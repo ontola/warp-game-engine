@@ -17,7 +17,7 @@ const NORMAL_SIZE: u32 = 1024;
 const SHADOW_SIZE: u32 = 4096;
 const NEAR_SHADOW_SIZE: u32 = 2048;
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
-const TIMESTAMP_CAPACITY: u32 = 128;
+const TIMESTAMP_CAPACITY: u32 = 160;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Readback { None, Metrics, ImageAndMetrics }
@@ -104,17 +104,14 @@ struct LightUniform {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GiUniform {
-    vol_origin: [f32; 4],
+    vol_origins: [[f32; 4]; 3],
+    vol_anchors: [[f32; 4]; 3],
     vol_dims: [u32; 4],
     hf: [f32; 4],
     hf_dims: [u32; 4],
     bounce: [f32; 4],
     params: [f32; 4],
 }
-
-/// The canopy volume around the cameras: 192 x 72 x 192 m at 1.5 m.
-const VOL_DIMS: [u32; 3] = [128, 48, 128];
-const VOXEL: f32 = 1.5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -257,9 +254,14 @@ pub struct FrameStats {
     /// Subset of total shadow work spent on the per-view near maps.
     pub near_shadow_clusters: u32,
     pub near_shadow_triangles: u32,
+    /// Per view: bit mask of rebuilt forest levels; zero is a cache hit.
+    pub canopy_updated_levels: Vec<u32>,
+    /// Per view: world voxel pitch of the three forest levels, in metres.
+    pub canopy_pitch_m: Vec<[f32; 3]>,
     /// GPU time per pass in ms, when the GPU has timestamps.
     pub gpu_ms: Vec<(&'static str, f64)>,
-    /// For each requested pixel: (instance, cluster, triangle) or None for sky.
+    /// For each requested composite-output pixel: (instance, cluster, triangle)
+    /// or None for sky, a split-screen gap, or a point outside all views.
     pub picks: Vec<Option<(u32, u32, u32)>>,
 }
 
@@ -298,10 +300,9 @@ pub struct Renderer {
     sky_limit: f32,
     sky_rotation: f32,
     shadow_samp: wgpu::Sampler,
-    foliage: wgpu::ComputePipeline,
-    foliage_layout: wgpu::BindGroupLayout,
-    density_filter: wgpu::ComputePipeline,
-    density_filter_layout: wgpu::BindGroupLayout,
+    canopies: std::sync::Mutex<Vec<crate::canopy::CanopyClipmap>>,
+    instance_flags: std::sync::Mutex<Vec<u32>>,
+    foliage_revision: std::sync::atomic::AtomicU64,
     density_sampler: wgpu::Sampler,
     solid_occluders: wgpu::Buffer,
     solid_count: u32,
@@ -582,7 +583,6 @@ impl Renderer {
                 (6, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)),
                 (7, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (8, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
-                (9, storage(true)),
                 (10, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (11, uniform()),
                 (12, storage(true)),
@@ -591,11 +591,8 @@ impl Renderer {
                 (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
-        let foliage_layout = layout(gpu, "foliage", &[(0, uniform()), (1, storage(false))]);
-        let density_filter_layout = layout(gpu, "density filter", &[
-            (0, uniform()), (1, storage(true)),
-            (2, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D3 }),
-        ]);
+        let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
+            .expect("scene exceeds the bounded canopy representation");
         let tone_layout = layout(
             gpu,
             "tone",
@@ -674,10 +671,6 @@ impl Renderer {
         let taa_mod = module("taa", include_str!("shaders/taa.wgsl"));
         let taa = compute(&pl(&[&taa_layout]), &taa_mod, "main");
         let clamp_samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        let foliage_mod = module("foliage", include_str!("shaders/foliage.wgsl"));
-        let foliage = compute(&pl(&[&scene_layout, &foliage_layout]), &foliage_mod, "fill");
-        let density_filter_mod = module("density filter", include_str!("shaders/density_filter.wgsl"));
-        let density_filter = compute(&pl(&[&density_filter_layout]), &density_filter_mod, "main");
         let density_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("linear canopy"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let solids = scene.solid_occluders();
         let solid_count = solids.len() as u32;
@@ -783,10 +776,9 @@ impl Renderer {
             sky_limit: mean * 8.0 * sky_scale,
             sky_rotation: rotation,
             shadow_samp,
-            foliage,
-            foliage_layout,
-            density_filter,
-            density_filter_layout,
+            canopies: std::sync::Mutex::new(vec![canopy]),
+            instance_flags: std::sync::Mutex::new(scene.instances.iter().map(|i| i.flags).collect()),
+            foliage_revision: Default::default(),
             density_sampler,
             solid_occluders,
             solid_count,
@@ -942,7 +934,18 @@ impl Renderer {
         if self.voxel_forest.as_ref().is_some_and(|forest|forest.contains_owner_range(first,instances.len())) {
             return Err("voxel test trees are static; rebuild their packed scene before changing transforms".into());
         }
+        self.canopies.lock().unwrap()[0].validate_update(first, instances)?;
         if !instances.is_empty() {
+            // Canopy density only changes with foliage. Moving cars and the
+            // streamed grass pool must not rebuild the static forest volumes.
+            let mut flags = self.instance_flags.lock().unwrap();
+            let old = &mut flags[first..first + instances.len()];
+            if old.iter().zip(instances).any(|(&before, after)|
+                (before | after.flags) & crate::scene::FOLIAGE != 0) {
+                self.foliage_revision.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            for (before, after) in old.iter_mut().zip(instances) { *before = after.flags; }
+            drop(flags);
             gpu.queue.write_buffer(&self.instance_buffer, (first * std::mem::size_of::<crate::scene::GpuInstance>()) as u64, bytemuck::cast_slice(instances));
             if let Some(transparency) = &self.transparency { transparency.update_instances(first, instances); }
             self.invalidate_shadow();
@@ -1027,64 +1030,19 @@ impl Renderer {
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
-        // GI: the canopy volume centred on the cameras' ground, terrain heights.
-        let half = Vec3::new(VOL_DIMS[0] as f32, 0.0, VOL_DIMS[2] as f32) * (VOXEL * 0.5);
-        let base_y = views.iter().map(|v| v.cam.pos.y).fold(f32::MAX, f32::min) - 30.0;
-        let origin = crate::stability::world_grid_origin(Vec3::new(centre.x - half.x, base_y, centre.z - half.z), VOXEL);
-        let gi_u = GiUniform {
-            vol_origin: [origin.x, origin.y, origin.z, VOXEL],
-            vol_dims: [VOL_DIMS[0], VOL_DIMS[1], VOL_DIMS[2], (light.gi > 0.0) as u32],
-            hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3), 0.0],
-            hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, 0],
-            // Reflectance, not a globally sunlit irradiance. The shader applies
-            // local sun/sky visibility before allowing this approximate bounce.
-            bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
-            params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit, 0.0],
-        };
-        let gi_buf = buffer(gpu, "gi", bytemuck::bytes_of(&gi_u), wgpu::BufferUsages::UNIFORM);
-        let vol_bytes = (VOL_DIMS[0] * VOL_DIMS[1] * VOL_DIMS[2] * 4) as u64;
-        let volume = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("canopy volume"), size: vol_bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let foliage_bind = bind(gpu, &self.foliage_layout, &[(0, gi_buf.as_entire_binding()), (1, volume.as_entire_binding())]);
-        let density_tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("filtered canopy"), size: wgpu::Extent3d { width: VOL_DIMS[0], height: VOL_DIMS[1], depth_or_array_layers: VOL_DIMS[2] },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
-        });
-        let density_view = density_tex.create_view(&Default::default());
-        let density_bind = bind(gpu, &self.density_filter_layout, &[(0, gi_buf.as_entire_binding()), (1, volume.as_entire_binding()), (2, wgpu::BindingResource::TextureView(&density_view))]);
-
+        // Each camera retains its own coverage/resolution. A second player
+        // moving away must not change this player's forest illumination.
+        let revision = self.foliage_revision.load(std::sync::atomic::Ordering::Relaxed);
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         let mut ts = 0u32;
         let mut names = Vec::new();
-        enc.clear_buffer(&volume, 0, None);
-        {
-            let t = self.query.as_ref().map(|(qs, _, _)| {
-                let i = timestamp_pair(&mut ts);
-                (qs, i)
-            });
-            if t.is_some() {
-                names.push("canopy volume");
-            }
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("canopy volume"),
-                timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
-            });
-            pass.set_pipeline(&self.foliage);
-            pass.set_bind_group(0, &self.scene_bind, &[]);
-            pass.set_bind_group(1, &foliage_bind, &[]);
-            pass.dispatch_workgroups(self.instances.div_ceil(64).max(1), 1, 1);
+        let mut canopies = self.canopies.lock().unwrap();
+        while canopies.len() < views.len() {
+            let next = canopies[0].fork_view(gpu);
+            canopies.push(next);
         }
-        {
-            let t = self.query.as_ref().map(|(qs, _, _)| { let i = timestamp_pair(&mut ts); (qs, i) });
-            if t.is_some() { names.push("filter canopy"); }
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("filter canopy"),
-                timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
-            });
-            pass.set_pipeline(&self.density_filter);
-            pass.set_bind_group(0, &density_bind, &[]);
-            pass.dispatch_workgroups(VOL_DIMS[0].div_ceil(8), VOL_DIMS[1].div_ceil(4), VOL_DIMS[2].div_ceil(8));
-        }
+        let mut canopy_updated_levels = Vec::with_capacity(views.len());
+        let mut canopy_pitch_m = Vec::with_capacity(views.len());
         if !reuse {
             self.cull_and_raster(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull");
         }
@@ -1109,6 +1067,29 @@ impl Renderer {
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         for (vi, view) in views.iter().enumerate() {
             let (w, h, cam) = (view.w, view.h, &view.cam);
+            let receivers = [cam.pos, cam.target, ahead(cam)];
+            let canopy_times = if canopies[vi].needs_update(&receivers, revision) {
+                ["canopy volume", "filter canopy"].map(|name| self.query.as_ref().map(|(qs, _, _)| {
+                    names.push(name);
+                    (qs, timestamp_pair(&mut ts))
+                }))
+            } else { [None, None] };
+            let canopy = canopies[vi].prepare(gpu, &mut enc, &self.scene_bind,
+                self.instances, &receivers, revision, canopy_times);
+            canopy_updated_levels.push(canopy.updated_levels);
+            canopy_pitch_m.push(canopy.origins.map(|origin| origin[3]));
+            let density_view = canopy.view;
+            let gi_u = GiUniform {
+                vol_origins: canopy.origins,
+                vol_anchors: canopy.anchors,
+                vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], (light.gi > 0.0) as u32],
+                hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3), 0.0],
+                hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, 0],
+                // Reflectance, conditioned on local sun and sky visibility.
+                bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
+                params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit, 0.0],
+            };
+            let gi_buf = buffer(gpu, "gi", bytemuck::bytes_of(&gi_u), wgpu::BufferUsages::UNIFORM);
             let mut view_light = lu;
             let near_view = if near_enabled {
                 let near = &near_shadows[vi];
@@ -1178,7 +1159,6 @@ impl Renderer {
                     (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
                     (7, wgpu::BindingResource::TextureView(&self.sky_view)),
                     (8, wgpu::BindingResource::TextureView(&hdr_v)),
-                    (9, volume.as_entire_binding()),
                     (10, wgpu::BindingResource::TextureView(&self.heightfield)),
                     (11, gi_buf.as_entire_binding()),
                     (12, self.solid_occluders.as_entire_binding()),
@@ -1294,6 +1274,7 @@ impl Renderer {
             keep.push((main, vis, depth, hdr));
         }
         drop(histories);
+        drop(canopies);
         if readback==Readback::None {
             gpu.queue.submit([enc.finish()]);
             return (ldr, Vec::new(), FrameStats::default());
@@ -1313,24 +1294,36 @@ impl Renderer {
         }
         gpu.queue.submit([enc.finish()]);
         let pixels = if readback==Readback::ImageAndMetrics { gpu.read_rgba8(&ldr) } else { Vec::new() };
-        let mut stats = FrameStats::default();
+        let mut stats = FrameStats {
+            canopy_updated_levels,
+            canopy_pitch_m,
+            ..Default::default()
+        };
         if !picks.is_empty() {
-            let (main, vis, ..) = &keep[0];
-            let w = views[0].w;
-            // The visibility buffer is 4 bytes per pixel too.
-            let ids = gpu.read_rgba8(vis);
-            let vis_list = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: MAX_VISIBLE as u64 * 8, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
-            let mut enc = gpu.device.create_command_encoder(&Default::default());
-            enc.copy_buffer_to_buffer(&main.visible, 0, &vis_list, 0, MAX_VISIBLE as u64 * 8);
-            gpu.queue.submit([enc.finish()]);
-            vis_list.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-            gpu.wait();
-            let list = vis_list.slice(..).get_mapped_range().expect("visible list");
-            let list: &[u32] = bytemuck::cast_slice(&list);
-            for &(x, y) in picks {
-                let k = ((y * w + x) * 4) as usize;
-                let id = u32::from_le_bytes(ids[k..k + 4].try_into().unwrap());
-                stats.picks.push(if id == u32::MAX { None } else { Some((list[(id >> 7) as usize * 2], list[(id >> 7) as usize * 2 + 1], id & 127)) });
+            stats.picks.resize(picks.len(), None);
+            for (view, (main, vis, ..)) in views.iter().zip(&keep) {
+                let requested: Vec<_> = picks.iter().enumerate().filter_map(|(i, &(x,y))|
+                    view.local_pixel(x,y).map(|(x,y)|(i,x,y))).collect();
+                if requested.is_empty() { continue; }
+                let ids = gpu.read_rgba8(vis);
+                let vis_list = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: MAX_VISIBLE as u64 * 8, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+                let mut pick_encoder = gpu.device.create_command_encoder(&Default::default());
+                pick_encoder.copy_buffer_to_buffer(&main.visible, 0, &vis_list, 0, MAX_VISIBLE as u64 * 8);
+                gpu.queue.submit([pick_encoder.finish()]);
+                vis_list.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                gpu.wait();
+                {
+                    let mapped = vis_list.slice(..).get_mapped_range().expect("visible list");
+                    let list: &[u32] = bytemuck::cast_slice(&mapped);
+                    for (i,x,y) in requested {
+                        let k = ((y * view.w + x) * 4) as usize;
+                        let id = u32::from_le_bytes(ids[k..k + 4].try_into().unwrap());
+                        if id != u32::MAX {
+                            stats.picks[i] = Some((list[(id >> 7) as usize * 2], list[(id >> 7) as usize * 2 + 1], id & 127));
+                        }
+                    }
+                }
+                vis_list.unmap();
             }
         }
         counters.slice(..).map_async(wgpu::MapMode::Read, |_| {});
@@ -1410,6 +1403,13 @@ pub fn split_rects(n: usize, w: u32, h: u32) -> Vec<(u32, u32, u32, u32)> {
     }
 }
 
+impl ViewRect {
+    fn local_pixel(&self, x:u32, y:u32) -> Option<(u32,u32)> {
+        let local=(x.checked_sub(self.x)?,y.checked_sub(self.y)?);
+        (local.0<self.w && local.1<self.h).then_some(local)
+    }
+}
+
 #[cfg(test)]
 mod layout_tests {
     use super::{split_rects, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};
@@ -1425,12 +1425,12 @@ mod layout_tests {
 
     #[test]
     fn four_views_with_near_maps_voxels_grass_transparency_and_taa_fit_timestamp_budget() {
-        // Shared canopy/filter/far map: 4 passes. Each view: near cull/raster,
+        // Shared far map: 2 passes. Each view: canopy/filter, near cull/raster,
         // main cull/raster, shade, voxel tiles/integrate/composite,
-        // far grass, grass transition/composite, transparency, TAA, tonemap: 14 intervals.
+        // far grass, grass transition/composite, transparency, TAA, tonemap: 16 intervals.
         let mut next = 0;
-        for _ in 0..(4 + 4 * 14) { timestamp_pair(&mut next); }
-        assert_eq!(next, 120);
+        for _ in 0..(2 + 4 * 16) { timestamp_pair(&mut next); }
+        assert_eq!(next, 132);
         assert!(next <= TIMESTAMP_CAPACITY);
         next = TIMESTAMP_CAPACITY - 2;
         assert_eq!(timestamp_pair(&mut next), TIMESTAMP_CAPACITY - 2);

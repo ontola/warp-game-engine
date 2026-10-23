@@ -18,6 +18,16 @@ F12 developer captures include same-frame scene GPU metrics. Do not claim
 token savings or runtime speed gains without measurements. Shader hot reload
 and broader frame-resource reuse are still future work.
 
+Joep also wants future GPU wind animation at every foliage distance, and
+procedural trees parameterized by growth and season. Preserve one source of
+species, seed, branch structure, rest pose and seasonal leaf coverage for near
+geometry and distant representations. A shared world wind field and bounded
+GPU branch deformation should animate both. Wind phase must be separate from
+structural changes to a tree; do not rebuild every cached canopy volume for
+every moving leaf. Evaluate conservative motion bounds, sampling a deformed
+rest-density field and infrequent shadow updates against actual error/cost.
+This is a design constraint, not implemented procedural growth or wind.
+
 The immediate visual priority is grass pop-in around 100 m, using a cheap
 terrain-following density volume and continuous near/far blending. Source
 trees remain the normal forest; GPU voxel crowns are still experimental.
@@ -42,9 +52,37 @@ GI. Keep the loops short and measured (README, "The iteration loops").
 - Show actual pictures and honest limitations. Compare current Kern variants;
   Joep explicitly ended Godot comparisons on 23 October.
 
-## Windows continuation, 2026-10-23
+## Windows continuation, 2026-10-24
 
-Latest r12b validated candidate SHA256:
+Latest r13c build SHA256:
+`c8092e3def8f464949cc6fc10738e1ae9828604a4f1a46bd388aa96212851565`.
+The r13 graphics iteration adds persistent per-camera canopy clipmaps for
+distant sun/sky occlusion, plus source-color/relative-height moments for far
+grass. One shared canopy was rejected because separated players changed
+lighting. Each view now has its own 1.5/6/24 m field levels, 27 MiB per view,
+108 MiB for four. Metadata reports per-view pitches and dirty masks.
+The canopy is a static ellipsoid-density approximation, not source-leaf
+voxel geometry, animated trees or a spatial radiance cache.
+
+The corrected 55-frame GPU fixture passes, including high forests, distant
+sunlight, split camera invariance and the former spread-threshold jump.
+12 grass and 11 tree-volume optical cases pass. The r13b graphics executable
+ran native 4K one/four-view 100-frame tests with matching r12b player states.
+Final scene GPU pass sums were 20.240/38.883 ms versus 17.977/36.954 ms before;
+this quality improvement costs GPU time. These are captured-frame timings,
+not gameplay FPS. The 120 FPS target remains unmet. r13c only raises the
+validated tree-count capacity to accommodate the existing 8 km stage range;
+the 8 km scene itself has not been measured. Read WINDOWS_VALIDATION.md.
+
+Keep `SIDEWAYS_FAR_GRASS=1` and `SIDEWAYS_VOXEL_TREE_PATCH=0` for the requested
+visible autoplay. Restart through `tools/play-dev-windows.ps1`; its active
+manifest owns the current PID/path. Stop it before isolated GPU measurements.
+Motion shimmer, approximate far silhouettes and broader route/weather
+coverage remain open. Future GPU wind/growth/season requirements are above.
+
+## Previous Windows continuation, 2026-10-23
+
+Previous r12b validated candidate SHA256:
 `05ec994693442cc72ec7d2cb10641666a616fa0d13db25138a860e75c479097e`.
 The visible demo is now managed by `tools/play-dev-windows.ps1`; use its
 `-Restart -Autoplay` workflow and inspect `build/dev-runs/active.json`.

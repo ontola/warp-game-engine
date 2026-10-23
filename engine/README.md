@@ -175,11 +175,29 @@ already supplies direct specular lighting. Approximate ground bounce uses
 local sun/sky visibility instead of assuming sunlit ground everywhere.
 
 Sun projections snap absolute light-space coordinates to texels. Split-screen
-extent grows in fixed buckets retained for a stage. The canopy density grid
-is world-aligned and hardware-trilinear-filtered; cars no longer splat into
-this coarse translucent grid. Stone-wall winding/normals and terrain boundary
-gradients were corrected. Thin foliage can still alias with live TAA disabled;
-widely separated players still exceed one shared canopy volume's useful area.
+sun-map extent grows in fixed buckets retained for a stage. Each camera now
+keeps three world-aligned canopy density grids at 1.5/6/24 m, with a larger
+coarse pitch when the initial scene height envelope requires it. They cover
+distant/high forests as well as nearby crowns. Continuous blend anchors are
+separate from snapped storage windows. Coarse cells retain integrated crown
+mass instead of missing a small tree when its centre falls between samples.
+All levels use additive ellipsoid extinction; this changes the previous
+max-union near approximation. These are shadow/sky-visibility proxies, not
+the experimental source-leaf voxel renderer.
+
+Per-camera fields cost 27 MiB, up to 108 MiB for four views. Pipelines and
+validation metadata are shared; unchanged fields emit no rebuild passes.
+Car/grass movement does not invalidate static forest density. Structural
+foliage edits do; adding/rescaling crowns requires rebuilding the renderer.
+Every surface, grass and volume pass samples the same lighting representation
+for its camera. Thin foliage can still alias with live TAA disabled. The
+canopy coverage guard is for 50/60 m sun/sky queries, not a guarantee for the
+full 250 m glossy-reflection query at the outermost visible forest edge.
+
+Indirect lighting currently uses nine global RGB sky SH coefficients,
+visibility queries and approximate local ground bounce. There is no spatial
+radiance cache, scene color bleeding or multi-bounce light transport. A
+cached extinction field is not a cached lighting solution.
 
 `--set contact_occlusion=0` and `--set reflection_occlusion=0` isolate the new
 effects in `shot`. Debug views are 1 sky visibility, 2 albedo, 3 direct light,
@@ -317,6 +335,8 @@ These budgets bound instance count, not GPU time.
 in live play. Four height bins follow the native 2 m terrain triangles and
 road mask. Source-photo coverage and habitat rules estimate its density;
 near and far representations blend before one composite over the scene.
+Each bin also retains extinction-weighted source color and normalized plant
+height, so its material response uses the same roots/tips as the near tufts.
 Far grass fades out over 160-240 m. This is a statistical, half-resolution
 volume, not individual blades or full Nanite. Its mean appearance is still
 too smooth on some open slopes, so the normal default remains unchanged.
@@ -335,7 +355,8 @@ sidecar to `engine/build/screenshots/`. On Windows it also copies the image
 to the clipboard; paste it into the chat with Ctrl+V. No automatic upload
 occurs. The metadata records the stage, cameras, cars, graphics settings and
 same-frame scene GPU pass times. Missing timestamp support is marked as
-unavailable. HUD, presentation and CPU time are outside these timings.
+unavailable. Per-view canopy pitches and rebuilt-level masks identify cached
+frames. HUD, presentation and CPU time are outside these timings.
 Hidden `play --smoke-render N --capture image.png` also writes
 `image.png.metrics.json` for the final frame.
 

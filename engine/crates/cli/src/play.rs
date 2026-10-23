@@ -453,7 +453,7 @@ impl App {
                 if !matches!(target.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb|wgpu::TextureFormat::Bgra8Unorm|wgpu::TextureFormat::Bgra8UnormSrgb){return Err("capture requires an 8-bit RGBA/BGRA surface".into());}
                 render::write_png(Path::new(path), size.width, size.height, &g.gpu.read_rgba8(target))?;
                 if let Some(stats)=&capture_stats {
-                    let metrics=serde_json::json!({"schema":1,"capture":path,"output_size":[size.width,size.height],"views":views.len(),"gpu_pass_ms":stats.gpu_ms,"timings_available":!stats.gpu_ms.is_empty(),"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS","triangles":stats.triangles,"clusters":stats.clusters});
+                    let metrics=serde_json::json!({"schema":1,"capture":path,"output_size":[size.width,size.height],"views":views.len(),"gpu_pass_ms":stats.gpu_ms,"timings_available":!stats.gpu_ms.is_empty(),"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS","triangles":stats.triangles,"clusters":stats.clusters,"canopy_updated_levels":stats.canopy_updated_levels,"canopy_pitch_m":stats.canopy_pitch_m});
                     std::fs::write(format!("{path}.metrics.json"),serde_json::to_vec_pretty(&metrics).unwrap()).map_err(|e|format!("capture metrics: {e}"))?;
                 }
             }
@@ -469,7 +469,7 @@ impl App {
                 "player_poses":poses.iter().enumerate().map(|(i,p)|serde_json::json!({"index":i,"position":p.pos.to_array(),"rotation_xyzw":p.rot.to_array(),"model":p.model})).collect::<Vec<_>>(),
                 "views":views.iter().map(|v|serde_json::json!({"rect":[v.x,v.y,v.w,v.h],"camera":{"position":v.cam.pos.to_array(),"target":v.cam.target.to_array(),"fov_y":v.cam.fov_y,"near":v.cam.near}})).collect::<Vec<_>>(),
                 "render":{"output_size":[size.width,size.height],"surface_format":format!("{:?}",g.config.format),"adapter":g.gpu.info.name,"backend":format!("{:?}",g.gpu.info.backend),"hud":self.args.hud,
-                    "profile":capture_stats.as_ref().map(|s|serde_json::json!({"gpu_pass_ms":s.gpu_ms,"timings_available":!s.gpu_ms.is_empty(),"triangles":s.triangles,"clusters":s.clusters,"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS"})),
+                    "profile":capture_stats.as_ref().map(|s|serde_json::json!({"gpu_pass_ms":s.gpu_ms,"timings_available":!s.gpu_ms.is_empty(),"triangles":s.triangles,"clusters":s.clusters,"canopy_updated_levels":s.canopy_updated_levels,"canopy_pitch_m":s.canopy_pitch_m,"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS"})),
                     "sun_direction":self.light.sun_dir.to_array(),"sun_lux":self.light.sun_lux,"sky_lux":self.light.sky_lux,"ev100":self.light.ev100,
                     "taa":self.light.taa,"lod_pixels":self.light.lod_pixels,"gi":self.light.gi,"contact_occlusion":self.light.contact_occlusion,
                     "reflection_occlusion":self.light.reflection_occlusion,"near_shadows":self.light.near_shadows,"debug":self.light.debug},

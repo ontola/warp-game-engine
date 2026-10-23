@@ -79,7 +79,6 @@ struct Material {
 @group(1) @binding(6) var shadow_samp: sampler_comparison;
 @group(1) @binding(7) var sky_tex: texture_2d<f32>;
 @group(1) @binding(8) var out_hdr: texture_storage_2d<rgba16float, write>;
-@group(1) @binding(9) var<storage, read> density: array<u32>;
 @group(1) @binding(10) var heightfield: texture_2d<f32>;
 @group(1) @binding(11) var<uniform> gi: Gi;
 struct SolidOccluder {
@@ -93,7 +92,8 @@ struct SolidOccluder {
 @group(1) @binding(15) var near_shadow_tex: texture_depth_2d;
 
 struct Gi {
-    vol_origin: vec4<f32>,
+    vol_origins: array<vec4<f32>, 3>,
+    vol_anchors: array<vec4<f32>, 3>,
     vol_dims: vec4<u32>,
     hf: vec4<f32>,
     hf_dims: vec4<u32>,
@@ -101,15 +101,31 @@ struct Gi {
     params: vec4<f32>, // contact on, reflection on, sun-free sky cap, unused
 };
 
-// Foliage density 0..1 at p, trilinear on an absolute world-aligned grid.
+// Extinction density on three absolute world grids. Blend the densities
+// before tracing, so overlapping levels never count the same forest twice.
+// The continuous anchors control the handoff; snapped storage windows do
+// not. An origin shift therefore cannot move a blend boundary in one frame.
 fn foliage(p: vec3<f32>) -> f32 {
-    let q = (p - gi.vol_origin.xyz) / gi.vol_origin.w;
     let d = vec3<f32>(gi.vol_dims.xyz);
-    if any(q < vec3<f32>(0.0)) || any(q >= d) {
-        return 0.0;
+    var remaining = 1.0;
+    var sigma = 0.0;
+    for (var level = 0u; level < 3u; level++) {
+        let origin = gi.vol_origins[level];
+        let delta = abs((p - gi.vol_anchors[level].xyz) / origin.w);
+        let weights = 1.0 - smoothstep(d * 0.5 - 13.0, d * 0.5 - 5.0, delta);
+        let weight = min(weights.x, min(weights.y, weights.z));
+        if weight <= 0.0 { continue; }
+        let q = (p - origin.xyz) / origin.w;
+        // Each level occupies one Y slab. Clamp inside its own texel centres
+        // so trilinear filtering can never sample a different level's slab.
+        let local = clamp(q, vec3<f32>(0.5), d - 0.5);
+        let uv = vec3<f32>(local.x / d.x,
+            (local.y + f32(level) * d.y) / (3.0 * d.y), local.z / d.z);
+        sigma += remaining * weight * textureSampleLevel(canopy_tex, canopy_sampler, uv, 0.0).r;
+        remaining *= 1.0 - weight;
+        if remaining <= 0.0001 { break; }
     }
-    let edge = min(min(q.x, d.x - q.x), min(q.z, d.z - q.z));
-    return textureSampleLevel(canopy_tex, canopy_sampler, q / d, 0.0).r * smoothstep(0.0, 3.0, edge);
+    return sigma;
 }
 
 // Smooth projected-area approximation for diffuse contact, and opaque ray
@@ -368,9 +384,13 @@ fn shadow_at(p: vec3<f32>, n: vec3<f32>) -> f32 {
     var far = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n);
     let c = light.shadow_view_proj * vec4<f32>(p, 1.0);
     let edge = max(abs(c.x), abs(c.y));
-    if edge > 0.85 && gi.vol_dims.w != 0u {
+    // Fade to a covered coarse forest field at every shadow-frustum face,
+    // including depth. A receiver outside Z must not silently become sunlit.
+    let depth_edge = max(1.0 - c.z / 0.05, 1.0 - (1.0 - c.z) / 0.05);
+    let coverage_fade = max(smoothstep(0.75, 1.0, edge), smoothstep(0.0, 1.0, depth_edge));
+    if coverage_fade > 0.0 && gi.vol_dims.w != 0u {
         let tr = transmittance(p + n * 0.2, light.sun_dir.xyz, 50.0);
-        far = mix(far, tr, smoothstep(0.85, 1.0, edge));
+        far = mix(far, tr, coverage_fade);
     }
     if weight <= 0.0 { return far; }
     let detail = shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n);

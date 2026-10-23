@@ -2,7 +2,7 @@
 // each ray interval is integrated analytically, never as an opaque grass roof.
 struct FarGrassParams {
     grid:vec4<f32>, dims:vec4<u32>, full:vec4<u32>, profile:vec4<f32>,
-    albedo:vec4<f32>, ranges:vec4<f32>, bounds:vec4<f32>,
+    shading:array<vec4<f32>,4>, ranges:vec4<f32>, bounds:vec4<f32>,
 };
 @group(2) @binding(0) var<uniform> fg:FarGrassParams;
 @group(2) @binding(1) var fg_terrain:texture_2d<f32>;
@@ -32,7 +32,7 @@ fn fg_road_clip(value:f32,rate:f32,span:vec2<f32>)->vec2<f32> {
     if rate>0.0 {return vec2<f32>(max(span.x,crossing),span.y);}
     return vec2<f32>(span.x,min(span.y,crossing));
 }
-struct FarAccum { transmission:f32, position:vec3<f32>, root_distance:f32, height:f32 };
+struct FarAccum { transmission:f32, position:vec3<f32>, root_distance:f32, shading:vec4<f32> };
 fn fg_triangle(cell:vec2<i32>,a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,e:vec2<f32>,
     begin:f32,end:f32,direction:vec3<f32>,horizontal:f32,coverage:f32,acc:ptr<function,FarAccum>) {
     if end<=begin {return;}
@@ -62,7 +62,7 @@ fn fg_triangle(cell:vec2<i32>,a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,e:vec2<f32>,
         let distance=begin+midpoint;
         (*acc).position+=(view.cam.xyz+direction*distance)*weight;
         (*acc).root_distance+=distance*horizontal*weight;
-        (*acc).height+=clamp((h0+dh*midpoint)/fg.grid.w,0.0,1.0)*weight;
+        (*acc).shading+=fg.shading[bin]*weight;
         (*acc).transmission*=attenuation;
     }
 }
@@ -90,16 +90,18 @@ fn fg_exits(cell:vec2<i32>,group:i32,direction:vec3<f32>)->vec2<f32> {
     }
     return result;
 }
-fn fg_lighting(p:vec3<f32>,height:f32,direction:vec3<f32>)->vec3<f32> {
+fn fg_lighting(p:vec3<f32>,shading:vec4<f32>,direction:vec3<f32>)->vec3<f32> {
     // One visibility/lighting evaluation at the absorbed-light centroid.
     // Same grass response; no far hero-contact query or per-bin GI loop.
     let n=vec3<f32>(0.0,1.0,0.0);let v=-direction;let l=light.sun_dir.xyz;
-    let base=fg.albedo.rgb*mix(0.8,1.0,height)*1.25*(1.0-light.fog.w*0.25);
+    // RGB already contains the source photo/height-factor covariance. W is
+    // original per-tuft normalized height, not height/max_possible_tuft.
+    let base=shading.rgb*1.25*(1.0-light.fog.w*0.25);
     let shadow=mix(1.0,shadow_at(p,n*sign(dot(n,l)+1e-4)),light.sun_color.w);
     let sun_e=light.sun_color.rgb*light.sun_dir.w*shadow;
     let sky_vis=sky_visibility(p,n);
     let bounce=gi.bounce.rgb*(gi.bounce.w*sky_vis+light.sun_dir.w*max(light.sun_dir.y,0.0)*shadow);
-    let ao=mix(0.45,1.0,height);
+    let ao=mix(0.45,1.0,shading.w);
     let ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*ao;
     let rough=0.85;let f0=vec3<f32>(0.016);
     let env=mix(bounce/PI,environment(reflect(-v,n),rough,bounce),sky_vis);
@@ -216,7 +218,7 @@ fn far_grass_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     if alpha<=0.0 {return;}
     let p=acc.position/alpha;let root_distance=acc.root_distance/alpha;
     let outer=1.0-smoothstep(fg.ranges.y,fg.ranges.z,root_distance);
-    let radiance=fg_lighting(p,acc.height/alpha,direction);
+    let radiance=fg_lighting(p,acc.shading/alpha,direction);
     // UNWEIGHTED with respect to the near/far handoff. The compositor alone
     // combines representations. Only the explicit outer 160..240 m fade is
     // applied here, once, to both premultiplied radiance and alpha.
