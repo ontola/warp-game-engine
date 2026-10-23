@@ -140,6 +140,34 @@ The oracle for `check`:
 
     godot --headless --path .. --script res://tools/oracle_dump.gd -- --seed 1 --km 2 --out /tmp/o.json
 
+## Indirect visibility and stable shadows
+
+Car bodies now provide up to six local opaque geometry proxies, excluding
+glass, for smooth contact occlusion and reflected-ray blocking. Proxies follow
+the live instance transform. Glossy materials also query terrain/canopy
+visibility along their reflected direction; clearcoat reuses that query. The
+HDRI sun is capped consistently with diffuse SH because the shadowed GGX sun
+already supplies direct specular lighting. Approximate ground bounce uses
+local sun/sky visibility instead of assuming sunlit ground everywhere.
+
+Sun projections snap absolute light-space coordinates to texels. Split-screen
+extent grows in fixed buckets retained for a stage. The canopy density grid
+is world-aligned and hardware-trilinear-filtered; cars no longer splat into
+this coarse translucent grid. Stone-wall winding/normals and terrain boundary
+gradients were corrected. Thin foliage can still alias with live TAA disabled;
+widely separated players still exceed one shared canopy volume's useful area.
+
+`--set contact_occlusion=0` and `--set reflection_occlusion=0` isolate the new
+effects in `shot`. Debug views are 1 sky visibility, 2 albedo, 3 direct light,
+4 diffuse indirect, 5 environment specular, 6 contact visibility and 7 reflected
+visibility. `cargo build --release -p cli --example lighting_fixture` builds a
+deterministic offscreen real-car/ground/mountain fixture. The commands in
+`tools/lighting_regression.py` separately plan, run and analyze it. Running is
+an explicit GPU operation; do not compete with a user's live playtest.
+
+These are bounded approximations, not full scene reflections, exact wheel-well
+geometry or multi-bounce GI. See `WINDOWS_VALIDATION.md` for measured scope.
+
 ## Parity with Godot
 
 - Stage layout, rivers, pace notes, heights, terrain chunks, trees and the

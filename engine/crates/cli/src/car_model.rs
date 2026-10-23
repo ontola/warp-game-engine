@@ -62,7 +62,12 @@ pub fn load(scene: &mut Scene, path: &std::path::Path, paint: [f32; 3], textures
         let painted = name.contains("Bodymat") || name.contains("Paint");
         let tint = if painted { paint } else { [f[0], f[1], f[2]] };
         // Paint as car_model.gd: metallic flake under a glossy clear coat.
-        let (roughness, metal, flags) = if painted { (0.38, 0.45, render::scene::CLEARCOAT) } else { (pbr.roughness_factor(), pbr.metallic_factor(), 0) };
+        let (roughness, metal, mut flags) = if painted { (0.38, 0.45, render::scene::CLEARCOAT) } else { (pbr.roughness_factor(), pbr.metallic_factor(), 0) };
+        // The renderer's local ambient proxies represent opaque bodywork.
+        // Glass/alpha coverage cannot safely be filled as a solid box.
+        if m.alpha_mode()!=gltf::material::AlphaMode::Opaque || f[3]<0.999 {
+            flags|=render::scene::NO_AMBIENT_OCCLUSION;
+        }
         mats.push(scene.add_material(Material { tint, layer: if painted { -1 } else { layer }, roughness, flags, scale: 1.0, metal }));
     }
     let mut body = None;
