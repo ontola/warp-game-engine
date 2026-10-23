@@ -20,7 +20,12 @@ pub struct FarGrassField {
     /// Includes the three-card/random-yaw factor; four equal height bins.
     pub profile: [f32; 4],
     pub max_height: f32,
+    /// Global unmodified photo mean, retained for source diagnostics.
     pub albedo: [f32; 3],
+    /// Per extinction bin: mean linear photo RGB * (0.8 + 0.2*source_height),
+    /// then mean source_height in W. Area-weighted before Beer-Lambert lighting.
+    /// Source height is normalized per original tuft, including its root inset.
+    pub shading_profile: [[f32; 4]; 4],
 }
 #[derive(Clone, Debug, Default)]
 pub struct FarGrassDiagnostics {
@@ -40,7 +45,7 @@ struct Params {
     dims: [u32; 4], // point width/height, half-output width/height
     full: [u32; 4], // full viewport width/height, tile width/height
     profile: [f32; 4],
-    albedo: [f32; 4],
+    shading: [[f32; 4]; 4],
     range: [f32; 4],  // inner radius, outer-fade start/end, road clearance
     bounds: [f32; 4], // minimum/maximum occupied world height
 }
@@ -80,6 +85,8 @@ fn prepare(field: &FarGrassField) -> Result<(Vec<[f32; 2]>, Vec<[f32; 2]>, Param
         || !field.origin.iter().all(|x| x.is_finite())
         || field.profile.iter().any(|x| !x.is_finite() || *x < 0.0)
         || field.albedo.iter().any(|x| !x.is_finite() || *x < 0.0)
+        || field.shading_profile.iter().any(|bin|
+            bin.iter().any(|x| !x.is_finite() || *x < 0.0) || bin[3] > 1.0)
     {
         return Err("invalid far-grass field geometry/optics".into());
     }
@@ -153,7 +160,7 @@ fn prepare(field: &FarGrassField) -> Result<(Vec<[f32; 2]>, Vec<[f32; 2]>, Param
             dims: [w, h, 0, 0],
             full: [0, 0, tw, th],
             profile: field.profile,
-            albedo: [field.albedo[0], field.albedo[1], field.albedo[2], 0.0],
+            shading: field.shading_profile,
             range: [40.0, 160.0, 240.0, 0.9],
             bounds: [bounds[0], bounds[1], 0.0, 0.0],
         },
@@ -587,11 +594,12 @@ mod tests {
             profile: [1.0, 2.0, 3.0, 0.0],
             max_height: 0.65,
             albedo: [0.1, 0.2, 0.05],
+            shading_profile: [[0.09, 0.18, 0.045, 0.5]; 4],
         }
     }
     #[test]
     fn source_shader_and_parameter_layout_validate() {
-        assert_eq!(std::mem::size_of::<Params>(), 112);
+        assert_eq!(std::mem::size_of::<Params>(), 160);
         let source = shader_source();
         let module = naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
@@ -634,6 +642,12 @@ mod tests {
         assert!(prepare(&f).is_err());
         let mut f = field();
         f.width = 1;
+        assert!(prepare(&f).is_err());
+        let mut f = field();
+        f.shading_profile[0][3] = 1.01;
+        assert!(prepare(&f).is_err());
+        let mut f = field();
+        f.shading_profile[2][1] = f32::NAN;
         assert!(prepare(&f).is_err());
     }
 }

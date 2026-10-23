@@ -617,3 +617,93 @@ completed the formerly invalid fine 256-tree fixture in 49.705 ms, max 1330
 steps, zero incomplete rays (`voxel-r12-256-fine`). Coverage ratio 0.890806 and
 soft IoU 0.773714 remain approximate/cloudy. This is still far too expensive
 for the intended full forest and stays disabled by default.
+
+## 24 October: persistent distant forest lighting and grass material continuity
+
+Evidence directory: `C:\dev\perf\warp-sideways-20261024`.
+The original canopy and sun-map footprint was about 192 m wide; the canopy
+also ended at approximately camera Y+42. Outside it, sun/sky queries lost
+the forest. Three world-anchored density levels now supply continuous
+coverage. Each camera owns its 1.5/6/24 m levels (coarse pitch grows for a
+larger initial vertical envelope), with 27 MiB persistent GPU storage per
+camera, at most 108 MiB for four. Pipelines and validation metadata are shared.
+Only changed storage windows or structural foliage revisions rebuild;
+moving cars and grass leave the static canopy cache intact.
+
+Coarse deposition integrates and normalizes each ellipsoid's mass before
+clipping to the resident window. This avoids losing small crowns between
+large voxel centres. All levels use additive extinction, intentionally
+changing the previous near-field max-union proxy. Density blends before
+light integration, with continuous camera anchors independent of snapped
+storage origins and all-axis transitions. Shadow-map XY and depth exits
+fall back to the covered field. This remains a soft canopy approximation,
+not source-needle geometry or a radiance cache.
+
+The first shared-field prototype was rejected despite its loose coverage
+checks passing. `canopy-probe-r13-1/report.json` retains its evidence:
+the same receiver changed displayed sky values 120 to 68/69 in split screen,
+and a 164-to-165 m camera spread changed 102 to 74. Its direct-light test
+also reused a previously expanded sun box, so it could not prove far
+fallback. The final fixture starts a fresh renderer per light component,
+uses per-camera canopy fields, and gates both split differences and the
+former spread threshold at 2/255. Composite-output picking was corrected
+to read the actual viewport's visibility buffer, including split gaps.
+
+`canopy-probe-r13b-2/report.json`: 55 actual GPU captures, zero failures.
+Sky at 12/100/300 m = 121/121/119 versus 152 without forest; elevated Y=200 =102.
+Same-camera one/four views are exactly 120/120; direct differences are at
+most 1/255 and camera reorder is byte-identical. All five spread samples
+remain 102. Nine old-boundary motion samples and a stationary repeat remain
+121. With the corrected fresh direct-light fixture, the 300 m receiver is
+[0,0,0] versus [174,173,170] without forest. These are displayed diagnostic
+values after tone mapping on synthetic receivers, not linear transmission,
+tree-asset fidelity, broad weather acceptance or gameplay performance.
+
+Far grass also carries extinction-weighted photo RGB and original relative
+plant height per bin. The previous use of the globally tallest possible
+plant incorrectly changed root/tip color and AO across distance. Density,
+alpha, placement, root geometry and distance bands remain unchanged. The
+GPU parameter block grows 48 bytes; there are no extra instances, marching
+steps or light queries. The open-slope statistical silhouette remains smooth
+and the feature stays opt-in. Future procedural growth, seasons and efficient
+near/far GPU wind are architectural requirements, not implemented features.
+
+CPU/shader checks: 45 CLI +59 render +3 probe tests passed; one unrelated
+benchmark remains ignored. The new material-moment test checks a known
+red/blue photo integral. All 12 far-grass GPU optical cases passed in
+`far-grass-r13b-optics`, and all 11 tree-volume optical cases passed in
+`voxel-r13b-optics` after the shared lighting change.
+
+The tested graphics binary is `sideways-r13b-canopy.exe`, SHA256
+`8731073343133f770d5d250e88fda17d5b953bd935b0ce7249f930fb505d424b`.
+Native 4K one/four-player runs each rendered 100 hidden frames to tick 800,
+with zero presented frames and player states exactly matching r12b.
+Final grass overflow is zero, maximum steps 96 single and 109/119/84/85 split.
+Each final canopy reports 1.5/6/24 m and dirty mask 0, demonstrating cache reuse
+while cars move. Actual captures: `r13b-single.png` and `r13b-four.png`.
+
+| Final-frame scene sample | r12b ms | r13b ms | r13b far grass ms |
+| --- | ---: | ---: | ---: |
+| One native 4K view | 17.977 | 20.240 | 0.225 |
+| Four views in one native 4K output | 36.954 | 38.883 | 0.715 |
+
+These are single-frame sums of GPU pass intervals, excluding HUD,
+presentation and CPU. They are not averaged FPS, isolated speedups or a
+full-route test. Expanded lighting has a visible GPU cost; 120 FPS/8.33 ms is
+still unmet. Detailed results and exact state comparisons are in
+`r13b-comparison.json`. The 60 m coverage guard targets sun/sky queries;
+outer-edge 250 m glossy reflection rays are not guaranteed fully covered.
+Foliage aliasing, distant approximation and complete temporal/weather
+acceptance remain open. Engine timestamp capacity now covers 132 queries
+for the maximum four-view pass combination.
+
+The final r13c binary is `sideways-r13c-canopy.exe`, SHA256
+`c8092e3def8f464949cc6fc10738e1ae9828604a4f1a46bd388aa96212851565`.
+It only raises the validated total crown limit from 262,143 to 1,048,575;
+the existing 8 km generator can exceed the lower count because its 200,000
+background-tree budget is additional to native corridor trees. Fixed atlas
+memory is unchanged and mass encoding still uses the actual scene count.
+Six canopy tests passed again after this capacity change. The 8 km scene
+itself was not generated/measured in this iteration. Graphics evidence above
+belongs to the preserved r13b binary; use the managed autoplay manifest for
+the final executable's live launch and first-frame confirmation.

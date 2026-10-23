@@ -49,7 +49,12 @@ fn field(case: &Case) -> FarGrassField {
     let mut f = FarGrassField { origin: [-extent; 2], cell: 2.0, width: n, height: n,
         heights: vec![0.0; (n*n) as usize], road: vec![5.0; (n*n) as usize],
         coverage: vec![255; ((n-1)*(n-1)) as usize], profile: [0.08; 4],
-        max_height: 0.65, albedo: [0.12, 0.25, 0.07] };
+        max_height: 0.65, albedo: [0.12, 0.25, 0.07],
+        shading_profile: std::array::from_fn(|i| {
+            let height = (i as f32 + 0.5) / 4.0;
+            let factor = 0.8 + 0.2 * height;
+            [0.12 * factor, 0.25 * factor, 0.07 * factor, height]
+        }) };
     for z in 0..n { for x in 0..n {
         let p = [f.origin[0] + x as f32 * f.cell, f.origin[1] + z as f32 * f.cell];
         let index = (z*n+x) as usize;

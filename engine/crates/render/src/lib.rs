@@ -21,6 +21,7 @@ pub mod voxel_forest;
 mod stability;
 mod transparency;
 mod volume_view;
+mod canopy;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, ViewRect, split_rects};
 pub use gpu::{Gpu, Stopwatch, write_png};

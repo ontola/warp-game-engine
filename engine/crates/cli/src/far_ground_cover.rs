@@ -25,24 +25,37 @@ fn linear(value: u8) -> f64 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-fn photo_profile(photo: &image::RgbaImage) -> Result<([f32; 4], f32, [f32; 3]), String> {
+struct PhotoProfile {
+    extinction: [f32; 4],
+    max_height: f32,
+    albedo: [f32; 3],
+    shading: [[f32; 4]; 4],
+}
+
+fn photo_profile(photo: &image::RgbaImage) -> Result<PhotoProfile, String> {
     if photo.width() == 0 || photo.height() == 0 {
         return Err("far grass requires a non-empty source clump photo".into());
     }
     let mut rows = vec![0.0f64; photo.height() as usize];
+    let mut row_color = vec![[0.0f64; 3]; photo.height() as usize];
     let mut color = [0.0f64; 3];
     let mut covered = 0u64;
     for (_, y, pixel) in photo.enumerate_pixels() {
         // Match the fixed 0.5 photo cutout in both live grass raster passes.
         if pixel[3] < 128 { continue; }
         rows[y as usize] += 1.0 / photo.width() as f64;
-        for k in 0..3 { color[k] += linear(pixel[k]); }
+        for k in 0..3 {
+            let value = linear(pixel[k]);
+            color[k] += value;
+            row_color[y as usize][k] += value / photo.width() as f64;
+        }
         covered += 1;
     }
     let albedo = color.map(|c| (c / covered.max(1) as f64) as f32);
     let max_height = HEIGHT * (SCALE_MIN + SCALE_SPAN);
     let bin_height = max_height as f64 / 4.0;
     let mut area = [0.0f64; 4];
+    let mut shading_mass = [[0.0f64; 4]; 4];
     for k in 0..PROFILE_SCALES {
         let scale = SCALE_MIN as f64 + SCALE_SPAN as f64 * (k as f64 + 0.5) / PROFILE_SCALES as f64;
         let width = WIDTH as f64 * scale;
@@ -54,8 +67,23 @@ fn photo_profile(photo: &image::RgbaImage) -> Result<([f32; 4], f32, [f32; 3]), 
             let y0 = ROOT_OFFSET as f64 + height * (1.0 - (row + 1) as f64 / rows.len() as f64);
             let y1 = ROOT_OFFSET as f64 + height * (1.0 - row as f64 / rows.len() as f64);
             for (bin, mass) in area.iter_mut().enumerate() {
-                let overlap = (y1.min((bin + 1) as f64 * bin_height) - y0.max(bin as f64 * bin_height)).max(0.0);
+                let lower = y0.max(bin as f64 * bin_height);
+                let upper = y1.min((bin + 1) as f64 * bin_height);
+                let overlap = (upper - lower).max(0.0);
+                // Keep the extinction accumulation unchanged. Shading carries
+                // separate area moments and cannot change optical density.
                 *mass += width * fraction * overlap / PROFILE_SCALES as f64;
+                if overlap == 0.0 { continue; }
+                let weight = width * fraction * overlap / PROFILE_SCALES as f64;
+                // Near shaders use (world_y-root_y)/(HEIGHT*instance_scale),
+                // not world height divided by the tallest possible plant.
+                // Its linear mean is exact over this clipped source row.
+                let source_height = ((lower + upper) * 0.5 - ROOT_OFFSET as f64) / height;
+                for channel in 0..3 {
+                    shading_mass[bin][channel] += weight * row_color[row][channel] / fraction
+                        * (0.8 + 0.2 * source_height);
+                }
+                shading_mass[bin][3] += weight * source_height;
             }
         }
     }
@@ -64,7 +92,11 @@ fn photo_profile(photo: &image::RgbaImage) -> Result<([f32; 4], f32, [f32; 3]), 
     // Units: tufts/m2 * projected m2/tuft / bin metres = extinction/metre.
     let density = 1.0 / (CELL as f64 * CELL as f64);
     let factor = density * 3.0 * std::f64::consts::FRAC_2_PI / bin_height;
-    Ok((area.map(|a| (a * factor) as f32), max_height, albedo))
+    let shading = std::array::from_fn(|bin| {
+        if area[bin] == 0.0 { return [0.0; 4]; }
+        shading_mass[bin].map(|value| (value / area[bin]) as f32)
+    });
+    Ok(PhotoProfile { extinction: area.map(|a| (a * factor) as f32), max_height, albedo, shading })
 }
 
 /// Bake once with a stage's native chunks; the renderer owns upload/lifetime.
@@ -103,9 +135,11 @@ pub fn bake(chunks: &[Chunk], photo: &image::RgbaImage) -> Result<(FarGrassField
     if origin.iter().chain(&end).any(|v| !v.is_finite() || v.abs() >= 10_000_000.0) {
         return Err("far grass grid exceeds the live placement coordinate range".into());
     }
-    let (profile, max_height, albedo) = photo_profile(photo)?;
+    let photo = photo_profile(photo)?;
+    let max_height = photo.max_height;
     let mut field = FarGrassField { origin, cell: GRID as f32, width: width as u32, height: height as u32,
-        heights: vec![0.0; points], road: vec![-1.0; points], coverage: vec![0; cells], profile, max_height, albedo };
+        heights: vec![0.0; points], road: vec![-1.0; points], coverage: vec![0; cells],
+        profile: photo.extinction, max_height, albedo: photo.albedo, shading_profile: photo.shading };
     let ground = Ground::new(chunks);
     let mut written = vec![false; points];
     let mut native_cells = 0usize;
@@ -144,7 +178,7 @@ pub fn bake(chunks: &[Chunk], photo: &image::RgbaImage) -> Result<(FarGrassField
         }}
     }
     let bytes = field.heights.len() * 4 + field.road.len() * 4 + field.coverage.len();
-    let summary = format!("far grass volume: {covered_cells}/{native_cells} native cells, {width}x{height} grid points at {GRID} m, 4 height bins up to {max_height:.2} m, {bytes} CPU bytes, {:.0} expected tufts, {:.1} ms bake; 4 stratified expected habitat/scale samples per cell (not exact individual tuft coverage), same CC0 photo/roots/road field, no new near instances",
+    let summary = format!("far grass volume: {covered_cells}/{native_cells} native cells, {width}x{height} grid points at {GRID} m, 4 height bins up to {max_height:.2} m, {bytes} CPU bytes, {:.0} expected tufts, {:.1} ms bake; 4 stratified expected habitat/scale samples per cell (not exact individual tuft coverage), source color/plant-height moments per bin, same CC0 photo/roots/road field, no new near instances",
         expected_tufts, started.elapsed().as_secs_f64() * 1000.0);
     Ok((field, summary))
 }
@@ -161,18 +195,56 @@ mod tests {
     }
     #[test]
     fn profile_preserves_card_area_height_and_linear_color() {
-        let (profile, height, albedo) = photo_profile(&photo(255)).unwrap();
-        let integral = profile.iter().sum::<f32>() as f64 * height as f64 / 4.0;
+        let source = photo_profile(&photo(255)).unwrap();
+        let integral = source.extinction.iter().sum::<f32>() as f64 * source.max_height as f64 / 4.0;
         let expected_area = (0..PROFILE_SCALES).map(|k| {
             let s = SCALE_MIN as f64 + SCALE_SPAN as f64 * (k as f64 + 0.5) / PROFILE_SCALES as f64;
             WIDTH as f64 * s * (HEIGHT as f64 * s + ROOT_OFFSET as f64)
         }).sum::<f64>() / PROFILE_SCALES as f64;
         let expected = expected_area * 3.0 * std::f64::consts::FRAC_2_PI / (CELL as f64 * CELL as f64);
         assert!((integral - expected).abs() < 1e-5);
-        assert!((height - 0.65).abs() < 1e-6);
-        assert!((albedo[0] as f64 - linear(128)).abs() < 1e-7);
-        assert_eq!(photo_profile(&photo(127)).unwrap().0, [0.0;4]);
-        assert!(photo_profile(&photo(128)).unwrap().0.iter().any(|v| *v > 0.0));
+        assert!((source.max_height - 0.65).abs() < 1e-6);
+        assert!((source.albedo[0] as f64 - linear(128)).abs() < 1e-7);
+        assert_eq!(photo_profile(&photo(127)).unwrap().extinction, [0.0;4]);
+        assert_eq!(photo_profile(&photo(127)).unwrap().shading, [[0.0;4];4]);
+        assert!(photo_profile(&photo(128)).unwrap().extinction.iter().any(|v| *v > 0.0));
+        for bin in source.shading {
+            assert!((bin[0] as f64 - linear(128) * (0.8 + 0.2 * bin[3] as f64)).abs() < 1e-7);
+        }
+    }
+    #[test]
+    fn material_moments_match_original_scaled_tuft_integrals() {
+        // A red upper half and blue lower half give independent closed-form
+        // color integrals. Scaling/inset mix source rows into different world
+        // height bins, but their total source-material moment must be conserved.
+        let mut image = image::RgbaImage::from_pixel(2, 8, image::Rgba([0, 0, 255, 255]));
+        for y in 0..4 { for x in 0..2 { image.put_pixel(x, y, image::Rgba([255, 0, 0, 255])); }}
+        let source = photo_profile(&image).unwrap();
+        let white = photo_profile(&image::RgbaImage::from_pixel(2, 8, image::Rgba([255;4]))).unwrap();
+        assert_eq!(source.extinction, white.extinction, "RGB must never alter density or alpha");
+        let bin_height = source.max_height as f64 / 4.0;
+        let actual: [f64;4] = std::array::from_fn(|channel| (0..4).map(|bin|
+            source.extinction[bin] as f64 * bin_height * source.shading[bin][channel] as f64).sum());
+        let mut expected = [0.0f64;4];
+        let density = 3.0 * std::f64::consts::FRAC_2_PI / (CELL as f64 * CELL as f64);
+        let primitive = |u:f64| 0.8*u + 0.1*u*u;
+        for k in 0..PROFILE_SCALES {
+            let scale = SCALE_MIN as f64 + SCALE_SPAN as f64 * (k as f64 + 0.5) / PROFILE_SCALES as f64;
+            let height = HEIGHT as f64 * scale;
+            let root = -ROOT_OFFSET as f64 / height;
+            let factor = WIDTH as f64 * scale * height * density / PROFILE_SCALES as f64;
+            expected[0] += factor * (primitive(1.0) - primitive(0.5));
+            expected[2] += factor * (primitive(0.5) - primitive(root));
+            expected[3] += factor * (1.0 - root*root) * 0.5;
+        }
+        for channel in 0..4 { assert!((actual[channel] - expected[channel]).abs() < 2e-6,
+            "channel {channel}: {} != {}", actual[channel], expected[channel]); }
+        assert!(source.shading[0][2] > source.shading[0][0]);
+        assert!(source.shading[3][0] > source.shading[3][2]);
+        // Material source height also rises per bin; it is not simply the
+        // bin centre divided by the tallest allowed plant's world height.
+        assert!(source.shading.windows(2).all(|b| b[1][3] > b[0][3]));
+        assert!((source.shading[1][3] - 0.375).abs() > 0.05);
     }
     #[test]
     fn native_samples_and_missing_chunks_are_preserved() {
