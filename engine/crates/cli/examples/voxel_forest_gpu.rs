@@ -268,13 +268,15 @@ fn fixture(assets: &Assets, a: &Args, voxel: bool) -> Result<Scene, String> {
     if voxel {
         let mut volumes = assets.volumes.clone();
         for v in &mut volumes {
-            v.levels = v.levels.drain(a.level..a.level + 1).collect();
+            // Keep coarser index levels for provably empty-region skipping.
+            // The first remaining level is still the explicit shaded level.
+            v.levels.drain(..a.level);
         }
         scene.voxel_forest = Some(pack(
             &volumes,
             &bindings,
             &scene.instances,
-            PackLimits::default(),
+            PackLimits { first_level_bounds: true, ..Default::default() },
         )?);
     }
     Ok(scene)
@@ -346,7 +348,10 @@ fn run(a: Args) -> Result<(), String> {
         let diagnostics = renderer.voxel_diagnostics(&gpu)?;
         let diag:Vec<_>=diagnostics.unwrap_or_default().into_iter().map(|d|{
             if d.step_overflow_rays>0{incomplete=true;}
-            json!({"candidate_overflow_tiles":d.candidate_overflow_tiles,"step_overflow_rays":d.step_overflow_rays,"traced_rays":d.traced_rays,"max_steps_used":d.max_steps_used,"max_tile_candidates":d.max_tile_candidates})
+            json!({"candidate_overflow_tiles":d.candidate_overflow_tiles,"step_overflow_rays":d.step_overflow_rays,"traced_rays":d.traced_rays,"max_steps_used":d.max_steps_used,"max_tile_candidates":d.max_tile_candidates,
+                "max_ray_candidates":d.max_ray_candidates,"ray_candidate_overflow_rays":d.ray_candidate_overflow_rays,
+                "max_active_volumes":d.max_active_volumes,"active_cache_overflow_rays":d.active_cache_overflow_rays,
+                "max_empty_brick_skips":d.max_empty_brick_skips})
         }).collect();
         let file = a.out.join(format!("{mode}.png"));
         render::write_png(&file, a.size.0, a.size.1, &pixels)?;
@@ -356,6 +361,8 @@ fn run(a: Args) -> Result<(), String> {
             if (*w, *h) != a.size || bytes.len() != (*w as usize) * (*h as usize) * 8 {
                 return Err("voxel layer size mismatch".into());
             }
+            std::fs::write(a.out.join("voxel-layer-rgba16f.bin"), bytes)
+                .map_err(|e| e.to_string())?;
             let mut alpha = Vec::with_capacity((*w as usize) * (*h as usize));
             for pixel in bytes.chunks_exact(8) {
                 let values: [f32; 4] = std::array::from_fn(|k| {

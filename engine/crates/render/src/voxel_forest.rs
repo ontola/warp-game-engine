@@ -10,7 +10,7 @@ use wgpu::util::DeviceExt;
 
 const TILE: u32 = 16;
 const CANDIDATES: u32 = 64;
-const COUNTER_BYTES: u64 = 32;
+const COUNTER_BYTES: u64 = 48;
 #[derive(Clone, Debug, Default)]
 pub struct VoxelViewDiagnostics {
     pub candidate_overflow_tiles: u32,
@@ -18,6 +18,13 @@ pub struct VoxelViewDiagnostics {
     pub traced_rays: u32,
     pub max_steps_used: u32,
     pub max_tile_candidates: u32,
+    pub max_ray_candidates: u32,
+    /// Complete scan fallback, not dropped candidates.
+    pub ray_candidate_overflow_rays: u32,
+    pub max_active_volumes: u32,
+    /// Complete scan fallback, not dropped overlapping density.
+    pub active_cache_overflow_rays: u32,
+    pub max_empty_brick_skips: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -42,6 +49,7 @@ pub(crate) struct VoxelRenderer {
     data: [wgpu::Buffer; 4],
     count: u32,
     step: f32,
+    empty_skip: bool,
     owners: Vec<u32>,
     targets: Mutex<Vec<Option<Targets>>>,
 }
@@ -51,6 +59,66 @@ pub(crate) fn shader_source() -> String {
         include_str!("shaders/shade.wgsl"),
         include_str!("shaders/voxel_forest.wgsl")
     )
+}
+
+/// Prove the occupancy implication used by the shader's empty-space skip.
+/// Arbitrary externally constructed levels may not form the baker's pyramid;
+/// those assets still render through the unchanged fine sampling path.
+fn valid_empty_skip_hierarchy(forest: &crate::foliage_volume_data::GpuForest) -> bool {
+    let mut checked = std::collections::HashSet::new();
+    for tree in &forest.instances {
+        let first = tree.meta[1] as usize;
+        let count = tree.meta[2] as usize;
+        if count == 0 {
+            return false;
+        }
+        let relative = (count - 1).min(2);
+        if !checked.insert((first, relative)) {
+            continue;
+        }
+        let Some(fine) = forest.levels.get(first) else {
+            return false;
+        };
+        let Some(coarse) = forest.levels.get(first + relative) else {
+            return false;
+        };
+        let ratio = 1u32 << relative;
+        if fine.origin_cell[..3] != coarse.origin_cell[..3]
+            || fine.origin_cell[3] * ratio as f32 != coarse.origin_cell[3]
+            || fine.dims_offset[..3].contains(&0)
+        {
+            return false;
+        }
+        for axis in 0..3 {
+            if fine.dims_offset[axis].div_ceil(ratio) != coarse.dims_offset[axis] {
+                return false;
+            }
+        }
+        let index = |level: &crate::foliage_volume_data::GpuLevel, x: u32, y: u32, z: u32| {
+            let offset = u64::from(level.dims_offset[3])
+                + u64::from(x)
+                + u64::from(level.dims_offset[0])
+                    * (u64::from(y) + u64::from(level.dims_offset[1]) * u64::from(z));
+            usize::try_from(offset)
+                .ok()
+                .and_then(|offset| forest.indices.get(offset))
+                .copied()
+        };
+        for z in 0..fine.dims_offset[2] {
+            for y in 0..fine.dims_offset[1] {
+                for x in 0..fine.dims_offset[0] {
+                    match index(fine, x, y, z) {
+                        Some(0) => {}
+                        Some(_)
+                            if index(coarse, x / ratio, y / ratio, z / ratio)
+                                .is_some_and(|v| v != 0) => {}
+                        _ => return false,
+                    }
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Exact per-owner material map; zero means every material stays rasterized.
@@ -131,6 +199,7 @@ impl VoxelRenderer {
             })
             .fold(f32::INFINITY, f32::min);
         assert!(step.is_finite() && step > 0.0, "invalid voxel march step");
+        let empty_skip = valid_empty_skip_hierarchy(forest);
         let uniform = wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
@@ -299,6 +368,7 @@ impl VoxelRenderer {
             data,
             count: forest.instances.len() as u32,
             step,
+            empty_skip,
             owners: forest.instances.iter().map(|t| t.meta[0]).collect(),
             targets: Mutex::new(Vec::new()),
         })
@@ -352,7 +422,7 @@ impl VoxelRenderer {
                 label: Some("voxel config"),
                 contents: bytemuck::bytes_of(&Config {
                     size_count: [size.0, size.1, size.0.div_ceil(TILE), self.count],
-                    march: [self.step, 1024.0, 0.0, 0.0],
+                    march: [self.step, 1024.0, u32::from(self.empty_skip) as f32, 0.0],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -544,6 +614,11 @@ impl VoxelRenderer {
                         traced_rays: value(2),
                         max_steps_used: value(3),
                         max_tile_candidates: value(4),
+                        max_ray_candidates: value(5),
+                        ray_candidate_overflow_rays: value(6),
+                        max_active_volumes: value(7),
+                        active_cache_overflow_rays: value(8),
+                        max_empty_brick_skips: value(9),
                     }
                 })
                 .collect()
@@ -619,6 +694,82 @@ impl VoxelRenderer {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn empty_skip_requires_real_parent_occupancy_and_matching_grid() {
+        use crate::foliage_volume_data::{GpuForest, GpuLevel, GpuTree};
+        let mut forest = GpuForest::default();
+        // Odd dimensions deliberately exercise ceil-sized parents. Two
+        // unrelated fine cells must both have their own occupied parent.
+        for (dims, cell) in [(5u32, 0.25), (3, 0.5), (2, 1.0)] {
+            let offset = forest.indices.len() as u32;
+            forest.levels.push(GpuLevel {
+                origin_cell: [-1.0, 2.0, -3.0, cell],
+                dims_offset: [dims, dims, dims, offset],
+            });
+            forest
+                .indices
+                .resize(forest.indices.len() + dims.pow(3) as usize, 0);
+        }
+        forest.instances.push(GpuTree {
+            inverse: [[0.0; 4]; 3],
+            bounds_min: [0.0; 4],
+            bounds_max: [0.0; 4],
+            meta: [0, 0, 3, 0],
+        });
+        forest.indices[0] = 1;
+        forest.indices[124] = 2;
+        let coarse_offset = forest.levels[2].dims_offset[3] as usize;
+        forest.indices[coarse_offset] = 3;
+        forest.indices[coarse_offset + 7] = 4;
+        assert!(super::valid_empty_skip_hierarchy(&forest));
+        forest.indices[coarse_offset + 7] = 0;
+        assert!(!super::valid_empty_skip_hierarchy(&forest));
+        forest.indices[coarse_offset + 7] = 4;
+        forest.levels[2].origin_cell[0] += 0.01;
+        assert!(!super::valid_empty_skip_hierarchy(&forest));
+        forest.levels[2].origin_cell[0] -= 0.01;
+        forest.levels[2].origin_cell[3] = 1.1;
+        assert!(!super::valid_empty_skip_hierarchy(&forest));
+        // A one-level asset can still prove emptiness directly from its fine
+        // indirection grid; unrelated coarse data cannot affect rendering.
+        forest.instances[0].meta[2] = 1;
+        assert!(super::valid_empty_skip_hierarchy(&forest));
+    }
+    #[test]
+    fn trilinear_brick_support_covers_signed_halo_and_both_ray_directions() {
+        for ratio in [1i32, 2, 4] {
+            for eighth in -129..130 {
+                let grid = eighth as f64 / 8.0;
+                let fine = grid.floor() as i32;
+                let q = (grid / ratio as f64).floor() as i32;
+                // Every contributing neighbour is in one of these two
+                // parent cells. Tensor product gives the eight 3D parents.
+                for child in [fine, fine + 1] {
+                    let parent = child.div_euclid(ratio);
+                    assert!(parent == q || parent == q + 1);
+                }
+                for rate in [-1.0f64, -0.25, 0.25, 1.0] {
+                    let mut directional_q = q;
+                    if rate < 0.0 && grid == q as f64 * ratio as f64 {
+                        directional_q -= 1;
+                    }
+                    let face = (directional_q + i32::from(rate > 0.0)) as f64 * ratio as f64;
+                    let dt = (face - grid) / rate;
+                    assert!(dt > 0.0);
+                    let midpoint = grid + rate * dt * 0.5;
+                    assert_eq!((midpoint / ratio as f64).floor() as i32, directional_q);
+                    // The negative-face correction changes only the brick
+                    // entered after t; its contributing fine support remains
+                    // bounded by the exact same two parent cells.
+                    let child = midpoint.floor() as i32;
+                    for neighbour in [child, child + 1] {
+                        let parent = neighbour.div_euclid(ratio);
+                        assert!(parent == directional_q || parent == directional_q + 1);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn homogeneous_overlap_has_order_independent_extinction_and_premultiplied_color() {
         let integrate = |segments: &[(f64, f64, f64)]| {
             let mut t = 1.0;
@@ -640,6 +791,7 @@ mod tests {
     #[test]
     fn config_layout_and_four_view_candidate_budget() {
         assert_eq!(std::mem::size_of::<super::Config>(), 32);
+        assert!(super::COUNTER_BYTES >= 10 * 4);
         assert_eq!(3840u64 * 2160 * 8, 66_355_200);
         let candidates = 3840u64.div_ceil(16) * 2160u64.div_ceil(16) * 65 * 4;
         assert_eq!(candidates, 8_424_000);

@@ -23,6 +23,7 @@ struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32> };
 const VOLUME_TILE: u32 = 16u;
 const VOLUME_CANDIDATES: u32 = 64u;
 const VOLUME_MAX_STEPS: u32 = 1024u;
+const VOLUME_ACTIVE: u32 = 16u;
 
 // One invocation owns one tile; no order-dependent append or counter reset.
 // Near-plane intersections conservatively cover the whole screen.
@@ -98,11 +99,9 @@ fn volume_sigma(cell:VolumeCell,d:VolumeDirection)->f32 {
     return max(value,0.0);
 }
 struct VolumeSample { sigma:f32,albedo:vec3<f32>,roughness:f32,normals:array<f32,6> };
-fn volume_sample(tree:VolumeTree,world:vec3<f32>,direction:VolumeDirection)->VolumeSample {
+fn volume_sample_local(tree:VolumeTree,local:vec3<f32>,direction:VolumeDirection)->VolumeSample {
     // First packed level is explicit in the fixture; no hidden LOD switch.
     let level=volume_levels[tree.identity.y];
-    let p=vec4<f32>(world,1.0);
-    let local=vec3<f32>(dot(tree.inverse[0],p),dot(tree.inverse[1],p),dot(tree.inverse[2],p));
     let grid=(local-level.origin_cell.xyz)/level.origin_cell.w-0.5;
     let base=vec3<i32>(floor(grid));
     let fraction=fract(grid);
@@ -128,6 +127,66 @@ fn volume_sample(tree:VolumeTree,world:vec3<f32>,direction:VolumeDirection)->Vol
         for(var k=0u;k<6u;k++) {result.normals[k]/=result.sigma;}
     }
     return result;
+}
+
+// At most 64 actual ray intersections, rather than 64 projected tile boxes.
+// More intersections use the complete scan path; none are discarded.
+struct VolumeInterval { time:vec2<f32>,index:u32,padding:u32 };
+struct VolumeRay {
+    origin_exit:vec4<f32>,
+    direction_scale:vec4<f32>,
+    weights:vec3<f32>,identity:u32,
+    // End of current reconstruction brick, and whether all its fine support
+    // is empty. Cached until the ray crosses that boundary.
+    brick:vec2<f32>,padding:vec2<f32>,
+};
+fn volume_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
+    let tree=volume_trees[index];
+    let p=vec4<f32>(view.cam.xyz,1.0);
+    let d=vec4<f32>(direction,0.0);
+    let local_origin=vec3<f32>(dot(tree.inverse[0],p),dot(tree.inverse[1],p),dot(tree.inverse[2],p));
+    let local_direction=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
+    let scale=length(local_direction);
+    let angular=volume_direction(local_direction/max(scale,1e-8));
+    let identity=(index<<12u)|angular.indices.x|(angular.indices.y<<4u)|(angular.indices.z<<8u);
+    return VolumeRay(vec4<f32>(local_origin,leave),vec4<f32>(local_direction,scale),
+        angular.weights,identity,vec2<f32>(-1.0,0.0),vec2<f32>(0.0));
+}
+fn volume_ray_direction(ray:VolumeRay)->VolumeDirection {
+    return VolumeDirection(vec3<u32>(ray.identity&15u,(ray.identity>>4u)&15u,(ray.identity>>8u)&15u),ray.weights);
+}
+fn volume_index(level:VolumeLevel,coord:vec3<i32>)->u32 {
+    if any(coord<vec3<i32>(0)) || any(coord>=vec3<i32>(level.dims_offset.xyz)) {return 0u;}
+    let c=vec3<u32>(coord);
+    return volume_indices[level.dims_offset.w+c.x+level.dims_offset.x*(c.y+level.dims_offset.y*c.z)];
+}
+fn volume_empty_brick(ray:VolumeRay,t:f32)->vec2<f32> {
+    let tree=volume_trees[ray.identity>>12u];
+    let fine=volume_levels[tree.identity.y];
+    let coarse=volume_levels[tree.identity.y+min(2u,tree.identity.z-1u)];
+    let ratio=coarse.origin_cell.w/fine.origin_cell.w;
+    let grid=(ray.origin_exit.xyz+ray.direction_scale.xyz*t-fine.origin_cell.xyz)/fine.origin_cell.w-0.5;
+    let rate=ray.direction_scale.xyz/fine.origin_cell.w;
+    var brick=vec3<i32>(floor(grid/ratio));
+    var leave=ray.origin_exit.w;
+    for(var axis=0u;axis<3u;axis++) {
+        // Exactly on a face, a negative ray enters the previous brick. No
+        // epsilon jump: near a face precision failure just disables skipping.
+        if rate[axis]<0.0 && grid[axis]==f32(brick[axis])*ratio {brick[axis]--;}
+        if rate[axis]!=0.0 {
+            let face=f32(brick[axis]+select(0,1,rate[axis]>0.0))*ratio;
+            leave=min(leave,t+(face-grid[axis])/rate[axis]);
+        }
+    }
+    if leave<=t {return vec2<f32>(t,0.0);}
+    // q=floor(grid/B): the two fine trilinear neighbours on every axis map
+    // only to coarse q or q+1. Host validates that each occupied fine cell
+    // has an occupied coarse parent before enabling this exact empty test.
+    for(var corner=0u;corner<8u;corner++) {
+        let offset=vec3<i32>(i32(corner&1u),i32((corner>>1u)&1u),i32((corner>>2u)&1u));
+        if volume_index(coarse,brick+offset)!=0u {return vec2<f32>(leave,0.0);}
+    }
+    return vec2<f32>(leave,1.0);
 }
 
 fn volume_radiance(sample:VolumeSample,tree:VolumeTree,p:vec3<f32>,v:vec3<f32>,shadow:f32,sky_vis:f32)->vec3<f32> {
@@ -175,8 +234,8 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     let start=(tile.y*tile_dims.x+tile.x)*(VOLUME_CANDIDATES+1u);
     let count=volume_tiles[start];
     if count==0u {return;}
-    let fallback=count>VOLUME_CANDIDATES;
-    let candidates=select(count,volume_config.size_count.w,fallback);
+    let tile_fallback=count>VOLUME_CANDIDATES;
+    let candidates=select(count,volume_config.size_count.w,tile_fallback);
     let ndc=(vec2<f32>(id.xy)+0.5)/vec2<f32>(volume_config.size_count.xy)*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
     let far=view.inv_view_proj*vec4<f32>(ndc,1e-4,1.0);
     let direction=normalize(far.xyz/far.w-view.cam.xyz);
@@ -185,54 +244,142 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     let depth=textureLoad(depth_tex,px,0);
     var limit=1e30;
     if depth>0.0 {let hit=view.inv_view_proj*vec4<f32>(ndc,depth,1.0);limit=distance(view.cam.xyz,hit.xyz/hit.w);}
+
+    // Compact and sort actual intersections once. Projected tile overlap is
+    // not ray overlap; overflow retains the original complete candidate set.
+    var intervals:array<VolumeInterval,64>;
+    var ray_count=0u;
     var begin=1e30;var end=0.0;
     for(var j=0u;j<candidates;j++) {
-        var index=j;if !fallback {index=volume_tiles[start+1u+j];}
-        let interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
-        if interval.y>interval.x {begin=min(begin,interval.x);end=max(end,interval.y);}
+        var index=j;if !tile_fallback {index=volume_tiles[start+1u+j];}
+        var interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
+        interval.x=max(interval.x,near_distance);
+        if interval.y<=interval.x {continue;}
+        if ray_count<VOLUME_CANDIDATES {intervals[ray_count]=VolumeInterval(interval,index,0u);}
+        ray_count++;
+        begin=min(begin,interval.x);end=max(end,interval.y);
     }
-    begin=max(begin,near_distance);
-    if end<=begin {return;}
+    atomicMax(&volume_stats[5],ray_count);
+    if ray_count==0u {return;}
+    let compact=ray_count<=VOLUME_CANDIDATES;
+    if !compact {atomicAdd(&volume_stats[6],1u);}
+    if compact {
+        for(var j=1u;j<ray_count;j++) {
+            let value=intervals[j];
+            var k=j;
+            // Bounded insertion sort; no sort occurs inside the march.
+            for(var move_count=0u;move_count<VOLUME_CANDIDATES;move_count++) {
+                if k==0u {break;}
+                if intervals[k-1u].time.x<=value.time.x {break;}
+                intervals[k]=intervals[k-1u];k--;
+            }
+            intervals[k]=value;
+        }
+    }
     atomicAdd(&volume_stats[2],1u);
+    var rays:array<VolumeRay,16>;
+    var resident_count=0u;var cursor=0u;var cached=compact;
+    var max_resident=0u;var cache_overflow=false;var empty_skips=0u;
     var t=begin;var transmittance=1.0;var color=vec3<f32>(0.0);var steps=0u;
     var next_light=-1.0;var cached_sky=1.0;
     loop {
         if t>=end || transmittance<=0.001 || steps>=VOLUME_MAX_STEPS {break;}
-        // Count every iteration, including air gaps and precision failures.
-        // Tiny scaled assets must never bypass the watchdog bound.
+        // Every path, including gaps and failed float progress, is bounded.
         steps++;
-        var next_entry=end;var segment_end=end;var inside_interval=false;
-        // Skip true gaps between tree bounds and split integration at entries /
-        // exits so a thin distant crown is never skipped by a large air step.
-        for(var j=0u;j<candidates;j++) {
-            var index=j;if !fallback {index=volume_tiles[start+1u+j];}
-            let interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
-            if interval.y<=interval.x || interval.y<=t {continue;}
-            if interval.x>t {next_entry=min(next_entry,interval.x);}
-            else {inside_interval=true;segment_end=min(segment_end,interval.y);}
+        var next_entry=end;var segment_end=end;var inside_count=0u;
+        if cached {
+            var slot=0u;
+            for(var removal=0u;removal<VOLUME_ACTIVE;removal++) {
+                if slot>=resident_count {break;}
+                if rays[slot].origin_exit.w<=t {
+                    resident_count--;rays[slot]=rays[resident_count];
+                } else {slot++;}
+            }
+            for(var insertion=0u;insertion<VOLUME_CANDIDATES;insertion++) {
+                if cursor>=ray_count {break;}
+                let interval=intervals[cursor];
+                if interval.time.x>t {break;}
+                cursor++;
+                if interval.time.y<=t {continue;}
+                if resident_count==VOLUME_ACTIVE {
+                    // Permanently switch this ray to the complete scan. Its
+                    // optical integral still includes every intersected tree.
+                    cached=false;cache_overflow=true;break;
+                }
+                rays[resident_count]=volume_ray(interval.index,interval.time.y,direction);
+                resident_count++;
+            }
         }
-        if !inside_interval {if next_entry<=t {break;} t=next_entry;continue;}
+        if cached {
+            inside_count=resident_count;
+            if cursor<ray_count {next_entry=intervals[cursor].time.x;}
+            for(var j=0u;j<resident_count;j++) {segment_end=min(segment_end,rays[j].origin_exit.w);}
+        } else {
+            let query_count=select(candidates,ray_count,compact);
+            for(var j=0u;j<query_count;j++) {
+                var interval:vec2<f32>;
+                if compact {interval=intervals[j].time;}
+                else {
+                    var index=j;if !tile_fallback {index=volume_tiles[start+1u+j];}
+                    interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
+                    interval.x=max(interval.x,near_distance);
+                }
+                if interval.y<=interval.x || interval.y<=t {continue;}
+                if interval.x>t {next_entry=min(next_entry,interval.x);}
+                else {inside_count++;segment_end=min(segment_end,interval.y);}
+            }
+        }
+        max_resident=max(max_resident,inside_count);
+        cache_overflow=cache_overflow||inside_count>VOLUME_ACTIVE;
+        if inside_count==0u {if next_entry<=t {break;}t=next_entry;continue;}
+        if cached && volume_config.march.z>0.5 {
+            var empty_until=min(segment_end,next_entry);
+            var all_empty=true;
+            for(var j=0u;j<resident_count;j++) {
+                if t>=rays[j].brick.x {rays[j].brick=volume_empty_brick(rays[j],t);}
+                all_empty=all_empty&&rays[j].brick.y>0.5;
+                empty_until=min(empty_until,rays[j].brick.x);
+            }
+            if all_empty && empty_until>t {
+                // These intervals contain no fine-level trilinear density.
+                // Coarse optical values never replace the selected fine LOD.
+                t=empty_until;empty_skips++;continue;
+            }
+        }
         let ds=min(volume_config.march.x,min(segment_end-t,next_entry-t));
         if ds<=0.0 || t+ds<=t {break;}
         let sample_t=t+0.5*ds;
         let p=view.cam.xyz+direction*sample_t;
         var total_sigma=0.0;var emission=vec3<f32>(0.0);
-        // Deliberate first-runtime spatial approximation: cache coarse
-        // canopy/terrain hemisphere visibility for one metre along the ray.
-        // Direct sun shadow still evaluates at the actual occupied sample.
-        if sample_t>=next_light {cached_sky=sky_visibility(p,vec3<f32>(0.0,1.0,0.0));next_light=sample_t+1.0;}
         var shadow=1.0;var shadow_ready=false;
-        for(var j=0u;j<candidates;j++) {
-            var index=j;if !fallback {index=volume_tiles[start+1u+j];}
-            let tree=volume_trees[index];
-            if any(p<tree.bounds_min.xyz)||any(p>tree.bounds_max.xyz) {continue;}
-            let ray=vec4<f32>(direction,0.0);
-            let local_direction=vec3<f32>(dot(tree.inverse[0],ray),dot(tree.inverse[1],ray),dot(tree.inverse[2],ray));
-            let scale=length(local_direction);
-            let sample=volume_sample(tree,p,volume_direction(local_direction/max(scale,1e-8)));
-            let sigma=sample.sigma*scale;
+        var query_count=select(candidates,ray_count,compact);
+        if cached {query_count=resident_count;}
+        for(var j=0u;j<query_count;j++) {
+            var ray:VolumeRay;
+            if cached {ray=rays[j];}
+            else {
+                var index=j;var interval:vec2<f32>;
+                if compact {index=intervals[j].index;interval=intervals[j].time;}
+                else {
+                    if !tile_fallback {index=volume_tiles[start+1u+j];}
+                    interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
+                }
+                if sample_t<interval.x || sample_t>interval.y || interval.y<=interval.x {continue;}
+                ray=volume_ray(index,interval.y,direction);
+            }
+            let tree=volume_trees[ray.identity>>12u];
+            let local=ray.origin_exit.xyz+ray.direction_scale.xyz*sample_t;
+            let sample=volume_sample_local(tree,local,volume_ray_direction(ray));
+            let sigma=sample.sigma*ray.direction_scale.w;
             if sigma<=0.0 {continue;}
-            if !shadow_ready {shadow=mix(1.0,shadow_at(p,vec3<f32>(0.0,1.0,0.0)),light.sun_color.w);shadow_ready=true;}
+            // Same one-metre spatial lighting approximation, now first
+            // evaluated at occupied density rather than empty bounding air.
+            // This may change lighting-cache phase; raw alpha is independent.
+            if !shadow_ready {
+                if sample_t>=next_light {cached_sky=sky_visibility(p,vec3<f32>(0.0,1.0,0.0));next_light=sample_t+1.0;}
+                shadow=mix(1.0,shadow_at(p,vec3<f32>(0.0,1.0,0.0)),light.sun_color.w);
+                shadow_ready=true;
+            }
             total_sigma+=sigma;
             emission+=sigma*volume_radiance(sample,tree,p,-direction,shadow,cached_sky);
         }
@@ -244,6 +391,9 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
         t+=ds;
     }
     atomicMax(&volume_stats[3],steps);
+    atomicMax(&volume_stats[7],max_resident);
+    if cache_overflow {atomicAdd(&volume_stats[8],1u);}
+    atomicMax(&volume_stats[9],empty_skips);
     if t<end && transmittance>0.001 {
         atomicAdd(&volume_stats[1],1u);
         // Explicitly invalid output; the fixture must fail this diagnostic.

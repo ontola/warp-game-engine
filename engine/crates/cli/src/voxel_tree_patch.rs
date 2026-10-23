@@ -88,12 +88,13 @@ pub fn attach(
             &scene.textures,
             BakeConfig {
                 cell_size: 0.25,
-                levels: 1,
+                levels: 3,
                 ..Default::default()
             },
         )?);
     }
-    let forest = pack(&assets, &bindings, &scene.instances, PackLimits::default())?;
+    let forest = pack(&assets, &bindings, &scene.instances,
+        PackLimits { first_level_bounds: true, ..Default::default() })?;
     let bytes = forest.byte_len();
     scene.voxel_forest = Some(forest);
     Ok(Some(format!(

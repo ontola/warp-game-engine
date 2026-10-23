@@ -33,6 +33,63 @@ pub struct Stats {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Tuft { id: Cell, position: Vec3, scale: f32, yaw: f32 }
+struct Tile {
+    tufts: Vec<Tuft>,
+    min: Vec2,
+    max: Vec2,
+    /// Desired circular residency, including slots omitted by an emergency
+    /// pool cap. Candidate order and therefore bit positions never change.
+    resident: u64,
+}
+impl Tile {
+    fn new(ground: &Ground, tile: Cell) -> Self {
+        let mut tufts = Vec::new();
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+        for z in 0..TILE_CELLS { for x in 0..TILE_CELLS {
+            if let Some(tuft) = candidate(ground, (tile.0 * TILE_CELLS + x, tile.1 * TILE_CELLS + z)) {
+                let p = Vec2::new(tuft.position.x, tuft.position.z);
+                min = min.min(p); max = max.max(p); tufts.push(tuft);
+            }
+        }}
+        Self { tufts, min, max, resident: 0 }
+    }
+    fn selected(&self, mask: u64) -> impl Iterator<Item = Tuft> + '_ {
+        SetBits(mask).map(|index| self.tufts[index])
+    }
+    fn mask(&self, centres: &[Vec2], range_squared: f32) -> u64 {
+        if self.tufts.is_empty() { return 0; }
+        let mut intersects = false;
+        for &centre in centres {
+            // Actual candidate bounds include jitter and f32 world rounding.
+            // The common interior needs no per-plant distance/hash lookup.
+            let far = (centre - self.min).abs().max((centre - self.max).abs());
+            if far.length_squared() <= range_squared {
+                return u64::MAX >> (64 - self.tufts.len());
+            }
+            if centre.distance_squared(centre.clamp(self.min, self.max)) <= range_squared {
+                intersects = true;
+            }
+        }
+        if !intersects { return 0; }
+        self.tufts.iter().enumerate().fold(0, |mask, (index, tuft)| {
+            let p = Vec2::new(tuft.position.x, tuft.position.z);
+            if centres.iter().any(|centre| p.distance_squared(*centre) <= range_squared) {
+                mask | (1u64 << index)
+            } else { mask }
+        })
+    }
+}
+struct SetBits(u64);
+impl Iterator for SetBits {
+    type Item = usize;
+    fn next(&mut self) -> Option<usize> {
+        if self.0 == 0 { return None; }
+        let index = self.0.trailing_zeros() as usize;
+        self.0 &= self.0 - 1;
+        Some(index)
+    }
+}
 struct GroundChunk { x0: f32, z0: f32, heights: Box<[f32]>, road: Box<[f32]> }
 struct Ground(HashMap<Cell, GroundChunk>);
 #[derive(Clone, Copy)]
@@ -107,7 +164,7 @@ pub struct LiveGroundCover {
     first: usize,
     capacity: usize,
     anchors: Option<(usize, Vec<Cell>)>,
-    tiles: BTreeMap<Cell, Vec<Tuft>>,
+    tiles: BTreeMap<Cell, Tile>,
     active: HashMap<Cell, usize>,
     free: BTreeSet<usize>,
     stats: Stats,
@@ -142,7 +199,7 @@ impl LiveGroundCover {
         }
         let ground_bytes = chunks.iter().map(|c| (c.heights.len() + c.road_d.len()) * std::mem::size_of::<f32>()).sum();
         Self { ground: Ground::new(chunks), mesh, first, capacity, anchors: None, tiles: BTreeMap::new(),
-            active: HashMap::new(), free: (0..capacity).collect(), stats: Stats { capacity, ground_bytes, ..Default::default() } }
+            active: HashMap::with_capacity(capacity), free: (0..capacity).collect(), stats: Stats { capacity, ground_bytes, ..Default::default() } }
     }
 
     pub fn stats(&self) -> Stats { self.stats }
@@ -176,25 +233,33 @@ impl LiveGroundCover {
             let centre = (Vec2::new(tx as f32, tz as f32) + Vec2::splat(0.5)) * TILE;
             if distance_squared(centre) <= (range + margin).powi(2) { wanted_tiles.insert((tx, tz)); }
         }}}
-        self.tiles.retain(|id, _| wanted_tiles.contains(id));
+        let mut removed = Vec::new();
+        let mut added = Vec::new();
+        self.tiles.retain(|id, tile| {
+            if wanted_tiles.contains(id) { return true; }
+            removed.extend(tile.selected(tile.resident).map(|tuft| tuft.id));
+            false
+        });
         for tile in wanted_tiles {
-            self.tiles.entry(tile).or_insert_with(|| {
-                let mut tufts = Vec::new();
-                for z in 0..TILE_CELLS { for x in 0..TILE_CELLS {
-                    if let Some(tuft) = candidate(&self.ground, (tile.0 * TILE_CELLS + x, tile.1 * TILE_CELLS + z)) { tufts.push(tuft); }
-                }}
-                tufts
-            });
+            self.tiles.entry(tile).or_insert_with(|| Tile::new(&self.ground, tile));
         }
-        let mut selected: Vec<Tuft> = self.tiles.values().flatten().copied().filter(|tuft| {
-            // Every accepted world plant remains resident through the same
-            // radius. No moving density threshold thins out the dense core.
-            distance_squared(Vec2::new(tuft.position.x, tuft.position.z)) <= range * range
-        }).collect();
-        self.stats.requested = selected.len();
-        self.stats.budget_clipped = selected.len().saturating_sub(self.capacity);
+        let was_capped = self.stats.budget_clipped > 0;
+        self.stats.requested = 0;
+        for tile in self.tiles.values_mut() {
+            let desired = tile.mask(&centres, range * range);
+            removed.extend(tile.selected(tile.resident & !desired).map(|tuft| tuft.id));
+            added.extend(tile.selected(desired & !tile.resident));
+            tile.resident = desired;
+            self.stats.requested += desired.count_ones() as usize;
+        }
+        self.stats.budget_clipped = self.stats.requested.saturating_sub(self.capacity);
         self.stats.visible_budget_clipped = 0;
-        if selected.len() > self.capacity {
+        if self.stats.budget_clipped > 0 || was_capped {
+            // A capped frame may omit arbitrary interior plants. Reconcile
+            // globally while capped and once after leaving that mode; normal
+            // streaming only changes bits at the circular residency border.
+            let mut selected: Vec<Tuft> = self.tiles.values()
+                .flat_map(|tile| tile.selected(tile.resident)).collect();
             // Emergency bound, not a visual LOD. First drop only resident
             // plants already beyond every view's zero-opacity endpoint.
             // If even visible plants exceed the pool, report that explicitly.
@@ -203,28 +268,24 @@ impl LiveGroundCover {
                     .distance_squared(Vec2::new(tuft.position.x, tuft.position.z))
                     < visible_radius(views).powi(2)
             });
-            selected.sort_unstable_by_key(|tuft| (!visible(tuft), hash(tuft.id, 71), tuft.id));
-            self.stats.visible_budget_clipped = selected[self.capacity..].iter().filter(|tuft| visible(tuft)).count();
-            selected.truncate(self.capacity);
+            if selected.len() > self.capacity {
+                selected.sort_unstable_by_key(|tuft| (!visible(tuft), hash(tuft.id, 71), tuft.id));
+                self.stats.visible_budget_clipped = selected[self.capacity..].iter().filter(|tuft| visible(tuft)).count();
+                selected.truncate(self.capacity);
+            }
+            let desired: HashSet<Cell> = selected.iter().map(|tuft| tuft.id).collect();
+            removed = self.active.keys().filter(|id| !desired.contains(*id)).copied().collect();
+            added = selected.into_iter().filter(|tuft| !self.active.contains_key(&tuft.id)).collect();
         }
-        // In the normal uncapped path, static membership plus distance is
-        // sufficient. Avoid constructing a 50k+ entry set every cache step.
-        let capped_desired: Option<HashSet<Cell>> = (self.stats.budget_clipped > 0)
-            .then(|| selected.iter().map(|tuft| tuft.id).collect());
-        let removed: Vec<_> = self.active.iter().filter(|(id, slot)| {
-            if let Some(desired) = &capped_desired { return !desired.contains(*id); }
-            let instance = &scene.instances[self.first + **slot];
-            distance_squared(Vec2::new(instance.rows[0][3], instance.rows[2][3])) > range * range
-        }).map(|(&id, &slot)| (id, slot)).collect();
         let mut dirty_lo = usize::MAX; let mut dirty_hi = 0;
-        for (id, slot) in removed {
-            self.active.remove(&id); self.free.insert(slot);
+        for id in removed {
+            let slot = self.active.remove(&id).expect("resident grass has an active slot outside capped reconciliation");
+            self.free.insert(slot);
             let instance = &mut scene.instances[self.first + slot]; instance.cluster_count = 0; instance.sphere[3] = 0.0;
             dirty_lo = dirty_lo.min(slot); dirty_hi = dirty_hi.max(slot + 1);
         }
-        for tuft in selected {
+        for tuft in added {
             let id = tuft.id;
-            if self.active.contains_key(&id) { continue; }
             let slot = self.free.pop_first().expect("selected grass count respects fixed pool capacity");
             scene.update_instance(self.first + slot, self.mesh, Affine3A::from_scale_rotation_translation(
                 Vec3::splat(tuft.scale), Quat::from_rotation_y(tuft.yaw), tuft.position));
@@ -341,5 +402,87 @@ mod tests {
         for views in 1..=4 {
             assert!(radius(views) - maximum_anchor_error > visible_radius(views));
         }
+    }
+
+    fn reference_selection(stream: &LiveGroundCover, cameras: &[Vec3]) -> (Vec<Tuft>, usize) {
+        // Deliberately retain the original full candidate scan as the oracle;
+        // it does not use tile masks or their bounding-box classification.
+        let views = cameras.len().clamp(1, 4);
+        let centres: Vec<_> = cameras.iter().take(4)
+            .filter(|c| c.is_finite() && c.x.abs() < 10_000_000.0 && c.z.abs() < 10_000_000.0)
+            .map(|c| (Vec2::new((c.x / TILE).floor(), (c.z / TILE).floor()) + Vec2::splat(0.5)) * TILE).collect();
+        let mut selected: Vec<_> = stream.tiles.values().flat_map(|tile| tile.tufts.iter()).copied()
+            .filter(|tuft| centres.iter().any(|centre|
+                Vec2::new(tuft.position.x, tuft.position.z).distance_squared(*centre) <= radius(views).powi(2))).collect();
+        let requested = selected.len();
+        if selected.len() > stream.capacity {
+            let visible = |tuft: &Tuft| cameras.iter().take(4).any(|camera| camera.is_finite()
+                && Vec2::new(camera.x, camera.z).distance_squared(Vec2::new(tuft.position.x, tuft.position.z)) < visible_radius(views).powi(2));
+            selected.sort_unstable_by_key(|tuft| (!visible(tuft), hash(tuft.id, 71), tuft.id));
+            selected.truncate(stream.capacity);
+        }
+        (selected, requested)
+    }
+
+    #[test]
+    fn incremental_residency_matches_full_scan_through_view_changes_and_pool_recovery() {
+        let chunks: Vec<_> = (-4..=4).flat_map(|z| (-4..=4).map(move |x| chunk((x, z), 5.0))).collect();
+        let (mut scene, mut stream) = setup(&chunks, 70_000);
+        let paths = [vec![Vec3::new(-2.0, 2.0, -2.0)], vec![Vec3::new(2.0, 2.0, -2.0)],
+            vec![Vec3::new(6.0, 2.0, 2.0)],
+            vec![Vec3::new(-70.0, 2.0, -70.0), Vec3::new(70.0, 2.0, -70.0), Vec3::new(-70.0, 2.0, 70.0), Vec3::new(70.0, 2.0, 70.0)],
+            vec![Vec3::new(6.0, 2.0, 2.0)], vec![Vec3::new(6.0, 2.0, 2.0), Vec3::new(7.0, 2.0, 2.0)],
+            vec![Vec3::new(130.0, 2.0, 90.0)], vec![], vec![Vec3::new(2.0, 2.0, -2.0)]];
+        let mut had_cap = false;
+        for cameras in paths {
+            let before: HashMap<_, _> = stream.active.iter().map(|(&id, &slot)|
+                (id, (slot, scene.instances[stream.first + slot].rows))).collect();
+            stream.update(&mut scene, &cameras);
+            let (expected, requested) = reference_selection(&stream, &cameras);
+            assert_eq!(requested, stream.stats.requested);
+            assert_eq!(stream.active.keys().copied().collect::<HashSet<_>>(), expected.iter().map(|tuft| tuft.id).collect());
+            assert_eq!(stream.active.len() + stream.free.len(), stream.capacity);
+            had_cap |= stream.stats.budget_clipped > 0;
+            for (&id, &slot) in &stream.active {
+                if let Some(&(previous_slot, rows)) = before.get(&id) {
+                    assert_eq!(slot, previous_slot);
+                    assert_eq!(scene.instances[stream.first + slot].rows, rows);
+                }
+            }
+        }
+        assert!(had_cap, "fixture must exercise the capped-to-incremental recovery path");
+        assert_eq!(stream.stats.budget_clipped, 0);
+    }
+
+    #[test]
+    #[ignore = "CPU timing fixture; run explicitly in release mode with --nocapture"]
+    fn benchmark_incremental_residency() {
+        let chunks: Vec<_> = (-2..=5).flat_map(|z| (-2..=5).map(move |x| chunk((x, z), 5.0))).collect();
+        let (mut scene, mut stream) = setup(&chunks, 70_000);
+        stream.update(&mut scene, &[Vec3::new(1.0, 2.0, 1.0)]);
+        let mut updates = Vec::new();
+        let mut mask_ms = 0.0;
+        let mut full_scan_ms = 0.0;
+        for step in 1..=64 {
+            let camera = Vec3::new(1.0 + step as f32 * TILE, 2.0, 1.0 + (step / 8) as f32 * TILE);
+            stream.update(&mut scene, &[camera]);
+            assert_eq!(stream.stats.budget_clipped, 0);
+            updates.push(stream.stats.last_update_ms);
+            let centre = (Vec2::new((camera.x / TILE).floor(), (camera.z / TILE).floor()) + Vec2::splat(0.5)) * TILE;
+            let started = Instant::now();
+            let masked: usize = stream.tiles.values().map(|tile| tile.mask(&[centre], radius(1).powi(2)).count_ones() as usize).sum();
+            std::hint::black_box(masked);
+            mask_ms += started.elapsed().as_secs_f64() * 1000.0;
+            let started = Instant::now();
+            let scanned = stream.tiles.values().flat_map(|tile| tile.tufts.iter()).filter(|tuft|
+                Vec2::new(tuft.position.x, tuft.position.z).distance_squared(centre) <= radius(1).powi(2)).count();
+            std::hint::black_box(scanned);
+            full_scan_ms += started.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(masked, scanned);
+            assert_eq!(masked, stream.stats.active);
+        }
+        updates.sort_by(f64::total_cmp);
+        println!("grass CPU 64 tile moves: active={}, update p50={:.3} ms p95={:.3} ms; selection-only mask={:.3} ms vs full-scan={:.3} ms total (no GPU/upload)",
+            stream.stats.active, updates[32], updates[60], mask_ms, full_scan_ms);
     }
 }
