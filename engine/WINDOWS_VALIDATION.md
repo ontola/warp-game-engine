@@ -494,3 +494,53 @@ trees. `sideways-voxel-r10-autoplay.exe` SHA256:
 `c836c45b1bf600dee6b5d0e3fd9ecb0075d85ad8a292b9896c7c7dc6edfd26a6`.
 This adds the existing race AI to standalone visible play; GameNight controls
 remain host-owned. It is not a new physics or driving-force implementation.
+
+## Voxel traversal r2 and incremental grass residency (r11)
+
+The experimental ray integrator compacts actual ray intersections once,
+caches up to 16 active volumes and skips only regions proven empty by the
+fine-to-coarse occupancy hierarchy. Both candidate/cache overflows retain a
+complete scan fallback. Coarse levels accelerate traversal without changing
+the explicitly shaded level. `first_level_bounds` preserves the fine grid's
+half-cell filter support when extra occupancy levels are packed. Every path
+remains bounded and incomplete rays remain explicit failures.
+
+94 CPU/shader checks passed; the separate optical example adds three CPU
+checks and eleven actual 128x128 GPU cases. These compare raw RGBA16F against
+analytic tent-function/Beer-Lambert integrals, including empty/sparse media,
+both ray directions, overlapping colour/order, nonuniform scale, opaque
+clipping and disconnected intervals. All passed. Evidence is
+`voxel-optics-r2-gpu-1/report.json`; these validate optical arithmetic, not
+the artistic match of real tree crowns.
+
+With the visible demo stopped, matched first-frame RTX 5070 Ti integrate
+intervals were: one tree 0.681 -> 2.859 ms, 64 trees 29.055 -> 32.242 ms,
+256 fine trees 107.818 -> 41.702 ms, and 256 coarse trees 69.597 -> 34.108 ms.
+The fine 256-tree result still has 836 incomplete rays and is invalid quality
+evidence. Thus this is not a universal performance improvement. Small groups
+regress; high private cache cost is a hypothesis awaiting a separate test.
+No gameplay FPS or 120 FPS claim follows from these intervals.
+
+`voxel-r1-r2-comparison.json` confirms identical source pixels and cameras in
+all four fixtures. Valid raw alpha-area changes are -0.0208%, +0.0009% and
+-0.0025%; 8-bit alpha-mask mean absolute differences over nonzero support are
+0.00107, 0.00019 and 0.00010. Sampling/cache phase changed, so output is not
+bit-identical. Inspected voxel images remain too cloudy, especially nearby.
+The source normal map is not yet baked; volume sky visibility still uses +Y.
+No global darkening/density multiplier is used to conceal these limitations.
+
+Live grass now keeps per-tile residency bitsets and mutates only border
+changes. World membership, three-card poses/sizes, surviving slots and caps
+are unchanged; cap recovery retains the previous full reconciliation. An
+independent review and full-scan regression passed. The CPU-only 64-move
+fixture measured selection totals 1.955 ms (masks) versus 8.201 ms (scan),
+with complete update p50 2.278 ms / p95 3.257 ms. This is a synthetic fixture,
+not gameplay timing or reduced GPU-upload proof; the contiguous upload span
+is unchanged. The demo was restarting during the CPU experiment.
+
+`sideways-voxel-r11-autoplay.exe` SHA256
+`50f3d592b04a993ab3660d120ac2ea553731e09248a7c5724f1eae4ee1fc7965`
+completed three invisible native-4K frames (`r11-smoke.*`) and then resumed
+the visible 4K AI demo. Voxel patches remain off by default. The actual F12
+image `engine/build/screenshots/sideways-1792788753189-145256-0.png` records
+the preceding r10 automatic drive with source trees, not the voxel fixture.

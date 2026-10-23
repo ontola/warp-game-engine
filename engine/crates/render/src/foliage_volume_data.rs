@@ -21,6 +21,10 @@ pub struct PackLimits {
     /// Pack this many finest levels, or fewer if the source has fewer levels.
     /// This is an explicit representation choice, not a silent budget fallback.
     pub levels_per_asset: usize,
+    /// Extra packed levels are occupancy acceleration only. Keep the ray
+    /// bounds at the shaded first level, including its trilinear support.
+    /// Leave false if a consumer may shade any of the packed levels.
+    pub first_level_bounds: bool,
     pub max_dense_indices: usize,
     pub max_sparse_cells: usize,
 }
@@ -31,6 +35,7 @@ impl Default for PackLimits {
             max_instances: MAX_INSTANCES,
             max_assets: 3,
             levels_per_asset: 3,
+            first_level_bounds: false,
             max_dense_indices: 4_194_304,
             max_sparse_cells: 262_144,
         }
@@ -255,8 +260,10 @@ pub fn pack(assets: &[VoxelAsset], bindings: &[VolumeBinding], scene_instances: 
             // outside the grid's faces. Ray bounds must retain that support;
             // clamping samples to the edge would instead duplicate density.
             let filter_support = Vec3::splat(level.cell_size * 0.5);
-            local_min = local_min.min(Vec3::from(bounds[0]) - filter_support);
-            local_max = local_max.max(Vec3::from(bounds[1]) + filter_support);
+            if level_index == 0 || !limits.first_level_bounds {
+                local_min = local_min.min(Vec3::from(bounds[0]) - filter_support);
+                local_max = local_max.max(Vec3::from(bounds[1]) + filter_support);
+            }
         }
         if !local_min.is_finite() || !local_max.is_finite() {
             return Err(format!("volume asset {asset_index} cell bounds overflow"));
@@ -387,6 +394,20 @@ mod tests {
                 assert!((world - lo).min_element() >= -1e-5 && (hi - world).min_element() >= -1e-5);
             }
         }
+    }
+
+    #[test]
+    fn occupancy_only_levels_do_not_change_shaded_level_ray_bounds() {
+        let source = asset();
+        let instances = [instance(Affine3A::from_scale_rotation_translation(
+            Vec3::new(2.0, 3.0, 1.5), Quat::from_rotation_y(0.8), Vec3::new(12.0, 4.0, -8.0)))];
+        let first = pack(std::slice::from_ref(&source), &[binding(0, 0)], &instances,
+            PackLimits { levels_per_asset: 1, ..Default::default() }).unwrap();
+        let accelerated = pack(&[source], &[binding(0, 0)], &instances,
+            PackLimits { first_level_bounds: true, ..Default::default() }).unwrap();
+        assert_eq!(accelerated.levels.len(), 2);
+        assert_eq!(first.instances[0].bounds_min, accelerated.instances[0].bounds_min);
+        assert_eq!(first.instances[0].bounds_max, accelerated.instances[0].bounds_max);
     }
 
     #[test]
