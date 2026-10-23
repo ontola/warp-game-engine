@@ -128,6 +128,7 @@ impl App {
     }
 
     fn snapshot(&self) -> serde_json::Value {
+        let grass=self.built.ground_cover_stats();
         let players:Vec<_>=self.race.players.iter().enumerate().map(|(i,p)| {
             let t=p.car.pose(&self.race.phys).translation;
             let c=self.controls.get(i).copied().unwrap_or_default();
@@ -140,7 +141,8 @@ impl App {
             "paused": self.paused, "focused": self.focused, "rendered_frames": self.rendered, "presented_frames": self.presented,
             "window_visible":self.window.as_ref().and_then(|w|w.is_visible()).unwrap_or(false),
             "render_quiet":self.host.as_ref().is_some_and(|h|!h.state.is_running()),
-            "physics_hz": 120, "car_substeps": sideways::car::SUBSTEPS, "taa": false, "ground_cover": false,
+            "physics_hz": 120, "car_substeps": sideways::car::SUBSTEPS, "taa": false, "ground_cover": grass.is_some(),
+            "ground_cover_streaming":grass.map(|s|serde_json::json!({"capacity":s.capacity,"active":s.active,"cached_tiles":s.cached_tiles,"updates":s.updates,"last_update_ms":s.last_update_ms})),
             "initial_positions": self.initial_positions, "exit_reason": self.exit_reason, "error": self.error,
             "host": self.host.as_ref().map(|h|h.state.snapshot()), "view_order": self.view_order.iter().map(|i|self.seats[*i].index).collect::<Vec<_>>(),
             "native_controllers":self.input.controllers(),"native_active_samples":self.input.native_active_samples,
@@ -199,9 +201,9 @@ impl App {
     fn rebuild(&mut self) -> Result<(), String> {
         let poses = poses(&self.race);
         let cams = cameras(&self.race, &poses, &self.yaw, &self.far);
-        // Frozen CPU grass is intentionally not carried into a moving scene:
-        // it would stop at the original camera area. Streaming is separate work.
-        self.built = visuals::build(&self.race.stage, &poses, &cams.iter().map(|c|c.pos).collect::<Vec<_>>(), false)?;
+        let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i)).take(self.args.views).collect();
+        let positions:Vec<_>=if ordered.is_empty(){cams.iter().take(self.args.views).map(|c|c.pos).collect()}else{ordered.iter().map(|c|c.pos).collect()};
+        self.built = visuals::build_live(&self.race.stage, &poses, &positions)?;
         for line in &self.built.log { eprintln!("scene rebuild: {line}"); }
         self.light = lighting(self.race.weather);
         if let Some(g) = &mut self.graphics { g.renderer = Renderer::new(&g.gpu, &self.built.scene, &self.light); }
@@ -370,6 +372,11 @@ impl App {
         let invisible = self.invisible();
         let size = self.window.as_ref().unwrap().inner_size();
         if size.width == 0 || size.height == 0 { return Ok(()); }
+        let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i).copied()).collect();
+        let views = crate::shot::view_rects(if ordered.is_empty(){&cams}else{&ordered}, self.args.views, size.width, size.height);
+        // The fixed pool sits before the cars. World-cell changes upload only
+        // its dirty range; unchanged camera anchors require no grass upload.
+        let grass_dirty=self.built.update_ground_cover(&views.iter().map(|v|v.cam.pos).collect::<Vec<_>>());
         let layout_started=Instant::now();
         if self.screenshot_toast.as_ref().is_some_and(|(_,until)|now>=*until){self.screenshot_toast=None;}
         let mut draw_list=if self.args.hud {
@@ -386,9 +393,8 @@ impl App {
         }
         let prepare_ms=prepare_started.elapsed().as_secs_f64()*1000.0;
         let first = self.built.cars.first().map(|c|c.first).unwrap_or(self.built.scene.instances.len());
+        if let Some(range)=grass_dirty {g.renderer.update_instances(&g.gpu,range.start,&self.built.scene.instances[range])?;}
         g.renderer.update_instances(&g.gpu, first, &self.built.scene.instances[first..])?;
-        let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i).copied()).collect();
-        let views = crate::shot::view_rects(if ordered.is_empty(){&cams}else{&ordered}, self.args.views, size.width, size.height);
         let image = g.renderer.render_texture(&g.gpu, &views, &self.light, size.width, size.height);
         self.rendered += 1;
         let presented_before=self.presented;
@@ -540,7 +546,7 @@ pub fn run(raw:&[String])->i32{
     let a=match args(raw){Ok(a)=>a,Err(e)=>{eprintln!("play: {e}");return 2;}};
     if a.smoke_ticks>0{return match smoke(&a){Ok(())=>0,Err(e)=>{eprintln!("play smoke: {e}");1}};}
     let race=race(&a);let poses=poses(&race);let cams=cameras(&race,&poses,&[0.0;4],&[false;4]);
-    let built=match visuals::build(&race.stage,&poses,&cams.iter().map(|c|c.pos).collect::<Vec<_>>(),false){Ok(b)=>b,Err(e)=>{eprintln!("play scene: {e}");return 1;}};
+    let built=match visuals::build_live(&race.stage,&poses,&cams.iter().take(a.views).map(|c|c.pos).collect::<Vec<_>>()){Ok(b)=>b,Err(e)=>{eprintln!("play scene: {e}");return 1;}};
     for line in &built.log { eprintln!("scene initial: {line}"); }
     let light=lighting(race.weather);let now=Instant::now();
     let host=match Client::connect_from_env(){Ok(h)=>h,Err(e)=>{eprintln!("GameNight: {e}");return 1;}};

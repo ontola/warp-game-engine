@@ -105,8 +105,9 @@ safe lifecycle/input/pose snapshots without launch tokens.
 
 This first playable milestone is not feature parity or a 120 FPS claim.
 Live driving disables the existing camera-only TAA until object motion vectors
-are implemented. It also omits the frozen-shot grass field rather than leaving
-grass behind at the start; live grass streaming is still pending. The basic
+are implemented. Grass streams around the active views in a fixed pool of
+16,000 slots (one view) or 24,000 shared slots (multiple views), retaining
+world positions and sizes. `SIDEWAYS_LIVE_GRASS=0` disables it. The basic
 instruments are now rendered by the shared native-resolution HUD described below.
 Audio, particles and an in-game settings menu are still missing. Native device enumeration alone does not
 prove physical button response; the smoke trace reports observed native active
@@ -267,9 +268,11 @@ On a 2-core cloud container:
   in the repository root). The selected clump is combined into an RGBA layer
   in memory before coverage-preserving mip generation.
 
-- **Distant forest prototype:** high rolling background hills and up to 10,000
+- **Distant forest prototype:** high rolling background hills and up to 200,000
   trees reuse the three actual near-tree meshes and their existing cluster
-  LOD, preserving species identity. Placement is fixed in world space. Native terrain/collision
+  LOD, preserving species identity. Density is calibrated to actual native
+  trees per eligible horizontal square metre; logs report any budget or
+  candidate shortfall. Placement is fixed in world space. Native terrain/collision
   remains unchanged; the background extension has no new driving collision.
   Disable with `SIDEWAYS_DISTANT_FOREST=0` for matched comparisons. This is
   not Nanite assemblies or a virtualized geometry streaming implementation.
@@ -277,12 +280,20 @@ On a 2-core cloud container:
   `SIDEWAYS_GENERIC_VOXEL_TREES=1`; the source-derived density voxel bake is
   still an offline experiment.
 
-The grass scatter is currently built on the CPU once for a frozen shot. It
-does not yet stream as a live camera moves, animate in wind, or port shrubs,
-ferns, stumps and mossy rocks. Whole tufts are selected by a world-cell hash
-rather than a pixel dither; moving-camera pop-in and temporal stability still
-need a real motion test. The split-screen budget bounds instance count, not
-GPU time: each view still culls, rasterizes and shades its visible grass.
+Frozen shots build the full grass scatter once. Live play caches candidate
+plants in 3.6 m world tiles, updates when a camera changes tile and retains
+existing plants in their fixed slots. Single/two/three-or-four-view radii are
+32/26/22 m. Density falls gradually over that range through deterministic
+whole-tuft selection; this is not a continuous opacity fade. Roots follow the
+native terrain triangles and exclude the road. Plants receive the existing
+sun/canopy shading without casting shadows. Wind, shrubs, ferns, stumps and
+mossy rocks remain pending. The split-screen budget bounds instance count,
+not GPU time: each view still culls, rasterizes and shades its visible grass.
+
+In developer play, F12 saves the current image including HUD and a metadata
+sidecar to `engine/build/screenshots/`. On Windows it also copies the image
+to the clipboard; paste it into the chat with Ctrl+V. No automatic upload
+occurs. The metadata records the stage, cameras, cars and graphics settings.
 
 Not there yet: the remaining ground-cover types, car lights and particles,
 wet road reflections, and the remaining interactive features listed above. GPU numbers come from

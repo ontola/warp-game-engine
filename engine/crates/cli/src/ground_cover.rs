@@ -1,6 +1,7 @@
 //! The first ground-cover port: photographed CC0 tufts rooted in the terrain.
 //! Positions, size and rejection are keyed by world cell, never camera angle.
-//! This CPU scatter is for frozen shots; a moving scene will need a GPU field.
+//! Frozen shots use this scatter; live_ground_cover shares its assets and
+//! streams candidates into a fixed GPU instance pool for moving playtests.
 
 use glam::{Affine3A, Quat, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, Vertex};
@@ -146,7 +147,7 @@ fn scatter(field: &Field<'_>, cameras: &[Vec3]) -> (Vec<Tuft>, usize) {
     (tufts, requested)
 }
 
-fn mesh(material: u32) -> ClusterMesh {
+pub(crate) fn mesh(material: u32) -> ClusterMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for card in 0..3 {
@@ -161,7 +162,7 @@ fn mesh(material: u32) -> ClusterMesh {
     ClusterMesh::build(&[Part { vertices: &vertices, indices: &indices, material }])
 }
 
-fn photo(root: &Path) -> Result<image::RgbaImage, String> {
+pub(crate) fn photo(root: &Path) -> Result<image::RgbaImage, String> {
     let color_path = root.join("assets/grass/grass_medium_01_diff_2k.jpg");
     let alpha_path = root.join("assets/grass/grass_medium_01_alpha_2k.png");
     let color = image::open(&color_path).map_err(|e| format!("{}: {e}", color_path.display()))?.to_rgba8();

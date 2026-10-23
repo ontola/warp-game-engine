@@ -43,9 +43,11 @@ sticks, full throttle/brake, handbrake, recovery, camera and Start.
 The installed GameNight Preview daemon speaks protocol 1 / SDK 5, so
 SDK 6-only actions and room logs must be capability-gated.
 
-The photographed grass is implemented for frozen shots, with shared world
-cells, terrain-triangle roots and a 60,000-instance cap. Live play deliberately
-has no grass until it can stream around moving cameras. Live TAA is also off
+The photographed grass uses shared world cells and terrain-triangle roots.
+Frozen shots have a 60,000-instance cap; live play streams cached candidates
+into a fixed 16,000-slot pool for one view or 24,000 shared slots for multiple
+views. Existing plants keep their poses/sizes; only changed slots upload.
+`SIDEWAYS_LIVE_GRASS=0` disables it for comparisons. Live TAA is still off
 until per-instance motion vectors exist. The native-resolution HUD now uses
 glyphon and shared cached Barlow text, with timer, instruments, pace notes,
 progress, recovery, countdown and results. Audio, an in-game settings menu,
@@ -65,7 +67,10 @@ a bounded distant forest on rolling background hills. The r7 default reuses
 the three actual near-tree meshes and their cluster LOD to retain species
 identity; the original exposed-face voxel pines now require
 `SIDEWAYS_GENERIC_VOXEL_TREES=1`. The hills have higher warped skyline ridges.
-This uses the current cluster renderer, not Unreal Nanite.
+The following density iteration measures actual native trees per eligible
+horizontal terrain area and matches that density on the hills, bounded to
+200,000 background instances with any shortfall explicitly logged. This uses
+the current cluster renderer, not Unreal Nanite.
 The separate sparse density-voxel bake is still experimental and inactive in
 play. Its second CPU comparison reduces oblique coverage error using 13
 directional projected-area samples, but coarse levels remain soft and this
@@ -193,7 +198,7 @@ Original design, first step now implemented in `cli/src/ground_cover.rs`:
   keep a previous-transform buffer and write velocity.
 - **Complete the playable loop.** Moving instances, shadow invalidation,
   native input, GameNight and explicit window presentation now exist. Next
-  are audio, settings, live ground-cover streaming and scene performance work.
+  are audio, settings, additional small vegetation and scene performance work.
 - **Visual differences with Godot that remain:**
   - distant forest denser and darker than Godot's (Godot uses mid meshes
     and impostors beyond 150 m, `src/forest.gd`);

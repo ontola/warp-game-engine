@@ -15,6 +15,7 @@ pub struct Built {
     pub mesh_names: Vec<String>,
     pub log: Vec<String>,
     pub cars: Vec<DynamicCar>,
+    live_ground_cover: Option<crate::live_ground_cover::LiveGroundCover>,
 }
 
 pub struct DynamicCar {
@@ -24,6 +25,14 @@ pub struct DynamicCar {
 }
 
 impl Built {
+    pub fn update_ground_cover(&mut self, cameras: &[Vec3]) -> Option<std::ops::Range<usize>> {
+        self.live_ground_cover.as_mut()?.update(&mut self.scene, cameras)
+    }
+
+    pub fn ground_cover_stats(&self) -> Option<crate::live_ground_cover::Stats> {
+        self.live_ground_cover.as_ref().map(|stream| stream.stats())
+    }
+
     pub fn update_cars(&mut self, poses: &[CarPose]) {
         for (car, pose) in self.cars.iter().zip(poses) {
             let xf = Affine3A::from_rotation_translation(pose.rot, pose.pos);
@@ -248,6 +257,14 @@ pub struct CarPose {
 }
 
 pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bool) -> Result<Built, String> {
+    build_inner(stage, cars, cameras, ground_cover, false)
+}
+
+pub fn build_live(stage: &Stage, cars: &[CarPose], cameras: &[Vec3]) -> Result<Built, String> {
+    build_inner(stage, cars, cameras, false, std::env::var("SIDEWAYS_LIVE_GRASS").as_deref() != Ok("0"))
+}
+
+fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bool, live_cover: bool) -> Result<Built, String> {
     let mut log = Vec::new();
     let t = std::time::Instant::now();
     let mut scene = Scene::default();
@@ -331,7 +348,11 @@ pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bo
             })
             .collect();
         let p: Vec<Part> = parts.iter().map(|(v, i, m)| Part { vertices: v, indices: i, material: *m }).collect();
-        let cm = ClusterMesh::build(&p);
+        let cm = ClusterMesh::build_with_policy(&p, |part| if part.material == crown_mat {
+            render::cluster::SimplificationPolicy::AlphaCards
+        } else {
+            render::cluster::SimplificationPolicy::Geometry
+        });
         log.push(format!("fir_{variant}: {} leaf tris, {} root tris, {} clusters, {} levels", cm.leaf_triangles(), cm.root_triangles(), cm.clusters.len(), cm.levels));
         tree_meshes.push(scene.add_mesh(&cm));
         mesh_names.push(format!("fir_{variant}"));
@@ -367,11 +388,17 @@ pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bo
         }
     }
 
-    if ground_cover {
+    let live_ground_cover = if live_cover {
+        let stream = crate::live_ground_cover::LiveGroundCover::reserve(&mut scene, &chunks, cameras, &r, &mut mesh_names)?;
+        log.push(stream.summary());
+        Some(stream)
+    } else if ground_cover {
         log.push(crate::ground_cover::add(&mut scene, &chunks, cameras, &r, &mut mesh_names)?);
+        None
     } else {
         log.push("ground cover: disabled (matched A/B)".into());
-    }
+        None
+    };
 
     // Barriers along the ledges: Armco rails or dry-stone walls.
     let stone = tex(&mut scene, "assets/textures/stone_wall_04_albedo.jpg")?;
@@ -410,7 +437,7 @@ pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bo
         }
     }
     log.push(scene.stats());
-    Ok(Built { scene, mesh_names, log, cars: dynamic_cars })
+    Ok(Built { scene, mesh_names, log, cars: dynamic_cars, live_ground_cover })
 }
 
 #[cfg(test)]

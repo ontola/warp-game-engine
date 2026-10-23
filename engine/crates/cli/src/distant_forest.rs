@@ -1,6 +1,6 @@
-//! Original, bounded background forest prototype: three shared voxel-crown
-//! meshes over a continuous terrain extension. No camera-relative placement,
-//! opacity dither, imported assets, physics changes or runtime voxel tracing.
+//! Bounded background forest over a continuous terrain extension. The live
+//! scene reuses native tree meshes and measures native habitat density; the
+//! original voxel crowns remain an explicit alternative geometry experiment.
 
 use glam::{Affine3A, Quat, Vec3};
 use render::cluster::{ClusterMesh, Part, Vertex};
@@ -12,11 +12,14 @@ use std::{cell::RefCell, collections::{BTreeMap, BTreeSet, HashMap}, time::Insta
 const TILE: f32 = 64.0;
 const STEP: f32 = 8.0;
 const CELLS: usize = 8;
+const TREE_GRID: f32 = 4.0;
+const TREE_CELLS: i32 = 16;
+const MAX_BACKGROUND_TREES: usize = 200_000;
 
 #[derive(Clone, Copy)]
 pub struct Config { pub radius: f32, pub max_tiles: usize, pub max_trees: usize, pub max_height_samples: usize }
 impl Default for Config {
-    fn default() -> Self { Self { radius: 768.0, max_tiles: 2048, max_trees: 10_000, max_height_samples: 8_000_000 } }
+    fn default() -> Self { Self { radius: 768.0, max_tiles: 2048, max_trees: MAX_BACKGROUND_TREES, max_height_samples: 8_000_000 } }
 }
 
 fn hash(x: i32, z: i32, seed: u32) -> u32 {
@@ -100,13 +103,19 @@ impl Ground<'_> {
 struct Patch { ring: Vec<Vec3>, centre: Vec3 }
 impl Patch {
     fn height(&self, x: f32, z: f32) -> Option<f32> {
+        self.surface(x, z).map(|(height, _)| height)
+    }
+    fn surface(&self, x: f32, z: f32) -> Option<(f32, f32)> {
         let a = self.centre;
         for i in 0..self.ring.len() {
             let b = self.ring[i]; let c = self.ring[(i + 1) % self.ring.len()];
             let det = (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
             let u = ((x - a.x) * (c.z - a.z) - (z - a.z) * (c.x - a.x)) / det;
             let v = ((b.x - a.x) * (z - a.z) - (b.z - a.z) * (x - a.x)) / det;
-            if u >= -1e-4 && v >= -1e-4 && u + v <= 1.0001 { return Some(a.y + (b.y - a.y) * u + (c.y - a.y) * v); }
+            if u >= -1e-4 && v >= -1e-4 && u + v <= 1.0001 {
+                let normal_y = (b - a).cross(c - a).normalize().y.abs();
+                return Some((a.y + (b.y - a.y) * u + (c.y - a.y) * v, normal_y));
+            }
         }
         None
     }
@@ -144,6 +153,75 @@ impl LandTile {
         if !(0.0..=CELLS as f32).contains(&u) || !(0.0..=CELLS as f32).contains(&v) { return None; }
         self.patches[(v.floor() as usize).min(CELLS - 1) * CELLS + (u.floor() as usize).min(CELLS - 1)].height(x,z)
     }
+    fn surface(&self, x: f32, z: f32) -> Option<(f32, f32)> {
+        let u = (x - self.key.0 as f32 * TILE) / STEP;
+        let v = (z - self.key.1 as f32 * TILE) / STEP;
+        if !(0.0..=CELLS as f32).contains(&u) || !(0.0..=CELLS as f32).contains(&v) { return None; }
+        self.patches[(v.floor() as usize).min(CELLS - 1) * CELLS + (u.floor() as usize).min(CELLS - 1)].surface(x,z)
+    }
+}
+
+/// Horizontal habitat area, not total map area or surface area of steep cliffs.
+/// Match builder::terrain_chunk: normal.y >= .75, water at least .4 m below
+/// ground, and uniformly sampled 4.5..9 m road clearance. Integrating that last
+/// probability avoids inventing a hard clearance boundary for the comparison.
+fn habitat_weight(road_distance: f32, normal_y: f32, height: f32, water: f32) -> f64 {
+    if !normal_y.is_finite() || normal_y < 0.75 || water > height - 0.4 { return 0.0; }
+    ((road_distance - 4.5) / 4.5).clamp(0.0, 1.0) as f64
+}
+
+#[derive(Clone, Copy, Default)]
+struct NativeDensity { trees: usize, habitat_m2: f64 }
+impl NativeDensity {
+    fn per_m2(self) -> f64 {
+        if self.habitat_m2 > 0.0 { self.trees as f64 / self.habitat_m2 } else { 0.0 }
+    }
+}
+
+/// Count actual native placements, including their original noise/gap policy.
+/// Only the denominator is sampled: 2 m horizontal cells, exactly the native
+/// generation grid. Adjacent chunks provide derivative halo samples; at the
+/// outer corridor boundary the unchanged Stage height supplies that halo.
+fn native_density(chunks: &[Chunk], ground: &Ground<'_>) -> NativeDensity {
+    let mut out = NativeDensity::default();
+    for chunk in chunks {
+        out.trees += chunk.trees.len();
+        for j in 0..32 { for i in 0..32 {
+            let x = chunk.x0 as f32 + i as f32 * 2.0;
+            let z = chunk.z0 as f32 + j as f32 * 2.0;
+            let k = j * 33 + i;
+            let h = chunk.heights[k];
+            let halo = |x: f32, z: f32| ground.native_height(x,z)
+                .unwrap_or_else(|| ground.stage.height(x as f64,z as f64) as f32);
+            let left = if i > 0 { chunk.heights[k-1] } else { halo(x-2.0,z) };
+            let back = if j > 0 { chunk.heights[k-33] } else { halo(x,z-2.0) };
+            let normal_y = Vec3::new(left-chunk.heights[k+1],4.0,back-chunk.heights[k+33]).normalize().y;
+            let water = if ground.stage.rivers.is_empty() { f32::NEG_INFINITY }
+                else { ground.stage.water_level(x as f64,z as f64) as f32 };
+            out.habitat_m2 += 4.0 * habitat_weight(chunk.road_d[k],normal_y,h,water);
+        }}
+    }
+    out
+}
+
+#[derive(Clone, Copy)]
+struct TreePlacement { rank: f32, key: u32, x: f32, y: f32, z: f32 }
+
+/// Weighted sampling without replacement retains broad native forest gaps,
+/// while the count comes from measured near-tree density rather than another
+/// hand-tuned far density. The world-cell key fixes placement across cameras.
+fn forest_rank(key: u32, thin: f32) -> Option<f32> {
+    if thin <= -0.25 { return None; }
+    let weight = 0.28 + 0.25 * thin;
+    Some(-unit(key).max(1.0 / 16_777_216.0).ln() / weight)
+}
+
+fn select_trees(trees: &mut Vec<TreePlacement>, native: NativeDensity, habitat_m2: f64, budget: usize) -> usize {
+    let requested = (native.per_m2() * habitat_m2).round().max(0.0) as usize;
+    trees.sort_unstable_by(|a,b| a.rank.total_cmp(&b.rank).then(a.key.cmp(&b.key))
+        .then(a.x.total_cmp(&b.x)).then(a.z.total_cmp(&b.z)));
+    trees.truncate(requested.min(budget).min(MAX_BACKGROUND_TREES));
+    requested
 }
 
 fn background_cells(stage: &Stage, native: &HashMap<(i32,i32), &Chunk>, radius: f32) -> BTreeSet<(i32,i32)> {
@@ -278,29 +356,103 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
         tree_ids.push(scene.add_mesh(&mesh));mesh_names.push(format!("original voxel pine {variant}"));
       }
     }
+    let native=native_density(chunks,&ground);
     let seed=stage.noise_seed as u32 ^ 0xd157a47;let mut trees=Vec::new();
-    for tile in tiles.values(){for j in 0..4{for i in 0..4{
-        let gx=tile.key.0*4+i;let gz=tile.key.1*4+j;let key=hash(gx,gz,seed);
-        let x=(gx as f32+0.15+unit(key)*0.7)*16.0;let z=(gz as f32+0.15+unit(key.rotate_left(13))*0.7)*16.0;
-        // Broad gaps between stands, then irregular positions within each
-        // stand; no perfectly straight rows or camera-following rings.
-        if noise(x/130.0,z/130.0,seed^0x8ab31) < -0.58{continue;}
-        let y=tile.height(x,z).expect("tree root lies on its background tile");
-        trees.push((hash(gx,gz,seed^0xa1ce),x,y,z,key));
+    let mut habitat_m2=0.0;let mut steep_m2=0.0;let mut wet_m2=0.0;
+    for tile in tiles.values(){for j in 0..TREE_CELLS{for i in 0..TREE_CELLS{
+        let gx=tile.key.0*TREE_CELLS+i;let gz=tile.key.1*TREE_CELLS+j;let key=hash(gx,gz,seed);
+        let x=(gx as f32+0.05+unit(key)*0.9)*TREE_GRID;
+        let z=(gz as f32+0.05+unit(key.rotate_left(13))*0.9)*TREE_GRID;
+        let (y,normal_y)=tile.surface(x,z).expect("tree root lies on its background tile");
+        let water=if stage.rivers.is_empty(){f32::NEG_INFINITY}else{stage.water_level(x as f64,z as f64) as f32};
+        // All background tiles are beyond the full native road corridor, so
+        // road clearance is already satisfied. Use the actual raised mesh
+        // for both slope eligibility and roots, never the old Stage height.
+        let habitat=habitat_weight(f32::INFINITY,normal_y,y,water);
+        habitat_m2+=(TREE_GRID*TREE_GRID) as f64*habitat;
+        if normal_y<0.75 || !normal_y.is_finite(){steep_m2+=(TREE_GRID*TREE_GRID) as f64;}
+        else if water>y-0.4{wet_m2+=(TREE_GRID*TREE_GRID) as f64;}
+        if habitat==0.0{continue;}
+        let thin=stage.detail.get_2d(x*0.6,z*0.6);
+        let Some(rank)=forest_rank(hash(gx,gz,seed^0xa1ce),thin) else{continue;};
+        trees.push(TreePlacement{rank,key,x,y,z});
     }}}
-    trees.sort_unstable_by_key(|t|t.0);trees.truncate(config.max_trees.min(10_000));
-    for &(_,x,y,z,key) in &trees{
+    let candidates=trees.len();let budget=config.max_trees.min(MAX_BACKGROUND_TREES);
+    let requested=select_trees(&mut trees,native,habitat_m2,budget);
+    for &TreePlacement{x,y,z,key,..} in &trees{
         let wide=0.85+unit(key.rotate_left(7))*0.60;let tall=0.85+unit(key.rotate_left(19))*0.55;
         let transform=Affine3A::from_scale_rotation_translation(Vec3::new(wide,tall,wide),Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
         scene.add_instance(tree_ids[key as usize%tree_ids.len()],transform);scene.mark_foliage();
     }
     let representation=if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes",tree_ids.len())}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
-    Ok(format!("distant forest: {} {representation}, {} terrain tiles / {terrain_triangles} tris, radius {radius:.0} m, high warped skyline ridges, 2 m heightfield {} samples, {:.0} ms; background has no new driving collision",trees.len(),tiles.len(),scene.heightfield.heights.len(),started.elapsed().as_secs_f64()*1000.0))
+    let far_density=if habitat_m2>0.0{trees.len() as f64/habitat_m2}else{0.0};
+    let parity=if trees.len()==requested{"matched count"}else if requested>budget{"LIMITED BY INSTANCE BUDGET"}else{"LIMITED BY FOREST CANDIDATES"};
+    let total_m2=tiles.len() as f64*(TILE*TILE) as f64;
+    let eligible_percent=if total_m2>0.0{100.0*habitat_m2/total_m2}else{0.0};
+    Ok(format!("distant forest: {} {representation}, {} terrain tiles / {terrain_triangles} tris, radius {radius:.0} m, high warped skyline ridges, 2 m heightfield {} samples, {:.0} ms; habitat density native {:.1} trees/ha ({} actual trees / {:.0} horizontal m2 at 2 m sampling), far {:.1} trees/ha ({habitat_m2:.0} horizontal m2 at 4 m sampling; {eligible_percent:.1}% eligible, {steep_m2:.0} m2 steep and {wet_m2:.0} m2 wet excluded), requested {requested} / candidates {candidates} / instance budget {budget}: {parity}; background has no new driving collision",trees.len(),tiles.len(),scene.heightfield.heights.len(),started.elapsed().as_secs_f64()*1000.0,native.per_m2()*10_000.0,native.trees,native.habitat_m2,far_density*10_000.0))
 }
 
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn habitat_matches_native_clearance_slope_and_water_rules() {
+        let dry=f32::NEG_INFINITY;
+        assert_eq!(habitat_weight(4.5,1.0,10.0,dry),0.0);
+        assert_eq!(habitat_weight(6.75,1.0,10.0,dry),0.5);
+        assert_eq!(habitat_weight(9.0,0.75,10.0,dry),1.0);
+        assert_eq!(habitat_weight(100.0,0.749,10.0,dry),0.0);
+        assert_eq!(habitat_weight(100.0,1.0,10.0,9.7),0.0);
+        assert_eq!(habitat_weight(100.0,1.0,10.0,9.5),1.0);
+        assert!(forest_rank(100,-0.25).is_none());
+        assert!(forest_rank(100,0.0).unwrap().is_finite());
+    }
+    #[test]
+    fn native_calibration_counts_actual_trees_per_eligible_horizontal_area() {
+        use sideways::builder::{Spot,V3Ser};
+        let mut stage=Stage::generate(&mut gdcompat::Pcg::new(1),10.0);
+        stage.rivers.clear();
+        let mut chunks=Vec::new();
+        for z in -1..=1 {for x in -1..=1 {
+            chunks.push(Chunk{cell:(x,z),x0:x as f64*64.0,z0:z as f64*64.0,
+                heights:vec![20.0;33*33],road_d:vec![6.75;33*33],
+                trees:vec![Spot{pos:V3Ser(2.0,20.0,2.0),yaw:0.0,scale:1.0,scale_y:1.0};64],
+                rocks:vec![],grass:vec![],ferns:vec![],stumps:vec![]});
+        }}
+        let ground=Ground{stage:&stage,native:chunks.iter().map(|c|(c.cell,c)).collect(),cache:RefCell::new(HashMap::new())};
+        let measured=native_density(&chunks[4..5],&ground);
+        assert_eq!(measured.trees,64);
+        assert_eq!(measured.habitat_m2,2048.0,"half of a flat 4096 m2 tile clears the native random road offset");
+        assert_eq!(measured.per_m2(),1.0/32.0);
+    }
+    #[test]
+    fn far_count_matches_measured_habitat_density_and_honors_budget() {
+        let native=NativeDensity{trees:64,habitat_m2:2048.0};
+        let candidates:Vec<_>=(0..2560).map(|i|{
+            let key=hash(i,0,71);
+            TreePlacement{rank:forest_rank(key,0.2).unwrap(),key,x:i as f32,y:1.0,z:2.0}
+        }).collect();
+        let mut full=candidates.clone();
+        let requested=select_trees(&mut full,native,16.0*2560.0,200_000);
+        assert_eq!((requested,full.len()),(1280,1280));
+        let mut limited=candidates.clone();
+        assert_eq!(select_trees(&mut limited,native,16.0*2560.0,100),1280);
+        assert_eq!(limited.len(),100);
+        assert!(limited.iter().zip(&full).all(|(a,b)|a.key==b.key));
+        let mut repeated=candidates;
+        select_trees(&mut repeated,native,16.0*2560.0,200_000);
+        assert!(full.iter().zip(&repeated).all(|(a,b)|a.key==b.key));
+    }
+    #[test]
+    fn far_habitat_uses_raised_mesh_slope_and_exact_root_height() {
+        let patch=Patch{centre:Vec3::new(4.0,102.0,4.0),ring:vec![
+            Vec3::new(0.0,100.0,0.0),Vec3::new(0.0,104.0,8.0),
+            Vec3::new(8.0,104.0,8.0),Vec3::new(8.0,100.0,0.0)]};
+        let (height,normal_y)=patch.surface(3.2,6.7).unwrap();
+        assert!((height-103.35).abs()<1e-4);
+        assert!((normal_y-1.0/1.25f32.sqrt()).abs()<1e-5);
+        assert_eq!(habitat_weight(f32::INFINITY,normal_y,height,100.0),1.0);
+    }
     #[test]
     fn skyline_has_tall_peaks_and_saddles_without_camera_dependent_shape() {
         let mut lo = f32::INFINITY;
