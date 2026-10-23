@@ -87,6 +87,7 @@ struct GiUniform {
     hf: [f32; 4],
     hf_dims: [u32; 4],
     bounce: [f32; 4],
+    params: [f32; 4],
 }
 
 /// The canopy volume around the cameras: 192 x 72 x 192 m at 1.5 m.
@@ -135,7 +136,12 @@ pub struct Lighting {
     pub lod_pixels: f32,
     /// 1: sky visibility, canopy sun and bounce from the GI volume; 0: off.
     pub gi: f32,
-    /// Debug view: 0 off, 1 sky visibility, 2 albedo.
+    /// Analytic near-field visibility from moving opaque car geometry.
+    pub contact_occlusion: f32,
+    /// Visibility along the glossy reflected direction.
+    pub reflection_occlusion: f32,
+    /// Debug: 1 sky visibility, 2 albedo, 3 direct, 4 diffuse indirect,
+    /// 5 environment specular, 6 contact visibility, 7 reflection visibility.
     pub debug: f32,
     /// Temporal anti-aliasing: 1 on (jittered frames, history), 0 off.
     pub taa: f32,
@@ -166,6 +172,8 @@ impl Lighting {
             "saturation" => self.saturation = f,
             "lod_pixels" => self.lod_pixels = f,
             "gi" => self.gi = f,
+            "contact_occlusion" => self.contact_occlusion = f,
+            "reflection_occlusion" => self.reflection_occlusion = f,
             "debug" => self.debug = f,
             "taa" => self.taa = f,
             "taa_blend" => self.taa_blend = f,
@@ -202,6 +210,8 @@ impl Default for Lighting {
             saturation: 1.0,
             lod_pixels: 1.0,
             gi: 1.0,
+            contact_occlusion: 1.0,
+            reflection_occlusion: 1.0,
             debug: 0.0,
             taa: 1.0,
             taa_blend: 0.1,
@@ -251,13 +261,18 @@ pub struct Renderer {
     sky_sh: [[f32; 4]; 9],
     sky_horizon: Vec3,
     sky_scale: f32,
+    sky_limit: f32,
     sky_rotation: f32,
     shadow_samp: wgpu::Sampler,
     foliage: wgpu::ComputePipeline,
     foliage_layout: wgpu::BindGroupLayout,
+    density_filter: wgpu::ComputePipeline,
+    density_filter_layout: wgpu::BindGroupLayout,
+    density_sampler: wgpu::Sampler,
+    solid_occluders: wgpu::Buffer,
+    solid_count: u32,
     heightfield: wgpu::TextureView,
     hf: crate::scene::Heightfield,
-    foliage_instances: bool,
     query: Option<(wgpu::QuerySet, wgpu::Buffer, wgpu::Buffer)>,
     taa: wgpu::ComputePipeline,
     taa_layout: wgpu::BindGroupLayout,
@@ -265,6 +280,7 @@ pub struct Renderer {
     history: std::sync::Mutex<Vec<Option<History>>>,
     frame: std::sync::atomic::AtomicU32,
     shadow_cache: std::sync::Mutex<Option<ShadowCache>>,
+    shadow_extent: std::sync::Mutex<f32>,
 }
 
 fn storage(read_only: bool) -> wgpu::BindingType {
@@ -516,9 +532,16 @@ impl Renderer {
                 (9, storage(true)),
                 (10, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (11, uniform()),
+                (12, storage(true)),
+                (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
+                (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
             ],
         );
         let foliage_layout = layout(gpu, "foliage", &[(0, uniform()), (1, storage(false))]);
+        let density_filter_layout = layout(gpu, "density filter", &[
+            (0, uniform()), (1, storage(true)),
+            (2, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D3 }),
+        ]);
         let tone_layout = layout(
             gpu,
             "tone",
@@ -599,6 +622,12 @@ impl Renderer {
         let clamp_samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let foliage_mod = module("foliage", include_str!("shaders/foliage.wgsl"));
         let foliage = compute(&pl(&[&scene_layout, &foliage_layout]), &foliage_mod, "fill");
+        let density_filter_mod = module("density filter", include_str!("shaders/density_filter.wgsl"));
+        let density_filter = compute(&pl(&[&density_filter_layout]), &density_filter_mod, "main");
+        let density_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("linear canopy"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        let solids = scene.solid_occluders();
+        let solid_count = solids.len() as u32;
+        let solid_occluders = buffer(gpu, "solid occluders", if solids.is_empty() { &[0u8; 48] } else { bytemuck::cast_slice(&solids) }, wgpu::BufferUsages::STORAGE);
         let hf = scene.heightfield.clone();
         let (hw, hh, hdata) = if hf.w > 1 && hf.h > 1 { (hf.w, hf.h, hf.heights.clone()) } else { (2, 2, vec![-1e9f32; 4]) };
         let hf_tex = gpu.device.create_texture_with_data(
@@ -692,12 +721,17 @@ impl Renderer {
             sky_sh,
             sky_horizon: raw_horizon * sky_scale,
             sky_scale,
+            sky_limit: mean * 8.0 * sky_scale,
             sky_rotation: rotation,
             shadow_samp,
             foliage,
             foliage_layout,
+            density_filter,
+            density_filter_layout,
+            density_sampler,
+            solid_occluders,
+            solid_count,
             heightfield: hf_tex.create_view(&Default::default()),
-            foliage_instances: scene.instances.iter().any(|i| i.flags & (crate::scene::FOLIAGE | crate::scene::SOLID) != 0),
             hf,
             query,
             taa,
@@ -706,6 +740,7 @@ impl Renderer {
             history: Default::default(),
             frame: Default::default(),
             shadow_cache: Default::default(),
+            shadow_extent: Default::default(),
         }
     }
 
@@ -860,17 +895,14 @@ impl Renderer {
         };
         let centre = views.iter().map(|v| ahead(&v.cam)).sum::<Vec3>() / views.len().max(1) as f32;
         let spread = views.iter().map(|v| ahead(&v.cam).distance(centre)).fold(0.0f32, f32::max);
-        let extent = 90.0f32 + spread;
+        let mut previous_extent = self.shadow_extent.lock().unwrap();
+        let extent = crate::stability::stable_shadow_extent(90.0 + spread, *previous_extent);
+        *previous_extent = extent;
+        drop(previous_extent);
         let texel = 2.0 * extent / SHADOW_SIZE as f32;
-        let sun_view = Mat4::look_at_rh(centre + light.sun_dir * 400.0, centre, Vec3::Y);
-        // Snap to whole texels so the shadow does not crawl as the cameras move.
-        let c_ls = sun_view.transform_point3(centre);
-        let snap = Vec3::new((c_ls.x / texel).round() * texel - c_ls.x, (c_ls.y / texel).round() * texel - c_ls.y, 0.0);
-        let sun_view = Mat4::from_translation(snap) * sun_view;
-        let sun_proj = Mat4::orthographic_rh(-extent, extent, -extent, extent, 1.0, 900.0);
-        let svp = sun_proj * sun_view;
-        // The scene does not move between frames yet: a shadow map for the
-        // same sun box is still valid (saves the costliest pass).
+        let svp = crate::stability::stable_shadow(centre, light.sun_dir, extent, SHADOW_SIZE);
+        // Instance updates explicitly invalidate this cache. Fixed world texels
+        // keep tree silhouettes stable despite small suspension/camera motions.
         let mut cache = self.shadow_cache.lock().unwrap();
         let reuse = cache.as_ref().is_some_and(|c| c.view_proj.abs_diff_eq(svp, 1e-6));
         if !reuse {
@@ -900,19 +932,28 @@ impl Renderer {
         // GI: the canopy volume centred on the cameras' ground, terrain heights.
         let half = Vec3::new(VOL_DIMS[0] as f32, 0.0, VOL_DIMS[2] as f32) * (VOXEL * 0.5);
         let base_y = views.iter().map(|v| v.cam.pos.y).fold(f32::MAX, f32::min) - 30.0;
-        let origin = Vec3::new(centre.x - half.x, base_y, centre.z - half.z);
-        let ground_e = light.sun_lux * light.sun_dir.y.max(0.0) * (1.0 - 0.4 * light.shadow_strength) + light.sky_lux;
+        let origin = crate::stability::world_grid_origin(Vec3::new(centre.x - half.x, base_y, centre.z - half.z), VOXEL);
         let gi_u = GiUniform {
             vol_origin: [origin.x, origin.y, origin.z, VOXEL],
-            vol_dims: [VOL_DIMS[0], VOL_DIMS[1], VOL_DIMS[2], (self.foliage_instances && light.gi > 0.0) as u32],
+            vol_dims: [VOL_DIMS[0], VOL_DIMS[1], VOL_DIMS[2], (light.gi > 0.0) as u32],
             hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3), 0.0],
-            hf_dims: [self.hf.w.max(2), self.hf.h.max(2), 0, 0],
-            bounce: [ground_e * 0.12 * 0.85, ground_e * 0.12, ground_e * 0.12 * 0.7, 0.0],
+            hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, 0],
+            // Reflectance, not a globally sunlit irradiance. The shader applies
+            // local sun/sky visibility before allowing this approximate bounce.
+            bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
+            params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit, 0.0],
         };
         let gi_buf = buffer(gpu, "gi", bytemuck::bytes_of(&gi_u), wgpu::BufferUsages::UNIFORM);
         let vol_bytes = (VOL_DIMS[0] * VOL_DIMS[1] * VOL_DIMS[2] * 4) as u64;
         let volume = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("canopy volume"), size: vol_bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let foliage_bind = bind(gpu, &self.foliage_layout, &[(0, gi_buf.as_entire_binding()), (1, volume.as_entire_binding())]);
+        let density_tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("filtered canopy"), size: wgpu::Extent3d { width: VOL_DIMS[0], height: VOL_DIMS[1], depth_or_array_layers: VOL_DIMS[2] },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        });
+        let density_view = density_tex.create_view(&Default::default());
+        let density_bind = bind(gpu, &self.density_filter_layout, &[(0, gi_buf.as_entire_binding()), (1, volume.as_entire_binding()), (2, wgpu::BindingResource::TextureView(&density_view))]);
 
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         let mut ts = 0u32;
@@ -935,6 +976,17 @@ impl Renderer {
             pass.set_bind_group(0, &self.scene_bind, &[]);
             pass.set_bind_group(1, &foliage_bind, &[]);
             pass.dispatch_workgroups(self.instances.div_ceil(64).max(1), 1, 1);
+        }
+        {
+            let t = self.query.as_ref().map(|(qs, _, _)| { let i = ts; ts += 2; (qs, i) });
+            if t.is_some() { names.push("filter canopy"); }
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("filter canopy"),
+                timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
+            });
+            pass.set_pipeline(&self.density_filter);
+            pass.set_bind_group(0, &density_bind, &[]);
+            pass.dispatch_workgroups(VOL_DIMS[0].div_ceil(8), VOL_DIMS[1].div_ceil(4), VOL_DIMS[2].div_ceil(8));
         }
         if !reuse {
             self.cull_and_raster(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull");
@@ -999,6 +1051,9 @@ impl Renderer {
                     (9, volume.as_entire_binding()),
                     (10, wgpu::BindingResource::TextureView(&self.heightfield)),
                     (11, gi_buf.as_entire_binding()),
+                    (12, self.solid_occluders.as_entire_binding()),
+                    (13, wgpu::BindingResource::TextureView(&density_view)),
+                    (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                 ],
             );
             let resolved = taa_pass.as_ref().map(|(_, dst, _)| dst).unwrap_or(&hdr_v);

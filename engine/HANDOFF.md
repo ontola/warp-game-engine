@@ -55,6 +55,13 @@ One 4K output has four 1916x1076 views with an eight-pixel gap. The 120 FPS
 target has not been met. Frozen GPU pass timings are not live-game FPS.
 Keep the Godot source beside `engine/` as the unchanged reference.
 
+The next Windows lighting candidate fixes indirect visibility around cars,
+direction-aware glossy reflections, locally conditioned ground bounce,
+absolute shadow-texel snapping, filtered world-aligned canopy density and
+reversed stone-wall normals. Read the lighting section of WINDOWS_VALIDATION
+before claiming full shadow stability or 120 FPS. A separate experimental
+foliage-voxel prototype is being developed; it is not active in this playtest.
+
 ## Earlier renderer baseline
 
 - Simulation: stage, terrain, road, barriers, cars (Rapier), AI and race

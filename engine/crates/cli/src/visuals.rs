@@ -52,7 +52,12 @@ fn chunk_mesh(c: &Chunk, material: u32) -> ClusterMesh {
             let (ii, jj) = (i as isize, j as isize);
             let dx = h(ii + 1, jj) - h(ii - 1, jj);
             let dz = h(ii, jj + 1) - h(ii, jj - 1);
-            let n = Vec3::new(-dx, 2.0 * GRID as f32 * if i == 0 || i == N - 1 { 0.5 } else { 1.0 }, -dz).normalize();
+            // At chunk borders each axis has its own one-sided derivative.
+            // A shared denominator changed the z slope at x borders and
+            // halved it at z borders, producing visible lighting seams.
+            let span_x = GRID as f32 * if i == 0 || i == N - 1 { 1.0 } else { 2.0 };
+            let span_z = GRID as f32 * if j == 0 || j == N - 1 { 1.0 } else { 2.0 };
+            let n = Vec3::new(-dx / span_x, 1.0, -dz / span_z).normalize();
             let p = c.vertex(i, j);
             verts.push(v(Vec3::new(p.x, p.y, p.z), n, [c.road_d[j * N + i], 0.0]));
         }
@@ -194,7 +199,10 @@ fn sweep(line: &[Vec3], profile: &[[f32; 2]], verts: &mut Vec<Vertex>, idx: &mut
 }
 
 fn wall_mesh(line: &[Vec3], material: u32) -> ClusterMesh {
-    let profile = [[-0.28, -0.5], [-0.24, 0.62], [-0.12, 0.74], [0.12, 0.74], [0.24, 0.62], [0.28, -0.5]];
+    // sweep expects counterclockwise profiles. The previous reversed order
+    // pointed both the side normals and triangle winding into the wall, and
+    // its top normal down; the sunny side consequently received no direct sun.
+    let profile = [[0.28, -0.5], [0.24, 0.62], [0.12, 0.74], [-0.12, 0.74], [-0.24, 0.62], [-0.28, -0.5]];
     let (mut verts, mut idx) = (Vec::new(), Vec::new());
     sweep(line, &profile, &mut verts, &mut idx);
     ClusterMesh::build(&[Part { vertices: &verts, indices: &idx, material }])
@@ -388,4 +396,60 @@ pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bo
     }
     log.push(scene.stats());
     Ok(Built { scene, mesh_names, log, cars: dynamic_cars })
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    #[test]
+    fn stone_wall_top_faces_up_and_sides_face_outward_with_matching_winding() {
+        let mesh = wall_mesh(&[Vec3::ZERO, Vec3::Z * 4.0], 0);
+        for v in &mesh.vertices {
+            let p = Vec3::from(v.pos);
+            let n = Vec3::from(v.normal);
+            assert!(p.x * n.x > 0.0, "wall side normal points inward: {p:?}, {n:?}");
+            if p.y > 0.73 {
+                assert!(n.y > 0.8, "top shading normal must point up");
+            }
+        }
+        let mut top_triangles = 0;
+        for c in mesh.clusters.iter().filter(|c| c.own_error == 0.0) {
+            for packed in &mesh.tris[c.first_tri as usize..(c.first_tri + c.tri_count) as usize] {
+                let vertices: [Vertex; 3] = std::array::from_fn(|k| {
+                    let local = (packed >> (8 * k)) & 0xff;
+                    mesh.vertices[mesh.cluster_verts[(c.first_vert + local) as usize] as usize]
+                });
+                let p = vertices.map(|v| Vec3::from(v.pos));
+                let face = (p[1] - p[0]).cross(p[2] - p[0]).normalize();
+                let normal = vertices.iter().map(|v| Vec3::from(v.normal)).sum::<Vec3>().normalize();
+                assert!(face.dot(normal) > 0.5, "triangle winding disagrees with shading normals");
+                if p.iter().all(|v| v.y > 0.73) {
+                    assert!(face.y > 0.99, "top winding faces down");
+                    top_triangles += 1;
+                } else {
+                    let x = p.iter().map(|v| v.x).sum::<f32>();
+                    assert!(face.x * x > 0.0, "side winding faces inward");
+                }
+            }
+        }
+        assert_eq!(top_triangles, 2);
+    }
+
+    #[test]
+    fn sloped_terrain_has_the_same_normal_at_all_chunk_edges_and_corners() {
+        let heights = (0..N).flat_map(|j| (0..N).map(move |i| {
+            (i as f32 * 0.25 - j as f32 * 0.75) * GRID as f32
+        })).collect();
+        let chunk = Chunk {
+            cell: (0, 0), x0: 0.0, z0: 0.0, heights, road_d: vec![20.0; N * N],
+            trees: vec![], rocks: vec![], grass: vec![], ferns: vec![], stumps: vec![],
+        };
+        let mesh = chunk_mesh(&chunk, 0);
+        let expected = Vec3::new(-0.25, 1.0, 0.75).normalize();
+        assert_eq!(mesh.vertices.len(), N * N);
+        for v in &mesh.vertices {
+            assert!(Vec3::from(v.normal).abs_diff_eq(expected, 1e-5), "wrong slope normal at {:?}: {:?}", v.pos, v.normal);
+        }
+    }
 }

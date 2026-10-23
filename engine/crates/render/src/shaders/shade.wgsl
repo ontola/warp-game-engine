@@ -80,6 +80,14 @@ struct Material {
 @group(1) @binding(9) var<storage, read> density: array<u32>;
 @group(1) @binding(10) var heightfield: texture_2d<f32>;
 @group(1) @binding(11) var<uniform> gi: Gi;
+struct SolidOccluder {
+    center: vec4<f32>,
+    half_extent: vec4<f32>,
+    identity: vec4<u32>,
+};
+@group(1) @binding(12) var<storage, read> solids: array<SolidOccluder>;
+@group(1) @binding(13) var canopy_tex: texture_3d<f32>;
+@group(1) @binding(14) var canopy_sampler: sampler;
 
 struct Gi {
     vol_origin: vec4<f32>,
@@ -87,16 +95,72 @@ struct Gi {
     hf: vec4<f32>,
     hf_dims: vec4<u32>,
     bounce: vec4<f32>,
+    params: vec4<f32>, // contact on, reflection on, sun-free sky cap, unused
 };
 
-// Foliage density 0..1 at p (nearest voxel), 0 outside the volume.
+// Foliage density 0..1 at p, trilinear on an absolute world-aligned grid.
 fn foliage(p: vec3<f32>) -> f32 {
-    let q = vec3<i32>(floor((p - gi.vol_origin.xyz) / gi.vol_origin.w));
-    let d = vec3<i32>(gi.vol_dims.xyz);
-    if any(q < vec3<i32>(0)) || any(q >= d) {
+    let q = (p - gi.vol_origin.xyz) / gi.vol_origin.w;
+    let d = vec3<f32>(gi.vol_dims.xyz);
+    if any(q < vec3<f32>(0.0)) || any(q >= d) {
         return 0.0;
     }
-    return f32(density[(q.z * d.y + q.y) * d.x + q.x]) / 255.0;
+    let edge = min(min(q.x, d.x - q.x), min(q.z, d.z - q.z));
+    return textureSampleLevel(canopy_tex, canopy_sampler, q / d, 0.0).r * smoothstep(0.0, 3.0, edge);
+}
+
+// Smooth projected-area approximation for diffuse contact, and opaque ray
+// intersection for glossy visibility. Proxies follow the live car transform.
+// These small local bounds never share the coarse, translucent foliage grid.
+fn contact_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>, owner: u32) -> vec2<f32> {
+    if gi.vol_dims.w == 0u || gi.params.x < 0.5 { return vec2<f32>(1.0); }
+    var diffuse = 1.0;
+    var specular = 1.0;
+    for (var i = 0u; i < gi.hf_dims.z; i++) {
+        let bounds = solids[i];
+        let obj = instances[bounds.identity.x];
+        let world_delta = p - obj.sphere.xyz;
+        let reach_radius = obj.sphere.w + 8.0;
+        if dot(world_delta, world_delta) > reach_radius * reach_radius {
+            // All remaining boxes of this body share its broad-phase sphere.
+            i += max(bounds.identity.y, 1u) - 1u;
+            continue;
+        }
+        let ax = vec3<f32>(obj.r0.x, obj.r1.x, obj.r2.x);
+        let ay = vec3<f32>(obj.r0.y, obj.r1.y, obj.r2.y);
+        let az = vec3<f32>(obj.r0.z, obj.r1.z, obj.r2.z);
+        let scale2 = max(vec3<f32>(dot(ax, ax), dot(ay, ay), dot(az, az)), vec3<f32>(1e-8));
+        let offset = p - vec3<f32>(obj.r0.w, obj.r1.w, obj.r2.w);
+        let local = vec3<f32>(dot(ax, offset), dot(ay, offset), dot(az, offset)) / scale2 - bounds.center.xyz;
+        let extent3 = bounds.half_extent.xyz;
+        let delta = max(abs(local) - extent3, vec3<f32>(0.0));
+        let distance2 = dot(delta * delta, scale2);
+        if distance2 > 64.0 { continue; }
+        // Fitted proxies are deliberately inset, but irregular surface points
+        // can still fall inside their own proxy. Do not blacken those surfaces.
+        if bounds.identity.x == owner && all(abs(local) <= extent3 + vec3<f32>(0.025)) { continue; }
+        let scale = sqrt(scale2);
+        let toward = -local * scale;
+        let d2 = max(dot(toward, toward), 1e-6);
+        let v = toward / sqrt(d2);
+        let nn = vec3<f32>(dot(ax, n), dot(ay, n), dot(az, n)) / scale;
+        let h = extent3 * scale;
+        let area = 4.0 * dot(vec3<f32>(h.y * h.z, h.x * h.z, h.x * h.y), abs(v));
+        let coverage = area / (area + 3.14159265 * d2);
+        let reach = 1.0 - smoothstep(16.0, 64.0, distance2);
+        diffuse *= 1.0 - coverage * max(dot(nn, v), 0.0) * reach;
+        let rd = vec3<f32>(dot(ax, refl), dot(ay, refl), dot(az, refl)) / scale2;
+        let safe_rd = select(vec3<f32>(-1e-6), vec3<f32>(1e-6), rd >= vec3<f32>(0.0));
+        let inv = 1.0 / select(rd, safe_rd, abs(rd) < vec3<f32>(1e-6));
+        let a = (-extent3 - local) * inv;
+        let b = (extent3 - local) * inv;
+        let lo = min(a, b);
+        let hi = max(a, b);
+        let enter = max(max(lo.x, lo.y), lo.z);
+        let leave = min(min(hi.x, hi.y), hi.z);
+        if leave > max(enter, 0.025) && enter < 8.0 { specular = 0.0; }
+    }
+    return vec2<f32>(clamp(diffuse, 0.0, 1.0), specular);
 }
 
 // Terrain height at (x, z), bilinear; -1e9 outside the heightfield.
@@ -151,6 +215,24 @@ fn sky_visibility(p: vec3<f32>, n: vec3<f32>) -> f32 {
     return v / 6.0;
 }
 
+// Only glossy surfaces need this longer direction-aware query. A diffuse
+// hemisphere visibility cannot tell whether a mountain hides a reflection.
+fn reflected_visibility(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>) -> f32 {
+    if gi.vol_dims.w == 0u || gi.params.y < 0.5 { return 1.0; }
+    let o = p + n * 0.06;
+    var t = 0.25;
+    var tr = 1.0;
+    for (var k = 0; k < 20; k++) {
+        let q = o + r * t;
+        if q.y < ground_at(q.xz) - 0.12 { return 0.0; }
+        let step = max(0.6, t * 0.40);
+        tr *= exp(-foliage(q) * 0.9 * step);
+        t += step;
+        if t > 250.0 || tr < 0.02 { break; }
+    }
+    return tr;
+}
+
 const PI: f32 = 3.14159265;
 
 // GGX microfacet specular for a light from l (Karis 2013): D * Vis * F * n.l.
@@ -179,9 +261,11 @@ fn env_brdf(f0: vec3<f32>, rough: f32, ndv: f32) -> vec3<f32> {
 
 // Radiance arriving along r: the sky above the horizon (blurred into its
 // irradiance as the surface gets rougher), lit ground below it.
-fn environment(r: vec3<f32>, rough: f32) -> vec3<f32> {
-    let sky = mix(sky_radiance(r), sky_irradiance(r) / PI, smoothstep(0.05, 0.55, rough));
-    let ground = gi.bounce.rgb * 1.5 / PI;
+fn environment(r: vec3<f32>, rough: f32, bounce: vec3<f32>) -> vec3<f32> {
+    // The sun is already evaluated by GGX and its shadow map. Match the SH
+    // sun exclusion here so the HDRI does not add a second, unshadowed sun.
+    let sky = mix(min(sky_radiance(r), vec3<f32>(gi.params.z)), sky_irradiance(r) / PI, smoothstep(0.05, 0.55, rough));
+    let ground = bounce / PI;
     return mix(ground, sky, smoothstep(-0.08, 0.04, r.y));
 }
 
@@ -594,7 +678,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         back = vec3<f32>(0.12, 0.16, 0.05) * max(-ndl, 0.0);
     }
     var shadow = 1.0;
-    if sun > 0.0 || needles {
+    if sun > 0.0 || needles || gi.vol_dims.w != 0u || (m.flags & 32u) != 0u || m.roughness < 0.55 {
         var s_map = shadow_at(p, geo_n * sign(dot(geo_n, l) + 1e-4));
         // Beyond the shadow map the canopy volume shades the ground.
         let c = light.shadow_view_proj * vec4<f32>(p, 1.0);
@@ -616,32 +700,54 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         f0 = vec3<f32>(0.016); // grass_cards.gdshader: SPECULAR 0.2
     }
     let diffuse = base * (1.0 - m.metal) / PI;
-    // Sky light where the sky is visible; light bounced off the sunlit
-    // ground and foliage where it is not.
-    let sky_vis = sky_visibility(p, n);
-    let ambient = (sky_irradiance(n) * sky_vis + gi.bounce.rgb * (1.0 - sky_vis)) * ao;
+    // Visibility uses the geometric hemisphere: subpixel normal-map grain
+    // must not select entirely different terrain/canopy occlusion paths.
+    let visibility_n = geo_n * select(-1.0, 1.0, dot(geo_n, n) >= 0.0);
+    let sky_vis = sky_visibility(p, visibility_n);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     let refl = reflect(dir, n);
-    let env = environment(refl, rough) * sky_vis;
-    var rad = diffuse * (sun_e * sun + ambient) + sun_e * back / PI;
-    rad += sun_e * ggx(n, v, l, rough, f0) + env * env_brdf(f0, rough, ndv) * ao;
+    let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x);
+    let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
+    let ambient = (sky_irradiance(n) * sky_vis + bounce * (1.0 - sky_vis)) * ao * contact.x;
+    var reflection_vis = sky_vis;
+    if (m.flags & 32u) != 0u || rough < 0.55 {
+        reflection_vis = reflected_visibility(p, visibility_n, refl);
+    }
+    let spec_contact = mix(contact.y, contact.x, smoothstep(0.08, 0.6, rough));
+    let env = mix(bounce / PI, environment(refl, rough, bounce), reflection_vis) * spec_contact;
+    var direct = diffuse * sun_e * sun + sun_e * back / PI + sun_e * ggx(n, v, l, rough, f0);
+    var indirect = diffuse * ambient;
+    var specular = env * env_brdf(f0, rough, ndv) * ao;
     if (m.flags & 32u) != 0u {
         // Clear coat: a thin glossy dielectric on top; what it reflects the
         // base does not get.
         let fc = 0.04 + 0.96 * pow(1.0 - ndv, 5.0);
-        rad = rad * (1.0 - fc) + sun_e * ggx(n, v, l, 0.04, vec3<f32>(0.04)) + environment(refl, 0.04) * sky_vis * fc;
+        direct = direct * (1.0 - fc) + sun_e * ggx(n, v, l, 0.04, vec3<f32>(0.04));
+        indirect *= 1.0 - fc;
+        specular = specular * (1.0 - fc) + mix(bounce / PI, environment(refl, 0.04, bounce), reflection_vis) * contact.y * fc;
     }
+    var rad = direct + indirect + specular;
     // Distance fog in the sky's colour at the horizon.
     let f_lin = clamp((dist - light.fog_color.w) / max(light.fog.x - light.fog_color.w, 1.0), 0.0, 1.0);
     let f_exp = 1.0 - exp(-light.fog.y * dist);
     let f = max(f_lin, f_exp);
     let fog_rad = light.fog_color.rgb; // radiance (cd/m2) of the horizon
     rad = mix(rad, fog_rad, f);
-    // Debug view (light.sky.z): 1 shows sky visibility, 2 the albedo.
+    // Component diagnostics retain the exact material, pose and lighting.
     if light.sky.z > 0.5 && light.sky.z < 1.5 {
         rad = vec3<f32>(sky_vis) * 6000.0;
-    } else if light.sky.z > 1.5 {
+    } else if light.sky.z > 1.5 && light.sky.z < 2.5 {
         rad = base * 6000.0;
+    } else if light.sky.z > 2.5 && light.sky.z < 3.5 {
+        rad = direct;
+    } else if light.sky.z > 3.5 && light.sky.z < 4.5 {
+        rad = indirect;
+    } else if light.sky.z > 4.5 && light.sky.z < 5.5 {
+        rad = specular;
+    } else if light.sky.z > 5.5 && light.sky.z < 6.5 {
+        rad = vec3<f32>(contact.x) * 6000.0;
+    } else if light.sky.z > 6.5 && light.sky.z < 7.5 {
+        rad = vec3<f32>(reflection_vis) * 6000.0;
     }
     textureStore(out_hdr, px, vec4<f32>(rad, 1.0));
 }

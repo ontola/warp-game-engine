@@ -165,3 +165,53 @@ was started; `hud-r1-live.log` confirms the first actual presented frame and
 the running window title showed live race speed/time. This visible session was
 standalone. Earlier real GameNight protocol checks remain release-r4 evidence;
 the full daemon suite was not rerun during the user's live playtest.
+
+## Indirect visibility and shadow stability update
+
+Candidate `sideways-lighting-r3.exe`, SHA256
+`efedcf3634af2e97019b313eefc8e0bf6a5d3f0b80fbd01039c4a4d533f6f8a0`,
+was built from the lighting update and copied unchanged to `engine/build/sideways.exe`.
+All 42 workspace tests passed (`lighting-workspace-tests-r4.log`): shader
+validation, opaque proxy construction/pose invariance, absolute shadow-grid
+stability, split extent hysteresis, stone wall winding and terrain-edge normals
+are included. No driving forces, physics rate or GameNight protocol changed.
+
+The production shader was exercised in a deterministic real-car fixture with
+identical car/camera poses, open ground versus an actual 18 m terrain ridge,
+car/no-car and independent contact/reflection toggles. All 12 image checks
+passed in `lighting-r2-fixture/analysis.json`. Debug images separate albedo,
+direct, diffuse indirect, environment specular and visibility. Contact shading
+reduced indirect light below the car without altering direct sun or albedo;
+blocked reflected directions darkened while visible sky reflections remained.
+The beauty images were also inspected. This isolates the mechanisms; it is
+not a reconstruction of the user's exact route position or photometric truth.
+
+Native 4K fixture on/off/off/on measurements used 8 warmup + 40 measured frames
+per run. GPU pass sums, including canopy filtering, increased by 0.307816 ms
+for one view (2.973488 -> 3.281304 ms), and 0.321080 ms for four repeated views
+(3.063816 -> 3.384896 ms). This measures the two visibility toggles as a package,
+not the cost of every change versus the prior build. The synthetic four-view
+fixture repeats one car/camera and does not exercise four separated cars.
+
+Separate actual one/four-car route smoke runs completed 48 GPU frames and
+384 simulation ticks at native 3840x2160, with HUD enabled and TAA disabled. Four rectangles
+were 1916x1076. Captures `lighting-r3-one.png` and `lighting-r3-four.png` were
+visually inspected. Hidden graphics-wall medians were 15.89495 / 24.7234 ms
+(`lighting-r3-*-profile.json`), including GPU synchronization. They are not
+visible gameplay FPS or an ABBA comparison against the previous release.
+120 FPS is not established. No full GameNight lifecycle rerun was needed for
+these renderer-only changes; prior protocol evidence remains version-specific.
+
+The prior playtest exited through its normal window-close path. The new
+candidate was started explicitly, fullscreen at 4K with one player.
+`lighting-r3-live.log` confirms the first visible presented frame and a
+connected XInput controller; the running title subsequently showed live speed.
+GPU tests stopped before the user resumed play.
+
+Limits: car proxies approximate opaque geometry and may miss fine cavities;
+reflections use bounded heightfield/canopy visibility and average blocked
+radiance, not exact local scene reflection. Distant thin occluders can be
+missed. The shared 192 m canopy grid and single sun map still trade detail or
+coverage when players separate. Snapshot and CPU-grid tests do not prove that
+all moving foliage/shadow flicker is gone. Live vegetation still uses cards;
+no experimental Nanite-inspired voxel geometry is enabled in this candidate.

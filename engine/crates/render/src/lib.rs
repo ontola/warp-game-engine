@@ -13,6 +13,7 @@ pub mod hud;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
+mod stability;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, ViewRect, split_rects};
 pub use gpu::{Gpu, Stopwatch, write_png};
@@ -79,6 +80,7 @@ mod shader_tests {
             ("shade", include_str!("shaders/shade.wgsl")),
             ("tonemap", include_str!("shaders/tonemap.wgsl")),
             ("foliage", include_str!("shaders/foliage.wgsl")),
+            ("density_filter", include_str!("shaders/density_filter.wgsl")),
             ("taa", include_str!("shaders/taa.wgsl")),
             ("present", include_str!("shaders/present.wgsl")),
             ("hud", include_str!("shaders/hud.wgsl")),
