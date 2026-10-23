@@ -178,6 +178,8 @@ pub struct Scene {
     pub materials: Vec<Material>,
     pub blended_materials: HashMap<u32, BlendMaterial>,
     pub grass_ranges: Vec<crate::grass::GrassRange>,
+    /// Optional bounded validation forest; absent in normal live scenes.
+    pub voxel_forest: Option<crate::foliage_volume_data::GpuForest>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
     /// Game data for materials (Sideways: road surface per 2 m row).

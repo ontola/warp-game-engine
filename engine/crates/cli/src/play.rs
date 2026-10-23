@@ -15,6 +15,7 @@ struct Args {
     seed: u64, km: f64, views: usize, size: (u32, u32), weather: String,
     smoke_frames: u64, smoke_ticks: u64, capture: Option<String>, state_out: Option<String>, trace: Option<String>, fullscreen: bool,
     hud: bool, hud_profile: Option<String>, hud_warmup: usize,
+    autoplay: bool,
 }
 
 fn args(args: &[String]) -> Result<Args, String> {
@@ -34,7 +35,7 @@ fn args(args: &[String]) -> Result<Args, String> {
         return Err("HUD profiling needs --smoke-render 1..4096 and fewer warmup frames than rendered frames".into());
     }
     let hud=match opt("--hud","on").as_str(){"on"=>true,"off"=>false,_=>return Err("hud must be on or off".into())};
-    Ok(Args { seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup })
+    Ok(Args { seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay") })
 }
 
 fn race(a: &Args) -> Race {
@@ -137,12 +138,14 @@ impl App {
         }).collect();
         serde_json::json!({
             "schema": 1, "mode": "play", "hidden": self.args.smoke_frames > 0, "race_frame": self.race.frame,
+            "autoplay": self.args.autoplay && self.host.is_none(),
             "race_clock": self.race.clock, "race_round": self.race.round, "race_phase": self.race.phase,
             "paused": self.paused, "focused": self.focused, "rendered_frames": self.rendered, "presented_frames": self.presented,
             "window_visible":self.window.as_ref().and_then(|w|w.is_visible()).unwrap_or(false),
             "render_quiet":self.host.as_ref().is_some_and(|h|!h.state.is_running()),
             "physics_hz": 120, "car_substeps": sideways::car::SUBSTEPS, "taa": false, "ground_cover": grass.is_some(),
             "ground_cover_streaming":grass.map(|s|serde_json::json!({"capacity":s.capacity,"active":s.active,"requested":s.requested,"budget_clipped":s.budget_clipped,"visible_budget_clipped":s.visible_budget_clipped,"cached_tiles":s.cached_tiles,"updates":s.updates,"last_update_ms":s.last_update_ms,"ground_bytes":s.ground_bytes})),
+            "experimental_voxel_tree_patch":self.built.scene.voxel_forest.as_ref().map(|f|serde_json::json!({"tree_count":f.instances.len(),"levels":f.levels.len(),"packed_bytes":f.byte_len(),"automatic_lod_transition":false})),
             "initial_positions": self.initial_positions, "exit_reason": self.exit_reason, "error": self.error,
             "host": self.host.as_ref().map(|h|h.state.snapshot()), "view_order": self.view_order.iter().map(|i|self.seats[*i].index).collect::<Vec<_>>(),
             "native_controllers":self.input.controllers(),"native_active_samples":self.input.native_active_samples,
@@ -341,10 +344,11 @@ impl App {
         self.controls = inputs.iter().map(|i|i.control).collect();
         let old_round = self.race.round;
         let mut rebuilt=false;
-        if !self.paused && running && (self.focused || self.args.smoke_frames > 0 || self.host.is_some()) {
+        let autoplay=self.args.autoplay&&self.host.is_none();
+        if !self.paused && running && (self.focused || autoplay || self.args.smoke_frames > 0 || self.host.is_some()) {
             self.accumulator += if self.args.smoke_frames > 0 && self.host.is_none() { 8.0 / 120.0 } else { dt };
             let mut controls: Vec<_> = self.controls.iter().enumerate().map(|(i,c)| {
-                if self.host.is_some()&&self.seats.get(i).is_some_and(|s|s.ai){None}else{let mut c=*c;c.shift=self.input_edges[i].0;c.recover=self.input_edges[i].1;Some(c)}
+                if autoplay || (self.host.is_some()&&self.seats.get(i).is_some_and(|s|s.ai)){None}else{let mut c=*c;c.shift=self.input_edges[i].0;c.recover=self.input_edges[i].1;Some(c)}
             }).collect();
             while self.accumulator >= 1.0 / 120.0 {
                 if self.race.phase=="results" && self.race.results<=1.0/120.0 {

@@ -436,3 +436,61 @@ or proof of motion stability. The prior playtest was stopped before GPU smoke;
 the registered executable was then replaced and a visible r9 playtest started.
 No controller was connected at this startup; previous physical-controller
 validation is not repeated by this run.
+
+The r9 executable subsequently completed three invisible four-view native-4K
+frames as well (`forest-grass-r9-four-smoke.*`): 23,081 shared resident grass
+tufts, zero pool clipping, no renderer error. This is a pipeline smoke, not a
+four-player 120 FPS benchmark.
+
+## First actual GPU foliage volumes (r10 experiment)
+
+`foliage_volume_data.rs` packs the three existing source crowns once, with
+13 directional extinction samples and six shading-normal lobes. Per-tree
+inverse transforms preserve nonuniform scaling. A compute pass bins tree
+bounds per 16x16 tile and integrates overlapping densities front to back,
+clipped by existing opaque depth. Only each bound owner's crown material is
+removed from the colour raster; real trunks and source shadow casters remain.
+The fractional layer never writes false opaque first-hit depth. Tree owners
+are static; moving them requires rebuilding the packed data.
+
+This is deliberately limited to 256 trees and an explicit packed detail
+level. There is no near/far transition, hierarchical instancing or world
+streaming. A one-metre canopy-light cache and six-lobe normal model approximate
+source lighting. Trilinear reconstruction is softer than the source cutouts.
+The optical model itself is statistical, not an exact reconstruction of
+individual leaf visibility. Default play leaves this experiment disabled.
+
+90 CPU/shader tests passed after fixing a reserved WGSL identifier. The
+independent review also fixed missing half-cell filter support in ray bounds
+and a potential non-progressing small-step loop. Every loop path is bounded;
+incomplete rays are magenta and counted as failures. Readback is explicit and
+off by default in normal rendering.
+
+Actual RTX 5070 Ti fixtures, no simultaneous game GPU workload:
+
+| Fixture | Voxel integrate GPU ms | Alpha/source area | Soft IoU | Incomplete rays |
+| --- | ---: | ---: | ---: | ---: |
+| One tree, 512x288, 60 degrees, 0.25 m cells | 0.681 | 0.831 | 0.376 | 0 |
+| 64 trees, 960x540, 0 degrees, 0.25 m | 29.055 | 0.931 | 0.650 | 0 |
+| 256 trees, 960x540, 250 m / 60 degrees, 0.25 m | 107.818 | invalid | invalid | 1,778 |
+| Same 256-tree view, 0.5 m cells | 69.597 | 0.913 | 0.767 | 0 |
+
+These are single first-frame GPU intervals, not averaged gameplay performance.
+The reference coverage is the actual binary crown visibility buffer with no
+TAA/supersampling; volume alpha comes from raw RGBA16F readback. The invalid
+fine 256-tree image includes magenta diagnostics and is not quality evidence.
+Coarse timing is a changed representation, not an isolated speed improvement.
+Files are under `voxel-gpu-r1-one`, `voxel-gpu-r1-64`, `voxel-gpu-r1-256-far`
+and `voxel-gpu-r1-256-far-level1`; each contains images and report.json.
+
+Conclusion: the GPU path works, but it is too soft nearby and too expensive
+for the intended forest. Do not enable it by default or claim Nanite foliage
+is complete. Next work targets ray-candidate compaction and provably empty
+regions before expanding the scene. The optional live patch is fixed around
+the initial camera and is explicitly experimental.
+
+The visible remote-viewing demo uses `play --autoplay` with regular source
+trees. `sideways-voxel-r10-autoplay.exe` SHA256:
+`c836c45b1bf600dee6b5d0e3fd9ecb0075d85ad8a292b9896c7c7dc6edfd26a6`.
+This adds the existing race AI to standalone visible play; GameNight controls
+remain host-owned. It is not a new physics or driving-force implementation.

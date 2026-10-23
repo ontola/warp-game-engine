@@ -85,6 +85,13 @@ has not been accepted as a near-tree replacement.
 Joep explicitly prioritizes runtime source-derived voxel trees next. Preserve
 the current near crowns and species identity; procedural plant generation is
 later work. Do not call the existing alpha-card cluster renderer voxel foliage.
+As of the late 23 October session, Joep no longer wants Godot comparisons:
+evaluate current Kern mesh and voxel versions against each other. He is done
+playtesting tonight but subsequently asked to watch gameplay remotely. An
+explicit `play --autoplay` uses the existing race AI and keeps driving without
+focus; it does not override managed GameNight inputs. Show occasional actual
+images in chat. Stop the visible demo before GPU measurements and restart it
+afterwards; do not mix its GPU load into comparison timings.
 Joep requested quick build/restart rounds with his live visual feedback. Do
 not run competing GPU benchmarks during his playtest. Build/shader checks
 and first-frame confirmation remain appropriate; do not imply a full GPU

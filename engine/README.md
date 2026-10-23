@@ -15,6 +15,7 @@ why two runs differ, and comparing with the Godot original.
 ## Commands
 
     cargo run --release -p cli -- play --views 1 --size 1920x1080               # explicitly open a playable window
+    cargo run --release -p cli -- play --autoplay --fullscreen --size 3840x2160 # explicit AI driving demo for remote viewing
     cargo run --release -p cli -- play --views 4 --size 3840x2160               # one 4K output, four split-screen views
     cargo run --release -p cli -- play --list-controllers                       # enumerate native pads; no window
     cargo run --release -p cli -- play --probe-controllers 15 --state-out pads.json # observe actual native inputs; no window
@@ -32,6 +33,17 @@ why two runs differ, and comparing with the Godot original.
     cargo run -p cli -- gpu-run --out ../gpu-out                                 # gpu-jobs.toml (see GPU_RUNNER.md)
     cargo test -p render                                                         # every WGSL shader validated, no GPU
     cargo test -p cli ground_cover                                               # scatter/root/road/budget checks, no GPU
+
+    cargo run --release -p cli --example voxel_forest_gpu -- --out FRESH_DIR --trees 64 --size 960x540
+
+The voxel example compares actual source crowns with a bounded GPU density
+volume prototype. It writes source/voxel images, raw-alpha coverage metrics,
+GPU pass times and overflow diagnostics. It is not a full-forest renderer or
+gameplay FPS measurement. `SIDEWAYS_VOXEL_TREE_PATCH=1..256` explicitly enables
+a fixed source-derived patch in development play/shot; the default stays off.
+It has no automatic near/far transition. Current close voxels are too soft;
+the first dense 256-tree fine-level fixture exceeded its sample budget, so
+this prototype is not accepted for replacing the regular forest.
 
     cargo run -p cli -- bench                      # handling bench, next to Godot's numbers
     cargo run -p cli -- sim --ticks 45000 --seed 1 --km 2 --events
