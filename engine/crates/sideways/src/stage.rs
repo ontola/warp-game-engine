@@ -550,10 +550,17 @@ impl Stage {
     }
 
     fn carve(&self, x: f64, z: f64, h: f64) -> f64 {
-        let Some((ri, _, d, level)) = self.river_near(x, z, 40.0) else {
+        let Some((ri, k, d, level)) = self.river_near(x, z, 40.0) else {
             return h;
         };
         let r = &self.rivers[ri];
+        // The generated stream can meander back beside another road section.
+        // `wet == 0` rejects portions whose level does not fit the terrain;
+        // water_level already respects this mask. Carving those rejected
+        // portions anyway dug deep, invisible channels under the road ribbon.
+        if r.wet[k] == 0 {
+            return h;
+        }
         let half = r.half;
         let mut bed = level - r.depth * (1.0 - smoothstep(half * 0.45, half, d)) + 0.25 * smoothstep(half * 0.8, half, d);
         bed += (d - half).max(0.0) * 0.5;
@@ -758,5 +765,60 @@ fn pick_grade(rng: &mut Pcg) -> usize {
         r if r < 0.80 => 4,
         r if r < 0.92 => 5,
         _ => 6,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reported_round_two_stage() -> Stage {
+    // F12 sideways-1792785290021-227228-2: seed 1, round 2, 3 km,
+    // one human seat, no rivals. Replay only generation, not the race.
+    let mut rng=Pcg::new(1);
+    rng.skip(835);
+    let stage=Stage::generate(&mut rng,3000.0+RUNOUT);
+    assert_eq!((stage.noise_seed,stage.detail_seed),(370671355,-305494282));
+    stage
+}
+
+#[cfg(test)]
+mod foundation_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_dry_river_does_not_excavate_reported_hairpin_foundation() {
+        let stage=reported_round_two_stage();
+        let (x,z)=(-57.27709198,-662.73962402);
+        let near=stage.nearest_index(x,z);
+        let (ri,k,_,_)=stage.river_near(x,z,40.0).expect("recorded dry river beside road");
+        assert_eq!((ri,k,stage.rivers[ri].wet[k]),(1,138,0));
+        let raw=stage.height_near_raw(x,z,near);
+        assert!((raw-11.04958583).abs()<1e-5);
+        assert_eq!(stage.height(x,z),raw,"the old carve lowered this point to 4.897 m");
+        for row in 370..=403 {
+            let p=stage.points[row];let d=stage.dirs[row];let right=v3(-d.z,0.0,d.x);
+            for side in [-1.0,0.0,1.0] {
+                let q=p+right*(side*(stage.widths[row]+0.8));
+                let raw=stage.height_near_raw(q.x as f64,q.z as f64,row as i64);
+                let actual=stage.height_near(q.x as f64,q.z as f64,row as i64);
+                assert!((actual-raw).abs()<1e-6,"dry river still undercuts row {row}, side {side}: {actual} vs {raw}");
+            }
+        }
+    }
+
+    #[test]
+    fn valid_ford_and_bridge_beds_still_carve_below_water() {
+        let mut stage=reported_round_two_stage();
+        let row=stage.rivers[1].cross;let p=stage.points[row];
+        let (ri,k,d,level)=stage.river_near(p.x as f64,p.z as f64,40.0).unwrap();
+        assert_eq!((ri,k,stage.rivers[ri].wet[k]),(1,75,1));
+        assert!(d<1e-4);
+        let raw=stage.height_near_raw(p.x as f64,p.z as f64,row as i64);
+        let bed=level-stage.rivers[ri].depth;
+        assert!(raw-bed>0.5,"fixture must test a real river cut");
+        for ford in [true,false] {
+            stage.rivers[ri].ford=ford;
+            let actual=stage.height_near(p.x as f64,p.z as f64,row as i64);
+            assert!((actual-bed).abs()<1e-5,"valid crossing lost its river bed (ford={ford})");
+            assert!((stage.water_level(p.x as f64,p.z as f64)-level).abs()<1e-5);
+        }
     }
 }

@@ -384,3 +384,55 @@ terrain foundation bug in round 2: river sections marked dry still carve
 deep channels beneath a road. The CPU reproduction records up to 17.8 m of
 unwanted carve and a separate 3.68 m discrepancy from local nearest-road
 searches. Those fixes are subsequent work and are not present in r8.
+
+## Dense grass opacity and road foundation (r9)
+
+The r9 source removes camera-distance habitat thinning. Fixed world-cell
+plants retain their full three-card geometry and size, with a 70,000-slot
+single-view pool or 115,000 shared slots for split screen. Static woodland
+density increases. A nearest-layer HDR opacity pass fades covered pixels
+over 40-60 m (single) or 20-38 m (split); CPU residency extends to 64/42 m.
+Pool clipping, including visible clipping, is recorded in live state/F12 data.
+This does not yet provide a cheaper distant grass geometry representation.
+
+The transition preserves the frontmost colour at the opaque limit and does
+not use screen dithering or shrinking plants. It intentionally omits deeper
+partially transparent layers. Glass still tests against the original opaque
+depth; optional TAA would likewise reproject that depth. Live TAA remains off.
+Persistent RGBA16Float plus Depth32Float targets cost 99,532,800 bytes for
+one combined native 4K image, with 33,177,600 bytes of depth copy per frame.
+The copy/raster interval and composite interval are separately timestamped.
+All pool slots submit transition vertices (18 per slot per view); vertex
+rejection does not eliminate that cost. No 120 FPS or performance gain claim.
+
+CPU validation: 80 selected tests passed (39 CLI, 39 renderer, 2 voxel preview)
+plus five targeted foundation tests. These include shader validation,
+opaque-to-opacity colour continuity, nearest-depth semantics, stable grass
+residency and pool budgets. Logs: `forest-grass-r9-cpu-tests.log` and
+`foundation-r9-cpu-tests.log` in the dated Windows evidence directory.
+
+The exact round-2 F12 road repro now ignores river segments with wet-mask 0,
+matching water placement. Terrain chunk samples use the authoritative road
+nearest-index query. Real road/terrain Rapier rays pass the foundation test.
+`terrain-foundation-round2-fixed.json` reports zero samples differing by
+more than 5 cm (previously 53), maximum numerical height difference under
+one micrometre (previously 3.68 m), and maximum river carve 0.946 m in the
+sample area (previously 17.799 m). Remaining carving is the valid wet river.
+This intentionally fixes terrain geometry at the affected locations without
+changing the route RNG, drivetrain or tyre force model. The Godot reference
+source is unchanged. The CPU probe is now renderer-independent:
+
+    cargo run -p sideways --example terrain_foundation_probe -- <report.json>
+
+Release artifact `sideways-forest-grass-r9.exe` has SHA256
+`ddc2599e0a584a2a734ba0170cd7cf68c80a627f257cd33420bf9e82332f17cb`.
+The actual NVIDIA RTX 5070 Ti renderer completed three invisible native-4K
+frames, including the new depth-copy and opacity pipelines, and saved
+`forest-grass-r9-smoke.png/json`. The screenshot was inspected: grass is
+substantially denser; distant hill coverage still visibly thins and is not
+accepted as a complete LOD solution. Initial grass has 48,796 resident tufts
+with zero pool clipping. This short startup is not a frame-rate benchmark
+or proof of motion stability. The prior playtest was stopped before GPU smoke;
+the registered executable was then replaced and a visible r9 playtest started.
+No controller was connected at this startup; previous physical-controller
+validation is not repeated by this run.

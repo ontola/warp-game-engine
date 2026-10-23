@@ -1,13 +1,14 @@
 //! Bounded moving ground cover using the existing photographed tuft material.
 //! World tiles cache candidates, while a fixed instance pool keeps GPU buffers
-//! and every surviving plant's position/size stable. This first live pass uses
-//! deterministic whole-plant density falloff, not opacity blending or dither.
+//! and every surviving plant's position/size stable. CPU residency extends
+//! beyond the renderer's continuous fade; moving a cache tile cannot select
+//! visible plants by a camera-dependent density hash.
 
 use glam::{Affine3A, Quat, Vec2, Vec3};
-use render::scene::{ALPHA_TEST, GRASS, Material, Scene, TWO_SIDED};
+use render::scene::{ALPHA_TEST, GRASS, LIVE_GRASS, Material, Scene, TWO_SIDED};
 use sideways::builder::{Chunk, N};
 use sideways::stage::{CHUNK, GRID};
-use std::{collections::{BTreeMap, BTreeSet, HashMap}, ops::Range, path::Path, time::Instant};
+use std::{collections::{BTreeMap, BTreeSet, HashMap, HashSet}, ops::Range, path::Path, time::Instant};
 
 const CELL: f32 = 0.45;
 const TILE_CELLS: i32 = 8;
@@ -23,10 +24,15 @@ pub struct Stats {
     pub updates: u64,
     pub last_update_ms: f64,
     pub ground_bytes: usize,
+    /// Requested resident plants before the explicit emergency pool cap.
+    pub requested: usize,
+    pub budget_clipped: usize,
+    /// Clipping visible plants would be a quality failure, never normal LOD.
+    pub visible_budget_clipped: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Tuft { id: Cell, position: Vec3, scale: f32, yaw: f32, coverage: f32 }
+struct Tuft { id: Cell, position: Vec3, scale: f32, yaw: f32 }
 struct GroundChunk { x0: f32, z0: f32, heights: Box<[f32]>, road: Box<[f32]> }
 struct Ground(HashMap<Cell, GroundChunk>);
 #[derive(Clone, Copy)]
@@ -69,7 +75,11 @@ fn noise(p: Vec2) -> f32 {
     let c = random((id.0, id.1 + 1), 103); let d = random((id.0 + 1, id.1 + 1), 103);
     (a + (b - a) * x) * (1.0 - y) + (c + (d - c) * x) * y
 }
-fn radius(views: usize) -> f32 { match views { 0 | 1 => 32.0, 2 => 26.0, _ => 22.0 } }
+// Shared with grass_common.wgsl's opacity endpoints: 40..60 m for one view,
+// 20..38 m for split views. Four metres cover the maximum 2.55 m camera-to-
+// cache-anchor offset, so CPU additions/removals happen at zero opacity.
+fn radius(views: usize) -> f32 { if views <= 1 { 64.0 } else { 42.0 } }
+fn visible_radius(views: usize) -> f32 { if views <= 1 { 60.0 } else { 38.0 } }
 
 fn candidate(ground: &Ground, id: Cell) -> Option<Tuft> {
     let jitter = Vec2::new(random(id, 0) - 0.5, random(id, 17) - 0.5) * 1.6;
@@ -81,11 +91,14 @@ fn candidate(ground: &Ground, id: Cell) -> Option<Tuft> {
     if ![Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y].iter().all(|axis|
         ground.sample(xz + *axis * clearance).is_some_and(|sample| sample.road >= 0.9)) { return None; }
     let verge = smooth(0.5, 1.4, root.road) * (1.0 - smooth(10.0, 22.0, root.road));
-    let wood = smooth(0.3, 0.6, noise(xz / 7.0)) * 0.85 * smooth(1.0, 3.0, root.road);
+    // Keep a continuous low cover inside the woodland, with denser clearings.
+    // This is a world habitat mask: camera position never changes membership.
+    let wood = (0.55 + 0.45 * smooth(0.25, 0.65, noise(xz / 7.0)))
+        * 0.95 * smooth(1.0, 3.0, root.road);
     let coverage = verge.max(wood) * smooth(0.7, 0.82, root.up);
-    if coverage <= 0.0 { return None; }
+    if random(id, 43) >= coverage { return None; }
     Some(Tuft { id, position: Vec3::new(xz.x, root.height - 0.025, xz.y), scale,
-        yaw: random(id, 3) * std::f32::consts::TAU, coverage })
+        yaw: random(id, 3) * std::f32::consts::TAU })
 }
 
 pub struct LiveGroundCover {
@@ -95,7 +108,7 @@ pub struct LiveGroundCover {
     capacity: usize,
     anchors: Option<(usize, Vec<Cell>)>,
     tiles: BTreeMap<Cell, Vec<Tuft>>,
-    active: BTreeMap<Cell, usize>,
+    active: HashMap<Cell, usize>,
     free: BTreeSet<usize>,
     stats: Stats,
 }
@@ -109,9 +122,12 @@ impl LiveGroundCover {
         let material = scene.add_material(Material { tint: [1.0; 3], layer, roughness: 0.85,
             flags: ALPHA_TEST | TWO_SIDED | GRASS, scale: 1.0, metal: 0.0 });
         let mesh = scene.add_mesh(&crate::ground_cover::mesh(material));
-        mesh_names.push("photographed grass tuft (CC0 live pool)".into());
-        let capacity = if cameras.len() <= 1 { 16_000 } else { 24_000 };
+        mesh_names.push("photographed grass tuft (CC0 live opacity pool)".into());
+        let capacity = if cameras.len() <= 1 { 70_000 } else { 115_000 };
         let mut stream = Self::with_mesh(scene, chunks, mesh, capacity);
+        scene.grass_ranges.push(render::grass::GrassRange { first: stream.first as u32,
+            count: capacity as u32, material, width: crate::ground_cover::WIDTH,
+            height: crate::ground_cover::HEIGHT, split: cameras.len() > 1 });
         stream.update(scene, cameras);
         Ok(stream)
     }
@@ -120,17 +136,21 @@ impl LiveGroundCover {
         let first = scene.instances.len();
         for _ in 0..capacity {
             scene.add_instance(mesh, Affine3A::IDENTITY); scene.mark_no_shadow();
-            let instance = scene.instances.last_mut().unwrap(); instance.cluster_count = 0; instance.sphere[3] = 0.0;
+            let instance = scene.instances.last_mut().unwrap();
+            instance.flags |= LIVE_GRASS;
+            instance.cluster_count = 0; instance.sphere[3] = 0.0;
         }
         let ground_bytes = chunks.iter().map(|c| (c.heights.len() + c.road_d.len()) * std::mem::size_of::<f32>()).sum();
         Self { ground: Ground::new(chunks), mesh, first, capacity, anchors: None, tiles: BTreeMap::new(),
-            active: BTreeMap::new(), free: (0..capacity).collect(), stats: Stats { capacity, ground_bytes, ..Default::default() } }
+            active: HashMap::new(), free: (0..capacity).collect(), stats: Stats { capacity, ground_bytes, ..Default::default() } }
     }
 
     pub fn stats(&self) -> Stats { self.stats }
     pub fn summary(&self) -> String {
-        format!("live ground cover: {} active / {} fixed slots, {} cached world tiles, {:.1} MiB native ground, {:.2} ms last update; stable sizes, photo cutout, no casting shadows",
-            self.stats.active, self.capacity, self.tiles.len(), self.stats.ground_bytes as f64 / 1_048_576.0, self.stats.last_update_ms)
+        format!("live ground cover: {} active / {} fixed slots, {} requested, {} clipped ({} visible), {} cached world tiles, {:.1} MiB native ground, {:.2} ms last update; same world cells, stable 3-card sizes, true opacity outer fade, no casting shadows",
+            self.stats.active, self.capacity, self.stats.requested, self.stats.budget_clipped,
+            self.stats.visible_budget_clipped, self.tiles.len(),
+            self.stats.ground_bytes as f64 / 1_048_576.0, self.stats.last_update_ms)
     }
 
     /// Returns the contiguous union of changed slots. An unchanged camera tile
@@ -145,7 +165,7 @@ impl LiveGroundCover {
         if self.anchors.as_ref() == Some(&key) { return None; }
         let started = Instant::now();
         let centres: Vec<Vec2> = key.1.iter().map(|&(x, z)| (Vec2::new(x as f32, z as f32) + Vec2::splat(0.5)) * TILE).collect();
-        let distance = |p: Vec2| centres.iter().map(|c| p.distance(*c)).fold(f32::INFINITY, f32::min);
+        let distance_squared = |p: Vec2| centres.iter().map(|c| p.distance_squared(*c)).fold(f32::INFINITY, f32::min);
         let range = radius(views);
         // Include all candidate jitter/card extents around the visible circle;
         // tiles are only an update/cache granularity, never a square cut line.
@@ -154,7 +174,7 @@ impl LiveGroundCover {
         let mut wanted_tiles = BTreeSet::new();
         for &(x, z) in &key.1 { for tz in z - reach..=z + reach { for tx in x - reach..=x + reach {
             let centre = (Vec2::new(tx as f32, tz as f32) + Vec2::splat(0.5)) * TILE;
-            if distance(centre) <= range + margin { wanted_tiles.insert((tx, tz)); }
+            if distance_squared(centre) <= (range + margin).powi(2) { wanted_tiles.insert((tx, tz)); }
         }}}
         self.tiles.retain(|id, _| wanted_tiles.contains(id));
         for tile in wanted_tiles {
@@ -167,24 +187,43 @@ impl LiveGroundCover {
             });
         }
         let mut selected: Vec<Tuft> = self.tiles.values().flatten().copied().filter(|tuft| {
-            let d = distance(Vec2::new(tuft.position.x, tuft.position.z));
-            let falloff = (1.0 - smooth(8.0, range, d)).powi(2);
-            random(tuft.id, 43) < tuft.coverage * falloff
+            // Every accepted world plant remains resident through the same
+            // radius. No moving density threshold thins out the dense core.
+            distance_squared(Vec2::new(tuft.position.x, tuft.position.z)) <= range * range
         }).collect();
+        self.stats.requested = selected.len();
+        self.stats.budget_clipped = selected.len().saturating_sub(self.capacity);
+        self.stats.visible_budget_clipped = 0;
         if selected.len() > self.capacity {
-            // The explicit hard cap has a stable world priority, rather than
-            // dropping all grass from one view or slicing along a grid row.
-            selected.sort_unstable_by_key(|tuft| (hash(tuft.id, 71), tuft.id)); selected.truncate(self.capacity);
+            // Emergency bound, not a visual LOD. First drop only resident
+            // plants already beyond every view's zero-opacity endpoint.
+            // If even visible plants exceed the pool, report that explicitly.
+            let visible = |tuft: &Tuft| cameras.iter().take(4).any(|camera| {
+                camera.is_finite() && Vec2::new(camera.x, camera.z)
+                    .distance_squared(Vec2::new(tuft.position.x, tuft.position.z))
+                    < visible_radius(views).powi(2)
+            });
+            selected.sort_unstable_by_key(|tuft| (!visible(tuft), hash(tuft.id, 71), tuft.id));
+            self.stats.visible_budget_clipped = selected[self.capacity..].iter().filter(|tuft| visible(tuft)).count();
+            selected.truncate(self.capacity);
         }
-        let desired: BTreeMap<Cell, Tuft> = selected.into_iter().map(|tuft| (tuft.id, tuft)).collect();
-        let removed: Vec<_> = self.active.iter().filter(|(id, _)| !desired.contains_key(*id)).map(|(&id, &slot)| (id, slot)).collect();
+        // In the normal uncapped path, static membership plus distance is
+        // sufficient. Avoid constructing a 50k+ entry set every cache step.
+        let capped_desired: Option<HashSet<Cell>> = (self.stats.budget_clipped > 0)
+            .then(|| selected.iter().map(|tuft| tuft.id).collect());
+        let removed: Vec<_> = self.active.iter().filter(|(id, slot)| {
+            if let Some(desired) = &capped_desired { return !desired.contains(*id); }
+            let instance = &scene.instances[self.first + **slot];
+            distance_squared(Vec2::new(instance.rows[0][3], instance.rows[2][3])) > range * range
+        }).map(|(&id, &slot)| (id, slot)).collect();
         let mut dirty_lo = usize::MAX; let mut dirty_hi = 0;
         for (id, slot) in removed {
             self.active.remove(&id); self.free.insert(slot);
             let instance = &mut scene.instances[self.first + slot]; instance.cluster_count = 0; instance.sphere[3] = 0.0;
             dirty_lo = dirty_lo.min(slot); dirty_hi = dirty_hi.max(slot + 1);
         }
-        for (id, tuft) in desired {
+        for tuft in selected {
+            let id = tuft.id;
             if self.active.contains_key(&id) { continue; }
             let slot = self.free.pop_first().expect("selected grass count respects fixed pool capacity");
             scene.update_instance(self.first + slot, self.mesh, Affine3A::from_scale_rotation_translation(
@@ -255,9 +294,52 @@ mod tests {
         let cameras = [Vec3::ZERO, Vec3::new(45.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 45.0), Vec3::new(45.0, 0.0, 45.0)];
         stream.update(&mut scene, &cameras);
         assert_eq!(stream.stats.active, 500); assert_eq!(scene.instances.len(), stream.first + 500);
+        assert!(stream.stats.budget_clipped > 0);
+        assert!(stream.stats.visible_budget_clipped > 0);
         let positions: Vec<_> = scene.instances.iter().map(|i| i.rows).collect();
         let mut reversed = cameras; reversed.reverse();
         assert!(stream.update(&mut scene, &reversed).is_none());
         assert_eq!(positions, scene.instances.iter().map(|i| i.rows).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn dense_core_is_not_camera_thinned_and_tile_changes_stay_beyond_fade() {
+        let chunks: Vec<_> = (-2..=2).flat_map(|z| (-2..=2).map(move |x| chunk((x, z), 5.0))).collect();
+        let (mut scene, mut stream) = setup(&chunks, 70_000);
+        let previous = Vec3::new(1.7, 2.0, 1.7);
+        let current = Vec3::new(3.7, 2.0, 1.7);
+        stream.update(&mut scene, &[previous]);
+        let position = |instance: &render::scene::GpuInstance| Vec2::new(instance.rows[0][3], instance.rows[2][3]);
+        let before: HashMap<_, _> = stream.active.iter().map(|(&id, &slot)|
+            (id, position(&scene.instances[stream.first + slot]))).collect();
+        // On this fully fertile flat fixture, essentially every 0.45 m cell
+        // in the 20 m core is occupied (~6,200), rather than a camera hash.
+        assert!(before.values().filter(|p| p.distance(Vec2::new(previous.x, previous.z)) < 20.0).count() > 5_500);
+        assert_eq!(stream.stats.budget_clipped, 0);
+        stream.update(&mut scene, &[current]);
+        assert_eq!(stream.stats.budget_clipped, 0);
+        for (id, p) in &before {
+            if !stream.active.contains_key(id) {
+                assert!(p.distance(Vec2::new(current.x, current.z)) > visible_radius(1));
+            }
+        }
+        for (&id, &slot) in &stream.active {
+            if !before.contains_key(&id) {
+                assert!(position(&scene.instances[stream.first + slot]).distance(Vec2::new(previous.x, previous.z)) > visible_radius(1));
+            }
+        }
+        assert!(scene.instances[stream.first..].iter().all(|instance|
+            instance.flags & (LIVE_GRASS | render::scene::NO_SHADOW)
+                == (LIVE_GRASS | render::scene::NO_SHADOW)));
+    }
+
+    #[test]
+    fn residency_margin_covers_every_camera_position_inside_its_cache_tile() {
+        // This guards the CPU/shader endpoint contract independent of the
+        // actual path taken through a tile, including diagonal crossings.
+        let maximum_anchor_error = TILE * std::f32::consts::FRAC_1_SQRT_2;
+        for views in 1..=4 {
+            assert!(radius(views) - maximum_anchor_error > visible_radius(views));
+        }
     }
 }
