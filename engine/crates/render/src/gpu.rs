@@ -27,11 +27,29 @@ impl Gpu {
     /// whose name contains it.
     pub fn new() -> Result<Gpu, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        Self::request(&instance, None).map(|(gpu, _)| gpu)
+    }
+
+    /// Only an explicitly opened game window calls this. Headless tools keep
+    /// selecting their adapters without creating a surface or window.
+    pub fn for_surface(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>, w: u32, h: u32) -> Result<(Gpu, wgpu::SurfaceConfiguration), String> {
+        let (gpu, adapter) = Self::request(instance, Some(surface))?;
+        let mut config = surface.get_default_config(&adapter, w.max(1), h.max(1)).ok_or("adapter cannot present to this window")?;
+        // The tonemapped texture already contains sRGB-encoded numbers.
+        // Prefer an unorm swapchain; the presentation shader handles sRGB too.
+        let caps = surface.get_capabilities(&adapter);
+        if let Some(format) = caps.formats.iter().find(|f| !f.is_srgb()) { config.format = *format; }
+        config.present_mode = wgpu::PresentMode::AutoVsync;
+        config.desired_maximum_frame_latency = 2;
+        Ok((gpu, config))
+    }
+
+    fn request(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(Gpu, wgpu::Adapter), String> {
         let wanted = std::env::var("KERN_ADAPTER").ok();
         let adapter = pollster::block_on(async {
             if let Some(w) = wanted.as_deref().filter(|w| *w != "software") {
                 for a in instance.enumerate_adapters(wgpu::Backends::all()).await {
-                    if a.get_info().name.to_lowercase().contains(&w.to_lowercase()) {
+                    if a.get_info().name.to_lowercase().contains(&w.to_lowercase()) && surface.is_none_or(|s| a.is_surface_supported(s)) {
                         return Ok(a);
                     }
                 }
@@ -40,7 +58,7 @@ impl Gpu {
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     force_fallback_adapter: wanted.as_deref() == Some("software"),
-                    compatible_surface: None,
+                    compatible_surface: surface,
                     ..Default::default()
                 })
                 .await
@@ -64,7 +82,7 @@ impl Gpu {
             trace: wgpu::Trace::Off,
         }))
         .map_err(|e| format!("device: {e}"))?;
-        Ok(Gpu { device, queue, info, features, limits })
+        Ok((Gpu { device, queue, info, features, limits }, adapter))
     }
 
     pub fn summary(&self) -> GpuInfo {

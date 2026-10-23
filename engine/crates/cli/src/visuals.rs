@@ -14,6 +14,26 @@ pub struct Built {
     /// What each mesh id is, for picking.
     pub mesh_names: Vec<String>,
     pub log: Vec<String>,
+    pub cars: Vec<DynamicCar>,
+}
+
+pub struct DynamicCar {
+    pub first: usize,
+    meshes: crate::car_model::CarMeshes,
+    fallback: bool,
+}
+
+impl Built {
+    pub fn update_cars(&mut self, poses: &[CarPose]) {
+        for (car, pose) in self.cars.iter().zip(poses) {
+            let xf = Affine3A::from_rotation_translation(pose.rot, pose.pos);
+            if car.fallback {
+                self.scene.update_instance(car.first, car.meshes.body, xf);
+            } else {
+                crate::car_model::update(&mut self.scene, car.first, &car.meshes, xf, pose.ride, &pose.wheels);
+            }
+        }
+    }
 }
 
 fn root() -> PathBuf {
@@ -219,7 +239,7 @@ pub struct CarPose {
     pub wheels: Vec<crate::car_model::Wheel>,
 }
 
-pub fn build(stage: &Stage, cars: &[CarPose]) -> Result<Built, String> {
+pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bool) -> Result<Built, String> {
     let mut log = Vec::new();
     let t = std::time::Instant::now();
     let mut scene = Scene::default();
@@ -324,6 +344,12 @@ pub fn build(stage: &Stage, cars: &[CarPose]) -> Result<Built, String> {
     }
     log.push(format!("trees: {trees} instances, {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
 
+    if ground_cover {
+        log.push(crate::ground_cover::add(&mut scene, &chunks, cameras, &r, &mut mesh_names)?);
+    } else {
+        log.push("ground cover: disabled (matched A/B)".into());
+    }
+
     // Barriers along the ledges: Armco rails or dry-stone walls.
     let stone = tex(&mut scene, "assets/textures/stone_wall_04_albedo.jpg")?;
     let stone_mat = scene.add_material(m([0.78, 0.76, 0.72], stone, TRIPLANAR, 1.0 / 0.6));
@@ -338,7 +364,9 @@ pub fn build(stage: &Stage, cars: &[CarPose]) -> Result<Built, String> {
         scene.add_instance(id, Affine3A::IDENTITY);
     }
     let mut car_textures = std::collections::HashMap::new();
+    let mut dynamic_cars = Vec::new();
     for car in cars {
+        let first = scene.instances.len();
         let pose = Affine3A::from_rotation_translation(car.rot, car.pos);
         if let Some(rel) = car.model.strip_prefix("res://") {
             let t = std::time::Instant::now();
@@ -348,14 +376,16 @@ pub fn build(stage: &Stage, cars: &[CarPose]) -> Result<Built, String> {
                 mesh_names.push(format!("car {rel} part {}", k - before));
             }
             crate::car_model::place(&mut scene, &meshes, pose, car.ride, &car.wheels);
+            dynamic_cars.push(DynamicCar { first, meshes, fallback: false });
             log.push(format!("car {rel}: {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
         } else {
             let mat = scene.add_material(m(car.color.to_array(), -1, 0, 1.0));
             let id = scene.add_mesh(&car_mesh(&car.boxes, mat));
             mesh_names.push("car box".into());
             scene.add_instance(id, pose);
+            dynamic_cars.push(DynamicCar { first, meshes: crate::car_model::CarMeshes { body: id, wheels: [None; 4] }, fallback: true });
         }
     }
     log.push(scene.stats());
-    Ok(Built { scene, mesh_names, log })
+    Ok(Built { scene, mesh_names, log, cars: dynamic_cars })
 }

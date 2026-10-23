@@ -7,6 +7,10 @@
 mod car_model;
 mod check;
 mod gpu_run;
+mod ground_cover;
+mod input;
+mod play;
+mod gamenight;
 mod shot;
 mod visuals;
 
@@ -16,6 +20,7 @@ fn main() {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned().unwrap_or(default.to_string())
     };
     let code = match args.first().map(|s| s.as_str()) {
+        Some("play") => play::run(&args),
         Some("bench") => bench(&opt("--car", "rally2"), args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())),
         Some("sim") => sim(&args),
         Some("shot") => {
@@ -41,6 +46,7 @@ fn main() {
                 sets: args.iter().enumerate().filter(|(_, a)| *a == "--set").map(|(i, _)| args[i + 1].clone()).collect(),
                 views: opt("--views", "1").parse().unwrap(),
                 taa_frames: opt("--taa", "16").parse().unwrap(),
+                ground_cover: opt("--ground-cover", "on") != "off",
             })
         }
         Some("gpu-run") => gpu_run::run(&opt("--out", "gpu-out"), &opt("--jobs", "gpu-jobs.toml")),

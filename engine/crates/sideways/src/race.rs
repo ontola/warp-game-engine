@@ -26,6 +26,29 @@ pub const WEATHERS: [(&str, f64); 4] = [("clear", 0.0), ("overcast", 0.25), ("mi
 pub const WHEEL_FX_PARTICLES: usize = 6;
 const NAMES: [&str; 8] = ["Red", "Blue", "Yellow", "Green", "Purple", "Orange", "Pink", "Grey"];
 
+/// One human seat's input for a single fixed simulation tick. `None` in
+/// `step_with_inputs` leaves the existing AI in control; an explicit neutral
+/// value must be supplied for a disconnected human seat. Shift/recover are
+/// edges, not held buttons. Camera/menu input belongs to the presentation layer.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Control {
+    pub throttle: f64,
+    pub brake: f64,
+    pub steer: f64,
+    pub handbrake: f64,
+    pub shift: i8,
+    pub recover: bool,
+}
+
+impl Control {
+    pub fn sanitized(self) -> Self {
+        fn finite(v: f64, min: f64, max: f64) -> f64 { if v.is_finite() { v.clamp(min, max) } else { 0.0 } }
+        Self { throttle: finite(self.throttle, 0.0, 1.0), brake: finite(self.brake, 0.0, 1.0),
+            steer: finite(self.steer, -1.0, 1.0), handbrake: finite(self.handbrake, 0.0, 1.0),
+            shift: self.shift.signum(), recover: self.recover }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub stage_km: f64,
@@ -276,7 +299,11 @@ impl Race {
         self.event(format!("recover {name}"));
     }
 
-    fn drive(&mut self, i: usize, dt: f64) {
+    fn drive(&mut self, i: usize, dt: f64, input: Option<Control>) {
+        let input = input.map(Control::sanitized);
+        if input.is_some_and(|c| c.recover) && self.phase == "racing" && !self.players[i].finished {
+            self.recover(i);
+        }
         let pos = self.players[i].car.pose(&self.phys).translation;
         let loc = self.stage.locate(v3(pos.x, pos.y, pos.z), self.players[i].hint);
         if loc.index >= 0 {
@@ -296,7 +323,7 @@ impl Race {
         }
         let p = &mut self.players[i];
         if !racing {
-            p.car.throttle = if self.clock > -0.8 { 0.6 } else { 0.0 };
+            p.car.throttle = input.map(|c| c.throttle).unwrap_or_else(|| if self.clock > -0.8 { 0.6 } else { 0.0 });
             return;
         }
         if finished {
@@ -306,7 +333,17 @@ impl Race {
             p.car.steer_input = 0.0;
             return;
         }
-        p.ai.drive(&mut p.car, &self.phys, &self.stage, dt);
+        if let Some(control) = input {
+            p.car.throttle = control.throttle;
+            p.car.brake = control.brake;
+            p.car.steer_input = control.steer;
+            p.car.handbrake = control.handbrake;
+            if p.car.manual && control.shift != 0 {
+                p.car.request_shift(control.shift as i32);
+            }
+        } else {
+            p.ai.drive(&mut p.car, &self.phys, &self.stage, dt);
+        }
         self.stats.airtime = self.stats.airtime.max(p.car.stats.air_time);
         for w in &p.car.wheels {
             if w.slide > 0.3 {
@@ -323,7 +360,7 @@ impl Race {
         let stuck = lin.length() < 1.0 && (p.car.throttle > 0.5 || p.car.brake > 0.5);
         let off_track = lost || upside || stuck || loc.offset.abs() > width + 2.5;
         p.off_track = if off_track { p.off_track + dt } else { 0.0 };
-        p.off_road = if lost || upside || stuck || p.ai.stuck > 3.0 { p.off_road + dt } else { 0.0 };
+        p.off_road = if lost || upside || stuck || (input.is_none() && p.ai.stuck > 3.0) { p.off_road + dt } else { 0.0 };
         let limit = if upside || lost { 2.5 } else { 5.0 };
         if p.off_road > limit {
             let line = format!("lost {} at {:.0} m: lost {lost} upside {upside} stuck {stuck} offset {:.1}", p.name, p.along, loc.offset);
@@ -389,8 +426,10 @@ impl Race {
     }
 }
 
-impl Sim for Race {
-    fn step(&mut self, timings: &mut Timings) {
+impl Race {
+    /// Advances one 120 Hz tick. Missing entries preserve the established AI
+    /// path byte for byte; callers pause by not calling this method at all.
+    pub fn step_with_inputs(&mut self, timings: &mut Timings, inputs: &[Option<Control>]) {
         let dt = 1.0 / HZ;
         self.frame += 1;
         self.clock += dt;
@@ -403,7 +442,7 @@ impl Sim for Race {
         }
         timings.span("drive", || {
             for i in 0..self.players.len() {
-                self.drive(i, dt);
+                self.drive(i, dt, inputs.get(i).copied().flatten());
             }
         });
         if self.phase == "countdown" && self.clock >= 0.0 {
@@ -422,6 +461,12 @@ impl Sim for Race {
             }
         });
         timings.span("rapier step", || self.phys.step());
+    }
+}
+
+impl Sim for Race {
+    fn step(&mut self, timings: &mut Timings) {
+        self.step_with_inputs(timings, &[]);
     }
 
     fn tick(&self) -> u64 {
@@ -480,5 +525,48 @@ impl Sim for Race {
             _ => return None,
         };
         kern::walk(&root, &parts[1..]).cloned()
+    }
+}
+
+#[cfg(test)]
+mod human_control_tests {
+    use super::*;
+
+    #[test]
+    fn control_rejects_nonfinite_and_clamps_device_ranges() {
+        assert_eq!(Control { throttle: f64::NAN, brake: f64::INFINITY, steer: -4.0, handbrake: 3.0, shift: -9, recover: true }.sanitized(),
+            Control { throttle: 0.0, brake: 0.0, steer: -1.0, handbrake: 1.0, shift: -1, recover: true });
+    }
+
+    #[test]
+    fn manual_control_neutral_countdown_finish_and_recovery() {
+        // A short real route/collider fixture exercises the production driver
+        // path without a renderer. Simulation parity is checked separately
+        // against the preserved pre-control executable, not against itself.
+        let settings = Settings { stage_km: 0.2, rivals: 0, bots: 2, ..Settings::default() };
+        let mut race = Race::new(1, settings, Cars::load(None).unwrap());
+        let dt = 1.0 / HZ;
+        race.drive(0, dt, Some(Control { throttle: 0.8, ..Control::default() }));
+        assert_eq!(race.players[0].car.throttle, 0.8);
+        assert!(race.players[0].car.hold);
+        race.phase = "racing";
+        race.drive(0, dt, Some(Control { throttle: 0.7, brake: 0.1, steer: -0.4, handbrake: 0.2, ..Control::default() }));
+        assert_eq!(race.players[0].car.throttle, 0.7);
+        assert_eq!(race.players[0].car.brake, 0.1);
+        assert_eq!(race.players[0].car.steer_input, -0.4);
+        assert_eq!(race.players[0].car.handbrake, 0.2);
+        race.drive(0, dt, Some(Control::default()));
+        assert_eq!(race.players[0].car.throttle, 0.0, "Neutral human must not fall back to AI");
+        let recoveries = race.stats.recoveries;
+        race.drive(0, dt, Some(Control { recover: true, ..Control::default() }));
+        assert_eq!(race.stats.recoveries, recoveries + 1);
+        race.drive(0, dt, Some(Control::default()));
+        assert_eq!(race.stats.recoveries, recoveries + 1, "Recovery is a consumed edge");
+        race.players[0].finished = true;
+        race.drive(0, dt, Some(Control { throttle: 1.0, steer: 1.0, recover: true, ..Control::default() }));
+        assert_eq!(race.players[0].car.throttle, 0.0);
+        assert_eq!(race.players[0].car.brake, 1.0);
+        assert!(race.players[0].car.hold);
+        assert_eq!(race.stats.recoveries, recoveries + 1);
     }
 }

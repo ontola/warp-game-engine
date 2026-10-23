@@ -34,7 +34,7 @@ struct Instance {
     first_cluster: u32,
     cluster_count: u32,
     scale: f32,
-    pad: u32,
+    flags: u32,
 };
 
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
@@ -78,6 +78,11 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
         return;
     }
     let inst = instances[id];
+    // The orthographic pass is the sun shadow map. Low ground cover only
+    // receives shadows; exclude its tiny cards from this expensive pass.
+    if view.params.z > 0.5 && (inst.flags & 4u) != 0u {
+        return;
+    }
     if li == 0u {
         keep = in_frustum(inst.sphere.xyz, inst.sphere.w);
     }
