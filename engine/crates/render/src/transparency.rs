@@ -201,6 +201,13 @@ impl Transparency {
                 14,
                 wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             ),
+            (
+                15,
+                texture(
+                    wgpu::TextureSampleType::Depth,
+                    wgpu::TextureViewDimension::D2,
+                ),
+            ),
         ];
         let view_layout = gpu
             .device

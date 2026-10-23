@@ -360,6 +360,12 @@ pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bo
             Err(reason) => log.push(format!("distant forest unavailable: {reason}")),
         }
     }
+    if std::env::var("SIDEWAYS_PROCEDURAL_ROCKS").as_deref() != Ok("0") {
+        match crate::procedural_rocks::add(&mut scene, stage, &chunks, &mut mesh_names) {
+            Ok(summary) => log.push(summary),
+            Err(reason) => log.push(format!("procedural rocks unavailable: {reason}")),
+        }
+    }
 
     if ground_cover {
         log.push(crate::ground_cover::add(&mut scene, &chunks, cameras, &r, &mut mesh_names)?);

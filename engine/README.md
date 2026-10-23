@@ -240,9 +240,16 @@ On a 2-core cloud container:
   Catmull-Rom history, variance clipping in YCoCg, then contrast-adaptive
   sharpening. Only the camera's motion is reprojected so far: moving cars
   need per-instance motion vectors once the scene can move.
-- **GI:** tree crowns and car bodies are splatted into a density volume
-  around the cameras; with the terrain heightfield it gives sky visibility,
-  sunlight through the canopy beyond the shadow map, and ground bounce.
+- **GI:** tree crowns enter a world-aligned, filtered density volume around
+  the cameras. Opaque cars instead use bounded local contact proxies that
+  follow their live transforms and do not shade their own body panels.
+  Terrain and canopy tracing condition sky visibility, glossy reflected
+  directions, distant sunlight and local ground bounce. This is approximate
+  visibility and average blocked radiance, not full scene ray-traced GI.
+- **Transparent models:** glTF BLEND glass and decals use a small per-view
+  sorted forward pass into linear HDR. They do not write opaque depth or
+  cast opaque sun shadows. Texture alpha and authored material alpha both
+  contribute; no dither is used for glass.
 - **HDR to screen:** exposure as EV100 (14 for clear weather, calibrated
   against Godot's frame), AgX, sRGB.
 - **Split screen:** every view culled, rastered and shaded on its own, one
@@ -259,6 +266,14 @@ On a 2-core cloud container:
   originals and license are retained (`assets/licenses/grass-medium-01-cc0.txt`
   in the repository root). The selected clump is combined into an RGBA layer
   in memory before coverage-preserving mip generation.
+
+- **Distant forest prototype:** rolling background hills and up to 10,000
+  original voxel pines reuse three exposed-face meshes and the existing
+  cluster LOD. Placement is fixed in world space. Native terrain/collision
+  remains unchanged; the background extension has no new driving collision.
+  Disable with `SIDEWAYS_DISTANT_FOREST=0` for matched comparisons. This is
+  independent prototype geometry, not Nanite assemblies or a virtualized
+  geometry streaming implementation.
 
 The grass scatter is currently built on the CPU once for a frozen shot. It
 does not yet stream as a live camera moves, animate in wind, or port shrubs,

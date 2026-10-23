@@ -63,12 +63,7 @@ fn transparent_fs(in: BlendVertex, @builtin(front_facing) front: bool) -> @locat
     // smooth pane's triangles, matching the opaque base-normal policy.
     let visibility_n = n;
     let l = light.sun_dir.xyz;
-    var s_map = shadow_at(p, visibility_n * sign(dot(visibility_n, l) + 1e-4));
-    let shadow_position = light.shadow_view_proj * vec4<f32>(p, 1.0);
-    let edge = max(abs(shadow_position.x), abs(shadow_position.y));
-    if edge > 0.85 && gi.vol_dims.w != 0u {
-        s_map = mix(s_map, transmittance(p + visibility_n * 0.2, l, 50.0), smoothstep(0.85, 1.0, edge));
-    }
+    let s_map = shadow_at(p, visibility_n * sign(dot(visibility_n, l) + 1e-4));
     let shadow = mix(1.0, s_map, light.sun_color.w);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     let sky_vis = sky_visibility(p, visibility_n);

@@ -246,11 +246,13 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,me
     }
     scene.heightfield=hf;
     let bark=scene.add_material(Material{tint:[0.07,0.047,0.025],layer:-1,roughness:0.98,flags:0,scale:1.0,metal:0.0});
-    let mut tree_ids=Vec::new();let mut tree_triangles=0;
+    let mut tree_ids=Vec::new();let mut tree_triangles=0;let mut tree_roots=0;let mut tree_lods=Vec::new();
     for variant in 0..3{
         let tint=[[0.034,0.071,0.029],[0.043,0.080,0.035],[0.029,0.060,0.034]][variant as usize];
         let material=scene.add_material(Material{tint,layer:-1,roughness:0.98,flags:0,scale:1.0,metal:0.0});
-        let mesh=tree_mesh(variant,material,bark);tree_triangles+=mesh.leaf_triangles();
+        let mesh=tree_mesh(variant,material,bark);let leaf=mesh.leaf_triangles();let root=mesh.root_triangles();
+        tree_triangles+=leaf;tree_roots+=root;
+        tree_lods.push(format!("v{variant}: {leaf}->{root} tris, {} clusters, {} levels",mesh.clusters.len(),mesh.levels));
         tree_ids.push(scene.add_mesh(&mesh));mesh_names.push(format!("original voxel pine {variant}"));
     }
     let seed=stage.noise_seed as u32 ^ 0xd157a47;let mut trees=Vec::new();
@@ -269,7 +271,7 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,me
         let transform=Affine3A::from_scale_rotation_translation(Vec3::new(wide,tall,wide),Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
         scene.add_instance(tree_ids[key as usize%3],transform);scene.mark_foliage();
     }
-    Ok(format!("distant forest: {} original voxel trees / 3 shared meshes ({tree_triangles} source tris total), {} terrain tiles / {terrain_triangles} tris, radius {radius:.0} m, 2 m heightfield {} samples, {:.0} ms; background has no new driving collision",trees.len(),tiles.len(),scene.heightfield.heights.len(),started.elapsed().as_secs_f64()*1000.0))
+    Ok(format!("distant forest: {} original voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {}), {} terrain tiles / {terrain_triangles} tris, radius {radius:.0} m, 2 m heightfield {} samples, {:.0} ms; background has no new driving collision",trees.len(),tree_lods.join("; "),tiles.len(),scene.heightfield.heights.len(),started.elapsed().as_secs_f64()*1000.0))
 }
 
 #[cfg(test)]
@@ -281,9 +283,40 @@ mod tests{
         for z in [0.0,2.0,4.0,7.5,8.0]{for x in [0.0,1.0,4.0,7.7,8.0]{assert!((patch.height(x,z).unwrap()-(1.0+z*0.5)).abs()<1e-5);}}
     }
     #[test]
+    fn extension_preserves_native_f32_bits_and_two_metre_spacing(){
+        let plane=|x:f32,z:f32|Vec3::new(x,10.0+x*0.1+z*0.25,z);
+        let mut tiles=BTreeMap::new();
+        for key in [(-1,0),(0,0)]{
+            let mut patches=Vec::new();
+            for j in 0..CELLS{for i in 0..CELLS{
+                let x=key.0 as f32*TILE+i as f32*STEP;let z=j as f32*STEP;
+                patches.push(Patch{centre:plane(x+4.0,z+4.0),ring:vec![plane(x,z),plane(x,z+8.0),plane(x+8.0,z+8.0),plane(x+8.0,z)]});
+            }}
+            tiles.insert(key,LandTile{key,patches,vertices:vec![],indices:vec![]});
+        }
+        // Include negative zero and an adjacent floating-point value: an
+        // apparently equal resampling is insufficient; preservation is exact.
+        let original=Heightfield{origin:[2.0,4.0],cell:2.0,w:3,h:3,
+            heights:vec![-0.0,f32::from_bits(0x3f800001),2.0,3.0,-1e9,5.0,6.0,7.0,8.0]};
+        let extended=extended_heightfield(&original,&tiles,(-1,0),(0,0));
+        assert_eq!(extended.cell.to_bits(),original.cell.to_bits());
+        assert_eq!(extended.origin,[-64.0,0.0]);assert_eq!((extended.w,extended.h),(65,33));
+        for j in 0..original.h{for i in 0..original.w{
+            let old=original.heights[(j*original.w+i) as usize];
+            let value=extended.heights[((j+2)*extended.w+i+33) as usize];
+            if old > -1e8{assert_eq!(old.to_bits(),value.to_bits(),"native sample changed at {i},{j}");}
+            else{assert!((value-plane(4.0,6.0).y).abs()<1e-5,"native empty space should receive background height");}
+        }}
+        let far=extended.heights[(extended.w+1) as usize];
+        assert!((far-plane(-62.0,2.0).y).abs()<1e-5);
+    }
+    #[test]
     fn original_voxel_tree_has_bounded_geometry_and_outward_face_winding(){
         for variant in 0..3{
             let mesh=tree_mesh(variant,0,1);assert!(mesh.leaf_triangles()>50 && mesh.leaf_triangles()<6000);
+            assert!(mesh.root_triangles()*2<mesh.leaf_triangles(),
+                "voxel pine {variant} did not simplify below half: {} leaf, {} root triangles, {} levels",
+                mesh.leaf_triangles(),mesh.root_triangles(),mesh.levels);
             for cluster in mesh.clusters.iter().filter(|c|c.own_error==0.0){for packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri+cluster.tri_count) as usize]{
                 let v:[Vertex;3]=std::array::from_fn(|k|mesh.vertices[mesh.cluster_verts[(cluster.first_vert+((packed>>(8*k))&255)) as usize] as usize]);
                 let p=v.map(|v|Vec3::from(v.pos));let face=(p[1]-p[0]).cross(p[2]-p[0]);

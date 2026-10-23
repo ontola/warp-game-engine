@@ -15,6 +15,9 @@ const TEXTURE_SIZE: u32 = 2048;
 /// Normal map array resolution.
 const NORMAL_SIZE: u32 = 1024;
 const SHADOW_SIZE: u32 = 4096;
+const NEAR_SHADOW_SIZE: u32 = 2048;
+const NEAR_SHADOW_EXTENT: f32 = 16.0;
+const TIMESTAMP_CAPACITY: u32 = 128;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -39,6 +42,19 @@ struct ShadowCache {
     tex: wgpu::Texture,
     clusters: u32,
     triangles: u32,
+}
+
+/// Per-camera sun detail, retained across frames rather than reallocating.
+struct NearShadow {
+    tex: wgpu::Texture,
+    targets: ViewTargets,
+}
+
+fn timestamp_pair(next: &mut u32) -> u32 {
+    assert!(*next <= TIMESTAMP_CAPACITY - 2, "frame exceeds timestamp query capacity");
+    let first = *next;
+    *next += 2;
+    first
 }
 
 /// Halton(2, 3) sample k: sub-pixel offsets in [-0.5, 0.5).
@@ -77,6 +93,9 @@ struct LightUniform {
     fog_color: [f32; 4],
     fog: [f32; 4],
     sh: [[f32; 4]; 9],
+    near_shadow_view_proj: [[f32; 4]; 4],
+    /// x: world texel size, y: blend-start NDC radius, z: enabled.
+    near_shadow: [f32; 4],
 }
 
 #[repr(C)]
@@ -140,6 +159,8 @@ pub struct Lighting {
     pub contact_occlusion: f32,
     /// Visibility along the glossy reflected direction.
     pub reflection_occlusion: f32,
+    /// Per-view high-resolution sun detail; set 0 for an isolated cost check.
+    pub near_shadows: f32,
     /// Debug: 1 sky visibility, 2 albedo, 3 direct, 4 diffuse indirect,
     /// 5 environment specular, 6 contact visibility, 7 reflection visibility.
     pub debug: f32,
@@ -174,6 +195,7 @@ impl Lighting {
             "gi" => self.gi = f,
             "contact_occlusion" => self.contact_occlusion = f,
             "reflection_occlusion" => self.reflection_occlusion = f,
+            "near_shadows" => self.near_shadows = f,
             "debug" => self.debug = f,
             "taa" => self.taa = f,
             "taa_blend" => self.taa_blend = f,
@@ -212,6 +234,7 @@ impl Default for Lighting {
             gi: 1.0,
             contact_occlusion: 1.0,
             reflection_occlusion: 1.0,
+            near_shadows: 1.0,
             debug: 0.0,
             taa: 1.0,
             taa_blend: 0.1,
@@ -228,6 +251,9 @@ pub struct FrameStats {
     pub triangles: u32,
     pub shadow_clusters: u32,
     pub shadow_triangles: u32,
+    /// Subset of total shadow work spent on the per-view near maps.
+    pub near_shadow_clusters: u32,
+    pub near_shadow_triangles: u32,
     /// GPU time per pass in ms, when the GPU has timestamps.
     pub gpu_ms: Vec<(&'static str, f64)>,
     /// For each requested pixel: (instance, cluster, triangle) or None for sky.
@@ -282,6 +308,8 @@ pub struct Renderer {
     frame: std::sync::atomic::AtomicU32,
     shadow_cache: std::sync::Mutex<Option<ShadowCache>>,
     shadow_extent: std::sync::Mutex<f32>,
+    near_shadows: std::sync::Mutex<Vec<NearShadow>>,
+    shadow_capacity: u32,
 }
 
 fn storage(read_only: bool) -> wgpu::BindingType {
@@ -544,6 +572,7 @@ impl Renderer {
                 (12, storage(true)),
                 (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
                 (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
         let foliage_layout = layout(gpu, "foliage", &[(0, uniform()), (1, storage(false))]);
@@ -704,7 +733,7 @@ impl Renderer {
             ..Default::default()
         });
         let query = if gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY) {
-            let n = 64;
+            let n = TIMESTAMP_CAPACITY;
             let qs = gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("timestamps"), ty: wgpu::QueryType::Timestamp, count: n });
             let resolve = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 8 * n as u64, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
             let read = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 8 * n as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
@@ -751,12 +780,20 @@ impl Renderer {
             frame: Default::default(),
             shadow_cache: Default::default(),
             shadow_extent: Default::default(),
+            near_shadows: Default::default(),
+            // Upper bound: all clusters of all shadow-casting instances.
+            shadow_capacity: scene.instances.iter().filter(|i| i.flags & crate::scene::NO_SHADOW == 0)
+                .map(|i| i.cluster_count as u64).sum::<u64>().clamp(1, MAX_VISIBLE as u64) as u32,
         }
     }
 
     fn view_targets(&self, gpu: &Gpu, label: &str) -> ViewTargets {
+        self.view_targets_capacity(gpu, label, MAX_VISIBLE)
+    }
+
+    fn view_targets_capacity(&self, gpu: &Gpu, label: &str, capacity: u32) -> ViewTargets {
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<ViewUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: MAX_VISIBLE as u64 * 8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: capacity as u64 * 8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let args = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("args"), size: 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT, mapped_at_creation: false });
         let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (3, args.as_entire_binding())]);
@@ -768,8 +805,7 @@ impl Renderer {
         gpu.queue.write_buffer(&v.counter, 0, &[0u8; 16]);
         let tw = |ts: &mut u32| {
             self.query.as_ref().map(|(qs, _, _)| {
-                let i = *ts;
-                *ts += 2;
+                let i = timestamp_pair(ts);
                 (qs, i)
             })
         };
@@ -792,7 +828,7 @@ impl Renderer {
         }
         let t = tw(ts);
         if t.is_some() {
-            names.push(if color.is_some() { "raster" } else { "shadow raster" });
+            names.push(if color.is_some() { "raster" } else if name == "near shadow cull" { "near shadow raster" } else { "shadow raster" });
         }
         let attachments = [color.map(|c| wgpu::RenderPassColorAttachment {
             view: c,
@@ -936,8 +972,9 @@ impl Renderer {
             fog_color: [self.sky_horizon.x, self.sky_horizon.y, self.sky_horizon.z, light.fog_start],
             fog: [light.fog_end, light.fog_density, 0.0, 0.0],
             sh,
+            near_shadow_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, 0.0],
         };
-        let light_buf = buffer(gpu, "light", bytemuck::bytes_of(&lu), wgpu::BufferUsages::UNIFORM);
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
         // GI: the canopy volume centred on the cameras' ground, terrain heights.
@@ -972,8 +1009,7 @@ impl Renderer {
         enc.clear_buffer(&volume, 0, None);
         {
             let t = self.query.as_ref().map(|(qs, _, _)| {
-                let i = ts;
-                ts += 2;
+                let i = timestamp_pair(&mut ts);
                 (qs, i)
             });
             if t.is_some() {
@@ -989,7 +1025,7 @@ impl Renderer {
             pass.dispatch_workgroups(self.instances.div_ceil(64).max(1), 1, 1);
         }
         {
-            let t = self.query.as_ref().map(|(qs, _, _)| { let i = ts; ts += 2; (qs, i) });
+            let t = self.query.as_ref().map(|(qs, _, _)| { let i = timestamp_pair(&mut ts); (qs, i) });
             if t.is_some() { names.push("filter canopy"); }
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("filter canopy"),
@@ -1006,9 +1042,37 @@ impl Renderer {
         if histories.len() < views.len() {
             histories.resize_with(views.len(), || None);
         }
+        let near_enabled = light.near_shadows > 0.5 && light.shadow_strength > 0.0 && light.sun_lux > 0.0;
+        let mut near_shadows = self.near_shadows.lock().unwrap();
+        if near_enabled {
+            while near_shadows.len() < views.len() {
+                near_shadows.push(NearShadow {
+                    tex: tex2d("near sun shadow", NEAR_SHADOW_SIZE, NEAR_SHADOW_SIZE, wgpu::TextureFormat::Depth32Float,
+                        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING),
+                    targets: self.view_targets_capacity(gpu, "near sun view", self.shadow_capacity),
+                });
+            }
+        }
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         for (vi, view) in views.iter().enumerate() {
             let (w, h, cam) = (view.w, view.h, &view.cam);
+            let mut view_light = lu;
+            let near_view = if near_enabled {
+                let near = &near_shadows[vi];
+                let near_vp = crate::stability::stable_shadow(cam.target, light.sun_dir, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE);
+                gpu.queue.write_buffer(&near.targets.uniform, 0, bytemuck::bytes_of(&view_uniform(
+                    near_vp, cam.target + light.sun_dir * 400.0, NEAR_SHADOW_SIZE as f32 / (2.0 * NEAR_SHADOW_EXTENT),
+                    [light.lod_pixels, 1.0, 1.0, self.shadow_capacity as f32], [NEAR_SHADOW_SIZE as f32; 4], light.alpha_cut)));
+                let texture_view = near.tex.create_view(&Default::default());
+                self.cull_and_raster(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull");
+                view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
+                view_light.near_shadow[2] = 1.0;
+                texture_view
+            } else {
+                // Valid but unused binding when the feature is disabled.
+                cache.as_ref().unwrap().tex.create_view(&Default::default())
+            };
+            let light_buf = buffer(gpu, "view light", bytemuck::bytes_of(&view_light), wgpu::BufferUsages::UNIFORM);
             let vis = tex2d("vis", w, h, wgpu::TextureFormat::R32Uint, rt);
             let depth = tex2d("depth", w, h, wgpu::TextureFormat::Depth32Float, rt);
             let hdr = tex2d("hdr", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT);
@@ -1065,6 +1129,7 @@ impl Renderer {
                     (12, self.solid_occluders.as_entire_binding()),
                     (13, wgpu::BindingResource::TextureView(&density_view)),
                     (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
+                    (15, wgpu::BindingResource::TextureView(&near_view)),
                 ],
             );
             let resolved = taa_pass.as_ref().map(|(_, dst, _)| dst).unwrap_or(&hdr_v);
@@ -1091,8 +1156,7 @@ impl Renderer {
             passes.push(("tonemap", &self.tone, vec![&tone_bind]));
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {
-                    let i = ts;
-                    ts += 2;
+                    let i = timestamp_pair(&mut ts);
                     (qs, i)
                 });
                 if t.is_some() {
@@ -1110,7 +1174,7 @@ impl Renderer {
                 drop(pass);
                 if label == "shade" {
                     if let Some(transparency) = &self.transparency {
-                        let t = self.query.as_ref().map(|(qs, _, _)| { let i = ts; ts += 2; (qs, i) });
+                        let t = self.query.as_ref().map(|(qs, _, _)| { let i = timestamp_pair(&mut ts); (qs, i) });
                         if t.is_some() { names.push("transparency"); }
                         transparency.render(gpu, &mut enc, vi, cam, &self.scene_bind, &[
                             (0, main.uniform.as_entire_binding()), (2, light_buf.as_entire_binding()),
@@ -1121,6 +1185,7 @@ impl Renderer {
                             (11, gi_buf.as_entire_binding()), (12, self.solid_occluders.as_entire_binding()),
                             (13, wgpu::BindingResource::TextureView(&density_view)),
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
+                            (15, wgpu::BindingResource::TextureView(&near_view)),
                         ], &hdr_v, &depth_v,
                             t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }));
                     }
@@ -1133,10 +1198,14 @@ impl Renderer {
             gpu.queue.submit([enc.finish()]);
             return (ldr, Vec::new(), FrameStats::default());
         }
-        let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16 * (views.len() as u64 + 1), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let near_count = if near_enabled { views.len() } else { 0 };
+        let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16 * (views.len() as u64 + 1 + near_count as u64), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         enc.copy_buffer_to_buffer(&shadow_t.counter, 0, &counters, 0, 16);
         for (k, (main, ..)) in keep.iter().enumerate() {
             enc.copy_buffer_to_buffer(&main.counter, 0, &counters, 16 * (k as u64 + 1), 16);
+        }
+        for (k, near) in near_shadows.iter().take(near_count).enumerate() {
+            enc.copy_buffer_to_buffer(&near.targets.counter, 0, &counters, 16 * (views.len() as u64 + 1 + k as u64), 16);
         }
         if let Some((qs, resolve, read)) = &self.query {
             enc.resolve_query_set(qs, 0..ts, resolve, 0);
@@ -1185,6 +1254,14 @@ impl Renderer {
             if let Some(transparency) = &self.transparency {
                 stats.triangles += transparency.triangle_count() * views.len() as u32;
             }
+            for k in 0..near_count {
+                let offset = 4 * (views.len() + 1 + k);
+                assert!(c[offset] <= self.shadow_capacity, "near shadow visible-cluster capacity exceeded");
+                stats.near_shadow_clusters += c[offset];
+                stats.near_shadow_triangles += c[offset + 1];
+            }
+            stats.shadow_clusters += stats.near_shadow_clusters;
+            stats.shadow_triangles += stats.near_shadow_triangles;
         }
         if let Some((_, _, read)) = &self.query {
             {
@@ -1235,7 +1312,7 @@ pub fn split_rects(n: usize, w: u32, h: u32) -> Vec<(u32, u32, u32, u32)> {
 
 #[cfg(test)]
 mod layout_tests {
-    use super::split_rects;
+    use super::{split_rects, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};
     #[test]
     fn godot_split_layout_uses_one_4k_output() {
         assert_eq!(split_rects(2,3840,2160),vec![(0,0,3840,1076),(0,1084,3840,1076)]);
@@ -1244,6 +1321,43 @@ mod layout_tests {
         assert_eq!(odd[3].0+odd[3].2,1921);
         assert_eq!(odd[3].1+odd[3].3,1081);
         assert!(odd.iter().all(|r|r.2>0&&r.3>0&&r.0+r.2<=1921&&r.1+r.3<=1081));
+    }
+
+    #[test]
+    fn four_views_with_near_maps_transparency_and_taa_fit_timestamp_budget() {
+        // Shared canopy/filter/far map: 4 passes. Each view: near cull/raster,
+        // main cull/raster, shade, transparency, TAA, tonemap: 8 passes.
+        let mut next = 0;
+        for _ in 0..(4 + 4 * 8) { timestamp_pair(&mut next); }
+        assert_eq!(next, 72);
+        assert!(next <= TIMESTAMP_CAPACITY);
+        next = TIMESTAMP_CAPACITY - 2;
+        assert_eq!(timestamp_pair(&mut next), TIMESTAMP_CAPACITY - 2);
+        assert_eq!(next, TIMESTAMP_CAPACITY);
+    }
+
+    #[test]
+    #[should_panic(expected = "timestamp query capacity")]
+    fn timestamp_overflow_fails_before_encoding_an_invalid_gpu_query() {
+        let mut next = TIMESTAMP_CAPACITY;
+        timestamp_pair(&mut next);
+    }
+
+    #[test]
+    fn near_light_uniform_and_projection_cover_each_separated_car() {
+        use glam::Vec3;
+        assert_eq!(std::mem::size_of::<LightUniform>(), 368);
+        assert_eq!(std::mem::offset_of!(LightUniform, near_shadow_view_proj), 288);
+        assert_eq!(std::mem::offset_of!(LightUniform, near_shadow), 352);
+        let sun = Vec3::new(0.4, 0.8, -0.3).normalize();
+        for target in [Vec3::ZERO, Vec3::new(2500.0, 120.0, -4000.0)] {
+            let matrix = crate::stability::stable_shadow(target, sun, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE);
+            for point in [target, target+Vec3::X*2.5, target-Vec3::Z*2.5, target+Vec3::Y*2.0] {
+                let projected = matrix.project_point3(point);
+                assert!(projected.x.abs().max(projected.y.abs()) < 0.8, "car must remain fully inside near detail");
+                assert!(projected.z > 0.0 && projected.z < 1.0);
+            }
+        }
     }
 }
 
