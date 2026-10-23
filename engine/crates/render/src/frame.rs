@@ -246,6 +246,7 @@ struct ViewTargets {
 pub struct Renderer {
     scene_bind: wgpu::BindGroup,
     instance_buffer: wgpu::Buffer,
+    transparency: Option<crate::transparency::Transparency>,
     cull: wgpu::ComputePipeline,
     finalize: wgpu::ComputePipeline,
     raster: wgpu::RenderPipeline,
@@ -316,7 +317,7 @@ fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, entries: &[(u32, wgpu::Bindin
 /// Textures as one array with mips, all resized to `size`. Layers without
 /// an image get `fill`. Cut-out albedo keeps its alpha-test coverage per mip.
 /// Mips are built on all cores.
-fn texture_array(gpu: &Gpu, label: &str, images: &[Option<&image::RgbaImage>], size: u32, format: wgpu::TextureFormat, fill: [u8; 4]) -> wgpu::Texture {
+fn texture_array(gpu: &Gpu, label: &str, images: &[Option<&image::RgbaImage>], size: u32, format: wgpu::TextureFormat, fill: [u8; 4], cutout_layers: &[bool]) -> wgpu::Texture {
     let layers = images.len().max(1) as u32;
     let mips = size.ilog2() + 1;
     let tex = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -329,12 +330,12 @@ fn texture_array(gpu: &Gpu, label: &str, images: &[Option<&image::RgbaImage>], s
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let chain = |src: Option<&image::RgbaImage>| -> Vec<image::RgbaImage> {
+    let chain = |src: Option<&image::RgbaImage>, preserve_alpha: bool| -> Vec<image::RgbaImage> {
         let Some(src) = src else {
             return (0..mips).map(|m| image::RgbaImage::from_pixel((size >> m).max(1), (size >> m).max(1), image::Rgba(fill))).collect();
         };
         let mut img = if src.dimensions() == (size, size) { src.clone() } else { image::imageops::resize(src, size, size, image::imageops::FilterType::Triangle) };
-        let cutout = img.pixels().any(|p| p[3] < 250);
+        let cutout = preserve_alpha && img.pixels().any(|p| p[3] < 250);
         let target = coverage(&img, 1.0);
         let mut out = vec![img.clone()];
         for mip in 1..mips {
@@ -350,7 +351,7 @@ fn texture_array(gpu: &Gpu, label: &str, images: &[Option<&image::RgbaImage>], s
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let chains: Vec<Vec<image::RgbaImage>> = std::thread::scope(|sc| {
         let per = images.len().div_ceil(threads).max(1);
-        let handles: Vec<_> = images.chunks(per).map(|part| sc.spawn(move || part.iter().map(|i| chain(*i)).collect::<Vec<_>>())).collect();
+        let handles: Vec<_> = images.chunks(per).enumerate().map(|(chunk, part)| sc.spawn(move || part.iter().enumerate().map(|(index, i)| chain(*i, cutout_layers.get(chunk * per + index).copied().unwrap_or(false))).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
     for (layer, mips) in chains.iter().enumerate() {
@@ -453,11 +454,18 @@ impl Renderer {
         let materials = buffer(gpu, "materials", bytemuck::cast_slice(&scene.materials), u);
         let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
         let albedo_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| Some(&t.rgba)).collect();
-        let albedo = texture_array(gpu, "albedo", &albedo_src, TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, [255; 4]);
+        // Continuous alpha must average coverage naturally. Applying foliage's
+        // threshold-preserving mip scale to glass/decals changes their opacity.
+        let mut cutout_layers = vec![true; scene.textures.len()];
+        for &material in scene.blended_materials.keys() {
+            let layer = scene.materials[material as usize].layer;
+            if layer >= 0 { cutout_layers[layer as usize] = false; }
+        }
+        let albedo = texture_array(gpu, "albedo", &albedo_src, TEXTURE_SIZE, wgpu::TextureFormat::Rgba8UnormSrgb, [255; 4], &cutout_layers);
         let albedo_view = albedo.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
         // Normal maps, same layers; flat where a texture has none.
         let normal_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| t.normal.as_ref()).collect();
-        let normals = texture_array(gpu, "normals", &normal_src, NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, [128, 128, 255, 255]);
+        let normals = texture_array(gpu, "normals", &normal_src, NORMAL_SIZE, wgpu::TextureFormat::Rgba8Unorm, [128, 128, 255, 255], &[]);
         let normals_view = normals.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
         let samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -497,6 +505,7 @@ impl Renderer {
                 (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
             ],
         );
+        let transparency = crate::transparency::Transparency::new(gpu, scene, &scene_layout);
         let scene_bind = bind(
             gpu,
             &scene_layout,
@@ -706,6 +715,7 @@ impl Renderer {
         Renderer {
             scene_bind,
             instance_buffer: instances,
+            transparency,
             cull,
             finalize,
             raster,
@@ -848,6 +858,7 @@ impl Renderer {
         if first + instances.len() > self.instances as usize { return Err("instance update exceeds uploaded scene".into()); }
         if !instances.is_empty() {
             gpu.queue.write_buffer(&self.instance_buffer, (first * std::mem::size_of::<crate::scene::GpuInstance>()) as u64, bytemuck::cast_slice(instances));
+            if let Some(transparency) = &self.transparency { transparency.update_instances(first, instances); }
             self.invalidate_shadow();
         }
         Ok(())
@@ -1000,7 +1011,7 @@ impl Renderer {
             let (w, h, cam) = (view.w, view.h, &view.cam);
             let vis = tex2d("vis", w, h, wgpu::TextureFormat::R32Uint, rt);
             let depth = tex2d("depth", w, h, wgpu::TextureFormat::Depth32Float, rt);
-            let hdr = tex2d("hdr", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING);
+            let hdr = tex2d("hdr", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT);
             let (vis_v, depth_v, hdr_v) = (vis.create_view(&Default::default()), depth.create_view(&Default::default()), hdr.create_view(&Default::default()));
             // Reversed-Z infinite perspective.
             let view_m = Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
@@ -1096,6 +1107,24 @@ impl Renderer {
                     pass.set_bind_group(k as u32, *b, &[]);
                 }
                 pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                drop(pass);
+                if label == "shade" {
+                    if let Some(transparency) = &self.transparency {
+                        let t = self.query.as_ref().map(|(qs, _, _)| { let i = ts; ts += 2; (qs, i) });
+                        if t.is_some() { names.push("transparency"); }
+                        transparency.render(gpu, &mut enc, vi, cam, &self.scene_bind, &[
+                            (0, main.uniform.as_entire_binding()), (2, light_buf.as_entire_binding()),
+                            (5, wgpu::BindingResource::TextureView(&shadow_v)),
+                            (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
+                            (7, wgpu::BindingResource::TextureView(&self.sky_view)),
+                            (10, wgpu::BindingResource::TextureView(&self.heightfield)),
+                            (11, gi_buf.as_entire_binding()), (12, self.solid_occluders.as_entire_binding()),
+                            (13, wgpu::BindingResource::TextureView(&density_view)),
+                            (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
+                        ], &hdr_v, &depth_v,
+                            t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }));
+                    }
+                }
             }
             keep.push((main, vis, depth, hdr));
         }
@@ -1152,6 +1181,9 @@ impl Renderer {
             for k in 0..views.len() {
                 stats.clusters += c[4 * (k + 1)];
                 stats.triangles += c[4 * (k + 1) + 1];
+            }
+            if let Some(transparency) = &self.transparency {
+                stats.triangles += transparency.triangle_count() * views.len() as u32;
             }
         }
         if let Some((_, _, read)) = &self.query {

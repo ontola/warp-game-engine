@@ -215,3 +215,45 @@ missed. The shared 192 m canopy grid and single sun map still trade detail or
 coverage when players separate. Snapshot and CPU-grid tests do not prove that
 all moving foliage/shadow flicker is gone. Live vegetation still uses cards;
 no experimental Nanite-inspired voxel geometry is enabled in this candidate.
+
+## Rapid visual iteration: car glass and distant forest (r5)
+
+The user explicitly requested quick build/restart rounds rather than another
+long GPU acceptance suite. `sideways-forest-r5.exe` has SHA256
+`87ce473aa0d6a41ed18b7c09ef02e879314ef6c0872ef5c041d91f16beab8635`.
+It includes the preceding r4 change that removes self-occlusion from coarse
+car interior proxies and uses source car-body geometry in both visible and
+sun-shadow passes. It adds continuous forward alpha for glTF BLEND glass and
+decals, excluding those triangles from opaque depth, shadows and proxies.
+Transparent triangles sort per camera and blend into linear HDR before tone.
+
+Terrain lighting now uses the smooth authored normal for visibility and
+receiver bias, keeping the triangle normal for intersection derivatives.
+Terrain occlusion samples use the native mesh diagonal instead of bilinear
+patches. Normal transforms handle orthogonal nonuniform instance scales.
+These address specific causes of triangle-shaped lighting; the user's exact
+screenshot has not been reproduced or declared fixed by an image comparison.
+
+The default distant vista adds bounded rolling terrain and up to 10,000
+instances of three original exposed-face voxel pine meshes, using existing
+cluster LOD. `SIDEWAYS_DISTANT_FOREST=0` disables it for comparison. Native
+terrain, road and driving collision are unchanged; new distant terrain has
+no driving collision. The light-tracing heightfield remains at 2 m spacing
+and copies valid native samples exactly. Between distant samples it can
+approximate the coarser background triangles. This is a simple geometry
+prototype, not Unreal Nanite or its streaming/assembly/voxel pipeline.
+
+All 28 render library tests passed, including composed transparency WGSL,
+blend metadata/order and the eight sparse voxel-baker tests
+(`forest-r5-render-tests.log`). Release compilation passed
+(`forest-r5-build.log`). The exact executable was copied to the registered
+GameNight preview path and launched in a visible one-player native 4K session.
+`forest-r5-live.log` records the connected XInput controller and first
+presented frame. No competing GPU benchmark ran during the user's playtest;
+this iteration makes no FPS, four-view cost or complete artifact-removal claim.
+
+The separate CPU density-voxel bake remains experimental and inactive in
+play. `voxel-crown-preview-r1` contains real fir-crown comparisons: baking
+took 149.3 ms; 0.25/0.5/1 m cells produced 4,955/1,258/347 sparse cells with
+conserved area. Images show softness and excess apparent coverage, especially
+at coarse levels. These volumes are not accepted as a near-tree replacement.

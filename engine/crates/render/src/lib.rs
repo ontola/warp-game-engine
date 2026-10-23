@@ -13,7 +13,9 @@ pub mod hud;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
+pub mod foliage_voxel;
 mod stability;
+mod transparency;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, ViewRect, split_rects};
 pub use gpu::{Gpu, Stopwatch, write_png};
@@ -98,5 +100,13 @@ mod shader_tests {
             }
         }
         assert!(failed.is_empty(), "\n{}", failed.join("\n"));
+    }
+
+    #[test]
+    fn composed_transparency_shader_validates() {
+        let src = crate::transparency::shader_source();
+        let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+        let mut validator = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all());
+        validator.validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
     }
 }

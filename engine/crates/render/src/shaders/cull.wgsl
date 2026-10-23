@@ -37,8 +37,18 @@ struct Instance {
     flags: u32,
 };
 
+struct CullMaterial {
+    tint: vec3<f32>,
+    layer: i32,
+    roughness: f32,
+    flags: u32,
+    scale: f32,
+    metal: f32,
+};
+
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
+@group(0) @binding(5) var<storage, read> cull_materials: array<CullMaterial>;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read_write> visible: array<vec2<u32>>;
@@ -90,11 +100,16 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
     if !keep {
         return;
     }
-    let thr = view.params.x;
+    // Keep car body geometry consistent in the visible and sun passes. A
+    // coarse shadow mesh can cut across its own finer visible panels.
+    let thr = select(view.params.x, 0.0, (inst.flags & 2u) != 0u);
     let max_visible = u32(view.params.w);
     for (var c = li; c < inst.cluster_count; c += 64u) {
         let ci = inst.first_cluster + c;
         let cl = clusters[ci];
+        // Continuous-alpha surfaces are drawn separately after opaque HDR.
+        // Excluding them here also prevents opaque glass sun shadows.
+        if (cull_materials[cl.material].flags & 256u) != 0u { continue; }
         let s = inst.scale;
         let pc = to_world(inst, cl.parent.xyz);
         let parent_px = select(projected(cl.parent_error * s, pc, cl.parent.w * s), 1e30, cl.parent_error > 1e30);

@@ -352,6 +352,15 @@ pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bo
     }
     log.push(format!("trees: {trees} instances, {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
 
+    // Simple, world-fixed voxel pines extend the forested horizon. Disable
+    // explicitly for matched legacy captures; native road/physics are retained.
+    if std::env::var("SIDEWAYS_DISTANT_FOREST").as_deref() != Ok("0") {
+        match crate::distant_forest::add(&mut scene, stage, &chunks, terrain_mat, &mut mesh_names, Default::default()) {
+            Ok(summary) => log.push(summary),
+            Err(reason) => log.push(format!("distant forest unavailable: {reason}")),
+        }
+    }
+
     if ground_cover {
         log.push(crate::ground_cover::add(&mut scene, &chunks, cameras, &r, &mut mesh_names)?);
     } else {
