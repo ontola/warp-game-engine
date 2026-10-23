@@ -47,6 +47,65 @@ pub struct Part<'a> {
     pub material: u32,
 }
 
+/// Material-aware simplification is opt-in: opaque geometry keeps the existing
+/// spatial policy. Alpha cards must retain their texture mapping and folds;
+/// an opaque geometric error alone cannot describe their visible silhouette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimplificationPolicy {
+    Geometry,
+    AlphaCards,
+}
+
+type PendingCluster = (usize, i32, Vec<u32>, [f32; 4]);
+
+fn projected_triangle_area(vertices: &[Vertex], indices: &[u32]) -> f32 {
+    indices.chunks_exact(3).map(|tri| {
+        let a=glam::Vec3::from_array(vertices[tri[0] as usize].pos);
+        let b=glam::Vec3::from_array(vertices[tri[1] as usize].pos);
+        let c=glam::Vec3::from_array(vertices[tri[2] as usize].pos);
+        (b-a).cross(c-a).abs().element_sum()*0.5
+    }).sum()
+}
+
+/// Cutout-card coverage is not represented by positional simplification error:
+/// a planar card can shrink without moving any surviving point off its plane.
+/// Carry original projected-area credit through the DAG and include cumulative
+/// area loss in its existing world-space error, with no new GPU data or work.
+/// This is summed geometric area, not alpha-union coverage (cards can overlap).
+fn protect_card_coverage(vertices: &[Vertex], groups: &mut [[f32; 5]], pending: &[PendingCluster]) {
+    let areas:Vec<_>=pending.iter().map(|(_,_,indices,_)|projected_triangle_area(vertices,indices)).collect();
+    let mut replacement=vec![0.0f32;groups.len()];
+    let mut replacement_count=vec![0usize;groups.len()];
+    for ((_,refined,_,_),area) in pending.iter().zip(&areas) {
+        if *refined>=0 {replacement[*refined as usize]+=area;replacement_count[*refined as usize]+=1;}
+    }
+    let mut original=vec![0.0f32;groups.len()];
+    // Meshopt emits children before their parents. Distribute each refined
+    // group's original credit over all its replacement clusters, preserving
+    // the total even when those clusters later enter different parent groups.
+    for gid in 0..groups.len() {
+        let mut inherited_error=0.0f32;
+        for ((group,refined,_,_),area) in pending.iter().zip(&areas).filter(|((g,_,_,_),_)|*g==gid) {
+            debug_assert_eq!(*group,gid);
+            if *refined<0 {original[gid]+=area;} else {
+                let child=*refined as usize;
+                debug_assert!(child<gid);
+                let retained=replacement[child];
+                let credit=if retained>1e-12 {area/retained*original[child]} else {original[child]/replacement_count[child].max(1) as f32};
+                original[gid]+=credit;
+                inherited_error=inherited_error.max(groups[child][4]);
+            }
+        }
+        if groups[gid][4]>1e30 {continue;} // terminal group has no replacement
+        let loss=if original[gid]>1e-12 {1.0-(replacement[gid]/original[gid]).clamp(0.0,1.0)} else {0.0};
+        // At a 1 px error target this allows <=26.25% loss at 128 px
+        // projected group radius, <=32.5% at64px and <=45% at32px.
+        // A heavily depleted root is still allowed for tiny distant crowns.
+        let coverage_error=groups[gid][3]*(loss-0.20).max(0.0)/8.0;
+        groups[gid][4]=groups[gid][4].max(coverage_error).max(inherited_error);
+    }
+}
+
 /// Cluster data for a mesh, ready to append to the scene buffers. Indices
 /// in `clusters` are local to these arrays; the scene rebases them.
 #[derive(Default)]
@@ -64,6 +123,10 @@ pub struct ClusterMesh {
 
 impl ClusterMesh {
     pub fn build(parts: &[Part]) -> ClusterMesh {
+        Self::build_with_policy(parts, |_| SimplificationPolicy::Geometry)
+    }
+
+    pub fn build_with_policy(parts: &[Part], policy: impl Fn(&Part<'_>) -> SimplificationPolicy) -> ClusterMesh {
         let mut out = ClusterMesh::default();
         for part in parts {
             if part.indices.is_empty() {
@@ -73,11 +136,25 @@ impl ClusterMesh {
             out.vertices.extend_from_slice(part.vertices);
             let positions: &[u8] = bytemuck::cast_slice(part.vertices);
             let adapter = meshopt::VertexDataAdapter::new(positions, std::mem::size_of::<Vertex>(), 0).expect("vertex adapter");
-            let mesh = ClodMesh::new(part.indices, &adapter);
+            let mut mesh = ClodMesh::new(part.indices, &adapter);
             let mut config = clod_default_config(MAX_TRIS);
             config.max_triangles = MAX_TRIS;
+            // Keep this storage alive for the synchronous clod_build callback.
+            let attributes: Vec<f32>;
+            let alpha_cards=policy(part) == SimplificationPolicy::AlphaCards;
+            if alpha_cards {
+                attributes = part.vertices.iter().flat_map(|v| [v.normal[0], v.normal[1], v.normal[2], v.uv[0], v.uv[1]]).collect();
+                mesh.vertex_attributes = &attributes;
+                mesh.vertex_attributes_stride = 5 * std::mem::size_of::<f32>();
+                mesh.attribute_weights = &[0.25, 0.25, 0.25, 1.0, 1.0];
+                mesh.attribute_protect_mask = (1 << 3) | (1 << 4);
+                config.simplify_preserve_folds = true;
+                // The positional-only fallback discards the attributes again
+                // and can erase disconnected branch cards even if UVs matter.
+                config.simplify_fallback_sloppy = false;
+            }
             let mut groups: Vec<[f32; 5]> = Vec::new(); // simplified bounds per group
-            let mut pending: Vec<(usize, i32, Vec<u32>, [f32; 4])> = Vec::new(); // (group, refined, indices, cull sphere)
+            let mut pending: Vec<PendingCluster> = Vec::new(); // (group, refined, indices, cull sphere)
             clod_build(config, &mesh, |group, clusters| {
                 let gid = groups.len();
                 let b = group.simplified;
@@ -89,6 +166,11 @@ impl ClusterMesh {
                 out.levels = out.levels.max(group.depth as u32 + 1);
                 gid as i32
             });
+            if alpha_cards {
+                protect_card_coverage(part.vertices,&mut groups,&pending);
+                #[cfg(test)]
+                policy_tests::assert_complete_dag_cuts(&groups,&pending);
+            }
             for (gid, refined, indices, cull) in pending {
                 let g = groups[gid];
                 let (own, own_error) = if refined < 0 {
@@ -193,5 +275,143 @@ impl ClusterMesh {
     /// Triangles drawn when the whole mesh is far away (the DAG's roots).
     pub fn root_triangles(&self) -> usize {
         self.clusters.iter().filter(|c| c.parent_error > 1e30).map(|c| c.tri_count as usize).sum()
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    /// Audit exactly the GPU's parent/own selection at every transition and
+    /// halfway between transitions. Track each original leaf's DAG credit;
+    /// every cut must represent it exactly once, with no gap or double draw.
+    pub(super) fn assert_complete_dag_cuts(groups: &[[f32;5]], pending: &[PendingCluster]) {
+        let leaves:Vec<_>=pending.iter().enumerate().filter(|(_,(_,refined,_,_))|*refined<0).map(|(i,_)|i).collect();
+        let mut credits=vec![vec![0.0f64;leaves.len()];pending.len()];
+        let mut refined_count=vec![0usize;groups.len()];
+        for (_,refined,_,_) in pending {if *refined>=0 {refined_count[*refined as usize]+=1;}}
+        for (i,(_,refined,_,_)) in pending.iter().enumerate() {
+            if *refined<0 {credits[i][leaves.iter().position(|leaf|*leaf==i).unwrap()]=1.0;} else {
+                let child=*refined as usize;
+                for (j,_) in pending.iter().enumerate().filter(|(_,p)|p.0==child) {
+                    assert!(j<i,"DAG is not in child-first order");
+                    for k in 0..leaves.len() {let credit=credits[j][k]/refined_count[child] as f64;credits[i][k]+=credit;}
+                }
+            }
+        }
+        let mut cuts:Vec<_>=groups.iter().map(|g|g[4]).filter(|e|*e>0.0&&*e<1e30).collect();
+        cuts.sort_by(f32::total_cmp);cuts.dedup();
+        let mut probes=vec![0.0,1e29];
+        for (i,&cut) in cuts.iter().enumerate(){probes.push(cut);probes.push(if i==0{cut*0.5}else{(cuts[i-1]+cut)*0.5});}
+        for threshold in probes {
+            let mut totals=vec![0.0f64;leaves.len()];
+            for (i,(gid,refined,_,_)) in pending.iter().enumerate() {
+                let own=if *refined<0{0.0}else{groups[*refined as usize][4]};
+                let parent=groups[*gid][4];
+                assert!(own<=parent,"nonmonotonic crown DAG errors");
+                // Equivalent to projected(error)<=1 at a uniform px/metre
+                // scale of1/threshold; threshold0 selects the source leaves.
+                if (parent>threshold||parent>1e30)&&own<=threshold {
+                    for k in 0..leaves.len(){totals[k]+=credits[i][k];}
+                }
+            }
+            for total in totals {assert!((total-1.0).abs()<1e-8,"DAG gap/overlap at {threshold}: original leaf credit {total}");}
+        }
+        let root=groups.last().unwrap();
+        let centre=glam::Vec3::from_slice(&root[..3]);
+        for direction in [glam::Vec3::X,glam::Vec3::Z,glam::Vec3::new(1.0,0.3,1.0).normalize()] {
+            for distance in [100.0f32,300.0,800.0] {
+                let camera=centre+direction*distance;
+                for height in [1080.0f32,2160.0] {
+                    let px_scale=height/(2.0*32f32.to_radians().tan());
+                    let projected=|g:[f32;5]| if g[4]>1e30 {1e30} else {g[4]*px_scale/(glam::Vec3::from_slice(&g[..3]).distance(camera)-g[3]).max(0.1)};
+                    let mut totals=vec![0.0f64;leaves.len()];
+                    for (i,(gid,refined,_,_)) in pending.iter().enumerate() {
+                        let own=if *refined<0{0.0}else{projected(groups[*refined as usize])};
+                        if projected(groups[*gid])>1.0&&own<=1.0 {for k in 0..leaves.len(){totals[k]+=credits[i][k];}}
+                    }
+                    for total in totals {assert!((total-1.0).abs()<1e-8,"perspective DAG gap/overlap at{distance}m/{height}p: leaf credit {total}");}
+                }
+            }
+        }
+    }
+
+    /// Sum projected triangle areas in three orthogonal directions. This is a
+    /// geometry diagnostic, not a rendered alpha-coverage or overdraw measure.
+    fn projected_area(mesh: &ClusterMesh, material: u32, roots: bool) -> f32 {
+        let mut sum = 0.0;
+        for cluster in mesh.clusters.iter().filter(|c| c.material == material && if roots { c.parent_error > 1e30 } else { c.own_error == 0.0 }) {
+            for &packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri + cluster.tri_count) as usize] {
+                let p: [glam::Vec3; 3] = std::array::from_fn(|k| {
+                    let i = mesh.cluster_verts[cluster.first_vert as usize + ((packed >> (k*8)) & 255) as usize];
+                    glam::Vec3::from_array(mesh.vertices[i as usize].pos)
+                });
+                sum += (p[1]-p[0]).cross(p[2]-p[0]).abs().element_sum()*0.5;
+            }
+        }
+        sum
+    }
+
+    fn selected_metrics(mesh: &ClusterMesh, material: u32, select: impl Fn(&GpuCluster)->bool) -> (usize,f32) {
+        let mut selected=ClusterMesh::default();
+        selected.vertices=mesh.vertices.clone();selected.cluster_verts=mesh.cluster_verts.clone();selected.tris=mesh.tris.clone();
+        selected.clusters=mesh.clusters.iter().filter(|c|c.material==material&&select(c)).copied().map(|mut c|{c.parent_error=f32::MAX;c}).collect();
+        (selected.clusters.iter().map(|c|c.tri_count as usize).sum(),projected_area(&selected,material,true))
+    }
+
+    #[test]
+    fn authored_crowns_keep_source_and_opaque_policy_with_lod_metrics() {
+        for (name, bytes) in [
+            ("fir_a", include_bytes!("../../../assets/fir_a_near.kmesh").as_slice()),
+            ("fir_b", include_bytes!("../../../assets/fir_b_near.kmesh").as_slice()),
+            ("fir_c", include_bytes!("../../../assets/fir_c_near.kmesh").as_slice()),
+        ] {
+            let source = read_kmesh(bytes).unwrap();
+            let parts: Vec<Part> = source.iter().enumerate().map(|(i,(_,vertices,indices))| Part { vertices, indices, material:i as u32 }).collect();
+            let crown = source.iter().position(|(name,_,_)|name.is_empty()).unwrap() as u32;
+            let before = ClusterMesh::build(&parts);
+            let after = ClusterMesh::build_with_policy(&parts, |p| if p.material == crown { SimplificationPolicy::AlphaCards } else { SimplificationPolicy::Geometry });
+            assert_eq!(bytemuck::cast_slice::<Vertex,u8>(&before.vertices), bytemuck::cast_slice::<Vertex,u8>(&after.vertices), "{name}: near source vertices changed");
+            // Crown is the final material in these fixtures. Its policy cannot
+            // change any earlier wood clusters, triangles or local indices.
+            let old_wood: Vec<_> = before.clusters.iter().filter(|c|c.material != crown).copied().collect();
+            let new_wood: Vec<_> = after.clusters.iter().filter(|c|c.material != crown).copied().collect();
+            assert_eq!(bytemuck::cast_slice::<GpuCluster,u8>(&old_wood), bytemuck::cast_slice::<GpuCluster,u8>(&new_wood), "{name}: wood policy changed");
+            let root_tris = |mesh: &ClusterMesh| mesh.clusters.iter().filter(|c|c.material == crown && c.parent_error > 1e30).map(|c|c.tri_count as usize).sum::<usize>();
+            let full = source[crown as usize].2.len()/3;
+            let old_area = projected_area(&before,crown,false).max(1e-6);
+            let before_ratio = projected_area(&before,crown,true)/old_area;
+            let after_ratio = projected_area(&after,crown,true)/old_area;
+            eprintln!("{name}: crown source={full} root_before={} root_after={} whole_tree_before={} whole_tree_after={} projected_area_before={before_ratio:.4} projected_area_after={after_ratio:.4}", root_tris(&before),root_tris(&after),before.root_triangles(),after.root_triangles());
+            assert!(root_tris(&after)>0 && root_tris(&after)<=full, "{name}: invalid crown root budget");
+            assert!(after.levels>1, "{name}: LOD unexpectedly disabled");
+            let crown_bounds=bounding_sphere(parts[crown as usize].vertices);
+            let crown_radius=crown_bounds[3];
+            for radius_px in [16.0f32,32.0,64.0,128.0] {
+                let scale=radius_px/crown_radius;
+                let select=|c:&GpuCluster|(c.parent_error>1e30||c.parent_error*scale>1.0)&&c.own_error*scale<=1.0;
+                let (old_tris,old_selected_area)=selected_metrics(&before,crown,select);
+                let (tris,selected_area)=selected_metrics(&after,crown,select);
+                let old_retained=old_selected_area/old_area;
+                let retained=selected_area/old_area;
+                let minimum=(0.80-8.0/radius_px).max(0.0);
+                eprintln!("{name}: ortho crown_radius_px={radius_px} before_tris={old_tris} after_tris={tris} before_area={old_retained:.4} after_area={retained:.4} minimum={minimum:.4}");
+                assert!(tris>0&&tris<=full,"{name}: invalid selected crown budget at{radius_px}px");
+                assert!(retained+0.025>=minimum,"{name}: excessive geometric coverage loss at{radius_px}px: {retained} < {minimum}");
+            }
+            let centre=glam::Vec3::from_slice(&crown_bounds[..3]);
+            for distance in [100.0f32,300.0,800.0] {
+                let camera=centre+glam::Vec3::Z*distance;
+                for height in [1080.0f32,2160.0] {
+                    let px_scale=height/(2.0*32f32.to_radians().tan());
+                    let projected=|error:f32,sphere:[f32;4]|if error>1e30{1e30}else{error*px_scale/(glam::Vec3::from_slice(&sphere[..3]).distance(camera)-sphere[3]).max(0.1)};
+                    let select=|c:&GpuCluster|projected(c.parent_error,c.parent)>1.0&&projected(c.own_error,c.own)<=1.0;
+                    let (old_tris,old_selected_area)=selected_metrics(&before,crown,select);
+                    let (tris,selected_area)=selected_metrics(&after,crown,select);
+                    let old_retained=old_selected_area/old_area;let retained=selected_area/old_area;
+                    eprintln!("{name}: perspective identity_instance distance_m={distance} output_height={height} before_tris={old_tris} after_tris={tris} before_area={old_retained:.4} after_area={retained:.4}");
+                }
+            }
+        }
     }
 }

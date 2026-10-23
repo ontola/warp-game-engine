@@ -338,3 +338,49 @@ Far-footprint ratios across three angles are 0.9476-0.9659 (fine),
 0.9763-1.0177 (middle), and 1.0455-1.0901 (coarse). These are CPU preview
 measurements in `voxel-crown-preview-r2`, not GPU performance or acceptance
 of a runtime Nanite-like voxel renderer. Coarse softness remains visible.
+
+## Live grass and native-density background forest (r8)
+
+`sideways-forest-grass-r8.exe`, SHA256
+`c03b9b971d2b9f47827d12ab4f3ce254306c045d3ba55de7bc1f246848a0c9da`,
+passed 74 selected CPU tests (37 CLI, 35 render, 2 preview-example), release
+compilation and an actual visible native-4K startup with the controller.
+Evidence: `forest-grass-r8-cpu-tests.log`, `forest-grass-r8-build.log`, and
+`forest-grass-r8-live*.log/jsonl`. The registered GameNight executable path
+was updated to this exact binary. No competing GPU benchmark ran.
+
+Seed 1 now has 126,720 background trees instead of 10,000, using the same
+source models as the 45,248 native trees. Measured native and background
+habitat density both equal 298.7 trees/hectare. Background habitat covers
+4,242,064 horizontal square metres, 89.8% of the generated hills; steep
+terrain excludes 480,624 square metres. The count matches the calibrated
+target without hitting the 200,000-instance cap. It is density per eligible
+horizontal area, not a claim that every cliff face has trees.
+
+The first live grass implementation reserves 16,000 slots for one view or
+24,000 shared slots for multiple views before the cars. World-cell candidates
+retain poses/sizes and native triangle roots; only changed instance ranges
+upload. Initial seed 1 populated 3,424 slots. Three focused CPU tests cover
+root/road exclusion, retained poses/indices and four-view sharing/caps.
+Empty pool slots now return before the cull barrier. The user's playtest
+found this version too sparse, with conspicuous pop-in: the 32 m single-view
+radius and distance-based whole-plant selection are explicitly not accepted
+as the final grass treatment. Denser coverage and true opacity LOD transitions
+are the next iteration. No four-view GPU cost or 120 FPS result is claimed.
+
+Crown-only simplification now receives UV/normal attributes and a conservative
+error contribution from lost projected geometry area, preserving the source
+vertices and the opaque wood policy. Exact DAG-cut CPU checks pass in both
+orthographic and perspective cases. However, the matched CPU comparator in
+`forest-r8-crown-comparison-tests.log` shows little general change at the
+sampled screen sizes: most selected counts are unchanged. Only one sampled
+far case (fir_b, 800 m, 2160 output height) selects 543 versus 271 crown
+triangles, retaining 0.9824 versus 0.7839 of summed projected geometric area.
+This metric is not alpha-union coverage, and these results do not establish
+a general fix for sparse distant crowns or a speed improvement.
+
+The user's F12 capture `sideways-1792785290021-227228-2` exposed a separate
+terrain foundation bug in round 2: river sections marked dry still carve
+deep channels beneath a road. The CPU reproduction records up to 17.8 m of
+unwanted carve and a separate 3.68 m discrepancy from local nearest-road
+searches. Those fixes are subsequent work and are not present in r8.

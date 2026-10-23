@@ -88,6 +88,11 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
         return;
     }
     let inst = instances[id];
+    // Unoccupied fixed-pool slots have no geometry. This is uniform across
+    // the workgroup, so skip the frustum test/barrier without divergence.
+    if inst.cluster_count == 0u {
+        return;
+    }
     // The orthographic pass is the sun shadow map. Low ground cover only
     // receives shadows; exclude its tiny cards from this expensive pass.
     if view.params.z > 0.5 && (inst.flags & 4u) != 0u {
