@@ -10,6 +10,19 @@ const WHITE: [u8; 4] = [248, 249, 246, 255];
 const MUTED: [u8; 4] = [206, 214, 221, 230];
 const AMBER: [u8; 4] = [255, 203, 114, 255];
 const PLATE: [f32; 4] = [0.025, 0.032, 0.045, 0.70];
+
+/// Global developer feedback, independent of the number of split viewports.
+pub fn screenshot_toast(draw: &mut HudDrawList, message: &str) {
+    let [w,h]=draw.size.map(|v|v as f32);
+    let scale=(h/1080.0).clamp(0.65,2.0);
+    let width=(1050.0*scale).min((w-24.0).max(1.0));
+    let x=(w-width)*0.5;
+    let y=(h-76.0*scale).max(0.0);
+    let clip=[0.0,0.0,w,h];
+    draw.rect([x,y,width,52.0*scale],[0.025,0.032,0.045,0.96],clip);
+    draw.text.push(TextRun{id:u64::MAX-1,text:message.to_owned(),position:[x+12.0*scale,y+10.0*scale],bounds:clip,
+        font_size:24.0*scale,color:WHITE,font:FontFace::Body,align:TextAlign::Center,width:(width-24.0*scale).max(1.0)});
+}
 const COLORS: [[f32; 4]; 8] = [
     [0.92, 0.27, 0.21, 1.0], [0.25, 0.56, 0.95, 1.0],
     [1.0, 0.76, 0.23, 1.0], [0.28, 0.84, 0.44, 1.0],

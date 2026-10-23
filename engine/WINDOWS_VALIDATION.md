@@ -295,3 +295,46 @@ alongside play; no 120 FPS or isolated speed improvement is claimed.
 User feedback on this version: rock forms/materials look visibly repetitive.
 Further shape variation is pending; the near foliage remains the existing
 card geometry. F12 developer screenshots were requested after this build.
+
+## Developer capture, source-matched distant trees and varied cliffs (r7)
+
+`sideways-dev-r7.exe`, SHA256
+`76b15ade48e82f117ed7067ee0aafe1fb9034a0ccd78859d181336d5afcebcc2`,
+was built with 66 passing selected CPU tests (30 CLI, 2 preview-example,
+34 render). Evidence is in `dev-r7-cpu-tests.log` and `dev-r7-build.log`.
+The exact binary was copied to `engine/build/sideways.exe` and launched
+visibly at native 4K with the connected controller. The first actual
+presented frame is recorded in `dev-r7-live.log`.
+
+F12 captures the already-rendered scene with that frame's HUD into a
+same-format presentation target. It adds no simulation tick or scene render.
+Readback/PNG encoding happen only on demand. Windows CF_DIB clipboard data
+uses explicit bottom-up BGRA conversion, covered by CPU tests. The actual
+F12 key was exercised in the running game: `engine/build/screenshots/`
+`sideways-1792784655171-227228-1.png` and its JSON sidecar were created.
+The sidecar confirms 3840x2160, HUD enabled, zero extra scene renders/ticks,
+and successful image clipboard transfer. The in-game toast also showed
+`Copied: Ctrl+V`. Captures do not automatically transmit to chat.
+
+The background default now reuses the same three source tree meshes as the
+near forest instead of the generic voxel pines. Those remain available only
+with `SIDEWAYS_GENERIC_VOXEL_TREES=1`. Higher warped ridges are visible above
+the canopy, while native terrain samples and driving geometry stay unchanged.
+The 10,000-background-tree cap still makes the hills too empty, per the
+user's current feedback; matching native stem density is the next iteration.
+
+Cliffs use irregular 13.7-18.0 m footprints in this seed, continuous warped
+geology, variable bed spacing, broken joints and 3.2-5.8 m texture repeats.
+All 12 patches remain present, one using the clearance fallback footprint;
+147,456 source triangles reduce to 1,120 root triangles. Close foliage
+lighting was retained. The user's F12 capture was inspected and shows the
+new skyline/cliff treatment, but no matched quality or FPS comparison is
+claimed. No competing GPU benchmark was run during play.
+
+The separate CPU voxel preview r2 fixes a source of oblique over-coverage
+with 13 directional projected-area samples and continuous interpolation.
+At 60 degrees the fine source-coverage ratio changed from 1.2545 to 0.9699.
+Far-footprint ratios across three angles are 0.9476-0.9659 (fine),
+0.9763-1.0177 (middle), and 1.0455-1.0901 (coarse). These are CPU preview
+measurements in `voxel-crown-preview-r2`, not GPU performance or acceptance
+of a runtime Nanite-like voxel renderer. Coarse softness remains visible.

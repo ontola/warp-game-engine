@@ -5,7 +5,7 @@
 use glam::{Vec2, Vec3};
 use image::{Rgba, RgbaImage};
 use render::cluster::{Part, Vertex, read_kmesh};
-use render::foliage_voxel::{BakeConfig, VoxelAsset, VoxelLevel, bake};
+use render::foliage_voxel::{BakeConfig, PROJECTION_DIRECTIONS, VoxelAsset, VoxelLevel, bake};
 use render::scene::{ALPHA_TEST, Material, TWO_SIDED, TextureSource};
 use serde_json::json;
 use std::{collections::HashMap, path::{Path, PathBuf}, time::Instant};
@@ -132,12 +132,18 @@ fn ray_box(origin: Vec3, dir: Vec3, lo: Vec3, hi: Vec3) -> Option<(f32, f32)> {
     (exit > enter).then_some((enter, exit))
 }
 
-fn volume(asset: &VoxelAsset, level: &VoxelLevel, camera: &Camera) -> Vec<Pixel> {
+#[derive(Clone, Copy)]
+enum Extinction { LegacyAxisUpperBound, Directional }
+
+fn volume(asset: &VoxelAsset, level: &VoxelLevel, camera: &Camera, extinction: Extinction) -> Vec<Pixel> {
     let lookup: HashMap<[u32; 3], usize> = level.voxels.iter().enumerate().map(|(i, v)| (v.coord, i)).collect();
     let bounds = level.local_bounds(asset.origin); let lo = Vec3::from(bounds[0]); let hi = Vec3::from(bounds[1]);
     let cell = level.cell_size; let [w, h] = camera.size;
     let mut pixels = vec![[0.0; 4]; (w * h) as usize];
-    let density: Vec<f32> = level.voxels.iter().map(|v| Vec3::from(v.projected_density(cell)).dot(camera.dir.abs())).collect();
+    let density: Vec<f32> = level.voxels.iter().map(|v| match extinction {
+        Extinction::LegacyAxisUpperBound => Vec3::from(v.projected_density(cell)).dot(camera.dir.abs()),
+        Extinction::Directional => v.density_along(cell, camera.dir.to_array()),
+    }).collect();
     for y in 0..h { for x in 0..w {
         let origin = camera.ray(x, y);
         let Some((mut t, exit)) = ray_box(origin, camera.dir, lo, hi) else { continue; };
@@ -218,6 +224,72 @@ fn paste(image: &mut RgbaImage, pixels: &[Pixel], offset: [u32; 2], size: [u32; 
     }}
 }
 
+/// Nearest-neighbour enlargement is only for inspecting the actual small
+/// render. The metrics always use the native small pixels, never the enlarged
+/// image, and the label records their resolution.
+fn paste_enlarged(image: &mut RgbaImage, pixels: &[Pixel], offset: [u32; 2], native: [u32; 2], panel: [u32; 2], mask: bool) {
+    let scale = (panel[0] / native[0]).min(panel[1] / native[1]).max(1);
+    let size = [native[0] * scale, native[1] * scale];
+    let mut enlarged = Vec::with_capacity((size[0] * size[1]) as usize);
+    for y in 0..size[1] { for x in 0..size[0] {
+        enlarged.push(pixels[((y / scale) * native[0] + x / scale) as usize]);
+    }}
+    paste(image, &enlarged, [offset[0] + (panel[0] - size[0]) / 2, offset[1] + (panel[1] - size[1]) / 2], size, mask);
+}
+
+fn far_comparison(asset: &VoxelAsset, vertices: &[Vertex], indices: &[u32], texture: &RgbaImage,
+    material: Material, cut: f32) -> (RgbaImage, RgbaImage, Vec<serde_json::Value>) {
+    let bounds = asset.levels.last().unwrap().local_bounds(asset.origin);
+    let panel = [192, 288]; let gap = 8; let row_height = panel[1] + 70;
+    let columns = asset.levels.len() as u32 * 2;
+    let mut colors = RgbaImage::from_pixel(columns * (panel[0] + gap) + gap, row_height * 3 + gap, Rgba([19, 24, 30, 255]));
+    let mut masks = colors.clone(); let mut reports = Vec::new();
+    // Eight samples per axis approximate the filtered far-pixel coverage of
+    // thin needles. This remains an offline CPU comparison, not a proposed
+    // runtime 64-ray sampling budget.
+    let ss = 8;
+    for (row, azimuth) in [0.0f32, 60.0, 120.0].into_iter().enumerate() {
+        let probe = Camera::new(bounds, azimuth, 64, 96);
+        let axis_extent = probe.right.abs().element_sum().max(probe.up.abs().element_sum());
+        for (level_index, level) in asset.levels.iter().enumerate() {
+            // Each pair uses a different viewing footprint, chosen so one
+            // cell projects to at most approximately one pixel. The source
+            // cards and voxel data always share that exact camera/pixel grid.
+            let height = (probe.span[1] / (level.cell_size * axis_extent)).floor().clamp(6.0, 128.0) as u32;
+            let width = ((height as f32 * 2.0 / 3.0).round() as u32).max(4);
+            let native_camera = Camera::new(bounds, azimuth, width, height);
+            let camera = Camera::new(bounds, azimuth, width * ss, height * ss);
+            let begin = Instant::now();
+            let source = resolve(&source_cards(vertices, indices, texture, material, &camera, cut), width, height, ss);
+            let actual = resolve(&volume(asset, level, &camera, Extinction::Directional), width, height, ss);
+            let ms = begin.elapsed().as_secs_f64() * 1000.0;
+            let source_coverage: f64 = source.iter().map(|p| p[3] as f64).sum();
+            let coverage: f64 = actual.iter().map(|p| p[3] as f64).sum();
+            let error: f64 = actual.iter().zip(&source).map(|(a, b)| (a[3] as f64 - b[3] as f64).abs()).sum();
+            let squared: f64 = actual.iter().zip(&source).map(|(a, b)| (a[3] as f64 - b[3] as f64).powi(2)).sum();
+            let top = gap + row as u32 * row_height;
+            for (column, pixels, title) in [(0, &source, "SOURCE"), (1, &actual, "DIRECTIONAL")] {
+                let left = gap + (level_index as u32 * 2 + column) * (panel[0] + gap);
+                for image in [&mut colors, &mut masks] {
+                    label(image, left, top, &format!("AZ {azimuth:.0} L{level_index}"));
+                    label(image, left, top + 20, title);
+                    label(image, left, top + 40, &format!("{width}X{height} PX"));
+                }
+                paste_enlarged(&mut colors, pixels, [left, top + 62], [width, height], panel, false);
+                paste_enlarged(&mut masks, pixels, [left, top + 62], [width, height], panel, true);
+            }
+            let extent = [level.cell_size * native_camera.right.abs().element_sum() * width as f32 / native_camera.span[0],
+                level.cell_size * native_camera.up.abs().element_sum() * height as f32 / native_camera.span[1]];
+            reports.push(json!({"azimuth_degrees":azimuth,"elevation_degrees":8,"level":level_index,"cell_m":level.cell_size,
+                "native_panel_size":[width,height],"offline_supersamples_per_axis":ss,"enlargement":"nearest neighbour for inspection only",
+                "projected_cell_extent_pixels":extent,"camera_direction":camera.dir.to_array(),"camera_span_m":camera.span,
+                "source_coverage_pixels":source_coverage,"coverage_pixels":coverage,"coverage_ratio_to_cards":coverage/source_coverage.max(1e-12),
+                "alpha_mae":error/source.len() as f64,"alpha_rmse":(squared/source.len() as f64).sqrt(),"cpu_comparison_ms":ms}));
+        }
+    }
+    (colors, masks, reports)
+}
+
 fn run(a: Args) -> Result<(), String> {
     let started = Instant::now();
     if a.out.exists() { return Err(format!("refusing to overwrite existing output {}", a.out.display())); }
@@ -242,7 +314,9 @@ fn run(a: Args) -> Result<(), String> {
     let asset = bake(&[Part { vertices: &vertices, indices: &indices, material: 0 }], &[material], std::slice::from_ref(&texture), config)?;
     let bake_ms = begin.elapsed().as_secs_f64() * 1000.0;
     let bounds = asset.levels.last().unwrap().local_bounds(asset.origin);
-    let gap = 8; let row_height = a.height + 52; let mut atlas = RgbaImage::from_pixel(4 * (a.width + gap) + gap, 3 * row_height + gap, Rgba([19,24,30,255]));
+    let gap = 8; let row_height = a.height + 52;
+    let columns = asset.levels.len() as u32 + 2;
+    let mut atlas = RgbaImage::from_pixel(columns * (a.width + gap) + gap, 3 * row_height + gap, Rgba([19,24,30,255]));
     let mut masks = atlas.clone(); let mut comparisons = Vec::new();
     for (row, azimuth) in [0.0f32, 60.0, 120.0].into_iter().enumerate() {
         let camera = Camera::new(bounds, azimuth, a.width * a.ss, a.height * a.ss);
@@ -254,9 +328,17 @@ fn run(a: Args) -> Result<(), String> {
         for image in [&mut atlas, &mut masks] { label(image, gap, top, &format!("AZ {azimuth:.0} DEG - UNLIT CPU")); label(image, gap, top + 22, "SOURCE CARDS"); }
         paste(&mut atlas, &source, [gap, top + 44], [a.width, a.height], false);
         paste(&mut masks, &source, [gap, top + 44], [a.width, a.height], true);
+        let begin = Instant::now();
+        let legacy = resolve(&volume(&asset, &asset.levels[0], &camera, Extinction::LegacyAxisUpperBound), a.width, a.height, a.ss);
+        let legacy_ms = begin.elapsed().as_secs_f64() * 1000.0;
+        let legacy_coverage: f64 = legacy.iter().map(|p| p[3] as f64).sum();
+        let left = gap + a.width + gap;
+        for image in [&mut atlas, &mut masks] { label(image, left, top + 22, "OLD AXIS SUM"); }
+        paste(&mut atlas, &legacy, [left, top + 44], [a.width, a.height], false);
+        paste(&mut masks, &legacy, [left, top + 44], [a.width, a.height], true);
         let mut levels = Vec::new();
         for (i, level) in asset.levels.iter().enumerate() {
-            let begin = Instant::now(); let rendered = resolve(&volume(&asset, level, &camera), a.width, a.height, a.ss);
+            let begin = Instant::now(); let rendered = resolve(&volume(&asset, level, &camera, Extinction::Directional), a.width, a.height, a.ss);
             let render_ms = begin.elapsed().as_secs_f64() * 1000.0;
             let coverage: f64 = rendered.iter().map(|p| p[3] as f64).sum();
             let mut squared = 0.0; let mut absolute = 0.0; let mut intersection = 0usize; let mut union = 0usize;
@@ -265,8 +347,8 @@ fn run(a: Args) -> Result<(), String> {
                 intersection += (actual[3] >= 0.5 && expected[3] >= 0.5) as usize;
                 union += (actual[3] >= 0.5 || expected[3] >= 0.5) as usize;
             }
-            let left = gap + (i as u32 + 1) * (a.width + gap);
-            for image in [&mut atlas, &mut masks] { label(image, left, top + 22, &format!("VOXEL {:.2}M", level.cell_size)); }
+            let left = gap + (i as u32 + 2) * (a.width + gap);
+            for image in [&mut atlas, &mut masks] { label(image, left, top + 22, &format!("DIR {:.2}M", level.cell_size)); }
             paste(&mut atlas, &rendered, [left, top + 44], [a.width, a.height], false);
             paste(&mut masks, &rendered, [left, top + 44], [a.width, a.height], true);
             levels.push(json!({"level":i,"cell_m":level.cell_size,"raymarch_ms":render_ms,"coverage_pixels":coverage,
@@ -275,31 +357,41 @@ fn run(a: Args) -> Result<(), String> {
         }
         comparisons.push(json!({"azimuth_degrees":azimuth,"elevation_degrees":8,"camera_centre":camera.centre.to_array(),
             "camera_direction":camera.dir.to_array(),"camera_span_m":camera.span,"camera_distance":camera.distance,"source_raster_ms":source_ms,
-            "source_coverage_pixels":source_coverage,"levels":levels}));
+            "source_coverage_pixels":source_coverage,
+            "legacy_axis_sum":{"level":0,"cell_m":asset.levels[0].cell_size,"coverage_pixels":legacy_coverage,
+                "coverage_ratio_to_cards":legacy_coverage/source_coverage.max(1e-12),"raymarch_ms":legacy_ms},"levels":levels}));
     }
+    let (far_colors, far_masks, far_reports) = far_comparison(&asset, &vertices, &indices, &texture.rgba, material, config.alpha_cut);
     if let Some(parent) = a.out.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
     std::fs::create_dir(&a.out).map_err(|e| e.to_string())?;
     atlas.save(a.out.join("comparison-albedo.png")).map_err(|e| e.to_string())?;
     masks.save(a.out.join("comparison-coverage.png")).map_err(|e| e.to_string())?;
+    far_colors.save(a.out.join("comparison-far-albedo.png")).map_err(|e| e.to_string())?;
+    far_masks.save(a.out.join("comparison-far-coverage.png")).map_err(|e| e.to_string())?;
     let mass: Vec<_> = asset.levels.iter().enumerate().map(|(i, level)| {
         let surface: f64 = level.voxels.iter().map(|v| v.surface_area as f64).sum();
         let projected: [f64; 3] = std::array::from_fn(|k| level.voxels.iter().map(|v| v.projected_area[k] as f64).sum());
+        let directional: [f64; 13] = std::array::from_fn(|k| level.voxels.iter().map(|v| v.directional_area[k] as f64).sum());
         json!({"level":i,"cell_m":level.cell_size,"dimensions":level.dimensions,"sparse_cells":level.voxels.len(),
-            "surface_area_m2":surface,"projected_area_m2":projected,"cell_data_bytes":level.voxels.len()*std::mem::size_of::<render::foliage_voxel::Voxel>()})
+            "surface_area_m2":surface,"projected_area_m2":projected,"directional_area_m2":directional,
+            "cell_data_bytes":level.voxels.len()*std::mem::size_of::<render::foliage_voxel::Voxel>()})
     }).collect();
-    let report = json!({"schema":1,"kind":"original CPU sparse foliage prototype; not native gameplay or GPU performance",
+    let report = json!({"schema":2,"kind":"original CPU sparse foliage prototype; not native gameplay or GPU performance",
         "source":{"mesh":mesh_path,"mesh_fingerprint":fingerprint(&mesh_bytes),"texture":texture_path,"texture_fingerprint":fingerprint(&texture_bytes),
             "selected_surfaces":selected,"excluded":"trunk and bark surfaces","tint_linear":material.tint,"alpha_cut":config.alpha_cut},
         "render":{"panel_size":[a.width,a.height],"supersamples_per_axis":a.ss,"cpu_threads":1,"gpu_used":false,
-            "color":"unlit linear albedo, premultiplied integration, sRGB PNG","ray_method":"exact sparse cell DDA; Beer-Lambert extinction from absolute-axis projected area"},
+            "color":"unlit linear albedo, premultiplied integration, sRGB PNG",
+            "ray_method":"exact sparse cell DDA; Beer-Lambert extinction from normalized interpolation of 13 antipodal directional projected-area samples",
+            "direction_samples":PROJECTION_DIRECTIONS,"large_preview_columns":"source cards / legacy axis upper bound at finest level / corrected directional levels 0,1,2"},
         "bake":{"ms":bake_ms,"triangles":asset.stats.triangles,"samples":asset.stats.samples,"prepared_texture_texels":asset.stats.prepared_texture_texels,
             "max_samples":config.max_samples,"max_voxels":config.max_voxels,"origin":asset.origin,"source_bounds":asset.source_bounds,"levels":mass},
-        "comparisons":comparisons,"elapsed_ms":started.elapsed().as_secs_f64()*1000.0,
+        "comparisons":comparisons,"far_pixel_footprint_comparisons":far_reports,"elapsed_ms":started.elapsed().as_secs_f64()*1000.0,
         "limitations":["Surface/projected area conservation does not guarantee equal image opacity or silhouette.",
-            "Three absolute-axis projected areas approximate diagonal extinction and may overestimate it.",
+            "Legacy absolute-axis extinction is an upper bound; the new directional interpolation reduces this error but is still an angular approximation between its 13 samples.",
             "Source cards use base-level bilinear alpha then cutoff plus image supersampling. Bake thresholds before coverage mip filtering; these are deliberately reported as separate methods.",
             "No lighting, normal maps, wind, animation, shadows, GPU upload, runtime LOD switching, or performance qualification.",
-            "Coarse cells intentionally spread coverage across empty local space; block edges remain visible in this unfiltered first raymarch prototype."]});
+            "Uniform cells still spread coverage across empty local space. The magnified large preview is not a valid near-tree replacement; the far preview compares each level only around a one-pixel cell footprint.",
+            "The far reference uses 8x8 offline supersampling to assess filtered silhouette, not to claim a viable runtime ray budget."]});
     std::fs::write(a.out.join("report.json"), serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     println!("CPU foliage preview: {} (bake {:.1} ms; total {:.1} ms)", a.out.display(), bake_ms, started.elapsed().as_secs_f64()*1000.0);
     Ok(())

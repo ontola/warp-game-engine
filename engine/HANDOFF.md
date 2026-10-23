@@ -61,14 +61,25 @@ absolute shadow-texel snapping, filtered world-aligned canopy density and
 reversed stone-wall normals. Read the lighting section of WINDOWS_VALIDATION
 before claiming full shadow stability or 120 FPS. The subsequent r5 playtest
 adds forward glTF glass transparency, smooth terrain visibility normals and
-a bounded distant forest of original exposed-face voxel pines on rolling
-background hills. This uses the current cluster renderer, not Unreal Nanite.
+a bounded distant forest on rolling background hills. The r7 default reuses
+the three actual near-tree meshes and their cluster LOD to retain species
+identity; the original exposed-face voxel pines now require
+`SIDEWAYS_GENERIC_VOXEL_TREES=1`. The hills have higher warped skyline ridges.
+This uses the current cluster renderer, not Unreal Nanite.
 The separate sparse density-voxel bake is still experimental and inactive in
-play; its CPU comparison shows excessive softness/coverage at coarse levels.
+play. Its second CPU comparison reduces oblique coverage error using 13
+directional projected-area samples, but coarse levels remain soft and this
+has not been accepted as a near-tree replacement.
 Joep requested quick build/restart rounds with his live visual feedback. Do
 not run competing GPU benchmarks during his playtest. Build/shader checks
 and first-frame confirmation remain appropriate; do not imply a full GPU
 acceptance suite or a 120 FPS result for these rapid iterations.
+
+F12 in live play writes the current final 4K (or chosen window size) composite,
+including HUD, to `engine/build/screenshots/sideways-<timestamp>-<pid>-<serial>.png`.
+A JSON sidecar records the camera, cars, stage, settings and adapter. Windows
+also copies the image to the clipboard for the user to paste into the chat.
+This does not transmit anything automatically or advance the simulation.
 
 ## Earlier renderer baseline
 

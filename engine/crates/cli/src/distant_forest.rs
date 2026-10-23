@@ -32,6 +32,21 @@ fn noise(x: f32, z: f32, seed: u32) -> f32 {
     ((a + (b - a) * fx) * (1.0 - fz) + (c + (d - c) * fx) * fz) * 2.0 - 1.0
 }
 
+/// Broad peaks must rise above the native corridor's 15-25 m canopy. The
+/// earlier ~22 m addition was mostly hidden from a chase-height camera.
+/// Large warped ridges, lower saddles and finer shoulders vary the skyline
+/// without changing the road or creating a regular ring of equal-height hills.
+fn skyline_relief(x: f32, z: f32, seed: u32) -> f32 {
+    let wx = x + noise(x / 620.0, z / 620.0, seed ^ 0x19e377) * 105.0;
+    let wz = z + noise(x / 570.0, z / 570.0, seed ^ 0x5aa13e) * 105.0;
+    let ridge = 1.0 - noise(wx / 390.0, wz / 390.0, seed).abs();
+    let saddle = smooth((noise(x / 710.0, z / 710.0, seed ^ 0x8c47) + 0.65) / 1.30);
+    let peak = 70.0 + 125.0 * ridge * ridge;
+    let shoulders = 27.0 * noise(wx / 155.0, wz / 155.0, seed ^ 0x51f15e)
+        + 11.0 * noise(wx / 72.0, wz / 72.0, seed ^ 0x1ca23b);
+    ((peak + shoulders) * (0.42 + 0.58 * saddle)).max(18.0)
+}
+
 struct Ground<'a> { stage: &'a Stage, native: HashMap<(i32, i32), &'a Chunk>, cache: RefCell<HashMap<(i32,i32),f32>> }
 impl Ground<'_> {
     fn native_height(&self, x: f32, z: f32) -> Option<f32> {
@@ -72,7 +87,7 @@ impl Ground<'_> {
         if let Some(h) = self.native_height(x, z) { return h; }
         let blend = smooth(self.border_distance(x, z) / 128.0);
         let seed = self.stage.noise_seed as u32;
-        let hills = 22.0 + 28.0 * noise(x / 240.0, z / 240.0, seed) + 10.0 * noise(x / 95.0, z / 95.0, seed ^ 0x51f15e);
+        let hills = skyline_relief(x, z, seed);
         self.stage.height(x as f64, z as f64) as f32 + hills * blend
     }
     fn vertex(&self, x: f32, z: f32) -> Vertex {
@@ -225,7 +240,7 @@ fn tree_mesh(variant:u32, crown:u32, bark:u32) -> ClusterMesh {
     ClusterMesh::build(&[Part{vertices:&verts[0],indices:&indices[0],material:crown},Part{vertices:&verts[1],indices:&indices[1],material:bark}])
 }
 
-pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,mesh_names:&mut Vec<String>,config:Config)->Result<String,String>{
+pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,source_tree_meshes:&[usize],mesh_names:&mut Vec<String>,config:Config)->Result<String,String>{
     let started=Instant::now();
     if chunks.is_empty() || stage.points.is_empty(){return Err("no native terrain to attach background to".into());}
     if (scene.heightfield.cell-2.0).abs()>1e-6{return Err("background requires the native 2 m heightfield".into());}
@@ -245,15 +260,23 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,me
         let id=scene.add_mesh(&mesh);scene.add_instance(id,Affine3A::IDENTITY);mesh_names.push(format!("vista terrain {:?}",tile.key));
     }
     scene.heightfield=hf;
-    let bark=scene.add_material(Material{tint:[0.07,0.047,0.025],layer:-1,roughness:0.98,flags:0,scale:1.0,metal:0.0});
     let mut tree_ids=Vec::new();let mut tree_triangles=0;let mut tree_roots=0;let mut tree_lods=Vec::new();
-    for variant in 0..3{
+    // Preserve species, crown height and lighting in the live game. The
+    // original generic voxel pines remain an explicit geometry experiment;
+    // a future voxel LOD must be derived from these same source trees.
+    let generic_voxels=std::env::var("SIDEWAYS_GENERIC_VOXEL_TREES").as_deref()==Ok("1");
+    if !generic_voxels && !source_tree_meshes.is_empty() {
+        tree_ids.extend_from_slice(source_tree_meshes);
+    } else {
+      let bark=scene.add_material(Material{tint:[0.07,0.047,0.025],layer:-1,roughness:0.98,flags:0,scale:1.0,metal:0.0});
+      for variant in 0..3{
         let tint=[[0.034,0.071,0.029],[0.043,0.080,0.035],[0.029,0.060,0.034]][variant as usize];
         let material=scene.add_material(Material{tint,layer:-1,roughness:0.98,flags:0,scale:1.0,metal:0.0});
         let mesh=tree_mesh(variant,material,bark);let leaf=mesh.leaf_triangles();let root=mesh.root_triangles();
         tree_triangles+=leaf;tree_roots+=root;
         tree_lods.push(format!("v{variant}: {leaf}->{root} tris, {} clusters, {} levels",mesh.clusters.len(),mesh.levels));
         tree_ids.push(scene.add_mesh(&mesh));mesh_names.push(format!("original voxel pine {variant}"));
+      }
     }
     let seed=stage.noise_seed as u32 ^ 0xd157a47;let mut trees=Vec::new();
     for tile in tiles.values(){for j in 0..4{for i in 0..4{
@@ -269,14 +292,27 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,me
     for &(_,x,y,z,key) in &trees{
         let wide=0.85+unit(key.rotate_left(7))*0.60;let tall=0.85+unit(key.rotate_left(19))*0.55;
         let transform=Affine3A::from_scale_rotation_translation(Vec3::new(wide,tall,wide),Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
-        scene.add_instance(tree_ids[key as usize%3],transform);scene.mark_foliage();
+        scene.add_instance(tree_ids[key as usize%tree_ids.len()],transform);scene.mark_foliage();
     }
-    Ok(format!("distant forest: {} original voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {}), {} terrain tiles / {terrain_triangles} tris, radius {radius:.0} m, 2 m heightfield {} samples, {:.0} ms; background has no new driving collision",trees.len(),tree_lods.join("; "),tiles.len(),scene.heightfield.heights.len(),started.elapsed().as_secs_f64()*1000.0))
+    let representation=if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes",tree_ids.len())}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
+    Ok(format!("distant forest: {} {representation}, {} terrain tiles / {terrain_triangles} tris, radius {radius:.0} m, high warped skyline ridges, 2 m heightfield {} samples, {:.0} ms; background has no new driving collision",trees.len(),tiles.len(),scene.heightfield.heights.len(),started.elapsed().as_secs_f64()*1000.0))
 }
 
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn skyline_has_tall_peaks_and_saddles_without_camera_dependent_shape() {
+        let mut lo = f32::INFINITY;
+        let mut hi = 0.0f32;
+        for z in -12..=12 { for x in -12..=12 {
+            let h = skyline_relief(x as f32 * 97.0, z as f32 * 97.0, 7919);
+            assert!(h.is_finite() && (18.0..=233.0).contains(&h));
+            assert_eq!(h.to_bits(), skyline_relief(x as f32 * 97.0, z as f32 * 97.0, 7919).to_bits());
+            lo = lo.min(h); hi = hi.max(h);
+        }}
+        assert!(hi > 140.0 && hi - lo > 90.0, "the skyline needs distinct high ridges and low saddles: {lo}..{hi}");
+    }
     #[test]
     fn exact_patch_height_is_shared_by_roots_and_heightfield(){
         let patch=Patch{centre:Vec3::new(4.0,3.0,4.0),ring:vec![Vec3::new(0.0,1.0,0.0),Vec3::new(0.0,5.0,8.0),Vec3::new(8.0,5.0,8.0),Vec3::new(8.0,1.0,0.0)]};

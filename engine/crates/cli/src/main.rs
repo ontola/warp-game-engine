@@ -13,6 +13,7 @@ mod input;
 mod hud;
 mod play;
 mod procedural_rocks;
+mod screenshot;
 mod gamenight;
 mod shot;
 mod visuals;

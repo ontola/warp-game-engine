@@ -11,6 +11,21 @@ use crate::scene::{ALPHA_TEST, GRASS, Material, ROAD, TERRAIN, TRIPLANAR, TWO_SI
 use glam::{Vec2, Vec3};
 use std::collections::BTreeMap;
 
+/// Antipodal directions share one extinction sample: 3 axes, 6 face
+/// diagonals and 4 body diagonals of a cube. These measure geometric coverage,
+/// independently of the six lighting-normal lobes below.
+pub const PROJECTION_DIRECTIONS: [[f32; 3]; 13] = [
+    [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0],
+    [std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2, 0.0],
+    [std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2, 0.0],
+    [std::f32::consts::FRAC_1_SQRT_2, 0.0, std::f32::consts::FRAC_1_SQRT_2],
+    [std::f32::consts::FRAC_1_SQRT_2, 0.0, -std::f32::consts::FRAC_1_SQRT_2],
+    [0.0, std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2],
+    [0.0, std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2],
+    [0.57735026, 0.57735026, 0.57735026], [0.57735026, 0.57735026, -0.57735026],
+    [0.57735026, -0.57735026, 0.57735026], [0.57735026, -0.57735026, -0.57735026],
+];
+
 #[derive(Clone, Copy, Debug)]
 pub struct BakeConfig {
     pub cell_size: f32,
@@ -41,7 +56,12 @@ pub struct Voxel {
     /// Covered one-sided geometric surface area in square local metres.
     pub surface_area: f32,
     /// Integral of |geometric normal axis| dA, in square local metres.
+    /// Retained for mass diagnostics and the legacy upper-bound comparison.
     pub projected_area: [f32; 3],
+    /// Integral of |geometric normal dot direction| dA for the 13 directions
+    /// above. Unlike the sum of absolute axis projections, these retain
+    /// cancellation for oblique/edge-on leaves. Additive through coarse levels.
+    pub directional_area: [f32; 13],
     /// Coverage-weighted linear RGB, with the source material tint applied.
     pub albedo: [f32; 3],
     pub roughness: f32,
@@ -52,10 +72,43 @@ pub struct Voxel {
 }
 
 impl Voxel {
-    /// Area per unit volume (1/metre). A ray integrator uses this with its
-    /// local-space ray direction and segment length. Never use occupancy=1.
+    /// Legacy axis area per unit volume, retained for diagnostics/A-B only.
+    /// Do not dot this with abs(ray_direction): that overestimates oblique
+    /// extinction. Rendering should use density_along and segment length.
     pub fn projected_density(&self, cell_size: f32) -> [f32; 3] {
         self.projected_area.map(|a| a / cell_size.powi(3))
+    }
+
+    /// Continuous angular interpolation on 48 spherical cube triangles.
+    /// Normalized nonnegative weights preserve an isotropic distribution and
+    /// match the 13 stored directions exactly. Interpolation between them is
+    /// approximate; it is not an exact solution for every leaf orientation.
+    /// The old abs-axis sum is an upper bound and must not be used as this
+    /// extinction coefficient: |nx dx|+|ny dy|+|nz dz| can be nonzero even when
+    /// the actual leaf is edge-on and |dot(n,d)| is zero.
+    pub fn projected_area_along(&self, direction: [f32; 3]) -> f32 {
+        let direction = Vec3::from(direction);
+        if !direction.is_finite() { return 0.0; }
+        let Some(direction) = direction.try_normalize() else { return 0.0; };
+        let d = direction.to_array();
+        let magnitude = d.map(f32::abs);
+        let mut axes = [0usize, 1, 2];
+        axes.sort_unstable_by(|&a, &b| magnitude[b].total_cmp(&magnitude[a]));
+        let [a, b, c] = axes;
+        let pair = match (a.min(b), a.max(b)) { (0, 1) => 0, (0, 2) => 1, _ => 2 };
+        let diagonal = 3 + pair * 2 + usize::from(d[a] * d[b] < 0.0);
+        let corner = 9 + usize::from(d[0] * d[1] < 0.0) * 2 + usize::from(d[0] * d[2] < 0.0);
+        let weights = [magnitude[a] - magnitude[b], (magnitude[b] - magnitude[c]) * std::f32::consts::SQRT_2,
+            magnitude[c] * 3.0f32.sqrt()];
+        let value = self.directional_area[a] * weights[0] + self.directional_area[diagonal] * weights[1]
+            + self.directional_area[corner] * weights[2];
+        value / weights.iter().sum::<f32>()
+    }
+
+    /// Local-space extinction per metre, for a unit-length segment integral.
+    /// Instance scaling belongs in the ray transform/segment length, not here.
+    pub fn density_along(&self, cell_size: f32, direction: [f32; 3]) -> f32 {
+        self.projected_area_along(direction) / cell_size.powi(3)
     }
 }
 
@@ -99,6 +152,7 @@ pub struct VoxelAsset {
 struct Mass {
     area: f64,
     projected: [f64; 3],
+    directional: [f64; 13],
     color: [f64; 3],
     roughness: f64,
     normal: [f64; 6],
@@ -109,12 +163,14 @@ impl Mass {
         self.area += other.area;
         self.roughness += other.roughness;
         for k in 0..3 { self.projected[k] += other.projected[k]; self.color[k] += other.color[k]; }
+        for k in 0..13 { self.directional[k] += other.directional[k]; }
         for k in 0..6 { self.normal[k] += other.normal[k]; }
     }
 
     fn finish(&self, coord: [u32; 3]) -> Voxel {
         Voxel { coord, surface_area: self.area as f32,
             projected_area: self.projected.map(|x| x as f32),
+            directional_area: self.directional.map(|x| x as f32),
             albedo: self.color.map(|x| (x / self.area) as f32),
             roughness: (self.roughness / self.area) as f32,
             normal_weights: self.normal.map(|x| (x / self.area) as f32) }
@@ -271,6 +327,7 @@ pub fn bake(parts: &[Part<'_>], materials: &[Material], textures: &[TextureSourc
             if !area.is_finite() { return Err("foliage triangle area overflow".into()); }
             if area <= 1e-12 { stats.degenerate_triangles += 1; continue; }
             let geometric = cross.normalize();
+            let directional = PROJECTION_DIRECTIONS.map(|direction| geometric.dot(Vec3::from(direction)).abs());
             let edge = (p[1] - p[0]).length().max((p[2] - p[0]).length()).max((p[2] - p[1]).length());
             let divisions = (edge / config.cell_size * config.samples_per_cell as f32).ceil().max(1.0);
             if !divisions.is_finite() || divisions > 65_536.0 { return Err("foliage triangle quadrature is too large".into()); }
@@ -300,6 +357,7 @@ pub fn bake(parts: &[Part<'_>], materials: &[Material], textures: &[TextureSourc
                     cell.projected[k] += covered * geometric[k].abs() as f64;
                     cell.color[k] += sample_area * texel[k] as f64 * material.tint[k] as f64;
                 }
+                for k in 0..13 { cell.directional[k] += covered * directional[k] as f64; }
                 let normal = (normals[0] * weights.x + normals[1] * weights.y + normals[2] * weights.z).try_normalize().unwrap_or(geometric);
                 for k in 0..3 {
                     let mass = covered * normal[k] as f64 * normal[k] as f64;
@@ -438,5 +496,60 @@ mod tests {
         }
         let bad = [Part { vertices: &vertices, indices: &[0, 1, 9], material: 0 }];
         assert!(bake(&bad, &[material()], &[texture(&[[255; 4]])], BakeConfig::default()).is_err());
+    }
+
+    #[test]
+    fn edge_on_oblique_card_does_not_occlude_as_the_axis_upper_bound_does() {
+        let (mut vertices, indices) = card();
+        let rotation = glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4);
+        for vertex in &mut vertices {
+            vertex.pos = (rotation * Vec3::from(vertex.pos)).to_array();
+            vertex.normal = (rotation * Vec3::from(vertex.normal)).to_array();
+        }
+        let asset = bake(&[Part { vertices: &vertices, indices: &indices, material: 0 }],
+            &[material()], &[texture(&[[255; 4]])], BakeConfig::default()).unwrap();
+        let direction = PROJECTION_DIRECTIONS[6];
+        for level in &asset.levels {
+            let actual: f32 = level.voxels.iter().map(|v| v.projected_area_along(direction)).sum();
+            let old: f32 = level.voxels.iter().map(|v| Vec3::from(v.projected_area).dot(Vec3::from(direction).abs())).sum();
+            assert!(actual < 1e-5, "edge-on projected area {actual}");
+            assert!(old > 0.99, "legacy method should expose the original false-occlusion bug");
+        }
+    }
+
+    #[test]
+    fn directional_samples_and_coarse_integrals_are_preserved() {
+        let asset = run(texture(&[[30, 180, 60, 255]]), BakeConfig::default());
+        let ray = [0.87, -0.14, 0.49];
+        let fine: f32 = asset.levels[0].voxels.iter().map(|v| v.projected_area_along(ray)).sum();
+        for level in &asset.levels {
+            let integrated: f32 = level.voxels.iter().map(|v| v.density_along(level.cell_size, ray) * level.cell_size.powi(3)).sum();
+            assert!((integrated - fine).abs() < 1e-6);
+            for voxel in &level.voxels {
+                for (k, direction) in PROJECTION_DIRECTIONS.into_iter().enumerate() {
+                    assert!((voxel.projected_area_along(direction) - voxel.directional_area[k]).abs() < 1e-6);
+                    assert!((voxel.projected_area_along(direction.map(|v| -v)) - voxel.directional_area[k]).abs() < 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn angular_interpolation_is_continuous_and_preserves_isotropic_density() {
+        let isotropic = Mass { area: 1.0, directional: [0.5; 13], ..Default::default() }.finish([0; 3]);
+        for i in 0..180 {
+            let angle = i as f32 * std::f32::consts::PI / 90.0;
+            let direction = [angle.sin(), 0.37, angle.cos()];
+            assert!((isotropic.projected_area_along(direction) - 0.5).abs() < 1e-6);
+        }
+        let mut varied = isotropic.clone();
+        varied.directional_area = std::array::from_fn(|i| i as f32 / 13.0);
+        for direction in [[1.0, 1.0, 0.3], [1.0, 0.3, 0.3], [1.0, 0.0, 0.3], [-1.0, 1.0, 1.0]] {
+            let a = varied.projected_area_along([direction[0], direction[1] - 1e-6, direction[2]]);
+            let b = varied.projected_area_along([direction[0], direction[1] + 1e-6, direction[2]]);
+            assert!((a - b).abs() < 1e-5);
+        }
+        assert_eq!(isotropic.projected_area_along([0.0; 3]), 0.0);
+        assert_eq!(isotropic.projected_area_along([f32::NAN; 3]), 0.0);
     }
 }

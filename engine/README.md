@@ -267,13 +267,15 @@ On a 2-core cloud container:
   in the repository root). The selected clump is combined into an RGBA layer
   in memory before coverage-preserving mip generation.
 
-- **Distant forest prototype:** rolling background hills and up to 10,000
-  original voxel pines reuse three exposed-face meshes and the existing
-  cluster LOD. Placement is fixed in world space. Native terrain/collision
+- **Distant forest prototype:** high rolling background hills and up to 10,000
+  trees reuse the three actual near-tree meshes and their existing cluster
+  LOD, preserving species identity. Placement is fixed in world space. Native terrain/collision
   remains unchanged; the background extension has no new driving collision.
   Disable with `SIDEWAYS_DISTANT_FOREST=0` for matched comparisons. This is
-  independent prototype geometry, not Nanite assemblies or a virtualized
-  geometry streaming implementation.
+  not Nanite assemblies or a virtualized geometry streaming implementation.
+  The original generic exposed-face voxel pine trial is opt-in with
+  `SIDEWAYS_GENERIC_VOXEL_TREES=1`; the source-derived density voxel bake is
+  still an offline experiment.
 
 The grass scatter is currently built on the CPU once for a frozen shot. It
 does not yet stream as a live camera moves, animate in wind, or port shrubs,
