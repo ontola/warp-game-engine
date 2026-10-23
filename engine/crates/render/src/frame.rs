@@ -273,6 +273,7 @@ pub struct Renderer {
     scene_bind: wgpu::BindGroup,
     instance_buffer: wgpu::Buffer,
     transparency: Option<crate::transparency::Transparency>,
+    grass: Option<crate::grass::GrassRenderer>,
     cull: wgpu::ComputePipeline,
     finalize: wgpu::ComputePipeline,
     raster: wgpu::RenderPipeline,
@@ -534,6 +535,7 @@ impl Renderer {
             ],
         );
         let transparency = crate::transparency::Transparency::new(gpu, scene, &scene_layout);
+        let grass = crate::grass::GrassRenderer::new(gpu, scene, &scene_layout);
         let scene_bind = bind(
             gpu,
             &scene_layout,
@@ -604,7 +606,7 @@ impl Renderer {
         );
         let module = |name: &str, src: &str| gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(name), source: wgpu::ShaderSource::Wgsl(src.into()) });
         let cull_mod = module("cull", include_str!("shaders/cull.wgsl"));
-        let raster_mod = module("raster", include_str!("shaders/raster.wgsl"));
+        let raster_mod = module("raster", &crate::grass::raster_source());
         let shade_mod = module("shade", include_str!("shaders/shade.wgsl"));
         let tone_mod = module("tonemap", include_str!("shaders/tonemap.wgsl"));
         let pl = |layouts: &[&wgpu::BindGroupLayout]| {
@@ -745,6 +747,7 @@ impl Renderer {
             scene_bind,
             instance_buffer: instances,
             transparency,
+            grass,
             cull,
             finalize,
             raster,
@@ -1053,6 +1056,7 @@ impl Renderer {
                 });
             }
         }
+        if let Some(grass) = &self.grass { grass.set_view_count(views.len()); }
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         for (vi, view) in views.iter().enumerate() {
             let (w, h, cam) = (view.w, view.h, &view.cam);
@@ -1074,7 +1078,7 @@ impl Renderer {
             };
             let light_buf = buffer(gpu, "view light", bytemuck::bytes_of(&view_light), wgpu::BufferUsages::UNIFORM);
             let vis = tex2d("vis", w, h, wgpu::TextureFormat::R32Uint, rt);
-            let depth = tex2d("depth", w, h, wgpu::TextureFormat::Depth32Float, rt);
+            let depth = tex2d("depth", w, h, wgpu::TextureFormat::Depth32Float, rt | wgpu::TextureUsages::COPY_SRC);
             let hdr = tex2d("hdr", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT);
             let (vis_v, depth_v, hdr_v) = (vis.create_view(&Default::default()), depth.create_view(&Default::default()), hdr.create_view(&Default::default()));
             // Reversed-Z infinite perspective.
@@ -1086,7 +1090,9 @@ impl Renderer {
             let main = self.view_targets(gpu, "view");
             let px_scale = proj.y_axis.y * 0.5 * h as f32;
             let vp = jittered * view_m;
-            gpu.queue.write_buffer(&main.uniform, 0, bytemuck::bytes_of(&view_uniform(vp, cam.pos, px_scale, [light.lod_pixels, cam.near, 0.0, MAX_VISIBLE as f32], [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32], cut)));
+            let mut main_uniform = view_uniform(vp, cam.pos, px_scale, [light.lod_pixels, cam.near, 0.0, MAX_VISIBLE as f32], [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32], cut);
+            main_uniform.extra[1] = if views.len() > 1 { 1.0 } else { 0.0 };
+            gpu.queue.write_buffer(&main.uniform, 0, bytemuck::bytes_of(&main_uniform));
             // TAA history for this view (new, or reset when the size changes).
             let hist = &mut histories[vi];
             let fresh = !hist.as_ref().is_some_and(|hh| hh.size == (w, h));
@@ -1173,6 +1179,29 @@ impl Renderer {
                 pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
                 drop(pass);
                 if label == "shade" {
+                    if let Some(grass) = &self.grass {
+                        let transition_times = self.query.as_ref().map(|(qs, _, _)| {
+                            let i = timestamp_pair(&mut ts);
+                            names.push("grass copy + nearest");
+                            wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }
+                        });
+                        let composite_times = self.query.as_ref().map(|(qs, _, _)| {
+                            let i = timestamp_pair(&mut ts);
+                            names.push("grass composite");
+                            wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }
+                        });
+                        grass.render(gpu, &mut enc, vi, (w, h), &self.scene_bind, &[
+                            (0, main.uniform.as_entire_binding()), (2, light_buf.as_entire_binding()),
+                            (5, wgpu::BindingResource::TextureView(&shadow_v)),
+                            (6, wgpu::BindingResource::Sampler(&self.shadow_samp)),
+                            (7, wgpu::BindingResource::TextureView(&self.sky_view)),
+                            (10, wgpu::BindingResource::TextureView(&self.heightfield)),
+                            (11, gi_buf.as_entire_binding()), (12, self.solid_occluders.as_entire_binding()),
+                            (13, wgpu::BindingResource::TextureView(&density_view)),
+                            (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
+                            (15, wgpu::BindingResource::TextureView(&near_view)),
+                        ], &hdr_v, &depth, transition_times, composite_times);
+                    }
                     if let Some(transparency) = &self.transparency {
                         let t = self.query.as_ref().map(|(qs, _, _)| { let i = timestamp_pair(&mut ts); (qs, i) });
                         if t.is_some() { names.push("transparency"); }
@@ -1324,12 +1353,13 @@ mod layout_tests {
     }
 
     #[test]
-    fn four_views_with_near_maps_transparency_and_taa_fit_timestamp_budget() {
+    fn four_views_with_near_maps_grass_transparency_and_taa_fit_timestamp_budget() {
         // Shared canopy/filter/far map: 4 passes. Each view: near cull/raster,
-        // main cull/raster, shade, transparency, TAA, tonemap: 8 passes.
+        // main cull/raster, shade, grass transition/composite, transparency,
+        // TAA, tonemap: 10 passes.
         let mut next = 0;
-        for _ in 0..(4 + 4 * 8) { timestamp_pair(&mut next); }
-        assert_eq!(next, 72);
+        for _ in 0..(4 + 4 * 10) { timestamp_pair(&mut next); }
+        assert_eq!(next, 88);
         assert!(next <= TIMESTAMP_CAPACITY);
         next = TIMESTAMP_CAPACITY - 2;
         assert_eq!(timestamp_pair(&mut next), TIMESTAMP_CAPACITY - 2);

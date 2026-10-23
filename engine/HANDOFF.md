@@ -45,8 +45,15 @@ SDK 6-only actions and room logs must be capability-gated.
 
 The photographed grass uses shared world cells and terrain-triangle roots.
 Frozen shots have a 60,000-instance cap; live play streams cached candidates
-into a fixed 16,000-slot pool for one view or 24,000 shared slots for multiple
+into a fixed 70,000-slot pool for one view or 115,000 shared slots for multiple
 views. Existing plants keep their poses/sizes; only changed slots upload.
+The r9 grass uses static habitat density, retaining every tuft and all three
+cards. Near grass stays opaque; a nearest-layer opacity pass fades from
+40-60 m in one view or 20-38 m in split screen. CPU residency extends beyond
+that fade. This is not a distant geometry LOD yet. Deeper partial grass
+layers are omitted; glass ordering remains approximate and live TAA stays off.
+The private HDR/depth targets require about 95 MiB at combined native 4K;
+measure the extra GPU passes before making performance claims.
 `SIDEWAYS_LIVE_GRASS=0` disables it for comparisons. Live TAA is still off
 until per-instance motion vectors exist. The native-resolution HUD now uses
 glyphon and shared cached Barlow text, with timer, instruments, pace notes,
@@ -75,6 +82,9 @@ The separate sparse density-voxel bake is still experimental and inactive in
 play. Its second CPU comparison reduces oblique coverage error using 13
 directional projected-area samples, but coarse levels remain soft and this
 has not been accepted as a near-tree replacement.
+Joep explicitly prioritizes runtime source-derived voxel trees next. Preserve
+the current near crowns and species identity; procedural plant generation is
+later work. Do not call the existing alpha-card cluster renderer voxel foliage.
 Joep requested quick build/restart rounds with his live visual feedback. Do
 not run competing GPU benchmarks during his playtest. Build/shader checks
 and first-frame confirmation remain appropriate; do not imply a full GPU

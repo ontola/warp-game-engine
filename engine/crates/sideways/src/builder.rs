@@ -99,32 +99,6 @@ pub fn chunk_cells(s: &Stage) -> Vec<(i32, i32)> {
     out
 }
 
-fn d2(s: &Stage, x: f64, z: f64, i: i32) -> f64 {
-    let p = s.points[i as usize];
-    (p.x as f64 - x) * (p.x as f64 - x) + (p.z as f64 - z) * (p.z as f64 - z)
-}
-
-fn climb(s: &Stage, x: f64, z: f64, mut g: i32, lo: i32, hi: i32) -> i32 {
-    let mut d = d2(s, x, z, g);
-    while g < hi {
-        let e = d2(s, x, z, g + 1);
-        if e >= d {
-            break;
-        }
-        d = e;
-        g += 1;
-    }
-    while g > lo {
-        let e = d2(s, x, z, g - 1);
-        if e >= d {
-            break;
-        }
-        d = e;
-        g -= 1;
-    }
-    g
-}
-
 /// One terrain chunk: heights, road distance and what grows on it, with
 /// its own random numbers so chunks can be built in parallel.
 pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
@@ -132,8 +106,6 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
     let n = N;
     let x0 = c.0 as f64 * stage::CHUNK;
     let z0 = c.1 as f64 * stage::CHUNK;
-    let runs = s.runs_near(x0, z0, stage::CHUNK, stage::REACH + 5.0);
-    let mut guesses: Vec<i32> = runs.iter().map(|r| r[r.len() / 2]).collect();
     let m = n + 2;
     let mut hs = vec![0.0f32; m * m];
     let mut road_d = vec![0.0f32; m * m];
@@ -141,23 +113,22 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
         for i in 0..m {
             let x = x0 + (i as f64 - 1.0) * GRID;
             let z = z0 + (j as f64 - 1.0) * GRID;
-            let mut near = -1i64;
-            let mut near_d = f64::INFINITY;
-            for (ri, r) in runs.iter().enumerate() {
-                let g = climb(s, x, z, guesses[ri], r[0], r[r.len() - 1]);
-                guesses[ri] = g;
-                let p = s.points[g as usize];
-                let d = v2((p.x as f64 - x) as f32, (p.z as f64 - z) as f32).length_squared() as f64;
-                if d < near_d {
-                    near_d = d;
-                    near = g as i64;
-                }
-            }
-            if near_d > stage::REACH * stage::REACH {
-                near = -1;
-            }
+            // A winding run is not distance-monotonic: hill climbing from
+            // yesterday's guess can settle on the wrong road section. Use
+            // the same exact spatial lookup as Stage::height so terrain,
+            // road shoulders, vegetation roots and colliders agree.
+            let near = s.nearest_index(x, z);
+            let near_d = if near >= 0 {
+                let p = s.points[near as usize];
+                v2((p.x as f64 - x) as f32, (p.z as f64 - z) as f32).length_squared() as f64
+            } else { f64::INFINITY };
             hs[j * m + i] = s.height_near(x, z, near) as f32;
-            road_d[j * m + i] = (near_d.sqrt() - if near >= 0 { s.widths[near as usize] as f64 } else { 0.0 }) as f32;
+            // This also becomes a terrain vertex attribute and is linearly
+            // interpolated by grass sampling. Infinity produces NaNs at a
+            // zero barycentric weight; 100 m is beyond every verge threshold.
+            road_d[j * m + i] = if near >= 0 {
+                (near_d.sqrt() - s.widths[near as usize] as f64) as f32
+            } else { 100.0 };
         }
     }
     let mut trees = Vec::new();
@@ -390,4 +361,76 @@ pub struct GroundMap {
     pub width: usize,
     pub height: usize,
     pub heights: Vec<f32>,
+}
+
+#[cfg(test)]
+mod foundation_tests {
+    use super::*;
+
+    #[test]
+    fn road_distance_remains_finite_outside_carved_corridor() {
+        let s=stage::reported_round_two_stage();
+        let mut absent=0;
+        for key in [(-4,-11),(-1,-11)] {
+            let chunk=terrain_chunk(&s,key);
+            assert!(chunk.road_d.iter().all(|d|d.is_finite()));
+            for j in 0..N {for i in 0..N {
+                let x=chunk.x0+i as f64*GRID;let z=chunk.z0+j as f64*GRID;
+                let near=s.nearest_index(x,z);let actual=chunk.road_d[j*N+i];
+                if near<0 {
+                    absent+=1;assert_eq!(actual,100.0);
+                    assert!((actual*0.0+actual*1.0).is_finite(),"grid-boundary interpolation must stay finite");
+                } else {
+                    let p=s.points[near as usize];
+                    let distance=(v2((p.x as f64-x) as f32,(p.z as f64-z) as f32).length_squared() as f64).sqrt();
+                    let expected=(distance-s.widths[near as usize] as f64) as f32;
+                    assert_eq!(actual.to_bits(),expected.to_bits(),"finite road distances must remain exact");
+                }
+            }}
+        }
+        assert!(absent>0,"fixture must include terrain outside the road lookup reach");
+    }
+
+    #[test]
+    fn winding_route_chunk_samples_match_authoritative_stage_height() {
+        let s=stage::reported_round_two_stage();
+        // The old local hill climb differed by 3.68 m at (-68,-472).
+        // Include the adjoining chunk to catch chunk-order/seam differences.
+        for key in [(-2,-8),(-1,-8),(-1,-11)] {
+            let chunk=terrain_chunk(&s,key);
+            for j in 0..N {for i in 0..N {
+                let x=chunk.x0+i as f64*GRID;let z=chunk.z0+j as f64*GRID;
+                let expected=s.height(x,z) as f32;
+                assert_eq!(chunk.heights[j*N+i].to_bits(),expected.to_bits(),
+                    "terrain/height lookup disagree at ({x},{z})");
+            }}
+        }
+    }
+
+    #[test]
+    fn reported_raised_road_has_matching_real_terrain_and_road_colliders() {
+        use crate::physics::{Physics,ROAD};
+        use rapier3d::{glamx::Vec3,prelude::{QueryFilter,Ray}};
+        let s=stage::reported_round_two_stage();
+        let chunk=terrain_chunk(&s,(-1,-11));
+        let mut physics=Physics::new();physics.add_chunk(&chunk);physics.step();
+        let points=[(-57.27709198f32,-662.73962402f32),(-40.47281265,-699.24645996)];
+        let mut terrain_hits=Vec::new();
+        for (x,z) in points {
+            let ray=Ray::new(Vec3::new(x,60.0,z),Vec3::NEG_Y);
+            let (_,toi)=physics.world.cast_ray(&ray,100.0,true,QueryFilter::default()).expect("terrain collider hit");
+            let hit=60.0-toi;
+            assert!((hit-s.height(x as f64,z as f64) as f32).abs()<0.12,
+                "terrain collision does not match repaired foundation at ({x},{z}): {hit}");
+            terrain_hits.push(hit);
+        }
+        physics.add_road(&road(&s));physics.step();
+        for ((x,z),terrain_y) in points.into_iter().zip(terrain_hits) {
+            let ray=Ray::new(Vec3::new(x,60.0,z),Vec3::NEG_Y);
+            let (handle,toi)=physics.world.cast_ray(&ray,100.0,true,QueryFilter::default()).expect("road collider hit");
+            assert_eq!(physics.world.colliders[handle].user_data,ROAD);
+            let gap=60.0-toi-terrain_y;
+            assert!((0.0..0.3).contains(&gap),"road still floats over terrain at ({x},{z}): {gap} m");
+        }
+    }
 }

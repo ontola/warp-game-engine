@@ -9,6 +9,7 @@
 pub mod cluster;
 pub mod frame;
 pub mod gpu;
+pub mod grass;
 pub mod hud;
 pub mod hud_profile;
 pub mod present;
@@ -76,9 +77,10 @@ pub fn test_frame(gpu: &Gpu, w: u32, h: u32) -> Vec<u8> {
 mod shader_tests {
     #[test]
     fn shaders_validate() {
+        let raster=crate::grass::raster_source();
         let shaders = [
             ("cull", include_str!("shaders/cull.wgsl")),
-            ("raster", include_str!("shaders/raster.wgsl")),
+            ("raster", raster.as_str()),
             ("shade", include_str!("shaders/shade.wgsl")),
             ("tonemap", include_str!("shaders/tonemap.wgsl")),
             ("foliage", include_str!("shaders/foliage.wgsl")),
@@ -100,6 +102,14 @@ mod shader_tests {
             }
         }
         assert!(failed.is_empty(), "\n{}", failed.join("\n"));
+    }
+
+    #[test]
+    fn grass_transition_shaders_validate() {
+        for src in [crate::grass::shader_source(),include_str!("shaders/grass_composite.wgsl").to_owned()] {
+            let module=naga::front::wgsl::parse_str(&src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
+        }
     }
 
     #[test]

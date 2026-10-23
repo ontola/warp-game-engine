@@ -12,8 +12,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 const CELL: f32 = 0.45;
-const HEIGHT: f32 = 0.50;
-const WIDTH: f32 = 0.36 * (257.0 / 135.0);
+pub(crate) const HEIGHT: f32 = 0.50;
+pub(crate) const WIDTH: f32 = 0.36 * (257.0 / 135.0);
 pub const MAX_TUFTS: usize = 60_000;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -151,6 +151,9 @@ pub(crate) fn mesh(material: u32) -> ClusterMesh {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for card in 0..3 {
+        // The live grass renderer uses this same fixed template for its
+        // opaque/opacity handoff: the first card lies in local Z=0, and the
+        // remaining two cards keep their authored angle and physical size.
         let angle = std::f32::consts::PI * card as f32 / 3.0;
         let side = Vec3::new(angle.cos(), 0.0, angle.sin()) * WIDTH * 0.5;
         let base = vertices.len() as u32;

@@ -142,7 +142,7 @@ impl App {
             "window_visible":self.window.as_ref().and_then(|w|w.is_visible()).unwrap_or(false),
             "render_quiet":self.host.as_ref().is_some_and(|h|!h.state.is_running()),
             "physics_hz": 120, "car_substeps": sideways::car::SUBSTEPS, "taa": false, "ground_cover": grass.is_some(),
-            "ground_cover_streaming":grass.map(|s|serde_json::json!({"capacity":s.capacity,"active":s.active,"cached_tiles":s.cached_tiles,"updates":s.updates,"last_update_ms":s.last_update_ms})),
+            "ground_cover_streaming":grass.map(|s|serde_json::json!({"capacity":s.capacity,"active":s.active,"requested":s.requested,"budget_clipped":s.budget_clipped,"visible_budget_clipped":s.visible_budget_clipped,"cached_tiles":s.cached_tiles,"updates":s.updates,"last_update_ms":s.last_update_ms,"ground_bytes":s.ground_bytes})),
             "initial_positions": self.initial_positions, "exit_reason": self.exit_reason, "error": self.error,
             "host": self.host.as_ref().map(|h|h.state.snapshot()), "view_order": self.view_order.iter().map(|i|self.seats[*i].index).collect::<Vec<_>>(),
             "native_controllers":self.input.controllers(),"native_active_samples":self.input.native_active_samples,

@@ -65,6 +65,7 @@ struct VOut {
     @location(0) @interpolate(flat) id: u32,
     @location(1) @interpolate(flat) material: u32,
     @location(2) uv: vec2<f32>,
+    @location(3) @interpolate(flat) grass_opacity: f32,
 };
 
 @vertex
@@ -87,12 +88,21 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     o.id = (ii << 7u) | tri;
     o.material = cl.material;
     o.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
+    o.grass_opacity = 1.0;
+    if (inst.pad & 8u) != 0u {
+        o.grass_opacity = grass_card_opacity(vec3<f32>(inst.r0.w, inst.r1.w, inst.r2.w),
+            view.cam.xyz, view.extra.y > 0.5);
+        if o.grass_opacity < GRASS_OPAQUE_THRESHOLD {
+            o.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+        }
+    }
     return o;
 }
 
 fn alpha_cut(in: VOut) -> bool {
     let dx = dpdx(in.uv);
     let dy = dpdy(in.uv);
+    if in.grass_opacity < GRASS_OPAQUE_THRESHOLD { return true; }
     let m = materials[in.material];
     if (m.flags & 1u) != 0u && m.layer >= 0 {
         var a: f32;

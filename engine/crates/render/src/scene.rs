@@ -65,6 +65,8 @@ pub const FOLIAGE: u32 = 1;
 pub const SOLID: u32 = 2;
 /// Small ground cover receives shadows but does not fill the sun shadow map.
 pub const NO_SHADOW: u32 = 4;
+/// Fixed-pool grass with per-view opaque/transparent transition selection.
+pub const LIVE_GRASS: u32 = 8;
 
 pub const MAX_SOLID_SEGMENTS: usize = 6;
 
@@ -175,6 +177,7 @@ pub struct Scene {
     pub instances: Vec<GpuInstance>,
     pub materials: Vec<Material>,
     pub blended_materials: HashMap<u32, BlendMaterial>,
+    pub grass_ranges: Vec<crate::grass::GrassRange>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
     /// Game data for materials (Sideways: road surface per 2 m row).
