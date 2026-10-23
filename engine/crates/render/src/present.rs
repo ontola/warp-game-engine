@@ -10,6 +10,47 @@ pub struct Presenter {
 }
 
 impl Presenter {
+    /// Explicit screenshot path only. Recompose the existing scene image and
+    /// prepared HUD using the exact surface format. No scene or simulation step
+    /// is repeated, and normal presentation never allocates/maps this readback.
+    pub fn capture_rgba(&self, gpu: &Gpu, picture: &wgpu::Texture, format: wgpu::TextureFormat,
+        hud: Option<&crate::hud::HudRenderer>) -> Result<Vec<u8>, String> {
+        if !matches!(format, wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb|wgpu::TextureFormat::Bgra8Unorm|wgpu::TextureFormat::Bgra8UnormSrgb) {
+            return Err(format!("Screenshot surface format {format:?} is unsupported"));
+        }
+        let (width,height)=(picture.width(),picture.height());
+        let target=gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label:Some("F12 final composite"), size:picture.size(), mip_level_count:1,sample_count:1,
+            dimension:wgpu::TextureDimension::D2,format,
+            usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[],
+        });
+        self.present(gpu,picture,&target.create_view(&Default::default()),hud,None)?;
+        let row=(width*4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)*wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback=gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label:Some("F12 readback"),size:u64::from(row)*u64::from(height),
+            usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false,
+        });
+        let mut encoder=gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo{texture:&target,mip_level:0,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},
+            wgpu::TexelCopyBufferInfo{buffer:&readback,layout:wgpu::TexelCopyBufferLayout{offset:0,bytes_per_row:Some(row),rows_per_image:Some(height)}},
+            target.size());
+        let submission=gpu.queue.submit([encoder.finish()]);
+        let (sender,receiver)=std::sync::mpsc::channel();
+        readback.slice(..).map_async(wgpu::MapMode::Read,move|result|{let _=sender.send(result);});
+        gpu.device.poll(wgpu::PollType::Wait{submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(5))}).map_err(|e|format!("Screenshot GPU wait: {e:?}"))?;
+        receiver.try_recv().map_err(|e|format!("Screenshot callback: {e}"))?.map_err(|e|format!("Screenshot mapping: {e:?}"))?;
+        let result=(|| {
+            let bytes=readback.slice(..).get_mapped_range().map_err(|e|format!("Screenshot mapped range: {e:?}"))?;
+            let mut rgba=Vec::with_capacity(width as usize*height as usize*4);
+            for y in 0..height {let start=(y*row) as usize;rgba.extend_from_slice(&bytes[start..start+width as usize*4]);}
+            if matches!(format,wgpu::TextureFormat::Bgra8Unorm|wgpu::TextureFormat::Bgra8UnormSrgb){for pixel in rgba.chunks_exact_mut(4){pixel.swap(0,2);}}
+            Ok(rgba)
+        })();
+        readback.unmap();
+        result
+    }
+
     pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Self {
         let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("live presentation"),

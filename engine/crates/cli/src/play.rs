@@ -100,6 +100,7 @@ struct App {
     active_settings: serde_json::Value, input_edges: [(i8,bool);4], look: [[f32;2];4], finished_round: u32,
     resume_fullscreen: Option<Fullscreen>,
     hud_stats: serde_json::Value, hud_samples: Vec<serde_json::Value>,
+    screenshot_pending: bool, screenshot_toast: Option<(String, Instant)>,
 }
 
 impl App {
@@ -312,6 +313,10 @@ impl App {
         if self.input.take_key(KeyCode::F11) {
             if let Some(w) = &self.window { w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) }); }
         }
+        // Input::take_key consumes only the press edge, not OS key repeats.
+        if self.input.take_key(KeyCode::F12) && self.focused && !self.invisible() {
+            self.screenshot_pending = true;
+        }
         if self.args.smoke_frames > 0 && self.host.is_none() {
             self.race.phase = "racing"; self.race.clock = self.race.clock.max(0.0);
             for i in &mut inputs { i.control = Control { throttle: 0.75, steer: 0.04, ..Default::default() }; }
@@ -366,10 +371,12 @@ impl App {
         let size = self.window.as_ref().unwrap().inner_size();
         if size.width == 0 || size.height == 0 { return Ok(()); }
         let layout_started=Instant::now();
-        let draw_list=if self.args.hud {
+        if self.screenshot_toast.as_ref().is_some_and(|(_,until)|now>=*until){self.screenshot_toast=None;}
+        let mut draw_list=if self.args.hud {
             Some(crate::hud::build(&self.race,&self.view_order,&render::split_rects(self.args.views,size.width,size.height).into_iter().map(|(x,y,w,h)|[x,y,w,h]).collect::<Vec<_>>(),
                 &self.race.players.iter().map(|p|p.name.clone()).collect::<Vec<_>>(),self.paused,[size.width,size.height]))
         } else {None};
+        if let (Some(list),Some((message,_)))=(&mut draw_list,&self.screenshot_toast){crate::hud::screenshot_toast(list,message);}
         let layout_ms=layout_started.elapsed().as_secs_f64()*1000.0;
         let g = self.graphics.as_mut().ok_or("GPU not initialized")?;
         let prepare_started=Instant::now();
@@ -384,6 +391,7 @@ impl App {
         let views = crate::shot::view_rects(if ordered.is_empty(){&cams}else{&ordered}, self.args.views, size.width, size.height);
         let image = g.renderer.render_texture(&g.gpu, &views, &self.light, size.width, size.height);
         self.rendered += 1;
+        let presented_before=self.presented;
         let mut hidden_target=None;
         if self.rendered==1 { println!("play: first scene frame submitted"); }
         if invisible {
@@ -425,12 +433,30 @@ impl App {
             self.finish(event_loop, "smoke_frame_limit");
             return Ok(());
         }
+        if self.screenshot_pending && self.presented>presented_before {
+            self.screenshot_pending=false;
+            let g=self.graphics.as_ref().unwrap();
+            let metadata=serde_json::json!({
+                "schema":1,"seed":self.args.seed,"stage_noise_seed":self.race.stage.noise_seed,"stage_detail_seed":self.race.stage.detail_seed,"weather":self.race.weather,"state":self.snapshot(),
+                "player_poses":poses.iter().enumerate().map(|(i,p)|serde_json::json!({"index":i,"position":p.pos.to_array(),"rotation_xyzw":p.rot.to_array(),"model":p.model})).collect::<Vec<_>>(),
+                "views":views.iter().map(|v|serde_json::json!({"rect":[v.x,v.y,v.w,v.h],"camera":{"position":v.cam.pos.to_array(),"target":v.cam.target.to_array(),"fov_y":v.cam.fov_y,"near":v.cam.near}})).collect::<Vec<_>>(),
+                "render":{"output_size":[size.width,size.height],"surface_format":format!("{:?}",g.config.format),"adapter":g.gpu.info.name,"backend":format!("{:?}",g.gpu.info.backend),"hud":self.args.hud,
+                    "sun_direction":self.light.sun_dir.to_array(),"sun_lux":self.light.sun_lux,"sky_lux":self.light.sky_lux,"ev100":self.light.ev100,
+                    "taa":self.light.taa,"lod_pixels":self.light.lod_pixels,"gi":self.light.gi,"contact_occlusion":self.light.contact_occlusion,
+                    "reflection_occlusion":self.light.reflection_occlusion,"near_shadows":self.light.near_shadows,"debug":self.light.debug},
+            });
+            let saved=g.presenter.capture_rgba(&g.gpu,&image,g.config.format,g.hud.as_ref())
+                .and_then(|rgba|crate::screenshot::save(self.window.as_ref().unwrap(),size.width,size.height,&rgba,metadata));
+            let message=match saved{Ok(message)=>message,Err(error)=>{eprintln!("screenshot failed: {error}");format!("Screenshot failed: {error}")}};
+            self.window.as_ref().unwrap().set_title(&format!("Sideways | {message}"));
+            self.screenshot_toast=Some((message,Instant::now()+Duration::from_secs(4)));
+        }
         if self.last_title.elapsed() > Duration::from_millis(500) {
             self.last_title = Instant::now();
             let player = &self.race.players[0];
             let body = &self.race.phys.world.bodies[player.car.body];
             let speed = body.linvel().length() * 3.6;
-            self.window.as_ref().unwrap().set_title(&format!("Sideways | {:.0} km/h | gear {} | {} {:.1}s{} | RT/W gas, LT/S brake, A/Space handbrake, X/R reset, Start/Esc pause, N next stage", speed, player.car.gear, self.race.phase, self.race.clock, if self.paused { " PAUSED" } else { "" }));
+            self.window.as_ref().unwrap().set_title(&format!("Sideways | {:.0} km/h | gear {} | {} {:.1}s{} | RT/W gas, LT/S brake, A/Space handbrake, X/R reset, Start/Esc pause, N next stage, F12 screenshot{}", speed, player.car.gear, self.race.phase, self.race.clock, if self.paused { " PAUSED" } else { "" }, self.screenshot_toast.as_ref().map(|(text,_)|format!(" | {text}")).unwrap_or_default()));
         }
         self.trace(false);
         Ok(())
@@ -522,7 +548,7 @@ pub fn run(raw:&[String])->i32{
     let settings=serde_json::json!({"gearbox":"automatic","stage_km":a.km,"rivals":0,"contact":true,"weather":a.weather});
     let view_order=(0..a.views).collect();
     let resume_fullscreen=if a.fullscreen{Some(Fullscreen::Borderless(None))}else{None};
-    let mut app=App{args:a,race,built,light,input:Input::new(),window:None,graphics:None,focused:true,paused:false,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![]};
+    let mut app=App{args:a,race,built,light,input:Input::new(),window:None,graphics:None,focused:true,paused:false,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None};
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     if let Err(e)=events.run_app(&mut app){eprintln!("play event loop: {e}");return 1;}
     if let Some(e)=app.error{eprintln!("play: {e}");1}else{0}
