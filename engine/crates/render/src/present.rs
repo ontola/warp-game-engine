@@ -33,7 +33,8 @@ impl Presenter {
         Self { layout, pipeline, sampler, uniform }
     }
 
-    pub fn present(&self, gpu: &Gpu, picture: &wgpu::Texture, target: &wgpu::TextureView) {
+    pub fn present(&self, gpu: &Gpu, picture: &wgpu::Texture, target: &wgpu::TextureView,
+        hud: Option<&crate::hud::HudRenderer>, mut profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
         let view = picture.create_view(&Default::default());
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("live frame"), layout: &self.layout,
@@ -55,6 +56,21 @@ impl Presenter {
             pass.set_bind_group(0, &bind, &[]);
             pass.draw(0..3, 0..1);
         }
+        if let Some(hud) = hud {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("HUD at output resolution"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: profile.as_ref().map(|p|p.writes()),
+                occlusion_query_set: None, multiview_mask: None,
+            });
+            hud.render(&mut pass)?;
+        }
+        if hud.is_some() { if let Some(profile) = profile.as_mut() { profile.resolve(&mut encoder)?; } }
         gpu.queue.submit([encoder.finish()]);
+        Ok(())
     }
 }

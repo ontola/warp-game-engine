@@ -122,5 +122,46 @@ starts fullscreen at 4K output when explicitly selected by the user.
 Hidden GPU checks exercise the presentation shader against the real surface
 format but report zero presented frames. They do not prove visible swapchain
 presentation or a complete physical-controller driving session through the
-GameNight UI. Interactive play has no streamed grass, TAA, audio, full HUD,
-particles or in-game settings menu yet.
+GameNight UI. Release r4 had no streamed grass, TAA, audio, full HUD,
+particles or in-game settings menu. The HUD update below adds the instruments.
+
+## Native-resolution HUD update
+
+The next candidate, `sideways-hud-r1.exe`, SHA256
+`12e27b9cffdd5404f483c4568dd7f3c54933633355c56953d0aebe3b09b98b4f`,
+adds shared Glyphon 0.12 / Cosmic Text 0.19 font rendering, bundled Barlow,
+native-output UI geometry and the Godot instrument layout. The one shared
+atlas serves every view. Scene presentation now prefers an sRGB surface for
+linear alpha blending; screenshots include the composited HUD with correct
+BGRA channel order.
+
+All 32 workspace tests passed (`hud-workspace-tests-r2.log`), including WGSL,
+font shaping for Latin accents, stable cache identities, view clipping,
+time rollover, countdown/recovery/finish/results layouts and GPU query
+alignment/validation. No simulation forces or physics rate changed.
+
+Real RTX 5070 Ti GPU runs used native 3840x2160, 48 rendered frames and eight
+warmup frames, leaving 40 measured samples. Each run advanced 384 simulation
+ticks with scripted driving. Captures `hud-r1-one.png` and `hud-r1-four.png`
+were visually checked for readable text and clipping; corresponding
+`*-profile.json` files retain every per-frame duration and CPU sample.
+
+| Views | HUD GPU median | HUD GPU p95 | CPU prepare median | CPU layout median |
+|---|---:|---:|---:|---:|
+| 1 | 0.006000 ms | 0.006400 ms | 0.186350 ms | 0.016350 ms |
+| 4 | 0.006256 ms | 0.006752 ms | 0.225600 ms | 0.026950 ms |
+
+GPU timestamps bracket only the HUD geometry/text pass, excluding scene
+rendering, presentation blit, CPU shaping/uploads and query resolution.
+This satisfies the proposed 0.3 ms HUD draw budget in this short racing sample;
+it does not establish a total-frame improvement, 120 FPS gameplay, or costs for
+results screens, resize or first-time Unicode fallback. No total on/off ABBA
+claim is made. Hidden graphics wall time includes GPU synchronization.
+
+After the checks, the exact candidate was copied to `engine/build/sideways.exe`
+and its hash verified. The existing GameNight preview registration points to
+this path. At the user's request, a visible one-player 4K fullscreen playtest
+was started; `hud-r1-live.log` confirms the first actual presented frame and
+the running window title showed live race speed/time. This visible session was
+standalone. Earlier real GameNight protocol checks remain release-r4 evidence;
+the full daemon suite was not rerun during the user's live playtest.
