@@ -10,6 +10,7 @@ mod distant_forest;
 mod gpu_run;
 mod ground_cover;
 mod live_ground_cover;
+mod far_ground_cover;
 mod input;
 mod hud;
 mod play;

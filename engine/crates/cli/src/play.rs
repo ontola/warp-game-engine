@@ -145,6 +145,7 @@ impl App {
             "render_quiet":self.host.as_ref().is_some_and(|h|!h.state.is_running()),
             "physics_hz": 120, "car_substeps": sideways::car::SUBSTEPS, "taa": false, "ground_cover": grass.is_some(),
             "ground_cover_streaming":grass.map(|s|serde_json::json!({"capacity":s.capacity,"active":s.active,"requested":s.requested,"budget_clipped":s.budget_clipped,"visible_budget_clipped":s.visible_budget_clipped,"cached_tiles":s.cached_tiles,"updates":s.updates,"last_update_ms":s.last_update_ms,"ground_bytes":s.ground_bytes})),
+            "far_ground_cover":self.built.scene.far_grass.as_ref().map(|f|serde_json::json!({"origin":f.origin,"cell":f.cell,"point_grid":[f.width,f.height],"max_height":f.max_height,"profile":f.profile,"half_resolution":true,"outer_fade_m":[160,240]})),
             "experimental_voxel_tree_patch":self.built.scene.voxel_forest.as_ref().map(|f|serde_json::json!({"tree_count":f.instances.len(),"levels":f.levels.len(),"packed_bytes":f.byte_len(),"automatic_lod_transition":false})),
             "initial_positions": self.initial_positions, "exit_reason": self.exit_reason, "error": self.error,
             "host": self.host.as_ref().map(|h|h.state.snapshot()), "view_order": self.view_order.iter().map(|i|self.seats[*i].index).collect::<Vec<_>>(),
@@ -399,7 +400,13 @@ impl App {
         let first = self.built.cars.first().map(|c|c.first).unwrap_or(self.built.scene.instances.len());
         if let Some(range)=grass_dirty {g.renderer.update_instances(&g.gpu,range.start,&self.built.scene.instances[range])?;}
         g.renderer.update_instances(&g.gpu, first, &self.built.scene.instances[first..])?;
-        let image = g.renderer.render_texture(&g.gpu, &views, &self.light, size.width, size.height);
+        // F12 and the final hidden smoke capture measure this same frame;
+        // normal play retains the no-readback render path.
+        let measure_capture=self.screenshot_pending || (self.args.smoke_frames>0 && self.rendered+1>=self.args.smoke_frames && self.args.capture.is_some());
+        let (image,capture_stats)=if measure_capture {
+            let (image,stats)=g.renderer.render_texture_profiled(&g.gpu,&views,&self.light,size.width,size.height);
+            (image,Some(stats))
+        } else {(g.renderer.render_texture(&g.gpu, &views, &self.light, size.width, size.height),None)};
         self.rendered += 1;
         let presented_before=self.presented;
         let mut hidden_target=None;
@@ -433,11 +440,22 @@ impl App {
         if invisible {g.gpu.wait();}
         if self.args.hud_profile.is_some(){self.hud_samples.push(serde_json::json!({"frame":self.rendered,"race_frame":self.race.frame,"hud_layout_cpu_ms":layout_ms,"hud_prepare_cpu_ms":prepare_ms,"graphics_wall_ms":graphics_started.elapsed().as_secs_f64()*1000.0,"stats":self.hud_stats}));}
         if self.rendered==1 { println!("play: first frame complete (presented={})",self.presented); }
+        if presented_before==0 && self.presented>0 { println!("play: first visible frame complete"); }
         if self.args.smoke_frames > 0 && self.rendered >= self.args.smoke_frames {
+            if let Some(views)=g.renderer.far_grass_diagnostics(&g.gpu)? {
+                for (index,view) in views.iter().enumerate() {
+                    println!("far grass view {index}: traced={}, overflow={}, max_iterations={}",view.traced_rays,view.overflow_rays,view.max_iterations);
+                    if view.overflow_rays>0 {return Err(format!("far grass view {index} had {} incomplete rays",view.overflow_rays));}
+                }
+            }
             if let Some(path) = &self.args.capture {
                 let target=hidden_target.as_ref().ok_or("capture requires the final hidden presentation texture")?;
                 if !matches!(target.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb|wgpu::TextureFormat::Bgra8Unorm|wgpu::TextureFormat::Bgra8UnormSrgb){return Err("capture requires an 8-bit RGBA/BGRA surface".into());}
                 render::write_png(Path::new(path), size.width, size.height, &g.gpu.read_rgba8(target))?;
+                if let Some(stats)=&capture_stats {
+                    let metrics=serde_json::json!({"schema":1,"capture":path,"output_size":[size.width,size.height],"views":views.len(),"gpu_pass_ms":stats.gpu_ms,"timings_available":!stats.gpu_ms.is_empty(),"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS","triangles":stats.triangles,"clusters":stats.clusters});
+                    std::fs::write(format!("{path}.metrics.json"),serde_json::to_vec_pretty(&metrics).unwrap()).map_err(|e|format!("capture metrics: {e}"))?;
+                }
             }
             g.gpu.wait();
             self.finish(event_loop, "smoke_frame_limit");
@@ -451,6 +469,7 @@ impl App {
                 "player_poses":poses.iter().enumerate().map(|(i,p)|serde_json::json!({"index":i,"position":p.pos.to_array(),"rotation_xyzw":p.rot.to_array(),"model":p.model})).collect::<Vec<_>>(),
                 "views":views.iter().map(|v|serde_json::json!({"rect":[v.x,v.y,v.w,v.h],"camera":{"position":v.cam.pos.to_array(),"target":v.cam.target.to_array(),"fov_y":v.cam.fov_y,"near":v.cam.near}})).collect::<Vec<_>>(),
                 "render":{"output_size":[size.width,size.height],"surface_format":format!("{:?}",g.config.format),"adapter":g.gpu.info.name,"backend":format!("{:?}",g.gpu.info.backend),"hud":self.args.hud,
+                    "profile":capture_stats.as_ref().map(|s|serde_json::json!({"gpu_pass_ms":s.gpu_ms,"timings_available":!s.gpu_ms.is_empty(),"triangles":s.triangles,"clusters":s.clusters,"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS"})),
                     "sun_direction":self.light.sun_dir.to_array(),"sun_lux":self.light.sun_lux,"sky_lux":self.light.sky_lux,"ev100":self.light.ev100,
                     "taa":self.light.taa,"lod_pixels":self.light.lod_pixels,"gi":self.light.gi,"contact_occlusion":self.light.contact_occlusion,
                     "reflection_occlusion":self.light.reflection_occlusion,"near_shadows":self.light.near_shadows,"debug":self.light.debug},

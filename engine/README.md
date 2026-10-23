@@ -1,8 +1,19 @@
 # Kern: an engine built for fast iteration
 
 Rust workspace for the Sideways port. Designed around the loops that cost an
-AI (or a person) time: compiling, tuning numbers, seeing results, finding
-why two runs differ, and comparing with the Godot original.
+AI (or a person) time: compiling, tuning numbers, seeing results and finding
+why two runs differ. This project has two equal goals: improve the engine's
+APIs, performance and development loop, and apply those improvements in
+Sideways. Validate engine changes in the game; current comparisons are
+between Kern versions, not against the archived Godot implementation.
+
+Windows iteration: `tools/play-dev-windows.ps1 -Autoplay` builds while the
+current game keeps running and stages a uniquely named executable. Use
+`-Restart` for the following iteration, or `-BuildOnly` to avoid launching.
+See [the developer workflow](tools/README.md) for logs, process ownership and
+explicit first-presentation confirmation. This is build/restart, not shader
+hot reload. F12 captures the actual frame, camera/state and same-frame GPU
+pass timings; those timings exclude HUD, presentation and CPU work.
 
 | Crate | What |
 | --- | --- |
@@ -289,23 +300,44 @@ On a 2-core cloud container:
   Disable with `SIDEWAYS_DISTANT_FOREST=0` for matched comparisons. This is
   not Nanite assemblies or a virtualized geometry streaming implementation.
   The original generic exposed-face voxel pine trial is opt-in with
-  `SIDEWAYS_GENERIC_VOXEL_TREES=1`; the source-derived density voxel bake is
-  still an offline experiment.
+  `SIDEWAYS_GENERIC_VOXEL_TREES=1`; the source-derived density voxel renderer
+  is a separate bounded experiment, described above.
 
 Frozen shots build the full grass scatter once. Live play caches candidate
-plants in 3.6 m world tiles, updates when a camera changes tile and retains
-existing plants in their fixed slots. Single/two/three-or-four-view radii are
-32/26/22 m. Density falls gradually over that range through deterministic
-whole-tuft selection; this is not a continuous opacity fade. Roots follow the
-native terrain triangles and exclude the road. Plants receive the existing
-sun/canopy shading without casting shadows. Wind, shrubs, ferns, stumps and
-mossy rocks remain pending. The split-screen budget bounds instance count,
-not GPU time: each view still culls, rasterizes and shades its visible grass.
+plants in 3.6 m world tiles and updates residency masks at the moving border;
+surviving plants keep their three cards, size and fixed slots. The pool has
+70,000 slots for one view and 115,000 shared slots for split screen. Near
+grass uses a nearest-layer opacity fade at 40-60 m (20-38 m in split screen),
+with residency extending beyond the fade. Roots follow the native terrain
+triangles and exclude the road. Plants receive sun/canopy shading without
+casting shadows. Wind, shrubs, ferns, stumps and mossy rocks remain pending.
+These budgets bound instance count, not GPU time.
+
+`SIDEWAYS_FAR_GRASS=1` explicitly enables the new development grass volume
+in live play. Four height bins follow the native 2 m terrain triangles and
+road mask. Source-photo coverage and habitat rules estimate its density;
+near and far representations blend before one composite over the scene.
+Far grass fades out over 160-240 m. This is a statistical, half-resolution
+volume, not individual blades or full Nanite. Its mean appearance is still
+too smooth on some open slopes, so the normal default remains unchanged.
+The fixed allocation cap is 4,194,304 native grid points; an oversized field
+fails explicitly. See WINDOWS_VALIDATION.md for bounded GPU tests and costs.
+
+Engine integration: `Scene::far_grass` owns the terrain/density field;
+`volume_view::VolumeViewInputs` supplies typed shared lighting/depth inputs
+to both grass and tree-volume passes. `Renderer::render_texture` stays free
+of readback; `render_texture_profiled` explicitly waits for same-frame scene
+counters/timings without a redundant image readback. It is for developer
+captures, not continuous gameplay telemetry.
 
 In developer play, F12 saves the current image including HUD and a metadata
 sidecar to `engine/build/screenshots/`. On Windows it also copies the image
 to the clipboard; paste it into the chat with Ctrl+V. No automatic upload
-occurs. The metadata records the stage, cameras, cars and graphics settings.
+occurs. The metadata records the stage, cameras, cars, graphics settings and
+same-frame scene GPU pass times. Missing timestamp support is marked as
+unavailable. HUD, presentation and CPU time are outside these timings.
+Hidden `play --smoke-render N --capture image.png` also writes
+`image.png.metrics.json` for the final frame.
 
 Not there yet: the remaining ground-cover types, car lights and particles,
 wet road reflections, and the remaining interactive features listed above. GPU numbers come from

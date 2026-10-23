@@ -22,7 +22,7 @@ struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32> };
 
 const VOLUME_TILE: u32 = 16u;
 const VOLUME_CANDIDATES: u32 = 64u;
-const VOLUME_MAX_STEPS: u32 = 1024u;
+const VOLUME_MAX_STEPS: u32 = 4096u;
 const VOLUME_ACTIVE: u32 = 16u;
 
 // One invocation owns one tile; no order-dependent append or counter reset.

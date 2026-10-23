@@ -395,6 +395,12 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     let live_ground_cover = if live_cover {
         let stream = crate::live_ground_cover::LiveGroundCover::reserve(&mut scene, &chunks, cameras, &r, &mut mesh_names)?;
         log.push(stream.summary());
+        if std::env::var("SIDEWAYS_FAR_GRASS").as_deref() == Ok("1") {
+            let photo = crate::ground_cover::photo(&r)?;
+            let (field, summary) = crate::far_ground_cover::bake(&chunks, &photo)?;
+            log.push(summary);
+            scene.far_grass = Some(field);
+        }
         Some(stream)
     } else if ground_cover {
         log.push(crate::ground_cover::add(&mut scene, &chunks, cameras, &r, &mut mesh_names)?);
