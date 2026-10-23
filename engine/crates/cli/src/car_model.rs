@@ -68,7 +68,13 @@ pub fn load(scene: &mut Scene, path: &std::path::Path, paint: [f32; 3], textures
         if m.alpha_mode()!=gltf::material::AlphaMode::Opaque || f[3]<0.999 {
             flags|=render::scene::NO_AMBIENT_OCCLUSION;
         }
-        mats.push(scene.add_material(Material { tint, layer: if painted { -1 } else { layer }, roughness, flags, scale: 1.0, metal }));
+        if m.double_sided() { flags |= render::scene::TWO_SIDED; }
+        if m.alpha_mode() == gltf::material::AlphaMode::Mask { flags |= render::scene::ALPHA_TEST; }
+        let id = scene.add_material(Material { tint, layer: if painted { -1 } else { layer }, roughness, flags, scale: 1.0, metal });
+        if m.alpha_mode() == gltf::material::AlphaMode::Blend {
+            scene.set_material_blend(id, f[3], m.double_sided());
+        }
+        mats.push(id);
     }
     let mut body = None;
     let mut wheels = [None; 4];

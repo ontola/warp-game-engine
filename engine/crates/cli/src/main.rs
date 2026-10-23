@@ -6,6 +6,7 @@
 
 mod car_model;
 mod check;
+mod distant_forest;
 mod gpu_run;
 mod ground_cover;
 mod input;

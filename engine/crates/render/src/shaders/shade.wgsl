@@ -118,6 +118,12 @@ fn contact_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>, owner: u32) -
     var specular = 1.0;
     for (var i = 0u; i < gi.hf_dims.z; i++) {
         let bounds = solids[i];
+        // A coarse interior proxy must never shade its own visible body:
+        // segment boundaries otherwise appear as planes across the paint.
+        if bounds.identity.x == owner {
+            i += max(bounds.identity.y, 1u) - 1u;
+            continue;
+        }
         let obj = instances[bounds.identity.x];
         let world_delta = p - obj.sphere.xyz;
         let reach_radius = obj.sphere.w + 8.0;
@@ -136,9 +142,6 @@ fn contact_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>, owner: u32) -
         let delta = max(abs(local) - extent3, vec3<f32>(0.0));
         let distance2 = dot(delta * delta, scale2);
         if distance2 > 64.0 { continue; }
-        // Fitted proxies are deliberately inset, but irregular surface points
-        // can still fall inside their own proxy. Do not blacken those surfaces.
-        if bounds.identity.x == owner && all(abs(local) <= extent3 + vec3<f32>(0.025)) { continue; }
         let scale = sqrt(scale2);
         let toward = -local * scale;
         let d2 = max(dot(toward, toward), 1e-6);
@@ -163,7 +166,9 @@ fn contact_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>, owner: u32) -
     return vec2<f32>(clamp(diffuse, 0.0, 1.0), specular);
 }
 
-// Terrain height at (x, z), bilinear; -1e9 outside the heightfield.
+// Terrain height at (x, z), on the same diagonal as the terrain mesh.
+// A bilinear patch can rise above its two rendered triangles and make the
+// ground falsely occlude its own indirect light. -1e9 outside the field.
 fn ground_at(xz: vec2<f32>) -> f32 {
     let g = (xz - gi.hf.xy) / gi.hf.z;
     let d = vec2<i32>(gi.hf_dims.xy);
@@ -176,7 +181,10 @@ fn ground_at(xz: vec2<f32>) -> f32 {
     let b = textureLoad(heightfield, i + vec2<i32>(1, 0), 0).r;
     let c = textureLoad(heightfield, i + vec2<i32>(0, 1), 0).r;
     let e = textureLoad(heightfield, i + vec2<i32>(1, 1), 0).r;
-    return mix(mix(a, b, f.x), mix(c, e, f.x), f.y);
+    if f.x + f.y <= 1.0 {
+        return a + (b - a) * f.x + (c - a) * f.y;
+    }
+    return e + (c - e) * (1.0 - f.x) + (b - e) * (1.0 - f.y);
 }
 
 // How much light gets from direction `dir` to p, through the canopy and
@@ -283,7 +291,14 @@ fn xform(inst: Instance, p: vec3<f32>) -> vec3<f32> {
 }
 
 fn xform_dir(inst: Instance, d: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(dot(inst.r0.xyz, d), dot(inst.r1.xyz, d), dot(inst.r2.xyz, d));
+    // Instance transforms have orthogonal scaled axes. Normals need the
+    // inverse transpose, including non-uniformly scaled trees and rocks.
+    let ax = vec3<f32>(inst.r0.x, inst.r1.x, inst.r2.x);
+    let ay = vec3<f32>(inst.r0.y, inst.r1.y, inst.r2.y);
+    let az = vec3<f32>(inst.r0.z, inst.r1.z, inst.r2.z);
+    return ax * d.x / max(dot(ax, ax), 1e-8)
+        + ay * d.y / max(dot(ay, ay), 1e-8)
+        + az * d.z / max(dot(az, az), 1e-8);
 }
 
 fn sky_dir_uv(d: vec3<f32>) -> vec2<f32> {
@@ -522,6 +537,9 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     if dot(n, dir) > 0.0 && (m.flags & 8u) != 0u && (m.flags & 64u) == 0u {
         n = -n;
     }
+    // Keep the smooth authored normal before texture relief. Visibility
+    // traced around a flat triangle normal changes abruptly at every edge.
+    let surface_n = n;
     let dist = distance(p, view.cam.xyz);
     // Ray differentials: where the neighbouring pixels' rays meet this
     // triangle's plane. Gives exact, anisotropic texture footprints.
@@ -665,7 +683,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     var back = vec3<f32>(0.0);
     var ao = 1.0;
     let grass = (m.flags & 64u) != 0u;
-    let needles = (m.flags & 9u) == 9u && !grass;
+    let needles = (m.flags & 9u) == 9u && (inst.pad & 1u) != 0u && !grass;
     if needles {
         // foliage.gdshader: a little colour per tree, sunlight shining
         // through the needles from behind (BACKLIGHT), AO 0.85.
@@ -679,12 +697,12 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     var shadow = 1.0;
     if sun > 0.0 || needles || gi.vol_dims.w != 0u || (m.flags & 32u) != 0u || m.roughness < 0.55 {
-        var s_map = shadow_at(p, geo_n * sign(dot(geo_n, l) + 1e-4));
+        var s_map = shadow_at(p, surface_n * sign(dot(surface_n, l) + 1e-4));
         // Beyond the shadow map the canopy volume shades the ground.
         let c = light.shadow_view_proj * vec4<f32>(p, 1.0);
         let edge = max(abs(c.x), abs(c.y));
         if edge > 0.85 && gi.vol_dims.w != 0u {
-            let tr = transmittance(p + geo_n * 0.2, l, 50.0);
+            let tr = transmittance(p + surface_n * 0.2, l, 50.0);
             s_map = mix(s_map, tr, smoothstep(0.85, 1.0, edge));
         }
         shadow = mix(1.0, s_map, light.sun_color.w);
@@ -700,9 +718,9 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         f0 = vec3<f32>(0.016); // grass_cards.gdshader: SPECULAR 0.2
     }
     let diffuse = base * (1.0 - m.metal) / PI;
-    // Visibility uses the geometric hemisphere: subpixel normal-map grain
-    // must not select entirely different terrain/canopy occlusion paths.
-    let visibility_n = geo_n * select(-1.0, 1.0, dot(geo_n, n) >= 0.0);
+    // Use the continuous surface hemisphere, unaffected by texture grain.
+    // The triangle normal is only for intersection and texture derivatives.
+    let visibility_n = surface_n;
     let sky_vis = sky_visibility(p, visibility_n);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
     let refl = reflect(dir, n);

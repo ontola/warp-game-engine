@@ -20,6 +20,15 @@ pub const GRASS: u32 = 64;
 /// Glass/blended surfaces must not become opaque ambient-light occluders.
 /// This flag does not change the material's rasterization or albedo.
 pub const NO_AMBIENT_OCCLUSION: u32 = 128;
+/// Drawn by the sorted forward pass, never the opaque or shadow raster pass.
+pub const BLEND: u32 = 256;
+
+/// glTF alphaMode=BLEND data, separate from the fixed GPU material layout.
+#[derive(Clone, Copy, Debug)]
+pub struct BlendMaterial {
+    pub alpha: f32,
+    pub double_sided: bool,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -165,6 +174,7 @@ pub struct Scene {
     pub meshes: Vec<MeshRef>,
     pub instances: Vec<GpuInstance>,
     pub materials: Vec<Material>,
+    pub blended_materials: HashMap<u32, BlendMaterial>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
     /// Game data for materials (Sideways: road surface per 2 m row).
@@ -283,6 +293,13 @@ impl Scene {
     pub fn add_material(&mut self, m: Material) -> u32 {
         self.materials.push(m);
         (self.materials.len() - 1) as u32
+    }
+
+    /// Preserve continuous alpha, including opaque texels of a blended badge.
+    /// The same material is excluded from both depth/shadow and solid proxies.
+    pub fn set_material_blend(&mut self, material: u32, alpha: f32, double_sided: bool) {
+        self.materials[material as usize].flags |= BLEND | NO_AMBIENT_OCCLUSION;
+        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided });
     }
 
     /// Load an image file into the texture array; returns its layer.
