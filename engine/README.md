@@ -14,13 +14,22 @@ why two runs differ, and comparing with the Godot original.
 
 ## Commands
 
+    cargo run --release -p cli -- play --views 1 --size 1920x1080               # explicitly open a playable window
+    cargo run --release -p cli -- play --views 4 --size 3840x2160               # one 4K output, four split-screen views
+    cargo run --release -p cli -- play --list-controllers                       # enumerate native pads; no window
+    cargo run --release -p cli -- play --probe-controllers 15 --state-out pads.json # observe actual native inputs; no window
+    cargo run --release -p cli -- play --smoke-ticks 600 --state-out input.json # bounded manual-input simulation; no GPU/window
+    cargo run --release -p cli -- play --smoke-render 16 --capture play.png --state-out play.json # invisible bounded GPU smoke
+
     cargo run -p cli -- shot out.png --seed 1 --km 3 --at 300 --weather clear   # a race moment, offscreen (16 TAA frames)
     cargo run -p cli -- shot out.png --taa 1                                     # one frame, no TAA: the quick look
     cargo run -p cli -- shot out.png --views 4 --size 1920x1080                  # split screen
+    cargo run -p cli -- shot bare.png --ground-cover off                         # matched frame without grass
     cargo run -p cli -- shot out.png --pick 420,230                              # what covers that pixel
     cargo run -p cli -- shot out.png --set ev100=13.5 --set gi=0 --set debug=1   # retune light, A/B GI, sky visibility view
     cargo run -p cli -- gpu-run --out ../gpu-out                                 # gpu-jobs.toml (see GPU_RUNNER.md)
     cargo test -p render                                                         # every WGSL shader validated, no GPU
+    cargo test -p cli ground_cover                                               # scatter/root/road/budget checks, no GPU
 
     cargo run -p cli -- bench                      # handling bench, next to Godot's numbers
     cargo run -p cli -- sim --ticks 45000 --seed 1 --km 2 --events
@@ -30,6 +39,76 @@ why two runs differ, and comparing with the Godot original.
 
 Car numbers live in `data/cars.toml` and are read at every run: retune and
 rerun without rebuilding. `--cars other.toml` runs a variant.
+
+Every `shot` also writes `<output.png>.json` with the actual camera positions,
+targets, vertical FOV, split rectangles, car/wheel poses, weather, resolution
+and AA/ground-cover settings. Use these inputs when comparing renderers;
+matching the seed and starting distance alone does not match the final camera
+after different physics simulations. GPU jobs accept `ground_cover = false`
+for a matched no-grass baseline.
+
+## Explicit Windows playtest
+
+Build and stage the Windows preview with `tools\build-windows.ps1`. Launch it
+explicitly with `tools\play-windows.ps1` (one view, 4K fullscreen), or add
+`-Views 4 -Windowed -Size 1920x1080`. Keep this checkout: the current development
+executable loads assets from its build-time repository path and is not a
+standalone redistributable package. Measured Windows evidence and remaining
+limitations are in [WINDOWS_VALIDATION.md](WINDOWS_VALIDATION.md).
+
+Only `play` opens a window. Headless commands never create one, and
+`play --smoke-render N` creates an invisible window for validation. In a
+managed GameNight session, even normal `play` stays hidden during preparation
+and becomes visible only after a valid host start/resume. Host pause hides the
+window, releases fullscreen and stops GPU rendering while input/lifecycle
+polling continues. The initial play
+path runs the same car simulation at 120 Hz with four drivetrain substeps,
+updates existing GPU body/wheel instances, invalidates moving shadows, and
+presents the GPU image without a full-frame CPU readback.
+
+Invisible windows are pumped explicitly because Win32 can suppress their
+redraw events. Hidden validation creates/configures the real Windows surface,
+then renders the presentation pipeline into an offscreen target of that surface
+format. It reports zero presented frames; it does not prove visible swapchain
+presentation. The smoke loop has a 90-second wall deadline in the event pump,
+independent of redraw callbacks (an external timeout is still needed for a
+driver call that never returns).
+
+Windows native controllers use gilrs's XInput backend (the WGI backend did not
+enumerate the attached 8BitDo in the initial test). `--probe-controllers 1..60`
+records real mapped controls and device names through the same input path as
+play; press the physical controls during its bounded run. Its optional
+`--state-out` JSON distinguishes native activity from controller enumeration.
+
+Native controllers use RT throttle, LT brake/reverse, A handbrake, X recovery,
+Y chase-distance toggle, RB/LB manual shifts and Start pause. The right stick
+selects a viewing direction around the car: right shows its left side, down
+shows its front and release returns behind it. Keyboard fallback is WASD or
+arrows, Space handbrake, R recovery, C camera, Q/E gears, Escape pause, N next
+stage, M automatic/manual gearbox and F11 fullscreen. Back is left to the
+host. Loss of focus neutralizes standalone driving and pauses simulation.
+
+GameNight activation uses the existing SDK 6 environment variables
+(`GAMENIGHT`, `GAMENIGHT_ADDR`, `GAMENIGHT_GAME_ID`, `GAMENIGHT_TOKEN`). Managed
+input is routed by canonical seat/controller tokens, not native device order.
+Start/pause/resume/dispose follow host sessions; missing/stale input becomes
+neutral. Name and couch-order updates preserve car identities and poses.
+The installed Windows Preview daemon advertises SDK 5. Optional SDK 6 actions
+and room logs are sent only when supported; SDK 5 therefore has no declared
+"New stage" action from this game. Stage rollover still works.
+Roster additions/removals apply at the next stage, as advertised by
+`instant_join=false`. Gearbox is live; stage length, rivals, contact and weather
+are pending until the next stage. Optional `--state-trace trace.jsonl` appends
+safe lifecycle/input/pose snapshots without launch tokens.
+
+This first playable milestone is not feature parity or a 120 FPS claim.
+Live driving disables the existing camera-only TAA until object motion vectors
+are implemented. It also omits the frozen-shot grass field rather than leaving
+grass behind at the start; live grass streaming is still pending. The basic
+speed/gear/countdown/controls are in the window title, with no full in-game HUD,
+audio, particles or settings menu yet. Native device enumeration alone does not
+prove physical button response; the smoke trace reports observed native active
+samples separately. GPU timings from frozen shots are not live-game frame rates.
 
 The oracle for `check`:
 
@@ -114,7 +193,26 @@ On a 2-core cloud container:
   against Godot's frame), AgX, sRGB.
 - **Split screen:** every view culled, rastered and shaded on its own, one
   shared shadow map, tonemapped into its rectangle.
+- **Ground cover:** one photographed CC0 grass clump on three crossing cards,
+  scattered on a common 0.45 m world grid around the active cameras. Density
+  follows verge distance, patches and slope, then falls off over a broad
+  distance range. Tuft size never depends on the camera. Roots sit on the
+  rendered terrain triangles and the card footprint is excluded from the
+  road. One, two and three/four views use radii of 80, 65 and 52 m with density
+  multipliers 1, 0.68 and 0.42; duplicate cells are shared, and all views
+  together have a hard limit of 60,000 tufts. Grass receives sun/canopy shadows
+  and does not cast into the sun map. The existing Poly Haven diffuse/alpha
+  originals and license are retained (`assets/licenses/grass-medium-01-cc0.txt`
+  in the repository root). The selected clump is combined into an RGBA layer
+  in memory before coverage-preserving mip generation.
 
-Not there yet: grass and ground cover, car lights and particles, wet road
-reflections, a window and input for playing. GPU numbers come from the
-runner (GPU_RUNNER.md); the container only has a software rasteriser.
+The grass scatter is currently built on the CPU once for a frozen shot. It
+does not yet stream as a live camera moves, animate in wind, or port shrubs,
+ferns, stumps and mossy rocks. Whole tufts are selected by a world-cell hash
+rather than a pixel dither; moving-camera pop-in and temporal stability still
+need a real motion test. The split-screen budget bounds instance count, not
+GPU time: each view still culls, rasterizes and shades its visible grass.
+
+Not there yet: the remaining ground-cover types, car lights and particles,
+wet road reflections, and the remaining interactive features listed above. GPU numbers come from
+the runner (GPU_RUNNER.md); the container only has a software rasteriser.

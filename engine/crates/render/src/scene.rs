@@ -14,6 +14,8 @@ pub const TWO_SIDED: u32 = 8;
 pub const TRIPLANAR: u32 = 16;
 /// A glossy clear coat over the base (car paint).
 pub const CLEARCOAT: u32 = 32;
+/// Photographed low grass cards: upward lighting normal and root occlusion.
+pub const GRASS: u32 = 64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -48,6 +50,8 @@ pub struct GpuInstance {
 pub const FOLIAGE: u32 = 1;
 /// A solid occluder in the GI volume (car bodies).
 pub const SOLID: u32 = 2;
+/// Small ground cover receives shadows but does not fill the sun shadow map.
+pub const NO_SHADOW: u32 = 4;
 
 /// Terrain heights on a regular grid, for GI occlusion (and later grass).
 #[derive(Default, Clone)]
@@ -111,20 +115,28 @@ impl Scene {
     }
 
     pub fn add_instance(&mut self, mesh: usize, xf: Affine3A) {
-        let m = &self.meshes[mesh];
+        self.instances.push(Self::instance(&self.meshes[mesh], xf, 0));
+    }
+
+    pub fn update_instance(&mut self, index: usize, mesh: usize, xf: Affine3A) {
+        let flags = self.instances[index].flags;
+        self.instances[index] = Self::instance(&self.meshes[mesh], xf, flags);
+    }
+
+    fn instance(m: &MeshRef, xf: Affine3A, flags: u32) -> GpuInstance {
         let c = xf.transform_point3(Vec3::from_slice(&m.sphere[..3]));
         let cols = xf.matrix3;
         let scale = cols.x_axis.length().max(cols.y_axis.length()).max(cols.z_axis.length());
         let mat = glam::Mat4::from(xf);
         let r = mat.transpose();
-        self.instances.push(GpuInstance {
+        GpuInstance {
             rows: [r.x_axis.to_array(), r.y_axis.to_array(), r.z_axis.to_array()],
             sphere: [c.x, c.y, c.z, m.sphere[3] * scale],
             first_cluster: m.first_cluster,
             cluster_count: m.cluster_count,
             scale,
-            flags: 0,
-        });
+            flags,
+        }
     }
 
     /// Mark the last instance as a solid GI occluder.
@@ -138,6 +150,12 @@ impl Scene {
     pub fn mark_foliage(&mut self) {
         if let Some(i) = self.instances.last_mut() {
             i.flags |= FOLIAGE;
+        }
+    }
+
+    pub fn mark_no_shadow(&mut self) {
+        if let Some(i) = self.instances.last_mut() {
+            i.flags |= NO_SHADOW;
         }
     }
 

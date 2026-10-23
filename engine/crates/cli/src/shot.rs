@@ -22,6 +22,8 @@ pub struct ShotArgs {
     pub views: usize,
     /// Frames rendered for TAA to converge (the camera holds still); 1: no TAA.
     pub taa_frames: u32,
+    /// Photographed grass; false is a matched no-cover performance baseline.
+    pub ground_cover: bool,
 }
 
 /// main.gd's player colours (sRGB).
@@ -48,9 +50,12 @@ pub struct Setup {
     /// One chase camera per car.
     pub cams: Vec<Camera>,
     pub log: Vec<String>,
+    /// Actual render inputs, written beside a shot for reproducible comparison.
+    pub metadata: serde_json::Value,
 }
 
 pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
+    if !(1..=4).contains(&a.views) { return Err("views must be in 1..=4".into()); }
     let mut log = Vec::new();
     let t = Stopwatch::start();
     let mut settings = sideways::race::Settings::default();
@@ -93,8 +98,18 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
             }
         })
         .collect();
+    // Chase cameras (src/chase_camera.gd: 5.2 m back, 2.05 m up).
+    let cams: Vec<Camera> = poses
+        .iter()
+        .map(|car| {
+            let fwd = car.rot * Vec3::NEG_Z;
+            let heading = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
+            Camera { pos: car.pos - heading * 5.2 + Vec3::Y * 2.05, target: car.pos + Vec3::Y * 0.9 + heading * 4.0, fov_y: 64f32.to_radians(), near: 0.1 }
+        })
+        .collect();
     let t = Stopwatch::start();
-    let built = visuals::build(&race.stage, &poses)?;
+    let camera_positions: Vec<_> = cams.iter().take(a.views).map(|c| c.pos).collect();
+    let built = visuals::build(&race.stage, &poses, &camera_positions, a.ground_cover)?;
     log.extend(built.log.iter().map(|l| format!("  {l}")));
     log.push(format!("scene: {:.0} ms", t.ms()));
     let mut light = Lighting::default();
@@ -130,16 +145,26 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
     for kv in &a.sets {
         light.set(kv)?;
     }
-    // Chase cameras (src/chase_camera.gd: 5.2 m back, 2.05 m up).
-    let cams: Vec<Camera> = poses
-        .iter()
-        .map(|car| {
-            let fwd = car.rot * Vec3::NEG_Z;
-            let heading = Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
-            Camera { pos: car.pos - heading * 5.2 + Vec3::Y * 2.05, target: car.pos + Vec3::Y * 0.9 + heading * 4.0, fov_y: 64f32.to_radians(), near: 0.1 }
-        })
-        .collect();
-    Ok(Setup { scene: built.scene, mesh_names: built.mesh_names, light, cam: cams[0], cams, log })
+    let metadata = serde_json::json!({
+        "schema": 1, "renderer": "kern", "seed": a.seed, "km": a.km, "start_at_m": a.at,
+        "requested_frames": a.frames, "simulation_steps": a.frames.saturating_sub(1),
+        "simulation_tick": race.tick(), "round": race.round, "race_phase": race.phase,
+        "weather_requested": a.weather, "weather_actual": race.weather,
+        "output_size": [a.size.0, a.size.1], "ground_cover": a.ground_cover,
+        "taa_frames": a.taa_frames.max(1), "taa_enabled": a.taa_frames > 1 && light.taa > 0.5,
+        "light_overrides": a.sets, "lod_pixels_requested": a.lod_pixels, "lod_pixels": light.lod_pixels,
+        "light": {"sun_direction": light.sun_dir.to_array(), "sun_lux": light.sun_lux, "sky_lux": light.sky_lux, "ev100": light.ev100},
+        "views": view_rects(&cams, a.views, a.size.0, a.size.1).iter().map(|v| serde_json::json!({
+            "rect": [v.x, v.y, v.w, v.h], "position": v.cam.pos.to_array(), "target": v.cam.target.to_array(),
+            "fov_y_radians": v.cam.fov_y, "near": v.cam.near
+        })).collect::<Vec<_>>(),
+        "cars": poses.iter().map(|p| serde_json::json!({
+            "model": p.model, "position": p.pos.to_array(), "rotation_xyzw": p.rot.to_array(),
+            "ride": p.ride, "paint_linear": p.color.to_array(),
+            "wheels": p.wheels.iter().map(|w| serde_json::json!({"anchor": w.anchor.to_array(), "compression": w.compression, "steer": w.steer, "spin": w.spin})).collect::<Vec<_>>()
+        })).collect::<Vec<_>>()
+    });
+    Ok(Setup { scene: built.scene, mesh_names: built.mesh_names, light, cam: cams[0], cams, log, metadata })
 }
 
 pub fn run(a: &ShotArgs) -> i32 {
@@ -207,7 +232,13 @@ pub fn run(a: &ShotArgs) -> i32 {
     }
     match render::write_png(std::path::Path::new(&a.out), w, h, &px) {
         Ok(()) => {
+            let sidecar = format!("{}.json", a.out);
+            if let Err(e) = serde_json::to_vec_pretty(&setup.metadata).map_err(|e| e.to_string()).and_then(|bytes| std::fs::write(&sidecar, bytes).map_err(|e| e.to_string())) {
+                eprintln!("shot metadata {sidecar}: {e}");
+                return 1;
+            }
             println!("shot: {}", a.out);
+            println!("metadata: {sidecar}");
             0
         }
         Err(e) => {

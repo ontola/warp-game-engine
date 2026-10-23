@@ -17,3 +17,13 @@ toml.workspace = true
 glam = "0.31"
 gltf = { version = "1.4", default-features = false, features = ["utils", "names", "KHR_texture_transform", "allow_empty_texture", "extensions"] }
 image = { version = "0.25", default-features = false, features = ["webp", "png", "jpeg"] }
+winit = "0.30"
+wgpu = "30"
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+
+# The target Windows controller is exposed through XInput; WGI can miss it.
+[target.'cfg(windows)'.dependencies]
+gilrs = { version = "0.11", default-features = false, features = ["xinput"] }
+
+[target.'cfg(not(windows))'.dependencies]
+gilrs = "0.11"

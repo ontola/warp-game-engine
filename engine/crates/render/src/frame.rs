@@ -235,6 +235,7 @@ struct ViewTargets {
 
 pub struct Renderer {
     scene_bind: wgpu::BindGroup,
+    instance_buffer: wgpu::Buffer,
     cull: wgpu::ComputePipeline,
     finalize: wgpu::ComputePipeline,
     raster: wgpu::RenderPipeline,
@@ -451,6 +452,17 @@ impl Renderer {
             anisotropy_clamp: 16,
             ..Default::default()
         });
+        // A cropped plant is a single photograph, not a tiling surface.
+        // Clamp both axes so anisotropic taps cannot wrap roots into tips.
+        let plant_samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 16,
+            ..Default::default()
+        });
         let tex_array = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false };
         let scene_layout = layout(
             gpu,
@@ -466,6 +478,7 @@ impl Renderer {
                 (7, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (8, storage(true)),
                 (9, tex_array),
+                (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
             ],
         );
         let scene_bind = bind(
@@ -482,6 +495,7 @@ impl Renderer {
                 (7, wgpu::BindingResource::Sampler(&samp)),
                 (8, aux.as_entire_binding()),
                 (9, wgpu::BindingResource::TextureView(&normals_view)),
+                (10, wgpu::BindingResource::Sampler(&plant_samp)),
             ],
         );
         let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false))]);
@@ -662,6 +676,7 @@ impl Renderer {
         };
         Renderer {
             scene_bind,
+            instance_buffer: instances,
             cull,
             finalize,
             raster,
@@ -783,6 +798,27 @@ impl Renderer {
     /// and tonemapped into its rectangle of one `out_w` x `out_h` image.
     /// One sun shadow map covers all the cameras. Picks refer to view 0.
     pub fn render_views(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)]) -> (Vec<u8>, FrameStats) {
+        let (_, pixels, stats) = self.frame_output(gpu, views, light, out_w, out_h, picks, true);
+        (pixels, stats)
+    }
+
+    /// Render directly to a GPU texture for an explicit interactive surface.
+    /// No counter, timestamp or full-image readback stalls the live frame.
+    pub fn render_texture(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32) -> wgpu::Texture {
+        self.frame_output(gpu, views, light, out_w, out_h, &[], false).0
+    }
+
+    /// Update an existing instance range without rebuilding static geometry.
+    pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
+        if first + instances.len() > self.instances as usize { return Err("instance update exceeds uploaded scene".into()); }
+        if !instances.is_empty() {
+            gpu.queue.write_buffer(&self.instance_buffer, (first * std::mem::size_of::<crate::scene::GpuInstance>()) as u64, bytemuck::cast_slice(instances));
+            self.invalidate_shadow();
+        }
+        Ok(())
+    }
+
+    fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: bool) -> (wgpu::Texture, Vec<u8>, FrameStats) {
         let tex2d = |label: &str, w: u32, h: u32, format, usage| {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -796,7 +832,7 @@ impl Renderer {
             })
         };
         let rt = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
-        let ldr = tex2d("ldr", out_w, out_h, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC);
+        let ldr = tex2d("ldr", out_w, out_h, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING);
         let ldr_v = ldr.create_view(&Default::default());
         // TAA: this frame's sub-pixel offset and alpha-test threshold.
         let frame = self.frame.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1009,6 +1045,10 @@ impl Renderer {
             keep.push((main, vis, depth, hdr));
         }
         drop(histories);
+        if !readback {
+            gpu.queue.submit([enc.finish()]);
+            return (ldr, Vec::new(), FrameStats::default());
+        }
         let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16 * (views.len() as u64 + 1), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         enc.copy_buffer_to_buffer(&shadow_t.counter, 0, &counters, 0, 16);
         for (k, (main, ..)) in keep.iter().enumerate() {
@@ -1075,7 +1115,7 @@ impl Renderer {
             }
             read.unmap();
         }
-        (pixels, stats)
+        (ldr, pixels, stats)
     }
 }
 
@@ -1092,17 +1132,31 @@ pub struct ViewRect {
 /// Godot's split-screen layout for `n` views in a `w` x `h` image: one,
 /// side by side for two, a 2x2 grid for three or four, 4 px apart.
 pub fn split_rects(n: usize, w: u32, h: u32) -> Vec<(u32, u32, u32, u32)> {
-    let gap = 4;
+    let gap = ((h as f32 * 4.0 / 1080.0).round() as u32).max(1).min(w.saturating_sub(2)).min(h.saturating_sub(2));
     match n {
         0 | 1 => vec![(0, 0, w, h)],
         2 => {
-            let hw = (w - gap) / 2;
-            vec![(0, 0, hw, h), (hw + gap, 0, hw, h)]
+            let hh = (h - gap) / 2;
+            vec![(0, 0, w, hh), (0, hh + gap, w, h - hh - gap)]
         }
         _ => {
             let (hw, hh) = ((w - gap) / 2, (h - gap) / 2);
-            [(0, 0), (hw + gap, 0), (0, hh + gap), (hw + gap, hh + gap)].iter().take(n).map(|(x, y)| (*x, *y, hw, hh)).collect()
+            vec![(0, 0, hw, hh), (hw + gap, 0, w-hw-gap, hh), (0, hh + gap, hw, h-hh-gap), (hw + gap, hh + gap, w-hw-gap, h-hh-gap)].into_iter().take(n.min(4)).collect()
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::split_rects;
+    #[test]
+    fn godot_split_layout_uses_one_4k_output() {
+        assert_eq!(split_rects(2,3840,2160),vec![(0,0,3840,1076),(0,1084,3840,1076)]);
+        assert_eq!(split_rects(4,3840,2160),vec![(0,0,1916,1076),(1924,0,1916,1076),(0,1084,1916,1076),(1924,1084,1916,1076)]);
+        let odd=split_rects(4,1921,1081);
+        assert_eq!(odd[3].0+odd[3].2,1921);
+        assert_eq!(odd[3].1+odd[3].3,1081);
+        assert!(odd.iter().all(|r|r.2>0&&r.3>0&&r.0+r.2<=1921&&r.1+r.3<=1081));
     }
 }
 

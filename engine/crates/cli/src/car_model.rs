@@ -114,3 +114,16 @@ pub fn place(scene: &mut Scene, m: &CarMeshes, pose: Affine3A, ride: f32, wheels
         }
     }
 }
+
+/// Update the same body/wheel slots that `place` allocated at scene creation.
+pub fn update(scene: &mut Scene, first: usize, m: &CarMeshes, pose: Affine3A, ride: f32, wheels: &[Wheel]) {
+    scene.update_instance(first, m.body, pose * Affine3A::from_translation(Vec3::Y * ride));
+    let mut index = first + 1;
+    for (k, w) in wheels.iter().enumerate().take(4) {
+        if let Some(mesh) = m.wheels[k] {
+            let local = Affine3A::from_rotation_translation(Quat::from_rotation_y(w.steer) * Quat::from_rotation_x(-w.spin), w.anchor + Vec3::Y * w.compression);
+            scene.update_instance(index, mesh, pose * local);
+            index += 1;
+        }
+    }
+}

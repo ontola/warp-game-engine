@@ -22,17 +22,38 @@ GI. Keep the loops short and measured (README, "The iteration loops").
 - **Never open windows on his screen or take it over** (he may be watching
   a film on that PC). Everything renders offscreen: `shot` writes a PNG,
   `gpu-run` writes results. Do not add a windowed mode that opens by itself.
-- Commit to `main` of ontola/warp-game-engine and push. End commit messages with:
-
-      Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-      Claude-Session: https://claude.ai/code/session_01J41A9knfrMNAChGX8fzLhc
-
-  (use your own session link if you have one)
+- Commit to `main` of ontola/warp-game-engine and push. Attribute only the
+  actual contributors/session; do not copy another agent's attribution.
 - When mentioning PRs, link them with a short description.
 - Show him pictures of what changed. Compare against Godot's frame at the
   same moment, and be honest about what still looks worse.
 
-## Where it stands (commit 3f930b8)
+## Windows continuation, 2026-10-23
+
+Read `WINDOWS_VALIDATION.md` for measured results, evidence and limitations.
+The `play` command now provides a Windows driving loop, native XInput,
+GameNight lifecycle/controller transport and one to four rendered views.
+Only explicit `play` opens a window. Managed preparation stays invisible;
+automated GPU validation uses `play --smoke-render N` and reports zero
+visible presented frames. It is not a substitute for a visible playtest.
+
+Windows uses gilrs's XInput backend. The attached 8BitDo Ultimate is named
+"Xbox Controller" by that backend. A physical input probe recorded both
+sticks, full throttle/brake, handbrake, recovery, camera and Start.
+The installed GameNight Preview daemon speaks protocol 1 / SDK 5, so
+SDK 6-only actions and room logs must be capability-gated.
+
+The photographed grass is implemented for frozen shots, with shared world
+cells, terrain-triangle roots and a 60,000-instance cap. Live play deliberately
+has no grass until it can stream around moving cameras. Live TAA is also off
+until per-instance motion vectors exist. Audio, a full HUD/settings menu,
+particles and the remaining ground cover are still missing.
+
+One 4K output has four 1916x1076 views with an eight-pixel gap. The 120 FPS
+target has not been met. Frozen GPU pass timings are not live-game FPS.
+Keep the Godot source beside `engine/` as the unchanged reference.
+
+## Earlier renderer baseline
 
 - Simulation: stage, terrain, road, barriers, cars (Rapier), AI and race
   loop ported. Stage layout matches Godot bit for bit; handling bench is
@@ -74,7 +95,7 @@ Godot reference frame: `tools/shot.sh out.png --frames 30 --seed 1 --at 300
 --cam chase` from the repo root (needs Godot 4.5 in PATH). It renders
 offscreen.
 
-## In progress: grass and ground cover (Joep said yes)
+## Ground-cover reference and remaining work
 
 This is the biggest visible gap with Godot: the verge is bare, with a
 mown-lawn tiling, where Godot has grass tufts and berry shrubs. Port
@@ -122,7 +143,7 @@ What Godot does:
   - Godot colours are sRGB: convert them to linear.
 - **Wind.** Tips sway; there is no time in shots yet, so it can wait.
 
-Plan I had for Kern:
+Original design, first step now implemented in `cli/src/ground_cover.rs`:
 
 - **First step: build the tufts as instances on the CPU around the
   cameras, in `cli/src/visuals.rs`.** Make the decision for a fractional
@@ -133,18 +154,18 @@ Plan I had for Kern:
   - Add material flags for grass cards and shrubs. In `shade.wgsl`, derive
     tuft height from the instance origin (`inst.r1.w`) and `inst.scale`,
     and per-tuft tone from the instance origin.
-- **Right final design: GPU-driven.** A compute pass spawns the visible
-  tufts per view into the instance or visible list, so the CPU does nothing
-  per frame and split screen is free. Do it once the scene can move.
+- **Future design: GPU-driven.** A compute pass can spawn visible tufts into
+  an instance list to reduce CPU streaming work. Split screen still has
+  per-view culling, raster and shading costs; measure them independently.
 
 ## After that
 
 - **Per-instance motion vectors for TAA.** Only camera motion is
   reprojected now, so moving cars would smear. Shade knows the instance;
   keep a previous-transform buffer and write velocity.
-- **A playable loop.** Cars move every frame (instance updates, shadow
-  invalidation), input, a window. The window must only open when Joep
-  starts it himself.
+- **Complete the playable loop.** Moving instances, shadow invalidation,
+  native input, GameNight and explicit window presentation now exist. Next
+  are HUD, audio, live ground-cover streaming and presentation profiling.
 - **Visual differences with Godot that remain:**
   - distant forest denser and darker than Godot's (Godot uses mid meshes
     and impostors beyond 150 m, `src/forest.gd`);

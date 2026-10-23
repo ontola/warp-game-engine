@@ -55,6 +55,7 @@ struct Material {
 @group(0) @binding(5) var<storage, read> materials: array<Material>;
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
+@group(0) @binding(10) var plant_samp: sampler;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
@@ -94,8 +95,16 @@ fn alpha_cut(in: VOut) -> bool {
     let dy = dpdy(in.uv);
     let m = materials[in.material];
     if (m.flags & 1u) != 0u && m.layer >= 0 {
-        let a = textureSampleGrad(albedo, samp, in.uv, m.layer, dx, dy).a;
-        return a < view.extra.x; // per frame under TAA: soft coverage over time
+        var a: f32;
+        if (m.flags & 64u) != 0u {
+            a = textureSampleGrad(albedo, plant_samp, in.uv, m.layer, dx, dy).a;
+        } else {
+            a = textureSampleGrad(albedo, samp, in.uv, m.layer, dx, dy).a;
+        }
+        // Grass density is a world-cell decision, not screen-space noise.
+        // Keep its photo silhouette threshold fixed while TAA jitters geometry.
+        let threshold = select(view.extra.x, 0.5, (m.flags & 64u) != 0u);
+        return a < threshold;
     }
     return false;
 }

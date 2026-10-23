@@ -66,6 +66,7 @@ struct Material {
 @group(0) @binding(7) var samp: sampler;
 @group(0) @binding(8) var<storage, read> aux: array<u32>;
 @group(0) @binding(9) var normal_tex: texture_2d_array<f32>;
+@group(0) @binding(10) var plant_samp: sampler;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
@@ -434,7 +435,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     let geo_n = normalize(cross(e1, e2));
     let m = materials[cl.material];
     // Two-sided cards and backfaces face the viewer.
-    if dot(n, dir) > 0.0 && (m.flags & 8u) != 0u {
+    if dot(n, dir) > 0.0 && (m.flags & 8u) != 0u && (m.flags & 64u) == 0u {
         n = -n;
     }
     let dist = distance(p, view.cam.xyz);
@@ -551,6 +552,13 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         rn = mix(rn, nrm_xz(m.layer + 1, wuv / 2.2, 2.2), max(edge, shoulder));
         rn *= (1.0 - far_d * 0.6) * (1.0 - worn * 0.7) * (1.0 - asphalt * 0.6) * (1.0 - max(earth, muddy) * 0.4);
         nn = perturb_xz(n, rn);
+    } else if (m.flags & 64u) != 0u {
+        // grass_cards.gdshader: the photograph supplies blade colour, the
+        // authored upward normal stays the same on both card sides.
+        let height = clamp((p.y - inst.r1.w) / max(inst.scale * 0.5, 1e-4), 0.0, 1.0);
+        base = textureSampleGrad(albedo, plant_samp, uv, m.layer, duv_x, duv_y).rgb * m.tint;
+        base *= mix(0.8, 1.0, height) * 1.25 * (1.0 - light.fog.w * 0.25);
+        nn = vec3<f32>(0.0, 1.0, 0.0);
     } else if (m.flags & 16u) != 0u && m.layer >= 0 {
         var tw = pow(abs(n), vec3<f32>(4.0));
         tw /= tw.x + tw.y + tw.z;
@@ -572,13 +580,18 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     var sun = max(ndl, 0.0);
     var back = vec3<f32>(0.0);
     var ao = 1.0;
-    let needles = (m.flags & 9u) == 9u;
+    let grass = (m.flags & 64u) != 0u;
+    let needles = (m.flags & 9u) == 9u && !grass;
     if needles {
         // foliage.gdshader: a little colour per tree, sunlight shining
         // through the needles from behind (BACKLIGHT), AO 0.85.
         base *= 0.82 + 0.3 * hash2(vec2<f32>(inst.r0.w, inst.r2.w));
         back = vec3<f32>(0.175, 0.21, 0.1) * max(-ndl, 0.0);
         ao = 0.85;
+    } else if grass {
+        let height = clamp((p.y - inst.r1.w) / max(inst.scale * 0.5, 1e-4), 0.0, 1.0);
+        ao = mix(0.45, 1.0, height);
+        back = vec3<f32>(0.12, 0.16, 0.05) * max(-ndl, 0.0);
     }
     var shadow = 1.0;
     if sun > 0.0 || needles {
@@ -599,6 +612,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     var f0 = mix(vec3<f32>(0.04), base, m.metal);
     if needles {
         f0 = vec3<f32>(0.01); // foliage.gdshader: SPECULAR 0.125
+    } else if grass {
+        f0 = vec3<f32>(0.016); // grass_cards.gdshader: SPECULAR 0.2
     }
     let diffuse = base * (1.0 - m.metal) / PI;
     // Sky light where the sky is visible; light bounced off the sunlit

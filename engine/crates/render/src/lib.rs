@@ -9,6 +9,7 @@
 pub mod cluster;
 pub mod frame;
 pub mod gpu;
+pub mod present;
 pub mod scene;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, ViewRect, split_rects};
@@ -77,6 +78,7 @@ mod shader_tests {
             ("tonemap", include_str!("shaders/tonemap.wgsl")),
             ("foliage", include_str!("shaders/foliage.wgsl")),
             ("taa", include_str!("shaders/taa.wgsl")),
+            ("present", include_str!("shaders/present.wgsl")),
         ];
         let mut failed = Vec::new();
         for (name, src) in shaders {
