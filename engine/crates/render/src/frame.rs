@@ -274,6 +274,7 @@ pub struct Renderer {
     instance_buffer: wgpu::Buffer,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
+    voxel_forest: Option<crate::voxel_forest::VoxelRenderer>,
     cull: wgpu::ComputePipeline,
     finalize: wgpu::ComputePipeline,
     raster: wgpu::RenderPipeline,
@@ -482,6 +483,7 @@ impl Renderer {
         let instances = buffer(gpu, "instances", bytemuck::cast_slice(&scene.instances), u);
         let materials = buffer(gpu, "materials", bytemuck::cast_slice(&scene.materials), u);
         let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
+        let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&crate::voxel_forest::replacement_materials(scene)), u);
         let albedo_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| Some(&t.rgba)).collect();
         // Continuous alpha must average coverage naturally. Applying foliage's
         // threshold-preserving mip scale to glass/decals changes their opacity.
@@ -532,10 +534,12 @@ impl Renderer {
                 (8, storage(true)),
                 (9, tex_array),
                 (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                (11, storage(true)),
             ],
         );
         let transparency = crate::transparency::Transparency::new(gpu, scene, &scene_layout);
         let grass = crate::grass::GrassRenderer::new(gpu, scene, &scene_layout);
+        let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &scene_layout);
         let scene_bind = bind(
             gpu,
             &scene_layout,
@@ -551,6 +555,7 @@ impl Renderer {
                 (8, aux.as_entire_binding()),
                 (9, wgpu::BindingResource::TextureView(&normals_view)),
                 (10, wgpu::BindingResource::Sampler(&plant_samp)),
+                (11, voxel_replacement.as_entire_binding()),
             ],
         );
         let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false))]);
@@ -748,6 +753,7 @@ impl Renderer {
             instance_buffer: instances,
             transparency,
             grass,
+            voxel_forest,
             cull,
             finalize,
             raster,
@@ -892,9 +898,22 @@ impl Renderer {
         self.frame_output(gpu, views, light, out_w, out_h, &[], false).0
     }
 
+    /// Explicit offline validation readback; normal frame rendering never waits.
+    pub fn voxel_diagnostics(&self, gpu: &Gpu) -> Result<Option<Vec<crate::voxel_forest::VoxelViewDiagnostics>>,String> {
+        self.voxel_forest.as_ref().map(|forest|forest.diagnostics(gpu)).transpose()
+    }
+
+    /// Explicit raw premultiplied HDR + alpha readback for voxel validation.
+    pub fn voxel_layers_rgba16(&self,gpu:&Gpu)->Result<Vec<(u32,u32,Vec<u8>)>,String> {
+        match &self.voxel_forest {Some(forest)=>forest.layers_rgba16(gpu),None=>Ok(Vec::new())}
+    }
+
     /// Update an existing instance range without rebuilding static geometry.
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if first + instances.len() > self.instances as usize { return Err("instance update exceeds uploaded scene".into()); }
+        if self.voxel_forest.as_ref().is_some_and(|forest|forest.contains_owner_range(first,instances.len())) {
+            return Err("voxel test trees are static; rebuild their packed scene before changing transforms".into());
+        }
         if !instances.is_empty() {
             gpu.queue.write_buffer(&self.instance_buffer, (first * std::mem::size_of::<crate::scene::GpuInstance>()) as u64, bytemuck::cast_slice(instances));
             if let Some(transparency) = &self.transparency { transparency.update_instances(first, instances); }
@@ -1057,6 +1076,7 @@ impl Renderer {
             }
         }
         if let Some(grass) = &self.grass { grass.set_view_count(views.len()); }
+        if let Some(forest) = &self.voxel_forest { forest.set_view_count(views.len()); }
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         for (vi, view) in views.iter().enumerate() {
             let (w, h, cam) = (view.w, view.h, &view.cam);
@@ -1179,6 +1199,23 @@ impl Renderer {
                 pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
                 drop(pass);
                 if label == "shade" {
+                    if let Some(forest) = &self.voxel_forest {
+                        let times = ["voxel tiles", "voxel integrate", "voxel composite"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
+                            let i=timestamp_pair(&mut ts); names.push(name); (qs,i)
+                        }));
+                        forest.render(gpu,&mut enc,vi,(w,h),&self.scene_bind,&[
+                            (0,main.uniform.as_entire_binding()),(2,light_buf.as_entire_binding()),
+                            (4,wgpu::BindingResource::TextureView(&depth_v)),
+                            (5,wgpu::BindingResource::TextureView(&shadow_v)),
+                            (6,wgpu::BindingResource::Sampler(&self.shadow_samp)),
+                            (7,wgpu::BindingResource::TextureView(&self.sky_view)),
+                            (10,wgpu::BindingResource::TextureView(&self.heightfield)),
+                            (11,gi_buf.as_entire_binding()),
+                            (13,wgpu::BindingResource::TextureView(&density_view)),
+                            (14,wgpu::BindingResource::Sampler(&self.density_sampler)),
+                            (15,wgpu::BindingResource::TextureView(&near_view)),
+                        ],&hdr_v,times);
+                    }
                     if let Some(grass) = &self.grass {
                         let transition_times = self.query.as_ref().map(|(qs, _, _)| {
                             let i = timestamp_pair(&mut ts);
@@ -1353,13 +1390,13 @@ mod layout_tests {
     }
 
     #[test]
-    fn four_views_with_near_maps_grass_transparency_and_taa_fit_timestamp_budget() {
+    fn four_views_with_near_maps_voxels_grass_transparency_and_taa_fit_timestamp_budget() {
         // Shared canopy/filter/far map: 4 passes. Each view: near cull/raster,
-        // main cull/raster, shade, grass transition/composite, transparency,
-        // TAA, tonemap: 10 passes.
+        // main cull/raster, shade, voxel tiles/integrate/composite,
+        // grass transition/composite, transparency, TAA, tonemap: 13 intervals.
         let mut next = 0;
-        for _ in 0..(4 + 4 * 10) { timestamp_pair(&mut next); }
-        assert_eq!(next, 88);
+        for _ in 0..(4 + 4 * 13) { timestamp_pair(&mut next); }
+        assert_eq!(next, 112);
         assert!(next <= TIMESTAMP_CAPACITY);
         next = TIMESTAMP_CAPACITY - 2;
         assert_eq!(timestamp_pair(&mut next), TIMESTAMP_CAPACITY - 2);

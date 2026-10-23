@@ -388,6 +388,10 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         }
     }
 
+    if let Some(summary)=crate::voxel_tree_patch::attach(&mut scene,&tree_meshes,crown_mat,cameras,&r)? {
+        log.push(summary);
+    }
+
     let live_ground_cover = if live_cover {
         let stream = crate::live_ground_cover::LiveGroundCover::reserve(&mut scene, &chunks, cameras, &r, &mut mesh_names)?;
         log.push(stream.summary());

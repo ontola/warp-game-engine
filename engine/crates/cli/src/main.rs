@@ -18,6 +18,7 @@ mod screenshot;
 mod gamenight;
 mod shot;
 mod visuals;
+mod voxel_tree_patch;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

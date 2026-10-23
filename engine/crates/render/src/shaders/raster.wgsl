@@ -56,6 +56,7 @@ struct Material {
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
 @group(0) @binding(10) var plant_samp: sampler;
+@group(0) @binding(11) var<storage,read> voxel_replacement: array<u32>;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
@@ -88,6 +89,11 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     o.id = (ii << 7u) | tri;
     o.material = cl.material;
     o.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
+    // Only the explicitly packed crown material is replaced in color. Wood,
+    // unrelated cutouts and source sun-shadow geometry remain unchanged.
+    if view.params.z<0.5 && voxel_replacement[vis.x]==cl.material+1u {
+        o.pos=vec4<f32>(2.0,2.0,2.0,1.0);
+    }
     o.grass_opacity = 1.0;
     if (inst.pad & 8u) != 0u {
         o.grass_opacity = grass_card_opacity(vec3<f32>(inst.r0.w, inst.r1.w, inst.r2.w),

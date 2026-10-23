@@ -15,6 +15,8 @@ pub mod hud_profile;
 pub mod present;
 pub mod scene;
 pub mod foliage_voxel;
+pub mod foliage_volume_data;
+pub mod voxel_forest;
 mod stability;
 mod transparency;
 
@@ -107,6 +109,14 @@ mod shader_tests {
     #[test]
     fn grass_transition_shaders_validate() {
         for src in [crate::grass::shader_source(),include_str!("shaders/grass_composite.wgsl").to_owned()] {
+            let module=naga::front::wgsl::parse_str(&src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
+        }
+    }
+
+    #[test]
+    fn voxel_forest_shaders_validate() {
+        for src in [crate::voxel_forest::shader_source(),include_str!("shaders/voxel_composite.wgsl").to_owned()] {
             let module=naga::front::wgsl::parse_str(&src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
         }
