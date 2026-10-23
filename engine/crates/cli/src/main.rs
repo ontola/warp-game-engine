@@ -9,6 +9,7 @@ mod check;
 mod gpu_run;
 mod ground_cover;
 mod input;
+mod hud;
 mod play;
 mod gamenight;
 mod shot;

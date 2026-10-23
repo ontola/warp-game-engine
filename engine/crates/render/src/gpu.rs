@@ -35,10 +35,10 @@ impl Gpu {
     pub fn for_surface(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>, w: u32, h: u32) -> Result<(Gpu, wgpu::SurfaceConfiguration), String> {
         let (gpu, adapter) = Self::request(instance, Some(surface))?;
         let mut config = surface.get_default_config(&adapter, w.max(1), h.max(1)).ok_or("adapter cannot present to this window")?;
-        // The tonemapped texture already contains sRGB-encoded numbers.
-        // Prefer an unorm swapchain; the presentation shader handles sRGB too.
+        // Presentation decodes the already-tonemapped scene into linear light.
+        // An sRGB target then blends HUD coverage in linear light before encoding.
         let caps = surface.get_capabilities(&adapter);
-        if let Some(format) = caps.formats.iter().find(|f| !f.is_srgb()) { config.format = *format; }
+        if let Some(format) = caps.formats.iter().find(|f| f.is_srgb()) { config.format = *format; }
         config.present_mode = wgpu::PresentMode::AutoVsync;
         config.desired_maximum_frame_latency = 2;
         Ok((gpu, config))
@@ -123,6 +123,9 @@ impl Gpu {
         for y in 0..h {
             let start = (y * row) as usize;
             out.extend_from_slice(&data[start..start + (w * 4) as usize]);
+        }
+        if matches!(tex.format(), wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+            for pixel in out.chunks_exact_mut(4) { pixel.swap(0, 2); }
         }
         out
     }

@@ -9,6 +9,8 @@
 pub mod cluster;
 pub mod frame;
 pub mod gpu;
+pub mod hud;
+pub mod hud_profile;
 pub mod present;
 pub mod scene;
 
@@ -79,6 +81,7 @@ mod shader_tests {
             ("foliage", include_str!("shaders/foliage.wgsl")),
             ("taa", include_str!("shaders/taa.wgsl")),
             ("present", include_str!("shaders/present.wgsl")),
+            ("hud", include_str!("shaders/hud.wgsl")),
         ];
         let mut failed = Vec::new();
         for (name, src) in shaders {

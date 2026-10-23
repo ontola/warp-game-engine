@@ -46,7 +46,9 @@ SDK 6-only actions and room logs must be capability-gated.
 The photographed grass is implemented for frozen shots, with shared world
 cells, terrain-triangle roots and a 60,000-instance cap. Live play deliberately
 has no grass until it can stream around moving cameras. Live TAA is also off
-until per-instance motion vectors exist. Audio, a full HUD/settings menu,
+until per-instance motion vectors exist. The native-resolution HUD now uses
+glyphon and shared cached Barlow text, with timer, instruments, pace notes,
+progress, recovery, countdown and results. Audio, an in-game settings menu,
 particles and the remaining ground cover are still missing.
 
 One 4K output has four 1916x1076 views with an eight-pixel gap. The 120 FPS
@@ -165,7 +167,7 @@ Original design, first step now implemented in `cli/src/ground_cover.rs`:
   keep a previous-transform buffer and write velocity.
 - **Complete the playable loop.** Moving instances, shadow invalidation,
   native input, GameNight and explicit window presentation now exist. Next
-  are HUD, audio, live ground-cover streaming and presentation profiling.
+  are audio, settings, live ground-cover streaming and scene performance work.
 - **Visual differences with Godot that remain:**
   - distant forest denser and darker than Godot's (Godot uses mid meshes
     and impostors beyond 150 m, `src/forest.gd`);

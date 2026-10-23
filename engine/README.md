@@ -20,6 +20,8 @@ why two runs differ, and comparing with the Godot original.
     cargo run --release -p cli -- play --probe-controllers 15 --state-out pads.json # observe actual native inputs; no window
     cargo run --release -p cli -- play --smoke-ticks 600 --state-out input.json # bounded manual-input simulation; no GPU/window
     cargo run --release -p cli -- play --smoke-render 16 --capture play.png --state-out play.json # invisible bounded GPU smoke
+    cargo run --release -p cli -- play --views 4 --size 3840x2160 --smoke-render 48 --hud-profile hud.json --capture hud.png # HUD-only GPU / CPU profile
+    cargo run --release -p cli -- play --hud off                                # matched scene without the HUD
 
     cargo run -p cli -- shot out.png --seed 1 --km 3 --at 300 --weather clear   # a race moment, offscreen (16 TAA frames)
     cargo run -p cli -- shot out.png --taa 1                                     # one frame, no TAA: the quick look
@@ -105,10 +107,34 @@ This first playable milestone is not feature parity or a 120 FPS claim.
 Live driving disables the existing camera-only TAA until object motion vectors
 are implemented. It also omits the frozen-shot grass field rather than leaving
 grass behind at the start; live grass streaming is still pending. The basic
-speed/gear/countdown/controls are in the window title, with no full in-game HUD,
-audio, particles or settings menu yet. Native device enumeration alone does not
+instruments are now rendered by the shared native-resolution HUD described below.
+Audio, particles and an in-game settings menu are still missing. Native device enumeration alone does not
 prove physical button response; the smoke trace reports observed native active
 samples separately. GPU timings from frozen shots are not live-game frame rates.
+
+## HUD and fonts
+
+The HUD follows the Godot layout: stage time and driver name, gear/speed/revs,
+two pace notes, route progress, handbrake/recovery, countdown and stage results.
+Each player's output rectangle clips its HUD; the text-cache ID follows the
+car when GameNight couch order changes. One font system, glyph atlas and text
+renderer serve all four views. Bundled Barlow Condensed SemiBold and ExtraBold
+Italic fonts retain their existing SIL OFL license. Latin accents need no system
+fonts; missing glyphs trigger a one-time system-font fallback lookup.
+
+Geometry and glyphs render after the tonemapped scene at physical output
+resolution. The surface prefers sRGB so alpha coverage blends in linear light.
+HUD text is independent of scene TAA. Resizing changes physical font sizes;
+position/color changes preserve shaped buffers. Glyphs are prewarmed for the
+instrument alphabet and buffers are retained only for active text IDs.
+
+`--capture` now captures the final composite, including HUD and correct BGRA
+channel conversion. `--hud-profile FILE` is restricted to hidden smoke runs of
+at most 4096 frames. It records raw HUD-only GPU durations, CPU layout/prepare
+and graphics wall time, dropping eight warmup frames by default
+(`--hud-warmup N`). GPU query readback happens once at completion. Normal play
+does not allocate profiling queries or perform a HUD readback. Profile wall
+times include hidden GPU synchronization and are not gameplay FPS.
 
 The oracle for `check`:
 
