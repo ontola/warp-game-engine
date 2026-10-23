@@ -19,6 +19,9 @@ const NEAR_SHADOW_SIZE: u32 = 2048;
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
 const TIMESTAMP_CAPACITY: u32 = 128;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Readback { None, Metrics, ImageAndMetrics }
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct TaaUniform {
@@ -274,7 +277,9 @@ pub struct Renderer {
     instance_buffer: wgpu::Buffer,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
+    far_grass: Option<crate::far_grass::FarGrassRenderer>,
     voxel_forest: Option<crate::voxel_forest::VoxelRenderer>,
+    volume_view_layout: wgpu::BindGroupLayout,
     cull: wgpu::ComputePipeline,
     finalize: wgpu::ComputePipeline,
     raster: wgpu::RenderPipeline,
@@ -539,7 +544,11 @@ impl Renderer {
         );
         let transparency = crate::transparency::Transparency::new(gpu, scene, &scene_layout);
         let grass = crate::grass::GrassRenderer::new(gpu, scene, &scene_layout);
-        let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &scene_layout);
+        let volume_view_layout=crate::volume_view::create_layout(&gpu.device);
+        let far_grass = scene.far_grass.as_ref().map(|field|
+            crate::far_grass::FarGrassRenderer::new(gpu, field, &scene_layout, &volume_view_layout)
+                .expect("invalid far grass field"));
+        let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &scene_layout, &volume_view_layout);
         let scene_bind = bind(
             gpu,
             &scene_layout,
@@ -753,7 +762,9 @@ impl Renderer {
             instance_buffer: instances,
             transparency,
             grass,
+            far_grass,
             voxel_forest,
+            volume_view_layout,
             cull,
             finalize,
             raster,
@@ -888,19 +899,36 @@ impl Renderer {
     /// and tonemapped into its rectangle of one `out_w` x `out_h` image.
     /// One sun shadow map covers all the cameras. Picks refer to view 0.
     pub fn render_views(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)]) -> (Vec<u8>, FrameStats) {
-        let (_, pixels, stats) = self.frame_output(gpu, views, light, out_w, out_h, picks, true);
+        let (_, pixels, stats) = self.frame_output(gpu, views, light, out_w, out_h, picks, Readback::ImageAndMetrics);
         (pixels, stats)
     }
 
     /// Render directly to a GPU texture for an explicit interactive surface.
     /// No counter, timestamp or full-image readback stalls the live frame.
     pub fn render_texture(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32) -> wgpu::Texture {
-        self.frame_output(gpu, views, light, out_w, out_h, &[], false).0
+        self.frame_output(gpu, views, light, out_w, out_h, &[], Readback::None).0
+    }
+
+    /// Measure the exact rendered frame for an explicit developer capture.
+    /// This waits for GPU counters/timestamps, but avoids an image readback.
+    /// Normal gameplay should use `render_texture` instead.
+    pub fn render_texture_profiled(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32) -> (wgpu::Texture, FrameStats) {
+        let (texture, _, stats)=self.frame_output(gpu, views, light, out_w, out_h, &[], Readback::Metrics);
+        (texture,stats)
     }
 
     /// Explicit offline validation readback; normal frame rendering never waits.
     pub fn voxel_diagnostics(&self, gpu: &Gpu) -> Result<Option<Vec<crate::voxel_forest::VoxelViewDiagnostics>>,String> {
         self.voxel_forest.as_ref().map(|forest|forest.diagnostics(gpu)).transpose()
+    }
+
+    /// Explicit offline validation; no readback or wait in normal play.
+    pub fn far_grass_diagnostics(&self, gpu: &Gpu) -> Result<Option<Vec<crate::far_grass::FarGrassDiagnostics>>,String> {
+        self.far_grass.as_ref().map(|grass|grass.diagnostics(gpu)).transpose()
+    }
+
+    pub fn far_grass_layers_rgba16(&self, gpu: &Gpu) -> Result<Vec<(u32,u32,Vec<u8>)>,String> {
+        match &self.far_grass { Some(grass)=>grass.layers_rgba16(gpu), None=>Ok(Vec::new()) }
     }
 
     /// Explicit raw premultiplied HDR + alpha readback for voxel validation.
@@ -922,7 +950,7 @@ impl Renderer {
         Ok(())
     }
 
-    fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: bool) -> (wgpu::Texture, Vec<u8>, FrameStats) {
+    fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback) -> (wgpu::Texture, Vec<u8>, FrameStats) {
         let tex2d = |label: &str, w: u32, h: u32, format, usage| {
             gpu.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -1076,6 +1104,7 @@ impl Renderer {
             }
         }
         if let Some(grass) = &self.grass { grass.set_view_count(views.len()); }
+        if let Some(grass) = &self.far_grass { grass.set_view_count(views.len()); }
         if let Some(forest) = &self.voxel_forest { forest.set_view_count(views.len()); }
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         for (vi, view) in views.iter().enumerate() {
@@ -1199,22 +1228,27 @@ impl Renderer {
                 pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
                 drop(pass);
                 if label == "shade" {
+                    let volume_view=(self.far_grass.is_some() || self.voxel_forest.is_some()).then(||
+                        crate::volume_view::VolumeViewInputs {
+                            camera:&main.uniform, light:&light_buf, opaque_depth:&depth_v,
+                            sun_shadow:&shadow_v, shadow_sampler:&self.shadow_samp,
+                            sky:&self.sky_view, heightfield:&self.heightfield, gi:&gi_buf,
+                            canopy:&density_view, canopy_sampler:&self.density_sampler,
+                            near_shadow:&near_view,
+                        }.bind(&gpu.device,&self.volume_view_layout));
+                    let far_grass = self.far_grass.as_ref().map(|grass| {
+                        let time = self.query.as_ref().map(|(qs,_,_)| {
+                            let i=timestamp_pair(&mut ts); names.push("far grass volume"); (qs,i)
+                        });
+                        grass.render(gpu,&mut enc,vi,(w,h),&self.scene_bind,
+                            volume_view.as_ref().unwrap(),views.len()>1,time)
+                    });
                     if let Some(forest) = &self.voxel_forest {
                         let times = ["voxel tiles", "voxel integrate", "voxel composite"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
                             let i=timestamp_pair(&mut ts); names.push(name); (qs,i)
                         }));
-                        forest.render(gpu,&mut enc,vi,(w,h),&self.scene_bind,&[
-                            (0,main.uniform.as_entire_binding()),(2,light_buf.as_entire_binding()),
-                            (4,wgpu::BindingResource::TextureView(&depth_v)),
-                            (5,wgpu::BindingResource::TextureView(&shadow_v)),
-                            (6,wgpu::BindingResource::Sampler(&self.shadow_samp)),
-                            (7,wgpu::BindingResource::TextureView(&self.sky_view)),
-                            (10,wgpu::BindingResource::TextureView(&self.heightfield)),
-                            (11,gi_buf.as_entire_binding()),
-                            (13,wgpu::BindingResource::TextureView(&density_view)),
-                            (14,wgpu::BindingResource::Sampler(&self.density_sampler)),
-                            (15,wgpu::BindingResource::TextureView(&near_view)),
-                        ],&hdr_v,times);
+                        forest.render(gpu,&mut enc,vi,(w,h),&self.scene_bind,
+                            volume_view.as_ref().unwrap(),&hdr_v,times);
                     }
                     if let Some(grass) = &self.grass {
                         let transition_times = self.query.as_ref().map(|(qs, _, _)| {
@@ -1237,7 +1271,7 @@ impl Renderer {
                             (13, wgpu::BindingResource::TextureView(&density_view)),
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
-                        ], &hdr_v, &depth, transition_times, composite_times);
+                        ], &hdr_v, &depth, far_grass.as_ref(), transition_times, composite_times);
                     }
                     if let Some(transparency) = &self.transparency {
                         let t = self.query.as_ref().map(|(qs, _, _)| { let i = timestamp_pair(&mut ts); (qs, i) });
@@ -1260,7 +1294,7 @@ impl Renderer {
             keep.push((main, vis, depth, hdr));
         }
         drop(histories);
-        if !readback {
+        if readback==Readback::None {
             gpu.queue.submit([enc.finish()]);
             return (ldr, Vec::new(), FrameStats::default());
         }
@@ -1278,7 +1312,7 @@ impl Renderer {
             enc.copy_buffer_to_buffer(resolve, 0, read, 0, 8 * ts as u64);
         }
         gpu.queue.submit([enc.finish()]);
-        let pixels = gpu.read_rgba8(&ldr);
+        let pixels = if readback==Readback::ImageAndMetrics { gpu.read_rgba8(&ldr) } else { Vec::new() };
         let mut stats = FrameStats::default();
         if !picks.is_empty() {
             let (main, vis, ..) = &keep[0];
@@ -1393,10 +1427,10 @@ mod layout_tests {
     fn four_views_with_near_maps_voxels_grass_transparency_and_taa_fit_timestamp_budget() {
         // Shared canopy/filter/far map: 4 passes. Each view: near cull/raster,
         // main cull/raster, shade, voxel tiles/integrate/composite,
-        // grass transition/composite, transparency, TAA, tonemap: 13 intervals.
+        // far grass, grass transition/composite, transparency, TAA, tonemap: 14 intervals.
         let mut next = 0;
-        for _ in 0..(4 + 4 * 13) { timestamp_pair(&mut next); }
-        assert_eq!(next, 112);
+        for _ in 0..(4 + 4 * 14) { timestamp_pair(&mut next); }
+        assert_eq!(next, 120);
         assert!(next <= TIMESTAMP_CAPACITY);
         next = TIMESTAMP_CAPACITY - 2;
         assert_eq!(timestamp_pair(&mut next), TIMESTAMP_CAPACITY - 2);

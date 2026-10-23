@@ -544,3 +544,76 @@ completed three invisible native-4K frames (`r11-smoke.*`) and then resumed
 the visible 4K AI demo. Voxel patches remain off by default. The actual F12
 image `engine/build/screenshots/sideways-1792788753189-145256-0.png` records
 the preceding r10 automatic drive with source trees, not the voxel fixture.
+
+## Developer workflow and terrain-following far grass (r12b)
+
+The thread now has two explicit goals: improve the engine and apply it in
+Sideways. `VolumeViewInputs` centralizes the typed depth/light/canopy resources
+and shares one bind group per camera between the two volume renderers.
+`render_texture_profiled` measures the exact captured scene frame without a
+redundant image readback; normal `render_texture` still performs no CPU readback.
+F12 metadata and hidden-capture `.png.metrics.json` contain these measurements,
+explicitly excluding HUD, presentation and CPU. This is not continuous FPS
+telemetry. Existing readback error handling still needs hardening.
+
+`tools/play-dev-windows.ps1` builds while the previous tracked game keeps
+running, stages an immutable executable filename, preserves logs/SHA and only
+restarts its own PID after verifying path and creation time. Helper contract
+tests passed. A real BuildOnly took 83.30 seconds and left the previous demo
+alive (`build/dev-runs/20261023T213248089Z-f8c84fd6`). Explicit visible launch
+and restart also passed, using runs `20261023T214434940Z-d90fdae3` and
+`20261023T214614975Z-67c58bce`. The latter cached build took 1.99 seconds,
+then 10.76 seconds to first visible frame; this is not a changed-source build
+speed claim. The old process exited with `window_closed`, no error. A new
+first-visible-frame marker handles recovery when the first acquire fails.
+
+`SIDEWAYS_FAR_GRASS=1` enables four-bin statistical grass density following
+the native 2 m terrain triangles, road distance, habitat and source photograph.
+The 40-60 m single-view / 20-38 m split transition blends representations
+before one composite. No new near tufts are added. Half-resolution RGBA16F
+and root-distance targets use about 24.9 MB at combined 4K, plus static field
+textures. The seed-1 3 km field had 353x1633 points, 388,898 occupied cells and
+a 543 ms one-time CPU bake. Density is a four-sample habitat expectation,
+not individual blades. Half-resolution nearest reconstruction can show 2 px
+edges. Mean appearance is too smooth on some open slopes; retain opt-in status.
+
+101 distinct CPU/shader/oracle checks passed (one unrelated CPU benchmark is
+ignored by default). Twelve actual GPU optical cases initially found an AABB
+entry/exit rounding bug, preserved in `far-grass-r12-optics-1`. Integer-cell
+ownership now clamps only the known clipped entry and recognizes grid exit;
+no epsilon interval is skipped. All twelve cases passed in
+`far-grass-r12-optics-2/report.json`, including negative/grid-boundary rays,
+odd viewports, native terrain diagonals, partial-road clipping and conservative
+2x2 opaque clipping. Eleven existing tree optical GPU cases also passed with
+the shared bindings (`voxel-optics-r12-shared-view`).
+
+Exact r12b executable SHA256:
+`05ec994693442cc72ec7d2cb10641666a616fa0d13db25138a860e75c479097e`.
+Four separate native-4K hidden runs rendered 100 frames each, to physics tick
+800, with far grass off/on and one/four views. Paired player/control states
+matched exactly; see `r12b-grass-comparison.json`. Final-frame overflow was zero
+in every view (single max 96 iterations; four max 119). Actual images were
+inspected and show distant grassy coverage without filling the road or car.
+
+| Final captured frame | Scene GPU pass sum, ms | Far-grass pass, ms |
+| --- | ---: | ---: |
+| One view, off | 17.873 | absent |
+| One view, on | 17.977 | 0.190 |
+| Four views, off | 35.084 | absent |
+| Four views, on | 36.954 | 0.768 |
+
+These are single-frame pass intervals, not averaged gameplay FPS or isolated
+package speedups. A later actual F12 open-slope frame cost 1.190 ms for far
+grass, showing view dependence. Its real image/metadata are
+`engine/build/screenshots/sideways-1792791953659-192224-0.*`. Sparse captures
+do not certify temporal shimmer, all stage seeds/weather or the whole route.
+120 FPS remains unmet. The visible one-player 4K autoplay uses the opt-in
+grass volume and regular source trees.
+
+The intermediate r3 tree-cache specialization was rejected: 64-tree integrate
+regressed from r2 32.242 to 44.546 ms. Only the 4096-iteration correctness cap
+was retained with the original r2 caches. With the shared view bindings this
+completed the formerly invalid fine 256-tree fixture in 49.705 ms, max 1330
+steps, zero incomplete rays (`voxel-r12-256-fine`). Coverage ratio 0.890806 and
+soft IoU 0.773714 remain approximate/cloudy. This is still far too expensive
+for the intended full forest and stays disabled by default.

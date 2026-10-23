@@ -39,6 +39,8 @@ pub(crate) struct GrassRenderer {
     view_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     ranges: Vec<RangeGpu>,
+    empty_far: [wgpu::TextureView; 2],
+    blend_uniforms: [wgpu::Buffer; 2],
     targets: Mutex<Vec<Option<Targets>>>,
 }
 
@@ -57,6 +59,10 @@ pub(crate) fn shader_source() -> String {
         include_str!("shaders/grass_transition.wgsl")
     )
 }
+pub(crate) fn composite_source() -> String {
+    format!("{}\n{}", include_str!("shaders/grass_common.wgsl"),
+        include_str!("shaders/grass_composite.wgsl"))
+}
 
 impl GrassRenderer {
     pub(crate) fn new(
@@ -64,7 +70,7 @@ impl GrassRenderer {
         scene: &Scene,
         scene_layout: &wgpu::BindGroupLayout,
     ) -> Option<Self> {
-        if scene.grass_ranges.is_empty() {
+        if scene.grass_ranges.is_empty() && scene.far_grass.is_none() {
             return None;
         }
         let uniform = wgpu::BindingType::Buffer {
@@ -188,10 +194,10 @@ impl GrassRenderer {
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("grass composite"),
-                    entries: &[0].map(|binding| wgpu::BindGroupLayoutEntry {
+                    entries: &[0,1,2,3].map(|binding| wgpu::BindGroupLayoutEntry {
                         binding,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: unfiltered,
+                        ty: if binding==3 {uniform} else {unfiltered},
                         count: None,
                     }),
                 });
@@ -199,9 +205,7 @@ impl GrassRenderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("grass composite"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("shaders/grass_composite.wgsl").into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(composite_source().into()),
             });
         let layout = gpu
             .device
@@ -285,12 +289,29 @@ impl GrassRenderer {
                 }
             })
             .collect();
+        let empty_far = [wgpu::TextureFormat::Rgba16Float, wgpu::TextureFormat::R32Float].map(|format| {
+            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("empty far grass"), size: wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1},
+                mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format,
+                usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[],
+            });
+            let bytes = if format==wgpu::TextureFormat::Rgba16Float {8} else {4};
+            gpu.queue.write_texture(texture.as_image_copy(),&[0u8;8][..bytes],
+                wgpu::TexelCopyBufferLayout {offset:0,bytes_per_row:None,rows_per_image:None},
+                wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1});
+            texture.create_view(&Default::default())
+        });
+        let blend_uniforms = [0.0f32,1.0].map(|split|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:Some("grass blend range"),contents:bytemuck::cast_slice(&[split,0.0,0.0,0.0]),usage:wgpu::BufferUsages::UNIFORM,
+        }));
         Some(Self {
             pipeline,
             composite,
             view_layout,
             composite_layout,
             ranges,
+            empty_far,
+            blend_uniforms,
             targets: Mutex::new(Vec::new()),
         })
     }
@@ -336,7 +357,9 @@ impl GrassRenderer {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::TextureView(&layer),
-            }],
+            }, wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(&self.empty_far[0])},
+            wgpu::BindGroupEntry {binding:2,resource:wgpu::BindingResource::TextureView(&self.empty_far[1])},
+            wgpu::BindGroupEntry {binding:3,resource:self.blend_uniforms[0].as_entire_binding()}],
         });
         Targets {
             size,
@@ -357,6 +380,7 @@ impl GrassRenderer {
         bindings: &[(u32, wgpu::BindingResource<'_>)],
         hdr: &wgpu::TextureView,
         opaque_depth: &wgpu::Texture,
+        far: Option<&crate::far_grass::FarGrassLayer>,
         transition_times: Option<wgpu::RenderPassTimestampWrites<'_>>,
         composite_times: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
@@ -365,6 +389,15 @@ impl GrassRenderer {
             targets[view] = Some(self.targets(gpu, size));
         }
         let target = targets[view].as_ref().unwrap();
+        let far_composite = far.map(|far|gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:Some("near and far grass blend"),layout:&self.composite_layout,
+            entries:&[
+                wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(&target.layer)},
+                wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(&far.color)},
+                wgpu::BindGroupEntry {binding:2,resource:wgpu::BindingResource::TextureView(&far.distance)},
+                wgpu::BindGroupEntry {binding:3,resource:self.blend_uniforms[usize::from(targets.len()>1)].as_entire_binding()},
+            ],
+        }));
         let view_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("grass view"),
             layout: &self.view_layout,
@@ -461,7 +494,7 @@ impl GrassRenderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.composite);
-            pass.set_bind_group(0, &target.composite, &[]);
+            pass.set_bind_group(0, far_composite.as_ref().unwrap_or(&target.composite), &[]);
             pass.draw(0..3, 0..1);
         }
     }

@@ -5,6 +5,48 @@ Run from `engine/`. Python fixtures require Python 3.10+ and `websockets`
 Use a fresh `--out` directory for every run; keep failed evidence alongside
 later successes. Run rendering fixtures serially.
 
+## Short Windows development loop
+
+Run explicitly from `engine/`:
+
+```powershell
+tools\play-dev-windows.ps1 -Autoplay
+tools\play-dev-windows.ps1 -Restart -Autoplay
+tools\play-dev-windows.ps1 -BuildOnly
+tools\play-dev-windows.ps1 -Restart -Views 4 -Windowed -Size 1920x1080
+```
+
+The helper builds the current checkout, stages a uniquely named executable,
+and launches only when explicitly invoked without `-BuildOnly`. It keeps the
+previous tracked playtest running throughout compilation. `-Restart` replaces
+only the helper's own recorded process after the build succeeds, verifying
+its exact executable path, PID and creation time again after compilation.
+Games started by other tools are never stopped by this helper; stop those
+separately before adopting it, to avoid concurrent GPU workloads.
+
+Release is the default. `-Profile dev` uses the workspace's faster incremental
+development profile; do not compare its performance with release results.
+`-TargetDirectory C:\dev\warp-target-20261023` or the existing
+`CARGO_TARGET_DIR` can share Cargo artifacts. No source snapshot is taken;
+avoid editing source during a build intended for a reproducible comparison.
+
+Each `build/dev-runs/<run>/` preserves build/play logs, executable SHA256,
+arguments, source revision/dirty status and an `iteration.json` manifest.
+Normal game shutdown also writes `final-state.json`; continuous state tracing
+is not enabled by default.
+Success requires the game's first **presented** frame log. A startup timeout
+reports uncertainty and leaves that exact process recorded for inspection or
+the next `-Restart`; it does not claim a working playtest or kill it blindly.
+This is a launch check, not GPU benchmarking or a physical controller test.
+F12 saves the current final image and metadata under `build/screenshots/`
+and copies the image to the Windows clipboard. Assets still resolve from the
+build-time checkout, which must remain in place. GameNight launches continue
+through the host; this standalone helper rejects inherited host credentials.
+
+`tools\test-play-dev.ps1` checks process identity, build artifact handling,
+presentation evidence, quoting and script syntax without Cargo, a game process
+or GPU work.
+
 ## Windows lifecycle and controller contract
 
 ```powershell

@@ -10,7 +10,10 @@ use sideways::builder::{Chunk, N};
 use sideways::stage::{CHUNK, GRID};
 use std::{collections::{BTreeMap, BTreeSet, HashMap, HashSet}, ops::Range, path::Path, time::Instant};
 
-const CELL: f32 = 0.45;
+pub(crate) const CELL: f32 = 0.45;
+pub(crate) const ROOT_OFFSET: f32 = -0.025;
+pub(crate) const SCALE_MIN: f32 = 0.7;
+pub(crate) const SCALE_SPAN: f32 = 0.6;
 const TILE_CELLS: i32 = 8;
 const TILE: f32 = CELL * TILE_CELLS as f32;
 const TUFT_WIDTH: f32 = 0.36 * (257.0 / 135.0);
@@ -91,12 +94,12 @@ impl Iterator for SetBits {
     }
 }
 struct GroundChunk { x0: f32, z0: f32, heights: Box<[f32]>, road: Box<[f32]> }
-struct Ground(HashMap<Cell, GroundChunk>);
+pub(crate) struct Ground(HashMap<Cell, GroundChunk>);
 #[derive(Clone, Copy)]
 struct Sample { height: f32, road: f32, up: f32 }
 
 impl Ground {
-    fn new(chunks: &[Chunk]) -> Self {
+    pub(crate) fn new(chunks: &[Chunk]) -> Self {
         Self(chunks.iter().map(|c| (c.cell, GroundChunk { x0: c.x0 as f32, z0: c.z0 as f32,
             heights: c.heights.clone().into_boxed_slice(), road: c.road_d.clone().into_boxed_slice() })).collect())
     }
@@ -116,6 +119,27 @@ impl Ground {
             return Some(Sample { height: interpolate(&c.heights), road: interpolate(&c.road), up: 1.0 / (1.0 + dx * dx + dz * dz).sqrt() });
         }}
         None
+    }
+
+    /// Same accepted-plant probability as the live world grid, before its
+    /// fixed membership hash. Used for the far representation's mean density.
+    pub(crate) fn expected_coverage(&self, xz: Vec2, scale: f32) -> f32 {
+        self.placement(xz, scale).map_or(0.0, |(_, coverage)| coverage)
+    }
+
+    fn placement(&self, xz: Vec2, scale: f32) -> Option<(f32, f32)> {
+        let root = self.sample(xz)?;
+        let clearance = TUFT_WIDTH * 0.5 * scale;
+        if root.road < 0.9 + clearance || root.up <= 0.7 { return None; }
+        if ![Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y].iter().all(|axis|
+            self.sample(xz + *axis * clearance).is_some_and(|sample| sample.road >= 0.9)) { return None; }
+        let verge = smooth(0.5, 1.4, root.road) * (1.0 - smooth(10.0, 22.0, root.road));
+        // Keep a continuous low cover inside the woodland, with denser clearings.
+        // This is a world habitat mask: camera position never changes membership.
+        let wood = (0.55 + 0.45 * smooth(0.25, 0.65, noise(xz / 7.0)))
+            * 0.95 * smooth(1.0, 3.0, root.road);
+        let coverage = verge.max(wood) * smooth(0.7, 0.82, root.up);
+        Some((root.height, coverage))
     }
 }
 
@@ -141,20 +165,10 @@ fn visible_radius(views: usize) -> f32 { if views <= 1 { 60.0 } else { 38.0 } }
 fn candidate(ground: &Ground, id: Cell) -> Option<Tuft> {
     let jitter = Vec2::new(random(id, 0) - 0.5, random(id, 17) - 0.5) * 1.6;
     let xz = (Vec2::new(id.0 as f32, id.1 as f32) + Vec2::splat(0.5) + jitter) * CELL;
-    let scale = 0.7 + 0.6 * random(id, 9);
-    let root = ground.sample(xz)?;
-    let clearance = TUFT_WIDTH * 0.5 * scale;
-    if root.road < 0.9 + clearance || root.up <= 0.7 { return None; }
-    if ![Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y].iter().all(|axis|
-        ground.sample(xz + *axis * clearance).is_some_and(|sample| sample.road >= 0.9)) { return None; }
-    let verge = smooth(0.5, 1.4, root.road) * (1.0 - smooth(10.0, 22.0, root.road));
-    // Keep a continuous low cover inside the woodland, with denser clearings.
-    // This is a world habitat mask: camera position never changes membership.
-    let wood = (0.55 + 0.45 * smooth(0.25, 0.65, noise(xz / 7.0)))
-        * 0.95 * smooth(1.0, 3.0, root.road);
-    let coverage = verge.max(wood) * smooth(0.7, 0.82, root.up);
+    let scale = SCALE_MIN + SCALE_SPAN * random(id, 9);
+    let (height, coverage) = ground.placement(xz, scale)?;
     if random(id, 43) >= coverage { return None; }
-    Some(Tuft { id, position: Vec3::new(xz.x, root.height - 0.025, xz.y), scale,
+    Some(Tuft { id, position: Vec3::new(xz.x, height + ROOT_OFFSET, xz.y), scale,
         yaw: random(id, 3) * std::f32::consts::TAU })
 }
 

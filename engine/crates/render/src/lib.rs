@@ -10,6 +10,7 @@ pub mod cluster;
 pub mod frame;
 pub mod gpu;
 pub mod grass;
+pub mod far_grass;
 pub mod hud;
 pub mod hud_profile;
 pub mod present;
@@ -19,6 +20,7 @@ pub mod foliage_volume_data;
 pub mod voxel_forest;
 mod stability;
 mod transparency;
+mod volume_view;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, ViewRect, split_rects};
 pub use gpu::{Gpu, Stopwatch, write_png};
@@ -108,7 +110,7 @@ mod shader_tests {
 
     #[test]
     fn grass_transition_shaders_validate() {
-        for src in [crate::grass::shader_source(),include_str!("shaders/grass_composite.wgsl").to_owned()] {
+        for src in [crate::grass::shader_source(),crate::grass::composite_source()] {
             let module=naga::front::wgsl::parse_str(&src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
         }

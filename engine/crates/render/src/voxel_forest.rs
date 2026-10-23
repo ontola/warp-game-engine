@@ -43,7 +43,6 @@ pub(crate) struct VoxelRenderer {
     tiles: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
     composite: wgpu::RenderPipeline,
-    view_layout: wgpu::BindGroupLayout,
     data_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     data: [wgpu::Buffer; 4],
@@ -148,6 +147,7 @@ impl VoxelRenderer {
         gpu: &Gpu,
         scene: &Scene,
         scene_layout: &wgpu::BindGroupLayout,
+        volume_view_layout: &wgpu::BindGroupLayout,
     ) -> Option<Self> {
         let forest = scene.voxel_forest.as_ref()?;
         if forest.instances.is_empty() {
@@ -219,35 +219,6 @@ impl VoxelRenderer {
             wgpu::TextureSampleType::Float { filterable: false },
             wgpu::TextureViewDimension::D2,
         );
-        let depth = tex(
-            wgpu::TextureSampleType::Depth,
-            wgpu::TextureViewDimension::D2,
-        );
-        let view_bindings = [
-            (0, uniform),
-            (2, uniform),
-            (4, depth),
-            (5, depth),
-            (
-                6,
-                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-            ),
-            (7, unfiltered),
-            (10, unfiltered),
-            (11, uniform),
-            (
-                13,
-                tex(
-                    wgpu::TextureSampleType::Float { filterable: true },
-                    wgpu::TextureViewDimension::D3,
-                ),
-            ),
-            (
-                14,
-                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            ),
-            (15, depth),
-        ];
         let layout = |name, bindings: &[(u32, wgpu::BindingType)], visibility| {
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -263,7 +234,6 @@ impl VoxelRenderer {
                         .collect::<Vec<_>>(),
                 })
         };
-        let view_layout = layout("voxel view", &view_bindings, wgpu::ShaderStages::COMPUTE);
         let data_layout = layout(
             "voxel data",
             &[
@@ -289,7 +259,11 @@ impl VoxelRenderer {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("voxel forest"),
-                bind_group_layouts: &[Some(scene_layout), Some(&view_layout), Some(&data_layout)],
+                bind_group_layouts: &[
+                    Some(scene_layout),
+                    Some(volume_view_layout),
+                    Some(&data_layout),
+                ],
                 immediate_size: 0,
             });
         let module = gpu
@@ -362,7 +336,6 @@ impl VoxelRenderer {
             tiles,
             integrate,
             composite,
-            view_layout,
             data_layout,
             composite_layout,
             data,
@@ -487,7 +460,7 @@ impl VoxelRenderer {
         index: usize,
         size: (u32, u32),
         scene: &wgpu::BindGroup,
-        bindings: &[(u32, wgpu::BindingResource<'_>)],
+        view: &wgpu::BindGroup,
         hdr: &wgpu::TextureView,
         times: [Option<(&wgpu::QuerySet, u32)>; 3],
     ) {
@@ -496,17 +469,6 @@ impl VoxelRenderer {
             targets[index] = Some(self.targets(gpu, size));
         }
         let target = targets[index].as_ref().unwrap();
-        let view = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("voxel view"),
-            layout: &self.view_layout,
-            entries: &bindings
-                .iter()
-                .map(|(binding, resource)| wgpu::BindGroupEntry {
-                    binding: *binding,
-                    resource: resource.clone(),
-                })
-                .collect::<Vec<_>>(),
-        });
         encoder.clear_buffer(&target.counters, 0, None);
         for (stage, pipeline) in [&self.tiles, &self.integrate].into_iter().enumerate() {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -525,7 +487,7 @@ impl VoxelRenderer {
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, scene, &[]);
-            pass.set_bind_group(1, &view, &[]);
+            pass.set_bind_group(1, view, &[]);
             pass.set_bind_group(2, &target.bind, &[]);
             let dims = if stage == 0 {
                 (size.0.div_ceil(TILE), size.1.div_ceil(TILE))

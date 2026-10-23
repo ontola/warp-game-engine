@@ -8,7 +8,21 @@ in `engine/`, the Godot game beside it as the reference. (It started as the
 `rust-engine` branch of joepio/sideways; the game's own `main` there stays
 untouched.)
 
-## Goal
+## Current goals
+
+Joep explicitly wants both a better engine and its application in Sideways.
+Improve APIs, performance and iteration time while using the game to expose
+real needs. Current work shares typed volume-view bindings between voxel
+trees and distant grass, and adds a staged Windows build/restart workflow.
+F12 developer captures include same-frame scene GPU metrics. Do not claim
+token savings or runtime speed gains without measurements. Shader hot reload
+and broader frame-resource reuse are still future work.
+
+The immediate visual priority is grass pop-in around 100 m, using a cheap
+terrain-following density volume and continuous near/far blending. Source
+trees remain the normal forest; GPU voxel crowns are still experimental.
+
+## Original goal
 
 Joep asked for an engine designed around fast AI iteration loops, with the
 Sideways rally game (Godot 4.5) as the benchmark: port it, and beat Godot
@@ -19,16 +33,31 @@ GI. Keep the loops short and measured (README, "The iteration loops").
 ## Rules from Joep
 
 - Talk to him in Dutch, without em-dashes. Code, comments and docs in English.
-- **Never open windows on his screen or take it over** (he may be watching
-  a film on that PC). Everything renders offscreen: `shot` writes a PNG,
-  `gpu-run` writes results. Do not add a windowed mode that opens by itself.
+- Open a visible game only for an explicitly requested playtest/demo. Joep
+  now requests visible autonomous driving for remote watching. Otherwise
+  render offscreen; stop the demo before isolated GPU measurements.
 - Commit to `main` of ontola/warp-game-engine and push. Attribute only the
   actual contributors/session; do not copy another agent's attribution.
 - When mentioning PRs, link them with a short description.
-- Show him pictures of what changed. Compare against Godot's frame at the
-  same moment, and be honest about what still looks worse.
+- Show actual pictures and honest limitations. Compare current Kern variants;
+  Joep explicitly ended Godot comparisons on 23 October.
 
 ## Windows continuation, 2026-10-23
+
+Latest r12b validated candidate SHA256:
+`05ec994693442cc72ec7d2cb10641666a616fa0d13db25138a860e75c479097e`.
+The visible demo is now managed by `tools/play-dev-windows.ps1`; use its
+`-Restart -Autoplay` workflow and inspect `build/dev-runs/active.json`.
+It runs with `SIDEWAYS_FAR_GRASS=1`, `SIDEWAYS_VOXEL_TREE_PATCH=0` and NVIDIA.
+The new far grass fills the former missing representation past 60 m; it
+remains opt-in because open slopes look too smooth and the field has a fixed
+allocation bound. 101 CPU/shader/oracle checks and 12 far-grass / 11 tree
+GPU optical cases passed. Paired 100-frame 4K one/four-view smoke runs passed;
+final-frame far-grass overflow was zero in all views. This is not full-route
+temporal acceptance. Same-frame far pass samples were 0.190 ms single,
+0.768 ms combined four, and 1.190 ms on a later open-slope live capture.
+The four-view scene sample total was 36.954 ms excluding HUD/presentation/CPU;
+120 FPS is not achieved. Read the r12 section of WINDOWS_VALIDATION.md.
 
 Read `WINDOWS_VALIDATION.md` for measured results, evidence and limitations.
 The `play` command now provides a Windows driving loop, native XInput,
