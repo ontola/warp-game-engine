@@ -20,6 +20,8 @@ struct Light {
     fog_color: vec4<f32>,    // horizon radiance; w: fog start (m)
     fog: vec4<f32>,          // x: fog end (m), y: exponential density, z: height falloff, w: wetness
     sh: array<vec4<f32>, 9>, // sky irradiance, SH9, already in lux
+    near_shadow_view_proj: mat4x4<f32>,
+    near_shadow: vec4<f32>, // world texel size, blend-start radius, enabled
 };
 
 struct Cluster {
@@ -88,6 +90,7 @@ struct SolidOccluder {
 @group(1) @binding(12) var<storage, read> solids: array<SolidOccluder>;
 @group(1) @binding(13) var canopy_tex: texture_3d<f32>;
 @group(1) @binding(14) var canopy_sampler: sampler;
+@group(1) @binding(15) var near_shadow_tex: texture_depth_2d;
 
 struct Gi {
     vol_origin: vec4<f32>,
@@ -331,21 +334,47 @@ fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
     return max(e, vec3<f32>(0.0));
 }
 
-fn shadow_at(p: vec3<f32>, n: vec3<f32>) -> f32 {
-    let biased = p + n * light.sky.w * 1.5 + light.sun_dir.xyz * light.sky.w;
-    let c = light.shadow_view_proj * vec4<f32>(biased, 1.0);
+fn shadow_filter(map: texture_depth_2d, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>, n: vec3<f32>) -> f32 {
+    let biased = p + n * world_texel * 1.5 + light.sun_dir.xyz * world_texel;
+    let c = projection * vec4<f32>(biased, 1.0);
     let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
-    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z > 1.0 {
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 {
         return 1.0;
     }
-    let texel = 1.0 / vec2<f32>(textureDimensions(shadow_tex));
+    let texel = 1.0 / vec2<f32>(textureDimensions(map));
     var lit = 0.0;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
-            lit += textureSampleCompareLevel(shadow_tex, shadow_samp, uv + vec2<f32>(f32(x), f32(y)) * texel, c.z);
+            lit += textureSampleCompareLevel(map, shadow_samp, uv + vec2<f32>(f32(x), f32(y)) * texel, c.z);
         }
     }
     return lit / 9.0;
+}
+
+// Detail follows each camera but its texels remain fixed in world space.
+// Blend the far-map/canopy result before adding the near detail, so a camera
+// near the shared-map edge cannot overwrite a valid car shadow with foliage.
+fn shadow_at(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    var weight = 0.0;
+    if light.near_shadow.z > 0.5 {
+        let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
+        if c.z >= 0.0 && c.z <= 1.0 {
+            weight = 1.0 - smoothstep(light.near_shadow.y, 1.0, max(abs(c.x), abs(c.y)));
+        }
+    }
+    if weight >= 1.0 {
+        return shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n);
+    }
+    var far = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n);
+    let c = light.shadow_view_proj * vec4<f32>(p, 1.0);
+    let edge = max(abs(c.x), abs(c.y));
+    if edge > 0.85 && gi.vol_dims.w != 0u {
+        let tr = transmittance(p + n * 0.2, light.sun_dir.xyz, 50.0);
+        far = mix(far, tr, smoothstep(0.85, 1.0, edge));
+    }
+    if weight <= 0.0 { return far; }
+    let detail = shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n);
+    return mix(far, detail, weight);
 }
 
 fn tex(layer: i32, uv: vec2<f32>, lod: f32) -> vec4<f32> {
@@ -697,14 +726,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     var shadow = 1.0;
     if sun > 0.0 || needles || gi.vol_dims.w != 0u || (m.flags & 32u) != 0u || m.roughness < 0.55 {
-        var s_map = shadow_at(p, surface_n * sign(dot(surface_n, l) + 1e-4));
-        // Beyond the shadow map the canopy volume shades the ground.
-        let c = light.shadow_view_proj * vec4<f32>(p, 1.0);
-        let edge = max(abs(c.x), abs(c.y));
-        if edge > 0.85 && gi.vol_dims.w != 0u {
-            let tr = transmittance(p + surface_n * 0.2, l, 50.0);
-            s_map = mix(s_map, tr, smoothstep(0.85, 1.0, edge));
-        }
+        let s_map = shadow_at(p, surface_n * sign(dot(surface_n, l) + 1e-4));
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
     // Base layer: Lambert plus GGX, metals tint their reflection.

@@ -201,6 +201,7 @@ impl App {
         // Frozen CPU grass is intentionally not carried into a moving scene:
         // it would stop at the original camera area. Streaming is separate work.
         self.built = visuals::build(&self.race.stage, &poses, &cams.iter().map(|c|c.pos).collect::<Vec<_>>(), false)?;
+        for line in &self.built.log { eprintln!("scene rebuild: {line}"); }
         self.light = lighting(self.race.weather);
         if let Some(g) = &mut self.graphics { g.renderer = Renderer::new(&g.gpu, &self.built.scene, &self.light); }
         self.last_frame = Instant::now(); self.accumulator = 0.0;
@@ -514,6 +515,7 @@ pub fn run(raw:&[String])->i32{
     if a.smoke_ticks>0{return match smoke(&a){Ok(())=>0,Err(e)=>{eprintln!("play smoke: {e}");1}};}
     let race=race(&a);let poses=poses(&race);let cams=cameras(&race,&poses,&[0.0;4],&[false;4]);
     let built=match visuals::build(&race.stage,&poses,&cams.iter().map(|c|c.pos).collect::<Vec<_>>(),false){Ok(b)=>b,Err(e)=>{eprintln!("play scene: {e}");return 1;}};
+    for line in &built.log { eprintln!("scene initial: {line}"); }
     let light=lighting(race.weather);let now=Instant::now();
     let host=match Client::connect_from_env(){Ok(h)=>h,Err(e)=>{eprintln!("GameNight: {e}");return 1;}};
     let seats:Vec<_>=(0..a.views).map(|i|Seat{index:i,player_id:format!("standalone-{i}"),name:format!("Player {}",i+1),color:String::new(),controller:String::new(),ai:false,couch:Some(i as i64)}).collect();

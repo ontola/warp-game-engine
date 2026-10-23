@@ -12,6 +12,7 @@ mod ground_cover;
 mod input;
 mod hud;
 mod play;
+mod procedural_rocks;
 mod gamenight;
 mod shot;
 mod visuals;

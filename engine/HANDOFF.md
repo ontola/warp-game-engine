@@ -55,12 +55,20 @@ One 4K output has four 1916x1076 views with an eight-pixel gap. The 120 FPS
 target has not been met. Frozen GPU pass timings are not live-game FPS.
 Keep the Godot source beside `engine/` as the unchanged reference.
 
-The next Windows lighting candidate fixes indirect visibility around cars,
+The Windows lighting update fixes indirect visibility around cars,
 direction-aware glossy reflections, locally conditioned ground bounce,
 absolute shadow-texel snapping, filtered world-aligned canopy density and
 reversed stone-wall normals. Read the lighting section of WINDOWS_VALIDATION
-before claiming full shadow stability or 120 FPS. A separate experimental
-foliage-voxel prototype is being developed; it is not active in this playtest.
+before claiming full shadow stability or 120 FPS. The subsequent r5 playtest
+adds forward glTF glass transparency, smooth terrain visibility normals and
+a bounded distant forest of original exposed-face voxel pines on rolling
+background hills. This uses the current cluster renderer, not Unreal Nanite.
+The separate sparse density-voxel bake is still experimental and inactive in
+play; its CPU comparison shows excessive softness/coverage at coarse levels.
+Joep requested quick build/restart rounds with his live visual feedback. Do
+not run competing GPU benchmarks during his playtest. Build/shader checks
+and first-frame confirmation remain appropriate; do not imply a full GPU
+acceptance suite or a 120 FPS result for these rapid iterations.
 
 ## Earlier renderer baseline
 

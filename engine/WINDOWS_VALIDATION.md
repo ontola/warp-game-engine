@@ -257,3 +257,41 @@ play. `voxel-crown-preview-r1` contains real fir-crown comparisons: baking
 took 149.3 ms; 0.25/0.5/1 m cells produced 4,955/1,258/347 sparse cells with
 conserved area. Images show softness and excess apparent coverage, especially
 at coarse levels. These volumes are not accepted as a near-tree replacement.
+
+## Near shadows and procedural cliff detail (r6)
+
+`sideways-rocks-r6.exe`, SHA256
+`af57c418ba16e889854edf5896a1a0e6b9e4578cd2814916a650c3f1007c50ee`,
+adds one retained 2048-square near sun map per active view. Its light-space
+half-width is 16 m (1.5625 cm per texel), blending across the outer 20% into
+the shared distant map. This improves sampling resolution; it does not prove
+all close shadow artifacts are resolved. Both opaque and transparent shading
+use the same combination, with separately named near cull/raster timestamps.
+`near_shadows=0` disables it for a future isolated cost comparison. Four-view
+cost has not been measured for this candidate.
+
+New original fractured cliff meshes follow existing native uphill cuts.
+Bounded surface relief is visual, at most 0.46 m; native collision is retained.
+The running seed-1 3 km scene reports 12 patches, 147,456 source triangles,
+1,125 coarsest-LOD triangles and up to eight levels. The first is at 294 m.
+They use the existing CC0 rock texture and cluster renderer. This is detailed
+cliff dressing, not a standalone procedural boulder/collider system.
+
+The same runtime log confirms 45,248 existing trees plus 10,000 new background
+voxel pines. The three shared pine meshes contain 2,990 source / 211 root
+triangles total. The background contains 1,153 tiles, extends to a 768 m
+radius and uses 1,855,425 height samples. Scene-build logs are emitted for
+initial creation and stage changes, including any disabled or failed feature.
+
+All 57 selected CPU tests passed (26 CLI, 31 render), including native height
+preservation, both cliff windings, actual tree LOD reduction, composed WGSL,
+near shadow coverage and query capacity (`rocks-r6-cpu-tests.log`). The
+release build passed (`rocks-r6-build.log`). The exact binary was launched
+visibly at native 4K with a connected controller; `rocks-r6-live.log` records
+the first presented frame and `rocks-r6-live-errors.log` contains scene stats.
+A read-only capture of the user's live window was viewed. No benchmark ran
+alongside play; no 120 FPS or isolated speed improvement is claimed.
+
+User feedback on this version: rock forms/materials look visibly repetitive.
+Further shape variation is pending; the near foliage remains the existing
+card geometry. F12 developer screenshots were requested after this build.
