@@ -115,6 +115,8 @@ struct App {
     hud_stats: serde_json::Value, hud_samples: Vec<serde_json::Value>,
     screenshot_pending: bool, screenshot_toast: Option<(String, Instant)>,
     sound: Option<crate::audio_out::Sound>, sound_failed: bool,
+    /// Car material data and shading shaders, reloaded when edited.
+    live_edit: crate::car_look::LiveEdit,
 }
 
 impl App {
@@ -240,7 +242,7 @@ impl App {
         let cams = cameras(&self.race, &poses, &self.yaw, &self.far);
         let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i)).take(self.args.views).collect();
         let positions:Vec<_>=if ordered.is_empty(){cams.iter().take(self.args.views).map(|c|c.pos).collect()}else{ordered.iter().map(|c|c.pos).collect()};
-        self.built = visuals::build_live(&self.race.stage, &poses, &positions)?;
+        self.built = visuals::build_live(&self.race.stage, &poses, &positions, self.live_edit.looks())?;
         for line in &self.built.log { eprintln!("scene rebuild: {line}"); }
         self.light = lighting(self.race.weather);
         if let Some(g) = &mut self.graphics { g.renderer = Renderer::new(&g.gpu, &self.built.scene, &self.light); }
@@ -435,6 +437,7 @@ impl App {
         if let Some(range)=grass_dirty {g.renderer.update_instances(&g.gpu,range.start,&self.built.scene.instances[range])?;}
         g.renderer.update_instances(&g.gpu, first, &self.built.scene.instances[first..])?;
         g.renderer.set_wind(&g.gpu,&self.args.nature.wind(self.race.frame as f64 / 120.0))?;
+        if let Some((log,_))=self.live_edit.poll(Duration::from_millis(250),&g.gpu,&mut g.renderer,&self.built.car_slots){for l in log{eprintln!("live edit: {l}");}}
         // F12 and the final hidden smoke capture measure this same frame;
         // normal play retains the no-readback render path.
         let measure_profile=self.gpu_profile.is_some() && self.rendered>=self.args.gpu_warmup as u64;
@@ -631,7 +634,8 @@ pub fn run(raw:&[String])->i32{
     };
     if a.smoke_ticks>0{return match smoke(&a){Ok(())=>0,Err(e)=>{eprintln!("play smoke: {e}");1}};}
     let race=race(&a);let poses=poses(&race);let cams=cameras(&race,&poses,&[0.0;4],&[false;4]);
-    let built=match visuals::build_live(&race.stage,&poses,&cams.iter().take(a.views).map(|c|c.pos).collect::<Vec<_>>()){Ok(b)=>b,Err(e)=>{eprintln!("play scene: {e}");return 1;}};
+    let looks=match crate::car_look::Looks::load(None,vec![]){Ok(l)=>l,Err(e)=>{eprintln!("play: {e}");return 2;}};
+    let built=match visuals::build_live(&race.stage,&poses,&cams.iter().take(a.views).map(|c|c.pos).collect::<Vec<_>>(),&looks){Ok(b)=>b,Err(e)=>{eprintln!("play scene: {e}");return 1;}};
     for line in &built.log { eprintln!("scene initial: {line}"); }
     let light=lighting(race.weather);let now=Instant::now();
     let host=match Client::connect_from_env(){Ok(h)=>h,Err(e)=>{eprintln!("GameNight: {e}");return 1;}};
@@ -639,7 +643,7 @@ pub fn run(raw:&[String])->i32{
     let settings=serde_json::json!({"gearbox":"automatic","stage_km":a.km,"rivals":0,"contact":true,"weather":a.weather});
     let view_order=(0..a.views).collect();
     let resume_fullscreen=if a.fullscreen{Some(Fullscreen::Borderless(None))}else{None};
-    let mut app=App{gpu_profile,args:a,race,built,light,input:Input::new(),window:None,graphics:None,focused:true,paused:false,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,sound:None,sound_failed:false};
+    let mut app=App{gpu_profile,args:a,race,built,light,input:Input::new(),window:None,graphics:None,focused:true,paused:false,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false};
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     if let Err(e)=events.run_app(&mut app){eprintln!("play event loop: {e}");return 1;}
     if let Some(e)=app.error{eprintln!("play: {e}");1}else{0}
