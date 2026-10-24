@@ -8,6 +8,7 @@
 pub mod analysis;
 pub mod dsp;
 pub mod engine;
+pub mod es;
 pub mod fluid;
 pub mod mix;
 pub mod sounds;
