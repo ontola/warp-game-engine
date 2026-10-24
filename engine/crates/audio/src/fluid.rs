@@ -224,6 +224,9 @@ pub struct FluidEngine {
     last_exit: f32,
     /// Cell updates done, for cost reports.
     pub work: u64,
+    /// Exhaust runner pressure per cylinder after the last sample (bar
+    /// above ambient, plus engine-sim's 0.1 x dynamic pressure).
+    pub runner: Vec<f32>,
 }
 
 impl FluidEngine {
@@ -264,6 +267,7 @@ impl FluidEngine {
             noise: Noise::new(seed ^ 0xF1D),
             last_exit: 0.0,
             work: 0,
+            runner: vec![0.0; n],
             geo,
         }
     }
@@ -388,6 +392,10 @@ impl FluidEngine {
             self.pipe.interior_fluxes();
             self.pipe.update(dt);
             self.work += self.pipe.cells.len() as u64;
+        }
+        for (r, h) in self.runner.iter_mut().zip(&self.headers) {
+            let (rho, u, p) = prim(h.cells[0]);
+            *r = (p - P_ATM + 0.1 * rho * u * u) * 1e-5;
         }
         // Monopole radiation: d(mass flow)/dt.
         let d = (exit - self.last_exit) * self.sr;

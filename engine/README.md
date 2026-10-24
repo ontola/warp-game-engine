@@ -443,37 +443,47 @@ the runner (GPU_RUNNER.md); the container only has a software rasteriser.
 ## Sound
 
 `crates/audio` synthesises engine sound from the running engine, after Ange
-Yaghi's engine-sim; nothing is a recording. Two exhaust models share one
-voice (intake, valvetrain, turbo whistle and blow-off, straight-cut gear
-whine, overrun pops, and tyres on gravel, grass and asphalt):
+Yaghi's engine-sim; nothing is a recording. engine-sim's own synthesizer is
+ported (`es.rs`). Each cylinder's exhaust runner pressure is delayed along
+its pipe (343 m/s, weighted 1/length^2), then goes through these steps:
+1. a 1900 Hz anti-aliasing filter;
+2. sample jitter;
+3. DC removal;
+4. multiplication by band-limited "air noise";
+5. convolution with a recorded exhaust impulse response (engine-sim's,
+   MIT, in `assets/sound/ir`);
+6. a fast peak leveler.
+
+Two models supply the runner pressures:
 
 - **pulse:** each cylinder blows down at its own crank angle (firing order,
-  gaps, combustion strength from load, cycle-to-cycle variation) into a
-  delay-line header; a linear waveguide pipe and muffler resonances colour
-  it. About 70x realtime per car: every car can have one.
+  gaps, combustion strength from load, cycle-to-cycle variation). Cheap:
+  every car can have one.
 - **fluid:** gas dynamics, like engine-sim's newer solvers.
   - Cylinders are 0D slider-crank volumes with Wiebe combustion.
   - Valves are compressible orifices on a cam profile.
-  - The headers and pipe are 1D Euler finite volumes (HLL, MUSCL), joined
-    by a collector and a turbine restriction.
-  - The tailpipe radiates the rate of change of its mass flow.
-  - Cost: about 8 M cell updates per second of sound, 2-4x realtime on one
+  - Headers and pipe are 1D Euler finite volumes (HLL, MUSCL), joined by a
+    collector and a turbine restriction.
+  - Cost: about 8 M cell updates per second of sound, 3-4x realtime on one
     core of the cloud container. In `play` it is used for the players' own
     cars.
 
+Small extra layers (intake, valvetrain, turbo whistle and blow-off, gear
+whine, overrun pops, tyres) sit on top, kept quiet by default.
+
 Engines live in `data/sounds.toml`, read at every run. Each one sets its
-cylinders, firing order, header lengths, pipe, resonances and levels; use
-`--set key=value` to try a number. The three grid cars:
+cylinders, firing order, header lengths, pipe, impulse response and synth
+parameters; use `--set key=value` to try a number. The three grid cars:
 - an inline four (orders 2, 4, 6);
 - a five (orders 2.5, 5, 7.5);
 - a flat four with unequal headers, whose odd orders are the boxer burble.
 
-The tests check these signatures, determinism, crest factor, and that the
-live mix never blocks.
+The tests check these signatures, the partitioned FFT convolution against
+direct convolution, determinism, crest factor, and that the live mix never
+blocks.
 
 Live, every car renders on its own worker thread in 5 ms blocks, at most
 three ahead. The device callback (cpal) only places (distance, pan, air
-absorption, Doppler for the nearest chase camera) and mixes, so neither the
-game nor the callback waits for a slow voice. `play --sound off|pulse|fluid`
-(default fluid; hidden smoke runs are silent). On Linux, building needs
-libasound2-dev (and libudev-dev for the gamepad crate).
+absorption, Doppler for the nearest chase camera) and mixes. `play --sound
+off|pulse|fluid` (default fluid; hidden smoke runs are silent). On Linux,
+building needs libasound2-dev (and libudev-dev for the gamepad crate).

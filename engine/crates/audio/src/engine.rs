@@ -13,12 +13,13 @@
 //! (rpm, throttle, torque), so four cars cost well under a millisecond per
 //! 10 ms audio block.
 
-use crate::dsp::{Biquad, DcBlock, Delay, Kind, Noise, OnePole, approach, smoothstep};
+use crate::dsp::{Biquad, Delay, Kind, Noise, approach, smoothstep};
+use crate::es::{Synth, SynthParams};
 use crate::fluid::{FluidEngine, Geometry};
 use serde::Deserialize;
 
-/// Speed of sound in hot exhaust gas (m/s).
-const C_EXHAUST: f32 = 480.0;
+/// engine-sim delays each runner's pressure by its pipe at 343 m/s.
+const C_SOUND: f32 = 343.0;
 /// Crank angles (degrees after firing TDC) where valves open and close.
 const EVO: f32 = 130.0;
 const EXHAUST_LEN: f32 = 250.0;
@@ -40,13 +41,6 @@ pub struct EngineSound {
     pub headers: Vec<f32>,
     /// Main pipe length (m), collector to tailpipe.
     pub pipe: f32,
-    /// Reflection at the open tailpipe (0..1) and at the engine end.
-    pub end_reflection: f32,
-    pub engine_reflection: f32,
-    /// Muffler body resonances: [Hz, Q, gain].
-    pub resonances: Vec<[f32; 3]>,
-    /// Exhaust low-pass (Hz) closed and open throttle.
-    pub tone: [f32; 2],
     /// Cycle-to-cycle combustion variation at idle and at the limiter.
     pub roughness: [f32; 2],
     pub turbo: bool,
@@ -69,6 +63,9 @@ pub struct EngineSound {
     /// Level of the fluid exhaust relative to the pulse model's.
     #[serde(default = "one")]
     pub fluid_level: f32,
+    /// engine-sim's synthesizer: impulse response, noise, jitter, leveler.
+    #[serde(default)]
+    pub synth: SynthParams,
 }
 
 fn one() -> f32 {
@@ -106,6 +103,8 @@ struct Cylinder {
     amp: f32,
     header: Delay,
     delay: f32,
+    /// engine-sim's 1 / length^2, normalised to the mean length.
+    weight: f32,
 }
 
 pub struct EngineVoice {
@@ -118,16 +117,7 @@ pub struct EngineVoice {
     load: f32,
     target: Controls,
     cyl: Vec<Cylinder>,
-    fwd: Delay,
-    back: Delay,
-    pipe_n: f32,
-    back_out: f32,
-    end_lp: OnePole,
-    turbine: OnePole,
-    tone: OnePole,
-    res: Vec<(Biquad, f32)>,
-    prev_rad: f32,
-    dc: DcBlock,
+    synth: Synth,
     noise: Noise,
     intake_bp: Biquad,
     tick_bp: Biquad,
@@ -142,7 +132,6 @@ pub struct EngineVoice {
     lift_timer: f32,
     prev_throttle: f32,
     crack: f32,
-    crack_bp: Biquad,
     fluid: Option<FluidEngine>,
 }
 
@@ -160,16 +149,16 @@ impl EngineVoice {
             phase_of[(c.max(1) - 1).min(n - 1)] = angle;
             angle += gaps[k];
         }
+        let total = |i: usize| spec.headers.get(i).copied().unwrap_or(0.5) + spec.pipe;
+        let mean = (0..n).map(total).sum::<f32>() / n as f32;
         let cyl = (0..n)
             .map(|i| {
-                let len = spec.headers.get(i).copied().unwrap_or(0.5);
-                let delay = len / C_EXHAUST * sr;
-                Cylinder { phase: phase_of[i], last: 0.0, amp: 0.0, header: Delay::new(delay as usize + 4), delay }
+                let delay = total(i) / C_SOUND * sr;
+                Cylinder { phase: phase_of[i], last: 0.0, amp: 0.0, header: Delay::new(delay as usize + 4), delay, weight: (mean / total(i)).powi(2) }
             })
             .collect();
-        let pipe_n = spec.pipe / C_EXHAUST * sr;
         let fluid = (model == Model::Fluid).then(|| FluidEngine::new(spec.fluid.clone(), &phase_of, &spec.headers, spec.pipe, sr, seed));
-        let res = spec.resonances.iter().map(|r| (Biquad::new(Kind::BandPass, r[0], r[1], sr), r[2])).collect();
+        let synth = Synth::new(spec.synth.clone(), sr, seed);
         EngineVoice {
             sr,
             dt: 1.0 / sr,
@@ -179,16 +168,7 @@ impl EngineVoice {
             load: 0.0,
             target: Controls::default(),
             cyl,
-            fwd: Delay::new(pipe_n as usize + 4),
-            back: Delay::new(pipe_n as usize + 4),
-            pipe_n,
-            back_out: 0.0,
-            end_lp: OnePole::new(1800.0, sr),
-            turbine: OnePole::new(1400.0, sr),
-            tone: OnePole::new(spec.tone[0], sr),
-            res,
-            prev_rad: 0.0,
-            dc: DcBlock::default(),
+            synth,
             noise: Noise::new(seed),
             intake_bp: Biquad::new(Kind::BandPass, 700.0, 1.1, sr),
             tick_bp: Biquad::new(Kind::BandPass, 3300.0, 9.0, sr),
@@ -203,7 +183,6 @@ impl EngineVoice {
             lift_timer: 10.0,
             prev_throttle: 0.0,
             crack: 0.0,
-            crack_bp: Biquad::new(Kind::BandPass, 1400.0, 0.9, sr),
             fluid,
             spec,
         }
@@ -231,10 +210,7 @@ impl EngineVoice {
     pub fn render_add(&mut self, out: &mut [f32], gain: f32) {
         let sr = self.sr;
         let dt = self.dt;
-        let spec_tone = self.spec.tone;
         // Per block: filters that follow slow state.
-        let open = self.throttle;
-        self.tone.set_hz(spec_tone[0] + (spec_tone[1] - spec_tone[0]) * open, sr);
         self.intake_bp.set(Kind::BandPass, 450.0 + self.rpm * 0.12, 1.1, sr);
         let whistle_hz = self.spec.whistle[0] + (self.spec.whistle[1] - self.spec.whistle[0]) * self.boost;
         self.hiss_bp.set(Kind::BandPass, whistle_hz * 1.4, 1.5, sr);
@@ -259,7 +235,8 @@ impl EngineVoice {
             // Cylinders: blowdown pulses into their headers.
             let rough = self.spec.roughness[0] + (self.spec.roughness[1] - self.spec.roughness[0]) * smoothstep(900.0, 7500.0, rpm);
             let overrun = self.throttle < 0.12 && rpm > 3800.0 && (self.lift_timer < 1.6 || t.cut);
-            let mut collector = 0.0;
+            let mut pulses = [0.0f32; 16];
+            let mut k = 0;
             let mut intake_env = 0.0;
             let mut tick = 0.0;
             for c in self.cyl.iter_mut() {
@@ -289,46 +266,30 @@ impl EngineVoice {
                 if a >= IVO && a < IVO + INTAKE_LEN {
                     intake_env += ((a - IVO) / INTAKE_LEN * std::f32::consts::PI).sin();
                 }
-                c.header.write(p);
-                collector += c.header.read(c.delay);
+                pulses[k] = p;
+                k += 1;
             }
-            if self.spec.turbo {
-                // The turbine smooths the pulses and eats the highs.
-                let lp = self.turbine.run(collector);
-                collector = lp * 0.75 + collector * 0.25;
-            }
-
-            let rad = if let Some(f) = self.fluid.as_mut() {
-                // The gas-dynamics exhaust replaces the pulse path below.
+            // The fluid model supplies the real runner pressures instead.
+            if let Some(f) = self.fluid.as_mut() {
                 let fuel = !(t.cut || (self.throttle < 0.03 && rpm > 1600.0));
-                f.sample(rpm, self.throttle, self.boost, fuel, rough) * self.spec.fluid_level
-            } else {
-            // Main pipe: forward and backward travelling waves.
-            let fwd_in = collector + self.spec.engine_reflection * self.back_out;
-            self.fwd.write(fwd_in);
-            let at_end = self.fwd.read(self.pipe_n);
-            let refl = -self.spec.end_reflection * self.end_lp.run(at_end);
-            self.back.write(refl);
-            self.back_out = self.back.read(self.pipe_n);
-            let rad = at_end + refl;
-            // Radiation from the tailpipe favours higher frequencies.
-            let ex = rad + 2.5 * (rad - self.prev_rad);
-            self.prev_rad = rad;
-            ex
-            };
-            let mut ex = rad;
-            ex = self.tone.run(ex);
-            let mut body = 0.0;
-            for (bq, g) in self.res.iter_mut() {
-                body += bq.run(ex) * *g;
+                f.sample(rpm, self.throttle, self.boost, fuel, rough);
+                for (d, r) in pulses.iter_mut().zip(&f.runner) {
+                    *d = *r * self.spec.fluid_level;
+                }
             }
-            ex += body;
-            // Overrun crackle: a sharp broadband snap from the tailpipe.
+            // Each runner's pressure reaches the tailpipe after its length
+            // (engine-sim: at 343 m/s, weighted 1 / length^2).
+            let mut collector = 0.0;
+            for (c, p) in self.cyl.iter_mut().zip(&pulses) {
+                c.header.write(*p);
+                collector += c.header.read(c.delay) * c.weight;
+            }
+            // Overrun crackle: a burst through the same exhaust.
             if self.crack > 1e-3 {
-                ex += self.crack_bp.run(self.noise.white()) * self.crack * 2.5;
+                collector += self.noise.white() * self.crack * 1.5;
                 self.crack *= (-dt / 0.012).exp();
             }
-            let mut y = self.dc.run(ex) * self.spec.exhaust;
+            let mut y = self.synth.run(collector) * self.spec.exhaust;
 
             // Intake roar, stronger with the throttle open.
             if running {
