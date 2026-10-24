@@ -23,9 +23,22 @@ mechanical = 0.01
 whine = 0.004
 turbo_level = 0.012
 gain = 1.0
+# Runner low-pass (Hz), standing in for engine-sim's 0D runner volume. In
+# the fluid model it also keeps the headers' standing waves (about 1 kHz in
+# a 0.55 m header) from ringing at idle. Fitted on the ej3 reference.
+runner_cutoff = 150.0
+# The fluid model's runner pressures run higher: this lines its levels up
+# with the pulse model's.
+fluid_level = 0.6
+
+[base.fluid]
+runner_cutoff = 150.0
 
 [base.synth] # engine-sim's AudioParameters; see crates/audio/src/es.rs
 impulse_response = "minimal_muffling_03.wav"
+# Bar of runner pressure to synth units. The leveler only turns down, so
+# this sets how much quieter idle is than full throttle (about 12 dB here).
+input_scale = 2.5
 ir_volume = 0.01
 noise = 1.0
 jitter = 0.5
@@ -51,6 +64,7 @@ whistle = [1600.0, 7000.0]
 
 [models.mv6.synth]
 impulse_response = "minimal_muffling_01.wav"
+input_scale = 2.5
 
 # Impreza-like flat four: even firing, but 1-3-2-4 into unequal headers,
 # so the pulses reach the collector unevenly: the boxer burble.
@@ -64,6 +78,7 @@ pops = 0.14
 # engine-sim's Subaru EJ25 uses the mild exhaust.
 [models.toyama.synth]
 impulse_response = "mild_exhaust.wav"
+input_scale = 2.5
 
 # The reference: engine-sim's "Subaru EJ 3" (3_cylinder_boxer.mr), a flat
 # four with one cylinder missing. It fires at 0, 180 and 360 degrees, then
