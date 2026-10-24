@@ -51,6 +51,7 @@ impl Control {
 
 #[derive(Clone, Debug)]
 pub struct Settings {
+    pub vegetation: crate::vegetation::Vegetation,
     pub stage_km: f64,
     pub rivals: usize,
     pub contact: bool,
@@ -63,7 +64,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { stage_km: 3.0, rivals: 1, contact: true, weather: None, manual: false, bots: 1, start_at: 0.0 }
+        Settings { vegetation: Default::default(), stage_km: 3.0, rivals: 1, contact: true, weather: None, manual: false, bots: 1, start_at: 0.0 }
     }
 }
 
@@ -201,6 +202,7 @@ impl Race {
         let km = self.settings.stage_km;
         let rng = &mut self.rng;
         self.stage = timings.span("layout", || Stage::generate(rng, km * 1000.0 + RUNOUT));
+        self.stage.vegetation = self.settings.vegetation;
         let stage = &self.stage;
         let (phys, chunks, trees) = timings.span("colliders", || build_colliders(stage));
         self.phys = phys;

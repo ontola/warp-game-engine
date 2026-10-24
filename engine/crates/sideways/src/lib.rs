@@ -9,3 +9,4 @@ pub mod race;
 pub mod spec;
 pub mod stage;
 pub mod surfaces;
+pub mod vegetation;

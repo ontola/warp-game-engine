@@ -173,6 +173,7 @@ fn candidate(ground: &Ground, id: Cell) -> Option<Tuft> {
 }
 
 pub struct LiveGroundCover {
+    growth_scale: f32,
     ground: Ground,
     mesh: usize,
     first: usize,
@@ -189,13 +190,19 @@ impl LiveGroundCover {
     /// Disabled pool slots have zero clusters, not zero-sized moving plants.
     pub fn reserve(scene: &mut Scene, chunks: &[Chunk], cameras: &[Vec3], root: &Path,
         mesh_names: &mut Vec<String>) -> Result<Self, String> {
+        Self::reserve_with_vegetation(scene, chunks, cameras, root, mesh_names, Default::default())
+    }
+
+    pub fn reserve_with_vegetation(scene: &mut Scene, chunks: &[Chunk], cameras: &[Vec3], root: &Path,
+        mesh_names: &mut Vec<String>, vegetation: sideways::vegetation::Vegetation) -> Result<Self, String> {
         let layer = scene.add_image("Poly Haven grass_medium_01 selected CC0 live clump", crate::ground_cover::photo(root)?);
-        let material = scene.add_material(Material { tint: [1.0; 3], layer, roughness: 0.85,
+        let material = scene.add_material(Material { tint: vegetation.grass_tint(), layer, roughness: 0.85,
             flags: ALPHA_TEST | TWO_SIDED | GRASS, scale: 1.0, metal: 0.0 });
         let mesh = scene.add_mesh(&crate::ground_cover::mesh(material));
         mesh_names.push("photographed grass tuft (CC0 live opacity pool)".into());
         let capacity = if cameras.len() <= 1 { 70_000 } else { 115_000 };
         let mut stream = Self::with_mesh(scene, chunks, mesh, capacity);
+        stream.growth_scale = vegetation.grass_scale();
         scene.grass_ranges.push(render::grass::GrassRange { first: stream.first as u32,
             count: capacity as u32, material, width: crate::ground_cover::WIDTH,
             height: crate::ground_cover::HEIGHT, split: cameras.len() > 1 });
@@ -212,7 +219,7 @@ impl LiveGroundCover {
             instance.cluster_count = 0; instance.sphere[3] = 0.0;
         }
         let ground_bytes = chunks.iter().map(|c| (c.heights.len() + c.road_d.len()) * std::mem::size_of::<f32>()).sum();
-        Self { ground: Ground::new(chunks), mesh, first, capacity, anchors: None, tiles: BTreeMap::new(),
+        Self { growth_scale: 1.0, ground: Ground::new(chunks), mesh, first, capacity, anchors: None, tiles: BTreeMap::new(),
             active: HashMap::with_capacity(capacity), free: (0..capacity).collect(), stats: Stats { capacity, ground_bytes, ..Default::default() } }
     }
 
@@ -302,7 +309,7 @@ impl LiveGroundCover {
             let id = tuft.id;
             let slot = self.free.pop_first().expect("selected grass count respects fixed pool capacity");
             scene.update_instance(self.first + slot, self.mesh, Affine3A::from_scale_rotation_translation(
-                Vec3::splat(tuft.scale), Quat::from_rotation_y(tuft.yaw), tuft.position));
+                Vec3::splat(tuft.scale * self.growth_scale), Quat::from_rotation_y(tuft.yaw), tuft.position));
             self.active.insert(id, slot); dirty_lo = dirty_lo.min(slot); dirty_hi = dirty_hi.max(slot + 1);
         }
         self.anchors = Some(key);
@@ -335,6 +342,20 @@ mod tests {
         assert!((ground.sample(Vec2::new(1.5, 1.5)).unwrap().height - 6.5).abs() < 1e-6);
         let road = Ground::new(&[chunk((0, 0), 0.2)]);
         assert!((0..100).all(|i| candidate(&road, (i, 30)).is_none()));
+    }
+    #[test]
+    fn phenotype_changes_stature_without_reseeding_or_moving_pool_roots() {
+        let chunks=[chunk((0,0),5.0)];
+        let (mut old_scene,mut old)=setup(&chunks,500);
+        let (mut new_scene,mut new)=setup(&chunks,500);
+        new.growth_scale=0.5;
+        let cams=[Vec3::new(20.0,2.0,20.0)];
+        old.update(&mut old_scene,&cams);new.update(&mut new_scene,&cams);
+        assert_eq!(old.active,new.active);assert!(!old.active.is_empty());
+        for slot in old.active.values() {
+            let a=old_scene.instances[old.first+slot].rows;let b=new_scene.instances[new.first+slot].rows;
+            for row in 0..3 {assert_eq!(a[row][3],b[row][3]);for col in 0..3 {assert_eq!(a[row][col]*0.5,b[row][col]);}}
+        }
     }
     #[test]
     fn moving_pool_keeps_survivor_poses_slots_and_car_tail_unchanged() {

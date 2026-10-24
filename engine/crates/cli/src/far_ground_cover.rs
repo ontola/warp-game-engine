@@ -33,6 +33,10 @@ struct PhotoProfile {
 }
 
 fn photo_profile(photo: &image::RgbaImage) -> Result<PhotoProfile, String> {
+    photo_profile_with_vegetation(photo, Default::default())
+}
+
+fn photo_profile_with_vegetation(photo: &image::RgbaImage, vegetation: sideways::vegetation::Vegetation) -> Result<PhotoProfile, String> {
     if photo.width() == 0 || photo.height() == 0 {
         return Err("far grass requires a non-empty source clump photo".into());
     }
@@ -45,19 +49,19 @@ fn photo_profile(photo: &image::RgbaImage) -> Result<PhotoProfile, String> {
         if pixel[3] < 128 { continue; }
         rows[y as usize] += 1.0 / photo.width() as f64;
         for k in 0..3 {
-            let value = linear(pixel[k]);
+            let value = linear(pixel[k]) * vegetation.grass_tint()[k] as f64;
             color[k] += value;
             row_color[y as usize][k] += value / photo.width() as f64;
         }
         covered += 1;
     }
     let albedo = color.map(|c| (c / covered.max(1) as f64) as f32);
-    let max_height = HEIGHT * (SCALE_MIN + SCALE_SPAN);
+    let max_height = HEIGHT * (SCALE_MIN + SCALE_SPAN) * vegetation.grass_scale();
     let bin_height = max_height as f64 / 4.0;
     let mut area = [0.0f64; 4];
     let mut shading_mass = [[0.0f64; 4]; 4];
     for k in 0..PROFILE_SCALES {
-        let scale = SCALE_MIN as f64 + SCALE_SPAN as f64 * (k as f64 + 0.5) / PROFILE_SCALES as f64;
+        let scale = (SCALE_MIN as f64 + SCALE_SPAN as f64 * (k as f64 + 0.5) / PROFILE_SCALES as f64) * vegetation.grass_scale() as f64;
         let width = WIDTH as f64 * scale;
         let height = HEIGHT as f64 * scale;
         for (row, &fraction) in rows.iter().enumerate() {
@@ -104,6 +108,10 @@ fn photo_profile(photo: &image::RgbaImage) -> Result<PhotoProfile, String> {
 /// distances are retained so the GPU can clip every triangle segment against
 /// road(t)>=0.9 instead of spilling averaged boundary-cell grass on the road.
 pub fn bake(chunks: &[Chunk], photo: &image::RgbaImage) -> Result<(FarGrassField, String), String> {
+    bake_with_vegetation(chunks, photo, Default::default())
+}
+
+pub fn bake_with_vegetation(chunks: &[Chunk], photo: &image::RgbaImage, vegetation: sideways::vegetation::Vegetation) -> Result<(FarGrassField, String), String> {
     let started = Instant::now();
     let first = chunks.first().ok_or("far grass needs native terrain chunks")?;
     let mut lo = first.cell;
@@ -135,7 +143,7 @@ pub fn bake(chunks: &[Chunk], photo: &image::RgbaImage) -> Result<(FarGrassField
     if origin.iter().chain(&end).any(|v| !v.is_finite() || v.abs() >= 10_000_000.0) {
         return Err("far grass grid exceeds the live placement coordinate range".into());
     }
-    let photo = photo_profile(photo)?;
+    let photo = photo_profile_with_vegetation(photo, vegetation)?;
     let max_height = photo.max_height;
     let mut field = FarGrassField { origin, cell: GRID as f32, width: width as u32, height: height as u32,
         heights: vec![0.0; points], road: vec![-1.0; points], coverage: vec![0; cells],
@@ -192,6 +200,24 @@ mod tests {
     }
     fn photo(alpha: u8) -> image::RgbaImage {
         image::RgbaImage::from_pixel(2, 4, image::Rgba([128, 200, 60, alpha]))
+    }
+    #[test]
+    fn seasonal_profile_matches_scaled_cards_and_keeps_native_habitat() {
+        use sideways::vegetation::{Vegetation,Season};
+        let v=Vegetation::new(19,0.45,Season::Winter).unwrap();
+        let p=photo(255);let profile=photo_profile_with_vegetation(&p,v).unwrap();
+        assert_eq!(profile.max_height,HEIGHT*(SCALE_MIN+SCALE_SPAN)*v.grass_scale());
+        let expected=(0..PROFILE_SCALES).map(|i| {
+            let s=(SCALE_MIN as f64+SCALE_SPAN as f64*(i as f64+0.5)/PROFILE_SCALES as f64)*v.grass_scale() as f64;
+            WIDTH as f64*s*(HEIGHT as f64*s+ROOT_OFFSET as f64).max(0.0)
+        }).sum::<f64>()/PROFILE_SCALES as f64*3.0*std::f64::consts::FRAC_2_PI/(CELL as f64*CELL as f64);
+        let actual=profile.extinction.iter().sum::<f32>() as f64*profile.max_height as f64/4.0;
+        assert!((actual-expected).abs()<1e-5);
+        for c in 0..3 {assert!((profile.albedo[c] as f64-linear(p.get_pixel(0,0)[c])*v.grass_tint()[c] as f64).abs()<1e-7);}
+        let chunks=[chunk((0,0),5.0)];
+        let (a,_)=bake(&chunks,&p).unwrap();let (b,_)=bake_with_vegetation(&chunks,&p,v).unwrap();
+        assert_eq!(a.coverage,b.coverage);assert_eq!(a.heights,b.heights);assert_eq!(a.road,b.road);
+        assert!(b.max_height<a.max_height);
     }
     #[test]
     fn profile_preserves_card_area_height_and_linear_color() {

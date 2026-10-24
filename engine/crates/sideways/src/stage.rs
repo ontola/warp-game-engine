@@ -56,6 +56,7 @@ fn cell_of(x: f64, z: f64) -> Cell {
 }
 
 pub struct Stage {
+    pub vegetation: crate::vegetation::Vegetation,
     pub points: Vec<V3>,
     pub dirs: Vec<V3>,
     pub widths: Vec<f32>,
@@ -84,6 +85,7 @@ impl Stage {
         let noise_seed = rng.next_u32() as i32;
         let detail_seed = rng.next_u32() as i32;
         let mut s = Stage {
+            vegetation: Default::default(),
             points: vec![],
             dirs: vec![],
             widths: vec![],

@@ -1,7 +1,8 @@
 // Visibility buffer raster: every visible cluster is one instance of a
-// 128-triangle draw; vertices are pulled from storage buffers. The colour
+// size-bucketed draw; vertices are pulled from storage buffers. The colour
 // target stores which triangle covers each pixel; shading happens later,
 // once per pixel.
+override CLUSTER_BUCKETS: bool = true;
 
 struct View {
     view_proj: mat4x4<f32>,
@@ -60,6 +61,8 @@ struct Material {
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
+@group(1) @binding(2) var<storage, read> draw_map: array<u32>;
+@group(1) @binding(3) var<storage, read> draw_args: array<u32, 20>;
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -72,9 +75,11 @@ struct VOut {
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     var o: VOut;
-    let vis = visible[ii];
+    var slot = ii;
+    if CLUSTER_BUCKETS { slot = draw_map[draw_args[16u + vi / 384u] + ii]; }
+    let vis = visible[slot];
     let cl = clusters[vis.y];
-    let tri = vi / 3u;
+    let tri = (vi % 384u) / 3u;
     if tri >= cl.tri_count {
         o.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0); // degenerate, outside the clip volume
         return o;
@@ -84,9 +89,10 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     let local = (packed >> (8u * (vi % 3u))) & 0xffu;
     let v = cluster_verts[cl.first_vert + local] * 8u;
     let p = vec4<f32>(vertices[v], vertices[v + 1u], vertices[v + 2u], 1.0);
-    let w = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
+    let rest = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
+    let w = wind_position(vis.x, inst.r1.w, rest);
     o.pos = view.view_proj * vec4<f32>(w, 1.0);
-    o.id = (ii << 7u) | tri;
+    o.id = (slot << 7u) | tri;
     o.material = cl.material;
     o.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
     // Only the explicitly packed crown material is replaced in color. Wood,

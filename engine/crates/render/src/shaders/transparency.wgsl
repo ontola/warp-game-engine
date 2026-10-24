@@ -34,9 +34,9 @@ fn transparent_vs(@builtin(vertex_index) corner: u32, @builtin(instance_index) i
         + ay * local_normal.y / max(dot(ay, ay), 1e-8)
         + az * local_normal.z / max(dot(az, az), 1e-8);
     var out: BlendVertex;
-    out.world = xform(inst, pos_of(v));
+    out.world = wind_position(tri.owner, inst.r1.w, xform(inst, pos_of(v)));
     out.position = view.view_proj * vec4<f32>(out.world, 1.0);
-    out.normal = safe_normalize(normal);
+    out.normal = safe_normalize(wind_normal(tri.owner, normal));
     out.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
     out.triangle = id;
     return out;

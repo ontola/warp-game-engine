@@ -103,6 +103,11 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
         Some(v) => v.as_bool().ok_or("taa must be a boolean")?,
     };
     let args = crate::shot::ShotArgs {
+        // Preserve existing frozen GPU-job baselines unless wind is explicit.
+        nature: crate::nature::Nature { vegetation: sideways::vegetation::Vegetation::new(
+            get("vegetation_seed",0.0) as u64, get("growth",1.0) as f32,
+            job.get("season").and_then(|v|v.as_str()).unwrap_or("summer").parse()?)?,
+            wind_strength: get("wind",0.0) as f32, wind_time:Some(get("wind_time",0.0)) },
         out: String::new(),
         seed: get("seed", 1.0) as u64,
         km: get("km", 2.0),
@@ -130,6 +135,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
     let prep_ms = t.ms();
     let t = render::Stopwatch::start();
     let renderer = render::Renderer::new(gpu, &setup.scene, &setup.light);
+    renderer.set_wind(gpu,&setup.wind)?;
     let upload_ms = t.ms();
     let views = crate::shot::view_rects(&setup.cams, args.views, size.0, size.1);
     let mut walls = Vec::new();

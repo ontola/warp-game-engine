@@ -7,6 +7,7 @@ use kern::Sim;
 use render::{Camera, Gpu, Lighting, Renderer, Stopwatch};
 
 pub struct ShotArgs {
+    pub nature: crate::nature::Nature,
     pub out: String,
     pub seed: u64,
     pub km: f64,
@@ -43,6 +44,7 @@ fn paint(i: usize, humans: usize) -> Vec3 {
 
 /// Everything a frame needs: the scene, light and camera at a moment of a race.
 pub struct Setup {
+    pub wind: render::wind::WindState,
     pub scene: render::Scene,
     pub mesh_names: Vec<String>,
     pub light: Lighting,
@@ -62,6 +64,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
     settings.stage_km = a.km;
     settings.start_at = a.at;
     settings.weather = a.weather.clone();
+    settings.vegetation = a.nature.vegetation;
     if a.views > 1 {
         settings.bots = a.views;
         settings.rivals = 0;
@@ -147,6 +150,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
     }
     let metadata = serde_json::json!({
         "schema": 1, "renderer": "kern", "seed": a.seed, "km": a.km, "start_at_m": a.at,
+        "nature": a.nature.metadata(race.frame as f64 / 120.0),
         "requested_frames": a.frames, "simulation_steps": a.frames.saturating_sub(1),
         "simulation_tick": race.tick(), "round": race.round, "race_phase": race.phase,
         "weather_requested": a.weather, "weather_actual": race.weather,
@@ -164,7 +168,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
             "wheels": p.wheels.iter().map(|w| serde_json::json!({"anchor": w.anchor.to_array(), "compression": w.compression, "steer": w.steer, "spin": w.spin})).collect::<Vec<_>>()
         })).collect::<Vec<_>>()
     });
-    Ok(Setup { scene: built.scene, mesh_names: built.mesh_names, light, cam: cams[0], cams, log, metadata })
+    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), scene: built.scene, mesh_names: built.mesh_names, light, cam: cams[0], cams, log, metadata })
 }
 
 pub fn run(a: &ShotArgs) -> i32 {
@@ -187,6 +191,7 @@ pub fn run(a: &ShotArgs) -> i32 {
         }
     };
     let renderer = Renderer::new(&gpu, &setup.scene, &setup.light);
+    if let Err(e)=renderer.set_wind(&gpu,&setup.wind) {eprintln!("shot wind: {e}");return 1;}
     println!("gpu upload ({}): {:.0} ms", gpu.info.name, t.ms());
     let (cam, light) = (setup.cam, setup.light.clone());
     let (w, h) = a.size;

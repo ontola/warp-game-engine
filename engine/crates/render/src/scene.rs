@@ -67,6 +67,8 @@ pub const SOLID: u32 = 2;
 pub const NO_SHADOW: u32 = 4;
 /// Fixed-pool grass with per-view opaque/transparent transition selection.
 pub const LIVE_GRASS: u32 = 8;
+/// Ground-cover wind response without enabling a live distance transition.
+pub const WIND_GRASS: u32 = 16;
 
 pub const MAX_SOLID_SEGMENTS: usize = 6;
 

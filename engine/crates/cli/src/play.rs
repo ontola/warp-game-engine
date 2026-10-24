@@ -12,6 +12,8 @@ use winit::{application::ApplicationHandler, dpi::PhysicalSize, event::{ElementS
 
 #[derive(Clone)]
 struct Args {
+    nature: crate::nature::Nature,
+    gpu_profile: Option<String>, gpu_warmup: usize,
     seed: u64, km: f64, views: usize, size: (u32, u32), weather: String,
     smoke_frames: u64, smoke_ticks: u64, capture: Option<String>, state_out: Option<String>, trace: Option<String>, fullscreen: bool,
     hud: bool, hud_profile: Option<String>, hud_warmup: usize,
@@ -29,17 +31,22 @@ fn args(args: &[String]) -> Result<Args, String> {
     if !km.is_finite() || !(2.0..=8.0).contains(&km){return Err("km must be finite and in 2..=8".into());}
     let value = |key| args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned();
     let smoke_frames=parse("--smoke-render","0")?;
+    let gpu_profile=value("--gpu-profile");
+    if args.iter().any(|s|s=="--gpu-profile") && gpu_profile.as_ref().is_none_or(|s|s.starts_with("--")) { return Err("--gpu-profile requires a new JSONL output path".into()); }
+    let gpu_warmup=parse("--gpu-warmup","30")? as usize;
+    if gpu_profile.is_some() && smoke_frames>0 && gpu_warmup>=smoke_frames as usize {return Err("GPU profiling needs fewer warmup frames than rendered frames".into());}
+    if gpu_profile.is_some() && parse("--smoke-ticks","0")?>0 {return Err("GPU profiling requires rendering, not --smoke-ticks".into());}
     let hud_profile=value("--hud-profile");
     let hud_warmup=parse("--hud-warmup","8")? as usize;
     if hud_profile.is_some() && (smoke_frames==0 || smoke_frames>4096 || hud_warmup>=smoke_frames as usize) {
         return Err("HUD profiling needs --smoke-render 1..4096 and fewer warmup frames than rendered frames".into());
     }
     let hud=match opt("--hud","on").as_str(){"on"=>true,"off"=>false,_=>return Err("hud must be on or off".into())};
-    Ok(Args { seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay") })
+    Ok(Args { nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay") })
 }
 
 fn race(a: &Args) -> Race {
-    let settings = Settings { stage_km: a.km, bots: a.views, rivals: 0, weather: Some(a.weather.clone()), ..Default::default() };
+    let settings = Settings { vegetation:a.nature.vegetation, stage_km: a.km, bots: a.views, rivals: 0, weather: Some(a.weather.clone()), ..Default::default() };
     Race::new(a.seed, settings, sideways::spec::Cars::load(None).expect("bundled car specifications"))
 }
 
@@ -92,6 +99,7 @@ struct LiveGpu {
 }
 
 struct App {
+    gpu_profile: Option<std::io::BufWriter<std::fs::File>>,
     args: Args, race: Race, built: Built, light: Lighting, input: Input,
     window: Option<Arc<Window>>, graphics: Option<LiveGpu>, focused: bool, paused: bool,
     last_frame: Instant, started: Instant, last_title: Instant, last_trace: Instant, accumulator: f64,
@@ -138,6 +146,8 @@ impl App {
         }).collect();
         serde_json::json!({
             "schema": 1, "mode": "play", "hidden": self.args.smoke_frames > 0, "race_frame": self.race.frame,
+            "nature":self.args.nature.metadata(self.race.frame as f64 / 120.0),
+            "gpu_profile":self.args.gpu_profile,"gpu_profile_warmup_frames":self.args.gpu_warmup,
             "autoplay": self.args.autoplay && self.host.is_none(),
             "race_clock": self.race.clock, "race_round": self.race.round, "race_phase": self.race.phase,
             "paused": self.paused, "focused": self.focused, "rendered_frames": self.rendered, "presented_frames": self.presented,
@@ -170,6 +180,7 @@ impl App {
     fn finish(&mut self, event_loop: &ActiveEventLoop, reason: &str) {
         self.exit_reason = reason.into();
         if let Err(error)=self.write_hud_profile(){self.error=Some(error);}
+        if let Some(file)=&mut self.gpu_profile {if let Err(e)=file.flush(){self.error=Some(format!("GPU profile flush: {e}"));}}
         self.trace(true);
         if let Some(path) = &self.args.state_out {
             if let Err(e) = std::fs::write(path, serde_json::to_vec_pretty(&self.snapshot()).unwrap()) { self.error = Some(format!("state output: {e}")); }
@@ -400,14 +411,30 @@ impl App {
         let first = self.built.cars.first().map(|c|c.first).unwrap_or(self.built.scene.instances.len());
         if let Some(range)=grass_dirty {g.renderer.update_instances(&g.gpu,range.start,&self.built.scene.instances[range])?;}
         g.renderer.update_instances(&g.gpu, first, &self.built.scene.instances[first..])?;
+        g.renderer.set_wind(&g.gpu,&self.args.nature.wind(self.race.frame as f64 / 120.0))?;
         // F12 and the final hidden smoke capture measure this same frame;
         // normal play retains the no-readback render path.
-        let measure_capture=self.screenshot_pending || (self.args.smoke_frames>0 && self.rendered+1>=self.args.smoke_frames && self.args.capture.is_some());
+        let measure_profile=self.gpu_profile.is_some() && self.rendered>=self.args.gpu_warmup as u64;
+        let measure_capture=measure_profile || self.screenshot_pending || (self.args.smoke_frames>0 && self.rendered+1>=self.args.smoke_frames && self.args.capture.is_some());
         let (image,capture_stats)=if measure_capture {
             let (image,stats)=g.renderer.render_texture_profiled(&g.gpu,&views,&self.light,size.width,size.height);
             (image,Some(stats))
         } else {(g.renderer.render_texture(&g.gpu, &views, &self.light, size.width, size.height),None)};
         self.rendered += 1;
+        if measure_profile {
+            let stats=capture_stats.as_ref().expect("profiled frame has stats");
+            let sample=serde_json::json!({"kind":"frame","rendered_frame":self.rendered,"race_frame":self.race.frame,"race_clock":self.race.clock,
+                "round":self.race.round,"phase":self.race.phase,"paused":self.paused,"weather":self.race.weather,
+                "stage_noise_seed":self.race.stage.noise_seed,"stage_detail_seed":self.race.stage.detail_seed,
+                "nature":self.args.nature.metadata(self.race.frame as f64 / 120.0),"output_size":[size.width,size.height],
+                "views":views.iter().map(|v|serde_json::json!({"rect":[v.x,v.y,v.w,v.h],"position":v.cam.pos.to_array(),"target":v.cam.target.to_array()})).collect::<Vec<_>>(),
+                "car_positions":poses.iter().map(|p|p.pos.to_array()).collect::<Vec<_>>(),
+                "timings_available":!stats.gpu_ms.is_empty(),"gpu_pass_ms":stats.gpu_ms,
+                "instrumented_gpu_ms":if stats.gpu_ms.is_empty(){None}else{Some(stats.gpu_ms.iter().map(|(_,v)|v).sum::<f64>())},
+                "clusters":stats.clusters,"triangles":stats.triangles,"shadow_clusters":stats.shadow_clusters,"shadow_triangles":stats.shadow_triangles,"submitted_vertices":stats.submitted_vertices,"shadow_submitted_vertices":stats.shadow_submitted_vertices,"early_grass_rejects":stats.early_grass_rejects,"cluster_buckets":stats.cluster_buckets,"early_grass_cull":stats.early_grass_cull,
+                "canopy_updated_levels":stats.canopy_updated_levels,"canopy_pitch_m":stats.canopy_pitch_m});
+            writeln!(self.gpu_profile.as_mut().unwrap(),"{sample}").map_err(|e|format!("GPU profile: {e}"))?;
+        }
         let presented_before=self.presented;
         let mut hidden_target=None;
         if self.rendered==1 { println!("play: first scene frame submitted"); }
@@ -453,7 +480,7 @@ impl App {
                 if !matches!(target.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb|wgpu::TextureFormat::Bgra8Unorm|wgpu::TextureFormat::Bgra8UnormSrgb){return Err("capture requires an 8-bit RGBA/BGRA surface".into());}
                 render::write_png(Path::new(path), size.width, size.height, &g.gpu.read_rgba8(target))?;
                 if let Some(stats)=&capture_stats {
-                    let metrics=serde_json::json!({"schema":1,"capture":path,"output_size":[size.width,size.height],"views":views.len(),"gpu_pass_ms":stats.gpu_ms,"timings_available":!stats.gpu_ms.is_empty(),"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS","triangles":stats.triangles,"clusters":stats.clusters,"canopy_updated_levels":stats.canopy_updated_levels,"canopy_pitch_m":stats.canopy_pitch_m});
+                    let metrics=serde_json::json!({"schema":1,"capture":path,"output_size":[size.width,size.height],"views":views.len(),"gpu_pass_ms":stats.gpu_ms,"timings_available":!stats.gpu_ms.is_empty(),"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS","triangles":stats.triangles,"clusters":stats.clusters,"submitted_vertices":stats.submitted_vertices,"shadow_submitted_vertices":stats.shadow_submitted_vertices,"early_grass_rejects":stats.early_grass_rejects,"cluster_buckets":stats.cluster_buckets,"early_grass_cull":stats.early_grass_cull,"nature":self.args.nature.metadata(self.race.frame as f64/120.0),"canopy_updated_levels":stats.canopy_updated_levels,"canopy_pitch_m":stats.canopy_pitch_m});
                     std::fs::write(format!("{path}.metrics.json"),serde_json::to_vec_pretty(&metrics).unwrap()).map_err(|e|format!("capture metrics: {e}"))?;
                 }
             }
@@ -469,7 +496,7 @@ impl App {
                 "player_poses":poses.iter().enumerate().map(|(i,p)|serde_json::json!({"index":i,"position":p.pos.to_array(),"rotation_xyzw":p.rot.to_array(),"model":p.model})).collect::<Vec<_>>(),
                 "views":views.iter().map(|v|serde_json::json!({"rect":[v.x,v.y,v.w,v.h],"camera":{"position":v.cam.pos.to_array(),"target":v.cam.target.to_array(),"fov_y":v.cam.fov_y,"near":v.cam.near}})).collect::<Vec<_>>(),
                 "render":{"output_size":[size.width,size.height],"surface_format":format!("{:?}",g.config.format),"adapter":g.gpu.info.name,"backend":format!("{:?}",g.gpu.info.backend),"hud":self.args.hud,
-                    "profile":capture_stats.as_ref().map(|s|serde_json::json!({"gpu_pass_ms":s.gpu_ms,"timings_available":!s.gpu_ms.is_empty(),"triangles":s.triangles,"clusters":s.clusters,"canopy_updated_levels":s.canopy_updated_levels,"canopy_pitch_m":s.canopy_pitch_m,"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS"})),
+                    "profile":capture_stats.as_ref().map(|s|serde_json::json!({"gpu_pass_ms":s.gpu_ms,"timings_available":!s.gpu_ms.is_empty(),"triangles":s.triangles,"clusters":s.clusters,"submitted_vertices":s.submitted_vertices,"shadow_submitted_vertices":s.shadow_submitted_vertices,"early_grass_rejects":s.early_grass_rejects,"cluster_buckets":s.cluster_buckets,"early_grass_cull":s.early_grass_cull,"canopy_updated_levels":s.canopy_updated_levels,"canopy_pitch_m":s.canopy_pitch_m,"scope":"same-frame scene passes; excludes HUD, presentation and CPU; not gameplay FPS"})),
                     "sun_direction":self.light.sun_dir.to_array(),"sun_lux":self.light.sun_lux,"sky_lux":self.light.sky_lux,"ev100":self.light.ev100,
                     "taa":self.light.taa,"lod_pixels":self.light.lod_pixels,"gi":self.light.gi,"contact_occlusion":self.light.contact_occlusion,
                     "reflection_occlusion":self.light.reflection_occlusion,"near_shadows":self.light.near_shadows,"debug":self.light.debug},
@@ -507,6 +534,15 @@ impl ApplicationHandler for App {
             let hud=if self.args.hud {Some(render::hud::HudRenderer::new(&gpu,config.format)?)}else{None};
             let hud_profile=if self.args.hud_profile.is_some()&&self.args.hud {render::hud_profile::HudProfiler::new(&gpu,self.args.smoke_frames as u32)}else{None};
             let renderer = Renderer::new(&gpu,&self.built.scene,&self.light);
+            if let Some(file)=&mut self.gpu_profile {
+                let header=serde_json::json!({"kind":"header","schema":1,"adapter":gpu.info.name,"backend":format!("{:?}",gpu.info.backend),
+                    "seed":self.args.seed,"km":self.args.km,"views":self.args.views,"output_size":[size.width,size.height],"warmup_frames":self.args.gpu_warmup,
+                    "nature":self.args.nature.metadata(self.race.frame as f64/120.0),"autoplay":self.args.autoplay&&self.host.is_none(),
+                    "taa":self.light.taa,"lod_pixels":self.light.lod_pixels,"far_grass":self.built.scene.far_grass.is_some(),
+                    "voxel_forest":self.built.scene.voxel_forest.is_some(),"initial_instances":self.built.scene.instances.len(),
+                    "scope":"Synchronous same-frame GPU pass timestamps; excludes HUD, presentation, simulation and uninstrumented work. Profiling changes frame pacing; not gameplay FPS."});
+                writeln!(file,"{header}").and_then(|_|file.flush()).map_err(|e|format!("GPU profile header: {e}"))?;
+            }
             println!("play GPU: {}, {}x{}, {} views, hidden={}, 120 Hz / {} substeps",gpu.info.name,size.width,size.height,self.args.views,self.args.smoke_frames>0,sideways::car::SUBSTEPS);
             self.graphics=Some(LiveGpu{instance,surface,config,gpu,renderer,presenter,hud,hud_profile});
             self.window=Some(window); self.last_frame=Instant::now(); self.started=Instant::now();
@@ -567,6 +603,9 @@ pub fn run(raw:&[String])->i32{
         return match Input::probe(seconds,out){Ok(())=>0,Err(e)=>{eprintln!("controller probe: {e}");1}};
     }
     let a=match args(raw){Ok(a)=>a,Err(e)=>{eprintln!("play: {e}");return 2;}};
+    let gpu_profile=match a.gpu_profile.as_ref().map(|path|OpenOptions::new().write(true).create_new(true).open(path).map(std::io::BufWriter::new)).transpose() {
+        Ok(file)=>file,Err(e)=>{eprintln!("GPU profile requires a new writable file: {e}");return 2;}
+    };
     if a.smoke_ticks>0{return match smoke(&a){Ok(())=>0,Err(e)=>{eprintln!("play smoke: {e}");1}};}
     let race=race(&a);let poses=poses(&race);let cams=cameras(&race,&poses,&[0.0;4],&[false;4]);
     let built=match visuals::build_live(&race.stage,&poses,&cams.iter().take(a.views).map(|c|c.pos).collect::<Vec<_>>()){Ok(b)=>b,Err(e)=>{eprintln!("play scene: {e}");return 1;}};
@@ -577,7 +616,7 @@ pub fn run(raw:&[String])->i32{
     let settings=serde_json::json!({"gearbox":"automatic","stage_km":a.km,"rivals":0,"contact":true,"weather":a.weather});
     let view_order=(0..a.views).collect();
     let resume_fullscreen=if a.fullscreen{Some(Fullscreen::Borderless(None))}else{None};
-    let mut app=App{args:a,race,built,light,input:Input::new(),window:None,graphics:None,focused:true,paused:false,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None};
+    let mut app=App{gpu_profile,args:a,race,built,light,input:Input::new(),window:None,graphics:None,focused:true,paused:false,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None};
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     if let Err(e)=events.run_app(&mut app){eprintln!("play event loop: {e}");return 1;}
     if let Some(e)=app.error{eprintln!("play: {e}");1}else{0}

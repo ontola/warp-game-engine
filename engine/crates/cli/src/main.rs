@@ -10,6 +10,7 @@ mod distant_forest;
 mod gpu_run;
 mod ground_cover;
 mod live_ground_cover;
+mod nature;
 mod far_ground_cover;
 mod input;
 mod hud;
@@ -31,8 +32,10 @@ fn main() {
         Some("bench") => bench(&opt("--car", "rally2"), args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())),
         Some("sim") => sim(&args),
         Some("shot") => {
+            let nature = match nature::Nature::parse(&args) { Ok(n)=>n, Err(e)=>{eprintln!("shot: {e}");std::process::exit(2);} };
             let size: Vec<u32> = opt("--size", "960x540").split('x').map(|x| x.parse().unwrap()).collect();
             shot::run(&shot::ShotArgs {
+                nature,
                 out: args.get(1).cloned().unwrap_or("shot.png".into()),
                 seed: opt("--seed", "1").parse().unwrap(),
                 km: opt("--km", "2").parse().unwrap(),
@@ -116,6 +119,7 @@ fn sim(args: &[String]) -> i32 {
     let ticks: u64 = opt("--ticks", "45000").parse().unwrap();
     let seed: u64 = opt("--seed", "1").parse().unwrap();
     let mut settings = sideways::race::Settings::default();
+    settings.vegetation = match nature::Nature::parse(args) {Ok(n)=>n.vegetation,Err(e)=>{eprintln!("sim: {e}");return 2;}};
     settings.stage_km = opt("--km", "3").parse().unwrap();
     settings.rivals = opt("--rivals", "1").parse().unwrap();
     settings.bots = opt("--bots", "1").parse().unwrap();

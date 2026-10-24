@@ -1,6 +1,8 @@
 // Cluster culling and LOD selection, one workgroup per instance.
 // A cluster is drawn when its own error projects to at most the threshold
 // and its group's simplified replacement would project above it.
+override CLUSTER_BUCKETS: bool = true;
+override EARLY_GRASS_CULL: bool = true;
 
 struct View {
     view_proj: mat4x4<f32>,
@@ -49,11 +51,26 @@ struct CullMaterial {
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
 @group(0) @binding(5) var<storage, read> cull_materials: array<CullMaterial>;
+@group(0) @binding(12) var<storage, read> cull_wind: array<vec4<f32>>;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read_write> visible: array<vec2<u32>>;
-@group(1) @binding(2) var<storage, read_write> counter: array<atomic<u32>, 4>;
-@group(1) @binding(3) var<storage, read_write> args: array<u32, 4>;
+// 0: candidate count, 1: retained triangles, 2: submitted vertices,
+// 3: early grass rejects; 4..7: bucket counts, 8..11: scatter cursors.
+@group(1) @binding(2) var<storage, read_write> counter: array<atomic<u32>, 12>;
+// Four draw records followed by four bucket starts.
+@group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
+@group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
+
+fn cluster_bucket(triangles: u32) -> u32 {
+    if triangles <= 8u { return 0u; }
+    if triangles <= 32u { return 1u; }
+    if triangles <= 64u { return 2u; }
+    return 3u;
+}
+fn bucket_vertices(bucket: u32) -> u32 {
+    return array<u32, 4>(24u, 96u, 192u, 384u)[bucket];
+}
 
 fn in_frustum(c: vec3<f32>, r: f32) -> bool {
     for (var i = 0u; i < 6u; i++) {
@@ -98,8 +115,19 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
     if view.params.z > 0.5 && (inst.flags & 4u) != 0u {
         return;
     }
+    // Exactly the same root, camera and opacity decision as raster.vs.
+    // Transition grass still renders in its own pass; no geometry is removed
+    // from that pass and no threshold, alpha or source plant is changed.
+    if EARLY_GRASS_CULL && (inst.flags & 8u) != 0u {
+        let root = vec3<f32>(inst.r0.w, inst.r1.w, inst.r2.w);
+        if grass_card_opacity(root, view.cam.xyz, view.extra.y > 0.5) < GRASS_OPAQUE_THRESHOLD {
+            if li == 0u { atomicAdd(&counter[3], 1u); }
+            return;
+        }
+    }
+    let wind_pad = cull_wind[id].z;
     if li == 0u {
-        keep = in_frustum(inst.sphere.xyz, inst.sphere.w);
+        keep = in_frustum(inst.sphere.xyz, inst.sphere.w + wind_pad);
     }
     workgroupBarrier();
     if !keep {
@@ -116,36 +144,70 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
         // Excluding them here also prevents opaque glass sun shadows.
         if (cull_materials[cl.material].flags & 256u) != 0u { continue; }
         let s = inst.scale;
+        // Shear can stretch simplification error as well as move bounds.
+        // ||I + shear|| <= 1 + |shear|; use the identical factor on both
+        // sides of every parent/child cut so the DAG stays complete.
+        let error_scale = s * (1.0 + length(cull_wind[id].xy));
         let pc = to_world(inst, cl.parent.xyz);
-        let parent_px = select(projected(cl.parent_error * s, pc, cl.parent.w * s), 1e30, cl.parent_error > 1e30);
+        let parent_px = select(projected(cl.parent_error * error_scale, pc, cl.parent.w * s + wind_pad), 1e30, cl.parent_error > 1e30);
         if parent_px <= thr {
             continue; // a coarser cluster covers this patch
         }
         // Every cluster, the DAG's roots included, must itself be fine
         // enough; where it is not, its finer clusters are drawn instead.
         let oc = to_world(inst, cl.own.xyz);
-        if projected(cl.own_error * s, oc, cl.own.w * s) > thr {
+        if projected(cl.own_error * error_scale, oc, cl.own.w * s + wind_pad) > thr {
             continue;
         }
         let cc = to_world(inst, cl.cull.xyz);
-        if !in_frustum(cc, cl.cull.w * s) {
+        if !in_frustum(cc, cl.cull.w * s + wind_pad) {
             continue;
         }
         let slot = atomicAdd(&counter[0], 1u);
         if slot < max_visible {
             visible[slot] = vec2<u32>(id, ci);
             atomicAdd(&counter[1], cl.tri_count);
+            if CLUSTER_BUCKETS { atomicAdd(&counter[4u + cluster_bucket(cl.tri_count)], 1u); }
         }
     }
 }
 
-// Turn the count into an indirect draw: 128 triangles' worth of vertices
-// per visible cluster; clusters with fewer emit degenerate triangles.
+// Keep visible[] and its IDs unchanged. Only draw order and padded vertex
+// count change. first_vertex encodes the bucket, avoiding any dependency on
+// the optional INDIRECT_FIRST_INSTANCE device feature.
 @compute @workgroup_size(1)
 fn finalize() {
     let n = min(atomicLoad(&counter[0]), u32(view.params.w));
-    args[0] = 384u;
-    args[1] = n;
-    args[2] = 0u;
-    args[3] = 0u;
+    if !CLUSTER_BUCKETS {
+        args[0] = 384u;
+        args[1] = n;
+        args[2] = 0u;
+        args[3] = 0u;
+        atomicStore(&counter[2], n * 384u);
+        return;
+    }
+    var start = 0u;
+    var submitted = 0u;
+    for (var bucket = 0u; bucket < 4u; bucket++) {
+        let count = atomicLoad(&counter[4u + bucket]);
+        let vertices = bucket_vertices(bucket);
+        args[bucket * 4u] = vertices;
+        args[bucket * 4u + 1u] = count;
+        args[bucket * 4u + 2u] = bucket * 384u;
+        args[bucket * 4u + 3u] = 0u;
+        args[16u + bucket] = start;
+        start += count;
+        submitted += count * vertices;
+    }
+    atomicStore(&counter[2], submitted);
+}
+
+@compute @workgroup_size(64)
+fn scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let n = min(atomicLoad(&counter[0]), u32(view.params.w));
+    for (var slot = gid.x; slot < n; slot += groups.x * 64u) {
+        let bucket = cluster_bucket(clusters[visible[slot].y].tri_count);
+        let offset = atomicAdd(&counter[8u + bucket], 1u);
+        draw_map[args[16u + bucket] + offset] = slot;
+    }
 }
