@@ -290,7 +290,9 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     let trunk_b_mat = scene.add_material(m([1.0, 1.0, 1.0], trunk_b, 0, 1.0));
     let bark_mat = scene.add_material(m([1.0, 1.0, 1.0], bark, 0, 1.0));
     // Godot's foliage.gdshader tint.
-    let crown_mat = scene.add_material(m([0.62, 0.66, 0.55], crown, ALPHA_TEST | TWO_SIDED, 1.0));
+    let pine_tint = stage.vegetation.pine_tint();
+    let crown_mat = scene.add_material(m([0.62 * pine_tint[0], 0.66 * pine_tint[1], 0.55 * pine_tint[2]], crown, ALPHA_TEST | TWO_SIDED, 1.0));
+    log.push(format!("vegetation: {:?}, growth {:.3}, phenotype seed {}, stage construction only; evergreen pine / grass tint and stature", stage.vegetation.season, stage.vegetation.growth(), stage.vegetation.seed));
     let barrier_mat = scene.add_material(m([0.55, 0.56, 0.57], -1, 0, 1.0));
     log.push(format!("textures and sky: {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
 
@@ -393,17 +395,17 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     }
 
     let live_ground_cover = if live_cover {
-        let stream = crate::live_ground_cover::LiveGroundCover::reserve(&mut scene, &chunks, cameras, &r, &mut mesh_names)?;
+        let stream = crate::live_ground_cover::LiveGroundCover::reserve_with_vegetation(&mut scene, &chunks, cameras, &r, &mut mesh_names, stage.vegetation)?;
         log.push(stream.summary());
         if std::env::var("SIDEWAYS_FAR_GRASS").as_deref() == Ok("1") {
             let photo = crate::ground_cover::photo(&r)?;
-            let (field, summary) = crate::far_ground_cover::bake(&chunks, &photo)?;
+            let (field, summary) = crate::far_ground_cover::bake_with_vegetation(&chunks, &photo, stage.vegetation)?;
             log.push(summary);
             scene.far_grass = Some(field);
         }
         Some(stream)
     } else if ground_cover {
-        log.push(crate::ground_cover::add(&mut scene, &chunks, cameras, &r, &mut mesh_names)?);
+        log.push(crate::ground_cover::add_with_vegetation(&mut scene, &chunks, cameras, &r, &mut mesh_names, stage.vegetation)?);
         None
     } else {
         log.push("ground cover: disabled (matched A/B)".into());

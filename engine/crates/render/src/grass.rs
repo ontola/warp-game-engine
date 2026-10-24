@@ -46,7 +46,8 @@ pub(crate) struct GrassRenderer {
 
 pub(crate) fn raster_source() -> String {
     format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
+        crate::wind::common_source(),
         include_str!("shaders/grass_common.wgsl"),
         include_str!("shaders/raster.wgsl")
     )
@@ -54,7 +55,7 @@ pub(crate) fn raster_source() -> String {
 pub(crate) fn shader_source() -> String {
     format!(
         "{}\n{}\n{}",
-        include_str!("shaders/shade.wgsl"),
+        crate::wind::shade_source(),
         include_str!("shaders/grass_common.wgsl"),
         include_str!("shaders/grass_transition.wgsl")
     )

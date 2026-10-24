@@ -178,7 +178,8 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
                     let sc = rng.randf_range_f32(0.75, 1.25);
                     let yaw = (rng.randf() as f64 * TAU) as f32;
                     let sy = sc * rng.randf_range_f32(0.9, 1.15);
-                    trees.push(Spot { pos: v3(tx as f32, (foot - 0.25) as f32, tz as f32).into(), yaw, scale: sc, scale_y: sy });
+                    let growth = s.vegetation.tree_scale(tx as f32, tz as f32);
+                    trees.push(Spot { pos: v3(tx as f32, (foot - 0.25) as f32, tz as f32).into(), yaw, scale: sc * growth[0], scale_y: sy * growth[1] });
                 } else if clear > 4.0 && !steep && rng.randf() < 0.004 {
                     let sy = s.height(tx, tz);
                     let ss = rng.randf_range_f32(0.8, 1.3);
@@ -366,6 +367,32 @@ pub struct GroundMap {
 #[cfg(test)]
 mod foundation_tests {
     use super::*;
+
+    #[test]
+    fn vegetation_growth_preserves_roots_population_and_rng_consumption() {
+        use crate::vegetation::{Season,Vegetation};
+        let mut s=Stage::generate(&mut Pcg::new(7),340.0);
+        let cells=chunk_cells(&s);
+        let young=Vegetation::new(91,0.25,Season::Winter).unwrap();
+        let mut checked=0;
+        for key in cells.into_iter().take(12) {
+            s.vegetation=Default::default(); let mature=terrain_chunk(&s,key);
+            s.vegetation=young; let juvenile=terrain_chunk(&s,key);
+            assert_eq!(mature.heights,juvenile.heights);assert_eq!(mature.road_d,juvenile.road_d);
+            assert_eq!(mature.trees.len(),juvenile.trees.len());
+            for (a,b) in mature.trees.iter().zip(&juvenile.trees) {
+                assert_eq!([a.pos.0,a.pos.1,a.pos.2,a.yaw],[b.pos.0,b.pos.1,b.pos.2,b.yaw]);
+                let scale=young.tree_scale(a.pos.0,a.pos.2);
+                assert_eq!(b.scale,a.scale*scale[0]);assert_eq!(b.scale_y,a.scale_y*scale[1]);
+                checked+=1;
+            }
+            // Every later RNG-dependent decoration must remain bit-identical.
+            for (a,b) in [(&mature.rocks,&juvenile.rocks),(&mature.grass,&juvenile.grass),(&mature.ferns,&juvenile.ferns),(&mature.stumps,&juvenile.stumps)] {
+                assert_eq!(serde_json::to_vec(a).unwrap(),serde_json::to_vec(b).unwrap());
+            }
+        }
+        assert!(checked>0,"the fixture must actually contain trees");
+    }
 
     #[test]
     fn road_distance_remains_finite_outside_carved_corridor() {

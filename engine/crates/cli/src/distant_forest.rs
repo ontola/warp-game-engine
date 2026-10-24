@@ -348,7 +348,8 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     } else {
       let bark=scene.add_material(Material{tint:[0.07,0.047,0.025],layer:-1,roughness:0.98,flags:0,scale:1.0,metal:0.0});
       for variant in 0..3{
-        let tint=[[0.034,0.071,0.029],[0.043,0.080,0.035],[0.029,0.060,0.034]][variant as usize];
+        let base=[[0.034,0.071,0.029],[0.043,0.080,0.035],[0.029,0.060,0.034]][variant as usize];
+        let tint=std::array::from_fn(|i|base[i]*stage.vegetation.pine_tint()[i]);
         let material=scene.add_material(Material{tint,layer:-1,roughness:0.98,flags:0,scale:1.0,metal:0.0});
         let mesh=tree_mesh(variant,material,bark);let leaf=mesh.leaf_triangles();let root=mesh.root_triangles();
         tree_triangles+=leaf;tree_roots+=root;
@@ -380,7 +381,8 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     let candidates=trees.len();let budget=config.max_trees.min(MAX_BACKGROUND_TREES);
     let requested=select_trees(&mut trees,native,habitat_m2,budget);
     for &TreePlacement{x,y,z,key,..} in &trees{
-        let wide=0.85+unit(key.rotate_left(7))*0.60;let tall=0.85+unit(key.rotate_left(19))*0.55;
+        let growth=stage.vegetation.tree_scale(x,z);
+        let wide=(0.85+unit(key.rotate_left(7))*0.60)*growth[0];let tall=(0.85+unit(key.rotate_left(19))*0.55)*growth[1];
         let transform=Affine3A::from_scale_rotation_translation(Vec3::new(wide,tall,wide),Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
         scene.add_instance(tree_ids[key as usize%tree_ids.len()],transform);scene.mark_foliage();
     }

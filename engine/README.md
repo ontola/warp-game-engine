@@ -72,6 +72,79 @@ matching the seed and starting distance alone does not match the final camera
 after different physics simulations. GPU jobs accept `ground_cover = false`
 for a matched no-grass baseline.
 
+## Vegetation and wind
+
+`play` and `shot` accept the same explicit construction/animation options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--season spring\|summer\|autumn\|winter` | `summer` | Evergreen needle tint; grass tint and stature |
+| `--growth 0..1` | `1` | Established juvenile to mature tree/grass size, applied when building the stage |
+| `--vegetation-seed N` | `0` | Stable tree phenotype variation, independent of the layout RNG |
+| `--wind 0..1` | `0.3` | Shared world wind strength |
+| `--wind-time SECONDS` | simulation tick / 120 | Freeze the wind phase for reproducible images |
+
+    cargo run --release -p cli -- play --season autumn --growth 0.7 --vegetation-seed 42 --wind 0.3
+    cargo run --release -p cli -- shot autumn.png --season autumn --growth 0.7 --vegetation-seed 42 --wind 0.3 --wind-time 2.5 --taa 1
+
+Summer/growth 1 preserves the existing vegetation geometry and color exactly;
+gentle wind at 0.3 is a new CLI default. Use `--wind 0` for a stationary
+baseline. `sim` accepts the construction options too. The engine's
+`WindState::default()` and `gpu-run` jobs retain wind 0; jobs can opt in with
+`wind`, `wind_time`, `growth`, `season` and `vegetation_seed` TOML fields.
+
+The reusable game API is `sideways::vegetation::Vegetation::new(seed, growth,
+Season)`, assigned to `race::Settings::vegetation` before constructing a race.
+Native tree spots feed both colliders and visible instances; distant trees
+reuse the same phenotype function. Roots, populations and layout RNG draws
+do not change. Near grass size/tint and the far volume's source-area/color
+moments use the same profile. Stage reconstruction is required to change it.
+
+Call `Renderer::set_wind(&gpu, &WindState { time_seconds, strength,
+..Default::default() })` before rendering. One GPU coefficient field drives
+every view, source LOD, source shadow and deferred reconstruction, keeping
+roots fixed without CPU uploads of every plant transform. This is bounded
+whole-plant shear, not branch/leaf physics. Experimental packed voxel-tree
+owners remain static; canopy and far-grass density use mean rest poses.
+Pines do not turn into deciduous autumn trees. There is no continuous
+biological growth, snow accumulation or seasonal terrain-material change:
+the ground/verge texture keeps its existing color beyond the grass volume.
+Snapshots and shot sidecars record the resolved profile and wind phase.
+
+## Per-frame scene GPU profiling
+
+    cargo run --release -p cli -- play --autoplay --views 4 --size 3840x2160 --smoke-render 90 --gpu-profile route-gpu.jsonl --gpu-warmup 30 --wind 0.3
+
+`--gpu-profile` requires a new writable JSONL file and works in visible play
+or bounded hidden smoke. It streams a header and each frame after the warmup
+(30 by default), including adapter, route/tick, cameras, output size,
+vegetation/wind settings, GPU pass durations and work counters. Missing GPU
+timestamps remain explicitly unavailable. Hidden smoke reports no presented
+frames; its route pacing is a test harness, not normal gameplay.
+
+Profiling synchronizes same-frame GPU readback. `instrumented_gpu_ms` sums
+only timed scene passes; it excludes HUD, presentation, CPU simulation and
+uninstrumented work. Neither that sum nor the synchronized wall time is a
+gameplay FPS measurement. Normal play retains the asynchronous render path;
+`--hud-profile` measures the separate HUD scope described below.
+
+| Counter / bound | Interpretation |
+| --- | --- |
+| `submitted_vertices` | Opaque cluster draw vertices, including padding; excludes later glass, transition-grass and volume passes |
+| `shadow_submitted_vertices` | Actual far/near source-shadow draw vertices this frame; a cached far map contributes zero |
+| `clusters`, `triangles` | Selected geometry counts, not covered pixels; triangles also include the forward glass pass |
+| `shadow_clusters`, `shadow_triangles` | Retained shadow geometry, including a reused far map; not actual work on a cache hit |
+| `early_grass_rejects` | Per-view instances skipped because their opaque raster path was already invisible; not plants removed from the transition pass |
+| `canopy_updated_levels`, `canopy_pitch_m` | Per-view rebuild masks and world pitches; zero mask means no density rebuild |
+| 70,000 / 115,000 grass slots | One-view / shared split-screen residency caps, not per-player densities or millisecond budgets |
+| 27 MiB canopy per view | Density texture plus atomic working storage; up to 108 MiB for four views, excluding other renderer allocations |
+
+`KERN_CLUSTER_BUCKETS=0` and `KERN_EARLY_GRASS_CULL=0` independently disable
+the two draw-work optimizations for matched comparisons. Effective states
+are recorded in each sample. Buckets submit 8/32/64/128-triangle capacities
+instead of padding every cluster to 128; visibility IDs and source triangles
+are retained. No performance improvement is implied by these options alone.
+
 ## Explicit Windows playtest
 
 Build and stage the Windows preview with `tools\build-windows.ps1`. Launch it
@@ -129,7 +202,7 @@ safe lifecycle/input/pose snapshots without launch tokens.
 This first playable milestone is not feature parity or a 120 FPS claim.
 Live driving disables the existing camera-only TAA until object motion vectors
 are implemented. Grass streams around the active views in a fixed pool of
-16,000 slots (one view) or 24,000 shared slots (multiple views), retaining
+70,000 slots (one view) or 115,000 shared slots (multiple views), retaining
 world positions and sizes. `SIDEWAYS_LIVE_GRASS=0` disables it. The basic
 instruments are now rendered by the shared native-resolution HUD described below.
 Audio, particles and an in-game settings menu are still missing. Native device enumeration alone does not
@@ -256,8 +329,8 @@ On a 2-core cloud container:
   clusters per instance against a 1 px error; a cluster is drawn when its
   own error is small enough and its group's coarser replacement is not.
   Trees: about 4000 triangles up close, about 150 far away.
-- **Visibility buffer:** survivors are drawn as one indirect draw (one
-  instance per cluster, vertices pulled from storage buffers) into an
+- **Visibility buffer:** survivors are drawn in four indirect size buckets
+  (one instance per cluster, vertices pulled from storage buffers) into an
   R32Uint target: which triangle covers each pixel. Alpha-tested foliage
   is cut there, with coverage-preserving mips so crowns stay dense far away;
   under TAA the threshold changes every frame, so needles average out to
@@ -328,7 +401,8 @@ surviving plants keep their three cards, size and fixed slots. The pool has
 grass uses a nearest-layer opacity fade at 40-60 m (20-38 m in split screen),
 with residency extending beyond the fade. Roots follow the native terrain
 triangles and exclude the road. Plants receive sun/canopy shading without
-casting shadows. Wind, shrubs, ferns, stumps and mossy rocks remain pending.
+casting shadows. Shared wind is available as described above; shrubs,
+ferns, stumps and mossy rocks remain pending.
 These budgets bound instance count, not GPU time.
 
 `SIDEWAYS_FAR_GRASS=1` explicitly enables the new development grass volume

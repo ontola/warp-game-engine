@@ -184,15 +184,22 @@ pub(crate) fn photo(root: &Path) -> Result<image::RgbaImage, String> {
 }
 
 pub fn add(scene: &mut Scene, chunks: &[Chunk], cameras: &[Vec3], root: &Path, mesh_names: &mut Vec<String>) -> Result<String, String> {
+    add_with_vegetation(scene, chunks, cameras, root, mesh_names, Default::default())
+}
+
+pub fn add_with_vegetation(scene: &mut Scene, chunks: &[Chunk], cameras: &[Vec3], root: &Path, mesh_names: &mut Vec<String>, vegetation: sideways::vegetation::Vegetation) -> Result<String, String> {
     let t = std::time::Instant::now();
     let (tufts, requested) = scatter(&Field::new(chunks), cameras);
     let layer = scene.add_image("Poly Haven grass_medium_01 selected CC0 clump", photo(root)?);
-    let material = scene.add_material(Material { tint: [1.0; 3], layer, roughness: 0.85, flags: ALPHA_TEST | TWO_SIDED | GRASS, scale: 1.0, metal: 0.0 });
+    let material = scene.add_material(Material { tint: vegetation.grass_tint(), layer, roughness: 0.85, flags: ALPHA_TEST | TWO_SIDED | GRASS, scale: 1.0, metal: 0.0 });
     let id = scene.add_mesh(&mesh(material));
     mesh_names.push("photographed grass tuft (CC0)".into());
     for tuft in &tufts {
-        scene.add_instance(id, Affine3A::from_scale_rotation_translation(Vec3::splat(tuft.scale), Quat::from_rotation_y(tuft.yaw), tuft.pos));
+        scene.add_instance(id, Affine3A::from_scale_rotation_translation(Vec3::splat(tuft.scale * vegetation.grass_scale()), Quat::from_rotation_y(tuft.yaw), tuft.pos));
         scene.mark_no_shadow();
+        // Frozen shot grass sways too, without opting into live streaming's
+        // distance-opacity policy or range descriptors.
+        scene.instances.last_mut().unwrap().flags |= render::scene::WIND_GRASS;
     }
     Ok(format!("ground cover: {} tufts / {} requested, budget {}, {} views, radius {:.0} m, {:.0} ms", tufts.len(), requested, MAX_TUFTS, cameras.len(), radius(cameras.len()), t.elapsed().as_secs_f64() * 1e3))
 }

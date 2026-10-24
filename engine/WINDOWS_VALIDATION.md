@@ -707,3 +707,99 @@ Six canopy tests passed again after this capacity change. The 8 km scene
 itself was not generated/measured in this iteration. Graphics evidence above
 belongs to the preserved r13b binary; use the managed autoplay manifest for
 the final executable's live launch and first-frame confirmation.
+
+## 24 October: draw-work reduction, shared wind and vegetation profiles (r14)
+
+Evidence: `C:\dev\perf\warp-sideways-20261024\r14`. The tested executable is
+`sideways-r14a.exe`, SHA256
+`2f9f4ef830df9b8d630e90da7c943000bb2a321f0b88f28731140c7e58ddf7a3`.
+Tests passed: 64 renderer +3 probe checks (`render-tests.log`), 48 CLI +10
+simulation checks (`game-tests.log`), with one unrelated benchmark ignored.
+`shader-final.log` separately reruns specialization of every combination of
+the two performance switches. The vegetation regressions cover mature/default
+identity, stable roots/populations/RNG, collider/visual construction data and
+matched near/far grass stature, source-area moments and tint.
+
+`simulation-comparison.json` confirms the 45,000-tick candidate matches all
+374 baseline trace rows and the summary (375 rows, zero differences), with
+the same statistics/hash `d668fb21cead57b5`; both runs report `sim: ok`.
+Fresh actual GPU regressions pass all 12 far-grass optical cases
+(`far-grass-optics/report.json`) and all 11 tree-volume optical cases
+(`voxel-optics/report.json`). The natural-tree fixture in
+`voxel-forest-optics/report.json` also completes all rays, but its approximately
+39.2 ms integration remains expensive: this is correctness evidence, not a
+voxel speedup or acceptance for replacing the forest.
+
+The renderer now draws clusters in 8/32/64/128-triangle capacity buckets and
+rejects live grass from the opaque pass when its existing raster path would
+already reject it. The transition-grass pass retains those plants. Original
+visibility IDs, source geometry, LOD thresholds and material coverage remain
+the same. `KERN_CLUSTER_BUCKETS` and `KERN_EARLY_GRASS_CULL` allow independent
+disabling; the following comparison measures their combined package.
+
+`abba-summary.json` records four same-binary A/B/B/A hidden route runs on an
+NVIDIA GeForce RTX 5070 Ti / Vulkan: native 3840x2160, four 1916x1076 views,
+seed 1, 3 km, clear weather, source trees, far grass enabled, TAA and wind off.
+Each run renders 100 frames to tick 800, discards 20 warmup frames and measures
+80 frames. Camera/player routes match exactly. A disables both switches;
+B enables both.
+
+| Run | Mean scene GPU pass sum, ms | p95, ms |
+| --- | ---: | ---: |
+| A1 | 39.4614 | 40.4038 |
+| B1 | 34.4528 | 35.4079 |
+| B2 | 34.3810 | 35.4225 |
+| A2 | 39.4090 | 40.2849 |
+
+The paired mean falls **39.4352 to 34.4169 ms: 12.73% less scene GPU time**.
+Raster cost falls from about 19.60 to 13.33 ms while culling/scatter rises
+from about 2.08 to 3.36 ms. Final-frame opaque submitted vertices fall from
+667,651,200 to 433,273,968; 74,818 per-view instance rejects avoid work that
+was already invisible in the opaque pass. These counts include draw padding
+and are not visible triangle/pixel counts. The final captured A1/B1 images
+differ at only one output pixel, maximum channel difference 5/255; A/A and
+B/B repeats have the same tiny residual. This verifies the captured frame,
+not every moving pixel along an entire stage.
+
+`wind-abba-summary.json` repeats off/on/on/off with both optimizations enabled
+and the same routes. Wind strength 0.3 changes the paired scene GPU mean from
+34.4684 to 34.6230 ms: **+0.1546 ms (+0.45%)**. The shared wind compute pass
+averages 0.0238 ms; its timing alone does not include deformation in raster,
+shading or shadows. All four runs rebuild canopy levels on the same 29
+measured frames, consistent with wind leaving mean forest density cached.
+
+`wind-probe-a/report.json` passes six actual GPU differential cases: albedo
+and direct-light diagnostics at 0, 2.75 and 11.5 seconds exactly match the
+CPU-deformed reference images (zero RGB error). The nonzero phase-difference
+sum confirms motion occurred. This proves shared affine deformation and its
+lighting/shadow reconstruction in that synthetic fixture; it does not certify
+natural branch motion or animation quality across all tree assets.
+
+`single-wind.png` is an actual one-player native-4K capture at tick 800 with
+gentle wind. Its 80 measured route frames after 20 warmup frames average
+18.8734 ms in scene GPU passes, p95 19.7698 ms (`single-wind.jsonl`); this
+is a standalone sample, not a paired speedup. `autumn.png`, `winter.png` and
+`spring-young.png` are matching single-view captures with their exact profiles
+in the adjacent state JSONs;
+spring uses growth 0.35, the other two growth 1. All retain the same final
+car position and 48,124 active grass roots, with no residency-budget clipping.
+These hidden runs report zero presented frames and do not prove a visible
+interactive session. Final far-grass diagnostics report zero overflow.
+
+Growth is a stage-construction size parameter, not biological development or
+procedural branch generation. Native tree spots supply the same scales to
+collision and rendering; distant source trees and near/far grass share the
+profile. Pines remain evergreen. Wind is bounded whole-plant shear with fixed
+roots, shared across source LODs, views and shadows. Canopy/far-grass volumes
+remain mean rest fields, and experimental packed voxel-tree owners stay
+static. Terrain/verge colors and snow remain unchanged; this is not complete
+seasonal world simulation. Summer/growth 1 preserves existing vegetation;
+CLI wind 0.3 is new, while engine and GPU-job defaults remain wind 0.
+
+All timing figures above are synchronized sums of instrumented **scene GPU
+passes**, excluding HUD, CPU simulation, presentation and uninstrumented
+work. Profiling affects frame pacing. They are neither gameplay FPS nor a
+full-route/weather result, and **120 FPS / 8.33 ms remains unmet**. The JSONL
+profiles preserve route inputs, exact wind phase, settings and pass counters
+for further comparisons; no full-render or isolated optimization claim is
+inferred from these package measurements.

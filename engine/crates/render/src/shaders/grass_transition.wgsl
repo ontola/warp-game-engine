@@ -25,7 +25,7 @@ fn grass_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: 
     let angle = PI * f32(card) / 3.0;
     let side = vec3<f32>(cos(angle), 0.0, sin(angle)) * grass_range.shape.x * 0.5;
     let local = select(-side, side, (corner & 1u) != 0u) + vec3<f32>(0.0, select(0.0, grass_range.shape.y, corner >= 2u), 0.0);
-    out.world = xform(inst, local);
+    out.world = wind_position(owner, inst.r1.w, xform(inst, local));
     out.position = view.view_proj * vec4<f32>(out.world, 1.0);
     out.uv = vec2<f32>(f32(corner & 1u), select(1.0, 0.0, corner >= 2u));
     out.owner = owner;

@@ -19,6 +19,11 @@ const NEAR_SHADOW_SIZE: u32 = 2048;
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
 const TIMESTAMP_CAPACITY: u32 = 160;
 
+/// Keep the grass rejection in culling identical to its opaque raster path.
+pub(crate) fn cull_source() -> String {
+    format!("{}\n{}", include_str!("shaders/grass_common.wgsl"), include_str!("shaders/cull.wgsl"))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Readback { None, Metrics, ImageAndMetrics }
 
@@ -45,6 +50,7 @@ struct ShadowCache {
     tex: wgpu::Texture,
     clusters: u32,
     triangles: u32,
+    submitted_vertices: u32,
 }
 
 /// Per-camera sun detail, retained across frames rather than reallocating.
@@ -249,6 +255,14 @@ impl Default for Lighting {
 pub struct FrameStats {
     pub clusters: u32,
     pub triangles: u32,
+    /// Actual vertex invocations submitted by the opaque cluster draws.
+    /// Includes padding, excludes later glass/grass/volume passes.
+    pub submitted_vertices: u64,
+    pub shadow_submitted_vertices: u64,
+    /// Live-grass instances whose opaque draw was already invisible.
+    pub early_grass_rejects: u64,
+    pub cluster_buckets: bool,
+    pub early_grass_cull: bool,
     pub shadow_clusters: u32,
     pub shadow_triangles: u32,
     /// Subset of total shadow work spent on the per-view near maps.
@@ -265,6 +279,7 @@ pub struct FrameStats {
     pub picks: Vec<Option<(u32, u32, u32)>>,
 }
 
+#[derive(Clone)]
 struct ViewTargets {
     uniform: wgpu::Buffer,
     visible: wgpu::Buffer,
@@ -277,6 +292,7 @@ struct ViewTargets {
 pub struct Renderer {
     scene_bind: wgpu::BindGroup,
     instance_buffer: wgpu::Buffer,
+    wind: crate::wind::WindRenderer,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
     far_grass: Option<crate::far_grass::FarGrassRenderer>,
@@ -284,6 +300,9 @@ pub struct Renderer {
     volume_view_layout: wgpu::BindGroupLayout,
     cull: wgpu::ComputePipeline,
     finalize: wgpu::ComputePipeline,
+    scatter: wgpu::ComputePipeline,
+    cluster_buckets: bool,
+    early_grass_cull: bool,
     raster: wgpu::RenderPipeline,
     raster_depth: wgpu::RenderPipeline,
     shade: wgpu::ComputePipeline,
@@ -318,6 +337,7 @@ pub struct Renderer {
     shadow_extent: std::sync::Mutex<f32>,
     near_shadows: std::sync::Mutex<Vec<NearShadow>>,
     shadow_capacity: u32,
+    cluster_views: std::sync::Mutex<Vec<ViewTargets>>,
 }
 
 fn storage(read_only: bool) -> wgpu::BindingType {
@@ -490,6 +510,8 @@ impl Renderer {
         let materials = buffer(gpu, "materials", bytemuck::cast_slice(&scene.materials), u);
         let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
         let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&crate::voxel_forest::replacement_materials(scene)), u);
+        let wind = crate::wind::WindRenderer::new(gpu, &instances, &voxel_replacement, scene.instances.len())
+            .expect("scene exceeds bounded wind storage");
         let albedo_src: Vec<Option<&image::RgbaImage>> = scene.textures.iter().map(|t| Some(&t.rgba)).collect();
         // Continuous alpha must average coverage naturally. Applying foliage's
         // threshold-preserving mip scale to glass/decals changes their opacity.
@@ -541,6 +563,7 @@ impl Renderer {
                 (9, tex_array),
                 (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (11, storage(true)),
+                (12, storage(true)),
             ],
         );
         let transparency = crate::transparency::Transparency::new(gpu, scene, &scene_layout);
@@ -566,10 +589,11 @@ impl Renderer {
                 (9, wgpu::BindingResource::TextureView(&normals_view)),
                 (10, wgpu::BindingResource::Sampler(&plant_samp)),
                 (11, voxel_replacement.as_entire_binding()),
+                (12, wind.buffer().as_entire_binding()),
             ],
         );
-        let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false))]);
-        let view_raster_layout = layout(gpu, "view raster", &[(0, uniform()), (1, storage(true))]);
+        let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false)), (4, storage(false))]);
+        let view_raster_layout = layout(gpu, "view raster", &[(0, uniform()), (1, storage(true)), (2, storage(true)), (3, storage(true))]);
         let shade_layout = layout(
             gpu,
             "shade",
@@ -616,9 +640,9 @@ impl Renderer {
             ],
         );
         let module = |name: &str, src: &str| gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(name), source: wgpu::ShaderSource::Wgsl(src.into()) });
-        let cull_mod = module("cull", include_str!("shaders/cull.wgsl"));
+        let cull_mod = module("cull", &cull_source());
         let raster_mod = module("raster", &crate::grass::raster_source());
-        let shade_mod = module("shade", include_str!("shaders/shade.wgsl"));
+        let shade_mod = module("shade", &crate::wind::shade_source());
         let tone_mod = module("tonemap", include_str!("shaders/tonemap.wgsl"));
         let pl = |layouts: &[&wgpu::BindGroupLayout]| {
             let l: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(|x| Some(*x)).collect();
@@ -635,15 +659,28 @@ impl Renderer {
             })
         };
         let cull_pl = pl(&[&scene_layout, &view_cull_layout]);
-        let cull = compute(&cull_pl, &cull_mod, "cull");
-        let finalize = compute(&cull_pl, &cull_mod, "finalize");
+        // Constructor-time switches permit same-binary ABBA comparisons with
+        // identical assets, LOD thresholds, lighting and camera inputs.
+        let cluster_buckets = std::env::var("KERN_CLUSTER_BUCKETS").as_deref() != Ok("0");
+        let early_grass_cull = std::env::var("KERN_EARLY_GRASS_CULL").as_deref() != Ok("0");
+        let cull_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64),
+                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64)];
+        let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64)];
+        let cull_compute = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(entry), layout: Some(&cull_pl), module: &cull_mod, entry_point: Some(entry),
+            compilation_options: wgpu::PipelineCompilationOptions { constants: &cull_constants, ..Default::default() },
+            cache: None,
+        });
+        let cull = cull_compute("cull");
+        let finalize = cull_compute("finalize");
+        let scatter = cull_compute("scatter");
         let raster_pl = pl(&[&scene_layout, &view_raster_layout]);
         let raster_pipe = |color: bool| {
             let targets = [Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })];
             gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(if color { "raster" } else { "raster depth" }),
                 layout: Some(&raster_pl),
-                vertex: wgpu::VertexState { module: &raster_mod, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                vertex: wgpu::VertexState { module: &raster_mod, entry_point: Some("vs"), compilation_options: wgpu::PipelineCompilationOptions { constants: &raster_constants, ..Default::default() }, buffers: &[] },
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
@@ -753,6 +790,7 @@ impl Renderer {
         Renderer {
             scene_bind,
             instance_buffer: instances,
+            wind,
             transparency,
             grass,
             far_grass,
@@ -760,6 +798,9 @@ impl Renderer {
             volume_view_layout,
             cull,
             finalize,
+            scatter,
+            cluster_buckets,
+            early_grass_cull,
             raster,
             raster_depth,
             shade,
@@ -793,28 +834,36 @@ impl Renderer {
             shadow_cache: Default::default(),
             shadow_extent: Default::default(),
             near_shadows: Default::default(),
+            cluster_views: Default::default(),
             // Upper bound: all clusters of all shadow-casting instances.
             shadow_capacity: scene.instances.iter().filter(|i| i.flags & crate::scene::NO_SHADOW == 0)
                 .map(|i| i.cluster_count as u64).sum::<u64>().clamp(1, MAX_VISIBLE as u64) as u32,
         }
     }
 
-    fn view_targets(&self, gpu: &Gpu, label: &str) -> ViewTargets {
-        self.view_targets_capacity(gpu, label, MAX_VISIBLE)
+    fn view_targets(&self, gpu: &Gpu, label: &str, index: usize) -> ViewTargets {
+        // These buffers depend on cluster capacity, not output resolution.
+        // Reuse them across frames/resizes; queue writes remain submission-ordered.
+        let mut views = self.cluster_views.lock().unwrap();
+        while views.len() <= index {
+            views.push(self.view_targets_capacity(gpu, label, MAX_VISIBLE));
+        }
+        views[index].clone()
     }
 
     fn view_targets_capacity(&self, gpu: &Gpu, label: &str, capacity: u32) -> ViewTargets {
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<ViewUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: capacity as u64 * 8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let args = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("args"), size: 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT, mapped_at_creation: false });
-        let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (3, args.as_entire_binding())]);
-        let raster_bind = bind(gpu, &self.view_raster_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding())]);
+        let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: 48, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let args = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("args"), size: 80, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT, mapped_at_creation: false });
+        let draw_map = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("bucket draw map"), size: capacity as u64 * 4, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
+        let cull_bind = bind(gpu, &self.view_cull_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, counter.as_entire_binding()), (3, args.as_entire_binding()), (4, draw_map.as_entire_binding())]);
+        let raster_bind = bind(gpu, &self.view_raster_layout, &[(0, uniform.as_entire_binding()), (1, visible.as_entire_binding()), (2, draw_map.as_entire_binding()), (3, args.as_entire_binding())]);
         ViewTargets { uniform, visible, counter, args, cull_bind, raster_bind }
     }
 
     fn cull_and_raster(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str) {
-        gpu.queue.write_buffer(&v.counter, 0, &[0u8; 16]);
+        gpu.queue.write_buffer(&v.counter, 0, &[0u8; 48]);
         let tw = |ts: &mut u32| {
             self.query.as_ref().map(|(qs, _, _)| {
                 let i = timestamp_pair(ts);
@@ -837,6 +886,12 @@ impl Renderer {
             pass.dispatch_workgroups(n.min(65535), n.div_ceil(65535), 1);
             pass.set_pipeline(&self.finalize);
             pass.dispatch_workgroups(1, 1, 1);
+            if self.cluster_buckets {
+                pass.set_pipeline(&self.scatter);
+                // Bounded persistent grid: no full-capacity empty scan, no
+                // CPU count readback and no storage/indirect buffer alias.
+                pass.dispatch_workgroups(256, 1, 1);
+            }
         }
         let t = tw(ts);
         if t.is_some() {
@@ -864,12 +919,22 @@ impl Renderer {
         pass.set_pipeline(if color.is_some() { &self.raster } else { &self.raster_depth });
         pass.set_bind_group(0, &self.scene_bind, &[]);
         pass.set_bind_group(1, &v.raster_bind, &[]);
-        pass.draw_indirect(&v.args, 0);
+        for bucket in 0..if self.cluster_buckets { 4 } else { 1 } {
+            pass.draw_indirect(&v.args, bucket * 16);
+        }
     }
 
     /// Forget the cached sun shadow map (something in the scene moved).
     pub fn invalidate_shadow(&self) {
         *self.shadow_cache.lock().unwrap() = None;
+    }
+
+    /// One world wind field for every camera, source mesh LOD and sun map.
+    /// This changes animation only; static canopy density is not rebuilt.
+    /// Call before rendering, using simulation time rather than frame count.
+    pub fn set_wind(&self, gpu: &Gpu, state: &crate::wind::WindState) -> Result<(), String> {
+        if self.wind.update(gpu, state)? { self.invalidate_shadow(); }
+        Ok(())
     }
 
     /// Forget TAA history: the next frame starts from scratch (a camera cut).
@@ -1006,10 +1071,10 @@ impl Renderer {
         let mut cache = self.shadow_cache.lock().unwrap();
         let reuse = cache.as_ref().is_some_and(|c| c.view_proj.abs_diff_eq(svp, 1e-6));
         if !reuse {
-            *cache = Some(ShadowCache { view_proj: svp, tex: tex2d("shadow", SHADOW_SIZE, SHADOW_SIZE, wgpu::TextureFormat::Depth32Float, rt), clusters: 0, triangles: 0 });
+            *cache = Some(ShadowCache { view_proj: svp, tex: tex2d("shadow", SHADOW_SIZE, SHADOW_SIZE, wgpu::TextureFormat::Depth32Float, rt), clusters: 0, triangles: 0, submitted_vertices: 0 });
         }
         let shadow_v = cache.as_ref().unwrap().tex.create_view(&Default::default());
-        let shadow_t = self.view_targets(gpu, "sun view");
+        let shadow_t = self.view_targets(gpu, "sun view", 0);
         gpu.queue.write_buffer(
             &shadow_t.uniform,
             0,
@@ -1036,6 +1101,13 @@ impl Renderer {
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         let mut ts = 0u32;
         let mut names = Vec::new();
+        // Compute once for the shared scene, before all camera and shadow
+        // passes. The same frozen state still updates recycled grass slots.
+        let wind_time = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+        if self.wind.encode(&mut enc, wind_time) && wind_time.is_some() {
+            timestamp_pair(&mut ts);
+            names.push("plant wind");
+        }
         let mut canopies = self.canopies.lock().unwrap();
         while canopies.len() < views.len() {
             let next = canopies[0].fork_view(gpu);
@@ -1117,7 +1189,7 @@ impl Renderer {
             let mut jittered = proj;
             jittered.z_axis.x += jx * 2.0 / w as f32;
             jittered.z_axis.y += jy * 2.0 / h as f32;
-            let main = self.view_targets(gpu, "view");
+            let main = self.view_targets(gpu, "view", vi + 1);
             let px_scale = proj.y_axis.y * 0.5 * h as f32;
             let vp = jittered * view_m;
             let mut main_uniform = view_uniform(vp, cam.pos, px_scale, [light.lod_pixels, cam.near, 0.0, MAX_VISIBLE as f32], [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32], cut);
@@ -1295,6 +1367,8 @@ impl Renderer {
         gpu.queue.submit([enc.finish()]);
         let pixels = if readback==Readback::ImageAndMetrics { gpu.read_rgba8(&ldr) } else { Vec::new() };
         let mut stats = FrameStats {
+            cluster_buckets: self.cluster_buckets,
+            early_grass_cull: self.early_grass_cull,
             canopy_updated_levels,
             canopy_pitch_m,
             ..Default::default()
@@ -1337,12 +1411,17 @@ impl Renderer {
             let sc = cache.as_mut().unwrap();
             if !reuse {
                 (sc.clusters, sc.triangles) = (c[0], c[1]);
+                sc.submitted_vertices = c[2];
             }
             stats.shadow_clusters = sc.clusters;
             stats.shadow_triangles = sc.triangles;
+            stats.shadow_submitted_vertices = if reuse { 0 } else { sc.submitted_vertices as u64 };
             for k in 0..views.len() {
+                assert!(c[4 * (k + 1)] <= MAX_VISIBLE, "main visible-cluster capacity exceeded");
                 stats.clusters += c[4 * (k + 1)];
                 stats.triangles += c[4 * (k + 1) + 1];
+                stats.submitted_vertices += c[4 * (k + 1) + 2] as u64;
+                stats.early_grass_rejects += c[4 * (k + 1) + 3] as u64;
             }
             if let Some(transparency) = &self.transparency {
                 stats.triangles += transparency.triangle_count() * views.len() as u32;
@@ -1352,6 +1431,7 @@ impl Renderer {
                 assert!(c[offset] <= self.shadow_capacity, "near shadow visible-cluster capacity exceeded");
                 stats.near_shadow_clusters += c[offset];
                 stats.near_shadow_triangles += c[offset + 1];
+                stats.shadow_submitted_vertices += c[offset + 2] as u64;
             }
             stats.shadow_clusters += stats.near_shadow_clusters;
             stats.shadow_triangles += stats.near_shadow_triangles;
@@ -1414,6 +1494,74 @@ impl ViewRect {
 mod layout_tests {
     use super::{split_rects, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};
     #[test]
+    fn bucket_indirect_encoding_preserves_every_original_triangle_id() {
+        let limits = [8u32, 32, 64, 128];
+        // Includes every boundary, empty lists and capacity-truncated lists.
+        let source: Vec<u32> = (1..=128).rev().chain([6, 8, 9, 32, 33, 64, 65, 128]).collect();
+        for capacity in [0usize, 1, 7, 64, source.len()] {
+            let visible = &source[..capacity];
+            let mut buckets = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            for (slot, &triangles) in visible.iter().enumerate() {
+                buckets[limits.iter().position(|&n| n >= triangles).unwrap()].push(slot as u32);
+            }
+            // Scatter order is deliberately reversed: original visibility IDs
+            // must survive arbitrary compute scheduling and bucket draw order.
+            for b in &mut buckets { b.reverse(); }
+            let map: Vec<_> = buckets.iter().flatten().copied().collect();
+            let mut first = 0;
+            let mut actual = Vec::new();
+            let mut submitted = 0;
+            for bucket in 0..4usize {
+                let first_vertex = bucket as u32 * 384;
+                for ii in 0..buckets[bucket].len() {
+                    for vertex in 0..limits[bucket] * 3 {
+                        let vi = first_vertex + vertex;
+                        assert_eq!((vi / 384) as usize, bucket);
+                        let slot = map[first + ii];
+                        let tri = (vi % 384) / 3;
+                        if tri < visible[slot as usize] && vertex % 3 == 0 {
+                            actual.push((slot << 7) | tri);
+                        }
+                    }
+                }
+                submitted += limits[bucket] as usize * 3 * buckets[bucket].len();
+                first += buckets[bucket].len();
+            }
+            let mut expected: Vec<_> = visible.iter().enumerate().flat_map(|(slot, &n)|
+                (0..n).map(move |tri| ((slot as u32) << 7) | tri)).collect();
+            actual.sort_unstable(); expected.sort_unstable();
+            assert_eq!(actual, expected);
+            assert!(submitted <= visible.len() * 384);
+            assert_eq!(map.len(), visible.len());
+        }
+        assert!((super::MAX_VISIBLE as u64) * 384 <= u32::MAX as u64);
+        assert!((super::MAX_VISIBLE as u64) * 384 * 4 > u32::MAX as u64);
+    }
+
+    #[test]
+    fn cull_and_raster_specialize_all_performance_switch_combinations() {
+        let cull = super::cull_source();
+        let raster = crate::grass::raster_source();
+        for (src, entries) in [(&cull, vec![(naga::ShaderStage::Compute, "cull"),
+            (naga::ShaderStage::Compute, "finalize"), (naga::ShaderStage::Compute, "scatter")]),
+            (&raster, vec![(naga::ShaderStage::Vertex, "vs")])] {
+            let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(src)));
+            let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+                .validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(src)));
+            for buckets in [0.0, 1.0] {
+                for early in [0.0, 1.0] {
+                    let mut constants = naga::back::PipelineConstants::default();
+                    constants.insert("CLUSTER_BUCKETS".into(), buckets);
+                    if entries.len() > 1 { constants.insert("EARLY_GRASS_CULL".into(), early); }
+                    for &entry in &entries {
+                        naga::back::pipeline_constants::process_overrides(&module, &info, Some(entry), &constants)
+                            .unwrap_or_else(|e| panic!("{entry:?}, buckets={buckets}, early={early}: {e}"));
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn godot_split_layout_uses_one_4k_output() {
         assert_eq!(split_rects(2,3840,2160),vec![(0,0,3840,1076),(0,1084,3840,1076)]);
         assert_eq!(split_rects(4,3840,2160),vec![(0,0,1916,1076),(1924,0,1916,1076),(0,1084,1916,1076),(1924,1084,1916,1076)]);
@@ -1425,12 +1573,12 @@ mod layout_tests {
 
     #[test]
     fn four_views_with_near_maps_voxels_grass_transparency_and_taa_fit_timestamp_budget() {
-        // Shared far map: 2 passes. Each view: canopy/filter, near cull/raster,
+        // Wind + shared far map: 3 passes. Each view: canopy/filter, near cull/raster,
         // main cull/raster, shade, voxel tiles/integrate/composite,
         // far grass, grass transition/composite, transparency, TAA, tonemap: 16 intervals.
         let mut next = 0;
-        for _ in 0..(2 + 4 * 16) { timestamp_pair(&mut next); }
-        assert_eq!(next, 132);
+        for _ in 0..(3 + 4 * 16) { timestamp_pair(&mut next); }
+        assert_eq!(next, 134);
         assert!(next <= TIMESTAMP_CAPACITY);
         next = TIMESTAMP_CAPACITY - 2;
         assert_eq!(timestamp_pair(&mut next), TIMESTAMP_CAPACITY - 2);

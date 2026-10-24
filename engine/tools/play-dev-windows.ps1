@@ -9,6 +9,11 @@ param(
     [ValidateRange(2, 8)][double]$Km = 3,
     [UInt64]$Seed = 1,
     [ValidateSet('clear', 'overcast', 'mist', 'wet')][string]$Weather = 'clear',
+    [ValidateSet('spring', 'summer', 'autumn', 'winter')][string]$Season = 'summer',
+    [ValidateRange(0, 1)][double]$Growth = 1,
+    [ValidateRange(0, 1)][double]$Wind = 0.3,
+    [Nullable[double]]$WindTime,
+    [Nullable[UInt64]]$VegetationSeed,
     [switch]$Autoplay,
     [switch]$Windowed,
     [ValidateRange(10, 600)][int]$StartupTimeoutSeconds = 180
@@ -42,6 +47,12 @@ try {
         throw 'Size must be within 64x64..7680x4320.'
     }
     if ([double]::IsNaN($Km) -or [double]::IsInfinity($Km)) { throw 'Km must be finite.' }
+    foreach ($value in @($Growth, $Wind)) {
+        if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { throw 'Growth and Wind must be finite.' }
+    }
+    if ($null -ne $WindTime -and ([double]::IsNaN($WindTime) -or [double]::IsInfinity($WindTime) -or $WindTime -lt 0)) {
+        throw 'WindTime must be finite and nonnegative.'
+    }
     if (-not $BuildOnly -and (@('GAMENIGHT', 'GAMENIGHT_ADDR', 'GAMENIGHT_GAME_ID', 'GAMENIGHT_TOKEN') | Where-Object { [Environment]::GetEnvironmentVariable($_) })) {
         throw 'This helper is for standalone play. Launch managed sessions through GameNight; no host credentials are recorded.'
     }
@@ -63,7 +74,11 @@ try {
     $playOut = Join-Path $directory 'play.stdout.log'
     $playError = Join-Path $directory 'play.stderr.log'
     $arguments = @('play', '--views', "$Views", '--size', $Size, '--seed', "$Seed", '--km', $Km.ToString([Globalization.CultureInfo]::InvariantCulture), '--weather', $Weather,
+        '--season', $Season, '--growth', $Growth.ToString([Globalization.CultureInfo]::InvariantCulture),
+        '--wind', $Wind.ToString([Globalization.CultureInfo]::InvariantCulture),
         '--state-out', (Join-Path $directory 'final-state.json'))
+    if ($null -ne $WindTime) { $arguments += @('--wind-time', $WindTime.ToString([Globalization.CultureInfo]::InvariantCulture)) }
+    if ($null -ne $VegetationSeed) { $arguments += @('--vegetation-seed', "$VegetationSeed") }
     if (-not $Windowed) { $arguments += '--fullscreen' }
     if ($Autoplay) { $arguments += '--autoplay' }
     $sourceRevision = $null
@@ -75,7 +90,7 @@ try {
         if ($LASTEXITCODE -eq 0) { $sourceDirty = [bool]$dirty }
     }
     $graphics = @{}
-    foreach ($key in @('KERN_ADAPTER', 'SIDEWAYS_LIVE_GRASS', 'SIDEWAYS_FAR_GRASS', 'SIDEWAYS_VOXEL_TREE_PATCH', 'SIDEWAYS_PROCEDURAL_ROCKS', 'SIDEWAYS_GENERIC_VOXEL_TREES')) {
+    foreach ($key in @('KERN_ADAPTER', 'KERN_CLUSTER_BUCKETS', 'KERN_EARLY_GRASS_CULL', 'SIDEWAYS_LIVE_GRASS', 'SIDEWAYS_FAR_GRASS', 'SIDEWAYS_VOXEL_TREE_PATCH', 'SIDEWAYS_PROCEDURAL_ROCKS', 'SIDEWAYS_GENERIC_VOXEL_TREES')) {
         $value = [Environment]::GetEnvironmentVariable($key)
         if ($null -ne $value) { $graphics[$key] = $value }
     }

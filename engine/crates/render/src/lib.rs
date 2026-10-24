@@ -18,6 +18,7 @@ pub mod scene;
 pub mod foliage_voxel;
 pub mod foliage_volume_data;
 pub mod voxel_forest;
+pub mod wind;
 mod stability;
 mod transparency;
 mod volume_view;
@@ -83,10 +84,13 @@ mod shader_tests {
     #[test]
     fn shaders_validate() {
         let raster=crate::grass::raster_source();
+        let cull=crate::frame::cull_source();
+        let shade=crate::wind::shade_source();
         let shaders = [
-            ("cull", include_str!("shaders/cull.wgsl")),
+            ("cull", cull.as_str()),
             ("raster", raster.as_str()),
-            ("shade", include_str!("shaders/shade.wgsl")),
+            ("shade", shade.as_str()),
+            ("wind", include_str!("shaders/wind.wgsl")),
             ("tonemap", include_str!("shaders/tonemap.wgsl")),
             ("foliage", include_str!("shaders/foliage.wgsl")),
             ("density_filter", include_str!("shaders/density_filter.wgsl")),

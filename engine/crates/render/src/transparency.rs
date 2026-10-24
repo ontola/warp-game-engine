@@ -54,7 +54,7 @@ pub(crate) struct Transparency {
 pub(crate) fn shader_source() -> String {
     format!(
         "{}\n{}",
-        include_str!("shaders/shade.wgsl"),
+        crate::wind::shade_source(),
         include_str!("shaders/transparency.wgsl")
     )
 }

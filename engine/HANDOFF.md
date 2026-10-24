@@ -26,7 +26,9 @@ GPU branch deformation should animate both. Wind phase must be separate from
 structural changes to a tree; do not rebuild every cached canopy volume for
 every moving leaf. Evaluate conservative motion bounds, sampling a deformed
 rest-density field and infrequent shadow updates against actual error/cost.
-This is a design constraint, not implemented procedural growth or wind.
+The r14 first implementation below now supplies shared GPU whole-plant wind
+and stage-authored growth/season profiles. Branch structure, biological growth,
+seasonal terrain, animated density and per-leaf motion remain future work.
 
 The immediate visual priority is grass pop-in around 100 m, using a cheap
 terrain-following density volume and continuous near/far blending. Source
@@ -52,7 +54,55 @@ GI. Keep the loops short and measured (README, "The iteration loops").
 - Show actual pictures and honest limitations. Compare current Kern variants;
   Joep explicitly ended Godot comparisons on 23 October.
 
-## Windows continuation, 2026-10-24
+## Windows continuation r14, 2026-10-24
+
+Current graphics executable: `C:/dev/perf/warp-sideways-20261024/r14/sideways-r14a.exe`,
+SHA256 `2f9f4ef830df9b8d630e90da7c943000bb2a321f0b88f28731140c7e58ddf7a3`.
+The previous r13 binaries/evidence remain intact. User asked to optimize the
+budget and work on wind, growth and seasons. No Godot comparison is required.
+
+Geometry work is now bucketed into 8/32/64/128-triangle indirect draws. Original
+visibility IDs and LOD policy are retained; live grass rejected by the existing
+opaque fade is culled before drawing. Per-camera cluster buffers persist.
+`KERN_CLUSTER_BUCKETS=0` and `KERN_EARLY_GRASS_CULL=0` are constructor-time A/B
+switches. Per-frame metrics distinguish actual submitted vertices from retained
+shadow geometry. Buckets require up to 16 MiB additional mapping storage per
+view/map (144 MiB upper bound for four main + four near + one shared sun map).
+
+Native 4K/four-player ABBA, 80 measured route frames per run after 20 warmup:
+GPU scene-pass mean 39.4352 -> 34.4169 ms (12.73% less), raster 19.5981 -> 13.3308 ms.
+Sorting raises cull cost; the net improvement includes it. Exact car/camera
+traces match. Final captures differ in one pixel by at most 5 RGB8 levels, also
+seen between repeated baseline runs. This is bounded route evidence, not full
+gameplay FPS or proof over all routes. 120 FPS remains unmet.
+
+`render::wind::WindState` + `Renderer::set_wind` drive a single compute field
+shared across source geometry, every camera/LOD and depth shadows. Roots stay
+fixed; normals and CLOD bounds account for the shear. This is whole-plant sway,
+not skeletal branch animation. Canopy/far-grass densities remain mean rest-pose
+fields and experimental packed voxel-tree owners stay static. Wind does not
+invalidate the canopy; source sun shadows update with changed wind. The GPU
+differential fixture matches CPU-baked geometry and direct shadows exactly.
+Separate four-view wind ABBA: 34.4684 -> 34.6230 ms at strength 0.3, +0.1546 ms;
+the shared compute itself is 0.0238 ms. Not an isolated total GPU-clock claim.
+
+`--season spring|summer|autumn|winter --growth 0..1 --vegetation-seed N`
+select a stage phenotype. Shared native tree Spots keep colliders aligned;
+near/far grass use the same stature and tint. Pines stay evergreen. Growth is
+authored juvenile-to-mature scale, not procedural branch generation; terrain
+does not yet recolor with seasons, and there is no snow. Summer/growth 1 keeps
+the prior geometry. CLI play/shot now default to gentle `--wind 0.3`; engine
+and existing gpu-run jobs default to zero. `--wind-time SECONDS` freezes phase.
+`--gpu-profile NEW.jsonl --gpu-warmup N` records per-frame route/GPU evidence;
+it synchronizes for readback and excludes HUD/presentation/CPU from pass sums.
+
+Use `tools/play-dev-windows.ps1 -Restart -Autoplay` for the visible remote demo.
+It accepts `-Season`, `-Growth`, `-Wind`, `-WindTime` and `-VegetationSeed`, and
+records the options in its staged run manifest. Keep far grass enabled and
+experimental voxel crowns disabled. Stop the owned demo before GPU tests.
+Full evidence and remaining limitations are in WINDOWS_VALIDATION.md.
+
+## Previous Windows continuation r13, 2026-10-24
 
 Latest r13c build SHA256:
 `c8092e3def8f464949cc6fc10738e1ae9828604a4f1a46bd388aa96212851565`.

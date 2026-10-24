@@ -556,9 +556,11 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var k = 0u; k < 3u; k++) {
         vi[k] = vtx(cluster_verts[cl.first_vert + ((packed >> (8u * k)) & 0xffu)]);
     }
-    let p0 = xform(inst, pos_of(vi[0]));
-    let p1 = xform(inst, pos_of(vi[1]));
-    let p2 = xform(inst, pos_of(vi[2]));
+    // Match the actual deformed raster triangle before ray intersection and
+    // texture derivatives. Rest-pose reconstruction would slide UVs and light.
+    let p0 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[0])));
+    let p1 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[1])));
+    let p2 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[2])));
     // Ray-triangle intersection for perspective-correct barycentrics.
     let e1 = p1 - p0;
     let e2 = p2 - p0;
@@ -579,7 +581,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         n += vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]) * w[k];
         uv += vec2<f32>(vertices[v + 6u], vertices[v + 7u]) * w[k];
     }
-    n = normalize(xform_dir(inst, n));
+    n = normalize(wind_normal(vis.x, xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
     let m = materials[cl.material];
     // Two-sided cards and backfaces face the viewer.
