@@ -56,7 +56,7 @@ impl Sound {
             .enumerate()
             .map(|(i, p)| {
                 let model = if mode == Mode::Fluid && i < listeners { Model::Fluid } else { Model::Pulse };
-                sounds.get(crate::sound::sound_id(&p.car)).map(|s| (s, model))
+                sounds.for_car(crate::sound::sound_id(&p.car)).map(|s| (s, model))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let (mut mix, feeder) = LiveMix::start(cars, sr);

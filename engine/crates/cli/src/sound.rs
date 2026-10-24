@@ -106,7 +106,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         for p in &race.players {
             // The listener's own car gets `--model`; the others the pulse model.
             let m = if mixer.cars.len() == listen { model } else { audio::Model::Pulse };
-            mixer.add_car_model(sounds.get(sound_id(&p.car))?, mixer.cars.len() as u32 + 1, m);
+            mixer.add_car_model(sounds.for_car(sound_id(&p.car))?, mixer.cars.len() as u32 + 1, m);
         }
         firing = mixer.cars[listen].engine.firing_hz(1.0);
         let mut buf = vec![0.0; block * 2];
