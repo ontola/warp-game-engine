@@ -197,6 +197,16 @@ impl Car {
         self.engine_omega * RPM
     }
 
+    /// Net engine torque (Nm) of the last substep: combustion minus friction.
+    pub fn engine_torque(&self) -> f64 {
+        self.engine_torque
+    }
+
+    /// Ignition cut: mid-shift, or on the limiter.
+    pub fn cut(&self) -> bool {
+        self.shift_timer > 0.0 || self.rpm() > self.spec.limit_rpm
+    }
+
     pub fn pose(&self, phys: &Physics) -> Pose3 {
         *phys.world.bodies[self.body].position()
     }
