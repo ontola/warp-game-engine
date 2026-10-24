@@ -5,6 +5,11 @@
 # Models are merged over [base], key by key, like cars.toml (a model's
 # [synth] table replaces the base one; missing keys take the defaults).
 
+# Every car in play and `sideways sound --race` gets this engine: the
+# engine-sim reference (Subaru EJ 3, [models.ej3] below). Empty: each car
+# its own model.
+every_car = "ej3"
+
 # A Rally2-like 1.6 l turbo inline four.
 [base]
 name = "Rally2 inline 4 turbo"
