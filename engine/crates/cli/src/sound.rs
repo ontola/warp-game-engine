@@ -145,13 +145,34 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         mixer.add_car_model(sounds.get(&id)?, 1, model);
         firing = mixer.cars[0].engine.firing_hz(1.0);
         let sweep: Vec<f32> = opt(args, "--sweep", "1000:7400").split(':').map(|x| x.parse().unwrap()).collect();
-        let seconds: f32 = opt(args, "--seconds", "6").parse().unwrap();
+        let mut seconds: f32 = opt(args, "--seconds", "6").parse().unwrap();
         let throttle: f32 = opt(args, "--throttle", "1").parse().unwrap();
+        // --controls file.json: [[t, rpm, throttle], ...] (e.g. read off a
+        // reference recording); interpolated, rpm 0/null is the engine off.
+        let controls: Vec<[f32; 3]> = match args.iter().position(|a| a == "--controls") {
+            Some(i) => {
+                let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&args[i + 1]).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                v.as_array().ok_or("controls: expected an array")?.iter().map(|r| [r[0].as_f64().unwrap_or(0.0) as f32, r[1].as_f64().unwrap_or(0.0) as f32, r[2].as_f64().unwrap_or(0.0) as f32]).collect()
+            }
+            None => Vec::new(),
+        };
+        if let Some(last) = controls.last() {
+            seconds = last[0];
+        }
         let blocks = (seconds * 120.0) as usize;
         let mut buf = vec![0.0; block * 2];
         for b in 0..blocks {
             let x = b as f32 / blocks.max(1) as f32;
-            let rpm = sweep[0] + (sweep[sweep.len() - 1] - sweep[0]) * x;
+            let mut rpm = sweep[0] + (sweep[sweep.len() - 1] - sweep[0]) * x;
+            let mut throttle = throttle;
+            if !controls.is_empty() {
+                let t = b as f32 / 120.0;
+                let k = controls.partition_point(|c| c[0] <= t).clamp(1, controls.len() - 1);
+                let (c0, c1) = (controls[k - 1], controls[k]);
+                let f = ((t - c0[0]) / (c1[0] - c0[0]).max(1e-6)).clamp(0.0, 1.0);
+                rpm = c0[1] + (c1[1] - c0[1]) * f;
+                throttle = c0[2] + (c1[2] - c0[2]) * f;
+            }
             let car = &mut mixer.cars[0];
             car.controls = Controls { rpm, throttle, load: throttle * 0.9, cut: false, gear: 3, speed: rpm / 7600.0 * 40.0 };
             car.place = audio::Placement { gain: 1.0, pan: 0.0, air_hz: 18_000.0, doppler: 1.0 };

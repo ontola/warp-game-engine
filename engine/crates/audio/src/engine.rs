@@ -43,6 +43,13 @@ pub struct EngineSound {
     pub pipe: f32,
     /// Cycle-to-cycle combustion variation at idle and at the limiter.
     pub roughness: [f32; 2],
+    /// engine-sim's per-cylinder sound_attenuation (1 when absent).
+    #[serde(default)]
+    pub attenuation: Vec<f32>,
+    /// Low-pass (Hz) on each runner's pressure, standing in for the
+    /// smoothing of engine-sim's 0D runner volume; 0 is off.
+    #[serde(default)]
+    pub runner_cutoff: f32,
     pub turbo: bool,
     /// Whistle pitch (Hz) at no boost and at full boost.
     pub whistle: [f32; 2],
@@ -105,6 +112,7 @@ struct Cylinder {
     delay: f32,
     /// engine-sim's 1 / length^2, normalised to the mean length.
     weight: f32,
+    smooth: Option<Biquad>,
 }
 
 pub struct EngineVoice {
@@ -149,12 +157,13 @@ impl EngineVoice {
             phase_of[(c.max(1) - 1).min(n - 1)] = angle;
             angle += gaps[k];
         }
+        let cutoff = if model == Model::Fluid && spec.fluid.runner_cutoff > 0.0 { spec.fluid.runner_cutoff } else { spec.runner_cutoff };
         let total = |i: usize| spec.headers.get(i).copied().unwrap_or(0.5) + spec.pipe;
         let mean = (0..n).map(total).sum::<f32>() / n as f32;
         let cyl = (0..n)
             .map(|i| {
                 let delay = total(i) / C_SOUND * sr;
-                Cylinder { phase: phase_of[i], last: 0.0, amp: 0.0, header: Delay::new(delay as usize + 4), delay, weight: (mean / total(i)).powi(2) }
+                Cylinder { phase: phase_of[i], last: 0.0, amp: 0.0, header: Delay::new(delay as usize + 4), delay, weight: (mean / total(i)).powi(2) * spec.attenuation.get(i).copied().unwrap_or(1.0), smooth: (cutoff > 0.0).then(|| Biquad::new(Kind::LowPass, cutoff, 0.707, sr)) }
             })
             .collect();
         let fluid = (model == Model::Fluid).then(|| FluidEngine::new(spec.fluid.clone(), &phase_of, &spec.headers, spec.pipe, sr, seed));
@@ -281,7 +290,11 @@ impl EngineVoice {
             // (engine-sim: at 343 m/s, weighted 1 / length^2).
             let mut collector = 0.0;
             for (c, p) in self.cyl.iter_mut().zip(&pulses) {
-                c.header.write(*p);
+                let p = match c.smooth.as_mut() {
+                    Some(f) => f.run(*p),
+                    None => *p,
+                };
+                c.header.write(p);
                 collector += c.header.read(c.delay) * c.weight;
             }
             // Overrun crackle: a burst through the same exhaust.

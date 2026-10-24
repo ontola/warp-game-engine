@@ -378,11 +378,12 @@ impl Synth {
         let x = self.antialias_in.run(pressure * p.input_scale);
         let j = self.jitter.run(x, p.jitter, &mut self.rng);
         let f = j - self.dc.run(j);
-        let d = (j - self.prev) * self.sr / 44_100.0; // per 44.1 kHz sample, as tuned there
+        // engine-sim's DerivativeFilter: per second, not per sample.
+        let d = (j - self.prev) * self.sr;
         self.prev = j;
         let r = self.air.run(self.rng.white());
         let mixed = p.noise * r + (1.0 - p.noise);
-        let v_in = d * p.hf_gain * 441.0 + f * mixed * (1.0 - p.hf_gain);
+        let v_in = d * p.hf_gain + f * mixed * (1.0 - p.hf_gain);
         let v = match self.conv.as_mut() {
             Some(c) => p.convolution * c.run(v_in) + (1.0 - p.convolution) * v_in,
             None => v_in,
