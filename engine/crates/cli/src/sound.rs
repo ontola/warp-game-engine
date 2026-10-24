@@ -82,6 +82,9 @@ fn run_inner(args: &[String]) -> Result<(), String> {
     let sr = SAMPLE_RATE;
     let block = (sr / 120.0) as usize; // one physics tick
     let mut mixer = Mixer::new(sr);
+    if args.iter().any(|a| a == "--no-tyres") {
+        mixer.tyres = 0.0;
+    }
     let mut stereo = Vec::new();
     let mut watch_rpm = Vec::new(); // per block, for the spectrogram overlay
     let t0 = std::time::Instant::now();
@@ -160,6 +163,8 @@ fn run_inner(args: &[String]) -> Result<(), String> {
             seconds = last[0];
         }
         let blocks = (seconds * 120.0) as usize;
+        let speed_pin: Option<f32> = args.iter().position(|a| a == "--speed").map(|i| args[i + 1].parse().unwrap());
+        let gear_pin: Option<i32> = args.iter().position(|a| a == "--gear").map(|i| args[i + 1].parse().unwrap());
         let mut buf = vec![0.0; block * 2];
         for b in 0..blocks {
             let x = b as f32 / blocks.max(1) as f32;
@@ -174,7 +179,9 @@ fn run_inner(args: &[String]) -> Result<(), String> {
                 throttle = c0[2] + (c1[2] - c0[2]) * f;
             }
             let car = &mut mixer.cars[0];
-            car.controls = Controls { rpm, throttle, load: throttle * 0.9, cut: false, gear: 3, speed: rpm / 7600.0 * 40.0 };
+            // --speed and --gear pin the road state (e.g. standing still).
+            let speed = speed_pin.unwrap_or(rpm / 7600.0 * 40.0);
+            car.controls = Controls { rpm, throttle, load: throttle * 0.9, cut: false, gear: gear_pin.unwrap_or(3), speed };
             car.place = audio::Placement { gain: 1.0, pan: 0.0, air_hz: 18_000.0, doppler: 1.0 };
             mixer.render(&mut buf);
             stereo.extend_from_slice(&buf);

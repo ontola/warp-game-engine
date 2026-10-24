@@ -284,7 +284,9 @@ impl Default for SynthParams {
             noise_cutoff: 2000.0,
             jitter: 0.5,
             level: 0.9,
-            max_gain: 1.9,
+            // engine-sim allows 1.9; a game wants idle quieter than full
+            // throttle, so the leveler only ever turns down.
+            max_gain: 1.0,
             input_scale: 20.0,
         }
     }
