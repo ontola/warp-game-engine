@@ -43,6 +43,11 @@ pub struct EngineSound {
     pub pipe: f32,
     /// Cycle-to-cycle combustion variation at idle and at the limiter.
     pub roughness: [f32; 2],
+    /// Flow noise riding on each blowdown pulse, as a share of the pulse.
+    /// The synth's derivative path lifts it by 6 dB per octave, so a little
+    /// already reads as hiss.
+    #[serde(default)]
+    pub turbulence: f32,
     /// engine-sim's per-cylinder sound_attenuation (1 when absent).
     #[serde(default)]
     pub attenuation: Vec<f32>,
@@ -270,7 +275,7 @@ impl EngineVoice {
                     let x = (a - EVO) / EXHAUST_LEN;
                     let env = (-x * 7.0).exp();
                     p = c.amp * ((1.0 - (-x * 40.0).exp()) * env + 0.12 * (x * std::f32::consts::PI).sin());
-                    p += c.amp * 0.22 * env * self.noise.white();
+                    p += c.amp * self.spec.turbulence * env * self.noise.white();
                 }
                 if a >= IVO && a < IVO + INTAKE_LEN {
                     intake_env += ((a - IVO) / INTAKE_LEN * std::f32::consts::PI).sin();
