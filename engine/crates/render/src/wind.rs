@@ -170,9 +170,12 @@ impl WindRenderer {
     }
 }
 
-pub(crate) fn common_source() -> &'static str { include_str!("shaders/wind_common.wgsl") }
+pub(crate) fn common_source() -> String { crate::shaders::source("wind_common.wgsl") }
+/// The lighting helpers and the shade entry point, with the car materials.
+/// Read from `KERN_SHADER_DIR` when it is set (see shaders.rs).
 pub(crate) fn shade_source() -> String {
-    format!("{}\n{}", common_source(), include_str!("shaders/shade.wgsl"))
+    let s = crate::shaders::source;
+    format!("{}\n{}\n{}", s("wind_common.wgsl"), s("shade.wgsl"), s("car_material.wgsl"))
 }
 
 #[cfg(test)]

@@ -3,6 +3,9 @@
 //! No window, input, physics, host connection or running-game process is used.
 
 #[allow(dead_code)]
+#[path = "../src/car_look.rs"]
+mod car_look;
+#[allow(dead_code)]
 #[path = "../src/car_model.rs"]
 mod car_model;
 
@@ -258,10 +261,16 @@ fn run(a: Args) -> Result<(), String> {
                 .strip_prefix("res://")
                 .ok_or("fixture car must be a local model")?,
         );
+        // Clean gloss paint: lighting regressions, not material wear.
+        let clean = ["paint=gloss", "chips=0", "scratches=0", "swirls=0", "fade=0", "dust=0", "mud=0", "rust=0"];
+        let looks = car_look::Looks::load(None, clean.map(String::from).to_vec())?;
         let meshes = car_model::load(
             &mut scene,
             &model,
+            0,
             [0.19, 0.035, 0.025],
+            &looks,
+            &mut Vec::new(),
             &mut HashMap::new(),
         )?;
         let wheels: Vec<_> = (0..2)

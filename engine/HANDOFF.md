@@ -16,7 +16,15 @@ real needs. Current work shares typed volume-view bindings between voxel
 trees and distant grass, and adds a staged Windows build/restart workflow.
 F12 developer captures include same-frame scene GPU metrics. Do not claim
 token savings or runtime speed gains without measurements. Shader hot reload
-and broader frame-resource reuse are still future work.
+exists for the shading chain only (shade, car_material, transparency,
+wind_common: `KERN_SHADER_DIR`, `shot --watch`, live in `play`); the other
+shaders and broader frame-resource reuse are still future work.
+
+Car materials (branch `car-materials`, README "Car materials"): procedural
+paint (solid, metallic, pearl, candy), wear and grime in
+`shaders/car_material.wgsl`, parameters in `data/car_materials.toml`,
+reloaded live. Tuned only on lavapipe in the cloud container: check flake
+sparkle, swirl arcs and the paint's brightness under TAA on the real GPU.
 
 Joep also wants future GPU wind animation at every foliage distance, and
 procedural trees parameterized by growth and season. Preserve one source of
