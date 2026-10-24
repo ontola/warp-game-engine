@@ -10,7 +10,7 @@ struct VolumeTree {
     inverse: array<vec4<f32>,3>,
     bounds_min: vec4<f32>, bounds_max: vec4<f32>, identity: vec4<u32>,
 };
-struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32> };
+struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u32> };
 @group(2) @binding(0) var<storage,read> volume_levels: array<VolumeLevel>;
 @group(2) @binding(1) var<storage,read> volume_indices: array<u32>;
 @group(2) @binding(2) var<storage,read> volume_cells: array<VolumeCell>;
@@ -19,13 +19,18 @@ struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32> };
 @group(2) @binding(5) var<storage,read_write> volume_stats: array<atomic<u32>>;
 @group(2) @binding(6) var volume_output: texture_storage_2d<rgba16float,write>;
 @group(2) @binding(7) var<uniform> volume_config: VolumeConfig;
+@group(2) @binding(8) var<storage,read_write> volume_jobs: array<atomic<u32>>;
+@group(2) @binding(9) var<uniform> volume_selection: array<vec4<u32>,256>;
 
 const VOLUME_TILE: u32 = 16u;
 const VOLUME_CANDIDATES: u32 = 64u;
 const VOLUME_MAX_STEPS: u32 = 4096u;
 const VOLUME_ACTIVE: u32 = 16u;
+// Portable minimum workgroup-count limit. Four 8x8 groups cover a 16x16 tile.
+const VOLUME_JOB_ROW: u32 = 65535u;
 
-// One invocation owns one tile; no order-dependent append or counter reset.
+// One invocation owns one tile; its candidate ordering is deterministic.
+// Optional job append order affects scheduling only, never pixel integration.
 // Near-plane intersections conservatively cover the whole screen.
 @compute @workgroup_size(8,8)
 fn voxel_tiles(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -36,6 +41,7 @@ fn voxel_tiles(@builtin(global_invocation_id) id: vec3<u32>) {
     let tile_hi=tile_lo+vec2<f32>(16.0);
     var count=0u;
     for(var i=0u;i<volume_config.size_count.w;i++) {
+        if volume_selection[i].x==0u {continue;}
         let tree=volume_trees[i];
         var lo=vec2<f32>(1e30);
         var hi=vec2<f32>(-1e30);
@@ -61,6 +67,19 @@ fn voxel_tiles(@builtin(global_invocation_id) id: vec3<u32>) {
     volume_tiles[start]=count;
     atomicMax(&volume_stats[4],count);
     if count>VOLUME_CANDIDATES {atomicAdd(&volume_stats[0],1u);}
+    if count>0u && volume_config.dispatch.x!=0u {
+        let job=atomicAdd(&volume_jobs[3],1u);
+        atomicStore(&volume_jobs[4u+job],id.y*tile_dims.x+id.x);
+        atomicMax(&volume_jobs[0],min(job+1u,VOLUME_JOB_ROW));
+        atomicMax(&volume_jobs[1],4u*(job/VOLUME_JOB_ROW+1u));
+        atomicStore(&volume_jobs[2],1u);
+    }
+}
+
+@compute @workgroup_size(8,8)
+fn voxel_clear(@builtin(global_invocation_id) id:vec3<u32>) {
+    if any(id.xy>=volume_config.size_count.xy) {return;}
+    textureStore(volume_output,vec2<i32>(id.xy),vec4<f32>(0.0));
 }
 
 fn volume_interval(tree:VolumeTree,origin:vec3<f32>,direction:vec3<f32>,limit:f32)->vec2<f32> {
@@ -98,10 +117,8 @@ fn volume_sigma(cell:VolumeCell,d:VolumeDirection)->f32 {
     for(var k=0u;k<3u;k++) {let i=d.indices[k];value+=cell.extinction[i/4u][i%4u]*d.weights[k];}
     return max(value,0.0);
 }
-struct VolumeSample { sigma:f32,albedo:vec3<f32>,roughness:f32,normals:array<f32,6> };
-fn volume_sample_local(tree:VolumeTree,local:vec3<f32>,direction:VolumeDirection)->VolumeSample {
-    // First packed level is explicit in the fixture; no hidden LOD switch.
-    let level=volume_levels[tree.identity.y];
+struct VolumeSample { sigma:f32,albedo:vec3<f32>,roughness:f32,leaf_fraction:f32,normals:array<f32,6> };
+fn volume_sample_level(level:VolumeLevel,local:vec3<f32>,direction:VolumeDirection)->VolumeSample {
     let grid=(local-level.origin_cell.xyz)/level.origin_cell.w-0.5;
     let base=vec3<i32>(floor(grid));
     let fraction=fract(grid);
@@ -120,13 +137,36 @@ fn volume_sample_local(tree:VolumeTree,local:vec3<f32>,direction:VolumeDirection
         result.sigma+=sigma;
         result.albedo+=cell.albedo_rough.rgb*sigma;
         result.roughness+=cell.albedo_rough.a*sigma;
+        result.leaf_fraction+=cell.normals[1].z*sigma;
         for(var k=0u;k<6u;k++) {result.normals[k]+=cell.normals[k/4u][k%4u]*sigma;}
     }
     if result.sigma>0.0 {
         result.albedo/=result.sigma; result.roughness/=result.sigma;
+        result.leaf_fraction/=result.sigma;
         for(var k=0u;k<6u;k++) {result.normals[k]/=result.sigma;}
     }
     return result;
+}
+
+// Reconstruct extinction and extinction-weighted material moments, not
+// opacity or straight colour. An empty coarse cell must not darken a fine
+// cell's material, and opposing normal lobes must not cancel to a flat normal.
+fn volume_sample_local(tree:VolumeTree,local:vec3<f32>,direction:VolumeDirection,lod:f32)->VolumeSample {
+    let lower=u32(floor(lod));
+    var a=volume_sample_level(volume_levels[tree.identity.y+lower],local,direction);
+    let blend=fract(lod);
+    if blend<=0.0 || lower+1u>=tree.identity.z {return a;}
+    let b=volume_sample_level(volume_levels[tree.identity.y+lower+1u],local,direction);
+    let wa=a.sigma*(1.0-blend);let wb=b.sigma*blend;
+    let sigma=wa+wb;
+    if sigma>0.0 {
+        a.albedo=(a.albedo*wa+b.albedo*wb)/sigma;
+        a.roughness=(a.roughness*wa+b.roughness*wb)/sigma;
+        a.leaf_fraction=(a.leaf_fraction*wa+b.leaf_fraction*wb)/sigma;
+        for(var k=0u;k<6u;k++) {a.normals[k]=(a.normals[k]*wa+b.normals[k]*wb)/sigma;}
+    }
+    a.sigma=sigma;
+    return a;
 }
 
 // At most 64 actual ray intersections, rather than 64 projected tile boxes.
@@ -138,8 +178,36 @@ struct VolumeRay {
     weights:vec3<f32>,identity:u32,
     // End of current reconstruction brick, and whether all its fine support
     // is empty. Cached until the ray crosses that boundary.
-    brick:vec2<f32>,padding:vec2<f32>,
+    brick:vec2<f32>,
+    // x: conservative finest-cell projected diameter * ray distance.
+    // y: half finest-cell size divided by this ray's current inverse stretch.
+    // z: finest-cell bounding radius / forward ray cosine, for conservative
+    // finite-cell perspective support (not just its centre Jacobian).
+    lod_step:vec4<f32>,
 };
+fn volume_projected_cell(tree:VolumeTree,direction:vec3<f32>)->vec2<f32> {
+    let owner=instances[tree.identity.x];
+    let r0=owner.r0.xyz;let r1=owner.r1.xyz;let r2=owner.r2.xyz;
+    let frobenius=sqrt(dot(r0,r0)+dot(r1,r1)+dot(r2,r2));
+    let norm_inf=max(dot(abs(r0),vec3<f32>(1.0)),max(dot(abs(r1),vec3<f32>(1.0)),dot(abs(r2),vec3<f32>(1.0))));
+    let sums=abs(r0)+abs(r1)+abs(r2);
+    let norm_one=max(sums.x,max(sums.y,sums.z));
+    let stretch=min(frobenius,sqrt(norm_inf*norm_one));
+    // Perspective Jacobian evaluated along this ray. Including the off-axis
+    // -ndc*row_w term prevents corners of a wide-FOV view selecting too coarse
+    // a mip. Frobenius bounds its largest singular value; sqrt(3) bounds the
+    // diameter of one local cubic cell under arbitrary rotation and shear.
+    let row_w=vec3<f32>(view.view_proj[0].w,view.view_proj[1].w,view.view_proj[2].w);
+    let row_x=vec3<f32>(view.view_proj[0].x,view.view_proj[1].x,view.view_proj[2].x);
+    let row_y=vec3<f32>(view.view_proj[0].y,view.view_proj[1].y,view.view_proj[2].y);
+    let depth_rate=max(dot(row_w,direction),1e-6);
+    let ndc=vec2<f32>(dot(row_x,direction),dot(row_y,direction))/depth_rate;
+    let jx=(row_x-ndc.x*row_w)*(0.5*f32(volume_config.size_count.x));
+    let jy=(row_y-ndc.y*row_w)*(0.5*f32(volume_config.size_count.y));
+    let pixel_scale=sqrt(dot(jx,jx)+dot(jy,jy))/depth_rate;
+    let diameter=volume_levels[tree.identity.y].origin_cell.w*1.73205081*stretch;
+    return vec2<f32>(diameter*pixel_scale,0.5*diameter/depth_rate);
+}
 fn volume_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
     let tree=volume_trees[index];
     let p=vec4<f32>(view.cam.xyz,1.0);
@@ -149,8 +217,26 @@ fn volume_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
     let scale=length(local_direction);
     let angular=volume_direction(local_direction/max(scale,1e-8));
     let identity=(index<<12u)|angular.indices.x|(angular.indices.y<<4u)|(angular.indices.z<<8u);
+    var lod_step=vec4<f32>(0.0);
+    if volume_config.march.w>0.0 {
+        let projected=volume_projected_cell(tree,direction);
+        lod_step=vec4<f32>(projected.x,volume_levels[tree.identity.y].origin_cell.w*0.5/max(scale,1e-8),projected.y,0.0);
+    }
     return VolumeRay(vec4<f32>(local_origin,leave),vec4<f32>(local_direction,scale),
-        angular.weights,identity,vec2<f32>(-1.0,0.0),vec2<f32>(0.0));
+        angular.weights,identity,vec2<f32>(-1.0,0.0),lod_step);
+}
+fn volume_lod(ray:VolumeRay,t:f32)->f32 {
+    if volume_config.march.w<=0.0 {return 0.0;}
+    let tree=volume_trees[ray.identity>>12u];
+    // Solve target = diameter_px*2^lod / (distance-radius*2^lod).
+    // Cells touching the near plane therefore cannot pick a coarse level.
+    let denominator=ray.lod_step.x+volume_config.march.w*ray.lod_step.z;
+    let footprint=volume_config.march.w*max(t,1e-6)/max(denominator,1e-8);
+    let ceiling=min(tree.identity.z-1u,volume_selection[ray.identity>>12u].y);
+    return clamp(log2(max(footprint,1e-8)),0.0,f32(ceiling));
+}
+fn volume_ray_step(ray:VolumeRay,t:f32)->f32 {
+    return ray.lod_step.y*exp2(floor(volume_lod(ray,t)));
 }
 fn volume_ray_direction(ray:VolumeRay)->VolumeDirection {
     return VolumeDirection(vec3<u32>(ray.identity&15u,(ray.identity>>4u)&15u,(ray.identity>>8u)&15u),ray.weights);
@@ -160,10 +246,10 @@ fn volume_index(level:VolumeLevel,coord:vec3<i32>)->u32 {
     let c=vec3<u32>(coord);
     return volume_indices[level.dims_offset.w+c.x+level.dims_offset.x*(c.y+level.dims_offset.y*c.z)];
 }
-fn volume_empty_brick(ray:VolumeRay,t:f32)->vec2<f32> {
+fn volume_empty_brick_level(ray:VolumeRay,t:f32,relative:u32)->vec2<f32> {
     let tree=volume_trees[ray.identity>>12u];
-    let fine=volume_levels[tree.identity.y];
-    let coarse=volume_levels[tree.identity.y+min(2u,tree.identity.z-1u)];
+    let fine=volume_levels[tree.identity.y+relative];
+    let coarse=volume_levels[tree.identity.y+min(relative+2u,tree.identity.z-1u)];
     let ratio=coarse.origin_cell.w/fine.origin_cell.w;
     let grid=(ray.origin_exit.xyz+ray.direction_scale.xyz*t-fine.origin_cell.xyz)/fine.origin_cell.w-0.5;
     let rate=ray.direction_scale.xyz/fine.origin_cell.w;
@@ -188,11 +274,28 @@ fn volume_empty_brick(ray:VolumeRay,t:f32)->vec2<f32> {
     }
     return vec2<f32>(leave,1.0);
 }
+fn volume_empty_brick(ray:VolumeRay,t:f32)->vec2<f32> {
+    if volume_config.march.w<=0.0 {return volume_empty_brick_level(ray,t,0u);}
+    let tree=volume_trees[ray.identity>>12u];
+    let relative=u32(floor(volume_lod(ray,t)));
+    let a=volume_empty_brick_level(ray,t,relative);
+    if relative+1u>=tree.identity.z {return a;}
+    // Test both mip supports even when the upper weight is currently zero:
+    // it can become nonzero before the next brick boundary. Invalidate the
+    // cache when the lower mip changes; no skipped interval loses density.
+    let b=volume_empty_brick_level(ray,t,relative+1u);
+    let next_lod=(ray.lod_step.x/volume_config.march.w+ray.lod_step.z)*exp2(f32(relative+1u));
+    return vec2<f32>(min(min(a.x,b.x),next_lod),min(a.y,b.y));
+}
 
 fn volume_radiance(sample:VolumeSample,tree:VolumeTree,p:vec3<f32>,v:vec3<f32>,shadow:f32,sky_vis:f32)->vec3<f32> {
     let owner=instances[tree.identity.x];
     // Asset albedo already includes the source material tint.
-    let base=sample.albedo*(0.82+0.3*hash2(vec2<f32>(owner.r0.w,owner.r2.w)));
+    var base=sample.albedo;
+    // Procedural thin foliage already carries its source colours. A hash of
+    // the animated part translation would make its colour shimmer in wind.
+    let procedural=tree.identity.w==0xffffffffu;
+    if !procedural {base*=0.82+0.3*hash2(vec2<f32>(owner.r0.w,owner.r2.w));}
     let sun_e=light.sun_color.rgb*light.sun_dir.w*shadow;
     let bounce=gi.bounce.rgb*(gi.bounce.w*sky_vis+light.sun_dir.w*max(light.sun_dir.y,0.0)*shadow);
     let rough=clamp(sample.roughness,0.04,1.0);
@@ -204,6 +307,18 @@ fn volume_radiance(sample:VolumeSample,tree:VolumeTree,p:vec3<f32>,v:vec3<f32>,s
         // the source two-sided needle normals. Never average opposing normals.
         var n=normalize(tree.inverse[k/2u].xyz)*select(1.0,-1.0,(k&1u)!=0u);
         if dot(n,v)<0.0 {n=-n;}
+        direct+=headlight_radiance(p,n,v,base/PI,rough,vec3<f32>(0.01))*weight;
+        if procedural {
+            // Integrate the authored normal lobes without random normal
+            // selection or a new global up-normal at the representation swap.
+            let front=sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis);
+            let back=sky_irradiance(-n)*sky_vis+bounce*(1.0-sky_vis);
+            let refl=reflect(-v,n);
+            let env=mix(bounce/PI,environment(refl,rough,bounce),sky_vis);
+            let response=thin_foliage_response(base,n,v,rough,sample.leaf_fraction,sun_e,front,back,env);
+            direct+=response.direct*weight;indirect+=response.indirect*weight;specular+=response.specular*weight;
+            continue;
+        }
         let ndl=dot(n,light.sun_dir.xyz);
         let ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*0.85;
         let refl=reflect(-v,n);
@@ -213,9 +328,7 @@ fn volume_radiance(sample:VolumeSample,tree:VolumeTree,p:vec3<f32>,v:vec3<f32>,s
         indirect+=base/PI*ambient*weight;
         specular+=env*env_brdf(vec3<f32>(0.01),rough,max(dot(n,v),1e-4))*0.85*weight;
     }
-    let distance_to_camera=distance(p,view.cam.xyz);
-    let fog=max(clamp((distance_to_camera-light.fog_color.w)/max(light.fog.x-light.fog_color.w,1.0),0.0,1.0),1.0-exp(-light.fog.y*distance_to_camera));
-    var rad=mix(direct+indirect+specular,light.fog_color.rgb,fog);
+    var rad=apply_distance_fog(direct+indirect+specular,distance(p,view.cam.xyz),-v);
     if light.sky.z>0.5&&light.sky.z<1.5 {rad=vec3<f32>(sky_vis)*6000.0;}
     else if light.sky.z>1.5&&light.sky.z<2.5 {rad=base*6000.0;}
     else if light.sky.z>2.5&&light.sky.z<3.5 {rad=direct;}
@@ -226,6 +339,22 @@ fn volume_radiance(sample:VolumeSample,tree:VolumeTree,p:vec3<f32>,v:vec3<f32>,s
 
 @compute @workgroup_size(8,8)
 fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
+    voxel_integrate_pixel(id);
+}
+
+@compute @workgroup_size(8,8)
+fn voxel_integrate_active(@builtin(workgroup_id) group:vec3<u32>,
+                          @builtin(local_invocation_id) local:vec3<u32>) {
+    let job=group.x+(group.y/4u)*VOLUME_JOB_ROW;
+    if job>=atomicLoad(&volume_jobs[3]) {return;}
+    let tile_index=atomicLoad(&volume_jobs[4u+job]);
+    let tile_width=volume_config.size_count.z;
+    let tile=vec2<u32>(tile_index%tile_width,tile_index/tile_width);
+    let offset=vec2<u32>(group.y&1u,(group.y>>1u)&1u)*8u;
+    voxel_integrate_pixel(vec3<u32>(tile*VOLUME_TILE+offset+local.xy,0u));
+}
+
+fn voxel_integrate_pixel(id:vec3<u32>) {
     if any(id.xy>=volume_config.size_count.xy) {return;}
     let px=vec2<i32>(id.xy);
     textureStore(volume_output,px,vec4<f32>(0.0));
@@ -252,6 +381,7 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     var begin=1e30;var end=0.0;
     for(var j=0u;j<candidates;j++) {
         var index=j;if !tile_fallback {index=volume_tiles[start+1u+j];}
+        if volume_selection[index].x==0u {continue;}
         var interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
         interval.x=max(interval.x,near_distance);
         if interval.y<=interval.x {continue;}
@@ -282,11 +412,14 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     var max_resident=0u;var cache_overflow=false;var empty_skips=0u;
     var t=begin;var transmittance=1.0;var color=vec3<f32>(0.0);var steps=0u;
     var next_light=-1.0;var cached_sky=1.0;
+    var max_occupied_lod=0.0;
     loop {
         if t>=end || transmittance<=0.001 || steps>=VOLUME_MAX_STEPS {break;}
         // Every path, including gaps and failed float progress, is bounded.
         steps++;
         var next_entry=end;var segment_end=end;var inside_count=0u;
+        var march_step=volume_config.march.x;
+        if volume_config.march.w>0.0 {march_step=1e30;}
         if cached {
             var slot=0u;
             for(var removal=0u;removal<VOLUME_ACTIVE;removal++) {
@@ -313,20 +446,27 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
         if cached {
             inside_count=resident_count;
             if cursor<ray_count {next_entry=intervals[cursor].time.x;}
-            for(var j=0u;j<resident_count;j++) {segment_end=min(segment_end,rays[j].origin_exit.w);}
+            for(var j=0u;j<resident_count;j++) {
+                segment_end=min(segment_end,rays[j].origin_exit.w);
+                if volume_config.march.w>0.0 {march_step=min(march_step,volume_ray_step(rays[j],t));}
+            }
         } else {
             let query_count=select(candidates,ray_count,compact);
             for(var j=0u;j<query_count;j++) {
-                var interval:vec2<f32>;
-                if compact {interval=intervals[j].time;}
+                var interval:vec2<f32>;var index=j;
+                if compact {interval=intervals[j].time;index=intervals[j].index;}
                 else {
-                    var index=j;if !tile_fallback {index=volume_tiles[start+1u+j];}
+                    if !tile_fallback {index=volume_tiles[start+1u+j];}
+                    if volume_selection[index].x==0u {continue;}
                     interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
                     interval.x=max(interval.x,near_distance);
                 }
                 if interval.y<=interval.x || interval.y<=t {continue;}
                 if interval.x>t {next_entry=min(next_entry,interval.x);}
-                else {inside_count++;segment_end=min(segment_end,interval.y);}
+                else {
+                    inside_count++;segment_end=min(segment_end,interval.y);
+                    if volume_config.march.w>0.0 {march_step=min(march_step,volume_ray_step(volume_ray(index,interval.y,direction),t));}
+                }
             }
         }
         max_resident=max(max_resident,inside_count);
@@ -341,12 +481,12 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
                 empty_until=min(empty_until,rays[j].brick.x);
             }
             if all_empty && empty_until>t {
-                // These intervals contain no fine-level trilinear density.
-                // Coarse optical values never replace the selected fine LOD.
+                // Both reconstructed mip supports are empty over this whole
+                // interval, including any impending blend/LOD boundary.
                 t=empty_until;empty_skips++;continue;
             }
         }
-        let ds=min(volume_config.march.x,min(segment_end-t,next_entry-t));
+        let ds=min(march_step,min(segment_end-t,next_entry-t));
         if ds<=0.0 || t+ds<=t {break;}
         let sample_t=t+0.5*ds;
         let p=view.cam.xyz+direction*sample_t;
@@ -362,6 +502,7 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
                 if compact {index=intervals[j].index;interval=intervals[j].time;}
                 else {
                     if !tile_fallback {index=volume_tiles[start+1u+j];}
+                    if volume_selection[index].x==0u {continue;}
                     interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
                 }
                 if sample_t<interval.x || sample_t>interval.y || interval.y<=interval.x {continue;}
@@ -369,9 +510,11 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
             }
             let tree=volume_trees[ray.identity>>12u];
             let local=ray.origin_exit.xyz+ray.direction_scale.xyz*sample_t;
-            let sample=volume_sample_local(tree,local,volume_ray_direction(ray));
+            let lod=volume_lod(ray,sample_t);
+            let sample=volume_sample_local(tree,local,volume_ray_direction(ray),lod);
             let sigma=sample.sigma*ray.direction_scale.w;
             if sigma<=0.0 {continue;}
+            max_occupied_lod=max(max_occupied_lod,lod);
             // Same one-metre spatial lighting approximation, now first
             // evaluated at occupied density rather than empty bounding air.
             // This may change lighting-cache phase; raw alpha is independent.
@@ -394,6 +537,10 @@ fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     atomicMax(&volume_stats[7],max_resident);
     if cache_overflow {atomicAdd(&volume_stats[8],1u);}
     atomicMax(&volume_stats[9],empty_skips);
+    if max_occupied_lod>0.0 {
+        atomicMax(&volume_stats[10],u32(ceil(max_occupied_lod*256.0)));
+        atomicAdd(&volume_stats[11],1u);
+    }
     if t<end && transmittance>0.001 {
         atomicAdd(&volume_stats[1],1u);
         // Explicitly invalid output; the fixture must fail this diagnostic.

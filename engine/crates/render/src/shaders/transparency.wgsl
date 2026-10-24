@@ -42,11 +42,11 @@ fn transparent_vs(@builtin(vertex_index) corner: u32, @builtin(instance_index) i
     return out;
 }
 
-@fragment
-fn transparent_fs(in: BlendVertex, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     // Evaluate derivatives before any per-material discard or dynamic branch.
-    let dx = dpdx(in.uv);
-    let dy = dpdy(in.uv);
+    let mip_scale = select(1.0, view.extra.z, view.extra.z > 0.0);
+    let dx = dpdx(in.uv) * mip_scale;
+    let dy = dpdy(in.uv) * mip_scale;
     let tri = blend_triangles[in.triangle];
     let m = materials[tri.material];
     if !front && tri.double_sided == 0u { discard; }
@@ -88,11 +88,9 @@ fn transparent_fs(in: BlendVertex, @builtin(front_facing) front: bool) -> @locat
         indirect *= 1.0 - fc;
         specular = specular * (1.0 - fc) + mix(bounce / PI, environment(refl, 0.04, bounce), reflection_vis) * contact.y * fc;
     }
-    var rad = direct + indirect + specular;
-    let dist = distance(p, view.cam.xyz);
-    let fog_linear = clamp((dist - light.fog_color.w) / max(light.fog.x - light.fog_color.w, 1.0), 0.0, 1.0);
-    let fog_exponential = 1.0 - exp(-light.fog.y * dist);
-    rad = mix(rad, light.fog_color.rgb, max(fog_linear, fog_exponential));
+    direct += headlight_radiance(p,n,v,diffuse,rough,f0);
+    var rad = direct + indirect + specular + car_lamp_emission(m.flags, base);
+    rad = apply_distance_fog(rad, distance(p, view.cam.xyz), -v);
     if light.sky.z > 0.5 && light.sky.z < 1.5 { rad = vec3<f32>(sky_vis) * 6000.0; }
     else if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }
     else if light.sky.z > 2.5 && light.sky.z < 3.5 { rad = direct; }
@@ -102,4 +100,15 @@ fn transparent_fs(in: BlendVertex, @builtin(front_facing) front: bool) -> @locat
     else if light.sky.z > 6.5 && light.sky.z < 7.5 { rad = vec3<f32>(reflection_vis) * 6000.0; }
     // Premultiplied source-over, in linear HDR before TAA and tonemapping.
     return vec4<f32>(rad * alpha, alpha);
+}
+@fragment fn transparent_fs(in: BlendVertex, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return transparent_color(in,front);
+}
+struct GlassMotionOut { @location(0) color:vec4<f32>, @location(1) metadata:vec2<u32> };
+@fragment fn transparent_motion_fs(in: BlendVertex, @builtin(front_facing) front: bool)->GlassMotionOut {
+    var out:GlassMotionOut;out.color=transparent_color(in,front);
+    let owner=blend_triangles[in.triangle].owner;
+    let coverage=u32(round(clamp(out.color.a,0.0,1.0)*255.0));
+    out.metadata=vec2<u32>(((owner+1u)<<8u)|coverage,bitcast<u32>(in.position.z));
+    return out;
 }

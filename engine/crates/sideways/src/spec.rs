@@ -62,6 +62,7 @@ impl CarSpec {
 pub const GRID: [&str; 3] = ["asti", "mv6", "toyama"];
 
 /// All cars: "base" plus every model merged over it.
+#[derive(Clone)]
 pub struct Cars {
     table: toml::Table,
 }

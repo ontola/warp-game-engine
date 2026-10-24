@@ -175,7 +175,10 @@ pub(crate) fn common_source() -> String { crate::shaders::source("wind_common.wg
 /// Read from `KERN_SHADER_DIR` when it is set (see shaders.rs).
 pub(crate) fn shade_source() -> String {
     let s = crate::shaders::source;
-    format!("{}\n{}\n{}", s("wind_common.wgsl"), s("shade.wgsl"), s("car_material.wgsl"))
+    // Every material pass shares this complete lighting chain. Disk overrides
+    // must not drop helper bindings used by grass, foliage or headlights.
+    format!("{}\n{}\n{}\n{}\n{}\n{}", s("wind_common.wgsl"), s("shade.wgsl"),
+        s("car_material.wgsl"), s("grass_lighting.wgsl"), s("headlights.wgsl"), s("car_lamps.wgsl"))
 }
 
 #[cfg(test)]

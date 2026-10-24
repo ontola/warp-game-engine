@@ -12,6 +12,8 @@ struct View {
     params: vec4<f32>,       // threshold px, znear, ortho, max visible
     size: vec4<f32>,
     extra: vec4<f32>,        // x: alpha test threshold
+    grass: vec4<f32>,        // source-grass fade start/end, shared with residency
+    fog_cull: vec4<f32>,     // full-fog distance, camera-colour enable, reserved
 };
 
 struct Cluster {
@@ -52,6 +54,7 @@ struct CullMaterial {
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
 @group(0) @binding(5) var<storage, read> cull_materials: array<CullMaterial>;
 @group(0) @binding(12) var<storage, read> cull_wind: array<vec4<f32>>;
+@group(0) @binding(11) var<storage, read> cull_voxel_replacement: array<u32>;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read_write> visible: array<vec2<u32>>;
@@ -61,6 +64,7 @@ struct CullMaterial {
 // Four draw records followed by four bucket starts.
 @group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
 @group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
+@group(1) @binding(5) var<uniform> foliage_selection: array<vec4<u32>,256>;
 
 fn cluster_bucket(triangles: u32) -> u32 {
     if triangles <= 8u { return 0u; }
@@ -79,6 +83,13 @@ fn in_frustum(c: vec3<f32>, r: f32) -> bool {
         }
     }
     return true;
+}
+
+fn hidden_by_camera_fog(c: vec3<f32>, r: f32) -> bool {
+    // Only the colour view opts in. Shadow/GI/reflection caster lists stay
+    // independent, including trees completely hidden from this camera.
+    if view.fog_cull.y < 0.5 || view.params.z > 0.5 { return false; }
+    return distance(c, view.cam.xyz) > view.fog_cull.x + max(r, 0.0);
 }
 
 fn to_world(inst: Instance, p: vec3<f32>) -> vec3<f32> {
@@ -110,9 +121,17 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
     if inst.cluster_count == 0u {
         return;
     }
+    // Runtime groups replace this entire branch in the colour view only.
+    // Do not spend cluster/raster work on the hidden source. Both sun and
+    // perspective lamp shadows retain the same animated source geometry.
+    let replacement=cull_voxel_replacement[id];
+    if view.params.z<0.5 && view.extra.y<1.5 && replacement!=0xffffffffu
+        && (replacement&0x80000000u)!=0u {
+        if foliage_selection[replacement&0x7fffffffu].x!=0u {return;}
+    }
     // The orthographic pass is the sun shadow map. Low ground cover only
     // receives shadows; exclude its tiny cards from this expensive pass.
-    if view.params.z > 0.5 && (inst.flags & 4u) != 0u {
+    if (view.params.z > 0.5 || view.extra.y > 1.5) && (inst.flags & 4u) != 0u {
         return;
     }
     // Exactly the same root, camera and opacity decision as raster.vs.
@@ -120,14 +139,15 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
     // from that pass and no threshold, alpha or source plant is changed.
     if EARLY_GRASS_CULL && (inst.flags & 8u) != 0u {
         let root = vec3<f32>(inst.r0.w, inst.r1.w, inst.r2.w);
-        if grass_card_opacity(root, view.cam.xyz, view.extra.y > 0.5) < GRASS_OPAQUE_THRESHOLD {
+        if grass_card_opacity(root, view.cam.xyz, view.grass.xy, view.extra.w) < GRASS_OPAQUE_THRESHOLD {
             if li == 0u { atomicAdd(&counter[3], 1u); }
             return;
         }
     }
     let wind_pad = cull_wind[id].z;
     if li == 0u {
-        keep = in_frustum(inst.sphere.xyz, inst.sphere.w + wind_pad);
+        let radius = inst.sphere.w + wind_pad;
+        keep = in_frustum(inst.sphere.xyz, radius) && !hidden_by_camera_fog(inst.sphere.xyz, radius);
     }
     workgroupBarrier();
     if !keep {
@@ -160,7 +180,8 @@ fn cull(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) l
             continue;
         }
         let cc = to_world(inst, cl.cull.xyz);
-        if !in_frustum(cc, cl.cull.w * s + wind_pad) {
+        let radius = cl.cull.w * s + wind_pad;
+        if !in_frustum(cc, radius) || hidden_by_camera_fog(cc, radius) {
             continue;
         }
         let slot = atomicAdd(&counter[0], 1u);

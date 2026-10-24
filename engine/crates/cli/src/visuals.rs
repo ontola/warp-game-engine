@@ -3,7 +3,7 @@
 //! barriers and cars, with the Poly Haven textures.
 
 use glam::{Affine3A, Quat, Vec3};
-use render::cluster::{ClusterMesh, Part, Vertex, read_kmesh};
+use render::cluster::{ClusterMesh, Part, Vertex};
 use render::scene::{ALPHA_TEST, Material, ROAD, Scene, TERRAIN, TRIPLANAR, TWO_SIDED};
 use sideways::builder::{self, Chunk, N};
 use sideways::stage::{GRID, Stage};
@@ -18,6 +18,8 @@ pub struct Built {
     /// Every car surface in `scene.car_materials` order, to re-apply edited
     /// car material data (`Renderer::set_car_materials`).
     pub car_slots: Vec<crate::car_look::Slot>,
+    /// Explicit experimental patch provenance; None in normal play.
+    pub procedural_grass: Option<serde_json::Value>,
     live_ground_cover: Option<crate::live_ground_cover::LiveGroundCover>,
 }
 
@@ -56,33 +58,200 @@ fn v(p: Vec3, n: Vec3, uv: [f32; 2]) -> Vertex {
     Vertex { pos: p.to_array(), normal: n.to_array(), uv }
 }
 
-fn chunk_mesh(c: &Chunk, material: u32) -> ClusterMesh {
+#[cfg(test)]
+fn chunk_mesh(c: &Chunk, material: u32, sample_halo: impl Fn(f64,f64)->f32) -> ClusterMesh {
+    let mut geometry=vec![chunk_geometry(c,sample_halo)];
+    terrain_surface_normals(&mut geometry);
+    let (verts, idx) = geometry.pop().unwrap();
+    ClusterMesh::build_with_policy(&[Part { vertices: &verts, indices: &idx, material }],
+        |_|render::cluster::SimplificationPolicy::Terrain)
+}
+
+// Surface relief is bounded relative to the unchanged 2 m collision mesh.
+// The entire road/shoulder and a 2 m verge are exact; only steep, off-road
+// faces receive curved geometry. Flat chunks keep their original topology.
+const CLIFF_VISUAL_OFFSET: f32 = 1.10;
+const CLIFF_FACE_RELIEF: f32 = 0.24;
+const CLIFF_ROAD_GUARD: f32 = 2.0;
+const CLIFF_DETAIL_UP: f32 = 0.80;
+
+fn cubic_height(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
+    b + 0.5 * t * (c - a + t * (2.0*a - 5.0*b + 4.0*c - d + t * (3.0*(b-c) + d-a)))
+}
+
+/// Derive detail normals from the actual bounded, weighted render surface.
+/// All chunks participate before cluster construction, so a shared border
+/// includes triangles on BOTH sides and receives one bit-identical normal.
+/// Road/shoulder normals and every position/UV remain unchanged.
+fn terrain_surface_normals(geometry:&mut [(Vec<Vertex>,Vec<u32>)])->(usize,usize) {
+    #[derive(Default)]
+    struct Normal {area:Vec3,direction:Vec3,up_mix:f32}
+    let key=|v:&Vertex|(v.pos[0].to_bits(),v.pos[2].to_bits());
+    let detailed=|v:&Vertex|v.uv[0]>CLIFF_ROAD_GUARD&&v.uv[0]<35.0&&v.uv[1]-1.0<CLIFF_DETAIL_UP;
+    let mut shared=std::collections::HashMap::<(u32,u32),Normal>::new();
+    for (vertices,_) in geometry.iter() {for v in vertices.iter().filter(|v|detailed(v)) {shared.entry(key(v)).or_default();}}
+    if shared.is_empty(){return (0,0);}
+    // Area weighting does not overemphasise the tiny fan triangles relative
+    // to their neighbours. Accumulation order is the sorted chunk/triangle
+    // order, independent of HashMap iteration or parallel mesh preparation.
+    for (vertices,indices) in geometry.iter() {for t in indices.chunks_exact(3) {
+        let p=[t[0],t[1],t[2]].map(|i|Vec3::from(vertices[i as usize].pos));
+        let face=(p[1]-p[0]).cross(p[2]-p[0]);
+        for &i in t {if let Some(n)=shared.get_mut(&key(&vertices[i as usize])) {n.area+=face;}}
+    }}
+    for n in shared.values_mut() {n.direction=n.area.normalize_or(Vec3::Y);}
+    // A smooth normal at a sharp non-convex joint must remain outside every
+    // incident face. The heightfield's +Y is a feasible common hemisphere.
+    // Use only the smallest necessary blend, then normalize once; the bound
+    // is shared by all copies of the vertex, including chunk boundaries.
+    for (vertices,indices) in geometry.iter() {for t in indices.chunks_exact(3) {
+        let p=[t[0],t[1],t[2]].map(|i|Vec3::from(vertices[i as usize].pos));
+        let face=(p[1]-p[0]).cross(p[2]-p[0]).normalize_or(Vec3::Y);
+        for &i in t {if let Some(n)=shared.get_mut(&key(&vertices[i as usize])) {
+            let dot=n.direction.dot(face);let margin=face.y.max(0.0)*0.0001;
+            if dot<margin {n.up_mix=n.up_mix.max(((margin-dot)/(face.y-dot).max(1e-8)).clamp(0.0,1.0));}
+        }}
+    }}
+    for n in shared.values_mut() {n.direction=n.direction.lerp(Vec3::Y,n.up_mix).normalize_or(Vec3::Y);}
+    for (vertices,_) in geometry.iter_mut() {for v in vertices {if let Some(n)=shared.get(&key(v)) {v.normal=n.direction.to_array();}}}
+    // Conservative bucket storage bound, excluding allocator bookkeeping.
+    // No per-triangle adjacency lists and no permanent runtime allocation.
+    let bucket_bound=(shared.capacity()*8/7+16).next_power_of_two();
+    (shared.len(),bucket_bound*(std::mem::size_of::<((u32,u32),Normal)>()+16))
+}
+
+fn chunk_geometry(c: &Chunk, sample_halo: impl Fn(f64,f64)->f32) -> (Vec<Vertex>, Vec<u32>) {
+    // A shared three-cell world halo makes the rounded surface and its
+    // finite-difference normals identical at neighbouring chunk borders.
+    let halo = 3isize;
+    let stride = N + 2 * halo as usize;
+    let heights: Vec<f32> = (-halo..N as isize+halo).flat_map(|j| {
+        let sample = &sample_halo;
+        (-halo..N as isize+halo).map(move |i| if i>=0 && j>=0 && i<N as isize && j<N as isize {
+            c.heights[j as usize*N+i as usize]
+        } else {sample(c.x0+i as f64*GRID,c.z0+j as f64*GRID)})
+    }).collect();
+    let h = |i:isize,j:isize| heights[(j+halo) as usize*stride+(i+halo) as usize];
+    let native_normal = |i:isize,j:isize| Vec3::new(
+        -(h(i+1,j)-h(i-1,j))/(2.0*GRID as f32),1.0,
+        -(h(i,j+1)-h(i,j-1))/(2.0*GRID as f32)).normalize();
+    let smooth=|t:f32| {let t=t.clamp(0.0,1.0);t*t*(3.0-2.0*t)};
+    let weight=|road:f32,n:Vec3| smooth((road-CLIFF_ROAD_GUARD)/1.4)*smooth((CLIFF_DETAIL_UP-n.y)/0.25)
+        *(1.0-smooth((road-25.0)/10.0));
+    let curved=|x:f32,z:f32,n:Vec3| {
+        let gx=(x as f64-c.x0)/GRID;let gz=(z as f64-c.z0)/GRID;
+        let i=gx.floor()as isize;let j=gz.floor()as isize;
+        let u=(gx-i as f64)as f32;let w=(gz-j as f64)as f32;
+        let row=|j| cubic_height(h(i-1,j),h(i,j),h(i+1,j),h(i+2,j),u);
+        let rounded=cubic_height(row(j-1),row(j),row(j+1),row(j+2),w);
+        // A vertical-only heightfield needs 1/n.y times more vertical offset
+        // to express a fixed depth normal to a steep face. The old 14 cm Y
+        // cap produced only 3 cm of rock volume on an almost vertical cut.
+        let relief=crate::procedural_rocks::terrain_relief(Vec3::new(x,rounded,z),n)
+            .clamp(-CLIFF_FACE_RELIEF,CLIFF_FACE_RELIEF)/n.y.max(0.22);
+        (rounded,relief)
+    };
+    let surface = |x:f32,z:f32,road:f32,n:Vec3| {
+        let gx=(x as f64-c.x0)/GRID;let gz=(z as f64-c.z0)/GRID;
+        let i=gx.floor() as isize;let j=gz.floor() as isize;
+        let u=gx.fract() as f32;let w=gz.fract() as f32;
+        // Coordinates used here are inside the chunk except the small
+        // derivative halo. fract() is negative there, so use floor residual.
+        let u=if u<0.0 {u+1.0}else{u};let w=if w<0.0 {w+1.0}else{w};
+        let native=if u+w<=1.0 {h(i,j)+(h(i+1,j)-h(i,j))*u+(h(i,j+1)-h(i,j))*w}
+            else {h(i+1,j+1)+(h(i,j+1)-h(i+1,j+1))*(1.0-u)+(h(i+1,j)-h(i+1,j+1))*(1.0-w)};
+        let weight=weight(road,n);
+        if weight==0.0 {return native;}
+        let (rounded,relief)=curved(x,z,n);
+        let rounding=(rounded-native).clamp(-0.16,0.16);
+        native+(rounding+relief).clamp(-CLIFF_VISUAL_OFFSET,CLIFF_VISUAL_OFFSET)*weight
+    };
+    let detailed_vertex = |p:Vec3,n:Vec3,road:f32| {
+        if road<=CLIFF_ROAD_GUARD || road>=35.0 || n.y>=CLIFF_DETAIL_UP {return v(p,n,[road,1.0+n.y]);}
+        let y=surface(p.x,p.z,road,n);
+        // Final normals are reconstructed from the rendered triangles after
+        // every chunk is available, not a derivative of a different field.
+        v(Vec3::new(p.x,y,p.z),n,[road,1.0+n.y])
+    };
     let mut verts = Vec::with_capacity(N * N);
+    let mut native = Vec::with_capacity(N * N);
     for j in 0..N {
         for i in 0..N {
-            let h = |i: isize, j: isize| c.heights[(j.clamp(0, N as isize - 1) as usize) * N + i.clamp(0, N as isize - 1) as usize];
-            let (ii, jj) = (i as isize, j as isize);
-            let dx = h(ii + 1, jj) - h(ii - 1, jj);
-            let dz = h(ii, jj + 1) - h(ii, jj - 1);
-            // At chunk borders each axis has its own one-sided derivative.
-            // A shared denominator changed the z slope at x borders and
-            // halved it at z borders, producing visible lighting seams.
-            let span_x = GRID as f32 * if i == 0 || i == N - 1 { 1.0 } else { 2.0 };
-            let span_z = GRID as f32 * if j == 0 || j == N - 1 { 1.0 } else { 2.0 };
-            let n = Vec3::new(-dx / span_x, 1.0, -dz / span_z).normalize();
+            let n = native_normal(i as isize,j as isize);
             let p = c.vertex(i, j);
-            verts.push(v(Vec3::new(p.x, p.y, p.z), n, [c.road_d[j * N + i], 0.0]));
+            let p=Vec3::new(p.x,p.y,p.z);let road=c.road_d[j*N+i];
+            native.push(v(p,n,[road,0.0]));
+            verts.push(detailed_vertex(p,n,road));
         }
     }
+    if !native.iter().any(|v|v.uv[0]>CLIFF_ROAD_GUARD && v.uv[0]<35.0 && v.normal[1]<CLIFF_DETAIL_UP) {
+        // Most chunks are rolling forest, not a rock cut. Avoid the edge
+        // cache and per-triangle allocation entirely for that common case.
+        let mut indices=Vec::with_capacity((N-1)*(N-1)*6);
+        for j in 0..N-1 {for i in 0..N-1 {
+            let a=(j*N+i)as u32;let n=N as u32;
+            indices.extend_from_slice(&[a,a+n,a+1,a+1,a+n,a+n+1]);
+        }}
+        return (verts,indices);
+    }
+    let mut edges=std::collections::HashMap::<(u32,u32),Vec<u32>>::new();
     let mut idx = Vec::new();
     for j in 0..N - 1 {
         for i in 0..N - 1 {
             let a = (j * N + i) as u32;
             let n = N as u32;
-            idx.extend_from_slice(&[a, a + n, a + 1, a + 1, a + n, a + n + 1]);
+            for triangle in [[a,a+n,a+1],[a+1,a+n,a+n+1]] {
+                let mut boundary=Vec::new();let mut refined=false;
+                for e in 0..3 {
+                    let (a,b)=(triangle[e],triangle[(e+1)%3]);
+                    let key=(a.min(b),a.max(b));
+                    let edge=edges.entry(key).or_insert_with(|| {
+                        let va=native[key.0 as usize];let vb=native[key.1 as usize];
+                        let split=va.uv[0].max(vb.uv[0])>CLIFF_ROAD_GUARD && va.uv[0].min(vb.uv[0])<35.0
+                            && va.normal[1].min(vb.normal[1])<CLIFF_DETAIL_UP;
+                        let mut edge=vec![key.0];
+                        if split {for k in 1..4 {
+                            let t=k as f32/4.0;
+                            let p=Vec3::from(va.pos).lerp(Vec3::from(vb.pos),t);
+                            let normal=Vec3::from(va.normal).lerp(Vec3::from(vb.normal),t).normalize();
+                            let road=va.uv[0]+(vb.uv[0]-va.uv[0])*t;
+                            edge.push(verts.len()as u32);native.push(v(p,normal,[road,0.0]));
+                            verts.push(detailed_vertex(p,normal,road));
+                        }}
+                        edge.push(key.1);edge
+                    });
+                    refined|=edge.len()>2;
+                    if a==key.0 {boundary.extend(edge[..edge.len()-1].iter().copied());}
+                    else {boundary.extend(edge[1..].iter().rev().copied());}
+                }
+                if !refined {idx.extend_from_slice(&triangle);continue;}
+                let source=triangle.map(|k|native[k as usize]);
+                let cp=source.iter().map(|v|Vec3::from(v.pos)).sum::<Vec3>()/3.0;
+                let cn=source.iter().map(|v|Vec3::from(v.normal)).sum::<Vec3>().normalize();
+                let cr=source.iter().map(|v|v.uv[0]).sum::<f32>()/3.0;
+                let centre=verts.len()as u32;native.push(v(cp,cn,[cr,0.0]));verts.push(detailed_vertex(cp,cn,cr));
+                // One interior ring limits long skinny fans on the tall
+                // face. Every edge uses a shared cache: no T junctions,
+                // independent tessellation switches or extra draw instances.
+                let mut ring=Vec::with_capacity(boundary.len());
+                for &b in &boundary {
+                    // Interpolate the same native field on every ring.
+                    // Reusing already displaced positions/normals would feed
+                    // the detail back into its own weight and sample domain.
+                    let vb=native[b as usize];
+                    let p=cp.lerp(Vec3::from(vb.pos),0.5);
+                    let nn=cn.lerp(Vec3::from(vb.normal),0.5).normalize();
+                    let rd=(cr+vb.uv[0])*0.5;
+                    ring.push(verts.len()as u32);native.push(v(p,nn,[rd,0.0]));verts.push(detailed_vertex(p,nn,rd));
+                }
+                for k in 0..boundary.len() {
+                    let next=(k+1)%boundary.len();
+                    idx.extend_from_slice(&[centre,ring[k],ring[next],ring[k],boundary[k],boundary[next],ring[k],boundary[next],ring[next]]);
+                }
+            }
         }
     }
-    ClusterMesh::build(&[Part { vertices: &verts, indices: &idx, material }])
+    (verts,idx)
 }
 
 /// All chunks' heights on one 2 m grid (cells outside the corridor are deep).
@@ -104,10 +273,22 @@ fn heightfield(chunks: &[Chunk]) -> render::scene::Heightfield {
     render::scene::Heightfield { origin: [lo.0 as f32 * 64.0, lo.1 as f32 * 64.0], cell: GRID as f32, w, h, heights }
 }
 
-fn road_mesh(s: &Stage, material: u32) -> ClusterMesh {
+fn native_terrain_normal(s: &Stage, p: Vec3) -> Vec3 {
+    let gx=p.x as f64/GRID;let gz=p.z as f64/GRID;
+    let i=gx.floor();let j=gz.floor();let u=(gx-i)as f32;let w=(gz-j)as f32;
+    let normal=|dx:f64,dz:f64| {
+        let x=(i+dx)*GRID;let z=(j+dz)*GRID;
+        Vec3::new((s.height(x-GRID,z)as f32-s.height(x+GRID,z)as f32)/(2.0*GRID as f32),
+            1.0,(s.height(x,z-GRID)as f32-s.height(x,z+GRID)as f32)/(2.0*GRID as f32)).normalize()
+    };
+    if u+w<=1.0 {(normal(0.0,0.0)*(1.0-u-w)+normal(1.0,0.0)*u+normal(0.0,1.0)*w).normalize()}
+    else {(normal(1.0,1.0)*(u+w-1.0)+normal(0.0,1.0)*(1.0-u)+normal(1.0,0.0)*(1.0-w)).normalize()}
+}
+
+pub(crate) fn road_mesh(s: &Stage, material: u32) -> ClusterMesh {
     let r = builder::road(s);
     let cols = r.cols;
-    let rows = r.verts.len() / cols;
+    let rows = r.rows;
     let mut verts = Vec::with_capacity(r.verts.len());
     for i in 0..rows {
         for c in 0..cols {
@@ -119,7 +300,28 @@ fn road_mesh(s: &Stage, material: u32) -> ClusterMesh {
             if n.y < 0.0 {
                 n = -n;
             }
-            verts.push(v(at(k), n, [builder::ACROSS[c] as f32, i as f32 * 2.0]));
+            verts.push(v(at(k), n, r.uvs[k]));
+        }
+    }
+    // The shoulder has extra vertices at every terrain-triangle crossing.
+    // Keep its road-space UVs and smooth normals continuous with the original
+    // ribbon; collision consumes these exact same positions and triangles.
+    for k in rows * cols..r.verts.len() {
+        let uv = r.uvs[k];
+        let c = if uv[0] < -1.1 { 0 } else if uv[0] < 0.0 { 1 }
+            else if uv[0] > 1.1 { cols - 1 } else { cols - 2 };
+        let row = (uv[1] / sideways::stage::STEP as f32).clamp(0.0, (rows - 1) as f32);
+        let i = row.floor() as usize;
+        let a = Vec3::from_array(verts[i * cols + c].normal);
+        let b = Vec3::from_array(verts[(i + 1).min(rows - 1) * cols + c].normal);
+        let p = r.verts[k];
+        verts.push(v(Vec3::new(p.x, p.y, p.z), a.lerp(b, row.fract()).normalize_or(Vec3::Y), uv));
+    }
+    for vertex in &mut verts {
+        let t=((vertex.uv[0].abs()-1.0)/0.25).clamp(0.0,1.0);
+        if t>0.0 {
+            let terrain=native_terrain_normal(s,Vec3::from(vertex.pos));
+            vertex.normal=Vec3::from(vertex.normal).lerp(terrain,t*t*(3.0-2.0*t)).normalize().to_array();
         }
     }
     let mut idx = Vec::new();
@@ -271,6 +473,9 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     let mut log = Vec::new();
     let t = std::time::Instant::now();
     let mut scene = Scene::default();
+    // The receiver escape contract is the SAME bound enforced by surface().
+    // Grass and driving ground keep strict native-height occlusion.
+    scene.terrain_visual_offset_m=CLIFF_VISUAL_OFFSET;
     let r = root();
     let tex = |scene: &mut Scene, rel: &str| scene.add_texture(&r.join(rel));
     // Terrain layers, in the order shade.wgsl blends them.
@@ -279,7 +484,12 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     tex(&mut scene, "assets/textures/grass_ground_albedo.jpg")?; // verge
     tex(&mut scene, "assets/textures/forest_ground_04_albedo.jpg")?; // bare ground
     tex(&mut scene, "assets/textures/rock_face_03_albedo.jpg")?; // rock
-    let gravel = tex(&mut scene, "assets/textures/gravel_ground_01_albedo.jpg")?;
+    // This source normal was sRGB-transferred; all other normal assets remain
+    // linear data. Decode before the renderer resizes/builds its normal mips.
+    let gravel = scene.add_texture_with_normal_encoding(
+        &r.join("assets/textures/gravel_ground_01_albedo.jpg"),
+        render::scene::NormalEncoding::SrgbTransferred,
+    )?;
     tex(&mut scene, "assets/textures/forest_ground_04_albedo.jpg")?;
     let trunk_a = tex(&mut scene, "assets/trees/trunk_a_albedo.jpg")?;
     let trunk_b = tex(&mut scene, "assets/trees/trunk_b_albedo.jpg")?;
@@ -310,12 +520,26 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     });
     log.push(format!("terrain data: {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
     let t = std::time::Instant::now();
-    let meshes: Vec<ClusterMesh> = std::thread::scope(|s| {
+    let mut geometry: Vec<(Vec<Vertex>,Vec<u32>)> = std::thread::scope(|s| {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         let per = chunks.len().div_ceil(threads);
-        let handles: Vec<_> = chunks.chunks(per).map(|part| s.spawn(move || part.iter().map(|c| chunk_mesh(c, terrain_mat)).collect::<Vec<_>>())).collect();
+        let handles: Vec<_> = chunks.chunks(per).map(|part| s.spawn(move || part.iter().map(|c| chunk_geometry(c,|x,z|stage.height(x,z)as f32)).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
+    let normal_started=std::time::Instant::now();
+    let source_bytes:usize=geometry.iter().map(|(v,i)|v.capacity()*std::mem::size_of::<Vertex>()+i.capacity()*4).sum();
+    let (normal_count,normal_bytes)=terrain_surface_normals(&mut geometry);
+    log.push(format!("terrain surface normals: {normal_count} shared detail vertices, {:.1} ms; transient table <={} KiB, retained source buffers {} KiB",normal_started.elapsed().as_secs_f64()*1000.0,normal_bytes.div_ceil(1024),source_bytes.div_ceil(1024)));
+    let meshes: Vec<ClusterMesh> = std::thread::scope(|s| {
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let per = geometry.len().div_ceil(threads);
+        let handles: Vec<_> = geometry.chunks(per).map(|part| s.spawn(move ||part.iter().map(|(v,i)|ClusterMesh::build_with_policy(&[Part {vertices:v,indices:i,material:terrain_mat}],|_|render::cluster::SimplificationPolicy::Terrain)).collect::<Vec<_>>())).collect();
+        handles.into_iter().flat_map(|h|h.join().unwrap()).collect()
+    });
+    drop(geometry);
+    log.push(format!("unified terrain rock: {} native / {} refined source / {} coarsest cluster triangles; face relief <=0.24 m, total Y offset <=1.10 m, native 2 m road-edge protection; zero overlay exposures",
+        chunks.len()*(N-1)*(N-1)*2,meshes.iter().map(ClusterMesh::leaf_triangles).sum::<usize>(),
+        meshes.iter().map(ClusterMesh::root_triangles).sum::<usize>()));
     let mut mesh_names = Vec::new();
     for (k, mesh) in meshes.iter().enumerate() {
         let id = scene.add_mesh(mesh);
@@ -330,13 +554,11 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     scene.add_instance(road, Affine3A::IDENTITY);
     log.push(format!("terrain + road clusters: {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
 
-    // Trees: three variants, Godot's near meshes.
+    // Three shared evergreen archetypes, used unchanged by every distance LOD.
     let t = std::time::Instant::now();
     let mut tree_meshes = Vec::new();
-    for variant in ["a", "b", "c"] {
-        let path = r.join(format!("engine/assets/fir_{variant}_near.kmesh"));
-        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e} (run tools/export_meshes.gd)", path.display()))?;
-        let surfaces = read_kmesh(&bytes)?;
+    for archetype in sideways::vegetation::TreeArchetype::ALL {
+        let surfaces = crate::tree_assets::load(&r, archetype)?;
         let parts: Vec<(Vec<Vertex>, Vec<u32>, u32)> = surfaces
             .into_iter()
             .map(|(name, verts, idx)| {
@@ -356,16 +578,18 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         let cm = ClusterMesh::build_with_policy(&p, |part| if part.material == crown_mat {
             render::cluster::SimplificationPolicy::AlphaCards
         } else {
-            render::cluster::SimplificationPolicy::Geometry
+            render::cluster::SimplificationPolicy::TexturedGeometry
         });
-        log.push(format!("fir_{variant}: {} leaf tris, {} root tris, {} clusters, {} levels", cm.leaf_triangles(), cm.root_triangles(), cm.clusters.len(), cm.levels));
+        log.push(format!("{}: {} leaf tris, {} root tris, {} clusters, {} levels", archetype.label(), cm.leaf_triangles(), cm.root_triangles(), cm.clusters.len(), cm.levels));
         tree_meshes.push(scene.add_mesh(&cm));
-        mesh_names.push(format!("fir_{variant}"));
+        mesh_names.push(format!("evergreen {}", archetype.label()));
     }
     let mut trees = 0;
+    let mut families = [0usize; 3]; let mut juveniles = 0usize;
     for c in &chunks {
-        for (k, spot) in c.trees.iter().enumerate() {
-            let variant = ((spot.pos.0 * 7.31 + spot.pos.2 * 3.17).abs() as usize + k) % 3;
+        for spot in &c.trees {
+            let phenotype = stage.vegetation.tree(stage.noise_seed as u64, spot.pos.0, spot.pos.2);
+            let variant = phenotype.archetype.index();
             let xf = Affine3A::from_scale_rotation_translation(
                 Vec3::new(spot.scale, spot.scale_y, spot.scale),
                 Quat::from_rotation_y(spot.yaw),
@@ -374,9 +598,10 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
             scene.add_instance(tree_meshes[variant], xf);
             scene.mark_foliage();
             trees += 1;
+            families[variant] += 1; juveniles += usize::from(phenotype.juvenile);
         }
     }
-    log.push(format!("trees: {trees} instances, {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
+    log.push(format!("trees: {trees} instances, {} canopy / {} tapered conifer / {} stout trunk; {juveniles} juveniles; 3 shared evergreen source archetypes, {:.0} ms", families[0], families[1], families[2], t.elapsed().as_secs_f64() * 1e3));
 
     // World-fixed trees extend the forested horizon, using the same source
     // models and LOD as the near forest. Native road/physics are retained.
@@ -386,19 +611,19 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
             Err(reason) => log.push(format!("distant forest unavailable: {reason}")),
         }
     }
-    if std::env::var("SIDEWAYS_PROCEDURAL_ROCKS").as_deref() != Ok("0") {
-        match crate::procedural_rocks::add(&mut scene, stage, &chunks, &mut mesh_names) {
-            Ok(summary) => log.push(summary),
-            Err(reason) => log.push(format!("procedural rocks unavailable: {reason}")),
-        }
-    }
+    // Rock detail is part of the native terrain source mesh. The retired
+    // twelve-overlay route used a second geometry/normal field and caused
+    // visibly different short spans even when it shared the material ID.
 
     if let Some(summary)=crate::voxel_tree_patch::attach(&mut scene,&tree_meshes,crown_mat,cameras,&r)? {
         log.push(summary);
     }
 
+    let procedural_patch=crate::grass_voxel_asset::attach_procedural_patch(&mut scene,stage,&chunks,cameras,&mut mesh_names)?;
+    let excluded=procedural_patch.as_ref().map(|patch|patch.excluded);
+    let procedural_grass=procedural_patch.map(|patch| {log.push(patch.summary);patch.metadata});
     let live_ground_cover = if live_cover {
-        let stream = crate::live_ground_cover::LiveGroundCover::reserve_with_vegetation(&mut scene, &chunks, cameras, &r, &mut mesh_names, stage.vegetation)?;
+        let stream = crate::live_ground_cover::LiveGroundCover::reserve_with_exclusion(&mut scene, &chunks, cameras, &r, &mut mesh_names, stage.vegetation, excluded)?;
         log.push(stream.summary());
         if std::env::var("SIDEWAYS_FAR_GRASS").as_deref() == Ok("1") {
             let photo = crate::ground_cover::photo(&r)?;
@@ -408,7 +633,7 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         }
         Some(stream)
     } else if ground_cover {
-        log.push(crate::ground_cover::add_with_vegetation(&mut scene, &chunks, cameras, &r, &mut mesh_names, stage.vegetation)?);
+        log.push(crate::ground_cover::add_with_exclusion(&mut scene, &chunks, cameras, &r, &mut mesh_names, stage.vegetation, excluded)?);
         None
     } else {
         log.push("ground cover: disabled (matched A/B)".into());
@@ -427,6 +652,10 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         let id = scene.add_mesh(&mesh);
         mesh_names.push(if line.rail { "armco".into() } else { "stone wall".into() });
         scene.add_instance(id, Affine3A::IDENTITY);
+    }
+    // Animated world actors precede the contiguous CPU-updated car range.
+    if let Some(summary)=crate::roadside_crowds::append(&mut scene,stage,&chunks,&mut mesh_names)? {
+        log.push(summary);
     }
     let mut car_textures = std::collections::HashMap::new();
     let mut dynamic_cars = Vec::new();
@@ -453,7 +682,7 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         }
     }
     log.push(scene.stats());
-    Ok(Built { scene, mesh_names, log, cars: dynamic_cars, car_slots, live_ground_cover })
+    Ok(Built { scene, mesh_names, log, cars: dynamic_cars, car_slots, live_ground_cover, procedural_grass })
 }
 
 #[cfg(test)]
@@ -497,17 +726,232 @@ mod geometry_tests {
     #[test]
     fn sloped_terrain_has_the_same_normal_at_all_chunk_edges_and_corners() {
         let heights = (0..N).flat_map(|j| (0..N).map(move |i| {
-            (i as f32 * 0.25 - j as f32 * 0.75) * GRID as f32
+            (i as f32 * 0.125 - j as f32 * 0.25) * GRID as f32
         })).collect();
         let chunk = Chunk {
             cell: (0, 0), x0: 0.0, z0: 0.0, heights, road_d: vec![20.0; N * N],
             trees: vec![], rocks: vec![], grass: vec![], ferns: vec![], stumps: vec![],
         };
-        let mesh = chunk_mesh(&chunk, 0);
-        let expected = Vec3::new(-0.25, 1.0, 0.75).normalize();
+        let mesh = chunk_mesh(&chunk,0,|x,z|(x*0.125-z*0.25)as f32);
+        let expected = Vec3::new(-0.125, 1.0, 0.25).normalize();
         assert_eq!(mesh.vertices.len(), N * N);
         for v in &mesh.vertices {
             assert!(Vec3::from(v.normal).abs_diff_eq(expected, 1e-5), "wrong slope normal at {:?}: {:?}", v.pos, v.normal);
         }
+    }
+
+    #[test]
+    fn curved_terrain_shared_vertices_have_identical_normals_across_chunks() {
+        // The old one-sided rule passes a planar-slope test but disagrees
+        // across curved seams. Samples on either side must use one world halo.
+        let height=|x:f64,z:f64|(x*x*0.003+z*z*0.004+x*z*0.002+(x/8.0).sin()*3.0)as f32;
+        let mut shared=std::collections::HashMap::new();let mut matches=0;
+        let mut geometry=Vec::new();
+        for cell in [(-1,-1),(0,-1),(-1,0),(0,0)] {
+            let (x0,z0)=(cell.0 as f64*64.0,cell.1 as f64*64.0);
+            let heights=(0..N).flat_map(|j|(0..N).map(move|i|height(x0+i as f64*GRID,z0+j as f64*GRID))).collect();
+            let chunk=Chunk {cell,x0,z0,heights,road_d:vec![20.0;N*N],trees:vec![],rocks:vec![],grass:vec![],ferns:vec![],stumps:vec![]};
+            geometry.push(chunk_geometry(&chunk,height));
+        }
+        terrain_surface_normals(&mut geometry);
+        for (vertices,_) in geometry {
+            for vertex in vertices {
+                let key=(vertex.pos[0].to_bits(),vertex.pos[2].to_bits());
+                if let Some(previous)=shared.insert(key,vertex.normal.map(f32::to_bits)) {
+                    assert_eq!(previous,vertex.normal.map(f32::to_bits),"shared vertex {:?}",vertex.pos);matches+=1;
+                }
+            }
+        }
+        assert!(matches>=4*N-1);
+    }
+
+    #[test]
+    fn cliff_refinement_is_welded_bounded_and_keeps_the_road_exact() {
+        let height=|x:f64,z:f64| ((x*0.20).sin()*0.3 + 11.0*((z-10.0)/9.0).clamp(0.0,1.0)
+            + (x*0.27).sin()*(z*0.17).cos())as f32;
+        let heights=(0..N).flat_map(|j|(0..N).map(move|i|height(i as f64*GRID,j as f64*GRID))).collect();
+        let road_d=(0..N).flat_map(|j|(0..N).map(move|_|j as f32*GRID as f32-3.0)).collect();
+        let c=Chunk {cell:(0,0),x0:0.0,z0:0.0,heights,road_d,trees:vec![],rocks:vec![],grass:vec![],ferns:vec![],stumps:vec![]};
+        let (vertices,indices)=chunk_geometry(&c,height);
+        let mut edges=std::collections::HashMap::<(u32,u32),usize>::new();
+        let mut detailed=0;
+        for vertex in &vertices {
+            let p=Vec3::from(vertex.pos);
+            let gx=p.x/GRID as f32;let gz=p.z/GRID as f32;
+            let i=(gx.floor()as usize).min(N-2);let j=(gz.floor()as usize).min(N-2);
+            let u=gx-i as f32;let w=gz-j as f32;
+            let h=|i:usize,j:usize|c.heights[j*N+i];
+            let native=if u+w<=1.0 {h(i,j)+(h(i+1,j)-h(i,j))*u+(h(i,j+1)-h(i,j))*w}
+                else {h(i+1,j+1)+(h(i,j+1)-h(i+1,j+1))*(1.0-u)+(h(i+1,j)-h(i+1,j+1))*(1.0-w)};
+            let delta=(p.y-native).abs();
+            assert!(delta<=CLIFF_VISUAL_OFFSET+1e-4,"unbounded collider offset at {p:?}: {delta}");
+            if vertex.uv[0]<=CLIFF_ROAD_GUARD {assert!(delta<1e-5,"protected road changed at {p:?}");}
+            else if delta>0.01 {detailed+=1;}
+            assert!((1.0..=2.0).contains(&vertex.uv[1]),"macro slope missing");
+            assert!(delta*(vertex.uv[1]-1.0)<=CLIFF_FACE_RELIEF+0.161,"face-relative relief exceeded the geometry bound");
+            assert!(p.is_finite()&&Vec3::from(vertex.normal).is_finite());
+        }
+        for tri in indices.chunks_exact(3) {
+            let p=tri.iter().map(|&i|Vec3::from(vertices[i as usize].pos)).collect::<Vec<_>>();
+            assert!((p[1]-p[0]).cross(p[2]-p[0]).y>0.0,"folded/degenerate triangle");
+            for k in 0..3 {let (a,b)=(tri[k],tri[(k+1)%3]);*edges.entry((a.min(b),a.max(b))).or_default()+=1;}
+        }
+        for ((a,b),count) in edges {
+            assert!(count<=2,"overlapping surface");
+            if count==1 {
+                let a=Vec3::from(vertices[a as usize].pos);let b=Vec3::from(vertices[b as usize].pos);
+                assert!((a.x==0.0&&b.x==0.0)||(a.z==0.0&&b.z==0.0)||(a.x==64.0&&b.x==64.0)||(a.z==64.0&&b.z==64.0),"internal crack: {a:?} -> {b:?}");
+            }
+        }
+        assert!(detailed>500,"fixture must exercise the whole cut, not one local patch");
+        assert!(indices.len()/3<(N-1)*(N-1)*2*10,"adaptive cost exceeded 10x even in this cliff fixture");
+        eprintln!("cliff fixture: {} native triangles -> {} source triangles; {detailed} detailed vertices; max relief {CLIFF_VISUAL_OFFSET} m",(N-1)*(N-1)*2,indices.len()/3);
+    }
+
+    #[test]
+    fn road_shoulder_normals_match_the_actual_adjacent_terrain() {
+        let stage=Stage::generate(&mut gdcompat::Pcg::new(7),600.0);
+        let mesh=road_mesh(&stage,0);
+        let mut count=0;
+        for vertex in &mesh.vertices {
+            if vertex.uv[0].abs()>1.249 {
+                let expected=native_terrain_normal(&stage,Vec3::from(vertex.pos));
+                assert!(Vec3::from(vertex.normal).abs_diff_eq(expected,1e-5));count+=1;
+            }
+        }
+        assert!(count>500);
+    }
+
+    #[test]
+    fn refined_cliff_matches_vertices_normals_and_segments_across_chunk_boundaries() {
+        use std::collections::{BTreeMap,BTreeSet,HashMap};
+        let height=|x:f64,z:f64| {
+            let t=((x+z-53.0)/15.0).clamp(0.0,1.0);
+            (15.0*t*t*(3.0-2.0*t)+0.35*(x*0.31).sin()*(z*0.27).cos())as f32
+        };
+        let mut boundaries=Vec::new();
+        let mut geometry=Vec::new();
+        for cell in [(0,0),(1,0),(0,1)] {
+            let x0=cell.0 as f64*64.0;let z0=cell.1 as f64*64.0;
+            let heights=(0..N).flat_map(|j|(0..N).map(move|i|height(x0+i as f64*GRID,z0+j as f64*GRID))).collect();
+            let chunk=Chunk {cell,x0,z0,heights,road_d:vec![12.0;N*N],trees:vec![],rocks:vec![],grass:vec![],ferns:vec![],stumps:vec![]};
+            geometry.push(chunk_geometry(&chunk,height));
+        }
+        terrain_surface_normals(&mut geometry);
+        for (vertices,indices) in geometry {
+            let mut edges=HashMap::<(u32,u32),usize>::new();
+            for tri in indices.chunks_exact(3) {for i in 0..3 {let (a,b)=(tri[i],tri[(i+1)%3]);*edges.entry((a.min(b),a.max(b))).or_default()+=1;}}
+            let mut points=BTreeMap::new();let mut segments=BTreeSet::new();
+            for ((a,b),count) in edges {
+                if count!=1 {continue;}
+                let va=vertices[a as usize];let vb=vertices[b as usize];
+                let p=Vec3::from(va.pos);let q=Vec3::from(vb.pos);
+                if (p.x==64.0&&q.x==64.0)||(p.z==64.0&&q.z==64.0) {
+                    let pa=(p.x.to_bits(),p.z.to_bits());let pb=(q.x.to_bits(),q.z.to_bits());
+                    points.insert(pa,(va.pos[1].to_bits(),va.normal.map(f32::to_bits)));
+                    points.insert(pb,(vb.pos[1].to_bits(),vb.normal.map(f32::to_bits)));
+                    segments.insert((pa.min(pb),pa.max(pb)));
+                }
+            }
+            boundaries.push((points,segments));
+        }
+        for (other,axis) in [(1,0),(2,1)] {
+            let on_edge=|p:&(u32,u32)|if axis==0 {p.0==64.0f32.to_bits()}else{p.1==64.0f32.to_bits()};
+            let a_points:BTreeMap<_,_>=boundaries[0].0.iter().filter(|(p,_)|on_edge(p)).map(|(k,v)|(*k,*v)).collect();
+            let b_points:BTreeMap<_,_>=boundaries[other].0.iter().filter(|(p,_)|on_edge(p)).map(|(k,v)|(*k,*v)).collect();
+            assert!(a_points.len()>N,"fixture did not subdivide the shared cliff edge");
+            assert_eq!(a_points,b_points,"shared cliff positions/normals differ on axis {axis}");
+            let a_segments:BTreeSet<_>=boundaries[0].1.iter().filter(|(a,b)|on_edge(a)&&on_edge(b)).copied().collect();
+            let b_segments:BTreeSet<_>=boundaries[other].1.iter().filter(|(a,b)|on_edge(a)&&on_edge(b)).copied().collect();
+            assert_eq!(a_segments,b_segments,"shared cliff has a T junction on axis {axis}");
+        }
+    }
+
+    #[test]
+    fn refined_surface_preserves_actual_road_shoulder_contacts_across_generated_stages() {
+        use std::collections::HashMap;
+        let mut checked=0;let mut refined_chunks=0;
+        for seed in [1,7,31] {
+            let stage=Stage::generate(&mut gdcompat::Pcg::new(seed),800.0);
+            let road=builder::road(&stage);
+            let mut cache=HashMap::<(i32,i32),(Vec<Vertex>,Vec<u32>)>::new();
+            for side in [-1.0f32,1.0] {
+                let mut boundary:Vec<_>=road.verts.iter().zip(&road.uvs).filter(|(_,uv)|(uv[0]-side*1.25).abs()<1e-6).collect();
+                boundary.sort_by(|a,b|a.1[1].total_cmp(&b.1[1]));
+                for edge in boundary.windows(2) {
+                    for t in [0.25,0.5,0.75] {
+                        let a=edge[0].0;let b=edge[1].0;
+                        let p=Vec3::new(a.x,a.y,a.z).lerp(Vec3::new(b.x,b.y,b.z),t);
+                        let cell=((p.x/64.0).floor()as i32,(p.z/64.0).floor()as i32);
+                        let (vertices,indices)=cache.entry(cell).or_insert_with(|| {
+                            let c=builder::terrain_chunk(&stage,cell);
+                            let geometry=chunk_geometry(&c,|x,z|stage.height(x,z)as f32);
+                            refined_chunks+=usize::from(geometry.0.len()>N*N);geometry
+                        });
+                        let mut hit=None;
+                        for tri in indices.chunks_exact(3) {
+                            let a=Vec3::from(vertices[tri[0]as usize].pos);
+                            let b=Vec3::from(vertices[tri[1]as usize].pos);
+                            let c=Vec3::from(vertices[tri[2]as usize].pos);
+                            let d=(b.x-a.x)*(c.z-a.z)-(b.z-a.z)*(c.x-a.x);
+                            let u=((p.x-a.x)*(c.z-a.z)-(p.z-a.z)*(c.x-a.x))/d;
+                            let w=((b.x-a.x)*(p.z-a.z)-(b.z-a.z)*(p.x-a.x))/d;
+                            if u>=-1e-5 && w>=-1e-5 && u+w<=1.00001 {
+                                hit=Some(a.y+(b.y-a.y)*u+(c.y-a.y)*w);break;
+                            }
+                        }
+                        let h=hit.expect("rendered shoulder terrain must exist");
+                        assert!((h-p.y-0.003).abs()<0.001,"rendered road seam moved at {p:?} in seed {seed}: terrain {h}");
+                        checked+=1;
+                    }
+                }
+            }
+        }
+        assert!(checked>3000&&refined_chunks>3);
+        eprintln!("actual rendered road contacts: {checked} PASS across 3 stages; {refined_chunks} refined chunks");
+    }
+
+    #[test]
+    fn native_cliff_uses_one_material_and_preserves_macro_slope_through_clod() {
+        let height=|x:f64,z:f64|(x*1.8+(z*0.4).sin()*0.4)as f32;
+        let heights=(0..N).flat_map(|j|(0..N).map(move|i|height(i as f64*GRID,j as f64*GRID))).collect();
+        let c=Chunk {cell:(0,0),x0:0.0,z0:0.0,heights,road_d:vec![12.0;N*N],trees:vec![],rocks:vec![],grass:vec![],ferns:vec![],stumps:vec![]};
+        let mesh=chunk_mesh(&c,7,height);
+        assert!(mesh.clusters.iter().all(|cluster|cluster.material==7));
+        assert!(mesh.vertices.iter().all(|v|(1.0..=2.0).contains(&v.uv[1])));
+        assert!(mesh.vertices.iter().any(|v|(v.normal[1]-(v.uv[1]-1.0)).abs()>0.1),"macro geology must be independent of detailed normals");
+        assert!(mesh.root_triangles()<mesh.leaf_triangles(),"detail must retain distant cluster reduction");
+    }
+
+    #[test]
+    fn captured_cliff_normals_match_rendered_faces_without_moving_relief_or_road() {
+        let mut rng=gdcompat::Pcg::new(1);rng.next_u32();
+        let stage=Stage::generate(&mut rng,3000.0+sideways::stage::RUNOUT);
+        assert_eq!((stage.noise_seed,stage.detail_seed),(683407368,2033395789));
+        let mut geometry=Vec::new();
+        for z in -7..=-5 {for x in -3..=-1 {let c=builder::terrain_chunk(&stage,(x,z));geometry.push(chunk_geometry(&c,|x,z|stage.height(x,z)as f32));}}
+        let before=geometry.clone();
+        let started=std::time::Instant::now();let (count,bytes)=terrain_surface_normals(&mut geometry);
+        let mut tested=0usize;let mut changed=0usize;let mut shared=std::collections::HashMap::new();
+        for ((vertices,indices),(original,original_indices)) in geometry.iter().zip(&before) {
+            assert_eq!(indices,original_indices,"normal repair must not change topology");
+            for (v,old) in vertices.iter().zip(original) {
+                assert_eq!(v.pos.map(f32::to_bits),old.pos.map(f32::to_bits),"relief position changed");
+                assert_eq!(v.uv.map(f32::to_bits),old.uv.map(f32::to_bits),"material/collider attributes changed");
+                if v.uv[0]<=CLIFF_ROAD_GUARD {assert_eq!(v.normal,old.normal,"road normal changed");}
+                changed+=usize::from(v.normal!=old.normal);
+                let key=(v.pos[0].to_bits(),v.pos[2].to_bits());
+                if let Some(previous)=shared.insert(key,v.normal.map(f32::to_bits)) {assert_eq!(previous,v.normal.map(f32::to_bits),"chunk seam normal changed");}
+            }
+            for tri in indices.chunks_exact(3) {
+                let v=[vertices[tri[0]as usize],vertices[tri[1]as usize],vertices[tri[2]as usize]];
+                let p=v.map(|v|Vec3::from(v.pos));let face=(p[1]-p[0]).cross(p[2]-p[0]).normalize();
+                for vertex in v {if vertex.uv[0]>CLIFF_ROAD_GUARD&&vertex.uv[0]<35.0&&vertex.uv[1]-1.0<CLIFF_DETAIL_UP {
+                    assert!(Vec3::from(vertex.normal).dot(face)>=-2e-6,"detail normal points into rendered triangle at {:?}",vertex.pos);tested+=1;
+                }}
+            }
+        }
+        assert!(count>10000&&changed>10000&&tested>60000);
+        eprintln!("captured cliff normals: {count} shared, {tested} face incidences, {:.1} ms including invariants, temporary table <= {bytes} B",started.elapsed().as_secs_f64()*1000.0);
     }
 }

@@ -2405,7 +2405,9 @@ dependencies = [
 name = "render"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "bytemuck",
+ "cc",
  "glam 0.31.1",
  "glyphon",
  "image",

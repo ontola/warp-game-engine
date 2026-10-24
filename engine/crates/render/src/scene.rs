@@ -22,6 +22,8 @@ pub const GRASS: u32 = 64;
 pub const NO_AMBIENT_OCCLUSION: u32 = 128;
 /// Drawn by the sorted forward pass, never the opaque or shadow raster pass.
 pub const BLEND: u32 = 256;
+/// True leaf/needle geometry: thin-leaf lighting without alpha-tested cards.
+pub const THIN_FOLIAGE: u32 = 512;
 
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
@@ -99,6 +101,8 @@ pub const NO_SHADOW: u32 = 4;
 pub const LIVE_GRASS: u32 = 8;
 /// Ground-cover wind response without enabling a live distance transition.
 pub const WIND_GRASS: u32 = 16;
+/// A rigid vegetation part driven by the shared hierarchical GPU pose pass.
+pub const PART_WIND: u32 = 32;
 
 pub const MAX_SOLID_SEGMENTS: usize = 6;
 
@@ -191,11 +195,40 @@ pub struct MeshRef {
     pub sphere: [f32; 4],
 }
 
+/// Encoding of the RGB normal components in a source image. This must be
+/// supplied by the asset caller, never inferred from colour/profile metadata.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NormalEncoding {
+    /// Ordinary normal-map data: RGB already holds linear UNORM components.
+    #[default]
+    LinearUnorm,
+    /// The file applied the IEC sRGB transfer function to its UNORM components.
+    SrgbTransferred,
+}
+
+impl NormalEncoding {
+    fn decode(self, image: &mut image::RgbaImage) {
+        if self == Self::LinearUnorm { return; }
+        // Decode at source resolution, before any resize/mip filtering. The
+        // texture array remains linear RGBA8 UNORM; alpha is coverage/data.
+        let table: [u8; 256] = std::array::from_fn(|byte| {
+            let encoded = byte as f64 / 255.0;
+            let linear = if encoded <= 0.04045 { encoded / 12.92 }
+                else { ((encoded + 0.055) / 1.055).powf(2.4) };
+            (linear * 255.0).round() as u8
+        });
+        for pixel in image.pixels_mut() {
+            for channel in &mut pixel.0[..3] { *channel = table[*channel as usize]; }
+        }
+    }
+}
+
 /// Textures to put in the albedo array (all resized to one size).
 pub struct TextureSource {
     pub name: String,
     pub rgba: image::RgbaImage,
-    /// Tangent-space normal map (OpenGL convention, like Godot), if any.
+    /// Tangent-space normal map in linear UNORM (OpenGL convention), if any.
+    /// Source transfer encoding has already been removed before GPU mipmaps.
     pub normal: Option<image::RgbaImage>,
 }
 
@@ -213,16 +246,42 @@ pub struct Scene {
     pub car_materials: Vec<GpuCarMaterial>,
     pub blended_materials: HashMap<u32, BlendMaterial>,
     pub grass_ranges: Vec<crate::grass::GrassRange>,
+    /// Shared CPU residency / per-view GPU fade policy for source grass.
+    pub grass_detail: crate::vegetation_detail::DistanceProfile,
     /// Optional world-fixed terrain-following grass density field.
     pub far_grass: Option<crate::far_grass::FarGrassField>,
+    /// Maximum vertical displacement of TERRAIN source geometry from the
+    /// native ground field. Zero keeps strict solid-ground receiver tests.
+    /// Only ascending escape within one native-cell diagonal of the receiver
+    /// is permitted, independent of its position relative to grid boundaries;
+    /// subsequent terrain, grass and road occluders remain unchanged.
+    pub terrain_visual_offset_m: f32,
     /// Optional bounded validation forest; absent in normal live scenes.
     pub voxel_forest: Option<crate::foliage_volume_data::GpuForest>,
+    /// Explicit projected voxel LOD experiment; zero keeps finest-level mode.
+    pub voxel_lod_pixels: f32,
+    /// Experimental GPU worklist: integrate only tiles with volume candidates.
+    /// Defaults to the full-screen reference until image/timing validation.
+    pub voxel_active_tiles: bool,
+    /// Optional exact source/volume pairs, selected independently for each
+    /// camera. Empty preserves static validation-forest replacement.
+    pub foliage_representations: Vec<crate::foliage_representation::Binding>,
+    /// Optical evidence is required unless the caller explicitly opts into
+    /// the bounded procedural foliage experiment.
+    pub foliage_representation_policy: crate::foliage_representation::Policy,
+    /// Optional bounded shared branch poses for both source and voxel parts.
+    pub part_wind: Vec<crate::part_wind::PartWind>,
+    /// Shared baked rigid-part clips. Optional, with bounded actor/part pools.
+    pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
     /// Game data for materials (Sideways: road surface per 2 m row).
     pub aux: Vec<u32>,
     /// Equirectangular HDR sky, linear RGB.
     pub sky: Option<(u32, u32, Vec<[f32; 4]>)>,
+    /// Absolute, sun-disc-free radiance with its solar state supplied by the
+    /// atmosphere bake. Bypass HDRI brightest-pixel rotation and lux rescaling.
+    pub sky_physical: bool,
 }
 
 impl Scene {
@@ -353,13 +412,23 @@ impl Scene {
 
     /// Load an image file into the texture array; returns its layer.
     pub fn add_texture(&mut self, path: &std::path::Path) -> Result<i32, String> {
+        self.add_texture_with_normal_encoding(path, NormalEncoding::LinearUnorm)
+    }
+
+    /// Load an albedo and its sibling normal map with explicit source encoding.
+    /// Only the normal RGB is decoded; albedo and normal alpha stay untouched.
+    pub fn add_texture_with_normal_encoding(&mut self, path: &std::path::Path, encoding: NormalEncoding) -> Result<i32, String> {
         // The normal map sits beside the albedo: x_albedo.jpg, x_normal.jpg (or .png).
         let normal_path = path.file_name().and_then(|f| f.to_str()).filter(|f| f.contains("_albedo.")).and_then(|f| {
             let stem = f.split("_albedo.").next().unwrap_or(f);
             ["jpg", "png"].iter().map(|e| path.with_file_name(format!("{stem}_normal.{e}"))).find(|p| p.exists())
         });
         let (img, normal) = std::thread::scope(|s| {
-            let n = s.spawn(|| normal_path.and_then(|p| image::open(p).ok()).map(|i| i.to_rgba8()));
+            let n = s.spawn(|| normal_path.and_then(|p| image::open(p).ok()).map(|i| {
+                let mut normal = i.to_rgba8();
+                encoding.decode(&mut normal);
+                normal
+            }));
             (image::open(path), n.join().unwrap())
         });
         let img = img.map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
@@ -392,6 +461,69 @@ impl Scene {
             self.vertices.len(),
             self.textures.len()
         )
+    }
+}
+
+#[cfg(test)]
+mod normal_encoding_tests {
+    use super::NormalEncoding;
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn normal_encoding_srgb_neutral_and_alpha() {
+        let mut image = RgbaImage::from_fn(256, 1, |x, _| Rgba([188, 188, 255, x as u8]));
+        NormalEncoding::SrgbTransferred.decode(&mut image);
+        for (x, pixel) in image.pixels().enumerate() {
+            assert_eq!(pixel.0, [128, 128, 255, x as u8]);
+        }
+    }
+
+    #[test]
+    fn normal_encoding_uses_iec_piecewise_transfer() {
+        // Independent reference byte values include both sides of the toe.
+        let encoded = [0, 10, 11, 64, 128, 188, 255];
+        let expected = [0, 1, 1, 13, 55, 128, 255];
+        let mut image = RgbaImage::from_fn(7, 1, |x, _| Rgba([encoded[x as usize]; 4]));
+        NormalEncoding::SrgbTransferred.decode(&mut image);
+        for (i, pixel) in image.pixels().enumerate() {
+            assert_eq!(pixel.0, [expected[i], expected[i], expected[i], encoded[i]]);
+        }
+    }
+
+    #[test]
+    fn normal_encoding_tilted_vectors_round_trip() {
+        let vectors = [[0.36f64, 0.48, 0.8], [-0.6, 0.0, 0.8],
+            [0.0, -0.8, 0.6], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]];
+        let forward = |signed: f64| {
+            let linear = signed * 0.5 + 0.5;
+            let encoded = if linear <= 0.0031308 { linear * 12.92 }
+                else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 };
+            (encoded * 255.0).round() as u8
+        };
+        for vector in vectors {
+            let mut image = RgbaImage::from_pixel(1, 1,
+                Rgba([forward(vector[0]), forward(vector[1]), forward(vector[2]), 73]));
+            NormalEncoding::SrgbTransferred.decode(&mut image);
+            for (channel, expected) in vector.into_iter().enumerate() {
+                let actual = image.get_pixel(0, 0)[channel] as f64 * (2.0 / 255.0) - 1.0;
+                // Source transfer quantization plus linear UNORM quantization.
+                assert!((actual - expected).abs() <= 0.013, "{vector:?}: {channel} = {actual}");
+            }
+            assert_eq!(image.get_pixel(0, 0)[3], 73);
+        }
+    }
+
+    #[test]
+    fn normal_encoding_linear_is_byte_identical_including_fallback() {
+        assert_eq!(NormalEncoding::default(), NormalEncoding::LinearUnorm);
+        let mut image = RgbaImage::from_fn(256, 1, |x, _|
+            Rgba([x as u8, (255 - x) as u8, (x * 37) as u8, (x * 71) as u8]));
+        let original = image.clone();
+        NormalEncoding::LinearUnorm.decode(&mut image);
+        assert_eq!(image, original);
+        let mut flat = RgbaImage::from_pixel(1, 1, Rgba([128, 128, 255, 255]));
+        NormalEncoding::LinearUnorm.decode(&mut flat);
+        assert_eq!(flat.get_pixel(0, 0).0, [128, 128, 255, 255]);
     }
 }
 

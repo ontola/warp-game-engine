@@ -147,7 +147,10 @@ fn scatter(field: &Field<'_>, cameras: &[Vec3]) -> (Vec<Tuft>, usize) {
     (tufts, requested)
 }
 
-pub(crate) fn mesh(material: u32) -> ClusterMesh {
+/// Shared authored clump for near rendering and offline derived volumes.
+/// Its UP vertex normals are legacy lighting proxies, not blade normals.
+/// The current renderer applies its common statistical leaf BRDF instead.
+pub(crate) fn source_geometry() -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for card in 0..3 {
@@ -162,6 +165,11 @@ pub(crate) fn mesh(material: u32) -> ClusterMesh {
         }
         indices.extend([0, 2, 1, 1, 2, 3].map(|i| base + i));
     }
+    (vertices, indices)
+}
+
+pub(crate) fn mesh(material: u32) -> ClusterMesh {
+    let (vertices, indices) = source_geometry();
     ClusterMesh::build(&[Part { vertices: &vertices, indices: &indices, material }])
 }
 
@@ -188,8 +196,13 @@ pub fn add(scene: &mut Scene, chunks: &[Chunk], cameras: &[Vec3], root: &Path, m
 }
 
 pub fn add_with_vegetation(scene: &mut Scene, chunks: &[Chunk], cameras: &[Vec3], root: &Path, mesh_names: &mut Vec<String>, vegetation: sideways::vegetation::Vegetation) -> Result<String, String> {
+    add_with_exclusion(scene,chunks,cameras,root,mesh_names,vegetation,None)
+}
+
+pub(crate) fn add_with_exclusion(scene: &mut Scene, chunks: &[Chunk], cameras: &[Vec3], root: &Path, mesh_names: &mut Vec<String>, vegetation: sideways::vegetation::Vegetation, excluded: Option<crate::live_ground_cover::CellRect>) -> Result<String, String> {
     let t = std::time::Instant::now();
-    let (tufts, requested) = scatter(&Field::new(chunks), cameras);
+    let (mut tufts, requested) = scatter(&Field::new(chunks), cameras);
+    if let Some(rect)=excluded {tufts.retain(|tuft|!rect.contains(tuft.id));}
     let layer = scene.add_image("Poly Haven grass_medium_01 selected CC0 clump", photo(root)?);
     let material = scene.add_material(Material { tint: vegetation.grass_tint(), layer, roughness: 0.85, flags: ALPHA_TEST | TWO_SIDED | GRASS, scale: 1.0, metal: 0.0 });
     let id = scene.add_mesh(&mesh(material));

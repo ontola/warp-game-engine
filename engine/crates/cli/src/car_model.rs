@@ -2,7 +2,7 @@
 //! in the player's colour, four wheels placed by the suspension. Their
 //! materials are procedural car surfaces (car_look.rs, car_material.wgsl).
 
-use crate::car_look::{Kind, Looks, Slot};
+use crate::car_look::{Kind, LampRole, Looks, Slot};
 use glam::{Affine3A, Quat, Vec3};
 use render::cluster::{ClusterMesh, Part, Vertex};
 use render::scene::{Material, Scene};
@@ -22,6 +22,7 @@ pub struct Wheel {
 }
 
 /// A glTF material as authored, before it becomes scene materials.
+#[derive(Clone)]
 struct Authored {
     material: Material,
     /// glTF alpha blend: (alpha, double sided).
@@ -35,6 +36,20 @@ struct Authored {
 struct Node {
     name: String,
     parts: Vec<(Vec<Vertex>, Vec<u32>, usize)>,
+}
+
+/// Imported body-space bounds, measured from the bundled GLBs. A shared
+/// lights/glass material also covers windows and front lamps: never tag it
+/// wholesale. The selected indices are moved, not copied or offset.
+fn rear_lens_role(model:&str, material:&str, vertices:&[Vertex], tri:&[u32]) -> Option<LampRole> {
+    if !tri.iter().all(|&i|vertices.get(i as usize).is_some_and(|v|
+        v.pos.iter().all(|x|x.is_finite()) && v.pos[2]>=1.65 && (0.24..=0.65).contains(&v.pos[1]))) {return None;}
+    match (model,material) {
+        ("asti_stradale","UCB_Lights_and_Glass.003")|("mv6","UCB_Lights_and_Glass.002")=>Some(LampRole::RearAtlas),
+        ("toyama_xr","Body_Glass_Red.001")=>Some(LampRole::Red),
+        ("toyama_xr","Body_Glass.001")=>Some(LampRole::Reverse),
+        _=>None,
+    }
 }
 
 /// min y, max y, min z, max z of some vertices.
@@ -126,13 +141,27 @@ pub fn load(scene: &mut Scene, path: &std::path::Path, car: usize, game_colour: 
             let nrm: Vec<[f32; 3]> = reader.read_normals().map(|n| n.collect()).unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; pos.len()]);
             let uv: Vec<[f32; 2]> = reader.read_tex_coords(0).map(|t| t.into_f32().collect()).unwrap_or_else(|| vec![[0.0; 2]; pos.len()]);
             let idx: Vec<u32> = reader.read_indices().map(|i| i.into_u32().collect()).unwrap_or_else(|| (0..pos.len() as u32).collect());
-            let verts = pos
+            let verts: Vec<Vertex> = pos
                 .iter()
                 .zip(&nrm)
                 .zip(&uv)
                 .map(|((p, n), t)| Vertex { pos: local.transform_point3(Vec3::from(*p)).to_array(), normal: local.transform_vector3(Vec3::from(*n)).normalize_or(Vec3::Y).to_array(), uv: *t })
                 .collect();
-            parts.push((verts, idx, prim.material().index().unwrap_or(0)));
+            let gi=prim.material().index().unwrap_or(0);
+            let mut ordinary=Vec::new();let mut lens=Vec::new();let mut role=None;
+            for tri in idx.chunks_exact(3) {
+                let selected=if name.starts_with("body") {rear_lens_role(&model,prim.material().name().unwrap_or(""),&verts,tri)} else {None};
+                if let Some(selected)=selected {role=Some(selected);lens.extend_from_slice(tri);}else{ordinary.extend_from_slice(tri);}
+            }
+            if let Some(role)=role {
+                let mut a=authored.get(gi).ok_or("lamp primitive without material")?.clone();
+                a.part=role.part().into();a.kind=Kind::Lamp;
+                let lamp_id=authored.len();authored.push(a);
+                // Both sets retain exact source positions, normals and UVs;
+                // their triangle counts sum to the original primitive count.
+                parts.push((verts.clone(),lens,lamp_id));
+            }
+            if !ordinary.is_empty(){parts.push((verts,ordinary,gi));}
         }
         nodes.push(Node { name, parts });
     }
@@ -173,7 +202,7 @@ pub fn load(scene: &mut Scene, path: &std::path::Path, car: usize, game_colour: 
                 None => {
                     let mut material = a.material;
                     // Glass keeps the forward pass's own shading.
-                    if a.blend.is_none() {
+                    if a.blend.is_none() || a.kind==Kind::Lamp {
                         let slot = Slot {
                             car,
                             model: model.clone(),
@@ -310,6 +339,38 @@ pub fn update(scene: &mut Scene, first: usize, m: &CarMeshes, pose: Affine3A, ri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rear_lenses_are_original_triangles_and_do_not_include_windows_or_fronts() {
+        for (model,expected) in [("asti_stradale",[252,0,0]),("mv6",[76,0,0]),("toyama_xr",[0,276,144])] {
+            let path=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/cars").join(format!("{model}.glb"));
+            let bytes=std::fs::read(path).unwrap();let glb=gltf::Gltf::from_slice_without_validation(&bytes).unwrap();let blob=glb.blob.as_deref().unwrap();
+            let node=glb.nodes().find(|n|n.name().is_some_and(|s|s.starts_with("body"))).unwrap();
+            let (t,r,s)=node.transform().decomposed();let xf=Affine3A::from_scale_rotation_translation(Vec3::from(s),Quat::from_array(r),Vec3::from(t));
+            let mut counts=[0;3];let mut sides=[[0;2];3];
+            for prim in node.mesh().unwrap().primitives() {
+                let reader=prim.reader(|_|Some(blob));
+                let vertices:Vec<_>=reader.read_positions().unwrap().map(|p|Vertex{pos:xf.transform_point3(Vec3::from(p)).to_array(),normal:[0.0;3],uv:[0.0;2]}).collect();
+                let indices:Vec<_>=reader.read_indices().unwrap().into_u32().collect();
+                let mut selected=0;let mut ordinary=0;
+                for tri in indices.chunks_exact(3) {
+                    if let Some(role)=rear_lens_role(model,prim.material().name().unwrap_or(""),&vertices,tri) {
+                        counts[role as usize]+=1;selected+=1;
+                        let x=tri.iter().map(|i|vertices[*i as usize].pos[0]).sum::<f32>();sides[role as usize][usize::from(x>0.0)]+=1;
+                    }else{ordinary+=1;}
+                }
+                assert_eq!((selected+ordinary)*3,indices.len(),"source triangles lost or duplicated");
+            }
+            assert_eq!(counts,expected,"{model}: source lens mapping changed");
+            for (n,side) in counts.into_iter().zip(sides) {if n>0{assert!(side.iter().all(|n|*n>0));}}
+        }
+        let vertex=|z,y|Vertex{pos:[0.5,y,z],normal:[0.0;3],uv:[0.0;2]};
+        for (model,material) in [("asti_stradale","UCB_Lights_and_Glass.003"),("toyama_xr","Body_Glass.001")] {
+            assert!(rear_lens_role(model,material,&[vertex(-1.9,0.4);3],&[0,1,2]).is_none());
+            assert!(rear_lens_role(model,material,&[vertex(1.4,0.9);3],&[0,1,2]).is_none());
+        }
+        assert!(rear_lens_role("custom","UCB_Lights_and_Glass.003",&[vertex(1.8,0.4);3],&[0,1,2]).is_none());
+    }
 
     /// A cube's edges are convex; turned inside out they are concave.
     #[test]

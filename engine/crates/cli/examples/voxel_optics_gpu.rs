@@ -71,14 +71,14 @@ fn asset(medium: &Medium) -> VoxelAsset {
     for level in 0..3 {
         levels.push(VoxelLevel { cell_size, dimensions, voxels: cells.iter().map(|(&coord, &area)| Voxel {
             coord, surface_area: area * 2.0, projected_area: [area; 3], directional_area: [area; 13],
-            albedo: medium.color, roughness: 0.9, normal_weights: [1.0 / 6.0; 6],
+            albedo: medium.color, roughness: 0.9, leaf_fraction: 0.0, normal_weights: [1.0 / 6.0; 6],
         }).collect() });
         if level == 2 { break; }
         let mut parents = BTreeMap::new();
         for (coord, area) in cells { *parents.entry(coord.map(|v| v / 2)).or_insert(0.0) += area; }
         cells = parents; dimensions = dimensions.map(|v| v.div_ceil(2)); cell_size *= 2.0;
     }
-    VoxelAsset { origin: ORIGIN, source_bounds: [ORIGIN, [1.5, 1.5, 3.0]], levels, stats: BakeStats::default() }
+    VoxelAsset { projection_measure: Default::default(), origin: ORIGIN, source_bounds: [ORIGIN, [1.5, 1.5, 3.0]], levels, stats: BakeStats::default() }
 }
 fn material() -> Material {
     Material { tint: [0.2; 3], layer: -1, roughness: 0.9, flags: TWO_SIDED, scale: 1.0, metal: 0.0 }

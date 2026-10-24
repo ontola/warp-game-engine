@@ -2,7 +2,8 @@
 //!
 //! Integrates all overlapping crown densities together, clipped by opaque
 //! scene depth. Crowns write C/T, never a false opaque first-hit depth. Current
-//! first-level and 256-tree limits are deliberate, not full-forest LOD support.
+//! 256-part limit is deliberate, not full-forest streaming support. Optional
+//! per-view projected mip selection shares the same immutable asset pyramid.
 use crate::{Gpu, Scene};
 use bytemuck::{Pod, Zeroable};
 use std::{sync::Mutex, time::Duration};
@@ -11,6 +12,15 @@ use wgpu::util::DeviceExt;
 const TILE: u32 = 16;
 const CANDIDATES: u32 = 64;
 const COUNTER_BYTES: u64 = 48;
+// Volume shading only needs owner transforms and shared grass/headlight inputs.
+// Reusing the entire mesh scene layout also counts unused mesh/car buffers
+// against WebGPU's per-stage limit (10 scene + 7 volume = 17). Keep this
+// interface small instead of increasing the requested hardware limit.
+pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 13, 14, 15, 16, 17, 18];
+pub(crate) const MAX_VIEW_GROUPS: usize = 256;
+pub(crate) fn default_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] {
+    [[1, u32::MAX, 0, 0]; MAX_VIEW_GROUPS]
+}
 #[derive(Clone, Debug, Default)]
 pub struct VoxelViewDiagnostics {
     pub candidate_overflow_tiles: u32,
@@ -25,12 +35,17 @@ pub struct VoxelViewDiagnostics {
     /// Complete scan fallback, not dropped overlapping density.
     pub active_cache_overflow_rays: u32,
     pub max_empty_brick_skips: u32,
+    /// Largest occupied sample's fractional mip, in units of 1/256 level.
+    pub max_occupied_lod_x256: u32,
+    /// Rays containing nonzero density sampled beyond the finest mip.
+    pub occupied_coarse_mip_rays: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Config {
     size_count: [u32; 4],
     march: [f32; 4],
+    dispatch: [u32; 4],
 }
 struct Targets {
     size: (u32, u32),
@@ -38,9 +53,12 @@ struct Targets {
     bind: wgpu::BindGroup,
     composite: wgpu::BindGroup,
     counters: wgpu::Buffer,
+    jobs: wgpu::Buffer,
+    indirect: wgpu::Buffer,
 }
 pub(crate) struct VoxelRenderer {
     tiles: wgpu::ComputePipeline,
+    clear: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
     composite: wgpu::RenderPipeline,
     data_layout: wgpu::BindGroupLayout,
@@ -49,6 +67,8 @@ pub(crate) struct VoxelRenderer {
     count: u32,
     step: f32,
     empty_skip: bool,
+    lod_pixels: f32,
+    active_tiles: bool,
     owners: Vec<u32>,
     targets: Mutex<Vec<Option<Targets>>>,
 }
@@ -64,14 +84,18 @@ pub(crate) fn shader_source() -> String {
 /// Arbitrary externally constructed levels may not form the baker's pyramid;
 /// those assets still render through the unchanged fine sampling path.
 fn valid_empty_skip_hierarchy(forest: &crate::foliage_volume_data::GpuForest) -> bool {
+    valid_skip_levels(forest, false)
+}
+fn valid_skip_levels(forest: &crate::foliage_volume_data::GpuForest, all_levels: bool) -> bool {
     let mut checked = std::collections::HashSet::new();
     for tree in &forest.instances {
-        let first = tree.meta[1] as usize;
         let count = tree.meta[2] as usize;
         if count == 0 {
             return false;
         }
-        let relative = (count - 1).min(2);
+        for selected in 0..if all_levels { count } else { 1 } {
+        let first = tree.meta[1] as usize + selected;
+        let relative = (count - selected - 1).min(2);
         if !checked.insert((first, relative)) {
             continue;
         }
@@ -116,6 +140,7 @@ fn valid_empty_skip_hierarchy(forest: &crate::foliage_volume_data::GpuForest) ->
                 }
             }
         }
+        }
     }
     true
 }
@@ -129,15 +154,19 @@ pub(crate) fn replacement_materials(scene: &Scene) -> Vec<u32> {
             let owner = tree.meta[0] as usize;
             let material = tree.meta[3];
             assert!(
-                owner < scene.instances.len() && (material as usize) < scene.materials.len(),
+                owner < scene.instances.len() && (material == crate::foliage_volume_data::ALL_MATERIALS || (material as usize) < scene.materials.len()),
                 "invalid voxel replacement owner/material"
             );
+            let replacement = if material == crate::foliage_volume_data::ALL_MATERIALS { u32::MAX } else { material + 1 };
             assert!(
-                result[owner] == 0 || result[owner] == material + 1,
+                result[owner] == 0 || result[owner] == replacement,
                 "one owner cannot replace two different crown materials"
             );
-            result[owner] = material + 1;
+            result[owner] = replacement;
         }
+    }
+    for binding in &scene.foliage_representations {
+        result[binding.owner as usize] = 0x8000_0000 | binding.volume;
     }
     result
 }
@@ -169,7 +198,11 @@ impl VoxelRenderer {
             upload("voxel levels", bytemuck::cast_slice(&forest.levels)),
             upload("voxel indices", bytemuck::cast_slice(&forest.indices)),
             upload("voxel cells", bytemuck::cast_slice(&forest.cells)),
-            upload("voxel trees", bytemuck::cast_slice(&forest.instances)),
+            gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("voxel trees"),
+                contents: bytemuck::cast_slice(&forest.instances),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            }),
         ];
         // Both Frobenius and sqrt(matrix 1-norm * infinity-norm) bound
         // inverse-ray stretch. Their minimum is still conservative and avoids
@@ -199,7 +232,24 @@ impl VoxelRenderer {
             })
             .fold(f32::INFINITY, f32::min);
         assert!(step.is_finite() && step > 0.0, "invalid voxel march step");
-        let empty_skip = valid_empty_skip_hierarchy(forest);
+        let lod_pixels = scene.voxel_lod_pixels;
+        assert!(lod_pixels.is_finite() && lod_pixels >= 0.0, "invalid voxel pixel error");
+        // Dynamic LOD assumes the baker's consecutive dyadic mip levels.
+        // Unrelated user-constructed grids must not silently select nonsense.
+        if lod_pixels > 0.0 {
+            for tree in &forest.instances {
+                let levels = &forest.levels[tree.meta[1] as usize..][..tree.meta[2] as usize];
+                assert!(!levels.is_empty(), "voxel LOD requires at least one level");
+                for pair in levels.windows(2) {
+                    assert!(pair[0].origin_cell[..3] == pair[1].origin_cell[..3]
+                        && pair[0].origin_cell[3] * 2.0 == pair[1].origin_cell[3]
+                        && (0..3).all(|axis| pair[0].dims_offset[axis].div_ceil(2) == pair[1].dims_offset[axis]),
+                        "voxel LOD requires consecutive shared-origin mip levels");
+                }
+            }
+        }
+        let empty_skip = if lod_pixels > 0.0 { valid_skip_levels(forest, true) }
+            else { valid_empty_skip_hierarchy(forest) };
         let uniform = wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
@@ -252,6 +302,8 @@ impl VoxelRenderer {
                     },
                 ),
                 (7, uniform),
+                (8, storage(false)),
+                (9, uniform),
             ],
             wgpu::ShaderStages::COMPUTE,
         );
@@ -284,7 +336,12 @@ impl VoxelRenderer {
                 })
         };
         let tiles = compute("voxel_tiles");
-        let integrate = compute("voxel_integrate");
+        let clear = compute("voxel_clear");
+        let integrate = compute(if scene.voxel_active_tiles {
+            "voxel_integrate_active"
+        } else {
+            "voxel_integrate"
+        });
         let composite_layout = layout(
             "voxel composite",
             &[(0, unfiltered)],
@@ -334,6 +391,7 @@ impl VoxelRenderer {
             });
         Some(Self {
             tiles,
+            clear,
             integrate,
             composite,
             data_layout,
@@ -342,10 +400,15 @@ impl VoxelRenderer {
             count: forest.instances.len() as u32,
             step,
             empty_skip,
+            lod_pixels,
+            active_tiles: scene.voxel_active_tiles,
             owners: forest.instances.iter().map(|t| t.meta[0]).collect(),
             targets: Mutex::new(Vec::new()),
         })
     }
+    /// Shared rigid-part compute writes poses before volume tile/bin passes.
+    /// Asset grids and cells remain immutable; the 96-byte tree layout is unchanged.
+    pub(crate) fn tree_buffer(&self) -> &wgpu::Buffer { &self.data[3] }
     pub(crate) fn contains_owner_range(&self, first: usize, count: usize) -> bool {
         self.owners
             .iter()
@@ -356,7 +419,7 @@ impl VoxelRenderer {
         targets.truncate(count);
         targets.resize_with(count, || None);
     }
-    fn targets(&self, gpu: &Gpu, size: (u32, u32)) -> Targets {
+    fn targets(&self, gpu: &Gpu, size: (u32, u32), selection: &wgpu::Buffer) -> Targets {
         let layer = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("voxel C and alpha"),
             size: wgpu::Extent3d {
@@ -389,13 +452,31 @@ impl VoxelRenderer {
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Header: dispatch xyz, active count; then one tile index per job.
+        // Keep indirect arguments separate: the integration pass reads jobs
+        // as storage, which cannot alias an indirect-dispatch argument buffer.
+        let jobs = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("voxel active tile worklist"),
+            size: (4 + tile_count) * 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let indirect = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("voxel active tile indirect arguments"),
+            size: 12,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let config = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel config"),
                 contents: bytemuck::bytes_of(&Config {
                     size_count: [size.0, size.1, size.0.div_ceil(TILE), self.count],
-                    march: [self.step, 1024.0, u32::from(self.empty_skip) as f32, 0.0],
+                    march: [self.step, 1024.0, u32::from(self.empty_skip) as f32, self.lod_pixels],
+                    dispatch: [u32::from(self.active_tiles), 0, 0, 0],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -435,6 +516,11 @@ impl VoxelRenderer {
                     binding: 7,
                     resource: config.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: jobs.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry { binding: 9, resource: selection.as_entire_binding() },
             ],
         });
         let composite = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -451,6 +537,8 @@ impl VoxelRenderer {
             bind,
             composite,
             counters,
+            jobs,
+            indirect,
         }
     }
     pub(crate) fn render(
@@ -462,15 +550,22 @@ impl VoxelRenderer {
         scene: &wgpu::BindGroup,
         view: &wgpu::BindGroup,
         hdr: &wgpu::TextureView,
+        selection: &wgpu::Buffer,
         times: [Option<(&wgpu::QuerySet, u32)>; 3],
     ) {
         let mut targets = self.targets.lock().unwrap();
         if !targets[index].as_ref().is_some_and(|t| t.size == size) {
-            targets[index] = Some(self.targets(gpu, size));
+            targets[index] = Some(self.targets(gpu, size, selection));
         }
         let target = targets[index].as_ref().unwrap();
         encoder.clear_buffer(&target.counters, 0, None);
+        if self.active_tiles {
+            encoder.clear_buffer(&target.jobs, 0, Some(16));
+        }
         for (stage, pipeline) in [&self.tiles, &self.integrate].into_iter().enumerate() {
+            if stage == 1 && self.active_tiles {
+                encoder.copy_buffer_to_buffer(&target.jobs, 0, &target.indirect, 0, 12);
+            }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some(if stage == 0 {
                     "voxel tiles"
@@ -485,16 +580,26 @@ impl VoxelRenderer {
                     }
                 }),
             });
-            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, scene, &[]);
             pass.set_bind_group(1, view, &[]);
             pass.set_bind_group(2, &target.bind, &[]);
+            if stage == 0 && self.active_tiles {
+                // Count the necessary clear in the tile-pass GPU timestamp.
+                // This entry point never reaches the large per-ray arrays.
+                pass.set_pipeline(&self.clear);
+                pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
+            }
+            pass.set_pipeline(pipeline);
             let dims = if stage == 0 {
                 (size.0.div_ceil(TILE), size.1.div_ceil(TILE))
             } else {
                 size
             };
-            pass.dispatch_workgroups(dims.0.div_ceil(8), dims.1.div_ceil(8), 1);
+            if stage == 1 && self.active_tiles {
+                pass.dispatch_workgroups_indirect(&target.indirect, 0);
+            } else {
+                pass.dispatch_workgroups(dims.0.div_ceil(8), dims.1.div_ceil(8), 1);
+            }
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("voxel composite"),
@@ -581,6 +686,8 @@ impl VoxelRenderer {
                         max_active_volumes: value(7),
                         active_cache_overflow_rays: value(8),
                         max_empty_brick_skips: value(9),
+                        max_occupied_lod_x256: value(10),
+                        occupied_coarse_mip_rays: value(11),
                     }
                 })
                 .collect()
@@ -656,6 +763,100 @@ impl VoxelRenderer {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn volume_entry_points_fit_reduced_scene_binding_contract() {
+        let source = super::shader_source();
+        let module = naga::front::wgsl::parse_str(&source).unwrap();
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all()).validate(&module).unwrap();
+        for (i, entry) in module.entry_points.iter().enumerate()
+            .filter(|(_, e)| e.name.starts_with("voxel_")) {
+            let uses = info.get_entry_point(i);
+            let mut storage_count = 0;
+            for (handle, global) in module.global_variables.iter() {
+                if uses[handle].is_empty() { continue; }
+                if let Some(binding) = &global.binding {
+                    if binding.group == 0 {
+                        assert!(super::SCENE_BINDINGS.contains(&binding.binding),
+                            "{} unexpectedly uses scene binding {} ({:?})", entry.name, binding.binding, global.name);
+                    }
+                    if matches!(global.space, naga::AddressSpace::Storage { .. }) { storage_count += 1; }
+                }
+            }
+            // One owner transform buffer + seven bounded volume buffers.
+            assert!(storage_count <= 8, "{} uses {storage_count} storage buffers", entry.name);
+        }
+    }
+
+    #[test]
+    fn active_tile_jobs_cover_exact_pixels_for_sparse_odd_and_multirow_views() {
+        // Independent reference is a pixel mask of the candidate tile set.
+        // Exercise partial edge tiles, sparse reordered jobs and >65535 jobs,
+        // where a one-dimensional indirect dispatch would exceed GPU limits.
+        for (width, height, sparse) in [(1u32, 1u32, false), (257, 193, true),
+            (1916, 1076, true), (4097, 4097, false)] {
+            let tiles_w = width.div_ceil(16);
+            let tiles_h = height.div_ceil(16);
+            let jobs: Vec<u32> = (0..tiles_w * tiles_h).rev()
+                .filter(|i| !sparse || i % 3 == 1).collect();
+            let count = jobs.len() as u32;
+            let dispatch = [count.min(65535), 4 * count.div_ceil(65535), 1];
+            assert!(dispatch.into_iter().all(|n| n <= 65535));
+            let mut visits = vec![0u8; (width * height) as usize];
+            for gy in 0..dispatch[1] {
+                for gx in 0..dispatch[0] {
+                    let job = gx + (gy / 4) * 65535;
+                    if job >= count { continue; }
+                    let tile = jobs[job as usize];
+                    let base_x = (tile % tiles_w) * 16 + (gy & 1) * 8;
+                    let base_y = (tile / tiles_w) * 16 + ((gy >> 1) & 1) * 8;
+                    for ly in 0..8 {
+                        for lx in 0..8 {
+                            let (x, y) = (base_x + lx, base_y + ly);
+                            if x < width && y < height {
+                                visits[(y * width + x) as usize] += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            for y in 0..height {
+                for x in 0..width {
+                    let tile = (y / 16) * tiles_w + x / 16;
+                    assert_eq!(visits[(y * width + x) as usize],
+                        u8::from(!sparse || tile % 3 == 1), "pixel ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_tile_indirect_header_handles_empty_and_row_boundaries() {
+        for count in [0u32, 1, 65534, 65535, 65536, 131070, 131071, 1_048_576] {
+            // Mirror the parallel atomic reduction, then prove the dispatch
+            // contains exactly the expected jobs, with four groups per job.
+            let mut header = [0u32; 3];
+            for job in (0..count).rev() {
+                header[0] = header[0].max((job + 1).min(65535));
+                header[1] = header[1].max(4 * (job / 65535 + 1));
+                header[2] = 1;
+            }
+            if count == 0 {
+                assert_eq!(header, [0; 3]);
+                continue;
+            }
+            let mut visits = vec![0u8; count as usize];
+            for y in 0..header[1] {
+                for x in 0..header[0] {
+                    let job = x + (y / 4) * 65535;
+                    if job < count { visits[job as usize] += 1; }
+                }
+            }
+            assert!(visits.into_iter().all(|v| v == 4));
+            assert!(header.into_iter().all(|n| n <= 65535));
+        }
+    }
+
+    #[test]
     fn empty_skip_requires_real_parent_occupancy_and_matching_grid() {
         use crate::foliage_volume_data::{GpuForest, GpuLevel, GpuTree};
         let mut forest = GpuForest::default();
@@ -683,6 +884,14 @@ mod tests {
         forest.indices[coarse_offset] = 3;
         forest.indices[coarse_offset + 7] = 4;
         assert!(super::valid_empty_skip_hierarchy(&forest));
+        // The old fine-only proof is insufficient once mip 1 can be shaded:
+        // separately occupied intermediate cells also need coarse parents.
+        assert!(super::valid_skip_levels(&forest, true));
+        let middle_offset = forest.levels[1].dims_offset[3] as usize;
+        forest.indices[middle_offset + 2] = 5;
+        assert!(super::valid_empty_skip_hierarchy(&forest));
+        assert!(!super::valid_skip_levels(&forest, true));
+        forest.indices[middle_offset + 2] = 0;
         forest.indices[coarse_offset + 7] = 0;
         assert!(!super::valid_empty_skip_hierarchy(&forest));
         forest.indices[coarse_offset + 7] = 4;
@@ -751,11 +960,93 @@ mod tests {
         assert_eq!(integrate(&[(0.0, 100.0, 3.0)]), (0.0, 1.0));
     }
     #[test]
+    fn projected_mip_bound_covers_rotated_sheared_cells_and_four_view_sizes() {
+        use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
+        // Independent oracle: project all eight real corners, not the
+        // diameter approximation used for the shader's LOD choice.
+        let sizes = [(3840.0, 2160.0), (1916.0, 1076.0), (960.0, 1080.0), (640.0, 360.0)];
+        let transforms = [Mat3::IDENTITY,
+            Mat3::from_quat(Quat::from_euler(glam::EulerRot::YXZ, 0.71, -0.3, 0.24))
+                * Mat3::from_diagonal(Vec3::new(0.3, 2.0, 1.4)),
+            Mat3::from_cols(Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.7, 1.2, 0.0), Vec3::new(-0.2, 0.3, 0.8))];
+        for (width, height) in sizes {
+            let projection = Mat4::perspective_infinite_reverse_rh(1.3, width / height, 0.1);
+            let rows = projection.transpose();
+            for linear in transforms {
+                let r = linear.transpose();
+                let frobenius = linear.to_cols_array().iter().map(|x| x*x).sum::<f32>().sqrt();
+                let one = linear.x_axis.abs().element_sum().max(linear.y_axis.abs().element_sum()).max(linear.z_axis.abs().element_sum());
+                let inf = r.x_axis.abs().element_sum().max(r.y_axis.abs().element_sum()).max(r.z_axis.abs().element_sum());
+                let stretch = frobenius.min((one * inf).sqrt());
+                for direction in [Vec3::NEG_Z, Vec3::new(0.8, 0.45, -1.0).normalize()] {
+                    let depth_rate = rows.w_axis.truncate().dot(direction);
+                    let ndc = Vec2::new(rows.x_axis.truncate().dot(direction), rows.y_axis.truncate().dot(direction)) / depth_rate;
+                    let jx = (rows.x_axis.truncate() - ndc.x * rows.w_axis.truncate()) * (width * 0.5);
+                    let jy = (rows.y_axis.truncate() - ndc.y * rows.w_axis.truncate()) * (height * 0.5);
+                    let diameter = 0.04 * 3.0f32.sqrt() * stretch;
+                    let c = diameter * (jx.length_squared() + jy.length_squared()).sqrt() / depth_rate;
+                    let radius = 0.5 * diameter / depth_rate;
+                    let target = 1.5;
+                    let transition = c / target + radius;
+                    let mut previous = -1.0;
+                    for distance in [0.3, 1.0, 3.0, 10.0, 30.0, 80.0, 180.0, 500.0] {
+                        let lod = (distance / transition).log2().clamp(0.0, 5.0);
+                        assert!(lod >= previous); previous = lod;
+                        let scale = 2.0f32.powf(lod.floor());
+                        let bound = c * scale / (distance - radius * scale);
+                        if distance <= radius * scale { assert_eq!(lod, 0.0); continue; }
+                        if lod > 0.0 { assert!(bound <= target * 1.00001); }
+                        let corners: Vec<Vec2> = (0..8).map(|corner| {
+                            let offset = Vec3::new(if corner&1==0 {-0.5} else {0.5}, if corner&2==0 {-0.5} else {0.5}, if corner&4==0 {-0.5} else {0.5});
+                            let clip = projection * (direction * distance + linear * offset * (0.04 * scale)).extend(1.0);
+                            Vec2::new(clip.x * width, clip.y * height) / (2.0 * clip.w)
+                        }).collect();
+                        for a in &corners { for b in &corners {
+                            assert!(a.distance(*b) <= bound * 1.0001, "finite projected cell exceeded conservative bound");
+                        }}
+                    }
+                    // No discontinuous representation jump as the camera
+                    // crosses a dyadic mip boundary; the two levels meet.
+                    for level in 1..5 {
+                        let boundary = transition * 2.0f32.powi(level);
+                        let before = ((boundary - 0.001) / transition).log2();
+                        let after = ((boundary + 0.001) / transition).log2();
+                        assert!((after - before).abs() < 0.002);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn mip_moments_keep_empty_cells_uncoloured_and_normal_lobes_distinct() {
+        // Empty neighbours carry no material moment. Blending their default
+        // black colour directly would darken silhouettes during LOD changes.
+        let merge = |a: (f64, [f64; 6]), b: (f64, [f64; 6]), weight: f64| {
+            let wa = a.0 * (1.0-weight); let wb = b.0 * weight;
+            let sigma = wa + wb;
+            (sigma, std::array::from_fn::<_, 6, _>(|k| if sigma > 0.0 {(wa*a.1[k]+wb*b.1[k])/sigma} else {0.0}))
+        };
+        let x = (2.0, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let minus_x = (6.0, [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+        for w in [0.0, 0.01, 0.25, 0.5, 0.99] {
+            let (sigma, lobes) = merge(x, (0.0, [0.0; 6]), w);
+            assert_eq!(lobes, x.1); assert_eq!(sigma, 2.0 * (1.0-w));
+            let (sigma, lobes) = merge(x, minus_x, w);
+            assert!((lobes.iter().sum::<f64>()-1.0).abs() < 1e-12);
+            assert_eq!(lobes[2..], [0.0; 4]);
+            assert!((sigma*lobes[0]-2.0*(1.0-w)).abs() < 1e-12);
+            assert!((sigma*lobes[1]-6.0*w).abs() < 1e-12);
+        }
+    }
+    #[test]
     fn config_layout_and_four_view_candidate_budget() {
-        assert_eq!(std::mem::size_of::<super::Config>(), 32);
-        assert!(super::COUNTER_BYTES >= 10 * 4);
+        assert_eq!(std::mem::size_of::<super::Config>(), 48);
+        assert_eq!(std::mem::offset_of!(super::Config, dispatch), 32);
+        assert!(super::COUNTER_BYTES >= 12 * 4);
         assert_eq!(3840u64 * 2160 * 8, 66_355_200);
         let candidates = 3840u64.div_ceil(16) * 2160u64.div_ceil(16) * 65 * 4;
         assert_eq!(candidates, 8_424_000);
+        let jobs = (3840u64.div_ceil(16) * 2160u64.div_ceil(16) + 4) * 4 + 12;
+        assert_eq!(jobs, 129_628);
     }
 }

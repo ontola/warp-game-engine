@@ -23,7 +23,7 @@ struct RangeUniform {
     shape: [f32; 4],
 }
 struct RangeGpu {
-    count: u32,
+    owners: crate::foliage_compact::OwnerRange,
     bind: wgpu::BindGroup,
 }
 struct Targets {
@@ -32,16 +32,22 @@ struct Targets {
     depth: wgpu::Texture,
     depth_view: wgpu::TextureView,
     composite: wgpu::BindGroup,
+    motion: Option<wgpu::TextureView>,
 }
 pub(crate) struct GrassRenderer {
-    pipeline: wgpu::RenderPipeline,
+    pipelines: [wgpu::RenderPipeline; 2],
+    selection: wgpu::ComputePipeline,
+    compact: crate::foliage_compact::Compactor,
     composite: wgpu::RenderPipeline,
     view_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     ranges: Vec<RangeGpu>,
     empty_far: [wgpu::TextureView; 2],
-    blend_uniforms: [wgpu::Buffer; 2],
+    blend_uniforms: [wgpu::Buffer; 6],
     targets: Mutex<Vec<Option<Targets>>>,
+    // Instance capacity is independent of pixel dimensions. Retain these on
+    // viewport resize; separated players must never share a mutable draw list.
+    visible: Mutex<Vec<Option<Vec<crate::foliage_compact::OwnerList>>>>,
 }
 
 pub(crate) fn raster_source() -> String {
@@ -60,6 +66,11 @@ pub(crate) fn shader_source() -> String {
         include_str!("shaders/grass_transition.wgsl")
     )
 }
+pub(crate) fn compact_source() -> String {
+    format!("{}\n{}\n{}\n{}",crate::wind::shade_source(),
+        include_str!("shaders/grass_common.wgsl"),crate::foliage_compact::selection_source(),
+        include_str!("shaders/grass_compact.wgsl"))
+}
 pub(crate) fn composite_source() -> String {
     format!("{}\n{}", include_str!("shaders/grass_common.wgsl"),
         include_str!("shaders/grass_composite.wgsl"))
@@ -74,6 +85,7 @@ impl GrassRenderer {
         if scene.grass_ranges.is_empty() && scene.far_grass.is_none() {
             return None;
         }
+        let compact = crate::foliage_compact::Compactor::new(gpu);
         let uniform = wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
@@ -125,7 +137,7 @@ impl GrassRenderer {
                     .iter()
                     .map(|&(binding, ty)| wgpu::BindGroupLayoutEntry {
                         binding,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                         ty,
                         count: None,
                     })
@@ -137,7 +149,7 @@ impl GrassRenderer {
                 label: Some("grass range"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                     ty: uniform,
                     count: None,
                 }],
@@ -146,7 +158,7 @@ impl GrassRenderer {
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("grass transition"),
-                bind_group_layouts: &[Some(scene_layout), Some(&view_layout), Some(&range_layout)],
+                bind_group_layouts: &[Some(scene_layout), Some(&view_layout), Some(&range_layout),Some(&compact.draw_layout)],
                 immediate_size: 0,
             });
         let module = gpu
@@ -155,7 +167,10 @@ impl GrassRenderer {
                 label: Some("grass transition"),
                 source: wgpu::ShaderSource::Wgsl(shader_source().into()),
             });
-        let pipeline = gpu
+        let pipelines = [false,true].map(|motion| {
+            let mut targets=vec![Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba16Float,blend:None,write_mask:wgpu::ColorWrites::ALL})];
+            if motion {targets.push(Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rg32Uint,blend:None,write_mask:wgpu::ColorWrites::ALL}));}
+            gpu
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("grass nearest transition"),
@@ -180,17 +195,26 @@ impl GrassRenderer {
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("grass_fs"),
+                    entry_point: Some(if motion {"grass_motion_fs"}else{"grass_fs"}),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: &targets,
                 }),
                 multiview_mask: None,
                 cache: None,
-            });
+            })
+        });
+        let selection_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:Some("grass transition selection"),
+            bind_group_layouts:&[Some(scene_layout),Some(&view_layout),Some(&range_layout),Some(&compact.selection_layout)],
+            immediate_size:0,
+        });
+        let selection_shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:Some("grass transition selection"),source:wgpu::ShaderSource::Wgsl(compact_source().into()),
+        });
+        let selection = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("grass transition selection"),layout:Some(&selection_layout),module:&selection_shader,
+            entry_point:Some("grass_compact"),compilation_options:Default::default(),cache:None,
+        });
         let composite_layout =
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -284,10 +308,10 @@ impl GrassRenderer {
                         resource: buffer.as_entire_binding(),
                     }],
                 });
-                RangeGpu {
-                    count: range.count,
-                    bind,
-                }
+                let owners=crate::foliage_compact::OwnerRange::new(range.first,range.count,18)
+                    .expect("grass owner range exceeds u32");
+                owners.validate(&gpu.limits).expect("grass compaction exceeds GPU limits");
+                RangeGpu { owners, bind }
             })
             .collect();
         let empty_far = [wgpu::TextureFormat::Rgba16Float, wgpu::TextureFormat::R32Float].map(|format| {
@@ -302,11 +326,16 @@ impl GrassRenderer {
                 wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1});
             texture.create_view(&Default::default())
         });
-        let blend_uniforms = [0.0f32,1.0].map(|split|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:Some("grass blend range"),contents:bytemuck::cast_slice(&[split,0.0,0.0,0.0]),usage:wgpu::BufferUsages::UNIFORM,
-        }));
+        let blend_uniforms = std::array::from_fn(|index| {
+            let band=scene.grass_detail.for_views(if index%2==0 {1}else{2});
+            gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label:Some("grass blend range"),contents:bytemuck::cast_slice(&[(index%2) as f32,(index/2) as f32,band.fade_start,band.fade_end]),usage:wgpu::BufferUsages::UNIFORM,
+            })
+        });
         Some(Self {
-            pipeline,
+            pipelines,
+            selection,
+            compact,
             composite,
             view_layout,
             composite_layout,
@@ -314,6 +343,7 @@ impl GrassRenderer {
             empty_far,
             blend_uniforms,
             targets: Mutex::new(Vec::new()),
+            visible: Mutex::new(Vec::new()),
         })
     }
 
@@ -321,6 +351,9 @@ impl GrassRenderer {
         let mut targets = self.targets.lock().unwrap();
         targets.truncate(count);
         targets.resize_with(count, || None);
+        let mut visible=self.visible.lock().unwrap();
+        visible.truncate(count);
+        visible.resize_with(count,||None);
     }
 
     fn targets(&self, gpu: &Gpu, size: (u32, u32)) -> Targets {
@@ -368,7 +401,12 @@ impl GrassRenderer {
             depth,
             depth_view,
             composite,
+            motion: None,
         }
+    }
+
+    pub(crate) fn motion_layer(&self,view:usize)->Option<wgpu::TextureView> {
+        self.targets.lock().unwrap().get(view).and_then(Option::as_ref).and_then(|t|t.motion.clone())
     }
 
     pub(crate) fn render(
@@ -384,19 +422,35 @@ impl GrassRenderer {
         far: Option<&crate::far_grass::FarGrassLayer>,
         transition_times: Option<wgpu::RenderPassTimestampWrites<'_>>,
         composite_times: Option<wgpu::RenderPassTimestampWrites<'_>>,
+        motion: bool,
+        reference: f32,
     ) {
         let mut targets = self.targets.lock().unwrap();
         if !targets[view].as_ref().is_some_and(|t| t.size == size) {
             targets[view] = Some(self.targets(gpu, size));
         }
+        if motion && targets[view].as_ref().unwrap().motion.is_none() {
+            let tex=gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label:Some("grass motion owner"),size:wgpu::Extent3d {width:size.0,height:size.1,depth_or_array_layers:1},
+                mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rg32Uint,
+                usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[],
+            });
+            targets[view].as_mut().unwrap().motion=Some(tex.create_view(&Default::default()));
+        }
         let target = targets[view].as_ref().unwrap();
+        let mut lists=self.visible.lock().unwrap();
+        if lists[view].is_none() {
+            lists[view]=Some(self.ranges.iter().map(|range|self.compact.list(gpu,range.owners)
+                .expect("previously validated grass owner range")).collect());
+        }
+        let lists=lists[view].as_ref().unwrap();
         let far_composite = far.map(|far|gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:Some("near and far grass blend"),layout:&self.composite_layout,
             entries:&[
                 wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(&target.layer)},
                 wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(&far.color)},
                 wgpu::BindGroupEntry {binding:2,resource:wgpu::BindingResource::TextureView(&far.distance)},
-                wgpu::BindGroupEntry {binding:3,resource:self.blend_uniforms[usize::from(targets.len()>1)].as_entire_binding()},
+                wgpu::BindGroupEntry {binding:3,resource:self.blend_uniforms[reference.clamp(0.0,2.0) as usize*2+usize::from(targets.len()>1)].as_entire_binding()},
             ],
         }));
         let view_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -410,7 +464,7 @@ impl GrassRenderer {
                 })
                 .collect::<Vec<_>>(),
         });
-        // Include the mandatory depth copy in the transition interval. Devices
+        // Include compaction and the mandatory copy in the transition interval. Devices
         // lacking encoder timestamps use an empty pass for the beginning stamp;
         // no extra queries, mapping, synchronization or normal-play readback.
         if let Some(times) = &transition_times {
@@ -432,6 +486,19 @@ impl GrassRenderer {
                 }
             }
         }
+        {
+            let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label:Some("grass transition selection"),timestamp_writes:None,
+            });
+            pass.set_pipeline(&self.selection);
+            pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,&view_bind,&[]);
+            for (range,list) in self.ranges.iter().zip(lists) {
+                if list.range().blocks()==0 {continue;}
+                pass.set_bind_group(2,&range.bind,&[]);pass.set_bind_group(3,&list.selection,&[]);
+                pass.dispatch_workgroups(list.range().blocks(),1,1);
+            }
+        }
+        for list in lists { self.compact.finish(encoder,list); }
         encoder.copy_texture_to_texture(
             opaque_depth.as_image_copy(),
             target.depth.as_image_copy(),
@@ -442,17 +509,17 @@ impl GrassRenderer {
             },
         );
         {
+            let mut attachments=vec![Some(wgpu::RenderPassColorAttachment {
+                view:&target.layer,depth_slice:None,resolve_target:None,
+                ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store},
+            })];
+            if motion {attachments.push(Some(wgpu::RenderPassColorAttachment {
+                view:target.motion.as_ref().unwrap(),depth_slice:None,resolve_target:None,
+                ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store},
+            }));}
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("grass nearest transition"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.layer,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &target.depth_view,
                     depth_ops: Some(wgpu::Operations {
@@ -469,12 +536,13 @@ impl GrassRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&self.pipelines[usize::from(motion)]);
             pass.set_bind_group(0, scene, &[]);
             pass.set_bind_group(1, &view_bind, &[]);
-            for range in &self.ranges {
+            for (range,list) in self.ranges.iter().zip(lists) {
                 pass.set_bind_group(2, &range.bind, &[]);
-                pass.draw(0..18, 0..range.count);
+                pass.set_bind_group(3, &list.draw, &[]);
+                pass.draw_indirect(&list.indirect,0);
             }
         }
         {

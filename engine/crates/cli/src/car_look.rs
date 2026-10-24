@@ -25,6 +25,20 @@ pub enum Kind {
     Chrome = 3,
     Plastic = 4,
     Textured = 6,
+    Lamp = 7,
+}
+
+/// Only original, measured rear-lens triangles receive these internal slots.
+/// The shader uses second.xy for red/white radiance and second.w for this role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LampRole { RearAtlas = 0, Red = 1, Reverse = 2 }
+impl LampRole {
+    pub fn part(self) -> &'static str {
+        match self {Self::RearAtlas=>"__lamp_rear_atlas",Self::Red=>"__lamp_rear_red",Self::Reverse=>"__lamp_rear_reverse"}
+    }
+    pub fn from_part(part:&str) -> Option<Self> {
+        match part {"__lamp_rear_atlas"=>Some(Self::RearAtlas),"__lamp_rear_red"=>Some(Self::Red),"__lamp_rear_reverse"=>Some(Self::Reverse),_=>None}
+    }
 }
 
 /// Keys only paint uses; parts never inherit them from the car.
@@ -146,6 +160,16 @@ impl Looks {
 
     /// The GPU material for one slot.
     pub fn material(&self, slot: &Slot) -> Result<GpuCarMaterial, String> {
+        if let Some(role)=LampRole::from_part(&slot.part) {
+            // Preserve authored lens colour/UVs and transparency. Paint edits
+            // and generic dirt must not recolour the optical emission mask.
+            return Ok(GpuCarMaterial {
+                colour:[1.0,1.0,1.0,Kind::Lamp as u32 as f32],
+                second:[0.0,0.0,0.0,role as u32 as f32],
+                surface:[slot.gltf[3],slot.gltf[4],0.0,0.04],
+                body:slot.body,axles:slot.axles,..Default::default()
+            });
+        }
         let car = self.car_table(slot.car, &slot.model);
         let mut t = Table::new();
         let paint = self.part_kind(&slot.part) == Kind::Paint;

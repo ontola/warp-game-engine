@@ -1,4 +1,4 @@
-# Kern: an engine built for fast iteration
+# Warp: an engine built for fast iteration
 
 Rust workspace for the Sideways port. Designed around the loops that cost an
 AI (or a person) time: compiling, tuning numbers, seeing results and finding
@@ -6,6 +6,22 @@ why two runs differ. This project has two equal goals: improve the engine's
 APIs, performance and development loop, and apply those improvements in
 Sideways. Validate engine changes in the game; current comparisons are
 between Kern versions, not against the archived Godot implementation.
+
+## Current focus and limitations
+
+Our current priorities are realistic, performant procedural nature (terrain,
+trees, grass and sky), vehicle physics, AI-driven workflows, and fast iteration,
+including compilation. Sideways is the playable testbed for applying and
+evaluating that work. These priorities can change; they describe the direction,
+not completed capabilities.
+
+Missing systems include a human-facing editor UI, indoor scenes, water,
+buildings, people and a general animation system. Procedural plant wind is
+in development, separate from general-purpose or character animation support.
+
+An opt-in [procedural atmosphere foundation](ATMOSPHERE.md) shares one solar
+state between the sky, direct light and diffuse environment. The default is
+still the HDRI; volumetric clouds and continuous day/night updates are pending.
 
 Windows iteration: `tools/play-dev-windows.ps1 -Autoplay` builds while the
 current game keeps running and stages a uniquely named executable. Use
@@ -50,7 +66,7 @@ Car materials (see "Car materials" below) iterate without `cargo build`:
     KERN_SHADER_DIR=crates/render/src/shaders cargo run --release -p cli -- shot car.png --taa 1 --lineup 4 --cam yaw=90,dist=10 --watch
     cargo run --release -p cli -- shot car.png --cam yaw=40,dist=4,car=0 --car-set paint=candy --car-set rust=0.6
     cargo run --release -p cli -- shot roof.png --lineup 1 --cam glint=1,dist=3.2 --car-set swirls=1   # the sun's reflection on the roof
-    cargo run --release -p cli -- shot masks.png --cam yaw=40,dist=4 --set debug=9                       # 8 curvature, 9 wear, 10 grime
+    cargo run --release -p cli -- shot masks.png --cam yaw=40,dist=4 --set debug=21                      # 20 curvature, 21 wear, 22 grime
 
     cargo run --release -p cli --example voxel_forest_gpu -- --out FRESH_DIR --trees 64 --size 960x540
 
@@ -63,13 +79,41 @@ It has no automatic near/far transition. Current close voxels are too soft;
 the first dense 256-tree fine-level fixture exceeded its sample budget, so
 this prototype is not accepted for replacing the regular forest.
 
+    cargo run -p cli --example grass_voxel_bake -- --out FRESH_DIR
+
+This is a retained coverage experiment. Further optimization of the old
+grass-card path is paused in favour of shared procedural plant assemblies.
+
+This CPU-only fixture feeds the exact near-grass source into the same foliage
+voxel baker. It exports a shared sparse asset, deterministic live-placement
+groups, source/volume previews and opacity-error measurements. It starts no
+GPU or game and does not replace the live statistical far-grass field. Raw
+coverage mass alone does not preserve silhouette opacity; the current 2 cm
+volume covers about 82-84% of the source in the fixture. A separate candidate
+retains the exact source sheets with coverage mips: at the reported 73-111 m
+DLSS Quality sizes, four-sample integration reaches 100.5-101.5% of reference
+opacity. This is a CPU fidelity result, not a GPU performance or runtime claim;
+small split-screen samples still have up to roughly 7% error. Its contract
+records shared wind, seasonal tint, material response and motion-history needs.
+
+    cargo run --release -p cli --example procedural_foliage_gpu -- --out FRESH_DIR
+
+The next-path fixture derives opaque blades/needles and voxel levels from the
+same reusable parts, then animates shared branch pivots on the GPU. Actual
+source and voxel poses, bounds, inverse transforms and previous poses are
+checked against an independent CPU reference. Near geometry and volume
+normal distributions use shared leaf lighting, including back transmission.
+The first 38-frame GPU run passed those checks and zero-light darkness, but
+its voxels remain too blurred and expensive for live replacement. This is
+a bounded prototype, with no automatic source/voxel handoff, world streaming
+or animated-part DLSS support. See [the current evidence](HANDOFF.md#in-progress-shared-assemblies-fog-and-procedural-sky-r16).
+
     cargo run -p cli -- sound out.wav --car mv6 --sweep 900:7400 --model fluid --orders   # engine sound, offline: WAV + spectrogram PNG
     cargo run -p cli -- sound out.wav --race --seed 1 --from 240 --ticks 1800            # a race as heard from the chase camera
-    cargo run -p cli -- bench                      # handling bench, next to Godot's numbers
+    cargo run -p cli -- bench                      # handling regression bench
     cargo run -p cli -- sim --ticks 45000 --seed 1 --km 2 --events
     cargo run -p cli -- sim --ticks 14000 --trace players.0.kmh,players.0.car.gear --from 12000 --every 30
     cargo run -p cli -- sim --ticks 13660 --probe 14.2,-166.0,1.5   # what colliders are there
-    cargo run -p cli -- check /tmp/o.json --seed 1 --km 2           # compare with Godot
 
 Car numbers live in `data/cars.toml` and are read at every run: retune and
 rerun without rebuilding. `--cars other.toml` runs a variant.
@@ -80,6 +124,30 @@ and AA/ground-cover settings. Use these inputs when comparing renderers;
 matching the seed and starting distance alone does not match the final camera
 after different physics simulations. GPU jobs accept `ground_cover = false`
 for a matched no-grass baseline.
+
+## DLSS Super Resolution on Windows
+
+Optional NVIDIA NGX integration requires the external official SDK/runtime;
+see [setup and runtime licensing](crates/render/native/DLSS.md). Native builds
+remain independent of that SDK. With the documented environment configured:
+
+    cargo run --release -p cli --features render/dlss -- play --upscale dlss-quality --size 3840x2160
+    ./tools/play-dev-windows.ps1 -Restart -Upscale dlss-quality
+
+`play`, `shot`, GPU jobs and GameNight accept `native` (default),
+`dlss-quality`, `dlss-balanced`, and `dlss-performance`. Each view receives its
+own SDK-selected input size and temporal history. The output and HUD keep the
+requested resolution. Captures and GPU profiles report actual evaluated input
+and output dimensions; unsupported requests return an error rather than silently
+using another algorithm. This integration adds Super Resolution only.
+
+The renderer exposes `set_upscale`, `upscale_status`, `set_frame_time_ms` and
+fallible `try_render_*` methods. Supply real frame time, and call `reset_history`
+on camera cuts or identity reordering. Source car/wheel/plant motion contributes
+to temporal reprojection. Dominant-layer transparency and mean far-grass motion
+remain approximations; experimental voxel crowns are currently incompatible.
+See [current validation limits](HANDOFF.md#in-progress-windows-r15-2026-10-24)
+before treating the development integration as fully accepted.
 
 ## Vegetation and wind
 
@@ -363,6 +431,11 @@ On a 2-core cloud container:
   reflections of the sky (blurring into its irradiance with roughness),
   metalness, Godot's foliage look (tint, per-tree shade, backlight), and
   procedural car materials (below).
+- **Road surface:** the generated route currently uses continuous gravel for
+  appearance, tyre grip and AI. Random asphalt/dirt/mud strips were removed.
+  Loose shoulders and offroad surfaces remain distinct. Future road-type
+  transitions should follow a real junction and road-width change; mud should
+  follow wet, low-lying soil. Those geographical transitions are not built yet.
 - **Anti-aliasing:** TAA with a Halton(2,3) jitter, reprojection from depth,
   Catmull-Rom history, variance clipping in YCoCg, then contrast-adaptive
   sharpening. Only the camera's motion is reprojected so far: moving cars
@@ -485,7 +558,7 @@ paint presets, then `[all]`, `[model.<glb>]`, `[car.<index>]` and
 documents every key. `shot --lineup N` puts N copies of car 0 nose to tail
 on the road (cars 0..N-1 in the data); `--cam yaw=,dist=,height=,car=,fov=`
 is a close camera and `--cam glint=1` looks down the sun's mirror direction.
-`--set debug=8|9|10` shows curvature, wear and grime masks.
+`--set debug=20|21|22` shows curvature, wear and grime masks.
 
 Without a rebuild:
 
