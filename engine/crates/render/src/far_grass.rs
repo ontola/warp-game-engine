@@ -167,6 +167,10 @@ fn prepare(field: &FarGrassField) -> Result<(Vec<[f32; 2]>, Vec<[f32; 2]>, Param
     ))
 }
 impl FarGrassRenderer {
+    /// Reuse the exact native field for near grass/ground sunlight transport.
+    pub(crate) fn surface_fields(&self)->(wgpu::TextureView,wgpu::TextureView,wgpu::TextureView) {
+        (self.terrain.clone(),self.coverage.clone(),self.tiles.clone())
+    }
     pub(crate) fn new(
         gpu: &Gpu,
         field: &FarGrassField,

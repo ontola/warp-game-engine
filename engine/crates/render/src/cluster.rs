@@ -54,9 +54,89 @@ pub struct Part<'a> {
 pub enum SimplificationPolicy {
     Geometry,
     AlphaCards,
+    /// Preserve authored normals, UV seams and folds without alpha-area credit.
+    TexturedGeometry,
+    /// Smooth terrain normals and bounded road-distance material coordinates.
+    Terrain,
 }
 
 type PendingCluster = (usize, i32, Vec<u32>, [f32; 4]);
+
+/// A purely positional collapse can turn a small bent branch inside out
+/// relative to its retained shading normals, despite preserving its outline.
+/// Attribute weights reduce this but do not forbid it. Keep such replacement
+/// triangles below two projected pixels by assigning half their longest edge
+/// as error. Source detail and distant root budgets remain unchanged.
+fn protect_surface_orientation(part: &Part<'_>, groups: &mut [[f32; 5]], pending: &[PendingCluster]) {
+    let orientation: f64 = part.indices.chunks_exact(3).map(|tri| {
+        let p: [glam::Vec3; 3] = std::array::from_fn(|k| glam::Vec3::from(part.vertices[tri[k] as usize].pos));
+        let n: glam::Vec3 = tri.iter().map(|i| glam::Vec3::from(part.vertices[*i as usize].normal)).sum();
+        (p[1]-p[0]).cross(p[2]-p[0]).dot(n) as f64
+    }).sum();
+    if !orientation.is_finite() || orientation.abs() < 1e-12 { return; }
+    let sign = orientation.signum() as f32;
+    // Retained authored triangles can have unusual scanned normals already.
+    // They are not a new collapse defect and must not pin unrelated detail.
+    let key = |tri: &[u32]| {
+        let k = if tri[0] <= tri[1] && tri[0] <= tri[2] {0} else if tri[1] <= tri[2] {1} else {2};
+        [tri[k], tri[(k+1)%3], tri[(k+2)%3]]
+    };
+    let source: std::collections::HashSet<_> = part.indices.chunks_exact(3).map(key).collect();
+    for (_, refined, indices, _) in pending {
+        if *refined < 0 { continue; }
+        let mut error = 0.0f32;
+        for tri in indices.chunks_exact(3) {
+            if source.contains(&key(tri)) { continue; }
+            let p: [glam::Vec3; 3] = std::array::from_fn(|k| glam::Vec3::from(part.vertices[tri[k] as usize].pos));
+            let face = (p[1]-p[0]).cross(p[2]-p[0]);
+            if face.length_squared() <= 1e-20 { continue; }
+            let n: glam::Vec3 = tri.iter().map(|i| glam::Vec3::from(part.vertices[*i as usize].normal)).sum();
+            if n.length_squared() <= 1e-12 || face.normalize().dot(n.normalize()) * sign < -0.1 {
+                error = error.max((p[1]-p[0]).length().max((p[2]-p[0]).length()).max((p[2]-p[1]).length()) * 0.5);
+            }
+        }
+        groups[*refined as usize][4] = groups[*refined as usize][4].max(error);
+    }
+    // Child groups precede parents. Every cut still has matching parent/own
+    // error and monotonically increasing error, so this creates no LOD gaps.
+    for gid in 0..groups.len() {
+        for (_, refined, _, _) in pending.iter().filter(|(group,_,_,_)| *group == gid) {
+            if *refined >= 0 {
+                debug_assert!((*refined as usize) < gid);
+                groups[gid][4] = groups[gid][4].max(groups[*refined as usize][4]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod terrain_policy_tests {
+    use super::*;
+    #[test]
+    fn road_corridor_keeps_source_triangles_in_coarsest_terrain_cut() {
+        let n=33usize;
+        let vertices:Vec<_>=(0..n).flat_map(|z|(0..n).map(move|x|Vertex {
+            pos:[x as f32*2.0,0.0,z as f32*2.0],normal:[0.0,1.0,0.0],
+            uv:[(x as f32*2.0-32.0).abs()-5.0,0.0]
+        })).collect();
+        let indices:Vec<_>=(0..n-1).flat_map(|z|(0..n-1).flat_map(move|x| {
+            let a=(z*n+x)as u32;let stride=n as u32;[a,a+stride,a+1,a+1,a+stride,a+stride+1]
+        })).collect();
+        let mesh=ClusterMesh::build_with_policy(&[Part {vertices:&vertices,indices:&indices,material:0}],|_|SimplificationPolicy::Terrain);
+        let mut retained=std::collections::HashSet::new();
+        for cluster in mesh.clusters.iter().filter(|c|c.parent_error>1e30) {
+            for packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri+cluster.tri_count)as usize] {
+                let mut tri=[packed&255,(packed>>8)&255,(packed>>16)&255].map(|i|mesh.cluster_verts[(cluster.first_vert+i)as usize]);tri.sort();retained.insert(tri);
+            }
+        }
+        let mut protected=0;
+        for tri in indices.chunks_exact(3).filter(|t|t.iter().all(|i|vertices[*i as usize].uv[0]<=5.0)) {
+            let mut key=[tri[0],tri[1],tri[2]];key.sort();assert!(retained.contains(&key),"road-border triangle removed: {key:?}");protected+=1;
+        }
+        assert!(protected>500);
+        assert!(retained.len()<indices.len()/3*3/4,"terrain outside the road corridor must still simplify");
+    }
+}
 
 fn projected_triangle_area(vertices: &[Vertex], indices: &[u32]) -> f32 {
     indices.chunks_exact(3).map(|tri| {
@@ -141,17 +221,37 @@ impl ClusterMesh {
             config.max_triangles = MAX_TRIS;
             // Keep this storage alive for the synchronous clod_build callback.
             let attributes: Vec<f32>;
-            let alpha_cards=policy(part) == SimplificationPolicy::AlphaCards;
-            if alpha_cards {
-                attributes = part.vertices.iter().flat_map(|v| [v.normal[0], v.normal[1], v.normal[2], v.uv[0], v.uv[1]]).collect();
+            let vertex_locks:Vec<meshopt::SimplifyVertex>;
+            let selected_policy=policy(part);
+            let alpha_cards=selected_policy == SimplificationPolicy::AlphaCards;
+            if selected_policy != SimplificationPolicy::Geometry {
+                let terrain=selected_policy == SimplificationPolicy::Terrain;
+                attributes = part.vertices.iter().flat_map(|v| [v.normal[0], v.normal[1], v.normal[2],
+                    if terrain {v.uv[0].clamp(0.0,32.0)}else{v.uv[0]},if terrain {v.uv[1].clamp(0.0,2.0)}else{v.uv[1]}]).collect();
                 mesh.vertex_attributes = &attributes;
                 mesh.vertex_attributes_stride = 5 * std::mem::size_of::<f32>();
-                mesh.attribute_weights = &[0.25, 0.25, 0.25, 1.0, 1.0];
-                mesh.attribute_protect_mask = (1 << 3) | (1 << 4);
-                config.simplify_preserve_folds = true;
+                // Terrain uv.x stores metres from the road. Only the first
+                // 32 m affect material masks; distant values must not keep
+                // needless geometry. These weights retain smooth gradients
+                // without treating a metre of road distance as a full UV seam.
+                // Terrain uv.y carries 1+macro-up (0 means legacy). Preserve
+                // the geology mask when detailed rock normals simplify.
+                mesh.attribute_weights = if terrain {&[0.1,0.1,0.1,0.02,0.15]}else{&[0.25,0.25,0.25,1.0,1.0]};
+                mesh.attribute_protect_mask = if terrain {0}else{(1 << 3) | (1 << 4)};
+                config.simplify_preserve_folds = !terrain;
                 // The positional-only fallback discards the attributes again
                 // and can erase disconnected branch cards even if UVs matter.
                 config.simplify_fallback_sloppy = false;
+                if terrain {
+                    // The separately rendered road's outer shoulder follows
+                    // these exact native triangles. Keep a narrow corridor
+                    // intact at every cut, including the sun's coarse cut.
+                    // Five metres includes the shoulder plus native-cell halo.
+                    vertex_locks=part.vertices.iter().map(|v|if v.uv[0]<=5.0 {
+                        meshopt::SimplifyVertex::Lock
+                    }else{meshopt::SimplifyVertex::None}).collect();
+                    mesh.vertex_lock=Some(&vertex_locks);
+                }
             }
             let mut groups: Vec<[f32; 5]> = Vec::new(); // simplified bounds per group
             let mut pending: Vec<PendingCluster> = Vec::new(); // (group, refined, indices, cull sphere)
@@ -166,6 +266,11 @@ impl ClusterMesh {
                 out.levels = out.levels.max(group.depth as u32 + 1);
                 gid as i32
             });
+            if selected_policy == SimplificationPolicy::TexturedGeometry {
+                protect_surface_orientation(part, &mut groups, &pending);
+                #[cfg(test)]
+                policy_tests::assert_complete_dag_cuts(&groups, &pending);
+            }
             if alpha_cards {
                 protect_card_coverage(part.vertices,&mut groups,&pending);
                 #[cfg(test)]
@@ -281,6 +386,44 @@ impl ClusterMesh {
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+
+    #[test]
+    fn textured_wood_keeps_authored_surface_orientation_until_subpixel() {
+        for (name, bytes) in [
+            ("fir_a", include_bytes!("../../../assets/fir_a_near.kmesh").as_slice()),
+            ("fir_b", include_bytes!("../../../assets/fir_b_near.kmesh").as_slice()),
+            ("fir_c", include_bytes!("../../../assets/fir_c_near.kmesh").as_slice()),
+        ] {
+            let source = read_kmesh(bytes).unwrap();
+            for (material, vertices, indices) in source.iter().filter(|(n,_,_)|n.contains("trunk")||n.contains("bark")) {
+                let key=|t:&[u32]| {let k=if t[0]<=t[1]&&t[0]<=t[2]{0}else if t[1]<=t[2]{1}else{2};[t[k],t[(k+1)%3],t[(k+2)%3]]};
+                let authored:std::collections::HashSet<_>=indices.chunks_exact(3).map(key).collect();
+                let mesh=ClusterMesh::build_with_policy(&[Part{vertices,indices,material:0}],|_|SimplificationPolicy::TexturedGeometry);
+                assert_eq!(bytemuck::cast_slice::<Vertex,u8>(vertices),bytemuck::cast_slice::<Vertex,u8>(&mesh.vertices),"source normals/UVs must stay exact");
+                assert!(mesh.root_triangles()<indices.len()/3,"{name}/{material}: distant LOD was disabled");
+                for cut in [0.001f32,0.01,0.1,1.0,1e29] {
+                    let mut count=0;
+                    for c in mesh.clusters.iter().filter(|c|c.own_error<=cut&&c.parent_error>cut) {
+                        for packed in &mesh.tris[c.first_tri as usize..(c.first_tri+c.tri_count)as usize] {
+                            let tri:[u32;3]=std::array::from_fn(|k|mesh.cluster_verts[c.first_vert as usize+((packed>>(8*k))&255)as usize]);
+                            count+=1;
+                            if authored.contains(&key(&tri)){continue;}
+                            let p=tri.map(|i|glam::Vec3::from(vertices[i as usize].pos));
+                            let face=(p[1]-p[0]).cross(p[2]-p[0]);
+                            if face.length_squared()<=1e-20{continue;}
+                            let n:glam::Vec3=tri.iter().map(|i|glam::Vec3::from(vertices[*i as usize].normal)).sum();
+                            // These retained source assets have clockwise winding.
+                            if n.length_squared()<=1e-12||face.normalize().dot(n.normalize())>0.1 {
+                                let edge=(p[1]-p[0]).length().max((p[2]-p[0]).length()).max((p[2]-p[1]).length());
+                                assert!(edge<=cut*2.0+1e-6,"{name}/{material}: visible reversed face of {edge}m at error {cut}m");
+                            }
+                        }
+                    }
+                    assert!(count>0&&count<=indices.len()/3,"invalid wood budget");
+                }
+            }
+        }
+    }
 
     /// Audit exactly the GPU's parent/own selection at every transition and
     /// halfway between transitions. Track each original leaf's DAG credit;

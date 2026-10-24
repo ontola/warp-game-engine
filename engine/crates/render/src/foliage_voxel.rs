@@ -7,7 +7,7 @@
 //! Transparent card borders must never be interpreted as solid geometry.
 
 use crate::cluster::Part;
-use crate::scene::{ALPHA_TEST, GRASS, Material, ROAD, TERRAIN, TRIPLANAR, TWO_SIDED, TextureSource};
+use crate::scene::{ALPHA_TEST, GRASS, Material, ROAD, TERRAIN, THIN_FOLIAGE, TRIPLANAR, TWO_SIDED, TextureSource};
 use glam::{Vec2, Vec3};
 use std::collections::BTreeMap;
 
@@ -26,8 +26,25 @@ pub const PROJECTION_DIRECTIONS: [[f32; 3]; 13] = [
     [0.57735026, -0.57735026, 0.57735026], [0.57735026, -0.57735026, -0.57735026],
 ];
 
+/// What one optical crossing represents. This is geometry semantics, not an
+/// artistic density multiplier. Never infer closedness from TWO_SIDED.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProjectionMeasure {
+    /// Every covered source sheet contributes |n dot d| dA. Existing cutout
+    /// assets use this convention; an open leaf has only one geometric side.
+    #[default]
+    SheetCrossings,
+    /// Entry area of outward, closed opaque components: 1/2 |n dot d| dA.
+    /// Every through-ray enters and exits a closed component. For a convex
+    /// leaf this is its exact projected silhouette area; concave components
+    /// can contribute multiple intervals. It is NOT an exact Beer-opacity
+    /// solution for correlated opaque leaves. Each part is validated first.
+    ClosedSurfaceEntries,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BakeConfig {
+    pub projection_measure: ProjectionMeasure,
     pub cell_size: f32,
     /// Includes the finest level. Each subsequent cell is twice as wide.
     pub levels: u32,
@@ -44,7 +61,8 @@ pub struct BakeConfig {
 
 impl Default for BakeConfig {
     fn default() -> Self {
-        Self { cell_size: 0.25, levels: 6, samples_per_cell: 4, alpha_cut: 0.42,
+        Self { projection_measure: ProjectionMeasure::SheetCrossings,
+            cell_size: 0.25, levels: 6, samples_per_cell: 4, alpha_cut: 0.42,
             max_samples: 8_000_000, max_voxels: 262_144,
             max_texture_texels: 24_000_000, max_axis_cells: 1024 }
     }
@@ -55,16 +73,20 @@ pub struct Voxel {
     pub coord: [u32; 3],
     /// Covered one-sided geometric surface area in square local metres.
     pub surface_area: f32,
-    /// Integral of |geometric normal axis| dA, in square local metres.
+    /// Optical projected area under the asset's declared projection measure,
+    /// in square local metres. Closed components count entry and exit once.
     /// Retained for mass diagnostics and the legacy upper-bound comparison.
     pub projected_area: [f32; 3],
-    /// Integral of |geometric normal dot direction| dA for the 13 directions
+    /// Optical integral of |geometric normal dot direction| dA for the 13 directions
     /// above. Unlike the sum of absolute axis projections, these retain
     /// cancellation for oblique/edge-on leaves. Additive through coarse levels.
     pub directional_area: [f32; 13],
     /// Coverage-weighted linear RGB, with the source material tint applied.
     pub albedo: [f32; 3],
     pub roughness: f32,
+    /// Fraction of covered surface authored as thin foliage, not bark. This
+    /// material moment survives mip aggregation; it is not baked illumination.
+    pub leaf_fraction: f32,
     /// Normal distribution in +X,-X,+Y,-Y,+Z,-Z lobes; sums to one.
     /// Two-sided leaves distribute equal weight to opposite lobes. These are
     /// shading statistics, not normals selected randomly on every frame.
@@ -134,10 +156,13 @@ pub struct BakeStats {
     pub degenerate_triangles: u64,
     pub samples: u64,
     pub prepared_texture_texels: usize,
+    pub closed_parts_checked: u64,
+    pub closed_components_checked: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoxelAsset {
+    pub projection_measure: ProjectionMeasure,
     /// All levels use this same, finest-grid-aligned local-space origin.
     pub origin: [f32; 3],
     /// Original geometry bounds; use VoxelLevel::local_bounds for ray traversal.
@@ -155,6 +180,7 @@ struct Mass {
     directional: [f64; 13],
     color: [f64; 3],
     roughness: f64,
+    leaf_area: f64,
     normal: [f64; 6],
 }
 
@@ -162,6 +188,7 @@ impl Mass {
     fn add(&mut self, other: &Self) {
         self.area += other.area;
         self.roughness += other.roughness;
+        self.leaf_area += other.leaf_area;
         for k in 0..3 { self.projected[k] += other.projected[k]; self.color[k] += other.color[k]; }
         for k in 0..13 { self.directional[k] += other.directional[k]; }
         for k in 0..6 { self.normal[k] += other.normal[k]; }
@@ -173,6 +200,7 @@ impl Mass {
             directional_area: self.directional.map(|x| x as f32),
             albedo: self.color.map(|x| (x / self.area) as f32),
             roughness: (self.roughness / self.area) as f32,
+            leaf_fraction: (self.leaf_area / self.area) as f32,
             normal_weights: self.normal.map(|x| (x / self.area) as f32) }
     }
 }
@@ -265,6 +293,68 @@ impl Texture {
     }
 }
 
+/// Validate closed topology by geometric positions rather than vertex indices:
+/// hard-normal meshes deliberately duplicate their vertices. Exact welding is
+/// intentional; a near-open seam must not silently acquire solid semantics.
+/// Each edge-connected component must have consistent outward orientation.
+/// This checks topology/orientation, not arbitrary triangle self-intersection.
+pub fn validate_closed_part(part: &Part<'_>) -> Result<usize, String> {
+    if part.indices.is_empty() || part.indices.len() % 3 != 0 {
+        return Err("closed foliage needs complete nonempty triangles".into());
+    }
+    let mut welded = BTreeMap::<[u32; 3], usize>::new();
+    let mut points = Vec::new();
+    let mut triangles = Vec::new();
+    for triangle in part.indices.chunks_exact(3) {
+        let mut ids = [0usize; 3];
+        for (slot, &index) in triangle.iter().enumerate() {
+            let p = part.vertices.get(index as usize).ok_or("closed foliage vertex out of range")?.pos;
+            if p.iter().any(|v| !v.is_finite()) { return Err("non-finite closed foliage position".into()); }
+            let key = p.map(|v| if v == 0.0 { 0 } else { v.to_bits() });
+            let next = points.len();
+            ids[slot] = *welded.entry(key).or_insert_with(|| { points.push(Vec3::from(p).as_dvec3()); next });
+        }
+        let [a, b, c] = ids.map(|i| points[i]);
+        if ids[0] == ids[1] || ids[1] == ids[2] || ids[2] == ids[0]
+            || (b-a).cross(c-a).length_squared() <= 4e-24 {
+            return Err("closed foliage has a degenerate face".into());
+        }
+        triangles.push(ids);
+    }
+    let mut edges = BTreeMap::<(usize, usize), Vec<(usize, bool)>>::new();
+    for (i, triangle) in triangles.iter().enumerate() {
+        for side in 0..3 {
+            let (a, b) = (triangle[side], triangle[(side+1)%3]);
+            edges.entry((a.min(b), a.max(b))).or_default().push((i, a < b));
+        }
+    }
+    let mut neighbours = vec![Vec::new(); triangles.len()];
+    for edge in edges.values() {
+        if edge.len() != 2 || edge[0].1 == edge[1].1 {
+            return Err("closed foliage requires two opposite incidences on every edge".into());
+        }
+        neighbours[edge[0].0].push(edge[1].0); neighbours[edge[1].0].push(edge[0].0);
+    }
+    let mut seen = vec![false; triangles.len()];
+    let mut components = 0;
+    for start in 0..triangles.len() {
+        if seen[start] { continue; }
+        components += 1;
+        let origin = points[triangles[start][0]];
+        let mut pending = vec![start]; let mut volume6 = 0.0; let mut absolute6 = 0.0;
+        seen[start] = true;
+        while let Some(i) = pending.pop() {
+            let [a,b,c] = triangles[i].map(|p| points[p] - origin);
+            let v = a.dot(b.cross(c)); volume6 += v; absolute6 += v.abs();
+            for &next in &neighbours[i] { if !seen[next] { seen[next] = true; pending.push(next); } }
+        }
+        if !volume6.is_finite() || volume6 <= absolute6 * 1e-10 || absolute6 == 0.0 {
+            return Err("closed foliage components must enclose positive outward volume".into());
+        }
+    }
+    Ok(components)
+}
+
 /// Bake untransformed source parts before cluster simplification. Instance
 /// transforms remain outside this asset, so all copies share one bake.
 ///
@@ -299,12 +389,24 @@ pub fn bake(parts: &[Part<'_>], materials: &[Material], textures: &[TextureSourc
             if vertex.pos.iter().chain(&vertex.normal).chain(&vertex.uv).any(|x| !x.is_finite()) { return Err("foliage vertex is not finite".into()); }
             let p = Vec3::from_array(vertex.pos); lo = lo.min(p); hi = hi.max(p);
         }
+        if config.projection_measure == ProjectionMeasure::ClosedSurfaceEntries {
+            if material.flags & ALPHA_TEST != 0 {
+                return Err("closed foliage projection cannot use alpha-cut holes; use sheet crossings".into());
+            }
+            stats.closed_components_checked += validate_closed_part(part)? as u64;
+            stats.closed_parts_checked += 1;
+        }
         if material.layer >= 0 && !prepared.contains_key(&part.material) {
             let texture = textures.get(material.layer as usize).ok_or("foliage texture index out of range")?;
             prepared.insert(part.material, Texture::new(texture, material, config, &mut stats)?);
         }
     }
-    if !lo.is_finite() { return Ok(VoxelAsset { origin: [0.0; 3], source_bounds: [[0.0; 3]; 2], levels: Vec::new(), stats }); }
+    if !lo.is_finite() { return Ok(VoxelAsset { projection_measure: config.projection_measure,
+        origin: [0.0; 3], source_bounds: [[0.0; 3]; 2], levels: Vec::new(), stats }); }
+    let projection_scale = match config.projection_measure {
+        ProjectionMeasure::SheetCrossings => 1.0,
+        ProjectionMeasure::ClosedSurfaceEntries => 0.5,
+    };
     let origin = (lo / config.cell_size).floor() * config.cell_size;
     let cells = ((hi - origin) / config.cell_size).floor() + Vec3::ONE;
     if !origin.is_finite() || !cells.is_finite() || cells.max_element() > config.max_axis_cells as f32 {
@@ -353,11 +455,12 @@ pub fn bake(parts: &[Part<'_>], materials: &[Material], textures: &[TextureSourc
                 let covered = sample_area * texel[3] as f64;
                 cell.area += covered;
                 cell.roughness += covered * material.roughness.clamp(0.0, 1.0) as f64;
+                if material.flags & THIN_FOLIAGE != 0 { cell.leaf_area += covered; }
                 for k in 0..3 {
-                    cell.projected[k] += covered * geometric[k].abs() as f64;
+                    cell.projected[k] += covered * geometric[k].abs() as f64 * projection_scale;
                     cell.color[k] += sample_area * texel[k] as f64 * material.tint[k] as f64;
                 }
-                for k in 0..13 { cell.directional[k] += covered * directional[k] as f64; }
+                for k in 0..13 { cell.directional[k] += covered * directional[k] as f64 * projection_scale; }
                 let normal = (normals[0] * weights.x + normals[1] * weights.y + normals[2] * weights.z).try_normalize().unwrap_or(geometric);
                 for k in 0..3 {
                     let mass = covered * normal[k] as f64 * normal[k] as f64;
@@ -389,7 +492,8 @@ pub fn bake(parts: &[Part<'_>], materials: &[Material], textures: &[TextureSourc
         cell_size *= 2.0;
         dimensions = dimensions.map(|v| v.div_ceil(2));
     }
-    Ok(VoxelAsset { origin: origin.to_array(), source_bounds: [lo.to_array(), hi.to_array()], levels, stats })
+    Ok(VoxelAsset { projection_measure: config.projection_measure,
+        origin: origin.to_array(), source_bounds: [lo.to_array(), hi.to_array()], levels, stats })
 }
 
 #[cfg(test)]
@@ -408,6 +512,113 @@ mod tests {
         bake(&[Part { vertices: &vertices, indices: &indices, material: 0 }], &[material()], &[source], config).unwrap()
     }
     fn area(level: &VoxelLevel) -> f64 { level.voxels.iter().map(|v| v.surface_area as f64).sum() }
+
+    // Analytic opaque leaf oracle: a convex rectangular blade with actual
+    // thickness. Face order is independent of the production blade generator.
+    fn box_leaf(size: Vec3, rotation: glam::Quat) -> (Vec<Vertex>, Vec<u32>) {
+        let p: Vec<_> = (0..8).map(|i| size * Vec3::new(
+            if i&1==0 {-0.5} else {0.5}, if i&2==0 {-0.5} else {0.5},
+            if i&4==0 {-0.5} else {0.5})).collect();
+        let mut vertices=Vec::new();let mut indices=Vec::new();
+        for face in [[0,4,6,2],[1,3,7,5],[0,1,5,4],[2,6,7,3],[0,2,3,1],[4,5,7,6]] {
+            for t in [[0,1,2],[0,2,3]] {
+                let [a,b,c]=t.map(|j|rotation*p[face[j]]);
+                let normal=(b-a).cross(c-a).normalize().to_array();
+                for q in [a,b,c] {indices.push(vertices.len() as u32);vertices.push(Vertex {pos:q.to_array(),normal,uv:[0.0;2]});}
+            }
+        }
+        (vertices,indices)
+    }
+
+    #[test]
+    fn closed_leaf_entry_area_matches_analytic_projected_silhouette_in_every_mip() {
+        let size=Vec3::new(0.07,0.8,0.003);
+        for rotation in [glam::Quat::IDENTITY,glam::Quat::from_euler(glam::EulerRot::XYZ,0.41,-0.77,0.19)] {
+            let (vertices,indices)=box_leaf(size,rotation);
+            let parts=[Part {vertices:&vertices,indices:&indices,material:0}];
+            let materials=[Material {layer:-1,flags:THIN_FOLIAGE|TWO_SIDED,..material()}];
+            let config=BakeConfig {projection_measure:ProjectionMeasure::ClosedSurfaceEntries,
+                cell_size:0.1,levels:5,samples_per_cell:1,..Default::default()};
+            let closed=bake(&parts,&materials,&[],config).unwrap();
+            let sheets=bake(&parts,&materials,&[],BakeConfig {projection_measure:ProjectionMeasure::SheetCrossings,..config}).unwrap();
+            assert_eq!(closed.stats.closed_parts_checked,1);
+            assert_eq!(closed.stats.closed_components_checked,1);
+            for (level,legacy) in closed.levels.iter().zip(&sheets.levels) {
+                for (k,direction) in PROJECTION_DIRECTIONS.into_iter().enumerate() {
+                    let d=(rotation.conjugate()*Vec3::from(direction)).abs();
+                    let expected=size.y*size.z*d.x+size.x*size.z*d.y+size.x*size.y*d.z;
+                    let measured:f32=level.voxels.iter().map(|v|v.directional_area[k]).sum();
+                    assert!((measured-expected).abs()<expected*3e-5+1e-8,"dir {k}: {measured} != {expected}");
+                }
+                assert_eq!(area(level),area(legacy));
+                for (a,b) in level.voxels.iter().zip(&legacy.voxels) {
+                    assert_eq!(a.albedo,b.albedo);assert_eq!(a.normal_weights,b.normal_weights);
+                    assert_eq!(a.roughness,b.roughness);assert_eq!(a.leaf_fraction,b.leaf_fraction);
+                    assert_eq!(a.directional_area,b.directional_area.map(|x|x*0.5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn closed_optics_reject_open_inward_nonmanifold_and_cutout_sources() {
+        let (vertices,indices)=box_leaf(Vec3::new(0.07,0.8,0.003),glam::Quat::IDENTITY);
+        let material=Material {layer:-1,flags:THIN_FOLIAGE|TWO_SIDED,..material()};
+        let config=BakeConfig {projection_measure:ProjectionMeasure::ClosedSurfaceEntries,..Default::default()};
+        let mut inward=indices.clone(); for t in inward.chunks_exact_mut(3) {t.swap(1,2);}
+        let mut inconsistent=indices.clone();inconsistent.swap(1,2);
+        let mut nonmanifold=indices.clone();nonmanifold.extend_from_slice(&indices[..3]);
+        for bad in [&indices[..indices.len()-3],&inward,&inconsistent,&nonmanifold] {
+            assert!(bake(&[Part {vertices:&vertices,indices:bad,material:0}],&[material],&[],config).is_err());
+        }
+        assert!(bake(&[Part {vertices:&vertices,indices:&indices,material:0}],
+            &[Material {flags:ALPHA_TEST|TWO_SIDED,..material}],&[],config).is_err());
+        let (sheet,sheet_indices)=card();
+        assert!(bake(&[Part {vertices:&sheet,indices:&sheet_indices,material:0}],&[material],&[],config).is_err());
+        // A correctly oriented component cannot hide an inverted neighbour.
+        let mut both=vertices.clone();both.extend(vertices.iter().map(|v|Vertex {pos:[v.pos[0]+1.0,v.pos[1],v.pos[2]],..*v}));
+        let mut both_indices=indices.clone();both_indices.extend(inward.iter().map(|i|i+vertices.len() as u32));
+        assert!(validate_closed_part(&Part {vertices:&both,indices:&both_indices,material:0}).is_err());
+        both_indices.truncate(indices.len());both_indices.extend(indices.iter().map(|i|i+vertices.len() as u32));
+        assert_eq!(validate_closed_part(&Part {vertices:&both,indices:&both_indices,material:0}).unwrap(),2);
+    }
+
+    #[test]
+    fn legacy_sheet_projection_is_default_and_is_not_automatically_halved() {
+        let config=BakeConfig::default();
+        assert_eq!(config.projection_measure,ProjectionMeasure::SheetCrossings);
+        let default=run(texture(&[[255;4]]),config);
+        let explicit=run(texture(&[[255;4]]),BakeConfig {projection_measure:ProjectionMeasure::SheetCrossings,..config});
+        assert_eq!(default,explicit);
+        for level in default.levels {
+            let projected:f32=level.voxels.iter().map(|v|v.directional_area[2]).sum();
+            assert!((projected-1.0).abs()<1e-6);
+        }
+    }
+
+    #[test]
+    fn leaf_and_bark_material_mass_survives_every_mip_without_baked_lighting() {
+        let (bark, indices) = card();
+        let mut leaf = bark;
+        // Half the surface area, spatially separate at the finest level.
+        for v in &mut leaf { v.pos[0] = v.pos[0] * 0.5 + 2.0; }
+        let materials = [
+            Material { layer: -1, flags: 0, ..material() },
+            Material { layer: -1, flags: TWO_SIDED | THIN_FOLIAGE, ..material() },
+        ];
+        let asset = bake(&[
+            Part { vertices: &bark, indices: &indices, material: 0 },
+            Part { vertices: &leaf, indices: &indices, material: 1 },
+        ], &materials, &[], BakeConfig::default()).unwrap();
+        for level in &asset.levels {
+            let leaf_area: f64 = level.voxels.iter().map(|v| (v.surface_area * v.leaf_fraction) as f64).sum();
+            assert!((leaf_area - 0.5).abs() < 1e-6);
+            assert!((area(level) - 1.5).abs() < 1e-6);
+            assert!(level.voxels.iter().all(|v| (0.0..=1.0).contains(&v.leaf_fraction)));
+        }
+        let coarsest = asset.levels.last().unwrap();
+        assert!(coarsest.voxels.iter().any(|v| v.leaf_fraction > 0.0 && v.leaf_fraction < 1.0));
+    }
 
     #[test]
     fn empty_and_full_alpha_do_not_make_solid_cards() {

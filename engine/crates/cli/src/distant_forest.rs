@@ -11,15 +11,21 @@ use std::{cell::RefCell, collections::{BTreeMap, BTreeSet, HashMap}, time::Insta
 
 const TILE: f32 = 64.0;
 const STEP: f32 = 8.0;
+#[cfg(test)]
 const CELLS: usize = 8;
+const OUTER_STEP: f32 = 16.0;
+const INNER_RADIUS: f32 = 768.0;
+const MAX_RADIUS: f32 = 1152.0;
+const MAX_BACKGROUND_TILES: usize = 3072;
+const MAX_HEIGHT_SAMPLES: usize = 8_000_000;
 const TREE_GRID: f32 = 4.0;
 const TREE_CELLS: i32 = 16;
-const MAX_BACKGROUND_TREES: usize = 200_000;
+const MAX_BACKGROUND_TREES: usize = 320_000;
 
 #[derive(Clone, Copy)]
 pub struct Config { pub radius: f32, pub max_tiles: usize, pub max_trees: usize, pub max_height_samples: usize }
 impl Default for Config {
-    fn default() -> Self { Self { radius: 768.0, max_tiles: 2048, max_trees: MAX_BACKGROUND_TREES, max_height_samples: 8_000_000 } }
+    fn default() -> Self { Self { radius: MAX_RADIUS, max_tiles: MAX_BACKGROUND_TILES, max_trees: MAX_BACKGROUND_TREES, max_height_samples: MAX_HEIGHT_SAMPLES } }
 }
 
 fn hash(x: i32, z: i32, seed: u32) -> u32 {
@@ -96,7 +102,7 @@ impl Ground<'_> {
     fn vertex(&self, x: f32, z: f32) -> Vertex {
         let n = Vec3::new(self.height(x - 2.0, z) - self.height(x + 2.0, z), 4.0,
             self.height(x, z - 2.0) - self.height(x, z + 2.0)).normalize();
-        Vertex { pos: [x, self.height(x, z), z], normal: n.to_array(), uv: [100.0, 0.0] }
+        Vertex { pos: [x, self.height(x, z), z], normal: n.to_array(), uv: [100.0, 1.0+n.y] }
     }
 }
 
@@ -120,22 +126,25 @@ impl Patch {
         None
     }
 }
-struct LandTile { key: (i32, i32), patches: Vec<Patch>, vertices: Vec<Vertex>, indices: Vec<u32> }
+struct LandTile { key: (i32, i32), step: f32, patches: Vec<Patch>, vertices: Vec<Vertex>, indices: Vec<u32> }
 impl LandTile {
-    fn new(key: (i32, i32), ground: &Ground<'_>) -> Self {
-        let mut out = Self { key, patches: Vec::new(), vertices: Vec::new(), indices: Vec::new() };
-        for j in 0..CELLS { for i in 0..CELLS {
-            let x = key.0 as f32 * TILE + i as f32 * STEP; let z = key.1 as f32 * TILE + j as f32 * STEP;
-            let corners = [[x,z], [x,z+STEP], [x+STEP,z+STEP], [x+STEP,z]];
-            let seam = [i == 0 && ground.native.contains_key(&(key.0-1,key.1)),
-                j == CELLS-1 && ground.native.contains_key(&(key.0,key.1+1)),
-                i == CELLS-1 && ground.native.contains_key(&(key.0+1,key.1)),
-                j == 0 && ground.native.contains_key(&(key.0,key.1-1))];
-            let centre = ground.vertex(x + STEP * 0.5, z + STEP * 0.5);
+    fn new(key: (i32, i32), ground: &Ground<'_>, steps: &BTreeMap<(i32,i32),f32>) -> Self {
+        let step=steps[&key];let cells=(TILE/step) as usize;
+        let mut out = Self { key, step, patches: Vec::new(), vertices: Vec::new(), indices: Vec::new() };
+        for j in 0..cells { for i in 0..cells {
+            let x = key.0 as f32 * TILE + i as f32 * step; let z = key.1 as f32 * TILE + j as f32 * step;
+            let corners = [[x,z], [x,z+step], [x+step,z+step], [x+step,z]];
+            let neighbours=[(key.0-1,key.1),(key.0,key.1+1),(key.0+1,key.1),(key.0,key.1-1)];
+            let border=[i==0,j==cells-1,i==cells-1,j==0];
+            let centre = ground.vertex(x + step * 0.5, z + step * 0.5);
             let base = out.vertices.len() as u32; out.vertices.push(centre);
             let mut ring = Vec::new();
             for edge in 0..4 {
-                let count = if seam[edge] { 4 } else { 1 };
+                // Coarse/fine borders use the finer neighbour's actual edge
+                // vertices. Native edges retain every original 2 m sample.
+                let neighbour_step=if ground.native.contains_key(&neighbours[edge]){2.0}
+                    else{steps.get(&neighbours[edge]).copied().unwrap_or(step)};
+                let count=if border[edge]{(step/step.min(neighbour_step)) as usize}else{1};
                 for step in 0..count {
                     let t = step as f32 / count as f32;
                     let a = corners[edge]; let b = corners[(edge + 1) % 4];
@@ -149,15 +158,14 @@ impl LandTile {
         out
     }
     fn height(&self, x: f32, z: f32) -> Option<f32> {
-        let u = (x - self.key.0 as f32 * TILE) / STEP; let v = (z - self.key.1 as f32 * TILE) / STEP;
-        if !(0.0..=CELLS as f32).contains(&u) || !(0.0..=CELLS as f32).contains(&v) { return None; }
-        self.patches[(v.floor() as usize).min(CELLS - 1) * CELLS + (u.floor() as usize).min(CELLS - 1)].height(x,z)
+        self.surface(x,z).map(|(height,_)|height)
     }
     fn surface(&self, x: f32, z: f32) -> Option<(f32, f32)> {
-        let u = (x - self.key.0 as f32 * TILE) / STEP;
-        let v = (z - self.key.1 as f32 * TILE) / STEP;
-        if !(0.0..=CELLS as f32).contains(&u) || !(0.0..=CELLS as f32).contains(&v) { return None; }
-        self.patches[(v.floor() as usize).min(CELLS - 1) * CELLS + (u.floor() as usize).min(CELLS - 1)].surface(x,z)
+        let cells=(TILE/self.step) as usize;
+        let u = (x - self.key.0 as f32 * TILE) / self.step;
+        let v = (z - self.key.1 as f32 * TILE) / self.step;
+        if !(0.0..=cells as f32).contains(&u) || !(0.0..=cells as f32).contains(&v) { return None; }
+        self.patches[(v.floor() as usize).min(cells - 1) * cells + (u.floor() as usize).min(cells - 1)].surface(x,z)
     }
 }
 
@@ -238,11 +246,42 @@ fn background_cells(stage: &Stage, native: &HashMap<(i32,i32), &Chunk>, radius: 
     cells
 }
 
+/// Resolution is fixed in world space, never switched under a moving camera.
+/// Every tile in the previous 768 m extent retains its 8 m source mesh.
+fn terrain_steps(stage:&Stage,cells:&BTreeSet<(i32,i32)>)->BTreeMap<(i32,i32),f32> {
+    cells.iter().map(|&key|{
+        let x=(key.0 as f32+0.5)*TILE;let z=(key.1 as f32+0.5)*TILE;
+        let inner=stage.points.iter().step_by(32).any(|p|(p.x-x).powi(2)+(p.z-z).powi(2)<=INNER_RADIUS*INNER_RADIUS);
+        (key,if inner{STEP}else{OUTER_STEP})
+    }).collect()
+}
+
 fn bounds(native: &HashMap<(i32,i32), &Chunk>, far: &BTreeSet<(i32,i32)>) -> ((i32,i32),(i32,i32),usize) {
     let mut lo = (i32::MAX,i32::MAX); let mut hi = (i32::MIN,i32::MIN);
     for &(x,z) in native.keys().chain(far.iter()) { lo.0=lo.0.min(x);lo.1=lo.1.min(z);hi.0=hi.0.max(x);hi.1=hi.1.max(z); }
     let w = (hi.0-lo.0+1) as usize * 32 + 1; let h = (hi.1-lo.1+1) as usize * 32 + 1;
     (lo,hi,w.saturating_mul(h))
+}
+
+struct Extent {cells:BTreeSet<(i32,i32)>,lo:(i32,i32),hi:(i32,i32),radius:f32}
+
+fn choose_extent(stage:&Stage,native:&HashMap<(i32,i32),&Chunk>,density:NativeDensity,config:Config)->Result<Extent,String> {
+    if !config.radius.is_finite(){return Err("background radius must be finite".into());}
+    let mut radius=config.radius.clamp(384.0,MAX_RADIUS);
+    let tree_budget=config.max_trees.min(MAX_BACKGROUND_TREES);
+    loop {
+        let cells=background_cells(stage,native,radius);let(lo,hi,samples)=bounds(native,&cells);
+        // Conservatively assume every outer square metre is habitat. Reducing
+        // the extent is preferable to thinning every distant forest when a
+        // long/wide stage reaches the instance budget. Actual slope/water
+        // exclusions can only reduce the measured requested tree count.
+        let trees_upper=(density.per_m2()*cells.len() as f64*(TILE*TILE) as f64).ceil() as usize;
+        if cells.len()<=config.max_tiles.min(MAX_BACKGROUND_TILES)
+            && samples<=config.max_height_samples.min(MAX_HEIGHT_SAMPLES)
+            && trees_upper<=tree_budget {return Ok(Extent{cells,lo,hi,radius});}
+        if radius<=384.0{return Err(format!("background budget exceeded even at 384 m: {} tiles, {samples} height samples, up to {trees_upper} density-matched trees / budget {tree_budget}; native terrain retained",cells.len()));}
+        radius=(radius-128.0).max(384.0);
+    }
 }
 
 fn extended_heightfield(old: &Heightfield, tiles: &BTreeMap<(i32,i32), LandTile>, lo:(i32,i32), hi:(i32,i32)) -> Heightfield {
@@ -323,18 +362,15 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     if chunks.is_empty() || stage.points.is_empty(){return Err("no native terrain to attach background to".into());}
     if (scene.heightfield.cell-2.0).abs()>1e-6{return Err("background requires the native 2 m heightfield".into());}
     let ground=Ground{stage,native:chunks.iter().map(|c|(c.cell,c)).collect(),cache:RefCell::new(HashMap::new())};
-    let mut radius=config.radius.clamp(384.0,896.0);
-    let (cells,lo,hi)=loop{
-        let cells=background_cells(stage,&ground.native,radius);let(lo,hi,samples)=bounds(&ground.native,&cells);
-        if cells.len()<=config.max_tiles && samples<=config.max_height_samples{break(cells,lo,hi);}
-        if radius<=384.0{return Err(format!("background budget exceeded even at 384 m: {} tiles, {samples} height samples; native terrain retained",cells.len()));}
-        radius=(radius-128.0).max(384.0);
-    };
-    let tiles:BTreeMap<_,_>=cells.into_iter().map(|key|(key,LandTile::new(key,&ground))).collect();
+    let native=native_density(chunks,&ground);
+    let Extent{cells,lo,hi,radius}=choose_extent(stage,&ground.native,native,config)?;
+    let steps=terrain_steps(stage,&cells);
+    let tiles:BTreeMap<_,_>=cells.into_iter().map(|key|(key,LandTile::new(key,&ground,&steps))).collect();
     let hf=extended_heightfield(&scene.heightfield,&tiles,lo,hi);
     let terrain_triangles:usize=tiles.values().map(|t|t.indices.len()/3).sum();
     for tile in tiles.values(){
-        let mesh=ClusterMesh::build(&[Part{vertices:&tile.vertices,indices:&tile.indices,material:terrain_material}]);
+        let mesh=ClusterMesh::build_with_policy(&[Part{vertices:&tile.vertices,indices:&tile.indices,material:terrain_material}],
+            |_|render::cluster::SimplificationPolicy::Terrain);
         let id=scene.add_mesh(&mesh);scene.add_instance(id,Affine3A::IDENTITY);mesh_names.push(format!("vista terrain {:?}",tile.key));
     }
     scene.heightfield=hf;
@@ -357,7 +393,6 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
         tree_ids.push(scene.add_mesh(&mesh));mesh_names.push(format!("original voxel pine {variant}"));
       }
     }
-    let native=native_density(chunks,&ground);
     let seed=stage.noise_seed as u32 ^ 0xd157a47;let mut trees=Vec::new();
     let mut habitat_m2=0.0;let mut steep_m2=0.0;let mut wet_m2=0.0;
     for tile in tiles.values(){for j in 0..TREE_CELLS{for i in 0..TREE_CELLS{
@@ -380,23 +415,100 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     }}}
     let candidates=trees.len();let budget=config.max_trees.min(MAX_BACKGROUND_TREES);
     let requested=select_trees(&mut trees,native,habitat_m2,budget);
+    let mut families=[0usize;3];let mut juveniles=0usize;
     for &TreePlacement{x,y,z,key,..} in &trees{
-        let growth=stage.vegetation.tree_scale(x,z);
-        let wide=(0.85+unit(key.rotate_left(7))*0.60)*growth[0];let tall=(0.85+unit(key.rotate_left(19))*0.55)*growth[1];
+        let phenotype=stage.vegetation.tree(stage.noise_seed as u64,x,z);
+        let wide=(0.85+unit(key.rotate_left(7))*0.60)*phenotype.scale[0];let tall=(0.85+unit(key.rotate_left(19))*0.55)*phenotype.scale[1];
         let transform=Affine3A::from_scale_rotation_translation(Vec3::new(wide,tall,wide),Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
-        scene.add_instance(tree_ids[key as usize%tree_ids.len()],transform);scene.mark_foliage();
+        let family=phenotype.archetype.index();
+        scene.add_instance(tree_ids[family%tree_ids.len()],transform);scene.mark_foliage();
+        families[family]+=1;juveniles+=usize::from(phenotype.juvenile);
     }
-    let representation=if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes",tree_ids.len())}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
+    let representation=if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes, {} canopy / {} tapered conifer / {} stout trunk, {juveniles} juveniles",tree_ids.len(),families[0],families[1],families[2])}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
     let far_density=if habitat_m2>0.0{trees.len() as f64/habitat_m2}else{0.0};
     let parity=if trees.len()==requested{"matched count"}else if requested>budget{"LIMITED BY INSTANCE BUDGET"}else{"LIMITED BY FOREST CANDIDATES"};
     let total_m2=tiles.len() as f64*(TILE*TILE) as f64;
     let eligible_percent=if total_m2>0.0{100.0*habitat_m2/total_m2}else{0.0};
-    Ok(format!("distant forest: {} {representation}, {} terrain tiles / {terrain_triangles} tris, radius {radius:.0} m, high warped skyline ridges, 2 m heightfield {} samples, {:.0} ms; habitat density native {:.1} trees/ha ({} actual trees / {:.0} horizontal m2 at 2 m sampling), far {:.1} trees/ha ({habitat_m2:.0} horizontal m2 at 4 m sampling; {eligible_percent:.1}% eligible, {steep_m2:.0} m2 steep and {wet_m2:.0} m2 wet excluded), requested {requested} / candidates {candidates} / instance budget {budget}: {parity}; background has no new driving collision",trees.len(),tiles.len(),scene.heightfield.heights.len(),started.elapsed().as_secs_f64()*1000.0,native.per_m2()*10_000.0,native.trees,native.habitat_m2,far_density*10_000.0))
+    let outer_tiles=tiles.values().filter(|tile|tile.step==OUTER_STEP).count();
+    let instance_bytes=(trees.len()+tiles.len())*std::mem::size_of::<render::scene::GpuInstance>();
+    let height_bytes=scene.heightfield.heights.len()*std::mem::size_of::<f32>();
+    Ok(format!("distant forest: {} {representation}, {} terrain tiles / {terrain_triangles} tris ({outer_tiles} outer tiles at 16 m, inner terrain 8 m, stitched native edges 2 m), radius {radius:.0} m / requested {:.0} m, high warped skyline ridges, 2 m heightfield {} samples / {height_bytes} bytes (hard cap {}), background instance payload {instance_bytes} bytes (excludes renderer copies/CLOD traversal; extra trees remain shadow casters), {:.0} ms; habitat density native {:.1} trees/ha ({} actual trees / {:.0} horizontal m2 at 2 m sampling), far {:.1} trees/ha ({habitat_m2:.0} horizontal m2 at 4 m sampling; {eligible_percent:.1}% eligible, {steep_m2:.0} m2 steep and {wet_m2:.0} m2 wet excluded), requested {requested} / candidates {candidates} / instance budget {budget}: {parity}; background has no new driving collision",trees.len(),tiles.len(),config.radius,scene.heightfield.heights.len(),MAX_HEIGHT_SAMPLES*4,started.elapsed().as_secs_f64()*1000.0,native.per_m2()*10_000.0,native.trees,native.habitat_m2,far_density*10_000.0))
 }
 
 #[cfg(test)]
 mod tests{
     use super::*;
+    fn flat_chunk(cell:(i32,i32))->Chunk {
+        Chunk {cell,x0:cell.0 as f64*64.0,z0:cell.1 as f64*64.0,
+            heights:vec![20.0;33*33],road_d:vec![100.0;33*33],trees:vec![],
+            rocks:vec![],grass:vec![],ferns:vec![],stumps:vec![]}
+    }
+    #[test]
+    fn outer_sixteen_metre_tiles_stitch_exactly_to_eight_and_native_two_metre_edges() {
+        let stage=Stage::generate(&mut gdcompat::Pcg::new(1),10.0);let chunk=flat_chunk((0,0));
+        let ground=Ground{stage:&stage,native:HashMap::from([((0,0),&chunk)]),cache:RefCell::new(HashMap::new())};
+        let steps=BTreeMap::from([((1,0),STEP),((2,0),OUTER_STEP)]);
+        let fine=LandTile::new((1,0),&ground,&steps);let coarse=LandTile::new((2,0),&ground,&steps);
+        for k in 0..=32 {
+            let z=k as f32*2.0;
+            assert_eq!(fine.height(64.0,z).unwrap().to_bits(),20.0f32.to_bits(),"native border {z}");
+            let a=fine.height(128.0,z).unwrap();let b=coarse.height(128.0,z).unwrap();
+            assert!((a-b).abs()<2e-5,"coarse/fine seam at {z}: {a} versus {b}");
+        }
+        for k in 0..=8 {
+            let z=k as f32*8.0;
+            let a=fine.vertices.iter().find(|v|v.pos[0]==128.0&&v.pos[2]==z).unwrap();
+            let b=coarse.vertices.iter().find(|v|v.pos[0]==128.0&&v.pos[2]==z).unwrap();
+            assert_eq!(a.pos,b.pos);
+            assert_eq!(a.normal,b.normal);
+        }
+        assert_eq!(coarse.indices.len()/3,68,"64 base triangles + four finer-edge splits");
+        assert_eq!(fine.indices.len()/3,280,"256 base triangles + 24 native-edge splits");
+        // Independently evaluate rendered triangle centroids; root placement
+        // must use that mesh, not the un-tessellated high-frequency height.
+        for tri in coarse.indices.chunks_exact(3) {
+            let p:[Vec3;3]=std::array::from_fn(|i|Vec3::from(coarse.vertices[tri[i] as usize].pos));
+            let centre=(p[0]+p[1]+p[2])/3.0;
+            assert!((coarse.height(centre.x,centre.z).unwrap()-centre.y).abs()<0.002);
+        }
+    }
+    #[test]
+    fn mixed_resolution_heightfield_preserves_native_bits_and_samples_rendered_outer_mesh() {
+        let stage=Stage::generate(&mut gdcompat::Pcg::new(2),10.0);let chunk=flat_chunk((0,0));
+        let ground=Ground{stage:&stage,native:HashMap::from([((0,0),&chunk)]),cache:RefCell::new(HashMap::new())};
+        let steps=BTreeMap::from([((1,0),STEP),((2,0),OUTER_STEP)]);
+        let tiles:BTreeMap<_,_>=steps.keys().map(|&key|(key,LandTile::new(key,&ground,&steps))).collect();
+        let mut old=Heightfield{origin:[0.0,0.0],cell:2.0,w:33,h:33,heights:chunk.heights.clone()};
+        old.heights[17]=-0.0;old.heights[18]=f32::from_bits(0x3f800001);
+        let hf=extended_heightfield(&old,&tiles,(0,0),(2,0));
+        assert_eq!((hf.w,hf.h,hf.cell),(97,33,2.0));
+        for j in 0..33 {for i in 0..33 {assert_eq!(hf.heights[j*97+i].to_bits(),old.heights[j*33+i].to_bits());}}
+        let outer=&tiles[&(2,0)];
+        for j in 0..=32 {for i in 0..=32 {
+            let expected=outer.height(128.0+i as f32*2.0,j as f32*2.0).unwrap();
+            assert_eq!(hf.heights[j*97+i+64].to_bits(),expected.to_bits());
+        }}
+    }
+    #[test]
+    fn extended_extent_preserves_inner_resolution_and_reduces_range_before_density() {
+        let stage=Stage::generate(&mut gdcompat::Pcg::new(1),500.0);let chunk=flat_chunk((0,0));
+        let native=HashMap::from([((0,0),&chunk)]);let density=NativeDensity{trees:300,habitat_m2:10_000.0};
+        let old=background_cells(&stage,&native,INNER_RADIUS);
+        let extended=choose_extent(&stage,&native,density,Config::default()).unwrap();
+        assert_eq!(extended.radius,1152.0);assert!(old.is_subset(&extended.cells));
+        assert!(extended.cells.len()>old.len());assert!(extended.cells.len()<=MAX_BACKGROUND_TILES);
+        let (_,_,samples)=bounds(&native,&extended.cells);assert!(samples<=MAX_HEIGHT_SAMPLES);
+        let steps=terrain_steps(&stage,&extended.cells);
+        assert!(old.iter().all(|key|steps[key]==STEP));
+        assert!(extended.cells.difference(&old).all(|key|steps[key]==OUTER_STEP));
+        let tree_budget=(density.per_m2()*old.len() as f64*(TILE*TILE) as f64).ceil() as usize;
+        let reduced=choose_extent(&stage,&native,density,Config{max_trees:tree_budget,..Default::default()}).unwrap();
+        assert_eq!(reduced.radius,INNER_RADIUS);assert_eq!(reduced.cells,old);
+        let repeated=choose_extent(&stage,&native,density,Config::default()).unwrap();assert_eq!(extended.cells,repeated.cells);
+        assert!(choose_extent(&stage,&native,density,Config{radius:f32::NAN,..Default::default()}).is_err());
+        assert!(choose_extent(&stage,&native,density,Config{max_height_samples:100,..Default::default()}).is_err());
+        eprintln!("bounded vista: {} -> {} tiles, {} outer 16 m tiles, {samples} height samples ({} bytes), tree cap {MAX_BACKGROUND_TREES} ({} bytes instance payload; GPU copies/traversal/shadows additional)",old.len(),extended.cells.len(),extended.cells.len()-old.len(),samples*4,MAX_BACKGROUND_TREES*std::mem::size_of::<render::scene::GpuInstance>());
+    }
     #[test]
     fn habitat_matches_native_clearance_slope_and_water_rules() {
         let dry=f32::NEG_INFINITY;
@@ -482,7 +594,7 @@ mod tests{
                 let x=key.0 as f32*TILE+i as f32*STEP;let z=j as f32*STEP;
                 patches.push(Patch{centre:plane(x+4.0,z+4.0),ring:vec![plane(x,z),plane(x,z+8.0),plane(x+8.0,z+8.0),plane(x+8.0,z)]});
             }}
-            tiles.insert(key,LandTile{key,patches,vertices:vec![],indices:vec![]});
+            tiles.insert(key,LandTile{key,step:STEP,patches,vertices:vec![],indices:vec![]});
         }
         // Include negative zero and an adjacent floating-point value: an
         // apparently equal resampling is insufficient; preservation is exact.
