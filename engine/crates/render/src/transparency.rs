@@ -37,6 +37,9 @@ struct OrderBuffer {
 
 pub(crate) struct Transparency {
     pipeline: wgpu::RenderPipeline,
+    /// Kept to rebuild the pipeline when its source changes on disk.
+    layout: wgpu::PipelineLayout,
+    source: String,
     view_layout: wgpu::BindGroupLayout,
     geometry_layout: wgpu::BindGroupLayout,
     triangles: wgpu::Buffer,
@@ -55,8 +58,51 @@ pub(crate) fn shader_source() -> String {
     format!(
         "{}\n{}",
         crate::wind::shade_source(),
-        include_str!("shaders/transparency.wgsl")
+        crate::shaders::source("transparency.wgsl")
     )
+}
+
+/// The forward glass pipeline from composed WGSL `source`.
+fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::RenderPipeline {
+    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("transparent car surfaces"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("transparent car surfaces"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("transparent_vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("transparent_fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba16Float,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 fn source_triangles(
@@ -234,12 +280,6 @@ impl Transparency {
                         count: None,
                     }),
                 });
-        let module = gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("transparent car surfaces"),
-                source: wgpu::ShaderSource::Wgsl(shader_source().into()),
-            });
         let layout = gpu
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -251,43 +291,8 @@ impl Transparency {
                 ],
                 immediate_size: 0,
             });
-        let pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("transparent car surfaces"),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("transparent_vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(false),
-                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("transparent_fs"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
+        let source = shader_source();
+        let pipeline = pipeline(gpu, &layout, &source);
         let triangles = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -297,6 +302,8 @@ impl Transparency {
             });
         Some(Self {
             pipeline,
+            layout,
+            source,
             view_layout,
             geometry_layout,
             triangles,
@@ -304,6 +311,18 @@ impl Transparency {
             owners: Mutex::new(owners),
             orders: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Rebuild from the current shader source (KERN_SHADER_DIR); keeps the
+    /// running pipeline when the new code fails validation.
+    pub(crate) fn reload(&mut self, gpu: &Gpu) -> Result<bool, String> {
+        let source = shader_source();
+        if source == self.source {
+            return Ok(false);
+        }
+        self.pipeline = crate::shaders::checked(gpu, || pipeline(gpu, &self.layout, &source))?;
+        self.source = source;
+        Ok(true)
     }
 
     pub(crate) fn update_instances(&self, first: usize, instances: &[GpuInstance]) {
