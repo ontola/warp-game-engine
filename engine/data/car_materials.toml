@@ -1,0 +1,154 @@
+# Car materials, read at run time (cli/src/car_look.rs). The shader that
+# draws them is render/src/shaders/car_material.wgsl. Edit and re-run
+# `shot` (no cargo build), or keep `shot --watch` or `play` running: both
+# reload this file when it changes.
+#
+# A car's paint: the [paint.<name>] preset that `paint` names, then [all],
+# then [model.<id>] (the glb's name), then [car.<index>] (0 is the first
+# player), then `--car-set [N:][part.]key=value` on the command line.
+# Later tables override single keys of earlier ones.
+#
+# Colours are "#rrggbb" in sRGB, or [r, g, b] in linear 0..1. Without a
+# `colour`, the paint takes the game's player colour.
+#
+# Paint keys:
+#   finish          solid | metallic | pearl | candy
+#   colour, second  base colour; pearl: colour at grazing angles;
+#                   candy: the flakes under the tinted lacquer (colour is the tint)
+#   roughness       base layer roughness (the flakes' spread under the coat)
+#   metal           base layer metalness
+#   clearcoat       clear coat 0..1, coat_roughness its roughness
+#   flake           flake glitter 0..1, flake_size in metres, flake_spread 0..1
+#   orange_peel     waviness of the coat 0..1
+# Wear and grime keys (0..1; parts inherit the car's grime and fade):
+#   chips           paint chipped off edges, the nose and sills (primer, then steel)
+#   scratches       fine scratches in the coat, a few down to primer
+#   swirls          polish swirl marks, seen around the sun's reflection
+#   fade            sun fade on upward panels, grey rubber and plastic
+#   dust, mud       a dust film low down and behind the wheels; mud splatter
+#   rust            from chips, sills, wheel arches and creases
+#   dirt_colour     the dust's colour; wetness 0..1 makes mud glossy (wet weather does too)
+#   seed            the wear pattern; defaults to one per car
+
+[paint.gloss]
+finish = "solid"
+roughness = 0.35
+metal = 0.0
+clearcoat = 1.0
+coat_roughness = 0.03
+orange_peel = 0.4
+
+[paint.metallic]
+finish = "metallic"
+roughness = 0.38
+metal = 0.55
+flake = 0.5
+flake_size = 0.0006
+flake_spread = 0.3
+clearcoat = 1.0
+coat_roughness = 0.03
+orange_peel = 0.4
+
+[paint.pearl]
+finish = "pearl"
+roughness = 0.35
+metal = 0.25
+second = "#c8b8e8"
+flake = 0.35
+flake_size = 0.0004
+flake_spread = 0.35
+clearcoat = 1.0
+coat_roughness = 0.03
+orange_peel = 0.3
+
+[paint.candy]
+finish = "candy"
+second = "#f0e8dc"
+roughness = 0.3
+metal = 0.85
+flake = 0.6
+flake_size = 0.0005
+flake_spread = 0.25
+clearcoat = 1.0
+coat_roughness = 0.02
+orange_peel = 0.3
+
+[paint.matte]
+finish = "solid"
+roughness = 0.65
+metal = 0.0
+clearcoat = 0.0
+
+[paint.satin]
+finish = "metallic"
+roughness = 0.45
+metal = 0.5
+flake = 0.25
+flake_size = 0.0006
+flake_spread = 0.4
+clearcoat = 0.7
+coat_roughness = 0.22
+
+# Every car: a rally car a few stages in.
+[all]
+paint = "metallic"
+chips = 0.15
+scratches = 0.25
+swirls = 0.3
+fade = 0.0
+dust = 0.2
+mud = 0.1
+rust = 0.0
+
+# One per grid slot, so split screen shows the variety.
+[car.0]
+paint = "metallic"
+
+[car.1]
+paint = "pearl"
+colour = "#1d3a9a"
+second = "#4fb8b0"
+
+[car.2]
+paint = "candy"
+
+[car.3]
+paint = "matte"
+chips = 0.45
+scratches = 0.4
+fade = 0.5
+rust = 0.35
+dust = 0.35
+mud = 0.3
+
+# Parts by glTF material name (the first table whose `match` has a
+# substring of the name). Kinds: paint, rubber, metal, chrome, plastic,
+# textured (keeps its texture and gets only grime). Unmatched opaque
+# materials are "textured"; glass (alpha blend) is drawn as before.
+# Changing `match` or `kind` needs a restart; other keys reload live.
+[part.paint]
+match = ["Bodymat", "Paint"]
+kind = "paint"
+
+[part.tyre]
+match = ["Tire"]
+kind = "rubber"
+roughness = 0.88
+fade = 0.3
+
+[part.rim]
+match = ["Alloy"]
+kind = "metal"
+roughness = 0.32
+
+[part.chrome]
+match = ["Chrome"]
+kind = "chrome"
+colour = "#e4e4e4"
+roughness = 0.06
+
+[part.trim]
+match = ["Plastic", "Perfect_Black"]
+kind = "plastic"
+colour = "#202020"
+roughness = 0.55

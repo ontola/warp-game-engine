@@ -728,6 +728,28 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         nn = perturb(n, nrm(m.layer, uv, duv_x, duv_y), frame[0], frame[1]);
     }
     n = nn;
+    // Car parts get a procedural surface (car_material.wgsl): flags bits
+    // 16.. hold 1 + their index in car_materials. Others keep the material.
+    let car = m.flags >> 16u;
+    var rough_m = m.roughness;
+    var metal = m.metal;
+    var coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
+    var coat_rough = 0.04;
+    var coat_n = n;
+    var glint = vec3<f32>(0.0);
+    var car_debug = vec3<f32>(0.0);
+    if car != 0u {
+        let cs = car_surface(car_materials[car - 1u], inst, p, n, dir, uv, base, m.roughness, m.metal);
+        base = cs.base;
+        n = cs.n;
+        rough_m = cs.rough;
+        metal = cs.metal;
+        coat = cs.coat;
+        coat_rough = cs.coat_rough;
+        coat_n = cs.coat_n;
+        glint = cs.glint;
+        car_debug = cs.debug;
+    }
     let l = light.sun_dir.xyz;
     let ndl = dot(n, l);
     var sun = max(ndl, 0.0);
@@ -747,21 +769,21 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         back = vec3<f32>(0.12, 0.16, 0.05) * max(-ndl, 0.0);
     }
     var shadow = 1.0;
-    if sun > 0.0 || needles || gi.vol_dims.w != 0u || (m.flags & 32u) != 0u || m.roughness < 0.55 {
+    if sun > 0.0 || needles || gi.vol_dims.w != 0u || coat > 0.0 || rough_m < 0.55 {
         let s_map = shadow_at(p, surface_n * sign(dot(surface_n, l) + 1e-4));
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
-    let rough = clamp(m.roughness, 0.04, 1.0);
-    var f0 = mix(vec3<f32>(0.04), base, m.metal);
+    let rough = clamp(rough_m, 0.04, 1.0);
+    var f0 = mix(vec3<f32>(0.04), base, metal);
     if needles {
         f0 = vec3<f32>(0.01); // foliage.gdshader: SPECULAR 0.125
     } else if grass {
         f0 = vec3<f32>(0.016); // grass_cards.gdshader: SPECULAR 0.2
     }
-    let diffuse = base * (1.0 - m.metal) / PI;
+    let diffuse = base * (1.0 - metal) / PI;
     // Use the continuous surface hemisphere, unaffected by texture grain.
     // The triangle normal is only for intersection and texture derivatives.
     let visibility_n = surface_n;
@@ -772,7 +794,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
     let ambient = (sky_irradiance(n) * sky_vis + bounce * (1.0 - sky_vis)) * ao * contact.x;
     var reflection_vis = sky_vis;
-    if (m.flags & 32u) != 0u || rough < 0.55 {
+    if coat > 0.0 || rough < 0.55 {
         reflection_vis = reflected_visibility(p, visibility_n, refl);
     }
     let spec_contact = mix(contact.y, contact.x, smoothstep(0.08, 0.6, rough));
@@ -780,13 +802,20 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     var direct = diffuse * sun_e * sun + sun_e * back / PI + sun_e * ggx(n, v, l, rough, f0);
     var indirect = diffuse * ambient;
     var specular = env * env_brdf(f0, rough, ndv) * ao;
-    if (m.flags & 32u) != 0u {
-        // Clear coat: a thin glossy dielectric on top; what it reflects the
-        // base does not get.
-        let fc = 0.04 + 0.96 * pow(1.0 - ndv, 5.0);
-        direct = direct * (1.0 - fc) + sun_e * ggx(n, v, l, 0.04, vec3<f32>(0.04));
+    // Flake and swirl-mark glints sit under (or in) the coat.
+    direct += sun_e * glint;
+    if coat > 0.0 {
+        // Clear coat: a thin glossy dielectric on top, with its own normal
+        // and roughness (car paint); what it reflects the base does not get.
+        let coat_v = max(dot(coat_n, v), 1e-4);
+        let fc = (0.04 + 0.96 * pow(1.0 - coat_v, 5.0)) * coat;
+        let coat_refl = reflect(dir, coat_n);
+        let coat_contact = mix(contact.y, contact.x, smoothstep(0.08, 0.6, coat_rough));
+        // The sun is a 0.5 degree disc, not a point: a mirror shows it no
+        // smaller than roughness 0.05 does.
+        direct = direct * (1.0 - fc) + sun_e * ggx(coat_n, v, l, max(coat_rough, 0.05), vec3<f32>(0.04)) * coat;
         indirect *= 1.0 - fc;
-        specular = specular * (1.0 - fc) + mix(bounce / PI, environment(refl, 0.04, bounce), reflection_vis) * contact.y * fc;
+        specular = specular * (1.0 - fc) + mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact * fc;
     }
     var rad = direct + indirect + specular;
     // Distance fog in the sky's colour at the horizon.
@@ -810,6 +839,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         rad = vec3<f32>(contact.x) * 6000.0;
     } else if light.sky.z > 6.5 && light.sky.z < 7.5 {
         rad = vec3<f32>(reflection_vis) * 6000.0;
+    } else if light.sky.z > 7.5 && light.sky.z < 10.5 {
+        rad = car_debug * 6000.0;
     }
     textureStore(out_hdr, px, vec4<f32>(rad, 1.0));
 }

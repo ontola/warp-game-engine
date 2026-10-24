@@ -4,6 +4,7 @@
 //!
 //! Output is short on purpose: one line per check, and the first mismatch.
 
+mod car_look;
 mod car_model;
 mod check;
 mod distant_forest;
@@ -57,6 +58,11 @@ fn main() {
                 views: opt("--views", "1").parse().unwrap(),
                 taa_frames: opt("--taa", "16").parse().unwrap(),
                 ground_cover: opt("--ground-cover", "on") != "off",
+                cam: args.iter().position(|a| a == "--cam").map(|i| args[i + 1].clone()),
+                lineup: opt("--lineup", "0").parse().unwrap(),
+                car_materials: args.iter().position(|a| a == "--car-materials").map(|i| args[i + 1].clone()),
+                car_sets: args.iter().enumerate().filter(|(_, a)| *a == "--car-set").map(|(i, _)| args[i + 1].clone()).collect(),
+                watch: args.iter().any(|a| a == "--watch"),
             })
         }
         Some("gpu-run") => gpu_run::run(&opt("--out", "gpu-out"), &opt("--jobs", "gpu-jobs.toml")),
