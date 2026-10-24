@@ -31,7 +31,7 @@ const Q_AIR: f32 = 2.9e6;
 
 /// Engine geometry, in data/sounds.toml under `[x.fluid]`.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct Geometry {
     /// Swept volume of the whole engine (litres).
     pub displacement: f32,
@@ -45,11 +45,23 @@ pub struct Geometry {
     pub turbine_area: f32,
     /// Collector volume (litres).
     pub collector: f32,
+    /// Cam events, crank degrees after firing TDC: exhaust opens and lasts,
+    /// intake opens and lasts.
+    pub exhaust_open: f32,
+    pub exhaust_duration: f32,
+    pub intake_open: f32,
+    pub intake_duration: f32,
+    /// Ignition, degrees before TDC; the burn lasts `burn` degrees.
+    pub spark_advance: f32,
+    pub burn: f32,
+    /// Runner low-pass (Hz) for this model, replacing the top-level
+    /// `runner_cutoff` when set (see EngineSound::runner_cutoff).
+    pub runner_cutoff: f32,
 }
 
 impl Default for Geometry {
     fn default() -> Self {
-        Geometry { displacement: 1.6, bore_stroke: 1.05, compression: 9.5, header_diameter: 0.036, pipe_diameter: 0.063, cells_per_m: 30.0, turbine_area: 0.35, collector: 0.4 }
+        Geometry { displacement: 1.6, bore_stroke: 1.05, compression: 9.5, header_diameter: 0.036, pipe_diameter: 0.063, cells_per_m: 30.0, turbine_area: 0.35, collector: 0.4, exhaust_open: 130.0, exhaust_duration: 250.0, intake_open: 345.0, intake_duration: 245.0, spark_advance: 15.0, burn: 55.0, runner_cutoff: 0.0 }
     }
 }
 
@@ -310,24 +322,26 @@ impl FluidEngine {
             for k in 0..n_cyl {
                 let a = (self.crank - self.cyl[k].phase).rem_euclid(720.0);
                 let v_new = self.volume(a);
-                let (ex_area, in_area) = (self.valve_area[1] * lift((a - 130.0) / 250.0), self.valve_area[0] * lift((a - 345.0) / 245.0));
+                let (ex_area, in_area) = (self.valve_area[1] * lift((a - self.geo.exhaust_open) / self.geo.exhaust_duration), self.valve_area[0] * lift((a - self.geo.intake_open) / self.geo.intake_duration));
+                let spark = 720.0 - self.geo.spark_advance;
                 let hp = &self.headers[k];
                 let (hr, hu, hpres) = prim(hp.cells[0]);
                 let ht = hpres / (hr * R);
                 let c = &mut self.cyl[k];
-                // Ignition: the charge trapped at intake closing burns from 15 deg BTDC.
-                if c.last < 705.0 && a >= 705.0 {
+                // Ignition: the charge trapped at intake closing burns from the spark.
+                if c.last < spark && a >= spark {
                     let fuel_mass = if fuel { 1.0 } else { 0.0 };
                     c.q_total = c.m * Q_AIR * 0.38 * fuel_mass * (1.0 + rough * self.noise.gauss()).max(0.3);
                 }
                 c.last = a;
                 let p = c.m * R * c.t / c.v;
-                // Wiebe heat release over 55 degrees from 705 (= -15).
-                let theta = (a + 15.0).rem_euclid(720.0);
+                // Wiebe heat release over `burn` degrees from the spark.
+                let theta = (a + self.geo.spark_advance).rem_euclid(720.0);
+                let burn = self.geo.burn.max(1.0);
                 let mut dq = 0.0;
-                if theta < 55.0 && c.q_total > 0.0 {
-                    let xb = 1.0 - (-5.0 * (theta / 55.0).powi(3)).exp();
-                    let xb_next = 1.0 - (-5.0 * ((theta + dcrank) / 55.0).min(1.0).powi(3)).exp();
+                if theta < burn && c.q_total > 0.0 {
+                    let xb = 1.0 - (-5.0 * (theta / burn).powi(3)).exp();
+                    let xb_next = 1.0 - (-5.0 * ((theta + dcrank) / burn).min(1.0).powi(3)).exp();
                     dq = c.q_total * (xb_next - xb).max(0.0);
                 }
                 // Valve flows (positive out of the cylinder).
