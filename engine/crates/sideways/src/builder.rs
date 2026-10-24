@@ -178,8 +178,9 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
                     let sc = rng.randf_range_f32(0.75, 1.25);
                     let yaw = (rng.randf() as f64 * TAU) as f32;
                     let sy = sc * rng.randf_range_f32(0.9, 1.15);
-                    let growth = s.vegetation.tree_scale(tx as f32, tz as f32);
-                    trees.push(Spot { pos: v3(tx as f32, (foot - 0.25) as f32, tz as f32).into(), yaw, scale: sc * growth[0], scale_y: sy * growth[1] });
+                    let phenotype = s.vegetation.tree(s.noise_seed as u64, tx as f32, tz as f32);
+                    trees.push(Spot { pos: v3(tx as f32, (foot - 0.25) as f32, tz as f32).into(), yaw,
+                        scale: sc * phenotype.scale[0], scale_y: sy * phenotype.scale[1] });
                 } else if clear > 4.0 && !steep && rng.randf() < 0.004 {
                     let sy = s.height(tx, tz);
                     let ss = rng.randf_range_f32(0.8, 1.3);
@@ -222,6 +223,10 @@ pub const ACROSS: [f64; 23] = [
 pub struct Road {
     pub verts: Vec<V3>,
     pub tris: Vec<[u32; 3]>,
+    /// Road-space coordinates, including additional shoulder seam vertices.
+    pub uvs: Vec<[f32; 2]>,
+    /// The original rectangular ribbon occupies the first rows * cols vertices.
+    pub rows: usize,
     pub cols: usize,
 }
 
@@ -230,6 +235,11 @@ pub fn road(s: &Stage) -> Road {
     let n = s.points.len();
     let wob = Noise::with_defaults(11, 1.0 / 18.0);
     let mut verts = Vec::with_capacity(n * cols);
+    let mut uvs = Vec::with_capacity(n * cols);
+    let mut heights = std::collections::HashMap::new();
+    let mut ground = |x, z| terrain_triangle_height(x, z, &mut |i, j| {
+        *heights.entry((i, j)).or_insert_with(|| s.height(i as f64 * GRID, j as f64 * GRID) as f32)
+    });
     for i in 0..n {
         let p = s.points[i];
         let d = s.dirs[i];
@@ -249,21 +259,94 @@ pub fn road(s: &Stage) -> Road {
             let windrow = (-((a.abs() - 0.8) / 0.08).powi(2)).exp();
             y += -0.045 * rut + 0.025 * ridge + 0.04 * windrow;
             if a.abs() > 1.1 {
-                y = s.height_near(q.x as f64, q.z as f64, i as i64) + 0.02;
+                // Join the actual 2 m terrain triangles, not the analytic
+                // height function between their samples. A tiny overlap
+                // avoids a coplanar seam; the drivable road stays unchanged.
+                y = ground(q.x, q.z) as f64 - SHOULDER_OVERLAP as f64;
             }
             verts.push(v3(q.x, y as f32, q.z));
+            uvs.push([a as f32, (i as f64 * STEP) as f32]);
         }
     }
     let mut tris = Vec::with_capacity((n - 1) * (cols - 1) * 2);
     for i in 0..n - 1 {
-        for c in 0..cols - 1 {
+        for c in 1..cols - 2 {
             let a = (i * cols + c) as u32;
             let cl = cols as u32;
             tris.push([a, a + cl, a + 1]);
             tris.push([a + 1, a + cl, a + cl + 1]);
         }
+        // Each outer 80 cm shoulder must follow every terrain-triangle
+        // boundary it crosses, including the diagonal inside each grid cell.
+        // Snapping only the two row endpoints still leaves visible gaps.
+        for (outer, inner) in [(0, 1), (cols - 1, cols - 2)] {
+            let outer_a = verts[i * cols + outer];
+            let outer_b = verts[(i + 1) * cols + outer];
+            let inner_a = verts[i * cols + inner];
+            let inner_b = verts[(i + 1) * cols + inner];
+            let cuts = terrain_edge_cuts(outer_a, outer_b);
+            let mut previous = (i * cols + outer, i * cols + inner);
+            for &t in cuts.iter().skip(1) {
+                let next = if t == 1.0 {
+                    ((i + 1) * cols + outer, (i + 1) * cols + inner)
+                } else {
+                    let q = outer_a.lerp(outer_b, t as f32);
+                    let k = verts.len();
+                    verts.push(v3(q.x, ground(q.x, q.z) - SHOULDER_OVERLAP, q.z));
+                    verts.push(inner_a.lerp(inner_b, t as f32));
+                    let along = ((i as f64 + t) * STEP) as f32;
+                    uvs.push([ACROSS[outer] as f32, along]);
+                    uvs.push([ACROSS[inner] as f32, along]);
+                    (k, k + 1)
+                };
+                let (a, b, c, d) = if outer == 0 {
+                    (previous.0, next.0, previous.1, next.1)
+                } else {
+                    (previous.1, next.1, previous.0, next.0)
+                };
+                tris.push([a as u32, b as u32, c as u32]);
+                tris.push([c as u32, b as u32, d as u32]);
+                previous = next;
+            }
+        }
     }
-    Road { verts, tris, cols }
+    Road { verts, tris, uvs, rows: n, cols }
+}
+
+const SHOULDER_OVERLAP: f32 = 0.003;
+
+/// Interpolate the same diagonal and f32 samples as Chunk::triangles().
+fn terrain_triangle_height(x: f32, z: f32, sample: &mut impl FnMut(i32, i32) -> f32) -> f32 {
+    let gx = x as f64 / GRID;
+    let gz = z as f64 / GRID;
+    let (i, j) = (gx.floor() as i32, gz.floor() as i32);
+    let (x, z) = (gx - i as f64, gz - j as f64);
+    if x + z <= 1.0 {
+        (sample(i, j) as f64 * (1.0 - x - z)
+            + sample(i + 1, j) as f64 * x + sample(i, j + 1) as f64 * z) as f32
+    } else {
+        (sample(i + 1, j + 1) as f64 * (x + z - 1.0)
+            + sample(i, j + 1) as f64 * (1.0 - x)
+            + sample(i + 1, j) as f64 * (1.0 - z)) as f32
+    }
+}
+
+/// Grid edges are x = k*GRID, z = k*GRID and x+z = k*GRID.
+fn terrain_edge_cuts(a: V3, b: V3) -> Vec<f64> {
+    let mut cuts = vec![0.0, 1.0];
+    for (start, end) in [(a.x as f64, b.x as f64), (a.z as f64, b.z as f64),
+        (a.x as f64 + a.z as f64, b.x as f64 + b.z as f64)] {
+        if (end - start).abs() < 1e-12 { continue; }
+        let lo = (start.min(end) / GRID).floor() as i32 + 1;
+        let hi = (start.max(end) / GRID).floor() as i32;
+        for k in lo..=hi {
+            let t = (k as f64 * GRID - start) / (end - start);
+            if t > 0.0 && t < 1.0 { cuts.push(t); }
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    cuts
 }
 
 /// A box collider: centre, half extents and a horizontal facing.
@@ -365,6 +448,140 @@ pub struct GroundMap {
 }
 
 #[cfg(test)]
+mod road_seam_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn reported_round_three() -> Stage {
+        // F12 sideways-1792818090962-266592-4: seed 1, round 3, 3 km.
+        let mut rng = Pcg::new(1);
+        rng.skip(1806);
+        let s = Stage::generate(&mut rng, 3000.0 + stage::RUNOUT);
+        assert_eq!((s.noise_seed, s.detail_seed), (-1661450362, -518345863));
+        s
+    }
+
+    /// Evaluate an actual terrain mesh triangle plane, independently of the
+    /// shoulder's interpolation helper (including negative chunk positions).
+    fn mesh_height(s: &Stage, chunks: &mut HashMap<(i32, i32), Chunk>, p: V3) -> f32 {
+        let cell = ((p.x as f64 / stage::CHUNK).floor() as i32,
+            (p.z as f64 / stage::CHUNK).floor() as i32);
+        let c = chunks.entry(cell).or_insert_with(|| terrain_chunk(s, cell));
+        let x = (p.x as f64 - c.x0) / GRID;
+        let z = (p.z as f64 - c.z0) / GRID;
+        let (i, j) = (x.floor() as usize, z.floor() as usize);
+        let native_corners = if x.fract() + z.fract() <= 1.0 {
+            [j * N + i, j * N + i + 1, (j + 1) * N + i]
+        } else {
+            [(j + 1) * N + i + 1, (j + 1) * N + i, j * N + i + 1]
+        };
+        for index in native_corners {
+            assert!(c.road_d[index] <= 5.0,
+                "terrain CLOD's 5 m vertex-lock band must preserve every seam triangle: {} at {p:?}", c.road_d[index]);
+        }
+        let (a, b, d) = if x.fract() + z.fract() <= 1.0 {
+            (c.vertex(i, j), c.vertex(i + 1, j), c.vertex(i, j + 1))
+        } else {
+            (c.vertex(i + 1, j + 1), c.vertex(i, j + 1), c.vertex(i + 1, j))
+        };
+        let normal = (b - a).cross(d - a);
+        a.y - (normal.x * (p.x - a.x) + normal.z * (p.z - a.z)) / normal.y
+    }
+
+    fn outer_edges(r: &Road) -> Vec<(usize, usize)> {
+        let mut found = HashSet::new();
+        for tri in &r.tris { for e in 0..3 {
+            let (a, b) = (tri[e] as usize, tri[(e + 1) % 3] as usize);
+            if r.uvs[a][0].abs() > 1.1 && r.uvs[a][0] == r.uvs[b][0] {
+                assert!(found.insert((a.min(b), a.max(b))), "outer seam must be a boundary, not overlapping faces");
+            }
+        }}
+        found.into_iter().collect()
+    }
+
+    #[test]
+    fn shoulder_boundary_matches_actual_terrain_triangles_across_stages() {
+        let mut stages = vec![reported_round_three(), stage::reported_round_two_stage()];
+        for seed in [0, 7, 42] {
+            stages.push(Stage::generate(&mut Pcg::new(seed), 800.0));
+        }
+        let mut checked = 0;
+        for s in stages {
+            let r = road(&s);
+            let mut chunks = HashMap::new();
+            for (a, b) in outer_edges(&r) {
+                for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                    let p = r.verts[a].lerp(r.verts[b], t);
+                    let gap = p.y - mesh_height(&s, &mut chunks, p);
+                    assert!((-0.0036..=-0.0024).contains(&gap),
+                        "shoulder gap {gap} at {p:?}, stage {}, edge {a}..{b}", s.noise_seed);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100_000, "check full stages, not only the reported point");
+    }
+
+    #[test]
+    fn reported_stage_main_road_geometry_remains_bit_identical() {
+        let r = road(&reported_round_three());
+        let mut hash = 0xcbf29ce484222325u64;
+        for i in 0..r.rows { for c in 1..r.cols - 1 {
+            let p = r.verts[i * r.cols + c];
+            for v in [p.x, p.y, p.z] { for byte in v.to_bits().to_le_bytes() {
+                hash = (hash ^ byte as u64).wrapping_mul(0x100000001b3);
+            }}
+        }}
+        // Captured from unmodified HEAD c8dddd8 builder, with a separate
+        // comparison of all 62,800 original interior collision triangles.
+        assert_eq!(hash, 0xbcf201770a17e336);
+        let interior: Vec<_> = r.tris.iter().filter(|tri| tri.iter().all(|v| {
+            let k = *v as usize;
+            k < r.rows * r.cols && k % r.cols > 0 && k % r.cols < r.cols - 1
+        })).collect();
+        let expected: Vec<_> = (0..r.rows - 1).flat_map(|i| (1..r.cols - 2).flat_map(move |c| {
+            let a = (i * r.cols + c) as u32; let cols = r.cols as u32;
+            [[a, a + cols, a + 1], [a + 1, a + cols, a + cols + 1]]
+        })).collect();
+        assert_eq!(interior.len(), 62_800);
+        assert_eq!(interior.into_iter().copied().collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn reported_shoulder_has_no_hidden_collision_step() {
+        use crate::physics::{Physics, ROAD};
+        use rapier3d::{glamx::Vec3, prelude::{QueryFilter, Ray}};
+        let s = reported_round_three();
+        let r = road(&s);
+        let mut chunks = HashMap::new();
+        let edges: Vec<_> = outer_edges(&r).into_iter().filter(|(a, b)| {
+            let along = (r.uvs[*a][1] + r.uvs[*b][1]) * 0.5;
+            (1670.0..1684.0).contains(&along)
+        }).collect();
+        let mut probes = Vec::new();
+        for (a, b) in edges {
+            for t in [0.2, 0.5, 0.8] {
+                let p = r.verts[a].lerp(r.verts[b], t);
+                let h = mesh_height(&s, &mut chunks, p);
+                probes.push((p, h));
+            }
+        }
+        let mut physics = Physics::new();
+        for c in chunks.values() { physics.add_chunk(c); }
+        physics.add_road(&r);
+        physics.step();
+        for (p, h) in &probes {
+            let ray = Ray::new(Vec3::new(p.x, h + 2.0, p.z), Vec3::NEG_Y);
+            let (handle, toi) = physics.world.cast_ray(&ray, 4.0, true, QueryFilter::default()).expect("terrain seam collision");
+            assert_ne!(physics.world.colliders[handle].user_data, ROAD,
+                "road shoulder must end under terrain, not leave an invisible step at {p:?}");
+            assert!((toi - 2.0).abs() < 0.001, "collider/visual ground mismatch at {p:?}");
+        }
+        assert!(probes.len() >= 100);
+    }
+}
+
+#[cfg(test)]
 mod foundation_tests {
     use super::*;
 
@@ -373,25 +590,57 @@ mod foundation_tests {
         use crate::vegetation::{Season,Vegetation};
         let mut s=Stage::generate(&mut Pcg::new(7),340.0);
         let cells=chunk_cells(&s);
+        let grown=Vegetation::new(91,1.0,Season::Summer).unwrap();
         let young=Vegetation::new(91,0.25,Season::Winter).unwrap();
         let mut checked=0;
         for key in cells.into_iter().take(12) {
-            s.vegetation=Default::default(); let mature=terrain_chunk(&s,key);
+            s.vegetation=grown; let mature=terrain_chunk(&s,key);
             s.vegetation=young; let juvenile=terrain_chunk(&s,key);
+            s.vegetation=Vegetation::new(92,0.25,Season::Winter).unwrap(); let reseeded=terrain_chunk(&s,key);
             assert_eq!(mature.heights,juvenile.heights);assert_eq!(mature.road_d,juvenile.road_d);
             assert_eq!(mature.trees.len(),juvenile.trees.len());
+            assert_eq!(mature.trees.len(),reseeded.trees.len());
+            for (a,b) in mature.trees.iter().zip(&reseeded.trees) {
+                assert_eq!([a.pos.0,a.pos.1,a.pos.2,a.yaw],[b.pos.0,b.pos.1,b.pos.2,b.yaw]);
+            }
             for (a,b) in mature.trees.iter().zip(&juvenile.trees) {
                 assert_eq!([a.pos.0,a.pos.1,a.pos.2,a.yaw],[b.pos.0,b.pos.1,b.pos.2,b.yaw]);
-                let scale=young.tree_scale(a.pos.0,a.pos.2);
-                assert_eq!(b.scale,a.scale*scale[0]);assert_eq!(b.scale_y,a.scale_y*scale[1]);
+                let old=grown.tree(s.noise_seed as u64,a.pos.0,a.pos.2);
+                let new=young.tree(s.noise_seed as u64,a.pos.0,a.pos.2);
+                assert_eq!((old.archetype,old.juvenile),(new.archetype,new.juvenile));
+                assert!((b.scale-a.scale*new.scale[0]/old.scale[0]).abs()<1e-6);
+                assert!((b.scale_y-a.scale_y*new.scale[1]/old.scale[1]).abs()<1e-6);
                 checked+=1;
             }
             // Every later RNG-dependent decoration must remain bit-identical.
             for (a,b) in [(&mature.rocks,&juvenile.rocks),(&mature.grass,&juvenile.grass),(&mature.ferns,&juvenile.ferns),(&mature.stumps,&juvenile.stumps)] {
                 assert_eq!(serde_json::to_vec(a).unwrap(),serde_json::to_vec(b).unwrap());
             }
+            for (a,b) in [(&mature.rocks,&reseeded.rocks),(&mature.grass,&reseeded.grass),(&mature.ferns,&reseeded.ferns),(&mature.stumps,&reseeded.stumps)] {
+                assert_eq!(serde_json::to_vec(a).unwrap(),serde_json::to_vec(b).unwrap());
+            }
         }
         assert!(checked>0,"the fixture must actually contain trees");
+    }
+
+    #[test]
+    fn tree_colliders_follow_the_same_family_and_juvenile_instance_scales() {
+        let vegetation=crate::vegetation::Vegetation::default();
+        let mut seen=[[false;2];3];
+        for i in 0..128 {
+            let phenotype=vegetation.tree(7,i as f32,11.5);
+            let t=Spot { pos:V3Ser(i as f32,2.0,11.5),yaw:0.7,
+                scale:phenotype.scale[0],scale_y:phenotype.scale[1] };
+            let mut physics=crate::physics::Physics::new();
+            physics.add_trunk(&t);
+            let (_,collider)=physics.world.colliders.iter().next().unwrap();
+            let cylinder=collider.shape().as_cylinder().unwrap();
+            assert!((cylinder.radius-0.22*t.scale).abs()<1e-6);
+            assert!((cylinder.half_height-3.0*t.scale_y).abs()<1e-6);
+            assert!((collider.translation().y-(t.pos.1+2.5*t.scale_y)).abs()<1e-6);
+            seen[phenotype.archetype.index()][usize::from(phenotype.juvenile)]=true;
+        }
+        assert!(seen.into_iter().flatten().all(|present|present),"fixture must cover all three families and ages");
     }
 
     #[test]

@@ -22,6 +22,8 @@ pub const GRASS: u32 = 64;
 pub const NO_AMBIENT_OCCLUSION: u32 = 128;
 /// Drawn by the sorted forward pass, never the opaque or shadow raster pass.
 pub const BLEND: u32 = 256;
+/// True leaf/needle geometry: thin-leaf lighting without alpha-tested cards.
+pub const THIN_FOLIAGE: u32 = 512;
 
 /// glTF alphaMode=BLEND data, separate from the fixed GPU material layout.
 #[derive(Clone, Copy, Debug)]
@@ -69,6 +71,8 @@ pub const NO_SHADOW: u32 = 4;
 pub const LIVE_GRASS: u32 = 8;
 /// Ground-cover wind response without enabling a live distance transition.
 pub const WIND_GRASS: u32 = 16;
+/// A rigid vegetation part driven by the shared hierarchical GPU pose pass.
+pub const PART_WIND: u32 = 32;
 
 pub const MAX_SOLID_SEGMENTS: usize = 6;
 
@@ -180,16 +184,30 @@ pub struct Scene {
     pub materials: Vec<Material>,
     pub blended_materials: HashMap<u32, BlendMaterial>,
     pub grass_ranges: Vec<crate::grass::GrassRange>,
+    /// Shared CPU residency / per-view GPU fade policy for source grass.
+    pub grass_detail: crate::vegetation_detail::DistanceProfile,
     /// Optional world-fixed terrain-following grass density field.
     pub far_grass: Option<crate::far_grass::FarGrassField>,
     /// Optional bounded validation forest; absent in normal live scenes.
     pub voxel_forest: Option<crate::foliage_volume_data::GpuForest>,
+    /// Explicit projected voxel LOD experiment; zero keeps finest-level mode.
+    pub voxel_lod_pixels: f32,
+    /// Experimental GPU worklist: integrate only tiles with volume candidates.
+    /// Defaults to the full-screen reference until image/timing validation.
+    pub voxel_active_tiles: bool,
+    /// Optional bounded shared branch poses for both source and voxel parts.
+    pub part_wind: Vec<crate::part_wind::PartWind>,
+    /// Shared baked rigid-part clips. Optional, with bounded actor/part pools.
+    pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
     /// Game data for materials (Sideways: road surface per 2 m row).
     pub aux: Vec<u32>,
     /// Equirectangular HDR sky, linear RGB.
     pub sky: Option<(u32, u32, Vec<[f32; 4]>)>,
+    /// Absolute, sun-disc-free radiance with its solar state supplied by the
+    /// atmosphere bake. Bypass HDRI brightest-pixel rotation and lux rescaling.
+    pub sky_physical: bool,
 }
 
 impl Scene {

@@ -6,6 +6,7 @@
 
 use glam::{Affine3A, Quat, Vec2, Vec3};
 use render::scene::{ALPHA_TEST, GRASS, LIVE_GRASS, Material, Scene, TWO_SIDED};
+use render::vegetation_detail::DistanceProfile;
 use sideways::builder::{Chunk, N};
 use sideways::stage::{CHUNK, GRID};
 use std::{collections::{BTreeMap, BTreeSet, HashMap, HashSet}, ops::Range, path::Path, time::Instant};
@@ -21,6 +22,10 @@ type Cell = (i32, i32);
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Stats {
+    pub detail_profile: DistanceProfile,
+    pub residency: f32,
+    pub fade_start: f32,
+    pub fade_end: f32,
     pub capacity: usize,
     pub active: usize,
     pub cached_tiles: usize,
@@ -35,7 +40,18 @@ pub struct Stats {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Tuft { id: Cell, position: Vec3, scale: f32, yaw: f32 }
+pub(crate) struct Tuft {
+    pub(crate) id: Cell,
+    pub(crate) position: Vec3,
+    pub(crate) scale: f32,
+    pub(crate) yaw: f32,
+}
+impl Tuft {
+    pub(crate) fn transform(self, growth_scale: f32) -> Affine3A {
+        Affine3A::from_scale_rotation_translation(Vec3::splat(self.scale * growth_scale),
+            Quat::from_rotation_y(self.yaw), self.position)
+    }
+}
 struct Tile {
     tufts: Vec<Tuft>,
     min: Vec2,
@@ -156,12 +172,6 @@ fn noise(p: Vec2) -> f32 {
     let c = random((id.0, id.1 + 1), 103); let d = random((id.0 + 1, id.1 + 1), 103);
     (a + (b - a) * x) * (1.0 - y) + (c + (d - c) * x) * y
 }
-// Shared with grass_common.wgsl's opacity endpoints: 40..60 m for one view,
-// 20..38 m for split views. Four metres cover the maximum 2.55 m camera-to-
-// cache-anchor offset, so CPU additions/removals happen at zero opacity.
-fn radius(views: usize) -> f32 { if views <= 1 { 64.0 } else { 42.0 } }
-fn visible_radius(views: usize) -> f32 { if views <= 1 { 60.0 } else { 38.0 } }
-
 fn candidate(ground: &Ground, id: Cell) -> Option<Tuft> {
     let jitter = Vec2::new(random(id, 0) - 0.5, random(id, 17) - 0.5) * 1.6;
     let xz = (Vec2::new(id.0 as f32, id.1 as f32) + Vec2::splat(0.5) + jitter) * CELL;
@@ -172,7 +182,25 @@ fn candidate(ground: &Ground, id: Cell) -> Option<Tuft> {
         yaw: random(id, 3) * std::f32::consts::TAU })
 }
 
+/// Bounded asset/placement diagnostic. Uses the exact live membership,
+/// native triangle roots and footprint rejection, without a camera or pool.
+/// Bounds are world-cell coordinates, min inclusive and max exclusive.
+pub(crate) fn patch_candidates(ground: &Ground, min: [i32; 2], max: [i32; 2]) -> Result<Vec<Tuft>, String> {
+    let dimensions = [max[0] as i64 - min[0] as i64, max[1] as i64 - min[1] as i64];
+    if dimensions.iter().any(|n| *n <= 0 || *n > 256)
+        || dimensions[0] * dimensions[1] > 16_384
+        || min.into_iter().chain(max).any(|v| v.unsigned_abs() > 20_000_000) {
+        return Err("grass patch requires finite world bounds and at most 16384 cells".into());
+    }
+    let mut result = Vec::new();
+    for x in min[0]..max[0] { for z in min[1]..max[1] {
+        if let Some(tuft) = candidate(ground, (x, z)) { result.push(tuft); }
+    }}
+    Ok(result)
+}
+
 pub struct LiveGroundCover {
+    detail_profile: DistanceProfile,
     growth_scale: f32,
     ground: Ground,
     mesh: usize,
@@ -195,13 +223,19 @@ impl LiveGroundCover {
 
     pub fn reserve_with_vegetation(scene: &mut Scene, chunks: &[Chunk], cameras: &[Vec3], root: &Path,
         mesh_names: &mut Vec<String>, vegetation: sideways::vegetation::Vegetation) -> Result<Self, String> {
+        let requested=match std::env::var("SIDEWAYS_GRASS_DETAIL") {
+            Ok(value)=>Some(value),Err(std::env::VarError::NotPresent)=>None,
+            Err(error)=>return Err(format!("SIDEWAYS_GRASS_DETAIL: {error}")),
+        };
+        let detail_profile=DistanceProfile::parse(requested.as_deref())?;
+        scene.grass_detail=detail_profile;
         let layer = scene.add_image("Poly Haven grass_medium_01 selected CC0 live clump", crate::ground_cover::photo(root)?);
         let material = scene.add_material(Material { tint: vegetation.grass_tint(), layer, roughness: 0.85,
             flags: ALPHA_TEST | TWO_SIDED | GRASS, scale: 1.0, metal: 0.0 });
         let mesh = scene.add_mesh(&crate::ground_cover::mesh(material));
         mesh_names.push("photographed grass tuft (CC0 live opacity pool)".into());
-        let capacity = if cameras.len() <= 1 { 70_000 } else { 115_000 };
-        let mut stream = Self::with_mesh(scene, chunks, mesh, capacity);
+        let capacity = detail_profile.for_views(cameras.len()).capacity;
+        let mut stream = Self::with_mesh(scene, chunks, mesh, capacity, detail_profile);
         stream.growth_scale = vegetation.grass_scale();
         scene.grass_ranges.push(render::grass::GrassRange { first: stream.first as u32,
             count: capacity as u32, material, width: crate::ground_cover::WIDTH,
@@ -210,7 +244,7 @@ impl LiveGroundCover {
         Ok(stream)
     }
 
-    fn with_mesh(scene: &mut Scene, chunks: &[Chunk], mesh: usize, capacity: usize) -> Self {
+    fn with_mesh(scene: &mut Scene, chunks: &[Chunk], mesh: usize, capacity: usize, detail_profile: DistanceProfile) -> Self {
         let first = scene.instances.len();
         for _ in 0..capacity {
             scene.add_instance(mesh, Affine3A::IDENTITY); scene.mark_no_shadow();
@@ -219,13 +253,15 @@ impl LiveGroundCover {
             instance.cluster_count = 0; instance.sphere[3] = 0.0;
         }
         let ground_bytes = chunks.iter().map(|c| (c.heights.len() + c.road_d.len()) * std::mem::size_of::<f32>()).sum();
-        Self { growth_scale: 1.0, ground: Ground::new(chunks), mesh, first, capacity, anchors: None, tiles: BTreeMap::new(),
-            active: HashMap::with_capacity(capacity), free: (0..capacity).collect(), stats: Stats { capacity, ground_bytes, ..Default::default() } }
+        Self { detail_profile, growth_scale: 1.0, ground: Ground::new(chunks), mesh, first, capacity, anchors: None, tiles: BTreeMap::new(),
+            active: HashMap::with_capacity(capacity), free: (0..capacity).collect(), stats: Stats { detail_profile, capacity, ground_bytes, ..Default::default() } }
     }
 
+    pub fn detail_profile(&self) -> DistanceProfile { self.detail_profile }
     pub fn stats(&self) -> Stats { self.stats }
     pub fn summary(&self) -> String {
-        format!("live ground cover: {} active / {} fixed slots, {} requested, {} clipped ({} visible), {} cached world tiles, {:.1} MiB native ground, {:.2} ms last update; same world cells, stable 3-card sizes, true opacity outer fade, no casting shadows",
+        format!("live ground cover: detail={}, {:.0}..{:.0} m opacity fade, {:.0} m residency; {} active / {} fixed slots, {} requested, {} clipped ({} visible), {} cached world tiles, {:.1} MiB native ground, {:.2} ms last update; same world cells, stable 3-card sizes, true opacity outer fade, no casting shadows",
+            self.detail_profile.label(),self.stats.fade_start,self.stats.fade_end,self.stats.residency,
             self.stats.active, self.capacity, self.stats.requested, self.stats.budget_clipped,
             self.stats.visible_budget_clipped, self.tiles.len(),
             self.stats.ground_bytes as f64 / 1_048_576.0, self.stats.last_update_ms)
@@ -242,9 +278,11 @@ impl LiveGroundCover {
         let key = (views, anchors);
         if self.anchors.as_ref() == Some(&key) { return None; }
         let started = Instant::now();
+        let band=self.detail_profile.for_views(views);
+        self.stats.residency=band.residency;self.stats.fade_start=band.fade_start;self.stats.fade_end=band.fade_end;
         let centres: Vec<Vec2> = key.1.iter().map(|&(x, z)| (Vec2::new(x as f32, z as f32) + Vec2::splat(0.5)) * TILE).collect();
         let distance_squared = |p: Vec2| centres.iter().map(|c| p.distance_squared(*c)).fold(f32::INFINITY, f32::min);
-        let range = radius(views);
+        let range = band.residency;
         // Include all candidate jitter/card extents around the visible circle;
         // tiles are only an update/cache granularity, never a square cut line.
         let margin = TILE * std::f32::consts::FRAC_1_SQRT_2 + CELL;
@@ -287,7 +325,7 @@ impl LiveGroundCover {
             let visible = |tuft: &Tuft| cameras.iter().take(4).any(|camera| {
                 camera.is_finite() && Vec2::new(camera.x, camera.z)
                     .distance_squared(Vec2::new(tuft.position.x, tuft.position.z))
-                    < visible_radius(views).powi(2)
+                    < band.fade_end.powi(2)
             });
             if selected.len() > self.capacity {
                 selected.sort_unstable_by_key(|tuft| (!visible(tuft), hash(tuft.id, 71), tuft.id));
@@ -308,8 +346,7 @@ impl LiveGroundCover {
         for tuft in added {
             let id = tuft.id;
             let slot = self.free.pop_first().expect("selected grass count respects fixed pool capacity");
-            scene.update_instance(self.first + slot, self.mesh, Affine3A::from_scale_rotation_translation(
-                Vec3::splat(tuft.scale * self.growth_scale), Quat::from_rotation_y(tuft.yaw), tuft.position));
+            scene.update_instance(self.first + slot, self.mesh, tuft.transform(self.growth_scale));
             self.active.insert(id, slot); dirty_lo = dirty_lo.min(slot); dirty_hi = dirty_hi.max(slot + 1);
         }
         self.anchors = Some(key);
@@ -327,11 +364,15 @@ mod tests {
             road_d: vec![road; N * N], trees: vec![], rocks: vec![], grass: vec![], ferns: vec![], stumps: vec![] }
     }
     fn setup(chunks: &[Chunk], capacity: usize) -> (Scene, LiveGroundCover) {
+        setup_profile(chunks,capacity,DistanceProfile::Default)
+    }
+    fn setup_profile(chunks: &[Chunk], capacity: usize, profile: DistanceProfile) -> (Scene, LiveGroundCover) {
         let mut scene = Scene::default();
+        scene.grass_detail=profile;
         let mesh = scene.add_mesh(&crate::ground_cover::mesh(0));
         // Real scenes already contain terrain/trees before the pool.
         scene.add_instance(mesh, Affine3A::from_translation(Vec3::new(500.0, 0.0, 500.0)));
-        let stream = LiveGroundCover::with_mesh(&mut scene, chunks, mesh, capacity);
+        let stream = LiveGroundCover::with_mesh(&mut scene, chunks, mesh, capacity, profile);
         (scene, stream)
     }
     #[test]
@@ -416,12 +457,12 @@ mod tests {
         assert_eq!(stream.stats.budget_clipped, 0);
         for (id, p) in &before {
             if !stream.active.contains_key(id) {
-                assert!(p.distance(Vec2::new(current.x, current.z)) > visible_radius(1));
+                assert!(p.distance(Vec2::new(current.x, current.z)) > stream.detail_profile.for_views(1).fade_end);
             }
         }
         for (&id, &slot) in &stream.active {
             if !before.contains_key(&id) {
-                assert!(position(&scene.instances[stream.first + slot]).distance(Vec2::new(previous.x, previous.z)) > visible_radius(1));
+                assert!(position(&scene.instances[stream.first + slot]).distance(Vec2::new(previous.x, previous.z)) > stream.detail_profile.for_views(1).fade_end);
             }
         }
         assert!(scene.instances[stream.first..].iter().all(|instance|
@@ -434,8 +475,84 @@ mod tests {
         // This guards the CPU/shader endpoint contract independent of the
         // actual path taken through a tile, including diagonal crossings.
         let maximum_anchor_error = TILE * std::f32::consts::FRAC_1_SQRT_2;
-        for views in 1..=4 {
-            assert!(radius(views) - maximum_anchor_error > visible_radius(views));
+        for profile in [DistanceProfile::Default,DistanceProfile::Extended] {for views in 1..=4 {
+            let band=profile.for_views(views);
+            assert!(band.residency - maximum_anchor_error > band.fade_end);
+        }}
+    }
+
+    #[test]
+    fn profile_capacities_cover_dense_world_lattice_with_bounded_headroom() {
+        // A candidate can move 0.8 cell from its cell centre on each axis.
+        // Add the cell's half diagonal too: the disjoint cells of all roots
+        // inside the circle fit inside this expanded circle. This bounds
+        // their count by area, including diagonal jitter and the edge cells.
+        let padding=(0.8+0.5)*CELL as f64*std::f64::consts::SQRT_2;
+        for profile in [DistanceProfile::Default,DistanceProfile::Extended] {for views in [1,4] {
+            let band=profile.for_views(views);let r=band.residency as f64;
+            let area=views as f64*std::f64::consts::PI/(CELL as f64).powi(2);
+            let bound=(area*(r+padding).powi(2)).ceil()as usize;
+            let ideal=area*r*r;
+            assert!(band.capacity>=bound,"{profile:?}/{views}: capacity {} < lattice bound {bound}",band.capacity);
+            assert!((band.capacity as f64)<=ideal*1.11,"capacity must remain an explicit bounded experiment");
+        }}
+    }
+
+    #[test]
+    fn extended_profile_preserves_common_plants_and_streams_only_beyond_zero_opacity() {
+        let chunks:Vec<_>=(-2..=2).flat_map(|z|(-2..=2).map(move|x|chunk((x,z),5.0))).collect();
+        let (mut old_scene,mut old)=setup_profile(&chunks,70_000,DistanceProfile::Default);
+        let profile=DistanceProfile::Extended;let band=profile.for_views(1);
+        let (mut scene,mut stream)=setup_profile(&chunks,band.capacity,profile);
+        let previous=Vec3::new(1.7,2.0,1.7);let current=Vec3::new(3.7,2.0,1.7);
+        old.update(&mut old_scene,&[previous]);stream.update(&mut scene,&[previous]);
+        assert!(stream.active.len()>old.active.len()*3);
+        assert_eq!(old.stats.visible_budget_clipped,0);assert_eq!(stream.stats.budget_clipped,0);
+        for (&id,&slot) in &old.active {
+            let extended_slot=stream.active[&id];
+            assert_eq!(old_scene.instances[old.first+slot].rows,scene.instances[stream.first+extended_slot].rows,
+                "profile changed the source pose for world plant {id:?}");
+        }
+        let position=|instance:&render::scene::GpuInstance|Vec2::new(instance.rows[0][3],instance.rows[2][3]);
+        let before:HashMap<_,_>=stream.active.iter().map(|(&id,&slot)|
+            (id,(slot,scene.instances[stream.first+slot].rows))).collect();
+        stream.update(&mut scene,&[current]);
+        assert_eq!(stream.stats.detail_profile,profile);assert_eq!(stream.stats.fade_end,band.fade_end);
+        assert_eq!(stream.stats.budget_clipped,0);assert_eq!(stream.stats.visible_budget_clipped,0);
+        let mut removed=0;let mut added=0;
+        for (&id,&(slot,rows)) in &before {
+            if let Some(&survivor)=stream.active.get(&id) {
+                assert_eq!(slot,survivor);assert_eq!(rows,scene.instances[stream.first+survivor].rows);
+            } else {
+                removed+=1;let p=Vec2::new(rows[0][3],rows[2][3]);
+                assert!(p.distance(Vec2::new(current.x,current.z))>band.fade_end);
+            }
+        }
+        for (&id,&slot) in &stream.active {if !before.contains_key(&id) {
+            added+=1;assert!(position(&scene.instances[stream.first+slot]).distance(Vec2::new(previous.x,previous.z))>band.fade_end);
+        }}
+        assert!(added>100&&removed>100,"fixture must cross a real cache-tile boundary");
+    }
+
+    #[test]
+    fn both_profiles_fit_four_fully_fertile_separated_views_without_visible_clipping() {
+        let chunks:Vec<_>=(-2..=5).flat_map(|z|(-2..=5).map(move|x|chunk((x,z),5.0))).collect();
+        let cameras=[Vec3::ZERO,Vec3::new(256.0,0.0,0.0),Vec3::new(0.0,0.0,256.0),Vec3::new(256.0,0.0,256.0)];
+        for profile in [DistanceProfile::Default,DistanceProfile::Extended] {
+            let band=profile.for_views(4);let (mut scene,mut stream)=setup_profile(&chunks,band.capacity,profile);
+            stream.update(&mut scene,&cameras);
+            assert!(stream.stats.requested>band.capacity*9/10,"fixture must exercise nearly the full pool");
+            assert_eq!(stream.stats.requested,stream.stats.active);
+            assert_eq!(stream.stats.budget_clipped,0);assert_eq!(stream.stats.visible_budget_clipped,0);
+            assert_eq!(scene.instances.len(),stream.first+band.capacity);
+            // Every visible source plant in every view is represented. This
+            // catches an accidental camera-dependent thinning/priority cap.
+            for tile in stream.tiles.values() {for tuft in &tile.tufts {
+                let p=Vec2::new(tuft.position.x,tuft.position.z);
+                if cameras.iter().any(|c|p.distance(Vec2::new(c.x,c.z))<band.fade_end) {
+                    assert!(stream.active.contains_key(&tuft.id),"missing visible source plant {:?}",tuft.id);
+                }
+            }}
         }
     }
 
@@ -443,16 +560,17 @@ mod tests {
         // Deliberately retain the original full candidate scan as the oracle;
         // it does not use tile masks or their bounding-box classification.
         let views = cameras.len().clamp(1, 4);
+        let band=stream.detail_profile.for_views(views);
         let centres: Vec<_> = cameras.iter().take(4)
             .filter(|c| c.is_finite() && c.x.abs() < 10_000_000.0 && c.z.abs() < 10_000_000.0)
             .map(|c| (Vec2::new((c.x / TILE).floor(), (c.z / TILE).floor()) + Vec2::splat(0.5)) * TILE).collect();
         let mut selected: Vec<_> = stream.tiles.values().flat_map(|tile| tile.tufts.iter()).copied()
             .filter(|tuft| centres.iter().any(|centre|
-                Vec2::new(tuft.position.x, tuft.position.z).distance_squared(*centre) <= radius(views).powi(2))).collect();
+                Vec2::new(tuft.position.x, tuft.position.z).distance_squared(*centre) <= band.residency.powi(2))).collect();
         let requested = selected.len();
         if selected.len() > stream.capacity {
             let visible = |tuft: &Tuft| cameras.iter().take(4).any(|camera| camera.is_finite()
-                && Vec2::new(camera.x, camera.z).distance_squared(Vec2::new(tuft.position.x, tuft.position.z)) < visible_radius(views).powi(2));
+                && Vec2::new(camera.x, camera.z).distance_squared(Vec2::new(tuft.position.x, tuft.position.z)) < band.fade_end.powi(2));
             selected.sort_unstable_by_key(|tuft| (!visible(tuft), hash(tuft.id, 71), tuft.id));
             selected.truncate(stream.capacity);
         }
@@ -505,12 +623,12 @@ mod tests {
             updates.push(stream.stats.last_update_ms);
             let centre = (Vec2::new((camera.x / TILE).floor(), (camera.z / TILE).floor()) + Vec2::splat(0.5)) * TILE;
             let started = Instant::now();
-            let masked: usize = stream.tiles.values().map(|tile| tile.mask(&[centre], radius(1).powi(2)).count_ones() as usize).sum();
+            let masked: usize = stream.tiles.values().map(|tile| tile.mask(&[centre], stream.detail_profile.for_views(1).residency.powi(2)).count_ones() as usize).sum();
             std::hint::black_box(masked);
             mask_ms += started.elapsed().as_secs_f64() * 1000.0;
             let started = Instant::now();
             let scanned = stream.tiles.values().flat_map(|tile| tile.tufts.iter()).filter(|tuft|
-                Vec2::new(tuft.position.x, tuft.position.z).distance_squared(centre) <= radius(1).powi(2)).count();
+                Vec2::new(tuft.position.x, tuft.position.z).distance_squared(centre) <= stream.detail_profile.for_views(1).residency.powi(2)).count();
             std::hint::black_box(scanned);
             full_scan_ms += started.elapsed().as_secs_f64() * 1000.0;
             assert_eq!(masked, scanned);

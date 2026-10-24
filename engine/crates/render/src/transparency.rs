@@ -36,7 +36,7 @@ struct OrderBuffer {
 }
 
 pub(crate) struct Transparency {
-    pipeline: wgpu::RenderPipeline,
+    pipelines: [wgpu::RenderPipeline; 2],
     view_layout: wgpu::BindGroupLayout,
     geometry_layout: wgpu::BindGroupLayout,
     triangles: wgpu::Buffer,
@@ -46,6 +46,7 @@ pub(crate) struct Transparency {
     // One reusable order buffer per view avoids rewriting a preceding view's
     // indices before its commands execute at the shared queue submission.
     orders: Mutex<Vec<OrderBuffer>>,
+    motion_targets: Mutex<Vec<Option<wgpu::TextureView>>>,
 }
 
 /// Compose the real production lighting helpers with the forward entry points.
@@ -251,7 +252,11 @@ impl Transparency {
                 ],
                 immediate_size: 0,
             });
-        let pipeline = gpu
+        let pipelines=[false,true].map(|motion| {
+            let mut targets=vec![Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba16Float,
+                blend:Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})];
+            if motion {targets.push(Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rg32Uint,blend:None,write_mask:wgpu::ColorWrites::ALL}));}
+            gpu
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("transparent car surfaces"),
@@ -277,17 +282,14 @@ impl Transparency {
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("transparent_fs"),
+                    entry_point: Some(if motion {"transparent_motion_fs"}else{"transparent_fs"}),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: &targets,
                 }),
                 multiview_mask: None,
                 cache: None,
-            });
+            })
+        });
         let triangles = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -296,13 +298,14 @@ impl Transparency {
                 usage: wgpu::BufferUsages::STORAGE,
             });
         Some(Self {
-            pipeline,
+            pipelines,
             view_layout,
             geometry_layout,
             triangles,
             sort_triangles,
             owners: Mutex::new(owners),
             orders: Mutex::new(Vec::new()),
+            motion_targets: Mutex::new(Vec::new()),
         })
     }
 
@@ -328,6 +331,7 @@ impl Transparency {
         hdr: &wgpu::TextureView,
         depth: &wgpu::TextureView,
         timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
+        motion: bool,
     ) {
         let indices = sorted_indices(&self.sort_triangles, &self.owners.lock().unwrap(), camera);
         let mut orders = self.orders.lock().unwrap();
@@ -368,17 +372,25 @@ impl Transparency {
                 })
                 .collect::<Vec<_>>(),
         });
+        let mut motion_targets=self.motion_targets.lock().unwrap();
+        while motion_targets.len()<=view_index {motion_targets.push(None);}
+        let size=hdr.texture().size();
+        if motion && motion_targets[view_index].as_ref().is_none_or(|v|v.texture().size()!=size) {
+            let tex=gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("transparent motion owner"),size,
+                mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rg32Uint,
+                usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
+            motion_targets[view_index]=Some(tex.create_view(&Default::default()));
+        }
+        let mut attachments=vec![Some(wgpu::RenderPassColorAttachment {
+            view:hdr,resolve_target:None,depth_slice:None,ops:wgpu::Operations {load:wgpu::LoadOp::Load,store:wgpu::StoreOp::Store},
+        })];
+        if motion {attachments.push(Some(wgpu::RenderPassColorAttachment {
+            view:motion_targets[view_index].as_ref().unwrap(),resolve_target:None,depth_slice:None,
+            ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store},
+        }));}
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("transparency"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: hdr,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            color_attachments: &attachments,
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
                 depth_ops: Some(wgpu::Operations {
@@ -391,11 +403,15 @@ impl Transparency {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(&self.pipelines[usize::from(motion)]);
         pass.set_bind_group(0, scene_bind, &[]);
         pass.set_bind_group(1, &view_bind, &[]);
         pass.set_bind_group(2, &order.bind, &[]);
         pass.draw(0..3, 0..indices.len() as u32);
+    }
+
+    pub(crate) fn motion_layer(&self,view:usize)->Option<wgpu::TextureView> {
+        self.motion_targets.lock().unwrap().get(view).and_then(Clone::clone)
     }
 }
 

@@ -172,7 +172,7 @@ impl WindRenderer {
 
 pub(crate) fn common_source() -> &'static str { include_str!("shaders/wind_common.wgsl") }
 pub(crate) fn shade_source() -> String {
-    format!("{}\n{}", common_source(), include_str!("shaders/shade.wgsl"))
+    format!("{}\n{}\n{}\n{}", common_source(), include_str!("shaders/shade.wgsl"), include_str!("shaders/grass_lighting.wgsl"), include_str!("shaders/headlights.wgsl"))
 }
 
 #[cfg(test)]

@@ -10,6 +10,9 @@ struct Parameters {
 @group(0) @binding(4) var<storage,read> instances:array<Instance>;
 @group(1) @binding(0) var<uniform> params:Parameters;
 @group(1) @binding(1) var<storage,read_write> density:array<atomic<u32>>;
+// Instance IDs followed by shared 8-word local leaf bounds. ID zero keeps
+// compatibility for foliage without a supported source leaf material.
+@group(1) @binding(3) var<storage,read> source_crowns:array<u32>;
 
 // Bounded quadrature over cell/crown overlap. At coarse pitches a crown's
 // centre can lie anywhere inside a cell: sampling only its centre loses it.
@@ -39,8 +42,17 @@ fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
     if index>=params.state.y || index>=arrayLength(&instances) {return;}
     let inst=instances[index];if (inst.flags&1u)==0u {return;}
     let r=inst.sphere.w;
-    let centre=inst.sphere.xyz+vec3<f32>(0.0,r*0.25,0.0);
-    let radii=vec3<f32>(r*0.38,r*0.62,r*0.38);
+    var centre=inst.sphere.xyz+vec3<f32>(0.0,r*0.25,0.0);
+    var radii=vec3<f32>(r*0.38,r*0.62,r*0.38);
+    var source_id=0u;
+    if index<params.state.z {source_id=source_crowns[index];}
+    if source_id!=0u {
+        let at=params.state.z+source_id*8u;
+        let c=vec3<f32>(bitcast<f32>(source_crowns[at]),bitcast<f32>(source_crowns[at+1u]),bitcast<f32>(source_crowns[at+2u]));
+        let h=vec3<f32>(bitcast<f32>(source_crowns[at+4u]),bitcast<f32>(source_crowns[at+5u]),bitcast<f32>(source_crowns[at+6u]));
+        centre=vec3<f32>(dot(inst.r0.xyz,c)+inst.r0.w,dot(inst.r1.xyz,c)+inst.r1.w,dot(inst.r2.xyz,c)+inst.r2.w);
+        radii=vec3<f32>(dot(abs(inst.r0.xyz),h),dot(abs(inst.r1.xyz),h),dot(abs(inst.r2.xyz),h));
+    }
     let mass=(8.0*3.14159265359/15.0)*radii.x*radii.y*radii.z;
     let dims=vec3<i32>(params.dims.xyz);
     let level_count=params.dims.x*params.dims.y*params.dims.z;

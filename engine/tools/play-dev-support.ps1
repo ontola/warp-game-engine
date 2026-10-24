@@ -50,3 +50,29 @@ function Write-DevJson {
     [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
+
+function Get-DlssBuildSetup {
+    param([string]$Upscale, [string]$Sdk = $env:NVIDIA_DLSS_SDK,
+        [string]$VulkanHeaders = $env:VULKAN_HEADERS, [string]$Runtime = $env:KERN_DLSS_RUNTIME_DIR)
+    if ($Upscale -eq 'native') { return [ordered]@{ features = @(); dlss = $null } }
+    if ($Upscale -notin @('dlss-quality', 'dlss-balanced', 'dlss-performance')) { throw "Unknown upscaling mode: $Upscale" }
+    $paths = [ordered]@{ NVIDIA_DLSS_SDK = $Sdk; VULKAN_HEADERS = $VulkanHeaders; KERN_DLSS_RUNTIME_DIR = $Runtime }
+    foreach ($key in $paths.Keys) {
+        if ([string]::IsNullOrWhiteSpace($paths[$key]) -or -not (Test-Path -LiteralPath $paths[$key] -PathType Container)) {
+            throw "DLSS requested: set $key to its installed directory before building. Native builds do not require the optional SDK/runtime."
+        }
+    }
+    $files = [ordered]@{
+        sdk_header = Join-Path $Sdk 'include\nvsdk_ngx_vk.h'
+        vulkan_header = Join-Path $VulkanHeaders 'include\vulkan\vulkan.h'
+        runtime_library = Join-Path $Runtime 'nvngx_dlss.dll'
+    }
+    $evidence = [ordered]@{ sdk_root = [IO.Path]::GetFullPath($Sdk); vulkan_headers_root = [IO.Path]::GetFullPath($VulkanHeaders) }
+    foreach ($key in $files.Keys) {
+        $path = [IO.Path]::GetFullPath($files[$key])
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "DLSS prerequisite missing: $path" }
+        $evidence[$key] = $path
+        $evidence[$key + '_sha256'] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    return [ordered]@{ features = @('render/dlss'); dlss = $evidence }
+}

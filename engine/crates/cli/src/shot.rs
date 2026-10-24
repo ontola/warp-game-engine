@@ -7,6 +7,7 @@ use kern::Sim;
 use render::{Camera, Gpu, Lighting, Renderer, Stopwatch};
 
 pub struct ShotArgs {
+    pub upscale: render::upscale::UpscaleMode,
     pub nature: crate::nature::Nature,
     pub out: String,
     pub seed: u64,
@@ -45,6 +46,7 @@ fn paint(i: usize, humans: usize) -> Vec3 {
 /// Everything a frame needs: the scene, light and camera at a moment of a race.
 pub struct Setup {
     pub wind: render::wind::WindState,
+    pub headlights: Vec<render::headlights::SpotLight>,
     pub scene: render::Scene,
     pub mesh_names: Vec<String>,
     pub light: Lighting,
@@ -112,7 +114,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
         .collect();
     let t = Stopwatch::start();
     let camera_positions: Vec<_> = cams.iter().take(a.views).map(|c| c.pos).collect();
-    let built = visuals::build(&race.stage, &poses, &camera_positions, a.ground_cover)?;
+    let mut built = visuals::build(&race.stage, &poses, &camera_positions, a.ground_cover)?;
     log.extend(built.log.iter().map(|l| format!("  {l}")));
     log.push(format!("scene: {:.0} ms", t.ms()));
     let mut light = Lighting::default();
@@ -145,12 +147,20 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
         }
         _ => {}
     }
+    let sky_metadata = crate::procedural_sky::apply_environment(&mut built.scene, &mut light)?;
     for kv in &a.sets {
         light.set(kv)?;
     }
+    // Derive lights after every sky/light override, exactly as interactive
+    // play does. A night shot must not omit the car's only local light.
+    let headlights=crate::car_headlights::from_poses(&poses,&(0..a.views).collect::<Vec<_>>(),&light);
     let metadata = serde_json::json!({
         "schema": 1, "renderer": "kern", "seed": a.seed, "km": a.km, "start_at_m": a.at,
+        "upscale_requested": a.upscale.as_str(), "sky": sky_metadata,
+        "headlights": crate::car_headlights::metadata(&headlights),
         "nature": a.nature.metadata(race.frame as f64 / 120.0),
+        "grass_detail_profile": built.scene.grass_detail.label(),
+        "crowds": crate::roadside_crowds::metadata(&built.scene),
         "requested_frames": a.frames, "simulation_steps": a.frames.saturating_sub(1),
         "simulation_tick": race.tick(), "round": race.round, "race_phase": race.phase,
         "weather_requested": a.weather, "weather_actual": race.weather,
@@ -168,11 +178,11 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
             "wheels": p.wheels.iter().map(|w| serde_json::json!({"anchor": w.anchor.to_array(), "compression": w.compression, "steer": w.steer, "spin": w.spin})).collect::<Vec<_>>()
         })).collect::<Vec<_>>()
     });
-    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), scene: built.scene, mesh_names: built.mesh_names, light, cam: cams[0], cams, log, metadata })
+    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), headlights, scene: built.scene, mesh_names: built.mesh_names, light, cam: cams[0], cams, log, metadata })
 }
 
 pub fn run(a: &ShotArgs) -> i32 {
-    let setup = match prepare(a) {
+    let mut setup = match prepare(a) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("shot: {e}");
@@ -191,7 +201,14 @@ pub fn run(a: &ShotArgs) -> i32 {
         }
     };
     let renderer = Renderer::new(&gpu, &setup.scene, &setup.light);
+    if let Err(e)=renderer.set_headlights(&setup.headlights) {eprintln!("shot headlights: {e}");return 1;}
+    if let Err(e)=renderer.set_upscale(&gpu,a.upscale) {eprintln!("shot upscale: {e}");return 1;}
     if let Err(e)=renderer.set_wind(&gpu,&setup.wind) {eprintln!("shot wind: {e}");return 1;}
+    if let Err(e)=renderer.set_animation_time(setup.wind.time_seconds) {eprintln!("shot animation: {e}");return 1;}
+    // Held-pose temporal convergence has a fixed cadence, not the wall time
+    // spent synchronously reading images back for this diagnostic command.
+    renderer.set_frame_time_ms(1000.0/60.0);
+    setup.metadata["frame_time_ms"] = serde_json::json!(1000.0f32/60.0);
     println!("gpu upload ({}): {:.0} ms", gpu.info.name, t.ms());
     let (cam, light) = (setup.cam, setup.light.clone());
     let (w, h) = a.size;
@@ -204,12 +221,15 @@ pub fn run(a: &ShotArgs) -> i32 {
     }
     let mut first_ms = 0.0;
     for _ in 1..a.taa_frames.max(1) {
-        renderer.render_views(&gpu, &views, &light, w, h, &[]);
+        if let Err(e)=renderer.try_render_views(&gpu, &views, &light, w, h, &[]) {eprintln!("shot render: {e}");return 1;}
         if first_ms == 0.0 {
             first_ms = t.ms();
         }
     }
-    let (px, stats) = renderer.render_views(&gpu, &views, &light, w, h, &a.picks);
+    let (px, stats) = match renderer.try_render_views(&gpu, &views, &light, w, h, &a.picks) {Ok(frame)=>frame,Err(e)=>{eprintln!("shot render: {e}");return 1;}};
+    setup.metadata["upscale"] = crate::upscale::metadata(a.upscale,&renderer.upscale_status());
+    setup.metadata["taa_enabled"] = serde_json::json!(a.upscale==render::upscale::UpscaleMode::Native && a.taa_frames>1 && light.taa>0.5);
+    setup.metadata["temporal_reconstruction"] = serde_json::json!(if a.upscale==render::upscale::UpscaleMode::Native {"native_taa_setting"} else {"dlss"});
     for (k, p) in stats.picks.iter().enumerate() {
         let (x, y) = a.picks[k];
         match p {

@@ -103,6 +103,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
         Some(v) => v.as_bool().ok_or("taa must be a boolean")?,
     };
     let args = crate::shot::ShotArgs {
+        upscale: job.get("upscale").map(|v|v.as_str().ok_or("upscale must be a string")).transpose()?.unwrap_or("native").parse()?,
         // Preserve existing frozen GPU-job baselines unless wind is explicit.
         nature: crate::nature::Nature { vegetation: sideways::vegetation::Vegetation::new(
             get("vegetation_seed",0.0) as u64, get("growth",1.0) as f32,
@@ -127,7 +128,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
     if !taa {
         setup.light.taa = 0.0;
     }
-    let taa_enabled = setup.light.taa > 0.5;
+    let taa_enabled = args.upscale==render::upscale::UpscaleMode::Native && setup.light.taa > 0.5;
     // prepare() describes shot convergence. This command instead retains
     // history through its whole warmup + measured sequence, even for 1 frame.
     setup.metadata["taa_enabled"] = json!(taa_enabled);
@@ -135,7 +136,11 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
     let prep_ms = t.ms();
     let t = render::Stopwatch::start();
     let renderer = render::Renderer::new(gpu, &setup.scene, &setup.light);
+    renderer.set_headlights(&setup.headlights)?;
+    renderer.set_upscale(gpu,args.upscale)?;
     renderer.set_wind(gpu,&setup.wind)?;
+    renderer.set_frame_time_ms(1000.0/60.0);
+    setup.metadata["frame_time_ms"]=json!(1000.0f32/60.0);
     let upload_ms = t.ms();
     let views = crate::shot::view_rects(&setup.cams, args.views, size.0, size.1);
     let mut walls = Vec::new();
@@ -146,7 +151,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
     for frame in 0..total_frames {
         let t = render::Stopwatch::start();
         renderer.invalidate_shadow();
-        last = renderer.render_views(gpu, &views, &setup.light, size.0, size.1, &[]);
+        last = renderer.try_render_views(gpu, &views, &setup.light, size.0, size.1, &[])?;
         let wall_ms = t.ms();
         let gpu_total = gpu_total(&last.1.gpu_ms)?;
         let measured = frame >= warmup;
@@ -163,7 +168,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
         samples.push(json!({
             "render_frame": frame + 1, "phase": if measured { "measured" } else { "warmup" },
             "wall_ms": wall_ms, "gpu_ms_total": gpu_total, "gpu_ms_by_pass": gpu_passes,
-            "counts": frame_counts(&last.1)
+            "counts": frame_counts(&last.1), "upscale":crate::upscale::metadata(args.upscale,&renderer.upscale_status())
         }));
     }
     let file = format!("{name}.png");
@@ -190,6 +195,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
         "gpu_timestamp_samples": totals.len(), "moving_gameplay": false
     });
     setup.metadata["gpu"] = gpu_metadata(gpu);
+    setup.metadata["upscale"] = crate::upscale::metadata(args.upscale,&renderer.upscale_status());
     setup.metadata["benchmark"] = benchmark.clone();
     setup.metadata["job_config"] = json!(job);
     setup.metadata["last_frame_counts"] = frame_counts(&last.1);

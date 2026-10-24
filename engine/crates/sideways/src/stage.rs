@@ -1,10 +1,11 @@
-//! The stage layout, ported from src/stage.gd. Same seed, same road: the
-//! arithmetic follows Godot's float widths (f64 scalars, f32 vectors and
-//! packed arrays) so the oracle can compare it number for number.
+//! Deterministic rally layout and shared terrain/surface queries. Rendering,
+//! placement and physics consume the same stage. The original layout keeps
+//! its f64 scalar/f32 vector arithmetic; current terrain and road-surface
+//! design intentionally evolve independently of the earlier engine version.
 
 use crate::surfaces::Surface;
 use gdcompat::math::{V2, V3, lerp, signf, smoothstep, v2, v3};
-use gdcompat::{Noise, Pcg, Var, hash};
+use gdcompat::{Noise, Pcg};
 use std::collections::HashMap;
 
 pub const STEP: f64 = 2.0;
@@ -117,30 +118,11 @@ impl Stage {
     }
 
     fn make_road_surfaces(&mut self) {
-        let n = self.points.len();
-        self.road_surfaces = vec![Surface::Gravel as u8; n];
-        let mut rng = Pcg::new(hash(&Var::Array(&[
-            Var::Int(self.noise_seed as i64),
-            Var::Int(self.detail_seed as i64),
-            Var::Str("road surfaces"),
-        ])) as u64);
-        let mut block_start = 0.0f64;
-        while self.finish - block_start >= 600.0 {
-            let span = (self.finish - block_start).min(1200.0);
-            let kinds = [Surface::Dirt, Surface::Mud, Surface::Asphalt];
-            let fractions = [0.20, 0.48, 0.75];
-            let lengths = [0.06, 0.08, 0.06];
-            for j in 0..3 {
-                let start = block_start + span * (fractions[j] + rng.randf_range_f32(-0.015, 0.015) as f64);
-                let metres = (span * lengths[j] * rng.randf_range_f32(0.9, 1.1) as f64).max(40.0);
-                let first = ((start / STEP).floor() as i64).clamp(0, n as i64 - 1) as usize;
-                let end = (first + ((metres / STEP).floor() as usize).max(20)).min(n);
-                for row in first..end {
-                    self.road_surfaces[row] = kinds[j] as u8;
-                }
-            }
-            block_start += span;
-        }
+        // One continuous gravel road. Arbitrary asphalt/dirt/mud bands did
+        // not correspond to the landscape or a change of road. Future types
+        // belong to authored junctions (including width) or wet low ground.
+        // The same rows feed rendering, tyre grip and AI look-ahead.
+        self.road_surfaces = vec![Surface::Gravel as u8; self.points.len()];
     }
 
     pub fn road_surface_at(&self, along: f64) -> Surface {
@@ -551,7 +533,7 @@ impl Stage {
         self.noise.get_2d(x as f32, z as f32) as f64 * 34.0 + self.detail.get_2d(x as f32, z as f32) as f64 * 3.0
     }
 
-    fn carve(&self, x: f64, z: f64, h: f64) -> f64 {
+    fn carve(&self, x: f64, z: f64, h: f64, near: i64) -> f64 {
         let Some((ri, k, d, level)) = self.river_near(x, z, 40.0) else {
             return h;
         };
@@ -566,11 +548,34 @@ impl Stage {
         let half = r.half;
         let mut bed = level - r.depth * (1.0 - smoothstep(half * 0.45, half, d)) + 0.25 * smoothstep(half * 0.8, half, d);
         bed += (d - half).max(0.0) * 0.5;
-        h.min(bed)
+        let carved = h.min(bed);
+        // A river used to impose its 1:2 bank plane up to 40 m away,
+        // including past an endpoint. That sliced nearby cut faces into
+        // cones/wedges (the reported #4 crest lost almost 9 m). The wet
+        // channel stays exact; only its dry outer bank joins back into the
+        // authoritative terrain, with a compact, C1-continuous influence.
+        if d <= half + 2.0 { return carved; }
+        let road_weight = if near >= 0 {
+            let at = self.result(v3(x as f32, 0.0, z as f32), near as usize);
+            let edge = at.offset.abs() - self.widths[near as usize] as f64;
+            // Preserve every native triangle touching road + 2 m, not only
+            // sample points in that strip: one grid diagonal is its halo.
+            let guard = 2.0 + GRID * std::f64::consts::SQRT_2;
+            if edge <= guard { return carved; }
+            smoothstep(guard, guard + 2.0, edge)
+        } else { 1.0 };
+        let bank_weight = 1.0 - smoothstep(half + 2.0, half + 12.0, d);
+        // Round the terrain/bank intersection without an infinite-support
+        // blur. The maximum extra incision is 0.1875 m and is zero where
+        // the two surfaces differ by at least 0.75 m.
+        let join = (1.0 - (h - bed).abs() / 0.75).max(0.0);
+        let rounded = carved - 0.1875 * join * join * smoothstep(half + 2.0, half + 4.0, d);
+        if bank_weight == 0.0 && road_weight == 1.0 { return h; }
+        lerp(carved, lerp(h, rounded, bank_weight), road_weight)
     }
 
     pub fn height_near(&self, x: f64, z: f64, near: i64) -> f64 {
-        self.carve(x, z, self.height_near_raw(x, z, near))
+        self.carve(x, z, self.height_near_raw(x, z, near), near)
     }
 
     fn height_near_raw(&self, x: f64, z: f64, near: i64) -> f64 {
@@ -594,20 +599,42 @@ impl Stage {
         let reach = ((natural - road_h).abs() / 0.32).clamp(12.0, 60.0);
         let blend = smoothstep(w + 3.0, w + 3.0 + reach, off);
         let normal = lerp(road_h, natural, blend) + ditch * (1.0 - blend * 0.6);
-        let ledge = self.ledges[near] as f64;
+        // Ledge strength used to jump to the nearest 2 m road row. Near a
+        // cut's ends that became a metre-scale stair even on a dense mesh.
+        // Interpolate the signed wall/drop amplitudes, not the height and
+        // envelope independently (which would attenuate the end twice).
+        let row = (r.along / STEP).clamp(0.0, (self.points.len() - 1) as f64);
+        let a = row.floor() as usize;
+        let b = (a + 1).min(self.points.len() - 1);
+        let t = row.fract();
+        let ledge = lerp(self.ledges[a] as f64, self.ledges[b] as f64, t);
         if ledge == 0.0 {
             return normal;
         }
+        // Generated cuts are separated, but keep edited/opposite-sign
+        // neighbours bounded instead of dividing by their cancelled sign.
+        let strength = lerp(self.ledges[a].abs() as f64, self.ledges[b].abs() as f64, t);
+        let wall = lerp((self.ledge_wall[a] * self.ledges[a].abs()) as f64,
+            (self.ledge_wall[b] * self.ledges[b].abs()) as f64, t) / strength;
+        let drop = lerp((self.ledge_drop[a] * self.ledges[a].abs()) as f64,
+            (self.ledge_drop[b] * self.ledges[b].abs()) as f64, t) / strength;
         let back = smoothstep(w + 14.0, REACH - 5.0, off);
         if signf(r.offset) == signf(ledge) {
-            let face = smoothstep(w + 2.4, w + 7.0, off);
+            // A 4.6 m cut sampled on the shared 2 m grid had only two cells
+            // across a 9-22 m face. Its grid diagonals formed regular toe
+            // pyramids. Give the toe/crown a resolved, varying footprint;
+            // keep the same high plateau and a steep central rock face.
+            // World noise is coherent across road rows, chunks and physics.
+            let toe = 2.4 + 0.95 * self.detail.get_2d((x * 2.3 + 113.0) as f32, (z * 2.3 - 71.0) as f32) as f64;
+            let span = 7.6 + 1.6 * self.detail.get_2d((x * 1.7 - 37.0) as f32, (z * 1.7 + 159.0) as f32) as f64;
+            let face = smoothstep(w + toe, w + toe + span, off);
             let mut rock = road_h
-                + self.ledge_wall[near] as f64 * face
+                + wall * face
                 + self.detail.get_2d((x * 3.0) as f32, (z * 3.0) as f32) as f64 * 1.4 * face * (1.0 - face);
             rock = lerp(rock, natural, back);
             return lerp(normal, normal.max(rock), ledge.abs());
         }
-        let mut fall = road_h - 0.1 - self.ledge_drop[near] as f64 * smoothstep(w + 1.9, w + 11.0, off);
+        let mut fall = road_h - 0.1 - drop * smoothstep(w + 1.9, w + 11.0, off);
         fall = lerp(fall, natural, back);
         lerp(normal, normal.min(fall), ledge.abs())
     }
@@ -771,6 +798,26 @@ fn pick_grade(rng: &mut Pcg) -> usize {
 }
 
 #[cfg(test)]
+mod road_surface_tests {
+    use super::*;
+
+    #[test]
+    fn generated_road_has_one_surface_for_rendering_ai_and_wheel_queries() {
+        for (seed, length) in [(1, 8000.0), (73, 3000.0), (9021, 800.0)] {
+            let stage = Stage::generate(&mut Pcg::new(seed), length + RUNOUT);
+            assert_eq!(stage.road_surfaces.len(), stage.points.len());
+            for (index, point) in stage.points.iter().enumerate() {
+                assert_eq!(stage.road_surfaces[index], Surface::Gravel as u8,
+                    "render row changed surface at seed {seed}, row {index}");
+                assert_eq!(stage.road_surface_at(index as f64 * STEP), Surface::Gravel);
+                assert_eq!(stage.surface_near(*point, index as i64).0, Surface::Gravel,
+                    "wheel query disagrees at seed {seed}, row {index}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn reported_round_two_stage() -> Stage {
     // F12 sideways-1792785290021-227228-2: seed 1, round 2, 3 km,
     // one human seat, no rivals. Replay only generation, not the race.
@@ -779,6 +826,225 @@ pub(crate) fn reported_round_two_stage() -> Stage {
     let stage=Stage::generate(&mut rng,3000.0+RUNOUT);
     assert_eq!((stage.noise_seed,stage.detail_seed),(370671355,-305494282));
     stage
+}
+
+#[cfg(test)]
+mod cut_bank_tests {
+    use super::*;
+
+    fn foundation_digest(s: &Stage) -> (usize, u64) {
+        let mut digest=0xcbf29ce484222325u64;let mut samples=0usize;
+        for row in 0..s.points.len() {let p=s.points[row];let d=s.dirs[row];
+            for side in [-1.0,1.0] {for step in 0..=24 {
+                let off=(s.widths[row]as f64+2.0)*step as f64/24.0;
+                let x=p.x as f64-d.z as f64*side*off;let z=p.z as f64+d.x as f64*side*off;
+                for byte in s.height_near(x,z,row as i64).to_le_bytes(){digest=(digest^byte as u64).wrapping_mul(0x100000001b3);}
+                samples+=1;
+            }}
+        }
+        (samples,digest)
+    }
+
+    #[test]
+    #[ignore = "recorded-camera shape diagnostic; run explicitly with --nocapture"]
+    fn reported_fourth_capture_shape_metrics() {
+        let s=reported_stage();
+        let eye=v3(-18.910427,1.5267234,-1957.8578);
+        let target=v3(-21.110065,0.37672335,-1964.1864);
+        let f=(target-eye).normalized();let right=f.cross(V3::UP).normalized();let up=right.cross(f);
+        let scale=(1.1170107126235962f32*0.5).tan();
+        let mut hits=Vec::new();
+        for (name,u,v) in [("left toe",0.29f32,0.43f32),("upper crest",0.48,0.21),("far rail",0.67,0.34)] {
+            let d=(f+right*((2.0*u-1.0)*scale*16.0/9.0)+up*((1.0-2.0*v)*scale)).normalized();
+            let mut previous=0.0;
+            for k in 1..=2400 {
+                let distance=k as f32*0.25;let p=eye+d*distance;
+                if p.y as f64<=grid_height(&s,p.x as f64,p.z as f64) {
+                    let(mut a,mut b)=(previous,distance);
+                    for _ in 0..16 {let m=(a+b)*0.5;let q=eye+d*m;
+                        if q.y as f64<=grid_height(&s,q.x as f64,q.z as f64){b=m;}else{a=m;}}
+                    let q=eye+d*((a+b)*0.5);let r=s.locate(q,-1);
+                    println!("F12 #4 {name}: world={q:?}, row={}, along={:.3}, edge={:.3}, ledge={:.4}, wall={:.3}, height={:.5}, raw={:.5}, grid={:.5}, river={:?}",
+                        r.index,r.along,r.offset.abs()-s.width_at(r.along),s.ledges[r.index as usize],s.ledge_wall[r.index as usize],s.height(q.x as f64,q.z as f64),
+                        s.height_near_raw(q.x as f64,q.z as f64,s.nearest_index(q.x as f64,q.z as f64)),q.y,s.river_near(q.x as f64,q.z as f64,40.0));
+                    hits.push((name,r.index));break;
+                }
+                previous=distance;
+            }
+        }
+        let mut sections=Vec::new();
+        for (name,row) in hits {
+            for row in (row-8).max(0)..=(row+8).min(s.points.len()as i64-1) {
+                let p=s.points[row as usize];let d=s.dirs[row as usize];
+                for side in [-1.0,1.0] {
+                    for k in 0..=80 {let edge=2.0+k as f64*0.25;let off=s.widths[row as usize]as f64+edge;
+                        let x=p.x as f64-d.z as f64*side*off;let z=p.z as f64+d.x as f64*side*off;
+                        sections.push(serde_json::json!({"hit":name,"row":row,"side":side,"edge":edge,"x":x,"z":z,
+                            "height":s.height(x,z),"raw":s.height_near_raw(x,z,s.nearest_index(x,z)),"grid":grid_height(&s,x,z),"natural":s.ground(x,z),"river":s.river_near(x,z,40.0)}));
+                    }
+                }
+            }
+        }
+        let (samples,digest)=foundation_digest(&s);
+        println!("road+2m foundation: {samples} samples, digest={digest:016x}");
+        if let Ok(path)=std::env::var("WARP_MACROTERRAIN_METRICS") {
+            std::fs::write(path,serde_json::to_vec_pretty(&serde_json::json!({"foundation_samples":samples,"foundation_digest":format!("{digest:016x}"),"sections":sections})).unwrap()).unwrap();
+        }
+    }
+
+    fn reported_stage() -> Stage {
+        let mut rng=Pcg::new(1);rng.next_u32();
+        let stage=Stage::generate(&mut rng,3000.0+RUNOUT);
+        assert_eq!((stage.noise_seed,stage.detail_seed),(683407368,2033395789));
+        stage
+    }
+
+    #[test]
+    fn remote_river_bank_does_not_slice_the_reported_cliff_crests() {
+        let s=reported_stage();
+        for (row,edge,previous_cut) in [(1142,11.0,6.80036),(1174,12.0,17.97660)] {
+            let p=s.points[row];let d=s.dirs[row];let off=s.widths[row]as f64+edge;
+            let x=p.x as f64+d.z as f64*off;let z=p.z as f64-d.x as f64*off;
+            let near=s.nearest_index(x,z);let raw=s.height_near_raw(x,z,near);
+            let (ri,_,distance,_)=s.river_near(x,z,40.0).unwrap();
+            assert!(distance>s.rivers[ri].half+12.0,"fixture moved into the river's bank");
+            assert_eq!(s.height(x,z).to_bits(),raw.to_bits(),"remote river still clips row {row}");
+            assert!(raw-previous_cut>4.0,"fixture no longer exercises the recorded large cliff loss");
+        }
+        // The entire original road, its two-metre shoulder strip, generation
+        // seed and vertical profile retain their pre-change bits.
+        assert_eq!(foundation_digest(&s),(78_550,0xabbf09378d960281));
+    }
+
+    #[test]
+    fn river_beds_water_and_native_road_triangles_keep_their_old_foundation() {
+        let s=reported_stage();let mut wet=0usize;let mut guarded=0usize;
+        let legacy=|x:f64,z:f64,h:f64| {
+            let Some((ri,k,d,level))=s.river_near(x,z,40.0) else{return h};let r=&s.rivers[ri];
+            if r.wet[k]==0{return h;}
+            let bed=level-r.depth*(1.0-smoothstep(r.half*0.45,r.half,d))
+                +0.25*smoothstep(r.half*0.8,r.half,d)+(d-r.half).max(0.0)*0.5;
+            h.min(bed)
+        };
+        for r in &s.rivers {for k in 1..r.pts.len()-1 {
+            let p=r.pts[k];let direction=(r.pts[k+1]-r.pts[k-1]).normalized();
+            for side in [-1.0,0.0,1.0] {for edge in [0.0,r.half,r.half+1.9] {
+                let x=p.x as f64-direction.y as f64*side*edge;let z=p.y as f64+direction.x as f64*side*edge;
+                let near=s.nearest_index(x,z);let raw=s.height_near_raw(x,z,near);
+                let Some((ri,j,d,level))=s.river_near(x,z,40.0) else{continue};let river=&s.rivers[ri];
+                if river.wet[j]==0||d>river.half+2.0{continue;}
+                assert_eq!(s.height_near(x,z,near).to_bits(),legacy(x,z,raw).to_bits());wet+=1;
+                if d<=river.half+0.5 {assert_eq!(s.water_level(x,z).to_bits(),level.to_bits());}
+            }}
+        }}
+        // Every corner of each native grid cell touched by road+2m is
+        // unchanged. This is stronger than checking the continuous field.
+        for row in 0..s.points.len() {let p=s.points[row];let direction=s.dirs[row];
+            for side in [-1.0,1.0] {let off=s.widths[row]as f64+2.0;
+                let x=p.x as f64-direction.z as f64*side*off;let z=p.z as f64+direction.x as f64*side*off;
+                let gx=(x/GRID).floor();let gz=(z/GRID).floor();
+                for dx in [0.0,1.0] {for dz in [0.0,1.0] {
+                    let x=(gx+dx)*GRID;let z=(gz+dz)*GRID;let near=s.nearest_index(x,z);let raw=s.height_near_raw(x,z,near);
+                    assert_eq!(s.height_near(x,z,near).to_bits(),legacy(x,z,raw).to_bits(),"road guard grid corner ({x},{z})");guarded+=1;
+                }}
+            }
+        }
+        println!("unchanged river/road foundations: wet={wet}, native road+2m corners={guarded}");
+        assert!(wet>500);assert_eq!(guarded,s.points.len()*8);
+    }
+
+    #[test]
+    fn compact_river_banks_join_continuously_without_a_forty_metre_ring() {
+        let mut s=reported_stage();
+        s.rivers=vec![River {pts:vec![v2(0.0,-100.0),v2(0.0,0.0),v2(0.0,100.0)],
+            levels:vec![0.0;3],wet:vec![1;3],half:3.0,depth:1.0,cross:0,ford:false}];
+        s.index_rivers();
+        for radius in [5.0,15.0,40.0] {for offset in [-10.0,-0.4,0.4,10.0] {
+            let h=(radius-3.0)*0.5+0.25+offset;
+            let sample=|x:f64|s.carve(x,0.0,h,-1);
+            assert!((sample(radius-0.0001)-sample(radius+0.0001)).abs()<0.0005,
+                "bank discontinuity at {radius}m, height {h}");
+            let left=(sample(radius)-sample(radius-0.01))/0.01;
+            let right=(sample(radius+0.01)-sample(radius))/0.01;
+            assert!((left-right).abs()<0.03,"bank derivative jump at {radius}m: {left} vs {right}");
+            if radius>=15.0 {assert_eq!(sample(radius).to_bits(),h.to_bits());}
+        }}
+        // This is the old hard min intersection, away from protected water.
+        let h=2.75;let sample=|x:f64|s.carve(x,0.0,h,-1);
+        let left=(sample(8.0)-sample(7.99))/0.01;let right=(sample(8.01)-sample(8.0))/0.01;
+        assert!((left-right).abs()<0.03,"unrounded bank/terrain intersection");
+    }
+
+    fn grid_height(s:&Stage,x:f64,z:f64)->f64 {
+        let gx=(x/GRID).floor();let gz=(z/GRID).floor();
+        let (u,v)=(x/GRID-gx,z/GRID-gz);
+        let h=|i:f64,j:f64|s.height((gx+i)*GRID,(gz+j)*GRID);
+        if u+v<=1.0 {h(0.,0.)*(1.-u-v)+h(1.,0.)*u+h(0.,1.)*v}
+        else {h(1.,1.)*(u+v-1.)+h(1.,0.)*(1.-v)+h(0.,1.)*(1.-u)}
+    }
+
+    #[test]
+    fn reported_cut_bank_keeps_its_height_and_steep_face_with_less_grid_error() {
+        let s=reported_stage();let mut errors=Vec::new();let mut steep=0usize;
+        for row in 778..=868 {
+            let p=s.points[row];let d=s.dirs[row];let side=s.ledges[row].signum()as f64;
+            let position=|off:f64|(p.x as f64-d.z as f64*side*off,p.z as f64+d.x as f64*side*off);
+            for k in 0..=100 {
+                let off=s.widths[row]as f64+1.0+k as f64*0.1;
+                let (x,z)=position(off);errors.push((grid_height(&s,x,z)-s.height(x,z)).abs());
+            }
+            if s.ledges[row].abs()==1.0 {
+                let (x,z)=position(s.widths[row]as f64+12.0);
+                assert!((s.height_near_raw(x,z,row as i64)-(p.y as f64-0.06+s.ledge_wall[row]as f64)).abs()<0.15,
+                    "cliff plateau was lowered at row {row}");
+                let peak=(0..90).map(|k| {
+                    let off=s.widths[row]as f64+1.0+k as f64*0.1;
+                    let a=position(off);let b=position(off+0.1);
+                    (s.height_near_raw(b.0,b.1,row as i64)-s.height_near_raw(a.0,a.1,row as i64))/0.1
+                }).fold(0.0f64,f64::max);
+                assert!(peak>1.5,"cut became a shallow hillside: row {row}, slope {peak}");steep+=1;
+            }
+        }
+        errors.sort_by(f64::total_cmp);
+        // Actual pre-fix F12 corridor: p95=0.96884 m, max=1.54492 m.
+        assert!(errors[errors.len()*95/100]<0.50);
+        assert!(*errors.last().unwrap()<0.80);
+        assert!(steep>50);
+    }
+
+    #[test]
+    fn ledge_envelope_is_continuous_when_the_nearest_road_row_changes() {
+        let mut s=reported_stage();let n=20;
+        s.points=(0..n).map(|i|v3(0.0,100.0,-(i as f32)*STEP as f32)).collect();
+        s.dirs=vec![v3(0.0,0.0,-1.0);n];s.widths=vec![3.4;n];
+        s.ledges=(0..n).map(|i|i as f32/(n-1)as f32).collect();
+        s.ledge_wall=vec![12.0;n];s.ledge_drop=vec![20.0;n];s.rivers.clear();s.index();
+        for row in 2..n-3 {
+            let z=-(row as f64+0.5)*STEP;
+            let before=s.height(8.0,z+0.001);let after=s.height(8.0,z-0.001);
+            assert!((after-before).abs()<0.01,"nearest-row ledge discontinuity: {before} -> {after}");
+        }
+        s.ledges[7]=1.0;s.ledges[8]=-1.0;
+        for delta in [-0.0001,0.0,0.0001] {for side in [-1.0,1.0] {
+            let height=s.height(8.0*side,-15.0+delta);
+            assert!(height.is_finite()&&(70.0..=113.0).contains(&height),"opposite ledges exploded: {height}");
+        }}
+    }
+
+    #[test]
+    fn drivable_foundation_retains_its_exact_original_height() {
+        for seed in [1,7,9001] {
+            let s=Stage::generate(&mut Pcg::new(seed),3000.0+RUNOUT);
+            for row in 0..s.points.len() {
+                let p=s.points[row];let d=s.dirs[row];let right=v3(-d.z,0.,d.x);
+                for fraction in [-1.0,-0.5,0.0,0.5,1.0] {
+                    let q=p+right*(fraction*s.widths[row]);let r=s.result(q,row);
+                    let expected=r.height-0.06*(r.offset.abs()/s.widths[row]as f64).clamp(0.0,1.0)-0.08;
+                    assert_eq!(s.height_near_raw(q.x as f64,q.z as f64,row as i64).to_bits(),expected.to_bits());
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

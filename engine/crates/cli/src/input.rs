@@ -110,6 +110,23 @@ impl Input {
 
     pub fn take_key(&mut self, key: KeyCode) -> bool { self.key_edges.remove(&key) }
 
+    /// Shared standalone pause menu. Reads held values; the menu owns its
+    /// edge/repeat policy so this never consumes driving/controller edges.
+    pub fn menu_state(&self,focused:bool)->([i8;2],bool) {
+        if !focused {return ([0,0],false);}
+        let held=|a,b|self.keys.contains(&a)||self.keys.contains(&b);
+        let mut axis=[i8::from(held(KeyCode::ArrowRight,KeyCode::KeyD))-i8::from(held(KeyCode::ArrowLeft,KeyCode::KeyA)),
+            i8::from(held(KeyCode::ArrowDown,KeyCode::KeyS))-i8::from(held(KeyCode::ArrowUp,KeyCode::KeyW))];
+        let mut confirm=held(KeyCode::Enter,KeyCode::Space);
+        if let Some(pads)=&self.pads {for id in self.slots.iter().flatten() {
+            let pad=pads.gamepad(*id);if !pad.is_connected(){continue;}
+            let horizontal=i8::from(pad.is_pressed(Button::DPadRight)||pad.value(Axis::LeftStickX)>0.55)-i8::from(pad.is_pressed(Button::DPadLeft)||pad.value(Axis::LeftStickX)< -0.55);
+            let vertical=i8::from(pad.is_pressed(Button::DPadDown)||pad.value(Axis::LeftStickY)< -0.55)-i8::from(pad.is_pressed(Button::DPadUp)||pad.value(Axis::LeftStickY)>0.55);
+            if axis==[0,0] {axis=[horizontal,vertical];}confirm|=pad.is_pressed(Button::South);
+        }}
+        (axis,confirm)
+    }
+
     pub fn controllers(&self) -> serde_json::Value {
         serde_json::json!(self.pads.as_ref().map(|pads|pads.gamepads().map(|(id,pad)|serde_json::json!({"id":usize::from(id),"name":pad.name(),"connected":pad.is_connected(),"mapping":format!("{:?}",pad.mapping_source())})).collect::<Vec<_>>()).unwrap_or_default())
     }
@@ -138,7 +155,9 @@ impl Input {
                 out.control.throttle = trigger(Button::RightTrigger2);
                 out.control.brake = trigger(Button::LeftTrigger2);
                 out.control.handbrake = if pad.is_pressed(Button::South) { 1.0 } else { 0.0 };
-                out.look = [deadzone(pad.value(Axis::RightStickX)), deadzone(pad.value(Axis::RightStickY))];
+                // Orbit owns one radial/hysteretic deadzone, shared with
+                // GameNight. Per-axis remapping here distorts stick angles.
+                out.look = [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)];
                 now = Buttons { recover: pad.is_pressed(Button::West), camera: pad.is_pressed(Button::North), pause: pad.is_pressed(Button::Start), up: pad.is_pressed(Button::RightTrigger), down: pad.is_pressed(Button::LeftTrigger) };
                 if focused && (out.control.throttle>0.05 || out.control.brake>0.05 || out.control.steer.abs()>0.05 || out.control.handbrake>0.0 || out.look.iter().any(|x|x.abs()>0.05) || now.recover || now.camera || now.pause || now.up || now.down) { self.native_active_samples += 1; }
             }
