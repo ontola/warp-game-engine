@@ -56,7 +56,7 @@ pub struct Mixer {
 
 impl Mixer {
     pub fn new(sr: f32) -> Mixer {
-        Mixer { sr, cars: Vec::new(), master: 0.8, tyres: 0.5 }
+        Mixer { sr, cars: Vec::new(), master: 0.8, tyres: crate::tyres::MIX_LEVEL }
     }
 
     pub fn add_car(&mut self, sound: EngineSound, seed: u32) -> usize {

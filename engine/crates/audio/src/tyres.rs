@@ -21,6 +21,10 @@ pub struct TyreControls {
     pub wet: f32,
 }
 
+/// Tyres' level in the mix next to an engine whose leveler aims at 0.9:
+/// rolling sits about 20 dB under full throttle, a slide about 15 dB.
+pub const MIX_LEVEL: f32 = 0.25;
+
 pub struct TyreVoice {
     sr: f32,
     target: TyreControls,

@@ -2,8 +2,9 @@
 //! `audio::stream::LiveMix`; each frame the game places every car for the
 //! listeners (the chase cameras) and hands over what its engine does.
 //!
-//! The cars nearest a listener get the gas-dynamics exhaust (`--sound
-//! fluid`, the default), the rest the cheap pulse model. Without an audio
+//! Every car gets the pulse model by default. `--sound fluid` gives the
+//! players' own cars the gas-dynamics exhaust, which is still experimental:
+//! on the overrun its reverse flow is too loud and tonal. Without an audio
 //! device the game runs silently.
 
 use audio::stream::{CarInput, Feeder, LiveMix};

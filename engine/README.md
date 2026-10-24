@@ -560,5 +560,6 @@ blocks.
 Live, every car renders on its own worker thread in 5 ms blocks, at most
 three ahead. The device callback (cpal) only places (distance, pan, air
 absorption, Doppler for the nearest chase camera) and mixes. `play --sound
-off|pulse|fluid` (default fluid; hidden smoke runs are silent). On Linux,
+off|pulse|fluid` (default pulse; fluid is experimental, its overrun is too
+loud and tonal; hidden smoke runs are silent). On Linux,
 building needs libasound2-dev (and libudev-dev for the gamepad crate).
