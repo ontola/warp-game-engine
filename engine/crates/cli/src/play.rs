@@ -18,6 +18,8 @@ struct Args {
     smoke_frames: u64, smoke_ticks: u64, capture: Option<String>, state_out: Option<String>, trace: Option<String>, fullscreen: bool,
     hud: bool, hud_profile: Option<String>, hud_warmup: usize,
     autoplay: bool,
+    /// Engine sound: off, pulse, or fluid for the players' own cars.
+    sound: crate::audio_out::Mode,
 }
 
 fn args(args: &[String]) -> Result<Args, String> {
@@ -42,7 +44,9 @@ fn args(args: &[String]) -> Result<Args, String> {
         return Err("HUD profiling needs --smoke-render 1..4096 and fewer warmup frames than rendered frames".into());
     }
     let hud=match opt("--hud","on").as_str(){"on"=>true,"off"=>false,_=>return Err("hud must be on or off".into())};
-    Ok(Args { nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay") })
+    Ok(Args { nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay"),
+        // Hidden smoke runs stay silent unless asked.
+        sound: crate::audio_out::Mode::parse(&opt("--sound", if smoke_frames > 0 { "off" } else { "fluid" }))? })
 }
 
 fn race(a: &Args) -> Race {
@@ -110,9 +114,27 @@ struct App {
     resume_fullscreen: Option<Fullscreen>,
     hud_stats: serde_json::Value, hud_samples: Vec<serde_json::Value>,
     screenshot_pending: bool, screenshot_toast: Option<(String, Instant)>,
+    sound: Option<crate::audio_out::Sound>, sound_failed: bool,
 }
 
 impl App {
+    /// Engine sound: (re)start when the field of cars changes, then place
+    /// every car for the players' cameras. A missing device turns it off.
+    fn update_sound(&mut self, cams: &[Camera], dt: f32, invisible: bool) {
+        if self.args.sound == crate::audio_out::Mode::Off || self.sound_failed { return; }
+        if self.sound.as_ref().map(|s| s.cars()) != Some(self.race.players.len()) {
+            self.sound = None;
+            match crate::audio_out::Sound::start(&self.race, self.args.views, self.args.sound) {
+                Ok(s) => self.sound = Some(s),
+                Err(e) => { eprintln!("audio off: {e}"); self.sound_failed = true; return; }
+            }
+        }
+        if let Some(s) = &mut self.sound {
+            s.pause(self.paused || invisible);
+            s.update(&self.race, &cams[..self.args.views.min(cams.len())], dt);
+        }
+    }
+
     fn invisible(&self) -> bool {
         self.args.smoke_frames > 0 || self.window.as_ref().is_some_and(|w|w.is_visible()==Some(false))
     }
@@ -379,13 +401,14 @@ impl App {
         // Keep the host socket, neutral input and trace alive while the host
         // owns the screen. A warm/paused managed game must not consume a full
         // render frame or continue presenting behind the GameNight lobby.
-        if !running {self.trace(false);return Ok(());}
+        if !running {if let Some(s)=&self.sound{s.pause(true);}self.trace(false);return Ok(());}
         let graphics_started=Instant::now();
         if self.rendered==0 { println!("play: first frame entered (invisible={})", self.invisible()); }
         let poses = poses(&self.race);
         self.built.update_cars(&poses);
         let cams = cameras(&self.race, &poses, &self.yaw, &self.far);
         let invisible = self.invisible();
+        self.update_sound(&cams, dt as f32, invisible);
         let size = self.window.as_ref().unwrap().inner_size();
         if size.width == 0 || size.height == 0 { return Ok(()); }
         let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i).copied()).collect();
@@ -616,7 +639,7 @@ pub fn run(raw:&[String])->i32{
     let settings=serde_json::json!({"gearbox":"automatic","stage_km":a.km,"rivals":0,"contact":true,"weather":a.weather});
     let view_order=(0..a.views).collect();
     let resume_fullscreen=if a.fullscreen{Some(Fullscreen::Borderless(None))}else{None};
-    let mut app=App{gpu_profile,args:a,race,built,light,input:Input::new(),window:None,graphics:None,focused:true,paused:false,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None};
+    let mut app=App{gpu_profile,args:a,race,built,light,input:Input::new(),window:None,graphics:None,focused:true,paused:false,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,sound:None,sound_failed:false};
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     if let Err(e)=events.run_app(&mut app){eprintln!("play event loop: {e}");return 1;}
     if let Some(e)=app.error{eprintln!("play: {e}");1}else{0}

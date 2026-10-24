@@ -1,0 +1,58 @@
+# How each car's engine sounds (crates/audio, after engine-sim). Read at
+# every run: change a number, render again (`sideways sound`), no rebuild.
+# Models are merged over [base], key by key, like cars.toml.
+
+# A Rally2-like 1.6 l turbo inline four.
+[base]
+name = "Rally2 inline 4 turbo"
+cylinders = 4
+firing_order = [1, 3, 4, 2]
+headers = [0.62, 0.60, 0.60, 0.62] # m, equal-ish 4-1
+pipe = 2.9
+end_reflection = 0.72
+engine_reflection = 0.35
+resonances = [[140.0, 1.6, 0.55], [420.0, 2.5, 0.3]] # muffler body: Hz, Q, gain
+tone = [2600.0, 6500.0] # exhaust low-pass, throttle closed / open
+roughness = [0.14, 0.05]
+turbo = true
+whistle = [1800.0, 7800.0]
+gear_teeth = 23.0
+pops = 0.18
+exhaust = 0.9
+intake = 0.25
+mechanical = 0.05
+whine = 0.012
+turbo_level = 0.03
+gain = 1.4
+
+# Lancia-like: the classic 2.0 l turbo four, a hard edge at full throttle.
+[models.asti]
+name = "Asti Stradale inline 4 turbo"
+headers = [0.55, 0.58, 0.58, 0.55]
+pipe = 3.3
+resonances = [[155.0, 1.4, 0.6], [520.0, 3.0, 0.25]]
+tone = [2400.0, 7200.0]
+
+# Quattro-like five: 1-2-4-5-3, a firing every 144 degrees, the warble of
+# half orders (2.5 per revolution), and a lot of anti-lag.
+[models.mv6]
+name = "MV6 inline 5 turbo"
+cylinders = 5
+firing_order = [1, 2, 4, 5, 3]
+headers = [0.52, 0.56, 0.60, 0.56, 0.52]
+pipe = 2.7
+resonances = [[120.0, 1.5, 0.6], [380.0, 2.2, 0.35]]
+roughness = [0.16, 0.06]
+pops = 0.32
+whistle = [1600.0, 7000.0]
+
+# Impreza-like flat four: even firing, but 1-3-2-4 into unequal headers,
+# so the pulses reach the collector unevenly: the boxer burble.
+[models.toyama]
+name = "Toyama XR flat 4 turbo"
+firing_order = [1, 3, 2, 4]
+headers = [0.48, 0.48, 0.98, 0.98]
+pipe = 3.1
+resonances = [[110.0, 1.3, 0.65], [330.0, 2.0, 0.3]]
+tone = [2200.0, 6000.0]
+pops = 0.14
