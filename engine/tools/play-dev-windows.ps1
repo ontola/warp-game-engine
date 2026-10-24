@@ -6,6 +6,7 @@ param(
     [string]$TargetDirectory,
     [ValidateRange(1, 4)][int]$Views = 1,
     [ValidatePattern('^\d+x\d+$')][string]$Size = '3840x2160',
+    [ValidateSet('native', 'dlss-quality', 'dlss-balanced', 'dlss-performance')][string]$Upscale = 'native',
     [ValidateRange(2, 8)][double]$Km = 3,
     [UInt64]$Seed = 1,
     [ValidateSet('clear', 'overcast', 'mist', 'wet')][string]$Weather = 'clear',
@@ -56,6 +57,7 @@ try {
     if (-not $BuildOnly -and (@('GAMENIGHT', 'GAMENIGHT_ADDR', 'GAMENIGHT_GAME_ID', 'GAMENIGHT_TOKEN') | Where-Object { [Environment]::GetEnvironmentVariable($_) })) {
         throw 'This helper is for standalone play. Launch managed sessions through GameNight; no host credentials are recorded.'
     }
+    $upscaleBuild = Get-DlssBuildSetup -Upscale $Upscale
     $cargo = (Get-Command cargo -CommandType Application -ErrorAction Stop).Source
     New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
     try { $guard = [IO.File]::Open((Join-Path $runRoot 'iteration.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
@@ -73,7 +75,7 @@ try {
     $buildError = Join-Path $directory 'build.stderr.log'
     $playOut = Join-Path $directory 'play.stdout.log'
     $playError = Join-Path $directory 'play.stderr.log'
-    $arguments = @('play', '--views', "$Views", '--size', $Size, '--seed', "$Seed", '--km', $Km.ToString([Globalization.CultureInfo]::InvariantCulture), '--weather', $Weather,
+    $arguments = @('play', '--views', "$Views", '--size', $Size, '--upscale', $Upscale, '--seed', "$Seed", '--km', $Km.ToString([Globalization.CultureInfo]::InvariantCulture), '--weather', $Weather,
         '--season', $Season, '--growth', $Growth.ToString([Globalization.CultureInfo]::InvariantCulture),
         '--wind', $Wind.ToString([Globalization.CultureInfo]::InvariantCulture),
         '--state-out', (Join-Path $directory 'final-state.json'))
@@ -90,17 +92,19 @@ try {
         if ($LASTEXITCODE -eq 0) { $sourceDirty = [bool]$dirty }
     }
     $graphics = @{}
-    foreach ($key in @('KERN_ADAPTER', 'KERN_CLUSTER_BUCKETS', 'KERN_EARLY_GRASS_CULL', 'SIDEWAYS_LIVE_GRASS', 'SIDEWAYS_FAR_GRASS', 'SIDEWAYS_VOXEL_TREE_PATCH', 'SIDEWAYS_PROCEDURAL_ROCKS', 'SIDEWAYS_GENERIC_VOXEL_TREES')) {
+    foreach ($key in @('KERN_ADAPTER', 'KERN_CLUSTER_BUCKETS', 'KERN_EARLY_GRASS_CULL', 'KERN_CUTOUT_LINEAR_RGB', 'KERN_GRASS_LEAF_BRDF', 'KERN_GRASS_SUN_OCCLUSION', 'KERN_SOURCE_CROWN_BOUNDS', 'SIDEWAYS_LIVE_GRASS', 'SIDEWAYS_FAR_GRASS', 'SIDEWAYS_GRASS_DETAIL', 'SIDEWAYS_VOXEL_TREE_PATCH', 'SIDEWAYS_PROCEDURAL_ROCKS', 'SIDEWAYS_CROWDS', 'SIDEWAYS_GENERIC_VOXEL_TREES', 'SIDEWAYS_SKY', 'SIDEWAYS_SUN_ELEVATION', 'SIDEWAYS_SUN_AZIMUTH')) {
         $value = [Environment]::GetEnvironmentVariable($key)
         if ($null -ne $value) { $graphics[$key] = $value }
     }
     $manifest = [ordered]@{ status = 'building'; started_utc = [DateTime]::UtcNow.ToString('o'); engine_root = $engineRoot;
         profile = $Profile; source_revision = $sourceRevision; source_dirty = $sourceDirty;
+        cargo_features = $upscaleBuild.features; dlss = $upscaleBuild.dlss;
         source_note = 'Working checkout build, not an immutable source snapshot.';
         arguments = $arguments; graphics_environment = $graphics; executable = $stagedExecutable;
         build_stdout = $buildOut; build_stderr = $buildError; play_stdout = $playOut; play_stderr = $playError }
     Write-DevJson $manifestPath $manifest
     $buildArguments = @('build', '--locked', '-p', 'cli', '--bin', 'sideways', '--profile', $Profile, '--message-format=json-render-diagnostics')
+    if ($upscaleBuild.features.Count -gt 0) { $buildArguments += @('--features', ($upscaleBuild.features -join ',')) }
     if ($TargetDirectory) { $buildArguments += @('--target-dir', $TargetDirectory) }
     Write-Host "Building $Profile; existing playtest stays running. Logs: $directory"
     $clock = [Diagnostics.Stopwatch]::StartNew()

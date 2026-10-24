@@ -13,6 +13,9 @@ use std::collections::HashSet;
 
 /// Must match the runtime prototype's bounded candidate-list capacity.
 pub const MAX_INSTANCES: usize = 256;
+/// Replace every source material for a procedural part. Its voxel albedo
+/// already contains the individual source materials' linear colours.
+pub const ALL_MATERIALS: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PackLimits {
@@ -49,6 +52,7 @@ pub struct VolumeBinding {
     /// Index in the source VoxelAsset slice, not a per-instance asset copy.
     pub asset: u32,
     /// Only this material's clusters are replaced; trunk/bark remain meshes.
+    /// ALL_MATERIALS replaces the complete procedural part, including variation.
     pub crown_material: u32,
 }
 
@@ -70,11 +74,12 @@ pub struct GpuCell {
     /// Thirteen directional extinction coefficients per local metre, padded
     /// with three zeroes. Same direction order as PROJECTION_DIRECTIONS.
     pub extinction: [[f32; 4]; 4],
-    /// Six normalized shading lobes (+X,-X,+Y,-Y,+Z,-Z), then two zeroes.
+    /// Six normalized shading lobes (+X,-X,+Y,-Y,+Z,-Z), leaf fraction, zero.
     pub normals: [[f32; 4]; 2],
 }
 
-/// WGSL: six vec4 records, 96 bytes. Trees are static in this first path.
+/// WGSL: six vec4 records, 96 bytes. Shared part-wind can update these poses;
+/// asset cells and grids stay immutable.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct GpuTree {
@@ -113,6 +118,8 @@ fn pack_cell(voxel: &Voxel, cell_size: f32) -> Result<GpuCell, String> {
         || !valid_nonnegative(&voxel.normal_weights)
         || !voxel.roughness.is_finite()
         || !(0.0..=1.0).contains(&voxel.roughness)
+        || !voxel.leaf_fraction.is_finite()
+        || !(0.0..=1.0).contains(&voxel.leaf_fraction)
     {
         return Err("volume cell has invalid optical/material data".into());
     }
@@ -136,6 +143,7 @@ fn pack_cell(voxel: &Voxel, cell_size: f32) -> Result<GpuCell, String> {
     for (index, weight) in voxel.normal_weights.iter().enumerate() {
         cell.normals[index / 4][index % 4] = *weight;
     }
+    cell.normals[1][2] = voxel.leaf_fraction;
     Ok(cell)
 }
 
@@ -293,11 +301,11 @@ mod tests {
     fn voxel(coord: [u32; 3], area: f32) -> Voxel {
         Voxel { coord, surface_area: area, projected_area: [area, 0.0, 0.0],
             directional_area: PROJECTION_DIRECTIONS.map(|direction| direction[0].abs() * area),
-            albedo: [0.2, 0.4, 0.1], roughness: 0.8,
+            albedo: [0.2, 0.4, 0.1], roughness: 0.8, leaf_fraction: 0.0,
             normal_weights: [0.5, 0.5, 0.0, 0.0, 0.0, 0.0] }
     }
     fn asset() -> VoxelAsset {
-        VoxelAsset { origin: [-0.5, 0.0, -0.5], source_bounds: [[-0.5, 0.0, -0.5], [0.0, 0.5, 0.0]],
+        VoxelAsset { projection_measure: Default::default(), origin: [-0.5, 0.0, -0.5], source_bounds: [[-0.5, 0.0, -0.5], [0.0, 0.5, 0.0]],
             levels: vec![
                 VoxelLevel { cell_size: 0.25, dimensions: [3, 3, 3], voxels: vec![voxel([0, 0, 0], 0.02), voxel([1, 1, 1], 0.04)] },
                 VoxelLevel { cell_size: 0.5, dimensions: [2, 2, 2], voxels: vec![voxel([0, 0, 0], 0.06)] },

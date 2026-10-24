@@ -10,20 +10,36 @@ pub mod cluster;
 pub mod frame;
 pub mod gpu;
 pub mod grass;
+mod grass_lighting;
 pub mod far_grass;
 pub mod hud;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
 pub mod shaders;
+pub mod atmosphere;
+pub mod headlights;
 pub mod foliage_voxel;
+pub mod foliage_shadow;
+pub mod foliage_assembly;
 pub mod foliage_volume_data;
+pub mod foliage_groups;
+pub mod foliage_representation;
+pub mod foliage_compact;
+pub mod vegetation_detail;
 pub mod voxel_forest;
 pub mod wind;
+pub mod part_wind;
+pub mod baked_animation;
+pub mod motion;
+pub mod dlss;
+pub mod upscale;
 mod stability;
 mod transparency;
 mod volume_view;
 mod canopy;
+#[cfg(test)]
+mod fog_tests;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, ViewRect, split_rects};
 pub use gpu::{Gpu, Stopwatch, write_png};
@@ -116,7 +132,7 @@ mod shader_tests {
 
     #[test]
     fn grass_transition_shaders_validate() {
-        for src in [crate::grass::shader_source(),crate::grass::composite_source()] {
+        for src in [crate::grass::shader_source(),crate::grass::composite_source(),crate::grass::compact_source()] {
             let module=naga::front::wgsl::parse_str(&src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
         }

@@ -1,4 +1,31 @@
-# Sideways
+# Warp
+
+A game engine focused on realistic procedural outdoor worlds, with Sideways,
+a rally game for [GameNight](https://gamenight.ontola.io), as its playable testbed.
+The active Rust workspace, setup and development commands are in
+[`engine/`](engine/README.md).
+
+## Current focus
+
+- Realistic, performant procedural nature: terrain, vegetation (trees and
+  grass), and sky.
+- Vehicle physics, exercised in Sideways.
+- AI-driven development workflows and useful engine APIs.
+- Fast iteration, including compilation and the build-to-play loop.
+
+These are development priorities, not a claim that every system is complete.
+The focus can change as the engine develops.
+
+## Missing systems
+
+There is no human-facing editor UI or complete support for indoor scenes,
+water, buildings, people, or a general animation system. Procedural plant wind
+is in development; it is not a character or general-purpose animation system.
+
+## Legacy Sideways (Godot)
+
+The original game below is retained as historical source. Active engine work
+and playtests use Warp; ongoing Godot comparisons are no longer a goal.
 
 A gravel rally game for [GameNight](https://gamenight.ontola.io), with up to
 four drivers racing the same forest stage in local split screen.
