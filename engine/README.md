@@ -45,6 +45,13 @@ pass timings; those timings exclude HUD, presentation and CPU work.
     cargo test -p render                                                         # every WGSL shader validated, no GPU
     cargo test -p cli ground_cover                                               # scatter/root/road/budget checks, no GPU
 
+Car materials (see "Car materials" below) iterate without `cargo build`:
+
+    KERN_SHADER_DIR=crates/render/src/shaders cargo run --release -p cli -- shot car.png --taa 1 --lineup 4 --cam yaw=90,dist=10 --watch
+    cargo run --release -p cli -- shot car.png --cam yaw=40,dist=4,car=0 --car-set paint=candy --car-set rust=0.6
+    cargo run --release -p cli -- shot roof.png --lineup 1 --cam glint=1,dist=3.2 --car-set swirls=1   # the sun's reflection on the roof
+    cargo run --release -p cli -- shot masks.png --cam yaw=40,dist=4 --set debug=9                       # 8 curvature, 9 wear, 10 grime
+
     cargo run --release -p cli --example voxel_forest_gpu -- --out FRESH_DIR --trees 64 --size 960x540
 
 The voxel example compares actual source crowns with a bounded GPU density
@@ -322,6 +329,9 @@ On a 2-core cloud container:
 | validate all shaders | 2 s (`cargo test -p render`) | run the game |
 | render a frame on the software GPU (960x540) | 7 s; 16 TAA frames 41 s | about 35 s |
 | find what draws a wrong pixel | one `--pick x,y` | inspect the scene tree |
+| retune car paint/wear data, `shot --watch` (1200x420, 1 frame) | 2.9 s edit to PNG | |
+| edit car/shading WGSL, `shot --watch` (900x500, 1 frame) | 0.7-0.9 s pipeline rebuild, 5.2 s edit to PNG | |
+| the same WGSL edit through `cargo build --release` + `shot` (960x540) | 2 min build + 31 s shot | |
 
 ## The renderer
 
@@ -351,8 +361,8 @@ On a 2-core cloud container:
   bark and needles, in planar, triplanar and mesh uv frames.
 - **Materials:** Lambert plus GGX sun specular, split-sum environment
   reflections of the sky (blurring into its irradiance with roughness),
-  metalness, a clear coat for car paint (car_model.gd's numbers), Godot's
-  foliage look (tint, per-tree shade, backlight).
+  metalness, Godot's foliage look (tint, per-tree shade, backlight), and
+  procedural car materials (below).
 - **Anti-aliasing:** TAA with a Halton(2,3) jitter, reprojection from depth,
   Catmull-Rom history, variance clipping in YCoCg, then contrast-adaptive
   sharpening. Only the camera's motion is reprojected so far: moving cars
@@ -439,6 +449,61 @@ Hidden `play --smoke-render N --capture image.png` also writes
 Not there yet: the remaining ground-cover types, car lights and particles,
 wet road reflections, and the remaining interactive features listed above. GPU numbers come from
 the runner (GPU_RUNNER.md); the container only has a software rasteriser.
+
+## Car materials
+
+Car surfaces are generated in the shader (`shaders/car_material.wgsl`,
+appended to shade.wgsl) from the object-space position and normal, noise
+filtered by the pixel footprint, and a curvature the loader bakes per
+vertex (dihedral angles of the welded mesh, convex positive) into the
+paint's unused uv. No texture assets. Layers, bottom to top: bare steel,
+primer, paint, clear coat, then wear and grime:
+
+- **Paint finishes:** solid; metallic (flop: darker edge-on, and flake
+  glints, one random flake normal per pixel-sized cell, fading into a smooth
+  lobe when flakes are far below a pixel); pearl (hue shift toward `second`
+  at grazing angles, tinted mica); candy (tinted lacquer over bright flakes,
+  deeper at grazing angles). Matte and satin are presets with less or a
+  rougher coat. The coat has its own normal (orange peel) and roughness;
+  its sun term never gets sharper than the sun's 0.5 degree disc.
+- **Wear:** chips on convex edges, the nose, sills and arches (primer, then
+  steel), small stone chips, straight scratches in the coat, polish swirls
+  (short buffer arcs that only light up where they run across the direction
+  to the sun's reflection), and sun fade on upward panels.
+- **Grime:** rust from bare steel, low edges, creases and wheel arches, with
+  blistered paint around it and brown run-off below; a dust film low down,
+  behind the wheels and on top; mud splatter, glossy when wet.
+- **Other parts**, by glTF material name: tyres (the tyre texture's rubber,
+  disc and lettering told apart by brightness and radius; aged sidewalls),
+  alloy rims, chrome, unpainted plastic that greys in the sun, and textured
+  parts that keep their texture and only get grime. Glass keeps the forward
+  pass's shading.
+
+Parameters live in `engine/data/car_materials.toml`, read at run time:
+paint presets, then `[all]`, `[model.<glb>]`, `[car.<index>]` and
+`--car-set [N:][part.]key=value`, each overriding single keys. The file
+documents every key. `shot --lineup N` puts N copies of car 0 nose to tail
+on the road (cars 0..N-1 in the data); `--cam yaw=,dist=,height=,car=,fov=`
+is a close camera and `--cam glint=1` looks down the sun's mirror direction.
+`--set debug=8|9|10` shows curvature, wear and grime masks.
+
+Without a rebuild:
+
+- `KERN_SHADER_DIR=crates/render/src/shaders` reads wind_common, shade,
+  car_material and transparency .wgsl from disk when the renderer is made
+  (missing files fall back to the built-in copies), so a plain `shot`
+  picks up shader edits. Other shaders stay built in.
+- `shot --watch` keeps the scene and renderer alive and re-renders when the
+  data file or those shaders change; `play` polls the same files every
+  250 ms. Changed WGSL rebuilds only the shade and glass pipelines, under a
+  wgpu validation error scope: broken code prints the compiler's message
+  and the previous pipeline keeps drawing. Broken data keeps the previous
+  materials. Changing a part's `match` or `kind` needs a restart.
+
+Measured on the 2-core cloud container with lavapipe (CPU rasteriser), see
+the iteration table above. The edit-to-PNG time is almost all lavapipe
+rendering the frame; on a real GPU the same loop is the pipeline rebuild
+(0.7-0.9 s here, mostly WGSL to SPIR-V and LLVM) plus a frame.
 
 ## Sound
 

@@ -15,6 +15,7 @@ pub mod hud;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
+pub mod shaders;
 pub mod foliage_voxel;
 pub mod foliage_volume_data;
 pub mod voxel_forest;
