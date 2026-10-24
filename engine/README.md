@@ -536,6 +536,16 @@ Two models supply the runner pressures:
 Small extra layers (intake, valvetrain, turbo whistle and blow-off, gear
 whine, overrun pops, tyres) sit on top, kept quiet by default.
 
+The leveler only turns down (engine-sim's lets quiet signals up to 1.9x).
+With `input_scale` 2.5, idle sits about 10 dB below full throttle, and
+light throttle no longer brings up the noise floor. Every runner goes
+through a 150 Hz low-pass by default. In the fluid model this also keeps
+the headers' standing waves from ringing at idle: around 1 kHz in a 0.55 m
+header, which the solver barely damps. Gravel under the tyres is grains,
+low-passed so a slide crunches instead of hissing. `examples/tyre_probe.rs`
+prints each situation's level and high-band share, and `sound --speed 0
+--gear 1` renders standing still.
+
 Engines live in `data/sounds.toml`, read at every run. Each one sets its
 cylinders, firing order, header lengths, pipe, impulse response and synth
 parameters; use `--set key=value` to try a number. The three grid cars:
@@ -550,5 +560,6 @@ blocks.
 Live, every car renders on its own worker thread in 5 ms blocks, at most
 three ahead. The device callback (cpal) only places (distance, pan, air
 absorption, Doppler for the nearest chase camera) and mixes. `play --sound
-off|pulse|fluid` (default fluid; hidden smoke runs are silent). On Linux,
+off|pulse|fluid` (default pulse; fluid is experimental, its overrun is too
+loud and tonal; hidden smoke runs are silent). On Linux,
 building needs libasound2-dev (and libudev-dev for the gamepad crate).

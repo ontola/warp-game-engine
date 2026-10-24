@@ -48,6 +48,15 @@ impl Sounds {
         self.table.get("models").and_then(|m| m.as_table()).map(|m| m.keys().cloned().collect()).unwrap_or_default()
     }
 
+    /// The sound for a car of model `id`: the `every_car` entry when the
+    /// file sets one, else the model's own.
+    pub fn for_car(&self, id: &str) -> Result<EngineSound, String> {
+        match self.table.get("every_car").and_then(|v| v.as_str()) {
+            Some(all) if !all.is_empty() => self.get(all),
+            _ => self.get(id),
+        }
+    }
+
     pub fn get(&self, id: &str) -> Result<EngineSound, String> {
         let mut merged = self.table.get("base").and_then(|b| b.as_table()).cloned().ok_or("sounds.toml has no [base]")?;
         if id != "base" {

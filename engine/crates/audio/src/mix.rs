@@ -50,11 +50,13 @@ pub struct Mixer {
     pub sr: f32,
     pub cars: Vec<CarVoice>,
     pub master: f32,
+    /// Tyre level in the mix (0 mutes them, for diagnosis).
+    pub tyres: f32,
 }
 
 impl Mixer {
     pub fn new(sr: f32) -> Mixer {
-        Mixer { sr, cars: Vec::new(), master: 0.8 }
+        Mixer { sr, cars: Vec::new(), master: 0.8, tyres: crate::tyres::MIX_LEVEL }
     }
 
     pub fn add_car(&mut self, sound: EngineSound, seed: u32) -> usize {
@@ -89,7 +91,7 @@ impl Mixer {
             car.scratch.clear();
             car.scratch.resize(frames, 0.0);
             car.engine.render_add(&mut car.scratch, 1.0);
-            car.tyres.render_add(&mut car.scratch, 0.5);
+            car.tyres.render_add(&mut car.scratch, self.tyres);
             car.air[0].set_hz(car.place.air_hz, self.sr);
             car.air[1].set_hz(car.place.air_hz, self.sr);
             // Glide gain and pan over the block: no clicks.
