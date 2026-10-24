@@ -121,6 +121,11 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
         taa_frames: if taa { total_frames } else { 1 },
         ground_cover: job.get("ground_cover").and_then(|v| v.as_bool()).unwrap_or(true),
         sets: job.get("set").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default(),
+        cam: None,
+        lineup: 0,
+        car_materials: None,
+        car_sets: vec![],
+        watch: false,
     };
     let t = render::Stopwatch::start();
     let mut setup = crate::shot::prepare(&args)?;

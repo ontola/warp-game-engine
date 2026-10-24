@@ -25,6 +25,19 @@ pub struct ShotArgs {
     pub taa_frames: u32,
     /// Photographed grass; false is a matched no-cover performance baseline.
     pub ground_cover: bool,
+    /// `--cam yaw=DEG,dist=M,height=M,car=N,fov=DEG`: a close camera on a
+    /// car (material work) instead of the chase camera.
+    pub cam: Option<String>,
+    /// `--lineup N`: N copies of car 0's model side by side, cars 0..N in
+    /// the car material data, for comparing paints in one frame.
+    pub lineup: usize,
+    /// Car material data instead of engine/data/car_materials.toml.
+    pub car_materials: Option<String>,
+    /// `--car-set [N:][part.]key=value` car material overrides.
+    pub car_sets: Vec<String>,
+    /// Keep running: re-render when the car material data or the shading
+    /// shaders (`KERN_SHADER_DIR`) change, with no rebuild.
+    pub watch: bool,
 }
 
 /// main.gd's player colours (sRGB).
@@ -48,12 +61,13 @@ pub struct Setup {
     pub scene: render::Scene,
     pub mesh_names: Vec<String>,
     pub light: Lighting,
-    pub cam: Camera,
     /// One chase camera per car.
     pub cams: Vec<Camera>,
     pub log: Vec<String>,
     /// Actual render inputs, written beside a shot for reproducible comparison.
     pub metadata: serde_json::Value,
+    pub looks: crate::car_look::Looks,
+    pub car_slots: Vec<crate::car_look::Slot>,
 }
 
 pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
@@ -76,7 +90,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
         race.step(&mut timings);
     }
     log.push(format!("sim to tick {}: {:.0} ms", a.frames, t.ms()));
-    let poses: Vec<CarPose> = race
+    let mut poses: Vec<CarPose> = race
         .players
         .iter()
         .enumerate()
@@ -101,8 +115,11 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
             }
         })
         .collect();
+    if a.lineup > 0 {
+        poses = lineup(&race.stage, &poses[0], a.lineup, a.views.max(1));
+    }
     // Chase cameras (src/chase_camera.gd: 5.2 m back, 2.05 m up).
-    let cams: Vec<Camera> = poses
+    let mut cams: Vec<Camera> = poses
         .iter()
         .map(|car| {
             let fwd = car.rot * Vec3::NEG_Z;
@@ -110,9 +127,18 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
             Camera { pos: car.pos - heading * 5.2 + Vec3::Y * 2.05, target: car.pos + Vec3::Y * 0.9 + heading * 4.0, fov_y: 64f32.to_radians(), near: 0.1 }
         })
         .collect();
+    if let Some(spec) = &a.cam {
+        // With a lineup in split screen, view i looks at car i: one frame
+        // compares several materials from the same angle.
+        for (i, c) in cams.iter_mut().enumerate() {
+            let per_car = a.lineup > 1 && a.views > 1 && !spec.contains("car=");
+            *c = close_camera(&if per_car { format!("{spec},car={i}") } else { spec.clone() }, &poses, a.lineup)?;
+        }
+    }
+    let looks = crate::car_look::Looks::load(a.car_materials.as_deref().map(std::path::Path::new), a.car_sets.clone())?;
     let t = Stopwatch::start();
     let camera_positions: Vec<_> = cams.iter().take(a.views).map(|c| c.pos).collect();
-    let built = visuals::build(&race.stage, &poses, &camera_positions, a.ground_cover)?;
+    let built = visuals::build(&race.stage, &poses, &camera_positions, a.ground_cover, &looks)?;
     log.extend(built.log.iter().map(|l| format!("  {l}")));
     log.push(format!("scene: {:.0} ms", t.ms()));
     let mut light = Lighting::default();
@@ -168,7 +194,61 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
             "wheels": p.wheels.iter().map(|w| serde_json::json!({"anchor": w.anchor.to_array(), "compression": w.compression, "steer": w.steer, "spin": w.spin})).collect::<Vec<_>>()
         })).collect::<Vec<_>>()
     });
-    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), scene: built.scene, mesh_names: built.mesh_names, light, cam: cams[0], cams, log, metadata })
+    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), scene: built.scene, mesh_names: built.mesh_names, light, cams, log, metadata, looks, car_slots: built.car_slots })
+}
+
+/// `n` copies of `car` nose to tail along the road, 5.5 m apart, at its
+/// distance from the centre line and height above the road: the same model
+/// and suspension, so only their materials differ. Car 0 leads.
+fn lineup(stage: &sideways::stage::Stage, car: &CarPose, n: usize, humans: usize) -> Vec<CarPose> {
+    let at = stage.locate(gdcompat::math::v3(car.pos.x, car.pos.y, car.pos.z), -1);
+    let lift = car.pos.y - at.height as f32;
+    (0..n)
+        .map(|i| {
+            let along = at.along + ((n as f64 - 1.0) * 0.5 - i as f64) * 5.5;
+            let (c, d) = (stage.point_at(along), stage.dir_at(along));
+            let heading = Vec3::new(d.x, 0.0, d.z).normalize_or(Vec3::NEG_Z);
+            let right = Vec3::new(-heading.z, 0.0, heading.x);
+            let pos = Vec3::new(c.x, c.y + lift, c.z) + right * at.offset as f32;
+            let wheels = car.wheels.iter().map(|w| crate::car_model::Wheel { anchor: w.anchor, compression: w.compression, steer: 0.0, spin: w.spin }).collect();
+            CarPose { pos, rot: Quat::from_rotation_arc(Vec3::NEG_Z, heading), color: paint(i, humans), boxes: car.boxes.clone(), model: car.model.clone(), ride: car.ride, wheels }
+        })
+        .collect()
+}
+
+/// A camera a few metres from a car (or the middle of a lineup), from
+/// `yaw=DEG,dist=M,height=M,car=N,fov=DEG`. Yaw 0 looks at the nose,
+/// 90 at the right side; height is above the car's origin. `glint=1`
+/// instead looks down the sun's mirror direction at the roof, where the
+/// coat, flakes and swirl marks catch the sun (yaw then turns away from it).
+fn close_camera(spec: &str, poses: &[CarPose], lineup: usize) -> Result<Camera, String> {
+    let (mut yaw, mut dist, mut height, mut car, mut fov, mut glint) = (35.0f32, 4.5f32, 1.0f32, 0usize, 40.0f32, false);
+    for kv in spec.split(',').filter(|s| !s.is_empty()) {
+        let (k, v) = kv.split_once('=').ok_or_else(|| format!("--cam {kv}: expected key=value"))?;
+        let x: f32 = v.parse().map_err(|_| format!("--cam {kv}: not a number"))?;
+        match k {
+            "yaw" => yaw = x,
+            "dist" => dist = x,
+            "height" => height = x,
+            "car" => car = x as usize,
+            "fov" => fov = x,
+            "glint" => glint = x > 0.0,
+            _ => return Err(format!("--cam {k}: expected yaw, dist, height, car, fov or glint")),
+        }
+    }
+    let pose = poses.get(car).ok_or_else(|| format!("--cam car={car}: only {} cars", poses.len()))?;
+    let centre = if lineup > 0 && !spec.contains("car=") { poses.iter().map(|p| p.pos).sum::<Vec3>() / poses.len() as f32 } else { pose.pos };
+    if glint {
+        let sun = Lighting::default().sun_dir;
+        let target = centre + Vec3::Y * 0.9;
+        let turn = if spec.contains("yaw=") { yaw } else { 0.0 };
+        let mirror = Quat::from_rotation_y(-turn.to_radians()) * Vec3::new(-sun.x, sun.y, -sun.z).normalize();
+        return Ok(Camera { pos: target + mirror * dist, target, fov_y: fov.to_radians(), near: 0.05 });
+    }
+    let target = centre + Vec3::Y * 0.35;
+    let fwd = pose.rot * Vec3::NEG_Z;
+    let dir = Quat::from_rotation_y(-yaw.to_radians()) * Vec3::new(fwd.x, 0.0, fwd.z).normalize_or(Vec3::NEG_Z);
+    Ok(Camera { pos: centre + dir * dist + Vec3::Y * height, target, fov_y: fov.to_radians(), near: 0.05 })
 }
 
 pub fn run(a: &ShotArgs) -> i32 {
@@ -190,15 +270,42 @@ pub fn run(a: &ShotArgs) -> i32 {
             return 1;
         }
     };
-    let renderer = Renderer::new(&gpu, &setup.scene, &setup.light);
+    let mut renderer = Renderer::new(&gpu, &setup.scene, &setup.light);
     if let Err(e)=renderer.set_wind(&gpu,&setup.wind) {eprintln!("shot wind: {e}");return 1;}
     println!("gpu upload ({}): {:.0} ms", gpu.info.name, t.ms());
-    let (cam, light) = (setup.cam, setup.light.clone());
+    let code = frame(a, &setup, &gpu, &renderer);
+    if code != 0 || !a.watch {
+        return code;
+    }
+    watch(a, setup, &gpu, &mut renderer)
+}
+
+/// `--watch`: poll the car material data and the shading shaders; on an
+/// edit, apply it to the running renderer and write the shot again. Prints
+/// how long after the file's modification the new PNG was written.
+fn watch(a: &ShotArgs, setup: Setup, gpu: &Gpu, renderer: &mut Renderer) -> i32 {
+    let shader_dir = render::shaders::dir().map(|d| d.display().to_string()).unwrap_or_else(|| "built in (set KERN_SHADER_DIR to edit)".into());
+    let data = setup.looks.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "built in".into());
+    println!("watching car materials {data} and shaders {shader_dir}; Ctrl-C stops");
+    let mut live = crate::car_look::LiveEdit::new(setup.looks.clone());
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let t = Stopwatch::start();
+        let Some((log, edited)) = live.poll(std::time::Duration::ZERO, gpu, renderer, &setup.car_slots) else { continue };
+        log.iter().for_each(|l| println!("{l}"));
+        renderer.reset_history();
+        frame(a, &setup, gpu, renderer);
+        let since = edited.and_then(|m| std::time::SystemTime::now().duration_since(m).ok()).map(|d| d.as_secs_f64() * 1e3).unwrap_or(0.0);
+        println!("edit -> png: {since:.0} ms (reload and render {:.0} ms)", t.ms());
+    }
+}
+
+/// Render the views, answer picks, and write the PNG with its metadata.
+fn frame(a: &ShotArgs, setup: &Setup, gpu: &Gpu, renderer: &Renderer) -> i32 {
     let (w, h) = a.size;
     let t = Stopwatch::start();
-    let _ = cam;
     let views = view_rects(&setup.cams, a.views, w, h);
-    let mut light = light;
+    let mut light = setup.light.clone();
     if a.taa_frames <= 1 {
         light.taa = 0.0;
     }

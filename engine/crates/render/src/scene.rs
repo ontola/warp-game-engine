@@ -23,6 +23,36 @@ pub const NO_AMBIENT_OCCLUSION: u32 = 128;
 /// Drawn by the sorted forward pass, never the opaque or shadow raster pass.
 pub const BLEND: u32 = 256;
 
+/// Material flags from this bit up hold 1 + an index into
+/// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
+pub const CAR_SHIFT: u32 = 16;
+
+/// One procedural car surface: paint, or another part of a car, with its
+/// wear and grime. The meaning of each field is in car_material.wgsl; the
+/// CLI fills these from engine/data/car_materials.toml.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct GpuCarMaterial {
+    /// rgb paint or part colour (linear), w: kind.
+    pub colour: [f32; 4],
+    /// rgb pearl shift / candy flake colour, w: paint finish.
+    pub second: [f32; 4],
+    /// Base roughness, metalness, clear coat, coat roughness.
+    pub surface: [f32; 4],
+    /// Flake amount, flake size (m), flake spread, orange peel.
+    pub flake: [f32; 4],
+    /// Chips, scratches, polish swirls, sun fade.
+    pub wear: [f32; 4],
+    /// Dust, mud, rust, seed.
+    pub grime: [f32; 4],
+    /// rgb dust colour, w: mud wetness.
+    pub dirt: [f32; 4],
+    /// Object-space bounds: min y, max y, min z, max z.
+    pub body: [f32; 4],
+    /// Front axle z, rear axle z, wheel radius, half track (negative: a wheel).
+    pub axles: [f32; 4],
+}
+
 /// glTF alphaMode=BLEND data, separate from the fixed GPU material layout.
 #[derive(Clone, Copy, Debug)]
 pub struct BlendMaterial {
@@ -178,6 +208,9 @@ pub struct Scene {
     pub meshes: Vec<MeshRef>,
     pub instances: Vec<GpuInstance>,
     pub materials: Vec<Material>,
+    /// Procedural car surfaces, referenced through `CAR_SHIFT` flag bits.
+    /// `Renderer::set_car_materials` replaces them without a rebuild.
+    pub car_materials: Vec<GpuCarMaterial>,
     pub blended_materials: HashMap<u32, BlendMaterial>,
     pub grass_ranges: Vec<crate::grass::GrassRange>,
     /// Optional world-fixed terrain-following grass density field.
@@ -302,6 +335,13 @@ impl Scene {
     pub fn add_material(&mut self, m: Material) -> u32 {
         self.materials.push(m);
         (self.materials.len() - 1) as u32
+    }
+
+    /// Add a procedural car surface; returns the material flag bits that
+    /// select it (or them into `Material::flags`).
+    pub fn add_car_material(&mut self, c: GpuCarMaterial) -> u32 {
+        self.car_materials.push(c);
+        (self.car_materials.len() as u32) << CAR_SHIFT
     }
 
     /// Preserve continuous alpha, including opaque texels of a blended badge.

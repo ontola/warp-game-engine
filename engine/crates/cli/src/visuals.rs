@@ -15,6 +15,9 @@ pub struct Built {
     pub mesh_names: Vec<String>,
     pub log: Vec<String>,
     pub cars: Vec<DynamicCar>,
+    /// Every car surface in `scene.car_materials` order, to re-apply edited
+    /// car material data (`Renderer::set_car_materials`).
+    pub car_slots: Vec<crate::car_look::Slot>,
     live_ground_cover: Option<crate::live_ground_cover::LiveGroundCover>,
 }
 
@@ -256,15 +259,15 @@ pub struct CarPose {
     pub wheels: Vec<crate::car_model::Wheel>,
 }
 
-pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bool) -> Result<Built, String> {
-    build_inner(stage, cars, cameras, ground_cover, false)
+pub fn build(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bool, looks: &crate::car_look::Looks) -> Result<Built, String> {
+    build_inner(stage, cars, cameras, ground_cover, false, looks)
 }
 
-pub fn build_live(stage: &Stage, cars: &[CarPose], cameras: &[Vec3]) -> Result<Built, String> {
-    build_inner(stage, cars, cameras, false, std::env::var("SIDEWAYS_LIVE_GRASS").as_deref() != Ok("0"))
+pub fn build_live(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], looks: &crate::car_look::Looks) -> Result<Built, String> {
+    build_inner(stage, cars, cameras, false, std::env::var("SIDEWAYS_LIVE_GRASS").as_deref() != Ok("0"), looks)
 }
 
-fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bool, live_cover: bool) -> Result<Built, String> {
+fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: bool, live_cover: bool, looks: &crate::car_look::Looks) -> Result<Built, String> {
     let mut log = Vec::new();
     let t = std::time::Instant::now();
     let mut scene = Scene::default();
@@ -427,13 +430,14 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     }
     let mut car_textures = std::collections::HashMap::new();
     let mut dynamic_cars = Vec::new();
-    for car in cars {
+    let mut car_slots = Vec::new();
+    for (index, car) in cars.iter().enumerate() {
         let first = scene.instances.len();
         let pose = Affine3A::from_rotation_translation(car.rot, car.pos);
         if let Some(rel) = car.model.strip_prefix("res://") {
             let t = std::time::Instant::now();
             let before = scene.meshes.len();
-            let meshes = crate::car_model::load(&mut scene, &r.join(rel), car.color.to_array(), &mut car_textures)?;
+            let meshes = crate::car_model::load(&mut scene, &r.join(rel), index, car.color.to_array(), looks, &mut car_slots, &mut car_textures)?;
             for k in before..scene.meshes.len() {
                 mesh_names.push(format!("car {rel} part {}", k - before));
             }
@@ -449,7 +453,7 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         }
     }
     log.push(scene.stats());
-    Ok(Built { scene, mesh_names, log, cars: dynamic_cars, live_ground_cover })
+    Ok(Built { scene, mesh_names, log, cars: dynamic_cars, car_slots, live_ground_cover })
 }
 
 #[cfg(test)]

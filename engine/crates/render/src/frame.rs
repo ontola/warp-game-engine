@@ -306,6 +306,11 @@ pub struct Renderer {
     raster: wgpu::RenderPipeline,
     raster_depth: wgpu::RenderPipeline,
     shade: wgpu::ComputePipeline,
+    /// Kept to rebuild `shade` when its source changes on disk.
+    shade_pl: wgpu::PipelineLayout,
+    shade_text: String,
+    car_materials: wgpu::Buffer,
+    car_material_count: usize,
     tone: wgpu::ComputePipeline,
     shade_layout: wgpu::BindGroupLayout,
     tone_layout: wgpu::BindGroupLayout,
@@ -509,6 +514,9 @@ impl Renderer {
         let instances = buffer(gpu, "instances", bytemuck::cast_slice(&scene.instances), u);
         let materials = buffer(gpu, "materials", bytemuck::cast_slice(&scene.materials), u);
         let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
+        // Never empty: a binding needs at least one element.
+        let car_list = if scene.car_materials.is_empty() { vec![crate::scene::GpuCarMaterial::default()] } else { scene.car_materials.clone() };
+        let car_materials = buffer(gpu, "car materials", bytemuck::cast_slice(&car_list), u);
         let voxel_replacement = buffer(gpu, "voxel crown replacement", bytemuck::cast_slice(&crate::voxel_forest::replacement_materials(scene)), u);
         let wind = crate::wind::WindRenderer::new(gpu, &instances, &voxel_replacement, scene.instances.len())
             .expect("scene exceeds bounded wind storage");
@@ -564,6 +572,7 @@ impl Renderer {
                 (10, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (11, storage(true)),
                 (12, storage(true)),
+                (13, storage(true)),
             ],
         );
         let transparency = crate::transparency::Transparency::new(gpu, scene, &scene_layout);
@@ -590,6 +599,7 @@ impl Renderer {
                 (10, wgpu::BindingResource::Sampler(&plant_samp)),
                 (11, voxel_replacement.as_entire_binding()),
                 (12, wind.buffer().as_entire_binding()),
+                (13, car_materials.as_entire_binding()),
             ],
         );
         let view_cull_layout = layout(gpu, "view cull", &[(0, uniform()), (1, storage(false)), (2, storage(false)), (3, storage(false)), (4, storage(false))]);
@@ -703,7 +713,8 @@ impl Renderer {
         };
         let raster = raster_pipe(true);
         let raster_depth = raster_pipe(false);
-        let shade = compute(&pl(&[&scene_layout, &shade_layout]), &shade_mod, "shade");
+        let shade_pl = pl(&[&scene_layout, &shade_layout]);
+        let shade = compute(&shade_pl, &shade_mod, "shade");
         let tone = compute(&pl(&[&tone_layout]), &tone_mod, "main");
         let taa_mod = module("taa", include_str!("shaders/taa.wgsl"));
         let taa = compute(&pl(&[&taa_layout]), &taa_mod, "main");
@@ -804,6 +815,10 @@ impl Renderer {
             raster,
             raster_depth,
             shade,
+            shade_pl,
+            shade_text: crate::wind::shade_source(),
+            car_materials,
+            car_material_count: car_list.len(),
             tone,
             shade_layout,
             tone_layout,
@@ -935,6 +950,50 @@ impl Renderer {
     pub fn set_wind(&self, gpu: &Gpu, state: &crate::wind::WindState) -> Result<(), String> {
         if self.wind.update(gpu, state)? { self.invalidate_shadow(); }
         Ok(())
+    }
+
+    /// Replace the procedural car surfaces, one per `Scene::car_materials`
+    /// entry: retuning paint, wear or grime needs no new renderer.
+    pub fn set_car_materials(&self, gpu: &Gpu, materials: &[crate::scene::GpuCarMaterial]) -> Result<(), String> {
+        if materials.is_empty() {
+            return Ok(());
+        }
+        if materials.len() != self.car_material_count {
+            return Err(format!("{} car materials for a scene built with {}", materials.len(), self.car_material_count));
+        }
+        gpu.queue.write_buffer(&self.car_materials, 0, bytemuck::cast_slice(materials));
+        Ok(())
+    }
+
+    /// Re-read the shading shaders (`KERN_SHADER_DIR`, see shaders.rs) and
+    /// rebuild the shade and glass pipelines whose source changed. Code that
+    /// fails validation leaves the running pipelines in place and returns
+    /// the compiler's message. Ok(true) when something was rebuilt.
+    pub fn reload_shaders(&mut self, gpu: &Gpu) -> Result<bool, String> {
+        let mut rebuilt = false;
+        let text = crate::wind::shade_source();
+        if text != self.shade_text {
+            self.shade = crate::shaders::checked(gpu, || {
+                let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade"), source: wgpu::ShaderSource::Wgsl(text.as_str().into()) });
+                gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("shade"),
+                    layout: Some(&self.shade_pl),
+                    module: &module,
+                    entry_point: Some("shade"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            })?;
+            self.shade_text = text;
+            rebuilt = true;
+        }
+        if let Some(t) = &mut self.transparency {
+            rebuilt |= t.reload(gpu)?;
+        }
+        if rebuilt {
+            self.reset_history();
+        }
+        Ok(rebuilt)
     }
 
     /// Forget TAA history: the next frame starts from scratch (a camera cut).
