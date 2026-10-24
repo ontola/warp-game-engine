@@ -384,7 +384,10 @@ pub fn settings() -> Value {
         {"key":"stage_km","label":"Stage length km (next stage)","kind":"number","default":3,"min":2,"max":8},
         {"key":"rivals","label":"AI rivals (next stage)","kind":"number","default":1,"min":0,"max":3},
         {"key":"contact","label":"Car contact (next stage)","kind":"toggle","default":true},
-        {"key":"weather","label":"Weather (next stage)","kind":"choice","default":"random","options":["random","clear","overcast","mist","wet"]}
+        {"key":"weather","label":"Road weather (next stage)","kind":"choice","default":"random","options":["random","clear","overcast","mist","wet"]},
+        {"key":"sky_time","label":"Time of day (live)","kind":"choice","default":"noon","options":["current","sunrise","morning","noon","afternoon","sunset","night"]},
+        {"key":"sky_weather","label":"Atmosphere (live)","kind":"choice","default":"clear","options":["clear","haze","mist"]},
+        {"key":"upscale","label":"Upscaling (DLSS requires supported GPU/runtime)","kind":"choice","default":"native","options":["native","dlss-quality","dlss-balanced","dlss-performance"]}
     ])
 }
 
@@ -393,6 +396,29 @@ pub fn actions() -> Value { json!([{"key":"new_stage","label":"New stage"}]) }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_sky_menu_choices_match_runtime_and_keep_road_weather_separate() {
+        let choices=settings();let choices=choices.as_array().unwrap();
+        for item in choices {
+            if let Some(key @ ("sky_time"|"sky_weather"))=item["key"].as_str() {
+                for value in item["options"].as_array().unwrap() {
+                    assert!(crate::procedural_sky::LiveSettings::default().changed(key,value).is_ok());
+                }
+                assert!(item["label"].as_str().unwrap().contains("live"));
+            }
+        }
+        assert!(choices.iter().any(|item|item["key"]=="weather"&&item["label"].as_str().unwrap().contains("next stage")));
+    }
+
+    #[test]
+    fn upscaling_menu_declares_only_explicit_renderer_modes() {
+        let settings=settings();
+        let item=settings.as_array().unwrap().iter().find(|s|s["key"]=="upscale").unwrap();
+        assert_eq!(item["kind"],"choice");assert_eq!(item["default"],"native");
+        assert_eq!(item["options"].as_array().unwrap().len(),4);
+        for option in item["options"].as_array().unwrap() {assert!(option.as_str().unwrap().parse::<render::upscale::UpscaleMode>().is_ok());}
+    }
 
     fn prepare() -> Value { json!({"type":"prepare", "game":"sideways", "session":"s1",
         "seats":[{"index":3,"controller":"pad-b","occupant":{"kind":"local","player_id":"p2"}}, {"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}}],

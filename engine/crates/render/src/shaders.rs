@@ -1,6 +1,7 @@
 //! Shader sources for iteration without a rebuild.
 //!
-//! The shading chain (wind_common, shade, car_material, transparency) is
+//! The shading chain (wind_common, shade, car_material, grass_lighting,
+//! headlights and transparency) is
 //! compiled into the binary, and can instead be read from disk: set
 //! `KERN_SHADER_DIR` to a directory holding those `.wgsl` files (normally
 //! `crates/render/src/shaders`). A missing or unreadable file falls back to
@@ -11,10 +12,12 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-const BUILT_IN: [(&str, &str); 4] = [
+const BUILT_IN: [(&str, &str); 6] = [
     ("wind_common.wgsl", include_str!("shaders/wind_common.wgsl")),
     ("shade.wgsl", include_str!("shaders/shade.wgsl")),
     ("car_material.wgsl", include_str!("shaders/car_material.wgsl")),
+    ("grass_lighting.wgsl", include_str!("shaders/grass_lighting.wgsl")),
+    ("headlights.wgsl", include_str!("shaders/headlights.wgsl")),
     ("transparency.wgsl", include_str!("shaders/transparency.wgsl")),
 ];
 

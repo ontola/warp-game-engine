@@ -147,7 +147,10 @@ fn scatter(field: &Field<'_>, cameras: &[Vec3]) -> (Vec<Tuft>, usize) {
     (tufts, requested)
 }
 
-pub(crate) fn mesh(material: u32) -> ClusterMesh {
+/// Shared authored clump for near rendering and offline derived volumes.
+/// Its UP vertex normals are legacy lighting proxies, not blade normals.
+/// The current renderer applies its common statistical leaf BRDF instead.
+pub(crate) fn source_geometry() -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for card in 0..3 {
@@ -162,6 +165,11 @@ pub(crate) fn mesh(material: u32) -> ClusterMesh {
         }
         indices.extend([0, 2, 1, 1, 2, 3].map(|i| base + i));
     }
+    (vertices, indices)
+}
+
+pub(crate) fn mesh(material: u32) -> ClusterMesh {
+    let (vertices, indices) = source_geometry();
     ClusterMesh::build(&[Part { vertices: &vertices, indices: &indices, material }])
 }
 

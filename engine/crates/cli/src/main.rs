@@ -6,21 +6,27 @@
 
 mod car_look;
 mod car_model;
+mod car_headlights;
+mod chase_camera;
 mod check;
 mod distant_forest;
 mod gpu_run;
 mod ground_cover;
 mod live_ground_cover;
 mod nature;
+mod upscale;
 mod far_ground_cover;
 mod input;
 mod hud;
 mod play;
 mod procedural_rocks;
+mod procedural_sky;
+mod roadside_crowds;
 mod screenshot;
 mod gamenight;
 mod shot;
 mod visuals;
+mod tree_assets;
 mod voxel_tree_patch;
 
 fn main() {
@@ -34,9 +40,11 @@ fn main() {
         Some("sim") => sim(&args),
         Some("shot") => {
             let nature = match nature::Nature::parse(&args) { Ok(n)=>n, Err(e)=>{eprintln!("shot: {e}");std::process::exit(2);} };
+            let upscale = match upscale::parse(&args) { Ok(n)=>n, Err(e)=>{eprintln!("shot: {e}");std::process::exit(2);} };
             let size: Vec<u32> = opt("--size", "960x540").split('x').map(|x| x.parse().unwrap()).collect();
             shot::run(&shot::ShotArgs {
                 nature,
+                upscale,
                 out: args.get(1).cloned().unwrap_or("shot.png".into()),
                 seed: opt("--seed", "1").parse().unwrap(),
                 km: opt("--km", "2").parse().unwrap(),

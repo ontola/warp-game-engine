@@ -4,6 +4,9 @@ edition.workspace = true
 version.workspace = true
 description = "Kern's renderer: GPU-driven clusters with LOD, visibility buffer, HDR, sun and sky light"
 
+[features]
+dlss = ["dep:ash"]
+
 [dependencies]
 wgpu = "30"
 pollster = "1"
@@ -13,6 +16,10 @@ png = "0.18"
 glam = { version = "0.31", features = ["bytemuck"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "hdr", "webp"] }
 glyphon = "0.12"
+ash = { version = "0.38", optional = true }
+
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }

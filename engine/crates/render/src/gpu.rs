@@ -73,15 +73,29 @@ impl Gpu {
         limits.max_buffer_size = al.max_buffer_size;
         limits.max_storage_buffers_per_shader_stage = al.max_storage_buffers_per_shader_stage.min(16);
         limits.max_compute_workgroups_per_dimension = al.max_compute_workgroups_per_dimension;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let descriptor = wgpu::DeviceDescriptor {
             label: Some("kern"),
             required_features: features,
             required_limits: limits.clone(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
-        }))
-        .map_err(|e| format!("device: {e}"))?;
+        };
+        #[cfg(all(feature = "dlss", target_os = "windows"))]
+        let native = crate::dlss::request_device(&adapter, &descriptor);
+        #[cfg(not(all(feature = "dlss", target_os = "windows")))]
+        let native: Option<Result<(wgpu::Device, wgpu::Queue), String>> = None;
+        let (device, queue) = match native {
+            Some(Ok(result)) => result,
+            Some(Err(reason)) => {
+                // Optional capability discovery must not disable native rendering
+                // on an older driver. Explicit DLSS selection still fails in its
+                // context's extension/capability validation; it never falls back.
+                eprintln!("DLSS capability setup unavailable: {reason}; creating native device");
+                pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("device: {e}"))?
+            }
+            None => pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("device: {e}"))?,
+        };
         Ok((Gpu { device, queue, info, features, limits }, adapter))
     }
 

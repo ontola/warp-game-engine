@@ -104,7 +104,8 @@ fn photo_profile_with_vegetation(photo: &image::RgbaImage, vegetation: sideways:
 }
 
 /// Bake once with a stage's native chunks; the renderer owns upload/lifetime.
-/// Missing chunks have zero coverage and finite inert point values. Road
+/// Missing chunks have zero coverage and a finite -1e9 missing-height sentinel.
+/// This distinguishes holes from actual flat terrain at world height zero. Road
 /// distances are retained so the GPU can clip every triangle segment against
 /// road(t)>=0.9 instead of spilling averaged boundary-cell grass on the road.
 pub fn bake(chunks: &[Chunk], photo: &image::RgbaImage) -> Result<(FarGrassField, String), String> {
@@ -146,7 +147,7 @@ pub fn bake_with_vegetation(chunks: &[Chunk], photo: &image::RgbaImage, vegetati
     let photo = photo_profile_with_vegetation(photo, vegetation)?;
     let max_height = photo.max_height;
     let mut field = FarGrassField { origin, cell: GRID as f32, width: width as u32, height: height as u32,
-        heights: vec![0.0; points], road: vec![-1.0; points], coverage: vec![0; cells],
+        heights: vec![-1e9; points], road: vec![-1.0; points], coverage: vec![0; cells],
         profile: photo.extinction, max_height, albedo: photo.albedo, shading_profile: photo.shading };
     let ground = Ground::new(chunks);
     let mut written = vec![false; points];
@@ -286,6 +287,10 @@ mod tests {
         for z in 0..N-1 { for x in N-1..2*(N-1) {
             assert_eq!(field.coverage[z*(field.width as usize-1)+x], 0);
         }}
+        assert_eq!(field.heights[(N/2)*field.width as usize+N+(N-1)/2],-1e9,
+            "missing native chunks cannot become a sunlight-blocking floor at Y=0");
+        assert_eq!(field.heights[(N/2)*field.width as usize+2*(N-1)+N/2],0.0,
+            "real zero-height terrain remains valid");
         assert!(field.heights.iter().chain(&field.road).all(|v| v.is_finite()));
     }
     #[test]

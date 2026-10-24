@@ -1,15 +1,20 @@
 //! Persistent world-anchored canopy extinction, shared by sun and sky queries.
 //!
 //! This is a rest-pose ellipsoid approximation, not source-needle voxel data.
+//! `KERN_SOURCE_CROWN_BOUNDS=1` tests source-leaf envelopes instead of the
+//! whole-tree sphere. This fixes placement/scale, not lost light transmission;
+//! it remains opt-in pending source-alpha/mean-transmission GPU validation.
 //! Extinction adds between crowns at EVERY level (the old field used max).
 //! Structural tree changes invalidate the field; a future wind phase must not
 //! be treated as a structural revision or trigger per-leaf rebuilds.
 //! Each view owns its receiver window so other players cannot change its LOD
 //! blend or lighting. Three levels cost 27 MiB per view, 108 MiB for four.
-use crate::{scene::{GpuInstance, Scene, FOLIAGE}, Gpu};
+use crate::{scene::{GpuInstance, Scene, FOLIAGE, ALPHA_TEST, THIN_FOLIAGE, GRASS}, Gpu};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use wgpu::util::DeviceExt;
 
 pub const CANOPY_DIMS: [u32; 3] = [128, 48, 128];
 pub const CANOPY_LEVELS: usize = 3;
@@ -68,9 +73,12 @@ pub struct CanopyClipmap {
     fill: wgpu::ComputePipeline,
     filter: wgpu::ComputePipeline,
     cache: Mutex<Cache>,
-    initial_radii: Arc<Vec<Option<f32>>>,
+    // Original enclosing radius and integrated source-envelope mass.
+    initial_crowns: Arc<Vec<Option<[f64; 2]>>>,
     foliage_y: [f32; 2],
     mass_scale: f32,
+    source_crowns: Arc<SourceCrowns>,
+    source_buffer: wgpu::Buffer,
 }
 
 /// Per-view resident data: 27 MiB, bounded at 108 MiB for four views.
@@ -83,7 +91,7 @@ struct ViewResources {
     bind: wgpu::BindGroup,
 }
 
-fn view_resources(gpu: &Gpu, layout: &wgpu::BindGroupLayout) -> ViewResources {
+fn view_resources(gpu: &Gpu, layout: &wgpu::BindGroupLayout, source_buffer: &wgpu::Buffer) -> ViewResources {
     let atomic = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("canopy clipmap mass"), size: COUNT * 3 * 4,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
@@ -106,15 +114,78 @@ fn view_resources(gpu: &Gpu, layout: &wgpu::BindGroupLayout) -> ViewResources {
             wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: atomic.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 3, resource: source_buffer.as_entire_binding() },
         ],
     });
     ViewResources { texture, view, atomic, uniform, bind }
 }
 
-fn crown(instance: &GpuInstance) -> (Vec3, Vec3) {
+fn legacy_crown(instance: &GpuInstance) -> (Vec3, Vec3) {
     let r = instance.sphere[3];
     (Vec3::new(instance.sphere[0], instance.sphere[1] + r * 0.25, instance.sphere[2]),
         Vec3::new(r * 0.38, r * 0.62, r * 0.38))
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, Pod, Zeroable)]
+struct CrownBounds { centre: [f32; 4], half: [f32; 4] }
+
+/// One compact ID per instance; local bounds are shared by every reuse of a
+/// mesh. This buffer is shared across views, unlike the resident clipmaps.
+struct SourceCrowns { ids: Vec<u32>, bounds: Vec<CrownBounds> }
+
+impl SourceCrowns {
+    fn new(scene: &Scene) -> Self {
+        let mut result = Self { ids: Vec::with_capacity(scene.instances.len()), bounds: vec![CrownBounds::default()] };
+        let mut meshes = HashMap::new();
+        for instance in &scene.instances {
+            if instance.flags & FOLIAGE == 0 { result.ids.push(0); continue; }
+            let id = *meshes.entry((instance.first_cluster, instance.cluster_count)).or_insert_with(|| {
+                let mut lo = Vec3::splat(f32::INFINITY); let mut hi = Vec3::splat(f32::NEG_INFINITY);
+                let start = instance.first_cluster as usize;
+                let end = start.saturating_add(instance.cluster_count as usize).min(scene.clusters.len());
+                for c in scene.clusters.get(start..end).unwrap_or_default() {
+                    if c.own_error != 0.0 { continue; }
+                    let Some(m) = scene.materials.get(c.material as usize) else { continue; };
+                    if m.flags & (ALPHA_TEST | THIN_FOLIAGE) == 0 || m.flags & GRASS != 0 { continue; }
+                    for ti in c.first_tri..c.first_tri.saturating_add(c.tri_count) {
+                        let Some(&tri) = scene.tris.get(ti as usize) else { continue; };
+                        for corner in 0..3 {
+                            let local = ((tri >> (corner * 8)) & 255) as usize;
+                            let Some(v) = scene.cluster_verts.get(c.first_vert as usize + local).and_then(|i| scene.vertices.get(*i as usize)) else { continue; };
+                            let p = Vec3::from(v.pos);
+                            if p.is_finite() { lo = lo.min(p); hi = hi.max(p); }
+                        }
+                    }
+                }
+                let half = (hi - lo) * 0.5;
+                // A flat source sheet cannot define a volumetric crown. Keep
+                // the legacy fallback for unsupported/untagged foliage only.
+                if !half.is_finite() || half.min_element() <= 0.001 { return 0; }
+                let centre = (hi + lo) * 0.5;
+                let id = result.bounds.len() as u32;
+                result.bounds.push(CrownBounds { centre: [centre.x, centre.y, centre.z, 1.0], half: [half.x, half.y, half.z, 0.0] });
+                id
+            });
+            result.ids.push(id);
+        }
+        result
+    }
+
+    fn packed(&self) -> Vec<u32> {
+        let mut data = self.ids.clone();
+        data.extend_from_slice(bytemuck::cast_slice(&self.bounds));
+        data
+    }
+
+    fn crown(&self, index: usize, instance: &GpuInstance) -> (Vec3, Vec3) {
+        let id = self.ids.get(index).copied().unwrap_or(0) as usize;
+        if id == 0 { return legacy_crown(instance); }
+        let local = self.bounds[id]; let p = Vec3::from_slice(&local.centre); let r = Vec3::from_slice(&local.half);
+        let centre = Vec3::from_array(std::array::from_fn(|k| Vec3::from_slice(&instance.rows[k]).dot(p) + instance.rows[k][3]));
+        let radii = Vec3::from_array(std::array::from_fn(|k| Vec3::from_slice(&instance.rows[k]).abs().dot(r)));
+        (centre, radii)
+    }
 }
 fn crown_mass(r: Vec3) -> f64 {
     (8.0 * std::f64::consts::PI / 15.0) * f64::from(r.x) * f64::from(r.y) * f64::from(r.z)
@@ -157,13 +228,16 @@ fn choose_layout(receivers: &[Vec3], foliage_y: [f32; 2], previous_pitch: f32) -
 
 impl CanopyClipmap {
     pub fn new(gpu: &Gpu, scene: &Scene, scene_layout: &wgpu::BindGroupLayout) -> Result<Self, String> {
-        let mut initial_radii = vec![None; scene.instances.len()];
+        let source_crowns = Arc::new(if std::env::var("KERN_SOURCE_CROWN_BOUNDS").as_deref()==Ok("1") {
+            SourceCrowns::new(scene)
+        } else { SourceCrowns {ids:Vec::new(),bounds:vec![CrownBounds::default()]} });
+        let mut initial_crowns = vec![None; scene.instances.len()];
         let mut foliage_y = [f32::INFINITY, f32::NEG_INFINITY];
         let mut total_mass = 0.0;
         let mut count = 0usize;
         for (index, instance) in scene.instances.iter().enumerate() {
             if instance.flags & FOLIAGE == 0 { continue; }
-            let (centre, radii) = crown(instance);
+            let (centre, radii) = source_crowns.crown(index, instance);
             if !centre.is_finite() || !radii.is_finite() || radii.min_element() <= 0.0
                 || centre.abs().max_element() > 1_000_000.0 {
                 return Err(format!("canopy instance {index} has invalid or unsupported world bounds"));
@@ -171,7 +245,7 @@ impl CanopyClipmap {
             if footprint_bound(radii, 1.5) > MAX_CROWN_CELLS {
                 return Err(format!("canopy instance {index} exceeds {MAX_CROWN_CELLS} finest-cell work limit"));
             }
-            initial_radii[index] = Some(instance.sphere[3]);
+            initial_crowns[index] = Some([f64::from(instance.sphere[3]), crown_mass(radii)]);
             foliage_y[0] = foliage_y[0].min(centre.y - radii.y);
             foliage_y[1] = foliage_y[1].max(centre.y + radii.y);
             total_mass += crown_mass(radii);
@@ -195,6 +269,8 @@ impl CanopyClipmap {
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D3 }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -209,11 +285,14 @@ impl CanopyClipmap {
         };
         let fill = pipeline("canopy mass fill", include_str!("shaders/canopy_fill.wgsl").into());
         let filter = pipeline("canopy mass to density", include_str!("shaders/canopy_filter.wgsl").into());
-        let resources = view_resources(gpu, &layout);
+        let source_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("shared source crown bounds"), contents: bytemuck::cast_slice(&source_crowns.packed()), usage: wgpu::BufferUsages::STORAGE,
+        });
+        let resources = view_resources(gpu, &layout, &source_buffer);
         Ok(Self { _texture: resources.texture, view: resources.view, atomic: resources.atomic,
             uniform: resources.uniform, bind: resources.bind, bind_layout: layout,
             fill, filter, cache: Mutex::new(Cache::default()),
-            initial_radii: Arc::new(initial_radii), foliage_y, mass_scale })
+            initial_crowns: Arc::new(initial_crowns), foliage_y, mass_scale, source_crowns, source_buffer })
     }
 
     /// Create an independent persistent view without reloading scene data or
@@ -221,11 +300,12 @@ impl CanopyClipmap {
     /// camera's position, target and lookahead, never the other players.
     /// Cache state starts empty: no inherited union/spread-dependent pitch.
     pub fn fork_view(&self, gpu: &Gpu) -> Self {
-        let resources = view_resources(gpu, &self.bind_layout);
+        let resources = view_resources(gpu, &self.bind_layout, &self.source_buffer);
         Self { _texture: resources.texture, view: resources.view, atomic: resources.atomic,
             uniform: resources.uniform, bind: resources.bind, bind_layout: self.bind_layout.clone(),
             fill: self.fill.clone(), filter: self.filter.clone(), cache: Mutex::new(Cache::default()),
-            initial_radii: Arc::clone(&self.initial_radii), foliage_y: self.foliage_y, mass_scale: self.mass_scale }
+            initial_crowns: Arc::clone(&self.initial_crowns), foliage_y: self.foliage_y, mass_scale: self.mass_scale,
+            source_crowns: Arc::clone(&self.source_crowns), source_buffer: self.source_buffer.clone() }
     }
 
     /// Call before changing the shared instance buffer. Rigid motion is valid;
@@ -235,8 +315,9 @@ impl CanopyClipmap {
         for (offset, instance) in instances.iter().enumerate() {
             if instance.flags & FOLIAGE == 0 { continue; }
             let index = first.checked_add(offset).ok_or("canopy update index overflow")?;
-            let original = self.initial_radii.get(index).copied().flatten()
+            let [original, original_mass] = self.initial_crowns.get(index).copied().flatten()
                 .ok_or_else(|| format!("new foliage at instance {index} requires renderer rebuild"))?;
+            let original = original as f32;
             // Rotation matrix normalization may perturb a bounding radius by
             // a few ulps. The fixed-point budget has a factor-two margin;
             // this tolerance does not permit an actual art/geometry rescale.
@@ -244,8 +325,15 @@ impl CanopyClipmap {
             if !instance.sphere[3].is_finite() || (instance.sphere[3] - original).abs() > radius_tolerance {
                 return Err(format!("rescaling foliage instance {index} requires renderer rebuild"));
             }
-            let (centre, radii) = crown(instance);
-            if !centre.is_finite() || centre.abs().max_element() > 1_000_000.0
+            let (centre, radii) = self.source_crowns.crown(index, instance);
+            // Preserve the original fixed-point precision. The existing 2x
+            // headroom covers ordinary rigid envelope changes; an extreme
+            // rotated/squeezed envelope must rebuild, never overflow atomics.
+            if crown_mass(radii) > original_mass * 2.0 {
+                return Err(format!("foliage instance {index} exceeded its validated mass envelope; rebuild renderer"));
+            }
+            if !centre.is_finite() || !radii.is_finite() || radii.min_element() <= 0.0
+                || centre.abs().max_element() > 1_000_000.0
                 || instance.rows.iter().flatten().any(|v| !v.is_finite())
                 || !instance.scale.is_finite() || instance.scale <= 0.0
                 || footprint_bound(radii, 1.5) > MAX_CROWN_CELLS
@@ -278,7 +366,7 @@ impl CanopyClipmap {
         }
         if dirty != 0 {
             let fill_uniform = FillUniform { origins: layout.origins, dims: [128, 48, 128, 0],
-                mass: [self.mass_scale, 1.0 / self.mass_scale, 0.0, 0.0], state: [dirty, instance_count, 0, 0] };
+                mass: [self.mass_scale, 1.0 / self.mass_scale, 0.0, 0.0], state: [dirty, instance_count, self.source_crowns.ids.len() as u32, 0] };
             gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&fill_uniform));
             for level in 0..3 {
                 if dirty & (1 << level) != 0 { encoder.clear_buffer(&self.atomic, level as u64 * COUNT * 4, Some(COUNT * 4)); }
@@ -310,6 +398,59 @@ impl CanopyClipmap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_scene() -> Scene {
+        use crate::cluster::{ClusterMesh, Part, Vertex};
+        use crate::scene::Material;
+        let mut scene = Scene::default();
+        for flags in [0, ALPHA_TEST] {
+            scene.materials.push(Material { tint: [1.0; 3], layer: -1, roughness: 1.0, flags, scale: 1.0, metal: 0.0 });
+        }
+        let box_vertices = |lo:Vec3,hi:Vec3| -> Vec<Vertex> {
+            (0..8).map(|i| Vertex { pos:std::array::from_fn(|a| if i&(1<<a)==0 {lo[a]} else {hi[a]}), normal:[0.0,1.0,0.0], uv:[0.0;2] }).collect()
+        };
+        let indices = [0,2,1,1,2,3,4,5,6,5,7,6,0,1,4,1,5,4,2,6,3,3,6,7,0,4,2,2,4,6,1,3,5,3,7,5];
+        let trunk = box_vertices(Vec3::new(-0.3,0.0,-0.3),Vec3::new(0.3,18.0,0.3));
+        let leaves = box_vertices(Vec3::new(-2.0,7.0,-3.0),Vec3::new(2.0,16.0,3.0));
+        let mesh = ClusterMesh::build(&[Part {vertices:&trunk,indices:&indices,material:0}, Part {vertices:&leaves,indices:&indices,material:1}]);
+        let id = scene.add_mesh(&mesh);
+        for transform in [glam::Affine3A::IDENTITY, glam::Affine3A::from_scale_rotation_translation(Vec3::new(2.0,0.5,1.0),glam::Quat::from_rotation_y(0.73),Vec3::new(-7.0,11.0,4.0))] {
+            scene.add_instance(id,transform);scene.mark_foliage();
+        }
+        scene
+    }
+
+    #[test]
+    fn source_leaf_bounds_exclude_stem_and_share_mesh_data() {
+        let scene = source_scene(); let source = SourceCrowns::new(&scene);
+        assert_eq!(source.bounds.len(),2); assert_eq!(source.ids,vec![1,1]);
+        let (c,r) = source.crown(0,&scene.instances[0]);
+        assert!(c.abs_diff_eq(Vec3::new(0.0,11.5,0.0),1e-6));
+        assert!(r.abs_diff_eq(Vec3::new(2.0,4.5,3.0),1e-6));
+        assert_eq!(c.y-r.y,7.0,"the bare stem must not become a low canopy");
+        assert_eq!(source.packed().len()*4,2*4+2*32);
+    }
+
+    #[test]
+    fn source_crown_envelope_follows_actual_nonuniform_transform() {
+        let scene = source_scene(); let source = SourceCrowns::new(&scene);
+        let inst = &scene.instances[1]; let (c,r) = source.crown(1,inst);
+        let xf = glam::Affine3A::from_scale_rotation_translation(Vec3::new(2.0,0.5,1.0),glam::Quat::from_rotation_y(0.73),Vec3::new(-7.0,11.0,4.0));
+        let mut lo = Vec3::splat(f32::INFINITY); let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for x in [-2.0,2.0] {for y in [7.0,16.0] {for z in [-3.0,3.0] {
+            let p = xf.transform_point3(Vec3::new(x,y,z)); lo=lo.min(p);hi=hi.max(p);
+        }}}
+        assert!((c-r).abs_diff_eq(lo,2e-6)); assert!((c+r).abs_diff_eq(hi,2e-6));
+        assert_eq!(r.y,2.25,"vertical scale must not be replaced by largest axis scale");
+        assert!(crown_mass(r)<=crown_mass(Vec3::splat(inst.sphere[3])));
+    }
+
+    #[test]
+    fn untagged_opaque_foliage_keeps_legacy_fallback() {
+        let mut scene = source_scene(); scene.materials[1].flags=0;
+        let source = SourceCrowns::new(&scene); assert_eq!(source.ids,vec![0,0]);
+        assert_eq!(source.crown(0,&scene.instances[0]),legacy_crown(&scene.instances[0]));
+    }
 
     #[test]
     fn storage_and_uniform_contract_are_bounded() {

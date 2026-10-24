@@ -3,7 +3,7 @@
 use glam::Vec3;
 use render::{
     Scene,
-    cluster::{Part, read_kmesh},
+    cluster::Part,
     foliage_volume_data::{PackLimits, VolumeBinding, pack},
     foliage_voxel::{BakeConfig, bake},
 };
@@ -69,10 +69,8 @@ pub fn attach(
         })
         .collect();
     let mut assets = Vec::new();
-    for variant in ["a", "b", "c"] {
-        let path = root.join(format!("engine/assets/fir_{variant}_near.kmesh"));
-        let parts =
-            read_kmesh(&std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)?;
+    for archetype in sideways::vegetation::TreeArchetype::ALL {
+        let parts = crate::tree_assets::load(root, archetype)?;
         let crowns: Vec<_> = parts
             .iter()
             .filter(|(name, _, _)| !name.contains("trunk") && !name.contains("bark"))

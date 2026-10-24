@@ -96,7 +96,7 @@ impl Ground<'_> {
     fn vertex(&self, x: f32, z: f32) -> Vertex {
         let n = Vec3::new(self.height(x - 2.0, z) - self.height(x + 2.0, z), 4.0,
             self.height(x, z - 2.0) - self.height(x, z + 2.0)).normalize();
-        Vertex { pos: [x, self.height(x, z), z], normal: n.to_array(), uv: [100.0, 0.0] }
+        Vertex { pos: [x, self.height(x, z), z], normal: n.to_array(), uv: [100.0, 1.0+n.y] }
     }
 }
 
@@ -334,7 +334,8 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     let hf=extended_heightfield(&scene.heightfield,&tiles,lo,hi);
     let terrain_triangles:usize=tiles.values().map(|t|t.indices.len()/3).sum();
     for tile in tiles.values(){
-        let mesh=ClusterMesh::build(&[Part{vertices:&tile.vertices,indices:&tile.indices,material:terrain_material}]);
+        let mesh=ClusterMesh::build_with_policy(&[Part{vertices:&tile.vertices,indices:&tile.indices,material:terrain_material}],
+            |_|render::cluster::SimplificationPolicy::Terrain);
         let id=scene.add_mesh(&mesh);scene.add_instance(id,Affine3A::IDENTITY);mesh_names.push(format!("vista terrain {:?}",tile.key));
     }
     scene.heightfield=hf;
@@ -380,13 +381,16 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
     }}}
     let candidates=trees.len();let budget=config.max_trees.min(MAX_BACKGROUND_TREES);
     let requested=select_trees(&mut trees,native,habitat_m2,budget);
+    let mut families=[0usize;3];let mut juveniles=0usize;
     for &TreePlacement{x,y,z,key,..} in &trees{
-        let growth=stage.vegetation.tree_scale(x,z);
-        let wide=(0.85+unit(key.rotate_left(7))*0.60)*growth[0];let tall=(0.85+unit(key.rotate_left(19))*0.55)*growth[1];
+        let phenotype=stage.vegetation.tree(stage.noise_seed as u64,x,z);
+        let wide=(0.85+unit(key.rotate_left(7))*0.60)*phenotype.scale[0];let tall=(0.85+unit(key.rotate_left(19))*0.55)*phenotype.scale[1];
         let transform=Affine3A::from_scale_rotation_translation(Vec3::new(wide,tall,wide),Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
-        scene.add_instance(tree_ids[key as usize%tree_ids.len()],transform);scene.mark_foliage();
+        let family=phenotype.archetype.index();
+        scene.add_instance(tree_ids[family%tree_ids.len()],transform);scene.mark_foliage();
+        families[family]+=1;juveniles+=usize::from(phenotype.juvenile);
     }
-    let representation=if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes",tree_ids.len())}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
+    let representation=if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes, {} canopy / {} tapered conifer / {} stout trunk, {juveniles} juveniles",tree_ids.len(),families[0],families[1],families[2])}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
     let far_density=if habitat_m2>0.0{trees.len() as f64/habitat_m2}else{0.0};
     let parity=if trees.len()==requested{"matched count"}else if requested>budget{"LIMITED BY INSTANCE BUDGET"}else{"LIMITED BY FOREST CANDIDATES"};
     let total_m2=tiles.len() as f64*(TILE*TILE) as f64;
