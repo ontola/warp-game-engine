@@ -4,6 +4,8 @@
 //!
 //! Output is short on purpose: one line per check, and the first mismatch.
 
+mod audio_out;
+mod sound;
 mod car_look;
 mod car_model;
 mod check;
@@ -30,6 +32,7 @@ fn main() {
     };
     let code = match args.first().map(|s| s.as_str()) {
         Some("play") => play::run(&args),
+        Some("sound") => sound::run(&args),
         Some("bench") => bench(&opt("--car", "rally2"), args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())),
         Some("sim") => sim(&args),
         Some("shot") => {
