@@ -46,7 +46,7 @@ fn args(args: &[String]) -> Result<Args, String> {
     let hud=match opt("--hud","on").as_str(){"on"=>true,"off"=>false,_=>return Err("hud must be on or off".into())};
     Ok(Args { nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay"),
         // Hidden smoke runs stay silent unless asked.
-        sound: crate::audio_out::Mode::parse(&opt("--sound", if smoke_frames > 0 { "off" } else { "fluid" }))? })
+        sound: crate::audio_out::Mode::parse(&opt("--sound", if smoke_frames > 0 { "off" } else { "pulse" }))? })
 }
 
 fn race(a: &Args) -> Race {

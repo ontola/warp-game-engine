@@ -193,7 +193,7 @@ fn worker(i: usize, sound: EngineSound, model: Model, sr: f32, shared: Arc<Share
         tyres.set(input.tyres);
         let mut block = vec![0.0; BLOCK];
         engine.render_add(&mut block, 1.0);
-        tyres.render_add(&mut block, 0.5);
+        tyres.render_add(&mut block, crate::tyres::MIX_LEVEL);
         // Blocks while AHEAD blocks wait: that paces the worker.
         if tx.send(block).is_err() {
             break;
