@@ -44,7 +44,10 @@ impulse_response = "minimal_muffling_03.wav"
 input_scale = 2.5
 ir_volume = 0.01
 noise = 1.0
-jitter = 0.5
+# engine-sim's sample jitter: random sub-sample read offsets, which the
+# derivative path then lifts by 6 dB per octave. At engine-sim's 0.5 it is
+# the hiss above 2 kHz (-16 dB of the sound); at 0.05 it is -37 dB.
+jitter = 0.05
 hf_gain = 0.01
 
 # Lancia-like: the classic 2.0 l turbo four, a hard edge at full throttle.
@@ -70,6 +73,7 @@ whistle = [1600.0, 7000.0]
 # pulse, a high whistle in play.
 impulse_response = "minimal_muffling_02.wav"
 input_scale = 2.5
+jitter = 0.05
 
 # Impreza-like flat four: even firing, but 1-3-2-4 into unequal headers,
 # so the pulses reach the collector unevenly: the boxer burble.
@@ -84,6 +88,7 @@ pops = 0.14
 [models.toyama.synth]
 impulse_response = "mild_exhaust.wav"
 input_scale = 2.5
+jitter = 0.05
 
 # The reference: engine-sim's "Subaru EJ 3" (3_cylinder_boxer.mr), a flat
 # four with one cylinder missing. It fires at 0, 180 and 360 degrees, then
@@ -112,6 +117,7 @@ impulse_response = "minimal_muffling_02.wav"
 # engine-sim: 1600 * dp[Pa] * audio_volume (2.1) / 3 cylinders / length^2,
 # against a leveler target of 30000 (here 0.9): about 2800 per bar.
 input_scale = 2800.0
+# ej3 keeps engine-sim's jitter (0.5): it is matched to the recording.
 
 [models.ej3.fluid]
 displacement = 1.84
