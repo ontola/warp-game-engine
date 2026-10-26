@@ -83,6 +83,42 @@ ongeveer 2,5 s bij het opstarten.
   laatste clusterniveau is de geometrievariant op afstand dus geen
   gelijkwaardige vervanging, ook als hij op de GPU sneller zou zijn.
 
+## Voxelniveaus voorbij 8 cm (Nanite-stijl)
+
+Gemeten op de CPU (orthografische silhouetoppervlakte op 512 px tegen de
+fijnste alpha-kaarten, vier richtingen die niet voor het fitten zijn
+gebruikt): twig-cuts houden 0,88 tot 0,97 van de bedekking tot 0,32 m fout
+en zakken vanaf 0,64 m naar **0,12 tot 0,20** (28 triangles over). Dat is de
+verdunning op 50 tot 150 m.
+
+Daarom wisselt de opake kroon nu net als Nanite naar voxels zodra die
+beter zijn dan driehoeken:
+
+- `ClusterMesh::replace_beyond` (render): kroonclusters met fout boven de
+  wissel (standaard 0,08 m, `SIDEWAYS_TREE_VOXEL_SWITCH`, 0 = uit) vallen
+  weg; de rest kapt zijn ouderfout op de wissel. Daarna volgen expliciete
+  niveaus met cellen van 0,08 tot 5,12 m. Alle wisselgrenzen delen één bol,
+  zodat precies één representatie de GPU-toets `eigen <= t < ouder` haalt
+  (getest over een afstandsreeks).
+- `foliage_voxel::proxy_level`: per bezette cel één willekeurig gedraaide,
+  verschoven regelmatige tetraëder (4 triangles), groot naar de
+  Beer-bedekking van de cel, kleur uit een palet van 8 lineaire kleuren.
+  Subpixel raakt een blob een pixelcentrum met kans gelijk aan zijn
+  bedekking; TAA middelt dat naar de dichtheid van de kaarten.
+- Bakken uit de alpha-kaarten (het referentiebeeld); per niveau wordt de
+  blobgrootte zo gefit dat de silhouetoppervlakte over zes richtingen gelijk
+  is aan die van de kaarten (schalen 0,89 tot 1,10).
+
+Resultaat op de CPU: voxels houden **0,75 tot 1,32** van de kaartbedekking op
+elk niveau, waar de twig-cuts naar een vijfde zakken. Per boom: 9 tot 41
+duizend voxels op 0,08 m, 4 tot 9 op 5,12 m (16 tot 36 triangles, minder dan
+de 131 tot 172 van de oude grofste LOD). Op lavapipe is het bos op 50 tot
+150 m weer vol; de voxelkronen ogen iets donkerder en egaler dan de kaarten.
+
+Nog open: GPU-kosten (de fijnste voxelniveaus hebben meer triangles dan de
+twig-cut die ze vervangen), belichting van de voxels (één normaal per blob)
+en de zonneschaduw van voxelkronen.
+
 ## Meten op de 5070 Ti
 
 `games/sideways/scenarios/opaque-crowns.toml` (native 1080p, één view, twee
