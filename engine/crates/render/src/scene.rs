@@ -24,6 +24,10 @@ pub const NO_AMBIENT_OCCLUSION: u32 = 128;
 pub const BLEND: u32 = 256;
 /// True leaf/needle geometry: thin-leaf lighting without alpha-tested cards.
 pub const THIN_FOLIAGE: u32 = 512;
+/// Opaque needle geometry shaded exactly like the alpha-tested needle cards
+/// (ALPHA_TEST|TWO_SIDED): per-tree tint, backlight, AO 0.85, low specular.
+/// Raster never samples alpha for it.
+pub const OPAQUE_NEEDLES: u32 = 1024;
 
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).

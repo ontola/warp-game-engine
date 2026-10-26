@@ -557,7 +557,14 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     let bark_mat = scene.add_material(m([1.0, 1.0, 1.0], bark, 0, 1.0));
     // Godot's foliage.gdshader tint.
     let pine_tint = stage.vegetation.pine_tint();
-    let crown_mat = scene.add_material(m([0.62 * pine_tint[0], 0.66 * pine_tint[1], 0.55 * pine_tint[2]], crown, ALPHA_TEST | TWO_SIDED, 1.0));
+    // SIDEWAYS_TREE_CROWN=opaque: the same needles as real geometry, shaded
+    // as needles but never alpha tested (tree_assets::Crown).
+    let tree_crown = crate::tree_assets::configured_crown()?;
+    let crown_flags = match tree_crown {
+        crate::tree_assets::Crown::Cards => ALPHA_TEST | TWO_SIDED,
+        crate::tree_assets::Crown::Opaque => render::scene::OPAQUE_NEEDLES | TWO_SIDED,
+    };
+    let crown_mat = scene.add_material(m([0.62 * pine_tint[0], 0.66 * pine_tint[1], 0.55 * pine_tint[2]], crown, crown_flags, 1.0));
     log.push(format!("vegetation: {:?}, growth {:.3}, phenotype seed {}, stage construction only; evergreen pine / grass tint and stature", stage.vegetation.season, stage.vegetation.growth(), stage.vegetation.seed));
     let barrier_mat = scene.add_material(m([0.55, 0.56, 0.57], -1, 0, 1.0));
     log.push(format!("textures and sky: {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
@@ -619,12 +626,12 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     // Three shared evergreen archetypes, used unchanged by every distance LOD.
     let t = std::time::Instant::now();
     let tree_fullness = crate::tree_assets::configured_fullness()?;
-    log.push(format!("tree crown source: fullness={tree_fullness:.3}, stem-anchored frond expansion; shared near/far source, unchanged tree counts, wood/colliders, triangle counts and alpha"));
+    log.push(format!("tree crown source: fullness={tree_fullness:.3}, stem-anchored frond expansion, crown={}; shared near/far source, unchanged tree counts and wood/colliders", tree_crown.label()));
     let mut tree_meshes = Vec::new();
     let mut tree_source_archetypes = Vec::new();
     for archetype in sideways::vegetation::TreeArchetype::ALL {
-        let surfaces = crate::tree_assets::load_with_fullness(&r, archetype, tree_fullness)?;
-        let crown_fronds = crate::tree_assets::crown_frond_count(&surfaces)?;
+        let crown_fronds = crate::tree_assets::crown_frond_count(&crate::tree_assets::load_with_fullness(&r, archetype, tree_fullness)?)?;
+        let surfaces = crate::tree_assets::load_with_crown(&r, archetype, tree_fullness, tree_crown)?;
         let crown_triangles: usize = surfaces.iter().filter(|(name, _, _)|
             !name.contains("trunk") && !name.contains("bark")).map(|(_, _, i)| i.len()/3).sum();
         let source_triangles: usize = surfaces.iter().map(|(_, _, i)| i.len()/3).sum();
@@ -646,7 +653,7 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
             })
             .collect();
         let p: Vec<Part> = parts.iter().map(|(v, i, m)| Part { vertices: v, indices: i, material: *m }).collect();
-        let cm = ClusterMesh::build_with_policy(&p, |part| if part.material == crown_mat {
+        let cm = ClusterMesh::build_with_policy(&p, |part| if part.material == crown_mat && tree_crown == crate::tree_assets::Crown::Cards {
             render::cluster::SimplificationPolicy::AlphaCards
         } else {
             render::cluster::SimplificationPolicy::TexturedGeometry
@@ -657,6 +664,7 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     }
     let tree_source = serde_json::json!({"fullness":tree_fullness,
         "recipe":"stem_anchored_frond_expansion_v1","source_archetypes":tree_source_archetypes,
+        "crown":tree_crown.label(),
         "shared_near_far":true,"alpha_modified":false,"wood_modified_by_fullness":false});
     let mut trees = 0;
     let mut families = [0usize; 3]; let mut juveniles = 0usize;

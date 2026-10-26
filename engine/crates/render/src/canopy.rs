@@ -13,7 +13,7 @@
 //! source leaves' vertical envelope. It preserves integrated proxy mass, not
 //! directional gaps/mean transmission. Opt-in pending matched GPU acceptance;
 //! scratch adds 18 MiB per view and sampling uses eight loads per active level.
-use crate::{scene::{GpuInstance, Scene, FOLIAGE, ALPHA_TEST, THIN_FOLIAGE, GRASS}, Gpu};
+use crate::{scene::{GpuInstance, Scene, FOLIAGE, ALPHA_TEST, THIN_FOLIAGE, OPAQUE_NEEDLES, GRASS}, Gpu};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use std::sync::{Arc, Mutex};
@@ -155,7 +155,7 @@ impl SourceCrowns {
                 for c in scene.clusters.get(start..end).unwrap_or_default() {
                     if c.own_error != 0.0 { continue; }
                     let Some(m) = scene.materials.get(c.material as usize) else { continue; };
-                    if m.flags & (ALPHA_TEST | THIN_FOLIAGE) == 0 || m.flags & GRASS != 0 { continue; }
+                    if m.flags & (ALPHA_TEST | THIN_FOLIAGE | OPAQUE_NEEDLES) == 0 || m.flags & GRASS != 0 { continue; }
                     for ti in c.first_tri..c.first_tri.saturating_add(c.tri_count) {
                         let Some(&tri) = scene.tris.get(ti as usize) else { continue; };
                         for corner in 0..3 {

@@ -19,7 +19,9 @@
   `623212ffeb4efbf4c95323a4a6a57e726be4f6e9`. Changes: local textures capped at
   1024 pixels; node transforms baked; foliage isolated; three fixed crown
   rotations/radial fits to Sideways tree dimensions; normals transformed and
-  UV-aligned tangents generated. No endorsement by the author is implied.
+  UV-aligned tangents generated; `assets/meshes/pine_twig_part.kmesh` is the
+  foliage texture's alpha silhouette traced into triangles (tools/twig_part.py).
+  No endorsement by the author is implied.
   Retained trunks/dead branches remain **Poly Haven fir_tree_01 (CC0)** and keep
   the existing Poly Haven credit. Exact inputs and reproduction instructions:
   `tools/pine_crown_data/manifest.json` and `README.md`.

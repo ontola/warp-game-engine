@@ -132,6 +132,135 @@ fn expand_fronds(vertices: &mut [Vertex], indices: &[u32], fullness: f32) -> Res
     Ok(())
 }
 
+/// How crown needles are represented. `Cards` is the retained source: 136
+/// alpha-tested fronds of eight triangles. `Opaque` puts one copy of the
+/// opaque twig part (the needle texture's alpha silhouette as triangles,
+/// `assets/meshes/pine_twig_part.kmesh`, baked by tools/twig_part.py) on every
+/// frond card instead: no alpha test, about 240 times the crown triangles.
+/// An experiment to measure cards against geometry, not a promoted default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Crown {
+    Cards,
+    Opaque,
+}
+
+impl Crown {
+    pub fn label(self) -> &'static str {
+        match self {
+            Crown::Cards => "cards",
+            Crown::Opaque => "opaque",
+        }
+    }
+}
+
+pub fn configured_crown() -> Result<Crown, String> {
+    match std::env::var("SIDEWAYS_TREE_CROWN").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("") | Ok("cards") => Ok(Crown::Cards),
+        Ok("opaque") => Ok(Crown::Opaque),
+        _ => Err("SIDEWAYS_TREE_CROWN must be cards or opaque".into()),
+    }
+}
+
+pub fn load_twig_part(root: &Path) -> Result<(Vec<Vertex>, Vec<u32>), String> {
+    let path = root.join("assets/meshes/pine_twig_part.kmesh");
+    let mut surfaces =
+        read_kmesh(&std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)?;
+    if surfaces.len() != 1 {
+        return Err(format!("{}: expected one twig surface", path.display()));
+    }
+    let (_, vertices, indices) = surfaces.pop().unwrap();
+    if indices.is_empty()
+        || indices.len() % 3 != 0
+        || indices.iter().any(|&i| i as usize >= vertices.len())
+        || vertices
+            .iter()
+            .any(|v| v.uv.iter().any(|x| !x.is_finite() || !(-0.01..=1.01).contains(x)))
+    {
+        return Err(format!("{}: invalid twig part", path.display()));
+    }
+    Ok((vertices, indices))
+}
+
+/// A point of the frond's texture square on its bent card: barycentric
+/// weights in the card triangle that contains `uv`, or, outside the card's UV
+/// footprint, the plane of the nearest one extended.
+fn card_weights(card: &[[Vertex; 3]], uv: glam::Vec2) -> (usize, [f32; 3]) {
+    let mut best = (0usize, [1.0f32, 0.0, 0.0], f32::NEG_INFINITY);
+    for (k, t) in card.iter().enumerate() {
+        let [a, b, c] = t.map(|v| glam::Vec2::from(v.uv));
+        let area = (b - a).perp_dot(c - a);
+        if area.abs() < 1e-12 {
+            continue;
+        }
+        let w1 = (uv - a).perp_dot(c - a) / area;
+        let w2 = (b - a).perp_dot(uv - a) / area;
+        let w = [1.0 - w1 - w2, w1, w2];
+        let inside = w.iter().copied().fold(f32::INFINITY, f32::min);
+        if inside > best.2 {
+            best = (k, w, inside);
+        }
+    }
+    (best.0, best.1)
+}
+
+/// Replace every alpha-tested frond card with the opaque twig part mapped
+/// onto it. Positions and normals follow the card (barycentric in UV space),
+/// UVs stay the part's own, so albedo comes from the same texture. Each
+/// mapped triangle is wound to face along its interpolated normal.
+pub fn opaque_fronds(
+    vertices: &[Vertex],
+    indices: &[u32],
+    part: &(Vec<Vertex>, Vec<u32>),
+) -> Result<(Vec<Vertex>, Vec<u32>), String> {
+    let groups = fronds(vertices, indices)?;
+    let mut frond_of = vec![usize::MAX; vertices.len()];
+    for (k, g) in groups.iter().enumerate() {
+        for &v in &g.vertices {
+            frond_of[v] = k;
+        }
+    }
+    let mut cards = vec![Vec::<[Vertex; 3]>::new(); groups.len()];
+    for t in indices.chunks_exact(3) {
+        cards[frond_of[t[0] as usize]].push([0, 1, 2].map(|k| vertices[t[k] as usize]));
+    }
+    let (part_vertices, part_indices) = part;
+    let mut out_vertices = Vec::with_capacity(groups.len() * part_vertices.len());
+    let mut out_indices = Vec::with_capacity(groups.len() * part_indices.len());
+    for card in &cards {
+        let base = out_vertices.len() as u32;
+        for pv in part_vertices {
+            let (k, w) = card_weights(card, glam::Vec2::from(pv.uv));
+            let t = &card[k];
+            let pos: Vec3 = (0..3).map(|i| Vec3::from(t[i].pos) * w[i]).sum();
+            let mut normal: Vec3 = (0..3).map(|i| Vec3::from(t[i].normal) * w[i]).sum();
+            if normal.length_squared() < 1e-12 {
+                normal = (Vec3::from(t[1].pos) - Vec3::from(t[0].pos))
+                    .cross(Vec3::from(t[2].pos) - Vec3::from(t[0].pos));
+            }
+            out_vertices.push(Vertex {
+                pos: pos.to_array(),
+                normal: normal.normalize_or(Vec3::Y).to_array(),
+                uv: pv.uv,
+            });
+        }
+        out_indices.extend(part_indices.iter().map(|i| base + i));
+    }
+    orient_to_normals(&out_vertices, &mut out_indices);
+    Ok((out_vertices, out_indices))
+}
+
+/// Wind each triangle to face along the sum of its vertex normals. Run again
+/// after any warp that moves positions and normals differently (the taper).
+fn orient_to_normals(vertices: &[Vertex], indices: &mut [u32]) {
+    for t in indices.chunks_exact_mut(3) {
+        let p = [t[0], t[1], t[2]].map(|i| Vec3::from(vertices[i as usize].pos));
+        let n: Vec3 = t.iter().map(|&i| Vec3::from(vertices[i as usize].normal)).sum();
+        if (p[1] - p[0]).cross(p[2] - p[0]).dot(n) < 0.0 {
+            t.swap(1, 2);
+        }
+    }
+}
+
 pub fn crown_frond_count(surfaces: &Surfaces) -> Result<usize, String> {
     surfaces
         .iter()
@@ -161,6 +290,8 @@ pub fn scale_from_units(width_unit: f32, height_unit: f32, phenotype: TreePhenot
     )
 }
 
+/// Card crowns for the volume/voxel experiments; the live scene
+/// (visuals.rs) honours SIDEWAYS_TREE_CROWN through load_with_crown.
 pub fn load(root: &Path, archetype: TreeArchetype) -> Result<Surfaces, String> {
     load_with_fullness(root, archetype, configured_fullness()?)
 }
@@ -170,7 +301,20 @@ pub fn load_with_fullness(
     archetype: TreeArchetype,
     fullness: f32,
 ) -> Result<Surfaces, String> {
+    load_with_crown(root, archetype, fullness, Crown::Cards)
+}
+
+pub fn load_with_crown(
+    root: &Path,
+    archetype: TreeArchetype,
+    fullness: f32,
+    crown: Crown,
+) -> Result<Surfaces, String> {
     validate_fullness(fullness)?;
+    let twig = match crown {
+        Crown::Cards => None,
+        Crown::Opaque => Some(load_twig_part(root)?),
+    };
     let variant = ["a", "b", "c"][archetype.index()];
     let path = root.join(format!("assets/meshes/fir_{variant}_near.kmesh"));
     let mut surfaces =
@@ -193,14 +337,24 @@ pub fn load_with_fullness(
         }
         if is_crown(name) {
             expand_fronds(vertices, indices, fullness)?;
+            // Before the taper below, which then bends wood, cards and
+            // twigs alike.
+            if let Some(part) = &twig {
+                let (v, i) = opaque_fronds(vertices, indices, part)?;
+                *vertices = v;
+                *indices = i;
+            }
         }
     }
     // One coherent warp for wood and leaves preserves their attachment. The
     // lower trunk stays exactly as authored, including its physical radius.
     if archetype == TreeArchetype::Conifer {
-        for (_, vertices, _) in &mut surfaces {
-            for v in vertices {
+        for (name, vertices, indices) in &mut surfaces {
+            for v in vertices.iter_mut() {
                 taper(v, taper_height);
+            }
+            if twig.is_some() && is_crown(name) {
+                orient_to_normals(vertices, indices);
             }
         }
     }
@@ -751,6 +905,101 @@ mod tests {
             }
         }
         mask
+    }
+
+    #[test]
+    fn opaque_crown_places_one_twig_per_frond_on_its_card() {
+        let root = sideways::game_assets::root();
+        let part = load_twig_part(&root).unwrap();
+        for archetype in TreeArchetype::ALL {
+            let cards = load_with_crown(&root, archetype, 1.0, Crown::Cards).unwrap();
+            let opaque = load_with_crown(&root, archetype, 1.0, Crown::Opaque).unwrap();
+            assert_eq!(cards.len(), opaque.len());
+            for ((name, cv, ci), (oname, ov, oi)) in cards.iter().zip(&opaque) {
+                assert_eq!(name, oname);
+                if !is_crown(name) {
+                    assert_eq!((cv.len(), ci.len()), (ov.len(), oi.len()), "wood is untouched");
+                    continue;
+                }
+                let fronds = fronds(cv, ci).unwrap().len();
+                assert_eq!(fronds, 136);
+                assert_eq!(oi.len(), fronds * part.1.len());
+                assert_eq!(ov.len(), fronds * part.0.len());
+                assert!(ov.iter().all(|v| v.pos.iter().chain(&v.normal).all(|x| x.is_finite())));
+                // Every twig vertex stays near its card: extrapolation past
+                // the card's UV footprint is bounded.
+                let (lo, hi) = cv.iter().fold((Vec3::INFINITY, Vec3::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(Vec3::from(v.pos)), hi.max(Vec3::from(v.pos)))
+                });
+                let margin = (hi - lo).max_element() * 0.05;
+                assert!(ov.iter().all(|v| {
+                    let p = Vec3::from(v.pos);
+                    p.cmpge(lo - margin).all() && p.cmple(hi + margin).all()
+                }));
+                // Triangles face along their shading normals.
+                let flipped = oi.chunks_exact(3).filter(|t| {
+                    let p = [t[0], t[1], t[2]].map(|i| Vec3::from(ov[i as usize].pos));
+                    let n: Vec3 = t.iter().map(|&i| Vec3::from(ov[i as usize].normal)).sum();
+                    let g = (p[1] - p[0]).cross(p[2] - p[0]);
+                    g.dot(n) < -1e-3 * g.length() * n.length()
+                }).count();
+                eprintln!("{} {name}: {flipped} of {} twig triangles face against their normals", archetype.label(), oi.len() / 3);
+                assert_eq!(flipped, 0);
+            }
+        }
+        assert!(matches!(configured_crown(), Ok(Crown::Cards) | Ok(Crown::Opaque)));
+    }
+
+    /// The opaque crown must cover what the alpha-tested crown covers, seen
+    /// from around the tree: CPU orthographic masks of the finest source.
+    #[test]
+    fn opaque_crown_silhouette_matches_alpha_tested_cards() {
+        let root = sideways::game_assets::root();
+        let texture = image::open(root.join("assets/trees/authored_pine_albedo.png"))
+            .unwrap()
+            .to_rgba8();
+        let solid = image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]));
+        let size = 384usize;
+        for archetype in TreeArchetype::ALL {
+            let cards = load_with_crown(&root, archetype, 1.0, Crown::Cards).unwrap();
+            let opaque = load_with_crown(&root, archetype, 1.0, Crown::Opaque).unwrap();
+            let mut rows = Vec::new();
+            let mut worst = (1.0f64, f64::INFINITY, 0.0f64);
+            for elevation in [0.0f32, 30.0] {
+                for angle in 0..8 {
+                    let yaw = angle as f32 * std::f32::consts::TAU / 8.0;
+                    let pitch = elevation.to_radians();
+                    let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+                    let direction =
+                        Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
+                    let up = direction.cross(right);
+                    let a = projected_crown(&cards, right, up);
+                    let b = projected_crown(&opaque, right, up);
+                    let points: Vec<_> = a.iter().flat_map(|(p, _)| p.iter().copied()).collect();
+                    let lo = points.iter().copied().fold(glam::Vec2::splat(f32::INFINITY), glam::Vec2::min);
+                    let hi = points.iter().copied().fold(glam::Vec2::splat(f32::NEG_INFINITY), glam::Vec2::max);
+                    let centre = (lo + hi) * 0.5;
+                    let extent = (hi - lo).max_element();
+                    let alpha = crown_mask(&a, &texture, centre, extent, size);
+                    let geometry = crown_mask(&b, &solid, centre, extent, size);
+                    let both = alpha.iter().zip(&geometry).filter(|(a, b)| **a && **b).count();
+                    let either = alpha.iter().zip(&geometry).filter(|(a, b)| **a || **b).count();
+                    let ratio = geometry.iter().filter(|x| **x).count() as f64
+                        / alpha.iter().filter(|x| **x).count() as f64;
+                    let iou = both as f64 / either as f64;
+                    rows.push(serde_json::json!({"azimuth_degrees":angle*45,"elevation_degrees":elevation,"iou":iou,"coverage_ratio":ratio}));
+                    worst = (worst.0.min(iou), worst.1.min(ratio), worst.2.max(ratio));
+                }
+            }
+            eprintln!("opaque crown silhouette: {}", serde_json::json!({"archetype":archetype.label(),
+                "scope":"CPU finest-source orthographic coverage, opaque twig geometry vs alpha-tested cards at cutoff 0.42; not GPU/LOD/lighting parity",
+                "mask_size":size,"views":rows}));
+            eprintln!("{}: worst IoU {:.3}, coverage {:.3}..{:.3}", archetype.label(), worst.0, worst.1, worst.2);
+            // Needles are sub-pixel at this mask scale, so per-pixel overlap of
+            // two thin-structure masks is pessimistic; total coverage is what
+            // a distant viewer sees. Measured: IoU >= 0.81, coverage 0.96-0.98.
+            assert!(worst.0 > 0.8 && worst.1 > 0.94 && worst.2 < 1.06, "{}: {worst:?}", archetype.label());
+        }
     }
 
     #[test]

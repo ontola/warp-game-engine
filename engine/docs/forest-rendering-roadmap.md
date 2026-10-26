@@ -1,5 +1,12 @@
 # Bosrendering in Warp
 
+Actuele aanvulling, **26 oktober 2026, r51**:
+[ondoorzichtige naaldkronen en de afstand tot Nanite Foliage](opaque-crowns-r51.md).
+De naaldkaarten kunnen worden vervangen door echte geometrie: één gebakken
+takonderdeel (1.937 triangles) per frond, zonder alpha test, achter
+`SIDEWAYS_TREE_CROWN=opaque`. CPU-silhouet en lavapipe-beeld komen overeen met
+de kaarten; GPU-kosten zijn nog niet gemeten. Standaard blijft `cards`.
+
 Actuele aanvulling, **26 oktober 2026, r49**:
 [LOD-optiek en vraaggestuurde schaduwen](lod-shadow-demand-r49.md).
 De kleine schaduwproef behoudt gevraagde dieptetexels en eindbeelden exact bij

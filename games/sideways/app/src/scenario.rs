@@ -174,6 +174,17 @@ fn camera(value:&Value)->Result<Camera,String>{let t=table(value,"camera")?;keys
         assert_eq!(s.capture_path(2).unwrap(),Path::new("scenarios/out/frame-000002.jpg"));assert!(s.capture_path(1).is_none());
         assert!(s.arguments(&["--views".into(),"1".into()]).is_err());
     }
+    #[test] fn shipped_scenarios_parse() {
+        let dir=sideways::game_assets::root().join("scenarios");
+        let mut n=0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path=entry.unwrap().path();
+            if path.extension().and_then(|e|e.to_str())!=Some("toml") {continue;}
+            Scenario::load(&path).unwrap_or_else(|e|panic!("{}: {e}",path.display()));
+            n+=1;
+        }
+        assert!(n>=5);
+    }
     #[test] fn initial_fast_forward_uses_exact_unchanged_race_ticks() {
         use sideways::{race::{Race,Settings},spec::Cars};
         let settings=Settings {stage_km:0.05,rivals:0,..Default::default()};
