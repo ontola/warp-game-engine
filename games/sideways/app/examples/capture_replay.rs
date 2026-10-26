@@ -2,6 +2,7 @@
 //! Diagnostic views omit cars and HUD; they are not gameplay/performance claims.
 //! `--cpu-only` checks stage/camera and captured controls without creating a GPU.
 //! `--no-meadow` explicitly overrides restored controls to isolate the ground.
+//! Repeat `--pick x,y` to replace legacy probes with explicit native-output pixels.
 #![allow(dead_code)]
 #[path="../src/car_look.rs"] mod car_look;
 #[path="../src/car_model.rs"] mod car_model;
@@ -151,6 +152,51 @@ fn sun_focus_point(text:&str)->Result<Vec3,String> {
         return Err("--sun-focus needs three finite comma-separated coordinates".into());
     }
     Ok(Vec3::new(values[0],values[1],values[2]))
+}
+
+const MAX_REQUESTED_PICKS:usize=64;
+
+fn push_requested_pick(picks:&mut Vec<(u32,u32)>,text:&str)->Result<(),String> {
+    if picks.len()>=MAX_REQUESTED_PICKS {return Err(format!("--pick supports at most {MAX_REQUESTED_PICKS} entries"));}
+    let parts=text.split(',').map(str::trim).collect::<Vec<_>>();
+    if parts.len()!=2 || parts.iter().any(|s|s.is_empty()||!s.bytes().all(|b|b.is_ascii_digit())) {
+        return Err("--pick needs two nonnegative integer pixel coordinates: x,y".into());
+    }
+    let x=parts[0].parse::<u32>().map_err(|_|"--pick x exceeds u32")?;
+    let y=parts[1].parse::<u32>().map_err(|_|"--pick y exceeds u32")?;
+    picks.push((x,y));Ok(())
+}
+
+fn replay_size(capture:&Value)->Result<[u32;2],String> {
+    let source_w=number(&capture["capture"]["size"][0])?;
+    let source_h=number(&capture["capture"]["size"][1])?;
+    if source_w<=0.0 || source_h<=0.0 {return Err("invalid captured image size".into());}
+    let width=1920u32;let height=(width as f32*source_h/source_w).round()as u32;
+    if !(64..=4096).contains(&height){return Err("invalid replay aspect ratio".into());}
+    Ok([width,height])
+}
+
+fn replay_picks(requested:&[(u32,u32)],size:[u32;2])->Result<Vec<(u32,u32)>,String> {
+    let [width,height]=size;
+    if requested.len()>MAX_REQUESTED_PICKS {return Err(format!("--pick supports at most {MAX_REQUESTED_PICKS} entries"));}
+    for &(x,y) in requested {
+        if x>=width || y>=height {
+            return Err(format!("--pick {x},{y} is outside native replay output {width}x{height}; coordinates are zero-based, not original F12 pixels"));
+        }
+    }
+    if !requested.is_empty(){return Ok(requested.to_vec());}
+    // Preserve the historical implicit probes only when no explicit picks
+    // were requested. New investigations use --pick, never another hardcoded row.
+    let mut picks:Vec<_>=[(0.12,0.25),(0.25,0.25),(0.38,0.25),(0.5,0.25),(0.65,0.25),(0.8,0.25),
+        (0.25,0.4),(0.5,0.4),(0.75,0.4)].into_iter().map(|(x,y)|((x*width as f32)as u32,(y*height as f32)as u32)).collect();
+    for y in [0.13,0.15,0.17,0.19,0.21,0.23] {
+        for x in [0.12,0.2,0.28,0.36,0.44,0.52,0.6,0.68,0.76,0.84] {
+            picks.push(((x*width as f32)as u32,(y*height as f32)as u32));
+        }
+    }
+    picks.extend([(1300.0,795.0),(1500.0,820.0),(2100.0,870.0),(1285.0,1427.0),(1285.0,1415.0)].map(|(x,y)|
+        ((x/3840.0*width as f32)as u32,(y/2160.0*height as f32)as u32)));
+    Ok(picks)
 }
 
 fn approach_distances(text:&str)->Result<Vec<f32>,String> {
@@ -484,10 +530,12 @@ fn context(capture:&Value)->Result<(sideways::stage::Stage,Camera,Lighting,rende
     Ok((stage,camera,light,wind,sky))
 }
 
-fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[String],yaw_degrees:f32,shadow_probe:bool,approach:Option<&[f32]>,world_terrain_probe:bool,sun_focus:Option<Vec3>,paged_foliage_probe:bool,no_meadow:bool)->Result<(),String> {
+fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[String],yaw_degrees:f32,shadow_probe:bool,approach:Option<&[f32]>,world_terrain_probe:bool,sun_focus:Option<Vec3>,paged_foliage_probe:bool,no_meadow:bool,requested_picks:&[(u32,u32)])->Result<(),String> {
     validate_probes(shadow_probe,world_terrain_probe,paged_foliage_probe)?;
     let paged_foliage_enabled=std::env::var("KERN_PAGED_FOLIAGE_SUN").as_deref()==Ok("1");
     let capture:Value=serde_json::from_slice(&std::fs::read(capture_path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    let [width,height]=replay_size(&capture)?;
+    let picks=replay_picks(requested_picks,[width,height])?;
     let (stage,mut camera,mut light,wind,sky)=context(&capture)?;
     let movement_axis=if approach.is_some(){approach_axis(&camera)?}else{Vec3::ZERO};
     if !yaw_degrees.is_finite(){return Err("nonfinite camera yaw override".into());}
@@ -504,7 +552,8 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
     if cpu_only {println!("stage/camera/sky verified: noise={}, detail={}, camera={:?}, procedural={}, exposure={}, fog={:?}",
         stage.noise_seed,stage.detail_seed,camera.pos,sky.is_some(),light.ev100,[light.fog_start,light.fog_end,light.fog_density]);
         println!("captured controls validated: {:?}, applied trees={:?}, local lights={}, historical fields={:?}; source construction not checked in --cpu-only",
-            effective_options,controls.trees,local_lights.len(),controls.historical_fields);return Ok(());}
+            effective_options,controls.trees,local_lights.len(),controls.historical_fields);
+        println!("native replay size={width}x{height}; requested picks={requested_picks:?}; effective picks={picks:?}");return Ok(());}
     if out.exists(){return Err("output directory must be fresh".into());}
     std::fs::create_dir_all(out).map_err(|e|e.to_string())?;
     let looks=car_look::Looks::load(None,vec![])?;
@@ -542,27 +591,6 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
     if let Some(point)=sun_focus {renderer.set_sun_shadow_focus(&[point])?;}
     renderer.set_wind(&gpu,&wind)?;renderer.set_animation_time(wind.time_seconds)?;
     renderer.set_frame_time_ms(1000.0/60.0);
-    let source_w=number(&capture["capture"]["size"][0])?;
-    let source_h=number(&capture["capture"]["size"][1])?;
-    let width=1920u32;let height=(width as f32*source_h/source_w).round()as u32;
-    if !(64..=4096).contains(&height){return Err("invalid replay aspect ratio".into());}
-    let mut picks:Vec<_>=[(0.12,0.25),(0.25,0.25),(0.38,0.25),(0.5,0.25),(0.65,0.25),(0.8,0.25),
-        (0.25,0.4),(0.5,0.4),(0.75,0.4)].into_iter().map(|(x,y)|((x*width as f32)as u32,(y*height as f32)as u32)).collect();
-    // F12 192948-0: actual distant crown skyline above the old quarter-height
-    // picks. Retain misses/terrain hits so the report does not cherry-pick trees.
-    for y in [0.13,0.15,0.17,0.19,0.21,0.23] {
-        for x in [0.12,0.2,0.28,0.36,0.44,0.52,0.6,0.68,0.76,0.84] {
-            picks.push(((x*width as f32)as u32,(y*height as f32)as u32));
-        }
-    }
-    // F12 102808-5: two completely black wall pixels and a textured wall
-    // control, expressed in original 3840x2160 coordinates. Picks identify
-    // the actual frontmost owner; do not assume every black pixel is the wall.
-    picks.extend([(1300.0,795.0),(1500.0,820.0),(2100.0,870.0)].map(|(x,y)|
-        ((x/3840.0*width as f32)as u32,(y/2160.0*height as f32)as u32)));
-    // Sunrise F12 134304-1: nearest trunk foot and the same trunk above it.
-    picks.extend([(1285.0,1427.0),(1285.0,1415.0)].map(|(x,y)|
-        ((x/3840.0*width as f32)as u32,(y/2160.0*height as f32)as u32)));
     if world_terrain_probe && picks.len()>100{return Err("terrain source audit exceeds bounded 100 picks per camera".into());}
     let mut rows=Vec::new();
     let mut terrain_source_queries=Vec::new();
@@ -608,6 +636,7 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
             if finished {break;}
         }
         let (pixels,stats)=renderer.try_render_views(&gpu,&views,&light,width,height,&picks)?;
+        if stats.picks.len()!=picks.len(){return Err("renderer returned a different number of picks than requested".into());}
         let filename=if approach.is_some(){format!("d{distance}-{name}.png")}else{format!("{name}.png")};
         let path=out.join(filename);render::write_png(&path,width,height,&pixels)?;
         let selection:Vec<_>=stats.picks.iter().zip(&picks).map(|(p,xy)|match p {
@@ -633,7 +662,7 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
                     "camera":{"position":moved_camera.pos.to_array(),"target":moved_camera.target.to_array()},"queries":queries}));
             }
         }
-        rows.push(json!({"name":name,"image":path,"debug":debug,"near_shadows":near,"gpu_ms":stats.gpu_ms,"warmup_gpu_ms":warmup_gpu_ms,"picks":selection,
+        let mut row=json!({"name":name,"image":path,"debug":debug,"near_shadows":near,"gpu_ms":stats.gpu_ms,"warmup_gpu_ms":warmup_gpu_ms,"picks":selection,
             "approach_m":distance,"movement_axis":movement_axis.to_array(),"movement":movement.to_array(),
             "camera":{"position":moved_camera.pos.to_array(),"target":moved_camera.target.to_array(),"fov_y":moved_camera.fov_y,"near":moved_camera.near},
             "lighting_focus":moved_focus.to_array(),
@@ -642,7 +671,20 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
                 "texel_m":stats.far_sun_texel_m,"lod_pixels":stats.far_sun_lod_pixels,"clusters":stats.far_sun_clusters,"triangles":stats.far_sun_triangles,"submitted_vertices":stats.far_sun_submitted_vertices},
             "warmup_foliage_pages":warmup_foliage_pages,"foliage_pages":foliage_page_stats(&stats),
             "world_terrain":{"enabled":stats.world_terrain_visibility,"bytes":stats.world_terrain_bytes,"setup_cpu_ms":stats.world_terrain_setup_cpu_ms},
-            "camera_sun_visibility":stats.camera_sun_visibility,"clusters":stats.clusters,"triangles":stats.triangles}));
+            "camera_sun_visibility":stats.camera_sun_visibility,"clusters":stats.clusters,"triangles":stats.triangles});
+        for (key,value) in [
+            ("shadow_triangles",json!(stats.shadow_triangles)),("shadow_clusters",json!(stats.shadow_clusters)),
+            ("near_shadow_triangles",json!(stats.near_shadow_triangles)),("near_shadow_clusters",json!(stats.near_shadow_clusters)),
+            ("shadow_submitted_vertices",json!(stats.shadow_submitted_vertices)),
+            ("shared_sun_extent_m",json!(stats.shared_sun_extent_m)),("shared_sun_texel_m",json!(stats.shared_sun_texel_m)),
+        ] {row[key]=value;}
+        row["shadow_count_scope"]=json!({
+            "shadow_triangles_and_clusters":"FrameStats total selected shadow work: shared sun (including retained static/far selections on cache hits), per-view near sun, headlight maps and foliage pages updated this frame. Not unique scene geometry or all-resident page geometry.",
+            "near_shadow_triangles_and_clusters":"Per-view near-sun subset already included in shadow totals; do not add again.",
+            "shadow_submitted_vertices":"Actual padded cluster-draw vertex submissions this frame across those shadow passes; cached shared maps contribute zero submissions on a hit. Not selected triangle count times three, shaded pixels or GPU time.",
+            "shared_sun_extent_m":"Shared sun map half extent in metres; texel size is 2*half_extent/map_resolution.",
+            "measurement":"Existing capture FrameStats only; no extra readbacks; held diagnostic frame, not steady gameplay or an isolated road-caster count."});
+        rows.push(row);
       }
     }
     let mut report=json!({"schema":3,"capture":capture_path,"stage_verified":true,"lit_only":lit_only,"shadow_probe":shadow_probe,"world_terrain_probe":world_terrain_probe,"diagnostic_light_overrides":overrides,
@@ -684,6 +726,9 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
         "constructed_trees":built.tree_source,
         "scope":"Applied tree settings only, before renderer resource build; captured grass controls and feature toggles. Pending UI and saved presets are never replay inputs. Absent historical controls use explicitly recorded authored/neutral behavior; bloom absent means off."});
     report["paged_foliage_probe"]=json!(paged_foliage_probe);
+    report["pick_request"]=json!({"requested":requested_picks,"effective":picks,"size":[width,height],
+        "mode":if requested_picks.is_empty(){"legacy_default"}else{"explicit_cli"},"maximum_explicit_picks":MAX_REQUESTED_PICKS,
+        "coordinates":"zero-based native replay output pixels; x from left, y from top. Explicit picks replace defaults and preserve request order, including duplicates; identical screen pixels are sampled at each diagnostic/approach view."});
     report["paged_foliage_probe_contract"]=json!("debug25: source-alpha blocked black, clear white, missing magenta. Resident counts current requests, not total occupied cache slots. Missing pages remain unresolved, not assumed clear");
     report["foliage_page_warmup"]=json!({"enabled":paged_foliage_enabled,"minimum_frames":3,"maximum_frames":if paged_foliage_enabled {40}else{3},
         "stop_rule":"after at least3 frames, stop when updated pages=0 or bounded40frames reached; capacity-limited missing pages may remain and are reported"});
@@ -694,18 +739,19 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
 fn main() {
     let args:Vec<_>=std::env::args().skip(1).collect();
     let result=(|| {
-        let path=args.first().ok_or("usage: capture_replay F12.json FRESH_DIR [--cpu-only] [--lit-only] [--no-meadow]")?;
+        let path=args.first().ok_or("usage: capture_replay F12.json FRESH_DIR [--cpu-only] [--lit-only] [--no-meadow] [--pick x,y ...]")?;
         let out=args.get(1).ok_or("missing fresh output directory")?;
-        let mut settings=Vec::new();let mut yaw=0.0f32;let mut approach=None;let mut sun_focus=None;let mut i=2;
+        let mut settings=Vec::new();let mut yaw=0.0f32;let mut approach=None;let mut sun_focus=None;let mut requested_picks=Vec::new();let mut i=2;
         while i<args.len() {match args[i].as_str() {
             "--cpu-only"|"--lit-only"|"--shadow-probe"|"--world-terrain-probe"|"--paged-foliage-probe"|"--no-meadow"=>{},
             "--yaw-deg"=>{i+=1;yaw=args.get(i).ok_or("--yaw-deg needs an angle")?.parse().map_err(|_|"invalid yaw angle")?;},
             "--set"=>{i+=1;settings.push(args.get(i).ok_or("--set needs key=value")?.clone());},
             "--approach-m"=>{if approach.is_some(){return Err("--approach-m may only be supplied once".into());}i+=1;approach=Some(approach_distances(args.get(i).ok_or("--approach-m needs comma-separated metres")?)?);},
             "--sun-focus"=>{if sun_focus.is_some(){return Err("--sun-focus may only be supplied once".into());}i+=1;sun_focus=Some(sun_focus_point(args.get(i).ok_or("--sun-focus needs x,y,z")?)?);},
+            "--pick"=>{i+=1;push_requested_pick(&mut requested_picks,args.get(i).ok_or("--pick needs x,y")?)?;},
             _=>return Err("unknown replay arguments".into()),
         }i+=1;}
-        run(&PathBuf::from(path),&PathBuf::from(out),args.iter().any(|s|s=="--cpu-only"),args.iter().any(|s|s=="--lit-only"),&settings,yaw,args.iter().any(|s|s=="--shadow-probe"),approach.as_deref(),args.iter().any(|s|s=="--world-terrain-probe"),sun_focus,args.iter().any(|s|s=="--paged-foliage-probe"),args.iter().any(|s|s=="--no-meadow"))
+        run(&PathBuf::from(path),&PathBuf::from(out),args.iter().any(|s|s=="--cpu-only"),args.iter().any(|s|s=="--lit-only"),&settings,yaw,args.iter().any(|s|s=="--shadow-probe"),approach.as_deref(),args.iter().any(|s|s=="--world-terrain-probe"),sun_focus,args.iter().any(|s|s=="--paged-foliage-probe"),args.iter().any(|s|s=="--no-meadow"),&requested_picks)
     })();
     if let Err(e)=result {eprintln!("capture replay: {e}");std::process::exit(1);}
 }
@@ -713,6 +759,39 @@ fn main() {
 #[cfg(test)]
 mod replay_tests {
     use super::*;
+    #[test]
+    fn explicit_pick_arguments_preserve_order_duplicates_and_fail_without_mutation() {
+        let mut picks=Vec::new();
+        for text in ["850,430"," 852 , 431 ","850,430"] {push_requested_pick(&mut picks,text).unwrap();}
+        assert_eq!(picks,[(850,430),(852,431),(850,430)]);
+        for text in ["","850","850,430,1","-1,430","850,-1","850.0,430","NaN,1","1e2,430","+1,2","4294967296,0","0,"] {
+            let original=picks.clone();assert!(push_requested_pick(&mut picks,text).is_err(),"{text}");assert_eq!(picks,original);
+        }
+        while picks.len()<MAX_REQUESTED_PICKS {push_requested_pick(&mut picks,"0,0").unwrap();}
+        let original=picks.clone();assert!(push_requested_pick(&mut picks,"0,0").is_err());assert_eq!(picks,original);
+    }
+    #[test]
+    fn explicit_picks_replace_defaults_and_validate_native_coordinates_before_render() {
+        let capture=json!({"capture":{"size":[3840,2160]}});
+        let size=replay_size(&capture).unwrap();assert_eq!(size,[1920,1080]);
+        let requested=[(850,430),(0,0),(1919,1079),(850,430)];
+        assert_eq!(replay_picks(&requested,size).unwrap(),requested);
+        for bad in [(1920,0),(0,1080),(1700,1200),(u32::MAX,0)] {
+            assert!(replay_picks(&[bad],size).is_err(),"{bad:?}");
+        }
+        assert!(replay_picks(&vec![(0,0);MAX_REQUESTED_PICKS+1],size).is_err());
+        let tall=replay_size(&json!({"capture":{"size":[1920,1200]}})).unwrap();
+        assert!(replay_picks(&[(100,1199)],tall).is_ok());
+        assert!(replay_size(&json!({"capture":{"size":[0,2160]}})).is_err());
+    }
+    #[test]
+    fn absent_explicit_picks_keep_existing_legacy_probe_sequence() {
+        let picks=replay_picks(&[],[1920,1080]).unwrap();
+        assert_eq!(picks.len(),74);
+        assert_eq!(picks[0],(230,270));
+        assert_eq!(&picks[69..],&[(650,397),(750,410),(1050,435),(642,713),(642,707)]);
+        assert!(picks.iter().all(|&(x,y)|x<1920&&y<1080));
+    }
     fn control_capture()->Value {
         json!({"render":{"engine_debug":{
             "meadow":true,"headlights":false,"transparency":false,"exhaust":true,"wheel_particles":false,

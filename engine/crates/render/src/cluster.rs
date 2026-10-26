@@ -147,6 +147,141 @@ fn projected_triangle_area(vertices: &[Vertex], indices: &[u32]) -> f32 {
     }).sum()
 }
 
+#[cfg(test)]
+mod constraint_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    const SIDE: usize = 33;
+
+    fn folded_grid() -> (Vec<Vertex>, Vec<u32>) {
+        let vertices = (0..SIDE).flat_map(|z| (0..SIDE).map(move |x| {
+            let (x, z) = (x as f32, z as f32);
+            Vertex {
+                pos: [x * 2.0, 0.3 * (z * 0.41).sin() + 0.12 * (x * 0.37 + z * 0.19).cos(), z * 2.0],
+                normal: [0.0, 1.0, 0.0],
+                uv: [(x * 2.0 - 32.0).abs() - 5.0, 1.5],
+            }
+        })).collect();
+        let indices = (0..SIDE - 1).flat_map(|z| (0..SIDE - 1).flat_map(move |x| {
+            let a = (z * SIDE + x) as u32;
+            let row = SIDE as u32;
+            [a, a + row, a + 1, a + 1, a + row, a + row + 1]
+        })).collect();
+        (vertices, indices)
+    }
+
+    fn key(triangle: [u32; 3]) -> [u32; 3] {
+        let first = (0..3).min_by_key(|&i| triangle[i]).unwrap();
+        [triangle[first], triangle[(first + 1) % 3], triangle[(first + 2) % 3]]
+    }
+
+    fn selected_triangles(mesh: &ClusterMesh, keep: impl Fn(&GpuCluster) -> bool) -> HashMap<[u32; 3], usize> {
+        let mut result = HashMap::new();
+        for cluster in mesh.clusters.iter().filter(|c| keep(c)) {
+            for packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri + cluster.tri_count) as usize] {
+                let tri = std::array::from_fn(|k| mesh.cluster_verts[cluster.first_vert as usize + ((packed >> (8 * k)) & 255) as usize]);
+                *result.entry(key(tri)).or_insert(0) += 1;
+            }
+        }
+        result
+    }
+
+    fn assert_retained(mesh: &ClusterMesh, protected: &[[u32; 3]]) {
+        assert!(!protected.is_empty());
+        let check = |triangles: HashMap<[u32; 3], usize>| {
+            for &triangle in protected {
+                assert_eq!(triangles.get(&key(triangle)), Some(&1),
+                    "constrained source triangle must survive exactly once, with its winding: {triangle:?}");
+            }
+        };
+        let mut events: Vec<_> = mesh.clusters.iter().flat_map(|c| [c.own_error, c.parent_error])
+            .filter(|e| *e > 0.0 && *e < 1e30).collect();
+        events.sort_by(f32::total_cmp);
+        events.dedup();
+        let mut thresholds = vec![0.0, 1e29];
+        for (i, &event) in events.iter().enumerate() {
+            thresholds.push(event);
+            let previous = if i == 0 { 0.0 } else { events[i - 1] };
+            thresholds.push((previous + event) * 0.5);
+        }
+        for threshold in thresholds {
+            check(selected_triangles(mesh, |c| c.own_error <= threshold && c.parent_error > threshold));
+        }
+        // Different groups can change levels in the same camera cut. Check
+        // those mixed cuts too, using the production perspective error test.
+        let centre = glam::Vec3::from_slice(&mesh.sphere[..3]);
+        for camera in [centre + glam::Vec3::new(1.0, 10.0, 9.0),
+            centre + glam::Vec3::new(70.0, 20.0, 100.0),
+            centre + glam::Vec3::new(-400.0, 180.0, 200.0)] {
+            for height in [1080.0f32, 2160.0] {
+                let scale = height / (2.0 * 32f32.to_radians().tan());
+                let projected = |error: f32, sphere: [f32; 4]| {
+                    if error > 1e30 { 1e30 } else {
+                        error * scale / (glam::Vec3::from_slice(&sphere[..3]).distance(camera) - sphere[3]).max(0.1)
+                    }
+                };
+                check(selected_triangles(mesh, |c| projected(c.own_error, c.own) <= 1.0
+                    && projected(c.parent_error, c.parent) > 1.0));
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_vertex_constraints_keep_a_nonplanar_strip_through_every_cut() {
+        let (vertices, indices) = folded_grid();
+        let lock = |index: usize| (14..=18).contains(&(index % SIDE));
+        let parts = [Part { vertices: &vertices, indices: &indices, material: 7 }];
+        let mesh = ClusterMesh::build_with_constraints(&parts, |_| SimplificationPolicy::Geometry, |_, i| lock(i));
+        let protected: Vec<_> = indices.chunks_exact(3).filter(|tri| tri.iter().all(|i| lock(*i as usize)))
+            .map(|tri| [tri[0], tri[1], tri[2]]).collect();
+        assert_eq!(protected.len(), 256);
+        assert!(vertices[SIDE * 4 + 16].pos[1] - vertices[SIDE * 12 + 16].pos[1] > 0.3,
+            "fixture must have real noncoplanar relief");
+        assert_eq!(bytemuck::cast_slice::<Vertex, u8>(&mesh.vertices), bytemuck::cast_slice::<Vertex, u8>(&vertices));
+        assert_retained(&mesh, &protected);
+        assert!(mesh.root_triangles() < indices.len() / 3, "unlocked surface must still simplify");
+        assert!(mesh.levels > 1);
+    }
+
+    #[test]
+    fn explicit_vertex_constraints_add_to_terrain_locks_and_use_part_local_indices() {
+        let (vertices, indices) = folded_grid();
+        let parts = [Part { vertices: &vertices, indices: &indices, material: 3 },
+            Part { vertices: &vertices, indices: &indices, material: 8 }];
+        let policy = |part: &Part<'_>| if part.material == 8 { SimplificationPolicy::Terrain } else { SimplificationPolicy::Geometry };
+        let mesh = ClusterMesh::build_with_constraints(&parts, policy,
+            |part, index| part.material == 8 && (27..=29).contains(&(index % SIDE)));
+        let expected: Vec<_> = indices.chunks_exact(3).filter(|tri| tri.iter().all(|&i|
+            vertices[i as usize].uv[0] <= 5.0 || (27..=29).contains(&(i as usize % SIDE))))
+            .map(|tri| [tri[0], tri[1], tri[2]].map(|i| i + vertices.len() as u32)).collect();
+        assert!(expected.len() > 500);
+        assert_retained(&mesh, &expected);
+        // The first part has no locks: a second part's local index must not
+        // accidentally pin the corresponding vertices in that first part.
+        let reference = ClusterMesh::build(&parts[..1]);
+        let first: Vec<_> = mesh.clusters.iter().filter(|c| c.material == 3).copied().collect();
+        assert_eq!(bytemuck::cast_slice::<GpuCluster, u8>(&first), bytemuck::cast_slice::<GpuCluster, u8>(&reference.clusters));
+    }
+
+    #[test]
+    fn all_false_constraints_preserve_every_existing_policy_byte_for_byte() {
+        let (vertices, indices) = folded_grid();
+        let parts = [Part { vertices: &vertices, indices: &indices, material: 4 }];
+        for policy in [SimplificationPolicy::Geometry, SimplificationPolicy::Terrain,
+            SimplificationPolicy::TexturedGeometry, SimplificationPolicy::AlphaCards] {
+            let baseline = ClusterMesh::build_with_policy(&parts, |_| policy);
+            let constrained = ClusterMesh::build_with_constraints(&parts, |_| policy, |_, _| false);
+            assert_eq!(bytemuck::cast_slice::<Vertex, u8>(&baseline.vertices), bytemuck::cast_slice::<Vertex, u8>(&constrained.vertices));
+            assert_eq!(bytemuck::cast_slice::<GpuCluster, u8>(&baseline.clusters), bytemuck::cast_slice::<GpuCluster, u8>(&constrained.clusters));
+            assert_eq!(baseline.cluster_verts, constrained.cluster_verts);
+            assert_eq!(baseline.tris, constrained.tris);
+            assert_eq!(baseline.sphere, constrained.sphere);
+            assert_eq!(baseline.levels, constrained.levels);
+        }
+    }
+}
+
 /// Cutout-card coverage is not represented by positional simplification error:
 /// a planar card can shrink without moving any surviving point off its plane.
 /// Carry original projected-area credit through the DAG and include cumulative
@@ -207,6 +342,30 @@ impl ClusterMesh {
     }
 
     pub fn build_with_policy(parts: &[Part], policy: impl Fn(&Part<'_>) -> SimplificationPolicy) -> ClusterMesh {
+        Self::build_configured(parts, policy, None)
+    }
+
+    /// Keep caller-selected source vertices fixed through every LOD cut.
+    /// `locked` receives an index local to that part's `vertices` and is
+    /// evaluated once per vertex of each nonempty part during cooking only.
+    /// Locks add to the selected policy's own constraints; they never remove
+    /// them. Lock every vertex of a source triangle to preserve that triangle,
+    /// for example where independently simplified surfaces must meet exactly.
+    /// Other vertices remain eligible for simplification. No extra runtime
+    /// buffers or shader work are introduced.
+    pub fn build_with_constraints(
+        parts: &[Part],
+        policy: impl Fn(&Part<'_>) -> SimplificationPolicy,
+        locked: impl Fn(&Part<'_>, usize) -> bool,
+    ) -> ClusterMesh {
+        Self::build_configured(parts, policy, Some(&locked))
+    }
+
+    fn build_configured(
+        parts: &[Part],
+        policy: impl Fn(&Part<'_>) -> SimplificationPolicy,
+        locked: Option<&dyn Fn(&Part<'_>, usize) -> bool>,
+    ) -> ClusterMesh {
         let mut out = ClusterMesh::default();
         for part in parts {
             if part.indices.is_empty() {
@@ -221,11 +380,11 @@ impl ClusterMesh {
             config.max_triangles = MAX_TRIS;
             // Keep this storage alive for the synchronous clod_build callback.
             let attributes: Vec<f32>;
-            let vertex_locks:Vec<meshopt::SimplifyVertex>;
+            let mut vertex_locks = Vec::new();
             let selected_policy=policy(part);
             let alpha_cards=selected_policy == SimplificationPolicy::AlphaCards;
+            let terrain=selected_policy == SimplificationPolicy::Terrain;
             if selected_policy != SimplificationPolicy::Geometry {
-                let terrain=selected_policy == SimplificationPolicy::Terrain;
                 attributes = part.vertices.iter().flat_map(|v| [v.normal[0], v.normal[1], v.normal[2],
                     if terrain {v.uv[0].clamp(0.0,32.0)}else{v.uv[0]},if terrain {v.uv[1].clamp(0.0,2.0)}else{v.uv[1]}]).collect();
                 mesh.vertex_attributes = &attributes;
@@ -250,8 +409,26 @@ impl ClusterMesh {
                     vertex_locks=part.vertices.iter().map(|v|if v.uv[0]<=5.0 {
                         meshopt::SimplifyVertex::Lock
                     }else{meshopt::SimplifyVertex::None}).collect();
-                    mesh.vertex_lock=Some(&vertex_locks);
                 }
+            }
+            if let Some(locked) = locked {
+                for index in 0..part.vertices.len() {
+                    if locked(part, index) {
+                        // An all-false callback retains the old policy's exact
+                        // configuration and does not allocate a lock stream.
+                        if vertex_locks.is_empty() {
+                            vertex_locks.resize_with(part.vertices.len(), || meshopt::SimplifyVertex::None);
+                        }
+                        vertex_locks[index] = meshopt::SimplifyVertex::Lock;
+                    }
+                }
+            }
+            if !vertex_locks.is_empty() {
+                mesh.vertex_lock = Some(&vertex_locks);
+                // Sloppy fallback is positional-only and does not honor the
+                // caller's hard topology constraints. Keep the normal locked
+                // simplifier even when a constrained group cannot shrink.
+                config.simplify_fallback_sloppy = false;
             }
             let mut groups: Vec<[f32; 5]> = Vec::new(); // simplified bounds per group
             let mut pending: Vec<PendingCluster> = Vec::new(); // (group, refined, indices, cull sphere)
