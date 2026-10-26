@@ -61,14 +61,16 @@ struct CullMaterial {
 // 0: candidate count, 1: retained triangles, 2: submitted vertices,
 // 3: early grass rejects; 4..7: bucket counts, 8..11: scatter cursors.
 // 12: phase2 prefix, 13/14: submitted phase1/2 clusters,
-// 15/16: tested/rejected owners, 17/18: tested/rejected clusters. 19 reserved.
+// 15/16: tested/rejected owners, 17/18: tested/rejected clusters.
+// 19: software-raster clusters, then their scatter cursor.
 // 20/21: spatial parents tested/rejected,22/23 leaves tested/rejected,
 // 24/25: spatial owner tests/compacted,26 resident cluster loop visits,
 // 27 full-scan fallbacks,28 phase-local early-grass scratch,
 // 29/30 phase-local expected/visited owners,31 traversal-mismatch fallbacks.
 @group(1) @binding(2) var<storage, read_write> counter: array<atomic<u32>, 32>;
-// Four draw records followed by four bucket starts.
-@group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
+// Four draw records, four bucket starts, then the software raster's
+// dispatch (20..22), its first draw_map entry (23) and cluster count (24).
+@group(1) @binding(3) var<storage, read_write> args: array<u32, 25>;
 @group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
 @group(1) @binding(5) var<uniform> foliage_selection: array<vec4<u32>,256>;
 @group(1) @binding(6) var<uniform> tree_phase: vec4<f32>; // x: 0 reference, 1 occluders, 2 remainder; y split metres; z enables Hi-Z rejection
@@ -129,6 +131,34 @@ fn tree_occluded(root:vec3<f32>,radius:f32)->bool {
     }
     return false;
 }
+
+// Software raster (software_raster.wgsl, software_raster_depth.wgsl): camera
+// colour views and orthographic sun maps whose uniform sets view.grass.z
+// (0 = off) to the largest mean triangle size in pixels it accepts; opaque
+// non-grass clusters at most 64 px across whose bounding square per triangle
+// is within that, and, in perspective, well in front of the near plane.
+// Cull and scatter evaluate this identically from the same frame's data.
+fn software_cluster(id: u32, ci: u32) -> bool {
+    // Headlight shadows (perspective depth-only) stay on hardware.
+    if !CLUSTER_BUCKETS || view.grass.z <= 0.0 || (view.params.z < 0.5 && view.extra.y > 1.5) { return false; }
+    let cl = clusters[ci];
+    let inst = instances[id];
+    if (cull_materials[cl.material].flags & 321u) != 0u || (inst.flags & 24u) != 0u
+        || cull_voxel_replacement[id] != 0u { return false; }
+    let c = to_world(inst, cl.cull.xyz);
+    let r = cl.cull.w * inst.scale + cull_wind[id].z;
+    // Orthographic sun maps: cam.w is pixels per metre at any distance.
+    var diameter = 2.0 * r * view.cam.w;
+    if view.params.z < 0.5 {
+        let d = distance(c, view.cam.xyz);
+        if d < r * 2.0 + view.params.y * 4.0 + 1.0 { return false; }
+        diameter = 2.0 * r / (d - r) * view.cam.w;
+    }
+    // Small triangles, not small clusters, waste hardware work: route by
+    // the cluster's bounding square per triangle, within a bounded footprint.
+    return diameter <= SOFTWARE_MAX_DIAMETER && diameter * diameter <= view.grass.z * f32(cl.tri_count);
+}
+const SOFTWARE_MAX_DIAMETER: f32 = 64.0;
 
 fn cluster_bucket(triangles: u32) -> u32 {
     if triangles <= 8u { return 0u; }
@@ -313,7 +343,8 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
     if slot < max_visible {
         visible[slot] = vec2<u32>(id, ci);
         atomicAdd(&counter[1], cl.tri_count);
-        if CLUSTER_BUCKETS { atomicAdd(&counter[4u + cluster_bucket(cl.tri_count)], 1u); }
+        if software_cluster(id, ci) { atomicAdd(&counter[19], 1u); }
+        else if CLUSTER_BUCKETS { atomicAdd(&counter[4u + cluster_bucket(cl.tri_count)], 1u); }
     }
 }
 
@@ -496,6 +527,12 @@ fn finalize() {
     let first=atomicLoad(&counter[12]);
     if tree_phase.x>1.5 {atomicStore(&counter[14],n-first);}
     else if tree_phase.x>0.5 {atomicStore(&counter[13],n);}
+    let software = atomicLoad(&counter[19]);
+    atomicStore(&counter[19], 0u); // now the software scatter cursor
+    args[20] = min(software, 65535u);
+    args[21] = max(1u, (software + 65534u) / 65535u);
+    args[22] = 1u;
+    args[24] = software;
     if !CLUSTER_BUCKETS {
         args[0] = 384u;
         args[1] = n;
@@ -517,6 +554,7 @@ fn finalize() {
         start += count;
         submitted += count * vertices;
     }
+    args[23] = start;
     // Phase2 adds to phase1 work; visibility prefix and triangle totals live
     // through both passes. Reference/phase1 start from zero.
     atomicAdd(&counter[2], submitted);
@@ -528,13 +566,19 @@ fn finalize() {
 fn prepare_tree_phase() {
     atomicStore(&counter[12],min(atomicLoad(&counter[0]),u32(view.params.w)));
     for(var i=4u;i<12u;i++){atomicStore(&counter[i],0u);}
+    atomicStore(&counter[19],0u);
 }
 
 @compute @workgroup_size(64)
 fn scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
     let n = min(atomicLoad(&counter[0]), u32(view.params.w));
     for (var slot = atomicLoad(&counter[12])+gid.x; slot < n; slot += groups.x * 64u) {
-        let bucket = cluster_bucket(clusters[visible[slot].y].tri_count);
+        let entry = visible[slot];
+        if software_cluster(entry.x, entry.y) {
+            draw_map[args[23] + atomicAdd(&counter[19], 1u)] = slot;
+            continue;
+        }
+        let bucket = cluster_bucket(clusters[entry.y].tri_count);
         let offset = atomicAdd(&counter[8u + bucket], 1u);
         draw_map[args[16u + bucket] + offset] = slot;
     }

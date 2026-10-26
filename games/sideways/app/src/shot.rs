@@ -406,6 +406,9 @@ fn frame(a: &ShotArgs, setup: &Setup, gpu: &Gpu, renderer: &Renderer) -> i32 {
             stats.static_sun_casters, stats.dynamic_sun_casters, stats.static_sun_triangles, stats.dynamic_sun_triangles,
             stats.static_sun_redrawn, stats.wind_freeze_m, stats.wind_freeze_repinned);
     }
+    if stats.software_clusters > 0 {
+        println!("  software raster: {} of {} clusters; shared sun map {} of {}", stats.software_clusters, stats.clusters, stats.software_sun_clusters, stats.shadow_clusters);
+    }
     if !stats.gpu_ms.is_empty() {
         println!("  gpu: {}", stats.gpu_ms.iter().map(|(n, ms)| format!("{n} {ms:.1} ms")).collect::<Vec<_>>().join(", "));
     }
