@@ -187,6 +187,10 @@ impl Partition {
             if bytemuck::bytes_of(&before) == bytemuck::bytes_of(&after) { continue; }
             let owner = first + offset;
             let old = class(&before, self.animated[owner], self.frozen[owner]);
+            // A changed transform invalidates the proof that this root stays
+            // outside every pinned camera's wind radius. Keep it dynamic until
+            // the next explicit pin certifies its new position.
+            if before.rows != after.rows { self.frozen[owner] = false; }
             let new = class(&after, self.animated[owner], self.frozen[owner]);
             dirty |= old == STATIC || new == STATIC;
             membership |= old != new;
@@ -443,6 +447,32 @@ mod tests {
         terrain.flags |= FOLIAGE;
         assert_eq!(p.update(0, &[terrain]).unwrap(), (true, true));
         assert_eq!(ids(&p, DYNAMIC), &[0,1]);
+    }
+
+    #[test]
+    fn moved_frozen_tree_is_demoted_until_its_new_position_is_certified() {
+        let mut scene = Scene::default();
+        let camera = Vec3::new(150.0, 12.0, -500.0);
+        let mut tree = source(GeometryCategory::Trees, FOLIAGE);
+        tree.rows[0][3] = camera.x;
+        tree.rows[2][3] = camera.z + 150.0;
+        scene.instances.push(tree);
+        let mut p = Partition::new(&scene).unwrap();
+        assert!(p.pin_frozen(&[camera], 90.0));
+        assert_eq!(ids(&p, STATIC), &[0]);
+        assert_eq!(p.update(0, &[tree]).unwrap(), (false, false));
+        tree.rows[2][3] = camera.z + 10.0;
+        assert_eq!(p.update(0, &[tree]).unwrap(), (true, true));
+        assert_eq!(ids(&p, DYNAMIC), &[0]);
+        assert!(!p.frozen[0]);
+        assert!(!p.pin_frozen(&[camera], 90.0));
+        tree.rows[2][3] = camera.z + 150.0;
+        assert_eq!(p.update(0, &[tree]).unwrap(), (false, false));
+        assert_eq!(ids(&p, DYNAMIC), &[0], "moving away is not a fresh pin certificate");
+        assert!(p.pin_frozen(&[camera], 90.0));
+        assert_eq!(ids(&p, STATIC), &[0]);
+        assert!(p.pin_frozen(&[], 0.0), "disabling freeze must clear old static certificates");
+        assert_eq!(ids(&p, DYNAMIC), &[0]);
     }
 
     #[test]
