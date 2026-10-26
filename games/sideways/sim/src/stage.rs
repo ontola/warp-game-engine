@@ -594,11 +594,16 @@ impl Stage {
         if off < w + 0.8 {
             return road_h - 0.08;
         }
-        let dx = off - (w + 2.2);
-        let ditch = -0.55 * (-dx * dx / 0.9).exp();
+        // The old 55 cm Gaussian ditch was narrower than one native 2 m
+        // terrain cell. Oblique roads sampled it at alternating phases,
+        // creating repeated triangular pits instead of a continuous verge.
+        // Carry the existing foundation inset into the surroundings over
+        // two native cells, with zero endpoint slope. The road ribbon/ruts
+        // and the foundation inside w + 0.8 remain exactly unchanged.
+        let verge = -0.08 * (1.0 - smoothstep(w + 0.8, w + 0.8 + 2.0 * GRID, off));
         let reach = ((natural - road_h).abs() / 0.32).clamp(12.0, 60.0);
         let blend = smoothstep(w + 3.0, w + 3.0 + reach, off);
-        let normal = lerp(road_h, natural, blend) + ditch * (1.0 - blend * 0.6);
+        let normal = lerp(road_h, natural, blend) + verge * (1.0 - blend * 0.6);
         // Ledge strength used to jump to the nearest 2 m road row. Near a
         // cut's ends that became a metre-scale stair even on a dense mesh.
         // Interpolate the signed wall/drop amplitudes, not the height and
@@ -911,9 +916,11 @@ mod cut_bank_tests {
             assert_eq!(s.height(x,z).to_bits(),raw.to_bits(),"remote river still clips row {row}");
             assert!(raw-previous_cut>4.0,"fixture no longer exercises the recorded large cliff loss");
         }
-        // The entire original road, its two-metre shoulder strip, generation
-        // seed and vertical profile retain their pre-change bits.
-        assert_eq!(foundation_digest(&s),(78_550,0xabbf09378d960281));
+        // This fingerprint includes the intentionally changed r52 off-road
+        // verge (old narrow-ditch value: 0xabbf09378d960281). The generation
+        // seed and road vertical profile are unchanged; builder's separate
+        // bit-identity test preserves the original drivable ribbon/ruts.
+        assert_eq!(foundation_digest(&s),(78_550,0x7fd617ff94b4b62b));
     }
 
     #[test]
@@ -1044,6 +1051,147 @@ mod cut_bank_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod roadside_grid_audit {
+    use super::*;
+
+    fn mesh_height(s: &Stage, x: f64, z: f64) -> f64 {
+        let (i, j) = ((x / GRID).floor(), (z / GRID).floor());
+        let (u, v) = (x / GRID - i, z / GRID - j);
+        // Same f32 vertex storage and diagonal as the collision/render mesh.
+        let h = |a, b| s.height((i + a) * GRID, (j + b) * GRID) as f32 as f64;
+        if u + v <= 1.0 { h(0., 0.) * (1. - u - v) + h(1., 0.) * u + h(0., 1.) * v }
+        else { h(1., 1.) * (u + v - 1.) + h(1., 0.) * (1. - v) + h(0., 1.) * (1. - u) }
+    }
+
+    fn metrics(samples: &[(f64, f64)]) -> serde_json::Value {
+        let mut errors: Vec<_> = samples.iter().map(|(raw, grid)| (raw - grid).abs()).collect();
+        errors.sort_by(f64::total_cmp);
+        let (lo, hi) = samples.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (_, h)| (lo.min(*h), hi.max(*h)));
+        serde_json::json!({"samples": samples.len(), "grid_range_m": hi - lo,
+            "grid_min_m": lo, "grid_max_m": hi, "error_p95_m": errors[errors.len() * 95 / 100],
+            "error_max_m": errors.last().unwrap()})
+    }
+
+    fn flat_stage(degrees: f64, phase: f32) -> Stage {
+        let mut s = Stage::generate(&mut Pcg::new(7), 200.0);
+        let d = v3(degrees.to_radians().sin() as f32, 0., -degrees.to_radians().cos() as f32);
+        s.points = (0..80).map(|i| d * ((i as f32 - 40.) * STEP as f32) + v3(phase, 0., phase * 0.7)).collect();
+        s.dirs = vec![d; 80]; s.widths = vec![3.4; 80]; s.ledges = vec![0.; 80];
+        s.ledge_wall = vec![0.; 80]; s.ledge_drop = vec![0.; 80]; s.rivers.clear();
+        s.noise = Noise::with_defaults(7, 0.0); s.detail = Noise::with_defaults(9, 0.0); s.index();
+        s
+    }
+
+    #[test]
+    fn resolved_verge_has_no_large_direction_or_grid_phase_waves() {
+        let mut worst = 0.0f64;
+        for degrees in [0f64, 15., 30., 45., 60., 75., 90.] { for phase in [0., 0.37, 1.11] {
+            let s = flat_stage(degrees, phase); let d = s.dirs[40];
+            for side in [-1., 1.] { for edge in [0.8, 1.2, 2.2, 3.2, 4.8, 6.8] {
+                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                for k in 0..=256 {
+                    let q = s.point_at(64. + k as f64 * 0.125) + v3(-d.z, 0., d.x) * (side * (3.4 + edge)) as f32;
+                    let h = mesh_height(&s, q.x as f64, q.z as f64);
+                    lo = lo.min(h); hi = hi.max(h);
+                }
+                worst = worst.max(hi - lo);
+                // Native triangle geometry, not just the analytic profile.
+                // Old profile reached 344.8 mm on these same flat roads.
+                assert!(hi - lo < 0.015, "verge wave {}m at {degrees}deg, phase {phase}, side {side}, edge {edge}", hi - lo);
+            }}
+        }}
+        println!("maximum flat-road verge wave: {worst:.9} m");
+    }
+
+    #[test]
+    fn shallow_verge_joins_continuously_and_preserves_drivable_foundation() {
+        let s = flat_stage(0., 0.37); let p = s.points[40]; let w = s.widths[40] as f64;
+        for side in [-1., 1.] {
+            let h = |edge: f64| s.height_near_raw(p.x as f64 + side * (w + edge), p.z as f64, 40);
+            for edge in [0.8, 0.8 + 2. * GRID] {
+                assert!((h(edge - 0.0001) - h(edge + 0.0001)).abs() < 0.00001);
+                let left = (h(edge) - h(edge - 0.01)) / 0.01;
+                let right = (h(edge + 0.01) - h(edge)) / 0.01;
+                assert!((left - right).abs() < 0.001, "verge derivative discontinuity at {edge}: {left}/{right}");
+            }
+            for k in 0..=128 {
+                let x = p.x as f64 + side * (w + 0.79) * k as f64 / 128.;
+                let r = s.result(v3(x as f32, 0., p.z), 40);
+                let expected = r.height - 0.06 * (r.offset.abs() / w).clamp(0., 1.) - 0.08;
+                assert_eq!(s.height_near_raw(x, p.z as f64, 40).to_bits(), expected.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn reported_roadside_native_triangle_error_is_bounded() {
+        let s = reported_round_two_stage();
+        let at = s.locate(v3(44.444496, 2.2734036, -1263.9277), -1);
+        let (mut worst_verge, mut worst_outer) = (0.0f64, 0.0f64);
+        for side in [-1., 1.] { for edge in [0.8, 1.2, 2.2, 3.2] { for k in 0..=320 {
+            let along = at.along - 20. + k as f64 * 0.125;
+            let p = s.point_at(along);
+            let d = (s.point_at(along + 0.25) - s.point_at(along - 0.25)).normalized();
+            let off = s.width_at(along) + edge;
+            let (x, z) = (p.x as f64 - d.z as f64 * side * off, p.z as f64 + d.x as f64 * side * off);
+            let error = (s.height(x, z) - mesh_height(&s, x, z)).abs();
+            if edge <= 2.2 { worst_verge = worst_verge.max(error); }
+            else { worst_outer = worst_outer.max(error); }
+        }}}
+        // Previously 475 mm in the ditch zone beside the recorded road.
+        // Beyond edge=3m the unchanged natural hillside blend contributes
+        // additional curvature; constrain it separately from the verge.
+        assert!(worst_verge < 0.03, "reported verge native-grid error {worst_verge}m");
+        assert!(worst_outer < 0.10, "reported outer hillside native-grid error {worst_outer}m");
+        println!("reported native-grid error: verge {worst_verge:.9} m, outer hillside {worst_outer:.9} m");
+    }
+
+    #[test]
+    #[ignore = "bounded CPU geometry diagnosis; optional SIDEWAYS_ROADSIDE_AUDIT JSON output"]
+    fn reported_roadside_grid_audit() {
+        let actual = reported_round_two_stage();
+        let at = actual.locate(v3(44.444496, 2.2734036, -1263.9277), -1);
+        let mut actual_rows = Vec::new();
+        for side in [-1., 1.] { for edge in [0.8, 1.2, 2.2, 3.2] {
+            let mut samples = Vec::new();
+            let mut points = Vec::new();
+            for k in 0..=320 {
+                let along = at.along - 20. + k as f64 * 0.125;
+                let p = actual.point_at(along);
+                let d = (actual.point_at(along + 0.25) - actual.point_at(along - 0.25)).normalized();
+                let off = actual.width_at(along) + edge;
+                let (x, z) = (p.x as f64 - d.z as f64 * side * off, p.z as f64 + d.x as f64 * side * off);
+                let raw = actual.height(x, z); let grid = mesh_height(&actual, x, z);
+                samples.push((raw, grid));
+                points.push([x, z, raw, grid]);
+            }
+            actual_rows.push(serde_json::json!({"side": side, "edge_m": edge,
+                "metrics": metrics(&samples), "points": points}));
+        }}
+        let mut synthetic_rows = Vec::new();
+        for degrees in [0f64, 15., 30., 45., 60., 75., 90.] { for phase in [0., 0.37, 1.11] {
+            let s = flat_stage(degrees, phase); let d = s.dirs[40];
+            for edge in [0.8, 1.2, 2.2, 3.2] {
+                let samples: Vec<_> = (0..=256).map(|k| {
+                    let p = s.point_at(64. + k as f64 * 0.125);
+                    let q = p + v3(-d.z, 0., d.x) * (3.4 + edge) as f32;
+                    (s.height(q.x as f64, q.z as f64), mesh_height(&s, q.x as f64, q.z as f64))
+                }).collect();
+                synthetic_rows.push(serde_json::json!({"degrees": degrees, "phase_m": phase,
+                    "edge_m": edge, "metrics": metrics(&samples)}));
+            }
+        }}
+        let report = serde_json::json!({"capture": "sideways-1793039836887-117876-1", "noise_seed": actual.noise_seed,
+            "detail_seed": actual.detail_seed, "road_row": at.index, "along_m": at.along,
+            "native_cell_m": GRID, "actual": actual_rows, "synthetic": synthetic_rows});
+        if let Ok(path) = std::env::var("SIDEWAYS_ROADSIDE_AUDIT") {
+            std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        }
+        println!("roadside grid: row {} along {:.3}; {} actual / {} synthetic profiles", at.index, at.along, actual_rows.len(), synthetic_rows.len());
     }
 }
 
