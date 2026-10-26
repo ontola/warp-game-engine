@@ -1,0 +1,30 @@
+# Scene-camera regression, not an exact car/controller replay.
+# Camera: build/screenshots/sideways-1792855853301-192948-0.json, seed1 round1.
+schema = 1
+name = "noon-foliage"
+ticks_per_frame = 0
+capture_dir = "../build/scenario-captures/noon-foliage"
+capture_frames = [1, 60, 180]
+
+[capture]
+format = "jpg"
+max_width = 1600
+quality = 85
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "3840x2160"
+upscale = "dlss-quality"
+hud = false
+
+[[sections]]
+name = "noon-held-forest"
+start_tick = 0
+frames = 180
+warmup = 60
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-72.12802124, 4.13761520, -335.08944702], target = [-76.23734283, 2.98761511, -337.04077148], fov_y_degrees = 64.0}

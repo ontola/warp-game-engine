@@ -60,6 +60,8 @@ struct Targets {
 }
 pub(crate) struct FarGrassRenderer {
     pipeline: wgpu::ComputePipeline,
+    pipeline_layout: wgpu::PipelineLayout,
+    source: String,
     data_layout: wgpu::BindGroupLayout,
     terrain: wgpu::TextureView,
     coverage: wgpu::TextureView,
@@ -67,11 +69,21 @@ pub(crate) struct FarGrassRenderer {
     base: Params,
     targets: Mutex<Vec<Option<Targets>>>,
 }
+pub(crate) struct Reload { pipeline: wgpu::ComputePipeline, source: String }
+fn pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
+    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("far grass"), source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("far grass integrate"), layout: Some(layout), module: &module,
+        entry_point: Some("far_grass_integrate"), compilation_options: Default::default(), cache: gpu.pipeline_cache(),
+    })
+}
 pub(crate) fn shader_source() -> String {
     format!(
         "{}\n{}",
         crate::wind::shade_source(),
-        include_str!("shaders/far_grass.wgsl")
+        crate::shaders::source("far_grass.wgsl")
     )
 }
 fn prepare(field: &FarGrassField) -> Result<(Vec<[f32; 2]>, Vec<[f32; 2]>, Params), String> {
@@ -167,6 +179,10 @@ fn prepare(field: &FarGrassField) -> Result<(Vec<[f32; 2]>, Vec<[f32; 2]>, Param
     ))
 }
 impl FarGrassRenderer {
+    /// Reuse the exact native field for near grass/ground sunlight transport.
+    pub(crate) fn surface_fields(&self)->(wgpu::TextureView,wgpu::TextureView,wgpu::TextureView) {
+        (self.terrain.clone(),self.coverage.clone(),self.tiles.clone())
+    }
     pub(crate) fn new(
         gpu: &Gpu,
         field: &FarGrassField,
@@ -298,24 +314,12 @@ impl FarGrassRenderer {
                 ],
                 immediate_size: 0,
             });
-        let module = gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("far grass"),
-                source: wgpu::ShaderSource::Wgsl(shader_source().into()),
-            });
-        let pipeline = gpu
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("far grass integrate"),
-                layout: Some(&pipeline_layout),
-                module: &module,
-                entry_point: Some("far_grass_integrate"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
+        let source = shader_source();
+        let pipeline = pipeline(gpu, &pipeline_layout, &source);
         Ok(Self {
             pipeline,
+            pipeline_layout,
+            source,
             data_layout,
             terrain,
             coverage,
@@ -323,6 +327,15 @@ impl FarGrassRenderer {
             base,
             targets: Mutex::new(Vec::new()),
         })
+    }
+    pub(crate) fn prepare_reload(&self, gpu: &Gpu, source: String) -> Result<Option<Reload>, String> {
+        if source == self.source { return Ok(None); }
+        let pipeline = crate::shaders::checked(gpu, || pipeline(gpu, &self.pipeline_layout, &source))?;
+        Ok(Some(Reload { pipeline, source }))
+    }
+    pub(crate) fn commit_reload(&mut self, reload: Reload) {
+        self.pipeline = reload.pipeline;
+        self.source = reload.source;
     }
     pub(crate) fn set_view_count(&self, count: usize) {
         let mut targets = self.targets.lock().unwrap();

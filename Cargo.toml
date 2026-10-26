@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = ["engine/crates/kern", "engine/crates/render", "engine/crates/audio", "games/sideways/determinism", "games/sideways/sim", "games/sideways/app"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+kern = { path = "engine/crates/kern" }
+gdcompat = { path = "games/sideways/determinism" }
+sideways = { path = "games/sideways/sim" }
+rapier3d = { version = "0.36", features = ["enhanced-determinism"] }
+fastnoise-lite = "1.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+sha2 = "0.10"
+
+# The iteration loop: dependencies are built once, optimised, and then left
+# alone; our own crates build fast with light optimisation, so a debug build
+# still simulates a stage in seconds.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

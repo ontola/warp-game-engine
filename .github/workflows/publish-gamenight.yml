@@ -5,7 +5,7 @@
 name: Publish GameNight preview
 on:
   workflow_run:
-    workflows: [Build and release]
+    workflows: [Native checks and Windows build]
     types: [completed]
 permissions:
   contents: read

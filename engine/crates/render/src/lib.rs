@@ -8,22 +8,86 @@
 
 pub mod cluster;
 pub mod frame;
+pub mod static_sun;
+pub mod debug_settings;
+pub mod debug_ui;
+pub mod debug_timing;
+pub mod cpu_time;
 pub mod gpu;
+pub mod gpu_profile;
+pub mod geometry_diagnostics;
+pub mod startup_profile;
+mod texture_cache;
+mod pipeline_cache;
 pub mod grass;
+pub mod meadow;
+pub mod meadow_data;
+pub(crate) mod meadow_shadow_receivers;
+pub mod receiver_shadow_demand;
+pub mod meadow_aggregate;
+pub mod meadow_voxel;
+pub mod meadow_voxel_samples;
+pub mod meadow_brick_field;
+pub mod vegetation_brick_render;
+mod meadow_substrate;
+mod meadow_index;
+pub mod tree_occlusion;
+pub mod cull_groups;
+pub mod cluster_traversal;
+pub mod shadow_diagnostics;
+mod depth_pyramid;
+#[cfg(test)]
+mod meadow_occlusion_tests;
+mod grass_lighting;
 pub mod far_grass;
 pub mod hud;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
 pub mod shaders;
+pub mod atmosphere;
+pub mod radiance_cache;
+pub mod radiance_cache_gpu;
+pub mod headlights;
+pub mod exhaust;
+pub mod wheel_particles;
+pub mod tracks;
 pub mod foliage_voxel;
+pub mod foliage_shadow;
+pub mod foliage_assembly;
+pub mod vegetation_asset;
+pub mod vegetation_accounting;
+pub mod vegetation_clod;
 pub mod foliage_volume_data;
+pub mod foliage_groups;
+pub mod foliage_representation;
+pub mod foliage_compact;
+pub mod source_replacement;
+pub mod foliage_world;
+pub mod foliage_world_render;
+pub mod vegetation_detail;
 pub mod voxel_forest;
 pub mod wind;
+pub mod part_wind;
+pub mod baked_animation;
+pub mod motion;
+pub mod dlss;
+pub mod upscale;
 mod stability;
+mod far_sun;
+mod foliage_sun_pages;
+mod world_visibility;
 mod transparency;
 mod volume_view;
 mod canopy;
+mod terrain_visibility;
+pub mod terrain_trace;
+#[cfg(test)]
+mod fog_tests;
+#[cfg(test)]
+mod transmittance_tests;
+#[cfg(test)]
+mod rock_mapping;
 
 pub use frame::{Camera, FrameStats, Lighting, Renderer, ViewRect, split_rects};
 pub use gpu::{Gpu, Stopwatch, write_png};
@@ -59,7 +123,7 @@ pub fn test_frame(gpu: &Gpu, w: u32, h: u32) -> Vec<u8> {
         module: &module,
         entry_point: Some("main"),
         compilation_options: Default::default(),
-        cache: None,
+        cache: gpu.pipeline_cache(),
     });
     let view = tex.create_view(&Default::default());
     let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -116,7 +180,7 @@ mod shader_tests {
 
     #[test]
     fn grass_transition_shaders_validate() {
-        for src in [crate::grass::shader_source(),crate::grass::composite_source()] {
+        for src in [crate::grass::shader_source(),crate::grass::composite_source(),crate::grass::compact_source()] {
             let module=naga::front::wgsl::parse_str(&src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
         }

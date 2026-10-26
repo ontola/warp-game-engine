@@ -1,0 +1,37 @@
+# Four real player views, normal chase cameras and deterministic AI input.
+# A total 4K output, not four independent 4K outputs. No fixed cameras.
+schema = 1
+name = "fourplayer-route"
+ticks_per_frame = 1
+capture_dir = "../build/scenario-captures/fourplayer-route"
+capture_frames = [1, 60, 240, 300, 480]
+
+[capture]
+format = "jpg"
+max_width = 1600
+quality = 85
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 4
+size = "3840x2160"
+upscale = "dlss-quality"
+hud = true
+
+[[sections]]
+name = "route-first"
+start_tick = 6000
+frames = 240
+warmup = 60
+sun = "noon"
+atmosphere = "clear"
+
+[[sections]]
+name = "route-continued"
+start_tick = 6240
+frames = 240
+warmup = 60
+sun = "noon"
+atmosphere = "clear"

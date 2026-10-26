@@ -1,0 +1,8 @@
+[package]
+name = "gdcompat"
+edition.workspace = true
+version.workspace = true
+description = "Sideways' stable deterministic RNG, math, hashing and terrain noise"
+
+[dependencies]
+fastnoise-lite.workspace = true

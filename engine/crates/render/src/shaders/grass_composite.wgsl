@@ -12,14 +12,17 @@ fn vs(@builtin(vertex_index) vertex:u32)->@builtin(position) vec4<f32> {
 fn fs(@builtin(position) position:vec4<f32>)->@location(0) vec4<f32> {
     let pixel=vec2<i32>(position.xy);
     let near = textureLoad(nearest_layer,pixel,0);
+    // Full near detail is already written by the opaque pass in this mode.
+    if grass_blend.values.y > 0.5 && grass_blend.values.y < 1.5 { return vec4<f32>(0.0); }
     let far_size = textureDimensions(far_layer);
     // Nearest half-resolution reconstruction retains the conservative 2x2
     // opaque-depth bound. Bilinear interpolation could leak behind cars.
     let far_pixel = min(vec2<u32>(position.xy) / 2u, far_size - 1u);
     let distant = textureLoad(far_layer,vec2<i32>(far_pixel),0);
+    if grass_blend.values.y >= 1.5 { return distant; }
     if distant.a <= 0.0 { return near; }
     let root_distance = textureLoad(far_root_distance,vec2<i32>(far_pixel),0).r;
-    var weight = grass_distance_opacity(root_distance,grass_blend.values.x>0.5);
+    var weight = grass_distance_opacity(root_distance,grass_blend.values.zw);
     // Covered near pixels already carry their exact plant-root fade. Holes
     // need the geometric fade too: using (1-near.a) there would fill the
     // photograph's silhouette even at full near detail. Far root distance

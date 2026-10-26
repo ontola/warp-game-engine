@@ -1,36 +1,45 @@
-# Sideways
+# Warp + Sideways
 
-A gravel rally game for [GameNight](https://gamenight.ontola.io), with up to
-four drivers racing the same forest stage in local split screen.
+[Warp](engine/README.md) is a Rust engine for realistic, performant procedural
+outdoor worlds. [Sideways](games/sideways/README.md) is its rally game for
+[GameNight](https://gamenight.ontola.io), with up to four local players.
 
-Controls: left stick steers, RT accelerates, LT brakes, A is the handbrake,
-X resets and Y changes camera. Run it with Godot 4.5:
+One Cargo workspace and lockfile, with separate engine and game directories.
 
-    godot --path . -- --players 2
+| Location | Responsibility |
+| --- | --- |
+| `engine/crates/` | Reusable rendering, audio and simulation interfaces |
+| `engine/tools/` | Frame accounting and iteration diagnostics |
+| `games/sideways/app/` | Native app, HUD and GameNight integration |
+| `games/sideways/sim/` | Physics, stages, AI and race state |
+| `games/sideways/determinism/` | Stable RNG, noise and math |
+| `games/sideways/assets/`, `data/` | Game assets, licenses and tuning |
+| `games/sideways/tools/`, `scenarios/` | Launchers, acceptance and replays |
 
-See [AGENTS.md](AGENTS.md) for tests, screenshots and releases.
+From the repository root:
 
-The graphics target is four players at 4K and 120 FPS; it is not yet reached.
-For a repeatable native 4K benchmark, use the real renderer:
-
-```sh
-godot --path . --resolution 3840x2160 --fullscreen --disable-vsync --fixed-fps 120 -- --benchmark 1200 --benchmark-warmup 240 --views 4 --rivals 0 --seed 4242 --at 300 --weather clear --km 2
+```powershell
+cargo run --release -p cli -- play --views 1
+games/sideways/tools/play-dev-windows.ps1 -Restart
 ```
 
-This drives four cars along the same route, warms up 240 rendered frames,
-then measures 1200 frames using wall time. Verify output 3840x2160 and four
-1916x1076 viewports at scale 1.0 in the final JSON. It reports FPS,
-median/p95/p99 frame times, draw calls and the engine primitive counter
-(which is not a reliable physical triangle total for MultiMesh LODs).
-Keep engine, hardware and background load matched; report upscaling separately.
-Use `--views 1` / `--views 2` for other layouts and `--strip trees`,
-`--strip grass`, etc. only to isolate costs.
+Current focus: procedural nature, trees and grass, sky, vehicle physics,
+AI-driven workflows and short iteration loops. Missing general systems:
+a human editor UI, indoor scenes, water, buildings, people and general animation.
+These priorities can change.
 
-Graphics regressions cover mip data/prop LODs (`tests/graphics.gd`), actual
-viewport resizing (`tests/view_resolution.gd`), tyre uniforms, stage-query
-caches and tree tangents. Run them headless; CI includes all five.
+Target: four players in one 4K output at 120 FPS; not yet reached.
+See the [forest roadmap](engine/docs/forest-rendering-roadmap.md) and
+[category measurements](engine/docs/render-categories-2026-10-24.md).
 
-See the [graphics iteration report](docs/graphics-performance.md) for measured
-before/after results, visual references and remaining split-screen limits.
-The [overnight iteration log](docs/graphics-night-2026-10-21.md) records the
-ongoing reference-driven graphics review and accepted/rejected experiments.
+Current work (26 October 2026): reduce foliage traversal/raster cost, preserve
+appearance across vegetation LODs, and measure full GPU frame intervals.
+The latest controlled four-player 4K-output route measured about 38–44.5 ms
+with DLSS Quality; this is not native 4K or a typical-gameplay guarantee.
+See [the latest measured iteration](engine/docs/lod-shadow-demand-r49.md).
+World-grid traversal of shared plant volumes and early whole-owner replacement
+are experimental, disabled by default, and still require GPU/visual validation.
+
+The Godot implementation and export workflow are retired. Historical
+measurements remain as evidence, without ongoing comparisons.
+[Third-party asset credits](games/sideways/CREDITS.md).

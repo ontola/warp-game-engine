@@ -13,6 +13,9 @@ use std::collections::HashSet;
 
 /// Must match the runtime prototype's bounded candidate-list capacity.
 pub const MAX_INSTANCES: usize = 256;
+/// Replace every source material for a procedural part. Its voxel albedo
+/// already contains the individual source materials' linear colours.
+pub const ALL_MATERIALS: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PackLimits {
@@ -27,6 +30,51 @@ pub struct PackLimits {
     pub first_level_bounds: bool,
     pub max_dense_indices: usize,
     pub max_sparse_cells: usize,
+}
+
+/// Shared asset budgets, independent of any renderer's instance capacity.
+#[derive(Clone, Copy, Debug)]
+pub struct AssetPackLimits {
+    pub max_assets: usize,
+    pub levels_per_asset: usize,
+    pub first_level_bounds: bool,
+    pub max_dense_indices: usize,
+    pub max_sparse_cells: usize,
+}
+
+impl From<PackLimits> for AssetPackLimits {
+    fn from(limits: PackLimits) -> Self {
+        Self { max_assets: limits.max_assets, levels_per_asset: limits.levels_per_asset,
+            first_level_bounds: limits.first_level_bounds, max_dense_indices: limits.max_dense_indices,
+            max_sparse_cells: limits.max_sparse_cells }
+    }
+}
+
+impl Default for AssetPackLimits {
+    fn default() -> Self { PackLimits::default().into() }
+}
+
+/// Local support includes every shaded mip's half-cell reconstruction tent.
+#[derive(Clone, Copy, Debug)]
+pub struct AssetSpan {
+    pub levels: [u32; 2],
+    pub bounds: [[f32; 3]; 2],
+}
+
+/// One immutable upload shared by any number of world instances. The empty
+/// forest.instances vector is populated by a consumer with its own limits.
+#[derive(Clone, Debug)]
+pub struct PackedAssets {
+    pub forest: GpuForest,
+    pub spans: Vec<AssetSpan>,
+}
+
+impl PackedAssets {
+    pub fn instance(&self, binding: VolumeBinding, source: &GpuInstance) -> Result<GpuTree, String> {
+        let span = self.spans.get(binding.asset as usize)
+            .ok_or_else(|| format!("volume source asset {} is out of bounds", binding.asset))?;
+        pack_tree(binding, source, span.levels, Vec3::from(span.bounds[0]), Vec3::from(span.bounds[1]))
+    }
 }
 
 impl Default for PackLimits {
@@ -49,6 +97,7 @@ pub struct VolumeBinding {
     /// Index in the source VoxelAsset slice, not a per-instance asset copy.
     pub asset: u32,
     /// Only this material's clusters are replaced; trunk/bark remain meshes.
+    /// ALL_MATERIALS replaces the complete procedural part, including variation.
     pub crown_material: u32,
 }
 
@@ -62,19 +111,24 @@ pub struct GpuLevel {
     pub dims_offset: [u32; 4],
 }
 
-/// WGSL: seven vec4f records, 112 bytes. Values remain linear and unquantized.
+/// WGSL: eleven vec4f records, 176 bytes. Values remain linear and unquantized.
+/// Actual normal centroids add 64 bytes/cell over the previous axis-only data.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct GpuCell {
     pub albedo_rough: [f32; 4],
-    /// Thirteen directional extinction coefficients per local metre, padded
-    /// with three zeroes. Same direction order as PROJECTION_DIRECTIONS.
+    /// Thirteen directional extinction coefficients per local metre, followed
+    /// by leaf fraction and two zeroes. Direction order is unchanged.
     pub extinction: [[f32; 4]; 4],
-    /// Six normalized shading lobes (+X,-X,+Y,-Y,+Z,-Z), then two zeroes.
-    pub normals: [[f32; 4]; 2],
+    /// Six actual authored-normal centroids: xyz conditional mean, w lobe weight.
+    /// The mean length is in 0..=1; do not normalize it before interpolation.
+    /// Interpolate xyz with extinction*lobe_weight, then normalize the result;
+    /// never average unweighted directions or substitute the signed basis axis.
+    pub normals: [[f32; 4]; 6],
 }
 
-/// WGSL: six vec4 records, 96 bytes. Trees are static in this first path.
+/// WGSL: six vec4 records, 96 bytes. Shared part-wind can update these poses;
+/// asset cells and grids stay immutable.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct GpuTree {
@@ -111,8 +165,11 @@ fn pack_cell(voxel: &Voxel, cell_size: f32) -> Result<GpuCell, String> {
     if !valid_nonnegative(&voxel.directional_area)
         || !valid_nonnegative(&voxel.albedo)
         || !valid_nonnegative(&voxel.normal_weights)
+        || voxel.normal_centroids.iter().flatten().any(|x| !x.is_finite())
         || !voxel.roughness.is_finite()
         || !(0.0..=1.0).contains(&voxel.roughness)
+        || !voxel.leaf_fraction.is_finite()
+        || !(0.0..=1.0).contains(&voxel.leaf_fraction)
     {
         return Err("volume cell has invalid optical/material data".into());
     }
@@ -134,8 +191,15 @@ fn pack_cell(voxel: &Voxel, cell_size: f32) -> Result<GpuCell, String> {
         cell.extinction[index / 4][index % 4] = density;
     }
     for (index, weight) in voxel.normal_weights.iter().enumerate() {
-        cell.normals[index / 4][index % 4] = *weight;
+        if *weight == 0.0 { continue; }
+        let normal = Vec3::from(voxel.normal_centroids[index]);
+        let length_squared: f64 = voxel.normal_centroids[index].iter().map(|&x| f64::from(x).powi(2)).sum();
+        if length_squared <= 0.0 || length_squared > 1.001 {
+            return Err("occupied volume normal lobe requires a nonzero conditional mean of unit normals".into());
+        }
+        cell.normals[index] = normal.extend(*weight).to_array();
     }
+    cell.extinction[3][1] = voxel.leaf_fraction;
     Ok(cell)
 }
 
@@ -204,6 +268,23 @@ pub fn pack(assets: &[VoxelAsset], bindings: &[VolumeBinding], scene_instances: 
         return Err(format!("volume instance budget exceeded: {} requested, {} allowed (hard maximum {MAX_INSTANCES})",
             bindings.len(), limits.max_instances));
     }
+    let mut packed = pack_assets(assets, limits.into())?;
+    let mut owners = HashSet::with_capacity(bindings.len());
+    for &binding in bindings {
+        if !owners.insert(binding.owner) {
+            return Err(format!("duplicate volume source owner {} would double the density", binding.owner));
+        }
+        let instance = scene_instances.get(binding.owner as usize)
+            .ok_or_else(|| format!("volume source owner {} is out of bounds", binding.owner))?;
+        let tree = packed.instance(binding, instance)?;
+        packed.forest.instances.push(tree);
+    }
+    Ok(packed.forest)
+}
+
+/// Pack and validate source assets without imposing the old patch renderer's
+/// 256-instance limit. Does not change the legacy pack() capacity or semantics.
+pub fn pack_assets(assets: &[VoxelAsset], limits: AssetPackLimits) -> Result<PackedAssets, String> {
     if assets.len() > limits.max_assets || limits.levels_per_asset == 0 || limits.levels_per_asset > 16 {
         return Err("invalid volume asset/level budget".into());
     }
@@ -268,20 +349,10 @@ pub fn pack(assets: &[VoxelAsset], bindings: &[VolumeBinding], scene_instances: 
         if !local_min.is_finite() || !local_max.is_finite() {
             return Err(format!("volume asset {asset_index} cell bounds overflow"));
         }
-        asset_spans.push(([first, forest.levels.len() as u32 - first], local_min, local_max));
+        asset_spans.push(AssetSpan { levels: [first, forest.levels.len() as u32 - first],
+            bounds: [local_min.to_array(), local_max.to_array()] });
     }
-    let mut owners = HashSet::with_capacity(bindings.len());
-    for &binding in bindings {
-        if !owners.insert(binding.owner) {
-            return Err(format!("duplicate volume source owner {} would double the density", binding.owner));
-        }
-        let instance = scene_instances.get(binding.owner as usize)
-            .ok_or_else(|| format!("volume source owner {} is out of bounds", binding.owner))?;
-        let &(levels, local_min, local_max) = asset_spans.get(binding.asset as usize)
-            .ok_or_else(|| format!("volume source asset {} is out of bounds", binding.asset))?;
-        forest.instances.push(pack_tree(binding, instance, levels, local_min, local_max)?);
-    }
-    Ok(forest)
+    Ok(PackedAssets { forest, spans: asset_spans })
 }
 
 #[cfg(test)]
@@ -293,11 +364,12 @@ mod tests {
     fn voxel(coord: [u32; 3], area: f32) -> Voxel {
         Voxel { coord, surface_area: area, projected_area: [area, 0.0, 0.0],
             directional_area: PROJECTION_DIRECTIONS.map(|direction| direction[0].abs() * area),
-            albedo: [0.2, 0.4, 0.1], roughness: 0.8,
-            normal_weights: [0.5, 0.5, 0.0, 0.0, 0.0, 0.0] }
+            albedo: [0.2, 0.4, 0.1], roughness: 0.8, leaf_fraction: 0.0,
+            normal_weights: [0.5, 0.5, 0.0, 0.0, 0.0, 0.0],
+            normal_centroids: crate::foliage_voxel::AXIS_NORMAL_CENTROIDS }
     }
     fn asset() -> VoxelAsset {
-        VoxelAsset { origin: [-0.5, 0.0, -0.5], source_bounds: [[-0.5, 0.0, -0.5], [0.0, 0.5, 0.0]],
+        VoxelAsset { projection_measure: Default::default(), origin: [-0.5, 0.0, -0.5], source_bounds: [[-0.5, 0.0, -0.5], [0.0, 0.5, 0.0]],
             levels: vec![
                 VoxelLevel { cell_size: 0.25, dimensions: [3, 3, 3], voxels: vec![voxel([0, 0, 0], 0.02), voxel([1, 1, 1], 0.04)] },
                 VoxelLevel { cell_size: 0.5, dimensions: [2, 2, 2], voxels: vec![voxel([0, 0, 0], 0.06)] },
@@ -316,7 +388,9 @@ mod tests {
     #[test]
     fn shared_assets_have_exact_gpu_layout_and_valid_zero_empty_indices() {
         assert_eq!(std::mem::size_of::<GpuLevel>(), 32);
-        assert_eq!(std::mem::size_of::<GpuCell>(), 112);
+        assert_eq!(std::mem::size_of::<GpuCell>(), 176);
+        assert_eq!(std::mem::offset_of!(GpuCell, extinction), 16);
+        assert_eq!(std::mem::offset_of!(GpuCell, normals), 80);
         assert_eq!(std::mem::size_of::<GpuTree>(), 96);
         let instances = [instance(Affine3A::IDENTITY), instance(Affine3A::from_translation(Vec3::X * 8.0))];
         let forest = pack(&[asset()], &[binding(0, 0), binding(1, 0)], &instances, PackLimits::default()).unwrap();
@@ -327,7 +401,24 @@ mod tests {
         assert!(forest.indices.iter().all(|&index| index as usize <= forest.cells.len()));
         assert_eq!(forest.instances[0].meta, [0, 0, 2, 12]);
         assert_eq!(forest.instances[1].meta, [1, 0, 2, 12]);
-        assert_eq!(forest.byte_len(), 2 * 32 + 35 * 4 + 3 * 112 + 2 * 96);
+        assert_eq!(forest.byte_len(), 2 * 32 + 35 * 4 + 3 * 176 + 2 * 96);
+    }
+
+    #[test]
+    fn independent_asset_packing_preserves_legacy_upload_bytes_and_instance_bounds() {
+        let assets = [asset()];
+        let source = instance(Affine3A::from_scale_rotation_translation(
+            Vec3::new(0.7, 1.8, 2.1), Quat::from_rotation_y(0.37), Vec3::new(-7.0, 4.0, 31.0)));
+        for first_level_bounds in [false, true] {
+            let limits = PackLimits { first_level_bounds, ..Default::default() };
+            let legacy = pack(&assets, &[binding(0,0)], &[source], limits).unwrap();
+            let shared = pack_assets(&assets, limits.into()).unwrap();
+            assert!(shared.forest.instances.is_empty());
+            assert_eq!(bytemuck::cast_slice::<_,u8>(&legacy.levels), bytemuck::cast_slice::<_,u8>(&shared.forest.levels));
+            assert_eq!(legacy.indices, shared.forest.indices);
+            assert_eq!(bytemuck::cast_slice::<_,u8>(&legacy.cells), bytemuck::cast_slice::<_,u8>(&shared.forest.cells));
+            assert_eq!(bytemuck::bytes_of(&legacy.instances[0]), bytemuck::bytes_of(&shared.instance(binding(0,0), &source).unwrap()));
+        }
     }
 
     #[test]
@@ -347,7 +438,34 @@ mod tests {
         }
         for cell in &forest.cells {
             assert_eq!(cell.extinction[3][1..], [0.0; 3]);
-            assert_eq!(cell.normals[1][2..], [0.0; 2]);
+            assert_eq!(cell.normals[0], [1.0, 0.0, 0.0, 0.5]);
+            assert_eq!(cell.normals[1], [-1.0, 0.0, 0.0, 0.5]);
+            assert_eq!(cell.normals[2..], [[0.0; 4]; 4]);
+        }
+    }
+
+    #[test]
+    fn packed_actual_normal_means_preserve_density_colour_and_leaf_fraction() {
+        let mut source = voxel([0; 3], 0.17);
+        source.leaf_fraction = 0.75;
+        // A dispersed lobe has a mean length below one. Normalizing it at
+        // upload would change the first moment used by spatial interpolation.
+        source.normal_centroids[0] = [0.4, 0.3, 0.0];
+        source.normal_centroids[1] = [-0.4, -0.3, 0.0];
+        let packed = pack_cell(&source, 0.25).unwrap();
+        assert_eq!(packed.albedo_rough, [0.2, 0.4, 0.1, 0.8]);
+        assert_eq!(packed.normals[0], [0.4, 0.3, 0.0, 0.5]);
+        assert_eq!(packed.normals[1], [-0.4, -0.3, 0.0, 0.5]);
+        assert_eq!(packed.normals[2..], [[0.0; 4]; 4]);
+        for k in 0..13 {
+            assert_eq!(packed.extinction[k / 4][k % 4].to_bits(),
+                (source.directional_area[k] / 0.25f32.powi(3)).to_bits());
+        }
+        assert_eq!(packed.extinction[3][1..], [0.75, 0.0, 0.0]);
+        for invalid in [[0.0; 3], [f32::NAN, 0.0, 0.0], [2.0, 0.0, 0.0]] {
+            let mut invalid_source = source.clone();
+            invalid_source.normal_centroids[0] = invalid;
+            assert!(pack_cell(&invalid_source, 0.25).is_err());
         }
     }
 

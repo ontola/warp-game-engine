@@ -119,7 +119,7 @@ impl WindRenderer {
         });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("plant wind"), layout: None, module: &module,
-            entry_point: Some("update_wind"), compilation_options: Default::default(), cache: None,
+            entry_point: Some("update_wind"), compilation_options: Default::default(), cache: gpu.pipeline_cache(),
         });
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("plant wind"), layout: &pipeline.get_bind_group_layout(0),
@@ -174,8 +174,7 @@ pub(crate) fn common_source() -> String { crate::shaders::source("wind_common.wg
 /// The lighting helpers and the shade entry point, with the car materials.
 /// Read from `KERN_SHADER_DIR` when it is set (see shaders.rs).
 pub(crate) fn shade_source() -> String {
-    let s = crate::shaders::source;
-    format!("{}\n{}\n{}", s("wind_common.wgsl"), s("shade.wgsl"), s("car_material.wgsl"))
+    crate::shaders::SHARED_NAMES.map(crate::shaders::source).join("\n")
 }
 
 #[cfg(test)]

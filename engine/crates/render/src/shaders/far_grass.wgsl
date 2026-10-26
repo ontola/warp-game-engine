@@ -97,21 +97,14 @@ fn fg_lighting(p:vec3<f32>,shading:vec4<f32>,direction:vec3<f32>)->vec3<f32> {
     // RGB already contains the source photo/height-factor covariance. W is
     // original per-tuft normalized height, not height/max_possible_tuft.
     let base=shading.rgb*1.25*(1.0-light.fog.w*0.25);
-    let shadow=mix(1.0,shadow_at(p,n*sign(dot(n,l)+1e-4)),light.sun_color.w);
+    var shadow=mix(1.0,shadow_at(p,n*sign(dot(n,l)+1e-4)),light.sun_color.w);
+    if shadow > 0.0 { shadow*=mix(1.0,grass_sun_transmittance(p,l),light.sun_color.w); }
     let sun_e=light.sun_color.rgb*light.sun_dir.w*shadow;
     let sky_vis=sky_visibility(p,n);
-    let bounce=gi.bounce.rgb*(gi.bounce.w*sky_vis+light.sun_dir.w*max(light.sun_dir.y,0.0)*shadow);
-    let ao=mix(0.45,1.0,shading.w);
-    let ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*ao;
-    let rough=0.85;let f0=vec3<f32>(0.016);
-    let env=mix(bounce/PI,environment(reflect(-v,n),rough,bounce),sky_vis);
-    let back=vec3<f32>(0.12,0.16,0.05)*max(-dot(n,l),0.0);
-    let direct=base/PI*sun_e*max(dot(n,l),0.0)+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
-    let indirect=base/PI*ambient;
-    let specular=env*env_brdf(f0,rough,max(dot(n,v),1e-4))*ao;
-    let distance=distance(p,view.cam.xyz);
-    let fog=max(clamp((distance-light.fog_color.w)/max(light.fog.x-light.fog_color.w,1.0),0.0,1.0),1.0-exp(-light.fog.y*distance));
-    var radiance=mix(direct+indirect+specular,light.fog_color.rgb,fog);
+    let rough=0.85;
+    let response=grass_leaf_response(base,shading.w,v,sun_e,shadow,sky_vis,vec2<f32>(1.0),rough);
+    let direct=response.direct+headlight_grass_radiance(p,v,base,rough);let indirect=response.indirect;let specular=response.specular;
+    var radiance=apply_distance_fog(direct+indirect+specular,distance(p,view.cam.xyz),direction);
     if light.sky.z>0.5&&light.sky.z<1.5 {radiance=vec3<f32>(sky_vis)*6000.0;}
     else if light.sky.z>1.5&&light.sky.z<2.5 {radiance=base*6000.0;}
     else if light.sky.z>2.5&&light.sky.z<3.5 {radiance=direct;}
@@ -125,6 +118,7 @@ fn far_grass_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     let output=vec2<i32>(id.xy);
     textureStore(fg_color,output,vec4<f32>(0.0));
     textureStore(fg_distance,output,vec4<f32>(0.0));
+    if view.extra.w > 0.5 && view.extra.w < 1.5 {return;}
     if fg.bounds.y<fg.bounds.x {return;}
     let full_pixel=min(vec2<f32>(id.xy*2u)+1.0,vec2<f32>(fg.full.xy)-0.5);
     let ndc=full_pixel/vec2<f32>(fg.full.xy)*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
@@ -133,7 +127,8 @@ fn far_grass_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     let horizontal=length(direction.xz);
     if horizontal<1e-8 {return;}
     let near=view.inv_view_proj*vec4<f32>(ndc,1.0,1.0);
-    var span=vec2<f32>(max(fg.ranges.x/horizontal,distance(view.cam.xyz,near.xyz/near.w)),fg.ranges.z/horizontal);
+    let minimum_range=select(view.grass.x,0.0,view.extra.w>=1.5);
+    var span=vec2<f32>(max(minimum_range/horizontal,distance(view.cam.xyz,near.xyz/near.w)),fg.ranges.z/horizontal);
     // Closest of the source 2x2 opaque pixels (reversed Z). This intentionally
     // under-covers silhouettes rather than leaking grass onto a car/rock.
     var opaque=0.0;
