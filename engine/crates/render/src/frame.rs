@@ -184,7 +184,8 @@ struct ToneUniform {
     saturation: f32,
     sharpen: f32,
     offset: [u32; 2],
-    pad2: [u32; 2],
+    bloom_strength:f32,
+    pad2:u32,
 }
 
 /// Where the camera is and what it sees.
@@ -526,6 +527,7 @@ pub struct Renderer {
     exhaust: crate::exhaust::ExhaustRenderer,
     wheel_particles: crate::wheel_particles::WheelParticles,
     headlight_state: std::sync::Mutex<Vec<crate::headlights::SpotLight>>,
+    local_light_state: std::sync::Mutex<Vec<crate::headlights::LocalLight>>,
     lighting_focus: std::sync::Mutex<Vec<Vec3>>,
     diagnostic_sun_focus: std::sync::Mutex<Vec<Vec3>>,
     legacy_light_lookahead: bool,
@@ -593,6 +595,7 @@ pub struct Renderer {
     car_materials: wgpu::Buffer,
     car_material_count: usize,
     tone: wgpu::ComputePipeline,
+    bloom: crate::bloom::Bloom,
     shade_layout: wgpu::BindGroupLayout,
     hidden_meadow_fallback: wgpu::Buffer,
     tone_layout: wgpu::BindGroupLayout,
@@ -1144,6 +1147,8 @@ impl Renderer {
                 (0, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (1, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 }),
                 (2, uniform()),
+                (3, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
+                (4, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
             ],
         );
         let float_tex = |filterable| wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
@@ -1168,6 +1173,7 @@ impl Renderer {
         let shade_mod = module("shade", &crate::wind::shade_source());
         startup.mark("shade_shader_module");
         let tone_mod = module("tonemap", include_str!("shaders/tonemap.wgsl"));
+        let bloom=crate::bloom::Bloom::new(gpu);
         startup.mark("tone_shader_module");
         let pl = |layouts: &[&wgpu::BindGroupLayout]| {
             let l: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(|x| Some(*x)).collect();
@@ -1374,6 +1380,7 @@ impl Renderer {
             exhaust,
             wheel_particles,
             headlight_state: Default::default(),
+            local_light_state: Default::default(),
             lighting_focus: Default::default(),
             diagnostic_sun_focus: Default::default(),
             legacy_light_lookahead: std::env::var("KERN_LEGACY_LIGHT_LOOKAHEAD").is_ok_and(|v|v=="1"),
@@ -1438,6 +1445,7 @@ impl Renderer {
             car_materials,
             car_material_count: car_list.len(),
             tone,
+            bloom,
             shade_layout,
             hidden_meadow_fallback,
             tone_layout,
@@ -1883,6 +1891,14 @@ impl Renderer {
     pub fn set_headlights(&self,lights:&[crate::headlights::SpotLight])->Result<(),String> {
         let validated=crate::headlights::validate(lights)?;
         *self.headlight_state.lock().unwrap()=validated;Ok(())
+    }
+
+    /// Short-range direct spill, independently bounded from shadowed lights.
+    /// No shadow target allocation or culling/raster pass is added. Call with
+    /// an empty set when emitters expire; invalid sets leave the old set intact.
+    pub fn set_local_lights(&self,lights:&[crate::headlights::LocalLight])->Result<(),String> {
+        let validated=crate::headlights::validate_local(lights)?;
+        *self.local_light_state.lock().unwrap()=validated;Ok(())
     }
 
     /// Physical receivers in view order (for example each player car), not
@@ -2368,6 +2384,7 @@ impl Renderer {
         color_diagnostics.context = None;
         let geometry_diagnostic=self.geometry_diagnostic_config()?;
         let debug_options = self.debug_options();
+        self.bloom.set_view_count(views.len());
         let meadow_substrate_settings = self.meadow_substrate_settings.with_debug(debug_options);
         gpu.queue.write_buffer(&self.meadow_substrate_buffer, 0, bytemuck::bytes_of(&meadow_substrate_settings));
         let render_sequence = self.profile_sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2657,7 +2674,8 @@ impl Renderer {
         let headlights = if debug_options.headlights_enabled {
             self.headlight_state.lock().unwrap().clone()
         } else { Vec::new() };
-        self.headlights.upload(gpu,&headlights);
+        let local_lights=self.local_light_state.lock().unwrap().clone();
+        self.headlights.upload(gpu,&headlights,&local_lights);
         let mut headlight_targets=self.headlight_targets.lock().unwrap();
         while headlight_targets.len()<headlights.len() {
             headlight_targets.push(self.view_targets_capacity(gpu,"headlight shadow",self.shadow_capacity,false,self.instance_groups.headlight_enabled));
@@ -2859,7 +2877,8 @@ impl Renderer {
             } else {
                 None
             };
-            let tone_buf = buffer(gpu, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], pad2: [0, 0] }), wgpu::BufferUsages::UNIFORM);
+            let bloom_on=crate::bloom::active(debug_options.bloom_enabled,debug_options.bloom_strength);
+            let tone_buf = buffer(gpu, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},pad2:0 }), wgpu::BufferUsages::UNIFORM);
             let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
                 bind(
                     gpu,
@@ -3135,10 +3154,18 @@ impl Renderer {
                 if let Some((qs, i)) = particles_time { enc.write_timestamp(qs, i + 1); }
                 output
             } else { None };
-            let result_view = particle_output.as_ref().or(exhaust_output.as_ref()).unwrap_or(&resolved).create_view(&Default::default());
+            let result=particle_output.as_ref().or(exhaust_output.as_ref()).unwrap_or(&resolved);
+            // Extract the actual final HDR, including lens emission and exhaust,
+            // after temporal reconstruction. Every view owns separate targets.
+            let bloom_view=if bloom_on {
+                let time=self.query.as_ref().map(|(qs,_,_)|{names.push("bloom");(qs,timestamp_pair(&mut ts))});
+                self.bloom.render(gpu,&mut enc,vi,result,exposure,time)
+            }else{self.bloom.disabled_view()};
+            let result_view = result.create_view(&Default::default());
             let tone_bind = bind(gpu, &self.tone_layout, &[
                 (0, wgpu::BindingResource::TextureView(&result_view)),
-                (1, wgpu::BindingResource::TextureView(&ldr_v)), (2, tone_buf.as_entire_binding())]);
+                (1, wgpu::BindingResource::TextureView(&ldr_v)), (2, tone_buf.as_entire_binding()),
+                (3,wgpu::BindingResource::TextureView(&bloom_view)),(4,wgpu::BindingResource::Sampler(&self.bloom.sampler))]);
             let t = self.query.as_ref().map(|(qs, _, _)| {
                 names.push("tonemap"); (qs, timestamp_pair(&mut ts))
             });
@@ -3863,6 +3890,9 @@ mod layout_tests {
         assert!(next<=TIMESTAMP_CAPACITY);
         timestamp_pair(&mut next); // shared receiver demand build + OR hierarchy
         assert_eq!(next,366);
+        assert!(next<=TIMESTAMP_CAPACITY);
+        for _ in 0..4 {timestamp_pair(&mut next);} // one bounded bloom scope per view
+        assert_eq!(next,374);
         assert!(next<=TIMESTAMP_CAPACITY);
         let brick_fixture_upper_bound = 330 - 4*6*2 + (8+4*3)*2;
         assert!(brick_fixture_upper_bound <= TIMESTAMP_CAPACITY);

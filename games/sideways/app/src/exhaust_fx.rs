@@ -2,6 +2,7 @@
 //! No physics forces, asset mutation, or render-rate random emission.
 use glam::{Quat,Vec3};
 use render::exhaust::Sprite;
+use render::headlights::LocalLight;
 use sideways::race::Race;
 
 const DT:f32=1.0/120.0;
@@ -9,6 +10,9 @@ const CARS:usize=4;
 const PUFFS_PER_CAR:usize=24;
 const FLASH_TICKS:u8=2;
 const COOLDOWN_TICKS:u32=48;
+const MAX_OUTLET_MOTION_M:f32=0.003;
+const FLASH_INTENSITY_CD:Vec3=Vec3::new(160.0,36.0,3.0);
+const FLASH_RANGE_M:f32=2.0;
 
 /// Tube centres from connected rear underbody components in bundled GLBs.
 /// +Z is rear. MV6/Toyama use the full circular cross-section centre because
@@ -28,8 +32,11 @@ fn unit(x:u64)->f32 {(hash(x)>>40)as f32/16777216.0}
 struct Input {pos:Vec3,rot:Quat,velocity:Vec3,angular:Vec3,ride:f32,model:String,rpm:f32,limit:f32,throttle:f32,cut:bool,downshift:bool}
 impl Input {
     fn origins(&self)->Vec<(Vec3,Vec3)> {
+        self.moving_origins(Vec3::ZERO)
+    }
+    fn moving_origins(&self,offset:Vec3)->Vec<(Vec3,Vec3)> {
         mounts(&self.model).iter().map(|p| {
-            let arm=self.rot*(Vec3::from_array(*p)+Vec3::new(0.0,self.ride,0.015));
+            let arm=self.rot*(Vec3::from_array(*p)+Vec3::new(0.0,self.ride,0.015)+offset);
             (self.pos+arm,self.velocity+self.angular.cross(arm))
         }).collect()
     }
@@ -37,10 +44,28 @@ impl Input {
 #[derive(Clone)]
 struct Puff {pos:Vec3,velocity:Vec3,age:f32,life:f32,radius:f32,alpha:f32,seed:f32}
 #[derive(Default)]
-struct Emitter {input:Option<Input>,puffs:Vec<Puff>,credit:f32,serial:u64,flash:u8,cooldown:u32,events:u64}
+struct Emitter {input:Option<Input>,puffs:Vec<Puff>,credit:f32,serial:u64,flash:u8,cooldown:u32,events:u64,phase:f32}
 impl Emitter {
+    // A bounded visual engine pulse, not physical body/pipe animation. It is
+    // integrated at simulation cadence so RPM changes cannot teleport phase.
+    fn outlet_motion(&self,input:&Input)->Vec3 {
+        if input.rpm<=400.0 {return Vec3::ZERO;}
+        let load=input.throttle.clamp(0.0,1.0);
+        let rpm=(input.rpm/input.limit.max(1000.0)).clamp(0.0,1.0);
+        let amplitude=0.001+0.0015*load+0.0005*rpm;
+        Vec3::new(0.55*self.phase.sin(),0.75*(2.0*self.phase+0.4).sin(),0.30*(self.phase+0.8).sin())*amplitude
+    }
+    fn local_axis(&self)->Vec3 {
+        Vec3::new(0.012*self.phase.sin(),0.008*(2.0*self.phase+0.3).sin(),1.0).normalize()
+    }
+    fn flash_energy(&self)->f32 {match self.flash {0=>0.0,1=>0.6,_=>1.0}}
     fn advance(&mut self,input:Input,seed:u64,dt:f32) {
+        if self.input.is_none() {self.phase=unit(seed^0xe11a57)*std::f32::consts::TAU;}
         if dt==0.0 {self.input=Some(input);return;}
+        if input.rpm>400.0 {
+            let hz=6.0+input.rpm.clamp(0.0,12000.0)/600.0;
+            self.phase=(self.phase+std::f32::consts::TAU*hz*dt).rem_euclid(std::f32::consts::TAU);
+        }
         self.flash=self.flash.saturating_sub(1);self.cooldown=self.cooldown.saturating_sub(1);
         let old=self.input.as_ref();
         let shift=old.is_some_and(|p|!p.downshift)&&input.downshift&&input.rpm>4300.0;
@@ -60,7 +85,7 @@ impl Emitter {
             p.pos+=p.velocity*dt;
         }
         self.puffs.retain(|p|p.age<p.life);
-        let origins=input.origins();
+        let origins=input.moving_origins(self.outlet_motion(&input));
         if input.rpm>400.0&&!origins.is_empty() {
             let load=input.throttle.clamp(0.0,1.0);
             self.credit+=dt*(5.0+load*8.0);
@@ -69,7 +94,7 @@ impl Emitter {
                 let key=seed^self.serial;let (pos,velocity)=origins[self.serial as usize%origins.len()];
                 let jitter=Vec3::new(unit(key^11)-0.5,unit(key^29)-0.25,unit(key^53)-0.5)*0.14;
                 if self.puffs.len()==PUFFS_PER_CAR {self.puffs.remove(0);}
-                self.puffs.push(Puff {pos,velocity:velocity+input.rot*Vec3::Z*(0.65+2.0*load)+jitter,
+                self.puffs.push(Puff {pos,velocity:velocity+input.rot*self.local_axis()*(0.65+2.0*load)+jitter,
                     age:0.0,life:0.55+unit(key^7)*0.3,radius:0.027+unit(key^3)*0.012,
                     alpha:0.055+load*0.05,seed:unit(key^97)*6.2831855});
             }
@@ -84,13 +109,27 @@ impl Emitter {
         }
         let Some(input)=&self.input else{return};if input.rpm<=400.0{return;}
         let load=input.throttle.clamp(0.0,1.0);let rpm=(input.rpm/input.limit.max(1000.0)).clamp(0.0,1.2);
-        let axis=(input.rot*Vec3::Z+Vec3::Y*0.15).normalize();
-        for (index,(pos,_)) in input.origins().into_iter().enumerate() {
-            out.push(Sprite {position_radius:pos.extend(0.055+load*0.04).to_array(),axis_length:axis.extend(0.3+rpm*0.38+load*0.12).to_array(),colour_alpha:[0.0,0.0,0.0,0.32],params:[1.0,index as f32*2.7,time,0.5+rpm*0.9]});
+        let rear=input.rot*self.local_axis();
+        let axis=(rear+Vec3::Y*0.15).normalize();let pulse=1.0+0.07*self.phase.sin();
+        for (index,(pos,_)) in input.moving_origins(self.outlet_motion(input)).into_iter().enumerate() {
+            out.push(Sprite {position_radius:pos.extend(0.055+load*0.04).to_array(),axis_length:axis.extend((0.3+rpm*0.38+load*0.12)*pulse).to_array(),colour_alpha:[0.0,0.0,0.0,0.32],params:[1.0,index as f32*2.7,time,(0.5+rpm*0.9)*pulse]});
             if self.flash>0 {
-                out.push(Sprite {position_radius:pos.extend(0.045+load*0.025).to_array(),axis_length:(input.rot*Vec3::Z).extend(0.26+rpm*0.17).to_array(),colour_alpha:[8000.0,1800.0,150.0,0.9],params:[2.0,index as f32*2.7,time,0.0]});
+                out.push(Sprite {position_radius:pos.extend(0.045+load*0.025).to_array(),axis_length:rear.extend(0.26+rpm*0.17).to_array(),colour_alpha:[8000.0,1800.0,150.0,0.9*self.flash_energy()],params:[2.0,index as f32*2.7,time,0.0]});
             }
         }
+    }
+    fn light(&self)->Option<LocalLight> {
+        let input=self.input.as_ref()?;
+        if self.flash==0 || input.rpm<=400.0 {return None;}
+        let origins=input.moving_origins(self.outlet_motion(input));
+        if origins.is_empty() {return None;}
+        // One bounded light approximates both pipes. Its source lies inside
+        // the flame, just behind the measured outlets, never in the engine.
+        let rear=input.rot*self.local_axis();
+        let position=origins.iter().map(|(p,_)|*p).sum::<Vec3>()/origins.len()as f32+rear*0.08;
+        Some(LocalLight {position,direction:(rear-input.rot*Vec3::Y*0.12).normalize(),
+            intensity_cd:FLASH_INTENSITY_CD*self.flash_energy(),range_m:FLASH_RANGE_M,
+            inner_cos:45.0f32.to_radians().cos(),outer_cos:70.0f32.to_radians().cos(),source_radius_m:0.05})
     }
 }
 pub struct ExhaustFx {seed:u64,last:Option<(u32,u64)>,emitters:[Emitter;CARS]}
@@ -115,7 +154,10 @@ impl ExhaustFx {
         self.last=Some((round,tick));
     }
     pub fn sprites(&self)->Vec<Sprite> {let mut out=Vec::with_capacity(CARS*(PUFFS_PER_CAR+4));let time=self.last.map_or(0.0,|(_,t)|(t%432000)as f32*DT);for e in &self.emitters {e.sprites(time,&mut out);}out}
-    pub fn metadata(&self)->serde_json::Value {serde_json::json!({"mode":"fixed_tick_measured_tailpipes","tick":self.last,"cars":CARS,"puff_capacity_per_car":PUFFS_PER_CAR,"sprite_capacity":CARS*(PUFFS_PER_CAR+4),"sprites":self.sprites().len(),"backfires":self.emitters.iter().map(|e|e.events).sum::<u64>(),"flash_ms":FLASH_TICKS as f32*DT*1000.0,"physics_unchanged":true,"unknown_model_policy":"disabled_without_authored_mount","limits":["four cars maximum","smoke has sky illumination without volumetric sun shadow","no projected flash light","opaque foreground depth protects heat refraction; transparent foreground is not depth-tested"]})}
+    /// Event-local rear spots: the host applies the exhaust visibility gate and
+    /// uploads this list with other local lights. No shadowed headlamp slots.
+    pub fn lights(&self)->Vec<LocalLight> {self.emitters.iter().filter_map(Emitter::light).collect()}
+    pub fn metadata(&self)->serde_json::Value {serde_json::json!({"mode":"fixed_tick_measured_tailpipes","tick":self.last,"cars":CARS,"puff_capacity_per_car":PUFFS_PER_CAR,"sprite_capacity":CARS*(PUFFS_PER_CAR+4),"sprites":self.sprites().len(),"backfires":self.emitters.iter().map(|e|e.events).sum::<u64>(),"flash_ms":FLASH_TICKS as f32*DT*1000.0,"physics_unchanged":true,"unknown_model_policy":"disabled_without_authored_mount","engine_motion":{"scope":"body-local emitted gas/flame and heat only; no body mesh, camera or physics motion","maximum_outlet_motion_m":MAX_OUTLET_MOTION_M,"clock":"fixed120Hz,RPM-integrated visual pulse"},"flash_lights":{"scope":"emitter requests before host exhaust gate; one approximate rear spot per car, not one per pipe","range_m":FLASH_RANGE_M,"peak_intensity_cd":FLASH_INTENSITY_CD.to_array(),"lights":self.lights().iter().map(|l|serde_json::json!({"position":l.position.to_array(),"direction":l.direction.to_array(),"intensity_cd":l.intensity_cd.to_array(),"range_m":l.range_m,"inner_cos":l.inner_cos,"outer_cos":l.outer_cos,"source_radius_m":l.source_radius_m})).collect::<Vec<_>>()},"limits":["four cars maximum","smoke has sky illumination without volumetric sun shadow","flash light is a short-range rear-cone approximation, no volumetric beam","opaque foreground depth protects heat refraction; transparent foreground is not depth-tested"]})}
 }
 
 #[cfg(test)] mod tests {
@@ -139,4 +181,55 @@ impl ExhaustFx {
     #[test] fn render_calls_and_pause_do_not_advance_emission(){let mut a=ExhaustFx::new(7);let mut b=ExhaustFx::new(7);for tick in 0..360{a.observe(1,tick,&[input()]);b.observe(1,tick,&[input()]);for _ in 0..8{b.observe(1,tick,&[input()]);let _=b.sprites();}assert_eq!(a.sprites(),b.sprites());}assert!(!a.emitters[0].puffs.is_empty());}
     #[test] fn four_car_budget_and_round_reset(){let mut fx=ExhaustFx::new(8);for tick in 0..1200{fx.observe(1,tick,&vec![input();4]);assert!(fx.sprites().len()<=112);assert!(fx.emitters.iter().all(|e|e.puffs.len()<=24));}fx.observe(2,1200,&[input()]);assert!(fx.emitters.iter().all(|e|e.puffs.is_empty()));assert_eq!(fx.sprites().len(),2);}
     #[test] fn flash_requires_engine_edge_and_expires_in_two_ticks(){let seed=(0..100).find(|s|unit(*s^1)<0.65).unwrap();let mut e=Emitter::default();e.advance(input(),seed,0.0);let mut down=input();down.downshift=true;e.advance(down.clone(),seed,DT);assert_eq!(e.flash,2);assert_eq!(e.events,1);e.advance(down.clone(),seed,DT);assert_eq!(e.flash,1);e.advance(down.clone(),seed,DT);assert_eq!(e.flash,0);for _ in 0..120{e.advance(down.clone(),seed,DT);}assert_eq!(e.events,1);}
+    #[test] fn outlet_motion_is_bounded_and_follows_full_body_pose() {
+        let mut p=input();p.throttle=1.0;p.rpm=p.limit;
+        let mut e=Emitter::default();let q=Quat::from_euler(glam::EulerRot::YXZ,0.8,0.4,-0.3);
+        for i in 0..2048 {
+            e.phase=i as f32*std::f32::consts::TAU/2048.0;
+            let offset=e.outlet_motion(&p);assert!(offset.length()<=MAX_OUTLET_MOTION_M);
+            assert!(e.local_axis().dot(Vec3::Z)>1.0f32.to_radians().cos());
+            let base=p.moving_origins(offset);let mut rotated=p.clone();rotated.rot=q;rotated.pos=Vec3::new(3.0,4.0,-7.0);
+            for (a,b) in base.iter().zip(rotated.moving_origins(offset)) {
+                assert!(b.0.abs_diff_eq(rotated.pos+q*a.0,1e-5));
+            }
+        }
+        p.rpm=0.0;assert_eq!(e.outlet_motion(&p),Vec3::ZERO);
+    }
+    #[test] fn pulse_phase_tracks_rpm_only_on_actual_ticks() {
+        let mut low=input();low.rpm=1000.0;let mut high=low.clone();high.rpm=7000.0;
+        let mut a=Emitter::default();let mut b=Emitter::default();
+        a.advance(low.clone(),7,0.0);b.advance(high.clone(),7,0.0);
+        let start=a.phase;assert_eq!(start,b.phase);
+        a.advance(low.clone(),7,DT);b.advance(high.clone(),7,DT);
+        let da=(a.phase-start).rem_euclid(std::f32::consts::TAU);
+        let db=(b.phase-start).rem_euclid(std::f32::consts::TAU);
+        assert!(db>da);assert!((da-(6.0+1000.0/600.0)*std::f32::consts::TAU*DT).abs()<1e-6);
+        let held=a.phase;a.advance(low,7,0.0);assert_eq!(held,a.phase);
+        let mut stopped=input();stopped.rpm=0.0;a.advance(stopped,7,DT);assert_eq!(held,a.phase);
+    }
+    #[test] fn flash_light_and_entire_flame_share_event_and_decay() {
+        let seed=(0..100).find(|s|unit(*s^1)<0.65).unwrap();let mut e=Emitter::default();
+        e.advance(input(),seed,0.0);assert!(e.light().is_none());let mut down=input();down.downshift=true;
+        for energy in [1.0,0.6,0.0] {
+            e.advance(down.clone(),seed,DT);let mut sprites=Vec::new();e.sprites(0.0,&mut sprites);
+            let flames:Vec<_>=sprites.iter().filter(|s|s.params[0]==2.0).collect();
+            if energy==0.0 {assert!(e.light().is_none());assert!(flames.is_empty());continue;}
+            let light=e.light().unwrap();assert_eq!(flames.len(),2);
+            assert!(light.intensity_cd.abs_diff_eq(FLASH_INTENSITY_CD*energy,1e-6));
+            assert!(flames.iter().all(|s|(s.colour_alpha[3]-0.9*energy).abs()<1e-6));
+            let midpoint=flames.iter().map(|s|Vec3::from_slice(&s.position_radius[..3])).sum::<Vec3>()/2.0;
+            assert!(light.position.abs_diff_eq(midpoint+Vec3::from_slice(&flames[0].axis_length[..3])*0.08,1e-6));
+            assert!((light.direction.length()-1.0).abs()<1e-6);assert_eq!(light.range_m,2.0);
+            assert!(light.inner_cos>light.outer_cos&&light.outer_cos>0.0);
+        }
+        assert_eq!(e.events,1);
+    }
+    #[test] fn flash_lights_are_four_car_bounded_and_cannot_survive_reset_or_unknown_model() {
+        let mut fx=ExhaustFx::new(4);fx.observe(1,0,&vec![input();CARS]);
+        for e in &mut fx.emitters {e.flash=2;}
+        assert_eq!(fx.lights().len(),CARS);let positions:Vec<_>=fx.lights().iter().map(|l|l.position).collect();
+        fx.observe(1,0,&vec![input();CARS]);assert_eq!(positions,fx.lights().iter().map(|l|l.position).collect::<Vec<_>>());
+        fx.emitters[0].input.as_mut().unwrap().model="custom.glb".into();assert_eq!(fx.lights().len(),CARS-1);
+        fx.observe(2,0,&vec![input();CARS]);assert!(fx.lights().is_empty());
+    }
 }

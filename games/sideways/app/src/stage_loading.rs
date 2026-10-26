@@ -38,10 +38,12 @@ impl Phase {
 }
 
 pub struct Progress {pub phase:Phase,pub since:Instant,pub report:serde_json::Value}
-pub struct Loaded {pub race:Race,pub built:Built,pub renderer:Renderer,pub light:Lighting,pub sky:serde_json::Value}
+pub struct Loaded {pub race:Race,pub built:Built,pub renderer:Renderer,pub light:Lighting,pub sky:serde_json::Value,
+    pub tree_baseline:Option<crate::tree_tuning::Baseline>,pub tree_settings:crate::tree_tuning::Settings}
 pub struct Request {
     pub seed:Seed,pub seats:Vec<Seat>,pub views:usize,pub settings:serde_json::Value,
     pub looks:Looks,pub sky:Option<PreparedSky>,pub upscale:render::upscale::UpscaleMode,
+    pub tree_settings:crate::tree_tuning::Settings,
 }
 
 /// Heavy first-renderer construction uses the same device as the presenter,
@@ -250,6 +252,8 @@ fn build(request:Request,gpu:Gpu,progress:Arc<Mutex<Progress>>,cancel:Arc<Atomic
     let mut order:Vec<_>=(0..request.seats.len()).collect();order.sort_by_key(|i|(request.seats[*i].couch.unwrap_or(1000),request.seats[*i].index));
     let positions:Vec<_>=order.iter().filter_map(|i|cams.get(*i).map(|c|c.pos)).take(request.views).collect();
     let mut built=visuals::build_live(&race.stage,&poses,&positions,&request.looks)?;
+    let tree_baseline=crate::tree_tuning::Baseline::prepare_optional_stage(&mut built.scene,&mut race.phys,request.tree_settings)?;
+    record("tree_settings",crate::tree_tuning::Baseline::stage_metadata(tree_baseline.as_ref(),request.tree_settings));
     record("visuals_ms",(at.elapsed().as_secs_f64()*1000.0).into());record("visuals_breakdown",serde_json::json!(built.log));
     let at=Instant::now();let mut light=lighting(race.weather);
     let sky=if let Some(sky)=request.sky {sky.apply_scene(&mut built.scene,&mut light);sky.metadata}else{crate::procedural_sky::apply_environment(&mut built.scene,&mut light)?};
@@ -262,7 +266,7 @@ fn build(request:Request,gpu:Gpu,progress:Arc<Mutex<Progress>>,cancel:Arc<Atomic
     gpu.device.poll(wgpu::PollType::Wait{submission_index:Some(submission),timeout:Some(std::time::Duration::from_secs(60))}).map_err(|e|format!("stage upload completion: {e:?}"))?;
     record("upload_wait_ms",(at.elapsed().as_secs_f64()*1000.0).into());record("total_worker_ms",(start.elapsed().as_secs_f64()*1000.0).into());
     phase(Phase::Ready)?;
-    Ok(Loaded {race,built,renderer,light,sky})
+    Ok(Loaded {race,built,renderer,light,sky,tree_baseline,tree_settings:request.tree_settings})
 }
 
 #[cfg(test)]

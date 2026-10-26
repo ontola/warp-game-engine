@@ -82,14 +82,47 @@ fn scale_of(instance:&GpuInstance)->Result<[f32;2],String> {
 }
 
 impl Baseline {
+    fn unsupported_scene(scene:&Scene)->bool {
+        scene.voxel_forest.is_some() || scene.foliage_world.is_some() || !scene.foliage_representations.is_empty()
+            || !scene.foliage_source_groups.is_empty() || !scene.part_wind.is_empty() || !scene.part_attachments.is_empty()
+    }
+
+    /// An explicit neutral preset can leave experimental fixtures untouched.
+    /// Any non-neutral edit still fails; never tune source while keeping stale
+    /// voxel/branch assets or collision resources.
+    pub fn prepare_optional_stage(scene:&mut Scene,physics:&mut Physics,settings:Settings)->Result<Option<Self>,String> {
+        settings.validate()?;
+        let no_trees=!scene.instances.iter().any(|i|i.category()==GeometryCategory::Trees && i.cluster_count>0);
+        if settings==Settings::default() && (Self::unsupported_scene(scene)||no_trees) {return Ok(None);}
+        Self::prepare_stage(scene,physics,settings).map(Some)
+    }
+
+    pub fn stage_metadata(baseline:Option<&Self>,settings:Settings)->serde_json::Value {
+        match baseline {
+            Some(baseline)=>{let mut value=baseline.metadata(settings);value["editing_available"]=true.into();value},
+            None=>serde_json::json!({"editing_available":false,"size_scale":settings.size_scale,
+                "population_fraction":settings.density,"leaf_rgb_multiplier":settings.color_multiplier,
+                "scope":"Explicit authored preset: experimental or tree-free scene retained without tree edits; Apply requires editable source trees."}),
+        }
+    }
+
+    /// Start a newly built stage from absolute game settings before creating
+    /// any renderer resources. Retain the authored source/collider baseline
+    /// so subsequent Apply/Reset never compounds scale or population removal.
+    pub fn prepare_stage(scene:&mut Scene,physics:&mut Physics,settings:Settings)->Result<Self,String> {
+        settings.validate()?;
+        let baseline=Self::capture(scene,physics)?;
+        baseline.apply_scene(scene,settings)?;
+        baseline.apply_physics(physics,settings)?;
+        Ok(baseline)
+    }
+
     pub fn capture(scene:&Scene,physics:&Physics)->Result<Self,String> {
         // Packed voxel transforms, branch ownership and their optical assets
         // need a different transaction. Fail explicitly rather than tune only
         // one of those representations.
-        if scene.voxel_forest.is_some() || !scene.foliage_representations.is_empty()
-            || !scene.foliage_source_groups.is_empty() || !scene.part_wind.is_empty()
-            || !scene.part_attachments.is_empty()
-        {return Err("tree editing is unavailable for experimental packed voxel/branch scenes; rebuild their source and voxel assets together".into());}
+        if Self::unsupported_scene(scene)
+        {return Err("tree editing is unavailable for experimental packed voxel/branch/world scenes; rebuild their source and voxel assets together, or use SIDEWAYS_RENDER_BASELINE=authored to leave them unedited".into());}
         let mut trees=Vec::new();let mut sources=Vec::new();let mut crown_ids=BTreeSet::new();
         for (owner,instance) in scene.instances.iter().enumerate() {
             if instance.category()!=GeometryCategory::Trees {continue;}
@@ -251,6 +284,46 @@ mod tests {
             .all(|i|i.cluster_count==0&&i.flags&FOLIAGE==0));
         assert_eq!(scene.instances.last().unwrap().rows,unrelated);
         assert_eq!(root_rank([10.,2.,20.]),root_rank([10.,99.,20.]));
+    }
+
+    #[test]
+    fn stage_baseline_is_applied_once_and_remains_an_absolute_reset_reference() {
+        let settings=Settings{size_scale:1.5,density:0.45,color_multiplier:[1.0,1.15,0.9]};
+        let (mut scene,mut physics)=fixture();let original=scene.instances.clone();let colors=scene.materials.clone();
+        let baseline=Baseline::prepare_stage(&mut scene,&mut physics,settings).unwrap();
+        let tuned=scene.instances.clone();let tuned_materials=scene.materials.clone();
+        assert_eq!(baseline.metadata(settings)["total_source_trees"],16);
+        for (tree,instance) in baseline.trees.iter().zip(&scene.instances) {
+            assert_eq!(tree.original.rows,original[tree.owner].rows,"retain authored bytes, not scaled stage bytes");
+            assert_eq!(instance.scale,tree.original.scale*1.5);
+        }
+        // Repeat Apply/Reset never scales already edited trees a second time.
+        baseline.apply_scene(&mut scene,Settings{size_scale:0.7,density:0.2,color_multiplier:[0.8;3]}).unwrap();
+        baseline.apply_scene(&mut scene,settings).unwrap();baseline.apply_physics(&mut physics,settings).unwrap();
+        for (a,b) in scene.instances.iter().zip(&tuned) {
+            assert_eq!(a.rows,b.rows);assert_eq!(a.sphere,b.sphere);assert_eq!(a.cluster_count,b.cluster_count);
+        }
+        for (a,b) in scene.materials.iter().zip(&tuned_materials) {assert_eq!(a.tint,b.tint);}
+        baseline.apply_scene(&mut scene,Settings::default()).unwrap();baseline.apply_physics(&mut physics,Settings::default()).unwrap();
+        for (a,b) in scene.instances.iter().zip(&original) {assert_eq!(a.rows,b.rows);assert_eq!(a.cluster_count,b.cluster_count);}
+        for (a,b) in scene.materials.iter().zip(&colors) {assert_eq!(a.tint,b.tint);}
+        // A newly constructed stage receives its own authored baseline.
+        let (mut next_scene,mut next_physics)=fixture();
+        let next=Baseline::prepare_stage(&mut next_scene,&mut next_physics,settings).unwrap();
+        assert_eq!(next.metadata(settings),baseline.metadata(settings));
+        for (a,b) in next_scene.instances.iter().zip(&tuned) {assert_eq!(a.rows,b.rows);assert_eq!(a.cluster_count,b.cluster_count);}
+    }
+
+    #[test]
+    fn explicit_neutral_preset_leaves_unsupported_scene_untouched_without_hiding_edits() {
+        let (mut scene,mut physics)=fixture();let original=scene.instances.clone();
+        scene.part_attachments.push(render::part_wind::PartAttachment {pose:0,owner:0,rest:glam::Mat4::IDENTITY});
+        let baseline=Baseline::prepare_optional_stage(&mut scene,&mut physics,Settings::default()).unwrap();
+        assert!(baseline.is_none());
+        assert_eq!(Baseline::stage_metadata(baseline.as_ref(),Settings::default())["editing_available"],false);
+        assert!(Baseline::prepare_optional_stage(&mut scene,&mut physics,Settings{size_scale:1.5,..Default::default()}).is_err());
+        for (a,b) in scene.instances.iter().zip(&original) {assert_eq!(a.rows,b.rows);assert_eq!(a.sphere,b.sphere);assert_eq!(a.cluster_count,b.cluster_count);}
+        assert!(Baseline::prepare_optional_stage(&mut Scene::default(),&mut Physics::new(),Settings::default()).unwrap().is_none());
     }
 
     #[test]

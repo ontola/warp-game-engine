@@ -89,7 +89,7 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
         specular = specular * (1.0 - fc) + mix(bounce / PI, environment(refl, 0.04, bounce), reflection_vis) * contact.y * fc;
     }
     direct += headlight_radiance(p,n,v,diffuse,rough,f0);
-    var rad = direct + indirect + specular + car_lamp_emission(m.flags, base);
+    var rad = direct + indirect + specular + car_lamp_emission(m.flags, base, instances[tri.owner], p);
     rad = apply_distance_fog(rad, distance(p, view.cam.xyz), -v);
     if light.sky.z > 0.5 && light.sky.z < 1.5 { rad = vec3<f32>(sky_vis) * 6000.0; }
     else if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }

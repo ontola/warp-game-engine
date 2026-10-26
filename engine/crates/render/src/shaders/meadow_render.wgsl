@@ -66,10 +66,10 @@ fn meadow_headlights(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,base:vec3<f32>,rough:f3
     let specular_weight=clamp(env_brdf(f0,rough,max(dot(n,v),1e-4)),vec3<f32>(0.0),vec3<f32>(1.0));
     let budget=clamp(base,vec3<f32>(0.0),vec3<f32>(1.0))*(1.0-specular_weight)/PI;
     var result=vec3<f32>(0.0);
-    for(var index=0u;index<min(headlights.count.x,8u);index++) {
-        let towards=headlights.lights[index].position_range.xyz-p;
+    for(var index=0u;index<incident_light_count(p);index++) {
+        let towards=incident_light_position(index)-p;
         let bias=n*select(-1.0,1.0,dot(n,towards)>=0.0);
-        let lamp=headlight_sample(index,p,bias);
+        let lamp=incident_light_sample(index,p,bias);
         if all(lamp.irradiance==vec3<f32>(0.0)) {continue;}
         let ndl=dot(n,lamp.direction);
         result+=lamp.irradiance*(budget*(0.75*max(ndl,0.0)+0.25*max(-ndl,0.0))+ggx(n,v,lamp.direction,rough,f0));

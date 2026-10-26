@@ -9,6 +9,9 @@ pub struct DebugRenderOptions {
     pub transparency_enabled: bool,
     pub exhaust_enabled: bool,
     pub wheel_particles_enabled: bool,
+    /// Post-reconstruction highlight bloom; never modifies temporal history.
+    pub bloom_enabled: bool,
+    pub bloom_strength: f32,
     /// Scale both meadow representation transitions and its outer fade. This
     /// only shrinks the existing allocation; it does not change root density.
     pub meadow_distance_scale: f32,
@@ -31,6 +34,8 @@ impl Default for DebugRenderOptions {
             transparency_enabled: true,
             exhaust_enabled: true,
             wheel_particles_enabled: true,
+            bloom_enabled: true,
+            bloom_strength: crate::bloom::DEFAULT_STRENGTH,
             meadow_distance_scale: 1.0,
             meadow_lod_pixels: 1.0,
             meadow_size_scale: 1.0,
@@ -42,6 +47,9 @@ impl Default for DebugRenderOptions {
 
 impl DebugRenderOptions {
     pub fn validate(&self) -> Result<(), String> {
+        if !self.bloom_strength.is_finite() || !(0.0..=0.2).contains(&self.bloom_strength) {
+            return Err("bloom strength must be finite and in 0.0..=0.2".into());
+        }
         if !self.meadow_distance_scale.is_finite()
             || !(0.25..=1.0).contains(&self.meadow_distance_scale)
         {
@@ -71,7 +79,7 @@ impl DebugRenderOptions {
             || self.meadow_size_scale != previous.meadow_size_scale
             || self.meadow_density != previous.meadow_density
             || self.meadow_color_multiplier != previous.meadow_color_multiplier
-        // Exhaust and wheel particles compose after temporal reconstruction.
+        // Exhaust, wheel particles and bloom compose after reconstruction.
     }
 
     pub(crate) fn draws_meadow(self) -> bool {
@@ -93,6 +101,10 @@ mod tests {
     fn debug_options_validate_before_mutating_renderer_state() {
         let defaults = DebugRenderOptions::default();
         assert!(defaults.validate().is_ok());
+        assert!(defaults.bloom_enabled);assert_eq!(defaults.bloom_strength,0.04);
+        for bad in [f32::NAN,f32::INFINITY,-0.01,0.201] {
+            assert!(DebugRenderOptions{bloom_strength:bad,..defaults}.validate().is_err());
+        }
         assert_eq!(defaults.meadow_size_scale,1.0);
         assert_eq!(defaults.meadow_lod_pixels,1.0);
         assert_eq!(defaults.meadow_density,1.0);
@@ -147,7 +159,7 @@ mod tests {
             assert!(defaults.resets_history(changed));
         }
         let post_effects = DebugRenderOptions {
-            exhaust_enabled: false, wheel_particles_enabled: false, ..defaults
+            exhaust_enabled: false, wheel_particles_enabled: false, bloom_enabled:false,bloom_strength:0.2, ..defaults
         };
         assert!(!post_effects.resets_history(defaults));
         assert!(!defaults.resets_history(post_effects));
