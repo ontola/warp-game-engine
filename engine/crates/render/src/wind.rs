@@ -79,8 +79,48 @@ impl Uniform {
             amplitudes: [state.tree_shear, state.grass_shear, 0.0, 0.0] }
     }
 }
+/// Tree wind stops beyond a distance from every camera (Nanite's animation
+/// min screen size, as a view-independent radius). Trees in rest pose are
+/// static shadow casters; see static_sun::StaticSun::pin_frozen_trees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindFreeze {
+    /// Sway fades out from here (m, horizontal distance to the nearest camera).
+    pub fade_start: f32,
+    /// Beyond this a tree is exactly at rest.
+    pub frozen_beyond: f32,
+}
+
+impl WindFreeze {
+    /// `KERN_WIND_FREEZE=start,end` in metres, e.g. `50,70`. Unset or invalid: off.
+    pub fn parse(value: Option<&str>) -> Option<Self> {
+        let (a, b) = value?.split_once(',')?;
+        let (a, b) = (a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?);
+        (a.is_finite() && b.is_finite() && a >= 0.0 && b > a && b <= 2000.0)
+            .then_some(Self { fade_start: a, frozen_beyond: b })
+    }
+
+    /// CPU counterpart of the shader's amplitude factor.
+    pub fn factor(&self, root: Vec3, cameras: &[Vec3]) -> f32 {
+        let nearest = cameras.iter().take(MAX_FREEZE_CAMERAS)
+            .map(|c| Vec2::new(root.x - c.x, root.z - c.z).length()).fold(f32::INFINITY, f32::min);
+        if nearest >= self.frozen_beyond { return 0.0; }
+        let t = ((nearest - self.fade_start) / (self.frozen_beyond - self.fade_start)).clamp(0.0, 1.0);
+        1.0 - t * t * (3.0 - 2.0 * t)
+    }
+}
+
+pub const MAX_FREEZE_CAMERAS: usize = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
+struct FreezeUniform {
+    params: [f32; 4],
+    cameras: [[f32; 4]; MAX_FREEZE_CAMERAS],
+}
+
 struct Cache {
     uniform: Uniform,
+    freeze: FreezeUniform,
     clear_pending: bool,
 }
 
@@ -89,6 +129,7 @@ pub struct WindRenderer {
     bind: wgpu::BindGroup,
     uniform: wgpu::Buffer,
     coefficients: wgpu::Buffer,
+    freeze: wgpu::Buffer,
     count: u32,
     cache: Mutex<Cache>,
 }
@@ -114,6 +155,10 @@ impl WindRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        let freeze = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wind freeze"), contents: bytemuck::bytes_of(&FreezeUniform::zeroed()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("plant wind"), source: wgpu::ShaderSource::Wgsl(include_str!("shaders/wind.wgsl").into()),
         });
@@ -128,10 +173,11 @@ impl WindRenderer {
                 wgpu::BindGroupEntry { binding: 1, resource: instances.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: replacements.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: coefficients.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: freeze.as_entire_binding() },
             ],
         });
-        Ok(Self { pipeline, bind, uniform, coefficients, count,
-            cache: Mutex::new(Cache { uniform: initial, clear_pending: false }) })
+        Ok(Self { pipeline, bind, uniform, coefficients, freeze, count,
+            cache: Mutex::new(Cache { uniform: initial, freeze: FreezeUniform::zeroed(), clear_pending: false }) })
     }
 
     pub fn buffer(&self) -> &wgpu::Buffer { &self.coefficients }
@@ -147,6 +193,21 @@ impl WindRenderer {
         cache.uniform = uniform;
         gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         Ok(true)
+    }
+
+    /// This frame's cameras for the freeze radius (at most four are used).
+    /// None disables freezing. Writes only when something changed.
+    pub fn set_freeze(&self, gpu: &Gpu, freeze: Option<WindFreeze>, cameras: &[Vec3]) {
+        let mut u = FreezeUniform::zeroed();
+        if let Some(f) = freeze {
+            let n = cameras.len().min(MAX_FREEZE_CAMERAS);
+            u.params = [f.fade_start, f.frozen_beyond, n as f32, if n > 0 { 1.0 } else { 0.0 }];
+            for (slot, c) in u.cameras.iter_mut().zip(cameras) { *slot = [c.x, c.z, 0.0, 0.0]; }
+        }
+        let mut cache = self.cache.lock().unwrap();
+        if cache.freeze == u { return; }
+        cache.freeze = u;
+        gpu.queue.write_buffer(&self.freeze, 0, bytemuck::bytes_of(&u));
     }
 
     /// Encode once BEFORE any cull/raster/shadow pass. Active fixed-time fields
