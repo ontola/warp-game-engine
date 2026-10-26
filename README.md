@@ -32,11 +32,11 @@ Target: four players in one 4K output at 120 FPS; not yet reached.
 See the [forest roadmap](engine/docs/forest-rendering-roadmap.md) and
 [category measurements](engine/docs/render-categories-2026-10-24.md).
 
-Current work (26 October 2026): reduce foliage traversal/raster cost, preserve
-appearance across vegetation LODs, and measure full GPU frame intervals.
-The latest controlled four-player 4K-output route measured about 38–44.5 ms
-with DLSS Quality; this is not native 4K or a typical-gameplay guarantee.
-See [the latest measured iteration](engine/docs/lod-shadow-demand-r49.md).
+Current work (26 October 2026): follow the [ordered four-view budget plan](engine/docs/four-view-budget-plan-r55.md).
+The repeated four-player 4K-output route measures 32.16/40.35 ms with DLSS
+Quality and 27.67/33.93 ms with Performance in its two sections. These are
+medians of three run medians, not native 4K or typical-gameplay guarantees.
+See [the resolution sweep and per-pass costs](engine/docs/resolution-sweep-r55.md).
 World-grid traversal of shared plant volumes and early whole-owner replacement
 are experimental, disabled by default, and still require GPU/visual validation.
 

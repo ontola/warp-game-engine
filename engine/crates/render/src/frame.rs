@@ -23,7 +23,7 @@ const NORMAL_SIZE: u32 = 1024;
 const SHADOW_SIZE: u32 = 4096;
 const NEAR_SHADOW_SIZE: u32 = 2048;
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
-const TIMESTAMP_CAPACITY: u32 = 384; // includes independent solar/headlamp hierarchy selection
+const TIMESTAMP_CAPACITY: u32 = 400; // includes per-view aggregate depth/material/illumination
 
 /// Keep the grass rejection in culling identical to its opaque raster path.
 pub(crate) fn cull_source() -> String {
@@ -2656,6 +2656,8 @@ impl Renderer {
         let mut segments = Vec::new();
         let mut ts = 0u32;
         let mut names = Vec::new();
+        let mut timing_views = Vec::with_capacity(views.len());
+        let mut timing_envelopes = Vec::with_capacity(views.len());
         // Compute once for the shared scene, before all camera and shadow
         // passes. The same frozen state still updates recycled grass slots.
         let wind_time = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
@@ -2799,6 +2801,7 @@ impl Renderer {
         foliage_planners.resize_with(views.len(), Default::default);
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         for (vi, view) in views.iter().enumerate() {
+            let timing_start = names.len();
             let (w, h) = if let Some(backend) = &mut up.backend {
                 backend.optimal_size(mode, (view.w, view.h))?
             } else { (view.w, view.h) };
@@ -2968,7 +2971,7 @@ impl Renderer {
                         ];
             let hidden_meadow=if let Some(meadow)=self.meadow.as_ref().filter(|m|m.skip_hidden_shade_enabled()
                 && self.meadow_brick_fixture.is_none() && debug_options.draws_meadow() && geometry_diagnostic.grass_enabled()) {
-                let mut times=[None;8];
+                let mut times=[None;10];
                 for (slot,name) in [(0,"meadow placement"),(6,"meadow visibility")] {
                     times[slot]=self.query.as_ref().map(|(qs,_,_)| {names.push(name);(qs,timestamp_pair(&mut ts))});
                 }
@@ -3097,10 +3100,12 @@ impl Renderer {
                     if let Some(meadow) = self.meadow.as_ref().filter(|_| self.meadow_brick_fixture.is_none()
                         && debug_options.draws_meadow() && geometry_diagnostic.grass_enabled()) {
                         let times = ["meadow placement", "meadow render", "meadow aggregate placement",
-                            "meadow aggregate render", "meadow merge", "meadow composite",
-                            "meadow visibility", "meadow resolve"].map(|name|
+                            "meadow aggregate depth", "meadow merge", "meadow composite",
+                            "meadow visibility", "meadow resolve", "meadow aggregate material",
+                            "meadow aggregate illumination"].map(|name|
                             self.query.as_ref().filter(|_| meadow.aggregate_enabled()
-                                || !matches!(name, "meadow aggregate placement" | "meadow aggregate render" | "meadow merge"))
+                                || !matches!(name, "meadow aggregate placement" | "meadow aggregate depth"
+                                    | "meadow aggregate material" | "meadow aggregate illumination" | "meadow merge"))
                             .filter(|_| match name {
                                 "meadow render" => !meadow.visibility_enabled(),
                                 "meadow visibility" => meadow.visibility_enabled() && !meadow.skip_hidden_shade_enabled(),
@@ -3111,6 +3116,11 @@ impl Renderer {
                             .map(|(qs,_,_)| {
                                 names.push(name); (qs,timestamp_pair(&mut ts))
                             }));
+                        if let (Some((_, depth)), Some((_, material)), Some((_, illumination))) = (times[3], times[8], times[9]) {
+                            timing_envelopes.push(crate::gpu_profile::Envelope {
+                                name: "meadow aggregate render", children: [depth, material, illumination],
+                            });
+                        }
                         meadow.render(gpu, &mut enc, vi, (w,h), &self.scene_bind, &meadow_bindings, &hdr_v, &depth, times, dlss_on, debug_options)?;
                     }
                     if let Some(transparency) = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled) {
@@ -3221,6 +3231,7 @@ impl Renderer {
                 pass.dispatch_workgroups(view.w.div_ceil(8), view.h.div_ceil(8), 1);
             }
             keep.push((main, vis, depth, hdr));
+            timing_views.push((vi as u32, timing_start..names.len()));
         }
         if let Some(motion) = &up.motion { motion.finish_frame(&mut enc); }
         // One shared previous wind state, advanced only after every view has
@@ -3234,8 +3245,10 @@ impl Renderer {
         drop(canopies);
         // Resolve once after every native/DLSS segment. The queued copy owns a
         // free ring slot; a full ring skips this sample instead of stalling.
+        let timing_specs = crate::gpu_profile::describe_passes(&names, &timing_views, &timing_envelopes)
+            .map_err(|()| "invalid submitted-frame GPU timing layout")?;
         let async_ticket = self.async_gpu_profile.lock().unwrap().reserve(
-            profile_context, &names, ts, f64::from(gpu.queue.get_timestamp_period()));
+            profile_context, &timing_specs, ts, f64::from(gpu.queue.get_timestamp_period()));
         if let (Some(ticket), Some((qs, resolve, _))) = (&async_ticket, &self.query) {
             enc.resolve_query_set(qs, 0..ticket.query_count, resolve, 0);
             enc.copy_buffer_to_buffer(resolve, 0, &ticket.read, 0, u64::from(ticket.query_count) * 8);
@@ -3441,20 +3454,17 @@ impl Renderer {
         }
         if sun_needed { self.foliage_sun_pages.submitted(&page_plan); }
         if let Some((_, _, read)) = &self.query {
-            {
+            let sample = {
                 let t = read.slice(..).get_mapped_range().expect("timestamps");
                 let t: &[u64] = bytemuck::cast_slice(&t);
                 let period = gpu.queue.get_timestamp_period() as f64;
-                // Same-named passes of different views add up.
-                for (k, name) in names.iter().enumerate() {
-                    let ms = t[2 * k + 1].saturating_sub(t[2 * k]) as f64 * period / 1e6;
-                    match stats.gpu_ms.iter_mut().find(|(n, _)| n == name) {
-                        Some(e) => e.1 += ms,
-                        None => stats.gpu_ms.push((name, ms)),
-                    }
+                if ts == 0 { Ok(Vec::new()) } else {
+                    crate::gpu_profile::decode_timestamps(profile_context, &timing_specs, ts, period, t)
+                        .map(|sample| sample.gpu_ms)
                 }
-            }
+            };
             read.unmap();
+            stats.gpu_ms = sample.map_err(|()| "invalid synchronous GPU timestamps")?;
         }
         Ok((ldr, pixels, stats))
     }
@@ -3936,6 +3946,11 @@ mod layout_tests {
         assert!(next<=TIMESTAMP_CAPACITY);
         for _ in 0..4 {timestamp_pair(&mut next);} // one bounded bloom scope per view
         assert_eq!(next,374);
+        assert!(next<=TIMESTAMP_CAPACITY);
+        // The legacy aggregate envelope aliases depth-start/illumination-end.
+        // Three physical pairs replace its one pair: only two extra per view.
+        for _ in 0..(4 * 2) { timestamp_pair(&mut next); }
+        assert_eq!(next,390);
         assert!(next<=TIMESTAMP_CAPACITY);
         let brick_fixture_upper_bound = 330 - 4*6*2 + (8+4*3)*2;
         assert!(brick_fixture_upper_bound <= TIMESTAMP_CAPACITY);

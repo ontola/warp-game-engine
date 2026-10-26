@@ -220,7 +220,8 @@ fn decode_frame(sample: &GpuProfileSample, current_frame_id: u64) -> Option<Fram
     let lo = sample.intervals.iter().map(|interval| interval.start_ms).fold(f64::INFINITY, f64::min);
     let hi = sample.intervals.iter().map(|interval| interval.end_ms).fold(0.0, f64::max);
     let span = hi - lo;
-    let sum: f64 = sample.intervals.iter().map(|interval| interval.end_ms - interval.start_ms).sum();
+    let sum: f64 = sample.intervals.iter().filter(|interval| interval.parent.is_none())
+        .map(|interval| interval.end_ms - interval.start_ms).sum();
     // A small relative rounding allowance; no invalid summary becomes zero.
     let equal = |a: f64, b: f64| (a - b).abs() <= 1e-8 * a.abs().max(b.abs()).max(1.0);
     if !sum.is_finite() || !equal(span, sample.covered_interval_ms)
@@ -228,12 +229,13 @@ fn decode_frame(sample: &GpuProfileSample, current_frame_id: u64) -> Option<Fram
     { return None; }
     let mut ranges: BTreeMap<&'static str, (Vec<(f64, f64)>, bool)> = BTreeMap::new();
     for (index, interval) in sample.intervals.iter().enumerate() {
-        if interval.name.is_empty() { return None; }
+        if interval.name.is_empty() || interval.view_index.is_some_and(|view| view >= sample.views) { return None; }
         if let Some(parent) = interval.parent {
             // Authored parent-before-child indices make cycles impossible.
             if parent >= index { return None; }
             let scope = &sample.intervals[parent];
-            if scope.start_ms > interval.start_ms || scope.end_ms < interval.end_ms { return None; }
+            if scope.start_ms > interval.start_ms || scope.end_ms < interval.end_ms
+                || scope.view_index != interval.view_index { return None; }
         }
         let children: Vec<_> = sample.intervals.iter().filter(|child| child.parent == Some(index))
             .map(|child| (child.start_ms, child.end_ms)).collect();
@@ -279,14 +281,14 @@ mod tests {
     use super::*;
 
     fn interval(name: &'static str, start_ms: f64, end_ms: f64, parent: Option<usize>) -> GpuPassInterval {
-        GpuPassInterval { name, start_ms, end_ms, parent }
+        GpuPassInterval { name, start_ms, end_ms, parent, view_index: None }
     }
     fn sample(frame_id: u64, sequence: u64, intervals: Vec<GpuPassInterval>) -> GpuProfileSample {
         let lo = intervals.iter().map(|interval| interval.start_ms).fold(f64::INFINITY, f64::min);
         let hi = intervals.iter().map(|interval| interval.end_ms).fold(0.0, f64::max);
         GpuProfileSample { frame_id, render_sequence: sequence,
-            gpu_ms: intervals.iter().map(|i| (i.name, i.end_ms - i.start_ms)).collect(),
-            instrumented_gpu_ms: intervals.iter().map(|i| i.end_ms - i.start_ms).sum(),
+            gpu_ms: intervals.iter().filter(|i| i.parent.is_none()).map(|i| (i.name, i.end_ms - i.start_ms)).collect(),
+            instrumented_gpu_ms: intervals.iter().filter(|i| i.parent.is_none()).map(|i| i.end_ms - i.start_ms).sum(),
             covered_interval_ms: hi - lo,
             covered_union_ms: interval_union_ms(intervals.iter().map(|i| (i.start_ms, i.end_ms))).unwrap(),
             intervals, output_size: [1920, 1080], views: 1 }
@@ -304,7 +306,7 @@ mod tests {
         let measured = sample(10, 7, vec![interval("render", 0.0, 10.0, None),
             interval("meadow render", 1.0, 5.0, Some(0)), interval("shade", 4.0, 8.0, Some(0)),
             interval("tonemap", 12.0, 14.0, None)]);
-        assert_eq!(measured.instrumented_gpu_ms, 20.0);
+        assert_eq!(measured.instrumented_gpu_ms, 12.0, "authored children do not inflate root totals");
         model.ingest_gpu(&drain(vec![measured]), 12);
         let snapshot = model.snapshot(12);
         assert_eq!(snapshot.gpu_interval_ms, Some(14.0));
@@ -314,6 +316,22 @@ mod tests {
         assert_eq!(parent.mean_ms, 3.0); assert!(parent.has_exclusive_scope);
         assert_eq!(snapshot.gpu_passes.iter().map(|pass| pass.mean_ms).sum::<f64>(), 13.0,
             "independent overlapping child costs still must not be summed as total");
+    }
+
+    #[test]
+    fn explicit_children_cannot_cross_submitted_view_boundaries() {
+        let mut parent = interval("aggregate", 0.0, 10.0, None);
+        parent.view_index = Some(0);
+        let mut child = interval("aggregate depth", 0.0, 3.0, Some(0));
+        child.view_index = Some(0);
+        let mut measured = sample(10, 7, vec![parent, child]);
+        assert!(decode_frame(&measured, 10).is_some());
+        measured.views = 4;
+        measured.intervals[1].view_index = Some(1);
+        assert!(decode_frame(&measured, 10).is_none());
+        measured.intervals[1].view_index = Some(0);
+        measured.intervals[0].view_index = Some(4);
+        assert!(decode_frame(&measured, 10).is_none());
     }
 
     #[test]
