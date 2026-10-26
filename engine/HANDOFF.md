@@ -17,7 +17,7 @@ integration at 128x128. Do not scale/promote it on mechanical correctness alone.
 The user explicitly requested a playtest after the stopped-playtest instruction
 below. It now runs the validated r49 candidate E at 4K output/one player/DLSS
 Quality; world volumes remain off. Launch manifest:
-`games/sideways/build/dev-runs/20261026T160601393Z-ef7609c3/iteration.json`.
+`games/sideways/build/dev-runs/20261026T161351534Z-c9f58110/iteration.json`.
 Leave this playtest running and do not compete for its GPU.
 
 ## Publication and in-progress world foliage — 26 October 2026
