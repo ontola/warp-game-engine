@@ -1,5 +1,11 @@
 # Bosrendering in Warp
 
+Actuele aanvulling, **26 oktober 2026, r52**:
+[wind uit op afstand, verre bomen als gecachete schaduwcasters](wind-freeze-sun-cache-r52.md).
+Met `KERN_WIND_FREEZE` staan bomen buiten 70 m stil en vallen ze in de
+statische zoncache; op lavapipe daalt de dynamische schaduwraster ongeveer
+9,4 keer. Standaard uit; GPU-tijd nog niet gemeten.
+
 Actuele aanvulling, **26 oktober 2026, r49**:
 [LOD-optiek en vraaggestuurde schaduwen](lod-shadow-demand-r49.md).
 De kleine schaduwproef behoudt gevraagde dieptetexels en eindbeelden exact bij
