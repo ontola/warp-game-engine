@@ -1,0 +1,47 @@
+# Alpha-tested needle cards against opaque twig geometry (r51). Run the same
+# executable once per environment file, hidden, and compare GPU intervals:
+#   opaque-crowns.cards.json            SIDEWAYS_TREE_CROWN=cards (default)
+#   opaque-crowns.opaque.json           SIDEWAYS_TREE_CROWN=opaque
+#   opaque-crowns.opaque-traversal.json opaque + KERN_CLUSTER_TRAVERSAL=1
+# Opaque trees have about 4,600 resident clusters instead of 63-87, so the
+# flat per-owner cluster loop is expected to dominate without traversal.
+# Native 1080p, one view; not the four-player 4K target.
+schema = 1
+name = "opaque-crowns"
+ticks_per_frame = 0
+capture_dir = "../build/scenario-captures/opaque-crowns"
+capture_frames = [120, 360]
+
+[capture]
+format = "png"
+max_width = 1920
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "1920x1080"
+upscale = "native"
+hud = false
+
+# The noon-foliage camera: crowns from a few metres to the forest edge.
+[[sections]]
+name = "held-forest"
+start_tick = 0
+frames = 240
+warmup = 60
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-72.12802124, 4.13761520, -335.08944702], target = [-76.23734283, 2.98761511, -337.04077148], fov_y_degrees = 64.0}
+
+# Above the canopy, looking out: many trees at small screen size, where thin
+# geometry simplifies worst and the coarse LODs carry the frame.
+[[sections]]
+name = "canopy-vista"
+start_tick = 0
+frames = 240
+warmup = 60
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-72.0, 38.0, -335.0], target = [-160.0, 12.0, -420.0], fov_y_degrees = 64.0}

@@ -510,6 +510,106 @@ fn bounding_sphere(v: &[Vertex]) -> [f32; 4] {
     [c[0], c[1], c[2], r]
 }
 
+/// One explicit coarse level for [`ClusterMesh::replace_beyond`]: unindexed
+/// geometry is fine; triangles are split into clusters as they come.
+pub struct ProxyLevel<'a> {
+    /// Object-space error at which this level becomes acceptable.
+    pub error: f32,
+    pub parts: Vec<Part<'a>>,
+}
+
+impl ClusterMesh {
+    /// Nanite-style switch: clusters of `replace` materials are kept only
+    /// while their error is below `levels[0].error`; beyond it the explicit
+    /// `levels` take over, each until the next one's error. All switching
+    /// bounds share one sphere around everything replaced, so exactly one of
+    /// {source cut, level k} passes the GPU's own <= t < parent test for any
+    /// view. Source clusters coarser than the switch are dropped. Other
+    /// materials (wood) keep their own DAG untouched.
+    pub fn replace_beyond(&mut self, replace: impl Fn(u32) -> bool, levels: &[ProxyLevel<'_>]) -> Result<(), String> {
+        let Some(first) = levels.first() else { return Ok(()) };
+        let switch = first.error;
+        if !switch.is_finite() || switch <= 0.0
+            || levels.windows(2).any(|w| !w[1].error.is_finite() || w[1].error <= w[0].error) {
+            return Err("proxy level errors must be finite, positive and increasing".into());
+        }
+        // One sphere over the replaced source and every proxy vertex.
+        let mut points: Vec<Vertex> = Vec::new();
+        for c in self.clusters.iter().filter(|c| replace(c.material)) {
+            for k in 0..c.tri_count {
+                let packed = self.tris[(c.first_tri + k) as usize];
+                for corner in 0..3 {
+                    let local = (packed >> (8 * corner)) & 255;
+                    points.push(self.vertices[self.cluster_verts[(c.first_vert + local) as usize] as usize]);
+                }
+            }
+        }
+        for level in levels {
+            for part in &level.parts {
+                if part.indices.len() % 3 != 0 || part.indices.iter().any(|&i| i as usize >= part.vertices.len()) {
+                    return Err("proxy level has invalid indices".into());
+                }
+                points.extend(part.indices.iter().map(|&i| part.vertices[i as usize]));
+            }
+        }
+        if points.iter().any(|v| v.pos.iter().any(|x| !x.is_finite())) {
+            return Err("proxy level has non-finite positions".into());
+        }
+        let sphere = bounding_sphere(&points);
+        self.clusters.retain(|c| !replace(c.material) || c.own_error < switch);
+        for c in self.clusters.iter_mut().filter(|c| replace(c.material) && c.parent_error >= switch) {
+            c.parent_error = switch;
+            c.parent = sphere;
+        }
+        for (k, level) in levels.iter().enumerate() {
+            let parent_error = levels.get(k + 1).map_or(f32::MAX, |l| l.error);
+            for part in &level.parts {
+                // Split in index order: at most MAX_TRIS triangles and 255
+                // distinct vertices per cluster (u8 local indices).
+                let mut start = 0;
+                while start < part.indices.len() {
+                    let mut local = std::collections::HashMap::<u32, u32>::new();
+                    let mut verts = Vec::new();
+                    let mut packed = Vec::new();
+                    let mut end = start;
+                    while end < part.indices.len() && packed.len() < MAX_TRIS {
+                        let tri = &part.indices[end..end + 3];
+                        let mut fresh = 0;
+                        for (n, i) in tri.iter().enumerate() {
+                            if !local.contains_key(i) && !tri[..n].contains(i) { fresh += 1; }
+                        }
+                        if verts.len() + fresh > 255 { break; }
+                        let mut p = 0u32;
+                        for (corner, &i) in tri.iter().enumerate() {
+                            let l = *local.entry(i).or_insert_with(|| { verts.push(i); verts.len() as u32 - 1 });
+                            p |= l << (8 * corner);
+                        }
+                        packed.push(p);
+                        end += 3;
+                    }
+                    let base = self.vertices.len() as u32;
+                    let cluster_vertices: Vec<Vertex> = verts.iter().map(|&i| part.vertices[i as usize]).collect();
+                    let cull = bounding_sphere(&cluster_vertices);
+                    self.vertices.extend_from_slice(&cluster_vertices);
+                    let first_vert = self.cluster_verts.len() as u32;
+                    self.cluster_verts.extend((0..cluster_vertices.len() as u32).map(|i| base + i));
+                    let first_tri = self.tris.len() as u32;
+                    self.tris.extend_from_slice(&packed);
+                    self.clusters.push(GpuCluster {
+                        cull, parent: sphere, own: sphere, parent_error, own_error: level.error,
+                        first_tri, tri_count: packed.len() as u32, first_vert,
+                        material: part.material, depth: 0, _pad: 0,
+                    });
+                    start = end;
+                }
+            }
+        }
+        self.levels += levels.len() as u32;
+        self.sphere = bounding_sphere(&self.vertices);
+        Ok(())
+    }
+}
+
 /// Read a .kmesh written by tools/export_meshes.gd: (material name, vertices, indices) per surface.
 pub fn read_kmesh(bytes: &[u8]) -> Result<Vec<(String, Vec<Vertex>, Vec<u32>)>, String> {
     let mut at = 0usize;
@@ -733,5 +833,73 @@ mod policy_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    fn grid(n: usize, z: f32) -> (Vec<Vertex>, Vec<u32>) {
+        let mut v = Vec::new();
+        let mut i = Vec::new();
+        for y in 0..=n { for x in 0..=n {
+            v.push(Vertex { pos: [x as f32 / n as f32 * 4.0, y as f32 / n as f32 * 4.0, z], normal: [0.0, 0.0, 1.0], uv: [0.0; 2] });
+        } }
+        for y in 0..n { for x in 0..n {
+            let a = (y * (n + 1) + x) as u32;
+            let b = a + 1; let c = a + n as u32 + 1; let d = c + 1;
+            i.extend([a, b, c, b, d, c]);
+        } }
+        (v, i)
+    }
+
+    /// The GPU rule from cull.wgsl: own projects <= t < parent.
+    fn selected(mesh: &ClusterMesh, eye: glam::Vec3, t: f32) -> Vec<&GpuCluster> {
+        let proj = |e: f32, s: [f32; 4]| {
+            if e > 1e30 { return 1e30; }
+            let d = (glam::Vec3::new(s[0], s[1], s[2]).distance(eye) - s[3]).max(1e-3);
+            e / d
+        };
+        mesh.clusters.iter().filter(|c| proj(c.own_error, c.own) <= t && proj(c.parent_error, c.parent) > t).collect()
+    }
+
+    #[test]
+    fn proxy_levels_replace_exactly_one_representation_at_every_distance() {
+        let (sv, si) = grid(40, 0.0);
+        let (wv, wi) = grid(8, -1.0);
+        let mut mesh = ClusterMesh::build(&[Part { vertices: &sv, indices: &si, material: 0 }, Part { vertices: &wv, indices: &wi, material: 1 }]);
+        let source_area = 16.0;
+        let (p1, i1) = grid(4, 0.0);
+        let (p2, i2) = grid(2, 0.0);
+        let levels = [
+            ProxyLevel { error: 0.05, parts: vec![Part { vertices: &p1, indices: &i1, material: 2 }] },
+            ProxyLevel { error: 0.2, parts: vec![Part { vertices: &p2, indices: &i2, material: 3 }] },
+        ];
+        let wood_before: Vec<GpuCluster> = mesh.clusters.iter().filter(|c| c.material == 1).copied().collect();
+        mesh.replace_beyond(|m| m == 0, &levels).unwrap();
+        assert!(mesh.clusters.iter().filter(|c| c.material == 0).all(|c| c.own_error < 0.05));
+        assert_eq!(wood_before.len(), mesh.clusters.iter().filter(|c| c.material == 1).count(), "other materials untouched");
+        let area = |c: &GpuCluster| -> f32 {
+            (0..c.tri_count).map(|k| {
+                let packed = mesh.tris[(c.first_tri + k) as usize];
+                let p: [glam::Vec3; 3] = std::array::from_fn(|j| glam::Vec3::from(mesh.vertices[mesh.cluster_verts[(c.first_vert + ((packed >> (8 * j)) & 255)) as usize] as usize].pos));
+                (p[1] - p[0]).cross(p[2] - p[0]).length() * 0.5
+            }).sum()
+        };
+        let mut seen = [false; 3];
+        for step in 0..400 {
+            let distance = 0.5 * 1.03f32.powi(step);
+            let eye = glam::Vec3::new(2.0, 2.0, distance);
+            let sel = selected(&mesh, eye, 1.0 / 900.0);
+            let by = |m: u32| sel.iter().filter(|c| c.material == m).map(|c| area(c)).sum::<f32>();
+            let (src, a, b) = (by(0), by(2), by(3));
+            let reps = [src > 0.0, a > 0.0, b > 0.0];
+            assert_eq!(reps.iter().filter(|x| **x).count(), 1, "distance {distance}: {reps:?}");
+            for (k, r) in reps.iter().enumerate() { seen[k] |= *r; }
+            let total = src + a + b;
+            assert!((total - source_area).abs() < 1e-3, "distance {distance}: area {total}");
+        }
+        assert_eq!(seen, [true; 3], "every representation is used at some distance");
     }
 }

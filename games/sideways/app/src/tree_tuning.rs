@@ -4,7 +4,7 @@
 //! pages, wind envelopes and every source CLOD refer to the edited instances.
 //! Commit matching trunk physics only after that renderer is ready. This is
 //! never an update_instances shortcut or a new population generator.
-use render::scene::{Scene, GpuInstance, Material, GeometryCategory, FOLIAGE, ALPHA_TEST, THIN_FOLIAGE};
+use render::scene::{Scene, GpuInstance, Material, GeometryCategory, FOLIAGE, ALPHA_TEST, THIN_FOLIAGE, OPAQUE_NEEDLES};
 use sideways::physics::{Physics, TreeColliderSource, TreeColliderBaseline};
 use std::collections::BTreeSet;
 
@@ -138,7 +138,7 @@ impl Baseline {
             for cluster in clusters {
                 let id=cluster.material as usize;
                 let material=scene.materials.get(id).ok_or("tree source material is absent")?;
-                if material.flags&(ALPHA_TEST|THIN_FOLIAGE)!=0 {crown_ids.insert(id);}
+                if material.flags&(ALPHA_TEST|THIN_FOLIAGE|OPAQUE_NEEDLES)!=0 {crown_ids.insert(id);}
             }
             trees.push(Tree{owner,original:*instance,root,rank:root_rank(root)});
             sources.push(TreeColliderSource{root,scale});

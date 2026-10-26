@@ -1433,7 +1433,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
     var ao = 1.0;
     let grass = (m.flags & 64u) != 0u;
     let procedural_leaf = (m.flags & 512u) != 0u;
-    let needles = procedural_leaf || ((m.flags & 9u) == 9u && (inst.pad & 1u) != 0u && !grass);
+    // 9u: alpha-tested two-sided needle cards; 1024u: OPAQUE_NEEDLES geometry.
+    let needles = procedural_leaf || (((m.flags & 9u) == 9u || (m.flags & 1024u) != 0u) && (inst.pad & 1u) != 0u && !grass);
     if needles && !procedural_leaf {
         // foliage.gdshader: a little colour per tree, sunlight shining
         // through the needles from behind (BACKLIGHT), AO 0.85.
