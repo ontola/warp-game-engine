@@ -161,6 +161,138 @@ pub fn configured_crown() -> Result<Crown, String> {
     }
 }
 
+/// Object-space error (m) where opaque crowns switch from twig triangles to
+/// coverage-preserving voxel levels (`SIDEWAYS_TREE_VOXEL_SWITCH`, 0 = off).
+/// Each further level doubles the cell. 8 cm: twig cuts up to here keep
+/// 97% of the card coverage; coarser triangle cuts erode the needles.
+pub fn configured_voxel_switch() -> Result<f32, String> {
+    match std::env::var("SIDEWAYS_TREE_VOXEL_SWITCH") {
+        Err(std::env::VarError::NotPresent) => Ok(0.08),
+        Ok(v) => match v.parse::<f32>() {
+            Ok(x) if x == 0.0 || (0.01..=1.0).contains(&x) => Ok(x),
+            _ => Err("SIDEWAYS_TREE_VOXEL_SWITCH must be 0 (off) or 0.01..1 metres".into()),
+        },
+        Err(_) => Err("SIDEWAYS_TREE_VOXEL_SWITCH must be valid Unicode".into()),
+    }
+}
+
+/// Orthographic silhouette area in pixels: triangles with an alpha texture
+/// sampled at the 0.42 card cutoff, or solid when `alpha` is None.
+fn silhouette_pixels(
+    tris: &[([glam::Vec2; 3], [glam::Vec2; 3])],
+    alpha: Option<&image::RgbaImage>,
+    centre: glam::Vec2,
+    extent: f32,
+    size: usize,
+) -> usize {
+    let mut mask = vec![false; size * size];
+    let sample = |uv: glam::Vec2| match alpha {
+        None => 1.0,
+        Some(t) => {
+            let p = uv.clamp(glam::Vec2::ZERO, glam::Vec2::ONE) * glam::Vec2::new(t.width() as f32 - 1.0, t.height() as f32 - 1.0);
+            t.get_pixel(p.x.round() as u32, p.y.round() as u32)[3] as f32 / 255.0
+        }
+    };
+    for (world, uv) in tris {
+        let [a, b, c] = world.map(|p| (p - centre) / extent * size as f32 + glam::Vec2::splat(size as f32 * 0.5));
+        let area = (b - a).perp_dot(c - a);
+        if area.abs() < 1e-9 { continue; }
+        let lo = a.min(b).min(c).floor().max(glam::Vec2::ZERO);
+        let hi = a.max(b).max(c).ceil().min(glam::Vec2::splat(size as f32 - 1.0));
+        if lo.x > hi.x || lo.y > hi.y { continue; }
+        for y in lo.y as usize..=hi.y as usize {
+            for x in lo.x as usize..=hi.x as usize {
+                if mask[y * size + x] { continue; }
+                let p = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                let w1 = (p - a).perp_dot(c - a) / area;
+                let w2 = (b - a).perp_dot(p - a) / area;
+                let w0 = 1.0 - w1 - w2;
+                if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 && sample(uv[0] * w0 + uv[1] * w1 + uv[2] * w2) >= 0.42 {
+                    mask[y * size + x] = true;
+                }
+            }
+        }
+    }
+    mask.iter().filter(|m| **m).count()
+}
+
+/// Coarse voxel levels for one opaque-crown archetype: baked from the
+/// alpha-tested cards (the reference look), cells from `switch` doubling up
+/// to whole-crown blobs. Each level's blob size is fitted so its silhouette
+/// area over six views equals the cards' (what TAA converges to when the
+/// blobs are subpixel); returns the fitted scales too.
+pub fn crown_voxel_proxies(
+    cards: &Surfaces,
+    crown: render::scene::Material,
+    textures: &[render::scene::TextureSource],
+    switch: f32,
+    seed: u32,
+) -> Result<(render::foliage_voxel::CoverageProxies, Vec<f32>), String> {
+    use render::foliage_voxel::{BakeConfig, bake, proxy_level, proxy_palette, CoverageProxies};
+    let card = render::scene::Material {
+        flags: render::scene::ALPHA_TEST | render::scene::TWO_SIDED,
+        ..crown
+    };
+    let crown_surfaces: Vec<_> = cards.iter().filter(|(name, _, _)| is_crown(name)).collect();
+    let parts: Vec<render::cluster::Part> = crown_surfaces
+        .iter()
+        .map(|(_, vertices, indices)| render::cluster::Part { vertices, indices, material: 0 })
+        .collect();
+    // Up to cells of about 2.5-5 m: a crown is then a handful of blobs.
+    let levels = (1..=8).take_while(|k| switch * (1u32 << (k - 1)) as f32 <= 5.2).count() as u32;
+    let asset = bake(
+        &parts,
+        &[card],
+        textures,
+        BakeConfig { cell_size: switch, levels, max_voxels: 2_000_000, max_samples: 400_000_000, ..Default::default() },
+    )?;
+    let texture = textures.get(crown.layer.max(0) as usize).map(|t| &t.rgba).ok_or("crown texture missing")?;
+    let size = 256usize;
+    let views: Vec<(Vec3, Vec3, glam::Vec2, f32, usize)> = (0..6)
+        .map(|k| {
+            let yaw = (k as f32 * 60.0 + 15.0).to_radians();
+            let pitch = if k % 2 == 0 { 0.0f32 } else { 30.0f32.to_radians() };
+            let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+            let direction = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
+            let up = direction.cross(right);
+            let tris: Vec<_> = crown_surfaces.iter().flat_map(|(_, v, i)| i.chunks_exact(3).map(move |t| {
+                let v3 = [t[0], t[1], t[2]].map(|k| v[k as usize]);
+                (v3.map(|v| { let p = Vec3::from(v.pos); glam::Vec2::new(p.dot(right), p.dot(up)) }), v3.map(|v| glam::Vec2::from(v.uv)))
+            })).collect();
+            let (lo, hi) = tris.iter().flat_map(|(p, _)| p.iter()).fold(
+                (glam::Vec2::splat(f32::INFINITY), glam::Vec2::splat(f32::NEG_INFINITY)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+            let (centre, extent) = ((lo + hi) * 0.5, (hi - lo).max_element() * 1.3);
+            let reference = silhouette_pixels(&tris, Some(texture), centre, extent, size);
+            (right, up, centre, extent, reference)
+        })
+        .collect();
+    let palette = proxy_palette(&asset, 8);
+    let ratio = |level: &render::foliage_voxel::ProxyGeometry| {
+        let (mut got, mut want) = (0usize, 0usize);
+        for &(right, up, centre, extent, reference) in &views {
+            let tris: Vec<_> = level.parts.iter().flat_map(|(_, v, i)| i.chunks_exact(3).map(move |t| {
+                ([t[0], t[1], t[2]].map(|k| { let p = Vec3::from(v[k as usize].pos); glam::Vec2::new(p.dot(right), p.dot(up)) }), [glam::Vec2::ZERO; 3])
+            })).collect();
+            got += silhouette_pixels(&tris, None, centre, extent, size);
+            want += reference;
+        }
+        got as f64 / want.max(1) as f64
+    };
+    let mut out = Vec::new();
+    let mut scales = Vec::new();
+    for li in 0..asset.levels.len() {
+        let (mut lo, mut hi) = (0.2f32, 2.0f32);
+        for _ in 0..10 {
+            let mid = 0.5 * (lo + hi);
+            if ratio(&proxy_level(&asset, li, &palette, seed, mid)) < 1.0 { lo = mid } else { hi = mid }
+        }
+        let scale = 0.5 * (lo + hi);
+        scales.push(scale);
+        out.push(proxy_level(&asset, li, &palette, seed, scale));
+    }
+    Ok((CoverageProxies { palette, levels: out }, scales))
+}
+
 pub fn load_twig_part(root: &Path) -> Result<(Vec<Vertex>, Vec<u32>), String> {
     let path = root.join("assets/meshes/pine_twig_part.kmesh");
     let mut surfaces =
@@ -1099,5 +1231,70 @@ mod tests {
                 archetype.label()
             );
         }
+    }
+
+    /// The voxel levels keep the cards' coverage at the scale they are used
+    /// as area coverage (what TAA converges to), where triangle cuts of thin
+    /// twigs erode to a fifth.
+    #[test]
+    fn crown_voxel_levels_keep_card_coverage_where_twig_cuts_erode() {
+        use render::cluster::{ClusterMesh, Part, SimplificationPolicy};
+        use render::scene::{Material, TextureSource, OPAQUE_NEEDLES, TWO_SIDED};
+        let root = sideways::game_assets::root();
+        let texture = image::open(root.join("assets/trees/authored_pine_albedo.png")).unwrap().to_rgba8();
+        let solid = image::RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]));
+        let textures = [TextureSource { name: "pine".into(), rgba: texture.clone(), normal: None }];
+        let crown = Material { tint: [0.62, 0.66, 0.55], layer: 0, roughness: 0.9, flags: OPAQUE_NEEDLES | TWO_SIDED, scale: 1.0, metal: 0.0 };
+        let archetype = TreeArchetype::ALL[1];
+        let cards = load_with_crown(&root, archetype, 1.0, Crown::Cards).unwrap();
+        let opaque = load_with_crown(&root, archetype, 1.0, Crown::Opaque).unwrap();
+        let (proxies, scales) = crown_voxel_proxies(&cards, crown, &textures, 0.08, 1).unwrap();
+        eprintln!("fitted edge scales {scales:?}");
+        assert!(proxies.levels.len() >= 6 && proxies.palette.len() == 8);
+        let twig_parts: Vec<Part> = opaque.iter().filter(|(n, _, _)| is_crown(n)).map(|(_, v, i)| Part { vertices: v, indices: i, material: 0 }).collect();
+        let twigs = ClusterMesh::build_with_policy(&twig_parts, |_| SimplificationPolicy::TexturedGeometry);
+        let twigs = &twigs;
+        let project = |p: [f32; 3], right: Vec3, up: Vec3| { let p = Vec3::from(p); glam::Vec2::new(p.dot(right), p.dot(up)) };
+        let mut rows = Vec::new();
+        for (azimuth, elevation) in [(0.0f32, 0.0f32), (60.0, 0.0), (135.0, 20.0), (250.0, 45.0)] {
+            let (yaw, pitch) = (azimuth.to_radians(), elevation.to_radians());
+            let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+            let direction = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
+            let up = direction.cross(right);
+            let a = projected_crown(&cards, right, up);
+            let pts: Vec<_> = a.iter().flat_map(|(p, _)| p.iter().copied()).collect();
+            let lo = pts.iter().copied().fold(glam::Vec2::splat(f32::INFINITY), glam::Vec2::min);
+            let hi = pts.iter().copied().fold(glam::Vec2::splat(f32::NEG_INFINITY), glam::Vec2::max);
+            let (centre, extent) = ((lo + hi) * 0.5, (hi - lo).max_element() * 1.1);
+            for level in &proxies.levels {
+                // TAA jitter makes subpixel hits converge to area coverage:
+                // compare silhouette area at a fine, fixed resolution.
+                let size = 512usize;
+                let count = |m: Vec<bool>| m.iter().filter(|x| **x).count() as f64;
+                let reference = count(crown_mask(&a, &texture, centre, extent, size));
+                let tris: Vec<_> = level.parts.iter().flat_map(|(_, v, i)| i.chunks_exact(3).map(move |t| {
+                    ([t[0], t[1], t[2]].map(|k| project(v[k as usize].pos, right, up)), [glam::Vec2::ZERO; 3])
+                })).collect();
+                let voxels = count(crown_mask(&tris, &solid, centre, extent, size)) / reference;
+                let cut = level.cell_size;
+                let twig: Vec<_> = twigs.clusters.iter().filter(|c| c.own_error <= cut && c.parent_error > cut).flat_map(|c| {
+                    (0..c.tri_count).map(move |k| {
+                        let packed = twigs.tris[(c.first_tri + k) as usize];
+                        let v: [render::cluster::Vertex; 3] = std::array::from_fn(|j| twigs.vertices[twigs.cluster_verts[(c.first_vert + ((packed >> (8 * j)) & 255)) as usize] as usize]);
+                        (v.map(|v| project(v.pos, right, up)), [glam::Vec2::ZERO; 3])
+                    })
+                }).collect();
+                let twig_coverage = count(crown_mask(&twig, &solid, centre, extent, size)) / reference;
+                rows.push(serde_json::json!({"azimuth":azimuth,"elevation":elevation,"cell_m":cut,"pixels":size,
+                    "voxel_coverage":voxels,"twig_cut_coverage":twig_coverage,"voxel_triangles":tris.len(),"twig_triangles":twig.len()}));
+                // Views here differ from the six used for fitting.
+                assert!((0.7..1.4).contains(&voxels), "{azimuth}/{elevation} cell {cut}: voxel coverage {voxels:.3}");
+                if cut >= 0.6 {
+                    assert!(voxels > 3.0 * twig_coverage, "{azimuth}/{elevation} cell {cut}: voxels {voxels:.3} vs twig cut {twig_coverage:.3}");
+                }
+            }
+        }
+        eprintln!("crown voxel coverage: {}", serde_json::json!({"archetype":archetype.label(),
+            "scope":"CPU orthographic silhouette area at 512 px against the finest alpha-tested cards; held-out views; not GPU/TAA/lighting parity","rows":rows}));
     }
 }

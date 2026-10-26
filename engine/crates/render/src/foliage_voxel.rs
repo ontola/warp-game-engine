@@ -537,6 +537,122 @@ pub fn bake(parts: &[Part<'_>], materials: &[Material], textures: &[TextureSourc
         origin: origin.to_array(), source_bounds: [lo.to_array(), hi.to_array()], levels, stats })
 }
 
+
+/// One coarse level of rasterizable coverage proxies, grouped by palette entry.
+pub struct ProxyGeometry {
+    pub cell_size: f32,
+    /// (palette index, vertices, indices); unindexed tetrahedra per voxel.
+    pub parts: Vec<(usize, Vec<crate::cluster::Vertex>, Vec<u32>)>,
+    pub voxels: usize,
+}
+
+/// Rasterizable stand-ins for baked voxels, for coarse cluster levels: one
+/// randomly oriented, jittered regular tetrahedron per occupied cell, sized
+/// so its mean projected area equals the cell's baked coverage
+/// 1 - exp(-A/c^2), A the mean axis optical area. Subpixel tetrahedra hit
+/// pixel centres with probability = coverage, so coverage (not triangle
+/// surface) is what survives as cells grow, the way Nanite voxels keep thin
+/// foliage from eroding. Colour is the voxel's linear albedo quantized to
+/// `palette`; the normal is the coverage-weighted lobe mean, turned upwards.
+pub struct CoverageProxies {
+    pub palette: Vec<[f32; 3]>,
+    pub levels: Vec<ProxyGeometry>,
+}
+
+fn proxy_hash(mut h: u32) -> u32 {
+    h ^= h >> 16; h = h.wrapping_mul(0x7feb352d); h ^= h >> 15; h = h.wrapping_mul(0x846ca68b); h ^= h >> 16; h
+}
+
+fn proxy_unit(h: u32) -> f32 { (h >> 8) as f32 / (1u32 << 24) as f32 }
+
+/// Linear-albedo palette over every voxel of `asset` (deterministic k-means).
+pub fn proxy_palette(asset: &VoxelAsset, palette_size: usize) -> Vec<[f32; 3]> {
+    let albedo: Vec<[f32; 3]> = asset.levels.iter().flat_map(|l| l.voxels.iter().map(|v| v.albedo)).collect();
+    kmeans_palette(&albedo, palette_size.max(1))
+}
+
+/// All levels with unit edge scale. See [`proxy_level`] for calibration.
+pub fn coverage_proxies(asset: &VoxelAsset, palette_size: usize, seed: u32) -> CoverageProxies {
+    let palette = proxy_palette(asset, palette_size);
+    let levels = (0..asset.levels.len()).map(|li| proxy_level(asset, li, &palette, seed, 1.0)).collect();
+    CoverageProxies { palette, levels }
+}
+
+/// One level of proxies. `edge_scale` multiplies every tetrahedron's edge:
+/// Beer coverage assumes needles spread evenly through a cell, but fronds
+/// clump, and convex blobs fill gaps a silhouette keeps; a caller can fit
+/// it per level against the source's own coverage.
+pub fn proxy_level(asset: &VoxelAsset, li: usize, palette: &[[f32; 3]], seed: u32, edge_scale: f32) -> ProxyGeometry {
+    use crate::cluster::Vertex;
+    let nearest = |c: [f32; 3]| (0..palette.len()).min_by(|&a, &b| {
+        let d = |p: [f32; 3]| (0..3).map(|k| (p[k] - c[k]).powi(2)).sum::<f32>();
+        d(palette[a]).total_cmp(&d(palette[b]))
+    }).unwrap_or(0);
+    // Regular tetrahedron with edge 2*sqrt(2).
+    const TETRA: [[f32; 3]; 4] = [[1.0, 1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, 1.0]];
+    const FACES: [u32; 12] = [0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2];
+    let level = &asset.levels[li];
+    let c = level.cell_size;
+    let mut parts: Vec<(usize, Vec<Vertex>, Vec<u32>)> = (0..palette.len()).map(|i| (i, Vec::new(), Vec::new())).collect();
+    let mut voxels = 0;
+    for v in &level.voxels {
+        let optical = (v.directional_area[0] + v.directional_area[1] + v.directional_area[2]) / 3.0;
+        let coverage = 1.0 - (-optical / (c * c)).exp();
+        if !(coverage > 1e-4) { continue; }
+        voxels += 1;
+        // Mean projected area of a regular tetrahedron is surface/4 = sqrt(3)/4 a^2.
+        let edge = c * (4.0 * coverage / 3.0f32.sqrt()).sqrt() * edge_scale;
+        let key = proxy_hash(seed ^ proxy_hash(li as u32 ^ proxy_hash(v.coord[0] ^ proxy_hash(v.coord[1] ^ proxy_hash(v.coord[2])))));
+        let r = |k: u32| proxy_unit(proxy_hash(key ^ k.wrapping_mul(0x9e3779b9)));
+        // Uniform random rotation (Shoemake).
+        let (u1, u2, u3) = (r(1), r(2) * std::f32::consts::TAU, r(3) * std::f32::consts::TAU);
+        let q = glam::Quat::from_xyzw((1.0 - u1).sqrt() * u2.sin(), (1.0 - u1).sqrt() * u2.cos(), u1.sqrt() * u3.sin(), u1.sqrt() * u3.cos()).normalize();
+        let centre = Vec3::from(asset.origin) + (Vec3::new(v.coord[0] as f32, v.coord[1] as f32, v.coord[2] as f32) + 0.5) * c
+            + (Vec3::new(r(4), r(5), r(6)) - 0.5) * 0.5 * c;
+        let mut n = Vec3::ZERO;
+        for k in 0..6 {
+            let mut lobe = Vec3::from(v.normal_centroids[k]);
+            if lobe.y < 0.0 { lobe = -lobe; }
+            n += lobe * v.normal_weights[k];
+        }
+        let n = n.try_normalize().unwrap_or(Vec3::Y).to_array();
+        let part = &mut parts[nearest(v.albedo)];
+        let base = part.1.len() as u32;
+        for p in TETRA {
+            let pos = centre + q * (Vec3::from(p) * (edge / (2.0 * std::f32::consts::SQRT_2)));
+            part.1.push(Vertex { pos: pos.to_array(), normal: n, uv: [0.0; 2] });
+        }
+        part.2.extend(FACES.iter().map(|i| base + i));
+    }
+    parts.retain(|p| !p.2.is_empty());
+    ProxyGeometry { cell_size: c, parts, voxels }
+}
+
+/// Deterministic k-means in linear RGB, seeded at luminance quantiles.
+fn kmeans_palette(colours: &[[f32; 3]], k: usize) -> Vec<[f32; 3]> {
+    if colours.is_empty() { return vec![[0.5; 3]]; }
+    let lum = |c: &[f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let mut sorted = colours.to_vec();
+    sorted.sort_by(|a, b| lum(a).total_cmp(&lum(b)));
+    let mut centres: Vec<[f32; 3]> = (0..k).map(|i| sorted[((2 * i + 1) * sorted.len() / (2 * k)).min(sorted.len() - 1)]).collect();
+    for _ in 0..12 {
+        let mut sum = vec![[0.0f64; 3]; k];
+        let mut count = vec![0usize; k];
+        for c in colours {
+            let j = (0..k).min_by(|&a, &b| {
+                let d = |p: [f32; 3]| (0..3).map(|i| (p[i] - c[i]).powi(2)).sum::<f32>();
+                d(centres[a]).total_cmp(&d(centres[b]))
+            }).unwrap();
+            for i in 0..3 { sum[j][i] += c[i] as f64; }
+            count[j] += 1;
+        }
+        for j in 0..k {
+            if count[j] > 0 { centres[j] = std::array::from_fn(|i| (sum[j][i] / count[j] as f64) as f32); }
+        }
+    }
+    centres
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
