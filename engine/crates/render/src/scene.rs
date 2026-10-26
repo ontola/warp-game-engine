@@ -22,6 +22,8 @@ pub const GRASS: u32 = 64;
 pub const NO_AMBIENT_OCCLUSION: u32 = 128;
 /// Drawn by the sorted forward pass, never the opaque or shadow raster pass.
 pub const BLEND: u32 = 256;
+/// True leaf/needle geometry: thin-leaf lighting without alpha-tested cards.
+pub const THIN_FOLIAGE: u32 = 512;
 
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
@@ -99,6 +101,61 @@ pub const NO_SHADOW: u32 = 4;
 pub const LIVE_GRASS: u32 = 8;
 /// Ground-cover wind response without enabling a live distance transition.
 pub const WIND_GRASS: u32 = 16;
+/// A rigid vegetation part driven by the shared hierarchical GPU pose pass.
+pub const PART_WIND: u32 = 32;
+
+/// Explicit source provenance for render diagnostics. These bits are in
+/// `GpuInstance::flags`, not material flags, and do not select rendering policy.
+pub const INSTANCE_CATEGORY_SHIFT: u32 = 24;
+pub const INSTANCE_CATEGORY_MASK: u32 = 7 << INSTANCE_CATEGORY_SHIFT;
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum GeometryCategory {
+    #[default]
+    Other = 0,
+    Terrain = 1,
+    Trees = 2,
+    Grass = 3,
+    Cars = 4,
+}
+
+impl GeometryCategory {
+    pub const ALL: [Self; 5] = [Self::Other, Self::Terrain, Self::Trees, Self::Grass, Self::Cars];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Other => "other", Self::Terrain => "terrain", Self::Trees => "trees",
+            Self::Grass => "grass", Self::Cars => "cars",
+        }
+    }
+
+    pub const fn exclusion_bit(self) -> u32 { 1 << self as u32 }
+}
+
+impl GpuInstance {
+    pub const fn category(&self) -> GeometryCategory {
+        match (self.flags & INSTANCE_CATEGORY_MASK) >> INSTANCE_CATEGORY_SHIFT {
+            1 => GeometryCategory::Terrain, 2 => GeometryCategory::Trees,
+            3 => GeometryCategory::Grass, 4 => GeometryCategory::Cars,
+            _ => GeometryCategory::Other,
+        }
+    }
+
+    /// Changes diagnostic provenance only; wind, shadows and occlusion flags stay intact.
+    pub fn set_category(&mut self, category: GeometryCategory) {
+        self.flags = (self.flags & !INSTANCE_CATEGORY_MASK) | ((category as u32) << INSTANCE_CATEGORY_SHIFT);
+    }
+}
+
+/// CPU source counts, not selected GPU work. Empty reserved pool slots count
+/// toward `instances` only; referenced clusters include every available LOD.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GeometryCategoryCounts {
+    pub instances: u64,
+    pub active_instances: u64,
+    pub referenced_clusters: u64,
+}
 
 pub const MAX_SOLID_SEGMENTS: usize = 6;
 
@@ -191,11 +248,40 @@ pub struct MeshRef {
     pub sphere: [f32; 4],
 }
 
+/// Encoding of the RGB normal components in a source image. This must be
+/// supplied by the asset caller, never inferred from colour/profile metadata.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NormalEncoding {
+    /// Ordinary normal-map data: RGB already holds linear UNORM components.
+    #[default]
+    LinearUnorm,
+    /// The file applied the IEC sRGB transfer function to its UNORM components.
+    SrgbTransferred,
+}
+
+impl NormalEncoding {
+    fn decode(self, image: &mut image::RgbaImage) {
+        if self == Self::LinearUnorm { return; }
+        // Decode at source resolution, before any resize/mip filtering. The
+        // texture array remains linear RGBA8 UNORM; alpha is coverage/data.
+        let table: [u8; 256] = std::array::from_fn(|byte| {
+            let encoded = byte as f64 / 255.0;
+            let linear = if encoded <= 0.04045 { encoded / 12.92 }
+                else { ((encoded + 0.055) / 1.055).powf(2.4) };
+            (linear * 255.0).round() as u8
+        });
+        for pixel in image.pixels_mut() {
+            for channel in &mut pixel.0[..3] { *channel = table[*channel as usize]; }
+        }
+    }
+}
+
 /// Textures to put in the albedo array (all resized to one size).
 pub struct TextureSource {
     pub name: String,
     pub rgba: image::RgbaImage,
-    /// Tangent-space normal map (OpenGL convention, like Godot), if any.
+    /// Tangent-space normal map in linear UNORM (OpenGL convention), if any.
+    /// Source transfer encoding has already been removed before GPU mipmaps.
     pub normal: Option<image::RgbaImage>,
 }
 
@@ -213,16 +299,60 @@ pub struct Scene {
     pub car_materials: Vec<GpuCarMaterial>,
     pub blended_materials: HashMap<u32, BlendMaterial>,
     pub grass_ranges: Vec<crate::grass::GrassRange>,
+    /// GPU-generated ground cover: terrain/settings/recipes once, no CPU tuft stream.
+    pub meadow: Option<crate::meadow_data::MeadowField>,
+    /// Shared CPU residency / per-view GPU fade policy for source grass.
+    pub grass_detail: crate::vegetation_detail::DistanceProfile,
     /// Optional world-fixed terrain-following grass density field.
     pub far_grass: Option<crate::far_grass::FarGrassField>,
+    /// Maximum vertical displacement of TERRAIN source geometry from the
+    /// native ground field. Zero keeps strict solid-ground receiver tests.
+    /// Only ascending escape within one native-cell diagonal of the receiver
+    /// is permitted, independent of its position relative to grid boundaries;
+    /// subsequent terrain, grass and road occluders remain unchanged.
+    pub terrain_visual_offset_m: f32,
     /// Optional bounded validation forest; absent in normal live scenes.
     pub voxel_forest: Option<crate::foliage_volume_data::GpuForest>,
+    /// Shared source-derived whole-plant volumes and a world-grid index.
+    /// Experimental native renderer; source is retained unless explicitly enabled.
+    pub foliage_world: Option<crate::foliage_world::WorldField>,
+    pub foliage_world_experimental: bool,
+    /// Output-pixel spatial support budget; optics require separate validation.
+    pub foliage_world_error_pixels: f32,
+    /// Explicit projected voxel LOD experiment; zero keeps finest-level mode.
+    pub voxel_lod_pixels: f32,
+    /// Experimental GPU worklist: integrate only tiles with volume candidates.
+    /// Defaults to the full-screen reference until image/timing validation.
+    pub voxel_active_tiles: bool,
+    /// Optional exact source/volume pairs, selected independently for each
+    /// camera. Empty preserves static validation-forest replacement.
+    pub foliage_representations: Vec<crate::foliage_representation::Binding>,
+    /// A branch proxy may own many shared primitive instances. All members
+    /// switch with its single source/voxel decision; shadows retain members.
+    pub foliage_source_groups: Vec<crate::foliage_representation::SourceGroup>,
+    /// Optical evidence is required unless the caller explicitly opts into
+    /// the bounded procedural foliage experiment.
+    pub foliage_representation_policy: crate::foliage_representation::Policy,
+    /// Optional bounded shared branch poses for both source and voxel parts.
+    pub part_wind: Vec<crate::part_wind::PartWind>,
+    /// Reused primitive meshes following shared branch poses on the GPU.
+    /// Empty preserves the original one-source-instance-per-branch path.
+    pub part_attachments: Vec<crate::part_wind::PartAttachment>,
+    /// Shared baked rigid-part clips. Optional, with bounded actor/part pools.
+    pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
+    /// Explicit declaration that heightfield sentinel holes and outside its
+    /// bounds contain no loaded TERRAIN geometry. Does not cover meshes or
+    /// future streamed terrain. False keeps strict unknown-outside tracing.
+    pub terrain_visibility_complete: bool,
     /// Game data for materials (Sideways: road surface per 2 m row).
     pub aux: Vec<u32>,
     /// Equirectangular HDR sky, linear RGB.
     pub sky: Option<(u32, u32, Vec<[f32; 4]>)>,
+    /// Absolute, sun-disc-free radiance with its solar state supplied by the
+    /// atmosphere bake. Bypass HDRI brightest-pixel rotation and lux rescaling.
+    pub sky_physical: bool,
 }
 
 impl Scene {
@@ -291,6 +421,32 @@ impl Scene {
         self.instances.push(Self::instance(&self.meshes[mesh], xf, 0));
     }
 
+    /// Label at the source maker, rather than inferring a category from a
+    /// material or behavioral flag (a tree contains bark as well as leaves).
+    pub fn add_classified_instance(&mut self, mesh: usize, xf: Affine3A, category: GeometryCategory) {
+        self.instances.push(Self::instance(&self.meshes[mesh], xf, (category as u32) << INSTANCE_CATEGORY_SHIFT));
+    }
+
+    pub fn set_instance_category(&mut self, index: usize, category: GeometryCategory) {
+        self.instances[index].set_category(category);
+    }
+
+    pub fn set_instance_categories(&mut self, range: std::ops::Range<usize>, category: GeometryCategory) {
+        for instance in &mut self.instances[range] { instance.set_category(category); }
+    }
+
+    /// Explicit O(source instances) startup/diagnostic scan; never part of rendering.
+    pub fn geometry_category_counts(&self) -> [GeometryCategoryCounts; 5] {
+        let mut counts = [GeometryCategoryCounts::default(); 5];
+        for instance in &self.instances {
+            let count = &mut counts[instance.category() as usize];
+            count.instances += 1;
+            count.active_instances += u64::from(instance.cluster_count > 0);
+            count.referenced_clusters += u64::from(instance.cluster_count);
+        }
+        counts
+    }
+
     pub fn update_instance(&mut self, index: usize, mesh: usize, xf: Affine3A) {
         let flags = self.instances[index].flags;
         self.instances[index] = Self::instance(&self.meshes[mesh], xf, flags);
@@ -353,13 +509,23 @@ impl Scene {
 
     /// Load an image file into the texture array; returns its layer.
     pub fn add_texture(&mut self, path: &std::path::Path) -> Result<i32, String> {
+        self.add_texture_with_normal_encoding(path, NormalEncoding::LinearUnorm)
+    }
+
+    /// Load an albedo and its sibling normal map with explicit source encoding.
+    /// Only the normal RGB is decoded; albedo and normal alpha stay untouched.
+    pub fn add_texture_with_normal_encoding(&mut self, path: &std::path::Path, encoding: NormalEncoding) -> Result<i32, String> {
         // The normal map sits beside the albedo: x_albedo.jpg, x_normal.jpg (or .png).
         let normal_path = path.file_name().and_then(|f| f.to_str()).filter(|f| f.contains("_albedo.")).and_then(|f| {
             let stem = f.split("_albedo.").next().unwrap_or(f);
             ["jpg", "png"].iter().map(|e| path.with_file_name(format!("{stem}_normal.{e}"))).find(|p| p.exists())
         });
         let (img, normal) = std::thread::scope(|s| {
-            let n = s.spawn(|| normal_path.and_then(|p| image::open(p).ok()).map(|i| i.to_rgba8()));
+            let n = s.spawn(|| normal_path.and_then(|p| image::open(p).ok()).map(|i| {
+                let mut normal = i.to_rgba8();
+                encoding.decode(&mut normal);
+                normal
+            }));
             (image::open(path), n.join().unwrap())
         });
         let img = img.map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
@@ -392,6 +558,135 @@ impl Scene {
             self.vertices.len(),
             self.textures.len()
         )
+    }
+}
+
+#[cfg(test)]
+mod geometry_category_tests {
+    use super::*;
+
+    fn scene() -> Scene {
+        let mut scene = Scene::default();
+        scene.meshes.push(MeshRef { first_cluster: 12, cluster_count: 7, sphere: [1.0, 2.0, 3.0, 4.0] });
+        scene
+    }
+
+    #[test]
+    fn geometry_category_preserves_abi_geometry_and_behavior_bits() {
+        assert_eq!(std::mem::size_of::<GpuInstance>(), 80);
+        let behavior = FOLIAGE | SOLID | NO_SHADOW | LIVE_GRASS | WIND_GRASS | PART_WIND;
+        assert_eq!(behavior & INSTANCE_CATEGORY_MASK, 0);
+        let mut scene = scene();
+        scene.add_instance(0, Affine3A::from_translation(Vec3::new(10.0, 5.0, -40.0)));
+        scene.instances[0].flags = behavior | (1 << 31);
+        let before = scene.instances[0];
+        // Being foliage alone never implicitly assigns tree provenance.
+        assert_eq!(before.category(), GeometryCategory::Other);
+        for category in GeometryCategory::ALL {
+            scene.set_instance_category(0, category);
+            let after = scene.instances[0];
+            assert_eq!(after.category(), category);
+            assert_eq!(after.flags & !INSTANCE_CATEGORY_MASK, before.flags);
+            assert_eq!(&bytemuck::bytes_of(&after)[..76], &bytemuck::bytes_of(&before)[..76]);
+            assert_eq!(category.exclusion_bit(), 1 << category as u32);
+        }
+    }
+
+    #[test]
+    fn geometry_category_survives_transform_and_mesh_updates() {
+        let mut scene = scene();
+        scene.add_classified_instance(0, Affine3A::IDENTITY, GeometryCategory::Trees);
+        scene.mark_foliage();
+        scene.meshes.push(MeshRef { first_cluster: 30, cluster_count: 3, sphere: [0.0, 0.0, 0.0, 1.0] });
+        scene.update_instance(0, 1, Affine3A::from_translation(Vec3::X * 99.0));
+        assert_eq!(scene.instances[0].category(), GeometryCategory::Trees);
+        assert_eq!(scene.instances[0].flags & FOLIAGE, FOLIAGE);
+        assert_eq!(scene.instances[0].first_cluster, 30);
+        assert_eq!(scene.instances[0].sphere[0], 99.0);
+    }
+
+    #[test]
+    fn geometry_category_counts_distinguish_reserved_slots_and_available_lods() {
+        let mut scene = scene();
+        for category in [GeometryCategory::Other, GeometryCategory::Grass, GeometryCategory::Grass,
+            GeometryCategory::Cars, GeometryCategory::Cars] {
+            scene.add_classified_instance(0, Affine3A::IDENTITY, category);
+        }
+        scene.instances[2].cluster_count = 0;
+        scene.set_instance_categories(3..5, GeometryCategory::Trees);
+        let counts = scene.geometry_category_counts();
+        assert_eq!(counts[GeometryCategory::Other as usize].instances, 1);
+        assert_eq!(counts[GeometryCategory::Grass as usize], GeometryCategoryCounts {
+            instances: 2, active_instances: 1, referenced_clusters: 7,
+        });
+        assert_eq!(counts[GeometryCategory::Trees as usize], GeometryCategoryCounts {
+            instances: 2, active_instances: 2, referenced_clusters: 14,
+        });
+        assert_eq!(counts[GeometryCategory::Cars as usize], GeometryCategoryCounts::default());
+        assert_eq!(counts.iter().map(|c| c.instances).sum::<u64>(), scene.instances.len() as u64);
+    }
+}
+
+#[cfg(test)]
+mod normal_encoding_tests {
+    use super::NormalEncoding;
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn normal_encoding_srgb_neutral_and_alpha() {
+        let mut image = RgbaImage::from_fn(256, 1, |x, _| Rgba([188, 188, 255, x as u8]));
+        NormalEncoding::SrgbTransferred.decode(&mut image);
+        for (x, pixel) in image.pixels().enumerate() {
+            assert_eq!(pixel.0, [128, 128, 255, x as u8]);
+        }
+    }
+
+    #[test]
+    fn normal_encoding_uses_iec_piecewise_transfer() {
+        // Independent reference byte values include both sides of the toe.
+        let encoded = [0, 10, 11, 64, 128, 188, 255];
+        let expected = [0, 1, 1, 13, 55, 128, 255];
+        let mut image = RgbaImage::from_fn(7, 1, |x, _| Rgba([encoded[x as usize]; 4]));
+        NormalEncoding::SrgbTransferred.decode(&mut image);
+        for (i, pixel) in image.pixels().enumerate() {
+            assert_eq!(pixel.0, [expected[i], expected[i], expected[i], encoded[i]]);
+        }
+    }
+
+    #[test]
+    fn normal_encoding_tilted_vectors_round_trip() {
+        let vectors = [[0.36f64, 0.48, 0.8], [-0.6, 0.0, 0.8],
+            [0.0, -0.8, 0.6], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]];
+        let forward = |signed: f64| {
+            let linear = signed * 0.5 + 0.5;
+            let encoded = if linear <= 0.0031308 { linear * 12.92 }
+                else { 1.055 * linear.powf(1.0 / 2.4) - 0.055 };
+            (encoded * 255.0).round() as u8
+        };
+        for vector in vectors {
+            let mut image = RgbaImage::from_pixel(1, 1,
+                Rgba([forward(vector[0]), forward(vector[1]), forward(vector[2]), 73]));
+            NormalEncoding::SrgbTransferred.decode(&mut image);
+            for (channel, expected) in vector.into_iter().enumerate() {
+                let actual = image.get_pixel(0, 0)[channel] as f64 * (2.0 / 255.0) - 1.0;
+                // Source transfer quantization plus linear UNORM quantization.
+                assert!((actual - expected).abs() <= 0.013, "{vector:?}: {channel} = {actual}");
+            }
+            assert_eq!(image.get_pixel(0, 0)[3], 73);
+        }
+    }
+
+    #[test]
+    fn normal_encoding_linear_is_byte_identical_including_fallback() {
+        assert_eq!(NormalEncoding::default(), NormalEncoding::LinearUnorm);
+        let mut image = RgbaImage::from_fn(256, 1, |x, _|
+            Rgba([x as u8, (255 - x) as u8, (x * 37) as u8, (x * 71) as u8]));
+        let original = image.clone();
+        NormalEncoding::LinearUnorm.decode(&mut image);
+        assert_eq!(image, original);
+        let mut flat = RgbaImage::from_pixel(1, 1, Rgba([128, 128, 255, 255]));
+        NormalEncoding::LinearUnorm.decode(&mut flat);
+        assert_eq!(flat.get_pixel(0, 0).0, [128, 128, 255, 255]);
     }
 }
 

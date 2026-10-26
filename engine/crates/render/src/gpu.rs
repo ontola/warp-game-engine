@@ -4,12 +4,14 @@
 
 use std::time::Instant;
 
+#[derive(Clone)]
 pub struct Gpu {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub info: wgpu::AdapterInfo,
     pub features: wgpu::Features,
     pub limits: wgpu::Limits,
+    pipeline_cache: std::sync::Arc<crate::pipeline_cache::Cache>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +67,7 @@ impl Gpu {
         })
         .map_err(|e| format!("no GPU adapter: {e}"))?;
         let info = adapter.get_info();
-        let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        let optional = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS | wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::PIPELINE_CACHE | wgpu::Features::PRIMITIVE_INDEX;
         let features = adapter.features() & optional;
         let mut limits = wgpu::Limits::default().using_resolution(adapter.limits());
         let al = adapter.limits();
@@ -73,17 +75,38 @@ impl Gpu {
         limits.max_buffer_size = al.max_buffer_size;
         limits.max_storage_buffers_per_shader_stage = al.max_storage_buffers_per_shader_stage.min(16);
         limits.max_compute_workgroups_per_dimension = al.max_compute_workgroups_per_dimension;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let descriptor = wgpu::DeviceDescriptor {
             label: Some("kern"),
             required_features: features,
             required_limits: limits.clone(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
-        }))
-        .map_err(|e| format!("device: {e}"))?;
-        Ok((Gpu { device, queue, info, features, limits }, adapter))
+        };
+        #[cfg(all(feature = "dlss", target_os = "windows"))]
+        let native = crate::dlss::request_device(&adapter, &descriptor);
+        #[cfg(not(all(feature = "dlss", target_os = "windows")))]
+        let native: Option<Result<(wgpu::Device, wgpu::Queue), String>> = None;
+        let (device, queue) = match native {
+            Some(Ok(result)) => result,
+            Some(Err(reason)) => {
+                // Optional capability discovery must not disable native rendering
+                // on an older driver. Explicit DLSS selection still fails in its
+                // context's extension/capability validation; it never falls back.
+                eprintln!("DLSS capability setup unavailable: {reason}; creating native device");
+                pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("device: {e}"))?
+            }
+            None => pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| format!("device: {e}"))?,
+        };
+        let pipeline_cache = std::sync::Arc::new(crate::pipeline_cache::Cache::new(&device, &info));
+        Ok((Gpu { device, queue, info, features, limits, pipeline_cache }, adapter))
     }
+
+    /// One cache is shared by all views, stage workers and pipeline variants.
+    pub(crate) fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> { self.pipeline_cache.handle() }
+
+    /// Explicit construction/reload savepoint, never called by a render frame.
+    pub(crate) fn persist_pipeline_cache(&self) -> crate::pipeline_cache::Profile { self.pipeline_cache.persist() }
 
     pub fn summary(&self) -> GpuInfo {
         GpuInfo {

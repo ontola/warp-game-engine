@@ -1,0 +1,39 @@
+# Same stage1 wall under two sun directions. No invented round2 replay.
+# Camera: build/screenshots/sideways-1792849958527-134304-0.json.
+schema = 1
+name = "sunrise-rocks"
+ticks_per_frame = 0
+capture_dir = "../build/scenario-captures/sunrise-rocks"
+capture_frames = [1, 60, 180, 181, 240, 360]
+
+[capture]
+format = "jpg"
+max_width = 1600
+quality = 85
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "3840x2160"
+upscale = "dlss-quality"
+hud = false
+
+[[sections]]
+name = "sunrise-wall"
+start_tick = 0
+frames = 180
+warmup = 60
+sun = "sunrise"
+atmosphere = "clear"
+camera = {position = [38.02541733, 10.65486431, -1436.08178711], target = [32.05661774, 9.50486374, -1438.69653320], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "afternoon-same-wall"
+start_tick = 0
+frames = 180
+warmup = 60
+sun = "afternoon"
+atmosphere = "clear"
+camera = {position = [38.02541733, 10.65486431, -1436.08178711], target = [32.05661774, 9.50486374, -1438.69653320], fov_y_degrees = 64.0}

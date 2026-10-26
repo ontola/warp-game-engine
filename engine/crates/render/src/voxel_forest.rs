@@ -2,7 +2,8 @@
 //!
 //! Integrates all overlapping crown densities together, clipped by opaque
 //! scene depth. Crowns write C/T, never a false opaque first-hit depth. Current
-//! first-level and 256-tree limits are deliberate, not full-forest LOD support.
+//! 256-part limit is deliberate, not full-forest streaming support. Optional
+//! per-view projected mip selection shares the same immutable asset pyramid.
 use crate::{Gpu, Scene};
 use bytemuck::{Pod, Zeroable};
 use std::{sync::Mutex, time::Duration};
@@ -10,7 +11,91 @@ use wgpu::util::DeviceExt;
 
 const TILE: u32 = 16;
 const CANDIDATES: u32 = 64;
-const COUNTER_BYTES: u64 = 48;
+// Four exact 64-bit aggregate counters follow the fourteen original u32s.
+// WGSL uses atomic low words plus carry; no optional GPU u64 feature is needed.
+const COUNTER_BYTES: u64 = 88;
+
+/// Accepted selected-mip empty-space skipping fix, fixed for a renderer's
+/// lifetime. Explicit env=0 retains the baseline for matched diagnostics.
+/// This does not make the bounded experimental volume renderer forest-ready.
+#[derive(Clone, Copy, Debug)]
+struct IntegratorOptions {
+    empty_ceiling: bool,
+    // Experimental register/BRDF specialization; immutable packed cells must
+    // first prove exact antipodal symmetry. The 176-byte upload ABI is unchanged.
+    antipodal_normals: bool,
+}
+impl Default for IntegratorOptions {
+    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false } }
+}
+impl IntegratorOptions {
+    fn from_environment() -> Self {
+        Self {
+            empty_ceiling: std::env::var("KERN_VOXEL_EMPTY_CEILING").map_or(true, |value| value != "0"),
+            antipodal_normals: std::env::var("KERN_VOXEL_ANTIPODAL_NORMALS").is_ok_and(|value| value == "1"),
+        }
+    }
+    fn specialize(self, source: &str) -> Result<String, String> {
+        let mut result = source.to_owned();
+        let changes = [
+            (self.empty_ceiling, "const VOLUME_EMPTY_CEILING: bool = false;", "const VOLUME_EMPTY_CEILING: bool = true;"),
+        ];
+        for (enabled, from, to) in changes {
+            if !enabled { continue; }
+            if result.matches(from).count() != 1 {
+                return Err(format!("voxel option requires exactly one WGSL declaration: {from}"));
+            }
+            result = result.replacen(from, to, 1);
+        }
+        if self.antipodal_normals {
+            // Specialize source rather than branch inside every cell fetch.
+            // VolumeCell remains six records; only private VolumeSample and
+            // its interpolation/lighting loops shrink to three records.
+            for (from,to) in [
+                ("const VOLUME_NORMAL_COUNT: u32 = 6u;", "const VOLUME_NORMAL_COUNT: u32 = 3u;"),
+                ("let lobe=cell.normals[k];", "let lobe=cell.normals[k*2u];"),
+                // Keep the positive first moment at its original magnitude:
+                // doubling it would change the existing near-zero normal
+                // rejection threshold. Only the response weight is combined.
+                ("result.normals[k]+=vec4<f32>(lobe.xyz*lobe.w,lobe.w)*sigma;", "result.normals[k]+=vec4<f32>(lobe.xyz*lobe.w,lobe.w+cell.normals[k*2u+1u].w)*sigma;"),
+                ("let weight=sample.normals[k].w;", "var weight=sample.normals[k].w;"),
+                ("// VOLUME_ANTIPODAL_RESPONSE_BEGIN", "// Exactly grazing view keeps both opposite responses: the generic\n        // fold only flips a negative dot product, not zero.\n        let normal_copies=select(1u,2u,dot(n,v)==0.0);\n        if normal_copies==2u {weight*=0.5;}\n        for(var normal_side=0u;normal_side<normal_copies;normal_side++) {\n        if normal_side==1u {n=-n;}"),
+                ("// VOLUME_ANTIPODAL_RESPONSE_END", "}"),
+            ] {
+                if result.matches(from).count()!=1 {
+                    return Err(format!("antipodal normal specialization requires exactly one WGSL marker: {from}"));
+                }
+                result=result.replacen(from,to,1);
+            }
+        }
+        Ok(result)
+    }
+}
+
+/// All uploaded cells, including unused mip cells, must have exactly matching
+/// pair weights and opposite conditional means. No tolerance silently drops
+/// an unequal moment. Signed zero compares equal, as required by the baker.
+fn antipodal_normal_cells(cells:&[crate::foliage_volume_data::GpuCell])->bool {
+    !cells.is_empty() && cells.iter().all(|cell| (0..3).all(|axis| {
+        let a=cell.normals[axis*2];let b=cell.normals[axis*2+1];
+        a.iter().chain(&b).all(|x|x.is_finite()) && a[3]>=0.0 && a[3]==b[3]
+            && (0..3).all(|k|a[k]==-b[k])
+    }))
+}
+fn diagnostic_u64(bytes: &[u8], word: usize) -> u64 {
+    let low = u32::from_le_bytes(bytes[word * 4..word * 4 + 4].try_into().unwrap());
+    let high = u32::from_le_bytes(bytes[word * 4 + 4..word * 4 + 8].try_into().unwrap());
+    u64::from(low) | (u64::from(high) << 32)
+}
+// Volume shading only needs owner transforms and shared grass/headlight inputs.
+// Reusing the entire mesh scene layout also counts unused mesh/car buffers
+// against WebGPU's per-stage limit (10 scene + 7 volume = 17). Keep this
+// interface small instead of increasing the requested hardware limit.
+pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 26];
+pub(crate) const MAX_VIEW_GROUPS: usize = 256;
+pub(crate) fn default_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] {
+    [[1, u32::MAX, 0, 0]; MAX_VIEW_GROUPS]
+}
 #[derive(Clone, Debug, Default)]
 pub struct VoxelViewDiagnostics {
     pub candidate_overflow_tiles: u32,
@@ -25,12 +110,31 @@ pub struct VoxelViewDiagnostics {
     /// Complete scan fallback, not dropped overlapping density.
     pub active_cache_overflow_rays: u32,
     pub max_empty_brick_skips: u32,
+    /// Largest occupied sample's fractional mip, in units of 1/256 level.
+    pub max_occupied_lod_x256: u32,
+    /// Rays containing nonzero density sampled beyond the finest mip.
+    pub occupied_coarse_mip_rays: u32,
+    pub active_tiles: u32,
+    /// In-bounds pixels covered by active tiles (before exact ray rejection).
+    pub scheduled_pixels: u32,
+    /// Sum of march-loop iterations, including gap jumps and empty-brick skips.
+    pub total_steps: u64,
+    /// Calls that reconstruct one volume at one ray position (possibly two mips).
+    pub volume_samples: u64,
+    /// Nonempty sparse cell records fetched during trilinear reconstruction.
+    /// Counts both mips and repeated reads, even if a corner's weight is zero;
+    /// not unique cells, ray positions, visible voxels, or rasterized boxes.
+    pub occupied_cell_samples: u64,
+    /// Actual ray/AABB interval tests, including misses and complete-scan fallbacks.
+    /// Does not count tile projection or imply any box was rasterized.
+    pub aabb_interval_tests: u64,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Config {
     size_count: [u32; 4],
     march: [f32; 4],
+    dispatch: [u32; 4],
 }
 struct Targets {
     size: (u32, u32),
@@ -38,10 +142,30 @@ struct Targets {
     bind: wgpu::BindGroup,
     composite: wgpu::BindGroup,
     counters: wgpu::Buffer,
+    jobs: wgpu::Buffer,
+    indirect: wgpu::Buffer,
+    config: wgpu::Buffer,
+    motion: Option<wgpu::Texture>,
+}
+pub(crate) struct TemporalInputs<'a> {
+    pub previous_instances: &'a wgpu::Buffer,
+    pub snapshot_valid: bool,
+}
+struct TemporalPipelines {
+    data_layout: wgpu::BindGroupLayout,
+    layout: wgpu::PipelineLayout,
+    pipelines: [wgpu::ComputePipeline;3],
 }
 pub(crate) struct VoxelRenderer {
     tiles: wgpu::ComputePipeline,
+    clear: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
+    pipeline_layout: wgpu::PipelineLayout,
+    scene_layout: wgpu::BindGroupLayout,
+    view_layout: wgpu::BindGroupLayout,
+    temporal: Mutex<Option<TemporalPipelines>>,
+    temporal_error: Option<String>,
+    source: String,
     composite: wgpu::RenderPipeline,
     data_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
@@ -49,14 +173,53 @@ pub(crate) struct VoxelRenderer {
     count: u32,
     step: f32,
     empty_skip: bool,
+    lod_pixels: f32,
+    active_tiles: bool,
+    integrator_options: IntegratorOptions,
     owners: Vec<u32>,
     targets: Mutex<Vec<Option<Targets>>>,
+}
+pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 3], temporal: Option<[wgpu::ComputePipeline;3]>, source: String }
+/// Native generation contains neither temporal resources nor per-sample work.
+/// Explicit blocks keep shader reload transactional for both pipeline sets.
+fn temporal_source(source:&str,enabled:bool)->Result<String,String> {
+    let mut result=String::with_capacity(source.len());let mut inside=false;let mut blocks=0;
+    for line in source.split_inclusive('\n') {
+        match line.trim() {
+            "// VOLUME_MOTION_BEGIN"=>{if inside {return Err("nested voxel temporal block".into());}inside=true;blocks+=1;},
+            "// VOLUME_MOTION_END"=>{if !inside {return Err("unmatched voxel temporal block end".into());}inside=false;},
+            _=>if enabled || !inside {result.push_str(line);},
+        }
+    }
+    if inside || blocks==0 {return Err("voxel temporal shader blocks are missing or incomplete".into());}
+    Ok(result)
+}
+fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
+    let storage=|read_only|wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Storage {read_only},has_dynamic_offset:false,min_binding_size:None};
+    let uniform=wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None};
+    let output=|format|wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format,view_dimension:wgpu::TextureViewDimension::D2};
+    let mut entries=vec![(0,storage(true)),(1,storage(true)),(2,storage(true)),(3,storage(true)),
+        (4,storage(false)),(5,storage(false)),(6,output(wgpu::TextureFormat::Rgba16Float)),
+        (7,uniform),(8,storage(false)),(9,uniform)];
+    if temporal {entries.extend([(10,output(wgpu::TextureFormat::Rgba32Float)),(11,storage(true))]);}
+    gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
+        entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
+}
+fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool) -> [wgpu::ComputePipeline; 3] {
+    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("voxel forest"), source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    ["voxel_tiles", "voxel_clear", if active_tiles {"voxel_integrate_active"} else {"voxel_integrate"}]
+        .map(|entry| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(entry), layout: Some(layout), module: &module, entry_point: Some(entry),
+            compilation_options: Default::default(), cache: gpu.pipeline_cache(),
+        }))
 }
 pub(crate) fn shader_source() -> String {
     format!(
         "{}\n{}",
         crate::wind::shade_source(),
-        include_str!("shaders/voxel_forest.wgsl")
+        crate::shaders::source("voxel_forest.wgsl")
     )
 }
 
@@ -64,14 +227,18 @@ pub(crate) fn shader_source() -> String {
 /// Arbitrary externally constructed levels may not form the baker's pyramid;
 /// those assets still render through the unchanged fine sampling path.
 fn valid_empty_skip_hierarchy(forest: &crate::foliage_volume_data::GpuForest) -> bool {
+    valid_skip_levels(forest, false)
+}
+fn valid_skip_levels(forest: &crate::foliage_volume_data::GpuForest, all_levels: bool) -> bool {
     let mut checked = std::collections::HashSet::new();
     for tree in &forest.instances {
-        let first = tree.meta[1] as usize;
         let count = tree.meta[2] as usize;
         if count == 0 {
             return false;
         }
-        let relative = (count - 1).min(2);
+        for selected in 0..if all_levels { count } else { 1 } {
+        let first = tree.meta[1] as usize + selected;
+        let relative = (count - selected - 1).min(2);
         if !checked.insert((first, relative)) {
             continue;
         }
@@ -116,6 +283,7 @@ fn valid_empty_skip_hierarchy(forest: &crate::foliage_volume_data::GpuForest) ->
                 }
             }
         }
+        }
     }
     true
 }
@@ -129,17 +297,55 @@ pub(crate) fn replacement_materials(scene: &Scene) -> Vec<u32> {
             let owner = tree.meta[0] as usize;
             let material = tree.meta[3];
             assert!(
-                owner < scene.instances.len() && (material as usize) < scene.materials.len(),
+                owner < scene.instances.len() && (material == crate::foliage_volume_data::ALL_MATERIALS || (material as usize) < scene.materials.len()),
                 "invalid voxel replacement owner/material"
             );
+            let replacement = if material == crate::foliage_volume_data::ALL_MATERIALS { u32::MAX } else { material + 1 };
             assert!(
-                result[owner] == 0 || result[owner] == material + 1,
+                result[owner] == 0 || result[owner] == replacement,
                 "one owner cannot replace two different crown materials"
             );
-            result[owner] = material + 1;
+            result[owner] = replacement;
         }
     }
+    for binding in &scene.foliage_representations {
+        result[binding.owner as usize] = 0x8000_0000 | binding.volume;
+    }
+    // A single per-view branch decision replaces every shared primitive of
+    // that branch, without a new per-stage storage binding or a second source
+    // mesh. Shadow passes ignore dynamic replacements and retain the members.
+    for group in &scene.foliage_source_groups {
+        let replacement=result[group.owner as usize];
+        assert!(replacement&0x8000_0000!=0,"shared foliage proxy needs a dynamic representation");
+        for &member in &group.members { result[member as usize]=replacement; }
+    }
     result
+}
+
+/// A packed volume's local coordinates must correspond to its source-owner
+/// snapshot. Legacy whole-plant wind is disabled for replaced owners; only
+/// PartWind currently updates a moving volume and its source in lockstep.
+fn temporal_compatibility(scene:&Scene)->Result<(),String> {
+    let Some(forest)=&scene.voxel_forest else {return Ok(());};
+    let matrix=|r:[[f32;4];3]|glam::Mat4::from_cols_array(&[
+        r[0][0],r[1][0],r[2][0],0.0,r[0][1],r[1][1],r[2][1],0.0,
+        r[0][2],r[1][2],r[2][2],0.0,r[0][3],r[1][3],r[2][3],1.0]);
+    for (index,tree) in forest.instances.iter().enumerate() {
+        let owner=tree.meta[0];
+        let source=scene.instances.get(owner as usize).ok_or("voxel temporal owner is out of bounds")?;
+        let expected=matrix(source.rows).inverse();let actual=matrix(tree.inverse);
+        if !expected.is_finite() || !actual.is_finite() || expected.to_cols_array().into_iter().zip(actual.to_cols_array())
+            .any(|(a,b)|(a-b).abs()>2e-4*(1.0+a.abs().max(b.abs()))) {
+            return Err(format!("voxel {index} inverse does not match its source owner for temporal reprojection"));
+        }
+        if scene.baked_animations.as_ref().is_some_and(|animation|animation.parts.iter().any(|part|part.owner==owner)) {
+            return Err(format!("voxel owner {owner} uses baked animation without matching volume deformation"));
+        }
+        if source.flags&crate::scene::PART_WIND!=0 && !scene.part_wind.iter().any(|part|part.owner==Some(owner)&&part.volume==Some(index as u32)) {
+            return Err(format!("voxel owner {owner} needs a matching rigid-part volume pose for temporal reprojection"));
+        }
+    }
+    Ok(())
 }
 
 impl VoxelRenderer {
@@ -161,7 +367,7 @@ impl VoxelRenderer {
             gpu.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(name),
-                    contents: if data.is_empty() { &[0; 112] } else { data },
+                    contents: if data.is_empty() { &[0; std::mem::size_of::<crate::foliage_volume_data::GpuCell>()] } else { data },
                     usage: wgpu::BufferUsages::STORAGE,
                 })
         };
@@ -169,7 +375,11 @@ impl VoxelRenderer {
             upload("voxel levels", bytemuck::cast_slice(&forest.levels)),
             upload("voxel indices", bytemuck::cast_slice(&forest.indices)),
             upload("voxel cells", bytemuck::cast_slice(&forest.cells)),
-            upload("voxel trees", bytemuck::cast_slice(&forest.instances)),
+            gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("voxel trees"),
+                contents: bytemuck::cast_slice(&forest.instances),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            }),
         ];
         // Both Frobenius and sqrt(matrix 1-norm * infinity-norm) bound
         // inverse-ray stretch. Their minimum is still conservative and avoids
@@ -199,17 +409,24 @@ impl VoxelRenderer {
             })
             .fold(f32::INFINITY, f32::min);
         assert!(step.is_finite() && step > 0.0, "invalid voxel march step");
-        let empty_skip = valid_empty_skip_hierarchy(forest);
-        let uniform = wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        };
-        let storage = |read_only| wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        };
+        let lod_pixels = scene.voxel_lod_pixels;
+        assert!(lod_pixels.is_finite() && lod_pixels >= 0.0, "invalid voxel pixel error");
+        // Dynamic LOD assumes the baker's consecutive dyadic mip levels.
+        // Unrelated user-constructed grids must not silently select nonsense.
+        if lod_pixels > 0.0 {
+            for tree in &forest.instances {
+                let levels = &forest.levels[tree.meta[1] as usize..][..tree.meta[2] as usize];
+                assert!(!levels.is_empty(), "voxel LOD requires at least one level");
+                for pair in levels.windows(2) {
+                    assert!(pair[0].origin_cell[..3] == pair[1].origin_cell[..3]
+                        && pair[0].origin_cell[3] * 2.0 == pair[1].origin_cell[3]
+                        && (0..3).all(|axis| pair[0].dims_offset[axis].div_ceil(2) == pair[1].dims_offset[axis]),
+                        "voxel LOD requires consecutive shared-origin mip levels");
+                }
+            }
+        }
+        let empty_skip = if lod_pixels > 0.0 { valid_skip_levels(forest, true) }
+            else { valid_empty_skip_hierarchy(forest) };
         let tex = |sample_type, view_dimension| wgpu::BindingType::Texture {
             sample_type,
             view_dimension,
@@ -234,27 +451,7 @@ impl VoxelRenderer {
                         .collect::<Vec<_>>(),
                 })
         };
-        let data_layout = layout(
-            "voxel data",
-            &[
-                (0, storage(true)),
-                (1, storage(true)),
-                (2, storage(true)),
-                (3, storage(true)),
-                (4, storage(false)),
-                (5, storage(false)),
-                (
-                    6,
-                    wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                ),
-                (7, uniform),
-            ],
-            wgpu::ShaderStages::COMPUTE,
-        );
+        let data_layout = create_data_layout(gpu,false);
         let pipeline_layout = gpu
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -266,25 +463,19 @@ impl VoxelRenderer {
                 ],
                 immediate_size: 0,
             });
-        let module = gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("voxel forest"),
-                source: wgpu::ShaderSource::Wgsl(shader_source().into()),
-            });
-        let compute = |entry| {
-            gpu.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some(entry),
-                    layout: Some(&pipeline_layout),
-                    module: &module,
-                    entry_point: Some(entry),
-                    compilation_options: Default::default(),
-                    cache: None,
-                })
-        };
-        let tiles = compute("voxel_tiles");
-        let integrate = compute("voxel_integrate");
+        let source = shader_source();
+        let mut integrator_options = IntegratorOptions::from_environment();
+        let antipodal_requested=integrator_options.antipodal_normals;
+        let antipodal_eligible=antipodal_normal_cells(&forest.cells);
+        integrator_options.antipodal_normals &= antipodal_eligible;
+        let specialized_source = integrator_options.specialize(&temporal_source(&source,false).expect("invalid voxel temporal blocks"))
+            .expect("invalid voxel integrator option shader");
+        let [tiles, clear, integrate] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles);
+        eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
+            integrator_options.empty_ceiling);
+        eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=176 (experimental; exact pairs, generic fallback)",
+            integrator_options.antipodal_normals,if integrator_options.antipodal_normals {3}else{6});
+        let lighting_layout = pipeline_layout;
         let composite_layout = layout(
             "voxel composite",
             &[(0, unfiltered)],
@@ -330,11 +521,18 @@ impl VoxelRenderer {
                     })],
                 }),
                 multiview_mask: None,
-                cache: None,
+                cache: gpu.pipeline_cache(),
             });
         Some(Self {
             tiles,
+            clear,
             integrate,
+            pipeline_layout: lighting_layout,
+            scene_layout: scene_layout.clone(),
+            view_layout: volume_view_layout.clone(),
+            temporal: Mutex::new(None),
+            temporal_error: temporal_compatibility(scene).err(),
+            source,
             composite,
             data_layout,
             composite_layout,
@@ -342,21 +540,60 @@ impl VoxelRenderer {
             count: forest.instances.len() as u32,
             step,
             empty_skip,
+            lod_pixels,
+            active_tiles: scene.voxel_active_tiles,
+            integrator_options,
             owners: forest.instances.iter().map(|t| t.meta[0]).collect(),
             targets: Mutex::new(Vec::new()),
         })
     }
+    /// Shared rigid-part compute writes poses before volume tile/bin passes.
+    /// Asset grids and cells remain immutable; the 96-byte tree layout is unchanged.
+    pub(crate) fn tree_buffer(&self) -> &wgpu::Buffer { &self.data[3] }
     pub(crate) fn contains_owner_range(&self, first: usize, count: usize) -> bool {
         self.owners
             .iter()
             .any(|&owner| (first..first + count).contains(&(owner as usize)))
+    }
+    pub(crate) fn prepare_temporal(&self,gpu:&Gpu)->Result<(),String> {
+        if let Some(error)=&self.temporal_error {return Err(error.clone());}
+        let mut temporal=self.temporal.lock().unwrap();
+        if temporal.is_some() {return Ok(());}
+        let source=self.integrator_options.specialize(&temporal_source(&self.source,true)?)?;
+        let prepared=crate::shaders::checked(gpu,|| {
+            let data_layout=create_data_layout(gpu,true);
+            let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label:Some("temporal voxel forest"),bind_group_layouts:&[Some(&self.scene_layout),Some(&self.view_layout),Some(&data_layout)],immediate_size:0});
+            let pipelines=pipelines(gpu,&layout,&source,self.active_tiles);
+            TemporalPipelines {data_layout,layout,pipelines}
+        })?;
+        *temporal=Some(prepared);Ok(())
+    }
+    /// Recreated motion snapshots must not leave target bindings pointing to
+    /// the previous DLSS instance buffer. Queued GPU work retains its handles.
+    pub(crate) fn reset_targets(&self) {for target in self.targets.lock().unwrap().iter_mut() {*target=None;}}
+    pub(crate) fn prepare_reload(&self, gpu: &Gpu, source: String) -> Result<Option<Reload>, String> {
+        if source == self.source { return Ok(None); }
+        let specialized_source = self.integrator_options.specialize(&temporal_source(&source,false)?)?;
+        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.pipeline_layout, &specialized_source, self.active_tiles))?;
+        let temporal=if let Some(temporal)=self.temporal.lock().unwrap().as_ref() {
+            let specialized=self.integrator_options.specialize(&temporal_source(&source,true)?)?;
+            Some(crate::shaders::checked(gpu,||self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles))?)
+        } else {None};
+        Ok(Some(Reload { pipelines, temporal, source }))
+    }
+    pub(crate) fn commit_reload(&mut self, reload: Reload) {
+        [self.tiles, self.clear, self.integrate] = reload.pipelines;
+        if let Some(pipelines)=reload.temporal {self.temporal.lock().unwrap().as_mut().unwrap().pipelines=pipelines;}
+        self.source = reload.source;
     }
     pub(crate) fn set_view_count(&self, count: usize) {
         let mut targets = self.targets.lock().unwrap();
         targets.truncate(count);
         targets.resize_with(count, || None);
     }
-    fn targets(&self, gpu: &Gpu, size: (u32, u32)) -> Targets {
+    fn targets(&self, gpu: &Gpu, size: (u32, u32), selection: &wgpu::Buffer,
+        temporal:Option<(&wgpu::BindGroupLayout,&wgpu::Buffer)>) -> Targets {
         let layer = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("voxel C and alpha"),
             size: wgpu::Extent3d {
@@ -374,6 +611,11 @@ impl VoxelRenderer {
             view_formats: &[],
         });
         let layer_view = layer.create_view(&Default::default());
+        let motion=temporal.map(|_|gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label:Some("voxel fractional reprojection"),size:wgpu::Extent3d {width:size.0,height:size.1,depth_or_array_layers:1},
+            mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba32Float,
+            usage:wgpu::TextureUsages::STORAGE_BINDING|wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_SRC,view_formats:&[]}));
+        let motion_view=motion.as_ref().map(|texture|texture.create_view(&Default::default()));
         let tile_count = u64::from(size.0.div_ceil(TILE)) * u64::from(size.1.div_ceil(TILE));
         let tiles = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel tile candidates"),
@@ -389,20 +631,35 @@ impl VoxelRenderer {
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Header: dispatch xyz, active count; then one tile index per job.
+        // Keep indirect arguments separate: the integration pass reads jobs
+        // as storage, which cannot alias an indirect-dispatch argument buffer.
+        let jobs = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("voxel active tile worklist"),
+            size: (4 + tile_count) * 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let indirect = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("voxel active tile indirect arguments"),
+            size: 12,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let config = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel config"),
                 contents: bytemuck::bytes_of(&Config {
                     size_count: [size.0, size.1, size.0.div_ceil(TILE), self.count],
-                    march: [self.step, 1024.0, u32::from(self.empty_skip) as f32, 0.0],
+                    march: [self.step, 1024.0, u32::from(self.empty_skip) as f32, self.lod_pixels],
+                    dispatch: [u32::from(self.active_tiles), 0, 0, 0],
                 }),
-                usage: wgpu::BufferUsages::UNIFORM,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("voxel data"),
-            layout: &self.data_layout,
-            entries: &[
+        let mut entries=vec![
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: self.data[0].as_entire_binding(),
@@ -435,7 +692,18 @@ impl VoxelRenderer {
                     binding: 7,
                     resource: config.as_entire_binding(),
                 },
-            ],
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: jobs.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry { binding: 9, resource: selection.as_entire_binding() },
+            ];
+        if let Some((_,previous))=temporal {
+            entries.push(wgpu::BindGroupEntry {binding:10,resource:wgpu::BindingResource::TextureView(motion_view.as_ref().unwrap())});
+            entries.push(wgpu::BindGroupEntry {binding:11,resource:previous.as_entire_binding()});
+        }
+        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("voxel data"),layout:temporal.map_or(&self.data_layout,|(layout,_)|layout),entries:&entries,
         });
         let composite = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("voxel composite"),
@@ -451,6 +719,10 @@ impl VoxelRenderer {
             bind,
             composite,
             counters,
+            jobs,
+            indirect,
+            config,
+            motion,
         }
     }
     pub(crate) fn render(
@@ -462,15 +734,30 @@ impl VoxelRenderer {
         scene: &wgpu::BindGroup,
         view: &wgpu::BindGroup,
         hdr: &wgpu::TextureView,
+        selection: &wgpu::Buffer,
+        temporal: Option<TemporalInputs<'_>>,
         times: [Option<(&wgpu::QuerySet, u32)>; 3],
     ) {
+        let temporal_guard=self.temporal.lock().unwrap();
+        let temporal_pipelines=temporal.as_ref().map(|_|temporal_guard.as_ref().expect("prepare_temporal before voxel render"));
         let mut targets = self.targets.lock().unwrap();
-        if !targets[index].as_ref().is_some_and(|t| t.size == size) {
-            targets[index] = Some(self.targets(gpu, size));
+        if !targets[index].as_ref().is_some_and(|t| t.size == size && t.motion.is_some()==temporal.is_some()) {
+            targets[index] = Some(self.targets(gpu, size, selection,
+                temporal.as_ref().zip(temporal_pipelines).map(|(input,pipes)|(&pipes.data_layout,input.previous_instances))));
         }
         let target = targets[index].as_ref().unwrap();
+        if let Some(input)=&temporal {
+            gpu.queue.write_buffer(&target.config,32,bytemuck::cast_slice(&[u32::from(self.active_tiles),u32::from(input.snapshot_valid),0,0]));
+        }
+        let [tiles,clear,integrate]=temporal_pipelines.map_or([&self.tiles,&self.clear,&self.integrate],|p|[&p.pipelines[0],&p.pipelines[1],&p.pipelines[2]]);
         encoder.clear_buffer(&target.counters, 0, None);
-        for (stage, pipeline) in [&self.tiles, &self.integrate].into_iter().enumerate() {
+        if self.active_tiles {
+            encoder.clear_buffer(&target.jobs, 0, Some(16));
+        }
+        for (stage, pipeline) in [tiles, integrate].into_iter().enumerate() {
+            if stage == 1 && self.active_tiles {
+                encoder.copy_buffer_to_buffer(&target.jobs, 0, &target.indirect, 0, 12);
+            }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some(if stage == 0 {
                     "voxel tiles"
@@ -485,16 +772,26 @@ impl VoxelRenderer {
                     }
                 }),
             });
-            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, scene, &[]);
             pass.set_bind_group(1, view, &[]);
             pass.set_bind_group(2, &target.bind, &[]);
+            if stage == 0 && self.active_tiles {
+                // Count the necessary clear in the tile-pass GPU timestamp.
+                // This entry point never reaches the large per-ray arrays.
+                pass.set_pipeline(clear);
+                pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
+            }
+            pass.set_pipeline(pipeline);
             let dims = if stage == 0 {
                 (size.0.div_ceil(TILE), size.1.div_ceil(TILE))
             } else {
                 size
             };
-            pass.dispatch_workgroups(dims.0.div_ceil(8), dims.1.div_ceil(8), 1);
+            if stage == 1 && self.active_tiles {
+                pass.dispatch_workgroups_indirect(&target.indirect, 0);
+            } else {
+                pass.dispatch_workgroups(dims.0.div_ceil(8), dims.1.div_ceil(8), 1);
+            }
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("voxel composite"),
@@ -519,6 +816,10 @@ impl VoxelRenderer {
         pass.set_pipeline(&self.composite);
         pass.set_bind_group(0, &target.composite, &[]);
         pass.draw(0..3, 0..1);
+    }
+    pub(crate) fn motion_layer(&self,index:usize)->Option<(wgpu::TextureView,wgpu::TextureView)> {
+        let targets=self.targets.lock().unwrap();let target=targets.get(index)?.as_ref()?;
+        Some((target.layer.create_view(&Default::default()),target.motion.as_ref()?.create_view(&Default::default())))
     }
     /// Explicit offline readback only. Normal frames never map or wait here.
     pub(crate) fn diagnostics(&self, gpu: &Gpu) -> Result<Vec<VoxelViewDiagnostics>, String> {
@@ -581,6 +882,14 @@ impl VoxelRenderer {
                         max_active_volumes: value(7),
                         active_cache_overflow_rays: value(8),
                         max_empty_brick_skips: value(9),
+                        max_occupied_lod_x256: value(10),
+                        occupied_coarse_mip_rays: value(11),
+                        active_tiles: value(12),
+                        scheduled_pixels: value(13),
+                        total_steps: diagnostic_u64(bytes, 14),
+                        volume_samples: diagnostic_u64(bytes, 16),
+                        occupied_cell_samples: diagnostic_u64(bytes, 18),
+                        aabb_interval_tests: diagnostic_u64(bytes, 20),
                     }
                 })
                 .collect()
@@ -591,11 +900,20 @@ impl VoxelRenderer {
     /// Raw little-endian RGBA16F: premultiplied linear radiance RGB and 1-T.
     /// Explicit offline request only; strips WebGPU row alignment padding.
     pub(crate) fn layers_rgba16(&self, gpu: &Gpu) -> Result<Vec<(u32, u32, Vec<u8>)>, String> {
+        self.read_layers(gpu,false)
+    }
+    /// Raw little-endian RGBA32F centroid metadata. Empty for native targets.
+    pub(crate) fn motion_layers_rgba32(&self,gpu:&Gpu)->Result<Vec<(u32,u32,Vec<u8>)>,String> {
+        self.read_layers(gpu,true)
+    }
+    fn read_layers(&self,gpu:&Gpu,motion:bool)->Result<Vec<(u32,u32,Vec<u8>)>,String> {
         let targets = self.targets.lock().unwrap();
         let mut result = Vec::new();
         for target in targets.iter().filter_map(Option::as_ref) {
+            let texture=if motion {let Some(texture)=&target.motion else {continue;};texture} else {&target.layer};
+            let bytes_per_pixel=if motion {16}else{8};
             let (w, h) = target.size;
-            let row = (w * 8).div_ceil(256) * 256;
+            let row = (w * bytes_per_pixel).div_ceil(256) * 256;
             let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("voxel raw alpha readback"),
                 size: u64::from(row) * u64::from(h),
@@ -604,7 +922,7 @@ impl VoxelRenderer {
             });
             let mut encoder = gpu.device.create_command_encoder(&Default::default());
             encoder.copy_texture_to_buffer(
-                target.layer.as_image_copy(),
+                texture.as_image_copy(),
                 wgpu::TexelCopyBufferInfo {
                     buffer: &read,
                     layout: wgpu::TexelCopyBufferLayout {
@@ -639,10 +957,10 @@ impl VoxelRenderer {
                     .slice(..)
                     .get_mapped_range()
                     .map_err(|e| format!("voxel raw layer range failed: {e:?}"))?;
-                let mut packed = Vec::with_capacity(w as usize * h as usize * 8);
+                let mut packed = Vec::with_capacity(w as usize * h as usize * bytes_per_pixel as usize);
                 for y in 0..h {
                     let start = y as usize * row as usize;
-                    packed.extend_from_slice(&bytes[start..start + w as usize * 8]);
+                    packed.extend_from_slice(&bytes[start..start + w as usize * bytes_per_pixel as usize]);
                 }
                 packed
             };
@@ -655,6 +973,296 @@ impl VoxelRenderer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_ceiling_variants_validate_and_disabled_keeps_baseline_unchanged() {
+        assert!(super::IntegratorOptions::default().empty_ceiling);
+        assert!(!super::IntegratorOptions::default().antipodal_normals);
+        let original = super::shader_source();
+        for empty_ceiling in [false, true] {
+            let options = super::IntegratorOptions { empty_ceiling, ..Default::default() };
+            let source = options.specialize(&original).unwrap();
+            if !empty_ceiling { assert_eq!(source, original); }
+            let module = naga::front::wgsl::parse_str(&source)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all()).validate(&module)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+            if empty_ceiling {
+                assert!(options.specialize(&original.replace(
+                    "const VOLUME_EMPTY_CEILING: bool = false;", "")).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn antipodal_gate_accepts_baked_two_sided_mips_but_rejects_single_or_mixed_sources() {
+        use crate::{cluster::{Vertex,Part},foliage_voxel::{bake,BakeConfig},
+            foliage_volume_data::{pack,PackLimits},scene::{Material,TWO_SIDED}};
+        let vertices: [Vertex;4]=std::array::from_fn(|i|Vertex {pos:[(i%2) as f32,(i/2) as f32,0.0],
+            normal:[0.6,0.8,0.0],uv:[0.0;2]});
+        let indices=[0,1,2,2,1,3];
+        let source=|flags| {
+            let material=Material {tint:[0.2,0.4,0.1],layer:-1,roughness:0.8,flags,scale:1.0,metal:0.0};
+            let asset=bake(&[Part {vertices:&vertices,indices:&indices,material:0}],&[material],&[],
+                BakeConfig {levels:4,samples_per_cell:2,..Default::default()}).unwrap();
+            pack(&[asset],&[],&[],PackLimits::default()).unwrap().cells
+        };
+        let two_sided=source(TWO_SIDED);
+        let single_sided=source(0);
+        assert!(!two_sided.is_empty());
+        assert!(super::antipodal_normal_cells(&two_sided));
+        assert!(!super::antipodal_normal_cells(&single_sided));
+        let mut mixed=two_sided.clone();mixed.extend(single_sided);
+        assert!(!super::antipodal_normal_cells(&mixed));
+        assert!(!super::antipodal_normal_cells(&[]));
+        // One ULP is a real unequal moment, not an accepted tolerance.
+        let mut unequal=two_sided.clone();
+        unequal[0].normals[1][3]=f32::from_bits(unequal[0].normals[1][3].to_bits()+1);
+        assert!(!super::antipodal_normal_cells(&unequal));
+        unequal=two_sided.clone();
+        unequal[0].normals[1][0]=f32::from_bits(unequal[0].normals[1][0].to_bits()+1);
+        assert!(!super::antipodal_normal_cells(&unequal));
+        unequal=two_sided;
+        unequal[0].normals[0][0]=f32::NAN;
+        assert!(!super::antipodal_normal_cells(&unequal));
+    }
+
+    #[test]
+    fn antipodal_pair_keeps_interpolated_moment_threshold_and_grazing_response() {
+        use glam::Vec3;
+        // Independent anisotropic front/back response: exactly grazing the
+        // viewer does NOT fold the two orientations onto a single normal.
+        let response=|n:Vec3,sun:Vec3|0.75*n.dot(sun).max(0.0)+0.25*(-n.dot(sun)).max(0.0);
+        let fold=|n:Vec3,v:Vec3|if n.dot(v)<0.0 {-n}else{n};
+        for normal in [Vec3::X,Vec3::new(0.6,0.8,0.0)] {
+            for view in [Vec3::Z,Vec3::X,Vec3::NEG_X,Vec3::new(0.2,-0.3,0.9).normalize()] {
+                let sun=Vec3::new(0.7,0.2,0.1).normalize();
+                let generic=0.5*response(fold(normal,view),sun)+0.5*response(fold(-normal,view),sun);
+                let candidate=if normal.dot(view)==0.0 {
+                    0.5*(response(normal,sun)+response(-normal,sun))
+                }else{response(fold(normal,view),sun)};
+                assert!((generic-candidate).abs()<1e-7);
+            }
+        }
+        assert_eq!(0.5*(response(Vec3::X,Vec3::X)+response(Vec3::NEG_X,Vec3::X)),0.5);
+        assert_ne!(response(Vec3::X,Vec3::X),0.5,"dropping the grazing antipode changes transport");
+        // Pair response mass doubles, but its positive vector moment must not.
+        // This preserves the shader's existing 1e-16 squared-length rejection.
+        let tiny=Vec3::X*7e-9;
+        assert!(tiny.length_squared()<=1e-16 && (tiny*2.0).length_squared()>1e-16);
+        let mut original=Vec3::ZERO;let mut candidate=Vec3::ZERO;
+        let mut weight=0.0f32;let mut pair_weight=0.0f32;
+        for (mean,mass,sigma) in [(Vec3::new(0.6,0.2,0.0),0.17,0.3),
+            (Vec3::new(0.4,-0.1,0.2),0.21,1.7),(Vec3::new(0.3,0.5,-0.2),0.12,0.9)] {
+            original+=mean*mass*sigma;candidate+=mean*mass*sigma;
+            weight+=mass*sigma;pair_weight+=(mass+mass)*sigma;
+        }
+        assert_eq!(candidate,original);
+        assert_eq!(pair_weight,weight*2.0);
+    }
+
+    #[test]
+    fn selected_mip_ceiling_keeps_empty_support_valid_past_unused_lod_boundary() {
+        // Construct an actual pooled occupancy pyramid. Distant occupied
+        // cells make a never-selected upper mip's coarse support nonempty,
+        // while the selected mip is identically empty throughout this brick.
+        // Its old next-LOD boundary is already behind the current ray point.
+        for ceiling in 0..3usize {
+            let h = (1u32 << ceiling) as f64;
+            let mut levels = vec![vec![0.0f64; 32 << ceiling]];
+            levels[0][0] = 1.0;
+            levels[0][12 << ceiling] = 1.0;
+            for level in 1..ceiling + 4 {
+                let parent = levels[level - 1].chunks(2)
+                    .map(|pair| pair.iter().sum::<f64>() / 2.0).collect();
+                levels.push(parent);
+            }
+            let t = 5.2 * h;
+            let brick_exit = 8.5 * h;
+            let unused_lod_boundary = 2.0 * h;
+            assert!(unused_lod_boundary < t && brick_exit > t);
+            // Selected level uses coarse parent q=1 or q+1; both are empty.
+            assert_eq!(levels[ceiling + 2][1], 0.0);
+            assert_eq!(levels[ceiling + 2][2], 0.0);
+            // Unused upper level checks a broader pair that includes material.
+            assert!(levels[ceiling + 3][0] + levels[ceiling + 3][1] > 0.0);
+            for i in 0..1001 {
+                let x = t + (brick_exit - t) * i as f64 / 1000.0;
+                // Independent linear reconstruction at the clamped mip:
+                // the extra coarse support may not invent a nonzero blend.
+                let raw_lod = x.log2();
+                let lod = raw_lod.clamp(0.0, ceiling as f64);
+                assert_eq!(lod, ceiling as f64);
+                assert_eq!(lod.fract(), 0.0);
+                let grid = x / h - 0.5;
+                let base = grid.floor() as usize;
+                let f = grid.fract();
+                let sigma = levels[ceiling][base] * (1.0 - f) + levels[ceiling][base + 1] * f;
+                assert_eq!(sigma, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn volume_entry_points_fit_reduced_scene_binding_contract() {
+        for temporal in [false,true] {
+        for antipodal_normals in [false,true] {
+        let options=super::IntegratorOptions {antipodal_normals,..Default::default()};
+        let source = options.specialize(&super::temporal_source(&super::shader_source(),temporal).unwrap()).unwrap();
+        assert_eq!(source.contains("var volume_motion_output"),temporal);
+        assert_eq!(source.contains("var<storage,read> volume_previous_instances"),temporal);
+        assert_eq!(source.contains("delta_sigma"),temporal);
+        let module = naga::front::wgsl::parse_str(&source).unwrap();
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all()).validate(&module).unwrap();
+        let span=|name:&str|module.types.iter().find_map(|(_,ty)| {
+            if ty.name.as_deref()!=Some(name) {return None;}
+            if let naga::TypeInner::Struct {span,..}=&ty.inner {Some(*span)}else{None}
+        }).unwrap();
+        assert_eq!(span("VolumeCell"),176,"specialization must not alter GPU storage ABI");
+        assert_eq!(span("VolumeSample"),if antipodal_normals {112}else{160},"private reconstruction result actually shrinks");
+        if antipodal_normals {
+            assert!(source.contains("cell.normals[k*2u]"));
+            assert!(source.contains("normal_copies=select(1u,2u,dot(n,v)==0.0)"));
+            assert!(options.specialize(&super::shader_source().replace("// VOLUME_ANTIPODAL_RESPONSE_END","")).is_err());
+        }
+        for (i, entry) in module.entry_points.iter().enumerate()
+            .filter(|(_, e)| e.name.starts_with("voxel_")) {
+            let uses = info.get_entry_point(i);
+            let mut storage_count = 0;
+            for (handle, global) in module.global_variables.iter() {
+                if uses[handle].is_empty() { continue; }
+                if let Some(binding) = &global.binding {
+                    if binding.group == 0 {
+                        assert!(super::SCENE_BINDINGS.contains(&binding.binding),
+                            "{} unexpectedly uses scene binding {} ({:?})", entry.name, binding.binding, global.name);
+                    }
+                    if matches!(global.space, naga::AddressSpace::Storage { .. }) { storage_count += 1; }
+                }
+            }
+            // One owner transform, seven bounded volume buffers and the shared
+            // world terrain hierarchy and shared foliage page table. The engine requests up to16 storage
+            // bindings already (opaque materials exceed the WebGPU base8).
+            // Temporal adds one previous-owner buffer, remaining below the
+            // existing 16-storage limit. Native has no motion buffer or writes.
+            assert!(storage_count <= if temporal {11}else{10}, "{} uses {storage_count} storage buffers", entry.name);
+        }
+        }
+        }
+        assert!(super::temporal_source("// VOLUME_MOTION_BEGIN\nlet broken=0;",false).is_err());
+        assert!(super::temporal_source("// VOLUME_MOTION_END\n",false).is_err());
+    }
+
+    #[test]
+    fn fractional_motion_uses_opacity_and_all_overlapping_branch_weights() {
+        use glam::Vec3;
+        let mut transmittance=1.0f32;let mut delta=Vec3::ZERO;let mut distance=0.0;
+        let mut expected_previous=Vec3::ZERO;let mut expected_current=Vec3::ZERO;
+        for (t,ds,sigma_a,sigma_b) in [(3.0f32,0.2f32,1.4f32,0.3f32),(3.4,0.5,0.2,2.1)] {
+            let p=Vec3::new(0.0,0.0,-t);let a=Vec3::new(-0.7,0.1,0.0);let b=Vec3::new(0.2,0.4,0.1);
+            let sigma=sigma_a+sigma_b;let opacity=transmittance*(1.0-(-sigma*ds).exp());
+            delta+=opacity*(a*sigma_a+b*sigma_b)/sigma;
+            distance+=opacity*t;
+            expected_previous+=opacity*((p+a)*sigma_a+(p+b)*sigma_b)/sigma;
+            expected_current+=opacity*p;
+            transmittance*=(-sigma*ds).exp();
+        }
+        let alpha=1.0-transmittance;
+        assert!((delta/alpha-(expected_previous-expected_current)/alpha).length()<2e-6);
+        assert!((Vec3::NEG_Z*(distance/alpha)-expected_current/alpha).length()<2e-6);
+        assert!((delta/alpha-Vec3::new(-0.7,0.1,0.0)).length()>0.1,"must not choose only first owner");
+        assert!((delta/alpha-Vec3::new(0.2,0.4,0.1)).length()>0.1,"must not choose only strongest owner");
+    }
+
+    #[test]
+    fn temporal_volume_requires_matching_source_coordinates_and_part_deformation() {
+        use bytemuck::Zeroable;
+        use crate::{Scene,scene::{GpuInstance,PART_WIND},foliage_volume_data::{GpuForest,GpuTree},part_wind::PartWind};
+        let rows=[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0]];
+        let mut scene=Scene::default();
+        scene.instances.push(GpuInstance {rows,scale:1.0,..GpuInstance::zeroed()});
+        scene.voxel_forest=Some(GpuForest {instances:vec![GpuTree {inverse:rows,..GpuTree::zeroed()}],..Default::default()});
+        assert!(super::temporal_compatibility(&scene).is_ok());
+        scene.voxel_forest.as_mut().unwrap().instances[0].inverse[0][3]=0.5;
+        assert!(super::temporal_compatibility(&scene).is_err());
+        scene.voxel_forest.as_mut().unwrap().instances[0].inverse=rows;
+        scene.instances[0].flags=PART_WIND;
+        assert!(super::temporal_compatibility(&scene).is_err());
+        scene.part_wind.push(PartWind {owner:Some(0),volume:Some(0),..Default::default()});
+        assert!(super::temporal_compatibility(&scene).is_ok());
+        scene.part_wind[0].volume=None;
+        assert!(super::temporal_compatibility(&scene).is_err());
+    }
+
+    #[test]
+    fn active_tile_jobs_cover_exact_pixels_for_sparse_odd_and_multirow_views() {
+        // Independent reference is a pixel mask of the candidate tile set.
+        // Exercise partial edge tiles, sparse reordered jobs and >65535 jobs,
+        // where a one-dimensional indirect dispatch would exceed GPU limits.
+        for (width, height, sparse) in [(1u32, 1u32, false), (257, 193, true),
+            (1916, 1076, true), (4097, 4097, false)] {
+            let tiles_w = width.div_ceil(16);
+            let tiles_h = height.div_ceil(16);
+            let jobs: Vec<u32> = (0..tiles_w * tiles_h).rev()
+                .filter(|i| !sparse || i % 3 == 1).collect();
+            let count = jobs.len() as u32;
+            let dispatch = [count.min(65535), 4 * count.div_ceil(65535), 1];
+            assert!(dispatch.into_iter().all(|n| n <= 65535));
+            let mut visits = vec![0u8; (width * height) as usize];
+            for gy in 0..dispatch[1] {
+                for gx in 0..dispatch[0] {
+                    let job = gx + (gy / 4) * 65535;
+                    if job >= count { continue; }
+                    let tile = jobs[job as usize];
+                    let base_x = (tile % tiles_w) * 16 + (gy & 1) * 8;
+                    let base_y = (tile / tiles_w) * 16 + ((gy >> 1) & 1) * 8;
+                    for ly in 0..8 {
+                        for lx in 0..8 {
+                            let (x, y) = (base_x + lx, base_y + ly);
+                            if x < width && y < height {
+                                visits[(y * width + x) as usize] += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            for y in 0..height {
+                for x in 0..width {
+                    let tile = (y / 16) * tiles_w + x / 16;
+                    assert_eq!(visits[(y * width + x) as usize],
+                        u8::from(!sparse || tile % 3 == 1), "pixel ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn active_tile_indirect_header_handles_empty_and_row_boundaries() {
+        for count in [0u32, 1, 65534, 65535, 65536, 131070, 131071, 1_048_576] {
+            // Mirror the parallel atomic reduction, then prove the dispatch
+            // contains exactly the expected jobs, with four groups per job.
+            let mut header = [0u32; 3];
+            for job in (0..count).rev() {
+                header[0] = header[0].max((job + 1).min(65535));
+                header[1] = header[1].max(4 * (job / 65535 + 1));
+                header[2] = 1;
+            }
+            if count == 0 {
+                assert_eq!(header, [0; 3]);
+                continue;
+            }
+            let mut visits = vec![0u8; count as usize];
+            for y in 0..header[1] {
+                for x in 0..header[0] {
+                    let job = x + (y / 4) * 65535;
+                    if job < count { visits[job as usize] += 1; }
+                }
+            }
+            assert!(visits.into_iter().all(|v| v == 4));
+            assert!(header.into_iter().all(|n| n <= 65535));
+        }
+    }
+
     #[test]
     fn empty_skip_requires_real_parent_occupancy_and_matching_grid() {
         use crate::foliage_volume_data::{GpuForest, GpuLevel, GpuTree};
@@ -683,6 +1291,14 @@ mod tests {
         forest.indices[coarse_offset] = 3;
         forest.indices[coarse_offset + 7] = 4;
         assert!(super::valid_empty_skip_hierarchy(&forest));
+        // The old fine-only proof is insufficient once mip 1 can be shaded:
+        // separately occupied intermediate cells also need coarse parents.
+        assert!(super::valid_skip_levels(&forest, true));
+        let middle_offset = forest.levels[1].dims_offset[3] as usize;
+        forest.indices[middle_offset + 2] = 5;
+        assert!(super::valid_empty_skip_hierarchy(&forest));
+        assert!(!super::valid_skip_levels(&forest, true));
+        forest.indices[middle_offset + 2] = 0;
         forest.indices[coarse_offset + 7] = 0;
         assert!(!super::valid_empty_skip_hierarchy(&forest));
         forest.indices[coarse_offset + 7] = 4;
@@ -751,11 +1367,146 @@ mod tests {
         assert_eq!(integrate(&[(0.0, 100.0, 3.0)]), (0.0, 1.0));
     }
     #[test]
+    fn projected_mip_bound_covers_rotated_sheared_cells_and_four_view_sizes() {
+        use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
+        // Independent oracle: project all eight real corners, not the
+        // diameter approximation used for the shader's LOD choice.
+        let sizes = [(3840.0, 2160.0), (1916.0, 1076.0), (960.0, 1080.0), (640.0, 360.0)];
+        let transforms = [Mat3::IDENTITY,
+            Mat3::from_quat(Quat::from_euler(glam::EulerRot::YXZ, 0.71, -0.3, 0.24))
+                * Mat3::from_diagonal(Vec3::new(0.3, 2.0, 1.4)),
+            Mat3::from_cols(Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.7, 1.2, 0.0), Vec3::new(-0.2, 0.3, 0.8))];
+        for (width, height) in sizes {
+            let projection = Mat4::perspective_infinite_reverse_rh(1.3, width / height, 0.1);
+            let rows = projection.transpose();
+            for linear in transforms {
+                let r = linear.transpose();
+                let frobenius = linear.to_cols_array().iter().map(|x| x*x).sum::<f32>().sqrt();
+                let one = linear.x_axis.abs().element_sum().max(linear.y_axis.abs().element_sum()).max(linear.z_axis.abs().element_sum());
+                let inf = r.x_axis.abs().element_sum().max(r.y_axis.abs().element_sum()).max(r.z_axis.abs().element_sum());
+                let stretch = frobenius.min((one * inf).sqrt());
+                for direction in [Vec3::NEG_Z, Vec3::new(0.8, 0.45, -1.0).normalize()] {
+                    let depth_rate = rows.w_axis.truncate().dot(direction);
+                    let ndc = Vec2::new(rows.x_axis.truncate().dot(direction), rows.y_axis.truncate().dot(direction)) / depth_rate;
+                    let jx = (rows.x_axis.truncate() - ndc.x * rows.w_axis.truncate()) * (width * 0.5);
+                    let jy = (rows.y_axis.truncate() - ndc.y * rows.w_axis.truncate()) * (height * 0.5);
+                    let diameter = 0.04 * 3.0f32.sqrt() * stretch;
+                    let c = diameter * (jx.length_squared() + jy.length_squared()).sqrt() / depth_rate;
+                    let radius = 0.5 * diameter / depth_rate;
+                    let target = 1.5;
+                    let transition = c / target + radius;
+                    let mut previous = -1.0;
+                    for distance in [0.3, 1.0, 3.0, 10.0, 30.0, 80.0, 180.0, 500.0] {
+                        let lod = (distance / transition).log2().clamp(0.0, 5.0);
+                        assert!(lod >= previous); previous = lod;
+                        let scale = 2.0f32.powf(lod.floor());
+                        let bound = c * scale / (distance - radius * scale);
+                        if distance <= radius * scale { assert_eq!(lod, 0.0); continue; }
+                        if lod > 0.0 { assert!(bound <= target * 1.00001); }
+                        let corners: Vec<Vec2> = (0..8).map(|corner| {
+                            let offset = Vec3::new(if corner&1==0 {-0.5} else {0.5}, if corner&2==0 {-0.5} else {0.5}, if corner&4==0 {-0.5} else {0.5});
+                            let clip = projection * (direction * distance + linear * offset * (0.04 * scale)).extend(1.0);
+                            Vec2::new(clip.x * width, clip.y * height) / (2.0 * clip.w)
+                        }).collect();
+                        for a in &corners { for b in &corners {
+                            assert!(a.distance(*b) <= bound * 1.0001, "finite projected cell exceeded conservative bound");
+                        }}
+                    }
+                    // No discontinuous representation jump as the camera
+                    // crosses a dyadic mip boundary; the two levels meet.
+                    for level in 1..5 {
+                        let boundary = transition * 2.0f32.powi(level);
+                        let before = ((boundary - 0.001) / transition).log2();
+                        let after = ((boundary + 0.001) / transition).log2();
+                        assert!((after - before).abs() < 0.002);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn mip_moments_keep_empty_cells_uncoloured_and_normal_lobes_distinct() {
+        // Empty neighbours carry no material moment. Blending their default
+        // black colour directly would darken silhouettes during LOD changes.
+        let merge = |a: (f64, [f64; 6]), b: (f64, [f64; 6]), weight: f64| {
+            let wa = a.0 * (1.0-weight); let wb = b.0 * weight;
+            let sigma = wa + wb;
+            (sigma, std::array::from_fn::<_, 6, _>(|k| if sigma > 0.0 {(wa*a.1[k]+wb*b.1[k])/sigma} else {0.0}))
+        };
+        let x = (2.0, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let minus_x = (6.0, [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+        for w in [0.0, 0.01, 0.25, 0.5, 0.99] {
+            let (sigma, lobes) = merge(x, (0.0, [0.0; 6]), w);
+            assert_eq!(lobes, x.1); assert_eq!(sigma, 2.0 * (1.0-w));
+            let (sigma, lobes) = merge(x, minus_x, w);
+            assert!((lobes.iter().sum::<f64>()-1.0).abs() < 1e-12);
+            assert_eq!(lobes[2..], [0.0; 4]);
+            assert!((sigma*lobes[0]-2.0*(1.0-w)).abs() < 1e-12);
+            assert!((sigma*lobes[1]-6.0*w).abs() < 1e-12);
+        }
+    }
+    #[test]
     fn config_layout_and_four_view_candidate_budget() {
-        assert_eq!(std::mem::size_of::<super::Config>(), 32);
-        assert!(super::COUNTER_BYTES >= 10 * 4);
+        assert_eq!(std::mem::size_of::<super::Config>(), 48);
+        assert_eq!(std::mem::offset_of!(super::Config, dispatch), 32);
+        assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2) * 4);
         assert_eq!(3840u64 * 2160 * 8, 66_355_200);
         let candidates = 3840u64.div_ceil(16) * 2160u64.div_ceil(16) * 65 * 4;
         assert_eq!(candidates, 8_424_000);
+        let jobs = (3840u64.div_ceil(16) * 2160u64.div_ceil(16) + 4) * 4 + 12;
+        assert_eq!(jobs, 129_628);
     }
+
+    #[test]
+    fn aggregate_work_counters_preserve_carry_and_distinct_readback_slots() {
+        // Each low-word atomic returns its own serialized predecessor. The
+        // carry decision must agree with an independent widened integer sum,
+        // including exact wrap and contributions arriving in either order.
+        let contributions=[0u32,1,u32::MAX,16_777_216,4096,256,u32::MAX,7];
+        let expected: u64=contributions.iter().map(|&x|u64::from(x)).sum();
+        for reverse in [false,true] {
+            let mut words=[0u32;2];
+            for i in 0..contributions.len() {
+                let value=contributions[if reverse {contributions.len()-1-i} else {i}];
+                let previous=words[0];
+                let widened=u64::from(previous)+u64::from(value);
+                words[0]=previous.wrapping_add(value);
+                let carry=previous>u32::MAX-value;
+                assert_eq!(carry,widened>u64::from(u32::MAX));
+                words[1]+=u32::from(carry);
+            }
+            assert_eq!(u64::from(words[0])+(u64::from(words[1])<<32),expected);
+        }
+        let totals=[3840u64*2160*4096,expected,expected*16,u64::from(u32::MAX)+1];
+        let mut bytes=vec![0xa5;super::COUNTER_BYTES as usize];
+        for (slot,total) in totals.into_iter().enumerate() {
+            let offset=(14+2*slot)*4;
+            bytes[offset..offset+8].copy_from_slice(&total.to_le_bytes());
+        }
+        for (slot,total) in totals.into_iter().enumerate() {
+            assert_eq!(super::diagnostic_u64(&bytes,14+2*slot),total);
+        }
+        assert!(bytes[..14*4].iter().all(|&x|x==0xa5));
+    }
+
+    #[test]
+    fn per_ray_work_fits_local_u32_while_full_resolution_totals_require_u64() {
+        let steps=4096u64;
+        let volumes=256u64;
+        let volume_samples=steps*volumes;
+        // Every interpolation can fetch eight cells in each of two mips.
+        // Empty-brick tests read only indirection, not occupied cell records.
+        let occupied_cell_samples=volume_samples*16;
+        // Initial interval scan plus both complete-scan loops on every step.
+        let interval_tests=volumes+2*steps*volumes;
+        for per_ray in [steps,volume_samples,occupied_cell_samples,interval_tests] {
+            assert!(per_ray<=u64::from(u32::MAX));
+            assert!(per_ray*3840*2160>u64::from(u32::MAX));
+        }
+        // The shader's literal caps are the premises of this local bound.
+        let source=include_str!("shaders/voxel_forest.wgsl");
+        assert!(source.contains("const VOLUME_MAX_STEPS: u32 = 4096u;"));
+        assert_eq!(crate::foliage_volume_data::MAX_INSTANCES,256);
+    }
+
 }

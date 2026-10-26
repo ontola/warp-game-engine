@@ -4,16 +4,17 @@ use crate::Gpu;
 use bytemuck::{Pod, Zeroable};
 use glyphon::{Attrs, Buffer, Cache, Color, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap};
 use glyphon::cosmic_text::Align;
-use std::{collections::{HashMap, HashSet}, time::Instant};
+use std::{collections::{HashMap, HashSet}, ops::Range, time::Instant};
 use wgpu::util::DeviceExt;
 
-const BODY_FONT: &[u8] = include_bytes!("../../../../assets/fonts/BarlowCondensed-SemiBold.ttf");
-const TITLE_FONT: &[u8] = include_bytes!("../../../../assets/fonts/BarlowCondensed-ExtraBoldItalic.ttf");
+const BODY_FONT: &[u8] = include_bytes!("../../../assets/fonts/BarlowCondensed-SemiBold.ttf");
+const TITLE_FONT: &[u8] = include_bytes!("../../../assets/fonts/BarlowCondensed-ExtraBoldItalic.ttf");
 /// Barlow is packaged under SIL OFL 1.1; keep this notice with distributions.
-pub const FONT_LICENSE: &str = include_str!("../../../../assets/fonts/OFL-BarlowCondensed.txt");
+pub const FONT_LICENSE: &str = include_str!("../../../assets/fonts/OFL-BarlowCondensed.txt");
 const WARM_TEXT: &str = "0123456789:-+. /()<> ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz";
 const MAX_RUNS: usize = 512;
 const MAX_VERTICES: usize = 131_072;
+const MAX_LAYERS: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FontFace { Body, Title }
@@ -50,10 +51,49 @@ pub struct HudDrawList {
     pub size: [u32; 2],
     pub vertices: Vec<HudVertex>,
     pub text: Vec<TextRun>,
+    overlay_boundaries: Vec<(usize, usize)>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HudLayer { vertices: Range<u32>, text: Range<usize> }
+
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { size, vertices: Vec::new(), text: Vec::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { size, vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new() } }
+
+    /// Start a layer above ALL geometry and text already in the list. Within
+    /// each layer, geometry is drawn before text, as in the original HUD API.
+    /// Repeated calls without intervening content do not create empty layers.
+    /// Keep appending to the public vectors; truncating prior layers is invalid.
+    pub fn begin_overlay(&mut self) {
+        let end = (self.vertices.len(), self.text.len());
+        if end != self.overlay_boundaries.last().copied().unwrap_or((0, 0)) {
+            self.overlay_boundaries.push(end);
+        }
+    }
+
+    fn layer_ranges(&self) -> Result<Vec<HudLayer>, String> {
+        if self.overlay_boundaries.len() > MAX_LAYERS {
+            return Err("HUD draw list exceeds layer capacity".into());
+        }
+        let mut result = Vec::new();
+        let mut start = (0, 0);
+        for end in self.overlay_boundaries.iter().copied()
+            .chain(std::iter::once((self.vertices.len(), self.text.len())))
+        {
+            if end.0 < start.0 || end.1 < start.1
+                || end.0 > self.vertices.len() || end.1 > self.text.len()
+                || end.0 % 3 != 0 || end.0 > MAX_VERTICES
+            {
+                return Err("HUD overlay boundary no longer matches complete geometry/text".into());
+            }
+            if end != start {
+                result.push(HudLayer { vertices: start.0 as u32..end.0 as u32, text: start.1..end.1 });
+            }
+            start = end;
+        }
+        if result.len() > MAX_LAYERS { return Err("HUD draw list exceeds layer capacity".into()); }
+        Ok(result)
+    }
 
     fn quad(&mut self, points: [[f32; 2]; 4], shapes: [[f32; 4]; 4], color: [f32; 4], clip: [f32; 4]) {
         for i in [0, 1, 2, 0, 2, 3] { self.vertices.push(HudVertex { position: points[i], color, clip, shape: shapes[i] }); }
@@ -168,13 +208,13 @@ pub struct HudRenderer {
     uniform: wgpu::Buffer,
     vertices: wgpu::Buffer,
     vertex_capacity: u64,
-    vertex_count: u32,
+    layers: Vec<HudLayer>,
     srgb: bool,
     text: FontCache,
     swash: SwashCache,
     viewport: Viewport,
     atlas: TextAtlas,
-    renderer: TextRenderer,
+    renderers: Vec<TextRenderer>,
     warmed: HashSet<(FontFace,u32)>,
     size: [u32;2],
 }
@@ -193,7 +233,7 @@ impl HudRenderer {
             vertex:wgpu::VertexState{module:&shader,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[Some(wgpu::VertexBufferLayout{array_stride:std::mem::size_of::<HudVertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x2,1=>Float32x4,2=>Float32x4,3=>Float32x4]})]},
             primitive:wgpu::PrimitiveState::default(),depth_stencil:None,multisample:Default::default(),
             fragment:Some(wgpu::FragmentState{module:&shader,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
-            multiview_mask:None,cache:None,
+            multiview_mask:None,cache: gpu.pipeline_cache(),
         });
         let vertex_capacity=4096;
         let vertices=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("HUD vertices"),size:vertex_capacity,usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
@@ -201,13 +241,16 @@ impl HudRenderer {
         let viewport=Viewport::new(&gpu.device,&cache);
         let mut atlas=TextAtlas::with_color_mode(&gpu.device,&gpu.queue,&cache,format,if format.is_srgb(){ColorMode::Accurate}else{ColorMode::Web});
         let renderer=TextRenderer::new(&mut atlas,&gpu.device,wgpu::MultisampleState::default(),None);
-        Ok(Self{pipeline,bind,uniform,vertices,vertex_capacity,vertex_count:0,srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderer,warmed:HashSet::new(),size:[0;2]})
+        Ok(Self{pipeline,bind,uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2]})
     }
 
     pub fn prepare(&mut self,gpu:&Gpu,list:&HudDrawList)->Result<HudStats,String> {
         let begin=Instant::now();
+        // A failed prepare must not advertise stale overlay draw buffers.
+        self.layers.clear();
         if list.size.contains(&0){return Err("HUD output dimensions must be positive".into());}
         if list.text.len()>MAX_RUNS || list.vertices.len()>MAX_VERTICES{return Err("HUD draw list exceeds bounded capacity".into());}
+        let layers = list.layer_ranges()?;
         let mut ids=HashSet::new();
         for run in &list.text {
             if !ids.insert(run.id){return Err(format!("duplicate HUD text id {}",run.id));}
@@ -225,7 +268,6 @@ impl HudRenderer {
             self.vertices=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("HUD vertices"),size:self.vertex_capacity,usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         }
         if !bytes.is_empty(){gpu.queue.write_buffer(&self.vertices,0,bytes);}
-        self.vertex_count=list.vertices.len() as u32;
         let mut reshaped=self.text.update(&list.text);
         if !self.text.system_fallback && self.text.missing_glyphs() {
             self.text.load_fallback();self.swash=SwashCache::new();self.warmed.clear();
@@ -243,15 +285,24 @@ impl HudRenderer {
         }
         if !warm.is_empty() {
             let areas=warm.iter().map(|buffer|TextArea{buffer,left:0.0,top:0.0,scale:1.0,bounds:TextBounds::default(),default_color:Color::rgba(255,255,255,0),custom_glyphs:&[]});
-            self.renderer.prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash).map_err(|e|format!("HUD font warmup: {e}"))?;
+            self.renderers[0].prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash).map_err(|e|format!("HUD font warmup: {e}"))?;
         }
-        let areas=list.text.iter().map(|run| {
-            let [x,y,w,h]=run.bounds;
-            TextArea{buffer:&self.text.buffers[&run.id].buffer,left:run.position[0],top:run.position[1],scale:1.0,
-                bounds:TextBounds{left:x.ceil() as i32,top:y.ceil() as i32,right:(x+w).floor() as i32,bottom:(y+h).floor() as i32},
-                default_color:Color::rgba(run.color[0],run.color[1],run.color[2],run.color[3]),custom_glyphs:&[]}
-        });
-        self.renderer.prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash).map_err(|e|format!("HUD text preparation: {e}"))?;
+        while self.renderers.len() < layers.len() {
+            self.renderers.push(TextRenderer::new(&mut self.atlas,&gpu.device,wgpu::MultisampleState::default(),None));
+        }
+        // One retained glyph buffer per layer, one shared atlas/font cache.
+        // Do not trim between layers: earlier glyphs stay pinned while later
+        // overlays are prepared. Atlas growth preserves glyph coordinates.
+        for (renderer, layer) in self.renderers.iter_mut().zip(&layers) {
+            let areas=list.text[layer.text.clone()].iter().map(|run| {
+                let [x,y,w,h]=run.bounds;
+                TextArea{buffer:&self.text.buffers[&run.id].buffer,left:run.position[0],top:run.position[1],scale:1.0,
+                    bounds:TextBounds{left:x.ceil() as i32,top:y.ceil() as i32,right:(x+w).floor() as i32,bottom:(y+h).floor() as i32},
+                    default_color:Color::rgba(run.color[0],run.color[1],run.color[2],run.color[3]),custom_glyphs:&[]}
+            });
+            renderer.prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash).map_err(|e|format!("HUD text preparation: {e}"))?;
+        }
+        self.layers = layers;
         let glyphs=self.text.buffers.values().map(|b|b.buffer.layout_runs().map(|line|line.glyphs.len()).sum::<usize>()).sum();
         // Atlas remains GPU-resident. Bound the auxiliary CPU raster cache if
         // repeated window sizes or many changing Unicode names expand it.
@@ -260,11 +311,16 @@ impl HudRenderer {
     }
 
     pub fn render(&self,pass:&mut wgpu::RenderPass<'_>)->Result<(),String> {
-        if self.vertex_count>0 {
-            pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&self.bind,&[]);
-            pass.set_vertex_buffer(0,self.vertices.slice(..));pass.draw(0..self.vertex_count,0..1);
+        for (layer, renderer) in self.layers.iter().zip(&self.renderers) {
+            if !layer.vertices.is_empty() {
+                // Glyph rendering changes pipeline/bindings/vertex buffer.
+                // Rebind all geometry state at each subsequent overlay.
+                pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&self.bind,&[]);
+                pass.set_vertex_buffer(0,self.vertices.slice(..));pass.draw(layer.vertices.clone(),0..1);
+            }
+            renderer.render(&self.atlas,&self.viewport,pass).map_err(|e|format!("HUD rendering: {e}"))?;
         }
-        self.renderer.render(&self.atlas,&self.viewport,pass).map_err(|e|format!("HUD rendering: {e}"))
+        Ok(())
     }
 }
 
@@ -293,5 +349,59 @@ mod tests {
         list.line([2000.0,1300.0],[2040.0,1300.0],3.0,[1.0;4],clip);
         list.line([0.0;2],[0.0;2],3.0,[1.0;4],clip);assert_eq!(list.vertices.len(),18);
         assert!(list.vertices.iter().all(|v|v.clip==clip && v.position.iter().all(|x|x.is_finite())));
+    }
+
+    #[test]
+    fn overlay_geometry_follows_base_text_and_nested_overlay_is_last() {
+        let mut list=HudDrawList::new([800,600]);
+        let clip=[0.0,0.0,800.0,600.0];
+        // All three rectangles and text layouts overlap deliberately. Merely
+        // appending vertices/text to their old global batches cannot pass.
+        for layer in 0..3 {
+            if layer>0 {list.begin_overlay();}
+            list.rect([0.0,0.0,600.0,100.0],[layer as f32/2.0,0.0,0.0,1.0],clip);
+            let mut text=run();text.id=layer+1;list.text.push(text);
+        }
+        let layers=list.layer_ranges().unwrap();
+        assert_eq!(layers,vec![
+            HudLayer{vertices:0..6,text:0..1},
+            HudLayer{vertices:6..12,text:1..2},
+            HudLayer{vertices:12..18,text:2..3},
+        ]);
+        let mut order=Vec::new();
+        for layer in &layers {
+            if !layer.vertices.is_empty() {order.push(("geometry",layer.vertices.start as u64));}
+            for text in &list.text[layer.text.clone()] {order.push(("text",text.id));}
+        }
+        assert_eq!(order,vec![("geometry",0),("text",1),("geometry",6),("text",2),("geometry",12),("text",3)]);
+    }
+
+    #[test]
+    fn overlay_boundaries_preserve_normal_hud_and_cached_text() {
+        let mut list=HudDrawList::new([800,600]);
+        list.text.push(run());
+        assert_eq!(list.layer_ranges().unwrap(),vec![HudLayer{vertices:0..0,text:0..1}]);
+        let mut cache=FontCache::new().unwrap();
+        assert_eq!(cache.update(&list.text),1);
+        list.begin_overlay();list.begin_overlay();
+        list.rect([0.0,0.0,600.0,100.0],[0.0,0.0,0.0,1.0],[0.0,0.0,800.0,600.0]);
+        assert_eq!(list.layer_ranges().unwrap(),vec![
+            HudLayer{vertices:0..0,text:0..1},HudLayer{vertices:0..6,text:1..1}]);
+        assert_eq!(cache.update(&list.text),0,"layer boundaries must not reshape existing text");
+        assert_eq!(cache.buffers.len(),1);
+        let mut empty=HudDrawList::new([800,600]);empty.begin_overlay();empty.begin_overlay();
+        assert!(empty.layer_ranges().unwrap().is_empty());
+    }
+
+    #[test]
+    fn overlay_boundaries_reject_truncation_and_excess_layers() {
+        let mut list=HudDrawList::new([800,600]);list.text.push(run());list.begin_overlay();
+        list.text.clear();
+        assert!(list.layer_ranges().is_err());
+        let mut list=HudDrawList::new([800,600]);
+        for i in 0..=MAX_LAYERS {
+            list.begin_overlay();let mut text=run();text.id=i as u64;list.text.push(text);
+        }
+        assert!(list.layer_ranges().is_err());
     }
 }

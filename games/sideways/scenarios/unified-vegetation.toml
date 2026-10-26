@@ -1,0 +1,59 @@
+# Bounded mixed grass/sapling slice. Native only, no change to default foliage.
+# Required environment: SIDEWAYS_PROCEDURAL_GRASS=source (or experimental auto),
+# SIDEWAYS_PROCEDURAL_GRASS_CELL=-177,-723, SIDEWAYS_FAR_GRASS=0.
+# Explicit cells keep the population fixed when the camera moves.
+# This is a real stage preview, not an optical oracle or gameplay FPS benchmark.
+schema = 1
+name = "unified-vegetation"
+ticks_per_frame = 0
+capture_frames = [30, 60, 90, 120]
+
+[capture]
+format = "jpg"
+max_width = 1600
+quality = 90
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "1600x900"
+upscale = "native"
+hud = false
+
+[[sections]]
+name = "mixed-close"
+start_tick = 0
+frames = 30
+warmup = 20
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-82.5, 2.5, -325.6], target = [-77.8, 1.2, -324.5], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "mixed-40m"
+start_tick = 0
+frames = 30
+warmup = 20
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-115.4, 11.6, -333.3], target = [-77.8, 1.2, -324.5], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "mixed-70m"
+start_tick = 0
+frames = 30
+warmup = 20
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-143.6, 19.4, -339.9], target = [-77.8, 1.2, -324.5], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "mixed-100m"
+start_tick = 0
+frames = 30
+warmup = 20
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-171.8, 27.2, -346.5], target = [-77.8, 1.2, -324.5], fov_y_degrees = 64.0}

@@ -253,7 +253,7 @@ struct Leveler {
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SynthParams {
-    /// Impulse response file in assets/sound/ir.
+    /// Absolute impulse-response path, or a filename under `ir_dir()`.
     pub impulse_response: String,
     /// Its volume (engine-sim's ir_lib volumes: 0.001 smooth, 0.01 new).
     pub ir_volume: f32,
@@ -306,8 +306,23 @@ pub struct Synth {
     rng: Noise,
 }
 
-/// The impulse responses ship in engine/assets/sound/ir.
+/// Reusable engine impulse responses. An explicit WARP_AUDIO_IR_DIR wins;
+/// bundles may place engine/assets/sound/ir beside their executable. Source
+/// builds retain the engine's asset directory as the development fallback.
 pub fn ir_dir() -> std::path::PathBuf {
+    resolve_ir_dir(
+        std::env::var_os("WARP_AUDIO_IR_DIR").filter(|p| !p.is_empty()).map(Into::into),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
+fn resolve_ir_dir(override_dir: Option<std::path::PathBuf>, executable: Option<&std::path::Path>) -> std::path::PathBuf {
+    // Do not silently substitute another IR library for a broken explicit path.
+    if let Some(path) = override_dir { return path; }
+    if let Some(dir) = executable.and_then(std::path::Path::parent) {
+        let bundled = dir.join("engine/assets/sound/ir");
+        if bundled.is_dir() { return bundled; }
+    }
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/sound/ir")
 }
 
@@ -403,6 +418,19 @@ impl Synth {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn impulse_library_explicit_and_bundle_paths_preserve_source_fallback() {
+        let root=std::env::temp_dir().join(format!("warp-audio-bundle-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let bundled=root.join("engine/assets/sound/ir");
+        std::fs::create_dir_all(&bundled).unwrap();
+        let executable=root.join("application.exe");
+        assert_eq!(resolve_ir_dir(None,Some(&executable)),bundled);
+        let explicit=root.join("chosen-even-if-missing");
+        assert_eq!(resolve_ir_dir(Some(explicit.clone()),Some(&executable)),explicit);
+        assert_eq!(resolve_ir_dir(None,None),std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/sound/ir"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn partitioned_convolution_matches_direct() {

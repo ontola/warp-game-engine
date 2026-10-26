@@ -10,18 +10,22 @@ struct View {
     params: vec4<f32>,
     size: vec4<f32>,
     extra: vec4<f32>,
+    grass: vec4<f32>,
+    fog_cull: vec4<f32>,
 };
 
 struct Light {
     sun_dir: vec4<f32>,      // towards the sun; w: illuminance in lux
     sun_color: vec4<f32>,    // linear colour; w: shadow strength
     shadow_view_proj: mat4x4<f32>,
-    sky: vec4<f32>,          // x: sky luminance scale, y: sky rotation (rad), z: exposure, w: shadow texel (m)
-    fog_color: vec4<f32>,    // horizon radiance; w: fog start (m)
-    fog: vec4<f32>,          // x: fog end (m), y: exponential density, z: height falloff, w: wetness
+    sky: vec4<f32>,          // x: sky luminance scale, y: sky rotation (rad), z: diagnostic mode, w: shadow texel (m)
+    fog_color: vec4<f32>,    // legacy horizon radiance; w: legacy fog start (m)
+    fog: vec4<f32>,          // x: legacy end (m), y: extinction/m, z: aerosol scale height (m; 0 legacy), w: wetness
+    fog_scattering: vec4<f32>, // RGB single-scattering albedo; w: aerosol phase asymmetry
     sh: array<vec4<f32>, 9>, // sky irradiance, SH9, already in lux
     near_shadow_view_proj: mat4x4<f32>,
     near_shadow: vec4<f32>, // world texel size, blend-start radius, enabled
+    night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
 };
 
 struct Cluster {
@@ -69,6 +73,24 @@ struct Material {
 @group(0) @binding(8) var<storage, read> aux: array<u32>;
 @group(0) @binding(9) var normal_tex: texture_2d_array<f32>;
 @group(0) @binding(10) var plant_samp: sampler;
+// Sparse persistent tyre material data: no geometry, emission or extra lights.
+@group(0) @binding(20) var track_atlas: texture_2d<f32>;
+@group(0) @binding(21) var track_lookup: texture_2d<i32>;
+// One source-geometry sun map shared by every view. Unlike a density field,
+// this preserves the open sky immediately above an exposed tree crown.
+struct FarSun {
+    view_proj: mat4x4<f32>,
+    params: vec4<f32>, // world texel, edge blend start, enabled, reserved
+};
+@group(0) @binding(22) var<uniform> far_sun: FarSun;
+@group(0) @binding(23) var far_sun_tex: texture_depth_2d_array;
+// Only a material approximation beneath/beyond the actual directional grass
+// aggregate. No light, normal, opacity layer or camera-distance tint is stored.
+struct MeadowSubstrate {
+    control: vec4<u32>, // enabled, field seed, f32 rest top-coverage, reserved
+    leaf_base: vec4<f32>, // source linear RGB (height tint included), roughness
+};
+@group(0) @binding(27) var<uniform> meadow_substrate: MeadowSubstrate;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
@@ -90,6 +112,15 @@ struct SolidOccluder {
 @group(1) @binding(13) var canopy_tex: texture_3d<f32>;
 @group(1) @binding(14) var canopy_sampler: sampler;
 @group(1) @binding(15) var near_shadow_tex: texture_depth_2d;
+// The texture binding budget is already full. Copy the certified source IDs
+// into this buffer; the opaque lighting pass reads one owner word per pixel.
+struct HiddenMeadow {
+    skipped:atomic<u32>, width:u32, height:u32, row_pairs:u32,
+    padding:array<u32,60>, ids:array<vec2<u32>>,
+};
+@group(1) @binding(16) var<storage,read_write> hidden_meadow:HiddenMeadow;
+override SKIP_HIDDEN_MEADOW:bool=false;
+var<workgroup> hidden_meadow_count:atomic<u32>;
 
 struct Gi {
     vol_origins: array<vec4<f32>, 3>,
@@ -105,6 +136,26 @@ struct Gi {
 // before tracing, so overlapping levels never count the same forest twice.
 // The continuous anchors control the handoff; snapped storage windows do
 // not. An origin shift therefore cannot move a blend boundary in one frame.
+fn bounded_canopy_density(q:vec3<f32>,level:u32,d:vec3<f32>)->f32 {
+    // Texture samples represent cell centres. Source-bounded Y tents retain
+    // the same [-1,+1] neighbour support, so exactly eight loads suffice.
+    let grid=q-0.5;let base=vec3<i32>(floor(grid));
+    var result=0.0;
+    for(var z=0i;z<2i;z++) {for(var y=0i;y<2i;y++) {for(var x=0i;x<2i;x++) {
+        let cell=base+vec3<i32>(x,y,z);
+        if any(cell<vec3<i32>(0)) || any(cell>=vec3<i32>(d)) {continue;}
+        let delta=grid-vec3<f32>(cell);
+        let data=textureLoad(canopy_tex,cell+vec3<i32>(0,i32(f32(level)*d.y),0),0);
+        if data.r<=0.0 || data.a<=0.0 || delta.y<=data.g || delta.y>=data.b {continue;}
+        let tent=max(vec3<f32>(1.0)-abs(delta),vec3<f32>(0.0));
+        let lower=select(1.0,smoothstep(data.g,data.g+data.a,delta.y),data.g>-1.0);
+        let upper=select(1.0,1.0-smoothstep(data.b-data.a,data.b,delta.y),data.b<1.0);
+        let window=lower*upper;
+        result+=data.r*tent.x*tent.y*tent.z*window;
+    }}}
+    return result;
+}
+
 fn foliage(p: vec3<f32>) -> f32 {
     let d = vec3<f32>(gi.vol_dims.xyz);
     var remaining = 1.0;
@@ -116,12 +167,18 @@ fn foliage(p: vec3<f32>) -> f32 {
         let weight = min(weights.x, min(weights.y, weights.z));
         if weight <= 0.0 { continue; }
         let q = (p - origin.xyz) / origin.w;
-        // Each level occupies one Y slab. Clamp inside its own texel centres
-        // so trilinear filtering can never sample a different level's slab.
-        let local = clamp(q, vec3<f32>(0.5), d - 0.5);
-        let uv = vec3<f32>(local.x / d.x,
-            (local.y + f32(level) * d.y) / (3.0 * d.y), local.z / d.z);
-        sigma += remaining * weight * textureSampleLevel(canopy_tex, canopy_sampler, uv, 0.0).r;
+        var value=0.0;
+        if (gi.vol_dims.w&2u)!=0u {
+            value=bounded_canopy_density(q,level,d);
+        } else {
+            // Each level occupies one Y slab. Clamp inside its own texel
+            // centres so filtering cannot sample a different level's slab.
+            let local = clamp(q, vec3<f32>(0.5), d - 0.5);
+            let uv = vec3<f32>(local.x / d.x,
+                (local.y + f32(level) * d.y) / (3.0 * d.y), local.z / d.z);
+            value=textureSampleLevel(canopy_tex, canopy_sampler, uv, 0.0).r;
+        }
+        sigma += remaining * weight * value;
         remaining *= 1.0 - weight;
         if remaining <= 0.0001 { break; }
     }
@@ -212,17 +269,22 @@ fn transmittance(p: vec3<f32>, dir: vec3<f32>, max_t: f32) -> f32 {
     var t = 0.5;
     var tr = 1.0;
     for (var k = 0; k < 12; k++) {
+        if t >= max_t { break; }
         let q = p + dir * t;
         if q.y < ground_at(q.xz) - 0.3 {
             return 0.0;
         }
-        let step = max(t * 0.45, 0.6);
+        // Left-endpoint samples retain their existing positions, but the last
+        // interval ends at max_t. A full final step over-attenuated short rays.
+        let step = min(max(t * 0.45, 0.6), max_t - t);
         tr *= exp(-foliage(q) * 0.9 * step);
         t += step;
-        if t > max_t || tr < 0.02 {
+        if t >= max_t || tr < 0.02 {
             break;
         }
     }
+    // Bounded 12-sample estimate only. Unmarched space after this budget is
+    // unknown, not certified empty; this does not solve canopy shape/coverage.
     return tr;
 }
 
@@ -291,9 +353,19 @@ fn env_brdf(f0: vec3<f32>, rough: f32, ndv: f32) -> vec3<f32> {
 fn environment(r: vec3<f32>, rough: f32, bounce: vec3<f32>) -> vec3<f32> {
     // The sun is already evaluated by GGX and its shadow map. Match the SH
     // sun exclusion here so the HDRI does not add a second, unshadowed sun.
-    let sky = mix(min(sky_radiance(r), vec3<f32>(gi.params.z)), sky_irradiance(r) / PI, smoothstep(0.05, 0.55, rough));
     let ground = bounce / PI;
-    return mix(ground, sky, smoothstep(-0.08, 0.04, r.y));
+    let sky_weight = smoothstep(-0.08, 0.04, r.y);
+    // Exact smoothstep endpoints: do not sample a contribution weighted zero.
+    if sky_weight <= 0.0 { return ground; }
+    var sky: vec3<f32>;
+    if rough >= 0.55 {
+        sky = sky_irradiance(r) / PI;
+    } else if rough <= 0.05 {
+        sky = min(sky_radiance(r), vec3<f32>(gi.params.z));
+    } else {
+        sky = mix(min(sky_radiance(r), vec3<f32>(gi.params.z)), sky_irradiance(r) / PI, smoothstep(0.05, 0.55, rough));
+    }
+    return mix(ground, sky, sky_weight);
 }
 
 fn vtx(i: u32) -> u32 {
@@ -310,6 +382,17 @@ fn xform(inst: Instance, p: vec3<f32>) -> vec3<f32> {
 }
 
 fn xform_dir(inst: Instance, d: vec3<f32>) -> vec3<f32> {
+    if (inst.pad & 32u) != 0u {
+        // A scaled assembly root followed by rigid child rotations can have
+        // non-orthogonal columns. Match the volume's full affine inverse.
+        let ax = vec3<f32>(inst.r0.x, inst.r1.x, inst.r2.x);
+        let ay = vec3<f32>(inst.r0.y, inst.r1.y, inst.r2.y);
+        let az = vec3<f32>(inst.r0.z, inst.r1.z, inst.r2.z);
+        let cx = cross(ay, az);
+        let cy = cross(az, ax);
+        let cz = cross(ax, ay);
+        return (cx * d.x + cy * d.y + cz * d.z) / dot(ax, cx);
+    }
     // Instance transforms have orthogonal scaled axes. Normals need the
     // inverse transpose, including non-uniformly scaled trees and rocks.
     let ax = vec3<f32>(inst.r0.x, inst.r1.x, inst.r2.x);
@@ -330,10 +413,163 @@ fn sky_dir_uv(d: vec3<f32>) -> vec2<f32> {
 }
 
 fn sky_radiance(d: vec3<f32>) -> vec3<f32> {
-    let dims = vec2<f32>(textureDimensions(sky_tex));
-    let uv = sky_dir_uv(d);
-    let px = vec2<i32>(clamp(uv * dims, vec2<f32>(0.0), dims - 1.0));
-    return textureLoad(sky_tex, px, 0).rgb * light.sky.x;
+    let dims = vec2<i32>(textureDimensions(sky_tex));
+    let pixel = sky_dir_uv(d) * vec2<f32>(dims) - 0.5;
+    let base = vec2<i32>(floor(pixel));
+    let weight = fract(pixel);
+    var samples: array<vec3<f32>,4>;
+    for (var corner=0u;corner<4u;corner++) {
+        let offset=vec2<i32>(i32(corner&1u),i32(corner>>1u));
+        let p=base+offset;
+        // Equirectangular longitude wraps, latitude clamps at the poles.
+        let coord=vec2<i32>((p.x%dims.x+dims.x)%dims.x,clamp(p.y,0,dims.y-1));
+        samples[corner]=textureLoad(sky_tex,coord,0).rgb;
+    }
+    return mix(mix(samples[0],samples[1],weight.x),mix(samples[2],samples[3],weight.x),weight.y)*light.sky.x;
+}
+
+// Exact column integral of exp(-max(world_y,0)/height_scale) along a finite
+// ray. Below the datum density stays constant. Evaluate the near-horizontal
+// limit analytically to avoid cancellation and a horizon seam.
+fn fog_column(distance_m: f32, height: f32, vertical: f32, height_scale: f32) -> f32 {
+    let extent = max(distance_m, 0.0);
+    let end = height + vertical * extent;
+    if max(height, end) <= 0.0 { return extent; }
+    if min(height, end) >= 0.0 {
+        let q = vertical * extent / height_scale;
+        if abs(q) < 0.001 {
+            return extent * exp(-height / height_scale) * (1.0 - q * 0.5 + q * q / 6.0);
+        }
+        return height_scale * (exp(-height / height_scale) - exp(-end / height_scale)) / vertical;
+    }
+    let a = min(height, 0.0) + height_scale * (1.0 - exp(-max(height, 0.0) / height_scale));
+    let b = min(end, 0.0) + height_scale * (1.0 - exp(-max(end, 0.0) / height_scale));
+    return (b - a) / vertical;
+}
+
+// Normalised Cornette-Shanks phase, matching the atmospheric aerosol model.
+// Direction points FROM camera TO surface, so forward scattering peaks
+// when looking toward the sun. No baked planet horizon participates here.
+fn fog_phase(mu: f32, g: f32) -> f32 {
+    return 3.0 * (1.0 - g * g) * (1.0 + mu * mu)
+        / (8.0 * PI * (2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
+}
+
+fn fog_segment(surface: vec3<f32>, scattering_source: vec3<f32>, optical_depth: f32) -> vec3<f32> {
+    let transmission = exp(-max(optical_depth, 0.0));
+    return surface * transmission + scattering_source * (1.0 - transmission);
+}
+
+fn fog_scattering_source(direction: vec3<f32>) -> vec3<f32> {
+    // SH0 / sqrt(4*pi) is incident mean sky radiance. Diffuse incident
+    // illumination is approximated as isotropic; direct sun keeps its phase.
+    // The camera's terrain horizon blocks the directional solar glow. Keep
+    // isotropic skylight: shaded air is not black. This bounded approximation
+    // does not integrate separate sun visibility along the entire fog ray.
+    let diffuse = max(light.sh[0].rgb * 0.282095, vec3<f32>(0.0));
+    let solar = light.sun_color.rgb * light.sun_dir.w * clamp(view.fog_cull.z, 0.0, 1.0)
+        * fog_phase(clamp(dot(direction, light.sun_dir.xyz), -1.0, 1.0), light.fog_scattering.w);
+    return light.fog_scattering.rgb * (diffuse + solar);
+}
+
+// A fixed world-direction catalogue, generated from cubemap cells. Neither
+// camera translation nor frame/time enters its seed. Sparse points have an
+// angular Gaussian footprint, widened by the pixel footprint while preserving
+// integrated energy; tiny stars do not randomly blink between single samples.
+fn star_hash(value: u32) -> u32 {
+    var h = value;
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    return h ^ (h >> 16u);
+}
+fn star_unit(value: u32) -> f32 { return f32(star_hash(value) >> 8u) / 16777216.0; }
+
+fn night_star_radiance(direction: vec3<f32>) -> vec3<f32> {
+    if light.night_stars.x <= 0.0 || direction.y <= 0.015 { return vec3<f32>(0.0); }
+    let a = abs(direction);
+    var face = 0u;
+    var plane: vec2<f32>;
+    if a.x >= max(a.y, a.z) {
+        face = select(0u, 1u, direction.x < 0.0);
+        plane = direction.yz / a.x;
+    } else if a.y >= a.z {
+        face = select(2u, 3u, direction.y < 0.0);
+        plane = direction.xz / a.y;
+    } else {
+        face = select(4u, 5u, direction.z < 0.0);
+        plane = direction.xy / a.z;
+    }
+    let cell = min(vec2<u32>((plane * 0.5 + 0.5) * 64.0), vec2<u32>(63u));
+    let id = (face * 4096u + cell.y * 64u + cell.x) ^ u32(light.night_stars.w);
+    // Cubemap solid angle correction avoids denser star clusters at corners.
+    let cell_plane = ((vec2<f32>(cell) + 0.5) / 64.0) * 2.0 - 1.0;
+    let solid_angle = pow(1.0 + dot(cell_plane, cell_plane), -1.5);
+    if star_unit(id) > 0.085 * solid_angle { return vec3<f32>(0.0); }
+    let jitter = vec2<f32>(star_unit(id ^ 0x68bc21ebu), star_unit(id ^ 0x02e5be93u));
+    // Leave an empty margin at cell edges. The tiny Gaussian support lies
+    // inside its cell at normal render sizes, including split-screen input.
+    let q = ((vec2<f32>(cell) + 0.25 + 0.5 * jitter) / 64.0) * 2.0 - 1.0;
+    let sign = select(1.0, -1.0, (face & 1u) != 0u);
+    var centre = vec3<f32>(sign, q.x, q.y);
+    if face >= 4u { centre = vec3<f32>(q.x, q.y, sign); }
+    else if face >= 2u { centre = vec3<f32>(q.x, sign, q.y); }
+    let delta = direction - normalize(centre);
+    let angular_sigma = 0.00032;
+    let pixel_angle = 1.0 / max(view.cam.w, 1.0);
+    let variance = angular_sigma * angular_sigma + pixel_angle * pixel_angle / 12.0;
+    let footprint = exp(-0.5 * dot(delta, delta) / variance)
+        * angular_sigma * angular_sigma / variance;
+    let magnitude = 0.06 + 0.94 * pow(star_unit(id ^ 0x967a889bu), 6.0);
+    let colour = mix(vec3<f32>(0.72, 0.84, 1.0), vec3<f32>(1.0, 0.86, 0.72), star_unit(id ^ 0x368cc8b7u));
+    let transmission = exp(-light.night_stars.y / max(direction.y, 0.05))
+        * smoothstep(0.015, 0.12, direction.y);
+    return colour * light.night_stars.x * magnitude * footprint * transmission;
+}
+
+fn attenuate_background(direction: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
+    if light.fog.z <= 0.0 || light.fog.y <= 0.0 { return sky; }
+    let source = fog_scattering_source(direction);
+    // Upward rays integrate the remaining finite atmospheric column; rays
+    // toward/below the horizon have infinite optical depth in this local
+    // plane-parallel layer. Only background rays use the sky as boundary.
+    if direction.y <= 0.0 { return source; }
+    let column = (max(-view.cam.y, 0.0)
+        + light.fog.z * exp(-max(view.cam.y, 0.0) / light.fog.z)) / direction.y;
+    return fog_segment(sky, source, light.fog.y * column);
+}
+
+fn background_radiance(direction: vec3<f32>) -> vec3<f32> {
+    // Surface fog must remain star-free: stars are behind opaque geometry,
+    // not bright flecks painted onto fully fogged distant mountains.
+    return attenuate_background(direction, sky_radiance(direction));
+}
+
+fn visible_background_radiance(direction: vec3<f32>) -> vec3<f32> {
+    return attenuate_background(direction, sky_radiance(direction) + night_star_radiance(direction));
+}
+
+fn distance_fog_amount(distance: f32) -> f32 {
+    let linear = clamp((distance - light.fog_color.w) / max(light.fog.x - light.fog_color.w, 1.0), 0.0, 1.0);
+    let exponential = 1.0 - exp(-light.fog.y * distance);
+    return max(linear, exponential);
+}
+
+fn fog_blend(source: vec3<f32>, background: vec3<f32>, amount: f32) -> vec3<f32> {
+    if amount <= 0.0 { return source; }
+    if amount >= 1.0 { return background; }
+    return mix(source, background, amount);
+}
+
+fn apply_distance_fog(radiance: vec3<f32>, distance: f32, direction: vec3<f32>) -> vec3<f32> {
+    if light.fog.z > 0.0 {
+        if light.fog.y <= 0.0 { return radiance; }
+        let column = fog_column(distance, view.cam.y, direction.y, light.fog.z);
+        return fog_segment(radiance, fog_scattering_source(direction), light.fog.y * column);
+    }
+    let amount = distance_fog_amount(distance);
+    // Near surfaces do not need an additional sky texture lookup.
+    if amount <= 0.0 { return radiance; }
+    return fog_blend(radiance, background_radiance(direction), amount);
 }
 
 // Irradiance (lux) from the sky for a surface facing n.
@@ -350,7 +586,79 @@ fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
     return max(e, vec3<f32>(0.0));
 }
 
-fn shadow_filter(map: texture_depth_2d, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>, n: vec3<f32>) -> f32 {
+// Explicit 4x4 footprint equals the old 3x3 bilinear comparison kernel.
+// Each comparison uses the actual receiving triangle's depth at THAT texel,
+// instead of pushing every possible caster away by its unbounded slope.
+var<private> sun_receiver_tri: array<vec3<f32>,3>;
+var<private> sun_receiver_tri_set: bool;
+fn shadow_cross2(a:vec2<f32>,b:vec2<f32>)->f32 { return a.x*b.y-a.y*b.x; }
+fn shadow_triangle_contains(q:vec2<f32>,a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,orientation:f32)->bool {
+    return shadow_cross2(b-a,q-a)*orientation>=0.0
+        && shadow_cross2(c-b,q-b)*orientation>=0.0
+        && shadow_cross2(a-c,q-c)*orientation>=0.0;
+}
+fn shadow_filter_plane(map: texture_depth_2d, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    let c = projection * vec4<f32>(p, 1.0);
+    let uv = c.xy * vec2<f32>(0.5, -0.5) + 0.5;
+    if !all(abs(c) < vec4<f32>(1e20)) || any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || c.z < 0.0 || c.z > 1.0 { return 1.0; }
+    let size = vec2<i32>(textureDimensions(map));
+    let q = uv * vec2<f32>(size) - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = fract(q);
+    let wx = vec4<f32>(1.0-f.x, 1.0, 1.0, f.x) / 3.0;
+    let wy = vec4<f32>(1.0-f.y, 1.0, 1.0, f.y) / 3.0;
+    let row_x = vec3<f32>(projection[0].x, projection[1].x, projection[2].x);
+    let row_y = vec3<f32>(projection[0].y, projection[1].y, projection[2].y);
+    let row_z = vec3<f32>(projection[0].z, projection[1].z, projection[2].z);
+    let denominator = dot(plane_n, -normalize(row_z));
+    var gradient = vec2<f32>(0.0);
+    // Zero means no actual triangle plane was supplied (volume/transparency).
+    // A nearly sun-parallel plane has no stable depth function; use a centred
+    // comparison, never an arbitrary metre-scale bias or unsafe division.
+    if all(abs(plane_n) < vec3<f32>(1e10)) && dot(plane_n,plane_n) > 1e-12
+        && abs(denominator) > 1e-4 && dot(row_x,row_x) > 1e-20 && dot(row_y,row_y) > 1e-20 {
+        gradient = vec2<f32>(dot(plane_n,normalize(row_x)), -dot(plane_n,normalize(row_y)))
+            * (world_texel * length(row_z) / denominator);
+    }
+    // f32 projection roundoff, in normalized depth. Unlike slope bias this
+    // grows only with arithmetic precision, not the receiving/casting slope.
+    let epsilon = 4.7683716e-7 * (dot(abs(row_z),abs(p)) + abs(projection[3].z) + 1.0);
+    let clipped = sun_receiver_tri_set && dot(plane_n,plane_n)>1e-12;
+    var triangle:array<vec2<f32>,3>;
+    var orientation=0.0;
+    if clipped {
+        for(var i=0;i<3;i++) {
+            let vertex=projection*vec4<f32>(sun_receiver_tri[i],1.0);
+            triangle[i]=(vertex.xy*vec2<f32>(0.5,-0.5)+0.5)*vec2<f32>(size)-0.5;
+        }
+        orientation=sign(shadow_cross2(triangle[1]-triangle[0],triangle[2]-triangle[0]));
+    }
+    var lit = 0.0;
+    var total = 0.0;
+    for (var y=0; y<4; y++) { for (var x=0; x<4; x++) {
+        let pixel = clamp(base + vec2<i32>(x-1,y-1), vec2<i32>(0), size-1);
+        // A plane is valid only inside its actual triangle. Extrapolating it
+        // into a neighbouring concave face creates false triangle-wire shadow
+        // even with identical source geometry and infinite numeric precision.
+        if clipped && (orientation==0.0 || !shadow_triangle_contains(vec2<f32>(pixel),triangle[0],triangle[1],triangle[2],orientation)) { continue; }
+        let delta = vec2<f32>(pixel) - q;
+        let reference = c.z + dot(gradient,delta) - epsilon;
+        let depth = textureLoad(map,pixel,0);
+        let weight=wx[x]*wy[y];
+        lit += weight * select(0.0,1.0,reference <= depth);
+        total += weight;
+    }}
+    if total>1e-8 {return lit/total;}
+    // Subtexel / edge-on triangles may contain no shadow-map sample centre.
+    // Fall back to ONE nearest depth sample at the actual receiver depth.
+    // This has <=half-texel quantization per axis and may alias; it cannot
+    // invent an arbitrarily extrapolated plane or force an unoccluded result.
+    let nearest=clamp(vec2<i32>(floor(q+0.5)),vec2<i32>(0),size-1);
+    return select(0.0,1.0,c.z-epsilon<=textureLoad(map,nearest,0));
+}
+
+fn shadow_filter(map: texture_depth_2d, projection: mat4x4<f32>, world_texel: f32, p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    if light.near_shadow.w > 0.5 { return shadow_filter_plane(map,projection,world_texel,p,plane_n); }
     let biased = p + n * world_texel * 1.5 + light.sun_dir.xyz * world_texel;
     let c = projection * vec4<f32>(biased, 1.0);
     let uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
@@ -367,10 +675,43 @@ fn shadow_filter(map: texture_depth_2d, projection: mat4x4<f32>, world_texel: f3
     return lit / 9.0;
 }
 
+fn sun_coverage_fade(projection: mat4x4<f32>, p: vec3<f32>, blend_start: f32) -> f32 {
+    let c = projection * vec4<f32>(p, 1.0);
+    let edge = max(abs(c.x), abs(c.y));
+    let depth_edge = max(1.0 - c.z / 0.05, 1.0 - (1.0 - c.z) / 0.05);
+    return max(smoothstep(blend_start, 1.0, edge), smoothstep(0.0, 1.0, depth_edge));
+}
+
+fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    let page=foliage_page_visibility(p,n,plane_n);
+    if page.y>0.5 {return page.x;}
+    var fade = 1.0;
+    var mapped = 1.0;
+    if far_sun.params.z > 0.5 {
+        fade = sun_coverage_fade(far_sun.view_proj, p, far_sun.params.y);
+        if fade < 1.0 {
+            // The old per-texel offset becomes metres on a stage-wide map and
+            // pushes receivers through their own crowns. Keep numerical bias
+            // in world units and use one bilinear comparison footprint: the
+            // map already integrates a much larger area than the close maps.
+            let bias = min(0.06, far_sun.params.x * 0.1);
+            let c = far_sun.view_proj * vec4<f32>(p + (n + light.sun_dir.xyz) * bias, 1.0);
+            let uv = c.xy * vec2<f32>(0.5,-0.5) + 0.5;
+            mapped = textureSampleCompareLevel(far_sun_tex, shadow_samp, uv, 0, c.z);
+        }
+        if fade <= 0.0 { return mapped; }
+    }
+    var fallback = 1.0;
+    if gi.vol_dims.w != 0u {
+        fallback = transmittance(p + n * 0.2, light.sun_dir.xyz, 50.0);
+    }
+    return mix(mapped, fallback, fade);
+}
+
 // Detail follows each camera but its texels remain fixed in world space.
-// Blend the far-map/canopy result before adding the near detail, so a camera
+// Blend the shared maps before adding the near detail, so a camera
 // near the shared-map edge cannot overwrite a valid car shadow with foliage.
-fn shadow_at(p: vec3<f32>, n: vec3<f32>) -> f32 {
+fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
     var weight = 0.0;
     if light.near_shadow.z > 0.5 {
         let c = light.near_shadow_view_proj * vec4<f32>(p, 1.0);
@@ -379,22 +720,48 @@ fn shadow_at(p: vec3<f32>, n: vec3<f32>) -> f32 {
         }
     }
     if weight >= 1.0 {
-        return shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n);
+        return shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n, plane_n);
     }
-    var far = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n);
-    let c = light.shadow_view_proj * vec4<f32>(p, 1.0);
-    let edge = max(abs(c.x), abs(c.y));
-    // Fade to a covered coarse forest field at every shadow-frustum face,
-    // including depth. A receiver outside Z must not silently become sunlit.
-    let depth_edge = max(1.0 - c.z / 0.05, 1.0 - (1.0 - c.z) / 0.05);
-    let coverage_fade = max(smoothstep(0.75, 1.0, edge), smoothstep(0.0, 1.0, depth_edge));
-    if coverage_fade > 0.0 && gi.vol_dims.w != 0u {
-        let tr = transmittance(p + n * 0.2, light.sun_dir.xyz, 50.0);
-        far = mix(far, tr, coverage_fade);
+    var far = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
+    // The outer map uses actual alpha-tested tree geometry, not the coarse
+    // density field that wrongly buried sunlit crowns in their own shadow.
+    let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.75);
+    if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || foliage_sun_pages.counts.z != 0u || gi.vol_dims.w != 0u) {
+        far = mix(far, distant_sun_visibility(p,n,plane_n), coverage_fade);
     }
     if weight <= 0.0 { return far; }
-    let detail = shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n);
+    let detail = shadow_filter(near_shadow_tex, light.near_shadow_view_proj, light.near_shadow.x, p, n, plane_n);
     return mix(far, detail, weight);
+}
+
+// The renderer reserves night_stars.z for this execution policy. Diagnostics
+// retain their shadow queries at zero lux; ambient/contact/reflection paths do
+// not use this guard. Keep the predicate aligned with frame.rs.
+fn sun_visibility_required() -> bool {
+    // The finite lower bound also keeps -infinity on the conservative path;
+    // NaN fails the conjunction, exactly as the host's is_finite predicate.
+    return light.night_stars.z < 0.5
+        || !(light.sun_dir.w <= 0.0 && light.sun_dir.w >= -3.4028234663852886e38)
+        || light.sky.z != 0.0;
+}
+
+// Coverage of the camera's detailed map never removes a world terrain blocker.
+fn shadow_at_surface(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>, representation_error:f32) -> f32 {
+    if !sun_visibility_required() { return 1.0; }
+    let detail=shadow_detail_receiver(p,n,plane_n);
+    if detail<=0.0 {return 0.0;}
+    return min(detail,world_terrain_sun_visibility(p,n,representation_error));
+}
+
+fn shadow_at_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    return shadow_at_surface(p,n,plane_n,0.0);
+}
+
+fn shadow_at(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    return shadow_at_receiver(p,n,vec3<f32>(0.0));
+}
+fn shadow_at_plane(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
+    return shadow_at_receiver(p,n,plane_n);
 }
 
 fn tex(layer: i32, uv: vec2<f32>, lod: f32) -> vec4<f32> {
@@ -409,6 +776,44 @@ struct Footprint {
 };
 
 var<private> fp: Footprint;
+
+fn track_tile(key:vec2<i32>)->vec4<i32> {
+    var h=bitcast<u32>(key.x)*0x9e3779b9u ^ bitcast<u32>(key.y)*0x85ebca6bu;
+    h^=h>>16u;h*=0x7feb352du;h^=h>>15u;
+    for(var probe=0u;probe<8u;probe++) {
+        let index=(h+probe)&0xffffu;
+        let entry=textureLoad(track_lookup,vec2<i32>(i32(index&255u),i32(index>>8u)),0);
+        if entry.z==0 {return vec4<i32>(0);}
+        if entry.z>0 && all(entry.xy==key) {return entry;}
+        // z=-1 is an evicted tombstone: a later colliding identity remains
+        // reachable, but stale page contents can never match a world tile.
+    }
+    return vec4<i32>(0);
+}
+fn track_material(p:vec3<f32>)->vec2<f32> {
+    let footprint=max(length(fp.dx.xz),length(fp.dy.xz));
+    let filtered=1.0-smoothstep(0.12,0.60,footprint);
+    if filtered<=0.0 {return vec2<f32>(0);}
+    let q=p.xz/0.08-0.5;let base=vec2<i32>(floor(q));let f=fract(q);
+    let key=vec2<i32>(floor(vec2<f32>(base)/128.0));
+    let initial=track_tile(key);
+    if initial.z==0 && all(base-key*128<vec2<i32>(127)) {return vec2<f32>(0);}
+    var result=vec2<f32>(0);
+    for(var y=0;y<2;y++) {for(var x=0;x<2;x++) {
+        let pixel=base+vec2<i32>(x,y);let tile=vec2<i32>(floor(vec2<f32>(pixel)/128.0));
+        var entry=initial;if any(tile!=key) {entry=track_tile(tile);}
+        if entry.z<=0 {continue;}
+        let slot=u32(entry.z-1);let local=pixel-tile*128;
+        let address=vec2<i32>(i32(slot%32u)*128,i32(slot/32u)*128)+local;
+        let data=textureLoad(track_atlas,address,0);
+        if max(data.r,data.g)<=0.0 {continue;}
+        let height=bitcast<f32>(entry.w)+((data.b*255.0+data.a*65280.0)/65535.0*2.0-1.0)*64.0;
+        let clip=clamp(1.0-(abs(p.y-height)-0.08)/0.08,0.0,1.0);
+        let weight=select(1.0-f.x,f.x,x==1)*select(1.0-f.y,f.y,y==1);
+        result+=data.rg*(clip*weight);
+    }}
+    return result*filtered;
+}
 
 // Sample with the true texture-space gradients (anisotropic filtering):
 // uv = (world position projected on `ax`, `ay`) / scale.
@@ -504,20 +909,204 @@ fn fbm(p: vec2<f32>) -> f32 {
     return vnoise(p) * 0.55 + vnoise(p * 2.1) * 0.3 + vnoise(p * 4.3) * 0.15;
 }
 
-// layer2's normal map, blended the same way.
-fn layer2n(l: i32, uv: vec2<f32>, scale: f32, far: f32, mixer: f32) -> vec2<f32> {
-    let a = nrm_xz(l, uv / scale, scale);
-    let k = scale * 4.3;
-    let b = TURN * nrm(l, TURN * uv / k, TURN * fp.dx.xz / k, TURN * fp.dy.xz / k);
-    return mix(a, b, clamp(mixer + far * 0.4, 0.0, 1.0));
+// Two world-anchored texture variants, shared by color and normal maps.
+// The previous second sample enlarged every texture 4.3x as the camera moved
+// away. Mountains exposed that repeat, and camera distance changed the soil.
+// Adjacent hashed variants use the SAME physical texel scale. A smooth scalar
+// noise field chooses their blend, so no square tile boundary is introduced.
+// There are still two texture reads per layer, and filtering uses each rotated
+// footprint rather than differentiating the discontinuous variant index.
+struct TerrainMapping {
+    a: mat2x2<f32>,
+    b: mat2x2<f32>,
+    offset_a: vec2<f32>,
+    offset_b: vec2<f32>,
+    blend: f32,
+};
+
+fn terrain_turn(index: f32) -> mat2x2<f32> {
+    let angle = hash2(vec2<f32>(index, 37.0)) * 6.2831853;
+    let cs = cos(angle);
+    let sn = sin(angle);
+    return mat2x2<f32>(cs, sn, -sn, cs);
 }
 
-// Two scales of one texture, blended by distance and noise: no visible tiling.
-fn layer2(l: i32, uv: vec2<f32>, scale: f32, far: f32, mixer: f32) -> vec3<f32> {
-    let a = tex_xz(l, uv / scale, scale).rgb;
-    let k = scale * 4.3;
-    let b = tex_w(l, TURN * uv / k, TURN * fp.dx.xz / k, TURN * fp.dy.xz / k).rgb;
-    return mix(a, b, clamp(mixer + far * 0.4, 0.0, 1.0));
+fn terrain_mapping(p: vec3<f32>) -> TerrainMapping {
+    let selector = fbm((p.xz + p.yy * vec2<f32>(0.31, -0.23)) / 19.0 + 13.0) * 16.0;
+    let index = floor(selector);
+    var mapping: TerrainMapping;
+    mapping.a = terrain_turn(index);
+    mapping.b = terrain_turn(index + 1.0);
+    mapping.offset_a = vec2<f32>(hash2(vec2<f32>(index, 11.0)), hash2(vec2<f32>(index, 23.0)));
+    mapping.offset_b = vec2<f32>(hash2(vec2<f32>(index + 1.0, 11.0)), hash2(vec2<f32>(index + 1.0, 23.0)));
+    mapping.blend = smoothstep(0.15, 0.85, fract(selector));
+    return mapping;
+}
+
+fn terrain_layer_normal(l: i32, uv: vec2<f32>, scale: f32, mapping: TerrainMapping) -> vec2<f32> {
+    let a = mapping.a * nrm(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale);
+    let b = mapping.b * nrm(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale);
+    return mix(a, b, mapping.blend);
+}
+
+fn terrain_layer(l: i32, uv: vec2<f32>, scale: f32, mapping: TerrainMapping) -> vec3<f32> {
+    let a = tex_w(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale).rgb;
+    let b = tex_w(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale).rgb;
+    return mix(a, b, mapping.blend);
+}
+
+// The road and terrain use the same source soil texture, metre scale,
+// rotation, colour and weather response where their geometry joins. Matching
+// positions alone left a bright, ruler-straight gravel/soil material cut.
+fn shoulder_soil(l: i32, p: vec3<f32>, mapping: TerrainMapping) -> vec3<f32> {
+    return terrain_layer(l, p.xz, 3.0, mapping) * vec3<f32>(0.85, 0.8, 0.75)
+        * (0.78 + 0.34 * fbm(p.xz / 31.0));
+}
+
+struct RockSurface { color: vec3<f32>, normal: vec3<f32> };
+// Explicit diagnostic opt-in. Keep the original material unchanged while
+// comparing the independent shadow fix; the shade pipeline specializes this.
+override ROCK_VARIATION: bool = false;
+
+// World-cell hash: integer arithmetic keeps negative coordinates and distant
+// mountains stable, without the precision loss of sin(large_coordinate).
+fn rock_hash(cell: vec2<i32>, seed: u32) -> f32 {
+    var h = bitcast<u32>(cell.x) * 0x9e3779b9u ^ bitcast<u32>(cell.y) * 0x85ebca6bu ^ seed;
+    h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u;
+    h *= 0x846ca68bu; h ^= h >> 16u;
+    return f32(h >> 8u) / 16777216.0;
+}
+
+// Signed value and analytic XY gradient. Quintic interpolation gives a C2
+// coordinate field, including every cell boundary; its Jacobian is C1.
+fn rock_noise_gradient(p: vec2<f32>, seed: u32) -> vec3<f32> {
+    let cell = vec2<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let du = 30.0 * f * f * (f - 1.0) * (f - 1.0);
+    let a = rock_hash(cell, seed);
+    let b = rock_hash(cell + vec2<i32>(1, 0), seed);
+    let c = rock_hash(cell + vec2<i32>(0, 1), seed);
+    let d = rock_hash(cell + vec2<i32>(1, 1), seed);
+    return vec3<f32>(mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0,
+        mix(b - a, d - c, u.y) * du.x * 2.0,
+        mix(c - a, d - b, u.x) * du.y * 2.0);
+}
+
+fn rock_warp_gradient(p: vec2<f32>, seed: u32) -> vec3<f32> {
+    let fine = rock_noise_gradient(p / 13.0, seed);
+    let broad = rock_noise_gradient(p / 47.0, seed ^ 0x68bc21ebu);
+    return vec3<f32>(fine.x * 0.8 + broad.x * 2.6,
+        fine.yz * (0.8 / 13.0) + broad.yz * (2.6 / 47.0));
+}
+
+struct RockVariant { turn: mat2x2<f32>, offset: vec2<f32> };
+struct RockMapping { a: RockVariant, b: RockVariant, blend: f32 };
+
+fn rock_variant(index: i32) -> RockVariant {
+    let angle = rock_hash(vec2<i32>(index, 37), 0xc28491d3u) * 6.2831853;
+    let cs = cos(angle); let sn = sin(angle);
+    var result: RockVariant;
+    result.turn = mat2x2<f32>(cs, sn, -sn, cs);
+    result.offset = vec2<f32>(rock_hash(vec2<i32>(index, 11), 0x6a09e667u),
+        rock_hash(vec2<i32>(index, 23), 0xbb67ae85u));
+    return result;
+}
+
+fn rock_mapping(p: vec3<f32>) -> RockMapping {
+    let field = rock_noise_gradient((p.xz + p.yy * vec2<f32>(0.37, -0.23)) / 17.0, 0x3c6ef372u);
+    let selector = (field.x * 0.5 + 0.5) * 12.0;
+    let index = i32(floor(selector));
+    var result: RockMapping;
+    result.a = rock_variant(index);
+    result.b = rock_variant(index + 1);
+    result.blend = smoothstep(0.15, 0.85, fract(selector));
+    return result;
+}
+
+// gu/gv are the world gradients of the unscaled, rotated texture coordinates.
+// Pull the sampled normal's slope through the SAME Jacobian as its albedo.
+// OpenGL normal-map green points against image V. Do not rotate just the UV:
+// that leaves relief facing the old direction and produces false lighting.
+fn rock_mapped_normal(n: vec3<f32>, xy: vec2<f32>, gu: vec3<f32>, gv: vec3<f32>) -> vec3<f32> {
+    let gradient = gu * xy.x - gv * xy.y;
+    return safe_normalize(n * sqrt(max(1.0 - dot(xy, xy), 0.0))
+        + gradient - n * dot(n, gradient));
+}
+
+fn rock_axis_variant(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>,
+    n: vec3<f32>, gu: vec3<f32>, gv: vec3<f32>, variant: RockVariant) -> RockSurface {
+    let q = variant.turn * uv + variant.offset;
+    let qx = variant.turn * dx; let qy = variant.turn * dy;
+    let ru = gu * variant.turn[0].x + gv * variant.turn[1].x;
+    let rv = gu * variant.turn[0].y + gv * variant.turn[1].y;
+    var result: RockSurface;
+    result.color = tex_w(l, q, qx, qy).rgb;
+    result.normal = rock_mapped_normal(n, nrm(l, q, qx, qy), ru, rv);
+    return result;
+}
+
+fn rock_axis(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>,
+    n: vec3<f32>, gu: vec3<f32>, gv: vec3<f32>, mapping: RockMapping) -> RockSurface {
+    // Endpoints need only one variant. A transition never exceeds two color
+    // and two normal reads, and both variants retain the same 3.7 m scale.
+    if mapping.blend <= 0.0 { return rock_axis_variant(l, uv, dx, dy, n, gu, gv, mapping.a); }
+    if mapping.blend >= 1.0 { return rock_axis_variant(l, uv, dx, dy, n, gu, gv, mapping.b); }
+    let a = rock_axis_variant(l, uv, dx, dy, n, gu, gv, mapping.a);
+    let b = rock_axis_variant(l, uv, dx, dy, n, gu, gv, mapping.b);
+    var result: RockSurface;
+    result.color = mix(a.color, b.color, mapping.blend);
+    result.normal = safe_normalize(mix(a.normal, b.normal, mapping.blend));
+    return result;
+}
+
+// World-fixed continuous variants break the remaining recognizable repeat
+// of one warped rock asset. At an integer selector boundary the preceding B
+// is exactly the following A; there is no tile edge, camera fade or LOD swap.
+// Keep the existing non-folding warp: each off-diagonal Jacobian row sums to
+// at most 7.5 * (0.8/13 + 2.6/47) < 0.877. Color, normal direction and each
+// anisotropic footprint consume the identical warp and variant rotation.
+fn rock_surface(l: i32, p: vec3<f32>, n: vec3<f32>, tw: vec3<f32>) -> RockSurface {
+    let wx = rock_warp_gradient(p.yz, 0x7314a5d3u);
+    let wy = rock_warp_gradient(p.xz, 0x2c6e8b91u);
+    let wz = rock_warp_gradient(p.xy, 0x9a35d7f1u);
+    let q = p + vec3<f32>(wx.x, wy.x, wz.x);
+    let gx = vec3<f32>(1.0, wx.y, wx.z);
+    let gy = vec3<f32>(wy.y, 1.0, wy.z);
+    let gz = vec3<f32>(wz.y, wz.z, 1.0);
+    let dx = vec3<f32>(dot(gx, fp.dx), dot(gy, fp.dx), dot(gz, fp.dx)) / 3.7;
+    let dy = vec3<f32>(dot(gx, fp.dy), dot(gy, fp.dy), dot(gz, fp.dy)) / 3.7;
+    let uv = q / 3.7;
+    if !ROCK_VARIATION {
+        var original: RockSurface;
+        original.color = tex_w(l, uv.zy, dx.zy, dy.zy).rgb * tw.x
+            + tex_w(l, uv.xz, dx.xz, dy.xz).rgb * tw.y
+            + tex_w(l, uv.xy, dx.xy, dy.xy).rgb * tw.z;
+        let nx = perturb(n, nrm(l, uv.zy, dx.zy, dy.zy), gz, -gy);
+        let ny = perturb(n, nrm(l, uv.xz, dx.xz, dy.xz), gx, -gz);
+        let nz = perturb(n, nrm(l, uv.xy, dx.xy, dy.xy), gx, -gy);
+        original.normal = safe_normalize(nx * tw.x + ny * tw.y + nz * tw.z);
+        return original;
+    }
+    let mapping = rock_mapping(p);
+    var result: RockSurface;
+    result.color = vec3<f32>(0.0); result.normal = vec3<f32>(0.0);
+    // At most 0.01% material weight is discarded per skipped axis. Avoid
+    // sampling a ground-facing projection on an almost vertical cliff.
+    if tw.x > 0.0001 {
+        let x = rock_axis(l, uv.zy, dx.zy, dy.zy, n, gz, gy, mapping);
+        result.color += x.color * tw.x; result.normal += x.normal * tw.x;
+    }
+    if tw.y > 0.0001 {
+        let y = rock_axis(l, uv.xz, dx.xz, dy.xz, n, gx, gz, mapping);
+        result.color += y.color * tw.y; result.normal += y.normal * tw.y;
+    }
+    if tw.z > 0.0001 {
+        let z = rock_axis(l, uv.xy, dx.xy, dy.xy, n, gx, gy, mapping);
+        result.color += z.color * tw.z; result.normal += z.normal * tw.z;
+    }
+    result.normal = safe_normalize(result.normal);
+    return result;
 }
 
 fn hash2(p: vec2<f32>) -> f32 {
@@ -531,19 +1120,59 @@ fn vnoise(p: vec2<f32>) -> f32 {
     return mix(mix(hash2(i), hash2(i + vec2<f32>(1.0, 0.0)), u.x), mix(hash2(i + vec2<f32>(0.0, 1.0)), hash2(i + vec2<f32>(1.0, 1.0)), u.x), u.y);
 }
 
+struct ThinFoliageResponse {direct:vec3<f32>,indirect:vec3<f32>,specular:vec3<f32>};
+// Shared by actual procedural blades and their normal-distribution voxels.
+// A modest diffuse-transmission fraction is a material approximation, not
+// measured plant optics. Reflection/transmission SHARE the coloured diffuse
+// budget. There is no fixed green backlight, world-up normal or night glow.
+fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_fraction:f32,
+    sun_e:vec3<f32>,front_irradiance:vec3<f32>,back_irradiance:vec3<f32>,env:vec3<f32>)->ThinFoliageResponse {
+    let f0=vec3<f32>(0.04);
+    let specular_weight=clamp(env_brdf(f0,rough,max(dot(n,v),1e-4)),vec3<f32>(0.0),vec3<f32>(1.0));
+    let budget=clamp(base,vec3<f32>(0.0),vec3<f32>(1.0))*(1.0-specular_weight)/PI;
+    let transmission=0.25*clamp(leaf_fraction,0.0,1.0);
+    let reflection=1.0-transmission;
+    let ndl=dot(n,light.sun_dir.xyz);
+    var result:ThinFoliageResponse;
+    result.direct=budget*sun_e*(reflection*max(ndl,0.0)+transmission*max(-ndl,0.0))
+        +sun_e*ggx(n,v,light.sun_dir.xyz,rough,f0);
+    result.indirect=budget*(reflection*front_irradiance+transmission*back_irradiance);
+    result.specular=env*specular_weight;
+    return result;
+}
+
 @compute @workgroup_size(8, 8)
-fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
     let size = vec2<u32>(view.size.xy);
+    var hidden=false;
+    if SKIP_HIDDEN_MEADOW {
+        // All invocations participate in barriers, including edge workgroups.
+        // Count the actual early returns, with only one global atomic per tile.
+        if local==0u {atomicStore(&hidden_meadow_count,0u);}
+        workgroupBarrier();
+        if light.sky.z==0.0 && all(gid.xy<size) && hidden_meadow.width==size.x && hidden_meadow.height==size.y {
+            let owner=hidden_meadow.ids[gid.y*hidden_meadow.row_pairs+gid.x].x;
+            hidden=(owner&0x80000000u)!=0u && textureLoad(depth_tex,vec2<i32>(gid.xy),0)>0.0;
+        }
+        if hidden {atomicAdd(&hidden_meadow_count,1u);}
+        workgroupBarrier();
+        if local==0u {let count=atomicLoad(&hidden_meadow_count);if count!=0u {atomicAdd(&hidden_meadow.skipped,count);}}
+    }
     if gid.x >= size.x || gid.y >= size.y {
         return;
     }
     let px = vec2<i32>(gid.xy);
+    if hidden {
+        // Later source alpha is exactly1. Keep a finite initialized background
+        // for intervening premultiplied layers; no partial coverage is skipped.
+        textureStore(out_hdr,px,vec4<f32>(0.0,0.0,0.0,1.0));return;
+    }
     let ndc = vec2<f32>((f32(gid.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(gid.y) + 0.5) / view.size.y * 2.0);
     let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
     let dir = normalize(far.xyz / far.w - view.cam.xyz);
     let depth = textureLoad(depth_tex, px, 0);
     if depth <= 0.0 {
-        textureStore(out_hdr, px, vec4<f32>(sky_radiance(dir), 1.0));
+        textureStore(out_hdr, px, vec4<f32>(visible_background_radiance(dir), 1.0));
         return;
     }
     let id = textureLoad(vis_tex, px, 0).r;
@@ -583,6 +1212,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     n = normalize(wind_normal(vis.x, xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
+    sun_receiver_tri[0]=p0;sun_receiver_tri[1]=p1;sun_receiver_tri[2]=p2;
+    sun_receiver_tri_set=true;
     let m = materials[cl.material];
     // Two-sided cards and backfaces face the viewer.
     if dot(n, dir) > 0.0 && (m.flags & 8u) != 0u && (m.flags & 64u) == 0u {
@@ -604,6 +1235,11 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     let reach = dist * 0.05 + 0.05; // grazing hits run off towards infinity
     fp.dx = clamp(hit_x - p, vec3<f32>(-reach), vec3<f32>(reach));
     fp.dy = clamp(hit_y - p, vec3<f32>(-reach), vec3<f32>(reach));
+    // Reconstruct output-resolution detail rather than selecting coarse
+    // input-resolution mip levels. Zero retains native and shadow behavior.
+    let mip_scale = select(1.0, view.extra.z, view.extra.z > 0.0);
+    fp.dx *= mip_scale;
+    fp.dy *= mip_scale;
     let duv_x = uv_at(fp.dx, e1, e2, vi) ;
     let duv_y = uv_at(fp.dy, e1, e2, vi);
     var base = m.tint;
@@ -613,44 +1249,65 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         // verge, bare ground beside the road and rock where it is steep.
         // uv.x is metres from the road edge. Layers m.layer .. m.layer+4.
         let wuv = p.xz;
-        let far = smoothstep(30.0, 140.0, dist);
-        let lmix = smoothstep(0.2, 0.8, fbm(wuv / 8.0 + 21.0)) * 0.6;
-        let moss = layer2(m.layer, wuv, 3.2, far, lmix) * vec3<f32>(0.78, 0.86, 0.7);
-        let needles = layer2(m.layer + 1, wuv, 2.8, far, lmix) * vec3<f32>(0.72, 0.66, 0.6);
-        let verge = layer2(m.layer + 2, wuv, 2.6, far, lmix) * vec3<f32>(0.68, 0.94, 0.70);
-        let ground = layer2(m.layer + 3, wuv, 3.0, far, lmix) * vec3<f32>(0.85, 0.8, 0.75);
-        let road_d = clamp(uv.x / 14.0, 0.0, 1.0);
-        let up = n.y;
-        let m_needles = smoothstep(0.48, 0.62, fbm(wuv / 11.0 + 7.0));
-        // Grass on the verge, thinning into the wood, patchy in clearings.
-        let m_verge = clamp((1.0 - smoothstep(6.0, 24.0, uv.x)) * 0.85 + smoothstep(0.55, 0.8, fbm(wuv / 23.0 + 3.0)) * 0.5, 0.0, 1.0);
-        var m_bare = 1.0 - smoothstep(0.03, 0.12, road_d + (fbm(wuv / 2.5) - 0.5) * 0.12);
-        m_bare = max(m_bare, smoothstep(0.82, 0.62, up) * 0.8);
-        var c = mix(moss, needles, m_needles);
-        c = mix(c, verge, m_verge);
-        c = mix(c, ground, m_bare);
-        var nt = mix(layer2n(m.layer, wuv, 3.2, far, lmix), layer2n(m.layer + 1, wuv, 2.8, far, lmix), m_needles);
-        nt = mix(nt, layer2n(m.layer + 2, wuv, 2.6, far, lmix), m_verge);
-        nt = mix(nt, layer2n(m.layer + 3, wuv, 3.0, far, lmix), m_bare);
-        nn = perturb_xz(n, nt);
-        c *= 0.78 + 0.34 * fbm(wuv / 31.0);
+        let mapping = terrain_mapping(p);
+        // uv.y=1+macro-up separates broad geology from micro-relief normals.
+        // The zero legacy encoding falls back to the old authored normal.
+        let up = select(n.y, clamp(uv.y - 1.0, 0.0, 1.0), uv.y >= 1.0);
         let m_rock = smoothstep(0.72, 0.5, up + (fbm(wuv / 3.0) - 0.5) * 0.15);
+        var c = vec3<f32>(0.0);
+        // A fully exposed rock face has no soil contribution. Reusing the
+        // terrain material must not also sample four invisible soil layers.
+        if m_rock < 1.0 {
+            let moss = terrain_layer(m.layer, wuv, 3.2, mapping) * vec3<f32>(0.78, 0.86, 0.7);
+            let needles = terrain_layer(m.layer + 1, wuv, 2.8, mapping) * vec3<f32>(0.72, 0.66, 0.6);
+            let verge = terrain_layer(m.layer + 2, wuv, 2.6, mapping) * vec3<f32>(0.68, 0.94, 0.70);
+            let ground = terrain_layer(m.layer + 3, wuv, 3.0, mapping) * vec3<f32>(0.85, 0.8, 0.75);
+            let road_d = clamp(uv.x / 14.0, 0.0, 1.0);
+            let m_needles = smoothstep(0.48, 0.62, fbm(wuv / 11.0 + 7.0));
+            // Grass on the verge, thinning into the wood, patchy in clearings.
+            let m_verge = clamp((1.0 - smoothstep(6.0, 24.0, uv.x)) * 0.85 + smoothstep(0.55, 0.8, fbm(wuv / 23.0 + 3.0)) * 0.5, 0.0, 1.0);
+            var m_bare = 1.0 - smoothstep(0.03, 0.12, road_d + (fbm(wuv / 2.5) - 0.5) * 0.12);
+            m_bare = max(m_bare, smoothstep(0.82, 0.62, up) * 0.8);
+            c = mix(moss, needles, m_needles);
+            c = mix(c, verge, m_verge);
+            c = mix(c, ground, m_bare);
+            var nt = mix(terrain_layer_normal(m.layer, wuv, 3.2, mapping), terrain_layer_normal(m.layer + 1, wuv, 2.8, mapping), m_needles);
+            nt = mix(nt, terrain_layer_normal(m.layer + 2, wuv, 2.6, mapping), m_verge);
+            nt = mix(nt, terrain_layer_normal(m.layer + 3, wuv, 3.0, mapping), m_bare);
+            nn = perturb_xz(n, nt);
+            c *= 0.78 + 0.34 * fbm(wuv / 31.0);
+            if meadow_substrate.control.x != 0u {
+                // Use the same habitat beyond the old roadside verge too.
+                // Source top-coverage leaves actual soil/needles in the gaps;
+                // it approximates rest coverage, not animated blade normals.
+                let habitat = meadow_habitat_coverage(wuv, uv.x, up, meadow_substrate.control.y);
+                let coverage = habitat * clamp(bitcast<f32>(meadow_substrate.control.z), 0.0, 1.0)
+                    * smoothstep(1.5, 2.5, uv.x);
+                let cell = vec2<i32>(floor(wuv / 0.45));
+                let pigment = meadow_material_tint(wuv, cell, meadow_substrate.control.y);
+                // Restrained existing soil texture detail, without importing
+                // its unrelated green palette into the shared source albedo.
+                let detail = clamp(0.94 + 0.3 * dot(verge, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.94, 1.06);
+                c = mix(c, meadow_substrate.leaf_base.rgb * pigment * detail, coverage);
+            }
+        }
         if m_rock > 0.0 {
             var tw = pow(abs(n), vec3<f32>(4.0));
             tw /= tw.x + tw.y + tw.z;
             let rp = p.xz + p.yy * 0.7;
-            let rmix = smoothstep(0.25, 0.75, fbm(rp / 6.0 + 3.0));
             let rl = m.layer + 4;
-            let a = triplanar(rl, p, tw, 3.7, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0);
-            let b = triplanar(rl, p, tw, 11.3, TURN, 0.37);
-            var rock = mix(a, b, rmix) * vec3<f32>(0.62, 0.63, 0.62);
-            let strata = 0.88 + 0.12 * sin(p.y * 2.1 + fbm(rp / 5.0) * 5.0);
-            let stain = fbm(rp / 17.0 + 11.0);
-            rock *= strata * (0.75 + 0.45 * stain);
-            rock = mix(rock, rock * vec3<f32>(0.85, 0.95, 0.7), smoothstep(0.55, 0.75, fbm(rp / 3.0 + 5.0)) * 0.6);
+            let sampled = rock_surface(rl, p, n, tw);
+            var rock = sampled.color * vec3<f32>(0.62, 0.63, 0.62);
+            // Restrained continuous weathering, never alternating rock types
+            // or green soil patches caused by a detailed face pointing up.
+            rock *= 0.94 + 0.12 * fbm(rp / 31.0 + 11.0);
             c = mix(c, rock, m_rock);
-            let rn = safe_normalize(mix(triplanar_n(rl, p, n, tw, 3.7, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0), triplanar_n(rl, p, n, tw, 11.3, TURN, 0.37), rmix));
-            nn = safe_normalize(mix(nn, rn, m_rock));
+            nn = safe_normalize(mix(nn, sampled.normal, m_rock));
+        }
+        let join = 1.0 - smoothstep(1.0, 2.2, uv.x + (vnoise(wuv / 1.1) - 0.5) * 0.18);
+        if join > 0.0 {
+            c = mix(c, shoulder_soil(m.layer + 3, p, mapping), join);
+            nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(m.layer + 3, wuv, 3.0, mapping)), join));
         }
         base = c * mix(1.0, 0.7, light.fog.w) * m.tint;
     } else if (m.flags & 4u) != 0u {
@@ -683,8 +1340,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         c = mix(c, lo * 0.7, shoulder);
         c = mix(c, mix(gr, lo, 0.3) * vec3<f32>(0.78, 0.74, 0.68), ridge * 0.6);
         c *= 0.9 + 0.2 * vnoise(wuv / 7.0);
-        let green = smoothstep(0.45, 0.7, vnoise(wuv / 6.0 + 13.0)) * smoothstep(0.3, 0.8, exp(-pow(uv.x / 0.07, 2.0))) * smoothstep(0.35, 0.65, vnoise(wuv * 2.3));
-        c = mix(c, vec3<f32>(0.2, 0.25, 0.11) * (0.8 + 0.4 * gr.g), green * 0.75);
+        // Vegetation is real ground cover. Painting green into the road's
+        // centre produced flat green streaks with neither blades nor shadows.
         c *= 0.85 + 0.3 * smoothstep(0.3, 0.7, vnoise(wuv / 23.0 + 4.0));
         let smear = vnoise(vec2<f32>(uv.x * 70.0, uv.y * 0.6)) * 0.6 + vnoise(vec2<f32>(uv.x * 140.0, uv.y * 1.3)) * 0.4;
         let worn = clamp(rut * (0.65 + 0.35 * smear), 0.0, 1.0);
@@ -705,6 +1362,15 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         rn = mix(rn, nrm_xz(m.layer + 1, wuv / 2.2, 2.2), max(edge, shoulder));
         rn *= (1.0 - far_d * 0.6) * (1.0 - worn * 0.7) * (1.0 - asphalt * 0.6) * (1.0 - max(earth, muddy) * 0.4);
         nn = perturb_xz(n, rn);
+        let join_noise = (vnoise(wuv / 1.1) - 0.5) * 0.08 * (1.0 - smoothstep(1.0, 1.2, a));
+        let join = smoothstep(0.82, 1.22, a + join_noise);
+        if join > 0.0 {
+            let mapping = terrain_mapping(p);
+            // m.tint boosts the driving lane, but must not boost only one
+            // side of an otherwise identical terrain/shoulder junction.
+            base = mix(base, shoulder_soil(m.layer + 1, p, mapping) * mix(1.0, 0.7, light.fog.w), join);
+            nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(m.layer + 1, wuv, 3.0, mapping)), join));
+        }
     } else if (m.flags & 64u) != 0u {
         // grass_cards.gdshader: the photograph supplies blade colour, the
         // authored upward normal stays the same on both card sides.
@@ -732,6 +1398,16 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     // 16.. hold 1 + their index in car_materials. Others keep the material.
     let car = m.flags >> 16u;
     var rough_m = m.roughness;
+    if (m.flags & 6u)!=0u {
+        let tracks=track_material(p);
+        // Compacted mineral soil retains its texture and real illumination;
+        // rubber appears only under actual asphalt slip. No final-color or
+        // ambient darkening, and original normal-map relief is untouched.
+        base*=vec3<f32>(1.0)-vec3<f32>(0.28,0.25,0.22)*tracks.x;
+        base=mix(base,base*0.42,tracks.y*0.8);
+        rough_m=mix(rough_m,max(rough_m-0.13,0.55),tracks.x);
+        rough_m=mix(rough_m,0.72,tracks.y*0.65);
+    }
     var metal = m.metal;
     var coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
     var coat_rough = 0.04;
@@ -756,11 +1432,14 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     var back = vec3<f32>(0.0);
     var ao = 1.0;
     let grass = (m.flags & 64u) != 0u;
-    let needles = (m.flags & 9u) == 9u && (inst.pad & 1u) != 0u && !grass;
-    if needles {
+    let procedural_leaf = (m.flags & 512u) != 0u;
+    let needles = procedural_leaf || ((m.flags & 9u) == 9u && (inst.pad & 1u) != 0u && !grass);
+    if needles && !procedural_leaf {
         // foliage.gdshader: a little colour per tree, sunlight shining
         // through the needles from behind (BACKLIGHT), AO 0.85.
-        base *= 0.82 + 0.3 * hash2(vec2<f32>(inst.r0.w, inst.r2.w));
+        // Procedural leaves carry stable authored colour. Hashing the moving
+        // branch pivot would change their colour whenever the wind moves it.
+        if !procedural_leaf {base *= 0.82 + 0.3 * hash2(vec2<f32>(inst.r0.w, inst.r2.w));}
         back = vec3<f32>(0.175, 0.21, 0.1) * max(-ndl, 0.0);
         ao = 0.85;
     } else if grass {
@@ -768,11 +1447,13 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         ao = mix(0.45, 1.0, height);
         back = vec3<f32>(0.12, 0.16, 0.05) * max(-ndl, 0.0);
     }
+    let terrain_error=select(0.0,world_visibility.params.z,(m.flags&6u)!=0u);
     var shadow = 1.0;
     if sun > 0.0 || needles || gi.vol_dims.w != 0u || coat > 0.0 || rough_m < 0.55 {
-        let s_map = shadow_at(p, surface_n * sign(dot(surface_n, l) + 1e-4));
+        let s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
+    if shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
@@ -792,17 +1473,35 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     let refl = reflect(dir, n);
     let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x);
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
-    let ambient = (sky_irradiance(n) * sky_vis + bounce * (1.0 - sky_vis)) * ao * contact.x;
     var reflection_vis = sky_vis;
     if coat > 0.0 || rough < 0.55 {
         reflection_vis = reflected_visibility(p, visibility_n, refl);
     }
-    let spec_contact = mix(contact.y, contact.x, smoothstep(0.08, 0.6, rough));
-    let env = mix(bounce / PI, environment(refl, rough, bounce), reflection_vis) * spec_contact;
-    var direct = diffuse * sun_e * sun + sun_e * back / PI + sun_e * ggx(n, v, l, rough, f0);
-    var indirect = diffuse * ambient;
-    var specular = env * env_brdf(f0, rough, ndv) * ao;
-    // Flake and swirl-mark glints sit under (or in) the coat.
+    var direct:vec3<f32>;
+    var indirect:vec3<f32>;
+    var specular:vec3<f32>;
+    if procedural_leaf {
+        let back_sky_vis=sky_visibility(p,-visibility_n);
+        let front_ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*contact.x;
+        let back_ambient=(sky_irradiance(-n)*back_sky_vis+bounce*(1.0-back_sky_vis))*contact.x;
+        let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
+        let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
+        let response=thin_foliage_response(base,n,v,rough,1.0,sun_e,front_ambient,back_ambient,env);
+        direct=response.direct;indirect=response.indirect;specular=response.specular;
+    } else if grass {
+        let height=clamp((p.y-inst.r1.w)/max(inst.scale*0.5,1e-4),0.0,1.0);
+        let response=grass_leaf_response(base,height,v,sun_e,shadow,sky_vis,contact,rough);
+        direct=response.direct;indirect=response.indirect;specular=response.specular;
+    } else {
+        let ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*ao*contact.x;
+        let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
+        let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
+        direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
+        indirect=diffuse*ambient;
+        specular=env*env_brdf(f0,rough,ndv)*ao;
+    }
+    // Flake and swirl-mark glints sit under (or in) the coat. Non-car
+    // materials retain a zero glint and their existing material coat.
     direct += sun_e * glint;
     if coat > 0.0 {
         // Clear coat: a thin glossy dielectric on top, with its own normal
@@ -817,13 +1516,13 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         indirect *= 1.0 - fc;
         specular = specular * (1.0 - fc) + mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact * fc;
     }
-    var rad = direct + indirect + specular;
-    // Distance fog in the sky's colour at the horizon.
-    let f_lin = clamp((dist - light.fog_color.w) / max(light.fog.x - light.fog_color.w, 1.0), 0.0, 1.0);
-    let f_exp = 1.0 - exp(-light.fog.y * dist);
-    let f = max(f_lin, f_exp);
-    let fog_rad = light.fog_color.rgb; // radiance (cd/m2) of the horizon
-    rad = mix(rad, fog_rad, f);
+    if grass {
+        direct += headlight_grass_radiance(p,v,base,rough);
+    } else {
+        direct += headlight_radiance(p,n,v,diffuse,rough,f0);
+    }
+    var rad = direct + indirect + specular + car_lamp_emission(m.flags, base);
+    rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
     if light.sky.z > 0.5 && light.sky.z < 1.5 {
         rad = vec3<f32>(sky_vis) * 6000.0;
@@ -839,8 +1538,35 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         rad = vec3<f32>(contact.x) * 6000.0;
     } else if light.sky.z > 6.5 && light.sky.z < 7.5 {
         rad = vec3<f32>(reflection_vis) * 6000.0;
-    } else if light.sky.z > 7.5 && light.sky.z < 10.5 {
+    } else if light.sky.z > 7.5 && light.sky.z < 8.5 {
+        rad = vec3<f32>(shadow) * 6000.0;
+    } else if light.sky.z > 8.5 && light.sky.z < 9.5 {
+        rad = vec3<f32>(shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error)) * 6000.0;
+    } else if light.sky.z > 9.5 && light.sky.z < 10.5 {
+        rad = vec3<f32>(grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u)) * 6000.0;
+    } else if light.sky.z > 10.5 && light.sky.z < 11.5 {
+        rad = (n * 0.5 + 0.5) * 6000.0;
+    } else if light.sky.z > 11.5 && light.sky.z < 12.5 {
+        rad = (surface_n * 0.5 + 0.5) * 6000.0;
+    } else if light.sky.z > 12.5 && light.sky.z < 13.5 {
+        rad = vec3<f32>(max(dot(n,l),0.0)) * 6000.0;
+    } else if light.sky.z > 13.5 && light.sky.z < 14.5 {
+        rad = vec3<f32>(max(dot(surface_n,l),0.0)) * 6000.0;
+    } else if light.sky.z > 14.5 && light.sky.z < 15.5 {
+        rad = vec3<f32>(shadow_filter(near_shadow_tex,light.near_shadow_view_proj,light.near_shadow.x,p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n)) * 6000.0;
+    } else if light.sky.z > 15.5 && light.sky.z < 16.5 {
+        rad = vec3<f32>(shadow_filter(shadow_tex,light.shadow_view_proj,light.sky.w,p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n)) * 6000.0;
+    } else if light.sky.z > 16.5 && light.sky.z < 17.5 {
+        let clip=light.near_shadow_view_proj*vec4<f32>(p,1.0);
+        let valid=light.near_shadow.z>0.5 && clip.z>=0.0 && clip.z<=1.0;
+        rad=vec3<f32>(select(0.0,1.0-smoothstep(light.near_shadow.y,1.0,max(abs(clip.x),abs(clip.y))),valid))*6000.0;
+    } else if light.sky.z > 19.5 && light.sky.z < 22.5 {
         rad = car_debug * 6000.0;
+    } else if light.sky.z > 22.5 && light.sky.z < 24.5 {
+        rad = world_terrain_debug(p,surface_n*sign(dot(surface_n,l)+1e-4),light.sky.z>23.5,terrain_error)*6000.0;
+    } else if light.sky.z > 24.5 && light.sky.z < 25.5 {
+        let page=foliage_page_visibility(p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n);
+        rad=select(vec3<f32>(1.0,0.0,1.0),vec3<f32>(page.x),page.y>0.5)*6000.0;
     }
     textureStore(out_hdr, px, vec4<f32>(rad, 1.0));
 }

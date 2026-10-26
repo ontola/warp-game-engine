@@ -15,16 +15,46 @@ impl Presenter {
     /// is repeated, and normal presentation never allocates/maps this readback.
     pub fn capture_rgba(&self, gpu: &Gpu, picture: &wgpu::Texture, format: wgpu::TextureFormat,
         hud: Option<&crate::hud::HudRenderer>) -> Result<Vec<u8>, String> {
+        self.capture_rgba_scaled(gpu,picture,format,hud,0).map(|(_,_,rgba)|rgba)
+    }
+
+    /// Developer preview: compose at render resolution, then downsample on the
+    /// GPU before readback. Zero retains native pixels; never changes gameplay
+    /// render size, HUD layout, simulation ticks or scene rendering.
+    pub fn capture_rgba_scaled(&self, gpu: &Gpu, picture: &wgpu::Texture, format: wgpu::TextureFormat,
+        hud: Option<&crate::hud::HudRenderer>, max_width: u32) -> Result<(u32,u32,Vec<u8>), String> {
         if !matches!(format, wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb|wgpu::TextureFormat::Bgra8Unorm|wgpu::TextureFormat::Bgra8UnormSrgb) {
             return Err(format!("Screenshot surface format {format:?} is unsupported"));
         }
-        let (width,height)=(picture.width(),picture.height());
+        let (width,height)=preview_dimensions(picture.width(),picture.height(),max_width);
+        let scaled=width!=picture.width();
         let target=gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label:Some("F12 final composite"), size:picture.size(), mip_level_count:1,sample_count:1,
+            label:Some("developer capture"), size:wgpu::Extent3d{width,height,depth_or_array_layers:1}, mip_level_count:1,sample_count:1,
             dimension:wgpu::TextureDimension::D2,format,
             usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[],
         });
-        self.present(gpu,picture,&target.create_view(&Default::default()),hud,None)?;
+        if scaled && hud.is_some() {
+            // Glyph positions/viewport were prepared for the full output size.
+            // Downsample the completed HUD too, rather than cropping its layout.
+            let encoded_format=match format {
+                wgpu::TextureFormat::Rgba8UnormSrgb=>wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Bgra8UnormSrgb=>wgpu::TextureFormat::Bgra8Unorm,
+                other=>other,
+            };
+            let view_formats=if encoded_format!=format {vec![encoded_format]} else {vec![]};
+            let composite=gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label:Some("preview full HUD composite"),size:picture.size(),mip_level_count:1,sample_count:1,
+                dimension:wgpu::TextureDimension::D2,format,
+                usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&view_formats,
+            });
+            self.present(gpu,picture,&composite.create_view(&Default::default()),hud,None)?;
+            // Present expects encoded LDR numbers. An UNORM alias avoids a
+            // second sRGB decode on hardware while sampling this intermediate.
+            let source=composite.create_view(&wgpu::TextureViewDescriptor{format:Some(encoded_format),..Default::default()});
+            self.present_view(gpu,&source,&target.create_view(&Default::default()),None,None)?;
+        } else {
+            self.present(gpu,picture,&target.create_view(&Default::default()),hud,None)?;
+        }
         let row=(width*4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)*wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback=gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label:Some("F12 readback"),size:u64::from(row)*u64::from(height),
@@ -45,7 +75,7 @@ impl Presenter {
             let mut rgba=Vec::with_capacity(width as usize*height as usize*4);
             for y in 0..height {let start=(y*row) as usize;rgba.extend_from_slice(&bytes[start..start+width as usize*4]);}
             if matches!(format,wgpu::TextureFormat::Bgra8Unorm|wgpu::TextureFormat::Bgra8UnormSrgb){for pixel in rgba.chunks_exact_mut(4){pixel.swap(0,2);}}
-            Ok(rgba)
+            Ok((width,height,rgba))
         })();
         readback.unmap();
         result
@@ -67,7 +97,7 @@ impl Presenter {
             vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
             primitive: wgpu::PrimitiveState::default(), depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
-            multiview_mask: None, cache: None,
+            multiview_mask: None, cache: gpu.pipeline_cache(),
         });
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let uniform = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("surface encoding"), contents: bytemuck::cast_slice(&[u32::from(format.is_srgb()), 0, 0, 0]), usage: wgpu::BufferUsages::UNIFORM });
@@ -75,12 +105,17 @@ impl Presenter {
     }
 
     pub fn present(&self, gpu: &Gpu, picture: &wgpu::Texture, target: &wgpu::TextureView,
-        hud: Option<&crate::hud::HudRenderer>, mut profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
+        hud: Option<&crate::hud::HudRenderer>, profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
         let view = picture.create_view(&Default::default());
+        self.present_view(gpu,&view,target,hud,profile)
+    }
+
+    fn present_view(&self, gpu: &Gpu, view: &wgpu::TextureView, target: &wgpu::TextureView,
+        hud: Option<&crate::hud::HudRenderer>, mut profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("live frame"), layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 2, resource: self.uniform.as_entire_binding() },
             ],
@@ -114,4 +149,9 @@ impl Presenter {
         gpu.queue.submit([encoder.finish()]);
         Ok(())
     }
+}
+
+fn preview_dimensions(width:u32,height:u32,max_width:u32)->(u32,u32) {
+    if max_width==0 || width<=max_width {(width,height)}
+    else {(max_width,((u64::from(height)*u64::from(max_width)+u64::from(width)/2)/u64::from(width)).max(1) as u32)}
 }

@@ -21,7 +21,7 @@ struct CarMaterial {
     body: vec4<f32>,    // object-space bounds: min y, max y, min z, max z
     axles: vec4<f32>,   // front axle z, rear axle z, wheel radius, half track (< 0: a wheel)
 };
-@group(0) @binding(13) var<storage, read> car_materials: array<CarMaterial>;
+@group(0) @binding(19) var<storage, read> car_materials: array<CarMaterial>;
 
 const CAR_PAINT: u32 = 0u;
 const CAR_RUBBER: u32 = 1u;
@@ -49,7 +49,7 @@ struct CarSurface {
     coat_rough: f32,
     coat_n: vec3<f32>,  // the coat's own normal (orange peel)
     glint: vec3<f32>,   // extra sun BRDF * n.l: flakes and swirl marks
-    debug: vec3<f32>,   // --set debug=8..10
+    debug: vec3<f32>,   // --set debug=20..22
 };
 
 // pcg3d (Jarzynski and Olano 2020): a well-mixed hash of an integer cell.
@@ -454,14 +454,14 @@ fn car_surface(cm: CarMaterial, inst: Instance, p: vec3<f32>, n: vec3<f32>, dir:
     s.rough = clamp(s.rough, 0.04, 1.0);
     s.metal = clamp(s.metal, 0.0, 1.0);
     s.coat = clamp(s.coat, 0.0, 1.0);
-    // Diagnostics: 8 curvature (red convex, blue concave), 9 wear (red
-    // chips, green scratches/primer, blue rust), 10 grime (red dust, green mud).
+    // Diagnostics: 20 curvature (red convex, blue concave), 21 wear (red
+    // chips, green scratches/primer, blue rust), 22 grime (red dust, green mud).
     let dbg = light.sky.z;
-    if dbg > 7.5 && dbg < 8.5 {
+    if dbg > 19.5 && dbg < 20.5 {
         s.debug = vec3<f32>(edge, 0.0, crease);
-    } else if dbg > 8.5 && dbg < 9.5 {
+    } else if dbg > 20.5 && dbg < 21.5 {
         s.debug = vec3<f32>(steel, primer, rust);
-    } else if dbg > 9.5 && dbg < 10.5 {
+    } else if dbg > 21.5 && dbg < 22.5 {
         s.debug = vec3<f32>(dust_w, mud, low * 0.3);
     }
     return s;
