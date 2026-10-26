@@ -1,8 +1,11 @@
 # Foliage PR integration and trials — 26 October 2026
 
-Status: the corrected local integration passes **517 renderer tests, with 1
-ignored**. This covers CPU invariants and shader validation, not GPU performance
-or visual acceptance. No experimental rendering default is promoted here.
+Status: the corrected local integration passes **517 renderer tests and 187 CLI
+tests, with 1 ignored in each suite**. Its release build completed in **102 s**.
+These checks cover CPU invariants, shader validation and compilation, not GPU
+performance or visual acceptance. Eight original-PR GPU runs are complete below;
+corrected-integration GPU results remain pending. No experimental rendering
+default is promoted here.
 
 ## Scope and defaults
 
@@ -71,9 +74,9 @@ measured speedups.
 
 ## Separate evidence streams
 
-The user's `C:/dev/warp-bench/run-bench.ps1` is running the **original PR branch
+The user's `C:/dev/warp-bench/run-bench.ps1` completed the **original PR branch
 refs** in separate clones/worktrees and target directories under
-`C:/dev/warp-bench`. It writes to `C:/dev/perf/claude-bench-<timestamp>` and does
+`C:/dev/warp-bench`. This run wrote to `C:/dev/perf/claude-bench-20261026-2158` and does
 not test the corrected integration described above. Its branch names are
 `software-raster` and `wind-freeze-sun-cache`; record the resolved commits and
 executable hashes from each run rather than assuming branch names are immutable.
@@ -87,12 +90,128 @@ count, GPU interval and individual scopes, CPU execution separately, memory,
 selected geometry, image/depth differences and any fallback. Exclude warmup and
 diagnostic readback from timing summaries.
 
-## Pending GPU results — to be filled by the root runner
+## Original-PR GPU results
+
+Evidence: `C:/dev/perf/warp-sideways-20261026/r54-pr-trials/` contains
+`requested-bench-extracted.json` (all eight runs) and
+`original-crowns-analysis.json` (matched crown counts, images and interpretation).
+Every run exited **0** with **480/480 frames**. Each of its two sections has
+**179 eligible synchronized GPU samples** after warmup and capture exclusions,
+with no missing or invalid GPU samples. These are single ordered runs, not ABBA
+repeats; there is no repeat-noise estimate. Times below are per-frame GPU interval
+medians, not summed pass medians or gameplay FPS.
+
+The five crown cases use the same original `cca3902` executable, SHA-256
+`87c2c35926adf656db779107caa11d1b0430ff17bbdea6e2efe4357ceb644bef`, native
+1920×1080, one view, noon and fixed wind time. They use legacy card grass rather
+than the current live meadow, with 143,394 selected trees out of 319,179 roots,
+size multiplier 1.5. These results do not describe the current four-player game.
+
+| Original crown configuration | Held forest, ms | Canopy vista, ms |
+|---|---:|---:|
+| Cards, hardware | 9.204 | 10.311 |
+| Opaque needles + proxies, hardware | 55.088 | 60.854 |
+| Opaque + software threshold 16 | 35.355 | 38.055 |
+| Opaque + software 16 + cluster traversal | 30.401 | 33.443 |
+| Cards + software 16 | 8.779 | 9.439 |
+
+Software raster and traversal reduce the opaque variant's regression, but its
+best measured interval remains **3.30×/3.24×** the card reference. In held forest,
+selected scene clusters grow 202,393→2,211,360 and shared-sun triangles
+1,948,615→52,311,585. Hardware raster, culling and shadow geometry dominate this
+increase. Cards + software suggests a modest reduction, but software excludes
+alpha-tested needles: that case routes eligible opaque terrain/wood instead.
+It is not evidence that card needles became cheaper, nor a repeat-validated gain.
+
+The image review finds a conspicuously darker distant hillside in the opaque
+variant before software routing is enabled. A fixed mixed crown/terrain ROI's
+display luminance falls 39.92→17.02/255; this is not a segmented coverage or
+physical-light measurement. Opaque hardware versus software differs at
+1,558/5,977 pixels, with maximum channel differences 175/179; sparse differences
+are not exact parity. Enabling traversal on the software variant produces exact
+decoded RGB matches at both captures, with unchanged selected counts and sun
+fingerprints. Cards hardware versus software still differs at 26/155 pixels.
+These final RGB images cannot isolate normal error, coverage, shadow bias or
+missing geometry, and do not clear the original routing defect.
+
+The three route cases use original `8dd5d62`, executable SHA-256
+`0e83da9007d4943da9a8821658fa1e000400db12f58eafaad08688040cbdd03d`, one
+3840×2160 output with four actual 1916×1076 view rectangles. The scenario requests
+DLSS Quality and follows the deterministic noon route.
+
+| Original route configuration | First section, ms | Continued section, ms |
+|---|---:|---:|
+| Baseline | 32.557 | 34.752 |
+| Static cache + 32 m guard | 32.855 | 34.786 |
+| Cache + guard + wind freeze 50–70 m | 31.267 | 33.723 |
+
+The freeze run is only about 1.29/1.03 ms below baseline. **The original camera-Z
+packing defect invalidates performance acceptance:** GPU wind freezes around
+different camera positions from those used to certify static shadow casters.
+Completion and lower timing do not prove a correct cache or equivalent scene.
+The corrected integration must be measured separately before any promotion.
+
+## Corrected-integration GPU results
+
+The release executable is `r54-pr-trials/sideways-trials.exe`, SHA-256
+`028dd855a9fca56159ba4506c034916f23fd5d61f18858a23a06e37c3a4b01f7`.
+Source snapshot: `1d6a233f0ed5cfbd05765d65f9b50a7318d4d46a` on
+`codex/try-foliage-prs-20261026`. Unlike the original script, these runs explicitly
+use the current saved vegetation baseline, meadow field/aggregate rendering,
+tree occlusion and paged foliage shadows. All flags and shader/executable hashes
+are in each run manifest. The GPU is an NVIDIA GeForce RTX 5070 Ti.
+
+The following are **mean covered GPU intervals**, not the medians above, not
+visible presentation FPS, and not typical gameplay. Every completed case has
+480 rendered frames and 358 measured samples: 60 warmup frames per section and
+the captured frames are excluded. Each variant ran once in order; shared-host
+CI load is uncontrolled. No compilation overlapped these corrected GPU runs.
+
+| Current-preset case | Resolution / views | Mean GPU ms | p95 ms |
+|---|---|---:|---:|
+| `integrated-crowns-a`: cards | Native 1920×1080, one view, two held cameras | 19.398 | 21.921 |
+| `integrated-crowns-b`: cards + corrected software raster 16 | Same | 19.636 | 21.908 |
+| `integrated-route-a`: baseline | 3840×2160 output, four DLSS Quality views | 48.800 | 55.797 |
+| `integrated-route-b`: freeze + cache + guard | Same route/output | 47.870 | 55.119 |
+| `integrated-route-sw`: cards + corrected software raster 16 | Same route/output | 46.450 | 52.963 |
+
+The combined opaque + software + traversal + freeze case
+`integrated-crowns-all` **fails before its first rendered frame**, exit 1:
+`foliage page exceeds visible-cluster capacity; refusing truncated shadows`.
+It has no valid GPU performance or output image. The paged-shadow guard was
+retained; no incomplete-shadow workaround was enabled to manufacture a pass.
+
+Four-player freeze/cache changes the shared shadow half-extent from 112 to
+176 m and texel size from 0.0546875 to 0.0859375 m. Thus the small 1.91% mean
+change includes 57% coarser shared texels, frozen animation and caching; it is
+not an isolated equal-quality cache saving. Five JPEG pairs show no obvious
+gross stale shadows, while all 480 recorded camera/car/light identities match.
+Four measured repins add 1.38–1.49 ms static cull/raster work. The cache uses
+about 121.3 MB and seeds about 67.1 MB/frame. Temporal and raw-depth parity need
+an identical-freeze/guard cache-off/on comparison before promotion.
+
+Software raster on existing cards is mixed: a small one-view regression and a
+4.82% lower four-view mean in this ordered trial. It still excludes alpha-tested
+needles; it cannot be credited with eliminating their raster cost. These results
+need repeated order-reversed runs and motion/image acceptance before changing
+defaults. The four-view baseline's major mean scopes remain tree remaining
+raster 12.65 ms, meadow aggregate/visibility/resolve about 13.27 ms, shade
+9.03 ms and DLSS 3.05 ms. Scope costs are descriptive, not additive projected
+optimization gains.
+
+Evidence under `C:/dev/perf/warp-sideways-20261026/r54-pr-trials/`:
+`summary.json`, `fixed-wind-analysis.json`, `fixed-crowns-analysis.json`, complete
+run manifests, raw frame profiles and captures. The default frame-budget report
+correctly excludes hidden diagnostic samples; the separate extraction explicitly
+reports their synchronized GPU intervals instead.
 
 | Evidence stream | Exact source / executable / run path | Visual and correctness result | GPU timing and scope |
 |---|---|---|---|
-| Original PR refs, external user script | Pending run manifests | Pending | Pending |
-| Corrected integrated source | Pending immutable snapshot and executable | Pending | Pending |
+| Original PR refs, external user script | `claude-bench-20261026-2158`; heads/hashes above | Complete; limitations and known original defects above | Eight cases above; single ordered run each |
+| Corrected integrated source | `r54-pr-trials/sideways-trials.exe`, SHA-256 above | Five completed cases; combined opaque/paged-shadow case fails | Table above; experimental, no default promotion |
 
-No hardware GPU result, accepted visual equivalence, default promotion or
-8.33 ms frame-budget achievement is claimed in this document yet.
+Decision: keep all three experimental modes opt-in. The integration fixes and
+tests are retained on the trial branch; main and the remote PR merge states are
+unchanged. The 8.33 ms frame-budget target is not achieved. Next work is reducing
+opaque proxy/source geometry and shadow capacity pressure, measuring projection-
+matched cache behavior, and repeating the software-raster four-view comparison.

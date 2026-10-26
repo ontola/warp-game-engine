@@ -7,7 +7,32 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r53 false roadside sun shadow
+## Trial branch — PRs 4, 5 and 6, 26 October 2026
+
+See [the PR trial report](docs/pr-foliage-trials-2026-10-26.md). The local
+`codex/try-foliage-prs-20261026` branch combines the three PRs with fixes for
+source/proxy overlap, wind-camera packing and cache invalidation, software
+raster clipping bounds, and timestamp capacity. 517 renderer and 187 game
+tests pass (one ignored in each suite). Main remains at `0601966`; no remote
+PR was merged. All experimental modes remain opt-in.
+
+The user-requested `C:/dev/warp-bench/run-bench.ps1` completed eight original-PR
+cases, each 480 frames. The corrected current-preset integration completed five
+more cases; combined opaque crowns fail the paged-shadow capacity guard before
+the first frame. Do not disable that guard or silently clip shadow geometry.
+Four-player 4K-output / DLSS Quality mean covered GPU intervals: baseline
+48.800 ms, freeze/cache/guard 47.870 ms, software raster on cards 46.450 ms.
+Single ordered runs, uncontrolled CI, hidden synchronization; no FPS or robust
+gain claim. Cache guard also coarsens shared shadow texels by 57%.
+
+Immutable trial executable:
+`C:/dev/perf/warp-sideways-20261026/r54-pr-trials/sideways-trials.exe`, SHA256
+`028dd855a9fca56159ba4506c034916f23fd5d61f18858a23a06e37c3a4b01f7`.
+Full manifests, images and results are in that evidence directory; originals
+are in `C:/dev/perf/claude-bench-20261026-2158`. No live playtest was started by
+these hidden trials. Recheck processes before future GPU work.
+
+## Main status — r53 false roadside sun shadow
 
 See [r53 diagnosis and validation](docs/roadside-shadow-r53.md). The disappearing
 black wedge is a separate road-caster CLOD mismatch: a coarse triangle bridged
