@@ -23,7 +23,46 @@ fn blade_budget(value: Option<&str>) -> Result<MeadowBladeBudget, String> {
     }
 }
 
-fn source_range(aggregate: bool, override_radius: Option<&str>) -> Result<(f32, f32), String> {
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SourceRange {
+    radius: f32,
+    fade_start: f32,
+    origin: &'static str,
+}
+
+impl SourceRange {
+    fn metadata(self, override_radius: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "metres":[self.fade_start,self.radius],
+            "origin":self.origin,
+            "ignored_legacy_radius":if self.origin == "SIDEWAYS_MEADOW_SOURCE_BAND" { override_radius } else { None },
+            "scope":"Authored source-to-aggregate endpoints before the live distance multiplier. This override does not change the renderer's 160..180 m outer fade; actual scaled endpoints are reported in render.meadow."
+        })
+    }
+}
+
+fn source_range(
+    aggregate: bool,
+    override_radius: Option<&str>,
+    override_band: Option<&str>,
+) -> Result<SourceRange, String> {
+    // The explicit pair wins over a radius inherited from a saved launcher
+    // preset. Never silently turn a source handoff into a source-only fade.
+    if let Some(value) = override_band {
+        if !aggregate {
+            return Err("SIDEWAYS_MEADOW_SOURCE_BAND requires KERN_MEADOW_AGGREGATE=1".into());
+        }
+        let error = "SIDEWAYS_MEADOW_SOURCE_BAND must be start,end metres with finite 0 <= start < end and 10 <= end <= 100";
+        let mut parts = value.split(',');
+        let fade_start = parts.next().ok_or(error)?.trim().parse::<f32>().map_err(|_| error)?;
+        let radius = parts.next().ok_or(error)?.trim().parse::<f32>().map_err(|_| error)?;
+        if parts.next().is_some() || !fade_start.is_finite() || !radius.is_finite()
+            || fade_start < 0.0 || fade_start >= radius || !(10.0..=100.0).contains(&radius)
+        {
+            return Err(error.into());
+        }
+        return Ok(SourceRange { radius, fade_start, origin: "SIDEWAYS_MEADOW_SOURCE_BAND" });
+    }
     // Keep the original source-only range. With a distant replacement, use
     // fewer expensive subpixel ribbons and blend over the same twenty metres.
     let radius = match override_radius {
@@ -33,7 +72,11 @@ fn source_range(aggregate: bool, override_radius: Option<&str>) -> Result<(f32, 
     if !radius.is_finite() || !(60.0..=100.0).contains(&radius) {
         return Err("SIDEWAYS_MEADOW_SOURCE_RADIUS must be finite and within 60..100 metres".into());
     }
-    Ok((radius, radius - 20.0))
+    Ok(SourceRange {
+        radius,
+        fade_start: radius - 20.0,
+        origin: if override_radius.is_some() { "SIDEWAYS_MEADOW_SOURCE_RADIUS" } else { "default" },
+    })
 }
 
 fn terrain_samples(heightfield: &Heightfield, chunks: &[Chunk]) -> Result<Vec<[f32; 4]>, String> {
@@ -109,6 +152,13 @@ pub fn build(
     chunks: &[Chunk],
     vegetation: Vegetation,
 ) -> Result<(MeadowField, String, serde_json::Value), String> {
+    let override_radius = std::env::var("SIDEWAYS_MEADOW_SOURCE_RADIUS").ok();
+    let override_band = std::env::var("SIDEWAYS_MEADOW_SOURCE_BAND").ok();
+    let source_range = source_range(
+        std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1"),
+        override_radius.as_deref(),
+        override_band.as_deref(),
+    )?;
     let samples = terrain_samples(heightfield, chunks)?;
     // Growth scales blades about their fixed basal anchors, not the patch
     // footprint. Season is a shared material operation at cooking time.
@@ -128,10 +178,6 @@ pub fn build(
         .map(|levels| levels.map(|range| range[1] / 3));
     let valid = samples.iter().filter(|s| s[2] == 1.0).count();
     let bytes = samples.len() * std::mem::size_of::<[f32; 4]>();
-    let (radius, fade_start) = source_range(
-        std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1"),
-        std::env::var("SIDEWAYS_MEADOW_SOURCE_RADIUS").ok().as_deref(),
-    )?;
     let field = MeadowField {
         origin: heightfield.origin,
         cell: heightfield.cell,
@@ -141,8 +187,8 @@ pub fn build(
         seed: (vegetation.seed ^ (vegetation.seed >> 32)) as u32,
         growth: vegetation.grass_scale(),
         dry_season,
-        radius,
-        fade_start,
+        radius: source_range.radius,
+        fade_start: source_range.fade_start,
         geometry,
     };
     field.validate()?;
@@ -164,6 +210,7 @@ pub fn build(
         "blade_budget_scope":"Authored ribbons per unchanged world patch; reduced budgets sample existing anchors across each wind group/prototype and widen only transverse width. Actual source/LOD/atlas/substrate recook; silhouette union and optical parity require visual acceptance.",
         "terrain_samples":valid, "terrain_dimensions":[field.width,field.height], "terrain_bytes":bytes,
         "shared_vertex_bytes":geometry_bytes, "radius_metres":field.radius, "fade_start_metres":field.fade_start,
+        "authored_source_band":source_range.metadata(override_radius.as_deref()),
         "growth_scale":field.growth, "dry_season":dry_season, "placement":"GPU world-cell habitat, native triangle height and road clearance",
         "wind":"four GPU angle groups per patch; each blade bends about its own fixed root; current and previous pose share geometry",
         "material_variation":"stable world-space fresh/olive/dry patches plus small per-root and blade-height pigment variation; shared across source LODs",
@@ -199,13 +246,40 @@ mod tests {
     }
     #[test]
     fn source_range_preserves_reference_and_rejects_invalid_overrides() {
-        assert_eq!(source_range(false, None).unwrap(), (100.0, 80.0));
-        assert_eq!(source_range(true, None).unwrap(), (80.0, 60.0));
-        assert_eq!(source_range(true, Some("100")).unwrap(), (100.0, 80.0));
+        assert_eq!(source_range(false, None, None).unwrap(), SourceRange { radius:100.0, fade_start:80.0, origin:"default" });
+        assert_eq!(source_range(true, None, None).unwrap(), SourceRange { radius:80.0, fade_start:60.0, origin:"default" });
+        assert_eq!(source_range(true, Some("100"), None).unwrap(), SourceRange { radius:100.0, fade_start:80.0, origin:"SIDEWAYS_MEADOW_SOURCE_RADIUS" });
         for invalid in ["NaN", "inf", "-1", "0", "59", "101", "no"] {
-            assert!(source_range(true, Some(invalid)).is_err());
+            assert!(source_range(true, Some(invalid), None).is_err());
         }
-        assert_eq!(source_range(true, Some("60")).unwrap(), (60.0, 40.0));
+        assert_eq!(source_range(true, Some("60"), None).unwrap(), SourceRange { radius:60.0, fade_start:40.0, origin:"SIDEWAYS_MEADOW_SOURCE_RADIUS" });
+    }
+    #[test]
+    fn explicit_source_band_overrides_legacy_radius_and_records_resolved_values() {
+        for radius in [None, Some("80"), Some("100"), Some("unused")] {
+            let band = source_range(true, radius, Some(" 40 , 50 ")).unwrap();
+            assert_eq!(band, SourceRange { radius:50.0, fade_start:40.0, origin:"SIDEWAYS_MEADOW_SOURCE_BAND" });
+            let metadata = band.metadata(radius);
+            assert_eq!(metadata["metres"], serde_json::json!([40.0,50.0]));
+            assert_eq!(metadata["origin"], "SIDEWAYS_MEADOW_SOURCE_BAND");
+            assert_eq!(metadata["ignored_legacy_radius"], serde_json::json!(radius));
+        }
+        let default = source_range(true, None, None).unwrap().metadata(None);
+        assert_eq!(default["metres"], serde_json::json!([60.0,80.0]));
+        assert_eq!(default["origin"], "default");
+        assert_eq!(default["ignored_legacy_radius"], serde_json::Value::Null);
+    }
+    #[test]
+    fn explicit_source_band_is_bounded_and_requires_a_replacement() {
+        assert!(source_range(false, None, Some("40,50")).is_err());
+        for invalid in ["", "40", "40;50", ",50", "40,", "40,50,60", "40,50,",
+            "NaN,50", "40,NaN", "-inf,50", "40,inf", "-1,50", "50,50", "51,50",
+            "0,9.99", "40,100.01"] {
+            assert!(source_range(true, None, Some(invalid)).is_err(), "accepted {invalid:?}");
+        }
+        for band in ["0,10", "40,50", "60,80", "80,100"] {
+            assert!(source_range(true, None, Some(band)).is_ok(), "rejected {band:?}");
+        }
     }
     fn chunk() -> Chunk {
         Chunk {

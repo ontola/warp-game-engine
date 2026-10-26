@@ -90,6 +90,13 @@ not voxel rendering. Use `-MeadowAggregate:$false` for the source-only reference
 An explicit switch overrides inherited `KERN_MEADOW_AGGREGATE`, then the launcher
 default applies. `SIDEWAYS_MEADOW_SOURCE_RADIUS=100` retains the previous source
 range for comparisons; valid values are60..100m. Captures report actual settings.
+For an opt-in earlier handoff, `SIDEWAYS_MEADOW_SOURCE_BAND=40,50` sets independent
+start/end metres and takes precedence over an inherited source-radius override.
+It requires the aggregate, accepts finite `0 <= start < end` with `10 <= end <= 100`,
+and leaves the 160–180 m outer fade unchanged. Unset it to restore the existing
+radius-override/default behavior (normally 60–80 m). Captures record the authored pair and its origin; the live grass
+distance control still scales both the source band and outer fade together.
+This comparison setting has no visual or performance acceptance yet.
 The current iteration improves coverage but retains a faint grid pattern on
 some distant slopes; it is not a complete pop-in or120FPS solution. See the
 [r39 results and limits](../../engine/docs/meadow-distance-r39.md).

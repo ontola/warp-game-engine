@@ -970,9 +970,15 @@ impl App {
         self.debug.ingest(&drain,self.rendered);
         let Some(profile)=&mut self.frame_profile else{return;};
         for sample in &drain.samples {
+            let intervals:Vec<_>=sample.intervals.iter().map(|interval|serde_json::json!({
+                "name":interval.name,"start_ms":interval.start_ms,"end_ms":interval.end_ms,
+                "parent":interval.parent,"view_index":interval.view_index})).collect();
+            let view_pass_ms:Vec<_>=sample.view_pass_ms().into_iter().map(|(view_index,passes)|
+                serde_json::json!({"view_index":view_index,"gpu_pass_ms":passes})).collect();
             profile.record(serde_json::json!({"kind":"gpu_frame","frame_id":sample.frame_id,"render_sequence":sample.render_sequence,
                 "gpu_pass_ms":sample.gpu_ms,"instrumented_gpu_ms":sample.instrumented_gpu_ms,"covered_interval_ms":sample.covered_interval_ms,
                 "covered_union_ms":sample.covered_union_ms,
+                "gpu_pass_intervals":intervals,"gpu_view_pass_ms":view_pass_ms,
                 "output_size":sample.output_size,"views":sample.views,"received_call_id":call_id}));
         }
         profile.record(serde_json::json!({"kind":"gpu_status","call_id":call_id,"round":self.race.round,"pending":drain.pending,

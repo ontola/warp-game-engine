@@ -1317,7 +1317,7 @@ impl MeadowRenderer {
         &self, gpu:&Gpu, enc:&mut wgpu::CommandEncoder, index:usize, size:(u32,u32),
         scene:&wgpu::BindGroup, bindings:&[(u32,wgpu::BindingResource<'_>)],
         hdr:&wgpu::TextureView, opaque_depth:&wgpu::Texture,
-        times:[Option<(&wgpu::QuerySet,u32)>;8], motion:bool,
+        times:[Option<(&wgpu::QuerySet,u32)>;10], motion:bool,
         options:crate::debug_settings::DebugRenderOptions,
     )->Result<wgpu::Buffer,String> {
         if !self.skip_hidden_shade {return Err("hidden meadow preparation is disabled".into());}
@@ -1336,7 +1336,7 @@ impl MeadowRenderer {
         bindings: &[(u32, wgpu::BindingResource<'_>)],
         hdr: &wgpu::TextureView,
         opaque_depth: &wgpu::Texture,
-        times: [Option<(&wgpu::QuerySet, u32)>; 8],
+        times: [Option<(&wgpu::QuerySet, u32)>; 10],
         motion: bool,
         options: crate::debug_settings::DebugRenderOptions,
     ) -> Result<(), String> {
@@ -1352,7 +1352,7 @@ impl MeadowRenderer {
         bindings: &[(u32, wgpu::BindingResource<'_>)],
         hdr: &wgpu::TextureView,
         opaque_depth: &wgpu::Texture,
-        times: [Option<(&wgpu::QuerySet, u32)>; 8],
+        times: [Option<(&wgpu::QuerySet, u32)>; 10],
         motion: bool,
         options: crate::debug_settings::DebugRenderOptions,
         prepare_only: bool,
@@ -1714,7 +1714,7 @@ impl MeadowRenderer {
                     label: Some(if depth {
                         "meadow aggregate depth"
                     } else {
-                        "meadow aggregate shading"
+                        "meadow aggregate material"
                     }),
                     color_attachments: &attachments,
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -1725,11 +1725,11 @@ impl MeadowRenderer {
                         }),
                         stencil_ops: None,
                     }),
-                    timestamp_writes: times[3].filter(|_| depth).map(|(query_set, i)| {
+                    timestamp_writes: times[if depth { 3 } else { 8 }].map(|(query_set, i)| {
                         wgpu::RenderPassTimestampWrites {
                             query_set,
-                            beginning_of_pass_write_index: depth.then_some(i),
-                            end_of_pass_write_index: None,
+                            beginning_of_pass_write_index: Some(i),
+                            end_of_pass_write_index: Some(i + 1),
                         }
                     }),
                     occlusion_query_set: None,
@@ -1798,10 +1798,10 @@ impl MeadowRenderer {
                         },
                     })],
                     depth_stencil_attachment: None,
-                    timestamp_writes: times[3].map(|(query_set, i)| {
+                    timestamp_writes: times[9].map(|(query_set, i)| {
                         wgpu::RenderPassTimestampWrites {
                             query_set,
-                            beginning_of_pass_write_index: None,
+                            beginning_of_pass_write_index: Some(i),
                             end_of_pass_write_index: Some(i + 1),
                         }
                     }),
