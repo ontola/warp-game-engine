@@ -199,6 +199,11 @@ impl WorldField {
             for a in 0..2 { grid_min[a] = grid_min[a].min(low[a]); grid_max[a] = grid_max[a].max(high[a]); }
             rectangles.push([low, high]);
         }
+        // Coarse empty-space certificates require real dyadic parents, not
+        // merely increasing cell sizes. Reject before any source is omitted.
+        if !crate::voxel_forest::valid_skip_levels(&packed.forest, true) {
+            return Err("world foliage requires a complete dyadic occupancy hierarchy for empty-space traversal".into());
+        }
         let dimensions64: [u64; 2] = std::array::from_fn(|a| (i64::from(grid_max[a]) - i64::from(grid_min[a]) + 1) as u64);
         let grid_count = dimensions64[0].checked_mul(dimensions64[1]).ok_or("world foliage grid size overflow")?;
         if grid_count > config.max_grid_cells as u64 { return Err("world foliage grid-cell budget exceeded".into()); }
@@ -350,5 +355,29 @@ mod tests {
         let mut bad_source=source;bad_source[0].flags=PART_WIND;
         assert!(WorldField::build(&[asset()],&bindings(1),&bad_source,Default::default()).is_err());
         assert_eq!(bytemuck::bytes_of(&source[0]),baseline);
+    }
+
+    #[test]
+    fn world_rejects_missing_and_non_dyadic_parents_before_source_publication() {
+        let source = [instance(Vec3::ZERO)];
+        let before = bytemuck::bytes_of(&source[0]).to_vec();
+        let mut complete = asset();
+        complete.levels.push(VoxelLevel { cell_size: 1.0, dimensions: [1,2,1],
+            voxels: vec![complete.levels[0].voxels[0].clone()] });
+        assert!(WorldField::build(&[complete.clone()], &bindings(1), &source, WorldConfig::default()).is_ok());
+        let mut missing = complete.clone();
+        missing.levels[1].voxels.clear();
+        let mut non_dyadic = complete.clone();
+        non_dyadic.levels[1].cell_size = 1.1;
+        let mut wrong_dimensions = complete;
+        wrong_dimensions.levels[1].dimensions[1] = 3;
+        for malformed in [missing, non_dyadic, wrong_dimensions] {
+            // Legal standalone density assets can still be sampled without
+            // acceleration; the world path must not trust them as skip proofs.
+            assert!(pack_assets(std::slice::from_ref(&malformed), Default::default()).is_ok());
+            let error = WorldField::build(&[malformed], &bindings(1), &source, WorldConfig::default()).unwrap_err();
+            assert!(error.contains("dyadic occupancy hierarchy"), "{error}");
+        }
+        assert_eq!(bytemuck::bytes_of(&source[0]), before);
     }
 }

@@ -229,7 +229,7 @@ pub(crate) fn shader_source() -> String {
 fn valid_empty_skip_hierarchy(forest: &crate::foliage_volume_data::GpuForest) -> bool {
     valid_skip_levels(forest, false)
 }
-fn valid_skip_levels(forest: &crate::foliage_volume_data::GpuForest, all_levels: bool) -> bool {
+pub(crate) fn valid_skip_levels(forest: &crate::foliage_volume_data::GpuForest, all_levels: bool) -> bool {
     let mut checked = std::collections::HashSet::new();
     for tree in &forest.instances {
         let count = tree.meta[2] as usize;

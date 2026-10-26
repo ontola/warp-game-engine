@@ -7,6 +7,19 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## Latest status — r50 and requested playtest
+
+Main was pushed in 79cb339 (engine/game split, Godot removal, docs and accumulated
+engine work). See [r50 results](docs/world-foliage-r50.md). The tiny world-volume
+GPU fixture replaces 64 trees correctly but is rejected for cost/blur: 23.779 ms
+integration at 128x128. Do not scale/promote it on mechanical correctness alone.
+
+The user explicitly requested a playtest after the stopped-playtest instruction
+below. It now runs the validated r49 candidate E at 4K output/one player/DLSS
+Quality; world volumes remain off. Launch manifest:
+`games/sideways/build/dev-runs/20261026T160601393Z-ef7609c3/iteration.json`.
+Leave this playtest running and do not compete for its GPU.
+
 ## Publication and in-progress world foliage — 26 October 2026
 
 The local engine/game separation, retired Godot files, diagnostics and r49
