@@ -1,6 +1,7 @@
 //! Rebuild the current scene at a verified F12 stage/camera and applied sky.
 //! Diagnostic views omit cars and HUD; they are not gameplay/performance claims.
-//! `--cpu-only` checks the stage/camera contract without creating a GPU.
+//! `--cpu-only` checks stage/camera and captured controls without creating a GPU.
+//! `--no-meadow` explicitly overrides restored controls to isolate the ground.
 #![allow(dead_code)]
 #[path="../src/car_look.rs"] mod car_look;
 #[path="../src/car_model.rs"] mod car_model;
@@ -13,11 +14,13 @@
 #[path="../src/procedural_rocks.rs"] mod procedural_rocks;
 #[path="../src/roadside_crowds.rs"] mod roadside_crowds;
 #[path="../src/tree_assets.rs"] mod tree_assets;
+#[path="../src/tree_tuning.rs"] mod tree_tuning;
 #[path="../src/voxel_tree_patch.rs"] mod voxel_tree_patch;
 #[path="../src/visuals.rs"] mod visuals;
 
 use glam::{DVec3, Mat4, Vec2, Vec3};
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, BakedSky, SolarState};
+use render::debug_settings::DebugRenderOptions;
 use render::{Camera, Gpu, Lighting, Renderer, ViewRect};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -29,6 +32,116 @@ fn number(v:&Value)->Result<f32,String> {
 }
 fn vector(v:&Value)->Result<Vec3,String> {
     Ok(Vec3::new(number(&v[0])?,number(&v[1])?,number(&v[2])?))
+}
+
+fn rgb(v:&Value)->Result<[f32;3],String> {
+    if v.as_array().is_none_or(|v|v.len()!=3) {return Err("captured RGB must contain exactly three numbers".into());}
+    Ok(vector(v)?.to_array())
+}
+
+struct CapturedControls {
+    options: DebugRenderOptions,
+    trees: Option<tree_tuning::Settings>,
+    historical_fields: Vec<&'static str>,
+}
+
+// Historical captures predate these controls. Freeze their neutral behavior
+// here rather than importing today's saved game preset or renderer defaults.
+// An absent field is recorded; a present but malformed field is an error.
+fn captured_controls(capture:&Value)->Result<CapturedControls,String> {
+    let debug=capture["render"].get("engine_debug");
+    if debug.is_some_and(|v|!v.is_object()) {return Err("captured engine_debug must be an object".into());}
+    let mut historical_fields=Vec::new();
+    let mut field=|key:&'static str| {
+        let value=debug.and_then(|d|d.get(key));
+        if value.is_none(){historical_fields.push(key);}
+        value
+    };
+    let boolean=|v:Option<&Value>|->Result<bool,String> {
+        v.map(|v|v.as_bool().ok_or_else(||"captured feature toggle must be boolean".into())).unwrap_or(Ok(true))
+    };
+    let scalar=|v:Option<&Value>|->Result<f32,String> {v.map(number).unwrap_or(Ok(1.0))};
+    let mut options=DebugRenderOptions {
+        meadow_enabled:boolean(field("meadow"))?,
+        headlights_enabled:boolean(field("headlights"))?,
+        transparency_enabled:boolean(field("transparency"))?,
+        exhaust_enabled:boolean(field("exhaust"))?,
+        wheel_particles_enabled:boolean(field("wheel_particles"))?,
+        bloom_enabled:false,bloom_strength:0.0,
+        meadow_distance_scale:scalar(field("grass_distance_scale"))?,
+        meadow_lod_pixels:scalar(field("grass_lod_pixels"))?,
+        meadow_size_scale:scalar(field("grass_size_scale"))?,
+        meadow_density:scalar(field("grass_patch_count_fraction"))?,
+        meadow_color_multiplier:field("grass_color_multiplier").map(rgb).unwrap_or(Ok([1.0;3]))?,
+    };
+    if let Some(bloom)=field("bloom") {
+        options.bloom_enabled=bloom["enabled"].as_bool().ok_or("captured bloom lacks boolean enabled")?;
+        options.bloom_strength=number(&bloom["strength"])?;
+        if number(&bloom["threshold_exposed"])?!=render::bloom::THRESHOLD
+            || number(&bloom["knee_exposed"])?!=render::bloom::KNEE
+        {return Err("captured bloom threshold/knee differ from this renderer".into());}
+        if let Some(active)=bloom.get("active") {
+            if active.as_bool()!=Some(options.bloom_enabled&&options.bloom_strength>0.0) {
+                return Err("captured bloom active state contradicts its settings".into());
+            }
+        }
+    }
+    options.validate()?;
+    let trees=field("tree_applied").map(|t| {
+        let settings=tree_tuning::Settings {size_scale:number(&t["size_scale"])?,density:number(&t["density"])?,
+            color_multiplier:rgb(&t["color_multiplier"])?};
+        settings.validate()?;Ok::<_,String>(settings)
+    }).transpose()?;
+    Ok(CapturedControls{options,trees,historical_fields})
+}
+
+fn options_metadata(o:DebugRenderOptions)->Value {
+    json!({"meadow":o.meadow_enabled,"headlights":o.headlights_enabled,"transparency":o.transparency_enabled,
+        "exhaust":o.exhaust_enabled,"wheel_particles":o.wheel_particles_enabled,
+        "grass_distance_scale":o.meadow_distance_scale,"grass_lod_pixels":o.meadow_lod_pixels,
+        "grass_size_scale":o.meadow_size_scale,"grass_patch_count_fraction":o.meadow_density,
+        "grass_color_multiplier":o.meadow_color_multiplier,
+        "bloom":{"enabled":o.bloom_enabled,"strength":o.bloom_strength,
+            "threshold_exposed":render::bloom::THRESHOLD,"knee_exposed":render::bloom::KNEE}})
+}
+
+fn replay_options(captured:DebugRenderOptions,no_meadow:bool)->DebugRenderOptions {
+    DebugRenderOptions{meadow_enabled:captured.meadow_enabled&&!no_meadow,..captured}
+}
+
+fn restore_trees(scene:&mut render::scene::Scene,settings:Option<tree_tuning::Settings>)->Result<Value,String> {
+    let Some(settings)=settings else {
+        return Ok(json!({"origin":"historical authored source; tree_applied absent","applied":false}));
+    };
+    // This diagnostic has no simulated cars/colliders. Reuse exactly the game
+    // source transform/subset/material transaction before canopy/shadow build.
+    let mut physics=sideways::physics::Physics::new();
+    let baseline=tree_tuning::Baseline::prepare_optional_stage(scene,&mut physics,settings)?;
+    Ok(json!({"origin":"render.engine_debug.tree_applied","applied":true,
+        "source":tree_tuning::Baseline::stage_metadata(baseline.as_ref(),settings),
+        "physics":"not reconstructed in this static diagnostic; zero matched collider count is intentional"}))
+}
+
+fn validate_source_recipe(capture:&Value,grass:Option<&Value>,trees:&Value)->Result<(),String> {
+    // These source controls remain process construction inputs. Refuse a
+    // different recipe instead of changing process globals or hiding a mismatch.
+    for (name,expected,actual,keys) in [
+        ("procedural_grass",&capture["render"]["procedural_grass"],grass,&[
+            "mode","recipe","source_blades_per_root","blade_budget","blade_width_multiplier",
+            "triangles_per_variant_lod","radius_metres","fade_start_metres","growth_scale","dry_season"] as &[_]),
+        ("tree_source",&capture["render"]["tree_source"],Some(trees),&["recipe","fullness","source_archetypes"] as &[_]),
+    ] {
+        if expected.is_null(){continue;}
+        let actual=actual.ok_or_else(||format!("captured {name} exists but reconstructed source is absent"))?;
+        for key in keys {
+            if let Some(value)=expected.get(*key) {
+                if actual.get(*key)!=Some(value) {
+                    return Err(format!("captured {name}.{key} differs from reconstructed source: capture={value}, replay={}; restore the captured construction environment",actual[*key]));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn sun_focus_point(text:&str)->Result<Vec3,String> {
@@ -187,6 +300,27 @@ fn captured_headlights(capture:&Value)->Result<Vec<render::headlights::SpotLight
         inner_angle_radians:number(&l["inner_angle_radians"])?,outer_angle_radians:number(&l["outer_angle_radians"])?
     })).collect::<Result<Vec<_>,String>>()?;
     render::headlights::validate(&lights)
+}
+
+fn captured_local_lights(capture:&Value)->Result<Vec<render::headlights::LocalLight>,String> {
+    let Some(lamps)=capture["render"].get("local_lights") else {return Ok(Vec::new());};
+    let rows=lamps["lights"].as_array().ok_or("captured local lights lack light list")?;
+    if lamps["enabled"].as_bool()!=Some(!rows.is_empty()) {
+        return Err("inconsistent captured local light enable state".into());
+    }
+    if lamps.get("vehicle_count").is_some() || lamps.get("exhaust_count").is_some() {
+        let vehicle=lamps["vehicle_count"].as_u64().ok_or("invalid captured local vehicle light count")?;
+        let exhaust=lamps["exhaust_count"].as_u64().ok_or("invalid captured local exhaust light count")?;
+        if vehicle.checked_add(exhaust)!=Some(rows.len() as u64) {
+            return Err("captured local light counts do not sum to the light list".into());
+        }
+    }
+    let lights=rows.iter().map(|l|Ok(render::headlights::LocalLight {
+        position:vector(&l["position"])?,direction:vector(&l["direction"])?,intensity_cd:vector(&l["intensity_cd"])?,
+        range_m:number(&l["range_m"])?,inner_cos:number(&l["inner_cos"])?,outer_cos:number(&l["outer_cos"])?,
+        source_radius_m:number(&l["source_radius_m"])?,
+    })).collect::<Result<Vec<_>,String>>()?;
+    render::headlights::validate_local(&lights)
 }
 
 struct ReplaySky {baked:Arc<BakedSky>,metadata:Value}
@@ -350,7 +484,7 @@ fn context(capture:&Value)->Result<(sideways::stage::Stage,Camera,Lighting,rende
     Ok((stage,camera,light,wind,sky))
 }
 
-fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[String],yaw_degrees:f32,shadow_probe:bool,approach:Option<&[f32]>,world_terrain_probe:bool,sun_focus:Option<Vec3>,paged_foliage_probe:bool)->Result<(),String> {
+fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[String],yaw_degrees:f32,shadow_probe:bool,approach:Option<&[f32]>,world_terrain_probe:bool,sun_focus:Option<Vec3>,paged_foliage_probe:bool,no_meadow:bool)->Result<(),String> {
     validate_probes(shadow_probe,world_terrain_probe,paged_foliage_probe)?;
     let paged_foliage_enabled=std::env::var("KERN_PAGED_FOLIAGE_SUN").as_deref()==Ok("1");
     let capture:Value=serde_json::from_slice(&std::fs::read(capture_path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
@@ -363,13 +497,20 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
     let player=capture["state"]["view_order"][0].as_u64().ok_or("missing captured view order")? as usize;
     let focus=vector(&capture["state"]["players"][player]["position"])?;
     let headlights=captured_headlights(&capture)?;
+    let local_lights=captured_local_lights(&capture)?;
+    let controls=captured_controls(&capture)?;
+    let effective_options=replay_options(controls.options,no_meadow);
     for setting in overrides {light.set(setting)?;}
     if cpu_only {println!("stage/camera/sky verified: noise={}, detail={}, camera={:?}, procedural={}, exposure={}, fog={:?}",
-        stage.noise_seed,stage.detail_seed,camera.pos,sky.is_some(),light.ev100,[light.fog_start,light.fog_end,light.fog_density]);return Ok(());}
+        stage.noise_seed,stage.detail_seed,camera.pos,sky.is_some(),light.ev100,[light.fog_start,light.fog_end,light.fog_density]);
+        println!("captured controls validated: {:?}, applied trees={:?}, local lights={}, historical fields={:?}; source construction not checked in --cpu-only",
+            effective_options,controls.trees,local_lights.len(),controls.historical_fields);return Ok(());}
     if out.exists(){return Err("output directory must be fresh".into());}
     std::fs::create_dir_all(out).map_err(|e|e.to_string())?;
     let looks=car_look::Looks::load(None,vec![])?;
     let mut built=visuals::build_live(&stage,&[],&[camera.pos],&looks)?;
+    validate_source_recipe(&capture,built.procedural_grass.as_ref(),&built.tree_source)?;
+    let tree_replay=restore_trees(&mut built.scene,controls.trees)?;
     if let Some(expected)=capture["state"]["grass_detail_profile"].as_str() {
         if expected!=built.scene.grass_detail.label(){return Err(format!("grass profile differs: capture={expected}, replay={}; set SIDEWAYS_GRASS_DETAIL before replay",built.scene.grass_detail.label()));}
     }
@@ -392,7 +533,9 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
     let terrain_cpu_build_ms=terrain_cpu.as_ref().map(|_|terrain_cpu_start.elapsed().as_secs_f64()*1000.0);
     let gpu=Gpu::new()?;
     let renderer=Renderer::new(&gpu,&built.scene,&light);
+    renderer.set_debug_options(effective_options)?;
     renderer.set_headlights(&headlights)?;
+    renderer.set_local_lights(&local_lights)?;
     renderer.set_lighting_focus(&[focus])?;
     // Diagnostic raster-shadow placement only. The shared canopy/lighting
     // focus still follows the captured player; this stays fixed on approach.
@@ -502,7 +645,7 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
             "camera_sun_visibility":stats.camera_sun_visibility,"clusters":stats.clusters,"triangles":stats.triangles}));
       }
     }
-    let mut report=json!({"schema":2,"capture":capture_path,"stage_verified":true,"lit_only":lit_only,"shadow_probe":shadow_probe,"world_terrain_probe":world_terrain_probe,"diagnostic_light_overrides":overrides,
+    let mut report=json!({"schema":3,"capture":capture_path,"stage_verified":true,"lit_only":lit_only,"shadow_probe":shadow_probe,"world_terrain_probe":world_terrain_probe,"diagnostic_light_overrides":overrides,
         "stage_noise_seed":stage.noise_seed,"stage_detail_seed":stage.detail_seed,
         "source_camera":capture["views"][0]["camera"],
         "camera":{"position":camera.pos.to_array(),"target":camera.target.to_array(),"fov_y":camera.fov_y,"near":camera.near},
@@ -527,10 +670,19 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
         "compact_canopy_support":std::env::var("KERN_CANOPY_COMPACT_SUPPORT").is_ok_and(|v|v=="1"),"size":[width,height],"adapter":gpu.info.name,
         "source_image":capture["capture"]["png"],"overlay_meshes":overlays,"rows":rows,
         "sky_replay":sky.as_ref().map(|s|&s.metadata),"grass_detail_profile":built.scene.grass_detail.label(),
-        "headlights_replay":capture["render"]["headlights"],
-        "limitations":["native diagnostic reconstruction, not original DLSS frame","no cars or HUD; captured lamp poses preserved, car self-shadow omitted",
+        "headlights_replay":capture["render"]["headlights"]});
+    report["limitations"]=json!(["native diagnostic reconstruction, not original DLSS frame","no cars or HUD; captured lamp poses preserved, car self-shadow omitted",
+            "no visible exhaust, wheel particles or emissive car geometry; their captured feature toggles cannot recreate omitted dynamic geometry",
+            "source recipe settings are checked where recorded; external render flags/shader versions still require the captured environment, not inferred from saved defaults",
             "stage-only round history verified against both recorded stage seeds, with exact camera, applied sky, sun, exposure, fog and wind phase",
-            "held-camera diagnostic timings are not gameplay FPS"]});
+            "held-camera diagnostic timings are not gameplay FPS"]);
+    report["local_lights_replay"]=json!({"captured":capture["render"]["local_lights"],"restored_count":local_lights.len(),
+        "origin":if capture["render"].get("local_lights").is_some(){"captured emitters"}else{"historical absent; no emitters invented"}});
+    report["vegetation_replay"]=json!({"trees":tree_replay,"captured_options":options_metadata(controls.options),
+        "effective_options":options_metadata(renderer.debug_options()),"no_meadow_override":no_meadow,
+        "historical_neutral_fields":controls.historical_fields,"constructed_grass":built.procedural_grass,
+        "constructed_trees":built.tree_source,
+        "scope":"Applied tree settings only, before renderer resource build; captured grass controls and feature toggles. Pending UI and saved presets are never replay inputs. Absent historical controls use explicitly recorded authored/neutral behavior; bloom absent means off."});
     report["paged_foliage_probe"]=json!(paged_foliage_probe);
     report["paged_foliage_probe_contract"]=json!("debug25: source-alpha blocked black, clear white, missing magenta. Resident counts current requests, not total occupied cache slots. Missing pages remain unresolved, not assumed clear");
     report["foliage_page_warmup"]=json!({"enabled":paged_foliage_enabled,"minimum_frames":3,"maximum_frames":if paged_foliage_enabled {40}else{3},
@@ -542,18 +694,18 @@ fn run(capture_path:&Path,out:&Path,cpu_only:bool,lit_only:bool,overrides:&[Stri
 fn main() {
     let args:Vec<_>=std::env::args().skip(1).collect();
     let result=(|| {
-        let path=args.first().ok_or("usage: capture_replay F12.json FRESH_DIR [--cpu-only] [--lit-only]")?;
+        let path=args.first().ok_or("usage: capture_replay F12.json FRESH_DIR [--cpu-only] [--lit-only] [--no-meadow]")?;
         let out=args.get(1).ok_or("missing fresh output directory")?;
         let mut settings=Vec::new();let mut yaw=0.0f32;let mut approach=None;let mut sun_focus=None;let mut i=2;
         while i<args.len() {match args[i].as_str() {
-            "--cpu-only"|"--lit-only"|"--shadow-probe"|"--world-terrain-probe"|"--paged-foliage-probe"=>{},
+            "--cpu-only"|"--lit-only"|"--shadow-probe"|"--world-terrain-probe"|"--paged-foliage-probe"|"--no-meadow"=>{},
             "--yaw-deg"=>{i+=1;yaw=args.get(i).ok_or("--yaw-deg needs an angle")?.parse().map_err(|_|"invalid yaw angle")?;},
             "--set"=>{i+=1;settings.push(args.get(i).ok_or("--set needs key=value")?.clone());},
             "--approach-m"=>{if approach.is_some(){return Err("--approach-m may only be supplied once".into());}i+=1;approach=Some(approach_distances(args.get(i).ok_or("--approach-m needs comma-separated metres")?)?);},
             "--sun-focus"=>{if sun_focus.is_some(){return Err("--sun-focus may only be supplied once".into());}i+=1;sun_focus=Some(sun_focus_point(args.get(i).ok_or("--sun-focus needs x,y,z")?)?);},
             _=>return Err("unknown replay arguments".into()),
         }i+=1;}
-        run(&PathBuf::from(path),&PathBuf::from(out),args.iter().any(|s|s=="--cpu-only"),args.iter().any(|s|s=="--lit-only"),&settings,yaw,args.iter().any(|s|s=="--shadow-probe"),approach.as_deref(),args.iter().any(|s|s=="--world-terrain-probe"),sun_focus,args.iter().any(|s|s=="--paged-foliage-probe"))
+        run(&PathBuf::from(path),&PathBuf::from(out),args.iter().any(|s|s=="--cpu-only"),args.iter().any(|s|s=="--lit-only"),&settings,yaw,args.iter().any(|s|s=="--shadow-probe"),approach.as_deref(),args.iter().any(|s|s=="--world-terrain-probe"),sun_focus,args.iter().any(|s|s=="--paged-foliage-probe"),args.iter().any(|s|s=="--no-meadow"))
     })();
     if let Err(e)=result {eprintln!("capture replay: {e}");std::process::exit(1);}
 }
@@ -561,6 +713,116 @@ fn main() {
 #[cfg(test)]
 mod replay_tests {
     use super::*;
+    fn control_capture()->Value {
+        json!({"render":{"engine_debug":{
+            "meadow":true,"headlights":false,"transparency":false,"exhaust":true,"wheel_particles":false,
+            "grass_distance_scale":0.75,"grass_lod_pixels":4.0,"lod_pixels":0.5,
+            "grass_size_scale":2.0,"grass_patch_count_fraction":0.55,"grass_color_multiplier":[1.3,0.9,1.3],
+            "bloom":{"enabled":true,"active":true,"strength":0.04,"threshold_exposed":2.0,"knee_exposed":1.0},
+            "tree_applied":{"size_scale":1.5,"density":0.45,"color_multiplier":[1.0,1.15,0.9]},
+            "tree_pending":{"size_scale":0.5,"density":0.0,"color_multiplier":[0.25,0.25,0.25]},
+            "saved_vegetation_baseline":{"grass_patch_count_fraction":0.15,"tree_size_scale":0.75}
+        }}})
+    }
+    #[test]
+    fn captured_applied_vegetation_and_features_override_neutral_not_pending_or_saved_values() {
+        let c=captured_controls(&control_capture()).unwrap();
+        assert!(c.historical_fields.is_empty());
+        assert_eq!(c.trees,Some(tree_tuning::Settings{size_scale:1.5,density:0.45,color_multiplier:[1.0,1.15,0.9]}));
+        assert_eq!(c.options,DebugRenderOptions{meadow_enabled:true,headlights_enabled:false,
+            transparency_enabled:false,exhaust_enabled:true,wheel_particles_enabled:false,bloom_enabled:true,bloom_strength:0.04,
+            meadow_distance_scale:0.75,meadow_lod_pixels:4.0,meadow_size_scale:2.0,meadow_density:0.55,
+            meadow_color_multiplier:[1.3,0.9,1.3]});
+        let off=replay_options(c.options,true);
+        assert_eq!(off,DebugRenderOptions{meadow_enabled:false,..c.options});
+        assert_eq!(replay_options(c.options,false),c.options);
+        assert_eq!(options_metadata(off)["grass_lod_pixels"],4.0);
+    }
+    #[test]
+    fn missing_historical_controls_remain_authored_and_do_not_invent_bloom_or_saved_presets() {
+        let mut capture=control_capture();
+        let debug=capture["render"]["engine_debug"].as_object_mut().unwrap();
+        debug.retain(|k,_|k=="tree_pending"||k=="saved_vegetation_baseline");
+        let historical=captured_controls(&capture).unwrap();
+        assert!(historical.trees.is_none());
+        assert_eq!(historical.options,DebugRenderOptions{bloom_enabled:false,bloom_strength:0.0,..Default::default()});
+        assert!(historical.historical_fields.contains(&"tree_applied"));
+        assert!(historical.historical_fields.contains(&"grass_patch_count_fraction"));
+        assert!(historical.historical_fields.contains(&"bloom"));
+        assert_eq!(historical.options,captured_controls(&json!({"render":{}})).unwrap().options);
+        let mut scene=render::scene::Scene::default();
+        assert_eq!(restore_trees(&mut scene,None).unwrap()["applied"],false);
+    }
+    #[test]
+    fn present_invalid_controls_fail_instead_of_using_current_defaults() {
+        for (key,value) in [("meadow",json!(1)),("grass_size_scale",json!(2.1)),
+            ("grass_lod_pixels",json!(0.0)),("grass_patch_count_fraction",Value::Null),
+            ("grass_color_multiplier",json!([1,1,1,1])),("tree_applied",json!({"size_scale":1.5})),
+            ("bloom",json!({"enabled":true,"strength":0.04})),
+            ("bloom",json!({"enabled":true,"active":false,"strength":0.04,"threshold_exposed":2,"knee_exposed":1})),
+            ("bloom",json!({"enabled":true,"strength":0.04,"threshold_exposed":3,"knee_exposed":1}))] {
+            let mut broken=control_capture();broken["render"]["engine_debug"][key]=value;
+            assert!(captured_controls(&broken).is_err(),"{key}");
+        }
+        let mut broken=control_capture();broken["render"]["engine_debug"]=Value::Null;
+        assert!(captured_controls(&broken).is_err());
+    }
+    #[test]
+    fn tree_replay_applies_size_pigment_and_population_before_renderer_construction() {
+        use render::cluster::{ClusterMesh,Part,Vertex};
+        use render::scene::{GeometryCategory,Material,ALPHA_TEST};
+        let mut scene=render::scene::Scene::default();
+        let material=scene.add_material(Material{tint:[0.2,0.4,0.6],flags:ALPHA_TEST,
+            layer:-1,roughness:1.0,scale:1.0,metal:0.0});
+        let vertices=[[-1.,0.,0.],[1.,0.,0.],[0.,2.,0.]].map(|pos|Vertex{pos,normal:[0.,0.,1.],uv:[0.;2]});
+        let mesh=scene.add_mesh(&ClusterMesh::build(&[Part{vertices:&vertices,indices:&[0,1,2],material}]));
+        let root=Vec3::new(7.,2.,-3.);
+        scene.add_classified_instance(mesh,glam::Affine3A::from_translation(root),GeometryCategory::Trees);
+        scene.mark_foliage();
+        let original=scene.instances[0];
+        let applied=tree_tuning::Settings{size_scale:1.5,density:1.,color_multiplier:[1.,1.15,0.9]};
+        let metadata=restore_trees(&mut scene,Some(applied)).unwrap();
+        let changed=scene.instances[0];
+        assert_eq!([changed.rows[0][3],changed.rows[1][3],changed.rows[2][3]],root.to_array());
+        assert_eq!(changed.rows[0][0],1.5);assert_eq!(changed.rows[1][1],1.5);
+        assert_eq!(changed.sphere[3],original.sphere[3]*1.5);
+        assert_eq!(scene.materials[material as usize].tint,[0.2,0.4*1.15,0.6*0.9]);
+        assert_eq!(metadata["source"]["selected_source_trees"],1);
+        restore_trees(&mut scene,Some(tree_tuning::Settings{density:0.,..Default::default()})).unwrap();
+        assert_eq!(scene.instances[0].cluster_count,0);
+        assert_eq!(scene.instances[0].flags&render::scene::FOLIAGE,0);
+    }
+    #[test]
+    fn construction_guard_rejects_different_blade_budget_and_crown_source() {
+        let grass=json!({"mode":"gpu_meadow_field","blade_budget":120,"radius_metres":80.0});
+        let trees=json!({"recipe":"stem_anchored_frond_expansion_v1","fullness":1.25});
+        let capture=json!({"render":{"procedural_grass":grass,"tree_source":trees}});
+        assert!(validate_source_recipe(&capture,Some(&grass),&trees).is_ok());
+        let mut bad=grass.clone();bad["blade_budget"]=json!(360);
+        assert!(validate_source_recipe(&capture,Some(&bad),&trees).is_err());
+        let mut bad=trees.clone();bad["fullness"]=json!(1.0);
+        assert!(validate_source_recipe(&capture,Some(&grass),&bad).is_err());
+        assert!(validate_source_recipe(&capture,None,&trees).is_err());
+        assert!(validate_source_recipe(&json!({"render":{}}),None,&trees).is_ok());
+    }
+    #[test]
+    fn local_light_capture_keeps_recorded_emitters_and_rejects_partial_or_inconsistent_data() {
+        let lamp=json!({"position":[1,2,3],"direction":[0,0,1],"intensity_cd":[2.5,0.02,0.0075],
+            "range_m":2.2,"inner_cos":0.866,"outer_cos":0.208,"source_radius_m":0.06});
+        let capture=json!({"render":{"local_lights":{"enabled":true,"vehicle_count":1,"exhaust_count":0,"lights":[lamp]}}});
+        let lights=captured_local_lights(&capture).unwrap();assert_eq!(lights.len(),1);
+        assert_eq!(lights[0].position,Vec3::new(1.,2.,3.));assert_eq!(lights[0].range_m,2.2);
+        assert_eq!(lights[0].intensity_cd,Vec3::new(2.5,0.02,0.0075));
+        for (key,value) in [("source_radius_m",Value::Null),("outer_cos",json!(1)),("intensity_cd",json!([-1,0,0]))] {
+            let mut bad=capture.clone();bad["render"]["local_lights"]["lights"][0][key]=value;
+            assert!(captured_local_lights(&bad).is_err(),"{key}");
+        }
+        let mut bad=capture.clone();bad["render"]["local_lights"]["vehicle_count"]=json!(2);
+        assert!(captured_local_lights(&bad).is_err());
+        let mut bad=capture.clone();bad["render"]["local_lights"]["enabled"]=json!(false);
+        assert!(captured_local_lights(&bad).is_err());
+        assert!(captured_local_lights(&json!({"render":{}})).unwrap().is_empty());
+    }
     #[test]
     fn paged_warmup_waits_for_updates_with_minimum_and_hard_limit() {
         for frames in 0..3 {assert!(!warmup_finished(true,frames,0));assert!(!warmup_finished(false,frames,0));}

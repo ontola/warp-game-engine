@@ -7,7 +7,27 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r51 saved baseline, vehicle lights and bloom
+## Latest status — r52 roadside terrain wedges
+
+See [r52 diagnosis and validation](docs/roadside-verge-r52.md). A 55 cm ditch
+was too narrow for the 2 m terrain grid, causing the repeated roadside pits
+and black headlight-shadow wedges in the user's F12 captures. It is replaced
+by a shallow 4 m smooth verge transition, preserving the drivable road/ruts.
+Flat-road grid waves drop from 344.8 mm to 8.5 mm. Matched native captures
+with grass on and off remove the large wedges at the reported location.
+The small jagged grass-clearance boundary remains separate work.
+
+F12 capture_replay now restores applied tree/grass/bloom/local-light controls
+and rejects mismatched source recipes; --no-meadow is a recorded diagnostic.
+38 simulation, 182 CLI and 19 replay tests passed; normal suites have three
+explicitly ignored diagnostics. Release game SHA256:
+`82d4d08a2973df43a411a25f221bb6b0bbeb26c9b51ea7b3de05373f36466921`.
+Evidence: `C:/dev/perf/warp-sideways-20261026/r52-roadside-terrain/`.
+Latest interactive playtest: PID 32728, first visible frame confirmed;
+`games/sideways/build/dev-runs/20261026T185740242Z-424ec09c/iteration.json`.
+Keep the interactive GPU free from competing fixtures.
+
+## Previous status — r51 saved baseline, vehicle lights and bloom
 
 See [r51 implementation and open checks](docs/local-lights-and-vegetation-r51.md).
 The user's tree/grass settings are saved in the Sideways data preset, applied
