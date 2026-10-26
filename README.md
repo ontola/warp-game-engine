@@ -37,6 +37,11 @@ The repeated four-player 4K-output route measures 32.16/40.35 ms with DLSS
 Quality and 27.67/33.93 ms with Performance in its two sections. These are
 medians of three run medians, not native 4K or typical-gameplay guarantees.
 See [the resolution sweep and per-pass costs](engine/docs/resolution-sweep-r55.md).
+The subsequent [opt-in grass handoff trial](engine/docs/meadow-band-r56.md)
+measures 26.95/33.35 ms with Performance, a 2.3-2.4% same-executable improvement.
+Both the 25 ms decision gate and 4 ms grass budget remain unmet; the next
+quality/target decision is pending. Renderer timing now identifies each view
+and the aggregate grass depth/material/illumination costs separately.
 World-grid traversal of shared plant volumes and early whole-owner replacement
 are experimental, disabled by default, and still require GPU/visual validation.
 

@@ -52,3 +52,33 @@ passed (one ignored in each). Its remote head was `34a2c73`; neither PR 4 nor
 PR 6 was merged. PR 6 remains opt-in on the trial branch, with raw visibility
 and depth parity explicitly unaccepted. The resolution sweep keeps all three
 experimental modes off and uses the pre-existing r54 executable unchanged.
+
+## Decision gate reached: steps 1-2 measured
+
+The [r55 resolution sweep](resolution-sweep-r55.md) completed nine runs, three
+per mode. Quality measured 32.157 / 40.346 ms in the two route sections,
+Balanced 29.893 / 36.418 ms, and Performance 27.669 / 33.933 ms. The historical
+48.80 ms baseline cannot be treated as a same-session speedup: identical-input
+Quality measurements shifted between sessions without GPU-clock/load evidence.
+
+The [r56 grass experiment](meadow-band-r56.md) completed six Performance runs
+with one new immutable executable: A/B/A/B/A/B. The 40-50 m band changes total
+GPU interval from 27.604 / 34.126 to 26.947 / 33.351 ms. Root-only grass totals
+change from 6.865 / 9.475 to 6.500 / 8.950 ms. Neither the approximately 25 ms
+decision gate nor the under-4-ms grass budget is met. Defaults remain unchanged.
+
+The engine now reports true per-view GPU scopes and aggregate depth, material
+and illumination children without double counting them. Atlas/terrain/source
+resources are already shared; projection, depth, coverage and lighting are
+view-dependent. Moving remaining world-space placement into a shared pool has
+not been implemented: its measured aggregate-placement cost is about 0.2 ms,
+not the multi-millisecond raster bottleneck. This is an explicit deferred item.
+
+Preview image checks found no gross missing coverage, but differences remain
+and moving transition/native-resolution acceptance is still pending. There is
+no basis for promoting the shorter band or Performance DLSS as defaults.
+
+Steps 3-4 and the remaining pass-sharing implementation in step 5 have **not**
+started. Discuss a reduced four-player quality tier while retaining the 120 FPS
+goal, or a 60 FPS milestone (16.67 ms, also not yet reached), before deeper
+renderer work. The current 120 FPS target has not been changed.
