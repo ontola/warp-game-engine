@@ -78,8 +78,15 @@ pub struct CasterCounts {
     pub skipped: u32,
 }
 
-fn class(instance: &GpuInstance, animated: bool) -> u32 {
+fn class(instance: &GpuInstance, animated: bool, frozen: bool) -> u32 {
     if instance.cluster_count == 0 || instance.flags & NO_SHADOW != 0 { return SKIPPED; }
+    // A tree past the wind freeze radius stands exactly at rest (wind.wgsl),
+    // so its depth is as static as a rock until the cameras are re-pinned.
+    if frozen && !animated && instance.flags & FOLIAGE != 0
+        && instance.flags & (LIVE_GRASS | WIND_GRASS | PART_WIND) == 0
+        && instance.category() == GeometryCategory::Trees {
+        return STATIC;
+    }
     // Include provenance as a conservative exclusion even if an asset omitted
     // its wind flag. SOLID alone is not dynamic: buildings/rocks use it too.
     if animated || instance.flags & (FOLIAGE | LIVE_GRASS | WIND_GRASS | PART_WIND) != 0
@@ -93,6 +100,8 @@ fn class(instance: &GpuInstance, animated: bool) -> u32 {
 struct Partition {
     sources: Vec<GpuInstance>,
     animated: Vec<bool>,
+    /// Trees beyond the freeze radius of every pinned camera.
+    frozen: Vec<bool>,
     /// Header [static count, dynamic count, static offset, dynamic offset],
     /// N class words, N static-owner slots, N dynamic-owner slots. Offsets are
     /// u32 WORD offsets. The unused tail of each list is zero and never read.
@@ -116,7 +125,7 @@ impl Partition {
         if let Some(animation) = &scene.baked_animations {
             for part in &animation.parts { mark(part.owner)?; }
         }
-        let mut result = Self { sources: scene.instances.clone(), animated,
+        let mut result = Self { sources: scene.instances.clone(), frozen: vec![false; n], animated,
             words: vec![0; word_count], counts: CasterCounts::default() };
         result.rebuild();
         Ok(result)
@@ -131,7 +140,7 @@ impl Partition {
         self.words[2] = static_start as u32;
         self.words[3] = dynamic_start as u32;
         for (owner, source) in self.sources.iter().enumerate() {
-            let kind = class(source, self.animated[owner]);
+            let kind = class(source, self.animated[owner], self.frozen[owner]);
             self.words[4 + owner] = kind;
             match kind {
                 STATIC => {
@@ -149,6 +158,24 @@ impl Partition {
         self.words[1] = self.counts.dynamic_casters;
     }
 
+    /// Mark trees whose root is at least `radius` (horizontal) from every
+    /// camera. Returns whether any tree changed class.
+    fn pin_frozen(&mut self, cameras: &[Vec3], radius: f32) -> bool {
+        let mut changed = false;
+        for (owner, source) in self.sources.iter().enumerate() {
+            let root = glam::Vec2::new(source.rows[0][3], source.rows[2][3]);
+            let frozen = !cameras.is_empty() && cameras.iter()
+                .all(|c| root.distance(glam::Vec2::new(c.x, c.z)) >= radius);
+            if frozen != self.frozen[owner] {
+                let before = class(source, self.animated[owner], self.frozen[owner]);
+                self.frozen[owner] = frozen;
+                changed |= before != class(source, self.animated[owner], frozen);
+            }
+        }
+        if changed { self.rebuild(); }
+        changed
+    }
+
     /// Validate the complete range before mutating. An instance may cease to
     /// be static (or start casting again), which also invalidates old depth.
     fn update(&mut self, first: usize, instances: &[GpuInstance]) -> Result<(bool, bool), String> {
@@ -159,8 +186,12 @@ impl Partition {
         for (offset, (&before, &after)) in self.sources[first..end].iter().zip(instances).enumerate() {
             if bytemuck::bytes_of(&before) == bytemuck::bytes_of(&after) { continue; }
             let owner = first + offset;
-            let old = class(&before, self.animated[owner]);
-            let new = class(&after, self.animated[owner]);
+            let old = class(&before, self.animated[owner], self.frozen[owner]);
+            // A changed transform invalidates the proof that this root stays
+            // outside every pinned camera's wind radius. Keep it dynamic until
+            // the next explicit pin certifies its new position.
+            if before.rows != after.rows { self.frozen[owner] = false; }
+            let new = class(&after, self.animated[owner], self.frozen[owner]);
             dirty |= old == STATIC || new == STATIC;
             membership |= old != new;
         }
@@ -273,6 +304,20 @@ impl StaticSun {
         Ok(dirty)
     }
 
+    /// Re-pin wind-frozen trees around `cameras`: trees at least `radius`
+    /// from every camera become static casters. Callers choose radius =
+    /// freeze distance + guard and re-pin before any camera moves more than
+    /// the guard from its pinned position, so every static tree stays at
+    /// rest. Invalidates cached depth when membership changes.
+    pub fn pin_frozen_trees(&mut self, gpu: &Gpu, cameras: &[Vec3], radius: f32) -> bool {
+        let changed = self.partition.pin_frozen(cameras, radius);
+        if changed {
+            self.content.invalidate();
+            gpu.queue.write_buffer(&self.owners, 0, bytemuck::cast_slice(&self.partition.words));
+        }
+        changed
+    }
+
     /// Call for geometry/material/shader changes and scene-visibility changes
     /// not expressed by update_instances. Keeping depth while merely changing
     /// sunlight strength or disabling sun rendering is safe; dawn's key and
@@ -344,7 +389,42 @@ mod tests {
         assert_eq!(ids(&p, STATIC), &[0,1]);
         assert_eq!(ids(&p, DYNAMIC), &[2,3,4,5,6,7]);
         assert_eq!(p.counts.skipped, 1);
-        for flag in [LIVE_GRASS, WIND_GRASS, PART_WIND] { assert_eq!(class(&source(GeometryCategory::Other, flag), false), DYNAMIC); }
+        for flag in [LIVE_GRASS, WIND_GRASS, PART_WIND] {
+            assert_eq!(class(&source(GeometryCategory::Other, flag), false, false), DYNAMIC);
+            // Freezing never makes grass, part wind or non-trees static.
+            assert_eq!(class(&source(GeometryCategory::Trees, flag | FOLIAGE), false, true), DYNAMIC);
+        }
+        assert_eq!(class(&source(GeometryCategory::Cars, FOLIAGE), false, true), DYNAMIC);
+        assert_eq!(class(&source(GeometryCategory::Trees, FOLIAGE), true, true), DYNAMIC);
+    }
+
+    #[test]
+    fn frozen_trees_become_static_only_beyond_the_pinned_radius() {
+        let mut scene = Scene::default();
+        let tree = |x: f32| { let mut t = source(GeometryCategory::Trees, FOLIAGE); t.rows[0][3] = x; t };
+        scene.instances = vec![source(GeometryCategory::Terrain, 0), tree(10.0), tree(90.0), tree(-200.0)];
+        let mut p = Partition::new(&scene).unwrap();
+        assert_eq!(ids(&p, DYNAMIC), &[1,2,3]);
+        assert!(p.pin_frozen(&[Vec3::ZERO], 80.0));
+        assert_eq!(ids(&p, STATIC), &[0,2,3]);
+        assert_eq!(ids(&p, DYNAMIC), &[1]);
+        assert!(!p.pin_frozen(&[Vec3::ZERO], 80.0), "same pin: no membership change");
+        // A second camera near the far tree pulls it back into the wind.
+        assert!(p.pin_frozen(&[Vec3::ZERO, Vec3::new(-190.0, 0.0, 0.0)], 80.0));
+        assert_eq!(ids(&p, DYNAMIC), &[1,3]);
+        // The guarantee the caller relies on: re-pinning before a camera
+        // moves more than `guard` keeps every static tree past `freeze`.
+        let freeze = crate::wind::WindFreeze { fade_start: 50.0, frozen_beyond: 70.0 };
+        let guard = 20.0;
+        p.pin_frozen(&[Vec3::ZERO], freeze.frozen_beyond + guard);
+        for step in 0..=20 {
+            let camera = Vec3::new(step as f32, 0.0, 0.0);
+            for owner in ids(&p, STATIC) {
+                let i = &p.sources[*owner as usize];
+                if i.category() != GeometryCategory::Trees { continue; }
+                assert_eq!(freeze.factor(Vec3::new(i.rows[0][3], 0.0, i.rows[2][3]), &[camera]), 0.0);
+            }
+        }
     }
 
     #[test]
@@ -367,6 +447,32 @@ mod tests {
         terrain.flags |= FOLIAGE;
         assert_eq!(p.update(0, &[terrain]).unwrap(), (true, true));
         assert_eq!(ids(&p, DYNAMIC), &[0,1]);
+    }
+
+    #[test]
+    fn moved_frozen_tree_is_demoted_until_its_new_position_is_certified() {
+        let mut scene = Scene::default();
+        let camera = Vec3::new(150.0, 12.0, -500.0);
+        let mut tree = source(GeometryCategory::Trees, FOLIAGE);
+        tree.rows[0][3] = camera.x;
+        tree.rows[2][3] = camera.z + 150.0;
+        scene.instances.push(tree);
+        let mut p = Partition::new(&scene).unwrap();
+        assert!(p.pin_frozen(&[camera], 90.0));
+        assert_eq!(ids(&p, STATIC), &[0]);
+        assert_eq!(p.update(0, &[tree]).unwrap(), (false, false));
+        tree.rows[2][3] = camera.z + 10.0;
+        assert_eq!(p.update(0, &[tree]).unwrap(), (true, true));
+        assert_eq!(ids(&p, DYNAMIC), &[0]);
+        assert!(!p.frozen[0]);
+        assert!(!p.pin_frozen(&[camera], 90.0));
+        tree.rows[2][3] = camera.z + 150.0;
+        assert_eq!(p.update(0, &[tree]).unwrap(), (false, false));
+        assert_eq!(ids(&p, DYNAMIC), &[0], "moving away is not a fresh pin certificate");
+        assert!(p.pin_frozen(&[camera], 90.0));
+        assert_eq!(ids(&p, STATIC), &[0]);
+        assert!(p.pin_frozen(&[], 0.0), "disabling freeze must clear old static certificates");
+        assert_eq!(ids(&p, DYNAMIC), &[0]);
     }
 
     #[test]

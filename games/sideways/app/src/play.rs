@@ -99,6 +99,7 @@ fn static_sun_metadata(stats:&render::FrameStats)->serde_json::Value {
         "static_triangles":stats.static_sun_triangles,"dynamic_clusters":stats.dynamic_sun_clusters,
         "dynamic_triangles":stats.dynamic_sun_triangles,"static_submitted_vertices":stats.static_sun_submitted_vertices,
         "guard_m":stats.sun_cache_guard_m,"guard_recentered":stats.sun_cache_guard_recentered,
+        "wind_freeze_m":stats.wind_freeze_m,"wind_freeze_repinned":stats.wind_freeze_repinned,
         "extent_m":stats.shared_sun_extent_m,"texel_m":stats.shared_sun_texel_m,
         "scope":"Shared source sun only. Owner counts are CPU partition membership. Selected geometry counts are available only in synchronized diagnostics; GPU pass timestamps are separate. Depth copy plus dynamic raster is exact min(static,dynamic); extra allocation is not a timing saving."})
 }
