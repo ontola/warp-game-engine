@@ -383,7 +383,16 @@ pub(crate) fn road_mesh(s: &Stage, material: u32) -> ClusterMesh {
         // anyway, but keep it consistent with the terrain.
         idx.extend_from_slice(&[t[0], t[2], t[1]]);
     }
-    ClusterMesh::build(&[Part { vertices: &verts, indices: &idx, material }])
+    // Terrain already locks the native roadside corridor. Preserve the full
+    // joining shoulder here too, in every camera and shadow cut. Position-only
+    // simplification could otherwise bridge tens of metres between seam
+    // vertices and cast a floating triangular shadow onto the finer road.
+    // The road interior remains eligible for its existing CLOD simplification.
+    ClusterMesh::build_with_constraints(
+        &[Part { vertices: &verts, indices: &idx, material }],
+        |_|render::cluster::SimplificationPolicy::Geometry,
+        |part,index|part.vertices[index].uv[0].abs()>=1.0,
+    )
 }
 
 fn box_mesh(half: Vec3, material: u32) -> ClusterMesh {
@@ -903,6 +912,47 @@ mod geometry_tests {
             }
         }
         assert!(count>500);
+    }
+
+    #[test]
+    fn reported_road_shoulder_is_source_exact_in_camera_and_shadow_lod_cuts() {
+        use std::collections::HashSet;
+        let mut rng=gdcompat::Pcg::new(1);rng.next_u32();
+        let stage=Stage::generate(&mut rng,3000.0+sideways::stage::RUNOUT);
+        assert_eq!((stage.noise_seed,stage.detail_seed),(683407368,2033395789));
+        let road=builder::road(&stage);let mesh=road_mesh(&stage,0);
+        assert_eq!(mesh.vertices.len(),road.verts.len());
+        for (v,p) in mesh.vertices.iter().zip(&road.verts) {
+            assert_eq!(v.pos.map(f32::to_bits),[p.x,p.y,p.z].map(f32::to_bits),"cooking must not move the source/collision ribbon");
+        }
+        let key=|t:[u32;3]| {let k=if t[0]<=t[1]&&t[0]<=t[2]{0}else if t[1]<=t[2]{1}else{2};[t[k],t[(k+1)%3],t[(k+2)%3]]};
+        let source:HashSet<_>=road.tris.iter().map(|t|key([t[0],t[2],t[1]])).collect();
+        let shoulder:HashSet<_>=source.iter().copied().filter(|t|t.iter().all(|&i|mesh.vertices[i as usize].uv[0].abs()>=1.0)).collect();
+        assert!(shoulder.len()>10_000,"exercise both full stage shoulders");
+        let mesh_ref=&mesh;
+        let triangles=|selected:&dyn Fn(&render::cluster::GpuCluster)->bool|mesh_ref.clusters.iter().filter(|c|selected(c)).flat_map(|c|
+            mesh_ref.tris[c.first_tri as usize..(c.first_tri+c.tri_count)as usize].iter().map(move|packed|
+                key(std::array::from_fn(|k|mesh_ref.cluster_verts[(c.first_vert+((packed>>(8*k))&255))as usize])))).collect::<HashSet<_>>();
+        let check=|cut:HashSet<[u32;3]>| {
+            assert!(shoulder.is_subset(&cut),"a locked shoulder source triangle was replaced");
+            for tri in cut.iter().filter(|t|t.iter().any(|&i|mesh.vertices[i as usize].uv[0].abs()>1.0)) {
+                assert!(source.contains(tri),"a new triangle crosses the protected shoulder: {tri:?}");
+            }
+        };
+        // Source, production 32m/2048 near and 192m/4096 shared sun maps,
+        // plus much coarser cuts. This is a geometry invariant, not a bias fix.
+        for error in [0.0,1.0/64.0,2.0/(4096.0/192.0),1.0,16.0,1e20] {
+            check(triangles(&|c|c.parent_error>error&&c.own_error<=error));
+        }
+        let cam=Vec3::new(-92.96343,-6.46169,-518.938);
+        for height in [1080.0,1440.0,2160.0] {
+            let focal=height/(2.0*32f32.to_radians().tan());
+            let projected=|e:f32,s:[f32;4]|e*focal/(cam.distance(Vec3::from_slice(&s))-s[3]).max(0.1);
+            check(triangles(&|c|projected(c.parent_error,c.parent)>1.0&&projected(c.own_error,c.own)<=1.0));
+        }
+        let far=triangles(&|c|c.parent_error*(4096.0/192.0)>2.0&&c.own_error*(4096.0/192.0)<=2.0);
+        assert!(far.len()<source.len(),"unlocked drivable interior must still simplify");
+        eprintln!("reported road: {} source triangles, {} exact shoulder triangles, {} shared-sun triangles",source.len(),shoulder.len(),far.len());
     }
 
     #[test]
