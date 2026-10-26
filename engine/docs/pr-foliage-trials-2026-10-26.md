@@ -180,6 +180,9 @@ The combined opaque + software + traversal + freeze case
 `foliage page exceeds visible-cluster capacity; refusing truncated shadows`.
 It has no valid GPU performance or output image. The paged-shadow guard was
 retained; no incomplete-shadow workaround was enabled to manufacture a pass.
+The 256 m page's summed resident caster cluster counts exceed the existing
+4,194,304-cluster visible-list capacity. This is an admission limit, not a
+measurement of post-LOD selected triangles.
 
 Four-player freeze/cache changes the shared shadow half-extent from 112 to
 176 m and texel size from 0.0546875 to 0.0859375 m. Thus the small 1.91% mean
@@ -198,6 +201,13 @@ defaults. The four-view baseline's major mean scopes remain tree remaining
 raster 12.65 ms, meadow aggregate/visibility/resolve about 13.27 ms, shade
 9.03 ms and DLSS 3.05 ms. Scope costs are descriptive, not additive projected
 optimization gains.
+
+Corrected card HW/SW PNGs differ at 516/2,394 pixels in the two held views,
+with maximum channel differences 44/175 bytes. Selected owner/cluster identities
+and captured inputs match. Preview review shows no obvious large coverage shift,
+but those sparse differences are not exact parity. The route JPEG pairs also
+show no obvious large shift at preview scale; compression prevents using them
+as pixel-exact evidence. Software remains off by default.
 
 Evidence under `C:/dev/perf/warp-sideways-20261026/r54-pr-trials/`:
 `summary.json`, `fixed-wind-analysis.json`, `fixed-crowns-analysis.json`, complete
