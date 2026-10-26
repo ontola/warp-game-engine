@@ -23,7 +23,7 @@ const NORMAL_SIZE: u32 = 1024;
 const SHADOW_SIZE: u32 = 4096;
 const NEAR_SHADOW_SIZE: u32 = 2048;
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
-const TIMESTAMP_CAPACITY: u32 = 384; // includes independent solar/headlamp hierarchy selection
+const TIMESTAMP_CAPACITY: u32 = 416; // includes software raster/merge for both camera phases and sun maps
 
 /// Keep the grass rejection in culling identical to its opaque raster path.
 pub(crate) fn cull_source() -> String {
@@ -2735,7 +2735,9 @@ impl Renderer {
         // More than four views would exceed the freeze uniform: keep wind.
         let cameras: Vec<Vec3> = views.iter().map(|v| v.cam.pos).collect();
         let wind_freeze = self.wind_freeze.filter(|_| cameras.len() <= crate::wind::MAX_FREEZE_CAMERAS);
-        self.wind.set_freeze(gpu, wind_freeze, &cameras);
+        if self.wind.set_freeze(gpu, wind_freeze, &cameras) {
+            self.invalidate_dynamic_shadow();
+        }
         let mut wind_freeze_repinned = false;
         if let (Some(freeze), Some(cache)) = (wind_freeze, static_sun.as_mut()) {
             // Trees >= frozen_beyond + guard from the pinned cameras stay at
@@ -2750,6 +2752,14 @@ impl Renderer {
                     *pin = Some(cameras.clone());
                     wind_freeze_repinned = true;
                 }
+            }
+        } else if let Some(cache) = static_sun.as_mut() {
+            // More than four views disables the GPU freeze field. Previously
+            // pinned trees must resume dynamic shadows as well.
+            let mut pin = self.wind_freeze_pin.lock().unwrap();
+            if pin.take().is_some() {
+                cache.pin_frozen_trees(gpu, &[], 0.0);
+                wind_freeze_repinned = true;
             }
         }
         let mut static_targets = self.static_sun_targets.lock().unwrap();
@@ -4135,6 +4145,11 @@ mod layout_tests {
         for _ in 0..4 {timestamp_pair(&mut next);} // one bounded bloom scope per view
         assert_eq!(next,374);
         assert!(next<=TIMESTAMP_CAPACITY);
+        // Software compute+merge share one scope: two camera phases/view,
+        // four near sun maps and both static/dynamic shared sun passes.
+        for _ in 0..(4*2+4+2) {timestamp_pair(&mut next);}
+        assert_eq!(next,402);
+        assert!(next<=TIMESTAMP_CAPACITY);
         let brick_fixture_upper_bound = 330 - 4*6*2 + (8+4*3)*2;
         assert!(brick_fixture_upper_bound <= TIMESTAMP_CAPACITY);
         next = TIMESTAMP_CAPACITY - 2;
@@ -4242,6 +4257,60 @@ fn view_uniform(vp: Mat4, cam: Vec3, px_scale: f32, params: [f32; 4], size: [f32
 
 #[cfg(test)]
 mod software_raster_tests {
+    // Independent double-precision projection oracle for the routing bound.
+    fn pixel_rect(vp:glam::DMat4,c:glam::DVec3,r:f64,size:glam::DVec2)->Option<(glam::DVec2,glam::DVec2)> {
+        let mut lo=glam::DVec2::splat(f64::INFINITY);let mut hi=-lo;
+        for i in 0..8 {
+            let p=c+glam::DVec3::new((i&1)as f64,((i>>1)&1)as f64,((i>>2)&1)as f64)*2.0*r-glam::DVec3::splat(r);
+            let clip=vp*p.extend(1.0);
+            if !clip.is_finite() || clip.w<=1e-5 || clip.z<=0.0 || clip.z>=clip.w {return None;}
+            let p=glam::DVec2::new(clip.x/clip.w*0.5+0.5,0.5-clip.y/clip.w*0.5)*size;
+            lo=lo.min(p);hi=hi.max(p);
+        }
+        lo=(lo-glam::DVec2::splat(1.5)).floor().max(glam::DVec2::ZERO);
+        hi=(hi+glam::DVec2::splat(0.5)).ceil().min(size-glam::DVec2::ONE);
+        (hi.cmpge(lo).all()).then_some((lo,hi))
+    }
+
+    #[test]
+    fn software_route_rejects_off_axis_radial_underestimate_and_near_plane_crossing() {
+        let size=glam::DVec2::new(1920.0,1080.0);
+        let fov=65f64.to_radians();let vp=glam::DMat4::perspective_infinite_reverse_rh(fov,16.0/9.0,0.1);
+        let c=glam::DVec3::new(17.0,0.0,-16.0);let r=0.7;
+        let old_diameter=2.0*r/(c.length()-r)*(1080.0/(2.0*(fov*0.5).tan()));
+        assert!(old_diameter<64.0);
+        let (lo,hi)=pixel_rect(vp,c,r,size).unwrap();
+        assert!((hi-lo+glam::DVec2::ONE).max_element()>64.0);
+        assert!(pixel_rect(vp,glam::DVec3::new(0.0,0.0,-0.12),0.05,size).is_none());
+        assert!(pixel_rect(vp,glam::DVec3::new(f64::NAN,0.0,-10.0),0.1,size).is_none());
+        let shader=include_str!("shaders/cull.wgsl");
+        assert!(shader.contains("let extent=software_pixel_extent(c,r)"));
+        assert!(shader.contains("clip.z>0.0 && clip.z<clip.w"));
+    }
+
+    #[test]
+    fn software_pixel_rect_encloses_interior_triangle_loops_for_camera_and_sun() {
+        let size=glam::DVec2::new(1920.0,1080.0);
+        let matrices=[glam::DMat4::perspective_infinite_reverse_rh(65f64.to_radians(),16.0/9.0,0.1),
+            glam::DMat4::orthographic_rh(-32.0,32.0,-18.0,18.0,0.1,200.0)];
+        for vp in matrices {for c in [glam::DVec3::new(0.0,0.0,-40.0),glam::DVec3::new(12.0,5.0,-40.0)] {
+            let r=0.2;let (lo,hi)=pixel_rect(vp,c,r,size).unwrap();
+            assert!((hi-lo+glam::DVec2::ONE).max_element()<=64.0);
+            // Interior/extreme points stand in for arbitrary triangle vertices.
+            // Every inclusive floor/ceil loop lies within the padded bounds.
+            for x in 0..=8 {for y in 0..=8 {for z in 0..=8 {
+                let p=c+(glam::DVec3::new(x as f64,y as f64,z as f64)/4.0-glam::DVec3::ONE)*r;
+                let clip=vp*p.extend(1.0);
+                let pixel=glam::DVec2::new(clip.x/clip.w*0.5+0.5,0.5-clip.y/clip.w*0.5)*size;
+                assert!((pixel-glam::DVec2::splat(0.5)).floor().cmpge(lo).all());
+                assert!((pixel-glam::DVec2::splat(0.5)).ceil().cmple(hi).all());
+            }}}
+        }}
+        for shader in [include_str!("shaders/software_raster.wgsl"),include_str!("shaders/software_raster_depth.wgsl")] {
+            assert!(!shader.contains("MAX_BOX_PIXELS"),"already routed geometry cannot disappear at an independent box cap");
+        }
+    }
+
     #[test]
     fn software_raster_and_merge_shaders_validate() {
         for (name, source) in [

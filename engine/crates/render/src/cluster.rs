@@ -522,9 +522,11 @@ impl ClusterMesh {
     /// Nanite-style switch: clusters of `replace` materials are kept only
     /// while their error is below `levels[0].error`; beyond it the explicit
     /// `levels` take over, each until the next one's error. All switching
-    /// bounds share one sphere around everything replaced, so exactly one of
-    /// {source cut, level k} passes the GPU's own <= t < parent test for any
-    /// view. Source clusters coarser than the switch are dropped. Other
+    /// bounds share one sphere enclosing both geometry and the original
+    /// error spheres. This makes the switch dominate every finer source
+    /// decision, so exactly one of {source cut, level k} passes the GPU's
+    /// own <= t < parent test for any view. Source clusters coarser than the
+    /// switch are dropped. Other
     /// materials (wood) keep their own DAG untouched.
     pub fn replace_beyond(&mut self, replace: impl Fn(u32) -> bool, levels: &[ProxyLevel<'_>]) -> Result<(), String> {
         let Some(first) = levels.first() else { return Ok(()) };
@@ -545,6 +547,9 @@ impl ClusterMesh {
             }
         }
         for level in levels {
+            if !level.parts.iter().any(|part| !part.indices.is_empty()) {
+                return Err("proxy level must contain replacement triangles".into());
+            }
             for part in &level.parts {
                 if part.indices.len() % 3 != 0 || part.indices.iter().any(|&i| i as usize >= part.vertices.len()) {
                     return Err("proxy level has invalid indices".into());
@@ -555,7 +560,32 @@ impl ClusterMesh {
         if points.iter().any(|v| v.pos.iter().any(|x| !x.is_finite())) {
             return Err("proxy level has non-finite positions".into());
         }
-        let sphere = bounding_sphere(&points);
+        let mut sphere = bounding_sphere(&points);
+        // A sphere containing the vertices need not contain a local error
+        // sphere: that sphere can extend beyond its own geometry. If its
+        // nearest point is closer to the camera than our common sphere's,
+        // an untouched finer source cut can still pass after the proxy has
+        // become acceptable. Enclosing all original error spheres ensures
+        // projected(switch, common) >= projected(source error, local) for
+        // every source error below the switch, including off-centre views.
+        let centre = glam::DVec3::new(sphere[0] as f64, sphere[1] as f64, sphere[2] as f64);
+        let mut radius = sphere[3] as f64;
+        for c in self.clusters.iter().filter(|c| replace(c.material)) {
+            for bound in [c.own, c.parent] {
+                if bound.iter().any(|x| !x.is_finite()) || bound[3] < 0.0 {
+                    return Err("source cluster has an invalid error sphere".into());
+                }
+                let local = glam::DVec3::new(bound[0] as f64, bound[1] as f64, bound[2] as f64);
+                radius = radius.max(centre.distance(local) + bound[3] as f64);
+            }
+        }
+        if !radius.is_finite() || radius > f32::MAX as f64 {
+            return Err("proxy switching sphere exceeds finite bounds".into());
+        }
+        sphere[3] = radius as f32;
+        if (sphere[3] as f64) < radius {
+            sphere[3] = f32::from_bits(sphere[3].to_bits() + 1);
+        }
         self.clusters.retain(|c| !replace(c.material) || c.own_error < switch);
         for c in self.clusters.iter_mut().filter(|c| replace(c.material) && c.parent_error >= switch) {
             c.parent_error = switch;
@@ -862,6 +892,96 @@ mod proxy_tests {
             e / d
         };
         mesh.clusters.iter().filter(|c| proj(c.own_error, c.own) <= t && proj(c.parent_error, c.parent) > t).collect()
+    }
+
+    #[test]
+    fn proxy_switch_encloses_error_spheres_for_oblique_nonplanar_cuts() {
+        // Two independent branches, each with a leaf and a simplified cut.
+        // Their error spheres extend past the common vertex sphere. The
+        // triangles are deliberately not coplanar and the camera can graze
+        // either branch rather than looking straight at the crown centre.
+        let vertices: Vec<Vertex> = [
+            [-1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.9, 0.1],
+            [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, -0.9, -0.1],
+        ].into_iter().map(|pos| Vertex { pos, normal: [0.0, 0.0, 1.0], uv: [0.0; 2] }).collect();
+        let indices = [0, 1, 2, 3, 4, 5];
+        let mut mesh = ClusterMesh::default();
+        mesh.vertices = vertices.clone();
+        mesh.cluster_verts = indices.to_vec();
+        mesh.tris = vec![0 | (1 << 8) | (2 << 16); 2];
+        mesh.sphere = bounding_sphere(&vertices);
+        let original_bounds = [[0.0, 1.0, 0.0, 1.0], [0.0, -1.0, 0.0, 1.0]];
+        for (branch, own) in original_bounds.into_iter().enumerate() {
+            for leaf in [true, false] {
+                mesh.clusters.push(GpuCluster {
+                    cull: own, own,
+                    parent: if leaf { own } else { [0.0, 0.0, 0.0, 2.0] },
+                    parent_error: if leaf { 0.07 } else { f32::MAX },
+                    own_error: if leaf { 0.0 } else { 0.07 },
+                    first_tri: branch as u32, tri_count: 1, first_vert: branch as u32 * 3,
+                    material: 0, depth: 0, _pad: 0,
+                });
+            }
+        }
+        let levels = [
+            ProxyLevel { error: 0.08, parts: vec![Part { vertices: &vertices, indices: &indices, material: 2 }] },
+            ProxyLevel { error: 0.2, parts: vec![Part { vertices: &vertices, indices: &indices, material: 3 }] },
+        ];
+        mesh.replace_beyond(|m| m == 0, &levels).unwrap();
+        let common = mesh.clusters.iter().find(|c| c.material == 2).unwrap().own;
+        for bound in original_bounds {
+            let distance = glam::DVec3::new(common[0] as f64, common[1] as f64, common[2] as f64)
+                .distance(glam::DVec3::new(bound[0] as f64, bound[1] as f64, bound[2] as f64));
+            assert!(distance + bound[3] as f64 <= common[3] as f64);
+        }
+
+        // Reproduce the previous vertex-only bound without changing any
+        // triangles or error values: it selects leaf source AND a proxy.
+        let mut old = ClusterMesh::default();
+        old.clusters = mesh.clusters.clone();
+        let vertex_sphere = bounding_sphere(&vertices);
+        for c in &mut old.clusters {
+            if c.material == 0 && c.parent_error == 0.08 { c.parent = vertex_sphere; }
+            if c.material != 0 { c.own = vertex_sphere; c.parent = vertex_sphere; }
+        }
+        let broken = selected(&old, glam::Vec3::new(0.0, 2.5, 0.1), 0.1);
+        assert!(broken.iter().any(|c| c.material == 0) && broken.iter().any(|c| c.material == 2));
+
+        for direction in [
+            glam::Vec3::Y, -glam::Vec3::Y, glam::Vec3::Z,
+            glam::Vec3::new(0.1, 1.0, 0.04).normalize(),
+            glam::Vec3::new(1.0, -0.6, 0.2).normalize(),
+        ] {
+            for distance in [1.45, 2.5, 4.0, 20.0] {
+                let eye = direction * distance;
+                let mut thresholds = vec![0.0, 1e-5, 0.1, 1000.0];
+                for c in &mesh.clusters {
+                    for (error, sphere) in [(c.own_error, c.own), (c.parent_error, c.parent)] {
+                        if error <= 0.0 || error > 1e30 { continue; }
+                        let projected = error / (glam::Vec3::from_slice(&sphere[..3]).distance(eye) - sphere[3]).max(1e-3);
+                        thresholds.extend([projected * 0.9999, projected, projected * 1.0001]);
+                    }
+                }
+                for threshold in thresholds {
+                    let mut credit = [0usize; 2];
+                    for c in selected(&mesh, eye, threshold) {
+                        if c.material == 0 { credit[c.first_tri as usize] += 1; }
+                        else { credit[0] += 1; credit[1] += 1; }
+                    }
+                    assert_eq!(credit, [1, 1], "eye={eye:?}, threshold={threshold}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_proxy_level_is_rejected_before_source_changes() {
+        let (vertices, indices) = grid(4, 0.0);
+        let mut mesh = ClusterMesh::build(&[Part { vertices: &vertices, indices: &indices, material: 0 }]);
+        let before = bytemuck::cast_slice::<GpuCluster, u8>(&mesh.clusters).to_vec();
+        let levels = [ProxyLevel { error: 0.08, parts: Vec::new() }];
+        assert!(mesh.replace_beyond(|m| m == 0, &levels).unwrap_err().contains("replacement triangles"));
+        assert_eq!(before, bytemuck::cast_slice::<GpuCluster, u8>(&mesh.clusters));
     }
 
     #[test]

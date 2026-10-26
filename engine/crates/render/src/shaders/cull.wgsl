@@ -135,9 +135,34 @@ fn tree_occluded(root:vec3<f32>,radius:f32)->bool {
 // Software raster (software_raster.wgsl, software_raster_depth.wgsl): camera
 // colour views and orthographic sun maps whose uniform sets view.grass.z
 // (0 = off) to the largest mean triangle size in pixels it accepts; opaque
-// non-grass clusters at most 64 px across whose bounding square per triangle
-// is within that, and, in perspective, well in front of the near plane.
+// non-grass clusters whose padded integer pixel bounds are at most 64 px
+// across and whose bounding square per triangle is within that. All clipping
+// uncertainty stays in hardware. Euclidean camera distance is NOT a safe
+// perspective-width bound near the sides of the image.
 // Cull and scatter evaluate this identically from the same frame's data.
+fn software_pixel_extent(c:vec3<f32>,r:f32)->vec2<f32> {
+    if !(r>=0.0 && r<1e20) || !all(abs(c)<vec3<f32>(1e20)) {return vec2<f32>(1e30);}
+    var lo=vec2<f32>(1e30);var hi=vec2<f32>(-1e30);
+    // The same wind-padded world sphere used for cluster culling encloses
+    // every deformed vertex. Its AABB corners bound perspective extrema
+    // provided the whole box has positive W and stays inside the depth slab.
+    for(var i=0u;i<8u;i++) {
+        let signs=vec3<f32>(f32(i&1u),f32((i>>1u)&1u),f32((i>>2u)&1u))*2.0-1.0;
+        let clip=view.view_proj*vec4<f32>(c+signs*r,1.0);
+        if !all(abs(clip)<vec4<f32>(1e30)) || !(clip.w>1e-5 && clip.z>0.0 && clip.z<clip.w) {
+            return vec2<f32>(1e30);
+        }
+        let ndc=clip.xy/clip.w;
+        let pixel=vec2<f32>(ndc.x*0.5+0.5,0.5-ndc.y*0.5)*view.size.xy;
+        lo=min(lo,pixel);hi=max(hi,pixel);
+    }
+    // Mirror the raster's inclusive floor/ceil pixel loop, with one extra
+    // pixel on each side for projection roundoff. Clamp only after expansion.
+    lo=max(floor(lo-1.5),vec2<f32>(0.0));
+    hi=min(ceil(hi+0.5),view.size.xy-1.0);
+    if any(hi<lo) {return vec2<f32>(1e30);}
+    return hi-lo+1.0;
+}
 fn software_cluster(id: u32, ci: u32) -> bool {
     // Headlight shadows (perspective depth-only) stay on hardware.
     if !CLUSTER_BUCKETS || view.grass.z <= 0.0 || (view.params.z < 0.5 && view.extra.y > 1.5) { return false; }
@@ -147,13 +172,8 @@ fn software_cluster(id: u32, ci: u32) -> bool {
         || cull_voxel_replacement[id] != 0u { return false; }
     let c = to_world(inst, cl.cull.xyz);
     let r = cl.cull.w * inst.scale + cull_wind[id].z;
-    // Orthographic sun maps: cam.w is pixels per metre at any distance.
-    var diameter = 2.0 * r * view.cam.w;
-    if view.params.z < 0.5 {
-        let d = distance(c, view.cam.xyz);
-        if d < r * 2.0 + view.params.y * 4.0 + 1.0 { return false; }
-        diameter = 2.0 * r / (d - r) * view.cam.w;
-    }
+    let extent=software_pixel_extent(c,r);
+    let diameter=max(extent.x,extent.y);
     // Small triangles, not small clusters, waste hardware work: route by
     // the cluster's bounding square per triangle, within a bounded footprint.
     return diameter <= SOFTWARE_MAX_DIAMETER && diameter * diameter <= view.grass.z * f32(cl.tri_count);

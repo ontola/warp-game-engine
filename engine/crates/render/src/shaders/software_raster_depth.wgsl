@@ -57,10 +57,6 @@ struct Instance {
 @group(1) @binding(3) var<storage, read> draw_args: array<u32, 25>;
 @group(1) @binding(4) var<storage, read_write> depth32: array<atomic<u32>>;
 
-// Larger bounding boxes than this are not this path's job; the cull
-// predicate keeps whole clusters far below it. Never loop unbounded.
-const MAX_BOX_PIXELS: u32 = 4096u;
-
 fn edge(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> f32 {
     return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 }
@@ -83,8 +79,8 @@ fn software_raster_depth(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_in
         let p = vec4<f32>(vertices[v], vertices[v + 1u], vertices[v + 2u], 1.0);
         let rest = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
         let clip = view.view_proj * vec4<f32>(wind_position(vis.x, inst.r1.w, rest), 1.0);
-        // The cull predicate keeps software clusters well in front of the
-        // near plane; anything else is dropped rather than clipped.
+        // Routing certifies the whole wind-padded AABB inside the depth slab.
+        // The vertex check only protects invalid source data.
         if clip.w <= 1e-6 { return; }
         let ndc = clip.xyz / clip.w;
         s[c] = vec3<f32>((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y, ndc.z);
@@ -97,8 +93,8 @@ fn software_raster_depth(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_in
     let lo = max(floor(min(min(a, b), c) - 0.5), vec2<f32>(0.0));
     let hi = min(ceil(max(max(a, b), c) - 0.5), size - 1.0);
     if any(hi < lo) { return; }
-    let box = vec2<u32>(hi - lo) + 1u;
-    if box.x * box.y > MAX_BOX_PIXELS { return; }
+    // Routing bounds this loop to at most 64x64 pixels. Do not silently drop
+    // an already-routed triangle on another approximate footprint test here.
     // Depth bias: constant * r + slope * max |dz/dpixel|, r = 2^(e - 23)
     // for the largest depth's exponent e (floating-point depth formats).
     let za = s[0].z; let zb = s[1].z; let zc = s[2].z;

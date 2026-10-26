@@ -118,10 +118,35 @@ struct FreezeUniform {
     cameras: [[f32; 4]; MAX_FREEZE_CAMERAS],
 }
 
+impl FreezeUniform {
+    fn new(freeze: Option<WindFreeze>, cameras: &[Vec3]) -> Self {
+        let mut uniform = Self::zeroed();
+        if let Some(freeze) = freeze {
+            let count = cameras.len().min(MAX_FREEZE_CAMERAS);
+            uniform.params = [freeze.fade_start, freeze.frozen_beyond, count as f32,
+                if count > 0 { 1.0 } else { 0.0 }];
+            // wind.wgsl reads cameras[k].xz. Keep actual XYZ coordinates;
+            // packing XZ into XY would make every GPU camera's Z zero.
+            for (slot, camera) in uniform.cameras.iter_mut().zip(cameras) {
+                *slot = [camera.x, camera.y, camera.z, 0.0];
+            }
+        }
+        uniform
+    }
+}
+
 struct Cache {
     uniform: Uniform,
     freeze: FreezeUniform,
     clear_pending: bool,
+}
+
+impl Cache {
+    fn set_freeze(&mut self, freeze: FreezeUniform) -> bool {
+        if self.freeze == freeze { return false; }
+        self.freeze = freeze;
+        true
+    }
 }
 
 pub struct WindRenderer {
@@ -196,18 +221,15 @@ impl WindRenderer {
     }
 
     /// This frame's cameras for the freeze radius (at most four are used).
-    /// None disables freezing. Writes only when something changed.
-    pub fn set_freeze(&self, gpu: &Gpu, freeze: Option<WindFreeze>, cameras: &[Vec3]) {
-        let mut u = FreezeUniform::zeroed();
-        if let Some(f) = freeze {
-            let n = cameras.len().min(MAX_FREEZE_CAMERAS);
-            u.params = [f.fade_start, f.frozen_beyond, n as f32, if n > 0 { 1.0 } else { 0.0 }];
-            for (slot, c) in u.cameras.iter_mut().zip(cameras) { *slot = [c.x, c.z, 0.0, 0.0]; }
-        }
+    /// None disables freezing. Returns true when the uploaded field changes,
+    /// including camera movement with fixed wind time. The caller must then
+    /// invalidate combined sun depth; the pinned static partition stays valid.
+    pub fn set_freeze(&self, gpu: &Gpu, freeze: Option<WindFreeze>, cameras: &[Vec3]) -> bool {
+        let u = FreezeUniform::new(freeze, cameras);
         let mut cache = self.cache.lock().unwrap();
-        if cache.freeze == u { return; }
-        cache.freeze = u;
+        if !cache.set_freeze(u) { return false; }
         gpu.queue.write_buffer(&self.freeze, 0, bytemuck::bytes_of(&u));
+        true
     }
 
     /// Encode once BEFORE any cull/raster/shadow pass. Active fixed-time fields
@@ -241,6 +263,59 @@ pub(crate) fn shade_source() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freeze_uniform_uses_actual_xz_for_nonzero_z_cameras() {
+        let freeze = WindFreeze { fade_start: 50.0, frozen_beyond: 70.0 };
+        let cameras = [Vec3::new(-150.0, 12.0, -500.0), Vec3::new(230.0, -20.0, 900.0),
+            Vec3::new(710.0, 40.0, -330.0), Vec3::new(-930.0, 85.0, 260.0)];
+        assert_eq!(std::mem::size_of::<FreezeUniform>(), 80);
+        assert_eq!(std::mem::offset_of!(FreezeUniform, cameras), 16);
+        // Decode the exact bytes uploaded to the WGSL vec4 array. This catches
+        // the old [x,z,0,0] host packing even though WindFreeze::factor alone
+        // (which receives Vec3s directly) was already correct.
+        for count in [1, 4] {
+            let uniform = FreezeUniform::new(Some(freeze), &cameras[..count]);
+            let words: &[f32] = bytemuck::cast_slice(bytemuck::bytes_of(&uniform));
+            assert_eq!(words[2], count as f32);
+            let decoded: Vec<_> = (0..count).map(|i| Vec3::new(words[4 + i * 4], 0.0, words[6 + i * 4])).collect();
+            for (i, &camera) in cameras[..count].iter().enumerate() {
+                assert_eq!(decoded[i], Vec3::new(camera.x, 0.0, camera.z));
+                for (distance, expected) in [(0.0, 1.0), (60.0, 0.5), (70.0, 0.0), (90.0, 0.0)] {
+                    let root = camera + Vec3::Z * distance;
+                    assert_eq!(freeze.factor(root, &decoded), expected);
+                    assert_eq!(freeze.factor(root, &decoded), freeze.factor(root, &cameras[..count]));
+                }
+            }
+        }
+        assert!(include_str!("shaders/wind.wgsl").contains("freeze.cameras[k].xz"));
+    }
+
+    #[test]
+    fn freeze_uniform_disables_empty_or_absent_camera_fields() {
+        let freeze = WindFreeze { fade_start: 50.0, frozen_beyond: 70.0 };
+        assert!(FreezeUniform::new(None, &[Vec3::new(100.0, 20.0, -500.0)]) == FreezeUniform::zeroed());
+        let empty = FreezeUniform::new(Some(freeze), &[]);
+        assert_eq!(empty.params[2..], [0.0, 0.0]);
+        assert_eq!(empty.cameras, [[0.0; 4]; MAX_FREEZE_CAMERAS]);
+    }
+
+    #[test]
+    fn fixed_time_camera_freeze_changes_invalidate_but_identical_uploads_do_not() {
+        let freeze = WindFreeze { fade_start: 50.0, frozen_beyond: 70.0 };
+        let uniform = Uniform::from_state(WindState { strength: 0.8, time_seconds: 1.9,
+            ..Default::default() });
+        let mut cache = Cache { uniform, freeze: FreezeUniform::zeroed(), clear_pending: false };
+        let camera = Vec3::new(150.0, 12.0, -500.0);
+        let first = FreezeUniform::new(Some(freeze), &[camera]);
+        assert!(cache.set_freeze(first));
+        assert!(!cache.set_freeze(first));
+        assert!(cache.set_freeze(FreezeUniform::new(Some(freeze), &[camera + Vec3::Z])));
+        assert!(cache.set_freeze(FreezeUniform::new(Some(freeze), &[camera, camera + Vec3::Z * 100.0])));
+        assert!(cache.set_freeze(FreezeUniform::new(None, &[camera])));
+        assert!(!cache.set_freeze(FreezeUniform::new(None, &[camera + Vec3::Z])));
+        assert!(cache.uniform == uniform, "camera invalidation must not advance wind time");
+    }
 
     #[test]
     fn validation_and_disabled_time_are_safe() {
