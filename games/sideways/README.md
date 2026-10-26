@@ -23,6 +23,23 @@ successful build. Logs and executable manifests live in this game's
 `build/dev-runs/`. F12 captures the displayed frame and camera/state metadata.
 Old `engine/build/` runs remain historical evidence.
 
+The latest measured developer optimization paths are an explicit opt-in:
+
+```powershell
+games/sideways/tools/play-dev-windows.ps1 -Restart -WorkReduction -Upscale dlss-quality
+```
+
+`-WorkReduction` enables one grass geometry submission, skipping opaque terrain
+lighting hidden by fully opaque grass, and spatial headlight-caster selection.
+The launcher records their effective settings and restores the parent process
+environment afterward. These preserve the existing source appearance rather
+than adding new visuals; exact full-image acceptance is still incomplete.
+See [r47 measurements](../../engine/docs/meadow-work-r47.md) and
+[r48 measurements](../../engine/docs/render-traversal-r48.md). Gains vary by
+scene and must not be added together or presented as an 8.33 ms result.
+The experimental world-volume trees remain disabled; see
+[r50 rejection and next steps](../../engine/docs/world-foliage-r50.md).
+
 Developer playtests default to fuller tree crowns (`-TreeFullness 1.25`, range
 1..1.35) and tree occlusion culling. Use `-TreeFullness 1 -TreeOcclusion:$false`
 for the reference settings. Explicit parameters take precedence over inherited

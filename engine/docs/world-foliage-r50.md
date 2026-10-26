@@ -55,5 +55,15 @@ The user requested an interactive playtest after this diagnostic. GPU fixtures
 are stopped. The validated r49 candidate E game was launched with one player,
 4K output, DLSS Quality and the existing grass/tree settings. The experimental
 world foliage backend is not in that playtest. Active launch evidence is under
-`games/sideways/build/dev-runs/20261026T160601393Z-ef7609c3/iteration.json`.
+`games/sideways/build/dev-runs/20261026T161351534Z-c9f58110/iteration.json`.
 Do not run competing GPU fixtures or restart this playtest without user intent.
+
+The first r49 playtest launch accidentally reused r46 settings, leaving the
+measured visibility/hidden-shading/headlight-grouping options off. The user
+reported unchanged performance. A corrected launch now uses the r49 off-a
+benchmark graphics environment (receiver-demand still off), with one player
+and moving wind. First-visible-frame and engine logs confirm the running path;
+this interactive session is not a matched performance benchmark. The new
+`-WorkReduction` launcher option makes this choice explicit and records it,
+rather than relying on reconstructing an old environment. No visual upgrade
+was claimed for these work-avoidance paths.

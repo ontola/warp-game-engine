@@ -23,6 +23,8 @@ param(
     [Nullable[double]]$WindTime,
     [Nullable[UInt64]]$VegetationSeed,
     [switch]$Autoplay,
+    # Explicit developer opt-in to the measured r47/r48 paths; not a quality preset.
+    [switch]$WorkReduction,
     [switch]$FrameProfile,
     [switch]$DebugUi,
     [switch]$Windowed,
@@ -43,6 +45,9 @@ $startupProfileBefore = [Environment]::GetEnvironmentVariable('KERN_STARTUP_PROF
 $treeFullnessBefore = [Environment]::GetEnvironmentVariable('SIDEWAYS_TREE_FULLNESS')
 $treeOcclusionBefore = [Environment]::GetEnvironmentVariable('KERN_TREE_OCCLUSION')
 $meadowAggregateBefore = [Environment]::GetEnvironmentVariable('KERN_MEADOW_AGGREGATE')
+$workReductionKeys = @('KERN_CLUSTER_BUCKETS', 'KERN_MEADOW_INDEXED', 'KERN_MEADOW_VISIBILITY', 'KERN_MEADOW_SKIP_HIDDEN_SHADE', 'KERN_HEADLIGHT_INSTANCE_GROUPS')
+$workReductionBefore = @{}
+foreach ($key in $workReductionKeys) { $workReductionBefore[$key] = [Environment]::GetEnvironmentVariable($key) }
 
 function Resolve-DevTreeSettings {
     param(
@@ -133,6 +138,10 @@ try {
         $meadowAggregateSource = 'environment'
     }
     $env:KERN_MEADOW_AGGREGATE = if ($meadowAggregateRequested) { '1' } else { '0' }
+    if ($WorkReduction) {
+        foreach ($key in $workReductionKeys) { [Environment]::SetEnvironmentVariable($key, '1', 'Process') }
+        Write-Host 'Developer work reduction enabled: single grass geometry pass, hidden-ground shading skip, grouped headlight casters.'
+    }
     $upscaleBuild = Get-DlssBuildSetup -Upscale $Upscale
     $env:KERN_STARTUP_PROFILE = '1'
     $cargo = if (-not $preparedArtifact) { (Get-Command cargo -CommandType Application -ErrorAction Stop).Source } else { $null }
@@ -175,7 +184,7 @@ try {
     $graphics['SIDEWAYS_TREE_FULLNESS'] = $env:SIDEWAYS_TREE_FULLNESS
     $graphics['KERN_TREE_OCCLUSION'] = $env:KERN_TREE_OCCLUSION
     $graphics['KERN_MEADOW_AGGREGATE'] = $env:KERN_MEADOW_AGGREGATE
-    foreach ($key in @('KERN_MEADOW_SUBSTRATE', 'KERN_MEADOW_INDEXED', 'KERN_MEADOW_VISIBILITY', 'KERN_MEADOW_SKIP_HIDDEN_SHADE', 'KERN_MEADOW_OCCLUSION', 'KERN_MEADOW_GROUP_CACHE', 'KERN_MEADOW_GROUP_REPLACE', 'SIDEWAYS_MEADOW_SOURCE_RADIUS', 'SIDEWAYS_MEADOW_BLADE_BUDGET', 'KERN_REUSE_SUN_TEXTURE', 'KERN_ZERO_SUN_FAST_PATH', 'KERN_INSTANCE_GROUPS', 'KERN_SUN_INSTANCE_GROUPS', 'KERN_CLUSTER_TRAVERSAL', 'KERN_STATIC_SUN_CACHE', 'KERN_SUN_CACHE_GUARD_METRES')) {
+    foreach ($key in @('KERN_MEADOW_SUBSTRATE', 'KERN_MEADOW_INDEXED', 'KERN_MEADOW_VISIBILITY', 'KERN_MEADOW_SKIP_HIDDEN_SHADE', 'KERN_MEADOW_OCCLUSION', 'KERN_MEADOW_GROUP_CACHE', 'KERN_MEADOW_GROUP_REPLACE', 'SIDEWAYS_MEADOW_SOURCE_RADIUS', 'SIDEWAYS_MEADOW_BLADE_BUDGET', 'KERN_REUSE_SUN_TEXTURE', 'KERN_ZERO_SUN_FAST_PATH', 'KERN_INSTANCE_GROUPS', 'KERN_SUN_INSTANCE_GROUPS', 'KERN_HEADLIGHT_INSTANCE_GROUPS', 'KERN_CLUSTER_TRAVERSAL', 'KERN_STATIC_SUN_CACHE', 'KERN_SUN_CACHE_GUARD_METRES')) {
         $value = [Environment]::GetEnvironmentVariable($key)
         if ($null -ne $value) { $graphics[$key] = $value }
     }
@@ -189,7 +198,7 @@ try {
     }
     $manifest = [ordered]@{ status = 'building'; started_utc = [DateTime]::UtcNow.ToString('o'); engine_root = (Join-Path $workspaceRoot 'engine'); game_root = $gameRoot; workspace_root = $workspaceRoot;
         profile = $Profile; source_revision = $sourceRevision; source_dirty = $sourceDirty;
-        cargo_features = $upscaleBuild.features; dlss = $upscaleBuild.dlss;
+        cargo_features = $upscaleBuild.features; dlss = $upscaleBuild.dlss; work_reduction_requested = [bool]$WorkReduction;
         tree_settings = $treeSettings;
         meadow_settings = @{ aggregate_requested = $meadowAggregateRequested; source = $meadowAggregateSource; scope = 'Launch request; actual constructed representation and counts are in capture metadata.' };
         source_note = 'Working checkout build, not an immutable source snapshot.';
@@ -286,5 +295,6 @@ try {
     [Environment]::SetEnvironmentVariable('SIDEWAYS_TREE_FULLNESS', $treeFullnessBefore)
     [Environment]::SetEnvironmentVariable('KERN_TREE_OCCLUSION', $treeOcclusionBefore)
     [Environment]::SetEnvironmentVariable('KERN_MEADOW_AGGREGATE', $meadowAggregateBefore)
+    foreach ($key in $workReductionKeys) { [Environment]::SetEnvironmentVariable($key, $workReductionBefore[$key], 'Process') }
     if ($guard) { $guard.Dispose() }
 }
