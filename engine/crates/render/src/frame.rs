@@ -357,6 +357,10 @@ pub struct FrameStats {
     pub dynamic_sun_triangles: u32,
     pub sun_cache_guard_m: f32,
     pub sun_cache_guard_recentered: bool,
+    /// Wind freeze radius in use (0 = off) and whether the frozen-tree static
+    /// casters were re-pinned around the cameras this frame.
+    pub wind_freeze_m: f32,
+    pub wind_freeze_repinned: bool,
     pub shared_sun_extent_m: f32,
     pub shared_sun_texel_m: f32,
     /// One shared static source-alpha map, regardless of player count.
@@ -582,6 +586,11 @@ pub struct Renderer {
     sun_guard_bounds: Option<std::sync::Mutex<crate::stability::SunSceneBounds>>,
     sun_cache_guard_m: f32,
     sun_cache_anchor: std::sync::Mutex<crate::static_sun::GuardedAnchor>,
+    /// `KERN_WIND_FREEZE=start,end`: trees past `end` from every camera stand
+    /// still; with the static sun cache and a guard they are cached casters.
+    wind_freeze: Option<crate::wind::WindFreeze>,
+    /// Camera positions the frozen-tree partition was pinned around.
+    wind_freeze_pin: std::sync::Mutex<Option<Vec<Vec3>>>,
     sun_terrain_error: bool,
     sun_surface_source: bool,
     camera_sun_occlusion: bool,
@@ -1433,6 +1442,8 @@ impl Renderer {
             sun_guard_bounds,
             sun_cache_guard_m,
             sun_cache_anchor: Default::default(),
+            wind_freeze: crate::wind::WindFreeze::parse(std::env::var("KERN_WIND_FREEZE").ok().as_deref()),
+            wind_freeze_pin: Default::default(),
             sun_terrain_error: std::env::var("KERN_SUN_TERRAIN_ERROR").as_deref()==Ok("1"),
             sun_surface_source: std::env::var("KERN_SUN_SURFACE_SOURCE").as_deref()==Ok("1"),
             camera_sun_occlusion: std::env::var("KERN_CAMERA_SUN_OCCLUSION").as_deref()!=Ok("0"),
@@ -2526,6 +2537,37 @@ impl Renderer {
         // Content invalidation still redraws every moving caster. The 64 MiB
         // depth allocation survives wind, car motion and sun-box changes.
         let mut static_sun = self.static_sun.as_ref().map(|s| s.lock().unwrap());
+        // Wind freeze: one view-independent radius for every pass (wind.wgsl).
+        // More than four views would exceed the freeze uniform: keep wind.
+        let cameras: Vec<Vec3> = views.iter().map(|v| v.cam.pos).collect();
+        let wind_freeze = self.wind_freeze.filter(|_| cameras.len() <= crate::wind::MAX_FREEZE_CAMERAS);
+        if self.wind.set_freeze(gpu, wind_freeze, &cameras) {
+            self.invalidate_dynamic_shadow();
+        }
+        let mut wind_freeze_repinned = false;
+        if let (Some(freeze), Some(cache)) = (wind_freeze, static_sun.as_mut()) {
+            // Trees >= frozen_beyond + guard from the pinned cameras stay at
+            // rest while no camera has moved more than guard: re-pin first.
+            if self.sun_cache_guard_m > 0.0 {
+                let guard = self.sun_cache_guard_m;
+                let mut pin = self.wind_freeze_pin.lock().unwrap();
+                let stale = pin.as_ref().is_none_or(|p| p.len() != cameras.len()
+                    || p.iter().zip(&cameras).any(|(a, b)| glam::Vec2::new(a.x - b.x, a.z - b.z).length() > guard));
+                if stale {
+                    cache.pin_frozen_trees(gpu, &cameras, freeze.frozen_beyond + guard);
+                    *pin = Some(cameras.clone());
+                    wind_freeze_repinned = true;
+                }
+            }
+        } else if let Some(cache) = static_sun.as_mut() {
+            // More than four views disables the GPU freeze field. Previously
+            // pinned trees must resume dynamic shadows as well.
+            let mut pin = self.wind_freeze_pin.lock().unwrap();
+            if pin.take().is_some() {
+                cache.pin_frozen_trees(gpu, &[], 0.0);
+                wind_freeze_repinned = true;
+            }
+        }
         let mut static_targets = self.static_sun_targets.lock().unwrap();
         let mut cache = self.shadow_cache.lock().unwrap();
         let shadow_lod = light.lod_pixels * 2.0;
@@ -2552,6 +2594,7 @@ impl Renderer {
             static_sun_gpu_bytes: static_sun.as_ref().map_or(0,|s|s.gpu_bytes()),
             static_sun_casters: static_counts.static_casters, dynamic_sun_casters: static_counts.dynamic_casters,
             sun_cache_guard_m:self.sun_cache_guard_m, sun_cache_guard_recentered:guard_recentered,
+            wind_freeze_m: wind_freeze.map_or(0.0, |f| f.frozen_beyond), wind_freeze_repinned,
             shared_sun_extent_m:extent, shared_sun_texel_m:texel,
             ..Default::default()
         };

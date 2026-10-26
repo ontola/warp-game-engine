@@ -1,5 +1,11 @@
 # Bosrendering in Warp
 
+Actuele opt-in aanvulling, **26 oktober 2026**:
+[wind freeze en statische zoncache](wind-freeze-sun-cache-r52.md).
+Camera-Z, bewegende camera's en gewijzigde frozen owners zijn gecorrigeerd.
+Standaard uit; de gecorrigeerde vier-view-proef toont slechts een kleine,
+ongeisoleerde winst en gebruikt grovere gedeelde schaduwtexels. Geen promotie.
+
 Actuele aanvulling, **26 oktober 2026, r49**:
 [LOD-optiek en vraaggestuurde schaduwen](lod-shadow-demand-r49.md).
 De kleine schaduwproef behoudt gevraagde dieptetexels en eindbeelden exact bij
