@@ -132,22 +132,33 @@ fn tree_occluded(root:vec3<f32>,radius:f32)->bool {
     return false;
 }
 
-// Software raster (software_raster.wgsl): camera colour views only, opaque
-// non-grass clusters whose whole cull sphere projects to at most
-// view.grass.z pixels (0 = off) and lies well in front of the near plane.
+// Software raster (software_raster.wgsl, software_raster_depth.wgsl): camera
+// colour views and orthographic sun maps whose uniform sets view.grass.z
+// (0 = off) to the largest mean triangle size in pixels it accepts; opaque
+// non-grass clusters at most 64 px across whose bounding square per triangle
+// is within that, and, in perspective, well in front of the near plane.
 // Cull and scatter evaluate this identically from the same frame's data.
 fn software_cluster(id: u32, ci: u32) -> bool {
-    if !CLUSTER_BUCKETS || view.grass.z <= 0.0 || view.params.z > 0.5 || view.extra.y > 1.5 { return false; }
+    // Headlight shadows (perspective depth-only) stay on hardware.
+    if !CLUSTER_BUCKETS || view.grass.z <= 0.0 || (view.params.z < 0.5 && view.extra.y > 1.5) { return false; }
     let cl = clusters[ci];
     let inst = instances[id];
     if (cull_materials[cl.material].flags & 321u) != 0u || (inst.flags & 24u) != 0u
         || cull_voxel_replacement[id] != 0u { return false; }
     let c = to_world(inst, cl.cull.xyz);
     let r = cl.cull.w * inst.scale + cull_wind[id].z;
-    let d = distance(c, view.cam.xyz);
-    if d < r * 2.0 + view.params.y * 4.0 + 1.0 { return false; }
-    return 2.0 * r / (d - r) * view.cam.w <= view.grass.z;
+    // Orthographic sun maps: cam.w is pixels per metre at any distance.
+    var diameter = 2.0 * r * view.cam.w;
+    if view.params.z < 0.5 {
+        let d = distance(c, view.cam.xyz);
+        if d < r * 2.0 + view.params.y * 4.0 + 1.0 { return false; }
+        diameter = 2.0 * r / (d - r) * view.cam.w;
+    }
+    // Small triangles, not small clusters, waste hardware work: route by
+    // the cluster's bounding square per triangle, within a bounded footprint.
+    return diameter <= SOFTWARE_MAX_DIAMETER && diameter * diameter <= view.grass.z * f32(cl.tri_count);
 }
+const SOFTWARE_MAX_DIAMETER: f32 = 64.0;
 
 fn cluster_bucket(triangles: u32) -> u32 {
     if triangles <= 8u { return 0u; }

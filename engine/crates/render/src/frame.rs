@@ -386,6 +386,8 @@ pub struct FrameStats {
     pub clusters: u32,
     /// Of `clusters`, drawn by the software raster (last cull phase only).
     pub software_clusters: u32,
+    /// Shared sun map clusters drawn by the software raster (dynamic pass when split).
+    pub software_sun_clusters: u32,
     pub triangles: u32,
     /// Actual vertex invocations submitted by the opaque cluster draws.
     /// Includes padding, excludes later glass/grass/volume passes.
@@ -433,10 +435,18 @@ struct SoftwareRaster {
     merge: wgpu::RenderPipeline,
     merge_layout: wgpu::BindGroupLayout,
     targets: std::sync::Mutex<Vec<Option<SoftwareTargets>>>,
+    /// Depth-only sun maps: 32-bit atomics, merged with the Less test.
+    depth_pipeline: wgpu::ComputePipeline,
+    merge_depth: wgpu::RenderPipeline,
+    /// Keyed by the cull targets' args buffer (one per shadow map).
+    depth_targets: std::sync::Mutex<Vec<(wgpu::Buffer, SoftwareTargets)>>,
+    /// Slope-scale bias the hardware sun pipeline uses (receiver plane: 0).
+    sun_slope_bias: f32,
 }
 
 #[derive(Clone)]
 struct SoftwareTargets {
+    depth_only: bool,
     size: (u32, u32),
     vis64: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -1275,7 +1285,7 @@ impl Renderer {
             .then(|| raster_pipe(false, true));
         let raster_far_sun_depth=(far_sun.enabled || foliage_sun_pages.enabled).then(||raster_pipe(false,true));
         let software = std::env::var("KERN_SOFTWARE_RASTER").ok().and_then(|v| v.parse::<f32>().ok())
-            .filter(|px| px.is_finite() && *px > 0.0 && *px <= 64.0)
+            .filter(|px| px.is_finite() && *px > 0.0 && *px <= 4096.0)
             .and_then(|max_pixels| {
                 let needed = wgpu::Features::SHADER_INT64 | wgpu::Features::SHADER_INT64_ATOMIC_MIN_MAX;
                 if !gpu.features.contains(needed) {
@@ -1307,8 +1317,32 @@ impl Renderer {
                     multiview_mask: None,
                     cache: gpu.pipeline_cache(),
                 });
-                eprintln!("software raster: clusters up to {max_pixels} px wide");
-                Some(SoftwareRaster { max_pixels, pipeline, layout: view_layout, merge, merge_layout, targets: Default::default() })
+                let depth_source = format!("{}\n{}", crate::wind::common_source(), include_str!("shaders/software_raster_depth.wgsl"));
+                let depth_pipeline = compute(&pl(&[&scene_layout, &view_layout]), &module("software raster depth", &depth_source), "software_raster_depth");
+                let merge_depth_mod = module("software merge depth", include_str!("shaders/software_merge_depth.wgsl"));
+                let merge_depth = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("software merge depth"),
+                    layout: Some(&pl(&[&merge_layout])),
+                    vertex: wgpu::VertexState { module: &merge_depth_mod, entry_point: Some("merge_vs"), compilation_options: Default::default(), buffers: &[] },
+                    primitive: Default::default(),
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Less),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &merge_depth_mod, entry_point: Some("merge_depth_fs"), compilation_options: Default::default(), targets: &[],
+                    }),
+                    multiview_mask: None,
+                    cache: gpu.pipeline_cache(),
+                });
+                let sun_slope_bias = if std::env::var("KERN_SUN_RECEIVER_PLANE").as_deref() == Ok("1") { 0.0 } else { 2.0 };
+                eprintln!("software raster: triangles up to {max_pixels} px (clusters up to 64 px), camera views and sun maps");
+                Some(SoftwareRaster { max_pixels, pipeline, layout: view_layout, merge, merge_layout, targets: Default::default(),
+                    depth_pipeline, merge_depth, depth_targets: Default::default(), sun_slope_bias })
             });
         startup.mark("raster_shadow_pipelines");
         let sun_scene_bounds = (std::env::var("KERN_SUN_SCENE_DEPTH").as_deref() == Ok("1"))
@@ -1768,9 +1802,36 @@ impl Renderer {
             let view_bind = bind(gpu, &software.layout, &[(0, v.uniform.as_entire_binding()), (1, v.visible.as_entire_binding()),
                 (2, v.draw_map.as_entire_binding()), (3, v.args.as_entire_binding()), (4, vis64.as_entire_binding())]);
             let merge_bind = bind(gpu, &software.merge_layout, &[(0, vis64.as_entire_binding()), (1, dims.as_entire_binding())]);
-            targets[index] = Some(SoftwareTargets { size, vis64, bind: view_bind, merge_bind });
+            targets[index] = Some(SoftwareTargets { depth_only: false, size, vis64, bind: view_bind, merge_bind });
         }
         targets[index].clone()
+    }
+
+    /// Depth-only software targets for one square sun map, keyed by its cull
+    /// targets. None when the software raster is disabled.
+    fn software_depth_targets(&self, gpu: &Gpu, v: &ViewTargets, size: u32) -> Option<SoftwareTargets> {
+        let software = self.software.as_ref()?;
+        let mut all = software.depth_targets.lock().unwrap();
+        if let Some((_, t)) = all.iter().find(|(args, t)| *args == v.args && t.size == (size, size)) { return Some(t.clone()); }
+        all.retain(|(args, _)| *args != v.args);
+        let depth32 = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("software sun depth"),
+            size: u64::from(size) * u64::from(size) * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let dims = buffer(gpu, "software merge size", bytemuck::cast_slice(&[size, size, 0, 0]), wgpu::BufferUsages::UNIFORM);
+        let view_bind = bind(gpu, &software.layout, &[(0, v.uniform.as_entire_binding()), (1, v.visible.as_entire_binding()),
+            (2, v.draw_map.as_entire_binding()), (3, v.args.as_entire_binding()), (4, depth32.as_entire_binding())]);
+        let merge_bind = bind(gpu, &software.merge_layout, &[(0, depth32.as_entire_binding()), (1, dims.as_entire_binding())]);
+        let t = SoftwareTargets { depth_only: true, size: (size, size), vis64: depth32, bind: view_bind, merge_bind };
+        all.push((v.args.clone(), t.clone()));
+        Some(t)
+    }
+
+    /// Mark a sun-map uniform for the software raster (cull.wgsl reads
+    /// grass.z as the size limit and the depth raster grass.w as slope bias).
+    fn software_sun_uniform(&self, uniform: &mut ViewUniform) {
+        if let Some(software) = &self.software {
+            uniform.grass[2] = software.max_pixels;
+            uniform.grass[3] = software.sun_slope_bias;
+        }
     }
 
     fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool, software:Option<&SoftwareTargets>) {
@@ -1896,7 +1957,33 @@ impl Renderer {
         drop(pass);
         // Pixel-sized clusters the cull routed away from the buckets: raster
         // them in compute, then fold them into this view's visibility/depth.
-        if let (true, Some(raster), Some(targets), Some(color)) = (matches!(kind, RasterPass::Color), &self.software, software, color) {
+        let sun = matches!(kind, RasterPass::Sun | RasterPass::SunStatic(_) | RasterPass::SunDynamic(_));
+        if let (true, Some(raster), Some(targets), None) = (sun, &self.software, software.filter(|t| t.depth_only), color) {
+            if !append { enc.clear_buffer(&targets.vis64, 0, None); }
+            let t = tw(ts);
+            if t.is_some() { names.push("software sun raster"); }
+            {
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("software sun raster"),
+                    timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: None }) });
+                pass.set_pipeline(&raster.depth_pipeline);
+                pass.set_bind_group(0, scene_bind, &[]);
+                pass.set_bind_group(1, &targets.bind, &[]);
+                pass.dispatch_workgroups_indirect(&v.args, 80);
+            }
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("software sun merge"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+                timestamp_writes: t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: None, end_of_pass_write_index: Some(i + 1) }),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&raster.merge_depth);
+            pass.set_bind_group(0, &targets.merge_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        if let (true, Some(raster), Some(targets), Some(color)) = (matches!(kind, RasterPass::Color), &self.software, software.filter(|t| !t.depth_only), color) {
             if !append { enc.clear_buffer(&targets.vis64, 0, None); }
             let t = tw(ts);
             if t.is_some() { names.push("software raster"); }
@@ -2682,6 +2769,7 @@ impl Renderer {
         // Positive extra.z is the camera material mip-gradient scale.
         // Reserve negative values for sun demand without changing alpha mips.
         if self.receiver_demand.enabled() {shadow_uniform.extra[2]=-1.0;}
+        self.software_sun_uniform(&mut shadow_uniform);
         if draw_main_sun { gpu.queue.write_buffer(&shadow_t.uniform, 0, bytemuck::bytes_of(&shadow_uniform)); }
         if draw_static_sun {
             let target = static_targets.get_or_insert_with(||self.view_targets_capacity(gpu,"static shared sun",self.shadow_capacity,false,false));
@@ -2812,18 +2900,22 @@ impl Renderer {
             if let (Some(split),Some(plan)) = (static_sun.as_ref(),static_plan.as_ref()) {
                 if plan.redraw_static {
                     let depth = split.texture().create_view(&Default::default());
-                    self.cull_and_raster(&mut enc,gpu,static_targets.as_ref().unwrap(),None,&depth,
-                        &mut ts,&mut names,"static sun cull",RasterPass::SunStatic(static_counts.static_casters));
+                    let targets = static_targets.as_ref().unwrap();
+                    let software = self.software_depth_targets(gpu, targets, SHADOW_SIZE);
+                    self.cull_and_raster_pass(&mut enc,gpu,targets,None,&depth,
+                        &mut ts,&mut names,"static sun cull",RasterPass::SunStatic(static_counts.static_casters),None,false,software.as_ref());
                 }
                 let copy_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS))
                     .map(|(qs,_,_)|(qs,timestamp_pair(&mut ts)));
                 if let Some((qs,index)) = copy_time { names.push("static sun depth seed"); enc.write_timestamp(qs,index); }
                 split.encode_seed(&mut enc,&cache.as_ref().unwrap().tex,plan)?;
                 if let Some((qs,index)) = copy_time { enc.write_timestamp(qs,index+1); }
-                self.cull_and_raster(&mut enc,gpu,&shadow_t,None,&shadow_v,
-                    &mut ts,&mut names,"dynamic sun cull",RasterPass::SunDynamic(static_counts.dynamic_casters));
+                let software = self.software_depth_targets(gpu, &shadow_t, SHADOW_SIZE);
+                self.cull_and_raster_pass(&mut enc,gpu,&shadow_t,None,&shadow_v,
+                    &mut ts,&mut names,"dynamic sun cull",RasterPass::SunDynamic(static_counts.dynamic_casters),None,false,software.as_ref());
             } else {
-                self.cull_and_raster(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun);
+                let software = self.software_depth_targets(gpu, &shadow_t, SHADOW_SIZE);
+                self.cull_and_raster_pass(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun,None,false,software.as_ref());
             }
         }
         if far_updated {
@@ -2904,9 +2996,11 @@ impl Renderer {
                 configure_sun_terrain_error(&mut near_uniform,self.sun_terrain_error);
                 near_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
                 if self.receiver_demand.enabled() {near_uniform.extra[2]=-((vi+2)as f32);}
+                self.software_sun_uniform(&mut near_uniform);
                 gpu.queue.write_buffer(&near.targets.uniform, 0, bytemuck::bytes_of(&near_uniform));
                 let texture_view = near.tex.create_view(&Default::default());
-                self.cull_and_raster(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull",RasterPass::Sun);
+                let software = self.software_depth_targets(gpu, &near.targets, NEAR_SHADOW_SIZE);
+                self.cull_and_raster_pass(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull",RasterPass::Sun,None,false,software.as_ref());
                 view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
                 view_light.near_shadow[2] = 1.0;
                 texture_view
@@ -3341,8 +3435,9 @@ impl Renderer {
         let page_counter_index=far_counter_index+usize::from(self.far_sun.enabled);
         let static_counter_index=page_counter_index+page_plan.updates.len();
         let software_counter_index=static_counter_index+usize::from(static_sun.is_some());
-        let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16 * (software_counter_index+views.len()) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16 * (software_counter_index+views.len()+1) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         if sun_needed { enc.copy_buffer_to_buffer(&shadow_t.counter, 0, &counters, 0, 16); }
+        if sun_needed && self.software.is_some() { enc.copy_buffer_to_buffer(&shadow_t.args, 96, &counters, 16 * (software_counter_index + views.len()) as u64, 4); }
         if sun_needed {if let Some(target)=static_targets.as_ref() {
             enc.copy_buffer_to_buffer(&target.counter,0,&counters,16*static_counter_index as u64,16);
         }}
@@ -3450,6 +3545,7 @@ impl Renderer {
                 (sc.clusters, sc.triangles) = (c[0], c[1]);
                 sc.submitted_vertices = c[2];
                 stats.shadow_clusters = sc.clusters;
+                if self.software.is_some() && draw_main_sun { stats.software_sun_clusters = c[4 * (software_counter_index + views.len())]; }
                 stats.shadow_triangles = sc.triangles;
                 stats.shadow_submitted_vertices = if draw_main_sun { sc.submitted_vertices as u64 } else { 0 };
                 if static_sun.is_some() {
@@ -4118,6 +4214,8 @@ mod software_raster_tests {
         for (name, source) in [
             ("software raster", format!("{}\n{}", crate::wind::common_source(), include_str!("shaders/software_raster.wgsl"))),
             ("software merge", include_str!("shaders/software_merge.wgsl").to_string()),
+            ("software raster depth", format!("{}\n{}", crate::wind::common_source(), include_str!("shaders/software_raster_depth.wgsl"))),
+            ("software merge depth", include_str!("shaders/software_merge_depth.wgsl").to_string()),
         ] {
             let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(&source)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
@@ -4129,7 +4227,7 @@ mod software_raster_tests {
     fn cull_and_raster_agree_on_the_extended_args_layout() {
         // Hardware draws/starts (0..20), software dispatch (20..23), start
         // (23) and count (24): all three shaders and the buffer must agree.
-        for source in [include_str!("shaders/cull.wgsl"), include_str!("shaders/raster.wgsl"), include_str!("shaders/software_raster.wgsl")] {
+        for source in [include_str!("shaders/cull.wgsl"), include_str!("shaders/raster.wgsl"), include_str!("shaders/software_raster.wgsl"), include_str!("shaders/software_raster_depth.wgsl")] {
             assert!(source.contains("array<u32, 25>"));
         }
         assert!(include_str!("frame.rs").contains("label: Some(\"args\"), size: 100,"));
