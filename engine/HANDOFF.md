@@ -7,7 +7,26 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r52 roadside terrain wedges
+## Latest status — r53 false roadside sun shadow
+
+See [r53 diagnosis and validation](docs/roadside-shadow-r53.md). The disappearing
+black wedge is a separate road-caster CLOD mismatch: a coarse triangle bridged
+45 m above the exact shoulder. Warp now offers generic cooking-time vertex
+constraints; Sideways preserves the full joining shoulder in every cut.
+Source/collision geometry and sun bias/filter/strength are unchanged.
+CPU false-hit counts drop 69→0 and 106→0 in the two captures. Matched GPU
+views at 0/8/16 m, grass-off, and the exact second camera remove the wedge.
+6 engine cluster, 183 CLI and 22 replay tests pass; one CLI diagnostic ignored.
+F12 replay now accepts explicit bounded --pick x,y and reports shadow counts.
+The single-view 4K-output/DLSS Quality hidden ABBA measures shadow cull+raster
+0.913→0.919 ms and total covered interval 21.794→22.419 ms; no FPS improvement
+or four-player result is claimed. See the doc for sample counts and limits.
+Evidence: `C:/dev/perf/warp-sideways-20261026/r53-roadside-shadow/`.
+Game SHA256: `ccfbb7c9376db5800e4470edbbada3c984095617a5545cd37eb23f37c0a7bcb6`.
+Interactive launch: `games/sideways/build/dev-runs/20261026T192639759Z-155c7fd7/iteration.json`.
+Do not compete with that playtest for the GPU. Prior r52 process has exited.
+
+## Previous status — r52 roadside terrain wedges
 
 See [r52 diagnosis and validation](docs/roadside-verge-r52.md). A 55 cm ditch
 was too narrow for the 2 m terrain grid, causing the repeated roadside pits
