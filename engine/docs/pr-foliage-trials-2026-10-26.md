@@ -3,9 +3,11 @@
 Status: the corrected local integration passes **517 renderer tests and 187 CLI
 tests, with 1 ignored in each suite**. Its release build completed in **102 s**.
 These checks cover CPU invariants, shader validation and compilation, not GPU
-performance or visual acceptance. Eight original-PR GPU runs are complete below;
-corrected-integration GPU results remain pending. No experimental rendering
-default is promoted here.
+performance or visual acceptance. Eight original-PR GPU runs and five completed
+corrected-integration runs are recorded below; the combined opaque case failed.
+No experimental rendering default is promoted here. This report records the
+trial branch state at that time; subsequent PR disposition and experiments are
+tracked in the [ordered budget plan](four-view-budget-plan-r55.md).
 
 ## Scope and defaults
 

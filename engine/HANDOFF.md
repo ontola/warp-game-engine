@@ -7,7 +7,41 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r53 false roadside sun shadow
+## Latest status — r55/r56 four-view budget decision gate
+
+Read [the ordered plan](docs/four-view-budget-plan-r55.md),
+[resolution sweep](docs/resolution-sweep-r55.md), and
+[grass experiment](docs/meadow-band-r56.md) before doing further GPU work.
+Branch `codex/fourview-budget-20261026` contains the diagnostics and opt-in
+source-band control; implementation commit `9329d2f` built the frozen r56 exe.
+PR 4 is draft, PR 6 remains unmerged/opt-in with raw visibility/depth comparison
+pending, and corrected PR 5 merged separately to main as `8c62e47` with all
+experimental switches still off. Neither PR 4 nor PR 6 is in the r56 executable.
+
+Nine no-code DLSS runs and six grass A/B/A/B/A/B runs completed. Four-player
+4K-output/DLSS Performance with a 40-50 m source band measures 26.947/33.351 ms
+in the two route sections; default 60-80 m in the same executable measures
+27.604/34.126 ms. Grass alone is 6.500/8.950 ms. All are medians of three run
+medians of hidden synchronized GPU intervals, not typical gameplay FPS.
+Do not attribute the old 48.8 ms baseline drop to code: identical input/exe
+measurements shifted between sessions with no historical clock/load telemetry.
+
+The user's decision gate is now triggered: discuss a quality tier or target
+before steps 3-4/deeper renderer rewrites. 120 FPS remains the target; no new
+graphics defaults are accepted. The aggregate's world resources are shared,
+but its depth/coverage/lighting remain per-camera; shared source pooling is
+deferred, not implemented. Preview A/B checks are limited to downsized stills;
+moving transitions remain unaccepted. Do not start an interactive playtest.
+
+Validation: 514 renderer and 185 CLI tests pass, one ignored in each; release
+build took 95 s. r56 executable SHA-256:
+`4878f5971e4b41b385e3ae9dc337fd3be9d0eac42ee118fb89592c8cdcbe2be8`.
+Evidence: `C:/dev/perf/warp-sideways-20261026/r55-resolution-grass/` and
+`C:/dev/perf/warp-sideways-20261026/r56-meadow-band/`. Both experiments finished;
+no game/benchmark session is intentionally left running. Execution/playtest
+instructions in older sections below are historical, superseded by this status.
+
+## Previous status — r53 false roadside sun shadow
 
 See [r53 diagnosis and validation](docs/roadside-shadow-r53.md). The disappearing
 black wedge is a separate road-caster CLOD mismatch: a coarse triangle bridged

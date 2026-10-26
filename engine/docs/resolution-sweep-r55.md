@@ -1,6 +1,6 @@
 # DLSS resolution sweep — r55
 
-Completed no-code resolution experiment, 26 October 2026. No renderer setting or source change was promoted. The measured four-view GPU interval remains above 25 ms even in Performance mode; the planned shorter source-grass band has **not** been tested yet. The decision gate after both experiments remains pending.
+Completed no-code resolution experiment, 26 October 2026. No renderer setting or source change was promoted. The measured four-view GPU interval remains above 25 ms even in Performance mode. The subsequent [r56 grass experiment](meadow-band-r56.md) also remains above the decision gate; deeper renderer rewrites await the target/quality-tier discussion.
 
 ## Reproducible scope
 
@@ -97,7 +97,7 @@ Viewed Q/B/P contacts at frames 240 and 480 for views 0 and 3, plus both same-Qu
 
 These are 1600×900 JPEG previews downsampled from 4K, not native-resolution images or a motion review. They cannot establish final reconstruction quality, temporal stability or exact pixel parity. Quality-repeat mean absolute channel differences are 0.477–0.492/255; Q/B is 3.877–3.904 and Q/P 5.312–5.346. Same-mode noise is reported as a control, not used to waive differences. No quality-default promotion follows from these previews alone.
 
-Next is the separately controlled shorter source-grass handoff experiment, preserving distant coverage. Only then apply the [four-view budget plan](four-view-budget-plan-r55.md) decision gate: if Performance plus the grass changes still exceeds roughly 25 ms, discuss the target/quality tier before deeper rewrites. The 8.33-ms objective remains unmet.
+The separately controlled [r56 shorter source-grass handoff experiment](meadow-band-r56.md) preserves distant coverage. Its result triggers the [four-view budget plan](four-view-budget-plan-r55.md) decision gate: Performance plus the grass changes still exceeds roughly 25 ms, so discuss the target/quality tier before deeper rewrites. The 8.33-ms objective remains unmet.
 
 ## Evidence
 
