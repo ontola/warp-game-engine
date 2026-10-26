@@ -1981,6 +1981,9 @@ impl Renderer {
     /// Failure leaves all live pipelines and temporal histories unchanged.
     /// Wind deformation/layout changes require a renderer rebuild.
     pub fn reload_shaders(&mut self, gpu: &Gpu) -> Result<bool, String> {
+        if self.foliage_world.is_some() {
+            return Err("experimental world foliage currently requires a renderer rebuild for shader changes; no lighting pipelines were reloaded".into());
+        }
         if self.meadow.is_some() {
             return Err("procedural meadow currently requires a renderer rebuild for shader changes; no lighting pipelines were reloaded".into());
         }
@@ -2876,7 +2879,7 @@ impl Renderer {
                     let time=self.query.as_ref().map(|(qs,_,_)| {names.push("world foliage select");(qs,timestamp_pair(&mut ts))});
                     selector.encode(gpu,&mut enc,&self.instance_groups.owners,&main.spatial_owners,self.source_readiness.as_ref().unwrap(),
                         crate::source_replacement::View {view_projection:proj*view_m,output_size:[view.w,view.h],max_error_pixels:self.foliage_world_error_pixels,
-                            generation:(render_sequence as u32).max(1),enabled:self.foliage_world_enabled.load(std::sync::atomic::Ordering::Relaxed),
+                            generation:(render_sequence as u32).wrapping_add(1).max(1),enabled:self.foliage_world_enabled.load(std::sync::atomic::Ordering::Relaxed),
                             native_supported:!dlss_on&&!taa_on&&self.foliage_world_valid.load(std::sync::atomic::Ordering::Relaxed),optical_opt_in:true},time)?;
                 }
                 self.tree_cull_and_raster(&mut enc,gpu,&main,&vis_v,&depth_v,vi,(w,h),&mut ts,&mut names);
@@ -2885,7 +2888,7 @@ impl Renderer {
                     let time=self.query.as_ref().map(|(qs,_,_)| {names.push("world foliage select");(qs,timestamp_pair(&mut ts))});
                     selector.encode(gpu,&mut enc,&self.instance_groups.owners,&main.spatial_owners,self.source_readiness.as_ref().unwrap(),
                         crate::source_replacement::View {view_projection:proj*view_m,output_size:[view.w,view.h],max_error_pixels:self.foliage_world_error_pixels,
-                            generation:(render_sequence as u32).max(1),enabled:self.foliage_world_enabled.load(std::sync::atomic::Ordering::Relaxed),
+                            generation:(render_sequence as u32).wrapping_add(1).max(1),enabled:self.foliage_world_enabled.load(std::sync::atomic::Ordering::Relaxed),
                             native_supported:!dlss_on&&!taa_on&&self.foliage_world_valid.load(std::sync::atomic::Ordering::Relaxed),optical_opt_in:true},time)?;
                 }
                 self.cull_and_raster(&mut enc, gpu, &main, Some(&vis_v), &depth_v, &mut ts, &mut names, "cull",RasterPass::Color);
