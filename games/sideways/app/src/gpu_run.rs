@@ -142,6 +142,10 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
     let t = render::Stopwatch::start();
     let renderer = render::Renderer::new(gpu, &setup.scene, &setup.light);
     renderer.set_headlights(&setup.headlights)?;
+    renderer.set_local_lights(&setup.local_lights)?;
+    // A held backfire must keep its visible sprite and local light together.
+    // Both come from the same fixed simulation tick prepared by shot.
+    renderer.set_exhaust(gpu,&setup.exhaust)?;
     renderer.set_upscale(gpu,args.upscale)?;
     renderer.set_wind(gpu,&setup.wind)?;
     renderer.set_frame_time_ms(1000.0/60.0);

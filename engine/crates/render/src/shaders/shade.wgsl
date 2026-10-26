@@ -1521,7 +1521,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
     } else {
         direct += headlight_radiance(p,n,v,diffuse,rough,f0);
     }
-    var rad = direct + indirect + specular + car_lamp_emission(m.flags, base);
+    var rad = direct + indirect + specular + car_lamp_emission(m.flags, base, inst, p);
     rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
     if light.sky.z > 0.5 && light.sky.z < 1.5 {

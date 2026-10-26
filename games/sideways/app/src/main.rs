@@ -24,6 +24,7 @@ mod play;
 mod engine_debug;
 mod debug_environment;
 mod tree_tuning;
+mod render_baseline;
 mod procedural_rocks;
 mod procedural_sky;
 mod roadside_crowds;

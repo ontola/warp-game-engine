@@ -274,6 +274,25 @@ fn lighting_metadata(light:&Lighting)->serde_json::Value {
         "gi":light.gi,"contact_occlusion":light.contact_occlusion,"reflection_occlusion":light.reflection_occlusion,"ev100":light.ev100})
 }
 
+pub(crate) fn rear_light_state(gear:i32,manual:bool,hold:bool,brake:f64,throttle:f64)->crate::car_headlights::RearLightState {
+    // Same effective pedal as Car::drive and the original emissive rear lenses:
+    // automatic reverse swaps the driving/braking pedals; hold is a full brake.
+    let foot=if hold {1.0}else if gear>0||manual {brake}else{throttle};
+    crate::car_headlights::RearLightState {brake:if foot.is_finite(){foot.clamp(0.0,1.0) as f32}else{0.0},reverse:gear<0}
+}
+
+pub(crate) fn local_lights_metadata(lights:&[render::headlights::LocalLight],vehicle_count:usize)->serde_json::Value {
+    serde_json::json!({"mode":"bounded unshadowed direct vehicle and exhaust spill",
+        "enabled":!lights.is_empty(),"vehicle_count":vehicle_count,"exhaust_count":lights.len().saturating_sub(vehicle_count),
+        "rear_lamp_policy":crate::car_headlights::local_metadata(),
+        "lights":lights.iter().enumerate().map(|(i,l)|serde_json::json!({
+            "source":if i<vehicle_count {"rear_lamp"}else{"exhaust_flash"},
+            "position":l.position.to_array(),"direction":l.direction.to_array(),"intensity_cd":l.intensity_cd.to_array(),
+            "range_m":l.range_m,"inner_cos":l.inner_cos,"outer_cos":l.outer_cos,"source_radius_m":l.source_radius_m
+        })).collect::<Vec<_>>(),
+        "limits":["direct spill only; no local shadow, bounce or atmospheric scattering","nearby occluders can leak these short-range lights"]})
+}
+
 struct LiveGpu {
     instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
@@ -484,7 +503,9 @@ impl App {
         let ordered:Vec<_>=self.view_order.iter().filter_map(|i|cams.get(*i)).take(self.args.views).collect();
         let positions:Vec<_>=if ordered.is_empty(){cams.iter().take(self.args.views).map(|c|c.pos).collect()}else{ordered.iter().map(|c|c.pos).collect()};
         self.built = visuals::build_live(&self.race.stage, &poses, &positions, self.live_edit.looks())?;
-        self.tree_baseline=None;self.debug.reset_tree_stage();
+        let tree_settings=self.debug.applied_tree_settings();
+        let baseline=crate::tree_tuning::Baseline::prepare_optional_stage(&mut self.built.scene,&mut self.race.phys,tree_settings)?;
+        let tree_report=crate::tree_tuning::Baseline::stage_metadata(baseline.as_ref(),tree_settings);self.tree_baseline=baseline;
         for line in &self.built.log { eprintln!("scene rebuild: {line}"); }
         self.light = lighting(self.race.weather);
         self.sky_metadata = match self.sky_controls.restore(&mut self.built.scene,&mut self.light) {
@@ -497,6 +518,7 @@ impl App {
             g.renderer = renderer;
             self.debug.reset_measurements(self.rendered);self.debug.gpu_unavailable=false;
         }
+        self.debug.tree_committed(tree_settings,tree_report);
         self.last_frame = Instant::now(); self.accumulator = 0.0;
         Ok(())
     }
@@ -679,7 +701,8 @@ impl App {
         let seats=self.host.as_ref().map(|h|h.state.seats()).filter(|s|!s.is_empty()).unwrap_or_else(||self.seats.clone());
         let views=seats.len().clamp(1,4);settings.bots=views;
         let request=stage_loading::Request {seed:stage_loading::Seed::next(&self.race,settings),seats,views,settings:values,
-            looks:self.live_edit.looks().clone(),sky:self.sky_controls.applied_snapshot(),upscale:self.args.upscale};
+            looks:self.live_edit.looks().clone(),sky:self.sky_controls.applied_snapshot(),upscale:self.args.upscale,
+            tree_settings:self.debug.applied_tree_settings()};
         let loading=stage_loading::Loading::new(request);
         {
             let mut p=loading.progress.lock().unwrap_or_else(|e|e.into_inner());
@@ -780,7 +803,9 @@ impl App {
                 Ok(loaded)=>{
                     let installing=Instant::now();
                     self.race=loaded.race;self.built=loaded.built;self.light=loaded.light;self.sky_metadata=loaded.sky;
-                    self.tree_baseline=None;self.debug.reset_tree_stage();
+                    let tree_report=crate::tree_tuning::Baseline::stage_metadata(loaded.tree_baseline.as_ref(),loaded.tree_settings);
+                    self.tree_baseline=loaded.tree_baseline;
+                    self.debug.tree_committed(loaded.tree_settings,tree_report);
                     self.exhaust=crate::exhaust_fx::ExhaustFx::new(self.args.seed);self.exhaust.step(&self.race);
                     self.wheel_effects=crate::wheel_effects::WheelEffects::new(self.args.seed);self.wheel_effects.step(&self.race);
                     self.graphics.as_mut().ok_or("GPU missing at stage commit")?.renderer=loaded.renderer;
@@ -1180,6 +1205,17 @@ impl App {
         let headlight_indices:Vec<_>=if self.view_order.is_empty(){(0..views.len()).collect()}else{self.view_order.iter().copied().take(views.len()).collect()};
         let headlights=if self.debug.options.headlights_enabled {crate::car_headlights::from_poses(&poses,&headlight_indices,&render_light)}else{vec![]};
         g.renderer.set_headlights(&headlights)?;
+        let rear_states:Vec<_>=self.race.players.iter().map(|p|{
+            let c=&p.car;rear_light_state(c.gear,c.manual,c.hold,c.brake,c.throttle)
+        }).collect();
+        let mut local_lights=if self.debug.options.headlights_enabled {
+            crate::car_headlights::local_from_poses(&poses,&headlight_indices,&render_light,&rear_states)
+        }else{vec![]};
+        let vehicle_local_light_count=local_lights.len();
+        if self.debug.options.exhaust_enabled {local_lights.extend(self.exhaust.lights());}
+        // Upload the empty list too, so releasing a pedal/flash or disabling a
+        // feature cannot reuse the previous frame's illumination.
+        g.renderer.set_local_lights(&local_lights)?;
         g.renderer.set_exhaust(&g.gpu,&self.exhaust.sprites())?;
         self.wheel_effects.upload(&g.gpu,&mut g.renderer)?;
         g.renderer.set_lighting_focus(&headlight_indices.iter().filter_map(|i|poses.get(*i).map(|p|p.pos)).collect::<Vec<_>>())?;
@@ -1328,6 +1364,7 @@ impl App {
                 "views":views.iter().map(|v|serde_json::json!({"rect":[v.x,v.y,v.w,v.h],"position":v.cam.pos.to_array(),"target":v.cam.target.to_array(),"fov_y":v.cam.fov_y})).collect::<Vec<_>>(),
                 "player_positions":poses.iter().map(|p|p.pos.to_array()).collect::<Vec<_>>(),"sky":self.sky_metadata,
                 "headlights":crate::car_headlights::metadata_for_poses(&headlights,&poses,&headlight_indices),
+                "local_lights":local_lights_metadata(&local_lights,vehicle_local_light_count),
                 "sun_direction":render_light.sun_dir.to_array(),"sun_lux":render_light.sun_lux,"sky_lux":render_light.sky_lux,"ev100":render_light.ev100,
                 "scope":"Actual frame captured from the shared scenario renderer; capture readback is synchronous and excluded from steady-frame summaries."});
             std::fs::write(path.with_extension("json"),serde_json::to_vec_pretty(&metadata).unwrap()).map_err(|e|format!("scenario capture metadata: {e}"))?;
@@ -1390,6 +1427,7 @@ impl App {
                     "reflection_occlusion":render_light.reflection_occlusion,"near_shadows":render_light.near_shadows,"debug":render_light.debug},
             });
             metadata["render"]["engine_debug"]=self.debug.metadata();
+            metadata["render"]["local_lights"]=local_lights_metadata(&local_lights,vehicle_local_light_count);
             metadata["render"]["render_lighting"]=lighting_metadata(&render_light);
             metadata["render"]["tree_source"]=self.built.tree_source.clone();
             metadata["render"]["camera_sun_occlusion"]=serde_json::json!(std::env::var("KERN_CAMERA_SUN_OCCLUSION").as_deref()!=Ok("0"));
@@ -1555,6 +1593,7 @@ pub fn run(raw:&[String])->i32{
     let scenario_config=match scenario_config {Ok(value)=>value,Err(error)=>{eprintln!("play: {error}");return 2;}};
     let effective=match scenario_config.as_ref().map(|s|s.arguments(raw)).transpose(){Ok(args)=>args.unwrap_or_else(||raw.to_vec()),Err(error)=>{eprintln!("play: {error}");return 2;}};
     let a=match args(&effective){Ok(a)=>a,Err(e)=>{eprintln!("play: {e}");return 2;}};
+    let mut debug=match crate::engine_debug::EngineDebug::new(a.debug_ui,a.debug_ui_script.as_deref()) {Ok(ui)=>ui,Err(error)=>{eprintln!("debug UI / saved baseline: {error}");return 2;}};
     let render_diagnostic=match render::geometry_diagnostics::Config::from_environment() {
         Ok(config)=>render_diagnostic::config(&config),Err(error)=>{eprintln!("play: {error}");return 2;}
     };
@@ -1581,6 +1620,11 @@ pub fn run(raw:&[String])->i32{
     let looks=match crate::car_look::Looks::load(None,vec![]){Ok(l)=>l,Err(e)=>{eprintln!("play: {e}");return 2;}};
     startup_timing.mark("initial_camera_and_materials");
     let mut built=match visuals::build_live(&race.stage,&poses,&cams.iter().take(a.views).map(|c|c.pos).collect::<Vec<_>>(),&looks){Ok(b)=>b,Err(e)=>{eprintln!("play scene: {e}");return 1;}};
+    let tree_settings=debug.applied_tree_settings();
+    let tree_baseline=match crate::tree_tuning::Baseline::prepare_optional_stage(&mut built.scene,&mut race.phys,tree_settings) {
+        Ok(baseline)=>baseline,Err(error)=>{eprintln!("play tree baseline: {error}");return 1;}
+    };
+    debug.tree_committed(tree_settings,crate::tree_tuning::Baseline::stage_metadata(tree_baseline.as_ref(),tree_settings));
     startup_timing.mark("initial_scene_cpu");
     for line in &built.log { eprintln!("scene initial: {line}"); }
     let mut light=lighting(race.weather);
@@ -1601,9 +1645,8 @@ pub fn run(raw:&[String])->i32{
     let ambient_clock=AmbientClock::new(a.smoke_frames>0||scenario.is_some());
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
-    let debug=match crate::engine_debug::EngineDebug::new(a.debug_ui,a.debug_ui_script.as_deref()) {Ok(ui)=>ui,Err(error)=>{eprintln!("debug UI: {error}");return 2;}};
     let start_paused=a.start_paused;
-    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline:None,tree_loading:None,tree_loading_settings:Default::default(),last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,deferred_host:vec![],smoke_stage_requested:false};
+    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,deferred_host:vec![],smoke_stage_requested:false};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");
@@ -1613,6 +1656,25 @@ pub fn run(raw:&[String])->i32{
     if let Some(profile)=&mut app.frame_profile {if let Err(error)=profile.finish(){eprintln!("play: {error}");return 1;}}
     app.startup_timing.emit("run_end",serde_json::json!({"rendered_frames":app.rendered,"presented_frames":app.presented,"exit_reason":app.exit_reason,"error":app.error}));
     if let Some(e)=app.error{eprintln!("play: {e}");1}else{0}
+}
+
+#[cfg(test)]
+mod local_light_tests {
+    use super::*;
+    #[test]
+    fn rear_spill_follows_effective_pedal_and_release_without_history() {
+        assert_eq!(rear_light_state(1,false,false,0.6,0.0).brake,0.6);
+        assert_eq!(rear_light_state(-1,false,false,1.0,0.0).brake,0.0);
+        assert_eq!(rear_light_state(-1,false,false,0.0,0.7).brake,0.7);
+        assert_eq!(rear_light_state(-1,true,false,0.4,1.0).brake,0.4);
+        assert_eq!(rear_light_state(1,false,true,0.0,0.0).brake,1.0);
+        assert_eq!(rear_light_state(1,false,false,f64::NAN,0.0).brake,0.0);
+        assert!(!rear_light_state(1,false,false,0.0,0.0).reverse);
+        assert!(rear_light_state(-1,false,false,0.0,0.0).reverse);
+        let empty=local_lights_metadata(&[],0);
+        assert_eq!(empty["enabled"],false);assert_eq!(empty["vehicle_count"],0);assert_eq!(empty["exhaust_count"],0);
+        assert_eq!(empty["lights"].as_array().unwrap().len(),0);
+    }
 }
 
 #[cfg(test)]

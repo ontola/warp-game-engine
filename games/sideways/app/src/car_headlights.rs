@@ -1,7 +1,7 @@
 //! Bounded car-only night lights: two physical front lamps per human car.
 //! Visual light intensity is a tuning value, not a homologated beam model.
 use glam::Vec3;
-use render::{Lighting,headlights::SpotLight};
+use render::{Lighting,headlights::{LocalLight,SpotLight}};
 use crate::visuals::CarPose;
 
 const MAX_CARS:usize=4;
@@ -69,6 +69,92 @@ pub fn from_poses(poses:&[CarPose],human_indices:&[usize],light:&Lighting)->Vec<
             inner_angle_radians:17.0f32.to_radians(),outer_angle_radians:32.0f32.to_radians()})
     }).collect()
 }
+
+/// Effective foot-brake amount and gear state, indexed by the original car
+/// index. The caller applies automatic-reverse pedal mapping, just as it does
+/// for the visible rear lenses. This adapter retains no light/event history.
+#[derive(Clone,Copy,Debug,Default,PartialEq)]
+pub struct RearLightState {pub brake:f32,pub reverse:bool}
+
+#[derive(Clone,Copy)]
+struct RearMounts {red:[Vec3;2],reverse:[Vec3;2]}
+
+/// Points on the same imported triangles selected by car_model::rear_lens_role.
+/// XY comes from each lens region; Z is its actual triangle intersection.
+/// Atlas red/clear regions were identified from the original base-colour map.
+/// Unknown models have no known emitting lenses, so they get no guessed spill.
+fn model_rear_lenses(model:&str)->Option<RearMounts> {
+    match model.rsplit(['/', '\\']).next().unwrap_or("") {
+        "asti_stradale.glb"=>Some(RearMounts {
+            red:[Vec3::new(-0.705000,0.320000,1.834089),Vec3::new(0.710000,0.310000,1.833807)],
+            reverse:[Vec3::new(-0.602490,0.325074,1.855777),Vec3::new(0.606913,0.317301,1.855777)]}),
+        "mv6.glb"=>Some(RearMounts {
+            red:[Vec3::new(-0.720000,0.414000,1.856082),Vec3::new(0.720000,0.414000,1.855998)],
+            reverse:[Vec3::new(-0.747866,0.584852,1.823039),Vec3::new(0.747649,0.584853,1.823039)]}),
+        "toyama_xr.glb"=>Some(RearMounts {
+            red:[Vec3::new(-0.668736,0.524098,2.032834),Vec3::new(0.658270,0.524098,2.032834)],
+            reverse:[Vec3::new(-0.488722,0.411710,2.100906),Vec3::new(0.478256,0.411710,2.100906)]}),
+        _=>None,
+    }
+}
+
+const TAIL_INTENSITY_CD:f32=2.5;
+const BRAKE_INTENSITY_CD:f32=32.0;
+const REVERSE_PAIR_INTENSITY_CD:f32=100.0;
+const TAIL_RANGE_M:f32=2.2;
+const BRAKE_RANGE_M:f32=3.2;
+const REVERSE_RANGE_M:f32=5.0;
+const REAR_DOWN_RADIANS:f32=10.0*std::f32::consts::PI/180.0;
+const REAR_OUTER_RADIANS:f32=78.0*std::f32::consts::PI/180.0;
+
+/// Short, unshadowed direct spill: two red lenses and at most one merged
+/// reverse-pair light per selected car. Four cars leave four of the sixteen
+/// local-light slots available for actual exhaust flashes. No extra shadow
+/// maps or GI are created. Finite rear-facing cones avoid illuminating ahead
+/// through the car; nearby walls/terrain can still leak unshadowed light.
+/// Intensities are art tuning in candela, not measured vehicle photometry.
+pub fn local_from_poses(poses:&[CarPose],human_indices:&[usize],light:&Lighting,states:&[RearLightState])->Vec<LocalLight> {
+    let tail=if active(light){TAIL_INTENSITY_CD}else{0.0};
+    let mut result=Vec::with_capacity(MAX_CARS*3);
+    for (index,p) in selected_cars(poses,human_indices).into_iter().flatten() {
+        let Some(mounts)=model_rear_lenses(&p.model)else{continue};
+        let state=states.get(index).copied().unwrap_or_default();
+        let brake=if state.brake.is_finite()&&state.brake>0.02 {state.brake.clamp(0.0,1.0)}else{0.0};
+        let red=tail+(BRAKE_INTENSITY_CD-tail)*brake;
+        let direction=p.rot*Vec3::new(0.0,-REAR_DOWN_RADIANS.sin(),REAR_DOWN_RADIANS.cos());
+        let make=|mount:Vec3,intensity_cd:Vec3,range_m:f32,source_radius_m:f32|LocalLight {
+            position:p.pos+p.rot*(mount+Vec3::new(0.0,p.ride,LENS_CLEARANCE_M)),
+            direction,intensity_cd,range_m,source_radius_m,
+            inner_cos:40.0f32.to_radians().cos(),outer_cos:70.0f32.to_radians().cos(),
+        };
+        if red>0.0 {
+            // A visible lamp is much brighter than its nearby spill. Preserve
+            // a broad, soft rear wash rather than two headlight-like beams.
+            let range=TAIL_RANGE_M+(BRAKE_RANGE_M-TAIL_RANGE_M)*brake;
+            result.extend(mounts.red.map(|mount|LocalLight {
+                inner_cos:30.0f32.to_radians().cos(),outer_cos:REAR_OUTER_RADIANS.cos(),
+                ..make(mount,Vec3::new(1.0,0.008,0.003)*red,range,0.06)
+            }));
+        }
+        if state.reverse {
+            // One explicitly combined emitter bounds the cost of two clear
+            // lenses. Its centre is between their measured source mounts.
+            result.push(make((mounts.reverse[0]+mounts.reverse[1])*0.5,
+                Vec3::new(1.0,0.94,0.82)*REVERSE_PAIR_INTENSITY_CD,REVERSE_RANGE_M,0.10));
+        }
+    }
+    result
+}
+
+pub fn local_metadata()->serde_json::Value {serde_json::json!({
+    "mode":"short unshadowed direct rear-lamp spill",
+    "red_lamps_per_car":2,"reverse_lights_per_car":1,"reverse_mount":"merged pair midpoint",
+    "tail_intensity_cd":TAIL_INTENSITY_CD,"brake_intensity_cd":BRAKE_INTENSITY_CD,
+    "reverse_pair_intensity_cd":REVERSE_PAIR_INTENSITY_CD,"tail_range_m":TAIL_RANGE_M,"brake_range_m":BRAKE_RANGE_M,
+    "red_cone_degrees":[30.0,78.0],"red_spill_policy":"faint tail wash, brighter brake wash; source lens emission is independent",
+    "reverse_range_m":REVERSE_RANGE_M,"mount_source":"measured bundled rear-lens triangles; unknown models omitted",
+    "limits":["no occlusion shadows or indirect bounce","nearby walls and terrain folds can leak light",
+        "no atmospheric scattering","tuned intensity, not measured photometry"]})}
 pub fn metadata(lights:&[SpotLight])->serde_json::Value {serde_json::json!({
     "mode":"two shadowed physical front lamps per human car","enabled":!lights.is_empty(),
     "lamps_per_car":2,"pair_intensity_cd":PAIR_INTENSITY_CD.to_array(),"lens_clearance_m":LENS_CLEARANCE_M,
@@ -142,6 +228,94 @@ pub fn metadata_for_poses(lights:&[SpotLight],poses:&[CarPose],human_indices:&[u
         assert_eq!(meta["lights"][0]["mount_source"],"collision_bound_fallback");
         assert_eq!(meta["lights"][1]["side"],"right");
         let mut p=pose();p.boxes.clear();assert!(local_emitters(&p).iter().all(|v|v.is_finite()));
+    }
+    fn rear_pose()->CarPose {let mut p=pose();p.model="asti_stradale.glb".into();p}
+    #[test]fn rear_spill_follows_current_brake_reverse_and_tail_without_lingering() {
+        let poses=[rear_pose()];let day=Lighting::default();
+        let lamps=|state,light:&Lighting|local_from_poses(&poses,&[0],light,&[state]);
+        assert!(lamps(RearLightState::default(),&day).is_empty());
+        let brake=lamps(RearLightState{brake:1.0,reverse:false},&day);
+        assert_eq!(brake.len(),2);assert_eq!(brake[0].intensity_cd.x,BRAKE_INTENSITY_CD);
+        assert_eq!(brake[0].range_m,BRAKE_RANGE_M);
+        let half=lamps(RearLightState{brake:0.5,reverse:false},&day);
+        assert_eq!(half[0].intensity_cd.x,BRAKE_INTENSITY_CD*0.5);
+        let reverse=lamps(RearLightState{brake:0.0,reverse:true},&day);
+        assert_eq!(reverse.len(),1);assert_eq!(reverse[0].range_m,REVERSE_RANGE_M);
+        let tail=lamps(RearLightState::default(),&night());
+        assert_eq!(tail[0].intensity_cd.x,TAIL_INTENSITY_CD);
+        assert_eq!(tail[0].range_m,TAIL_RANGE_M);
+        assert!(tail[0].range_m<brake[0].range_m);
+        for invalid in [f32::NAN,f32::INFINITY,-1.0,0.02] {
+            assert!(lamps(RearLightState{brake:invalid,reverse:false},&day).is_empty());
+        }
+        assert_eq!(lamps(RearLightState{brake:2.0,reverse:false},&day)[0].intensity_cd.x,BRAKE_INTENSITY_CD);
+        assert!(lamps(RearLightState::default(),&day).is_empty(),"release must clear the next upload");
+    }
+    #[test]fn rear_spill_applies_full_body_pose_ride_and_rearward_cone_once() {
+        let mut p=rear_pose();p.ride=0.19;
+        let local=local_from_poses(&[p],&[0],&night(),&[RearLightState{brake:1.0,reverse:true}]);
+        let q=Quat::from_euler(glam::EulerRot::YXZ,1.2,-0.31,0.2);
+        let mut p=rear_pose();p.ride=0.19;p.rot=q;
+        let world=local_from_poses(&[p],&[0],&night(),&[RearLightState{brake:1.0,reverse:true}]);
+        let mounts=model_rear_lenses("asti_stradale.glb").unwrap();
+        let origins=[mounts.red[0],mounts.red[1],(mounts.reverse[0]+mounts.reverse[1])*0.5];
+        assert!(REAR_OUTER_RADIANS+REAR_DOWN_RADIANS<std::f32::consts::FRAC_PI_2,
+            "the whole cone must remain behind the car, not just its centre");
+        for i in 0..3 {
+            let offset=origins[i]+Vec3::new(0.0,0.19,LENS_CLEARANCE_M);
+            assert!(local[i].position.abs_diff_eq(Vec3::new(1.0,2.0,3.0)+offset,1e-6));
+            assert!(world[i].position.abs_diff_eq(Vec3::new(1.0,2.0,3.0)+q*offset,1e-6));
+            assert!(world[i].direction.abs_diff_eq(q*local[i].direction,1e-6));
+            assert!((world[i].direction.length()-1.0).abs()<1e-6);
+            assert!(world[i].source_radius_m>0.0&&world[i].range_m<=5.0);
+        }
+    }
+    #[test]fn rear_spill_uses_original_car_indices_and_preserves_flash_budget() {
+        let poses:Vec<_>=(0..6).map(|i|{let mut p=rear_pose();p.pos.x+=10.0*i as f32;p}).collect();
+        let states=vec![RearLightState{brake:1.0,reverse:true};6];
+        let lamps=local_from_poses(&poses,&[999,4,4,1,5,2,0],&night(),&states);
+        assert_eq!(lamps.len(),12);assert!(lamps.len()+MAX_CARS<=16);
+        for (slot,car) in [4,1,5,2].into_iter().enumerate() {
+            assert!((lamps[slot*3].position.x-poses[car].pos.x).abs()<1.0);
+        }
+        let mut states=vec![RearLightState::default();6];states[4].reverse=true;
+        assert_eq!(local_from_poses(&poses,&[4,1],&Lighting::default(),&states).len(),1);
+        assert!(local_from_poses(&poses,&[4,1],&Lighting::default(),&[]).is_empty());
+        assert!(local_from_poses(&[pose()],&[0],&night(),&states).is_empty(),"unknown lenses are not guessed");
+    }
+    #[test]fn bundled_rear_mounts_are_on_the_original_rear_lens_triangles() {
+        for model in ["asti_stradale","mv6","toyama_xr"] {
+            let bytes=std::fs::read(sideways::game_assets::asset("cars").join(format!("{model}.glb"))).unwrap();
+            let g=gltf::Gltf::from_slice_without_validation(&bytes).unwrap();let blob=g.blob.as_deref().unwrap();
+            let body=g.nodes().find(|n|n.name().is_some_and(|name|name.starts_with("body"))).unwrap();
+            let(t,r,s)=body.transform().decomposed();
+            let transform=glam::Affine3A::from_scale_rotation_translation(Vec3::from(s),Quat::from_array(r),Vec3::from(t));
+            let mounts=model_rear_lenses(&format!("{model}.glb")).unwrap();
+            for (reverse,lenses) in [(false,mounts.red),(true,mounts.reverse)] {
+                let material=match (model,reverse) {
+                    ("asti_stradale",_)=>"UCB_Lights_and_Glass.003",
+                    ("mv6",_)=>"UCB_Lights_and_Glass.002",
+                    ("toyama_xr",false)=>"Body_Glass_Red.001",
+                    ("toyama_xr",true)=>"Body_Glass.001",_=>unreachable!(),
+                };
+                let mesh=body.mesh().unwrap();let prim=mesh.primitives().find(|p|p.material().name()==Some(material)).unwrap();
+                let reader=prim.reader(|_|Some(blob));
+                let vertices:Vec<_>=reader.read_positions().unwrap().map(|p|transform.transform_point3(Vec3::from(p))).collect();
+                let indices:Vec<_>=reader.read_indices().unwrap().into_u32().collect();
+                for lens in lenses {
+                    let on_lens=indices.chunks_exact(3).any(|tri|{
+                        let [a,b,c]=[vertices[tri[0]as usize],vertices[tri[1]as usize],vertices[tri[2]as usize]];
+                        if [a,b,c].iter().any(|p|p.z<1.65||!(0.24..=0.65).contains(&p.y)){return false;}
+                        let d=(b.y-c.y)*(a.x-c.x)+(c.x-b.x)*(a.y-c.y);
+                        if d.abs()<1e-10{return false;}
+                        let u=((b.y-c.y)*(lens.x-c.x)+(c.x-b.x)*(lens.y-c.y))/d;
+                        let v=((c.y-a.y)*(lens.x-c.x)+(a.x-c.x)*(lens.y-c.y))/d;let w=1.0-u-v;
+                        u.min(v).min(w)>=-1e-4&&(u*a.z+v*b.z+w*c.z-lens.z).abs()<0.001
+                    });
+                    assert!(on_lens,"{model}: {lens:?} is no longer on its imported rear lens");
+                }
+            }
+        }
     }
     #[test]fn bundled_mounts_are_on_actual_imported_lens_triangles() {
         // This reads the same GLB node transforms as car_model::load. A model

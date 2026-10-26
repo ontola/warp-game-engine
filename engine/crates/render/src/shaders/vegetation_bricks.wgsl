@@ -114,9 +114,9 @@ fn brick_radiance(sample:VolumeSample,p:vec3<f32>,v:vec3<f32>)->vec3<f32> {
         let response=thin_foliage_response(base,n,v,rough,sample.leaf_fraction,
             light.sun_color.rgb*light.sun_dir.w*shadow,front,back,env);
         direct+=response.direct*moment.w;indirect+=response.indirect*moment.w;specular+=response.specular*moment.w;
-        for(var lamp=0u;lamp<min(headlights.count.x,8u);lamp++) {
-            let toward=headlights.lights[lamp].position_range.xyz-p;
-            let incident=headlight_sample(lamp,p,n*select(-1.0,1.0,dot(n,toward)>=0.0));
+        for(var lamp=0u;lamp<incident_light_count(p);lamp++) {
+            let toward=incident_light_position(lamp)-p;
+            let incident=incident_light_sample(lamp,p,n*select(-1.0,1.0,dot(n,toward)>=0.0));
             if any(incident.irradiance>vec3<f32>(0.0)) {
                 direct+=incident.irradiance*volume_thin_leaf_direct(base,n,v,incident.direction,rough,sample.leaf_fraction)*moment.w;
             }

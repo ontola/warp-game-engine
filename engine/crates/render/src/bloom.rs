@@ -1,0 +1,112 @@
+//! Small display-space highlight bloom. Physical scene HDR and reconstruction
+//! history remain untouched. The two quarter-size targets belong to one view.
+use crate::Gpu;
+use wgpu::util::DeviceExt;
+
+pub const DEFAULT_STRENGTH:f32=0.04;
+pub const THRESHOLD:f32=2.0;
+pub const KNEE:f32=1.0;
+pub const MAX_EXPOSED:f32=64.0;
+
+pub fn dimensions(width:u32,height:u32)->[u32;2] {[width.div_ceil(4).max(1),height.div_ceil(4).max(1)]}
+pub fn active(enabled:bool,strength:f32)->bool {enabled && strength>0.0}
+
+struct Targets {size:[u32;2],a:wgpu::Texture,b:wgpu::Texture}
+pub(crate) struct Bloom {
+    layout:wgpu::BindGroupLayout,
+    pipelines:[wgpu::ComputePipeline;3],
+    pub sampler:wgpu::Sampler,
+    fallback:wgpu::Texture,
+    views:std::sync::Mutex<Vec<Targets>>,
+}
+fn texture(gpu:&Gpu,size:[u32;2])->wgpu::Texture {
+    gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("quarter-resolution bloom"),
+        size:wgpu::Extent3d{width:size[0],height:size[1],depth_or_array_layers:1},
+        mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,
+        format:wgpu::TextureFormat::Rgba16Float,
+        usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::STORAGE_BINDING,view_formats:&[]})
+}
+impl Bloom {
+    pub fn new(gpu:&Gpu)->Self {
+        let types=[
+            wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},
+            wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format:wgpu::TextureFormat::Rgba16Float,view_dimension:wgpu::TextureViewDimension::D2},
+            wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:wgpu::BufferSize::new(16)},
+            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+        ];
+        let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("bloom"),
+            entries:&types.into_iter().enumerate().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding:binding as u32,
+                visibility:wgpu::ShaderStages::COMPUTE,ty,count:None}).collect::<Vec<_>>()});
+        let pipeline_layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {label:Some("bloom"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {label:Some("bloom"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/bloom.wgsl").into())});
+        let pipelines=["extract","horizontal","vertical"].map(|entry|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some(entry),layout:Some(&pipeline_layout),module:&module,entry_point:Some(entry),compilation_options:Default::default(),cache:gpu.pipeline_cache()}));
+        let sampler=gpu.device.create_sampler(&wgpu::SamplerDescriptor {label:Some("view-local bloom filtering"),
+            mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,
+            address_mode_u:wgpu::AddressMode::ClampToEdge,address_mode_v:wgpu::AddressMode::ClampToEdge,..Default::default()});
+        Self {layout,pipelines,sampler,fallback:texture(gpu,[1,1]),views:std::sync::Mutex::new(Vec::new())}
+    }
+
+    pub fn disabled_view(&self)->wgpu::TextureView {self.fallback.create_view(&Default::default())}
+    pub fn set_view_count(&self,count:usize) {self.views.lock().unwrap().truncate(count);}
+
+    pub fn render(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,view:usize,input:&wgpu::Texture,
+        exposure:f32,timestamps:Option<(&wgpu::QuerySet,u32)>)->wgpu::TextureView {
+        let size=dimensions(input.width(),input.height());
+        let mut views=self.views.lock().unwrap();
+        while views.len()<=view {views.push(Targets{size:[1,1],a:texture(gpu,[1,1]),b:texture(gpu,[1,1])});}
+        let target=&mut views[view];
+        if target.size!=size {*target=Targets{size,a:texture(gpu,size),b:texture(gpu,size)};}
+        let source=input.create_view(&Default::default());let a=target.a.create_view(&Default::default());let b=target.b.create_view(&Default::default());
+        let exposure=if exposure.is_finite(){exposure.clamp(0.0,65504.0)}else{0.0};
+        // Immutable per invocation: encoding multiple split views cannot make
+        // their extraction use a later view's exposure before queue submission.
+        let uniform=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("bloom exposure"),
+            contents:bytemuck::cast_slice(&[exposure,THRESHOLD,KNEE,MAX_EXPOSED]),usage:wgpu::BufferUsages::UNIFORM});
+        for (i,(src,dst)) in [(&source,&a),(&a,&b),(&b,&a)].into_iter().enumerate() {
+            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("bloom view"),layout:&self.layout,entries:&[
+                wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(src)},
+                wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(dst)},
+                wgpu::BindGroupEntry {binding:2,resource:uniform.as_entire_binding()},
+                wgpu::BindGroupEntry {binding:3,resource:wgpu::BindingResource::Sampler(&self.sampler)},
+            ]});
+            let writes=if i==1 {None}else{timestamps.map(|(query_set,start)|wgpu::ComputePassTimestampWrites {query_set,
+                beginning_of_pass_write_index:(i==0).then_some(start),end_of_pass_write_index:(i==2).then_some(start+1)})};
+            let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some(["bloom highlight extraction","bloom horizontal filter","bloom vertical filter"][i]),timestamp_writes:writes});
+            pass.set_pipeline(&self.pipelines[i]);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(size[0].div_ceil(8),size[1].div_ceil(8),1);
+        }
+        a
+    }
+}
+
+#[cfg(test)]mod tests {
+    use super::*;
+    #[test]fn bounded_view_dimensions_and_disabled_mode() {
+        for (input,expected) in [([1,1],[1,1]),([639,359],[160,90]),([1920,1080],[480,270]),([3840,2160],[960,540])] {
+            assert_eq!(dimensions(input[0],input[1]),expected);
+            assert!(expected[0]*expected[1]*16<=input[0]*input[1]+16*(input[0]+input[1]+1));
+        }
+        assert!(!active(false,DEFAULT_STRENGTH));assert!(!active(true,0.0));assert!(active(true,DEFAULT_STRENGTH));
+        // Four independently allocated views have no sampling coordinates in
+        // another view, including odd split sizes and after a layout change.
+        assert_eq!(dimensions(639,359),[160,90]);
+    }
+    #[test]fn exposure_soft_knee_preserves_dark_ground_and_tiny_highlights() {
+        let extract=|radiance:f64,exposure:f64| {let b=(radiance.max(0.0)*exposure).min(MAX_EXPOSED as f64);
+            let soft=(b-THRESHOLD as f64+KNEE as f64).clamp(0.0,2.0*KNEE as f64);
+            (b-THRESHOLD as f64).max(soft*soft/(4.0*KNEE as f64)).max(0.0)};
+        for b in [0.0,0.18,0.5,1.0] {assert_eq!(extract(b,1.0),0.0);}
+        assert_eq!(extract(8.0,0.25),extract(2.0,1.0));
+        assert!(extract(8.0,1.0)/16.0>0.0,"threshold before downsample retains a small bright emitter");
+        assert_eq!(extract(8.0/16.0,1.0),0.0,"threshold after downsample loses that emitter");
+        let mut previous=0.0;for i in 0..10000 {let value=extract(i as f64/100.0,1.0);assert!(value>=previous&&value.is_finite());previous=value;}
+        assert_eq!(extract(f64::INFINITY,1.0),62.0);
+    }
+    #[test]fn bloom_shader_validates_and_all_filters_preserve_constant_energy() {
+        let source=include_str!("shaders/bloom.wgsl");let module=naga::front::wgsl::parse_str(source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(source)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
+        assert_eq!(module.entry_points.len(),3);
+        assert!((0.227027027_f64+2.0*0.316216216+2.0*0.070270270-1.0).abs()<1e-8);
+        assert!(source.contains("if all(p<size)"));assert!(source.contains("max(count,1.0)"));
+    }
+}

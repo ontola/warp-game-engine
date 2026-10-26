@@ -60,6 +60,7 @@ fn paint(i: usize, humans: usize) -> Vec3 {
 pub struct Setup {
     pub wind: render::wind::WindState,
     pub headlights: Vec<render::headlights::SpotLight>,
+    pub local_lights: Vec<render::headlights::LocalLight>,
     pub lighting_focus: Vec<Vec3>,
     pub rear_lamps: Vec<crate::car_lamps::State>,
     pub exhaust: Vec<render::exhaust::Sprite>,
@@ -191,6 +192,16 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
     let lighting_focus=poses.iter().take(a.views).map(|p|p.pos).collect();
     let rear_lamps=crate::car_lamps::from_race(&race,&light,poses.len());
     crate::car_lamps::apply(&mut built.scene.car_materials,&built.car_slots,&rear_lamps)?;
+    // Use the same effective foot pedal as live play (including automatic
+    // reverse and hold), after all environment overrides. Lineups retain
+    // posed rear lamps but cannot borrow flames from unrelated race positions.
+    let rear_states=(0..poses.len()).map(|i|race.players.get(i).or_else(||race.players.first())
+        .map_or_else(crate::car_headlights::RearLightState::default,|p|{
+            let c=&p.car;crate::play::rear_light_state(c.gear,c.manual,c.hold,c.brake,c.throttle)
+        })).collect::<Vec<_>>();
+    let mut local_lights=crate::car_headlights::local_from_poses(&poses,&(0..a.views).collect::<Vec<_>>(),&light,&rear_states);
+    let vehicle_local_light_count=local_lights.len();
+    if a.lineup==0 {local_lights.extend(exhaust.lights());}
     let mut metadata = serde_json::json!({
         "schema": 1, "renderer": "kern", "seed": a.seed, "km": a.km, "start_at_m": a.at,
         "upscale_requested": a.upscale.as_str(), "sky": sky_metadata,
@@ -217,11 +228,13 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
         })).collect::<Vec<_>>()
     });
     metadata["exhaust"]=exhaust.metadata();metadata["exhaust_disabled_for_lineup"]=(a.lineup>0).into();
+    metadata["local_lights"]=crate::play::local_lights_metadata(&local_lights,vehicle_local_light_count);
+    metadata["exhaust_local_lights_disabled_for_lineup"]=(a.lineup>0).into();
     metadata["wheel_effects"]=wheel_effects.metadata();
     metadata["wheel_effects_disabled_for_lineup"]=(a.lineup>0).into();
     if a.lineup>0 {wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);}
     metadata["procedural_grass"]=built.procedural_grass.clone().unwrap_or(serde_json::Value::Null);
-    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), headlights, lighting_focus, rear_lamps, exhaust:if a.lineup>0{vec![]}else{exhaust.sprites()}, wheel_effects, scene: built.scene, mesh_names: built.mesh_names, light, cams, log, metadata, looks, car_slots: built.car_slots })
+    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), headlights, local_lights, lighting_focus, rear_lamps, exhaust:if a.lineup>0{vec![]}else{exhaust.sprites()}, wheel_effects, scene: built.scene, mesh_names: built.mesh_names, light, cams, log, metadata, looks, car_slots: built.car_slots })
 }
 
 /// `n` copies of `car` nose to tail along the road, 5.5 m apart, at its
@@ -299,6 +312,7 @@ pub fn run(a: &ShotArgs) -> i32 {
     };
     let mut renderer = Renderer::new(&gpu, &setup.scene, &setup.light);
     if let Err(e)=renderer.set_headlights(&setup.headlights) {eprintln!("shot headlights: {e}");return 1;}
+    if let Err(e)=renderer.set_local_lights(&setup.local_lights) {eprintln!("shot local lights: {e}");return 1;}
     if let Err(e)=renderer.set_exhaust(&gpu,&setup.exhaust) {eprintln!("shot exhaust: {e}");return 1;}
     if let Err(e)=setup.wheel_effects.upload(&gpu,&mut renderer) {eprintln!("shot wheel effects: {e}");return 1;}
     setup.metadata["wheel_effects"]=setup.wheel_effects.metadata();

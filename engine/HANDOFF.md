@@ -7,7 +7,30 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r50 and requested playtest
+## Latest status — r51 saved baseline, vehicle lights and bloom
+
+See [r51 implementation and open checks](docs/local-lights-and-vegetation-r51.md).
+The user's tree/grass settings are saved in the Sideways data preset, applied
+before renderer construction and retained across new stages. The engine now
+supports a separate short-range local-light budget for tail/brake/reverse and
+event-synchronized exhaust illumination, without new shadow maps. Exhaust
+gas/flame/heat has fixed-tick RPM motion; the metal pipe is not animated.
+The corrected release and a192-frame real night bloom on/off/on replay passed;
+bloom's three filters average0.096-0.097ms at4K output / DLSS Quality, one
+held view. Total covered GPU time remains16.6-16.8ms, not the8.33ms target.
+HDR/exposure/AgX existed; new subtle bloom and its strength control are under
+Lighting. Lamp cores are brighter while red environment spill is weaker.
+CPU:182 CLI tests passed, one ignored; focused engine shader/settings/light
+checks passed. See the linked doc for exact manifests and remaining GPU checks.
+The native local-light fixture passes8/8 including last slot, clearing and
+unchanged headlight depth/casters. Current interactive launch manifest:
+`games/sideways/build/dev-runs/20261026T174416078Z-ced5e454/iteration.json`.
+Near-grass shapes, grass shadow casting and the reported silhouette border
+remain open with evidence and a concrete reproduction procedure in that doc.
+The first r51 playtest ran and was closed by the user. It has been superseded
+by the corrected executable in dev-runs/20261026T173428410Z-fe6ffcbd.
+
+## Previous status — r50 and requested playtest
 
 Main was pushed in 79cb339 (engine/game split, Godot removal, docs and accumulated
 engine work). See [r50 results](docs/world-foliage-r50.md). The tiny world-volume

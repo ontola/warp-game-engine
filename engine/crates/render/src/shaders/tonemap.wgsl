@@ -7,12 +7,15 @@ struct Tone {
     saturation: f32,
     sharpen: f32,   // after TAA, which softens: 0 off
     offset: vec2<u32>, // where this view goes in the output image
-    pad2: vec2<u32>,
+    bloom_strength: f32,
+    pad2: u32,
 };
 
 @group(0) @binding(0) var hdr: texture_2d<f32>;
 @group(0) @binding(1) var ldr: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> tone: Tone;
+@group(0) @binding(3) var bloom: texture_2d<f32>;
+@group(0) @binding(4) var bloom_sampler: sampler;
 
 fn agx_contrast(x: vec3<f32>) -> vec3<f32> {
     let x2 = x * x;
@@ -51,7 +54,14 @@ fn srgb(c: vec3<f32>) -> vec3<f32> {
 
 fn display(px: vec2<i32>) -> vec3<f32> {
     let size = vec2<i32>(textureDimensions(hdr));
-    let c = textureLoad(hdr, clamp(px, vec2<i32>(0), size - 1), 0).rgb * tone.exposure;
+    let p=clamp(px,vec2<i32>(0),size-1);
+    var c = textureLoad(hdr, p, 0).rgb * tone.exposure;
+    if tone.bloom_strength>0.0 {
+        // Bloom already uses this frame's exposure. Never expose it twice.
+        // Separate per-view images and clamp sampling prohibit split bleed.
+        let uv=(vec2<f32>(p)+0.5)/vec2<f32>(size);
+        c+=textureSampleLevel(bloom,bloom_sampler,uv,0.0).rgb*tone.bloom_strength;
+    }
     var v = agx(c);
     // Look: a touch of contrast and saturation around mid grey.
     let luma = dot(v, vec3<f32>(0.2126, 0.7152, 0.0722));

@@ -10,6 +10,7 @@ pub mod cluster;
 pub mod frame;
 pub mod static_sun;
 pub mod debug_settings;
+pub mod bloom;
 pub mod debug_ui;
 pub mod debug_timing;
 pub mod cpu_time;
@@ -157,6 +158,7 @@ mod shader_tests {
             ("shade", shade.as_str()),
             ("wind", include_str!("shaders/wind.wgsl")),
             ("tonemap", include_str!("shaders/tonemap.wgsl")),
+            ("bloom", include_str!("shaders/bloom.wgsl")),
             ("foliage", include_str!("shaders/foliage.wgsl")),
             ("density_filter", include_str!("shaders/density_filter.wgsl")),
             ("taa", include_str!("shaders/taa.wgsl")),

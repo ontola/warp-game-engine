@@ -280,13 +280,13 @@ fn volume_empty_brick(ray:VolumeRay,t:f32)->vec2<f32> {
 
 fn volume_leaf_headlights(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,base:vec3<f32>,rough:f32,leaf_fraction:f32)->vec3<f32> {
     var result=vec3<f32>(0.0);
-    for(var index=0u;index<min(headlights.count.x,8u);index++) {
+    for(var index=0u;index<incident_light_count(p);index++) {
         // Match source Meadow's two-sided receiver bias and coloured diffuse
         // reflection/transmission. Cone, range and blocker visibility remain
         // authoritative: zero incident irradiance contributes exactly zero.
-        let towards=headlights.lights[index].position_range.xyz-p;
+        let towards=incident_light_position(index)-p;
         let bias=n*select(-1.0,1.0,dot(n,towards)>=0.0);
-        let lamp=headlight_sample(index,p,bias);
+        let lamp=incident_light_sample(index,p,bias);
         if all(lamp.irradiance==vec3<f32>(0.0)) {continue;}
         result+=lamp.irradiance*volume_thin_leaf_direct(base,n,v,lamp.direction,rough,leaf_fraction);
     }
