@@ -1,11 +1,19 @@
 # Bosrendering in Warp
 
+<<<<<<< HEAD
 Actuele aanvulling, **26 oktober 2026, r51**:
 [ondoorzichtige naaldkronen en de afstand tot Nanite Foliage](opaque-crowns-r51.md).
 De naaldkaarten kunnen worden vervangen door echte geometrie: één gebakken
 takonderdeel (1.937 triangles) per frond, zonder alpha test, achter
 `SIDEWAYS_TREE_CROWN=opaque`. CPU-silhouet en lavapipe-beeld komen overeen met
 de kaarten; GPU-kosten zijn nog niet gemeten. Standaard blijft `cards`.
+=======
+Actuele aanvulling, **26 oktober 2026, r52**:
+[wind uit op afstand, verre bomen als gecachete schaduwcasters](wind-freeze-sun-cache-r52.md).
+Met `KERN_WIND_FREEZE` staan bomen buiten 70 m stil en vallen ze in de
+statische zoncache; op lavapipe daalt de dynamische schaduwraster ongeveer
+9,4 keer. Standaard uit; GPU-tijd nog niet gemeten.
+>>>>>>> origin/pr/5
 
 Actuele aanvulling, **26 oktober 2026, r49**:
 [LOD-optiek en vraaggestuurde schaduwen](lod-shadow-demand-r49.md).
