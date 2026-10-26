@@ -73,8 +73,15 @@ ongeveer 2,5 s bij het opstarten.
   subpixel, dus de IoU is pessimistisch; de bedekking is wat een kijker op
   afstand ziet.
 - Lavapipe-shots (`sideways shot`, 640x360 en 960x540, zonder verre bossen):
-  kaarten en geometrie zijn visueel gelijkwaardig; gemiddeld 5,2/255
-  verschil per kanaal.
+  dichtbij en vanaf de auto zijn kaarten en geometrie visueel gelijkwaardig;
+  gemiddeld 5,2/255 verschil per kanaal.
+- Lavapipe-vista met het volledige bos (`--cam yaw=200,dist=120,height=45`):
+  **kronen op 50 tot 150 m worden zichtbaar ijler** met geometrie. Dat is
+  het verwachte oppervlakteverlies van dunne vormen bij simplificatie: de
+  `TexturedGeometry`-LOD's behouden geen bedekking zoals `AlphaCards` dat
+  doet (`protect_card_coverage`). Zonder oppervlaktebehoud of voxels als
+  laatste clusterniveau is de geometrievariant op afstand dus geen
+  gelijkwaardige vervanging, ook als hij op de GPU sneller zou zijn.
 
 ## Meten op de 5070 Ti
 
