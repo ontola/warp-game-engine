@@ -2541,7 +2541,9 @@ impl Renderer {
         // More than four views would exceed the freeze uniform: keep wind.
         let cameras: Vec<Vec3> = views.iter().map(|v| v.cam.pos).collect();
         let wind_freeze = self.wind_freeze.filter(|_| cameras.len() <= crate::wind::MAX_FREEZE_CAMERAS);
-        self.wind.set_freeze(gpu, wind_freeze, &cameras);
+        if self.wind.set_freeze(gpu, wind_freeze, &cameras) {
+            self.invalidate_dynamic_shadow();
+        }
         let mut wind_freeze_repinned = false;
         if let (Some(freeze), Some(cache)) = (wind_freeze, static_sun.as_mut()) {
             // Trees >= frozen_beyond + guard from the pinned cameras stay at
@@ -2556,6 +2558,14 @@ impl Renderer {
                     *pin = Some(cameras.clone());
                     wind_freeze_repinned = true;
                 }
+            }
+        } else if let Some(cache) = static_sun.as_mut() {
+            // More than four views disables the GPU freeze field. Previously
+            // pinned trees must resume dynamic shadows as well.
+            let mut pin = self.wind_freeze_pin.lock().unwrap();
+            if pin.take().is_some() {
+                cache.pin_frozen_trees(gpu, &[], 0.0);
+                wind_freeze_repinned = true;
             }
         }
         let mut static_targets = self.static_sun_targets.lock().unwrap();
