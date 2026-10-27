@@ -14,6 +14,7 @@ mod net;
 mod play;
 mod session;
 mod sounds;
+mod synth;
 mod view;
 
 use growing_guns::{Event, World, TICK_HZ};
@@ -137,6 +138,8 @@ fn nettest(args: &Args) -> Result<(), String> {
         ticket_tx.send(host.session().ticket().unwrap().to_string()).map_err(|e| e.to_string())?;
         let start = std::time::Instant::now();
         for k in 0..ticks + 120 {
+            // Destruction mid-game: clients must end with the same arena.
+            if k == 90 || k == 150 { host.command(&format!("blast {} 0 {} 5 400", k as f32 * 0.1 - 10.0, 6.0))?; }
             host.tick(&[Controls::default()]);
             let due = start + std::time::Duration::from_secs_f32((k + 1) as f32 / TICK_HZ as f32);
             if let Some(wait) = due.checked_duration_since(std::time::Instant::now()) { std::thread::sleep(wait); }
@@ -159,7 +162,14 @@ fn nettest(args: &Args) -> Result<(), String> {
         last_tick = client.world.tick;
         std::thread::sleep(std::time::Duration::from_secs_f32(1.0 / TICK_HZ as f32));
     }
+    // Drain what the host still sends while it finishes.
+    let drain = std::time::Instant::now();
+    while drain.elapsed().as_secs_f32() < 1.0 { client.receive(1.0 / TICK_HZ as f32); std::thread::sleep(std::time::Duration::from_millis(16)); }
     let host_state: serde_json::Value = serde_json::from_str(&host.join().map_err(|_| "host thread panicked")??).map_err(|e| e.to_string())?;
+    let host_broken = host_state["arena"]["chunks_broken"].as_u64().unwrap_or(0);
+    let client_broken = (client.world.arena.chunks.len() - client.world.arena.alive_chunks()) as u64;
+    println!("destruction: host broke {host_broken} chunks, client sees {client_broken}");
+    if host_broken == 0 || host_broken != client_broken { return Err("nettest failed: arenas differ".into()); }
     let moved = start_pos.map_or(0.0, |p| p.distance(client.world.players[me].pos));
     let human = host_state["players"][me]["bot"] == serde_json::Value::Bool(false);
     println!("client followed to host tick {last_tick}; player {} moved {moved:.1} m; host sees it as human: {human}; ammo {}",

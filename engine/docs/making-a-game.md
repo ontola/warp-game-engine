@@ -56,7 +56,16 @@ complete example with split screen, bots and online play.
   nettest` runs a host and a client over loopback.
 - Physics: `kern::collide` for characters (yaw boxes, rays, move and
   slide) and the `physics` crate (Rapier) for rigid bodies, blasts, joints
-  and ragdolls.
+  and ragdolls. Movers and rays take any `kern::collide::Boxes`: a slice
+  for a few hundred boxes, `BoxGrid` (uniform grid, `remove`/`restore`,
+  stable indices) for thousands, such as a destructible level.
+- Destruction: pre-split level pieces into chunks (no mesh rebuilds), keep
+  them in a `BoxGrid` and in `Slots`, and remove both when a chunk breaks.
+  `render::debris::Debris` throws GPU-simulated rubble (thousands of shards,
+  colliding with a one-bit `Occupancy` grid you keep in step with the
+  level); `primitives::hewn_block` gives bevelled and worn bricks. Growing
+  Guns' `destruct.rs` and `view.rs` show the whole path, including sending
+  breakage to clients.
 - Things that come, go or move: `render::slots::Slots::reserve(&mut scene,
   n)` before the renderer exists, then `add`/`set`/`remove` and one
   `flush` per frame. Any mesh already in the scene can go in any slot.
@@ -65,6 +74,9 @@ complete example with split screen, bots and online play.
 - First person: `scene.instances[i].hide_in_views(1 << view)` hides a body
   from its own camera; it keeps its shadow.
 - Sky: `scene.sky = Some(primitives::gradient_sky(zenith, horizon, ground))`.
+- Debug commands: implement `Game::command` (`give 0 explosive`,
+  `teleport 0 1 2 3`) and scripts can set up any scenario with a `cmd`
+  step instead of playing up to it.
 - Up to 16 unshadowed point or spot lights per frame:
   `renderer.set_local_lights` (an omni light is `outer_cos: -1.0`).
 

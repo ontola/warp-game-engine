@@ -38,13 +38,22 @@ them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift or right
 mouse dash, left mouse fire, R reload; on a pad the sticks, A jump, B or RB
 dash, RT fire, X reload. F12 saves a screenshot.
 
-Ported since the first slice: nine stat cards picked by round losers
-(`scripts/cards.json`), the Godot WAVs (`--sounds DIR` or `GG_SOUNDS`,
-the Godot project's `assets/audio`), particles (sparks, dust, blood,
-casings) and ragdolls on the `physics` crate.
+Ported since the first slice: nine stat cards and explosive rounds picked by
+round losers (`scripts/cards.json`), the Godot WAVs (`--sounds DIR` or
+`GG_SOUNDS`, the Godot project's `assets/audio`) plus synthesised impacts
+and explosions (`synth.rs`, from `sfx.gd`), particles (sparks, dust, blood,
+casings, fireballs) and ragdolls on the `physics` crate, and destruction
+(`sim/src/destruct.rs`, after `destructible_solid.gd`): every block,
+including the three floor layers above the lava, is pre-split into about
+6,000 to 9,400 chunks; strong rifle hits wear chunks down, explosions break
+them, the rim of a hole weakens; worn bricks crack, hits leave scorch marks
+and rubble flies as GPU debris (`render::debris`). Breakage goes to clients
+reliably (`ToClient::Broken`). `scripts/destruction.json` digs into the
+lava, `scripts/wall.json` blows a hole in a wall; both use debug commands
+(`cmd` steps, see `help`).
 
 Not ported: the other cards (ricochet, shotgun, specials) and weapons,
-destruction, skinned characters (the FBX models need converting to glTF
+skinned characters (the FBX models need converting to glTF
 first), menus beyond card picks, music, GameNight. Online play is tested
 over loopback (`nettest`), not yet between two machines; clients predict
 only their look direction.

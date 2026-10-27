@@ -1,13 +1,15 @@
-//! Turns the simulation into a Warp scene: arena blocks as instanced unit
-//! cubes with the castle palette, lava, players, bullet tracers, sparks and
-//! lights, plus one camera per local player.
+//! Turns the simulation into a Warp scene: arena chunks as hewn stone
+//! bricks with the castle palette (worn bricks crack, broken ones vanish),
+//! lava, players, bullet tracers, sparks, scorch marks, rubble and lights,
+//! plus one camera per local player.
 use glam::{Affine3A, Quat, Vec3};
-use growing_guns::shape::Kind;
+use growing_guns::shape::{Boxes, Kind};
 use growing_guns::{Event, World, EYE};
 use render::primitives;
+use render::debris::{BurstSpec, Debris, Occupancy};
 use render::particles::{Burst, Particles};
 use render::slots::{SlotId, Slots};
-use physics::{Body, BodyDesc, Physics, Shape};
+use physics::{Body, BodyDesc, Physics, Shape, Static};
 use render::headlights::LocalLight;
 use render::scene::{GpuInstance, Material, EMISSIVE};
 use render::{Camera, Lighting, Scene};
@@ -62,16 +64,56 @@ pub struct Visuals {
     lights: Vec<LocalLight>,
     arena: Slots,
     kinds: KindMeshes,
+    /// Slot and collider of every arena chunk (None once broken).
+    chunk_slots: Vec<Option<SlotId>>,
+    statics: Vec<Option<Static>>,
+    /// Wear level shown per chunk (0 intact, 1 cracked, 2 crumbling).
+    shown_wear: Vec<u8>,
+    marks: Marks,
+    /// GPU rubble colliding with the arena's occupancy grid.
+    debris: Debris,
 }
+
+/// Bullet scorch marks: a ring of slots, oldest reused first; each knows
+/// the chunk it sits on and goes when that chunk breaks.
+struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, mesh: usize }
 
 struct Ragdoll { torso: Body, head: Body, slots: [SlotId; 2], meshes: [usize; 2] }
 
 #[derive(Clone, Copy)]
-struct FxMeshes { spark: usize, dust: usize, blood: usize, casing: usize }
+struct FxMeshes { spark: usize, dust: usize, blood: usize, casing: usize, fire: usize, smoke: usize }
 
-struct KindMeshes { floor: usize, wall: usize, building: usize, dark: usize, accent_a: usize, accent_b: usize, beacons: [usize; 3] }
+/// Stone per palette colour: four tint variants of the intact brick, then
+/// cracked and crumbling bricks for worn chunks.
+#[derive(Clone, Copy)]
+struct Stone { intact: [usize; 4], cracked: usize, crumbling: usize, chip: usize, shards: [usize; 3] }
 
-const ARENA_SLOTS: usize = 256;
+struct KindMeshes { floor: Stone, wall: Stone, building: Stone, dark: Stone, accent_a: Stone, accent_b: Stone, beacons: [usize; 3] }
+
+impl KindMeshes {
+    fn stone(&self, k: Kind) -> Stone {
+        match k {
+            Kind::Floor => self.floor,
+            Kind::Wall => self.wall,
+            Kind::Tower | Kind::Pillar => self.dark,
+            Kind::Building => self.building,
+            Kind::Ledge | Kind::Platform => self.accent_b,
+            Kind::Cover => self.accent_a,
+        }
+    }
+}
+
+/// Godot's hairline mortar gap between bricks.
+const VISUAL_CHUNK_INSET: f32 = 0.992;
+const MARKS: usize = 384;
+/// Godot: MAX_LIVE_PARTICLES 3600 at full quality.
+const DEBRIS: usize = 4096;
+/// Occupancy bounds: the largest arena (95 m) plus margin, lava to roofs.
+const OCC_HALF: f32 = 52.0;
+const OCC_VOXEL: f32 = 0.5;
+
+/// The largest generated arena has about 9400 chunks.
+const ARENA_SLOTS: usize = 9800;
 /// The Godot arena's light colours (towers and building roofs).
 const BEACON_COLORS: [[f32; 3]; 3] = [[1.0, 0.4, 0.3], [1.0, 0.35, 0.2], [1.0, 0.7, 0.2]];
 fn dist(a: [f32; 3], b: [f32; 3]) -> f32 { (0..3).map(|i| (a[i] - b[i]).powi(2)).sum() }
@@ -81,14 +123,13 @@ impl Visuals {
     pub fn build(world: &World) -> Self {
         let mut scene = Scene::default();
         scene.sky = Some(sky());
-        let kind_mesh = |scene: &mut Scene, tint, rough| { let m = material(scene, tint, rough); cube(scene, m) };
         let kinds = KindMeshes {
-            floor: kind_mesh(&mut scene, palette::FLOOR, 0.9),
-            wall: kind_mesh(&mut scene, palette::WALL, 0.85),
-            building: kind_mesh(&mut scene, palette::BUILDING, 0.85),
-            dark: kind_mesh(&mut scene, palette::DARK, 0.9),
-            accent_a: kind_mesh(&mut scene, palette::ACCENT_A, 0.7),
-            accent_b: kind_mesh(&mut scene, palette::ACCENT_B, 0.7),
+            floor: stone(&mut scene, palette::FLOOR, 0.9),
+            wall: stone(&mut scene, palette::WALL, 0.85),
+            building: stone(&mut scene, palette::BUILDING, 0.85),
+            dark: stone(&mut scene, palette::DARK, 0.9),
+            accent_a: stone(&mut scene, palette::ACCENT_A, 0.7),
+            accent_b: stone(&mut scene, palette::ACCENT_B, 0.7),
             beacons: BEACON_COLORS.map(|c| { let m = glow(&mut scene, c, 6000.0); cube(&mut scene, m) }),
         };
         // Lava: a glowing sheet under the floor, visible through holes and
@@ -99,14 +140,20 @@ impl Visuals {
         scene.mark_no_shadow();
         // The arena lives in slots: a new round refills them, no rebuild.
         let arena = Slots::reserve(&mut scene, ARENA_SLOTS);
+        let mark_m = material(&mut scene, [0.06, 0.055, 0.05], 0.95);
+        let marks = Marks { slots: Slots::reserve(&mut scene, MARKS), ring: Vec::new(), next: 0, mesh: sphere(&mut scene, mark_m, 4, 8) };
         // Effects: engine particles with their own meshes.
         let fxm = FxMeshes {
             spark: { let m = glow(&mut scene, [1.0, 0.6, 0.2], 20000.0); cube(&mut scene, m) },
             dust: { let m = material(&mut scene, palette::DARK, 0.95); cube(&mut scene, m) },
             blood: { let m = material(&mut scene, [0.45, 0.02, 0.02], 0.35); sphere(&mut scene, m, 4, 6) },
             casing: { let m = scene.add_material(Material { tint: [0.75, 0.55, 0.2], layer: -1, roughness: 0.35, flags: 0, scale: 1.0, metal: 1.0 }); cube(&mut scene, m) },
+            fire: { let m = glow(&mut scene, [1.0, 0.45, 0.12], 9000.0); sphere(&mut scene, m, 6, 10) },
+            smoke: { let m = material(&mut scene, [0.16, 0.15, 0.14], 1.0); sphere(&mut scene, m, 6, 10) },
         };
         let fx = Particles::reserve(&mut scene, 768, world.arena.seed | 1);
+        let occ = Occupancy::new(Vec3::new(-OCC_HALF, -4.0, -OCC_HALF), Vec3::new(OCC_HALF, 30.0, OCC_HALF), OCC_VOXEL);
+        let debris = Debris::reserve(&mut scene, DEBRIS, occ, false);
         // Ragdolls: two jointed bodies per corpse, drawn with the player's meshes.
         let corpses = Slots::reserve(&mut scene, 32);
         let phys = Physics::new(Vec3::new(0.0, -20.0, 0.0), growing_guns::TICK_HZ as f32);
@@ -129,7 +176,7 @@ impl Visuals {
         for _ in 0..TRACERS { scene.add_instance(tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
 
         let mut v = Visuals { scene, first_dynamic, players, tracer, fx, fxm, flashes: Vec::new(), lights: Vec::new(), arena, kinds,
-            corpses, phys, ragdolls: Vec::new() };
+            corpses, phys, ragdolls: Vec::new(), chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, debris };
         v.set_arena(world);
         v
     }
@@ -141,20 +188,26 @@ impl Visuals {
         self.corpses.clear(&mut self.scene);
         self.ragdolls.clear();
         self.phys.clear_bodies();
-        self.phys.set_statics(&world.arena.shapes);
-        let k = &self.kinds;
-        for b in &world.arena.blocks {
-            let m = match b.kind {
-                Kind::Floor => k.floor,
-                Kind::Wall => k.wall,
-                Kind::Tower | Kind::Pillar => k.dark,
-                Kind::Building => k.building,
-                Kind::Ledge | Kind::Platform => k.accent_b,
-                Kind::Cover => k.accent_a,
-            };
-            let xf = Affine3A::from_scale_rotation_translation(b.half * 2.0, Quat::from_rotation_y(b.yaw), b.center);
-            self.arena.add(&mut self.scene, m, xf).expect("arena slots");
+        self.marks.slots.clear(&mut self.scene);
+        self.marks.ring.clear();
+        let a = &world.arena;
+        let alive: Vec<_> = a.chunks.iter().filter(|c| c.alive).map(|c| c.shape()).collect();
+        let mut handles = self.phys.set_statics(&alive).into_iter();
+        self.statics = a.chunks.iter().map(|c| if c.alive { handles.next() } else { None }).collect();
+        self.shown_wear = a.chunks.iter().map(|c| wear_level(c.wear())).collect();
+        self.debris.clear();
+        let occ = self.debris.occupancy_mut();
+        occ.clear();
+        for c in a.chunks.iter().filter(|c| c.alive) { occ.fill_box(c.center, c.half, c.yaw, true); }
+        self.chunk_slots = Vec::with_capacity(a.chunks.len());
+        for (i, c) in a.chunks.iter().enumerate() {
+            let slot = c.alive.then(|| {
+                let (mesh, xf) = self.chunk_look(c, self.shown_wear[i]);
+                self.arena.add(&mut self.scene, mesh, xf).expect("arena slots")
+            });
+            self.chunk_slots.push(slot);
         }
+        let k = &self.kinds;
         // Roof beacons where the Godot lights hang, in the nearest colour.
         for &(p, c) in &world.arena.lights {
             let nearest = (0..BEACON_COLORS.len()).min_by(|&a, &b| dist(BEACON_COLORS[a], c).total_cmp(&dist(BEACON_COLORS[b], c))).unwrap();
@@ -167,18 +220,49 @@ impl Visuals {
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
         self.arena.flush(gpu, renderer, &self.scene)?;
         self.corpses.flush(gpu, renderer, &self.scene)?;
+        self.marks.slots.flush(gpu, renderer, &self.scene)?;
+        self.debris.flush(gpu, renderer)?;
         self.fx.flush(gpu, renderer, &self.scene)
     }
 
     /// Effects from this tick's events, then one tick of particle motion
     /// (colliding with the arena).
     pub fn absorb(&mut self, world: &World) {
+        self.break_chunks(world);
         let (s, m) = (&mut self.scene, self.fxm);
         for e in &world.events {
             match *e {
-                Event::Impact { pos, normal } => {
+                Event::Impact { pos, normal, damage, strong } => {
                     self.fx.burst(s, pos + normal * 0.03, normal, &Burst { mesh: m.spark, count: 8, ..Burst::sparks() });
                     self.fx.burst(s, pos + normal * 0.05, normal, &Burst { mesh: m.dust, count: 5, ..Burst::dust() });
+                    // Chips fly off every hit, more and bigger for heavy rounds
+                    // (Godot `request_chips`), as GPU debris.
+                    let chunk = world.arena.grid.ray(pos + normal * 0.05, -normal, 0.3).map(|h| h.2);
+                    let stone = chunk.map_or(self.kinds.floor, |c| self.kinds.stone(world.arena.chunks[c].kind));
+                    let scale = (0.06 + damage * 0.008).clamp(0.06, 1.0);
+                    let amount = ((16.0 * scale).round() as u32).clamp(2, 20);
+                    let size = 2.4 * (0.05 + damage * 0.0022).clamp(0.05, 0.35);
+                    let radius = growing_guns::destruct::rifle_chip(damage / 16.0).1;
+                    self.debris.burst(s, &BurstSpec::chips(pos + normal * 0.15, radius * 0.3, amount, size, &stone.shards));
+                    // A scorch mark on the stone (decal), bigger for strong rounds.
+                    if let Some(c) = chunk {
+                        let r = if strong { 0.32 } else { 0.22 };
+                        let rot = Quat::from_rotation_arc(Vec3::Y, normal);
+                        let xf = Affine3A::from_scale_rotation_translation(Vec3::new(r, 0.02, r), rot, pos);
+                        self.marks.place(s, xf, c as u32);
+                    }
+                }
+                Event::Explosion { pos, radius, .. } => {
+                    use std::f32::consts::PI;
+                    self.flashes.push((pos, 0.12));
+                    // Fireball: glowing puffs that swell out and shrink away,
+                    // then a smoke cloud rising, sparks flying.
+                    let r = radius.max(1.0);
+                    self.fx.burst(s, pos, Vec3::Y, &Burst { mesh: m.fire, count: 10, spread: PI, speed: [r * 0.8, r * 2.0], size: [r * 0.35, r * 0.05], life: [0.12, 0.3], gravity: -2.0, drag: 6.0, bounce: 0.0, spin: 0.0, stretch: 0.0 });
+                    self.fx.burst(s, pos, Vec3::Y, &Burst { mesh: m.smoke, count: 8, spread: 1.2, speed: [0.5, r * 0.6], size: [r * 0.3, r * 0.5], life: [1.0, 2.2], gravity: -1.5, drag: 1.5, bounce: 0.0, spin: 0.5, stretch: 0.0 });
+                    self.fx.burst(s, pos, Vec3::Y, &Burst { mesh: m.spark, count: 40, spread: PI, speed: [6.0, 18.0], ..Burst::sparks() });
+                    self.fx.burst(s, pos, Vec3::Y, &Burst { mesh: m.dust, count: 24, spread: PI, speed: [1.0, radius * 1.2], size: [0.5, 0.1], life: [0.6, 1.4], ..Burst::dust() });
+                    self.phys.blast(pos, radius, 9.0);
                 }
                 Event::Hit { victim, attacker, pos, head, .. } => {
                     let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
@@ -219,7 +303,7 @@ impl Visuals {
                 }
             }
         }
-        let shapes = &world.arena.shapes;
+        let shapes = &world.arena.grid;
         self.fx.update(s, growing_guns::DT, |a, b| {
             let d = b - a;
             let len = d.length();
@@ -270,6 +354,63 @@ impl Visuals {
         }
     }
 
+    /// Mesh and transform for a chunk at a wear level.
+    fn chunk_look(&self, c: &growing_guns::Chunk, wear: u8) -> (usize, Affine3A) {
+        let st = self.kinds.stone(c.kind);
+        let mesh = match wear { 0 => st.intact[(c.seed % 4) as usize], 1 => st.cracked, _ => st.crumbling };
+        // Worn bricks shrink a little and sit askew, like Godot's deform carve.
+        let shrink = [1.0, 0.97, 0.92][wear as usize];
+        let tilt = if wear == 0 { Quat::IDENTITY } else {
+            let r = |k: u32| ((c.seed >> k) & 0xff) as f32 / 255.0 - 0.5;
+            Quat::from_euler(glam::EulerRot::XYZ, r(0) * 0.05 * wear as f32, r(8) * 0.05 * wear as f32, r(16) * 0.05 * wear as f32)
+        };
+        // The mortar gap is horizontal only: courses sit flush, so the bright
+        // lava never shows through a seam under a wall.
+        (mesh, Affine3A::from_scale_rotation_translation(c.half * 2.0 * Vec3::new(VISUAL_CHUNK_INSET, 1.0, VISUAL_CHUNK_INSET) * shrink, Quat::from_rotation_y(c.yaw) * tilt, c.center))
+    }
+
+    /// This tick's breakage: worn bricks change look, broken ones and their
+    /// marks and colliders go, rubble flies.
+    fn break_chunks(&mut self, world: &World) {
+        self.debris.advance(growing_guns::DT);
+        let b = &world.breakage;
+        if b.is_empty() { return; }
+        for &(i, _) in &b.worn {
+            let c = &world.arena.chunks[i as usize];
+            let lvl = wear_level(c.wear());
+            if lvl != self.shown_wear[i as usize] {
+                self.shown_wear[i as usize] = lvl;
+                if let Some(slot) = self.chunk_slots[i as usize] {
+                    let (mesh, xf) = self.chunk_look(c, lvl);
+                    self.arena.set(&mut self.scene, slot, mesh, xf);
+                }
+            }
+        }
+        for &i in &b.removed {
+            if let Some(slot) = self.chunk_slots[i as usize].take() { self.arena.remove(&mut self.scene, slot); }
+            if let Some(h) = self.statics[i as usize].take() { self.phys.remove_static(h); }
+            self.marks.drop_on(&mut self.scene, i);
+            // Carve the chunk out of the debris grid, then restore voxels its
+            // neighbours still fill.
+            let c = world.arena.chunks[i as usize];
+            let occ = self.debris.occupancy_mut();
+            occ.fill_box(c.center, c.half, c.yaw, false);
+            let r = c.shape().reach() + OCC_VOXEL;
+            for j in world.arena.grid.query(glam::Vec2::new(c.center.x - r, c.center.z - r), glam::Vec2::new(c.center.x + r, c.center.z + r)) {
+                let n = &world.arena.chunks[j];
+                if (n.center.y - c.center.y).abs() <= n.half.y + c.half.y + OCC_VOXEL { occ.fill_box(n.center, n.half, n.yaw, true); }
+            }
+        }
+        // Rubble from each blast (Godot `request_burst`): 70 shards per
+        // broken chunk, 128 to 900, thrown from the blast centre.
+        for burst in &b.bursts {
+            let st = self.kinds.stone(burst.kind);
+            let count = (burst.count * 70).clamp(128, 900);
+            self.debris.burst(&self.scene, &BurstSpec::rubble(burst.center, burst.radius.max(1.0), count, &st.shards));
+            self.fx.burst(&mut self.scene, burst.center, Vec3::Y, &Burst { mesh: self.fxm.dust, count: 12, spread: 1.5, speed: [0.5, 3.0], size: [0.9, 0.3], life: [0.8, 1.6], ..Burst::dust() });
+        }
+    }
+
     /// Ragdoll torso positions (for state dumps).
     pub fn ragdolls(&self) -> Vec<[f32; 3]> {
         self.ragdolls.iter().filter_map(|r| self.phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect()
@@ -282,6 +423,49 @@ impl Visuals {
         for &(p, _) in self.flashes.iter().rev().take(16 - l.len()) { l.push(omni(p, Vec3::new(1.0, 0.75, 0.35) * 600.0, 8.0)); }
         l
     }
+}
+
+impl Marks {
+    fn place(&mut self, scene: &mut Scene, xf: Affine3A, chunk: u32) {
+        if self.ring.len() < self.slots.capacity() {
+            if let Some(id) = self.slots.add(scene, self.mesh, xf) { self.ring.push((id, chunk)); }
+            return;
+        }
+        let k = self.next % self.ring.len();
+        self.next += 1;
+        let id = self.ring[k].0;
+        if self.slots.is_used(id) { self.slots.set(scene, id, self.mesh, xf); } else if let Some(n) = self.slots.add(scene, self.mesh, xf) { self.ring[k].0 = n; }
+        self.ring[k].1 = chunk;
+    }
+
+    fn drop_on(&mut self, scene: &mut Scene, chunk: u32) {
+        for (id, c) in &mut self.ring {
+            if *c == chunk && self.slots.is_used(*id) { self.slots.remove(scene, *id); *c = u32::MAX; }
+        }
+    }
+}
+
+fn wear_level(w: f32) -> u8 { if w <= 0.08 { 0 } else if w < 0.5 { 1 } else { 2 } }
+
+fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
+    // Per-brick brightness variation (Godot's INSTANCE_CUSTOM) as four tints.
+    let intact = [0.88, 0.96, 1.04, 1.12].map(|k| {
+        let m = material(scene, tint.map(|c| (c * k).min(1.0)), rough);
+        scene.add_mesh(&primitives::hewn_block(m, 3, 0.09, 0.0, 0).mesh())
+    });
+    let dark = |k: f32| tint.map(|c| c * k);
+    let cm = material(scene, dark(0.8), rough);
+    let cracked = scene.add_mesh(&primitives::hewn_block(cm, 4, 0.11, 0.07, 1).mesh());
+    let km = material(scene, dark(0.62), rough);
+    let crumbling = scene.add_mesh(&primitives::hewn_block(km, 4, 0.14, 0.16, 2).mesh());
+    let chm = material(scene, dark(0.9), rough);
+    let chip = scene.add_mesh(&primitives::hewn_block(chm, 1, 0.12, 0.2, 3).mesh());
+    // Rubble: rough shards in three shades (Godot: base colour x 0.72..1.17).
+    let shards = [0.72, 0.92, 1.12].map(|k| {
+        let m = material(scene, tint.map(|c| (c * k).min(1.0)), rough);
+        scene.add_mesh(&primitives::hewn_block(m, 2, 0.15, 0.22, (k * 100.0) as u32).mesh())
+    });
+    Stone { intact, cracked, crumbling, chip, shards }
 }
 
 fn omni(p: Vec3, cd: Vec3, range: f32) -> LocalLight {

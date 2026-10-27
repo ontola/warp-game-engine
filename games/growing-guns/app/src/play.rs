@@ -143,6 +143,61 @@ impl app::Game for Gg {
 
     fn title(&self) -> Option<String> { Some(format!("round {}", self.world.round)) }
 
+    fn command(&mut self, cmd: &str) -> Result<String, String> {
+        let w: Vec<&str> = cmd.split_whitespace().collect();
+        let num = |k: usize| -> Result<f32, String> { w.get(k).ok_or(format!("{cmd}: missing argument {k}"))?.parse::<f32>().map_err(|e| format!("{cmd}: {e}")) };
+        let player = |k: usize, world: &World| -> Result<usize, String> {
+            let p = num(k)? as usize;
+            if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
+        };
+        match w.first().copied().unwrap_or("") {
+            "help" => Ok("give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | arena SEED | cards".into()),
+            "arena" => {
+                let seed = num(1)? as u64;
+                self.world.arena = growing_guns::Arena::generate(seed);
+                self.new_arena();
+                let a = &self.world.arena;
+                Ok(format!("arena {seed}: {:?}, {} m, {} chunks", a.variant, a.size, a.chunks.len()))
+            }
+            "cards" => Ok(growing_guns::cards::ALL.iter().map(|c| format!("{c:?}").to_lowercase()).collect::<Vec<_>>().join(" ")),
+            "give" => {
+                let p = player(1, &self.world)?;
+                let name = w.get(2).ok_or("give P CARD")?.to_lowercase();
+                let card = *growing_guns::cards::ALL.iter().find(|c| format!("{c:?}").to_lowercase() == name).ok_or(format!("unknown card {name} (try: cards)"))?;
+                let pl = &mut self.world.players[p];
+                pl.mods.apply(card);
+                pl.cards.push(card);
+                pl.ammo = pl.mag_size();
+                Ok(format!("player {p} has {:?}", pl.cards))
+            }
+            "teleport" => {
+                let p = player(1, &self.world)?;
+                let to = Vec3::new(num(2)?, num(3)?, num(4)?);
+                self.world.players[p].pos = to;
+                self.world.players[p].vel = Vec3::ZERO;
+                if let Some(q) = self.prev.get_mut(p) { *q = to; }
+                Ok(format!("player {p} at {to}"))
+            }
+            "aim" => {
+                let p = player(1, &self.world)?;
+                let pl = &mut self.world.players[p];
+                let d = (Vec3::new(num(2)?, num(3)?, num(4)?) - pl.eye()).normalize_or(Vec3::NEG_Z);
+                pl.yaw = (-d.x).atan2(-d.z);
+                pl.pitch = d.y.clamp(-1.0, 1.0).asin().clamp(-1.5, 1.5);
+                Ok(format!("player {p} yaw {:.3} pitch {:.3}", pl.yaw, pl.pitch))
+            }
+            "health" => { let p = player(1, &self.world)?; self.world.players[p].health = num(2)? as i32; Ok(format!("player {p} health {}", self.world.players[p].health)) }
+            "ammo" => { let p = player(1, &self.world)?; self.world.players[p].ammo = num(2)? as u32; Ok(format!("player {p} ammo {}", self.world.players[p].ammo)) }
+            "bots" => { self.world.bots_paused = w.get(1) == Some(&"pause"); Ok(format!("bots paused: {}", self.world.bots_paused)) }
+            "blast" => {
+                let c = growing_guns::Carve { pos: Vec3::new(num(1)?, num(2)?, num(3)?), radius: num(4)?, damage: num(5)? };
+                self.world.queue_carve(c);
+                Ok("blast queued for the next tick".into())
+            }
+            other => Err(format!("unknown command {other} (try: help)")),
+        }
+    }
+
     fn state(&self) -> Option<String> {
         let w = &self.world;
         let players: Vec<_> = w.players.iter().enumerate().map(|(i, p)| serde_json::json!({
@@ -154,7 +209,8 @@ impl app::Game for Gg {
         })).collect();
         Some(serde_json::json!({
             "tick": w.tick, "round": w.round, "intermission": w.intermission, "ended": w.ended, "pick_time": w.pick_time,
-            "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len() },
+            "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
+                "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
             "players": players, "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(),
         }).to_string())
     }

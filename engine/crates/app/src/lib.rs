@@ -67,6 +67,10 @@ pub trait Game {
     fn title(&self) -> Option<String> { None }
     /// The game's state as JSON, for scripted playtests and agents.
     fn state(&self) -> Option<String> { None }
+    /// A debug command from a script or console (`give 0 explosive`,
+    /// `teleport 0 1 2 3`): set up scenarios without playing up to them.
+    /// `help` should list what the game understands.
+    fn command(&mut self, cmd: &str) -> Result<String, String> { Err(format!("this game has no commands ({cmd})")) }
 }
 
 #[derive(Clone, Debug)]

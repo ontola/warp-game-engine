@@ -1,7 +1,9 @@
 //! Simple, deterministic collision for game prototypes: boxes rotated about
 //! the vertical axis (most level geometry), an upright cylinder for
 //! characters, rays and spheres, and a `move_and_slide` character mover.
-//! No broadphase: fine for hundreds of boxes and a few movers per tick.
+//! A plain slice has no broadphase (fine for hundreds of boxes); [`BoxGrid`]
+//! adds a uniform grid with removal for thousands (destructible levels).
+//! Movers and rays work on either through [`Boxes`].
 //!
 //! Yaw convention: positive yaw turns +X towards -Z (right-handed, Y up;
 //! the same as `glam::Quat::from_rotation_y`).
@@ -101,6 +103,179 @@ pub fn raycast<'a>(boxes: impl IntoIterator<Item = &'a YawBox>, origin: Vec3, di
     best
 }
 
+/// A set of boxes movers and rays can query. Visits are in increasing index
+/// order, so results are deterministic whatever the broadphase.
+pub trait Boxes {
+    /// Every live box whose footprint may overlap the XZ rectangle.
+    fn near(&self, lo: Vec2, hi: Vec2, f: &mut dyn FnMut(usize, &YawBox));
+    /// Closest hit: distance, outward normal, box index.
+    fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, usize)>;
+}
+
+impl Boxes for [YawBox] {
+    fn near(&self, lo: Vec2, hi: Vec2, f: &mut dyn FnMut(usize, &YawBox)) {
+        for (i, b) in self.iter().enumerate() {
+            let r = b.reach();
+            if b.center.x + r < lo.x || b.center.x - r > hi.x || b.center.z + r < lo.y || b.center.z - r > hi.y { continue; }
+            f(i, b);
+        }
+    }
+    fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, usize)> { raycast(self, origin, dir, max) }
+}
+
+impl Boxes for Vec<YawBox> {
+    fn near(&self, lo: Vec2, hi: Vec2, f: &mut dyn FnMut(usize, &YawBox)) { self.as_slice().near(lo, hi, f) }
+    fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, usize)> { self.as_slice().ray(origin, dir, max) }
+}
+
+impl<const N: usize> Boxes for [YawBox; N] {
+    fn near(&self, lo: Vec2, hi: Vec2, f: &mut dyn FnMut(usize, &YawBox)) { self.as_slice().near(lo, hi, f) }
+    fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, usize)> { self.as_slice().ray(origin, dir, max) }
+}
+
+/// Boxes in a uniform XZ grid, for levels with thousands of pieces. Boxes
+/// can be removed (destroyed) and restored without a rebuild; indices stay
+/// stable. Each box is listed in every cell its footprint touches.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BoxGrid {
+    pub boxes: Vec<YawBox>,
+    alive: Vec<bool>,
+    origin: Vec2,
+    cell: f32,
+    dims: [i32; 2],
+    /// Start of each cell's run in `items` (dims.0 * dims.1 + 1 entries).
+    starts: Vec<u32>,
+    items: Vec<u32>,
+    live: usize,
+}
+
+impl BoxGrid {
+    /// Build with `cell` metres per grid cell (about the size of a typical
+    /// box; 4 suits rooms of 1 to 3 metre pieces).
+    pub fn new(boxes: Vec<YawBox>, cell: f32) -> Self {
+        let cell = cell.max(0.1);
+        let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+        for b in &boxes {
+            let r = b.reach();
+            lo = lo.min(Vec2::new(b.center.x - r, b.center.z - r));
+            hi = hi.max(Vec2::new(b.center.x + r, b.center.z + r));
+        }
+        if boxes.is_empty() { (lo, hi) = (Vec2::ZERO, Vec2::ONE); }
+        let dims = [(((hi.x - lo.x) / cell).ceil() as i32).max(1), (((hi.y - lo.y) / cell).ceil() as i32).max(1)];
+        let mut g = BoxGrid { alive: vec![true; boxes.len()], live: boxes.len(), boxes, origin: lo, cell, dims, starts: Vec::new(), items: Vec::new() };
+        let n = (dims[0] * dims[1]) as usize;
+        let mut counts = vec![0u32; n + 1];
+        let each = |g: &BoxGrid, f: &mut dyn FnMut(usize, usize)| for (i, b) in g.boxes.iter().enumerate() {
+            let (a, z) = g.footprint(b);
+            for cz in a[1]..=z[1] { for cx in a[0]..=z[0] { f((cz * g.dims[0] + cx) as usize, i); } }
+        };
+        each(&g, &mut |c, _| counts[c + 1] += 1);
+        for k in 0..n { counts[k + 1] += counts[k]; }
+        let mut fill = counts.clone();
+        let mut items = vec![0u32; counts[n] as usize];
+        each(&g, &mut |c, i| { items[fill[c] as usize] = i as u32; fill[c] += 1; });
+        g.starts = counts;
+        g.items = items;
+        g
+    }
+
+    fn cell_of(&self, p: Vec2) -> [i32; 2] {
+        let c = (p - self.origin) / self.cell;
+        [(c.x.floor() as i32).clamp(0, self.dims[0] - 1), (c.y.floor() as i32).clamp(0, self.dims[1] - 1)]
+    }
+
+    fn footprint(&self, b: &YawBox) -> ([i32; 2], [i32; 2]) {
+        let r = b.reach();
+        (self.cell_of(Vec2::new(b.center.x - r, b.center.z - r)), self.cell_of(Vec2::new(b.center.x + r, b.center.z + r)))
+    }
+
+    fn cell_items(&self, cx: i32, cz: i32) -> &[u32] {
+        let c = (cz * self.dims[0] + cx) as usize;
+        &self.items[self.starts[c] as usize..self.starts[c + 1] as usize]
+    }
+
+    pub fn len(&self) -> usize { self.boxes.len() }
+    pub fn is_empty(&self) -> bool { self.boxes.is_empty() }
+    /// Boxes not removed.
+    pub fn live(&self) -> usize { self.live }
+    pub fn is_alive(&self, i: usize) -> bool { self.alive[i] }
+    pub fn remove(&mut self, i: usize) { if std::mem::replace(&mut self.alive[i], false) { self.live -= 1; } }
+    pub fn restore(&mut self, i: usize) { if !std::mem::replace(&mut self.alive[i], true) { self.live += 1; } }
+
+    /// Live boxes whose footprint may overlap the XZ rectangle, each once,
+    /// in index order.
+    pub fn query(&self, lo: Vec2, hi: Vec2) -> Vec<usize> {
+        let (a, z) = (self.cell_of(lo), self.cell_of(hi));
+        let mut out = Vec::new();
+        for cz in a[1]..=z[1] { for cx in a[0]..=z[0] {
+            out.extend(self.cell_items(cx, cz).iter().map(|&i| i as usize).filter(|&i| self.alive[i]));
+        } }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Live boxes overlapping a sphere (conservatively, by footprint and height).
+    pub fn in_sphere(&self, center: Vec3, radius: f32) -> Vec<usize> {
+        let r = Vec2::splat(radius);
+        let c = Vec2::new(center.x, center.z);
+        self.query(c - r, c + r).into_iter().filter(|&i| {
+            let b = &self.boxes[i];
+            let d = b.center - center;
+            d.y.abs() <= b.half.y + radius && Vec2::new(d.x, d.z).length() <= b.reach() + radius
+        }).collect()
+    }
+}
+
+impl Boxes for BoxGrid {
+    fn near(&self, lo: Vec2, hi: Vec2, f: &mut dyn FnMut(usize, &YawBox)) {
+        for i in self.query(lo, hi) { f(i, &self.boxes[i]); }
+    }
+
+    /// Walks the cells along the ray (2D DDA on XZ) and stops once the best
+    /// hit is nearer than the next cell.
+    fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, usize)> {
+        let mut best: Option<(f32, Vec3, usize)> = None;
+        let mut tested: Vec<u32> = Vec::new();
+        let p = (Vec2::new(origin.x, origin.z) - self.origin) / self.cell;
+        let d = Vec2::new(dir.x, dir.z);
+        let mut c = [p.x.floor() as i32, p.y.floor() as i32];
+        let step = [if d.x >= 0.0 { 1 } else { -1 }, if d.y >= 0.0 { 1 } else { -1 }];
+        // Ray distance (along `dir`, metres) to the next cell boundary per axis.
+        let next = |k: usize, c: i32| -> f32 {
+            let dk = if k == 0 { d.x } else { d.y };
+            if dk.abs() < 1e-9 { return f32::INFINITY; }
+            let pk = if k == 0 { p.x } else { p.y };
+            let edge = if dk > 0.0 { (c + 1) as f32 } else { c as f32 };
+            (edge - pk) * self.cell / dk
+        };
+        let delta = [if d.x.abs() < 1e-9 { f32::INFINITY } else { self.cell / d.x.abs() }, if d.y.abs() < 1e-9 { f32::INFINITY } else { self.cell / d.y.abs() }];
+        let mut t_next = [next(0, c[0]), next(1, c[1])];
+        loop {
+            let inside = c[0] >= 0 && c[1] >= 0 && c[0] < self.dims[0] && c[1] < self.dims[1];
+            if inside {
+                for &i in self.cell_items(c[0], c[1]) {
+                    if !self.alive[i as usize] || tested.contains(&i) { continue; }
+                    tested.push(i);
+                    if let Some((t, n)) = self.boxes[i as usize].ray(origin, dir, best.map_or(max, |h| h.0)) {
+                        if best.is_none_or(|h| t < h.0 || (t == h.0 && (i as usize) < h.2)) { best = Some((t, n, i as usize)); }
+                    }
+                }
+            }
+            let t_exit = t_next[0].min(t_next[1]);
+            if t_exit > max || best.is_some_and(|h| h.0 <= t_exit) { break; }
+            // Outside the grid and moving away: nothing more to find.
+            let leaving = (c[0] < 0 && step[0] < 0) || (c[0] >= self.dims[0] && step[0] > 0)
+                || (c[1] < 0 && step[1] < 0) || (c[1] >= self.dims[1] && step[1] > 0);
+            if leaving { break; }
+            let k = if t_next[0] < t_next[1] { 0 } else { 1 };
+            c[k] += step[k];
+            t_next[k] += delta[k];
+        }
+        best
+    }
+}
+
 /// Ray against a sphere: entry distance (0 when starting inside).
 pub fn ray_sphere(origin: Vec3, dir: Vec3, center: Vec3, radius: f32, max: f32) -> Option<f32> {
     let m = origin - center;
@@ -131,17 +306,19 @@ impl Mover {
     /// boxes): sub-steps of at most `max_step` metres, up to four push-out
     /// passes each. Velocity loses its component into walls, floors and
     /// ceilings. Small ledges (shallower than the side push) are stepped up.
-    pub fn slide(&self, boxes: &[YawBox], pos: &mut Vec3, vel: &mut Vec3, dt: f32, max_step: f32) -> Contact {
+    pub fn slide<B: Boxes + ?Sized>(&self, boxes: &B, pos: &mut Vec3, vel: &mut Vec3, dt: f32, max_step: f32) -> Contact {
         let travel = *vel * dt;
         let steps = (travel.length() / max_step).ceil().max(1.0) as usize;
         let mut c = Contact::default();
+        let mut near: Vec<(usize, YawBox)> = Vec::new();
         for _ in 0..steps {
             *pos += travel / steps as f32;
             for _ in 0..4 {
                 let mut any = false;
-                for b in boxes {
-                    let reach = b.half.x.max(b.half.z) * std::f32::consts::SQRT_2 + self.radius;
-                    if (pos.x - b.center.x).abs() > reach || (pos.z - b.center.z).abs() > reach { continue; }
+                near.clear();
+                let r = Vec2::splat(self.radius + 0.01);
+                boxes.near(Vec2::new(pos.x, pos.z) - r, Vec2::new(pos.x, pos.z) + r, &mut |i, b| near.push((i, *b)));
+                for (_, b) in &near {
                     let Some(push) = b.push_out(*pos, self.radius, self.half_height) else { continue };
                     any = true;
                     *pos += push;
@@ -189,6 +366,64 @@ mod tests {
         let side = wall.push_out(Vec3::new(1.2, 1.0, 0.0), 0.4, 0.9).unwrap();
         assert!((side.x + 0.1).abs() < 1e-5 && side.y == 0.0, "{side}");
         assert!(wall.push_out(Vec3::new(0.5, 1.0, 0.0), 0.4, 0.9).is_none());
+    }
+
+    fn scatter(n: usize, seed: u64) -> Vec<YawBox> {
+        let mut s = seed;
+        let mut r = move || { s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (s >> 40) as f32 / (1u64 << 24) as f32 };
+        (0..n).map(|_| YawBox::new(Vec3::new(r() * 80.0 - 40.0, r() * 6.0, r() * 80.0 - 40.0),
+            Vec3::new(0.3 + r() * 3.0, 0.3 + r() * 3.0, 0.3 + r() * 3.0), if r() < 0.5 { 0.0 } else { r() * 6.28 })).collect()
+    }
+
+    #[test]
+    fn grid_rays_and_queries_match_the_plain_scan() {
+        let boxes = scatter(600, 7);
+        let mut grid = BoxGrid::new(boxes.clone(), 4.0);
+        let mut s = 99u64;
+        let mut r = move || { s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (s >> 40) as f32 / (1u64 << 24) as f32 };
+        for k in 0..2000 {
+            let o = Vec3::new(r() * 120.0 - 60.0, r() * 8.0 - 1.0, r() * 120.0 - 60.0);
+            let d = Vec3::new(r() - 0.5, (r() - 0.5) * if k % 7 == 0 { 0.0 } else { 0.6 }, r() - 0.5).normalize();
+            let d = if k % 13 == 0 { Vec3::NEG_Y } else { d };
+            let max = r() * 90.0;
+            let a = boxes.as_slice().ray(o, d, max);
+            let b = grid.ray(o, d, max);
+            assert_eq!(a.map(|h| h.2), b.map(|h| h.2), "ray {k}: {o} {d} {max}");
+        }
+        for i in (0..600).step_by(3) { grid.remove(i); }
+        assert_eq!(grid.live(), 400);
+        let live: Vec<YawBox> = boxes.iter().enumerate().map(|(i, b)| if i % 3 == 0 { YawBox::new(Vec3::splat(1e6), Vec3::ONE, 0.0) } else { *b }).collect();
+        for _ in 0..500 {
+            let o = Vec3::new(r() * 100.0 - 50.0, r() * 6.0, r() * 100.0 - 50.0);
+            let d = Vec3::new(r() - 0.5, (r() - 0.5) * 0.4, r() - 0.5).normalize();
+            assert_eq!(live.as_slice().ray(o, d, 70.0).map(|h| h.2), grid.ray(o, d, 70.0).map(|h| h.2));
+            let near = grid.query(Vec2::new(o.x - 2.0, o.z - 2.0), Vec2::new(o.x + 2.0, o.z + 2.0));
+            let mut want = Vec::new();
+            live.as_slice().near(Vec2::new(o.x - 2.0, o.z - 2.0), Vec2::new(o.x + 2.0, o.z + 2.0), &mut |i, _| want.push(i));
+            assert!(want.iter().all(|i| near.contains(i)), "grid query misses a box");
+            assert!(near.windows(2).all(|w| w[0] < w[1]));
+        }
+        grid.restore(0);
+        assert_eq!(grid.live(), 401);
+    }
+
+    #[test]
+    fn mover_on_a_grid_matches_the_slice() {
+        let mut boxes = scatter(300, 3);
+        boxes.push(YawBox::new(Vec3::new(0.0, -0.5, 0.0), Vec3::new(100.0, 1.0, 100.0), 0.0));
+        let grid = BoxGrid::new(boxes.clone(), 4.0);
+        let m = Mover { radius: 0.4, half_height: 0.9 };
+        for start in 0..20 {
+            let (mut p, mut v) = (Vec3::new(start as f32 * 3.0 - 30.0, 8.0, 5.0), Vec3::new(4.0, -3.0, -6.0));
+            let (mut q, mut w) = (p, v);
+            for _ in 0..240 {
+                v.y -= 0.5; w.y -= 0.5;
+                let a = m.slide(&boxes, &mut p, &mut v, 1.0 / 60.0, 0.25);
+                let b = m.slide(&grid, &mut q, &mut w, 1.0 / 60.0, 0.25);
+                assert_eq!(a, b);
+                assert_eq!(p, q);
+            }
+        }
     }
 
     #[test]

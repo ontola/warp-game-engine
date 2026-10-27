@@ -3,11 +3,13 @@
 //! world is a plain value: the host steps it, clients render snapshots.
 pub mod arena;
 pub mod cards;
+pub mod destruct;
 mod bot;
 pub mod rng;
 pub mod shape;
 
 pub use arena::Arena;
+pub use destruct::{Breakage, Carve, Chunk};
 use glam::{Vec2, Vec3};
 use rng::Rng;
 use serde::{Deserialize, Serialize};
@@ -49,6 +51,12 @@ pub const RECOIL_PITCH: f32 = 0.018;
 pub const RANGE: f32 = 200.0;
 pub const BULLET_SPEED: f32 = 150.0;
 pub const KNOCKBACK_PER_DAMAGE: f32 = 0.12;
+/// Explosions launch harder at the same damage.
+pub const BLAST_KNOCKBACK_MULT: f32 = 1.5;
+/// Splash damage at the edge of the radius, as a fraction (Godot EXPLOSION_EDGE_FALLOFF).
+pub const EXPLOSION_EDGE_FALLOFF: f32 = 0.2;
+/// Your own explosions hurt you this much.
+pub const SELF_SPLASH: f32 = 0.5;
 
 pub const INTERMISSION: f32 = 3.0;
 /// Seconds a loser has to pick a card (Godot: CARD_PICK_TIMEOUT).
@@ -140,7 +148,11 @@ pub struct Bullet {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Shot { player: usize, from: Vec3, dir: Vec3 },
-    Impact { pos: Vec3, normal: Vec3 },
+    /// A bullet hit the arena. `damage` is the chip damage to the stone
+    /// (decal and chip size); `strong` hits also wear chunks down.
+    Impact { pos: Vec3, normal: Vec3, damage: f32, strong: bool },
+    /// An explosive round went off.
+    Explosion { pos: Vec3, radius: f32, owner: usize },
     Hit { victim: usize, attacker: usize, damage: i32, head: bool, pos: Vec3 },
     Kill { victim: usize, attacker: Option<usize> },
     Jump { player: usize },
@@ -179,6 +191,11 @@ pub struct World {
     /// The round is over: intermission and card picks until the next one.
     pub ended: bool,
     pub events: Vec<Event>,
+    /// What this tick did to the arena (sent reliably to clients).
+    pub breakage: Breakage,
+    /// Debug: bots stand still and hold fire.
+    pub bots_paused: bool,
+    carves: Vec<Carve>,
     rng: Rng,
     brains: Vec<bot::Brain>,
 }
@@ -190,7 +207,7 @@ impl World {
         let arena = Arena::generate(rng.next_u32() as u64);
         let players = bots.iter().map(|&b| Player::new(b)).collect();
         let brains = (0..bots.len()).map(|i| bot::Brain::new(seed ^ (i as u64 + 1) * 0x9E37)).collect();
-        let mut w = World { arena, players, bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), rng, brains };
+        let mut w = World { arena, players, bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), breakage: Breakage::default(), bots_paused: false, carves: Vec::new(), rng, brains };
         w.spawn_all();
         w
     }
@@ -221,10 +238,11 @@ impl World {
 
     pub fn step(&mut self, inputs: &[Input]) {
         self.events.clear();
+        self.breakage = Breakage::default();
         self.tick += 1;
         let mut inp: Vec<Input> = (0..self.players.len()).map(|i| inputs.get(i).copied().unwrap_or_default()).collect();
         for i in 0..self.players.len() {
-            if self.players[i].bot && self.players[i].alive && !self.between_rounds() {
+            if self.players[i].bot && self.players[i].alive && !self.between_rounds() && !self.bots_paused {
                 let mut brain = std::mem::take(&mut self.brains[i]);
                 inp[i] = brain.think(self, i);
                 self.brains[i] = brain;
@@ -237,6 +255,8 @@ impl World {
             if self.players[i].alive { self.weapon(i, inp[i]); }
         }
         self.step_bullets();
+        let carves = std::mem::take(&mut self.carves);
+        self.breakage = self.arena.carve(&carves);
         for i in 0..self.players.len() {
             if self.players[i].alive && self.arena.in_lava(self.players[i].pos) { self.kill(i, None); }
         }
@@ -246,7 +266,7 @@ impl World {
 
     fn move_player(&mut self, i: usize, input: Input) {
         let mut ev = Vec::new();
-        let shapes = &self.arena.shapes;
+        let shapes = &self.arena.grid;
         let p = &mut self.players[i];
         p.yaw += input.look[0];
         p.pitch = (p.pitch + input.look[1]).clamp(-1.5, 1.5);
@@ -355,7 +375,7 @@ impl World {
             let speed = b.vel.length();
             let len = speed * DT;
             let dir = b.vel / speed;
-            let wall = shape::raycast(&self.arena.shapes, b.pos, dir, len);
+            let wall = shape::raycast(&self.arena.grid, b.pos, dir, len);
             let mut best = wall.map(|(t, _, _)| t).unwrap_or(len);
             let mut target = None;
             for (j, p) in self.players.iter().enumerate() {
@@ -367,13 +387,24 @@ impl World {
                 }
             }
             let at = b.pos + dir * best;
+            let mods = self.players[b.owner].mods;
             if let Some((j, head)) = target {
-                let dmg = (DAMAGE * self.players[b.owner].mods.damage * if head { HEADSHOT_MULT } else { 1.0 }).round() as i32;
+                let dmg = (DAMAGE * mods.damage * if head { HEADSHOT_MULT } else { 1.0 }).round() as i32;
                 self.damage(j, b.owner, dmg, head, at, dir);
+                if mods.explosive_radius > 0.0 { self.explode(at - dir * 0.1, b.owner); }
                 return false;
             }
             if let Some((_, n, _)) = wall {
-                self.events.push(Event::Impact { pos: at, normal: n });
+                if mods.explosive_radius > 0.0 {
+                    self.explode(at + n * 0.1, b.owner);
+                } else {
+                    // Rifle chip (Godot `carve_from_hit`): every hit marks the
+                    // stone, strong ones wear it down.
+                    let (damage, radius) = destruct::rifle_chip(mods.damage);
+                    let strong = damage >= destruct::MIN_DESTRUCTION_DAMAGE;
+                    self.events.push(Event::Impact { pos: at, normal: n, damage, strong });
+                    self.carves.push(Carve { pos: at, radius, damage });
+                }
                 return false;
             }
             b.pos = at;
@@ -390,6 +421,40 @@ impl World {
         v.vel += dir * dmg as f32 * KNOCKBACK_PER_DAMAGE;
         self.events.push(Event::Hit { victim, attacker, damage: dmg, head, pos });
         if v.health <= 0 { self.kill(victim, Some(attacker)); }
+    }
+
+    /// Damage the arena at the end of the next step (debug tools, scripted
+    /// events); it goes through the same sweep, breakage and network path.
+    pub fn queue_carve(&mut self, c: Carve) { self.carves.push(c); }
+
+    /// Explosive round: carve the arena and splash players in the open
+    /// (Godot `Blast.apply` with line of sight to the torso).
+    fn explode(&mut self, pos: Vec3, owner: usize) {
+        let mods = self.players[owner].mods;
+        let (radius, damage) = (mods.explosive_radius, if mods.explosive_damage > 0.0 { mods.explosive_damage } else { 30.0 });
+        self.events.push(Event::Explosion { pos, radius, owner });
+        self.carves.push(Carve { pos, radius: radius * 0.52, damage });
+        for j in 0..self.players.len() {
+            let (alive, at) = (self.players[j].alive, self.players[j].pos);
+            if !alive { continue; }
+            let dist = pos.distance(at);
+            if dist > radius { continue; }
+            let (from, to) = (pos + Vec3::Y * 0.1, at + Vec3::Y * 0.1);
+            let d = to - from;
+            if d.length() > 1e-3 && shape::raycast(&self.arena.grid, from, d.normalize(), d.length()).is_some() { continue; }
+            let linear = (1.0 - dist / radius).clamp(0.0, 1.0);
+            let falloff = EXPLOSION_EDGE_FALLOFF + (1.0 - EXPLOSION_EDGE_FALLOFF) * linear.sqrt();
+            let mut dmg = (damage * falloff) as i32;
+            if j == owner { dmg = (dmg as f32 * SELF_SPLASH) as i32; }
+            let away = (at - pos).try_normalize().unwrap_or(Vec3::Y);
+            let kb = dmg.max(0) as f32 * KNOCKBACK_PER_DAMAGE * BLAST_KNOCKBACK_MULT;
+            self.players[j].vel += away * kb + Vec3::Y * kb * 0.25;
+            if dmg > 0 {
+                self.players[j].health -= dmg;
+                self.events.push(Event::Hit { victim: j, attacker: owner, damage: dmg, head: false, pos: at });
+                if self.players[j].health <= 0 { self.kill(j, Some(owner)); }
+            }
+        }
     }
 
     fn kill(&mut self, victim: usize, attacker: Option<usize>) {
@@ -433,6 +498,9 @@ impl World {
                 self.ended = false;
                 self.round += 1;
                 self.arena = Arena::generate(self.rng.next_u32() as u64);
+                self.carves.clear();
+                // Breakage indexes the old arena's chunks.
+                self.breakage = Breakage::default();
                 self.spawn_all();
                 self.events.push(Event::NewArena);
             }
@@ -474,7 +542,7 @@ impl World {
     /// the first snapshot arrives.
     pub fn remote(arena: Arena, players: usize) -> Self {
         let brains = (0..players).map(|_| bot::Brain::default()).collect();
-        World { arena, players: (0..players).map(|_| Player::new(true)).collect(), bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), rng: Rng::new(0), brains }
+        World { arena, players: (0..players).map(|_| Player::new(true)).collect(), bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), breakage: Breakage::default(), bots_paused: false, carves: Vec::new(), rng: Rng::new(0), brains }
     }
 
     /// Hand a player slot to a human (remote join) or back to a bot.
@@ -493,6 +561,7 @@ impl World {
             mix(p.ammo);
         }
         mix(self.bullets.len() as u32);
+        mix(self.arena.alive_chunks() as u32);
         h
     }
 }
@@ -523,7 +592,7 @@ mod tests {
     fn flat_world() -> World {
         let mut w = World::new(1, &[false, false]);
         w.arena.blocks = vec![Block::new(Vec3::new(0.0, -1.5, 0.0), Vec3::new(100.0, 3.0, 100.0), 0.0, Kind::Floor)];
-        w.arena.reshape();
+        w.arena.build_chunks();
         w.players[0].pos = Vec3::new(0.0, HALF_HEIGHT, 0.0);
         w.players[1].pos = Vec3::new(0.0, HALF_HEIGHT, -20.0);
         w.players[0].yaw = 0.0;
@@ -578,7 +647,7 @@ mod tests {
     fn wall_blocks_and_wall_jump_pushes_away() {
         let mut w = flat_world();
         w.arena.blocks.push(Block::new(Vec3::new(0.0, 5.0, -3.0), Vec3::new(10.0, 10.0, 1.0), 0.0, Kind::Wall));
-        w.arena.reshape();
+        w.arena.build_chunks();
         let fwd = Input { mv: [0.0, 1.0], ..Default::default() };
         for _ in 0..40 { w.step(&[fwd, Input::default()]); }
         assert!(w.players[0].pos.z > -3.0 + 0.5 + RADIUS - 0.01, "{}", w.players[0].pos);
@@ -589,6 +658,69 @@ mod tests {
         w.step(&[Input { jump: true, ..fwd }, Input::default()]);
         assert!(w.players[0].vel.y > 9.0);
         assert!(w.players[0].vel.z > vz, "pushed off the wall");
+    }
+
+    #[test]
+    fn explosive_rounds_dig_through_the_floor_into_the_lava() {
+        let mut w = World::new(3, &[false, false]);
+        let spot = Vec3::new(5.0, HALF_HEIGHT + 0.05, 5.0);
+        w.players[0].pos = spot;
+        w.players[1].pos = Vec3::new(4.0, HALF_HEIGHT + 0.05, 9.0);
+        for _ in 0..3 { w.players[0].mods.apply(cards::Card::Explosive); }
+        w.players[0].mods.mag_bonus = 200;
+        w.players[0].ammo = 200;
+        w.players[0].health = 100_000;
+        w.players[1].health = 100_000;
+        let before = w.arena.alive_chunks();
+        let fire = Input { fire: true, ..Default::default() };
+        let (mut booms, mut splashed, mut burned) = (0, false, false);
+        for _ in 0..1200 {
+            w.players[0].pitch = -1.5;
+            w.step(&[fire, Input::default()]);
+            booms += w.events.iter().filter(|e| matches!(e, Event::Explosion { .. })).count();
+            splashed |= w.events.iter().any(|e| matches!(e, Event::Hit { victim: 1, attacker: 0, .. }));
+            if w.events.iter().any(|e| matches!(e, Event::Kill { victim: 0, attacker: None })) { burned = true; break; }
+        }
+        assert!(booms > 0);
+        assert!(w.arena.alive_chunks() < before, "nothing broke");
+        assert!(splashed, "a player 4 m away in the open takes splash");
+        assert!(burned, "dug through three floor layers into the lava: {}", w.players[0].pos);
+    }
+
+    #[test]
+    fn strong_rifle_hits_wear_a_wall_down_and_weak_ones_do_not() {
+        let base = World::new(4, &[false, false]);
+        let wall = base.arena.chunks.iter().position(|c| c.kind == Kind::Wall && c.center.y > 1.0 && c.center.y < 3.0).unwrap();
+        let c = base.arena.chunks[wall];
+        // Stand 6 m inside the arena, facing the wall chunk.
+        let inward = -Vec3::new(c.center.x, 0.0, c.center.z).normalize();
+        let shoot = |mods: cards::Mods| {
+            let mut w = base.clone();
+            w.players[0].mods = mods;
+            w.players[0].mods.mag_bonus = 300;
+            w.players[0].ammo = 300;
+            w.players[1].pos = Vec3::new(0.0, -50.0, 0.0);
+            w.players[1].health = 1_000_000;
+            let eye = c.center + inward * (c.half.z.max(c.half.x) + 6.0);
+            let fire = Input { fire: true, ..Default::default() };
+            for _ in 0..600 {
+                w.players[0].pos = eye - Vec3::Y * EYE;
+                w.players[0].vel = Vec3::ZERO;
+                let d = (c.center - eye).normalize();
+                w.players[0].yaw = (-d.x).atan2(-d.z);
+                w.players[0].pitch = d.y.asin();
+                w.players[0].bloom = 0.0;
+                w.step(&[fire, Input::default()]);
+                w.players[1].alive = true;
+                w.ended = false;
+            }
+            w.arena.chunks[wall]
+        };
+        let weak = shoot(cards::Mods::default());
+        assert!(weak.alive && weak.hp == weak.max_hp, "base rifle only marks stone");
+        let mut strong = cards::Mods::default();
+        strong.apply(cards::Card::Damage);
+        assert!(!shoot(strong).alive, "x1.5 damage breaks it");
     }
 
     #[test]

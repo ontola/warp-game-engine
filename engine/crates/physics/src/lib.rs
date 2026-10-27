@@ -77,6 +77,9 @@ impl Physics {
         Static(self.world.colliders.insert(c))
     }
 
+    /// Remove one static collider (a destroyed piece of level).
+    pub fn remove_static(&mut self, s: Static) { self.world.remove_collider(s.0); }
+
     /// Replace every static collider (a new level) with these boxes.
     pub fn set_statics(&mut self, boxes: &[YawBox]) -> Vec<Static> {
         let old: Vec<ColliderHandle> = self.world.colliders.iter().filter(|(_, c)| c.parent().is_none()).map(|(h, _)| h).collect();

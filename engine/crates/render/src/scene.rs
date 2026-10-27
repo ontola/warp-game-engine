@@ -354,6 +354,8 @@ pub struct Scene {
     pub part_attachments: Vec<crate::part_wind::PartAttachment>,
     /// Shared baked rigid-part clips. Optional, with bounded actor/part pools.
     pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
+    /// A GPU-simulated debris pool (`debris::Debris::reserve`).
+    pub debris: Option<crate::debris::DebrisSpec>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
     /// Explicit declaration that heightfield sentinel holes and outside its

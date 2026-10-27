@@ -76,6 +76,7 @@ pub mod voxel_forest;
 pub mod wind;
 pub mod part_wind;
 pub mod baked_animation;
+pub mod debris;
 pub mod motion;
 pub mod dlss;
 pub mod upscale;

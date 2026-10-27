@@ -10,6 +10,7 @@
 //!     { "capture": "after-jump.png" },
 //!     { "state": "after-jump.json" },
 //!     { "expect": "/players/0/alive", "equals": true },
+//!     { "cmd": ["give 0 explosive", "face 0 0 -1.4"] },
 //!     { "until": "/round", "min": 2, "max_ticks": 4000 }
 //!   ] }
 //! ```
@@ -23,7 +24,9 @@
 //! exists; `until` ticks until such a check passes. A failed expectation
 //! fails the run. A `capture` with `compare` checks the frame against a reference PNG
 //! (written on first run). `audio` writes the sound since the previous
-//! audio step as a WAV with its peak and RMS. Every step prints one JSON line.
+//! audio step as a WAV with its peak and RMS. `cmd` (a string or a list)
+//! runs game debug commands (`Game::command`) before the step's ticks, to
+//! set up a scenario: give items, teleport, aim. Every step prints one JSON line.
 use crate::{Buttons, Controls, Game, Headless};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -74,8 +77,18 @@ pub struct Step {
     /// `Headless::audio`) as a WAV and report its peak and RMS.
     pub audio: Option<String>,
     pub tolerance: Option<f64>,
+    /// Debug commands for `Game::command`, run before the ticks.
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub cmd: Vec<String>,
     /// Free text shown in the log line.
     pub note: Option<String>,
+}
+
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum M { One(String), Many(Vec<String>) }
+    Ok(match M::deserialize(d)? { M::One(s) => vec![s], M::Many(v) => v })
 }
 
 pub fn button(name: &str) -> Result<u32, String> {
@@ -138,6 +151,13 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
         let mut reached = None;
         let (hold, press) = (mask(&step.hold)?, mask(&step.press)?);
         if step.player >= players.max(1) && has_controls { return Err(format!("step {i}: player {} of {players}", step.player)); }
+        let mut replies = Vec::new();
+        for c in &step.cmd {
+            match game.command(c) {
+                Ok(r) => replies.push(json!({ "cmd": c, "ok": true, "reply": r })),
+                Err(e) => { failed += 1; replies.push(json!({ "cmd": c, "ok": false, "error": e })); }
+            }
+        }
         for t in 0..ticks {
             let mut c = vec![Controls::default(); players];
             if let Some(p) = c.get_mut(step.player) {
@@ -166,6 +186,7 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
             line["until"] = json!({ "pointer": pointer, "ticks": reached, "ok": reached.is_some() });
         }
         if let Some(n) = &step.note { line["note"] = json!(n); }
+        if !replies.is_empty() { line["cmd"] = json!(replies); }
         if let Some(name) = &step.capture {
             let rgba = headless.frame(game)?;
             let path = out.join(name);
