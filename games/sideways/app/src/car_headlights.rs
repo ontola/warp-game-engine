@@ -125,7 +125,7 @@ pub fn local_from_poses(poses:&[CarPose],human_indices:&[usize],light:&Lighting,
         let make=|mount:Vec3,intensity_cd:Vec3,range_m:f32,source_radius_m:f32|LocalLight {
             position:p.pos+p.rot*(mount+Vec3::new(0.0,p.ride,LENS_CLEARANCE_M)),
             direction,intensity_cd,range_m,source_radius_m,
-            inner_cos:40.0f32.to_radians().cos(),outer_cos:70.0f32.to_radians().cos(),
+            inner_cos:40.0f32.to_radians().cos(),outer_cos:70.0f32.to_radians().cos(),falloff:2.0,
         };
         if red>0.0 {
             // A visible lamp is much brighter than its nearby spill. Preserve

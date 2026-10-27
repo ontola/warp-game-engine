@@ -541,6 +541,7 @@ pub struct Renderer {
     part_wind: Option<crate::part_wind::PartWindRenderer>,
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
     debris: Option<crate::debris::DebrisRenderer>,
+    fx: crate::fx::FxSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
     meadow: Option<crate::meadow::MeadowRenderer>,
@@ -1414,6 +1415,7 @@ impl Renderer {
             part_wind,
             baked_animations,
             debris,
+            fx: Default::default(),
             transparency,
             grass,
             meadow,
@@ -2414,6 +2416,13 @@ impl Renderer {
         self.meadow_substrate_enabled && self.debug_options().draws_meadow()
     }
 
+    /// Blast effects (`fx::Effects::flush`): the clock, and the live puffs
+    /// when they changed.
+    pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
+        self.fx.set(gpu, time, puffs);
+        Ok(())
+    }
+
     /// Spawns, grid changes and simulation steps for the scene's debris pool
     /// (called by `debris::Debris::flush`).
     #[allow(clippy::too_many_arguments)]
@@ -3297,6 +3306,22 @@ impl Renderer {
             cpu.mark("view temporal");
             // Compose after temporal reconstruction into a separate output.
             // Never write heat/smoke back into TAA or DLSS history.
+            // Blast effects (fire, smoke, embers, heat) over the resolved HDR.
+            let fx_output = {
+                let mut fx = self.fx.0.lock().unwrap();
+                match fx.as_mut() {
+                    Some(fx) => {
+                        let white = (light.sun_lux * light.sun_dir.y.max(0.0) + light.sky_lux) / std::f32::consts::PI;
+                        let time = self.query.as_ref().map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white)?;
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                        out
+                    }
+                    None => None,
+                }
+            };
+            let resolved = fx_output.unwrap_or(resolved);
             let exhaust_output = if debug_options.exhaust_enabled {
                 let exhaust_time = self.query.as_ref().map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))

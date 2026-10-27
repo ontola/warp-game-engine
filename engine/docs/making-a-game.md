@@ -74,6 +74,12 @@ complete example with split screen, bots and online play.
 - First person: `scene.instances[i].hide_in_views(1 << view)` hides a body
   from its own camera; it keeps its shadow.
 - Sky: `scene.sky = Some(primitives::gradient_sky(zenith, horizon, ground))`.
+- Explosions: `render::fx::Effects` (Growing Guns' Godot blast: lumpy fire
+  and smoke billows, flame tongues, ember streaks, heat shimmer, flash and
+  fireball lights), drawn in HDR after TAA with soft depth fades; spawn
+  with `explosion`, then `flush` per frame and add `lights` to your local
+  lights. Local lights take a `falloff` exponent (2 physical; Godot's
+  `omni_attenuation` for a stylised long reach).
 - Debug commands: implement `Game::command` (`give 0 explosive`,
   `teleport 0 1 2 3`) and scripts can set up any scenario with a `cmd`
   step instead of playing up to it.

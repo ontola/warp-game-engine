@@ -1588,5 +1588,6 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         let page=foliage_page_visibility(p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n);
         rad=select(vec3<f32>(1.0,0.0,1.0),vec3<f32>(page.x),page.y>0.5)*6000.0;
     }
-    textureStore(out_hdr, px, vec4<f32>(rad, 1.0));
+    // fp16 target: a blast light next to a wall must saturate, not become inf.
+    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), 1.0));
 }
