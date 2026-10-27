@@ -522,6 +522,7 @@ pub struct Renderer {
     far_sun_scene_bind: wgpu::BindGroup,
     far_sun: crate::far_sun::Resources,
     foliage_sun_pages: crate::foliage_sun_pages::Resources,
+    async_shadow_validation: Option<std::sync::Mutex<crate::shadow_validation::State>>,
     foliage_sun_scene_bind: wgpu::BindGroup,
     foliage_page_targets: std::sync::Mutex<Vec<(u32, ViewTargets)>>,
     world_visibility: crate::world_visibility::Resources,
@@ -1385,6 +1386,10 @@ impl Renderer {
             far_sun_scene_bind,
             far_sun,
             foliage_sun_pages,
+            // Opt-in comparison: the same executable retains the original
+            // synchronous cache validation unless explicitly requested.
+            async_shadow_validation: (std::env::var("KERN_ASYNC_SHADOW_VALIDATION").as_deref()==Ok("1"))
+                .then(Default::default),
             foliage_sun_scene_bind,
             foliage_page_targets:Default::default(),
             world_visibility,
@@ -2411,6 +2416,9 @@ impl Renderer {
         // Errors before submission leave no stale frame advertised as current.
         let mut color_diagnostics = self.color_diagnostics.lock().unwrap();
         color_diagnostics.context = None;
+        let mut shadow_validation=self.async_shadow_validation.as_ref().map(|state|state.lock().unwrap());
+        if let Some(state)=shadow_validation.as_mut() {state.drain(gpu)?;}
+        let async_pages=readback==Readback::None && shadow_validation.is_some();
         let geometry_diagnostic=self.geometry_diagnostic_config()?;
         let debug_options = self.debug_options();
         self.bloom.set_view_count(views.len());
@@ -2520,9 +2528,12 @@ impl Renderer {
             camera:view.cam,aspect:view.w as f32/view.h as f32,
         }).collect();
         let page_lod=light.lod_pixels.min(self.foliage_sun_pages.lod_pixels);
+        // A saturated validation queue defers new pages. Never drop their
+        // overflow checks or drain the GPU to make room during gameplay.
+        let page_update_budget=if async_pages && !shadow_validation.as_ref().unwrap().available(){0}else{8};
         let page_prepare_started=std::time::Instant::now();
         let page_plan=if sun_needed {
-            self.foliage_sun_pages.prepare(gpu,light.sun_dir,light.alpha_cut,page_lod,&page_views,8)?
+            self.foliage_sun_pages.prepare(gpu,light.sun_dir,light.alpha_cut,page_lod,&page_views,page_update_budget)?
         } else { crate::foliage_sun_pages::Plan::disabled() };
         let page_prepare_cpu_ms=if sun_needed {page_prepare_started.elapsed().as_secs_f64()*1000.} else {0.};
         let mut page_targets=self.foliage_page_targets.lock().unwrap();
@@ -3271,8 +3282,9 @@ impl Renderer {
             enc.resolve_query_set(qs, 0..ticket.query_count, resolve, 0);
             enc.copy_buffer_to_buffer(resolve, 0, &ticket.read, 0, u64::from(ticket.query_count) * 8);
         }
-        // A cache rebuild must validate its raw visible count even for a
-        // non-profiled caller; otherwise overflow would silently lose forests.
+        // Cache updates always validate their raw visible count. The opt-in
+        // page path checks a bounded asynchronous copy on a later frame;
+        // captures, metrics and legacy far-sun updates keep their explicit wait.
         let mut solar_passes=Vec::new();
         let solar_record=|name,view_index,target:&ViewTargets,grouped|crate::shadow_diagnostics::Pass {
             name,view_index,counter:target.counter.clone(),visible:target.visible.clone(),
@@ -3289,9 +3301,16 @@ impl Renderer {
         }}
         let lamp_passes=headlight_targets.iter().take(headlights.len()).enumerate()
             .map(|(index,target)|solar_record("headlight",Some(index),target,self.instance_groups.headlight_enabled)).collect();
-        if readback==Readback::None && !far_updated && page_plan.updates.is_empty() {
+        if readback==Readback::None && !far_updated && (page_plan.updates.is_empty() || async_pages) {
+            let page_validation=if page_plan.updates.is_empty() {None}else{
+                let pages:Vec<_>=page_plan.updates.iter().zip(page_targets.iter())
+                    .map(|(page,(_,target))|(page.layer,page.capacity,&target.counter)).collect();
+                Some(shadow_validation.as_mut().unwrap().encode(gpu,&mut enc,&pages)
+                    .ok_or("foliage page validation queue unexpectedly full")?)
+            };
             segments.push(enc.finish());
             gpu.queue.submit(segments);
+            if let Some(ticket)=page_validation {shadow_validation.as_mut().unwrap().submitted(ticket);}
             *self.sun_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:solar_passes};
             *self.headlight_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:lamp_passes};
             if let Some(meadow) = &self.meadow { meadow.group_cache_submitted(); }
@@ -3299,6 +3318,9 @@ impl Renderer {
             if let (Some(split),Some(plan)) = (static_sun.as_mut(),static_plan) { split.submitted(plan); }
             color_diagnostics.submitted(profile_context, views, &keep,self.geometry_diagnostics.owners());
             if let Some(ticket) = async_ticket { ticket.submitted(); }
+            // The ordered queue renders/clears every pending page before any
+            // view samples it. Submission commits cache reuse; asynchronous
+            // counter failure is a render error on the next completed poll.
             if sun_needed { self.foliage_sun_pages.submitted(&page_plan); }
             return Ok((ldr, Vec::new(), split_stats));
         }
@@ -3403,6 +3425,9 @@ impl Renderer {
             read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         }
         gpu.wait();
+        // An explicit diagnostic already waited for this queue. Validate all
+        // earlier asynchronous page copies too, including a final capture.
+        if let Some(state)=shadow_validation.as_mut() {state.drain(gpu)?;}
         {
             let c = counters.slice(..).get_mapped_range().expect("counters");
             let c: &[u32] = bytemuck::cast_slice(&c);
