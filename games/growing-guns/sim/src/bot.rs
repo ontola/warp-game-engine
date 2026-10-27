@@ -34,7 +34,7 @@ impl Brain {
         let visible = |j: usize| {
             let to = w.players[j].pos + Vec3::Y * 0.3 - eye;
             let d = to.length();
-            d < RANGE && shape::raycast(&w.arena.blocks, eye, to / d, d).is_none()
+            d < RANGE && shape::raycast(&w.arena.shapes, eye, to / d, d).is_none()
         };
         let mut best: Option<(usize, f32, bool)> = None;
         for (j, o) in w.players.iter().enumerate() {
@@ -78,7 +78,7 @@ impl Brain {
         let to_world = |m: Vec2| Vec3::new(cy, 0.0, -sy) * m.x + Vec3::new(-sy, 0.0, -cy) * m.y;
         let solid_ahead = |m: Vec2| {
             let probe = p.pos + to_world(m).normalize_or_zero() * 2.5;
-            shape::raycast(&w.arena.blocks, probe + Vec3::Y * 0.5, Vec3::NEG_Y, 8.0).is_some()
+            shape::raycast(&w.arena.shapes, probe + Vec3::Y * 0.5, Vec3::NEG_Y, 8.0).is_some()
         };
         if p.on_floor && mv != Vec2::ZERO && !solid_ahead(mv) {
             mv = -mv;

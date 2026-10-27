@@ -2,7 +2,7 @@
 //!
 //!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm]
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
-//!   growing-guns sim [--seed S] [--seconds T]
+//!   growing-guns sim [--seed S] [--seconds T] [--trace players.0.health,round [--rows N]]
 //!   growing-guns script FILE.json --out DIR [--players N] [--seed S]   (app::script; exit 1 on a failed expect)
 //!
 //! Online: `play --host` prints a ticket; `play --join TICKET` joins it.
@@ -64,6 +64,15 @@ fn sim(args: &Args) {
         }
     }
     let ms = t.elapsed().as_secs_f64() * 1000.0 / (seconds * TICK_HZ) as f64;
+    if let Some(paths) = args.value("--trace") {
+        // Replay from the same seed, sampling the paths (kern::Trace).
+        let paths: Vec<String> = paths.split(',').map(str::to_string).collect();
+        let mut sim = World::new(seed, &[true; 4]);
+        let mut trace = kern::Trace::new(&paths);
+        let mut timings = kern::Timings::default();
+        for _ in 0..seconds * TICK_HZ / 6 { for _ in 0..6 { kern::Sim::step(&mut sim, &mut timings); } trace.sample(&sim); }
+        print!("{}", trace.table(args.num("--rows", 24usize)));
+    }
     println!("seed {seed}: {seconds} s, {rounds} rounds, {shots} shots, {hits} hits, scores {:?}, {ms:.4} ms per tick, digest {:016x}",
         w.players.iter().map(|p| p.score).collect::<Vec<_>>(), w.digest());
 }

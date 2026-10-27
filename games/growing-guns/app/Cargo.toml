@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 growing-guns.workspace = true
+kern.workspace = true
 render = { path = "../../../engine/crates/render" }
 app = { path = "../../../engine/crates/app" }
 glam = "0.31"
