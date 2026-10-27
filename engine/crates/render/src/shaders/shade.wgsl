@@ -278,8 +278,6 @@ fn ground_at(xz: vec2<f32>) -> f32 {
 // How much light gets from direction `dir` to p, through the canopy and
 // past the terrain: steps grow with distance, like a cone widening.
 fn transmittance(p: vec3<f32>, dir: vec3<f32>, max_t: f32) -> f32 {
-    // Bit 4: no foliage and no heightfield, so nothing can attenuate a ray.
-    if (gi.vol_dims.w & 4u) != 0u { return 1.0; }
     var t = 0.5;
     var tr = 1.0;
     for (var k = 0; k < 12; k++) {
@@ -718,7 +716,8 @@ fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
         if fade <= 0.0 { return mapped; }
     }
     var fallback = 1.0;
-    if gi.vol_dims.w != 0u {
+    // vol_dims.w bit 4: no foliage and no heightfield, the march returns 1.
+    if gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u {
         fallback = transmittance(p + n * 0.2, light.sun_dir.xyz, 50.0);
     }
     return mix(mapped, fallback, fade);
