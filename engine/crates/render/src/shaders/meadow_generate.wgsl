@@ -23,11 +23,6 @@ struct MeadowDrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_index:u
 // to exchange cells or bunch arbitrarily. At 0.45 m spacing this is at most
 // 1.8 cm per axis (2.55 cm radially); adjacent centres remain >=0.414 m apart.
 // Both source and aggregate dispatch this same function for the same cell.
-const MEADOW_ROOT_JITTER:f32=0.04;
-fn meadow_root_fraction(cell:vec2<i32>,seed:u32)->vec2<f32> {
-    let random=vec2<f32>(meadow_random(cell,157u,seed),meadow_random(cell,163u,seed));
-    return vec2<f32>(0.5)+(random*2.0-1.0)*MEADOW_ROOT_JITTER;
-}
 const MEADOW_GROWTH_BROAD_METRES:f32=9.0;
 const MEADOW_GROWTH_LOCAL_METRES:f32=3.0;
 const MEADOW_GROWTH_BROAD_WEIGHT:f32=0.75;

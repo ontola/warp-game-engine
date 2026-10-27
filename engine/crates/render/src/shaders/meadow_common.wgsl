@@ -21,15 +21,6 @@ struct MeadowPlant {
 const MEADOW_TAU:f32=6.283185307179586;
 const MEADOW_PLANT_WORDS:u32=28u;
 const MEADOW_RECIPE_VERTICES:u32=21u;
-const MEADOW_DENSITY_SALT:u32=191u;
-
-// Stable whole-source selection: near and aggregate execute the same test
-// before allocating a draw slot. Never fade individual blade/atlas alpha to
-// pretend it is an exact density reduction. Default one retains every cell.
-fn meadow_patch_retained(cell:vec2<i32>,seed:u32,fraction:f32)->bool {
-    if fraction>=1.0 {return true;}
-    return fraction>0.0 && meadow_random(cell,MEADOW_DENSITY_SALT,seed)<fraction;
-}
 
 // A local road plane is exact only inside its native terrain triangle. Keep
 // the entire fixed anchor disk inside all three edges; boundary patches use
