@@ -3,7 +3,7 @@
 
 use crate::car::{Car, Ground};
 use crate::physics::{HZ, Physics};
-use crate::spec::Cars;
+use crate::spec::{CarSpec, Cars};
 use crate::surfaces::{Surface, Surfaces};
 use rapier3d::glamx::{EulerRot, Pose3, Vec3};
 use serde_json::{Map, Value, json};
@@ -31,6 +31,11 @@ fn snap(x: f64, step: f64) -> f64 {
 
 pub fn run(cars: &Cars, car_id: &str) -> Result<BenchResult, String> {
     let spec = cars.get(car_id)?;
+    run_spec(&spec)
+}
+
+/// Runs the same acceptance bench with an explicit specification for paired tuning.
+pub fn run_spec(spec: &CarSpec) -> Result<BenchResult, String> {
     let surfaces = Surfaces::default();
     let mut phys = Physics::new();
     phys.add_flat_ground(Surface::Gravel);
@@ -159,10 +164,14 @@ pub fn run(cars: &Cars, car_id: &str) -> Result<BenchResult, String> {
     let mut failures = Vec::new();
     for (key, lo, hi) in [
         ("rest_drift_cm", 0.0, 3.0),
-        ("0-100_s", 3.5, 6.5),
+        // A traction increase may launch faster; keep the old upper time bound
+        // and the original 3.5 s lower bound when the explicit scale is 1.0.
+        ("0-100_s", 3.5 / spec.tyre_grip_scale, 6.5),
         ("top_kmh", 175.0, 215.0),
         ("brake_100_m", 35.0, 60.0),
-        ("skid_lat_g", 0.75, 1.25),
+        // More tyre friction intentionally raises the skidpad ceiling. Normalize
+        // this one grip-dependent gate; original 1.0 specs keep the old limits.
+        ("skid_lat_g", 0.75 * spec.tyre_grip_scale, 1.25 * spec.tyre_grip_scale),
         ("hand_heading_deg", 60.0, 180.0),
     ] {
         let v = r.get(key).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
@@ -171,4 +180,27 @@ pub fn run(cars: &Cars, car_id: &str) -> Result<BenchResult, String> {
         }
     }
     Ok(BenchResult { results: r, failures, ticks })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn original_and_grippier_base_keep_braking_handbrake_and_scaled_grip_limits() {
+        let cars = Cars::load(None).unwrap();
+        for id in ["base", "asti", "mv6", "toyama"] {
+            for (grip, lateral) in [(1.0, 1.0), (1.12, 0.8)] {
+                let mut spec = cars.get(id).unwrap();
+                spec.tyre_grip_scale = grip;
+                spec.lateral_peak_scale = lateral;
+                let result = run_spec(&spec).unwrap();
+                eprintln!("handling {id} {grip}/{lateral}: {:?}", result.results);
+                assert!(result.results.values().all(|v| v.as_f64().is_some_and(f64::is_finite)));
+                assert!(result.failures.is_empty(), "{id} {grip}/{lateral}: {:?}", result.failures);
+            }
+        }
+        assert_eq!(HZ, 120.0);
+        assert_eq!(crate::car::SUBSTEPS, 4);
+    }
 }

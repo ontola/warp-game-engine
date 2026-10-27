@@ -1,4 +1,4 @@
-# The numbers that make a car (src/car_spec.gd). Read at every run: change a
+# The numbers that make a car (sim/src/spec.rs). Read at every run: change a
 # number, run the bench again, no rebuild. Lengths m, masses kg, torque Nm.
 # Local frame: -Z forward, +X right, +Y up; y = 0 is the wheel-centre height
 # at rest, z = 0 midway between the axles.
@@ -20,6 +20,11 @@ bump = [3200.0, 2800.0]
 rebound = [4800.0, 4200.0]
 arb = [9000.0, 6000.0]
 max_steer_deg = 30.0
+# 27 October handling trial: more available grip and earlier lateral bite.
+# Both scales accept 0.5..1.5; 1.0/1.0 restores the original tyre response.
+# Loaded at startup / GameNight Prepare, not live or on the next stage.
+tyre_grip_scale = 1.12
+lateral_peak_scale = 0.80
 brake = [1650.0, 1050.0]
 handbrake = 2600.0
 drive = [0.5, 0.5]

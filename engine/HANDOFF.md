@@ -7,7 +7,31 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — managed GameNight preview profile repaired
+## Latest status — r60 handling trial in GameNight
+
+The user requested more grip after feedback that the car feels like a boat.
+Read [the r60 report](../games/sideways/docs/handling-grip-r60.md). Game-owned
+car data now uses tyre_grip_scale=1.12 and lateral_peak_scale=0.80. Physics
+remains 120 Hz/four substeps; steering, inertia and relaxation are unchanged.
+Matched 60 km/h flat-gravel impulse tests recover 50 ms earlier with about
+10% less sideways travel. Braking improves about 11%; subjective acceptance,
+powered slides and rough/wet-road validation remain open. 43 sim library and
+two transient tests passed, two existing diagnostics ignored. Grip-dependent
+bench limits were explicitly adjusted and documented; this changes handling.
+
+DLSS release built successfully. Package `games/sideways/build/gamenight-r60/`
+contains the updated executable AND cars.toml; SHA256:
+`672d2380424687c1342e3857d3dcf80ecccfb06a0358426b554aa148f1ce1099`.
+The managed registration retains the complete procedural-grass preview profile
+from r58, with AO off. Runtime confirms the GPU meadow, no photographed grass,
+and a visible 3840x2160 scene submission. GameNight session
+`92154014-f51e-42e5-a621-6a8f5bf2fcc3` was confirmed running with two occupied
+seats and the prior controller ordinal bindings. This is not physical-input or
+display-scanout verification. Do not run GPU benchmarks during the playtest.
+Live host state uses `active_session`/`warm_session`, NOT `active`/`warm`.
+Registration is loaded on host launch; avoid redundant next/relaunch commands.
+
+## Previous status — managed GameNight preview profile repaired
 
 The user requested a GameNight session. The first r59 registration pointed to
 the correct new executable but omitted the developer graphics environment.

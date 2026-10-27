@@ -141,6 +141,15 @@ than changing their source while retaining stale packed assets.
 Controls: left stick steers, RT accelerates, LT brakes/reverses, A handbrake,
 X reset, Y camera, right stick look around, Start menu.
 
+The [r60 handling trial](docs/handling-grip-r60.md) selects
+`tyre_grip_scale = 1.12` and `lateral_peak_scale = 0.80` in the `[base]` section
+of [`data/cars.toml`](data/cars.toml), for more grip and earlier lateral bite.
+Both accept finite values from 0.5 to 1.5; `1.0/1.0` restores the original
+tuning. With an r60-capable executable, edit the game's data copy and relaunch
+through GameNight to apply changes; New Stage does not reload the file.
+Flat-gravel tests show about 10% less sideways travel, with subjective driving
+acceptance still pending. Physics remains 120 Hz with four substeps.
+
 The engine debug Lighting submenu includes **Highlight bloom** and a draggable
 **Bloom strength** control (4% default, 0-20%). Bloom softens bright lamp cores
 after reconstruction and before AgX; it does not increase how strongly the
