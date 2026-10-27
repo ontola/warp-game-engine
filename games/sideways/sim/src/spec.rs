@@ -24,6 +24,13 @@ pub struct CarSpec {
     pub rebound: [f64; 2],
     pub arb: [f64; 2],
     pub max_steer_deg: f64,
+    /// Multiplies each surface's tyre friction, retaining weather differences.
+    /// Old car files retain their original handling with an implicit 1.0.
+    #[serde(default = "unit_scale", deserialize_with = "tyre_scale")]
+    pub tyre_grip_scale: f64,
+    /// Multiplies the lateral slip at peak force; lower values bite earlier.
+    #[serde(default = "unit_scale", deserialize_with = "tyre_scale")]
+    pub lateral_peak_scale: f64,
     pub brake: [f64; 2],
     pub handbrake: f64,
     pub drive: [f64; 2],
@@ -48,6 +55,16 @@ pub struct CarSpec {
     pub ride: f64,
     /// [size x, y, z, centre x, y, z]
     pub boxes: Vec<[f64; 6]>,
+}
+
+fn unit_scale() -> f64 { 1.0 }
+
+fn tyre_scale<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    let value = f64::deserialize(deserializer)?;
+    if !value.is_finite() || !(0.5..=1.5).contains(&value) {
+        return Err(serde::de::Error::custom("tyre handling scale must be finite and within 0.5..1.5"));
+    }
+    Ok(value)
 }
 
 impl CarSpec {
@@ -94,5 +111,42 @@ impl Cars {
             }
         }
         toml::Value::Table(merged).try_into().map_err(|e| format!("car '{id}': {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn configured(grip: Option<f64>, lateral: Option<f64>) -> Cars {
+        let mut table: toml::Table = DEFAULT_CARS.parse().unwrap();
+        let base = table.get_mut("base").unwrap().as_table_mut().unwrap();
+        for (key, value) in [("tyre_grip_scale", grip), ("lateral_peak_scale", lateral)] {
+            match value { Some(value) => { base.insert(key.into(), toml::Value::Float(value)); }, None => { base.remove(key); } }
+        }
+        Cars { table }
+    }
+
+    #[test]
+    fn old_car_files_keep_original_tyre_scales_and_models_inherit_tuning() {
+        for id in ["base", "asti", "mv6", "toyama"] {
+            let original = configured(None, None).get(id).unwrap();
+            assert_eq!((original.tyre_grip_scale, original.lateral_peak_scale), (1.0, 1.0));
+            let candidate = configured(Some(1.12), Some(0.8)).get(id).unwrap();
+            assert_eq!((candidate.tyre_grip_scale, candidate.lateral_peak_scale), (1.12, 0.8));
+            assert_eq!(candidate.inertia, original.inertia);
+            assert_eq!(candidate.max_steer_deg, original.max_steer_deg);
+        }
+    }
+
+    #[test]
+    fn invalid_tyre_scales_fail_before_car_construction() {
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0, 0.49, 1.51] {
+            assert!(configured(Some(invalid), None).get("asti").is_err());
+            assert!(configured(None, Some(invalid)).get("mv6").is_err());
+        }
+        for bound in [0.5, 1.5] {
+            assert!(configured(Some(bound), Some(bound)).get("base").is_ok());
+        }
     }
 }

@@ -144,6 +144,7 @@ impl Car {
             }
         }
         let engine_omega = spec.idle_rpm / RPM;
+        let grip_scale = spec.tyre_grip_scale;
         Car {
             spec,
             body,
@@ -162,7 +163,7 @@ impl Car {
             speed: 0.0,
             on_ground: 0,
             wading: 0.0,
-            grip_scale: 1.0,
+            grip_scale,
             stats: CarStats::default(),
             reverse_hold: 0.0,
             shift_request: 0,
@@ -268,7 +269,7 @@ impl Car {
         let mut sum_fy = [0.0f64; 4];
         for _ in 0..SUBSTEPS {
             for i in 0..4 {
-                let (fx, fy) = tyre(&self.wheels[i], surfaces, self.grip_scale);
+                let (fx, fy) = tyre(&self.wheels[i], surfaces, self.grip_scale, self.spec.lateral_peak_scale);
                 self.wheels[i].fx = fx;
                 self.wheels[i].fy = fy;
                 sum_fx[i] += fx;
@@ -301,7 +302,7 @@ impl Car {
             let f = w.wf * (sum_fx[i] / SUBSTEPS as f64) as f32 + w.wr * (sum_fy[i] / SUBSTEPS as f64) as f32;
             apply(f, w.point);
             let surf = surfaces.get(w.surface);
-            let s = ((w.kappa / surf.kappa_peak).powi(2) + (w.tan_alpha / surf.alpha_peak).powi(2)).sqrt();
+            let s = ((w.kappa / surf.kappa_peak).powi(2) + (w.tan_alpha / (surf.alpha_peak * self.spec.lateral_peak_scale)).powi(2)).sqrt();
             w.slide = ((s - 0.8) / 2.0).clamp(0.0, 1.0);
             // Grass and dirt drag at the car a little.
             let drag = surf.drag * speed_len.min(10.0) * 0.1 * w.load / 3000.0;
@@ -568,13 +569,13 @@ impl Car {
 
 /// Slip to force: the normalised slip vector picks the direction, its
 /// length the point on the curve.
-fn tyre(w: &Wheel, surfaces: &Surfaces, grip_scale: f64) -> (f64, f64) {
+fn tyre(w: &Wheel, surfaces: &Surfaces, grip_scale: f64, lateral_peak_scale: f64) -> (f64, f64) {
     if !w.contact || w.load <= 0.0 {
         return (0.0, 0.0);
     }
     let surf = surfaces.get(w.surface);
     let kn = w.kappa / surf.kappa_peak;
-    let an = w.tan_alpha / surf.alpha_peak;
+    let an = w.tan_alpha / (surf.alpha_peak * lateral_peak_scale);
     let s = (kn * kn + an * an).sqrt();
     if s < 1e-6 {
         return (0.0, 0.0);
@@ -595,5 +596,63 @@ fn torque_curve(pts: &[[f64; 2]], r: f64) -> f64 {
         }
     }
     0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loaded_wheel() -> Wheel {
+        let mut spec = crate::spec::Cars::load(None).unwrap().get("base").unwrap();
+        spec.tyre_grip_scale = 1.12;
+        let mut physics = Physics::new();
+        let body = physics.add_car(&spec, Pose3::IDENTITY, false);
+        let car = Car::new(spec, body);
+        assert_eq!(car.grip_scale, 1.12);
+        let mut wheel = car.wheels[0].clone();
+        wheel.contact = true;
+        wheel.load = 3000.0;
+        wheel
+    }
+
+    #[test]
+    fn tyre_tuning_improves_small_angle_bite_and_retains_weather_grip() {
+        let mut wheel = loaded_wheel();
+        let dry = Surfaces::default();
+        wheel.tan_alpha = 2.0f64.to_radians().tan();
+        let baseline = tyre(&wheel, &dry, 1.0, 1.0);
+        let candidate = tyre(&wheel, &dry, 1.12, 0.8);
+        assert!(candidate.1 < baseline.1 * 1.12, "earlier lateral bite must add to the grip increase");
+        assert_eq!(candidate.0, 0.0);
+        let wet = Surfaces::with_wetness(&dry, 1.0);
+        for surface in [Surface::Asphalt, Surface::Mud] {
+            wheel.surface = surface;
+            let dry_force = tyre(&wheel, &dry, 1.12, 0.8).1;
+            let wet_force = tyre(&wheel, &wet, 1.12, 0.8).1;
+            assert!(wet_force.abs() < dry_force.abs());
+            assert!((wet_force / dry_force - wet.get(surface).mu / dry.get(surface).mu).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn combined_tyre_force_stays_bounded_and_contact_gated() {
+        let mut wheel = loaded_wheel();
+        let surfaces = Surfaces::default();
+        for surface in Surface::ALL {
+            wheel.surface = surface;
+            for slip in [0.0, 0.01, 0.1, 1.0, 10.0] {
+                wheel.kappa = slip;
+                wheel.tan_alpha = -slip;
+                let (fx, fy) = tyre(&wheel, &surfaces, 1.12, 0.8);
+                assert!(fx.is_finite() && fy.is_finite() && fx >= 0.0 && fy >= 0.0);
+                assert!((fx / 1.04).hypot(fy) <= surfaces.get(surface).mu * 1.12 * wheel.load + 1e-9);
+            }
+        }
+        wheel.contact = false;
+        assert_eq!(tyre(&wheel, &surfaces, 1.12, 0.8), (0.0, 0.0));
+        wheel.contact = true;
+        wheel.load = 0.0;
+        assert_eq!(tyre(&wheel, &surfaces, 1.12, 0.8), (0.0, 0.0));
+    }
 }
 
