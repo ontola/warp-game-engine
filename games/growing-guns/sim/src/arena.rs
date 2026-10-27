@@ -9,6 +9,7 @@
 use crate::rng::Rng;
 use crate::shape::{Block, Kind};
 use glam::{Vec2, Vec3};
+use serde::{Deserialize, Serialize};
 use std::f32::consts::{PI, TAU};
 
 const TOWER_FOOTPRINT: f32 = 7.5;
@@ -21,10 +22,10 @@ const WALL_HEIGHT: f32 = 12.0;
 /// Below this a player is in the lava under the floor (instant death).
 pub const LAVA_KILL_Y: f32 = -2.6;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Variant { Walled, Hole, Open }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Arena {
     pub seed: u64,
     pub size: f32,

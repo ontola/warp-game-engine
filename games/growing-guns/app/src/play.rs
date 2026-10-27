@@ -1,5 +1,6 @@
 //! The windowed game: fixed 60 Hz simulation, 1 to 4 local players in split
 //! screen (keyboard and mouse plus gamepads), the rest bots.
+use crate::session::Session;
 use crate::{hud, view, Args};
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 use glam::Vec3;
@@ -78,14 +79,31 @@ struct App {
     max_frames: u64,
     frames: u64,
     started: Instant,
+    session: Session,
+    since_snap: f32,
+    /// World player index for each local view.
+    slots: Vec<usize>,
 }
 
 pub fn run(args: &Args) -> Result<(), String> {
     let total = args.num("--total", 4usize).clamp(1, 8);
     let humans = args.num("--players", 1usize).clamp(1, 4).min(total);
     let seed = args.num("--seed", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs()));
-    let bots: Vec<bool> = (0..total).map(|i| i >= humans).collect();
-    let world = World::new(seed, &bots);
+    let lan = args.flag("--lan");
+    let (session, world, slots) = if let Some(ticket) = args.value("--join") {
+        let (session, world, slots) = Session::join(ticket, humans as u8, lan)?;
+        println!("joined: playing as {:?}", slots.iter().map(|s| s + 1).collect::<Vec<_>>());
+        (session, world, slots)
+    } else {
+        let bots: Vec<bool> = (0..total).map(|i| i >= humans).collect();
+        let session = if args.flag("--host") { Session::host(lan)? } else { Session::Local };
+        if let Some(t) = session.ticket() {
+            println!("hosting. Others join with:\n  growing-guns play --join {t}{}", if lan { " --lan" } else { "" });
+            let _ = std::fs::write("growing-guns-ticket.txt", t);
+        }
+        (session, World::new(seed, &bots), (0..humans).collect())
+    };
+    let total = world.players.len();
     let vis = view::Visuals::build(&world);
     let gilrs = Gilrs::new().map_err(|e| eprintln!("gamepads unavailable: {e}")).ok();
     let mut app = App {
@@ -93,7 +111,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         prev: world.players.iter().map(|p| p.pos).collect(), world, vis, light: view::lighting(),
         fb: vec![hud::Feedback::default(); total], gfx: None, window: None, gilrs, kbm: Kbm::default(),
         pads: Vec::new(), grabbed: false, acc: 0.0, last: Instant::now(), error: None,
-        max_frames: args.num("--frames", 0u64), frames: 0, started: Instant::now(),
+        max_frames: args.num("--frames", 0u64), frames: 0, started: Instant::now(), session, slots, since_snap: 0.0,
     };
     if let Some(g) = &app.gilrs { app.pads = g.gamepads().map(|(id, _)| Pad { id, latch: Latch::default() }).collect(); }
     println!("growing guns: seed {seed}, {humans} local players, {} bots, {} gamepads", total - humans, app.pads.len());
@@ -142,7 +160,7 @@ impl App {
                 });
             }
         }
-        let mut out = vec![Input::default(); self.world.players.len()];
+        let mut out = vec![Input::default(); self.humans];
         for (k, d) in devices.into_iter().enumerate() {
             let slot = if self.humans == 1 { 0 } else { k };
             if slot >= self.humans { break; }
@@ -187,10 +205,16 @@ impl App {
         self.acc += dt;
         let mut steps = 0;
         let mut rebuilt = false;
+        let client = self.session.is_client();
         while self.acc >= DT && steps < 6 {
             self.acc -= DT;
             steps += 1;
-            let inputs = self.inputs();
+            let local = self.inputs();
+            if client { self.session.send(local); continue; }
+            let mut inputs = vec![Input::default(); self.world.players.len()];
+            for (k, &s) in self.slots.iter().enumerate() { inputs[s] = local[k]; }
+            self.session.poll(&mut self.world);
+            self.session.remote_inputs(&mut inputs);
             self.prev = self.world.players.iter().map(|p| p.pos).collect();
             self.world.step(&inputs);
             if self.world.events.contains(&Event::NewArena) {
@@ -200,8 +224,16 @@ impl App {
             }
             self.vis.absorb(&self.world);
             feedback(&mut self.fb, &self.world, DT);
+            self.session.publish(&self.world);
         }
-        let alpha = (self.acc / DT).clamp(0.0, 1.0);
+        if client {
+            let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
+            let (vis, fb) = (&mut self.vis, &mut self.fb);
+            let (snaps, arena) = self.session.receive(&mut self.world, &self.slots, |w| { vis.absorb(w); feedback(fb, w, DT); });
+            if snaps > 0 { self.prev = before; self.since_snap = 0.0; } else { self.since_snap += dt; }
+            if arena { self.vis = view::Visuals::build(&self.world); self.prev = self.world.players.iter().map(|p| p.pos).collect(); rebuilt = true; }
+        }
+        let alpha = if client { (self.since_snap / DT).clamp(0.0, 1.0) } else { (self.acc / DT).clamp(0.0, 1.0) };
         self.vis.pose(&self.world, &self.prev, alpha, dt);
         let Some(g) = &mut self.gfx else { return Ok(()) };
         if rebuilt { g.renderer = Renderer::new(&g.gpu, &self.vis.scene, &self.light); }
@@ -210,14 +242,16 @@ impl App {
         let (w, h) = (g.config.width, g.config.height);
         let rects = render::split_rects(self.humans, w, h);
         let views: Vec<ViewRect> = rects.iter().enumerate()
-            .map(|(i, &(x, y, vw, vh))| ViewRect { cam: view::camera(&self.world, i, &self.prev, alpha), x, y, w: vw, h: vh }).collect();
+            .map(|(i, &(x, y, vw, vh))| ViewRect { cam: view::camera(&self.world, self.slots[i], &self.prev, alpha), x, y, w: vw, h: vh }).collect();
         let picture = g.renderer.try_render_texture(&g.gpu, &views, &self.light, w, h)?;
         let mut list = render::hud::HudDrawList::new([w, h]);
         for (i, &(x, y, vw, vh)) in rects.iter().enumerate() {
-            hud::view(&mut list, &self.world, i, [x as f32, y as f32, vw as f32, vh as f32], &self.fb[i]);
+            let s = self.slots[i];
+            hud::view(&mut list, &self.world, s, [x as f32, y as f32, vw as f32, vh as f32], &self.fb[s]);
         }
-        let hint = (!self.grabbed && self.kbm_enabled).then_some("click to capture the mouse, Esc releases");
-        hud::global(&mut list, &self.world, hint);
+        let mut status = self.session.status(&self.slots).unwrap_or_default();
+        if !self.grabbed && self.kbm_enabled { status = format!("click to capture the mouse, Esc releases   {status}"); }
+        hud::global(&mut list, &self.world, (!status.is_empty()).then_some(status.as_str()));
         g.hud.prepare(&g.gpu, &list)?;
         match g.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
