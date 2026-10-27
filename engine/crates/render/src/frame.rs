@@ -558,6 +558,9 @@ pub struct Renderer {
     foliage_representations: Vec<crate::foliage_representation::Binding>,
     foliage_representation_policy: crate::foliage_representation::Policy,
     foliage_planners: std::sync::Mutex<Vec<crate::foliage_representation::ViewPlanner>>,
+    /// Per view: size, visibility, depth and HDR targets reused across frames.
+    #[allow(clippy::type_complexity)]
+    view_targets: std::sync::Mutex<Vec<Option<((u32, u32), wgpu::Texture, wgpu::Texture, wgpu::Texture)>>>,
     volume_view_layout: wgpu::BindGroupLayout,
     cull: wgpu::ComputePipeline,
     split_sun_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
@@ -602,6 +605,7 @@ pub struct Renderer {
     shader_generation: u64,
     rock_variation: bool,
     shade_features: crate::shade_features::ShadeFeatures,
+    cpu_spans: Option<crate::cpu_spans::Collector>,
     /// No foliage instance, forest field or heightfield: GI rays cannot be
     /// attenuated, so sky, reflection and sun-fallback marches are skipped
     /// (exactly 1). Foliage cannot be added later without a rebuild.
@@ -1421,6 +1425,7 @@ impl Renderer {
             foliage_representations: scene.foliage_representations.clone(),
             foliage_representation_policy: scene.foliage_representation_policy,
             foliage_planners: Default::default(),
+            view_targets: Default::default(),
             volume_view_layout,
             cull,
             split_sun_cull,
@@ -1461,6 +1466,7 @@ impl Renderer {
             shader_generation: 0,
             rock_variation,
             shade_features,
+            cpu_spans: crate::cpu_spans::Collector::from_env(),
             empty_gi_volume: scene.heightfield.heights.is_empty() && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
                 && !scene.instances.iter().any(|i| i.flags & crate::scene::FOLIAGE != 0),
             car_materials,
@@ -2134,6 +2140,10 @@ impl Renderer {
 
     /// Constructor CPU attribution, present only with KERN_STARTUP_PROFILE=1.
     /// Image decoding occurs before Renderer::new; queued GPU work is not timed.
+    /// With KERN_CPU_SPANS=1: average CPU ms per frame for each phase of
+    /// the frame since the last call, and the number of frames.
+    pub fn cpu_spans(&self) -> Option<(Vec<(&'static str, f64)>, u64)> { self.cpu_spans.as_ref().map(|c| c.take()) }
+
     /// Optional shade-shader features this renderer's scene can reach.
     pub fn shade_features(&self) -> crate::shade_features::ShadeFeatures { self.shade_features }
 
@@ -2404,6 +2414,7 @@ impl Renderer {
     fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
         // Serialize explicit diagnostic readbacks with writes to reused targets.
         // Errors before submission leave no stale frame advertised as current.
+        let mut cpu = crate::cpu_spans::Spans::start(self.cpu_spans.as_ref());
         let mut color_diagnostics = self.color_diagnostics.lock().unwrap();
         color_diagnostics.context = None;
         let geometry_diagnostic=self.geometry_diagnostic_config()?;
@@ -2663,6 +2674,7 @@ impl Renderer {
         // Each camera retains its own coverage/resolution. A second player
         // moving away must not change this player's forest illumination.
         let revision = self.foliage_revision.load(std::sync::atomic::Ordering::Relaxed);
+        cpu.mark("setup");
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         // wgpu30 requires native API commands on a separate encoder. All
         // tracked and native segments still submit once, in queue order.
@@ -2810,6 +2822,7 @@ impl Renderer {
         let mut foliage_planners = self.foliage_planners.lock().unwrap();
         if layout_changed { foliage_planners.clear(); }
         foliage_planners.resize_with(views.len(), Default::default);
+        cpu.mark("shadows and prepasses");
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         for (vi, view) in views.iter().enumerate() {
             let (w, h) = if let Some(backend) = &mut up.backend {
@@ -2864,9 +2877,23 @@ impl Renderer {
                 cache.as_ref().unwrap().tex.create_view(&Default::default())
             };
             let light_buf = buffer(gpu, "view light", bytemuck::bytes_of(&view_light), wgpu::BufferUsages::UNIFORM);
-            let vis = tex2d("vis", w, h, wgpu::TextureFormat::R32Uint, rt);
-            let depth = tex2d("depth", w, h, wgpu::TextureFormat::Depth32Float, rt | wgpu::TextureUsages::COPY_SRC);
-            let hdr = tex2d("hdr", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+            // Per-view targets live across frames while the view keeps its size:
+            // allocating three full-screen textures per view per frame cost
+            // CPU time and driver memory churn. Every pass writes them fully.
+            let (vis, depth, hdr) = {
+                let mut targets = self.view_targets.lock().unwrap();
+                if targets.len() <= vi { targets.resize_with(vi + 1, || None); }
+                match &targets[vi] {
+                    Some(t) if t.0 == (w, h) => (t.1.clone(), t.2.clone(), t.3.clone()),
+                    _ => {
+                        let made = (tex2d("vis", w, h, wgpu::TextureFormat::R32Uint, rt),
+                            tex2d("depth", w, h, wgpu::TextureFormat::Depth32Float, rt | wgpu::TextureUsages::COPY_SRC),
+                            tex2d("hdr", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC));
+                        targets[vi] = Some(((w, h), made.0.clone(), made.1.clone(), made.2.clone()));
+                        made
+                    }
+                }
+            };
             let (vis_v, depth_v, hdr_v) = (vis.create_view(&Default::default()), depth.create_view(&Default::default()), hdr.create_view(&Default::default()));
             // Reversed-Z infinite perspective.
             let view_m = Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
@@ -2935,6 +2962,7 @@ impl Renderer {
             };
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,debug_options.bloom_strength);
             let tone_buf = buffer(gpu, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},pad2:0 }), wgpu::BufferUsages::UNIFORM);
+            cpu.mark("view setup");
             let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
                 bind(
                     gpu,
@@ -2968,6 +2996,7 @@ impl Renderer {
                 }
                 self.cull_and_raster(&mut enc, gpu, &main, Some(&vis_v), &depth_v, &mut ts, &mut names, "cull",RasterPass::Color);
             }
+            cpu.mark("view cull and raster");
             let meadow_bindings = [
                             (0, main.uniform.as_entire_binding()), (2, light_buf.as_entire_binding()),
                             (5, wgpu::BindingResource::TextureView(&shadow_v)),
@@ -3234,6 +3263,7 @@ impl Renderer {
                 pass.dispatch_workgroups(view.w.div_ceil(8), view.h.div_ceil(8), 1);
             }
             keep.push((main, vis, depth, hdr));
+            cpu.mark("view shade and post");
         }
         if let Some(motion) = &up.motion { motion.finish_frame(&mut enc); }
         // One shared previous wind state, advanced only after every view has
@@ -3272,8 +3302,10 @@ impl Renderer {
         let lamp_passes=headlight_targets.iter().take(headlights.len()).enumerate()
             .map(|(index,target)|solar_record("headlight",Some(index),target,self.instance_groups.headlight_enabled)).collect();
         if readback==Readback::None && !far_updated && page_plan.updates.is_empty() {
+            cpu.mark("diagnostics");
             segments.push(enc.finish());
             gpu.queue.submit(segments);
+            cpu.mark("submit");
             *self.sun_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:solar_passes};
             *self.headlight_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:lamp_passes};
             if let Some(meadow) = &self.meadow { meadow.group_cache_submitted(); }
@@ -3284,6 +3316,7 @@ impl Renderer {
             if sun_needed { self.foliage_sun_pages.submitted(&page_plan); }
             return Ok((ldr, Vec::new(), split_stats));
         }
+        cpu.mark("diagnostics (slow path)");
         let near_count = if near_enabled { views.len() } else { 0 };
         let far_counter_index=views.len()+1+near_count+headlights.len();
         let page_counter_index=far_counter_index+usize::from(self.far_sun.enabled);
