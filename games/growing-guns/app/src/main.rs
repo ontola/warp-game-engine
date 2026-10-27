@@ -6,6 +6,7 @@
 //!
 //! Online: `play --host` prints a ticket; `play --join TICKET` joins it.
 //! `--lan` skips relays and address lookup (direct addresses only).
+mod bench;
 mod hud;
 mod net;
 mod play;
@@ -39,6 +40,7 @@ fn main() {
         "play" => play::run(&args),
         "shot" => shot(&args),
         "sim" => { sim(&args); Ok(()) }
+        "bench" => bench::run(&args),
         _ => Err(format!("unknown command {cmd}; use play, shot or sim")),
     };
     if let Err(e) = result {
