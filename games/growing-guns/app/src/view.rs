@@ -315,7 +315,7 @@ impl Visuals {
                     let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
                     self.fx.burst(s, pos, dir + Vec3::Y * 0.3, &Burst { mesh: m.blood, count: if head { 22 } else { 12 }, ..Burst::drops() });
                 }
-                Event::Kill { victim, attacker } => {
+                Event::Kill { victim, attacker, .. } => {
                     let v = &world.players[victim];
                     self.fx.burst(s, v.pos, Vec3::Y, &Burst { mesh: m.blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
                     // Shot dead: pushed away from the shooter. Lava: no body.

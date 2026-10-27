@@ -155,7 +155,9 @@ pub enum Event {
     /// An explosive round went off.
     Explosion { pos: Vec3, radius: f32, owner: usize },
     Hit { victim: usize, attacker: usize, damage: i32, head: bool, pos: Vec3 },
-    Kill { victim: usize, attacker: Option<usize> },
+    /// `gib` says how the body goes (Godot `do_ragdoll` death modes) and
+    /// `dir` which way the killing blow pushed.
+    Kill { victim: usize, attacker: Option<usize>, #[serde(default)] gib: Gib, #[serde(default)] dir: Vec3 },
     Jump { player: usize },
     Dash { player: usize },
     RoundOver { winner: Option<usize> },
@@ -163,6 +165,23 @@ pub enum Event {
     /// A fresh arena was generated: rebuild the scene.
     NewArena,
 }
+
+/// How a body goes when it dies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum Gib {
+    /// Tumbles whole (a regular hit; lava).
+    #[default]
+    Ragdoll,
+    /// A headshot: the head bursts, the torso tumbles.
+    Head,
+    /// Overkill (health at or below OVERKILL_HEALTH) or an explosion: the
+    /// whole body bursts into chunks. `severity` 0.4..2.5, `blast` when an
+    /// explosion did it.
+    Burst { severity: f32, blast: bool },
+}
+
+/// A killing blow that leaves health here or lower bursts the body.
+pub const OVERKILL_HEALTH: i32 = -50;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -261,7 +280,7 @@ impl World {
         let carves = std::mem::take(&mut self.carves);
         self.breakage = self.arena.carve(&carves);
         for i in 0..self.players.len() {
-            if self.players[i].alive && self.arena.in_lava(self.players[i].pos) { self.kill(i, None); }
+            if self.players[i].alive && self.arena.in_lava(self.players[i].pos) { self.kill(i, None, Gib::Ragdoll, Vec3::Y); }
         }
         self.picks(&inp);
         self.rounds();
@@ -423,7 +442,7 @@ impl World {
         v.health -= dmg;
         v.vel += dir * dmg as f32 * KNOCKBACK_PER_DAMAGE;
         self.events.push(Event::Hit { victim, attacker, damage: dmg, head, pos });
-        if v.health <= 0 { self.kill(victim, Some(attacker)); }
+        if v.health <= 0 { let g = Self::gib_for(v.health, head, None); self.kill(victim, Some(attacker), g, dir); }
     }
 
     /// Damage the arena at the end of the next step (debug tools, scripted
@@ -463,17 +482,33 @@ impl World {
             if dmg > 0 {
                 self.players[j].health -= dmg;
                 self.events.push(Event::Hit { victim: j, attacker: owner, damage: dmg, head: false, pos: at });
-                if self.players[j].health <= 0 { self.kill(j, Some(owner)); }
+                if self.players[j].health <= 0 {
+                    // Blast severity grows with how close and how big (Godot `blast_severity`).
+                    let g = Self::gib_for(self.players[j].health, false, Some((linear * (radius / 4.0).clamp(0.5, 2.0)).clamp(0.4, 2.5)));
+                    self.kill(j, Some(owner), g, away);
+                }
             }
         }
     }
 
-    fn kill(&mut self, victim: usize, attacker: Option<usize>) {
+    fn kill(&mut self, victim: usize, attacker: Option<usize>, gib: Gib, dir: Vec3) {
         let v = &mut self.players[victim];
         if !v.alive { return; }
         v.alive = false;
         v.health = 0;
-        self.events.push(Event::Kill { victim, attacker });
+        self.events.push(Event::Kill { victim, attacker, gib, dir });
+    }
+
+    /// The death mode for a blow that left `health` (Godot `do_ragdoll`).
+    fn gib_for(health: i32, head: bool, blast: Option<f32>) -> Gib {
+        let overkill = health <= OVERKILL_HEALTH;
+        let severity = if overkill { ((-health + OVERKILL_HEALTH) as f32 / 50.0).clamp(0.4, 2.5) } else { 0.0 };
+        match blast {
+            Some(b) => Gib::Burst { severity: severity.max(b), blast: true },
+            None if overkill => Gib::Burst { severity, blast: false },
+            None if head => Gib::Head,
+            None => Gib::Ragdoll,
+        }
     }
 
     /// After a round's end, until every loser has picked a card.
@@ -690,7 +725,7 @@ mod tests {
             w.step(&[fire, Input::default()]);
             booms += w.events.iter().filter(|e| matches!(e, Event::Explosion { .. })).count();
             splashed |= w.events.iter().any(|e| matches!(e, Event::Hit { victim: 1, attacker: 0, .. }));
-            if w.events.iter().any(|e| matches!(e, Event::Kill { victim: 0, attacker: None })) { burned = true; break; }
+            if w.events.iter().any(|e| matches!(e, Event::Kill { victim: 0, attacker: None, .. })) { burned = true; break; }
         }
         assert!(booms > 0);
         assert!(w.arena.alive_chunks() < before, "nothing broke");
