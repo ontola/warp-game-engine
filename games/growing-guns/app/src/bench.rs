@@ -17,15 +17,80 @@ fn pct(v: &mut [f64], p: f64) -> f64 {
     v[((v.len() - 1) as f64 * p).round() as usize]
 }
 
+/// The game's CPU side without a GPU, as Godot's perf_benchmark measures
+/// it headless: four bots with a stacked build fight (health topped up each
+/// second), 3 s warmup then 15 s of 60 Hz ticks: simulation step, then the
+/// scene update (effects, debris, gore, guns, crowd) that feeds the renderer.
+/// Godot perf_benchmark's stress build, from the cards both games have
+/// (`--build a,b,c`; `--build none` for stock guns).
+fn armed_world(args: &Args) -> Result<(World, Vec<growing_guns::cards::Card>), String> {
+    use growing_guns::cards::ALL;
+    let spec = args.value("--build").unwrap_or("rapidfire,rapidfire,explosive,explosive,damage");
+    let build: Vec<_> = if spec == "none" { Vec::new() } else { spec.split(',')
+        .map(|n| ALL.iter().copied().find(|c| format!("{c:?}").eq_ignore_ascii_case(n.trim())).ok_or(format!("unknown card {n}"))).collect::<Result<_, _>>()? };
+    let mut world = World::new(args.num("--seed", 2u64), &[true; 4]);
+    for p in &mut world.players { for &c in &build { p.mods.apply(c); p.cards.push(c); } p.ammo = p.mag_size(); }
+    Ok((world, build))
+}
+
+/// Bots cannot die (Godot tops their health up every second).
+fn top_up(world: &mut World, tick: usize) {
+    if tick % TICK_HZ as usize == 0 { for p in &mut world.players { if p.alive { p.health = p.max_health(); } } }
+}
+
+pub fn sim(args: &Args) -> Result<(), String> {
+    let (mut world, build) = armed_world(args)?;
+    let t = Instant::now();
+    let mut vis = view::Visuals::build(&world);
+    let t_scene = ms(t);
+    let prev: Vec<Vec3> = world.players.iter().map(|p| p.pos).collect();
+    let (warm, measure) = (3 * TICK_HZ as usize, 15 * TICK_HZ as usize);
+    let (mut step, mut scene, mut total) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut shots, mut booms, mut kills) = (0usize, 0usize, 0usize);
+    let chunks0 = world.arena.alive_chunks();
+    let mut chunks_at = chunks0;
+    for tick in 0..warm + measure {
+        top_up(&mut world, tick);
+        let t = Instant::now();
+        world.step(&[]);
+        let a = ms(t);
+        let t2 = Instant::now();
+        vis.absorb(&world, &[]);
+        vis.pose(&world, &prev, 1.0, 1.0 / TICK_HZ as f32);
+        let b = ms(t2);
+        if tick == warm { chunks_at = world.arena.alive_chunks(); }
+        if tick >= warm {
+            step.push(a); scene.push(b); total.push(a + b);
+            for e in &world.events {
+                match e { growing_guns::Event::Shot { .. } => shots += 1, growing_guns::Event::Explosion { .. } => booms += 1, growing_guns::Event::Kill { .. } => kills += 1, _ => {} }
+            }
+        }
+    }
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    let secs = measure as f64 / TICK_HZ as f64;
+    println!("Warp sim bench | build {:?} | seed {} | arena {} m, {} chunks | scene build {t_scene:.0} ms", build, args.num("--seed", 2u64), world.arena.size, chunks0);
+    println!("per tick ms (mean / p50 / p95 / max):");
+    for (n, v) in [("sim step", &mut step), ("scene update", &mut scene), ("total", &mut total)] {
+        let m = mean(v);
+        let mx = v.iter().cloned().fold(0.0, f64::max);
+        println!("  {n:<13} {m:7.3} / {:7.3} / {:7.3} / {mx:7.3}", pct(&mut v.clone(), 0.5), pct(v, 0.95));
+    }
+    println!("events per s: shots {:.0}, explosions {:.1}, kills {:.1}; chunks removed {} (~{:.0}/s); gore pieces {}",
+        shots as f64 / secs, booms as f64 / secs, kills as f64 / secs, chunks_at.saturating_sub(world.arena.alive_chunks()), chunks_at.saturating_sub(world.arena.alive_chunks()) as f64 / secs, vis.gore_len());
+    Ok(())
+}
+
 pub fn run(args: &Args) -> Result<(), String> {
+    if args.flag("--sim") { return sim(args); }
     let views = args.num("--views", 4usize).clamp(1, 4);
     let (w, h) = args.size((1920, 1080));
     let frames = args.num("--frames", 300usize);
     let t = Instant::now();
     let gpu = Gpu::new()?;
     let t_gpu = ms(t);
-    let mut world = World::new(args.num("--seed", 2u64), &[true; 4]);
-    for _ in 0..TICK_HZ { world.step(&[]); }
+    let (mut world, build) = armed_world(args)?;
+    println!("build {build:?}");
+    for t in 0..TICK_HZ as usize { top_up(&mut world, t); world.step(&[]); }
     let t = Instant::now();
     let mut vis = view::Visuals::build(&world);
     if args.flag("--empty") {
@@ -51,8 +116,17 @@ pub fn run(args: &Args) -> Result<(), String> {
     }
     let rects = render::split_rects(views, w, h);
     let prev: Vec<Vec3> = world.players.iter().map(|p| p.pos).collect();
+    // `--overhead`: Godot perf_benchmark's static camera (0, 18, 18), 35 degrees down.
+    let overhead = args.flag("--overhead");
     let cams = |world: &World| -> Vec<ViewRect> { rects.iter().enumerate()
-        .map(|(i, &(x, y, vw, vh))| ViewRect { cam: view::camera(world, i, &prev, 1.0), x, y, w: vw, h: vh }).collect() };
+        .map(|(i, &(x, y, vw, vh))| {
+            let cam = if overhead {
+                let pos = Vec3::new(0.0, 18.0, 18.0);
+                let (s, c) = (-35f32).to_radians().sin_cos();
+                render::Camera { pos, target: pos + Vec3::new(0.0, s, -c), fov_y: view::FOV_Y, near: 0.05 }
+            } else { view::camera(world, i, &prev, 1.0) };
+            ViewRect { cam, x, y, w: vw, h: vh }
+        }).collect() };
     let t = Instant::now();
     renderer.try_render_texture(&gpu, &cams(&world), &light, w, h)?;
     gpu.wait();
@@ -66,6 +140,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     for f in 0..frames + 30 {
         let t = Instant::now();
         if !empty {
+            top_up(&mut world, f);
             world.step(&[]);
             vis.absorb(&world, &[]);
             vis.pose(&world, &prev, 1.0, 1.0 / 60.0);

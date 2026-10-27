@@ -593,6 +593,8 @@ impl Visuals {
         self.ragdolls.iter().filter_map(|r| self.phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect()
     }
 
+    pub fn gore_len(&self) -> usize { self.gore.len() }
+
     pub fn dynamic(&self) -> &[GpuInstance] { &self.scene.instances[self.first_dynamic..] }
 
     /// Explosion view punch (Godot `do_explosion_view_punch`): pushed away
