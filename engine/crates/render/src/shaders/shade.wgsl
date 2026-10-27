@@ -278,6 +278,8 @@ fn ground_at(xz: vec2<f32>) -> f32 {
 // How much light gets from direction `dir` to p, through the canopy and
 // past the terrain: steps grow with distance, like a cone widening.
 fn transmittance(p: vec3<f32>, dir: vec3<f32>, max_t: f32) -> f32 {
+    // Bit 4: no foliage and no heightfield, so nothing can attenuate a ray.
+    if (gi.vol_dims.w & 4u) != 0u { return 1.0; }
     var t = 0.5;
     var tr = 1.0;
     for (var k = 0; k < 12; k++) {
@@ -302,7 +304,7 @@ fn transmittance(p: vec3<f32>, dir: vec3<f32>, max_t: f32) -> f32 {
 
 // Fraction of the sky a surface sees: five cones around its normal.
 fn sky_visibility(p: vec3<f32>, n: vec3<f32>) -> f32 {
-    if gi.vol_dims.w == 0u {
+    if gi.vol_dims.w == 0u || (gi.vol_dims.w & 4u) != 0u {
         return 1.0;
     }
     let t1 = normalize(select(cross(n, vec3<f32>(0.0, 0.0, 1.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.x) < 0.9));
@@ -319,7 +321,7 @@ fn sky_visibility(p: vec3<f32>, n: vec3<f32>) -> f32 {
 // Only glossy surfaces need this longer direction-aware query. A diffuse
 // hemisphere visibility cannot tell whether a mountain hides a reflection.
 fn reflected_visibility(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>) -> f32 {
-    if gi.vol_dims.w == 0u || gi.params.y < 0.5 { return 1.0; }
+    if gi.vol_dims.w == 0u || gi.params.y < 0.5 || (gi.vol_dims.w & 4u) != 0u { return 1.0; }
     let o = p + n * 0.06;
     var t = 0.25;
     var tr = 1.0;

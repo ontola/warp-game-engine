@@ -81,7 +81,9 @@ impl Visuals {
                 Kind::Platform => accent_b,
             };
             scene.add_instance(m, Affine3A::from_scale_rotation_translation(b.half * 2.0, Quat::from_rotation_y(b.yaw), b.center));
-            scene.mark_solid();
+            // Contact shading loops over every SOLID box per pixel: keep it
+            // to the small cover blocks, where it grounds them best.
+            if b.kind == Kind::Cover { scene.mark_solid(); }
         }
         // Lava: a glowing sheet under the floor, visible through holes and
         // past the edge of open arenas.
