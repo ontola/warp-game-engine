@@ -43,6 +43,11 @@ pub fn run(args: &Args) -> Result<(), String> {
     let t = Instant::now();
     let renderer = Renderer::new(&gpu, &vis.scene, &light);
     let t_renderer = ms(t);
+    if let Some(p) = renderer.startup_profile() {
+        let mut v: Vec<_> = p.sections.iter().filter(|s| s.cpu_ms >= 1.0).map(|s| (s.name, s.cpu_ms)).collect();
+        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        println!("renderer startup sections ms: {}", v.iter().take(16).map(|(n, t)| format!("{n} {t:.0}")).collect::<Vec<_>>().join(", "));
+    }
     let rects = render::split_rects(views, w, h);
     let prev: Vec<Vec3> = world.players.iter().map(|p| p.pos).collect();
     let cams = |world: &World| -> Vec<ViewRect> { rects.iter().enumerate()
