@@ -5,13 +5,13 @@ use glam::{Affine3A, Quat, Vec3};
 use growing_guns::shape::Kind;
 use growing_guns::{Event, World, EYE};
 use render::primitives;
+use render::particles::{Burst, Particles};
 use render::slots::Slots;
 use render::headlights::LocalLight;
 use render::scene::{GpuInstance, Material, EMISSIVE};
 use render::{Camera, Lighting, Scene};
 
 pub const TRACERS: usize = 64;
-pub const SPARKS: usize = 48;
 const HIDDEN: Vec3 = Vec3::new(0.0, -500.0, 0.0);
 pub const FOV_Y: f32 = 75.0 * std::f32::consts::PI / 180.0;
 
@@ -52,14 +52,16 @@ pub struct Visuals {
     pub first_dynamic: usize,
     players: Vec<PlayerMeshes>,
     tracer: usize,
-    spark: usize,
-    sparks: Vec<(Vec3, f32)>,
-    next_spark: usize,
+    fx: Particles,
+    fxm: FxMeshes,
     flashes: Vec<(Vec3, f32)>,
     lights: Vec<LocalLight>,
     arena: Slots,
     kinds: KindMeshes,
 }
+
+#[derive(Clone, Copy)]
+struct FxMeshes { spark: usize, dust: usize, blood: usize, casing: usize }
 
 struct KindMeshes { floor: usize, wall: usize, building: usize, dark: usize, accent_a: usize, accent_b: usize, beacons: [usize; 3] }
 
@@ -91,6 +93,14 @@ impl Visuals {
         scene.mark_no_shadow();
         // The arena lives in slots: a new round refills them, no rebuild.
         let arena = Slots::reserve(&mut scene, ARENA_SLOTS);
+        // Effects: engine particles with their own meshes.
+        let fxm = FxMeshes {
+            spark: { let m = glow(&mut scene, [1.0, 0.6, 0.2], 20000.0); cube(&mut scene, m) },
+            dust: { let m = material(&mut scene, palette::DARK, 0.95); cube(&mut scene, m) },
+            blood: { let m = material(&mut scene, [0.45, 0.02, 0.02], 0.35); sphere(&mut scene, m, 4, 6) },
+            casing: { let m = scene.add_material(Material { tint: [0.75, 0.55, 0.2], layer: -1, roughness: 0.35, flags: 0, scale: 1.0, metal: 1.0 }); cube(&mut scene, m) },
+        };
+        let fx = Particles::reserve(&mut scene, 768, world.arena.seed | 1);
 
         let first_dynamic = scene.instances.len();
         let eye_m = material(&mut scene, [0.05, 0.05, 0.06], 0.3);
@@ -108,12 +118,8 @@ impl Visuals {
         let tracer_m = glow(&mut scene, [1.0, 0.9, 0.3], 30000.0);
         let tracer = cube(&mut scene, tracer_m);
         for _ in 0..TRACERS { scene.add_instance(tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
-        let spark_m = glow(&mut scene, [1.0, 0.6, 0.2], 20000.0);
-        let spark = cube(&mut scene, spark_m);
-        for _ in 0..SPARKS { scene.add_instance(spark, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
 
-        let mut v = Visuals { scene, first_dynamic, players, tracer, spark, sparks: vec![(HIDDEN, 0.0); SPARKS], next_spark: 0,
-            flashes: Vec::new(), lights: Vec::new(), arena, kinds };
+        let mut v = Visuals { scene, first_dynamic, players, tracer, fx, fxm, flashes: Vec::new(), lights: Vec::new(), arena, kinds };
         v.set_arena(world);
         v
     }
@@ -143,26 +149,47 @@ impl Visuals {
         self.lights = world.arena.lights.iter().take(12).map(|&(p, c)| omni(p, Vec3::from(c) * 900.0, 20.0)).collect();
     }
 
-    /// Upload changed arena slots.
+    /// Upload changed arena slots and particles.
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
-        self.arena.flush(gpu, renderer, &self.scene)
+        self.arena.flush(gpu, renderer, &self.scene)?;
+        self.fx.flush(gpu, renderer, &self.scene)
     }
 
-    /// Advance effects from this tick's events.
+    /// Effects from this tick's events, then one tick of particle motion
+    /// (colliding with the arena).
     pub fn absorb(&mut self, world: &World) {
+        let (s, m) = (&mut self.scene, self.fxm);
         for e in &world.events {
             match *e {
-                Event::Impact { pos, normal } => self.spark(pos + normal * 0.05),
-                Event::Hit { pos, .. } => self.spark(pos),
-                Event::Shot { from, dir, .. } => self.flashes.push((from + dir * 0.8, 0.06)),
+                Event::Impact { pos, normal } => {
+                    self.fx.burst(s, pos + normal * 0.03, normal, &Burst { mesh: m.spark, count: 8, ..Burst::sparks() });
+                    self.fx.burst(s, pos + normal * 0.05, normal, &Burst { mesh: m.dust, count: 5, ..Burst::dust() });
+                }
+                Event::Hit { victim, attacker, pos, head, .. } => {
+                    let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
+                    self.fx.burst(s, pos, dir + Vec3::Y * 0.3, &Burst { mesh: m.blood, count: if head { 22 } else { 12 }, ..Burst::drops() });
+                }
+                Event::Kill { victim, .. } => {
+                    let p = world.players[victim].pos;
+                    self.fx.burst(s, p, Vec3::Y, &Burst { mesh: m.blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+                }
+                Event::Shot { player, from, dir } => {
+                    self.flashes.push((from + dir * 0.8, 0.06));
+                    let p = &world.players[player];
+                    let (sy, cy) = p.yaw.sin_cos();
+                    let right = Vec3::new(cy, 0.0, -sy);
+                    self.fx.burst_with(s, from + right * 0.35 - Vec3::Y * 0.25 + dir * 0.3, right + Vec3::Y * 0.6, p.vel, &Burst { mesh: m.casing, ..Burst::debris() });
+                }
                 _ => {}
             }
         }
-    }
-
-    fn spark(&mut self, p: Vec3) {
-        self.sparks[self.next_spark] = (p, 0.15);
-        self.next_spark = (self.next_spark + 1) % SPARKS;
+        let shapes = &world.arena.shapes;
+        self.fx.update(s, growing_guns::DT, |a, b| {
+            let d = b - a;
+            let len = d.length();
+            if len < 1e-6 { return None; }
+            growing_guns::shape::raycast(shapes, a, d / len, len).map(|(t, n, _)| (a + d / len * t, n))
+        });
     }
 
     /// Rewrite the dynamic instances. `alpha` blends from the previous tick.
@@ -194,12 +221,6 @@ impl Visuals {
                 Affine3A::from_scale_rotation_translation(Vec3::new(0.035, 0.035, len), rot, b.pos - dir * len * 0.5)
             });
             self.scene.update_instance(slot, self.tracer, xf);
-            slot += 1;
-        }
-        for s in &mut self.sparks {
-            s.1 -= dt;
-            let xf = if s.1 > 0.0 { Affine3A::from_scale_rotation_translation(Vec3::splat(0.12 + s.1), Quat::IDENTITY, s.0) } else { Affine3A::from_translation(HIDDEN) };
-            self.scene.update_instance(slot, self.spark, xf);
             slot += 1;
         }
         self.flashes.retain_mut(|f| { f.1 -= dt; f.1 > 0.0 });

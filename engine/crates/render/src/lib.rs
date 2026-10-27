@@ -47,6 +47,7 @@ pub mod present;
 pub mod scene;
 pub mod primitives;
 pub mod slots;
+pub mod particles;
 pub mod shade_features;
 pub mod shaders;
 pub mod atmosphere;
