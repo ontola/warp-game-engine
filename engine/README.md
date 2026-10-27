@@ -32,6 +32,7 @@ See the [diagnostics guide](tools/frame-budget.md),
 [shared vegetation API and validation](docs/unified-vegetation.md),
 [four-view grass timing and visual tradeoffs](docs/meadow-half-resolution-r57.md),
 [full-resolution sampling and raw-buffer diagnostics](docs/meadow-sampling-r58.md),
+[analytic grass contact AO](docs/meadow-contact-ao-r59.md),
 [atmosphere notes](ATMOSPHERE.md), [handoff](HANDOFF.md) and
 [category measurements](docs/render-categories-2026-10-24.md).
 Old development notes are preserved in the game's historical documentation.

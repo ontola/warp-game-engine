@@ -7,7 +7,29 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r58 full-resolution sample pruning measured, opt-in only
+## Latest status — r59 grass contact AO, opt-in only; playtest closed
+
+Read [r59](docs/meadow-contact-ao-r59.md). Runtime `e8634da` adds default-off
+`KERN_MEADOW_CONTACT_AO=1`: four bounded canonical-root footprints attenuate
+terrain diffuse skylight only, with no new pass or texture lookup. Direct
+sun/headlights/specular remain unchanged. Tests: 528 render + 185 CLI passed,
+one ignored each; launcher contracts passed. Frozen r59 binary and SHA256
+are in the report.
+
+Six OFF/ON runs, same executable, four-view 4K-output/DLSS Performance:
+GPU 28.007/27.997 ms first, 34.110/34.203 ms continued. Opaque shading
+4.092/4.085 and 3.920/3.936 ms. No large cost increase resolved above run
+variation; not proof of zero cost or speedup. Pruning was OFF in both modes,
+so do not combine r58 and r59 deltas as a measured package result.
+Separate PNG QA completed at frames 60/240/480, all four views. Contact is
+subtle in daylight, not a directional grass-shadow replacement. Motion and
+all-weather acceptance remain open. No default promotion.
+
+The user stopped the interactive playtest before leaving. It is closed and
+both QA runs have ended. Do not restart an interactive session unless asked.
+Evidence: `C:/dev/perf/warp-sideways-20261027/r59-meadow-contact-ao/`.
+
+## Previous status — r58 full-resolution sample pruning measured, opt-in only
 
 Read [the r58 report](docs/meadow-sampling-r58.md). Runtime `d5fea46` adds
 default-off `KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE=1` and explicit raw aggregate
@@ -30,8 +52,7 @@ used for the six repeated runs.
 The user briefly playtested this binary with one player, 4K/DLSS Quality and
 pruning ON; visible presentation was confirmed. It was closed at the user's
 request (owned PID 192560). No interactive game should be restarted unless
-requested. The new request for inexpensive grass-ground AO is being prepared
-separately; do not claim its GPU cost or visual quality is validated yet.
+requested. The subsequent grass-ground AO experiment is recorded above.
 
 ## Previous status — r57 earlier/cheaper grass measured, opt-in only
 
