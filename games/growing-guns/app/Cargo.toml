@@ -18,9 +18,8 @@ physics = { path = "../../../engine/crates/physics" }
 glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = "30"
-iroh = "1.4"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
-postcard = { version = "1", features = ["alloc"] }
+net = { path = "../../../engine/crates/net" }
+tokio = { version = "1", features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
 

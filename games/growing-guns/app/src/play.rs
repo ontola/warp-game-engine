@@ -67,6 +67,23 @@ impl Gg {
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
+
+    /// Client: apply what the host sent; returns the interpolation alpha.
+    pub fn receive(&mut self, dt: f32) -> f32 {
+        let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
+        let (vis, fb, sounds, slots) = (&mut self.vis, &mut self.fb, &mut self.sounds, &self.slots);
+        let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
+            vis.absorb(w);
+            feedback(fb, w, DT);
+            if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); }
+        });
+        if snaps > 0 { self.prev = before; self.since_snap = 0.0; } else { self.since_snap += dt; }
+        if arena { self.new_arena(); }
+        (self.since_snap / DT).clamp(0.0, 1.0)
+    }
+
+    pub fn slots(&self) -> &[usize] { &self.slots }
+    pub fn session(&self) -> &Session { &self.session }
     pub fn set_sounds(&mut self, s: crate::sounds::Sounds) { self.sounds = Some(s); }
 
     /// A new round: refill the arena slots; the renderer is kept.
@@ -106,19 +123,7 @@ impl app::Game for Gg {
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        let mut alpha = frame.alpha;
-        if self.session.is_client() {
-            let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
-            let (vis, fb, sounds, slots) = (&mut self.vis, &mut self.fb, &mut self.sounds, &self.slots);
-            let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
-                vis.absorb(w);
-                feedback(fb, w, DT);
-                if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); }
-            });
-            if snaps > 0 { self.prev = before; self.since_snap = 0.0; } else { self.since_snap += frame.dt; }
-            if arena { self.new_arena(); }
-            alpha = (self.since_snap / DT).clamp(0.0, 1.0);
-        }
+        let alpha = if self.session.is_client() { self.receive(frame.dt) } else { frame.alpha };
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() { frame.set_scene(&self.vis.scene, &self.light); }
         let r = frame.renderer().expect("scene set above");
