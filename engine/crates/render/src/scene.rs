@@ -24,6 +24,9 @@ pub const NO_AMBIENT_OCCLUSION: u32 = 128;
 pub const BLEND: u32 = 256;
 /// True leaf/needle geometry: thin-leaf lighting without alpha-tested cards.
 pub const THIN_FOLIAGE: u32 = 512;
+/// Self-lit surface (lava, lamps, tracers): adds `tint * scale` nits of
+/// radiance. Use with `layer: -1`; `scale` is then the emission, not a repeat.
+pub const EMISSIVE: u32 = 1024;
 
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
