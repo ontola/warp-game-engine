@@ -21,6 +21,7 @@ very different game and to find where the engine is in the way; see
 
 ```sh
 cargo run -p growing-guns-app -- play                      # 1 player + 3 bots
+cargo run -p growing-guns-app -- play --give explosive     # start with a card (repeatable)
 cargo run -p growing-guns-app -- play --players 4          # split screen, pads
 cargo run -p growing-guns-app -- play --host               # prints a ticket
 cargo run -p growing-guns-app -- play --join TICKET

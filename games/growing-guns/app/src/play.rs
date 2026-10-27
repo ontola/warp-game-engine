@@ -236,6 +236,10 @@ pub fn run(args: &Args) -> Result<(), String> {
     };
     println!("seed {seed}, {} local, {} players", slots.len(), world.players.len());
     let mut game = Gg::new(world, session, slots);
+    // `--give explosive --give damage`: start local player 1 with these cards.
+    for card in args.list.windows(2).filter(|w| w[0] == "--give").map(|w| w[1].clone()) {
+        println!("{}", app::Game::command(&mut game, &format!("give 0 {card}"))?);
+    }
     // Keep the speaker alive for the whole run.
     let _speaker = match crate::sounds::find_dir(args.value("--sounds")) {
         Some(dir) => match app::sound::start(64) {
