@@ -32,7 +32,7 @@ Target: four players in one 4K output at 120 FPS; not yet reached.
 See the [forest roadmap](engine/docs/forest-rendering-roadmap.md) and
 [category measurements](engine/docs/render-categories-2026-10-24.md).
 
-Current work (26 October 2026): follow the [ordered four-view budget plan](engine/docs/four-view-budget-plan-r55.md).
+Current work (27 October 2026): follow the [ordered four-view budget plan](engine/docs/four-view-budget-plan-r55.md).
 The repeated four-player 4K-output route measures 32.16/40.35 ms with DLSS
 Quality and 27.67/33.93 ms with Performance in its two sections. These are
 medians of three run medians, not native 4K or typical-gameplay guarantees.
@@ -42,6 +42,11 @@ measures 26.95/33.35 ms with Performance, a 2.3-2.4% same-executable improvement
 Both the 25 ms decision gate and 4 ms grass budget remain unmet; the next
 quality/target decision is pending. Renderer timing now identifies each view
 and the aggregate grass depth/material/illumination costs separately.
+The subsequent [earlier/half-resolution grass experiment](engine/docs/meadow-half-resolution-r57.md)
+measures 25.94/30.23 ms against 27.83/34.10 ms in the same executable.
+It reduces grass cost to 5.00/5.78 ms, but visibly smears distant grass/ground:
+**opt-in only, not accepted as the default**. The earlier transition alone
+does not save time. Full-output comparisons and per-pass CSVs are in the report.
 World-grid traversal of shared plant volumes and early whole-owner replacement
 are experimental, disabled by default, and still require GPU/visual validation.
 

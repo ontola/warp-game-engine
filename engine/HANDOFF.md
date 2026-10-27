@@ -7,7 +7,38 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r55/r56 four-view budget decision gate
+## Latest status — r57 earlier/cheaper grass measured, opt-in only
+
+The user chose an earlier cheap-grass follow-up after the r56 decision gate.
+Read [r57 implementation, measurements and image review](docs/meadow-half-resolution-r57.md).
+Runtime source `72db92f` adds `KERN_MEADOW_AGGREGATE_HALF_RES=1`: half-linear
+aggregate depth/material/illumination, full source/merge and conservative
+depth reconstruction. Source band 25–35 m, unchanged 160–180 m outer range.
+No density/placement/physics changes; no default promotion.
+
+Nine serial A/B/C/B/C/A/C/A/B runs, same exe and four-player 4K-output/DLSS
+Performance: current A 27.828/34.098 ms; earlier-only B 27.914/34.181 ms;
+earlier+half C 25.938/30.229 ms. C grass is 5.001/5.782 ms versus
+6.895/9.545 ms in A. Medians of three run medians; 179 clean frames per
+section/run. All 4,320 GPU records validated. No historical-binary gain claim.
+
+Full-output PNG QA completed (52 captures, 28 pixel-crop boards reviewed).
+C visibly smears distant ground/grass and lower trunk boundaries, particularly
+at frame 480. **Not visually equivalent, not accepted for default use.** Close
+edges are broadly similar; motion remains unaccepted (sparse still review of
+a recorded 0.2-second sequence is not a temporal pass). Earlier-only B does
+not save GPU time here. 25 ms decision gate, 4 ms grass and 8.33 ms total targets
+remain unmet. Do not start deeper tree/shading rewrites or change targets on
+the strength of this experiment alone. First isolate aggregate filtering and
+DLSS/motion contributions or investigate cheaper full-resolution aggregate work.
+
+518 renderer + 185 CLI tests pass, one ignored each; DLSS release build 94 s.
+Frozen exe `C:/dev/perf/warp-sideways-20261027/r57-cheaper-grass/sideways-r57.exe`,
+SHA256 `faac17848bf3fec16707b50c0a1808dcb3f91cfbd640be0900cd6afa43af1a83`.
+Evidence root is its containing folder. No game/benchmark remains active.
+The later metadata-only prose correction does not replace this frozen exe.
+
+## Previous status — r55/r56 four-view budget decision gate
 
 27 October follow-up: the user requests DLSS rather than native 1080p per panel.
 The measurements below already used DLSS. Developer launcher `-Views 4` now

@@ -55,6 +55,15 @@ experimental modes off and uses the pre-existing r54 executable unchanged.
 
 ## Decision gate reached: steps 1-2 measured
 
+27 October bounded follow-up: the user requested earlier cheap grass.
+[r57](meadow-half-resolution-r57.md) compares current, 25–35 m full aggregate,
+and 25–35 m half-resolution aggregate with three alternating repeats each.
+The latter reduces total GPU interval from 27.828/34.098 to 25.938/30.229 ms
+and grass to 5.001/5.782 ms. It visibly smears distant grass/ground in full-output
+PNG review and is not accepted as default. Earlier-only saves no time here.
+The decision gate remains unmet; the follow-up is not permission to silently
+change targets or treat deeper renderer rewrites as already accepted.
+
 The [r55 resolution sweep](resolution-sweep-r55.md) completed nine runs, three
 per mode. Quality measured 32.157 / 40.346 ms in the two route sections,
 Balanced 29.893 / 36.418 ms, and Performance 27.669 / 33.933 ms. The historical

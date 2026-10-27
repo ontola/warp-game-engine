@@ -46,7 +46,10 @@ depth/material/lighting targets to half their internal width and height. Source
 grass and the final merge stay at full internal resolution; world placement,
 density, color, wind and the 160-180 m outer fade remain unchanged. The merge
 uses full-resolution opaque depth and reconstructed motion. This is an optical
-approximation and stays off by default, pending visual/performance acceptance.
+approximation and stays off by default. The [r57 measured comparison](../../engine/docs/meadow-half-resolution-r57.md)
+saves 1.89/3.87 ms total GPU interval, but visibly smears distant grass/ground.
+It is not visually equivalent or accepted for default use; temporal acceptance
+also remains open. Moving the existing aggregate closer alone did not save time.
 It cannot be combined with `KERN_MEADOW_GROUP_CACHE`. Captures record the actual
 aggregate target dimensions, ratios and allocated target bytes for every view.
 
