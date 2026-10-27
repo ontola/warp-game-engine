@@ -2,7 +2,7 @@
 //! first-person rifle, damage flash; plus the shared scoreboard and round
 //! banner. All shapes, no textures.
 use crate::view::PLAYER_COLORS_U8;
-use growing_guns::{World, MAG_SIZE, MAX_DASH_CHARGES, MAX_HEALTH, RELOAD_TIME, WALK_SPEED};
+use growing_guns::{World, MAX_DASH_CHARGES, RELOAD_TIME, WALK_SPEED};
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 
 /// Per local player feedback timers kept by the app.
@@ -17,13 +17,19 @@ fn text(d: &mut HudDrawList, id: u64, s: String, pos: [f32; 2], size: f32, color
     d.text.push(TextRun { id, text: s, position: [x, pos[1]], bounds: clip, font_size: size, color, font: FontFace::Body, align, width });
 }
 
-pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &Feedback) {
+pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &Feedback, card_focus: usize) {
     let [x, y, w, h] = rect;
     let clip = rect;
     let s = (h / 1080.0).max(0.35);
     let p = &world.players[i];
     let id = 1000 * (i as u64 + 1);
     let (cx, cy) = (x + w * 0.5, y + h * 0.5);
+    if let Some(offer) = p.offer {
+        let cards: Vec<app::ui::Card> = offer.iter().map(|c| app::ui::Card { title: c.name(), body: c.text(), color: c.color() }).collect();
+        let footer = format!("{:.0} s   (stick or arrows, A or Space to take)", world.pick_time.ceil());
+        app::ui::cards(d, id + 200, rect, "PICK A CARD", &cards, card_focus, &footer, &app::ui::Style::for_height(h));
+        return;
+    }
     if !p.alive {
         text(d, id, "ELIMINATED".into(), [cx, cy - 40.0 * s], 54.0 * s, [255, 90, 70, 255], TextAlign::Center, w, clip);
         text(d, id + 1, "spectating until the round ends".into(), [cx, cy + 24.0 * s], 26.0 * s, MUTED, TextAlign::Center, w, clip);
@@ -43,7 +49,7 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
     let kick = (1.0 - p.since_shot / 0.12).max(0.0);
     let speed = (p.vel.x * p.vel.x + p.vel.z * p.vel.z).sqrt() / WALK_SPEED;
     let bob = if p.on_floor { fb.bob.sin() * 10.0 * s * speed.min(1.0) } else { -6.0 * s };
-    let reload = if p.reloading() { (std::f32::consts::PI * (1.0 - p.reload_timer / RELOAD_TIME)).sin() } else { 0.0 };
+    let reload = if p.reloading() { (std::f32::consts::PI * (1.0 - p.reload_timer * p.mods.reload / RELOAD_TIME)).sin() } else { 0.0 };
     let gx = x + w * 0.66 + kick * 18.0 * s + (fb.bob * 0.5).sin() * 6.0 * s * speed.min(1.0);
     let gy = y + h * 0.78 + kick * 26.0 * s + bob + reload * 120.0 * s;
     let gun_dark = [0.10, 0.10, 0.11, 1.0];
@@ -86,7 +92,7 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
     // Health bar and dash pips, bottom left.
     let (bx, by, bw, bh) = (x + 36.0 * s, y + h - 70.0 * s, 300.0 * s, 22.0 * s);
     d.rect([bx - 3.0 * s, by - 3.0 * s, bw + 6.0 * s, bh + 6.0 * s], [0.0, 0.0, 0.0, 0.55], clip);
-    let frac = (p.health.max(0) as f32 / MAX_HEALTH as f32).clamp(0.0, 1.0);
+    let frac = (p.health.max(0) as f32 / p.max_health() as f32).clamp(0.0, 1.0);
     let hc = if frac > 0.5 { [0.35, 0.85, 0.35, 0.95] } else if frac > 0.25 { [0.95, 0.75, 0.2, 0.95] } else { [0.95, 0.25, 0.2, 0.95] };
     d.rect([bx, by, bw * frac, bh], hc, clip);
     text(d, id + 2, format!("{}", p.health.max(0)), [bx + 8.0 * s, by - 2.0 * s], 22.0 * s, WHITE, TextAlign::Left, 100.0 * s, clip);
@@ -99,9 +105,11 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
     if p.reloading() {
         text(d, id + 3, "RELOADING".into(), [ax, ay - 10.0 * s], 28.0 * s, [255, 210, 120, 255], TextAlign::Right, 300.0 * s, clip);
     } else {
-        for k in 0..MAG_SIZE {
+        let mag = p.mag_size();
+        let pip = if mag > 10 { 6.0 * s } else { 16.0 * s };
+        for k in 0..mag {
             let c = if k < p.ammo { [1.0, 0.85, 0.35, 0.95] } else { [0.25, 0.22, 0.18, 0.7] };
-            d.rect([ax - (k + 1) as f32 * 16.0 * s, ay, 9.0 * s, 30.0 * s], c, clip);
+            d.rect([ax - (k + 1) as f32 * pip, ay, pip * 0.56, 30.0 * s], c, clip);
         }
     }
     // Player tag, top left of the view.
@@ -124,12 +132,16 @@ pub fn global(d: &mut HudDrawList, world: &World, net: Option<&str>) {
         text(d, 10 + i as u64, format!("{tag}{} {}", i + 1, p.score), [x0 + cell * (i as f32 + 0.5), 8.0 * s], 28.0 * s, c, TextAlign::Center, cell, clip);
     }
     text(d, 20, format!("ROUND {}", world.round), [w * 0.5, 54.0 * s], 20.0 * s, MUTED, TextAlign::Center, 300.0 * s, clip);
+    if world.ended && world.intermission <= 0.0 {
+        d.rect([0.0, 0.0, w, 40.0 * s], [0.0, 0.0, 0.0, 0.0], clip);
+        text(d, 23, format!("waiting for card picks  {:.0} s", world.pick_time.ceil()), [w * 0.5, 80.0 * s], 24.0 * s, MUTED, TextAlign::Center, w, clip);
+    }
     if world.intermission > 0.0 {
         let winner = world.players.iter().position(|p| p.alive);
         let msg = match winner { Some(i) => format!("P{} WINS THE ROUND", i + 1), None => "DRAW".into() };
         let c = winner.map_or(WHITE, |i| PLAYER_COLORS_U8[i % 4]);
-        d.rect([0.0, h * 0.5 - 60.0 * s, w, 120.0 * s], [0.0, 0.0, 0.0, 0.55], clip);
-        text(d, 21, msg, [w * 0.5, h * 0.5 - 40.0 * s], 64.0 * s, c, TextAlign::Center, w, clip);
+        d.rect([0.0, h * 0.12 - 10.0 * s, w, 100.0 * s], [0.0, 0.0, 0.0, 0.55], clip);
+        text(d, 21, msg, [w * 0.5, h * 0.12], 52.0 * s, c, TextAlign::Center, w, clip);
     }
     if let Some(net) = net {
         text(d, 22, net.into(), [w - 16.0 * s, h - 34.0 * s], 18.0 * s, MUTED, TextAlign::Right, w * 0.6, clip);

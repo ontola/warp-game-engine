@@ -29,6 +29,7 @@ fn merge(into: &mut Input, i: &Input) {
     into.jump |= i.jump;
     into.dash |= i.dash;
     into.reload |= i.reload;
+    into.pick = i.pick.or(into.pick);
 }
 
 impl Session {
@@ -108,6 +109,7 @@ impl Session {
                 p.jump = false;
                 p.dash = false;
                 p.reload = false;
+                p.pick = None;
             }
         }
     }

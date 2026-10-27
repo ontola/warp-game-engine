@@ -9,7 +9,8 @@
 //!     { "press": ["SOUTH"] },
 //!     { "capture": "after-jump.png" },
 //!     { "state": "after-jump.json" },
-//!     { "expect": "/players/0/alive", "equals": true }
+//!     { "expect": "/players/0/alive", "equals": true },
+//!     { "until": "/round", "min": 2, "max_ticks": 4000 }
 //!   ] }
 //! ```
 //!
@@ -18,8 +19,9 @@
 //! tick (look is per tick, x right and y up, radians). Other players idle.
 //! `capture` and `state` write into the output directory. `expect` reads a
 //! JSON pointer (RFC 6901) from the game's state and compares it with
-//! `equals`, or checks it within `min`/`max`; a failed expectation fails the
-//! run. A `capture` with `compare` checks the frame against a reference PNG
+//! `equals`, or checks it within `min`/`max`, or (with neither) that it
+//! exists; `until` ticks until such a check passes. A failed expectation
+//! fails the run. A `capture` with `compare` checks the frame against a reference PNG
 //! (written on first run). `audio` writes the sound since the previous
 //! audio step as a WAV with its peak and RMS. Every step prints one JSON line.
 use crate::{Buttons, Controls, Game, Headless};
@@ -36,6 +38,9 @@ pub struct Script {
 
 fn default_size() -> [u32; 2] { [800, 450] }
 
+/// A field given as JSON null deserializes to Some(Null), not None.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> { Value::deserialize(d).map(Some) }
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
@@ -51,6 +56,13 @@ pub struct Step {
     pub capture: Option<String>,
     pub state: Option<String>,
     pub expect: Option<String>,
+    /// Tick (with this step's controls) until this pointer passes the
+    /// `equals`/`min`/`max` check (or is not null), at most `max_ticks`
+    /// (default 3600); not reaching it is a failure.
+    pub until: Option<String>,
+    pub max_ticks: Option<u32>,
+    /// `null` is a real expectation (the value must be null or absent).
+    #[serde(default, deserialize_with = "present")]
     pub equals: Option<Value>,
     pub min: Option<f64>,
     pub max: Option<f64>,
@@ -78,6 +90,10 @@ pub fn button(name: &str) -> Result<u32, String> {
         "RIGHT_TRIGGER" | "RT" => Buttons::RIGHT_TRIGGER,
         "SELECT" => Buttons::SELECT,
         "START" => Buttons::START,
+        "UP" => Buttons::UP,
+        "DOWN" => Buttons::DOWN,
+        "LEFT" => Buttons::LEFT,
+        "RIGHT" => Buttons::RIGHT,
         other => return Err(format!("unknown button {other}")),
     })
 }
@@ -99,6 +115,17 @@ pub fn mean_abs_diff(a: &[u8], b: &[u8]) -> f64 {
     sum as f64 / n.max(1) as f64
 }
 
+fn check(state: &Value, pointer: &str, step: &Step) -> (Value, bool) {
+    let got = state.pointer(pointer).cloned().unwrap_or(Value::Null);
+    let ok = match (&step.equals, got.as_f64()) {
+        (Some(want), _) => &got == want,
+        (None, Some(v)) if step.min.is_some() || step.max.is_some() => step.min.is_none_or(|m| v >= m) && step.max.is_none_or(|m| v <= m),
+        (None, _) if step.min.is_none() && step.max.is_none() => !got.is_null(),
+        _ => false,
+    };
+    (got, ok)
+}
+
 /// Run a script; `base` resolves reference images. Returns failed checks.
 pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &Path, base: &Path) -> Result<usize, String> {
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -107,7 +134,8 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
     let mut failed = 0;
     for (i, step) in script.steps.iter().enumerate() {
         let has_controls = step.mv.is_some() || step.look.is_some() || !step.hold.is_empty() || !step.press.is_empty();
-        let ticks = step.ticks.unwrap_or(u32::from(has_controls));
+        let ticks = if step.until.is_some() { step.max_ticks.unwrap_or(3600) } else { step.ticks.unwrap_or(u32::from(has_controls)) };
+        let mut reached = None;
         let (hold, press) = (mask(&step.hold)?, mask(&step.press)?);
         if step.player >= players.max(1) && has_controls { return Err(format!("step {i}: player {} of {players}", step.player)); }
         for t in 0..ticks {
@@ -126,8 +154,17 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
                 headless.recorded.resize(start + n, 0.0);
                 mix.render_add(&mut headless.recorded[start..], 2);
             }
+            if let Some(pointer) = &step.until {
+                let state: Value = game.state().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+                if check(&state, pointer, step).1 { reached = Some(t + 1); break; }
+            }
         }
+
         let mut line = json!({ "step": i, "tick": tick });
+        if let Some(pointer) = &step.until {
+            if reached.is_none() { failed += 1; }
+            line["until"] = json!({ "pointer": pointer, "ticks": reached, "ok": reached.is_some() });
+        }
         if let Some(n) = &step.note { line["note"] = json!(n); }
         if let Some(name) = &step.capture {
             let rgba = headless.frame(game)?;
@@ -173,13 +210,7 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
             line["state"] = json!(path.display().to_string());
         }
         if let Some(pointer) = &step.expect {
-            let s = state()?;
-            let got = s.pointer(pointer).cloned().unwrap_or(Value::Null);
-            let ok = match (&step.equals, got.as_f64()) {
-                (Some(want), _) => &got == want,
-                (None, Some(v)) => step.min.is_none_or(|m| v >= m) && step.max.is_none_or(|m| v <= m),
-                (None, None) => false,
-            };
+            let (got, ok) = check(&state()?, pointer, step);
             if !ok { failed += 1; }
             line["expect"] = json!({ "pointer": pointer, "got": got, "ok": ok });
         }
@@ -213,5 +244,8 @@ mod tests {
         assert!(button("Z").is_err());
         assert_eq!(mean_abs_diff(&[10, 20, 30, 255], &[13, 20, 27, 0]), 2.0);
         assert!(serde_json::from_str::<Script>(r#"{"steps":[{"tick":3}]}"#).is_err(), "typos are errors");
+        let n: Script = serde_json::from_str(r#"{"steps":[{"expect":"/a","equals":null},{"expect":"/a"}]}"#).unwrap();
+        assert_eq!(n.steps[0].equals, Some(Value::Null));
+        assert_eq!(n.steps[1].equals, None);
     }
 }

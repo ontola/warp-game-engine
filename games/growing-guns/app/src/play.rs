@@ -37,6 +37,7 @@ fn input(c: &Controls) -> Input {
         dash: c.pressed.has(Buttons::EAST | Buttons::RIGHT_SHOULDER | Buttons::LEFT_TRIGGER),
         reload: c.pressed.has(Buttons::WEST),
         fire: c.held.has(Buttons::RIGHT_TRIGGER),
+        pick: None,
     }
 }
 
@@ -52,6 +53,8 @@ pub struct Gg {
     since_snap: f32,
     rebuild: bool,
     sounds: Option<crate::sounds::Sounds>,
+    /// Card menu per local player.
+    menus: Vec<app::ui::Menu>,
 }
 
 impl Gg {
@@ -60,7 +63,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, rebuild: true, sounds: None }
+            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, rebuild: true, sounds: None, menus: Vec::new() }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -77,7 +80,17 @@ impl app::Game for Gg {
     fn local_players(&self) -> usize { self.slots.len() }
 
     fn tick(&mut self, controls: &[Controls]) {
-        let local: Vec<Input> = controls.iter().map(input).collect();
+        let mut local: Vec<Input> = controls.iter().map(input).collect();
+        // Card picks: the menu takes this player's controls while an offer is open.
+        self.menus.resize_with(self.slots.len(), Default::default);
+        for (k, &s) in self.slots.iter().enumerate() {
+            if self.world.players.get(s).is_none_or(|p| p.offer.is_none()) { continue; }
+            if let (Some(c), Some(i)) = (controls.get(k), local.get_mut(k)) {
+                if let app::ui::MenuEvent::Select(n) = self.menus[k].update(c, 3, 3, DT) { i.pick = Some(n as u8); }
+                i.fire = false;
+                i.jump = false;
+            }
+        }
         if self.session.is_client() { self.session.send(local); return; }
         let mut inputs = vec![Input::default(); self.world.players.len()];
         for (k, &s) in self.slots.iter().enumerate() { if let Some(i) = local.get(k) { inputs[s] = *i; } }
@@ -115,7 +128,9 @@ impl app::Game for Gg {
         let rects = frame.rects(self.slots.len());
         let cameras = self.slots.iter().map(|&s| view::camera(&self.world, s, &self.prev, alpha)).collect();
         let mut list = HudDrawList::new(frame.size);
-        for (rect, &s) in rects.iter().zip(&self.slots) { hud::view(&mut list, &self.world, s, *rect, &self.fb[s]); }
+        for (k, (rect, &s)) in rects.iter().zip(&self.slots).enumerate() {
+            hud::view(&mut list, &self.world, s, *rect, &self.fb[s], self.menus.get(k).map_or(0, |m| m.focus));
+        }
         let status = self.session.status(&self.slots);
         hud::global(&mut list, &self.world, status.as_deref());
         Ok(Draw { cameras, light: self.light.clone(), hud: list })
@@ -130,9 +145,10 @@ impl app::Game for Gg {
             "alive": p.alive, "health": p.health, "score": p.score, "ammo": p.ammo, "reloading": p.reloading(),
             "pos": p.pos.to_array(), "vel": p.vel.to_array(), "yaw": p.yaw, "pitch": p.pitch,
             "on_floor": p.on_floor, "on_wall": p.wall_normal.is_some(), "dash_charges": p.dash_charges,
+            "cards": p.cards, "offer": p.offer, "max_health": p.max_health(), "mag": p.mag_size(),
         })).collect();
         Some(serde_json::json!({
-            "tick": w.tick, "round": w.round, "intermission": w.intermission,
+            "tick": w.tick, "round": w.round, "intermission": w.intermission, "ended": w.ended, "pick_time": w.pick_time,
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len() },
             "players": players, "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(),
         }).to_string())

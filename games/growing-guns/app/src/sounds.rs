@@ -11,6 +11,7 @@ pub struct Sounds {
     hurt: Vec<Clip>,
     death: Vec<Clip>,
     step: Vec<Clip>,
+    card: Vec<Clip>,
     pick: u32,
     walked: Vec<f32>,
 }
@@ -35,6 +36,7 @@ impl Sounds {
             hurt: load(dir, (1..=12).map(|i| format!("hurt{i}.wav"))),
             death: load(dir, (1..=4).map(|i| format!("death{i}.wav"))),
             step: load(dir, (1..=13).map(|i| format!("Step-{i}.wav"))),
+            card: load(dir, std::iter::once("Card Pick.wav".to_string())),
             pick: 0,
             walked: Vec::new(),
         };
@@ -50,7 +52,7 @@ impl Sounds {
     fn jitter(&self) -> f32 { 0.94 + ((self.pick >> 8) % 1000) as f32 * 0.00012 }
 
     fn play(&mut self, set: usize, at: [f32; 3], ears: &[Listener], unit: f32, db: f32) {
-        let set = match set { 0 => &self.gun, 1 => &self.jump, 2 => &self.hurt, 3 => &self.death, _ => &self.step }.clone();
+        let set = match set { 0 => &self.gun, 1 => &self.jump, 2 => &self.hurt, 3 => &self.death, 5 => &self.card, _ => &self.step }.clone();
         let Some(clip) = self.pick(&set).cloned() else { return };
         let play = spatial(at, ears, unit).db(db).pitch(self.jitter());
         self.tx.play(&clip, play);
@@ -69,6 +71,8 @@ impl Sounds {
                 Event::Jump { player } => self.play(1, world.players[player].pos.to_array(), &ears, 8.0, -2.0),
                 Event::Hit { victim, .. } => self.play(2, world.players[victim].pos.to_array(), &ears, 12.0, 0.0),
                 Event::Kill { victim, .. } => self.play(3, world.players[victim].pos.to_array(), &ears, 16.0, 2.0),
+                // Only the picker hears their card (it plays at their own ear).
+                Event::Picked { player, .. } => if let Some(k) = slots.iter().position(|&s| s == player) { self.play(5, ears[k].pos, &ears, 1000.0, -2.0) },
                 _ => {}
             }
         }

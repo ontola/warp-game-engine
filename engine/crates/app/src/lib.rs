@@ -8,6 +8,7 @@
 pub mod input;
 pub mod script;
 pub mod sound;
+pub mod ui;
 
 pub use input::{Buttons, Controls, Devices, Tuning};
 use render::hud::{HudDrawList, HudRenderer};

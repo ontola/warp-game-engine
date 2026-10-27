@@ -2,6 +2,7 @@
 //! bots. Constants come from the Godot game (`player.gd`, `weapon.gd`). The
 //! world is a plain value: the host steps it, clients render snapshots.
 pub mod arena;
+pub mod cards;
 mod bot;
 pub mod rng;
 pub mod shape;
@@ -50,6 +51,8 @@ pub const BULLET_SPEED: f32 = 150.0;
 pub const KNOCKBACK_PER_DAMAGE: f32 = 0.12;
 
 pub const INTERMISSION: f32 = 3.0;
+/// Seconds a loser has to pick a card (Godot: CARD_PICK_TIMEOUT).
+pub const PICK_TIME: f32 = 10.0;
 
 /// Hit spheres relative to the capsule centre: (offset y, radius, is head).
 pub const HITBOXES: [(f32, f32, bool); 3] = [(-0.45, 0.37, false), (0.1, 0.42, false), (0.65, 0.27, true)];
@@ -66,6 +69,9 @@ pub struct Input {
     pub dash: bool,
     pub fire: bool,
     pub reload: bool,
+    /// Card choice (0..3) while this player has an offer.
+    #[serde(default)]
+    pub pick: Option<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,6 +98,11 @@ pub struct Player {
     pub bot: bool,
     /// Seconds since the last shot, for the gun kick animation.
     pub since_shot: f32,
+    /// Cards taken this match and their accumulated effect.
+    pub cards: Vec<cards::Card>,
+    pub mods: cards::Mods,
+    /// Three cards to choose from after losing a round.
+    pub offer: Option<[cards::Card; 3]>,
 }
 
 impl Player {
@@ -101,11 +112,14 @@ impl Player {
             jumps_left: 1, wall_jump_cd: 0.0, dash_timer: 0.0, dash_dir: Vec3::ZERO,
             dash_charges: MAX_DASH_CHARGES, dash_recharge: 0.0, health: MAX_HEALTH, alive: true,
             ammo: MAG_SIZE, reload_timer: 0.0, fire_cd: 0.0, bloom: 0.0, score: 0, bot, since_shot: 9.0,
+            cards: Vec::new(), mods: cards::Mods::default(), offer: None,
         }
     }
     pub fn eye(&self) -> Vec3 { self.pos + Vec3::Y * EYE }
     pub fn forward(&self) -> Vec3 { look_dir(self.yaw, self.pitch) }
     pub fn reloading(&self) -> bool { self.reload_timer > 0.0 }
+    pub fn max_health(&self) -> i32 { MAX_HEALTH + self.mods.hp_bonus }
+    pub fn mag_size(&self) -> u32 { MAG_SIZE + self.mods.mag_bonus }
 }
 
 /// Godot convention: yaw 0 looks down -Z, positive yaw turns left.
@@ -132,6 +146,7 @@ pub enum Event {
     Jump { player: usize },
     Dash { player: usize },
     RoundOver { winner: Option<usize> },
+    Picked { player: usize, card: cards::Card },
     /// A fresh arena was generated: rebuild the scene.
     NewArena,
 }
@@ -141,6 +156,10 @@ pub struct Snapshot {
     pub tick: u64,
     pub round: u32,
     pub intermission: f32,
+    #[serde(default)]
+    pub pick_time: f32,
+    #[serde(default)]
+    pub ended: bool,
     pub players: Vec<Player>,
     pub bullets: Vec<Bullet>,
     pub events: Vec<Event>,
@@ -155,6 +174,10 @@ pub struct World {
     pub round: u32,
     /// Counts down after a round ends; the next round starts at zero.
     pub intermission: f32,
+    /// Seconds left for losers to pick a card.
+    pub pick_time: f32,
+    /// The round is over: intermission and card picks until the next one.
+    pub ended: bool,
     pub events: Vec<Event>,
     rng: Rng,
     brains: Vec<bot::Brain>,
@@ -167,7 +190,7 @@ impl World {
         let arena = Arena::generate(rng.next_u32() as u64);
         let players = bots.iter().map(|&b| Player::new(b)).collect();
         let brains = (0..bots.len()).map(|i| bot::Brain::new(seed ^ (i as u64 + 1) * 0x9E37)).collect();
-        let mut w = World { arena, players, bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, events: Vec::new(), rng, brains };
+        let mut w = World { arena, players, bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), rng, brains };
         w.spawn_all();
         w
     }
@@ -181,9 +204,13 @@ impl World {
         }
         for (i, p) in self.players.iter_mut().enumerate() {
             let s = spots[i % spots.len()] + Vec3::new((i / spots.len()) as f32 * 1.2, 0.0, 0.0);
-            let score = p.score;
+            let (score, taken, mods) = (p.score, std::mem::take(&mut p.cards), p.mods);
             *p = Player::new(p.bot);
             p.score = score;
+            p.cards = taken;
+            p.mods = mods;
+            p.health = p.max_health();
+            p.ammo = p.mag_size();
             p.pos = s + Vec3::Y * 0.2;
             // Face the arena centre.
             let to = -Vec2::new(s.x, s.z);
@@ -197,7 +224,7 @@ impl World {
         self.tick += 1;
         let mut inp: Vec<Input> = (0..self.players.len()).map(|i| inputs.get(i).copied().unwrap_or_default()).collect();
         for i in 0..self.players.len() {
-            if self.players[i].bot && self.players[i].alive && self.intermission <= 0.0 {
+            if self.players[i].bot && self.players[i].alive && !self.between_rounds() {
                 let mut brain = std::mem::take(&mut self.brains[i]);
                 inp[i] = brain.think(self, i);
                 self.brains[i] = brain;
@@ -213,6 +240,7 @@ impl World {
         for i in 0..self.players.len() {
             if self.players[i].alive && self.arena.in_lava(self.players[i].pos) { self.kill(i, None); }
         }
+        self.picks(&inp);
         self.rounds();
     }
 
@@ -259,9 +287,10 @@ impl World {
             ev.push(Event::Dash { player: i });
         }
 
-        let mut target = wish * WALK_SPEED;
+        let walk = WALK_SPEED * p.mods.speed;
+        let mut target = wish * walk;
         let horiz = Vec3::new(p.vel.x, 0.0, p.vel.z);
-        let speeding = horiz.length() > WALK_SPEED + 0.1;
+        let speeding = horiz.length() > walk + 0.1;
         let accel = if p.dash_timer > 0.0 {
             p.dash_timer -= DT;
             p.vel.y = p.vel.y.max(0.0);
@@ -291,38 +320,41 @@ impl World {
     }
 
     fn weapon(&mut self, i: usize, input: Input) {
+        let between = self.between_rounds();
         let p = &mut self.players[i];
         p.fire_cd = (p.fire_cd - DT).max(0.0);
         p.bloom = (p.bloom - DT * 0.12).max(0.0);
         p.since_shot += DT;
         if p.reload_timer > 0.0 {
             p.reload_timer -= DT;
-            if p.reload_timer <= 0.0 { p.reload_timer = 0.0; p.ammo = MAG_SIZE; }
+            if p.reload_timer <= 0.0 { p.reload_timer = 0.0; p.ammo = p.mag_size(); }
             return;
         }
-        if (input.reload && p.ammo < MAG_SIZE) || p.ammo == 0 {
-            p.reload_timer = RELOAD_TIME;
+        if (input.reload && p.ammo < p.mag_size()) || p.ammo == 0 {
+            p.reload_timer = RELOAD_TIME / p.mods.reload;
             return;
         }
-        if !input.fire || p.fire_cd > 0.0 || self.intermission > 0.0 { return; }
-        p.fire_cd = FIRE_INTERVAL;
+        if !input.fire || p.fire_cd > 0.0 || between { return; }
+        p.fire_cd = FIRE_INTERVAL / p.mods.fire_rate;
         p.ammo -= 1;
         p.since_shot = 0.0;
-        let cone = SPREAD + p.bloom;
+        let cone = SPREAD * p.mods.spread + p.bloom;
         let (yaw, pitch) = (p.yaw + self.rng.range(-cone, cone), p.pitch + self.rng.range(-cone, cone));
         let dir = look_dir(yaw, pitch);
-        p.bloom = (p.bloom + RECOIL_BLOOM).min(0.08);
-        p.pitch = (p.pitch + RECOIL_PITCH).min(1.5);
+        p.bloom = (p.bloom + RECOIL_BLOOM * p.mods.recoil).min(0.08);
+        p.pitch = (p.pitch + RECOIL_PITCH * p.mods.recoil).min(1.5);
         let from = p.eye();
-        self.bullets.push(Bullet { pos: from, vel: dir * BULLET_SPEED, owner: i, travelled: 0.0 });
+        let speed = BULLET_SPEED * p.mods.bullet_speed;
+        self.bullets.push(Bullet { pos: from, vel: dir * speed, owner: i, travelled: 0.0 });
         self.events.push(Event::Shot { player: i, from, dir });
     }
 
     fn step_bullets(&mut self) {
         let mut bullets = std::mem::take(&mut self.bullets);
         bullets.retain_mut(|b| {
-            let len = BULLET_SPEED * DT;
-            let dir = b.vel / BULLET_SPEED;
+            let speed = b.vel.length();
+            let len = speed * DT;
+            let dir = b.vel / speed;
             let wall = shape::raycast(&self.arena.shapes, b.pos, dir, len);
             let mut best = wall.map(|(t, _, _)| t).unwrap_or(len);
             let mut target = None;
@@ -336,7 +368,7 @@ impl World {
             }
             let at = b.pos + dir * best;
             if let Some((j, head)) = target {
-                let dmg = (DAMAGE * if head { HEADSHOT_MULT } else { 1.0 }).round() as i32;
+                let dmg = (DAMAGE * self.players[b.owner].mods.damage * if head { HEADSHOT_MULT } else { 1.0 }).round() as i32;
                 self.damage(j, b.owner, dmg, head, at, dir);
                 return false;
             }
@@ -368,11 +400,37 @@ impl World {
         self.events.push(Event::Kill { victim, attacker });
     }
 
+    /// After a round's end, until every loser has picked a card.
+    pub fn between_rounds(&self) -> bool { self.ended }
+
+    /// Apply card choices; bots choose at once.
+    fn picks(&mut self, inputs: &[Input]) {
+        for i in 0..self.players.len() {
+            let Some(offer) = self.players[i].offer else { continue };
+            let choice = if self.players[i].bot { Some(self.rng.below(3) as u8) } else { inputs.get(i).and_then(|inp| inp.pick) };
+            if let Some(k) = choice.filter(|&k| k < 3) {
+                let card = offer[k as usize];
+                let p = &mut self.players[i];
+                p.mods.apply(card);
+                p.cards.push(card);
+                p.offer = None;
+                self.events.push(Event::Picked { player: i, card });
+            }
+        }
+    }
+
     fn rounds(&mut self) {
-        if self.intermission > 0.0 {
-            self.intermission -= DT;
-            if self.intermission <= 0.0 {
-                self.intermission = 0.0;
+        if self.ended {
+            self.intermission = (self.intermission - DT).max(0.0);
+            self.pick_time = (self.pick_time - DT).max(0.0);
+            let waiting = self.players.iter().any(|p| p.offer.is_some());
+            if waiting && self.pick_time <= 0.0 {
+                // Out of time: take the first card.
+                let auto: Vec<Input> = (0..self.players.len()).map(|_| Input { pick: Some(0), ..Default::default() }).collect();
+                self.picks(&auto);
+            }
+            if self.intermission <= 0.0 && !self.players.iter().any(|p| p.offer.is_some()) {
+                self.ended = false;
                 self.round += 1;
                 self.arena = Arena::generate(self.rng.next_u32() as u64);
                 self.spawn_all();
@@ -386,13 +444,18 @@ impl World {
             let winner = alive.first().copied();
             if let Some(w) = winner { self.players[w].score += 1; }
             self.intermission = INTERMISSION;
+            self.pick_time = PICK_TIME;
+            self.ended = true;
+            for i in 0..self.players.len() {
+                if Some(i) != winner { self.players[i].offer = Some(cards::offer(&mut self.rng)); }
+            }
             self.events.push(Event::RoundOver { winner });
         }
     }
 
     /// Everything a remote viewer needs for one tick, arena excepted.
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot { tick: self.tick, round: self.round, intermission: self.intermission, players: self.players.clone(), bullets: self.bullets.clone(), events: self.events.clone() }
+        Snapshot { tick: self.tick, round: self.round, intermission: self.intermission, pick_time: self.pick_time, ended: self.ended, players: self.players.clone(), bullets: self.bullets.clone(), events: self.events.clone() }
     }
 
     /// Replace the state with a host snapshot (clients never step).
@@ -400,6 +463,8 @@ impl World {
         self.tick = s.tick;
         self.round = s.round;
         self.intermission = s.intermission;
+        self.pick_time = s.pick_time;
+        self.ended = s.ended;
         self.players = s.players;
         self.bullets = s.bullets;
         self.events = s.events;
@@ -409,7 +474,7 @@ impl World {
     /// the first snapshot arrives.
     pub fn remote(arena: Arena, players: usize) -> Self {
         let brains = (0..players).map(|_| bot::Brain::default()).collect();
-        World { arena, players: (0..players).map(|_| Player::new(true)).collect(), bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, events: Vec::new(), rng: Rng::new(0), brains }
+        World { arena, players: (0..players).map(|_| Player::new(true)).collect(), bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), rng: Rng::new(0), brains }
     }
 
     /// Hand a player slot to a human (remote join) or back to a bot.
@@ -543,6 +608,34 @@ mod tests {
         for _ in 0..2 { w.step(&[Input::default(); 2]); }
         assert_eq!(w.players[0].score, 1);
         assert!(w.intermission > 0.0);
+    }
+
+    #[test]
+    fn losers_pick_cards_and_the_next_round_waits_for_them() {
+        let mut w = flat_world();
+        w.players[1].bot = false;
+        let fire = Input { fire: true, ..Default::default() };
+        for _ in 0..300 {
+            w.players[0].pitch = -0.02;
+            w.step(&[fire, Input::default()]);
+            if w.between_rounds() { break; }
+        }
+        assert!(w.players[1].offer.is_some() && w.players[0].offer.is_none(), "the loser gets an offer");
+        let round = w.round;
+        for _ in 0..(INTERMISSION * 60.0) as usize + 30 { w.step(&[Input::default(); 2]); }
+        assert_eq!(w.round, round, "waits for the human pick");
+        let card = w.players[1].offer.unwrap()[2];
+        w.step(&[Input::default(), Input { pick: Some(2), ..Default::default() }]);
+        assert!(w.events.contains(&Event::Picked { player: 1, card }));
+        assert_eq!(w.players[1].cards, vec![card]);
+        w.step(&[Input::default(); 2]);
+        assert_eq!(w.round, round + 1);
+        assert_eq!(w.players[1].health, w.players[1].max_health());
+        assert_eq!(w.players[1].ammo, w.players[1].mag_size());
+        // A second loss without picking: the first card is taken at the deadline.
+        let mut m = cards::Mods::default();
+        m.apply(cards::Card::BigMag);
+        assert_eq!(m.mag_bonus, 20);
     }
 
     #[test]
