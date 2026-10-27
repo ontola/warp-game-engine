@@ -11,6 +11,7 @@ pub mod engine;
 pub mod es;
 pub mod fluid;
 pub mod mix;
+pub mod sfx;
 pub mod sounds;
 pub mod stream;
 pub mod tyres;

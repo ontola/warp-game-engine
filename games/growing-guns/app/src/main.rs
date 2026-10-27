@@ -12,6 +12,7 @@ mod hud;
 mod net;
 mod play;
 mod session;
+mod sounds;
 mod view;
 
 use growing_guns::{Event, World, TICK_HZ};
@@ -108,8 +109,13 @@ fn script(args: &Args) -> Result<(), String> {
     let mut game = play::Gg::new(world, session::Session::Local, (0..humans).collect());
     game.light_mut().taa = 0.0;
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
+    let mixer = sounds::find_dir(args.value("--sounds")).map(|dir| {
+        let (tx, mix) = audio::sfx::sfx(64, audio::SAMPLE_RATE);
+        game.set_sounds(sounds::Sounds::load(&dir, tx));
+        mix
+    });
     let gpu = Gpu::new()?;
-    let failed = app::script::run_file(&mut game, &gpu, TICK_HZ as f32, std::path::Path::new(file), std::path::Path::new(out))?;
+    let failed = app::script::run_file(&mut game, &gpu, TICK_HZ as f32, std::path::Path::new(file), std::path::Path::new(out), mixer)?;
     if failed > 0 { std::process::exit(1); }
     Ok(())
 }

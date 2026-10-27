@@ -51,6 +51,7 @@ pub struct Gg {
     slots: Vec<usize>,
     since_snap: f32,
     rebuild: bool,
+    sounds: Option<crate::sounds::Sounds>,
 }
 
 impl Gg {
@@ -59,10 +60,11 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, rebuild: true }
+            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, rebuild: true, sounds: None }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
+    pub fn set_sounds(&mut self, s: crate::sounds::Sounds) { self.sounds = Some(s); }
 
     /// A new round: refill the arena slots; the renderer is kept.
     fn new_arena(&mut self) {
@@ -86,6 +88,7 @@ impl app::Game for Gg {
         if self.world.events.contains(&Event::NewArena) { self.new_arena(); }
         self.vis.absorb(&self.world);
         feedback(&mut self.fb, &self.world, DT);
+        if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); }
         self.session.publish(&self.world);
     }
 
@@ -93,8 +96,12 @@ impl app::Game for Gg {
         let mut alpha = frame.alpha;
         if self.session.is_client() {
             let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
-            let (vis, fb) = (&mut self.vis, &mut self.fb);
-            let (snaps, arena) = self.session.receive(&mut self.world, &self.slots, |w| { vis.absorb(w); feedback(fb, w, DT); });
+            let (vis, fb, sounds, slots) = (&mut self.vis, &mut self.fb, &mut self.sounds, &self.slots);
+            let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
+                vis.absorb(w);
+                feedback(fb, w, DT);
+                if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); }
+            });
             if snaps > 0 { self.prev = before; self.since_snap = 0.0; } else { self.since_snap += frame.dt; }
             if arena { self.new_arena(); }
             alpha = (self.since_snap / DT).clamp(0.0, 1.0);
@@ -152,6 +159,14 @@ pub fn run(args: &Args) -> Result<(), String> {
     };
     println!("seed {seed}, {} local, {} players", slots.len(), world.players.len());
     let mut game = Gg::new(world, session, slots);
+    // Keep the speaker alive for the whole run.
+    let _speaker = match crate::sounds::find_dir(args.value("--sounds")) {
+        Some(dir) => match app::sound::start(64) {
+            Ok((speaker, tx)) => { game.set_sounds(crate::sounds::Sounds::load(&dir, tx)); Some(speaker) }
+            Err(e) => { eprintln!("silent: {e}"); None }
+        },
+        None => { eprintln!("silent: no sound folder (--sounds DIR or GG_SOUNDS, the Godot project's assets/audio)"); None }
+    };
     let cfg = app::Config {
         title: "Growing Guns | Warp".into(),
         tick_hz: TICK_HZ as f32,

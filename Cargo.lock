@@ -147,6 +147,8 @@ dependencies = [
 name = "app"
 version = "0.1.0"
 dependencies = [
+ "audio",
+ "cpal",
  "gilrs",
  "glam 0.31.1",
  "image",
@@ -1666,6 +1668,7 @@ name = "growing-guns-app"
 version = "0.1.0"
 dependencies = [
  "app",
+ "audio",
  "glam 0.31.1",
  "growing-guns",
  "image",
