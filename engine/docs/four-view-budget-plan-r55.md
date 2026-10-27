@@ -55,6 +55,15 @@ experimental modes off and uses the pre-existing r54 executable unchanged.
 
 ## Decision gate reached: steps 1-2 measured
 
+The user subsequently requested investigation of distant-grass cost. The
+[r58 full-resolution sampling trial](meadow-sampling-r58.md) reduces aggregate
+time 15–21% and whole GPU interval 0.640/0.758 ms in six alternating runs.
+Exact raw depth/motion and coverage masks match; color accumulation varies at
+the same scale as repeated OFF runs. No new blur was observed. This switch
+remains opt-in, with total 27.005/32.976 ms and meadow 6.502/8.452 ms still
+above the goals. The requested cheap grass-ground AO is a separate experiment,
+not an assumed performance improvement or a substitute for cast shadows.
+
 27 October bounded follow-up: the user requested earlier cheap grass.
 [r57](meadow-half-resolution-r57.md) compares current, 25–35 m full aggregate,
 and 25–35 m half-resolution aggregate with three alternating repeats each.

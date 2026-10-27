@@ -7,7 +7,33 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r57 earlier/cheaper grass measured, opt-in only
+## Latest status — r58 full-resolution sample pruning measured, opt-in only
+
+Read [the r58 report](docs/meadow-sampling-r58.md). Runtime `d5fea46` adds
+default-off `KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE=1` and explicit raw aggregate
+captures. Six OFF/ON runs: aggregate 4.169→3.307 / 6.729→5.694 ms; all grass
+7.284→6.502 / 9.398→8.452 ms; total 27.645→27.005 / 33.734→32.976 ms. Same
+binary, four-view 4K-output/DLSS Performance, 25–35 m band, full-resolution
+aggregate, 179 clean frames/section/run. No default or target change.
+
+Raw A/A/B checks cover 12 view/frame cases: all depth/motion bits match, zero
+coverage mask differences, finite layers. Color/OIT differences also occur A/A;
+their similar scale does not prove exact optical parity. All-view still review
+found no new blur or silhouette issue. Motion/all-weather acceptance remains
+open. 524 renderer + 185 CLI tests passed, one ignored each. Executable:
+`C:/dev/perf/warp-sideways-20261027/r58-meadow-sampling/sideways-r58.exe`, SHA256
+`ac95dfa6632f4236583989aa2ab4db1d53ec88ad8795ce7770d7a5a74389c203`.
+Evidence is beside it (`timing-v2`, `raw-qa`, `raw-analysis-a`). Original failed
+harness evidence remains; only the corrected output-vs-viewport validator is
+used for the six repeated runs.
+
+The user briefly playtested this binary with one player, 4K/DLSS Quality and
+pruning ON; visible presentation was confirmed. It was closed at the user's
+request (owned PID 192560). No interactive game should be restarted unless
+requested. The new request for inexpensive grass-ground AO is being prepared
+separately; do not claim its GPU cost or visual quality is validated yet.
+
+## Previous status — r57 earlier/cheaper grass measured, opt-in only
 
 The user chose an earlier cheap-grass follow-up after the r56 decision gate.
 Read [r57 implementation, measurements and image review](docs/meadow-half-resolution-r57.md).
