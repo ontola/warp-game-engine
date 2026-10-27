@@ -64,11 +64,10 @@ impl Gg {
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
 
+    /// A new round: refill the arena slots; the renderer is kept.
     fn new_arena(&mut self) {
-        self.vis = view::Visuals::build(&self.world);
-        self.vis.hide_own_bodies(&self.slots);
+        self.vis.set_arena(&self.world);
         self.prev = self.world.players.iter().map(|p| p.pos).collect();
-        self.rebuild = true;
     }
 }
 
@@ -103,6 +102,7 @@ impl app::Game for Gg {
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() { frame.set_scene(&self.vis.scene, &self.light); }
         let r = frame.renderer().expect("scene set above");
+        self.vis.flush(frame.gpu, r)?;
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
         r.set_local_lights(&self.vis.local_lights())?;
         let rects = frame.rects(self.slots.len());

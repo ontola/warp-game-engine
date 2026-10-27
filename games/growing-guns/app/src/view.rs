@@ -5,6 +5,7 @@ use glam::{Affine3A, Quat, Vec3};
 use growing_guns::shape::Kind;
 use growing_guns::{Event, World, EYE};
 use render::primitives;
+use render::slots::Slots;
 use render::headlights::LocalLight;
 use render::scene::{GpuInstance, Material, EMISSIVE};
 use render::{Camera, Lighting, Scene};
@@ -56,7 +57,16 @@ pub struct Visuals {
     next_spark: usize,
     flashes: Vec<(Vec3, f32)>,
     lights: Vec<LocalLight>,
+    arena: Slots,
+    kinds: KindMeshes,
 }
+
+struct KindMeshes { floor: usize, wall: usize, building: usize, dark: usize, accent_a: usize, accent_b: usize, beacons: [usize; 3] }
+
+const ARENA_SLOTS: usize = 256;
+/// The Godot arena's light colours (towers and building roofs).
+const BEACON_COLORS: [[f32; 3]; 3] = [[1.0, 0.4, 0.3], [1.0, 0.35, 0.2], [1.0, 0.7, 0.2]];
+fn dist(a: [f32; 3], b: [f32; 3]) -> f32 { (0..3).map(|i| (a[i] - b[i]).powi(2)).sum() }
 
 
 impl Visuals {
@@ -64,40 +74,23 @@ impl Visuals {
         let mut scene = Scene::default();
         scene.sky = Some(sky());
         let kind_mesh = |scene: &mut Scene, tint, rough| { let m = material(scene, tint, rough); cube(scene, m) };
-        let floor = kind_mesh(&mut scene, palette::FLOOR, 0.9);
-        let wall = kind_mesh(&mut scene, palette::WALL, 0.85);
-        let building = kind_mesh(&mut scene, palette::BUILDING, 0.85);
-        let dark = kind_mesh(&mut scene, palette::DARK, 0.9);
-        let accent_a = kind_mesh(&mut scene, palette::ACCENT_A, 0.7);
-        let accent_b = kind_mesh(&mut scene, palette::ACCENT_B, 0.7);
-        for b in &world.arena.blocks {
-            let m = match b.kind {
-                Kind::Floor => floor,
-                Kind::Wall => wall,
-                Kind::Tower | Kind::Pillar => dark,
-                Kind::Building => building,
-                Kind::Ledge => accent_b,
-                Kind::Cover => accent_a,
-                Kind::Platform => accent_b,
-            };
-            scene.add_instance(m, Affine3A::from_scale_rotation_translation(b.half * 2.0, Quat::from_rotation_y(b.yaw), b.center));
-            // Contact shading loops over every SOLID box per pixel: keep it
-            // to the small cover blocks, where it grounds them best.
-            if b.kind == Kind::Cover { scene.mark_solid(); }
-        }
+        let kinds = KindMeshes {
+            floor: kind_mesh(&mut scene, palette::FLOOR, 0.9),
+            wall: kind_mesh(&mut scene, palette::WALL, 0.85),
+            building: kind_mesh(&mut scene, palette::BUILDING, 0.85),
+            dark: kind_mesh(&mut scene, palette::DARK, 0.9),
+            accent_a: kind_mesh(&mut scene, palette::ACCENT_A, 0.7),
+            accent_b: kind_mesh(&mut scene, palette::ACCENT_B, 0.7),
+            beacons: BEACON_COLORS.map(|c| { let m = glow(&mut scene, c, 6000.0); cube(&mut scene, m) }),
+        };
         // Lava: a glowing sheet under the floor, visible through holes and
         // past the edge of open arenas.
         let lava_m = glow(&mut scene, [1.0, 0.28, 0.04], 2600.0);
         let lava = cube(&mut scene, lava_m);
         scene.add_instance(lava, Affine3A::from_scale_rotation_translation(Vec3::new(900.0, 0.2, 900.0), Quat::IDENTITY, Vec3::new(0.0, -2.3, 0.0)));
         scene.mark_no_shadow();
-        // Roof beacons as small glowing cubes where the Godot lights hang.
-        for &(p, c) in &world.arena.lights {
-            let m = glow(&mut scene, c, 6000.0);
-            let beacon = cube(&mut scene, m);
-            scene.add_instance(beacon, Affine3A::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, p));
-            scene.mark_no_shadow();
-        }
+        // The arena lives in slots: a new round refills them, no rebuild.
+        let arena = Slots::reserve(&mut scene, ARENA_SLOTS);
 
         let first_dynamic = scene.instances.len();
         let eye_m = material(&mut scene, [0.05, 0.05, 0.06], 0.3);
@@ -119,8 +112,40 @@ impl Visuals {
         let spark = cube(&mut scene, spark_m);
         for _ in 0..SPARKS { scene.add_instance(spark, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
 
-        let lights = world.arena.lights.iter().take(12).map(|&(p, c)| omni(p, Vec3::from(c) * 900.0, 20.0)).collect();
-        Visuals { scene, first_dynamic, players, tracer, spark, sparks: vec![(HIDDEN, 0.0); SPARKS], next_spark: 0, flashes: Vec::new(), lights }
+        let mut v = Visuals { scene, first_dynamic, players, tracer, spark, sparks: vec![(HIDDEN, 0.0); SPARKS], next_spark: 0,
+            flashes: Vec::new(), lights: Vec::new(), arena, kinds };
+        v.set_arena(world);
+        v
+    }
+
+    /// Fill the arena slots from the world's current arena (a new round).
+    /// Call `flush` afterwards to upload; the renderer stays.
+    pub fn set_arena(&mut self, world: &World) {
+        self.arena.clear(&mut self.scene);
+        let k = &self.kinds;
+        for b in &world.arena.blocks {
+            let m = match b.kind {
+                Kind::Floor => k.floor,
+                Kind::Wall => k.wall,
+                Kind::Tower | Kind::Pillar => k.dark,
+                Kind::Building => k.building,
+                Kind::Ledge | Kind::Platform => k.accent_b,
+                Kind::Cover => k.accent_a,
+            };
+            let xf = Affine3A::from_scale_rotation_translation(b.half * 2.0, Quat::from_rotation_y(b.yaw), b.center);
+            self.arena.add(&mut self.scene, m, xf).expect("arena slots");
+        }
+        // Roof beacons where the Godot lights hang, in the nearest colour.
+        for &(p, c) in &world.arena.lights {
+            let nearest = (0..BEACON_COLORS.len()).min_by(|&a, &b| dist(BEACON_COLORS[a], c).total_cmp(&dist(BEACON_COLORS[b], c))).unwrap();
+            self.arena.add(&mut self.scene, k.beacons[nearest], Affine3A::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, p)).expect("arena slots");
+        }
+        self.lights = world.arena.lights.iter().take(12).map(|&(p, c)| omni(p, Vec3::from(c) * 900.0, 20.0)).collect();
+    }
+
+    /// Upload changed arena slots.
+    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
+        self.arena.flush(gpu, renderer, &self.scene)
     }
 
     /// Advance effects from this tick's events.
