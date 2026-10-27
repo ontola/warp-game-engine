@@ -1014,6 +1014,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "growing-guns"
+version = "0.1.0"
+dependencies = [
+ "glam 0.31.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "growing-guns-app"
+version = "0.1.0"
+dependencies = [
+ "gilrs",
+ "glam 0.31.1",
+ "growing-guns",
+ "image",
+ "render",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
