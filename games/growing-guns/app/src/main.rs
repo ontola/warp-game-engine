@@ -77,6 +77,7 @@ fn shot(args: &Args) -> Result<(), String> {
     let world = World::new(seed, &[true; 4]);
     let mut game = play::Gg::new(world, session::Session::Local, (0..views).collect());
     game.light_mut().taa = 0.0;
+    for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
     let gpu = Gpu::new()?;
     let rgba = app::capture(&mut game, &gpu, [w, h], (seconds * TICK_HZ as f32) as u32, TICK_HZ as f32)?;
     render::write_png(std::path::Path::new(out), w, h, &rgba)?;

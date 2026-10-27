@@ -602,6 +602,10 @@ pub struct Renderer {
     shader_generation: u64,
     rock_variation: bool,
     shade_features: crate::shade_features::ShadeFeatures,
+    /// No foliage instance, forest field or heightfield: GI rays cannot be
+    /// attenuated, so sky, reflection and sun-fallback marches are skipped
+    /// (exactly 1). Foliage cannot be added later without a rebuild.
+    empty_gi_volume: bool,
     car_materials: wgpu::Buffer,
     car_material_count: usize,
     tone: wgpu::ComputePipeline,
@@ -1457,6 +1461,8 @@ impl Renderer {
             shader_generation: 0,
             rock_variation,
             shade_features,
+            empty_gi_volume: scene.heightfield.heights.is_empty() && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
+                && !scene.instances.iter().any(|i| i.flags & crate::scene::FOLIAGE != 0),
             car_materials,
             car_material_count: car_list.len(),
             tone,
@@ -2827,7 +2833,7 @@ impl Renderer {
             let gi_u = GiUniform {
                 vol_origins: canopy.origins,
                 vol_anchors: canopy.anchors,
-                vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], if light.gi>0.0 {1|((canopy.compact_support as u32)<<1)} else {0}],
+                vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], if light.gi>0.0 {1|((canopy.compact_support as u32)<<1)|((self.empty_gi_volume as u32)<<2)} else {0}],
                 hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3), 0.0],
                 hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, 0],
                 // Reflectance, conditioned on local sun and sky visibility.

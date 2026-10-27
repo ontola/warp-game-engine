@@ -37,6 +37,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     }
     let t_scene = ms(t);
     let mut light = view::lighting();
+    for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { light.set(&kv)?; }
     if args.value("--light") == Some("lean") {
         light.gi = 0.0; light.near_shadows = 0.0; light.taa = 0.0; light.contact_occlusion = 0.0; light.reflection_occlusion = 0.0;
     }
