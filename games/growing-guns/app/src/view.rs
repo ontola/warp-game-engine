@@ -16,6 +16,7 @@ use render::scene::{GpuInstance, Material, EMISSIVE};
 use render::{Camera, Lighting, Scene};
 use crate::stadium::StadiumVisuals;
 use crate::gun::{self, Rig, Stats};
+use crate::gore;
 use audio::sfx::Listener;
 
 pub const TRACERS: usize = 64;
@@ -88,6 +89,8 @@ pub struct Visuals {
     pub stadium: StadiumVisuals,
     /// The growing gun per player, its meshes and instance blocks.
     guns: Guns,
+    /// Burst bodies: chunks and blobs.
+    gore: gore::Gore,
 }
 
 /// Instance blocks per player: the first-person gun (seen only in that
@@ -114,9 +117,10 @@ const BLAST_TINT: Vec3 = Vec3::new(1.0, 0.70, 0.20);
 
 /// Bullet scorch marks: a ring of slots, oldest reused first; each knows
 /// the chunk it sits on and goes when that chunk breaks.
-struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, mesh: usize }
+struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, mesh: usize, blood: usize }
 
-struct Ragdoll { torso: Body, head: Body, slots: [SlotId; 2], meshes: [usize; 2] }
+/// A corpse: jointed bodies, each drawn with one of the player's meshes.
+struct Ragdoll { torso: Body, parts: Vec<(Body, SlotId, usize, Vec3)> }
 
 #[derive(Clone, Copy)]
 struct FxMeshes { spark: usize, dust: usize, blood: usize, casing: usize, fire: usize, smoke: usize }
@@ -179,7 +183,8 @@ impl Visuals {
         // The arena lives in slots: a new round refills them, no rebuild.
         let arena = Slots::reserve(&mut scene, ARENA_SLOTS);
         let mark_m = material(&mut scene, [0.06, 0.055, 0.05], 0.95);
-        let marks = Marks { slots: Slots::reserve(&mut scene, MARKS), ring: Vec::new(), next: 0, mesh: sphere(&mut scene, mark_m, 4, 8) };
+        let blood_m = material(&mut scene, [0.36, 0.02, 0.015], 0.35);
+        let marks = Marks { slots: Slots::reserve(&mut scene, MARKS), ring: Vec::new(), next: 0, mesh: sphere(&mut scene, mark_m, 4, 8), blood: sphere(&mut scene, blood_m, 4, 10) };
         // Effects: engine particles with their own meshes.
         let fxm = FxMeshes {
             spark: { let m = glow(&mut scene, [1.0, 0.6, 0.2], 20000.0); cube(&mut scene, m) },
@@ -201,11 +206,14 @@ impl Visuals {
         let eye_m = material(&mut scene, [0.05, 0.05, 0.06], 0.3);
         let gun_m = material(&mut scene, [0.12, 0.12, 0.13], 0.4);
         let mut players = Vec::new();
+        let mut gore_parts = Vec::new();
         for i in 0..world.players.len() {
             let body_m = material(&mut scene, PLAYER_COLORS[i % 4], 0.55);
-            let body = sphere(&mut scene, body_m, 10, 16);
-            let head = sphere(&mut scene, body_m, 8, 14);
-            let eyes = sphere(&mut scene, eye_m, 6, 8);
+            let prims = [primitives::sphere(body_m, 10, 16), primitives::sphere(body_m, 8, 14), primitives::sphere(eye_m, 6, 8)];
+            let body = scene.add_mesh(&prims[0].mesh());
+            let head = scene.add_mesh(&prims[1].mesh());
+            let eyes = scene.add_mesh(&prims[2].mesh());
+            gore_parts.push(prims);
             let gun = cube(&mut scene, gun_m);
             for m in [body, head, eyes, gun] { scene.add_instance(m, Affine3A::from_translation(HIDDEN)); }
             players.push(PlayerMeshes { body, head, eyes, gun });
@@ -214,10 +222,12 @@ impl Visuals {
         let tracer = cube(&mut scene, tracer_m);
         for _ in 0..TRACERS { scene.add_instance(tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
         let guns = Guns::reserve(&mut scene, world.players.len());
+        // Gore lives in the dynamic range too: uploaded with it every frame.
+        let gore = gore::Gore::reserve(&mut scene, &gore_parts, world.arena.seed);
 
         let mut v = Visuals { scene, first_dynamic, players, tracer, fx, fxm, flashes: Vec::new(), lights: Vec::new(), arena, kinds,
             corpses, phys, ragdolls: Vec::new(), chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, debris,
-            blasts: Effects::default(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new(), stadium, guns };
+            blasts: Effects::default(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new(), stadium, guns, gore };
         v.set_arena(world);
         v
     }
@@ -228,6 +238,7 @@ impl Visuals {
         self.arena.clear(&mut self.scene);
         self.corpses.clear(&mut self.scene);
         self.ragdolls.clear();
+        self.gore.clear(&mut self.scene, &mut self.phys);
         self.phys.clear_bodies();
         self.marks.slots.clear(&mut self.scene);
         self.marks.ring.clear();
@@ -275,12 +286,12 @@ impl Visuals {
     /// (colliding with the arena). `ears` place the crowd's reactions.
     pub fn absorb(&mut self, world: &World, ears: &[Listener]) {
         self.break_chunks(world);
-        let (s, m) = (&mut self.scene, self.fxm);
+        let m = self.fxm;
         for e in &world.events {
             match *e {
                 Event::Impact { pos, normal, damage, strong } => {
-                    self.fx.burst(s, pos + normal * 0.03, normal, &Burst { mesh: m.spark, count: 8, ..Burst::sparks() });
-                    self.fx.burst(s, pos + normal * 0.05, normal, &Burst { mesh: m.dust, count: 5, ..Burst::dust() });
+                    self.fx.burst(&mut self.scene, pos + normal * 0.03, normal, &Burst { mesh: m.spark, count: 8, ..Burst::sparks() });
+                    self.fx.burst(&mut self.scene, pos + normal * 0.05, normal, &Burst { mesh: m.dust, count: 5, ..Burst::dust() });
                     // Chips fly off every hit, more and bigger for heavy rounds
                     // (Godot `request_chips`), as GPU debris.
                     let chunk = world.arena.grid.ray(pos + normal * 0.05, -normal, 0.3).map(|h| h.2);
@@ -289,13 +300,13 @@ impl Visuals {
                     let amount = ((16.0 * scale).round() as u32).clamp(2, 20);
                     let size = 2.4 * (0.05 + damage * 0.0022).clamp(0.05, 0.35);
                     let radius = growing_guns::destruct::rifle_chip(damage / 16.0).1;
-                    self.debris.burst(s, &BurstSpec::chips(pos + normal * 0.15, radius * 0.3, amount, size, &stone.shards));
+                    self.debris.burst(&mut self.scene, &BurstSpec::chips(pos + normal * 0.15, radius * 0.3, amount, size, &stone.shards));
                     // A scorch mark on the stone (decal), bigger for strong rounds.
                     if let Some(c) = chunk {
                         let r = if strong { 0.32 } else { 0.22 };
                         let rot = Quat::from_rotation_arc(Vec3::Y, normal);
                         let xf = Affine3A::from_scale_rotation_translation(Vec3::new(r, 0.02, r), rot, pos);
-                        self.marks.place(s, xf, c as u32);
+                        self.marks.place(&mut self.scene, xf, c as u32);
                     }
                 }
                 Event::Explosion { pos, radius, .. } => {
@@ -313,23 +324,38 @@ impl Visuals {
                 }
                 Event::Hit { victim, attacker, pos, head, .. } => {
                     let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
-                    self.fx.burst(s, pos, dir + Vec3::Y * 0.3, &Burst { mesh: m.blood, count: if head { 22 } else { 12 }, ..Burst::drops() });
+                    self.fx.burst(&mut self.scene, pos, dir + Vec3::Y * 0.3, &Burst { mesh: m.blood, count: if head { 22 } else { 12 }, ..Burst::drops() });
                 }
-                Event::Kill { victim, attacker, .. } => {
+                Event::Kill { victim, attacker, gib, dir } => {
                     let v = &world.players[victim];
-                    self.fx.burst(s, v.pos, Vec3::Y, &Burst { mesh: m.blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
-                    // Shot dead: pushed away from the shooter. Lava: no body.
-                    if let Some(a) = attacker {
-                        let push = (v.pos - world.players[a].pos).with_y(0.0).normalize_or_zero() * 5.0 + Vec3::Y * 2.0;
-                        let rot = Quat::from_rotation_y(v.yaw);
-                        let torso = self.phys.add(&BodyDesc { rot, vel: v.vel + push, density: 300.0, ..BodyDesc::new(Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25) });
-                        let head = self.phys.add(&BodyDesc { rot, vel: v.vel + push * 1.4, density: 300.0, ..BodyDesc::new(Shape::Sphere(0.28), v.pos + Vec3::Y * 0.55) });
-                        self.phys.ball_joint(torso, head, Vec3::Y * 0.52, Vec3::Y * -0.28);
-                        let pm = &self.players[victim];
-                        let (b, h) = (pm.body, pm.head);
-                        let ts = self.corpses.add(s, b, Affine3A::from_translation(v.pos));
-                        let hs = self.corpses.add(s, h, Affine3A::from_translation(v.pos));
-                        if let (Some(ts), Some(hs)) = (ts, hs) { self.ragdolls.push(Ragdoll { torso, head, slots: [ts, hs], meshes: [b, h] }); }
+                    let now = world.tick as f32 * growing_guns::DT;
+                    // Lava takes the body whole.
+                    let Some(a) = attacker else {
+                        self.fx.burst(&mut self.scene, v.pos, Vec3::Y, &Burst { mesh: m.blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+                        continue;
+                    };
+                    let push_dir = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
+                    match gib {
+                        growing_guns::Gib::Burst { severity, blast } => {
+                            // Godot: chaos from the severity, the whole body in chunks,
+                            // blood mist and a spray, splats on the ground around.
+                            let chaos = (severity * if blast { 0.75 } else { 0.82 }).clamp(0.35, 1.1);
+                            self.gore.burst(&mut self.scene, &mut self.phys, victim, &[gore::Part::Body, gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push_dir, chaos, now);
+                            self.blasts.gib_mist(now, v.pos + Vec3::Y * 0.2, 1.0 + chaos * 1.5);
+                            self.fx.burst(&mut self.scene, v.pos, push_dir + Vec3::Y * 0.5, &Burst { mesh: m.blood, count: 28, spread: 1.8, speed: [3.0, 10.0], ..Burst::drops() });
+                            self.blood_splats(world, v.pos, (6.0 + chaos * 8.0) as usize, 1.6 + chaos * 1.4);
+                        }
+                        growing_guns::Gib::Head => {
+                            self.gore.burst(&mut self.scene, &mut self.phys, victim, &[gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push_dir, 0.5, now);
+                            self.blasts.gib_mist(now, v.pos + Vec3::Y * 0.6, 0.8);
+                            self.fx.burst(&mut self.scene, v.pos + Vec3::Y * 0.55, push_dir + Vec3::Y * 0.4, &Burst { mesh: m.blood, count: 20, spread: 1.4, speed: [2.0, 8.0], ..Burst::drops() });
+                            self.ragdoll(victim, v, push_dir, false);
+                            self.blood_splats(world, v.pos, 3, 1.2);
+                        }
+                        growing_guns::Gib::Ragdoll => {
+                            self.fx.burst(&mut self.scene, v.pos, Vec3::Y, &Burst { mesh: m.blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+                            self.ragdoll(victim, v, push_dir, true);
+                        }
                     }
                 }
                 Event::Picked { player, .. } => self.guns.rigs[player].grow_to(Stats::of(&world.players[player])),
@@ -343,7 +369,7 @@ impl Visuals {
                     let p = &world.players[player];
                     let (sy, cy) = p.yaw.sin_cos();
                     let right = Vec3::new(cy, 0.0, -sy);
-                    self.fx.burst_with(s, from + right * 0.35 - Vec3::Y * 0.25 + dir * 0.3, right + Vec3::Y * 0.6, p.vel, &Burst { mesh: m.casing, ..Burst::debris() });
+                    self.fx.burst_with(&mut self.scene, from + right * 0.35 - Vec3::Y * 0.25 + dir * 0.3, right + Vec3::Y * 0.6, p.vel, &Burst { mesh: m.casing, ..Burst::debris() });
                 }
                 _ => {}
             }
@@ -353,8 +379,10 @@ impl Visuals {
         let s = &mut self.scene;
         self.guns.tick(world, growing_guns::DT);
         self.phys.step();
+        self.gore.update(&mut self.scene, &mut self.phys, world.tick as f32 * growing_guns::DT);
+        let s = &mut self.scene;
         for r in &self.ragdolls {
-            for (body, slot, mesh, scale) in [(r.torso, r.slots[0], r.meshes[0], Vec3::new(0.42, 0.5, 0.42)), (r.head, r.slots[1], r.meshes[1], Vec3::splat(0.3))] {
+            for &(body, slot, mesh, scale) in &r.parts {
                 if let Some((pos, rot)) = self.phys.pose(body) {
                     self.corpses.set(s, slot, mesh, Affine3A::from_scale_rotation_translation(scale, rot, pos));
                 }
@@ -524,6 +552,42 @@ impl Visuals {
         }
     }
 
+    /// A corpse that tumbles: torso, and the head unless it burst. Pushed
+    /// away from the killing blow.
+    fn ragdoll(&mut self, victim: usize, v: &growing_guns::Player, dir: Vec3, with_head: bool) {
+        let push = dir.with_y(0.0).normalize_or_zero() * 5.0 + Vec3::Y * 2.0;
+        let rot = Quat::from_rotation_y(v.yaw);
+        let pm = &self.players[victim];
+        let (b, h) = (pm.body, pm.head);
+        let torso = self.phys.add(&BodyDesc { rot, vel: v.vel + push, density: 300.0, ..BodyDesc::new(Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25) });
+        let Some(ts) = self.corpses.add(&mut self.scene, b, Affine3A::from_translation(v.pos)) else { self.phys.remove(torso); return };
+        let mut parts = vec![(torso, ts, b, Vec3::new(0.42, 0.5, 0.42))];
+        if with_head {
+            let head = self.phys.add(&BodyDesc { rot, vel: v.vel + push * 1.4, density: 300.0, ..BodyDesc::new(Shape::Sphere(0.28), v.pos + Vec3::Y * 0.55) });
+            self.phys.ball_joint(torso, head, Vec3::Y * 0.52, Vec3::Y * -0.28);
+            match self.corpses.add(&mut self.scene, h, Affine3A::from_translation(v.pos)) {
+                Some(hs) => parts.push((head, hs, h, Vec3::splat(0.3))),
+                None => self.phys.remove(head),
+            }
+        }
+        self.ragdolls.push(Ragdoll { torso, parts });
+    }
+
+    /// Blood splats on the ground around a burst body (Godot
+    /// `spawn_overkill_blood_splats_after_destruction`).
+    fn blood_splats(&mut self, world: &World, at: Vec3, n: usize, reach: f32) {
+        for k in 0..n {
+            let a = k as f32 * 2.399 + at.x * 1.7 + world.tick as f32 * 0.37;
+            let r = reach * ((k as f32 + 0.5) / n as f32).sqrt();
+            let from = at + Vec3::new(a.cos() * r, 0.6, a.sin() * r);
+            let Some((t, normal, c)) = growing_guns::shape::raycast(&world.arena.grid, from, Vec3::NEG_Y, 6.0) else { continue };
+            let size = 0.25 + 0.35 * (1.0 - r / reach.max(0.01));
+            let rot = Quat::from_rotation_arc(Vec3::Y, normal) * Quat::from_rotation_y(a * 3.1);
+            let xf = Affine3A::from_scale_rotation_translation(Vec3::new(size, 0.02, size * 0.8), rot, from + Vec3::NEG_Y * t);
+            self.marks.place_with(&mut self.scene, self.marks.blood, xf, c as u32);
+        }
+    }
+
     /// Ragdoll torso positions (for state dumps).
     pub fn ragdolls(&self) -> Vec<[f32; 3]> {
         self.ragdolls.iter().filter_map(|r| self.phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect()
@@ -680,15 +744,17 @@ fn apply_punch(world: &World, i: usize, mut cam: Camera, punch: &[(Vec3, glam::V
 }
 
 impl Marks {
-    fn place(&mut self, scene: &mut Scene, xf: Affine3A, chunk: u32) {
+    fn place(&mut self, scene: &mut Scene, xf: Affine3A, chunk: u32) { self.place_with(scene, self.mesh, xf, chunk) }
+
+    fn place_with(&mut self, scene: &mut Scene, mesh: usize, xf: Affine3A, chunk: u32) {
         if self.ring.len() < self.slots.capacity() {
-            if let Some(id) = self.slots.add(scene, self.mesh, xf) { self.ring.push((id, chunk)); }
+            if let Some(id) = self.slots.add(scene, mesh, xf) { self.ring.push((id, chunk)); }
             return;
         }
         let k = self.next % self.ring.len();
         self.next += 1;
         let id = self.ring[k].0;
-        if self.slots.is_used(id) { self.slots.set(scene, id, self.mesh, xf); } else if let Some(n) = self.slots.add(scene, self.mesh, xf) { self.ring[k].0 = n; }
+        if self.slots.is_used(id) { self.slots.set(scene, id, mesh, xf); } else if let Some(n) = self.slots.add(scene, mesh, xf) { self.ring[k].0 = n; }
         self.ring[k].1 = chunk;
     }
 
