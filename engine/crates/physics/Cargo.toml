@@ -1,0 +1,11 @@
+[package]
+name = "physics"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Rigid bodies for games (Rapier): static boxes, dynamic boxes, spheres and capsules, impulses, blasts, rays"
+
+[dependencies]
+rapier3d.workspace = true
+glam = "0.31"
+kern.workspace = true
