@@ -176,7 +176,7 @@ impl Visuals {
         };
         // Lava: a glowing sheet under the floor, visible through holes and
         // past the edge of open arenas.
-        let lava_m = glow(&mut scene, [1.0, 0.28, 0.04], 2600.0);
+        let lava_m = scene.add_material(Material { tint: [1.0; 3], layer: -1, roughness: 1.0, flags: render::scene::LAVA, scale: 12000.0, metal: 0.0 });
         let lava = cube(&mut scene, lava_m);
         scene.add_instance(lava, Affine3A::from_scale_rotation_translation(Vec3::new(900.0, 0.2, 900.0), Quat::IDENTITY, Vec3::new(0.0, -2.3, 0.0)));
         scene.mark_no_shadow();
@@ -767,16 +767,22 @@ impl Marks {
 
 fn wear_level(w: f32) -> u8 { if w <= 0.08 { 0 } else if w < 0.5 { 1 } else { 2 } }
 
+/// Godot's rock_surface on a brick: procedural pits, cracks and moss;
+/// `damage` 0..1 brings out more and darker cracks.
+fn rock(scene: &mut Scene, tint: [f32; 3], rough: f32, damage: f32) -> u32 {
+    scene.add_material(Material { tint: srgb_to_linear(tint), layer: -1, roughness: rough, flags: render::scene::ROCK, scale: damage, metal: 0.0 })
+}
+
 fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
     // Per-brick brightness variation (Godot's INSTANCE_CUSTOM) as four tints.
     let intact = [0.88, 0.96, 1.04, 1.12].map(|k| {
-        let m = material(scene, tint.map(|c| (c * k).min(1.0)), rough);
+        let m = rock(scene, tint.map(|c| (c * k).min(1.0)), rough, 0.0);
         scene.add_mesh(&primitives::hewn_block(m, 3, 0.09, 0.0, 0).mesh())
     });
     let dark = |k: f32| tint.map(|c| c * k);
-    let cm = material(scene, dark(0.8), rough);
+    let cm = rock(scene, dark(0.9), rough, 0.5);
     let cracked = scene.add_mesh(&primitives::hewn_block(cm, 4, 0.11, 0.07, 1).mesh());
-    let km = material(scene, dark(0.62), rough);
+    let km = rock(scene, dark(0.8), rough, 1.0);
     let crumbling = scene.add_mesh(&primitives::hewn_block(km, 4, 0.14, 0.16, 2).mesh());
     let chm = material(scene, dark(0.9), rough);
     let chip = scene.add_mesh(&primitives::hewn_block(chm, 1, 0.12, 0.2, 3).mesh());

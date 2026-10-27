@@ -27,6 +27,13 @@ pub const THIN_FOLIAGE: u32 = 512;
 /// Self-lit surface (lava, lamps, tracers): adds `tint * scale` nits of
 /// radiance. Use with `layer: -1`; `scale` is then the emission, not a repeat.
 pub const EMISSIVE: u32 = 1024;
+/// Procedural rock (Growing Guns' rock_surface): world-space pits, cracks
+/// and moss on a block's faces, tinted by `tint`; `scale` 0..1 is damage
+/// (more and darker cracks). Meant for unit-cube blocks (hewn bricks).
+pub const ROCK: u32 = 2048;
+/// Procedural flowing lava (Growing Guns' lava_flow), unlit; `scale` is the
+/// radiance in nits of a white pixel. Follows `Lighting::time`.
+pub const LAVA: u32 = 4096;
 
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
