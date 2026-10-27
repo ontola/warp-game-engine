@@ -7,7 +7,7 @@
 //! Not ported in this slice: the all-floor-lava island layout, bridges,
 //! tunnels, diagonal walls, decorations, colosseum and destruction.
 use crate::rng::Rng;
-use crate::shape::{Block, Kind};
+use crate::shape::{Block, Kind, YawBox};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{PI, TAU};
@@ -31,6 +31,8 @@ pub struct Arena {
     pub size: f32,
     pub variant: Variant,
     pub blocks: Vec<Block>,
+    /// Collision shapes of `blocks`, same order (call `reshape` after edits).
+    pub shapes: Vec<YawBox>,
     pub spawns: Vec<Vec3>,
     /// Roof/beacon light positions and colours (Godot omni lights).
     pub lights: Vec<(Vec3, [f32; 3])>,
@@ -65,7 +67,7 @@ impl Arena {
         // Godot: 18% island lava (not ported: becomes walled), 24% open, 16% hole.
         let variant = if (0.18..0.42).contains(&roll) { Variant::Open }
             else if (0.42..0.58).contains(&roll) { Variant::Hole } else { Variant::Walled };
-        let mut a = Arena { seed, size, variant, blocks: Vec::new(), spawns: Vec::new(), lights: Vec::new(), hole: None };
+        let mut a = Arena { seed, size, variant, blocks: Vec::new(), shapes: Vec::new(), spawns: Vec::new(), lights: Vec::new(), hole: None };
         let mut placer = Placer { placed: Vec::new() };
         let half = size * 0.5;
         if variant == Variant::Hole {
@@ -181,6 +183,7 @@ impl Arena {
         for (x, z) in [(-c, -c), (c, c), (-c, c), (c, -c)] {
             a.spawns.push(Vec3::new(x, 1.0, z));
         }
+        a.reshape();
         if let Some((hc, side)) = a.hole {
             a.spawns.retain(|s| (s.x - hc.x).abs() > side * 0.5 + 1.0 || (s.z - hc.y).abs() > side * 0.5 + 1.0);
         }
@@ -252,6 +255,9 @@ impl Arena {
     fn platform(&mut self, pos: Vec3) {
         self.blocks.push(Block::new(pos, Vec3::new(5.0, 0.6, 5.0), 0.0, Kind::Platform));
     }
+
+    /// Rebuild `shapes` from `blocks`.
+    pub fn reshape(&mut self) { self.shapes = self.blocks.iter().map(Block::shape).collect(); }
 
     /// Fell into the lava below the floor (hole or open arena edge).
     pub fn in_lava(&self, p: Vec3) -> bool { p.y < LAVA_KILL_Y }

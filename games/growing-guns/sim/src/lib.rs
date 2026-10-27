@@ -32,6 +32,7 @@ pub const MAX_FALL: f32 = 60.0;
 
 pub const RADIUS: f32 = 0.4;
 pub const HALF_HEIGHT: f32 = 0.9;
+const MOVER: kern::collide::Mover = kern::collide::Mover { radius: RADIUS, half_height: HALF_HEIGHT };
 /// Camera height above the capsule centre.
 pub const EYE: f32 = 0.62;
 pub const MAX_HEALTH: i32 = 100;
@@ -217,7 +218,7 @@ impl World {
 
     fn move_player(&mut self, i: usize, input: Input) {
         let mut ev = Vec::new();
-        let blocks = &self.arena.blocks;
+        let shapes = &self.arena.shapes;
         let p = &mut self.players[i];
         p.yaw += input.look[0];
         p.pitch = (p.pitch + input.look[1]).clamp(-1.5, 1.5);
@@ -281,37 +282,10 @@ impl World {
         }
         if p.dash_timer <= 0.0 { p.vel.y = (p.vel.y - GRAVITY * DT).max(-MAX_FALL); }
 
-        // Move in sub-steps short enough that no thin block is skipped.
-        let travel = p.vel * DT;
-        let steps = (travel.length() / 0.25).ceil().max(1.0) as usize;
-        p.on_floor = false;
-        p.wall_normal = None;
-        for _ in 0..steps {
-            p.pos += travel / steps as f32;
-            for _ in 0..4 {
-                let mut any = false;
-                for b in blocks {
-                    // Cheap reject on the bounding circle.
-                    let reach = b.half.x.max(b.half.z) * 1.4143 + RADIUS;
-                    if (p.pos.x - b.center.x).abs() > reach || (p.pos.z - b.center.z).abs() > reach { continue; }
-                    let Some(push) = b.push_out(p.pos, RADIUS, HALF_HEIGHT) else { continue };
-                    any = true;
-                    p.pos += push;
-                    if push.y > 0.0 {
-                        p.on_floor = true;
-                        p.vel.y = p.vel.y.max(0.0);
-                    } else if push.y < 0.0 {
-                        p.vel.y = p.vel.y.min(0.0);
-                    } else {
-                        let n = push.normalize();
-                        let into = p.vel.dot(n);
-                        if into < 0.0 { p.vel -= n * into; }
-                        p.wall_normal = Some(n);
-                    }
-                }
-                if !any { break; }
-            }
-        }
+        // Sub-steps short enough that no thin block is skipped.
+        let contact = MOVER.slide(shapes, &mut p.pos, &mut p.vel, DT, 0.25);
+        p.on_floor = contact.on_floor;
+        p.wall_normal = contact.wall_normal;
         if p.on_floor { p.wall_normal = None; p.jumps_left = p.jumps_left.max(1); }
         self.events.extend(ev);
     }
@@ -349,7 +323,7 @@ impl World {
         bullets.retain_mut(|b| {
             let len = BULLET_SPEED * DT;
             let dir = b.vel / BULLET_SPEED;
-            let wall = shape::raycast(&self.arena.blocks, b.pos, dir, len);
+            let wall = shape::raycast(&self.arena.shapes, b.pos, dir, len);
             let mut best = wall.map(|(t, _, _)| t).unwrap_or(len);
             let mut target = None;
             for (j, p) in self.players.iter().enumerate() {
@@ -458,6 +432,20 @@ impl World {
     }
 }
 
+/// Bots-only stepping for the engine's tools (`kern::run`, `Trace`,
+/// `first_divergence`). Query paths address the snapshot JSON, e.g.
+/// `players.0.health`, `players.2.pos.1`, `round`, `bullets`.
+impl kern::Sim for World {
+    fn step(&mut self, timings: &mut kern::Timings) { timings.span("world", || World::step(self, &[])); }
+    fn tick(&self) -> u64 { self.tick }
+    fn digest(&self, d: &mut kern::Digest) { d.u64(World::digest(self)); }
+    fn query(&self, path: &str) -> Option<serde_json::Value> {
+        let v = serde_json::to_value(self.snapshot()).ok()?;
+        let parts: Vec<&str> = path.split('.').collect();
+        kern::walk(&v, &parts).cloned()
+    }
+}
+
 fn move_toward(from: f32, to: f32, delta: f32) -> f32 {
     if (to - from).abs() <= delta { to } else { from + (to - from).signum() * delta }
 }
@@ -470,6 +458,7 @@ mod tests {
     fn flat_world() -> World {
         let mut w = World::new(1, &[false, false]);
         w.arena.blocks = vec![Block::new(Vec3::new(0.0, -1.5, 0.0), Vec3::new(100.0, 3.0, 100.0), 0.0, Kind::Floor)];
+        w.arena.reshape();
         w.players[0].pos = Vec3::new(0.0, HALF_HEIGHT, 0.0);
         w.players[1].pos = Vec3::new(0.0, HALF_HEIGHT, -20.0);
         w.players[0].yaw = 0.0;
@@ -524,6 +513,7 @@ mod tests {
     fn wall_blocks_and_wall_jump_pushes_away() {
         let mut w = flat_world();
         w.arena.blocks.push(Block::new(Vec3::new(0.0, 5.0, -3.0), Vec3::new(10.0, 10.0, 1.0), 0.0, Kind::Wall));
+        w.arena.reshape();
         let fwd = Input { mv: [0.0, 1.0], ..Default::default() };
         for _ in 0..40 { w.step(&[fwd, Input::default()]); }
         assert!(w.players[0].pos.z > -3.0 + 0.5 + RADIUS - 0.01, "{}", w.players[0].pos);

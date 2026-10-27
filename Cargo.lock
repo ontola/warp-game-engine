@@ -1655,6 +1655,7 @@ name = "growing-guns"
 version = "0.1.0"
 dependencies = [
  "glam 0.31.1",
+ "kern",
  "serde",
  "serde_json",
 ]
@@ -1668,6 +1669,7 @@ dependencies = [
  "growing-guns",
  "image",
  "iroh",
+ "kern",
  "postcard",
  "render",
  "serde",
@@ -2424,6 +2426,7 @@ dependencies = [
 name = "kern"
 version = "0.1.0"
 dependencies = [
+ "glam 0.31.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
