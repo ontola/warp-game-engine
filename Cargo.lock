@@ -1674,6 +1674,7 @@ dependencies = [
  "image",
  "iroh",
  "kern",
+ "physics",
  "postcard",
  "render",
  "serde",

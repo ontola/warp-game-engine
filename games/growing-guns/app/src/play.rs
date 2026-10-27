@@ -134,7 +134,7 @@ impl app::Game for Gg {
         Some(serde_json::json!({
             "tick": w.tick, "round": w.round, "intermission": w.intermission,
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len() },
-            "players": players, "bullets": w.bullets.len(), "events": w.events,
+            "players": players, "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(),
         }).to_string())
     }
 }
