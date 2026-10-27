@@ -2257,6 +2257,10 @@ impl Renderer {
     pub fn meadow_source_fixture_layers(&self) -> Vec<wgpu::Texture> {
         self.meadow.as_ref().map(|m|m.source_fixture_layers()).unwrap_or_default()
     }
+    /// Explicit capture-only raw aggregate layers, before scene composition or DLSS.
+    pub fn meadow_aggregate_raw(&self, gpu: &Gpu) -> Result<Vec<crate::meadow::MeadowAggregateRaw>, String> {
+        self.meadow.as_ref().map_or_else(|| Ok(Vec::new()), |m| m.aggregate_raw(gpu))
+    }
 
     /// Explicit offline validation readback; normal frame rendering never waits.
     pub fn voxel_diagnostics(&self, gpu: &Gpu) -> Result<Option<Vec<crate::voxel_forest::VoxelViewDiagnostics>>,String> {

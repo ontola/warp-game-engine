@@ -172,6 +172,7 @@ fn meadow_capture_metadata(renderer: &Renderer, gpu: &Gpu, scene: &render::Scene
         // Keep this expanding diagnostics object below serde_json's macro
         // recursion limit without increasing it for the entire application.
         value["aggregate_half_resolution"] = s.aggregate_half_resolution.into();
+        value["aggregate_sample_prune_enabled"] = s.aggregate_sample_prune_enabled.into();
         value["aggregate_target_size"] = serde_json::json!(s.aggregate_target_size);
         value["aggregate_resolution_scale"] = serde_json::json!(s.aggregate_resolution_scale);
         value["aggregate_resolution_scope"] = "Aggregate raster and illumination target relative to the per-view internal DLSS input; source grass, world roots, draw range and output resolution are unchanged. Reduced resolution is an opt-in optical approximation.".into();
@@ -1368,7 +1369,7 @@ impl App {
             let scenario=self.scenario.as_ref().unwrap();let frame=scenario.config.frame(self.rendered-1).unwrap();
             let render_diagnostic=render_diagnostic::capture(&g.renderer,&g.gpu,&self.built.scene,views.len(),self.rendered)?;
             meadow_capture=Some(meadow_capture_metadata(&g.renderer,&g.gpu,&self.built.scene)?);
-            let metadata=serde_json::json!({"scenario":scenario.config.metadata(),"frame_id":self.rendered,"section":frame.section.name,
+            let mut metadata=serde_json::json!({"scenario":scenario.config.metadata(),"frame_id":self.rendered,"section":frame.section.name,
                 "engine_debug":self.debug.metadata(),
                 "render_lighting":lighting_metadata(&render_light),
                 "static_sun":capture_stats.as_ref().map(static_sun_metadata),
@@ -1383,6 +1384,9 @@ impl App {
                 "local_lights":local_lights_metadata(&local_lights,vehicle_local_light_count),
                 "sun_direction":render_light.sun_dir.to_array(),"sun_lux":render_light.sun_lux,"sky_lux":render_light.sky_lux,"ev100":render_light.ev100,
                 "scope":"Actual frame captured from the shared scenario renderer; capture readback is synchronous and excluded from steady-frame summaries."});
+            if std::env::var("KERN_MEADOW_CAPTURE_RAW").as_deref()==Ok("1") {
+                metadata["meadow_raw"] = render_diagnostic::capture_meadow_raw(&g.renderer,&g.gpu,&path,self.rendered)?;
+            }
             std::fs::write(path.with_extension("json"),serde_json::to_vec_pretty(&metadata).unwrap()).map_err(|e|format!("scenario capture metadata: {e}"))?;
             frame_profile::section(trace,"unattributed");
         }
