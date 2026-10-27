@@ -118,7 +118,7 @@ fn main() -> Result<(), String> {
     if let Some(script) = arg("--script") {
         let gpu = render::Gpu::new()?;
         let out = arg("--out").unwrap_or_else(|| "hello-out".into());
-        let failed = app::script::run_file(&mut game, &gpu, TICK_HZ, script.as_ref(), out.as_ref())?;
+        let failed = app::script::run_file(&mut game, &gpu, TICK_HZ, script.as_ref(), out.as_ref(), None)?;
         std::process::exit(i32::from(failed > 0));
     }
     app::run(app::Config { title: "Hello Warp".into(), tick_hz: TICK_HZ, ..Default::default() }, &mut game)

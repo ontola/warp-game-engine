@@ -7,6 +7,7 @@
 //! released), F11 toggles fullscreen, F12 saves `screenshot-N.png`.
 pub mod input;
 pub mod script;
+pub mod sound;
 
 pub use input::{Buttons, Controls, Devices, Tuning};
 use render::hud::{HudDrawList, HudRenderer};
@@ -112,6 +113,9 @@ pub struct Headless<'g> {
     pub gpu: &'g Gpu,
     pub size: [u32; 2],
     pub tick_hz: f32,
+    /// Offline sound: scripts mix one tick of audio per tick into `recorded`.
+    pub audio: Option<audio::sfx::SfxMixer>,
+    pub recorded: Vec<f32>,
     renderer: Option<Renderer>,
     out: Output,
     target: wgpu::Texture,
@@ -120,7 +124,7 @@ pub struct Headless<'g> {
 impl<'g> Headless<'g> {
     pub fn new(gpu: &'g Gpu, size: [u32; 2], tick_hz: f32) -> Result<Self, String> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        Ok(Self { gpu, size, tick_hz, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format) })
+        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format) })
     }
     /// Draw one frame and read it back as RGBA8.
     pub fn frame(&mut self, game: &mut dyn Game) -> Result<Vec<u8>, String> {

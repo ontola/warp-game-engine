@@ -20,7 +20,8 @@
 //! JSON pointer (RFC 6901) from the game's state and compares it with
 //! `equals`, or checks it within `min`/`max`; a failed expectation fails the
 //! run. A `capture` with `compare` checks the frame against a reference PNG
-//! (written on first run). Every step prints one JSON line to stdout.
+//! (written on first run). `audio` writes the sound since the previous
+//! audio step as a WAV with its peak and RMS. Every step prints one JSON line.
 use crate::{Buttons, Controls, Game, Headless};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -57,6 +58,9 @@ pub struct Step {
     /// against; fails when the mean absolute difference per channel (0..255)
     /// exceeds `tolerance` (default 1.0). A missing reference is written.
     pub compare: Option<String>,
+    /// Write the sound mixed since the previous `audio` step (needs
+    /// `Headless::audio`) as a WAV and report its peak and RMS.
+    pub audio: Option<String>,
     pub tolerance: Option<f64>,
     /// Free text shown in the log line.
     pub note: Option<String>,
@@ -116,6 +120,12 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
             }
             game.tick(&c);
             tick += 1;
+            if let Some(mix) = &mut headless.audio {
+                let n = (audio::SAMPLE_RATE / headless.tick_hz).round() as usize * 2;
+                let start = headless.recorded.len();
+                headless.recorded.resize(start + n, 0.0);
+                mix.render_add(&mut headless.recorded[start..], 2);
+            }
         }
         let mut line = json!({ "step": i, "tick": tick });
         if let Some(n) = &step.note { line["note"] = json!(n); }
@@ -148,6 +158,15 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
             let text = game.state().ok_or("this game exposes no state")?;
             serde_json::from_str(&text).map_err(|e| format!("game state is not JSON: {e}"))
         };
+        if let Some(name) = &step.audio {
+            let path = out.join(name);
+            let samples = std::mem::take(&mut headless.recorded);
+            audio::analysis::write_wav(&path, audio::SAMPLE_RATE as u32, 2, &samples).map_err(|e| e.to_string())?;
+            let peak = samples.iter().fold(0f32, |m, s| m.max(s.abs()));
+            let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt();
+            line["audio"] = json!({ "path": path.display().to_string(), "seconds": samples.len() as f32 / 2.0 / audio::SAMPLE_RATE, "peak": peak, "rms": rms,
+                "enabled": headless.audio.is_some() });
+        }
         if let Some(name) = &step.state {
             let path = out.join(name);
             std::fs::write(&path, serde_json::to_string_pretty(&state()?).unwrap()).map_err(|e| e.to_string())?;
@@ -171,10 +190,13 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
 }
 
 /// Load a script from a file and run it.
-pub fn run_file(game: &mut dyn Game, gpu: &render::Gpu, tick_hz: f32, file: &Path, out: &Path) -> Result<usize, String> {
+/// `audio`: an offline mixer whose sender the game holds; scripts can then
+/// record and check its sound.
+pub fn run_file(game: &mut dyn Game, gpu: &render::Gpu, tick_hz: f32, file: &Path, out: &Path, audio: Option<audio::sfx::SfxMixer>) -> Result<usize, String> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let script: Script = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
     let mut headless = Headless::new(gpu, script.size, tick_hz)?;
+    headless.audio = audio;
     run(game, &mut headless, &script, out, file.parent().unwrap_or(Path::new(".")))
 }
 
