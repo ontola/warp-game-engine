@@ -6,7 +6,8 @@ use growing_guns::shape::Kind;
 use growing_guns::{Event, World, EYE};
 use render::primitives;
 use render::particles::{Burst, Particles};
-use render::slots::Slots;
+use render::slots::{SlotId, Slots};
+use physics::{Body, BodyDesc, Physics, Shape};
 use render::headlights::LocalLight;
 use render::scene::{GpuInstance, Material, EMISSIVE};
 use render::{Camera, Lighting, Scene};
@@ -54,11 +55,16 @@ pub struct Visuals {
     tracer: usize,
     fx: Particles,
     fxm: FxMeshes,
+    corpses: Slots,
+    phys: Physics,
+    ragdolls: Vec<Ragdoll>,
     flashes: Vec<(Vec3, f32)>,
     lights: Vec<LocalLight>,
     arena: Slots,
     kinds: KindMeshes,
 }
+
+struct Ragdoll { torso: Body, head: Body, slots: [SlotId; 2], meshes: [usize; 2] }
 
 #[derive(Clone, Copy)]
 struct FxMeshes { spark: usize, dust: usize, blood: usize, casing: usize }
@@ -101,6 +107,9 @@ impl Visuals {
             casing: { let m = scene.add_material(Material { tint: [0.75, 0.55, 0.2], layer: -1, roughness: 0.35, flags: 0, scale: 1.0, metal: 1.0 }); cube(&mut scene, m) },
         };
         let fx = Particles::reserve(&mut scene, 768, world.arena.seed | 1);
+        // Ragdolls: two jointed bodies per corpse, drawn with the player's meshes.
+        let corpses = Slots::reserve(&mut scene, 32);
+        let phys = Physics::new(Vec3::new(0.0, -20.0, 0.0), growing_guns::TICK_HZ as f32);
 
         let first_dynamic = scene.instances.len();
         let eye_m = material(&mut scene, [0.05, 0.05, 0.06], 0.3);
@@ -119,7 +128,8 @@ impl Visuals {
         let tracer = cube(&mut scene, tracer_m);
         for _ in 0..TRACERS { scene.add_instance(tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
 
-        let mut v = Visuals { scene, first_dynamic, players, tracer, fx, fxm, flashes: Vec::new(), lights: Vec::new(), arena, kinds };
+        let mut v = Visuals { scene, first_dynamic, players, tracer, fx, fxm, flashes: Vec::new(), lights: Vec::new(), arena, kinds,
+            corpses, phys, ragdolls: Vec::new() };
         v.set_arena(world);
         v
     }
@@ -128,6 +138,10 @@ impl Visuals {
     /// Call `flush` afterwards to upload; the renderer stays.
     pub fn set_arena(&mut self, world: &World) {
         self.arena.clear(&mut self.scene);
+        self.corpses.clear(&mut self.scene);
+        self.ragdolls.clear();
+        self.phys.clear_bodies();
+        self.phys.set_statics(&world.arena.shapes);
         let k = &self.kinds;
         for b in &world.arena.blocks {
             let m = match b.kind {
@@ -152,6 +166,7 @@ impl Visuals {
     /// Upload changed arena slots and particles.
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
         self.arena.flush(gpu, renderer, &self.scene)?;
+        self.corpses.flush(gpu, renderer, &self.scene)?;
         self.fx.flush(gpu, renderer, &self.scene)
     }
 
@@ -169,9 +184,22 @@ impl Visuals {
                     let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
                     self.fx.burst(s, pos, dir + Vec3::Y * 0.3, &Burst { mesh: m.blood, count: if head { 22 } else { 12 }, ..Burst::drops() });
                 }
-                Event::Kill { victim, .. } => {
-                    let p = world.players[victim].pos;
-                    self.fx.burst(s, p, Vec3::Y, &Burst { mesh: m.blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+                Event::Kill { victim, attacker } => {
+                    let v = &world.players[victim];
+                    self.fx.burst(s, v.pos, Vec3::Y, &Burst { mesh: m.blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+                    // Shot dead: pushed away from the shooter. Lava: no body.
+                    if let Some(a) = attacker {
+                        let push = (v.pos - world.players[a].pos).with_y(0.0).normalize_or_zero() * 5.0 + Vec3::Y * 2.0;
+                        let rot = Quat::from_rotation_y(v.yaw);
+                        let torso = self.phys.add(&BodyDesc { rot, vel: v.vel + push, density: 300.0, ..BodyDesc::new(Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25) });
+                        let head = self.phys.add(&BodyDesc { rot, vel: v.vel + push * 1.4, density: 300.0, ..BodyDesc::new(Shape::Sphere(0.28), v.pos + Vec3::Y * 0.55) });
+                        self.phys.ball_joint(torso, head, Vec3::Y * 0.52, Vec3::Y * -0.28);
+                        let pm = &self.players[victim];
+                        let (b, h) = (pm.body, pm.head);
+                        let ts = self.corpses.add(s, b, Affine3A::from_translation(v.pos));
+                        let hs = self.corpses.add(s, h, Affine3A::from_translation(v.pos));
+                        if let (Some(ts), Some(hs)) = (ts, hs) { self.ragdolls.push(Ragdoll { torso, head, slots: [ts, hs], meshes: [b, h] }); }
+                    }
                 }
                 Event::Shot { player, from, dir } => {
                     self.flashes.push((from + dir * 0.8, 0.06));
@@ -181,6 +209,14 @@ impl Visuals {
                     self.fx.burst_with(s, from + right * 0.35 - Vec3::Y * 0.25 + dir * 0.3, right + Vec3::Y * 0.6, p.vel, &Burst { mesh: m.casing, ..Burst::debris() });
                 }
                 _ => {}
+            }
+        }
+        self.phys.step();
+        for r in &self.ragdolls {
+            for (body, slot, mesh, scale) in [(r.torso, r.slots[0], r.meshes[0], Vec3::new(0.42, 0.5, 0.42)), (r.head, r.slots[1], r.meshes[1], Vec3::splat(0.3))] {
+                if let Some((pos, rot)) = self.phys.pose(body) {
+                    self.corpses.set(s, slot, mesh, Affine3A::from_scale_rotation_translation(scale, rot, pos));
+                }
             }
         }
         let shapes = &world.arena.shapes;
@@ -232,6 +268,11 @@ impl Visuals {
         for (k, &s) in slots.iter().enumerate().take(8) {
             for part in 0..4 { self.scene.instances[self.first_dynamic + s * 4 + part].hide_in_views(1 << k); }
         }
+    }
+
+    /// Ragdoll torso positions (for state dumps).
+    pub fn ragdolls(&self) -> Vec<[f32; 3]> {
+        self.ragdolls.iter().filter_map(|r| self.phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect()
     }
 
     pub fn dynamic(&self) -> &[GpuInstance] { &self.scene.instances[self.first_dynamic..] }

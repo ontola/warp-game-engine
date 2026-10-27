@@ -1,0 +1,8 @@
+{ "size": [480, 270],
+  "steps": [
+    { "ticks": 480, "note": "bots fight; seed 2 has three deaths by now" },
+    { "expect": "/ragdolls/0/1", "min": -0.5, "max": 15 },
+    { "ticks": 120, "note": "two more seconds: bodies settle, none falls through" },
+    { "expect": "/ragdolls/0/1", "min": -0.5, "max": 15 },
+    { "state": "ragdolls.json", "capture": "ragdolls.png" }
+  ] }
