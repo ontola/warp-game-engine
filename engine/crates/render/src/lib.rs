@@ -14,6 +14,7 @@ pub mod bloom;
 pub mod debug_ui;
 pub mod debug_timing;
 pub mod cpu_time;
+pub mod cpu_spans;
 pub mod gpu;
 pub mod gpu_profile;
 pub mod geometry_diagnostics;

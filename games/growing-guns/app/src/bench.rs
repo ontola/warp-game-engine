@@ -88,6 +88,10 @@ pub fn run(args: &Args) -> Result<(), String> {
             renderer.drain_gpu_profiles(&gpu);
         }
     }
+    if let Some((spans, n)) = renderer.cpu_spans() {
+        let total: f64 = spans.iter().map(|s| s.1).sum();
+        println!("cpu spans ms per frame ({n} frames, total {total:.2}): {}", spans.iter().map(|(k, v)| format!("{k} {v:.3}")).collect::<Vec<_>>().join(", "));
+    }
     println!("GPU {} | {w}x{h}, {views} views, {} instances, light {}", gpu.info.name, vis.scene.instances.len(), args.value("--light").unwrap_or("full"));
     println!("startup ms: device {t_gpu:.0}, scene {t_scene:.1}, renderer {t_renderer:.0}, first frame {t_first:.0}");
     println!("frame ms (median / p95): cpu submit {:.2} / {:.2}, wall {:.2} / {:.2}, gpu {:.2} / {:.2}",
