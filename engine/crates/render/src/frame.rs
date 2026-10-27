@@ -2210,6 +2210,21 @@ impl Renderer {
         self.try_render_texture(gpu, views, light, out_w, out_h).expect("render texture")
     }
 
+    /// An output texture for `try_render_into`, made once per size.
+    pub fn output_texture(gpu: &Gpu, out_w: u32, out_h: u32) -> wgpu::Texture {
+        gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("frame output"),
+            size: wgpu::Extent3d { width: out_w, height: out_h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] })
+    }
+
+    /// Like `try_render_texture`, but into the caller's texture (from
+    /// `output_texture`), so a game loop allocates no output per frame.
+    /// The texture is overwritten; present or copy it before the next call.
+    pub fn try_render_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, target: &wgpu::Texture) -> Result<(), String> {
+        self.frame_output_into(gpu, views, light, target.width(), target.height(), &[], Readback::None, Some(target)).map(|_| ())
+    }
+
     pub fn try_render_texture(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32) -> Result<wgpu::Texture, String> {
         Ok(self.frame_output(gpu, views, light, out_w, out_h, &[], Readback::None)?.0)
     }
@@ -2431,6 +2446,11 @@ impl Renderer {
     }
 
     fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
+        self.frame_output_into(gpu, views, light, out_w, out_h, picks, readback, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn frame_output_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback, target: Option<&wgpu::Texture>) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
         // Serialize explicit diagnostic readbacks with writes to reused targets.
         // Errors before submission leave no stale frame advertised as current.
         let mut cpu = crate::cpu_spans::Spans::start(self.cpu_spans.as_ref());
@@ -2460,7 +2480,16 @@ impl Renderer {
             })
         };
         let rt = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
-        let ldr = tex2d("ldr", out_w, out_h, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING);
+        let ldr_usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
+        let ldr = match target {
+            Some(t) => {
+                if (t.width(), t.height()) != (out_w, out_h) || t.format() != wgpu::TextureFormat::Rgba8Unorm || !t.usage().contains(ldr_usage) {
+                    return Err("render target must be Rgba8Unorm at the output size with STORAGE_BINDING, COPY_SRC and TEXTURE_BINDING (Renderer::output_texture)".into());
+                }
+                t.clone()
+            }
+            None => tex2d("ldr", out_w, out_h, wgpu::TextureFormat::Rgba8Unorm, ldr_usage),
+        };
         let ldr_v = ldr.create_view(&Default::default());
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
@@ -2857,8 +2886,10 @@ impl Renderer {
                     (qs, timestamp_pair(&mut ts))
                 }))
             } else { [None, None] };
+            cpu.mark("view start");
             let canopy = canopies[vi].prepare(gpu, &mut enc, &self.scene_bind,
                 self.instances, &receivers, revision, canopy_times);
+            cpu.mark("view canopy");
             canopy_updated_levels.push(canopy.updated_levels);
             canopy_pitch_m.push(canopy.origins.map(|origin| origin[3]));
             let density_view = canopy.view;
@@ -2914,6 +2945,7 @@ impl Renderer {
                 }
             };
             let (vis_v, depth_v, hdr_v) = (vis.create_view(&Default::default()), depth.create_view(&Default::default()), hdr.create_view(&Default::default()));
+            cpu.mark("view lights and targets");
             // Reversed-Z infinite perspective.
             let view_m = Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
             let proj = Mat4::perspective_infinite_reverse_rh(cam.fov_y, view.w as f32 / view.h as f32, cam.near);
@@ -2957,6 +2989,7 @@ impl Renderer {
             main_uniform.fog_cull[3] = geometry_diagnostic.excluded_mask as f32;
             camera_sun_visibility.push(sun_visibility);
             gpu.queue.write_buffer(&main.uniform, 0, bytemuck::bytes_of(&main_uniform));
+            cpu.mark("view foliage and camera");
             // TAA history for this view (new, or reset when the size changes).
             let hist = &mut histories[vi];
             let fresh = !hist.as_ref().is_some_and(|hh| hh.size == (w, h));
