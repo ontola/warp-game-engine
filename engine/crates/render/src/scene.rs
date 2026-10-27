@@ -107,6 +107,11 @@ pub const WIND_GRASS: u32 = 16;
 /// A rigid vegetation part driven by the shared hierarchical GPU pose pass.
 pub const PART_WIND: u32 = 32;
 
+/// Bits 8..15: hidden from camera view 0..7 (still casts shadows and shows in
+/// other views). Set with [`GpuInstance::hide_in_views`].
+pub const HIDE_IN_VIEW_SHIFT: u32 = 8;
+pub const HIDE_IN_VIEW_MASK: u32 = 0xff << HIDE_IN_VIEW_SHIFT;
+
 /// Explicit source provenance for render diagnostics. These bits are in
 /// `GpuInstance::flags`, not material flags, and do not select rendering policy.
 pub const INSTANCE_CATEGORY_SHIFT: u32 = 24;
@@ -146,6 +151,12 @@ impl GpuInstance {
     }
 
     /// Changes diagnostic provenance only; wind, shadows and occlusion flags stay intact.
+    /// Hide this instance from the camera views in `mask` (bit i: view i),
+    /// e.g. a first-person player's own body. Shadows are unaffected.
+    pub fn hide_in_views(&mut self, mask: u8) {
+        self.flags = (self.flags & !HIDE_IN_VIEW_MASK) | (u32::from(mask) << HIDE_IN_VIEW_SHIFT);
+    }
+
     pub fn set_category(&mut self, category: GeometryCategory) {
         self.flags = (self.flags & !INSTANCE_CATEGORY_MASK) | ((category as u32) << INSTANCE_CATEGORY_SHIFT);
     }

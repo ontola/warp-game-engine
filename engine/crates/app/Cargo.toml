@@ -1,0 +1,19 @@
+[package]
+name = "app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Warp game shell: window, fixed tick, local player input, split-screen frames, headless capture"
+
+[dependencies]
+render = { path = "../render" }
+glam = "0.31"
+winit = "0.30"
+wgpu = "30"
+
+# Windows controllers are exposed through XInput; WGI can miss them.
+[target.'cfg(windows)'.dependencies]
+gilrs = { version = "0.11", default-features = false, features = ["xinput"] }
+
+[target.'cfg(not(windows))'.dependencies]
+gilrs = "0.11"

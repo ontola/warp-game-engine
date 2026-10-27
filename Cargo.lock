@@ -144,6 +144,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "gilrs",
+ "glam 0.31.1",
+ "render",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1650,7 +1661,7 @@ dependencies = [
 name = "growing-guns-app"
 version = "0.1.0"
 dependencies = [
- "gilrs",
+ "app",
  "glam 0.31.1",
  "growing-guns",
  "image",
@@ -1660,7 +1671,6 @@ dependencies = [
  "serde",
  "tokio",
  "wgpu",
- "winit",
 ]
 
 [[package]]

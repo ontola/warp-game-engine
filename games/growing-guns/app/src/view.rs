@@ -4,7 +4,7 @@
 use glam::{Affine3A, Quat, Vec3};
 use growing_guns::shape::Kind;
 use growing_guns::{Event, World, EYE};
-use render::cluster::{ClusterMesh, Part, Vertex};
+use render::primitives;
 use render::headlights::LocalLight;
 use render::scene::{GpuInstance, Material, EMISSIVE};
 use render::{Camera, Lighting, Scene};
@@ -32,60 +32,8 @@ pub const PLAYER_COLORS_U8: [[u8; 4]; 4] = [[255, 110, 80, 255], [110, 160, 255,
 
 fn srgb_to_linear(c: [f32; 3]) -> [f32; 3] { c.map(|v| v.powf(2.2)) }
 
-/// Mesh builders: outward normals, counter-clockwise around the normal.
-fn cube_part(material: u32) -> (Vec<Vertex>, Vec<u32>, u32) {
-    let mut v = Vec::new();
-    let mut i = Vec::new();
-    for n in [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z] {
-        let u = if n.y.abs() > 0.5 { Vec3::X } else { Vec3::Y };
-        let u = u.cross(n).normalize();
-        let w = n.cross(u);
-        let base = v.len() as u32;
-        for (a, b) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            let p = (n + u * a + w * b) * 0.5;
-            v.push(Vertex { pos: p.to_array(), normal: n.to_array(), uv: [(a + 1.0) * 0.5, (b + 1.0) * 0.5] });
-        }
-        i.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    fix_winding(&v, &mut i);
-    (v, i, material)
-}
-
-fn sphere_part(material: u32, rings: u32, segs: u32) -> (Vec<Vertex>, Vec<u32>, u32) {
-    let mut v = Vec::new();
-    let mut i = Vec::new();
-    for r in 0..=rings {
-        let th = std::f32::consts::PI * r as f32 / rings as f32;
-        for s in 0..=segs {
-            let ph = std::f32::consts::TAU * s as f32 / segs as f32;
-            let n = Vec3::new(th.sin() * ph.cos(), th.cos(), th.sin() * ph.sin());
-            v.push(Vertex { pos: n.to_array(), normal: n.to_array(), uv: [s as f32 / segs as f32, r as f32 / rings as f32] });
-        }
-    }
-    for r in 0..rings {
-        for s in 0..segs {
-            let a = r * (segs + 1) + s;
-            let b = a + segs + 1;
-            if r > 0 { i.extend([a, b, a + 1]); }
-            if r + 1 < rings { i.extend([a + 1, b, b + 1]); }
-        }
-    }
-    fix_winding(&v, &mut i);
-    (v, i, material)
-}
-
-/// Make every triangle of a convex, origin-centred mesh face outwards.
-fn fix_winding(v: &[Vertex], idx: &mut [u32]) {
-    for t in idx.chunks_exact_mut(3) {
-        let [a, b, c] = [t[0], t[1], t[2]].map(|k| Vec3::from(v[k as usize].pos));
-        if (b - a).cross(c - a).dot(a + b + c) < 0.0 { t.swap(1, 2); }
-    }
-}
-
-fn mesh(scene: &mut Scene, parts: &[(Vec<Vertex>, Vec<u32>, u32)]) -> usize {
-    let parts: Vec<Part> = parts.iter().map(|(v, i, m)| Part { vertices: v, indices: i, material: *m }).collect();
-    scene.add_mesh(&ClusterMesh::build(&parts))
-}
+fn cube(scene: &mut Scene, material: u32) -> usize { scene.add_mesh(&primitives::cube(material).mesh()) }
+fn sphere(scene: &mut Scene, material: u32, rings: u32, segments: u32) -> usize { scene.add_mesh(&primitives::sphere(material, rings, segments).mesh()) }
 
 fn material(scene: &mut Scene, tint: [f32; 3], roughness: f32) -> u32 {
     scene.add_material(Material { tint: srgb_to_linear(tint), layer: -1, roughness, flags: 0, scale: 1.0, metal: 0.0 })
@@ -115,7 +63,7 @@ impl Visuals {
     pub fn build(world: &World) -> Self {
         let mut scene = Scene::default();
         scene.sky = Some(sky());
-        let kind_mesh = |scene: &mut Scene, tint, rough| { let m = material(scene, tint, rough); mesh(scene, &[cube_part(m)]) };
+        let kind_mesh = |scene: &mut Scene, tint, rough| { let m = material(scene, tint, rough); cube(scene, m) };
         let floor = kind_mesh(&mut scene, palette::FLOOR, 0.9);
         let wall = kind_mesh(&mut scene, palette::WALL, 0.85);
         let building = kind_mesh(&mut scene, palette::BUILDING, 0.85);
@@ -138,13 +86,13 @@ impl Visuals {
         // Lava: a glowing sheet under the floor, visible through holes and
         // past the edge of open arenas.
         let lava_m = glow(&mut scene, [1.0, 0.28, 0.04], 2600.0);
-        let lava = mesh(&mut scene, &[cube_part(lava_m)]);
+        let lava = cube(&mut scene, lava_m);
         scene.add_instance(lava, Affine3A::from_scale_rotation_translation(Vec3::new(900.0, 0.2, 900.0), Quat::IDENTITY, Vec3::new(0.0, -2.3, 0.0)));
         scene.mark_no_shadow();
         // Roof beacons as small glowing cubes where the Godot lights hang.
         for &(p, c) in &world.arena.lights {
             let m = glow(&mut scene, c, 6000.0);
-            let beacon = mesh(&mut scene, &[cube_part(m)]);
+            let beacon = cube(&mut scene, m);
             scene.add_instance(beacon, Affine3A::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, p));
             scene.mark_no_shadow();
         }
@@ -155,18 +103,18 @@ impl Visuals {
         let mut players = Vec::new();
         for i in 0..world.players.len() {
             let body_m = material(&mut scene, PLAYER_COLORS[i % 4], 0.55);
-            let body = mesh(&mut scene, &[sphere_part(body_m, 10, 16)]);
-            let head = mesh(&mut scene, &[sphere_part(body_m, 8, 14)]);
-            let eyes = mesh(&mut scene, &[sphere_part(eye_m, 5, 8)]);
-            let gun = mesh(&mut scene, &[cube_part(gun_m)]);
+            let body = sphere(&mut scene, body_m, 10, 16);
+            let head = sphere(&mut scene, body_m, 8, 14);
+            let eyes = sphere(&mut scene, eye_m, 6, 8);
+            let gun = cube(&mut scene, gun_m);
             for m in [body, head, eyes, gun] { scene.add_instance(m, Affine3A::from_translation(HIDDEN)); }
             players.push(PlayerMeshes { body, head, eyes, gun });
         }
         let tracer_m = glow(&mut scene, [1.0, 0.9, 0.3], 30000.0);
-        let tracer = mesh(&mut scene, &[cube_part(tracer_m)]);
+        let tracer = cube(&mut scene, tracer_m);
         for _ in 0..TRACERS { scene.add_instance(tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
         let spark_m = glow(&mut scene, [1.0, 0.6, 0.2], 20000.0);
-        let spark = mesh(&mut scene, &[cube_part(spark_m)]);
+        let spark = cube(&mut scene, spark_m);
         for _ in 0..SPARKS { scene.add_instance(spark, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
 
         let lights = world.arena.lights.iter().take(12).map(|&(p, c)| omni(p, Vec3::from(c) * 900.0, 20.0)).collect();
@@ -230,6 +178,14 @@ impl Visuals {
         self.flashes.retain_mut(|f| { f.1 -= dt; f.1 > 0.0 });
     }
 
+    /// First person: hide each local player's own model from their view
+    /// (`slots[k]` is drawn in view k). It still casts its shadow.
+    pub fn hide_own_bodies(&mut self, slots: &[usize]) {
+        for (k, &s) in slots.iter().enumerate().take(8) {
+            for part in 0..4 { self.scene.instances[self.first_dynamic + s * 4 + part].hide_in_views(1 << k); }
+        }
+    }
+
     pub fn dynamic(&self) -> &[GpuInstance] { &self.scene.instances[self.first_dynamic..] }
 
     pub fn local_lights(&self) -> Vec<LocalLight> {
@@ -280,9 +236,7 @@ pub fn camera(world: &World, i: usize, prev: &[Vec3], alpha: f32) -> Camera {
         let r = world.arena.size * 0.55;
         return Camera { pos: Vec3::new(a.cos() * r, 22.0, a.sin() * r), target: Vec3::ZERO, fov_y: FOV_Y, near: 0.05 };
     }
-    // Warp draws both faces and has no per-view hiding, so the eye sits just
-    // in front of the player's own head instead of inside it.
-    let (sy, cy) = p.yaw.sin_cos();
-    let eye = pos + Vec3::Y * EYE + Vec3::new(-sy, 0.0, -cy) * 0.36;
+    // The player's own model is hidden from this view (hide_own_bodies).
+    let eye = pos + Vec3::Y * EYE;
     Camera { pos: eye, target: eye + p.forward(), fov_y: FOV_Y, near: 0.05 }
 }
