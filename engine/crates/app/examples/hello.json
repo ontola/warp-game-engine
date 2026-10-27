@@ -1,0 +1,9 @@
+{ "size": [640, 360],
+  "steps": [
+    { "ticks": 90, "mv": [0, 1], "note": "roll forward into the first gem" },
+    { "expect": "/score", "min": 1 },
+    { "ticks": 40, "look": [0.02, 0], "mv": [0, 1], "note": "curve right" },
+    { "press": ["SOUTH"], "ticks": 10, "note": "jump" },
+    { "expect": "/ball/1", "min": 0.6 },
+    { "capture": "jump.png", "compare": "hello-jump.png", "tolerance": 2.0, "state": "jump.json" }
+  ] }
