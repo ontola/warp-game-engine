@@ -7,6 +7,7 @@ use growing_guns::shape::{Boxes, Kind};
 use growing_guns::{Event, World, EYE};
 use render::primitives;
 use render::debris::{BurstSpec, Debris, Occupancy};
+use render::fx::Effects;
 use render::particles::{Burst, Particles};
 use render::slots::{SlotId, Slots};
 use physics::{Body, BodyDesc, Physics, Shape, Static};
@@ -72,7 +73,18 @@ pub struct Visuals {
     marks: Marks,
     /// GPU rubble colliding with the arena's occupancy grid.
     debris: Debris,
+    /// Explosions: fire, smoke, embers, heat shell, lights (render::fx).
+    blasts: Effects,
+    /// Seconds on the effects clock for the frame being drawn.
+    clock: f32,
+    /// Explosion view punch per player: position offset (camera local) and
+    /// pitch/yaw kick, plus punches still travelling at the speed of sound.
+    punch: Vec<(Vec3, glam::Vec2)>,
+    pending_punch: Vec<(f32, Vec3, f32)>,
 }
+
+/// Bullet colour with explosive rounds (Godot: base yellow toward orange).
+const BLAST_TINT: Vec3 = Vec3::new(1.0, 0.70, 0.20);
 
 /// Bullet scorch marks: a ring of slots, oldest reused first; each knows
 /// the chunk it sits on and goes when that chunk breaks.
@@ -176,7 +188,8 @@ impl Visuals {
         for _ in 0..TRACERS { scene.add_instance(tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
 
         let mut v = Visuals { scene, first_dynamic, players, tracer, fx, fxm, flashes: Vec::new(), lights: Vec::new(), arena, kinds,
-            corpses, phys, ragdolls: Vec::new(), chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, debris };
+            corpses, phys, ragdolls: Vec::new(), chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, debris,
+            blasts: Effects::default(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new() };
         v.set_arena(world);
         v
     }
@@ -222,6 +235,7 @@ impl Visuals {
         self.corpses.flush(gpu, renderer, &self.scene)?;
         self.marks.slots.flush(gpu, renderer, &self.scene)?;
         self.debris.flush(gpu, renderer)?;
+        self.blasts.flush(gpu, renderer, self.clock)?;
         self.fx.flush(gpu, renderer, &self.scene)
     }
 
@@ -253,15 +267,16 @@ impl Visuals {
                     }
                 }
                 Event::Explosion { pos, radius, .. } => {
-                    use std::f32::consts::PI;
-                    self.flashes.push((pos, 0.12));
-                    // Fireball: glowing puffs that swell out and shrink away,
-                    // then a smoke cloud rising, sparks flying.
-                    let r = radius.max(1.0);
-                    self.fx.burst(s, pos, Vec3::Y, &Burst { mesh: m.fire, count: 10, spread: PI, speed: [r * 0.8, r * 2.0], size: [r * 0.35, r * 0.05], life: [0.12, 0.3], gravity: -2.0, drag: 6.0, bounce: 0.0, spin: 0.0, stretch: 0.0 });
-                    self.fx.burst(s, pos, Vec3::Y, &Burst { mesh: m.smoke, count: 8, spread: 1.2, speed: [0.5, r * 0.6], size: [r * 0.3, r * 0.5], life: [1.0, 2.2], gravity: -1.5, drag: 1.5, bounce: 0.0, spin: 0.5, stretch: 0.0 });
-                    self.fx.burst(s, pos, Vec3::Y, &Burst { mesh: m.spark, count: 40, spread: PI, speed: [6.0, 18.0], ..Burst::sparks() });
-                    self.fx.burst(s, pos, Vec3::Y, &Burst { mesh: m.dust, count: 24, spread: PI, speed: [1.0, radius * 1.2], size: [0.5, 0.1], life: [0.6, 1.4], ..Burst::dust() });
+                    // Godot's spawn_bullet_blast: billowing fire and smoke,
+                    // flame tongues, embers, heat shell, flash and glow lights.
+                    let now = world.tick as f32 * growing_guns::DT;
+                    self.blasts.explosion(now, pos, radius, BLAST_TINT);
+                    // View punch for everyone within five radii, after the
+                    // sound has travelled.
+                    for (i, p) in world.players.iter().enumerate() {
+                        let d = p.pos.distance(pos);
+                        if p.alive && d < (radius * 5.0).max(radius + 1.0) { self.pending_punch.push((now + d / 343.0, pos, radius)); let _ = i; }
+                    }
                     self.phys.blast(pos, radius, 9.0);
                 }
                 Event::Hit { victim, attacker, pos, head, .. } => {
@@ -314,6 +329,8 @@ impl Visuals {
 
     /// Rewrite the dynamic instances. `alpha` blends from the previous tick.
     pub fn pose(&mut self, world: &World, prev: &[Vec3], alpha: f32, dt: f32) {
+        self.clock = (world.tick as f32 - 1.0 + alpha) * growing_guns::DT;
+        self.update_punch(world, dt);
         let mut slot = self.first_dynamic;
         for (i, p) in world.players.iter().enumerate() {
             let m = &self.players[i];
@@ -418,8 +435,48 @@ impl Visuals {
 
     pub fn dynamic(&self) -> &[GpuInstance] { &self.scene.instances[self.first_dynamic..] }
 
+    /// Explosion view punch (Godot `do_explosion_view_punch`): pushed away
+    /// from the blast, kicked in pitch and yaw, easing back at rate 12.
+    fn update_punch(&mut self, world: &World, dt: f32) {
+        self.punch.resize(world.players.len(), (Vec3::ZERO, glam::Vec2::ZERO));
+        let now = self.clock;
+        let due: Vec<_> = self.pending_punch.iter().filter(|p| p.0 <= now).copied().collect();
+        self.pending_punch.retain(|p| p.0 > now);
+        for (_, pos, radius) in due {
+            for (i, p) in world.players.iter().enumerate() {
+                let to = p.pos - pos;
+                let dist = to.length();
+                let reach = (radius * 5.0).max(radius + 1.0);
+                if !p.alive || dist >= reach { continue; }
+                let strength = (1.0 - dist / reach).clamp(0.0, 1.0) * (radius / 5.0).clamp(0.45, 1.6);
+                let away = if dist > 1e-3 { to / dist } else { Vec3::Y };
+                let local = Quat::from_rotation_y(p.yaw).inverse() * away;
+                self.punch[i].0 += local * (0.09 + 0.33 * strength);
+                self.punch[i].1 += glam::Vec2::new(-local.y * (0.045 + 0.165 * strength), local.x * (0.018 + 0.084 * strength));
+            }
+        }
+        let k = (dt * 12.0).min(1.0);
+        for p in &mut self.punch { p.0 = p.0.lerp(Vec3::ZERO, k); p.1 = p.1.lerp(glam::Vec2::ZERO, k); }
+    }
+
+    /// A player's camera with the explosion punch applied.
+    pub fn punched(&self, world: &World, i: usize, mut cam: Camera) -> Camera {
+        let Some(&(off, rot)) = self.punch.get(i) else { return cam };
+        if !world.players[i].alive { return cam; }
+        let yaw = Quat::from_rotation_y(world.players[i].yaw);
+        let fwd = cam.target - cam.pos;
+        let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
+        let turned = Quat::from_axis_angle(Vec3::Y, rot.y) * Quat::from_axis_angle(right, rot.x) * fwd;
+        cam.pos += yaw * off;
+        cam.target = cam.pos + turned;
+        cam
+    }
+
     pub fn local_lights(&self) -> Vec<LocalLight> {
-        let mut l = self.lights.clone();
+        // Blast lights first: they matter most while they last.
+        let mut l = self.blasts.lights(self.clock);
+        l.truncate(16);
+        l.extend(self.lights.iter().take(16 - l.len()).copied());
         for &(p, _) in self.flashes.iter().rev().take(16 - l.len()) { l.push(omni(p, Vec3::new(1.0, 0.75, 0.35) * 600.0, 8.0)); }
         l
     }
@@ -469,7 +526,7 @@ fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
 }
 
 fn omni(p: Vec3, cd: Vec3, range: f32) -> LocalLight {
-    LocalLight { position: p, direction: Vec3::NEG_Y, intensity_cd: cd, range_m: range, inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 0.15 }
+    LocalLight { position: p, direction: Vec3::NEG_Y, intensity_cd: cd, range_m: range, inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 0.15, falloff: 2.0 }
 }
 
 /// Godot's sky_top to horizon; the ground colour is the darkened horizon.

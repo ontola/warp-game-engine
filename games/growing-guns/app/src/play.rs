@@ -131,7 +131,7 @@ impl app::Game for Gg {
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
         r.set_local_lights(&self.vis.local_lights())?;
         let rects = frame.rects(self.slots.len());
-        let cameras = self.slots.iter().map(|&s| view::camera(&self.world, s, &self.prev, alpha)).collect();
+        let cameras = self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect();
         let mut list = HudDrawList::new(frame.size);
         for (k, (rect, &s)) in rects.iter().zip(&self.slots).enumerate() {
             hud::view(&mut list, &self.world, s, *rect, &self.fb[s], self.menus.get(k).map_or(0, |m| m.focus));
@@ -151,7 +151,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | arena SEED | cards".into()),
+            "help" => Ok("give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards".into()),
             "arena" => {
                 let seed = num(1)? as u64;
                 self.world.arena = growing_guns::Arena::generate(seed);
@@ -189,6 +189,11 @@ impl app::Game for Gg {
             "health" => { let p = player(1, &self.world)?; self.world.players[p].health = num(2)? as i32; Ok(format!("player {p} health {}", self.world.players[p].health)) }
             "ammo" => { let p = player(1, &self.world)?; self.world.players[p].ammo = num(2)? as u32; Ok(format!("player {p} ammo {}", self.world.players[p].ammo)) }
             "bots" => { self.world.bots_paused = w.get(1) == Some(&"pause"); Ok(format!("bots paused: {}", self.world.bots_paused)) }
+            "boom" => {
+                let (pos, r) = (Vec3::new(num(1)?, num(2)?, num(3)?), num(4)?);
+                self.world.queue_explosion(pos, r, w.get(5).and_then(|d| d.parse().ok()).unwrap_or(50.0), 0);
+                Ok(format!("explosion of {r} m queued at {pos}"))
+            }
             "blast" => {
                 let c = growing_guns::Carve { pos: Vec3::new(num(1)?, num(2)?, num(3)?), radius: num(4)?, damage: num(5)? };
                 self.world.queue_carve(c);

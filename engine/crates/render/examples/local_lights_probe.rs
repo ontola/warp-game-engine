@@ -60,7 +60,7 @@ fn spill(intensity_cd: Vec3, range_m: f32) -> LocalLight {
     LocalLight { position: Vec3::new(0.0, 0.45, 0.08),
         direction: Vec3::new(0.0, -REAR_DOWN_DEGREES.to_radians().sin(), REAR_DOWN_DEGREES.to_radians().cos()),
         intensity_cd, range_m, inner_cos: 40f32.to_radians().cos(),
-        outer_cos: 70f32.to_radians().cos(), source_radius_m: 0.06 }
+        outer_cos: 70f32.to_radians().cos(), source_radius_m: 0.06, falloff: 2.0 }
 }
 fn red_spill(brake: f32) -> LocalLight {
     let intensity = TAIL_INTENSITY_CD + (BRAKE_INTENSITY_CD - TAIL_INTENSITY_CD) * brake;

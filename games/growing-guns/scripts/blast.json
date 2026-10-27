@@ -1,0 +1,13 @@
+{ "size": [640, 360],
+  "steps": [
+    { "cmd": ["bots pause", "arena 10", "give 0 explosive", "give 0 explosive", "health 0 5000",
+              "teleport 0 8 1 -24", "aim 0 8 3.5 -38"], "note": "one explosive round (6.5 m) at a wall 14 m away" },
+    { "ticks": 10 },
+    { "ticks": 1, "hold": ["RIGHT_TRIGGER"] },
+    { "ticks": 6 }, { "capture": "t06.png" },
+    { "ticks": 6 }, { "capture": "t12.png" },
+    { "ticks": 8 }, { "capture": "t20.png" },
+    { "ticks": 15 }, { "capture": "t35.png" },
+    { "ticks": 25 }, { "capture": "t60.png" },
+    { "ticks": 40 }, { "capture": "t100.png" }
+  ] }

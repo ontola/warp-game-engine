@@ -448,7 +448,7 @@ mod tests {
         let target = Renderer::output_texture(&gpu, 64, 64);
         let view = [ViewRect { cam: Camera { pos: Vec3::new(0.0, 6.0, 14.0), target: Vec3::ZERO, fov_y: 1.0, near: 0.1 }, x: 0, y: 0, w: 64, h: 64 }];
         d.burst(&scene, &BurstSpec { life: 30.0, ..BurstSpec::rubble(Vec3::new(0.0, 1.5, 0.0), 2.0, 300, &[cube]) });
-        let mut frame = |d: &mut Debris, ticks: u32| { for _ in 0..ticks { d.advance(STEP); } d.flush(&gpu, &r).unwrap(); r.try_render_into(&gpu, &view, &light, &target).unwrap(); };
+        let frame = |d: &mut Debris, ticks: u32| { for _ in 0..ticks { d.advance(STEP); } d.flush(&gpu, &r).unwrap(); r.try_render_into(&gpu, &view, &light, &target).unwrap(); };
         frame(&mut d, 6);
         let early = r.debris_debug_instances(&gpu).unwrap();
         let live: Vec<_> = early.iter().filter(|i| i.cluster_count > 0).collect();

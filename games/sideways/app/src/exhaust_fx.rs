@@ -129,7 +129,7 @@ impl Emitter {
         let position=origins.iter().map(|(p,_)|*p).sum::<Vec3>()/origins.len()as f32+rear*0.08;
         Some(LocalLight {position,direction:(rear-input.rot*Vec3::Y*0.12).normalize(),
             intensity_cd:FLASH_INTENSITY_CD*self.flash_energy(),range_m:FLASH_RANGE_M,
-            inner_cos:45.0f32.to_radians().cos(),outer_cos:70.0f32.to_radians().cos(),source_radius_m:0.05})
+            inner_cos:45.0f32.to_radians().cos(),outer_cos:70.0f32.to_radians().cos(),source_radius_m:0.05,falloff:2.0})
     }
 }
 pub struct ExhaustFx {seed:u64,last:Option<(u32,u64)>,emitters:[Emitter;CARS]}
