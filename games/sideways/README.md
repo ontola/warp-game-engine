@@ -23,6 +23,26 @@ successful build. Logs and executable manifests live in this game's
 `build/dev-runs/`. F12 captures the displayed frame and camera/state metadata.
 Old `engine/build/` runs remain historical evidence.
 
+For a managed GameNight preview, register the package with the graphics profile
+from a recorded developer playtest. Copying only the executable is insufficient:
+`SIDEWAYS_PROCEDURAL_GRASS=field` selects the new GPU meadow; without it the
+legacy photographed grass is constructed. `KERN_MEADOW_AGGREGATE=1` alone does
+not select the meadow.
+
+```powershell
+games/sideways/tools/register-gamenight-windows.ps1 -PackageDirectory C:/path/to/package -ReferencePlaytestManifest C:/path/to/dev-run/iteration.json -DebugUi
+games/sideways/tools/test-register-gamenight.ps1
+```
+
+The package must include its verified executable, game assets and DLSS runtime.
+The helper copies the complete preview graphics profile, remaps packaged asset
+paths, preserves other games and backs up registration changes. `-ValidateOnly`
+reviews without writing. It does not launch or stop GameNight. Its default is
+4K output with DLSS Performance; GameNight supplies the actual player count.
+These flags remain scoped to the registered preview, not engine defaults.
+After launch verify the log says `GPU meadow: full terrain field` and
+`no photographed grass or CPU tuft pool`; process startup alone is insufficient.
+
 Four-player developer launches now select **DLSS Performance** unless `-Upscale`
 is explicitly supplied. One 4K output contains four panels: the measured input
 is 958x538 per panel, reconstructed to 1916x1076 after divider margins. The HUD

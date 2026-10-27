@@ -7,7 +7,28 @@ Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r59 grass contact AO, opt-in only; playtest closed
+## Latest status — managed GameNight preview profile repaired
+
+The user requested a GameNight session. The first r59 registration pointed to
+the correct new executable but omitted the developer graphics environment.
+Actual logs confirmed legacy photographed grass, tree fullness 1.0 and the
+old sky selection. This was a launch-profile regression, not a source rollback.
+The registration now copies the complete visible r58 playtest profile from
+`games/sideways/build/dev-runs/20261027T100418779Z-44907e32/iteration.json`, with
+packaged game/IR/DLSS paths. r59 executable hash remains unchanged.
+
+Managed runtime now confirms GPU meadow with 120 opaque ribbon blades/patch,
+25–35 m transition, no photographed grass/CPU tuft pool, tree fullness 1.25,
+and a visible 3840×2160 scene frame. New registration helper and isolated
+tests preserve the profile, unrelated games, backups and disabled experiments.
+Tests pass on PowerShell 7 and Windows PowerShell 5.1. GameNight's controller
+seats and settings remain host-owned; check live party state before transitions.
+
+Local package: `games/sideways/build/gamenight-r59/`; registration proof is
+`registration-proof.json` beside it. The user has resumed playtesting. Do not
+run GPU benchmarks concurrently or restart merely to gather proof.
+
+## Previous status — r59 grass contact AO, opt-in only
 
 Read [r59](docs/meadow-contact-ao-r59.md). Runtime `e8634da` adds default-off
 `KERN_MEADOW_CONTACT_AO=1`: four bounded canonical-root footprints attenuate
