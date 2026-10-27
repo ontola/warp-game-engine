@@ -73,7 +73,7 @@ impl Gg {
         let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
         let (vis, fb, sounds, slots) = (&mut self.vis, &mut self.fb, &mut self.sounds, &self.slots);
         let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
-            vis.absorb(w);
+            vis.absorb(w, &crate::sounds::ears(w, slots));
             feedback(fb, w, DT);
             if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); }
         });
@@ -85,6 +85,16 @@ impl Gg {
     pub fn slots(&self) -> &[usize] { &self.slots }
     pub fn session(&self) -> &Session { &self.session }
     pub fn set_sounds(&mut self, s: crate::sounds::Sounds) { self.sounds = Some(s); }
+
+    /// The crowd's recordings (`--crowd DIR`, GG_CROWD, or found beside the
+    /// sound folder); without them the crowd still reacts, silently.
+    pub fn set_crowd(&mut self, arg: Option<&str>, sounds: &std::path::Path, tx: &audio::sfx::SfxSender) {
+        let Some(dir) = crate::crowd_sound::find_dir(arg, Some(sounds)) else { eprintln!("silent crowd: no crowd_sound samples (--crowd DIR or GG_CROWD)"); return };
+        match crate::crowd_sound::Samples::load(&dir) {
+            Ok(s) => { let mut c = crate::crowd_sound::CrowdSound::new(Some((tx.clone(), s))); c.kickoff(); self.vis.stadium.set_sound(c); }
+            Err(e) => eprintln!("silent crowd: {e}"),
+        }
+    }
 
     /// A new round: refill the arena slots; the renderer is kept.
     fn new_arena(&mut self) {
@@ -116,7 +126,7 @@ impl app::Game for Gg {
         self.prev = self.world.players.iter().map(|p| p.pos).collect();
         self.world.step(&inputs);
         if self.world.events.contains(&Event::NewArena) { self.new_arena(); }
-        self.vis.absorb(&self.world);
+        self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
         feedback(&mut self.fb, &self.world, DT);
         if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); }
         self.session.publish(&self.world);
@@ -216,7 +226,7 @@ impl app::Game for Gg {
             "tick": w.tick, "round": w.round, "intermission": w.intermission, "ended": w.ended, "pick_time": w.pick_time,
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
                 "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
-            "players": players, "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(),
+            "players": players, "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
         }).to_string())
     }
 }
@@ -248,7 +258,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     // Keep the speaker alive for the whole run.
     let _speaker = match crate::sounds::find_dir(args.value("--sounds")) {
         Some(dir) => match app::sound::start(64) {
-            Ok((speaker, tx)) => { game.set_sounds(crate::sounds::Sounds::load(&dir, tx)); Some(speaker) }
+            Ok((speaker, tx)) => { game.set_crowd(args.value("--crowd"), &dir, &tx); game.set_sounds(crate::sounds::Sounds::load(&dir, tx)); Some(speaker) }
             Err(e) => { eprintln!("silent: {e}"); None }
         },
         None => { eprintln!("silent: no sound folder (--sounds DIR or GG_SOUNDS, the Godot project's assets/audio)"); None }

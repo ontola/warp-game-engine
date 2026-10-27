@@ -90,13 +90,13 @@ impl Effects {
         let r = radius.max(0.5);
         // Smoke: dark, lingering, rising (spawn_blast_fire_smoke).
         let n = ((r * 1.1) as i32).clamp(8, 24) as usize;
-        self.billows(time, pos, r, n, false, 0.5 + r * 0.13, 0.5, 1.3, r * 0.7, 1.0, 0.0);
+        self.billows(time, pos, r, n, false, 0.5 + r * 0.13, 0.5, 1.3, r * 0.7, 1.0, 0.0, Vec3::ONE, 1.0);
         // Fireball (spawn_blast_fire_clouds).
         let n = ((r * 0.8) as i32).clamp(6, 18) as usize;
-        self.billows(time, pos, r, n, true, 0.35 + r * 0.055, 0.3, 0.7, r * 0.3, 1.0, 0.0);
+        self.billows(time, pos, r, n, true, 0.35 + r * 0.055, 0.3, 0.7, r * 0.3, 1.0, 0.0, Vec3::ONE, 1.0);
         // Flame tongues: stretched fire puffs, a beat later (spawn_blast_flame_shards).
         let n = ((r * 0.7) as i32).clamp(5, 12) as usize;
-        self.billows(time, pos, r, n, true, 0.34 + r * 0.05, 0.28, 0.6, r * 0.28, 2.6, 0.14);
+        self.billows(time, pos, r, n, true, 0.34 + r * 0.05, 0.28, 0.6, r * 0.28, 2.6, 0.14, Vec3::ONE, 1.0);
         self.embers(time, pos, r, color);
         if r >= DISTORTION_MIN_RADIUS {
             let duration = (0.42 + r * 0.018).clamp(0.42, 0.95);
@@ -109,8 +109,17 @@ impl Effects {
         self.changed = true;
     }
 
+    /// A hanging red haze where spectators died (Godot's blood mist: the
+    /// smoke billow with a red tint, translucent, slower to rise).
+    pub fn blood_mist(&mut self, time: f32, pos: Vec3, radius: f32, kills: usize) {
+        let r = (radius * 2.0).max(2.0);
+        let n = ((4.0 + kills as f32 * 0.7).round() as usize).clamp(4, 10);
+        self.billows(time, pos, r, n, false, (0.5 + 0.13 * r) * 1.6, 0.45, 1.05, r * 0.3, 1.0, 0.0, Vec3::new(2.2, 0.22, 0.18), 0.6);
+        self.changed = true;
+    }
+
     #[allow(clippy::too_many_arguments)]
-    fn billows(&mut self, time: f32, pos: Vec3, r: f32, count: usize, fire: bool, life: f32, scale_lo: f32, scale_hi: f32, rise: f32, stretch: f32, delay_bias: f32) {
+    fn billows(&mut self, time: f32, pos: Vec3, r: f32, count: usize, fire: bool, life: f32, scale_lo: f32, scale_hi: f32, rise: f32, stretch: f32, delay_bias: f32, tint: Vec3, opacity: f32) {
         let spread = r * if fire { 0.45 } else { 0.65 };
         let base = pos + Vec3::Y * r * 0.1;
         for _ in 0..count {
@@ -144,9 +153,9 @@ impl Effects {
             self.puffs.push(Puff {
                 center_kind: (base + off).extend(if fire { FIRE } else { SMOKE }).to_array(),
                 ax: ax.extend(seed).to_array(), ay: ay.extend(delay).to_array(), az: az.extend(heat).to_array(),
-                body: body.extend(opk).to_array(),
+                body: body.extend(opk * opacity).to_array(),
                 timing: [time, life, rise, speed],
-                extra: [0.32, 0.35, tail, 2.1],
+                extra: tint.extend(tail).to_array(),
             });
         }
     }

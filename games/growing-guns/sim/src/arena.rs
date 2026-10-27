@@ -22,7 +22,7 @@ const PARAPET_OVERHANG: f32 = 1.15;
 const PARAPET_HEIGHT: f32 = 1.35;
 const MERLON: f32 = 1.2;
 const MERLON_HEIGHT: f32 = 1.35;
-const WALL_HEIGHT: f32 = 12.0;
+pub const WALL_HEIGHT: f32 = 12.0;
 /// Below this a player is in the lava under the floor (instant death).
 pub const LAVA_KILL_Y: f32 = -2.6;
 
@@ -38,8 +38,11 @@ pub struct Arena {
     pub blocks: Vec<Block>,
     /// Destructible pieces of `blocks` (built by `build_chunks`).
     pub chunks: Vec<Chunk>,
-    /// Collision: one box per chunk, same indices; destroyed chunks removed.
+    /// Collision: one box per chunk (same indices; destroyed chunks
+    /// removed), then the stadium's solid pieces.
     pub grid: BoxGrid,
+    /// The colosseum around the arena.
+    pub stadium: crate::stadium::Stadium,
     pub spawns: Vec<Vec3>,
     /// Roof/beacon light positions and colours (Godot omni lights).
     pub lights: Vec<(Vec3, [f32; 3])>,
@@ -74,7 +77,7 @@ impl Arena {
         // Godot: 18% island lava (not ported: becomes walled), 24% open, 16% hole.
         let variant = if (0.18..0.42).contains(&roll) { Variant::Open }
             else if (0.42..0.58).contains(&roll) { Variant::Hole } else { Variant::Walled };
-        let mut a = Arena { seed, size, variant, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), spawns: Vec::new(), lights: Vec::new(), hole: None };
+        let mut a = Arena { seed, size, variant, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), stadium: crate::stadium::Stadium::new(size, variant != Variant::Open, WALL_HEIGHT), spawns: Vec::new(), lights: Vec::new(), hole: None };
         let mut placer = Placer { placed: Vec::new() };
         let half = size * 0.5;
         if variant == Variant::Hole {

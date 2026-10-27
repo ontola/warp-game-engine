@@ -7,6 +7,7 @@ pub mod destruct;
 mod bot;
 pub mod rng;
 pub mod shape;
+pub mod stadium;
 
 pub use arena::Arena;
 pub use destruct::{Breakage, Carve, Chunk};

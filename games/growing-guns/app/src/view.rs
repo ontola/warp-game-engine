@@ -14,6 +14,8 @@ use physics::{Body, BodyDesc, Physics, Shape, Static};
 use render::headlights::LocalLight;
 use render::scene::{GpuInstance, Material, EMISSIVE};
 use render::{Camera, Lighting, Scene};
+use crate::stadium::StadiumVisuals;
+use audio::sfx::Listener;
 
 pub const TRACERS: usize = 64;
 const HIDDEN: Vec3 = Vec3::new(0.0, -500.0, 0.0);
@@ -81,6 +83,8 @@ pub struct Visuals {
     /// pitch/yaw kick, plus punches still travelling at the speed of sound.
     punch: Vec<(Vec3, glam::Vec2)>,
     pending_punch: Vec<(f32, Vec3, f32)>,
+    /// The colosseum, its crowd and their voice.
+    pub stadium: StadiumVisuals,
 }
 
 /// Bullet colour with explosive rounds (Godot: base yellow toward orange).
@@ -169,6 +173,7 @@ impl Visuals {
         // Ragdolls: two jointed bodies per corpse, drawn with the player's meshes.
         let corpses = Slots::reserve(&mut scene, 32);
         let phys = Physics::new(Vec3::new(0.0, -20.0, 0.0), growing_guns::TICK_HZ as f32);
+        let stadium = StadiumVisuals::reserve(&mut scene);
 
         let first_dynamic = scene.instances.len();
         let eye_m = material(&mut scene, [0.05, 0.05, 0.06], 0.3);
@@ -189,7 +194,7 @@ impl Visuals {
 
         let mut v = Visuals { scene, first_dynamic, players, tracer, fx, fxm, flashes: Vec::new(), lights: Vec::new(), arena, kinds,
             corpses, phys, ragdolls: Vec::new(), chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, debris,
-            blasts: Effects::default(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new() };
+            blasts: Effects::default(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new(), stadium };
         v.set_arena(world);
         v
     }
@@ -204,7 +209,9 @@ impl Visuals {
         self.marks.slots.clear(&mut self.scene);
         self.marks.ring.clear();
         let a = &world.arena;
-        let alive: Vec<_> = a.chunks.iter().filter(|c| c.alive).map(|c| c.shape()).collect();
+        // Chunks first (their handles are kept), then the stands.
+        let mut alive: Vec<_> = a.chunks.iter().filter(|c| c.alive).map(|c| c.shape()).collect();
+        alive.extend(a.stadium.collision());
         let mut handles = self.phys.set_statics(&alive).into_iter();
         self.statics = a.chunks.iter().map(|c| if c.alive { handles.next() } else { None }).collect();
         self.shown_wear = a.chunks.iter().map(|c| wear_level(c.wear())).collect();
@@ -226,6 +233,7 @@ impl Visuals {
             let nearest = (0..BEACON_COLORS.len()).min_by(|&a, &b| dist(BEACON_COLORS[a], c).total_cmp(&dist(BEACON_COLORS[b], c))).unwrap();
             self.arena.add(&mut self.scene, k.beacons[nearest], Affine3A::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, p)).expect("arena slots");
         }
+        self.stadium.set_arena(&mut self.scene, world);
         self.lights = world.arena.lights.iter().take(12).map(|&(p, c)| omni(p, Vec3::from(c) * 900.0, 20.0)).collect();
     }
 
@@ -236,12 +244,13 @@ impl Visuals {
         self.marks.slots.flush(gpu, renderer, &self.scene)?;
         self.debris.flush(gpu, renderer)?;
         self.blasts.flush(gpu, renderer, self.clock)?;
+        self.stadium.flush(gpu, renderer, &self.scene, self.clock)?;
         self.fx.flush(gpu, renderer, &self.scene)
     }
 
     /// Effects from this tick's events, then one tick of particle motion
-    /// (colliding with the arena).
-    pub fn absorb(&mut self, world: &World) {
+    /// (colliding with the arena). `ears` place the crowd's reactions.
+    pub fn absorb(&mut self, world: &World, ears: &[Listener]) {
         self.break_chunks(world);
         let (s, m) = (&mut self.scene, self.fxm);
         for e in &world.events {
@@ -252,7 +261,7 @@ impl Visuals {
                     // Chips fly off every hit, more and bigger for heavy rounds
                     // (Godot `request_chips`), as GPU debris.
                     let chunk = world.arena.grid.ray(pos + normal * 0.05, -normal, 0.3).map(|h| h.2);
-                    let stone = chunk.map_or(self.kinds.floor, |c| self.kinds.stone(world.arena.chunks[c].kind));
+                    let stone = chunk.map_or(self.kinds.floor, |c| world.arena.chunk(c).map_or(self.kinds.floor, |ch| self.kinds.stone(ch.kind)));
                     let scale = (0.06 + damage * 0.008).clamp(0.06, 1.0);
                     let amount = ((16.0 * scale).round() as u32).clamp(2, 20);
                     let size = 2.4 * (0.05 + damage * 0.0022).clamp(0.05, 0.35);
@@ -310,6 +319,9 @@ impl Visuals {
                 _ => {}
             }
         }
+        let now = world.tick as f32 * growing_guns::DT;
+        self.stadium.absorb(&mut self.scene, &mut self.fx, &mut self.blasts, world, ears, now, growing_guns::DT);
+        let s = &mut self.scene;
         self.phys.step();
         for r in &self.ragdolls {
             for (body, slot, mesh, scale) in [(r.torso, r.slots[0], r.meshes[0], Vec3::new(0.42, 0.5, 0.42)), (r.head, r.slots[1], r.meshes[1], Vec3::splat(0.3))] {
@@ -414,7 +426,7 @@ impl Visuals {
             occ.fill_box(c.center, c.half, c.yaw, false);
             let r = c.shape().reach() + OCC_VOXEL;
             for j in world.arena.grid.query(glam::Vec2::new(c.center.x - r, c.center.z - r), glam::Vec2::new(c.center.x + r, c.center.z + r)) {
-                let n = &world.arena.chunks[j];
+                let Some(n) = world.arena.chunk(j) else { continue };
                 if (n.center.y - c.center.y).abs() <= n.half.y + c.half.y + OCC_VOXEL { occ.fill_box(n.center, n.half, n.yaw, true); }
             }
         }
@@ -476,6 +488,7 @@ impl Visuals {
         // Blast lights first: they matter most while they last.
         let mut l = self.blasts.lights(self.clock);
         l.truncate(16);
+        l.extend(self.stadium.lights().iter().take(16 - l.len()).copied());
         l.extend(self.lights.iter().take(16 - l.len()).copied());
         for &(p, _) in self.flashes.iter().rev().take(16 - l.len()) { l.push(omni(p, Vec3::new(1.0, 0.75, 0.35) * 600.0, 8.0)); }
         l

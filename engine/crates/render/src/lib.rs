@@ -78,6 +78,7 @@ pub mod part_wind;
 pub mod baked_animation;
 pub mod debris;
 pub mod fx;
+pub mod crowd;
 pub mod motion;
 pub mod dlss;
 pub mod upscale;

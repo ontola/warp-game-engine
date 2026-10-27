@@ -25,7 +25,7 @@ struct Puff {
     body: vec4<f32>,
     // birth, life, rise (m over life), age speed
     timing: vec4<f32>,
-    // kind parameters: smoke/fire (lump, growth_min, tail_power, edge_power);
+    // kind parameters: smoke/fire (smoke tint rgb, tail_power);
     // ember (size, elong01, grow_start, brightness); heat (strength, 0, 0, 0)
     extra: vec4<f32>,
 };
@@ -94,8 +94,8 @@ fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V 
         let b = sin(local.x * 13.0 + s * 2.1) * sin(local.z * 11.0 + s * 1.3);
         let c = sin(local.x * 21.0 + s * 3.3) * sin(local.y * 18.0 + s * 2.1) * sin(local.z * 25.0 + s * 1.5);
         out.shade = (a * 0.7 + b * 0.3) * 0.55 + c * 0.45;
-        local += n * (a * 0.7 + b * 0.3) * p.extra.x;
-        local *= mix(p.extra.y, 1.0, out.age);
+        local += n * (a * 0.7 + b * 0.3) * 0.32;
+        local *= mix(0.35, 1.0, out.age);
         world += p.ax.xyz * local.x + p.ay.xyz * local.y + p.az.xyz * local.z + vec3<f32>(0.0, p.timing.z * anim, 0.0);
         // Normal through the inverse transpose of the (orthogonal) axes.
         normal = normalize(p.ax.xyz * n.x / dot(p.ax.xyz, p.ax.xyz) + p.ay.xyz * n.y / dot(p.ay.xyz, p.ay.xyz) + p.az.xyz * n.z / dot(p.az.xyz, p.az.xyz));
@@ -159,12 +159,12 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
     if gap <= 0.0 { discard; }
     let view = normalize(u.camera_near.xyz - in.world);
     let facing = abs(dot(normalize(in.normal), view));
-    let fres = pow(1.0 - facing, p.extra.w);
+    let fres = pow(1.0 - facing, 2.1);
     let age = in.age;
     let fade_in = smoothstep(0.0, 0.12, age);
     let t = clamp((age - 0.12) / 0.88, 0.0, 1.0);
     // Long tail with a soft landing.
-    let fade_out = pow(1.0 - t, p.extra.z) * (1.0 - smoothstep(0.5, 1.0, t));
+    let fade_out = pow(1.0 - t, p.extra.w) * (1.0 - smoothstep(0.5, 1.0, t));
     var alpha = p.body.a * fade_in * fade_out * smoothstep(0.0, 0.85, facing);
     // Soft particles: dissolve where the puff meets solid geometry.
     alpha *= clamp(gap / 1.6, 0.0, 1.0);
@@ -193,7 +193,7 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
         grey = floor(grey * 16.0 + 0.5) / 16.0;
         // Godot's arena haze lifts its unshaded smoke to a mid grey that
         // darkens the background by about a quarter; match that.
-        color = vec3<f32>(grey * 3.0 + 0.12);
+        color = vec3<f32>(grey * 3.0 + 0.12) * p.extra.rgb;
         alpha *= 0.75;
     }
     if alpha < 0.0005 { discard; }

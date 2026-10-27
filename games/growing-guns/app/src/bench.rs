@@ -67,7 +67,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         let t = Instant::now();
         if !empty {
             world.step(&[]);
-            vis.absorb(&world);
+            vis.absorb(&world, &[]);
             vis.pose(&world, &prev, 1.0, 1.0 / 60.0);
             renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
             renderer.set_local_lights(&vis.local_lights())?;
