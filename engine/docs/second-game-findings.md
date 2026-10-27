@@ -84,3 +84,28 @@ renderer.
   swash 0.2.10 uses skrifa 0.44 / read-fonts 0.41 (about 140 CPU-seconds).
   Pinning an older swash would remove that but may change HUD glyphs. Agents
   should keep `target/` between sessions.
+
+## Destruction
+
+Growing Guns' Godot destruction (pre-split chunks, health, GPU rubble) is
+ported. What the engine gained for it:
+
+- `kern::collide::BoxGrid` and the `Boxes` trait: a uniform-grid
+  broadphase with removal, so movers and rays stay cheap over 6,000 to
+  9,400 chunks. Results are identical to the plain scan (tested). The bots'
+  simulation still runs at 0.07 ms per tick in release, a new arena of
+  chunks included.
+- `render::debris`: GPU-simulated shards in a reserved instance range,
+  colliding with a one-bit occupancy grid; nothing is read back. 300
+  shards fall, bounce and settle on llvmpipe in the GPU test.
+- `primitives::hewn_block` (bevelled, optionally pitted bricks),
+  `Physics::remove_static`, `Slots::is_used`.
+- `Game::command` and the script `cmd` step: set up a scenario (give
+  cards, teleport, aim, blast) instead of playing up to it.
+- Fix: the shadow cluster capacity counted empty slots as zero, so a
+  scene whose slots later filled up (a bigger arena next round) could hit
+  the capacity assertion. Empty instances now count as the largest mesh.
+
+Godot's running bond left gaps at 8 m tile borders (each tile had its own
+edge seed); edges now depend on the parent block and the tile's position
+along each axis, and a test checks walls and floors for holes.

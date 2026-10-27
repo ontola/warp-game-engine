@@ -48,6 +48,7 @@ impl Slots {
     }
 
     pub fn capacity(&self) -> usize { self.used.len() }
+    pub fn is_used(&self, id: SlotId) -> bool { self.used.get(id.0).copied().unwrap_or(false) }
     pub fn len(&self) -> usize { self.used.len() - self.free.len() }
     pub fn is_empty(&self) -> bool { self.len() == 0 }
     /// Scene instance index of a slot (for flags such as `hide_in_views`).

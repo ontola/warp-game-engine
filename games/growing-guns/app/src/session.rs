@@ -3,7 +3,7 @@
 //! them, predicting only its own look direction (acknowledged input
 //! sequence numbers reconcile it with the host).
 use crate::net::{Client, Host, HostEvent, ToClient, ToHost};
-use growing_guns::{Event, Input, World};
+use growing_guns::{Breakage, Event, Input, World};
 use std::collections::VecDeque;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -19,7 +19,7 @@ pub enum Session {
     Local,
     /// `joining`: connected clients that have not said hello yet.
     Host { host: Host, remotes: Vec<Remote>, joining: Vec<(u64, UnboundedSender<ToClient>)> },
-    Client { client: Client, ack: u32, seq: u32, sent: VecDeque<(u32, Vec<Input>)>, base_look: Vec<(f32, f32)>, closed: bool },
+    Client { client: Client, ack: u32, seq: u32, sent: VecDeque<(u32, Vec<Input>)>, base_look: Vec<(f32, f32)>, closed: bool, broken: Breakage },
 }
 
 /// Fold one more input into a pending one: look adds up, edges stick.
@@ -48,7 +48,7 @@ impl Session {
                 Ok(ToClient::Welcome { slots, players, arena }) => {
                     let world = World::remote(arena, players);
                     let base = vec![(0.0, 0.0); slots.len()];
-                    return Ok((Session::Client { client, ack: 0, seq: 0, sent: VecDeque::new(), base_look: base, closed: false }, world, slots));
+                    return Ok((Session::Client { client, ack: 0, seq: 0, sent: VecDeque::new(), base_look: base, closed: false, broken: Breakage::default() }, world, slots));
                 }
                 Ok(ToClient::Full) => return Err("the game is full".into()),
                 Ok(_) => {}
@@ -125,6 +125,7 @@ impl Session {
         let arena = world.events.contains(&Event::NewArena).then(|| world.arena.clone());
         let snap = world.snapshot();
         for r in remotes.iter() {
+            if !world.breakage.is_empty() { let _ = r.tx.send(ToClient::Broken(world.breakage.clone())); }
             if let Some(a) = &arena { let _ = r.tx.send(ToClient::Arena(a.clone())); }
             let _ = r.tx.send(ToClient::Snap { ack: r.seq, snap: snap.clone() });
         }
@@ -143,13 +144,15 @@ impl Session {
     /// arena replaced). Each applied snapshot's events stay in `world.events`
     /// only until the next one, so `on_snap` sees every snapshot.
     pub fn receive(&mut self, world: &mut World, slots: &[usize], mut on_snap: impl FnMut(&World)) -> (usize, bool) {
-        let Session::Client { client, ack, sent, base_look, closed, .. } = self else { return (0, false) };
+        let Session::Client { client, ack, sent, base_look, closed, broken, .. } = self else { return (0, false) };
         let (mut snaps, mut arena) = (0, false);
         loop {
             match client.rx.try_recv() {
-                Ok(ToClient::Arena(a)) => { world.arena = a; arena = true; }
+                Ok(ToClient::Arena(a)) => { world.arena = a; arena = true; *broken = Breakage::default(); }
+                Ok(ToClient::Broken(b)) => { world.arena.apply_breakage(&b); broken.extend(b); }
                 Ok(ToClient::Snap { ack: a, snap }) => {
                     world.apply(snap);
+                    world.breakage = std::mem::take(broken);
                     *ack = a;
                     while sent.front().is_some_and(|(s, _)| *s <= a) { sent.pop_front(); }
                     for (k, &s) in slots.iter().enumerate() { base_look[k] = (world.players[s].yaw, world.players[s].pitch); }

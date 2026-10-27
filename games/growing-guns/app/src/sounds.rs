@@ -1,5 +1,6 @@
-//! Growing Guns' sounds from the Godot project's WAVs (`assets/audio`),
-//! played through `audio::sfx` and placed for the local players.
+//! Growing Guns' sounds from the Godot project's WAVs (`assets/audio`) and,
+//! for impacts and explosions, synthesised like Godot's `sfx.gd`
+//! (`synth.rs`), played through `audio::sfx` and placed for the local players.
 use audio::sfx::{spatial, Clip, Listener, SfxSender};
 use growing_guns::{Event, World, EYE};
 use std::path::Path;
@@ -14,6 +15,7 @@ pub struct Sounds {
     card: Vec<Clip>,
     pick: u32,
     walked: Vec<f32>,
+    bank: crate::synth::Bank,
 }
 
 fn load(dir: &Path, names: impl Iterator<Item = String>) -> Vec<Clip> {
@@ -39,6 +41,7 @@ impl Sounds {
             card: load(dir, std::iter::once("Card Pick.wav".to_string())),
             pick: 0,
             walked: Vec::new(),
+            bank: Default::default(),
         };
         println!("sounds: {} clips from {}", s.gun.len() + s.jump.len() + s.hurt.len() + s.death.len() + s.step.len(), dir.display());
         s
@@ -48,6 +51,8 @@ impl Sounds {
         self.pick = self.pick.wrapping_mul(1_103_515_245).wrapping_add(12_345);
         set.get((self.pick >> 16) as usize % set.len().max(1))
     }
+
+    fn next(&mut self) -> u32 { self.pick = self.pick.wrapping_mul(1_103_515_245).wrapping_add(12_345); self.pick >> 16 }
 
     fn jitter(&self) -> f32 { 0.94 + ((self.pick >> 8) % 1000) as f32 * 0.00012 }
 
@@ -73,6 +78,19 @@ impl Sounds {
                 Event::Kill { victim, .. } => self.play(3, world.players[victim].pos.to_array(), &ears, 16.0, 2.0),
                 // Only the picker hears their card (it plays at their own ear).
                 Event::Picked { player, .. } => if let Some(k) = slots.iter().position(|&s| s == player) { self.play(5, ears[k].pos, &ears, 1000.0, -2.0) },
+                Event::Impact { pos, damage, .. } => {
+                    let ratio = (damage - growing_guns::destruct::RIFLE_CHIP_DAMAGE_BASE) / growing_guns::destruct::RIFLE_CHIP_DAMAGE_PER_RATIO;
+                    let v = self.next();
+                    let clip = self.bank.impact(ratio, v);
+                    let db = -14.0 + ((ratio.max(1.0)).log2() * 4.0).clamp(0.0, 9.0);
+                    self.tx.play(&clip, spatial(pos.to_array(), &ears, 8.0).db(db).pitch(self.jitter()));
+                }
+                Event::Explosion { pos, radius, .. } => {
+                    let v = self.next();
+                    let (bang, rumble) = (self.bank.bang(radius, v), self.bank.rumble(radius, v));
+                    self.tx.play(&bang, spatial(pos.to_array(), &ears, (radius * 0.8).clamp(4.0, 24.0)).db(2.0));
+                    self.tx.play(&rumble, spatial(pos.to_array(), &ears, (radius * 4.5).clamp(20.0, 100.0)).db(0.0));
+                }
                 _ => {}
             }
         }

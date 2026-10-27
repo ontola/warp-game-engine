@@ -540,6 +540,7 @@ pub struct Renderer {
     wind: crate::wind::WindRenderer,
     part_wind: Option<crate::part_wind::PartWindRenderer>,
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
+    debris: Option<crate::debris::DebrisRenderer>,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
     meadow: Option<crate::meadow::MeadowRenderer>,
@@ -1007,6 +1008,7 @@ impl Renderer {
         let baked_animations = scene.baked_animations.as_ref().map(|animation|
             crate::baked_animation::AnimationRenderer::new(gpu, animation, &scene.instances, &instances)
                 .expect("invalid baked animation scene"));
+        let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
         startup.mark("grass_lighting_resources");
@@ -1411,6 +1413,7 @@ impl Renderer {
             wind,
             part_wind,
             baked_animations,
+            debris,
             transparency,
             grass,
             meadow,
@@ -1515,9 +1518,14 @@ impl Renderer {
             near_shadows: Default::default(),
             cluster_views: Default::default(),
             color_diagnostics: Default::default(),
-            // Upper bound: all clusters of all shadow-casting instances.
-            shadow_capacity: scene.instances.iter().filter(|i| i.flags & crate::scene::NO_SHADOW == 0)
-                .map(|i| i.cluster_count as u64).sum::<u64>().clamp(1, MAX_VISIBLE as u64) as u32,
+            // Upper bound: all clusters of all shadow-casting instances. An
+            // empty instance (a reserved slot, a GPU-driven particle) may later
+            // hold any mesh, so it counts as the largest one.
+            shadow_capacity: {
+                let largest = scene.meshes.iter().map(|m| m.cluster_count as u64).max().unwrap_or(1);
+                scene.instances.iter().filter(|i| i.flags & crate::scene::NO_SHADOW == 0)
+                    .map(|i| if i.cluster_count == 0 { largest } else { i.cluster_count as u64 }).sum::<u64>().clamp(1, MAX_VISIBLE as u64) as u32
+            },
         };
         let pipeline_cache=gpu.persist_pipeline_cache();
         startup.mark("pipeline_cache_persist");
@@ -2344,6 +2352,13 @@ impl Renderer {
         self.baked_animations.as_ref().map(|_|&self.instance_buffer)
     }
 
+    /// Explicit validation only: the debris pool's instances as the GPU
+    /// last wrote them (waits for the GPU).
+    pub fn debris_debug_instances(&self, gpu: &Gpu) -> Result<Vec<crate::scene::GpuInstance>, String> {
+        let d = self.debris.as_ref().ok_or("no debris pool")?;
+        d.read_instances(gpu, &self.instance_buffer)
+    }
+
     /// Explicit offline validation; no readback or wait in normal play.
     pub fn far_grass_diagnostics(&self, gpu: &Gpu) -> Result<Option<Vec<crate::far_grass::FarGrassDiagnostics>>,String> {
         self.far_grass.as_ref().map(|grass|grass.diagnostics(gpu)).transpose()
@@ -2399,10 +2414,21 @@ impl Renderer {
         self.meadow_substrate_enabled && self.debug_options().draws_meadow()
     }
 
+    /// Spawns, grid changes and simulation steps for the scene's debris pool
+    /// (called by `debris::Debris::flush`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_debris(&self, gpu: &Gpu, spawns: &[crate::debris::Shard], occupancy: Option<(usize, &[u32])>, meta: Option<&crate::debris::Occupancy>,
+        steps: u32, reset: bool, active: bool, tuning: &crate::debris::Tuning) -> Result<(), String> {
+        self.debris.as_ref().ok_or("this scene reserved no debris pool")?.update(gpu, spawns, occupancy, meta, steps, reset, active, tuning)
+    }
+
     /// Update an existing instance range without rebuilding static geometry.
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.baked_animations.as_ref().is_some_and(|animation|animation.contains_owner_range(first,instances.len())) {
             return Err("baked actor parts are driven by the shared GPU animation pass".into());
+        }
+        if self.debris.as_ref().is_some_and(|d| d.contains_owner_range(first, instances.len())) {
+            return Err("debris instances are written by the GPU debris pass".into());
         }
         if self.part_wind.as_ref().is_some_and(|parts|parts.contains_owner_range(first,instances.len())) {
             return Err("procedural part owners are driven by shared GPU poses, not CPU instance updates".into());
@@ -2748,6 +2774,13 @@ impl Renderer {
             animation.encode(gpu, &mut enc, times);
             if times.is_some() { names.push("baked crowd animation"); }
         }
+        if let Some(debris) = &self.debris {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if debris.encode(gpu, &mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("debris");
+            }
+        }
         // Actual updated instance/branch spheres and wind bounds, once shared
         // across cameras and solar views. They each select independent owners.
         let group_time=self.query.as_ref().map(|(qs,_,_)|(qs,ts));
@@ -2779,7 +2812,7 @@ impl Renderer {
             if self.grass.is_some()||self.far_grass.is_some() {fallback|=1<<8;}
             if self.voxel_forest.is_some()||self.meadow_brick_fixture.is_some() {fallback|=1<<9;}
             if static_sun.is_some() {fallback|=1<<10;}
-            if self.part_wind.is_some()||self.baked_animations.is_some() {fallback|=1<<11;}
+            if self.part_wind.is_some()||self.baked_animations.is_some()||self.debris.is_some() {fallback|=1<<11;}
             let time=self.query.as_ref().map(|(qs,_,_)|(qs,timestamp_pair(&mut ts)));
             if time.is_some(){names.push("shadow receiver demand");}
             self.receiver_demand.encode(gpu,&mut enc,(render_sequence as u32).wrapping_add(1).max(1),&cameras,&maps,&extra,fallback,time)?;

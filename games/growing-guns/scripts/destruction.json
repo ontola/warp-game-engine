@@ -1,0 +1,14 @@
+{ "size": [800, 450],
+  "steps": [
+    { "ticks": 20, "note": "settle on the spawn" },
+    { "cmd": ["bots pause", "give 0 explosive", "give 0 explosive", "give 0 explosive", "give 0 bigmag", "health 0 5000"] },
+    { "expect": "/arena/chunks_broken", "equals": 0 },
+    { "ticks": 20, "look": [0, -0.06], "note": "look down at the floor in front" },
+    { "capture": "before.png" },
+    { "ticks": 90, "hold": ["RIGHT_TRIGGER"], "note": "explosive rounds into the floor" },
+    { "capture": "crater.png", "state": "crater.json" },
+    { "expect": "/arena/chunks_broken", "min": 6, "note": "the floor broke" },
+    { "ticks": 2, "mv": [0, 1], "note": "step into the crater" },
+    { "until": "/players/0/alive", "equals": false, "max_ticks": 900, "hold": ["RIGHT_TRIGGER"], "mv": [0, 0.3], "look": [0, -0.02], "note": "keep digging and walk in: three layers, then lava" },
+    { "capture": "lava.png", "state": "lava.json" }
+  ] }

@@ -4,10 +4,14 @@
 //! floaters, cover blocks and floating platforms. Every feature has a 180
 //! degree mirror at (-x, -z), so the map plays fair from any spawn.
 //!
+//! Everything is destructible, as in Godot: each block is pre-split into
+//! uneven chunks (see `destruct.rs`) and collision runs on the live chunks.
+//!
 //! Not ported in this slice: the all-floor-lava island layout, bridges,
-//! tunnels, diagonal walls, decorations, colosseum and destruction.
+//! tunnels, diagonal walls, decorations and colosseum.
 use crate::rng::Rng;
-use crate::shape::{Block, Kind, YawBox};
+use crate::destruct::Chunk;
+use crate::shape::{Block, BoxGrid, Kind};
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{PI, TAU};
@@ -26,13 +30,16 @@ pub const LAVA_KILL_Y: f32 = -2.6;
 pub enum Variant { Walled, Hole, Open }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(into = "crate::destruct::ArenaWire", from = "crate::destruct::ArenaWire")]
 pub struct Arena {
     pub seed: u64,
     pub size: f32,
     pub variant: Variant,
     pub blocks: Vec<Block>,
-    /// Collision shapes of `blocks`, same order (call `reshape` after edits).
-    pub shapes: Vec<YawBox>,
+    /// Destructible pieces of `blocks` (built by `build_chunks`).
+    pub chunks: Vec<Chunk>,
+    /// Collision: one box per chunk, same indices; destroyed chunks removed.
+    pub grid: BoxGrid,
     pub spawns: Vec<Vec3>,
     /// Roof/beacon light positions and colours (Godot omni lights).
     pub lights: Vec<(Vec3, [f32; 3])>,
@@ -67,7 +74,7 @@ impl Arena {
         // Godot: 18% island lava (not ported: becomes walled), 24% open, 16% hole.
         let variant = if (0.18..0.42).contains(&roll) { Variant::Open }
             else if (0.42..0.58).contains(&roll) { Variant::Hole } else { Variant::Walled };
-        let mut a = Arena { seed, size, variant, blocks: Vec::new(), shapes: Vec::new(), spawns: Vec::new(), lights: Vec::new(), hole: None };
+        let mut a = Arena { seed, size, variant, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), spawns: Vec::new(), lights: Vec::new(), hole: None };
         let mut placer = Placer { placed: Vec::new() };
         let half = size * 0.5;
         if variant == Variant::Hole {
@@ -183,7 +190,7 @@ impl Arena {
         for (x, z) in [(-c, -c), (c, c), (-c, c), (c, -c)] {
             a.spawns.push(Vec3::new(x, 1.0, z));
         }
-        a.reshape();
+        a.build_chunks();
         if let Some((hc, side)) = a.hole {
             a.spawns.retain(|s| (s.x - hc.x).abs() > side * 0.5 + 1.0 || (s.z - hc.y).abs() > side * 0.5 + 1.0);
         }
@@ -193,19 +200,27 @@ impl Arena {
     fn build_floor(&mut self) {
         let s = self.size;
         let half = s * 0.5;
-        let slab = |c: Vec2, sx: f32, sz: f32| Block::new(Vec3::new(c.x, -1.5, c.y), Vec3::new(sx, 3.0, sz), 0.0, Kind::Floor);
+        // Three 1 m layers (Godot `_add_floor_slab`): the walk surface at
+        // y = 0, lava under the bottom at y = -3. Dig through and you burn.
+        let mut slabs = Vec::new();
         match self.hole {
-            None => self.blocks.push(slab(Vec2::ZERO, s, s)),
+            None => slabs.push((Vec2::ZERO, s, s)),
             Some((h, side)) => {
                 let hh = side * 0.5;
                 let n = (h.y - hh) + half;
-                if n > 0.1 { self.blocks.push(slab(Vec2::new(0.0, (-half + h.y - hh) * 0.5), s, n)); }
+                if n > 0.1 { slabs.push((Vec2::new(0.0, (-half + h.y - hh) * 0.5), s, n)); }
                 let so = half - (h.y + hh);
-                if so > 0.1 { self.blocks.push(slab(Vec2::new(0.0, (h.y + hh + half) * 0.5), s, so)); }
+                if so > 0.1 { slabs.push((Vec2::new(0.0, (h.y + hh + half) * 0.5), s, so)); }
                 let w = (h.x - hh) + half;
-                if w > 0.1 { self.blocks.push(slab(Vec2::new((-half + h.x - hh) * 0.5, h.y), w, side)); }
+                if w > 0.1 { slabs.push((Vec2::new((-half + h.x - hh) * 0.5, h.y), w, side)); }
                 let e = half - (h.x + hh);
-                if e > 0.1 { self.blocks.push(slab(Vec2::new((h.x + hh + half) * 0.5, h.y), e, side)); }
+                if e > 0.1 { slabs.push((Vec2::new((h.x + hh + half) * 0.5, h.y), e, side)); }
+            }
+        }
+        for (c, sx, sz) in slabs {
+            for layer in 0..3 {
+                let y = -0.5 - layer as f32;
+                self.blocks.push(Block::new(Vec3::new(c.x, y, c.y), Vec3::new(sx, 1.0, sz), 0.0, Kind::Floor).tiled());
             }
         }
     }
@@ -218,7 +233,7 @@ impl Arena {
             (Vec3::new(0.0, y, half), Vec3::new(s, WALL_HEIGHT, 1.0)),
             (Vec3::new(half, y, 0.0), Vec3::new(1.0, WALL_HEIGHT, s)),
             (Vec3::new(-half, y, 0.0), Vec3::new(1.0, WALL_HEIGHT, s)),
-        ] { self.blocks.push(Block::new(c, size, 0.0, Kind::Wall)); }
+        ] { self.blocks.push(Block::new(c, size, 0.0, Kind::Wall).tiled()); }
         for (x, z) in [(half, -half), (half, half), (-half, half), (-half, -half)] {
             self.tower(Vec3::new(x, 0.0, z), TOWER_FOOTPRINT, WALL_HEIGHT + TOWER_LIFT, Kind::Tower);
             placer.placed.push((Vec2::new(x, z), TOWER_FOOTPRINT * 0.55 + PARAPET_OVERHANG + 1.5));
@@ -227,9 +242,9 @@ impl Arena {
 
     /// Castle tower: shaft, overhanging parapet and a merlon ring.
     fn tower(&mut self, base: Vec3, footprint: f32, shaft: f32, kind: Kind) {
-        self.blocks.push(Block::new(Vec3::new(base.x, shaft * 0.5, base.z), Vec3::new(footprint, shaft, footprint), 0.0, kind));
+        self.blocks.push(Block::new(Vec3::new(base.x, shaft * 0.5, base.z), Vec3::new(footprint, shaft, footprint), 0.0, kind).tiled());
         let w = footprint + PARAPET_OVERHANG * 2.0;
-        self.blocks.push(Block::new(Vec3::new(base.x, shaft + PARAPET_HEIGHT * 0.5, base.z), Vec3::new(w, PARAPET_HEIGHT, w), 0.0, Kind::Ledge));
+        self.blocks.push(Block::new(Vec3::new(base.x, shaft + PARAPET_HEIGHT * 0.5, base.z), Vec3::new(w, PARAPET_HEIGHT, w), 0.0, Kind::Ledge).tiled());
         let y = shaft + PARAPET_HEIGHT + MERLON_HEIGHT * 0.5;
         let n = ((w / (MERLON * 2.0)).floor() as i32).max(2);
         let step = (w - MERLON) / (n - 1) as f32;
@@ -255,9 +270,6 @@ impl Arena {
     fn platform(&mut self, pos: Vec3) {
         self.blocks.push(Block::new(pos, Vec3::new(5.0, 0.6, 5.0), 0.0, Kind::Platform));
     }
-
-    /// Rebuild `shapes` from `blocks`.
-    pub fn reshape(&mut self) { self.shapes = self.blocks.iter().map(Block::shape).collect(); }
 
     /// Fell into the lava below the floor (hole or open arena edge).
     pub fn in_lava(&self, p: Vec3) -> bool { p.y < LAVA_KILL_Y }
