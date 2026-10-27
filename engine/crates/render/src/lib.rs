@@ -45,6 +45,7 @@ pub mod hud;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
+pub mod shade_features;
 pub mod shaders;
 pub mod atmosphere;
 pub mod radiance_cache;

@@ -601,6 +601,7 @@ pub struct Renderer {
     shader_wind_text: String,
     shader_generation: u64,
     rock_variation: bool,
+    shade_features: crate::shade_features::ShadeFeatures,
     car_materials: wgpu::Buffer,
     car_material_count: usize,
     tone: wgpu::ComputePipeline,
@@ -1272,9 +1273,11 @@ impl Renderer {
         let rock_variation=std::env::var("KERN_ROCK_VARIATION").as_deref()==Ok("1");
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
         let hidden_meadow_fallback=crate::meadow::MeadowRenderer::hidden_shade_fallback(gpu);
+        let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0);
+        let shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade"),
-            compilation_options:wgpu::PipelineCompilationOptions {constants:&[("ROCK_VARIATION",if rock_variation{1.0}else{0.0}),("SKIP_HIDDEN_MEADOW",if skip_hidden_meadow{1.0}else{0.0})],..Default::default()},cache: gpu.pipeline_cache(),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
         startup.mark("shade_pipeline");
         let tone = compute(&pl(&[&tone_layout]), &tone_mod, "main");
@@ -1453,6 +1456,7 @@ impl Renderer {
             shader_wind_text: crate::wind::common_source(),
             shader_generation: 0,
             rock_variation,
+            shade_features,
             car_materials,
             car_material_count: car_list.len(),
             tone,
@@ -2027,7 +2031,7 @@ impl Renderer {
                     layout: Some(&self.shade_pl),
                     module: &module,
                     entry_point: Some("shade"),
-                    compilation_options: wgpu::PipelineCompilationOptions {constants:&[("ROCK_VARIATION",if self.rock_variation{1.0}else{0.0}),("SKIP_HIDDEN_MEADOW",if self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()){1.0}else{0.0})],..Default::default()},
+                    compilation_options: wgpu::PipelineCompilationOptions {constants:&self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled())),..Default::default()},
                     cache: gpu.pipeline_cache(),
                 })
             }).map_err(|e| format!("opaque reload: {e}"))?)
@@ -2124,6 +2128,9 @@ impl Renderer {
 
     /// Constructor CPU attribution, present only with KERN_STARTUP_PROFILE=1.
     /// Image decoding occurs before Renderer::new; queued GPU work is not timed.
+    /// Optional shade-shader features this renderer's scene can reach.
+    pub fn shade_features(&self) -> crate::shade_features::ShadeFeatures { self.shade_features }
+
     pub fn startup_profile(&self) -> Option<&crate::startup_profile::StartupProfile> {
         self.startup_profile.as_ref()
     }
