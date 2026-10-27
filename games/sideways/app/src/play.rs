@@ -141,7 +141,8 @@ fn meadow_capture_metadata(renderer: &Renderer, gpu: &Gpu, scene: &render::Scene
     let Some(field) = &scene.meadow else { return Ok(serde_json::Value::Null); };
     let stats = renderer.meadow_diagnostics(gpu)?;
     let pool_bytes: u64 = stats.iter().map(|s| s.pool_bytes).sum();
-    let views: Vec<_> = stats.iter().map(|s| serde_json::json!({
+    let views: Vec<_> = stats.iter().map(|s| {
+        let mut value = serde_json::json!({
         "view":s.view,"visible_plants_per_lod":s.plants,"source_triangles_per_lod":s.triangles,
         "source_triangles_total":s.triangles.iter().sum::<u64>(),
         "depth_and_color_submitted_triangles_per_lod":s.triangles.map(|n|n*u64::from(s.source_geometry_passes)),
@@ -167,7 +168,15 @@ fn meadow_capture_metadata(renderer: &Renderer, gpu: &Gpu, scene: &render::Scene
         "aggregate_transition_metres":s.aggregate_transition_m,"aggregate_outer_fade_metres":s.aggregate_outer_fade_m,
         "aggregate_target_bytes":s.aggregate_target_bytes,
         "group_cache":meadow_group_metadata(&s.group_cache)
-    })).collect();
+        });
+        // Keep this expanding diagnostics object below serde_json's macro
+        // recursion limit without increasing it for the entire application.
+        value["aggregate_half_resolution"] = s.aggregate_half_resolution.into();
+        value["aggregate_target_size"] = serde_json::json!(s.aggregate_target_size);
+        value["aggregate_resolution_scale"] = serde_json::json!(s.aggregate_resolution_scale);
+        value["aggregate_resolution_scope"] = "Aggregate raster and illumination target relative to the per-view internal DLSS input; source grass, world roots, draw range and output resolution are unchanged. Reduced resolution is an opt-in optical approximation.".into();
+        value
+    }).collect();
     let memory = serde_json::json!({
         "shared_terrain_sample_bytes":field.samples.len()*std::mem::size_of::<[f32;4]>(),
         "shared_source_vertex_bytes":field.geometry.vertices.len()*std::mem::size_of::<render::meadow_data::GpuMeadowVertex>(),

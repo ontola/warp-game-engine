@@ -13,6 +13,8 @@ pub mod group_cache;
 mod group_gpu;
 #[path = "meadow_visibility.rs"]
 mod visibility;
+#[path = "meadow_half.rs"]
+mod half;
 pub use group_gpu::Stats as GroupCacheStats;
 
 #[repr(C)]
@@ -95,6 +97,11 @@ pub struct MeadowStats {
     /// Padded ID copy plus its counter/header; per-view allocation.
     pub hidden_shade_buffer_bytes: u64,
     pub aggregate_enabled: bool,
+    /// Opt-in spatial reconstruction approximation; source and merge remain full size.
+    pub aggregate_half_resolution: bool,
+    pub aggregate_target_size: [u32; 2],
+    /// Actual far/source dimension ratios, including ceil rounding on odd inputs.
+    pub aggregate_resolution_scale: [f32; 2],
     pub aggregate_plants: u32,
     pub aggregate_triangles: u64,
     pub aggregate_capacity: u32,
@@ -138,6 +145,7 @@ struct Targets {
     motion: Option<wgpu::TextureView>,
     reveal: Option<wgpu::TextureView>,
     material: Option<MaterialTargets>,
+    reduced_opaque: Option<half::OpaqueTarget>,
     composite: wgpu::BindGroup,
 }
 struct MaterialTargets {
@@ -177,6 +185,7 @@ fn consume_prepared_visibility(prepared:&mut Option<((u32,u32),Settings)>,size:(
     Ok(())
 }
 struct AggregateResources {
+    half_depth: Option<half::DepthReduce>,
     dimension: u32,
     capacity: u32,
     pool_bytes: u64,
@@ -408,7 +417,11 @@ impl MeadowRenderer {
         };
         field.validate()?;
         let aggregate_enabled = std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1");
+        let aggregate_half = aggregate_enabled && std::env::var("KERN_MEADOW_AGGREGATE_HALF_RES").as_deref() == Ok("1");
         let groups_enabled = std::env::var("KERN_MEADOW_GROUP_CACHE").as_deref() == Ok("1");
+        if aggregate_half && groups_enabled {
+            return Err("KERN_MEADOW_AGGREGATE_HALF_RES does not support KERN_MEADOW_GROUP_CACHE".into());
+        }
         if std::env::var("KERN_MEADOW_GROUP_REPLACE").as_deref() == Ok("1") && !groups_enabled {
             return Err("KERN_MEADOW_GROUP_REPLACE requires KERN_MEADOW_GROUP_CACHE=1".into());
         }
@@ -732,6 +745,7 @@ impl MeadowRenderer {
                 immediate_size: 0,
             });
         let pipeline = |motion: bool, depth: bool, aggregate: bool| {
+            let constants = [("MEADOW_AGGREGATE_HALF_RES", if aggregate && aggregate_half {1.0} else {0.0})];
             let mut targets = if depth {
                 vec![]
             } else {
@@ -797,7 +811,7 @@ impl MeadowRenderer {
                         } else {
                             "meadow_vs"
                         }),
-                        compilation_options: Default::default(),
+                        compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                         buffers: &[],
                     },
                     primitive: wgpu::PrimitiveState {
@@ -831,7 +845,7 @@ impl MeadowRenderer {
                         } else {
                             "meadow_fs"
                         }),
-                        compilation_options: Default::default(),
+                        compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                         targets: &targets,
                     }),
                     multiview_mask: None,
@@ -861,27 +875,29 @@ impl MeadowRenderer {
             let merge_layout = layout(gpu, "meadow representation merge", &[
                 (0,texture(unfiltered,d2)),(1,texture(unfiltered,d2)),
                 (2,texture(wgpu::TextureSampleType::Depth,d2)),(3,texture(wgpu::TextureSampleType::Depth,d2)),
-                (4,texture(unfiltered,d2)),(5,texture(unfiltered,d2)),(6,uniform()),(7,uniform()),(8,texture(unfiltered,d2))
+                (4,texture(unfiltered,d2)),(5,texture(unfiltered,d2)),(6,uniform()),(7,uniform()),(8,texture(wgpu::TextureSampleType::Depth,d2))
             ],wgpu::ShaderStages::FRAGMENT);
             let ml = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:Some("meadow representation merge"),bind_group_layouts:&[Some(&merge_layout)],immediate_size:0,
             });
             let ms = shader(gpu,"meadow representation merge",include_str!("shaders/meadow_merge.wgsl").into());
             let merge = std::array::from_fn(|motion| {
+                let constants=[("MEADOW_AGGREGATE_HALF_RES",if aggregate_half {1.0} else {0.0})];
                 let mut targets=vec![Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba16Float,blend:None,write_mask:wgpu::ColorWrites::ALL})];
                 if motion!=0 {targets.push(Some(wgpu::ColorTargetState {format:wgpu::TextureFormat::Rgba32Float,blend:None,write_mask:wgpu::ColorWrites::ALL}));}
                 gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label:Some("meadow representation merge"),layout:Some(&ml),
                     vertex:wgpu::VertexState {module:&ms,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[]},
                     primitive:Default::default(),depth_stencil:None,multisample:Default::default(),
-                    fragment:Some(wgpu::FragmentState {module:&ms,entry_point:Some(if motion==0 {"fs"} else {"motion_fs"}),compilation_options:Default::default(),targets:&targets}),
+                    fragment:Some(wgpu::FragmentState {module:&ms,entry_point:Some(if motion==0 {"fs"} else {"motion_fs"}),compilation_options:wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},targets:&targets}),
                     multiview_mask:None,cache:gpu.pipeline_cache(),
                 })
             });
             let transition=buffer(gpu,"meadow transition",bytemuck::cast_slice(&[field.fade_start,field.radius,160.0,180.0]),wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
             let recipe_bytes=atlas.bytes+(216+12)*16;
             eprintln!("GPU meadow surface aggregate: {}–180 m, {} candidates/view, {} pool bytes/view, {} atlas+bounds bytes, {:.2} ms CPU cook; hardware filtered source material, one lighting resolve per pixel, NOT voxel transport",field.fade_start,aggregate_capacity,aggregate_pool_bytes,recipe_bytes,cook_ms);
-            AggregateResources {dimension:aggregate_dimension,capacity:aggregate_capacity,pool_bytes:aggregate_pool_bytes,
+            eprintln!("GPU meadow aggregate half resolution: {aggregate_half}; reduced depth/material/lighting, full source/merge; spatial reconstruction approximation");
+            AggregateResources {half_depth:aggregate_half.then(||half::DepthReduce::new(gpu)),dimension:aggregate_dimension,capacity:aggregate_capacity,pool_bytes:aggregate_pool_bytes,
                 recipe_bytes,cook_ms,atlas_base,
                 depth:[pipeline(false,true,true),pipeline(true,true,true)],pipeline:pipeline(false,false,true),
                 merge_layout,merge,transition,atlas,draw_layout:aggregate_draw_layout,resolve_layout,resolve}
@@ -1269,6 +1285,7 @@ impl MeadowRenderer {
             motion: None,
             reveal: None,
             material: None,
+            reduced_opaque: None,
             composite,
         }
     }
@@ -1381,17 +1398,22 @@ impl MeadowRenderer {
             v.targets = Some(self.targets(gpu, size));
         }
         if let Some(far) = v.aggregate.as_mut() {
-            if !far.targets.as_ref().is_some_and(|t| t.size == size) {
-                far.targets = Some(self.targets(gpu, size));
+            let half=self.aggregate.as_ref().is_some_and(|a|a.half_depth.is_some());
+            let far_size=half::size(size,half);
+            if !far.targets.as_ref().is_some_and(|t| t.size == far_size) {
+                far.targets = Some(self.targets(gpu, far_size));
             }
             Self::ensure_motion(gpu, far.targets.as_mut().unwrap(), motion);
             let target = far.targets.as_mut().unwrap();
+            if half && target.reduced_opaque.is_none() {
+                target.reduced_opaque=Some(half::OpaqueTarget::new(gpu,far_size));
+            }
             if target.material.is_none() {
                 let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("meadow material normal reveal moments"),
                     size: wgpu::Extent3d {
-                        width: size.0,
-                        height: size.1,
+                        width: far_size.0,
+                        height: far_size.1,
                         depth_or_array_layers: 3,
                     },
                     mip_level_count: 1,
@@ -1651,12 +1673,17 @@ impl MeadowRenderer {
                     1,
                 );
             }
+            if let (Some(reduce),Some(low))=(&aggregate.half_depth,&ft.reduced_opaque) {
+                reduce.encode(gpu,enc,&opaque_view,low,times[3]);
+            }
+            let far_opaque=ft.reduced_opaque.as_ref().map_or(opaque_depth,|low|&low.texture);
+            let far_opaque_view=ft.reduced_opaque.as_ref().map_or(&opaque_view,|low|&low.view);
             enc.copy_texture_to_texture(
-                opaque_depth.as_image_copy(),
+                far_opaque.as_image_copy(),
                 ft.depth.as_image_copy(),
                 wgpu::Extent3d {
-                    width: size.0,
-                    height: size.1,
+                    width: ft.size.0,
+                    height: ft.size.1,
                     depth_or_array_layers: 1,
                 },
             );
@@ -1718,7 +1745,7 @@ impl MeadowRenderer {
                     }),
                     color_attachments: &attachments,
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: if depth { &ft.depth_view } else { &opaque_view },
+                        view: if depth { &ft.depth_view } else { far_opaque_view },
                         depth_ops: depth.then_some(wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
@@ -1728,7 +1755,7 @@ impl MeadowRenderer {
                     timestamp_writes: times[if depth { 3 } else { 8 }].map(|(query_set, i)| {
                         wgpu::RenderPassTimestampWrites {
                             query_set,
-                            beginning_of_pass_write_index: Some(i),
+                            beginning_of_pass_write_index: (!(depth && aggregate.half_depth.is_some())).then_some(i),
                             end_of_pass_write_index: Some(i + 1),
                         }
                     }),
@@ -1856,7 +1883,7 @@ impl MeadowRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 8,
-                        resource: wgpu::BindingResource::TextureView(ft.reveal.as_ref().unwrap()),
+                        resource: wgpu::BindingResource::TextureView(&opaque_view),
                     },
                 ],
             });
@@ -2013,6 +2040,12 @@ impl MeadowRenderer {
                 opaque_shade_skipped_pixels:if v.hidden_used_this_frame {coverage.as_ref().map_or(0,|c|c.skipped)} else {0},
                 hidden_shade_buffer_bytes:v.visibility.as_ref().map_or(0,|t|t.hidden_bytes()),
                 aggregate_enabled: self.aggregate.is_some(),
+                aggregate_half_resolution: self.aggregate.as_ref().is_some_and(|a|a.half_depth.is_some()),
+                aggregate_target_size: v.aggregate.as_ref().and_then(|f|f.targets.as_ref()).map_or([0;2],|t|[t.size.0,t.size.1]),
+                aggregate_resolution_scale: match (v.targets.as_ref(),v.aggregate.as_ref().and_then(|f|f.targets.as_ref())) {
+                    (Some(source),Some(far))=>[far.size.0 as f32/source.size.0 as f32,far.size.1 as f32/source.size.1 as f32],
+                    _=>[0.0;2],
+                },
                 aggregate_plants,
                 aggregate_triangles: u64::from(aggregate_plants) * 2,
                 aggregate_capacity: self.aggregate.as_ref().map_or(0, |a| a.capacity),
@@ -2021,14 +2054,9 @@ impl MeadowRenderer {
                 aggregate_cook_ms: self.aggregate.as_ref().map_or(0.0, |a| a.cook_ms),
                 aggregate_transition_m: [v.ranges[0], v.ranges[1]],
                 aggregate_outer_fade_m: [v.ranges[2], v.ranges[3]],
-                aggregate_target_bytes: if self.aggregate.is_some() {
-                    v.targets.as_ref().map_or(0, |t| {
-                        u64::from(t.size.0)
-                            * u64::from(t.size.1)
-                            * (48 + if t.motion.is_some() { 32 } else { 0 })
-                    })
-                } else {
-                    0
+                aggregate_target_bytes: match (v.resolved.as_ref(),v.aggregate.as_ref().and_then(|f|f.targets.as_ref())) {
+                    (Some(resolved),Some(far))=>half::target_bytes(resolved.size,far.size,far.motion.is_some(),far.reduced_opaque.is_some()),
+                    _=>0,
                 },
                 group_cache:{let mut stats=self.groups.as_ref().map_or_else(GroupCacheStats::default,|g|g.stats(index));
                     if stats.enabled {
@@ -2306,6 +2334,7 @@ mod tests {
             super::aggregate_resolve_source(),
             super::COMPOSITE.into(),
             include_str!("shaders/meadow_merge.wgsl").into(),
+            include_str!("shaders/meadow_half_depth.wgsl").into(),
             crate::depth_pyramid::SOURCE.into(),
         ] {
             let module = naga::front::wgsl::parse_str(&source)
