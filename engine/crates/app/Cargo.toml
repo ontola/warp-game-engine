@@ -11,6 +11,7 @@ glam = "0.31"
 winit = "0.30"
 wgpu = "30"
 serde.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json.workspace = true
 
 # Windows controllers are exposed through XInput; WGI can miss them.

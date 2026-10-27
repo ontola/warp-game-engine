@@ -12,8 +12,11 @@ complete example with split screen, bots and online play.
    final timing).
 3. Look and check without a display:
    `KERN_ADAPTER=software your-game script s.json --out dir`, which saves
-   frames and state dumps and fails on a broken expectation. The `hello`
-   example runs a script in about 2 s on a CPU rasteriser.
+   frames and state dumps and fails on a broken expectation or an image
+   that drifts from its reference (`compare`, written on the first run).
+   `cargo run -p app --example hello -- --script
+   engine/crates/app/examples/hello.json --out /tmp/hello` takes about 2 s
+   on a CPU rasteriser and is deterministic (difference 0.0 between runs).
 4. Measure with GPU timestamps when performance matters (`bench` in Growing
    Guns shows how).
 

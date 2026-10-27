@@ -19,7 +19,8 @@
 //! `capture` and `state` write into the output directory. `expect` reads a
 //! JSON pointer (RFC 6901) from the game's state and compares it with
 //! `equals`, or checks it within `min`/`max`; a failed expectation fails the
-//! run. Every step prints one JSON line to stdout.
+//! run. A `capture` with `compare` checks the frame against a reference PNG
+//! (written on first run). Every step prints one JSON line to stdout.
 use crate::{Buttons, Controls, Game, Headless};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -52,6 +53,11 @@ pub struct Step {
     pub equals: Option<Value>,
     pub min: Option<f64>,
     pub max: Option<f64>,
+    /// With `capture`: a reference PNG (relative to the script) to compare
+    /// against; fails when the mean absolute difference per channel (0..255)
+    /// exceeds `tolerance` (default 1.0). A missing reference is written.
+    pub compare: Option<String>,
+    pub tolerance: Option<f64>,
     /// Free text shown in the log line.
     pub note: Option<String>,
 }
@@ -75,7 +81,22 @@ pub fn button(name: &str) -> Result<u32, String> {
 fn mask(names: &[String]) -> Result<u32, String> { names.iter().try_fold(0, |m, n| Ok(m | button(n)?)) }
 
 /// Run a script. Returns the number of failed expectations.
-pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &Path) -> Result<usize, String> {
+fn read_png(path: &Path) -> Result<([u32; 2], Vec<u8>), String> {
+    let img = image::open(path).map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
+    Ok(([img.width(), img.height()], img.into_raw()))
+}
+
+/// Mean absolute difference per RGB channel, 0..255.
+pub fn mean_abs_diff(a: &[u8], b: &[u8]) -> f64 {
+    let (mut sum, mut n) = (0u64, 0u64);
+    for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+        for c in 0..3 { sum += u64::from(p[c].abs_diff(q[c])); n += 1; }
+    }
+    sum as f64 / n.max(1) as f64
+}
+
+/// Run a script; `base` resolves reference images. Returns failed checks.
+pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &Path, base: &Path) -> Result<usize, String> {
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let players = game.local_players();
     let mut tick = 0u64;
@@ -103,6 +124,25 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
             let path = out.join(name);
             render::write_png(&path, headless.size[0], headless.size[1], &rgba)?;
             line["capture"] = json!(path.display().to_string());
+            if let Some(reference) = &step.compare {
+                let reference = base.join(reference);
+                match read_png(&reference) {
+                    Ok((size, want)) if size == headless.size => {
+                        let diff = mean_abs_diff(&rgba, &want);
+                        let ok = diff <= step.tolerance.unwrap_or(1.0);
+                        if !ok { failed += 1; }
+                        line["compare"] = json!({ "reference": reference.display().to_string(), "mean_abs_diff": diff, "ok": ok });
+                    }
+                    Ok((size, _)) => {
+                        failed += 1;
+                        line["compare"] = json!({ "reference": reference.display().to_string(), "error": format!("size {size:?} differs"), "ok": false });
+                    }
+                    Err(_) => {
+                        render::write_png(&reference, headless.size[0], headless.size[1], &rgba)?;
+                        line["compare"] = json!({ "reference": reference.display().to_string(), "written": true });
+                    }
+                }
+            }
         }
         let state = || -> Result<Value, String> {
             let text = game.state().ok_or("this game exposes no state")?;
@@ -135,7 +175,7 @@ pub fn run_file(game: &mut dyn Game, gpu: &render::Gpu, tick_hz: f32, file: &Pat
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let script: Script = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
     let mut headless = Headless::new(gpu, script.size, tick_hz)?;
-    run(game, &mut headless, &script, out)
+    run(game, &mut headless, &script, out, file.parent().unwrap_or(Path::new(".")))
 }
 
 #[cfg(test)]
@@ -149,6 +189,7 @@ mod tests {
         assert_eq!(s.steps.len(), 3);
         assert_eq!(mask(&s.steps[1].press).unwrap(), Buttons::SOUTH | Buttons::RIGHT_TRIGGER);
         assert!(button("Z").is_err());
+        assert_eq!(mean_abs_diff(&[10, 20, 30, 255], &[13, 20, 27, 0]), 2.0);
         assert!(serde_json::from_str::<Script>(r#"{"steps":[{"tick":3}]}"#).is_err(), "typos are errors");
     }
 }
