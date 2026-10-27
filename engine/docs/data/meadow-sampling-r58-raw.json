@@ -1,0 +1,241 @@
+{
+  "all_finite": true,
+  "bitwise_parity": {
+    "A1-A2": false,
+    "A1-B": false,
+    "A2-B": false
+  },
+  "pairs": {
+    "A1-A2": {
+      "coverage_mask_xor": 0,
+      "material_mask_xor": 0,
+      "motion_mask_xor": 0,
+      "covered_pixels": 292726,
+      "layers": {
+        "color": {
+          "bit_different_pixels": 167961,
+          "max_error": 200.25,
+          "covered_mae": 0.222352300522528,
+          "per_case_p99_max": 4.0
+        },
+        "material": {
+          "bit_different_pixels": 165410,
+          "max_error": 0.1875,
+          "covered_mae": 0.0006610253109565789,
+          "per_case_p99_max": 0.03125
+        },
+        "normal": {
+          "bit_different_pixels": 168837,
+          "max_error": 0.15625,
+          "covered_mae": 0.0010219609530905973,
+          "per_case_p99_max": 0.03125
+        },
+        "reveal": {
+          "bit_different_pixels": 75577,
+          "max_error": 0.00244140625,
+          "covered_mae": 2.26295201720079e-05,
+          "per_case_p99_max": 0.0009765625
+        },
+        "depth": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "covered_mae": 0.0,
+          "per_case_p99_max": 0.0
+        },
+        "motion": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "covered_mae": 0.0,
+          "per_case_p99_max": 0.0
+        }
+      },
+      "derived": {
+        "union_coverage": {
+          "bit_different_pixels": 75577,
+          "max_error": 0.00244140625,
+          "mae_weighted": 2.26295201720079e-05,
+          "per_case_p99_max": 0.0009765625
+        },
+        "conditional_pigment_rgb": {
+          "bit_different_pixels": 165410,
+          "max_error": 0.0014058023618367665,
+          "mae_weighted": 5.160751006793777e-05,
+          "per_case_p99_max": 0.00045963908233728767
+        },
+        "conditional_normal_roughness_moments": {
+          "bit_different_pixels": 174191,
+          "max_error": 0.0068571839831109704,
+          "mae_weighted": 0.00021214050925304927,
+          "per_case_p99_max": 0.002284595981175385
+        },
+        "covered_depth": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "mae_weighted": 0.0,
+          "per_case_p99_max": 0.0
+        },
+        "covered_motion": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "mae_weighted": 0.0,
+          "per_case_p99_max": 0.0
+        }
+      },
+      "max_normal_angle_degrees": 0.17907078359836895
+    },
+    "A1-B": {
+      "coverage_mask_xor": 0,
+      "material_mask_xor": 0,
+      "motion_mask_xor": 0,
+      "covered_pixels": 292726,
+      "layers": {
+        "color": {
+          "bit_different_pixels": 173765,
+          "max_error": 200.25,
+          "covered_mae": 0.22646522046913706,
+          "per_case_p99_max": 4.0
+        },
+        "material": {
+          "bit_different_pixels": 171293,
+          "max_error": 0.15625,
+          "covered_mae": 0.0006746409440883898,
+          "per_case_p99_max": 0.03125
+        },
+        "normal": {
+          "bit_different_pixels": 175169,
+          "max_error": 0.21875,
+          "covered_mae": 0.0010404273543139862,
+          "per_case_p99_max": 0.03125
+        },
+        "reveal": {
+          "bit_different_pixels": 79781,
+          "max_error": 0.00244140625,
+          "covered_mae": 2.4006228724762248e-05,
+          "per_case_p99_max": 0.0009765625
+        },
+        "depth": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "covered_mae": 0.0,
+          "per_case_p99_max": 0.0
+        },
+        "motion": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "covered_mae": 0.0,
+          "per_case_p99_max": 0.0
+        }
+      },
+      "derived": {
+        "union_coverage": {
+          "bit_different_pixels": 79781,
+          "max_error": 0.00244140625,
+          "mae_weighted": 2.4006228724762248e-05,
+          "per_case_p99_max": 0.0009765625
+        },
+        "conditional_pigment_rgb": {
+          "bit_different_pixels": 171293,
+          "max_error": 0.0011857006412880344,
+          "mae_weighted": 5.3771187462746285e-05,
+          "per_case_p99_max": 0.00046975454854579534
+        },
+        "conditional_normal_roughness_moments": {
+          "bit_different_pixels": 180469,
+          "max_error": 0.006213044983760518,
+          "mae_weighted": 0.0002201509081885968,
+          "per_case_p99_max": 0.002377807586410738
+        },
+        "covered_depth": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "mae_weighted": 0.0,
+          "per_case_p99_max": 0.0
+        },
+        "covered_motion": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "mae_weighted": 0.0,
+          "per_case_p99_max": 0.0
+        }
+      },
+      "max_normal_angle_degrees": 0.1800599581337046
+    },
+    "A2-B": {
+      "coverage_mask_xor": 0,
+      "material_mask_xor": 0,
+      "motion_mask_xor": 0,
+      "covered_pixels": 292726,
+      "layers": {
+        "color": {
+          "bit_different_pixels": 170492,
+          "max_error": 201.0,
+          "covered_mae": 0.22206301648078966,
+          "per_case_p99_max": 4.0
+        },
+        "material": {
+          "bit_different_pixels": 167904,
+          "max_error": 0.15625,
+          "covered_mae": 0.0006588395319537331,
+          "per_case_p99_max": 0.0234375
+        },
+        "normal": {
+          "bit_different_pixels": 171835,
+          "max_error": 0.15625,
+          "covered_mae": 0.0010193090175730068,
+          "per_case_p99_max": 0.03125
+        },
+        "reveal": {
+          "bit_different_pixels": 77550,
+          "max_error": 0.0029296875,
+          "covered_mae": 2.3349440011555728e-05,
+          "per_case_p99_max": 0.000732421875
+        },
+        "depth": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "covered_mae": 0.0,
+          "per_case_p99_max": 0.0
+        },
+        "motion": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "covered_mae": 0.0,
+          "per_case_p99_max": 0.0
+        }
+      },
+      "derived": {
+        "union_coverage": {
+          "bit_different_pixels": 77550,
+          "max_error": 0.0029296875,
+          "mae_weighted": 2.3349440011555728e-05,
+          "per_case_p99_max": 0.000732421875
+        },
+        "conditional_pigment_rgb": {
+          "bit_different_pixels": 167904,
+          "max_error": 0.001603349078523858,
+          "mae_weighted": 5.219311456271852e-05,
+          "per_case_p99_max": 0.00046022290034882006
+        },
+        "conditional_normal_roughness_moments": {
+          "bit_different_pixels": 177098,
+          "max_error": 0.006657290953276496,
+          "mae_weighted": 0.00021464303931769294,
+          "per_case_p99_max": 0.00224465584428943
+        },
+        "covered_depth": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "mae_weighted": 0.0,
+          "per_case_p99_max": 0.0
+        },
+        "covered_motion": {
+          "bit_different_pixels": 0,
+          "max_error": 0,
+          "mae_weighted": 0.0,
+          "per_case_p99_max": 0.0
+        }
+      },
+      "max_normal_angle_degrees": 0.18677699455526922
+    }
+  }
+}

@@ -47,6 +47,11 @@ measures 25.94/30.23 ms against 27.83/34.10 ms in the same executable.
 It reduces grass cost to 5.00/5.78 ms, but visibly smears distant grass/ground:
 **opt-in only, not accepted as the default**. The earlier transition alone
 does not save time. Full-output comparisons and per-pass CSVs are in the report.
+The [full-resolution sampling follow-up](engine/docs/meadow-sampling-r58.md)
+removes redundant aggregate reads: 15–21% less aggregate time and 0.64/0.76 ms
+less total GPU interval in a six-run comparison. Raw depth/motion and coverage
+masks match; image review found no new blur. It remains opt-in. The larger
+cost is overlapping per-root pixel work, which still needs structural reduction.
 World-grid traversal of shared plant volumes and early whole-owner replacement
 are experimental, disabled by default, and still require GPU/visual validation.
 

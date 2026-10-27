@@ -53,6 +53,14 @@ also remains open. Moving the existing aggregate closer alone did not save time.
 It cannot be combined with `KERN_MEADOW_GROUP_CACHE`. Captures record the actual
 aggregate target dimensions, ratios and allocated target bytes for every view.
 
+`KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE=1` is a separate full-resolution experiment:
+skip zero-weight directional reads and fetch the selected surface payload once.
+It reduces aggregate time 15–21% in the [r58 comparison](../../engine/docs/meadow-sampling-r58.md),
+with exact captured depth/motion and coverage masks and no newly observed blur.
+It stays off by default and is incompatible with the experimental group cache.
+`KERN_MEADOW_CAPTURE_RAW=1` saves pre-DLSS layers alongside scenario captures;
+it performs synchronous readback and is for explicit diagnostics only.
+
 The latest measured developer optimization paths are an explicit opt-in:
 
 ```powershell
