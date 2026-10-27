@@ -52,6 +52,10 @@ removes redundant aggregate reads: 15–21% less aggregate time and 0.64/0.76 ms
 less total GPU interval in a six-run comparison. Raw depth/motion and coverage
 masks match; image review found no new blur. It remains opt-in. The larger
 cost is overlapping per-root pixel work, which still needs structural reduction.
+An [opt-in grass contact-AO experiment](engine/docs/meadow-contact-ao-r59.md)
+adds bounded root footprints to terrain skylight, without a new render pass.
+Six repeats show no large cost increase above run variation; the visual effect
+is subtle in the daylight fixture. It is not directional grass shadowing.
 World-grid traversal of shared plant volumes and early whole-owner replacement
 are experimental, disabled by default, and still require GPU/visual validation.
 

@@ -61,6 +61,13 @@ It stays off by default and is incompatible with the experimental group cache.
 `KERN_MEADOW_CAPTURE_RAW=1` saves pre-DLSS layers alongside scenario captures;
 it performs synchronous readback and is for explicit diagnostics only.
 
+`KERN_MEADOW_CONTACT_AO=1` separately enables soft grass-root contact footprints
+in terrain diffuse skylight. It follows canonical root placement, live size and
+density, and adds no shadow pass. Direct sun and headlights remain unchanged.
+The [r59 OFF/ON comparison](../../engine/docs/meadow-contact-ao-r59.md) found no
+large cost increase above run variation; the daylight effect is subtle.
+It remains off by default, without claiming directional grass shadows.
+
 The latest measured developer optimization paths are an explicit opt-in:
 
 ```powershell
