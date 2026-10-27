@@ -1,6 +1,6 @@
 //! Growing Guns' sounds from the Godot project's WAVs (`assets/audio`),
 //! played through `audio::sfx` and placed for the local players.
-use audio::sfx::{spatial, Clip, Listener, Play, SfxSender};
+use audio::sfx::{spatial, Clip, Listener, SfxSender};
 use growing_guns::{Event, World, EYE};
 use std::path::Path;
 
