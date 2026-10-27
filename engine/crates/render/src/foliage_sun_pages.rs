@@ -404,6 +404,22 @@ impl Resources {
         let mut empty=state(&[instance(Vec3::ZERO,100.,0)],32);empty.rebuild(Vec3::Y,0.42,0.5).unwrap();let e=empty.plan(&[view()],0,true).unwrap();
         assert!(e.updates.is_empty());assert!(e.known_empty>0);assert!(empty.table().iter().all(|e|e.key_layer[2]==-1));
     }
+    #[test]fn foliage_pages_deferred_validation_budget_keeps_cache_and_retries_missing_work(){
+        let instances:Vec<_>=(-10..=10).map(|x|instance(Vec3::new(x as f32*32.,5.,0.),4.,FOLIAGE)).collect();
+        let mut s=state(&instances,MAX_PAGES);s.rebuild(Vec3::Y,0.42,0.5).unwrap();
+        let first=s.plan(&[view()],1,true).unwrap();assert_eq!(first.updates.len(),1);assert!(first.missing>0);
+        s.submitted(&first);let layer=first.updates[0].layer as usize;let key=s.slots[layer].key;
+        // The renderer supplies zero while its bounded validation queue is
+        // full. Retained pages stay reusable and missing pages stay explicit.
+        for _ in 0..5 {
+            let deferred=s.plan(&[view()],0,false).unwrap();
+            assert!(deferred.updates.is_empty());assert!(deferred.missing>0);
+            assert!(deferred.cache_hits>=1);assert!(s.slots[layer].valid);assert_eq!(s.slots[layer].key,key);
+            s.submitted(&deferred);
+        }
+        let resumed=s.plan(&[view()],8,false).unwrap();assert!(!resumed.updates.is_empty());assert!(resumed.cache_hits>=1);
+        assert!(resumed.updates.iter().all(|page|page.layer as usize!=layer),"resuming must not rerender a retained valid page");
+    }
     #[test]fn foliage_pages_sun_or_source_revision_invalidates_and_bounds_fail_closed(){
         let mut s=state(&[instance(Vec3::ZERO,5.,FOLIAGE)],8);s.rebuild(Vec3::Y,0.42,0.5).unwrap();let a=s.plan(&[view()],8,true).unwrap();s.submitted(&a);
         s.rebuild(Vec3::new(0.2,0.8,0.1).normalize(),0.42,0.5).unwrap();assert!(s.table().is_empty());assert!(s.revision>a.revision);

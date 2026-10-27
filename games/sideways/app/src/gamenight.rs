@@ -340,42 +340,108 @@ impl Client {
 }
 
 fn transport(config: Config, outgoing: Receiver<Value>, incoming: &Sender<Incoming>) -> Result<(), String> {
+    let mut diagnostics = TransportDiagnostics::new();
     let mut ws_config = tungstenite::protocol::WebSocketConfig::default();
     ws_config.max_message_size = Some(16 * 1024 * 1024); // SDK6: four avatar/profile payloads may exceed 1 MiB.
-    let (mut socket, _) = tungstenite::client::connect_with_config(config.url.as_str(), Some(ws_config), 3).map_err(|_| "Cannot connect to GameNight host".to_string())?;
+    let (mut socket, _) = tungstenite::client::connect_with_config(config.url.as_str(), Some(ws_config), 3)
+        .map_err(|error| diagnostics.failure("connect", websocket_error(&error)))?;
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => configure_stream(stream)?,
         _ => return Err("Unexpected GameNight transport".into()),
     }
     let mut hello = json!({"type":"hello", "role":"game", "game":config.game_id});
     if !config.token.is_empty() { hello["token"] = json!(config.token); }
-    socket.send(Message::Text(hello.to_string().into())).map_err(|_| "GameNight hello failed".to_string())?;
+    socket.send(Message::Text(hello.to_string().into()))
+        .map_err(|error| diagnostics.failure("hello", websocket_error(&error)))?;
+    diagnostics.sent_messages += 1;
     loop {
         loop {
             match outgoing.try_recv() {
-                Ok(value) => socket.send(Message::Text(value.to_string().into())).map_err(|_| "GameNight send failed".to_string())?,
+                Ok(value) => {
+                    socket.send(Message::Text(value.to_string().into()))
+                        .map_err(|error| diagnostics.failure("send", websocket_error(&error)))?;
+                    diagnostics.sent_messages += 1;
+                }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => { let _ = socket.close(None); return Ok(()); }
             }
         }
         match socket.read() {
             Ok(Message::Text(raw)) => {
-                let value: Value = serde_json::from_str(raw.as_str()).map_err(|_| "GameNight sent invalid JSON".to_string())?;
+                diagnostics.received_frames += 1;
+                diagnostics.last_received = Some(Instant::now());
+                let value: Value = serde_json::from_str(raw.as_str()).map_err(|error| diagnostics.failure("decode",
+                    format!("json={:?}, line={}, column={}", error.classify(), error.line(), error.column())))?;
                 if !value.is_object() { continue; }
                 if incoming.send(Incoming::Json(value, Instant::now())).is_err() { return Ok(()); }
             }
-            Ok(Message::Close(_)) => return Err("GameNight host closed the connection".into()),
-            Ok(_) => { let _ = socket.flush(); }
-            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {},
-            Err(_) => return Err("GameNight connection lost".into()),
+            Ok(Message::Close(frame)) => return Err(diagnostics.failure("receive close",
+                format!("code={}", frame.map(|frame| u16::from(frame.code).to_string()).unwrap_or_else(|| "none".into())))),
+            Ok(_) => {
+                diagnostics.received_frames += 1;
+                diagnostics.last_received = Some(Instant::now());
+                let _ = socket.flush();
+            }
+            Err(error) if read_timeout(&error) => {},
+            Err(error) => return Err(diagnostics.failure("read", websocket_error(&error))),
         }
     }
 }
 
+// Report only when this transport exits, never once per idle read timeout.
+// Error Display/Debug can contain URLs, headers or buffered messages: retain
+// structural causes and OS codes without printing any peer-controlled text.
+struct TransportDiagnostics {
+    started: Instant,
+    last_received: Option<Instant>,
+    received_frames: u64,
+    sent_messages: u64,
+}
+
+impl TransportDiagnostics {
+    fn new() -> Self {
+        Self { started: Instant::now(), last_received: None, received_frames: 0, sent_messages: 0 }
+    }
+
+    fn failure(&self, operation: &str, cause: String) -> String {
+        let last_received_ms = self.last_received.map(|at| at.elapsed().as_millis().to_string()).unwrap_or_else(|| "none".into());
+        format!("GameNight transport {operation} failed: {cause}; elapsed_ms={}, received_frames={}, sent_messages={}, last_received_ms={last_received_ms}",
+            self.started.elapsed().as_millis(), self.received_frames, self.sent_messages)
+    }
+}
+
+fn read_timeout(error: &tungstenite::Error) -> bool {
+    matches!(error, tungstenite::Error::Io(error)
+        if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
+}
+
+fn io_error(error: &std::io::Error) -> String {
+    format!("io={:?}, os_code={}", error.kind(), error.raw_os_error().map(|code| code.to_string()).unwrap_or_else(|| "none".into()))
+}
+
+fn websocket_error(error: &tungstenite::Error) -> String {
+    use tungstenite::{Error, error::ProtocolError};
+    match error {
+        Error::Io(error) => io_error(error),
+        Error::ConnectionClosed => "connection_closed".into(),
+        Error::AlreadyClosed => "already_closed".into(),
+        Error::Capacity(error) => format!("capacity={error:?}"), // Only limits/counts.
+        Error::Protocol(ProtocolError::InvalidHeader(_)) => "protocol=InvalidHeader".into(),
+        Error::Protocol(error) => format!("protocol={error:?}"), // Remaining 0.28 variants contain only enums/numbers.
+        Error::Http(response) => format!("http_status={}", response.status().as_u16()),
+        Error::HttpFormat(_) => "http_format".into(),
+        Error::WriteBufferFull(_) => "write_buffer_full".into(),
+        Error::Utf8(_) => "invalid_utf8".into(),
+        Error::Url(_) => "invalid_url_or_connect_target".into(),
+        Error::Tls(_) => "tls".into(),
+        Error::AttackAttempt => "attack_attempt".into(),
+    }
+}
+
 fn configure_stream(stream: &TcpStream) -> Result<(), String> {
-    stream.set_read_timeout(Some(Duration::from_millis(10))).map_err(|e| e.to_string())?;
-    stream.set_write_timeout(Some(Duration::from_secs(2))).map_err(|e| e.to_string())?;
-    stream.set_nodelay(true).map_err(|e| e.to_string())
+    stream.set_read_timeout(Some(Duration::from_millis(10))).map_err(|e| format!("GameNight set_read_timeout failed: {}", io_error(&e)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2))).map_err(|e| format!("GameNight set_write_timeout failed: {}", io_error(&e)))?;
+    stream.set_nodelay(true).map_err(|e| format!("GameNight set_nodelay failed: {}", io_error(&e)))
 }
 
 pub fn settings() -> Value {
@@ -396,6 +462,62 @@ pub fn actions() -> Value { json!([{"key":"new_stage","label":"New stage"}]) }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_diagnostics_redact_peer_text_and_keep_structural_causes() {
+        use tungstenite::{Error, error::{ProtocolError, UrlError}};
+        let secret = "private-token-and-payload";
+        let errors = [
+            Error::Io(std::io::Error::new(std::io::ErrorKind::ConnectionReset, secret)),
+            Error::Utf8(secret.into()),
+            Error::Url(UrlError::UnableToConnect(format!("ws://host/?token={secret}"))),
+            Error::WriteBufferFull(Box::new(Message::Text(secret.into()))),
+            Error::Protocol(ProtocolError::InvalidHeader(Box::new(tungstenite::http::HeaderName::from_static("private-token-and-payload")))),
+            Error::Http(Box::new(tungstenite::http::Response::builder().status(403).header("x-private", secret).body(Some(secret.as_bytes().to_vec())).unwrap())),
+        ];
+        let diagnostics = TransportDiagnostics::new();
+        for error in errors {
+            let report = diagnostics.failure("read", websocket_error(&error));
+            assert!(!report.contains(secret), "peer data leaked: {report}");
+            assert!(report.contains("received_frames=0") && report.contains("last_received_ms=none"));
+            assert!(report.len() < 512);
+        }
+        assert!(websocket_error(&Error::Io(std::io::Error::from_raw_os_error(10054))).contains("os_code=10054"));
+        assert_eq!(websocket_error(&Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)), "protocol=ResetWithoutClosingHandshake");
+        for kind in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
+            assert!(read_timeout(&Error::Io(std::io::Error::from(kind))));
+        }
+        assert!(!read_timeout(&Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset))));
+        assert!(!read_timeout(&Error::ConnectionClosed));
+    }
+
+    #[test]
+    fn transport_close_report_keeps_code_without_reason_token_or_query() {
+        use std::net::TcpListener;
+        use tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
+        let secret = "private-token-and-payload";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let _hello = socket.read().unwrap();
+            socket.close(Some(CloseFrame { code: CloseCode::Policy, reason: secret.into() })).unwrap();
+        });
+        let mut client = Client::connect(Config { url: format!("ws://{address}/?private={secret}"), game_id:"sideways".into(), token:secret.into(), launched_by_daemon:true }).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut report = None;
+        while Instant::now() < deadline && report.is_none() {
+            for event in client.poll() { if let Command::Disconnected(error) = event { report = Some(error); } }
+            if report.is_none() { std::thread::sleep(Duration::from_millis(2)); }
+        }
+        server.join().unwrap();
+        let report = report.expect("host close must report a disconnect");
+        assert!(report.contains("receive close") && report.contains("code=1008"), "{report}");
+        assert!(report.contains("sent_messages=1"), "{report}");
+        assert!(!report.contains(secret), "{report}");
+    }
 
     #[test]
     fn live_sky_menu_choices_match_runtime_and_keep_road_weather_separate() {

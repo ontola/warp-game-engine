@@ -3,11 +3,57 @@
 For the next agent. Read this, `README.md`, `../games/sideways/README.md`
 and `../AGENTS.md`. Cargo workspace and lockfile are at the repository root.
 
-Repo: https://github.com/ontola/warp-game-engine, branch `main`: the engine
+Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r60 handling trial in GameNight
+## Latest status — r61 frame hitch fix, opt-in GameNight preview
+
+Current branch: `codex/fourview-budget-20261026`. Read
+[the r61 report](docs/frame-hitches-r61.md). Foliage shadow page updates were
+forcing counter readback and `gpu.wait()` even during ordinary gameplay.
+`KERN_ASYNC_SHADOW_VALIDATION=1` now copies counters to a bounded asynchronous
+queue, retains overflow/error checks and defers page updates on saturation.
+Engine default remains off. No shader, shadow quality, LOD or physics changes.
+There is no dedicated validation drain at renderer destruction; explicit
+captures drain earlier batches, as all six measured runs did.
+
+Six alternating A/B runs of the SAME r61 executable: one view, 4K output,
+DLSS Performance (1920x1080 internal), fixed-camera then deterministic drive.
+The two repeatable shadow-update intervals fall from median 59.234/56.918 ms
+to 15.489/14.386 ms. All six baseline page-update spikes disappear. Total
+intervals above 33.33 ms fall from 12 to 3 across 10,068 intervals per variant.
+GPU covered median stays approximately 15.75/15.83 ms; this fixes a wait,
+not average rendering cost. Other spikes remain unexplained. No four-player
+or 8.33 ms claim. JPEG A/B differences are comparable to repeat-run A/A;
+sampled visual review found no missing shadows, not raw/motion equivalence.
+
+New `engine/tools/frame-hitches.py` reports cadence tails and preceding CPU
+work with real-frame-ID GPU joins. 27 Python fixture tests, 12 focused render
+tests and two transport tests passed; DLSS release built and six visible
+3,600-frame runs completed. GameNight transport failures now report structural
+causes and timing without tokens/payloads; a prior disconnect is not yet
+explained or claimed fixed.
+
+Package `games/sideways/build/gamenight-r61/` and frozen test binary SHA256:
+`3ae3e74087829185873f13862a1d526aa3ec90d24ab0cecf52061bacb31f8a3c`.
+Local registration enables the async preview while retaining GPU meadow,
+120 blades, 25–35 m band, tree fullness 1.25, AO off and the r60 grip change.
+At 2026-10-27 13:40 UTC GameNight session
+`c49511ad-d234-416d-8ada-015df3d2ec40` was running this exact executable;
+PID 201308, seat 0 occupied, controller `ordinal:1`. The game logged a visible
+3840x2160 scene frame. No physical controller-input/scanout proof. Do not run
+GPU fixtures while this playtest is active. Evidence and managed launch proof:
+`C:/dev/perf/warp-sideways-20261027/r61-hitch-investigation/`.
+
+GameNight can overwrite an explicit local launch with a cloud CI preview;
+that previously selected an old Godot executable. Process-scoped
+`GAMENIGHT_OFFLINE=1` was used when starting the host for this investigation;
+check live executable paths after any later host restart. Do not change or
+delete old cached packages as a workaround. The host priority issue is not
+fixed here. Use `active_session`/`warm_session` in live party state.
+
+## Previous status — r60 handling trial in GameNight
 
 The user requested more grip after feedback that the car feels like a boat.
 Read [the r60 report](../games/sideways/docs/handling-grip-r60.md). Game-owned

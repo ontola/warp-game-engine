@@ -36,6 +36,7 @@ pub mod tree_occlusion;
 pub mod cull_groups;
 pub mod cluster_traversal;
 pub mod shadow_diagnostics;
+mod shadow_validation;
 mod depth_pyramid;
 #[cfg(test)]
 mod meadow_occlusion_tests;
