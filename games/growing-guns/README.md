@@ -38,6 +38,13 @@ them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift or right
 mouse dash, left mouse fire, R reload; on a pad the sticks, A jump, B or RB
 dash, RT fire, X reload. F12 saves a screenshot.
 
-Not ported: cards and weapon growth, other weapons and specials, destruction,
-ragdolls, sounds, menus, GameNight. Online play is tested over loopback (`nettest`), not yet between two
-machines; clients predict only their look direction.
+Ported since the first slice: nine stat cards picked by round losers
+(`scripts/cards.json`), the Godot WAVs (`--sounds DIR` or `GG_SOUNDS`,
+the Godot project's `assets/audio`), particles (sparks, dust, blood,
+casings) and ragdolls on the `physics` crate.
+
+Not ported: the other cards (ricochet, shotgun, specials) and weapons,
+destruction, skinned characters (the FBX models need converting to glTF
+first), menus beyond card picks, music, GameNight. Online play is tested
+over loopback (`nettest`), not yet between two machines; clients predict
+only their look direction.
