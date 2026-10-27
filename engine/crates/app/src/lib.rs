@@ -84,18 +84,21 @@ impl Default for Config {
 }
 
 /// The present path shared by the window and headless capture.
-struct Output { presenter: Presenter, hud: HudRenderer }
+struct Output { presenter: Presenter, hud: HudRenderer, picture: Option<wgpu::Texture> }
 
 impl Output {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Self, String> {
-        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)? })
+        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None })
     }
     fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], target: &wgpu::TextureView) -> Result<(), String> {
         let rects = render::split_rects(draw.cameras.len(), size[0], size[1]);
         let views: Vec<ViewRect> = draw.cameras.iter().zip(&rects).map(|(&cam, &(x, y, w, h))| ViewRect { cam, x, y, w, h }).collect();
-        let picture = renderer.try_render_texture(gpu, &views, &draw.light, size[0], size[1])?;
+        // One output texture, reused while the size holds.
+        if self.picture.as_ref().is_none_or(|p| [p.width(), p.height()] != size) { self.picture = Some(Renderer::output_texture(gpu, size[0], size[1])); }
+        let picture = self.picture.as_ref().unwrap();
+        renderer.try_render_into(gpu, &views, &draw.light, picture)?;
         self.hud.prepare(gpu, &draw.hud)?;
-        self.presenter.present(gpu, &picture, target, Some(&self.hud), None)
+        self.presenter.present(gpu, picture, target, Some(&self.hud), None)
     }
 }
 

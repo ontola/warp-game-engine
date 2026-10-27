@@ -57,6 +57,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     renderer.try_render_texture(&gpu, &cams(&world), &light, w, h)?;
     gpu.wait();
     let t_first = ms(t);
+    let output = Renderer::output_texture(&gpu, w, h);
     let profiling = renderer.set_async_gpu_profiling(&gpu, true).is_ok();
     let (mut cpu, mut wall, mut gputot) = (Vec::new(), Vec::new(), Vec::new());
     let mut passes: BTreeMap<&'static str, f64> = BTreeMap::new();
@@ -72,7 +73,7 @@ pub fn run(args: &Args) -> Result<(), String> {
             renderer.set_local_lights(&vis.local_lights())?;
         }
         renderer.set_gpu_profile_frame_id(f as u64);
-        renderer.try_render_texture(&gpu, &cams(&world), &light, w, h)?;
+        renderer.try_render_into(&gpu, &cams(&world), &light, &output)?;
         let c = ms(t);
         gpu.wait();
         let wl = ms(t);
