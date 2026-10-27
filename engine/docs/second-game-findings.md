@@ -77,3 +77,10 @@ renderer.
 - The default look is pale (AgX, physical units) without tuning.
 - `render` is about 50k lines, 26k of them vegetation; `frame.rs` refers to
   Sideways features more than 500 times.
+- A clean dev build of `app` (hello example) takes 8.6 min on 2 cores
+  (991 CPU-seconds). Largest units: naga 73 s, wgpu-core 73 s, render 46 s,
+  wayland-protocols 43 s, x11rb-protocol 40 s, wgpu-hal 34 s. Fonts are
+  built twice: cosmic-text 0.19 uses skrifa 0.40 / read-fonts 0.37 while its
+  swash 0.2.10 uses skrifa 0.44 / read-fonts 0.41 (about 140 CPU-seconds).
+  Pinning an older swash would remove that but may change HUD glyphs. Agents
+  should keep `target/` between sessions.
