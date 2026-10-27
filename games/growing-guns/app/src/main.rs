@@ -3,8 +3,13 @@
 //!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm]
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T]
+//!
+//! Online: `play --host` prints a ticket; `play --join TICKET` joins it.
+//! `--lan` skips relays and address lookup (direct addresses only).
 mod hud;
+mod net;
 mod play;
+mod session;
 mod view;
 
 use glam::Vec3;

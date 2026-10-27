@@ -67,7 +67,7 @@ pub struct Input {
     pub reload: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
     pub pos: Vec3,
     pub vel: Vec3,
@@ -114,7 +114,7 @@ pub fn look_dir(yaw: f32, pitch: f32) -> Vec3 {
     Vec3::new(-sy * cp, sp, -cy * cp)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bullet {
     pub pos: Vec3,
     pub vel: Vec3,
@@ -122,7 +122,7 @@ pub struct Bullet {
     pub travelled: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Shot { player: usize, from: Vec3, dir: Vec3 },
     Impact { pos: Vec3, normal: Vec3 },
@@ -133,6 +133,16 @@ pub enum Event {
     RoundOver { winner: Option<usize> },
     /// A fresh arena was generated: rebuild the scene.
     NewArena,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub tick: u64,
+    pub round: u32,
+    pub intermission: f32,
+    pub players: Vec<Player>,
+    pub bullets: Vec<Bullet>,
+    pub events: Vec<Event>,
 }
 
 #[derive(Clone, Debug)]
@@ -405,6 +415,31 @@ impl World {
             self.events.push(Event::RoundOver { winner });
         }
     }
+
+    /// Everything a remote viewer needs for one tick, arena excepted.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot { tick: self.tick, round: self.round, intermission: self.intermission, players: self.players.clone(), bullets: self.bullets.clone(), events: self.events.clone() }
+    }
+
+    /// Replace the state with a host snapshot (clients never step).
+    pub fn apply(&mut self, s: Snapshot) {
+        self.tick = s.tick;
+        self.round = s.round;
+        self.intermission = s.intermission;
+        self.players = s.players;
+        self.bullets = s.bullets;
+        self.events = s.events;
+    }
+
+    /// A client's view of a host world: the host's arena, empty state until
+    /// the first snapshot arrives.
+    pub fn remote(arena: Arena, players: usize) -> Self {
+        let brains = (0..players).map(|_| bot::Brain::default()).collect();
+        World { arena, players: (0..players).map(|_| Player::new(true)).collect(), bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, events: Vec::new(), rng: Rng::new(0), brains }
+    }
+
+    /// Hand a player slot to a human (remote join) or back to a bot.
+    pub fn set_bot(&mut self, i: usize, bot: bool) { self.players[i].bot = bot; }
 
     /// Order-independent digest of the state, for determinism checks.
     pub fn digest(&self) -> u64 {

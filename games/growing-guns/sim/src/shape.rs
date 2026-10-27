@@ -2,8 +2,9 @@
 //! with `rotation_y`). Collision for the player capsule and ray queries for
 //! bullets, both exact for yaw-rotated boxes.
 use glam::{Vec2, Vec3};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     Floor,
     Wall,
@@ -15,7 +16,7 @@ pub enum Kind {
     Platform,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Block {
     pub center: Vec3,
     pub half: Vec3,

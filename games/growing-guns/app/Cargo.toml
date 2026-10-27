@@ -15,6 +15,10 @@ glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 winit = "0.30"
 wgpu = "30"
+iroh = "1.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+postcard = { version = "1", features = ["alloc"] }
+serde.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 gilrs = { version = "0.11", default-features = false, features = ["xinput"] }
