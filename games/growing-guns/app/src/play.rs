@@ -178,7 +178,9 @@ impl app::Game for Gg {
                 pl.mods.apply(card);
                 pl.cards.push(card);
                 pl.ammo = pl.mag_size();
-                Ok(format!("player {p} has {:?}", pl.cards))
+                // The gun grows into the new card, as after a pick.
+                self.vis.grow_gun(p, &self.world.players[p]);
+                Ok(format!("player {p} has {:?}", self.world.players[p].cards))
             }
             "teleport" => {
                 let p = player(1, &self.world)?;
