@@ -88,6 +88,24 @@ pub fn capsule(material: u32, middle: f32, rings: u32, segments: u32) -> Primiti
     p.outward()
 }
 
+/// An equirectangular gradient sky for `Scene::sky`: `horizon` rising to
+/// `zenith`, `ground` below. Colours are sRGB 0..1 (as picked in a colour
+/// tool); the renderer scales the sky to `Lighting::sky_lux`.
+///
+/// `scene.sky = Some(primitives::gradient_sky([0.25, 0.45, 0.8], [0.75, 0.82, 0.9], [0.35, 0.33, 0.3]));`
+pub fn gradient_sky(zenith: [f32; 3], horizon: [f32; 3], ground: [f32; 3]) -> (u32, u32, Vec<[f32; 4]>) {
+    let lin = |c: [f32; 3]| Vec3::from(c.map(|v| v.powf(2.2)));
+    let (top, hor, low) = (lin(zenith), lin(horizon), lin(ground));
+    let (w, h) = (64u32, 32u32);
+    let mut px = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        let el = std::f32::consts::FRAC_PI_2 - std::f32::consts::PI * (y as f32 + 0.5) / h as f32;
+        let c = if el > 0.0 { hor.lerp(top, (el / 1.2).min(1.0).powf(0.6)) } else { hor.lerp(low, (-el / 0.3).min(1.0)) };
+        for _ in 0..w { px.push([c.x, c.y, c.z, 1.0]); }
+    }
+    (w, h, px)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

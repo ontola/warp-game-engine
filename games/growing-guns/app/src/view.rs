@@ -226,18 +226,9 @@ fn omni(p: Vec3, cd: Vec3, range: f32) -> LocalLight {
     LocalLight { position: p, direction: Vec3::NEG_Y, intensity_cd: cd, range_m: range, inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 0.15 }
 }
 
-/// Equirectangular gradient: Godot's sky_top to horizon, ground below.
+/// Godot's sky_top to horizon; the ground colour is the darkened horizon.
 fn sky() -> (u32, u32, Vec<[f32; 4]>) {
-    let (w, h) = (64u32, 32u32);
-    let top = Vec3::from(srgb_to_linear(palette::SKY_TOP));
-    let hor = Vec3::from(srgb_to_linear(palette::HORIZON));
-    let mut px = Vec::with_capacity((w * h) as usize);
-    for y in 0..h {
-        let el = std::f32::consts::FRAC_PI_2 - std::f32::consts::PI * (y as f32 + 0.5) / h as f32;
-        let c = if el > 0.0 { hor.lerp(top, (el / 1.2).min(1.0).powf(0.6)) } else { hor * 0.6 };
-        for _ in 0..w { px.push([c.x, c.y, c.z, 1.0]); }
-    }
-    (w, h, px)
+    primitives::gradient_sky(palette::SKY_TOP, palette::HORIZON, palette::HORIZON.map(|c| c * 0.79))
 }
 
 pub fn lighting() -> Lighting {

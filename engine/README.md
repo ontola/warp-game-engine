@@ -9,6 +9,7 @@ the game owns its simulation, assets, tuning and integration.
 | `kern` | Simulation interfaces, deterministic digests, traces and timings |
 | `render` | Cluster LOD, GPU visibility, shading, shadows, vegetation, atmosphere, HUD and reconstruction |
 | `audio` | Synthesis, mixing and explicit caller-provided sound configuration |
+| `app` | Game shell: window, fixed tick, input, split screen, headless frames and scripted playtests |
 
 `assets/` contains licensed default fonts, reusable audio resources and
 explicit renderer test fixtures. Game runtime meshes belong to Sideways.
@@ -25,6 +26,9 @@ cargo test --locked -p audio --lib
 python engine/tools/frame-budget.py --help
 python engine/tools/render-category-report.py --help
 ```
+
+New game? Read [making a game](docs/making-a-game.md) and run
+`cargo run -p app --example hello`.
 
 See the [diagnostics guide](tools/frame-budget.md),
 [live render debug panel](docs/debug-ui.md),

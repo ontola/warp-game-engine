@@ -54,14 +54,26 @@ renderer.
   `play` and `shot` use it; the window code in the game went from about 300
   lines to none.
 
+## Later rounds
+
+- `render::slots::Slots`: reserve empty instances, then add, move,
+  re-mesh and remove objects at runtime; Growing Guns now keeps one
+  renderer for the whole session and refills the arena each round.
+- GI marches are skipped (exactly) when there is no foliage or heightfield:
+  shade pass 393 to 171 ms on llvmpipe at 640x360, pixel-identical.
+  Contact shading loops over every SOLID box per pixel; Growing Guns stopped
+  marking its arena SOLID. Frame 499 to 151 ms.
+- `app::Headless` and `app::script`: JSON playtests with captures, state
+  dumps and expectations; `Game::state()`.
+- `primitives::gradient_sky`, `examples/hello.rs` and
+  [making-a-game.md](making-a-game.md).
+
 ## Still in the way
 
-- The scene is a fixed upload. Adding or removing instances means pools of
-  hidden instances or a new `Renderer`; a scene change recompiles pipelines.
+- New meshes or materials still need a new renderer (pipeline compile).
 - Fixed per-frame work for features a scene does not use (exhaust, wheel
-  particles, canopy filtering). The canopy GI volume is also marched when it
-  is empty, whenever `Lighting::gi` is on.
+  particles, canopy filtering).
 - No collision layer for simple games; Growing Guns uses its own box tests.
-- Physical light units without a simple "game look" preset.
+- The default look is pale (AgX, physical units) without tuning.
 - `render` is about 50k lines, 26k of them vegetation; `frame.rs` refers to
   Sideways features more than 500 times.
