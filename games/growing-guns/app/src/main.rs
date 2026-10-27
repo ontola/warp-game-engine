@@ -3,6 +3,7 @@
 //!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm]
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T]
+//!   growing-guns script FILE.json --out DIR [--players N] [--seed S]   (app::script; exit 1 on a failed expect)
 //!
 //! Online: `play --host` prints a ticket; `play --join TICKET` joins it.
 //! `--lan` skips relays and address lookup (direct addresses only).
@@ -40,6 +41,7 @@ fn main() {
         "shot" => shot(&args),
         "sim" => { sim(&args); Ok(()) }
         "bench" => bench::run(&args),
+        "script" => script(&args),
         _ => Err(format!("unknown command {cmd}; use play, shot or sim")),
     };
     if let Err(e) = result {
@@ -83,5 +85,22 @@ fn shot(args: &Args) -> Result<(), String> {
     render::write_png(std::path::Path::new(out), w, h, &rgba)?;
     println!("{out}: {views} views, round {}, tick {}, arena {} m {:?}, {} blocks, GPU {}",
         game.world.round, game.world.tick, game.world.arena.size, game.world.arena.variant, game.world.arena.blocks.len(), gpu.info.name);
+    Ok(())
+}
+
+/// Scripted headless playtest (see engine/crates/app/src/script.rs): local
+/// players 0..N follow the script, the rest are bots.
+fn script(args: &Args) -> Result<(), String> {
+    let file = args.list.get(1).filter(|f| !f.starts_with("--")).ok_or("script FILE.json --out DIR")?;
+    let out = args.value("--out").unwrap_or("script-out");
+    let humans = args.num("--players", 1usize).clamp(1, 4);
+    let bots: Vec<bool> = (0..4).map(|i| i >= humans).collect();
+    let world = World::new(args.num("--seed", 3u64), &bots);
+    let mut game = play::Gg::new(world, session::Session::Local, (0..humans).collect());
+    game.light_mut().taa = 0.0;
+    for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
+    let gpu = Gpu::new()?;
+    let failed = app::script::run_file(&mut game, &gpu, TICK_HZ as f32, std::path::Path::new(file), std::path::Path::new(out))?;
+    if failed > 0 { std::process::exit(1); }
     Ok(())
 }
