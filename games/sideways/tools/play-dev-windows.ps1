@@ -10,6 +10,8 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{64}$')][string]$PreparedSha256,
     [ValidateRange(1, 4)][int]$Views = 1,
     [ValidatePattern('^\d+x\d+$')][string]$Size = '3840x2160',
+    # Four-player developer sessions resolve to DLSS Performance below unless
+    # explicitly overridden. Other view counts retain this native fallback.
     [ValidateSet('native', 'dlss-quality', 'dlss-balanced', 'dlss-performance')][string]$Upscale = 'native',
     [ValidateRange(2, 8)][double]$Km = 3,
     [UInt64]$Seed = 1,
@@ -142,7 +144,13 @@ try {
         foreach ($key in $workReductionKeys) { [Environment]::SetEnvironmentVariable($key, '1', 'Process') }
         Write-Host 'Developer work reduction enabled: single grass geometry pass, hidden-ground shading skip, grouped headlight casters.'
     }
+    $upscaleSource = if ($PSBoundParameters.ContainsKey('Upscale')) { 'parameter' } else { 'launcher_default' }
+    if ($Views -eq 4 -and -not $PSBoundParameters.ContainsKey('Upscale')) {
+        $Upscale = 'dlss-performance'
+        $upscaleSource = 'four_player_default'
+    }
     $upscaleBuild = Get-DlssBuildSetup -Upscale $Upscale
+    Write-Host "Render mode: $Upscale ($upscaleSource), $Views views, $Size output."
     $env:KERN_STARTUP_PROFILE = '1'
     $cargo = if (-not $preparedArtifact) { (Get-Command cargo -CommandType Application -ErrorAction Stop).Source } else { $null }
     New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
@@ -199,6 +207,7 @@ try {
     $manifest = [ordered]@{ status = 'building'; started_utc = [DateTime]::UtcNow.ToString('o'); engine_root = (Join-Path $workspaceRoot 'engine'); game_root = $gameRoot; workspace_root = $workspaceRoot;
         profile = $Profile; source_revision = $sourceRevision; source_dirty = $sourceDirty;
         cargo_features = $upscaleBuild.features; dlss = $upscaleBuild.dlss; work_reduction_requested = [bool]$WorkReduction;
+        upscale_requested = $Upscale; upscale_source = $upscaleSource;
         tree_settings = $treeSettings;
         meadow_settings = @{ aggregate_requested = $meadowAggregateRequested; source = $meadowAggregateSource; scope = 'Launch request; actual constructed representation and counts are in capture metadata.' };
         source_note = 'Working checkout build, not an immutable source snapshot.';
