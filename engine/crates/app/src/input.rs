@@ -9,7 +9,7 @@ use winit::keyboard::KeyCode;
 
 /// Buttons as a bit set. Keyboard: Space South, Shift/RMB East, R West,
 /// F North, LMB RightTrigger, Q LeftShoulder, E RightShoulder, Tab Select,
-/// Enter Start.
+/// Enter Start, arrows and the D-pad Up/Down/Left/Right.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Buttons(pub u32);
 
@@ -24,6 +24,10 @@ impl Buttons {
     pub const RIGHT_TRIGGER: u32 = 128;
     pub const SELECT: u32 = 256;
     pub const START: u32 = 512;
+    pub const UP: u32 = 1024;
+    pub const DOWN: u32 = 2048;
+    pub const LEFT: u32 = 4096;
+    pub const RIGHT: u32 = 8192;
     pub fn has(self, b: u32) -> bool { self.0 & b != 0 }
 }
 
@@ -66,6 +70,10 @@ fn key_button(k: KeyCode) -> u32 {
         KeyCode::KeyE => Buttons::RIGHT_SHOULDER,
         KeyCode::Tab => Buttons::SELECT,
         KeyCode::Enter => Buttons::START,
+        KeyCode::ArrowUp => Buttons::UP,
+        KeyCode::ArrowDown => Buttons::DOWN,
+        KeyCode::ArrowLeft => Buttons::LEFT,
+        KeyCode::ArrowRight => Buttons::RIGHT,
         _ => 0,
     }
 }
@@ -82,6 +90,10 @@ fn pad_button(b: PadButton) -> u32 {
         PadButton::RightTrigger2 => Buttons::RIGHT_TRIGGER,
         PadButton::Select => Buttons::SELECT,
         PadButton::Start => Buttons::START,
+        PadButton::DPadUp => Buttons::UP,
+        PadButton::DPadDown => Buttons::DOWN,
+        PadButton::DPadLeft => Buttons::LEFT,
+        PadButton::DPadRight => Buttons::RIGHT,
         _ => 0,
     }
 }
@@ -170,7 +182,8 @@ impl Devices {
                 if !gp.is_connected() { continue; }
                 let mut held = 0;
                 for b in [PadButton::South, PadButton::East, PadButton::West, PadButton::North, PadButton::LeftTrigger, PadButton::RightTrigger,
-                    PadButton::LeftTrigger2, PadButton::RightTrigger2, PadButton::Select, PadButton::Start] {
+                    PadButton::LeftTrigger2, PadButton::RightTrigger2, PadButton::Select, PadButton::Start,
+                    PadButton::DPadUp, PadButton::DPadDown, PadButton::DPadLeft, PadButton::DPadRight] {
                     let analog = gp.button_data(b).is_some_and(|d| d.value() > 0.4);
                     if gp.is_pressed(b) || analog { held |= pad_button(b); }
                 }

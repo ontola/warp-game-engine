@@ -1,7 +1,6 @@
 //! Small display-space highlight bloom. Physical scene HDR and reconstruction
 //! history remain untouched. The two quarter-size targets belong to one view.
 use crate::Gpu;
-use wgpu::util::DeviceExt;
 
 pub const DEFAULT_STRENGTH:f32=0.04;
 pub const THRESHOLD:f32=2.0;
@@ -13,7 +12,7 @@ pub fn active(enabled:bool,strength:f32)->bool {enabled && strength>0.0}
 
 /// Bind groups for one input texture (TAA alternates two histories).
 struct Cached {input:wgpu::Texture,binds:[wgpu::BindGroup;3]}
-struct Targets {size:[u32;2],a:wgpu::Texture,b:wgpu::Texture,a_view:wgpu::TextureView,b_view:wgpu::TextureView,uniform:wgpu::Buffer,cached:Vec<Cached>}
+struct Targets {size:[u32;2],_a:wgpu::Texture,_b:wgpu::Texture,a_view:wgpu::TextureView,b_view:wgpu::TextureView,uniform:wgpu::Buffer,cached:Vec<Cached>}
 pub(crate) struct Bloom {
     layout:wgpu::BindGroupLayout,
     pipelines:[wgpu::ComputePipeline;3],
@@ -62,7 +61,7 @@ impl Bloom {
             // One exposure buffer per view: split views never share a value.
             let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bloom exposure"),size:16,
                 usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-            Targets{size,a,b,a_view,b_view,uniform,cached:Vec::new()}
+            Targets{size,_a:a,_b:b,a_view,b_view,uniform,cached:Vec::new()}
         };
         while views.len()<=view {views.push(make([1,1]));}
         let target=&mut views[view];

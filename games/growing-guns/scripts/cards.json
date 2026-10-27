@@ -1,0 +1,12 @@
+{ "size": [800, 450],
+  "steps": [
+    { "until": "/players/0/offer", "max_ticks": 6000, "note": "player 0 idles until it loses a round and is offered cards" },
+    { "capture": "offer.png", "state": "offer.json" },
+    { "press": ["RIGHT"], "note": "focus the second card" },
+    { "press": ["SOUTH"], "note": "take it" },
+    { "ticks": 2 },
+    { "expect": "/players/0/cards/0", "note": "a card was taken" },
+    { "expect": "/players/0/offer", "equals": null },
+    { "until": "/ended", "equals": false, "max_ticks": 600, "note": "the next round starts once every pick is in" },
+    { "state": "picked.json" }
+  ] }
