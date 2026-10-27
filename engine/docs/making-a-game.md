@@ -38,7 +38,20 @@ complete example with split screen, bots and online play.
 - Meshes: `render::primitives::{cube, sphere, capsule}(material).mesh()`
   or your own `ClusterMesh::build`. Materials: tint (linear), roughness,
   `flags` (`EMISSIVE` with `scale` as nits for glowing things).
+- Models: `assets::gltf::load(&mut scene, path)` reads .glb or .gltf
+  (node transforms, materials, base-colour and normal textures) into one
+  mesh; `cargo run -p assets --example view_model -- model.gltf --out
+  m.png` shows it from four sides without a window. Skinning and animation
+  are not read yet; convert FBX to glTF first.
 - Static things: `scene.add_instance(mesh, transform)`.
+- Effects: `render::particles::Particles` (sparks, dust, drops, debris on
+  slots, with a collision callback).
+- Sound: `audio::sfx` (WAV clips, voice pool, spatial placement for one or
+  more listeners) with `app::sound::start` for the speakers; scripts record
+  it (`audio` step) so a test can check that a sound played.
+- Physics: `kern::collide` for characters (yaw boxes, rays, move and
+  slide) and the `physics` crate (Rapier) for rigid bodies, blasts, joints
+  and ragdolls.
 - Things that come, go or move: `render::slots::Slots::reserve(&mut scene,
   n)` before the renderer exists, then `add`/`set`/`remove` and one
   `flush` per frame. Any mesh already in the scene can go in any slot.
@@ -68,5 +81,8 @@ complete example with split screen, bots and online play.
   your yaw convention once.
 - `Frame::set_scene` replaces the whole renderer; call it once, not per
   frame.
+- Render loops outside `app` should use `Renderer::try_render_into` with a
+  texture from `Renderer::output_texture`, so no output is allocated per
+  frame; `KERN_CPU_SPANS=1` shows where a frame's CPU time goes.
 - Pipe test output with `set -o pipefail` when you filter it, or a failing
   `cargo test` looks green.

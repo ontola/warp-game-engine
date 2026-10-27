@@ -205,6 +205,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "assets"
+version = "0.1.0"
+dependencies = [
+ "app",
+ "glam 0.31.1",
+ "gltf",
+ "image",
+ "render",
+]
+
+[[package]]
 name = "async_io_stream"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
