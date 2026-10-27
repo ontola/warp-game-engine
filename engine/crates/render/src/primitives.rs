@@ -101,6 +101,92 @@ pub fn torus(material: u32, tube: f32, rings: u32, sides: u32) -> Primitive {
     p.along_normals()
 }
 
+/// One piece of a shattered mesh: the shell triangles nearest one seed,
+/// recentred on the piece's centroid, and a cap closing the cut (a fan from
+/// the centroid to every open edge) in `cap` material. Both are drawn from
+/// both sides so a tumbling piece never shows a hole.
+#[derive(Clone, Debug)]
+pub struct Shard { pub shell: Primitive, pub cap: Primitive, pub centroid: Vec3, pub half: Vec3 }
+
+impl Shard {
+    pub fn mesh(&self) -> ClusterMesh { ClusterMesh::build(&[self.shell.part(), self.cap.part()]) }
+}
+
+/// Break `p` into up to `cells` pieces (Growing Guns' Voronoi gibs): seeds
+/// on the surface kept apart, each triangle to its nearest seed, each
+/// piece capped where it was cut. Deterministic for a `seed`.
+pub fn shatter(p: &Primitive, cells: usize, cap: u32, seed: u64) -> Vec<Shard> {
+    let tris = p.indices.len() / 3;
+    if tris < 2 || cells == 0 { return Vec::new(); }
+    let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut next = move || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+    let pos = |k: u32| Vec3::from(p.vertices[k as usize].pos);
+    let centre = |t: usize| (pos(p.indices[t * 3]) + pos(p.indices[t * 3 + 1]) + pos(p.indices[t * 3 + 2])) / 3.0;
+    let (lo, hi) = p.vertices.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), v| (a.min(v.pos.into()), b.max(v.pos.into())));
+    let min_sep = (hi - lo).max_element() * 0.12;
+    let mut seeds: Vec<Vec3> = Vec::new();
+    for _ in 0..cells {
+        let (mut best, mut best_sep) = (Vec3::ZERO, -1.0f32);
+        for _ in 0..4 {
+            let c = centre((next() % tris as u64) as usize);
+            let sep = seeds.iter().map(|s| s.distance(c)).fold(f32::MAX, f32::min);
+            if sep >= min_sep { best = c; break; }
+            if sep > best_sep { best_sep = sep; best = c; }
+        }
+        seeds.push(best);
+    }
+    let mut buckets = vec![Vec::new(); cells];
+    for t in 0..tris {
+        let c = centre(t);
+        let k = (0..cells).min_by(|&a, &b| seeds[a].distance_squared(c).total_cmp(&seeds[b].distance_squared(c))).unwrap();
+        buckets[k].push(t);
+    }
+    let key = |v: Vec3| (v * 1e4).round().as_ivec3();
+    buckets.into_iter().filter(|b| !b.is_empty()).map(|bucket| {
+        let mut remap = std::collections::HashMap::new();
+        let mut shell = Primitive { material: p.material, ..Default::default() };
+        for &t in &bucket {
+            for k in &p.indices[t * 3..t * 3 + 3] {
+                let n = *remap.entry(*k).or_insert_with(|| { shell.vertices.push(p.vertices[*k as usize]); shell.vertices.len() as u32 - 1 });
+                shell.indices.push(n);
+            }
+        }
+        let centroid = shell.vertices.iter().map(|v| Vec3::from(v.pos)).sum::<Vec3>() / shell.vertices.len() as f32;
+        for v in &mut shell.vertices { v.pos = (Vec3::from(v.pos) - centroid).to_array(); }
+        // Open edges: seen once, matched by position (primitives repeat
+        // vertices along seams).
+        let mut edges: std::collections::HashMap<(glam::IVec3, glam::IVec3), (u32, u32, u32)> = std::collections::HashMap::new();
+        for t in shell.indices.chunks_exact(3) {
+            for e in 0..3 {
+                let (a, b) = (t[e], t[(e + 1) % 3]);
+                let (ka, kb) = (key(shell.vertices[a as usize].pos.into()), key(shell.vertices[b as usize].pos.into()));
+                let k = if (ka.x, ka.y, ka.z) <= (kb.x, kb.y, kb.z) { (ka, kb) } else { (kb, ka) };
+                edges.entry(k).and_modify(|c| c.2 += 1).or_insert((a, b, 1));
+            }
+        }
+        let mut capp = Primitive { material: cap, ..Default::default() };
+        let mut open: Vec<(u32, u32)> = edges.values().filter(|e| e.2 == 1).map(|e| (e.0, e.1)).collect();
+        open.sort_unstable();
+        for (a, b) in open {
+            let (pa, pb) = (Vec3::from(shell.vertices[a as usize].pos), Vec3::from(shell.vertices[b as usize].pos));
+            let n = pa.cross(pb).normalize_or(Vec3::Y);
+            for (tri, n) in [([Vec3::ZERO, pa, pb], n), ([Vec3::ZERO, pb, pa], -n)] {
+                let base = capp.vertices.len() as u32;
+                for (i, v) in tri.iter().enumerate() { capp.vertices.push(Vertex { pos: v.to_array(), normal: n.to_array(), uv: [i as f32 * 0.5, 0.0] }); }
+                capp.indices.extend([base, base + 1, base + 2]);
+            }
+        }
+        // The shell's inside, for the gaps a fan cannot close.
+        let back: Vec<u32> = shell.indices.chunks_exact(3).flat_map(|t| [t[0], t[2], t[1]]).collect();
+        let flipped = shell.vertices.len() as u32;
+        let inner: Vec<Vertex> = shell.vertices.iter().map(|v| Vertex { normal: (-Vec3::from(v.normal)).to_array(), ..*v }).collect();
+        shell.vertices.extend(inner);
+        shell.indices.extend(back.iter().map(|k| k + flipped));
+        let (lo, hi) = shell.vertices.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), v| (a.min(v.pos.into()), b.max(v.pos.into())));
+        Shard { shell, cap: capp, centroid, half: ((hi - lo) * 0.5).max(Vec3::splat(0.025)) }
+    }).collect()
+}
+
 /// Unit cube (side 1), flat-shaded, uv 0..1 per face.
 pub fn cube(material: u32) -> Primitive {
     let mut p = Primitive { material, ..Default::default() };
@@ -231,6 +317,19 @@ pub fn gradient_sky(zenith: [f32; 3], horizon: [f32; 3], ground: [f32; 3]) -> (u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shattered_sphere_keeps_every_triangle_and_caps_each_piece() {
+        let s = sphere(0, 8, 12);
+        let shards = shatter(&s, 3, 1, 7);
+        assert!(shards.len() >= 2 && shards.len() <= 3);
+        let kept: usize = shards.iter().map(|d| d.shell.indices.len() / 2).sum();
+        assert_eq!(kept, s.indices.len());
+        assert!(shards.iter().all(|d| !d.cap.indices.is_empty() && d.cap.material == 1 && d.half.max_element() < 1.01));
+        let c: Vec3 = shards.iter().map(|d| d.centroid).sum();
+        assert!(c.length() < 1.5);
+        assert_eq!(shatter(&s, 3, 1, 7)[0].centroid, shards[0].centroid);
+    }
 
     fn check(p: &Primitive) {
         assert!(p.indices.len() % 3 == 0 && !p.indices.is_empty());

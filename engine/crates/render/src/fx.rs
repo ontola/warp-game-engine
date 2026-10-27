@@ -118,6 +118,16 @@ impl Effects {
         self.changed = true;
     }
 
+    /// A short burst of red spray where a body came apart (Godot
+    /// `spawn_gib_mist`): small dark puffs that swell and fade in half a
+    /// second. `intensity` 0.35..2.8.
+    pub fn gib_mist(&mut self, time: f32, pos: Vec3, intensity: f32) {
+        let r = 0.35 + intensity.clamp(0.35, 2.8) * 0.12;
+        let n = ((8.0 + intensity * 2.5).round() as usize).clamp(8, 14);
+        self.billows(time, pos, r, n, false, 0.55, 0.45, 0.9, r * 0.25, 1.0, 0.0, Vec3::new(1.15, 0.07, 0.05), 0.55);
+        self.changed = true;
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn billows(&mut self, time: f32, pos: Vec3, r: f32, count: usize, fire: bool, life: f32, scale_lo: f32, scale_hi: f32, rise: f32, stretch: f32, delay_bias: f32, tint: Vec3, opacity: f32) {
         let spread = r * if fire { 0.45 } else { 0.65 };

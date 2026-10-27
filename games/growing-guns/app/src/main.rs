@@ -16,6 +16,7 @@ mod session;
 mod sounds;
 mod synth;
 mod crowd_sound;
+mod gore;
 mod gun;
 mod stadium;
 mod view;
