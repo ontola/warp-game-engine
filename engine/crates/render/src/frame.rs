@@ -162,6 +162,8 @@ struct LightUniform {
     near_shadow: [f32; 4],
     /// Stellar peak radiance, zenith optical depth, zero-sun fast path, stable seed.
     night_stars: [f32; 4],
+    /// x: seconds for animated procedural materials (Lighting::time).
+    anim: [f32; 4],
 }
 
 #[repr(C)]
@@ -211,6 +213,9 @@ pub struct Lighting {
     /// Background stars only: peak radiance, zenith optical depth, reserved,
     /// numeric 24-bit seed. Atmosphere::NightSky supplies this automatically.
     /// A zero peak disables stars for legacy HDR environments.
+    /// Seconds on the clock that animated procedural materials (flowing
+    /// lava) follow. Keep it running with the game, not the wall clock.
+    pub time: f32,
     pub night_stars: [f32; 4],
     /// Exposure value at ISO 100 (sunny 16: about 15).
     pub ev100: f32,
@@ -310,6 +315,7 @@ impl Default for Lighting {
             shadow_strength: 1.0,
             sky_lux: 18_000.0,
             night_stars: [0.0; 4],
+            time: 0.0,
             ev100: 14.0,
             fog_start: 140.0,
             fog_end: 750.0,
@@ -2762,6 +2768,7 @@ impl Renderer {
             near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
+            anim: [light.time, 0.0, 0.0, 0.0],
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
@@ -4151,7 +4158,8 @@ mod layout_tests {
     #[test]
     fn near_light_uniform_and_projection_cover_each_separated_car() {
         use glam::Vec3;
-        assert_eq!(std::mem::size_of::<LightUniform>(), 400);
+        assert_eq!(std::mem::size_of::<LightUniform>(), 416);
+        assert_eq!(std::mem::offset_of!(LightUniform, anim), 400);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_scattering), 144);
         assert_eq!(std::mem::offset_of!(LightUniform, near_shadow_view_proj), 304);
         assert_eq!(std::mem::offset_of!(LightUniform, near_shadow), 368);

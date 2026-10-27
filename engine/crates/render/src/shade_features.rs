@@ -8,7 +8,7 @@
 //! construction. A disabled feature is exactly the path the shader would
 //! have taken anyway, so images do not change. `KERN_SHADE_FEATURES=all`
 //! restores the unspecialised pipeline for comparisons.
-use crate::scene::{Scene, ALPHA_TEST, CAR_SHIFT, GRASS, ROAD, TERRAIN, THIN_FOLIAGE};
+use crate::scene::{Scene, ALPHA_TEST, CAR_SHIFT, GRASS, LAVA, ROAD, ROCK, TERRAIN, THIN_FOLIAGE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadeFeatures {
@@ -28,10 +28,12 @@ pub struct ShadeFeatures {
     pub terrain: bool,
     /// Needle and leaf lighting (THIN_FOLIAGE or ALPHA_TEST materials).
     pub foliage: bool,
+    /// Procedural rock and lava surfaces (ROCK or LAVA materials).
+    pub procedural: bool,
 }
 
 impl ShadeFeatures {
-    pub const ALL: Self = Self { cars: true, grass: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true };
+    pub const ALL: Self = Self { cars: true, grass: true, tracks: true, world_terrain: true, foliage_pages: true, meadow: true, terrain: true, foliage: true, procedural: true };
 
     pub fn for_scene(scene: &Scene, world_terrain: bool, foliage_pages: bool, meadow: bool) -> Self {
         if std::env::var("KERN_SHADE_FEATURES").as_deref() == Ok("all") { return Self::ALL; }
@@ -45,6 +47,7 @@ impl ShadeFeatures {
             meadow,
             terrain: any(TERRAIN),
             foliage: any(THIN_FOLIAGE | ALPHA_TEST),
+            procedural: any(ROCK | LAVA),
         }
     }
 
@@ -62,6 +65,7 @@ impl ShadeFeatures {
             ("FEATURE_MEADOW", b(self.meadow)),
             ("FEATURE_TERRAIN", b(self.terrain)),
             ("FEATURE_FOLIAGE", b(self.foliage)),
+            ("FEATURE_PROCEDURAL", b(self.procedural)),
         ]
     }
 }
@@ -80,6 +84,6 @@ mod tests {
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: ROAD, scale: 1.0, metal: 0.0 });
         let f = ShadeFeatures::for_scene(&scene, false, false, true);
         assert!(f.grass && f.tracks && !f.cars && f.meadow);
-        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 10);
+        assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 11);
     }
 }

@@ -26,6 +26,7 @@ struct Light {
     near_shadow_view_proj: mat4x4<f32>,
     near_shadow: vec4<f32>, // world texel size, blend-start radius, enabled
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
+    anim: vec4<f32>,        // x: seconds for animated procedural materials
 };
 
 struct Cluster {
@@ -124,6 +125,8 @@ struct HiddenMeadow {
 // sets a feature false when its scene cannot use it (Renderer::new), so a
 // game without cars, grass, tracks or forests does not compile their code.
 override FEATURE_CARS: bool = true;
+// Procedural rock and lava surfaces (procedural_surface.wgsl).
+override FEATURE_PROCEDURAL: bool = true;
 override FEATURE_GRASS: bool = true;
 override FEATURE_TRACKS: bool = true;
 override FEATURE_WORLD_TERRAIN: bool = true;
@@ -1425,6 +1428,11 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         rough_m=mix(rough_m,max(rough_m-0.13,0.55),tracks.x);
         rough_m=mix(rough_m,0.72,tracks.y*0.65);
     }
+    if FEATURE_PROCEDURAL && (m.flags & 2048u) != 0u {
+        let rs = proc_rock(inst, p, n, m.tint, m.scale, max(length(fp.dx), length(fp.dy)));
+        base = rs.base;
+        rough_m = rs.rough;
+    }
     var metal = m.metal;
     var coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
     var coat_rough = 0.04;
@@ -1542,6 +1550,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
     if FEATURE_CARS { rad += car_lamp_emission(m.flags, base, inst, p); }
     // EMISSIVE: an untextured glowing surface, `scale` is its radiance in nits.
     if (m.flags & 1024u) != 0u { rad += m.tint * m.scale; }
+    // LAVA: unlit, flowing molten rock; `scale` is the radiance of white.
+    if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x) * m.scale; }
     rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
     if light.sky.z > 0.5 && light.sky.z < 1.5 {

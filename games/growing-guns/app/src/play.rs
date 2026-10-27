@@ -148,7 +148,10 @@ impl app::Game for Gg {
         }
         let status = self.session.status(&self.slots);
         hud::global(&mut list, &self.world, status.as_deref());
-        Ok(Draw { cameras, light: self.light.clone(), hud: list })
+        let mut light = self.light.clone();
+        // The lava flows on the game clock.
+        light.time = (self.world.tick as f32 - 1.0 + alpha) * DT;
+        Ok(Draw { cameras, light, hud: list })
     }
 
     fn title(&self) -> Option<String> { Some(format!("round {}", self.world.round)) }
