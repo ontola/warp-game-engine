@@ -85,10 +85,12 @@ struct FarSun {
 @group(0) @binding(22) var<uniform> far_sun: FarSun;
 @group(0) @binding(23) var far_sun_tex: texture_depth_2d_array;
 // Only a material approximation beneath/beyond the actual directional grass
-// aggregate. No light, normal, opacity layer or camera-distance tint is stored.
+// aggregate, plus opt-in analytic ground-contact AO. Neither is a cast shadow.
 struct MeadowSubstrate {
-    control: vec4<u32>, // enabled, field seed, f32 rest top-coverage, reserved
+    control: vec4<u32>, // albedo enabled, seed, f32 top-coverage, f32 AO strength
     leaf_base: vec4<f32>, // source linear RGB (height tint included), roughness
+    field_bounds: vec4<f32>, // minXZ/maxXZ
+    contact: vec4<f32>, // live density, basal radius, fixed anchor, blade reach
 };
 @group(0) @binding(27) var<uniform> meadow_substrate: MeadowSubstrate;
 
@@ -1244,6 +1246,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
     let duv_y = uv_at(fp.dy, e1, e2, vi);
     var base = m.tint;
     var nn = n; // the normal after normal maps
+    var meadow_ground_sky = 1.0;
     if (m.flags & 2u) != 0u {
         // Terrain (src/shaders/terrain.gdshader): moss, needles, a grassy
         // verge, bare ground beside the road and rock where it is steep.
@@ -1276,6 +1279,26 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
             nt = mix(nt, terrain_layer_normal(m.layer + 3, wuv, 3.0, mapping), m_bare);
             nn = perturb_xz(n, nt);
             c *= 0.78 + 0.34 * fbm(wuv / 31.0);
+            let contact_strength=bitcast<f32>(meadow_substrate.control.w);
+            if contact_strength>0.0 && meadow_substrate.contact.x>0.0 {
+                let params=meadow_substrate.contact;
+                // Use the same unanimated retained/jittered root identities as
+                // source and far grass. No camera, distance, LOD or sun term.
+                // Stay inside the field and away from road/support boundaries;
+                // this conservative setback deliberately omits edge AO.
+                let setback=0.9+params.z+params.w+1.415*params.y;
+                let inside=all(wuv>=meadow_substrate.field_bounds.xy+vec2<f32>(setback))
+                    && all(wuv<=meadow_substrate.field_bounds.zw-vec2<f32>(setback));
+                let habitat=meadow_habitat_coverage(wuv,uv.x,up,meadow_substrate.control.y)
+                    *smoothstep(setback,setback+0.5,uv.x)*(1.0-m_rock);
+                if inside && habitat>0.0 {
+                    // Substrate count scales its average palette coverage;
+                    // contact instead selects those actual retained root IDs.
+                    let source_cover=clamp(bitcast<f32>(meadow_substrate.control.z)/params.x,0.0,1.0);
+                    let cover=meadow_contact_cover(wuv,meadow_substrate.control.y,params.x,params.y,source_cover);
+                    meadow_ground_sky=1.0-clamp(contact_strength,0.0,0.7)*habitat*cover;
+                }
+            }
             if meadow_substrate.control.x != 0u {
                 // Use the same habitat beyond the old roadside verge too.
                 // Source top-coverage leaves actual soil/needles in the gaps;
@@ -1493,7 +1516,9 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         let response=grass_leaf_response(base,height,v,sun_e,shadow,sky_vis,contact,rough);
         direct=response.direct;indirect=response.indirect;specular=response.specular;
     } else {
-        let ambient=(sky_irradiance(n)*sky_vis+bounce*(1.0-sky_vis))*ao*contact.x;
+        // Analytic meadow AO affects only diffuse skylight on terrain. Direct
+        // sun/headlights, bounce, reflections, emission and fog remain intact.
+        let ambient=(sky_irradiance(n)*sky_vis*meadow_ground_sky+bounce*(1.0-sky_vis))*ao*contact.x;
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);

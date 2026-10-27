@@ -192,6 +192,12 @@ fn meadow_capture_metadata(renderer: &Renderer, gpu: &Gpu, scene: &render::Scene
     Ok(serde_json::json!({
         "views":views,"memory":memory,"lod_order":[0,1,2],
         "substrate_enabled":renderer.meadow_substrate_enabled(),
+        "contact_ao":{
+            "enabled":renderer.meadow_contact_ao_strength()>0.0,
+            "strength":renderer.meadow_contact_ao_strength(),
+            "max_radius_m":renderer.meadow_contact_ao_radius(),
+            "scope":"Analytic retained-root basal footprints attenuate terrain diffuse skylight only; source rest coverage, conservative road setback, no camera/LOD factor. Not source-silhouette AO or a cast grass shadow."
+        },
         "shadow_caster":false,"far_voxels":false,
         "distant_representation":if stats.iter().any(|s|s.aggregate_enabled) { "source_derived_directional_surface_samples" } else { "none" },
         "aggregate_limits":"Directional rest-source coverage/depth/normal/material samples with wind reprojection; not a voxel volume, multilayer transport or a grass shadow caster.",

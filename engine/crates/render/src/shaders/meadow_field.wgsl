@@ -8,6 +8,40 @@ fn meadow_hash(cell:vec2<i32>,salt:u32,seed:u32)->u32 {
 fn meadow_random(cell:vec2<i32>,salt:u32,seed:u32)->f32 {
     return f32(meadow_hash(cell,salt,seed)>>8u)/16777216.0;
 }
+// Shared source/aggregate/contact identity; never depends on a view or pose.
+const MEADOW_DENSITY_SALT:u32=191u;
+const MEADOW_ROOT_JITTER:f32=0.04;
+const MEADOW_ROOT_CELL:f32=0.45;
+fn meadow_patch_retained(cell:vec2<i32>,seed:u32,fraction:f32)->bool {
+    if fraction>=1.0 {return true;}
+    return fraction>0.0 && meadow_random(cell,MEADOW_DENSITY_SALT,seed)<fraction;
+}
+fn meadow_root_fraction(cell:vec2<i32>,seed:u32)->vec2<f32> {
+    let random=vec2<f32>(meadow_random(cell,157u,seed),meadow_random(cell,163u,seed));
+    return vec2<f32>(0.5)+(random*2.0-1.0)*MEADOW_ROOT_JITTER;
+}
+// Analytic basal contact footprint, NOT geometric union coverage or a shadow.
+// Radius below one cell minus jitter makes four canonical neighbour centres
+// sufficient: every omitted centre has zero support, including at cell seams.
+fn meadow_contact_cover(xz:vec2<f32>,seed:u32,density:f32,radius:f32,source_cover:f32)->f32 {
+    if density<=0.0 || radius<=0.0 || source_cover<=0.0 {return 0.0;}
+    // World-space f32 rounding can exceed a fixed sub-millimetre guard on
+    // kilometre-scale fields. Shrink only the bounded support by eight float
+    // epsilons at this coordinate, so omitted neighbours remain exactly zero.
+    let roundoff=8.0*1.1920928955078125e-7*(max(abs(xz.x),abs(xz.y))+MEADOW_ROOT_CELL);
+    let r=min(radius,max(0.0,MEADOW_ROOT_CELL*(1.0-MEADOW_ROOT_JITTER)-0.0001-roundoff));
+    if r<=0.0 {return 0.0;}
+    let first=vec2<i32>(floor(xz/MEADOW_ROOT_CELL-0.5));var gap=1.0;
+    for(var z=0;z<2;z++){for(var x=0;x<2;x++){
+        let cell=first+vec2<i32>(x,z);
+        if !meadow_patch_retained(cell,seed,density) {continue;}
+        let root=(vec2<f32>(cell)+meadow_root_fraction(cell,seed))*MEADOW_ROOT_CELL;
+        let d2=dot(xz-root,xz-root);
+        let footprint=1.0-smoothstep(0.0625*r*r,r*r,d2);
+        gap*=1.0-clamp(source_cover,0.0,1.0)*footprint;
+    }}
+    return 1.0-gap;
+}
 fn meadow_noise(p:vec2<f32>,seed:u32)->f32 {
     let cell=vec2<i32>(floor(p));let f=fract(p);let u=f*f*(3.0-2.0*f);
     return mix(mix(meadow_random(cell,103u,seed),meadow_random(cell+vec2<i32>(1,0),103u,seed),u.x),

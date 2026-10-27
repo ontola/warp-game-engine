@@ -1029,13 +1029,18 @@ impl Renderer {
         startup.mark("far_sun_resources");
         let foliage_sun_pages=crate::foliage_sun_pages::Resources::new(gpu,scene).expect("foliage sun pages");
         startup.mark("foliage_sun_page_resources");
+        let meadow_substrate_enabled = crate::meadow_substrate::enabled(
+            std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1"),
+            std::env::var("KERN_MEADOW_SUBSTRATE").ok().as_deref(),
+        );
+        let meadow_contact_ao = std::env::var("KERN_MEADOW_CONTACT_AO").as_deref() == Ok("1");
         let meadow_substrate_settings = crate::meadow_substrate::Uniform::from_field(
-            scene.meadow.as_ref(),
-            crate::meadow_substrate::enabled(
-                std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1"),
-                std::env::var("KERN_MEADOW_SUBSTRATE").ok().as_deref(),
-            ),
-        ).expect("invalid meadow substrate material");
+            scene.meadow.as_ref(), meadow_substrate_enabled || meadow_contact_ao,
+        ).expect("invalid meadow substrate material").with_features(meadow_substrate_enabled, meadow_contact_ao);
+        if meadow_contact_ao {
+            eprintln!("GPU meadow contact AO: actual strength {}; analytic retained-root basal footprint, terrain diffuse skylight only, not a cast shadow",
+                f32::from_bits(meadow_substrate_settings.control[3]));
+        }
         let meadow_substrate = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("shared meadow substrate material"),
             contents: bytemuck::bytes_of(&meadow_substrate_settings),
@@ -2344,6 +2349,15 @@ impl Renderer {
     /// when no meadow source exists in this scene; never rereads process env.
     pub fn meadow_substrate_enabled(&self) -> bool {
         self.meadow_substrate_enabled && self.debug_options().draws_meadow()
+    }
+
+    /// Actual configured/live analytic ground AO strength; never a fresh env
+    /// query. Zero without a meadow field or when live meadow/count is off.
+    pub fn meadow_contact_ao_strength(&self) -> f32 {
+        f32::from_bits(self.meadow_substrate_settings.with_debug(self.debug_options()).control[3])
+    }
+    pub fn meadow_contact_ao_radius(&self) -> f32 {
+        self.meadow_substrate_settings.with_debug(self.debug_options()).contact[1]
     }
 
     /// Update an existing instance range without rebuilding static geometry.
