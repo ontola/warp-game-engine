@@ -2,7 +2,7 @@
 //! first-person rifle, damage flash; plus the shared scoreboard and round
 //! banner. All shapes, no textures.
 use crate::view::PLAYER_COLORS_U8;
-use growing_guns::{World, MAX_DASH_CHARGES, RELOAD_TIME, WALK_SPEED};
+use growing_guns::{World, MAX_DASH_CHARGES};
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 
 /// Per local player feedback timers kept by the app.
@@ -44,32 +44,6 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
         d.rect([x, y + h - e, w, e], red, clip);
         d.rect([x, y, e, h], red, clip);
         d.rect([x + w - e, y, e, h], red, clip);
-    }
-    // 2D rifle, bottom right: kicks back on a shot, bobs while running.
-    let kick = (1.0 - p.since_shot / 0.12).max(0.0);
-    let speed = (p.vel.x * p.vel.x + p.vel.z * p.vel.z).sqrt() / WALK_SPEED;
-    let bob = if p.on_floor { fb.bob.sin() * 10.0 * s * speed.min(1.0) } else { -6.0 * s };
-    let reload = if p.reloading() { (std::f32::consts::PI * (1.0 - p.reload_timer * p.mods.reload / RELOAD_TIME)).sin() } else { 0.0 };
-    let gx = x + w * 0.66 + kick * 18.0 * s + (fb.bob * 0.5).sin() * 6.0 * s * speed.min(1.0);
-    let gy = y + h * 0.78 + kick * 26.0 * s + bob + reload * 120.0 * s;
-    let gun_dark = [0.10, 0.10, 0.11, 1.0];
-    let gun_mid = [0.20, 0.20, 0.22, 1.0];
-    let wood = [0.42, 0.26, 0.14, 1.0];
-    let u = 1.15 * s;
-    let poly = |d: &mut HudDrawList, pts: &[[f32; 2]], c: [f32; 4]| {
-        for k in 1..pts.len() - 1 {
-            d.triangle([pts[0], pts[k], pts[k + 1]].map(|q| [gx + q[0] * u, gy + q[1] * u]), c, clip);
-        }
-    };
-    poly(d, &[[-60.0, -30.0], [50.0, 10.0], [40.0, 40.0], [-70.0, 0.0]], gun_dark); // handguard
-    poly(d, &[[-175.0, -72.0], [-50.0, -22.0], [-56.0, -8.0], [-180.0, -58.0]], gun_dark); // barrel
-    poly(d, &[[30.0, 0.0], [230.0, 70.0], [215.0, 115.0], [15.0, 40.0]], gun_mid); // receiver
-    poly(d, &[[120.0, 50.0], [165.0, 66.0], [150.0, 170.0], [105.0, 160.0]], wood); // grip
-    poly(d, &[[220.0, 70.0], [420.0, 120.0], [400.0, 230.0], [205.0, 115.0]], wood); // stock
-    poly(d, &[[40.0, -8.0], [140.0, 28.0], [136.0, 40.0], [36.0, 4.0]], [0.05, 0.05, 0.05, 1.0]); // sight rail
-    if kick > 0.4 {
-        let mf = [1.0, 0.85, 0.35, (kick - 0.4) * 1.6];
-        d.circle([gx - 182.0 * u, gy - 66.0 * u], 22.0 * u * kick, mf, clip);
     }
     // Crosshair, opening with recoil bloom.
     let gap = (6.0 + p.bloom * 900.0) * s;

@@ -15,6 +15,7 @@ use render::headlights::LocalLight;
 use render::scene::{GpuInstance, Material, EMISSIVE};
 use render::{Camera, Lighting, Scene};
 use crate::stadium::StadiumVisuals;
+use crate::gun::{self, Rig, Stats};
 use audio::sfx::Listener;
 
 pub const TRACERS: usize = 64;
@@ -85,7 +86,28 @@ pub struct Visuals {
     pending_punch: Vec<(f32, Vec3, f32)>,
     /// The colosseum, its crowd and their voice.
     pub stadium: StadiumVisuals,
+    /// The growing gun per player, its meshes and instance blocks.
+    guns: Guns,
 }
+
+/// Instance blocks per player: the first-person gun (seen only in that
+/// player's own view) and the third-person gun (seen by everyone else).
+const GUN_PARTS: usize = 192;
+
+struct Guns {
+    /// Mesh per shape, then per material (barrel: one per heat level).
+    meshes: Vec<Vec<usize>>,
+    rigs: Vec<Rig>,
+    feel: Vec<GunFeel>,
+    /// First instance of each player's first-person and third-person block.
+    fp: Vec<usize>,
+    tp: Vec<usize>,
+}
+
+/// First-person gun feel (Godot `_update_gun_feel`): walk bob, jump bump,
+/// strafe tilt, recoil kick, the card-growth inspect blend.
+#[derive(Clone, Copy, Default)]
+struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect: f32 }
 
 /// Bullet colour with explosive rounds (Godot: base yellow toward orange).
 const BLAST_TINT: Vec3 = Vec3::new(1.0, 0.70, 0.20);
@@ -191,10 +213,11 @@ impl Visuals {
         let tracer_m = glow(&mut scene, [1.0, 0.9, 0.3], 30000.0);
         let tracer = cube(&mut scene, tracer_m);
         for _ in 0..TRACERS { scene.add_instance(tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
+        let guns = Guns::reserve(&mut scene, world.players.len());
 
         let mut v = Visuals { scene, first_dynamic, players, tracer, fx, fxm, flashes: Vec::new(), lights: Vec::new(), arena, kinds,
             corpses, phys, ragdolls: Vec::new(), chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, debris,
-            blasts: Effects::default(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new(), stadium };
+            blasts: Effects::default(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new(), stadium, guns };
         v.set_arena(world);
         v
     }
@@ -309,7 +332,13 @@ impl Visuals {
                         if let (Some(ts), Some(hs)) = (ts, hs) { self.ragdolls.push(Ragdoll { torso, head, slots: [ts, hs], meshes: [b, h] }); }
                     }
                 }
+                Event::Picked { player, .. } => self.guns.rigs[player].grow_to(Stats::of(&world.players[player])),
+                Event::Jump { player } => self.guns.feel[player].bump = 0.06,
                 Event::Shot { player, from, dir } => {
+                    let stats = Stats::of(&world.players[player]);
+                    self.guns.rigs[player].fire(&stats);
+                    let f = &mut self.guns.feel[player];
+                    f.kick = f.kick.max(0.08 * world.players[player].mods.recoil.clamp(0.2, 2.5));
                     self.flashes.push((from + dir * 0.8, 0.06));
                     let p = &world.players[player];
                     let (sy, cy) = p.yaw.sin_cos();
@@ -322,6 +351,7 @@ impl Visuals {
         let now = world.tick as f32 * growing_guns::DT;
         self.stadium.absorb(&mut self.scene, &mut self.fx, &mut self.blasts, world, ears, now, growing_guns::DT);
         let s = &mut self.scene;
+        self.guns.tick(world, growing_guns::DT);
         self.phys.step();
         for r in &self.ragdolls {
             for (body, slot, mesh, scale) in [(r.torso, r.slots[0], r.meshes[0], Vec3::new(0.42, 0.5, 0.42)), (r.head, r.slots[1], r.meshes[1], Vec3::splat(0.3))] {
@@ -357,7 +387,8 @@ impl Visuals {
             let eyes = Affine3A::from_scale_rotation_translation(Vec3::new(0.2, 0.07, 0.05), rot, pos + Vec3::Y * 0.6 + rot * Vec3::new(0.0, 0.0, -0.27));
             let aim = rot * Quat::from_rotation_x(p.pitch);
             let gun = Affine3A::from_scale_rotation_translation(Vec3::new(0.09, 0.12, 0.7), aim, pos + Vec3::Y * 0.05 + rot * Vec3::new(0.38, 0.0, -0.3));
-            for (mesh, xf) in [(m.body, body), (m.head, head), (m.eyes, eyes), (m.gun, gun)] { self.scene.update_instance(slot, mesh, xf); slot += 1; }
+            let _ = gun;
+            for (mesh, xf) in [(m.body, body), (m.head, head), (m.eyes, eyes), (m.gun, Affine3A::from_translation(HIDDEN))] { self.scene.update_instance(slot, mesh, xf); slot += 1; }
         }
         // Tracers: a short glowing streak behind each live bullet.
         for t in 0..TRACERS {
@@ -373,6 +404,55 @@ impl Visuals {
             slot += 1;
         }
         self.flashes.retain_mut(|f| { f.1 -= dt; f.1 > 0.0 });
+        self.pose_guns(world, prev, alpha, dt);
+    }
+
+    /// Morph a player's gun into their current stats (a card was given).
+    pub fn grow_gun(&mut self, i: usize, p: &growing_guns::Player) { self.guns.rigs[i].grow_to(Stats::of(p)); }
+
+    /// The growing guns: each player's rig follows their stats, then is drawn
+    /// in first person (own view) and third person (everyone else's).
+    fn pose_guns(&mut self, world: &World, prev: &[Vec3], alpha: f32, dt: f32) {
+        let Guns { meshes, rigs, feel, fp: fps, tp: tps } = &self.guns;
+        let _ = dt;
+        for (i, p) in world.players.iter().enumerate() {
+            let rig = &rigs[i];
+            let heat = rig.heat_level();
+            let f = &feel[i];
+            let bob = f.bob;
+            let reload = if p.reloading() { 1.0 - p.reload_timer * p.mods.reload / growing_guns::RELOAD_TIME } else { 0.0 };
+            let (r_off, r_tilt, mag_drop) = if p.reloading() { gun::reload_pose(reload) } else { (Vec3::ZERO, 0.0, 0.0) };
+            let pull = ((rig.build.barrel_length - 0.5) * 0.3).clamp(0.0, 0.3);
+            let cam = punched_camera(world, i, prev, alpha, &self.punch);
+            let fwd = (cam.target - cam.pos).normalize_or(Vec3::NEG_Z);
+            let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
+            let up = right.cross(fwd);
+            let view = Affine3A::from_cols(right.into(), up.into(), (-fwd).into(), cam.pos.into());
+            let muzzle = Vec3::new(0.3 + (f.phase * 0.5).sin() * 0.007 * bob, -0.3 + f.phase.sin() * 0.012 * bob - f.bump, -0.8 + f.kick + pull) + r_off;
+            let s = f.inspect;
+            let fp = view * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 0.0, r_tilt, f.tilt), muzzle)
+                * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 1.0 * s, 0.12 * s, 0.08 * s), Vec3::new(-0.14, 0.04, 0.14) * s);
+            // Third person: in the right hand, aimed with the head.
+            let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
+            let rot = Quat::from_rotation_y(p.yaw);
+            let tp = Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(p.pitch), pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12));
+            for (first, xf, drop) in [(fps[i], fp, mag_drop), (tps[i], tp, 0.0)] {
+                let mut n = 0;
+                if p.alive {
+                    for (part, local) in rig.pose(drop) {
+                        if n == GUN_PARTS { break; }
+                        self.scene.update_instance(first + n, gun_mesh(meshes, part.shape, part.mat, heat), xf * local);
+                        n += 1;
+                    }
+                }
+                for k in n..GUN_PARTS {
+                    let inst = &mut self.scene.instances[first + k];
+                    if inst.cluster_count == 0 { break; }
+                    inst.cluster_count = 0;
+                    inst.sphere = [0.0; 4];
+                }
+            }
+        }
     }
 
     /// First person: hide each local player's own model from their view
@@ -380,6 +460,10 @@ impl Visuals {
     pub fn hide_own_bodies(&mut self, slots: &[usize]) {
         for (k, &s) in slots.iter().enumerate().take(8) {
             for part in 0..4 { self.scene.instances[self.first_dynamic + s * 4 + part].hide_in_views(1 << k); }
+            for n in 0..GUN_PARTS {
+                self.scene.instances[self.guns.tp[s] + n].hide_in_views(1 << k);
+                self.scene.instances[self.guns.fp[s] + n].hide_in_views(!(1u8 << k));
+            }
         }
     }
 
@@ -472,17 +556,7 @@ impl Visuals {
     }
 
     /// A player's camera with the explosion punch applied.
-    pub fn punched(&self, world: &World, i: usize, mut cam: Camera) -> Camera {
-        let Some(&(off, rot)) = self.punch.get(i) else { return cam };
-        if !world.players[i].alive { return cam; }
-        let yaw = Quat::from_rotation_y(world.players[i].yaw);
-        let fwd = cam.target - cam.pos;
-        let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
-        let turned = Quat::from_axis_angle(Vec3::Y, rot.y) * Quat::from_axis_angle(right, rot.x) * fwd;
-        cam.pos += yaw * off;
-        cam.target = cam.pos + turned;
-        cam
-    }
+    pub fn punched(&self, world: &World, i: usize, cam: Camera) -> Camera { apply_punch(world, i, cam, &self.punch) }
 
     pub fn local_lights(&self) -> Vec<LocalLight> {
         // Blast lights first: they matter most while they last.
@@ -493,6 +567,116 @@ impl Visuals {
         for &(p, _) in self.flashes.iter().rev().take(16 - l.len()) { l.push(omni(p, Vec3::new(1.0, 0.75, 0.35) * 600.0, 8.0)); }
         l
     }
+}
+
+impl Guns {
+    /// One tick of gun state: rigs follow their stats (morphs, heat, bolt,
+    /// spin) and the first-person feel eases (bob, bump, tilt, kick).
+    fn tick(&mut self, world: &World, dt: f32) {
+        for (i, p) in world.players.iter().enumerate() {
+            let rig = &mut self.rigs[i];
+            rig.follow(Stats::of(p));
+            rig.update(dt);
+            let f = &mut self.feel[i];
+            let horiz = Vec3::new(p.vel.x, 0.0, p.vel.z).length();
+            f.bob = if p.on_floor && horiz > 0.5 { (horiz / growing_guns::WALK_SPEED).clamp(0.0, 1.4) } else { 0.0 };
+            if f.bob > 0.0 { f.phase += horiz * dt / 2.2 * std::f32::consts::PI; }
+            let k = (dt * 8.0).min(1.0);
+            f.bump -= f.bump * k;
+            f.kick -= f.kick * (dt * 14.0).min(1.0);
+            let (sy, cy) = p.yaw.sin_cos();
+            let lateral = (p.vel.dot(Vec3::new(cy, 0.0, -sy)) / growing_guns::WALK_SPEED).clamp(-1.0, 1.0);
+            f.tilt += ((lateral * 3.5f32).to_radians() - f.tilt) * k;
+            f.inspect += (if rig.is_growing() { 1.0 } else { 0.0 } - f.inspect) * (dt * 5.0).min(1.0);
+        }
+    }
+
+    fn reserve(scene: &mut Scene, players: usize) -> Self {
+        let mut meshes = Vec::new();
+        for shape in gun::SHAPES {
+            let mut row = Vec::new();
+            for m in gun::MATS {
+                let levels = if m == gun::Mat::Barrel { gun::HEAT_LEVELS } else { 1 };
+                for h in 0..levels {
+                    let mat = gun_material(scene, m, h);
+                    let prim = match shape {
+                        gun::Shape::Box => primitives::hewn_block(mat, 1, 0.1, 0.0, 0),
+                        gun::Shape::Cyl => primitives::cylinder(mat, 1.0, 1.0, 8),
+                        gun::Shape::Taper85 => primitives::cylinder(mat, 1.0, 0.85, 8),
+                        gun::Shape::Taper105 => primitives::cylinder(mat, 1.0, 1.05, 8),
+                        gun::Shape::Ring18 => primitives::torus(mat, 0.099, 10, 6),
+                        gun::Shape::Ring25 => primitives::torus(mat, 0.143, 10, 6),
+                    };
+                    row.push(scene.add_mesh(&prim.mesh()));
+                }
+            }
+            meshes.push(row);
+        }
+        let (mut fp, mut tp) = (Vec::new(), Vec::new());
+        for _ in 0..players {
+            let a = Slots::reserve(scene, GUN_PARTS).first;
+            // Nobody sees a first-person gun until its player is local.
+            for k in 0..GUN_PARTS { let i = &mut scene.instances[a + k]; i.hide_in_views(0xff); i.flags |= render::scene::NO_SHADOW; }
+            fp.push(a);
+            tp.push(Slots::reserve(scene, GUN_PARTS).first);
+        }
+        Guns { meshes, rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp }
+    }
+
+}
+
+fn gun_mesh(meshes: &[Vec<usize>], shape: gun::Shape, mat: gun::Mat, heat: usize) -> usize {
+    let s = gun::SHAPES.iter().position(|&x| x == shape).unwrap();
+    let mut k = 0;
+    for m in gun::MATS {
+        if m == mat { return meshes[s][k + if m == gun::Mat::Barrel { heat } else { 0 }]; }
+        k += if m == gun::Mat::Barrel { gun::HEAT_LEVELS } else { 1 };
+    }
+    unreachable!()
+}
+
+/// Godot `_make_material` and `_make_polymer`: machined metal lifted toward
+/// gunmetal, matte polymer; the barrel glows with heat.
+fn gun_material(scene: &mut Scene, m: gun::Mat, heat: usize) -> u32 {
+    use gun::Mat::*;
+    let rc = [0.13f32, 0.14, 0.17];
+    let metal = |scene: &mut Scene, col: [f32; 3], metallic: f32, rough: f32| {
+        let lift = 0.06 + (0.3 - 0.06) * metallic;
+        let gm = [0.62, 0.64, 0.68];
+        let tint = [0, 1, 2].map(|i| col[i] + (gm[i] - col[i]) * lift);
+        scene.add_material(Material { tint: srgb_to_linear(tint), layer: -1, roughness: (rough + 0.1).min(1.0), flags: 0, scale: 1.0, metal: metallic })
+    };
+    let k = |f: f32| rc.map(|c| c * f);
+    match m {
+        Metal => metal(scene, rc, 0.85, 0.32),
+        Dark => metal(scene, k(0.6), 0.95, 0.22),
+        Barrel if heat == 0 => metal(scene, k(0.6), 0.95, 0.22),
+        Barrel => { let (c, e) = gun::heat_glow(heat); glow(scene, c, e * 4000.0) }
+        Polymer => material(scene, [0.3, 0.25, 0.18], 0.7),
+        Pad => material(scene, [0.07, 0.07, 0.075], 0.7),
+        Recess => metal(scene, k(0.2), 0.3, 0.8),
+        Slot => metal(scene, k(0.25), 0.4, 0.85),
+        Bolt => metal(scene, [0.55, 0.57, 0.62], 0.95, 0.18),
+        Lens => glow(scene, [0.35, 0.7, 1.0], 7000.0),
+        Indicator => glow(scene, [0.4, 1.0, 0.95], 10000.0),
+    }
+}
+
+/// A player's camera with the view punch, for the first-person gun.
+fn punched_camera(world: &World, i: usize, prev: &[Vec3], alpha: f32, punch: &[(Vec3, glam::Vec2)]) -> Camera {
+    apply_punch(world, i, camera(world, i, prev, alpha), punch)
+}
+
+fn apply_punch(world: &World, i: usize, mut cam: Camera, punch: &[(Vec3, glam::Vec2)]) -> Camera {
+    let Some(&(off, rot)) = punch.get(i) else { return cam };
+    if !world.players[i].alive { return cam; }
+    let yaw = Quat::from_rotation_y(world.players[i].yaw);
+    let fwd = cam.target - cam.pos;
+    let right = fwd.cross(Vec3::Y).normalize_or(Vec3::X);
+    let turned = Quat::from_axis_angle(Vec3::Y, rot.y) * Quat::from_axis_angle(right, rot.x) * fwd;
+    cam.pos += yaw * off;
+    cam.target = cam.pos + turned;
+    cam
 }
 
 impl Marks {

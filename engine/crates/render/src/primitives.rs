@@ -31,6 +31,74 @@ impl Primitive {
         }
         self
     }
+
+    /// Wind every triangle to face along its vertex normals (for shapes
+    /// that are not convex around the origin, such as a torus).
+    fn along_normals(mut self) -> Self {
+        for t in self.indices.chunks_exact_mut(3) {
+            let v = [t[0], t[1], t[2]].map(|k| self.vertices[k as usize]);
+            let [a, b, c] = v.map(|v| Vec3::from(v.pos));
+            let n: Vec3 = v.iter().map(|v| Vec3::from(v.normal)).sum();
+            if (b - a).cross(c - a).dot(n) < 0.0 { t.swap(1, 2); }
+        }
+        self
+    }
+}
+
+/// Cylinder of height 1 along Y (centred), radius `bottom` at y = -0.5 and
+/// `top` at y = +0.5, `segments` around; smooth sides, flat caps.
+pub fn cylinder(material: u32, top: f32, bottom: f32, segments: u32) -> Primitive {
+    let segments = segments.max(3);
+    let mut p = Primitive { material, ..Default::default() };
+    let slope = (bottom - top).atan2(1.0);
+    for s in 0..=segments {
+        let ph = std::f32::consts::TAU * s as f32 / segments as f32;
+        let (c, sn) = (ph.cos(), ph.sin());
+        let n = Vec3::new(c * slope.cos(), slope.sin(), sn * slope.cos());
+        for (r, y) in [(bottom, -0.5), (top, 0.5)] {
+            p.vertices.push(Vertex { pos: [c * r, y, sn * r], normal: n.to_array(), uv: [s as f32 / segments as f32, y + 0.5] });
+        }
+    }
+    for s in 0..segments {
+        let a = s * 2;
+        p.indices.extend([a, a + 1, a + 2, a + 1, a + 3, a + 2]);
+    }
+    for (r, y) in [(bottom, -0.5f32), (top, 0.5)] {
+        if r <= 0.0 { continue; }
+        let base = p.vertices.len() as u32;
+        let n = [0.0, y.signum(), 0.0];
+        p.vertices.push(Vertex { pos: [0.0, y, 0.0], normal: n, uv: [0.5, 0.5] });
+        for s in 0..=segments {
+            let ph = std::f32::consts::TAU * s as f32 / segments as f32;
+            p.vertices.push(Vertex { pos: [ph.cos() * r, y, ph.sin() * r], normal: n, uv: [0.5 + ph.cos() * 0.5, 0.5 + ph.sin() * 0.5] });
+        }
+        for s in 0..segments { p.indices.extend([base, base + 1 + s, base + 2 + s]); }
+    }
+    p.along_normals()
+}
+
+/// Torus around Y: the tube's centre circle has radius 1, the tube radius
+/// `tube`; `rings` around the axis, `sides` around the tube.
+pub fn torus(material: u32, tube: f32, rings: u32, sides: u32) -> Primitive {
+    let (rings, sides) = (rings.max(3), sides.max(3));
+    let mut p = Primitive { material, ..Default::default() };
+    for r in 0..=rings {
+        let a = std::f32::consts::TAU * r as f32 / rings as f32;
+        let out = Vec3::new(a.cos(), 0.0, a.sin());
+        for s in 0..=sides {
+            let b = std::f32::consts::TAU * s as f32 / sides as f32;
+            let n = out * b.cos() + Vec3::Y * b.sin();
+            p.vertices.push(Vertex { pos: (out + n * tube).to_array(), normal: n.to_array(), uv: [r as f32 / rings as f32, s as f32 / sides as f32] });
+        }
+    }
+    for r in 0..rings {
+        for s in 0..sides {
+            let a = r * (sides + 1) + s;
+            let b = a + sides + 1;
+            p.indices.extend([a, b, a + 1, a + 1, b, b + 1]);
+        }
+    }
+    p.along_normals()
 }
 
 /// Unit cube (side 1), flat-shaded, uv 0..1 per face.
