@@ -115,6 +115,21 @@ impl app::Game for Gg {
     }
 
     fn title(&self) -> Option<String> { Some(format!("round {}", self.world.round)) }
+
+    fn state(&self) -> Option<String> {
+        let w = &self.world;
+        let players: Vec<_> = w.players.iter().enumerate().map(|(i, p)| serde_json::json!({
+            "index": i, "bot": p.bot, "local_view": self.slots.iter().position(|&s| s == i),
+            "alive": p.alive, "health": p.health, "score": p.score, "ammo": p.ammo, "reloading": p.reloading(),
+            "pos": p.pos.to_array(), "vel": p.vel.to_array(), "yaw": p.yaw, "pitch": p.pitch,
+            "on_floor": p.on_floor, "on_wall": p.wall_normal.is_some(), "dash_charges": p.dash_charges,
+        })).collect();
+        Some(serde_json::json!({
+            "tick": w.tick, "round": w.round, "intermission": w.intermission,
+            "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len() },
+            "players": players, "bullets": w.bullets.len(), "events": w.events,
+        }).to_string())
+    }
 }
 
 pub fn run(args: &Args) -> Result<(), String> {

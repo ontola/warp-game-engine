@@ -150,6 +150,8 @@ dependencies = [
  "gilrs",
  "glam 0.31.1",
  "render",
+ "serde",
+ "serde_json",
  "wgpu",
  "winit",
 ]
@@ -1669,6 +1671,7 @@ dependencies = [
  "postcard",
  "render",
  "serde",
+ "serde_json",
  "tokio",
  "wgpu",
 ]

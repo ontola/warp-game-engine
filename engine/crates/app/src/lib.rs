@@ -6,6 +6,7 @@
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
 //! released), F11 toggles fullscreen, F12 saves `screenshot-N.png`.
 pub mod input;
+pub mod script;
 
 pub use input::{Buttons, Controls, Devices, Tuning};
 use render::hud::{HudDrawList, HudRenderer};
@@ -62,6 +63,8 @@ pub trait Game {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String>;
     /// A line for the window title, if any.
     fn title(&self) -> Option<String> { None }
+    /// The game's state as JSON, for scripted playtests and agents.
+    fn state(&self) -> Option<String> { None }
 }
 
 #[derive(Clone, Debug)]
@@ -102,19 +105,40 @@ fn offscreen(gpu: &Gpu, size: [u32; 2], format: wgpu::TextureFormat) -> wgpu::Te
     })
 }
 
+/// A game without a window: tick it with any controls and render frames to
+/// memory through the same path as the window. Keeps its renderer between
+/// frames. `KERN_ADAPTER=software` runs it on a CPU rasteriser.
+pub struct Headless<'g> {
+    pub gpu: &'g Gpu,
+    pub size: [u32; 2],
+    pub tick_hz: f32,
+    renderer: Option<Renderer>,
+    out: Output,
+    target: wgpu::Texture,
+}
+
+impl<'g> Headless<'g> {
+    pub fn new(gpu: &'g Gpu, size: [u32; 2], tick_hz: f32) -> Result<Self, String> {
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        Ok(Self { gpu, size, tick_hz, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format) })
+    }
+    /// Draw one frame and read it back as RGBA8.
+    pub fn frame(&mut self, game: &mut dyn Game) -> Result<Vec<u8>, String> {
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, renderer: &mut self.renderer };
+        let draw = game.draw(&mut frame)?;
+        let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
+        self.out.draw(self.gpu, renderer, &draw, self.size, &self.target.create_view(&Default::default()))?;
+        Ok(self.gpu.read_rgba8(&self.target))
+    }
+    pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
+}
+
 /// Headless: run `ticks` steps with idle controls, draw one frame and return
-/// it as RGBA8. No window is created (`KERN_ADAPTER=software` works too).
+/// it as RGBA8. No window is created.
 pub fn capture(game: &mut dyn Game, gpu: &Gpu, size: [u32; 2], ticks: u32, tick_hz: f32) -> Result<Vec<u8>, String> {
     let players = game.local_players();
     for _ in 0..ticks { game.tick(&vec![Controls::default(); players]); }
-    let mut renderer = None;
-    let mut frame = Frame { gpu, size, dt: 1.0 / tick_hz, alpha: 1.0, renderer: &mut renderer };
-    let draw = game.draw(&mut frame)?;
-    let renderer = renderer.ok_or("the game drew without a scene")?;
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let target = offscreen(gpu, size, format);
-    Output::new(gpu, format)?.draw(gpu, &renderer, &draw, size, &target.create_view(&Default::default()))?;
-    Ok(gpu.read_rgba8(&target))
+    Headless::new(gpu, size, tick_hz)?.frame(game)
 }
 
 struct Live {

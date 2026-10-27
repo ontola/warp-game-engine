@@ -10,6 +10,8 @@ render = { path = "../render" }
 glam = "0.31"
 winit = "0.30"
 wgpu = "30"
+serde.workspace = true
+serde_json.workspace = true
 
 # Windows controllers are exposed through XInput; WGI can miss them.
 [target.'cfg(windows)'.dependencies]
