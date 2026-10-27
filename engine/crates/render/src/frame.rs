@@ -2894,7 +2894,7 @@ impl Renderer {
             main_uniform.extra[2] = if dlss_on { h as f32 / view.h as f32 } else { 0.0 };
             main_uniform.extra[3] = light.grass_reference;
             let grass_band = self.grass_detail.for_views(views.len());
-            main_uniform.grass = [grass_band.fade_start, grass_band.fade_end, 0.0, 0.0];
+            main_uniform.grass = [grass_band.fade_start, grass_band.fade_end, (vi + 1) as f32, 0.0];
             main_uniform.fog_cull = camera_fog_cull(light);
             // One allocation-free terrain horizon query per physical camera.
             // Independent of camera rotation, jitter, exposure and shadow-map focus.

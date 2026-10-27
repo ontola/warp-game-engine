@@ -7,7 +7,7 @@ use growing_guns::{Event, Input, World};
 use std::collections::VecDeque;
 use tokio::sync::mpsc::UnboundedSender;
 
-struct Remote {
+pub struct Remote {
     client: u64,
     slots: Vec<usize>,
     tx: UnboundedSender<ToClient>,

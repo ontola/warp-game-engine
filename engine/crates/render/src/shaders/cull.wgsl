@@ -204,6 +204,13 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
         && (replacement&0x80000000u)!=0u {
         if foliage_selection[replacement&0x7fffffffu].x!=0u {return 0u;}
     }
+    // Per-view hiding (scene::HIDE_IN_VIEW): a player's own body is absent
+    // from that player's camera, yet still casts shadows and shows elsewhere.
+    // grass.z holds 1 + the camera view index; other passes leave it zero.
+    if view.params.z<0.5 && view.extra.y<1.5 && view.grass.z>0.5 {
+        let bit=1u<<(u32(view.grass.z)-1u);
+        if ((inst.flags>>8u)&bit)!=0u {return 0u;}
+    }
     // The orthographic pass is the sun shadow map. Low ground cover only
     // receives shadows; exclude its tiny cards from this expensive pass.
     if (view.params.z > 0.5 || view.extra.y > 1.5) && (inst.flags & 4u) != 0u {
