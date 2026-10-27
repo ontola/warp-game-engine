@@ -561,6 +561,8 @@ pub struct Renderer {
     /// Per view: size, visibility, depth and HDR targets reused across frames.
     #[allow(clippy::type_complexity)]
     view_targets: std::sync::Mutex<Vec<Option<((u32, u32), wgpu::Texture, wgpu::Texture, wgpu::Texture)>>>,
+    /// Per view: the gi, view light, TAA and tone uniforms, rewritten each frame.
+    view_uniforms: std::sync::Mutex<Vec<[Option<wgpu::Buffer>; 4]>>,
     volume_view_layout: wgpu::BindGroupLayout,
     cull: wgpu::ComputePipeline,
     split_sun_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
@@ -1426,6 +1428,7 @@ impl Renderer {
             foliage_representation_policy: scene.foliage_representation_policy,
             foliage_planners: Default::default(),
             view_targets: Default::default(),
+            view_uniforms: Default::default(),
             volume_view_layout,
             cull,
             split_sun_cull,
@@ -2144,6 +2147,22 @@ impl Renderer {
     /// the frame since the last call, and the number of frames.
     pub fn cpu_spans(&self) -> Option<(Vec<(&'static str, f64)>, u64)> { self.cpu_spans.as_ref().map(|c| c.take()) }
 
+    /// A per-view uniform buffer reused across frames: written with
+    /// `write_buffer`, which lands before this frame's commands run and
+    /// after the previous frame's (one queue), instead of a new buffer.
+    fn view_uniform(&self, gpu: &Gpu, view: usize, slot: usize, label: &str, data: &[u8]) -> wgpu::Buffer {
+        let mut all = self.view_uniforms.lock().unwrap();
+        if all.len() <= view { all.resize_with(view + 1, Default::default); }
+        let entry = &mut all[view][slot];
+        if entry.as_ref().is_none_or(|b| b.size() != data.len() as u64) {
+            *entry = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: data.len() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+        }
+        let b = entry.clone().unwrap();
+        gpu.queue.write_buffer(&b, 0, data);
+        b
+    }
+
     /// Optional shade-shader features this renderer's scene can reach.
     pub fn shade_features(&self) -> crate::shade_features::ShadeFeatures { self.shade_features }
 
@@ -2853,7 +2872,7 @@ impl Renderer {
                 bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
                 params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit, 0.0],
             };
-            let gi_buf = buffer(gpu, "gi", bytemuck::bytes_of(&gi_u), wgpu::BufferUsages::UNIFORM);
+            let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             let mut view_light = lu;
             let near_view = if near_enabled {
                 let near = &near_shadows[vi];
@@ -2876,7 +2895,7 @@ impl Renderer {
                 // Valid but unused binding when the feature is disabled.
                 cache.as_ref().unwrap().tex.create_view(&Default::default())
             };
-            let light_buf = buffer(gpu, "view light", bytemuck::bytes_of(&view_light), wgpu::BufferUsages::UNIFORM);
+            let light_buf = self.view_uniform(gpu, vi, 1, "view light", bytemuck::bytes_of(&view_light));
             // Per-view targets live across frames while the view keeps its size:
             // allocating three full-screen textures per view per frame cost
             // CPU time and driver memory churn. Every pass writes them fully.
@@ -2956,12 +2975,12 @@ impl Renderer {
                 };
                 hh.prev_view_proj = proj * view_m;
                 hh.cur = 1 - hh.cur;
-                Some((src, dst, buffer(gpu, "taa", bytemuck::bytes_of(&u), wgpu::BufferUsages::UNIFORM)))
+                Some((src, dst, self.view_uniform(gpu, vi, 2, "taa", bytemuck::bytes_of(&u))))
             } else {
                 None
             };
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,debug_options.bloom_strength);
-            let tone_buf = buffer(gpu, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},pad2:0 }), wgpu::BufferUsages::UNIFORM);
+            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},pad2:0 }));
             cpu.mark("view setup");
             let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
                 bind(
@@ -3174,6 +3193,7 @@ impl Renderer {
                     far_motion_layer = far_grass;
                 }
             }
+            cpu.mark("view shade and layers");
             let resolved = if dlss_on {
                 let grass_motion = self.grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).and_then(|g| g.motion_layer(vi));
                 let glass_motion = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled).and_then(|t| t.motion_layer(vi));
@@ -3208,6 +3228,7 @@ impl Renderer {
             } else if taa_on {
                 let hh = hist.as_ref().unwrap(); hh.tex[hh.cur].clone()
             } else { hdr.clone() };
+            cpu.mark("view temporal");
             // Compose after temporal reconstruction into a separate output.
             // Never write heat/smoke back into TAA or DLSS history.
             let exhaust_output = if debug_options.exhaust_enabled {
@@ -3263,7 +3284,7 @@ impl Renderer {
                 pass.dispatch_workgroups(view.w.div_ceil(8), view.h.div_ceil(8), 1);
             }
             keep.push((main, vis, depth, hdr));
-            cpu.mark("view shade and post");
+            cpu.mark("view effects, bloom, tonemap");
         }
         if let Some(motion) = &up.motion { motion.finish_frame(&mut enc); }
         // One shared previous wind state, advanced only after every view has
