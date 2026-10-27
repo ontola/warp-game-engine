@@ -2,6 +2,7 @@
 // Rest coverage is an approximation under wind; representative surface points,
 // real normals and previous positions use the same four branch poses as source.
 override MEADOW_AGGREGATE_HALF_RES:bool=false;
+override MEADOW_AGGREGATE_SAMPLE_PRUNE:bool=false;
 fn meadow_aggregate_size()->vec2<f32> {
     if MEADOW_AGGREGATE_HALF_RES {return ceil(view.size.xy*0.5);}
     return view.size.xy;
@@ -86,6 +87,7 @@ fn meadow_atlas_sample(variant:u32,direction:u32,local_origin:vec3<f32>,local_ra
 fn meadow_atlas_representative(surface:MeadowSurface)->MeadowSurface {
     var result=surface;let uv=surface.point.xy;let mip_value=surface.point.z;let layer=i32(surface.point.w);
     let first_mip=u32(floor(mip_value));let fraction=fract(mip_value);var strongest=0.0;
+    var strongest_xy=vec2<i32>(0);var strongest_mip=0u;
     for(var level=0u;level<2u;level++) {
         let mip=min(first_mip+level,5u);let weight=select(1.0-fraction,fraction,level!=0u);
         if weight<=0.0 {continue;}
@@ -94,8 +96,18 @@ fn meadow_atlas_representative(surface:MeadowSurface)->MeadowSurface {
             let xy=first+vec2<i32>(i32(x),i32(y));if any(xy<vec2<i32>(0)) || any(xy>=vec2<i32>(i32(size))) {continue;}
             let coverage=textureLoad(meadow_atlas_material,xy,layer,i32(mip)).w;
             let w=coverage*weight*select(1.0-f.x,f.x,x!=0u)*select(1.0-f.y,f.y,y!=0u);
-            if w>strongest {strongest=w;result.point=textureLoad(meadow_atlas_surface,xy,layer,i32(mip));result.anchor=textureLoad(meadow_atlas_surface,xy,layer+1,i32(mip));}
+            if w>strongest {
+                strongest=w;
+                if MEADOW_AGGREGATE_SAMPLE_PRUNE {strongest_xy=xy;strongest_mip=mip;}
+                else {result.point=textureLoad(meadow_atlas_surface,xy,layer,i32(mip));result.anchor=textureLoad(meadow_atlas_surface,xy,layer+1,i32(mip));}
+            }
         }}
+    }
+    // Keep strict > and the original mip/y/x scan order, including equal-weight
+    // ties. A zero-coverage query leaves the incoming surface untouched.
+    if MEADOW_AGGREGATE_SAMPLE_PRUNE && strongest>0.0 {
+        result.point=textureLoad(meadow_atlas_surface,strongest_xy,layer,i32(strongest_mip));
+        result.anchor=textureLoad(meadow_atlas_surface,strongest_xy,layer+1,i32(strongest_mip));
     }
     return result;
 }
@@ -126,8 +138,12 @@ fn meadow_aggregate_surface(in:MeadowAggregateVertex)->MeadowAggregateSurface {
     let footprint=select(distance(root.xyz,view.cam.xyz),1.0,view.params.z>0.5)/max(meadow_aggregate_focal(),1.0)/max(root.w,0.1);
     var sample:MeadowSurface;var total=0.0;var strongest=0.0;var rgb=vec3<f32>(0.0);
     for(var e=0u;e<2u;e++){for(var a=0u;a<2u;a++){
+        let weight=select(1.0-azf,azf,a!=0u)*select(1.0-elf,elf,e!=0u);
+        // No epsilon cutoff: every nonzero angular contribution retains its
+        // original reads, multiplication and accumulation order.
+        if MEADOW_AGGREGATE_SAMPLE_PRUNE && weight==0.0 {continue;}
         let s=meadow_atlas_sample(variant,(el0+e)*8u+(az0+a)%8u,local_origin,local_ray,footprint);
-        let weight=select(1.0-azf,azf,a!=0u)*select(1.0-elf,elf,e!=0u);let covered=weight*s.color.w;
+        let covered=weight*s.color.w;
         rgb+=s.color.rgb*covered;sample.normal+=s.normal*covered;total+=covered;
         if covered>strongest {strongest=covered;sample.point=s.point;sample.anchor=s.anchor;}
     }}

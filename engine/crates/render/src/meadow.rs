@@ -15,6 +15,12 @@ mod group_gpu;
 mod visibility;
 #[path = "meadow_half.rs"]
 mod half;
+#[path = "meadow_capture.rs"]
+mod capture;
+pub use capture::{MeadowAggregateRaw, MeadowRawLayer};
+#[cfg(test)]
+#[path = "meadow_sample_prune_tests.rs"]
+mod sample_prune_tests;
 pub use group_gpu::Stats as GroupCacheStats;
 
 #[repr(C)]
@@ -97,6 +103,8 @@ pub struct MeadowStats {
     /// Padded ID copy plus its counter/header; per-view allocation.
     pub hidden_shade_buffer_bytes: u64,
     pub aggregate_enabled: bool,
+    /// Actual constructed aggregate pipeline specialization, not a fresh env read.
+    pub aggregate_sample_prune_enabled: bool,
     /// Opt-in spatial reconstruction approximation; source and merge remain full size.
     pub aggregate_half_resolution: bool,
     pub aggregate_target_size: [u32; 2],
@@ -143,12 +151,16 @@ struct Targets {
     depth: wgpu::Texture,
     depth_view: wgpu::TextureView,
     motion: Option<wgpu::TextureView>,
+    motion_texture: Option<wgpu::Texture>,
+    capture_ready: bool,
+    motion_written: bool,
     reveal: Option<wgpu::TextureView>,
     material: Option<MaterialTargets>,
     reduced_opaque: Option<half::OpaqueTarget>,
     composite: wgpu::BindGroup,
 }
 struct MaterialTargets {
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     layers: [wgpu::TextureView; 3],
 }
@@ -186,6 +198,7 @@ fn consume_prepared_visibility(prepared:&mut Option<((u32,u32),Settings)>,size:(
 }
 struct AggregateResources {
     half_depth: Option<half::DepthReduce>,
+    sample_prune_enabled: bool,
     dimension: u32,
     capacity: u32,
     pool_bytes: u64,
@@ -418,9 +431,13 @@ impl MeadowRenderer {
         field.validate()?;
         let aggregate_enabled = std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1");
         let aggregate_half = aggregate_enabled && std::env::var("KERN_MEADOW_AGGREGATE_HALF_RES").as_deref() == Ok("1");
+        let aggregate_sample_prune = aggregate_enabled && std::env::var("KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE").as_deref() == Ok("1");
         let groups_enabled = std::env::var("KERN_MEADOW_GROUP_CACHE").as_deref() == Ok("1");
         if aggregate_half && groups_enabled {
             return Err("KERN_MEADOW_AGGREGATE_HALF_RES does not support KERN_MEADOW_GROUP_CACHE".into());
+        }
+        if aggregate_sample_prune && groups_enabled {
+            return Err("KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE does not support KERN_MEADOW_GROUP_CACHE".into());
         }
         if std::env::var("KERN_MEADOW_GROUP_REPLACE").as_deref() == Ok("1") && !groups_enabled {
             return Err("KERN_MEADOW_GROUP_REPLACE requires KERN_MEADOW_GROUP_CACHE=1".into());
@@ -745,7 +762,10 @@ impl MeadowRenderer {
                 immediate_size: 0,
             });
         let pipeline = |motion: bool, depth: bool, aggregate: bool| {
-            let constants = [("MEADOW_AGGREGATE_HALF_RES", if aggregate && aggregate_half {1.0} else {0.0})];
+            let constants = [
+                ("MEADOW_AGGREGATE_HALF_RES", if aggregate && aggregate_half {1.0} else {0.0}),
+                ("MEADOW_AGGREGATE_SAMPLE_PRUNE", if aggregate && aggregate_sample_prune {1.0} else {0.0}),
+            ];
             let mut targets = if depth {
                 vec![]
             } else {
@@ -897,7 +917,8 @@ impl MeadowRenderer {
             let recipe_bytes=atlas.bytes+(216+12)*16;
             eprintln!("GPU meadow surface aggregate: {}–180 m, {} candidates/view, {} pool bytes/view, {} atlas+bounds bytes, {:.2} ms CPU cook; hardware filtered source material, one lighting resolve per pixel, NOT voxel transport",field.fade_start,aggregate_capacity,aggregate_pool_bytes,recipe_bytes,cook_ms);
             eprintln!("GPU meadow aggregate half resolution: {aggregate_half}; reduced depth/material/lighting, full source/merge; spatial reconstruction approximation");
-            AggregateResources {half_depth:aggregate_half.then(||half::DepthReduce::new(gpu)),dimension:aggregate_dimension,capacity:aggregate_capacity,pool_bytes:aggregate_pool_bytes,
+            eprintln!("GPU meadow aggregate sample pruning: {aggregate_sample_prune}; exact-zero angular reads skipped, representative point/anchor fetched once; unchanged resolution/coverage/pose");
+            AggregateResources {half_depth:aggregate_half.then(||half::DepthReduce::new(gpu)),sample_prune_enabled:aggregate_sample_prune,dimension:aggregate_dimension,capacity:aggregate_capacity,pool_bytes:aggregate_pool_bytes,
                 recipe_bytes,cook_ms,atlas_base,
                 depth:[pipeline(false,true,true),pipeline(true,true,true)],pipeline:pipeline(false,false,true),
                 merge_layout,merge,transition,atlas,draw_layout:aggregate_draw_layout,resolve_layout,resolve}
@@ -1038,7 +1059,12 @@ impl MeadowRenderer {
         let mut views=self.views.lock().unwrap();
         views.resize_with(count, || None);
         // A skipped/aborted previous frame can never certify a new frame.
-        for view in views.iter_mut().flatten() {view.prepared_visibility=None;view.hidden_used_this_frame=false;}
+        for view in views.iter_mut().flatten() {
+            view.prepared_visibility=None;view.hidden_used_this_frame=false;
+            if let Some(target)=view.aggregate.as_mut().and_then(|far|far.targets.as_mut()) {
+                target.capture_ready=false;target.motion_written=false;
+            }
+        }
     }
     fn frame_settings(&self, options: crate::debug_settings::DebugRenderOptions) -> Result<Settings, String> {
         self.settings.for_frame(options, &self.clock.lock().unwrap())
@@ -1265,6 +1291,7 @@ impl MeadowRenderer {
             wgpu::TextureFormat::Depth32Float,
             wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::TEXTURE_BINDING,
         );
         let depth_view = depth.create_view(&Default::default());
@@ -1283,6 +1310,9 @@ impl MeadowRenderer {
             depth,
             depth_view,
             motion: None,
+            motion_texture: None,
+            capture_ready: false,
+            motion_written: false,
             reveal: None,
             material: None,
             reduced_opaque: None,
@@ -1293,6 +1323,33 @@ impl MeadowRenderer {
     pub(crate) fn source_fixture_layers(&self) -> Vec<wgpu::Texture> {
         self.views.lock().unwrap().iter().filter_map(|v|v.as_ref()?.targets.as_ref()
             .map(|t|t.color_texture.clone())).collect()
+    }
+    /// Synchronous, explicit diagnostic readback of the last encoded aggregate
+    /// pass. Call only after its submission, and attach the host frame identity.
+    /// No readback or filesystem work is performed by ordinary rendering.
+    pub fn aggregate_raw(&self, gpu: &Gpu) -> Result<Vec<MeadowAggregateRaw>, String> {
+        let Some(aggregate) = &self.aggregate else { return Ok(Vec::new()); };
+        let inputs = {
+            let views = self.views.lock().unwrap();
+            let mut inputs = Vec::new();
+            for (view, resources) in views.iter().enumerate() {
+                let Some(target) = resources.as_ref().and_then(|v| v.aggregate.as_ref())
+                    .and_then(|v| v.targets.as_ref()).filter(|t| t.capture_ready) else { continue; };
+                let material = target.material.as_ref().ok_or("aggregate material capture missing")?;
+                let motion = if target.motion_written {
+                    Some(target.motion_texture.clone().ok_or("aggregate motion capture missing")?)
+                } else { None };
+                inputs.push(capture::Input {
+                    view, size: [target.size.0, target.size.1],
+                    sample_prune_enabled: aggregate.sample_prune_enabled,
+                    half_resolution: aggregate.half_depth.is_some(),
+                    color: target.color_texture.clone(), depth: target.depth.clone(),
+                    material: material.texture.clone(), motion,
+                });
+            }
+            inputs
+        };
+        capture::read(gpu, inputs)
     }
     pub fn motion_layer(&self, index: usize) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
         let views = self.views.lock().unwrap();
@@ -1308,8 +1365,7 @@ impl MeadowRenderer {
         if !motion || t.motion.is_some() {
             return;
         }
-        t.motion = Some(
-            gpu.device
+        let texture = gpu.device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some("meadow temporal positions"),
                     size: wgpu::Extent3d {
@@ -1322,11 +1378,12 @@ impl MeadowRenderer {
                     dimension: wgpu::TextureDimension::D2,
                     format: wgpu::TextureFormat::Rgba32Float,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
                     view_formats: &[],
-                })
-                .create_view(&Default::default()),
-        );
+                });
+        t.motion = Some(texture.create_view(&Default::default()));
+        t.motion_texture = Some(texture);
     }
     /// Encode exact source visibility before opaque lighting. The later render
     /// consumes it once; settings/size changes are rejected rather than reused.
@@ -1405,6 +1462,8 @@ impl MeadowRenderer {
             }
             Self::ensure_motion(gpu, far.targets.as_mut().unwrap(), motion);
             let target = far.targets.as_mut().unwrap();
+            target.capture_ready = false;
+            target.motion_written = false;
             if half && target.reduced_opaque.is_none() {
                 target.reduced_opaque=Some(half::OpaqueTarget::new(gpu,far_size));
             }
@@ -1421,7 +1480,8 @@ impl MeadowRenderer {
                     dimension: wgpu::TextureDimension::D2,
                     format: wgpu::TextureFormat::Rgba16Float,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
                     view_formats: &[],
                 });
                 let layers = std::array::from_fn(|layer| {
@@ -1439,6 +1499,7 @@ impl MeadowRenderer {
                         ..Default::default()
                     }),
                     layers,
+                    texture,
                 });
             }
             if !v.resolved.as_ref().is_some_and(|t| t.size == size) {
@@ -1922,6 +1983,10 @@ impl MeadowRenderer {
             pass.set_pipeline(&aggregate.merge[usize::from(motion)]);
             pass.set_bind_group(0, &merge, &[]);
             pass.draw(0..3, 0..1);
+            drop(pass);
+            let target = far.targets.as_mut().unwrap();
+            target.capture_ready = true;
+            target.motion_written = motion;
         }
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2040,6 +2105,7 @@ impl MeadowRenderer {
                 opaque_shade_skipped_pixels:if v.hidden_used_this_frame {coverage.as_ref().map_or(0,|c|c.skipped)} else {0},
                 hidden_shade_buffer_bytes:v.visibility.as_ref().map_or(0,|t|t.hidden_bytes()),
                 aggregate_enabled: self.aggregate.is_some(),
+                aggregate_sample_prune_enabled: self.aggregate.as_ref().is_some_and(|a|a.sample_prune_enabled),
                 aggregate_half_resolution: self.aggregate.as_ref().is_some_and(|a|a.half_depth.is_some()),
                 aggregate_target_size: v.aggregate.as_ref().and_then(|f|f.targets.as_ref()).map_or([0;2],|t|[t.size.0,t.size.1]),
                 aggregate_resolution_scale: match (v.targets.as_ref(),v.aggregate.as_ref().and_then(|f|f.targets.as_ref())) {

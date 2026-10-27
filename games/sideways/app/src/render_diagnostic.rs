@@ -2,6 +2,37 @@
 use render::{geometry_diagnostics::Config, scene::GeometryCategory, Gpu, Renderer, Scene};
 use serde_json::{json, Value};
 
+/// Opt-in scenario capture only. Preserve packed GPU bytes, without tone mapping,
+/// image conversion or DLSS. Never called by the ordinary frame/timing path.
+pub fn capture_meadow_raw(renderer:&Renderer,gpu:&Gpu,image_path:&std::path::Path,frame_id:u64)->Result<Value,String> {
+    use std::io::Write;
+    let views=renderer.meadow_aggregate_raw(gpu)?;
+    if views.is_empty() {return Err("raw meadow capture requested without aggregate targets".into());}
+    let directory=image_path.with_extension("meadow-raw");
+    std::fs::create_dir(&directory).map_err(|e|format!("raw meadow capture directory: {e}"))?;
+    let mut output=Vec::new();
+    for view in views {
+        let mut layers=Vec::new();
+        for layer in view.layers {
+            let name=format!("view{}-{}.bin",view.view,layer.name);
+            let path=directory.join(&name);
+            let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+                .map_err(|e|format!("raw meadow capture file: {e}"))?;
+            file.write_all(&layer.data).map_err(|e|format!("raw meadow capture bytes: {e}"))?;
+            layers.push(json!({"name":layer.name,"file":name,"format":layer.format,"size":layer.size,
+                "bytes_per_pixel":layer.bytes_per_pixel,"row_stride_bytes":layer.row_stride_bytes,
+                "readback_row_stride_bytes":layer.readback_row_stride_bytes,"bytes":layer.data.len()}));
+        }
+        output.push(json!({"view":view.view,"size":view.size,"sample_prune_enabled":view.sample_prune_enabled,
+            "half_resolution":view.half_resolution,"motion_available":view.motion_available,"layers":layers}));
+    }
+    let metadata=json!({"schema":1,"frame_id":frame_id,"directory":directory.file_name().unwrap().to_string_lossy(),
+        "views":output,"scope":"Actual aggregate render targets from this completed frame, before DLSS. Packed raw little-endian GPU formats; no color conversion. Explicit synchronous capture, excluded from steady timings. OIT accumulation may vary with GPU append order; compare same-mode repeats."});
+    std::fs::write(directory.join("manifest.json"),serde_json::to_vec_pretty(&metadata).unwrap())
+        .map_err(|e|format!("raw meadow capture manifest: {e}"))?;
+    Ok(metadata)
+}
+
 /// Diagnostic-only multiset fingerprint: GPU append order may vary, while
 /// duplicate or missing (owner, cluster) submissions must remain observable.
 fn selection_digest(pairs:&[[u32;2]])->String {
