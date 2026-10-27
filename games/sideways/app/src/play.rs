@@ -195,7 +195,7 @@ fn meadow_capture_metadata(renderer: &Renderer, gpu: &Gpu, scene: &render::Scene
         "distant_representation":if stats.iter().any(|s|s.aggregate_enabled) { "source_derived_directional_surface_samples" } else { "none" },
         "aggregate_limits":"Directional rest-source coverage/depth/normal/material samples with wind reprojection; not a voxel volume, multilayer transport or a grass shadow caster.",
         "main_frame_stats_include_meadow_triangles":false,
-        "geometry_scope":"Actual GPU post-cull indirect lists. Each source triangle is counted once; depth prepass plus colour pass submit it twice. Counts are before per-blade road habitat rejection, neither rasterized pixels nor shadow triangles, and separate from FrameStats.triangles.",
+        "geometry_scope":"Actual GPU post-cull indirect lists. Source triangles count geometry once; submitted_source_triangles applies source_geometry_passes (one visibility pass or depth plus colour). Counts precede per-blade road habitat rejection, are neither rasterized pixels nor shadow triangles, and are separate from FrameStats.triangles.",
         "cpu_dependency":"Initial terrain and shared recipe upload only for meadow placement; GPU generates world-cell roots, LOD lists and branch animation. CPU supplies per-frame camera, lighting and wind parameters; no CPU per-root streaming.",
         "readback_scope":"Explicit F12 or scenario image capture only; synchronous readback is excluded from steady-frame timings."
     }))
