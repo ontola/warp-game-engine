@@ -39,6 +39,17 @@ not accept other graphics experiments or reduce the output resolution. The
 [r56 grass trial](../../engine/docs/meadow-band-r56.md) already used DLSS;
 their 27-33 ms Performance results are not native-1080p-per-player measurements.
 
+An experimental earlier-grass tier is available for controlled comparisons:
+`KERN_MEADOW_AGGREGATE=1`, `SIDEWAYS_MEADOW_SOURCE_BAND=25,35`, and
+`KERN_MEADOW_AGGREGATE_HALF_RES=1`. The last flag reduces only the aggregate
+depth/material/lighting targets to half their internal width and height. Source
+grass and the final merge stay at full internal resolution; world placement,
+density, color, wind and the 160-180 m outer fade remain unchanged. The merge
+uses full-resolution opaque depth and reconstructed motion. This is an optical
+approximation and stays off by default, pending visual/performance acceptance.
+It cannot be combined with `KERN_MEADOW_GROUP_CACHE`. Captures record the actual
+aggregate target dimensions, ratios and allocated target bytes for every view.
+
 The latest measured developer optimization paths are an explicit opt-in:
 
 ```powershell

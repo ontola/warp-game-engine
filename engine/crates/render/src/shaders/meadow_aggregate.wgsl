@@ -1,6 +1,19 @@
 // Directional source-surface cache. This is NOT a volume or a new grass recipe.
 // Rest coverage is an approximation under wind; representative surface points,
 // real normals and previous positions use the same four branch poses as source.
+override MEADOW_AGGREGATE_HALF_RES:bool=false;
+fn meadow_aggregate_size()->vec2<f32> {
+    if MEADOW_AGGREGATE_HALF_RES {return ceil(view.size.xy*0.5);}
+    return view.size.xy;
+}
+fn meadow_aggregate_focal()->f32 {
+    if MEADOW_AGGREGATE_HALF_RES {
+        let scale=meadow_aggregate_size()/view.size.xy;
+        // The larger actual pixel footprint also bounds odd-size anisotropy.
+        return view.cam.w*min(scale.x,scale.y);
+    }
+    return view.cam.w;
+}
 const MEADOW_ATLAS_VIEW_STRIDE:u32=3u; // compact projection headers
 const MEADOW_ATLAS_VARIANT_STRIDE:u32=24u*MEADOW_ATLAS_VIEW_STRIDE;
 struct MeadowAggregateVertex {
@@ -33,7 +46,7 @@ struct MeadowAggregateVertex {
     }
     let corners=array<vec2<f32>,6>(vec2<f32>(-1.0,-1.0),vec2<f32>(1.0,-1.0),vec2<f32>(-1.0,1.0),
         vec2<f32>(-1.0,1.0),vec2<f32>(1.0,-1.0),vec2<f32>(1.0,1.0));
-    let pixel_pad=select(camera_distance,1.0,view.params.z>0.5)/max(view.cam.w,1.0);
+    let pixel_pad=select(camera_distance,1.0,view.params.z>0.5)/max(meadow_aggregate_focal(),1.0);
     let extent=mix(low-vec2<f32>(pixel_pad),high+vec2<f32>(pixel_pad),corners[vertex]*0.5+0.5);
     out.world=root.xyz+right*extent.x+up*extent.y;
     out.owner=owner;out.position=view.view_proj*vec4<f32>(out.world,1.0);return out;
@@ -93,7 +106,7 @@ fn meadow_aggregate_surface(in:MeadowAggregateVertex)->MeadowAggregateSurface {
     var ray_origin=view.cam.xyz;
     var world_ray=meadow_safe_normal(in.world-view.cam.xyz);
     if view.params.z>0.5 {
-        let xy=in.position.xy/view.size.xy*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
+        let xy=in.position.xy/meadow_aggregate_size()*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
         let near=view.inv_view_proj*vec4<f32>(xy,1.0,1.0);
         let far=view.inv_view_proj*vec4<f32>(xy,0.0,1.0);
         ray_origin=near.xyz/near.w;world_ray=meadow_safe_normal(far.xyz/far.w-ray_origin);
@@ -110,7 +123,7 @@ fn meadow_aggregate_surface(in:MeadowAggregateVertex)->MeadowAggregateSurface {
     let elevation=clamp(asin(clamp(toward.y,-1.0,1.0))/(MEADOW_TAU/12.0),0.0,2.0);
     let az0=u32(floor(az))%8u;let el0=min(u32(floor(elevation)),1u);
     let azf=fract(az);let elf=clamp(elevation-f32(el0),0.0,1.0);
-    let footprint=select(distance(root.xyz,view.cam.xyz),1.0,view.params.z>0.5)/max(view.cam.w,1.0)/max(root.w,0.1);
+    let footprint=select(distance(root.xyz,view.cam.xyz),1.0,view.params.z>0.5)/max(meadow_aggregate_focal(),1.0)/max(root.w,0.1);
     var sample:MeadowSurface;var total=0.0;var strongest=0.0;var rgb=vec3<f32>(0.0);
     for(var e=0u;e<2u;e++){for(var a=0u;a<2u;a++){
         let s=meadow_atlas_sample(variant,(el0+e)*8u+(az0+a)%8u,local_origin,local_ray,footprint);
