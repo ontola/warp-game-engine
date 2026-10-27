@@ -12,7 +12,7 @@ Run from the repository root:
 
 ```powershell
 cargo run --release -p cli -- play --views 1 --size 3840x2160
-cargo run --release -p cli -- play --views 4 --size 3840x2160
+games/sideways/tools/play-dev-windows.ps1 -Views 4 -Size 3840x2160 -Restart
 games/sideways/tools/play-dev-windows.ps1 -Restart
 games/sideways/tools/play-dev-windows.ps1 -BuildOnly
 cargo run --release -p cli -- sim --ticks 45000 --seed 1 --km 2
@@ -22,6 +22,22 @@ The launcher builds while an owned playtest runs, then restarts it after a
 successful build. Logs and executable manifests live in this game's
 `build/dev-runs/`. F12 captures the displayed frame and camera/state metadata.
 Old `engine/build/` runs remain historical evidence.
+
+Four-player developer launches now select **DLSS Performance** unless `-Upscale`
+is explicitly supplied. One 4K output contains four panels: the measured input
+is 958x538 per panel, reconstructed to 1916x1076 after divider margins. The HUD
+uses output resolution. Actual dimensions are reported by DLSS capture metadata.
+Use `-Upscale native`, `dlss-quality` or `dlss-balanced` to override; one to three
+views keep their previous native fallback. This launcher validates the optional
+NVIDIA SDK/runtime and builds with `render/dlss`; missing support is an error,
+not a silent native fallback. Generic packaged builds still require explicit
+DLSS support before requesting it. The launch manifest records mode and source.
+
+This follows the user's 27 October request to use DLSS for four players. It does
+not accept other graphics experiments or reduce the output resolution. The
+[r55 sweep](../../engine/docs/resolution-sweep-r55.md) and
+[r56 grass trial](../../engine/docs/meadow-band-r56.md) already used DLSS;
+their 27-33 ms Performance results are not native-1080p-per-player measurements.
 
 The latest measured developer optimization paths are an explicit opt-in:
 

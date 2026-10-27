@@ -9,6 +9,14 @@ comparison are removed; older sections below remain historical evidence.
 
 ## Latest status — r55/r56 four-view budget decision gate
 
+27 October follow-up: the user requests DLSS rather than native 1080p per panel.
+The measurements below already used DLSS. Developer launcher `-Views 4` now
+resolves an omitted `-Upscale` to `dlss-performance`, enables its build support,
+and records the selection source. Explicit overrides and 1-3-view defaults stay
+unchanged. Generic packaged/GameNight builds are not automatically DLSS-capable.
+No new GPU result or reduced graphics tier is implied; deeper-work choice is
+still pending. No interactive playtest was started for this launcher change.
+
 Read [the ordered plan](docs/four-view-budget-plan-r55.md),
 [resolution sweep](docs/resolution-sweep-r55.md), and
 [grass experiment](docs/meadow-band-r56.md) before doing further GPU work.
@@ -27,8 +35,9 @@ Do not attribute the old 48.8 ms baseline drop to code: identical input/exe
 measurements shifted between sessions with no historical clock/load telemetry.
 
 The user's decision gate is now triggered: discuss a quality tier or target
-before steps 3-4/deeper renderer rewrites. 120 FPS remains the target; no new
-graphics defaults are accepted. The aggregate's world resources are shared,
+before steps 3-4/deeper renderer rewrites. 120 FPS remains the target. Apart from
+the developer DLSS selection above, no new graphics defaults are accepted.
+The aggregate's world resources are shared,
 but its depth/coverage/lighting remain per-camera; shared source pooling is
 deferred, not implemented. Preview A/B checks are limited to downsized stills;
 moving transitions remain unaccepted. Do not start an interactive playtest.
