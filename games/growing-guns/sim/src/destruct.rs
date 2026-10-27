@@ -184,11 +184,17 @@ impl Arena {
                 volume += 1;
             }
         }
-        self.grid = BoxGrid::new(chunks.iter().map(Chunk::shape).collect(), 4.0);
+        self.stadium = crate::stadium::Stadium::new(self.size, self.variant != crate::arena::Variant::Open, crate::arena::WALL_HEIGHT);
+        let mut boxes: Vec<YawBox> = chunks.iter().map(Chunk::shape).collect();
+        boxes.extend(self.stadium.collision());
+        self.grid = BoxGrid::new(boxes, 4.0);
         self.chunks = chunks;
     }
 
-    pub fn alive_chunks(&self) -> usize { self.grid.live() }
+    pub fn alive_chunks(&self) -> usize { self.grid.live() - (self.grid.len() - self.chunks.len()) }
+
+    /// The chunk a grid index refers to (None for stadium pieces).
+    pub fn chunk(&self, grid_index: usize) -> Option<&Chunk> { self.chunks.get(grid_index) }
 
     /// Apply one tick's queued damage (Godot `apply_pending_carves`, all
     /// bodies at once): accumulate per chunk, one health sweep, remove what
@@ -202,7 +208,7 @@ impl Arena {
         let mut blast: BTreeMap<u32, (Vec3, f32)> = BTreeMap::new();
         for c in &carves {
             for i in self.grid.in_sphere(c.pos, c.radius + MAX_HALF_DIAG) {
-                let ch = &self.chunks[i];
+                let Some(ch) = self.chunks.get(i) else { continue };
                 let hd = ch.half_diag();
                 let dist = ch.center.distance(c.pos);
                 if dist > c.radius + hd { continue; }
@@ -243,7 +249,7 @@ impl Arena {
             let mut n = 0;
             for i in self.grid.in_sphere(mean, reach + MAX_HALF_DIAG + TARGET_CELL * 0.75) {
                 if n >= MAX_JAGGEDIZE_PER_CARVE { break; }
-                let ch = &mut self.chunks[i];
+                let Some(ch) = self.chunks.get_mut(i) else { continue };
                 if ch.volume != *volume { continue; }
                 let dist = ch.center.distance(mean);
                 if dist > reach + ch.half_diag() + TARGET_CELL * 0.75 { continue; }
@@ -303,6 +309,7 @@ impl From<Arena> for ArenaWire {
 impl From<ArenaWire> for Arena {
     fn from(w: ArenaWire) -> Self {
         let mut a = Arena { seed: w.seed, size: w.size, variant: w.variant, blocks: w.blocks, chunks: Vec::new(), grid: BoxGrid::default(),
+            stadium: crate::stadium::Stadium::new(w.size, w.variant != crate::arena::Variant::Open, crate::arena::WALL_HEIGHT),
             spawns: w.spawns, lights: w.lights, hole: w.hole };
         a.build_chunks();
         let removed = w.wear.iter().filter(|x| x.1 <= 0.0).map(|x| x.0).collect();

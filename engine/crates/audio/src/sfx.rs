@@ -1,8 +1,9 @@
-//! Sample playback for game sound effects: decoded clips, a fixed voice
-//! pool with gain, equal-power pan, pitch and a distance low-pass, and
-//! placement for one or more listeners (split screen hears each sound from
-//! the nearest player). The game sends `Play` commands through a channel;
-//! the mixer runs in the audio callback, or offline for tests.
+//! Sample playback for game sound effects: decoded clips (WAV, Ogg Vorbis),
+//! a fixed voice pool with gain, equal-power pan, pitch and a distance
+//! low-pass, looping beds whose gain the game moves every frame (ambience,
+//! crowds), and placement for one or more listeners (split screen hears each
+//! sound from the nearest player). The game sends commands through a
+//! channel; the mixer runs in the audio callback, or offline for tests.
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -66,6 +67,27 @@ pub fn load_wav(path: &std::path::Path) -> Result<Clip, String> {
     decode_wav(&std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Decode an Ogg Vorbis stream to a mono clip at `SAMPLE_RATE`.
+pub fn decode_ogg(b: &[u8]) -> Result<Clip, String> {
+    let mut r = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(b)).map_err(|e| format!("ogg: {e}"))?;
+    let channels = r.ident_hdr.audio_channels.max(1) as usize;
+    let rate = r.ident_hdr.audio_sample_rate as f32;
+    let mut mono = Vec::new();
+    while let Some(packet) = r.read_dec_packet_itl().map_err(|e| format!("ogg: {e}"))? {
+        for f in packet.chunks_exact(channels) {
+            mono.push(f.iter().map(|&s| s as f32 / 32768.0).sum::<f32>() / channels as f32);
+        }
+    }
+    Ok(Clip(resample(&mono, rate, SAMPLE_RATE).into()))
+}
+
+/// Load a WAV or Ogg Vorbis file (by its contents).
+pub fn load_clip(path: &std::path::Path) -> Result<Clip, String> {
+    let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let r = if b.starts_with(b"OggS") { decode_ogg(&b) } else { decode_wav(&b) };
+    r.map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Linear resampling (enough for effects; clips are short).
 fn resample(x: &[f32], from: f32, to: f32) -> Vec<f32> {
     if (from - to).abs() < 0.5 || x.is_empty() { return x.to_vec(); }
@@ -126,9 +148,18 @@ pub fn spatial(at: [f32; 3], listeners: &[Listener], unit: f32) -> Play {
 
 struct Voice { clip: Clip, pos: f64, play: Play, lp: f32, coef: f32 }
 
+/// A looping bed: plays until stopped; its gain glides to the target set by
+/// `SfxSender::loop_gain` (no zipper noise when the game moves it per frame).
+struct Bed { id: u32, clip: Clip, pos: f64, gain: f32, target: f32, play: Play }
+
 /// What the game sends to the mixer.
 pub enum Command {
     Play(Clip, Play),
+    /// Start (or replace) looping bed `id`.
+    Loop(u32, Clip, Play),
+    /// Move bed `id`'s gain (linear) toward this value.
+    LoopGain(u32, f32),
+    StopLoop(u32),
     StopAll,
     /// Master gain.
     Volume(f32),
@@ -140,6 +171,10 @@ pub struct SfxSender(Sender<Command>);
 
 impl SfxSender {
     pub fn play(&self, clip: &Clip, play: Play) { let _ = self.0.send(Command::Play(clip.clone(), play)); }
+    /// Start a looping bed (its gain starts at `play.gain`).
+    pub fn start_loop(&self, id: u32, clip: &Clip, play: Play) { let _ = self.0.send(Command::Loop(id, clip.clone(), play)); }
+    pub fn loop_gain(&self, id: u32, gain: f32) { let _ = self.0.send(Command::LoopGain(id, gain)); }
+    pub fn stop_loop(&self, id: u32) { let _ = self.0.send(Command::StopLoop(id)); }
     pub fn stop_all(&self) { let _ = self.0.send(Command::StopAll); }
     pub fn volume(&self, gain: f32) { let _ = self.0.send(Command::Volume(gain)); }
 }
@@ -148,6 +183,7 @@ impl SfxSender {
 pub struct SfxMixer {
     rx: Receiver<Command>,
     voices: Vec<Voice>,
+    beds: Vec<Bed>,
     max_voices: usize,
     master: f32,
     sr: f32,
@@ -158,7 +194,7 @@ pub struct SfxMixer {
 /// A connected sender and mixer. `sr` is the output rate.
 pub fn sfx(max_voices: usize, sr: f32) -> (SfxSender, SfxMixer) {
     let (tx, rx) = channel();
-    (SfxSender(tx), SfxMixer { rx, voices: Vec::with_capacity(max_voices), max_voices: max_voices.max(1), master: 1.0, sr, stolen: 0 })
+    (SfxSender(tx), SfxMixer { rx, voices: Vec::with_capacity(max_voices), beds: Vec::new(), max_voices: max_voices.max(1), master: 1.0, sr, stolen: 0 })
 }
 
 impl SfxMixer {
@@ -181,7 +217,13 @@ impl SfxMixer {
                     let coef = 1.0 - (-2.0 * std::f32::consts::PI * play.lowpass_hz.min(self.sr * 0.45) / self.sr).exp();
                     self.voices.push(Voice { clip, pos: 0.0, play, lp: 0.0, coef });
                 }
-                Command::StopAll => self.voices.clear(),
+                Command::Loop(id, clip, play) => {
+                    self.beds.retain(|b| b.id != id);
+                    if !clip.0.is_empty() { self.beds.push(Bed { id, clip, pos: 0.0, gain: play.gain, target: play.gain, play }); }
+                }
+                Command::LoopGain(id, g) => if let Some(b) = self.beds.iter_mut().find(|b| b.id == id) { b.target = g.max(0.0) },
+                Command::StopLoop(id) => self.beds.retain(|b| b.id != id),
+                Command::StopAll => { self.voices.clear(); self.beds.clear(); }
                 Command::Volume(g) => self.master = g,
             }
         }
@@ -192,6 +234,7 @@ impl SfxMixer {
     pub fn render_add(&mut self, out: &mut [f32], channels: usize) {
         self.drain();
         let channels = channels.max(1);
+        self.render_beds(out, channels);
         let rate = SAMPLE_RATE as f64 / self.sr as f64;
         let master = self.master;
         self.voices.retain_mut(|v| {
@@ -214,6 +257,29 @@ impl SfxMixer {
             }
             true
         });
+    }
+
+    fn render_beds(&mut self, out: &mut [f32], channels: usize) {
+        let rate = SAMPLE_RATE as f64 / self.sr as f64;
+        // About 30 ms to reach a new gain target.
+        let glide = 1.0 - (-1.0 / (0.03 * self.sr)).exp();
+        for b in &mut self.beds {
+            let x = &b.clip.0;
+            let n = x.len();
+            if n < 2 { continue; }
+            let a = (b.play.pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+            let (l, r) = if channels == 1 { (1.0, 0.0) } else { (a.cos(), a.sin()) };
+            let step = rate * b.play.pitch.max(0.01) as f64;
+            for f in out.chunks_exact_mut(channels) {
+                b.gain += (b.target - b.gain) * glide;
+                let i = b.pos as usize % n;
+                let t = (b.pos - b.pos.floor()) as f32;
+                let s = (x[i] + (x[(i + 1) % n] - x[i]) * t) * b.gain * self.master;
+                if channels == 1 { f[0] += s; } else { f[0] += s * l; f[1] += s * r; }
+                b.pos += step;
+                if b.pos >= n as f64 { b.pos -= n as f64; }
+            }
+        }
     }
 
     /// Offline: mix `seconds` of stereo output (for tests and agents).
@@ -279,6 +345,32 @@ mod tests {
         for _ in 0..3 { tx.play(&clip, Play::default()); }
         mix.render_stereo(0.001);
         assert_eq!((mix.active(), mix.stolen), (2, 1));
+    }
+
+    #[test]
+    fn beds_loop_and_glide_to_their_gain() {
+        let clip = Clip(vec![0.5f32; 480].into());
+        let (tx, mut mix) = sfx(4, SAMPLE_RATE);
+        tx.start_loop(7, &clip, Play { gain: 1.0, ..Default::default() });
+        let out = mix.render_stereo(0.1);
+        assert!(out[out.len() - 2].abs() > 0.3, "still playing after ten loops");
+        tx.loop_gain(7, 0.0);
+        let out = mix.render_stereo(0.3);
+        assert!(out[out.len() - 2].abs() < 1e-3, "glided to silence");
+        tx.stop_loop(7);
+        mix.render_stereo(0.01);
+        assert!(mix.beds.is_empty());
+    }
+
+    #[test]
+    fn decodes_ogg_vorbis() {
+        // A real file when the Growing Guns checkout is next to this repo.
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../growing-guns/addons/crowd_sound/samples/ooh_1.ogg");
+        if let Ok(c) = load_clip(&p) {
+            assert!(c.seconds() > 0.3, "{}", c.seconds());
+            assert!(c.0.iter().any(|s| s.abs() > 0.05));
+        }
+        assert!(decode_ogg(b"OggSnot really").is_err());
     }
 
     #[test]

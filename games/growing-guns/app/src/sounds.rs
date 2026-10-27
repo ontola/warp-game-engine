@@ -24,6 +24,15 @@ fn load(dir: &Path, names: impl Iterator<Item = String>) -> Vec<Clip> {
 
 /// The Godot project's sound folder: `--sounds DIR`, `GG_SOUNDS`, or a
 /// sibling checkout `../growing-guns/assets/audio`.
+/// One listener per local player, at eye height.
+pub fn ears(world: &World, slots: &[usize]) -> Vec<Listener> {
+    slots.iter().map(|&s| {
+        let p = &world.players[s];
+        let (sy, cy) = p.yaw.sin_cos();
+        Listener { pos: (p.pos + glam::Vec3::Y * EYE).to_array(), right: [cy, 0.0, -sy] }
+    }).collect()
+}
+
 pub fn find_dir(arg: Option<&str>) -> Option<std::path::PathBuf> {
     let candidates: [Option<String>; 3] = [arg.map(str::to_string), std::env::var("GG_SOUNDS").ok(), Some("../growing-guns/assets/audio".to_string())];
     candidates.into_iter().flatten().map(std::path::PathBuf::from).find(|p| p.join("jump1.wav").exists())
@@ -65,11 +74,7 @@ impl Sounds {
 
     /// Sounds for one tick of events; `slots` are the local players (ears).
     pub fn tick(&mut self, world: &World, slots: &[usize], dt: f32) {
-        let ears: Vec<Listener> = slots.iter().map(|&s| {
-            let p = &world.players[s];
-            let (sy, cy) = p.yaw.sin_cos();
-            Listener { pos: (p.pos + glam::Vec3::Y * EYE).to_array(), right: [cy, 0.0, -sy] }
-        }).collect();
+        let ears = ears(world, slots);
         for e in &world.events {
             match *e {
                 Event::Shot { from, .. } => self.play(0, from.to_array(), &ears, 25.0, -4.0),

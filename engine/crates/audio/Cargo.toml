@@ -3,8 +3,9 @@ name = "audio"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Kern's audio: physically inspired engine sound synthesis (after engine-sim), mixing, WAV and spectrograms"
+description = "Kern's audio: physically inspired engine sound synthesis (after engine-sim), mixing, WAV/Ogg Vorbis decoding and spectrograms"
 
 [dependencies]
+lewton = "0.10"
 serde.workspace = true
 toml.workspace = true

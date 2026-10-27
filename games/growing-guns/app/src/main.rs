@@ -15,6 +15,8 @@ mod play;
 mod session;
 mod sounds;
 mod synth;
+mod crowd_sound;
+mod stadium;
 mod view;
 
 use growing_guns::{Event, World, TICK_HZ};
@@ -114,6 +116,7 @@ fn script(args: &Args) -> Result<(), String> {
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
     let mixer = sounds::find_dir(args.value("--sounds")).map(|dir| {
         let (tx, mix) = audio::sfx::sfx(64, audio::SAMPLE_RATE);
+        game.set_crowd(args.value("--crowd"), &dir, &tx);
         game.set_sounds(sounds::Sounds::load(&dir, tx));
         mix
     });

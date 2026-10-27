@@ -541,6 +541,7 @@ pub struct Renderer {
     part_wind: Option<crate::part_wind::PartWindRenderer>,
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
     debris: Option<crate::debris::DebrisRenderer>,
+    crowd: Option<crate::crowd::CrowdRenderer>,
     fx: crate::fx::FxSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
@@ -1010,6 +1011,7 @@ impl Renderer {
             crate::baked_animation::AnimationRenderer::new(gpu, animation, &scene.instances, &instances)
                 .expect("invalid baked animation scene"));
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
+        let crowd = scene.crowd.map(|spec| crate::crowd::CrowdRenderer::new(gpu, &spec, &instances));
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
         startup.mark("grass_lighting_resources");
@@ -1415,6 +1417,7 @@ impl Renderer {
             part_wind,
             baked_animations,
             debris,
+            crowd,
             fx: Default::default(),
             transparency,
             grass,
@@ -2423,6 +2426,11 @@ impl Renderer {
         Ok(())
     }
 
+    /// The crowd's mood, flee ring and kills (`crowd::Crowd::flush`).
+    pub fn update_crowd(&self, gpu: &Gpu, uniform: &[u8], seats: Option<&[u8]>, alive: Option<(usize, &[u32])>) -> Result<(), String> {
+        self.crowd.as_ref().ok_or("this scene reserved no crowd")?.update(gpu, uniform, seats, alive)
+    }
+
     /// Spawns, grid changes and simulation steps for the scene's debris pool
     /// (called by `debris::Debris::flush`).
     #[allow(clippy::too_many_arguments)]
@@ -2435,6 +2443,9 @@ impl Renderer {
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.baked_animations.as_ref().is_some_and(|animation|animation.contains_owner_range(first,instances.len())) {
             return Err("baked actor parts are driven by the shared GPU animation pass".into());
+        }
+        if self.crowd.as_ref().is_some_and(|c| c.contains_owner_range(first, instances.len())) {
+            return Err("crowd instances are posed by the GPU crowd pass".into());
         }
         if self.debris.as_ref().is_some_and(|d| d.contains_owner_range(first, instances.len())) {
             return Err("debris instances are written by the GPU debris pass".into());
@@ -2783,6 +2794,13 @@ impl Renderer {
             animation.encode(gpu, &mut enc, times);
             if times.is_some() { names.push("baked crowd animation"); }
         }
+        if let Some(crowd) = &self.crowd {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if crowd.encode(&mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("crowd");
+            }
+        }
         if let Some(debris) = &self.debris {
             let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
             if debris.encode(gpu, &mut enc, times) && times.is_some() {
@@ -2821,7 +2839,7 @@ impl Renderer {
             if self.grass.is_some()||self.far_grass.is_some() {fallback|=1<<8;}
             if self.voxel_forest.is_some()||self.meadow_brick_fixture.is_some() {fallback|=1<<9;}
             if static_sun.is_some() {fallback|=1<<10;}
-            if self.part_wind.is_some()||self.baked_animations.is_some()||self.debris.is_some() {fallback|=1<<11;}
+            if self.part_wind.is_some()||self.baked_animations.is_some()||self.debris.is_some()||self.crowd.is_some() {fallback|=1<<11;}
             let time=self.query.as_ref().map(|(qs,_,_)|(qs,timestamp_pair(&mut ts)));
             if time.is_some(){names.push("shadow receiver demand");}
             self.receiver_demand.encode(gpu,&mut enc,(render_sequence as u32).wrapping_add(1).max(1),&cameras,&maps,&extra,fallback,time)?;

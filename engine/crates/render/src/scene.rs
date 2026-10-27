@@ -356,6 +356,8 @@ pub struct Scene {
     pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
     /// A GPU-simulated debris pool (`debris::Debris::reserve`).
     pub debris: Option<crate::debris::DebrisSpec>,
+    /// A GPU-posed crowd (`crowd::Crowd::reserve`).
+    pub crowd: Option<crate::crowd::CrowdSpec>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
     /// Explicit declaration that heightfield sentinel holes and outside its
