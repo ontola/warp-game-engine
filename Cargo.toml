@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["engine/crates/kern", "engine/crates/render", "engine/crates/audio", "engine/crates/app", "engine/crates/physics", "engine/crates/assets", "games/sideways/determinism", "games/sideways/sim", "games/sideways/app", "games/growing-guns/sim", "games/growing-guns/app"]
+members = ["engine/crates/kern", "engine/crates/render", "engine/crates/audio", "engine/crates/app", "engine/crates/physics", "engine/crates/assets", "engine/crates/net", "games/sideways/determinism", "games/sideways/sim", "games/sideways/app", "games/growing-guns/sim", "games/growing-guns/app"]
 
 [workspace.package]
 edition = "2024"

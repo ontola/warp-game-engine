@@ -3,6 +3,7 @@
 //!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm]
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T] [--trace players.0.health,round [--rows N]]
+//!   growing-guns nettest [--seconds T]   (host + client over iroh loopback, headless)
 //!   growing-guns script FILE.json --out DIR [--players N] [--seed S]   (app::script; exit 1 on a failed expect)
 //!
 //! Online: `play --host` prints a ticket; `play --join TICKET` joins it.
@@ -43,6 +44,7 @@ fn main() {
         "sim" => { sim(&args); Ok(()) }
         "bench" => bench::run(&args),
         "script" => script(&args),
+        "nettest" => nettest(&args),
         _ => Err(format!("unknown command {cmd}; use play, shot or sim")),
     };
     if let Err(e) = result {
@@ -117,5 +119,52 @@ fn script(args: &Args) -> Result<(), String> {
     let gpu = Gpu::new()?;
     let failed = app::script::run_file(&mut game, &gpu, TICK_HZ as f32, std::path::Path::new(file), std::path::Path::new(out), mixer)?;
     if failed > 0 { std::process::exit(1); }
+    Ok(())
+}
+
+/// A host and a client in one process over iroh on loopback (no relays),
+/// driven through the same Game::tick as play: the client walks and fires;
+/// checks that the host treats it as a human, that it moves, and that the
+/// client's world follows the host's ticks.
+fn nettest(args: &Args) -> Result<(), String> {
+    use app::{Buttons, Controls, Game};
+    let seconds = args.num("--seconds", 4.0f32);
+    let ticks = (seconds * TICK_HZ as f32) as u32;
+    let (ticket_tx, ticket_rx) = std::sync::mpsc::channel();
+    // The host runs in real time on its own thread, as it would in play.
+    let host = std::thread::spawn(move || -> Result<String, String> {
+        let mut host = play::Gg::new(World::new(9, &[false, true, true, true]), session::Session::host(true)?, vec![0]);
+        ticket_tx.send(host.session().ticket().unwrap().to_string()).map_err(|e| e.to_string())?;
+        let start = std::time::Instant::now();
+        for k in 0..ticks + 120 {
+            host.tick(&[Controls::default()]);
+            let due = start + std::time::Duration::from_secs_f32((k + 1) as f32 / TICK_HZ as f32);
+            if let Some(wait) = due.checked_duration_since(std::time::Instant::now()) { std::thread::sleep(wait); }
+        }
+        host.state().ok_or("no state".into())
+    });
+    let ticket = ticket_rx.recv_timeout(std::time::Duration::from_secs(20)).map_err(|e| format!("host did not start: {e}"))?;
+    let t = std::time::Instant::now();
+    let (session, world, slots) = session::Session::join(&ticket, 1, true)?;
+    println!("joined in {:.0} ms as player {}", t.elapsed().as_secs_f64() * 1000.0, slots[0] + 1);
+    let mut client = play::Gg::new(world, session, slots.clone());
+    let me = slots[0];
+    let mut start_pos = None;
+    let mut last_tick = 0;
+    for k in 0..ticks {
+        let c = Controls { mv: [0.0, 1.0], held: Buttons(if k % 30 < 15 { Buttons::RIGHT_TRIGGER } else { 0 }), ..Default::default() };
+        client.tick(&[c]);
+        client.receive(1.0 / TICK_HZ as f32);
+        if start_pos.is_none() && client.world.tick > 0 { start_pos = Some(client.world.players[me].pos); }
+        last_tick = client.world.tick;
+        std::thread::sleep(std::time::Duration::from_secs_f32(1.0 / TICK_HZ as f32));
+    }
+    let host_state: serde_json::Value = serde_json::from_str(&host.join().map_err(|_| "host thread panicked")??).map_err(|e| e.to_string())?;
+    let moved = start_pos.map_or(0.0, |p| p.distance(client.world.players[me].pos));
+    let human = host_state["players"][me]["bot"] == serde_json::Value::Bool(false);
+    println!("client followed to host tick {last_tick}; player {} moved {moved:.1} m; host sees it as human: {human}; ammo {}",
+        me + 1, client.world.players[me].ammo);
+    if !(human && moved > 2.0 && last_tick > (ticks / 2) as u64) { return Err("nettest failed".into()); }
+    println!("nettest ok");
     Ok(())
 }

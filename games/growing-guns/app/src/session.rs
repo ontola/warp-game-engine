@@ -17,7 +17,8 @@ pub struct Remote {
 
 pub enum Session {
     Local,
-    Host { host: Host, remotes: Vec<Remote> },
+    /// `joining`: connected clients that have not said hello yet.
+    Host { host: Host, remotes: Vec<Remote>, joining: Vec<(u64, UnboundedSender<ToClient>)> },
     Client { client: Client, ack: u32, seq: u32, sent: VecDeque<(u32, Vec<Input>)>, base_look: Vec<(f32, f32)>, closed: bool },
 }
 
@@ -34,13 +35,13 @@ fn merge(into: &mut Input, i: &Input) {
 
 impl Session {
     pub fn host(lan: bool) -> Result<Session, String> {
-        Ok(Session::Host { host: Host::start(lan)?, remotes: Vec::new() })
+        Ok(Session::Host { host: crate::net::host(lan)?, remotes: Vec::new(), joining: Vec::new() })
     }
 
     /// Connect, then wait for the host's welcome: returns the session, the
     /// world shell and the player slots this client controls.
     pub fn join(ticket: &str, players: u8, lan: bool) -> Result<(Session, World, Vec<usize>), String> {
-        let mut client = Client::join(ticket, players, lan)?;
+        let mut client = crate::net::join(ticket, players, lan)?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             match client.rx.try_recv() {
@@ -68,10 +69,13 @@ impl Session {
 
     /// Host: handle joins, leaves and remote input.
     pub fn poll(&mut self, world: &mut World) {
-        let Session::Host { host, remotes } = self else { return };
-        while let Ok(ev) = host.events.try_recv() {
+        let Session::Host { host, remotes, joining } = self else { return };
+        while let Some(ev) = host.poll() {
             match ev {
-                HostEvent::Joined { client, players, tx } => {
+                HostEvent::Joined { client, tx } => joining.push((client, tx)),
+                HostEvent::Message { client, msg: ToHost::Hello { players } } => {
+                    let Some(k) = joining.iter().position(|j| j.0 == client) else { continue };
+                    let tx = joining.remove(k).1;
                     let taken: Vec<usize> = remotes.iter().flat_map(|r| r.slots.iter().copied()).collect();
                     let free: Vec<usize> = (1..world.players.len()).filter(|i| world.players[*i].bot && !taken.contains(i)).take(players as usize).collect();
                     if free.len() < players as usize || players == 0 { let _ = tx.send(ToClient::Full); continue; }
@@ -80,13 +84,14 @@ impl Session {
                     println!("client {client} joined as players {:?}", free.iter().map(|s| s + 1).collect::<Vec<_>>());
                     remotes.push(Remote { client, pending: vec![Input::default(); free.len()], slots: free, tx, seq: 0 });
                 }
-                HostEvent::Input { client, seq, inputs } => {
+                HostEvent::Message { client, msg: ToHost::Input { seq, inputs } } => {
                     if let Some(r) = remotes.iter_mut().find(|r| r.client == client) {
                         for (p, i) in r.pending.iter_mut().zip(&inputs) { merge(p, i); }
                         r.seq = r.seq.max(seq);
                     }
                 }
                 HostEvent::Left { client } => {
+                    joining.retain(|j| j.0 != client);
                     if let Some(k) = remotes.iter().position(|r| r.client == client) {
                         let r = remotes.remove(k);
                         for s in r.slots { world.set_bot(s, true); }

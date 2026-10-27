@@ -49,6 +49,11 @@ complete example with split screen, bots and online play.
 - Sound: `audio::sfx` (WAV clips, voice pool, spatial placement for one or
   more listeners) with `app::sound::start` for the speakers; scripts record
   it (`audio` step) so a test can check that a sound played.
+- Online: the `net` crate (iroh: hole punching, relays, tickets) carries
+  your own message types between a host and clients through channels the
+  game loop polls; Growing Guns' `session.rs` shows host-authoritative
+  play with input sequence numbers and look prediction, and `growing-guns
+  nettest` runs a host and a client over loopback.
 - Physics: `kern::collide` for characters (yaw boxes, rays, move and
   slide) and the `physics` crate (Rapier) for rigid bodies, blasts, joints
   and ragdolls.
