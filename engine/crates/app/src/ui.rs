@@ -3,6 +3,9 @@
 //! East backs out. Drawing goes into the HUD list, so it shows in every
 //! view and in headless captures. Immediate mode: keep a `Menu` per local
 //! player and call `update` with that player's controls each tick.
+//! [`text_field`] draws a [`crate::text::TextField`] in the same style, and
+//! [`CharPicker`] lets a pad type into one.
+use crate::text::{TextEvent, TextField};
 use crate::{Buttons, Controls};
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 
@@ -108,6 +111,84 @@ pub fn cards(d: &mut HudDrawList, id: u64, rect: [f32; 4], title: &str, cards: &
     if !footer.is_empty() { text(d, id + 99, footer, rect[0], y0 + ch + 30.0 * s, 24.0 * s, st.muted, rect[2], rect); }
 }
 
+/// A text field in the menu style: the item plate, the focus frame when
+/// focused, the text (or the muted placeholder) and a caret.
+pub fn text_field(d: &mut HudDrawList, id: u64, rect: [f32; 4], field: &TextField, placeholder: &str, focused: bool, st: &Style) {
+    let s = st.scale;
+    if focused { d.rect([rect[0] - 4.0 * s, rect[1] - 4.0 * s, rect[2] + 8.0 * s, rect[3] + 8.0 * s], st.focus, rect_grow(rect, 4.0 * s)); }
+    d.rect(rect, st.item, rect);
+    let inner = [rect[0] + 14.0 * s, rect[1], rect[2] - 28.0 * s, rect[3]];
+    let caret = focused.then(|| [st.text[0] as f32 / 255.0, st.text[1] as f32 / 255.0, st.text[2] as f32 / 255.0, 1.0]);
+    field.draw(d, id, inner, FontFace::Body, 26.0 * s, st.text, (placeholder, st.muted), caret);
+}
+
+fn rect_grow(r: [f32; 4], by: f32) -> [f32; 4] { [r[0] - by, r[1] - by, r[2] + 2.0 * by, r[3] + 2.0 * by] }
+
+/// An on-screen keyboard for pads: a grid of letters, digits and a few
+/// marks, then SHIFT, DEL, PASTE and DONE. The focus moves like a [`Menu`];
+/// South types the focused key, West deletes, Start is DONE, East or Select
+/// cancels. Each update yields at most one [`TextEvent`].
+#[derive(Clone, Debug, Default)]
+pub struct CharPicker {
+    pub menu: Menu,
+    pub upper: bool,
+}
+
+const PICKER_COLUMNS: usize = 10;
+const PICKER_CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-_.";
+const PICKER_KEYS: [&str; 5] = ["SPACE", "SHIFT", "DEL", "PASTE", "DONE"];
+
+impl CharPicker {
+    fn count() -> usize { PICKER_CHARS.chars().count() + PICKER_KEYS.len() }
+
+    /// The label of key `k` as drawn.
+    pub fn label(&self, k: usize) -> String {
+        match PICKER_CHARS.chars().nth(k) {
+            Some(c) if self.upper => c.to_ascii_uppercase().to_string(),
+            Some(c) => c.to_string(),
+            None => PICKER_KEYS.get(k - PICKER_CHARS.chars().count()).map_or(String::new(), |s| s.to_string()),
+        }
+    }
+
+    pub fn update(&mut self, c: &Controls, dt: f32) -> Option<TextEvent> {
+        if c.pressed.has(Buttons::START) { return Some(TextEvent::Enter); }
+        if c.pressed.has(Buttons::WEST) { return Some(TextEvent::Backspace); }
+        let ev = self.menu.update(&Controls { pressed: Buttons(c.pressed.0 & !Buttons::START), held: Buttons(c.held.0 & !Buttons::START), ..*c }, Self::count(), PICKER_COLUMNS, dt);
+        match ev {
+            MenuEvent::Back => Some(TextEvent::Escape),
+            MenuEvent::Select(k) => match self.label(k).as_str() {
+                "SPACE" => Some(TextEvent::Insert(" ".into())),
+                "SHIFT" => { self.upper = !self.upper; None }
+                "DEL" => Some(TextEvent::Backspace),
+                "PASTE" => Some(TextEvent::Paste(crate::clipboard::get())),
+                "DONE" => Some(TextEvent::Enter),
+                ch => Some(TextEvent::Insert(ch.into())),
+            },
+            _ => None,
+        }
+    }
+
+    /// The grid, centred in `rect`, with a hint line under it.
+    pub fn draw(&self, d: &mut HudDrawList, id: u64, rect: [f32; 4], st: &Style) {
+        let s = st.scale;
+        let (kw, kh, gap) = (56.0 * s, 48.0 * s, 6.0 * s);
+        let rows = Self::count().div_ceil(PICKER_COLUMNS);
+        let (w, h) = (PICKER_COLUMNS as f32 * (kw + gap) - gap, rows as f32 * (kh + gap) - gap + 40.0 * s);
+        let (x0, y0) = (rect[0] + (rect[2] - w) * 0.5, rect[1] + (rect[3] - h) * 0.5);
+        d.rect([x0 - 16.0 * s, y0 - 16.0 * s, w + 32.0 * s, h + 32.0 * s], st.panel, rect);
+        for k in 0..Self::count() {
+            let (col, row) = (k % PICKER_COLUMNS, k / PICKER_COLUMNS);
+            let r = [x0 + col as f32 * (kw + gap), y0 + row as f32 * (kh + gap), kw, kh];
+            if k == self.menu.focus { d.rect([r[0] - 3.0 * s, r[1] - 3.0 * s, r[2] + 6.0 * s, r[3] + 6.0 * s], st.focus, rect); }
+            d.rect(r, st.item, rect);
+            let label = self.label(k);
+            let size = if label.len() > 1 { 15.0 } else { 26.0 } * s;
+            text(d, id + 1 + k as u64, &label, r[0], r[1] + (kh - size * 1.2) * 0.5, size, if label == "SHIFT" && self.upper { [255, 200, 90, 255] } else { st.text }, kw, rect);
+        }
+        text(d, id, "A type   X delete   START done   B cancel", x0, y0 + h - 26.0 * s, 20.0 * s, st.muted, w, rect);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +212,32 @@ mod tests {
         let mut l = Menu::default();
         l.update(&press(Buttons::DOWN), 4, 1, 0.016);
         assert_eq!(l.focus, 1, "a list moves down");
+    }
+
+    #[test]
+    fn char_picker_types_deletes_shifts_and_cancels() {
+        let mut p = CharPicker::default();
+        assert_eq!(p.update(&press(Buttons::SOUTH), 0.016), Some(TextEvent::Insert("a".into())));
+        p.update(&press(Buttons::RIGHT), 0.016);
+        assert_eq!(p.update(&press(Buttons::SOUTH), 0.016), Some(TextEvent::Insert("b".into())));
+        assert_eq!(p.update(&press(Buttons::WEST), 0.016), Some(TextEvent::Backspace));
+        assert_eq!(p.update(&press(Buttons::START), 0.016), Some(TextEvent::Enter));
+        // Down five rows reaches the last row's keys (SHIFT is its second).
+        p.menu.focus = 39 + 1;
+        assert_eq!(p.label(p.menu.focus), "SHIFT");
+        assert_eq!(p.update(&press(Buttons::SOUTH), 0.016), None);
+        assert!(p.upper);
+        p.menu.focus = 2;
+        assert_eq!(p.update(&press(Buttons::SOUTH), 0.016), Some(TextEvent::Insert("C".into())));
+        assert_eq!(p.update(&press(Buttons::EAST), 0.016), Some(TextEvent::Escape));
+        let mut d = HudDrawList::new([1280, 720]);
+        p.draw(&mut d, 10, [0.0, 0.0, 1280.0, 720.0], &Style::for_height(720.0));
+        assert_eq!(d.text.len(), CharPicker::count() + 1);
+        let mut d = HudDrawList::new([1280, 720]);
+        let mut f = TextField::new(0);
+        f.set("abc");
+        text_field(&mut d, 1, [10.0, 10.0, 300.0, 40.0], &f, "", true, &Style::for_height(720.0));
+        assert_eq!(d.text[0].text, "abc");
     }
 }
 /// Half-open pixel bounds, shared by drawn UI hit targets.
