@@ -18,6 +18,8 @@
     { "expect": "/screen", "equals": "Advanced" },
     { "ticks": 10, "hold": ["LEFT"] },
     { "capture": "gn-advanced.png" },
+    { "cmd": ["menu settings"] }, { "ticks": 2 },
+    { "capture": "gn-settings.png" },
     { "cmd": ["menu start"] }, { "ticks": 40 },
     { "capture": "names-start.png" }
   ] }
