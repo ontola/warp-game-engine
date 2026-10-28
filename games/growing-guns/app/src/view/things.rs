@@ -121,7 +121,16 @@ impl Things {
         // (8 cm wide as soon as they show), and 45 cm sheets down the inside
         // of the walls, growing from the top.
         let l = &world.lava;
-        if l.active {
+        // An island arena's floor: Godot's LavaFloorSurface, a plane the size
+        // of the arena at 0.04 m. Godot leaves it there while the leak rises
+        // (and hides the leak's fronts), so the rising lava that kills is
+        // invisible; here the floor rises with it.
+        if world.arena.variant == growing_guns::arena::Variant::Island {
+            let y = floor_lava_y(world);
+            let s = world.arena.size;
+            put(scene, self.lava, at(Vec3::new(0.0, y - 0.05, 0.0), Vec3::new(s, 0.1, s)), false);
+        }
+        if l.active && !l.full {
             let (half, y) = (l.half, l.surface());
             let shown = l.floor_t() > 0.0 || !l.has_walls;
             if shown {
@@ -146,6 +155,14 @@ impl Things {
 }
 
 const LAVA_FRONT_THICKNESS: f32 = 0.045;
+
+/// The drawn surface of an island arena's lava floor: 0.04 m, or the leak's
+/// surface once it has risen past that.
+pub fn floor_lava_y(world: &World) -> f32 {
+    let l = &world.lava;
+    let leak = if l.active { l.surface() } else { f32::MIN };
+    growing_guns::arena::LAVA_FLOOR_Y.max(leak)
+}
 
 /// The four floor fronts the leak has covered, `inset` in from each edge:
 /// centre and size in XZ (north and south span the side, east and west the

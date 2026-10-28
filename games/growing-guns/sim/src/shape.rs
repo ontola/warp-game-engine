@@ -15,6 +15,9 @@ pub enum Kind {
     Pillar,
     Cover,
     Platform,
+    /// Lava-island rock: the island columns, their cover and planks
+    /// (Godot `_mat_dark` in the all-floor-lava layout).
+    Island,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

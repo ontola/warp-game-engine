@@ -90,14 +90,15 @@ impl IonFx {
         }
     }
 
-    pub fn detonate(&mut self, effects: &mut Effects, now: f32, position: Vec3, radius: f32) {
+    /// `lava_y`: the lava's surface; the column reaches 20 m below it.
+    pub fn detonate(&mut self, effects: &mut Effects, now: f32, position: Vec3, radius: f32, lava_y: f32) {
         if !now.is_finite() || !position.is_finite() || !radius.is_finite() || radius <= 0.0 { return; }
         self.detonations.retain(|d| now < d.birth + FLASH_SUSTAIN + FLASH_RELEASE);
         if self.detonations.iter().any(|d| d.birth == now && d.position == position) { return; }
         if self.detonations.len() >= MAX_DETONATIONS { self.detonations.remove(0); }
         self.charges.retain(|c| c.position != position);
         let radius = radius.min(200.0);
-        let bottom = growing_guns::arena::LAVA_KILL_Y - 20.0;
+        let bottom = lava_y - 20.0;
         let tint = ION_CORE.lerp(ION_COLOR, 0.18);
         // Three contiguous phases preserve the original flash's rise, short
         // hot peak and release instead of an ordinary orange explosion.
@@ -309,9 +310,9 @@ mod tests {
         let mut effects = Effects::default();
         for column in charge_columns(Vec3::ZERO, 0.0) { effects.column(column).unwrap(); }
         let mut ion = IonFx::default();
-        ion.detonate(&mut effects, 4.0, Vec3::ZERO, 38.0);
+        ion.detonate(&mut effects, 4.0, Vec3::ZERO, 38.0, growing_guns::arena::LAVA_KILL_Y);
         assert_eq!(effects.len(), 8 + 3 + 40);
-        ion.detonate(&mut effects, 4.0, Vec3::ZERO, 38.0);
+        ion.detonate(&mut effects, 4.0, Vec3::ZERO, 38.0, growing_guns::arena::LAVA_KILL_Y);
         assert_eq!(effects.len(), 8 + 3 + 40);
         assert_eq!(ion.flash(3.99, Vec3::ZERO), 0.0);
         assert!(ion.flash(4.01, Vec3::ZERO) > 0.7);

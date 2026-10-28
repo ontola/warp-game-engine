@@ -27,6 +27,23 @@ pub mod palette {
     pub const SKY_TOP: [f32; 3] = [0.22, 0.24, 0.28];
     pub const HORIZON: [f32; 3] = [0.48, 0.46, 0.44];
     pub const SUN: [f32; 3] = [1.0, 0.82, 0.58];
+
+    /// Godot `_inferno_palette`'s atmosphere for island arenas: sky, sun
+    /// (energy 2.55 against the castle grey's 2.0).
+    pub const INFERNO_SKY_TOP: [f32; 3] = [0.06, 0.05, 0.09];
+    pub const INFERNO_HORIZON: [f32; 3] = [0.58, 0.24, 0.10];
+    pub const INFERNO_SUN: [f32; 3] = [1.0, 0.72, 0.38];
+    pub const INFERNO_SUN_ENERGY: f32 = 2.55 / 2.0;
+
+    /// Godot `_inferno_palette`, the island arenas' stone: the castle grey
+    /// pulled towards a dark basalt.
+    pub fn inferno(base: [f32; 3]) -> [f32; 3] {
+        const STONE: [f32; 3] = [0.30, 0.28, 0.26];
+        let lighten = |a: f32| STONE.map(|c| c + (1.0 - c) * a);
+        let (to, t) = if base == FLOOR { (STONE, 0.62) } else if base == WALL { (lighten(0.08), 0.68) }
+            else if base == BUILDING { (lighten(0.12), 0.64) } else if base == DARK { ([0.20, 0.18, 0.17], 0.72) } else { return base };
+        [0, 1, 2].map(|k| base[k] + (to[k] - base[k]) * t)
+    }
 }
 
 /// Godot's hairline mortar gap between bricks.
@@ -42,6 +59,7 @@ const BEACON_COLORS: [[f32; 3]; 3] = [[1.0, 0.4, 0.3], [1.0, 0.35, 0.2], [1.0, 0
 #[derive(Clone, Copy)]
 pub struct Stone { intact: [usize; 4], cracked: usize, crumbling: usize, pub shards: [usize; 3] }
 
+#[derive(Clone, Copy)]
 struct KindMeshes { floor: Stone, wall: Stone, building: Stone, dark: Stone, accent_a: Stone, accent_b: Stone, beacons: [usize; 3] }
 
 impl KindMeshes {
@@ -49,7 +67,7 @@ impl KindMeshes {
         match k {
             Kind::Floor => self.floor,
             Kind::Wall => self.wall,
-            Kind::Tower | Kind::Pillar => self.dark,
+            Kind::Tower | Kind::Pillar | Kind::Island => self.dark,
             Kind::Building => self.building,
             Kind::Ledge | Kind::Platform => self.accent_b,
             Kind::Cover => self.accent_a,
@@ -64,6 +82,9 @@ struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, scorch: usiz
 pub struct ArenaView {
     slots: Slots,
     kinds: KindMeshes,
+    /// The same in the inferno palette, for island arenas.
+    inferno: KindMeshes,
+    island: bool,
     /// Slot and collider of every arena chunk (None once broken).
     chunk_slots: Vec<Option<SlotId>>,
     statics: Vec<Option<Static>>,
@@ -91,15 +112,18 @@ pub fn lava_material(scene: &mut Scene) -> u32 {
 impl ArenaView {
     /// Brick meshes, the lava sheet, the arena slots and the marks.
     pub fn reserve(scene: &mut Scene) -> Self {
-        let kinds = KindMeshes {
-            floor: stone(scene, palette::FLOOR, 0.9),
-            wall: stone(scene, palette::WALL, 0.85),
-            building: stone(scene, palette::BUILDING, 0.85),
-            dark: stone(scene, palette::DARK, 0.9),
-            accent_a: stone(scene, palette::ACCENT_A, 0.7),
-            accent_b: stone(scene, palette::ACCENT_B, 0.7),
-            beacons: BEACON_COLORS.map(|c| { let m = glow(scene, c, 6000.0); cube(scene, m) }),
+        let beacons = BEACON_COLORS.map(|c| { let m = glow(scene, c, 6000.0); cube(scene, m) });
+        let set = |scene: &mut Scene, tint: fn([f32; 3]) -> [f32; 3]| KindMeshes {
+            floor: stone(scene, tint(palette::FLOOR), 0.9),
+            wall: stone(scene, tint(palette::WALL), 0.85),
+            building: stone(scene, tint(palette::BUILDING), 0.85),
+            dark: stone(scene, tint(palette::DARK), 0.9),
+            accent_a: stone(scene, tint(palette::ACCENT_A), 0.7),
+            accent_b: stone(scene, tint(palette::ACCENT_B), 0.7),
+            beacons,
         };
+        let kinds = set(scene, |c| c);
+        let inferno = set(scene, palette::inferno);
         // Lava: Godot's flowing lava under the floor, visible through holes
         // and past the edge of open arenas.
         // Its surface is at the kill height (Godot LAVA_POOL_Y), level with
@@ -113,7 +137,7 @@ impl ArenaView {
         let scorch_m = material(scene, [0.06, 0.055, 0.05], 0.95);
         let blood_m = material(scene, [0.36, 0.02, 0.015], 0.35);
         let marks = Marks { slots: Slots::reserve(scene, MARKS), ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
-        ArenaView { slots, kinds, chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, lights: Vec::new(), lava: Default::default() }
+        ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, lights: Vec::new(), lava: Default::default() }
     }
 
     /// Fill the slots, colliders and debris grid from the world's arena (a
@@ -123,6 +147,7 @@ impl ArenaView {
         self.marks.slots.clear(scene);
         self.marks.ring.clear();
         let a = &world.arena;
+        self.island = a.variant == growing_guns::arena::Variant::Island;
         // Chunks first (their handles are kept), then the stands.
         let mut alive: Vec<_> = a.chunks.iter().filter(|c| c.alive).map(|c| c.shape()).collect();
         alive.extend(a.stadium.collision());
@@ -157,9 +182,12 @@ impl ArenaView {
 
     pub fn lights(&self) -> &[LocalLight] { &self.lights }
 
+    /// The stone set of this arena (the inferno one on islands).
+    fn kinds(&self) -> &KindMeshes { if self.island { &self.inferno } else { &self.kinds } }
+
     /// The stone of the chunk at a grid index (the floor's for the stands).
     pub fn stone_at(&self, world: &World, grid_index: Option<usize>) -> Stone {
-        grid_index.and_then(|c| world.arena.chunk(c)).map_or(self.kinds.floor, |ch| self.kinds.stone(ch.kind))
+        grid_index.and_then(|c| world.arena.chunk(c)).map_or(self.kinds().floor, |ch| self.kinds().stone(ch.kind))
     }
 
     /// A scorch mark on the stone a bullet hit.
@@ -170,7 +198,7 @@ impl ArenaView {
 
     /// Mesh and transform for a chunk at a wear level.
     fn chunk_look(&self, c: &growing_guns::Chunk, wear: u8) -> (usize, Affine3A) {
-        let st = self.kinds.stone(c.kind);
+        let st = self.kinds().stone(c.kind);
         let mesh = match wear { 0 => st.intact[(c.seed % 4) as usize], 1 => st.cracked, _ => st.crumbling };
         // Worn bricks shrink a little and sit askew, like Godot's deform carve.
         let shrink = [1.0, 0.97, 0.92][wear as usize];
@@ -218,7 +246,7 @@ impl ArenaView {
         // Rubble from each blast (Godot `request_burst`): 70 shards per
         // broken chunk, 128 to 900, thrown from the blast centre.
         for burst in &b.bursts {
-            let st = self.kinds.stone(burst.kind);
+            let st = self.kinds().stone(burst.kind);
             let count = (burst.count * 70).clamp(128, 900);
             fx.debris.burst(scene, &BurstSpec::rubble(burst.center, burst.radius.max(1.0), count, &st.shards));
             fx.particles.burst(scene, burst.center, Vec3::Y, &Burst { mesh: fx.meshes.dust, count: 12, spread: 1.5, speed: [0.5, 3.0], size: [0.9, 0.3], life: [0.8, 1.6], ..Burst::dust() });

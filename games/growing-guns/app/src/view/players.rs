@@ -43,7 +43,8 @@ const SPLASH_SINK_S: f32 = 0.55;
 /// A body sinking into the lava: a lava twin of the character (an instance
 /// in the dynamic range) or lava blobs in corpse slots, and the splash.
 /// `surface` is where Godot's `_lava_surface_world_y` puts it: the pool
-/// under the floor (LAVA_POOL_Y) for every lava death, the leak's too.
+/// under the floor (LAVA_POOL_Y) for every lava death, the leak's too; the
+/// lava floor (0.04 m) in an island arena, even under a risen leak.
 struct LavaCorpse { victim: usize, pos: Vec3, yaw: f32, birth: f32, fall: bool, surface: f32, twin: Option<(usize, usize)>, blobs: Vec<(SlotId, usize, Vec3, f32)>, splash: Option<SlotId> }
 
 impl LavaCorpse {
@@ -170,7 +171,7 @@ impl PlayersView {
         // Lava (Godot `_lava_death`): no ragdoll and no blood, the body
         // takes the lava's look and sinks.
         if let Gib::Lava { fall } = gib {
-            if victim < self.meshes.len() { self.lava_death(scene, victim, v, fall, now); }
+            if victim < self.meshes.len() { self.lava_death(scene, victim, v, fall, now, world.arena.lava_surface()); }
             return;
         }
         let blood = fx.meshes.blood;
@@ -222,9 +223,8 @@ impl PlayersView {
 
     /// Godot `Violence.play_lava_death`: a lava twin of the character (or
     /// lava blobs) where the body was, and a splash pillar when it fell in.
-    fn lava_death(&mut self, scene: &mut Scene, victim: usize, v: &Player, fall: bool, now: f32) {
+    fn lava_death(&mut self, scene: &mut Scene, victim: usize, v: &Player, fall: bool, now: f32, surface: f32) {
         self.end_lava(scene, victim);
-        let surface = growing_guns::arena::LAVA_KILL_Y;
         let twin = if self.meshes[victim].skinned { self.characters.as_mut().and_then(|c| c.lava_twin(victim)) } else { None };
         let mut blobs = Vec::new();
         if twin.is_none() {

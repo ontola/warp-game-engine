@@ -1,9 +1,18 @@
 //! Growing Guns as a Warp `app::Game`: local, host or client sessions with
 //! 1 to 4 local players in split screen, the rest bots. Window, tick, input
 //! and presentation come from the engine's app shell.
+//!
+//! Splitscreen hot-join (Godot `splitscreen_manager.gd`): with splitscreen
+//! on (the pause menu's SPLITSCREEN, or more than one local seat), a pad no
+//! seat uses joins by pressing X: the new local player takes over a bot's
+//! seat, or (offline, versus, nobody remote) a new seat is added. A joined
+//! seat's Start opens its PLAYER MENU (RESUME / LEAVE); leaving hands the
+//! seat back to a bot. Seats change between ticks on the host only, so the
+//! simulation stays deterministic and clients just follow the snapshots.
+//! Under GameNight the party owns the seats and there is no hot-join.
 use crate::session::Session;
 use crate::{hud, view, Args};
-use app::{Buttons, Controls, Draw, Frame};
+use app::{Buttons, Controls, Device, Draw, Frame};
 use glam::Vec3;
 use growing_guns::{Event, Input, World, DT, TICK_HZ};
 use render::hud::HudDrawList;
@@ -44,6 +53,8 @@ pub struct Gg {
     since_snap: f32,
     since_poll: u32,
     rebuild: bool,
+    /// The atmosphere shown is the island arenas' (Godot's sky only).
+    inferno: bool,
     pub(crate) sounds: Option<crate::sounds::Sounds>,
     /// The soundtrack and game.gd's music logic.
     music: Option<(crate::music::Shared, crate::music::Director)>,
@@ -75,6 +86,25 @@ pub struct Gg {
     light_overrides: Vec<String>,
     /// Scatter weights of the stadium's lights (`light flood_scatter=..`).
     scatter: view::Scatter,
+    /// Splitscreen: spare pads may join (see the module notes).
+    pub split: bool,
+    /// The devices driving each local seat while split (`Game::seats`).
+    binding: Vec<Vec<Device>>,
+    /// Devices connected now; the last pad used, and whether the last input
+    /// came from a pad (Godot `_last_input_was_controller`).
+    connected: Vec<Device>,
+    last_pad: Option<Device>,
+    pad_last: bool,
+    /// Local seats that joined this tick: their join press is not play input.
+    joined_now: Vec<usize>,
+    /// A joined seat's PLAYER MENU: local seat and its focus.
+    player_menu: Option<(usize, app::ui::Menu)>,
+    /// A join from the menus' field, connecting on its own thread.
+    joining: Option<std::sync::mpsc::Receiver<Result<(Session, World, Vec<usize>), String>>>,
+    /// The Player name as last saved.
+    saved_name: String,
+    /// Menu joins skip relays (`--lan`, tests).
+    pub lan: bool,
 }
 
 impl Gg {
@@ -83,9 +113,13 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
-            sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default() }
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
+            sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default(),
+            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false }
+            .with_split()
     }
+
+    fn with_split(mut self) -> Self { self.split = self.slots.len() > 1; self }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
 
@@ -102,9 +136,13 @@ impl Gg {
         self.world = world;
         self.slots = slots;
         self.menus.clear();
+        self.split = self.slots.len() > 1;
+        self.binding.clear();
+        self.player_menu = None;
         self.rebuild = true;
         // The fresh visuals carry Godot's sky: apply the chosen one again.
         self.sky.applied = None;
+        self.inferno = false;
         let choice = self.sky.choice;
         if let Err(e) = self.set_sky(choice) { eprintln!("sky: {e}"); }
         // A new match for the music too.
@@ -142,7 +180,8 @@ impl Gg {
     pub fn receive(&mut self, dt: f32) -> f32 {
         let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
         self.hud.locals.clone_from(&self.slots);
-        self.hud.set_names(&self.world, &self.slots, &self.names);
+        let names = self.seat_names();
+        self.hud.set_names(&self.world, &self.slots, &names);
         let (vis, hud, sounds, music, slots) = (&mut self.vis, &mut self.hud, &mut self.sounds, &mut self.music, &self.slots);
         let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
             vis.absorb(w, &crate::sounds::ears(w, slots));
@@ -199,10 +238,10 @@ impl Gg {
     fn apply_sky(&mut self) -> Result<(), String> {
         match self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) {
             None if self.sky.applied.is_some() => {
-                self.vis.scene.sky = Some(view::sky());
+                self.vis.scene.sky = Some(view::sky_for(self.inferno));
                 self.vis.scene.sky_physical = false;
                 let taa = self.light.taa;
-                self.light = Lighting { taa, ..view::lighting() };
+                self.light = Lighting { taa, ..view::lighting_for(self.inferno) };
                 self.vis.set_floodlights(1.0);
                 self.apply_light_overrides();
                 self.sky.applied = None;
@@ -217,6 +256,22 @@ impl Gg {
             Some(_) => {}
         }
         Ok(())
+    }
+
+    /// Godot's island arenas have their own atmosphere (`_inferno_palette`):
+    /// under Godot's sky, swap the sky and sun when a round changes between
+    /// an island arena and another (a renderer rebuild, only then). The
+    /// procedural skies keep theirs.
+    fn sync_atmosphere(&mut self) {
+        let inferno = self.world.arena.variant == growing_guns::arena::Variant::Island;
+        if inferno == self.inferno { return; }
+        self.inferno = inferno;
+        if self.sky.applied.is_some() { return; }
+        self.vis.scene.sky = Some(view::sky_for(inferno));
+        let taa = self.light.taa;
+        self.light = Lighting { taa, ..view::lighting_for(inferno) };
+        self.apply_light_overrides();
+        self.rebuild = true;
     }
 
     fn show_sky(&mut self, prepared: render::sky::PreparedSky) {
@@ -322,6 +377,100 @@ impl Gg {
         self.ui.open(hud::menus::Screen::Start);
     }
 
+    /// Names for the local seats: the party's (or `names`), else the Player
+    /// name for the first seat.
+    fn seat_names(&self) -> Vec<String> {
+        if !self.names.is_empty() || self.ui.player_name.is_empty() { self.names.clone() } else { vec![self.ui.player_name.clone()] }
+    }
+
+    fn ctx_parts(&self) -> (Option<String>, bool) { (self.session.ticket().map(str::to_string), self.party.is_some()) }
+
+    /// Hot-join is possible here: splitscreen on, the host's (or an offline)
+    /// match, no party, in play.
+    fn can_join(&self) -> bool {
+        self.split && self.party.is_none() && !self.session.is_client() && self.start_seats.is_empty() && !matches!(self.ui.screen, hud::menus::Screen::Start)
+    }
+
+    /// Godot `_should_show_splitscreen_hint`: a spare pad is connected and
+    /// splitscreen is off (one pad only counts while the keyboard is in use).
+    fn hint_visible(&self) -> bool {
+        let pads = self.connected.iter().filter(|d| d.is_pad()).count();
+        self.party.is_none() && !self.split && !self.session.is_client() && pads > 0 && (pads >= 2 || !self.pad_last)
+    }
+
+    /// Godot `_join_player`: device `dev` gets a local seat. It takes over a
+    /// bot's seat (not a remote's, not a wave enemy); offline in versus with
+    /// none free, a new seat is added.
+    fn join_local(&mut self, dev: Device) -> Result<usize, String> {
+        if self.session.is_client() { return Err("SPLITSCREEN IS HOST-ONLY".into()); }
+        if self.slots.len() >= 4 { return Err("ALL 4 SEATS ARE TAKEN".into()); }
+        let taken = self.session.remote_slots();
+        let w = &self.world;
+        let seats = if w.coop { w.waves.seats.min(w.players.len()) } else { w.players.len() };
+        let free = (0..seats).find(|i| w.players[*i].bot && !self.slots.contains(i) && !taken.contains(i));
+        let s = match free {
+            Some(s) => s,
+            None if self.session.remote_players() == 0 && !w.coop && w.players.len() < 8 => {
+                let mut p = growing_guns::Player::new(false);
+                let have = w.players.len();
+                p.pos = w.arena.spawns.get(have % w.arena.spawns.len().max(1)).copied().unwrap_or_default() + Vec3::Y;
+                self.world.players.push(p);
+                have
+            }
+            None => return Err("GAME FULL".into()),
+        };
+        self.world.set_bot(s, false);
+        self.slots.push(s);
+        self.binding.push(vec![dev]);
+        self.joined_now.push(self.slots.len() - 1);
+        rebuild_views(self);
+        let names = self.seat_names();
+        self.hud.locals.clone_from(&self.slots);
+        self.hud.set_names(&self.world, &self.slots, &names);
+        self.hud.sync(&self.world);
+        let n = self.hud.name(s).to_string();
+        self.hud.announce(format!("{n} joined"), 2.0, 0.0);
+        println!("{dev} joined as player {}", s + 1);
+        Ok(s)
+    }
+
+    /// Godot `_leave_player`: local seat `k` (not the first) goes back to a bot.
+    fn leave_local(&mut self, k: usize) {
+        if k == 0 || k >= self.slots.len() { return; }
+        let s = self.slots.remove(k);
+        if k < self.binding.len() { self.binding.remove(k); }
+        if k < self.menus.len() { self.menus.remove(k); }
+        self.player_menu = None;
+        self.world.set_bot(s, true);
+        let n = self.hud.name(s).to_string();
+        rebuild_views(self);
+        self.hud.locals.clone_from(&self.slots);
+        self.hud.sync(&self.world);
+        self.hud.announce(format!("{n} left"), 2.0, 0.0);
+    }
+
+    /// The shared menus' context.
+    fn ctx<'a>(&'a self, ticket: Option<&'a str>) -> hud::menus::Ctx<'a> {
+        menu_ctx(&self.session, &self.world, ticket, self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names)
+    }
+
+    /// A finished join from the menu: the new session replaces this one.
+    fn poll_join(&mut self) {
+        let Some(rx) = &self.joining else { return };
+        let got = match rx.try_recv() { Ok(r) => r, Err(std::sync::mpsc::TryRecvError::Empty) => return, Err(_) => Err("the join stopped".into()) };
+        self.joining = None;
+        self.ui.joining = false;
+        match got {
+            Ok((session, world, slots)) => {
+                println!("joined: playing as {:?}", slots.iter().map(|s| s + 1).collect::<Vec<_>>());
+                self.session = session;
+                self.reset(world, slots);
+                self.ui.join.set("");
+            }
+            Err(e) => { self.ui.notice = Some(format!("Could not join: {e}")); }
+        }
+    }
+
     /// Godot `MenuHelpers.save_settings`.
     fn save_settings(&self) {
         let Some(path) = &self.settings_file else { return };
@@ -353,18 +502,46 @@ impl Gg {
                 self.ui.open(Screen::Play);
             }
             Action::Host if matches!(self.session, Session::Local) => match Session::host(false) {
+                // The field shows the match ID; COPY puts it on the clipboard.
                 Ok(s) => {
-                    if let Some(t) = s.ticket() { println!("hosting. Others join with:\n  growing-guns play --join {t}"); let _ = std::fs::write("growing-guns-ticket.txt", t); }
+                    if let Some(t) = s.ticket() { println!("hosting. Others join with:\n  growing-guns play --join {t}"); }
                     self.session = s;
-                    self.ui.notice = Some("Hosting: ticket written to growing-guns-ticket.txt".into());
                 }
                 Err(e) => { self.ui.notice = Some(format!("could not host: {e}")); self.ui.error = Some(format!("Couldn't start the online host: {e}")); }
             },
+            // Godot `_pause_copy_game_id`: the clipboard, and COPIED! for a moment.
             Action::Copy => if let Some(t) = self.session.ticket() {
-                let _ = std::fs::write("growing-guns-ticket.txt", t);
+                app::clipboard::set(t);
                 println!("ticket: {t}");
-                self.ui.notice = Some("Ticket written to growing-guns-ticket.txt".into());
+                self.ui.copied = 1.5;
             },
+            // Godot `_pause_join`: leave this game and join that one.
+            Action::Join if self.joining.is_none() && !self.session.is_client() && self.party.is_none() => {
+                let ticket = self.ui.join_ticket();
+                let (players, lan) = (self.slots.len().max(1) as u8, self.lan);
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || { let _ = tx.send(Session::join(&ticket, players, lan)); });
+                self.joining = Some(rx);
+                self.ui.joining = true;
+                println!("joining {}...", self.ui.join_ticket());
+            }
+            // Godot `_pause_toggle_splitscreen`.
+            Action::Splitscreen if host && self.party.is_none() => {
+                if self.split {
+                    while self.slots.len() > 1 { let k = self.slots.len() - 1; self.leave_local(k); }
+                    self.split = false;
+                    self.binding.clear();
+                    self.hud.announce("SPLITSCREEN OFF", 2.0, 0.0);
+                } else {
+                    self.split = true;
+                    // The first seat keeps the keyboard, and the pad last used.
+                    let mut first = Vec::new();
+                    if !self.no_kbm { first.push(Device::Keyboard); }
+                    if (self.pad_last || self.no_kbm) && let Some(p) = self.last_pad { first.push(p); }
+                    self.binding = vec![first];
+                }
+                self.ui.open(Screen::Play);
+            }
             Action::Rematch if host => { self.world.restart_match(); self.new_arena(); self.hud.round_age = 0.0; self.ui.open(Screen::Play); }
             Action::Advanced => self.ui.open(Screen::Advanced),
             Action::Party(k, v) => {
@@ -393,6 +570,35 @@ impl Gg {
     }
 }
 
+impl Gg {
+    /// Godot's per-player PLAYER MENU: a joined seat's Start opens it; it
+    /// then takes that seat's controls (A or X select, B or Start resume).
+    fn player_menus(&mut self, controls: &mut [Controls]) {
+        if !self.split || self.party.is_some() { self.player_menu = None; return; }
+        let mut leave = None;
+        if let Some((k, menu)) = &mut self.player_menu {
+            let k = *k;
+            let c = controls.get(k).copied().unwrap_or_default();
+            if c.pressed.has(Buttons::START | Buttons::EAST) { self.player_menu = None; }
+            else {
+                let sel = Buttons(if c.pressed.has(Buttons::WEST) { c.pressed.0 | Buttons::SOUTH } else { c.pressed.0 });
+                match menu.update(&Controls { pressed: sel, ..c }, hud::menus::PLAYER_MENU.len(), 1, DT) {
+                    app::ui::MenuEvent::Select(0) | app::ui::MenuEvent::Back => self.player_menu = None,
+                    app::ui::MenuEvent::Select(_) => { leave = Some(k); }
+                    _ => {}
+                }
+            }
+            if let Some(c) = controls.get_mut(k) { *c = Controls::default(); }
+        } else if !self.ui.is_open() {
+            if let Some(k) = (1..controls.len()).find(|&k| controls[k].pressed.has(Buttons::START)) {
+                self.player_menu = Some((k, Default::default()));
+                controls[k] = Controls::default();
+            }
+        }
+        if let Some(k) = leave { self.leave_local(k); }
+    }
+}
+
 impl app::Game for Gg {
     fn local_players(&self) -> usize { self.slots.len() }
 
@@ -409,6 +615,8 @@ impl app::Game for Gg {
         let (pointer, pointer_size) = std::mem::take(&mut self.pointer);
         // Live-control requests, between ticks (also while a party is paused).
         crate::live::tick(self);
+        self.poll_join();
+        if self.ui.player_name != self.saved_name { self.saved_name = self.ui.player_name.clone(); self.save_settings(); }
         let party_controls = match self.party_tick() {
             None => None,
             Some(None) => return,
@@ -419,7 +627,12 @@ impl app::Game for Gg {
             for (k, c) in c.iter_mut().enumerate() { let m = self.names.get(k).map_or(self.ui.stick, |n| self.ui.aim_for(n)); c.look = c.look.map(|v| v * m); }
             c
         });
-        let controls: &[Controls] = party_controls.as_deref().unwrap_or(controls);
+        let mut controls: Vec<Controls> = party_controls.unwrap_or_else(|| controls.to_vec());
+        controls.resize(self.slots.len(), Controls::default());
+        // A seat that joined this tick: its X was the join, not a reload.
+        for k in std::mem::take(&mut self.joined_now) { if let Some(c) = controls.get_mut(k) { *c = Controls::default(); } }
+        self.player_menus(&mut controls);
+        let controls: &[Controls] = &controls;
         // The music volume setting.
         if let Some((m, _)) = &self.music && self.music_db != Some(self.ui.music_db) {
             crate::music::lock(m).set_music_db(self.ui.music_db);
@@ -432,7 +645,8 @@ impl app::Game for Gg {
             if let Some(s) = &self.scripts { for line in s.poll(&mut self.world) { eprintln!("mods: {line}"); } }
         }
         self.hud.locals.clone_from(&self.slots);
-        self.hud.set_names(&self.world, &self.slots, &self.names);
+        let names = self.seat_names();
+        self.hud.set_names(&self.world, &self.slots, &names);
         // Menus take the local players' controls (merged) while open.
         let merged = merge(controls);
         let ctx_ticket = self.session.ticket().map(str::to_string);
@@ -490,6 +704,7 @@ impl app::Game for Gg {
         self.vis.set_tilt(self.ui.tilt);
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if self.sky.live.is_some() { self.cycle_sky(); }
+        self.sync_atmosphere();
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
             frame.set_scene(&self.vis.scene, &self.light);
             self.plates.invalidate();
@@ -527,6 +742,9 @@ impl app::Game for Gg {
             list.begin_overlay();
             let error = self.session.error().or_else(|| self.ui.error.clone());
             self.hud.global(&mut list, &self.world, error.as_deref());
+            // Splitscreen: the join prompt while seats are open, else the hint.
+            if self.can_join() && self.slots.len() < 4 { hud::menus::join_prompt(&mut list); } else if self.hint_visible() { hud::menus::splitscreen_hint(&mut list); }
+            if let Some((k, m)) = &self.player_menu && let Some(&s) = self.slots.get(*k) { hud::menus::player_menu(&mut list, self.hud.name(s), m.focus); }
             self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect()
         };
         list.begin_overlay();
@@ -565,6 +783,40 @@ impl app::Game for Gg {
         t.stick = d.stick * self.ui.stick;
     }
 
+    fn devices(&mut self, devices: &[(Device, Controls)]) {
+        self.connected = devices.iter().map(|d| d.0).collect();
+        for (d, c) in devices {
+            if c.pressed.0 != 0 || c.mv != [0.0; 2] || c.look != [0.0; 2] { self.pad_last = d.is_pad(); if d.is_pad() { self.last_pad = Some(*d); } }
+        }
+        if !self.split || self.party.is_some() { return; }
+        // Seats without a device (launched with --players N) take the next
+        // free one in order, as the shell's own routing would.
+        self.binding.resize(self.slots.len(), Vec::new());
+        for k in 0..self.binding.len() {
+            if !self.binding[k].is_empty() { continue; }
+            if let Some(&d) = self.connected.iter().find(|d| !self.binding.iter().any(|b| b.contains(d))) { self.binding[k].push(d); }
+        }
+        if !self.can_join() { return; }
+        for (d, c) in devices {
+            if c.pressed.has(Buttons::WEST) && !self.binding.iter().any(|b| b.contains(d)) {
+                if let Err(e) = self.join_local(*d) { self.hud.announce(e, 2.0, 0.0); }
+            }
+        }
+    }
+
+    fn seats(&self) -> Option<Vec<Vec<Device>>> { (self.split && self.party.is_none()).then(|| self.binding.clone()) }
+
+    fn text_input(&self) -> bool {
+        let (ticket, _) = self.ctx_parts();
+        self.ui.text_focus(&self.ctx(ticket.as_deref())).is_some()
+    }
+
+    fn text(&mut self, ev: app::TextEvent) {
+        let (ticket, _) = self.ctx_parts();
+        let a = { let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.text(ev, &ctx) };
+        self.act(a);
+    }
+
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let w: Vec<&str> = cmd.split_whitespace().collect();
         let num = |k: usize| -> Result<f32, String> { w.get(k).ok_or(format!("{cmd}: missing argument {k}"))?.parse::<f32>().map_err(|e| format!("{cmd}: {e}")) };
@@ -573,7 +825,25 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
+            // The keyboard focus on a text field of the open menu.
+            "focus" => {
+                use hud::menus::Field;
+                let f = match w.get(1).copied() { Some("join") => Field::Join, Some("name") => Field::Name, _ => return Err("focus join|name".into()) };
+                let (ticket, _) = self.ctx_parts();
+                let ok = { let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.focus_field(f, &ctx) };
+                if ok { Ok(format!("focus {f:?}")) } else { Err(format!("no {f:?} field on {:?}", self.ui.screen)) }
+            }
+            // Splitscreen on or off, as the pause menu's SPLITSCREEN.
+            "split" => {
+                let want = match w.get(1).copied() { Some("on") => true, Some("off") => false, _ => !self.split };
+                if want != self.split { self.act(hud::menus::Action::Splitscreen); }
+                Ok(format!("splitscreen {}, local seats {:?}", self.split, self.slots))
+            }
+            // The menus' COPY: the match ID to the clipboard.
+            "copy" => { self.act(hud::menus::Action::Copy); Ok(format!("clipboard {:?}", app::clipboard::get())) }
+            // A local seat leaves (PLAYER MENU's LEAVE).
+            "leave" => { let k = num(1)? as usize; if k == 0 || k >= self.slots.len() { return Err(format!("no joined seat {k}")); } self.leave_local(k); Ok(format!("local seats {:?}", self.slots)) }
             // Show (or clear with `none`) a network error in the red panel.
             "net-error" => {
                 let t = cmd.trim_start().strip_prefix("net-error").unwrap_or("").trim();
@@ -631,12 +901,19 @@ impl app::Game for Gg {
                 Ok(s.status())
             }
             "arena" => {
-                let seed = num(1)? as u64;
-                self.world.arena = growing_guns::Arena::generate(seed);
+                // `arena SEED`, or `arena island [SEED]`: the island layout
+                // whatever the seed rolls (Godot `force_all_floor_lava`).
+                let island = w.get(1) == Some(&"island");
+                let seed = if island { w.get(2).map_or(Ok(1.0), |_| num(2))? } else { num(1)? } as u64;
+                self.world.arena = growing_guns::Arena::generate_with(seed, 55.0, 95.0, island);
+                self.world.lava = Default::default();
+                // On islands everyone moves onto one (anywhere else is lava).
+                if island { self.world.place_on_spawns(); }
                 self.new_arena();
                 let a = &self.world.arena;
                 let hole = a.hole.map(|(c, s)| format!(", hole {s:.1} m at {:.1} {:.1}", c.x, c.y)).unwrap_or_default();
-                Ok(format!("arena {seed}: {:?}, {} m, {} chunks{hole}", a.variant, a.size, a.chunks.len()))
+                let islands = if a.islands.is_empty() { String::new() } else { format!(", {} islands", a.islands.len()) };
+                Ok(format!("arena {seed}: {:?}, {} m, {} chunks{hole}{islands}", a.variant, a.size, a.chunks.len()))
             }
             "lava" => {
                 // Godot's dev key L; `lava S` as if the leak began S seconds ago.
@@ -704,9 +981,16 @@ impl app::Game for Gg {
             "tick": w.tick, "round": w.round, "phase": w.phase, "screen": format!("{:?}", self.ui.screen), "net": self.session.status(&self.slots), "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
             "projectiles": w.projectiles.len(), "strikes": w.strikes.len(), "pickups": w.pickups.len(),
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
-                "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
+                "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks(),
+                "islands": w.arena.islands.len(), "lava_surface": w.arena.lava_surface(), "leak_surface": w.lava.active.then(|| w.lava.surface()) },
             "players": players, "waves": w.coop.then_some(&w.waves), "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
             "sky": { "choice": self.sky.choice.name(), "applied": self.sky.applied.map(|s| s.metadata()) },
+            "local": { "seats": self.slots, "split": self.split, "devices": self.binding.iter().map(|b| b.iter().map(|d| d.to_string()).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                "connected": self.connected.iter().map(|d| d.to_string()).collect::<Vec<_>>(), "player_menu": self.player_menu.as_ref().map(|m| m.0),
+                "join_prompt": self.can_join() && self.slots.len() < 4, "hint": self.hint_visible() },
+            "menu": { "join_field": self.ui.join.text(), "joining": self.ui.joining, "player_name": self.ui.player_name, "name_field": self.ui.name.text(),
+                "text_input": app::Game::text_input(self), "picker": self.ui.picker.is_some(), "copied": self.ui.copied > 0.0, "notice": self.ui.notice,
+                "clipboard": app::clipboard::get() },
         }).to_string())
     }
 }
@@ -746,7 +1030,8 @@ pub fn rebuild_views(gg: &mut Gg) {
 fn card_id(w: &World, c: growing_guns::cards::Card) -> String { w.cards.get(c).map_or_else(|| format!("#{}", c.0), |d| d.id.clone()) }
 
 /// `--modifier ID` forces a round modifier (`none` for none), `--rounds N`
-/// sets the wins that end the match, `--coop` plays wave survival.
+/// sets the wins that end the match, `--coop` plays wave survival,
+/// `--island` makes every arena an island arena.
 /// Headless tools roll no modifiers unless asked.
 pub fn match_options(args: &Args, w: &mut World, play: bool) {
     if !play { w.modifier_chance = 0.0; }
@@ -760,6 +1045,7 @@ pub fn match_options(args: &Args, w: &mut World, play: bool) {
     }
     w.rounds_to_win = args.num("--rounds", w.rounds_to_win);
     w.coop = args.flag("--coop");
+    w.force_island = args.flag("--island");
 }
 
 pub fn run(args: &Args) -> Result<(), String> {
@@ -786,9 +1072,12 @@ pub fn run(args: &Args) -> Result<(), String> {
     if game.party.is_some() { println!("gamenight: waiting for the party host"); }
     game.live = crate::live::start(args)?.map(Box::new);
     game.no_kbm = args.flag("--no-kbm");
+    game.lan = lan;
     // Settings persist like Godot's user://settings.cfg.
     game.settings_file = settings_path();
     if let Some(v) = game.settings_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) { game.ui.load_settings(&v); }
+    // Godot names a new player Player_NNN.
+    if game.ui.player_name.is_empty() { game.ui.player_name = format!("Player_{}", seed % 1000); }
     // Godot opens on the start screen; `--skip-menu`, joining and a party go straight in.
     if !args.flag("--skip-menu") && !game.session.is_client() && game.party.is_none() { game.show_start(); }
     game.set_sky(crate::sky::Sky::from_args(args.value("--sky"))?)?;
@@ -820,4 +1109,131 @@ pub fn run(args: &Args) -> Result<(), String> {
         ..Default::default()
     };
     app::run(cfg, &mut game)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use app::Game;
+
+    fn press(b: u32) -> Controls { Controls { held: Buttons(b), pressed: Buttons(b), ..Default::default() } }
+    fn idle(n: u32) -> Vec<(Device, Controls)> { std::iter::once(Device::Keyboard).chain((0..n).map(Device::Pad)).map(|d| (d, Controls::default())).collect() }
+    /// One shell tick: devices, then routed controls.
+    fn step(g: &mut Gg, devices: &[(Device, Controls)]) -> Vec<Controls> {
+        let c = app::seat_controls(g, devices);
+        g.tick(&c);
+        c
+    }
+
+    #[test]
+    fn spare_pads_join_over_bots_lead_their_own_seat_and_leave() {
+        let mut world = World::new(5, &[false, true, true, true]);
+        world.release_cage();
+        let mut g = Gg::new(world, Session::Local, vec![0]);
+        // Not split: every device drives the one seat; a second pad shows the hint.
+        step(&mut g, &idle(2));
+        assert!(g.seats().is_none());
+        assert!(g.hint_visible());
+        g.command("split on").unwrap();
+        assert!(g.split && !g.hint_visible());
+        assert_eq!(g.seats(), Some(vec![vec![Device::Keyboard]]));
+        // pad1 presses X: it takes the first bot's seat.
+        let mut d = idle(2);
+        d[2].1 = press(Buttons::WEST);
+        let c = step(&mut g, &d);
+        assert_eq!(g.slots, vec![0, 1]);
+        assert!(!g.world.players[1].bot);
+        assert_eq!(c.len(), 2, "the seat counts from its join tick");
+        assert_eq!(g.seats(), Some(vec![vec![Device::Keyboard], vec![Device::Pad(1)]]));
+        // Its sticks move player 2 only.
+        let before = (g.world.players[0].pos, g.world.players[1].pos);
+        let mut d = idle(2);
+        d[2].1 = Controls { mv: [0.0, 1.0], ..Default::default() };
+        for _ in 0..40 { step(&mut g, &d); }
+        assert!(g.world.players[1].pos.distance(before.1) > 0.5, "the joined pad moves its player");
+        assert!(g.world.players[0].pos.distance(before.0) < 0.5, "and not the first");
+        // pad0 joins too; the keyboard never takes a second seat.
+        let mut d = idle(2);
+        d[1].1 = press(Buttons::WEST);
+        d[0].1 = press(Buttons::WEST);
+        step(&mut g, &d);
+        assert_eq!(g.slots, vec![0, 1, 2]);
+        // Start on pad1 opens its PLAYER MENU; down and A leaves.
+        let mut d = idle(2);
+        d[2].1 = press(Buttons::START);
+        step(&mut g, &d);
+        assert_eq!(g.player_menu.as_ref().map(|m| m.0), Some(1));
+        assert!(!g.ui.is_open(), "the match menu stays shut");
+        d[2].1 = press(Buttons::DOWN);
+        step(&mut g, &d);
+        d[2].1 = press(Buttons::SOUTH);
+        step(&mut g, &d);
+        assert_eq!(g.slots, vec![0, 2]);
+        assert!(g.world.players[1].bot, "the seat goes back to a bot");
+        assert_eq!(g.binding, vec![vec![Device::Keyboard], vec![Device::Pad(0)]]);
+        // SPLITSCREEN off sends everyone joined back to the bots.
+        g.command("split off").unwrap();
+        assert_eq!(g.slots, vec![0]);
+        assert!(g.world.players[2].bot && g.seats().is_none());
+    }
+
+    #[test]
+    fn a_full_match_adds_a_seat_offline_and_the_start_screen_takes_no_joins() {
+        let mut g = Gg::new(World::new(5, &[false, false]), Session::Local, vec![0, 1]);
+        assert!(g.split, "two local seats are splitscreen");
+        // Launch seats take the devices in order, as the shell would.
+        let mut d = idle(1);
+        d[1].1 = press(Buttons::WEST);
+        step(&mut g, &d);
+        assert_eq!(g.binding, vec![vec![Device::Keyboard], vec![Device::Pad(0)]], "pad0 drives seat 2, no join");
+        let mut d = idle(2);
+        d[2].1 = press(Buttons::WEST);
+        step(&mut g, &d);
+        assert_eq!(g.slots, vec![0, 1, 2], "no bot free: a third player is added");
+        assert_eq!(g.world.players.len(), 3);
+        assert!(!g.world.players[2].bot);
+        // The determinism of the sim: the same joins at the same ticks give the same world.
+        let digest = |g: &Gg| g.world.digest();
+        let mut a = Gg::new(World::new(9, &[false, true, true]), Session::Local, vec![0]);
+        let mut b = Gg::new(World::new(9, &[false, true, true]), Session::Local, vec![0]);
+        for g in [&mut a, &mut b] {
+            g.world.release_cage();
+            g.command("split on").unwrap();
+            for t in 0..90 {
+                let mut d = idle(1);
+                if t == 30 { d[1].1 = press(Buttons::WEST); }
+                if t > 30 { d[1].1 = Controls { mv: [0.3, 1.0], held: Buttons(Buttons::RIGHT_TRIGGER), ..Default::default() }; }
+                step(g, &d);
+            }
+        }
+        assert_eq!(digest(&a), digest(&b));
+        assert_eq!(a.slots, vec![0, 1]);
+        // Behind the start screen the local seats are bots: no joins.
+        let mut p = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
+        p.split = true;
+        assert!(p.can_join());
+        let mut d = idle(1);
+        d[1].1 = press(Buttons::WEST);
+        p.start_seats = vec![0];
+        step(&mut p, &d);
+        assert_eq!(p.slots, vec![0], "no joins behind the start screen");
+    }
+
+    #[test]
+    fn copy_puts_the_ticket_on_the_clipboard_and_names_reach_the_hud() {
+        app::clipboard::memory_only();
+        let mut g = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
+        g.ui.player_name = "Joep".into();
+        step(&mut g, &idle(0));
+        assert_eq!(g.hud.name(0), "Joep");
+        g.command("menu pause").unwrap();
+        assert!(!app::Game::text_input(&g));
+        g.command("focus join").unwrap();
+        assert!(app::Game::text_input(&g));
+        g.text(app::TextEvent::Insert("xyz".into()));
+        assert_eq!(g.ui.join.text(), "xyz");
+        let state: serde_json::Value = serde_json::from_str(&g.state().unwrap()).unwrap();
+        assert_eq!(state["menu"]["join_field"], "xyz");
+        assert_eq!(state["menu"]["text_input"], true);
+    }
 }

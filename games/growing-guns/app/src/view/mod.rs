@@ -167,7 +167,7 @@ impl Visuals {
                     // Godot's spawn_bullet_blast: billowing fire and smoke,
                     // flame tongues, embers, heat shell, flash and glow lights.
                     if kind == ExplosionKind::Ion {
-                        self.ion.detonate(&mut self.fx.blasts, now, pos, radius);
+                        self.ion.detonate(&mut self.fx.blasts, now, pos, radius, world.arena.lava_surface());
                     } else {
                         self.fx.blasts.explosion(now, pos, radius, BLAST_TINT);
                     }
@@ -305,8 +305,22 @@ impl Visuals {
 }
 
 /// Godot's sky_top to horizon; the ground colour is the darkened horizon.
-pub fn sky() -> (u32, u32, Vec<[f32; 4]>) {
-    primitives::gradient_sky(palette::SKY_TOP, palette::HORIZON, palette::HORIZON.map(|c| c * 0.79))
+pub fn sky() -> (u32, u32, Vec<[f32; 4]>) { sky_for(false) }
+
+/// Godot's sky, or (`inferno`) the island arenas' red-orange one.
+pub fn sky_for(inferno: bool) -> (u32, u32, Vec<[f32; 4]>) {
+    let (top, horizon) = if inferno { (palette::INFERNO_SKY_TOP, palette::INFERNO_HORIZON) } else { (palette::SKY_TOP, palette::HORIZON) };
+    primitives::gradient_sky(top, horizon, horizon.map(|c| c * 0.79))
+}
+
+/// `lighting`, with the island arenas' warmer, stronger sun if `inferno`.
+pub fn lighting_for(inferno: bool) -> Lighting {
+    let mut l = lighting();
+    if inferno {
+        l.sun_color = Vec3::from(palette::INFERNO_SUN);
+        l.sun_lux *= palette::INFERNO_SUN_ENERGY;
+    }
+    l
 }
 
 /// How much emission follows the exposure (render::Lighting): 1 shows it
