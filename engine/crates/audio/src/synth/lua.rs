@@ -189,6 +189,10 @@ fn api(lua: &Lua, g: &Table) -> mlua::Result<()> {
         Ok(push(lua, u, ins))
     })?)?;
     add_fixed(lua, g, "pluck", Unit::Pluck)?;
+    // engine("ej3", rpm, throttle, load, cut, gear, speed); engine_fluid(...) for the costly model.
+    add_set::<String>(lua, g, "engine", |c| Ok(Unit::Engine { car: c.unwrap_or_default(), fluid: false, spec: Default::default() }))?;
+    add_set::<String>(lua, g, "engine_fluid", |c| Ok(Unit::Engine { car: c.unwrap_or_default(), fluid: true, spec: Default::default() }))?;
+    add_fixed(lua, g, "tyres", Unit::Tyres)?;
     // The patch itself.
     g.raw_set("param", lua.create_function(|lua, (name, default): (String, Option<f32>)| {
         let mut b = lua.app_data_mut::<Builder>().expect("builder");

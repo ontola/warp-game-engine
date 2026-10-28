@@ -18,7 +18,7 @@ pub mod units;
 pub use mixer::{mixer, Compressor, Cull, Hall, Handle, Master, Mixer, Play, SoundSender};
 pub use patch::{In, Node, Patch, Voice};
 pub use spatial::{Ear, Falloff, Layout, Place, Speaker};
-pub use units::{FilterMode, Mode, NoiseColor, Point, Shape, Unit};
+pub use units::{register_engines, EngineSpec, FilterMode, Mode, NoiseColor, Point, Shape, Unit};
 
 /// Samples per block.
 pub const BLOCK: usize = 64;
