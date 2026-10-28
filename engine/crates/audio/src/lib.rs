@@ -34,21 +34,50 @@ impl Source for sfx::SfxMixer {
     fn render(&mut self, out: &mut [f32], channels: usize) { out.fill(0.0); self.render_add(out, channels); }
 }
 
-/// Several sources mixed (summed, no limiting).
-pub struct Sum(pub Vec<Box<dyn Source>>, Vec<f32>);
+/// Several sources mixed, optionally through a peak limiter.
+pub struct Sum { sources: Vec<Box<dyn Source>>, buf: Vec<f32>, ceiling: Option<f32>, gain: f32 }
 
 impl Sum {
-    pub fn new(sources: Vec<Box<dyn Source>>) -> Self { Sum(sources, Vec::new()) }
+    /// Summed as they are.
+    pub fn new(sources: Vec<Box<dyn Source>>) -> Self { Sum { sources, buf: Vec::new(), ceiling: None, gain: 1.0 } }
+    /// Summed, then held under `ceiling_db` dBFS (instant attack, 100 ms release).
+    pub fn limited(sources: Vec<Box<dyn Source>>, ceiling_db: f32) -> Self { Sum { ceiling: Some(10f32.powf(ceiling_db / 20.0)), ..Sum::new(sources) } }
 }
 
 impl Source for Sum {
     fn render(&mut self, out: &mut [f32], channels: usize) {
         out.fill(0.0);
-        self.1.resize(out.len(), 0.0);
-        for s in &mut self.0 {
-            s.render(&mut self.1, channels);
-            for (o, v) in out.iter_mut().zip(&self.1) { *o += v; }
+        self.buf.resize(out.len(), 0.0);
+        for s in &mut self.sources {
+            s.render(&mut self.buf, channels);
+            for (o, v) in out.iter_mut().zip(&self.buf) { *o += v; }
         }
+        let Some(ceiling) = self.ceiling else { return };
+        let release = (-1.0f32 / (0.1 * SAMPLE_RATE)).exp();
+        for frame in out.chunks_mut(channels.max(1)) {
+            let peak = frame.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            let released = 1.0 + (self.gain - 1.0) * release;
+            self.gain = if peak > 0.0 { released.min(ceiling / peak) } else { released };
+            for v in frame.iter_mut() { *v = (*v * self.gain).clamp(-1.0, 1.0); }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sum_tests {
+    use super::*;
+    struct Tone(f32);
+    impl Source for Tone { fn render(&mut self, out: &mut [f32], _: usize) { for (i, o) in out.iter_mut().enumerate() { *o = self.0 * (i as f32 * 0.05).sin(); } } }
+
+    #[test]
+    fn a_limited_sum_stays_under_its_ceiling() {
+        let mut s = Sum::limited(vec![Box::new(Tone(0.8)), Box::new(Tone(0.8))], -0.3);
+        let mut out = vec![0.0; 9600];
+        s.render(&mut out, 2);
+        assert!(out.iter().all(|v| v.abs() <= 0.967), "{}", out.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+        let mut plain = Sum::new(vec![Box::new(Tone(0.8)), Box::new(Tone(0.8))]);
+        plain.render(&mut out, 2);
+        assert!(out.iter().any(|v| v.abs() > 1.5));
     }
 }
 

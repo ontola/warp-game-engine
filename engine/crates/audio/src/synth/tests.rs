@@ -212,6 +212,7 @@ fn the_godot_master_compresses_hot_mixes() {
     assert!(plain > 0.88 && godot < plain * 0.9, "{plain} {godot}");
 }
 
+#[cfg(feature = "luau")]
 #[test]
 fn engines_and_tyres_play_as_units() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../games/sideways/data/sounds.toml");
