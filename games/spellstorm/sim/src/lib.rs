@@ -4,10 +4,14 @@
 //! the same controls always play out the same run.
 
 pub mod balance;
+pub mod biome;
+pub mod collide;
 pub mod el;
 pub mod grammar;
+pub mod level;
 pub mod queue;
 pub mod relics;
+pub mod rng;
 
 pub use el::El;
 pub use grammar::{Form, Shape, Spell, compose};
