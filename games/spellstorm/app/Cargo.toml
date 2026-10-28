@@ -18,3 +18,4 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { workspace = true }
 serde_json.workspace = true
 flate2 = "1"
+hecs = "0.10"

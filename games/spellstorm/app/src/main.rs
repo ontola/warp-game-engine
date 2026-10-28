@@ -4,6 +4,7 @@
 //!
 //! The sim is games/spellstorm/sim (hecs, the Godot game's rules); the look
 //! comes from the Godot game's own models and materials (assets/kits).
+mod anim;
 mod kits;
 mod look;
 mod view;

@@ -59,6 +59,8 @@ pub struct Mat {
     pub no_shadow: bool,
     /// A camera-facing card (halo.gdshader, billboard materials).
     pub billboard: bool,
+    /// Its picture is this cell of the card atlas: the uvs are moved there.
+    pub cell: Option<u32>,
 }
 
 /// One drawn piece of a kit: a Warp mesh at a node.
@@ -77,11 +79,14 @@ pub struct Look {
     tiles: Vec<u32>,
     /// Built kits: their pieces.
     built: HashMap<String, Vec<Piece>>,
+    /// The card atlas (halos), 8 x 8 cells, and its next free cell.
+    halo_layer: i32,
+    halo_next: u32,
 }
 
 impl Look {
     pub fn empty() -> Look {
-        Look { mats: HashMap::new(), meshes: HashMap::new(), tiles: vec![], built: HashMap::new() }
+        Look { mats: HashMap::new(), meshes: HashMap::new(), tiles: vec![], built: HashMap::new(), halo_layer: -1, halo_next: 0 }
     }
 
     /// Put every noise picture in 2048 px atlas layers (8 x 8 cells).
@@ -109,7 +114,8 @@ impl Look {
             }
         }
         let _ = layer_of;
-        Ok(Look { mats: HashMap::new(), meshes: HashMap::new(), tiles, built: HashMap::new() })
+        let halo_layer = scene.add_image("spellstorm-cards", image::RgbaImage::from_pixel(2048, 2048, image::Rgba([0, 0, 0, 0])));
+        Ok(Look { mats: HashMap::new(), meshes: HashMap::new(), tiles, built: HashMap::new(), halo_layer, halo_next: 0 })
     }
 
     /// Godot material `m` (a kit material index) in the scene.
@@ -123,8 +129,8 @@ impl Look {
         v
     }
 
-    fn make(&self, kits: &Kits, scene: &mut Scene, d: &Value) -> Mat {
-        let plain = |scene: &mut Scene, m: Material| Mat { id: scene.add_material(m), vcol: false, no_shadow: false, billboard: false };
+    fn make(&mut self, kits: &Kits, scene: &mut Scene, d: &Value) -> Mat {
+        let plain = |scene: &mut Scene, m: Material| Mat { id: scene.add_material(m), vcol: false, no_shadow: false, billboard: false, cell: None };
         match d["type"].as_str().unwrap_or("") {
             "StandardMaterial3D" => {
                 let albedo = linear(&d["albedo"]);
@@ -147,7 +153,7 @@ impl Look {
                         scene.set_material_blend(id, alpha, flags & TWO_SIDED != 0);
                         scene.set_material_object_sort(id);
                     }
-                    return Mat { id, vcol: false, no_shadow: true, billboard };
+                    return Mat { id, vcol: false, no_shadow: true, billboard, cell: None };
                 }
                 let mut m = Material { tint: albedo.to_array(), layer: -1, roughness: rough, flags, scale: 1.0, metal };
                 if d["emission"].is_array() {
@@ -208,7 +214,7 @@ impl Look {
                         scene.set_material_object_sort(id);
                     }
                 }
-                Mat { id, vcol: packs, no_shadow: false, billboard }
+                Mat { id, vcol: packs, no_shadow: false, billboard, cell: None }
             }
             "ShaderMaterial" => {
                 let p = &d["params"];
@@ -232,16 +238,20 @@ impl Look {
                         push_f32(aux, num(p, "weave", 90.0));
                         push_f32(aux, num(p, "bump", 0.012));
                         let id = scene.add_material(Material { tint: [1.0; 3], layer: surface_layer(CLOTH, o), roughness: 0.92, flags: SURFACE | TWO_SIDED, scale: 1.0, metal: 0.0 });
-                        Mat { id, vcol: true, no_shadow: false, billboard: false }
+                        Mat { id, vcol: true, no_shadow: false, billboard: false, cell: None }
                     }
                     "halo" => {
-                        // A soft additive glow card; its look is approximated by a
-                        // flat additive colour until the card shader is ported.
-                        let c = linear(&p["color"]) * num(p, "strength", 1.0);
-                        let peak = c.max_element().max(1e-6);
-                        let id = scene.add_material(Material { tint: (c / peak).to_array(), layer: -1, roughness: 1.0, flags: EMISSIVE | TWO_SIDED, scale: peak * 0.25, metal: 0.0 });
-                        scene.set_material_additive(id, 0.25, true);
-                        Mat { id, vcol: false, no_shadow: true, billboard: true }
+                        // halo.gdshader: a soft glow card added over the scene,
+                        // baked into a cell of the card atlas (it only depends on
+                        // the uv), turned to the camera every frame.
+                        let c = linear(&p["color"]);
+                        let s = num(p, "strength", 1.0);
+                        let cell = self.halo_next;
+                        self.halo_next += 1;
+                        let peak = bake_halo(&mut scene.textures[self.halo_layer as usize].rgba, cell, c, s);
+                        let id = scene.add_material(Material { tint: [1.0; 3], layer: self.halo_layer, roughness: 1.0, flags: EMISSIVE | TWO_SIDED, scale: peak, metal: 0.0 });
+                        scene.set_material_additive(id, 1.0, true);
+                        Mat { id, vcol: false, no_shadow: true, billboard: true, cell: Some(cell) }
                     }
                     _ => {
                         // element.gdshader and friends: the element's colour, glowing.
@@ -249,7 +259,7 @@ impl Look {
                         let e = base * num(p, "energy", 1.0);
                         let peak = e.max_element().max(1e-6);
                         let id = scene.add_material(Material { tint: (e / peak).to_array(), layer: -1, roughness: 1.0, flags: EMISSIVE, scale: peak, metal: 0.0 });
-                        Mat { id, vcol: false, no_shadow: true, billboard: false }
+                        Mat { id, vcol: false, no_shadow: true, billboard: false, cell: None }
                     }
                 }
             }
@@ -285,6 +295,10 @@ impl Look {
                         let c = a.colors.get(i).copied().unwrap_or([1.0; 4]);
                         let b = c.map(|x| (x.clamp(0.0, 1.0) * 255.0).round());
                         [b[0] + 256.0 * b[1], b[2] + 256.0 * b[3]]
+                    } else if let Some(cell) = m.cell {
+                        let uv = a.uvs.get(i).copied().unwrap_or([0.0; 2]);
+                        let (cx, cy) = ((cell % 8) as f32, (cell / 8) as f32);
+                        [(cx + 0.02 + uv[0].clamp(0.0, 1.0) * 0.96) / 8.0, (cy + 0.02 + uv[1].clamp(0.0, 1.0) * 0.96) / 8.0]
                     } else {
                         a.uvs.get(i).copied().unwrap_or([0.0; 2])
                     };
@@ -326,7 +340,7 @@ impl Look {
                     push_f32(aux, weave as f32);
                     push_f32(aux, num(&d["params"], "bump", 0.012));
                     let id = scene.add_material(Material { tint: [1.0; 3], layer: surface_layer(CLOTH, o), roughness: 0.92, flags: SURFACE | TWO_SIDED, scale: 1.0, metal: 0.0 });
-                    Mat { id, vcol: true, no_shadow: false, billboard: false }
+                    Mat { id, vcol: true, no_shadow: false, billboard: false, cell: None }
                 }),
                 _ => self.material(kits, scene, m),
             };
@@ -358,6 +372,39 @@ impl Look {
         self.built.insert(name.to_string(), out.clone());
         out
     }
+}
+
+/// halo.gdshader's picture for `color` at `strength` into cell `cell` of
+/// `atlas` (sRGB, the added light already multiplied by its alpha).
+/// Returns the peak radiance it was scaled by.
+fn bake_halo(atlas: &mut image::RgbaImage, cell: u32, color: Vec3, strength: f32) -> f32 {
+    let size = 256u32;
+    let mut px = vec![Vec3::ZERO; (size * size) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let p = glam::Vec2::new((x as f32 + 0.5) / size as f32, (y as f32 + 0.5) / size as f32) * 2.0 - glam::Vec2::ONE;
+            let r = p.length();
+            let k = (1.0 - r).clamp(0.0, 1.0).powf(2.4);
+            let inner = (1.0 - r * 2.2).clamp(0.0, 1.0).powi(2);
+            let albedo = (color * k + color.lerp(Vec3::ONE, 0.6) * inner * 0.8) * strength;
+            let alpha = (k * strength).clamp(0.0, 1.0);
+            px[(y * size + x) as usize] = albedo * alpha;
+        }
+    }
+    let peak = px.iter().map(|c| c.max_element()).fold(1e-6, f32::max);
+    let enc = |v: f32| {
+        let v = (v / peak).clamp(0.0, 1.0);
+        let s = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (s * 255.0).round() as u8
+    };
+    let (ox, oy) = ((cell % 8) * size, (cell / 8) * size);
+    for y in 0..size {
+        for x in 0..size {
+            let c = px[(y * size + x) as usize];
+            atlas.put_pixel(ox + x, oy + y, image::Rgba([enc(c.x), enc(c.y), enc(c.z), 255]));
+        }
+    }
+    peak
 }
 
 fn aux_start(scene: &mut Scene) -> usize {
