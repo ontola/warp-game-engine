@@ -12,12 +12,46 @@ const TITLE_FONT: &[u8] = include_bytes!("../../../assets/fonts/BarlowCondensed-
 /// Barlow is packaged under SIL OFL 1.1; keep this notice with distributions.
 pub const FONT_LICENSE: &str = include_str!("../../../assets/fonts/OFL-BarlowCondensed.txt");
 const WARM_TEXT: &str = "0123456789:-+. /()<> ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz";
-const MAX_RUNS: usize = 512;
+const MAX_RUNS: usize = 2048;
 const MAX_VERTICES: usize = 131_072;
 const MAX_LAYERS: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum FontFace { Body, Title }
+pub enum FontFace {
+    Body,
+    Title,
+    /// A face a game registered with [`register_font`].
+    Custom(u16),
+}
+
+/// Fonts games add next to the two bundled faces, in registration order.
+static REGISTERED: std::sync::Mutex<Vec<&'static [u8]>> = std::sync::Mutex::new(Vec::new());
+
+/// Make a font file (TTF/OTF bytes) available to every HUD renderer and to
+/// [`measure`]. Registering the same bytes again returns the same face.
+pub fn register_font(data: &'static [u8]) -> FontFace {
+    let mut fonts = REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
+    let k = fonts.iter().position(|f| std::ptr::eq(f.as_ptr(), data.as_ptr()) && f.len() == data.len()).unwrap_or_else(|| { fonts.push(data); fonts.len() - 1 });
+    FontFace::Custom(k as u16)
+}
+
+fn registered() -> Vec<&'static [u8]> { REGISTERED.lock().unwrap_or_else(|e| e.into_inner()).clone() }
+
+/// Width and height in pixels of `text` laid out on one line (height is
+/// lines times the 1.2 line height every run uses), for fitting and
+/// centring text before drawing it.
+pub fn measure(text: &str, face: FontFace, size: f32) -> [f32; 2] {
+    static CACHE: std::sync::Mutex<Option<FontCache>> = std::sync::Mutex::new(None);
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_none() { *guard = FontCache::new().ok(); }
+    let Some(cache) = guard.as_mut() else { return [0.0; 2] };
+    cache.sync_registered();
+    if !size.is_finite() || size <= 0.0 { return [0.0; 2]; }
+    let buffer = cache.buffer(text, face, size, 1.0e6, TextAlign::Left, Wrap::None);
+    let (mut w, mut lines) = (0.0f32, 0usize);
+    for run in buffer.layout_runs() { w = w.max(run.line_w); lines += 1; }
+    [w, lines.max(1) as f32 * size * 1.2]
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextAlign { Left, Center, Right }
 
@@ -167,6 +201,29 @@ impl HudDrawList {
             [[-extent,half,0.0,2.0],[-extent,half,0.0,2.0],[extent,half,0.0,2.0],[extent,half,0.0,2.0]],color,clip);
     }
 
+    /// A filled polygon, fanned from its centroid: right for convex and
+    /// star-shaped outlines (plates, hearts, stars). No edge antialiasing.
+    pub fn polygon(&mut self, points: &[[f32; 2]], color: [f32; 4], clip: [f32; 4]) {
+        if points.len() < 3 { return; }
+        let n = points.len() as f32;
+        let c = points.iter().fold([0.0, 0.0], |a, p| [a[0] + p[0] / n, a[1] + p[1] / n]);
+        for k in 0..points.len() { self.triangle([c, points[k], points[(k + 1) % points.len()]], color, clip); }
+    }
+
+    /// A ring segment from angle `from` to `to` (radians, 0 = +x, clockwise
+    /// on screen), `width` thick, centred on `radius`.
+    pub fn arc(&mut self, center: [f32; 2], radius: f32, from: f32, to: f32, width: f32, color: [f32; 4], clip: [f32; 4]) {
+        let steps = (((to - from).abs() * radius.max(1.0) / 6.0).ceil() as usize).clamp(2, 96);
+        let (r0, r1) = ((radius - width * 0.5).max(0.0), radius + width * 0.5);
+        let at = |a: f32, r: f32| [center[0] + a.cos() * r, center[1] + a.sin() * r];
+        for k in 0..steps {
+            let (a, b) = (from + (to - from) * k as f32 / steps as f32, from + (to - from) * (k + 1) as f32 / steps as f32);
+            let q = [at(a, r0), at(a, r1), at(b, r1), at(b, r0)];
+            self.triangle([q[0], q[1], q[2]], color, clip);
+            self.triangle([q[0], q[2], q[3]], color, clip);
+        }
+    }
+
     pub fn circle(&mut self, center: [f32; 2], radius: f32, color: [f32; 4], clip: [f32; 4]) {
         if radius<=0.0 {return;}
         let [x,y]=center;let r=radius+1.0;
@@ -196,6 +253,8 @@ struct FontCache {
     fonts: FontSystem,
     body_family: String,
     title_family: String,
+    /// Registered faces loaded so far: family, weight, style.
+    custom: Vec<(String, Weight, Style)>,
     buffers: HashMap<u64,CachedText>,
     system_fallback: bool,
 }
@@ -208,7 +267,21 @@ impl FontCache {
         let body_ids:HashSet<_>=db.faces().map(|f|f.id).collect();
         db.load_font_data(TITLE_FONT.to_vec());
         let title_family=db.faces().find(|f|!body_ids.contains(&f.id)).and_then(|f|f.families.first()).map(|f|f.0.clone()).ok_or("bundled HUD title font failed to load")?;
-        Ok(Self{fonts:FontSystem::new_with_locale_and_db("en-US".into(),db),body_family,title_family,buffers:HashMap::new(),system_fallback:false})
+        let mut cache=Self{fonts:FontSystem::new_with_locale_and_db("en-US".into(),db),body_family,title_family,custom:Vec::new(),buffers:HashMap::new(),system_fallback:false};
+        cache.sync_registered();
+        Ok(cache)
+    }
+
+    /// Load fonts registered since the last call.
+    fn sync_registered(&mut self) {
+        let all=registered();
+        for data in &all[self.custom.len().min(all.len())..] {
+            let db=self.fonts.db_mut();
+            let before:HashSet<_>=db.faces().map(|f|f.id).collect();
+            db.load_font_data(data.to_vec());
+            let face=db.faces().find(|f|!before.contains(&f.id)).map(|f|(f.families.first().map(|n|n.0.clone()).unwrap_or_default(),f.weight,f.style));
+            self.custom.push(face.unwrap_or_else(||(self.body_family.clone(),Weight::SEMIBOLD,Style::Normal)));
+        }
     }
 
     fn buffer(&mut self, text:&str, face:FontFace, size:f32, width:f32, align:TextAlign, wrap:Wrap)->Buffer {
@@ -218,6 +291,7 @@ impl FontCache {
         let (family,weight,style)=match face {
             FontFace::Body=>(&self.body_family,Weight::SEMIBOLD,Style::Normal),
             FontFace::Title=>(&self.title_family,Weight::EXTRA_BOLD,Style::Italic),
+            FontFace::Custom(k)=>self.custom.get(k as usize).map_or((&self.body_family,Weight::SEMIBOLD,Style::Normal),|c|(&c.0,c.1,c.2)),
         };
         let attrs=Attrs::new().family(Family::Name(family)).weight(weight).style(style);
         let alignment=match align {TextAlign::Left=>Align::Left,TextAlign::Center=>Align::Center,TextAlign::Right=>Align::Right};
@@ -227,6 +301,7 @@ impl FontCache {
     }
 
     fn update(&mut self,runs:&[TextRun])->usize {
+        if runs.iter().any(|r|matches!(r.font,FontFace::Custom(k) if k as usize>=self.custom.len())) {self.sync_registered();}
         let mut changed=0;
         for run in runs {
             if self.buffers.get(&run.id).is_some_and(|cached|cached.matches(run)){continue;}
@@ -480,6 +555,28 @@ mod tests {
         assert_eq!(px(8,24),[0,0,0],"plain shapes still draw");
     }
     fn run()->TextRun {TextRun{id:1,text:"Zoë Ångström 120 km/h".into(),position:[0.0;2],bounds:[0.0,0.0,600.0,100.0],font_size:32.0,color:[255;4],font:FontFace::Body,align:TextAlign::Left,width:600.0}}
+    #[test]
+    fn registered_fonts_shape_and_measure() {
+        static FACE: &[u8] = include_bytes!("../../../assets/fonts/Barlow-SemiBold.ttf");
+        let face = register_font(FACE);
+        assert_eq!(register_font(FACE), face, "registering twice gives the same face");
+        let mut cache = FontCache::new().unwrap();
+        let mut text = run(); text.font = face;
+        assert_eq!(cache.update(&[text]), 1);
+        assert!(!cache.missing_glyphs());
+        let [w, h] = measure("ABC", face, 20.0);
+        let [w2, _] = measure("ABCABC", face, 20.0);
+        assert!(w > 10.0 && (w2 - 2.0 * w).abs() < 2.0 && (h - 24.0).abs() < 0.01, "{w} {w2} {h}");
+    }
+    #[test]
+    fn polygons_and_arcs_make_whole_triangles() {
+        let mut list = HudDrawList::new([100, 100]);
+        list.polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]], [1.0; 4], [0.0, 0.0, 100.0, 100.0]);
+        assert_eq!(list.vertices.len(), 12);
+        list.arc([50.0, 50.0], 20.0, 0.0, 1.0, 4.0, [1.0; 4], [0.0, 0.0, 100.0, 100.0]);
+        assert_eq!(list.vertices.len() % 3, 0);
+        assert!(list.layer_ranges().is_ok());
+    }
     #[test]
     fn bundled_fonts_shape_latin_without_system_dependencies() {
         let mut cache=FontCache::new().unwrap();let mut text=run();
