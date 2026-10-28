@@ -3,7 +3,7 @@ name = "gamenight"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "GameNight client for Warp games: party sessions, seats, settings, actions and controller frames over the host's websocket"
+description = "GameNight client for Warp games and lobbies: party sessions, seats, settings, actions, controller frames, the lobby role, room links and party artwork"
 
 [dependencies]
 serde_json.workspace = true
