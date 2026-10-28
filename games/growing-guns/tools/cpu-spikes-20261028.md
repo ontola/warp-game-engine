@@ -98,6 +98,13 @@ CPU columns measure elapsed wall time, including blocking and descheduling. Host
 
 This is a three-repeat synthetic stress comparison with pinned players, periodic/depletion arena resets and fixed camera views. It is not a live-play timing capture, a statistical significance claim, or a benchmark of the later grass/main build.
 
+After these measurements, main `d2bd2f0` changed pickup beams from scene
+geometry to world sprites. The benchmark now submits those sprites, including
+in HUD-free captures and the timed flush stage. The stress fixture can spawn
+pickups late in a run; omitting them would silently undercount render work.
+This integration correction does not alter either pinned executable or the
+historical A/B results, and future timings need a fresh matched baseline.
+
 Recompute without modifying input evidence:
 
 ```powershell
