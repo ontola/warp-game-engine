@@ -811,7 +811,7 @@ mod tests {
         assert!(report.resident_vertices_shared > report.source_vertices_shared);
         assert_eq!((report.source_vertices_shared, report.resident_vertices_shared, report.shared_geometry_bytes),
             (first_source, first_resident, first_bytes));
-        assert_eq!(report.shared_geometry_bytes, cooked.primitives.iter().map(|p| mesh_bytes(&p.mesh)).sum());
+        assert_eq!(report.shared_geometry_bytes, cooked.primitives.iter().map(|p| mesh_bytes(&p.mesh)).sum::<usize>());
     }
 
     #[test]

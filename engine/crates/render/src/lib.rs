@@ -57,6 +57,7 @@ pub mod particles;
 pub mod shade_features;
 pub mod shaders;
 pub mod atmosphere;
+pub mod sky;
 pub mod radiance_cache;
 pub mod radiance_cache_gpu;
 pub mod headlights;
