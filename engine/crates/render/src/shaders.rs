@@ -115,6 +115,11 @@ pub(crate) fn built_in(name: &str) -> &'static str {
 
 /// `name` from `KERN_SHADER_DIR` when it is there, else the built-in copy.
 pub(crate) fn source(name: &str) -> String {
+    if name == "game_surface.wgsl" {
+        if let Some(game) = GAME_SURFACE.lock().unwrap().clone() {
+            return game;
+        }
+    }
     if let Some(path) = dir().map(|d| d.join(name)) {
         if let Ok(text) = std::fs::read_to_string(&path) {
             return text;

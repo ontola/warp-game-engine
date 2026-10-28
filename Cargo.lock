@@ -5223,6 +5223,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "spellstorm-app"
+version = "0.1.0"
+dependencies = [
+ "app",
+ "flate2",
+ "glam 0.31.1",
+ "image",
+ "kern",
+ "render",
+ "serde",
+ "serde_json",
+ "spellstorm",
+]
+
+[[package]]
 name = "spez"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
