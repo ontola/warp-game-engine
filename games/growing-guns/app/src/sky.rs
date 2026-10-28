@@ -6,7 +6,7 @@
 //!   `night:haze` (time sunrise|morning|noon|afternoon|sunset|night, weather
 //!   clear|haze|mist; either part may be left out);
 //! - `rounds[:WEATHER]`: the time of day steps on each round, starting at
-//!   morning (a round modifier for the sky);
+//!   morning (a round modifier for the sky), baked in the background;
 //! - `cycle[:WEATHER][:MINUTES]`: a slow day and night on the game clock,
 //!   baked off the frame loop by `render::sky::LiveSky` (default 12 minutes
 //!   for a whole day).

@@ -176,7 +176,6 @@ impl Gg {
         self.session.mark_arena();
         self.vis.set_arena(&self.world);
         self.prev = self.world.players.iter().map(|p| p.pos).collect();
-        if matches!(self.sky.choice, crate::sky::SkyChoice::Rounds(_)) && let Err(e) = self.apply_sky() { eprintln!("sky: {e}"); }
     }
 
     /// Choose the sky (`--sky`, the `sky` command). Godot's is the default.
@@ -184,7 +183,7 @@ impl Gg {
         self.sky.choice = choice;
         self.sky.live = None;
         self.apply_sky()?;
-        if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. })) {
+        if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. } | crate::sky::SkyChoice::Rounds(_))) {
             self.sky.live = Some(render::sky::LiveSky::starting(s, &serde_json::Value::Null));
         }
         Ok(())
@@ -223,7 +222,8 @@ impl Gg {
         self.sky_upload = Some(prepared);
     }
 
-    /// The cycle: request the sun for the game clock, take finished bakes.
+    /// Rounds and the cycle: request the sky for this round and the game
+    /// clock off the frame loop (a bake is ~0.2 s), take finished bakes.
     fn cycle_sky(&mut self) {
         let Some(want) = self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) else { return };
         let now = std::time::Instant::now();
