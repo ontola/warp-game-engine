@@ -1,0 +1,1034 @@
+{
+  "schema": 1,
+  "date": "2026-10-28",
+  "source_log": "C:/dev/warp-bench/perf-20261028-0832.txt",
+  "source_log_sha256": "F357DC85E974A8EE46A64708953925F9A287A81D80FC953A85B385F99C50C191",
+  "script": "C:/dev/warp-bench/gg-perf.ps1",
+  "script_sha256": "978CA34D2405A553582E1A55FBB957709CE68505933977949AB8E8661E4C6394",
+  "source_commit": "74ea8f0d110a4c7ef0a34e9fd67086714ec301a4",
+  "log_commit": "74ea8f0",
+  "observed_executable_sha256": "70854BE5F20F8C58B8ED5DF7F8DE64D10AE52F1F33843E22E0A6A4A27CCF773E",
+  "protocol": {
+    "repetitions": 1,
+    "order": "Fixed: four-view 4K six variants, then one-view 1080p same variants",
+    "classification": "exploratory single fixed-order repetition",
+    "frames_per_measured_run": 600,
+    "warmup_render_iterations": 30,
+    "first_frame_separate": true,
+    "per_run_exit_codes_recorded": false,
+    "raw_per_frame_samples_retained": false,
+    "KERN_CPU_SPANS": "1"
+  },
+  "validation": {
+    "attempted": 12,
+    "measured": 10,
+    "failed": 2,
+    "all_expected_configurations_present": true,
+    "completed_log_marker": true,
+    "all_measured_backend": "Vulkan",
+    "all_measured_adapter": "NVIDIA GeForce RTX 5070 Ti",
+    "all_measured_coverage": "600/600",
+    "total_measured_gpu_samples": 6000,
+    "dropped": 0,
+    "profiler_errors": 0,
+    "dx12_measured": false
+  },
+  "scope": {
+    "cpu_submit": "Wall time from before simulation/top-up, scene/FX update and uploads through render submission; excludes the explicit gpu.wait(). Not pure CPU execution time.",
+    "wall_submit_and_wait": "Same start through serialized GPU completion wait on every frame. No window, presentation or image readback.",
+    "gpu_covered_union": "Timestamp covered-union duration for measured frame IDs 30..629; final drain included. Median/p95 printed; whole-frame GPU mean unavailable.",
+    "renderer_cpu_spans": "Mean wall-time sections within Renderer, 631 frames including first frame and 30 warmup frames; excludes simulation/scene/FX uploads and explicit outer GPU wait. Not directly equivalent to measured CPU-submit percentile population.",
+    "gpu_pass_means": "Printed top 14 pass means across 600 measured profiles. Distinct count includes omitted passes; nested/overlapping pass durations must not be summed as exclusive GPU time.",
+    "statistics": "Printed aggregated values only; rounded to 0.01 ms for frame percentiles and 0.001 ms for spans/passes. Percentile index rounds (N-1)*p. No raw samples or repeat-based uncertainty available.",
+    "shader_builds": "Device/scene/renderer/first-frame startup reported separately. Cache state not controlled. Script hides cargo output and does not capture per-run exit codes; timing success is validated by complete summaries, failures by panic logs."
+  },
+  "findings": [
+    "Both requested DX12 cases fail compiling the cull compute pipeline in FXC (X3663 varying-control-flow thread synchronization and uninitialized instance_policy). There are no DX12 frame-time measurements.",
+    "Four-view 4K default: CPU-submit 2.59/6.38 ms, serialized wall 7.57/12.85 ms, GPU 4.15/4.77 ms (median/p95). A median below 8.33 ms does not prove sustained 120 FPS or presented performance.",
+    "One-view 1080p default: CPU-submit 0.79/2.53 ms, serialized wall 2.39/5.52 ms, GPU 1.18/1.50 ms.",
+    "Renderer submit is the largest measured renderer CPU span; shade is the largest GPU pass in all successful runs. The CPU span does not isolate driver work from queue blocking.",
+    "Sky tiles off slightly lowers GPU median (4.15 to 4.00 ms at 4K; 1.18 to 1.14 ms at 1080p), but wall medians are effectively unchanged/mixed. One ordered pass cannot establish a stable improvement.",
+    "Tiled post off raises tonemap mean (0.176 to 0.303 ms at 4K, 0.043 to 0.073 ms at 1080p); whole-frame differences remain exploratory.",
+    "Instance broadphase leaves GPU medians essentially unchanged and has a worse 1080p CPU-submit/wall tail in this pass (wall p95 11.66 vs 5.52 ms). Instance groups shows no clear overall win. Do not change defaults on these data alone.",
+    "Startup renderer time varies substantially, including 4104 ms for 4K sky-tiles-off versus 83 ms default. Treat startup/cache behavior separately from the measured frame percentiles.",
+    "This is a populated default bot fixture with full scene/FX uploads, not the separate sustained bullet/explosion stress fixtures or a Godot-matched workload. No cross-engine ratio."
+  ],
+  "source_locations": [
+    "games/growing-guns/app/src/bench.rs:137 (measured loop and full scene/FX upload)",
+    "games/growing-guns/app/src/bench.rs:158 (CPU/wall boundaries and frame filtering)",
+    "games/growing-guns/app/src/bench.rs:172 (final GPU drain)",
+    "games/growing-guns/app/src/bench.rs:184 (CPU span population and metric output)",
+    "engine/crates/render/src/gpu.rs:31 (backend selection from environment)",
+    "engine/crates/render/src/cpu_spans.rs:14 (renderer span means)"
+  ],
+  "runs": [
+    {
+      "order": 1,
+      "config": "default",
+      "views": 4,
+      "output_resolution": [
+        3840,
+        2160
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {},
+      "log_header_line": 3,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 2.59,
+          "p95": 6.38
+        },
+        "wall_submit_and_wait": {
+          "median": 7.57,
+          "p95": 12.85
+        },
+        "gpu_covered_union": {
+          "median": 4.15,
+          "p95": 4.77,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 2.51,
+        "top_hotspots_mean_ms": {
+          "submit": 1.918,
+          "view effects, bloom, tonemap": 0.149,
+          "view lights and targets": 0.118,
+          "view shade and layers": 0.075,
+          "view cull and raster": 0.066
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 17,
+        "printed_pass_means_ms": {
+          "shade": 1.742,
+          "raster": 0.679,
+          "near shadow raster": 0.466,
+          "taa": 0.272,
+          "cull": 0.188,
+          "tonemap": 0.176,
+          "shadow raster": 0.165,
+          "bloom": 0.154,
+          "near shadow cull": 0.139,
+          "fx": 0.115,
+          "shadow cull": 0.041,
+          "crowd": 0.017,
+          "debris": 0.005,
+          "wheel particles": 0.001
+        },
+        "unprinted_pass_count": 3
+      },
+      "startup_ms": {
+        "device": 843,
+        "scene": 40.5,
+        "renderer": 83,
+        "first_frame": 30
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 2,
+      "config": "sky tiles off",
+      "views": 4,
+      "output_resolution": [
+        3840,
+        2160
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {
+        "KERN_SKY_TILES": "0"
+      },
+      "log_header_line": 12,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 2.75,
+          "p95": 6.1
+        },
+        "wall_submit_and_wait": {
+          "median": 7.65,
+          "p95": 11.92
+        },
+        "gpu_covered_union": {
+          "median": 4,
+          "p95": 4.55,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 2.63,
+        "top_hotspots_mean_ms": {
+          "submit": 1.934,
+          "view effects, bloom, tonemap": 0.165,
+          "view lights and targets": 0.147,
+          "shadows and prepasses": 0.079,
+          "view cull and raster": 0.079
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 17,
+        "printed_pass_means_ms": {
+          "shade": 1.563,
+          "raster": 0.675,
+          "near shadow raster": 0.464,
+          "taa": 0.271,
+          "cull": 0.193,
+          "tonemap": 0.177,
+          "shadow raster": 0.161,
+          "bloom": 0.156,
+          "near shadow cull": 0.145,
+          "fx": 0.115,
+          "shadow cull": 0.042,
+          "crowd": 0.017,
+          "debris": 0.005,
+          "wheel particles": 0.001
+        },
+        "unprinted_pass_count": 3
+      },
+      "startup_ms": {
+        "device": 852,
+        "scene": 35.9,
+        "renderer": 4104,
+        "first_frame": 60
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 3,
+      "config": "tiled post off",
+      "views": 4,
+      "output_resolution": [
+        3840,
+        2160
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {
+        "KERN_TILED_POST": "0"
+      },
+      "log_header_line": 21,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 2.55,
+          "p95": 5.38
+        },
+        "wall_submit_and_wait": {
+          "median": 8.09,
+          "p95": 11.82
+        },
+        "gpu_covered_union": {
+          "median": 4.31,
+          "p95": 4.85,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 2.51,
+        "top_hotspots_mean_ms": {
+          "submit": 1.907,
+          "view effects, bloom, tonemap": 0.152,
+          "view lights and targets": 0.119,
+          "view shade and layers": 0.082,
+          "view cull and raster": 0.074
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 17,
+        "printed_pass_means_ms": {
+          "shade": 1.762,
+          "raster": 0.675,
+          "near shadow raster": 0.463,
+          "tonemap": 0.303,
+          "taa": 0.27,
+          "cull": 0.189,
+          "shadow raster": 0.16,
+          "bloom": 0.156,
+          "near shadow cull": 0.143,
+          "fx": 0.116,
+          "shadow cull": 0.043,
+          "crowd": 0.018,
+          "debris": 0.005,
+          "wheel particles": 0.001
+        },
+        "unprinted_pass_count": 3
+      },
+      "startup_ms": {
+        "device": 800,
+        "scene": 49.1,
+        "renderer": 239,
+        "first_frame": 28
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 4,
+      "config": "instance broadphase",
+      "views": 4,
+      "output_resolution": [
+        3840,
+        2160
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {
+        "KERN_INSTANCE_BROADPHASE": "1"
+      },
+      "log_header_line": 30,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 2.85,
+          "p95": 7.44
+        },
+        "wall_submit_and_wait": {
+          "median": 8.04,
+          "p95": 14.44
+        },
+        "gpu_covered_union": {
+          "median": 4.16,
+          "p95": 4.75,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 2.75,
+        "top_hotspots_mean_ms": {
+          "submit": 2.129,
+          "view effects, bloom, tonemap": 0.146,
+          "view lights and targets": 0.123,
+          "view cull and raster": 0.081,
+          "view shade and layers": 0.077
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 18,
+        "printed_pass_means_ms": {
+          "shade": 1.73,
+          "raster": 0.657,
+          "near shadow raster": 0.461,
+          "taa": 0.269,
+          "cull": 0.191,
+          "tonemap": 0.176,
+          "shadow raster": 0.159,
+          "bloom": 0.154,
+          "near shadow cull": 0.144,
+          "fx": 0.116,
+          "shadow cull": 0.043,
+          "instance broadphase": 0.022,
+          "crowd": 0.017,
+          "debris": 0.005
+        },
+        "unprinted_pass_count": 4
+      },
+      "startup_ms": {
+        "device": 803,
+        "scene": 52.8,
+        "renderer": 702,
+        "first_frame": 27
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 5,
+      "config": "instance groups",
+      "views": 4,
+      "output_resolution": [
+        3840,
+        2160
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {
+        "KERN_INSTANCE_GROUPS": "1"
+      },
+      "log_header_line": 39,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 2.4,
+          "p95": 7.31
+        },
+        "wall_submit_and_wait": {
+          "median": 7.53,
+          "p95": 14.74
+        },
+        "gpu_covered_union": {
+          "median": 4.23,
+          "p95": 4.84,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 2.62,
+        "top_hotspots_mean_ms": {
+          "submit": 2.022,
+          "view effects, bloom, tonemap": 0.153,
+          "view lights and targets": 0.133,
+          "view shade and layers": 0.076,
+          "view cull and raster": 0.065
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 19,
+        "printed_pass_means_ms": {
+          "shade": 1.743,
+          "raster": 0.658,
+          "near shadow raster": 0.459,
+          "taa": 0.266,
+          "cull": 0.193,
+          "tonemap": 0.179,
+          "shadow raster": 0.16,
+          "bloom": 0.154,
+          "near shadow cull": 0.145,
+          "fx": 0.115,
+          "instance group select": 0.079,
+          "shadow cull": 0.04,
+          "crowd": 0.016,
+          "instance group refit": 0.008
+        },
+        "unprinted_pass_count": 5
+      },
+      "startup_ms": {
+        "device": 818,
+        "scene": 49.7,
+        "renderer": 911,
+        "first_frame": 24
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 6,
+      "config": "DX12 instead of Vulkan",
+      "views": 4,
+      "output_resolution": [
+        3840,
+        2160
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full (requested)",
+      "env_overrides": {
+        "WGPU_BACKEND": "dx12"
+      },
+      "log_header_line": 50,
+      "status": "shader_compile_failure",
+      "requested_backend": "dx12",
+      "actual_backend": null,
+      "backend_evidence": "FXC D3DCompile failure in cull confirms Direct3D compiler path; final adapter/backend summary was never reached.",
+      "adapter": null,
+      "final_instances": null,
+      "frame_ms": null,
+      "gpu_coverage": null,
+      "renderer_cpu_spans": null,
+      "gpu_passes": null,
+      "startup_ms": null,
+      "failure": {
+        "stage": "Device::create_compute_pipeline label=cull",
+        "kind": "wgpu validation panic / FXC D3DCompile",
+        "errors": [
+          {
+            "code": "X3663",
+            "message": "thread sync operation found in varying flow control, consider"
+          },
+          {
+            "code": "X3663",
+            "message": "potentially uninitialized data accessed at this location"
+          },
+          {
+            "code": "X3663",
+            "message": "this variable dependent on potentially uninitialized data: instance_policy"
+          },
+          {
+            "code": "X3663",
+            "message": "this variable dependent on potentially uninitialized data: instance_policy"
+          },
+          {
+            "code": "X3663",
+            "message": "this variable dependent on potentially uninitialized data:"
+          },
+          {
+            "code": "X3663",
+            "message": "this variable dependent on potentially uninitialized data: _e8"
+          }
+        ],
+        "warning_X4000_count": 21
+      },
+      "process_exit_code": null
+    },
+    {
+      "order": 7,
+      "config": "default",
+      "views": 1,
+      "output_resolution": [
+        1920,
+        1080
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {},
+      "log_header_line": 95,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 0.79,
+          "p95": 2.53
+        },
+        "wall_submit_and_wait": {
+          "median": 2.39,
+          "p95": 5.52
+        },
+        "gpu_covered_union": {
+          "median": 1.18,
+          "p95": 1.5,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 0.72,
+        "top_hotspots_mean_ms": {
+          "submit": 0.506,
+          "setup": 0.044,
+          "view effects, bloom, tonemap": 0.039,
+          "shadows and prepasses": 0.032,
+          "view lights and targets": 0.025
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 17,
+        "printed_pass_means_ms": {
+          "shade": 0.381,
+          "shadow raster": 0.195,
+          "raster": 0.156,
+          "near shadow raster": 0.151,
+          "taa": 0.066,
+          "cull": 0.046,
+          "tonemap": 0.043,
+          "shadow cull": 0.042,
+          "bloom": 0.038,
+          "near shadow cull": 0.033,
+          "fx": 0.031,
+          "crowd": 0.015,
+          "debris": 0.005,
+          "wheel particles": 0
+        },
+        "unprinted_pass_count": 3
+      },
+      "startup_ms": {
+        "device": 878,
+        "scene": 46.1,
+        "renderer": 79,
+        "first_frame": 27
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 8,
+      "config": "sky tiles off",
+      "views": 1,
+      "output_resolution": [
+        1920,
+        1080
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {
+        "KERN_SKY_TILES": "0"
+      },
+      "log_header_line": 104,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 0.84,
+          "p95": 2.88
+        },
+        "wall_submit_and_wait": {
+          "median": 2.37,
+          "p95": 5.47
+        },
+        "gpu_covered_union": {
+          "median": 1.14,
+          "p95": 1.35,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 0.71,
+        "top_hotspots_mean_ms": {
+          "submit": 0.513,
+          "view effects, bloom, tonemap": 0.046,
+          "setup": 0.035,
+          "view lights and targets": 0.025,
+          "shadows and prepasses": 0.024
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 17,
+        "printed_pass_means_ms": {
+          "shade": 0.331,
+          "shadow raster": 0.195,
+          "raster": 0.156,
+          "near shadow raster": 0.151,
+          "taa": 0.065,
+          "cull": 0.046,
+          "tonemap": 0.043,
+          "shadow cull": 0.041,
+          "bloom": 0.038,
+          "near shadow cull": 0.035,
+          "fx": 0.031,
+          "crowd": 0.015,
+          "debris": 0.005,
+          "wheel particles": 0
+        },
+        "unprinted_pass_count": 3
+      },
+      "startup_ms": {
+        "device": 808,
+        "scene": 38.7,
+        "renderer": 85,
+        "first_frame": 14
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 9,
+      "config": "tiled post off",
+      "views": 1,
+      "output_resolution": [
+        1920,
+        1080
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {
+        "KERN_TILED_POST": "0"
+      },
+      "log_header_line": 113,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 0.81,
+          "p95": 2.51
+        },
+        "wall_submit_and_wait": {
+          "median": 2.4,
+          "p95": 5.13
+        },
+        "gpu_covered_union": {
+          "median": 1.21,
+          "p95": 1.52,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 0.68,
+        "top_hotspots_mean_ms": {
+          "submit": 0.493,
+          "view effects, bloom, tonemap": 0.038,
+          "setup": 0.032,
+          "shadows and prepasses": 0.024,
+          "view lights and targets": 0.024
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 17,
+        "printed_pass_means_ms": {
+          "shade": 0.378,
+          "shadow raster": 0.195,
+          "raster": 0.156,
+          "near shadow raster": 0.151,
+          "tonemap": 0.073,
+          "taa": 0.065,
+          "cull": 0.047,
+          "shadow cull": 0.04,
+          "bloom": 0.038,
+          "near shadow cull": 0.033,
+          "fx": 0.03,
+          "crowd": 0.015,
+          "debris": 0.005,
+          "wheel particles": 0
+        },
+        "unprinted_pass_count": 3
+      },
+      "startup_ms": {
+        "device": 832,
+        "scene": 41.8,
+        "renderer": 77,
+        "first_frame": 20
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 10,
+      "config": "instance broadphase",
+      "views": 1,
+      "output_resolution": [
+        1920,
+        1080
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {
+        "KERN_INSTANCE_BROADPHASE": "1"
+      },
+      "log_header_line": 122,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 1.36,
+          "p95": 4.15
+        },
+        "wall_submit_and_wait": {
+          "median": 3.03,
+          "p95": 11.66
+        },
+        "gpu_covered_union": {
+          "median": 1.18,
+          "p95": 1.44,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 1.56,
+        "top_hotspots_mean_ms": {
+          "submit": 1.252,
+          "shadows and prepasses": 0.068,
+          "view effects, bloom, tonemap": 0.055,
+          "setup": 0.044,
+          "view lights and targets": 0.043
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 18,
+        "printed_pass_means_ms": {
+          "shade": 0.379,
+          "shadow raster": 0.195,
+          "near shadow raster": 0.152,
+          "raster": 0.15,
+          "taa": 0.067,
+          "cull": 0.043,
+          "tonemap": 0.043,
+          "shadow cull": 0.04,
+          "bloom": 0.04,
+          "near shadow cull": 0.032,
+          "fx": 0.03,
+          "crowd": 0.016,
+          "instance broadphase": 0.005,
+          "debris": 0.005
+        },
+        "unprinted_pass_count": 4
+      },
+      "startup_ms": {
+        "device": 806,
+        "scene": 57,
+        "renderer": 134,
+        "first_frame": 45
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 11,
+      "config": "instance groups",
+      "views": 1,
+      "output_resolution": [
+        1920,
+        1080
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full",
+      "env_overrides": {
+        "KERN_INSTANCE_GROUPS": "1"
+      },
+      "log_header_line": 131,
+      "status": "measured",
+      "requested_backend": "default adapter selection",
+      "actual_backend": "Vulkan",
+      "backend_evidence": "Explicit backend line",
+      "adapter": "NVIDIA GeForce RTX 5070 Ti",
+      "final_instances": 48441,
+      "frame_ms": {
+        "cpu_submit": {
+          "median": 0.9,
+          "p95": 2.74
+        },
+        "wall_submit_and_wait": {
+          "median": 2.5,
+          "p95": 5.4
+        },
+        "gpu_covered_union": {
+          "median": 1.21,
+          "p95": 1.43,
+          "mean": null
+        }
+      },
+      "gpu_coverage": {
+        "collected": 600,
+        "requested": 600,
+        "dropped": 0,
+        "profiler_errors": 0
+      },
+      "renderer_cpu_spans": {
+        "frames_including_first_and_warmup": 631,
+        "total_mean_ms": 0.78,
+        "top_hotspots_mean_ms": {
+          "submit": 0.572,
+          "view effects, bloom, tonemap": 0.042,
+          "view cull and raster": 0.031,
+          "setup": 0.028,
+          "shadows and prepasses": 0.027
+        }
+      },
+      "gpu_passes": {
+        "sample_count": 600,
+        "distinct_passes": 19,
+        "printed_pass_means_ms": {
+          "shade": 0.377,
+          "shadow raster": 0.194,
+          "near shadow raster": 0.15,
+          "raster": 0.15,
+          "taa": 0.064,
+          "tonemap": 0.045,
+          "cull": 0.044,
+          "shadow cull": 0.041,
+          "bloom": 0.038,
+          "near shadow cull": 0.035,
+          "fx": 0.03,
+          "instance group select": 0.018,
+          "crowd": 0.016,
+          "instance group refit": 0.007
+        },
+        "unprinted_pass_count": 5
+      },
+      "startup_ms": {
+        "device": 854,
+        "scene": 38.9,
+        "renderer": 96,
+        "first_frame": 10
+      },
+      "failure": null,
+      "process_exit_code": null
+    },
+    {
+      "order": 12,
+      "config": "DX12 instead of Vulkan",
+      "views": 1,
+      "output_resolution": [
+        1920,
+        1080
+      ],
+      "per_view_resolution": [
+        1920,
+        1080
+      ],
+      "light": "full (requested)",
+      "env_overrides": {
+        "WGPU_BACKEND": "dx12"
+      },
+      "log_header_line": 142,
+      "status": "shader_compile_failure",
+      "requested_backend": "dx12",
+      "actual_backend": null,
+      "backend_evidence": "FXC D3DCompile failure in cull confirms Direct3D compiler path; final adapter/backend summary was never reached.",
+      "adapter": null,
+      "final_instances": null,
+      "frame_ms": null,
+      "gpu_coverage": null,
+      "renderer_cpu_spans": null,
+      "gpu_passes": null,
+      "startup_ms": null,
+      "failure": {
+        "stage": "Device::create_compute_pipeline label=cull",
+        "kind": "wgpu validation panic / FXC D3DCompile",
+        "errors": [
+          {
+            "code": "X3663",
+            "message": "thread sync operation found in varying flow control, consider"
+          },
+          {
+            "code": "X3663",
+            "message": "potentially uninitialized data accessed at this location"
+          },
+          {
+            "code": "X3663",
+            "message": "this variable dependent on potentially uninitialized data: instance_policy"
+          },
+          {
+            "code": "X3663",
+            "message": "this variable dependent on potentially uninitialized data: instance_policy"
+          },
+          {
+            "code": "X3663",
+            "message": "this variable dependent on potentially uninitialized data:"
+          },
+          {
+            "code": "X3663",
+            "message": "this variable dependent on potentially uninitialized data: _e8"
+          }
+        ],
+        "warning_X4000_count": 21
+      },
+      "process_exit_code": null
+    }
+  ]
+}
