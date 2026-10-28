@@ -39,7 +39,8 @@ fn units() {
     println!("\nLuau helpers: sine tri saw square steps (osc shapes), osc(shape, ...), noise(color), env{{ {{time, level, curve}} }},");
     println!("  lowpass highpass bandpass notch peak (x, cutoff, q), filter(mode, ...), decay(dur, power), sweep(f0, f1, k),");
     println!("  hump(dur), after(delay, x), expdecay(tau), expr(src, {{name = sig}}), mix(...), db(v), param(name, default),");
-    println!("  length(s), loop(), sound(name, fn). Arithmetic + - * / ^ and unary - work on signals.");
+    println!("  length(s or param), loop(), sound(name, fn), and for Godot ports white44(), godot_lp(x, k), godot_hp(x, k).");
+    println!("  Arithmetic + - * / ^ and unary - work on signals; expr has fmod.");
 }
 
 fn check(files: &[String]) -> Result<(), String> {

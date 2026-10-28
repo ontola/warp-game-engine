@@ -241,6 +241,24 @@ fn finish(b: Builder, out: &Value) -> mlua::Result<Patch> {
     Ok(p)
 }
 
+/// Helpers written in Luau itself, for ports of Godot (44.1 kHz) code.
+const PRELUDE: &str = r#"
+-- White noise with Godot's density: one uniform sample per 44.1 kHz tick
+-- spread over more bandwidth keeps its level per hertz.
+function white44() return noise() * expr("sqrt(sr / 44100)") end
+-- Godot's one-pole `y = lerp(y, x, k)` at 44.1 kHz, matched at any rate:
+-- the exact cutoff, slightly lowered, plus a small direct term (fits the
+-- 44.1 kHz response to 0.03 dB up to 20 kHz).
+function godot_lp(x, k)
+  local s = expr("clamp((sr - 44100) / 3900, 0, 1)")
+  local c = expr("(0.025 * k + 0.06 * k * k) * s", { k = k, s = s })
+  local fc = expr("-log(1 - k) * 44100 / tau * (1 - 0.025 * k * s)", { k = k, s = s })
+  return expr("c * x + (1 - c) * y", { c = c, x = x, y = lowpass1(x, fc) })
+end
+-- Its high-pass, x - lp(x).
+function godot_hp(x, k) return x - godot_lp(x, k) end
+"#;
+
 /// Load the patches in a Luau source. `name` names the sound the chunk
 /// returns (usually the file stem).
 pub fn load(name: &str, src: &str) -> Result<Vec<Patch>, String> {
@@ -262,6 +280,7 @@ pub fn load(name: &str, src: &str) -> Result<Vec<Patch>, String> {
         math.raw_set("randomseed", Value::Nil)?;
         api(&lua, &g)
     })().map_err(short)?;
+    lua.load(PRELUDE).set_name("=prelude").exec().map_err(short)?;
     lua.sandbox(true).map_err(short)?;
     lua.set_app_data(Builder { name: name.to_string(), ..Default::default() });
     lua.set_app_data(Vec::<Patch>::new());
@@ -292,10 +311,11 @@ mod tests {
             local burst = noise() * env{ {0.001, 1}, {0.06, 0, 4} }
             length(1.0)
             sound("tone", function() return sine(sweep(880, 220, 20)) * decay(0.3, 2) * db(-6) end)
+            sound("port", function() return godot_hp(godot_lp(white44(), 0.3), 0.04) end)
             return lowpass(burst, 300 + 4000 * size) - burst / 4
         "#;
         let ps = load("shot", src).unwrap();
-        assert_eq!(ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["shot", "tone"]);
+        assert_eq!(ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["shot", "tone", "port"]);
         let shot = &ps[0];
         assert_eq!(shot.params, vec![("size".to_string(), 1.0)]);
         assert_eq!(shot.max_length, 1.0);
