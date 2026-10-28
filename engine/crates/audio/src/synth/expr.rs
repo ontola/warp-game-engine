@@ -5,7 +5,7 @@
 //! Variables: `t` (seconds since the voice started), `sr`, and up to six
 //! named inputs. Operators `+ - * / ^`, unary `-`, comparisons `< >` (1 or
 //! 0), and functions exp, log, sin, cos, tan, tanh, sqrt, abs, sign, floor,
-//! fract, min, max, pow, clamp, lerp, smoothstep, step.
+//! fract, min, max, pow, fmod (mod), clamp, lerp, smoothstep, step.
 
 use super::BLOCK;
 use super::units::Sig;
@@ -83,7 +83,7 @@ fn fast_pow(a: f32, b: f32) -> f32 {
 #[derive(Clone, Copy, Debug)]
 enum F1 { Exp, Ln, Sin, Cos, Tan, Tanh, Sqrt, Abs, Sign, Floor, Fract }
 #[derive(Clone, Copy, Debug)]
-enum F2 { Min, Max, Pow, Step }
+enum F2 { Min, Max, Pow, Step, Mod }
 #[derive(Clone, Copy, Debug)]
 enum F3 { Clamp, Lerp, Smooth }
 
@@ -98,6 +98,7 @@ macro_rules! with_f1 { ($f:expr, |$g:ident| $body:expr) => { match $f {
 macro_rules! with_f2 { ($f:expr, |$g:ident| $body:expr) => { match $f {
     F2::Min => { let $g = f32::min; $body } F2::Max => { let $g = f32::max; $body } F2::Pow => { let $g = fast_pow; $body }
     F2::Step => { let $g = |e: f32, x: f32| (x >= e) as u8 as f32; $body }
+    F2::Mod => { let $g = |a: f32, b: f32| if b != 0.0 { a - b * (a / b).floor() } else { 0.0 }; $body }
 } } }
 macro_rules! with_f3 { ($f:expr, |$g:ident| $body:expr) => { match $f {
     F3::Clamp => { let $g = |x: f32, a: f32, b: f32| x.clamp(a.min(b), b.max(a)); $body }
@@ -322,7 +323,7 @@ fn func(name: &str, n: usize) -> Option<Op> {
         ("exp", 1) => Op::F1(F1::Exp), ("log", 1) => Op::F1(F1::Ln), ("sin", 1) => Op::F1(F1::Sin), ("cos", 1) => Op::F1(F1::Cos),
         ("tan", 1) => Op::F1(F1::Tan), ("tanh", 1) => Op::F1(F1::Tanh), ("sqrt", 1) => Op::F1(F1::Sqrt), ("abs", 1) => Op::F1(F1::Abs),
         ("sign", 1) => Op::F1(F1::Sign), ("floor", 1) => Op::F1(F1::Floor), ("fract", 1) => Op::F1(F1::Fract),
-        ("min", 2) => Op::F2(F2::Min), ("max", 2) => Op::F2(F2::Max), ("pow", 2) => Op::F2(F2::Pow), ("step", 2) => Op::F2(F2::Step),
+        ("min", 2) => Op::F2(F2::Min), ("max", 2) => Op::F2(F2::Max), ("pow", 2) => Op::F2(F2::Pow), ("step", 2) => Op::F2(F2::Step), ("fmod", 2) | ("mod", 2) => Op::F2(F2::Mod),
         ("clamp", 3) => Op::F3(F3::Clamp), ("lerp", 3) => Op::F3(F3::Lerp), ("smoothstep", 3) => Op::F3(F3::Smooth),
         _ => return None,
     })
@@ -359,6 +360,7 @@ mod tests {
         let e = Expr::compile("(1 - t / 0.2) ^ 1.6 * -2 + clamp(t, 0, 1) + (t > 0.5)", &[]).unwrap();
         assert!((e.eval(0.1, 48000.0, &[0.0; 6]) - (0.5f32.powf(1.6) * -2.0 + 0.1)).abs() < 1e-5);
         assert_eq!(e.eval(0.6, 48000.0, &[0.0; 6]), 0.0f32.powf(1.6) * -2.0 + 0.6 + 1.0);
+        assert_eq!(Expr::compile("fmod(t, 0.07)", &[]).unwrap().eval(0.1, 48000.0, &[0.0; 6]), 0.1f32 - 0.07);
         assert!(Expr::compile("nope + 1", &[]).unwrap_err().contains("unknown variable"));
         assert!(Expr::compile("lerp(1, 2)", &[]).is_err());
     }
