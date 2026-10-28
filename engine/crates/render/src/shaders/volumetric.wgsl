@@ -23,7 +23,10 @@ struct Uniform {
     output: vec4<f32>,
     // Density (scattering = extinction, 1/m), anisotropy g, intensity, light count.
     medium: vec4<f32>,
+    // Scattering tint; w: extinction (how much the medium dims the scene).
     tint: vec4<f32>,
+    // Ambient in-scatter radiance (converged); w: medium length, 0 unbounded.
+    ambient: vec4<f32>,
     lights: array<ScatterLight, 32>,
 };
 
@@ -173,12 +176,13 @@ fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
         let hit = u.inverse_depth_vp * vec4<f32>(ndc, best_depth, 1.0);
         tmax = length(hit.xyz / hit.w - origin);
     }
+    if u.ambient.w > 0.0 { tmax = min(tmax, u.ambient.w); }
     var sum = vec3<f32>(0.0);
     let count = min(u32(u.medium.w), 32u);
     for (var i = 0u; i < count; i++) {
         sum += light_scatter(origin, v, tmax, u.lights[i], u.medium.x, u.medium.y);
     }
-    let colour = sum * u.tint.rgb * (u.medium.x * u.medium.z);
+    let colour = sum * u.tint.rgb * (u.medium.x * u.medium.z) + u.ambient.rgb * (1.0 - exp(-u.medium.x * tmax));
     textureStore(scatter_out, vec2<i32>(id.xy), vec4<f32>(colour, view_depth(best_depth)));
 }
 
@@ -213,5 +217,10 @@ fn composite(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     var scattered = nearest;
     if weight > 0.05 { scattered = sum / weight; }
-    textureStore(colour_out, vec2<i32>(id.xy), vec4<f32>(colour.rgb + scattered, colour.a));
+    // Extinction of the scene behind the medium (0 by default: only adds).
+    var reach = z;
+    if u.ambient.w > 0.0 { reach = min(reach, u.ambient.w); }
+    var behind = colour.rgb;
+    if u.tint.w > 0.0 { behind *= exp(-u.tint.w * u.medium.x * reach); }
+    textureStore(colour_out, vec2<i32>(id.xy), vec4<f32>(behind + scattered, colour.a));
 }

@@ -66,9 +66,6 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
         }
         // With a texture layer the textured colour glows (signs, logos).
         let glow = select(m.tint, sample.rgb * m.tint, m.layer >= 0);
-        // Lamp-lit volumetric fog in front of the surface dims it like the
-        // opaque scene (its in-scattering is already behind it).
-        transmission *= exp(-headlights.fog.x * min(ray_length, headlights.fog.z));
         return vec4<f32>(glow * m.scale * light.anim.y * transmission * alpha, alpha);
     }
     let base = sample.rgb * m.tint;
@@ -109,7 +106,6 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     var rad = direct + indirect + specular + car_lamp_emission(m.flags, base, instances[tri.owner], p) * light.anim.y;
     if (m.flags & 1024u) != 0u { rad += m.tint * m.scale * light.anim.y; }
     rad = apply_distance_fog(rad, distance(p, view.cam.xyz), -v);
-    rad *= exp(-headlights.fog.x * min(distance(p, view.cam.xyz), headlights.fog.z));
     if light.sky.z > 0.5 && light.sky.z < 1.5 { rad = vec3<f32>(sky_vis) * 6000.0; }
     else if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }
     else if light.sky.z > 2.5 && light.sky.z < 3.5 { rad = direct; }

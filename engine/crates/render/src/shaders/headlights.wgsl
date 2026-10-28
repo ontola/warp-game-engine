@@ -3,7 +3,7 @@
 struct Headlight { view_proj:mat4x4<f32>, position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32> };
 struct LocalLight { position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32>, source:vec4<f32> };
 struct Headlights { lights:array<Headlight,8>, count:vec4<u32>, local:array<LocalLight,32>, local_min:vec4<f32>, local_max:vec4<f32>,
-    fog:vec4<f32>, fog_albedo:vec4<f32>, fog_emission:vec4<f32>, spot_fog:array<vec4<f32>,2>, local_fog:array<vec4<f32>,8>, spot_falloff:array<vec4<f32>,2>, fog_extra:vec4<f32> };
+    spot_falloff:array<vec4<f32>,2> };
 @group(0) @binding(17) var<uniform> headlights:Headlights;
 @group(0) @binding(18) var headlight_depth:texture_depth_2d_array;
 

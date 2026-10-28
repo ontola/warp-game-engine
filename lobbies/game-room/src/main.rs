@@ -60,20 +60,7 @@ fn run() -> Result<(), String> {
     let renderer = Renderer::new(&gpu, &scene, &light);
     renderer.set_local_lights(&room.locals)?;
     renderer.set_headlights(&room.spots)?;
-    let env = &room.dump.environment;
-    let fog = (env["volumetric_fog_enabled"].as_bool().unwrap_or(false) && !flag("--no-fog")).then(|| render::headlights::VolumetricFog {
-        density: num(env, "volumetric_fog_density", 0.0) * numf("--fog-density", 1.0),
-        albedo: linear(&env["volumetric_fog_albedo"]),
-        emission: linear(&env["volumetric_fog_emission"]) * num(env, "volumetric_fog_emission_energy", 0.0),
-        anisotropy: num(env, "volumetric_fog_anisotropy", 0.2),
-        gi_inject: num(env, "volumetric_fog_gi_inject", 1.0) * numf("--fog-gi", 0.4),
-        cone_blur: numf("--fog-blur", 12.0).to_radians(),
-        length: num(env, "volumetric_fog_length", 64.0),
-        steps: numf("--fog-steps", 24.0) as u32,
-        spot_energy: room.spot_fog.iter().map(|e| e * numf("--fog", 0.4)).collect(),
-        local_energy: room.local_fog.iter().map(|e| e * numf("--fog", 0.4)).collect(),
-    });
-    renderer.set_light_extras(fog, &room.spot_falloff);
+    renderer.set_spot_falloff(&room.spot_falloff);
     let mut options = renderer.debug_options();
     // Godot's glow: levels 3-6 summed, screen-blended. The 0.36 matches its
     // capture: Godot's levels are smaller per level than our wide rounds.
@@ -95,6 +82,43 @@ fn run() -> Result<(), String> {
         probes
     } else { vec![] };
     let bake = bake_start.elapsed();
+
+    // Godot's volumetric fog: lamp beams, ambient light in the haze, and the
+    // scene behind dimmed by it.
+    let env = &room.dump.environment;
+    let mut light = light;
+    if env["volumetric_fog_enabled"].as_bool().unwrap_or(false) && !flag("--no-fog") {
+        let albedo = linear(&env["volumetric_fog_albedo"]);
+        // Mean probe irradiance stands in for SDFGI's injection into the froxels.
+        let mean = if probes.is_empty() { room.ambient } else { probes.iter().map(|p| p.axes.iter().sum::<Vec3>() / 6.0).sum::<Vec3>() / probes.len() as f32 };
+        let inject = num(env, "volumetric_fog_gi_inject", 1.0) * numf("--fog-gi", 0.4);
+        let emission = linear(&env["volumetric_fog_emission"]) * num(env, "volumetric_fog_emission_energy", 0.0);
+        light.volumetric = Some(render::volumetric::Volumetric {
+            density: num(env, "volumetric_fog_density", 0.0) * numf("--fog-density", 1.0),
+            color: albedo,
+            anisotropy: num(env, "volumetric_fog_anisotropy", 0.2),
+            intensity: numf("--fog", 0.6),
+            extinction: 1.0,
+            ambient: albedo * mean * inject / (4.0 * PI) + emission,
+            length: num(env, "volumetric_fog_length", 64.0),
+        });
+        // Every lamp scatters by its volumetric fog energy, its cone widened
+        // like Godot's coarse froxels (power kept).
+        let blur = numf("--fog-blur", 12.0).to_radians();
+        let beams: Vec<_> = all_lights.iter().zip(room.local_fog.iter().chain(&room.spot_fog)).filter(|(_, e)| **e > 0.0).map(|(l, e)| {
+            let mut b = *l;
+            if l.outer_cos > -0.99 {
+                let (outer, inner) = (l.outer_cos.acos(), l.inner_cos.acos());
+                let wide = (outer + blur).min(std::f32::consts::PI);
+                b.outer_cos = wide.cos();
+                b.inner_cos = (inner + blur).min(wide - 0.01).cos();
+                b.intensity_cd *= (1.0 - l.outer_cos) / (1.0 - b.outer_cos).max(1e-4);
+            }
+            b.intensity_cd *= *e;
+            b
+        }).collect();
+        renderer.set_volumetric_beams(&beams)?;
+    }
 
     let mut screen = render::screen::Screen::new(&gpu)?;
     screen.draw(&gpu, &renderer, label_layer, [0.0; 4], &label_list)?;
