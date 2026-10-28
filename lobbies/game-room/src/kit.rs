@@ -41,6 +41,7 @@ pub const CONFETTI: [&str; 4] = ["ffb454", "7c5cff", "3ddc97", "ff4f8b"];
 /// room.gd's two fireballs per explosion: colour and radius.
 pub const FIREBALL_KINDS: [(&str, f32); 2] = [("ff6a2a", 1.4), ("ffd27a", 0.7)];
 
+#[derive(Clone)]
 pub struct Kit {
     /// Item parts by `item_key`.
     pub items: HashMap<String, Vec<Part>>,
@@ -54,7 +55,22 @@ pub struct Kit {
     pub fireballs: Vec<Vec<(usize, usize)>>,
     /// The laser beam, a unit-long box.
     pub beam: usize,
+    /// Profile doors: the gold frame and picture light bar, and per door a
+    /// canvas with its own material (tinted by the waiting person's skin).
+    pub door_frame: usize,
+    pub door_bar: usize,
+    pub door_canvas: Vec<(usize, usize)>,
+    /// Game spines on the shelf: per slot a box with its own material (the
+    /// game's colour), and the dark band at the top.
+    pub spines: Vec<(usize, usize)>,
+    pub spine_band: usize,
 }
+
+/// Spine slots on the shelf (room.gd `set_shelf`: 5 per row, two rows).
+pub const SPINES: usize = 10;
+pub const DOORS: usize = 3;
+/// The door canvas and frame (main.gd `_make_door`).
+pub fn door_size() -> f32 { game_room_sim::layout::DOOR_HALF as f32 * 2.0 - 0.12 }
 
 /// The parts for an item: blasters by hue, sabers by blade colour.
 pub fn item_key(kind: Kind, id: u32) -> String {
@@ -125,7 +141,8 @@ impl Item<'_> {
 
 /// Add every prop to `r`, hidden.
 pub fn add(r: &mut RoomBuild) -> Kit {
-    let mut kit = Kit { items: HashMap::new(), pivots: HashMap::new(), shots: HashMap::new(), sparks: HashMap::new(), fireballs: vec![], beam: 0 };
+    let mut kit = Kit { items: HashMap::new(), pivots: HashMap::new(), shots: HashMap::new(), sparks: HashMap::new(), fireballs: vec![], beam: 0,
+        door_frame: 0, door_bar: 0, door_canvas: vec![], spines: vec![], spine_band: 0 };
     let mut items = HashMap::new();
     let mut item = |r: &mut RoomBuild, key: String, make: &dyn Fn(&mut Item)| {
         r.group = format!("kit/{key}");
@@ -267,6 +284,27 @@ pub fn add(r: &mut RoomBuild) -> Kit {
     let cyan = Color::hex("38d6ff");
     kit.beam = r.box_flat(Vec3::new(1.0, 0.12, 0.12), Vec3::ZERO, &mat(cyan.lightened(0.5), 0.2, 0.0, cyan, 9.0));
     r.hidden.push(kit.beam);
+
+    r.group = "kit/doors".into();
+    let size = door_size();
+    let gold = mat(Color::hex("c9a24a"), 0.35, 0.8, Color::hex("ffcf5a"), 0.35);
+    kit.door_frame = r.box_(Vec3::new(size + 0.12, size + 0.12, 0.08), Vec3::ZERO, &gold);
+    kit.door_bar = r.box_(Vec3::new(0.36, 0.05, 0.1), Vec3::ZERO, &gold);
+    r.hidden.extend([kit.door_frame, kit.door_bar]);
+    for _ in 0..DOORS {
+        let canvas = Color::hex("2a2140");
+        let i = r.box_flat(Vec3::new(size - 0.04, size - 0.04, 0.02), Vec3::ZERO, &mat(canvas, 0.9, 0.0, canvas, 0.25));
+        r.hidden.push(i);
+        kit.door_canvas.push((i, r.material_of(i)));
+    }
+    r.group = "kit/spines".into();
+    for _ in 0..SPINES {
+        let i = r.box_(Vec3::new(0.2, 0.7, 0.5), Vec3::ZERO, &mat(crate::room::VIOLET.darkened(0.25), 0.45, 0.1, Color::BLACK, 0.0));
+        r.hidden.push(i);
+        kit.spines.push((i, r.material_of(i)));
+    }
+    kit.spine_band = r.box_flat(Vec3::new(0.205, 0.08, 0.505), Vec3::ZERO, &m("12141f", 0.35));
+    r.hidden.push(kit.spine_band);
     r.group.clear();
     kit
 }

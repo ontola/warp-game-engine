@@ -130,6 +130,7 @@ pub struct Lobby {
     rng: Pcg,
     uploaded: bool,
     pub(crate) props: Props,
+    board: crate::board::Board,
     events: Vec<world::Event>,
     // main.gd's state
     pub(crate) controllers: HashMap<String, String>,
@@ -214,9 +215,10 @@ impl Lobby {
         }
         let mut room = Room::from_build(parts);
         room.live = true;
-        let (mut actors_view, mut props) = (None, None);
+        let (mut actors_view, mut props, mut board) = (None, None, None);
         let stage = Stage::new(room, options, |scene, room| {
             actors_view = Some(ActorMeshes::reserve(scene));
+            board = Some(crate::board::Board::reserve(&kit, scene, room));
             props = Some(Props::reserve(kit, scene, room));
         })?;
         let lobby_id = client.as_ref().map_or_else(|| "game-room".to_string(), |c| c.config.lobby_id.clone());
@@ -227,7 +229,7 @@ impl Lobby {
             build, stage, actors_view: actors_view.expect("actor meshes"), world: World::new(7), host: Host::new(&lobby_id), client, profiles: vec![], actors: HashMap::new(),
             next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), prompt_glow: HashMap::new(),
             mood: Mood::default(), animated, time: 0.0, since_paint: 0.0, screens_dirty: true, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
-            props: props.expect("props"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
+            props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
             bumpers_visible: false, display_active: None, quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080],
@@ -650,6 +652,10 @@ impl Game for Lobby {
         self.props.camera(&mut self.stage.room.camera, self.time, delta);
         let light = self.stage.options.tuning.light;
         let (mut lights, shots) = self.props.update(&self.world, &mut self.stage.room, &mut self.stage.scene, frame.alpha, delta, self.time, light);
+        let pending = self.host.pending_profiles();
+        let shelf: Vec<(String, String)> = self.show.shelf.iter().map(|g| (g.title.clone(), g.color.clone())).collect();
+        self.board.update(&mut self.stage.room, &mut self.stage.scene, &pending, &shelf, self.host.shelf_offset, light);
+        lights.extend(self.board.lights().iter().copied());
         lights.extend(glows);
         lights.extend(shots);
         let (gpu, renderer) = (frame.gpu, frame.renderer().ok_or("no renderer")?);
@@ -658,6 +664,8 @@ impl Game for Lobby {
         self.actors_view.bodies.flush(gpu, renderer, &self.stage.scene)?;
         self.props.flush(gpu, renderer, &self.stage.room, &mut self.stage.scene)?;
         self.pose_parts(gpu, renderer, delta)?;
+        let screen = self.screen.as_mut().unwrap();
+        self.board.flush(gpu, renderer, &self.stage.room, &self.stage.scene, screen)?;
         self.stage.relight_with(renderer, &lights)?;
         if std::mem::take(&mut self.sheets_dirty) { self.paint_sheets(gpu, renderer)?; }
         // The idle TV cycles its colours: repaint the screens ten times a

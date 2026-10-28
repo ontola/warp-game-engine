@@ -63,6 +63,8 @@ pub struct Show {
     pub profile_colors: Vec<String>,
     pub now_playing: Option<Track>,
     pub room_code: String,
+    /// The room QR code's dark modules, 0..1 (qr.rs).
+    pub qr: Vec<[f32; 4]>,
     pub bumper_presses: [f32; 2],
 }
 
@@ -366,15 +368,20 @@ pub fn jukebox(c: &mut Canvas, show: &Show) {
     text(c, &artist, [0.0, 128.0], fit(&artist, 24.0, w - 80.0, 16.0), Color::hex("8a2e3c"), w, TextAlign::Center);
 }
 
-/// main.gd `_draw_plaque`: the join code (the QR code comes with the link).
+/// main.gd `_draw_plaque`: the room's QR code and join code.
 pub fn plaque(c: &mut Canvas, show: &Show) {
     let [w, h] = c.size;
     c.rect([0.0, 0.0, w, h], Color::hex("0c0a16"));
     let side = 264.0;
     let qr = [(w - side) / 2.0, 20.0, side, side];
     let cy = qr[1] + side / 2.0;
-    text(c, "Phone joining", [qr[0], cy - 6.0], 16.0, DIM, side, TextAlign::Center);
-    text(c, "starts with GameNight", [qr[0], cy + 18.0], 16.0, DIM, side, TextAlign::Center);
+    if show.qr.is_empty() {
+        text(c, "Phone joining", [qr[0], cy - 6.0], 16.0, DIM, side, TextAlign::Center);
+        text(c, "starts with GameNight", [qr[0], cy + 18.0], 16.0, DIM, side, TextAlign::Center);
+    } else {
+        // White modules on the dark plaque; the wall around is the quiet zone.
+        for m in &show.qr { c.rect([qr[0] + m[0] * side, qr[1] + m[1] * side, m[2] * side, m[3] * side], Color::WHITE); }
+    }
     let code = if show.room_code.is_empty() { "· · · ·" } else { &show.room_code };
     c.text(faces().wordmark, [0.0, h - 34.0], code, TextAlign::Center, w, 52.0, TEXT);
 }

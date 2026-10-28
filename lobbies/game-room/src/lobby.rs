@@ -530,6 +530,8 @@ impl Lobby {
             let code = room.get("room_code").or_else(|| room.get("code")).map(s).unwrap_or_default();
             if code == "<null>" { String::new() } else { code }
         };
+        let svg = get(&self.host.links["room"], "qr_svg", "");
+        self.show.qr = if svg.len() < 200_000 { crate::qr::modules(&svg) } else { vec![] };
         self.screens_dirty = true;
     }
 
