@@ -1,6 +1,7 @@
 //! The game drawn by Warp: the level built into a scene (floor, walls,
 //! props, torches), the wizards and monsters posed from the sim every frame
 //! into a pool of instances, the Godot camera, moon, ambient and fog.
+use crate::anim;
 use crate::kits::{Kit, Kits};
 use crate::look::{self, linear3, push_f32, surface_layer, Look, Piece, FLOOR};
 use glam::{Affine3A, Mat3, Mat4, Quat, Vec2, Vec3};
@@ -19,6 +20,9 @@ const POOL: usize = 4096;
 
 /// Godot's light energy 1 lights white albedo like this many lux.
 const LIGHT: f32 = PI;
+
+/// A biome's mist (FogVolume density 1) as even fog density per metre.
+const MIST_DEPTH: f32 = 0.02;
 
 /// Godot's ZONE_TINTS: the level's three zones, front to back.
 const ZONE_TINTS: [[f32; 3]; 3] = [[1.0, 1.0, 1.0], [0.82, 0.92, 0.8], [1.08, 0.93, 0.88]];
@@ -116,9 +120,13 @@ pub struct View {
     prop_ranges: Vec<std::ops::Range<usize>>,
     prop_broken: Vec<bool>,
     pub lamps: Vec<Lamp>,
+    /// Camera-facing cards in the level: instance, mesh, centre, scale.
+    cards: Vec<(usize, usize, Vec3, Vec3)>,
     probes: Vec<Probe>,
     /// Wizard kit pieces per seat (their robes recoloured).
     wizard_pieces: HashMap<usize, Vec<Piece>>,
+    wizard_anims: Vec<anim::WizardAnim>,
+    enemy_anims: HashMap<hecs::Entity, anim::EnemyAnim>,
     cam_center: Vec3,
     cam_height: f32,
     pub camera: Camera,
@@ -155,8 +163,11 @@ impl View {
             prop_ranges: vec![],
             prop_broken: vec![],
             lamps: vec![],
+            cards: vec![],
             probes: vec![],
             wizard_pieces: HashMap::new(),
+            wizard_anims: vec![],
+            enemy_anims: HashMap::new(),
             cam_center: Vec3::ZERO,
             cam_height: 18.5,
             camera: Camera { pos: Vec3::new(0.0, 20.0, 12.0), target: Vec3::ZERO, fov_y: 42f32.to_radians(), near: 0.1 },
@@ -177,6 +188,7 @@ impl View {
         let l = &w.level;
         let biome = l.biome();
         self.lamps.clear();
+        self.cards.clear();
         self.prop_ranges.clear();
         self.prop_broken.clear();
         self.wizard_pieces.clear();
@@ -330,6 +342,10 @@ impl View {
             if !p.shadow {
                 scene.mark_no_shadow();
             }
+            if p.billboard {
+                let (scale, _, pos) = xf.to_scale_rotation_translation();
+                self.cards.push((scene.instances.len() - 1, p.mesh, pos, scale));
+            }
         }
         for (i, n) in kit.nodes.iter().enumerate() {
             if let Some(l) = n.light {
@@ -354,24 +370,33 @@ impl View {
     /// Pose everything that moves, the camera and the nearest lights.
     pub fn pose(&mut self, gpu: &Gpu, renderer: &Renderer, w: &World, dt: f32) -> Result<(), String> {
         let mut out: Vec<(usize, Affine3A, bool)> = Vec::new();
+        let time = w.time as f32;
+        self.wizard_anims.resize_with(w.wizards.len(), Default::default);
         for (i, &id) in w.wizards.iter().enumerate() {
             let a = w.a(id);
+            let wz = w.wiz(id);
             let Some(pieces) = self.wizard_pieces.get(&i) else { continue };
             let Some(kit) = self.kits.kit("wizard") else { continue };
-            let at = Mat4::from_rotation_translation(Quat::from_rotation_y(a.yaw), a.pos);
-            push_kit(&mut out, kit, pieces, at);
+            let pose = self.wizard_anims[i].pose(kit, &a, &wz, dt);
+            let at = Mat4::from_translation(a.pos);
+            for p in pieces {
+                out.push((p.mesh, look::affine(at * anim::posed(kit, &pose, p.node)), p.shadow));
+            }
         }
+        let mut seen = Vec::new();
         for &id in w.enemies.iter().chain(&w.corpses) {
             let Some(a) = w.actor(id) else { continue };
             let Ok(e) = w.ecs.get::<&spellstorm::enemy::Enemy>(id) else { continue };
             let name = format!("enemy/{}", e.cfg().key);
-            drop(e);
             let pieces = self.look.pieces(&self.kits, &mut self.scene, &name);
             let Some(kit) = self.kits.kit(&name) else { continue };
-            let s = kit.base_scale;
-            let at = Mat4::from_scale_rotation_translation(Vec3::splat(s), Quat::from_rotation_y(a.yaw), a.pos);
+            let seed = id.id();
+            let model = self.enemy_anims.entry(id).or_default().model(kit.base_scale, &a, &e, time, seed, dt);
+            seen.push(id);
+            let at = Mat4::from_rotation_translation(Quat::from_rotation_y(a.yaw), a.pos) * model;
             push_kit(&mut out, kit, &pieces, at);
         }
+        self.enemy_anims.retain(|id, _| seen.contains(id));
         let first = self.pool_first;
         for i in 0..POOL {
             let slot = first + i;
@@ -399,12 +424,25 @@ impl View {
         }
         renderer.update_instances(gpu, first, &self.scene.instances[first..first + POOL])?;
         self.follow(w, dt);
+        // Cards turn to the camera (halo.gdshader's billboard).
+        let face = facing(&self.camera);
+        for &(i, mesh, pos, scale) in &self.cards {
+            if self.scene.instances[i].cluster_count == 0 {
+                continue;
+            }
+            self.scene.update_instance(i, mesh, Affine3A::from_mat3_translation(face * Mat3::from_diagonal(scale), pos));
+            renderer.update_instances(gpu, i, &self.scene.instances[i..i + 1])?;
+        }
         // The 32 lights nearest the middle of the view.
         let mid = self.camera.target;
         let mut near: Vec<&Lamp> = self.lamps.iter().collect();
         near.sort_by(|a, b| a.pos.distance_squared(mid).total_cmp(&b.pos.distance_squared(mid)));
         let locals: Vec<LocalLight> = near.iter().take(render::headlights::MAX_LOCAL_LIGHTS).map(|l| l.light).collect();
         renderer.set_local_lights(&locals)?;
+        // Lamps light the haze (Godot's light_volumetric_fog_energy is 1).
+        if self.light.volumetric.is_some() {
+            renderer.set_volumetric_beams(&locals)?;
+        }
         self.light.time = w.time as f32;
         Ok(())
     }
@@ -438,6 +476,14 @@ impl View {
         let c = self.cam_center + Vec3::new(0.0, 0.0, -1.5);
         self.camera = Camera { pos: c + Vec3::new(0.0, self.cam_height, self.cam_height * 0.55), target: c, fov_y: 42f32.to_radians(), near: 0.1 };
     }
+}
+
+/// The camera's rotation: a card with it faces the camera.
+pub fn facing(cam: &Camera) -> Mat3 {
+    let back = (cam.pos - cam.target).normalize_or(Vec3::Z);
+    let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
+    let up = back.cross(right);
+    Mat3::from_cols(right, up, back)
 }
 
 fn push_kit(out: &mut Vec<(usize, Affine3A, bool)>, kit: &Kit, pieces: &[Piece], at: Mat4) {
@@ -511,8 +557,13 @@ fn lighting(w: &World, ambient: Vec3) -> Lighting {
     let basis = Mat3::from_euler(glam::EulerRot::YXZ, 28f32.to_radians(), -62f32.to_radians(), 0.0);
     let sun_dir = basis * Vec3::Z;
     let ev = (1.0 / (1.2 * 1.5f32)).log2() + 0.43;
-    let albedo = linear3([0.5, 0.55, 0.6]);
-    let emission = linear3(b.fog) * 0.15;
+    // The global fog (density 0.004) and the biome's ground mist (a fog
+    // volume of density `mist`, thick at the ankles, gone by the waist, in
+    // patches) as one even medium: about the mist's optical depth along a
+    // view ray from the camera's height.
+    let mist = b.mist * MIST_DEPTH;
+    let albedo = linear3([0.5, 0.55, 0.6]).lerp(linear3(b.mist_c), mist / (mist + 0.004));
+    let emission = linear3(b.fog) * 0.15 + linear3(b.mist_c) * 0.05 * mist / (mist + 0.004);
     Lighting {
         sun_dir,
         sun_lux: (b.moon_energy * 1.8 + 0.15) * LIGHT,
@@ -527,7 +578,7 @@ fn lighting(w: &World, ambient: Vec3) -> Lighting {
         taa: 0.0,
         sharpen: 0.3,
         volumetric: Some(render::volumetric::Volumetric {
-            density: 0.004,
+            density: 0.004 + mist,
             color: albedo,
             anisotropy: 0.4,
             intensity: 0.6,
