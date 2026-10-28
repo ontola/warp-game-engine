@@ -227,9 +227,25 @@ impl Devices {
         }
     }
 
+    /// Connected devices in [`Devices::controls`] order: the keyboard (when
+    /// enabled), then the pads in connection order.
+    pub fn connected(&self) -> Vec<Device> {
+        let mut v = Vec::new();
+        if self.keyboard_enabled { v.push(Device::Keyboard); }
+        if let Some(g) = &self.gilrs { v.extend(self.pads.iter().filter(|p| g.gamepad(p.0).is_connected()).map(|p| Device::Pad(usize::from(p.0) as u32))); }
+        v
+    }
+
     /// Controls for `players` local players for one tick of `dt` seconds;
-    /// consumes edges and mouse motion.
+    /// consumes edges and mouse motion. Devices drive seats in order.
     pub fn controls(&mut self, players: usize, dt: f32) -> Vec<Controls> {
+        let devices = self.device_controls(dt);
+        route(&devices, None, players)
+    }
+
+    /// One tick of every connected device's input, keyboard first, then
+    /// pads; consumes edges and mouse motion.
+    pub fn device_controls(&mut self, dt: f32) -> Vec<(Device, Controls)> {
         let t = self.tuning;
         let mut devices = Vec::new();
         if self.keyboard_enabled {
@@ -239,12 +255,12 @@ impl Devices {
             let mut mv = [key(KeyCode::KeyD) - key(KeyCode::KeyA), key(KeyCode::KeyW) - key(KeyCode::KeyS)];
             let len = (mv[0] * mv[0] + mv[1] * mv[1]).sqrt();
             if len > 1.0 { mv = [mv[0] / len, mv[1] / len]; }
-            devices.push(Controls {
+            devices.push((Device::Keyboard, Controls {
                 mv,
                 look: [k.look[0] as f32 * t.mouse, -k.look[1] as f32 * t.mouse],
                 held: Buttons(held),
                 pressed: Buttons(std::mem::take(&mut k.pressed)),
-            });
+            }));
             k.look = [0.0; 2];
         }
         if let Some(g) = &self.gilrs {
@@ -258,25 +274,67 @@ impl Devices {
                     let analog = gp.button_data(b).is_some_and(|d| d.value() > 0.4);
                     if gp.is_pressed(b) || analog { held |= pad_button(b); }
                 }
-                devices.push(Controls {
+                devices.push((Device::Pad(usize::from(*id) as u32), Controls {
                     mv: [shape(gp.value(Axis::LeftStickX), &t), shape(gp.value(Axis::LeftStickY), &t)],
                     look: [shape(gp.value(Axis::RightStickX), &t) * t.stick * dt, shape(gp.value(Axis::RightStickY), &t) * t.stick * dt],
                     held: Buttons(held),
                     pressed: Buttons(std::mem::take(pressed)),
-                });
+                }));
             }
         }
-        let mut out = vec![Controls::default(); players];
-        for (k, d) in devices.into_iter().enumerate() {
-            let slot = if players == 1 { 0 } else { k };
-            let Some(o) = out.get_mut(slot) else { break };
-            o.mv = [(o.mv[0] + d.mv[0]).clamp(-1.0, 1.0), (o.mv[1] + d.mv[1]).clamp(-1.0, 1.0)];
-            o.look = [o.look[0] + d.look[0], o.look[1] + d.look[1]];
-            o.held.0 |= d.held.0;
-            o.pressed.0 |= d.pressed.0;
-        }
-        out
+        devices
     }
+}
+
+/// An input device on this machine. Pad numbers are stable while the
+/// program runs (a reconnected pad may get a new one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Device { Keyboard, Pad(u32) }
+
+impl Device {
+    /// `keyboard`, `pad0`, `pad1`.. (scripts, logs).
+    pub fn parse(s: &str) -> Result<Device, String> {
+        let s = s.trim().to_ascii_lowercase();
+        if s == "keyboard" || s == "kbm" { return Ok(Device::Keyboard); }
+        s.strip_prefix("pad").and_then(|n| n.parse().ok()).map(Device::Pad).ok_or(format!("unknown device {s} (keyboard, pad0, pad1..)"))
+    }
+    pub fn is_pad(self) -> bool { matches!(self, Device::Pad(_)) }
+}
+
+impl std::fmt::Display for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Device::Keyboard => write!(f, "keyboard"), Device::Pad(n) => write!(f, "pad{n}") }
+    }
+}
+
+/// Fold one device's input into a seat's.
+pub fn merge_into(o: &mut Controls, d: &Controls) {
+    o.mv = [(o.mv[0] + d.mv[0]).clamp(-1.0, 1.0), (o.mv[1] + d.mv[1]).clamp(-1.0, 1.0)];
+    o.look = [o.look[0] + d.look[0], o.look[1] + d.look[1]];
+    o.held.0 |= d.held.0;
+    o.pressed.0 |= d.pressed.0;
+}
+
+/// Per-device input to `players` seats. `seats`: the devices bound to each
+/// seat ([`crate::Game::seats`]); devices in no seat drive nothing. None:
+/// devices drive seats in order, and a single seat takes every device.
+pub fn route(devices: &[(Device, Controls)], seats: Option<&[Vec<Device>]>, players: usize) -> Vec<Controls> {
+    let mut out = vec![Controls::default(); players];
+    match seats {
+        Some(seats) => {
+            for (o, bound) in out.iter_mut().zip(seats) {
+                for (dev, c) in devices { if bound.contains(dev) { merge_into(o, c); } }
+            }
+        }
+        None => {
+            for (k, (_, d)) in devices.iter().enumerate() {
+                let slot = if players == 1 { 0 } else { k };
+                let Some(o) = out.get_mut(slot) else { break };
+                merge_into(o, d);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -310,5 +368,25 @@ mod tests {
         assert!((shape(1.0, &t) - 1.0).abs() < 1e-6);
         assert!((shape(-1.0, &t) + 1.0).abs() < 1e-6);
         assert!(shape(0.5, &t) < 0.5);
+    }
+
+    fn press(b: u32) -> Controls { Controls { held: Buttons(b), pressed: Buttons(b), ..Default::default() } }
+
+    #[test]
+    fn routing_follows_order_or_bound_seats() {
+        let devs = [(Device::Keyboard, press(Buttons::SOUTH)), (Device::Pad(3), press(Buttons::WEST)), (Device::Pad(5), press(Buttons::NORTH))];
+        // Default: one seat takes everything; more seats go in order.
+        assert_eq!(route(&devs, None, 1)[0].pressed.0, Buttons::SOUTH | Buttons::WEST | Buttons::NORTH);
+        let two = route(&devs, None, 2);
+        assert_eq!((two[0].pressed.0, two[1].pressed.0), (Buttons::SOUTH, Buttons::WEST));
+        // Bound: a spare pad drives nothing; a seat can have two devices.
+        let seats = vec![vec![Device::Keyboard, Device::Pad(5)], vec![]];
+        let b = route(&devs, Some(&seats), 2);
+        assert_eq!(b[0].pressed.0, Buttons::SOUTH | Buttons::NORTH);
+        assert_eq!(b[1], Controls::default());
+        assert_eq!(Device::parse("pad3"), Ok(Device::Pad(3)));
+        assert_eq!(Device::parse("Keyboard"), Ok(Device::Keyboard));
+        assert!(Device::parse("joystick").is_err());
+        assert_eq!(Device::Pad(2).to_string(), "pad2");
     }
 }

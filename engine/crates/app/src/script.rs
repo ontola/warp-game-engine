@@ -27,6 +27,18 @@
 //! audio step as a WAV with its peak and RMS. `cmd` (a string or a list)
 //! runs game debug commands (`Game::command`) before the step's ticks, to
 //! set up a scenario: give items, teleport, aim. Every step prints one JSON line.
+//!
+//! Text and devices: `clipboard` sets the (in-process) clipboard, `text`
+//! types a string and `keys` sends editing keys (`Backspace`, `Enter`,
+//! `Escape`, `Left`, `Right`, `Home`, `End`, `Delete`, `Copy`, `Paste`)
+//! through [`Game::text`], before the step's ticks. `pads: N` connects N
+//! virtual pads (`pad0`..) beside the keyboard from that step on; `device:
+//! "pad1"` makes the step's controls come from that device, routed through
+//! [`Game::seats`] as the window does (a spare pad pressing X to join).
+//! Without either, controls go straight to seat `player`. Scripts never touch
+//! the system clipboard.
+use crate::input::Device;
+use crate::text::TextEvent;
 use crate::{Buttons, Controls, Game, Headless};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -82,6 +94,17 @@ pub struct Step {
     pub cmd: Vec<String>,
     /// Free text shown in the log line.
     pub note: Option<String>,
+    /// Typed into the game (`Game::text`) before the ticks.
+    pub text: Option<String>,
+    /// Editing keys (see `TextEvent::key`), after `text`.
+    #[serde(default)]
+    pub keys: Vec<String>,
+    /// Set the clipboard first.
+    pub clipboard: Option<String>,
+    /// Connected virtual pads from this step on.
+    pub pads: Option<u32>,
+    /// The device this step's controls come from (`keyboard`, `pad0`..).
+    pub device: Option<String>,
 }
 
 fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
@@ -142,7 +165,13 @@ fn check(state: &Value, pointer: &str, step: &Step) -> (Value, bool) {
 /// Run a script; `base` resolves reference images. Returns failed checks.
 pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &Path, base: &Path) -> Result<usize, String> {
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let players = game.local_players();
+    run_steps(game, Some(headless), script, out, base)
+}
+
+/// The runner; without `headless`, capture and audio steps are errors.
+fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &Script, out: &Path, base: &Path) -> Result<usize, String> {
+    crate::clipboard::memory_only();
+    let mut pads: Option<u32> = None;
     let mut tick = 0u64;
     let mut failed = 0;
     for (i, step) in script.steps.iter().enumerate() {
@@ -150,7 +179,11 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
         let ticks = if step.until.is_some() { step.max_ticks.unwrap_or(3600) } else { step.ticks.unwrap_or(u32::from(has_controls)) };
         let mut reached = None;
         let (hold, press) = (mask(&step.hold)?, mask(&step.press)?);
-        if step.player >= players.max(1) && has_controls { return Err(format!("step {i}: player {} of {players}", step.player)); }
+        let device = step.device.as_deref().map(Device::parse).transpose().map_err(|e| format!("step {i}: {e}"))?;
+        if step.pads.is_some() { pads = step.pads; }
+        if device.is_some() && pads.is_none() { pads = Some(0); }
+        let players = game.local_players();
+        if device.is_none() && step.player >= players.max(1) && has_controls { return Err(format!("step {i}: player {} of {players}", step.player)); }
         let mut replies = Vec::new();
         for c in &step.cmd {
             match game.command(c) {
@@ -158,19 +191,42 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
                 Err(e) => { failed += 1; replies.push(json!({ "cmd": c, "ok": false, "error": e })); }
             }
         }
+        if let Some(c) = &step.clipboard { crate::clipboard::set(c); }
+        let mut typed = Vec::new();
+        if let Some(t) = &step.text { typed.push(TextEvent::Insert(t.clone())); }
+        for k in &step.keys { typed.push(TextEvent::key(k).map_err(|e| format!("step {i}: {e}"))?); }
+        let text_events = typed.len();
+        for ev in typed { game.text(ev); }
         for t in 0..ticks {
-            let mut c = vec![Controls::default(); players];
-            if let Some(p) = c.get_mut(step.player) {
-                p.mv = step.mv.unwrap_or_default();
-                p.look = step.look.unwrap_or_default();
-                p.held = Buttons(hold | if t == 0 { press } else { 0 });
-                p.pressed = Buttons(if t == 0 { press } else { 0 });
-            }
+            let mine = Controls {
+                mv: step.mv.unwrap_or_default(),
+                look: step.look.unwrap_or_default(),
+                held: Buttons(hold | if t == 0 { press } else { 0 }),
+                pressed: Buttons(if t == 0 { press } else { 0 }),
+            };
+            let c = match pads {
+                // Devices: every connected one idles but the step's, and the
+                // game's seats route them.
+                Some(n) => {
+                    let mut devices: Vec<(Device, Controls)> = std::iter::once(Device::Keyboard).chain((0..n).map(Device::Pad)).map(|d| (d, Controls::default())).collect();
+                    if let Some(dev) = device {
+                        match devices.iter_mut().find(|d| d.0 == dev) { Some(d) => d.1 = mine, None => devices.push((dev, mine)) }
+                    }
+                    let mut c = crate::seat_controls(game, &devices);
+                    if device.is_none() && has_controls && let Some(p) = c.get_mut(step.player) { *p = mine; }
+                    c
+                }
+                None => {
+                    let mut c = vec![Controls::default(); game.local_players()];
+                    if let Some(p) = c.get_mut(step.player) { *p = mine; }
+                    c
+                }
+            };
             game.tick(&c);
             tick += 1;
             // A live-control screenshot asked for during the tick.
-            if game.wants_capture() { let rgba = headless.frame(game)?; game.captured(headless.size, rgba); }
-            if let Some(mix) = &mut headless.audio {
+            if game.wants_capture() && let Some(h) = headless.as_deref_mut() { let rgba = h.frame(game)?; game.captured(h.size, rgba); }
+            if let Some(headless) = headless.as_deref_mut() && let Some(mix) = &mut headless.audio {
                 let n = (audio::SAMPLE_RATE / headless.tick_hz).round() as usize * 2;
                 let start = headless.recorded.len();
                 headless.recorded.resize(start + n, 0.0);
@@ -188,8 +244,11 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
             line["until"] = json!({ "pointer": pointer, "ticks": reached, "ok": reached.is_some() });
         }
         if let Some(n) = &step.note { line["note"] = json!(n); }
+        if text_events > 0 { line["text_events"] = json!(text_events); }
+        if let Some(d) = device { line["device"] = json!(d.to_string()); }
         if !replies.is_empty() { line["cmd"] = json!(replies); }
         if let Some(name) = &step.capture {
+            let headless = headless.as_deref_mut().ok_or("capture needs a renderer")?;
             let rgba = headless.frame(game)?;
             let path = out.join(name);
             render::write_png(&path, headless.size[0], headless.size[1], &rgba)?;
@@ -219,6 +278,7 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
             serde_json::from_str(&text).map_err(|e| format!("game state is not JSON: {e}"))
         };
         if let Some(name) = &step.audio {
+            let headless = headless.as_deref_mut().ok_or("audio needs a mixer")?;
             let path = out.join(name);
             let samples = std::mem::take(&mut headless.recorded);
             audio::analysis::write_wav(&path, audio::SAMPLE_RATE as u32, 2, &samples).map_err(|e| e.to_string())?;
@@ -270,5 +330,50 @@ mod tests {
         let n: Script = serde_json::from_str(r#"{"steps":[{"expect":"/a","equals":null},{"expect":"/a"}]}"#).unwrap();
         assert_eq!(n.steps[0].equals, Some(Value::Null));
         assert_eq!(n.steps[1].equals, None);
+        let t: Script = serde_json::from_str(r#"{"steps":[{"pads":2,"device":"pad1","press":["X"]},{"text":"abc","keys":["Backspace","Enter"],"clipboard":"t"}]}"#).unwrap();
+        assert_eq!(t.steps[0].pads, Some(2));
+        assert_eq!(t.steps[1].keys.len(), 2);
+    }
+
+    /// A game with seats that a spare pad joins, and a text sink.
+    struct Seats { seats: Vec<Vec<Device>>, ticks: Vec<Vec<Controls>>, typed: String }
+    impl Game for Seats {
+        fn local_players(&self) -> usize { self.seats.len() }
+        fn tick(&mut self, c: &[Controls]) { self.ticks.push(c.to_vec()); }
+        fn devices(&mut self, devices: &[(Device, Controls)]) {
+            for (d, c) in devices {
+                if c.pressed.has(Buttons::WEST) && !self.seats.iter().any(|s| s.contains(d)) { self.seats.push(vec![*d]); }
+            }
+        }
+        fn seats(&self) -> Option<Vec<Vec<Device>>> { Some(self.seats.clone()) }
+        fn draw(&mut self, _: &mut crate::Frame) -> Result<crate::Draw, String> { Err("no drawing".into()) }
+        fn text(&mut self, e: TextEvent) {
+            match e { TextEvent::Insert(s) | TextEvent::Paste(s) => self.typed += &s, TextEvent::Backspace => { self.typed.pop(); } _ => {} }
+        }
+        fn state(&self) -> Option<String> { Some(json!({ "seats": self.seats.len(), "typed": self.typed }).to_string()) }
+    }
+
+    #[test]
+    fn device_steps_route_through_the_games_seats_and_text_reaches_it() {
+        let mut g = Seats { seats: vec![vec![Device::Keyboard]], ticks: vec![], typed: String::new() };
+        let script: Script = serde_json::from_str(r#"{"steps":[
+            {"pads":2,"ticks":2},
+            {"device":"pad1","press":["X"]},
+            {"device":"pad1","press":["A"]},
+            {"device":"keyboard","press":["B"]},
+            {"text":"hello","keys":["Backspace"]},
+            {"clipboard":"xyz","keys":["Paste"]},
+            {"expect":"/seats","equals":2},
+            {"expect":"/typed","equals":"hellxyz"}]}"#).unwrap();
+        let failed = run_steps(&mut g, None, &script, Path::new("."), Path::new(".")).unwrap();
+        assert_eq!(failed, 0);
+        assert_eq!(g.seats, vec![vec![Device::Keyboard], vec![Device::Pad(1)]]);
+        // The seat counts from the tick it joins; the keyboard's seat never sees the pad.
+        assert_eq!(g.ticks[1].len(), 1);
+        assert_eq!(g.ticks[2].len(), 2);
+        assert!(!g.ticks[2][0].pressed.has(Buttons::WEST));
+        assert!(g.ticks[3][1].pressed.has(Buttons::SOUTH) && !g.ticks[3][0].pressed.has(Buttons::SOUTH));
+        assert!(g.ticks[4][0].pressed.has(Buttons::EAST));
+        assert!(run_steps(&mut g, None, &serde_json::from_str(r#"{"steps":[{"capture":"x.png"}]}"#).unwrap(), Path::new("."), Path::new(".")).is_err());
     }
 }

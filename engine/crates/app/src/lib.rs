@@ -5,13 +5,23 @@
 //!
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
 //! released), F11 toggles fullscreen, F12 saves `screenshot-N.png`.
+//!
+//! Text entry: while [`Game::text_input`] is true the keyboard types
+//! ([`Game::text`] gets characters, IME commits, editing keys and
+//! Ctrl/Cmd+V paste) instead of pressing buttons; arrows up and down and
+//! Tab still move menus. Seats: [`Game::devices`] sees every device's input
+//! each tick and [`Game::seats`] can bind devices to seats, so a game can
+//! let a spare pad join mid-match.
+pub mod clipboard;
 pub mod input;
+pub mod text;
 pub mod script;
 pub mod sound;
 pub mod tween;
 pub mod ui;
 
-pub use input::{Buttons, Controls, Devices, Pointer, Tuning};
+pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
+pub use text::{FieldEvent, TextEvent, TextField};
 use render::hud::{HudDrawList, HudRenderer};
 use render::present::Presenter;
 use render::{Camera, Gpu, Lighting, Renderer, Scene, ViewRect};
@@ -19,9 +29,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, Ime, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 /// What a game draws this frame.
@@ -100,6 +110,26 @@ pub trait Game {
     /// Adjust input tuning (look sensitivity) from the game's settings;
     /// called before every frame's ticks.
     fn tuning(&self, _tuning: &mut Tuning) {}
+    /// Every connected device's input for the coming tick, before it is
+    /// routed to seats: a spare pad's buttons (press X to join), which
+    /// device was used last. Called just before each tick.
+    fn devices(&mut self, _devices: &[(Device, Controls)]) {}
+    /// The devices bound to each local seat (one list per seat, in seat
+    /// order); devices in no list drive nobody. None: devices drive seats in
+    /// order and a single seat takes every device.
+    fn seats(&self) -> Option<Vec<Vec<Device>>> { None }
+    /// The game has a text field focused: the keyboard types into it.
+    fn text_input(&self) -> bool { false }
+    /// Text typed while [`Game::text_input`] holds.
+    fn text(&mut self, _event: TextEvent) {}
+}
+
+/// One tick's controls through the game's seat binding: `devices` goes to
+/// [`Game::devices`], then to the seats of [`Game::seats`].
+pub fn seat_controls(game: &mut dyn Game, devices: &[(Device, Controls)]) -> Vec<Controls> {
+    game.devices(devices);
+    let seats = game.seats();
+    input::route(devices, seats.as_deref(), game.local_players())
 }
 
 /// What the game wants from its window.
@@ -245,13 +275,17 @@ struct Shell<'g> {
     screenshot: bool,
     shots: u32,
     error: Option<String>,
+    modifiers: ModifiersState,
+    /// IME composition in progress: key text is the IME's until it commits.
+    composing: bool,
+    ime: bool,
 }
 
 /// Open a window and run the game until it closes.
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let devices = Devices::new(cfg.keyboard);
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, shots: 0, error: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, shots: 0, error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -287,11 +321,14 @@ impl Shell<'_> {
             steps += 1;
             let size = self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]);
             self.game.pointer(self.devices.pointer(), size);
-            let controls = self.devices.controls(self.game.local_players(), step);
+            let devices = self.devices.device_controls(step);
+            let controls = seat_controls(self.game, &devices);
             self.game.tick(&controls);
             self.sync_capture();
         }
         if steps == 6 { self.acc = 0.0; }
+        let wants_text = self.game.text_input();
+        if wants_text != self.ime && let Some(w) = &self.window { w.set_ime_allowed(wants_text); self.ime = wants_text; }
         let Some(live) = &mut self.live else { return Ok(()) };
         let size = [live.config.width, live.config.height];
         let split = self.game.split();
@@ -402,8 +439,40 @@ impl ApplicationHandler for Shell<'_> {
                 }
                 self.devices.mouse_button(button, state);
             }
+            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            WindowEvent::Ime(ime) => match ime {
+                Ime::Preedit(text, _) => self.composing = !text.is_empty(),
+                Ime::Commit(text) => { self.composing = false; if self.game.text_input() && !text.is_empty() { self.game.text(TextEvent::Insert(text)); } }
+                Ime::Enabled | Ime::Disabled => self.composing = false,
+            },
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
+                if self.game.text_input() && event.state == ElementState::Pressed {
+                    // Text entry: editing keys and typed text go to the game;
+                    // only menu movement still presses buttons.
+                    let cmd = self.modifiers.control_key() || self.modifiers.super_key();
+                    let ev = match code {
+                        KeyCode::Escape if !event.repeat => Some(TextEvent::Escape),
+                        KeyCode::Enter | KeyCode::NumpadEnter if !event.repeat => Some(TextEvent::Enter),
+                        KeyCode::Backspace => Some(TextEvent::Backspace),
+                        KeyCode::Delete => Some(TextEvent::Delete),
+                        KeyCode::ArrowLeft => Some(TextEvent::Left),
+                        KeyCode::ArrowRight => Some(TextEvent::Right),
+                        KeyCode::Home => Some(TextEvent::Home),
+                        KeyCode::End => Some(TextEvent::End),
+                        KeyCode::KeyV if cmd && !event.repeat => Some(TextEvent::Paste(clipboard::get())),
+                        KeyCode::KeyC if cmd && !event.repeat => Some(TextEvent::Copy),
+                        KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::Tab | KeyCode::F11 | KeyCode::F12 => None,
+                        _ => {
+                            let typed = event.text.as_ref().filter(|t| !cmd && !self.composing && t.chars().any(|c| !c.is_control()));
+                            if let Some(t) = typed { self.game.text(TextEvent::Insert(t.to_string())); }
+                            return;
+                        }
+                    };
+                    if let Some(ev) = ev { self.game.text(ev); self.sync_capture(); return; }
+                    // Tab leaves the field: a tap of Down for the menu.
+                    if code == KeyCode::Tab { self.devices.key(KeyCode::ArrowDown, ElementState::Pressed, false); self.devices.key(KeyCode::ArrowDown, ElementState::Released, false); return; }
+                }
                 if event.state == ElementState::Pressed && !event.repeat {
                     match code {
                         KeyCode::Escape => {
