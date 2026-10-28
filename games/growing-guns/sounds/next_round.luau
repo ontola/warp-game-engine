@@ -5,12 +5,10 @@
 -- Game: after each shot, at the gun, -16 dB, dry (no room reverb), unit 5 m, SPL 65.
 length(0.07)
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
-local function hz(k) return expr("-log(1 - " .. k .. ") * 44100 / tau") end
-
-local burst = white() * expr("exp(-t * 260) + step(0.022, t) * 0.75 * exp(-(t - 0.022) * 200)")
+local burst = white44() * expr("exp(-t * 260) + step(0.022, t) * 0.75 * exp(-(t - 0.022) * 200)")
 -- HP at k 0.04 (287 Hz), then LP at k 0.48 (4.6 kHz).
-return lowpass1(highpass1(burst, hz("0.04")), hz("0.48")) * 0.85
+return godot_lp(godot_hp(burst, 0.04), 0.48) * 0.85

@@ -12,19 +12,19 @@
 --                unit clamp(radius * 0.8, 4, 12), the shot's SPL. Same synth, no separate patch.
 length(5.0)
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
 local r = param("radius", 6)
 
 local dur = expr("clamp(0.3 + 4.7 * (clamp(r, 2, 24) / 24) ^ 2, 0.3, 5)", { r = r })
 local fc = expr("clamp(220 - 7 * r, 55, 200) + j", { r = r, j = rand(-15, 15) })
-local k_hz = expr("-log(1 - clamp(tau * f / 44100, 0.005, 0.4)) * 44100 / tau", { f = fc })
+local k = expr("clamp(tau * f / 44100, 0.005, 0.4)", { f = fc })
 
 -- brown = 0.998 brown + 0.03 white  ==  15 * one-pole LP (k 0.002, 14.05 Hz) of white.
-local brown = lowpass1(white(), 14.0515) * 15
-local lp = lowpass1(brown, k_hz)
+local brown = godot_lp(white44(), 0.002) * 15
+local lp = godot_lp(brown, k)
 
 local env = expr("clamp(t / a, 0, 1) * (1 - clamp((t - a) / max(d - a, 0.0001), 0, 1)) ^ p", {
   a = rand(0.05, 0.12), d = dur, p = rand(2.4, 3.0) })
