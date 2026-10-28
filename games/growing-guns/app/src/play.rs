@@ -67,6 +67,10 @@ pub struct Gg {
     pub names: Vec<String>,
     /// Live control (`--live`, live.rs).
     pub(crate) live: Option<Box<crate::live::GgLive>>,
+    /// Rendering only: Godot's sky or a procedural one (crate::sky).
+    sky: crate::sky::Sky,
+    /// A baked sky waiting for the renderer (`Renderer::update_sky`).
+    sky_upload: Option<render::sky::PreparedSky>,
 }
 
 impl Gg {
@@ -75,7 +79,8 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None }
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
+            sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -94,6 +99,10 @@ impl Gg {
         self.slots = slots;
         self.menus.clear();
         self.rebuild = true;
+        // The fresh visuals carry Godot's sky: apply the chosen one again.
+        self.sky.applied = None;
+        let choice = self.sky.choice;
+        if let Err(e) = self.set_sky(choice) { eprintln!("sky: {e}"); }
         // A new match for the music too.
         if let Some((_, d)) = &mut self.music { *d = Default::default(); }
     }
@@ -167,6 +176,60 @@ impl Gg {
         self.session.mark_arena();
         self.vis.set_arena(&self.world);
         self.prev = self.world.players.iter().map(|p| p.pos).collect();
+        if matches!(self.sky.choice, crate::sky::SkyChoice::Rounds(_)) && let Err(e) = self.apply_sky() { eprintln!("sky: {e}"); }
+    }
+
+    /// Choose the sky (`--sky`, the `sky` command). Godot's is the default.
+    pub fn set_sky(&mut self, choice: crate::sky::SkyChoice) -> Result<(), String> {
+        self.sky.choice = choice;
+        self.sky.live = None;
+        self.apply_sky()?;
+        if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. })) {
+            self.sky.live = Some(render::sky::LiveSky::starting(s, &serde_json::Value::Null));
+        }
+        Ok(())
+    }
+
+    /// Bake and apply the sky for this round now (synchronous; see
+    /// engine/docs/live-sky-controls.md for the cost). Godot's sky needs a
+    /// renderer rebuild; a procedural one updates the renderer in place.
+    fn apply_sky(&mut self) -> Result<(), String> {
+        match self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) {
+            None if self.sky.applied.is_some() => {
+                self.vis.scene.sky = Some(view::sky());
+                self.vis.scene.sky_physical = false;
+                let taa = self.light.taa;
+                self.light = Lighting { taa, ..view::lighting() };
+                self.vis.set_floodlights(1.0);
+                self.sky.applied = None;
+                self.sky_upload = None;
+                self.rebuild = true;
+            }
+            None => {}
+            Some(s) if self.sky.applied != Some(s) => {
+                let prepared = crate::sky::bake(s)?;
+                self.show_sky(prepared);
+            }
+            Some(_) => {}
+        }
+        Ok(())
+    }
+
+    fn show_sky(&mut self, prepared: render::sky::PreparedSky) {
+        prepared.apply_scene(&mut self.vis.scene, &mut self.light);
+        self.vis.set_floodlights(crate::sky::floodlights(prepared.settings.solar().elevation_degrees));
+        self.sky.applied = Some(prepared.settings);
+        if let Some(live) = &mut self.sky.live { live.accepted(prepared.clone()); }
+        self.sky_upload = Some(prepared);
+    }
+
+    /// The cycle: request the sun for the game clock, take finished bakes.
+    fn cycle_sky(&mut self) {
+        let Some(want) = self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) else { return };
+        let now = std::time::Instant::now();
+        let Some(live) = &mut self.sky.live else { return };
+        if live.desired() != want && let Err(e) = live.request(want, now) { eprintln!("sky: {e}"); }
+        if let Some(prepared) = live.poll(now) { self.show_sky(prepared); }
     }
 }
 
@@ -374,7 +437,16 @@ impl app::Game for Gg {
         let alpha = if self.session.is_client() { self.receive(frame.dt) } else { frame.alpha };
         self.vis.set_tilt(self.ui.tilt);
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
-        if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() { frame.set_scene(&self.vis.scene, &self.light); self.plates.invalidate(); }
+        if self.sky.live.is_some() { self.cycle_sky(); }
+        if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
+            frame.set_scene(&self.vis.scene, &self.light);
+            self.plates.invalidate();
+            self.sky_upload = None;
+        } else if let Some(prepared) = self.sky_upload.take() {
+            let gpu = frame.gpu;
+            let r = frame.renderer_mut().expect("renderer checked above");
+            if let Err(e) = r.update_sky(gpu, &prepared.sky, &mut self.light) { eprintln!("sky unchanged on the GPU: {e}"); }
+        }
         crate::live::frame(self, frame);
         let r = frame.renderer().expect("scene set above");
         self.vis.flush(frame.gpu, r)?;
@@ -447,7 +519,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | round | cage | rematch | extend".into()),
             // Show (or clear with `none`) a network error in the red panel.
             "net-error" => {
                 let t = cmd.trim_start().strip_prefix("net-error").unwrap_or("").trim();
@@ -485,6 +557,10 @@ impl app::Game for Gg {
                 self.world.forced_modifier = if id == "none" { None } else { Some(growing_guns::Modifier::named(id).ok_or(format!("unknown modifier {id}"))?) };
                 if id == "none" { self.world.modifier_chance = 0.0; }
                 Ok(format!("modifier {id} from the next round (round: start it now)"))
+            }
+            "sky" => {
+                if let Some(name) = w.get(1) { self.set_sky(crate::sky::SkyChoice::parse(name)?)?; }
+                Ok(format!("sky {}", self.sky.choice.name()))
             }
             "round" => { self.world.next_round(); self.new_arena(); Ok(format!("round {}", self.world.round)) }
             "cage" => { self.world.release_cage(); Ok("cage open".into()) }
@@ -567,6 +643,7 @@ impl app::Game for Gg {
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
                 "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
             "players": players, "waves": w.coop.then_some(&w.waves), "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
+            "sky": { "choice": self.sky.choice.name(), "applied": self.sky.applied.map(|s| s.metadata()) },
         }).to_string())
     }
 }
@@ -651,6 +728,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     if let Some(v) = game.settings_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) { game.ui.load_settings(&v); }
     // Godot opens on the start screen; `--skip-menu`, joining and a party go straight in.
     if !args.flag("--skip-menu") && !game.session.is_client() && game.party.is_none() { game.show_start(); }
+    game.set_sky(crate::sky::Sky::from_args(args.value("--sky"))?)?;
     // `--give explosive --give damage`: start local player 1 with these cards.
     for card in args.list.windows(2).filter(|w| w[0] == "--give").map(|w| w[1].clone()) {
         println!("{}", app::Game::command(&mut game, &format!("give 0 {card}"))?);
