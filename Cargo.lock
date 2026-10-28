@@ -1703,6 +1703,7 @@ dependencies = [
  "app",
  "assets",
  "audio",
+ "gamenight",
  "glam 0.31.1",
  "growing-guns",
  "image",
@@ -1714,6 +1715,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tungstenite",
  "wgpu",
 ]
 

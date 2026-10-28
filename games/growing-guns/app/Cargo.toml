@@ -21,7 +21,11 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = "30"
 net = { path = "../../../engine/crates/net" }
 script = { path = "../../../engine/crates/script" }
+gamenight = { path = "../../../engine/crates/gamenight" }
 tokio = { version = "1", features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
 
+
+[dev-dependencies]
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

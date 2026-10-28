@@ -14,6 +14,7 @@ mod hud;
 mod net;
 mod play;
 mod session;
+mod party;
 mod sounds;
 mod crowd_sound;
 mod gun;
