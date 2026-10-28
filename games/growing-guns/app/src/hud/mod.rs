@@ -56,13 +56,15 @@ pub struct Feedback {
     /// The explosion flash (Godot `_explosion_flash_overlay`): alpha now,
     /// the target it rises to, and how fast the target falls.
     pub flash: [f32; 3],
+    /// The phoenix white (Godot `set_phoenix_fade`) and its fade-out rate.
+    pub phoenix: [f32; 2],
     last_offer: Option<Vec<growing_guns::cards::Card>>,
 }
 
 impl Default for Feedback {
     fn default() -> Self {
         Feedback { hit: 9.0, hit_kind: HitKind::Body, arcs: Vec::new(), burned: None, bob: 0.0, special_max: 0.0, last_special: 0.0, toast: None,
-            numbers: Vec::new(), exit: None, pick_closed: 9.0, highlight: Vec::new(), stats: Vec::new(), flash: [0.0; 3], last_offer: None }
+            numbers: Vec::new(), exit: None, pick_closed: 9.0, highlight: Vec::new(), stats: Vec::new(), flash: [0.0; 3], phoenix: [0.0; 2], last_offer: None }
     }
 }
 
@@ -183,6 +185,16 @@ impl Hud {
             if p.special_cd > f.last_special + 1e-6 { f.special_max = p.special_cd; }
             f.last_special = p.special_cd;
             if let Some(t) = &mut f.toast { t.3 += dt; if t.3 > 1.35 { f.toast = None; } }
+            // Phoenix: a card revive whitens the view as it rises (fading out
+            // over 0.9 s once the sky drop starts); a coop down flashes white
+            // and clears by the top of the ascent.
+            let rising = p.phoenix.map(|(_, t)| t as f32 / growing_guns::PHOENIX_TICKS as f32)
+                .or_else(|| world.coop.then(|| world.waves.downed(i)).flatten().map(|d| 1.0 - d.ascent as f32 / growing_guns::PHOENIX_TICKS as f32));
+            if let Some(a) = rising { f.phoenix = [a.clamp(0.0, 1.0), 0.0]; } else if f.phoenix[0] > 0.0 {
+                if f.phoenix[1] <= 0.0 { f.phoenix[1] = f.phoenix[0] / 0.9; }
+                f.phoenix[0] = (f.phoenix[0] - f.phoenix[1] * dt).max(0.0);
+                if f.phoenix[0] <= 0.001 { f.phoenix = [0.0; 2]; }
+            }
             // Godot `_update_explosion_sidechain`: a quick rise, then the target decays.
             let [a, target, vel] = &mut f.flash;
             if *target > 0.0 || *a > 0.001 {
@@ -337,7 +349,9 @@ impl Hud {
             d.begin_overlay();
             cards::pick(d, world, i, &l, f, focus);
         }
-        // The explosion flash sits above everything (Godot canvas layer 50).
+        // The phoenix white (its own canvas layer over this view's HUD) and the
+        // explosion flash above everything (Godot canvas layer 50).
+        if f.phoenix[0] > 0.003 { d.begin_overlay(); d.rect(rect, [1.0, 1.0, 1.0, f.phoenix[0]], clip); }
         if f.flash[0] > 0.003 { d.begin_overlay(); d.rect(rect, [1.0, 0.96, 0.88, f.flash[0]], clip); }
         let _ = cy;
     }
