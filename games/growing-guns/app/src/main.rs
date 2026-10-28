@@ -24,6 +24,7 @@ mod gun;
 mod scripts;
 mod sky;
 mod stadium;
+mod spectators;
 mod music;
 mod view;
 

@@ -13,7 +13,7 @@ struct Seat {
 };
 struct Instance { r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, sphere: vec4<f32>, first_cluster: u32, cluster_count: u32, scale: f32, flags: u32 };
 struct Uniform {
-    // time, excitement, panic, unused
+    // time, excitement, panic, optional local shoulder pivot height
     mood: vec4<f32>,
     // ring centre xz, seats, first instance (as f32 bits: see counts)
     ring: vec4<f32>,
@@ -101,6 +101,15 @@ fn animate(@builtin(global_invocation_id) id: vec3<u32>) {
     write(body_index, ex, by, ez, origin, s.meshes.x, s.meshes.y, scale * 0.9, scale);
     // Arms: raised with the cheer, spread outward (they sit at x = +-0.21).
     let arm = 1.0 - panic;
+    if u.mood.w > 0.0 {
+        let angle = -2.4 * arm * up;
+        let ay = by * cos(angle) + ez * sin(angle);
+        let az = ez * cos(angle) - by * sin(angle);
+        let pivot = u.mood.w;
+        write(body_index + 1u, ex, ay, az, origin + (by - ay) * pivot,
+              s.meshes.z, s.meshes.w, scale * 0.9, scale);
+        return;
+    }
     let spread = 1.0 + arm * up * 0.12 / 0.21;
     let arms_origin = origin + by * 0.0 + ey * (arm * up * 0.34);
     write(body_index + 1u, ex * spread, by, ez, arms_origin, s.meshes.z, s.meshes.w, scale * 0.9, scale * spread);

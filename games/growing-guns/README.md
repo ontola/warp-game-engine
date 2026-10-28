@@ -203,6 +203,10 @@ its old results or with Godot's differently staged stress scenes.
 
 Recorded measurements from 2026-10-28:
 
+- [Crowd silhouettes and measurements](../../engine/docs/growing-guns-crowd.md):
+  8,363 spectators, shared low-poly figures and GPU shoulder pivots. Three
+  alternating 4K/four-view pairs measure about 0.35 ms added GPU time;
+  geometry budgets and serialized benchmark FPS are documented separately.
 - [CPU spike optimization comparison](tools/cpu-spikes-20261028.md):
   24 alternating runs with exact workload parity; substantially cheaper
   explosion reset frames, but no general hitch-elimination claim. Includes

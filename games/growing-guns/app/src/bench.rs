@@ -190,6 +190,8 @@ pub fn run(args: &Args) -> Result<(), String> {
         println!("cpu spans ms per frame ({n} frames, total {total:.2}): {}", spans.iter().map(|(k, v)| format!("{k} {v:.3}")).collect::<Vec<_>>().join(", "));
     }
     println!("GPU {} | {w}x{h}, {views} views, {} instances, light {}", gpu.info.name, vis.scene.instances.len(), args.value("--light").unwrap_or("full"));
+    println!("crowd geometry (not visible-triangle counts): {}", vis.stadium.geometry_counts(&vis.scene));
+    println!("serialized benchmark FPS (1000 / median wall ms): {:.1}", 1000.0 / pct(&mut wall.clone(), 0.5));
     println!("backend {:?}; full scene/FX uploads; GPU coverage {samples}/{frames}, dropped {dropped}, errors {errors}", gpu.info.backend);
     println!("scope: offscreen CPU submit plus serialized GPU completion wait; renderer CPU spans include startup/warmup and exclude simulation/scene/FX uploads");
     println!("startup ms: device {t_gpu:.0}, scene {t_scene:.1}, renderer {t_renderer:.0}, first frame {t_first:.0}");
