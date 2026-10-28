@@ -137,14 +137,20 @@ pub fn run(args: &Args) -> Result<(), String> {
     let (mut cpu, mut wall, mut gputot) = (Vec::new(), Vec::new(), Vec::new());
     let mut passes: BTreeMap<&'static str, f64> = BTreeMap::new();
     let mut samples = 0usize;
+    let mut profiles = BTreeMap::new();
+    let (mut dropped, mut errors) = (0, 0);
     let empty = args.flag("--empty");
     for f in 0..frames + 30 {
         let t = Instant::now();
         if !empty {
             top_up(&mut world, f);
             world.step(&[]);
+            if world.events.iter().any(|e| matches!(e, growing_guns::Event::NewArena)) {
+                vis.set_arena(&world);
+            }
             vis.absorb(&world, &[]);
             vis.pose(&world, &prev, 1.0, 1.0 / 60.0);
+            vis.flush(&gpu, &renderer)?;
             renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
             renderer.set_local_lights(&vis.local_lights())?;
         }
@@ -156,20 +162,33 @@ pub fn run(args: &Args) -> Result<(), String> {
         if f >= 30 {
             cpu.push(c);
             wall.push(wl);
-            for s in renderer.drain_gpu_profiles(&gpu).samples {
-                gputot.push(s.covered_union_ms);
-                for (n, v) in s.gpu_ms { *passes.entry(n).or_default() += v; }
-                samples += 1;
-            }
-        } else {
-            renderer.drain_gpu_profiles(&gpu);
         }
+        let drain = renderer.drain_gpu_profiles(&gpu);
+        dropped = drain.dropped;
+        errors = drain.errors;
+        for s in drain.samples {
+            if (30..(frames + 30) as u64).contains(&s.frame_id) { profiles.insert(s.frame_id, s); }
+        }
+    }
+    gpu.wait();
+    let drain = renderer.drain_gpu_profiles(&gpu);
+    dropped = dropped.max(drain.dropped);
+    errors = errors.max(drain.errors);
+    for s in drain.samples {
+        if (30..(frames + 30) as u64).contains(&s.frame_id) { profiles.insert(s.frame_id, s); }
+    }
+    for s in profiles.values() {
+        gputot.push(s.covered_union_ms);
+        for &(n, v) in &s.gpu_ms { *passes.entry(n).or_default() += v; }
+        samples += 1;
     }
     if let Some((spans, n)) = renderer.cpu_spans() {
         let total: f64 = spans.iter().map(|s| s.1).sum();
         println!("cpu spans ms per frame ({n} frames, total {total:.2}): {}", spans.iter().map(|(k, v)| format!("{k} {v:.3}")).collect::<Vec<_>>().join(", "));
     }
     println!("GPU {} | {w}x{h}, {views} views, {} instances, light {}", gpu.info.name, vis.scene.instances.len(), args.value("--light").unwrap_or("full"));
+    println!("backend {:?}; full scene/FX uploads; GPU coverage {samples}/{frames}, dropped {dropped}, errors {errors}", gpu.info.backend);
+    println!("scope: offscreen CPU submit plus serialized GPU completion wait; renderer CPU spans include startup/warmup and exclude simulation/scene/FX uploads");
     println!("startup ms: device {t_gpu:.0}, scene {t_scene:.1}, renderer {t_renderer:.0}, first frame {t_first:.0}");
     println!("frame ms (median / p95): cpu submit {:.2} / {:.2}, wall {:.2} / {:.2}, gpu {:.2} / {:.2}",
         pct(&mut cpu.clone(), 0.5), pct(&mut cpu, 0.95), pct(&mut wall.clone(), 0.5), pct(&mut wall, 0.95),
@@ -187,7 +206,7 @@ pub fn run(args: &Args) -> Result<(), String> {
 
 // These deliberately bounded capacity fixtures use the game's actual tick,
 // effects, upload and rendering paths. Their workload is not a Godot replica.
-// All changes below are opt-in; the historical bot benchmark above is unchanged.
+// These sustained workloads are opt-in; the bot fixture remains separate.
 const STRESS_WARMUP: usize = 180;
 const STRESS_FRAMES: usize = 900;
 const STRESS_RESET: usize = 180;
