@@ -97,8 +97,12 @@ Animated pixels reject temporal history until deformation motion vectors are
 implemented. The older benchmark results below used primitive characters and
 are not measurements of the new roster.
 
-Not ported yet: wave survival (coop), Godot's bot AI (bots still use the
-slice's simple brain), ghosts planting mines (unreachable in Godot at this
+Bots are Godot's (`sim/src/bot.rs`): sticky nearest target, a slewed aim
+point with lead and wobble, reaction time, their own spread, held range and
+strafing, gap jumps, ledge climbs, hops, dashes, strike fleeing, pickups and
+specials by distance.
+
+Not ported yet: wave survival (coop), ghosts planting mines (unreachable in Godot at this
 commit), the island lava layout, music, GameNight. Online play is tested
 over loopback (`nettest`), not yet between two machines; clients predict
 only their look direction.

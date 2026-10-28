@@ -471,13 +471,8 @@ impl World {
             let p = &self.players[i];
             // A player choosing a card gets no gameplay input.
             if p.offer.is_some() && !p.bot { *input = Input { pick: input.pick, ..Default::default() }; }
-            if p.bot && p.alive && !self.bots_paused {
-                let mut brain = std::mem::take(&mut self.brains[i]);
-                *input = brain.think(self, i);
-                self.brains[i] = brain;
-                // Bots move between rounds but do not fire.
-                if self.phase != Phase::Playing { input.fire = false; input.special = false; }
-            }
+            // Bots think in their own physics step (bot.rs).
+            if p.bot { *input = Input::default(); }
         }
         // Each player runs its whole tick in turn, as Godot's nodes do.
         for (i, &input) in inp.iter().enumerate() { self.player_tick(i, input); }
