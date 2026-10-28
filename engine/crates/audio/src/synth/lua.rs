@@ -294,6 +294,24 @@ mod tests {
     }
 
     #[test]
+    fn rand_draws_in_one_voice_are_independent() {
+        // Two rand nodes; read one or the other with the same seed.
+        let mut pa = load("r", "local a = rand(0, 1) local b = rand(0, 1) return a").unwrap().remove(0);
+        pa.out = 0;
+        let mut pb = pa.clone();
+        pb.out = 1;
+        let draw = |p: &Patch, seed: u32| { let mut b = [0.0; crate::synth::BLOCK]; p.voice(&[], seed, 48000.0).render(&mut b); b[0] as f64 };
+        let n = 4000;
+        let xs: Vec<(f64, f64)> = (0..n).map(|s| (draw(&pa, s), draw(&pb, s))).collect();
+        let m = |f: &dyn Fn(&(f64, f64)) -> f64| xs.iter().map(f).sum::<f64>() / n as f64;
+        let (ma, mb) = (m(&|x| x.0), m(&|x| x.1));
+        let cov = m(&|x| (x.0 - ma) * (x.1 - mb));
+        let r = cov / (m(&|x| (x.0 - ma).powi(2)).sqrt() * m(&|x| (x.1 - mb).powi(2)).sqrt());
+        assert!(r.abs() < 0.05, "correlation {r}");
+        assert!((ma - 0.5).abs() < 0.02 && (mb - 0.5).abs() < 0.02, "{ma} {mb}");
+    }
+
+    #[test]
     fn mistakes_come_back_as_short_errors() {
         assert!(load("x", "return lowpass(1, 2, 3, 4)").unwrap_err().contains("takes 3 inputs"));
         assert!(load("x", "return noise('purple')").unwrap_err().contains("unknown noise"));
