@@ -179,7 +179,7 @@ impl Characters {
         }
     }
 
-    pub fn pose(&mut self, world: &World, prev: &[Vec3], alpha: f32) {
+    pub fn pose(&mut self, world: &World, prev: &[crate::view::Pose], alpha: f32) {
         for (i, (actor, p)) in self.actors.iter_mut().zip(&world.players).enumerate() {
             if !p.alive {
                 actor.corpse_transform = actor.corpse.as_ref().map(|c| c.pose(alpha, &mut actor.palette));
@@ -201,8 +201,8 @@ impl Characters {
                 mix(model.sample_socket(IDLE, "RightHand", idle_time, true).expect("validated idle socket"),
                     model.sample_socket(RUN, "RightHand", m.run, true).expect("validated run socket"), m.blend)
             };
-            let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
-            self.hands[i] = Some(model_transform(pos,p.yaw).transform_point3(socket.w_axis.truncate()));
+            let drawn = crate::view::pose(world, i, prev, alpha);
+            self.hands[i] = Some(model_transform(drawn.pos, drawn.yaw).transform_point3(socket.w_axis.truncate()));
         }
     }
 

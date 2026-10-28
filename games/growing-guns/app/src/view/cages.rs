@@ -71,15 +71,14 @@ impl Cages {
         }
     }
 
-    pub fn pose(&self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32, clock: f32) {
+    pub fn pose(&self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, clock: f32) {
         for (k, cage) in self.cages.iter().enumerate() {
             let Some(cage) = cage else { self.hide(scene, k); continue };
             let age = cage.opened.map_or(0.0, |t| (clock - t).max(0.0));
             if age >= WINCH_DELAY + WINCH_SECONDS { self.hide(scene, k); continue; }
             let origin = if cage.opened.is_none() {
                 // Match the camera/player interpolation during the descent.
-                let p = world.players[k].pos;
-                prev.get(k).map_or(p, |q| q.lerp(p, alpha)) - Vec3::Y * FLOOR_OFFSET
+                crate::view::pose(world, k, prev, alpha).pos - Vec3::Y * FLOOR_OFFSET
             } else {
                 let u = ((age - WINCH_DELAY) / WINCH_SECONDS).clamp(0.0, 1.0);
                 cage.origin + Vec3::Y * (WINCH_RISE * u * u)
@@ -160,14 +159,14 @@ mod tests {
         let mut scene = Scene::default();
         let mut cages = Cages::reserve(&mut scene, 2);
         cages.reset(&mut scene, &world);
-        let mut prev = world.players.iter().map(|p| p.pos).collect::<Vec<_>>();
+        let mut prev = crate::view::Pose::all(&world);
         for _ in 0..120 {
-            prev = world.players.iter().map(|p| p.pos).collect();
+            prev = crate::view::Pose::all(&world);
             world.step(&[]);
             cages.sync(&world);
         }
         cages.pose(&mut scene, &world, &prev, 0.4, world.tick as f32 * growing_guns::DT);
-        let origin = prev[0].lerp(world.players[0].pos, 0.4) - Vec3::Y * FLOOR_OFFSET;
+        let origin = prev[0].pos.lerp(world.players[0].pos, 0.4) - Vec3::Y * FLOOR_OFFSET;
         assert!(translation(&scene.instances[cages.first]).abs_diff_eq(origin, 0.0001));
         assert!(scene.instances.iter().all(|i| i.cluster_count > 0 && i.flags & NO_SHADOW != 0));
         while world.cage_left().is_some() { world.step(&[]); cages.sync(&world); }

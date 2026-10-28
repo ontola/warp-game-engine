@@ -304,7 +304,7 @@ impl PlayersView {
     }
 
     /// Players (interpolated by `alpha` from `prev`) and tracers.
-    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32) {
+    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32) {
         if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha); }
         let mut slot = self.first;
         for (i, m) in self.meshes.iter().enumerate() {
@@ -318,10 +318,10 @@ impl PlayersView {
                 }
                 continue;
             };
-            let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
-            let rot = Quat::from_rotation_y(p.yaw);
+            let drawn = crate::view::pose(world, i, prev, alpha);
+            let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
             let (body, head, eyes) = if m.skinned {
-                (characters::model_transform(pos, p.yaw), Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN))
+                (characters::model_transform(pos, drawn.yaw), Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN))
             } else {
                 (Affine3A::from_scale_rotation_translation(BODY, rot, pos + Vec3::Y * -0.25),
                  Affine3A::from_scale_rotation_translation(Vec3::splat(HEAD), rot, pos + Vec3::Y * 0.55),

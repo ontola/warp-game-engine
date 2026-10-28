@@ -45,7 +45,7 @@ pub fn sim(args: &Args) -> Result<(), String> {
     let t = Instant::now();
     let mut vis = view::Visuals::build(&world);
     let t_scene = ms(t);
-    let prev: Vec<Vec3> = world.players.iter().map(|p| p.pos).collect();
+    let prev = view::Pose::all(&world);
     let (warm, measure) = (3 * TICK_HZ as usize, 15 * TICK_HZ as usize);
     let (mut step, mut scene, mut total) = (Vec::new(), Vec::new(), Vec::new());
     let (mut shots, mut booms, mut kills) = (0usize, 0usize, 0usize);
@@ -118,7 +118,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         println!("renderer startup sections ms: {}", v.iter().take(16).map(|(n, t)| format!("{n} {t:.0}")).collect::<Vec<_>>().join(", "));
     }
     let rects = render::split_rects(views, w, h);
-    let prev: Vec<Vec3> = world.players.iter().map(|p| p.pos).collect();
+    let prev = view::Pose::all(&world);
     // `--overhead`: Godot perf_benchmark's static camera (0, 18, 18), 35 degrees down.
     let overhead = args.flag("--overhead");
     let cams = |world: &World| -> Vec<ViewRect> { rects.iter().enumerate()
@@ -361,7 +361,7 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
     }).collect();
     let output = Renderer::output_texture(&gpu, w, h);
     let t = Instant::now();
-    vis.pose(&world, &poses, 1.0, growing_guns::DT);
+    vis.pose(&world, &view::Pose::all(&world), 1.0, growing_guns::DT);
     vis.flush(&gpu, &renderer)?;
     renderer.set_sprites(&gpu, vis.sprites())?;
     renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
@@ -450,7 +450,7 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
         let absorb_ms = ms(t);
         thread_ms[2] = thread.mark();
         let pose_start = Instant::now();
-        vis.pose(&world, &poses, 1.0, growing_guns::DT);
+        vis.pose(&world, &view::Pose::all(&world), 1.0, growing_guns::DT);
         let pose_ms = ms(pose_start);
         let scene_ms = ms(t);
         thread_ms[3] = thread.mark();
