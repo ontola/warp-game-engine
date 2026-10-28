@@ -1,0 +1,11 @@
+{ "size": [960, 540],
+  "steps": [
+    { "note": "UI parity: split-screen HUD (run with --players 2 and --players 4), each view with its own plates, crosshair and card pick." },
+    { "cmd": ["bots pause"] },
+    { "ticks": 30 },
+    { "capture": "split.png" },
+    { "cmd": ["health 0 1", "bots resume"] },
+    { "until": "/players/0/offer", "max_ticks": 6000 },
+    { "ticks": 70 },
+    { "capture": "split-offer.png" }
+  ] }

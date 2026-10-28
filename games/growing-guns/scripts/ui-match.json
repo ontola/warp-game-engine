@@ -1,0 +1,22 @@
+{ "size": [960, 540],
+  "steps": [
+    { "note": "UI parity: hit marker and damage arcs up close, the round-win strip, the match-over banner and buttons, the start screen. Run with --rounds 1." },
+    { "cmd": ["bots pause", "health 0 5000", "teleport 0 0 3 0", "teleport 1 0 3 -6", "health 1 400", "aim 0 0 3.6 -6"] },
+    { "ticks": 3, "hold": ["RIGHT_TRIGGER"] },
+    { "capture": "hit.png" },
+    { "cmd": ["teleport 2 6 3 0", "bots resume"] },
+    { "ticks": 40 },
+    { "capture": "hurt.png" },
+    { "until": "/phase", "equals": "MatchOver", "max_ticks": 9000, "hold": ["RIGHT_TRIGGER"] },
+    { "ticks": 12 },
+    { "capture": "match-pop.png" },
+    { "ticks": 110 },
+    { "capture": "match-buttons.png" },
+    { "press": ["DOWN"] }, { "ticks": 2 },
+    { "capture": "match-focus.png" },
+    { "cmd": ["menu start"] }, { "ticks": 30 },
+    { "capture": "start.png" },
+    { "press": ["DOWN"] }, { "press": ["DOWN"] }, { "press": ["SOUTH"] }, { "ticks": 2 },
+    { "capture": "start-settings.png" },
+    { "expect": "/screen", "equals": "Settings { from_start: true }" }
+  ] }

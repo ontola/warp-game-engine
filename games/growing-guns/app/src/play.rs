@@ -9,24 +9,6 @@ use growing_guns::{Event, Input, World, DT, TICK_HZ};
 use render::hud::HudDrawList;
 use render::Lighting;
 
-/// Hit markers, damage flash and gun bob from this tick's events.
-pub fn feedback(fb: &mut [hud::Feedback], world: &World, dt: f32) {
-    for (i, f) in fb.iter_mut().enumerate() {
-        f.hit = (f.hit - dt).max(0.0);
-        f.hurt = (f.hurt - dt).max(0.0);
-        if let Some(p) = world.players.get(i) {
-            let speed = (p.vel.x * p.vel.x + p.vel.z * p.vel.z).sqrt();
-            f.bob += speed * dt * 0.75;
-        }
-    }
-    for e in &world.events {
-        if let Event::Hit { victim, attacker, head, .. } = *e {
-            if let Some(f) = fb.get_mut(attacker) { f.hit = 0.25; f.headshot = head; }
-            if let Some(f) = fb.get_mut(victim) { f.hurt = 0.35; }
-        }
-    }
-}
-
 /// Engine controls to this game's input. Look x is right-positive in the
 /// shell and left-positive (yaw) in the simulation.
 fn input(c: &Controls) -> Input {
@@ -49,7 +31,11 @@ pub struct Gg {
     prev: Vec<Vec3>,
     pub vis: view::Visuals,
     light: Lighting,
-    fb: Vec<hud::Feedback>,
+    pub hud: hud::Hud,
+    /// Start, pause and settings screens, the match-over buttons.
+    pub ui: hud::menus::Menus,
+    /// Seat of each local view while the start screen's background fight runs.
+    start_seats: Vec<usize>,
     session: Session,
     /// World player index per local view.
     pub(crate) slots: Vec<usize>,
@@ -61,6 +47,9 @@ pub struct Gg {
     music: Option<(crate::music::Shared, crate::music::Director)>,
     /// Card menu per local player.
     menus: Vec<app::ui::Menu>,
+    quit: bool,
+    /// Keyboard and mouse off: every local player is on a pad.
+    pub no_kbm: bool,
     /// The mods (cards, rules), hot-reloaded.
     pub(crate) scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
     /// A GameNight party host, when it launched us.
@@ -74,11 +63,10 @@ pub struct Gg {
 impl Gg {
     pub fn new(mut world: World, session: Session, slots: Vec<usize>) -> Self {
         let scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
-        let n = world.players.len();
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), scripts, party: None, names: Vec::new(), live: None }
+            hud: hud::Hud::new(&world), ui: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), quit: false, no_kbm: false, scripts, party: None, names: Vec::new(), live: None }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -87,11 +75,12 @@ impl Gg {
     /// mods; the renderer, sound and party stay.
     pub fn reset(&mut self, mut world: World, slots: Vec<usize>) {
         self.scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
-        let n = world.players.len();
         self.vis = view::Visuals::build(&world);
         self.vis.hide_own_bodies(&slots);
         self.prev = world.players.iter().map(|p| p.pos).collect();
-        self.fb = vec![hud::Feedback::default(); n];
+        self.hud = hud::Hud::new(&world);
+        self.ui.open(hud::menus::Screen::Play);
+        self.start_seats.clear();
         self.world = world;
         self.slots = slots;
         self.menus.clear();
@@ -130,10 +119,11 @@ impl Gg {
     /// Client: apply what the host sent; returns the interpolation alpha.
     pub fn receive(&mut self, dt: f32) -> f32 {
         let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
-        let (vis, fb, sounds, music, slots) = (&mut self.vis, &mut self.fb, &mut self.sounds, &mut self.music, &self.slots);
+        self.hud.locals.clone_from(&self.slots);
+        let (vis, hud, sounds, music, slots) = (&mut self.vis, &mut self.hud, &mut self.sounds, &mut self.music, &self.slots);
         let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
             vis.absorb(w, &crate::sounds::ears(w, slots));
-            feedback(fb, w, DT);
+            hud.tick(w, DT);
             if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); vis.stadium.sound.loudness_db = s.duck_db(); }
             follow_music(music, w, slots);
         });
@@ -170,6 +160,62 @@ impl Gg {
     }
 }
 
+/// All local players' controls as one, for the shared menus.
+fn merge(controls: &[Controls]) -> Controls {
+    let mut m = Controls::default();
+    for c in controls {
+        m.held.0 |= c.held.0;
+        m.pressed.0 |= c.pressed.0;
+        if m.mv == [0.0; 2] { m.mv = c.mv; }
+    }
+    m
+}
+
+impl Gg {
+    /// The start screen: local seats become bots and fight in the background.
+    pub fn show_start(&mut self) {
+        self.start_seats = self.slots.clone();
+        for &s in &self.slots { self.world.set_bot(s, true); }
+        self.ui.open(hud::menus::Screen::Start);
+    }
+
+    fn act(&mut self, a: hud::menus::Action) {
+        use hud::menus::{Action, Screen};
+        let host = !self.session.is_client();
+        match a {
+            Action::None => {}
+            Action::Resume => self.ui.open(Screen::Play),
+            Action::Settings => { let from_start = self.ui.screen == Screen::Start; self.ui.open(Screen::Settings { from_start }); }
+            Action::Back => { let a = self.ui.back(); self.act(a); }
+            Action::Quit => self.quit = true,
+            Action::Versus | Action::Wave if host => {
+                for s in std::mem::take(&mut self.start_seats) { self.world.set_bot(s, false); }
+                self.world.coop = a == Action::Wave;
+                self.world.restart_match();
+                self.new_arena();
+                self.hud = hud::Hud::new(&self.world);
+                self.ui.open(Screen::Play);
+            }
+            Action::Host if matches!(self.session, Session::Local) => match Session::host(false) {
+                Ok(s) => {
+                    if let Some(t) = s.ticket() { println!("hosting. Others join with:\n  growing-guns play --join {t}"); let _ = std::fs::write("growing-guns-ticket.txt", t); }
+                    self.session = s;
+                    self.ui.notice = Some("Hosting: ticket written to growing-guns-ticket.txt".into());
+                }
+                Err(e) => self.ui.notice = Some(format!("could not host: {e}")),
+            },
+            Action::Copy => if let Some(t) = self.session.ticket() {
+                let _ = std::fs::write("growing-guns-ticket.txt", t);
+                println!("ticket: {t}");
+                self.ui.notice = Some("Ticket written to growing-guns-ticket.txt".into());
+            },
+            Action::Rematch if host => { self.world.restart_match(); self.new_arena(); }
+            Action::Extend if host => self.world.extend_match(),
+            _ => {}
+        }
+    }
+}
+
 impl app::Game for Gg {
     fn local_players(&self) -> usize { self.slots.len() }
 
@@ -188,7 +234,15 @@ impl app::Game for Gg {
             self.since_poll = 0;
             if let Some(s) = &self.scripts { for line in s.poll(&mut self.world) { eprintln!("mods: {line}"); } }
         }
-        let mut local: Vec<Input> = controls.iter().map(input).collect();
+        self.hud.locals.clone_from(&self.slots);
+        // Menus take the local players' controls (merged) while open.
+        let merged = merge(controls);
+        let ctx_ticket = self.session.ticket().map(str::to_string);
+        let ctx = hud::menus::Ctx { ticket: ctx_ticket.as_deref(), client: self.session.is_client(), seed: self.world.arena.seed, bots: self.world.players.iter().filter(|p| p.bot).count() };
+        let action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
+        self.act(action);
+        let menu_open = self.ui.is_open();
+        let mut local: Vec<Input> = if menu_open { vec![Input::default(); controls.len()] } else { controls.iter().map(input).collect() };
         // Sniper zoom slows the look (Godot x0.4).
         for (k, &s) in self.slots.iter().enumerate() {
             if self.world.players.get(s).is_some_and(|p| p.zooming) && let Some(i) = local.get_mut(k) { i.look = i.look.map(|v| v * 0.4); }
@@ -196,23 +250,28 @@ impl app::Game for Gg {
         // Card picks: the menu takes this player's controls while an offer is open.
         self.menus.resize_with(self.slots.len(), Default::default);
         for (k, &s) in self.slots.iter().enumerate() {
-            let Some(n) = self.world.players.get(s).and_then(|p| p.offer.as_ref()).map(|o| o.len()) else { continue };
-            if let (Some(c), Some(i)) = (controls.get(k), local.get_mut(k)) {
+            let Some((n, age)) = self.world.players.get(s).and_then(|p| p.offer.as_ref().map(|o| (o.len(), p.offer_age))) else { continue };
+            // Godot locks the cards for 0.75 s while they flip open.
+            if let (Some(c), Some(i)) = (controls.get(k), local.get_mut(k)) && !menu_open && age >= 0.75 {
                 if let app::ui::MenuEvent::Select(n) = self.menus[k].update(c, n, n, DT) { i.pick = Some(n as u8); }
-                i.fire = false;
-                i.jump = false;
             }
+            if let Some(i) = local.get_mut(k) { i.fire = false; i.jump = false; }
+            let focus = (age >= 0.75).then(|| self.menus[k].focus);
+            if let Some(f) = self.hud.fb.get_mut(s) { hud::cards::ease_highlight(f, n, focus, DT); }
         }
         if self.session.is_client() { self.session.send(local); return; }
         let mut inputs = vec![Input::default(); self.world.players.len()];
         for (k, &s) in self.slots.iter().enumerate() { if let Some(i) = local.get(k) { inputs[s] = *i; } }
         self.session.poll(&mut self.world);
         self.session.remote_inputs(&mut inputs);
+        // The pause menu stops a match nobody else is playing (Godot: one human).
+        let humans = self.world.players.iter().filter(|p| !p.bot).count();
+        if matches!(self.ui.screen, hud::menus::Screen::Pause | hud::menus::Screen::Settings { from_start: false }) && humans <= 1 { return; }
         self.prev = self.world.players.iter().map(|p| p.pos).collect();
         self.world.step(&inputs);
         if self.world.events.contains(&Event::NewArena) { self.new_arena(); }
         self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
-        feedback(&mut self.fb, &self.world, DT);
+        self.hud.tick(&self.world, DT);
         if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); self.vis.stadium.sound.loudness_db = s.duck_db(); }
         follow_music(&mut self.music, &self.world, &self.slots);
         self.session.publish(&self.world);
@@ -227,16 +286,29 @@ impl app::Game for Gg {
         self.vis.flush(frame.gpu, r)?;
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
         r.set_local_lights(&self.vis.local_lights())?;
-        let rects = frame.rects(self.slots.len());
-        let cameras = self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect();
         let mut list = HudDrawList::new(frame.size);
-        for (k, (rect, &s)) in rects.iter().zip(&self.slots).enumerate() {
-            let flash = self.vis.ion_flash(self.world.players[s].eye());
-            if flash > 0.0 { list.rect(*rect, [0.96, 0.99, 1.0, flash], *rect); }
-            hud::view(&mut list, &self.world, s, *rect, &self.fb[s], self.menus.get(k).map_or(0, |m| m.focus));
-        }
-        let status = self.session.status(&self.slots);
-        hud::global(&mut list, &self.world, status.as_deref());
+        let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
+        let cameras = if start {
+            // The start screen orbits the arena while bots fight (Godot: 82 m out, 34 up, FOV 66).
+            let t = self.ui.age * 0.055;
+            let r = self.world.arena.size * 1.14;
+            vec![render::Camera { pos: Vec3::new(t.cos() * r, 34.0, t.sin() * r), target: Vec3::new(0.0, 5.5, 0.0), fov_y: 66f32.to_radians(), near: 0.1 }]
+        } else {
+            let rects = frame.rects(self.slots.len());
+            for (k, (rect, &s)) in rects.iter().zip(&self.slots).enumerate() {
+                let flash = self.vis.ion_flash(self.world.players[s].eye());
+                let pad = k > 0 || self.no_kbm;
+                self.hud.view(&mut list, &self.world, s, *rect, self.menus.get(k).map_or(0, |m| m.focus), flash, pad);
+            }
+            list.begin_overlay();
+            let status = self.session.status(&self.slots);
+            self.hud.global(&mut list, &self.world, status.as_deref());
+            self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect()
+        };
+        list.begin_overlay();
+        let ticket = self.session.ticket().map(str::to_string);
+        let ctx = hud::menus::Ctx { ticket: ticket.as_deref(), client: self.session.is_client(), seed: self.world.arena.seed, bots: self.world.players.iter().filter(|p| p.bot).count() };
+        self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
         let mut light = self.light.clone();
         // The lava flows on the game clock.
         light.time = (self.world.tick as f32 - 1.0 + alpha) * DT;
@@ -249,6 +321,25 @@ impl app::Game for Gg {
 
     fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
 
+    fn split(&self) -> render::SplitLayout { render::SplitLayout::SideBySide }
+
+    fn escape(&mut self) -> bool {
+        use hud::menus::Screen;
+        match self.ui.screen {
+            // Esc on the start screen leaves the game (the shell first frees the mouse).
+            Screen::Start => false,
+            _ => { let a = self.ui.back(); self.act(a); true }
+        }
+    }
+
+    fn quit(&self) -> bool { self.quit }
+
+    fn tuning(&self, t: &mut app::Tuning) {
+        let d = app::Tuning::default();
+        t.mouse = d.mouse * self.ui.mouse;
+        t.stick = d.stick * self.ui.stick;
+    }
+
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let w: Vec<&str> = cmd.split_whitespace().collect();
         let num = |k: usize| -> Result<f32, String> { w.get(k).ok_or(format!("{cmd}: missing argument {k}"))?.parse::<f32>().map_err(|e| format!("{cmd}: {e}")) };
@@ -257,7 +348,18 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            "menu" => {
+                use hud::menus::Screen;
+                match w.get(1).copied().unwrap_or("") {
+                    "start" => self.show_start(),
+                    "pause" => self.ui.open(Screen::Pause),
+                    "settings" => self.ui.open(Screen::Settings { from_start: false }),
+                    "none" => self.ui.open(Screen::Play),
+                    m => return Err(format!("menu start|pause|settings|none, not {m}")),
+                }
+                Ok(format!("menu {:?}", self.ui.screen))
+            }
             "special" => {
                 let p = player(1, &self.world)?;
                 let name = w.get(2).ok_or("special P NAME")?;
@@ -347,7 +449,7 @@ impl app::Game for Gg {
             "cards": p.cards.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>(), "offer": p.offer.as_ref().map(|o| o.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>()), "max_health": p.max_health(), "mag": p.mag_size(),
         })).collect();
         Some(serde_json::json!({
-            "tick": w.tick, "round": w.round, "phase": w.phase, "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
+            "tick": w.tick, "round": w.round, "phase": w.phase, "screen": format!("{:?}", self.ui.screen), "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
             "projectiles": w.projectiles.len(), "strikes": w.strikes.len(), "pickups": w.pickups.len(),
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
                 "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
@@ -384,7 +486,7 @@ pub fn rebuild_views(gg: &mut Gg) {
     gg.vis.hide_own_bodies(&gg.slots);
     gg.vis.stadium.sound = sound;
     gg.prev = gg.world.players.iter().map(|p| p.pos).collect();
-    gg.fb.resize(gg.world.players.len(), hud::Feedback::default());
+    gg.hud.sync(&gg.world);
     gg.rebuild = true;
 }
 
@@ -430,6 +532,9 @@ pub fn run(args: &Args) -> Result<(), String> {
     game.party = crate::party::Party::connect();
     if game.party.is_some() { println!("gamenight: waiting for the party host"); }
     game.live = crate::live::start(args)?.map(Box::new);
+    game.no_kbm = args.flag("--no-kbm");
+    // Godot opens on the start screen; `--skip-menu`, joining and a party go straight in.
+    if !args.flag("--skip-menu") && !game.session.is_client() && game.party.is_none() { game.show_start(); }
     // `--give explosive --give damage`: start local player 1 with these cards.
     for card in args.list.windows(2).filter(|w| w[0] == "--give").map(|w| w[1].clone()) {
         println!("{}", app::Game::command(&mut game, &format!("give 0 {card}"))?);
