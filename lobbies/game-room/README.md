@@ -18,7 +18,7 @@ absolute paths:
 
 ```json
 [{"id":"warp-game-room","title":"Game Room (Warp)","launch":{
-  "command":"C:\\dev\\warp-game-engine\\target\\release\\game-room.exe",
+  "command":"C:\\dev\\warp-playtest\\target\\release\\game-room.exe",
   "env":{"GAMENIGHT_LOBBY_API":"1"}
 }}]
 ```
