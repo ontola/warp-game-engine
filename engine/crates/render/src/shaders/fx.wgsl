@@ -15,7 +15,7 @@ struct FxUniform {
     clock: vec4<f32>,
 };
 struct Puff {
-    // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat)
+    // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak)
     center_kind: vec4<f32>,
     // local axes with lengths (columns of the end transform) and per-kind data
     ax: vec4<f32>,
@@ -131,6 +131,69 @@ fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V 
     return out;
 }
 
+// Open-ended unit cylinder: x/z are radius one, y spans 0..1. Compact
+// topology is independent from the sphere billow path above.
+fn cylinder_vertex(vi: u32, segments: u32) -> vec3<f32> {
+    let corner = array<vec2<u32>, 6>(vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(1u, 1u),
+        vec2<u32>(0u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 1u))[vi % 6u];
+    let theta = f32(vi / 6u + corner.x) / f32(segments) * 6.2831853;
+    return vec3<f32>(cos(theta), f32(corner.y), sin(theta));
+}
+
+fn capped_cylinder_vertex(vi: u32, segments: u32) -> vec3<f32> {
+    if vi < segments * 6u { return cylinder_vertex(vi, segments); }
+    let cap_vertex = vi - segments * 6u;
+    let y = f32(cap_vertex / (segments * 3u));
+    let triangle = (cap_vertex / 3u) % segments;
+    let corner = cap_vertex % 3u;
+    if corner == 0u { return vec3<f32>(0.0, y, 0.0); }
+    let theta = f32(triangle + corner - 1u) / f32(segments) * 6.2831853;
+    return vec3<f32>(cos(theta), y, sin(theta));
+}
+
+fn additive_vertex(id: u32, world: vec3<f32>, age: f32) -> V {
+    var out: V;
+    out.id = id;
+    out.world = world;
+    out.normal = vec3<f32>(0.0, 1.0, 0.0);
+    out.uv = vec2<f32>(0.0);
+    out.age = age;
+    out.shade = 0.0;
+    out.position = u.view_proj * vec4<f32>(world, 1.0);
+    return out;
+}
+
+@vertex
+fn fx_column_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V {
+    let id = order[ii];
+    let p = puffs[id];
+    let age = clamp((u.clock.x - p.timing.x) / p.timing.y, 0.0, 1.0);
+    let local = cylinder_vertex(vi, 16u);
+    let radius = mix(p.ax.x, p.ax.y, pow(age, p.ax.w)) * mix(p.extra.z, 1.0, local.y);
+    let world = p.center_kind.xyz + vec3<f32>(local.x * radius, local.y * p.ax.z, local.z * radius);
+    return additive_vertex(id, world, age);
+}
+
+@vertex
+fn fx_streak_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V {
+    let id = order[ii];
+    let p = puffs[id];
+    let age = clamp((u.clock.x - p.timing.x) / p.timing.y, 0.0, 1.0);
+    let progress = 1.0 - pow(1.0 - age, p.ax.w);
+    let travel = p.ax.xyz;
+    let distance = length(travel);
+    let direction = select(vec3<f32>(0.0, 1.0, 0.0), travel / max(distance, 1e-6), distance > 1e-6);
+    let up = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(direction.y) < 0.99);
+    let x = normalize(cross(up, direction));
+    let z = cross(direction, x);
+    let local = capped_cylinder_vertex(vi, 6u);
+    let radius = mix(p.ay.x, p.ay.y, progress);
+    let length = mix(p.ay.z, p.ay.w, progress);
+    let world = p.center_kind.xyz + travel * progress + (x * local.x + z * local.z) * radius
+        + direction * (local.y - 0.5) * length;
+    return additive_vertex(id, world, age);
+}
+
 fn depth_metres(uv: vec2<f32>) -> f32 {
     let dims = vec2<i32>(textureDimensions(scene_depth));
     let px = clamp(vec2<i32>(uv * vec2<f32>(dims)), vec2<i32>(0), dims - 1);
@@ -150,6 +213,31 @@ fn depth_gap(world: vec3<f32>) -> f32 {
 fn fp16_safe(c: vec3<f32>) -> vec3<f32> {
     let m = max(c.r, max(c.g, c.b));
     return c * min(1.0, 60000.0 / max(m, 1e-6));
+}
+
+@fragment
+fn fx_column(in: V) -> @location(0) vec4<f32> {
+    let p = puffs[in.id];
+    if depth_gap(in.world) <= 0.0 { discard; }
+    let alpha = mix(p.ay.w, p.az.w, pow(in.age, p.body.z));
+    if alpha <= 0.0 { discard; }
+    let power = pow(in.age, p.body.w);
+    let radiance = max(0.0, mix(p.body.x, p.body.y, power)
+        + sin((u.clock.x - p.timing.x) * p.extra.x) * p.extra.y * power);
+    let color = mix(p.ay.rgb, p.az.rgb, smoothstep(p.timing.z, p.timing.w, in.age));
+    // Apply opacity before limiting HDR: a low-alpha high-radiance beam must
+    // not lose energy merely because its unweighted radiance exceeds fp16.
+    return vec4<f32>(fp16_safe(color * (radiance * alpha)), 0.0);
+}
+
+@fragment
+fn fx_streak(in: V) -> @location(0) vec4<f32> {
+    let p = puffs[in.id];
+    if depth_gap(in.world) <= 0.0 { discard; }
+    var fade = 1.0;
+    if p.body.y > 0.0 { fade *= smoothstep(0.0, p.body.y, in.age); }
+    if p.body.z > 0.0 { fade *= 1.0 - smoothstep(1.0 - p.body.z, 1.0, in.age); }
+    return vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade)), 0.0);
 }
 
 @fragment

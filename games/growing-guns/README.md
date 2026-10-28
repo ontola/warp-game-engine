@@ -37,9 +37,25 @@ cargo test -p growing-guns
 
 The dev profile is the iteration loop: a code change rebuilds in seconds and
 plays fine. `shot` and `bench` open no window (`KERN_ADAPTER=software` runs
-them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift or right
-mouse dash, left mouse fire, R reload; on a pad the sticks, A jump, B or RB
-dash, RT fire, X reload. F12 saves a screenshot.
+them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift dash,
+left mouse fire, right mouse special, R reload; on a pad the sticks, A/LB
+jump, Y/RB dash, RT fire, LT/B special, X reload. F12 saves a screenshot.
+
+The ion cannon has eight additive charge shells, nonlinear contraction and
+brightening, rising charge motes, local illumination, a blue-white detonation
+column, 40 ascending streaks and a brief per-view impact flash. `view/ion.rs`
+contains the game recipe; Warp's reusable `AdditiveColumn`/`AdditiveStreak`
+effects evaluate movement and radiance on the GPU after temporal reconstruction,
+with depth occlusion and bloom. Absolute emission is calibrated for Warp's HDR
+target; this is not a pixel-identical Godot render. Damage and charge timing are
+unchanged. `ExplosionKind` distinguishes ion impacts from ordinary fireballs.
+
+Reproduce the charge/impact/cleanup sequence without driving manually:
+
+```sh
+growing-guns script games/growing-guns/scripts/ion-transparency.json --out ion-captures --players 1 --seed 3
+growing-guns play --give ion_cannon
+```
 
 Gameplay is at parity with Godot 3daf27e (specs from `player.gd`,
 `weapon.gd`, `bullet.gd`, `blast.gd`, `grenade.gd`, `game.gd` and

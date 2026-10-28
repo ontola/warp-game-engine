@@ -47,7 +47,7 @@ impl Blast {
 impl World {
     pub(crate) fn blast(&mut self, pos: Vec3, radius: f32, damage: f32, shooter: Option<usize>, b: Blast) {
         if radius <= 0.0 { return; }
-        self.events.push(Event::Explosion { pos, radius, owner: shooter.unwrap_or(0) });
+        self.events.push(Event::Explosion { pos, radius, owner: shooter.unwrap_or(0), kind: crate::ExplosionKind::Conventional });
         for j in 0..self.players.len() {
             let p = &self.players[j];
             if p.ghost { continue; }
