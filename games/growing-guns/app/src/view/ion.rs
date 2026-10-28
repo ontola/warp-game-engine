@@ -185,7 +185,9 @@ fn charge_columns(position: Vec3, birth: f32) -> [AdditiveColumn; 8] {
         AdditiveColumn { position: position - Vec3::Y * BOTTOM_DEPTH, birth, life: CHARGE,
             height: SKY_HEIGHT + BOTTOM_DEPTH, radius: [START_RADIUS * layer.radius, END_RADIUS * layer.radius],
             radius_power: 2.0, color: [layer.color, Vec3::ONE], color_transition: [0.48, 0.985],
-            opacity: layer.alpha, opacity_power: 4.2,
+            // Godot ramps opacity with age^4.2; a gentler 2.4 makes the column
+            // show faintly from the start and build steadily to the strike.
+            opacity: layer.alpha, opacity_power: 2.4,
             radiance: [layer.emission[0] * CHARGE_START_NITS, layer.emission[1] * CHARGE_END_NITS], radiance_power: 2.35,
             pulse_radians_per_second: 9.0, pulse_radiance: 14.0 * (1.0 - i as f32 * 0.1) * CHARGE_END_NITS,
             bottom_radius_scale: 1.03 }
