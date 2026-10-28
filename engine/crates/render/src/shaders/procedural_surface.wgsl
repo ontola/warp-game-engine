@@ -61,6 +61,10 @@ fn ps_fbm(p: vec2<f32>, octaves: i32, fw: f32) -> f32 {
 
 fn ps_to_srgb(c: vec3<f32>) -> vec3<f32> { return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)); }
 fn ps_to_linear(c: vec3<f32>) -> vec3<f32> { return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2)); }
+// The exact sRGB curve (Godot's conversion of `source_color` uniforms).
+fn ps_srgb_decode(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
 
 struct ProcRock { base: vec3<f32>, rough: f32 };
 
@@ -126,33 +130,49 @@ fn proc_rock(inst: Instance, p: vec3<f32>, n: vec3<f32>, tint: vec3<f32>, damage
     return r;
 }
 
-// Lava noise: sample(uv) reads the 256 px texture (frequency 0.07) at uv * 0.01.
-fn ps_lava_n(q: vec2<f32>) -> f32 { return ps_fbm(q * 0.1792, 3, 0.0); }
+// Lava noise. Godot's sample_n reads its 256 px FastNoiseLite texture
+// (frequency 0.07) at uv * 0.01, repeating, with trilinear mipmaps: the
+// scene's noise field when it has one (`lod` is the mip level), else a
+// gradient noise of the same statistics (no mips).
+fn ps_lava_n(q: vec2<f32>, lod: f32, field: bool) -> f32 {
+    if field { return textureSampleLevel(noise_tex, samp, q * 0.01, lod).r; }
+    return ps_fbm(q * 0.1792, 3, 0.0);
+}
 
-fn ps_lava_fbm(p: vec2<f32>) -> f32 {
+fn ps_lava_fbm(p: vec2<f32>, lod: f32, field: bool) -> f32 {
     var v = 0.0;
     var amp = 0.52;
     var q = p;
+    var l = lod;
     for (var i = 0; i < 4; i++) {
-        v += amp * ps_lava_n(q);
+        v += amp * ps_lava_n(q, l, field);
         q *= 2.04;
         amp *= 0.5;
+        l += 1.0285; // log2(2.04)
     }
     return v;
 }
 
-// Linear radiance relative to white (Godot: ALBEDO + EMISSION * 1.35, unlit).
-fn proc_lava(p: vec3<f32>, time: f32) -> vec3<f32> {
+// Linear radiance relative to white. Godot's material is `unshaded`, which
+// shows ALBEDO alone (EMISSION is ignored in that mode); its `source_color`
+// uniforms are converted to linear before the mixes, so mix in linear too.
+// `footprint`: metres one pixel covers, for the mip level.
+fn proc_lava(p: vec3<f32>, time: f32, footprint: f32) -> vec3<f32> {
     let w = p.xz * 0.048;
     let t = time * 0.035;
     let drift = vec2<f32>(t * 0.42, t * 0.42 * 0.58);
-    let base = ps_lava_fbm(w + drift);
-    let detail = ps_lava_fbm(w * 1.85 - drift * 1.25 + vec2<f32>(4.2, 1.1));
+    let field = textureDimensions(noise_tex).x > 1u;
+    // Texels per pixel at the first octave: 256 * 0.01 * 0.048 per metre.
+    let lod = log2(max(footprint * f32(textureDimensions(noise_tex).x) * 0.00048, 1e-6));
+    let base = ps_lava_fbm(w + drift, lod, field);
+    let detail = ps_lava_fbm(w * 1.85 - drift * 1.25 + vec2<f32>(4.2, 1.1), lod + 0.8875, field); // log2(1.85)
     let veins = pow(1.0 - abs(base * 2.0 - 1.0), 3.2);
     let crust = pow(1.0 - abs(detail * 2.0 - 1.0), 2.4);
     var heat = clamp(base * 0.58 + detail * 0.42, 0.0, 1.0);
     heat = smoothstep(0.18, 0.82, heat + veins * 0.38 - crust * 0.22);
-    var col = mix(vec3<f32>(0.14, 0.05, 0.01), vec3<f32>(0.92, 0.30, 0.05), heat);
-    col = mix(col, vec3<f32>(1.0, 0.68, 0.22), pow(heat, 2.6) * veins);
-    return ps_to_linear(col) * 2.35;
+    let cool = ps_srgb_decode(vec3<f32>(0.14, 0.05, 0.01));
+    let hot = ps_srgb_decode(vec3<f32>(0.92, 0.30, 0.05));
+    let bright = ps_srgb_decode(vec3<f32>(1.0, 0.68, 0.22));
+    let col = mix(mix(cool, hot, heat), bright, pow(heat, 2.6) * veins);
+    return col;
 }

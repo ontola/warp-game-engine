@@ -51,6 +51,7 @@ pub mod irradiance_volume;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
+pub mod noise_field;
 pub mod primitives;
 pub mod slots;
 pub mod particles;

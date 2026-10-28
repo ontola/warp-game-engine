@@ -94,6 +94,8 @@ struct MeadowSubstrate {
     contact: vec4<f32>, // live density, basal radius, fixed anchor, blade reach
 };
 @group(0) @binding(27) var<uniform> meadow_substrate: MeadowSubstrate;
+// Scene::noise, a tiling scalar field for procedural materials (1x1 0.5 without one).
+@group(0) @binding(28) var noise_tex: texture_2d<f32>;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
@@ -1655,8 +1657,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // EMISSIVE: a glowing surface, `scale` is its radiance in nits for white;
     // with a texture layer the picture glows (screens), else the tint.
     if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * m.scale; }
-    // LAVA: unlit, flowing molten rock; `scale` is the radiance of white.
-    if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x) * m.scale; }
+    // LAVA: unlit, flowing molten rock; `tint * scale` is the radiance of white.
+    if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x, max(length(fp.dx), length(fp.dy))) * m.tint * m.scale; }
     rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
     if light.sky.z > 0.5 && light.sky.z < 1.5 {

@@ -1029,6 +1029,7 @@ impl Renderer {
                 (25, uniform()),
                 (26, storage(true)),
                 (27, uniform()),
+                (28, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ];
         let scene_layout = layout(gpu, "scene", &scene_bindings);
         let voxel_scene_bindings: Vec<_> = scene_bindings.iter().copied()
@@ -1131,6 +1132,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         assert!(!(far_sun.enabled && foliage_sun_pages.enabled),"choose paged foliage or legacy experimental far sun map, not both");
+        let noise_view = crate::noise_field::texture(gpu, scene.noise.as_ref());
         let make_scene_bind = |headlight_view:&wgpu::TextureView, far_view:&wgpu::TextureView, instance_data:&wgpu::Buffer, wind_data:&wgpu::Buffer| bind(
             gpu,
             &scene_layout,
@@ -1163,6 +1165,7 @@ impl Renderer {
                 (25, world_visibility.uniform.as_entire_binding()),
                 (26, foliage_sun_pages.metadata.as_entire_binding()),
                 (27, meadow_substrate.as_entire_binding()),
+                (28, wgpu::BindingResource::TextureView(&noise_view)),
             ],
         );
         let sampled_far=if foliage_sun_pages.enabled {&foliage_sun_pages.sampled}else{&far_sun.view};
