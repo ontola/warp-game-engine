@@ -695,6 +695,9 @@ pub struct Renderer {
     empty_gi_volume: bool,
     car_materials: wgpu::Buffer,
     car_material_count: usize,
+    /// The scene's materials, rewritable with [`Renderer::update_materials`].
+    materials: wgpu::Buffer,
+    material_count: usize,
     tone: wgpu::ComputePipeline,
     bloom: crate::bloom::Bloom,
     shade_layout: wgpu::BindGroupLayout,
@@ -1633,6 +1636,8 @@ impl Renderer {
                 && !scene.instances.iter().any(|i| i.flags & crate::scene::FOLIAGE != 0),
             car_materials,
             car_material_count: car_list.len(),
+            materials,
+            material_count: scene.materials.len(),
             tone,
             bloom,
             shade_layout,
@@ -2670,6 +2675,15 @@ impl Renderer {
     }
 
     /// Update an existing instance range without rebuilding static geometry.
+    /// Rewrite materials from `first` (an emissive sign flickering, a lamp
+    /// changing colour). Layers and flags may change; the blend set of the
+    /// scene (which materials are drawn blended) stays as built.
+    pub fn update_materials(&self, gpu: &Gpu, first: usize, materials: &[crate::scene::Material]) -> Result<(), String> {
+        if first.checked_add(materials.len()).is_none_or(|end| end > self.material_count) { return Err("material update exceeds uploaded scene".into()); }
+        gpu.queue.write_buffer(&self.materials, (first * std::mem::size_of::<crate::scene::Material>()) as u64, bytemuck::cast_slice(materials));
+        Ok(())
+    }
+
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.baked_animations.as_ref().is_some_and(|animation|animation.contains_owner_range(first,instances.len())) {
             return Err("baked actor parts are driven by the shared GPU animation pass".into());
