@@ -6,7 +6,9 @@ use growing_guns::{Arena, Breakage, Input, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub const ALPN: &[u8] = b"warp/growing-guns/1";
+// Version 2 adds the cage countdown to positional postcard snapshots.
+// Reject version-1 peers during connection setup, before decoding any state.
+pub const ALPN: &[u8] = b"warp/growing-guns/2";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToHost {

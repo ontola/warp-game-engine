@@ -57,9 +57,10 @@ That comparison changes several things and must be reported as a complete packag
 The first new-surface gallery and real Growing Guns capture rendered successfully
 on an RTX 5070 Ti. Evidence is locally in
 `C:/dev/warp-bench/stone-20261028/quarry-preview/` and `gg-stones.png`. These are
-visual previews, **not** a completed performance comparison. The playtest uses
-the early geometry version; subsequent geometry robustness fixes are recorded in
-source and need the next rebuild to reach the running game.
+visual previews, **not** a completed performance comparison. They show the early
+geometry version. The subsequent convex-mesh robustness fixes are included in
+the rebuilt executable; the earlier interactive playtest has stopped. No new
+interactive session was launched, at the user's request.
 
 The fracture pattern currently outlines too many similarly sized polygons,
 giving some faces a smaller-stones-within-stone appearance. Next visual iteration:
@@ -73,4 +74,3 @@ preview is included in the repository.
 Focused tests cover deterministic cooking, periodic values/slopes, physical
 normal direction, actual texture-array mip filtering, shared-layer reuse, closed
 convex meshes, outward normals, supporting faces, triangle counts and wear states.
-

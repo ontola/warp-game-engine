@@ -341,6 +341,41 @@ fn eliminated_human_walks_and_looks_after_picking_without_combat_or_resurrection
 }
 
 #[test]
+fn eliminated_human_recovers_from_lava_after_picking_on_surviving_ground() {
+    let mut w = World::new_with(3, &[false, true, true, true], |w| w.modifier_chance = 0.0);
+    w.cards = Arc::new(cards::test_book());
+    w.release_cage();
+    w.bots_paused = true;
+    w.arena.variant = arena::Variant::Island;
+    // The first authored spawn has lost its platform. Only the second has
+    // surviving collision; trusting the original spawn list causes a loop.
+    w.arena.spawns = vec![Vec3::new(-10.0, 3.0, 0.0), Vec3::new(12.0, 3.0, 0.0)];
+    w.arena.blocks = vec![Block::new(Vec3::new(12.0, 1.0, 0.0), Vec3::new(4.0, 2.0, 4.0), 0.0, Kind::Island)];
+    w.arena.build_chunks();
+    for p in &mut w.players { p.pos = Vec3::new(12.0, 2.0 + HALF_HEIGHT, 0.0); p.vel = Vec3::ZERO; }
+    w.queue_damage(0, 1000, Some(1));
+    w.step(&[]);
+    assert!(w.players[0].ghost && w.players[0].offer.is_some());
+    w.players[0].pos = Vec3::new(-10.0, -1.0, 0.0);
+    w.players[0].vel = Vec3::NEG_Y * 12.0;
+    w.step(&[Input { pick: Some(0), ..Default::default() }]);
+    w.step(&[]);
+    assert!((w.players[0].pos.x - 12.0).abs() < 0.01, "skip the destroyed spawn platform");
+    assert!(w.players[0].pos.y >= 2.0 + HALF_HEIGHT - 0.01, "recover above lava without waiting for the deep void");
+    idle(&mut w, 120);
+    let p = &w.players[0];
+    assert!(p.on_floor && p.ghost && !p.alive && p.health == 0 && !p.targetable());
+    // Rising lava can also cover every arena platform and the lower stand
+    // rows; the upper solid stands remain available to the eliminated ghost.
+    w.lava = flow::LavaLeak { active: true, full: true, rise: 18.0, spread: 30.0, half: w.arena.size * 0.5, ..Default::default() };
+    w.step(&[]);
+    let p = &w.players[0];
+    assert!(p.pos.y - HALF_HEIGHT > w.lava.surface());
+    assert!(p.ghost && !p.alive && p.health == 0);
+    assert!(shape::raycast(&w.arena.grid, p.pos, Vec3::NEG_Y, HALF_HEIGHT + 0.1).is_some(), "recovery has actual supporting collision");
+}
+
+#[test]
 fn parked_ghost_bots_do_not_move_or_respawn() {
     let mut w = flat_world();
     let p = &mut w.players[0];

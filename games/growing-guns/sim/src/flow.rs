@@ -549,6 +549,11 @@ impl World {
 
     /// Seconds left in the spawn cage, if it is closed.
     pub fn cage_left(&self) -> Option<f32> { self.flow.cage.map(|t| (CAGE_RELEASE - t).max(0.0) as f32) }
+
+    /// Mirror the host's cage state for presentation (remote worlds never step).
+    pub(crate) fn apply_cage_left(&mut self, left: Option<f32>) {
+        self.flow.cage = left.filter(|t| t.is_finite()).map(|t| (CAGE_RELEASE - t as f64).clamp(0.0, CAGE_RELEASE));
+    }
 }
 
 /// Godot `_pick_spawn`: as far from the others as possible, at similar

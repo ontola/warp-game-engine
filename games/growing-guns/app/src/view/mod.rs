@@ -1,10 +1,11 @@
 //! Turns the simulation into a Warp scene, one module per part:
-//! `arena` (bricks, beacons, marks), `effects` (particles, debris,
+//! `arena` (bricks, roof lights, marks), `effects` (particles, debris,
 //! explosions, flashes, view punch), `players` (players, tracers, corpses,
 //! gibs via `gore`), `guns` (the growing gun) and the colosseum
 //! (crate::stadium). This module owns the scene and the physics they share,
 //! routes each tick's events, and sets the lighting and cameras.
 mod arena;
+mod cages;
 mod characters;
 mod character_ragdoll;
 mod effects;
@@ -85,6 +86,7 @@ pub struct Visuals {
     arena: ArenaView,
     fx: EffectsView,
     players: PlayersView,
+    cages: cages::Cages,
     guns: Guns,
     things: things::Things,
     ion: ion::IonFx,
@@ -113,11 +115,12 @@ impl Visuals {
         // Coop waves add players as they come.
         let drawn = if world.coop { world.players.len().max(COOP_VIEW_PLAYERS) } else { world.players.len() };
         players.reserve_dynamic(&mut scene, drawn);
+        let cages = cages::Cages::reserve(&mut scene, drawn);
         let guns = Guns::reserve(&mut scene, drawn);
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false };
         v.set_arena(world);
         v
     }
@@ -128,13 +131,18 @@ impl Visuals {
         self.ion.reset();
         self.fx.blasts.clear();
         self.players.clear(&mut self.scene, &mut self.phys);
+        self.cages.reset(&mut self.scene, world);
         self.phys.clear_bodies();
         self.arena.set(&mut self.scene, &mut self.phys, &mut self.fx, world);
         self.stadium.set_arena(&mut self.scene, world);
     }
 
-    /// The renderer was rebuilt: upload the sprite images again.
-    pub fn invalidate_sprites(&mut self) { self.sprite_images = false; }
+    /// The renderer was rebuilt: restore sprite images and the debris
+    /// collision grid/metadata that lived on the previous GPU renderer.
+    pub fn invalidate_sprites(&mut self) {
+        self.sprite_images = false;
+        self.fx.debris.invalidate_renderer();
+    }
 
     /// World sprites besides the name tags: the light shafts.
     pub fn sprites(&self) -> &[render::sprites::Sprite] { self.things.sprites() }
@@ -157,6 +165,7 @@ impl Visuals {
     /// reactions.
     pub fn absorb(&mut self, world: &World, ears: &[Listener]) {
         let now = world.tick as f32 * growing_guns::DT;
+        self.cages.sync(world);
         self.ion.sync(world, &mut self.fx.blasts, now);
         self.fx.debris.advance(growing_guns::DT);
         self.arena.break_chunks(&mut self.scene, &mut self.phys, &mut self.fx, world);
@@ -246,6 +255,7 @@ impl Visuals {
         self.clock = (world.tick as f32 - 1.0 + alpha) * growing_guns::DT;
         self.fx.update(world, self.clock, dt);
         self.players.pose(&mut self.scene, world, prev, alpha);
+        self.cages.pose(&mut self.scene, world, prev, alpha, self.clock);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
         self.things.pose(&mut self.scene, world, self.clock);
         self.arena.lava.pose(world);

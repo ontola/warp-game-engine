@@ -1,0 +1,10 @@
+{
+  "seed_note": "Run with --players 1 --seed 3 --cage --sky noon. Inspect descent, trapdoor release, and complete winch retrieval without opening a window.",
+  "size": [1280, 720],
+  "steps": [
+    {"cmd": "bots pause", "ticks": 60, "capture": "descending.png", "state": "descending.json"},
+    {"ticks": 100, "capture": "holding.png"},
+    {"ticks": 25, "look": [0, 0.04], "capture": "released.png", "state": "released.json"},
+    {"ticks": 600, "capture": "retrieved.png"}
+  ]
+}

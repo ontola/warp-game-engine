@@ -7,6 +7,21 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## Growing Guns feedback fixes — 28 October 2026
+
+See [the feedback checklist](../games/growing-guns/docs/playtest-20261028.md).
+Quarried stone prototype, stable card hover, spawn cages, live stadium screens,
+human ghost recovery above lava, and debris collision re-upload are implemented.
+The stone surface still needs less regular fracture relief; this is explicitly
+unfinished visual refinement, not an accepted final asset or a measured speedup.
+
+**User requested no new interactive playtest: Claude handles the next launch.**
+Only offscreen captures and focused tests ran after that request. Build from
+current main (`cargo build --locked -p growing-guns-app`); the old local
+`gg-play.ps1` switches to an obsolete slice branch. GG network ALPN is now `/2`
+because cage state was added to the positional snapshot format; update both
+peers. The reusable GPU screen feed appears in profiler output as `live screens`.
+
 ## Integration into current main — 28 October 2026
 
 The grass agent's source is preserved in `ac29b0f` and integrated with current
