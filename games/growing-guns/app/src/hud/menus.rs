@@ -979,7 +979,7 @@ mod pointer_tests {
     const SIZE: [u32; 2] = [1600, 900];
     fn ctx() -> Ctx<'static> { Ctx { ticket: None, client: false, seed: 1, bots: 1, players: 2, coop: false, party: None, seats: vec![] } }
     fn at(r: [f32; 4], click: bool) -> app::Pointer {
-        app::Pointer { position: Some([r[0] + r[2] * 0.5, r[1] + r[3] * 0.5]), moved: true, pressed: click, held: click }
+        app::Pointer { position: Some([r[0] + r[2] * 0.5, r[1] + r[3] * 0.5]), moved: true, pressed: click, held: click, wheel: 0.0 }
     }
     fn draw(m: &Menus, w: &World, h: &Hud, c: &Ctx) { m.draw(&mut HudDrawList::new(SIZE), w, h, c); }
 
@@ -1133,7 +1133,7 @@ mod pointer_tests {
         draw(&m, &w, &h, &c);
         let r = m.hits.borrow().iter().find(|h| h.item == 1).unwrap().rect;
         m.pointer(at(r, true), SIZE, &w, None, &c);
-        let drag = app::Pointer { position: Some([r[0] + r[2] + 100.0, r[1]]), moved: true, pressed: false, held: true };
+        let drag = app::Pointer { position: Some([r[0] + r[2] + 100.0, r[1]]), moved: true, pressed: false, held: true, wheel: 0.0 };
         m.pointer(drag, SIZE, &w, None, &c);
         assert_eq!(m.music_db, 0.0);
         m.pointer(app::Pointer::default(), SIZE, &w, None, &c);

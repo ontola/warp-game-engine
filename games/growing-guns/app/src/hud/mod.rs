@@ -6,6 +6,7 @@
 //! shapes and text; no textures. Sizes are Godot design units (a 1281x720
 //! canvas stretched to the window) times the view's layout scale.
 pub mod cards;
+pub mod debug;
 pub mod menus;
 pub mod plates;
 pub mod style;
