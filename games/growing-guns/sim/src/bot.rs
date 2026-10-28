@@ -108,7 +108,9 @@ impl World {
             if !p.on_floor { p.vel.y -= gravity * DT; } else { p.jumps_left = 2 + p.weapon.extra_jumps; }
         }
         // Sticky nearest target.
-        let valid = |w: &World, t: usize| t != i && t < w.players.len() && !w.players[t].ghost && !w.allied(i, t);
+        // Not allies, ghosts, downed humans or enemies still rising (coop).
+        let valid = |w: &World, t: usize| t != i && t < w.players.len() && !w.players[t].ghost && !w.players[t].downed
+            && !w.allied(i, t) && !w.waves.emerging(t);
         if b.target.is_none_or(|t| !valid(self, t)) {
             let me = self.players[i].pos;
             b.target = (0..self.players.len()).filter(|&t| valid(self, t))
