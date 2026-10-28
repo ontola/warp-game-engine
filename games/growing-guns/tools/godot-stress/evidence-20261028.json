@@ -1,0 +1,655 @@
+{
+  "schema": 1,
+  "measured_date": "2026-10-28",
+  "engine": "Godot 4.6.2 official 71f334935",
+  "renderer": "Vulkan Forward+",
+  "adapter": "NVIDIA GeForce RTX 5070 Ti",
+  "validity": "Six completed Godot stress measurements with raw process-loop intervals, consistent sampled window/quality state, and viewport GPU telemetry. No cross-engine ratio or presented-FPS claim.",
+  "provenance": {
+    "game_executable": "C:\\dev\\growing-guns\\MoreRounds.exe",
+    "executable_sha256": "C9258C5D72677ADCE4F0AB5D2ED63FA5049CF963B4013477A2AFB421195B14BD",
+    "pck_sha256": "07476B651B0E064CC880ECF5DC8B26FCE190D044E968401E398D870D0AFC62DC",
+    "probe_sha256": "766AEDC33183AC7D76CED6FF5B5D3A5A4DF56D780227F98E79F43E5BD0D3E6F3",
+    "harness_sha256": "0109DE21D373E99D57C5AA644BEE1547DCC981699F30E7DEDE63E0C62436581A",
+    "seed": 721077
+  },
+  "source_analysis_sha256": "8005CF7148010B63ECF43EA17C9E04FD33A19BD9EF4E37493EB5E084B15FEC79",
+  "groups": {
+    "bullets": {
+      "run_count": 3,
+      "per_run_interval_stat_ranges": {
+        "median_ms": [
+          10.326,
+          11.489
+        ],
+        "p95_ms": [
+          22.501,
+          26.388
+        ],
+        "p99_ms": [
+          36.29,
+          47.726
+        ],
+        "max_ms": [
+          60.351,
+          72.579
+        ],
+        "mean_ms": [
+          11.039145,
+          12.721081
+        ]
+      },
+      "viewport_gpu_median_ms_range": [
+        0.089,
+        0.09
+      ],
+      "viewport_gpu_p95_ms_range": [
+        0.095,
+        0.096
+      ],
+      "peak_projectiles_range": [
+        474,
+        476
+      ]
+    },
+    "explosions": {
+      "run_count": 3,
+      "per_run_interval_stat_ranges": {
+        "median_ms": [
+          12.615,
+          18.119
+        ],
+        "p95_ms": [
+          40.7,
+          75.495
+        ],
+        "p99_ms": [
+          103.764,
+          115.373
+        ],
+        "max_ms": [
+          127.093,
+          175.784
+        ],
+        "mean_ms": [
+          17.22781,
+          26.617473
+        ]
+      },
+      "viewport_gpu_median_ms_range": [
+        2.321,
+        2.481
+      ],
+      "viewport_gpu_p95_ms_range": [
+        2.52,
+        2.746
+      ],
+      "peak_projectiles_range": [
+        85,
+        142
+      ]
+    }
+  },
+  "runs": [
+    {
+      "run": "01-bullets",
+      "completed": true,
+      "exit_code": 0,
+      "measure_seconds": 12.0,
+      "warmup_seconds": 2.0,
+      "sampled_seconds": 11.970537,
+      "process_loop_interval_ms": {
+        "count": 941,
+        "mean": 12.721081,
+        "median": 11.489,
+        "p95": 26.388,
+        "p99": 47.726,
+        "min": 2.481,
+        "max": 72.579
+      },
+      "hitches": {
+        "gt_16.67_ms": {
+          "count": 296,
+          "percent_of_intervals": 31.456
+        },
+        "gt_33.33_ms": {
+          "count": 19,
+          "percent_of_intervals": 2.019
+        },
+        "gt_50_ms": {
+          "count": 6,
+          "percent_of_intervals": 0.638
+        }
+      },
+      "viewport_gpu_ms": {
+        "count": 941,
+        "mean": 0.09122,
+        "median": 0.09,
+        "p95": 0.096,
+        "p99": 0.231,
+        "min": 0.066,
+        "max": 0.507
+      },
+      "events": {
+        "ev_bullets_spawned": 2520,
+        "ev_casings_spawned": 117,
+        "ev_collisions": 451,
+        "ev_explosions": 0,
+        "shots_triggered": 360
+      },
+      "event_rates_per_nominal_second": {
+        "ev_bullets_spawned": 210.0,
+        "ev_casings_spawned": 9.75,
+        "ev_collisions": 37.583,
+        "ev_explosions": 0.0,
+        "shots_triggered": 30.0
+      },
+      "blast_calls_full_cheap": {
+        "blast_calls": 0,
+        "blast_full": 0,
+        "blast_cheap": 0
+      },
+      "peak_projectiles": 474,
+      "actual_state": {
+        "window_mode": {
+          "min": 0.0,
+          "max": 0.0
+        },
+        "window_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "window_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "viewport_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "viewport_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "render_scale": {
+          "min": 1.0,
+          "max": 1.0
+        },
+        "quality_scale": {
+          "min": 1.0,
+          "max": 1.0
+        }
+      },
+      "frames_csv_sha256": "6947907C18DAD3FDBD9C66B59D717D5C3D56357F986BB3BA19F18F7FF29BC276",
+      "summary_json_sha256": "3C83E8655ABCDFF4B2C1FE2A893FE306D9C3599EB6FBABAE80D5DF95D87E09F7"
+    },
+    {
+      "run": "02-explosions",
+      "completed": true,
+      "exit_code": 0,
+      "measure_seconds": 15.0,
+      "warmup_seconds": 3.0,
+      "sampled_seconds": 14.884828,
+      "process_loop_interval_ms": {
+        "count": 864,
+        "mean": 17.22781,
+        "median": 12.615,
+        "p95": 40.7,
+        "p99": 108.462,
+        "min": 4.247,
+        "max": 175.784
+      },
+      "hitches": {
+        "gt_16.67_ms": {
+          "count": 231,
+          "percent_of_intervals": 26.736
+        },
+        "gt_33.33_ms": {
+          "count": 53,
+          "percent_of_intervals": 6.134
+        },
+        "gt_50_ms": {
+          "count": 38,
+          "percent_of_intervals": 4.398
+        }
+      },
+      "viewport_gpu_ms": {
+        "count": 864,
+        "mean": 2.349554,
+        "median": 2.321,
+        "p95": 2.52,
+        "p99": 2.734,
+        "min": 2.259,
+        "max": 2.893
+      },
+      "events": {
+        "ev_bullets_spawned": 317,
+        "ev_casings_spawned": 317,
+        "ev_collisions": 132,
+        "ev_explosions": 132
+      },
+      "event_rates_per_nominal_second": {
+        "ev_bullets_spawned": 21.133,
+        "ev_casings_spawned": 21.133,
+        "ev_collisions": 8.8,
+        "ev_explosions": 8.8
+      },
+      "blast_calls_full_cheap": {
+        "blast_calls": 713,
+        "blast_full": 616,
+        "blast_cheap": 97
+      },
+      "peak_projectiles": 85,
+      "actual_state": {
+        "window_mode": {
+          "min": 0.0,
+          "max": 0.0
+        },
+        "window_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "window_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "viewport_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "viewport_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "render_scale": {
+          "min": 1.0,
+          "max": 1.0
+        },
+        "quality_scale": {
+          "min": 1.0,
+          "max": 1.0
+        }
+      },
+      "frames_csv_sha256": "5EEEE0CE3602FA11CE4BCA2A76CCCFF93E261F81D5F926716656A655F70D41D8",
+      "summary_json_sha256": "6C2E5A16AC2A4CE350AB489A25E80EB3CB97B6009AE51BA64AEC90BA89DCD072"
+    },
+    {
+      "run": "03-bullets",
+      "completed": true,
+      "exit_code": 0,
+      "measure_seconds": 12.0,
+      "warmup_seconds": 2.0,
+      "sampled_seconds": 11.984114,
+      "process_loop_interval_ms": {
+        "count": 1071,
+        "mean": 11.189649,
+        "median": 10.823,
+        "p95": 22.742,
+        "p99": 36.731,
+        "min": 2.389,
+        "max": 60.351
+      },
+      "hitches": {
+        "gt_16.67_ms": {
+          "count": 183,
+          "percent_of_intervals": 17.087
+        },
+        "gt_33.33_ms": {
+          "count": 15,
+          "percent_of_intervals": 1.401
+        },
+        "gt_50_ms": {
+          "count": 6,
+          "percent_of_intervals": 0.56
+        }
+      },
+      "viewport_gpu_ms": {
+        "count": 1071,
+        "mean": 0.090133,
+        "median": 0.089,
+        "p95": 0.096,
+        "p99": 0.231,
+        "min": 0.064,
+        "max": 0.409
+      },
+      "events": {
+        "ev_bullets_spawned": 2520,
+        "ev_casings_spawned": 119,
+        "ev_collisions": 457,
+        "ev_explosions": 0,
+        "shots_triggered": 360
+      },
+      "event_rates_per_nominal_second": {
+        "ev_bullets_spawned": 210.0,
+        "ev_casings_spawned": 9.917,
+        "ev_collisions": 38.083,
+        "ev_explosions": 0.0,
+        "shots_triggered": 30.0
+      },
+      "blast_calls_full_cheap": {
+        "blast_calls": 0,
+        "blast_full": 0,
+        "blast_cheap": 0
+      },
+      "peak_projectiles": 476,
+      "actual_state": {
+        "window_mode": {
+          "min": 0.0,
+          "max": 0.0
+        },
+        "window_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "window_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "viewport_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "viewport_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "render_scale": {
+          "min": 1.0,
+          "max": 1.0
+        },
+        "quality_scale": {
+          "min": 1.0,
+          "max": 1.0
+        }
+      },
+      "frames_csv_sha256": "E3CA67C89F7D0415A4A72B5F280666A67F91143D0E7E4EF329CE1A931CB880D6",
+      "summary_json_sha256": "9979D35DA2E8C3F8B11416497EE571D82C0F40DF90FD1DF11E1ED0CBEBFBF4C0"
+    },
+    {
+      "run": "04-explosions",
+      "completed": true,
+      "exit_code": 0,
+      "measure_seconds": 15.0,
+      "warmup_seconds": 3.0,
+      "sampled_seconds": 14.905785,
+      "process_loop_interval_ms": {
+        "count": 560,
+        "mean": 26.617473,
+        "median": 18.119,
+        "p95": 75.495,
+        "p99": 115.373,
+        "min": 6.521,
+        "max": 172.849
+      },
+      "hitches": {
+        "gt_16.67_ms": {
+          "count": 322,
+          "percent_of_intervals": 57.5
+        },
+        "gt_33.33_ms": {
+          "count": 110,
+          "percent_of_intervals": 19.643
+        },
+        "gt_50_ms": {
+          "count": 75,
+          "percent_of_intervals": 13.393
+        }
+      },
+      "viewport_gpu_ms": {
+        "count": 560,
+        "mean": 2.475727,
+        "median": 2.441,
+        "p95": 2.725,
+        "p99": 2.839,
+        "min": 2.327,
+        "max": 3.036
+      },
+      "events": {
+        "ev_bullets_spawned": 638,
+        "ev_casings_spawned": 638,
+        "ev_collisions": 259,
+        "ev_explosions": 259
+      },
+      "event_rates_per_nominal_second": {
+        "ev_bullets_spawned": 42.533,
+        "ev_casings_spawned": 42.533,
+        "ev_collisions": 17.267,
+        "ev_explosions": 17.267
+      },
+      "blast_calls_full_cheap": {
+        "blast_calls": 843,
+        "blast_full": 662,
+        "blast_cheap": 181
+      },
+      "peak_projectiles": 116,
+      "actual_state": {
+        "window_mode": {
+          "min": 0.0,
+          "max": 0.0
+        },
+        "window_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "window_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "viewport_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "viewport_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "render_scale": {
+          "min": 1.0,
+          "max": 1.0
+        },
+        "quality_scale": {
+          "min": 1.0,
+          "max": 1.0
+        }
+      },
+      "frames_csv_sha256": "807B6D32D8270F2B5DD8EFBAF954510C0F74BF1F156A8CD9671CAE180FAC6350",
+      "summary_json_sha256": "182CEDECB5A4E08ADDEF52ED2EA3BB12B4997F45F6C867DA35841CABF6D84767"
+    },
+    {
+      "run": "05-bullets",
+      "completed": true,
+      "exit_code": 0,
+      "measure_seconds": 12.0,
+      "warmup_seconds": 2.0,
+      "sampled_seconds": 11.988512,
+      "process_loop_interval_ms": {
+        "count": 1086,
+        "mean": 11.039145,
+        "median": 10.326,
+        "p95": 22.501,
+        "p99": 36.29,
+        "min": 2.282,
+        "max": 71.609
+      },
+      "hitches": {
+        "gt_16.67_ms": {
+          "count": 206,
+          "percent_of_intervals": 18.969
+        },
+        "gt_33.33_ms": {
+          "count": 14,
+          "percent_of_intervals": 1.289
+        },
+        "gt_50_ms": {
+          "count": 7,
+          "percent_of_intervals": 0.645
+        }
+      },
+      "viewport_gpu_ms": {
+        "count": 1086,
+        "mean": 0.088383,
+        "median": 0.089,
+        "p95": 0.095,
+        "p99": 0.137,
+        "min": 0.063,
+        "max": 0.544
+      },
+      "events": {
+        "ev_bullets_spawned": 2520,
+        "ev_casings_spawned": 119,
+        "ev_collisions": 400,
+        "ev_explosions": 0,
+        "shots_triggered": 360
+      },
+      "event_rates_per_nominal_second": {
+        "ev_bullets_spawned": 210.0,
+        "ev_casings_spawned": 9.917,
+        "ev_collisions": 33.333,
+        "ev_explosions": 0.0,
+        "shots_triggered": 30.0
+      },
+      "blast_calls_full_cheap": {
+        "blast_calls": 0,
+        "blast_full": 0,
+        "blast_cheap": 0
+      },
+      "peak_projectiles": 476,
+      "actual_state": {
+        "window_mode": {
+          "min": 0.0,
+          "max": 0.0
+        },
+        "window_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "window_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "viewport_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "viewport_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "render_scale": {
+          "min": 1.0,
+          "max": 1.0
+        },
+        "quality_scale": {
+          "min": 1.0,
+          "max": 1.0
+        }
+      },
+      "frames_csv_sha256": "8AD41FA3ABC5C23F797A837C8EE91CA290C3BDAF78F3B49A1FF93C7257D05EF2",
+      "summary_json_sha256": "478DCD5E9CB2CBEE323AAACEDF3AA531F31F7BF7D81107CA7AE03969843BD961"
+    },
+    {
+      "run": "06-explosions",
+      "completed": true,
+      "exit_code": 0,
+      "measure_seconds": 15.0,
+      "warmup_seconds": 3.0,
+      "sampled_seconds": 14.808673,
+      "process_loop_interval_ms": {
+        "count": 707,
+        "mean": 20.945789,
+        "median": 13.914,
+        "p95": 66.162,
+        "p99": 103.764,
+        "min": 4.326,
+        "max": 127.093
+      },
+      "hitches": {
+        "gt_16.67_ms": {
+          "count": 266,
+          "percent_of_intervals": 37.624
+        },
+        "gt_33.33_ms": {
+          "count": 104,
+          "percent_of_intervals": 14.71
+        },
+        "gt_50_ms": {
+          "count": 71,
+          "percent_of_intervals": 10.042
+        }
+      },
+      "viewport_gpu_ms": {
+        "count": 707,
+        "mean": 2.516035,
+        "median": 2.481,
+        "p95": 2.746,
+        "p99": 2.962,
+        "min": 2.384,
+        "max": 3.209
+      },
+      "events": {
+        "ev_bullets_spawned": 563,
+        "ev_casings_spawned": 563,
+        "ev_collisions": 186,
+        "ev_explosions": 186
+      },
+      "event_rates_per_nominal_second": {
+        "ev_bullets_spawned": 37.533,
+        "ev_casings_spawned": 37.533,
+        "ev_collisions": 12.4,
+        "ev_explosions": 12.4
+      },
+      "blast_calls_full_cheap": {
+        "blast_calls": 774,
+        "blast_full": 648,
+        "blast_cheap": 126
+      },
+      "peak_projectiles": 142,
+      "actual_state": {
+        "window_mode": {
+          "min": 0.0,
+          "max": 0.0
+        },
+        "window_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "window_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "viewport_width": {
+          "min": 1920.0,
+          "max": 1920.0
+        },
+        "viewport_height": {
+          "min": 1080.0,
+          "max": 1080.0
+        },
+        "render_scale": {
+          "min": 1.0,
+          "max": 1.0
+        },
+        "quality_scale": {
+          "min": 1.0,
+          "max": 1.0
+        }
+      },
+      "frames_csv_sha256": "82695A5A1FF4CC9B5FA7E7763B94446DB2B50B183A6BC17E82A878DAF4925728",
+      "summary_json_sha256": "285D700030E360D8A953B9D8EBEB4DBA854FF8FB87240F4AAA23A287E13AACFF"
+    }
+  ],
+  "issues": "No errors or warnings before probe completion in all six engine logs; stdout/stderr added no unmatched issue messages. Shutdown resource/material/RID errors retained separately in original logs.",
+  "excluded_pilot": "One minigun + three shotgun cards produced only 98 bullets/12s and is excluded. Final heavy case uses three of each card.",
+  "limitations": [
+    "Both workloads are more consistent with host-side work, scheduling or synchronization limits than viewport GPU saturation: process-loop intervals are much longer than the separately measured viewport GPU work. This is an inference, not an exclusive CPU attribution.",
+    "GPU work and CPU work overlap, timestamps can lag, and process-loop wall time includes all waits. Do not subtract GPU time from loop time to manufacture total CPU time. Viewport timings do not include all presentation/compositor cost.",
+    "Explosion runs become substantially faster during the measure window. Fixed warmup does not produce a stationary workload: startup/cache settling, changes in bot activity, effect budgets, and terrain depletion can all contribute. Early-versus-late windows are retained instead of declaring one cause.",
+    "The 3x minigun + 3x shotgun bullet case retains the authored projectile cap and physics firing cadence; it is not an unlimited bullet generator.",
+    "Explosion mode combines four bots with 40/s nominal simulated-time wall spray. ev_explosions counts bullet collisions only; blast_calls/full/cheap include manual spray. Full/cheap are branch counters, not simultaneously visible effect counts.",
+    "Adaptive governor is disabled at quality 1, with original per-frame effect/time caps retained. Per-frame budgets can change the realized full/cheap workload as frame cadence changes.",
+    "Process callbacks are sampled strictly inside the observed measure phase; boundary intervals, initial startup and final report printing are excluded. This is offscreen rendering, not an onscreen presentation-latency test.",
+    "Fixed seed does not guarantee identical trajectories in a timing-dependent simulation. Event totals, destruction and full/cheap mix must accompany timing comparisons.",
+    "Shutdown errors are retained separately and do not fall inside recorded intervals. No scene/source/PCK fixes are included in this measurement task."
+  ],
+  "portable_launcher_difference": "Only the default output directory changed from beside the script to C:/dev/warp-bench/godot-stress-<timestamp>; probe bytes are unchanged."
+}
