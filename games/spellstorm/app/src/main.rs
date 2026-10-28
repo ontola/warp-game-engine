@@ -5,6 +5,7 @@
 //! The sim is games/spellstorm/sim (hecs, the Godot game's rules); the look
 //! comes from the Godot game's own models and materials (assets/kits).
 mod anim;
+mod fx;
 mod kits;
 mod look;
 mod view;
@@ -38,11 +39,22 @@ fn run() -> Result<(), String> {
             let renderer = Renderer::new(&gpu, &view.scene, &view.light);
             view.upload(&gpu, &renderer)?;
             eprintln!("scene: {} instances, {} meshes, {} materials, {} lamps in {:.2}s", view.scene.instances.len(), view.scene.meshes.len(), view.scene.materials.len(), view.lamps.len(), started.elapsed().as_secs_f32());
+            let mut counts = std::collections::BTreeMap::new();
             for t in 0..ticks {
                 world.step();
+                view.fx.absorb(&world);
+                if std::env::var_os("SPELLSTORM_EVENTS").is_some() {
+                    for e in &world.events {
+                        let d = format!("{e:?}");
+                        *counts.entry(d.split([' ', '(', '{']).next().unwrap_or("").to_string()).or_insert(0u32) += 1;
+                    }
+                }
                 if t % 4 == 0 || t + 1 == ticks {
                     view.pose(&gpu, &renderer, &world, 4.0 / 60.0)?;
                 }
+            }
+            if !counts.is_empty() {
+                eprintln!("events: {counts:?}");
             }
             let mut rgba = vec![];
             for _ in 0..numf("--frames", 4.0) as u32 {
