@@ -7,6 +7,7 @@
 //! canvas stretched to the window) times the view's layout scale.
 pub mod cards;
 pub mod menus;
+pub mod plates;
 pub mod style;
 
 use crate::view::PLAYER_COLORS_U8;
@@ -80,6 +81,10 @@ pub struct Hud {
     /// Display names: humans P1..P4, bots Godot-style ("Blitz Byte 23").
     pub names: Vec<String>,
     bots: Vec<bool>,
+    /// Names given from outside (a GameNight party's seats), by world player.
+    given: Vec<Option<String>>,
+    /// The lava leak was running last tick (its "LAVA LEAK" banner).
+    lava_was: bool,
     /// World players with a view on this machine.
     pub locals: Vec<usize>,
 }
@@ -134,7 +139,19 @@ impl Hud {
         let n = world.players.len();
         self.fb.resize_with(n, Feedback::default);
         self.bots = world.players.iter().map(|p| p.bot).collect();
-        self.names = (0..n).map(|i| if world.players[i].bot { bot_name(i) } else { format!("P{}", i + 1) }).collect();
+        self.names = (0..n).map(|i| match self.given.get(i) {
+            Some(Some(g)) if !world.players[i].bot => g.clone(),
+            _ if world.players[i].bot => bot_name(i),
+            _ => format!("P{}", i + 1),
+        }).collect();
+    }
+
+    /// Party names for the seated players: `names[k]` belongs to world
+    /// player `slots[k]` (GameNight's `Gg::names`); empty restores P1..P4.
+    pub fn set_names(&mut self, world: &World, slots: &[usize], names: &[String]) {
+        let mut given = vec![None; world.players.len()];
+        for (&s, n) in slots.iter().zip(names) { if let Some(g) = given.get_mut(s) && !n.trim().is_empty() { *g = Some(n.trim().to_string()); } }
+        if given != self.given { self.given = given; self.sync(world); }
     }
 
     pub fn name(&self, i: usize) -> &str { self.names.get(i).map_or("Player", |s| s.as_str()) }
@@ -182,6 +199,18 @@ impl Hud {
             }
             f.last_offer = p.offer.clone();
         }
+        // Coop enemies go by their archetype (Godot `_coop_enemy_name`).
+        if world.coop {
+            for i in world.waves.seats..world.players.len().min(self.names.len()) {
+                if let Some(a) = world.waves.archetype(i) {
+                    let want = format!("{} {:02}", a.name().to_uppercase(), i - world.waves.seats + 1);
+                    if self.names[i] != want { self.names[i] = want; }
+                }
+            }
+        }
+        // Sudden death: the leak's banner as it starts (Godot `_start_lava_leak`).
+        if world.lava.active && !self.lava_was && world.lava.elapsed <= 0.1 { self.announce("LAVA LEAK", 1.5, 0.0); }
+        self.lava_was = world.lava.active;
         for (_, age) in &mut self.feed { *age += dt; }
         self.feed.retain(|f| f.1 < 3.35);
         if let Some(b) = &mut self.banner { b.left -= dt; if b.left <= 0.0 { self.banner = None; } }

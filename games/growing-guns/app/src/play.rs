@@ -34,6 +34,8 @@ pub struct Gg {
     pub hud: hud::Hud,
     /// Start, pause and settings screens, the match-over buttons.
     pub ui: hud::menus::Menus,
+    /// Name tags over the other players.
+    plates: hud::plates::Plates,
     /// Seat of each local view while the start screen's background fight runs.
     start_seats: Vec<usize>,
     session: Session,
@@ -54,6 +56,8 @@ pub struct Gg {
     pub(crate) scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
     /// A GameNight party host, when it launched us.
     pub party: Option<crate::party::Party>,
+    /// `menu gamenight`: the GameNight pause menu without a party (scripts).
+    gn_preview: Option<crate::party::Settings>,
     /// Party names for the seated players, in slot order.
     pub names: Vec<String>,
     /// Live control (`--live`, live.rs).
@@ -66,7 +70,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), quit: false, no_kbm: false, scripts, party: None, names: Vec::new(), live: None }
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), quit: false, no_kbm: false, scripts, party: None, gn_preview: None, names: Vec::new(), live: None }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -120,6 +124,7 @@ impl Gg {
     pub fn receive(&mut self, dt: f32) -> f32 {
         let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
         self.hud.locals.clone_from(&self.slots);
+        self.hud.set_names(&self.world, &self.slots, &self.names);
         let (vis, hud, sounds, music, slots) = (&mut self.vis, &mut self.hud, &mut self.sounds, &mut self.music, &self.slots);
         let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
             vis.absorb(w, &crate::sounds::ears(w, slots));
@@ -157,6 +162,15 @@ impl Gg {
         self.session.mark_arena();
         self.vis.set_arena(&self.world);
         self.prev = self.world.players.iter().map(|p| p.pos).collect();
+    }
+}
+
+/// What the menus show of the session; `party`: GameNight's settings.
+fn menu_ctx<'a>(session: &Session, world: &World, ticket: Option<&'a str>, party: Option<&crate::party::Settings>) -> hud::menus::Ctx<'a> {
+    let status = if world.coop { format!("WAVE SURVIVAL  /  WAVE {}", world.waves.wave) } else { format!("VERSUS  /  ROUND {}  /  FIRST TO {}", world.round, world.rounds_to_win) };
+    hud::menus::Ctx {
+        ticket, client: session.is_client(), seed: world.arena.seed, bots: world.players.iter().filter(|p| p.bot).count(),
+        players: world.players.len(), coop: world.coop, party: party.map(|s| (s.entries(), status)),
     }
 }
 
@@ -209,7 +223,28 @@ impl Gg {
                 println!("ticket: {t}");
                 self.ui.notice = Some("Ticket written to growing-guns-ticket.txt".into());
             },
-            Action::Rematch if host => { self.world.restart_match(); self.new_arena(); }
+            Action::Rematch if host => { self.world.restart_match(); self.new_arena(); self.ui.open(Screen::Play); }
+            Action::Advanced => self.ui.open(Screen::Advanced),
+            Action::Party(k, v) => {
+                if let Some(p) = &mut self.party { p.set(k, v); } else if let Some(s) = &mut self.gn_preview && let Some(key) = s.key(k) { s.change(&key, &serde_json::json!(v)); }
+            }
+            // Godot `_spawn_bots` / `_despawn_one_bot` from the pause menu: the
+            // views are rebuilt for the new count, so not with anyone joined.
+            Action::AddBot if host && self.session.remote_players() == 0 && !self.world.coop && self.world.players.len() < 8 => {
+                let w = &mut self.world;
+                let mut p = growing_guns::Player::new(true);
+                let have = w.players.len();
+                p.pos = w.arena.spawns.get(have % w.arena.spawns.len().max(1)).copied().unwrap_or_default() + Vec3::Y;
+                w.players.push(p);
+                rebuild_views(self);
+            }
+            Action::RemoveBot if host && self.session.remote_players() == 0 && !self.world.coop => {
+                let keep = self.slots.iter().chain(&self.start_seats).max().map_or(1, |&m| m + 1).max(2);
+                if self.world.players.len() > keep && self.world.players.last().is_some_and(|p| p.bot) {
+                    self.world.players.pop();
+                    rebuild_views(self);
+                }
+            }
             Action::Extend if host => self.world.extend_match(),
             _ => {}
         }
@@ -235,10 +270,11 @@ impl app::Game for Gg {
             if let Some(s) = &self.scripts { for line in s.poll(&mut self.world) { eprintln!("mods: {line}"); } }
         }
         self.hud.locals.clone_from(&self.slots);
+        self.hud.set_names(&self.world, &self.slots, &self.names);
         // Menus take the local players' controls (merged) while open.
         let merged = merge(controls);
         let ctx_ticket = self.session.ticket().map(str::to_string);
-        let ctx = hud::menus::Ctx { ticket: ctx_ticket.as_deref(), client: self.session.is_client(), seed: self.world.arena.seed, bots: self.world.players.iter().filter(|p| p.bot).count() };
+        let ctx = menu_ctx(&self.session, &self.world, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()));
         let action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
         self.act(action);
         let menu_open = self.ui.is_open();
@@ -280,14 +316,17 @@ impl app::Game for Gg {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         let alpha = if self.session.is_client() { self.receive(frame.dt) } else { frame.alpha };
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
-        if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() { frame.set_scene(&self.vis.scene, &self.light); }
+        if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() { frame.set_scene(&self.vis.scene, &self.light); self.plates.invalidate(); }
         crate::live::frame(self, frame);
         let r = frame.renderer().expect("scene set above");
         self.vis.flush(frame.gpu, r)?;
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
         r.set_local_lights(&self.vis.local_lights())?;
-        let mut list = HudDrawList::new(frame.size);
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
+        // Name tags over everyone not seated here (on the start screen, everyone).
+        let drawn: Vec<Vec3> = self.world.players.iter().enumerate().map(|(i, p)| self.prev.get(i).map_or(p.pos, |q| q.lerp(p.pos, alpha))).collect();
+        self.plates.update(frame.gpu, r, &self.world, &self.hud, if start { &[] } else { &self.slots }, &drawn)?;
+        let mut list = HudDrawList::new(frame.size);
         let cameras = if start {
             // The start screen orbits the arena while bots fight (Godot: 82 m out, 34 up, FOV 66).
             let t = self.ui.age * 0.055;
@@ -307,7 +346,7 @@ impl app::Game for Gg {
         };
         list.begin_overlay();
         let ticket = self.session.ticket().map(str::to_string);
-        let ctx = hud::menus::Ctx { ticket: ticket.as_deref(), client: self.session.is_client(), seed: self.world.arena.seed, bots: self.world.players.iter().filter(|p| p.bot).count() };
+        let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()));
         self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
         let mut light = self.light.clone();
         // The lava flows on the game clock.
@@ -348,7 +387,13 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            // Party names for the local seats, comma separated (GameNight's `names`).
+            "names" => {
+                self.names = cmd.trim_start().strip_prefix("names").unwrap_or("").split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
+                self.hud.set_names(&self.world, &self.slots, &self.names);
+                Ok(format!("names {:?}", self.names))
+            }
             "menu" => {
                 use hud::menus::Screen;
                 match w.get(1).copied().unwrap_or("") {
@@ -356,7 +401,9 @@ impl app::Game for Gg {
                     "pause" => self.ui.open(Screen::Pause),
                     "settings" => self.ui.open(Screen::Settings { from_start: false }),
                     "none" => self.ui.open(Screen::Play),
-                    m => return Err(format!("menu start|pause|settings|none, not {m}")),
+                    "gamenight" => { self.gn_preview.get_or_insert_with(Default::default); self.ui.open(Screen::Pause) }
+                    "advanced" => { self.gn_preview.get_or_insert_with(Default::default); self.ui.open(Screen::Advanced) }
+                    m => return Err(format!("menu start|pause|settings|gamenight|advanced|none, not {m}")),
                 }
                 Ok(format!("menu {:?}", self.ui.screen))
             }
