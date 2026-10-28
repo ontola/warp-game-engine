@@ -537,6 +537,7 @@ impl Scene {
     }
 
     /// Preserve continuous alpha, including opaque texels of a blended badge.
+    /// An EMISSIVE material blends its emission only, unlit (signs, labels).
     /// The same material is excluded from both depth/shadow and solid proxies.
     pub fn set_material_blend(&mut self, material: u32, alpha: f32, double_sided: bool) {
         self.materials[material as usize].flags |= BLEND | NO_AMBIENT_OCCLUSION;

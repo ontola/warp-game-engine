@@ -2,7 +2,8 @@
 // small spill lights use finite cones/ranges and add no shadow rendering.
 struct Headlight { view_proj:mat4x4<f32>, position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32> };
 struct LocalLight { position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32>, source:vec4<f32> };
-struct Headlights { lights:array<Headlight,8>, count:vec4<u32>, local:array<LocalLight,32>, local_min:vec4<f32>, local_max:vec4<f32> };
+struct Headlights { lights:array<Headlight,8>, count:vec4<u32>, local:array<LocalLight,32>, local_min:vec4<f32>, local_max:vec4<f32>,
+    fog:vec4<f32>, fog_albedo:vec4<f32>, fog_emission:vec4<f32>, spot_fog:array<vec4<f32>,2>, local_fog:array<vec4<f32>,8>, spot_falloff:array<vec4<f32>,2>, fog_extra:vec4<f32> };
 @group(0) @binding(17) var<uniform> headlights:Headlights;
 @group(0) @binding(18) var headlight_depth:texture_depth_2d_array;
 
@@ -62,7 +63,10 @@ fn headlight_sample(index:u32,p:vec3<f32>,bias_normal:vec3<f32>)->HeadlightSampl
     let uv=ndc.xy*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5);
     let visibility=textureSampleCompareLevel(headlight_depth,shadow_samp,uv,i32(index),ndc.z-0.00001);
     let fade=1.0-smoothstep(lamp.position_range.w*0.8,lamp.position_range.w,dist);
-    result.irradiance=lamp.intensity_inner.rgb*(cone*fade*visibility/max(d2,0.04));
+    // Falloff exponent per spot: 2 is inverse square (the default).
+    let k=headlights.spot_falloff[index/4u][index%4u];
+    let spread=select(pow(max(d2,0.04),k*0.5),max(d2,0.04),k==2.0);
+    result.irradiance=lamp.intensity_inner.rgb*(cone*fade*visibility/spread);
     return result;
 }
 fn headlight_radiance(p:vec3<f32>,n:vec3<f32>,v:vec3<f32>,diffuse:vec3<f32>,rough:f32,f0:vec3<f32>)->vec3<f32> {
@@ -86,3 +90,4 @@ fn headlight_grass_radiance(p:vec3<f32>,v:vec3<f32>,base:vec3<f32>,rough:f32)->v
     }
     return result;
 }
+

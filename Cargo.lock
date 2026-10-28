@@ -1412,6 +1412,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "game-room"
+version = "0.1.0"
+dependencies = [
+ "glam 0.31.1",
+ "image",
+ "render",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "gamenight"
 version = "0.1.0"
 dependencies = [

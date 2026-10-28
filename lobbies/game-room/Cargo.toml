@@ -1,0 +1,16 @@
+[package]
+name = "game-room"
+edition.workspace = true
+version.workspace = true
+description = "The GameNight Game Room lobby on Warp"
+
+[[bin]]
+name = "game-room"
+path = "src/main.rs"
+
+[dependencies]
+render = { path = "../../engine/crates/render" }
+glam = "0.31"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { workspace = true }
+serde_json.workspace = true

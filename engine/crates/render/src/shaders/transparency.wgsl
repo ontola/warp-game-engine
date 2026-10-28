@@ -54,8 +54,8 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     if m.layer >= 0 { sample = textureSampleGrad(albedo, samp, in.uv, m.layer, dx, dy); }
     let alpha = clamp(sample.a * tri.alpha, 0.0, 1.0);
     if alpha <= 0.0 { discard; }
-    if tri.additive != 0u && (m.flags & 1024u) != 0u {
-        // Emissive effects are unlit. Fog may absorb their light, but adding
+    if (m.flags & 1024u) != 0u {
+        // Emissive surfaces are unlit, blended (signs, labels) or added. Fog may absorb their light, but adding
         // its scattering colour here would make the fog itself glow.
         let ray_length = distance(in.world, view.cam.xyz);
         var transmission = 1.0 - distance_fog_amount(ray_length);
@@ -64,7 +64,12 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
             let column = fog_column(ray_length, view.cam.y, direction.y, light.fog.z);
             transmission = exp(-max(light.fog.y, 0.0) * column);
         }
-        return vec4<f32>(m.tint * m.scale * transmission * alpha, alpha);
+        // With a texture layer the textured colour glows (signs, logos).
+        let glow = select(m.tint, sample.rgb * m.tint, m.layer >= 0);
+        // Lamp-lit volumetric fog in front of the surface dims it like the
+        // opaque scene (its in-scattering is already behind it).
+        transmission *= exp(-headlights.fog.x * min(ray_length, headlights.fog.z));
+        return vec4<f32>(glow * m.scale * transmission * alpha, alpha);
     }
     let base = sample.rgb * m.tint;
     let p = in.world;
@@ -104,6 +109,7 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     var rad = direct + indirect + specular + car_lamp_emission(m.flags, base, instances[tri.owner], p);
     if (m.flags & 1024u) != 0u { rad += m.tint * m.scale; }
     rad = apply_distance_fog(rad, distance(p, view.cam.xyz), -v);
+    rad *= exp(-headlights.fog.x * min(distance(p, view.cam.xyz), headlights.fog.z));
     if light.sky.z > 0.5 && light.sky.z < 1.5 { rad = vec3<f32>(sky_vis) * 6000.0; }
     else if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }
     else if light.sky.z > 2.5 && light.sky.z < 3.5 { rad = direct; }

@@ -543,6 +543,7 @@ pub struct Renderer {
     wheel_particles: crate::wheel_particles::WheelParticles,
     headlight_state: std::sync::Mutex<Vec<crate::headlights::SpotLight>>,
     local_light_state: std::sync::Mutex<Vec<crate::headlights::LocalLight>>,
+    light_extras: std::sync::Mutex<crate::headlights::LightExtras>,
     lighting_focus: std::sync::Mutex<Vec<Vec3>>,
     diagnostic_sun_focus: std::sync::Mutex<Vec<Vec3>>,
     legacy_light_lookahead: bool,
@@ -1470,6 +1471,7 @@ impl Renderer {
             wheel_particles,
             headlight_state: Default::default(),
             local_light_state: Default::default(),
+            light_extras: Default::default(),
             lighting_focus: Default::default(),
             diagnostic_sun_focus: Default::default(),
             legacy_light_lookahead: std::env::var("KERN_LEGACY_LIGHT_LOOKAHEAD").is_ok_and(|v|v=="1"),
@@ -1998,6 +2000,11 @@ impl Renderer {
         Ok(())
     }
 
+    /// Volumetric fog lit by the lamps, and per-spot falloff exponents
+    /// (Godot's `spot_attenuation`); `None`/empty restore the defaults.
+    pub fn set_light_extras(&self,fog:Option<crate::headlights::VolumetricFog>,spot_falloff:&[f32]) {
+        let mut e=self.light_extras.lock().unwrap();e.fog=fog;e.spot_falloff=spot_falloff.to_vec();
+    }
     pub fn set_headlights(&self,lights:&[crate::headlights::SpotLight])->Result<(),String> {
         let validated=crate::headlights::validate(lights)?;
         *self.headlight_state.lock().unwrap()=validated;Ok(())
@@ -2965,7 +2972,8 @@ impl Renderer {
             self.headlight_state.lock().unwrap().clone()
         } else { Vec::new() };
         let local_lights=self.local_light_state.lock().unwrap().clone();
-        self.headlights.upload(gpu,&headlights,&local_lights);
+        let mut extras=self.light_extras.lock().unwrap().clone();extras.frame=frame as u32;
+        self.headlights.upload(gpu,&headlights,&local_lights,&extras);
         let mut headlight_targets=self.headlight_targets.lock().unwrap();
         while headlight_targets.len()<headlights.len() {
             headlight_targets.push(self.view_targets_capacity(gpu,"headlight shadow",self.shadow_capacity,false,self.instance_groups.headlight_enabled));
@@ -3547,7 +3555,7 @@ impl Renderer {
             // after temporal reconstruction. Every view owns separate targets.
             let bloom_view=if bloom_on {
                 let time=self.query.as_ref().map(|(qs,_,_)|{names.push("bloom");(qs,timestamp_pair(&mut ts))});
-                self.bloom.render(gpu,&mut enc,vi,result,exposure,time)
+                self.bloom.render(gpu,&mut enc,vi,result,exposure,debug_options.bloom_threshold,debug_options.bloom_rounds,time)
             }else{self.bloom.disabled_view()};
             let result_view = result.create_view(&Default::default());
             let tone_bind = bind(gpu, &self.tone_layout, &[
