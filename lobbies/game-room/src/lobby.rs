@@ -59,7 +59,10 @@ impl Lobby {
     pub fn name(&self, id: &str) -> String { self.profile(id).map_or_else(|| "Player".into(), |p| p.name.clone()) }
 
     pub fn toast(&mut self, message: impl Into<String>, color: Color) {
-        self.toasts.push(Toast { text: message.into(), color, until: self.time + 3.5 });
+        let text = message.into();
+        // A reconnect loop repeats the same refusal; keep one, refreshed.
+        self.toasts.retain(|t| t.text != text);
+        self.toasts.push(Toast { text, color, until: self.time + 3.5 });
         if self.toasts.len() > 3 { self.toasts.remove(0); }
     }
 

@@ -30,12 +30,24 @@ fn run() -> Result<(), String> {
         print!("{text}");
         return Ok(());
     }
+    // Started by the GameNight host (bundled or registered lobby): the env
+    // carries GAMENIGHT_LOBBY_API, so no subcommand means "be the lobby".
+    let hosted = args.len() == 1 && std::env::var("GAMENIGHT_LOBBY_API").is_ok_and(|v| v == "1");
+    if hosted || args.get(1).map(String::as_str) == Some("lobby") {
+        // The GameNight lobby: connects to the host from GAMENIGHT_ADDR,
+        // fullscreen unless --windowed.
+        let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
+        let mut lobby = game_room::live::Lobby::connect(options)?;
+        let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), frames: numf("--frames", 0.0) as u64, ..Default::default() };
+        return app::run(cfg, &mut lobby);
+    }
     if matches!(args.get(1).map(String::as_str), Some("play") | Some("live-shot")) {
-        // The live lobby: `play` in a window, `live-shot` headless after --ticks.
+        // The live lobby: `play` in a window, `live-shot` headless after
+        // --ticks; with --host it joins the GameNight host instead of a demo.
         let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
         let local = numf("--players", 1.0) as usize;
         let bots = numf("--bots", 3.0) as usize;
-        let mut lobby = game_room::live::Lobby::new(options, local, bots)?;
+        let mut lobby = if flag("--host") { game_room::live::Lobby::connect(options)? } else { game_room::live::Lobby::new(options, local, bots)? };
         if args[1] == "play" {
             let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: flag("--fullscreen"), frames: numf("--frames", 0.0) as u64, ..Default::default() };
             return app::run(cfg, &mut lobby);
@@ -61,6 +73,8 @@ fn run() -> Result<(), String> {
                 for ev in [e(Ev::Explode, 3.0, 1.5, 0.0), e(Ev::Laser, -8.0, 3.0, -2.0), e(Ev::Spawn, -5.0, 0.0, 0.0), e(Ev::Hit, 6.0, 2.0, 0.0)] { lobby.event(ev); }
             }
             app::Game::tick(&mut lobby, &vec![app::Controls::default(); local]);
+            // A real host answers in real time.
+            if flag("--host") { std::thread::sleep(std::time::Duration::from_millis(16)); }
             rgba = headless.frame(&mut lobby)?;
         }
         return image::save_buffer(&out, &rgba, w, h, image::ColorType::Rgba8).map_err(|e| e.to_string());
