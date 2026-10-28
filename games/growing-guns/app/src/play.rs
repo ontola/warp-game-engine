@@ -710,6 +710,7 @@ impl app::Game for Gg {
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
             frame.set_scene(&self.vis.scene, &self.light);
             self.plates.invalidate();
+            self.vis.invalidate_sprites();
             self.sky_upload = None;
         } else if let Some(prepared) = self.sky_upload.take() {
             let gpu = frame.gpu;
@@ -726,7 +727,7 @@ impl app::Game for Gg {
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
         // Name tags over everyone not seated here (on the start screen, everyone).
         let drawn: Vec<Vec3> = self.world.players.iter().enumerate().map(|(i, p)| self.prev.get(i).map_or(p.pos, |q| q.lerp(p.pos, alpha))).collect();
-        self.plates.update(frame.gpu, r, &self.world, &self.hud, if start { &[] } else { &self.slots }, &drawn)?;
+        self.plates.update(frame.gpu, r, &self.world, &self.hud, if start { &[] } else { &self.slots }, &drawn, self.vis.sprites())?;
         let mut list = HudDrawList::new(frame.size);
         self.hud.begin_pointer_frame(frame.size);
         let cameras = if start {

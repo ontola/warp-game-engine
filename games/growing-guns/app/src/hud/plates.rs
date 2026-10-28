@@ -37,9 +37,10 @@ impl Plates {
     /// The renderer was rebuilt: draw and bind the tags again.
     pub fn invalidate(&mut self) { self.rows.clear(); }
 
-    /// The tags this frame: rows are redrawn when the names change.
+    /// The tags this frame (with the world's `extra` sprites, as the renderer
+    /// takes one list): rows are redrawn when the names change.
     /// `pos`: each player's drawn (interpolated) position.
-    pub fn update(&mut self, gpu: &render::Gpu, r: &render::Renderer, world: &World, hud: &Hud, locals: &[usize], pos: &[glam::Vec3]) -> Result<(), String> {
+    pub fn update(&mut self, gpu: &render::Gpu, r: &render::Renderer, world: &World, hud: &Hud, locals: &[usize], pos: &[glam::Vec3], extra: &[Sprite]) -> Result<(), String> {
         let tagged: Vec<usize> = world.players.iter().enumerate().filter(|(i, p)| !locals.contains(i) && p.alive && !p.ghost && i < &pos.len()).map(|(i, _)| i).take(MAX_TAGS).collect();
         let rows: Vec<(String, usize)> = tagged.iter().map(|&i| (hud.name(i).to_string(), i)).collect();
         if rows != self.rows && !rows.is_empty() {
@@ -59,13 +60,14 @@ impl Plates {
         self.rows = rows;
         let (w, h) = (ROW[0] as f32 / TEXELS * PIXEL_M, ROW[1] as f32 / TEXELS * PIXEL_M);
         let total = (ROW[1] * MAX_TAGS as u32) as f32;
-        let sprites: Vec<Sprite> = tagged.iter().enumerate().map(|(k, &i)| {
+        let mut sprites: Vec<Sprite> = tagged.iter().enumerate().map(|(k, &i)| {
             let p = &world.players[i];
             let lift = 1.4 * p.weapon.body_scale.max(0.1) * p.weapon.body_scale_axes.y.max(0.1);
             let mut s = Sprite::billboard(pos[i] + glam::Vec3::Y * lift, [w, h], IMAGE, [0.0, k as f32 * ROW[1] as f32 / total, 1.0, ROW[1] as f32 / total], glam::Vec3::splat(NITS));
             s.alpha_cut = 0.0;
             s
         }).collect();
+        sprites.extend_from_slice(extra);
         r.set_sprites(gpu, &sprites)
     }
 }
