@@ -183,6 +183,7 @@ fn sph(radius: f32) -> Shape {
 }
 
 /// Everything room.gd adds, in its order.
+#[derive(Clone)]
 pub struct RoomBuild {
     pub dump: Dump,
     pub bin: Vec<u8>,
@@ -1070,6 +1071,21 @@ fn set_transform(t: &mut [f32; 16], at: Affine3A) {
 impl RoomBuild {
     fn find(&self, name: &str) -> Vec<usize> {
         self.dump.instances.iter().enumerate().filter(|(_, i)| i.name == name || i.name.starts_with(&format!("{name}/"))).map(|(k, _)| k).collect()
+    }
+
+    /// What `pose` changes: instances (movers, disco ball, EQ bars, pads)
+    /// and materials (neon, pad bodies).
+    pub fn animated(&self) -> (Vec<usize>, Vec<usize>) {
+        let mut names: Vec<String> = vec!["mover0".into(), "mover1".into(), "disco".into()];
+        names.extend((0..7).map(|i| format!("eq{i}")));
+        names.extend(self.pads.iter().map(|p| p.0.clone()));
+        let mut instances: Vec<usize> = names.iter().flat_map(|n| self.find(n)).collect();
+        instances.sort();
+        instances.dedup();
+        let mut materials: Vec<usize> = self.neon.iter().map(|n| n.material).chain(self.pads.iter().map(|p| p.3)).collect();
+        materials.sort();
+        materials.dedup();
+        (instances, materials)
     }
 
     fn light(&self, name: &str) -> usize {

@@ -5,6 +5,7 @@ pub mod dump;
 pub mod fixture;
 pub mod fonts;
 pub mod godot;
+pub mod live;
 pub mod paint;
 pub mod room;
 pub mod stage;

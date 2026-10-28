@@ -1,6 +1,8 @@
 //! The GameNight Game Room lobby on Warp.
 //!
-//!   game-room shot --dump DIR --out room.png [--size 1280x720]
+//!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
+//!   game-room play [--players 1] [--bots 3] [--fullscreen]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -27,6 +29,27 @@ fn run() -> Result<(), String> {
         };
         print!("{text}");
         return Ok(());
+    }
+    if matches!(args.get(1).map(String::as_str), Some("play") | Some("live-shot")) {
+        // The live lobby: `play` in a window, `live-shot` headless after --ticks.
+        let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
+        let local = numf("--players", 1.0) as usize;
+        let bots = numf("--bots", 3.0) as usize;
+        let mut lobby = game_room::live::Lobby::new(options, local, bots)?;
+        if args[1] == "play" {
+            let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: flag("--fullscreen"), frames: numf("--frames", 0.0) as u64, ..Default::default() };
+            return app::run(cfg, &mut lobby);
+        }
+        let out = arg("--out").ok_or("--out FILE required")?;
+        let (w, h) = arg("--size").and_then(|s| s.split_once('x').map(|(a, b)| (a.parse().unwrap_or(1280), b.parse().unwrap_or(720)))).unwrap_or((1280u32, 720u32));
+        let gpu = Gpu::new()?;
+        let mut headless = app::Headless::new(&gpu, [w, h], 60.0)?;
+        let mut rgba = headless.frame(&mut lobby)?;
+        for _ in 0..numf("--ticks", 180.0) as u32 {
+            app::Game::tick(&mut lobby, &vec![app::Controls::default(); local]);
+            rgba = headless.frame(&mut lobby)?;
+        }
+        return image::save_buffer(&out, &rgba, w, h, image::ColorType::Rgba8).map_err(|e| e.to_string());
     }
     if args.get(1).map(String::as_str) == Some("tone") { return tone(&arg("--out").ok_or("--out FILE")?, numf("--ev", godot_ev(1.05))); }
     if args.get(1).map(String::as_str) != Some("shot") { return Err("usage: game-room shot [--dump DIR] --out room.png [--size WxH]".into()); }
