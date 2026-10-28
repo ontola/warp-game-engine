@@ -1,0 +1,15 @@
+{ "size": [960, 540],
+  "steps": [
+    { "cmd": ["bots pause", "health 0 50000"] },
+    { "ticks": 30 },
+    { "capture": "stock.png" },
+    { "cmd": ["give 0 precision", "give 0 precision", "give 0 steady_hands"] },
+    { "ticks": 50 }, { "capture": "growing.png" },
+    { "ticks": 90 }, { "capture": "sniper.png" },
+    { "cmd": ["give 0 dmg_up", "give 0 dmg_up", "give 0 dmg_up", "give 0 big_mag", "give 0 big_mag"] },
+    { "ticks": 140 }, { "capture": "heavy.png" },
+    { "cmd": ["give 0 rapid_fire", "give 0 rapid_fire", "give 0 rapid_fire", "give 0 rapid_fire", "give 0 explosive"] },
+    { "ticks": 140 }, { "capture": "minigun.png" },
+    { "ticks": 40, "hold": ["RIGHT_TRIGGER"], "look": [0, 0.01] }, { "capture": "firing.png" },
+    { "ticks": 30, "press": ["WEST"] }, { "capture": "reload.png" }
+  ] }

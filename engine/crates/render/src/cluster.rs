@@ -341,6 +341,69 @@ impl ClusterMesh {
         Self::build_with_policy(parts, |_| SimplificationPolicy::Geometry)
     }
 
+    /// Build source-only clusters for deforming meshes without simplification.
+    /// Every part's vertices are appended unchanged, including unreferenced
+    /// vertices and parts without triangles, so parallel skinning data keeps
+    /// the same vertex order. Triangle order, winding and materials also stay
+    /// unchanged; only their cluster-local index maps are constructed.
+    ///
+    /// `sphere` must conservatively enclose all supported deformations in mesh
+    /// space. It is used for the mesh and every cluster's culling/LOD bounds.
+    /// Indices must form complete triangles and refer to vertices in their part.
+    pub fn build_fixed(parts: &[Part], sphere: [f32; 4]) -> ClusterMesh {
+        const MAX_VERTS: usize = 256;
+        assert!(sphere.iter().all(|v| v.is_finite()) && sphere[3] >= 0.0,
+            "fixed mesh bounds must be a finite sphere with nonnegative radius");
+        let mut out = ClusterMesh { sphere, ..Default::default() };
+        for part in parts {
+            assert_eq!(part.indices.len() % 3, 0, "fixed mesh indices must form complete triangles");
+            assert!(part.indices.iter().all(|&i| (i as usize) < part.vertices.len()),
+                "fixed mesh index is outside its part's vertices");
+            let base = out.vertices.len() as u32;
+            out.vertices.extend_from_slice(part.vertices);
+            let mut at = 0;
+            while at < part.indices.len() {
+                let first_vert = out.cluster_verts.len() as u32;
+                let first_tri = out.tris.len() as u32;
+                let mut local = std::collections::HashMap::<u32, u32>::with_capacity(MAX_VERTS);
+                while at < part.indices.len() && out.tris.len() - (first_tri as usize) < MAX_TRIS {
+                    let triangle = &part.indices[at..at + 3];
+                    let added = triangle.iter().enumerate().filter(|&(k, index)|
+                        !local.contains_key(index) && !triangle[..k].contains(index)).count();
+                    if local.len() + added > MAX_VERTS { break; }
+                    let mut packed = 0;
+                    for (k, &index) in triangle.iter().enumerate() {
+                        let next = local.len() as u32;
+                        let cluster_index = *local.entry(index).or_insert_with(|| {
+                            out.cluster_verts.push(base + index);
+                            next
+                        });
+                        packed |= cluster_index << (k * 8);
+                    }
+                    out.tris.push(packed);
+                    at += 3;
+                }
+                out.clusters.push(GpuCluster {
+                    cull: sphere,
+                    parent: sphere,
+                    own: sphere,
+                    // A source leaf with no replacement is selected at every
+                    // LOD threshold, matching the renderer's terminal sentinel.
+                    parent_error: f32::MAX,
+                    own_error: 0.0,
+                    first_tri,
+                    tri_count: out.tris.len() as u32 - first_tri,
+                    first_vert,
+                    material: part.material,
+                    depth: 0,
+                    _pad: 0,
+                });
+            }
+        }
+        out.levels = u32::from(!out.clusters.is_empty());
+        out
+    }
+
     pub fn build_with_policy(parts: &[Part], policy: impl Fn(&Part<'_>) -> SimplificationPolicy) -> ClusterMesh {
         Self::build_configured(parts, policy, None)
     }
@@ -490,6 +553,105 @@ impl ClusterMesh {
     /// Triangles at full detail (the DAG's leaves).
     pub fn leaf_triangles(&self) -> usize {
         self.clusters.iter().filter(|c| c.own_error == 0.0).map(|c| c.tri_count as usize).sum()
+    }
+}
+
+#[cfg(test)]
+mod fixed_topology_tests {
+    use super::*;
+
+    fn vertices(count: usize, offset: f32) -> Vec<Vertex> {
+        (0..count).map(|i| Vertex {
+            pos: [offset + i as f32, i as f32 * 0.25, -offset],
+            normal: [0.0, 0.6, 0.8],
+            uv: [i as f32 * 0.125, offset],
+        }).collect()
+    }
+
+    fn triangles(mesh: &ClusterMesh) -> Vec<(u32, [u32; 3])> {
+        mesh.clusters.iter().flat_map(|cluster| {
+            mesh.tris[cluster.first_tri as usize..(cluster.first_tri + cluster.tri_count) as usize]
+                .iter().map(move |&packed| {
+                    assert_eq!(packed >> 24, 0, "only three byte-sized local indices are packed");
+                    (cluster.material, std::array::from_fn(|k|
+                        mesh.cluster_verts[cluster.first_vert as usize + ((packed >> (k * 8)) & 255) as usize]))
+                })
+        }).collect()
+    }
+
+    #[test]
+    fn fixed_preserves_every_vertex_and_authored_triangle_across_parts() {
+        let leading = vertices(2, -2.0);
+        let first = vertices(5, 0.0);
+        let unused = vertices(1, 10.0);
+        let second = vertices(4, 20.0);
+        let parts = [
+            Part { vertices: &leading, indices: &[], material: 1 },
+            Part { vertices: &first, indices: &[3, 1, 2, 3, 2, 0], material: 7 },
+            Part { vertices: &unused, indices: &[], material: 2 },
+            Part { vertices: &second, indices: &[2, 0, 3, 0, 0, 1], material: 19 },
+        ];
+        let sphere = [4.0, 7.0, -2.0, 90.0];
+        let mesh = ClusterMesh::build_fixed(&parts, sphere);
+        let authored: Vec<_> = parts.iter().flat_map(|part| part.vertices.iter().copied()).collect();
+        assert_eq!(bytemuck::cast_slice::<Vertex, u8>(&mesh.vertices), bytemuck::cast_slice::<Vertex, u8>(&authored));
+        assert_eq!(triangles(&mesh), vec![(7, [5, 3, 4]), (7, [5, 4, 2]), (19, [10, 8, 11]), (19, [8, 8, 9])]);
+        assert_eq!(mesh.sphere, sphere);
+        assert_eq!(mesh.levels, 1);
+        assert_eq!(mesh.leaf_triangles(), 4);
+        assert_eq!(mesh.root_triangles(), 4);
+        for cluster in &mesh.clusters {
+            assert_eq!(cluster.cull, sphere);
+            assert_eq!(cluster.parent, sphere);
+            assert_eq!(cluster.own, sphere);
+            assert_eq!(cluster.own_error, 0.0);
+            assert_eq!(cluster.parent_error, f32::MAX);
+            for threshold in [0.0, 1.0, 1e29] {
+                assert!(cluster.own_error <= threshold && cluster.parent_error > threshold);
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_splits_at_both_local_vertex_and_triangle_limits() {
+        let sparse = vertices(257, 0.0);
+        let dense = vertices(3, 300.0);
+        let mut sparse_indices: Vec<u32> = (0..255).collect();
+        sparse_indices.extend([0, 254, 255, 0, 255, 256]);
+        let dense_indices: Vec<u32> = (0..MAX_TRIS + 1).flat_map(|_| [0, 1, 2]).collect();
+        let parts = [
+            Part { vertices: &sparse, indices: &sparse_indices, material: 11 },
+            Part { vertices: &dense, indices: &dense_indices, material: 13 },
+        ];
+        let mesh = ClusterMesh::build_fixed(&parts, [0.0, 0.0, 0.0, 1000.0]);
+        assert_eq!(mesh.clusters.iter().map(|cluster| cluster.tri_count).collect::<Vec<_>>(), vec![86, 1, 128, 1]);
+        let mut expected = Vec::new();
+        let mut base = 0;
+        for part in &parts {
+            expected.extend(part.indices.chunks_exact(3).map(|triangle|
+                (part.material, [triangle[0] + base, triangle[1] + base, triangle[2] + base])));
+            base += part.vertices.len() as u32;
+        }
+        assert_eq!(triangles(&mesh), expected);
+        for (index, cluster) in mesh.clusters.iter().enumerate() {
+            let end = mesh.clusters.get(index + 1).map_or(mesh.cluster_verts.len(), |next| next.first_vert as usize);
+            let count = end - cluster.first_vert as usize;
+            assert!(count <= 256);
+            assert!(cluster.tri_count as usize <= MAX_TRIS);
+            if index == 0 { assert_eq!(count, 256); }
+            for &packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri + cluster.tri_count) as usize] {
+                for k in 0..3 { assert!((((packed >> (k * 8)) & 255) as usize) < count); }
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_empty_mesh_keeps_supplied_bounds_without_clusters() {
+        let sphere = [1.0, 2.0, 3.0, 4.0];
+        let mesh = ClusterMesh::build_fixed(&[], sphere);
+        assert_eq!(mesh.sphere, sphere);
+        assert_eq!(mesh.levels, 0);
+        assert!(mesh.vertices.is_empty() && mesh.cluster_verts.is_empty() && mesh.tris.is_empty() && mesh.clusters.is_empty());
     }
 }
 

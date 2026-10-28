@@ -1,0 +1,1502 @@
+{
+  "schema_version": 1,
+  "measured_date": "2026-10-28",
+  "units": "milliseconds unless otherwise named",
+  "provenance": {
+    "repository_base_commit": "0c2f1498bfa94ed7ea1fb14f0070d5987d78fdf2",
+    "source_state": "Base 0c2f149 plus then-uncommitted opt-in stress fixture in games/growing-guns/app/src/bench.rs and read-only effect counters in view.rs. Measurements precede subsequent fetch/rebase and gg-perf work; do not attribute them to a later HEAD.",
+    "warp_executable_sha256": "153ADE27C60DCD8558392DF0A49ABACE5F10A266617BF77899BE34DB9378D8E8",
+    "warp_executable": "C:\\dev\\warp-bench\\stress-20261028\\growing-guns-stress.exe",
+    "binary_hash_verified_against_both_manifests": true,
+    "adapter": "NVIDIA GeForce RTX 5070 Ti",
+    "warp_seed": 2,
+    "lighting": "full default",
+    "analysis_scripts": [
+      "C:/dev/warp-bench/stress-20261028/analyze-warp.py",
+      "C:/dev/warp-bench/stress-20261028/analyze-godot.py"
+    ],
+    "raw_artifact_availability": "Raw CSVs, logs, manifests and screenshots are retained at the listed local paths; this JSON is the portable summary, not a copy of those raw files."
+  },
+  "warp_protocol": {
+    "warmup_ticks": 180,
+    "measured_ticks": 900,
+    "simulation_tick_hz": 60,
+    "simulation_seconds": 15,
+    "repeats_per_mode_and_output": 3,
+    "accepted_runs": 12,
+    "native_resolution": true,
+    "render_per_tick": 1,
+    "serialized_gpu_wait_each_frame": true,
+    "real_time_pacing": false,
+    "presented_fps_measured": false,
+    "fixed_camera": {
+      "position": [
+        0,
+        24,
+        34
+      ],
+      "target": [
+        0,
+        6,
+        -2
+      ]
+    },
+    "four_view_interpretation": "One 3840x2160 output split into four near-1080p viewports, each using the same fixed overhead camera; not four separate 4K outputs or distinct player viewpoints.",
+    "cpu_total_scope": "Arena reset, input and simulation, scene update, FX flush, instance/light upload, and render submission. Stops before diagnostic counter collection and GPU-profile draining.",
+    "cpu_gpu_wait_scope": "Same frame start through explicit GPU completion wait. Serialized throughput fixture; not presented-frame latency.",
+    "gpu_union_scope": "Union of instrumented GPU pass intervals, paired by original measured frame ID. GPU interval spans earliest to latest timestamp; neither is a whole-frame FPS estimate.",
+    "excluded": [
+      "startup",
+      "first renderer initialization",
+      "180 warmup ticks",
+      "audio",
+      "HUD",
+      "onscreen presentation",
+      "post-measurement screenshot readback"
+    ],
+    "percentiles": "Sorted observations at floor((N-1)*p+0.5), matching nonnegative Rust round().",
+    "screenshots": "First repeat of each mode/output captured after measurement; visual review confirms visible tracers and explosion FX. This is not a per-frame pixel visibility assertion."
+  },
+  "warp_workloads": {
+    "bullets": {
+      "event_totals_per_900_tick_run": {
+        "requested": 3150,
+        "shots": 3150,
+        "explosions": 0,
+        "impacts": 3151,
+        "kills": 0,
+        "chunks_removed": 0,
+        "chunks_worn": 0,
+        "arena_resets": 0,
+        "fallback_targets": 0,
+        "debris_spawned": 9453
+      },
+      "occupancy_mean_and_max": {
+        "live_bullets": {
+          "mean": 70.23,
+          "max": 77.0
+        },
+        "rendered_tracers": {
+          "mean": 63.997778,
+          "max": 64.0
+        },
+        "alive_chunks": {
+          "mean": 5066.0,
+          "max": 5066.0
+        },
+        "local_lights": {
+          "mean": 16.0,
+          "max": 16.0
+        },
+        "cpu_particles": {
+          "mean": 737.945556,
+          "max": 755.0
+        },
+        "live_gpu_debris": {
+          "mean": 886.42,
+          "max": 920.0
+        },
+        "effect_puffs": {
+          "mean": 0.0,
+          "max": 0.0
+        }
+      },
+      "pool_caps": {
+        "rendered_tracers": {
+          "capacity": 64,
+          "frames_at_capacity": 898
+        },
+        "cpu_particles": {
+          "capacity": 768,
+          "frames_at_capacity": 0
+        },
+        "live_gpu_debris": {
+          "capacity": 4096,
+          "frames_at_capacity": 0
+        },
+        "effect_puffs": {
+          "capacity": 16384,
+          "frames_at_capacity": 0
+        },
+        "local_lights": {
+          "capacity": 16,
+          "frames_at_capacity": 900
+        }
+      },
+      "deterministic_counts_and_pool_saturation_across_all_six_runs": true,
+      "definition": "Four pinned rifles request seven bullets every two 60-Hz ticks: exactly 210/simulation-second. Damage 22, speed 150 m/s, range 200 m, no explosive rounds. Original 64 tracer pool retained; no terrain destruction at this chip damage."
+    },
+    "explosions": {
+      "event_totals_per_900_tick_run": {
+        "requested": 600,
+        "shots": 0,
+        "explosions": 600,
+        "impacts": 0,
+        "kills": 0,
+        "chunks_removed": 8300,
+        "chunks_worn": 16660,
+        "arena_resets": 15,
+        "fallback_targets": 0,
+        "debris_spawned": 621600
+      },
+      "occupancy_mean_and_max": {
+        "live_bullets": {
+          "mean": 0.0,
+          "max": 0.0
+        },
+        "rendered_tracers": {
+          "mean": 0.0,
+          "max": 0.0
+        },
+        "alive_chunks": {
+          "mean": 4749.077778,
+          "max": 5046.0
+        },
+        "local_lights": {
+          "mean": 16.0,
+          "max": 16.0
+        },
+        "cpu_particles": {
+          "mean": 768.0,
+          "max": 768.0
+        },
+        "live_gpu_debris": {
+          "mean": 3996.177778,
+          "max": 4096.0
+        },
+        "effect_puffs": {
+          "mean": 1399.333333,
+          "max": 1403.0
+        }
+      },
+      "pool_caps": {
+        "rendered_tracers": {
+          "capacity": 64,
+          "frames_at_capacity": 0
+        },
+        "cpu_particles": {
+          "capacity": 768,
+          "frames_at_capacity": 900
+        },
+        "live_gpu_debris": {
+          "capacity": 4096,
+          "frames_at_capacity": 835
+        },
+        "effect_puffs": {
+          "capacity": 16384,
+          "frames_at_capacity": 0
+        },
+        "local_lights": {
+          "capacity": 16,
+          "frames_at_capacity": 900
+        }
+      },
+      "deterministic_counts_and_pool_saturation_across_all_six_runs": true,
+      "definition": "Queue two gameplay explosions every three 60-Hz ticks: exactly 40/simulation-second, radius 6.5 m, damage 140. Live central chunk targets; original arena and debris replenished every 180 ticks or earlier on target depletion.",
+      "replenishments_per_run": {
+        "total": 15,
+        "periodic": 5,
+        "early_depletion": 10,
+        "costs_included": true
+      }
+    }
+  },
+  "warp_results": [
+    {
+      "output_size": "1920x1080",
+      "views": 1,
+      "manifest": "C:/dev/warp-bench/stress-20261028/warp-accepted/manifest.json",
+      "full_analysis": "C:/dev/warp-bench/stress-20261028/warp-results.json",
+      "per_run_timing_ranges_ms": {
+        "bullets": {
+          "cpu_total_ms": {
+            "mean": [
+              2.047532,
+              2.201686
+            ],
+            "median": [
+              1.7888,
+              1.8621
+            ],
+            "p95": [
+              3.7177,
+              4.768
+            ],
+            "p99": [
+              5.2432,
+              8.4712
+            ],
+            "max": [
+              8.4937,
+              14.1203
+            ]
+          },
+          "cpu_gpu_wait_ms": {
+            "mean": [
+              4.005351,
+              4.318873
+            ],
+            "median": [
+              3.5874,
+              3.7378
+            ],
+            "p95": [
+              6.7116,
+              8.3856
+            ],
+            "p99": [
+              9.7369,
+              11.4853
+            ],
+            "max": [
+              11.9234,
+              15.8813
+            ]
+          },
+          "gpu_union_ms": {
+            "mean": [
+              1.375828,
+              1.3782
+            ],
+            "median": [
+              1.339712,
+              1.34048
+            ],
+            "p95": [
+              1.632704,
+              1.633632
+            ],
+            "p99": [
+              1.650592,
+              1.710592
+            ],
+            "max": [
+              1.880448,
+              2.043808
+            ]
+          },
+          "gpu_interval_ms": {
+            "mean": [
+              1.46624,
+              1.467625
+            ],
+            "median": [
+              1.410528,
+              1.411392
+            ],
+            "p95": [
+              1.706304,
+              1.709856
+            ],
+            "p99": [
+              1.788608,
+              1.79776
+            ],
+            "max": [
+              2.091232,
+              2.251712
+            ]
+          }
+        },
+        "explosions": {
+          "cpu_total_ms": {
+            "mean": [
+              2.892968,
+              3.045418
+            ],
+            "median": [
+              2.3757,
+              2.4381
+            ],
+            "p95": [
+              6.4206,
+              6.8406
+            ],
+            "p99": [
+              11.8386,
+              14.5497
+            ],
+            "max": [
+              20.8547,
+              25.7468
+            ]
+          },
+          "cpu_gpu_wait_ms": {
+            "mean": [
+              5.120951,
+              5.24714
+            ],
+            "median": [
+              4.4683,
+              4.5235
+            ],
+            "p95": [
+              9.466,
+              10.7252
+            ],
+            "p99": [
+              15.1638,
+              16.6852
+            ],
+            "max": [
+              22.7893,
+              27.9304
+            ]
+          },
+          "gpu_union_ms": {
+            "mean": [
+              1.544972,
+              1.553088
+            ],
+            "median": [
+              1.52208,
+              1.525024
+            ],
+            "p95": [
+              1.79216,
+              1.805376
+            ],
+            "p99": [
+              1.832672,
+              1.916512
+            ],
+            "max": [
+              1.93248,
+              2.000576
+            ]
+          },
+          "gpu_interval_ms": {
+            "mean": [
+              1.636067,
+              1.642666
+            ],
+            "median": [
+              1.592128,
+              1.594496
+            ],
+            "p95": [
+              1.87824,
+              1.881536
+            ],
+            "p99": [
+              1.907104,
+              1.988544
+            ],
+            "max": [
+              2.001216,
+              2.072512
+            ]
+          }
+        }
+      },
+      "runs": [
+        {
+          "scenario": "bullets",
+          "repeat": 1,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 2.047532,
+              "median": 1.8167,
+              "p95": 3.7177,
+              "p99": 5.2432,
+              "max": 8.4937
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 4.005351,
+              "median": 3.5874,
+              "p95": 6.7205,
+              "p99": 9.7831,
+              "max": 14.5055
+            },
+            "gpu_union_ms": {
+              "mean": 1.3782,
+              "median": 1.339712,
+              "p95": 1.63328,
+              "p99": 1.650592,
+              "max": 1.880448
+            },
+            "gpu_interval_ms": {
+              "mean": 1.467625,
+              "median": 1.410528,
+              "p95": 1.706304,
+              "p99": 1.793056,
+              "max": 2.091232
+            }
+          },
+          "actual_loop_elapsed_seconds": 3.617,
+          "cpu_stage_means_ms": {
+            "scene_ms": 0.954958,
+            "render_submit_ms": 0.780291,
+            "sim_ms": 0.238541,
+            "fx_flush_ms": 0.047898,
+            "upload_ms": 0.025322,
+            "reset_ms": 6.4e-05
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 0.486508,
+            "shadow raster": 0.21965,
+            "raster": 0.211043,
+            "near shadow raster": 0.151019,
+            "taa": 0.06655,
+            "cull": 0.059934
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 0,
+          "reset_frame_wait_ms": null,
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-accepted/1-bullets.csv"
+        },
+        {
+          "scenario": "explosions",
+          "repeat": 1,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 3.045418,
+              "median": 2.4381,
+              "p95": 6.8406,
+              "p99": 13.1585,
+              "max": 25.7468
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 5.214705,
+              "median": 4.5235,
+              "p95": 9.9837,
+              "p99": 15.417,
+              "max": 27.9304
+            },
+            "gpu_union_ms": {
+              "mean": 1.553088,
+              "median": 1.525024,
+              "p95": 1.801248,
+              "p99": 1.916512,
+              "max": 1.939072
+            },
+            "gpu_interval_ms": {
+              "mean": 1.642666,
+              "median": 1.594496,
+              "p95": 1.87824,
+              "p99": 1.988544,
+              "max": 2.070976
+            }
+          },
+          "actual_loop_elapsed_seconds": 4.704,
+          "cpu_stage_means_ms": {
+            "scene_ms": 1.755142,
+            "render_submit_ms": 0.934865,
+            "fx_flush_ms": 0.117676,
+            "sim_ms": 0.117365,
+            "reset_ms": 0.093863,
+            "upload_ms": 0.026012
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 0.460441,
+            "raster": 0.231527,
+            "fx": 0.209775,
+            "shadow raster": 0.200688,
+            "near shadow raster": 0.135022,
+            "taa": 0.065876
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 15,
+          "reset_frame_wait_ms": {
+            "mean": 16.92056,
+            "median": 15.417,
+            "p95": 23.0663,
+            "p99": 27.9304,
+            "max": 27.9304
+          },
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-accepted/1-explosions.csv"
+        },
+        {
+          "scenario": "bullets",
+          "repeat": 2,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 2.201686,
+              "median": 1.8621,
+              "p95": 4.768,
+              "p99": 8.4712,
+              "max": 14.1203
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 4.318873,
+              "median": 3.7378,
+              "p95": 8.3856,
+              "p99": 11.4853,
+              "max": 15.8813
+            },
+            "gpu_union_ms": {
+              "mean": 1.375828,
+              "median": 1.340352,
+              "p95": 1.633632,
+              "p99": 1.710592,
+              "max": 1.944032
+            },
+            "gpu_interval_ms": {
+              "mean": 1.46624,
+              "median": 1.41104,
+              "p95": 1.709856,
+              "p99": 1.79776,
+              "max": 2.219808
+            }
+          },
+          "actual_loop_elapsed_seconds": 3.899,
+          "cpu_stage_means_ms": {
+            "scene_ms": 1.029732,
+            "render_submit_ms": 0.840063,
+            "sim_ms": 0.249266,
+            "fx_flush_ms": 0.054155,
+            "upload_ms": 0.027958,
+            "reset_ms": 5.9e-05
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 0.483758,
+            "shadow raster": 0.218924,
+            "raster": 0.2107,
+            "near shadow raster": 0.151407,
+            "taa": 0.067156,
+            "cull": 0.059833
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 0,
+          "reset_frame_wait_ms": null,
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-accepted/2-bullets.csv"
+        },
+        {
+          "scenario": "explosions",
+          "repeat": 2,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 2.892968,
+              "median": 2.3775,
+              "p95": 6.4206,
+              "p99": 11.8386,
+              "max": 21.9854
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 5.24714,
+              "median": 4.503,
+              "p95": 10.7252,
+              "p99": 15.1638,
+              "max": 23.9502
+            },
+            "gpu_union_ms": {
+              "mean": 1.544972,
+              "median": 1.52208,
+              "p95": 1.79216,
+              "p99": 1.894592,
+              "max": 2.000576
+            },
+            "gpu_interval_ms": {
+              "mean": 1.636067,
+              "median": 1.592128,
+              "p95": 1.881536,
+              "p99": 1.986464,
+              "max": 2.072512
+            }
+          },
+          "actual_loop_elapsed_seconds": 4.734,
+          "cpu_stage_means_ms": {
+            "scene_ms": 1.669689,
+            "render_submit_ms": 0.886463,
+            "sim_ms": 0.117546,
+            "fx_flush_ms": 0.109757,
+            "reset_ms": 0.085658,
+            "upload_ms": 0.023392
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 0.458629,
+            "raster": 0.229425,
+            "fx": 0.209592,
+            "shadow raster": 0.201002,
+            "near shadow raster": 0.134646,
+            "taa": 0.065672
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 15,
+          "reset_frame_wait_ms": {
+            "mean": 15.917747,
+            "median": 13.6884,
+            "p95": 21.7184,
+            "p99": 23.9502,
+            "max": 23.9502
+          },
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-accepted/2-explosions.csv"
+        },
+        {
+          "scenario": "bullets",
+          "repeat": 3,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 2.060845,
+              "median": 1.7888,
+              "p95": 3.9042,
+              "p99": 5.5949,
+              "max": 9.8182
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 4.056531,
+              "median": 3.5959,
+              "p95": 6.7116,
+              "p99": 9.7369,
+              "max": 11.9234
+            },
+            "gpu_union_ms": {
+              "mean": 1.376869,
+              "median": 1.34048,
+              "p95": 1.632704,
+              "p99": 1.671104,
+              "max": 2.043808
+            },
+            "gpu_interval_ms": {
+              "mean": 1.467591,
+              "median": 1.411392,
+              "p95": 1.708736,
+              "p99": 1.788608,
+              "max": 2.251712
+            }
+          },
+          "actual_loop_elapsed_seconds": 3.663,
+          "cpu_stage_means_ms": {
+            "scene_ms": 0.954758,
+            "render_submit_ms": 0.788408,
+            "sim_ms": 0.24195,
+            "fx_flush_ms": 0.046175,
+            "upload_ms": 0.029015,
+            "reset_ms": 6.4e-05
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 0.484211,
+            "shadow raster": 0.219396,
+            "raster": 0.210787,
+            "near shadow raster": 0.151692,
+            "taa": 0.06878,
+            "cull": 0.057952
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 0,
+          "reset_frame_wait_ms": null,
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-accepted/3-bullets.csv"
+        },
+        {
+          "scenario": "explosions",
+          "repeat": 3,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 2.951194,
+              "median": 2.3757,
+              "p95": 6.4677,
+              "p99": 14.5497,
+              "max": 20.8547
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 5.120951,
+              "median": 4.4683,
+              "p95": 9.466,
+              "p99": 16.6852,
+              "max": 22.7893
+            },
+            "gpu_union_ms": {
+              "mean": 1.552487,
+              "median": 1.524704,
+              "p95": 1.805376,
+              "p99": 1.832672,
+              "max": 1.93248
+            },
+            "gpu_interval_ms": {
+              "mean": 1.639432,
+              "median": 1.593984,
+              "p95": 1.87856,
+              "p99": 1.907104,
+              "max": 2.001216
+            }
+          },
+          "actual_loop_elapsed_seconds": 4.62,
+          "cpu_stage_means_ms": {
+            "scene_ms": 1.694658,
+            "render_submit_ms": 0.907517,
+            "sim_ms": 0.117091,
+            "fx_flush_ms": 0.113515,
+            "reset_ms": 0.094463,
+            "upload_ms": 0.023452
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 0.458739,
+            "raster": 0.231396,
+            "fx": 0.211383,
+            "shadow raster": 0.200605,
+            "near shadow raster": 0.134954,
+            "taa": 0.066502
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 15,
+          "reset_frame_wait_ms": {
+            "mean": 17.381467,
+            "median": 16.8501,
+            "p95": 22.5591,
+            "p99": 22.7893,
+            "max": 22.7893
+          },
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-accepted/3-explosions.csv"
+        }
+      ]
+    },
+    {
+      "output_size": "3840x2160",
+      "views": 4,
+      "manifest": "C:/dev/warp-bench/stress-20261028/warp-4k4v/manifest.json",
+      "full_analysis": "C:/dev/warp-bench/stress-20261028/warp-results4k.json",
+      "per_run_timing_ranges_ms": {
+        "bullets": {
+          "cpu_total_ms": {
+            "mean": [
+              3.734441,
+              3.943043
+            ],
+            "median": [
+              3.0421,
+              3.3788
+            ],
+            "p95": [
+              7.0485,
+              8.1051
+            ],
+            "p99": [
+              10.154,
+              11.7332
+            ],
+            "max": [
+              14.6739,
+              16.7545
+            ]
+          },
+          "cpu_gpu_wait_ms": {
+            "mean": [
+              9.550971,
+              10.025552
+            ],
+            "median": [
+              8.6723,
+              9.1457
+            ],
+            "p95": [
+              13.8545,
+              16.0564
+            ],
+            "p99": [
+              17.5687,
+              19.0548
+            ],
+            "max": [
+              23.0909,
+              29.8193
+            ]
+          },
+          "gpu_union_ms": {
+            "mean": [
+              4.700318,
+              4.748624
+            ],
+            "median": [
+              4.591712,
+              4.699232
+            ],
+            "p95": [
+              5.022528,
+              5.137792
+            ],
+            "p99": [
+              5.104832,
+              5.528704
+            ],
+            "max": [
+              5.318048,
+              5.833856
+            ]
+          },
+          "gpu_interval_ms": {
+            "mean": [
+              5.009461,
+              5.107799
+            ],
+            "median": [
+              5.092832,
+              5.111104
+            ],
+            "p95": [
+              5.296384,
+              5.485248
+            ],
+            "p99": [
+              5.419296,
+              5.89216
+            ],
+            "max": [
+              5.541824,
+              6.336224
+            ]
+          }
+        },
+        "explosions": {
+          "cpu_total_ms": {
+            "mean": [
+              4.748404,
+              4.992146
+            ],
+            "median": [
+              3.7945,
+              4.0955
+            ],
+            "p95": [
+              10.0482,
+              10.6686
+            ],
+            "p99": [
+              16.5634,
+              17.1764
+            ],
+            "max": [
+              22.5277,
+              30.888
+            ]
+          },
+          "cpu_gpu_wait_ms": {
+            "mean": [
+              11.624505,
+              11.983138
+            ],
+            "median": [
+              10.3852,
+              10.7981
+            ],
+            "p95": [
+              18.1305,
+              19.0315
+            ],
+            "p99": [
+              23.9413,
+              24.5023
+            ],
+            "max": [
+              28.6688,
+              37.3973
+            ]
+          },
+          "gpu_union_ms": {
+            "mean": [
+              5.484689,
+              5.517886
+            ],
+            "median": [
+              5.376608,
+              5.443008
+            ],
+            "p95": [
+              5.814432,
+              5.896736
+            ],
+            "p99": [
+              5.94256,
+              6.23392
+            ],
+            "max": [
+              6.070208,
+              6.775232
+            ]
+          },
+          "gpu_interval_ms": {
+            "mean": [
+              5.832324,
+              5.870743
+            ],
+            "median": [
+              5.868064,
+              5.892256
+            ],
+            "p95": [
+              6.080928,
+              6.230528
+            ],
+            "p99": [
+              6.29088,
+              6.674304
+            ],
+            "max": [
+              6.6576,
+              7.00352
+            ]
+          }
+        }
+      },
+      "runs": [
+        {
+          "scenario": "bullets",
+          "repeat": 1,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 3.943043,
+              "median": 3.3788,
+              "p95": 7.5444,
+              "p99": 11.3014,
+              "max": 14.6739
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 10.025552,
+              "median": 9.1457,
+              "p95": 14.9262,
+              "p99": 18.0422,
+              "max": 29.8193
+            },
+            "gpu_union_ms": {
+              "mean": 4.736873,
+              "median": 4.61808,
+              "p95": 5.11632,
+              "p99": 5.525728,
+              "max": 5.833856
+            },
+            "gpu_interval_ms": {
+              "mean": 5.08728,
+              "median": 5.093888,
+              "p95": 5.388192,
+              "p99": 5.89216,
+              "max": 6.071808
+            }
+          },
+          "actual_loop_elapsed_seconds": 9.041,
+          "cpu_stage_means_ms": {
+            "render_submit_ms": 2.460911,
+            "scene_ms": 1.118959,
+            "sim_ms": 0.270133,
+            "fx_flush_ms": 0.061875,
+            "upload_ms": 0.030532,
+            "reset_ms": 6e-05
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 1.990139,
+            "raster": 0.850343,
+            "near shadow raster": 0.595075,
+            "taa": 0.29772,
+            "cull": 0.240623,
+            "shadow raster": 0.212322
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 0,
+          "reset_frame_wait_ms": null,
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-4k4v/1-bullets.csv"
+        },
+        {
+          "scenario": "explosions",
+          "repeat": 1,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 4.879768,
+              "median": 3.9338,
+              "p95": 10.0482,
+              "p99": 16.5992,
+              "max": 22.5277
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 11.624505,
+              "median": 10.5184,
+              "p95": 18.1305,
+              "p99": 24.5023,
+              "max": 28.6688
+            },
+            "gpu_union_ms": {
+              "mean": 5.494212,
+              "median": 5.396128,
+              "p95": 5.814432,
+              "p99": 6.03888,
+              "max": 6.440864
+            },
+            "gpu_interval_ms": {
+              "mean": 5.832324,
+              "median": 5.892256,
+              "p95": 6.080928,
+              "p99": 6.425216,
+              "max": 6.66576
+            }
+          },
+          "actual_loop_elapsed_seconds": 10.479,
+          "cpu_stage_means_ms": {
+            "render_submit_ms": 2.696905,
+            "scene_ms": 1.80181,
+            "sim_ms": 0.131332,
+            "fx_flush_ms": 0.125456,
+            "reset_ms": 0.097818,
+            "upload_ms": 0.025883
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 1.863802,
+            "raster": 0.932215,
+            "fx": 0.836479,
+            "near shadow raster": 0.546131,
+            "taa": 0.296206,
+            "cull": 0.26075
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 15,
+          "reset_frame_wait_ms": {
+            "mean": 23.83114,
+            "median": 24.5023,
+            "p95": 27.8897,
+            "p99": 28.6688,
+            "max": 28.6688
+          },
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-4k4v/1-explosions.csv"
+        },
+        {
+          "scenario": "bullets",
+          "repeat": 2,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 3.734441,
+              "median": 3.1779,
+              "p95": 7.0485,
+              "p99": 10.154,
+              "max": 16.7545
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 9.550971,
+              "median": 8.7527,
+              "p95": 13.8545,
+              "p99": 17.5687,
+              "max": 23.0909
+            },
+            "gpu_union_ms": {
+              "mean": 4.700318,
+              "median": 4.591712,
+              "p95": 5.022528,
+              "p99": 5.104832,
+              "max": 5.318048
+            },
+            "gpu_interval_ms": {
+              "mean": 5.009461,
+              "median": 5.092832,
+              "p95": 5.296384,
+              "p99": 5.419296,
+              "max": 5.541824
+            }
+          },
+          "actual_loop_elapsed_seconds": 8.613,
+          "cpu_stage_means_ms": {
+            "render_submit_ms": 2.352465,
+            "scene_ms": 1.025318,
+            "sim_ms": 0.26201,
+            "fx_flush_ms": 0.065262,
+            "upload_ms": 0.02876,
+            "reset_ms": 5.8e-05
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 1.978955,
+            "raster": 0.846679,
+            "near shadow raster": 0.587062,
+            "taa": 0.268394,
+            "cull": 0.241806,
+            "shadow raster": 0.212628
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 0,
+          "reset_frame_wait_ms": null,
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-4k4v/2-bullets.csv"
+        },
+        {
+          "scenario": "explosions",
+          "repeat": 2,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 4.748404,
+              "median": 3.7945,
+              "p95": 10.6686,
+              "p99": 16.5634,
+              "max": 30.2427
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 11.645981,
+              "median": 10.3852,
+              "p95": 19.0315,
+              "p99": 24.2359,
+              "max": 36.7806
+            },
+            "gpu_union_ms": {
+              "mean": 5.484689,
+              "median": 5.376608,
+              "p95": 5.8656,
+              "p99": 5.94256,
+              "max": 6.070208
+            },
+            "gpu_interval_ms": {
+              "mean": 5.845069,
+              "median": 5.880736,
+              "p95": 6.14368,
+              "p99": 6.29088,
+              "max": 6.6576
+            }
+          },
+          "actual_loop_elapsed_seconds": 10.496,
+          "cpu_stage_means_ms": {
+            "render_submit_ms": 2.559418,
+            "scene_ms": 1.823254,
+            "fx_flush_ms": 0.122123,
+            "sim_ms": 0.121291,
+            "reset_ms": 0.09399,
+            "upload_ms": 0.027818
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 1.867317,
+            "raster": 0.926591,
+            "fx": 0.83662,
+            "near shadow raster": 0.549519,
+            "taa": 0.271476,
+            "cull": 0.271123
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 15,
+          "reset_frame_wait_ms": {
+            "mean": 23.574467,
+            "median": 22.4417,
+            "p95": 27.8207,
+            "p99": 36.7806,
+            "max": 36.7806
+          },
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-4k4v/2-explosions.csv"
+        },
+        {
+          "scenario": "bullets",
+          "repeat": 3,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 3.738463,
+              "median": 3.0421,
+              "p95": 8.1051,
+              "p99": 11.7332,
+              "max": 16.2182
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 9.88865,
+              "median": 8.6723,
+              "p95": 16.0564,
+              "p99": 19.0548,
+              "max": 28.3357
+            },
+            "gpu_union_ms": {
+              "mean": 4.748624,
+              "median": 4.699232,
+              "p95": 5.137792,
+              "p99": 5.528704,
+              "max": 5.823936
+            },
+            "gpu_interval_ms": {
+              "mean": 5.107799,
+              "median": 5.111104,
+              "p95": 5.485248,
+              "p99": 5.845056,
+              "max": 6.336224
+            }
+          },
+          "actual_loop_elapsed_seconds": 8.919,
+          "cpu_stage_means_ms": {
+            "render_submit_ms": 2.319168,
+            "scene_ms": 1.065818,
+            "sim_ms": 0.253138,
+            "fx_flush_ms": 0.06744,
+            "upload_ms": 0.032295,
+            "reset_ms": 6.3e-05
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 1.982779,
+            "raster": 0.872123,
+            "near shadow raster": 0.581393,
+            "taa": 0.299873,
+            "cull": 0.241902,
+            "shadow raster": 0.214134
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 0,
+          "reset_frame_wait_ms": null,
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-4k4v/3-bullets.csv"
+        },
+        {
+          "scenario": "explosions",
+          "repeat": 3,
+          "timings_ms": {
+            "cpu_total_ms": {
+              "mean": 4.992146,
+              "median": 4.0955,
+              "p95": 10.5124,
+              "p99": 17.1764,
+              "max": 30.888
+            },
+            "cpu_gpu_wait_ms": {
+              "mean": 11.983138,
+              "median": 10.7981,
+              "p95": 18.9927,
+              "p99": 23.9413,
+              "max": 37.3973
+            },
+            "gpu_union_ms": {
+              "mean": 5.517886,
+              "median": 5.443008,
+              "p95": 5.896736,
+              "p99": 6.23392,
+              "max": 6.775232
+            },
+            "gpu_interval_ms": {
+              "mean": 5.870743,
+              "median": 5.868064,
+              "p95": 6.230528,
+              "p99": 6.674304,
+              "max": 7.00352
+            }
+          },
+          "actual_loop_elapsed_seconds": 10.806,
+          "cpu_stage_means_ms": {
+            "render_submit_ms": 2.718861,
+            "scene_ms": 1.863498,
+            "fx_flush_ms": 0.140842,
+            "sim_ms": 0.129379,
+            "reset_ms": 0.108117,
+            "upload_ms": 0.03087
+          },
+          "top_gpu_pass_means_ms": {
+            "shade": 1.866923,
+            "raster": 0.92972,
+            "fx": 0.836036,
+            "near shadow raster": 0.551304,
+            "taa": 0.296116,
+            "cull": 0.274672
+          },
+          "validation": {
+            "accepted": true,
+            "measured_rows": 900,
+            "matching_gpu_profiles": 900,
+            "gpu_dropped": 0,
+            "gpu_errors": 0,
+            "fallback_targets": 0,
+            "all_players_alive_frames": 900,
+            "stderr_error_warning_lines": 0
+          },
+          "reset_frames": 15,
+          "reset_frame_wait_ms": {
+            "mean": 24.881493,
+            "median": 22.5831,
+            "p95": 33.8449,
+            "p99": 37.3973,
+            "max": 37.3973
+          },
+          "source_csv": "C:/dev/warp-bench/stress-20261028/warp-4k4v/3-explosions.csv"
+        }
+      ]
+    }
+  ],
+  "godot_reference": {
+    "full_analysis": "C:/dev/warp-bench/stress-20261028/godot-results.json",
+    "manifest": "C:/dev/warp-bench/stress-20261028/godot-final/manifest.json",
+    "provenance": {
+      "game_executable": "C:\\dev\\growing-guns\\MoreRounds.exe",
+      "executable_sha256": "C9258C5D72677ADCE4F0AB5D2ED63FA5049CF963B4013477A2AFB421195B14BD",
+      "pck_sha256": "07476B651B0E064CC880ECF5DC8B26FCE190D044E968401E398D870D0AFC62DC",
+      "probe_sha256": "766AEDC33183AC7D76CED6FF5B5D3A5A4DF56D780227F98E79F43E5BD0D3E6F3",
+      "harness_sha256": "0109DE21D373E99D57C5AA644BEE1547DCC981699F30E7DEDE63E0C62436581A",
+      "seed": 721077
+    },
+    "groups": {
+      "bullets": {
+        "run_count": 3,
+        "per_run_interval_stat_ranges": {
+          "median_ms": [
+            10.326,
+            11.489
+          ],
+          "p95_ms": [
+            22.501,
+            26.388
+          ],
+          "p99_ms": [
+            36.29,
+            47.726
+          ],
+          "max_ms": [
+            60.351,
+            72.579
+          ],
+          "mean_ms": [
+            11.039145,
+            12.721081
+          ]
+        },
+        "viewport_gpu_median_ms_range": [
+          0.089,
+          0.09
+        ],
+        "viewport_gpu_p95_ms_range": [
+          0.095,
+          0.096
+        ],
+        "peak_projectiles_range": [
+          474,
+          476
+        ]
+      },
+      "explosions": {
+        "run_count": 3,
+        "per_run_interval_stat_ranges": {
+          "median_ms": [
+            12.615,
+            18.119
+          ],
+          "p95_ms": [
+            40.7,
+            75.495
+          ],
+          "p99_ms": [
+            103.764,
+            115.373
+          ],
+          "max_ms": [
+            127.093,
+            175.784
+          ],
+          "mean_ms": [
+            17.22781,
+            26.617473
+          ]
+        },
+        "viewport_gpu_median_ms_range": [
+          2.321,
+          2.481
+        ],
+        "viewport_gpu_p95_ms_range": [
+          2.52,
+          2.746
+        ],
+        "peak_projectiles_range": [
+          85,
+          142
+        ]
+      }
+    },
+    "metrics": "Process-callback intervals strictly inside observed measure phase; delayed viewport GPU telemetry separately reported, without exact per-frame alignment. No CPU-total or presented-FPS claim.",
+    "resolution_and_control": "1920x1080 offscreen window, render scale 1, quality scale 1, adaptive governor disabled; original effect and projectile caps retained.",
+    "bullets": "Original remote_minigun_benchmark scene: three minigun plus three shotgun cards, 2 s authored warmup and 12 s measure; 2520 bullets/run, approximately 474-476 peak live projectiles. Different projectile lifetimes and visible workload from Warp.",
+    "explosions": "Original perf_benchmark wall_spray: four bots plus nominal 40/s manual spray, 3 s warmup and 15 s measure. Terrain is not replenished, and original full/cheap per-frame effect budgets remain active; event counts and realized load vary.",
+    "errors": "Recorded separately by phase in full analysis. Engine shutdown/resource cleanup errors occur after measurement completion and are retained, not silently discarded.",
+    "comparison_policy": "Different scenes, seeds, lifetimes, occupancy, render effects, reset policies and measurement clocks. These are separate stress measurements; do not calculate or publish an engine-speed ratio."
+  },
+  "excluded_runs": [
+    {
+      "path": "C:/dev/warp-bench/stress-20261028/warp-final",
+      "reason": "Explosion pilot used empty-target fallbacks for 375 of 600 blasts. Replaced by replenishment-on-depletion fixture and zero-fallback assertion."
+    },
+    {
+      "path": "C:/dev/warp-bench/stress-20261028/runs-20261028-080107/01-bullets",
+      "reason": "Godot instrument pilot emitted only 98 bullets in 12 seconds; excluded from heavy stress results."
+    }
+  ],
+  "findings": [
+    "All 12 Warp runs have 900 unique measured rows and exactly matching GPU profiles, no dropped/error GPU samples, zero target fallbacks, exact requested event totals, and all four players alive throughout.",
+    "At 1080p/one view, scene update is the largest measured CPU stage. At 4K/four views, render submission is largest. Shade is the largest GPU pass in both configurations.",
+    "Explosion scene-update and replenishment costs contribute to tails. Every explosion run replenishes 15 times; all reset costs remain included in reported frame statistics.",
+    "The 4K/four-view serialized CPU-plus-wait medians are 8.67-9.15 ms for bullets and 10.39-10.80 ms for explosions. Both exceed the 8.33 ms 120-Hz budget in this fixture; this does not establish presentation performance.",
+    "Pool caps are part of the workload: bullets fill 64 tracer slots in 898/900 frames; explosions fill 768 CPU particle slots in all frames and 4096 GPU debris slots in 835/900. Unlimited scaling cannot be inferred.",
+    "Do not interpret GPU-to-wall gaps as exclusive CPU attribution or subtract timestamp coverage from wall time. Scheduling and synchronization also contribute."
+  ]
+}

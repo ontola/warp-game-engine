@@ -1,0 +1,11 @@
+[package]
+name = "growing-guns"
+edition.workspace = true
+version.workspace = true
+description = "Growing Guns gameplay simulation on Warp: arena, movement, weapon, bots, rounds"
+
+[dependencies]
+kern.workspace = true
+glam = { version = "0.31", features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

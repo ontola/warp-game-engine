@@ -74,8 +74,83 @@ fn clip_box(h: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec3<f32> {
     return select(h, centre + v / m, m > 1.0);
 }
 
+// Each pixel reads its 3x3 neighbourhood: the workgroup loads its 8x8
+// tile plus a one-pixel border once into shared memory (100 loads of
+// colour and depth instead of 576), already range-compressed.
+var<workgroup> tile_c: array<vec3<f32>, 100>;
+var<workgroup> tile_d: array<f32, 100>;
+
+fn tile_index(q: vec2<i32>, origin: vec2<i32>) -> u32 { let l = q - origin; return u32(l.y * 10 + l.x); }
+
 @compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+    let size = vec2<i32>(taa.size.xy);
+    let px = vec2<i32>(gid.xy);
+    let origin = vec2<i32>(wg.xy) * 8 - 1;
+    for (var k = li; k < 100u; k += 64u) {
+        let q = clamp(origin + vec2<i32>(i32(k % 10u), i32(k / 10u)), vec2<i32>(0), size - 1);
+        tile_c[k] = compress(textureLoad(cur, q, 0).rgb);
+        tile_d[k] = textureLoad(depth_tex, q, 0);
+    }
+    workgroupBarrier();
+    if px.x >= size.x || px.y >= size.y {
+        return;
+    }
+    let c = tile_c[tile_index(px, origin)];
+    // Neighbourhood statistics, and the nearest surface around (edges of
+    // moving geometry reproject with the foreground).
+    var m1 = vec3<f32>(0.0);
+    var m2 = vec3<f32>(0.0);
+    var best = px;
+    var best_d = -1.0;
+    for (var y = -1; y <= 1; y++) {
+        for (var x = -1; x <= 1; x++) {
+            let q = clamp(px + vec2<i32>(x, y), vec2<i32>(0), size - 1);
+            let t = tile_index(q, origin);
+            let s = ycocg(tile_c[t]);
+            m1 += s;
+            m2 += s * s;
+            let d = tile_d[t];
+            if d > best_d {
+                best_d = d;
+                best = q;
+            }
+        }
+    }
+    let mean = m1 / 9.0;
+    let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3<f32>(0.0)));
+    // Where that surface was last frame. Sky (depth 0) is a direction:
+    // w = 0 keeps it at infinity through both matrices.
+    let ndc = vec2<f32>((f32(best.x) + 0.5) * taa.size.z * 2.0 - 1.0, 1.0 - (f32(best.y) + 0.5) * taa.size.w * 2.0);
+    let world = taa.inv_view_proj * vec4<f32>(ndc, best_d, 1.0);
+    let prev = taa.prev_view_proj * world;
+    let prev_ndc = prev.xy / prev.w;
+    let off = vec2<f32>(best - px);
+    let prev_uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5) - off * taa.size.zw;
+    let uv = (vec2<f32>(px) + 0.5) * taa.size.zw;
+    let motion = length((prev_uv - uv) * taa.size.xy);
+    let inside = all(prev_uv >= vec2<f32>(0.0)) && all(prev_uv <= vec2<f32>(1.0)) && prev.w > 0.0;
+    var n = 0.0;
+    var result = c;
+    if inside && taa.params.z < 0.5 {
+        n = textureSampleLevel(hist, lin, prev_uv, 0.0).a;
+        // A still image can trust its history more than a moving one.
+        let gamma = mix(taa.params.w, 1.0, smoothstep(0.05, 0.5, motion));
+        let h = ycocg(compress(history(prev_uv)));
+        let clipped = clip_box(h, mean - gamma * sigma, mean + gamma * sigma);
+        // History that had to be pulled far was wrong: start counting again.
+        let pulled = length(clipped - h) / (length(sigma) + 1e-3);
+        n = select(n, min(n, 2.0), pulled > 1.0);
+        let alpha = max(1.0 / (n + 1.0), taa.params.y);
+        result = mix(rgb(clipped), c, alpha);
+    }
+    textureStore(out_tex, px, vec4<f32>(expand(result), min(n + 1.0, 255.0)));
+}
+
+// The same pass reading neighbours straight from the textures
+// (KERN_TILED_POST=0), for comparison.
+@compute @workgroup_size(8, 8)
+fn main_direct(@builtin(global_invocation_id) gid: vec3<u32>) {
     let size = vec2<i32>(taa.size.xy);
     let px = vec2<i32>(gid.xy);
     if px.x >= size.x || px.y >= size.y {

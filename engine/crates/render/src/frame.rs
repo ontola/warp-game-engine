@@ -162,6 +162,8 @@ struct LightUniform {
     near_shadow: [f32; 4],
     /// Stellar peak radiance, zenith optical depth, zero-sun fast path, stable seed.
     night_stars: [f32; 4],
+    /// x: seconds for animated procedural materials (Lighting::time).
+    anim: [f32; 4],
 }
 
 #[repr(C)]
@@ -211,6 +213,9 @@ pub struct Lighting {
     /// Background stars only: peak radiance, zenith optical depth, reserved,
     /// numeric 24-bit seed. Atmosphere::NightSky supplies this automatically.
     /// A zero peak disables stars for legacy HDR environments.
+    /// Seconds on the clock that animated procedural materials (flowing
+    /// lava) follow. Keep it running with the game, not the wall clock.
+    pub time: f32,
     pub night_stars: [f32; 4],
     /// Exposure value at ISO 100 (sunny 16: about 15).
     pub ev100: f32,
@@ -310,6 +315,7 @@ impl Default for Lighting {
             shadow_strength: 1.0,
             sky_lux: 18_000.0,
             night_stars: [0.0; 4],
+            time: 0.0,
             ev100: 14.0,
             fog_start: 140.0,
             fog_end: 750.0,
@@ -541,6 +547,10 @@ pub struct Renderer {
     wind: crate::wind::WindRenderer,
     part_wind: Option<crate::part_wind::PartWindRenderer>,
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
+    skinning: Option<crate::skinning::SkinningRenderer>,
+    debris: Option<crate::debris::DebrisRenderer>,
+    crowd: Option<crate::crowd::CrowdRenderer>,
+    fx: crate::fx::FxSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
     meadow: Option<crate::meadow::MeadowRenderer>,
@@ -559,6 +569,11 @@ pub struct Renderer {
     foliage_representations: Vec<crate::foliage_representation::Binding>,
     foliage_representation_policy: crate::foliage_representation::Policy,
     foliage_planners: std::sync::Mutex<Vec<crate::foliage_representation::ViewPlanner>>,
+    /// Per view: size, visibility, depth and HDR targets reused across frames.
+    #[allow(clippy::type_complexity)]
+    view_targets: std::sync::Mutex<Vec<Option<((u32, u32), wgpu::Texture, wgpu::Texture, wgpu::Texture)>>>,
+    /// Per view: the gi, view light, TAA and tone uniforms, rewritten each frame.
+    view_uniforms: std::sync::Mutex<Vec<[Option<wgpu::Buffer>; 4]>>,
     volume_view_layout: wgpu::BindGroupLayout,
     cull: wgpu::ComputePipeline,
     split_sun_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
@@ -596,12 +611,27 @@ pub struct Renderer {
     sun_surface_source: bool,
     camera_sun_occlusion: bool,
     shade: wgpu::ComputePipeline,
+    /// Sky tiles (off by default, KERN_SKY_TILES=1: slower on an RTX 5070 Ti, shade 1.74 vs 1.56 ms at 4K x4): `shade_classify` writes
+    /// the sky of 8x8 tiles without geometry and lists the rest, and `shade`
+    /// runs indirectly over the listed tiles only. Same image either way.
+    sky_tiles: bool,
+    shade_classify: wgpu::ComputePipeline,
+    /// Per view: tile list (count first) and the indirect dispatch
+    /// arguments copied from it (a buffer cannot be storage and indirect in
+    /// one dispatch).
+    shade_tiles: std::sync::Mutex<Vec<Option<(wgpu::Buffer, wgpu::Buffer)>>>,
     /// Kept to rebuild `shade` when its source changes on disk.
     shade_pl: wgpu::PipelineLayout,
     shade_text: String,
     shader_wind_text: String,
     shader_generation: u64,
     rock_variation: bool,
+    shade_features: crate::shade_features::ShadeFeatures,
+    cpu_spans: Option<crate::cpu_spans::Collector>,
+    /// No foliage instance, forest field or heightfield: GI rays cannot be
+    /// attenuated, so sky, reflection and sun-fallback marches are skipped
+    /// (exactly 1). Foliage cannot be added later without a rebuild.
+    empty_gi_volume: bool,
     car_materials: wgpu::Buffer,
     car_material_count: usize,
     tone: wgpu::ComputePipeline,
@@ -997,6 +1027,12 @@ impl Renderer {
         let baked_animations = scene.baked_animations.as_ref().map(|animation|
             crate::baked_animation::AnimationRenderer::new(gpu, animation, &scene.instances, &instances)
                 .expect("invalid baked animation scene"));
+        let skinning = if scene.skinning.actors.is_empty() { None } else {
+            Some(crate::skinning::SkinningRenderer::new(gpu, &scene.skinning, &scene.vertices, &scene.instances, &vertices)
+                .expect("invalid weighted skinning scene"))
+        };
+        let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
+        let crowd = scene.crowd.map(|spec| crate::crowd::CrowdRenderer::new(gpu, &spec, &instances));
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
         startup.mark("grass_lighting_resources");
@@ -1150,6 +1186,7 @@ impl Renderer {
                 (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (16, storage(false)),
+                (17, storage(false)),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -1278,14 +1315,25 @@ impl Renderer {
         let rock_variation=std::env::var("KERN_ROCK_VARIATION").as_deref()==Ok("1");
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
         let hidden_meadow_fallback=crate::meadow::MeadowRenderer::hidden_shade_fallback(gpu);
+        let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0);
+        let sky_tiles=std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
+        let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
+        shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade"),
-            compilation_options:wgpu::PipelineCompilationOptions {constants:&[("ROCK_VARIATION",if rock_variation{1.0}else{0.0}),("SKIP_HIDDEN_MEADOW",if skip_hidden_meadow{1.0}else{0.0})],..Default::default()},cache: gpu.pipeline_cache(),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
+        });
+        let shade_classify = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("shade sky tiles"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("classify"),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
         startup.mark("shade_pipeline");
-        let tone = compute(&pl(&[&tone_layout]), &tone_mod, "main");
+        // Tonemap and TAA read their neighbourhoods from a shared tile;
+        // KERN_TILED_POST=0 selects the direct versions (same image).
+        let post_entry = if std::env::var("KERN_TILED_POST").as_deref() == Ok("0") { "main_direct" } else { "main" };
+        let tone = compute(&pl(&[&tone_layout]), &tone_mod, post_entry);
         let taa_mod = module("taa", include_str!("shaders/taa.wgsl"));
-        let taa = compute(&pl(&[&taa_layout]), &taa_mod, "main");
+        let taa = compute(&pl(&[&taa_layout]), &taa_mod, post_entry);
         startup.mark("tonemap_taa_pipelines");
         let clamp_samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let density_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("linear canopy"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
@@ -1408,6 +1456,10 @@ impl Renderer {
             wind,
             part_wind,
             baked_animations,
+            skinning,
+            debris,
+            crowd,
+            fx: Default::default(),
             transparency,
             grass,
             meadow,
@@ -1424,6 +1476,8 @@ impl Renderer {
             foliage_representations: scene.foliage_representations.clone(),
             foliage_representation_policy: scene.foliage_representation_policy,
             foliage_planners: Default::default(),
+            view_targets: Default::default(),
+            view_uniforms: Default::default(),
             volume_view_layout,
             cull,
             split_sun_cull,
@@ -1459,10 +1513,17 @@ impl Renderer {
             camera_sun_occlusion: std::env::var("KERN_CAMERA_SUN_OCCLUSION").as_deref()!=Ok("0"),
             shade,
             shade_pl,
+            sky_tiles,
+            shade_classify,
+            shade_tiles: std::sync::Mutex::new(Vec::new()),
             shade_text: crate::wind::shade_source(),
             shader_wind_text: crate::wind::common_source(),
             shader_generation: 0,
             rock_variation,
+            shade_features,
+            cpu_spans: crate::cpu_spans::Collector::from_env(),
+            empty_gi_volume: scene.heightfield.heights.is_empty() && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
+                && !scene.instances.iter().any(|i| i.flags & crate::scene::FOLIAGE != 0),
             car_materials,
             car_material_count: car_list.len(),
             tone,
@@ -1506,9 +1567,14 @@ impl Renderer {
             near_shadows: Default::default(),
             cluster_views: Default::default(),
             color_diagnostics: Default::default(),
-            // Upper bound: all clusters of all shadow-casting instances.
-            shadow_capacity: scene.instances.iter().filter(|i| i.flags & crate::scene::NO_SHADOW == 0)
-                .map(|i| i.cluster_count as u64).sum::<u64>().clamp(1, MAX_VISIBLE as u64) as u32,
+            // Upper bound: all clusters of all shadow-casting instances. An
+            // empty instance (a reserved slot, a GPU-driven particle) may later
+            // hold any mesh, so it counts as the largest one.
+            shadow_capacity: {
+                let largest = scene.meshes.iter().map(|m| m.cluster_count as u64).max().unwrap_or(1);
+                scene.instances.iter().filter(|i| i.flags & crate::scene::NO_SHADOW == 0)
+                    .map(|i| if i.cluster_count == 0 { largest } else { i.cluster_count as u64 }).sum::<u64>().clamp(1, MAX_VISIBLE as u64) as u32
+            },
         };
         let pipeline_cache=gpu.persist_pipeline_cache();
         startup.mark("pipeline_cache_persist");
@@ -1999,6 +2065,15 @@ impl Renderer {
         Ok(())
     }
 
+    /// Upload one actor's final object-space skin matrices. Call before render;
+    /// one shared compute pass updates color and all shadow views. The palette
+    /// must remain within the actor mesh's declared animation bounds.
+    pub fn set_skinning_palette(&self, gpu: &Gpu, actor: usize, matrices: &[Mat4]) -> Result<(), String> {
+        self.skinning.as_ref().ok_or("scene has no weighted actors")?.set_palette(gpu, actor, matrices)?;
+        self.invalidate_dynamic_shadow();
+        Ok(())
+    }
+
     /// Replace the procedural car surfaces, one per `Scene::car_materials`
     /// entry: retuning paint, wear or grime needs no new renderer.
     pub fn set_car_materials(&self, gpu: &Gpu, materials: &[crate::scene::GpuCarMaterial]) -> Result<(), String> {
@@ -2032,14 +2107,17 @@ impl Renderer {
         let shade = if sources.shade != self.shade_text {
             Some(crate::shaders::checked(gpu, || {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade"), source: wgpu::ShaderSource::Wgsl(sources.shade.as_str().into()) });
-                gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("shade"),
+                let mut constants = self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()));
+                constants.push(("SKY_TILES", if self.sky_tiles {1.0} else {0.0}));
+                let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
                     layout: Some(&self.shade_pl),
                     module: &module,
-                    entry_point: Some("shade"),
-                    compilation_options: wgpu::PipelineCompilationOptions {constants:&[("ROCK_VARIATION",if self.rock_variation{1.0}else{0.0}),("SKIP_HIDDEN_MEADOW",if self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()){1.0}else{0.0})],..Default::default()},
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                     cache: gpu.pipeline_cache(),
-                })
+                });
+                (make("shade"), make("classify"))
             }).map_err(|e| format!("opaque reload: {e}"))?)
         } else { None };
         // No live assignment above or below until all prepares have succeeded.
@@ -2054,7 +2132,7 @@ impl Renderer {
         let rebuilt = shade.is_some() || transparency.is_some() || grass.is_some() || far_grass.is_some() || voxel.is_some();
         snapshot.ensure_current()?;
         if !rebuilt { return Ok(false); }
-        if let Some(pipeline) = shade { self.shade = pipeline; self.shade_text = sources.shade; }
+        if let Some((pipeline, classify)) = shade { self.shade = pipeline; self.shade_classify = classify; self.shade_text = sources.shade; }
         if let Some(reload) = transparency { self.transparency.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = grass { self.grass.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = far_grass { self.far_grass.as_mut().unwrap().commit_reload(reload); }
@@ -2134,6 +2212,29 @@ impl Renderer {
 
     /// Constructor CPU attribution, present only with KERN_STARTUP_PROFILE=1.
     /// Image decoding occurs before Renderer::new; queued GPU work is not timed.
+    /// With KERN_CPU_SPANS=1: average CPU ms per frame for each phase of
+    /// the frame since the last call, and the number of frames.
+    pub fn cpu_spans(&self) -> Option<(Vec<(&'static str, f64)>, u64)> { self.cpu_spans.as_ref().map(|c| c.take()) }
+
+    /// A per-view uniform buffer reused across frames: written with
+    /// `write_buffer`, which lands before this frame's commands run and
+    /// after the previous frame's (one queue), instead of a new buffer.
+    fn view_uniform(&self, gpu: &Gpu, view: usize, slot: usize, label: &str, data: &[u8]) -> wgpu::Buffer {
+        let mut all = self.view_uniforms.lock().unwrap();
+        if all.len() <= view { all.resize_with(view + 1, Default::default); }
+        let entry = &mut all[view][slot];
+        if entry.as_ref().is_none_or(|b| b.size() != data.len() as u64) {
+            *entry = Some(gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: data.len() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+        }
+        let b = entry.clone().unwrap();
+        gpu.queue.write_buffer(&b, 0, data);
+        b
+    }
+
+    /// Optional shade-shader features this renderer's scene can reach.
+    pub fn shade_features(&self) -> crate::shade_features::ShadeFeatures { self.shade_features }
+
     pub fn startup_profile(&self) -> Option<&crate::startup_profile::StartupProfile> {
         self.startup_profile.as_ref()
     }
@@ -2176,6 +2277,21 @@ impl Renderer {
     /// No counter, timestamp or full-image readback stalls the live frame.
     pub fn render_texture(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32) -> wgpu::Texture {
         self.try_render_texture(gpu, views, light, out_w, out_h).expect("render texture")
+    }
+
+    /// An output texture for `try_render_into`, made once per size.
+    pub fn output_texture(gpu: &Gpu, out_w: u32, out_h: u32) -> wgpu::Texture {
+        gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("frame output"),
+            size: wgpu::Extent3d { width: out_w, height: out_h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] })
+    }
+
+    /// Like `try_render_texture`, but into the caller's texture (from
+    /// `output_texture`), so a game loop allocates no output per frame.
+    /// The texture is overwritten; present or copy it before the next call.
+    pub fn try_render_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, target: &wgpu::Texture) -> Result<(), String> {
+        self.frame_output_into(gpu, views, light, target.width(), target.height(), &[], Readback::None, Some(target)).map(|_| ())
     }
 
     pub fn try_render_texture(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32) -> Result<wgpu::Texture, String> {
@@ -2301,6 +2417,13 @@ impl Renderer {
         self.baked_animations.as_ref().map(|_|&self.instance_buffer)
     }
 
+    /// Explicit validation only: the debris pool's instances as the GPU
+    /// last wrote them (waits for the GPU).
+    pub fn debris_debug_instances(&self, gpu: &Gpu) -> Result<Vec<crate::scene::GpuInstance>, String> {
+        let d = self.debris.as_ref().ok_or("no debris pool")?;
+        d.read_instances(gpu, &self.instance_buffer)
+    }
+
     /// Explicit offline validation; no readback or wait in normal play.
     pub fn far_grass_diagnostics(&self, gpu: &Gpu) -> Result<Option<Vec<crate::far_grass::FarGrassDiagnostics>>,String> {
         self.far_grass.as_ref().map(|grass|grass.diagnostics(gpu)).transpose()
@@ -2365,10 +2488,36 @@ impl Renderer {
         self.meadow_substrate_settings.with_debug(self.debug_options()).contact[1]
     }
 
+    /// Blast effects (`fx::Effects::flush`): the clock, and the live puffs
+    /// when they changed.
+    pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
+        self.fx.set(gpu, time, puffs);
+        Ok(())
+    }
+
+    /// The crowd's mood, flee ring and kills (`crowd::Crowd::flush`).
+    pub fn update_crowd(&self, gpu: &Gpu, uniform: &[u8], seats: Option<&[u8]>, alive: Option<(usize, &[u32])>) -> Result<(), String> {
+        self.crowd.as_ref().ok_or("this scene reserved no crowd")?.update(gpu, uniform, seats, alive)
+    }
+
+    /// Spawns, grid changes and simulation steps for the scene's debris pool
+    /// (called by `debris::Debris::flush`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_debris(&self, gpu: &Gpu, spawns: &[crate::debris::Shard], occupancy: Option<(usize, &[u32])>, meta: Option<&crate::debris::Occupancy>,
+        steps: u32, reset: bool, active: bool, tuning: &crate::debris::Tuning) -> Result<(), String> {
+        self.debris.as_ref().ok_or("this scene reserved no debris pool")?.update(gpu, spawns, occupancy, meta, steps, reset, active, tuning)
+    }
+
     /// Update an existing instance range without rebuilding static geometry.
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.baked_animations.as_ref().is_some_and(|animation|animation.contains_owner_range(first,instances.len())) {
             return Err("baked actor parts are driven by the shared GPU animation pass".into());
+        }
+        if self.crowd.as_ref().is_some_and(|c| c.contains_owner_range(first, instances.len())) {
+            return Err("crowd instances are posed by the GPU crowd pass".into());
+        }
+        if self.debris.as_ref().is_some_and(|d| d.contains_owner_range(first, instances.len())) {
+            return Err("debris instances are written by the GPU debris pass".into());
         }
         if self.part_wind.as_ref().is_some_and(|parts|parts.contains_owner_range(first,instances.len())) {
             return Err("procedural part owners are driven by shared GPU poses, not CPU instance updates".into());
@@ -2412,8 +2561,14 @@ impl Renderer {
     }
 
     fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
+        self.frame_output_into(gpu, views, light, out_w, out_h, picks, readback, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn frame_output_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback, target: Option<&wgpu::Texture>) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
         // Serialize explicit diagnostic readbacks with writes to reused targets.
         // Errors before submission leave no stale frame advertised as current.
+        let mut cpu = crate::cpu_spans::Spans::start(self.cpu_spans.as_ref());
         let mut color_diagnostics = self.color_diagnostics.lock().unwrap();
         color_diagnostics.context = None;
         let mut shadow_validation=self.async_shadow_validation.as_ref().map(|state|state.lock().unwrap());
@@ -2443,7 +2598,16 @@ impl Renderer {
             })
         };
         let rt = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
-        let ldr = tex2d("ldr", out_w, out_h, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING);
+        let ldr_usage = wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING;
+        let ldr = match target {
+            Some(t) => {
+                if (t.width(), t.height()) != (out_w, out_h) || t.format() != wgpu::TextureFormat::Rgba8Unorm || !t.usage().contains(ldr_usage) {
+                    return Err("render target must be Rgba8Unorm at the output size with STORAGE_BINDING, COPY_SRC and TEXTURE_BINDING (Renderer::output_texture)".into());
+                }
+                t.clone()
+            }
+            None => tex2d("ldr", out_w, out_h, wgpu::TextureFormat::Rgba8Unorm, ldr_usage),
+        };
         let ldr_v = ldr.create_view(&Default::default());
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
@@ -2673,12 +2837,14 @@ impl Renderer {
             near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
+            anim: [light.time, 0.0, 0.0, 0.0],
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
         // Each camera retains its own coverage/resolution. A second player
         // moving away must not change this player's forest illumination.
         let revision = self.foliage_revision.load(std::sync::atomic::Ordering::Relaxed);
+        cpu.mark("setup");
         let mut enc = gpu.device.create_command_encoder(&Default::default());
         // wgpu30 requires native API commands on a separate encoder. All
         // tracked and native segments still submit once, in queue order.
@@ -2705,6 +2871,25 @@ impl Renderer {
             let times = self.query.as_ref().map(|(qs, _, _)| (qs, timestamp_pair(&mut ts)));
             animation.encode(gpu, &mut enc, times);
             if times.is_some() { names.push("baked crowd animation"); }
+        }
+        if let Some(skinning) = &self.skinning {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, timestamp_pair(&mut ts)));
+            skinning.encode(&mut enc, times);
+            if times.is_some() { names.push("weighted character skinning"); }
+        }
+        if let Some(crowd) = &self.crowd {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if crowd.encode(&mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("crowd");
+            }
+        }
+        if let Some(debris) = &self.debris {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
+            if debris.encode(gpu, &mut enc, times) && times.is_some() {
+                timestamp_pair(&mut ts);
+                names.push("debris");
+            }
         }
         // Actual updated instance/branch spheres and wind bounds, once shared
         // across cameras and solar views. They each select independent owners.
@@ -2737,7 +2922,7 @@ impl Renderer {
             if self.grass.is_some()||self.far_grass.is_some() {fallback|=1<<8;}
             if self.voxel_forest.is_some()||self.meadow_brick_fixture.is_some() {fallback|=1<<9;}
             if static_sun.is_some() {fallback|=1<<10;}
-            if self.part_wind.is_some()||self.baked_animations.is_some() {fallback|=1<<11;}
+            if self.part_wind.is_some()||self.baked_animations.is_some()||self.skinning.is_some()||self.debris.is_some()||self.crowd.is_some() {fallback|=1<<11;}
             let time=self.query.as_ref().map(|(qs,_,_)|(qs,timestamp_pair(&mut ts)));
             if time.is_some(){names.push("shadow receiver demand");}
             self.receiver_demand.encode(gpu,&mut enc,(render_sequence as u32).wrapping_add(1).max(1),&cameras,&maps,&extra,fallback,time)?;
@@ -2828,6 +3013,7 @@ impl Renderer {
         let mut foliage_planners = self.foliage_planners.lock().unwrap();
         if layout_changed { foliage_planners.clear(); }
         foliage_planners.resize_with(views.len(), Default::default);
+        cpu.mark("shadows and prepasses");
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
         for (vi, view) in views.iter().enumerate() {
             let timing_start = names.len();
@@ -2844,22 +3030,24 @@ impl Renderer {
                     (qs, timestamp_pair(&mut ts))
                 }))
             } else { [None, None] };
+            cpu.mark("view start");
             let canopy = canopies[vi].prepare(gpu, &mut enc, &self.scene_bind,
                 self.instances, &receivers, revision, canopy_times);
+            cpu.mark("view canopy");
             canopy_updated_levels.push(canopy.updated_levels);
             canopy_pitch_m.push(canopy.origins.map(|origin| origin[3]));
             let density_view = canopy.view;
             let gi_u = GiUniform {
                 vol_origins: canopy.origins,
                 vol_anchors: canopy.anchors,
-                vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], if light.gi>0.0 {1|((canopy.compact_support as u32)<<1)} else {0}],
+                vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], if light.gi>0.0 {1|((canopy.compact_support as u32)<<1)|((self.empty_gi_volume as u32)<<2)} else {0}],
                 hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3), 0.0],
                 hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, 0],
                 // Reflectance, conditioned on local sun and sky visibility.
                 bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
                 params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit, 0.0],
             };
-            let gi_buf = buffer(gpu, "gi", bytemuck::bytes_of(&gi_u), wgpu::BufferUsages::UNIFORM);
+            let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             let mut view_light = lu;
             let near_view = if near_enabled {
                 let near = &near_shadows[vi];
@@ -2882,11 +3070,26 @@ impl Renderer {
                 // Valid but unused binding when the feature is disabled.
                 cache.as_ref().unwrap().tex.create_view(&Default::default())
             };
-            let light_buf = buffer(gpu, "view light", bytemuck::bytes_of(&view_light), wgpu::BufferUsages::UNIFORM);
-            let vis = tex2d("vis", w, h, wgpu::TextureFormat::R32Uint, rt);
-            let depth = tex2d("depth", w, h, wgpu::TextureFormat::Depth32Float, rt | wgpu::TextureUsages::COPY_SRC);
-            let hdr = tex2d("hdr", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+            let light_buf = self.view_uniform(gpu, vi, 1, "view light", bytemuck::bytes_of(&view_light));
+            // Per-view targets live across frames while the view keeps its size:
+            // allocating three full-screen textures per view per frame cost
+            // CPU time and driver memory churn. Every pass writes them fully.
+            let (vis, depth, hdr) = {
+                let mut targets = self.view_targets.lock().unwrap();
+                if targets.len() <= vi { targets.resize_with(vi + 1, || None); }
+                match &targets[vi] {
+                    Some(t) if t.0 == (w, h) => (t.1.clone(), t.2.clone(), t.3.clone()),
+                    _ => {
+                        let made = (tex2d("vis", w, h, wgpu::TextureFormat::R32Uint, rt),
+                            tex2d("depth", w, h, wgpu::TextureFormat::Depth32Float, rt | wgpu::TextureUsages::COPY_SRC),
+                            tex2d("hdr", w, h, wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC));
+                        targets[vi] = Some(((w, h), made.0.clone(), made.1.clone(), made.2.clone()));
+                        made
+                    }
+                }
+            };
             let (vis_v, depth_v, hdr_v) = (vis.create_view(&Default::default()), depth.create_view(&Default::default()), hdr.create_view(&Default::default()));
+            cpu.mark("view lights and targets");
             // Reversed-Z infinite perspective.
             let view_m = Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
             let proj = Mat4::perspective_infinite_reverse_rh(cam.fov_y, view.w as f32 / view.h as f32, cam.near);
@@ -2919,7 +3122,7 @@ impl Renderer {
             main_uniform.extra[2] = if dlss_on { h as f32 / view.h as f32 } else { 0.0 };
             main_uniform.extra[3] = light.grass_reference;
             let grass_band = self.grass_detail.for_views(views.len());
-            main_uniform.grass = [grass_band.fade_start, grass_band.fade_end, 0.0, 0.0];
+            main_uniform.grass = [grass_band.fade_start, grass_band.fade_end, (vi + 1) as f32, 0.0];
             main_uniform.fog_cull = camera_fog_cull(light);
             // One allocation-free terrain horizon query per physical camera.
             // Independent of camera rotation, jitter, exposure and shadow-map focus.
@@ -2930,6 +3133,7 @@ impl Renderer {
             main_uniform.fog_cull[3] = geometry_diagnostic.excluded_mask as f32;
             camera_sun_visibility.push(sun_visibility);
             gpu.queue.write_buffer(&main.uniform, 0, bytemuck::bytes_of(&main_uniform));
+            cpu.mark("view foliage and camera");
             // TAA history for this view (new, or reset when the size changes).
             let hist = &mut histories[vi];
             let fresh = !hist.as_ref().is_some_and(|hh| hh.size == (w, h));
@@ -2948,12 +3152,13 @@ impl Renderer {
                 };
                 hh.prev_view_proj = proj * view_m;
                 hh.cur = 1 - hh.cur;
-                Some((src, dst, buffer(gpu, "taa", bytemuck::bytes_of(&u), wgpu::BufferUsages::UNIFORM)))
+                Some((src, dst, self.view_uniform(gpu, vi, 2, "taa", bytemuck::bytes_of(&u))))
             } else {
                 None
             };
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,debug_options.bloom_strength);
-            let tone_buf = buffer(gpu, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},pad2:0 }), wgpu::BufferUsages::UNIFORM);
+            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},pad2:0 }));
+            cpu.mark("view setup");
             let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
                 bind(
                     gpu,
@@ -2987,6 +3192,7 @@ impl Renderer {
                 }
                 self.cull_and_raster(&mut enc, gpu, &main, Some(&vis_v), &depth_v, &mut ts, &mut names, "cull",RasterPass::Color);
             }
+            cpu.mark("view cull and raster");
             let meadow_bindings = [
                             (0, main.uniform.as_entire_binding()), (2, light_buf.as_entire_binding()),
                             (5, wgpu::BindingResource::TextureView(&shadow_v)),
@@ -3007,6 +3213,21 @@ impl Renderer {
                 Some(meadow.prepare_visibility(gpu,&mut enc,vi,(w,h),&self.scene_bind,&meadow_bindings,
                     &hdr_v,&depth,times,dlss_on,debug_options)?)
             } else {None};
+            // Tile list for this view: reset to an empty indirect dispatch.
+            let shade_tiles = {
+                let tiles = (w.div_ceil(8) * h.div_ceil(8)) as u64;
+                let mut all = self.shade_tiles.lock().unwrap();
+                if all.len() <= vi { all.resize_with(vi + 1, || None); }
+                if all[vi].as_ref().is_none_or(|b| b.0.size() < 16 + 4 * tiles) {
+                    all[vi] = Some((gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade tiles"), size: 16 + 4 * tiles,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
+                        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade tile dispatch"), size: 16,
+                        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })));
+                }
+                let b = all[vi].clone().unwrap();
+                gpu.queue.write_buffer(&b.0, 0, bytemuck::cast_slice(&[0u32, 1, 1, 0]));
+                b
+            };
             let shade_bind = bind(
                 gpu,
                 &self.shade_layout,
@@ -3027,6 +3248,7 @@ impl Renderer {
                     (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                     (15, wgpu::BindingResource::TextureView(&near_view)),
                     (16, hidden_meadow.as_ref().unwrap_or(&self.hidden_meadow_fallback).as_entire_binding()),
+                    (17, shade_tiles.0.as_entire_binding()),
                 ],
             );
             let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = vec![("shade", &self.shade, vec![&self.scene_bind, &shade_bind])];
@@ -3042,16 +3264,35 @@ impl Renderer {
                 if t.is_some() {
                     names.push(label);
                 }
-                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some(label),
-                    timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
-                });
-                pass.set_pipeline(pipe);
-                for (k, b) in bindings.iter().enumerate() {
-                    pass.set_bind_group(k as u32, *b, &[]);
+                if label == "shade" && self.sky_tiles {
+                    // Sky tiles, then the listed tiles; the timestamps span both.
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("shade sky tiles"),
+                        timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: None }),
+                    });
+                    for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
+                    pass.set_pipeline(&self.shade_classify);
+                    pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    drop(pass);
+                    enc.copy_buffer_to_buffer(&shade_tiles.0, 0, &shade_tiles.1, 0, 16);
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some(label),
+                        timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: None, end_of_pass_write_index: Some(i + 1) }),
+                    });
+                    for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
+                    pass.set_pipeline(pipe);
+                    pass.dispatch_workgroups_indirect(&shade_tiles.1, 0);
+                    drop(pass);
+                } else {
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some(label),
+                        timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
+                    });
+                    for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
+                    pass.set_pipeline(pipe);
+                    pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    drop(pass);
                 }
-                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
-                drop(pass);
                 if label == "shade" {
                     let volume_view=(self.far_grass.is_some() || self.voxel_forest.is_some() || self.foliage_world.is_some() || self.meadow_brick_fixture.is_some()).then(||
                         crate::volume_view::VolumeViewInputs {
@@ -3171,6 +3412,7 @@ impl Renderer {
                     far_motion_layer = far_grass;
                 }
             }
+            cpu.mark("view shade and layers");
             let resolved = if dlss_on {
                 let grass_motion = self.grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).and_then(|g| g.motion_layer(vi));
                 let glass_motion = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled).and_then(|t| t.motion_layer(vi));
@@ -3205,8 +3447,25 @@ impl Renderer {
             } else if taa_on {
                 let hh = hist.as_ref().unwrap(); hh.tex[hh.cur].clone()
             } else { hdr.clone() };
+            cpu.mark("view temporal");
             // Compose after temporal reconstruction into a separate output.
             // Never write heat/smoke back into TAA or DLSS history.
+            // Blast effects (fire, smoke, embers, heat) over the resolved HDR.
+            let fx_output = {
+                let mut fx = self.fx.0.lock().unwrap();
+                match fx.as_mut() {
+                    Some(fx) => {
+                        let white = (light.sun_lux * light.sun_dir.y.max(0.0) + light.sky_lux) / std::f32::consts::PI;
+                        let time = self.query.as_ref().map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white)?;
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                        out
+                    }
+                    None => None,
+                }
+            };
+            let resolved = fx_output.unwrap_or(resolved);
             let exhaust_output = if debug_options.exhaust_enabled {
                 let exhaust_time = self.query.as_ref().map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))
@@ -3261,6 +3520,7 @@ impl Renderer {
             }
             keep.push((main, vis, depth, hdr));
             timing_views.push((vi as u32, timing_start..names.len()));
+            cpu.mark("view effects, bloom, tonemap");
         }
         if let Some(motion) = &up.motion { motion.finish_frame(&mut enc); }
         // One shared previous wind state, advanced only after every view has
@@ -3302,6 +3562,7 @@ impl Renderer {
         let lamp_passes=headlight_targets.iter().take(headlights.len()).enumerate()
             .map(|(index,target)|solar_record("headlight",Some(index),target,self.instance_groups.headlight_enabled)).collect();
         if readback==Readback::None && !far_updated && (page_plan.updates.is_empty() || async_pages) {
+            cpu.mark("diagnostics");
             let page_validation=if page_plan.updates.is_empty() {None}else{
                 let pages:Vec<_>=page_plan.updates.iter().zip(page_targets.iter())
                     .map(|(page,(_,target))|(page.layer,page.capacity,&target.counter)).collect();
@@ -3310,6 +3571,7 @@ impl Renderer {
             };
             segments.push(enc.finish());
             gpu.queue.submit(segments);
+            cpu.mark("submit");
             if let Some(ticket)=page_validation {shadow_validation.as_mut().unwrap().submitted(ticket);}
             *self.sun_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:solar_passes};
             *self.headlight_diagnostics.lock().unwrap()=crate::shadow_diagnostics::State {context:Some(profile_context),passes:lamp_passes};
@@ -3324,6 +3586,7 @@ impl Renderer {
             if sun_needed { self.foliage_sun_pages.submitted(&page_plan); }
             return Ok((ldr, Vec::new(), split_stats));
         }
+        cpu.mark("diagnostics (slow path)");
         let near_count = if near_enabled { views.len() } else { 0 };
         let far_counter_index=views.len()+1+near_count+headlights.len();
         let page_counter_index=far_counter_index+usize::from(self.far_sun.enabled);
@@ -4033,7 +4296,8 @@ mod layout_tests {
     #[test]
     fn near_light_uniform_and_projection_cover_each_separated_car() {
         use glam::Vec3;
-        assert_eq!(std::mem::size_of::<LightUniform>(), 400);
+        assert_eq!(std::mem::size_of::<LightUniform>(), 416);
+        assert_eq!(std::mem::offset_of!(LightUniform, anim), 400);
         assert_eq!(std::mem::offset_of!(LightUniform, fog_scattering), 144);
         assert_eq!(std::mem::offset_of!(LightUniform, near_shadow_view_proj), 304);
         assert_eq!(std::mem::offset_of!(LightUniform, near_shadow), 368);

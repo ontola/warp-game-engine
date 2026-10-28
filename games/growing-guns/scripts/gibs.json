@@ -1,0 +1,23 @@
+{ "size": [960, 540],
+  "steps": [
+    { "cmd": ["bots pause", "health 0 50000", "give 0 dmg_up", "give 0 dmg_up", "give 0 dmg_up"],
+      "note": "x3.4 damage: a headshot kills without overkill (head bursts), a body shot does not" },
+    { "ticks": 130 },
+    { "cmd": ["teleport 0 33.5 0.9 37", "teleport 2 36.96 0.9 36.95", "aim 0 36.96 1.55 36.95"] },
+    { "ticks": 2 },
+    { "press": ["RIGHT_TRIGGER"], "ticks": 3 },
+    { "ticks": 6 }, { "capture": "head_f09.png" },
+    { "ticks": 30 }, { "capture": "head_f39.png", "state": "head.json" },
+    { "expect": "/players/2/alive", "equals": false },
+    { "cmd": ["teleport 0 33.5 0.9 37", "teleport 3 36 0.9 40", "aim 0 36 1.0 40"] }, { "ticks": 2 },
+    { "cmd": ["boom 36.5 1.0 40.5 4 300"] },
+    { "ticks": 6 }, { "capture": "blast_f06.png" },
+    { "ticks": 20 }, { "capture": "blast_f26.png" },
+    { "ticks": 60 }, { "capture": "blast_f86.png", "state": "blast.json" },
+    { "expect": "/players/3/alive", "equals": false },
+    { "cmd": ["give 0 dmg_up", "give 0 dmg_up", "teleport 0 33.5 0.9 37", "teleport 1 36 0.9 34.5", "aim 0 36 0.7 34.5"] }, { "ticks": 2 },
+    { "press": ["RIGHT_TRIGGER"], "ticks": 3 },
+    { "ticks": 6 }, { "capture": "overkill_f09.png" },
+    { "ticks": 40 }, { "capture": "overkill_f49.png", "state": "overkill.json" },
+    { "expect": "/players/1/alive", "equals": false }
+  ] }

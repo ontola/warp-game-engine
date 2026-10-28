@@ -1,7 +1,6 @@
 //! Small display-space highlight bloom. Physical scene HDR and reconstruction
 //! history remain untouched. The two quarter-size targets belong to one view.
 use crate::Gpu;
-use wgpu::util::DeviceExt;
 
 pub const DEFAULT_STRENGTH:f32=0.04;
 pub const THRESHOLD:f32=2.0;
@@ -11,7 +10,9 @@ pub const MAX_EXPOSED:f32=64.0;
 pub fn dimensions(width:u32,height:u32)->[u32;2] {[width.div_ceil(4).max(1),height.div_ceil(4).max(1)]}
 pub fn active(enabled:bool,strength:f32)->bool {enabled && strength>0.0}
 
-struct Targets {size:[u32;2],a:wgpu::Texture,b:wgpu::Texture}
+/// Bind groups for one input texture (TAA alternates two histories).
+struct Cached {input:wgpu::Texture,binds:[wgpu::BindGroup;3]}
+struct Targets {size:[u32;2],_a:wgpu::Texture,_b:wgpu::Texture,a_view:wgpu::TextureView,b_view:wgpu::TextureView,uniform:wgpu::Buffer,cached:Vec<Cached>}
 pub(crate) struct Bloom {
     layout:wgpu::BindGroupLayout,
     pipelines:[wgpu::ComputePipeline;3],
@@ -54,28 +55,40 @@ impl Bloom {
         exposure:f32,timestamps:Option<(&wgpu::QuerySet,u32)>)->wgpu::TextureView {
         let size=dimensions(input.width(),input.height());
         let mut views=self.views.lock().unwrap();
-        while views.len()<=view {views.push(Targets{size:[1,1],a:texture(gpu,[1,1]),b:texture(gpu,[1,1])});}
+        let make=|size:[u32;2]| {
+            let (a,b)=(texture(gpu,size),texture(gpu,size));
+            let (a_view,b_view)=(a.create_view(&Default::default()),b.create_view(&Default::default()));
+            // One exposure buffer per view: split views never share a value.
+            let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bloom exposure"),size:16,
+                usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
+            Targets{size,_a:a,_b:b,a_view,b_view,uniform,cached:Vec::new()}
+        };
+        while views.len()<=view {views.push(make([1,1]));}
         let target=&mut views[view];
-        if target.size!=size {*target=Targets{size,a:texture(gpu,size),b:texture(gpu,size)};}
-        let source=input.create_view(&Default::default());let a=target.a.create_view(&Default::default());let b=target.b.create_view(&Default::default());
+        if target.size!=size {*target=make(size);}
         let exposure=if exposure.is_finite(){exposure.clamp(0.0,65504.0)}else{0.0};
-        // Immutable per invocation: encoding multiple split views cannot make
-        // their extraction use a later view's exposure before queue submission.
-        let uniform=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("bloom exposure"),
-            contents:bytemuck::cast_slice(&[exposure,THRESHOLD,KNEE,MAX_EXPOSED]),usage:wgpu::BufferUsages::UNIFORM});
-        for (i,(src,dst)) in [(&source,&a),(&a,&b),(&b,&a)].into_iter().enumerate() {
-            let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("bloom view"),layout:&self.layout,entries:&[
-                wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(src)},
-                wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(dst)},
-                wgpu::BindGroupEntry {binding:2,resource:uniform.as_entire_binding()},
-                wgpu::BindGroupEntry {binding:3,resource:wgpu::BindingResource::Sampler(&self.sampler)},
-            ]});
+        gpu.queue.write_buffer(&target.uniform,0,bytemuck::cast_slice(&[exposure,THRESHOLD,KNEE,MAX_EXPOSED]));
+        if !target.cached.iter().any(|c|c.input==*input) {
+            let source=input.create_view(&Default::default());
+            let binds=[(&source,&target.a_view),(&target.a_view,&target.b_view),(&target.b_view,&target.a_view)].map(|(src,dst)|
+                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("bloom view"),layout:&self.layout,entries:&[
+                    wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(src)},
+                    wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(dst)},
+                    wgpu::BindGroupEntry {binding:2,resource:target.uniform.as_entire_binding()},
+                    wgpu::BindGroupEntry {binding:3,resource:wgpu::BindingResource::Sampler(&self.sampler)},
+                ]}));
+            if target.cached.len()>=2 {target.cached.remove(0);}
+            target.cached.push(Cached{input:input.clone(),binds});
+        }
+        let cached=target.cached.iter().find(|c|c.input==*input).unwrap();
+        for i in 0..3 {
+            let bind=&cached.binds[i];
             let writes=if i==1 {None}else{timestamps.map(|(query_set,start)|wgpu::ComputePassTimestampWrites {query_set,
                 beginning_of_pass_write_index:(i==0).then_some(start),end_of_pass_write_index:(i==2).then_some(start+1)})};
             let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some(["bloom highlight extraction","bloom horizontal filter","bloom vertical filter"][i]),timestamp_writes:writes});
-            pass.set_pipeline(&self.pipelines[i]);pass.set_bind_group(0,&bind,&[]);pass.dispatch_workgroups(size[0].div_ceil(8),size[1].div_ceil(8),1);
+            pass.set_pipeline(&self.pipelines[i]);pass.set_bind_group(0,bind,&[]);pass.dispatch_workgroups(size[0].div_ceil(8),size[1].div_ceil(8),1);
         }
-        a
+        target.a_view.clone()
     }
 }
 

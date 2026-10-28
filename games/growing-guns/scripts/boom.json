@@ -1,0 +1,13 @@
+{ "size": [1280, 720],
+  "steps": [
+    { "cmd": ["bots pause", "arena 10", "health 0 50000", "teleport 0 20 1 30", "aim 0 20 2 15"],
+      "note": "Godot explosion_lab framing: radius 8 at 2 m, camera 15 m away" },
+    { "ticks": 20 },
+    { "cmd": "boom 20 2 15 8" },
+    { "ticks": 6 }, { "capture": "f006.png" },
+    { "ticks": 6 }, { "capture": "f012.png" },
+    { "ticks": 8 }, { "capture": "f020.png" },
+    { "ticks": 15 }, { "capture": "f035.png" },
+    { "ticks": 25 }, { "capture": "f060.png" },
+    { "ticks": 40 }, { "capture": "f100.png" }
+  ] }

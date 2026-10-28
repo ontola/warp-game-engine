@@ -365,6 +365,7 @@ fn captured_local_lights(capture:&Value)->Result<Vec<render::headlights::LocalLi
         position:vector(&l["position"])?,direction:vector(&l["direction"])?,intensity_cd:vector(&l["intensity_cd"])?,
         range_m:number(&l["range_m"])?,inner_cos:number(&l["inner_cos"])?,outer_cos:number(&l["outer_cos"])?,
         source_radius_m:number(&l["source_radius_m"])?,
+        falloff:l.get("falloff").and_then(|v|v.as_f64()).map_or(2.0,|v|v as f32),
     })).collect::<Result<Vec<_>,String>>()?;
     render::headlights::validate_local(&lights)
 }

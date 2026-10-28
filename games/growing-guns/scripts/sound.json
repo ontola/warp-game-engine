@@ -1,0 +1,7 @@
+{ "size": [320, 180],
+  "steps": [
+    { "ticks": 30, "audio": "settle.wav" },
+    { "ticks": 30, "hold": ["RIGHT_TRIGGER"], "mv": [0, 1], "note": "fire and run" },
+    { "press": ["SOUTH"], "ticks": 20, "audio": "fire-run-jump.wav", "note": "jump" },
+    { "expect": "/players/0/ammo", "max": 4 }
+  ] }

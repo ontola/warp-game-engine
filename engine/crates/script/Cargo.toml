@@ -1,0 +1,8 @@
+[package]
+name = "script"
+edition.workspace = true
+version.workspace = true
+description = "Luau scripting for Warp games: sandboxed modules from a folder, hot reload, deterministic step budget"
+
+[dependencies]
+mlua = { version = "0.12", features = ["luau", "send"] }

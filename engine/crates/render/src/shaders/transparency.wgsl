@@ -6,7 +6,7 @@ struct BlendTriangle {
     material: u32,
     alpha: f32,
     double_sided: u32,
-    padding: u32,
+    additive: u32,
 };
 @group(2) @binding(0) var<storage, read> blend_triangles: array<BlendTriangle>;
 @group(2) @binding(1) var<storage, read> blend_order: array<u32>;
@@ -54,6 +54,18 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     if m.layer >= 0 { sample = textureSampleGrad(albedo, samp, in.uv, m.layer, dx, dy); }
     let alpha = clamp(sample.a * tri.alpha, 0.0, 1.0);
     if alpha <= 0.0 { discard; }
+    if tri.additive != 0u && (m.flags & 1024u) != 0u {
+        // Emissive effects are unlit. Fog may absorb their light, but adding
+        // its scattering colour here would make the fog itself glow.
+        let ray_length = distance(in.world, view.cam.xyz);
+        var transmission = 1.0 - distance_fog_amount(ray_length);
+        if light.fog.z > 0.0 {
+            let direction = normalize(in.world - view.cam.xyz);
+            let column = fog_column(ray_length, view.cam.y, direction.y, light.fog.z);
+            transmission = exp(-max(light.fog.y, 0.0) * column);
+        }
+        return vec4<f32>(m.tint * m.scale * transmission * alpha, alpha);
+    }
     let base = sample.rgb * m.tint;
     let p = in.world;
     let v = normalize(view.cam.xyz - p);
@@ -90,6 +102,7 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     }
     direct += headlight_radiance(p,n,v,diffuse,rough,f0);
     var rad = direct + indirect + specular + car_lamp_emission(m.flags, base, instances[tri.owner], p);
+    if (m.flags & 1024u) != 0u { rad += m.tint * m.scale; }
     rad = apply_distance_fog(rad, distance(p, view.cam.xyz), -v);
     if light.sky.z > 0.5 && light.sky.z < 1.5 { rad = vec3<f32>(sky_vis) * 6000.0; }
     else if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }
@@ -98,17 +111,25 @@ fn transparent_color(in: BlendVertex, front: bool) -> vec4<f32> {
     else if light.sky.z > 4.5 && light.sky.z < 5.5 { rad = specular; }
     else if light.sky.z > 5.5 && light.sky.z < 6.5 { rad = vec3<f32>(contact.x) * 6000.0; }
     else if light.sky.z > 6.5 && light.sky.z < 7.5 { rad = vec3<f32>(reflection_vis) * 6000.0; }
-    // Premultiplied source-over, in linear HDR before TAA and tonemapping.
+    // Keep true alpha here for motion coverage, independently of blending.
     return vec4<f32>(rad * alpha, alpha);
 }
+fn transparent_blend(color: vec4<f32>, additive: u32) -> vec4<f32> {
+    // Premultiplied source-over uses 1 - source alpha for the destination.
+    // Zero output alpha makes the same pipeline retain all destination light.
+    return vec4<f32>(color.rgb, select(color.a, 0.0, additive != 0u));
+}
 @fragment fn transparent_fs(in: BlendVertex, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return transparent_color(in,front);
+    let color = transparent_color(in,front);
+    return transparent_blend(color, blend_triangles[in.triangle].additive);
 }
 struct GlassMotionOut { @location(0) color:vec4<f32>, @location(1) metadata:vec2<u32> };
 @fragment fn transparent_motion_fs(in: BlendVertex, @builtin(front_facing) front: bool)->GlassMotionOut {
-    var out:GlassMotionOut;out.color=transparent_color(in,front);
-    let owner=blend_triangles[in.triangle].owner;
-    let coverage=u32(round(clamp(out.color.a,0.0,1.0)*255.0));
+    let color=transparent_color(in,front);
+    let tri=blend_triangles[in.triangle];
+    var out:GlassMotionOut;out.color=transparent_blend(color,tri.additive);
+    let owner=tri.owner;
+    let coverage=u32(round(clamp(color.a,0.0,1.0)*255.0));
     out.metadata=vec2<u32>(((owner+1u)<<8u)|coverage,bitcast<u32>(in.position.z));
     return out;
 }

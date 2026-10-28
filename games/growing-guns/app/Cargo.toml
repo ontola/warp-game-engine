@@ -1,0 +1,27 @@
+[package]
+name = "growing-guns-app"
+edition.workspace = true
+version.workspace = true
+description = "Growing Guns on Warp: split-screen renderer, input and headless captures"
+
+[[bin]]
+name = "growing-guns"
+path = "src/main.rs"
+
+[dependencies]
+growing-guns.workspace = true
+kern.workspace = true
+render = { path = "../../../engine/crates/render" }
+assets = { path = "../../../engine/crates/assets" }
+app = { path = "../../../engine/crates/app" }
+audio = { path = "../../../engine/crates/audio" }
+physics = { path = "../../../engine/crates/physics" }
+glam = "0.31"
+image = { version = "0.25", default-features = false, features = ["png"] }
+wgpu = "30"
+net = { path = "../../../engine/crates/net" }
+script = { path = "../../../engine/crates/script" }
+tokio = { version = "1", features = ["sync"] }
+serde.workspace = true
+serde_json.workspace = true
+

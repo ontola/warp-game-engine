@@ -1,0 +1,218 @@
+//! Online play over iroh (QUIC with hole punching and relays): a host and
+//! clients exchange typed messages on one reliable stream per client
+//! (length-prefixed postcard). iroh runs on its own tokio runtime; the
+//! game loop polls channels and never blocks. A ticket (hex of the host's
+//! endpoint address) is what a player shares to join.
+//!
+//! The protocol is the game's: `In` goes client to host, `Out` host to
+//! client. A host-authoritative game sends inputs up and snapshots down;
+//! `latest` marks messages where only the newest matters (snapshots), so a
+//! slow client gets the newest instead of a backlog.
+use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
+use iroh::{Endpoint, EndpointAddr, RelayMode};
+use serde::{de::DeserializeOwned, Serialize};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+
+pub use tokio::sync::mpsc::error::TryRecvError;
+
+pub trait Message: Serialize + DeserializeOwned + Send + Sync + 'static {}
+impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Message for T {}
+
+async fn write<T: Serialize>(s: &mut SendStream, msg: &T) -> Result<(), String> {
+    let bytes = postcard::to_allocvec(msg).map_err(|e| e.to_string())?;
+    s.write_all(&(bytes.len() as u32).to_le_bytes()).await.map_err(|e| e.to_string())?;
+    s.write_all(&bytes).await.map_err(|e| e.to_string())
+}
+
+async fn read<T: DeserializeOwned>(r: &mut RecvStream) -> Result<T, String> {
+    let mut len = [0u8; 4];
+    r.read_exact(&mut len).await.map_err(|e| e.to_string())?;
+    let len = u32::from_le_bytes(len) as usize;
+    if len > 1 << 24 { return Err("message too large".into()); }
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf).await.map_err(|e| e.to_string())?;
+    postcard::from_bytes(&buf).map_err(|e| e.to_string())
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|e| e.to_string())
+}
+
+/// `lan`: no relays or address publishing; direct addresses only (fast,
+/// local network or tests). Otherwise iroh's default relays and lookup.
+async fn endpoint(lan: bool, alpns: Vec<Vec<u8>>) -> Result<Endpoint, String> {
+    let b = if lan { Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled) } else { Endpoint::builder(presets::N0) };
+    b.alpns(alpns).bind().await.map_err(|e| e.to_string())
+}
+
+pub fn ticket(addr: &EndpointAddr) -> String {
+    postcard::to_allocvec(addr).unwrap_or_default().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn parse_ticket(t: &str) -> Result<EndpointAddr, String> {
+    let t = t.trim();
+    if t.len() % 2 != 0 || t.is_empty() { return Err("bad ticket".into()); }
+    let bytes: Result<Vec<u8>, _> = (0..t.len()).step_by(2).map(|i| u8::from_str_radix(&t[i..i + 2], 16)).collect();
+    postcard::from_bytes(&bytes.map_err(|_| "bad ticket")?).map_err(|e| format!("bad ticket: {e}"))
+}
+
+/// What the host's game loop sees.
+pub enum HostEvent<In, Out> {
+    /// A client connected; send to it through `tx`.
+    Joined { client: u64, tx: UnboundedSender<Out> },
+    Message { client: u64, msg: In },
+    Left { client: u64 },
+}
+
+pub struct Host<In, Out> {
+    pub ticket: String,
+    pub events: UnboundedReceiver<HostEvent<In, Out>>,
+    _rt: tokio::runtime::Runtime,
+}
+
+impl<In: Message, Out: Message> Host<In, Out> {
+    /// Listen for clients speaking `alpn`.
+    pub fn start(alpn: &[u8], lan: bool, latest: fn(&Out) -> bool) -> Result<Self, String> {
+        let rt = runtime()?;
+        let (etx, events) = unbounded_channel();
+        let ep = rt.block_on(endpoint(lan, vec![alpn.to_vec()]))?;
+        let addr = rt.block_on(async {
+            if !lan { let _ = tokio::time::timeout(std::time::Duration::from_secs(5), ep.online()).await; }
+            ep.addr()
+        });
+        let ticket = ticket(&addr);
+        rt.spawn(async move {
+            let mut next = 1u64;
+            while let Some(incoming) = ep.accept().await {
+                let client = next;
+                next += 1;
+                let etx = etx.clone();
+                tokio::spawn(async move {
+                    let Ok(accepting) = incoming.accept() else { return };
+                    let Ok(conn) = accepting.await else { return };
+                    let _ = serve::<In, Out>(conn, client, etx.clone(), latest).await;
+                    let _ = etx.send(HostEvent::Left { client });
+                });
+            }
+        });
+        Ok(Host { ticket, events, _rt: rt })
+    }
+
+    pub fn poll(&mut self) -> Option<HostEvent<In, Out>> { self.events.try_recv().ok() }
+}
+
+async fn serve<In: Message, Out: Message>(conn: Connection, client: u64, etx: UnboundedSender<HostEvent<In, Out>>, latest: fn(&Out) -> bool) -> Result<(), String> {
+    let (mut send, mut recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
+    let (tx, mut rx) = unbounded_channel::<Out>();
+    etx.send(HostEvent::Joined { client, tx }).map_err(|_| "host gone")?;
+    let writer = tokio::spawn(async move {
+        while let Some(mut msg) = rx.recv().await {
+            // A backlog of `latest` messages collapses to the newest.
+            while let Ok(next) = rx.try_recv() {
+                if latest(&msg) && latest(&next) { msg = next; continue; }
+                if write(&mut send, &msg).await.is_err() { return; }
+                msg = next;
+            }
+            if write(&mut send, &msg).await.is_err() { return; }
+        }
+    });
+    let result = loop {
+        match read::<In>(&mut recv).await {
+            Ok(msg) => if etx.send(HostEvent::Message { client, msg }).is_err() { break Ok(()) },
+            Err(e) => break Err(e),
+        }
+    };
+    writer.abort();
+    result
+}
+
+pub struct Client<In, Out> {
+    pub tx: UnboundedSender<In>,
+    pub rx: UnboundedReceiver<Out>,
+    conn: Connection,
+    ep: Option<Endpoint>,
+    rt: Option<tokio::runtime::Runtime>,
+}
+
+impl<In, Out> Drop for Client<In, Out> {
+    /// Close at once, so the host sees the client leave without a timeout.
+    fn drop(&mut self) {
+        self.conn.close(0u32.into(), b"bye");
+        if let (Some(rt), Some(ep)) = (self.rt.take(), self.ep.take()) {
+            rt.block_on(async { let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ep.close()).await; });
+            rt.shutdown_background();
+        }
+    }
+}
+
+impl<In: Message, Out: Message> Client<In, Out> {
+    /// Connect to a ticket; blocks until the stream is open (20 s limit).
+    pub fn join(ticket: &str, alpn: &[u8], lan: bool) -> Result<Self, String> {
+        let addr = parse_ticket(ticket)?;
+        let rt = runtime()?;
+        let (tx, mut out) = unbounded_channel::<In>();
+        let (itx, rx) = unbounded_channel::<Out>();
+        let alpn = alpn.to_vec();
+        let (mut send, mut recv, ep, conn) = rt.block_on(async {
+            let ep = endpoint(lan, vec![]).await?;
+            let conn = tokio::time::timeout(std::time::Duration::from_secs(20), ep.connect(addr, &alpn)).await
+                .map_err(|_| "timed out connecting".to_string())?.map_err(|e| e.to_string())?;
+            let (send, recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+            Ok::<_, String>((send, recv, ep, conn))
+        })?;
+        rt.spawn(async move {
+            // The first write opens the stream for the host's accept_bi.
+            while let Some(msg) = out.recv().await { if write(&mut send, &msg).await.is_err() { break; } }
+        });
+        rt.spawn(async move {
+            while let Ok(msg) = read::<Out>(&mut recv).await { if itx.send(msg).is_err() { break; } }
+        });
+        Ok(Client { tx, rx, conn, ep: Some(ep), rt: Some(rt) })
+    }
+
+    pub fn send(&self, msg: In) -> bool { self.tx.send(msg).is_ok() }
+    pub fn poll(&mut self) -> Result<Out, TryRecvError> { self.rx.try_recv() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    enum Up { Hello(String), Ping(u32) }
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    enum Down { Welcome(u64), Pong(u32), State(Vec<u32>) }
+
+    fn wait<T>(mut f: impl FnMut() -> Option<T>) -> T {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if let Some(v) = f() { return v; }
+            assert!(std::time::Instant::now() < end, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn host_and_client_talk_over_loopback() {
+        let mut host = Host::<Up, Down>::start(b"warp/test/0", true, |m| matches!(m, Down::State(_))).unwrap();
+        let mut client = Client::<Up, Down>::join(&host.ticket, b"warp/test/0", true).unwrap();
+        assert!(client.send(Up::Hello("p1".into())));
+        let (id, tx) = wait(|| match host.poll() { Some(HostEvent::Joined { client, tx }) => Some((client, tx)), _ => None });
+        let hello = wait(|| match host.poll() { Some(HostEvent::Message { client, msg }) => Some((client, msg)), _ => None });
+        assert_eq!(hello, (id, Up::Hello("p1".into())));
+        tx.send(Down::Welcome(id)).unwrap();
+        assert_eq!(wait(|| client.poll().ok()), Down::Welcome(id));
+        // Round trips keep their order.
+        for k in 0..20 { client.send(Up::Ping(k)); }
+        for k in 0..20 {
+            let msg = wait(|| match host.poll() { Some(HostEvent::Message { msg, .. }) => Some(msg), _ => None });
+            assert_eq!(msg, Up::Ping(k));
+            tx.send(Down::Pong(k)).unwrap();
+        }
+        for k in 0..20 { assert_eq!(wait(|| client.poll().ok()), Down::Pong(k)); }
+        drop(client);
+        wait(|| match host.poll() { Some(HostEvent::Left { client }) => Some(client), _ => None });
+        assert!(parse_ticket("zz").is_err());
+    }
+}
