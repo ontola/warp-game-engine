@@ -94,9 +94,13 @@ Missing inputs take the unit's default.
 | `pluck` | x, freq, decay, brightness | Karplus-Strong string. |
 | `hold` | x, trig | Sample and hold on a rising trigger. |
 | `expr` | up to six named | Per-sample formula of `t`, `sr` and its inputs. |
+| `rand` | lo, hi | One random value per voice, from its seed (per-play variation). |
+| `engine` | rpm, throttle, load, cut, gear, speed | A car engine (the engine-sim model, Sideways' cars) by car id. |
+| `tyres` | speed, slip, contact, loose, soft, wet | Tyres on a stage: roll, slide, gravel, grass, splash. |
 
 `expr` formulas such as `f1 + (f0 - f1) * exp(-t * k)` compile once into a
-small stack program. They support `+ - * / ^`, unary minus, `<` and `>`
+small program that runs a block at a time, with constant parts computed
+once (fast exp, ln, tanh and sin keep them cheap). They support `+ - * / ^`, unary minus, `<` and `>`
 (1 or 0), and exp, log, sin, cos, tan, tanh, sqrt, abs, sign, floor,
 fract, min, max, pow, clamp, lerp, smoothstep and step, so formulas from
 procedural sound code in GDScript or C port as they are.
@@ -141,8 +145,14 @@ let samples = bell.voice(&[("freq", 440.0)], 1, 48_000.0).render_all(2.0);
 ```
 
 A voice ends when its envelopes are done and it has been quiet for about
-0.1 s, at `max_length`, or (when `looping`) after release. Parameters set
-while playing glide over the next block.
+0.1 s, at `max_length` (or the value of the `length_param` parameter), or
+(when `looping`) after release. Parameters set while playing glide over
+the next block. Nodes whose inputs are all constant this block (random
+values, parameters, values derived from them) are computed once.
+
+`engine` units find their car in the tables given to
+`synth::register_engines(&audio::Sounds)` (a `sounds.toml`, as Sideways
+uses), so a patch can wrap a car's engine with its own layers and filters.
 
 ### The mixer
 
@@ -179,17 +189,33 @@ What it does with each voice:
   several ears (split screen on one set of speakers) the image widens.
 - **Distance:** full gain within `Falloff::reference` (default 4 m), then
   reference / distance, silent beyond `max` (default 400 m).
+  `Falloff::godot(unit)` is Godot 4's model: unit / distance, capped at
+  +18 dB close in, an 8 kHz high shelf down to -12 dB far away, and
+  optionally a linear fade (`fade`).
 - **Air absorption:** highs fall with distance (`air`, the fraction of
   20 kHz lost per 100 m), applied as a low-pass.
-- **Occlusion:** 0 (clear) to 1 (behind walls) lowers gain and the
-  low-pass cutoff.
+- **Occlusion:** 0 (clear) to 1 (behind walls) moves a low-pass from 20 kHz
+  to 250 Hz in log frequency (gliding, as Godot's raytraced players do) and
+  lowers gain by `occlusion_cut`.
+- **Pitch:** `Play::pitch` is the playback rate (resampling: duration and
+  pitch together).
+- **Not positioned:** `Place::Head` (centred), `Place::Pan(p)` (a stereo
+  panner on the front pair, as Godot's 2D players).
+- **Loudness priority:** with `cull(Some(Cull::default()))`, a sound whose
+  `spl` is more than 35 dB below the loudest recent one is not played (the
+  window releases at 110 dB/s). `loudest()` reads it, for ducking.
 - **Speed of sound:** with `sound_delay`, a voice starts after distance /
   343 m/s. A test checks that a sound 68.6 m away arrives at 0.2 s.
 - **Reverb:** a feedback delay network of eight lines (30 to 75 ms) with
   one decorrelated output per speaker, so the tail surrounds the listener
   in any layout. `room(decay, damping, level)` sets it; `Play::reverb` is
   each voice's send.
-- **Limiter:** master gain and a peak limiter at -1 dBFS.
+- **Hall:** a second, long and dark reverb fed before distance
+  (`Play::tail`), whose level follows how loud things were recently
+  (`Hall`, `lift`): the big tail after explosions.
+- **Master:** `master(Master { compressors, ceiling })`; the default is a
+  peak limiter at -1 dBFS, `Master::godot()` adds two compressors as
+  Growing Guns' Godot bus.
 
 `Mixer::render(out, channels)` fills an interleaved device buffer: a
 device with more channels than the layout gets silence on the rest, one
@@ -197,12 +223,41 @@ with fewer folds the extra channels into the first ones. A test renders
 100 struck-metal voices in 7.1 with reverb and asserts it runs faster than
 real time.
 
-### In progress
+### Patches in Luau
 
-Being built in another branch, not yet committed, so not documented here
-in detail:
+With the `luau` feature, `synth::lua::load(name, src)` builds patches from
+Luau, where nodes are values and arithmetic builds the graph:
 
-- a Luau front end that writes patches as Luau (unit names from `UNITS`);
-- `warp-audio`, a command-line tool to render patches to audio files.
+```lua
+-- A gunshot kick: a sine whose pitch drops 220 Hz to 55 Hz, per-shot jitter.
+local damage = param("damage", 1)
+length(0.6)
+local kick = sine(sweep(220 * rand(0.88, 1.12), 55, rand(70, 95)))
+  * expr("exp(-t * 35 / sqrt(d))", { d = damage })
+return lowpass1(kick, 2500) + highpass(noise(), 2000) * decay(0.08, 1.6) * 0.5
+```
 
-Until then, patches are built in Rust as above.
+Every unit is a function (`sine`, `saw`, `noise`, `lowpass`, `modal`,
+`engine("asti", rpm, ...)` and so on), plus helpers: `decay(dur, power)`,
+`sweep(f0, f1, k)`, `hump(dur)`, `after(delay, x)`, `expdecay(tau)`,
+`expr(src, {name = signal})`, `mix(...)`, `db(v)`, `param(name, default)`,
+`length(seconds or param)`, `loop()` and `sound(name, fn)` for several
+sounds in one file. Each load runs in a fresh sandboxed VM under a step
+budget, so a broken edit fails to load instead of hanging the game.
+Growing Guns' sounds are such files (`games/growing-guns/sounds`), ported
+from Godot's sfx.gd and checked against 1:1 references; the game reloads
+them when saved.
+
+### warp-audio
+
+`cargo run -p audio --features luau --bin warp-audio --`:
+
+- `render FILE.luau [--sound NAME] [--set k=v] [--seed N] [--seconds S]
+  [--layout 5.1] [--at x,y,z] [--reverb R] [--repeat N --every S]
+  [--out x.wav] [--json]` renders through the mixer and prints the length,
+  peak, loudness, spectral centroid, per-speaker levels and a text
+  spectrogram, so a sound can be judged without listening (by a person or
+  a model);
+- `check FILES` validates patches; `units` lists units and helpers;
+- `--engines sounds.toml` registers cars for `engine` units (by default
+  Sideways' table when run from the repository).
