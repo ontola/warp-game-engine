@@ -122,7 +122,7 @@ pub struct Headless<'g> {
     pub size: [u32; 2],
     pub tick_hz: f32,
     /// Offline sound: scripts mix one tick of audio per tick into `recorded`.
-    pub audio: Option<audio::sfx::SfxMixer>,
+    pub audio: Option<Box<dyn audio::Source>>,
     pub recorded: Vec<f32>,
     renderer: Option<Renderer>,
     out: Output,

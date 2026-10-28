@@ -172,7 +172,7 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
                 let n = (audio::SAMPLE_RATE / headless.tick_hz).round() as usize * 2;
                 let start = headless.recorded.len();
                 headless.recorded.resize(start + n, 0.0);
-                mix.render_add(&mut headless.recorded[start..], 2);
+                mix.render(&mut headless.recorded[start..], 2);
             }
             if let Some(pointer) = &step.until {
                 let state: Value = game.state().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
@@ -244,7 +244,7 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
 /// Load a script from a file and run it.
 /// `audio`: an offline mixer whose sender the game holds; scripts can then
 /// record and check its sound.
-pub fn run_file(game: &mut dyn Game, gpu: &render::Gpu, tick_hz: f32, file: &Path, out: &Path, audio: Option<audio::sfx::SfxMixer>) -> Result<usize, String> {
+pub fn run_file(game: &mut dyn Game, gpu: &render::Gpu, tick_hz: f32, file: &Path, out: &Path, audio: Option<Box<dyn audio::Source>>) -> Result<usize, String> {
     let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let script: Script = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
     let mut headless = Headless::new(gpu, script.size, tick_hz)?;
