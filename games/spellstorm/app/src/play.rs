@@ -12,6 +12,7 @@ use spellstorm::{Seat, Settings, World};
 pub struct Spellstorm {
     pub world: World,
     pub view: View,
+    pub hud: crate::hud::Hud,
     humans: usize,
     built: bool,
 }
@@ -57,7 +58,9 @@ impl Spellstorm {
         let mut seats: Vec<Seat> = (0..humans).map(|i| Seat::player(i, spellstorm::world::NAMES[i % 6])).collect();
         seats.extend((humans..humans + bots).map(Seat::bot));
         let world = World::new(&seats, seed, Settings::default());
-        Spellstorm { world, view: View::new(kits), humans, built: false }
+        let mut hud = crate::hud::Hud::default();
+        hud.level(&world);
+        Spellstorm { world, view: View::new(kits), hud, humans, built: false }
     }
 
     /// One tick with these players' controls.
@@ -69,6 +72,8 @@ impl Spellstorm {
         }
         self.world.step();
         self.view.fx.absorb(&self.world);
+        self.hud.absorb(&self.world);
+        self.hud.update(spellstorm::world::DT as f32);
     }
 }
 
@@ -91,7 +96,9 @@ impl app::Game for Spellstorm {
         }
         let r = frame.renderer().ok_or("no renderer")?;
         self.view.pose(frame.gpu, r, &self.world, frame.dt)?;
-        Ok(Draw { cameras: vec![self.view.camera], light: self.view.light.clone(), hud: HudDrawList::new(frame.size) })
+        let mut hud = HudDrawList::new(frame.size);
+        self.hud.draw(&mut hud, &self.world, &self.view.camera, frame.size);
+        Ok(Draw { cameras: vec![self.view.camera], light: self.view.light.clone(), hud })
     }
 
     fn title(&self) -> Option<String> {
