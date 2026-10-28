@@ -9,7 +9,8 @@ very different game and to find where the engine is in the way; see
 [engine/docs/second-game-findings.md](../../engine/docs/second-game-findings.md).
 
 - `sim/` is the deterministic 60 Hz gameplay: arena generator (a port of
-  `arena_generator.gd`: walled, hole and open variants, mirrored layouts),
+  `arena_generator.gd`: walled, hole, open and lava-island variants,
+  mirrored layouts),
   collision through `kern::collide`, movement and weapon constants from
   `player.gd` and `weapon.gd`, rounds and bots. `World` implements
   `kern::Sim`. No rendering dependency.
@@ -90,11 +91,21 @@ counts):
   second), offers 0.35 s after a win, the dead pick mid-round with 3+
   players, bot picks after 1.2 s, no pick deadline for a solo human, match
   end at ten wins (`rematch`, `extend`), the twelve round modifiers, pickups
-  and the lava leak at 30 s.
+  and the lava leak at 30 s;
+- the lava-island arena, 18% of arenas as in Godot: no floor, lava at
+  0.04 m, mirrored stone islands within jump reach of each other, a kill
+  below the lava and a burn up to 1.15 m above it off the islands; the leak
+  only rises there. Bots keep to the islands (Godot's lava-map checks and
+  lapses) and leap between them. It has Godot's inferno stone, sky and sun
+  under Godot's sky; see [docs/lava-parity.md](docs/lava-parity.md).
+  `arena island [SEED]` (debug) or `--island` (every arena) forces it;
+  `scripts/island.json` shows it by day and night.
 
 Debug commands (`cmd` steps, `help`): `give`, `special`, `modifier`,
-`round`, `cage`, `rematch`, `extend`, `lua`, `mods` and more.
-`play --modifier ID`, `--rounds N`.
+`round`, `cage`, `rematch`, `extend`, `arena SEED`, `arena island [SEED]`,
+`lava [SECONDS]`, `lua`, `mods` and more.
+`play --modifier ID`, `--rounds N`, `--island`; `sim --arenas` lists each
+round's arena.
 
 Mods: the cards and game rules are Luau in [`mods/`](mods/API.md), run by
 `engine/crates/script` (sandboxed, a step budget per call, a load error
@@ -141,7 +152,7 @@ one, from the next wave). The view draws up to 24 players in coop (8 animated
 characters, the rest as blobs). `scripts/coop.json` plays it headless with
 `--coop --players 2`.
 
-Not ported yet: ghosts planting mines and the island lava layout. Music and
+Not ported yet: ghosts planting mines and the menu's cinematic lava fort. Music and
 GameNight integration are present. Online play is tested
 over loopback (`nettest`), not yet between two machines; clients predict
 only their look direction.

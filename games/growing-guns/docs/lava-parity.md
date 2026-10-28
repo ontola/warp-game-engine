@@ -14,7 +14,8 @@ fog and Filmic as the game has them).
 | | Godot | Rust |
 |---|---|---|
 | Pool | `_build_lava_pool`: a 6 km plane at `LAVA_POOL_Y` = -3 under every arena, seen through holes and past an open arena's edge | 900 m slab with its top at `LAVA_KILL_Y` = -3 (`view/arena.rs`) |
-| Arena variants | 18% all-floor-lava islands, 24% open, 16% hole, 42% walled | Islands not ported (they become walled); open, hole and walled match |
+| Arena variants | 18% all-floor-lava islands, 24% open, 16% hole, 42% walled | Same split, from the same single roll (see [The island arena](#the-island-arena)) |
+| Island floor | `_build_lava_floor_surface`: a plane the size of the arena at `LAVA_FLOOR_SURFACE_Y` = 0.04, over the pool | 10 cm lava slab with its top at 0.04 (`view/things.rs`), rising with the leak |
 | Leak (sudden death) | `arena_procedural.gd`: after 30 s (or at once with the Sudden Death modifier), 4 s down the inside of the walls, then floor fronts creep in from the edges (smoothstep over the rest of 20 s), then the surface rises 1.5 m/s to 18 m | Same timings in `sim/src/flow.rs`. Fronts and wall sheets in `view/things.rs` follow `_set_front_rect` and `LavaWallFlow`: 0.045 m thick fronts on the surface, at least 0.08 m wide once they show, and 0.45 m sheets at half - 0.62, growing down from the top |
 | Particles, embers, heat haze | None for lava. The embers and heat distortion in Godot belong to explosions | None |
 
@@ -182,7 +183,9 @@ All in the sim; deterministic, fixed 120 Hz.
 | Leak burn | 15 per 0.5 s within 2.4 m above the surface, inside the flooded edge band (once the floor phase is active) or within 1.25 m of a wall under its lava sheet (vertical band ±0.8 m) | same |
 | Accumulators | separate dictionaries for pool and leak | one per player, shared. Same result, because a player in the pool band is below the leak surface and dies to the leak first |
 | Destruction | breaking the floor drops players into the pool; the pool light brightens as columns open | same (the light via `ArenaView::break_chunks`) |
-| Island arena | burn within 1.15 m above the lava floor outside safe disks | not ported |
+| Island kill | below the lava floor (0.04, capsule centre), lethal past the phoenix; the pool's kill and burn are off | same (`player.rs::lava_tick`) |
+| Island burn | 15 per 0.5 s up to 1.15 m above the lava floor, outside the islands' safe disks (radius half side + 0.25, so a square column's corners burn) | same |
+| Island leak | `_lava_floor_already_full`: no wall sheets, the floor phase is complete at once, so it rises 1.5 m/s from the start to 18 m; kills below 0.09 + rise, burns 1.15 m above that, anywhere | same (`LavaLeak::full`) |
 
 ### Death
 
@@ -215,7 +218,8 @@ The port now matches Godot:
   - **Revive.** A revived player loses the lava body.
 - **Quirk kept.** Godot takes the surface from the generator's
   `get_lava_surface_world_y`, which is always the pool at -3 on non-island
-  arenas, even for leak deaths. A body burnt in the leak therefore sinks
+  arenas (0.04 on island arenas, even under a risen leak), even for leak
+  deaths. A body burnt in the leak therefore sinks
   through the floor to -3.5, and a leak fall's splash rises from the hidden
   pool. The port does the same.
 - **Small difference.** During a fall's first 0.18 s, Godot still shows the
@@ -227,10 +231,145 @@ The port now matches Godot:
 The lava sizzle (`sounds/lava_sizzle.luau`, played on `Event::Lava`) was
 already done and is unchanged.
 
+## The island arena
+
+Godot's `_build_lava_island_layout` (not the menu's cinematic fort), ported
+in `sim/src/arena.rs`. Run `scripts/island.json` to see it.
+
+### Choice and determinism
+
+Godot draws the size, then one `variant_roll`: below 0.18 (or with
+`force_all_floor_lava`) the island branch, which builds walls and corner
+towers, the pool, the lava floor and the islands, then returns early with no
+floor, buildings or cover. Nothing else is drawn at the decision point, so
+the other variants draw the same stream whether islands exist or not. The
+port's `Arena::generate_with` keeps that: walled, hole and open arenas are
+unchanged, generator draw for draw. Before, island rolls fell through to the
+walled layout.
+
+The port's random stream (PCG32 per arena seed) is not Godot's, so a seed
+gives a different layout than in Godot; the draws follow Godot's order.
+
+**Versus digests** (`growing-guns sim --seed S --seconds 180 --arenas`,
+bots only). A run stays identical tick for tick until its first island
+round, then diverges: an island arena has different spawns, so the round's
+spawn shuffle draws differently from the match stream.
+
+| Seed | First island round | Before | After |
+|---|---|---|---|
+| 1 | tick 1759 | 267adf3df3c7468d | c0feffd45eb915c2 |
+| 7 | tick 3124 | bdd8b64915fac337 | eca9be71db8f5dbf |
+| 42 | the first round | 6c2d3b8de92cceb8 | bfbef284bd0166f8 |
+| 99 | tick 6050 | a27eee66c0f1ad0c | 1cfa1f69eb77bf7e |
+| 4242 | tick 8644 | d92d8ade5a4df2bb | 076d2a42585ba8a0 |
+
+The digests at 29, 52, 100 and 144 s (just before those rounds) match the
+old build for seeds 1, 7, 99 and 4242. Seeds 8, 10, 11, 20 and 25 roll no
+island in 180 s and keep their digests. The golden images use the default
+script seed, whose arenas are not islands, and are unchanged pixel for pixel.
+Arena seeds 4, 5, 10 and 11 now roll islands, so the tests and scripts that
+used them as walled arenas moved to 15 and 0 (`destruct.rs`), 52
+(`lava.json`, `lava-night.json`; the Godot comparison above was measured on
+11, also walled and 76 m) and 85 (`wall.json`, `blast.json`, `boom.json`).
+
+### Layout
+
+| | Godot and the port |
+|---|---|
+| Centre | an island of half side 4.2 m, top at 1.0 |
+| Spine | 3 to 5 islands towards -X, half side 3 to 4.7, each 1.25 to 2.05 m above the last, gap 2.7 m to `max_gap` |
+| Grown pairs | round(size / 6) + 1..4, clamped to 10..18, each grown off a random island of the -X half: half side 2.2 to 5.2, height step -1.55 to 2.05 (58%: 0.6 to 2.05), gap 2.8 m to `max_gap`, 80 tries |
+| Stepping stones | half side 3, top 1.15, on the X axis at ±10.5 m, linked to the centre |
+| Reach | `max_gap` goes from 5.6 m (level) to 3.1 m (a 2.05 m climb); tops between 0.9 and 9 m, inside half the arena minus 3 m |
+| Islands | square destructible columns (2 x half side), from 0.45 to 1.5 m below the lava up to their top, `_mat_dark` (`Kind::Island`); everything but the centre mirrored at (-x, -z) |
+| Planks | over 22% of the links at least 7 m long, length - 4.8 m by 0.22 by 1 m, 8 cm above the lower top. Godot turns them by atan2(dz, dx) as rotation.y, which mirrors them in Z unless the link runs along X; kept |
+| Cover | on 38% of the islands with half side 3 or more: 1.8 to 2.8 by 1.1 by 0.8 to 1.2 m at a random angle. Planks and cover are not mirrored |
+| Spawns | one 1 m over each island top, pruned to `is_lava_spawn_safe` (at least 1.69 m up, within the safe disk minus 0.65 m) |
+
+`island_arenas_are_connected_and_spawn_safely` (arena.rs) ports Godot's
+`_validate_lava_platform_graph`: every link within `max_gap` and the step,
+every island reachable from the centre, for every island seed below 200 (41
+of 200 arenas, Godot 18%; 21 to 43 islands each).
+
+### The rest of the game on islands
+
+- **Spawns.** The round's greedy spaced pick over the island spawns (Godot
+  also searches a ring on a platform and caps the spacing on small ones;
+  with 21 to 43 islands the pick already spaces players). Sky drops
+  (phoenix, revive) reject ground off a safe disk.
+- **Strikes.** The sky ray finds islands (there is no floor), as in Godot.
+  The ion column reaches 20 m below the lava floor.
+- **Pickups.** A drop that misses the islands falls on for the rest of the
+  round and keeps its place under the cap of four, as Godot never frees it.
+- **Coop.** Wave enemies emerge on islands: no height cap, on safe disks.
+- **Debug.** `arena island [SEED]` (everyone moves onto an island), `play
+  --island` or `script --island` for every arena, `sim --island --arenas`.
+
+### Bots
+
+Godot's `_bot_on_lava_map` handling is ported (`sim/src/bot.rs`): the move
+direction is replaced by a safe one (`_bot_lava_safe_move_dir`: ahead,
+towards the centre, across it, then back, forward, left, right) unless
+0.9, 1.6 and 3 m ahead are on a safe disk with ground under them; edge probes
+reach 3 m; gap landings, ledge tops and pickups must be safe; random hops are
+rarer (0.0015 a tick) and only towards safe ground; dashes only when safe; no
+teleport special. Once a second a bot rolls a 7% lapse of 0.6 s in which the
+checks are skipped. The port rolls it on island arenas only (Godot rolls on
+every map), so other arenas keep their bot streams.
+
+As written, Godot's careful bots cannot cross: the safe direction is chosen
+before the gap check, so a careful bot never gap-jumps, and the same check
+runs in the air and turns a jumping bot back over the gap. The port adds two
+things. A careful bot keeps heading for its target when a gap lies ahead
+with a safe landing it can reach (a rise of at most 2 m; past 7 m only with
+a dash ready, as Godot's gap jump dashes there). In the air it then steers
+for that landing, brakes over it and double-jumps only if the fall would land
+short. Godot's headless players could not be run here to compare (their FBX
+characters are not imported), so this rests on reading `player.gd`.
+
+`bots_keep_to_the_islands_and_jump_between_them` (tests.rs), four bots,
+four seeds, 120 s each: 36 kills, 160 moves between islands, 39 falls, all
+but 3 within 1.5 s of a lapse or a cage drop. With Godot's logic alone:
+8 kills, 8 moves and 45 falls (most of them aborted jumps).
+
+### Visuals
+
+- **Lava floor.** The lava material (Godot noise, `LAVA_TINT` x
+  `LAVA_NITS`) on a slab the size of the arena. Godot leaves its floor at
+  0.04 while the leak rises invisibly and kills; the port draws the floor at
+  the leak's surface once it is higher, so the rising lava shows. No fronts
+  or wall sheets, as in Godot.
+- **Light.** Godot's LavaGlow: energy 8, range 0.78 x the arena, 0.35 m over
+  the lava, attenuation 0.65 (`view/lava.rs`, following the drawn surface).
+  No pool or leak light, as Godot sets up no openness and hides the leak
+  glow there.
+- **At night.** The night glows work unchanged: up to 4 over the largest
+  patches of open lava between the islands (now just over the lava floor)
+  and the ring past the edge. The floor glow is not scaled by the exposure,
+  so the islands catch more orange light than by day.
+- **Inferno palette.** Godot's `_inferno_palette`: stone pulled towards
+  basalt (floor 0.62, wall 0.68, building 0.64, dark 0.72 of the way), a sky
+  from (0.06, 0.05, 0.09) to (0.58, 0.24, 0.10) and a sun of (1, 0.72, 0.38)
+  at 2.55 / 2.0 of the usual energy. The sky and sun change only under
+  Godot's sky (the default), which takes a renderer rebuild, done only when
+  a round switches between an island arena and another; the procedural skies
+  (`--sky night` and others) keep their own. Not ported: the fill light,
+  ambient colour, exposure 1.14, sky energy 1.55 and glow. The engine's
+  linear fog towards the sky gives a salmon haze where Godot's exponential
+  orange fog is a saturated orange.
+
+Captures from `scripts/island.json` (960 x 540, software adapter): the
+arena from a corner tower, from the centre island and from above the north
+wall; the bots after 5 and 10 s; a bot falling into the lava and sinking;
+the leak risen 6 m; and the same at night. The Godot references, made with
+a scratch capture script under xvfb (Godot seed 3, so a different layout),
+look the same in structure; Godot's fog is a deeper orange.
+
 ## Still to do
 
-- The all-floor-lava island arena (layout, safe disks, lava floor surface at
-  0.04 m with its own glow lights, and the 1.15 m burn band).
+- Island arenas: Godot's fill light, ambient, exposure and glow of the
+  inferno palette, and its per-platform spawn ring; the menu's cinematic
+  lava fort (`cinematic_present`).
 - Colour beyond what AgX allows: only a different tonemapper would close it
   (decided against).
 - Fog and glow parity, which are scene-wide rather than lava.
