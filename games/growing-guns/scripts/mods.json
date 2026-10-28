@@ -1,0 +1,14 @@
+{ "size": [480, 270],
+  "steps": [
+    { "cmd": ["bots pause", "mods", "cards"], "note": "the base cards come from mods/base/cards.luau" },
+    { "cmd": ["lua g:give(1, 'explosive')", "lua g:give(1, 'explosive')"] },
+    { "ticks": 1 },
+    { "expect": "/players/0/cards/1", "equals": "explosive", "note": "given at the start of the tick, pick hook included" },
+    { "cmd": ["lua g:stat(1, 'explosive_radius')", "lua n = 41", "lua n + 1"] },
+    { "cmd": ["lua g:damage(2, 500, 1)"] },
+    { "ticks": 1 },
+    { "expect": "/players/1/alive", "equals": false, "note": "scripted damage kills, credited to player 1" },
+    { "cmd": ["lua g:explode(g:pos(3), 4, 0)"] },
+    { "ticks": 2 },
+    { "state": "after.json" }
+  ] }

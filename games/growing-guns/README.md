@@ -55,6 +55,16 @@ reliably (`ToClient::Broken`). `scripts/destruction.json` digs into the
 lava, `scripts/wall.json` blows a hole in a wall; both use debug commands
 (`cmd` steps, see `help`).
 
+Mods: the cards and game rules are Luau in [`mods/`](mods/API.md), run by
+`engine/crates/script` (sandboxed, a step budget per call, a load error
+keeps the previous version). Edit a file while the game runs and it reloads
+within a quarter second; `state` survives the reload. Hooks (`hit`, `kill`,
+`tick`, `round_start`, a card's `pick`) run inline in the host's sim tick, so
+matches still replay exactly. The debug console runs Luau against the live
+match: `lua g:give(1, 'explosive')`, `mods` lists modules and errors.
+`growing-guns mods-api` regenerates `mods/API.md` and `mods/types.d.luau`
+from the Rust side; `GG_MODS=DIR` points at another mods folder.
+
 Not ported: the other cards (ricochet, shotgun, specials) and weapons,
 skinned characters (the FBX models need converting to glTF
 first), menus beyond card picks, music, GameNight. Online play is tested

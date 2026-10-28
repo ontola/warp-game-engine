@@ -4,6 +4,7 @@
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T] [--trace players.0.health,round [--rows N]]
 //!   growing-guns nettest [--seconds T]   (host + client over iroh loopback, headless)
+//!   growing-guns mods-api   (writes mods/API.md and mods/types.d.luau)
 //!   growing-guns script FILE.json --out DIR [--players N] [--seed S]   (app::script; exit 1 on a failed expect)
 //!
 //! Online: `play --host` prints a ticket; `play --join TICKET` joins it.
@@ -17,6 +18,7 @@ mod sounds;
 mod synth;
 mod crowd_sound;
 mod gun;
+mod scripts;
 mod stadium;
 mod view;
 
@@ -49,6 +51,7 @@ fn main() {
         "bench" => bench::run(&args),
         "script" => script(&args),
         "nettest" => nettest(&args),
+        "mods-api" => mods_api(),
         _ => Err(format!("unknown command {cmd}; use play, shot or sim")),
     };
     if let Err(e) = result {
@@ -62,6 +65,7 @@ fn sim(args: &Args) {
     let seed = args.num("--seed", 1u64);
     let seconds = args.num("--seconds", 120u32);
     let mut w = World::new(seed, &[true; 4]);
+    if let Err(e) = scripts::attach(&mut w) { eprintln!("mods: {e}"); }
     let (mut shots, mut hits, mut rounds) = (0u32, 0u32, 0u32);
     let t = std::time::Instant::now();
     for _ in 0..seconds * TICK_HZ {
@@ -75,6 +79,7 @@ fn sim(args: &Args) {
         // Replay from the same seed, sampling the paths (kern::Trace).
         let paths: Vec<String> = paths.split(',').map(str::to_string).collect();
         let mut sim = World::new(seed, &[true; 4]);
+        if let Err(e) = scripts::attach(&mut sim) { eprintln!("mods: {e}"); }
         let mut trace = kern::Trace::new(&paths);
         let mut timings = kern::Timings::default();
         for _ in 0..seconds * TICK_HZ / 6 { for _ in 0..6 { kern::Sim::step(&mut sim, &mut timings); } trace.sample(&sim); }
@@ -82,6 +87,16 @@ fn sim(args: &Args) {
     }
     println!("seed {seed}: {seconds} s, {rounds} rounds, {shots} shots, {hits} hits, scores {:?}, {ms:.4} ms per tick, digest {:016x}",
         w.players.iter().map(|p| p.score).collect::<Vec<_>>(), w.digest());
+}
+
+/// Regenerate the mod API reference from the Rust side.
+fn mods_api() -> Result<(), String> {
+    let dir = scripts::find_dir().ok_or("no mods folder (GG_MODS or games/growing-guns/mods)")?;
+    for (file, text) in [("API.md", scripts::api_doc()), ("types.d.luau", scripts::api_types())] {
+        std::fs::write(dir.join(file), text).map_err(|e| e.to_string())?;
+        println!("{}", dir.join(file).display());
+    }
+    Ok(())
 }
 
 /// Headless capture through the same frame path as `play` (app::capture):

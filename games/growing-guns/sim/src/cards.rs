@@ -1,36 +1,104 @@
-//! Cards that grow the gun, after Godot's `card_library.gd` (the stat
-//! cards and explosive rounds; ricochet, shotgun and the specials are not
-//! ported). Losers of a
-//! round pick one of three; effects stack for the rest of the match.
+//! Cards that grow the gun. Losers of a round pick one of three; effects
+//! stack for the rest of the match. The cards themselves are data (the game
+//! loads them from `mods/*.luau`, see the app's `scripts` module): a name,
+//! a text, a colour and stat changes the sim applies in f32, plus an
+//! optional script hook for anything a table of numbers cannot say.
 use serde::{Deserialize, Serialize};
 
+/// A card: an index into the match's [`Book`]. Stable across hot reloads
+/// (new cards append, removed ones are switched off, never renumbered).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Card(pub u16);
+
+/// A stat a card can change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Card { Damage, Healthy, SteadyHands, Precision, Sneakers, RapidFire, FastRounds, BigMag, QuickReload, Explosive }
+pub enum Stat { Damage, FireRate, Spread, Recoil, Speed, BulletSpeed, Reload, MagBonus, HpBonus, ExplosiveRadius, ExplosiveDamage }
 
-pub const ALL: [Card; 10] = [Card::Damage, Card::Healthy, Card::SteadyHands, Card::Precision, Card::Sneakers, Card::RapidFire, Card::FastRounds, Card::BigMag, Card::QuickReload, Card::Explosive];
+pub const STATS: [(Stat, &str, &str); 11] = [
+    (Stat::Damage, "damage", "bullet damage multiplier"),
+    (Stat::FireRate, "fire_rate", "shots per second multiplier"),
+    (Stat::Spread, "spread", "spread cone multiplier (lower is tighter)"),
+    (Stat::Recoil, "recoil", "recoil multiplier"),
+    (Stat::Speed, "speed", "move speed multiplier"),
+    (Stat::BulletSpeed, "bullet_speed", "bullet speed multiplier"),
+    (Stat::Reload, "reload", "reload speed multiplier"),
+    (Stat::MagBonus, "mag_bonus", "extra rounds per magazine"),
+    (Stat::HpBonus, "hp_bonus", "extra max health"),
+    (Stat::ExplosiveRadius, "explosive_radius", "bullet blast radius in metres (0: no blast)"),
+    (Stat::ExplosiveDamage, "explosive_damage", "blast damage at the centre"),
+];
 
-impl Card {
-    pub fn name(self) -> &'static str {
-        match self {
-            Card::Damage => "DAMAGE", Card::Healthy => "HEALTHY", Card::SteadyHands => "STEADY HANDS", Card::Precision => "PRECISION",
-            Card::Sneakers => "SNEAKERS", Card::RapidFire => "RAPID FIRE", Card::FastRounds => "FAST ROUNDS", Card::BigMag => "BIG MAG", Card::QuickReload => "QUICK RELOAD", Card::Explosive => "EXPLOSIVE ROUNDS",
-        }
-    }
-    pub fn text(self) -> &'static str {
-        match self {
-            Card::Damage => "x1.5 damage", Card::Healthy => "+35 max health", Card::SteadyHands => "Tighter spread", Card::Precision => "Tighter spread, half recoil",
-            Card::Sneakers => "+15% move speed", Card::RapidFire => "x1.6 fire rate", Card::FastRounds => "x1.5 bullet speed", Card::BigMag => "+20 rounds", Card::QuickReload => "x2 reload speed", Card::Explosive => "Bullets explode on impact",
-        }
-    }
-    /// sRGB menu colour, as in the Godot pool.
-    pub fn color(self) -> [f32; 3] {
-        match self {
-            Card::Damage => [1.0, 0.25, 0.25], Card::Healthy => [0.45, 1.0, 0.55], Card::SteadyHands | Card::Precision => [0.55, 0.8, 1.0],
-            Card::Sneakers => [0.9, 0.9, 0.4], Card::RapidFire => [1.0, 0.6, 0.2], Card::FastRounds => [0.65, 0.92, 1.0], Card::BigMag | Card::QuickReload => [0.85, 0.7, 1.0], Card::Explosive => [1.0, 0.4, 0.1],
-        }
-    }
+impl Stat {
+    pub fn named(name: &str) -> Option<Stat> { STATS.iter().find(|s| s.1 == name).map(|s| s.0) }
+    pub fn name(self) -> &'static str { STATS.iter().find(|s| s.0 == self).map_or("?", |s| s.1) }
+}
+
+/// One card's definition.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CardDef {
+    /// Stable id, e.g. `rapid_fire`.
+    pub id: String,
+    pub name: String,
+    pub text: String,
+    /// sRGB menu colour.
+    pub color: [f32; 3],
     /// Improves the gun itself (one such card is always offered).
-    pub fn firepower(self) -> bool { !matches!(self, Card::Healthy | Card::Sneakers) }
+    pub firepower: bool,
+    /// Applied in order on pick: multiply, then add.
+    pub mul: Vec<(Stat, f32)>,
+    pub add: Vec<(Stat, f32)>,
+    /// Still in the mods (a removed card stays numbered but is not offered).
+    pub enabled: bool,
+}
+
+/// The match's cards.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Book { cards: Vec<CardDef> }
+
+impl Book {
+    pub fn new(cards: Vec<CardDef>) -> Self { Book::default().merged(cards) }
+
+    pub fn get(&self, c: Card) -> Option<&CardDef> { self.cards.get(c.0 as usize) }
+    pub fn name(&self, c: Card) -> &str { self.get(c).map_or("?", |d| d.name.as_str()) }
+    pub fn find(&self, id: &str) -> Option<Card> { self.cards.iter().position(|d| d.id == id && d.enabled).map(|i| Card(i as u16)) }
+    /// Cards that can be offered and given, in book order.
+    pub fn enabled(&self) -> impl Iterator<Item = (Card, &CardDef)> {
+        self.cards.iter().enumerate().filter(|(_, d)| d.enabled).map(|(i, d)| (Card(i as u16), d))
+    }
+
+    /// This book with `defs` as the new set: known ids keep their number,
+    /// new ones append, ids not in `defs` are switched off.
+    pub fn merged(&self, defs: Vec<CardDef>) -> Book {
+        let mut cards = self.cards.clone();
+        for c in &mut cards { c.enabled = false; }
+        for mut d in defs {
+            d.enabled = true;
+            match cards.iter().position(|c| c.id == d.id) { Some(i) => cards[i] = d, None => cards.push(d) }
+        }
+        Book { cards }
+    }
+
+    /// The card's stat changes.
+    pub fn apply(&self, c: Card, m: &mut Mods) {
+        let Some(d) = self.get(c) else { return };
+        for &(s, k) in &d.mul { m.set(s, m.get(s) * k); }
+        for &(s, k) in &d.add { m.set(s, m.get(s) + k); }
+    }
+
+    /// Three different cards, at least one firepower card; `None` with
+    /// fewer than three cards.
+    pub fn offer(&self, rng: &mut crate::rng::Rng) -> Option<[Card; 3]> {
+        let mut pool: Vec<Card> = self.enabled().map(|(c, _)| c).collect();
+        if pool.len() < 3 { return None; }
+        let mut out = [Card(0); 3];
+        for o in &mut out { *o = pool.remove(rng.below(pool.len() as u32) as usize); }
+        let fp = |c: &Card| self.get(*c).is_some_and(|d| d.firepower);
+        if !out.iter().any(fp) {
+            let all: Vec<Card> = self.enabled().map(|(c, _)| c).filter(fp).collect();
+            if !all.is_empty() { out[rng.below(3) as usize] = all[rng.below(all.len() as u32) as usize]; }
+        }
+        Some(out)
+    }
 }
 
 /// Accumulated card effects for one player.
@@ -57,34 +125,61 @@ impl Default for Mods {
 }
 
 impl Mods {
-    pub fn apply(&mut self, c: Card) {
-        match c {
-            Card::Damage => self.damage *= 1.5,
-            Card::Healthy => self.hp_bonus += 35,
-            Card::SteadyHands => self.spread *= 0.65,
-            Card::Precision => { self.spread *= 0.4; self.recoil *= 0.5; }
-            Card::Sneakers => self.speed *= 1.15,
-            Card::RapidFire => self.fire_rate *= 1.6,
-            Card::FastRounds => self.bullet_speed *= 1.5,
-            Card::BigMag => self.mag_bonus += 20,
-            Card::QuickReload => self.reload *= 2.0,
-            // First stack gives a sizeable blast, later ones grow it.
-            Card::Explosive => {
-                self.explosive_radius += if self.explosive_radius <= 0.0 { 4.0 } else { 2.5 };
-                self.explosive_damage += 25.0;
-            }
+    pub fn get(&self, s: Stat) -> f32 {
+        match s {
+            Stat::Damage => self.damage, Stat::FireRate => self.fire_rate, Stat::Spread => self.spread, Stat::Recoil => self.recoil,
+            Stat::Speed => self.speed, Stat::BulletSpeed => self.bullet_speed, Stat::Reload => self.reload,
+            Stat::MagBonus => self.mag_bonus as f32, Stat::HpBonus => self.hp_bonus as f32,
+            Stat::ExplosiveRadius => self.explosive_radius, Stat::ExplosiveDamage => self.explosive_damage,
+        }
+    }
+    /// Multipliers stay positive; the counts round.
+    pub fn set(&mut self, s: Stat, v: f32) {
+        let pos = v.max(0.01);
+        match s {
+            Stat::Damage => self.damage = pos, Stat::FireRate => self.fire_rate = pos, Stat::Spread => self.spread = v.max(0.0), Stat::Recoil => self.recoil = v.max(0.0),
+            Stat::Speed => self.speed = pos, Stat::BulletSpeed => self.bullet_speed = pos, Stat::Reload => self.reload = pos,
+            Stat::MagBonus => self.mag_bonus = v.round().clamp(0.0, 10_000.0) as u32, Stat::HpBonus => self.hp_bonus = v.round().clamp(-90.0, 100_000.0) as i32,
+            Stat::ExplosiveRadius => self.explosive_radius = v.clamp(0.0, 40.0), Stat::ExplosiveDamage => self.explosive_damage = v.max(0.0),
         }
     }
 }
 
-/// Three different cards, at least one firepower card.
-pub fn offer(rng: &mut crate::rng::Rng) -> [Card; 3] {
-    let mut pool = ALL.to_vec();
-    let mut out = [Card::Damage; 3];
-    for o in &mut out { *o = pool.remove(rng.below(pool.len() as u32) as usize); }
-    if !out.iter().any(|c| c.firepower()) {
-        let fp: Vec<Card> = ALL.iter().copied().filter(|c| c.firepower()).collect();
-        out[rng.below(3) as usize] = fp[rng.below(fp.len() as u32) as usize];
+#[cfg(test)]
+pub(crate) fn test_book() -> Book {
+    let c = |id: &str, firepower, mul: Vec<(Stat, f32)>, add: Vec<(Stat, f32)>| CardDef { id: id.into(), name: id.to_uppercase(), text: String::new(), color: [1.0; 3], firepower, mul, add, enabled: true };
+    Book::new(vec![
+        c("damage", true, vec![(Stat::Damage, 1.5)], vec![]),
+        c("healthy", false, vec![], vec![(Stat::HpBonus, 35.0)]),
+        c("sneakers", false, vec![(Stat::Speed, 1.15)], vec![]),
+        c("big_mag", true, vec![], vec![(Stat::MagBonus, 20.0)]),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_keeps_numbers_and_switches_off_removed_cards() {
+        let b = test_book();
+        let mag = b.find("big_mag").unwrap();
+        let mut defs: Vec<CardDef> = b.enabled().map(|(_, d)| d.clone()).filter(|d| d.id != "healthy").collect();
+        defs.push(CardDef { id: "new".into(), ..defs[0].clone() });
+        let b2 = b.merged(defs);
+        assert_eq!(b2.find("big_mag"), Some(mag));
+        assert_eq!(b2.find("healthy"), None);
+        assert_eq!(b2.find("new"), Some(Card(4)));
+        assert_eq!(b2.name(Card(1)), "HEALTHY", "a removed card still has its name");
     }
-    out
+
+    #[test]
+    fn stats_apply_in_f32() {
+        let b = test_book();
+        let mut m = Mods::default();
+        b.apply(b.find("sneakers").unwrap(), &mut m);
+        assert_eq!(m.speed, 1.0f32 * 1.15f32);
+        b.apply(b.find("big_mag").unwrap(), &mut m);
+        assert_eq!(m.mag_bonus, 20);
+    }
 }

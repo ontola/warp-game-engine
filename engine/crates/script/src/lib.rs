@@ -1,0 +1,373 @@
+//! Luau scripting for Warp games.
+//!
+//! A [`Host`] loads every `*.luau` file (not `*.d.luau`) under a folder as a module, each in
+//! its own sandboxed environment, and reloads a file when it changes while the
+//! game runs. A module returns a table of exports (hooks and data) that the
+//! game reads; the game decides which hooks exist and what they get.
+//!
+//! Rules that keep scripts safe to run inside a deterministic simulation:
+//! - no clock, no files, no `os`, no `math.random`: the game hands out time
+//!   and random numbers itself;
+//! - every call runs under a step budget counted in VM interrupts (function
+//!   calls and loop back-edges), so a runaway loop stops at the same point on
+//!   every machine instead of freezing the game;
+//! - a memory cap for the whole VM;
+//! - a load error keeps the previous version running; a runtime error turns
+//!   that module's hooks off until the file changes again.
+//!
+//! Each module has a `state` table that survives reloads, so a running match
+//! keeps what its scripts remembered while their code is replaced.
+use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value, VmState};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+
+pub use mlua;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Bytes for the whole VM.
+    pub memory: usize,
+    /// VM interrupts (calls and loop iterations) per hook call or load.
+    pub steps: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self { Limits { memory: 64 << 20, steps: 200_000 } }
+}
+
+pub struct Module {
+    /// Path under the root with `/` separators, e.g. `base/cards.luau`.
+    pub name: String,
+    path: Option<PathBuf>,
+    stamp: Option<(SystemTime, u64)>,
+    /// What the module returned; `None` until it first loads.
+    pub exports: Option<Table>,
+    state: Table,
+    /// The last load error, while the previous version (if any) still runs.
+    pub error: Option<String>,
+    /// A hook failed at runtime: this module's hooks stay off until it reloads.
+    pub broken: bool,
+}
+
+pub struct Host {
+    lua: Lua,
+    root: Option<PathBuf>,
+    /// Read-only names every module sees: safe libraries plus the game's API.
+    base: Table,
+    console: Table,
+    modules: Vec<Module>,
+    steps: Arc<AtomicU32>,
+    limits: Limits,
+    log: Arc<Mutex<Vec<String>>>,
+    /// Bumped on every successful load or removal.
+    generation: u64,
+    hooks: Vec<String>,
+}
+
+const BASE: &[&str] = &[
+    "assert", "error", "ipairs", "next", "pairs", "pcall", "xpcall", "select", "tonumber", "tostring", "type", "typeof",
+    "unpack", "rawequal", "rawget", "rawset", "rawlen", "setmetatable", "getmetatable",
+    "string", "table", "utf8", "bit32", "buffer", "vector",
+];
+
+impl Host {
+    /// A VM with the safe libraries; `api` adds the game's names (functions,
+    /// constants, tables) before everything is frozen.
+    pub fn new(limits: Limits, api: impl FnOnce(&Lua, &Table) -> mlua::Result<()>) -> Result<Self, String> {
+        let libs = StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::UTF8 | StdLib::BIT | StdLib::BUFFER | StdLib::VECTOR;
+        let lua = Lua::new_with(libs, LuaOptions::default()).map_err(err)?;
+        lua.set_memory_limit(limits.memory).map_err(err)?;
+        let steps = Arc::new(AtomicU32::new(limits.steps));
+        let budget = steps.clone();
+        lua.set_interrupt(move |_| {
+            if budget.fetch_sub(1, Ordering::Relaxed) == 0 {
+                budget.store(0, Ordering::Relaxed);
+                return Err(mlua::Error::runtime("step budget used up (a loop that never ends?)"));
+            }
+            Ok(VmState::Continue)
+        });
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let base = (|| -> mlua::Result<Table> {
+            let g = lua.globals();
+            let base = lua.create_table()?;
+            for &name in BASE {
+                let v: Value = g.raw_get(name)?;
+                if let Value::Table(t) = &v { t.set_readonly(true); }
+                base.raw_set(name, v)?;
+            }
+            // math without its own random generator (not seeded by the game).
+            let math = lua.create_table()?;
+            g.raw_get::<Table>("math")?.for_each(|k: String, v: Value| if k == "random" || k == "randomseed" { Ok(()) } else { math.raw_set(k, v) })?;
+            math.set_readonly(true);
+            base.raw_set("math", math)?;
+            let sink = log.clone();
+            base.raw_set("print", lua.create_function(move |_, args: mlua::Variadic<Value>| {
+                let line: Vec<String> = args.iter().map(|v| v.to_string().unwrap_or_else(|_| v.type_name().into())).collect();
+                sink.lock().unwrap().push(line.join("\t"));
+                Ok(())
+            })?)?;
+            api(&lua, &base)?;
+            base.set_readonly(true);
+            Ok(base)
+        })().map_err(err)?;
+        let console = env(&lua, &base, &lua.create_table().map_err(err)?).map_err(err)?;
+        Ok(Host { lua, root: None, base, console, modules: Vec::new(), steps, limits, log, generation: 0, hooks: Vec::new() })
+    }
+
+    /// Load every `*.luau` under `root` and watch it from now on ([`Host::poll`]).
+    pub fn watch(&mut self, root: impl Into<PathBuf>) -> Vec<String> {
+        self.root = Some(root.into());
+        self.poll()
+    }
+
+    /// A module from a string that never reloads (built-in content, tests).
+    pub fn add_source(&mut self, name: &str, source: &str) -> Result<(), String> {
+        let state = self.lua.create_table().map_err(err)?;
+        self.modules.push(Module { name: name.into(), path: None, stamp: None, exports: None, state, error: None, broken: false });
+        let i = self.modules.len() - 1;
+        self.load(i, source);
+        self.modules[i].error.clone().map_or(Ok(()), Err)
+    }
+
+    /// Reload what changed under the root: new and edited files load (in
+    /// path order), deleted ones drop. Returns the names that changed.
+    pub fn poll(&mut self) -> Vec<String> {
+        let Some(root) = self.root.clone() else { return Vec::new() };
+        let mut found = Vec::new();
+        scan(&root, &root, &mut found);
+        found.sort();
+        let mut changed = Vec::new();
+        let before = self.modules.len();
+        self.modules.retain(|m| m.path.is_none() || found.iter().any(|(n, _)| *n == m.name));
+        if self.modules.len() != before { self.generation += 1; changed.push("(removed)".into()); }
+        for (name, path) in found {
+            let stamp = std::fs::metadata(&path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()));
+            let i = match self.modules.iter().position(|m| m.name == name) {
+                Some(i) if self.modules[i].stamp == stamp => continue,
+                Some(i) => i,
+                None => {
+                    let Ok(state) = self.lua.create_table() else { continue };
+                    self.modules.push(Module { name: name.clone(), path: Some(path.clone()), stamp: None, exports: None, state, error: None, broken: false });
+                    self.modules.len() - 1
+                }
+            };
+            self.modules[i].stamp = stamp;
+            match std::fs::read_to_string(&path) {
+                Ok(src) => self.load(i, &src),
+                Err(e) => self.modules[i].error = Some(format!("{name}: {e}")),
+            }
+            changed.push(name);
+        }
+        // Keep path order (the order hooks run in) after additions.
+        self.modules.sort_by(|a, b| (a.path.is_some(), &a.name).cmp(&(b.path.is_some(), &b.name)));
+        changed
+    }
+
+    fn load(&mut self, i: usize, source: &str) {
+        let m = &self.modules[i];
+        let name = m.name.clone();
+        let result = env(&self.lua, &self.base, &m.state).and_then(|e| {
+            self.steps.store(self.limits.steps, Ordering::Relaxed);
+            self.lua.load(source).set_name(format!("@{name}")).set_environment(e).eval::<Value>()
+        });
+        let m = &mut self.modules[i];
+        match result {
+            Ok(Value::Table(t)) => { m.exports = Some(t); m.error = None; m.broken = false; }
+            Ok(Value::Nil) => { m.exports = self.lua.create_table().ok(); m.error = None; m.broken = false; }
+            Ok(v) => m.error = Some(format!("{name}: must return a table of exports, not a {}", v.type_name())),
+            Err(e) => m.error = Some(short(&e)),
+        }
+        match &m.error {
+            None => { self.generation += 1; self.say(format!("loaded {name}")); }
+            Some(e) => { let keep = if m.exports.is_some() { " (keeping the previous version)" } else { "" }; let e = format!("{e}{keep}"); self.say(e); }
+        }
+        self.hooks = self.modules.iter().filter_map(|m| m.exports.as_ref()).flat_map(|t| t.pairs::<String, Value>().filter_map(|kv| kv.ok()).filter(|(_, v)| v.is_function()).map(|(k, _)| k).collect::<Vec<_>>()).collect();
+        self.hooks.sort();
+        self.hooks.dedup();
+    }
+
+    /// Changes on every successful load, reload or removal: the game
+    /// re-reads exported data (cards, tuning) when this moves.
+    pub fn generation(&self) -> u64 { self.generation }
+
+    pub fn modules(&self) -> &[Module] { &self.modules }
+
+    pub fn lua(&self) -> &Lua { &self.lua }
+
+    /// Any loaded module exports a function under this name.
+    pub fn has(&self, hook: &str) -> bool { self.hooks.binary_search_by(|h| h.as_str().cmp(hook)).is_ok() }
+
+    /// The modules (in path order) that export `hook` and still run.
+    pub fn each(&self, hook: &str) -> Vec<(usize, Function)> {
+        if !self.has(hook) { return Vec::new(); }
+        self.modules.iter().enumerate()
+            .filter(|(_, m)| !m.broken)
+            .filter_map(|(i, m)| m.exports.as_ref()?.raw_get::<Option<Function>>(hook).ok().flatten().map(|f| (i, f)))
+            .collect()
+    }
+
+    /// Run one call on behalf of `module` with a fresh step budget; a
+    /// failure is logged and turns that module's hooks off until it reloads.
+    pub fn run<R>(&mut self, module: usize, what: &str, f: impl FnOnce(&Lua) -> mlua::Result<R>) -> Option<R> {
+        self.steps.store(self.limits.steps, Ordering::Relaxed);
+        match f(&self.lua) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                let m = &mut self.modules[module];
+                m.broken = true;
+                let line = format!("{} ({what}): {} (its hooks are off until the file changes)", m.name, short(&e));
+                self.say(line);
+                None
+            }
+        }
+    }
+
+    /// Steps left in the current call's budget.
+    pub fn steps_left(&self) -> u32 { self.steps.load(Ordering::Relaxed) }
+
+    /// A function for a console line: an expression (`1 + 2`) or statements,
+    /// in an environment that persists between lines. The game binds its
+    /// live objects into [`Host::console`] around the call.
+    pub fn console_line(&mut self, line: &str) -> Result<Function, String> {
+        self.steps.store(self.limits.steps, Ordering::Relaxed);
+        let load = |src: &str| self.lua.load(src).set_name("=console").set_environment(self.console.clone()).into_function();
+        load(&format!("return {line}")).or_else(|_| load(line)).map_err(|e| short(&e))
+    }
+
+    pub fn console(&self) -> &Table { &self.console }
+
+    /// Lines from `print` and from loads and failures, oldest first.
+    pub fn drain_log(&mut self) -> Vec<String> { std::mem::take(&mut *self.log.lock().unwrap()) }
+
+    fn say(&self, line: String) { self.log.lock().unwrap().push(line); }
+}
+
+/// A fresh module environment: its own globals, `state` kept across
+/// reloads, everything else read from the frozen base.
+fn env(lua: &Lua, base: &Table, state: &Table) -> mlua::Result<Table> {
+    let e = lua.create_table()?;
+    e.raw_set("state", state.clone())?;
+    let meta = lua.create_table()?;
+    meta.raw_set("__index", base.clone())?;
+    meta.raw_set("__metatable", false)?;
+    e.set_metatable(Some(meta))?;
+    Ok(e)
+}
+
+fn scan(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() { scan(root, &p, out); continue; }
+        // `*.d.luau` are type definitions, not modules.
+        if p.extension().is_some_and(|e| e == "luau") && !p.to_string_lossy().ends_with(".d.luau") {
+            let name = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            out.push((name, p));
+        }
+    }
+}
+
+fn err(e: mlua::Error) -> String { short(&e) }
+
+/// The message without the Rust-side wrapping and the stack traceback.
+pub fn short(e: &mlua::Error) -> String {
+    let mut e = e;
+    loop {
+        match e {
+            mlua::Error::CallbackError { cause, .. } => e = cause,
+            mlua::Error::WithContext { cause, .. } => e = cause,
+            _ => break,
+        }
+    }
+    let s = e.to_string();
+    let s = s.split("\nstack traceback").next().unwrap_or(&s);
+    s.trim_start_matches("runtime error: ").trim_start_matches("syntax error: ").trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host() -> Host {
+        Host::new(Limits { memory: 8 << 20, steps: 10_000 }, |lua, api| api.raw_set("twice", lua.create_function(|_, x: f64| Ok(x * 2.0))?)).unwrap()
+    }
+
+    #[test]
+    fn modules_get_the_api_and_return_exports() {
+        let mut h = host();
+        h.add_source("a.luau", "return { f = function(x) return twice(x) + 1 end }").unwrap();
+        assert!(h.has("f") && !h.has("g"));
+        let (m, f) = h.each("f").pop().unwrap();
+        assert_eq!(h.run(m, "f", |_| f.call::<f64>(20.0)), Some(41.0));
+    }
+
+    #[test]
+    fn sandbox_hides_clock_files_and_random() {
+        let mut h = host();
+        h.add_source("a.luau", "return { os = os, io = io, rnd = math.random, getfenv = getfenv, load = loadstring, req = require, floor = math.floor }").unwrap();
+        let e = h.modules()[0].exports.clone().unwrap();
+        for k in ["os", "io", "rnd", "getfenv", "load", "req"] { assert!(e.raw_get::<Value>(k).unwrap().is_nil(), "{k} visible"); }
+        assert!(e.raw_get::<Value>("floor").unwrap().is_function());
+        // The shared base and libraries are frozen.
+        assert!(h.add_source("b.luau", "math.floor = nil").is_err());
+        assert!(h.add_source("c.luau", "getmetatable(_G).__index.twice = nil").is_err());
+    }
+
+    #[test]
+    fn runaway_loops_stop_at_the_budget() {
+        let mut h = host();
+        h.add_source("a.luau", "return { spin = function() while true do pcall(function() while true do end end) end end, ok = function() return 1 end }").unwrap();
+        let (m, f) = h.each("spin").pop().unwrap();
+        assert_eq!(h.run(m, "spin", |_| f.call::<()>(())), None);
+        assert!(h.modules()[0].broken);
+        assert!(h.drain_log().iter().any(|l| l.contains("step budget")));
+        assert!(h.each("ok").is_empty(), "a broken module's hooks are off");
+    }
+
+    #[test]
+    fn hot_reload_keeps_state_and_survives_bad_edits() {
+        let dir = std::env::temp_dir().join(format!("warp-script-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let file = dir.join("sub/m.luau");
+        std::fs::write(&file, "state.n = (state.n or 0) + 1\nreturn { n = function() return state.n end, v = function() return 1 end }").unwrap();
+        let mut h = host();
+        assert_eq!(h.watch(&dir), vec!["sub/m.luau".to_string()]);
+        let call = |h: &mut Host, k: &str| { let (m, f) = h.each(k).pop().unwrap(); h.run(m, k, |_| f.call::<f64>(())).unwrap() };
+        assert_eq!(call(&mut h, "v"), 1.0);
+        // Edit: new code, state carried over (n counts loads).
+        std::fs::write(&file, "state.n = (state.n or 0) + 1\nreturn { n = function() return state.n end, v = function() return 2 end }   ").unwrap();
+        assert_eq!(h.poll(), vec!["sub/m.luau".to_string()]);
+        assert_eq!((call(&mut h, "v"), call(&mut h, "n")), (2.0, 2.0));
+        // A syntax error keeps version 2 running and reports the line.
+        std::fs::write(&file, "return {\n v = function() return 3 end,\n oops oops }").unwrap();
+        h.poll();
+        assert_eq!(call(&mut h, "v"), 2.0);
+        let e = h.modules()[0].error.clone().unwrap();
+        assert!(e.contains("sub/m.luau:3"), "{e}");
+        assert!(h.poll().is_empty(), "unchanged files do not reload");
+        std::fs::remove_file(&file).unwrap();
+        h.poll();
+        assert!(h.modules().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn console_lines_are_expressions_or_statements() {
+        let mut h = host();
+        let f = h.console_line("x = 20").unwrap();
+        f.call::<()>(()).unwrap();
+        let f = h.console_line("twice(x) + 2").unwrap();
+        assert_eq!(f.call::<f64>(()).unwrap(), 42.0);
+        assert!(h.console_line("1 +").is_err());
+    }
+
+    #[test]
+    fn memory_cap_holds() {
+        let mut h = host();
+        let r = h.add_source("a.luau", "local s = string.rep('x', 1e8) return {}");
+        assert!(r.is_err());
+    }
+}

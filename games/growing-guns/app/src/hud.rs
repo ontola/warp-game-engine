@@ -25,7 +25,10 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
     let id = 1000 * (i as u64 + 1);
     let (cx, cy) = (x + w * 0.5, y + h * 0.5);
     if let Some(offer) = p.offer {
-        let cards: Vec<app::ui::Card> = offer.iter().map(|c| app::ui::Card { title: c.name(), body: c.text(), color: c.color() }).collect();
+        let cards: Vec<app::ui::Card> = offer.iter().map(|&c| match world.cards.get(c) {
+            Some(d) => app::ui::Card { title: &d.name, body: &d.text, color: d.color },
+            None => app::ui::Card { title: "?", body: "", color: [1.0; 3] },
+        }).collect();
         let footer = format!("{:.0} s   (stick or arrows, A or Space to take)", world.pick_time.ceil());
         app::ui::cards(d, id + 200, rect, "PICK A CARD", &cards, card_focus, &footer, &app::ui::Style::for_height(h));
         return;

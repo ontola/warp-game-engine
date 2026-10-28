@@ -14,6 +14,36 @@ pub use destruct::{Breakage, Carve, Chunk};
 use glam::{Vec2, Vec3};
 use rng::Rng;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// Game rules from outside the sim (the app's Luau scripts). Called inline
+/// at fixed points of the tick, in a fixed order, so a match with the same
+/// scripts replays exactly. A hook may change the world; it must not step it.
+pub trait Hooks: Send + Sync {
+    /// After a card's stat changes were applied.
+    fn pick(&self, _w: &mut World, _player: usize, _card: cards::Card) {}
+    /// Before damage lands; returns the damage to deal (the given one by default).
+    fn hit(&self, _w: &mut World, _hit: &HitInfo) -> i32 { _hit.damage }
+    fn kill(&self, _w: &mut World, _victim: usize, _attacker: Option<usize>) {}
+    /// At the end of every tick.
+    fn tick(&self, _w: &mut World) {}
+    /// A new round's arena and spawns are ready.
+    fn round_start(&self, _w: &mut World) {}
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HitInfo { pub victim: usize, pub attacker: usize, pub damage: i32, pub head: bool, pub explosion: bool }
+
+/// Hooks plus the knowledge of whether any are set, for `World`'s Debug.
+#[derive(Clone, Default)]
+pub struct HookSlot(pub Option<Arc<dyn Hooks>>);
+impl std::fmt::Debug for HookSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { f.write_str(if self.0.is_some() { "hooks" } else { "no hooks" }) }
+}
+
+/// Script requests per tick (explosions, card grants): enough for any
+/// card, low enough that a broken script cannot flood the match.
+pub const SCRIPT_QUOTA: usize = 32;
 
 pub const TICK_HZ: u32 = 60;
 pub const DT: f32 = 1.0 / TICK_HZ as f32;
@@ -219,6 +249,13 @@ pub struct World {
     booms: Vec<(Vec3, f32, f32, usize)>,
     rng: Rng,
     brains: Vec<bot::Brain>,
+    /// The match's cards (data from the mods; swapped on hot reload).
+    pub cards: Arc<cards::Book>,
+    pub hooks: HookSlot,
+    /// Random numbers for scripts, apart from the sim's own stream.
+    pub script_rng: Rng,
+    gives: Vec<(usize, cards::Card)>,
+    damages: Vec<(usize, i32, Option<usize>)>,
 }
 
 impl World {
@@ -228,7 +265,8 @@ impl World {
         let arena = Arena::generate(rng.next_u32() as u64);
         let players = bots.iter().map(|&b| Player::new(b)).collect();
         let brains = (0..bots.len()).map(|i| bot::Brain::new(seed ^ ((i as u64 + 1) * 0x9E37))).collect();
-        let mut w = World { arena, players, bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), breakage: Breakage::default(), bots_paused: false, carves: Vec::new(), booms: Vec::new(), rng, brains };
+        let mut w = World { arena, players, bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), breakage: Breakage::default(), bots_paused: false, carves: Vec::new(), booms: Vec::new(), rng, brains,
+            cards: Arc::default(), hooks: HookSlot::default(), script_rng: Rng::new(seed ^ 0x5C21_97E5), gives: Vec::new(), damages: Vec::new() };
         w.spawn_all();
         w
     }
@@ -262,6 +300,8 @@ impl World {
         self.breakage = Breakage::default();
         self.tick += 1;
         for (pos, radius, damage, owner) in std::mem::take(&mut self.booms) { self.explode_with(pos, owner, radius, damage); }
+        for (player, card) in std::mem::take(&mut self.gives) { self.give(player, card); }
+        for (victim, dmg, by) in std::mem::take(&mut self.damages) { self.direct_damage(victim, dmg, by); }
         let mut inp: Vec<Input> = (0..self.players.len()).map(|i| inputs.get(i).copied().unwrap_or_default()).collect();
         for (i, input) in inp.iter_mut().enumerate() {
             if self.players[i].bot && self.players[i].alive && !self.between_rounds() && !self.bots_paused {
@@ -284,6 +324,50 @@ impl World {
         }
         self.picks(&inp);
         self.rounds();
+        if let Some(h) = self.hooks.0.clone() { h.tick(self); }
+    }
+
+    /// A card's stat changes and hook, as when picked.
+    pub fn give(&mut self, player: usize, card: cards::Card) {
+        let p = &mut self.players[player];
+        self.cards.apply(card, &mut p.mods);
+        p.cards.push(card);
+        if let Some(h) = self.hooks.0.clone() { h.pick(self, player, card); }
+    }
+
+    /// Give a card at the start of the next step (scripts); false over quota.
+    pub fn queue_give(&mut self, player: usize, card: cards::Card) -> bool {
+        if self.gives.len() >= SCRIPT_QUOTA || player >= self.players.len() { return false; }
+        self.gives.push((player, card));
+        true
+    }
+
+    /// Damage at the start of the next step (scripts), past the hit hooks;
+    /// false over quota.
+    pub fn queue_damage(&mut self, victim: usize, damage: i32, by: Option<usize>) -> bool {
+        if self.damages.len() >= SCRIPT_QUOTA || victim >= self.players.len() { return false; }
+        self.damages.push((victim, damage, by));
+        true
+    }
+
+    fn direct_damage(&mut self, victim: usize, dmg: i32, by: Option<usize>) {
+        let v = &mut self.players[victim];
+        if !v.alive || dmg <= 0 { return; }
+        v.health -= dmg;
+        let (health, pos) = (v.health, v.pos);
+        self.events.push(Event::Hit { victim, attacker: by.unwrap_or(victim), damage: dmg, head: false, pos });
+        if health <= 0 { let g = Self::gib_for(health, false, None); self.kill(victim, by, g, Vec3::Y); }
+    }
+
+    /// Explosions queued for the next step.
+    pub fn queued_explosions(&self) -> usize { self.booms.len() }
+
+    /// Damage after the hooks had their say.
+    fn hooked_damage(&mut self, victim: usize, attacker: usize, damage: i32, head: bool, explosion: bool) -> i32 {
+        match self.hooks.0.clone() {
+            Some(h) => h.hit(self, &HitInfo { victim, attacker, damage, head, explosion }),
+            None => damage,
+        }
     }
 
     fn move_player(&mut self, i: usize, input: Input) {
@@ -439,6 +523,8 @@ impl World {
     }
 
     fn damage(&mut self, victim: usize, attacker: usize, dmg: i32, head: bool, pos: Vec3, dir: Vec3) {
+        let dmg = self.hooked_damage(victim, attacker, dmg, head, false);
+        if !self.players[victim].alive { return; }
         let v = &mut self.players[victim];
         v.health -= dmg;
         v.vel += dir * dmg as f32 * KNOCKBACK_PER_DAMAGE;
@@ -480,7 +566,8 @@ impl World {
             let away = (at - pos).try_normalize().unwrap_or(Vec3::Y);
             let kb = dmg.max(0) as f32 * KNOCKBACK_PER_DAMAGE * BLAST_KNOCKBACK_MULT;
             self.players[j].vel += away * kb + Vec3::Y * kb * 0.25;
-            if dmg > 0 {
+            if dmg > 0 { dmg = self.hooked_damage(j, owner, dmg, false, true); }
+            if dmg > 0 && self.players[j].alive {
                 self.players[j].health -= dmg;
                 self.events.push(Event::Hit { victim: j, attacker: owner, damage: dmg, head: false, pos: at });
                 if self.players[j].health <= 0 {
@@ -498,6 +585,7 @@ impl World {
         v.alive = false;
         v.health = 0;
         self.events.push(Event::Kill { victim, attacker, gib, dir });
+        if let Some(h) = self.hooks.0.clone() { h.kill(self, victim, attacker); }
     }
 
     /// The death mode for a blow that left `health` (Godot `do_ragdoll`).
@@ -522,10 +610,8 @@ impl World {
             let choice = if self.players[i].bot { Some(self.rng.below(3) as u8) } else { inputs.get(i).and_then(|inp| inp.pick) };
             if let Some(k) = choice.filter(|&k| k < 3) {
                 let card = offer[k as usize];
-                let p = &mut self.players[i];
-                p.mods.apply(card);
-                p.cards.push(card);
-                p.offer = None;
+                self.players[i].offer = None;
+                self.give(i, card);
                 self.events.push(Event::Picked { player: i, card });
             }
         }
@@ -550,6 +636,7 @@ impl World {
                 self.breakage = Breakage::default();
                 self.spawn_all();
                 self.events.push(Event::NewArena);
+                if let Some(h) = self.hooks.0.clone() { h.round_start(self); }
             }
             return;
         }
@@ -562,7 +649,7 @@ impl World {
             self.pick_time = PICK_TIME;
             self.ended = true;
             for i in 0..self.players.len() {
-                if Some(i) != winner { self.players[i].offer = Some(cards::offer(&mut self.rng)); }
+                if Some(i) != winner { self.players[i].offer = self.cards.offer(&mut self.rng); }
             }
             self.events.push(Event::RoundOver { winner });
         }
@@ -589,7 +676,8 @@ impl World {
     /// the first snapshot arrives.
     pub fn remote(arena: Arena, players: usize) -> Self {
         let brains = (0..players).map(|_| bot::Brain::default()).collect();
-        World { arena, players: (0..players).map(|_| Player::new(true)).collect(), bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), breakage: Breakage::default(), bots_paused: false, carves: Vec::new(), booms: Vec::new(), rng: Rng::new(0), brains }
+        World { arena, players: (0..players).map(|_| Player::new(true)).collect(), bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), breakage: Breakage::default(), bots_paused: false, carves: Vec::new(), booms: Vec::new(), rng: Rng::new(0), brains,
+            cards: Arc::default(), hooks: HookSlot::default(), script_rng: Rng::new(0), gives: Vec::new(), damages: Vec::new() }
     }
 
     /// Hand a player slot to a human (remote join) or back to a bot.
@@ -638,6 +726,7 @@ mod tests {
 
     fn flat_world() -> World {
         let mut w = World::new(1, &[false, false]);
+        w.cards = Arc::new(cards::test_book());
         w.arena.blocks = vec![Block::new(Vec3::new(0.0, -1.5, 0.0), Vec3::new(100.0, 3.0, 100.0), 0.0, Kind::Floor)];
         w.arena.build_chunks();
         w.players[0].pos = Vec3::new(0.0, HALF_HEIGHT, 0.0);
@@ -713,7 +802,8 @@ mod tests {
         let spot = Vec3::new(5.0, HALF_HEIGHT + 0.05, 5.0);
         w.players[0].pos = spot;
         w.players[1].pos = Vec3::new(4.0, HALF_HEIGHT + 0.05, 9.0);
-        for _ in 0..3 { w.players[0].mods.apply(cards::Card::Explosive); }
+        // Three explosive cards' worth.
+        (w.players[0].mods.explosive_radius, w.players[0].mods.explosive_damage) = (9.0, 75.0);
         w.players[0].mods.mag_bonus = 200;
         w.players[0].ammo = 200;
         w.players[0].health = 100_000;
@@ -765,8 +855,7 @@ mod tests {
         };
         let weak = shoot(cards::Mods::default());
         assert!(weak.alive && weak.hp == weak.max_hp, "base rifle only marks stone");
-        let mut strong = cards::Mods::default();
-        strong.apply(cards::Card::Damage);
+        let strong = cards::Mods { damage: 1.5, ..Default::default() };
         assert!(!shoot(strong).alive, "x1.5 damage breaks it");
     }
 
@@ -811,10 +900,35 @@ mod tests {
         assert_eq!(w.round, round + 1);
         assert_eq!(w.players[1].health, w.players[1].max_health());
         assert_eq!(w.players[1].ammo, w.players[1].mag_size());
-        // A second loss without picking: the first card is taken at the deadline.
-        let mut m = cards::Mods::default();
-        m.apply(cards::Card::BigMag);
-        assert_eq!(m.mag_bonus, 20);
+    }
+
+    /// Hooks see hits before they land and can change them, and run in
+    /// the tick (a card's script part, round starts, every tick).
+    #[test]
+    fn hooks_change_damage_and_run_in_the_tick() {
+        use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+        #[derive(Default)]
+        struct H { ticks: AtomicU32, picks: AtomicU32 }
+        impl Hooks for H {
+            fn hit(&self, w: &mut World, h: &HitInfo) -> i32 { w.players[h.attacker].health += 1; h.damage * 10 }
+            fn tick(&self, _: &mut World) { self.ticks.fetch_add(1, Relaxed); }
+            fn pick(&self, w: &mut World, p: usize, _: cards::Card) { self.picks.fetch_add(1, Relaxed); w.players[p].mods.explosive_radius = 3.0; }
+        }
+        let h = Arc::new(H::default());
+        let mut w = flat_world();
+        w.hooks = HookSlot(Some(h.clone()));
+        let fire = Input { fire: true, ..Default::default() };
+        let mut killed = false;
+        for _ in 0..120 {
+            w.players[0].pitch = -0.02;
+            w.step(&[fire, Input::default()]);
+            if w.events.iter().any(|e| matches!(e, Event::Kill { victim: 1, .. })) { killed = true; break; }
+        }
+        assert!(killed, "x10 damage kills with the first hit");
+        assert_eq!(w.players[0].health, MAX_HEALTH + 1, "the hook ran once, for the one hit");
+        assert!(h.ticks.load(Relaxed) > 0);
+        w.give(0, cards::Card(0));
+        assert_eq!((h.picks.load(Relaxed), w.players[0].mods.explosive_radius, w.players[0].mods.damage), (1, 3.0, 1.5));
     }
 
     #[test]

@@ -24,12 +24,12 @@ fn pct(v: &mut [f64], p: f64) -> f64 {
 /// Godot perf_benchmark's stress build, from the cards both games have
 /// (`--build a,b,c`; `--build none` for stock guns).
 fn armed_world(args: &Args) -> Result<(World, Vec<growing_guns::cards::Card>), String> {
-    use growing_guns::cards::ALL;
     let spec = args.value("--build").unwrap_or("rapidfire,rapidfire,explosive,explosive,damage");
-    let build: Vec<_> = if spec == "none" { Vec::new() } else { spec.split(',')
-        .map(|n| ALL.iter().copied().find(|c| format!("{c:?}").eq_ignore_ascii_case(n.trim())).ok_or(format!("unknown card {n}"))).collect::<Result<_, _>>()? };
     let mut world = World::new(args.num("--seed", 2u64), &[true; 4]);
-    for p in &mut world.players { for &c in &build { p.mods.apply(c); p.cards.push(c); } p.ammo = p.mag_size(); }
+    crate::scripts::attach(&mut world)?;
+    let build: Vec<_> = if spec == "none" { Vec::new() } else { spec.split(',')
+        .map(|n| world.cards.find(&n.trim().to_lowercase()).ok_or(format!("unknown card {n}"))).collect::<Result<_, _>>()? };
+    for i in 0..world.players.len() { for &c in &build { world.give(i, c); } let p = &mut world.players[i]; p.ammo = p.mag_size(); }
     Ok((world, build))
 }
 
