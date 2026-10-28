@@ -193,6 +193,7 @@ pub struct Sounds {
     incoming: Option<Vec3>,
     offers: Vec<(bool, f64)>,
     shot_tick: Vec<u64>,
+    ears: Vec<Vec3>,
 }
 
 impl Sounds {
@@ -213,7 +214,7 @@ impl Sounds {
         if samples.is_some() { println!("sounds: {} recordings", steps.len() + hurts.len() + deaths.len()); }
         Sounds { tx, bank: Bank::load(patches), steps, hurts, deaths, rng: 0x1234_5678, time: 0.0, later: Vec::new(), walked: Vec::new(), last_zip: -1.0,
             lava_at: Vec::new(), explosions: Vec::new(), reloads: HashMap::new(), strikes: Vec::new(), descents: HashMap::new(), pickups: 0, incoming: None,
-            offers: Vec::new(), shot_tick: Vec::new() }
+            offers: Vec::new(), shot_tick: Vec::new(), ears: Vec::new() }
     }
 
 
@@ -221,7 +222,7 @@ impl Sounds {
     fn u(&mut self, a: f32, b: f32) -> f32 { a + (b - a) * (self.next() >> 8) as f32 / (1u32 << 24) as f32 }
     fn pick(&mut self, set: &[Arc<Patch>]) -> Option<Arc<Patch>> { if set.is_empty() { None } else { let k = self.next() as usize % set.len(); Some(set[k].clone()) } }
 
-    fn play(&mut self, patch: &Arc<Patch>, params: &[(&str, f32)], g: G) -> Handle {
+    fn play(&mut self, world: &World, patch: &Arc<Patch>, params: &[(&str, f32)], g: G) -> Handle {
         let seed = self.next();
         let p = match g.at {
             None => {
@@ -233,22 +234,24 @@ impl Sounds {
                     // Raytraced players fade out linearly to where they are 30 dB down.
                     Falloff::godot(g.unit).fade(g.unit / 10f32.powf((-30.0 - g.db) / 20.0))
                 };
-                Play { place: Place::At(at.to_array()), falloff, pitch: g.pitch, spl: g.spl, seed, sound_delay: g.delay,
+                let occlusion = if g.dry { 0.0 } else { occlusion(world, &self.ears, at) };
+                Play { place: Place::At(at.to_array()), falloff, pitch: g.pitch, spl: g.spl, seed, sound_delay: g.delay, occlusion,
                     reverb: if g.dry { 0.0 } else { ROOM_SEND }, tail: if g.tail { TAIL_SEND } else { 0.0 }, ..Default::default() }.db(g.db)
             }
         };
         self.tx.play(patch, params, p)
     }
 
-    fn named(&mut self, name: &str, params: &[(&str, f32)], g: G) -> Option<Handle> {
+    fn named(&mut self, world: &World, name: &str, params: &[(&str, f32)], g: G) -> Option<Handle> {
         let p = self.bank.get(name)?;
-        Some(self.play(&p, params, g))
+        Some(self.play(world, &p, params, g))
     }
 
     /// Sounds for one tick of events; `slots` are the local players (ears).
     pub fn tick(&mut self, world: &World, slots: &[usize], dt: f32) {
         for line in self.bank.poll(dt) { eprintln!("sfx: {line}"); }
         self.time += dt;
+        self.ears = synth_ears(world, slots).iter().map(|e| Vec3::from(e.pos)).collect();
         self.tx.ears(synth_ears(world, slots));
         let local = |p: usize| slots.contains(&p) && !world.players.get(p).is_some_and(|q| q.bot);
         // Split screen: a local shooter's own shot pans toward their half.
@@ -270,26 +273,26 @@ impl Sounds {
                     let ratio = (damage - growing_guns::destruct::RIFLE_CHIP_DAMAGE_BASE) / growing_guns::destruct::RIFLE_CHIP_DAMAGE_PER_RATIO;
                     let d = ratio.clamp(0.5, 6.0);
                     let dmg_db = (d.max(1.0).log2() * 4.0).clamp(0.0, 9.0);
-                    self.named("impact", &[("dmg_ratio", d)], G::at(pos, -16.0 + dmg_db, 8.0).dry().no_tail().spl(90.0 + dmg_db));
+                    self.named(world, "impact", &[("dmg_ratio", d)], G::at(pos, -16.0 + dmg_db, 8.0).dry().no_tail().spl(90.0 + dmg_db));
                 }
-                Event::Explosion { pos, radius, kind, .. } => self.explosion(pos, radius, kind),
+                Event::Explosion { pos, radius, kind, .. } => self.explosion(world, pos, radius, kind),
                 Event::Special { player, special } => match special {
                     Special::Grenade | Special::ClusterGrenade => {
                         let at = world.players[player].eye();
-                        self.named("grenade_launch", &[], G::at(at, -6.0, 12.0).spl(110.0));
+                        self.named(world, "grenade_launch", &[], G::at(at, -6.0, 12.0).spl(110.0));
                     }
                     _ => {}
                 },
                 Event::Slash { player, from, .. } => {
                     let w = &world.players[player].weapon;
                     let damage = w.melee_damage() as f32 * w.damage_mult;
-                    self.named("melee", &[("pitch_ratio", (50.0 / damage.max(1.0)).clamp(0.5, 1.2))], G::at(from, -6.0, 12.0).spl(90.0));
+                    self.named(world, "melee", &[("pitch_ratio", (50.0 / damage.max(1.0)).clamp(0.5, 1.2))], G::at(from, -6.0, 12.0).spl(90.0));
                 }
                 Event::Jump { player } => {
                     let at = world.players[player].pos;
                     for (db, lo, hi) in [(-7.5, 1.02, 1.12), (-10.5, 0.55, 0.65)] {
                         let (j, p) = (self.u(-1.5, 1.5), self.u(lo, hi));
-                        if let Some(s) = self.pick(&self.steps.clone()) { self.play(&s, &[], G::at(at, db + j, 12.0).pitch(p).spl(75.0)); }
+                        if let Some(s) = self.pick(&self.steps.clone()) { self.play(world, &s, &[], G::at(at, db + j, 12.0).pitch(p).spl(75.0)); }
                     }
                 }
                 Event::Landed { player, speed } => {
@@ -297,34 +300,34 @@ impl Sounds {
                     let t = ((speed - 2.0) / 23.0).clamp(0.0, 1.0);
                     let (db, pitch, spl) = (lerp(-22.0, 5.0, t), lerp(1.05, 0.55, t), lerp(75.0, 95.0, t));
                     let at = world.players[player].pos;
-                    if let Some(s) = self.pick(&self.steps.clone()) { self.play(&s, &[], G::at(at, db, 12.0).pitch(pitch).spl(spl)); }
-                    if t > 0.25 && let Some(s) = self.pick(&self.steps.clone()) { self.play(&s, &[], G::at(at, db - 4.0, 12.0).pitch(pitch * 0.5).spl(spl)); }
+                    if let Some(s) = self.pick(&self.steps.clone()) { self.play(world, &s, &[], G::at(at, db, 12.0).pitch(pitch).spl(spl)); }
+                    if t > 0.25 && let Some(s) = self.pick(&self.steps.clone()) { self.play(world, &s, &[], G::at(at, db - 4.0, 12.0).pitch(pitch * 0.5).spl(spl)); }
                     if let Some(h) = self.descents.remove(&player) { self.tx.release(&h); self.tx.stop(&h); }
                 }
-                Event::Dash { player } => { let at = world.players[player].pos; self.named("dash", &[], G::at(at, -24.0, 12.0).spl(75.0)); }
+                Event::Dash { player } => { let at = world.players[player].pos; self.named(world, "dash", &[], G::at(at, -24.0, 12.0).spl(75.0)); }
                 Event::Hit { victim, attacker, damage, head, pos } => {
                     // Hurt: the victim's own is 2D.
                     if let Some(s) = self.pick(&self.hurts.clone()) {
-                        if local(victim) { self.play(&s, &[], G::ui(-25.0).spl(100.0)); }
-                        else { let j = self.u(-1.5, 1.5); self.play(&s, &[], G::at(world.players[victim].pos, -17.5 + j, 12.0).spl(80.0)); }
+                        if local(victim) { self.play(world, &s, &[], G::ui(-25.0).spl(100.0)); }
+                        else { let j = self.u(-1.5, 1.5); self.play(world, &s, &[], G::at(world.players[victim].pos, -17.5 + j, 12.0).spl(80.0)); }
                     }
                     if local(victim) {
                         let i = (damage as f32 / 25.0).clamp(0.04, 2.0);
-                        self.named("hit_received", &[("intensity", i)], G::ui(-12.0 + 20.0 * i.clamp(0.05, 2.0).log10()).spl(130.0));
+                        self.named(world, "hit_received", &[("intensity", i)], G::ui(-12.0 + 20.0 * i.clamp(0.05, 2.0).log10()).spl(130.0));
                     }
                     if local(attacker) && attacker != victim && !killed.contains(&(victim, attacker)) {
                         let r = if damage == 0 { 1.0 } else { (damage as f32 / 22.0).clamp(0.5, 5.0) };
                         let kind = if head { 1.0 } else { 0.0 };
-                        self.named("hitmarker", &[("kind", kind), ("ratio", r)], G::ui(-5.0 + (2.0 * r.log2()).clamp(0.0, 4.0)).spl(130.0));
+                        self.named(world, "hitmarker", &[("kind", kind), ("ratio", r)], G::ui(-5.0 + (2.0 * r.log2()).clamp(0.0, 4.0)).spl(130.0));
                     }
                     let _ = pos;
                 }
                 Event::Kill { victim, attacker, .. } => {
                     if let Some(s) = self.pick(&self.deaths.clone()) {
-                        if local(victim) { self.play(&s, &[], G::ui(-12.0).spl(110.0)); }
-                        else { let j = self.u(-1.5, 1.5); self.play(&s, &[], G::at(world.players[victim].pos, -8.0 + j, 12.0).spl(85.0)); }
+                        if local(victim) { self.play(world, &s, &[], G::ui(-12.0).spl(110.0)); }
+                        else { let j = self.u(-1.5, 1.5); self.play(world, &s, &[], G::at(world.players[victim].pos, -8.0 + j, 12.0).spl(85.0)); }
                     }
-                    if let Some(a) = attacker && local(a) && a != victim { self.named("kill_confirm", &[], G::ui(-6.0).spl(130.0)); }
+                    if let Some(a) = attacker && local(a) && a != victim { self.named(world, "kill_confirm", &[], G::ui(-6.0).spl(130.0)); }
                     if let Some(h) = self.reloads.remove(&victim) { self.tx.stop(&h); }
                 }
                 Event::Lava { player, fall } => {
@@ -335,20 +338,20 @@ impl Sounds {
                     let j = self.u(-1.0, 1.0);
                     let pitch = self.u(0.96, 1.04);
                     let (db, spl) = if fall { (-26.0 + j, 72.0) } else { (-23.0 + j, 95.0) };
-                    self.named("lava_sizzle", &[("fall", if fall { 1.0 } else { 0.0 })], G::at(world.players[player].pos, db, 18.0).pitch(pitch).no_tail().spl(spl));
+                    self.named(world, "lava_sizzle", &[("fall", if fall { 1.0 } else { 0.0 })], G::at(world.players[player].pos, db, 18.0).pitch(pitch).no_tail().spl(spl));
                 }
                 Event::Reload { player, seconds } => {
                     if let Some(h) = self.reloads.remove(&player) { self.tx.stop(&h); }
                     let g = if local(player) { G::ui(-14.0) } else { G::at(world.players[player].eye(), -14.0, 12.0) };
-                    if let Some(h) = self.named("reload", &[("duration", seconds)], g.spl(70.0)) { self.reloads.insert(player, h); }
+                    if let Some(h) = self.named(world, "reload", &[("duration", seconds)], g.spl(70.0)) { self.reloads.insert(player, h); }
                 }
-                Event::Empty { player } => { let at = world.players[player].eye(); self.named("empty_chamber", &[], G::at(at, -10.0, 5.0).dry().spl(55.0)); }
-                Event::PickedUp { player, .. } => if local(player) { self.named("pling", &[("pitch", 1.15)], G::ui(-10.0).spl(70.0)); },
+                Event::Empty { player } => { let at = world.players[player].eye(); self.named(world, "empty_chamber", &[], G::at(at, -10.0, 5.0).dry().spl(55.0)); }
+                Event::PickedUp { player, .. } => if local(player) { self.named(world, "pling", &[("pitch", 1.15)], G::ui(-10.0).spl(70.0)); },
                 _ => {}
             }
         }
         self.state(world, slots, &local);
-        self.flush_later();
+        self.flush_later(world);
         self.footsteps(world, dt);
     }
 
@@ -367,14 +370,14 @@ impl Sounds {
         let params = [("damage", (w.damage() / 22.0).max(1.0)), ("accuracy", (1.0 - w.spread() / 0.06).clamp(0.0, 1.0)), ("velocity", w.bullet_speed_mult.clamp(0.5, 3.0))];
         if let Some(shot) = self.bank.get("shot") {
             let g = if is_self { G { center: true, pan, unit: 6.0, ..G::ui(dry) } } else { G::at(from, dry, 3.0).dry() };
-            self.play(&shot, &params, g.pitch(pitch).spl(spl));
+            self.play(world, &shot, &params, g.pitch(pitch).spl(spl));
             // The wet copy always plays at the muzzle, through the room.
-            self.play(&shot, &params, G { spl: None, ..G::at(from, dry - 10.0, 3.0).pitch(pitch) });
+            self.play(world, &shot, &params, G { spl: None, ..G::at(from, dry - 10.0, 3.0).pitch(pitch) });
         }
         if d > 1.4 {
             let rr = (d * 1.5).clamp(2.0, 12.0).round();
             let g = if is_self { G { center: true, unit: (rr * 0.8).clamp(4.0, 12.0), ..G::ui(-12.0) } } else { G::at(from, -12.0, (rr * 0.8).clamp(4.0, 12.0)) };
-            self.named("explosion_rumble", &[("radius", rr)], g);
+            self.named(world, "explosion_rumble", &[("radius", rr)], g);
         }
         // The bolt click in the gap before the next shot (not on fast guns).
         let fi = w.fire_interval() as f32;
@@ -404,7 +407,7 @@ impl Sounds {
         }
     }
 
-    fn explosion(&mut self, pos: Vec3, radius: f32, kind: ExplosionKind) {
+    fn explosion(&mut self, world: &World, pos: Vec3, radius: f32, kind: ExplosionKind) {
         // Bullet blasts under 3.5 m are silent; at most 25 per half second.
         if radius < 3.5 { return; }
         self.explosions.retain(|t| self.time - *t < 0.5);
@@ -414,9 +417,9 @@ impl Sounds {
         let rb = r.clamp(2.0, 24.0).round();
         let (bang_unit, rumble_unit) = ((0.8 * r).clamp(4.0, 24.0), (4.5 * r).clamp(20.0, 100.0));
         let spl = 165.0 + 5.0 * (r / 6.0).max(1.0).log2();
-        self.named("explosion_bang", &[("radius", rb)], G::at(pos, 12.0, bang_unit).dry().spl(spl));
-        self.named("explosion_bang", &[("radius", rb)], G::at(pos, 10.0, bang_unit).spl(spl));
-        self.named("explosion_rumble", &[("radius", rb)], G::at(pos, 10.0, rumble_unit).spl(spl));
+        self.named(world, "explosion_bang", &[("radius", rb)], G::at(pos, 12.0, bang_unit).dry().spl(spl));
+        self.named(world, "explosion_bang", &[("radius", rb)], G::at(pos, 10.0, bang_unit).spl(spl));
+        self.named(world, "explosion_rumble", &[("radius", rb)], G::at(pos, 10.0, rumble_unit).spl(spl));
         if kind == ExplosionKind::Ion {
             let rb = r.clamp(8.0, 48.0).round();
             let unit = (1.6 * r).clamp(16.0, 72.0);
@@ -424,8 +427,8 @@ impl Sounds {
             self.tx.lift(0.62);
             if let Some(p) = self.bank.get("ion_burst") {
                 // Two copies and an extra hall send at -20 dB (relative -18 to the first copy).
-                self.play(&p, &[("radius", rb)], G::at(pos, -2.0, unit).spl(spl));
-                self.play(&p, &[("radius", rb)], G::at(pos, 0.0, unit).spl(spl));
+                self.play(world, &p, &[("radius", rb)], G::at(pos, -2.0, unit).spl(spl));
+                self.play(world, &p, &[("radius", rb)], G::at(pos, 0.0, unit).spl(spl));
             }
         }
     }
@@ -456,16 +459,16 @@ impl Sounds {
                     let travel = growing_guns::AIR_STRIKE_TRAVEL as f32;
                     let sky = s.target + Vec3::new(0.0, 263.0, 93.0);
                     self.tx.lift(0.42);
-                    if let Some(h) = self.named("air_strike_inbound", &[("travel", travel), ("distant", 0.0)], G { delay: false, ..G::at(sky, -4.0, 58.0) }) { handles.push(h); }
+                    if let Some(h) = self.named(world, "air_strike_inbound", &[("travel", travel), ("distant", 0.0)], G { delay: false, ..G::at(sky, -4.0, 58.0) }) { handles.push(h); }
                     // The telegraph at the target.
-                    self.named("mine_plant", &[], G::at(s.target, -10.0, 12.0).spl(90.0));
+                    self.named(world, "mine_plant", &[], G::at(s.target, -10.0, 12.0).spl(90.0));
                 }
                 StrikeKind::IonCannon => {
                     let charge = growing_guns::ION_CHARGE as f32;
                     self.tx.lift(0.52);
                     // Attached at the target (not culled, not delayed), and a positional companion.
-                    if let Some(h) = self.named("ion_charge", &[("charge", charge)], G { delay: false, ..G::at(s.target, -14.0, 140.0) }) { handles.push(h); }
-                    if let Some(h) = self.named("ion_charge", &[("charge", charge)], G::at(s.target, -10.0, 140.0).spl(118.0)) { handles.push(h); }
+                    if let Some(h) = self.named(world, "ion_charge", &[("charge", charge)], G { delay: false, ..G::at(s.target, -14.0, 140.0) }) { handles.push(h); }
+                    if let Some(h) = self.named(world, "ion_charge", &[("charge", charge)], G::at(s.target, -10.0, 140.0).spl(118.0)) { handles.push(h); }
                 }
             }
             self.strikes.push((s.kind, s.target, handles));
@@ -476,12 +479,12 @@ impl Sounds {
         self.strikes.retain(|(_, _, hs)| { let r = keep[k]; k += 1; if !r { for h in hs { tx.release(h); } } r });
         // Pickups dropping in.
         if world.pickups.len() > self.pickups {
-            for p in &world.pickups[self.pickups..] { let at = p.pos; self.named("pickup_drop", &[], G::at(at, -11.0, 12.0).spl(75.0)); }
+            for p in &world.pickups[self.pickups..] { let at = p.pos; self.named(world, "pickup_drop", &[], G::at(at, -11.0, 12.0).spl(75.0)); }
         }
         self.pickups = world.pickups.len();
         // Coop: an enemy about to rise.
         let incoming = if world.coop { world.waves.incoming.as_ref().map(|i| i.ground) } else { None };
-        if let Some(g) = incoming && self.incoming.is_none_or(|o| o.distance(g) > 0.01) { self.named("enemy_incoming", &[], G::at(g, -8.5, 12.0).spl(95.0)); }
+        if let Some(g) = incoming && self.incoming.is_none_or(|o| o.distance(g) > 0.01) { self.named(world, "enemy_incoming", &[], G::at(g, -8.5, 12.0).spl(95.0)); }
         self.incoming = incoming;
         // Card offers for local players: the cards flip in, then countdown beeps.
         self.offers.resize(world.players.len(), (false, 0.0));
@@ -500,7 +503,7 @@ impl Sounds {
                             let (prev_left, left) = (growing_guns::CARD_PICK_TIMEOUT - age, growing_guns::CARD_PICK_TIMEOUT - p.offer_age);
                             if had && prev_left > th && left <= th {
                                 let step = (3.0 - th).clamp(0.0, 2.0) as f32;
-                                self.named("pick_beep", &[("step", step)], G::ui(-8.0).spl(140.0));
+                                self.named(world, "pick_beep", &[("step", step)], G::ui(-8.0).spl(140.0));
                             }
                         }
                     }
@@ -513,24 +516,24 @@ impl Sounds {
         for &s in slots {
             let p = &world.players[s];
             match (p.launching.is_some() && local(s), self.descents.contains_key(&s)) {
-                (true, false) => if let Some(h) = self.named("rocket_descent", &[], G::ui(-4.0).spl(130.0)) { self.descents.insert(s, h); },
+                (true, false) => if let Some(h) = self.named(world, "rocket_descent", &[], G::ui(-4.0).spl(130.0)) { self.descents.insert(s, h); },
                 (false, true) => if let Some(h) = self.descents.remove(&s) { self.tx.stop(&h); },
                 _ => {}
             }
         }
     }
 
-    fn flush_later(&mut self) {
+    fn flush_later(&mut self, world: &World) {
         let now = self.time;
         let due: Vec<Later> = { let mut d = Vec::new(); self.later.retain_mut(|(t, l)| if *t <= now { d.push(std::mem::replace(l, Later::CardFlip)); false } else { true }); d };
         for l in due {
             match l {
-                Later::CardFlip => { self.named("card_flip", &[], G::ui(-10.0).spl(60.0)); }
-                Later::NextRound(at) => { self.named("next_round", &[], G::at(at, -16.0, 5.0).dry().spl(65.0)); }
+                Later::CardFlip => { self.named(world, "card_flip", &[], G::ui(-10.0).spl(60.0)); }
+                Later::NextRound(at) => { self.named(world, "next_round", &[], G::at(at, -16.0, 5.0).dry().spl(65.0)); }
                 Later::Casing(at, ratio) => {
                     let db = -18.0 + lerp(-22.0, 2.0, ratio.clamp(0.05, 1.2));
                     let pitch = self.u(0.96, 1.04);
-                    self.named("casing_drop", &[], G::at(at, db, 6.0).dry().no_tail().pitch(pitch).spl(75.0));
+                    self.named(world, "casing_drop", &[], G::at(at, db, 6.0).dry().no_tail().pitch(pitch).spl(75.0));
                 }
                 Later::Zip { at, sf, sc, prox } => {
                     if now - self.last_zip < 0.032 { continue; }
@@ -566,9 +569,24 @@ impl Sounds {
             let db = -30.0 + self.u(-2.0, 2.0) + (6.0 * s.log2()).clamp(-6.0, 10.0);
             let pitch = (1.0 / s.sqrt()).clamp(0.5, 1.6) * self.u(0.92, 1.08);
             let at = p.pos;
-            if let Some(st) = self.pick(&self.steps.clone()) { self.play(&st, &[], G::at(at, db, 12.0).pitch(pitch).spl(78.0)); }
+            if let Some(st) = self.pick(&self.steps.clone()) { self.play(world, &st, &[], G::at(at, db, 12.0).pitch(pitch).spl(78.0)); }
         }
     }
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+
+/// Godot's raytraced muffle: the share of four listener rays with a clear
+/// line to the sound (here the ear and three points a metre and a half
+/// around it), through the arena's blocks. 0 clear .. 1 occluded.
+fn occlusion(world: &World, ears: &[Vec3], at: Vec3) -> f32 {
+    let Some(ear) = ears.iter().copied().min_by(|a, b| a.distance(at).total_cmp(&b.distance(at))) else { return 0.0 };
+    let clear = |from: Vec3| {
+        let d = at - from;
+        let len = d.length();
+        len <= 1e-3 || growing_guns::shape::raycast(&world.arena.grid, from, d / len, (len - 0.3).max(0.0)).is_none()
+    };
+    let side = (at - ear).cross(Vec3::Y).normalize_or_zero() * 1.5;
+    let seen = [ear, ear + Vec3::Y * 1.5, ear + side, ear - side].into_iter().filter(|&p| clear(p)).count();
+    1.0 - seen as f32 / 4.0
+}

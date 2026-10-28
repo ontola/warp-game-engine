@@ -36,6 +36,9 @@ pub struct Patch {
     /// Plays until stopped (beds, engines).
     #[serde(default)]
     pub looping: bool,
+    /// A parameter whose value (s) ends the voice, like `max_length`.
+    #[serde(default)]
+    pub length_param: Option<String>,
 }
 
 impl Patch {
@@ -60,6 +63,7 @@ impl Patch {
                 }
             }
         }
+        if let Some(p) = &self.length_param && !self.params.iter().any(|q| &q.0 == p) { return Err(format!("{}: length from unknown parameter {p}", self.name)); }
         Ok(())
     }
 
@@ -86,6 +90,7 @@ impl Patch {
             gate: true, time: 0.0, quiet: 0, max_length: self.max_length, looping: self.looping,
             has_env: self.nodes.iter().any(|n| matches!(n.unit, Unit::Env { .. } | Unit::Adsr | Unit::Clip { looping: false, .. })),
             names: self.params.iter().map(|p| p.0.clone()).collect(),
+            length_idx: self.length_param.as_ref().and_then(|n| self.params.iter().position(|p| &p.0 == n)),
         }
     }
 }
@@ -111,6 +116,7 @@ pub struct Voice {
     max_length: f32,
     looping: bool,
     has_env: bool,
+    length_idx: Option<usize>,
 }
 
 /// Blocks below this peak count as quiet.
@@ -160,6 +166,7 @@ impl Voice {
         self.time += BLOCK as f32 / self.sr;
         if self.looping && self.gate { return true; }
         if self.max_length > 0.0 && self.time >= self.max_length { return false; }
+        if let Some(k) = self.length_idx && self.time >= self.values[k] { return false; }
         let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
         if !peak.is_finite() { return false; }
         let envs_done = self.nodes.iter().all(|(_, s, _)| s.finished().unwrap_or(true));
