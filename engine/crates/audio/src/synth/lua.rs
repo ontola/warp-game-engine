@@ -46,7 +46,7 @@ impl UserData for S {
 }
 
 #[derive(Default)]
-struct Builder { name: String, nodes: Vec<Node>, params: Vec<(String, f32)>, max_length: f32, looping: bool }
+struct Builder { name: String, nodes: Vec<Node>, params: Vec<(String, f32)>, max_length: f32, looping: bool, length_param: Option<String> }
 
 fn push(lua: &Lua, unit: Unit, inputs: Vec<In>) -> S {
     let mut b = lua.app_data_mut::<Builder>().expect("builder");
@@ -195,7 +195,16 @@ fn api(lua: &Lua, g: &Table) -> mlua::Result<()> {
         if !b.params.iter().any(|p| p.0 == name) { b.params.push((name.clone(), default.unwrap_or(0.0))); }
         Ok(S(In::P(name)))
     })?)?;
-    g.raw_set("length", lua.create_function(|lua, s: f32| { lua.app_data_mut::<Builder>().expect("builder").max_length = s; Ok(()) })?)?;
+    // length(seconds) or length(param("duration")): when the voice ends.
+    g.raw_set("length", lua.create_function(|lua, v: Value| {
+        let mut b = lua.app_data_mut::<Builder>().expect("builder");
+        match sig(&v)? {
+            In::K(s) => b.max_length = s,
+            In::P(p) => b.length_param = Some(p),
+            In::N(_) => return Err(mlua::Error::runtime("length takes seconds or a param, not a signal")),
+        }
+        Ok(())
+    })?)?;
     g.raw_set("loop", lua.create_function(|lua, ()| { lua.app_data_mut::<Builder>().expect("builder").looping = true; Ok(()) })?)?;
     g.raw_set("sound", lua.create_function(|lua, (name, f): (String, Function)| {
         let outer = lua.remove_app_data::<Builder>().unwrap_or_default();
@@ -223,7 +232,7 @@ fn finish(b: Builder, out: &Value) -> mlua::Result<Patch> {
         // A bare parameter or constant: route it through a node.
         x => { b.nodes.push(Node { unit: Unit::Mul, inputs: vec![x, In::K(1.0)] }); b.nodes.len() - 1 }
     };
-    let p = Patch { name: b.name, nodes: b.nodes, out, params: b.params, max_length: b.max_length, looping: b.looping };
+    let p = Patch { name: b.name, nodes: b.nodes, out, params: b.params, max_length: b.max_length, looping: b.looping, length_param: b.length_param };
     p.validate().map_err(mlua::Error::runtime)?;
     Ok(p)
 }
@@ -291,6 +300,9 @@ mod tests {
         let t = ps[1].voice(&[], 1, 48000.0).render_all(1.0);
         assert!(t.len() < 30000, "tone ends after its decay: {}", t.len());
         assert!(t.iter().all(|v| v.abs() <= 0.51));
+        // A length from a parameter.
+        let p = load("hold", "local d = param('duration', 0.5) length(d) return sine(220)").unwrap().remove(0);
+        assert_eq!(p.voice(&[("duration", 0.25)], 1, 48000.0).render_all(2.0).len(), 12032);
     }
 
     #[test]

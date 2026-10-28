@@ -8,15 +8,15 @@
 --             clamp(duration, 0.2, 6) to 0.05 s (the cache bucket). Pass the real time.
 -- Game: -14 dB, SPL 70, 2D for the reloading player, else room reverb at the gun, unit 12 m.
 --   Stop the voice when the reload ends (or is cancelled), as Godot stops its player.
---   It is silent after `duration`, but a patch cannot end its voice at a parameter
---   time, so it is kept alive (silent) up to 6.05 s unless stopped.
+--   The voice ends at `duration` (Godot's buffer is that long).
 --
 -- Godot gives every tap its own noise and band-pass. Here each cluster is one
 -- noise through one band-pass whose band jumps to each tap's pitch at its onset,
 -- under the power sum of the taps' envelopes. Taps decay to 2% in 14 ms, so the
 -- newest tap dominates, and the power sum matches overlapping independent taps.
 -- (A noise and filter pair per tap, 20 slots, matches no closer and costs ~1.5x.)
-length(6.05)
+length(param("duration", 1.2))
+-- Keeps the voice alive through the silent gap between the clusters.
 local _keepalive = env{ { 6.05, 0 } }
 
 -- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
