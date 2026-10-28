@@ -39,6 +39,12 @@ impl Things {
     pub fn pickup_lights(&self) -> &[LocalLight] { self.beams.lights() }
     /// The pickups' scatter-only haze over their beams (night air).
     pub fn pickup_haze(&self) -> &[LocalLight] { self.beams.haze() }
+    /// 0 by day, 1 at night: the shafts are brighter against the day sky.
+    pub fn set_night(&mut self, night: f32) { self.beams.gain = dropbeam::DAY_GAIN + (1.0 - dropbeam::DAY_GAIN) * night.clamp(0.0, 1.0); }
+    /// The drop beams' sprite image.
+    pub fn sprite_picture() -> (render::sprites::SpriteImage, render::picture::Picture) { (dropbeam::IMAGE, dropbeam::picture()) }
+    /// The pickups' light shafts (sprites).
+    pub fn sprites(&self) -> &[render::sprites::Sprite] { self.beams.sprites() }
 
     pub fn reserve(scene: &mut Scene) -> Self {
         let dark = material(scene, [0.12, 0.14, 0.12], 0.5);

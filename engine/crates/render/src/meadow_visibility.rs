@@ -48,8 +48,8 @@ pub(super) struct Coverage {
     pub skipped: u64,
 }
 fn source() -> String {
-    format!("enable primitive_index;\n{}\n{}\n{}\n{}", crate::wind::shade_source(),
-        include_str!("shaders/meadow_common.wgsl"), include_str!("shaders/meadow_render.wgsl"),
+    format!("enable primitive_index;\n{}\n{}\n{}\n{}\n{}", crate::wind::shade_source(),
+        include_str!("shaders/meadow_common.wgsl"), include_str!("shaders/meadow_transition.wgsl"), include_str!("shaders/meadow_render.wgsl"),
         include_str!("shaders/meadow_visibility.wgsl"))
 }
 impl Renderer {

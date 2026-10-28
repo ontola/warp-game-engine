@@ -9,6 +9,8 @@ use rapier3d::glamx;
 use rapier3d::prelude::*;
 
 pub mod ragdoll;
+mod static_set;
+pub use static_set::StaticSet;
 
 fn to(v: Vec3) -> glamx::Vec3 { glamx::Vec3::from_array(v.to_array()) }
 fn from(v: glamx::Vec3) -> Vec3 { Vec3::from_array(v.to_array()) }

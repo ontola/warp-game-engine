@@ -12,6 +12,7 @@
 //! lights.extend(fx.lights(time));                            // local lights
 //! ```
 use crate::headlights::LocalLight;
+use crate::frame::resource_cache::{BindGroups, CacheStats, TextureViews};
 use crate::{Camera, Gpu};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
@@ -399,7 +400,58 @@ impl Effects {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniform { view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4] }
 
-struct Target { size: (u32, u32), output: wgpu::Texture, uniform: wgpu::Buffer, order: wgpu::Buffer }
+struct Target {
+    size: (u32, u32),
+    output: wgpu::Texture,
+    output_view: wgpu::TextureView,
+    uniform: wgpu::Buffer,
+    order: wgpu::Buffer,
+    // Each view can alternate TAA histories. Cache actual input/depth identity;
+    // a same-size replacement must not sample the preceding frame's textures.
+    backgrounds: TextureViews<2>,
+    binds: BindGroups<2>,
+}
+
+/// Shared CPU scratch: views encode serially and queue writes copy their data.
+/// Each view still owns its GPU order buffer until the common submission.
+#[derive(Default)]
+struct DrawOrder {
+    heat: Vec<u32>,
+    billows: Vec<(u32, f32)>,
+    embers: Vec<u32>,
+    columns: Vec<u32>,
+    streaks: Vec<u32>,
+    ids: Vec<u32>,
+}
+
+impl DrawOrder {
+    fn prepare(&mut self, source: &[Puff], time: f32, camera: Vec3) -> [u32; 5] {
+        self.heat.clear();
+        self.billows.clear();
+        self.embers.clear();
+        self.columns.clear();
+        self.streaks.clear();
+        self.ids.clear();
+        for (i, p) in source.iter().enumerate() {
+            if p.end() <= time || p.timing[0] > time { continue; }
+            match p.kind() {
+                0 | 1 => self.billows.push((i as u32, Vec3::from_slice(&p.center_kind[..3]).distance_squared(camera))),
+                2 => self.embers.push(i as u32),
+                3 => self.heat.push(i as u32),
+                4 => self.columns.push(i as u32),
+                5 => self.streaks.push(i as u32),
+                _ => {},
+            }
+        }
+        // Source indices are unique, so the tie-break gives the same total
+        // order as stable sort without that algorithm's temporary allocation.
+        self.billows.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        self.ids.extend(self.heat.iter().copied().chain(self.billows.iter().map(|b| b.0))
+            .chain(self.embers.iter().copied()).chain(self.columns.iter().copied()).chain(self.streaks.iter().copied()));
+        [self.heat.len() as u32, self.billows.len() as u32, self.embers.len() as u32,
+            self.columns.len() as u32, self.streaks.len() as u32]
+    }
+}
 
 /// Renderer side, created on first use.
 pub(crate) struct FxRenderer {
@@ -413,6 +465,7 @@ pub(crate) struct FxRenderer {
     puffs: wgpu::Buffer,
     source: Vec<Puff>,
     time: f32,
+    draw_order: DrawOrder,
     targets: Vec<Option<Target>>,
 }
 
@@ -448,7 +501,8 @@ impl FxRenderer {
             address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, ..Default::default() });
         let puffs = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("fx puffs"), size: (MAX_PUFFS * std::mem::size_of::<Puff>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        FxRenderer { layout, billow, ember, heat, column, streak, sampler, puffs, source: Vec::new(), time: 0.0, targets: Vec::new() }
+        FxRenderer { layout, billow, ember, heat, column, streak, sampler, puffs, source: Vec::new(), time: 0.0,
+            draw_order: DrawOrder::default(), targets: Vec::new() }
     }
 
     fn set(&mut self, gpu: &Gpu, time: f32, puffs: Option<&[Puff]>) {
@@ -461,66 +515,56 @@ impl FxRenderer {
         }
     }
 
+    pub(crate) fn resource_cache_stats(&self) -> CacheStats {
+        let mut stats = CacheStats::default();
+        for target in self.targets.iter().flatten() {
+            stats.add(target.backgrounds.stats());
+            stats.add(target.binds.stats());
+        }
+        stats
+    }
+
     /// Draw over a copy of `input`; returns the new HDR output, or None when
     /// nothing is live.
     #[allow(clippy::too_many_arguments)]
     pub fn render(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, index: usize, input: &wgpu::Texture, depth: &wgpu::TextureView,
         camera: Camera, view: Mat4, output_vp: Mat4, depth_vp: Mat4, white: f32) -> Result<Option<wgpu::Texture>, String> {
-        if self.source.iter().all(|p| p.end() <= self.time || p.timing[0] > self.time) { return Ok(None); }
         // Heat first (it refracts the plain scene), then billows back to front, then embers.
-        let mut heat = Vec::new();
-        let mut billows = Vec::new();
-        let mut embers = Vec::new();
-        let mut columns = Vec::new();
-        let mut streaks = Vec::new();
-        for (i, p) in self.source.iter().enumerate() {
-            if p.end() <= self.time || p.timing[0] > self.time { continue; }
-            let c = Vec3::from_slice(&p.center_kind[..3]);
-            match p.kind() {
-                0 | 1 => billows.push((i as u32, c.distance_squared(camera.pos))),
-                2 => embers.push(i as u32),
-                3 => heat.push(i as u32),
-                4 => columns.push(i as u32),
-                5 => streaks.push(i as u32),
-                _ => {},
-            }
-        }
-        billows.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        let ids: Vec<u32> = heat.iter().copied().chain(billows.iter().map(|b| b.0)).chain(embers.iter().copied())
-            .chain(columns.iter().copied()).chain(streaks.iter().copied()).collect();
-        let (nh, nb, ne) = (heat.len() as u32, billows.len() as u32, embers.len() as u32);
-        let (nc, ns) = (columns.len() as u32, streaks.len() as u32);
+        let [nh, nb, ne, nc, ns] = self.draw_order.prepare(&self.source, self.time, camera.pos);
+        if self.draw_order.ids.is_empty() { return Ok(None); }
         if input.format() != wgpu::TextureFormat::Rgba16Float || !input.usage().contains(wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING) {
             return Err("fx requires copyable sampleable HDR input".into());
         }
         let size = (input.width(), input.height());
         if self.targets.len() <= index { self.targets.resize_with(index + 1, || None); }
         if self.targets[index].as_ref().is_none_or(|t| t.size != size) {
+            // Retain bounded cache bookkeeping across resize. New uniform and
+            // order buffer identities force a miss even if an input is reused.
+            let (backgrounds, binds) = self.targets[index].take()
+                .map(|previous| (previous.backgrounds, previous.binds)).unwrap_or_default();
             let output = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("fx HDR output (not temporal history)"), size: input.size(), mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: input.format(),
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[] });
             let buffer = |label, size, usage| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
-            self.targets[index] = Some(Target { size, output,
+            let output_view = output.create_view(&Default::default());
+            self.targets[index] = Some(Target { size, output, output_view,
                 uniform: buffer("fx view", std::mem::size_of::<Uniform>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST),
-                order: buffer("fx order", (MAX_PUFFS * 4) as u64, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST) });
+                order: buffer("fx order", (MAX_PUFFS * 4) as u64, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST),
+                backgrounds, binds });
         }
-        let t = self.targets[index].as_ref().unwrap();
+        let t = self.targets[index].as_mut().unwrap();
         let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(), view: view.to_cols_array_2d(),
             camera_near: camera.pos.extend(camera.near).to_array(), size: [size.0 as f32, size.1 as f32, 1.0 / size.0 as f32, 1.0 / size.1 as f32],
             clock: [self.time, white, 0.0, 0.0] };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
-        gpu.queue.write_buffer(&t.order, 0, bytemuck::cast_slice(&ids));
+        gpu.queue.write_buffer(&t.order, 0, bytemuck::cast_slice(&self.draw_order.ids));
         enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());
-        let background = input.create_view(&Default::default());
-        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("fx view"), layout: &self.layout, entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: t.uniform.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: self.puffs.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: t.order.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&background) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(depth) },
-            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) }] });
-        let output = t.output.create_view(&Default::default());
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("fx"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &output, depth_slice: None,
+        let background = t.backgrounds.get(input);
+        let bind = t.binds.get(gpu, &self.layout, "cached fx view", &[
+            (0, t.uniform.as_entire_binding()), (1, self.puffs.as_entire_binding()), (2, t.order.as_entire_binding()),
+            (3, wgpu::BindingResource::TextureView(&background)), (4, wgpu::BindingResource::TextureView(depth)),
+            (5, wgpu::BindingResource::Sampler(&self.sampler))]);
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("fx"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &t.output_view, depth_slice: None,
             resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
             depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
         pass.set_bind_group(0, &bind, &[]);
@@ -549,6 +593,54 @@ impl FxSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_order_preserves_layers_lifetimes_and_equal_depth_source_order() {
+        let puff = |kind, z, birth, life| Puff { center_kind: [0.0, 0.0, z, kind],
+            timing: [birth, life, 0.0, 0.0], ..Default::default() };
+        let source = [
+            puff(FIRE, -1.0, 0.0, 1.0), puff(SMOKE, -3.0, 0.0, 1.0), puff(FIRE, 3.0, 0.0, 1.0),
+            puff(EMBER, 0.0, 0.0, 1.0), puff(HEAT, 0.0, 0.0, 1.0),
+            puff(COLUMN, 0.0, 0.0, 1.0), puff(STREAK, 0.0, 0.0, 1.0),
+            puff(FIRE, -5.0, -1.0, 1.0), puff(HEAT, 0.0, 1.0, 1.0),
+        ];
+        let mut order = DrawOrder::default();
+        assert_eq!(order.prepare(&source, 0.0, Vec3::ZERO), [1, 3, 1, 1, 1]);
+        assert_eq!(order.ids, [4, 1, 2, 0, 3, 5, 6]);
+        // Another view must recompute distance, retaining the same layer order.
+        assert_eq!(order.prepare(&source, 0.0, Vec3::Z * 4.0), [1, 3, 1, 1, 1]);
+        assert_eq!(order.ids, [4, 1, 0, 2, 3, 5, 6]);
+        assert_eq!(order.prepare(&source, 1.0, Vec3::ZERO), [1, 0, 0, 0, 0]);
+        assert_eq!(order.ids, [8]);
+        assert_eq!(order.prepare(&source, 2.0, Vec3::ZERO), [0; 5]);
+        assert!(order.ids.is_empty());
+    }
+
+    #[test]
+    fn repeated_views_reuse_order_storage_and_match_stable_sort() {
+        // Deliberately repeat positions across smoke and fire to exercise many
+        // equal-depth ties while the camera moves between independent views.
+        let source: Vec<_> = (0..256).map(|i| Puff {
+            center_kind: [(i % 5) as f32, 0.0, (i % 7) as f32, (i % 6) as f32],
+            timing: [0.0, 1.0, 0.0, 0.0], ..Default::default()
+        }).collect();
+        let capacities = |order: &DrawOrder| [order.heat.capacity(), order.billows.capacity(),
+            order.embers.capacity(), order.columns.capacity(), order.streaks.capacity(), order.ids.capacity()];
+        let mut order = DrawOrder::default();
+        order.prepare(&source, 0.0, Vec3::ZERO);
+        let allocated = capacities(&order);
+        for camera in [Vec3::ZERO, Vec3::X * 4.0, Vec3::Z * -3.0, Vec3::ZERO] {
+            let mut stable: Vec<_> = source.iter().enumerate().filter(|(_, p)| p.kind() <= 1)
+                .map(|(i, p)| (i as u32, Vec3::from_slice(&p.center_kind[..3]).distance_squared(camera))).collect();
+            stable.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            order.prepare(&source, 0.0, camera);
+            assert_eq!(order.billows, stable);
+            assert_eq!(capacities(&order), allocated);
+            order.prepare(&[], 0.0, camera);
+            assert!(order.ids.is_empty());
+            assert_eq!(capacities(&order), allocated);
+        }
+    }
 
     #[test]
     fn fx_wgsl_validates_and_layouts_match() {

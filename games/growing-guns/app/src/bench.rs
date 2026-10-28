@@ -2,6 +2,7 @@
 //! frames with CPU submit, wall (submit + GPU wait) and per-pass GPU time.
 //!
 //!   growing-guns bench [--views N] [--size WxH] [--frames N] [--light full|lean] [--empty]
+//!   growing-guns bench --stress explosions --cpu-thread --csv frames.csv
 use crate::{view, Args};
 use glam::Vec3;
 use growing_guns::{World, TICK_HZ};
@@ -152,6 +153,7 @@ pub fn run(args: &Args) -> Result<(), String> {
             vis.absorb(&world, &[]);
             vis.pose(&world, &prev, 1.0, 1.0 / 60.0);
             vis.flush(&gpu, &renderer)?;
+            renderer.set_sprites(&gpu, vis.sprites())?;
             renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
             renderer.set_local_lights(&vis.local_lights())?;
         }
@@ -235,11 +237,17 @@ struct StressCounts {
     fallback_targets: usize,
 }
 
+#[derive(Default)]
 struct StressFrame {
     frame: usize,
     // Reset, input/simulation, scene update, FX flush, instance/light upload,
     // render submission, entire CPU submission, CPU plus GPU wait.
     times: [f64; 8],
+    // Absorb and pose wall time; the legacy scene update column retains both.
+    scene_times: [f64; 2],
+    // Calling-thread execution at successive milestones: reset, sim, absorb,
+    // pose, flush, upload, render, and total. OS accounting may be quantized.
+    thread_ms: [Option<f64>; 8],
     counts: StressCounts,
     bullets: usize,
     tracers: usize,
@@ -250,6 +258,37 @@ struct StressFrame {
     debris: usize,
     puffs: usize,
     debris_spawned: u64,
+}
+
+const THREAD_STAGES: [&str; 8] = ["arena reset", "input + sim", "scene absorb", "scene pose", "FX flush", "instances/lights", "render submit", "thread total"];
+
+/// No timer construction or OS counter queries unless explicitly requested.
+/// Consecutive checkpoints include the small fixture/bookkeeping gaps between
+/// phases; total includes the observation overhead. Never substitute wall time.
+struct ThreadMarks {
+    timer: Option<render::cpu_time::ThreadCpuTimer>,
+    previous: Option<f64>,
+}
+
+impl ThreadMarks {
+    fn start(enabled: bool) -> Self {
+        Self { timer: enabled.then(render::cpu_time::ThreadCpuTimer::start), previous: Some(0.0) }
+    }
+    fn mark(&mut self) -> Option<f64> {
+        let current = self.timer.as_ref().and_then(|t| t.elapsed_ms());
+        let delta = checkpoint_delta(self.previous, current);
+        self.previous = current;
+        delta
+    }
+}
+
+fn checkpoint_delta(previous: Option<f64>, current: Option<f64>) -> Option<f64> {
+    let (previous, current) = (previous?, current?);
+    (previous.is_finite() && current.is_finite() && current >= previous).then_some(current - previous)
+}
+
+fn stress_stratum(rows: &[StressFrame], reset: bool) -> impl Iterator<Item = &StressFrame> {
+    rows.iter().filter(move |r| (r.counts.resets != 0) == reset)
 }
 
 fn stress_pose(world: &mut World, poses: &[Vec3]) {
@@ -280,6 +319,7 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
         return Err("--stress defines its own weapon stats; omit --build".into());
     }
     let views = args.num("--views", 1usize).clamp(1, 4);
+    let cpu_thread = args.flag("--cpu-thread");
     let (w, h) = args.size((1920, 1080));
     let seed = args.num("--seed", 2u64);
     let mut world = World::new_with(seed, &[false; 4], |w| w.modifier_chance = 0.0);
@@ -323,6 +363,7 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
     let t = Instant::now();
     vis.pose(&world, &poses, 1.0, growing_guns::DT);
     vis.flush(&gpu, &renderer)?;
+    renderer.set_sprites(&gpu, vis.sprites())?;
     renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
     renderer.set_local_lights(&vis.local_lights())?;
     renderer.try_render_into(&gpu, &cameras, &light, &output)?;
@@ -342,6 +383,11 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
         StressMode::Explosions => println!("workload: 40 real gameplay explosions/s, radius 6.5 m, damage 140, visible live-chunk targets; arena+debris reset every 180 ticks (3 s) or sooner when targets run out, reset costs included"),
     }
     println!("startup ms: device {t_gpu:.1}, scene {t_scene:.1}, renderer {t_renderer:.1}, first frame {t_first:.1}");
+    println!("CPU stage columns are elapsed wall time, including blocking/descheduling; thread CPU profiling {}", if cpu_thread { "enabled" } else { "off (opt in with --cpu-thread)" });
+    if cpu_thread {
+        println!("thread CPU: calling-thread user+kernel execution only; workers and blocked/descheduled time excluded; unavailable counters stay empty");
+        println!("thread counters may be quantized: aggregate sums/means are more meaningful than individual frame/stage samples; observer overhead and small inter-stage bookkeeping gaps are included");
+    }
     let mut rows = Vec::with_capacity(STRESS_FRAMES);
     let mut profiles: BTreeMap<usize, GpuProfileSample> = BTreeMap::new();
     let mut profile_dropped = 0;
@@ -351,6 +397,8 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
     for f in 0..STRESS_WARMUP + STRESS_FRAMES {
         if f == STRESS_WARMUP { measured_start = Instant::now(); }
         let frame_start = Instant::now();
+        let mut thread = ThreadMarks::start(cpu_thread);
+        let mut thread_ms = [None; 8];
         let mut counts = StressCounts::default();
         let t = Instant::now();
         let depleted = mode == StressMode::Explosions && f % 3 != 2
@@ -362,6 +410,7 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
             counts.resets = 1;
         }
         let reset_ms = ms(t);
+        thread_ms[0] = thread.mark();
         let t = Instant::now();
         stress_pose(&mut world, &poses);
         let mut inputs = [Input::default(); 4];
@@ -392,26 +441,38 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
         }
         world.step(&inputs);
         let sim_ms = ms(t);
+        thread_ms[1] = thread.mark();
         // Keep the posed fixture and camera stable after collision/gravity.
         // No events or breakage are replaced: real gameplay produces both.
         for (p, &pos) in world.players.iter_mut().zip(&poses) { p.pos = pos; p.vel = Vec3::ZERO; }
         let t = Instant::now();
         vis.absorb(&world, &[]);
+        let absorb_ms = ms(t);
+        thread_ms[2] = thread.mark();
+        let pose_start = Instant::now();
         vis.pose(&world, &poses, 1.0, growing_guns::DT);
+        let pose_ms = ms(pose_start);
         let scene_ms = ms(t);
+        thread_ms[3] = thread.mark();
         let t = Instant::now();
         vis.flush(&gpu, &renderer)?;
+        // World effects remain part of a HUD-free benchmark/capture.
+        renderer.set_sprites(&gpu, vis.sprites())?;
         let flush_ms = ms(t);
+        thread_ms[4] = thread.mark();
         let t = Instant::now();
         renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
         let lights = vis.local_lights();
         renderer.set_local_lights(&lights)?;
         let upload_ms = ms(t);
+        thread_ms[5] = thread.mark();
         light.time = world.tick as f32 * growing_guns::DT;
         renderer.set_gpu_profile_frame_id(f as u64);
         let t = Instant::now();
         renderer.try_render_into(&gpu, &cameras, &light, &output)?;
         let render_ms = ms(t);
+        thread_ms[6] = thread.mark();
+        thread_ms[7] = thread.previous;
         let cpu_ms = ms(frame_start);
         gpu.wait();
         let wall_ms = ms(frame_start);
@@ -440,6 +501,8 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
             rows.push(StressFrame {
                 frame: f,
                 times: [reset_ms, sim_ms, scene_ms, flush_ms, upload_ms, render_ms, cpu_ms, wall_ms],
+                scene_times: [absorb_ms, pose_ms],
+                thread_ms,
                 counts,
                 bullets: world.bullets.len(),
                 tracers: world.bullets.iter().take(view::TRACERS).filter(|b| b.travelled > 1.0).count(),
@@ -484,6 +547,21 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
     for (i, name) in ["arena reset", "input + sim", "scene update", "FX flush", "instances/lights", "render submit", "CPU total", "CPU + GPU wait"].iter().enumerate() {
         print_stress_times(name, rows.iter().map(|r| r.times[i]).collect());
     }
+    print_stress_times("scene absorb", rows.iter().map(|r| r.scene_times[0]).collect());
+    print_stress_times("scene pose", rows.iter().map(|r| r.scene_times[1]).collect());
+    if cpu_thread { print_thread_times(&rows.iter().collect::<Vec<_>>()); }
+    // Reset work can be deferred into absorb/physics and uploads. Keep the
+    // complete reset frame rather than subtracting only its reset_ms column.
+    for reset in [true, false] {
+        let group: Vec<_> = stress_stratum(&rows, reset).collect();
+        println!("{} frames: {}/{}; complete frame costs, all-frame totals above retain both strata", if reset { "reset" } else { "nonreset" }, group.len(), rows.len());
+        for (i, name) in ["arena reset", "input + sim", "scene update", "FX flush", "instances/lights", "render submit", "CPU total", "CPU + GPU wait"].iter().enumerate() {
+            print_stress_times(name, group.iter().map(|r| r.times[i]).collect());
+        }
+        print_stress_times("scene absorb", group.iter().map(|r| r.scene_times[0]).collect());
+        print_stress_times("scene pose", group.iter().map(|r| r.scene_times[1]).collect());
+        if cpu_thread { print_thread_times(&group); }
+    }
     println!("GPU timestamp coverage: {}/{} measured frames, enabled {profiling}, dropped {profile_dropped}, errors {profile_errors}; coverage is not whole-frame FPS", profiles.len(), rows.len());
     print_stress_times("GPU union", profiles.values().map(|p| p.covered_union_ms).collect());
     print_stress_times("GPU interval", profiles.values().map(|p| p.covered_interval_ms).collect());
@@ -524,26 +602,53 @@ fn print_stress_times(name: &str, mut values: Vec<f64>) {
     println!("  {name:<22} {mean:8.3} / {:8.3} / {:8.3} / {max:8.3}", pct(&mut values, 0.5), pct(&mut values, 0.95));
 }
 
+fn print_thread_times(rows: &[&StressFrame]) {
+    println!("calling-thread execution ms (mean / median / p95 / max); quantized samples:");
+    for (i, name) in THREAD_STAGES.iter().enumerate() {
+        let values: Vec<_> = rows.iter().filter_map(|r| r.thread_ms[i]).collect();
+        if !values.is_empty() { println!("  {name}: {} valid / {} frames, sum {:.3} ms", values.len(), rows.len(), values.iter().sum::<f64>()); }
+        print_stress_times(name, values);
+    }
+}
+
+fn write_optional_ms(out: &mut impl std::io::Write, values: &[Option<f64>]) -> std::io::Result<()> {
+    for value in values {
+        match value { Some(value) => write!(out, ",{value:.6}")?, None => write!(out, ",")? }
+    }
+    Ok(())
+}
+
+const STRESS_CSV_COLUMNS: &str = "frame,measured_tick,simulation_s,reset_ms,sim_ms,scene_ms,fx_flush_ms,upload_ms,render_submit_ms,cpu_total_ms,cpu_gpu_wait_ms,requested,shots,explosions,impacts,kills,chunks_removed,chunks_worn,arena_resets,fallback_targets,live_bullets,rendered_tracers,alive_players,alive_chunks,local_lights,cpu_particles,live_gpu_debris,effect_puffs,debris_spawned,gpu_union_ms,gpu_interval_ms,gpu_instrumented_ms";
+const STRESS_DIAGNOSTIC_COLUMNS: &str = "absorb_ms,pose_ms,thread_reset_ms,thread_sim_ms,thread_absorb_ms,thread_pose_ms,thread_fx_flush_ms,thread_upload_ms,thread_render_submit_ms,thread_total_ms";
+
+fn write_stress_rows(out: &mut impl std::io::Write, rows: &[StressFrame], profiles: &BTreeMap<usize, render::gpu_profile::GpuProfileSample>) -> std::io::Result<()> {
+    writeln!(out, "{STRESS_CSV_COLUMNS},{STRESS_DIAGNOSTIC_COLUMNS}")?;
+    for row in rows {
+        write!(out, "{},{},{:.6}", row.frame, row.frame - STRESS_WARMUP, (row.frame + 1) as f64 / TICK_HZ as f64)?;
+        for value in row.times { write!(out, ",{value:.6}")?; }
+        let c = &row.counts;
+        for value in [c.requested, c.shots, c.explosions, c.impacts, c.kills, c.removed, c.worn, c.resets, c.fallback_targets,
+            row.bullets, row.tracers, row.alive, row.chunks, row.lights, row.particles, row.debris, row.puffs] {
+            write!(out, ",{value}")?;
+        }
+        write!(out, ",{}", row.debris_spawned)?;
+        if let Some(p) = profiles.get(&row.frame) {
+            write!(out, ",{:.6},{:.6},{:.6}", p.covered_union_ms, p.covered_interval_ms, p.instrumented_gpu_ms)?;
+        } else { write!(out, ",,,")?; }
+        for value in row.scene_times { write!(out, ",{value:.6}")?; }
+        write_optional_ms(out, &row.thread_ms)?;
+        writeln!(out)?;
+    }
+    Ok(())
+}
+
 fn write_stress_csv(path: &str, rows: &[StressFrame], profiles: &BTreeMap<usize, render::gpu_profile::GpuProfileSample>) -> Result<(), String> {
     use std::io::Write;
     let path = std::path::Path::new(path);
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut out = std::io::BufWriter::new(file);
-    writeln!(out, "frame,measured_tick,simulation_s,reset_ms,sim_ms,scene_ms,fx_flush_ms,upload_ms,render_submit_ms,cpu_total_ms,cpu_gpu_wait_ms,requested,shots,explosions,impacts,kills,chunks_removed,chunks_worn,arena_resets,fallback_targets,live_bullets,rendered_tracers,alive_players,alive_chunks,local_lights,cpu_particles,live_gpu_debris,effect_puffs,debris_spawned,gpu_union_ms,gpu_interval_ms,gpu_instrumented_ms").map_err(|e| e.to_string())?;
-    for row in rows {
-        write!(out, "{},{},{:.6}", row.frame, row.frame - STRESS_WARMUP, (row.frame + 1) as f64 / TICK_HZ as f64).map_err(|e| e.to_string())?;
-        for value in row.times { write!(out, ",{value:.6}").map_err(|e| e.to_string())?; }
-        let c = &row.counts;
-        for value in [c.requested, c.shots, c.explosions, c.impacts, c.kills, c.removed, c.worn, c.resets, c.fallback_targets,
-            row.bullets, row.tracers, row.alive, row.chunks, row.lights, row.particles, row.debris, row.puffs] {
-            write!(out, ",{value}").map_err(|e| e.to_string())?;
-        }
-        write!(out, ",{}", row.debris_spawned).map_err(|e| e.to_string())?;
-        if let Some(p) = profiles.get(&row.frame) {
-            writeln!(out, ",{:.6},{:.6},{:.6}", p.covered_union_ms, p.covered_interval_ms, p.instrumented_gpu_ms).map_err(|e| e.to_string())?;
-        } else { writeln!(out, ",,,").map_err(|e| e.to_string())?; }
-    }
+    write_stress_rows(&mut out, rows, profiles).map_err(|e| e.to_string())?;
     out.flush().map_err(|e| e.to_string())?;
     let file = std::fs::File::create(format!("{}.gpu.csv", path.display())).map_err(|e| e.to_string())?;
     let mut out = std::io::BufWriter::new(file);
@@ -552,4 +657,52 @@ fn write_stress_csv(path: &str, rows: &[StressFrame], profiles: &BTreeMap<usize,
         for (name, value) in &profile.gpu_ms { writeln!(out, "{frame},{name},{value:.6}").map_err(|e| e.to_string())?; }
     }
     out.flush().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_thread_counters_stay_missing_and_quantized_zero_is_valid() {
+        let mut off = ThreadMarks::start(false);
+        assert!(off.timer.is_none(), "disabled profiling must not construct an OS timer");
+        assert_eq!(off.mark(), None);
+        assert_eq!(off.previous, None);
+        assert_eq!(checkpoint_delta(Some(1.0), Some(1.0)), Some(0.0));
+        assert_eq!(checkpoint_delta(Some(1.0), Some(3.5)), Some(2.5));
+        for (a, b) in [(None, Some(2.0)), (Some(1.0), None), (Some(3.0), Some(2.0)), (Some(0.0), Some(f64::NAN))] {
+            assert_eq!(checkpoint_delta(a, b), None);
+        }
+    }
+
+    #[test]
+    fn reset_strata_keep_whole_frame_costs_and_partition_every_row() {
+        let row = |frame, resets, total| StressFrame { frame, counts: StressCounts { resets, ..Default::default() },
+            times: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, total, total + 1.0], ..Default::default() };
+        let rows = [row(180, 1, 30.0), row(181, 0, 2.0), row(252, 1, 20.0)];
+        assert_eq!(stress_stratum(&rows, true).map(|r| r.frame).collect::<Vec<_>>(), vec![180, 252]);
+        assert_eq!(stress_stratum(&rows, false).map(|r| r.frame).collect::<Vec<_>>(), vec![181]);
+        let sum = |reset| stress_stratum(&rows, reset).map(|r| r.times[6]).sum::<f64>();
+        assert_eq!(sum(true), 50.0);
+        assert_eq!(sum(true) + sum(false), rows.iter().map(|r| r.times[6]).sum::<f64>());
+        assert_eq!(stress_stratum(&[], true).count(), 0);
+    }
+
+    #[test]
+    fn csv_preserves_legacy_columns_and_distinguishes_missing_from_zero() {
+        let row = StressFrame { frame: STRESS_WARMUP, scene_times: [1.25, 0.5],
+            thread_ms: [None, Some(0.0), Some(2.5), None, None, None, None, Some(2.5)], ..Default::default() };
+        let mut bytes = Vec::new();
+        write_stress_rows(&mut bytes, &[row], &BTreeMap::new()).unwrap();
+        let csv = String::from_utf8(bytes).unwrap();
+        let mut lines = csv.lines();
+        let header = lines.next().unwrap();
+        assert!(header.starts_with(&format!("{STRESS_CSV_COLUMNS},")));
+        let fields: Vec<_> = lines.next().unwrap().split(',').collect();
+        assert_eq!(fields.len(), header.split(',').count());
+        assert_eq!(&fields[29..32], &["", "", ""], "missing GPU values retain their columns");
+        assert_eq!(&fields[32..], &["1.250000", "0.500000", "", "0.000000", "2.500000", "", "", "", "", "2.500000"]);
+        assert!(lines.next().is_none());
+    }
 }

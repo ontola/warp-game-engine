@@ -11,20 +11,50 @@ struct MeadowVertex {
     @location(2) normal:vec3<f32>,
     @location(3) color:vec4<f32>,
     @location(4) @interpolate(flat) opacity:f32,
+    // Windswept: tip before AO/clamping and t+1. Zero W selects legacy RGB.
+    @location(5) blade_color:vec4<f32>,
+    @location(6) @interpolate(flat) pigment:u32,
 };
+// Analytic source material helpers are shared by raster and visibility resolve.
+// The basal baked colour is never clamped by the supported seasonal palette;
+// multiplying it by four removes root AO. The tip/base ratio reconstructs the
+// original (unclamped) tip without adding storage or losing dry-season values.
+fn meadow_windswept_tip(base:vec3<f32>,anchor:vec3<f32>)->vec3<f32> {
+    let original_base=mix(vec3<f32>(0.02,0.075,0.01),vec3<f32>(0.025,0.1,0.01),meadow_anchor_random(anchor,0x9e3779b9u));
+    let original_tip=mix(vec3<f32>(0.65,0.8,0.25),vec3<f32>(0.8,0.9,0.4),meadow_anchor_random(anchor,0x7f4a7c15u));
+    return base*(original_tip/original_base);
+}
+fn meadow_fragment_albedo(color:vec4<f32>,blade_color:vec4<f32>,pigment:u32,edits:vec3<f32>)->vec3<f32> {
+    var base=color.rgb;
+    if blade_color.w>0.0 {
+        let t=clamp(blade_color.w-1.0,0.0,1.0);let t2=t*t;
+        // Evaluate pigment and reference density-one AO at the interpolated
+        // blade coordinate. Interpolating their baked product makes a coarse
+        // triangle much brighter than the same material on six segments.
+        base=clamp(mix(color.rgb,blade_color.rgb,t2*t2)*(0.25+0.75*t2),vec3<f32>(0.0),vec3<f32>(1.0));
+        base*=meadow_unpack_tint(pigment)*edits;
+    }
+    return clamp(base,vec3<f32>(0.0),vec3<f32>(1.0));
+}
 fn meadow_read4(offset:u32)->vec4<f32> {
     return bitcast<vec4<f32>>(vec4<u32>(meadow_pool[offset],meadow_pool[offset+1u],meadow_pool[offset+2u],meadow_pool[offset+3u]));
 }
 fn meadow_source_owner(instance:u32,lod:u32,capacity:u32)->u32 {
-    if lod>=3u || instance>=capacity || arrayLength(&meadow_pool)<capacity*31u {return 0xffffffffu;}
-    return meadow_pool[capacity*MEADOW_PLANT_WORDS+lod*capacity+instance];
+    if lod>=3u || instance>=capacity || arrayLength(&meadow_pool)<meadow_pool_words(capacity,meadow.wind_history.w) {return 0xffffffffu;}
+    return meadow_pool[capacity*meadow_plant_words(meadow.wind_history.w)+lod*capacity+instance];
+}
+fn meadow_windswept_source_pose(address:u32,anchor:vec4<f32>,root:vec4<f32>,yaw:vec4<f32>,sc:vec4<f32>,
+    wind:MeadowBladeWind)->MeadowDeformed {
+    let point=meadow_recipe[address];let normal=meadow_recipe[address+1u];
+    let h=meadow_blade_coordinate(normal.w,anchor.w,meadow_rest_lean(anchor.xyz));
+    return meadow_deform_blade_with_wind(point.xyz,normal.xyz,normal.xyz,anchor,root,yaw,sc,meadow,h,wind);
 }
 // One implementation serves ordinary raster vertices and reconstruction of
 // an actually visible primitive. Recipe indices, habitat and wind stay exact.
 fn meadow_source_vertex(vertex:u32,owner:u32,lod:u32,capacity:u32)->MeadowVertex {
     var out:MeadowVertex;out.position=vec4<f32>(2.0,2.0,2.0,1.0);
-    if lod>=3u || owner>=capacity || arrayLength(&meadow_pool)<capacity*31u {return out;}
-    let offset=owner*MEADOW_PLANT_WORDS;let root=meadow_read4(offset);let yaw=meadow_read4(offset+4u);
+    if lod>=3u || owner>=capacity || arrayLength(&meadow_pool)<meadow_pool_words(capacity,meadow.wind_history.w) {return out;}
+    let offset=owner*meadow_plant_words(meadow.wind_history.w);let root=meadow_read4(offset);let yaw=meadow_read4(offset+4u);
     let variant=meadow_pool[offset+10u];if variant>=3u {return out;}
     let mesh=bitcast<vec4<u32>>(meadow_recipe[variant*3u+lod]);
     if vertex>=mesh.y {return out;}
@@ -37,16 +67,51 @@ fn meadow_source_vertex(vertex:u32,owner:u32,lod:u32,capacity:u32)->MeadowVertex
         pivot_world.xz,root.xz+pivot_world.xz,meadow.grid.z) {return out;}
     let normal=meadow_recipe[address+1u];let color=meadow_recipe[address+2u];
     let branch=min(u32(max(point.w,0.0)),3u);
-    let sc=meadow_read4(offset+12u+branch*4u);
-    let deformed=meadow_deform_source(point.xyz,normal.xyz,normal.xyz,anchor.xyz,root,yaw,sc,
-        meadow.previous.yz,meadow.previous.w>=0.5);
+    var sc=vec4<f32>(0.0,1.0,0.0,1.0);
+    var deformed:MeadowDeformed;var wind:MeadowBladeWind;
+    if anchor.w>0.0 {
+        wind=meadow_wind_at_anchor(anchor.xyz,root,yaw,meadow);
+        deformed=meadow_windswept_source_pose(address,anchor,root,yaw,sc,wind);
+    } else {
+        sc=meadow_read4(offset+12u+branch*4u);
+        deformed=meadow_deform_vertex(point.xyz,normal,normal.xyz,anchor,root,yaw,sc,meadow);
+    }
     out.world=deformed.world;out.previous_world=deformed.previous_world;out.normal=deformed.normal;
+    if anchor.w>0.0 && lod<2u && normal.w>0.0 && normal.w<1.0 {
+        let current=meadow_lod_factor(root.xyz,root.w,view.cam.xyz);
+        let prior_camera=select(view.cam.xyz,meadow.previous_camera.xyz,meadow.previous_camera.w>0.5);
+        let previous=meadow_lod_factor(root.xyz,root.w,prior_camera);
+        if max(current,previous)>0.0 {
+            let stride=array<u32,3>(33u,15u,3u)[lod];
+            let coarse=bitcast<vec4<u32>>(meadow_recipe[variant*3u+2u]);
+            let first=MEADOW_RECIPE_VERTICES+(coarse.x+(vertex/stride)*3u)*4u;
+            if first+11u>=arrayLength(&meadow_recipe) {return out;}
+            let left=meadow_windswept_source_pose(first,anchor,root,yaw,sc,wind);
+            let right=meadow_windswept_source_pose(first+4u,anchor,root,yaw,sc,wind);
+            let tip=meadow_windswept_source_pose(first+8u,anchor,root,yaw,sc,wind);
+            let morphed=meadow_morph_pose(deformed,left,right,tip,
+                meadow_coarse_weights(vertex,stride,normal.w),vec2<f32>(current,previous));
+            out.world=morphed.world;out.previous_world=morphed.previous_world;out.normal=morphed.normal;
+        }
+    }
     let pigment=meadow_unpack_tint(meadow_pool[offset+11u]);
     // A small, continuous blade pigment gradient survives source LOD cuts.
     // The actual shared scene lighting below still determines shade and sun.
     let height=clamp(point.y/max(meadow.shape.z,0.001),0.0,1.0);
-    let blade_tint=mix(vec3<f32>(0.91,0.94,0.86),vec3<f32>(1.10,1.04,0.98),height);
+    let blade_tint=select(mix(vec3<f32>(0.91,0.94,0.86),vec3<f32>(1.10,1.04,0.98),height),vec3<f32>(1.0),anchor.w>0.0);
     out.color=vec4<f32>(color.rgb*pigment*blade_tint*meadow.edits.rgb,color.w);
+    out.blade_color=vec4<f32>(0.0);out.pigment=0u;
+    if anchor.w>0.0 {
+        // The authored 6/3/1-segment cuts retain one contiguous triangle
+        // stream per blade (33/15/3 vertices), including its basal colour.
+        let stride=array<u32,3>(33u,15u,3u)[lod];
+        let first=(vertex/stride)*stride;
+        let root_color=meadow_recipe[MEADOW_RECIPE_VERTICES+(mesh.x+first)*4u+2u].rgb;
+        let base=root_color*4.0;
+        out.color=vec4<f32>(base,color.w);
+        out.blade_color=vec4<f32>(meadow_windswept_tip(base,anchor.xyz),normal.w+1.0);
+        out.pigment=meadow_pool[offset+11u];
+    }
     out.opacity=1.0-smoothstep(meadow.shape.w,meadow.range.x,distance(root.xz,view.cam.xz));
     if meadow.support.z>0.5 {out.opacity=1.0;}
     out.position=view.view_proj*vec4<f32>(out.world,1.0);return out;
@@ -81,7 +146,7 @@ fn meadow_color_with_geometric(in:MeadowVertex,geometric:vec3<f32>)->vec4<f32> {
     let p=in.world;let v=meadow_safe_normal(view.cam.xyz-p);
     var n=meadow_safe_normal(in.normal);if dot(n,v)<0.0 {n=-n;}
     let geo_n=geometric*select(-1.0,1.0,dot(geometric,n)>=0.0);
-    let base=clamp(in.color.rgb,vec3<f32>(0.0),vec3<f32>(1.0));let rough=clamp(in.color.w,0.04,1.0);
+    let base=meadow_fragment_albedo(in.color,in.blade_color,in.pigment,meadow.edits.rgb);let rough=clamp(in.color.w,0.04,1.0);
     let l=light.sun_dir.xyz;var shadow=1.0;
     if light.sun_dir.w>0.0 {
         shadow=mix(1.0,shadow_at_surface(p,n*sign(dot(n,l)+1e-4),geo_n,0.0),light.sun_color.w);

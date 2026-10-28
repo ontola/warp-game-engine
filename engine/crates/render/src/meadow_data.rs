@@ -22,11 +22,14 @@ pub const ROOT_CELL: f32 = 0.45;
 pub struct GpuMeadowVertex {
     /// Assembly-rest XYZ; W is the zero-based branch index, exactly 0..3.
     pub position: [f32; 4],
-    /// Actual inverse-transpose transformed source normal; W reserved zero.
+    /// Unit shading normal; optionally rounded independently of the physical
+    /// ribbon. Derive geometric area/normal from positions. W is normalized
+    /// blade height for windswept sources, zero for legacy recipes.
     pub normal: [f32; 4],
     /// Linear material albedo RGB, roughness W. Season is already applied.
     pub color: [f32; 4],
-    /// Unscaled basal anchor in the world-cell patch; W reserved. Wind and
+    /// Unscaled basal anchor in the world-cell patch; W is unbent blade height
+    /// for the windswept profile, zero for legacy recipes. Wind and
     /// growth act around this blade root, not a shared pivot that lifts roots.
     pub anchor: [f32; 4],
 }
@@ -51,6 +54,12 @@ pub struct MeadowGeometry {
 }
 
 impl MeadowGeometry {
+    /// Reference-derived curved blades, strong tip pigment and explicit
+    /// unbent-height metadata for height-dependent wind. Existing cooks retain
+    /// their geometry and shading bytes; this is a separate source recipe.
+    pub fn cook_windswept(seed: u64, dry_season: f32, budget: MeadowBladeBudget) -> Result<Self, String> {
+        crate::meadow_windswept::cook(seed, dry_season, budget)
+    }
     /// Cook only three reusable assets. Growth stays at one here and is
     /// applied once at the world root. A coarser requested level repeats the
     /// last accepted source level when that shape cannot simplify further.
@@ -62,6 +71,22 @@ impl MeadowGeometry {
     /// later aggregate/substrate cook consume this same altered geometry.
     /// The default cook remains the complete360-blade recipe.
     pub fn cook_with_blade_budget(seed: u64, dry_season: f32, budget: MeadowBladeBudget) -> Result<Self, String> {
+        Self::cook_shading(seed, dry_season, budget, false)
+    }
+
+    /// Smooth the source centreline and round shading across each physical
+    /// ribbon by twenty degrees at its edges. Positions, accepted LOD cuts,
+    /// blade counts, anchors, materials and conservative bounds are unchanged.
+    /// Every cut uses the same finest-source frame at retained vertices; a
+    /// coarser face must not restore flat shading. Recook dependent aggregates
+    /// from this result so their normal moments follow the selected source.
+    pub fn cook_with_blade_budget_and_rounded_normals(
+        seed: u64, dry_season: f32, budget: MeadowBladeBudget,
+    ) -> Result<Self, String> {
+        Self::cook_shading(seed, dry_season, budget, true)
+    }
+
+    fn cook_shading(seed: u64, dry_season: f32, budget: MeadowBladeBudget, rounded: bool) -> Result<Self, String> {
         let mut result = Self {
             vertices: Vec::new(),
             lod_ranges: [[[0; 2]; LODS]; VARIANTS],
@@ -103,6 +128,10 @@ impl MeadowGeometry {
                     })
                 })
                 .collect::<Result<_, _>>()?;
+            let shading_frames = if rounded {
+                Some(source.parts.iter().map(|part| RibbonShading::new(&part.vertices))
+                    .collect::<Result<Vec<_>, _>>()?)
+            } else { None };
             // Source/cut correspondences are cached once per shared primitive.
             // Only their few directional deviations are transformed per blade;
             // no per-placement surface search or repeated geometry cooking.
@@ -165,7 +194,9 @@ impl MeadowGeometry {
                     };
                     for vertex in level_vertices {
                         let p = transform.transform_point3(Vec3::from(vertex.pos));
-                        let n = (normal_matrix * Vec3::from(vertex.normal)).normalize();
+                        let n = if let Some(frames) = &shading_frames {
+                            frames[placement.part as usize].normal(vertex.pos, linear, normal_matrix)?
+                        } else { (normal_matrix * Vec3::from(vertex.normal)).normalize() };
                         result.max_tuft_radius = result.max_tuft_radius.max(p.x.hypot(p.z));
                         result.max_tuft_height = result.max_tuft_height.max(p.y.abs());
                         result.max_anchor_radius = result.max_anchor_radius.max(anchor.length());
@@ -222,6 +253,8 @@ impl MeadowGeometry {
                 || !(0.99..=1.01).contains(&n.length_squared())
                 || !(0.0..BRANCHES as f32).contains(&v.position[3])
                 || v.position[3].fract() != 0.0
+                || v.anchor[3] < 0.0
+                || (v.anchor[3] > 0.0 && !(0.0..=1.0).contains(&v.normal[3]))
                 || v.color.iter().any(|v| !(0.0..=1.0).contains(v))
             {
                 return Err("invalid meadow vertex, normal, branch or material".into());
@@ -257,12 +290,81 @@ impl MeadowGeometry {
                 }
             }
             for pivot in &self.branch_pivots[variant] {
-                if pivot.iter().any(|v| !v.is_finite()) || !(0.0..=0.7854).contains(&pivot[3]) {
+                if pivot.iter().any(|v| !v.is_finite()) || !(0.0..=1.25).contains(&pivot[3]) {
                     return Err("invalid meadow branch pivot".into());
                 }
             }
         }
         Ok(())
+    }
+}
+
+/// A shading-only frame sampled from the finest ribbon, before any LOD cut.
+/// The quadratic centreline derivative is exact for the authored meadow
+/// curve. Local three-station fits also give a deterministic choice
+/// for later curves; they do not move or reinterpret their physical surface.
+struct RibbonShading {
+    vertices: Vec<RibbonShadingVertex>,
+}
+struct RibbonShadingVertex {
+    position: [f32; 3],
+    normal: Vec3,
+    across: Vec3,
+    side: f32,
+}
+impl RibbonShading {
+    fn new(vertices: &[crate::cluster::Vertex]) -> Result<Self, String> {
+        let mut points: Vec<_> = vertices.iter().map(|v| Vec3::from(v.pos)).collect();
+        points.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)).then(a.z.total_cmp(&b.z)));
+        points.dedup();
+        let mut heights: Vec<_> = points.iter().map(|p| p.y).collect();
+        heights.dedup();
+        if heights.len() != 4 || points.len() != 7 {
+            return Err("rounded meadow shading requires three paired stations and a tip".into());
+        }
+        let rows: Vec<Vec<_>> = heights.iter().map(|&h| points.iter().copied().filter(|p| p.y == h).collect()).collect();
+        if rows[..3].iter().any(|r| r.len() != 2) || rows[3].len() != 1 {
+            return Err("rounded meadow shading has invalid ribbon stations".into());
+        }
+        let centres: Vec<_> = rows.iter().map(|row| row.iter().copied().sum::<Vec3>() / row.len() as f32).collect();
+        let orientation = Vec3::from(vertices[0].normal);
+        let mut result = Self { vertices: Vec::with_capacity(7) };
+        for (i, row) in rows.iter().enumerate() {
+            let first = i.saturating_sub(1).min(heights.len() - 3);
+            let mut tangent = Vec3::ZERO;
+            for j in 0..3 {
+                let a = first + j;
+                let b = first + (j + 1) % 3;
+                let c = first + (j + 2) % 3;
+                let derivative = (2.0 * heights[i] - heights[b] - heights[c])
+                    / ((heights[a] - heights[b]) * (heights[a] - heights[c]));
+                tangent += centres[a] * derivative;
+            }
+            let pair = &rows[i.min(2)];
+            let across = (pair[0] - pair[1]).normalize();
+            let mut normal = tangent.cross(across).normalize();
+            if normal.dot(orientation) < 0.0 { normal = -normal; }
+            if !normal.is_finite() || !across.is_finite() {
+                return Err("rounded meadow shading has a degenerate source frame".into());
+            }
+            for &p in row {
+                let side = if row.len() == 1 { 0.0 }
+                    else { ((p - centres[i]).dot(across) * 2.0 / pair[0].distance(pair[1])).clamp(-1.0, 1.0) };
+                result.vertices.push(RibbonShadingVertex { position: p.to_array(), normal, across, side });
+            }
+        }
+        Ok(result)
+    }
+
+    fn normal(&self, position: [f32; 3], linear: Mat3, normal_matrix: Mat3) -> Result<Vec3, String> {
+        let frame = self.vertices.iter().find(|frame| frame.position == position)
+            .ok_or_else(|| "rounded meadow cut contains a vertex outside its source stations".to_string())?;
+        let normal = (normal_matrix * frame.normal).normalize();
+        let across = (linear * frame.across).normalize();
+        // Round in the actual blade frame AFTER anisotropic size/placement.
+        // Otherwise the 120-blade recipe's increased width changes the angle.
+        let angle = frame.side * 20.0f32.to_radians();
+        Ok((normal * angle.cos() + across * angle.sin()).normalize())
     }
 }
 
@@ -321,6 +423,109 @@ impl MeadowField {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rounded_meadow_normals_preserve_geometry_and_match_shared_lod_positions() {
+        for budget in [MeadowBladeBudget::Blades120, MeadowBladeBudget::Blades180, MeadowBladeBudget::Blades360] {
+            let flat = MeadowGeometry::cook_with_blade_budget(29, 0.35, budget).unwrap();
+            let rounded = MeadowGeometry::cook_with_blade_budget_and_rounded_normals(29, 0.35, budget).unwrap();
+            assert_eq!(flat.vertices.len(), rounded.vertices.len());
+            assert_eq!(flat.lod_ranges, rounded.lod_ranges);
+            assert_eq!(flat.lod_errors, rounded.lod_errors);
+            assert_eq!(flat.branch_pivots, rounded.branch_pivots);
+            assert_eq!([flat.max_tuft_radius, flat.max_tuft_height, flat.max_anchor_radius, flat.max_blade_radius],
+                [rounded.max_tuft_radius, rounded.max_tuft_height, rounded.max_anchor_radius, rounded.max_blade_radius]);
+            let mut changed = 0;
+            for (before, after) in flat.vertices.iter().zip(&rounded.vertices) {
+                let mut restored = *after;
+                restored.normal = before.normal;
+                assert_eq!(*before, restored, "only shading normals may change");
+                let n = Vec3::from_slice(&after.normal);
+                assert!((n.length_squared() - 1.0).abs() < 5e-6);
+                assert!(n.dot(Vec3::from_slice(&before.normal)) > 0.90,
+                    "rounded normals remain in the actual source/cut hemisphere");
+                changed += usize::from(before.normal != after.normal);
+            }
+            assert!(changed > rounded.vertices.len() * 9 / 10);
+            for variant in 0..VARIANTS {
+                let mut reference = std::collections::BTreeMap::new();
+                for lod in 0..LODS {
+                    let [first, count] = rounded.lod_ranges[variant][lod];
+                    for v in &rounded.vertices[first as usize..][..count as usize] {
+                        let key = (v.position.map(f32::to_bits), v.anchor.map(f32::to_bits));
+                        if lod == 0 {
+                            if let Some(old) = reference.insert(key, v.normal) {
+                                assert_eq!(old, v.normal, "shared triangle corners must shade smoothly");
+                            }
+                        } else {
+                            assert_eq!(reference.get(&key), Some(&v.normal),
+                                "a retained station must not change shading when the cut changes");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rounded_meadow_edges_remain_symmetric_after_anisotropic_placement() {
+        let source = foliage_assembly::generate(Parameters::meadow_patch(11), Limits::meadow_patch()).unwrap();
+        for part in &source.parts {
+            let frames = RibbonShading::new(&part.vertices).unwrap();
+            for width in [0.007, 0.021] {
+                let linear = Mat3::from_quat(glam::Quat::from_rotation_y(1.7))
+                    * Mat3::from_diagonal(Vec3::new(0.007, 0.32, width));
+                let normal_matrix = linear.inverse().transpose();
+                for y in [0.0, 0.45, 0.78] {
+                    let row: Vec<_> = frames.vertices.iter().filter(|f| f.position[1] == y).collect();
+                    assert_eq!(row.len(), 2);
+                    let a = frames.normal(row[0].position, linear, normal_matrix).unwrap();
+                    let b = frames.normal(row[1].position, linear, normal_matrix).unwrap();
+                    let centre = (normal_matrix * row[0].normal).normalize();
+                    assert!((a + b).normalize().dot(centre) > 0.99999);
+                    assert!((a.dot(b) - 40.0f32.to_radians().cos()).abs() < 1e-5,
+                        "the physical edge angle must survive width and height scaling");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rounded_meadow_atlas_and_voxel_samples_keep_coverage_and_geometric_normals() {
+        use crate::meadow_aggregate::AggregateAtlas;
+        use crate::meadow_voxel_samples::{MeadowVoxelSamples, SampleConfig};
+        let flat = MeadowGeometry::cook_with_blade_budget(7, 0.0, MeadowBladeBudget::Blades120).unwrap();
+        let rounded = MeadowGeometry::cook_with_blade_budget_and_rounded_normals(7, 0.0, MeadowBladeBudget::Blades120).unwrap();
+        let old = AggregateAtlas::cook(&flat).unwrap();
+        let new = AggregateAtlas::cook(&rounded).unwrap();
+        assert_eq!(old.top_coverage, new.top_coverage);
+        assert_eq!(old.data.len(), new.data.len());
+        let mut normal_changes = 0;
+        for (a, b) in old.data.chunks_exact(old.view_stride as usize).zip(new.data.chunks_exact(new.view_stride as usize)) {
+            assert_eq!(&a[..3], &b[..3], "atlas projection remains geometric");
+            for (a, b) in a[3..].chunks_exact(4).zip(b[3..].chunks_exact(4)) {
+                for attribute in [0, 2, 3] { assert_eq!(a[attribute], b[attribute], "surface, coverage, colour and anchor stay exact"); }
+                assert_eq!(a[1][3], b[1][3], "roughness is unchanged");
+                normal_changes += usize::from(a[1] != b[1]);
+            }
+        }
+        assert!(normal_changes > 1000, "the aggregate must sample the rounded source normals");
+        let old = MeadowVoxelSamples::cook(&flat, SampleConfig::default()).unwrap();
+        let new = MeadowVoxelSamples::cook(&rounded, SampleConfig::default()).unwrap();
+        assert_eq!(old.ranges, new.ranges);
+        assert_eq!(old.stats.source_area, new.stats.source_area);
+        assert_eq!(old.samples.len(), new.samples.len());
+        let mut shading_changes = 0;
+        for (a, b) in old.samples.iter().zip(&new.samples) {
+            assert_eq!(a.position_area, b.position_area);
+            assert_eq!(a.anchor_branch, b.anchor_branch);
+            assert_eq!(a.geometric_normal_roughness, b.geometric_normal_roughness,
+                "optical area and geometry normals must not use rounded shading");
+            assert_eq!(a.albedo, b.albedo);
+            shading_changes += usize::from(a.shading_normal != b.shading_normal);
+        }
+        assert!(shading_changes > new.samples.len() * 9 / 10);
+    }
 
     #[test]
     fn meadow_blade_budget_cooks_actual_equal_lods_and_keeps_default_bytes() {

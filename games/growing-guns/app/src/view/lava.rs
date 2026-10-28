@@ -12,6 +12,7 @@ use glam::{Vec2, Vec3};
 use growing_guns::arena::LAVA_KILL_Y;
 use growing_guns::shape::Kind;
 use growing_guns::World;
+use kern::collide::BoxGridScratch;
 use render::headlights::LocalLight;
 
 /// Godot `LavaFloorOpenness.CELL` and `RAY_TOP_Y`.
@@ -78,6 +79,9 @@ pub struct LavaLight {
     /// How much of the night glows to show, 0 (day, Godot) .. 1 (night).
     pub night: f32,
     lights: Vec<LocalLight>,
+    query: BoxGridScratch,
+    dirty: Vec<bool>,
+    dirty_cells: Vec<usize>,
 }
 
 impl LavaLight {
@@ -88,24 +92,39 @@ impl LavaLight {
         self.side = (half / CELL).floor() as i32 - self.min + 1;
         self.block = vec![1.0; (self.side * self.side) as usize];
         self.exposed = vec![0.0; self.block.len()];
+        self.dirty.resize(self.block.len(), false);
+        self.dirty.fill(false);
+        self.dirty_cells.clear();
         for i in 0..self.block.len() { self.block[i] = self.measure(world, i); self.exposed[i] = self.exposure(world, i); }
         self.update_ratio();
     }
 
     /// Chunks broke: measure the columns under them again.
     pub fn broken(&mut self, world: &World, removed: &[u32]) {
+        for &k in &self.dirty_cells { self.dirty[k] = false; }
+        self.dirty_cells.clear();
         if removed.is_empty() || self.side == 0 { return; }
         for &i in removed {
             let c = &world.arena.chunks[i as usize];
+            // Both samples ignore geometry outside this vertical interval.
+            if c.center.y + c.half.y < LAVA_KILL_Y + 0.18 || c.center.y - c.half.y > RAY_TOP_Y { continue; }
             let r = c.shape().reach();
             let (lo, hi) = (self.cell_of(Vec2::new(c.center.x - r, c.center.z - r)), self.cell_of(Vec2::new(c.center.x + r, c.center.z + r)));
             for z in lo.1.max(0)..=hi.1.min(self.side - 1) {
                 for x in lo.0.max(0)..=hi.0.min(self.side - 1) {
                     let k = (z * self.side + x) as usize;
-                    self.block[k] = self.measure(world, k);
-                    self.exposed[k] = self.exposure(world, k);
+                    if !self.dirty[k] {
+                        self.dirty[k] = true;
+                        self.dirty_cells.push(k);
+                    }
                 }
             }
+        }
+        if self.dirty_cells.is_empty() { return; }
+        for i in 0..self.dirty_cells.len() {
+            let k = self.dirty_cells[i];
+            self.block[k] = self.measure(world, k);
+            self.exposed[k] = self.exposure(world, k);
         }
         self.update_ratio();
     }
@@ -189,12 +208,12 @@ impl LavaLight {
 
     /// How much of a cell shows lava: of 2 x 2 points, those with nothing
     /// over them between the lava and RAY_TOP_Y.
-    fn exposure(&self, world: &World, k: usize) -> f32 {
+    fn exposure(&mut self, world: &World, k: usize) -> f32 {
         let (x, z) = ((k as i32 % self.side) + self.min, (k as i32 / self.side) + self.min);
         let mut open = 0;
         for (u, v) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
             let p = Vec2::new((x as f32 + u) * CELL, (z as f32 + v) * CELL);
-            if !world.arena.grid.query(p, p).into_iter().any(|j| world.arena.chunk(j).is_some_and(|c| covers(c, p))) { open += 1; }
+            if !world.arena.grid.query_with_scratch(p, p, &mut self.query).iter().any(|&j| world.arena.chunk(j).is_some_and(|c| covers(c, p))) { open += 1; }
         }
         open as f32 / 4.0
     }
@@ -206,12 +225,12 @@ impl LavaLight {
     /// chunk first: the fraction of the column below its bottom (a ray that
     /// starts inside a floor chunk hits at once, so an intact floor reads
     /// nearly open, as in Godot); anything else: sealed (1).
-    fn measure(&self, world: &World, k: usize) -> f32 {
+    fn measure(&mut self, world: &World, k: usize) -> f32 {
         let (x, z) = ((k as i32 % self.side) + self.min, (k as i32 / self.side) + self.min);
         let p = Vec2::new((x as f32 + 0.5) * CELL, (z as f32 + 0.5) * CELL);
         let from = LAVA_KILL_Y + 0.18;
         let mut first: Option<(f32, Kind)> = None;
-        for j in world.arena.grid.query(p, p) {
+        for &j in world.arena.grid.query_with_scratch(p, p, &mut self.query) {
             let Some(c) = world.arena.chunk(j) else { continue };
             let (bottom, top) = (c.center.y - c.half.y, c.center.y + c.half.y);
             if top < from || bottom > RAY_TOP_Y { continue; }
@@ -249,6 +268,181 @@ fn glow(position: Vec3, energy: f32, range: f32) -> LocalLight {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use growing_guns::{Arena, Breakage, Carve, Chunk};
+    use growing_guns::rng::Rng;
+    use growing_guns::shape::BoxGrid;
+
+    // Independent copies of the pre-batching sampling and update algorithms.
+    // In particular these allocate queries and revisit overlapping cells.
+    fn reference_measure(l: &LavaLight, world: &World, k: usize) -> f32 {
+        let (x, z) = ((k as i32 % l.side) + l.min, (k as i32 / l.side) + l.min);
+        let p = Vec2::new((x as f32 + 0.5) * CELL, (z as f32 + 0.5) * CELL);
+        let from = LAVA_KILL_Y + 0.18;
+        let mut first: Option<(f32, Kind)> = None;
+        for j in world.arena.grid.query(p, p) {
+            let Some(c) = world.arena.chunk(j) else { continue };
+            let (bottom, top) = (c.center.y - c.half.y, c.center.y + c.half.y);
+            if top < from || bottom > RAY_TOP_Y { continue; }
+            let (s, co) = c.yaw.sin_cos();
+            let d = p - Vec2::new(c.center.x, c.center.z);
+            let local = Vec2::new(co * d.x - s * d.y, s * d.x + co * d.y);
+            if local.x.abs() > c.half.x || local.y.abs() > c.half.z { continue; }
+            let hit = bottom.max(from);
+            if first.is_none_or(|(y, _)| hit < y) { first = Some((hit, c.kind)); }
+        }
+        match first {
+            None => 0.0,
+            Some((y, Kind::Floor)) => ((y - LAVA_KILL_Y) / (RAY_TOP_Y - LAVA_KILL_Y).max(0.05)).clamp(0.0, 1.0),
+            Some(_) => 1.0,
+        }
+    }
+
+    fn reference_exposure(l: &LavaLight, world: &World, k: usize) -> f32 {
+        let (x, z) = ((k as i32 % l.side) + l.min, (k as i32 / l.side) + l.min);
+        let mut open = 0;
+        for (u, v) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+            let p = Vec2::new((x as f32 + u) * CELL, (z as f32 + v) * CELL);
+            if !world.arena.grid.query(p, p).into_iter().any(|j| world.arena.chunk(j).is_some_and(|c| covers(c, p))) { open += 1; }
+        }
+        open as f32 / 4.0
+    }
+
+    fn reference_set(l: &mut LavaLight, world: &World) {
+        let half = world.arena.size * 0.5;
+        l.min = (-half / CELL).floor() as i32;
+        l.side = (half / CELL).floor() as i32 - l.min + 1;
+        l.block = vec![1.0; (l.side * l.side) as usize];
+        l.exposed = vec![0.0; l.block.len()];
+        for k in 0..l.block.len() { l.block[k] = reference_measure(l, world, k); l.exposed[k] = reference_exposure(l, world, k); }
+        l.update_ratio();
+    }
+
+    fn reference_broken(l: &mut LavaLight, world: &World, removed: &[u32]) -> usize {
+        if removed.is_empty() || l.side == 0 { return 0; }
+        let mut measured = 0;
+        for &i in removed {
+            let c = &world.arena.chunks[i as usize];
+            let r = c.shape().reach();
+            let (lo, hi) = (l.cell_of(Vec2::new(c.center.x - r, c.center.z - r)), l.cell_of(Vec2::new(c.center.x + r, c.center.z + r)));
+            for z in lo.1.max(0)..=hi.1.min(l.side - 1) {
+                for x in lo.0.max(0)..=hi.0.min(l.side - 1) {
+                    let k = (z * l.side + x) as usize;
+                    l.block[k] = reference_measure(l, world, k);
+                    l.exposed[k] = reference_exposure(l, world, k);
+                    measured += 1;
+                }
+            }
+        }
+        l.update_ratio();
+        measured
+    }
+
+    fn bits(v: &[f32]) -> Vec<u32> { v.iter().map(|x| x.to_bits()).collect() }
+
+    fn light_bits(l: &LocalLight) -> Vec<u32> {
+        bits(&[
+            l.position.x, l.position.y, l.position.z, l.direction.x, l.direction.y, l.direction.z,
+            l.intensity_cd.x, l.intensity_cd.y, l.intensity_cd.z, l.range_m, l.inner_cos, l.outer_cos,
+            l.source_radius_m, l.falloff,
+        ])
+    }
+
+    fn assert_same(actual: &mut LavaLight, expected: &mut LavaLight, world: &World) {
+        assert_eq!(bits(&actual.block), bits(&expected.block), "column coverage");
+        assert_eq!(bits(&actual.exposed), bits(&expected.exposed), "exposed lava");
+        assert_eq!(actual.ratio.to_bits(), expected.ratio.to_bits(), "pool energy input");
+        let patches = |l: &LavaLight| l.patches.iter().map(|(p, area)| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), area.to_bits()]).collect::<Vec<_>>();
+        assert_eq!(patches(actual), patches(expected), "patch order and centroids");
+        for night in [0.0, 0.4, 1.0] {
+            actual.night = night;
+            expected.night = night;
+            actual.pose(world);
+            expected.pose(world);
+            assert_eq!(actual.lights.iter().map(light_bits).collect::<Vec<_>>(), expected.lights.iter().map(light_bits).collect::<Vec<_>>(), "posed lights");
+        }
+    }
+
+    #[test]
+    fn lava_batch_matches_reference_through_seeded_blasts_and_arena_resets() {
+        let mut actual = LavaLight::default();
+        let mut expected = LavaLight::default();
+        let mut removed_total = 0;
+        for seed in [1, 19, 482] {
+            let mut world = World::new(seed, &[false, false]);
+            let original = world.arena.clone();
+            let mut rng = Rng::new(seed ^ 0x5678);
+            actual.set(&world);
+            reference_set(&mut expected, &world);
+            assert_same(&mut actual, &mut expected, &world);
+            for tick in 0..18 {
+                if tick == 9 {
+                    world.arena = original.clone();
+                    actual.set(&world);
+                    reference_set(&mut expected, &world);
+                }
+                let at = world.arena.chunks[rng.below(world.arena.chunks.len() as u32) as usize].center;
+                let mut removed = world.arena.carve(&[
+                    Carve { pos: at, radius: 7.0, damage: 900.0 },
+                    Carve { pos: at + Vec3::X, radius: 5.0, damage: 900.0 },
+                ]).removed;
+                if tick % 4 == 0 { removed.extend_from_within(..); removed.reverse(); }
+                removed_total += removed.len();
+                actual.broken(&world, &removed);
+                reference_broken(&mut expected, &world, &removed);
+                assert_same(&mut actual, &mut expected, &world);
+            }
+            actual.broken(&world, &[]);
+            assert_same(&mut actual, &mut expected, &world);
+        }
+        assert!(removed_total > 100, "exercise actual destruction");
+    }
+
+    #[test]
+    fn lava_batch_skips_only_irrelevant_heights_and_deduplicates_rotated_cells() {
+        let mut world = World::new(4, &[false, false]);
+        world.arena = Arena::empty();
+        world.arena.size = 12.0;
+        for (i, (y, half_y)) in [(5.0, 0.5), (-5.0, 0.5), (RAY_TOP_Y, 0.0), (LAVA_KILL_Y + 0.18, 0.0), (-1.0, 1.5), (-1.0, 1.5)].into_iter().enumerate() {
+            world.arena.chunks.push(Chunk {
+                center: Vec3::new(0.25 * i as f32, y, 0.0), half: Vec3::new(3.0, half_y, 2.5), yaw: 0.3 * i as f32,
+                kind: if i == 4 { Kind::Floor } else { Kind::Wall }, volume: i as u32,
+                max_hp: 50.0, hp: 50.0, alive: true, seed: i as u32,
+            });
+        }
+        // An outside-arena chunk exercises empty, clipped cell rectangles.
+        let mut outside = world.arena.chunks[4];
+        outside.center.x = 40.0;
+        world.arena.chunks.push(outside);
+        world.arena.grid = BoxGrid::new(world.arena.chunks.iter().map(Chunk::shape).collect(), 4.0);
+        let mut actual = LavaLight::default();
+        let mut expected = LavaLight::default();
+        actual.set(&world);
+        reference_set(&mut expected, &world);
+        assert_same(&mut actual, &mut expected, &world);
+        for removed in [&[0, 1][..], &[2][..], &[3][..], &[4, 4, 5, 4, 5, 6][..]] {
+            world.arena.apply_breakage(&Breakage { removed: removed.to_vec(), ..Default::default() });
+            actual.broken(&world, removed);
+            let old_measured = reference_broken(&mut expected, &world, removed);
+            assert_same(&mut actual, &mut expected, &world);
+            if removed[0] == 0 { assert!(actual.dirty_cells.is_empty(), "high and low chunks cannot change lava samples"); }
+            else { assert!(!actual.dirty_cells.is_empty(), "interval boundaries remain relevant"); }
+            if removed.len() > 2 { assert!(actual.dirty_cells.len() * 2 < old_measured, "overlapping cells are measured once"); }
+        }
+        let capacities = (actual.dirty.capacity(), actual.dirty_cells.capacity());
+        for _ in 0..8 {
+            actual.broken(&world, &[4, 5, 4, 5]);
+            assert_same(&mut actual, &mut expected, &world);
+            assert_eq!((actual.dirty.capacity(), actual.dirty_cells.capacity()), capacities);
+        }
+        world.arena = Arena::empty();
+        world.arena.size = 2.0;
+        actual.set(&world);
+        reference_set(&mut expected, &world);
+        actual.broken(&world, &[]);
+        assert_same(&mut actual, &mut expected, &world);
+    }
+
     /// Texels of Godot's own texture, exported from Godot 4.5.2 with
     /// `get_lava_noise_texture().get_image()` (all 65536 matched exactly).
     #[test]

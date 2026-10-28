@@ -120,6 +120,11 @@ Scatter weights (`view::Scatter`):
 | pickup ground lights (`pickup_scatter`) | 4 | 1 per pickup |
 | pickup drop beams: scatter-only searchlights up from the landing spot (0.6-2.2 degrees) | 4 | 1 per pickup, after the stadium beams |
 
+The drop beam itself is drawn as an additive light-shaft sprite
+(`Sprite::shaft`: turned about the vertical towards each camera, a soft
+core-and-glow falloff in its texture), so it reads as light in air by day
+too; the searchlight adds the scattered haze at night.
+
 The beacons have weight 0 because otherwise the 32-light budget runs out.
 
 Tune live with the `command` tool, for example

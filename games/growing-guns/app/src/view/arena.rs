@@ -4,11 +4,12 @@
 //! the debris occupancy grid kept in step with what still stands.
 use super::effects::{EffectsView, OCC_VOXEL};
 use super::{cube, glow, material, omni, srgb_to_linear};
-use glam::{Affine3A, Quat, Vec3};
+use glam::{Affine3A, Quat, Vec2, Vec3};
 use growing_guns::shape::Kind;
 use growing_guns::World;
-use physics::{Physics, Static};
-use render::debris::BurstSpec;
+use kern::collide::{BoxGridScratch, YawBox};
+use physics::{Physics, Static, StaticSet};
+use render::debris::{BurstSpec, Occupancy};
 use render::headlights::LocalLight;
 use render::particles::Burst;
 use render::primitives;
@@ -88,10 +89,13 @@ pub struct ArenaView {
     /// Slot and collider of every arena chunk (None once broken).
     chunk_slots: Vec<Option<SlotId>>,
     statics: Vec<Option<Static>>,
+    static_set: StaticSet,
+    static_shapes: Vec<Option<YawBox>>,
     /// Wear level shown per chunk (0 intact, 1 cracked, 2 crumbling).
     shown_wear: Vec<u8>,
     marks: Marks,
     lights: Vec<LocalLight>,
+    occupancy_repair: OccupancyRepair,
     /// The light the lava casts.
     pub lava: super::lava::LavaLight,
 }
@@ -137,7 +141,7 @@ impl ArenaView {
         let scorch_m = material(scene, [0.06, 0.055, 0.05], 0.95);
         let blood_m = material(scene, [0.36, 0.02, 0.015], 0.35);
         let marks = Marks { slots: Slots::reserve(scene, MARKS), ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
-        ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, lights: Vec::new(), lava: Default::default() }
+        ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), static_set: Default::default(), static_shapes: Vec::new(), shown_wear: Vec::new(), marks, lights: Vec::new(), occupancy_repair: Default::default(), lava: Default::default() }
     }
 
     /// Fill the slots, colliders and debris grid from the world's arena (a
@@ -148,11 +152,14 @@ impl ArenaView {
         self.marks.ring.clear();
         let a = &world.arena;
         self.island = a.variant == growing_guns::arena::Variant::Island;
-        // Chunks first (their handles are kept), then the stands.
-        let mut alive: Vec<_> = a.chunks.iter().filter(|c| c.alive).map(|c| c.shape()).collect();
-        alive.extend(a.stadium.collision());
-        let mut handles = phys.set_statics(&alive).into_iter();
-        self.statics = a.chunks.iter().map(|c| if c.alive { handles.next() } else { None }).collect();
+        // Keep chunk indices (including holes) stable, then the stands. An
+        // unchanged collider survives the reset; destroyed handles are restored.
+        self.static_shapes.clear();
+        self.static_shapes.extend(a.chunks.iter().map(|c| c.alive.then(|| c.shape())));
+        self.static_shapes.extend(a.stadium.collision().into_iter().map(Some));
+        let handles = self.static_set.sync(phys, &self.static_shapes);
+        self.statics.clear();
+        self.statics.extend_from_slice(&handles[..a.chunks.len()]);
         self.shown_wear = a.chunks.iter().map(|c| wear_level(c.wear())).collect();
         fx.debris.clear();
         let occ = fx.debris.occupancy_mut();
@@ -232,17 +239,8 @@ impl ArenaView {
             if let Some(slot) = self.chunk_slots[i as usize].take() { self.slots.remove(scene, slot); }
             if let Some(h) = self.statics[i as usize].take() { phys.remove_static(h); }
             self.marks.drop_on(scene, i);
-            // Carve the chunk out of the debris grid, then restore voxels its
-            // neighbours still fill.
-            let c = world.arena.chunks[i as usize];
-            let occ = fx.debris.occupancy_mut();
-            occ.fill_box(c.center, c.half, c.yaw, false);
-            let r = c.shape().reach() + OCC_VOXEL;
-            for j in world.arena.grid.query(glam::Vec2::new(c.center.x - r, c.center.z - r), glam::Vec2::new(c.center.x + r, c.center.z + r)) {
-                let Some(n) = world.arena.chunk(j) else { continue };
-                if (n.center.y - c.center.y).abs() <= n.half.y + c.half.y + OCC_VOXEL { occ.fill_box(n.center, n.half, n.yaw, true); }
-            }
         }
+        self.occupancy_repair.apply(fx.debris.occupancy_mut(), &world.arena, &b.removed);
         // Rubble from each blast (Godot `request_burst`): 70 shards per
         // broken chunk, 128 to 900, thrown from the blast centre.
         for burst in &b.bursts {
@@ -250,6 +248,41 @@ impl ArenaView {
             let count = (burst.count * 70).clamp(128, 900);
             fx.debris.burst(scene, &BurstSpec::rubble(burst.center, burst.radius.max(1.0), count, &st.shards));
             fx.particles.burst(scene, burst.center, Vec3::Y, &Burst { mesh: fx.meshes.dust, count: 12, spread: 1.5, speed: [0.5, 3.0], size: [0.9, 0.3], life: [0.8, 1.6], ..Burst::dust() });
+        }
+    }
+}
+
+/// Restore each surviving neighbour once after carving all removed chunks.
+/// Filling solid voxels commutes; the final occupancy is the same as restoring
+/// neighbours after every carve, including boxes that overlap several holes.
+#[derive(Default)]
+struct OccupancyRepair {
+    query: BoxGridScratch,
+    seen: Vec<bool>,
+    neighbours: Vec<usize>,
+}
+
+impl OccupancyRepair {
+    fn apply(&mut self, occ: &mut Occupancy, arena: &growing_guns::Arena, removed: &[u32]) {
+        for &i in &self.neighbours { self.seen[i] = false; }
+        self.neighbours.clear();
+        if removed.is_empty() { return; }
+        if self.seen.len() < arena.chunks.len() { self.seen.resize(arena.chunks.len(), false); }
+        for &i in removed {
+            let c = &arena.chunks[i as usize];
+            occ.fill_box(c.center, c.half, c.yaw, false);
+            let r = c.shape().reach() + OCC_VOXEL;
+            for &j in arena.grid.query_with_scratch(Vec2::new(c.center.x - r, c.center.z - r), Vec2::new(c.center.x + r, c.center.z + r), &mut self.query) {
+                let Some(n) = arena.chunk(j) else { continue };
+                if !self.seen[j] && (n.center.y - c.center.y).abs() <= n.half.y + c.half.y + OCC_VOXEL {
+                    self.seen[j] = true;
+                    self.neighbours.push(j);
+                }
+            }
+        }
+        for &i in &self.neighbours {
+            let n = &arena.chunks[i];
+            occ.fill_box(n.center, n.half, n.yaw, true);
         }
     }
 }
@@ -301,4 +334,124 @@ fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
         scene.add_mesh(&primitives::hewn_block(m, 2, 0.15, 0.22, (k * 100.0) as u32).mesh())
     });
     Stone { intact, cracked, crumbling, shards }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use growing_guns::{Arena, Breakage, Chunk};
+    use growing_guns::destruct::Carve;
+    use growing_guns::rng::Rng;
+    use growing_guns::shape::{BoxGrid, YawBox};
+
+    fn fixture(seed: u64) -> Arena {
+        let mut a = Arena::empty();
+        let mut rng = Rng::new(seed);
+        for i in 0..96 {
+            a.chunks.push(Chunk {
+                center: Vec3::new(rng.range(-14.0, 14.0), rng.range(-4.0, 9.0), rng.range(-14.0, 14.0)),
+                half: Vec3::new(rng.range(0.2, 2.7), rng.range(0.2, 1.5), rng.range(0.2, 2.7)),
+                yaw: rng.range(-3.0, 3.0), kind: Kind::Wall, volume: i / 4,
+                max_hp: 50.0, hp: 50.0, alive: true, seed: i,
+            });
+        }
+        // Several removed boxes share the same surviving, rotated neighbour.
+        for (i, c) in a.chunks.iter_mut().take(8).enumerate() {
+            c.center = Vec3::new(i as f32 * 0.2, 0.0, 0.0);
+            c.half = Vec3::new(2.0, 0.75, 1.5);
+        }
+        let mut shapes: Vec<_> = a.chunks.iter().map(Chunk::shape).collect();
+        // Grid entries after the chunks are stadium colliders, not debris solids.
+        shapes.push(YawBox::new(Vec3::ZERO, Vec3::splat(5.0), 0.5));
+        a.grid = BoxGrid::new(shapes, 4.0);
+        a
+    }
+
+    fn occupancy(a: &Arena) -> Occupancy {
+        let mut o = Occupancy::new(Vec3::new(-12.0, -5.0, -12.0), Vec3::new(12.0, 12.0, 12.0), OCC_VOXEL);
+        for c in a.chunks.iter().filter(|c| c.alive) { o.fill_box(c.center, c.half, c.yaw, true); }
+        o
+    }
+
+    /// The pre-batching algorithm: clear and restore once per removed chunk.
+    fn sequential(o: &mut Occupancy, a: &Arena, removed: &[u32]) -> usize {
+        let mut fills = 0;
+        for &i in removed {
+            let c = &a.chunks[i as usize];
+            o.fill_box(c.center, c.half, c.yaw, false);
+            let r = c.shape().reach() + OCC_VOXEL;
+            for j in a.grid.query(Vec2::new(c.center.x - r, c.center.z - r), Vec2::new(c.center.x + r, c.center.z + r)) {
+                let Some(n) = a.chunk(j) else { continue };
+                if (n.center.y - c.center.y).abs() <= n.half.y + c.half.y + OCC_VOXEL {
+                    o.fill_box(n.center, n.half, n.yaw, true);
+                    fills += 1;
+                }
+            }
+        }
+        fills
+    }
+
+    #[test]
+    fn occupancy_batch_matches_sequential_after_overlapping_rotated_carves_and_resets() {
+        let mut repair = OccupancyRepair::default();
+        let mut total_removed = 0;
+        for seed in [1, 19, 482] {
+            let original = fixture(seed);
+            let mut a = original.clone();
+            let mut expected = occupancy(&a);
+            let mut actual = expected.clone();
+            let mut rng = Rng::new(seed ^ 0x1234);
+            for tick in 0..20 {
+                if tick == 10 {
+                    a = original.clone();
+                    expected = occupancy(&a);
+                    actual = expected.clone();
+                }
+                let at = a.chunks[rng.below(a.chunks.len() as u32) as usize].center;
+                let mut removed = a.carve(&[
+                    Carve { pos: at, radius: 5.5, damage: 900.0 },
+                    Carve { pos: at + Vec3::new(1.0, 0.3, -0.5), radius: 4.0, damage: 900.0 },
+                ]).removed;
+                if tick % 3 == 0 { removed.extend_from_within(..); removed.reverse(); }
+                total_removed += removed.len();
+                sequential(&mut expected, &a, &removed);
+                repair.apply(&mut actual, &a, &removed);
+                assert_eq!(actual.bits, expected.bits, "seed {seed}, tick {tick}");
+            }
+            repair.apply(&mut actual, &a, &[]);
+            assert_eq!(actual.bits, expected.bits, "empty batch");
+        }
+        assert!(total_removed > 100, "exercise destruction, not just empty updates");
+    }
+
+    #[test]
+    fn occupancy_batch_restores_shared_neighbours_once_and_reuses_capacity() {
+        let mut a = fixture(4);
+        let mut expected = occupancy(&a);
+        let mut actual = expected.clone();
+        let removed = [0, 1, 2, 0, 1];
+        a.apply_breakage(&Breakage { removed: removed.to_vec(), ..Default::default() });
+        let old_fills = sequential(&mut expected, &a, &removed);
+        let mut repair = OccupancyRepair::default();
+        repair.apply(&mut actual, &a, &removed);
+        assert_eq!(actual.bits, expected.bits);
+        assert!(repair.neighbours.len() * 2 < old_fills, "shared neighbours should be restored once");
+        let capacities = (repair.seen.capacity(), repair.neighbours.capacity());
+        for _ in 0..8 {
+            repair.apply(&mut actual, &a, &removed);
+            assert_eq!(actual.bits, expected.bits);
+            assert_eq!((repair.seen.capacity(), repair.neighbours.capacity()), capacities);
+        }
+        // Reuse the same scratch after switching to an empty/smaller arena.
+        let empty = Arena::empty();
+        repair.apply(&mut actual, &empty, &[]);
+        a.chunks.truncate(4);
+        a.grid = BoxGrid::new(a.chunks.iter().map(Chunk::shape).collect(), 4.0);
+        for i in [0, 1, 2] { a.grid.remove(i); }
+        expected = occupancy(&a);
+        actual = expected.clone();
+        sequential(&mut expected, &a, &removed);
+        repair.apply(&mut actual, &a, &removed);
+        assert_eq!(actual.bits, expected.bits, "smaller arena");
+    }
 }
