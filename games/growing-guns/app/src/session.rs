@@ -187,6 +187,11 @@ impl Session {
         (snaps, arena)
     }
 
+    /// A network error for Godot's red status panel (`_on_network_status_changed`).
+    pub fn error(&self) -> Option<String> {
+        match self { Session::Client { closed: true, .. } => Some("Lost the connection to the host.".into()), _ => None }
+    }
+
     pub fn status(&self, slots: &[usize]) -> Option<String> {
         match self {
             Session::Local => None,

@@ -160,7 +160,12 @@ impl Hud {
 
     /// One tick: advance timers and read this tick's events.
     pub fn tick(&mut self, world: &World, dt: f32) {
-        if self.bots.len() != world.players.len() || self.bots.iter().zip(&world.players).any(|(&b, p)| b != p.bot) { self.sync(world); }
+        if self.bots.len() != world.players.len() || self.bots.iter().zip(&world.players).any(|(&b, p)| b != p.bot) {
+            // A remote player took a seat or left it (Godot "%s joined" / "%s left").
+            let flips: Vec<(usize, bool)> = self.bots.iter().zip(&world.players).enumerate().filter(|(i, (b, p))| **b != p.bot && !self.locals.contains(i)).map(|(i, (_, p))| (i, p.bot)).collect();
+            self.sync(world);
+            for (i, bot) in flips { let n = self.name(i).to_string(); self.announce(if bot { format!("{n} left") } else { format!("{n} joined") }, 2.0, 0.0); }
+        }
         let humans = world.players.iter().filter(|p| !p.bot).count();
         let mut clear_banner = false;
         for (i, f) in self.fb.iter_mut().enumerate() {
@@ -468,6 +473,7 @@ impl Hud {
     }
 
     /// Shared overlay: the round banner, kill feed, coop count, match over.
+    /// `net`: a network error for Godot's red panel at the top right.
     pub fn global(&self, d: &mut HudDrawList, world: &World, net: Option<&str>) {
         let [w, h] = d.size.map(|v| v as f32);
         let u = h / DESIGN_H;
@@ -516,7 +522,15 @@ impl Hud {
             Label { size, ..lab }.draw(d, &b.text, w * 0.5, 115.0 * u + (lines - 1.0) * size * 0.6, clip);
         }
         if let Some(net) = net {
-            Label::new(BODY, 15.0 * u, BONE_DIM).outline(4.0 * u, BLACK).right().draw(d, net, w - 18.0 * u, h - 20.0 * u, clip);
+            // 422 wide from 18 in at the top right, 14 x 10 margins, wrapped 15 px text.
+            let pw = 422.0 * u;
+            let lines = cards::wrap(net, BODY, 15.0 * u, pw - 28.0 * u, 6);
+            let ph = lines.len() as f32 * 18.0 * u + 20.0 * u;
+            let pr = [w - 18.0 * u - pw, 18.0 * u, pw, ph];
+            d.rect(pr, [0.22, 0.03, 0.035, 0.94], clip);
+            frame_rect(d, pr, 2.0 * u, [1.0, 0.35, 0.28, 0.9], clip);
+            let lab = Label::new(BODY, 15.0 * u, [1.0, 0.84, 0.78, 1.0]).outline(4.0 * u, with_alpha(BLACK, 0.95));
+            for (k, line) in lines.iter().enumerate() { lab.draw(d, line, pr[0] + 14.0 * u, pr[1] + 10.0 * u + (k as f32 + 0.5) * 18.0 * u, clip); }
         }
     }
 }
