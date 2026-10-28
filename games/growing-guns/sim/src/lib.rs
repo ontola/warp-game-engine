@@ -373,7 +373,7 @@ impl Default for Rules {
 /// How a body goes when it dies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Gib {
-    /// Tumbles whole (a regular hit; lava).
+    /// Tumbles whole (a regular hit).
     #[default]
     Ragdoll,
     /// A headshot: the head bursts, the torso tumbles.
@@ -382,6 +382,10 @@ pub enum Gib {
     /// whole body bursts into chunks. `severity` 0.4..2.5, `blast` when an
     /// explosion did it.
     Burst { severity: f32, blast: bool },
+    /// Lava (Godot `_lava_death`): the body takes the lava's look and
+    /// sinks; `fall` when it fell in (a splash, a deeper, slower sink)
+    /// rather than burning to death standing in it.
+    Lava { fall: bool },
 }
 
 /// A killing blow that leaves health here or lower bursts the body.

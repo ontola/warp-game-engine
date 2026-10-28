@@ -508,6 +508,13 @@ impl Character {
         self.add_actor_with_bounds(scene, transform, self.min, self.max)
     }
 
+    /// An actor whose every surface is drawn with `material` instead of the
+    /// character's own (a body turned to lava, stone or a ghost), with the
+    /// same skeleton, clips and skinning; `None` keeps the authored ones.
+    pub fn add_actor_with_material(&self, scene: &mut Scene, transform: Affine3A, material: Option<u32>) -> Result<ActorHandle, String> {
+        self.add_actor_full(scene, transform, self.min, self.max, material)
+    }
+
     /// Add an actor with conservative object-space bounds for additional poses,
     /// such as physics-driven joints. These bounds affect only the new actor's
     /// mesh and instance; the shared character and other actors are unchanged.
@@ -521,6 +528,10 @@ impl Character {
         min: Vec3,
         max: Vec3,
     ) -> Result<ActorHandle, String> {
+        self.add_actor_full(scene, transform, min, max, None)
+    }
+
+    fn add_actor_full(&self, scene: &mut Scene, transform: Affine3A, min: Vec3, max: Vec3, material: Option<u32>) -> Result<ActorHandle, String> {
         if !min.is_finite()
             || !max.is_finite()
             || !min.cmple(max).all()
@@ -539,7 +550,7 @@ impl Character {
         }
         let initial = self.sample(&self.clips[0].name, 0.0, self.clips[0].looping)?;
         let mut material_ids = Vec::new();
-        for surface in &self.surfaces {
+        for surface in self.surfaces.iter().filter(|_| material.is_none()) {
             let layer = if let Some((name, image)) = &surface.texture {
                 let key = format!(
                     "{name}#normal={:?}:{}",
@@ -594,6 +605,7 @@ impl Character {
                 .unwrap_or_else(|| scene.add_material(material));
             material_ids.push(id);
         }
+        if let Some(m) = material { material_ids = vec![m; self.surfaces.len()]; }
         let parts: Vec<_> = self
             .surfaces
             .iter()

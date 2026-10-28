@@ -18,9 +18,14 @@ struct Motion { idle: f32, run: f32, blend: f32, jump: Option<f32> }
 struct Actor { handle: ActorHandle, palette: Vec<Mat4>, run_palette: Vec<Mat4>, motion: Motion,
     corpse: Option<Corpse>, corpse_transform: Option<Affine3A>, velocity: Vec3 }
 
+/// A player's body turned to lava (Godot `_apply_lava_body`): the same
+/// character drawn in the lava material, posed like the corpse.
+struct LavaTwin { handle: ActorHandle, palette: Vec<Mat4> }
+
 pub struct Characters {
     models: Vec<Character>,
     actors: Vec<Actor>,
+    lava: Vec<Option<LavaTwin>>,
     pub hands: Vec<Option<Vec3>>,
 }
 
@@ -31,7 +36,7 @@ mod tests {
     #[test]
     fn reused_enemy_and_round_reset_release_the_old_skin_rig() {
         let model = Character::load(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets/characters/knight.json")).unwrap();
-        let mut c = Characters { models: vec![model], actors: Vec::new(), hands: Vec::new() };
+        let mut c = Characters { models: vec![model], actors: Vec::new(), lava: Vec::new(), hands: Vec::new() };
         let mut scene = Scene::default();
         c.reserve_actor(&mut scene, 0).unwrap();
         let mut world = World::new(3, &[false, true, true]);
@@ -86,7 +91,7 @@ impl Characters {
             }
         }
         println!("characters: original knight, paladin, ch10 with idle/run/jump ({})", dir.display());
-        Ok(Self { models, actors: Vec::new(), hands: Vec::new() })
+        Ok(Self { models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
 
     pub fn reserve_actor(&mut self, scene: &mut Scene, player: usize) -> Result<usize, String> {
@@ -102,6 +107,40 @@ impl Characters {
         self.hands.push(None);
         Ok(mesh)
     }
+
+    /// A lava twin per actor while the renderer has skinning room left
+    /// (after every player has its own actor). Their instances start hidden.
+    pub fn reserve_lava(&mut self, scene: &mut Scene, material: u32) {
+        self.lava = (0..self.actors.len()).map(|i| {
+            let model = &self.models[i % self.models.len()];
+            let handle = model.add_actor_with_material(scene, model_transform(Vec3::new(0.0, -500.0, 0.0), 0.0), Some(material)).ok()?;
+            Some(LavaTwin { handle, palette: model.sample(IDLE, 0.0, true).ok()? })
+        }).collect();
+    }
+
+    /// Turn player `i`'s corpse to lava: its twin takes the death pose.
+    /// Returns the twin's instance and mesh (to place), None without room
+    /// for one.
+    pub fn lava_twin(&mut self, i: usize) -> Option<(usize, usize)> {
+        let actor = self.actors.get(i)?;
+        let twin = self.lava.get_mut(i)?.as_mut()?;
+        // The pose of the current simulated animation (as `kill`), even
+        // when no frame was drawn since the last tick.
+        let model = &self.models[i % self.models.len()];
+        let m = &actor.motion;
+        if let Some(age) = m.jump {
+            model.sample_into(JUMP, age, false, &mut twin.palette).ok()?;
+        } else {
+            model.sample_into(IDLE, m.idle, true, &mut twin.palette).ok()?;
+            let run = model.sample(RUN, m.run, true).ok()?;
+            for (idle, run) in twin.palette.iter_mut().zip(run) { *idle = mix(*idle, run, m.blend); }
+        }
+        self.hands[i] = None;
+        Some((twin.handle.instance, twin.handle.mesh))
+    }
+
+    /// Instance and mesh of every lava twin (to hide).
+    pub fn lava_instances(&self) -> Vec<(usize, usize)> { self.lava.iter().flatten().map(|t| (t.handle.instance, t.handle.mesh)).collect() }
 
     pub fn reset(&mut self, physics: &mut Physics) {
         for actor in &mut self.actors {
@@ -198,8 +237,10 @@ impl Characters {
     }
 
     pub fn flush(&self, gpu: &Gpu, renderer: &Renderer) -> Result<(), String> {
-        // Actors are reserved consecutively into the scene's skinning table.
-        debug_assert!(self.actors.iter().enumerate().all(|(i, actor)| actor.handle.actor == i));
-        renderer.set_skinning_palettes(gpu, self.actors.iter().map(|actor| actor.palette.as_slice()))
+        // Actors are reserved consecutively into the scene's skinning table:
+        // the players', then their lava twins.
+        debug_assert!(self.actors.iter().map(|a| a.handle.actor).chain(self.lava.iter().flatten().map(|t| t.handle.actor)).enumerate().all(|(i, actor)| actor == i));
+        renderer.set_skinning_palettes(gpu, self.actors.iter().map(|actor| actor.palette.as_slice())
+            .chain(self.lava.iter().flatten().map(|twin| twin.palette.as_slice())).collect::<Vec<_>>().into_iter())
     }
 }

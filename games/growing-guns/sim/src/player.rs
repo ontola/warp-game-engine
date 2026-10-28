@@ -24,10 +24,12 @@ pub const MINE_RELOAD: f64 = 2.5;
 pub const MINE_FORWARD_OFFSET: f32 = 0.9;
 
 #[derive(Clone, Copy, Debug)]
-pub struct Blow { pub pos: Vec3, pub dir: Vec3, pub head: bool, pub blast_radius: f32, pub severity: f32, pub env: bool }
+/// `lava`: a lava death if it kills, `Some(true)` falling in (Godot
+/// `"lava_fall"`), `Some(false)` burnt standing in it.
+pub struct Blow { pub pos: Vec3, pub dir: Vec3, pub head: bool, pub blast_radius: f32, pub severity: f32, pub env: bool, pub lava: Option<bool> }
 
 impl Blow {
-    pub fn plain(pos: Vec3) -> Self { Blow { pos, dir: Vec3::Y, head: false, blast_radius: 0.0, severity: 0.0, env: false } }
+    pub fn plain(pos: Vec3) -> Self { Blow { pos, dir: Vec3::Y, head: false, blast_radius: 0.0, severity: 0.0, env: false, lava: None } }
 }
 
 impl World {
@@ -344,7 +346,9 @@ impl World {
         }
         // Coop: a human goes down while a teammate stands.
         if self.coop && self.coop_down(i) { return true; }
-        let gib = if blow.blast_radius > 0.0 {
+        let gib = if let Some(fall) = blow.lava {
+            Gib::Lava { fall }
+        } else if blow.blast_radius > 0.0 {
             let severity = if overkill { ((-new + OVERKILL_HEALTH) as f32 / 50.0).clamp(0.4, 2.5) } else { 0.0 };
             Gib::Burst { severity: severity.max(blow.severity.clamp(0.4, 2.5)), blast: true }
         } else if overkill {
@@ -383,7 +387,7 @@ impl World {
         if iframes > 0.0 { p.frozen = frozen; return; }
         let pos = p.pos;
         self.events.push(crate::Event::Lava { player: i, fall: true });
-        self.apply_damage(i, lethal, Some(i), Blow { env: true, severity: -1.0, ..Blow::plain(pos) });
+        self.apply_damage(i, lethal, Some(i), Blow { env: true, severity: -1.0, lava: Some(true), ..Blow::plain(pos) });
     }
 
     /// Godot `apply_environmental_damage` (lava contact), from nobody.
@@ -395,7 +399,7 @@ impl World {
         let lethal = amount >= p.health;
         self.events.push(crate::Event::Lava { player: i, fall: false });
         if lethal { self.events.push(crate::Event::Lava { player: i, fall: true }); }
-        self.apply_damage(i, amount, None, Blow::plain(pos));
+        self.apply_damage(i, amount, None, Blow { lava: Some(false), ..Blow::plain(pos) });
     }
 
     /// Godot `_on_dealt_damage`: scavenger, refreshed, lifesteal.
