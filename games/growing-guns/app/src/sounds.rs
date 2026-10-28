@@ -98,6 +98,23 @@ impl Bank {
         self.scan()
     }
 
+    /// Every loaded patch (live `play_sound`).
+    pub fn patches(&self) -> impl Iterator<Item = &Arc<Patch>> { self.patches.values() }
+
+    /// A loaded patch, without the missing-patch warning.
+    pub fn find(&self, name: &str) -> Option<Arc<Patch>> { self.patches.get(name).cloned() }
+
+    /// Change a parameter's default for every later play (live `set_param`);
+    /// values a trigger passes still win. Editing the file resets it.
+    pub fn set_default(&mut self, name: &str, param: &str, value: f32) -> Result<f32, String> {
+        let p = self.patches.get_mut(name).ok_or_else(|| format!("no sound {name}"))?;
+        let names = || p.params.iter().map(|q| q.0.as_str()).collect::<Vec<_>>().join(", ");
+        let Some(k) = p.params.iter().position(|q| q.0 == param) else { return Err(format!("{name} has no parameter {param} (has {})", names())) };
+        let old = p.params[k].1;
+        Arc::make_mut(p).params[k].1 = value;
+        Ok(old)
+    }
+
     pub fn get(&mut self, name: &str) -> Option<Arc<Patch>> {
         let p = self.patches.get(name).cloned();
         if p.is_none() && self.warned.insert(name.to_string()) { eprintln!("sfx: no patch {name}"); }
@@ -227,6 +244,9 @@ impl Sounds {
             offers: Vec::new(), shot_tick: Vec::new(), ears: Vec::new(), music: None }
     }
 
+
+    /// The synth mixer (live `play_sound`).
+    pub fn sender(&self) -> &SoundSender { &self.tx }
 
     /// How far the loudest recent sound is above "loud" (Godot's crowd duck: HDR max - 112 dB).
     pub fn duck_db(&self) -> f32 { (self.tx.loudest() - 112.0).max(0.0) }

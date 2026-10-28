@@ -52,21 +52,23 @@ pub struct Gg {
     fb: Vec<hud::Feedback>,
     session: Session,
     /// World player index per local view.
-    slots: Vec<usize>,
+    pub(crate) slots: Vec<usize>,
     since_snap: f32,
     since_poll: u32,
     rebuild: bool,
-    sounds: Option<crate::sounds::Sounds>,
+    pub(crate) sounds: Option<crate::sounds::Sounds>,
     /// The soundtrack and game.gd's music logic.
     music: Option<(crate::music::Shared, crate::music::Director)>,
     /// Card menu per local player.
     menus: Vec<app::ui::Menu>,
     /// The mods (cards, rules), hot-reloaded.
-    scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
+    pub(crate) scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
     /// A GameNight party host, when it launched us.
     pub party: Option<crate::party::Party>,
     /// Party names for the seated players, in slot order.
     pub names: Vec<String>,
+    /// Live control (`--live`, live.rs).
+    pub(crate) live: Option<Box<crate::live::GgLive>>,
 }
 
 impl Gg {
@@ -76,7 +78,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), scripts, party: None, names: Vec::new() }
+            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), scripts, party: None, names: Vec::new(), live: None }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -161,6 +163,8 @@ impl Gg {
 
     /// A new round: refill the arena slots; the renderer is kept.
     fn new_arena(&mut self) {
+        // Also between ticks (debug commands, live tools): clients need it.
+        self.session.mark_arena();
         self.vis.set_arena(&self.world);
         self.prev = self.world.players.iter().map(|p| p.pos).collect();
     }
@@ -170,6 +174,8 @@ impl app::Game for Gg {
     fn local_players(&self) -> usize { self.slots.len() }
 
     fn tick(&mut self, controls: &[Controls]) {
+        // Live-control requests, between ticks (also while a party is paused).
+        crate::live::tick(self);
         let party_controls = match self.party_tick() {
             None => None,
             Some(None) => return,
@@ -216,6 +222,7 @@ impl app::Game for Gg {
         let alpha = if self.session.is_client() { self.receive(frame.dt) } else { frame.alpha };
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() { frame.set_scene(&self.vis.scene, &self.light); }
+        crate::live::frame(self, frame);
         let r = frame.renderer().expect("scene set above");
         self.vis.flush(frame.gpu, r)?;
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
@@ -237,6 +244,8 @@ impl app::Game for Gg {
     }
 
     fn title(&self) -> Option<String> { Some(format!("round {}", self.world.round)) }
+    fn wants_capture(&self) -> bool { crate::live::wants_capture(self) }
+    fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) { crate::live::captured(self, size, rgba) }
 
     fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
 
@@ -367,6 +376,18 @@ pub fn music(args: &Args, sounds: Option<&std::path::Path>, seed: u64, backgroun
     Some(m)
 }
 
+/// After the player count changed (live `spawn_bots`): new views and a new
+/// renderer scene; the crowd keeps its voice.
+pub fn rebuild_views(gg: &mut Gg) {
+    let sound = std::mem::replace(&mut gg.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
+    gg.vis = view::Visuals::build(&gg.world);
+    gg.vis.hide_own_bodies(&gg.slots);
+    gg.vis.stadium.sound = sound;
+    gg.prev = gg.world.players.iter().map(|p| p.pos).collect();
+    gg.fb.resize(gg.world.players.len(), hud::Feedback::default());
+    gg.rebuild = true;
+}
+
 fn card_id(w: &World, c: growing_guns::cards::Card) -> String { w.cards.get(c).map_or_else(|| format!("#{}", c.0), |d| d.id.clone()) }
 
 /// `--modifier ID` forces a round modifier (`none` for none), `--rounds N`
@@ -408,6 +429,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     let mut game = Gg::new(world, session, slots);
     game.party = crate::party::Party::connect();
     if game.party.is_some() { println!("gamenight: waiting for the party host"); }
+    game.live = crate::live::start(args)?.map(Box::new);
     // `--give explosive --give damage`: start local player 1 with these cards.
     for card in args.list.windows(2).filter(|w| w[0] == "--give").map(|w| w[1].clone()) {
         println!("{}", app::Game::command(&mut game, &format!("give 0 {card}"))?);

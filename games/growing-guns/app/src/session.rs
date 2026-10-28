@@ -18,7 +18,8 @@ pub struct Remote {
 pub enum Session {
     Local,
     /// `joining`: connected clients that have not said hello yet.
-    Host { host: Host, remotes: Vec<Remote>, joining: Vec<(u64, UnboundedSender<ToClient>)> },
+    /// `arena`: send the arena with the next snapshot (replaced between ticks).
+    Host { host: Host, remotes: Vec<Remote>, joining: Vec<(u64, UnboundedSender<ToClient>)>, arena: bool },
     Client { client: Client, ack: u32, seq: u32, sent: VecDeque<(u32, Vec<Input>)>, base_look: Vec<(f32, f32)>, closed: bool, broken: Breakage },
 }
 
@@ -35,7 +36,7 @@ fn merge(into: &mut Input, i: &Input) {
 
 impl Session {
     pub fn host(lan: bool) -> Result<Session, String> {
-        Ok(Session::Host { host: crate::net::host(lan)?, remotes: Vec::new(), joining: Vec::new() })
+        Ok(Session::Host { host: crate::net::host(lan)?, remotes: Vec::new(), joining: Vec::new(), arena: false })
     }
 
     /// Connect, then wait for the host's welcome: returns the session, the
@@ -70,7 +71,7 @@ impl Session {
 
     /// Host: handle joins, leaves and remote input.
     pub fn poll(&mut self, world: &mut World) {
-        let Session::Host { host, remotes, joining } = self else { return };
+        let Session::Host { host, remotes, joining, .. } = self else { return };
         while let Some(ev) = host.poll() {
             match ev {
                 HostEvent::Joined { client, tx } => joining.push((client, tx)),
@@ -124,14 +125,23 @@ impl Session {
 
     /// Host: after a step, stream the result.
     pub fn publish(&mut self, world: &World) {
-        let Session::Host { remotes, .. } = self else { return };
-        let arena = world.events.contains(&Event::NewArena).then(|| world.arena.clone());
+        let Session::Host { remotes, arena: replaced, .. } = self else { return };
+        let arena = (std::mem::take(replaced) || world.events.contains(&Event::NewArena)).then(|| world.arena.clone());
         let snap = world.snapshot();
         for r in remotes.iter() {
             if !world.breakage.is_empty() { let _ = r.tx.send(ToClient::Broken(world.breakage.clone())); }
             if let Some(a) = &arena { let _ = r.tx.send(ToClient::Arena(a.clone())); }
             let _ = r.tx.send(ToClient::Snap { ack: r.seq, snap: snap.clone() });
         }
+    }
+
+    /// Host: the arena was replaced outside a tick (a debug command or live
+    /// tool); the tick's events are cleared before publishing, so say so.
+    pub fn mark_arena(&mut self) { if let Session::Host { arena, .. } = self { *arena = true; } }
+
+    /// Host: players playing from other machines.
+    pub fn remote_players(&self) -> usize {
+        match self { Session::Host { remotes, .. } => remotes.iter().map(|r| r.slots.len()).sum(), _ => 0 }
     }
 
     /// Client: send this tick's local inputs.
