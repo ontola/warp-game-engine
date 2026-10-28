@@ -768,14 +768,18 @@ fn uniform() -> wgpu::BindingType {
     wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }
 }
 
-fn layout(gpu: &Gpu, label: &str, entries: &[(u32, wgpu::BindingType)]) -> wgpu::BindGroupLayout {
+fn layout_entries(entries: &[(u32, wgpu::BindingType)]) -> Vec<wgpu::BindGroupLayoutEntry> {
     let all = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
     // Writable bindings are for compute only (vertex stages cannot write).
     let writable = |ty: &wgpu::BindingType| matches!(ty, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, .. } | wgpu::BindingType::StorageTexture { .. });
-    let e: Vec<_> = entries
+    entries
         .iter()
         .map(|(b, ty)| wgpu::BindGroupLayoutEntry { binding: *b, visibility: if writable(ty) { wgpu::ShaderStages::COMPUTE } else { all }, ty: *ty, count: None })
-        .collect();
+        .collect()
+}
+
+fn layout(gpu: &Gpu, label: &str, entries: &[(u32, wgpu::BindingType)]) -> wgpu::BindGroupLayout {
+    let e = layout_entries(entries);
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(label), entries: &e })
 }
 
@@ -1057,8 +1061,19 @@ impl Renderer {
                 (26, storage(true)),
                 (27, uniform()),
                 (28, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (29, storage(true)),
             ];
-        let scene_layout = layout(gpu, "scene", &scene_bindings);
+        let mut scene_entries = layout_entries(&scene_bindings);
+        for entry in &mut scene_entries {
+            // Full-scene replacement IDs are read only by raster vertices;
+            // compute culling has its own reduced layout. Leaving this visible
+            // to shade would exceed 16 storage buffers after adding contact.
+            if entry.binding == 11 { entry.visibility = wgpu::ShaderStages::VERTEX; }
+            if entry.binding == 29 { entry.visibility = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE; }
+        }
+        let scene_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene"), entries: &scene_entries,
+        });
         let voxel_scene_bindings: Vec<_> = scene_bindings.iter().copied()
             .filter(|(binding, _)| crate::voxel_forest::SCENE_BINDINGS.contains(binding)).collect();
         let voxel_scene_layout = layout(gpu, "voxel lighting scene", &voxel_scene_bindings);
@@ -1158,6 +1173,8 @@ impl Renderer {
             contents: bytemuck::bytes_of(&meadow_substrate_settings),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let meadow_edge_fallback = buffer(gpu, "disabled meadow edge occupancy", &[0; 256], wgpu::BufferUsages::STORAGE);
+        let meadow_edge_buffer = meadow.as_ref().and_then(|m| m.edge_shadow_buffer()).unwrap_or(&meadow_edge_fallback);
         assert!(!(far_sun.enabled && foliage_sun_pages.enabled),"choose paged foliage or legacy experimental far sun map, not both");
         let noise_view = crate::noise_field::texture(gpu, scene.noise.as_ref());
         let make_scene_bind = |headlight_view:&wgpu::TextureView, far_view:&wgpu::TextureView, instance_data:&wgpu::Buffer, wind_data:&wgpu::Buffer| bind(
@@ -1193,6 +1210,7 @@ impl Renderer {
                 (26, foliage_sun_pages.metadata.as_entire_binding()),
                 (27, meadow_substrate.as_entire_binding()),
                 (28, wgpu::BindingResource::TextureView(&noise_view)),
+                (29, meadow_edge_buffer.as_entire_binding()),
             ],
         );
         let sampled_far=if foliage_sun_pages.enabled {&foliage_sun_pages.sampled}else{&far_sun.view};
@@ -1392,7 +1410,8 @@ impl Renderer {
         let rock_variation=std::env::var("KERN_ROCK_VARIATION").as_deref()==Ok("1");
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
         let hidden_meadow_fallback=crate::meadow::MeadowRenderer::hidden_shade_fallback(gpu);
-        let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0);
+        let meadow_edge_enabled=meadow.as_ref().is_some_and(|m|m.edge_shadow_stats().is_some_and(|s|s.enabled));
+        let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0 || meadow_edge_enabled);
         let sky_tiles=std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
@@ -2614,6 +2633,11 @@ impl Renderer {
     pub fn meadow_contact_ao_radius(&self) -> f32 {
         self.meadow_substrate_settings.with_debug(self.debug_options()).contact[1]
     }
+    pub fn meadow_edge_shadow_stats(&self) -> Option<crate::meadow::MeadowEdgeShadowStats> {
+        let mut stats = self.meadow.as_ref()?.edge_shadow_stats()?;
+        stats.enabled &= self.debug_options().draws_meadow() && self.meadow_brick_fixture.is_none();
+        Some(stats)
+    }
 
     /// Blast effects (`fx::Effects::flush`): the clock, and the live puffs
     /// when they changed.
@@ -3141,7 +3165,8 @@ impl Renderer {
         if let Some(grass) = &self.grass { grass.set_view_count(views.len()); }
         if let Some(meadow) = &self.meadow {
             meadow.set_view_count(views.len());
-            meadow.set_group_views(views, render_sequence);
+            meadow.set_views(views, render_sequence);
+            meadow.set_spatial_filter_temporal_active(dlss_on || taa_on);
         }
         if let Some(grass) = &self.far_grass { grass.set_view_count(views.len()); }
         if let Some(forest) = &self.voxel_forest { forest.set_view_count(views.len()); }
@@ -3263,6 +3288,10 @@ impl Renderer {
             main_uniform.extra[3] = light.grass_reference;
             let grass_band = self.grass_detail.for_views(views.len());
             main_uniform.grass = [grass_band.fade_start, grass_band.fade_end, (vi + 1) as f32, 0.0];
+            let meadow_edge_active = self.meadow.as_ref().is_some_and(|m| m.edge_shadow_stats().is_some_and(|s| s.enabled))
+                && self.meadow_brick_fixture.is_none() && debug_options.draws_meadow()
+                && geometry_diagnostic.grass_enabled();
+            main_uniform.grass[3] = if meadow_edge_active { 1.0 } else { 0.0 };
             main_uniform.fog_cull = camera_fog_cull(light);
             // One allocation-free terrain horizon query per physical camera.
             // Independent of camera rotation, jitter, exposure and shadow-map focus.
@@ -3345,6 +3374,12 @@ impl Renderer {
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
                         ];
+            if meadow_edge_active {
+                let time = self.query.as_ref().map(|(qs, _, _)| {
+                    names.push("meadow edge occupancy"); (qs, timestamp_pair(&mut ts))
+                });
+                self.meadow.as_ref().unwrap().prepare_edge_shadow(gpu, &mut enc, vi, &main.uniform, debug_options, time)?;
+            }
             let hidden_meadow=if let Some(meadow)=self.meadow.as_ref().filter(|m|m.skip_hidden_shade_enabled()
                 && self.meadow_brick_fixture.is_none() && debug_options.draws_meadow() && geometry_diagnostic.grass_enabled()) {
                 let mut times=[None;10];
@@ -4444,6 +4479,9 @@ mod layout_tests {
         // Three physical pairs replace its one pair: only two extra per view.
         for _ in 0..(4 * 2) { timestamp_pair(&mut next); }
         assert_eq!(next,390);
+        assert!(next<=TIMESTAMP_CAPACITY);
+        for _ in 0..4 { timestamp_pair(&mut next); } // per-view local grass occupancy
+        assert_eq!(next,398);
         assert!(next<=TIMESTAMP_CAPACITY);
         let brick_fixture_upper_bound = 330 - 4*6*2 + (8+4*3)*2;
         assert!(brick_fixture_upper_bound <= TIMESTAMP_CAPACITY);

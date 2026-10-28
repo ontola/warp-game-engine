@@ -1,0 +1,31 @@
+# Sparse deterministic wind poses at the exact edge/grain camera; not a movie
+# or a moving-camera test. Use --wind 0.8 and the matching debug settings script;
+# omit --wind-time so four simulation ticks advance wind by 1/30s per render.
+# Only six native PNGs are captured. Readback frames are diagnostic, not steady
+# performance samples. Pose times are (frame_id-1)/30 seconds.
+schema = 1
+name = "windswept-grass-edge-wind"
+ticks_per_frame = 4
+capture_frames = [12, 24, 36, 48, 60, 72]
+
+[capture]
+format = "png"
+max_width = 0
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "3840x2160"
+upscale = "native"
+hud = false
+
+[[sections]]
+name = "user-f12-edge-wind-poses"
+start_tick = 0
+frames = 72
+warmup = 12
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-42.18136978149414, 9.14914608001709, -989.0841674804688], target = [-38.512569427490234, 7.999146461486816, -994.6904296875], fov_y_degrees = 64.0}

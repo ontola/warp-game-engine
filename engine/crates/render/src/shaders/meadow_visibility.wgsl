@@ -52,7 +52,7 @@ fn meadow_visibility_surface(pixel:vec4<f32>)->MeadowVisibleSurface {
     if id.x==0u {return result;}
     let owner=(id.x&0x7fffffffu)-1u;let lod=id.y>>30u;let triangle=id.y&0x3fffffffu;
     if owner>=meadow_draw.y || lod>=3u {return result;}
-    let variant=meadow_pool[owner*MEADOW_PLANT_WORDS+10u];
+    let variant=meadow_pool[owner*meadow_plant_words(meadow.wind_history.w)+10u];
     if variant>=3u {return result;}
     let mesh=bitcast<vec4<u32>>(meadow_recipe[variant*3u+lod]);
     if triangle>=mesh.y/3u {return result;}
@@ -67,6 +67,8 @@ fn meadow_visibility_surface(pixel:vec4<f32>)->MeadowVisibleSurface {
     out.previous_world=a.previous_world*weights.x+b.previous_world*weights.y+c.previous_world*weights.z;
     out.normal=a.normal*weights.x+b.normal*weights.y+c.normal*weights.z;
     out.color=a.color*weights.x+b.color*weights.y+c.color*weights.z;
+    out.blade_color=a.blade_color*weights.x+b.blade_color*weights.y+c.blade_color*weights.z;
+    out.pigment=a.pigment;
     out.opacity=a.opacity; // flat per root, same value on all triangle corners
     // Derive the actual deformed face, not screen-neighbor normals or a
     // derivative across two different blades. Geometry/wind is identical to

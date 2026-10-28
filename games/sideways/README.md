@@ -29,6 +29,34 @@ from a recorded developer playtest. Copying only the executable is insufficient:
 legacy photographed grass is constructed. `KERN_MEADOW_AGGREGATE=1` alone does
 not select the meadow.
 
+The GPU meadow defaults to `SIDEWAYS_MEADOW_PROFILE=windswept`: curved blades,
+yellow-green tips and travelling noise wind. Six segments smoothly morph into
+one triangle over growth-scaled 3–6 m; the cooked three-segment cut is unused.
+Current r63e code defaults to source geometry through 250 m, fading over
+200–250 m. `SIDEWAYS_MEADOW_WINDSWEPT_RADIUS` accepts 60–256 m and ignores
+classic source-band/radius flags. This is an interim source comparison; a
+source-derived, terrain-following far layer is proposed but not implemented.
+Windswept forces the aggregate off and rejects group cache. Use
+`SIDEWAYS_MEADOW_PROFILE=classic` for the previous recipe, the aggregate
+experiments below and r62 rounded shading.
+See [r63 source equations, runtime choices and measurements](../../engine/docs/meadow-windswept-r63.md).
+
+The current [r64 grass experiment](../../engine/docs/meadow-edge-grain-r64.md)
+adds two opt-in flags: `KERN_MEADOW_SPATIAL_FILTER=1` filters distant rendered
+RGB while preserving grass alpha exactly; `KERN_MEADOW_EDGE_SHADOW=1` adds
+source-accepted basal contact on terrain/road. Filtering runs only on native
+source grass without TAA/DLSS. Wind and current lighting remain live; far
+geometry cost and silhouette aliasing remain. A static far crop shows less
+contrast and a brightness shift. Combined native 4K captures and selected wind
+poses completed; user acceptance is pending.
+
+For the matched r64 preview, pass
+`-DebugUiScript games/sideways/scenarios/windswept-grass-edge-settings.json`
+to `play-dev-windows.ps1` with one native 3840×2160 view. The launcher copies
+and hashes this script. It sets session grass size 1.6/density 1.0 through the
+debug UI and closes the panel; the saved size 2.0/density 0.55 baseline stays
+unchanged. Verify the resolved values in capture metadata after launch.
+
 ```powershell
 games/sideways/tools/register-gamenight-windows.ps1 -PackageDirectory C:/path/to/package -ReferencePlaytestManifest C:/path/to/dev-run/iteration.json -DebugUi
 games/sideways/tools/test-register-gamenight.ps1
@@ -40,7 +68,7 @@ paths, preserves other games and backs up registration changes. `-ValidateOnly`
 reviews without writing. It does not launch or stop GameNight. Its default is
 4K output with DLSS Performance; GameNight supplies the actual player count.
 These flags remain scoped to the registered preview, not engine defaults.
-After launch verify the log says `GPU meadow: full terrain field` and
+After launch verify the log identifies `GPU meadow`, `full terrain field` and
 `no photographed grass or CPU tuft pool`; process startup alone is insufficient.
 
 Four-player developer launches now select **DLSS Performance** unless `-Upscale`
@@ -87,6 +115,13 @@ density, and adds no shadow pass. Direct sun and headlights remain unchanged.
 The [r59 OFF/ON comparison](../../engine/docs/meadow-contact-ao-r59.md) found no
 large cost increase above run variation; the daylight effect is subtle.
 It remains off by default, without claiming directional grass shadows.
+
+`SIDEWAYS_MEADOW_BLADE_SHADING=rounded` is an opt-in grass appearance experiment:
+smooth blade normals along the curve and round them across the width, including
+every source LOD and the rebuilt distant atlas. It requires the GPU meadow
+(`SIDEWAYS_PROCEDURAL_GRASS=field`). Unset or `flat` retains existing shading.
+Placement, geometry, colour and wind stay the same. The launcher and captures
+record the mode; replays reject a mismatch. See [r62 details and validation](../../engine/docs/meadow-rounded-shading-r62.md).
 
 The latest measured developer optimization paths are an explicit opt-in:
 
@@ -157,7 +192,8 @@ lamps illuminate the road. Rear/brake/reverse lights and exhaust flashes now
 provide short-range environmental light without additional shadow maps.
 See [r51 evidence and limits](../../engine/docs/local-lights-and-vegetation-r51.md).
 
-Developer playtests also enable distant grass (`-MeadowAggregate`). Detailed
+For the explicit classic profile, developer playtests also enable distant grass
+(`-MeadowAggregate`). Detailed
 grass blends into a source-derived surface cache over60–80m; it fades into
 matching terrain colour over160–180m. This is a directional surface atlas,
 not voxel rendering. Use `-MeadowAggregate:$false` for the source-only reference.

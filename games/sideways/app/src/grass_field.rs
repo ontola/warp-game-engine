@@ -23,6 +23,22 @@ fn blade_budget(value: Option<&str>) -> Result<MeadowBladeBudget, String> {
     }
 }
 
+fn blade_shading(value: Option<&str>) -> Result<&'static str, String> {
+    match value {
+        None | Some("flat") => Ok("flat"),
+        Some("rounded") => Ok("rounded"),
+        Some(_) => Err("SIDEWAYS_MEADOW_BLADE_SHADING must be flat or rounded".into()),
+    }
+}
+
+fn profile(value: Option<&str>) -> Result<&'static str, String> {
+    match value {
+        None | Some("windswept") => Ok("windswept"),
+        Some("classic") => Ok("classic"),
+        Some(_) => Err("SIDEWAYS_MEADOW_PROFILE must be classic or windswept".into()),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SourceRange {
     radius: f32,
@@ -77,6 +93,16 @@ fn source_range(
         fade_start: radius - 20.0,
         origin: if override_radius.is_some() { "SIDEWAYS_MEADOW_SOURCE_RADIUS" } else { "default" },
     })
+}
+
+fn windswept_range(override_radius: Option<&str>) -> Result<SourceRange, String> {
+    let radius = override_radius.map_or(Ok(250.0), |value| value.parse::<f32>())
+        .map_err(|_| "invalid SIDEWAYS_MEADOW_WINDSWEPT_RADIUS")?;
+    if !radius.is_finite() || !(60.0..=256.0).contains(&radius) {
+        return Err("SIDEWAYS_MEADOW_WINDSWEPT_RADIUS must be finite and within 60..256 metres".into());
+    }
+    Ok(SourceRange { radius, fade_start: radius * 0.8,
+        origin: if override_radius.is_some() { "SIDEWAYS_MEADOW_WINDSWEPT_RADIUS" } else { "windswept_geometry_lods" } })
 }
 
 fn terrain_samples(heightfield: &Heightfield, chunks: &[Chunk]) -> Result<Vec<[f32; 4]>, String> {
@@ -152,13 +178,16 @@ pub fn build(
     chunks: &[Chunk],
     vegetation: Vegetation,
 ) -> Result<(MeadowField, String, serde_json::Value), String> {
+    let profile = profile(std::env::var("SIDEWAYS_MEADOW_PROFILE").ok().as_deref())?;
     let override_radius = std::env::var("SIDEWAYS_MEADOW_SOURCE_RADIUS").ok();
     let override_band = std::env::var("SIDEWAYS_MEADOW_SOURCE_BAND").ok();
-    let source_range = source_range(
+    let source_range = if profile == "windswept" {
+        windswept_range(std::env::var("SIDEWAYS_MEADOW_WINDSWEPT_RADIUS").ok().as_deref())?
+    } else { source_range(
         std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1"),
         override_radius.as_deref(),
         override_band.as_deref(),
-    )?;
+    )? };
     let samples = terrain_samples(heightfield, chunks)?;
     // Growth scales blades about their fixed basal anchors, not the patch
     // footprint. Season is a shared material operation at cooking time.
@@ -167,9 +196,17 @@ pub fn build(
         Season::Autumn => 0.5,
         Season::Winter => 0.8,
     };
-    let budget = blade_budget(std::env::var("SIDEWAYS_MEADOW_BLADE_BUDGET").ok().as_deref())?;
-    let blades = budget.blades();
-    let geometry = MeadowGeometry::cook_with_blade_budget(vegetation.seed, dry_season, budget)?;
+    let requested_budget = std::env::var("SIDEWAYS_MEADOW_BLADE_BUDGET").ok();
+    let budget = blade_budget(requested_budget.as_deref().or(if profile == "windswept" {Some("120")} else {None}))?;
+    let blades = if profile == "windswept" {budget.blades() / 3} else {budget.blades()};
+    let shading = blade_shading(std::env::var("SIDEWAYS_MEADOW_BLADE_SHADING").ok().as_deref())?;
+    let geometry = if profile == "windswept" {
+        MeadowGeometry::cook_windswept(vegetation.seed, dry_season, budget)?
+    } else if shading == "rounded" {
+        MeadowGeometry::cook_with_blade_budget_and_rounded_normals(vegetation.seed, dry_season, budget)?
+    } else {
+        MeadowGeometry::cook_with_blade_budget(vegetation.seed, dry_season, budget)?
+    };
     let lod_errors = geometry.lod_errors;
     let geometry_bytes =
         geometry.vertices.len() * std::mem::size_of::<render::meadow_data::GpuMeadowVertex>();
@@ -193,7 +230,7 @@ pub fn build(
     };
     field.validate()?;
     let summary = format!(
-        "GPU meadow: full terrain field {}x{} ({} valid samples / {} MiB), fixed {:.2} m world cells, 3 shared dense patch variants x {blades} opaque ribbon blades, source triangles {:?} per LOD, {} KiB shared vertices, 4 GPU wind groups with anchored blade roots, source radius {} m / transition {}..{} m; renderer reports distant aggregate configuration; no photographed grass or CPU tuft pool",
+        "GPU meadow ({profile}): full terrain field {}x{} ({} valid samples / {} MiB), fixed {:.2} m world cells, 3 shared patch variants x {blades} opaque ribbon blades, source triangles {:?} per LOD, {} KiB shared vertices, anchored blade roots, source radius {} m / transition {}..{} m; renderer reports distant aggregate configuration; no photographed grass or CPU tuft pool",
         field.width,
         field.height,
         valid,
@@ -202,7 +239,7 @@ pub fn build(
         triangles[0],
         geometry_bytes.div_ceil(1024), field.radius, field.fade_start, field.radius
     );
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "mode":"gpu_meadow_field", "recipe":"meadow_patch_v2", "world_cell_metres":ROOT_CELL,
         "source_blades_per_root":blades, "source_variants":3, "triangles_per_variant_lod":triangles,
         "blade_budget":blades, "blade_width_multiplier":budget.width_multiplier(),
@@ -228,12 +265,63 @@ pub fn build(
         "distant_representation_scope":"Actual constructed aggregate configuration and GPU counts are reported in render.meadow; source radius is not the aggregate draw distance.",
         "optical_parity_validated":false, "collision":"decorative only; unchanged physics"
     });
+    metadata["blade_shading"] = serde_json::json!(shading);
+    metadata["blade_shading_scope"] = serde_json::json!("Rounded is opt-in source shading, shared by every source LOD and the rebuilt distant atlas. Geometry, material, placement and wind remain unchanged. Distant aggregate shadow bias still uses its existing approximate resolved shading normal.");
+    metadata["profile"] = serde_json::json!(profile);
+    if profile == "windswept" {
+        metadata["recipe"] = serde_json::json!("meadow_windswept_v1");
+        metadata["blade_budget"] = serde_json::json!(budget.blades());
+        metadata["blade_width_multiplier"] = serde_json::json!(1.0);
+        metadata["blade_budget_scope"] = serde_json::json!("Budget levels 120/180/360 select 40/60/120 taller ribbons per fixed patch. No compensating width multiplier. Default 40 gives ~198 blades/m² before habitat and live density.");
+        metadata["blade_shading"] = serde_json::json!("curved");
+        metadata["blade_shading_scope"] = serde_json::json!("Six-segment source, rounded cross-blade normals, nonlinear wind with analytic normal/area transformation. Atlas representative points share deformation; its rest coverage remains approximate.");
+        metadata["wind"] = serde_json::json!("Per-blade scrolling value noise; rotation grows from zero at root to full tip angle; independent previous direction, amplitude and time. Based on SimonDev Quick_Grass.");
+        metadata["material_variation"] = serde_json::json!("Per-blade dark green base to yellow-green tip via h^4, stable .75..1 shade and .25+.75*h² basal darkening. Existing world pigment, season and live RGB edits still apply.");
+        metadata["lod_error_metric"] = serde_json::json!("Conservative animated error bounds recorded; source morphs over authored3..6m scaled by growth to the actual animated one-triangle surface, then switches six-to-one segments at6m. Every blade is retained. The cooked three-segment cut is not selected. No projected-pixel-error guarantee for this profile.");
+        metadata["material_interpolation"] = serde_json::json!("Base and tip pigment plus normalized blade height reach the fragment shader; t^4 pigment and density-one AO are evaluated per pixel identically for all LODs. Seasonal clamp precedes patch/live pigment.");
+        metadata["authored_source_band"] = serde_json::json!({
+            "metres":[source_range.fade_start,source_range.radius], "origin":source_range.origin,
+            "ignored_legacy_radius":override_radius, "ignored_legacy_band":override_band,
+            "scope":"Source-only outer fade in horizontal metres before the live distance multiplier; no distant replacement follows it. Classic source/aggregate ranges do not apply."
+        });
+        metadata["distant_representation_scope"] = serde_json::json!(format!(
+            "Source geometry only through{}m, fading{}..{}m before live distance edits. Classic source-band and aggregate settings do not apply; no overlapping patch atlas for tall nonlinear blades.", source_range.radius, source_range.fade_start, source_range.radius));
+    }
     Ok((field, summary, metadata))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn grass_profile_default_and_legacy_are_explicit() {
+        assert_eq!(profile(None).unwrap(), "windswept");
+        assert_eq!(profile(Some("classic")).unwrap(), "classic");
+        assert_eq!(profile(Some("windswept")).unwrap(), "windswept");
+        assert!(profile(Some("vibes")).is_err());
+    }
+    #[test]
+    fn windswept_outer_range_is_explicit_bounded_and_independent_of_classic_handoff() {
+        assert_eq!(windswept_range(None).unwrap(), SourceRange {
+            radius:250.0, fade_start:200.0, origin:"windswept_geometry_lods" });
+        for radius in [60.0,100.0,180.0,250.0,256.0] {
+            let range = windswept_range(Some(&radius.to_string())).unwrap();
+            assert_eq!(range.radius,radius);
+            assert_eq!(range.fade_start,radius*0.8);
+        }
+        for invalid in ["NaN","inf","-1","0","59.99","256.01","no"] {
+            assert!(windswept_range(Some(invalid)).is_err());
+        }
+    }
+    #[test]
+    fn blade_shading_requires_an_explicit_supported_mode() {
+        assert_eq!(blade_shading(None).unwrap(), "flat");
+        assert_eq!(blade_shading(Some("flat")).unwrap(), "flat");
+        assert_eq!(blade_shading(Some("rounded")).unwrap(), "rounded");
+        for invalid in ["", "1", "0", "true", "Rounded", " rounded", "smooth"] {
+            assert!(blade_shading(Some(invalid)).is_err());
+        }
+    }
     #[test]
     fn meadow_blade_budget_defaults_and_overrides_are_explicit() {
         assert_eq!(blade_budget(None).unwrap(),MeadowBladeBudget::Blades360);

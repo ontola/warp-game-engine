@@ -1,0 +1,37 @@
+# Native 4K source-distance regression from the user's first r63d F12 capture:
+# build/screenshots/sideways-1793199278964-109148-0.json (28 October 2026).
+# Exact captured camera; seed, stage length, noon and clear weather also match.
+# The central hillside is visibly bare beyond the original 80..100 m source fade.
+# This holds terrain/camera/settings for range comparisons, not the user's car
+# pose or wind pose: ticks_per_frame=0 and start_tick=0 hold scenario wind at t=0.
+# Run once per explicitly configured source radius with a fresh output directory.
+# Keep all other environment/settings identical; verify actual radius in metadata.
+# 96 frames minus 24 warmup leave 72 steady candidates. Capture24 is warmup,
+# excluding synchronous image readback from steady samples. GPU tail may be absent.
+schema = 1
+name = "windswept-grass-distance"
+ticks_per_frame = 0
+capture_frames = [24]
+
+[capture]
+format = "jpg"
+max_width = 1920
+quality = 90
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "3840x2160"
+upscale = "native"
+hud = false
+
+[[sections]]
+name = "user-f12-bare-hillside"
+start_tick = 0
+frames = 96
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-76.12712860107422, -4.613594055175781, -493.1341247558594], target = [-80.50606536865234, -5.763593673706055, -498.2051086425781], fov_y_degrees = 64.0}
