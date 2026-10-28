@@ -227,7 +227,7 @@ impl World {
         let mut rng = Rng::new(seed);
         let arena = Arena::generate(rng.next_u32() as u64);
         let players = bots.iter().map(|&b| Player::new(b)).collect();
-        let brains = (0..bots.len()).map(|i| bot::Brain::new(seed ^ (i as u64 + 1) * 0x9E37)).collect();
+        let brains = (0..bots.len()).map(|i| bot::Brain::new(seed ^ ((i as u64 + 1) * 0x9E37))).collect();
         let mut w = World { arena, players, bullets: Vec::new(), tick: 0, round: 1, intermission: 0.0, pick_time: 0.0, ended: false, events: Vec::new(), breakage: Breakage::default(), bots_paused: false, carves: Vec::new(), booms: Vec::new(), rng, brains };
         w.spawn_all();
         w
@@ -263,18 +263,18 @@ impl World {
         self.tick += 1;
         for (pos, radius, damage, owner) in std::mem::take(&mut self.booms) { self.explode_with(pos, owner, radius, damage); }
         let mut inp: Vec<Input> = (0..self.players.len()).map(|i| inputs.get(i).copied().unwrap_or_default()).collect();
-        for i in 0..self.players.len() {
+        for (i, input) in inp.iter_mut().enumerate() {
             if self.players[i].bot && self.players[i].alive && !self.between_rounds() && !self.bots_paused {
                 let mut brain = std::mem::take(&mut self.brains[i]);
-                inp[i] = brain.think(self, i);
+                *input = brain.think(self, i);
                 self.brains[i] = brain;
             }
         }
-        for i in 0..self.players.len() {
-            if self.players[i].alive { self.move_player(i, inp[i]); }
+        for (i, &input) in inp.iter().enumerate() {
+            if self.players[i].alive { self.move_player(i, input); }
         }
-        for i in 0..self.players.len() {
-            if self.players[i].alive { self.weapon(i, inp[i]); }
+        for (i, &input) in inp.iter().enumerate() {
+            if self.players[i].alive { self.weapon(i, input); }
         }
         self.step_bullets();
         let carves = std::mem::take(&mut self.carves);
@@ -403,8 +403,9 @@ impl World {
             for (j, p) in self.players.iter().enumerate() {
                 if j == b.owner || !p.alive { continue; }
                 for &(oy, r, head) in &HITBOXES {
-                    if let Some(t) = shape::ray_sphere(b.pos, dir, p.pos + Vec3::Y * oy, r, best) {
-                        if t < best || (t <= best && head) { best = t; target = Some((j, head)); }
+                    if let Some(t) = shape::ray_sphere(b.pos, dir, p.pos + Vec3::Y * oy, r, best).filter(|&t| t < best || (t <= best && head)) {
+                        best = t;
+                        target = Some((j, head));
                     }
                 }
             }

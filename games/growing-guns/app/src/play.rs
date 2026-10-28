@@ -82,7 +82,6 @@ impl Gg {
         (self.since_snap / DT).clamp(0.0, 1.0)
     }
 
-    pub fn slots(&self) -> &[usize] { &self.slots }
     pub fn session(&self) -> &Session { &self.session }
     pub fn set_sounds(&mut self, s: crate::sounds::Sounds) { self.sounds = Some(s); }
 
