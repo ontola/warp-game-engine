@@ -43,6 +43,13 @@ const MAX_LIGHTS: usize = render::headlights::MAX_LOCAL_LIGHTS;
 /// Of those, the most that ion strikes and blasts take, so the floodlights
 /// and the lava keep theirs.
 const MAX_TRANSIENT_LIGHTS: usize = MAX_LIGHTS - 4 - lava::MAX_LAVA_LIGHTS;
+/// Scatter weights for the night's volumetric light: the wide floodlights,
+/// their narrow beams, the lava's glow and the roof beacons. Tuned on the
+/// night captures. At most 32 lights scatter (the renderer's limit; local
+/// lights before beams): 4 floods + 14 lava + 12 beams leaves the beacons out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scatter { pub flood: f32, pub beam: f32, pub lava: f32, pub beacon: f32 }
+impl Default for Scatter { fn default() -> Self { Self { flood: 0.2, beam: 1.0, lava: 1.0, beacon: 0.0 } } }
 
 fn srgb_to_linear(c: [f32; 3]) -> [f32; 3] { c.map(|v| v.powf(2.2)) }
 fn cube(scene: &mut Scene, material: u32) -> usize { scene.add_mesh(&primitives::cube(material).mesh()) }
@@ -256,17 +263,34 @@ impl Visuals {
 
     /// Blast lights first (they matter most while they last), then the
     /// floodlights, the lava's glow, the roof beacons and muzzle flashes.
-    pub fn local_lights(&self) -> Vec<LocalLight> {
+    pub fn local_lights(&self) -> Vec<LocalLight> { self.local_lights_scattering(Scatter::default()).0 }
+
+    /// `local_lights` with a scatter weight per light for the renderer's
+    /// volumetric light (`Lighting::volumetric`, only on at night): the
+    /// floodlights, the lava's glow and the roof beacons may scatter, short
+    /// flashes do not.
+    pub fn local_lights_scattering(&self, scatter: Scatter) -> (Vec<LocalLight>, Vec<f32>) {
         let mut l = self.ion.lights(self.clock);
         l.extend(self.fx.blasts.lights(self.clock));
         l.truncate(MAX_TRANSIENT_LIGHTS);
+        let mut w = vec![0.0; l.len()];
         let flood = self.flood;
         l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).map(|f| LocalLight { intensity_cd: f.intensity_cd * flood, ..*f }));
+        w.resize(l.len(), scatter.flood);
         l.extend(self.arena.lava.lights().iter().take(MAX_LIGHTS - l.len()).copied());
+        w.resize(l.len(), scatter.lava);
         l.extend(self.arena.lights().iter().take(MAX_LIGHTS - l.len()).copied());
+        w.resize(l.len(), scatter.beacon);
         let room = MAX_LIGHTS - l.len();
         l.extend(self.fx.flash_lights(room));
-        l
+        w.resize(l.len(), 0.0);
+        (l, w)
+    }
+
+    /// The floodlight beams that only scatter (night volumetric light).
+    pub fn volumetric_beams(&self, scatter: Scatter) -> Vec<LocalLight> {
+        let flood = self.flood * scatter.beam;
+        self.stadium.beams().iter().map(|b| LocalLight { intensity_cd: b.intensity_cd * flood, ..*b }).collect()
     }
 
     /// Floodlight strength for the sky (1 for Godot's day).
