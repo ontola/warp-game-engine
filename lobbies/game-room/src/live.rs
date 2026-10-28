@@ -85,6 +85,8 @@ struct Actor {
 pub struct Profile {
     pub color: String,
     pub skin: String,
+    /// The drawn face, as GameNight sends it (face.rs).
+    pub avatar: String,
 }
 
 /// demo.gd's bots: wander to random spots, hop now and then, sometimes
@@ -144,7 +146,7 @@ impl Lobby {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
         for i in 0..(local + bots).min(MAX_ACTORS) {
             let id = format!("p{i}");
-            lobby.profiles.insert(id.clone(), Profile { color: COLORS[i % 6].into(), skin: SKINS[i % 6].into() });
+            lobby.profiles.insert(id.clone(), Profile { color: COLORS[i % 6].into(), skin: SKINS[i % 6].into(), avatar: crate::face::demo(i) });
             lobby.world.ensure_player(&id, i);
             if i < local { lobby.local.push(id.clone()); } else {
                 let x = lobby.world.player(&id).map_or(0.0, |p| p.x);
@@ -225,7 +227,8 @@ impl Lobby {
         for id in &ids {
             let p = self.world.player(id).unwrap().clone();
             let profile = self.profiles.get(id).cloned().unwrap_or_default();
-            let key = format!("{}|{}|{}", profile.color, profile.skin, p.hat);
+            let avatar = { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); profile.avatar.hash(&mut h); h.finish() };
+            let key = format!("{}|{}|{avatar}|{}", profile.color, profile.skin, p.hat);
             if !self.actors.contains_key(id) {
                 let Some(slot) = self.actors_view.slots.add(&mut self.stage.scene, self.actors_view.meshes[0][0][0], Affine3A::IDENTITY) else { continue };
                 let body = self.actors_view.bodies.add(&mut self.stage.scene, self.actors_view.body, Affine3A::IDENTITY).expect("as many bodies as sprites");
@@ -281,7 +284,9 @@ impl Lobby {
         for (id, actor) in &self.actors {
             let p = self.world.player(id);
             let profile = self.profiles.get(id).cloned().unwrap_or_default();
-            let mut sheet = character::build(&Look { color: &profile.color, skin: &profile.skin, hat: p.map_or("none", |p| p.hat.as_str()), ..Default::default() });
+            let face = crate::face::decode(&profile.avatar);
+            let mut sheet = character::build(&Look { color: &profile.color, skin: &profile.skin, hat: p.map_or("none", |p| p.hat.as_str()),
+                face: face.as_ref().map(|f| character::Face { image: &f.image, center: f.center }), ..Default::default() });
             // Clear pixels take the outline's colour, so filtering never
             // brings in Godot's transparent white.
             for px in sheet.pixels_mut() { if px[3] == 0 { *px = image::Rgba([11, 11, 18, 0]); } }

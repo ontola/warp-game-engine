@@ -2,6 +2,7 @@
 //! from a Godot export for comparison), its renderer setup, and the lobby.
 pub mod character;
 pub mod dump;
+pub mod face;
 pub mod fixture;
 pub mod fonts;
 pub mod godot;
