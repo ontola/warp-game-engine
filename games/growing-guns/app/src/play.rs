@@ -61,6 +61,10 @@ pub struct Gg {
     menus: Vec<app::ui::Menu>,
     /// The mods (cards, rules), hot-reloaded.
     scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
+    /// A GameNight party host, when it launched us.
+    pub party: Option<crate::party::Party>,
+    /// Party names for the seated players, in slot order.
+    pub names: Vec<String>,
 }
 
 impl Gg {
@@ -70,10 +74,52 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, menus: Vec::new(), scripts }
+            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, menus: Vec::new(), scripts, party: None, names: Vec::new() }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
+
+    /// A fresh match in place (a party's prepare): new world, views and
+    /// mods; the renderer, sound and party stay.
+    pub fn reset(&mut self, mut world: World, slots: Vec<usize>) {
+        self.scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
+        let n = world.players.len();
+        self.vis = view::Visuals::build(&world);
+        self.vis.hide_own_bodies(&slots);
+        self.prev = world.players.iter().map(|p| p.pos).collect();
+        self.fb = vec![hud::Feedback::default(); n];
+        self.world = world;
+        self.slots = slots;
+        self.menus.clear();
+        self.rebuild = true;
+    }
+
+    /// GameNight's lifecycle; returns the party's controls while it runs,
+    /// or None when the match is frozen (warming, paused, between sessions).
+    fn party_tick(&mut self) -> Option<Option<Vec<Controls>>> {
+        let party = self.party.as_mut()?;
+        let evs = party.poll();
+        for ev in evs {
+            match ev {
+                crate::party::Ev::Prepare { humans, bots } => {
+                    let seat_flags: Vec<bool> = (0..humans.len() + bots).map(|i| i >= humans.len()).collect();
+                    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs());
+                    let mut world = World::new(seed, &seat_flags);
+                    let party = self.party.as_mut().expect("party");
+                    party.settings.apply_match(&mut world);
+                    self.reset(world, (0..humans.len()).collect());
+                    self.names = humans;
+                    self.party.as_mut().expect("party").ready();
+                }
+                crate::party::Ev::Names(n) => self.names = n,
+                crate::party::Ev::Dispose => {}
+            }
+        }
+        let party = self.party.as_mut()?;
+        if self.world.events.iter().any(|e| matches!(e, Event::MatchOver { .. })) { party.finished(); }
+        if self.world.events.contains(&Event::NewArena) { party.settings.apply_round(&mut self.world); }
+        Some(party.running().then(|| party.controls(self.slots.len(), DT)))
+    }
 
     /// Client: apply what the host sent; returns the interpolation alpha.
     pub fn receive(&mut self, dt: f32) -> f32 {
@@ -113,6 +159,12 @@ impl app::Game for Gg {
     fn local_players(&self) -> usize { self.slots.len() }
 
     fn tick(&mut self, controls: &[Controls]) {
+        let party_controls = match self.party_tick() {
+            None => None,
+            Some(None) => return,
+            Some(Some(c)) => Some(c),
+        };
+        let controls: &[Controls] = party_controls.as_deref().unwrap_or(controls);
         // Edited mods take effect a quarter second later, between ticks.
         self.since_poll += 1;
         if self.since_poll >= TICK_HZ / 4 {
@@ -173,6 +225,8 @@ impl app::Game for Gg {
     }
 
     fn title(&self) -> Option<String> { Some(format!("round {}", self.world.round)) }
+
+    fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
 
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let w: Vec<&str> = cmd.split_whitespace().collect();
@@ -320,6 +374,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     };
     println!("seed {seed}, {} local, {} players", slots.len(), world.players.len());
     let mut game = Gg::new(world, session, slots);
+    game.party = crate::party::Party::connect();
+    if game.party.is_some() { println!("gamenight: waiting for the party host"); }
     // `--give explosive --give damage`: start local player 1 with these cards.
     for card in args.list.windows(2).filter(|w| w[0] == "--give").map(|w| w[1].clone()) {
         println!("{}", app::Game::command(&mut game, &format!("give 0 {card}"))?);

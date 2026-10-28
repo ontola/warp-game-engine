@@ -21,6 +21,7 @@ Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $destination 'growing-
 New-Item -ItemType Directory -Path (Join-Path $destination 'assets') | Out-Null
 Copy-Item -LiteralPath (Join-Path $gameRoot 'assets/characters') -Destination (Join-Path $destination 'assets') -Recurse
 Copy-Item -LiteralPath (Join-Path $gameRoot 'mods') -Destination $destination -Recurse
+Copy-Item -LiteralPath (Join-Path $gameRoot 'gamenight.json') -Destination $destination
 New-Item -ItemType Directory -Path (Join-Path $destination 'sounds') | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $gameRoot 'sounds') -Filter '*.luau' | Copy-Item -Destination (Join-Path $destination 'sounds')
 $recordings = 'none'
