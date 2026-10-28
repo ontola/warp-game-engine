@@ -25,3 +25,9 @@ cc = "1"
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
 serde_json.workspace = true
+
+# DX12 compiles shaders with DXC, linked in. Without it wgpu falls back to
+# FXC, which rejects the cull pipeline (X3663: barriers after data-dependent
+# early exits it cannot prove uniform). WGPU_DX12_COMPILER still overrides.
+[target.'cfg(all(windows, not(target_arch = "aarch64")))'.dependencies]
+wgpu = { version = "30", features = ["static-dxc"] }

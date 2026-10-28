@@ -153,8 +153,9 @@ Recorded measurements from 2026-10-28:
   scenes, with resolution, event counts and timing scope recorded separately.
 - [Renderer configuration sweep](tools/perf-results-20261028.json): measured
   commit `74ea8f0`, ten successful Vulkan configurations and two failed DX12
-  attempts. DX12 fails compiling the `cull` pipeline in FXC (X3663), before any
-  timing data. This sweep is one fixed-order repetition, not evidence for a
+  attempts. DX12 failed compiling the `cull` pipeline in FXC (X3663), before any
+  timing data. The renderer now links DXC on Windows (wgpu `static-dxc`), which
+  wgpu picks before FXC; this is not yet re-measured on DX12. This sweep is one fixed-order repetition, not evidence for a
   default change. At 4K/four views the default GPU median is 4.15 ms and serialized
   CPU-plus-GPU-wait median/p95 is 7.57/12.85 ms; this is an offscreen fixture, not
   a sustained 120 FPS gameplay claim. Each measured run retains all 600 requested
