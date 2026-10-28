@@ -10,7 +10,7 @@
 //! Render prints the length, peak, loudness, spectral centroid, per-speaker
 //! levels and a text spectrogram, so a sound can be judged (by a person or a
 //! model) without listening.
-use audio::analysis::{rms, spectrogram, spectrum, write_wav};
+use audio::analysis::{downmix, levels, text_spectrogram, trim_silence, write_wav};
 use audio::synth::{self, Ear, Layout, Place, Play};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -127,33 +127,19 @@ fn render(args: &[String]) -> Result<(), String> {
         t += block;
     }
     let cost = t0.elapsed().as_secs_f32();
-    // Trim trailing silence (under -90 dBFS).
-    let frames = out.len() / ch;
-    let last = (0..frames).rev().find(|&f| out[f * ch..(f + 1) * ch].iter().any(|v| v.abs() > 3e-5)).map_or(0, |f| f + 1);
-    out.truncate((last + (0.02 * SR) as usize).min(frames) * ch);
-    let frames = out.len() / ch;
-    let mono: Vec<f32> = (0..frames).map(|f| out[f * ch..(f + 1) * ch].iter().sum::<f32>() / ch as f32).collect();
-    let peak = out.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-    let per: Vec<f32> = (0..ch).map(|c| rms(&out.iter().skip(c).step_by(ch).copied().collect::<Vec<_>>())).collect();
-    let n = 4096.min(mono.len().next_power_of_two()).max(256);
-    let s = spectrum(&mono[..n.min(mono.len())], n);
-    let (num, den) = s.iter().enumerate().skip(1).fold((0.0, 0.0), |(a, b), (k, m)| (a + k as f32 * m, b + m));
-    let centroid = if den > 0.0 { num / den * SR / n as f32 } else { 0.0 };
-    let db = |v: f32| if v > 0.0 { 20.0 * v.log10() } else { -120.0 };
-    // Loudest 50 ms window: how hard it hits.
-    let w = (0.05 * SR) as usize;
-    let punch = mono.chunks(w.max(1)).map(rms).fold(0.0f32, f32::max);
+    trim_silence(&mut out, ch, SR);
+    let l = levels(&out, ch, SR);
     if let Some(path) = &o.out { write_wav(path, SR as u32, ch as u16, &out).map_err(|e| format!("{}: {e}", path.display()))?; }
     if o.json {
-        let names: Vec<String> = per.iter().map(|v| format!("{:.1}", db(*v))).collect();
+        let names: Vec<String> = l.channels_db.iter().map(|v| format!("{v:.1}")).collect();
         println!("{{\"sound\":\"{}\",\"seconds\":{:.3},\"peak_db\":{:.1},\"rms_db\":{:.1},\"punch_db\":{:.1},\"centroid_hz\":{:.0},\"channels_db\":[{}],\"render_ms\":{:.1}}}",
-            patch.name, frames as f32 / SR, db(peak), db(rms(&mono)), db(punch), centroid, names.join(","), cost * 1000.0);
+            patch.name, l.seconds, l.peak_db, l.rms_db, l.punch_db, l.centroid_hz, names.join(","), cost * 1000.0);
         return Ok(());
     }
-    println!("{} ({} nodes) on {} at seed {}: {:.3} s, rendered in {:.1} ms", patch.name, patch.nodes.len(), o.layout.name, o.seed, frames as f32 / SR, cost * 1000.0);
-    println!("peak {:.1} dBFS, rms {:.1} dB, loudest 50 ms {:.1} dB, centroid {:.0} Hz", db(peak), db(rms(&mono)), db(punch), centroid);
-    if ch > 1 { println!("speakers: {}", per.iter().enumerate().map(|(c, v)| format!("{}:{:.1}", speaker_name(&o.layout.name, c), db(*v))).collect::<Vec<_>>().join("  ")); }
-    print!("{}", text_spectrogram(&mono));
+    println!("{} ({} nodes) on {} at seed {}: {:.3} s, rendered in {:.1} ms", patch.name, patch.nodes.len(), o.layout.name, o.seed, l.seconds, cost * 1000.0);
+    println!("peak {:.1} dBFS, rms {:.1} dB, loudest 50 ms {:.1} dB, centroid {:.0} Hz", l.peak_db, l.rms_db, l.punch_db, l.centroid_hz);
+    if ch > 1 { println!("speakers: {}", l.channels_db.iter().enumerate().map(|(c, v)| format!("{}:{v:.1}", speaker_name(&o.layout.name, c))).collect::<Vec<_>>().join("  ")); }
+    print!("{}", text_spectrogram(&downmix(&out, ch), SR));
     if let Some(p) = &o.out { println!("wrote {}", p.display()); }
     Ok(())
 }
@@ -161,38 +147,4 @@ fn render(args: &[String]) -> Result<(), String> {
 fn speaker_name(layout: &str, c: usize) -> String {
     let names: &[&str] = match layout { "stereo" => &["L", "R"], "quad" => &["L", "R", "Ls", "Rs"], "5.1" => &["L", "R", "C", "LFE", "Ls", "Rs"], "7.1" => &["L", "R", "C", "LFE", "Lb", "Rb", "Ls", "Rs"], _ => &[] };
     names.get(c).map_or(format!("{c}"), |s| s.to_string())
-}
-
-/// Rows are log-spaced bands (high at the top), columns time; brightness
-/// relative to the loudest cell, 60 dB range.
-fn text_spectrogram(x: &[f32]) -> String {
-    if x.len() < 512 { return String::new(); }
-    let n = 1024;
-    let cols = 72usize;
-    let hop = (x.len().saturating_sub(n) / cols).max(64);
-    let frames = spectrogram(x, n, hop);
-    let bands: Vec<f32> = (0..=14).map(|k| 40.0 * (20000.0f32 / 40.0).powf(k as f32 / 14.0)).collect();
-    let mut grid = vec![vec![0.0f32; frames.len()]; bands.len() - 1];
-    for (c, f) in frames.iter().enumerate() {
-        for b in 0..bands.len() - 1 {
-            let (lo, hi) = ((bands[b] / SR * n as f32) as usize, ((bands[b + 1] / SR * n as f32) as usize).max((bands[b] / SR * n as f32) as usize + 1));
-            grid[b][c] = f[lo.min(f.len() - 1)..hi.min(f.len())].iter().map(|m| m * m).sum::<f32>();
-        }
-    }
-    let max = grid.iter().flatten().fold(0.0f32, |m, v| m.max(*v));
-    if max <= 0.0 { return "(silent)\n".into(); }
-    let ramp = [' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
-    let mut s = String::new();
-    for b in (0..grid.len()).rev() {
-        let label = bands[b + 1];
-        s += &format!("{:>6} |", if label >= 1000.0 { format!("{:.1}k", label / 1000.0) } else { format!("{label:.0}") });
-        for v in &grid[b] {
-            let d = 10.0 * (v / max).max(1e-12).log10();
-            let k = (((d + 60.0) / 60.0) * (ramp.len() - 1) as f32).round().clamp(0.0, (ramp.len() - 1) as f32) as usize;
-            s.push(ramp[k]);
-        }
-        s.push('\n');
-    }
-    s += &format!("       +{}\n        0 s{:>w$}\n", "-".repeat(grid[0].len()), format!("{:.2} s", x.len() as f32 / SR), w = grid[0].len().saturating_sub(3));
-    s
 }
