@@ -131,6 +131,7 @@ pub struct View {
     cam_height: f32,
     pub camera: Camera,
     pub fresh: bool,
+    pub fx: crate::fx::Fx,
 }
 
 fn level_key(l: &Level) -> u64 {
@@ -172,6 +173,7 @@ impl View {
             cam_height: 18.5,
             camera: Camera { pos: Vec3::new(0.0, 20.0, 12.0), target: Vec3::ZERO, fov_y: 42f32.to_radians(), near: 0.1 },
             fresh: true,
+            fx: crate::fx::Fx::default(),
         }
     }
 
@@ -364,6 +366,7 @@ impl View {
         o.bloom_strength = 0.6 * 0.36;
         o.bloom_threshold = 1.0;
         renderer.set_debug_options(o)?;
+        renderer.set_sprite_image(gpu, crate::fx::IMAGE, &crate::fx::atlas(), render::hud::ImageFilter::Linear);
         Ok(())
     }
 
@@ -424,6 +427,10 @@ impl View {
         }
         renderer.update_instances(gpu, first, &self.scene.instances[first..first + POOL])?;
         self.follow(w, dt);
+        self.fx.update(w, dt);
+        let shake = self.fx.shake_offset();
+        self.camera.pos += shake;
+        self.camera.target += shake;
         // Cards turn to the camera (halo.gdshader's billboard).
         let face = facing(&self.camera);
         for &(i, mesh, pos, scale) in &self.cards {
@@ -437,13 +444,21 @@ impl View {
         let mid = self.camera.target;
         let mut near: Vec<&Lamp> = self.lamps.iter().collect();
         near.sort_by(|a, b| a.pos.distance_squared(mid).total_cmp(&b.pos.distance_squared(mid)));
-        let locals: Vec<LocalLight> = near.iter().take(render::headlights::MAX_LOCAL_LIGHTS).map(|l| l.light).collect();
+        // Spell lights first, the level's lamps after.
+        let mut locals: Vec<LocalLight> = self.fx.lights();
+        locals.sort_by(|a, b| b.intensity_cd.max_element().total_cmp(&a.intensity_cd.max_element()));
+        locals.truncate(12);
+        let room = render::headlights::MAX_LOCAL_LIGHTS - locals.len();
+        locals.extend(near.iter().take(room).map(|l| l.light));
         renderer.set_local_lights(&locals)?;
         // Lamps light the haze (Godot's light_volumetric_fog_energy is 1).
         if self.light.volumetric.is_some() {
             renderer.set_volumetric_beams(&locals)?;
         }
         self.light.time = w.time as f32;
+        renderer.set_sprites(gpu, &self.fx.sprites(&self.camera))?;
+        let t = self.fx.time;
+        self.fx.blasts.flush(gpu, renderer, t)?;
         Ok(())
     }
 
