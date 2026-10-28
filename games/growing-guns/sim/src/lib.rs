@@ -322,7 +322,7 @@ pub enum Event {
     /// (decal and chip size); `strong` hits also wear chunks down.
     Impact { pos: Vec3, normal: Vec3, damage: f32, strong: bool },
     /// An explosion went off (bullet splash, grenade, mine, strike).
-    Explosion { pos: Vec3, radius: f32, owner: usize },
+    Explosion { pos: Vec3, radius: f32, owner: usize, #[serde(default)] kind: ExplosionKind },
     Hit { victim: usize, attacker: usize, damage: i32, head: bool, pos: Vec3 },
     /// `gib` says how the body goes (Godot `do_ragdoll` death modes) and
     /// `dir` which way the killing blow pushed.
@@ -344,6 +344,11 @@ pub enum Event {
     /// A fresh arena was generated: rebuild the scene.
     NewArena,
 }
+
+/// Presentation identity, independent of damage radius. Older recordings
+/// without this tag retain their conventional blast effects.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum ExplosionKind { #[default] Conventional, Ion }
 
 /// How a body goes when it dies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]

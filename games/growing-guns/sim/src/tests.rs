@@ -293,8 +293,20 @@ fn air_strike_echo_lands_twice_and_ion_ignores_cover() {
     w.arena.build_chunks();
     w.players[1].health = 500;
     w.strikes.push(Strike { kind: StrikeKind::IonCannon, target: Vec3::new(0.0, 0.0, 10.0), owner: Some(0), age: 0.0 });
-    idle(&mut w, 230);
+    let mut ion_events = 0;
+    for _ in 0..230 {
+        idle(&mut w, 1);
+        ion_events += w.events.iter().filter(|e| matches!(e, Event::Explosion { kind: ExplosionKind::Ion, .. })).count();
+    }
+    assert_eq!(ion_events, 1, "ion presentation must fire once, independently of blast radius");
     assert!(500 - w.players[1].health >= 101);
+}
+
+#[test]
+fn old_explosion_events_keep_conventional_effects() {
+    let old = r#"{"Explosion":{"pos":[0.0,1.0,2.0],"radius":38.0,"owner":0}}"#;
+    let event: Event = serde_json::from_str(old).unwrap();
+    assert!(matches!(event, Event::Explosion { kind: ExplosionKind::Conventional, .. }));
 }
 
 #[test]

@@ -1,16 +1,15 @@
 //! What lives in the world besides players and the arena: grenades,
 //! cluster fragments, mines and dash bombs, pickups, air strike rockets and
-//! markers, the ion cannon column and the lava leak.
+//! markers and the lava leak. The ion cannon uses GPU effects in `ion`.
 use super::{cube, glow, material, sphere};
 use glam::{Affine3A, Quat, Vec3};
 use glam::Vec2;
-use growing_guns::{PickupKind, ProjectileKind, StrikeKind, World, AIR_STRIKE_TRAVEL, ION_CHARGE, PICKUPS};
+use growing_guns::{PickupKind, ProjectileKind, StrikeKind, World, AIR_STRIKE_TRAVEL, PICKUPS};
 use render::scene::{Material, NO_SHADOW};
 use render::slots::Slots;
 use render::Scene;
 
 const SLOTS: usize = 192;
-const ION_SLOTS: usize = SLOTS / 2;
 
 pub struct Things {
     first: usize,
@@ -24,9 +23,6 @@ pub struct Things {
     pickups: [usize; 7],
     marker: usize,
     rocket: usize,
-    ion: usize,
-    ion_core: usize,
-    ion_first: usize,
     lava: usize,
 }
 
@@ -39,24 +35,8 @@ impl Things {
         let teal = glow(scene, [0.0, 0.95, 0.75], 20000.0);
         let pick = |scene: &mut Scene, c: [f32; 3]| { let m = glow(scene, c, 9000.0); cube(scene, m) };
         let lava_m = scene.add_material(Material { tint: [1.0; 3], layer: -1, roughness: 1.0, flags: render::scene::LAVA, scale: 12000.0, metal: 0.0 });
-        let ion_m = glow(scene, [0.35, 0.72, 1.0], 6000.0);
-        let ion_core_m = glow(scene, [0.8, 0.95, 1.0], 60000.0);
-        scene.set_material_additive(ion_m, 0.06, true);
-        scene.set_material_additive(ion_core_m, 0.18, true);
-        let ion = scene.add_mesh(&render::primitives::cylinder(ion_m, 1.0, 1.0, 24).mesh());
-        let ion_core = scene.add_mesh(&render::primitives::cylinder(ion_core_m, 1.0, 1.0, 12).mesh());
         let first = Slots::reserve(scene, SLOTS).first;
         for k in 0..SLOTS { scene.instances[first + k].cluster_count = 0; }
-        // Transparent source topology is registered at renderer creation.
-        // Dedicated owners keep their beam meshes; collapsed transforms hide
-        // idle slots without losing the geometry before the first cast.
-        let ion_first = scene.instances.len();
-        for _ in 0..ION_SLOTS {
-            for mesh in [ion, ion_core] {
-                scene.add_instance(mesh, Affine3A::from_scale(Vec3::ZERO));
-                scene.mark_no_shadow();
-            }
-        }
         Things {
             first,
             grenade: sphere(scene, dark, 6, 10),
@@ -72,7 +52,6 @@ impl Things {
             ],
             marker: { let m = glow(scene, [1.0, 0.1, 0.05], 12000.0); scene.add_mesh(&render::primitives::torus(m, 0.04, 24, 6).mesh()) },
             rocket: { let m = glow(scene, [1.0, 0.55, 0.2], 40000.0); cube(scene, m) },
-            ion, ion_core, ion_first,
             lava: cube(scene, lava_m),
         }
     }
@@ -106,7 +85,6 @@ impl Things {
             let xf = Affine3A::from_scale_rotation_translation(Vec3::splat(if p.kind == PickupKind::Mushroom { 0.6 } else { 0.45 }), Quat::from_rotation_y(clock * 1.8), p.pos + Vec3::Y * bob);
             put(scene, self.pickups[k], xf, true);
         }
-        let mut ion_count = 0;
         for s in &world.strikes {
             match s.kind {
                 StrikeKind::AirStrike => {
@@ -118,20 +96,7 @@ impl Things {
                     let dir = (s.target - sky).normalize();
                     put(scene, self.rocket, Affine3A::from_scale_rotation_translation(Vec3::new(0.35, 2.2, 0.35), Quat::from_rotation_arc(Vec3::Y, -dir), pos), false);
                 }
-                StrikeKind::IonCannon => {
-                    if ion_count >= ION_SLOTS { continue; }
-                    let t = ((s.age / ION_CHARGE) as f32).clamp(0.0, 1.0);
-                    let r = 30.0 + (1.5 - 30.0) * t;
-                    let slot = self.ion_first + ion_count * 2;
-                    scene.update_instance(slot, self.ion, at(s.target + Vec3::Y * 200.0, Vec3::new(r, 400.0, r)));
-                    scene.update_instance(slot + 1, self.ion_core, at(s.target + Vec3::Y * 200.0, Vec3::new(0.3 + t, 400.0, 0.3 + t)));
-                    ion_count += 1;
-                }
-            }
-        }
-        for k in ion_count..ION_SLOTS {
-            for (part, mesh) in [self.ion, self.ion_core].into_iter().enumerate() {
-                scene.update_instance(self.ion_first + k * 2 + part, mesh, Affine3A::from_scale(Vec3::ZERO));
+                StrikeKind::IonCannon => {}
             }
         }
         // Coop: where the next enemy rises (Godot's pentagram), and the
@@ -185,34 +150,4 @@ fn wall_sheets(half: f32) -> [(Vec2, Vec2); 4] {
         (Vec2::new(d, 0.0), Vec2::new(0.1, half * 2.0)), (Vec2::new(-d, 0.0), Vec2::new(0.1, half * 2.0)),
         (Vec2::new(0.0, d), Vec2::new(half * 2.0, 0.1)), (Vec2::new(0.0, -d), Vec2::new(half * 2.0, 0.1)),
     ]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ion_owners_keep_registered_geometry_across_casts() {
-        let mut scene = Scene::default();
-        let things = Things::reserve(&mut scene);
-        let mut world = World::new(3, &[false, true]);
-        things.pose(&mut scene, &world, 0.0);
-        let owners = &scene.instances[things.ion_first..things.ion_first + ION_SLOTS * 2];
-        assert!(owners.iter().all(|i| i.cluster_count > 0 && i.scale == 0.0 && i.flags & NO_SHADOW != 0));
-        let ranges: Vec<_> = owners.iter().map(|i| (i.first_cluster, i.cluster_count)).collect();
-        for i in owners {
-            let material = scene.clusters[i.first_cluster as usize].material;
-            let blend = scene.blended_materials[&material];
-            assert!(blend.additive && blend.alpha > 0.0 && blend.alpha < 0.2);
-        }
-        world.strikes.push(growing_guns::Strike { kind: StrikeKind::IonCannon, target: Vec3::new(4.0, 0.0, 6.0), owner: Some(0), age: 1.0 });
-        things.pose(&mut scene, &world, 1.0);
-        assert!(scene.instances[things.ion_first].scale > 0.0);
-        world.strikes.clear();
-        things.pose(&mut scene, &world, 2.0);
-        for (i, range) in scene.instances[things.ion_first..things.ion_first + ION_SLOTS * 2].iter().zip(ranges) {
-            assert_eq!((i.first_cluster, i.cluster_count), range);
-            assert_eq!(i.scale, 0.0);
-        }
-    }
 }

@@ -21,6 +21,8 @@ use std::sync::Mutex;
 /// target saturates anyway.
 const MAX_CD: f32 = 100_000_000.0;
 const SPHERE_VERTICES: u32 = 16 * 9 * 6;
+const COLUMN_VERTICES: u32 = 16 * 6;
+const STREAK_VERTICES: u32 = 6 * 12;
 const MAX_PUFFS: usize = 16384;
 /// Heat shells only for blasts at least this big (Godot BLAST_DISTORTION_MIN_RADIUS).
 pub const DISTORTION_MIN_RADIUS: f32 = 5.0;
@@ -41,6 +43,124 @@ const SMOKE: f32 = 0.0;
 const FIRE: f32 = 1.0;
 const EMBER: f32 = 2.0;
 const HEAT: f32 = 3.0;
+const COLUMN: f32 = 4.0;
+const STREAK: f32 = 5.0;
+
+/// An unlit, additive cylinder animated entirely from its birth time. Values
+/// are metres, seconds and linear RGB radiance in nits. `position` is the
+/// bottom centre; the cylinder has open ends so long columns have no visible
+/// cap. Several nested columns can describe a soft beam without a volume.
+#[derive(Clone, Copy, Debug)]
+pub struct AdditiveColumn {
+    pub position: Vec3,
+    pub birth: f32,
+    pub life: f32,
+    pub height: f32,
+    pub radius: [f32; 2],
+    pub radius_power: f32,
+    pub color: [Vec3; 2],
+    /// Normalized ages over which color changes, using smoothstep.
+    pub color_transition: [f32; 2],
+    pub opacity: [f32; 2],
+    pub opacity_power: f32,
+    pub radiance: [f32; 2],
+    pub radiance_power: f32,
+    pub pulse_radians_per_second: f32,
+    /// Added sinusoidal radiance, weighted by the radiance ramp.
+    pub pulse_radiance: f32,
+    pub bottom_radius_scale: f32,
+}
+
+impl Default for AdditiveColumn {
+    fn default() -> Self {
+        Self { position: Vec3::ZERO, birth: 0.0, life: 1.0, height: 1.0,
+            radius: [0.1; 2], radius_power: 1.0, color: [Vec3::ONE; 2],
+            color_transition: [0.0, 1.0], opacity: [1.0, 0.0], opacity_power: 1.0,
+            radiance: [1000.0; 2], radiance_power: 1.0,
+            pulse_radians_per_second: 0.0, pulse_radiance: 0.0, bottom_radius_scale: 1.0 }
+    }
+}
+
+/// A compact six-sided additive streak (72 vertices with caps), or a small mote when
+/// length and diameter are similar. It travels along `travel` over its life;
+/// motion_power 1 is linear and 2 eases out. Fade durations are fractions of
+/// its lifetime. No scene instances, CPU simulation or material uploads are
+/// needed after spawning.
+#[derive(Clone, Copy, Debug)]
+pub struct AdditiveStreak {
+    pub position: Vec3,
+    pub travel: Vec3,
+    pub birth: f32,
+    pub life: f32,
+    pub radius: [f32; 2],
+    pub length: [f32; 2],
+    pub color: Vec3,
+    pub radiance: f32,
+    pub opacity: f32,
+    pub fade_in: f32,
+    pub fade_out: f32,
+    pub motion_power: f32,
+}
+
+impl Default for AdditiveStreak {
+    fn default() -> Self {
+        Self { position: Vec3::ZERO, travel: Vec3::Y, birth: 0.0, life: 1.0,
+            radius: [0.05; 2], length: [0.1; 2], color: Vec3::ONE,
+            radiance: 1000.0, opacity: 1.0, fade_in: 0.1, fade_out: 0.5, motion_power: 1.0 }
+    }
+}
+
+fn effect_lifetime(birth: f32, life: f32) -> bool {
+    birth.is_finite() && life.is_finite() && life > 0.0 && life <= 120.0
+        && (birth + life).is_finite()
+}
+fn nonnegative(values: &[f32]) -> bool { values.iter().all(|v| v.is_finite() && *v >= 0.0) }
+fn ramp_power(value: f32) -> bool { value.is_finite() && (0.01..=32.0).contains(&value) }
+
+impl AdditiveColumn {
+    fn puff(self) -> Result<Puff, String> {
+        if !self.position.is_finite() || !effect_lifetime(self.birth, self.life)
+            || !self.height.is_finite() || self.height <= 0.0
+            || !(self.position.y + self.height).is_finite()
+            || !nonnegative(&self.radius) || !ramp_power(self.radius_power)
+            || self.color.iter().any(|c| !c.is_finite() || c.min_element() < 0.0)
+            || !nonnegative(&self.color_transition) || self.color_transition[0] >= self.color_transition[1] || self.color_transition[1] > 1.0
+            || !nonnegative(&self.opacity) || self.opacity.iter().any(|v| *v > 1.0) || !ramp_power(self.opacity_power)
+            || !nonnegative(&self.radiance) || !ramp_power(self.radiance_power)
+            || !nonnegative(&[self.pulse_radians_per_second, self.pulse_radiance, self.bottom_radius_scale])
+            || self.bottom_radius_scale <= 0.0 || self.radius.iter().any(|v| !(v * self.bottom_radius_scale).is_finite())
+            || self.radiance.iter().any(|v| !(*v + self.pulse_radiance).is_finite())
+            || !(self.pulse_radians_per_second * self.life).is_finite()
+            || self.color.iter().any(|c| !(c.max_element() * (self.radiance[0].max(self.radiance[1]) + self.pulse_radiance)).is_finite())
+        { return Err("additive column requires finite pose, dimensions and nonnegative radiance; life (0,120], opacity [0,1], ordered color transition [0,1] and powers [0.01,32]".into()); }
+        Ok(Puff { center_kind: self.position.extend(COLUMN).to_array(),
+            ax: [self.radius[0], self.radius[1], self.height, self.radius_power],
+            ay: self.color[0].extend(self.opacity[0]).to_array(),
+            az: self.color[1].extend(self.opacity[1]).to_array(),
+            body: [self.radiance[0], self.radiance[1], self.opacity_power, self.radiance_power],
+            timing: [self.birth, self.life, self.color_transition[0], self.color_transition[1]],
+            extra: [self.pulse_radians_per_second, self.pulse_radiance, self.bottom_radius_scale, 0.0] })
+    }
+}
+
+impl AdditiveStreak {
+    fn puff(self) -> Result<Puff, String> {
+        if !self.position.is_finite() || !self.travel.is_finite() || !(self.position + self.travel).is_finite()
+            || !self.travel.length_squared().is_finite() || !effect_lifetime(self.birth, self.life)
+            || !nonnegative(&self.radius) || !nonnegative(&self.length)
+            || !self.color.is_finite() || self.color.min_element() < 0.0
+            || !nonnegative(&[self.radiance, self.opacity, self.fade_in, self.fade_out])
+            || self.opacity > 1.0 || self.fade_in + self.fade_out > 1.0 || !ramp_power(self.motion_power)
+            || !(self.color.max_element() * self.radiance).is_finite()
+        { return Err("additive streak requires finite pose, dimensions and nonnegative radiance; life (0,120], opacity [0,1], fade fractions totaling <=1 and motion power [0.01,32]".into()); }
+        Ok(Puff { center_kind: self.position.extend(STREAK).to_array(),
+            ax: self.travel.extend(self.motion_power).to_array(),
+            ay: [self.radius[0], self.radius[1], self.length[0], self.length[1]],
+            az: self.color.extend(self.radiance).to_array(),
+            body: [self.opacity, self.fade_in, self.fade_out, 0.0],
+            timing: [self.birth, self.life, 0.0, 0.0], extra: [0.0; 4] })
+    }
+}
 
 impl Puff {
     fn kind(&self) -> u32 { self.center_kind[3] as u32 }
@@ -82,6 +202,26 @@ impl Effects {
     pub fn len(&self) -> usize { self.puffs.len() }
     pub fn is_empty(&self) -> bool { self.puffs.is_empty() }
     pub fn clear(&mut self) { self.puffs.clear(); self.pops.clear(); self.changed = true; }
+
+    /// Spawn one GPU-animated column. Oldest effects are recycled at the
+    /// shared pool limit, including when many future births are scheduled.
+    pub fn column(&mut self, spec: AdditiveColumn) -> Result<(), String> {
+        let puff = spec.puff()?;
+        self.additive(puff);
+        Ok(())
+    }
+
+    pub fn streak(&mut self, spec: AdditiveStreak) -> Result<(), String> {
+        let puff = spec.puff()?;
+        self.additive(puff);
+        Ok(())
+    }
+
+    fn additive(&mut self, puff: Puff) {
+        if self.puffs.len() >= MAX_PUFFS { self.puffs.drain(..self.puffs.len() + 1 - MAX_PUFFS); }
+        self.puffs.push(puff);
+        self.changed = true;
+    }
 
     /// A full blast at `time` (seconds on the clock passed to `flush`):
     /// smoke, fireball, flame tongues, embers, heat shell and lights.
@@ -267,6 +407,8 @@ pub(crate) struct FxRenderer {
     billow: wgpu::RenderPipeline,
     ember: wgpu::RenderPipeline,
     heat: wgpu::RenderPipeline,
+    column: wgpu::RenderPipeline,
+    streak: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     puffs: wgpu::Buffer,
     source: Vec<Puff>,
@@ -291,20 +433,22 @@ impl FxRenderer {
         let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("fx"), source: wgpu::ShaderSource::Wgsl(shader_source().into()) });
         let additive = wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
             alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add } };
-        let pipe = |entry: &str, blend: wgpu::BlendState| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some(entry), layout: Some(&pl),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("fx_vs"), compilation_options: Default::default(), buffers: &[] },
+        let pipe = |vertex: &str, entry: &str, blend: wgpu::BlendState| gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some(entry), layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some(vertex), compilation_options: Default::default(), buffers: &[] },
             primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() }, depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(entry), compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })] }),
             multiview_mask: None, cache: gpu.pipeline_cache() });
-        let billow = pipe("fx_billow", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
-        let ember = pipe("fx_ember", additive);
-        let heat = pipe("fx_heat", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let billow = pipe("fx_vs", "fx_billow", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let ember = pipe("fx_vs", "fx_ember", additive);
+        let heat = pipe("fx_vs", "fx_heat", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let column = pipe("fx_column_vs", "fx_column", additive);
+        let streak = pipe("fx_streak_vs", "fx_streak", additive);
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("fx background"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
             address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, ..Default::default() });
         let puffs = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("fx puffs"), size: (MAX_PUFFS * std::mem::size_of::<Puff>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        FxRenderer { layout, billow, ember, heat, sampler, puffs, source: Vec::new(), time: 0.0, targets: Vec::new() }
+        FxRenderer { layout, billow, ember, heat, column, streak, sampler, puffs, source: Vec::new(), time: 0.0, targets: Vec::new() }
     }
 
     fn set(&mut self, gpu: &Gpu, time: f32, puffs: Option<&[Puff]>) {
@@ -327,18 +471,25 @@ impl FxRenderer {
         let mut heat = Vec::new();
         let mut billows = Vec::new();
         let mut embers = Vec::new();
+        let mut columns = Vec::new();
+        let mut streaks = Vec::new();
         for (i, p) in self.source.iter().enumerate() {
             if p.end() <= self.time || p.timing[0] > self.time { continue; }
             let c = Vec3::from_slice(&p.center_kind[..3]);
             match p.kind() {
                 0 | 1 => billows.push((i as u32, c.distance_squared(camera.pos))),
                 2 => embers.push(i as u32),
-                _ => heat.push(i as u32),
+                3 => heat.push(i as u32),
+                4 => columns.push(i as u32),
+                5 => streaks.push(i as u32),
+                _ => {},
             }
         }
         billows.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        let ids: Vec<u32> = heat.iter().copied().chain(billows.iter().map(|b| b.0)).chain(embers.iter().copied()).collect();
+        let ids: Vec<u32> = heat.iter().copied().chain(billows.iter().map(|b| b.0)).chain(embers.iter().copied())
+            .chain(columns.iter().copied()).chain(streaks.iter().copied()).collect();
         let (nh, nb, ne) = (heat.len() as u32, billows.len() as u32, embers.len() as u32);
+        let (nc, ns) = (columns.len() as u32, streaks.len() as u32);
         if input.format() != wgpu::TextureFormat::Rgba16Float || !input.usage().contains(wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING) {
             return Err("fx requires copyable sampleable HDR input".into());
         }
@@ -376,6 +527,8 @@ impl FxRenderer {
         if nh > 0 { pass.set_pipeline(&self.heat); pass.draw(0..SPHERE_VERTICES, 0..nh); }
         if nb > 0 { pass.set_pipeline(&self.billow); pass.draw(0..SPHERE_VERTICES, nh..nh + nb); }
         if ne > 0 { pass.set_pipeline(&self.ember); pass.draw(0..SPHERE_VERTICES, nh + nb..nh + nb + ne); }
+        if nc > 0 { pass.set_pipeline(&self.column); pass.draw(0..COLUMN_VERTICES, nh + nb + ne..nh + nb + ne + nc); }
+        if ns > 0 { pass.set_pipeline(&self.streak); pass.draw(0..STREAK_VERTICES, nh + nb + ne + nc..nh + nb + ne + nc + ns); }
         drop(pass);
         Ok(Some(t.output.clone()))
     }
@@ -425,5 +578,78 @@ mod tests {
         let mut small = Effects::default();
         small.explosion(0.0, Vec3::ZERO, 4.0, Vec3::ONE);
         assert!(small.puffs.iter().all(|p| p.center_kind[3] != HEAT));
+    }
+
+    #[test]
+    fn additive_effects_preserve_ramps_and_use_compact_geometry() {
+        let mut fx = Effects::default();
+        let column = AdditiveColumn { position: Vec3::new(2.0, -4.0, 6.0), birth: 7.0, life: 3.0,
+            height: 100.0, radius: [8.0, 0.5], radius_power: 2.0,
+            color: [Vec3::new(0.2, 0.7, 1.0), Vec3::ONE], color_transition: [0.4, 0.9],
+            opacity: [0.01, 0.8], opacity_power: 4.2, radiance: [100.0, 50_000.0],
+            radiance_power: 2.35, pulse_radians_per_second: 9.0, pulse_radiance: 200.0,
+            bottom_radius_scale: 1.03 };
+        fx.column(column).unwrap();
+        let c = fx.puffs[0];
+        assert_eq!(c.kind(), 4);
+        assert_eq!(c.center_kind, [2.0, -4.0, 6.0, COLUMN]);
+        assert_eq!(c.ax, [8.0, 0.5, 100.0, 2.0]);
+        assert_eq!(c.body, [100.0, 50_000.0, 4.2, 2.35]);
+        assert_eq!(c.end(), 10.0);
+
+        let streak = AdditiveStreak { position: Vec3::X, travel: Vec3::Y * 30.0,
+            birth: 10.0, life: 0.4, radius: [0.1, 0.2], length: [16.0, 24.0],
+            color: Vec3::new(0.8, 0.95, 1.0), radiance: 40_000.0, opacity: 0.7,
+            fade_in: 0.0, fade_out: 0.85, motion_power: 1.0 };
+        fx.streak(streak).unwrap();
+        let s = fx.puffs[1];
+        assert_eq!(s.kind(), 5);
+        assert_eq!(s.ax, [0.0, 30.0, 0.0, 1.0]);
+        assert_eq!(s.ay, [0.1, 0.2, 16.0, 24.0]);
+        assert_eq!(s.body, [0.7, 0.0, 0.85, 0.0]);
+        assert!(fx.changed);
+        assert_eq!(COLUMN_VERTICES, 96);
+        assert_eq!(STREAK_VERTICES, 72);
+        assert!(STREAK_VERTICES < SPHERE_VERTICES / 8);
+    }
+
+    #[test]
+    fn invalid_additive_effects_do_not_enter_gpu_pool() {
+        let mut fx = Effects::default();
+        let c = AdditiveColumn::default();
+        for bad in [
+            AdditiveColumn { birth: f32::NAN, ..c },
+            AdditiveColumn { life: 0.0, ..c },
+            AdditiveColumn { life: 121.0, ..c },
+            AdditiveColumn { radius: [-1.0, 1.0], ..c },
+            AdditiveColumn { color_transition: [0.5, 0.5], ..c },
+            AdditiveColumn { radiance: [f32::INFINITY, 1.0], ..c },
+            AdditiveColumn { opacity: [0.1, 1.1], ..c },
+            AdditiveColumn { radius_power: 0.0, ..c },
+            AdditiveColumn { bottom_radius_scale: 0.0, ..c },
+        ] { assert!(fx.column(bad).is_err()); }
+        let s = AdditiveStreak::default();
+        for bad in [
+            AdditiveStreak { travel: Vec3::splat(f32::NAN), ..s },
+            AdditiveStreak { life: -1.0, ..s },
+            AdditiveStreak { radius: [-1.0, 0.0], ..s },
+            AdditiveStreak { length: [0.1, f32::INFINITY], ..s },
+            AdditiveStreak { color: Vec3::NEG_Y, ..s },
+            AdditiveStreak { radiance: -1.0, ..s },
+            AdditiveStreak { fade_in: 0.5, fade_out: 0.6, ..s },
+            AdditiveStreak { motion_power: 33.0, ..s },
+        ] { assert!(fx.streak(bad).is_err()); }
+        assert!(fx.is_empty());
+        assert!(!fx.changed);
+    }
+
+    #[test]
+    fn scheduled_additive_effects_are_bounded_before_upload() {
+        let mut fx = Effects::default();
+        for i in 0..MAX_PUFFS + 3 {
+            fx.streak(AdditiveStreak { birth: i as f32, ..Default::default() }).unwrap();
+        }
+        assert_eq!(fx.len(), MAX_PUFFS);
+        assert_eq!(fx.puffs[0].timing[0], 3.0);
     }
 }
