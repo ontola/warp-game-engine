@@ -231,6 +231,32 @@ pub fn ease_highlight(f: &mut Feedback, n: usize, focus: Option<usize>, dt: f32)
     for (k, h) in f.highlight.iter_mut().enumerate() {
         let target = if Some(k) == focus { 1.0 } else { 0.0 };
         let rate = if target > *h { dt / 0.18 } else { dt / 0.22 };
-        *h = if target > *h { (*h + rate).min(1.0) } else { (*h - rate).max(0.0) };
+        // Clamp to the target so a fully highlighted card stays there instead
+        // of taking a shrink step every other tick while focus is unchanged.
+        *h = if target > *h { (*h + rate).min(target) } else { (*h - rate).max(target) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hover_highlight_stays_settled_until_focus_changes() {
+        let mut feedback = Feedback::default();
+        for (focus, expected) in [
+            (Some(1), [0.0, 1.0, 0.0]),
+            (Some(2), [0.0, 0.0, 1.0]),
+            (None, [0.0; 3]),
+        ] {
+            // Hold each focus for two seconds, well past the rise/fall tween.
+            // Checking every settled tick catches alternating size/lift jitter.
+            for tick in 0..240 {
+                ease_highlight(&mut feedback, 3, focus, 1.0 / 120.0);
+                if tick >= 30 {
+                    assert_eq!(feedback.highlight.as_slice(), &expected, "focus {focus:?}, tick {tick}");
+                }
+            }
+        }
     }
 }
