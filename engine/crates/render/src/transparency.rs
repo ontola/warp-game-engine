@@ -1,4 +1,4 @@
-//! Small, deterministic forward pass for glTF BLEND surfaces.
+//! Small, deterministic forward pass for continuous-alpha and additive surfaces.
 //!
 //! Only source triangles carrying blend metadata enter this pass. They reuse
 //! the opaque renderer's geometry, materials and live instance transforms,
@@ -7,7 +7,7 @@
 
 use crate::Gpu;
 use crate::frame::Camera;
-use crate::scene::{GpuInstance, Scene};
+use crate::scene::{GpuInstance, Scene, HIDE_IN_VIEW_SHIFT};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ struct Triangle {
     material: u32,
     alpha: f32,
     double_sided: u32,
-    _pad: u32,
+    additive: u32,
 }
 
 struct SortTriangle {
@@ -154,7 +154,7 @@ fn source_triangles(
                     material: cluster.material,
                     alpha: blend.alpha,
                     double_sided: u32::from(blend.double_sided),
-                    _pad: 0,
+                    additive: u32::from(blend.additive),
                 });
                 sorting.push(SortTriangle {
                     owner: owner as u32,
@@ -171,11 +171,14 @@ fn sorted_indices(
     triangles: &[SortTriangle],
     owners: &HashMap<u32, GpuInstance>,
     camera: &Camera,
+    view_index: usize,
+    excluded_categories: u32,
 ) -> Vec<u32> {
     let forward = (camera.target - camera.pos).normalize_or(Vec3::NEG_Z);
     let mut depths: Vec<_> = triangles
         .iter()
         .enumerate()
+        .filter(|(_, triangle)| visible_in_view(&owners[&triangle.owner], view_index, excluded_categories))
         .map(|(index, triangle)| {
             let rows = owners[&triangle.owner].rows;
             let p = triangle.center.extend(1.0);
@@ -190,6 +193,13 @@ fn sorted_indices(
     // Stable tie-break prevents equal-depth coplanar decals flipping order.
     depths.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     depths.into_iter().map(|(index, _)| index).collect()
+}
+
+fn visible_in_view(instance: &GpuInstance, view_index: usize, excluded_categories: u32) -> bool {
+    instance.cluster_count != 0
+        && instance.scale > 0.0
+        && (view_index >= 8 || (instance.flags >> HIDE_IN_VIEW_SHIFT) & (1 << view_index) == 0)
+        && instance.category().exclusion_bit() & excluded_categories == 0
 }
 
 impl Transparency {
@@ -370,10 +380,7 @@ impl Transparency {
         excluded_categories: u32,
     ) {
         let owners=self.owners.lock().unwrap();
-        let mut indices = sorted_indices(&self.sort_triangles, &owners, camera);
-        if excluded_categories!=0 {indices.retain(|&index| {
-            owners[&self.sort_triangles[index as usize].owner].category().exclusion_bit() & excluded_categories==0
-        });}
+        let indices = sorted_indices(&self.sort_triangles, &owners, camera, view_index, excluded_categories);
         drop(owners);
         let mut orders = self.orders.lock().unwrap();
         while orders.len() <= view_index {
@@ -489,14 +496,39 @@ mod tests {
             ],
             sphere: [0.0; 4],
             first_cluster: 0,
-            cluster_count: 0,
+            cluster_count: 1,
             scale: 1.0,
             flags: 0,
         };
         let mut owners = HashMap::from([(7, identity), (3, identity)]);
-        assert_eq!(sorted_indices(&triangles, &owners, &camera), vec![1, 2, 0]);
+        assert_eq!(sorted_indices(&triangles, &owners, &camera, 0, 0), vec![1, 2, 0]);
         owners.get_mut(&7).unwrap().rows[2][3] = -8.0;
-        assert_eq!(sorted_indices(&triangles, &owners, &camera), vec![0, 1, 2]);
+        assert_eq!(sorted_indices(&triangles, &owners, &camera, 0, 0), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn ordering_omits_empty_collapsed_hidden_and_excluded_owners() {
+        let camera = Camera { pos: Vec3::ZERO, target: Vec3::NEG_Z, fov_y: 1.0, near: 0.1 };
+        let triangles = [SortTriangle { owner: 0, center: Vec3::ZERO }];
+        let instance = GpuInstance { cluster_count: 1, scale: 1.0, ..GpuInstance::zeroed() };
+        let mut owners = HashMap::from([(0, instance)]);
+        let visible = |owners: &HashMap<u32, GpuInstance>, view, categories| {
+            sorted_indices(&triangles, owners, &camera, view, categories)
+        };
+        assert_eq!(visible(&owners, 0, 0), vec![0]);
+        owners.get_mut(&0).unwrap().cluster_count = 0;
+        assert!(visible(&owners, 0, 0).is_empty());
+        owners.get_mut(&0).unwrap().cluster_count = 1;
+        owners.get_mut(&0).unwrap().scale = 0.0;
+        assert!(visible(&owners, 0, 0).is_empty());
+        owners.get_mut(&0).unwrap().scale = 1.0;
+        owners.get_mut(&0).unwrap().hide_in_views(1 << 1);
+        assert_eq!(visible(&owners, 0, 0), vec![0]);
+        assert!(visible(&owners, 1, 0).is_empty());
+        owners.get_mut(&0).unwrap().set_category(crate::scene::GeometryCategory::Cars);
+        assert!(visible(&owners, 0, crate::scene::GeometryCategory::Cars.exclusion_bit()).is_empty());
+        owners.get_mut(&0).unwrap().hide_in_views(0);
+        assert_eq!(visible(&owners, 1, 0), vec![0]);
     }
 
     #[test]
@@ -507,7 +539,7 @@ mod tests {
     #[test]
     fn blend_geometry_preserves_badges_and_glass_but_excludes_opaque_and_lod_copies() {
         use crate::cluster::{ClusterMesh, GpuCluster, Vertex};
-        use crate::scene::{BLEND, Material, NO_AMBIENT_OCCLUSION};
+        use crate::scene::{BLEND, EMISSIVE, Material, NO_AMBIENT_OCCLUSION};
         let mut scene = Scene::default();
         let material = Material {
             tint: [1.0; 3],
@@ -520,8 +552,10 @@ mod tests {
         let opaque = scene.add_material(material);
         let glass = scene.add_material(material);
         let badge = scene.add_material(material);
+        let energy = scene.add_material(Material { flags: EMISSIVE, ..material });
         scene.set_material_blend(glass, 0.8, true);
         scene.set_material_blend(badge, 1.0, false);
+        scene.set_material_additive(energy, 0.2, true);
         let vertices = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
             .map(|pos| Vertex {
                 pos,
@@ -529,7 +563,7 @@ mod tests {
                 uv: [0.0; 2],
             })
             .to_vec();
-        let clusters = [(opaque, 0.0), (glass, 0.0), (badge, 0.0), (glass, 0.1)]
+        let clusters = [(opaque, 0.0), (glass, 0.0), (badge, 0.0), (energy, 0.0), (glass, 0.1)]
             .map(|(material, own_error)| GpuCluster {
                 tri_count: 1,
                 material,
@@ -546,18 +580,23 @@ mod tests {
             levels: 2,
         });
         scene.add_instance(mesh, glam::Affine3A::IDENTITY);
-        scene.add_instance(mesh, glam::Affine3A::from_translation(Vec3::X * 10.0));
+        // Collapsed pool entries still need their geometry registered at startup.
+        scene.add_instance(mesh, glam::Affine3A::from_scale(Vec3::ZERO));
         let (triangles, _, owners) = source_triangles(&scene);
-        assert_eq!(triangles.len(), 4);
+        assert_eq!(triangles.len(), 6);
         assert_eq!(owners.len(), 2);
-        for pair in triangles.chunks_exact(2) {
+        for group in triangles.chunks_exact(3) {
             assert_eq!(
-                (pair[0].material, pair[0].alpha, pair[0].double_sided),
-                (glass, 0.8, 1)
+                (group[0].material, group[0].alpha, group[0].double_sided, group[0].additive),
+                (glass, 0.8, 1, 0)
             );
             assert_eq!(
-                (pair[1].material, pair[1].alpha, pair[1].double_sided),
-                (badge, 1.0, 0)
+                (group[1].material, group[1].alpha, group[1].double_sided, group[1].additive),
+                (badge, 1.0, 0, 0)
+            );
+            assert_eq!(
+                (group[2].material, group[2].alpha, group[2].double_sided, group[2].additive),
+                (energy, 0.2, 1, 1)
             );
         }
         assert_eq!(
@@ -565,5 +604,12 @@ mod tests {
             BLEND | NO_AMBIENT_OCCLUSION
         );
         assert_eq!(scene.materials[opaque as usize].flags & BLEND, 0);
+        assert_eq!(scene.materials[energy as usize].flags, EMISSIVE | BLEND | NO_AMBIENT_OCCLUSION);
+        scene.set_material_blend(energy, 2.0, false);
+        assert!(!scene.blended_materials[&energy].additive);
+        assert_eq!(scene.blended_materials[&energy].alpha, 1.0);
+        scene.set_material_additive(energy, -1.0, true);
+        assert!(scene.blended_materials[&energy].additive);
+        assert_eq!(scene.blended_materials[&energy].alpha, 0.0);
     }
 }
