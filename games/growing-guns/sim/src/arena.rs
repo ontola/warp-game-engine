@@ -7,8 +7,12 @@
 //! Everything is destructible, as in Godot: each block is pre-split into
 //! uneven chunks (see `destruct.rs`) and collision runs on the live chunks.
 //!
-//! Not ported in this slice: the all-floor-lava island layout, bridges,
-//! tunnels, diagonal walls, decorations and colosseum.
+//! The all-floor-lava island variant (Godot `_build_lava_island_layout`,
+//! 18% of arenas): the floor is lava at 0.04 m, players stand on mirrored
+//! stone columns within jump reach of each other.
+//!
+//! Not ported in this slice: bridges between buildings, tunnels, diagonal
+//! walls, decorations and colosseum.
 use crate::rng::Rng;
 use crate::destruct::Chunk;
 use crate::shape::{Block, BoxGrid, Kind};
@@ -28,9 +32,22 @@ pub const WALL_HEIGHT: f32 = 12.0;
 pub const LAVA_KILL_Y: f32 = -3.0;
 /// Within this much above the pool the heat burns 15 per half second.
 pub const LAVA_BURN_BAND: f32 = 1.2;
+/// Island arenas: the lava floor's surface (Godot LAVA_FLOOR_SURFACE_Y).
+/// Below it a player dies; up to `LAVA_FLOOR_BURN` above it, off the
+/// islands, the heat burns 15 per half second.
+pub const LAVA_FLOOR_Y: f32 = 0.04;
+pub const LAVA_FLOOR_BURN: f32 = 1.15;
+const ISLAND_TOP_Y: f32 = 1.0;
+const ISLAND_MAX_GAP: f32 = 5.6;
+const ISLAND_MIN_TOP: f32 = 0.9;
+const ISLAND_MAX_TOP: f32 = 9.0;
+/// The tallest step between linked islands (jump plus double jump).
+pub const ISLAND_MAX_STEP: f32 = 2.05;
+/// Spawns keep the capsule this far in from an island's safe disk.
+const SPAWN_INSET: f32 = 0.65;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Variant { Walled, Hole, Open }
+pub enum Variant { Walled, Hole, Open, Island }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(into = "crate::destruct::ArenaWire", from = "crate::destruct::ArenaWire")]
@@ -51,6 +68,12 @@ pub struct Arena {
     pub lights: Vec<(Vec3, [f32; 3])>,
     /// Square hole in the floor (centre XZ, side), lava visible below.
     pub hole: Option<(Vec2, f32)>,
+    /// Island arenas: each island's top centre and half side. Its safe disk
+    /// (no burn) has radius half side + 0.25, as in Godot, so the corners of
+    /// the square column burn.
+    pub islands: Vec<(Vec3, f32)>,
+    /// Island arenas: the jumps the generator guarantees (top to top).
+    pub links: Vec<(Vec3, Vec3)>,
 }
 
 struct Placer { placed: Vec<(Vec2, f32)> }
@@ -75,22 +98,34 @@ fn mirror(p: Vec3) -> Vec3 { Vec3::new(-p.x, p.y, -p.z) }
 impl Arena {
     /// No geometry (a world before its first round).
     pub fn empty() -> Self {
-        Arena { seed: 0, size: 55.0, variant: Variant::Open, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), stadium: crate::stadium::Stadium::new(55.0, false, WALL_HEIGHT), spawns: vec![Vec3::new(0.0, 1.0, 0.0)], lights: Vec::new(), hole: None }
+        Arena { seed: 0, size: 55.0, variant: Variant::Open, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), stadium: crate::stadium::Stadium::new(55.0, false, WALL_HEIGHT), spawns: vec![Vec3::new(0.0, 1.0, 0.0)], lights: Vec::new(), hole: None, islands: Vec::new(), links: Vec::new() }
     }
 
     /// Godot's default size range (55..95 m).
     pub fn generate(seed: u64) -> Self { Self::generate_sized(seed, 55.0, 95.0) }
 
-    pub fn generate_sized(seed: u64, lo: f32, hi: f32) -> Self {
+    pub fn generate_sized(seed: u64, lo: f32, hi: f32) -> Self { Self::generate_with(seed, lo, hi, false) }
+
+    /// `island`: always the island layout (Godot `force_all_floor_lava`).
+    pub fn generate_with(seed: u64, lo: f32, hi: f32, island: bool) -> Self {
         let mut rng = Rng::new(seed);
         let size = rng.range(lo, hi).round();
+        // One roll picks the variant (Godot `variant_roll`): 18% islands,
+        // 24% open, 16% hole, 42% walled. Nothing else is drawn here, so the
+        // other variants draw the same stream whether or not islands exist.
         let roll = rng.f();
-        // Godot: 18% island lava (not ported: becomes walled), 24% open, 16% hole.
-        let variant = if (0.18..0.42).contains(&roll) { Variant::Open }
-            else if (0.42..0.58).contains(&roll) { Variant::Hole } else { Variant::Walled };
-        let mut a = Arena { seed, size, variant, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), stadium: crate::stadium::Stadium::new(size, variant != Variant::Open, WALL_HEIGHT), spawns: Vec::new(), lights: Vec::new(), hole: None };
+        let variant = if island || roll < 0.18 { Variant::Island } else if roll < 0.42 { Variant::Open }
+            else if roll < 0.58 { Variant::Hole } else { Variant::Walled };
+        let mut a = Arena { seed, size, variant, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), stadium: crate::stadium::Stadium::new(size, variant != Variant::Open, WALL_HEIGHT), spawns: Vec::new(), lights: Vec::new(), hole: None, islands: Vec::new(), links: Vec::new() };
         let mut placer = Placer { placed: Vec::new() };
         let half = size * 0.5;
+        if variant == Variant::Island {
+            // Walls and corner towers, no floor: lava at 0.04 m instead.
+            a.build_walls(half, &mut placer);
+            a.island_layout(&mut rng, &mut placer, half - 3.0);
+            a.build_chunks();
+            return a;
+        }
         if variant == Variant::Hole {
             let side = rng.range(10.0, 16.0);
             let max_off = size * 0.25;
@@ -285,8 +320,135 @@ impl Arena {
         self.blocks.push(Block::new(pos, Vec3::new(5.0, 0.6, 5.0), 0.0, Kind::Platform));
     }
 
-    /// Fell into the lava below the floor (hole or open arena edge).
-    pub fn in_lava(&self, p: Vec3) -> bool { p.y < LAVA_KILL_Y }
+    /// Godot `_build_lava_island_layout` (not the cinematic fort): a centre
+    /// island, a spine of 3 to 5 rising islands towards -X, 10 to 18 more
+    /// grown off random islands of the -X half, two stepping stones on the
+    /// axis, all mirrored; then planks over some links and cover on some
+    /// islands (neither mirrored, as in Godot). Every island is within jump
+    /// reach of the one it grew from (`max_gap`, `ISLAND_MAX_STEP`).
+    fn island_layout(&mut self, rng: &mut Rng, placer: &mut Placer, perim: f32) {
+        let center_r = 4.2;
+        let center = Vec3::new(0.0, ISLAND_TOP_Y, 0.0);
+        self.island(center, center_r, 1.0);
+        placer.placed.push((Vec2::ZERO, center_r + 0.9));
+        let (mut anchor, mut anchor_r) = (center, center_r);
+        for _ in 0..3 + rng.below(3) {
+            let radius = rng.range(3.0, 4.7);
+            let step = rng.range(1.25, ISLAND_MAX_STEP);
+            let top = (anchor.y + step).clamp(ISLAND_MIN_TOP, ISLAND_MAX_TOP);
+            let gap = rng.range(2.7, max_gap(top - anchor.y));
+            let dist = anchor_r + radius + gap;
+            let dir = Vec2::new(-1.0, rng.range(-0.28, 0.28)).normalize();
+            let pos = Vec3::new(anchor.x + dir.x * dist, top, anchor.z + dir.y * dist);
+            if pos.x.abs() + radius > perim || pos.z.abs() + radius > perim { break; }
+            if !placer.try_place(pos, radius + 0.9) { break; }
+            let extra = rng.range(0.6, 1.4);
+            self.island(pos, radius, extra);
+            self.island(mirror(pos), radius, extra);
+            self.links.push((anchor, pos));
+            self.links.push((mirror(anchor), mirror(pos)));
+            (anchor, anchor_r) = (pos, radius);
+        }
+        let pairs = ((self.size / 6.0).round() as i32 + 1 + rng.below(4) as i32).clamp(10, 18);
+        for _ in 0..pairs {
+            for _ in 0..80 {
+                let (mut from, from_r) = self.islands[rng.below(self.islands.len() as u32) as usize];
+                if from.x > 0.0 { from = mirror(from); }
+                let radius = rng.range(2.2, 5.2);
+                let angle = rng.f() * TAU;
+                let mut step = rng.range(-1.55, ISLAND_MAX_STEP);
+                if rng.f() < 0.58 && from.y < ISLAND_MAX_TOP - 0.7 { step = rng.range(0.6, ISLAND_MAX_STEP); }
+                let top = (from.y + step).clamp(ISLAND_MIN_TOP, ISLAND_MAX_TOP);
+                let gap = rng.range(2.8, max_gap(top - from.y));
+                let dist = from_r + radius + gap;
+                let pos = Vec3::new(from.x + angle.cos() * dist, top, from.z + angle.sin() * dist);
+                if pos.x > -0.35 { continue; }
+                if pos.x.abs() + radius > perim || pos.z.abs() + radius > perim { continue; }
+                if (pos.y - from.y).abs() > ISLAND_MAX_STEP { continue; }
+                if !placer.try_place(pos, radius + 0.9) { continue; }
+                let extra = rng.range(0.45, 1.5);
+                self.island(pos, radius, extra);
+                self.island(mirror(pos), radius, extra);
+                self.links.push((from, pos));
+                self.links.push((mirror(from), mirror(pos)));
+                break;
+            }
+        }
+        // Stepping stones across the middle, each within reach of the centre.
+        let axis = Vec3::new(-(center_r + 3.2 + ISLAND_MAX_GAP * 0.55), ISLAND_TOP_Y + 0.15, 0.0);
+        if placer.try_place(axis, 3.1) {
+            self.island(axis, 3.0, 1.25);
+            self.island(mirror(axis), 3.0, 1.25);
+            self.links.push((center, axis));
+            self.links.push((center, mirror(axis)));
+        }
+        // Planks over some links (Godot `_build_lava_island_bridges`). Godot
+        // turns them by atan2(dz, dx) as rotation.y, which mirrors them in Z
+        // unless the link runs along X; kept as it plays.
+        for k in 0..self.links.len() {
+            if rng.f() > 0.22 { continue; }
+            let (p, q) = self.links[k];
+            let d = Vec2::new(q.x - p.x, q.z - p.z);
+            let len = d.length();
+            if len < 7.0 { continue; }
+            let mut mid = (p + q) * 0.5;
+            mid.y = p.y.min(q.y) + 0.08;
+            self.blocks.push(Block::new(mid, Vec3::new(len - 4.8, 0.22, 1.0), d.y.atan2(d.x), Kind::Island));
+        }
+        // Low cover on some of the larger islands (`_add_lava_island_cover`).
+        for k in 0..self.islands.len() {
+            if rng.f() > 0.38 { continue; }
+            let (top, radius) = self.islands[k];
+            if radius < 3.0 { continue; }
+            let angle = rng.f() * TAU;
+            let size = Vec3::new(rng.range(1.8, 2.8), 1.1, rng.range(0.8, 1.2));
+            let min_off = (size.x.max(size.z) * 0.5 + 1.35).max(radius * 0.58);
+            let max_off = (min_off + 0.2).max(radius * 0.88);
+            let off = rng.range(min_off, max_off);
+            let at = Vec3::new(top.x + angle.cos() * off, top.y + 0.55, top.z + angle.sin() * off);
+            let yaw = rng.f() * TAU;
+            self.blocks.push(Block::new(at, size, yaw, Kind::Island));
+        }
+        // `_prune_lava_spawn_positions`.
+        let spawns = std::mem::take(&mut self.spawns);
+        self.spawns = spawns.into_iter().filter(|&s| self.spawn_safe(s)).collect();
+        if self.spawns.is_empty() { self.spawns.push(center + Vec3::Y); }
+    }
+
+    /// Godot `_register_lava_platform`: a square column from below the lava
+    /// up to `top`, its safe disk and a spawn on it.
+    fn island(&mut self, top: Vec3, radius: f32, extra: f32) {
+        let h = (top.y - LAVA_FLOOR_Y + extra).max(0.45);
+        self.blocks.push(Block::new(Vec3::new(top.x, top.y - h * 0.5, top.z), Vec3::new(radius * 2.0, h, radius * 2.0), 0.0, Kind::Island));
+        self.islands.push((top, radius));
+        self.spawns.push(top + Vec3::Y);
+    }
+
+    /// The lava's surface: the floor of an island arena, else the pool.
+    pub fn lava_surface(&self) -> f32 { if self.variant == Variant::Island { LAVA_FLOOR_Y } else { LAVA_KILL_Y } }
+
+    /// Fell into the lava (below the floor, or the floor of an island arena).
+    pub fn in_lava(&self, p: Vec3) -> bool { p.y < self.lava_surface() }
+
+    /// Over an island's safe disk (Godot `_point_in_lava_safe_zone`).
+    pub fn on_island(&self, xz: Vec2) -> bool {
+        self.islands.iter().any(|&(t, r)| xz.distance(Vec2::new(t.x, t.z)) <= r + 0.25)
+    }
+
+    /// Godot `is_lava_spawn_safe`: always on other arenas; on islands, a
+    /// capsule centre clear of the burn band, well inside a safe disk.
+    pub fn spawn_safe(&self, p: Vec3) -> bool {
+        if self.variant != Variant::Island { return true; }
+        if p.y < LAVA_FLOOR_Y + LAVA_FLOOR_BURN + 0.5 { return false; }
+        let xz = Vec2::new(p.x, p.z);
+        self.islands.iter().any(|&(t, r)| xz.distance(Vec2::new(t.x, t.z)) <= (r + 0.25 - SPAWN_INSET).max(0.35))
+    }
+}
+
+/// Godot `_lava_max_gap_for_height_step`: the widest jump for a climb.
+pub fn max_gap(step: f32) -> f32 {
+    let t = (step.abs() / ISLAND_MAX_STEP).clamp(0.0, 1.0);
+    ISLAND_MAX_GAP + (3.1 - ISLAND_MAX_GAP) * t
 }
 
 fn tower_top(shaft: f32) -> f32 { shaft + PARAPET_HEIGHT + MERLON_HEIGHT }
@@ -303,13 +465,48 @@ mod tests {
             assert_eq!(a.blocks, b.blocks);
             assert!(a.spawns.len() >= 4, "seed {seed}");
             assert!((55.0..=95.0).contains(&a.size));
-            // Every non-floor block has a mirror twin.
-            for blk in a.blocks.iter().filter(|b| b.kind != Kind::Floor && b.kind != Kind::Wall) {
+            // Every non-floor block has a mirror twin (island planks and
+            // cover are not mirrored, as in Godot).
+            for blk in a.blocks.iter().filter(|b| b.kind != Kind::Floor && b.kind != Kind::Wall && b.kind != Kind::Island) {
                 let m = mirror(blk.center);
                 assert!(a.blocks.iter().any(|o| o.center.distance(m) < 1e-3 && o.half == blk.half), "seed {seed} {blk:?}");
             }
         }
         let variants: std::collections::HashSet<_> = (0..60).map(|s| format!("{:?}", Arena::generate(s).variant)).collect();
-        assert_eq!(variants.len(), 3);
+        assert_eq!(variants.len(), 4);
+    }
+
+    /// Godot `_validate_lava_platform_graph`: every link within jump reach,
+    /// every island reachable from the centre; spawns on safe ground.
+    #[test]
+    fn island_arenas_are_connected_and_spawn_safely() {
+        let mut islands = 0;
+        for seed in 0..200 {
+            let a = Arena::generate(seed);
+            if a.variant != Variant::Island { assert!(a.islands.is_empty() && a.links.is_empty()); continue; }
+            islands += 1;
+            assert!(a.islands.len() >= 8, "seed {seed}: {} islands", a.islands.len());
+            let find = |p: Vec3| a.islands.iter().position(|&(t, _)| t.distance(p) < 1e-3).unwrap_or_else(|| panic!("seed {seed}: link to no island {p}"));
+            let mut adj = vec![Vec::new(); a.islands.len()];
+            for &(p, q) in &a.links {
+                let (i, j) = (find(p), find(q));
+                let gap = Vec2::new(p.x - q.x, p.z - q.z).length() - a.islands[i].1 - a.islands[j].1;
+                assert!(gap <= max_gap(q.y - p.y) + 0.05, "seed {seed}: gap {gap}");
+                assert!((p.y - q.y).abs() <= ISLAND_MAX_STEP + 0.05, "seed {seed}: step");
+                adj[i].push(j);
+                adj[j].push(i);
+            }
+            let mut seen = vec![false; a.islands.len()];
+            let mut todo = vec![0];
+            seen[0] = true;
+            while let Some(i) = todo.pop() { for &j in &adj[i] { if !seen[j] { seen[j] = true; todo.push(j); } } }
+            assert!(seen.iter().all(|&s| s), "seed {seed}: islands not all reachable");
+            assert!(a.spawns.len() >= 4 && a.spawns.iter().all(|&s| a.spawn_safe(s) && a.on_island(glam::Vec2::new(s.x, s.z))), "seed {seed}");
+            assert!(a.islands.iter().all(|&(t, r)| t.x.abs() + r <= a.size * 0.5 - 3.0 + 1e-3 && t.z.abs() + r <= a.size * 0.5 - 3.0 + 1e-3));
+            assert_eq!(a.lava_surface(), LAVA_FLOOR_Y);
+        }
+        assert!((25..=50).contains(&islands), "{islands} of 200 arenas are islands (Godot 18%)");
+        let forced = Arena::generate_with(3, 55.0, 95.0, true);
+        assert_eq!(forced.variant, Variant::Island);
     }
 }

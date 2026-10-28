@@ -434,11 +434,30 @@ impl World {
     /// Base lava under the floor: a kill below -3, 15 damage per half
     /// second in the metre above (Godot `arena_generator` lava pool), and
     /// the lava leak.
+    ///
+    /// Island arenas instead (Godot `_apply_all_floor_lava_damage`): a kill
+    /// below the lava floor at 0.04 m, the burn up to 1.15 m above it except
+    /// over an island's safe disk.
     pub(crate) fn lava_tick(&mut self) {
+        let island = self.arena.variant == crate::arena::Variant::Island;
         for i in 0..self.players.len() {
             let p = &self.players[i];
             if !p.alive || p.ghost { continue; }
             let y = p.pos.y;
+            if island {
+                use crate::arena::{LAVA_FLOOR_BURN, LAVA_FLOOR_Y};
+                if y < LAVA_FLOOR_Y { self.kill_environmental(i); continue; }
+                if y <= LAVA_FLOOR_Y + LAVA_FLOOR_BURN && !self.arena.on_island(glam::Vec2::new(p.pos.x, p.pos.z)) {
+                    self.players[i].lava_accum += DT64;
+                    while self.players[i].lava_accum >= 0.5 {
+                        self.players[i].lava_accum -= 0.5;
+                        self.environmental_damage(i, 15);
+                    }
+                } else if !self.lava.active {
+                    self.players[i].lava_accum = 0.0;
+                }
+                continue;
+            }
             if y < crate::arena::LAVA_KILL_Y { self.kill_environmental(i); continue; }
             if y <= crate::arena::LAVA_KILL_Y + crate::arena::LAVA_BURN_BAND {
                 self.players[i].lava_accum += DT64;

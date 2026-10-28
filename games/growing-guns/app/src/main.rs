@@ -72,13 +72,19 @@ fn sim(args: &Args) {
     let seconds = args.num("--seconds", 120u32);
     let mut w = World::new(seed, &[true; 4]);
     if let Err(e) = scripts::attach(&mut w) { eprintln!("mods: {e}"); }
+    w.force_island = args.flag("--island");
     let (mut shots, mut hits, mut rounds) = (0u32, 0u32, 0u32);
+    // The arena of each round and the tick it began.
+    let mut arenas = vec![(0u64, format!("{:?}", w.arena.variant))];
     let t = std::time::Instant::now();
     for _ in 0..seconds * TICK_HZ {
         w.step(&[]);
         for e in &w.events {
-            match e { Event::Shot { .. } => shots += 1, Event::Hit { .. } => hits += 1, Event::RoundOver { .. } => rounds += 1, _ => {} }
+            match e { Event::Shot { .. } => shots += 1, Event::Hit { .. } => hits += 1, Event::RoundOver { .. } => rounds += 1, Event::NewArena => arenas.push((w.tick, format!("{:?}", w.arena.variant))), _ => {} }
         }
+    }
+    if args.flag("--arenas") {
+        println!("arenas: {}", arenas.iter().map(|(t, v)| format!("{v}@{t}")).collect::<Vec<_>>().join(" "));
     }
     let ms = t.elapsed().as_secs_f64() * 1000.0 / (seconds * TICK_HZ) as f64;
     if let Some(paths) = args.value("--trace") {

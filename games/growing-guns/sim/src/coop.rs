@@ -367,8 +367,11 @@ impl World {
         let (t, n, _) = shape::raycast(&self.arena.grid, from, Vec3::NEG_Y, 40.0)?;
         if n.y < 0.75 { return None; }
         let ground = from - Vec3::Y * t;
-        if ground.y > SPAWN_MAX_GROUND_HEIGHT || ground.y <= crate::arena::LAVA_KILL_Y + 0.25 { return None; }
+        // Island arenas skip the height cap: their islands are the ground.
+        let island = self.arena.variant == crate::arena::Variant::Island;
+        if (!island && ground.y > SPAWN_MAX_GROUND_HEIGHT) || ground.y <= self.arena.lava_surface() + 0.25 { return None; }
         let pos = ground + Vec3::Y * 1.7;
+        if !self.arena.spawn_safe(pos) { return None; }
         let r = Vec2::splat(CLEARANCE_RADIUS);
         let c = Vec2::new(pos.x, pos.z);
         let mut blocked = false;
