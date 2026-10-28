@@ -33,9 +33,14 @@ detail, the measurements and the dead ends are in the
 - **Split screen.** `render::split_rects` lays out up to four views; one
   call renders all of them into one output, sharing work such as skinning
   and wind.
-- **HUD.** Shapes and text (glyphon) in a draw list, drawn in every view
-  and in headless captures. Barlow and Barlow Condensed ship as the default
-  fonts.
+- **HUD.** Shapes, text (glyphon) and pictures in a draw list, drawn in
+  every view and in headless captures. Barlow and Barlow Condensed ship as
+  the default fonts.
+- **Runtime pictures.** `render::picture::decode` turns PNG, JPEG, WebP and
+  SVG bytes (sniffed by content, bounded) into RGBA; `HudRenderer::set_image`
+  uploads one under a `HudImage` id (mipmapped linear, or nearest for pixel
+  art) and `HudDrawList::image` draws it with a uv rectangle (negative to
+  mirror) and a tint. Uploading needs no renderer rebuild.
 
 ## Light
 

@@ -42,9 +42,18 @@ pub struct HudVertex {
     pub position: [f32; 2],
     pub color: [f32; 4],
     pub clip: [f32; 4],
-    // 0: plain triangle; 1: circle (center x/y, radius); 2: line (distance, half-width).
+    // 0: plain triangle; 1: circle (center x/y, radius); 2: line (distance, half-width);
+    // 3: picture (uv in x/y, the image bound by its run in `HudDrawList`).
     pub shape: [f32; 4],
 }
+
+/// A picture uploaded with `HudRenderer::set_image`, named by the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HudImage(pub u64);
+
+/// Pixel art wants `Nearest`; photos and covers `Linear` (mipmapped).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageFilter { Linear, Nearest }
 
 #[derive(Clone, Debug)]
 pub struct HudDrawList {
@@ -52,13 +61,51 @@ pub struct HudDrawList {
     pub vertices: Vec<HudVertex>,
     pub text: Vec<TextRun>,
     overlay_boundaries: Vec<(usize, usize)>,
+    /// (first vertex, picture) where the bound picture changes; plain shapes use None.
+    image_runs: Vec<(u32, Option<HudImage>)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HudLayer { vertices: Range<u32>, text: Range<usize> }
 
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { size, vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { size, vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new() } }
+
+    fn bind(&mut self, image: Option<HudImage>) {
+        let current = self.image_runs.last().and_then(|r| r.1);
+        if self.image_runs.is_empty() && image.is_none() { return; }
+        if current != image || self.image_runs.is_empty() { self.image_runs.push((self.vertices.len() as u32, image)); }
+    }
+
+    /// Vertex ranges of `range` with their pictures, in draw order.
+    fn image_spans(&self, range: Range<u32>) -> Vec<(Range<u32>, Option<HudImage>)> {
+        let mut spans = vec![];
+        let mut start = range.start;
+        let mut image = self.image_runs.iter().take_while(|r| r.0 <= start).last().and_then(|r| r.1);
+        for &(at, next) in self.image_runs.iter().filter(|r| r.0 > range.start && r.0 < range.end) {
+            if at > start { spans.push((start..at, image)); }
+            start = at;
+            image = next;
+        }
+        if range.end > start { spans.push((start..range.end, image)); }
+        spans
+    }
+
+    /// Draw `image` into `rect`, sampling `uv` (x/y/width/height in 0..1; a
+    /// negative width or height mirrors), times `tint` (straight-alpha sRGB).
+    pub fn image(&mut self, rect: [f32; 4], image: HudImage, uv: [f32; 4], tint: [f32; 4], clip: [f32; 4]) {
+        let [x, y, w, h] = rect;
+        if w <= 0.0 || h <= 0.0 { return; }
+        self.image_quad([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], image, uv, tint, clip);
+    }
+
+    /// Any four corners (clockwise from the top-left of the picture), e.g. rotated.
+    pub fn image_quad(&mut self, points: [[f32; 2]; 4], image: HudImage, uv: [f32; 4], tint: [f32; 4], clip: [f32; 4]) {
+        let [u, v, uw, vh] = uv;
+        let uvs = [[u, v], [u + uw, v], [u + uw, v + vh], [u, v + vh]];
+        self.bind(Some(image));
+        for i in [0, 1, 2, 0, 2, 3] { self.vertices.push(HudVertex { position: points[i], color: tint, clip, shape: [uvs[i][0], uvs[i][1], 0.0, 3.0] }); }
+    }
 
     /// Start a layer above ALL geometry and text already in the list. Within
     /// each layer, geometry is drawn before text, as in the original HUD API.
@@ -96,6 +143,7 @@ impl HudDrawList {
     }
 
     fn quad(&mut self, points: [[f32; 2]; 4], shapes: [[f32; 4]; 4], color: [f32; 4], clip: [f32; 4]) {
+        self.bind(None);
         for i in [0, 1, 2, 0, 2, 3] { self.vertices.push(HudVertex { position: points[i], color, clip, shape: shapes[i] }); }
     }
 
@@ -106,6 +154,7 @@ impl HudDrawList {
     }
 
     pub fn triangle(&mut self, points: [[f32; 2]; 3], color: [f32; 4], clip: [f32; 4]) {
+        self.bind(None);
         for position in points {self.vertices.push(HudVertex{position,color,clip,shape:[0.0;4]});}
     }
 
@@ -202,9 +251,18 @@ impl FontCache {
     }
 }
 
+struct GpuImage { bind: wgpu::BindGroup, size: [u32; 2] }
+
 pub struct HudRenderer {
     pipeline: wgpu::RenderPipeline,
     bind: wgpu::BindGroup,
+    image_layout: wgpu::BindGroupLayout,
+    linear: wgpu::Sampler,
+    nearest: wgpu::Sampler,
+    /// Bound for plain shapes and for pictures that are not (or no longer) uploaded.
+    blank: wgpu::BindGroup,
+    images: HashMap<HudImage, GpuImage>,
+    spans: Vec<Vec<(Range<u32>, Option<HudImage>)>>,
     uniform: wgpu::Buffer,
     vertices: wgpu::Buffer,
     vertex_capacity: u64,
@@ -226,8 +284,17 @@ impl HudRenderer {
         ]});
         let uniform=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("HUD display"),contents:bytemuck::cast_slice(&[1f32,1.0,0.0,0.0]),usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST});
         let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some("HUD geometry"),layout:&layout,entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()}]});
+        let image_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{label:Some("HUD picture"),entries:&[
+            wgpu::BindGroupLayoutEntry{binding:0,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
+            wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None},
+        ]});
+        let sampler=|filter:wgpu::FilterMode,mip:wgpu::MipmapFilterMode|gpu.device.create_sampler(&wgpu::SamplerDescriptor{label:Some("HUD picture"),
+            address_mode_u:wgpu::AddressMode::ClampToEdge,address_mode_v:wgpu::AddressMode::ClampToEdge,mag_filter:filter,min_filter:wgpu::FilterMode::Linear,mipmap_filter:mip,..Default::default()});
+        let linear=sampler(wgpu::FilterMode::Linear,wgpu::MipmapFilterMode::Linear);
+        let nearest=sampler(wgpu::FilterMode::Nearest,wgpu::MipmapFilterMode::Nearest);
+        let blank=image_bind(gpu,&image_layout,&linear,&crate::picture::Picture::solid(1,1,[0,0,0,0]),"HUD blank picture");
         let shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("HUD geometry"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/hud.wgsl").into())});
-        let pipeline_layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:Some("HUD geometry"),bind_group_layouts:&[Some(&layout)],immediate_size:0});
+        let pipeline_layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:Some("HUD geometry"),bind_group_layouts:&[Some(&layout),Some(&image_layout)],immediate_size:0});
         let pipeline=gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
             label:Some("HUD geometry"),layout:Some(&pipeline_layout),
             vertex:wgpu::VertexState{module:&shader,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[Some(wgpu::VertexBufferLayout{array_stride:std::mem::size_of::<HudVertex>() as u64,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x2,1=>Float32x4,2=>Float32x4,3=>Float32x4]})]},
@@ -241,13 +308,25 @@ impl HudRenderer {
         let viewport=Viewport::new(&gpu.device,&cache);
         let mut atlas=TextAtlas::with_color_mode(&gpu.device,&gpu.queue,&cache,format,if format.is_srgb(){ColorMode::Accurate}else{ColorMode::Web});
         let renderer=TextRenderer::new(&mut atlas,&gpu.device,wgpu::MultisampleState::default(),None);
-        Ok(Self{pipeline,bind,uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2]})
+        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2]})
     }
+
+    /// Upload (or replace) the picture drawn by `HudDrawList::image` with `id`.
+    /// Linear pictures get a mip chain, so covers stay smooth when drawn small.
+    pub fn set_image(&mut self,gpu:&Gpu,id:HudImage,picture:&crate::picture::Picture,filter:ImageFilter) {
+        let sampler=match filter {ImageFilter::Linear=>&self.linear,ImageFilter::Nearest=>&self.nearest};
+        let bind=image_bind(gpu,&self.image_layout,sampler,picture,"HUD picture");
+        self.images.insert(id,GpuImage{bind,size:[picture.width,picture.height]});
+    }
+    pub fn remove_image(&mut self,id:HudImage) {self.images.remove(&id);}
+    /// Uploaded size, if any.
+    pub fn image_size(&self,id:HudImage)->Option<[u32;2]> {self.images.get(&id).map(|i|i.size)}
 
     pub fn prepare(&mut self,gpu:&Gpu,list:&HudDrawList)->Result<HudStats,String> {
         let begin=Instant::now();
         // A failed prepare must not advertise stale overlay draw buffers.
         self.layers.clear();
+        self.spans.clear();
         if list.size.contains(&0){return Err("HUD output dimensions must be positive".into());}
         if list.text.len()>MAX_RUNS || list.vertices.len()>MAX_VERTICES{return Err("HUD draw list exceeds bounded capacity".into());}
         let layers = list.layer_ranges()?;
@@ -302,6 +381,7 @@ impl HudRenderer {
             });
             renderer.prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash).map_err(|e|format!("HUD text preparation: {e}"))?;
         }
+        self.spans = layers.iter().map(|layer| list.image_spans(layer.vertices.clone())).collect();
         self.layers = layers;
         let glyphs=self.text.buffers.values().map(|b|b.buffer.layout_runs().map(|line|line.glyphs.len()).sum::<usize>()).sum();
         // Atlas remains GPU-resident. Bound the auxiliary CPU raster cache if
@@ -311,12 +391,16 @@ impl HudRenderer {
     }
 
     pub fn render(&self,pass:&mut wgpu::RenderPass<'_>)->Result<(),String> {
-        for (layer, renderer) in self.layers.iter().zip(&self.renderers) {
+        for ((layer, renderer), spans) in self.layers.iter().zip(&self.renderers).zip(&self.spans) {
             if !layer.vertices.is_empty() {
                 // Glyph rendering changes pipeline/bindings/vertex buffer.
                 // Rebind all geometry state at each subsequent overlay.
                 pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&self.bind,&[]);
-                pass.set_vertex_buffer(0,self.vertices.slice(..));pass.draw(layer.vertices.clone(),0..1);
+                pass.set_vertex_buffer(0,self.vertices.slice(..));
+                for (range,image) in spans {
+                    let bind=image.and_then(|id|self.images.get(&id)).map_or(&self.blank,|i|&i.bind);
+                    pass.set_bind_group(1,bind,&[]);pass.draw(range.clone(),0..1);
+                }
             }
             renderer.render(&self.atlas,&self.viewport,pass).map_err(|e|format!("HUD rendering: {e}"))?;
         }
@@ -324,9 +408,77 @@ impl HudRenderer {
     }
 }
 
+/// Texture with a CPU box-filtered mip chain (premultiplied, so transparent
+/// edges do not darken; the shader divides alpha back out).
+fn image_bind(gpu:&Gpu,layout:&wgpu::BindGroupLayout,sampler:&wgpu::Sampler,picture:&crate::picture::Picture,label:&str)->wgpu::BindGroup {
+    let mut level:Vec<u8>=picture.rgba.chunks_exact(4).flat_map(|p|{let a=p[3] as u32;[(p[0] as u32*a/255) as u8,(p[1] as u32*a/255) as u8,(p[2] as u32*a/255) as u8,p[3]]}).collect();
+    let (mut w,mut h)=(picture.width,picture.height);
+    let mips=w.max(h).ilog2()+1;
+    let texture=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some(label),size:wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1},
+        mip_level_count:mips,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8Unorm,
+        usage:wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_DST,view_formats:&[]});
+    for mip in 0..mips {
+        gpu.queue.write_texture(wgpu::TexelCopyTextureInfo{texture:&texture,mip_level:mip,origin:wgpu::Origin3d::ZERO,aspect:wgpu::TextureAspect::All},&level,
+            wgpu::TexelCopyBufferLayout{offset:0,bytes_per_row:Some(4*w),rows_per_image:Some(h)},wgpu::Extent3d{width:w,height:h,depth_or_array_layers:1});
+        if mip+1==mips {break;}
+        let (nw,nh)=((w/2).max(1),(h/2).max(1));
+        let mut next=vec![0u8;(nw*nh*4) as usize];
+        for y in 0..nh { for x in 0..nw { for c in 0..4 {
+            let mut sum=0u32;
+            for (dx,dy) in [(0,0),(1,0),(0,1),(1,1)] {let sx=(x*2+dx).min(w-1);let sy=(y*2+dy).min(h-1);sum+=level[((sy*w+sx)*4+c) as usize] as u32;}
+            next[((y*nw+x)*4+c) as usize]=((sum+2)/4) as u8;
+        }}}
+        level=next;w=nw;h=nh;
+    }
+    let view=texture.create_view(&Default::default());
+    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor{label:Some(label),layout,entries:&[
+        wgpu::BindGroupEntry{binding:0,resource:wgpu::BindingResource::TextureView(&view)},
+        wgpu::BindGroupEntry{binding:1,resource:wgpu::BindingResource::Sampler(sampler)}]})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pictures_split_draws_by_image_and_plain_shapes_keep_the_blank_binding() {
+        let mut list=HudDrawList::new([100,100]);let clip=[0.0,0.0,100.0,100.0];
+        list.rect([0.0,0.0,10.0,10.0],[1.0;4],clip);
+        list.image([0.0,0.0,10.0,10.0],HudImage(7),[0.0,0.0,1.0,1.0],[1.0;4],clip);
+        list.image([10.0,0.0,10.0,10.0],HudImage(7),[1.0,0.0,-1.0,1.0],[1.0;4],clip);
+        list.circle([5.0,5.0],3.0,[1.0;4],clip);
+        assert_eq!(list.image_spans(0..24),vec![(0..6,None),(6..18,Some(HudImage(7))),(18..24,None)]);
+        assert_eq!(list.image_spans(12..24),vec![(12..18,Some(HudImage(7))),(18..24,None)]);
+        assert_eq!(list.vertices[12].shape,[1.0,0.0,0.0,3.0],"mirrored uv");
+        let mut plain=HudDrawList::new([10,10]);plain.rect([0.0,0.0,1.0,1.0],[1.0;4],clip);
+        assert_eq!(plain.image_spans(0..6),vec![(0..6,None)]);
+    }
+    #[test]
+    fn gpu_pictures_draw_mirrored_tinted_and_missing_ones_stay_invisible() {
+        let gpu=Gpu::new().unwrap();let format=wgpu::TextureFormat::Rgba8Unorm;
+        let presenter=crate::present::Presenter::new(&gpu,format);
+        let mut hud=HudRenderer::new(&gpu,format).unwrap();
+        // Left half red, right half half-transparent blue.
+        let rgba:Vec<u8>=(0..4*4).flat_map(|i|if i%4<2{[255,0,0,255]}else{[0,0,255,128]}).collect();
+        hud.set_image(&gpu,HudImage(1),&crate::picture::Picture::new(4,4,rgba).unwrap(),ImageFilter::Nearest);
+        let background=gpu.device.create_texture_with_data(&gpu.queue,&wgpu::TextureDescriptor{label:None,size:wgpu::Extent3d{width:64,height:32,depth_or_array_layers:1},
+            mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8Unorm,usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]},
+            Default::default(),&[255u8,255,255,255].repeat(64*32));
+        let mut list=HudDrawList::new([64,32]);let clip=[0.0,0.0,64.0,32.0];
+        list.image([0.0,0.0,16.0,16.0],HudImage(1),[0.0,0.0,1.0,1.0],[1.0;4],clip);
+        list.image([16.0,0.0,16.0,16.0],HudImage(1),[1.0,0.0,-1.0,1.0],[1.0;4],clip);
+        list.image([32.0,0.0,16.0,16.0],HudImage(1),[0.0,0.0,1.0,1.0],[0.0,1.0,0.0,1.0],clip);
+        list.image([48.0,0.0,16.0,16.0],HudImage(99),[0.0,0.0,1.0,1.0],[1.0;4],clip);
+        list.rect([0.0,16.0,64.0,16.0],[0.0,0.0,0.0,1.0],clip);
+        hud.prepare(&gpu,&list).unwrap();
+        let out=presenter.capture_rgba(&gpu,&background,format,Some(&hud)).unwrap();
+        let px=|x:usize,y:usize|{let i=(y*64+x)*4;[out[i],out[i+1],out[i+2]]};
+        assert_eq!(px(2,8),[255,0,0],"left half red");
+        let blend=px(13,8);assert!(blend[2]==255 && (120..=136).contains(&blend[0]),"half blue over white: {blend:?}");
+        assert_eq!(px(17,8),blend,"mirrored: blue on the left");assert_eq!(px(30,8),[255,0,0]);
+        assert_eq!(px(34,8),[0,0,0],"green tint times red");
+        assert_eq!(px(56,8),[255,255,255],"missing picture draws nothing");
+        assert_eq!(px(8,24),[0,0,0],"plain shapes still draw");
+    }
     fn run()->TextRun {TextRun{id:1,text:"Zoë Ångström 120 km/h".into(),position:[0.0;2],bounds:[0.0,0.0,600.0,100.0],font_size:32.0,color:[255;4],font:FontFace::Body,align:TextAlign::Left,width:600.0}}
     #[test]
     fn bundled_fonts_shape_latin_without_system_dependencies() {

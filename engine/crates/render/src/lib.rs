@@ -44,6 +44,7 @@ mod meadow_occlusion_tests;
 mod grass_lighting;
 pub mod far_grass;
 pub mod hud;
+pub mod picture;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
