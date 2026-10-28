@@ -2,7 +2,7 @@
 //!
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -44,8 +44,22 @@ fn run() -> Result<(), String> {
         let (w, h) = arg("--size").and_then(|s| s.split_once('x').map(|(a, b)| (a.parse().unwrap_or(1280), b.parse().unwrap_or(720)))).unwrap_or((1280u32, 720u32));
         let gpu = Gpu::new()?;
         let mut headless = app::Headless::new(&gpu, [w, h], 60.0)?;
+        if flag("--items") {
+            // One of every item along the floor, for a look at the props.
+            use game_room_sim::world::Kind::*;
+            for (i, k) in [Bomb, Blaster, Popcorn, Minigun, Bazooka, Laser, Saber, Ball].into_iter().enumerate() {
+                lobby.world.spawn_item(k, -7.0 + i as f64 * 2.0, 3.0);
+            }
+        }
+        let ticks = numf("--ticks", 180.0) as u32;
         let mut rgba = headless.frame(&mut lobby)?;
-        for _ in 0..numf("--ticks", 180.0) as u32 {
+        for t in 0..ticks {
+            if flag("--fx") && t + 8 == ticks {
+                // An explosion, a laser and a spawn, caught mid-effect.
+                use game_room_sim::world::{Ev, Event};
+                let e = |ev, x, y, value| Event { ev, x, y, player: None, kind: None, value };
+                for ev in [e(Ev::Explode, 3.0, 1.5, 0.0), e(Ev::Laser, -8.0, 3.0, -2.0), e(Ev::Spawn, -5.0, 0.0, 0.0), e(Ev::Hit, 6.0, 2.0, 0.0)] { lobby.event(ev); }
+            }
             app::Game::tick(&mut lobby, &vec![app::Controls::default(); local]);
             rgba = headless.frame(&mut lobby)?;
         }

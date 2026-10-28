@@ -5,6 +5,7 @@
 use crate::character::{self, Look, FRAMES};
 use crate::dump::{linear, Room};
 use crate::paint::{Prompt, Show};
+use crate::props::Props;
 use crate::room::{self, Mood, RoomBuild};
 use crate::stage::{Options, Stage};
 use app::{Buttons, Controls, Draw, Frame, Game};
@@ -111,6 +112,8 @@ pub struct Lobby {
     bots: HashMap<String, Bot>,
     rng: Pcg,
     uploaded: bool,
+    props: Props,
+    events: Vec<world::Event>,
 }
 
 const NAMES: [&str; 6] = ["Joep", "Mango", "Disco", "Waffle", "Pickle", "Rocket"];
@@ -121,16 +124,21 @@ const SKINS: [&str; 6] = ["#f5e9be", "#d99b72", "#efc39a", "#905c40", "#bf855b",
 impl Lobby {
     /// The room with `local` keyboard/pad players and `bots` demo bots.
     pub fn new(options: Options, local: usize, bots: usize) -> Result<Self, String> {
-        let build = room::build();
+        let mut build = room::build();
+        let kit = crate::kit::add(&mut build);
         let animated = build.animated();
         let mut room = Room::from_build(build.clone());
         room.live = true;
-        let mut actors_view = None;
-        let stage = Stage::new(room, options, |scene, _| actors_view = Some(ActorMeshes::reserve(scene)))?;
+        let (mut actors_view, mut props) = (None, None);
+        let stage = Stage::new(room, options, |scene, room| {
+            actors_view = Some(ActorMeshes::reserve(scene));
+            props = Some(Props::reserve(kit, scene, room));
+        })?;
         let mut lobby = Self {
             build, stage, actors_view: actors_view.expect("actor meshes"), world: World::new(7), profiles: HashMap::new(), actors: HashMap::new(),
             next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), mood: Mood::default(),
             animated, time: 0.0, since_paint: 0.0, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
+            props: props.expect("props"), events: vec![],
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -150,6 +158,9 @@ impl Lobby {
     }
 
     pub fn names() -> &'static [&'static str] { &NAMES }
+
+    /// Show an event as if the world had sent it.
+    pub fn event(&mut self, e: world::Event) { self.events.push(e); }
 
     fn bot_inputs(&mut self) {
         let dt = world::DT;
@@ -318,8 +329,10 @@ impl Game for Lobby {
         }
         self.bot_inputs();
         for p in &self.world.players { if let Some(a) = self.actors.get_mut(&p.id) { a.prev = [p.x, p.y]; } }
+        self.props.prev = self.world.items.iter().map(|i| (i.id, [i.x, i.y])).collect();
         self.world.step();
-        self.world.take_events();
+        let events = self.world.take_events();
+        self.events.extend(events);
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
@@ -334,11 +347,18 @@ impl Game for Lobby {
             self.since_paint = 1.0;
         }
         let glows = self.place_actors(frame.alpha, delta);
+        for e in std::mem::take(&mut self.events) { self.props.event(&e); }
+        self.props.camera(&mut self.stage.room.camera, self.time, delta);
+        let light = self.stage.options.tuning.light;
+        let (mut lights, shots) = self.props.update(&self.world, &mut self.stage.room, &mut self.stage.scene, frame.alpha, delta, self.time, light);
+        lights.extend(glows);
+        lights.extend(shots);
         let (gpu, renderer) = (frame.gpu, frame.renderer().ok_or("no renderer")?);
         self.animate(gpu, renderer, delta)?;
         self.actors_view.slots.flush(gpu, renderer, &self.stage.scene)?;
         self.actors_view.bodies.flush(gpu, renderer, &self.stage.scene)?;
-        self.stage.relight_with(renderer, &glows)?;
+        self.props.flush(gpu, renderer, &self.stage.room, &mut self.stage.scene)?;
+        self.stage.relight_with(renderer, &lights)?;
         if std::mem::take(&mut self.sheets_dirty) { self.paint_sheets(gpu, renderer)?; }
         // The idle TV cycles its colours: repaint the screens ten times a second.
         self.since_paint += delta;
