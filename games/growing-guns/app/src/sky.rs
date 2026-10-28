@@ -105,10 +105,10 @@ pub fn floodlights(elevation_degrees: f64) -> f32 {
     1.0 + (NIGHT_FLOODLIGHTS - 1.0) * t * t * (3.0 - 2.0 * t)
 }
 
-/// Tuned on the night captures (scripts/sky.json): at EV 11 the floor,
+/// Tuned on the night captures (scripts/sky.json): at EV 11 and 12x the floor,
 /// walls and players read clearly; the lava stays orange. The banks point
 /// at the centre, so the crowd in the stands falls dark.
-pub const NIGHT_FLOODLIGHTS: f32 = 16.0;
+pub const NIGHT_FLOODLIGHTS: f32 = 12.0;
 
 /// The sun over one cycle (`day` in days, 0 = morning): from -12 deg at
 /// midnight to the noon preset's 60 deg, turning once around the sky. The
