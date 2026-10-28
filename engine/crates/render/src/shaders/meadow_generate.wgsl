@@ -152,7 +152,9 @@ fn meadow_generate_cell(cell:vec2<i32>,page:bool)->MeadowCandidate {
     // move the lattice; displacement <= root-relative radius * angle.
     // Membership/road clearance is based on the MAX supported strength and
     // angle multiplier (WindState grass_shear<=.6), so wind cannot pop plants.
-    let wind_margin=meadow.support.y*scale*max_angle*1.5;
+    // The full root-relative radius already encloses every rotated vertex of
+    // the windswept recipe. Its angle varies with height but preserves length.
+    let wind_margin=select(meadow.support.y*scale*max_angle*1.5,0.0,meadow.wind_history.w>0.5);
     let clearance=rest_radius+wind_margin;
     let ground=meadow_ground_at(xz);
     if !ground.valid || ground.up<=0.7 {return result;}
@@ -165,7 +167,7 @@ fn meadow_generate_cell(cell:vec2<i32>,page:bool)->MeadowCandidate {
         // The blade envelope excludes the fixed patch anchor radius. Cover
         // every supported wind pose, and bound half-float error over all
         // anchors instead of trusting rounded gradients near the boundary.
-        let blade_reach=meadow.support.y*scale*(1.0+max_angle*1.5);
+        let blade_reach=meadow.support.y*scale*select(1.0+max_angle*1.5,1.0,meadow.wind_history.w>0.5);
         let quantization_guard=length(ground.road_gradient-decoded)*meadow.support.x;
         usable_road=ground.road-0.9-blade_reach*max(1.0,length(ground.road_gradient))-quantization_guard;
         if usable_road+length(decoded)*meadow.support.x<0.0 {return result;}
@@ -205,6 +207,14 @@ fn meadow_generate_cell(cell:vec2<i32>,page:bool)->MeadowCandidate {
         let pixels=select(error*view.cam.w/near_distance,error*view.cam.w,view.params.z>0.5);
         if pixels<=meadow.distances.z {lod=candidate;}
     }
+    if meadow.wind_history.w>0.5 {
+        // Quick_Grass uses six segments near and one beyond 15m, with 1.5m
+        // nominal blades. Our .6m recipe scales that to6m. The source vertex
+        // path morphs to the actual coarse triangle over3..6m before this cut.
+        // This is an authored appearance LOD, not a projected-error promise.
+        let d=distance(root.xyz,view.cam.xyz)/max(scale,0.01);
+        lod=select(0u,2u,d>=6.0);
+    }
     if meadow.support.z>1.5 {lod=0u;}
     if !page && meadow.support.z>1.5 && !meadow_retain_root(cell,root) {return result;}
     result.lod=lod;result.radius=radius;
@@ -215,16 +225,16 @@ fn meadow_generate_cell(cell:vec2<i32>,page:bool)->MeadowCandidate {
     let pigment=meadow_material_tint(xz,cell,seed);
     result.plant.yaw=vec4<f32>(cos(yaw),sin(yaw),ground.slope);
     // World-cell identity has already seeded placement/wind. These formerly
-    // unused render words carry the edge plane without enlarging the112B pool.
+    // unused render words carry the edge plane in both serialized layouts.
     result.plant.road_variant_tint=vec4<u32>(packed_road_gradient,bitcast<u32>(usable_road),variant,meadow_pack_tint(pigment));
-    for(var branch=0u;branch<4u;branch++) {
+    if meadow_plant_words(meadow.wind_history.w)>12u {for(var branch=0u;branch<4u;branch++) {
         let pivot=meadow_recipe[9u+variant*4u+branch];
         let amplitude=pivot.w*meadow.range.y*meadow.range.z;
         let detail=MEADOW_TAU*meadow_random(cell,83u+branch,seed);
         let current=meadow_branch_angle(xz,meadow.previous.yz,meadow.range.w,detail,amplitude);
         let previous=meadow_branch_angle(xz,meadow.previous.yz,meadow.previous.x,detail,amplitude);
         result.plant.branches[branch]=vec4<f32>(sin(current),cos(current),sin(previous),cos(previous));
-    }
+    }}
     result.valid=true;return result;
 }
 
@@ -233,18 +243,19 @@ fn meadow_store_candidate(candidate:MeadowCandidate,slot:u32,capacity:u32) {
     let lod=candidate.lod;
     let draw_slot=atomicAdd(&meadow_args[lod].instance_count,1u);
     if draw_slot>=capacity {return;}
-    meadow_pool[capacity*MEADOW_PLANT_WORDS+lod*capacity+draw_slot]=slot;
-    let offset=slot*MEADOW_PLANT_WORDS;let plant=candidate.plant;
+    let stride=meadow_plant_words(meadow.wind_history.w);
+    meadow_pool[capacity*stride+lod*capacity+draw_slot]=slot;
+    let offset=slot*stride;let plant=candidate.plant;
     meadow_write4(offset,plant.root_scale);meadow_write4(offset+4u,plant.yaw);
     for(var k=0u;k<4u;k++){meadow_pool[offset+8u+k]=plant.road_variant_tint[k];}
-    for(var branch=0u;branch<4u;branch++){meadow_write4(offset+12u+branch*4u,plant.branches[branch]);}
+    if stride>12u {for(var branch=0u;branch<4u;branch++){meadow_write4(offset+12u+branch*4u,plant.branches[branch]);}}
 }
 @compute @workgroup_size(8,8)
 fn generate_meadow(@builtin(global_invocation_id) id:vec3<u32>) {
     let dimension=u32(max(meadow.dispatch.z,0));let capacity=u32(max(meadow.dispatch.w,0));
     if id.x>=dimension || id.y>=dimension || capacity==0u || meadow.field.w<=0.0 {return;}
     let slot=id.y*dimension+id.x;
-    if slot>=capacity || arrayLength(&meadow_pool)<capacity*31u || arrayLength(&meadow_recipe)<21u {return;}
+    if slot>=capacity || arrayLength(&meadow_pool)<meadow_pool_words(capacity,meadow.wind_history.w) || arrayLength(&meadow_recipe)<21u {return;}
     let base=vec2<i32>(floor(view.cam.xz/meadow.field.w))-vec2<i32>(i32(dimension/2u));
     meadow_store_candidate(meadow_generate_cell(base+vec2<i32>(id.xy),false),slot,capacity);
 }
@@ -253,6 +264,6 @@ fn generate_meadow_page(@builtin(global_invocation_id) id:vec3<u32>) {
     let dimension=u32(max(meadow.dispatch.z,0));let capacity=u32(max(meadow.dispatch.w,0));
     if id.x>=dimension || id.y>=dimension || capacity==0u || meadow.field.w<=0.0 {return;}
     let slot=id.y*dimension+id.x;
-    if slot>=capacity || arrayLength(&meadow_pool)<capacity*31u || arrayLength(&meadow_recipe)<21u {return;}
+    if slot>=capacity || arrayLength(&meadow_pool)<meadow_pool_words(capacity,meadow.wind_history.w) || arrayLength(&meadow_recipe)<21u {return;}
     meadow_store_candidate(meadow_generate_cell(meadow.dispatch.xy+vec2<i32>(id.xy),true),slot,capacity);
 }

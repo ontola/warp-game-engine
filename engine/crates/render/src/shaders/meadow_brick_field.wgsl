@@ -46,9 +46,9 @@ fn brick_source_world(job:u32)->BrickWorldSample {
         base.xz,plant.root_scale.xz+base.xz,meadow.grid.z) {return result;}
     let branch=u32(source.anchor_branch.w);
     if branch>=4u {return result;}
-    let pose=meadow_deform_source(source.position_area.xyz,source.shading_normal.xyz,
-        source.geometric_normal_roughness.xyz,anchor,plant.root_scale,plant.yaw,
-        plant.branches[branch],meadow.previous.yz,false);
+    let pose=meadow_deform_blade(source.position_area.xyz,source.shading_normal.xyz,
+        source.geometric_normal_roughness.xyz,vec4<f32>(anchor,source.shading_normal.w),plant.root_scale,plant.yaw,
+        plant.branches[branch],meadow);
     result.position=pose.world;result.area=source.position_area.w*pose.area_scale;
     result.geometric=pose.geometric_normal;result.normal=pose.normal;
     result.roughness=source.geometric_normal_roughness.w;

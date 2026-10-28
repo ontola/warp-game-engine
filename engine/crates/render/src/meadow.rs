@@ -16,12 +16,23 @@ mod group_gpu;
 mod visibility;
 #[path = "meadow_half.rs"]
 mod half;
+#[path = "meadow_spatial_filter.rs"]
+mod spatial_filter;
 #[path = "meadow_capture.rs"]
 mod capture;
+#[path = "meadow_contact.rs"]
+mod contact;
+pub use contact::Stats as MeadowEdgeShadowStats;
 pub use capture::{MeadowAggregateRaw, MeadowRawLayer};
 #[cfg(test)]
 #[path = "meadow_sample_prune_tests.rs"]
 mod sample_prune_tests;
+#[cfg(test)]
+#[path = "meadow_wind_tests.rs"]
+mod wind_tests;
+#[cfg(test)]
+#[path = "meadow_pool_tests.rs"]
+mod pool_tests;
 pub use group_gpu::Stats as GroupCacheStats;
 
 #[repr(C)]
@@ -37,6 +48,9 @@ struct Settings {
     distances: [f32; 4],
     support: [f32; 4],
     edits: [f32; 4], // RGB multiplier, retained world-cell fraction
+    animation: [f32; 4], // bounded gust/direction scroll, current then previous
+    wind_history: [f32; 4], // prior direction/amplitude; 0 classic, 1 mixed, 2 compact windswept
+    previous_camera: [f32; 4], // previous rendered camera XYZ, history valid
 }
 impl Settings {
     fn with_live_options(mut self, options: crate::debug_settings::DebugRenderOptions) -> Self {
@@ -62,6 +76,14 @@ impl Settings {
             clock.current.direction.y,
             if clock.valid { 1.0 } else { 0.0 },
         ];
+        // Scrolling value noise repeats its integer lattice every 4096 cells.
+        // Wrap each scroll independently in f64: unlike the old 120s phase,
+        // these wraps are continuous and retain sub-frame time precision.
+        let prior = if clock.valid { clock.previous } else { clock.current };
+        let scroll = |time: f64, speed: f64| (time * speed).rem_euclid(4096.0) as f32;
+        settings.animation = [scroll(clock.current.time_seconds, 1.0), scroll(clock.current.time_seconds, 0.05),
+            scroll(prior.time_seconds, 1.0), scroll(prior.time_seconds, 0.05)];
+        settings.wind_history = [prior.direction.x, prior.direction.y, prior.strength * prior.grass_shear / 0.4, self.wind_history[3]];
         Ok(settings)
     }
 }
@@ -70,7 +92,8 @@ pub struct MeadowStats {
     pub view: usize,
     pub plants: [u32; 3],
     pub size_scale: f32,
-    /// Actual projected source-geometry error threshold in input pixels.
+    /// Requested projected error threshold; the windswept profile instead
+    /// uses its authored, growth-scaled source morph distances.
     pub lod_pixels: f32,
     pub density: f32,
     pub color_multiplier: [f32; 3],
@@ -99,6 +122,16 @@ pub struct MeadowStats {
     pub visibility_unique_roots: Option<u64>,
     pub visibility_invalid_ids: u64,
     pub skip_hidden_shade_enabled: bool,
+    /// Explicit request; the shading filter only runs for native source-only
+    /// authored blades, with neither temporal reconstruction nor motion output.
+    pub spatial_filter_requested: bool,
+    /// The last encoded composite used the filter; individual near/empty
+    /// pixels may remain unchanged. This is not a changed-pixel counter.
+    pub spatial_filter_enabled: bool,
+    pub spatial_filter_max_strength: f32,
+    /// Mean cooked basal diameter times the current live growth multiplier.
+    /// Filter onset uses half this value: the coarse triangle's mean width.
+    pub spatial_filter_blade_width_m: f32,
     /// Actual opaque shade early returns in this view, not eligible source area.
     pub opaque_shade_skipped_pixels: u64,
     /// Padded ID copy plus its counter/header; per-view allocation.
@@ -136,6 +169,17 @@ struct IndexBuffers {
 const DRAW_WORDS: usize = 5;
 const DRAW_STRIDE: u64 = DRAW_WORDS as u64 * 4;
 const ARGS_BYTES: u64 = DRAW_STRIDE * 3;
+// Only the serialized raster pool is compacted. MeadowPlant and the brick
+// producer retain their full branch-bearing ABI. Mixed recipes need branches.
+fn meadow_pool_profile(geometry: &crate::meadow_data::MeadowGeometry) -> f32 {
+    if geometry.vertices.iter().all(|vertex| vertex.anchor[3] > 0.0) { 2.0 }
+    else if geometry.vertices.iter().any(|vertex| vertex.anchor[3] > 0.0) { 1.0 }
+    else { 0.0 }
+}
+fn meadow_pool_plant_words(profile: f32) -> u32 { if profile > 1.5 { 12 } else { 28 } }
+fn meadow_pool_bytes(capacity: u32, profile: f32) -> u64 {
+    u64::from(capacity) * u64::from(meadow_pool_plant_words(profile) + 3) * 4
+}
 fn initial_draw_args(vertices: [u32; 3]) -> [u32; DRAW_WORDS * 3] {
     std::array::from_fn(|i| {
         if i % DRAW_WORDS == 0 {
@@ -181,6 +225,7 @@ struct ViewResources {
     visibility: Option<visibility::Target>,
     prepared_visibility: Option<((u32,u32), Settings)>,
     hidden_used_this_frame: bool,
+    spatial_filter_enabled: bool,
     pyramid: Option<crate::depth_pyramid::PyramidTarget>,
     opaque_view: TextureViews<1>,
     placement_bind: BindGroups<1>,
@@ -227,6 +272,21 @@ struct Clock {
     previous: WindState,
     valid: bool,
 }
+#[derive(Default)]
+struct CameraHistory {
+    pending: Vec<glam::Vec3>,
+    presented: Vec<glam::Vec3>,
+}
+impl CameraHistory {
+    fn prepare(&mut self, positions: impl IntoIterator<Item = glam::Vec3>) {
+        self.pending = positions.into_iter().collect();
+        if self.pending.len() != self.presented.len() { self.presented.clear(); }
+    }
+    fn previous(&self, index: usize) -> [f32; 4] {
+        self.presented.get(index).map_or([0.0; 4], |p| [p.x, p.y, p.z, 1.0])
+    }
+    fn finish(&mut self) { self.presented.clone_from(&self.pending); }
+}
 // The brick producer calls the shared camera-independent root function. Its
 // borrowed generation layout still requires pool/args/Hi-Z bindings, although
 // it never reads/writes them. Avoid allocating a full source/far view pool.
@@ -248,6 +308,7 @@ pub struct MeadowRenderer {
     pool_bytes: u64,
     ground: wgpu::Buffer,
     recipe: wgpu::Buffer,
+    edge_shadow: Option<contact::Renderer>,
     generate: wgpu::ComputePipeline,
     generate_layout: wgpu::BindGroupLayout,
     generate_view_layout: wgpu::BindGroupLayout,
@@ -259,8 +320,12 @@ pub struct MeadowRenderer {
     skip_hidden_shade: bool,
     composite: wgpu::RenderPipeline,
     composite_layout: wgpu::BindGroupLayout,
+    spatial_filter_requested: bool,
+    spatial_filter: Option<spatial_filter::Filter>,
+    spatial_filter_temporal_active: std::sync::atomic::AtomicBool,
     views: Mutex<Vec<Option<ViewResources>>>,
     clock: Mutex<Clock>,
+    cameras: Mutex<CameraHistory>,
     brick_source: Mutex<Option<BrickSourceBindings>>,
     aggregate: Option<AggregateResources>,
     groups: Option<group_gpu::GpuGroups>,
@@ -326,9 +391,10 @@ fn shader(gpu: &Gpu, label: &str, source: String) -> wgpu::ShaderModule {
 }
 pub fn shader_source() -> String {
     format!(
-        "{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}",
         crate::wind::shade_source(),
         include_str!("shaders/meadow_common.wgsl"),
+        include_str!("shaders/meadow_transition.wgsl"),
         include_str!("shaders/meadow_render.wgsl"),
         include_str!("shaders/meadow_aggregate.wgsl")
     )
@@ -343,9 +409,10 @@ pub fn generate_source() -> String {
 }
 pub fn aggregate_resolve_source() -> String {
     format!(
-        "{}\n{}\n{}\n{}",
+        "{}\n{}\n{}\n{}\n{}",
         crate::wind::shade_source(),
         include_str!("shaders/meadow_common.wgsl"),
+        include_str!("shaders/meadow_transition.wgsl"),
         include_str!("shaders/meadow_render.wgsl"),
         include_str!("shaders/meadow_aggregate_resolve.wgsl")
     )
@@ -436,10 +503,18 @@ impl MeadowRenderer {
             return Ok(None);
         };
         field.validate()?;
-        let aggregate_enabled = std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1");
+        let pool_profile = meadow_pool_profile(&field.geometry);
+        let windswept = pool_profile > 0.5;
+        // Tall nonlinear ribbons use real geometry at distance, as in the
+        // reference. A patch-wide rest atlas turns their conservative sweep
+        // into enormous overlapping fragments and cannot preserve coverage.
+        let aggregate_enabled = !windswept && std::env::var("KERN_MEADOW_AGGREGATE").as_deref() == Ok("1");
         let aggregate_half = aggregate_enabled && std::env::var("KERN_MEADOW_AGGREGATE_HALF_RES").as_deref() == Ok("1");
         let aggregate_sample_prune = aggregate_enabled && std::env::var("KERN_MEADOW_AGGREGATE_SAMPLE_PRUNE").as_deref() == Ok("1");
         let groups_enabled = std::env::var("KERN_MEADOW_GROUP_CACHE").as_deref() == Ok("1");
+        if groups_enabled && windswept {
+            return Err("windswept blades require KERN_MEADOW_GROUP_CACHE=0: world-page pose certificates support rigid branch wind only".into());
+        }
         if aggregate_half && groups_enabled {
             return Err("KERN_MEADOW_AGGREGATE_HALF_RES does not support KERN_MEADOW_GROUP_CACHE".into());
         }
@@ -460,7 +535,7 @@ impl MeadowRenderer {
             || !field.cell.is_finite()
             || field.cell <= 0.0
             || !field.radius.is_finite()
-            || !(10.0..=160.0).contains(&field.radius)
+            || !(10.0..=256.0).contains(&field.radius)
             || field.fade_start >= field.radius
         {
             return Err("invalid meadow field dimensions/range".into());
@@ -469,7 +544,7 @@ impl MeadowRenderer {
         let capacity = dimension
             .checked_mul(dimension)
             .ok_or("meadow capacity overflow")?;
-        let pool_bytes = u64::from(capacity) * 31 * 4;
+        let pool_bytes = meadow_pool_bytes(capacity, pool_profile);
         let mut packed = vec![[0.0f32; 4]; 21];
         let mut vertices = [0u32; 3];
         for variant in 0..3 {
@@ -532,7 +607,7 @@ impl MeadowRenderer {
         let aggregate_dimension =
             ((180.0 / crate::meadow_data::ROOT_CELL).ceil() as u32 + 3) * 2 + 1;
         let aggregate_capacity = aggregate_dimension * aggregate_dimension;
-        let aggregate_pool_bytes = u64::from(aggregate_capacity) * 31 * 4;
+        let aggregate_pool_bytes = meadow_pool_bytes(aggregate_capacity, 0.0);
         for bytes in [
             pool_bytes,
             (field.samples.len() * 16) as u64,
@@ -630,6 +705,9 @@ impl MeadowRenderer {
                 f32::from_bits(atlas_base),
             ],
             edits: [1.0; 4],
+            animation: [0.0; 4],
+            wind_history: [1.0, 0.0, 0.0, pool_profile],
+            previous_camera: [0.0; 4],
         };
         let generate_layout = layout(
             gpu,
@@ -987,6 +1065,15 @@ impl MeadowRenderer {
             eprintln!("GPU meadow world pages: experimental, shared 256 × 64² pages, four cooks/frame; uncertain depth/pose/direction retains per-root atlas");
             Some(group_gpu::GpuGroups::new(gpu,field,&generate_layout,&generate_view_layout)?)
         } else {None};
+        let edge_shadow = contact::Renderer::new(gpu, field, &ground, &recipe,
+            &generate_layout, &generate_view_layout);
+        let spatial_filter_requested = std::env::var("KERN_MEADOW_SPATIAL_FILTER").as_deref() == Ok("1");
+        let spatial_filter = if spatial_filter_requested && aggregate.is_none() {
+            spatial_filter::source_dimensions(&field.geometry).map(|dimensions| spatial_filter::Filter::new(gpu,dimensions))
+        } else {None};
+        if spatial_filter_requested {
+            eprintln!("GPU meadow spatial filter: compatible={}, native-only 3x3 source shading, strength <= {}; alpha/geometry unchanged, no temporal history",spatial_filter.is_some(),spatial_filter::MAX_STRENGTH);
+        }
         Ok(Some(Self {
             depth_pyramid: crate::depth_pyramid::DepthPyramid::new(gpu),
             settings,
@@ -1000,6 +1087,7 @@ impl MeadowRenderer {
             pool_bytes,
             ground,
             recipe,
+            edge_shadow,
             generate,
             generate_layout,
             generate_view_layout,
@@ -1011,12 +1099,16 @@ impl MeadowRenderer {
             skip_hidden_shade,
             composite,
             composite_layout,
+            spatial_filter_requested,
+            spatial_filter,
+            spatial_filter_temporal_active: std::sync::atomic::AtomicBool::new(false),
             views: Mutex::new(Vec::new()),
             clock: Mutex::new(Clock {
                 current: WindState::default(),
                 previous: WindState::default(),
                 valid: false,
             }),
+            cameras: Mutex::new(CameraHistory::default()),
             brick_source: Mutex::new(None),
             aggregate,
             groups,
@@ -1057,13 +1149,19 @@ impl MeadowRenderer {
         stats
     }
     pub fn skip_hidden_shade_enabled(&self)->bool {self.skip_hidden_shade}
+    /// The frame renderer updates this before each view. Source-only fixtures
+    /// default to native; motion output also independently disables the filter.
+    pub fn set_spatial_filter_temporal_active(&self, active: bool) {
+        self.spatial_filter_temporal_active.store(active, std::sync::atomic::Ordering::Relaxed);
+    }
     pub(crate) fn hidden_shade_fallback(gpu:&Gpu)->wgpu::Buffer {visibility::hidden_fallback(gpu)}
     /// Experimental cached pages do not yet preserve previous-frame coverage
     /// through page/reference transitions. Do not feed them to reconstruction.
     pub fn group_cache_enabled(&self) -> bool { self.groups.is_some() }
-    /// Request the complete camera set before any per-view encode. Page keys
-    /// are fixed world groups/directions; translation is not part of the key.
-    pub fn set_group_views(&self, views:&[crate::ViewRect], frame_serial:u64) {
+    /// Prepare per-view morph history before either visibility or shading.
+    /// Only finish_frame advances the last encoded camera set.
+    pub fn set_views(&self, views:&[crate::ViewRect], frame_serial:u64) {
+        self.cameras.lock().unwrap().prepare(views.iter().map(|v| v.cam.pos));
         if let Some(groups)=&self.groups {groups.set_views(views,frame_serial);}
     }
     /// Publish newly cooked pages only after their command buffer was submitted.
@@ -1074,9 +1172,11 @@ impl MeadowRenderer {
         let mut c = self.clock.lock().unwrap();
         c.previous = c.current;
         c.valid = true;
+        self.cameras.lock().unwrap().finish();
     }
     pub(crate) fn invalidate_history(&self) {
         self.clock.lock().unwrap().valid = false;
+        self.cameras.lock().unwrap().presented.clear();
         if let Some(groups)=&self.groups {groups.invalidate();}
     }
     pub fn set_view_count(&self, count: usize) {
@@ -1085,6 +1185,7 @@ impl MeadowRenderer {
         // A skipped/aborted previous frame can never certify a new frame.
         for view in views.iter_mut().flatten() {
             view.prepared_visibility=None;view.hidden_used_this_frame=false;
+            view.spatial_filter_enabled=false;
             if let Some(target)=view.aggregate.as_mut().and_then(|far|far.targets.as_mut()) {
                 target.capture_ready=false;target.motion_written=false;
             }
@@ -1276,6 +1377,7 @@ impl MeadowRenderer {
             visibility: None,
             prepared_visibility: None,
             hidden_used_this_frame: false,
+            spatial_filter_enabled: false,
             pyramid: None,
             opaque_view: Default::default(),
             placement_bind: Default::default(),
@@ -1416,6 +1518,20 @@ impl MeadowRenderer {
         t.motion = Some(texture.create_view(&Default::default()));
         t.motion_texture = Some(texture);
     }
+    pub(crate) fn edge_shadow_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.edge_shadow.as_ref().map(|r| &r.buffer)
+    }
+    pub fn edge_shadow_stats(&self) -> Option<MeadowEdgeShadowStats> {
+        self.edge_shadow.as_ref().map(|r| r.stats())
+    }
+    /// A small camera-local cache of camera-independent habitat decisions.
+    /// It includes off-screen occluders and fades before its guarded boundary.
+    pub(crate) fn prepare_edge_shadow(&self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder,
+        index: usize, camera: &wgpu::Buffer, options: crate::debug_settings::DebugRenderOptions,
+        time: Option<(&wgpu::QuerySet, u32)>) -> Result<(), String> {
+        let Some(contact) = &self.edge_shadow else { return Ok(()); };
+        contact.prepare(gpu, enc, index, camera, self.frame_settings(options)?, options.draws_meadow(), time)
+    }
     /// Encode exact source visibility before opaque lighting. The later render
     /// consumes it once; settings/size changes are rejected rather than reused.
     pub(crate) fn prepare_visibility(
@@ -1472,7 +1588,9 @@ impl MeadowRenderer {
             views[index] = Some(self.new_view(gpu));
         }
         let v = views[index].as_mut().unwrap();
-        let settings = self.frame_settings(options)?;
+        let mut settings = self.frame_settings(options)?;
+        settings.previous_camera = self.cameras.lock().unwrap().previous(index);
+        settings.previous_camera[3] *= settings.previous[3];
         let prepared = if self.skip_hidden_shade && !prepare_only {
             consume_prepared_visibility(&mut v.prepared_visibility,size,&settings)?;
             true
@@ -1482,6 +1600,7 @@ impl MeadowRenderer {
         v.edits = [options.meadow_color_multiplier[0], options.meadow_color_multiplier[1], options.meadow_color_multiplier[2], options.meadow_density];
         v.size_scale = options.meadow_size_scale;
         v.lod_pixels = options.meadow_lod_pixels;
+        v.spatial_filter_enabled = false;
         if !v.targets.as_ref().is_some_and(|t| t.size == size) {
             v.targets = Some(self.targets(gpu, size));
         }
@@ -1945,7 +2064,7 @@ impl MeadowRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 6,
-                        resource: view_resource,
+                        resource: view_resource.clone(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 7,
@@ -1998,6 +2117,13 @@ impl MeadowRenderer {
             target.motion_written = motion;
         }
         {
+            let filter = self.spatial_filter.as_ref().filter(|_| !motion && v.resolved.is_none()
+                && !self.spatial_filter_temporal_active.load(std::sync::atomic::Ordering::Relaxed));
+            let filtered = filter.map(|filter| {
+                let opaque_view = opaque_depth.create_view(&Default::default());
+                filter.bind(gpu,&t.color,&t.depth_view,&opaque_view,view_resource,&v.settings)
+            });
+            v.spatial_filter_enabled = filtered.is_some();
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("meadow composite"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2018,8 +2144,13 @@ impl MeadowRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.composite);
-            pass.set_bind_group(0, &v.resolved.as_ref().unwrap_or(t).composite, &[]);
+            if let (Some(filter),Some(bind)) = (filter,filtered.as_ref()) {
+                pass.set_pipeline(&filter.pipeline);
+                pass.set_bind_group(0,bind,&[]);
+            } else {
+                pass.set_pipeline(&self.composite);
+                pass.set_bind_group(0, &v.resolved.as_ref().unwrap_or(t).composite, &[]);
+            }
             pass.draw(0..3, 0..1);
         }
         Ok(())
@@ -2111,6 +2242,10 @@ impl MeadowRenderer {
                 visibility_unique_roots: coverage.as_ref().map(|c| c.roots),
                 visibility_invalid_ids: coverage.as_ref().map_or(0, |c| c.invalid),
                 skip_hidden_shade_enabled:self.skip_hidden_shade,
+                spatial_filter_requested:self.spatial_filter_requested,
+                spatial_filter_enabled:v.spatial_filter_enabled,
+                spatial_filter_max_strength:if v.spatial_filter_enabled {spatial_filter::MAX_STRENGTH} else {0.0},
+                spatial_filter_blade_width_m:self.spatial_filter.as_ref().map_or(0.0,|filter|filter.blade_width*self.settings.shape[0]*v.size_scale),
                 opaque_shade_skipped_pixels:if v.hidden_used_this_frame {coverage.as_ref().map_or(0,|c|c.skipped)} else {0},
                 hidden_shade_buffer_bytes:v.visibility.as_ref().map_or(0,|t|t.hidden_bytes()),
                 aggregate_enabled: self.aggregate.is_some(),
@@ -2145,6 +2280,25 @@ impl MeadowRenderer {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn source_morph_camera_history_is_per_view_and_commits_only_after_all_views() {
+        use glam::Vec3;
+        let mut history=super::CameraHistory::default();
+        history.prepare([Vec3::X,Vec3::Y]);
+        assert_eq!(history.previous(0),[0.0;4]);
+        history.finish();
+        history.prepare([Vec3::X*2.0,Vec3::Y*3.0]);
+        assert_eq!(history.previous(0),[1.0,0.0,0.0,1.0]);
+        assert_eq!(history.previous(1),[0.0,1.0,0.0,1.0]);
+        // Re-encoding/preparing an aborted frame must not become history.
+        history.prepare([Vec3::X*4.0,Vec3::Y*5.0]);
+        assert_eq!(history.previous(0),[1.0,0.0,0.0,1.0]);
+        history.finish();
+        assert_eq!(history.previous(0),[4.0,0.0,0.0,1.0]);
+        assert_eq!(history.previous(1),[0.0,5.0,0.0,1.0]);
+        history.prepare([Vec3::Z]);
+        assert_eq!(history.previous(0),[0.0;4],"layout changes discard old view identities");
+    }
     #[test]
     fn hidden_source_preparation_is_single_use_and_rejects_resize_or_changed_wind() {
         use bytemuck::Zeroable;
@@ -2196,6 +2350,8 @@ mod tests {
             ];
             expected.distances[2] = 2.0;
             expected.edits = [1.25, 0.5, 1.0, 0.5];
+            expected.animation = [135.0, 6.75, if valid {119.75} else {135.0}, if valid {5.9875} else {6.75}];
+            expected.wind_history = [0.6, 0.8, 0.7 * 0.2 / 0.4, 0.0];
             assert_eq!(bytemuck::bytes_of(&source), bytemuck::bytes_of(&expected),
                 "only shared frame controls may change; recipe, terrain, root identity and capacity stay exact");
             assert_eq!(clock.current, current);
@@ -2228,7 +2384,7 @@ mod tests {
             assert_eq!(bytemuck::bytes_of(&actual), bytemuck::bytes_of(&expected),
                 "LOD must not change distance, geometry bounds, density, wind or pool capacity");
         }
-        assert_eq!(std::mem::size_of::<super::Settings>(), 192);
+        assert_eq!(std::mem::size_of::<super::Settings>(), 240);
     }
 
     fn placement_random(cell: [i32; 2], salt: u32, seed: u32) -> f64 {
@@ -2331,7 +2487,7 @@ mod tests {
         assert!(yaw_bins.iter().all(|n| *n > 0), "yaw must not collapse to quarter turns");
         // First cell outside either source/far pool cannot jitter into the
         // radius, even with a camera just before the next world-cell boundary.
-        for radius in [10.0f64, 80.0, 100.0, 180.0] {
+        for radius in [10.0f64, 80.0, 100.0, 180.0, 250.0, 256.0] {
             let half_grid = (radius/spacing).ceil() + 3.0;
             for camera_fraction in [0.0, 0.5, 1.0] {
                 let right = (half_grid+1.0+0.5-jitter-camera_fraction)*spacing;
@@ -2424,15 +2580,16 @@ mod tests {
     }
     #[test]
     fn settings_abi() {
-        assert_eq!(std::mem::size_of::<super::Settings>(), 192);
+        assert_eq!(std::mem::size_of::<super::Settings>(), 240);
         assert_eq!(std::mem::offset_of!(super::Settings, edits),176);
         for source in [super::generate_source(),super::shader_source(),super::aggregate_resolve_source()] {
             let module=naga::front::wgsl::parse_str(&source).unwrap();
             let ty=module.types.iter().find(|(_,t)|t.name.as_deref()==Some("MeadowSettings")).unwrap().1;
             let naga::TypeInner::Struct{members,span}=&ty.inner else {panic!("settings must be a struct")};
-            assert_eq!(*span,192);
-            assert_eq!(members.last().unwrap().name.as_deref(),Some("edits"));
-            assert_eq!(members.last().unwrap().offset,176);
+            assert_eq!(*span,240);
+            for (name,offset) in [("edits",176),("animation",192),("wind_history",208),("previous_camera",224)] {
+                assert_eq!(members.iter().find(|m|m.name.as_deref()==Some(name)).unwrap().offset,offset);
+            }
         }
     }
 

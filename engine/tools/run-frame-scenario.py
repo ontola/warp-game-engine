@@ -141,6 +141,54 @@ def image_size(path):
             image.seek(length - 2, 1)
 
 
+def play_controls(wind=None, wind_time=None, debug_ui_script=None):
+    """Validate bounded replay controls before creating output or launching a child."""
+    command, metadata, script_bytes = [], {}, None
+    for flag, value, maximum in [("wind", wind, 1.0), ("wind-time", wind_time, 1.0e9)]:
+        if value is not None:
+            if not math.isfinite(value) or not 0 <= value <= maximum:
+                raise ValueError(f"--{flag} must be finite and in 0..{maximum:g}")
+            command += [f"--{flag}", str(value)]
+            metadata[flag.replace("-", "_")] = value
+    if debug_ui_script is not None:
+        path = Path(debug_ui_script).resolve()
+        with path.open("rb") as source:
+            script_bytes = source.read(65_537)
+        if len(script_bytes) > 65_536:
+            raise ValueError("debug UI script exceeds 64 KiB")
+        rows = json.loads(script_bytes.decode("utf-8"))
+        if not isinstance(rows, list) or len(rows) > 256:
+            raise ValueError("debug UI script must contain at most 256 events")
+        previous = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("debug UI event must be an object")
+            frame = row.get("frame")
+            if type(frame) is not int or not previous <= frame <= 4096 or frame < 1:
+                raise ValueError("debug UI event frames must be sorted integers in 1..4096")
+            previous = frame
+            actions = [key for key in ("key", "pointer", "pointer_down", "pointer_up") if key in row]
+            if len(actions) != 1:
+                raise ValueError("debug UI event requires exactly one input action")
+            action = actions[0]
+            if action == "key" and row[action] not in (
+                "toggle", "close", "up", "down", "left", "right", "enter", "page_up", "page_down"
+            ):
+                raise ValueError("unknown debug UI key")
+            if action == "pointer":
+                point = row[action]
+                if (not isinstance(point, list) or len(point) != 2 or any(
+                    type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 32768 for v in point
+                )):
+                    raise ValueError("debug UI pointer requires two finite coordinates within +/-32768")
+            if action in ("pointer_down", "pointer_up") and row[action] is not True:
+                raise ValueError("debug UI pointer press/release must be true")
+        metadata["debug_ui_script"] = {
+            "source": str(path), "sha256": hashlib.sha256(script_bytes).hexdigest(), "events": len(rows)
+        }
+    return command, metadata, script_bytes
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("scenario", type=Path)
@@ -152,6 +200,9 @@ def main(argv=None):
     parser.set_defaults(visible=True)
     parser.add_argument("--windowed", action="store_true", help="allow a visible window; OS chrome may clamp requested output and will be checked")
     parser.add_argument("--env-file", type=Path, help="JSON object of explicit nonsecret KERN_/SIDEWAYS_/WGPU_BACKEND values")
+    parser.add_argument("--wind", type=float, help="explicit wind strength in 0..1")
+    parser.add_argument("--wind-time", type=float, help="hold wind at this timestamp in seconds (0..1e9)")
+    parser.add_argument("--debug-ui-script", type=Path, help="bounded frame/input JSON; copied and hashed with the run")
     parser.add_argument("--timeout", type=float, default=300, help="maximum process seconds; kills only this spawned child on timeout")
     parser.add_argument("--build-ms", type=float, help="optional externally measured build duration, no build is performed")
     args = parser.parse_args(argv)
@@ -165,6 +216,7 @@ def main(argv=None):
             raise ValueError("--timeout must be finite and positive")
         if args.build_ms is not None and (not math.isfinite(args.build_ms) or args.build_ms < 0):
             raise ValueError("--build-ms must be finite and nonnegative")
+        control_args, controls, script_bytes = play_controls(args.wind, args.wind_time, args.debug_ui_script)
         case_bytes = scenario.read_bytes()
         case = tomllib.loads(case_bytes.decode("utf-8-sig"))
         frames = sum(section["frames"] for section in case.get("sections", []))
@@ -198,6 +250,12 @@ def main(argv=None):
         profile = out / "frames.jsonl"
         command = [str(exe), "play", "--scenario", str(scenario), "--frame-profile", str(profile),
                    "--scenario-output", str(out / "captures"), "--state-out", str(out / "final-state.json")]
+        command += control_args
+        if script_bytes is not None:
+            script_path = out / "debug-ui-script.json"
+            script_path.write_bytes(script_bytes)
+            command += ["--debug-ui-script", str(script_path)]
+            controls["debug_ui_script"]["copied_path"] = str(script_path)
         if not args.visible:
             command += ["--smoke-render", str(frames)]
         elif not args.windowed:
@@ -212,6 +270,7 @@ def main(argv=None):
                     "env_file_sha256": hashlib.sha256(env_bytes).hexdigest() if env_bytes else None,
                     "renderer_environment": {k: v for k, v in sorted(environment.items()) if renderer_key(k)},
                     "environment_overrides": overrides, "git": git_state(engine),
+                    "play_controls": controls,
                     "build_ms_external": args.build_ms, "visible": args.visible, "fullscreen": args.visible and not args.windowed,
                     "expected_frames": frames,
                     "scope": "Explicit bounded scenario. No build or existing-process termination. Timeout kills only the spawned child. Selected renderer environment is recorded; other process environment is inherited, not disclosed. Hidden cadence is event-loop throughput, not visible presentation."}
