@@ -1,0 +1,12 @@
+# What the warp executable needs to know about this game. Every key is
+# optional; see engine/docs/warp-cli.md for all of them.
+title = "Hello Warp"
+# tick(dt, input) runs this many times a second, with dt = 1 / tick_rate.
+tick_rate = 60
+# Local players (split screen), 1 to 4. `warp run --players N` overrides it.
+players = 1
+# Seed of the `random` generator: the same seed plays out the same way.
+seed = 7
+# gradient, or TIME[:WEATHER]: sunrise, morning, noon, afternoon, sunset,
+# night with clear, haze or mist. Scripts change it with sky.set.
+sky = "afternoon"

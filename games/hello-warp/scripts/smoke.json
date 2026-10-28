@@ -1,0 +1,16 @@
+{ "size": [640, 360],
+  "steps": [
+    { "ticks": 30, "note": "fall onto the floor" },
+    { "expect": "/state/grounded", "equals": true },
+    { "expect": "/errors", "equals": [] },
+    { "cmd": "lua world.spawn('sphere', { pos = vector.create(0, 0.8, -3), size = 0.6, color = '#ffd24a', emissive = 3, solid = false, tag = 'orb' })",
+      "note": "an orb three metres ahead" },
+    { "ticks": 45, "mv": [0, 1], "note": "run forward through it" },
+    { "expect": "/state/score", "equals": 1 },
+    { "expect": "/sounds/recent/0/sound", "equals": "pickup" },
+    { "expect": "/tags/orb", "equals": 7, "note": "a new orb replaced it" },
+    { "press": ["SOUTH"], "ticks": 12, "note": "jump" },
+    { "expect": "/state/vel/1", "min": 0.5 },
+    { "audio": "pickup-and-jump.wav" },
+    { "capture": "hello.png", "state": "hello.json" }
+  ] }

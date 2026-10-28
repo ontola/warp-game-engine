@@ -71,6 +71,10 @@ pub struct Gg {
     sky: crate::sky::Sky,
     /// A baked sky waiting for the renderer (`Renderer::update_sky`).
     sky_upload: Option<render::sky::PreparedSky>,
+    /// `light KEY=VALUE` settings, applied again over every sky change.
+    light_overrides: Vec<String>,
+    /// Scatter weights of the stadium's lights (`light flood_scatter=..`).
+    scatter: view::Scatter,
 }
 
 impl Gg {
@@ -80,7 +84,7 @@ impl Gg {
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
-            sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None }
+            sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default() }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -200,6 +204,7 @@ impl Gg {
                 let taa = self.light.taa;
                 self.light = Lighting { taa, ..view::lighting() };
                 self.vis.set_floodlights(1.0);
+                self.apply_light_overrides();
                 self.sky.applied = None;
                 self.sky_upload = None;
                 self.rebuild = true;
@@ -217,9 +222,56 @@ impl Gg {
     fn show_sky(&mut self, prepared: render::sky::PreparedSky) {
         prepared.apply_scene(&mut self.vis.scene, &mut self.light);
         self.vis.set_floodlights(crate::sky::floodlights(prepared.settings.solar().elevation_degrees));
+        self.light.volumetric = crate::sky::volumetric(&prepared.settings);
+        self.apply_light_overrides();
         self.sky.applied = Some(prepared.settings);
         if let Some(live) = &mut self.sky.live { live.accepted(prepared.clone()); }
         self.sky_upload = Some(prepared);
+    }
+
+    /// Re-apply the `light` command's settings after the sky replaced them.
+    fn apply_light_overrides(&mut self) {
+        for kv in self.light_overrides.clone() { if let Err(e) = self.set_light(&kv) { eprintln!("light {kv}: {e}"); } }
+    }
+
+    /// One `light` setting: `Lighting::set`, or the stadium's scatter weights
+    /// `flood_scatter`, `beam_scatter`, `lava_scatter`, `beacon_scatter`.
+    fn set_light(&mut self, kv: &str) -> Result<(), String> {
+        let weight = |v: &str| v.parse::<f32>().ok().filter(|w| w.is_finite() && (0.0..=100.0).contains(w)).ok_or(format!("{kv}: weight 0..100"));
+        match kv.split_once('=') {
+            Some(("flood_scatter", v)) => self.scatter.flood = weight(v)?,
+            Some(("beam_scatter", v)) => self.scatter.beam = weight(v)?,
+            Some(("lava_scatter", v)) => self.scatter.lava = weight(v)?,
+            Some(("beacon_scatter", v)) => self.scatter.beacon = weight(v)?,
+            _ => {
+                let mut probe = self.light.clone();
+                probe.set(kv)?;
+                self.light = probe;
+            }
+        }
+        Ok(())
+    }
+
+    /// `light` (show), `light KEY=VALUE..` (set and keep over sky changes;
+    /// see `Lighting::set`, e.g. `volumetric=0|1`, `vol_density`,
+    /// `vol_intensity`, `vol_anisotropy`, `vol_r/g/b`), `light reset`.
+    fn light_command(&mut self, args: &[&str]) -> Result<String, String> {
+        if args == ["reset"] {
+            self.light_overrides.clear();
+            self.scatter = Default::default();
+            let taa = self.light.taa;
+            self.light = Lighting { taa, ..view::lighting() };
+            self.sky.applied = None;
+            let choice = self.sky.choice;
+            self.set_sky(choice)?;
+        }
+        for kv in args.iter().filter(|a| **a != "reset") {
+            self.set_light(kv)?;
+            let key = kv.split_once('=').map_or(*kv, |(k, _)| k);
+            self.light_overrides.retain(|o| o.split_once('=').map_or(o.as_str(), |(k, _)| k) != key);
+            self.light_overrides.push(kv.to_string());
+        }
+        Ok(format!("light overrides {:?}, volumetric {:?}, {:?}", self.light_overrides, self.light.volumetric, self.scatter))
     }
 
     /// Rounds and the cycle: request the sky for this round and the game
@@ -451,7 +503,9 @@ impl app::Game for Gg {
         let r = frame.renderer().expect("scene set above");
         self.vis.flush(frame.gpu, r)?;
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
-        r.set_local_lights(&self.vis.local_lights())?;
+        let (lights, scatter) = self.vis.local_lights_scattering(self.scatter);
+        r.set_local_lights_scattering(&lights, &scatter)?;
+        r.set_volumetric_beams(&if self.light.volumetric.is_some() { self.vis.volumetric_beams(self.scatter) } else { Vec::new() })?;
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
         // Name tags over everyone not seated here (on the start screen, everyone).
         let drawn: Vec<Vec3> = self.world.players.iter().enumerate().map(|(i, p)| self.prev.get(i).map_or(p.pos, |q| q.lerp(p.pos, alpha))).collect();
@@ -519,7 +573,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
             // Show (or clear with `none`) a network error in the red panel.
             "net-error" => {
                 let t = cmd.trim_start().strip_prefix("net-error").unwrap_or("").trim();
@@ -562,6 +616,7 @@ impl app::Game for Gg {
                 if let Some(name) = w.get(1) { self.set_sky(crate::sky::SkyChoice::parse(name)?)?; }
                 Ok(format!("sky {}", self.sky.choice.name()))
             }
+            "light" => self.light_command(&w[1..]),
             "round" => { self.world.next_round(); self.new_arena(); Ok(format!("round {}", self.world.round)) }
             "cage" => { self.world.release_cage(); Ok("cage open".into()) }
             "rematch" => { self.world.restart_match(); self.new_arena(); Ok("rematch".into()) }

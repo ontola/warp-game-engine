@@ -6,7 +6,9 @@ outdoor worlds. [Sideways](games/sideways/README.md) is its rally game for
 
 One Cargo workspace and lockfile, with separate engine and game directories.
 [Growing Guns](games/growing-guns/README.md), an arena shooter, is the second
-game on the engine. Documentation starts at
+game on the engine. [Hello Warp](games/hello-warp/README.md) is the third: a
+game made only of Luau scripts and sound patches, run by the
+[`warp` executable](engine/docs/warp-cli.md) without compiling anything. Documentation starts at
 [engine/docs/README.md](engine/docs/README.md); [`website/`](website/README.md)
 builds it into a static site.
 

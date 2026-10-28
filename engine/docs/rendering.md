@@ -74,6 +74,9 @@ detail, the measurements and the dead ends are in the
   lights, with shadow rays and any number of bounces; a game can also
   supply its own probes. Use a black sky for a closed room.
 - Height fog with a finite-distance aerosol layer.
+- Opt-in volumetric light: in-scattering from chosen local lights and
+  scatter-only beams, at half resolution after reconstruction
+  ([volumetric-light.md](volumetric-light.md)). Off by default.
 - `Lighting::gi` marches foliage and terrain volumes for indirect light;
   without foliage or a heightfield the marches are skipped exactly.
   `scene.mark_solid()` adds near-field contact shading for a handful of

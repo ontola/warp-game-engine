@@ -18,6 +18,7 @@ games/
                             data/, scenarios/, tools/
   growing-guns/             arena shooter: app/, sim/, mods/, scripts/,
                             assets/, tools/
+  hello-warp/               a Luau-only game for the warp executable
 website/                    the static site built from these docs
 ```
 
@@ -34,6 +35,7 @@ website/                    the static site built from these docs
 | `net` | Online play over iroh (QUIC with hole punching and relays): a host and clients exchange the game's own typed messages through channels the game loop polls. | iroh, tokio, postcard |
 | `live` | Live control over MCP: a Streamable HTTP server on localhost with a bearer token, off the game thread; games add tools through the `LiveGame` trait. The `warp-mcp` stdio bridge. See [live control](live-control.md). | tokio, hyper, image |
 | `script` | Luau scripting: sandboxed modules from a folder, hot reload, a step budget per call and a memory cap. | mlua (Luau) |
+| `warp` | The `warp` executable: runs a game folder of Luau scripts, synth patches and glTF assets (window, headless script, headless live server), with a Luau game API, hot reload and MCP. See [games in Luau](warp-cli.md). | app, render, audio, script, live, assets |
 
 How the crates depend on each other:
 
@@ -42,6 +44,7 @@ kern  <-  physics
 render  <-  assets
 render, audio  <-  app
 net, script, live: standalone
+app, script, live, assets  <-  warp
 ```
 
 A game picks what it needs. Sideways uses `kern`, `render` and `audio`
