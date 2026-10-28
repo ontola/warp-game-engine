@@ -123,7 +123,7 @@ impl GpuBatch {pub fn read(self,gpu:&Gpu)->Vec<TraceResult>{
         let hf=Heightfield{origin:[0.,0.],cell:1.,w:2,h:2,heights:vec![0.,1.,2.,3.]};
         let h=Hierarchy::build(&hf).unwrap();let bytes=h.packed_bytes();
         assert_eq!(bytes.len(),320);assert_eq!(bytes.len(),packed_size(1));
-        assert_eq!(&bytes[304..312],bytemuck::cast_slice(&[[0.0f32,3.0f32]]));
+        assert_eq!(&bytes[304..312],bytemuck::cast_slice::<_,u8>(&[[0.0f32,3.0f32]]));
         assert_eq!(&bytes[312..],&[0;8]);
         for count in [1,2,5,21,341]{assert_eq!(packed_size(count)%16,0);assert!(packed_size(count)>=304+count as usize*8);}
     }

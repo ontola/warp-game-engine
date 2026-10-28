@@ -20,13 +20,13 @@ glyphon = "0.12"
 # SVG rasterising for runtime pictures (QR codes, icons); no text, no raster images.
 resvg = { version = "0.45", default-features = false }
 ash = { version = "0.38", optional = true }
+serde_json.workspace = true
 
 [build-dependencies]
 cc = "1"
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
-serde_json.workspace = true
 
 # DX12 compiles shaders with DXC, linked in. Without it wgpu falls back to
 # FXC, which rejects the cull pipeline (X3663: barriers after data-dependent
