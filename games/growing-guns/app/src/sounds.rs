@@ -166,7 +166,7 @@ pub fn speakers(layout: Option<&str>, music: Option<&crate::music::Shared>) -> R
         made = Some((tx, crowd));
         let mut sum: Vec<Box<dyn audio::Source>> = vec![Box::new(mix), Box::new(cmix)];
         if let Some(m) = music { crate::music::lock(m).set_sample_rate(rate as f32); sum.push(Box::new(crate::music::Player(m.clone()))); }
-        Box::new(audio::Sum::new(sum))
+        Box::new(audio::Sum::limited(sum, -0.3))
     })?;
     let (tx, crowd) = made.expect("built in open");
     Ok((speaker, tx, crowd))
@@ -178,7 +178,7 @@ pub fn offline(music: Option<&crate::music::Shared>) -> (Box<dyn audio::Source>,
     let (crowd, cmix) = audio::sfx::sfx(32, audio::SAMPLE_RATE);
     let mut sum: Vec<Box<dyn audio::Source>> = vec![Box::new(mix), Box::new(cmix)];
     if let Some(m) = music { crate::music::lock(m).set_sample_rate(audio::SAMPLE_RATE); sum.push(Box::new(crate::music::Player(m.clone()))); }
-    (Box::new(audio::Sum::new(sum)), tx, crowd)
+    (Box::new(audio::Sum::limited(sum, -0.3)), tx, crowd)
 }
 
 pub struct Sounds {
