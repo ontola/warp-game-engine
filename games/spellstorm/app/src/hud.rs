@@ -211,6 +211,7 @@ impl Hud {
             let y = (0.5 - c.y / c.w * 0.5) * size[1] as f32 / s;
             p.text(&wz.name, x, y + 14.0, body(), 26.0, lighten(wz.robe, 0.4), TextAlign::Center, 9.0);
         }
+        p.d.begin_overlay();
         for (i, &id) in w.wizards.iter().enumerate() {
             let right = i % 2 == 1;
             let top = i >= 2;
@@ -241,7 +242,8 @@ impl Hud {
             p.shadow_text(&self.card, sw * 0.5, cy - 20.0, title(), 96.0 * grow, col);
             p.rect([sw * 0.5 - 380.0 * grow, cy + 44.0 * grow, 760.0 * grow, 2.0], [0.86, 0.8, 0.68, 0.55 * a]);
         }
-        // Black for portals and for the end of a run.
+        // Black for portals and for the end of a run, over everything.
+        p.d.begin_overlay();
         let f = self.fade.now();
         if f > 0.0 {
             p.rect([0.0, 0.0, sw, 1080.0], [0.0, 0.0, 0.0, f]);
@@ -269,9 +271,9 @@ fn view_proj(cam: &Camera, size: [u32; 2]) -> Mat4 {
 }
 
 /// Draws on Godot's canvas: positions in 1080-high units, scaled by `s`.
-struct Painter<'a> {
-    d: &'a mut HudDrawList,
-    s: f32,
+pub(crate) struct Painter<'a> {
+    pub d: &'a mut HudDrawList,
+    pub s: f32,
 }
 
 impl Painter<'_> {
@@ -363,7 +365,7 @@ fn ball(p: &mut Painter, e: El, c: Vec2, r: f32, dim: f32) {
 }
 
 /// Icons.draw: each element as simple shapes.
-fn icon(p: &mut Painter, e: El, c: Vec2, r: f32, col: C) {
+pub(crate) fn icon(p: &mut Painter, e: El, c: Vec2, r: f32, col: C) {
     let w = (r * 0.16).max(1.5);
     let v = |x: f32, y: f32| c + Vec2::new(x, y);
     match e {

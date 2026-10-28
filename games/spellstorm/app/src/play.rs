@@ -13,7 +13,9 @@ pub struct Spellstorm {
     pub world: World,
     pub view: View,
     pub hud: crate::hud::Hud,
+    pub menu: crate::menu::Menu,
     humans: usize,
+    quit: bool,
     built: bool,
 }
 
@@ -60,12 +62,27 @@ impl Spellstorm {
         let world = World::new(&seats, seed, Settings::default());
         let mut hud = crate::hud::Hud::default();
         hud.level(&world);
-        Spellstorm { world, view: View::new(kits), hud, humans, built: false }
+        let mut menu = crate::menu::Menu::new(true);
+        if humans > 0 {
+            menu.show(true, &world);
+        }
+        Spellstorm { world, view: View::new(kits), hud, menu, humans, quit: false, built: false }
     }
 
     /// One tick with these players' controls.
     pub fn step(&mut self, controls: &[Controls]) {
+        let was_open = self.menu.open;
+        match self.menu.update(&mut self.world, controls, spellstorm::world::DT as f32) {
+            crate::menu::Action::StartAt(b) => self.world.start_at(b),
+            crate::menu::Action::Quit => self.quit = true,
+            _ => {}
+        }
+        // The game stands still under the menu; the press that closed it
+        // does not reach the wizards.
+        self.world.paused = self.menu.open;
+        let idle = self.menu.open || was_open;
         for (i, c) in controls.iter().enumerate().take(self.humans) {
+            let c = if idle { &Controls::default() } else { c };
             if let Some(&id) = self.world.wizards.get(i) {
                 self.world.wiz_mut(id).input = pad(c);
             }
@@ -98,7 +115,17 @@ impl app::Game for Spellstorm {
         self.view.pose(frame.gpu, r, &self.world, frame.dt)?;
         let mut hud = HudDrawList::new(frame.size);
         self.hud.draw(&mut hud, &self.world, &self.view.camera, frame.size);
+        self.menu.draw(&mut hud, &self.world, frame.size);
         Ok(Draw { cameras: vec![self.view.camera], light: self.view.light.clone(), hud })
+    }
+
+    fn escape(&mut self) -> bool {
+        self.menu.escape(&self.world);
+        true
+    }
+
+    fn quit(&self) -> bool {
+        self.quit
     }
 
     fn title(&self) -> Option<String> {
