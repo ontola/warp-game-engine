@@ -65,6 +65,14 @@ detail, the measurements and the dead ends are in the
   with ozone absorption on a spherical planet, supplying both the
   background and SH9 sky lighting. No clouds, moon or visible sun disc.
   See [ATMOSPHERE.md](../ATMOSPHERE.md).
+- Indoor light: `irradiance_volume` probes (an ambient cube per grid
+  point) reserved with `Scene::reserve_irradiance_volume` and filled with
+  `Renderer::set_irradiance_volume`. Inside the grid they replace sky light
+  and the outdoor bounce for diffuse ambient and rough reflections, fading
+  out over the outer half cell. `irradiance_volume::BoxRoom::bake` bakes them
+  on the CPU from boxes (walls, furniture, emissive tubes) and the local
+  lights, with shadow rays and any number of bounces; a game can also
+  supply its own probes. Use a black sky for a closed room.
 - Height fog with a finite-distance aerosol layer.
 - `Lighting::gi` marches foliage and terrain volumes for indirect light;
   without foliage or a heightfield the marches are skipped exactly.
@@ -129,7 +137,8 @@ the notes say so wherever a result is partial.
 - The default look is pale without tuning (AgX, physical units).
 - Animated pixels reject temporal history until deformation motion vectors
   exist.
-- No water, buildings or general indoor rendering.
+- No water or buildings. Indoor light is a baked probe grid: no dynamic
+  GI, light leaks through walls thinner than a cell.
 
 ## Further reading
 

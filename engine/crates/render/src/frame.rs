@@ -513,6 +513,8 @@ struct MeadowBrickFixture {
 pub struct Renderer {
     resource_device: wgpu::Device,
     albedo_array: wgpu::Texture,
+    aux_buffer: wgpu::Buffer,
+    irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
     sun_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
     headlight_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
     geometry_diagnostics: crate::geometry_diagnostics::State,
@@ -903,6 +905,15 @@ impl Renderer {
     /// The albedo texture array (sRGB, TEXTURE_SIZE square, mipmapped). Live
     /// layers are redrawn through `screen::Screen`; do not resize it.
     pub fn albedo_array(&self) -> &wgpu::Texture { &self.albedo_array }
+
+    /// Replace the probes reserved with `Scene::reserve_irradiance_volume`
+    /// (for example after `irradiance_volume::BoxRoom::bake`).
+    pub fn set_irradiance_volume(&self, gpu: &Gpu, probes: &[crate::irradiance_volume::Probe]) -> Result<(), String> {
+        let (offset, grid) = self.irradiance_volume.ok_or("the scene reserved no irradiance volume")?;
+        let words = crate::irradiance_volume::pack(&grid, probes)?;
+        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        Ok(())
+    }
 
     pub fn new(gpu: &Gpu, scene: &Scene, light: &Lighting) -> Renderer {
         let mut startup=crate::startup_profile::Trace::new();
@@ -1424,6 +1435,8 @@ impl Renderer {
         let mut renderer=Renderer {
             resource_device: gpu.device.clone(),
             albedo_array: albedo.clone(),
+            aux_buffer: aux.clone(),
+            irradiance_volume: scene.irradiance_volume,
             geometry_diagnostics,
             debug_options: Default::default(),
             upscaling: Default::default(),
@@ -3063,7 +3076,8 @@ impl Renderer {
                 hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, 0],
                 // Reflectance, conditioned on local sun and sky visibility.
                 bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
-                params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit, 0.0],
+                params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit,
+                    self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32)],
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             let mut view_light = lu;

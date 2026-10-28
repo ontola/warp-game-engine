@@ -369,6 +369,9 @@ pub struct Scene {
     pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
     /// Independent weighted character meshes, with caller-sampled palettes.
     pub skinning: crate::skinning::Skinning,
+    /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
+    /// word offset of their header and the grid.
+    pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
     /// A GPU-simulated debris pool (`debris::Debris::reserve`).
     pub debris: Option<crate::debris::DebrisSpec>,
     /// A GPU-posed crowd (`crowd::Crowd::reserve`).
@@ -575,6 +578,20 @@ impl Scene {
     }
 
     /// Add an already decoded image to the texture array; returns its layer.
+    /// Reserve indoor irradiance probes (`irradiance_volume`) in `aux`, dark
+    /// until `Renderer::set_irradiance_volume`. Call after the game's own
+    /// `aux` data is in place; one volume per scene.
+    pub fn reserve_irradiance_volume(&mut self, grid: crate::irradiance_volume::Grid) -> Result<(), String> {
+        if self.irradiance_volume.is_some() { return Err("the scene already has an irradiance volume".into()); }
+        let words = crate::irradiance_volume::pack(&grid, &vec![Default::default(); grid.count()])?;
+        // Offset 0 means "no volume" to the shader.
+        if self.aux.is_empty() { self.aux.push(0); }
+        if self.aux.len() + words.len() >= 1 << 24 { return Err("aux too large for an irradiance volume offset".into()); }
+        self.irradiance_volume = Some((self.aux.len(), grid));
+        self.aux.extend(words);
+        Ok(())
+    }
+
     /// Reserve an albedo layer that `screen::Screen` draws at runtime (TVs,
     /// signs, covers that arrive later). Black until the first draw. Pair it
     /// with an EMISSIVE material for a glowing screen.

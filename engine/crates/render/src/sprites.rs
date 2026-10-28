@@ -69,24 +69,29 @@ impl Sprite {
 pub fn irradiance(lights: &[LocalLight], p: Vec3, normal: Vec3, ambient: Vec3) -> Vec3 {
     let mut sum = ambient;
     for lamp in lights {
-        let offset = p - lamp.position;
-        let d2 = offset.length_squared();
-        let range = lamp.range_m;
-        if d2 >= range * range || d2 < 1e-10 { continue; }
-        let outward = offset / d2.sqrt();
-        let (lo, hi) = (lamp.outer_cos, lamp.inner_cos);
-        let t = ((outward.dot(lamp.direction.normalize_or_zero()) - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
-        let cone = t * t * (3.0 - 2.0 * t);
-        if cone <= 0.0 { continue; }
-        let normalized = d2 / (range * range);
-        let fade = (1.0 - normalized * normalized).max(0.0);
-        let near = lamp.source_radius_m * lamp.source_radius_m;
-        let spread = if lamp.falloff == 2.0 || lamp.falloff == 0.0 { d2.max(near) } else { d2.max(near).powf(lamp.falloff * 0.5) };
         // Half-Lambert wrap: a flat sprite stands in for a rounded body.
-        let lambert = (normal.dot(-outward) * 0.5 + 0.5).max(0.0);
-        sum += lamp.intensity_cd * (cone * fade * fade / spread * lambert);
+        if let Some((to_light, e)) = light_at(lamp, p) { sum += e * (normal.dot(to_light) * 0.5 + 0.5).max(0.0); }
     }
     sum
+}
+
+/// One local light at `p`: the unit direction towards it and the irradiance
+/// on a surface facing it (lux), as the shade pass evaluates it (unshadowed).
+pub fn light_at(lamp: &LocalLight, p: Vec3) -> Option<(Vec3, Vec3)> {
+    let offset = p - lamp.position;
+    let d2 = offset.length_squared();
+    let range = lamp.range_m;
+    if d2 >= range * range || d2 < 1e-10 { return None; }
+    let outward = offset / d2.sqrt();
+    let (lo, hi) = (lamp.outer_cos, lamp.inner_cos);
+    let t = ((outward.dot(lamp.direction.normalize_or_zero()) - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
+    let cone = t * t * (3.0 - 2.0 * t);
+    if cone <= 0.0 { return None; }
+    let normalized = d2 / (range * range);
+    let fade = (1.0 - normalized * normalized).max(0.0);
+    let near = lamp.source_radius_m * lamp.source_radius_m;
+    let spread = if lamp.falloff == 2.0 || lamp.falloff == 0.0 { d2.max(near) } else { d2.max(near).powf(lamp.falloff * 0.5) };
+    Some((-outward, lamp.intensity_cd * (cone * fade * fade / spread)))
 }
 
 /// An offscreen HUD canvas (text, shapes, pictures) to show as a sprite.
