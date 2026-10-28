@@ -9,6 +9,9 @@ use render::scene::{Material, NO_SHADOW};
 use render::slots::Slots;
 use render::Scene;
 
+#[path = "airstrike.rs"]
+mod airstrike;
+
 const SLOTS: usize = 192;
 
 pub struct Things {
@@ -24,6 +27,7 @@ pub struct Things {
     marker: usize,
     rocket: usize,
     lava: usize,
+    lasers: airstrike::Lasers,
 }
 
 impl Things {
@@ -53,6 +57,7 @@ impl Things {
             marker: { let m = glow(scene, [1.0, 0.1, 0.05], 12000.0); scene.add_mesh(&render::primitives::torus(m, 0.04, 24, 6).mesh()) },
             rocket: { let m = glow(scene, [1.0, 0.55, 0.2], 40000.0); cube(scene, m) },
             lava: cube(scene, lava_m),
+            lasers: airstrike::Lasers::reserve(scene),
         }
     }
 
@@ -88,10 +93,9 @@ impl Things {
         for s in &world.strikes {
             match s.kind {
                 StrikeKind::AirStrike => {
+                    if !airstrike::active(s) { continue; }
                     let t = (s.age / AIR_STRIKE_TRAVEL) as f32;
-                    let pulse = 1.0 + 0.15 * (clock * 10.0).sin();
-                    put(scene, self.marker, at(s.target + Vec3::Y * 0.1, Vec3::new(3.0 * pulse, 1.0, 3.0 * pulse)), false);
-                    let sky = s.target + Vec3::new(0.0, 263.0, 93.0);
+                    let sky = s.target + airstrike::SKY_OFFSET;
                     let pos = sky.lerp(s.target, t * t);
                     let dir = (s.target - sky).normalize();
                     put(scene, self.rocket, Affine3A::from_scale_rotation_translation(Vec3::new(0.35, 2.2, 0.35), Quat::from_rotation_arc(Vec3::Y, -dir), pos), false);
@@ -131,6 +135,7 @@ impl Things {
             i.cluster_count = 0;
             i.sphere = [0.0; 4];
         }
+        self.lasers.pose(scene, &world.strikes);
     }
 }
 

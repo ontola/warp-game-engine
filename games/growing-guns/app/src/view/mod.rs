@@ -283,7 +283,7 @@ pub fn lighting() -> Lighting {
 pub fn camera(world: &World, i: usize, prev: &[Vec3], alpha: f32) -> Camera {
     let p = &world.players[i];
     let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
-    if !p.alive {
+    if !p.alive && !p.ghost {
         // Spectate from above the arena centre.
         let a = world.tick as f32 * 0.003 + i as f32;
         let r = world.arena.size * 0.55;
@@ -294,4 +294,28 @@ pub fn camera(world: &World, i: usize, prev: &[Vec3], alpha: f32) -> Camera {
     // Sniper zoom (Godot FOV 30 instead of 75).
     let fov_y = if p.zooming { 30f32.to_radians() } else { FOV_Y };
     Camera { pos: eye, target: eye + p.forward(), fov_y, near: 0.05 }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+
+    #[test]
+    fn ghost_keeps_the_players_interpolated_eye_and_look() {
+        let mut world = World::new(3, &[false; 3]);
+        let p = &mut world.players[0];
+        p.alive = false;
+        p.ghost = true;
+        p.pos = Vec3::new(4.0, 2.0, -6.0);
+        p.yaw = 0.7;
+        p.pitch = -0.3;
+        let previous = p.pos - Vec3::X;
+        let eye = previous.lerp(p.pos, 0.5) + Vec3::Y * p.eye_height();
+        let direction = p.forward();
+        let cam = camera(&world, 0, &[previous], 0.5);
+        assert_eq!(cam.pos, eye);
+        assert!((cam.target - cam.pos - direction).length() < 1e-6);
+        world.players[0].ghost = false;
+        assert_ne!(camera(&world, 0, &[previous], 0.5).pos, eye);
+    }
 }

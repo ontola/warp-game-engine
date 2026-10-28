@@ -49,6 +49,7 @@ pub struct Gg {
     music: Option<(crate::music::Shared, crate::music::Director)>,
     /// Card menu per local player.
     menus: Vec<app::ui::Menu>,
+    pointer: (app::Pointer, [u32; 2]),
     quit: bool,
     /// Keyboard and mouse off: every local player is on a pad.
     pub no_kbm: bool,
@@ -74,7 +75,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None }
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -278,7 +279,17 @@ impl Gg {
 impl app::Game for Gg {
     fn local_players(&self) -> usize { self.slots.len() }
 
+    fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) {
+        self.pointer = (if self.no_kbm { app::Pointer::default() } else { pointer }, size);
+    }
+
+    fn mouse_capture(&self) -> Option<bool> {
+        Some(!self.no_kbm && !self.ui.is_open() && self.hud.match_over.is_none()
+            && !self.slots.first().and_then(|&s| self.world.players.get(s)).is_some_and(|p| p.offer.is_some()))
+    }
+
     fn tick(&mut self, controls: &[Controls]) {
+        let (pointer, pointer_size) = std::mem::take(&mut self.pointer);
         // Live-control requests, between ticks (also while a party is paused).
         crate::live::tick(self);
         let party_controls = match self.party_tick() {
@@ -309,7 +320,11 @@ impl app::Game for Gg {
         let merged = merge(controls);
         let ctx_ticket = self.session.ticket().map(str::to_string);
         let ctx = menu_ctx(&self.session, &self.world, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
-        let action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
+        let modal = self.ui.is_open() || self.hud.match_over.is_some();
+        let mut action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
+        if action == hud::menus::Action::None {
+            action = self.ui.pointer(pointer, pointer_size, &self.world, self.hud.match_over, &ctx);
+        }
         self.act(action);
         let menu_open = self.ui.is_open();
         let mut local: Vec<Input> = if menu_open { vec![Input::default(); controls.len()] } else { controls.iter().map(input).collect() };
@@ -324,6 +339,12 @@ impl app::Game for Gg {
             // Godot locks the cards for 0.75 s while they flip open.
             if let (Some(c), Some(i)) = (controls.get(k), local.get_mut(k)) && !menu_open && age >= 0.75 {
                 if let app::ui::MenuEvent::Select(n) = self.menus[k].update(c, n, n, DT) { i.pick = Some(n as u8); }
+                // The mouse belongs to the keyboard seat; global menus always win.
+                if k == 0 && !modal && (pointer.moved || pointer.pressed) && let Some(pos) = pointer.position
+                    && let Some(hit) = self.hud.card_hit(&self.world, s, pointer_size, pos) {
+                    self.menus[k].focus = hit;
+                    if pointer.pressed { i.pick = Some(hit as u8); }
+                }
             }
             if let Some(i) = local.get_mut(k) { i.fire = false; i.jump = false; }
             let focus = (age >= 0.75).then(|| self.menus[k].focus);
@@ -362,6 +383,7 @@ impl app::Game for Gg {
         let drawn: Vec<Vec3> = self.world.players.iter().enumerate().map(|(i, p)| self.prev.get(i).map_or(p.pos, |q| q.lerp(p.pos, alpha))).collect();
         self.plates.update(frame.gpu, r, &self.world, &self.hud, if start { &[] } else { &self.slots }, &drawn)?;
         let mut list = HudDrawList::new(frame.size);
+        self.hud.begin_pointer_frame(frame.size);
         let cameras = if start {
             // The start screen orbits the arena while bots fight (Godot: 82 m out, 34 up, FOV 66).
             let t = self.ui.age * 0.055;

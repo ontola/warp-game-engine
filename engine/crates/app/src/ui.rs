@@ -133,3 +133,7 @@ mod tests {
         assert_eq!(l.focus, 1, "a list moves down");
     }
 }
+/// Half-open pixel bounds, shared by drawn UI hit targets.
+pub fn contains(r: [f32; 4], p: [f32; 2]) -> bool {
+    p[0] >= r[0] && p[1] >= r[1] && p[0] < r[0] + r[2] && p[1] < r[1] + r[3]
+}

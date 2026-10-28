@@ -2,7 +2,8 @@
 //! and gold frame), `game.gd`'s pause menu, settings panel and match-over
 //! buttons, and its Tab scoreboard. Focus moves with the D-pad, arrows,
 //! WASD or stick; A/Space/Enter takes, B/Esc backs out; left and right move
-//! sliders. Online joining by pasted ID has no text entry here: join with
+//! sliders. Mouse hover focuses, clicks activate and dragging adjusts sliders.
+//! Online joining by pasted ID has no text entry here: join with
 //! `play --join TICKET` (the menu says so). Under GameNight the pause
 //! menu is Godot's `_build_gamenight_pause_menu`: a slab down the left with
 //! the logo, what is being played, and RESUME, NEW MATCH, the other mode,
@@ -12,6 +13,7 @@ use super::{Hud, DESIGN_H};
 use app::{Buttons, Controls};
 use growing_guns::{Phase, World};
 use render::hud::HudDrawList;
+use std::cell::{Cell, RefCell};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen { Play, Start, Pause, Settings { from_start: bool }, Advanced }
@@ -33,6 +35,9 @@ enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'st
 enum Field { Ticket, Join }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Slider { Music, Mouse, Stick, /** One per GameNight seat ("Aim: NAME"). */ Aim(usize) }
+
+#[derive(Clone, Copy, Debug)]
+struct Hit { rect: [f32; 4], item: usize, entry: usize }
 
 /// What the menus need to know about the session.
 pub struct Ctx<'a> {
@@ -75,11 +80,14 @@ pub struct Menus {
     pub notice: Option<String>,
     /// The last network error, for the HUD's red panel.
     pub error: Option<String>,
+    hits: RefCell<Vec<Hit>>,
+    hit_size: Cell<[u32; 2]>,
+    drag: Option<Hit>,
 }
 
 impl Default for Menus {
     fn default() -> Self {
-        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None }
+        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None }
     }
 }
 
@@ -93,7 +101,7 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Button("SETTINGS", Action::Settings, true), Item::Rule,
             Item::Text("Share your Match ID:", label), Item::Field(Field::Ticket), Item::Row(SHARE),
             Item::Text("Or join a friend's match:", label), Item::Field(Field::Join),
-            Item::Note("1 / 2 selects · Esc exits"),
+            Item::Note("Click or arrows + Enter · Esc exits"),
         ],
         Screen::Pause if ctx.party.is_some() => vec![
             Item::Button("RESUME", Action::Resume, true), Item::Button("NEW MATCH", Action::Rematch, !ctx.client),
@@ -163,8 +171,60 @@ fn match_buttons(world: &World) -> Vec<(&'static str, Action)> {
 }
 
 impl Menus {
-    pub fn open(&mut self, s: Screen) { self.screen = s; self.menu = Default::default(); self.col = 0; self.age = 0.0; self.notice = None; }
+    pub fn open(&mut self, s: Screen) { self.screen = s; self.menu = Default::default(); self.col = 0; self.age = 0.0; self.notice = None; self.hits.get_mut().clear(); self.drag = None; }
     pub fn is_open(&self) -> bool { self.screen != Screen::Play }
+
+    fn hit(&self, rect: [f32; 4], item: usize, entry: usize) {
+        self.hits.borrow_mut().push(Hit { rect, item, entry });
+    }
+
+    /// Targets come from the last displayed frame, so scale, layout and clipping
+    /// match the visible controls. Recheck enabled state before activation.
+    pub fn pointer(&mut self, p: app::Pointer, size: [u32; 2], world: &World, match_over: Option<f32>, ctx: &Ctx) -> Action {
+        if !p.held { self.drag = None; }
+        if self.hit_size.get() != size { self.drag = None; return Action::None; }
+        if !p.moved && !p.pressed { return Action::None; }
+        let Some(pos) = p.position else { return Action::None };
+        let inside = app::ui::contains([0.0, 0.0, size[0] as f32, size[1] as f32], pos);
+        let hit = self.drag.or_else(|| inside.then(|| self.hits.borrow().iter().rev().find(|h| app::ui::contains(h.rect, pos)).copied()).flatten());
+        let Some(hit) = hit else { return Action::None };
+        if !self.is_open() {
+            if match_over.is_none_or(|t| t < 2.4) { return Action::None; }
+            self.rematch.focus = hit.item;
+            return if p.pressed { match_buttons(world).get(hit.item).map_or(Action::None, |b| b.1) } else { Action::None };
+        }
+        let list = items(self.screen, ctx);
+        let foci = lines(&list, ctx);
+        let Some((focus, (_, entries))) = foci.iter().enumerate().find(|(_, (k, entries))| *k == hit.item && entries.contains(&hit.entry)) else { return Action::None };
+        self.menu.focus = focus;
+        self.col = entries.iter().position(|&j| j == hit.entry).unwrap_or(0);
+        let item = list[hit.item];
+        let sliding = matches!(item, Item::Slider(_) | Item::Party(_));
+        if p.pressed && sliding { self.drag = p.held.then_some(hit); }
+        if !(p.pressed || sliding && p.held && self.drag.is_some()) { return Action::None; }
+        let t = ((pos[0] - hit.rect[0]) / hit.rect[2].max(1.0)).clamp(0.0, 1.0);
+        match item {
+            Item::Button(_, a, true) => a,
+            Item::Row(row) => row[hit.entry].1,
+            Item::Bots(_) => if hit.entry == 0 { Action::RemoveBot } else { Action::AddBot },
+            Item::Tilt => { self.tilt = !self.tilt; Action::None }
+            Item::Slider(s) => {
+                if s == Slider::Music { self.music_db = (MUSIC_DB_MIN * (1.0 - t)).round(); }
+                else {
+                    let hi = if s == Slider::Mouse { 3.0 } else { 2.5 };
+                    let v = ((0.3 + (hi - 0.3) * t) * 20.0).round() / 20.0;
+                    match s { Slider::Mouse => self.mouse = v, Slider::Stick => self.stick = v,
+                        Slider::Aim(i) => if let Some(name) = ctx.seats.get(i) { self.set_aim(name, v); }, Slider::Music => {} }
+                }
+                Action::None
+            }
+            Item::Party(i) => ctx.party.as_ref().and_then(|p| p.0.get(i)).map_or(Action::None, |&(_, v, lo, hi)| {
+                let next = lo + ((hi - lo) as f32 * t).round() as i64;
+                if next == v { Action::None } else { Action::Party(i, next) }
+            }),
+            _ => Action::None,
+        }
+    }
 
     /// One tick of a menu with this player's controls.
     pub fn update(&mut self, c: &Controls, world: &World, match_over: Option<f32>, ctx: &Ctx, dt: f32) -> Action {
@@ -257,6 +317,8 @@ impl Menus {
     }
 
     pub fn draw(&self, d: &mut HudDrawList, world: &World, hud: &Hud, ctx: &Ctx) {
+        self.hits.borrow_mut().clear();
+        self.hit_size.set(d.size);
         let [w, h] = d.size.map(|v| v as f32);
         let u = h / DESIGN_H;
         let clip = [0.0, 0.0, w, h];
@@ -269,6 +331,7 @@ impl Menus {
             let y0 = h * 0.5 - (b.len() as f32 * (bh + 14.0 * u)) * 0.5 + 30.0 * u;
             for (k, (text, _)) in b.iter().enumerate() {
                 let r = [w * 0.5 - bw * 0.5, y0 + k as f32 * (bh + 14.0 * u), bw, bh];
+                if enabled { self.hit(r, k, 0); }
                 arena_button(d, r, text, enabled && k == self.rematch.focus, enabled, a, u, clip);
             }
         }
@@ -404,6 +467,7 @@ impl Menus {
                 Item::Button(t, _, enabled) => {
                     let bh = if gn { 46.0 } else { 32.0 } * u;
                     let br = [r[0], y, r[2], bh];
+                    if enabled { self.hit(br, k, 0); }
                     if gothic { gothic_button(d, br, t, fk(0), enabled, u, clip) } else if gn { gn_button(d, br, t, fk(0), enabled, u, clip) } else { arena_button(d, br, t, fk(0), enabled, 1.0, u, clip) }
                     y += bh + sep;
                 }
@@ -417,6 +481,7 @@ impl Menus {
                     for (j, t) in ["-", "+"].iter().enumerate() {
                         let bx = if j == 0 { x0 } else { x0 + bw + cw + 16.0 * u };
                         let on = bots_enabled(j, ctx);
+                        if on { self.hit([bx, y, bw, bh], k, j); }
                         if gn { gn_button(d, [bx, y, bw, bh], t, fk(j), on, u, clip) } else { arena_button(d, [bx, y, bw, bh], t, fk(j), on, 1.0, u, clip) }
                     }
                     Label::poster(24.0 * u).shadow(2.0 * u, RED).center().draw(d, &ctx.bots.to_string(), x0 + bw + 8.0 * u + cw * 0.5, y + bh * 0.5, clip);
@@ -428,6 +493,7 @@ impl Menus {
                     let mid = y + rh * 0.5;
                     Label::new(bold(), 17.0 * u, if fk(0) { BONE } else { BONE_DIM }).draw(d, name, r[0] + 14.0 * u, mid, clip);
                     let (sx, sw) = (r[0] + 250.0 * u, r[2] - 250.0 * u - 52.0 * u);
+                    self.hit([sx, y, sw, rh], k, 0);
                     d.rect([sx, mid - 2.0 * u, sw, 4.0 * u], [0.25, 0.22, 0.24, 1.0], clip);
                     let k = ((v - lo) as f32 / (hi - lo).max(1) as f32).clamp(0.0, 1.0);
                     d.rect([sx, mid - 2.0 * u, sw * k, 4.0 * u], if fk(0) { RED } else { [0.6, 0.55, 0.55, 1.0] }, clip);
@@ -443,6 +509,7 @@ impl Menus {
                     for (j, (t, _)) in row.iter().enumerate() {
                         let br = [r[0] + j as f32 * (bw + gap), y, bw, bh];
                         let enabled = row_enabled(t, ctx);
+                        if enabled { self.hit(br, k, j); }
                         if gothic { gothic_button(d, br, t, fk(j), enabled, u, clip) } else { arena_button(d, br, t, fk(j), enabled, 1.0, u, clip) }
                     }
                     y += bh + sep;
@@ -461,6 +528,7 @@ impl Menus {
                     let lc = if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] };
                     Label::new(BODY, fit(&name, BODY, 14.0 * u, 136.0 * u), lc).draw(d, &name, r[0], mid, clip);
                     let (sx, sw) = (r[0] + 142.0 * u, r[2] - 142.0 * u - 59.0 * u);
+                    self.hit([sx, y, sw, rh], k, 0);
                     d.rect([sx, mid - 2.0 * u, sw, 4.0 * u], [0.25, 0.22, 0.24, 1.0], clip);
                     let k = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
                     d.rect([sx, mid - 2.0 * u, sw * k, 4.0 * u], if fk(0) { RED } else { [0.6, 0.55, 0.55, 1.0] }, clip);
@@ -471,6 +539,7 @@ impl Menus {
                 Item::Tilt => {
                     // Godot's CheckButton: the text, and a switch on the right.
                     let rh = 30.0 * u;
+                    self.hit([r[0], y, r[2], rh], k, 0);
                     let mid = y + rh * 0.5;
                     Label::new(BODY, 14.0 * u, if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] }).draw(d, "Movement tilt", r[0], mid, clip);
                     let (sw, sh) = (40.0 * u, 20.0 * u);
@@ -690,4 +759,79 @@ fn scoreboard(d: &mut HudDrawList, world: &World, hud: &Hud, u: f32, clip: [f32;
         y += 4.0 * u;
     }
     let _ = Phase::Playing;
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    const SIZE: [u32; 2] = [1600, 900];
+    fn ctx() -> Ctx<'static> { Ctx { ticket: None, client: false, seed: 1, bots: 1, players: 2, coop: false, party: None, seats: vec![] } }
+    fn at(r: [f32; 4], click: bool) -> app::Pointer {
+        app::Pointer { position: Some([r[0] + r[2] * 0.5, r[1] + r[3] * 0.5]), moved: true, pressed: click, held: click }
+    }
+    fn draw(m: &Menus, w: &World, h: &Hud, c: &Ctx) { m.draw(&mut HudDrawList::new(SIZE), w, h, c); }
+
+    #[test]
+    fn painted_buttons_hover_click_and_reject_stale_targets() {
+        let w = World::new(1, &[false, true]);
+        let h = Hud::new(&w);
+        let c = ctx();
+        let mut m = Menus::default();
+        m.open(Screen::Start);
+        draw(&m, &w, &h, &c);
+        let r = m.hits.borrow().iter().find(|h| h.item == 3).unwrap().rect;
+        assert_eq!(m.pointer(at(r, false), SIZE, &w, None, &c), Action::None);
+        assert_eq!(m.menu.focus, 2);
+        m.menu.focus = 0;
+        let mut stationary = at(r, false); stationary.moved = false;
+        m.pointer(stationary, SIZE, &w, None, &c);
+        assert_eq!(m.menu.focus, 0, "stationary mouse preserves keyboard focus");
+        assert_eq!(m.pointer(at(r, true), SIZE, &w, None, &c), Action::Settings);
+        assert_eq!(m.pointer(at(r, true), [800, 600], &w, None, &c), Action::None);
+        m.open(Screen::Pause);
+        assert_eq!(m.pointer(at(r, true), SIZE, &w, None, &c), Action::None);
+    }
+
+    #[test]
+    fn disabled_buttons_and_match_reveal_cannot_be_clicked() {
+        let w = World::new(1, &[false, true]);
+        let mut h = Hud::new(&w);
+        let mut c = ctx();
+        let mut m = Menus::default();
+        m.open(Screen::Start);
+        draw(&m, &w, &h, &c);
+        let host = m.hits.borrow().iter().find(|h| h.item == 7 && h.entry == 0).unwrap().rect;
+        assert!(!m.hits.borrow().iter().any(|h| h.item == 7 && h.entry == 1));
+        c.client = true;
+        assert_eq!(m.pointer(at(host, true), SIZE, &w, None, &c), Action::None);
+        m.open(Screen::Play);
+        h.match_over = Some(2.0);
+        draw(&m, &w, &h, &c);
+        assert!(m.hits.borrow().is_empty());
+        h.match_over = Some(2.5);
+        draw(&m, &w, &h, &c);
+        let r = m.hits.borrow()[1].rect;
+        assert_eq!(m.pointer(at(r, true), SIZE, &w, h.match_over, &c), Action::Extend);
+        assert_eq!(m.pointer(at(r, true), SIZE, &w, Some(1.0), &c), Action::None);
+    }
+
+    #[test]
+    fn slider_drag_clamps_and_release_ends_drag() {
+        let w = World::new(1, &[false, true]);
+        let h = Hud::new(&w);
+        let c = ctx();
+        let mut m = Menus::default();
+        m.open(Screen::Settings { from_start: false });
+        draw(&m, &w, &h, &c);
+        let r = m.hits.borrow()[0].rect;
+        m.pointer(at(r, true), SIZE, &w, None, &c);
+        let drag = app::Pointer { position: Some([r[0] + r[2] + 100.0, r[1]]), moved: true, pressed: false, held: true };
+        m.pointer(drag, SIZE, &w, None, &c);
+        assert_eq!(m.music_db, 0.0);
+        m.pointer(app::Pointer::default(), SIZE, &w, None, &c);
+        assert!(m.drag.is_none());
+        let before = m.music_db;
+        m.pointer(app::Pointer { position: Some([r[0], r[1]]), ..drag }, SIZE, &w, None, &c);
+        assert_eq!(m.music_db, before, "holding from elsewhere does not start a drag");
+    }
 }

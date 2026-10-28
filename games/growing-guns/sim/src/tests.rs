@@ -303,6 +303,55 @@ fn air_strike_echo_lands_twice_and_ion_ignores_cover() {
 }
 
 #[test]
+fn eliminated_human_walks_and_looks_after_picking_without_combat_or_resurrection() {
+    let mut w = World::new(3, &[false; 3]);
+    w.cards = Arc::new(cards::test_book());
+    w.arena = flat_world().arena;
+    w.modifier = None;
+    w.release_cage();
+    for (i, p) in w.players.iter_mut().enumerate() {
+        p.pos = Vec3::new(i as f32 * 20.0, HALF_HEIGHT, 0.0);
+        p.yaw = 0.0;
+        p.on_floor = true;
+    }
+    w.queue_damage(0, 1000, Some(1));
+    w.step(&[Input::default(); 3]);
+    assert!(w.players[0].ghost && !w.players[0].alive && w.players[0].offer.is_some());
+    let before_pick = w.players[0].pos;
+    w.step(&[Input { mv: [1.0, 0.0], ..Default::default() }]);
+    assert_eq!(w.players[0].pos, before_pick, "card picker still blocks movement");
+    w.step(&[Input { pick: Some(0), ..Default::default() }]);
+    assert!(w.players[0].offer.is_none());
+    let start = w.players[0].pos;
+    for _ in 0..60 {
+        w.step(&[Input { mv: [0.0, 1.0], look: [0.01, 0.002], fire: true, special: true, dash: true, ..Default::default() }]);
+        assert!(!w.events.iter().any(|e| matches!(e, Event::Shot { player: 0, .. } | Event::Dash { player: 0 })));
+    }
+    let p = &w.players[0];
+    assert!(p.pos.distance(start) > 3.0 && p.yaw > 0.5 && p.pitch > 0.1);
+    assert!(p.on_floor && p.ghost && !p.alive && p.health == 0 && !p.targetable());
+    assert!(w.bullets.is_empty() && w.projectiles.is_empty() && w.strikes.is_empty());
+    w.step(&[Input { jump: true, ..Default::default() }]);
+    assert!(w.players[0].vel.y > 0.0 && w.players[0].pos.y > HALF_HEIGHT);
+    w.players[0].pos.y = FELL_OFF_Y - 10.0;
+    w.step(&[]);
+    assert!(w.players[0].pos.y > FELL_OFF_Y && w.players[0].ghost && !w.players[0].alive);
+}
+
+#[test]
+fn parked_ghost_bots_do_not_move_or_respawn() {
+    let mut w = flat_world();
+    let p = &mut w.players[0];
+    p.alive = false;
+    p.ghost = true;
+    p.bot = true;
+    p.pos = Vec3::new(0.0, -500.0, 0.0);
+    let parked = p.pos;
+    idle(&mut w, 120);
+    assert_eq!(w.players[0].pos, parked);
+}
+
+#[test]
 fn old_explosion_events_keep_conventional_effects() {
     let old = r#"{"Explosion":{"pos":[0.0,1.0,2.0],"radius":38.0,"owner":0}}"#;
     let event: Event = serde_json::from_str(old).unwrap();

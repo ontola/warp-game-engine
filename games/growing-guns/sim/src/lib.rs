@@ -143,7 +143,7 @@ pub struct Player {
     pub dash_recharge: f64,
     pub health: i32,
     pub alive: bool,
-    /// Dead in a 3+ player round: a spectator body nobody can hurt.
+    /// Dead in a 3+ player round: a walking spectator nobody can hurt.
     pub ghost: bool,
     pub ammo: u32,
     pub reloading: bool,

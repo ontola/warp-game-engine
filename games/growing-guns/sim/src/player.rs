@@ -9,6 +9,8 @@ use glam::{Vec2, Vec3};
 /// Poison ticks once this much time has gathered.
 const POISON_INTERVAL: f64 = 0.25;
 const FLOOR_SNAP: f32 = 0.1;
+/// Walk over ankle-height stones and chunk seams without spending a jump.
+const STEP_HEIGHT: f32 = 0.35;
 pub const PHOENIX_TICKS: u32 = 120;
 pub const PHOENIX_RISE: f32 = 10.0;
 /// Phoenix and coop revive drop: from this high, at this speed.
@@ -39,8 +41,7 @@ impl World {
         }
         let p = &self.players[i];
         if p.ghost {
-            // Ghosts can't act (Godot: their health is 0), but they can plant mines.
-            self.ghost_tick(i, fire_edge);
+            self.ghost_tick(i, input);
             return;
         }
         if p.downed { self.downed_tick(i, input.look); return; }
@@ -63,6 +64,32 @@ impl World {
             let hp = self.players[i].health.max(100);
             self.apply_damage(i, hp, Some(i), Blow { env: true, ..Blow::plain(self.players[i].pos) });
         }
+    }
+
+    /// A dead local/remote player can walk around after choosing a card.
+    /// Keep the eliminated body non-targetable and never enter combat input.
+    fn ghost_tick(&mut self, i: usize, input: Input) {
+        let p = &mut self.players[i];
+        // Dead bots include the parked co-op enemy pool; do not simulate them.
+        if p.bot || p.offer.is_some() || self.phase != Phase::Playing {
+            p.vel = Vec3::ZERO;
+            return;
+        }
+        if p.pos.y < FELL_OFF_Y {
+            p.pos = self.arena.spawns.get(i % self.arena.spawns.len().max(1))
+                .copied().unwrap_or(Vec3::ZERO) + Vec3::Y * crate::HALF_HEIGHT;
+            p.vel = Vec3::ZERO;
+            p.on_floor = false;
+            p.wall_normal = None;
+        }
+        p.dash_timer = 0.0;
+        p.zooming = false;
+        self.cooldowns(i);
+        self.decay_recoil(i);
+        // Reuse collision, gravity and jumps, but no weapon/card dash effects.
+        let event_count = self.events.len();
+        self.move_player(i, Input { mv: input.mv, look: input.look, jump: input.jump, ..Default::default() });
+        self.events.truncate(event_count); // silent ghost footsteps/landings
     }
 
     /// Godot `_tick_status_effects`: dodge, slow, poison; runs even while dead.
@@ -207,13 +234,14 @@ impl World {
 
     /// `move_and_slide` with Godot's floor snap: a grounded body is pressed
     /// down by up to 0.1 m so it stays on the floor and walks down steps.
+    /// Grounded movement can also step over obstacles up to 0.35 m high.
     pub(crate) fn slide(&mut self, i: usize) {
         let p = &mut self.players[i];
         let snap = p.on_floor && p.vel.y <= 0.0;
         let (was_on_floor, fall) = (p.on_floor, -p.vel.y);
         if snap { p.vel.y = -FLOOR_SNAP / DT; }
         // Sub-steps short enough that no thin block is skipped.
-        let contact = MOVER.slide(&self.arena.grid, &mut p.pos, &mut p.vel, DT, 0.25);
+        let contact = MOVER.slide_with_step(&self.arena.grid, &mut p.pos, &mut p.vel, DT, 0.25, STEP_HEIGHT, snap);
         if snap && !contact.on_floor {
             // Nothing within the snap: we walked off a ledge; undo the press.
             p.pos.y += FLOOR_SNAP;
@@ -408,4 +436,30 @@ impl World {
 impl Blow {
     /// Lava kills skip the phoenix (Godot zeroes the charges for the call).
     fn env_lava(&self) -> bool { self.env && self.severity < 0.0 }
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::*;
+    use crate::{shape::{BoxGrid, YawBox}, HALF_HEIGHT};
+
+    #[test]
+    fn grounded_player_steps_over_stones_without_a_jump_or_floor_snap_offset() {
+        let mut world = World::new(1, &[false, false]);
+        world.arena.grid = BoxGrid::new(vec![
+            YawBox::new(Vec3::new(0.0, -0.5, 0.0), Vec3::new(20.0, 1.0, 20.0), 0.0),
+            YawBox::new(Vec3::new(1.0, 0.15, 0.0), Vec3::new(1.0, 0.3, 2.0), 0.0),
+        ], 1.0);
+        let player = &mut world.players[0];
+        player.pos = Vec3::new(0.0, HALF_HEIGHT, 0.0);
+        player.vel = Vec3::new(12.0, 0.0, 0.0);
+        player.on_floor = true;
+        let jumps = player.jumps_left;
+        world.slide(0);
+        let player = &world.players[0];
+        assert!(player.pos.x > 0.19 && player.on_floor, "{}", player.pos);
+        assert!((player.pos.y - (HALF_HEIGHT + 0.3)).abs() < 1e-4, "{}", player.pos);
+        assert_eq!(player.vel, Vec3::new(12.0, 0.0, 0.0));
+        assert_eq!(player.jumps_left, jumps);
+    }
 }
