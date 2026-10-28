@@ -15,7 +15,7 @@ pub mod reverb;
 pub mod spatial;
 pub mod units;
 
-pub use mixer::{mixer, Handle, Mixer, Play, SoundSender};
+pub use mixer::{mixer, Compressor, Cull, Hall, Handle, Master, Mixer, Play, SoundSender};
 pub use patch::{In, Node, Patch, Voice};
 pub use spatial::{Ear, Falloff, Layout, Place, Speaker};
 pub use units::{FilterMode, Mode, NoiseColor, Point, Shape, Unit};

@@ -106,16 +106,52 @@ pub struct Ear { pub pos: [f32; 3], pub forward: [f32; 3], pub right: [f32; 3] }
 /// How a placed sound behaves with distance.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Falloff {
-    /// Full gain within this distance (m), then ref / d.
+    /// Gain is reference / d beyond this distance (m).
     pub reference: f32,
     /// Silent beyond this.
     pub max: f32,
-    /// Highs lost per 100 m (fraction of 20 kHz, air absorption).
+    /// Highs lost per 100 m (fraction of 20 kHz, air absorption as a low-pass).
     pub air: f32,
+    /// Highest gain close in (1: full gain inside `reference`; Godot's
+    /// inverse-distance model rises to +18 dB, 7.94).
+    #[serde(default = "one")]
+    pub near_max: f32,
+    /// A linear fade to silence at this distance on top (0: none).
+    #[serde(default)]
+    pub fade: f32,
+    /// Air absorption as an 8 kHz high shelf: this many dB cut far away,
+    /// `-shelf * (1 - min(1, reference / d))` (0: none).
+    #[serde(default)]
+    pub shelf: f32,
+    /// Gain lost when fully occluded (besides the low-pass).
+    #[serde(default = "occlusion_cut")]
+    pub occlusion_cut: f32,
 }
 
+fn one() -> f32 { 1.0 }
+fn occlusion_cut() -> f32 { 0.6 }
+
 impl Default for Falloff {
-    fn default() -> Self { Falloff { reference: 4.0, max: 400.0, air: 0.8 } }
+    fn default() -> Self { Falloff { reference: 4.0, max: 400.0, air: 0.8, near_max: 1.0, fade: 0.0, shelf: 0.0, occlusion_cut: 0.6 } }
+}
+
+impl Falloff {
+    /// Godot 4's AudioStreamPlayer3D: inverse distance from `unit` m, capped
+    /// at +18 dB, an 8 kHz shelf down to -12 dB far away, no distance
+    /// low-pass, occlusion as a low-pass only.
+    pub fn godot(unit: f32) -> Self {
+        Falloff { reference: unit.max(0.01), max: 4000.0, air: 0.0, near_max: 7.943, fade: 0.0, shelf: 12.0, occlusion_cut: 0.0 }
+    }
+    /// With a linear fade to silence at `fade` m.
+    pub fn fade(mut self, fade: f32) -> Self { self.fade = fade; self }
+    /// Gain at distance d (before occlusion).
+    pub fn gain(&self, d: f32) -> f32 {
+        if d >= self.max { return 0.0; }
+        let g = if self.near_max <= 1.0 { if d <= self.reference { 1.0 } else { self.reference / d } } else { (self.reference / (d + 1e-4 * self.reference)).min(self.near_max) };
+        if self.fade > 0.0 { g * (1.0 - d / self.fade).max(0.0) } else { g }
+    }
+    /// The high-shelf gain in dB at distance d.
+    pub fn shelf_db(&self, d: f32) -> f32 { if self.shelf <= 0.0 || d <= 0.0 { 0.0 } else { -self.shelf * (1.0 - (self.reference / d).min(1.0)) } }
 }
 
 /// Where a voice plays from.
@@ -126,6 +162,10 @@ pub enum Place {
     Head,
     /// At a point in the world.
     At([f32; 3]),
+    /// Not positioned, on the front pair like a stereo panner (Godot 2D
+    /// players): left `min(1, 1 - pan)`, right `min(1, 1 + pan)`, so 0 plays
+    /// both at full gain.
+    Pan(f32),
 }
 
 /// The result for one voice: channel gains, a low-pass for distance and
@@ -147,6 +187,11 @@ pub fn place(layout: &Layout, ears: &[Ear], at: Place, f: &Falloff, spread: f32,
 pub fn place_into(layout: &Layout, ears: &[Ear], at: Place, f: &Falloff, spread: f32, lfe: f32, occlusion: f32, gains: &mut [f32]) -> (f32, f32) {
     let (az, d) = match at {
         Place::Head => (0.0, 0.0),
+        Place::Pan(p) => {
+            gains.iter_mut().for_each(|g| *g = 0.0);
+            if gains.len() == 1 { gains[0] = 1.0; } else { gains[0] = (1.0 - p).clamp(0.0, 1.0); gains[1] = (1.0 + p).clamp(0.0, 1.0); }
+            return (20_000.0, 0.0);
+        }
         Place::At(p) => {
             let Some((d, e)) = ears.iter().map(|e| (dist(p, e.pos), e)).min_by(|a, b| a.0.total_cmp(&b.0)) else {
                 layout.gains(0.0, 1.0, lfe, gains);
@@ -160,11 +205,13 @@ pub fn place_into(layout: &Layout, ears: &[Ear], at: Place, f: &Falloff, spread:
     // Very close sounds wrap around the head.
     let spread = if matches!(at, Place::At(_)) { spread.max((1.0 - d / 1.5).clamp(0.0, 1.0) * 0.8) } else { spread };
     layout.gains(az, spread, lfe, gains);
-    let g = if d <= f.reference { 1.0 } else { f.reference / d } * if d >= f.max { 0.0 } else { 1.0 };
-    let g = g * (1.0 - 0.6 * occlusion.clamp(0.0, 1.0));
+    let occ = occlusion.clamp(0.0, 1.0);
+    let g = f.gain(d) * (1.0 - f.occlusion_cut * occ);
     for x in gains.iter_mut() { *x *= g; }
-    let lowpass = (20_000.0 * (1.0 - f.air * d / 100.0).clamp(0.05, 1.0)) * (1.0 - 0.85 * occlusion.clamp(0.0, 1.0));
-    (lowpass.max(300.0), d)
+    // Occlusion: 20 kHz clear to 250 Hz behind walls, in log frequency.
+    let occluded = 2f32.powf(20_000f32.log2() + (250f32.log2() - 20_000f32.log2()) * occ);
+    let lowpass = (20_000.0 * (1.0 - f.air * d / 100.0).clamp(0.05, 1.0)).min(occluded);
+    (lowpass.max(250.0), d)
 }
 
 fn dist(a: [f32; 3], b: [f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() }
