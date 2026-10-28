@@ -28,6 +28,49 @@ struct PlayerMeshes { body: usize, head: usize, eyes: usize, skinned: bool, own_
 /// A corpse: jointed bodies, each drawn with one of the player's meshes.
 struct Ragdoll { torso: Body, parts: Vec<(Body, SlotId, usize, Affine3A)> }
 
+/// Godot `Violence.play_lava_death`, tuned in `lava_death_lab.tscn`: the
+/// body turns to lava and sinks below the surface (a fall: a splash pillar
+/// first, then deeper and slower).
+const SINK_FALL: f32 = 0.75;
+const SINK_STAND: f32 = 0.5;
+const SINK_S_FALL: f32 = 2.15;
+const SINK_S_STAND: f32 = 1.35;
+const SPLASH_HEIGHT: f32 = 2.2;
+const SPLASH_RADIUS: f32 = 0.55;
+const SPLASH_RISE_S: f32 = 0.18;
+const SPLASH_SINK_S: f32 = 0.55;
+
+/// A body sinking into the lava: a lava twin of the character (an instance
+/// in the dynamic range) or lava blobs in corpse slots, and the splash.
+/// `surface` is where Godot's `_lava_surface_world_y` puts it: the pool
+/// under the floor (LAVA_POOL_Y) for every lava death, the leak's too.
+struct LavaCorpse { victim: usize, pos: Vec3, yaw: f32, birth: f32, fall: bool, surface: f32, twin: Option<(usize, usize)>, blobs: Vec<(SlotId, usize, Vec3, f32)>, splash: Option<SlotId> }
+
+impl LavaCorpse {
+    /// Centre height `t` seconds in (Godot: sine ease-in, after the splash
+    /// has risen when it fell in).
+    fn y(&self, t: f32) -> f32 {
+        let (depth, secs, delay) = if self.fall { (SINK_FALL, SINK_S_FALL, SPLASH_RISE_S) } else { (SINK_STAND, SINK_S_STAND, 0.0) };
+        let u = ((t - delay) / secs).clamp(0.0, 1.0);
+        self.pos.y + (self.surface - depth - self.pos.y) * (1.0 - (u * std::f32::consts::FRAC_PI_2).cos())
+    }
+
+    /// The splash pillar's centre `t` seconds in (quad ease-out up, sine
+    /// ease-in down), None once it has sunk.
+    fn splash_y(&self, t: f32) -> Option<f32> {
+        let y = self.surface + 0.06;
+        let (start, peak, end) = (y + SPLASH_HEIGHT * 0.5 + 0.08, y + SPLASH_HEIGHT * 1.05, y - SPLASH_HEIGHT * 0.7);
+        if t < SPLASH_RISE_S { let u = t / SPLASH_RISE_S; return Some(start + (peak - start) * (1.0 - (1.0 - u) * (1.0 - u))); }
+        let u = (t - SPLASH_RISE_S) / SPLASH_SINK_S;
+        (u < 1.0).then(|| peak + (end - peak) * (1.0 - (u * std::f32::consts::FRAC_PI_2).cos()))
+    }
+}
+
+/// Lava-material blob body and head (players without a character model)
+/// and the splash pillar.
+#[derive(Clone, Copy, Default)]
+struct LavaMeshes { body: usize, head: usize, splash: usize }
+
 pub struct PlayersView {
     /// First instance of the players' block (then the tracers).
     pub first: usize,
@@ -39,12 +82,14 @@ pub struct PlayersView {
     sources: Vec<[primitives::Primitive; 3]>,
     pub gore: Option<Gore>,
     characters: Option<Characters>,
+    lava: Vec<LavaCorpse>,
+    lava_meshes: LavaMeshes,
 }
 
 impl PlayersView {
     /// Corpse slots (static range, before the dynamic instances).
     pub fn reserve_corpses(scene: &mut Scene) -> Self {
-        PlayersView { first: 0, meshes: Vec::new(), tracer: 0, corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None }
+        PlayersView { first: 0, meshes: Vec::new(), tracer: 0, corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None, lava: Vec::new(), lava_meshes: LavaMeshes::default() }
     }
 
     /// Player and tracer instances, rewritten every frame.
@@ -74,6 +119,15 @@ impl PlayersView {
         let tracer_m = glow(scene, [1.0, 0.9, 0.3], 30000.0);
         self.tracer = cube(scene, tracer_m);
         for _ in 0..TRACERS { scene.add_instance(self.tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
+        // Lava deaths: twins of the characters after the tracers (outside
+        // the players' block), blobs and the splash in the lava material.
+        let lava_m = super::arena::lava_material(scene);
+        if let Some(characters) = &mut self.characters { characters.reserve_lava(scene, lava_m); }
+        self.lava_meshes = LavaMeshes {
+            body: scene.add_mesh(&primitives::sphere(lava_m, 10, 16).mesh()),
+            head: scene.add_mesh(&primitives::sphere(lava_m, 8, 14).mesh()),
+            splash: scene.add_mesh(&primitives::cylinder(lava_m, 0.42, 1.0, 10).mesh()),
+        };
     }
 
     /// Gib pieces shattered from the players' own meshes.
@@ -87,6 +141,10 @@ impl PlayersView {
     pub fn clear(&mut self, scene: &mut Scene, phys: &mut Physics) {
         self.corpses.clear(scene);
         self.ragdolls.clear();
+        self.lava.clear();
+        if let Some(characters) = &self.characters {
+            for (k, mesh) in characters.lava_instances() { scene.update_instance(k, mesh, Affine3A::from_translation(HIDDEN)); }
+        }
         self.gore().clear(scene, phys);
         if let Some(characters) = &mut self.characters { characters.reset(phys); }
     }
@@ -109,6 +167,12 @@ impl PlayersView {
     pub fn kill(&mut self, scene: &mut Scene, phys: &mut Physics, fx: &mut EffectsView, arena: &mut ArenaView, world: &World,
         victim: usize, attacker: Option<usize>, gib: Gib, dir: Vec3, now: f32) {
         let v = &world.players[victim];
+        // Lava (Godot `_lava_death`): no ragdoll and no blood, the body
+        // takes the lava's look and sinks.
+        if let Gib::Lava { fall } = gib {
+            if victim < self.meshes.len() { self.lava_death(scene, victim, v, fall, now); }
+            return;
+        }
         let blood = fx.meshes.blood;
         // Past the view's player capacity (a big coop wave): blood only.
         let Some(skinned) = self.meshes.get(victim).map(|m| m.skinned) else {
@@ -148,9 +212,59 @@ impl PlayersView {
                 self.ragdoll(scene, phys, victim, v, push, false);
                 blood_splats(scene, arena, world, v.pos, 3, 1.2);
             }
+            Gib::Lava { .. } => unreachable!("handled above"),
             Gib::Ragdoll => {
                 fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
                 self.ragdoll(scene, phys, victim, v, push, true);
+            }
+        }
+    }
+
+    /// Godot `Violence.play_lava_death`: a lava twin of the character (or
+    /// lava blobs) where the body was, and a splash pillar when it fell in.
+    fn lava_death(&mut self, scene: &mut Scene, victim: usize, v: &Player, fall: bool, now: f32) {
+        self.end_lava(scene, victim);
+        let surface = growing_guns::arena::LAVA_KILL_Y;
+        let twin = if self.meshes[victim].skinned { self.characters.as_mut().and_then(|c| c.lava_twin(victim)) } else { None };
+        let mut blobs = Vec::new();
+        if twin.is_none() {
+            let lm = self.lava_meshes;
+            for (mesh, offset, scale) in [(lm.body, -0.25, BODY), (lm.head, 0.55, Vec3::splat(HEAD))] {
+                if let Some(slot) = self.corpses.add(scene, mesh, Affine3A::from_translation(HIDDEN)) { blobs.push((slot, mesh, scale, offset)); }
+            }
+        }
+        let splash = if fall { self.corpses.add(scene, self.lava_meshes.splash, Affine3A::from_translation(HIDDEN)) } else { None };
+        let c = LavaCorpse { victim, pos: v.pos, yaw: v.yaw, birth: now, fall, surface, twin, blobs, splash };
+        self.lava.push(c);
+    }
+
+    /// Godot `end_lava_death`: player `victim`'s lava body goes (a revive).
+    fn end_lava(&mut self, scene: &mut Scene, victim: usize) {
+        let Some(k) = self.lava.iter().position(|c| c.victim == victim) else { return };
+        let c = self.lava.swap_remove(k);
+        if let Some((instance, mesh)) = c.twin { scene.update_instance(instance, mesh, Affine3A::from_translation(HIDDEN)); }
+        for (slot, ..) in c.blobs { self.corpses.remove(scene, slot); }
+        if let Some(slot) = c.splash { self.corpses.remove(scene, slot); }
+    }
+
+    /// Sinking lava bodies and their splashes at `clock` seconds.
+    fn pose_lava(&mut self, scene: &mut Scene, world: &World, clock: f32) {
+        let revived: Vec<usize> = self.lava.iter().map(|c| c.victim).filter(|&i| world.players.get(i).is_none_or(|p| p.alive)).collect();
+        for i in revived { self.end_lava(scene, i); }
+        let rot = Quat::from_rotation_y(0.0);
+        for c in &mut self.lava {
+            let t = (clock - c.birth).max(0.0);
+            let at = Vec3::new(c.pos.x, c.y(t), c.pos.z);
+            if let Some((instance, mesh)) = c.twin { scene.update_instance(instance, mesh, characters::model_transform(at, c.yaw)); }
+            for &(slot, mesh, scale, offset) in &c.blobs {
+                self.corpses.set(scene, slot, mesh, Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(c.yaw), at + Vec3::Y * offset));
+            }
+            if let Some(slot) = c.splash {
+                match c.splash_y(t) {
+                    Some(y) => self.corpses.set(scene, slot, self.lava_meshes.splash, Affine3A::from_scale_rotation_translation(
+                        Vec3::new(SPLASH_RADIUS, SPLASH_HEIGHT, SPLASH_RADIUS), rot, Vec3::new(c.pos.x, y, c.pos.z))),
+                    None => { self.corpses.remove(scene, slot); c.splash = None; }
+                }
             }
         }
     }
@@ -219,6 +333,7 @@ impl PlayersView {
                 slot += 1;
             }
         }
+        self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT);
         // Tracers: a short glowing streak behind each live bullet. Skip the
         // first metre so a player's own tracer never fills their screen; the
         // streak then grows to four metres.
