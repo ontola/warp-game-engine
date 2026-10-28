@@ -56,6 +56,10 @@ pub struct Gg {
     pub(crate) scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
     /// A GameNight party host, when it launched us.
     pub party: Option<crate::party::Party>,
+    /// The music volume last applied.
+    music_db: Option<f32>,
+    /// Where the settings persist (`play` only; scripts keep the defaults).
+    pub settings_file: Option<std::path::PathBuf>,
     /// `menu gamenight`: the GameNight pause menu without a party (scripts).
     gn_preview: Option<crate::party::Settings>,
     /// Party names for the seated players, in slot order.
@@ -70,7 +74,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), quit: false, no_kbm: false, scripts, party: None, gn_preview: None, names: Vec::new(), live: None }
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -166,12 +170,21 @@ impl Gg {
 }
 
 /// What the menus show of the session; `party`: GameNight's settings.
-fn menu_ctx<'a>(session: &Session, world: &World, ticket: Option<&'a str>, party: Option<&crate::party::Settings>) -> hud::menus::Ctx<'a> {
+fn menu_ctx<'a>(session: &Session, world: &World, ticket: Option<&'a str>, party: Option<&crate::party::Settings>, names: &[String]) -> hud::menus::Ctx<'a> {
     let status = if world.coop { format!("WAVE SURVIVAL  /  WAVE {}", world.waves.wave) } else { format!("VERSUS  /  ROUND {}  /  FIRST TO {}", world.round, world.rounds_to_win) };
     hud::menus::Ctx {
         ticket, client: session.is_client(), seed: world.arena.seed, bots: world.players.iter().filter(|p| p.bot).count(),
-        players: world.players.len(), coop: world.coop, party: party.map(|s| (s.entries(), status)),
+        players: world.players.len(), coop: world.coop, seats: if party.is_some() { names.to_vec() } else { Vec::new() }, party: party.map(|s| (s.entries(), status)),
     }
+}
+
+/// `$XDG_CONFIG_HOME/growing-guns/settings.json` (or ~/.config/...), or
+/// `%APPDATA%\growing-guns\settings.json` on Windows.
+fn settings_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("APPDATA").map(std::path::PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("growing-guns").join("settings.json"))
 }
 
 /// All local players' controls as one, for the shared menus.
@@ -193,6 +206,13 @@ impl Gg {
         self.ui.open(hud::menus::Screen::Start);
     }
 
+    /// Godot `MenuHelpers.save_settings`.
+    fn save_settings(&self) {
+        let Some(path) = &self.settings_file else { return };
+        if let Some(d) = path.parent() { let _ = std::fs::create_dir_all(d); }
+        if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(&self.ui.settings_json()).unwrap_or_default()) { eprintln!("settings: {e}"); }
+    }
+
     fn act(&mut self, a: hud::menus::Action) {
         use hud::menus::{Action, Screen};
         let host = !self.session.is_client();
@@ -200,7 +220,11 @@ impl Gg {
             Action::None => {}
             Action::Resume => self.ui.open(Screen::Play),
             Action::Settings => { let from_start = self.ui.screen == Screen::Start; self.ui.open(Screen::Settings { from_start }); }
-            Action::Back => { let a = self.ui.back(); self.act(a); }
+            Action::Back => {
+                if matches!(self.ui.screen, Screen::Settings { .. }) { self.save_settings(); }
+                let a = self.ui.back();
+                self.act(a);
+            }
             Action::Quit => self.quit = true,
             Action::Versus | Action::Wave if host => {
                 for s in std::mem::take(&mut self.start_seats) { self.world.set_bot(s, false); }
@@ -262,7 +286,17 @@ impl app::Game for Gg {
             Some(None) => return,
             Some(Some(c)) => Some(c),
         };
+        // Each GameNight player's own aim sensitivity (Godot `stick_sens_for`).
+        let party_controls = party_controls.map(|mut c| {
+            for (k, c) in c.iter_mut().enumerate() { let m = self.names.get(k).map_or(self.ui.stick, |n| self.ui.aim_for(n)); c.look = c.look.map(|v| v * m); }
+            c
+        });
         let controls: &[Controls] = party_controls.as_deref().unwrap_or(controls);
+        // The music volume setting.
+        if let Some((m, _)) = &self.music && self.music_db != Some(self.ui.music_db) {
+            crate::music::lock(m).set_music_db(self.ui.music_db);
+            self.music_db = Some(self.ui.music_db);
+        }
         // Edited mods take effect a quarter second later, between ticks.
         self.since_poll += 1;
         if self.since_poll >= TICK_HZ / 4 {
@@ -274,7 +308,7 @@ impl app::Game for Gg {
         // Menus take the local players' controls (merged) while open.
         let merged = merge(controls);
         let ctx_ticket = self.session.ticket().map(str::to_string);
-        let ctx = menu_ctx(&self.session, &self.world, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()));
+        let ctx = menu_ctx(&self.session, &self.world, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
         let action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
         self.act(action);
         let menu_open = self.ui.is_open();
@@ -315,6 +349,7 @@ impl app::Game for Gg {
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         let alpha = if self.session.is_client() { self.receive(frame.dt) } else { frame.alpha };
+        self.vis.set_tilt(self.ui.tilt);
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() { frame.set_scene(&self.vis.scene, &self.light); self.plates.invalidate(); }
         crate::live::frame(self, frame);
@@ -346,7 +381,7 @@ impl app::Game for Gg {
         };
         list.begin_overlay();
         let ticket = self.session.ticket().map(str::to_string);
-        let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()));
+        let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
         self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
         let mut light = self.light.clone();
         // The lava flows on the game clock.
@@ -580,6 +615,9 @@ pub fn run(args: &Args) -> Result<(), String> {
     if game.party.is_some() { println!("gamenight: waiting for the party host"); }
     game.live = crate::live::start(args)?.map(Box::new);
     game.no_kbm = args.flag("--no-kbm");
+    // Settings persist like Godot's user://settings.cfg.
+    game.settings_file = settings_path();
+    if let Some(v) = game.settings_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) { game.ui.load_settings(&v); }
     // Godot opens on the start screen; `--skip-menu`, joining and a party go straight in.
     if !args.flag("--skip-menu") && !game.session.is_client() && game.party.is_none() { game.show_start(); }
     // `--give explosive --give damage`: start local player 1 with these cards.

@@ -23,6 +23,8 @@ pub enum Action { None, Resume, Versus, Wave, Settings, Back, Host, Copy, Quit, 
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'static str, Action, bool), Row(&'static [(&'static str, Action)]), Slider(Slider), Gap(f32), Rule,
+    /// Movement tilt on or off.
+    Tilt,
     /// Bots: - count +, with this label on the left (empty: none).
     Bots(&'static str),
     /// A GameNight setting slider (index into `Ctx::party`).
@@ -30,7 +32,7 @@ enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'st
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Field { Ticket, Join }
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Slider { Mouse, Stick }
+enum Slider { Music, Mouse, Stick, /** One per GameNight seat ("Aim: NAME"). */ Aim(usize) }
 
 /// What the menus need to know about the session.
 pub struct Ctx<'a> {
@@ -41,6 +43,8 @@ pub struct Ctx<'a> {
     /// Under GameNight: the party's settings (label, value, min, max) and
     /// the status line under the logo.
     pub party: Option<(Vec<(&'static str, i64, i64, i64)>, String)>,
+    /// Names of the GameNight seats here (their own aim sliders).
+    pub seats: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +55,12 @@ pub struct Menus {
     /// Look sensitivity multipliers (Godot settings: mouse 0.3..3, stick 0.3..2.5).
     pub mouse: f32,
     pub stick: f32,
+    /// Music volume, dB (Godot -45 = off .. 0; default -16).
+    pub music_db: f32,
+    /// Movement tilt (the gun's strafe lean).
+    pub tilt: bool,
+    /// Stick sensitivity per GameNight player, by name.
+    pub aim: Vec<(String, f32)>,
     /// Seconds the screen has been open (fades and the start orbit).
     pub age: f32,
     /// The Tab / Back scoreboard is held.
@@ -67,7 +77,7 @@ pub struct Menus {
 
 impl Default for Menus {
     fn default() -> Self {
-        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None }
+        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None }
     }
 }
 
@@ -101,12 +111,24 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Button("VERSUS", Action::Versus, !ctx.client), Item::Button("WAVE SURVIVAL", Action::Wave, !ctx.client),
             Item::Button("SETTINGS", Action::Settings, true), Item::Button("RESUME", Action::Resume, true), Item::Button("EXIT GAME", Action::Quit, true),
         ],
-        Screen::Settings { .. } => vec![
-            Item::Slider(Slider::Mouse), Item::Slider(Slider::Stick), Item::Gap(8.0), Item::Button("BACK", Action::Back, true),
-        ],
+        Screen::Settings { .. } => settings_items(ctx),
         Screen::Play => vec![],
     }
 }
+
+/// Godot `build_settings_panel`: music, mouse, one stick slider (or one
+/// "Aim" slider per GameNight seat), movement tilt, BACK. (Player name and
+/// the retro shader have no counterpart here.)
+fn settings_items(ctx: &Ctx) -> Vec<Item> {
+    let mut v = vec![Item::Slider(Slider::Music), Item::Slider(Slider::Mouse)];
+    if ctx.seats.is_empty() { v.push(Item::Slider(Slider::Stick)); } else { v.extend((0..ctx.seats.len()).map(|k| Item::Slider(Slider::Aim(k)))); }
+    v.extend([Item::Tilt, Item::Gap(8.0), Item::Button("BACK", Action::Back, true)]);
+    v
+}
+
+/// Godot `music_label_for`: Off at the bottom, else 0..100 %.
+fn music_label(db: f32) -> String { if db <= MUSIC_DB_MIN + 0.5 { "Off".into() } else { format!("{}%", ((db - MUSIC_DB_MIN) / -MUSIC_DB_MIN * 100.0).round()) } }
+pub const MUSIC_DB_MIN: f32 = -45.0;
 
 /// The bot stepper's - (0) and + (1): host or offline, not in coop (the
 /// waves bring their own), 0..=6 bots and 8 players at most.
@@ -119,7 +141,7 @@ fn lines(items: &[Item], ctx: &Ctx) -> Vec<(usize, Vec<usize>)> {
     let mut out = Vec::new();
     for (k, it) in items.iter().enumerate() {
         match it {
-            Item::Button(_, _, true) | Item::Slider(_) | Item::Party(_) => out.push((k, vec![0])),
+            Item::Button(_, _, true) | Item::Slider(_) | Item::Party(_) | Item::Tilt => out.push((k, vec![0])),
             Item::Bots(_) => {
                 let on: Vec<usize> = [0, 1].into_iter().filter(|&j| bots_enabled(j, ctx)).collect();
                 if !on.is_empty() { out.push((k, on)); }
@@ -166,12 +188,19 @@ impl Menus {
         let step = if dx == 0 { self.held_x = 0; 0 } else if dx != self.held_x { self.held_x = dx; self.repeat = 0.35; dx } else { self.repeat -= dt; if self.repeat <= 0.0 { self.repeat = 0.08; dx } else { 0 } };
         let focus = foci.get(self.menu.focus.min(foci.len().saturating_sub(1))).cloned();
         if let Some((k, _)) = focus && let Item::Slider(s) = list[k] && step != 0 {
-            let v = match s { Slider::Mouse => &mut self.mouse, Slider::Stick => &mut self.stick };
-            let (lo, hi) = match s { Slider::Mouse => (0.3, 3.0), Slider::Stick => (0.3, 2.5) };
-            *v = (*v + 0.05 * step as f32).clamp(lo, hi);
-            *v = (*v * 20.0).round() / 20.0;
+            if s == Slider::Music { self.music_db = (self.music_db + step as f32).clamp(MUSIC_DB_MIN, 0.0); return Action::None; }
+            let (lo, hi) = if s == Slider::Mouse { (0.3, 3.0) } else { (0.3, 2.5) };
+            let v = self.slider(s, ctx);
+            let v = (((v + 0.05 * step as f32).clamp(lo, hi)) * 20.0).round() / 20.0;
+            match s {
+                Slider::Mouse => self.mouse = v,
+                Slider::Stick => self.stick = v,
+                Slider::Aim(i) => if let Some(name) = ctx.seats.get(i) { self.set_aim(name, v) },
+                Slider::Music => {}
+            }
             return Action::None;
         }
+        if let Some((k, _)) = focus && list[k] == Item::Tilt && (step != 0 || c.pressed.has(Buttons::SOUTH)) { self.tilt = !self.tilt; return Action::None; }
         if let Some((k, _)) = focus && let Item::Party(i) = list[k] && step != 0 && let Some((v, lo, hi)) = ctx.party.as_ref().and_then(|p| p.0.get(i)).map(|e| (e.1, e.2, e.3)) {
             let next = (v + step as i64).clamp(lo, hi);
             return if next != v { Action::Party(i, next) } else { Action::None };
@@ -189,6 +218,29 @@ impl Menus {
             app::ui::MenuEvent::Back => self.back(),
             _ => Action::None,
         }
+    }
+
+    fn slider(&self, s: Slider, ctx: &Ctx) -> f32 {
+        match s { Slider::Music => self.music_db, Slider::Mouse => self.mouse, Slider::Stick => self.stick, Slider::Aim(i) => ctx.seats.get(i).map_or(self.stick, |n| self.aim_for(n)) }
+    }
+    /// A GameNight player's stick sensitivity (Godot `stick_sens_for`: the shared one until set).
+    pub fn aim_for(&self, name: &str) -> f32 { self.aim.iter().find(|a| a.0 == name).map_or(self.stick, |a| a.1) }
+    fn set_aim(&mut self, name: &str, v: f32) {
+        match self.aim.iter_mut().find(|a| a.0 == name) { Some(a) => a.1 = v, None => self.aim.push((name.to_string(), v)) }
+    }
+
+    /// The settings as JSON (Godot keeps them in `user://settings.cfg`).
+    pub fn settings_json(&self) -> serde_json::Value {
+        serde_json::json!({ "music_db": self.music_db, "mouse": self.mouse, "stick": self.stick, "tilt": self.tilt,
+            "aim": self.aim.iter().map(|(n, v)| (n.clone(), serde_json::json!(v))).collect::<serde_json::Map<_, _>>() })
+    }
+    pub fn load_settings(&mut self, v: &serde_json::Value) {
+        let f = |k: &str, lo: f32, hi: f32, d: f32| v.get(k).and_then(|x| x.as_f64()).map_or(d, |x| (x as f32).clamp(lo, hi));
+        self.music_db = f("music_db", MUSIC_DB_MIN, 0.0, self.music_db);
+        self.mouse = f("mouse", 0.3, 3.0, self.mouse);
+        self.stick = f("stick", 0.3, 2.5, self.stick);
+        self.tilt = v.get("tilt").and_then(|x| x.as_bool()).unwrap_or(self.tilt);
+        if let Some(m) = v.get("aim").and_then(|x| x.as_object()) { self.aim = m.iter().filter_map(|(n, x)| Some((n.clone(), (x.as_f64()? as f32).clamp(0.3, 2.5)))).collect(); }
     }
 
     /// Esc or B: close one level.
@@ -394,17 +446,39 @@ impl Menus {
                     y += bh + sep;
                 }
                 Item::Slider(s) => {
-                    let (name, v, lo, hi) = match s { Slider::Mouse => ("Mouse sensitivity", self.mouse, 0.3, 3.0), Slider::Stick => ("Stick sensitivity", self.stick, 0.3, 2.5) };
+                    let v = self.slider(s, ctx);
+                    let (name, lo, hi) = match s {
+                        Slider::Music => ("Music".to_string(), MUSIC_DB_MIN, 0.0),
+                        Slider::Mouse => ("Mouse sensitivity".to_string(), 0.3, 3.0),
+                        Slider::Stick => ("Stick sensitivity".to_string(), 0.3, 2.5),
+                        Slider::Aim(i) => (format!("Aim: {}", ctx.seats.get(i).map_or("", |n| n.as_str())), 0.3, 2.5),
+                    };
+                    let value = if s == Slider::Music { music_label(v) } else { format!("{v:.2}x") };
                     let rh = 36.0 * u;
                     let mid = y + rh * 0.5;
                     let lc = if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] };
-                    Label::new(BODY, 14.0 * u, lc).draw(d, name, r[0], mid, clip);
+                    Label::new(BODY, fit(&name, BODY, 14.0 * u, 136.0 * u), lc).draw(d, &name, r[0], mid, clip);
                     let (sx, sw) = (r[0] + 142.0 * u, r[2] - 142.0 * u - 59.0 * u);
                     d.rect([sx, mid - 2.0 * u, sw, 4.0 * u], [0.25, 0.22, 0.24, 1.0], clip);
                     let k = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
                     d.rect([sx, mid - 2.0 * u, sw * k, 4.0 * u], if fk(0) { RED } else { [0.6, 0.55, 0.55, 1.0] }, clip);
                     d.circle([sx + sw * k, mid], 7.0 * u, if fk(0) { BONE } else { [0.8, 0.78, 0.75, 1.0] }, clip);
-                    Label::new(BODY, 14.0 * u, [0.74, 0.78, 0.9, 1.0]).right().draw(d, &format!("{v:.2}x"), r[0] + r[2], mid, clip);
+                    Label::new(BODY, 14.0 * u, [0.74, 0.78, 0.9, 1.0]).right().draw(d, &value, r[0] + r[2], mid, clip);
+                    y += rh + 14.0 * u;
+                }
+                Item::Tilt => {
+                    // Godot's CheckButton: the text, and a switch on the right.
+                    let rh = 30.0 * u;
+                    let mid = y + rh * 0.5;
+                    Label::new(BODY, 14.0 * u, if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] }).draw(d, "Movement tilt", r[0], mid, clip);
+                    let (sw, sh) = (40.0 * u, 20.0 * u);
+                    let sx = r[0] + r[2] - sw;
+                    let on = self.tilt;
+                    let track = if on { RED } else { [0.25, 0.22, 0.24, 1.0] };
+                    d.rect([sx + sh * 0.5, mid - sh * 0.5, sw - sh, sh], track, clip);
+                    d.circle([sx + sh * 0.5, mid], sh * 0.5, track, clip);
+                    d.circle([sx + sw - sh * 0.5, mid], sh * 0.5, track, clip);
+                    d.circle([if on { sx + sw - sh * 0.5 } else { sx + sh * 0.5 }, mid], sh * 0.38, if fk(0) { BONE } else { [0.8, 0.78, 0.75, 1.0] }, clip);
                     y += rh + 14.0 * u;
                 }
                 Item::Gap(g) => y += g * u,
@@ -420,7 +494,7 @@ fn column_height(list: &[Item], u: f32) -> f32 {
     list.iter().map(|it| match it {
         Item::Bots(_) => 34.0 + sep, Item::Party(_) => 36.0 + sep,
         Item::Text(..) => 20.0, Item::Note(t) => if *t == "BOTS" { 24.0 * 1.3 } else { 12.0 * 1.3 },
-        Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
+        Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Tilt => 44.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
     }).sum::<f32>() * u
 }
 

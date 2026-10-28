@@ -214,6 +214,9 @@ impl Visuals {
         self.things.pose(&mut self.scene, world, self.clock);
     }
 
+    /// The movement-tilt setting (the first-person gun's strafe lean).
+    pub fn set_tilt(&mut self, on: bool) { self.guns.tilt = on; }
+
     /// Morph a player's gun into their current stats (a card was given).
     pub fn grow_gun(&mut self, i: usize, p: &growing_guns::Player) { self.guns.grow(i, p); }
 
