@@ -51,19 +51,23 @@ pub struct Gg {
     /// World player index per local view.
     slots: Vec<usize>,
     since_snap: f32,
+    since_poll: u32,
     rebuild: bool,
     sounds: Option<crate::sounds::Sounds>,
     /// Card menu per local player.
     menus: Vec<app::ui::Menu>,
+    /// The mods (cards, rules), hot-reloaded.
+    scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
 }
 
 impl Gg {
-    pub fn new(world: World, session: Session, slots: Vec<usize>) -> Self {
+    pub fn new(mut world: World, session: Session, slots: Vec<usize>) -> Self {
+        let scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
         let n = world.players.len();
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, rebuild: true, sounds: None, menus: Vec::new() }
+            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, menus: Vec::new(), scripts }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -106,6 +110,12 @@ impl app::Game for Gg {
     fn local_players(&self) -> usize { self.slots.len() }
 
     fn tick(&mut self, controls: &[Controls]) {
+        // Edited mods take effect a quarter second later, between ticks.
+        self.since_poll += 1;
+        if self.since_poll >= TICK_HZ / 4 {
+            self.since_poll = 0;
+            if let Some(s) = &self.scripts { for line in s.poll(&mut self.world) { eprintln!("mods: {line}"); } }
+        }
         let mut local: Vec<Input> = controls.iter().map(input).collect();
         // Card picks: the menu takes this player's controls while an offer is open.
         self.menus.resize_with(self.slots.len(), Default::default);
@@ -163,7 +173,16 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards".into()),
+            "help" => Ok("give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods".into()),
+            "lua" => {
+                let code = cmd.trim_start().strip_prefix("lua").unwrap_or("").trim();
+                self.scripts.as_ref().ok_or("no mods loaded")?.console(&mut self.world, code)
+            }
+            "mods" => {
+                let s = self.scripts.as_ref().ok_or("no mods loaded")?;
+                for line in s.poll(&mut self.world) { eprintln!("mods: {line}"); }
+                Ok(s.status())
+            }
             "arena" => {
                 let seed = num(1)? as u64;
                 self.world.arena = growing_guns::Arena::generate(seed);
@@ -171,18 +190,18 @@ impl app::Game for Gg {
                 let a = &self.world.arena;
                 Ok(format!("arena {seed}: {:?}, {} m, {} chunks", a.variant, a.size, a.chunks.len()))
             }
-            "cards" => Ok(growing_guns::cards::ALL.iter().map(|c| format!("{c:?}").to_lowercase()).collect::<Vec<_>>().join(" ")),
+            "cards" => Ok(self.world.cards.enabled().map(|(_, d)| d.id.clone()).collect::<Vec<_>>().join(" ")),
             "give" => {
                 let p = player(1, &self.world)?;
                 let name = w.get(2).ok_or("give P CARD")?.to_lowercase();
-                let card = *growing_guns::cards::ALL.iter().find(|c| format!("{c:?}").to_lowercase() == name).ok_or(format!("unknown card {name} (try: cards)"))?;
+                let card = self.world.cards.find(&name).ok_or(format!("unknown card {name} (try: cards)"))?;
+                self.world.give(p, card);
                 let pl = &mut self.world.players[p];
-                pl.mods.apply(card);
-                pl.cards.push(card);
                 pl.ammo = pl.mag_size();
                 // The gun grows into the new card, as after a pick.
                 self.vis.grow_gun(p, &self.world.players[p]);
-                Ok(format!("player {p} has {:?}", self.world.players[p].cards))
+                let ids: Vec<&str> = self.world.players[p].cards.iter().map(|&c| self.world.cards.get(c).map_or("?", |d| d.id.as_str())).collect();
+                Ok(format!("player {p} has {ids:?}"))
             }
             "teleport" => {
                 let p = player(1, &self.world)?;
@@ -224,7 +243,7 @@ impl app::Game for Gg {
             "alive": p.alive, "health": p.health, "score": p.score, "ammo": p.ammo, "reloading": p.reloading(),
             "pos": p.pos.to_array(), "vel": p.vel.to_array(), "yaw": p.yaw, "pitch": p.pitch,
             "on_floor": p.on_floor, "on_wall": p.wall_normal.is_some(), "dash_charges": p.dash_charges,
-            "cards": p.cards, "offer": p.offer, "max_health": p.max_health(), "mag": p.mag_size(),
+            "cards": p.cards.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>(), "offer": p.offer.map(|o| o.map(|c| card_id(w, c))), "max_health": p.max_health(), "mag": p.mag_size(),
         })).collect();
         Some(serde_json::json!({
             "tick": w.tick, "round": w.round, "intermission": w.intermission, "ended": w.ended, "pick_time": w.pick_time,
@@ -234,6 +253,8 @@ impl app::Game for Gg {
         }).to_string())
     }
 }
+
+fn card_id(w: &World, c: growing_guns::cards::Card) -> String { w.cards.get(c).map_or_else(|| format!("#{}", c.0), |d| d.id.clone()) }
 
 pub fn run(args: &Args) -> Result<(), String> {
     let total = args.num("--total", 4usize).clamp(1, 8);

@@ -19,6 +19,7 @@ glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = "30"
 net = { path = "../../../engine/crates/net" }
+script = { path = "../../../engine/crates/script" }
 tokio = { version = "1", features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
