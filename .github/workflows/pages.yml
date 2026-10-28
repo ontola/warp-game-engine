@@ -1,0 +1,45 @@
+# Builds the website (website/build.py) from the markdown docs. On pull
+# requests this is only a check that the build works. On main it also
+# deploys to GitHub Pages, once the repository variable PAGES_ENABLED is
+# 'true' and Pages uses "GitHub Actions" as its source (both off by default).
+name: Website
+on:
+  push:
+    branches: [main]
+    paths: ['website/**', 'engine/**/*.md', 'games/**/*.md', 'games/growing-guns/scripts/golden/**', '.github/workflows/pages.yml']
+  pull_request:
+    paths: ['website/**', 'engine/**/*.md', 'games/**/*.md', 'games/growing-guns/scripts/golden/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build
+        run: python website/build.py --out website/_site --ref main
+      - if: github.event_name != 'pull_request' && vars.PAGES_ENABLED == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/_site
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.PAGES_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

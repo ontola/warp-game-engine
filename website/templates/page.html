@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} | Warp</title>
+<meta name="description" content="Warp engine documentation: {{title}}">
+<link rel="stylesheet" href="{{root}}/style.css">
+<link rel="icon" href="{{root}}/favicon.svg" type="image/svg+xml">
+</head>
+<body class="doc {{kind}}">
+<a class="skip" href="#content">Skip to the text</a>
+<header class="bar">
+  <a class="wordmark" href="{{root}}/index.html">Warp</a>
+  <nav aria-label="Site">
+    <a href="{{root}}/docs/index.html">Docs</a>
+    <a href="{{root}}/docs/making-a-game.html">Make a game</a>
+    <a href="https://github.com/ontola/warp-game-engine" rel="noopener">Source</a>
+  </nav>
+</header>
+<div class="docs-layout">
+  <details class="side" id="side">
+    <summary>Contents</summary>
+    <nav class="side-inner" aria-label="Documentation">
+{{nav}}
+    </nav>
+  </details>
+  <main id="content">
+    <article class="prose">
+{{banner}}
+{{body}}
+    </article>
+    <footer class="page-foot">
+      <p>This page is built from <a href="{{source}}" rel="noopener"><code>{{source_path}}</code></a>. Edit the markdown there; the site follows.</p>
+    </footer>
+  </main>
+  {{toc}}
+</div>
+<script>
+  // Wide screens: the contents panel is always open. Narrow: it starts folded.
+  (function () {
+    var side = document.getElementById("side");
+    var wide = window.matchMedia("(min-width: 60rem)");
+    function sync() { if (wide.matches) side.setAttribute("open", ""); else side.removeAttribute("open"); }
+    sync();
+    wide.addEventListener("change", sync);
+  })();
+</script>
+</body>
+</html>

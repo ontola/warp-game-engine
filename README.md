@@ -5,6 +5,10 @@ outdoor worlds. [Sideways](games/sideways/README.md) is its rally game for
 [GameNight](https://gamenight.ontola.io), with up to four local players.
 
 One Cargo workspace and lockfile, with separate engine and game directories.
+[Growing Guns](games/growing-guns/README.md), an arena shooter, is the second
+game on the engine. Documentation starts at
+[engine/docs/README.md](engine/docs/README.md); [`website/`](website/README.md)
+builds it into a static site.
 
 | Location | Responsibility |
 | --- | --- |
