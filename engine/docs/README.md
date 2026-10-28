@@ -102,6 +102,7 @@ Sky, fog and terrain:
 - [Live sky controls](live-sky-controls.md)
 - [Camera terrain occlusion of solar haze](camera-sun-fog.md)
 - [Finite-distance aerosol layer](finite-distance-fog.md)
+- [Volumetric light from local lights](volumetric-light.md)
 - [Terrain normals follow the rendered surface](terrain-surface-normals.md)
 - [Shared terrain visibility foundation](terrain-world-visibility.md)
 - [Repetitive roadside wedges, r52](roadside-verge-r52.md)
