@@ -132,6 +132,20 @@ fn run() -> Result<(), String> {
 
     let mut screen = render::screen::Screen::new(&gpu)?;
     screen.draw(&gpu, &renderer, label_layer, [0.0; 4], &label_list)?;
+    // The painted screens (a Rust-built room only), in their atlas layers.
+    let show = game_room::paint::Show { time: numf("--time", 0.0), ..Default::default() };
+    let prompts = std::collections::HashMap::new();
+    let mut layers: Vec<i32> = room.screens.values().map(|s| s.layer).collect();
+    layers.sort();
+    layers.dedup();
+    for layer in layers {
+        let mut list = HudDrawList::new([render::screen::SIZE; 2]);
+        for (name, rect) in room.screens.iter().filter(|s| s.1.layer == layer) {
+            let mut canvas = game_room::paint::Canvas::new(&mut list, rect.rect);
+            if !game_room::paint::paint(&mut canvas, name, &show, &prompts) { eprintln!("game-room: no painter for screen {name}"); }
+        }
+        screen.draw(&gpu, &renderer, layer, [0.0; 4], &list)?;
+    }
     let setup = started.elapsed();
 
     let frames_start = std::time::Instant::now();
