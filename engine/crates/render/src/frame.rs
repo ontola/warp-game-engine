@@ -3821,10 +3821,27 @@ pub struct ViewRect {
 
 /// Godot's split-screen layout for `n` views in a `w` x `h` image: one,
 /// side by side for two, a 2x2 grid for three or four, 4 px apart.
-pub fn split_rects(n: usize, w: u32, h: u32) -> Vec<(u32, u32, u32, u32)> {
+pub fn split_rects(n: usize, w: u32, h: u32) -> Vec<(u32, u32, u32, u32)> { split_rects_with(n, w, h, SplitLayout::Stacked) }
+
+/// How two views share the screen; three and four always use quarters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SplitLayout {
+    /// One above the other (wide views, for racing).
+    #[default]
+    Stacked,
+    /// Left and right halves (tall views, for shooters).
+    SideBySide,
+}
+
+/// [`split_rects`] with a choice of two-view layout.
+pub fn split_rects_with(n: usize, w: u32, h: u32, layout: SplitLayout) -> Vec<(u32, u32, u32, u32)> {
     let gap = ((h as f32 * 4.0 / 1080.0).round() as u32).max(1).min(w.saturating_sub(2)).min(h.saturating_sub(2));
     match n {
         0 | 1 => vec![(0, 0, w, h)],
+        2 if layout == SplitLayout::SideBySide => {
+            let hw = (w - gap) / 2;
+            vec![(0, 0, hw, h), (hw + gap, 0, w - hw - gap, h)]
+        }
         2 => {
             let hh = (h - gap) / 2;
             vec![(0, 0, w, hh), (0, hh + gap, w, h - hh - gap)]
@@ -3914,7 +3931,7 @@ mod layout_tests {
         let coarser=[[1,3,0,0],[0,0,0,0]];
         assert!(super::update_foliage_history(&mut views[0],&coarser));
     }
-    use super::{split_rects, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};
+    use super::{split_rects, split_rects_with, SplitLayout, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};
     #[test]
     fn sun_visibility_fast_path_preserves_diagnostics_and_invalid_inputs() {
         use super::sun_visibility_required as required;
@@ -4209,6 +4226,7 @@ mod layout_tests {
     #[test]
     fn godot_split_layout_uses_one_4k_output() {
         assert_eq!(split_rects(2,3840,2160),vec![(0,0,3840,1076),(0,1084,3840,1076)]);
+        assert_eq!(split_rects_with(2,3840,2160,SplitLayout::SideBySide),vec![(0,0,1916,2160),(1924,0,1916,2160)]);
         assert_eq!(split_rects(4,3840,2160),vec![(0,0,1916,1076),(1924,0,1916,1076),(0,1084,1916,1076),(1924,1084,1916,1076)]);
         let odd=split_rects(4,1921,1081);
         assert_eq!(odd[3].0+odd[3].2,1921);

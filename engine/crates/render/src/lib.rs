@@ -103,7 +103,7 @@ mod transmittance_tests;
 #[cfg(test)]
 mod rock_mapping;
 
-pub use frame::{Camera, FrameStats, Lighting, Renderer, ViewRect, split_rects};
+pub use frame::{Camera, FrameStats, Lighting, Renderer, SplitLayout, ViewRect, split_rects, split_rects_with};
 pub use gpu::{Gpu, Stopwatch, write_png};
 pub use scene::Scene;
 /// A test frame: a compute shader fills an RGBA8 image with a gradient.

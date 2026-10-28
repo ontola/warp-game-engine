@@ -40,6 +40,8 @@ pub struct Frame<'a> {
     pub dt: f32,
     /// Interpolation between the previous and the latest tick, 0..1.
     pub alpha: f32,
+    /// How two views share the screen ([`Game::split`]).
+    pub split: render::SplitLayout,
     renderer: &'a mut Option<Renderer>,
 }
 
@@ -53,7 +55,7 @@ impl Frame<'_> {
     pub fn renderer_mut(&mut self) -> Option<&mut Renderer> { self.renderer.as_mut() }
     /// Split-screen rectangles for `views` views, as x, y, width, height.
     pub fn rects(&self, views: usize) -> Vec<[f32; 4]> {
-        render::split_rects(views, self.size[0], self.size[1]).into_iter().map(|(x, y, w, h)| [x as f32, y as f32, w as f32, h as f32]).collect()
+        render::split_rects_with(views, self.size[0], self.size[1], self.split).into_iter().map(|(x, y, w, h)| [x as f32, y as f32, w as f32, h as f32]).collect()
     }
 }
 
@@ -81,6 +83,17 @@ pub trait Game {
     fn wants_capture(&self) -> bool { false }
     /// The frame asked for by [`Game::wants_capture`], RGBA8, top row first.
     fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) { let _ = (size, rgba); }
+    /// How two views share the screen.
+    fn split(&self) -> render::SplitLayout { render::SplitLayout::Stacked }
+    /// Escape was pressed: return true when the game used it (to open or
+    /// close its own menu). Otherwise the shell releases the mouse, or quits
+    /// when it is already released.
+    fn escape(&mut self) -> bool { false }
+    /// The game asks the shell to close (an Exit menu item).
+    fn quit(&self) -> bool { false }
+    /// Adjust input tuning (look sensitivity) from the game's settings;
+    /// called before every frame's ticks.
+    fn tuning(&self, _tuning: &mut Tuning) {}
 }
 
 /// What the game wants from its window.
@@ -117,8 +130,8 @@ impl Output {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Self, String> {
         Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None })
     }
-    fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], target: &wgpu::TextureView) -> Result<(), String> {
-        let rects = render::split_rects(draw.cameras.len(), size[0], size[1]);
+    fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView) -> Result<(), String> {
+        let rects = render::split_rects_with(draw.cameras.len(), size[0], size[1], split);
         let views: Vec<ViewRect> = draw.cameras.iter().zip(&rects).map(|(&cam, &(x, y, w, h))| ViewRect { cam, x, y, w, h }).collect();
         // One output texture, reused while the size holds.
         if self.picture.as_ref().is_none_or(|p| [p.width(), p.height()] != size) { self.picture = Some(Renderer::output_texture(gpu, size[0], size[1])); }
@@ -158,10 +171,11 @@ impl<'g> Headless<'g> {
     }
     /// Draw one frame and read it back as RGBA8.
     pub fn frame(&mut self, game: &mut dyn Game) -> Result<Vec<u8>, String> {
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, renderer: &mut self.renderer };
+        let split = game.split();
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, split, renderer: &mut self.renderer };
         let draw = game.draw(&mut frame)?;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
-        self.out.draw(self.gpu, renderer, &draw, self.size, &self.target.create_view(&Default::default()))?;
+        self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()))?;
         Ok(self.gpu.read_rgba8(&self.target))
     }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
@@ -256,6 +270,7 @@ impl Shell<'_> {
         let dt = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
         self.devices.poll();
+        self.game.tuning(&mut self.devices.tuning);
         let step = 1.0 / self.cfg.tick_hz;
         self.acc += dt;
         let mut steps = 0;
@@ -268,7 +283,8 @@ impl Shell<'_> {
         if steps == 6 { self.acc = 0.0; }
         let Some(live) = &mut self.live else { return Ok(()) };
         let size = [live.config.width, live.config.height];
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), renderer: &mut live.renderer };
+        let split = self.game.split();
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, renderer: &mut live.renderer };
         let mut draw = self.game.draw(&mut frame)?;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
         if !self.devices.mouse_captured && self.cfg.keyboard {
@@ -280,7 +296,7 @@ impl Shell<'_> {
         let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
         if to_file || to_game {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
-            Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(&live.gpu, renderer, &draw, size, &target.create_view(&Default::default()))?;
+            Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(&live.gpu, renderer, &draw, size, split, &target.create_view(&Default::default()))?;
             let rgba = live.gpu.read_rgba8(&target);
             if to_file {
                 self.shots += 1;
@@ -292,7 +308,7 @@ impl Shell<'_> {
         }
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-                live.out.draw(&live.gpu, renderer, &draw, size, &tex.texture.create_view(&Default::default()))?;
+                live.out.draw(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()))?;
                 if let Some(w) = &self.window { w.pre_present_notify(); }
                 live.gpu.queue.present(tex);
             }
@@ -366,7 +382,11 @@ impl ApplicationHandler for Shell<'_> {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 if event.state == ElementState::Pressed && !event.repeat {
                     match code {
-                        KeyCode::Escape => { if self.devices.mouse_captured { self.capture_mouse(false) } else { event_loop.exit() } return; }
+                        KeyCode::Escape => {
+                            if self.game.escape() { return; }
+                            if self.devices.mouse_captured { self.capture_mouse(false) } else { event_loop.exit() }
+                            return;
+                        }
                         KeyCode::F11 => {
                             if let Some(w) = &self.window { w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) }); }
                             return;
@@ -379,6 +399,7 @@ impl ApplicationHandler for Shell<'_> {
             }
             WindowEvent::RedrawRequested => {
                 if let Err(e) = self.frame() { self.error = Some(e); event_loop.exit(); return; }
+                if self.game.quit() { event_loop.exit(); return; }
                 self.frames += 1;
                 if self.frames % 60 == 0 { if let (Some(w), Some(t)) = (&self.window, self.game.title()) { w.set_title(&format!("{} | {t}", self.cfg.title)); } }
                 if self.cfg.frames > 0 && self.frames >= self.cfg.frames {
