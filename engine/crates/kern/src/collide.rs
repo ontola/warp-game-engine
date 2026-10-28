@@ -260,6 +260,8 @@ impl BoxGrid {
     /// allocating an owned result. Only unique candidates are sorted.
     pub fn query_with_scratch<'s>(&self, lo: Vec2, hi: Vec2, scratch: &'s mut BoxGridScratch) -> &'s [usize] {
         scratch.begin(self.boxes.len());
+        // A default grid has no cells yet. Clear reused results before returning.
+        if self.live == 0 { return &scratch.indices; }
         let (a, z) = (self.cell_of(lo), self.cell_of(hi));
         for cz in a[1]..=z[1] { for cx in a[0]..=z[0] {
             for &i in self.cell_items(cx, cz) {
@@ -301,6 +303,7 @@ impl BoxGrid {
     /// constant-time duplicate checks even for rays crossing many cells.
     pub fn ray_with_scratch(&self, origin: Vec3, dir: Vec3, max: f32, scratch: &mut BoxGridScratch) -> Option<(f32, Vec3, usize)> {
         scratch.begin(self.boxes.len());
+        if self.live == 0 { return None; }
         let mut best: Option<(f32, Vec3, usize)> = None;
         let p = (Vec2::new(origin.x, origin.z) - self.origin) / self.cell;
         let d = Vec2::new(dir.x, dir.z);
@@ -769,6 +772,36 @@ mod tests {
                 for max in [0.0, 1.0, 20.0] { assert_eq!(grid.ray(origin, dir, max), legacy_ray(&grid, origin, dir, max)); }
             }
         }
+    }
+
+    #[test]
+    fn empty_grids_are_queryable_with_reused_scratch_and_after_removal() {
+        let populated = BoxGrid::new(vec![YawBox::new(Vec3::ZERO, Vec3::splat(2.0), 0.0)], 1.0);
+        let mut removed = populated.clone();
+        removed.remove(0);
+        let mut scratch = BoxGridScratch::default();
+        let mover = Mover { radius: 0.4, half_height: 0.9 };
+        for grid in [&BoxGrid::default(), &BoxGrid::new(Vec::new(), 1.0), &removed] {
+            assert_eq!(populated.query_with_scratch(Vec2::splat(-2.0), Vec2::splat(2.0), &mut scratch), &[0]);
+            assert!(grid.query_with_scratch(Vec2::splat(-10.0), Vec2::splat(10.0), &mut scratch).is_empty());
+            assert!(grid.query(Vec2::ZERO, Vec2::ZERO).is_empty());
+            assert!(grid.in_sphere(Vec3::ZERO, 20.0).is_empty());
+            grid.near(Vec2::splat(-10.0), Vec2::splat(10.0), &mut |_, _| panic!("empty grid visited a box"));
+            for dir in [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Z] {
+                assert!(grid.ray_with_scratch(Vec3::ZERO, dir, 100.0, &mut scratch).is_none());
+                assert!(grid.ray(Vec3::splat(100.0), dir, 100.0).is_none());
+            }
+            let (mut p, mut v) = (Vec3::ZERO, Vec3::new(3.0, -2.0, 1.0));
+            let (mut expected_p, mut expected_v) = (p, v);
+            let empty: &[YawBox] = &[];
+            let expected = mover.slide(empty, &mut expected_p, &mut expected_v, 0.1, 0.25);
+            assert_eq!(mover.slide(grid, &mut p, &mut v, 0.1, 0.25), expected);
+            assert_eq!((p, v), (expected_p, expected_v));
+        }
+        removed.restore(0);
+        assert_eq!(removed.query_with_scratch(Vec2::ZERO, Vec2::ZERO, &mut scratch), &[0]);
+        // Box rays report an entering face, so start outside the restored box.
+        assert_eq!(removed.ray(Vec3::new(-3.0, 0.0, 0.0), Vec3::X, 10.0).map(|h| h.2), Some(0));
     }
 
     #[test]

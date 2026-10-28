@@ -1869,13 +1869,13 @@ impl Renderer {
         self.cull_and_raster_pass(enc,gpu,v,color,depth,ts,names,name,kind,None,false);
     }
 
-    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool) {
+    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, _gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool) {
         if !append && matches!(kind,RasterPass::Color) {enc.clear_buffer(&v.traversal_counter,0,None);}
         let scene_bind=match kind {RasterPass::Color=>&self.scene_bind,RasterPass::FarSun=>&self.far_sun_scene_bind,RasterPass::FoliagePage=>&self.foliage_sun_scene_bind,_=>&self.shadow_scene_bind};
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
-        if phase_bind.is_some() {
-            if !append {enc.clear_buffer(&v.counter,0,None);}
-        } else {gpu.queue.write_buffer(&v.counter, 0, &[0u8; crate::tree_occlusion::COUNTER_BYTES as usize]);}
+        // Reset in command order without allocating upload staging. A tree's
+        // appended phase must retain the preceding visible prefix and counters.
+        if phase_bind.is_none() || !append { enc.clear_buffer(&v.counter, 0, None); }
         let cull_bind=phase_bind.unwrap_or(&v.cull_bind);
         let tw = |ts: &mut u32| {
             self.query.as_ref().map(|(qs, _, _)| {
@@ -2270,6 +2270,7 @@ impl Renderer {
         let mut stats = self.output_view.lock().unwrap().stats();
         stats.add(self.shadow_view.lock().unwrap().stats());
         for resources in self.frame_resources.lock().unwrap().iter() { stats.add(resources.stats()); }
+        if let Some(fx) = self.fx.0.lock().unwrap().as_ref() { stats.add(fx.resource_cache_stats()); }
         stats
     }
 
