@@ -28,6 +28,8 @@ cargo run -p growing-guns-app -- play --join TICKET
 cargo run -p growing-guns-app -- nettest                   # host + client over loopback
 cargo run -p growing-guns-app -- shot --out s.png --views 4 --seconds 4
 cargo run -p growing-guns-app -- bench --views 4 --size 3840x2160
+cargo run --release -p growing-guns-app -- bench --stress bullets --csv bullets.csv
+cargo run --release -p growing-guns-app -- bench --stress explosions --csv explosions.csv --shot explosions.png
 cargo run -p growing-guns-app -- sim --seconds 120 --trace players.0.health,round
 cargo run -p growing-guns-app -- script games/growing-guns/scripts/smoke.json --out /tmp/gg
 cargo test -p growing-guns
@@ -58,3 +60,15 @@ skinned characters (the FBX models need converting to glTF
 first), menus beyond card picks, music, GameNight. Online play is tested
 over loopback (`nettest`), not yet between two machines; clients predict
 only their look direction.
+
+The opt-in stress fixtures run 180 warmup ticks and 900 measured ticks at the
+simulation's 60 Hz, with one offscreen render and GPU completion wait per tick.
+They sustain 210 rifle shots or 40 gameplay explosions per simulated second;
+these rates are not wall-clock presentation FPS. Explosion targets are restored
+every three simulated seconds, or sooner when depleted, and those costs remain
+in the measurements. Players are pinned and kept alive. The stress path flushes
+arena changes, debris and effects just as play does; audio and HUD are excluded.
+It checks actual event counts, writes raw CPU/GPU timings and reports effect
+pool limits. Screenshot readback happens after measurement. The ordinary bot
+benchmark is a different fixture; these results are not interchangeable with
+its old results or with Godot's differently staged stress scenes.
