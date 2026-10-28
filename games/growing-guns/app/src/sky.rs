@@ -91,10 +91,11 @@ impl SkyChoice {
     }
 }
 
-/// The darkest exposure (EV100) Growing Guns uses. The emissive surfaces
-/// (lava, beacons, tracers) have fixed radiance tuned for Godot's day at
-/// EV 13.6; at the night preset's EV 6 the lava turns white. A floodlit
-/// stadium is exposed for its lamps instead, and the sky goes black.
+/// The darkest exposure (EV100) Growing Guns uses: a floodlit stadium is
+/// exposed for its lamps, and the sky goes black. The emissive surfaces
+/// (lava, beacons, tracers) are tuned for Godot's day at EV 13.6 and are
+/// shown as at that exposure under every sky (view::EMISSIVE_COMPENSATION),
+/// so they keep their colour at night instead of clipping to white.
 pub const MIN_EV100: f32 = 11.0;
 
 /// Floodlight strength against Godot's (day) for the sun's elevation: 1 in
@@ -106,7 +107,7 @@ pub fn floodlights(elevation_degrees: f64) -> f32 {
 }
 
 /// Tuned on the night captures (scripts/sky.json): at EV 11 and 12x the floor,
-/// walls and players read clearly; the lava stays orange. The banks point
+/// walls and players read clearly. The banks point
 /// at the centre, so the crowd in the stands falls dark.
 pub const NIGHT_FLOODLIGHTS: f32 = 12.0;
 

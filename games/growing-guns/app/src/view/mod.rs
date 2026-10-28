@@ -39,7 +39,10 @@ pub const PLAYER_COLORS_U8: [[u8; 4]; 4] = [[255, 110, 80, 255], [110, 160, 255,
 /// past this are not drawn; waves reach it around wave 20).
 pub const COOP_VIEW_PLAYERS: usize = 24;
 /// The renderer's limit on local lights per frame.
-const MAX_LIGHTS: usize = 16;
+const MAX_LIGHTS: usize = render::headlights::MAX_LOCAL_LIGHTS;
+/// Of those, the most that ion strikes and blasts take, so the floodlights
+/// and the lava keep theirs.
+const MAX_TRANSIENT_LIGHTS: usize = MAX_LIGHTS - 4 - lava::MAX_LAVA_LIGHTS;
 
 fn srgb_to_linear(c: [f32; 3]) -> [f32; 3] { c.map(|v| v.powf(2.2)) }
 fn cube(scene: &mut Scene, material: u32) -> usize { scene.add_mesh(&primitives::cube(material).mesh()) }
@@ -252,14 +255,14 @@ impl Visuals {
     pub fn punched(&self, world: &World, i: usize, cam: Camera) -> Camera { self.fx.punched(world, i, cam) }
 
     /// Blast lights first (they matter most while they last), then the
-    /// floodlights, the roof beacons and muzzle flashes.
+    /// floodlights, the lava's glow, the roof beacons and muzzle flashes.
     pub fn local_lights(&self) -> Vec<LocalLight> {
         let mut l = self.ion.lights(self.clock);
         l.extend(self.fx.blasts.lights(self.clock));
-        l.extend(self.arena.lava.lights().iter().copied());
-        l.truncate(MAX_LIGHTS);
+        l.truncate(MAX_TRANSIENT_LIGHTS);
         let flood = self.flood;
         l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).map(|f| LocalLight { intensity_cd: f.intensity_cd * flood, ..*f }));
+        l.extend(self.arena.lava.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         l.extend(self.arena.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         let room = MAX_LIGHTS - l.len();
         l.extend(self.fx.flash_lights(room));
@@ -267,7 +270,11 @@ impl Visuals {
     }
 
     /// Floodlight strength for the sky (1 for Godot's day).
-    pub fn set_floodlights(&mut self, flood: f32) { self.flood = flood; }
+    /// The lava's night glows fade in with them.
+    pub fn set_floodlights(&mut self, flood: f32) {
+        self.flood = flood;
+        self.arena.lava.night = ((flood - 1.0) / (crate::sky::NIGHT_FLOODLIGHTS - 1.0)).clamp(0.0, 1.0);
+    }
 
     /// Short, distance-attenuated ion impact flash, separately per viewport.
     pub fn ion_flash(&self, eye: Vec3) -> f32 { self.ion.flash(self.clock, eye) }
@@ -278,6 +285,10 @@ pub fn sky() -> (u32, u32, Vec<[f32; 4]>) {
     primitives::gradient_sky(palette::SKY_TOP, palette::HORIZON, palette::HORIZON.map(|c| c * 0.79))
 }
 
+/// How much emission follows the exposure (render::Lighting): 1 shows it
+/// as at Godot's EV 13.6 under every sky.
+pub const EMISSIVE_COMPENSATION: f32 = 1.0;
+
 pub fn lighting() -> Lighting {
     let (el, az) = (38f32.to_radians(), 140f32.to_radians());
     Lighting {
@@ -286,6 +297,10 @@ pub fn lighting() -> Lighting {
         sun_color: Vec3::from(palette::SUN),
         sky_lux: 14_000.0,
         ev100: 13.6,
+        // Emission (lava, tracers, beacons) is tuned at Godot's exposure; a
+        // darker sky lowers the exposure, and the glow would clip to white.
+        emissive_compensation: EMISSIVE_COMPENSATION,
+        emissive_ev100: 13.6,
         fog_start: 40.0,
         fog_end: 320.0,
         ..Default::default()
