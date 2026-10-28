@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Warp game engine</title>
+<meta name="description" content="Warp is a Rust game engine for procedural outdoor worlds and short iteration loops: deterministic simulation, headless rendering, scripted playtests and hot-reloaded Luau.">
+<link rel="stylesheet" href="{{root}}/style.css">
+<link rel="icon" href="{{root}}/favicon.svg" type="image/svg+xml">
+</head>
+<body class="home">
+<a class="skip" href="#content">Skip to the text</a>
+<header class="bar">
+  <a class="wordmark" href="{{root}}/index.html">Warp</a>
+  <nav aria-label="Site">
+    <a href="{{root}}/docs/index.html">Docs</a>
+    <a href="{{root}}/docs/making-a-game.html">Make a game</a>
+    <a href="{{repo}}" rel="noopener">Source</a>
+  </nav>
+</header>
+
+<main id="content">
+  <section class="hero">
+    <h1 class="hero-mark">Warp</h1>
+    <div class="hero-text">
+      <p class="lead">A Rust game engine for procedural outdoor worlds, built so that a person or a coding agent can change a game and see the result in seconds, with or without a screen.</p>
+      <p class="actions">
+        <a class="button" href="{{root}}/docs/building-and-running.html">Build and run</a>
+        <a class="quiet" href="{{root}}/docs/overview.html">What Warp is</a>
+      </p>
+    </div>
+    <figure class="hero-shot">
+      <img src="{{root}}/img/sideways-stage.jpg" width="960" height="540" alt="Two rally cars side by side on a gravel road through a pine forest, grass on the banks, a pale overcast sky.">
+      <figcaption>
+        <span>Sideways at tick 900, rendered on a CPU rasteriser with no window.</span>
+        <code>KERN_ADAPTER=software sideways shot out.png --frames 900 --taa 4</code>
+      </figcaption>
+    </figure>
+  </section>
+
+  <section class="contact" aria-labelledby="contact-h">
+    <div class="section-head">
+      <h2 id="contact-h">Pictures from a script</h2>
+      <p>These six frames are Growing Guns' golden images. A JSON script plays the game headless, sets up each moment with debug commands, captures it and compares it with the reference in the repository. A frame that drifts fails the test.</p>
+    </div>
+    <ol class="frames">
+      <li><figure><img src="{{root}}/img/golden/arena.png" width="320" height="180" loading="lazy" alt="A castle arena from a player's view, with the scoreboard at the top."><figcaption><code>{ "ticks": 20 }</code> arena.png</figcaption></figure></li>
+      <li><figure><img src="{{root}}/img/golden/stands.png" width="320" height="180" loading="lazy" alt="Packed stands of spectators around the arena, lava in front."><figcaption><code>"teleport 0 30 12 0"</code> stands.png</figcaption></figure></li>
+      <li><figure><img src="{{root}}/img/golden/lava.png" width="320" height="180" loading="lazy" alt="A wide lava pool at the edge of the arena."><figcaption><code>"aim 0 0 0 -60"</code> lava.png</figcaption></figure></li>
+      <li><figure><img src="{{root}}/img/golden/gun.png" width="320" height="180" loading="lazy" alt="The player's rifle, grown larger by picked cards."><figcaption><code>"give 0 explosive"</code> gun.png</figcaption></figure></li>
+      <li><figure><img src="{{root}}/img/golden/blast.png" width="320" height="180" loading="lazy" alt="An explosion throwing stone chunks out of a wall."><figcaption><code>"boom 36.5 1.0 40.5 4 300"</code> blast.png</figcaption></figure></li>
+      <li><figure><img src="{{root}}/img/golden/gibs.png" width="320" height="180" loading="lazy" alt="Rubble and debris settling after the blast."><figcaption><code>{ "expect": "/players/3/alive", "equals": false }</code> gibs.png</figcaption></figure></li>
+    </ol>
+    <p class="aside"><a href="{{root}}/docs/building-and-running.html#scripted-playtests">How scripted playtests work</a></p>
+  </section>
+
+  <section class="games" aria-labelledby="games-h">
+    <h2 id="games-h">Two games, one workspace</h2>
+    <div class="game-pair">
+      <article class="game">
+        <h3>Sideways</h3>
+        <p>A gravel rally game for <a href="https://gamenight.ontola.io" rel="noopener">GameNight</a>, up to four players on one screen. Cars with suspension, Pacejka tyres and a drivetrain at 120 Hz, stages through dense procedural forest and meadow, engine sound synthesised from the running engine. Warp grew out of it.</p>
+        <p><a href="{{root}}/docs/sideways.html">Sideways README</a></p>
+      </article>
+      <article class="game">
+        <h3>Growing Guns</h3>
+        <p>A first-person arena shooter ported from Godot to see what Warp costs a very different game. Procedural castle arenas, 52 cards that grow your rifle, destructible walls, bots, split screen, wave survival and online play. Its cards and rules are Luau that reloads while you play.</p>
+        <p><a href="{{root}}/docs/growing-guns.html">Growing Guns README</a></p>
+      </article>
+    </div>
+  </section>
+
+  <section class="parts" aria-labelledby="parts-h">
+    <h2 id="parts-h">What the engine gives a game</h2>
+    <div class="table">
+      <table class="ledger">
+        <thead><tr><th>Part</th><th>What it does</th><th>Crate</th></tr></thead>
+        <tbody>
+          <tr><td>Deterministic simulation</td><td>Fixed ticks where the same inputs give the same state, bit for bit. State digests, the first tick where two runs differ, traces of any value over time.</td><td><code>kern</code></td></tr>
+          <tr><td>Headless rendering</td><td>Every frame renders into a texture. The same path runs on a desktop GPU and on a CPU rasteriser, so tests run in a container.</td><td><code>render</code></td></tr>
+          <tr><td>Scripted playtests</td><td>JSON steps that play, run debug commands, capture frames, check state and compare against golden images.</td><td><code>app</code></td></tr>
+          <tr><td>Cluster renderer</td><td>Cluster LOD selected on the GPU, a visibility buffer, HDR shading in lux and EV100, sun and sky, vegetation, effects, split screen.</td><td><code>render</code></td></tr>
+          <tr><td>Luau mods</td><td>Sandboxed modules with hot reload, state that survives a reload, and a step budget so a runaway loop stops at the same point everywhere.</td><td><code>script</code></td></tr>
+          <tr><td>Synthesised sound</td><td>Engine sound from the running engine, effects playback, and a procedural synth that places voices from mono to 7.1 with distance, air, occlusion and reverb.</td><td><code>audio</code></td></tr>
+          <tr><td>Online play</td><td>A host and clients exchanging the game's own messages over iroh, with relays and hole punching.</td><td><code>net</code></td></tr>
+          <tr><td>Physics</td><td>Box collision and a character mover for gameplay, Rapier rigid bodies for what tumbles and flies.</td><td><code>physics</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="start" aria-labelledby="start-h">
+    <h2 id="start-h">Try it</h2>
+    <p>From a clone of the repository, with stable Rust:</p>
+<pre><code>cargo run -p app --example hello
+KERN_ADAPTER=software cargo run -p app --example hello -- --shot hello.png
+cargo run -p growing-guns-app -- play</code></pre>
+    <p>The first is a ball rolling over a field in a window. The second renders the same game to a PNG on the CPU. Then read <a href="{{root}}/docs/making-a-game.html">making a game</a>.</p>
+  </section>
+
+  <section class="status" aria-labelledby="status-h">
+    <h2 id="status-h">Where it stands</h2>
+    <p>Warp is young and changes quickly. The Sideways target, four players on one 4K output at 120 frames per second, is not reached: a controlled four-player route measures about 38 to 44.5 ms per frame with DLSS Quality. There is no editor, and no water, buildings, people or general animation yet. The <a href="{{root}}/docs/index.html#engineering-notes">engineering notes</a> record every measured step, including the ones that were rejected.</p>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <p>Warp is MIT licensed. Barlow Condensed is by The Barlow Project Authors, under the <a href="{{root}}/fonts/OFL-BarlowCondensed.txt">SIL Open Font License</a>; the engine ships it in <code>engine/assets/fonts</code>.</p>
+  <p><a href="{{repo}}" rel="noopener">ontola/warp-game-engine</a></p>
+</footer>
+</body>
+</html>
