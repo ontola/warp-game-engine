@@ -1,0 +1,15 @@
+{ "size": [800, 450],
+  "steps": [
+    { "ticks": 30, "note": "settle on the spawn" },
+    { "expect": "/players/0/on_floor", "equals": true },
+    { "capture": "00-spawn.png", "state": "00-spawn.json" },
+    { "ticks": 40, "mv": [0, 1], "note": "run forward" },
+    { "expect": "/players/0/alive", "equals": true },
+    { "press": ["SOUTH"], "note": "jump" },
+    { "ticks": 12 },
+    { "expect": "/players/0/on_floor", "equals": false },
+    { "capture": "01-air.png" },
+    { "ticks": 20, "look": [0.03, 0], "hold": ["RIGHT_TRIGGER"], "note": "turn right while firing" },
+    { "expect": "/players/0/ammo", "max": 4 },
+    { "capture": "02-fired.png", "state": "02-fired.json" }
+  ] }

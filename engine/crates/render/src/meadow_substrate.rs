@@ -272,7 +272,7 @@ mod tests {
         // assignment, and one diffuse-sky factor. No direct/specular/fog use.
         assert_eq!(shade.matches("meadow_ground_sky").count(),3);
         assert!(shade.contains("sky_irradiance(n)*sky_vis*meadow_ground_sky+bounce*(1.0-sky_vis)"));
-        assert!(shade.contains("if meadow_substrate.control.x != 0u"));
+        assert!(shade.contains("if FEATURE_MEADOW && meadow_substrate.control.x != 0u"));
     }
 
     fn contact_random(cell:[i32;2],salt:u32,seed:u32)->f32 {

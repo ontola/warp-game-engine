@@ -43,6 +43,9 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
     if owner>=arrayLength(&current_instances) || owner>=arrayLength(&previous_instances)
         || owner>=arrayLength(&current_wind) || owner>=arrayLength(&previous_wind) {return vec4<f32>(0.0);}
     let now=current_instances[owner];let old=previous_instances[owner];
+    // Skinned vertices change object-space shape. Rigid root reprojection
+    // cannot recover that deformation; reject history on this surface.
+    if (now.flags&64u)!=0u {return vec4<f32>(0.0);}
     if old.cluster_count==0u || now.first_cluster!=old.first_cluster || now.cluster_count!=old.cluster_count
         // Category provenance cannot change geometry or motion history.
         || ((now.flags^old.flags)&~(7u<<24u))!=0u

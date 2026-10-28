@@ -24,6 +24,16 @@ pub const NO_AMBIENT_OCCLUSION: u32 = 128;
 pub const BLEND: u32 = 256;
 /// True leaf/needle geometry: thin-leaf lighting without alpha-tested cards.
 pub const THIN_FOLIAGE: u32 = 512;
+/// Self-lit surface (lava, lamps, tracers): adds `tint * scale` nits of
+/// radiance. Use with `layer: -1`; `scale` is then the emission, not a repeat.
+pub const EMISSIVE: u32 = 1024;
+/// Procedural rock (Growing Guns' rock_surface): world-space pits, cracks
+/// and moss on a block's faces, tinted by `tint`; `scale` 0..1 is damage
+/// (more and darker cracks). Meant for unit-cube blocks (hewn bricks).
+pub const ROCK: u32 = 2048;
+/// Procedural flowing lava (Growing Guns' lava_flow), unlit; `scale` is the
+/// radiance in nits of a white pixel. Follows `Lighting::time`.
+pub const LAVA: u32 = 4096;
 
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
@@ -55,11 +65,13 @@ pub struct GpuCarMaterial {
     pub axles: [f32; 4],
 }
 
-/// glTF alphaMode=BLEND data, separate from the fixed GPU material layout.
+/// Forward blend data, separate from the fixed GPU material layout.
 #[derive(Clone, Copy, Debug)]
 pub struct BlendMaterial {
     pub alpha: f32,
     pub double_sided: bool,
+    /// Add source radiance without attenuating the destination.
+    pub additive: bool,
 }
 
 #[repr(C)]
@@ -103,6 +115,14 @@ pub const LIVE_GRASS: u32 = 8;
 pub const WIND_GRASS: u32 = 16;
 /// A rigid vegetation part driven by the shared hierarchical GPU pose pass.
 pub const PART_WIND: u32 = 32;
+/// Weighted vertices are updated by the shared skinning pass. Dynamic shadow
+/// caster; temporal history is rejected until deformation vectors are supplied.
+pub const SKINNED: u32 = 64;
+
+/// Bits 8..15: hidden from camera view 0..7 (still casts shadows and shows in
+/// other views). Set with [`GpuInstance::hide_in_views`].
+pub const HIDE_IN_VIEW_SHIFT: u32 = 8;
+pub const HIDE_IN_VIEW_MASK: u32 = 0xff << HIDE_IN_VIEW_SHIFT;
 
 /// Explicit source provenance for render diagnostics. These bits are in
 /// `GpuInstance::flags`, not material flags, and do not select rendering policy.
@@ -143,6 +163,12 @@ impl GpuInstance {
     }
 
     /// Changes diagnostic provenance only; wind, shadows and occlusion flags stay intact.
+    /// Hide this instance from the camera views in `mask` (bit i: view i),
+    /// e.g. a first-person player's own body. Shadows are unaffected.
+    pub fn hide_in_views(&mut self, mask: u8) {
+        self.flags = (self.flags & !HIDE_IN_VIEW_MASK) | (u32::from(mask) << HIDE_IN_VIEW_SHIFT);
+    }
+
     pub fn set_category(&mut self, category: GeometryCategory) {
         self.flags = (self.flags & !INSTANCE_CATEGORY_MASK) | ((category as u32) << INSTANCE_CATEGORY_SHIFT);
     }
@@ -340,6 +366,12 @@ pub struct Scene {
     pub part_attachments: Vec<crate::part_wind::PartAttachment>,
     /// Shared baked rigid-part clips. Optional, with bounded actor/part pools.
     pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
+    /// Independent weighted character meshes, with caller-sampled palettes.
+    pub skinning: crate::skinning::Skinning,
+    /// A GPU-simulated debris pool (`debris::Debris::reserve`).
+    pub debris: Option<crate::debris::DebrisSpec>,
+    /// A GPU-posed crowd (`crowd::Crowd::reserve`).
+    pub crowd: Option<crate::crowd::CrowdSpec>,
     pub textures: Vec<TextureSource>,
     pub heightfield: Heightfield,
     /// Explicit declaration that heightfield sentinel holes and outside its
@@ -504,7 +536,15 @@ impl Scene {
     /// The same material is excluded from both depth/shadow and solid proxies.
     pub fn set_material_blend(&mut self, material: u32, alpha: f32, double_sided: bool) {
         self.materials[material as usize].flags |= BLEND | NO_AMBIENT_OCCLUSION;
-        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided });
+        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided, additive: false });
+    }
+
+    /// Add continuous-alpha radiance without obscuring the scene behind it.
+    /// EMISSIVE surfaces use only their emission, attenuated by fog transmission.
+    /// Like ordinary blending, this excludes opaque depth, shadows and proxies.
+    pub fn set_material_additive(&mut self, material: u32, alpha: f32, double_sided: bool) {
+        self.set_material_blend(material, alpha, double_sided);
+        self.blended_materials.get_mut(&material).unwrap().additive = true;
     }
 
     /// Load an image file into the texture array; returns its layer.

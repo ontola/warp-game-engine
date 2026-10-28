@@ -366,6 +366,9 @@ struct App {
     last_stage_load: serde_json::Value,
     loading_error: Option<String>,
     cached_picture: Option<wgpu::Texture>,
+    /// Two reused frame outputs, alternated so `cached_picture` (the last
+    /// frame) is never the texture the next frame renders into.
+    outputs: [Option<wgpu::Texture>; 2],
     deferred_host: Vec<Command>,
     smoke_stage_requested: bool,
 }
@@ -1277,7 +1280,15 @@ impl App {
         let (image,capture_stats)=if measure_capture {
             let (image,stats)=g.renderer.try_render_texture_profiled(&g.gpu,&views,&render_light,size.width,size.height)?;
             (image,Some(stats))
-        } else {(g.renderer.try_render_texture(&g.gpu, &views, &render_light, size.width, size.height)?,None)};
+        } else {
+            let k=(self.rendered%2) as usize;
+            if self.outputs[k].as_ref().is_none_or(|t|(t.width(),t.height())!=(size.width,size.height)) {
+                self.outputs[k]=Some(render::Renderer::output_texture(&g.gpu,size.width,size.height));
+            }
+            let output=self.outputs[k].clone().unwrap();
+            g.renderer.try_render_into(&g.gpu, &views, &render_light, &output)?;
+            (output,None)
+        };
         self.cached_picture=Some(image.clone());
         self.rendered += 1;
         if let Some(t)=trace {t.frame_id=Some(self.rendered);}
@@ -1672,7 +1683,7 @@ pub fn run(raw:&[String])->i32{
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
     let start_paused=a.start_paused;
-    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,deferred_host:vec![],smoke_stage_requested:false};
+    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],smoke_stage_requested:false};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");

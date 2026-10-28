@@ -27,20 +27,25 @@ pub struct LocalLight {
     pub outer_cos:f32,
     /// Finite source radius prevents a singular highlight at the emitter.
     pub source_radius_m:f32,
+    /// Distance exponent of the falloff: 2 is physical (inverse square, and
+    /// `intensity_cd` is candela); smaller values carry further, like
+    /// Godot's `omni_attenuation` (then `intensity_cd` is the irradiance in
+    /// lux at 1 m).
+    pub falloff:f32,
 }
 impl LocalLight {
     pub fn validated(self)->Result<Self,String> {
         if ![self.position,self.direction,self.intensity_cd].iter().all(|v|v.is_finite())
             || self.direction.length_squared()<1e-8
             || !self.direction.length_squared().is_finite()
-            || self.intensity_cd.min_element()<0.0 || self.intensity_cd.max_element()>1_000_000.0
-            || !self.range_m.is_finite() || !(0.1..=20.0).contains(&self.range_m)
+            || self.intensity_cd.min_element()<0.0 || self.intensity_cd.max_element()>100_000_000.0
+            || !self.range_m.is_finite() || !(0.1..=200.0).contains(&self.range_m)
             || !self.source_radius_m.is_finite() || !(0.01..=1.0).contains(&self.source_radius_m)
             || self.source_radius_m>=self.range_m
             || !self.inner_cos.is_finite() || !self.outer_cos.is_finite()
             || !(-1.0..=1.0).contains(&self.outer_cos) || !(-1.0..=1.0).contains(&self.inner_cos)
-            || self.outer_cos>=self.inner_cos
-        {return Err("local light requires finite pose/intensity, range0.1..20m, source radius0.01..1m smaller than range, and -1<=outer_cos<inner_cos<=1".into());}
+            || self.outer_cos>=self.inner_cos || !(0.1..=4.0).contains(&self.falloff)
+        {return Err("local light requires finite pose/intensity, falloff 0.1..4, range 0.1..200 m, source radius0.01..1m smaller than range, and -1<=outer_cos<inner_cos<=1".into());}
         Ok(Self{direction:self.direction.normalize(),..self})
     }
 }
@@ -111,7 +116,7 @@ impl Uniform {
             *dst=GpuLocal {position_range:src.position.extend(src.range_m).to_array(),
                 direction_outer:src.direction.extend(src.outer_cos).to_array(),
                 intensity_inner:src.intensity_cd.extend(src.inner_cos).to_array(),
-                source:[src.source_radius_m*src.source_radius_m,0.0,0.0,0.0]};
+                source:[src.source_radius_m*src.source_radius_m,src.falloff,0.0,0.0]};
         }
         if !local.is_empty() {result.local_min=lower.extend(0.0).to_array();result.local_max=upper.extend(0.0).to_array();}
         result
@@ -177,7 +182,7 @@ mod tests {
         assert_eq!(Uniform::from_lights(&[],&[]).count,[0;4]);
     }
     #[test] fn local_spill_has_an_independent_budget_and_zeroes_expired_lights() {
-        let light=LocalLight{position:Vec3::ZERO,direction:Vec3::Z*3.0,intensity_cd:Vec3::new(80.0,4.0,1.0),
+        let light=LocalLight{position:Vec3::ZERO,direction:Vec3::Z*3.0,intensity_cd:Vec3::new(80.0,4.0,1.0),falloff:2.0,
             range_m:3.0,inner_cos:0.8,outer_cos:0.3,source_radius_m:0.06};
         let local=validate_local(&[light;MAX_LOCAL_LIGHTS]).unwrap();
         assert_eq!(local[0].direction,Vec3::Z);

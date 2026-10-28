@@ -7,6 +7,8 @@
 //! Everything a tool prints is meant to be short: summaries and the first
 //! difference, not dumps.
 
+pub mod collide;
+
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;

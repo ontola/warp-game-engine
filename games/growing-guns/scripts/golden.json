@@ -1,0 +1,22 @@
+{ "size": [320, 180],
+  "steps": [
+    { "cmd": ["bots pause", "health 0 50000"],
+      "note": "Golden images (software adapter): arena, stands and crowd, the grown gun, a blast with gibs, lava. References in golden/; a missing one is written. Run tools/golden.sh." },
+    { "ticks": 20 },
+    { "capture": "arena.png", "compare": "golden/arena.png", "tolerance": 0.5 },
+    { "cmd": ["teleport 0 30 12 0", "aim 0 80 10 0"] }, { "ticks": 1 },
+    { "capture": "stands.png", "compare": "golden/stands.png", "tolerance": 0.5 },
+    { "cmd": ["teleport 0 0 8 -30", "aim 0 0 0 -60"] }, { "ticks": 1 },
+    { "capture": "lava.png", "compare": "golden/lava.png", "tolerance": 0.5 },
+    { "cmd": ["give 0 precision", "give 0 precision", "give 0 dmg_up", "give 0 dmg_up", "give 0 big_mag", "give 0 explosive",
+              "teleport 0 33.5 0.9 37", "aim 0 37 0.2 33"] },
+    { "ticks": 130 },
+    { "capture": "gun.png", "compare": "golden/gun.png", "tolerance": 0.5 },
+    { "cmd": ["teleport 0 33.5 0.9 37", "teleport 3 36 0.9 40", "health 3 100", "aim 0 36 1.0 40"] }, { "ticks": 2 },
+    { "cmd": ["boom 36.5 1.0 40.5 4 300"] },
+    { "ticks": 8 },
+    { "capture": "blast.png", "compare": "golden/blast.png", "tolerance": 0.5 },
+    { "ticks": 40 },
+    { "capture": "gibs.png", "compare": "golden/gibs.png", "tolerance": 0.5 },
+    { "expect": "/players/3/alive", "equals": false }
+  ] }

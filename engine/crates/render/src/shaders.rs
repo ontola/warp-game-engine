@@ -13,9 +13,10 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-pub(crate) const SHARED_NAMES: [&str; 11] = ["wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "foliage_volume.wgsl", "shade.wgsl",
-    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "headlights.wgsl", "car_lamps.wgsl"];
-const BUILT_IN: [(&str, &str); 15] = [
+pub(crate) const SHARED_NAMES: [&str; 12] = ["wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "foliage_volume.wgsl", "shade.wgsl",
+    "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "headlights.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
+const BUILT_IN: [(&str, &str); 16] = [
+    ("procedural_surface.wgsl", include_str!("shaders/procedural_surface.wgsl")),
     ("foliage_volume.wgsl", include_str!("shaders/foliage_volume.wgsl")),
     ("meadow_field.wgsl", include_str!("shaders/meadow_field.wgsl")),
     ("foliage_sun_pages.wgsl", include_str!("shaders/foliage_sun_pages.wgsl")),

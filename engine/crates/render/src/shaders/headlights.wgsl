@@ -31,7 +31,10 @@ fn local_light_sample(index:u32,p:vec3<f32>)->HeadlightSample {
     // visibility fallback disguised as GI: these tiny lights are unshadowed.
     let normalized=d2/(range*range);let fade=max(0.0,1.0-normalized*normalized);
     result.direction=-outward;
-    result.irradiance=lamp.intensity_inner.rgb*(cone*fade*fade/max(d2,lamp.source.x));
+    // Inverse square by default; source.y < 2 carries further (Godot's
+    // omni attenuation). The power form is exact at 2 and costs one pow.
+    let spread=select(pow(max(d2,lamp.source.x),lamp.source.y*0.5),max(d2,lamp.source.x),lamp.source.y==2.0||lamp.source.y==0.0);
+    result.irradiance=lamp.intensity_inner.rgb*(cone*fade*fade/spread);
     return result;
 }
 fn incident_light_sample(index:u32,p:vec3<f32>,bias_normal:vec3<f32>)->HeadlightSample {

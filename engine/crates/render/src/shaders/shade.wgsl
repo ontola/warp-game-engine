@@ -26,6 +26,7 @@ struct Light {
     near_shadow_view_proj: mat4x4<f32>,
     near_shadow: vec4<f32>, // world texel size, blend-start radius, enabled
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
+    anim: vec4<f32>,        // x: seconds for animated procedural materials
 };
 
 struct Cluster {
@@ -121,8 +122,29 @@ struct HiddenMeadow {
     padding:array<u32,60>, ids:array<vec2<u32>>,
 };
 @group(1) @binding(16) var<storage,read_write> hidden_meadow:HiddenMeadow;
+// Scene features, specialised per pipeline. All default to true: every
+// shader that includes this file behaves as before. The main shade pipeline
+// sets a feature false when its scene cannot use it (Renderer::new), so a
+// game without cars, grass, tracks or forests does not compile their code.
+override FEATURE_CARS: bool = true;
+// Procedural rock and lava surfaces (procedural_surface.wgsl).
+override FEATURE_PROCEDURAL: bool = true;
+override FEATURE_GRASS: bool = true;
+override FEATURE_TRACKS: bool = true;
+override FEATURE_WORLD_TERRAIN: bool = true;
+override FEATURE_FOLIAGE_PAGES: bool = true;
+override FEATURE_MEADOW: bool = true;
+override FEATURE_TERRAIN: bool = true;
+override FEATURE_FOLIAGE: bool = true;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
+// Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and
+// lists the others; `shade` then runs (indirectly) over listed tiles only,
+// so pure sky never occupies the heavy shading kernel.
+override SKY_TILES: bool = false;
+struct ShadeTiles { x: atomic<u32>, y: u32, z: u32, pad: u32, tiles: array<u32> };
+@group(1) @binding(17) var<storage,read_write> shade_tiles: ShadeTiles;
+var<workgroup> tile_has_geometry: atomic<u32>;
 
 struct Gi {
     vol_origins: array<vec4<f32>, 3>,
@@ -292,7 +314,7 @@ fn transmittance(p: vec3<f32>, dir: vec3<f32>, max_t: f32) -> f32 {
 
 // Fraction of the sky a surface sees: five cones around its normal.
 fn sky_visibility(p: vec3<f32>, n: vec3<f32>) -> f32 {
-    if gi.vol_dims.w == 0u {
+    if gi.vol_dims.w == 0u || (gi.vol_dims.w & 4u) != 0u {
         return 1.0;
     }
     let t1 = normalize(select(cross(n, vec3<f32>(0.0, 0.0, 1.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.x) < 0.9));
@@ -309,7 +331,7 @@ fn sky_visibility(p: vec3<f32>, n: vec3<f32>) -> f32 {
 // Only glossy surfaces need this longer direction-aware query. A diffuse
 // hemisphere visibility cannot tell whether a mountain hides a reflection.
 fn reflected_visibility(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>) -> f32 {
-    if gi.vol_dims.w == 0u || gi.params.y < 0.5 { return 1.0; }
+    if gi.vol_dims.w == 0u || gi.params.y < 0.5 || (gi.vol_dims.w & 4u) != 0u { return 1.0; }
     let o = p + n * 0.06;
     var t = 0.25;
     var tr = 1.0;
@@ -685,8 +707,10 @@ fn sun_coverage_fade(projection: mat4x4<f32>, p: vec3<f32>, blend_start: f32) ->
 }
 
 fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
-    let page=foliage_page_visibility(p,n,plane_n);
-    if page.y>0.5 {return page.x;}
+    if FEATURE_FOLIAGE_PAGES {
+        let page=foliage_page_visibility(p,n,plane_n);
+        if page.y>0.5 {return page.x;}
+    }
     var fade = 1.0;
     var mapped = 1.0;
     if far_sun.params.z > 0.5 {
@@ -704,7 +728,8 @@ fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
         if fade <= 0.0 { return mapped; }
     }
     var fallback = 1.0;
-    if gi.vol_dims.w != 0u {
+    // vol_dims.w bit 4: no foliage and no heightfield, the march returns 1.
+    if gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u {
         fallback = transmittance(p + n * 0.2, light.sun_dir.xyz, 50.0);
     }
     return mix(mapped, fallback, fade);
@@ -752,6 +777,8 @@ fn shadow_at_surface(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>, representat
     if !sun_visibility_required() { return 1.0; }
     let detail=shadow_detail_receiver(p,n,plane_n);
     if detail<=0.0 {return 0.0;}
+    // Disabled world terrain visibility answers 1 (fully visible).
+    if !FEATURE_WORLD_TERRAIN { return detail; }
     return min(detail,world_terrain_sun_visibility(p,n,representation_error));
 }
 
@@ -1143,9 +1170,41 @@ fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_f
     return result;
 }
 
+// Sky for tiles without geometry; tiles with any are listed for `shade`.
+// Same sky as `shade` writes for its own background pixels.
 @compute @workgroup_size(8, 8)
-fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+fn classify(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) local: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
     let size = vec2<u32>(view.size.xy);
+    if local == 0u { atomicStore(&tile_has_geometry, 0u); }
+    workgroupBarrier();
+    let inside = all(gid.xy < size);
+    var depth = 0.0;
+    if inside { depth = textureLoad(depth_tex, vec2<i32>(gid.xy), 0); }
+    if depth > 0.0 { atomicOr(&tile_has_geometry, 1u); }
+    workgroupBarrier();
+    let any_geometry = atomicLoad(&tile_has_geometry);
+    if any_geometry != 0u {
+        if local == 0u { shade_tiles.tiles[atomicAdd(&shade_tiles.x, 1u)] = wid.y * groups.x + wid.x; }
+        return;
+    }
+    if !inside { return; }
+    let ndc = vec2<f32>((f32(gid.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(gid.y) + 0.5) / view.size.y * 2.0);
+    let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
+    let dir = normalize(far.xyz / far.w - view.cam.xyz);
+    textureStore(out_hdr, vec2<i32>(gid.xy), vec4<f32>(visible_background_radiance(dir), 1.0));
+}
+
+@compute @workgroup_size(8, 8)
+fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+    let size = vec2<u32>(view.size.xy);
+    // With sky tiles the dispatch walks the list of tiles with geometry.
+    var tile = wid.xy;
+    if SKY_TILES {
+        let t = shade_tiles.tiles[wid.x];
+        let across = (size.x + 7u) / 8u;
+        tile = vec2<u32>(t % across, t / across);
+    }
+    let gid = vec3<u32>(tile * 8u + lid.xy, 0u);
     var hidden=false;
     if SKIP_HIDDEN_MEADOW {
         // All invocations participate in barriers, including edge workgroups.
@@ -1247,7 +1306,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
     var base = m.tint;
     var nn = n; // the normal after normal maps
     var meadow_ground_sky = 1.0;
-    if (m.flags & 2u) != 0u {
+    if FEATURE_TERRAIN && (m.flags & 2u) != 0u {
         // Terrain (src/shaders/terrain.gdshader): moss, needles, a grassy
         // verge, bare ground beside the road and rock where it is steep.
         // uv.x is metres from the road edge. Layers m.layer .. m.layer+4.
@@ -1280,7 +1339,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
             nn = perturb_xz(n, nt);
             c *= 0.78 + 0.34 * fbm(wuv / 31.0);
             let contact_strength=bitcast<f32>(meadow_substrate.control.w);
-            if contact_strength>0.0 && meadow_substrate.contact.x>0.0 {
+            if FEATURE_MEADOW && contact_strength>0.0 && meadow_substrate.contact.x>0.0 {
                 let params=meadow_substrate.contact;
                 // Use the same unanimated retained/jittered root identities as
                 // source and far grass. No camera, distance, LOD or sun term.
@@ -1299,7 +1358,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
                     meadow_ground_sky=1.0-clamp(contact_strength,0.0,0.7)*habitat*cover;
                 }
             }
-            if meadow_substrate.control.x != 0u {
+            if FEATURE_MEADOW && meadow_substrate.control.x != 0u {
                 // Use the same habitat beyond the old roadside verge too.
                 // Source top-coverage leaves actual soil/needles in the gaps;
                 // it approximates rest coverage, not animated blade normals.
@@ -1394,7 +1453,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
             base = mix(base, shoulder_soil(m.layer + 1, p, mapping) * mix(1.0, 0.7, light.fog.w), join);
             nn = safe_normalize(mix(nn, perturb_xz(n, terrain_layer_normal(m.layer + 1, wuv, 3.0, mapping)), join));
         }
-    } else if (m.flags & 64u) != 0u {
+    } else if FEATURE_GRASS && (m.flags & 64u) != 0u {
         // grass_cards.gdshader: the photograph supplies blade colour, the
         // authored upward normal stays the same on both card sides.
         let height = clamp((p.y - inst.r1.w) / max(inst.scale * 0.5, 1e-4), 0.0, 1.0);
@@ -1421,7 +1480,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
     // 16.. hold 1 + their index in car_materials. Others keep the material.
     let car = m.flags >> 16u;
     var rough_m = m.roughness;
-    if (m.flags & 6u)!=0u {
+    if FEATURE_TRACKS && (m.flags & 6u)!=0u {
         let tracks=track_material(p);
         // Compacted mineral soil retains its texture and real illumination;
         // rubber appears only under actual asphalt slip. No final-color or
@@ -1431,13 +1490,18 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         rough_m=mix(rough_m,max(rough_m-0.13,0.55),tracks.x);
         rough_m=mix(rough_m,0.72,tracks.y*0.65);
     }
+    if FEATURE_PROCEDURAL && (m.flags & 2048u) != 0u {
+        let rs = proc_rock(inst, p, n, m.tint, m.scale, max(length(fp.dx), length(fp.dy)));
+        base = rs.base;
+        rough_m = rs.rough;
+    }
     var metal = m.metal;
     var coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
     var coat_rough = 0.04;
     var coat_n = n;
     var glint = vec3<f32>(0.0);
     var car_debug = vec3<f32>(0.0);
-    if car != 0u {
+    if FEATURE_CARS && car != 0u {
         let cs = car_surface(car_materials[car - 1u], inst, p, n, dir, uv, base, m.roughness, m.metal);
         base = cs.base;
         n = cs.n;
@@ -1455,8 +1519,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
     var back = vec3<f32>(0.0);
     var ao = 1.0;
     let grass = (m.flags & 64u) != 0u;
-    let procedural_leaf = (m.flags & 512u) != 0u;
-    let needles = procedural_leaf || ((m.flags & 9u) == 9u && (inst.pad & 1u) != 0u && !grass);
+    let procedural_leaf = FEATURE_FOLIAGE && (m.flags & 512u) != 0u;
+    let needles = procedural_leaf || (FEATURE_FOLIAGE && (m.flags & 9u) == 9u && (inst.pad & 1u) != 0u && !grass);
     if needles && !procedural_leaf {
         // foliage.gdshader: a little colour per tree, sunlight shining
         // through the needles from behind (BACKLIGHT), AO 0.85.
@@ -1476,7 +1540,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         let s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
-    if shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
+    if FEATURE_GRASS && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
@@ -1511,7 +1575,7 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         let response=thin_foliage_response(base,n,v,rough,1.0,sun_e,front_ambient,back_ambient,env);
         direct=response.direct;indirect=response.indirect;specular=response.specular;
-    } else if grass {
+    } else if FEATURE_GRASS && grass {
         let height=clamp((p.y-inst.r1.w)/max(inst.scale*0.5,1e-4),0.0,1.0);
         let response=grass_leaf_response(base,height,v,sun_e,shadow,sky_vis,contact,rough);
         direct=response.direct;indirect=response.indirect;specular=response.specular;
@@ -1541,12 +1605,17 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         indirect *= 1.0 - fc;
         specular = specular * (1.0 - fc) + mix(bounce / PI, environment(coat_refl, coat_rough, bounce), reflection_vis) * coat_contact * fc;
     }
-    if grass {
+    if FEATURE_GRASS && grass {
         direct += headlight_grass_radiance(p,v,base,rough);
     } else {
         direct += headlight_radiance(p,n,v,diffuse,rough,f0);
     }
-    var rad = direct + indirect + specular + car_lamp_emission(m.flags, base, inst, p);
+    var rad = direct + indirect + specular;
+    if FEATURE_CARS { rad += car_lamp_emission(m.flags, base, inst, p); }
+    // EMISSIVE: an untextured glowing surface, `scale` is its radiance in nits.
+    if (m.flags & 1024u) != 0u { rad += m.tint * m.scale; }
+    // LAVA: unlit, flowing molten rock; `scale` is the radiance of white.
+    if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x) * m.scale; }
     rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
     if light.sky.z > 0.5 && light.sky.z < 1.5 {
@@ -1593,5 +1662,6 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         let page=foliage_page_visibility(p,surface_n*sign(dot(surface_n,l)+1e-4),geo_n);
         rad=select(vec3<f32>(1.0,0.0,1.0),vec3<f32>(page.x),page.y>0.5)*6000.0;
     }
-    textureStore(out_hdr, px, vec4<f32>(rad, 1.0));
+    // fp16 target: a blast light next to a wall must saturate, not become inf.
+    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), 1.0));
 }

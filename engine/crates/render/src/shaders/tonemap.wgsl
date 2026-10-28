@@ -70,8 +70,49 @@ fn display(px: vec2<i32>) -> vec3<f32> {
     return clamp(agx_eotf(v), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// The sharpened pass needs display() of each pixel's four neighbours: the
+// workgroup computes its 8x8 tile plus a one-pixel border once into shared
+// memory (100 evaluations instead of 320), then sharpens from there.
+var<workgroup> tile: array<vec3<f32>, 100>;
+
+fn tile_at(l: vec2<i32>) -> vec3<f32> { return tile[u32(l.y * 10 + l.x)]; }
+
 @compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+    let size = textureDimensions(hdr);
+    let inside = gid.x < size.x && gid.y < size.y;
+    let p = vec2<i32>(gid.xy);
+    if tone.sharpen <= 0.0 {
+        if inside { textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(srgb(display(p)), 1.0)); }
+        return;
+    }
+    // Uniform branch: every invocation reaches both barriers.
+    let origin = vec2<i32>(wg.xy) * 8 - 1;
+    for (var k = li; k < 100u; k += 64u) {
+        tile[k] = display(origin + vec2<i32>(i32(k % 10u), i32(k / 10u)));
+    }
+    workgroupBarrier();
+    if !inside { return; }
+    let l = vec2<i32>(gid.xy) - origin;
+    var out = tile_at(l);
+    // Contrast-adaptive sharpening (after AMD's CAS): sharpen less
+    // where the neighbourhood already has contrast; never overshoot it.
+    let n = tile_at(l + vec2<i32>(0, -1));
+    let s = tile_at(l + vec2<i32>(0, 1));
+    let w = tile_at(l + vec2<i32>(-1, 0));
+    let e = tile_at(l + vec2<i32>(1, 0));
+    let lo = min(out, min(min(n, s), min(w, e)));
+    let hi = max(out, max(max(n, s), max(w, e)));
+    let room = min(lo, 1.0 - hi) / max(hi, vec3<f32>(1e-4));
+    let amp = sqrt(clamp(room, vec3<f32>(0.0), vec3<f32>(1.0))) * tone.sharpen;
+    out = clamp(out + (out * 4.0 - (n + s + w + e)) * amp * 0.25, lo, hi);
+    textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(srgb(out), 1.0));
+}
+
+// The same pass evaluating every neighbour itself (KERN_TILED_POST=0),
+// for comparison.
+@compute @workgroup_size(8, 8)
+fn main_direct(@builtin(global_invocation_id) gid: vec3<u32>) {
     let size = textureDimensions(hdr);
     if gid.x >= size.x || gid.y >= size.y {
         return;

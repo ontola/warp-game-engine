@@ -1,0 +1,17 @@
+{ "size": [1280, 720],
+  "steps": [
+    { "cmd": ["bots pause", "health 0 50000"], "note": "the camera floats above the arena: re-placed before each shot" },
+    { "ticks": 30 },
+    { "cmd": ["teleport 0 30 12 0", "aim 0 80 10 0"] }, { "ticks": 1 },
+    { "capture": "stands.png", "state": "stands.json" },
+    { "expect": "/stadium/spectators", "min": 5000 },
+    { "cmd": ["teleport 0 -20 16 -20", "aim 0 -70 12 -70"] }, { "ticks": 1 },
+    { "capture": "corner.png" },
+    { "cmd": ["boom 80 9 3 5"] },
+    { "ticks": 7 }, { "cmd": ["teleport 0 30 12 0", "aim 0 80 10 0"] }, { "ticks": 1 }, { "capture": "blast_f08.png" },
+    { "ticks": 21 }, { "cmd": ["teleport 0 30 12 0", "aim 0 80 10 0"] }, { "ticks": 1 }, { "capture": "blast_f30.png", "state": "blast.json" },
+    { "expect": "/stadium/fear", "min": 0.2 },
+    { "expect": "/stadium/alive", "max": 11100, "note": "the blast killed spectators" },
+    { "ticks": 59 }, { "cmd": ["teleport 0 30 12 0", "aim 0 80 10 0"] }, { "ticks": 1 }, { "capture": "blast_f90.png" },
+    { "ticks": 400 }, { "cmd": ["teleport 0 30 12 0", "aim 0 80 10 0"] }, { "ticks": 1 }, { "capture": "after.png", "state": "after.json" }
+  ] }
