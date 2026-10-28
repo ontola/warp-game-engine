@@ -286,7 +286,7 @@ impl World {
                 (p.offer_age >= BOT_PICK_DELAY).then(|| self.rng.below(n as u32) as usize)
             } else if let Some(k) = inputs.get(i).and_then(|inp| inp.pick).filter(|&k| (k as usize) < n) {
                 Some(k as usize)
-            } else if humans > 1 && p.offer_age >= CARD_PICK_TIMEOUT {
+            } else if humans > 1 && p.offer_age >= self.card_pick_seconds {
                 Some(self.rng.below(n as u32) as usize)
             } else { None };
             if let Some(k) = choice { self.finalize_pick(i, k); }
@@ -320,7 +320,7 @@ impl World {
         if self.coop { self.coop_tick(); }
     }
 
-    pub(crate) fn pickup_mult(&self) -> f32 { if self.modifier == Some(Modifier::SupplyStorm) { 3.0 } else { 1.0 } }
+    pub(crate) fn pickup_mult(&self) -> f32 { (if self.modifier == Some(Modifier::SupplyStorm) { 3.0 } else { 1.0 }) * self.rules.pickup_rate }
 
     fn pickup_spawner(&mut self) {
         let mult = self.pickup_mult();

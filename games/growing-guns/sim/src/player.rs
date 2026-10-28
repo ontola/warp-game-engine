@@ -380,7 +380,7 @@ impl World {
         self.coop && a != b && self.players[a].bot == self.players[b].bot
     }
 
-    pub(crate) fn gravity_mult(&self) -> f32 { if self.modifier == Some(crate::Modifier::LowGravity) { 0.6 } else { 1.0 } }
+    pub(crate) fn gravity_mult(&self) -> f32 { (if self.modifier == Some(crate::Modifier::LowGravity) { 0.6 } else { 1.0 }) * self.rules.gravity }
 
     /// Base lava under the floor: a kill below -3, 15 damage per half
     /// second in the metre above (Godot `arena_generator` lava pool), and

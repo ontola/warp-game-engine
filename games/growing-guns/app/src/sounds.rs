@@ -507,7 +507,7 @@ impl Sounds {
                     }
                     if humans > 1 {
                         for th in [3.0, 2.0, 1.0] {
-                            let (prev_left, left) = (growing_guns::CARD_PICK_TIMEOUT - age, growing_guns::CARD_PICK_TIMEOUT - p.offer_age);
+                            let (prev_left, left) = (world.card_pick_seconds - age, world.card_pick_seconds - p.offer_age);
                             if had && prev_left > th && left <= th {
                                 self.named(world, "pick_countdown_beep", &[("seconds_left", th as f32)], G::ui(-8.0).spl(140.0));
                             }

@@ -358,6 +358,15 @@ pub enum Event {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum ExplosionKind { #[default] Conventional, Ion }
 
+/// Multipliers the party can set for the next round (Godot GameNight
+/// `round_rules`): gravity, bullet drop, body-shot damage, pickup rate.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rules { pub gravity: f32, pub bullet_drop: f32, pub body_damage: f32, pub pickup_rate: f32 }
+
+impl Default for Rules {
+    fn default() -> Self { Rules { gravity: 1.0, bullet_drop: 1.0, body_damage: 1.0, pickup_rate: 1.0 } }
+}
+
 /// How a body goes when it dies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Gib {
@@ -425,6 +434,10 @@ pub struct World {
     pub modifier: Option<Modifier>,
     /// Chance a round rolls a modifier (Godot 0.30).
     pub modifier_chance: f32,
+    /// Party rules on top of the modifier (GameNight settings; 1 is Godot's game).
+    pub rules: Rules,
+    /// Seconds a picker has before a card is chosen for them (Godot 10).
+    pub card_pick_seconds: f64,
     /// Force this modifier every round (debug).
     pub forced_modifier: Option<Modifier>,
     /// Wave survival instead of versus.
@@ -465,6 +478,7 @@ impl World {
         let mut w = World {
             arena: Arena::empty(), players, bullets: Vec::new(), projectiles: Vec::new(), strikes: Vec::new(), pickups: Vec::new(),
             tick: 0, round: 1, phase: Phase::Playing, rounds_to_win: flow::ROUNDS_TO_WIN, modifier: None, modifier_chance: flow::MODIFIER_CHANCE,
+            rules: Rules::default(), card_pick_seconds: flow::CARD_PICK_TIMEOUT,
             forced_modifier: None, coop: false, waves: coop::Waves::default(), lava: flow::LavaLeak::default(),
             events: Vec::new(), breakage: Breakage::default(), bots_paused: false,
             cards: Arc::default(), hooks: HookSlot::default(), script_rng: Rng::new(seed ^ 0x5C21_97E5), flow: flow::State::default(),

@@ -326,8 +326,8 @@ impl World {
     }
 
     /// `headshots_only`: body hits deal a quarter.
-    fn body_damage_mult(&self) -> f32 { if self.modifier == Some(crate::Modifier::HeadshotsOnly) { 0.25 } else { 1.0 } }
-    pub(crate) fn bullet_drop_mult(&self) -> f32 { if self.modifier == Some(crate::Modifier::LowGravity) { 0.6 } else { 1.0 } }
+    fn body_damage_mult(&self) -> f32 { (if self.modifier == Some(crate::Modifier::HeadshotsOnly) { 0.25 } else { 1.0 }) * self.rules.body_damage }
+    pub(crate) fn bullet_drop_mult(&self) -> f32 { (if self.modifier == Some(crate::Modifier::LowGravity) { 0.6 } else { 1.0 }) * self.rules.bullet_drop }
 }
 
 impl Player {
