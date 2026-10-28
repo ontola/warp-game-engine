@@ -168,6 +168,8 @@ pub fn run(game: &mut dyn Game, headless: &mut Headless, script: &Script, out: &
             }
             game.tick(&c);
             tick += 1;
+            // A live-control screenshot asked for during the tick.
+            if game.wants_capture() { let rgba = headless.frame(game)?; game.captured(headless.size, rgba); }
             if let Some(mix) = &mut headless.audio {
                 let n = (audio::SAMPLE_RATE / headless.tick_hz).round() as usize * 2;
                 let start = headless.recorded.len();
