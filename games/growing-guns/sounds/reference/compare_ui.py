@@ -15,8 +15,8 @@ Extra columns:
   bands      for the lava sizzle (--bands, on by default for it): the RMS envelope
              of the low band (< 400 Hz: the bubble bed) and the high band
              (> 2 kHz: the hiss) separately, and the depth of the ~30 Hz bubble
-             amplitude modulation (power of the low-band envelope at 20-40 Hz
-             over its mean), seed-averaged.
+             amplitude modulation (the 60-250 Hz power envelope over the known
+             body envelope; its 25-35 Hz line relative to its mean), seed-averaged.
 
 usage: compare_ui.py [--seeds N] [--only NAME] [--markdown OUT.md] [--warp-audio PATH]
 """
@@ -100,8 +100,20 @@ def wave_err(ref, pat):
     return 10 * math.log10(max(np.mean((b - a) ** 2), 1e-20) / max(np.mean(a ** 2), 1e-20))
 
 
-def band_stats(sigs, nwin):
-    """Seed-averaged 10 ms power envelopes of < 400 Hz and > 2 kHz, and the ~30 Hz AM depth of the low band."""
+def lava_body(u, fall):
+    """The bubble's amplitude envelope (sfx.gd 1846-1848), u = t / dur."""
+    if not fall:
+        return np.exp(-u * 4.2)
+    s = np.clip(u / 0.18, 0, 1)
+    fade = np.clip((u - 0.38) / 0.62, 0, 1)
+    return s * s * (3 - 2 * s) * np.maximum(np.cos(fade * np.pi / 2), 0) ** 1.65
+
+
+def band_stats(sigs, nwin, fall):
+    """Seed-averaged 10 ms power envelopes of < 400 Hz and > 2 kHz, and the depth of the
+    ~30 Hz bubble AM: the 60-250 Hz band's power envelope divided by the known body
+    envelope squared (from each render's own length), and the power of its 25-35 Hz line
+    over the squared mean. A steady (0.55 + 0.45 sin)^2 AM with no jitter would give 0.9."""
     lows, highs, am = [], [], []
     for x0, sr0 in sigs:
         x, sr = to_44k(x0, sr0)
@@ -114,21 +126,16 @@ def band_stats(sigs, nwin):
         hi = np.fft.irfft(X * (f > 2000), len(pad))
         lows.append(np.mean(lo.reshape(nwin, w) ** 2, axis=1))
         highs.append(np.mean(hi.reshape(nwin, w) ** 2, axis=1))
-        # Bubble AM: envelope of the 60-250 Hz band (the bed, below the AM sidebands
-        # of the hiss), its spectrum at 20-40 Hz relative to its mean.
-        bed = np.fft.irfft(X * ((f > 60) & (f < 250)), len(pad))
-        n_sig = len(x)
-        e = np.abs(bed[:n_sig]) ** 2
-        k = int(sr / 400)  # smooth over 2.5 ms
-        e = np.convolve(e, np.ones(k) / k, mode="same")
-        seg = e[int(0.05 * sr): int(0.9 * n_sig)]
-        if len(seg) < sr // 10:
-            am.append(0.0)
-            continue
-        seg = seg - np.linspace(seg[0], seg[-1], len(seg))  # remove the slow trend
-        E = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
-        fe = np.fft.rfftfreq(len(seg), 1 / sr)
-        am.append(float(np.sum(E[(fe > 20) & (fe < 40)]) / max(np.sum(E[(fe > 1) & (fe < 200)]), 1e-30)))
+        n_sig = len(np.trim_zeros(np.where(np.abs(x) > 1e-4, x, 0), "b"))
+        dur = n_sig / sr
+        bed = np.fft.irfft(X * ((f > 60) & (f < 250)), len(pad))[:n_sig]
+        u = np.arange(n_sig) / sr / dur
+        keep = (u > 0.25) & (u < 0.6) if fall else (u > 0.04) & (u < 0.9)
+        e = bed[keep] ** 2 / lava_body(u[keep], fall) ** 2
+        E = np.abs(np.fft.rfft((e - e.mean()) * np.hanning(len(e)))) ** 2
+        fe = np.fft.rfftfreq(len(e), 1 / sr)
+        # Hann window power gain 3/8 cancels against the same for a steady line.
+        am.append(float(np.sum(E[(fe > 25) & (fe < 35)]) / (e.mean() ** 2 * len(e) ** 2 * 3 / 8) * 2))
     return np.mean(lows, axis=0), np.mean(highs, axis=0), float(np.mean(am))
 
 
@@ -173,9 +180,10 @@ def main():
                   f"centroid {r['cent']:5.0f} / {p['cent']:5.0f} Hz, over time {c['cent_t']:4.1f}% [{fl['cent_t']:4.1f}%]{we}", flush=True)
             if patch in BANDS:
                 nwin = max(r["nwin"], p["nwin"])
-                rl, rh, ram = band_stats(refs, nwin)
-                pl, ph, pam = band_stats(pats, nwin)
-                ql, qh, qam = band_stats(refs2, nwin)
+                fall = bool(pparams.get("fall_death", 0))
+                rl, rh, ram = band_stats(refs, nwin, fall)
+                pl, ph, pam = band_stats(pats, nwin, fall)
+                ql, qh, qam = band_stats(refs2, nwin, fall)
                 b = (label, env_diff(rl, pl), env_diff(rl, ql), env_diff(rh, ph), env_diff(rh, qh), ram, pam, qam,
                      10 * math.log10(np.sum(pl) / np.sum(rl)), 10 * math.log10(np.sum(ph) / np.sum(rh)))
                 bands.append(b)
