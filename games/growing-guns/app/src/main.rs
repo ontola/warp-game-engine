@@ -15,7 +15,6 @@ mod net;
 mod play;
 mod session;
 mod sounds;
-mod synth;
 mod crowd_sound;
 mod gun;
 mod scripts;
@@ -133,10 +132,12 @@ fn script(args: &Args) -> Result<(), String> {
     if !args.flag("--cage") { game.world.release_cage(); }
     game.light_mut().taa = 0.0;
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
-    let mixer = sounds::find_dir(args.value("--sounds")).map(|dir| {
-        let (tx, mix) = audio::sfx::sfx(64, audio::SAMPLE_RATE);
-        game.set_crowd(args.value("--crowd"), &dir, &tx);
-        game.set_sounds(sounds::Sounds::load(&dir, tx));
+    let samples = sounds::find_dir(args.value("--sounds"));
+    let patches = sounds::find_patches(args.value("--sfx"));
+    let mixer = (samples.is_some() || patches.is_some()).then(|| {
+        let (mix, tx, crowd) = sounds::offline();
+        if let Some(dir) = &samples { game.set_crowd(args.value("--crowd"), dir, &crowd); }
+        game.set_sounds(sounds::Sounds::new(tx, patches, samples.as_deref()));
         mix
     });
     let gpu = Gpu::new()?;

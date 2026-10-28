@@ -325,12 +325,17 @@ pub fn run(args: &Args) -> Result<(), String> {
         println!("{}", app::Game::command(&mut game, &format!("give 0 {card}"))?);
     }
     // Keep the speaker alive for the whole run.
-    let _speaker = match crate::sounds::find_dir(args.value("--sounds")) {
-        Some(dir) => match app::sound::start(64) {
-            Ok((speaker, tx)) => { game.set_crowd(args.value("--crowd"), &dir, &tx); game.set_sounds(crate::sounds::Sounds::load(&dir, tx)); Some(speaker) }
-            Err(e) => { eprintln!("silent: {e}"); None }
-        },
-        None => { eprintln!("silent: no sound folder (--sounds DIR or GG_SOUNDS, the Godot project's assets/audio)"); None }
+    let samples = crate::sounds::find_dir(args.value("--sounds"));
+    let patches = crate::sounds::find_patches(args.value("--sfx"));
+    if samples.is_none() { eprintln!("no recordings: footsteps, hurts and deaths are silent (--sounds DIR or GG_SOUNDS, the Godot project's assets/audio)"); }
+    if patches.is_none() { eprintln!("no sound patches (--sfx DIR or GG_SFX, games/growing-guns/sounds)"); }
+    let _speaker = match crate::sounds::speakers(args.value("--speakers")) {
+        Ok((speaker, tx, crowd)) => {
+            if let Some(dir) = &samples { game.set_crowd(args.value("--crowd"), dir, &crowd); }
+            game.set_sounds(crate::sounds::Sounds::new(tx, patches, samples.as_deref()));
+            Some(speaker)
+        }
+        Err(e) => { eprintln!("silent: {e}"); None }
     };
     let cfg = app::Config {
         title: "Growing Guns | Warp".into(),
