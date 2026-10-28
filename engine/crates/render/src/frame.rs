@@ -245,6 +245,14 @@ pub struct Lighting {
     pub night_stars: [f32; 4],
     /// Exposure value at ISO 100 (sunny 16: about 15).
     pub ev100: f32,
+    /// Exposure compensation for emitted light (EMISSIVE and LAVA materials,
+    /// car lamps), 0 (off: physical) to 1: emission is shown as if the frame
+    /// were exposed at `emissive_ev100`, so a glow tuned for one exposure
+    /// keeps its colour when the exposure drops for night instead of
+    /// clipping to white. Light that local lights cast is unchanged.
+    pub emissive_compensation: f32,
+    /// The exposure (EV100) emission is shown at with full compensation.
+    pub emissive_ev100: f32,
     pub fog_start: f32,
     pub fog_end: f32,
     pub fog_density: f32,
@@ -289,6 +297,12 @@ pub struct Lighting {
 }
 
 impl Lighting {
+    /// The factor on emitted radiance: 2^((ev100 - emissive_ev100) * compensation).
+    pub fn emissive_scale(&self) -> f32 {
+        let s = 2f32.powf((self.ev100 - self.emissive_ev100) * self.emissive_compensation.clamp(0.0, 1.0));
+        if s.is_finite() { s } else { 1.0 }
+    }
+
     /// Set a field by name (`sun_lux=50000`): tune the look without a rebuild.
     pub fn set(&mut self, kv: &str) -> Result<(), String> {
         let (k, v) = kv.split_once('=').ok_or_else(|| format!("expected key=value, got {kv}"))?;
@@ -298,6 +312,8 @@ impl Lighting {
             "shadow_strength" => self.shadow_strength = f,
             "sky_lux" => self.sky_lux = f,
             "ev100" => self.ev100 = f,
+            "emissive_compensation" if (0.0..=1.0).contains(&f) => self.emissive_compensation = f,
+            "emissive_ev100" if f.is_finite() => self.emissive_ev100 = f,
             "fog_start" => self.fog_start = f,
             "fog_end" => self.fog_end = f,
             "fog_density" => self.fog_density = f,
@@ -343,6 +359,8 @@ impl Default for Lighting {
             night_stars: [0.0; 4],
             time: 0.0,
             ev100: 14.0,
+            emissive_compensation: 0.0,
+            emissive_ev100: 14.0,
             fog_start: 140.0,
             fog_end: 750.0,
             fog_density: 0.0,
@@ -2920,7 +2938,7 @@ impl Renderer {
             near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
-            anim: [light.time, 0.0, 0.0, 0.0],
+            anim: [light.time, light.emissive_scale(), 0.0, 0.0],
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
@@ -4413,6 +4431,19 @@ mod layout_tests {
             let fallback=resolve_lighting_focus(&views,&[]).unwrap();
             assert_eq!(fallback,views.iter().map(|v|v.cam.pos).collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn emission_follows_the_exposure_only_when_asked() {
+        let mut light = crate::Lighting { ev100: 11.0, emissive_ev100: 13.6, ..Default::default() };
+        assert_eq!(light.emissive_scale(), 1.0, "off by default: physical emission");
+        light.emissive_compensation = 1.0;
+        assert!((light.emissive_scale() - 2f32.powf(-2.6)).abs() < 1e-6, "shown as at EV 13.6");
+        light.emissive_compensation = 0.5;
+        assert!((light.emissive_scale() - 2f32.powf(-1.3)).abs() < 1e-6);
+        light.ev100 = 13.6;
+        assert_eq!(light.emissive_scale(), 1.0, "no change at the reference exposure");
+        assert!(light.set("emissive_compensation=2").is_err());
     }
 
     #[test]
