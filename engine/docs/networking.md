@@ -3,7 +3,7 @@
 The `net` crate carries a game's own message types between a host and its
 clients over [iroh](https://iroh.computer): QUIC with hole punching and
 relays, which are meant to let players connect without opening ports. The crate is
-small (about 200 lines) and has no idea what a game is. The protocol, the
+small and has no idea what a game is. The protocol, the
 authority model and the prediction are the game's.
 
 ## Model
@@ -14,8 +14,8 @@ authority model and the prediction are the game's.
 - `In` messages go client to host, `Out` messages host to client. Any type
   that is `Serialize + DeserializeOwned + Send + Sync + 'static` works.
 - iroh runs on its own small tokio runtime. The game loop polls channels
-  and never blocks (except `Client::join`, which waits up to 20 s for the
-  connection).
+  and never waits for network I/O (except `Client::join`, which waits up
+  to 20 s for the connection). Host output uses a short queue mutex.
 - A ticket, the hex of the host's endpoint address, is what a player shares
   to join.
 - `lan = true` disables relays and address publishing: direct addresses
@@ -49,11 +49,17 @@ c.send(Up::Hello("p1".into()));
 while let Ok(msg) = c.poll() { /* apply snapshot */ }
 ```
 
-`HostEvent::Joined` hands the game a sender for that client. When several
-messages wait to be written and both the queued and the next one are
-`latest` (snapshots), the backlog collapses to the newest, so a slow client
-gets the current state instead of a growing queue. Other messages keep
-their order.
+`HostEvent::Joined` hands the game a cloneable `HostSender<Out>` for that
+client. Its mailbox holds at most 64 messages. Consecutive `latest`
+messages (snapshots) replace the pending tail at enqueue time, so a slow
+client cannot build an unbounded snapshot backlog. Other messages form
+ordered barriers and are never silently replaced. If those barriers fill
+the mailbox, `send` fails and the connection closes, including when the
+writer is blocked by network flow control. This bound does not change
+the client input channel or the host event channel.
+
+Each writer reuses its serialization buffer. Dropping the final host
+sender drains its pending messages and finishes the stream normally.
 
 Dropping a `Client` closes the connection at once, so the host sees it
 leave without waiting for a timeout.
@@ -68,6 +74,10 @@ godot_iroh. See `games/growing-guns/app/src/net.rs` (the protocol) and
 - The host maps remote players onto bot seats, runs the only simulation,
   and streams snapshots (marked `latest`) and arena changes (reliable,
   never collapsed, so breakage reaches every client).
+- Each published snapshot is built once and shared across remote peers
+  with `Arc`; decoded snapshots move into the client's world. The postcard
+  wire format is unchanged. Each peer still serializes its own packet
+  because its acknowledged input sequence differs.
 - A client renders snapshots and predicts only its own look direction; the
   acknowledged input sequence reconciles it with the host.
 

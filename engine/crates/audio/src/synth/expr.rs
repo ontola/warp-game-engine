@@ -1,6 +1,6 @@
 //! Per-sample math for patches: `f1 + (f0 - f1) * exp(-t * k)`. Formulas
 //! from procedural sound code (GDScript, C) port as they are. Compiled once
-//! (when a voice is built) to a small stack program.
+//! (when a patch is prepared) to a shared small stack program.
 //!
 //! Variables: `t` (seconds since the voice started), `sr`, and up to six
 //! named inputs. Operators `+ - * / ^`, unary `-`, comparisons `< >` (1 or

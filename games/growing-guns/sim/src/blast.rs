@@ -98,7 +98,7 @@ impl World {
             Delayed::Hit { victim, from, dmg, impulse, pos, radius, severity } => {
                 if dmg > 0 {
                     let dir = impulse.normalize_or(Vec3::Y);
-                    self.apply_damage(victim, dmg, from, Blow { pos, dir, head: false, blast_radius: radius, severity: severity.max(0.4), env: false });
+                    self.apply_damage(victim, dmg, from, Blow { pos, dir, head: false, blast_radius: radius, severity: severity.max(0.4), env: false, lava: None });
                 }
                 self.knockback(victim, impulse);
             }

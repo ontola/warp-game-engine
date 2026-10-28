@@ -309,7 +309,7 @@ impl World {
         let knock_dir = (dir + Vec3::new(0.0, 0.18, 0.0)).normalize();
         let knock = w.knockback_force(dmg.max(poison) as f32, false, head);
         if direct > 0 {
-            self.apply_damage(victim, direct, Some(owner), Blow { pos: at, dir: knock_dir, head, blast_radius: w.explosive_radius, severity: if w.explosive_radius > 0.0 { 1.0 } else { 0.0 }, env: false });
+            self.apply_damage(victim, direct, Some(owner), Blow { pos: at, dir: knock_dir, head, blast_radius: w.explosive_radius, severity: if w.explosive_radius > 0.0 { 1.0 } else { 0.0 }, env: false, lava: None });
         }
         if knock > 0.0 { self.knockback(victim, knock_dir * knock); }
         let v = &mut self.players[victim];

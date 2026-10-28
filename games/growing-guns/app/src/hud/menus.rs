@@ -2,7 +2,8 @@
 //! and gold frame), `game.gd`'s pause menu, settings panel and match-over
 //! buttons, and its Tab scoreboard. Focus moves with the D-pad, arrows,
 //! WASD or stick; A/Space/Enter takes, B/Esc backs out; left and right move
-//! sliders. Online joining by pasted ID has no text entry here: join with
+//! sliders. Mouse hover focuses, clicks activate and dragging adjusts sliders.
+//! Online joining by pasted ID has no text entry here: join with
 //! `play --join TICKET` (the menu says so). Under GameNight the pause
 //! menu is Godot's `_build_gamenight_pause_menu`: a slab down the left with
 //! the logo, what is being played, and RESUME, NEW MATCH, the other mode,
@@ -12,6 +13,7 @@ use super::{Hud, DESIGN_H};
 use app::{Buttons, Controls};
 use growing_guns::{Phase, World};
 use render::hud::HudDrawList;
+use std::cell::{Cell, RefCell};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen { Play, Start, Pause, Settings { from_start: bool }, Advanced }
@@ -23,6 +25,8 @@ pub enum Action { None, Resume, Versus, Wave, Settings, Back, Host, Copy, Quit, 
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'static str, Action, bool), Row(&'static [(&'static str, Action)]), Slider(Slider), Gap(f32), Rule,
+    /// Movement tilt on or off.
+    Tilt,
     /// Bots: - count +, with this label on the left (empty: none).
     Bots(&'static str),
     /// A GameNight setting slider (index into `Ctx::party`).
@@ -30,7 +34,10 @@ enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'st
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Field { Ticket, Join }
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Slider { Mouse, Stick }
+enum Slider { Music, Mouse, Stick, /** One per GameNight seat ("Aim: NAME"). */ Aim(usize) }
+
+#[derive(Clone, Copy, Debug)]
+struct Hit { rect: [f32; 4], item: usize, entry: usize }
 
 /// What the menus need to know about the session.
 pub struct Ctx<'a> {
@@ -41,6 +48,8 @@ pub struct Ctx<'a> {
     /// Under GameNight: the party's settings (label, value, min, max) and
     /// the status line under the logo.
     pub party: Option<(Vec<(&'static str, i64, i64, i64)>, String)>,
+    /// Names of the GameNight seats here (their own aim sliders).
+    pub seats: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +60,12 @@ pub struct Menus {
     /// Look sensitivity multipliers (Godot settings: mouse 0.3..3, stick 0.3..2.5).
     pub mouse: f32,
     pub stick: f32,
+    /// Music volume, dB (Godot -45 = off .. 0; default -16).
+    pub music_db: f32,
+    /// Movement tilt (the gun's strafe lean).
+    pub tilt: bool,
+    /// Stick sensitivity per GameNight player, by name.
+    pub aim: Vec<(String, f32)>,
     /// Seconds the screen has been open (fades and the start orbit).
     pub age: f32,
     /// The Tab / Back scoreboard is held.
@@ -63,11 +78,16 @@ pub struct Menus {
     col: usize,
     /// A short line under the menu ("ticket written to ...").
     pub notice: Option<String>,
+    /// The last network error, for the HUD's red panel.
+    pub error: Option<String>,
+    hits: RefCell<Vec<Hit>>,
+    hit_size: Cell<[u32; 2]>,
+    drag: Option<Hit>,
 }
 
 impl Default for Menus {
     fn default() -> Self {
-        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None }
+        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None }
     }
 }
 
@@ -81,7 +101,7 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Button("SETTINGS", Action::Settings, true), Item::Rule,
             Item::Text("Share your Match ID:", label), Item::Field(Field::Ticket), Item::Row(SHARE),
             Item::Text("Or join a friend's match:", label), Item::Field(Field::Join),
-            Item::Note("1 / 2 selects · Esc exits"),
+            Item::Note("Click or arrows + Enter · Esc exits"),
         ],
         Screen::Pause if ctx.party.is_some() => vec![
             Item::Button("RESUME", Action::Resume, true), Item::Button("NEW MATCH", Action::Rematch, !ctx.client),
@@ -101,12 +121,24 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Button("VERSUS", Action::Versus, !ctx.client), Item::Button("WAVE SURVIVAL", Action::Wave, !ctx.client),
             Item::Button("SETTINGS", Action::Settings, true), Item::Button("RESUME", Action::Resume, true), Item::Button("EXIT GAME", Action::Quit, true),
         ],
-        Screen::Settings { .. } => vec![
-            Item::Slider(Slider::Mouse), Item::Slider(Slider::Stick), Item::Gap(8.0), Item::Button("BACK", Action::Back, true),
-        ],
+        Screen::Settings { .. } => settings_items(ctx),
         Screen::Play => vec![],
     }
 }
+
+/// Godot `build_settings_panel`: music, mouse, one stick slider (or one
+/// "Aim" slider per GameNight seat), movement tilt, BACK. (Player name and
+/// the retro shader have no counterpart here.)
+fn settings_items(ctx: &Ctx) -> Vec<Item> {
+    let mut v = vec![Item::Slider(Slider::Music), Item::Slider(Slider::Mouse)];
+    if ctx.seats.is_empty() { v.push(Item::Slider(Slider::Stick)); } else { v.extend((0..ctx.seats.len()).map(|k| Item::Slider(Slider::Aim(k)))); }
+    v.extend([Item::Tilt, Item::Gap(8.0), Item::Button("BACK", Action::Back, true)]);
+    v
+}
+
+/// Godot `music_label_for`: Off at the bottom, else 0..100 %.
+fn music_label(db: f32) -> String { if db <= MUSIC_DB_MIN + 0.5 { "Off".into() } else { format!("{}%", ((db - MUSIC_DB_MIN) / -MUSIC_DB_MIN * 100.0).round()) } }
+pub const MUSIC_DB_MIN: f32 = -45.0;
 
 /// The bot stepper's - (0) and + (1): host or offline, not in coop (the
 /// waves bring their own), 0..=6 bots and 8 players at most.
@@ -119,7 +151,7 @@ fn lines(items: &[Item], ctx: &Ctx) -> Vec<(usize, Vec<usize>)> {
     let mut out = Vec::new();
     for (k, it) in items.iter().enumerate() {
         match it {
-            Item::Button(_, _, true) | Item::Slider(_) | Item::Party(_) => out.push((k, vec![0])),
+            Item::Button(_, _, true) | Item::Slider(_) | Item::Party(_) | Item::Tilt => out.push((k, vec![0])),
             Item::Bots(_) => {
                 let on: Vec<usize> = [0, 1].into_iter().filter(|&j| bots_enabled(j, ctx)).collect();
                 if !on.is_empty() { out.push((k, on)); }
@@ -139,8 +171,60 @@ fn match_buttons(world: &World) -> Vec<(&'static str, Action)> {
 }
 
 impl Menus {
-    pub fn open(&mut self, s: Screen) { self.screen = s; self.menu = Default::default(); self.col = 0; self.age = 0.0; self.notice = None; }
+    pub fn open(&mut self, s: Screen) { self.screen = s; self.menu = Default::default(); self.col = 0; self.age = 0.0; self.notice = None; self.hits.get_mut().clear(); self.drag = None; }
     pub fn is_open(&self) -> bool { self.screen != Screen::Play }
+
+    fn hit(&self, rect: [f32; 4], item: usize, entry: usize) {
+        self.hits.borrow_mut().push(Hit { rect, item, entry });
+    }
+
+    /// Targets come from the last displayed frame, so scale, layout and clipping
+    /// match the visible controls. Recheck enabled state before activation.
+    pub fn pointer(&mut self, p: app::Pointer, size: [u32; 2], world: &World, match_over: Option<f32>, ctx: &Ctx) -> Action {
+        if !p.held { self.drag = None; }
+        if self.hit_size.get() != size { self.drag = None; return Action::None; }
+        if !p.moved && !p.pressed { return Action::None; }
+        let Some(pos) = p.position else { return Action::None };
+        let inside = app::ui::contains([0.0, 0.0, size[0] as f32, size[1] as f32], pos);
+        let hit = self.drag.or_else(|| inside.then(|| self.hits.borrow().iter().rev().find(|h| app::ui::contains(h.rect, pos)).copied()).flatten());
+        let Some(hit) = hit else { return Action::None };
+        if !self.is_open() {
+            if match_over.is_none_or(|t| t < 2.4) { return Action::None; }
+            self.rematch.focus = hit.item;
+            return if p.pressed { match_buttons(world).get(hit.item).map_or(Action::None, |b| b.1) } else { Action::None };
+        }
+        let list = items(self.screen, ctx);
+        let foci = lines(&list, ctx);
+        let Some((focus, (_, entries))) = foci.iter().enumerate().find(|(_, (k, entries))| *k == hit.item && entries.contains(&hit.entry)) else { return Action::None };
+        self.menu.focus = focus;
+        self.col = entries.iter().position(|&j| j == hit.entry).unwrap_or(0);
+        let item = list[hit.item];
+        let sliding = matches!(item, Item::Slider(_) | Item::Party(_));
+        if p.pressed && sliding { self.drag = p.held.then_some(hit); }
+        if !(p.pressed || sliding && p.held && self.drag.is_some()) { return Action::None; }
+        let t = ((pos[0] - hit.rect[0]) / hit.rect[2].max(1.0)).clamp(0.0, 1.0);
+        match item {
+            Item::Button(_, a, true) => a,
+            Item::Row(row) => row[hit.entry].1,
+            Item::Bots(_) => if hit.entry == 0 { Action::RemoveBot } else { Action::AddBot },
+            Item::Tilt => { self.tilt = !self.tilt; Action::None }
+            Item::Slider(s) => {
+                if s == Slider::Music { self.music_db = (MUSIC_DB_MIN * (1.0 - t)).round(); }
+                else {
+                    let hi = if s == Slider::Mouse { 3.0 } else { 2.5 };
+                    let v = ((0.3 + (hi - 0.3) * t) * 20.0).round() / 20.0;
+                    match s { Slider::Mouse => self.mouse = v, Slider::Stick => self.stick = v,
+                        Slider::Aim(i) => if let Some(name) = ctx.seats.get(i) { self.set_aim(name, v); }, Slider::Music => {} }
+                }
+                Action::None
+            }
+            Item::Party(i) => ctx.party.as_ref().and_then(|p| p.0.get(i)).map_or(Action::None, |&(_, v, lo, hi)| {
+                let next = lo + ((hi - lo) as f32 * t).round() as i64;
+                if next == v { Action::None } else { Action::Party(i, next) }
+            }),
+            _ => Action::None,
+        }
+    }
 
     /// One tick of a menu with this player's controls.
     pub fn update(&mut self, c: &Controls, world: &World, match_over: Option<f32>, ctx: &Ctx, dt: f32) -> Action {
@@ -166,12 +250,19 @@ impl Menus {
         let step = if dx == 0 { self.held_x = 0; 0 } else if dx != self.held_x { self.held_x = dx; self.repeat = 0.35; dx } else { self.repeat -= dt; if self.repeat <= 0.0 { self.repeat = 0.08; dx } else { 0 } };
         let focus = foci.get(self.menu.focus.min(foci.len().saturating_sub(1))).cloned();
         if let Some((k, _)) = focus && let Item::Slider(s) = list[k] && step != 0 {
-            let v = match s { Slider::Mouse => &mut self.mouse, Slider::Stick => &mut self.stick };
-            let (lo, hi) = match s { Slider::Mouse => (0.3, 3.0), Slider::Stick => (0.3, 2.5) };
-            *v = (*v + 0.05 * step as f32).clamp(lo, hi);
-            *v = (*v * 20.0).round() / 20.0;
+            if s == Slider::Music { self.music_db = (self.music_db + step as f32).clamp(MUSIC_DB_MIN, 0.0); return Action::None; }
+            let (lo, hi) = if s == Slider::Mouse { (0.3, 3.0) } else { (0.3, 2.5) };
+            let v = self.slider(s, ctx);
+            let v = (((v + 0.05 * step as f32).clamp(lo, hi)) * 20.0).round() / 20.0;
+            match s {
+                Slider::Mouse => self.mouse = v,
+                Slider::Stick => self.stick = v,
+                Slider::Aim(i) => if let Some(name) = ctx.seats.get(i) { self.set_aim(name, v) },
+                Slider::Music => {}
+            }
             return Action::None;
         }
+        if let Some((k, _)) = focus && list[k] == Item::Tilt && (step != 0 || c.pressed.has(Buttons::SOUTH)) { self.tilt = !self.tilt; return Action::None; }
         if let Some((k, _)) = focus && let Item::Party(i) = list[k] && step != 0 && let Some((v, lo, hi)) = ctx.party.as_ref().and_then(|p| p.0.get(i)).map(|e| (e.1, e.2, e.3)) {
             let next = (v + step as i64).clamp(lo, hi);
             return if next != v { Action::Party(i, next) } else { Action::None };
@@ -191,6 +282,29 @@ impl Menus {
         }
     }
 
+    fn slider(&self, s: Slider, ctx: &Ctx) -> f32 {
+        match s { Slider::Music => self.music_db, Slider::Mouse => self.mouse, Slider::Stick => self.stick, Slider::Aim(i) => ctx.seats.get(i).map_or(self.stick, |n| self.aim_for(n)) }
+    }
+    /// A GameNight player's stick sensitivity (Godot `stick_sens_for`: the shared one until set).
+    pub fn aim_for(&self, name: &str) -> f32 { self.aim.iter().find(|a| a.0 == name).map_or(self.stick, |a| a.1) }
+    fn set_aim(&mut self, name: &str, v: f32) {
+        match self.aim.iter_mut().find(|a| a.0 == name) { Some(a) => a.1 = v, None => self.aim.push((name.to_string(), v)) }
+    }
+
+    /// The settings as JSON (Godot keeps them in `user://settings.cfg`).
+    pub fn settings_json(&self) -> serde_json::Value {
+        serde_json::json!({ "music_db": self.music_db, "mouse": self.mouse, "stick": self.stick, "tilt": self.tilt,
+            "aim": self.aim.iter().map(|(n, v)| (n.clone(), serde_json::json!(v))).collect::<serde_json::Map<_, _>>() })
+    }
+    pub fn load_settings(&mut self, v: &serde_json::Value) {
+        let f = |k: &str, lo: f32, hi: f32, d: f32| v.get(k).and_then(|x| x.as_f64()).map_or(d, |x| (x as f32).clamp(lo, hi));
+        self.music_db = f("music_db", MUSIC_DB_MIN, 0.0, self.music_db);
+        self.mouse = f("mouse", 0.3, 3.0, self.mouse);
+        self.stick = f("stick", 0.3, 2.5, self.stick);
+        self.tilt = v.get("tilt").and_then(|x| x.as_bool()).unwrap_or(self.tilt);
+        if let Some(m) = v.get("aim").and_then(|x| x.as_object()) { self.aim = m.iter().filter_map(|(n, x)| Some((n.clone(), (x.as_f64()? as f32).clamp(0.3, 2.5)))).collect(); }
+    }
+
     /// Esc or B: close one level.
     pub fn back(&mut self) -> Action {
         match self.screen {
@@ -203,6 +317,8 @@ impl Menus {
     }
 
     pub fn draw(&self, d: &mut HudDrawList, world: &World, hud: &Hud, ctx: &Ctx) {
+        self.hits.borrow_mut().clear();
+        self.hit_size.set(d.size);
         let [w, h] = d.size.map(|v| v as f32);
         let u = h / DESIGN_H;
         let clip = [0.0, 0.0, w, h];
@@ -215,6 +331,7 @@ impl Menus {
             let y0 = h * 0.5 - (b.len() as f32 * (bh + 14.0 * u)) * 0.5 + 30.0 * u;
             for (k, (text, _)) in b.iter().enumerate() {
                 let r = [w * 0.5 - bw * 0.5, y0 + k as f32 * (bh + 14.0 * u), bw, bh];
+                if enabled { self.hit(r, k, 0); }
                 arena_button(d, r, text, enabled && k == self.rematch.focus, enabled, a, u, clip);
             }
         }
@@ -350,6 +467,7 @@ impl Menus {
                 Item::Button(t, _, enabled) => {
                     let bh = if gn { 46.0 } else { 32.0 } * u;
                     let br = [r[0], y, r[2], bh];
+                    if enabled { self.hit(br, k, 0); }
                     if gothic { gothic_button(d, br, t, fk(0), enabled, u, clip) } else if gn { gn_button(d, br, t, fk(0), enabled, u, clip) } else { arena_button(d, br, t, fk(0), enabled, 1.0, u, clip) }
                     y += bh + sep;
                 }
@@ -363,6 +481,7 @@ impl Menus {
                     for (j, t) in ["-", "+"].iter().enumerate() {
                         let bx = if j == 0 { x0 } else { x0 + bw + cw + 16.0 * u };
                         let on = bots_enabled(j, ctx);
+                        if on { self.hit([bx, y, bw, bh], k, j); }
                         if gn { gn_button(d, [bx, y, bw, bh], t, fk(j), on, u, clip) } else { arena_button(d, [bx, y, bw, bh], t, fk(j), on, 1.0, u, clip) }
                     }
                     Label::poster(24.0 * u).shadow(2.0 * u, RED).center().draw(d, &ctx.bots.to_string(), x0 + bw + 8.0 * u + cw * 0.5, y + bh * 0.5, clip);
@@ -374,6 +493,7 @@ impl Menus {
                     let mid = y + rh * 0.5;
                     Label::new(bold(), 17.0 * u, if fk(0) { BONE } else { BONE_DIM }).draw(d, name, r[0] + 14.0 * u, mid, clip);
                     let (sx, sw) = (r[0] + 250.0 * u, r[2] - 250.0 * u - 52.0 * u);
+                    self.hit([sx, y, sw, rh], k, 0);
                     d.rect([sx, mid - 2.0 * u, sw, 4.0 * u], [0.25, 0.22, 0.24, 1.0], clip);
                     let k = ((v - lo) as f32 / (hi - lo).max(1) as f32).clamp(0.0, 1.0);
                     d.rect([sx, mid - 2.0 * u, sw * k, 4.0 * u], if fk(0) { RED } else { [0.6, 0.55, 0.55, 1.0] }, clip);
@@ -389,22 +509,47 @@ impl Menus {
                     for (j, (t, _)) in row.iter().enumerate() {
                         let br = [r[0] + j as f32 * (bw + gap), y, bw, bh];
                         let enabled = row_enabled(t, ctx);
+                        if enabled { self.hit(br, k, j); }
                         if gothic { gothic_button(d, br, t, fk(j), enabled, u, clip) } else { arena_button(d, br, t, fk(j), enabled, 1.0, u, clip) }
                     }
                     y += bh + sep;
                 }
                 Item::Slider(s) => {
-                    let (name, v, lo, hi) = match s { Slider::Mouse => ("Mouse sensitivity", self.mouse, 0.3, 3.0), Slider::Stick => ("Stick sensitivity", self.stick, 0.3, 2.5) };
+                    let v = self.slider(s, ctx);
+                    let (name, lo, hi) = match s {
+                        Slider::Music => ("Music".to_string(), MUSIC_DB_MIN, 0.0),
+                        Slider::Mouse => ("Mouse sensitivity".to_string(), 0.3, 3.0),
+                        Slider::Stick => ("Stick sensitivity".to_string(), 0.3, 2.5),
+                        Slider::Aim(i) => (format!("Aim: {}", ctx.seats.get(i).map_or("", |n| n.as_str())), 0.3, 2.5),
+                    };
+                    let value = if s == Slider::Music { music_label(v) } else { format!("{v:.2}x") };
                     let rh = 36.0 * u;
                     let mid = y + rh * 0.5;
                     let lc = if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] };
-                    Label::new(BODY, 14.0 * u, lc).draw(d, name, r[0], mid, clip);
+                    Label::new(BODY, fit(&name, BODY, 14.0 * u, 136.0 * u), lc).draw(d, &name, r[0], mid, clip);
                     let (sx, sw) = (r[0] + 142.0 * u, r[2] - 142.0 * u - 59.0 * u);
+                    self.hit([sx, y, sw, rh], k, 0);
                     d.rect([sx, mid - 2.0 * u, sw, 4.0 * u], [0.25, 0.22, 0.24, 1.0], clip);
                     let k = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
                     d.rect([sx, mid - 2.0 * u, sw * k, 4.0 * u], if fk(0) { RED } else { [0.6, 0.55, 0.55, 1.0] }, clip);
                     d.circle([sx + sw * k, mid], 7.0 * u, if fk(0) { BONE } else { [0.8, 0.78, 0.75, 1.0] }, clip);
-                    Label::new(BODY, 14.0 * u, [0.74, 0.78, 0.9, 1.0]).right().draw(d, &format!("{v:.2}x"), r[0] + r[2], mid, clip);
+                    Label::new(BODY, 14.0 * u, [0.74, 0.78, 0.9, 1.0]).right().draw(d, &value, r[0] + r[2], mid, clip);
+                    y += rh + 14.0 * u;
+                }
+                Item::Tilt => {
+                    // Godot's CheckButton: the text, and a switch on the right.
+                    let rh = 30.0 * u;
+                    self.hit([r[0], y, r[2], rh], k, 0);
+                    let mid = y + rh * 0.5;
+                    Label::new(BODY, 14.0 * u, if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] }).draw(d, "Movement tilt", r[0], mid, clip);
+                    let (sw, sh) = (40.0 * u, 20.0 * u);
+                    let sx = r[0] + r[2] - sw;
+                    let on = self.tilt;
+                    let track = if on { RED } else { [0.25, 0.22, 0.24, 1.0] };
+                    d.rect([sx + sh * 0.5, mid - sh * 0.5, sw - sh, sh], track, clip);
+                    d.circle([sx + sh * 0.5, mid], sh * 0.5, track, clip);
+                    d.circle([sx + sw - sh * 0.5, mid], sh * 0.5, track, clip);
+                    d.circle([if on { sx + sw - sh * 0.5 } else { sx + sh * 0.5 }, mid], sh * 0.38, if fk(0) { BONE } else { [0.8, 0.78, 0.75, 1.0] }, clip);
                     y += rh + 14.0 * u;
                 }
                 Item::Gap(g) => y += g * u,
@@ -420,7 +565,7 @@ fn column_height(list: &[Item], u: f32) -> f32 {
     list.iter().map(|it| match it {
         Item::Bots(_) => 34.0 + sep, Item::Party(_) => 36.0 + sep,
         Item::Text(..) => 20.0, Item::Note(t) => if *t == "BOTS" { 24.0 * 1.3 } else { 12.0 * 1.3 },
-        Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
+        Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Tilt => 44.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
     }).sum::<f32>() * u
 }
 
@@ -614,4 +759,79 @@ fn scoreboard(d: &mut HudDrawList, world: &World, hud: &Hud, u: f32, clip: [f32;
         y += 4.0 * u;
     }
     let _ = Phase::Playing;
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    const SIZE: [u32; 2] = [1600, 900];
+    fn ctx() -> Ctx<'static> { Ctx { ticket: None, client: false, seed: 1, bots: 1, players: 2, coop: false, party: None, seats: vec![] } }
+    fn at(r: [f32; 4], click: bool) -> app::Pointer {
+        app::Pointer { position: Some([r[0] + r[2] * 0.5, r[1] + r[3] * 0.5]), moved: true, pressed: click, held: click }
+    }
+    fn draw(m: &Menus, w: &World, h: &Hud, c: &Ctx) { m.draw(&mut HudDrawList::new(SIZE), w, h, c); }
+
+    #[test]
+    fn painted_buttons_hover_click_and_reject_stale_targets() {
+        let w = World::new(1, &[false, true]);
+        let h = Hud::new(&w);
+        let c = ctx();
+        let mut m = Menus::default();
+        m.open(Screen::Start);
+        draw(&m, &w, &h, &c);
+        let r = m.hits.borrow().iter().find(|h| h.item == 3).unwrap().rect;
+        assert_eq!(m.pointer(at(r, false), SIZE, &w, None, &c), Action::None);
+        assert_eq!(m.menu.focus, 2);
+        m.menu.focus = 0;
+        let mut stationary = at(r, false); stationary.moved = false;
+        m.pointer(stationary, SIZE, &w, None, &c);
+        assert_eq!(m.menu.focus, 0, "stationary mouse preserves keyboard focus");
+        assert_eq!(m.pointer(at(r, true), SIZE, &w, None, &c), Action::Settings);
+        assert_eq!(m.pointer(at(r, true), [800, 600], &w, None, &c), Action::None);
+        m.open(Screen::Pause);
+        assert_eq!(m.pointer(at(r, true), SIZE, &w, None, &c), Action::None);
+    }
+
+    #[test]
+    fn disabled_buttons_and_match_reveal_cannot_be_clicked() {
+        let w = World::new(1, &[false, true]);
+        let mut h = Hud::new(&w);
+        let mut c = ctx();
+        let mut m = Menus::default();
+        m.open(Screen::Start);
+        draw(&m, &w, &h, &c);
+        let host = m.hits.borrow().iter().find(|h| h.item == 7 && h.entry == 0).unwrap().rect;
+        assert!(!m.hits.borrow().iter().any(|h| h.item == 7 && h.entry == 1));
+        c.client = true;
+        assert_eq!(m.pointer(at(host, true), SIZE, &w, None, &c), Action::None);
+        m.open(Screen::Play);
+        h.match_over = Some(2.0);
+        draw(&m, &w, &h, &c);
+        assert!(m.hits.borrow().is_empty());
+        h.match_over = Some(2.5);
+        draw(&m, &w, &h, &c);
+        let r = m.hits.borrow()[1].rect;
+        assert_eq!(m.pointer(at(r, true), SIZE, &w, h.match_over, &c), Action::Extend);
+        assert_eq!(m.pointer(at(r, true), SIZE, &w, Some(1.0), &c), Action::None);
+    }
+
+    #[test]
+    fn slider_drag_clamps_and_release_ends_drag() {
+        let w = World::new(1, &[false, true]);
+        let h = Hud::new(&w);
+        let c = ctx();
+        let mut m = Menus::default();
+        m.open(Screen::Settings { from_start: false });
+        draw(&m, &w, &h, &c);
+        let r = m.hits.borrow()[0].rect;
+        m.pointer(at(r, true), SIZE, &w, None, &c);
+        let drag = app::Pointer { position: Some([r[0] + r[2] + 100.0, r[1]]), moved: true, pressed: false, held: true };
+        m.pointer(drag, SIZE, &w, None, &c);
+        assert_eq!(m.music_db, 0.0);
+        m.pointer(app::Pointer::default(), SIZE, &w, None, &c);
+        assert!(m.drag.is_none());
+        let before = m.music_db;
+        m.pointer(app::Pointer { position: Some([r[0], r[1]]), ..drag }, SIZE, &w, None, &c);
+        assert_eq!(m.music_db, before, "holding from elsewhere does not start a drag");
+    }
 }

@@ -19,9 +19,9 @@ length(param("duration", 1.2))
 -- Keeps the voice alive through the silent gap between the clusters.
 local _keepalive = env{ { 6.05, 0 } }
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
 local D = expr("clamp(x, 0.2, 6)", { x = param("duration", 1.2) })
 
@@ -50,9 +50,10 @@ local function cluster(f_start, f_end, p_begin, p_end)
     centre = expr("x + step(a, t) * c + step(b, t) * d", { x = centre, a = u.a, c = u.dc, b = v.a, d = v.dc })
   end
   centre = centre + 1700 * p_begin
-  -- Godot's k = 1 - exp(-2π fc / SR) is exact, so these cutoffs are in Hz as written.
-  local x = white()
-  local bp = lowpass1(x, centre * 1.5) - lowpass1(x, expr("max(40, 0.6 * c)", { c = centre }))
+  -- Godot's k = 1 - exp(-2π fc / SR) at 44.1 kHz.
+  local x = white44()
+  local bp = godot_lp(x, expr("1 - exp(-tau * 1.5 * c / 44100)", { c = centre }))
+    - godot_lp(x, expr("1 - exp(-tau * max(40, 0.6 * c) / 44100)", { c = centre }))
   return bp * expr("sqrt(p)", { p = power })
 end
 

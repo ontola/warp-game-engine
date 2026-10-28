@@ -8,16 +8,16 @@
 --   gain -16 + dmg_db, SPL 90 + dmg_db, dmg_db = clamp(4 * log2(max(1, dmg_ratio)), 0, 9)
 length(0.09)
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
 local d = expr("clamp(x, 0.5, 6)", { x = param("dmg_ratio", 1) })
 local dn = expr("clamp((d - 1) / 4, 0, 1)", { d = d })
 
 -- Click: noise minus its one-pole average (Godot k = clamp(cf * 2π * 0.4 / 44100, 0.05, 0.6)).
-local hp_hz = expr("-log(1 - clamp(c * tau * 0.4 / 44100, 0.05, 0.6)) * 44100 / tau", { c = rand(2200, 4500) })
-local click = highpass1(white(), hp_hz) * expr("exp(-t * k)", { k = rand(180, 320) })
+local hp_k = expr("clamp(c * tau * 0.4 / 44100, 0.05, 0.6)", { c = rand(2200, 4500) })
+local click = godot_hp(white44(), hp_k) * expr("exp(-t * k)", { k = rand(180, 320) })
 
 -- Thump: 160-260 Hz falling to 45-80 Hz (lower for heavy rounds), silent at base damage.
 local f1 = expr("j * lerp(1, 0.7, n)", { j = rand(45, 80), n = dn })

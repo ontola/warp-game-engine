@@ -23,10 +23,53 @@ const HEAD: f32 = 0.3;
 
 /// `skinned`: an animated character (the renderer has room for a few);
 /// the rest are drawn as the primitive blob.
-struct PlayerMeshes { body: usize, head: usize, eyes: usize, skinned: bool }
+struct PlayerMeshes { body: usize, head: usize, eyes: usize, skinned: bool, own_views: u8 }
 
 /// A corpse: jointed bodies, each drawn with one of the player's meshes.
 struct Ragdoll { torso: Body, parts: Vec<(Body, SlotId, usize, Affine3A)> }
+
+/// Godot `Violence.play_lava_death`, tuned in `lava_death_lab.tscn`: the
+/// body turns to lava and sinks below the surface (a fall: a splash pillar
+/// first, then deeper and slower).
+const SINK_FALL: f32 = 0.75;
+const SINK_STAND: f32 = 0.5;
+const SINK_S_FALL: f32 = 2.15;
+const SINK_S_STAND: f32 = 1.35;
+const SPLASH_HEIGHT: f32 = 2.2;
+const SPLASH_RADIUS: f32 = 0.55;
+const SPLASH_RISE_S: f32 = 0.18;
+const SPLASH_SINK_S: f32 = 0.55;
+
+/// A body sinking into the lava: a lava twin of the character (an instance
+/// in the dynamic range) or lava blobs in corpse slots, and the splash.
+/// `surface` is where Godot's `_lava_surface_world_y` puts it: the pool
+/// under the floor (LAVA_POOL_Y) for every lava death, the leak's too.
+struct LavaCorpse { victim: usize, pos: Vec3, yaw: f32, birth: f32, fall: bool, surface: f32, twin: Option<(usize, usize)>, blobs: Vec<(SlotId, usize, Vec3, f32)>, splash: Option<SlotId> }
+
+impl LavaCorpse {
+    /// Centre height `t` seconds in (Godot: sine ease-in, after the splash
+    /// has risen when it fell in).
+    fn y(&self, t: f32) -> f32 {
+        let (depth, secs, delay) = if self.fall { (SINK_FALL, SINK_S_FALL, SPLASH_RISE_S) } else { (SINK_STAND, SINK_S_STAND, 0.0) };
+        let u = ((t - delay) / secs).clamp(0.0, 1.0);
+        self.pos.y + (self.surface - depth - self.pos.y) * (1.0 - (u * std::f32::consts::FRAC_PI_2).cos())
+    }
+
+    /// The splash pillar's centre `t` seconds in (quad ease-out up, sine
+    /// ease-in down), None once it has sunk.
+    fn splash_y(&self, t: f32) -> Option<f32> {
+        let y = self.surface + 0.06;
+        let (start, peak, end) = (y + SPLASH_HEIGHT * 0.5 + 0.08, y + SPLASH_HEIGHT * 1.05, y - SPLASH_HEIGHT * 0.7);
+        if t < SPLASH_RISE_S { let u = t / SPLASH_RISE_S; return Some(start + (peak - start) * (1.0 - (1.0 - u) * (1.0 - u))); }
+        let u = (t - SPLASH_RISE_S) / SPLASH_SINK_S;
+        (u < 1.0).then(|| peak + (end - peak) * (1.0 - (u * std::f32::consts::FRAC_PI_2).cos()))
+    }
+}
+
+/// Lava-material blob body and head (players without a character model)
+/// and the splash pillar.
+#[derive(Clone, Copy, Default)]
+struct LavaMeshes { body: usize, head: usize, splash: usize }
 
 pub struct PlayersView {
     /// First instance of the players' block (then the tracers).
@@ -39,12 +82,14 @@ pub struct PlayersView {
     sources: Vec<[primitives::Primitive; 3]>,
     pub gore: Option<Gore>,
     characters: Option<Characters>,
+    lava: Vec<LavaCorpse>,
+    lava_meshes: LavaMeshes,
 }
 
 impl PlayersView {
     /// Corpse slots (static range, before the dynamic instances).
     pub fn reserve_corpses(scene: &mut Scene) -> Self {
-        PlayersView { first: 0, meshes: Vec::new(), tracer: 0, corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None }
+        PlayersView { first: 0, meshes: Vec::new(), tracer: 0, corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None, lava: Vec::new(), lava_meshes: LavaMeshes::default() }
     }
 
     /// Player and tracer instances, rewritten every frame.
@@ -66,7 +111,7 @@ impl PlayersView {
                 proxy_body
             });
             for m in [head, eyes] { scene.add_instance(m, Affine3A::from_translation(HIDDEN)); }
-            self.meshes.push(PlayerMeshes { body, head, eyes, skinned });
+            self.meshes.push(PlayerMeshes { body, head, eyes, skinned, own_views: 0 });
             self.sources.push(prims);
         }
         // Gore only for blob bodies (indexed by player).
@@ -74,6 +119,15 @@ impl PlayersView {
         let tracer_m = glow(scene, [1.0, 0.9, 0.3], 30000.0);
         self.tracer = cube(scene, tracer_m);
         for _ in 0..TRACERS { scene.add_instance(self.tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
+        // Lava deaths: twins of the characters after the tracers (outside
+        // the players' block), blobs and the splash in the lava material.
+        let lava_m = super::arena::lava_material(scene);
+        if let Some(characters) = &mut self.characters { characters.reserve_lava(scene, lava_m); }
+        self.lava_meshes = LavaMeshes {
+            body: scene.add_mesh(&primitives::sphere(lava_m, 10, 16).mesh()),
+            head: scene.add_mesh(&primitives::sphere(lava_m, 8, 14).mesh()),
+            splash: scene.add_mesh(&primitives::cylinder(lava_m, 0.42, 1.0, 10).mesh()),
+        };
     }
 
     /// Gib pieces shattered from the players' own meshes.
@@ -87,8 +141,12 @@ impl PlayersView {
     pub fn clear(&mut self, scene: &mut Scene, phys: &mut Physics) {
         self.corpses.clear(scene);
         self.ragdolls.clear();
+        self.lava.clear();
+        if let Some(characters) = &self.characters {
+            for (k, mesh) in characters.lava_instances() { scene.update_instance(k, mesh, Affine3A::from_translation(HIDDEN)); }
+        }
         self.gore().clear(scene, phys);
-        if let Some(characters) = &mut self.characters { characters.reset(); }
+        if let Some(characters) = &mut self.characters { characters.reset(phys); }
     }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene) -> Result<(), String> {
@@ -96,8 +154,8 @@ impl PlayersView {
         self.corpses.flush(gpu, renderer, scene)
     }
 
-    pub fn tick(&mut self, world: &World) {
-        if let Some(characters) = &mut self.characters { characters.tick(world); }
+    pub fn tick(&mut self, world: &World, phys: &mut Physics) {
+        if let Some(characters) = &mut self.characters { characters.tick(world, phys); }
     }
 
     pub fn hands(&self) -> &[Option<Vec3>] {
@@ -109,6 +167,12 @@ impl PlayersView {
     pub fn kill(&mut self, scene: &mut Scene, phys: &mut Physics, fx: &mut EffectsView, arena: &mut ArenaView, world: &World,
         victim: usize, attacker: Option<usize>, gib: Gib, dir: Vec3, now: f32) {
         let v = &world.players[victim];
+        // Lava (Godot `_lava_death`): no ragdoll and no blood, the body
+        // takes the lava's look and sinks.
+        if let Gib::Lava { fall } = gib {
+            if victim < self.meshes.len() { self.lava_death(scene, victim, v, fall, now); }
+            return;
+        }
         let blood = fx.meshes.blood;
         // Past the view's player capacity (a big coop wave): blood only.
         let Some(skinned) = self.meshes.get(victim).map(|m| m.skinned) else {
@@ -121,10 +185,11 @@ impl PlayersView {
         };
         let push = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
         if skinned {
-            // Keep the original textured model in its final animated pose.
-            // Mesh-specific dismemberment needs a separate skin-aware bake;
-            // do not replace a humanoid corpse with the old coloured blobs.
-            self.ragdoll(scene, phys, victim, v, push, false);
+            // Drive the original textured skin from articulated limb bodies.
+            // Dismemberment is separate; a frozen whole-body capsule is not a ragdoll.
+            if let Some(characters) = &mut self.characters {
+                if let Err(error) = characters.kill(phys, victim, v, push) { eprintln!("ragdoll: {error}"); }
+            }
             fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.3, 0.8);
             fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.6, speed: [2.0, 8.0], ..Burst::drops() });
             blood_splats(scene, arena, world, v.pos, 4, 1.3);
@@ -147,9 +212,59 @@ impl PlayersView {
                 self.ragdoll(scene, phys, victim, v, push, false);
                 blood_splats(scene, arena, world, v.pos, 3, 1.2);
             }
+            Gib::Lava { .. } => unreachable!("handled above"),
             Gib::Ragdoll => {
                 fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
                 self.ragdoll(scene, phys, victim, v, push, true);
+            }
+        }
+    }
+
+    /// Godot `Violence.play_lava_death`: a lava twin of the character (or
+    /// lava blobs) where the body was, and a splash pillar when it fell in.
+    fn lava_death(&mut self, scene: &mut Scene, victim: usize, v: &Player, fall: bool, now: f32) {
+        self.end_lava(scene, victim);
+        let surface = growing_guns::arena::LAVA_KILL_Y;
+        let twin = if self.meshes[victim].skinned { self.characters.as_mut().and_then(|c| c.lava_twin(victim)) } else { None };
+        let mut blobs = Vec::new();
+        if twin.is_none() {
+            let lm = self.lava_meshes;
+            for (mesh, offset, scale) in [(lm.body, -0.25, BODY), (lm.head, 0.55, Vec3::splat(HEAD))] {
+                if let Some(slot) = self.corpses.add(scene, mesh, Affine3A::from_translation(HIDDEN)) { blobs.push((slot, mesh, scale, offset)); }
+            }
+        }
+        let splash = if fall { self.corpses.add(scene, self.lava_meshes.splash, Affine3A::from_translation(HIDDEN)) } else { None };
+        let c = LavaCorpse { victim, pos: v.pos, yaw: v.yaw, birth: now, fall, surface, twin, blobs, splash };
+        self.lava.push(c);
+    }
+
+    /// Godot `end_lava_death`: player `victim`'s lava body goes (a revive).
+    fn end_lava(&mut self, scene: &mut Scene, victim: usize) {
+        let Some(k) = self.lava.iter().position(|c| c.victim == victim) else { return };
+        let c = self.lava.swap_remove(k);
+        if let Some((instance, mesh)) = c.twin { scene.update_instance(instance, mesh, Affine3A::from_translation(HIDDEN)); }
+        for (slot, ..) in c.blobs { self.corpses.remove(scene, slot); }
+        if let Some(slot) = c.splash { self.corpses.remove(scene, slot); }
+    }
+
+    /// Sinking lava bodies and their splashes at `clock` seconds.
+    fn pose_lava(&mut self, scene: &mut Scene, world: &World, clock: f32) {
+        let revived: Vec<usize> = self.lava.iter().map(|c| c.victim).filter(|&i| world.players.get(i).is_none_or(|p| p.alive)).collect();
+        for i in revived { self.end_lava(scene, i); }
+        let rot = Quat::from_rotation_y(0.0);
+        for c in &mut self.lava {
+            let t = (clock - c.birth).max(0.0);
+            let at = Vec3::new(c.pos.x, c.y(t), c.pos.z);
+            if let Some((instance, mesh)) = c.twin { scene.update_instance(instance, mesh, characters::model_transform(at, c.yaw)); }
+            for &(slot, mesh, scale, offset) in &c.blobs {
+                self.corpses.set(scene, slot, mesh, Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(c.yaw), at + Vec3::Y * offset));
+            }
+            if let Some(slot) = c.splash {
+                match c.splash_y(t) {
+                    Some(y) => self.corpses.set(scene, slot, self.lava_meshes.splash, Affine3A::from_scale_rotation_translation(
+                        Vec3::new(SPLASH_RADIUS, SPLASH_HEIGHT, SPLASH_RADIUS), rot, Vec3::new(c.pos.x, y, c.pos.z))),
+                    None => { self.corpses.remove(scene, slot); c.splash = None; }
+                }
             }
         }
     }
@@ -160,17 +275,11 @@ impl PlayersView {
         let push = dir.with_y(0.0).normalize_or_zero() * 5.0 + Vec3::Y * 2.0;
         let rot = Quat::from_rotation_y(v.yaw);
         let (b, h) = (self.meshes[victim].body, self.meshes[victim].head);
-        let skinned = self.meshes[victim].skinned;
-        let (shape, center, local) = if skinned {
-            (Shape::Capsule(0.32, 0.55), v.pos, characters::model_transform(Vec3::ZERO, 0.0))
-        } else { (Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25, Affine3A::from_scale(BODY)) };
+        let (shape, center, local) = (Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25, Affine3A::from_scale(BODY));
         let torso = phys.add(&BodyDesc { rot, vel: v.vel + push, density: 300.0, ..BodyDesc::new(shape, center) });
         let Some(ts) = self.corpses.add(scene, b, Affine3A::from_translation(v.pos)) else { phys.remove(torso); return };
-        if skinned {
-            scene.instances[self.corpses.instance(ts)].flags |= render::scene::SKINNED;
-        }
         let mut parts = vec![(torso, ts, b, local)];
-        if with_head && !skinned {
+        if with_head {
             let head = phys.add(&BodyDesc { rot, vel: v.vel + push * 1.4, density: 300.0, ..BodyDesc::new(Shape::Sphere(0.28), v.pos + Vec3::Y * 0.55) });
             phys.ball_joint(torso, head, Vec3::Y * 0.52, Vec3::Y * -0.28);
             match self.corpses.add(scene, h, Affine3A::from_translation(v.pos)) {
@@ -184,6 +293,7 @@ impl PlayersView {
     /// One tick after the physics step: corpses and gore follow their bodies.
     pub fn follow_physics(&mut self, scene: &mut Scene, phys: &mut Physics, now: f32) {
         self.gore().update(scene, phys, now);
+        if let Some(characters) = &mut self.characters { characters.follow_physics(phys); }
         for r in &self.ragdolls {
             for &(body, slot, mesh, local) in &r.parts {
                 if let Some((pos, rot)) = phys.pose(body) {
@@ -195,10 +305,17 @@ impl PlayersView {
 
     /// Players (interpolated by `alpha` from `prev`) and tracers.
     pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32) {
+        if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha); }
         let mut slot = self.first;
         for (i, m) in self.meshes.iter().enumerate() {
             let Some(p) = world.players.get(i).filter(|p| p.alive) else {
-                for mesh in [m.body, m.head, m.eyes] { scene.update_instance(slot, mesh, Affine3A::from_translation(HIDDEN)); slot += 1; }
+                let corpse = self.characters.as_ref().and_then(|c| c.corpse_transform(i));
+                for (part, mesh) in [m.body, m.head, m.eyes].into_iter().enumerate() {
+                    let xf = if part == 0 { corpse.unwrap_or(Affine3A::from_translation(HIDDEN)) } else { Affine3A::from_translation(HIDDEN) };
+                    scene.update_instance(slot, mesh, xf);
+                    scene.instances[slot].hide_in_views(0);
+                    slot += 1;
+                }
                 continue;
             };
             let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
@@ -210,9 +327,13 @@ impl PlayersView {
                  Affine3A::from_scale_rotation_translation(Vec3::splat(HEAD), rot, pos + Vec3::Y * 0.55),
                  Affine3A::from_scale_rotation_translation(Vec3::new(0.2, 0.07, 0.05), rot, pos + Vec3::Y * 0.6 + rot * Vec3::new(0.0, 0.0, -0.27)))
             };
-            for (mesh, xf) in [(m.body, body), (m.head, head), (m.eyes, eyes)] { scene.update_instance(slot, mesh, xf); slot += 1; }
+            for (mesh, xf) in [(m.body, body), (m.head, head), (m.eyes, eyes)] {
+                scene.update_instance(slot, mesh, xf);
+                scene.instances[slot].hide_in_views(m.own_views);
+                slot += 1;
+            }
         }
-        if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha); }
+        self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT);
         // Tracers: a short glowing streak behind each live bullet. Skip the
         // first metre so a player's own tracer never fills their screen; the
         // streak then grows to four metres.
@@ -230,15 +351,19 @@ impl PlayersView {
 
     /// First person: hide each local player's own model from their view
     /// (`slots[k]` is drawn in view k). It still casts its shadow.
-    pub fn hide_own(&self, scene: &mut Scene, slots: &[usize]) {
+    pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
+        for m in &mut self.meshes { m.own_views = 0; }
         for (k, &s) in slots.iter().enumerate().take(8) {
+            if let Some(m) = self.meshes.get_mut(s) { m.own_views |= 1 << k; }
             for part in 0..PARTS { scene.instances[self.first + s * PARTS + part].hide_in_views(1 << k); }
         }
     }
 
     /// Ragdoll torso positions (for state dumps).
     pub fn ragdolls(&self, phys: &Physics) -> Vec<[f32; 3]> {
-        self.ragdolls.iter().filter_map(|r| phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect()
+        let mut positions: Vec<_> = self.ragdolls.iter().filter_map(|r| phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect();
+        if let Some(c) = &self.characters { positions.extend(c.ragdolls()); }
+        positions
     }
 
     pub fn gore_len(&self) -> usize { self.gore.as_ref().map_or(0, |g| g.len()) }

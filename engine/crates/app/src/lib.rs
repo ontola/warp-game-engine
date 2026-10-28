@@ -11,7 +11,7 @@ pub mod sound;
 pub mod tween;
 pub mod ui;
 
-pub use input::{Buttons, Controls, Devices, Tuning};
+pub use input::{Buttons, Controls, Devices, Pointer, Tuning};
 use render::hud::{HudDrawList, HudRenderer};
 use render::present::Presenter;
 use render::{Camera, Gpu, Lighting, Renderer, Scene, ViewRect};
@@ -65,6 +65,11 @@ pub trait Game {
     fn local_players(&self) -> usize;
     /// One fixed simulation step.
     fn tick(&mut self, controls: &[Controls]);
+    /// Free cursor input, delivered just before each tick, in physical pixels.
+    fn pointer(&mut self, _pointer: Pointer, _size: [u32; 2]) {}
+    /// Some(true) captures during play, Some(false) releases for UI. None keeps
+    /// the shell's traditional click-to-capture behavior.
+    fn mouse_capture(&self) -> Option<bool> { None }
     /// Pose the scene and describe the frame. Called once per displayed frame,
     /// after zero or more ticks. Create the scene with `frame.set_scene`.
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String>;
@@ -232,6 +237,7 @@ struct Shell<'g> {
     live: Option<Live>,
     window: Option<Arc<Window>>,
     screen: Screen,
+    focused: bool,
     acc: f32,
     last: Instant,
     started: Instant,
@@ -245,7 +251,7 @@ struct Shell<'g> {
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let devices = Devices::new(cfg.keyboard);
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, shots: 0, error: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, shots: 0, error: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -272,14 +278,18 @@ impl Shell<'_> {
         self.last = now;
         self.devices.poll();
         self.game.tuning(&mut self.devices.tuning);
+        self.sync_capture();
         let step = 1.0 / self.cfg.tick_hz;
         self.acc += dt;
         let mut steps = 0;
         while self.acc >= step && steps < 6 {
             self.acc -= step;
             steps += 1;
+            let size = self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]);
+            self.game.pointer(self.devices.pointer(), size);
             let controls = self.devices.controls(self.game.local_players(), step);
             self.game.tick(&controls);
+            self.sync_capture();
         }
         if steps == 6 { self.acc = 0.0; }
         let Some(live) = &mut self.live else { return Ok(()) };
@@ -288,7 +298,7 @@ impl Shell<'_> {
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, renderer: &mut live.renderer };
         let mut draw = self.game.draw(&mut frame)?;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
-        if !self.devices.mouse_captured && self.cfg.keyboard {
+        if !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
             let s = (size[1] as f32 / 1080.0).max(0.5);
             draw.hud.text.push(render::hud::TextRun { id: u64::MAX - 1, text: "click to capture the mouse, Esc releases".into(), position: [16.0 * s, size[1] as f32 - 34.0 * s],
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,
@@ -321,6 +331,7 @@ impl Shell<'_> {
 
     fn capture_mouse(&mut self, on: bool) {
         let Some(w) = &self.window else { return };
+        self.devices.reset_mouse();
         if on {
             let ok = w.set_cursor_grab(CursorGrabMode::Locked).or_else(|_| w.set_cursor_grab(CursorGrabMode::Confined)).is_ok();
             w.set_cursor_visible(!ok);
@@ -329,6 +340,13 @@ impl Shell<'_> {
             let _ = w.set_cursor_grab(CursorGrabMode::None);
             w.set_cursor_visible(true);
             self.devices.mouse_captured = false;
+        }
+    }
+
+    fn sync_capture(&mut self) {
+        if let Some(want) = self.game.mouse_capture() {
+            let want = want && self.cfg.keyboard && self.focused && self.screen != Screen::Hidden;
+            if want != self.devices.mouse_captured { self.capture_mouse(want); }
         }
     }
 }
@@ -371,9 +389,14 @@ impl ApplicationHandler for Shell<'_> {
                     l.surface.configure(&l.gpu.device, &l.config);
                 }
             }
-            WindowEvent::Focused(false) => self.capture_mouse(false),
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if !focused { self.capture_mouse(false); self.devices.cursor(None); }
+            }
+            WindowEvent::CursorMoved { position, .. } => self.devices.cursor(Some([position.x as f32, position.y as f32])),
+            WindowEvent::CursorLeft { .. } => self.devices.cursor(None),
             WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard {
+                if button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
                     self.capture_mouse(true);
                     return;
                 }
@@ -384,7 +407,7 @@ impl ApplicationHandler for Shell<'_> {
                 if event.state == ElementState::Pressed && !event.repeat {
                     match code {
                         KeyCode::Escape => {
-                            if self.game.escape() { return; }
+                            if self.game.escape() { self.sync_capture(); return; }
                             if self.devices.mouse_captured { self.capture_mouse(false) } else { event_loop.exit() }
                             return;
                         }

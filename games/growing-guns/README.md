@@ -41,6 +41,15 @@ them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift dash,
 left mouse fire, right mouse special, R reload; on a pad the sticks, A/LB
 jump, Y/RB dash, RT fire, LT/B special, X reload. F12 saves a screenshot.
 
+Menus and card choices accept mouse hover/click as well as keyboard and pads;
+settings sliders can be dragged. The cursor is released while the keyboard
+player is choosing a card or a menu is open, and captured again on returning
+to play. Grounded players step over obstacles up to 0.35 m when there is
+headroom. After a death in a 3+ player round and a card choice, human ghosts
+can walk, look and jump from their own view while remaining eliminated and
+unable to shoot. The airstrike marker is a thin additive white/red laser
+along the incoming rocket path, visible until impact.
+
 The ion cannon has eight additive charge shells, nonlinear contraction and
 brightening, rising charge motes, local illumination, a blue-white detonation
 column, 40 ascending streaks and a brief per-view impact flash. `view/ion.rs`
@@ -106,8 +115,13 @@ and gameplay rules are unchanged. See [asset provenance and regeneration](assets
 loads an alternate roster. Packaged builds should include `assets/characters`
 beside the executable; development builds also find the source assets.
 
-Character limitations: corpses currently tumble as whole models in their last
-pose; skin-aware dismemberment and jointed character ragdolls are not ported.
+Deaths now drive the original weighted skin from 11 connected physics bodies:
+pelvis, chest, head, upper/lower arms and upper/lower legs. Corpses collide with
+the arena, react to blasts and interpolate between physics ticks. A reused
+enemy slot removes its old corpse before animating again; round reset clears
+all ragdoll bodies. The reusable rig is `physics::ragdoll`.
+
+Character limitations: skin-aware dismemberment is not ported.
 Aim/spine and strafe animation layers are not yet equivalent to the original.
 Animated pixels reject temporal history until deformation motion vectors are
 implemented. The older benchmark results below used primitive characters and
@@ -127,7 +141,8 @@ one, from the next wave). The view draws up to 24 players in coop (8 animated
 characters, the rest as blobs). `scripts/coop.json` plays it headless with
 `--coop --players 2`.
 
-Not ported yet: ghosts planting mines (unreachable in Godot at thiscommit), the island lava layout, music, GameNight. Online play is tested
+Not ported yet: ghosts planting mines and the island lava layout. Music and
+GameNight integration are present. Online play is tested
 over loopback (`nettest`), not yet between two machines; clients predict
 only their look direction.
 

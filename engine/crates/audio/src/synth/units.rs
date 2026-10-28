@@ -198,7 +198,7 @@ pub(crate) enum State {
     Noise { color: NoiseColor, rng: Noise, b: [f32; 7] },
     Dust { rng: Noise },
     Clip { samples: std::sync::Arc<[f32]>, looping: bool, pos: f64 },
-    Env { points: Vec<Point>, t: f32, k: usize, from: f32 },
+    Env { t: f32, k: usize, from: f32 },
     Adsr { level: f32, stage: u8 },
     Lfo { shape: Shape, phase: f32, held: f32, rng: Noise },
     Wander { rng: Noise, a: f32, b: f32, t: f32 },
@@ -209,10 +209,10 @@ pub(crate) enum State {
     Comb { buf: Vec<f32>, pos: usize },
     Delay { buf: Vec<f32>, pos: usize },
     Crush { held: f32, n: f32 },
-    Modal { modes: Vec<Mode>, s: Vec<[f32; 2]> },
+    Modal { s: Vec<[f32; 2]> },
     Pluck { buf: Vec<f32>, pos: usize, lp: f32 },
     Hold { held: f32, last: f32 },
-    Expr { e: super::expr::Expr, t: f32, slots: Vec<super::expr::Slot> },
+    Expr { e: std::sync::Arc<super::expr::Expr>, t: f32, slots: Vec<super::expr::Slot> },
     Rand { u: f32 },
     Engine(Option<Box<crate::engine::EngineVoice>>),
     Tyres(Box<crate::tyres::TyreVoice>),
@@ -222,13 +222,13 @@ pub(crate) enum State {
 const MAX_PERIOD: f32 = 1.0 / 20.0;
 
 impl State {
-    pub(crate) fn new(u: &Unit, sr: f32, seed: u32) -> State {
+    pub(crate) fn new(u: &Unit, sr: f32, seed: u32, expr: Option<&std::sync::Arc<super::expr::Expr>>) -> State {
         match u {
             Unit::Osc { shape } => State::Osc { shape: *shape, phase: 0.0, last: 0.0, held: 0.0, rng: Noise::new(seed) },
             Unit::Noise { color } => State::Noise { color: *color, rng: Noise::new(seed), b: [0.0; 7] },
             Unit::Dust => State::Dust { rng: Noise::new(seed) },
             Unit::Clip { samples, looping, .. } => State::Clip { samples: samples.clone(), looping: *looping, pos: 0.0 },
-            Unit::Env { points } => State::Env { points: points.clone(), t: 0.0, k: 0, from: 0.0 },
+            Unit::Env { .. } => State::Env { t: 0.0, k: 0, from: 0.0 },
             Unit::Adsr => State::Adsr { level: 0.0, stage: 0 },
             Unit::Lfo { shape } => State::Lfo { shape: *shape, phase: 0.0, held: 0.0, rng: Noise::new(seed) },
             Unit::Wander => { let mut rng = Noise::new(seed); let a = rng.white(); let b = rng.white(); State::Wander { rng, a, b, t: 0.0 } }
@@ -240,11 +240,11 @@ impl State {
             Unit::Comb => State::Comb { buf: vec![0.0; (MAX_PERIOD * sr) as usize + 2], pos: 0 },
             Unit::Delay { max } => State::Delay { buf: vec![0.0; (max.clamp(0.001, 10.0) * sr) as usize + 2], pos: 0 },
             Unit::Crush => State::Crush { held: 0.0, n: 0.0 },
-            Unit::Modal { modes } => State::Modal { modes: modes.clone(), s: vec![[0.0; 2]; modes.len()] },
+            Unit::Modal { modes } => State::Modal { s: vec![[0.0; 2]; modes.len()] },
             Unit::Pluck => State::Pluck { buf: vec![0.0; (MAX_PERIOD * sr) as usize + 2], pos: 0, lp: 0.0 },
             Unit::Hold => State::Hold { held: 0.0, last: 0.0 },
-            Unit::Expr { src, vars } => {
-                let e = super::expr::Expr::compile(src, vars).unwrap_or_else(|_| super::expr::Expr::compile("0", &[]).unwrap());
+            Unit::Expr { .. } => {
+                let e = expr.expect("expression prepared with the graph").clone();
                 State::Expr { slots: e.slots(), e, t: 0.0 }
             }
             Unit::Rand => { let mut r = Noise::new(seed); r.unit(); State::Rand { u: r.unit() } }
@@ -257,17 +257,11 @@ impl State {
         }
     }
 
-    /// Stateless: the same inputs give the same output, so constant inputs
-    /// make a constant output (computed once per block).
-    pub(crate) fn pure(&self) -> bool {
-        match self { State::Math | State::Map { .. } | State::Rand { .. } => true, State::Expr { e, .. } => !e.uses_t(), _ => false }
-    }
-
     /// Whether this unit has run its course (envelopes; voices end when
     /// every envelope is done and the output is quiet).
-    pub(crate) fn finished(&self) -> Option<bool> {
+    pub(crate) fn finished(&self, unit: &Unit) -> Option<bool> {
         match self {
-            State::Env { points, k, .. } => Some(*k >= points.len()),
+            State::Env { k, .. } => if let Unit::Env { points } = unit { Some(*k >= points.len()) } else { unreachable!() },
             State::Adsr { stage, level } => Some(*stage == 3 && *level <= 1e-5),
             State::Clip { samples, looping, pos } => Some(!looping && *pos as usize + 1 >= samples.len()),
             _ => None,
@@ -278,7 +272,7 @@ impl State {
     pub(crate) fn run(&mut self, ins: &[Sig], out: &mut [f32], sr: f32, gate: bool, unit: &Unit) {
         let n = out.len();
         let dt = 1.0 / sr;
-        let i = |k: usize| ins.get(k).copied().unwrap_or(Sig::K(unit.default_input(k)));
+        let i = |k: usize| ins.get(k).copied().unwrap_or_else(|| Sig::K(unit.default_input(k)));
         match self {
             State::Osc { shape, phase, last, held, rng } => {
                 let (f, pm, w) = (i(0), i(1), i(2));
@@ -344,7 +338,8 @@ impl State {
                     *pos += r.at(s).max(0.0) as f64 * (crate::SAMPLE_RATE / sr) as f64;
                 }
             }
-            State::Env { points, t, k, from } => {
+            State::Env { t, k, from } => {
+                let Unit::Env { points } = unit else { unreachable!() };
                 for o in out.iter_mut() {
                     *o = loop {
                         let Some(p) = points.get(*k) else { break points.last().map_or(0.0, |p| p.level) };
@@ -490,7 +485,8 @@ impl State {
                     *o = *held;
                 }
             }
-            State::Modal { modes, s: st } => {
+            State::Modal { s: st } => {
+                let Unit::Modal { modes } = unit else { unreachable!() };
                 // Each mode: a two-pole resonator, r^2 per sample from the decay.
                 let (x, f, damp) = (i(0), i(1), i(2));
                 let base = f.first();

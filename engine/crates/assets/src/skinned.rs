@@ -430,6 +430,13 @@ impl Character {
     }
 
     pub fn sample(&self, name: &str, seconds: f32, looping: bool) -> Result<Vec<Mat4>, String> {
+        let mut palette = vec![Mat4::IDENTITY; self.joint_count];
+        self.sample_into(name, seconds, looping, &mut palette)?;
+        Ok(palette)
+    }
+
+    /// Reuse the caller's joint palette during per-frame animation sampling.
+    pub fn sample_into(&self, name: &str, seconds: f32, looping: bool, palette: &mut [Mat4]) -> Result<(), String> {
         if !seconds.is_finite() {
             return Err("animation sample time must be finite".into());
         }
@@ -439,10 +446,11 @@ impl Character {
             .find(|c| c.name == name)
             .ok_or_else(|| format!("missing character clip {name}"))?;
         let (first, second, t) = frame_pair(clip.frames, clip.duration, seconds, looping);
-        skinning::blend_palette(
+        skinning::blend_palette_into(
             &clip.matrices[first * self.joint_count..(first + 1) * self.joint_count],
             &clip.matrices[second * self.joint_count..(second + 1) * self.joint_count],
             t,
+            palette,
         )
     }
 
@@ -475,6 +483,14 @@ impl Character {
         Ok(*a * (1.0 - t) + *b * t)
     }
 
+    /// Joint names and model-space bind/rest transforms in skin palette order.
+    /// Names may repeat for joints with distinct inverse binds; every palette
+    /// entry is retained. A skin matrix multiplied by its rest transform yields
+    /// that joint's animated model-space transform.
+    pub fn joints(&self) -> impl ExactSizeIterator<Item = (&str, Mat4)> + '_ {
+        self.joints.iter().map(|(name, rest)| (name.as_str(), *rest))
+    }
+
     /// Recover a named model-space joint from a sampled or blended palette.
     /// Palettes may repeat bones for distinct inverse binds; the first matching
     /// entry yields the same animated joint position.
@@ -489,12 +505,52 @@ impl Character {
     /// Add exactly one independently deformed scene mesh and one instance.
     /// Reuses identical materials/textures on repeated calls for the same file.
     pub fn add_actor(&self, scene: &mut Scene, transform: Affine3A) -> Result<ActorHandle, String> {
+        self.add_actor_with_bounds(scene, transform, self.min, self.max)
+    }
+
+    /// An actor whose every surface is drawn with `material` instead of the
+    /// character's own (a body turned to lava, stone or a ghost), with the
+    /// same skeleton, clips and skinning; `None` keeps the authored ones.
+    pub fn add_actor_with_material(&self, scene: &mut Scene, transform: Affine3A, material: Option<u32>) -> Result<ActorHandle, String> {
+        self.add_actor_full(scene, transform, self.min, self.max, material)
+    }
+
+    /// Add an actor with conservative object-space bounds for additional poses,
+    /// such as physics-driven joints. These bounds affect only the new actor's
+    /// mesh and instance; the shared character and other actors are unchanged.
+    ///
+    /// Bounds must be finite, ordered, enclose `self.min..=self.max`, and produce
+    /// a finite culling sphere. The caller must enclose every additional pose.
+    pub fn add_actor_with_bounds(
+        &self,
+        scene: &mut Scene,
+        transform: Affine3A,
+        min: Vec3,
+        max: Vec3,
+    ) -> Result<ActorHandle, String> {
+        self.add_actor_full(scene, transform, min, max, None)
+    }
+
+    fn add_actor_full(&self, scene: &mut Scene, transform: Affine3A, min: Vec3, max: Vec3, material: Option<u32>) -> Result<ActorHandle, String> {
+        if !min.is_finite()
+            || !max.is_finite()
+            || !min.cmple(max).all()
+            || !min.cmple(self.min).all()
+            || !max.cmpge(self.max).all()
+        {
+            return Err("actor bounds must be finite, ordered and enclose character bounds".into());
+        }
+        let center = (min + max) * 0.5;
+        let radius = (max - min).length() * 0.5;
+        if !center.is_finite() || !radius.is_finite() {
+            return Err("actor bounds exceed finite culling sphere capacity".into());
+        }
         if scene.skinning.actors.len() >= skinning::MAX_ACTORS || !transform.is_finite() {
             return Err("invalid actor transform or skinning actor capacity exceeded".into());
         }
         let initial = self.sample(&self.clips[0].name, 0.0, self.clips[0].looping)?;
         let mut material_ids = Vec::new();
-        for surface in &self.surfaces {
+        for surface in self.surfaces.iter().filter(|_| material.is_none()) {
             let layer = if let Some((name, image)) = &surface.texture {
                 let key = format!(
                     "{name}#normal={:?}:{}",
@@ -549,8 +605,7 @@ impl Character {
                 .unwrap_or_else(|| scene.add_material(material));
             material_ids.push(id);
         }
-        let center = (self.min + self.max) * 0.5;
-        let radius = (self.max - self.min).length() * 0.5;
+        if let Some(m) = material { material_ids = vec![m; self.surfaces.len()]; }
         let parts: Vec<_> = self
             .surfaces
             .iter()
@@ -591,6 +646,149 @@ impl Character {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pose_bounds_character() -> Character {
+        Character {
+            name: "pose bounds fixture".into(),
+            joint_count: 3,
+            clips: vec![Clip {
+                name: "idle".into(),
+                duration: 1.0,
+                frames: 2,
+                looping: false,
+                min: Vec3::ZERO,
+                max: Vec3::ONE,
+                matrices: vec![Mat4::IDENTITY; 6],
+                sockets: Vec::new(),
+            }],
+            min: Vec3::ZERO,
+            max: Vec3::ONE,
+            triangles: 1,
+            surfaces: vec![Surface {
+                vertices: [Vec3::ZERO, Vec3::X, Vec3::Y]
+                    .map(|pos| Vertex {
+                        pos: pos.to_array(),
+                        normal: Vec3::Z.to_array(),
+                        uv: [0.0; 2],
+                    })
+                    .to_vec(),
+                indices: vec![0, 1, 2],
+                influences: vec![
+                    Influence {
+                        joints: [0; 8],
+                        weights: [0.125; 8],
+                    };
+                    3
+                ],
+                material: MaterialFile {
+                    name: "plain".into(),
+                    albedo_texture: None,
+                    albedo: [1.0; 4],
+                    roughness: 0.8,
+                    metallic: 0.0,
+                    albedo_color_space: "linear".into(),
+                    normal_texture: None,
+                    normal_scale: 1.0,
+                    two_sided: false,
+                    alpha_mode: "OPAQUE".into(),
+                },
+                texture: None,
+                normal: None,
+            }],
+            joints: vec![
+                ("Root".into(), Mat4::from_translation(Vec3::Y)),
+                ("Hand".into(), Mat4::from_translation(Vec3::X)),
+                ("Root".into(), Mat4::from_translation(Vec3::Z)),
+            ],
+        }
+    }
+
+    #[test]
+    fn joints_preserve_palette_order_and_duplicate_names() {
+        let character = pose_bounds_character();
+        let mut joints = character.joints();
+        assert_eq!(joints.len(), character.joint_count);
+        assert_eq!(joints.next(), Some(("Root", Mat4::from_translation(Vec3::Y))));
+        assert_eq!(joints.next(), Some(("Hand", Mat4::from_translation(Vec3::X))));
+        assert_eq!(joints.next(), Some(("Root", Mat4::from_translation(Vec3::Z))));
+        assert_eq!(joints.next(), None);
+    }
+
+    #[test]
+    fn extra_pose_bounds_apply_to_one_actor_without_changing_character() {
+        let character = pose_bounds_character();
+        let mut scene = Scene::default();
+        let original = character.add_actor(&mut scene, Affine3A::IDENTITY).unwrap();
+        let original_sphere = scene.meshes[original.mesh].sphere;
+        let min = Vec3::new(-4.0, -3.0, -2.0);
+        let max = Vec3::new(4.0, 5.0, 6.0);
+        let transform = Affine3A::from_scale_rotation_translation(
+            Vec3::splat(2.0),
+            glam::Quat::IDENTITY,
+            Vec3::new(5.0, 2.0, -3.0),
+        );
+        let extra = character
+            .add_actor_with_bounds(&mut scene, transform, min, max)
+            .unwrap();
+        let after = character.add_actor(&mut scene, Affine3A::IDENTITY).unwrap();
+        let sphere = [0.0, 1.0, 2.0, Vec3::splat(4.0).length()];
+        assert_eq!(scene.meshes[extra.mesh].sphere, sphere);
+        let mesh = &scene.meshes[extra.mesh];
+        assert!(mesh.cluster_count > 0);
+        for cluster in &scene.clusters
+            [mesh.first_cluster as usize..(mesh.first_cluster + mesh.cluster_count) as usize]
+        {
+            assert_eq!(cluster.cull, sphere);
+            assert_eq!(cluster.parent, sphere);
+            assert_eq!(cluster.own, sphere);
+        }
+        assert_eq!(
+            scene.instances[extra.instance].sphere,
+            [5.0, 4.0, 1.0, sphere[3] * 2.0]
+        );
+        assert_eq!(scene.skinning.actors[extra.actor].owner, extra.instance as u32);
+        assert_eq!(scene.meshes[original.mesh].sphere, original_sphere);
+        assert_eq!(scene.meshes[after.mesh].sphere, original_sphere);
+        assert_eq!(scene.instances[original.instance].sphere, original_sphere);
+        assert_eq!((character.min, character.max), (Vec3::ZERO, Vec3::ONE));
+        assert_eq!(
+            (character.clips[0].min, character.clips[0].max),
+            (Vec3::ZERO, Vec3::ONE)
+        );
+        assert_eq!(scene.materials.len(), 1);
+        scene
+            .skinning
+            .validate(&scene.vertices, &scene.instances)
+            .unwrap();
+    }
+
+    #[test]
+    fn invalid_extra_pose_bounds_leave_scene_unchanged() {
+        let character = pose_bounds_character();
+        let mut scene = Scene::default();
+        for (min, max) in [
+            (Vec3::splat(f32::NAN), Vec3::ONE),
+            (Vec3::ZERO, Vec3::splat(f32::INFINITY)),
+            (Vec3::ONE, Vec3::ZERO),
+            (Vec3::new(0.1, 0.0, 0.0), Vec3::ONE),
+            (Vec3::ZERO, Vec3::new(1.0, 1.0, 0.9)),
+            (Vec3::splat(-f32::MAX), Vec3::splat(f32::MAX)),
+        ] {
+            assert!(
+                character
+                    .add_actor_with_bounds(&mut scene, Affine3A::IDENTITY, min, max)
+                    .is_err()
+            );
+            assert!(scene.vertices.is_empty());
+            assert!(scene.clusters.is_empty());
+            assert!(scene.meshes.is_empty());
+            assert!(scene.instances.is_empty());
+            assert!(scene.materials.is_empty());
+            assert!(scene.textures.is_empty());
+            assert!(scene.skinning.actors.is_empty());
+        }
+    }
+
     #[test]
     fn portable_mesh_loads_with_empty_optional_maps_and_independent_actors() {
         let folder = std::env::temp_dir().join(format!(
@@ -677,6 +875,20 @@ mod tests {
             .validate(&scene.vertices, &scene.instances)
             .unwrap();
         let sphere = scene.meshes[a.mesh].sphere;
+        let mut reused = vec![Mat4::IDENTITY; character.joint_count];
+        let pointer = reused.as_ptr();
+        for step in 0..128 {
+            let time = step as f32 * 0.017;
+            let clip = &character.clips[0];
+            let (first, second, t) = frame_pair(clip.frames, clip.duration, time, true);
+            character.sample_into(&clip.name, time, true, &mut reused).unwrap();
+            for (joint, m) in reused.iter().enumerate() {
+                assert_eq!(*m, clip.matrices[first * character.joint_count + joint] * (1.0 - t)
+                    + clip.matrices[second * character.joint_count + joint] * t);
+            }
+            assert_eq!(pointer, reused.as_ptr());
+        }
+        assert!(character.sample_into(&character.clips[0].name, 0.0, true, &mut []).is_err());
         for source in &character.surfaces[0].vertices {
             let p = skinning::skin_position(
                 Vec3::from(source.pos),

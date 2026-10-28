@@ -45,6 +45,25 @@ pub struct Controls {
     pub pressed: Buttons,
 }
 
+/// Free cursor input in physical window pixels. Edges are consumed once per
+/// tick; a stationary cursor does not take focus from keyboard or gamepad.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pointer {
+    pub position: Option<[f32; 2]>,
+    pub moved: bool,
+    pub pressed: bool,
+    pub held: bool,
+}
+
+impl Pointer {
+    pub fn take(&mut self) -> Self {
+        let sample = *self;
+        self.moved = false;
+        self.pressed = false;
+        sample
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Tuning {
     /// Radians per mouse count.
@@ -111,6 +130,7 @@ pub struct Devices {
     pub keyboard_enabled: bool,
     /// The mouse only steers while captured.
     pub mouse_captured: bool,
+    pointer: Pointer,
     kb: Keyboard,
     gilrs: Option<Gilrs>,
     pads: Vec<(GamepadId, u32)>,
@@ -122,7 +142,7 @@ impl Devices {
     pub fn new(keyboard_enabled: bool) -> Self {
         let gilrs = Gilrs::new().map_err(|e| eprintln!("gamepads unavailable: {e}")).ok();
         let pads = gilrs.as_ref().map_or(Vec::new(), |g| g.gamepads().map(|(id, _)| (id, 0)).collect());
-        Self { tuning: Tuning::default(), keyboard_enabled, mouse_captured: false, kb: Keyboard::default(), gilrs, pads, rumble: Default::default() }
+        Self { tuning: Tuning::default(), keyboard_enabled, mouse_captured: false, pointer: Pointer::default(), kb: Keyboard::default(), gilrs, pads, rumble: Default::default() }
     }
 
     /// Vibrate local pad `pad` (in `controls` order, after the keyboard):
@@ -163,12 +183,36 @@ impl Devices {
     }
 
     pub fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
+        if button == MouseButton::Left && !self.mouse_captured && self.keyboard_enabled {
+            self.pointer.held = state == ElementState::Pressed;
+            self.pointer.pressed |= self.pointer.held;
+        }
         let b = match button { MouseButton::Left => Buttons::RIGHT_TRIGGER, MouseButton::Right => Buttons::LEFT_TRIGGER, _ => 0 };
         if state == ElementState::Pressed && self.mouse_captured { self.kb.mouse |= b; self.kb.pressed |= b; } else { self.kb.mouse &= !b; }
     }
 
     pub fn mouse_motion(&mut self, dx: f64, dy: f64) {
         if self.mouse_captured { self.kb.look[0] += dx; self.kb.look[1] += dy; }
+    }
+
+    pub fn cursor(&mut self, position: Option<[f32; 2]>) {
+        self.pointer.moved |= self.pointer.position != position;
+        self.pointer.position = position;
+    }
+
+    pub fn pointer(&mut self) -> Pointer {
+        let p = self.pointer.take();
+        if self.keyboard_enabled && !self.mouse_captured { p } else { Pointer::default() }
+    }
+
+    /// Capture transitions must not carry a menu click or old look delta into play.
+    pub fn reset_mouse(&mut self) {
+        self.kb.mouse = 0;
+        self.kb.pressed &= !(Buttons::LEFT_TRIGGER | Buttons::RIGHT_TRIGGER);
+        self.kb.look = [0.0; 2];
+        self.pointer.pressed = false;
+        self.pointer.held = false;
+        self.pointer.moved = false;
     }
 
     /// Drain pad events (edges) once per frame.
@@ -238,6 +282,26 @@ impl Devices {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_edges_are_consumed_once_and_menu_clicks_do_not_fire() {
+        let mut d = Devices { tuning: Tuning::default(), keyboard_enabled: true, mouse_captured: false,
+            pointer: Pointer::default(), kb: Keyboard::default(), gilrs: None, pads: vec![], rumble: Default::default() };
+        d.cursor(Some([30.0, 40.0]));
+        d.mouse_button(MouseButton::Left, ElementState::Pressed);
+        d.mouse_button(MouseButton::Left, ElementState::Released);
+        let p = d.pointer();
+        assert!(p.pressed && p.moved && !p.held);
+        assert_eq!(d.pointer(), Pointer { position: p.position, ..Default::default() });
+        assert!(!d.controls(1, 1.0 / 60.0)[0].pressed.has(Buttons::RIGHT_TRIGGER));
+        d.mouse_captured = true;
+        d.mouse_button(MouseButton::Left, ElementState::Pressed);
+        d.mouse_motion(300.0, 100.0);
+        d.reset_mouse();
+        let c = d.controls(1, 1.0 / 60.0)[0];
+        assert_eq!(c.look, [0.0; 2]);
+        assert!(!c.pressed.has(Buttons::RIGHT_TRIGGER) && !c.held.has(Buttons::RIGHT_TRIGGER));
+    }
 
     #[test]
     fn stick_shaping_has_a_dead_zone_and_reaches_one() {

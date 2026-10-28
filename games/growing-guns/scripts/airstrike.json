@@ -1,0 +1,13 @@
+{
+  "size": [960, 540],
+  "steps": [
+    {"cmd": ["bots pause", "cage", "health 0 50000", "special 0 air_strike"], "ticks": 30},
+    {"cmd": "aim 0 0 0 0", "capture": "before.png"},
+    {"ticks": 1, "hold": ["LEFT_TRIGGER"]},
+    {"expect": "/strikes", "equals": 1},
+    {"ticks": 30, "capture": "laser.png", "state": "laser.json", "note": "Thin white core and red laser sheath along the incoming rocket path; no targeting torus."},
+    {"ticks": 90, "capture": "incoming.png"},
+    {"ticks": 90, "capture": "after.png", "note": "The targeting laser is gone after impact."},
+    {"expect": "/strikes", "equals": 0}
+  ]
+}

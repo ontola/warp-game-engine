@@ -364,7 +364,7 @@ mod bench {
     #[ignore]
     fn shot_cost() {
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../games/growing-guns/sounds/shot.luau")).unwrap();
-        let p = super::load("shot", &src).unwrap().remove(0);
+        let p = super::load("shot", &src).unwrap().remove(0).compile().unwrap();
         let t = std::time::Instant::now();
         let mut n = 0;
         for s in 0..100 { n += p.voice(&[], s, 48000.0).render_all(1.0).len(); }

@@ -23,9 +23,14 @@ cylinder character.
 - `Mover { radius, half_height }.slide(boxes, &mut pos, &mut vel, dt,
   max_step)`: Godot's `move_and_slide` for boxes. Sub-steps of at most
   `max_step` metres, up to four push-out passes each; velocity loses its
-  component into walls, floors and ceilings; small ledges are stepped up.
+  component into walls, floors and ceilings.
   It returns a `Contact` with `on_floor`, `on_ceiling` and the last
   `wall_normal`.
+- `slide_with_step(..., step_height, grounded)` opts into climbing low
+  obstacles when ordinary movement is blocked. It requires real ground
+  support, clear headroom and a supported landing; jumping and airborne
+  movement retain ordinary sliding. The height budget applies to the whole
+  call. Growing Guns uses 0.35 m. Existing `slide` callers are unchanged.
 - The `Boxes` trait is what movers and rays query. A plain slice has no
   broadphase, which is fine for a few hundred boxes. `BoxGrid` is a uniform
   XZ grid for thousands: `remove` and `restore` boxes without a rebuild,
@@ -65,6 +70,14 @@ let (pos, rot) = p.pose(crate_body).unwrap();
 - `step()` advances one fixed tick, split into `substeps` if set.
   `pose`, `velocity`, `sleeping`, `body_count`, `clear_bodies`.
 - The crate's test checks that boxes fall, settle and replay identically.
+- `ragdoll::Ragdoll` builds a connected capsule tree from world-space
+  `Segment` endpoints and joint anchors. Each rig has a unique collision-group
+  bit: its limbs ignore one another but collide with the world and other rigs.
+  After each fixed step, call `update`; `delta(part, alpha)` interpolates the
+  rigid transform from that part's initial pose. Apply it to the initial world
+  skin matrix, then the current instance inverse, to deform an existing skin.
+  `remove` releases the bodies and joints. The game owns the skeleton mapping;
+  the physics API has no dependency on a particular model or animation format.
 
 Growing Guns uses it on the presentation side (`app/src/view/`): corpses
 that tumble, ragdolls and gibs. Its deterministic gameplay stays on
@@ -75,5 +88,4 @@ that tumble, ragdolls and gibs. Its deterministic gameplay stays on
 - A collision layer for simple games beyond boxes: no meshes or
   heightfields in `kern::collide`.
 - A general vehicle API; Sideways' car model lives in the game.
-- Jointed character ragdolls from skinned characters; Growing Guns'
-  corpses tumble as whole models.
+- Anatomical angular limits and skin-aware dismemberment for humanoid rigs.

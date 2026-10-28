@@ -71,6 +71,21 @@ pub struct ArenaView {
     shown_wear: Vec<u8>,
     marks: Marks,
     lights: Vec<LocalLight>,
+    /// The light the lava casts.
+    pub lava: super::lava::LavaLight,
+}
+
+/// The lava's radiance for a white pixel, per channel. Godot shows the
+/// unshaded albedo through Filmic at exposure 1.08 (and glow); under the
+/// engine's AgX that saturation is out of reach, so this is the best fit to
+/// the Godot captures (docs/lava-parity.md): a bright, red-leaning white
+/// with no blue, which AgX's channel crosstalk fills in.
+pub const LAVA_NITS: f32 = 45000.0;
+pub const LAVA_TINT: [f32; 3] = [1.0, 0.92, 0.0];
+
+/// The flowing lava (Godot `make_lava_shader_material`).
+pub fn lava_material(scene: &mut Scene) -> u32 {
+    scene.add_material(Material { tint: LAVA_TINT, layer: -1, roughness: 1.0, flags: render::scene::LAVA, scale: LAVA_NITS, metal: 0.0 })
 }
 
 impl ArenaView {
@@ -87,16 +102,18 @@ impl ArenaView {
         };
         // Lava: Godot's flowing lava under the floor, visible through holes
         // and past the edge of open arenas.
-        let lava_m = scene.add_material(Material { tint: [1.0; 3], layer: -1, roughness: 1.0, flags: render::scene::LAVA, scale: 12000.0, metal: 0.0 });
+        // Its surface is at the kill height (Godot LAVA_POOL_Y), level with
+        // the bottom of the floor.
+        let lava_m = lava_material(scene);
         let lava = cube(scene, lava_m);
-        scene.add_instance(lava, Affine3A::from_scale_rotation_translation(Vec3::new(900.0, 0.2, 900.0), Quat::IDENTITY, Vec3::new(0.0, -2.3, 0.0)));
+        scene.add_instance(lava, Affine3A::from_scale_rotation_translation(Vec3::new(900.0, 0.2, 900.0), Quat::IDENTITY, Vec3::new(0.0, growing_guns::arena::LAVA_KILL_Y - 0.1, 0.0)));
         scene.mark_no_shadow();
         // The arena lives in slots: a new round refills them, no rebuild.
         let slots = Slots::reserve(scene, ARENA_SLOTS);
         let scorch_m = material(scene, [0.06, 0.055, 0.05], 0.95);
         let blood_m = material(scene, [0.36, 0.02, 0.015], 0.35);
         let marks = Marks { slots: Slots::reserve(scene, MARKS), ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
-        ArenaView { slots, kinds, chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, lights: Vec::new() }
+        ArenaView { slots, kinds, chunk_slots: Vec::new(), statics: Vec::new(), shown_wear: Vec::new(), marks, lights: Vec::new(), lava: Default::default() }
     }
 
     /// Fill the slots, colliders and debris grid from the world's arena (a
@@ -130,6 +147,7 @@ impl ArenaView {
             self.slots.add(scene, self.kinds.beacons[nearest], Affine3A::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, p)).expect("arena slots");
         }
         self.lights = a.lights.iter().take(12).map(|&(p, c)| omni(p, Vec3::from(c) * 900.0, 20.0)).collect();
+        self.lava.set(world);
     }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene) -> Result<(), String> {
@@ -170,6 +188,7 @@ impl ArenaView {
     pub fn break_chunks(&mut self, scene: &mut Scene, phys: &mut Physics, fx: &mut EffectsView, world: &World) {
         let b = &world.breakage;
         if b.is_empty() { return; }
+        self.lava.broken(world, &b.removed);
         for &(i, _) in &b.worn {
             let c = &world.arena.chunks[i as usize];
             let lvl = wear_level(c.wear());

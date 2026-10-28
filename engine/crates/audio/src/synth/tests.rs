@@ -6,6 +6,53 @@ const SR: f32 = 48_000.0;
 
 fn node(unit: Unit, inputs: Vec<In>) -> Node { Node { unit, inputs } }
 
+#[test]
+fn prepared_patch_keeps_defaults_samples_and_active_voices_independent() {
+    let patch = Patch {
+        name: "recorded".into(), params: vec![("rate".into(), 1.0)],
+        nodes: vec![node(Unit::Clip { name: "test".into(), samples: (0..1000).map(|i| (i as f32 * 0.17).sin()).collect::<Vec<_>>().into(), looping: false }, vec![In::P("rate".into())])],
+        out: 0, max_length: 0.1, ..Default::default()
+    };
+    let prepared = patch.compile().unwrap();
+    let mut active = prepared.voice(&[], 7, SR);
+    let (edited, previous) = prepared.with_default("rate", 0.5).unwrap();
+    assert_eq!(previous, 1.0);
+    assert!(prepared.with_default("missing", 0.5).is_err());
+    let old = patch.voice(&[], 7, SR).render_all(0.1);
+    assert_eq!(active.render_all(0.1), old);
+    assert_eq!(prepared.voice(&[], 7, SR).render_all(0.1), old);
+    assert_ne!(edited.voice(&[], 7, SR).render_all(0.1), old);
+    assert_eq!(edited.voice(&[("rate", 1.0)], 7, SR).render_all(0.1), old);
+    for sr in [24_000.0, SR, 96_000.0] {
+        assert_eq!(prepared.voice(&[("rate", 0.73)], 3, sr).render_all(0.1), patch.voice(&[("rate", 0.73)], 3, sr).render_all(0.1));
+    }
+}
+
+#[test]
+fn prepared_graph_preserves_seed_glides_release_and_lifetime() {
+    let mut patch = bell();
+    patch.nodes.push(node(Unit::Expr { src: "x * exp(-t * 2)".into(), vars: vec!["x".into()] }, vec![In::N(patch.out)]));
+    patch.out = patch.nodes.len() - 1;
+    patch.params.push(("duration".into(), 0.6));
+    patch.length_param = Some("duration".into());
+    let prepared = patch.compile().unwrap();
+    for seed in [1, 7, 42] {
+        for sr in [24_000.0, SR, 96_000.0] {
+            let mut direct = patch.voice(&[("freq", 700.0), ("duration", 0.4)], seed, sr);
+            let mut shared = prepared.voice(&[("freq", 700.0), ("duration", 0.4)], seed, sr);
+            for block in 0..1000 {
+                if block == 17 { direct.set("freq", 910.0); shared.set("freq", 910.0); }
+                if block == 80 { direct.release(); shared.release(); }
+                let (mut a, mut b) = ([0.0; BLOCK], [0.0; BLOCK]);
+                let alive = direct.render(&mut a);
+                assert_eq!(alive, shared.render(&mut b));
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "seed {seed}, sample rate {sr}, block {block}");
+                if !alive { break; }
+            }
+        }
+    }
+}
+
 /// A plucked metal hit: noise burst into a modal bank, with a size parameter.
 fn bell() -> Patch {
     Patch {

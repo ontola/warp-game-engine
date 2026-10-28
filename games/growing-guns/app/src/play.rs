@@ -49,6 +49,7 @@ pub struct Gg {
     music: Option<(crate::music::Shared, crate::music::Director)>,
     /// Card menu per local player.
     menus: Vec<app::ui::Menu>,
+    pointer: (app::Pointer, [u32; 2]),
     quit: bool,
     /// Keyboard and mouse off: every local player is on a pad.
     pub no_kbm: bool,
@@ -56,12 +57,20 @@ pub struct Gg {
     pub(crate) scripts: Option<std::sync::Arc<crate::scripts::Scripts>>,
     /// A GameNight party host, when it launched us.
     pub party: Option<crate::party::Party>,
+    /// The music volume last applied.
+    music_db: Option<f32>,
+    /// Where the settings persist (`play` only; scripts keep the defaults).
+    pub settings_file: Option<std::path::PathBuf>,
     /// `menu gamenight`: the GameNight pause menu without a party (scripts).
     gn_preview: Option<crate::party::Settings>,
     /// Party names for the seated players, in slot order.
     pub names: Vec<String>,
     /// Live control (`--live`, live.rs).
     pub(crate) live: Option<Box<crate::live::GgLive>>,
+    /// Rendering only: Godot's sky or a procedural one (crate::sky).
+    sky: crate::sky::Sky,
+    /// A baked sky waiting for the renderer (`Renderer::update_sky`).
+    sky_upload: Option<render::sky::PreparedSky>,
 }
 
 impl Gg {
@@ -70,7 +79,8 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), quit: false, no_kbm: false, scripts, party: None, gn_preview: None, names: Vec::new(), live: None }
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
+            sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -89,6 +99,10 @@ impl Gg {
         self.slots = slots;
         self.menus.clear();
         self.rebuild = true;
+        // The fresh visuals carry Godot's sky: apply the chosen one again.
+        self.sky.applied = None;
+        let choice = self.sky.choice;
+        if let Err(e) = self.set_sky(choice) { eprintln!("sky: {e}"); }
         // A new match for the music too.
         if let Some((_, d)) = &mut self.music { *d = Default::default(); }
     }
@@ -163,15 +177,78 @@ impl Gg {
         self.vis.set_arena(&self.world);
         self.prev = self.world.players.iter().map(|p| p.pos).collect();
     }
+
+    /// Choose the sky (`--sky`, the `sky` command). Godot's is the default.
+    pub fn set_sky(&mut self, choice: crate::sky::SkyChoice) -> Result<(), String> {
+        self.sky.choice = choice;
+        self.sky.live = None;
+        self.apply_sky()?;
+        if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. } | crate::sky::SkyChoice::Rounds(_))) {
+            self.sky.live = Some(render::sky::LiveSky::starting(s, &serde_json::Value::Null));
+        }
+        Ok(())
+    }
+
+    /// Bake and apply the sky for this round now (synchronous; see
+    /// engine/docs/live-sky-controls.md for the cost). Godot's sky needs a
+    /// renderer rebuild; a procedural one updates the renderer in place.
+    fn apply_sky(&mut self) -> Result<(), String> {
+        match self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) {
+            None if self.sky.applied.is_some() => {
+                self.vis.scene.sky = Some(view::sky());
+                self.vis.scene.sky_physical = false;
+                let taa = self.light.taa;
+                self.light = Lighting { taa, ..view::lighting() };
+                self.vis.set_floodlights(1.0);
+                self.sky.applied = None;
+                self.sky_upload = None;
+                self.rebuild = true;
+            }
+            None => {}
+            Some(s) if self.sky.applied != Some(s) => {
+                let prepared = crate::sky::bake(s)?;
+                self.show_sky(prepared);
+            }
+            Some(_) => {}
+        }
+        Ok(())
+    }
+
+    fn show_sky(&mut self, prepared: render::sky::PreparedSky) {
+        prepared.apply_scene(&mut self.vis.scene, &mut self.light);
+        self.vis.set_floodlights(crate::sky::floodlights(prepared.settings.solar().elevation_degrees));
+        self.sky.applied = Some(prepared.settings);
+        if let Some(live) = &mut self.sky.live { live.accepted(prepared.clone()); }
+        self.sky_upload = Some(prepared);
+    }
+
+    /// Rounds and the cycle: request the sky for this round and the game
+    /// clock off the frame loop (a bake is ~0.2 s), take finished bakes.
+    fn cycle_sky(&mut self) {
+        let Some(want) = self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) else { return };
+        let now = std::time::Instant::now();
+        let Some(live) = &mut self.sky.live else { return };
+        if live.desired() != want && let Err(e) = live.request(want, now) { eprintln!("sky: {e}"); }
+        if let Some(prepared) = live.poll(now) { self.show_sky(prepared); }
+    }
 }
 
 /// What the menus show of the session; `party`: GameNight's settings.
-fn menu_ctx<'a>(session: &Session, world: &World, ticket: Option<&'a str>, party: Option<&crate::party::Settings>) -> hud::menus::Ctx<'a> {
+fn menu_ctx<'a>(session: &Session, world: &World, ticket: Option<&'a str>, party: Option<&crate::party::Settings>, names: &[String]) -> hud::menus::Ctx<'a> {
     let status = if world.coop { format!("WAVE SURVIVAL  /  WAVE {}", world.waves.wave) } else { format!("VERSUS  /  ROUND {}  /  FIRST TO {}", world.round, world.rounds_to_win) };
     hud::menus::Ctx {
         ticket, client: session.is_client(), seed: world.arena.seed, bots: world.players.iter().filter(|p| p.bot).count(),
-        players: world.players.len(), coop: world.coop, party: party.map(|s| (s.entries(), status)),
+        players: world.players.len(), coop: world.coop, seats: if party.is_some() { names.to_vec() } else { Vec::new() }, party: party.map(|s| (s.entries(), status)),
     }
+}
+
+/// `$XDG_CONFIG_HOME/growing-guns/settings.json` (or ~/.config/...), or
+/// `%APPDATA%\growing-guns\settings.json` on Windows.
+fn settings_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("APPDATA").map(std::path::PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("growing-guns").join("settings.json"))
 }
 
 /// All local players' controls as one, for the shared menus.
@@ -193,6 +270,13 @@ impl Gg {
         self.ui.open(hud::menus::Screen::Start);
     }
 
+    /// Godot `MenuHelpers.save_settings`.
+    fn save_settings(&self) {
+        let Some(path) = &self.settings_file else { return };
+        if let Some(d) = path.parent() { let _ = std::fs::create_dir_all(d); }
+        if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(&self.ui.settings_json()).unwrap_or_default()) { eprintln!("settings: {e}"); }
+    }
+
     fn act(&mut self, a: hud::menus::Action) {
         use hud::menus::{Action, Screen};
         let host = !self.session.is_client();
@@ -200,7 +284,11 @@ impl Gg {
             Action::None => {}
             Action::Resume => self.ui.open(Screen::Play),
             Action::Settings => { let from_start = self.ui.screen == Screen::Start; self.ui.open(Screen::Settings { from_start }); }
-            Action::Back => { let a = self.ui.back(); self.act(a); }
+            Action::Back => {
+                if matches!(self.ui.screen, Screen::Settings { .. }) { self.save_settings(); }
+                let a = self.ui.back();
+                self.act(a);
+            }
             Action::Quit => self.quit = true,
             Action::Versus | Action::Wave if host => {
                 for s in std::mem::take(&mut self.start_seats) { self.world.set_bot(s, false); }
@@ -208,6 +296,8 @@ impl Gg {
                 self.world.restart_match();
                 self.new_arena();
                 self.hud = hud::Hud::new(&self.world);
+                // A match starts on the round flash, as every round does.
+                self.hud.round_age = 0.0;
                 self.ui.open(Screen::Play);
             }
             Action::Host if matches!(self.session, Session::Local) => match Session::host(false) {
@@ -216,14 +306,14 @@ impl Gg {
                     self.session = s;
                     self.ui.notice = Some("Hosting: ticket written to growing-guns-ticket.txt".into());
                 }
-                Err(e) => self.ui.notice = Some(format!("could not host: {e}")),
+                Err(e) => { self.ui.notice = Some(format!("could not host: {e}")); self.ui.error = Some(format!("Couldn't start the online host: {e}")); }
             },
             Action::Copy => if let Some(t) = self.session.ticket() {
                 let _ = std::fs::write("growing-guns-ticket.txt", t);
                 println!("ticket: {t}");
                 self.ui.notice = Some("Ticket written to growing-guns-ticket.txt".into());
             },
-            Action::Rematch if host => { self.world.restart_match(); self.new_arena(); self.ui.open(Screen::Play); }
+            Action::Rematch if host => { self.world.restart_match(); self.new_arena(); self.hud.round_age = 0.0; self.ui.open(Screen::Play); }
             Action::Advanced => self.ui.open(Screen::Advanced),
             Action::Party(k, v) => {
                 if let Some(p) = &mut self.party { p.set(k, v); } else if let Some(s) = &mut self.gn_preview && let Some(key) = s.key(k) { s.change(&key, &serde_json::json!(v)); }
@@ -254,7 +344,17 @@ impl Gg {
 impl app::Game for Gg {
     fn local_players(&self) -> usize { self.slots.len() }
 
+    fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) {
+        self.pointer = (if self.no_kbm { app::Pointer::default() } else { pointer }, size);
+    }
+
+    fn mouse_capture(&self) -> Option<bool> {
+        Some(!self.no_kbm && !self.ui.is_open() && self.hud.match_over.is_none()
+            && !self.slots.first().and_then(|&s| self.world.players.get(s)).is_some_and(|p| p.offer.is_some()))
+    }
+
     fn tick(&mut self, controls: &[Controls]) {
+        let (pointer, pointer_size) = std::mem::take(&mut self.pointer);
         // Live-control requests, between ticks (also while a party is paused).
         crate::live::tick(self);
         let party_controls = match self.party_tick() {
@@ -262,7 +362,17 @@ impl app::Game for Gg {
             Some(None) => return,
             Some(Some(c)) => Some(c),
         };
+        // Each GameNight player's own aim sensitivity (Godot `stick_sens_for`).
+        let party_controls = party_controls.map(|mut c| {
+            for (k, c) in c.iter_mut().enumerate() { let m = self.names.get(k).map_or(self.ui.stick, |n| self.ui.aim_for(n)); c.look = c.look.map(|v| v * m); }
+            c
+        });
         let controls: &[Controls] = party_controls.as_deref().unwrap_or(controls);
+        // The music volume setting.
+        if let Some((m, _)) = &self.music && self.music_db != Some(self.ui.music_db) {
+            crate::music::lock(m).set_music_db(self.ui.music_db);
+            self.music_db = Some(self.ui.music_db);
+        }
         // Edited mods take effect a quarter second later, between ticks.
         self.since_poll += 1;
         if self.since_poll >= TICK_HZ / 4 {
@@ -274,8 +384,12 @@ impl app::Game for Gg {
         // Menus take the local players' controls (merged) while open.
         let merged = merge(controls);
         let ctx_ticket = self.session.ticket().map(str::to_string);
-        let ctx = menu_ctx(&self.session, &self.world, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()));
-        let action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
+        let ctx = menu_ctx(&self.session, &self.world, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
+        let modal = self.ui.is_open() || self.hud.match_over.is_some();
+        let mut action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
+        if action == hud::menus::Action::None {
+            action = self.ui.pointer(pointer, pointer_size, &self.world, self.hud.match_over, &ctx);
+        }
         self.act(action);
         let menu_open = self.ui.is_open();
         let mut local: Vec<Input> = if menu_open { vec![Input::default(); controls.len()] } else { controls.iter().map(input).collect() };
@@ -290,6 +404,12 @@ impl app::Game for Gg {
             // Godot locks the cards for 0.75 s while they flip open.
             if let (Some(c), Some(i)) = (controls.get(k), local.get_mut(k)) && !menu_open && age >= 0.75 {
                 if let app::ui::MenuEvent::Select(n) = self.menus[k].update(c, n, n, DT) { i.pick = Some(n as u8); }
+                // The mouse belongs to the keyboard seat; global menus always win.
+                if k == 0 && !modal && (pointer.moved || pointer.pressed) && let Some(pos) = pointer.position
+                    && let Some(hit) = self.hud.card_hit(&self.world, s, pointer_size, pos) {
+                    self.menus[k].focus = hit;
+                    if pointer.pressed { i.pick = Some(hit as u8); }
+                }
             }
             if let Some(i) = local.get_mut(k) { i.fire = false; i.jump = false; }
             let focus = (age >= 0.75).then(|| self.menus[k].focus);
@@ -315,8 +435,18 @@ impl app::Game for Gg {
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         let alpha = if self.session.is_client() { self.receive(frame.dt) } else { frame.alpha };
+        self.vis.set_tilt(self.ui.tilt);
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
-        if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() { frame.set_scene(&self.vis.scene, &self.light); self.plates.invalidate(); }
+        if self.sky.live.is_some() { self.cycle_sky(); }
+        if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
+            frame.set_scene(&self.vis.scene, &self.light);
+            self.plates.invalidate();
+            self.sky_upload = None;
+        } else if let Some(prepared) = self.sky_upload.take() {
+            let gpu = frame.gpu;
+            let r = frame.renderer_mut().expect("renderer checked above");
+            if let Err(e) = r.update_sky(gpu, &prepared.sky, &mut self.light) { eprintln!("sky unchanged on the GPU: {e}"); }
+        }
         crate::live::frame(self, frame);
         let r = frame.renderer().expect("scene set above");
         self.vis.flush(frame.gpu, r)?;
@@ -327,6 +457,7 @@ impl app::Game for Gg {
         let drawn: Vec<Vec3> = self.world.players.iter().enumerate().map(|(i, p)| self.prev.get(i).map_or(p.pos, |q| q.lerp(p.pos, alpha))).collect();
         self.plates.update(frame.gpu, r, &self.world, &self.hud, if start { &[] } else { &self.slots }, &drawn)?;
         let mut list = HudDrawList::new(frame.size);
+        self.hud.begin_pointer_frame(frame.size);
         let cameras = if start {
             // The start screen orbits the arena while bots fight (Godot: 82 m out, 34 up, FOV 66).
             let t = self.ui.age * 0.055;
@@ -340,14 +471,15 @@ impl app::Game for Gg {
                 self.hud.view(&mut list, &self.world, s, *rect, self.menus.get(k).map_or(0, |m| m.focus), flash, pad);
             }
             list.begin_overlay();
-            let status = self.session.status(&self.slots);
-            self.hud.global(&mut list, &self.world, status.as_deref());
+            let error = self.session.error().or_else(|| self.ui.error.clone());
+            self.hud.global(&mut list, &self.world, error.as_deref());
             self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect()
         };
         list.begin_overlay();
         let ticket = self.session.ticket().map(str::to_string);
-        let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()));
+        let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
         self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
+        self.hud.round_flash(&mut list);
         let mut light = self.light.clone();
         // The lava flows on the game clock.
         light.time = (self.world.tick as f32 - 1.0 + alpha) * DT;
@@ -387,7 +519,13 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | round | cage | rematch | extend".into()),
+            // Show (or clear with `none`) a network error in the red panel.
+            "net-error" => {
+                let t = cmd.trim_start().strip_prefix("net-error").unwrap_or("").trim();
+                self.ui.error = (t != "none" && !t.is_empty()).then(|| t.to_string());
+                Ok(format!("net error {:?}", self.ui.error))
+            }
             // Party names for the local seats, comma separated (GameNight's `names`).
             "names" => {
                 self.names = cmd.trim_start().strip_prefix("names").unwrap_or("").split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
@@ -420,6 +558,10 @@ impl app::Game for Gg {
                 if id == "none" { self.world.modifier_chance = 0.0; }
                 Ok(format!("modifier {id} from the next round (round: start it now)"))
             }
+            "sky" => {
+                if let Some(name) = w.get(1) { self.set_sky(crate::sky::SkyChoice::parse(name)?)?; }
+                Ok(format!("sky {}", self.sky.choice.name()))
+            }
             "round" => { self.world.next_round(); self.new_arena(); Ok(format!("round {}", self.world.round)) }
             "cage" => { self.world.release_cage(); Ok("cage open".into()) }
             "rematch" => { self.world.restart_match(); self.new_arena(); Ok("rematch".into()) }
@@ -438,7 +580,15 @@ impl app::Game for Gg {
                 self.world.arena = growing_guns::Arena::generate(seed);
                 self.new_arena();
                 let a = &self.world.arena;
-                Ok(format!("arena {seed}: {:?}, {} m, {} chunks", a.variant, a.size, a.chunks.len()))
+                let hole = a.hole.map(|(c, s)| format!(", hole {s:.1} m at {:.1} {:.1}", c.x, c.y)).unwrap_or_default();
+                Ok(format!("arena {seed}: {:?}, {} m, {} chunks{hole}", a.variant, a.size, a.chunks.len()))
+            }
+            "lava" => {
+                // Godot's dev key L; `lava S` as if the leak began S seconds ago.
+                let s = w.get(1).map_or(Ok(0.0), |_| num(1))?;
+                self.world.start_lava_leak_at(s);
+                let l = &self.world.lava;
+                Ok(format!("lava leak at {s} s: inset {:.1} m, surface {:.2} m", l.inset(), l.surface()))
             }
             "cards" => Ok(self.world.cards.enabled().map(|(_, d)| d.id.clone()).collect::<Vec<_>>().join(" ")),
             "give" => {
@@ -496,11 +646,12 @@ impl app::Game for Gg {
             "cards": p.cards.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>(), "offer": p.offer.as_ref().map(|o| o.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>()), "max_health": p.max_health(), "mag": p.mag_size(),
         })).collect();
         Some(serde_json::json!({
-            "tick": w.tick, "round": w.round, "phase": w.phase, "screen": format!("{:?}", self.ui.screen), "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
+            "tick": w.tick, "round": w.round, "phase": w.phase, "screen": format!("{:?}", self.ui.screen), "net": self.session.status(&self.slots), "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
             "projectiles": w.projectiles.len(), "strikes": w.strikes.len(), "pickups": w.pickups.len(),
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
                 "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
             "players": players, "waves": w.coop.then_some(&w.waves), "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
+            "sky": { "choice": self.sky.choice.name(), "applied": self.sky.applied.map(|s| s.metadata()) },
         }).to_string())
     }
 }
@@ -508,7 +659,7 @@ impl app::Game for Gg {
 fn follow_music(music: &mut Option<(crate::music::Shared, crate::music::Director)>, world: &World, slots: &[usize]) {
     let Some((m, director)) = music else { return };
     let mut m = crate::music::lock(m);
-    director.follow(&mut m, world, slots);
+    director.follow(&mut *m, world, slots);
     m.update(DT);
 }
 
@@ -580,8 +731,12 @@ pub fn run(args: &Args) -> Result<(), String> {
     if game.party.is_some() { println!("gamenight: waiting for the party host"); }
     game.live = crate::live::start(args)?.map(Box::new);
     game.no_kbm = args.flag("--no-kbm");
+    // Settings persist like Godot's user://settings.cfg.
+    game.settings_file = settings_path();
+    if let Some(v) = game.settings_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) { game.ui.load_settings(&v); }
     // Godot opens on the start screen; `--skip-menu`, joining and a party go straight in.
     if !args.flag("--skip-menu") && !game.session.is_client() && game.party.is_none() { game.show_start(); }
+    game.set_sky(crate::sky::Sky::from_args(args.value("--sky"))?)?;
     // `--give explosive --give damage`: start local player 1 with these cards.
     for card in args.list.windows(2).filter(|w| w[0] == "--give").map(|w| w[1].clone()) {
         println!("{}", app::Game::command(&mut game, &format!("give 0 {card}"))?);

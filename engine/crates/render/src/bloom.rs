@@ -22,7 +22,7 @@ pub(crate) struct Bloom {
     layout:wgpu::BindGroupLayout,
     pipelines:[wgpu::ComputePipeline;3],
     pub sampler:wgpu::Sampler,
-    fallback:wgpu::Texture,
+    fallback:wgpu::TextureView,
     views:std::sync::Mutex<Vec<Targets>>,
 }
 fn texture(gpu:&Gpu,size:[u32;2])->wgpu::Texture {
@@ -52,10 +52,10 @@ impl Bloom {
         let sampler=gpu.device.create_sampler(&wgpu::SamplerDescriptor {label:Some("view-local bloom filtering"),
             mag_filter:wgpu::FilterMode::Linear,min_filter:wgpu::FilterMode::Linear,
             address_mode_u:wgpu::AddressMode::ClampToEdge,address_mode_v:wgpu::AddressMode::ClampToEdge,..Default::default()});
-        Self {layout,pipelines,sampler,fallback:texture(gpu,[1,1]),views:std::sync::Mutex::new(Vec::new())}
+        Self {layout,pipelines,sampler,fallback:texture(gpu,[1,1]).create_view(&Default::default()),views:std::sync::Mutex::new(Vec::new())}
     }
 
-    pub fn disabled_view(&self)->wgpu::TextureView {self.fallback.create_view(&Default::default())}
+    pub fn disabled_view(&self)->wgpu::TextureView {self.fallback.clone()}
     pub fn set_view_count(&self,count:usize) {self.views.lock().unwrap().truncate(count);}
 
     pub fn render(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,view:usize,input:&wgpu::Texture,

@@ -371,7 +371,10 @@ impl World {
         let pos = ground + Vec3::Y * 1.7;
         let r = Vec2::splat(CLEARANCE_RADIUS);
         let c = Vec2::new(pos.x, pos.z);
-        let blocked = self.arena.grid.query(c - r, c + r).into_iter().any(|k| self.arena.grid.boxes[k].push_out(pos, CLEARANCE_RADIUS, CLEARANCE_HALF).is_some());
+        let mut blocked = false;
+        kern::collide::Boxes::near(&self.arena.grid, c - r, c + r, &mut |_, b| {
+            blocked = blocked || b.push_out(pos, CLEARANCE_RADIUS, CLEARANCE_HALF).is_some();
+        });
         (!blocked).then_some(pos)
     }
 
@@ -543,7 +546,7 @@ fn event_players(e: &Event) -> Vec<usize> {
     match *e {
         Event::Shot { player, .. } | Event::Jump { player } | Event::Dash { player } | Event::Special { player, .. } | Event::Slash { player, .. }
         | Event::Teleport { player, .. } | Event::Phoenix { player } | Event::PickedUp { player, .. } | Event::Picked { player, .. }
-        | Event::Landed { player, .. } | Event::Reload { player, .. } | Event::Empty { player } | Event::Lava { player, .. } => vec![player],
+        | Event::Landed { player, .. } | Event::Reload { player, .. } | Event::Empty { player } | Event::Lava { player, .. } | Event::MinePlanted { player, .. } => vec![player],
         Event::Explosion { owner, .. } => vec![owner],
         Event::Hit { victim, attacker, .. } => vec![victim, attacker],
         Event::Kill { victim, attacker, .. } => vec![victim, attacker.unwrap_or(victim)],
