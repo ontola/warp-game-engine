@@ -7,3 +7,4 @@ pub mod fonts;
 pub mod godot;
 pub mod paint;
 pub mod room;
+pub mod stage;
