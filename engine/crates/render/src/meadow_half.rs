@@ -16,8 +16,12 @@ pub(super) fn target_bytes(full: (u32, u32), far: (u32, u32), motion: bool, half
 pub(super) struct OpaqueTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    source: std::sync::Mutex<crate::frame::resource_cache::BindGroups<1>>,
 }
 impl OpaqueTarget {
+    pub fn resource_cache_stats(&self) -> crate::frame::ResourceCacheStats {
+        self.source.lock().unwrap().stats()
+    }
     pub fn new(gpu: &Gpu, size: (u32, u32)) -> Self {
         let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("half meadow conservative opaque depth"),
@@ -28,7 +32,7 @@ impl OpaqueTarget {
             view_formats:&[],
         });
         let view=texture.create_view(&Default::default());
-        Self {texture,view}
+        Self {texture,view,source:Default::default()}
     }
 }
 pub(super) struct DepthReduce {
@@ -63,10 +67,8 @@ impl DepthReduce {
     /// Starts the existing aggregate-depth interval. The actual far depth pass
     /// ends it, so reduction and the seed copy are included in measured work.
     pub fn encode(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,source:&wgpu::TextureView,target:&OpaqueTarget,time:Option<(&wgpu::QuerySet,u32)>) {
-        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:Some("half meadow opaque input"),layout:&self.layout,
-            entries:&[wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(source)}],
-        });
+        let bind=target.source.lock().unwrap().get(gpu,&self.layout,"half meadow opaque input",
+            &[(0,wgpu::BindingResource::TextureView(source))]);
         let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label:Some("half meadow conservative opaque reduction"),color_attachments:&[],
             depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment {

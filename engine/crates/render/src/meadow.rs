@@ -7,6 +7,7 @@ use crate::{wind::WindState, Gpu, Scene};
 use bytemuck::{Pod, Zeroable};
 use std::sync::Mutex;
 use wgpu::util::DeviceExt;
+use crate::frame::resource_cache::{BindGroups, TextureViews};
 #[path = "meadow_group_cache.rs"]
 pub mod group_cache;
 #[path = "meadow_group_gpu.rs"]
@@ -181,6 +182,12 @@ struct ViewResources {
     prepared_visibility: Option<((u32,u32), Settings)>,
     hidden_used_this_frame: bool,
     pyramid: Option<crate::depth_pyramid::PyramidTarget>,
+    opaque_view: TextureViews<1>,
+    placement_bind: BindGroups<1>,
+    lighting_bind: BindGroups<1>,
+    resolve_bind: BindGroups<1>,
+    merge_bind: BindGroups<1>,
+    resolve_draw: Option<wgpu::Buffer>,
     aggregate: Option<Box<ViewResources>>,
     resolved: Option<Targets>,
     /// Last encoded source transition and far fade, for truthful diagnostics.
@@ -1032,6 +1039,23 @@ impl MeadowRenderer {
         self.aggregate.is_some()
     }
     pub fn visibility_enabled(&self) -> bool { self.visibility.is_some() }
+    pub fn resource_cache_stats(&self) -> crate::frame::ResourceCacheStats {
+        let mut stats = crate::frame::ResourceCacheStats::default();
+        let views = self.views.lock().unwrap();
+        for view in views.iter().flatten() {
+            for resources in std::iter::once(view).chain(view.aggregate.as_deref()) {
+                for other in [resources.opaque_view.stats(), resources.placement_bind.stats(),
+                    resources.lighting_bind.stats(), resources.resolve_bind.stats(), resources.merge_bind.stats()] {
+                    stats.add(other);
+                }
+                if let Some(pyramid) = &resources.pyramid { stats.add(pyramid.resource_cache_stats()); }
+                if let Some(opaque) = resources.targets.as_ref().and_then(|t| t.reduced_opaque.as_ref()) {
+                    stats.add(opaque.resource_cache_stats());
+                }
+            }
+        }
+        stats
+    }
     pub fn skip_hidden_shade_enabled(&self)->bool {self.skip_hidden_shade}
     pub(crate) fn hidden_shade_fallback(gpu:&Gpu)->wgpu::Buffer {visibility::hidden_fallback(gpu)}
     /// Experimental cached pages do not yet preserve previous-frame coverage
@@ -1253,6 +1277,13 @@ impl MeadowRenderer {
             prepared_visibility: None,
             hidden_used_this_frame: false,
             pyramid: None,
+            opaque_view: Default::default(),
+            placement_bind: Default::default(),
+            lighting_bind: Default::default(),
+            resolve_bind: Default::default(),
+            merge_bind: Default::default(),
+            resolve_draw: aggregate.then(|| buffer(gpu, "meadow lighting draw",
+                bytemuck::cast_slice(&[0u32; 4]), wgpu::BufferUsages::UNIFORM)),
             aggregate: if !aggregate && self.aggregate.is_some() {
                 Some(Box::new(self.new_view_kind(gpu, true)))
             } else {
@@ -1511,10 +1542,11 @@ impl MeadowRenderer {
             v.pyramid = Some(self.depth_pyramid.target(gpu, size));
         }
         let pyramid = v.pyramid.as_ref().unwrap();
+        let opaque_view = v.opaque_view.get(opaque_depth);
         if !prepared {self.depth_pyramid.encode(
             gpu,
             enc,
-            &opaque_depth.create_view(&Default::default()),
+            &opaque_view,
             pyramid,
             times[0],
         );}
@@ -1534,10 +1566,8 @@ impl MeadowRenderer {
             .ok_or("meadow view binding missing")?
             .1
             .clone();
-        let gen_view = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("meadow placement view"),
-            layout: &self.generate_view_layout,
-            entries: &[
+        let gen_view = v.placement_bind.entries(gpu, &self.generate_view_layout,
+            "meadow placement view", &[
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: view_resource.clone(),
@@ -1547,7 +1577,7 @@ impl MeadowRenderer {
                     resource: wgpu::BindingResource::TextureView(&pyramid.view),
                 },
             ],
-        });
+        );
         if !prepared {
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1573,17 +1603,7 @@ impl MeadowRenderer {
             },
         );
         }
-        let view = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("meadow lights"),
-            layout: &self.view_layout,
-            entries: &bindings
-                .iter()
-                .map(|(binding, resource)| wgpu::BindGroupEntry {
-                    binding: *binding,
-                    resource: resource.clone(),
-                })
-                .collect::<Vec<_>>(),
-        });
+        let view = v.lighting_bind.get(gpu, &self.view_layout, "meadow lights", bindings);
         if let Some(visibility) = &self.visibility {
             if v.visibility.as_ref().is_none_or(|target| target.size != size) {
                 v.visibility = Some(visibility.target(gpu, size, &v.settings, &v.pool, &self.recipe, self.capacity, self.skip_hidden_shade));
@@ -1696,7 +1716,6 @@ impl MeadowRenderer {
                 0,
                 bytemuck::cast_slice(&initial_draw_args([6, 0, 0])),
             );
-            let opaque_view = opaque_depth.create_view(&Default::default());
             if let Some(groups)=&self.groups {
                 // This interval includes page request/cook GPU work as well
                 // as ordinary far-root placement. Never report only the cheap
@@ -1837,16 +1856,8 @@ impl MeadowRenderer {
                     pass.draw_indirect(&far.args, 0);
                 }
             }
-            let resolve_draw = buffer(
-                gpu,
-                "meadow lighting draw",
-                bytemuck::cast_slice(&[0u32; 4]),
-                wgpu::BufferUsages::UNIFORM,
-            );
-            let resolve = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("meadow aggregate illumination"),
-                layout: &aggregate.resolve_layout,
-                entries: &[
+            let resolve = far.resolve_bind.entries(gpu, &aggregate.resolve_layout,
+                "meadow aggregate illumination", &[
                     wgpu::BindGroupEntry {
                         binding: 0,
                         resource: far.settings.as_entire_binding(),
@@ -1861,7 +1872,7 @@ impl MeadowRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: resolve_draw.as_entire_binding(),
+                        resource: far.resolve_draw.as_ref().unwrap().as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
@@ -1872,7 +1883,7 @@ impl MeadowRenderer {
                         resource: wgpu::BindingResource::TextureView(&ft.depth_view),
                     },
                 ],
-            });
+            );
             {
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("meadow aggregate illumination"),
@@ -1902,10 +1913,8 @@ impl MeadowRenderer {
                 pass.set_bind_group(2, &resolve, &[]);
                 pass.draw(0..3, 0..1);
             }
-            let merge = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("meadow representation merge"),
-                layout: &aggregate.merge_layout,
-                entries: &[
+            let merge = v.merge_bind.entries(gpu, &aggregate.merge_layout,
+                "meadow representation merge", &[
                     wgpu::BindGroupEntry {
                         binding: 0,
                         resource: wgpu::BindingResource::TextureView(&t.color),
@@ -1947,7 +1956,7 @@ impl MeadowRenderer {
                         resource: wgpu::BindingResource::TextureView(&opaque_view),
                     },
                 ],
-            });
+            );
             let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
                 view: &resolved.color,
                 depth_slice: None,

@@ -22,6 +22,7 @@ pub(crate) const SOURCE: &str = r#"
 "#;
 pub(crate) struct DepthPyramid {
     copy: wgpu::ComputePipeline,
+    copy_layout: wgpu::BindGroupLayout,
     reduce: wgpu::ComputePipeline,
 }
 pub(crate) struct PyramidTarget {
@@ -29,6 +30,12 @@ pub(crate) struct PyramidTarget {
     pub view: wgpu::TextureView,
     levels: Vec<wgpu::TextureView>,
     binds: Vec<wgpu::BindGroup>,
+    source: std::sync::Mutex<crate::frame::resource_cache::BindGroups<1>>,
+}
+impl PyramidTarget {
+    pub(crate) fn resource_cache_stats(&self) -> crate::frame::ResourceCacheStats {
+        self.source.lock().unwrap().stats()
+    }
 }
 impl DepthPyramid {
     pub fn new(gpu: &Gpu) -> Self {
@@ -49,8 +56,10 @@ impl DepthPyramid {
                     cache: gpu.pipeline_cache(),
                 })
         };
+        let copy = make("copy_depth");
         Self {
-            copy: make("copy_depth"),
+            copy_layout: copy.get_bind_group_layout(0),
+            copy,
             reduce: make("reduce_depth"),
         }
     }
@@ -103,6 +112,7 @@ impl DepthPyramid {
             view,
             levels,
             binds,
+            source: Default::default(),
         }
     }
     pub fn encode(
@@ -113,10 +123,8 @@ impl DepthPyramid {
         target: &PyramidTarget,
         begin: Option<(&wgpu::QuerySet, u32)>,
     ) {
-        let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("depth pyramid source"),
-            layout: &self.copy.get_bind_group_layout(0),
-            entries: &[
+        let bind = target.source.lock().unwrap().entries(gpu, &self.copy_layout,
+            "depth pyramid source", &[
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(source),
@@ -126,7 +134,7 @@ impl DepthPyramid {
                     resource: wgpu::BindingResource::TextureView(&target.levels[0]),
                 },
             ],
-        });
+        );
         for i in 0..target.levels.len() {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("depth pyramid"),

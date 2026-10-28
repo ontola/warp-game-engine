@@ -24,9 +24,10 @@ net = { path = "../../../engine/crates/net" }
 script = { path = "../../../engine/crates/script" }
 gamenight = { path = "../../../engine/crates/gamenight" }
 tokio = { version = "1", features = ["sync"] }
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 
 
 [dev-dependencies]
+postcard = { version = "1", features = ["alloc"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

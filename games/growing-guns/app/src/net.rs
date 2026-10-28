@@ -4,6 +4,7 @@
 //! Godot version does over godot_iroh.
 use growing_guns::{Arena, Breakage, Input, Snapshot};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub const ALPN: &[u8] = b"warp/growing-guns/1";
 
@@ -22,7 +23,7 @@ pub enum ToClient {
     /// What a tick did to the arena; reliable and in order, never collapsed.
     Broken(Breakage),
     /// `ack`: the last input sequence the host has applied for this client.
-    Snap { ack: u32, snap: Snapshot },
+    Snap { ack: u32, snap: Arc<Snapshot> },
     Full,
 }
 
@@ -36,4 +37,34 @@ pub fn join(ticket: &str, players: u8, lan: bool) -> Result<Client, String> {
     let c = Client::join(ticket, ALPN, lan)?;
     c.send(ToHost::Hello { players });
     Ok(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // Keep the pre-sharing wire schema as a compatibility reference. Arc is
+    // an in-process ownership choice, never a protocol revision.
+    #[derive(Serialize, Deserialize)]
+    enum OwnedClient {
+        Welcome { slots: Vec<usize>, players: usize, arena: Arena, coop: bool },
+        Arena(Arena), Broken(Breakage), Snap { ack: u32, snap: Snapshot }, Full,
+    }
+    #[test]
+    fn shared_snapshot_retains_exact_wire_format_and_shares_across_peers() {
+        let world = growing_guns::World::new(3, &[true; 4]);
+        let snap = Arc::new(world.snapshot());
+        let a = ToClient::Snap { ack: 19, snap: snap.clone() };
+        let b = ToClient::Snap { ack: 27, snap: snap.clone() };
+        assert_eq!(Arc::strong_count(&snap), 3);
+        let bytes = postcard::to_allocvec(&a).unwrap();
+        assert_eq!(bytes, postcard::to_allocvec(&OwnedClient::Snap { ack: 19, snap: (*snap).clone() }).unwrap());
+        let decoded: ToClient = postcard::from_bytes(&bytes).unwrap();
+        let ToClient::Snap { ack, snap: received } = decoded else { panic!("wrong packet kind") };
+        assert_eq!(ack, 19);
+        assert_eq!(Arc::strong_count(&received), 1);
+        let owned = Arc::try_unwrap(received).expect("client owns decoded snapshot without a deep clone");
+        assert_eq!(owned.tick, world.tick);
+        drop(b);
+        assert_eq!(Arc::strong_count(&snap), 2);
+    }
 }

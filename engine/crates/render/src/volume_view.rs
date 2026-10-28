@@ -1,5 +1,5 @@
 //! Shared physical-lighting inputs for terrain/foliage volume passes.
-//! The caller creates one group per camera and reuses it across passes.
+//! The caller retains one group per camera and reuses it across frames/passes.
 //! Scene/volume-specific data and timestamps remain owned by each renderer.
 pub(crate) struct VolumeViewInputs<'a> {
     pub camera: &'a wgpu::Buffer,
@@ -72,15 +72,13 @@ pub(crate) fn create_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 impl VolumeViewInputs<'_> {
-    pub(crate) fn bind(
+    pub(crate) fn bind_cached(
         &self,
-        device: &wgpu::Device,
+        gpu: &crate::Gpu,
         layout: &wgpu::BindGroupLayout,
+        cache: &mut crate::frame::resource_cache::BindGroups<1>,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shared volume lighting view"),
-            layout,
-            entries: &[
+        cache.entries(gpu, layout, "shared volume lighting view", &[
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: self.camera.as_entire_binding(),
@@ -126,6 +124,6 @@ impl VolumeViewInputs<'_> {
                     resource: wgpu::BindingResource::TextureView(self.near_shadow),
                 },
             ],
-        })
+        )
     }
 }

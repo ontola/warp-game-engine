@@ -48,6 +48,7 @@
 #![allow(dead_code)]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 /// Stem files per loop set, in order low, mid, high (`LOOP_SETS`).
 pub const STEM_FILES: [[&str; 3]; 2] = [
@@ -438,7 +439,11 @@ impl Music {
 
     /// Replace the loop sets and start them all together from the top.
     pub fn set_stems(&mut self, sets: Vec<StemSet>) {
-        self.sets = sets.into_iter().map(|s| Set::new(s, self.sr)).collect();
+        self.replace_sets(sets.into_iter().map(|s| Set::new(s, self.sr)).collect());
+    }
+
+    fn replace_sets(&mut self, sets: Vec<Set>) {
+        self.sets = sets;
         let mut z = self.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -707,21 +712,156 @@ impl audio::Source for Music {
     }
 }
 
-/// The music shared between the game thread (controls) and the audio
-/// thread ([`Player`]).
-pub type Shared = Arc<Mutex<Music>>;
+/// Ordered game-time controls. Updates carry the original frame delta; the
+/// audio device never substitutes its own clock for gameplay's music clock.
+#[derive(Clone, Copy)]
+enum ControlCommand {
+    SampleRate(f32), Energy(i32, bool), Duck(f32), Rebake, Muffle(bool),
+    Enabled(bool), Volume(f32), HostMusic(bool), Level(i32, bool),
+    Escalate(i32), StartMatch, StartRound, MusicDb(f32), Update(f32),
+}
 
-pub fn shared(music: Music) -> Shared { Arc::new(Mutex::new(music)) }
+impl ControlCommand {
+    fn apply(self, m: &mut Music) -> bool {
+        match self {
+            Self::SampleRate(rate) => m.set_sample_rate(rate),
+            Self::Energy(level, immediate) => m.set_energy(level, immediate),
+            Self::Duck(amount) => m.duck(amount),
+            Self::Rebake => m.rebake(),
+            Self::Muffle(active) => m.set_muffle(active),
+            Self::Enabled(enabled) => m.set_enabled(enabled),
+            Self::Volume(db) => m.set_volume_db(db),
+            Self::HostMusic(playing) => m.set_host_music_playing(playing),
+            Self::Level(level, immediate) => m.set_level(level, immediate),
+            Self::Escalate(level) => m.escalate(level),
+            Self::StartMatch => m.start_match(),
+            Self::StartRound => return m.start_round(),
+            Self::MusicDb(db) => m.set_music_db(db),
+            Self::Update(dt) => m.update(dt),
+        }
+        false
+    }
+}
 
-/// Lock, also after a panic elsewhere (the state stays usable).
-pub fn lock(m: &Shared) -> std::sync::MutexGuard<'_, Music> { m.lock().unwrap_or_else(|e| e.into_inner()) }
+enum Command { Control(ControlCommand), Stems(Vec<Set>) }
 
-/// [`Shared`] music as an [`audio::Source`] for a mix.
-pub struct Player(pub Shared);
+/// Control producers share only this small game-side object. Its mutex is
+/// never acquired by the audio callback, whose Music is owned by [`Player`].
+pub type Shared = Arc<Mutex<Controls>>;
+
+pub struct Controls {
+    tx: Sender<Command>,
+    retired: Receiver<Vec<Set>>,
+    /// No stems or DSP buffers: synchronous queries follow ordered controls
+    /// even if the device has not pulled the next audio buffer yet.
+    shadow: Music,
+    has_stems: bool,
+    player: Option<Player>,
+}
+
+pub fn shared(music: Music) -> Shared {
+    let (tx, rx) = channel();
+    let (retire, retired) = channel();
+    let mut shadow = Music::new(music.sr, music.seed);
+    shadow.enabled = music.enabled;
+    shadow.music_db = music.music_db;
+    shadow.host_music = music.host_music;
+    shadow.target_energy = music.target_energy;
+    shadow.energy = music.energy;
+    shadow.round_level = music.round_level;
+    shadow.track_age = music.track_age;
+    let has_stems = music.has_stems();
+    Arc::new(Mutex::new(Controls { tx, retired, shadow, has_stems, player: Some(Player { music, rx, retire }) }))
+}
+
+/// Serialize control producers (game and background loader), never rendering.
+pub fn lock(m: &Shared) -> std::sync::MutexGuard<'_, Controls> { m.lock().unwrap_or_else(|e| e.into_inner()) }
+
+impl Controls {
+    fn send(&mut self, command: ControlCommand) -> bool {
+        // A replaced stem bank can own tens of MB. Reclaim it on a control
+        // producer, after the audio callback has relinquished it.
+        while self.retired.try_recv().is_ok() {}
+        let result = command.apply(&mut self.shadow);
+        let _ = self.tx.send(Command::Control(command));
+        result
+    }
+    pub fn set_sample_rate(&mut self, rate: f32) { self.send(ControlCommand::SampleRate(rate)); }
+    pub fn sample_rate(&self) -> f32 { self.shadow.sample_rate() }
+    pub fn has_stems(&self) -> bool { self.has_stems }
+    pub fn set_stems(&mut self, stems: Vec<StemSet>) {
+        self.has_stems = !stems.is_empty();
+        // Allocate buses off the audio thread as well as decoding samples there.
+        let sets = stems.into_iter().map(|s| Set::new(s, self.shadow.sr)).collect();
+        let _ = self.tx.send(Command::Stems(sets));
+    }
+    pub fn set_energy(&mut self, level: i32, immediate: bool) { self.send(ControlCommand::Energy(level, immediate)); }
+    pub fn energy(&self) -> i32 { self.shadow.energy() }
+    pub fn duck(&mut self, amount: f32) { self.send(ControlCommand::Duck(amount)); }
+    pub fn rebake(&mut self) { self.send(ControlCommand::Rebake); }
+    pub fn set_muffle(&mut self, active: bool) { self.send(ControlCommand::Muffle(active)); }
+    pub fn set_enabled(&mut self, enabled: bool) { self.send(ControlCommand::Enabled(enabled)); }
+    pub fn set_volume_db(&mut self, db: f32) { self.send(ControlCommand::Volume(db)); }
+    pub fn set_host_music_playing(&mut self, playing: bool) { self.send(ControlCommand::HostMusic(playing)); }
+    pub fn set_level(&mut self, level: i32, immediate: bool) { self.send(ControlCommand::Level(level, immediate)); }
+    pub fn escalate(&mut self, level: i32) { self.send(ControlCommand::Escalate(level)); }
+    pub fn round_level(&self) -> i32 { self.shadow.round_level() }
+    pub fn start_match(&mut self) { self.send(ControlCommand::StartMatch); }
+    pub fn start_round(&mut self) -> bool { self.send(ControlCommand::StartRound) }
+    pub fn set_music_db(&mut self, db: f32) { self.send(ControlCommand::MusicDb(db)); }
+    pub fn update(&mut self, dt: f32) { self.send(ControlCommand::Update(dt)); }
+}
+
+/// Audio-owned player. Taking it out of Shared is a one-time setup operation;
+/// rendering drains commands without borrowing or locking game-side state.
+pub struct Player { music: Music, rx: Receiver<Command>, retire: Sender<Vec<Set>> }
+
+impl Player {
+    pub fn new(shared: &Shared) -> Player { lock(shared).player.take().expect("music player already attached") }
+
+    fn drain(&mut self) {
+        while let Ok(command) = self.rx.try_recv() {
+            match command {
+                Command::Control(command) => { command.apply(&mut self.music); }
+                Command::Stems(sets) => {
+                    let previous = std::mem::take(&mut self.music.sets);
+                    self.music.replace_sets(sets);
+                    let _ = self.retire.send(previous);
+                }
+            }
+        }
+    }
+}
 
 impl audio::Source for Player {
-    fn render(&mut self, out: &mut [f32], channels: usize) { audio::Source::render(&mut *lock(&self.0), out, channels); }
+    fn render(&mut self, out: &mut [f32], channels: usize) {
+        self.drain();
+        audio::Source::render(&mut self.music, out, channels);
+    }
 }
+
+/// The Director can drive either an offline Music or the queued live controls.
+pub trait DirectedMusic {
+    fn start_match(&mut self);
+    fn start_round(&mut self) -> bool;
+    fn escalate(&mut self, level: i32);
+    fn round_level(&self) -> i32;
+    fn set_muffle(&mut self, active: bool);
+}
+
+macro_rules! directed_music {
+    ($ty:ty) => {
+        impl DirectedMusic for $ty {
+            fn start_match(&mut self) { <$ty>::start_match(self); }
+            fn start_round(&mut self) -> bool { <$ty>::start_round(self) }
+            fn escalate(&mut self, level: i32) { <$ty>::escalate(self, level); }
+            fn round_level(&self) -> i32 { <$ty>::round_level(self) }
+            fn set_muffle(&mut self, active: bool) { <$ty>::set_muffle(self, active); }
+        }
+    };
+}
+directed_music!(Music);
+directed_music!(Controls);
 
 /// The stem folder: `--music DIR`, `GG_MUSIC`, `music` beside the
 /// executable, `music` beside the sound folder (the Godot project's
@@ -760,7 +900,7 @@ const ZIP_RADIUS: f32 = 12.0;
 
 impl Director {
     /// After a tick (or a client snapshot); `slots` are the local players.
-    pub fn follow(&mut self, m: &mut Music, world: &growing_guns::World, slots: &[usize]) {
+    pub fn follow(&mut self, m: &mut impl DirectedMusic, world: &growing_guns::World, slots: &[usize]) {
         use growing_guns::{Event, Phase};
         if !std::mem::replace(&mut self.started, true) { m.start_match(); m.start_round(); }
         let playing = world.phase == Phase::Playing;
@@ -1033,10 +1173,66 @@ mod tests {
         // Through the shared handle, as the speakers pull it.
         let shared = shared(music(5));
         lock(&shared).set_energy(2, true);
-        let mut p = Player(shared.clone());
+        let mut p = Player::new(&shared);
         let mut out = vec![0.0; 2 * 4800];
         for chunk in out.chunks_mut(2 * 480) { lock(&shared).update(0.01); audio::Source::render(&mut p, chunk, 2); }
         assert_eq!(out, stereo);
+    }
+
+    #[test]
+    fn queued_controls_match_direct_audio_and_queries_in_order() {
+        let mut direct = music(5);
+        let shared = shared(music(5));
+        let mut player = Player::new(&shared);
+        let scripts = [
+            vec![ControlCommand::StartMatch, ControlCommand::StartRound, ControlCommand::Escalate(3), ControlCommand::Duck(0.8), ControlCommand::Update(0.1), ControlCommand::Duck(0.2)],
+            vec![ControlCommand::Muffle(true), ControlCommand::Update(0.7), ControlCommand::Rebake, ControlCommand::Level(2, true)],
+            vec![ControlCommand::MusicDb(MUSIC_DB_MIN), ControlCommand::Escalate(3), ControlCommand::Update(0.02), ControlCommand::MusicDb(-10.0)],
+            vec![ControlCommand::Update(MIN_TRACK_SECONDS), ControlCommand::StartRound, ControlCommand::Muffle(false), ControlCommand::SampleRate(44_100.0)],
+        ];
+        for commands in scripts {
+            for command in commands {
+                let expected = command.apply(&mut direct);
+                let mut controls = lock(&shared);
+                assert_eq!(controls.send(command), expected);
+                assert_eq!((controls.energy(), controls.round_level(), controls.sample_rate()), (direct.energy(), direct.round_level(), direct.sample_rate()));
+            }
+            let (mut a, mut b) = (vec![0.0; 4096], vec![0.0; 4096]);
+            audio::Source::render(&mut direct, &mut a, 2);
+            audio::Source::render(&mut player, &mut b, 2);
+            assert_eq!(a.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), b.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
+        }
+        // Loading/replacing stems is ordered with controls, at the device rate.
+        direct.set_stems(test_sets());
+        direct.set_energy(3, true);
+        {
+            let mut controls = lock(&shared);
+            controls.set_stems(test_sets());
+            controls.set_energy(3, true);
+            assert!(controls.has_stems());
+        }
+        let (mut a, mut b) = ([0.0; 1024], [0.0; 1024]);
+        audio::Source::render(&mut direct, &mut a, 2);
+        audio::Source::render(&mut player, &mut b, 2);
+        assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits));
+    }
+
+    #[test]
+    fn rendering_does_not_wait_for_the_game_controls_lock() {
+        let shared = shared(music(5));
+        lock(&shared).set_energy(2, true);
+        let mut player = Player::new(&shared);
+        let controls = lock(&shared);
+        let (tx, rx) = channel();
+        let render = std::thread::spawn(move || {
+            let mut out = [0.0; 1024];
+            audio::Source::render(&mut player, &mut out, 2);
+            tx.send(out.iter().any(|x| *x != 0.0)).unwrap();
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(2));
+        drop(controls);
+        render.join().unwrap();
+        assert_eq!(result, Ok(true), "audio callback must not acquire the controls mutex");
     }
 
     #[test]

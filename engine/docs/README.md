@@ -44,6 +44,7 @@ Status and plans:
 - [Forest rendering roadmap](forest-rendering-roadmap.md) (in Dutch).
 - [A second game on Warp: findings](second-game-findings.md).
 - [Iteration speed measurements, 24 October 2026](iteration-speed-2026-10-24.md).
+- [Engine efficiency changes, 28 October 2026](engine-efficiency-20261028.md): seven runtime fixes, CPU allocation measurements and parity evidence.
 - [Native workspace separation](repository-layout.md).
 - [GPU runner](../GPU_RUNNER.md) and [Windows validation, 2026-10-23](../WINDOWS_VALIDATION.md).
 

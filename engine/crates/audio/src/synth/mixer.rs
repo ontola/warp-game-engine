@@ -4,7 +4,7 @@
 //! limiter). The game thread builds voices (allocation happens there) and
 //! sends them; the audio thread only mixes and hands finished voices back to
 //! be dropped off the audio thread.
-use super::patch::{Patch, Voice};
+use super::patch::{CompiledPatch, PatchSource, Voice};
 use super::reverb::Reverb;
 use super::spatial::{place_into, Ear, Falloff, Layout, Place, MAX_SPEAKERS};
 use super::BLOCK;
@@ -55,7 +55,7 @@ impl Play {
 
 /// A playing sound, to move it, change its parameters or stop it.
 #[derive(Clone)]
-pub struct Handle { id: u32, patch: Arc<Patch> }
+pub struct Handle { id: u32, patch: CompiledPatch }
 
 impl Handle {
     pub fn id(&self) -> u32 { self.id }
@@ -205,14 +205,15 @@ pub fn mixer(layout: Layout, max_voices: usize, sr: f32) -> (SoundSender, Mixer)
 
 impl SoundSender {
     /// Start a patch. The voice is built here, on the calling thread.
-    pub fn play(&self, patch: &Arc<Patch>, params: &[(&str, f32)], play: Play) -> Handle {
+    pub fn play(&self, patch: &Arc<impl PatchSource>, params: &[(&str, f32)], play: Play) -> Handle {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         // Resampling by rate: the voice runs at sr / pitch and plays at sr.
         let voice = patch.voice(params, play.seed, self.sr / play.pitch.clamp(0.05, 20.0));
+        let patch = voice.patch.clone();
         let p = Box::new(Playing { id, voice, play, wait: 0, gains: [0.0; MAX_SPEAKERS], prev: [0.0; MAX_SPEAKERS], lp: 0.0, lp_hz: 20_000.0, lp_target: 20_000.0,
             shelf_lp: 0.0, shelf: 1.0, stopping: false });
         let _ = self.tx.send(Cmd::Play(p));
-        Handle { id, patch: patch.clone() }
+        Handle { id, patch }
     }
     /// Glide a parameter to `value` over the next block.
     pub fn set(&self, h: &Handle, name: &str, value: f32) {

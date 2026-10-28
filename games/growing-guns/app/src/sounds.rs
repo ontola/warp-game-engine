@@ -5,7 +5,7 @@
 //! room-reverb copies, the big-tail hall, loudness culling, the master bus).
 //! The trigger table is sfx.gd's call sites; see the patch headers.
 use audio::sfx::Listener;
-use audio::synth::{self, Ear, Falloff, Handle, Node, Patch, Place, Play, SoundSender, Unit};
+use audio::synth::{self, CompiledPatch, Ear, Falloff, Handle, Node, Patch, Place, Play, SoundSender, Unit};
 use growing_guns::{Event, ExplosionKind, Special, StrikeKind, World, EYE};
 use glam::Vec3;
 use std::collections::HashMap;
@@ -53,7 +53,7 @@ pub fn find_patches(arg: Option<&str>) -> Option<PathBuf> {
 #[derive(Default)]
 pub struct Bank {
     dir: Option<PathBuf>,
-    patches: HashMap<String, Arc<Patch>>,
+    patches: HashMap<String, Arc<CompiledPatch>>,
     files: HashMap<PathBuf, SystemTime>,
     warned: std::collections::HashSet<String>,
     since: f32,
@@ -78,7 +78,7 @@ impl Bank {
             let Ok(t) = e.metadata().and_then(|m| m.modified()) else { continue };
             if self.files.get(&path) == Some(&t) { continue; }
             let fresh = self.files.insert(path.clone(), t).is_some();
-            match synth::lua::load_file(&path) {
+            match synth::lua::load_file(&path).and_then(|ps| ps.iter().map(Patch::compile).collect::<Result<Vec<_>, _>>()) {
                 Ok(ps) => for p in ps {
                     if fresh { out.push(format!("reloaded {}", p.name)); }
                     self.warned.remove(&p.name);
@@ -99,23 +99,21 @@ impl Bank {
     }
 
     /// Every loaded patch (live `play_sound`).
-    pub fn patches(&self) -> impl Iterator<Item = &Arc<Patch>> { self.patches.values() }
+    pub fn patches(&self) -> impl Iterator<Item = &Arc<CompiledPatch>> { self.patches.values() }
 
     /// A loaded patch, without the missing-patch warning.
-    pub fn find(&self, name: &str) -> Option<Arc<Patch>> { self.patches.get(name).cloned() }
+    pub fn find(&self, name: &str) -> Option<Arc<CompiledPatch>> { self.patches.get(name).cloned() }
 
     /// Change a parameter's default for every later play (live `set_param`);
     /// values a trigger passes still win. Editing the file resets it.
     pub fn set_default(&mut self, name: &str, param: &str, value: f32) -> Result<f32, String> {
         let p = self.patches.get_mut(name).ok_or_else(|| format!("no sound {name}"))?;
-        let names = || p.params.iter().map(|q| q.0.as_str()).collect::<Vec<_>>().join(", ");
-        let Some(k) = p.params.iter().position(|q| q.0 == param) else { return Err(format!("{name} has no parameter {param} (has {})", names())) };
-        let old = p.params[k].1;
-        Arc::make_mut(p).params[k].1 = value;
+        let (next, old) = p.with_default(param, value)?;
+        *p = Arc::new(next);
         Ok(old)
     }
 
-    pub fn get(&mut self, name: &str) -> Option<Arc<Patch>> {
+    pub fn get(&mut self, name: &str) -> Option<Arc<CompiledPatch>> {
         let p = self.patches.get(name).cloned();
         if p.is_none() && self.warned.insert(name.to_string()) { eprintln!("sfx: no patch {name}"); }
         p
@@ -182,7 +180,7 @@ pub fn speakers(layout: Option<&str>, music: Option<&crate::music::Shared>) -> R
         let (crowd, cmix) = audio::sfx::sfx(32, rate);
         made = Some((tx, crowd));
         let mut sum: Vec<Box<dyn audio::Source>> = vec![Box::new(mix), Box::new(cmix)];
-        if let Some(m) = music { crate::music::lock(m).set_sample_rate(rate as f32); sum.push(Box::new(crate::music::Player(m.clone()))); }
+        if let Some(m) = music { crate::music::lock(m).set_sample_rate(rate as f32); sum.push(Box::new(crate::music::Player::new(m))); }
         Box::new(audio::Sum::limited(sum, -0.3))
     })?;
     let (tx, crowd) = made.expect("built in open");
@@ -194,16 +192,16 @@ pub fn offline(music: Option<&crate::music::Shared>) -> (Box<dyn audio::Source>,
     let (tx, mix) = synth::mixer(synth::Layout::stereo(), 160, audio::SAMPLE_RATE);
     let (crowd, cmix) = audio::sfx::sfx(32, audio::SAMPLE_RATE);
     let mut sum: Vec<Box<dyn audio::Source>> = vec![Box::new(mix), Box::new(cmix)];
-    if let Some(m) = music { crate::music::lock(m).set_sample_rate(audio::SAMPLE_RATE); sum.push(Box::new(crate::music::Player(m.clone()))); }
+    if let Some(m) = music { crate::music::lock(m).set_sample_rate(audio::SAMPLE_RATE); sum.push(Box::new(crate::music::Player::new(m))); }
     (Box::new(audio::Sum::limited(sum, -0.3)), tx, crowd)
 }
 
 pub struct Sounds {
     tx: SoundSender,
     pub bank: Bank,
-    steps: Vec<Arc<Patch>>,
-    hurts: Vec<Arc<Patch>>,
-    deaths: Vec<Arc<Patch>>,
+    steps: Vec<Arc<CompiledPatch>>,
+    hurts: Vec<Arc<CompiledPatch>>,
+    deaths: Vec<Arc<CompiledPatch>>,
     rng: u32,
     time: f32,
     later: Vec<(f32, Later)>,
@@ -231,9 +229,9 @@ impl Sounds {
         tx.hall(synth::Hall::default());
         // Godot RaytracedReverb: damping .55; room size ~0.18 in the arena.
         tx.room(0.8, 0.55, 1.0);
-        let load = |names: &mut dyn Iterator<Item = String>| -> Vec<Arc<Patch>> {
+        let load = |names: &mut dyn Iterator<Item = String>| -> Vec<Arc<CompiledPatch>> {
             let Some(dir) = samples else { return Vec::new() };
-            names.filter_map(|n| audio::sfx::load_wav(&dir.join(&n)).map_err(|e| eprintln!("sound: {e}")).ok().map(|c| Arc::new(clip_patch(&n, &c)))).collect()
+            names.filter_map(|n| audio::sfx::load_wav(&dir.join(&n)).map_err(|e| eprintln!("sound: {e}")).ok().map(|c| Arc::new(clip_patch(&n, &c).compile().expect("clip patch")))).collect()
         };
         let steps = load(&mut (1..=13).map(|i| format!("Step-{i}.wav")));
         let hurts = load(&mut (1..=12).map(|i| format!("hurt{i}.wav")));
@@ -255,9 +253,9 @@ impl Sounds {
 
     fn next(&mut self) -> u32 { self.rng ^= self.rng << 13; self.rng ^= self.rng >> 17; self.rng ^= self.rng << 5; self.rng }
     fn u(&mut self, a: f32, b: f32) -> f32 { a + (b - a) * (self.next() >> 8) as f32 / (1u32 << 24) as f32 }
-    fn pick(&mut self, set: &[Arc<Patch>]) -> Option<Arc<Patch>> { if set.is_empty() { None } else { let k = self.next() as usize % set.len(); Some(set[k].clone()) } }
+    fn pick(&mut self, set: &[Arc<CompiledPatch>]) -> Option<Arc<CompiledPatch>> { if set.is_empty() { None } else { let k = self.next() as usize % set.len(); Some(set[k].clone()) } }
 
-    fn play(&mut self, world: &World, patch: &Arc<Patch>, params: &[(&str, f32)], g: G) -> Handle {
+    fn play(&mut self, world: &World, patch: &Arc<CompiledPatch>, params: &[(&str, f32)], g: G) -> Handle {
         let seed = self.next();
         let p = match g.at {
             None => {
