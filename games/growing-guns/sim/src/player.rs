@@ -51,6 +51,7 @@ impl World {
             p.pitch = (p.pitch + input.look[1]).clamp(-PITCH_LIMIT, PITCH_LIMIT);
             return;
         }
+        if self.players[i].bot { self.bot_physics(i); return; }
         self.cooldowns(i);
         self.decay_recoil(i);
         self.move_player(i, input);
@@ -105,8 +106,8 @@ impl World {
         p.recoil_pitch *= 1.0 - DT * 9.0;
     }
 
-    /// Gravity, jumps, dash and horizontal movement, then the slide.
-    /// Bots run Godot's bot movement: 8 m/s, no friction branch, no wall jumps.
+    /// Gravity, jumps, dash and horizontal movement, then the slide (humans;
+    /// bots move in `bot.rs`).
     fn move_player(&mut self, i: usize, input: Input) {
         let gravity = GRAVITY * self.gravity_mult();
         let mut ev = Vec::new();
@@ -144,15 +145,19 @@ impl World {
                     ev.push(Event::Jump { player: i });
                 }
             }
-            if input.dash && p.dash_charges > 0 {
-                p.dash_dir = if wish.length_squared() < 1e-4 { fwd } else { wish.normalize() };
-                p.dash_timer = DASH_TIME;
-                p.dash_charges -= 1;
-                if p.weapon.dash_iframes { p.iframes = DASH_TIME; }
-                if p.weapon.dash_spawn_bomb { dash_started = Some(p.pos + Vec3::Y * 0.08); }
-                ev.push(Event::Dash { player: i });
-            }
+            if input.dash && p.dash_charges > 0 { dash_started = Some(if wish.length_squared() < 1e-4 { fwd } else { wish }); }
 
+        }
+        if let Some(d) = dash_started { self.start_dash(i, d); }
+        {
+            let p = &mut self.players[i];
+            let bot = p.bot;
+            let (sy, cy) = p.yaw.sin_cos();
+            let fwd = Vec3::new(-sy, 0.0, -cy);
+            let right = Vec3::new(cy, 0.0, -sy);
+            let mv = Vec2::from(input.mv);
+            let mv = if mv.length() > 1.0 { mv.normalize() } else { mv };
+            let wish = right * mv.x + fwd * mv.y;
             let speed = if bot { BOT_MOVE_SPEED } else { WALK_SPEED };
             let walk = speed * p.weapon.move_speed_mult * p.slow_mult;
             let mut target = wish * walk;
@@ -177,28 +182,45 @@ impl World {
                 p.vel.x = move_toward(p.vel.x, 0.0, f);
                 p.vel.z = move_toward(p.vel.z, 0.0, f);
             }
-            // Floor snap (Godot floor_snap_length 0.1): a grounded body is
-            // pressed down by up to 0.1 m so it stays on the floor and walks
-            // down small steps.
-            let snap = p.on_floor && p.vel.y <= 0.0;
-            if snap { p.vel.y = -FLOOR_SNAP / DT; }
-            // Sub-steps short enough that no thin block is skipped.
-            let contact = MOVER.slide(&self.arena.grid, &mut p.pos, &mut p.vel, DT, 0.25);
-            if snap && !contact.on_floor {
-                // Nothing within the snap: we walked off a ledge; undo the press.
-                p.pos.y += FLOOR_SNAP;
-                p.vel.y = 0.0;
-            }
-            p.on_floor = contact.on_floor;
-            p.wall_normal = if contact.on_floor { None } else { contact.wall_normal };
         }
+        self.slide(i);
         self.events.extend(ev);
-        if let Some(at) = dash_started { self.spawn_dash_bomb(i, at); }
         if dash_ended { self.dash_ended(i); }
     }
 
+    /// Godot `_start_dash`: a charge, the dodge immunity, the backblast bomb.
+    pub(crate) fn start_dash(&mut self, i: usize, dir: Vec3) {
+        let p = &mut self.players[i];
+        if p.dash_charges == 0 { return; }
+        let dir = if dir.length_squared() < 1e-4 { look_dir(p.yaw, 0.0) } else { dir };
+        p.dash_dir = dir.normalize();
+        p.dash_timer = DASH_TIME;
+        p.dash_charges -= 1;
+        if p.weapon.dash_iframes { p.iframes = DASH_TIME; }
+        let bomb = p.weapon.dash_spawn_bomb.then(|| p.pos + Vec3::Y * 0.08);
+        self.events.push(Event::Dash { player: i });
+        if let Some(at) = bomb { self.spawn_dash_bomb(i, at); }
+    }
+
+    /// `move_and_slide` with Godot's floor snap: a grounded body is pressed
+    /// down by up to 0.1 m so it stays on the floor and walks down steps.
+    pub(crate) fn slide(&mut self, i: usize) {
+        let p = &mut self.players[i];
+        let snap = p.on_floor && p.vel.y <= 0.0;
+        if snap { p.vel.y = -FLOOR_SNAP / DT; }
+        // Sub-steps short enough that no thin block is skipped.
+        let contact = MOVER.slide(&self.arena.grid, &mut p.pos, &mut p.vel, DT, 0.25);
+        if snap && !contact.on_floor {
+            // Nothing within the snap: we walked off a ledge; undo the press.
+            p.pos.y += FLOOR_SNAP;
+            p.vel.y = 0.0;
+        }
+        p.on_floor = contact.on_floor;
+        p.wall_normal = if contact.on_floor { None } else { contact.wall_normal };
+    }
+
     /// Godot `_on_dash_ended`: the ninja slash.
-    fn dash_ended(&mut self, i: usize) {
+    pub(crate) fn dash_ended(&mut self, i: usize) {
         let p = &self.players[i];
         if !p.weapon.dash_end_melee || !p.alive || p.ghost { return; }
         let dir = if p.dash_dir.length_squared() > 0.001 { p.dash_dir } else { look_dir(p.yaw, 0.0) };
