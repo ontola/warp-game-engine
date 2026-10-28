@@ -9,6 +9,7 @@
 //! the same as `glam::Quat::from_rotation_y`).
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 
 /// A box rotated about +Y.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -149,6 +150,53 @@ pub struct BoxGrid {
     live: usize,
 }
 
+/// Reusable work space for grid queries and rays. It can be reused across
+/// grids; its storage grows only when a query needs more capacity.
+#[derive(Debug, Default)]
+pub struct BoxGridScratch {
+    visited: Vec<u32>,
+    generation: u32,
+    indices: Vec<usize>,
+}
+
+impl BoxGridScratch {
+    fn begin(&mut self, boxes: usize) {
+        if self.visited.len() < boxes { self.visited.resize(boxes, 0); }
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.visited.fill(0);
+            self.generation = 1;
+        }
+        self.indices.clear();
+    }
+
+    fn first_visit(&mut self, i: usize) -> bool {
+        if self.visited[i] == self.generation { return false; }
+        self.visited[i] = self.generation;
+        true
+    }
+}
+
+thread_local! {
+    // Borrow the pool only to take/return scratch, never during callbacks.
+    // Nested queries get another lease, and separate threads never contend.
+    static GRID_SCRATCH: RefCell<Vec<BoxGridScratch>> = const { RefCell::new(Vec::new()) };
+}
+
+struct GridScratchLease(BoxGridScratch);
+
+impl Drop for GridScratchLease {
+    fn drop(&mut self) {
+        let scratch = std::mem::take(&mut self.0);
+        let _ = GRID_SCRATCH.try_with(|pool| pool.borrow_mut().push(scratch));
+    }
+}
+
+fn with_grid_scratch<R>(f: impl FnOnce(&mut BoxGridScratch) -> R) -> R {
+    let mut lease = GridScratchLease(GRID_SCRATCH.with(|pool| pool.borrow_mut().pop()).unwrap_or_default());
+    f(&mut lease.0)
+}
+
 impl BoxGrid {
     /// Build with `cell` metres per grid cell (about the size of a typical
     /// box; 4 suits rooms of 1 to 3 metre pieces).
@@ -205,14 +253,22 @@ impl BoxGrid {
     /// Live boxes whose footprint may overlap the XZ rectangle, each once,
     /// in index order.
     pub fn query(&self, lo: Vec2, hi: Vec2) -> Vec<usize> {
+        with_grid_scratch(|scratch| self.query_with_scratch(lo, hi, scratch).to_vec())
+    }
+
+    /// Like [`Self::query`], retaining storage between calls instead of
+    /// allocating an owned result. Only unique candidates are sorted.
+    pub fn query_with_scratch<'s>(&self, lo: Vec2, hi: Vec2, scratch: &'s mut BoxGridScratch) -> &'s [usize] {
+        scratch.begin(self.boxes.len());
         let (a, z) = (self.cell_of(lo), self.cell_of(hi));
-        let mut out = Vec::new();
         for cz in a[1]..=z[1] { for cx in a[0]..=z[0] {
-            out.extend(self.cell_items(cx, cz).iter().map(|&i| i as usize).filter(|&i| self.alive[i]));
+            for &i in self.cell_items(cx, cz) {
+                let i = i as usize;
+                if self.alive[i] && scratch.first_visit(i) { scratch.indices.push(i); }
+            }
         } }
-        out.sort_unstable();
-        out.dedup();
-        out
+        scratch.indices.sort_unstable();
+        &scratch.indices
     }
 
     /// Live boxes overlapping a sphere (conservatively, by footprint and height).
@@ -229,14 +285,23 @@ impl BoxGrid {
 
 impl Boxes for BoxGrid {
     fn near(&self, lo: Vec2, hi: Vec2, f: &mut dyn FnMut(usize, &YawBox)) {
-        for i in self.query(lo, hi) { f(i, &self.boxes[i]); }
+        with_grid_scratch(|scratch| {
+            for &i in self.query_with_scratch(lo, hi, scratch) { f(i, &self.boxes[i]); }
+        });
     }
 
-    /// Walks the cells along the ray (2D DDA on XZ) and stops once the best
-    /// hit is nearer than the next cell.
     fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, usize)> {
+        with_grid_scratch(|scratch| self.ray_with_scratch(origin, dir, max, scratch))
+    }
+}
+
+impl BoxGrid {
+    /// Walks the cells along the ray (2D DDA on XZ) and stops once the best
+    /// hit is nearer than the next cell. Reuses visited-box storage, with
+    /// constant-time duplicate checks even for rays crossing many cells.
+    pub fn ray_with_scratch(&self, origin: Vec3, dir: Vec3, max: f32, scratch: &mut BoxGridScratch) -> Option<(f32, Vec3, usize)> {
+        scratch.begin(self.boxes.len());
         let mut best: Option<(f32, Vec3, usize)> = None;
-        let mut tested: Vec<u32> = Vec::new();
         let p = (Vec2::new(origin.x, origin.z) - self.origin) / self.cell;
         let d = Vec2::new(dir.x, dir.z);
         let mut c = [p.x.floor() as i32, p.y.floor() as i32];
@@ -255,8 +320,7 @@ impl Boxes for BoxGrid {
             let inside = c[0] >= 0 && c[1] >= 0 && c[0] < self.dims[0] && c[1] < self.dims[1];
             if inside {
                 for &i in self.cell_items(c[0], c[1]) {
-                    if !self.alive[i as usize] || tested.contains(&i) { continue; }
-                    tested.push(i);
+                    if !self.alive[i as usize] || !scratch.first_visit(i as usize) { continue; }
                     if let Some((t, n)) = self.boxes[i as usize].ray(origin, dir, best.map_or(max, |h| h.0)) {
                         if best.is_none_or(|h| t < h.0 || (t == h.0 && (i as usize) < h.2)) { best = Some((t, n, i as usize)); }
                     }
@@ -310,16 +374,109 @@ impl Mover {
         let travel = *vel * dt;
         let steps = (travel.length() / max_step).ceil().max(1.0) as usize;
         let mut c = Contact::default();
+        for _ in 0..steps {
+            *pos += travel / steps as f32;
+            for _ in 0..4 {
+                let mut any = false;
+                let r = Vec2::splat(self.radius + 0.01);
+                // Keep the pre-pass bounds fixed while pushes change pos.
+                let center = Vec2::new(pos.x, pos.z);
+                boxes.near(center - r, center + r, &mut |_, b| {
+                    let Some(push) = b.push_out(*pos, self.radius, self.half_height) else { return };
+                    any = true;
+                    *pos += push;
+                    if push.y > 0.0 {
+                        c.on_floor = true;
+                        vel.y = vel.y.max(0.0);
+                    } else if push.y < 0.0 {
+                        c.on_ceiling = true;
+                        vel.y = vel.y.min(0.0);
+                    } else {
+                        let n = push.normalize();
+                        let into = vel.dot(n);
+                        if into < 0.0 { *vel -= n * into; }
+                        c.wall_normal = Some(n);
+                    }
+                });
+                if !any { break; }
+            }
+        }
+        if c.on_floor { c.wall_normal = None; }
+        c
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Preserve the pre-scratch algorithms as behavioral/performance references.
+    fn legacy_query(grid: &BoxGrid, lo: Vec2, hi: Vec2) -> Vec<usize> {
+        let (a, z) = (grid.cell_of(lo), grid.cell_of(hi));
+        let mut out = Vec::new();
+        for cz in a[1]..=z[1] { for cx in a[0]..=z[0] {
+            out.extend(grid.cell_items(cx, cz).iter().map(|&i| i as usize).filter(|&i| grid.alive[i]));
+        } }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    fn legacy_ray(grid: &BoxGrid, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, usize)> {
+        let mut best: Option<(f32, Vec3, usize)> = None;
+        let mut tested: Vec<u32> = Vec::new();
+        let p = (Vec2::new(origin.x, origin.z) - grid.origin) / grid.cell;
+        let d = Vec2::new(dir.x, dir.z);
+        let mut c = [p.x.floor() as i32, p.y.floor() as i32];
+        let step = [if d.x >= 0.0 { 1 } else { -1 }, if d.y >= 0.0 { 1 } else { -1 }];
+        // Ray distance (along `dir`, metres) to the next cell boundary per axis.
+        let next = |k: usize, c: i32| -> f32 {
+            let dk = if k == 0 { d.x } else { d.y };
+            if dk.abs() < 1e-9 { return f32::INFINITY; }
+            let pk = if k == 0 { p.x } else { p.y };
+            let edge = if dk > 0.0 { (c + 1) as f32 } else { c as f32 };
+            (edge - pk) * grid.cell / dk
+        };
+        let delta = [if d.x.abs() < 1e-9 { f32::INFINITY } else { grid.cell / d.x.abs() }, if d.y.abs() < 1e-9 { f32::INFINITY } else { grid.cell / d.y.abs() }];
+        let mut t_next = [next(0, c[0]), next(1, c[1])];
+        loop {
+            let inside = c[0] >= 0 && c[1] >= 0 && c[0] < grid.dims[0] && c[1] < grid.dims[1];
+            if inside {
+                for &i in grid.cell_items(c[0], c[1]) {
+                    if !grid.alive[i as usize] || tested.contains(&i) { continue; }
+                    tested.push(i);
+                    if let Some((t, n)) = grid.boxes[i as usize].ray(origin, dir, best.map_or(max, |h| h.0)) {
+                        if best.is_none_or(|h| t < h.0 || (t == h.0 && (i as usize) < h.2)) { best = Some((t, n, i as usize)); }
+                    }
+                }
+            }
+            let t_exit = t_next[0].min(t_next[1]);
+            if t_exit > max || best.is_some_and(|h| h.0 <= t_exit) { break; }
+            // Outside the grid and moving away: nothing more to find.
+            let leaving = (c[0] < 0 && step[0] < 0) || (c[0] >= grid.dims[0] && step[0] > 0)
+                || (c[1] < 0 && step[1] < 0) || (c[1] >= grid.dims[1] && step[1] > 0);
+            if leaving { break; }
+            let k = if t_next[0] < t_next[1] { 0 } else { 1 };
+            c[k] += step[k];
+            t_next[k] += delta[k];
+        }
+        best
+    }
+
+    fn legacy_slide<B: Boxes + ?Sized>(mover: &Mover, boxes: &B, pos: &mut Vec3, vel: &mut Vec3, dt: f32, max_step: f32) -> Contact {
+        let travel = *vel * dt;
+        let steps = (travel.length() / max_step).ceil().max(1.0) as usize;
+        let mut c = Contact::default();
         let mut near: Vec<(usize, YawBox)> = Vec::new();
         for _ in 0..steps {
             *pos += travel / steps as f32;
             for _ in 0..4 {
                 let mut any = false;
                 near.clear();
-                let r = Vec2::splat(self.radius + 0.01);
+                let r = Vec2::splat(mover.radius + 0.01);
                 boxes.near(Vec2::new(pos.x, pos.z) - r, Vec2::new(pos.x, pos.z) + r, &mut |i, b| near.push((i, *b)));
                 for (_, b) in &near {
-                    let Some(push) = b.push_out(*pos, self.radius, self.half_height) else { continue };
+                    let Some(push) = b.push_out(*pos, mover.radius, mover.half_height) else { continue };
                     any = true;
                     *pos += push;
                     if push.y > 0.0 {
@@ -341,11 +498,6 @@ impl Mover {
         if c.on_floor { c.wall_normal = None; }
         c
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn ray_hits_rotated_box_on_the_right_face() {
@@ -373,6 +525,167 @@ mod tests {
         let mut r = move || { s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (s >> 40) as f32 / (1u64 << 24) as f32 };
         (0..n).map(|_| YawBox::new(Vec3::new(r() * 80.0 - 40.0, r() * 6.0, r() * 80.0 - 40.0),
             Vec3::new(0.3 + r() * 3.0, 0.3 + r() * 3.0, 0.3 + r() * 3.0), if r() < 0.5 { 0.0 } else { r() * 6.28 })).collect()
+    }
+
+    struct LegacyGrid<'a>(&'a BoxGrid);
+
+    impl Boxes for LegacyGrid<'_> {
+        fn near(&self, lo: Vec2, hi: Vec2, f: &mut dyn FnMut(usize, &YawBox)) {
+            for i in legacy_query(self.0, lo, hi) { f(i, &self.0.boxes[i]); }
+        }
+        fn ray(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, usize)> {
+            legacy_ray(self.0, origin, dir, max)
+        }
+    }
+
+    #[test]
+    fn scratch_matches_legacy_after_removal_restoration_and_grid_changes() {
+        let mut grid = BoxGrid::new(scatter(600, 7), 2.0);
+        let other = BoxGrid::new(scatter(17, 93), 4.0);
+        let empty = BoxGrid::new(Vec::new(), 1.0);
+        let mut scratch = BoxGridScratch::default();
+        let mut state = 73u64;
+        let mut r = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let mover = Mover { radius: 0.4, half_height: 0.9 };
+        for k in 0..2000 {
+            let changed = (r() * grid.len() as f32) as usize;
+            if k % 3 == 0 { grid.restore(changed); } else { grid.remove(changed); }
+            let origin = Vec3::new(r() * 160.0 - 80.0, r() * 12.0 - 2.0, r() * 160.0 - 80.0);
+            let center = Vec2::new(origin.x, origin.z);
+            let extent = Vec2::new(r() * 10.0, r() * 10.0);
+            let (lo, hi) = (center - extent, center + extent);
+            let want = legacy_query(&grid, lo, hi);
+            assert_eq!(grid.query_with_scratch(lo, hi, &mut scratch), want, "query {k}");
+            let dir = match k % 11 {
+                0 => Vec3::NEG_Y,
+                1 => Vec3::X,
+                2 => Vec3::NEG_Z,
+                _ => Vec3::new(r() - 0.5, r() - 0.5, r() - 0.5).normalize(),
+            };
+            let max = r() * 120.0;
+            assert_eq!(grid.ray_with_scratch(origin, dir, max, &mut scratch), legacy_ray(&grid, origin, dir, max), "ray {k}");
+            // Alternate grid sizes without clearing or shrinking scratch.
+            assert_eq!(other.query_with_scratch(lo, hi, &mut scratch), legacy_query(&other, lo, hi));
+            assert!(empty.query_with_scratch(lo, hi, &mut scratch).is_empty());
+            if k % 5 == 0 {
+                // Start near geometry so the randomized moves include contacts.
+                let b = grid.boxes[changed];
+                let (mut p, mut v) = (b.center + Vec3::new(r() - 0.5, r() * 3.0, r() - 0.5), dir * 12.0);
+                let (mut q, mut w) = (p, v);
+                let a = mover.slide(&grid, &mut p, &mut v, 1.0 / 30.0, 0.25);
+                let b = legacy_slide(&mover, &LegacyGrid(&grid), &mut q, &mut w, 1.0 / 30.0, 0.25);
+                assert_eq!((a, p, v), (b, q, w), "move {k}");
+            }
+        }
+        scratch.generation = u32::MAX;
+        scratch.visited.fill(1);
+        assert_eq!(grid.query_with_scratch(Vec2::splat(-100.0), Vec2::splat(100.0), &mut scratch), legacy_query(&grid, Vec2::splat(-100.0), Vec2::splat(100.0)));
+        assert_eq!(scratch.generation, 1);
+    }
+
+    #[test]
+    fn grid_ray_ties_and_boundaries_keep_the_original_index() {
+        let b = YawBox::new(Vec3::new(2.0, 0.0, 0.0), Vec3::splat(2.0), 0.0);
+        let mut grid = BoxGrid::new(vec![b, b, YawBox::new(Vec3::new(5.0, 0.0, 0.0), Vec3::splat(2.0), 0.4)], 1.0);
+        assert_eq!(grid.ray(Vec3::ZERO, Vec3::X, 20.0).unwrap().2, 0);
+        grid.remove(0);
+        assert_eq!(grid.ray(Vec3::ZERO, Vec3::X, 20.0).unwrap().2, 1);
+        grid.restore(0);
+        for origin in [Vec3::ZERO, Vec3::new(-10.0, 0.0, 0.0), Vec3::new(2.0, 10.0, 0.0), Vec3::new(grid.origin.x, 0.0, grid.origin.y)] {
+            for dir in [Vec3::X, Vec3::NEG_X, Vec3::NEG_Y, Vec3::new(1.0, 0.0, 1.0).normalize()] {
+                for max in [0.0, 1.0, 20.0] { assert_eq!(grid.ray(origin, dir, max), legacy_ray(&grid, origin, dir, max)); }
+            }
+        }
+    }
+
+    #[test]
+    fn near_callbacks_can_reenter_and_share_a_grid_across_threads() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<BoxGrid>();
+        let grid = BoxGrid::new(scatter(40, 11), 3.0);
+        let (lo, hi) = (Vec2::splat(-100.0), Vec2::splat(100.0));
+        let expected = legacy_query(&grid, lo, hi);
+        let mut seen = Vec::new();
+        grid.near(lo, hi, &mut |i, _| {
+            seen.push(i);
+            let mut nested = Vec::new();
+            grid.near(lo, hi, &mut |j, _| nested.push(j));
+            assert_eq!(nested, expected);
+            assert_eq!(grid.ray(Vec3::ZERO, Vec3::X, 100.0), legacy_ray(&grid, Vec3::ZERO, Vec3::X, 100.0));
+        });
+        assert_eq!(seen, expected);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..50 { assert_eq!(grid.query(lo, hi), expected); }
+                });
+            }
+        });
+        let panicked = std::panic::catch_unwind(|| grid.near(lo, hi, &mut |_, _| panic!("test callback")));
+        assert!(panicked.is_err());
+        assert_eq!(grid.query(lo, hi), expected);
+    }
+
+    #[test]
+    fn warm_queries_rays_and_moves_retain_scratch_allocations() {
+        let mut boxes = scatter(600, 7);
+        boxes.push(YawBox::new(Vec3::new(0.0, -0.5, 0.0), Vec3::new(100.0, 1.0, 100.0), 0.0));
+        let grid = BoxGrid::new(boxes, 2.0);
+        let (lo, hi) = (Vec2::splat(-100.0), Vec2::splat(100.0));
+        grid.near(lo, hi, &mut |_, _| {});
+        let storage = || GRID_SCRATCH.with(|pool| {
+            let pool = pool.borrow();
+            let s = pool.last().unwrap();
+            (pool.len(), pool.capacity(), s.visited.as_ptr(), s.visited.capacity(), s.indices.as_ptr(), s.indices.capacity())
+        });
+        let initial = storage();
+        let mover = Mover { radius: 0.4, half_height: 0.9 };
+        for k in 0..500 {
+            let x = k as f32 * 0.1 - 25.0;
+            let center = Vec2::new(x, 0.0);
+            grid.near(center - Vec2::ONE, center + Vec2::ONE, &mut |_, _| {});
+            std::hint::black_box(grid.ray(Vec3::new(x, 10.0, 0.0), Vec3::NEG_Y, 30.0));
+            let (mut p, mut v) = (Vec3::new(x, 0.8, 0.0), Vec3::new(1.0, -3.0, 1.0));
+            std::hint::black_box(mover.slide(&grid, &mut p, &mut v, 1.0 / 60.0, 0.25));
+        }
+        assert_eq!(storage(), initial, "all scratch vectors retain their buffers after warmup");
+    }
+
+    #[test]
+    #[ignore = "manual CPU microbenchmark; run with --ignored --nocapture"]
+    fn collision_scratch_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let mut boxes = scatter(8000, 7);
+        boxes.push(YawBox::new(Vec3::new(0.0, -0.5, 0.0), Vec3::new(100.0, 1.0, 100.0), 0.0));
+        let grid = BoxGrid::new(boxes, 2.0);
+        let mover = Mover { radius: 0.4, half_height: 0.9 };
+        grid.near(Vec2::splat(-100.0), Vec2::splat(100.0), &mut |_, _| {});
+        for round in 0..3 {
+        for legacy in if round % 2 == 0 { [true, false] } else { [false, true] } {
+            let start = Instant::now();
+            for k in 0..10000 {
+                let c = Vec2::new((k % 100) as f32 * 0.8 - 40.0, (k / 100) as f32 * 0.8 - 40.0);
+                if legacy { black_box(legacy_query(&grid, c - Vec2::splat(3.0), c + Vec2::splat(3.0))); }
+                else { grid.near(c - Vec2::splat(3.0), c + Vec2::splat(3.0), &mut |i, _| { black_box(i); }); }
+            }
+            let query = start.elapsed();
+            let start = Instant::now();
+            for k in 0..4000 {
+                let origin = Vec3::new(-60.0, 20.0, (k % 100) as f32 * 0.8 - 40.0);
+                black_box(if legacy { legacy_ray(&grid, origin, Vec3::X, 120.0) } else { grid.ray(origin, Vec3::X, 120.0) });
+            }
+            let ray = start.elapsed();
+            let start = Instant::now();
+            for k in 0..4000 {
+                let (mut p, mut v) = (Vec3::new((k % 100) as f32 * 0.8 - 40.0, 0.8, 0.0), Vec3::new(1.0, -3.0, 1.0));
+                black_box(if legacy { legacy_slide(&mover, &LegacyGrid(&grid), &mut p, &mut v, 1.0 / 60.0, 0.25) } else { mover.slide(&grid, &mut p, &mut v, 1.0 / 60.0, 0.25) });
+            }
+            eprintln!("collision round={round} legacy={legacy}: query_10000={query:?} ray_4000={ray:?} mover_4000={:?}", start.elapsed());
+        }
+        }
     }
 
     #[test]

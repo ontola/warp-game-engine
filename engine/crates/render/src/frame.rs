@@ -12,6 +12,31 @@ use wgpu::util::DeviceExt;
 #[path = "cutout_mips.rs"]
 mod cutout_mips;
 
+#[path = "resource_cache.rs"]
+pub(crate) mod resource_cache;
+pub use resource_cache::CacheStats as ResourceCacheStats;
+
+#[derive(Default)]
+struct FrameResources {
+    targets: [resource_cache::TextureViews<1>; 3],
+    near_shadow: resource_cache::TextureViews<1>,
+    history: resource_cache::TextureViews<2>,
+    result: resource_cache::TextureViews<2>,
+    shade: resource_cache::BindGroups<1>,
+    taa: resource_cache::BindGroups<2>,
+    tone: resource_cache::BindGroups<2>,
+    volume: resource_cache::BindGroups<1>,
+}
+impl FrameResources {
+    fn stats(&self) -> ResourceCacheStats {
+        let mut stats = ResourceCacheStats::default();
+        for target in &self.targets { stats.add(target.stats()); }
+        for other in [self.near_shadow.stats(), self.history.stats(), self.result.stats(),
+            self.shade.stats(), self.taa.stats(), self.tone.stats(), self.volume.stats()] { stats.add(other); }
+        stats
+    }
+}
+
 #[path = "texture_mips.rs"]
 pub(crate) mod texture_mips;
 
@@ -579,6 +604,9 @@ pub struct Renderer {
     view_targets: std::sync::Mutex<Vec<Option<((u32, u32), wgpu::Texture, wgpu::Texture, wgpu::Texture)>>>,
     /// Per view: the gi, view light, TAA and tone uniforms, rewritten each frame.
     view_uniforms: std::sync::Mutex<Vec<[Option<wgpu::Buffer>; 4]>>,
+    frame_resources: std::sync::Mutex<Vec<FrameResources>>,
+    output_view: std::sync::Mutex<resource_cache::TextureViews<1>>,
+    shadow_view: std::sync::Mutex<resource_cache::TextureViews<1>>,
     volume_view_layout: wgpu::BindGroupLayout,
     cull: wgpu::ComputePipeline,
     split_sun_cull: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline)>,
@@ -1501,6 +1529,9 @@ impl Renderer {
             foliage_planners: Default::default(),
             view_targets: Default::default(),
             view_uniforms: Default::default(),
+            frame_resources: Default::default(),
+            output_view: Default::default(),
+            shadow_view: Default::default(),
             volume_view_layout,
             cull,
             split_sun_cull,
@@ -2097,6 +2128,15 @@ impl Renderer {
         Ok(())
     }
 
+    /// Upload the complete actor palette set in one submission-ordered write.
+    pub fn set_skinning_palettes<'a>(&self, gpu: &Gpu,
+        palettes: impl ExactSizeIterator<Item = &'a [Mat4]> + Clone) -> Result<(), String> {
+        if palettes.len() == 0 && self.skinning.is_none() { return Ok(()); }
+        self.skinning.as_ref().ok_or("scene has no weighted actors")?.set_palettes(gpu, palettes)?;
+        self.invalidate_dynamic_shadow();
+        Ok(())
+    }
+
     /// Replace the procedural car surfaces, one per `Scene::car_materials`
     /// entry: retuning paint, wear or grime needs no new renderer.
     pub fn set_car_materials(&self, gpu: &Gpu, materials: &[crate::scene::GpuCarMaterial]) -> Result<(), String> {
@@ -2169,6 +2209,15 @@ impl Renderer {
 
     /// Successful whole-lighting reloads since this renderer was constructed.
     pub fn shader_generation(&self) -> u64 { self.shader_generation }
+
+    /// Live frame-cache counters; steady-frame deltas expose unexpected GPU
+    /// resource creation without enabling timestamp profiling or readback.
+    pub fn resource_cache_stats(&self) -> ResourceCacheStats {
+        let mut stats = self.output_view.lock().unwrap().stats();
+        stats.add(self.shadow_view.lock().unwrap().stats());
+        for resources in self.frame_resources.lock().unwrap().iter() { stats.add(resources.stats()); }
+        stats
+    }
 
     /// Forget TAA history: the next frame starts from scratch (a camera cut).
     pub fn reset_history(&self) {
@@ -2639,7 +2688,7 @@ impl Renderer {
             }
             None => tex2d("ldr", out_w, out_h, wgpu::TextureFormat::Rgba8Unorm, ldr_usage),
         };
-        let ldr_v = ldr.create_view(&Default::default());
+        let ldr_v = self.output_view.lock().unwrap().get(&ldr);
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
         if self.meadow_brick_fixture.is_some() && (dlss_on || light.taa > 0.5) {
@@ -2833,7 +2882,7 @@ impl Renderer {
             // uploads and a sun direction numerically equal to the old one.
             cache.as_mut().unwrap().content.invalidate();
         }
-        let shadow_v = cache.as_ref().unwrap().tex.create_view(&Default::default());
+        let shadow_v = self.shadow_view.lock().unwrap().get(&cache.as_ref().unwrap().tex);
         let shadow_t = self.view_targets(gpu, "sun view", 0);
         let mut shadow_uniform=view_uniform(svp, shared_eye, SHADOW_SIZE as f32 / (2.0 * extent),
             [shadow_lod, 1.0, 1.0, MAX_VISIBLE as f32], [SHADOW_SIZE as f32; 4], light.alpha_cut);
@@ -3046,7 +3095,10 @@ impl Renderer {
         foliage_planners.resize_with(views.len(), Default::default);
         cpu.mark("shadows and prepasses");
         let mut keep = Vec::new(); // per view: targets and textures, alive until the readback
+        let mut frame_resources = self.frame_resources.lock().unwrap();
+        frame_resources.resize_with(views.len(), FrameResources::default);
         for (vi, view) in views.iter().enumerate() {
+            let resources = &mut frame_resources[vi];
             let timing_start = names.len();
             let (w, h) = if let Some(backend) = &mut up.backend {
                 backend.optimal_size(mode, (view.w, view.h))?
@@ -3093,14 +3145,14 @@ impl Renderer {
                 near_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
                 if self.receiver_demand.enabled() {near_uniform.extra[2]=-((vi+2)as f32);}
                 gpu.queue.write_buffer(&near.targets.uniform, 0, bytemuck::bytes_of(&near_uniform));
-                let texture_view = near.tex.create_view(&Default::default());
+                let texture_view = resources.near_shadow.get(&near.tex);
                 self.cull_and_raster(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull",RasterPass::Sun);
                 view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
                 view_light.near_shadow[2] = 1.0;
                 texture_view
             } else {
                 // Valid but unused binding when the feature is disabled.
-                cache.as_ref().unwrap().tex.create_view(&Default::default())
+                shadow_v.clone()
             };
             let light_buf = self.view_uniform(gpu, vi, 1, "view light", bytemuck::bytes_of(&view_light));
             // Per-view targets live across frames while the view keeps its size:
@@ -3120,7 +3172,7 @@ impl Renderer {
                     }
                 }
             };
-            let (vis_v, depth_v, hdr_v) = (vis.create_view(&Default::default()), depth.create_view(&Default::default()), hdr.create_view(&Default::default()));
+            let (vis_v, depth_v, hdr_v) = (resources.targets[0].get(&vis), resources.targets[1].get(&depth), resources.targets[2].get(&hdr));
             cpu.mark("view lights and targets");
             // Reversed-Z infinite perspective.
             let view_m = Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
@@ -3175,7 +3227,7 @@ impl Renderer {
             }
             let taa_pass = if taa_on {
                 let hh = hist.as_mut().unwrap();
-                let (src, dst) = (hh.tex[hh.cur].create_view(&Default::default()), hh.tex[1 - hh.cur].create_view(&Default::default()));
+                let (src, dst) = (resources.history.get(&hh.tex[hh.cur]), resources.history.get(&hh.tex[1 - hh.cur]));
                 let u = TaaUniform {
                     inv_view_proj: vp.inverse().to_cols_array_2d(),
                     prev_view_proj: hh.prev_view_proj.to_cols_array_2d(),
@@ -3192,9 +3244,10 @@ impl Renderer {
             let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},pad2:0 }));
             cpu.mark("view setup");
             let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
-                bind(
+                resources.taa.get(
                     gpu,
                     &self.taa_layout,
+                    "cached TAA view",
                     &[
                         (0, wgpu::BindingResource::TextureView(&hdr_v)),
                         (1, wgpu::BindingResource::TextureView(&depth_v)),
@@ -3260,9 +3313,10 @@ impl Renderer {
                 gpu.queue.write_buffer(&b.0, 0, bytemuck::cast_slice(&[0u32, 1, 1, 0]));
                 b
             };
-            let shade_bind = bind(
+            let shade_bind = resources.shade.get(
                 gpu,
                 &self.shade_layout,
+                "cached shade view",
                 &[
                     (0, main.uniform.as_entire_binding()),
                     (1, main.visible.as_entire_binding()),
@@ -3333,7 +3387,7 @@ impl Renderer {
                             sky:&self.sky_view, heightfield:&self.heightfield, gi:&gi_buf,
                             canopy:&density_view, canopy_sampler:&self.density_sampler,
                             near_shadow:&near_view,
-                        }.bind(&gpu.device,&self.volume_view_layout));
+                        }.bind_cached(gpu,&self.volume_view_layout,&mut resources.volume));
                     let far_grass = self.far_grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).map(|grass| {
                         let time = self.query.as_ref().map(|(qs,_,_)| {
                             let i=timestamp_pair(&mut ts); names.push("far grass volume"); (qs,i)
@@ -3549,8 +3603,8 @@ impl Renderer {
                 let time=self.query.as_ref().map(|(qs,_,_)|{names.push("bloom");(qs,timestamp_pair(&mut ts))});
                 self.bloom.render(gpu,&mut enc,vi,result,exposure,time)
             }else{self.bloom.disabled_view()};
-            let result_view = result.create_view(&Default::default());
-            let tone_bind = bind(gpu, &self.tone_layout, &[
+            let result_view = resources.result.get(result);
+            let tone_bind = resources.tone.get(gpu, &self.tone_layout, "cached tone view", &[
                 (0, wgpu::BindingResource::TextureView(&result_view)),
                 (1, wgpu::BindingResource::TextureView(&ldr_v)), (2, tone_buf.as_entire_binding()),
                 (3,wgpu::BindingResource::TextureView(&bloom_view)),(4,wgpu::BindingResource::Sampler(&self.bloom.sampler))]);

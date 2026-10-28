@@ -500,7 +500,9 @@ mod tests {
         for (file, text) in [("API.md", api_doc()), ("types.d.luau", api_types())] {
             let path = dir.join(file);
             if std::env::var_os("BLESS").is_some() { std::fs::write(&path, &text).unwrap(); }
-            assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), text, "{file} is stale: BLESS=1 cargo test -p growing-guns-app api_doc");
+            // Git may check out the generated files with Windows line endings.
+            let actual = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+            assert_eq!(actual, text, "{file} is stale: BLESS=1 cargo test -p growing-guns-app api_doc");
         }
     }
 

@@ -5,12 +5,13 @@
 use crate::net::{Client, Host, HostEvent, ToClient, ToHost};
 use growing_guns::{Breakage, Event, Input, World};
 use std::collections::VecDeque;
-use tokio::sync::mpsc::UnboundedSender;
+use net::HostSender;
+use std::sync::Arc;
 
 pub struct Remote {
     client: u64,
     slots: Vec<usize>,
-    tx: UnboundedSender<ToClient>,
+    tx: HostSender<ToClient>,
     pending: Vec<Input>,
     seq: u32,
 }
@@ -19,7 +20,7 @@ pub enum Session {
     Local,
     /// `joining`: connected clients that have not said hello yet.
     /// `arena`: send the arena with the next snapshot (replaced between ticks).
-    Host { host: Host, remotes: Vec<Remote>, joining: Vec<(u64, UnboundedSender<ToClient>)>, arena: bool },
+    Host { host: Host, remotes: Vec<Remote>, joining: Vec<(u64, HostSender<ToClient>)>, arena: bool },
     Client { client: Client, ack: u32, seq: u32, sent: VecDeque<(u32, Vec<Input>)>, base_look: Vec<(f32, f32)>, closed: bool, broken: Breakage },
 }
 
@@ -126,8 +127,9 @@ impl Session {
     /// Host: after a step, stream the result.
     pub fn publish(&mut self, world: &World) {
         let Session::Host { remotes, arena: replaced, .. } = self else { return };
+        if remotes.is_empty() { *replaced = false; return; }
         let arena = (std::mem::take(replaced) || world.events.contains(&Event::NewArena)).then(|| world.arena.clone());
-        let snap = world.snapshot();
+        let snap = Arc::new(world.snapshot());
         for r in remotes.iter() {
             if !world.breakage.is_empty() { let _ = r.tx.send(ToClient::Broken(world.breakage.clone())); }
             if let Some(a) = &arena { let _ = r.tx.send(ToClient::Arena(a.clone())); }
@@ -164,7 +166,7 @@ impl Session {
                 Ok(ToClient::Arena(a)) => { world.arena = a; arena = true; *broken = Breakage::default(); }
                 Ok(ToClient::Broken(b)) => { world.arena.apply_breakage(&b); broken.extend(b); }
                 Ok(ToClient::Snap { ack: a, snap }) => {
-                    world.apply(snap);
+                    world.apply(Arc::unwrap_or_clone(snap));
                     world.breakage = std::mem::take(broken);
                     *ack = a;
                     while sent.front().is_some_and(|(s, _)| *s <= a) { sent.pop_front(); }

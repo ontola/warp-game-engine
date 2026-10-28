@@ -13,7 +13,7 @@ const JUMP: &str = "pistol_jump";
 
 #[derive(Default)]
 struct Motion { idle: f32, run: f32, blend: f32, jump: Option<f32> }
-struct Actor { handle: ActorHandle, palette: Vec<Mat4>, motion: Motion }
+struct Actor { handle: ActorHandle, palette: Vec<Mat4>, run_palette: Vec<Mat4>, motion: Motion }
 
 pub struct Characters {
     models: Vec<Character>,
@@ -59,7 +59,8 @@ impl Characters {
         let handle = model.add_actor(scene, model_transform(Vec3::new(0.0, -500.0, 0.0), 0.0))?;
         let palette = model.sample(IDLE, 0.0, true)?;
         let mesh = handle.mesh;
-        self.actors.push(Actor { handle, palette, motion: Motion::default() });
+        let run_palette = vec![Mat4::IDENTITY; palette.len()];
+        self.actors.push(Actor { handle, palette, run_palette, motion: Motion::default() });
         self.hands.push(None);
         Ok(mesh)
     }
@@ -98,13 +99,13 @@ impl Characters {
             let interpolate = (alpha.clamp(0.0, 1.0) - 1.0) * DT;
             let socket = if let Some(age) = m.jump {
                 let time = (age + interpolate).max(0.0);
-                actor.palette = model.sample(JUMP, time, false).expect("validated jump clip");
+                model.sample_into(JUMP, time, false, &mut actor.palette).expect("validated jump clip");
                 model.sample_socket(JUMP, "RightHand", time, false).expect("validated jump socket")
             } else {
                 let idle_time = (m.idle + interpolate).max(0.0);
-                let idle = model.sample(IDLE, idle_time, true).expect("validated idle clip");
-                let run = model.sample(RUN, m.run, true).expect("validated run clip");
-                actor.palette = idle.into_iter().zip(run).map(|(a,b)| mix(a,b,m.blend)).collect();
+                model.sample_into(IDLE, idle_time, true, &mut actor.palette).expect("validated idle clip");
+                model.sample_into(RUN, m.run, true, &mut actor.run_palette).expect("validated run clip");
+                for (idle, run) in actor.palette.iter_mut().zip(&actor.run_palette) { *idle = mix(*idle, *run, m.blend); }
                 mix(model.sample_socket(IDLE, "RightHand", idle_time, true).expect("validated idle socket"),
                     model.sample_socket(RUN, "RightHand", m.run, true).expect("validated run socket"), m.blend)
             };
@@ -114,7 +115,8 @@ impl Characters {
     }
 
     pub fn flush(&self, gpu: &Gpu, renderer: &Renderer) -> Result<(), String> {
-        for actor in &self.actors { renderer.set_skinning_palette(gpu, actor.handle.actor, &actor.palette)?; }
-        Ok(())
+        // Actors are reserved consecutively into the scene's skinning table.
+        debug_assert!(self.actors.iter().enumerate().all(|(i, actor)| actor.handle.actor == i));
+        renderer.set_skinning_palettes(gpu, self.actors.iter().map(|actor| actor.palette.as_slice()))
     }
 }

@@ -16,7 +16,7 @@ pub mod spatial;
 pub mod units;
 
 pub use mixer::{mixer, Compressor, Cull, Hall, Handle, Master, Mixer, Play, SoundSender};
-pub use patch::{In, Node, Patch, Voice};
+pub use patch::{CompiledPatch, In, Node, Patch, PatchSource, Voice};
 pub use spatial::{Ear, Falloff, Layout, Place, Speaker};
 pub use units::{register_engines, EngineSpec, FilterMode, Mode, NoiseColor, Point, Shape, Unit};
 

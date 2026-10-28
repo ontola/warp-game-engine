@@ -430,6 +430,13 @@ impl Character {
     }
 
     pub fn sample(&self, name: &str, seconds: f32, looping: bool) -> Result<Vec<Mat4>, String> {
+        let mut palette = vec![Mat4::IDENTITY; self.joint_count];
+        self.sample_into(name, seconds, looping, &mut palette)?;
+        Ok(palette)
+    }
+
+    /// Reuse the caller's joint palette during per-frame animation sampling.
+    pub fn sample_into(&self, name: &str, seconds: f32, looping: bool, palette: &mut [Mat4]) -> Result<(), String> {
         if !seconds.is_finite() {
             return Err("animation sample time must be finite".into());
         }
@@ -439,10 +446,11 @@ impl Character {
             .find(|c| c.name == name)
             .ok_or_else(|| format!("missing character clip {name}"))?;
         let (first, second, t) = frame_pair(clip.frames, clip.duration, seconds, looping);
-        skinning::blend_palette(
+        skinning::blend_palette_into(
             &clip.matrices[first * self.joint_count..(first + 1) * self.joint_count],
             &clip.matrices[second * self.joint_count..(second + 1) * self.joint_count],
             t,
+            palette,
         )
     }
 
@@ -677,6 +685,20 @@ mod tests {
             .validate(&scene.vertices, &scene.instances)
             .unwrap();
         let sphere = scene.meshes[a.mesh].sphere;
+        let mut reused = vec![Mat4::IDENTITY; character.joint_count];
+        let pointer = reused.as_ptr();
+        for step in 0..128 {
+            let time = step as f32 * 0.017;
+            let clip = &character.clips[0];
+            let (first, second, t) = frame_pair(clip.frames, clip.duration, time, true);
+            character.sample_into(&clip.name, time, true, &mut reused).unwrap();
+            for (joint, m) in reused.iter().enumerate() {
+                assert_eq!(*m, clip.matrices[first * character.joint_count + joint] * (1.0 - t)
+                    + clip.matrices[second * character.joint_count + joint] * t);
+            }
+            assert_eq!(pointer, reused.as_ptr());
+        }
+        assert!(character.sample_into(&character.clips[0].name, 0.0, true, &mut []).is_err());
         for source in &character.surfaces[0].vertices {
             let p = skinning::skin_position(
                 Vec3::from(source.pos),

@@ -549,7 +549,7 @@ impl app::Game for Gg {
 fn follow_music(music: &mut Option<(crate::music::Shared, crate::music::Director)>, world: &World, slots: &[usize]) {
     let Some((m, director)) = music else { return };
     let mut m = crate::music::lock(m);
-    director.follow(&mut m, world, slots);
+    director.follow(&mut *m, world, slots);
     m.update(DT);
 }
 
