@@ -1715,6 +1715,7 @@ dependencies = [
  "app",
  "assets",
  "audio",
+ "fastnoise-lite",
  "gamenight",
  "glam 0.31.1",
  "growing-guns",
