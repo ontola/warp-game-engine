@@ -25,6 +25,10 @@ fn specs() -> Value {
     ])
 }
 
+/// The spec labels, in `specs()` order.
+const LABELS: [&str; 7] = ["Rounds to win (next match)", "Modifiers % (next round)", "Card time, s (next pick)", "Gravity % (next round)",
+    "Bullet drop % (next round)", "Body shot damage % (next round)", "Random pickup rate % (next round)"];
+
 /// The party's settings: whole numbers within each spec's range.
 #[derive(Clone, Debug)]
 pub struct Settings(Vec<(String, i64, i64, i64)>);
@@ -45,6 +49,9 @@ impl Settings {
         true
     }
     pub fn value(&self, key: &str) -> i64 { self.0.iter().find(|e| e.0 == key).map_or(0, |e| e.1) }
+    pub fn key(&self, k: usize) -> Option<String> { self.0.get(k).map(|e| e.0.clone()) }
+    /// Every setting as the ADVANCED menu shows it: label, value, min, max.
+    pub fn entries(&self) -> Vec<(&'static str, i64, i64, i64)> { self.0.iter().zip(LABELS).map(|(e, l)| (l, e.1, e.2, e.3)).collect() }
     /// Match settings (a new match).
     pub fn apply_match(&self, w: &mut World) { w.rounds_to_win = self.value("rounds_to_win") as u32; self.apply_round(w); }
     /// Next-round settings.
@@ -141,6 +148,13 @@ impl Party {
             }
         }
         out
+    }
+
+    /// Change setting `k` from the game's own menu (Godot `_gn_open_advanced`):
+    /// here at once, and through GameNight so the phones and lobby show it.
+    pub fn set(&mut self, k: usize, value: i64) {
+        let Some(key) = self.settings.0.get(k).map(|e| e.0.clone()) else { return };
+        if self.settings.change(&key, &json!(value)) && let Err(e) = self.client.send_json(json!({"type": "set_setting", "key": key, "value": value})) { eprintln!("gamenight: {e}"); }
     }
 
     /// The match is built: tell the host, then wait frozen for `start`.

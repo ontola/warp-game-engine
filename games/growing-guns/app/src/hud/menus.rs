@@ -3,7 +3,10 @@
 //! buttons, and its Tab scoreboard. Focus moves with the D-pad, arrows,
 //! WASD or stick; A/Space/Enter takes, B/Esc backs out; left and right move
 //! sliders. Online joining by pasted ID has no text entry here: join with
-//! `play --join TICKET` (the menu says so).
+//! `play --join TICKET` (the menu says so). Under GameNight the pause
+//! menu is Godot's `_build_gamenight_pause_menu`: a slab down the left with
+//! the logo, what is being played, and RESUME, NEW MATCH, the other mode,
+//! AI PLAYERS, ADVANCED (the party's match settings) and SETTINGS.
 use super::style::*;
 use super::{Hud, DESIGN_H};
 use app::{Buttons, Controls};
@@ -11,20 +14,34 @@ use growing_guns::{Phase, World};
 use render::hud::HudDrawList;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Screen { Play, Start, Pause, Settings { from_start: bool } }
+pub enum Screen { Play, Start, Pause, Settings { from_start: bool }, Advanced }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action { None, Resume, Versus, Wave, Settings, Back, Host, Copy, Quit, Rematch, Extend }
+pub enum Action { None, Resume, Versus, Wave, Settings, Back, Host, Copy, Quit, Rematch, Extend, AddBot, RemoveBot, Advanced,
+    /// A party setting (index into `Ctx::party`) changed to this value.
+    Party(usize, i64) }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'static str, Action, bool), Row(&'static [(&'static str, Action)]), Slider(Slider), Gap(f32), Rule }
+enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'static str, Action, bool), Row(&'static [(&'static str, Action)]), Slider(Slider), Gap(f32), Rule,
+    /// Bots: - count +, with this label on the left (empty: none).
+    Bots(&'static str),
+    /// A GameNight setting slider (index into `Ctx::party`).
+    Party(usize) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Field { Ticket, Join }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Slider { Mouse, Stick }
 
 /// What the menus need to know about the session.
-pub struct Ctx<'a> { pub ticket: Option<&'a str>, pub client: bool, pub seed: u64, pub bots: usize }
+pub struct Ctx<'a> {
+    pub ticket: Option<&'a str>, pub client: bool, pub seed: u64, pub bots: usize,
+    /// Everyone in the match, bots too.
+    pub players: usize,
+    pub coop: bool,
+    /// Under GameNight: the party's settings (label, value, min, max) and
+    /// the status line under the logo.
+    pub party: Option<(Vec<(&'static str, i64, i64, i64)>, String)>,
+}
 
 #[derive(Clone, Debug)]
 pub struct Menus {
@@ -40,6 +57,8 @@ pub struct Menus {
     pub scoreboard: bool,
     held_x: i32,
     repeat: f32,
+    /// The match-over buttons are unlocked and took their first focus.
+    rematch_armed: bool,
     /// Entry within a focused row.
     col: usize,
     /// A short line under the menu ("ticket written to ...").
@@ -48,7 +67,7 @@ pub struct Menus {
 
 impl Default for Menus {
     fn default() -> Self {
-        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, col: 0, notice: None }
+        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None }
     }
 }
 
@@ -64,10 +83,21 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Text("Or join a friend's match:", label), Item::Field(Field::Join),
             Item::Note("1 / 2 selects · Esc exits"),
         ],
+        Screen::Pause if ctx.party.is_some() => vec![
+            Item::Button("RESUME", Action::Resume, true), Item::Button("NEW MATCH", Action::Rematch, !ctx.client),
+            if ctx.coop { Item::Button("SWITCH TO VERSUS", Action::Versus, !ctx.client) } else { Item::Button("SWITCH TO WAVE SURVIVAL", Action::Wave, !ctx.client) },
+            Item::Bots("AI PLAYERS"), Item::Button("ADVANCED", Action::Advanced, true), Item::Button("SETTINGS", Action::Settings, true),
+        ],
+        Screen::Advanced => {
+            let n = ctx.party.as_ref().map_or(0, |p| p.0.len());
+            let mut v: Vec<Item> = (0..n).map(Item::Party).collect();
+            v.push(Item::Button("BACK", Action::Back, true));
+            v
+        }
         Screen::Pause => vec![
             Item::Text("Share your match with friends:", label), Item::Field(Field::Ticket), Item::Row(SHARE),
             Item::Text("Or join a friend:", label), Item::Field(Field::Join), Item::Note("Paste an iroh game ID"),
-            Item::Text("Bots:", label), Item::Note("BOTS"), Item::Gap(4.0),
+            Item::Text("Bots:", label), Item::Bots(""), Item::Gap(4.0),
             Item::Button("VERSUS", Action::Versus, !ctx.client), Item::Button("WAVE SURVIVAL", Action::Wave, !ctx.client),
             Item::Button("SETTINGS", Action::Settings, true), Item::Button("RESUME", Action::Resume, true), Item::Button("EXIT GAME", Action::Quit, true),
         ],
@@ -78,6 +108,10 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
     }
 }
 
+/// The bot stepper's - (0) and + (1): host or offline, not in coop (the
+/// waves bring their own), 0..=6 bots and 8 players at most.
+fn bots_enabled(j: usize, ctx: &Ctx) -> bool { !ctx.client && !ctx.coop && if j == 0 { ctx.bots > 0 && ctx.players > 1 } else { ctx.players < 8 } }
+
 fn row_enabled(t: &str, ctx: &Ctx) -> bool { !(ctx.client || (t == "COPY" && ctx.ticket.is_none()) || (t == "HOST ONLINE" && ctx.ticket.is_some())) }
 
 /// Focusable lines: item index and the enabled entries in it (a row has several).
@@ -85,7 +119,11 @@ fn lines(items: &[Item], ctx: &Ctx) -> Vec<(usize, Vec<usize>)> {
     let mut out = Vec::new();
     for (k, it) in items.iter().enumerate() {
         match it {
-            Item::Button(_, _, true) | Item::Slider(_) => out.push((k, vec![0])),
+            Item::Button(_, _, true) | Item::Slider(_) | Item::Party(_) => out.push((k, vec![0])),
+            Item::Bots(_) => {
+                let on: Vec<usize> = [0, 1].into_iter().filter(|&j| bots_enabled(j, ctx)).collect();
+                if !on.is_empty() { out.push((k, on)); }
+            }
             Item::Row(r) => {
                 let on: Vec<usize> = (0..r.len()).filter(|&j| row_enabled(r[j].0, ctx)).collect();
                 if !on.is_empty() { out.push((k, on)); }
@@ -112,8 +150,10 @@ impl Menus {
             // The match-over buttons: shown 1.4 s after the banner, usable 1 s later.
             if let Some(t) = match_over && t >= 2.4 {
                 let b = match_buttons(world);
+                // Unlocked: focus goes to 5 MORE ROUNDS, else REMATCH (Godot `_grab_rematch_overlay_focus`).
+                if !self.rematch_armed { self.rematch_armed = true; self.rematch.focus = if world.coop { 0 } else { 1 }; }
                 if let app::ui::MenuEvent::Select(k) = self.rematch.update(c, b.len(), 1, dt) { return b[k].1; }
-            } else { self.rematch = Default::default(); }
+            } else { self.rematch = Default::default(); self.rematch_armed = false; }
             if c.pressed.has(Buttons::START) { self.open(Screen::Pause); }
             return Action::None;
         }
@@ -132,6 +172,10 @@ impl Menus {
             *v = (*v * 20.0).round() / 20.0;
             return Action::None;
         }
+        if let Some((k, _)) = focus && let Item::Party(i) = list[k] && step != 0 && let Some((v, lo, hi)) = ctx.party.as_ref().and_then(|p| p.0.get(i)).map(|e| (e.1, e.2, e.3)) {
+            let next = (v + step as i64).clamp(lo, hi);
+            return if next != v { Action::Party(i, next) } else { Action::None };
+        }
         let ev = self.menu.update(&Controls { mv: [0.0, c.mv[1]], held: Buttons(c.held.0 & !(Buttons::LEFT | Buttons::RIGHT)), pressed: Buttons(c.pressed.0 & !(Buttons::LEFT | Buttons::RIGHT)), ..*c }, foci.len(), 1, dt);
         // Rows move left and right within themselves.
         if let Some((_, on)) = &focus && step != 0 { self.col = (self.col as i32 + step).clamp(0, on.len() as i32 - 1) as usize; }
@@ -140,7 +184,7 @@ impl Menus {
             app::ui::MenuEvent::Select(n) => {
                 let (k, on) = &foci[n];
                 let j = on[self.col.min(on.len() - 1)];
-                match list[*k] { Item::Button(_, a, _) => a, Item::Row(r) => r[j].1, _ => Action::None }
+                match list[*k] { Item::Button(_, a, _) => a, Item::Row(r) => r[j].1, Item::Bots(_) => if j == 0 { Action::RemoveBot } else { Action::AddBot }, _ => Action::None }
             }
             app::ui::MenuEvent::Back => self.back(),
             _ => Action::None,
@@ -151,6 +195,7 @@ impl Menus {
     pub fn back(&mut self) -> Action {
         match self.screen {
             Screen::Settings { from_start } => { self.open(if from_start { Screen::Start } else { Screen::Pause }); Action::None }
+            Screen::Advanced => { self.open(Screen::Pause); Action::None }
             Screen::Pause => Action::Resume,
             Screen::Start => Action::Quit,
             Screen::Play => { self.open(Screen::Pause); Action::None }
@@ -176,6 +221,8 @@ impl Menus {
         match self.screen {
             Screen::Play => {}
             Screen::Start => self.start(d, ctx, u, clip),
+            Screen::Pause if ctx.party.is_some() => self.party_menu(d, ctx, "", u, clip),
+            Screen::Advanced => self.party_menu(d, ctx, "ADVANCED", u, clip),
             Screen::Pause => self.pause(d, world, ctx, u, clip),
             Screen::Settings { from_start } => self.settings(d, ctx, from_start, u, clip),
         }
@@ -187,8 +234,9 @@ impl Menus {
     }
 
     fn start(&self, d: &mut HudDrawList, ctx: &Ctx, u: f32, clip: [f32; 4]) {
-        d.rect(clip, [0.02, 0.01, 0.015, 0.22], clip);
-        logo(d, [clip[2] * 0.5, 115.0 * u], 190.0 * u, clip);
+        // Godot's Dim (black 0.32) and the logo, 440 x 190 from y 20.
+        d.rect(clip, [0.0, 0.0, 0.0, 0.32], clip);
+        logo(d, [clip[2] * 0.5 - 220.0 * u, 20.0 * u, 440.0 * u, 190.0 * u], clip);
         let list = items(Screen::Start, ctx);
         let (pw, ph) = (350.0 * u, 392.0 * u);
         let panel = [52.0 * u, clip[3] * 0.5 - ph * 0.5, pw, ph];
@@ -201,7 +249,7 @@ impl Menus {
 
     fn pause(&self, d: &mut HudDrawList, _world: &World, ctx: &Ctx, u: f32, clip: [f32; 4]) {
         d.rect(clip, [0.0, 0.0, 0.0, 0.55], clip);
-        logo(d, [clip[2] * 0.5, 105.0 * u], 180.0 * u, clip);
+        logo(d, [clip[2] * 0.5 - 250.0 * u, 15.0 * u, 500.0 * u, 180.0 * u], clip);
         let list = items(Screen::Pause, ctx);
         let inner = column_height(&list, u);
         let pw = 350.0 * u + 52.0 * u;
@@ -212,6 +260,22 @@ impl Menus {
         // The arena seed, bottom right.
         Label::new(BODY, 13.0 * u, [0.72, 0.72, 0.85, 0.85]).outline(3.0 * u, [0.0, 0.0, 0.0, 0.85]).right()
             .draw(d, &format!("arena seed {}", ctx.seed), clip[2] - 12.0 * u, clip[3] - 18.0 * u, clip);
+    }
+
+    /// Godot `_gn_scaffold`: the slab, the logo, the status line, an
+    /// optional heading and the item column (400 wide from x 38).
+    fn party_menu(&self, d: &mut HudDrawList, ctx: &Ctx, heading: &str, u: f32, clip: [f32; 4]) {
+        slab(d, u, clip);
+        logo(d, [40.0 * u, 28.0 * u, 408.0 * u, 170.0 * u], clip);
+        let status = ctx.party.as_ref().map_or("", |p| p.1.as_str());
+        Label::new(bold(), 20.0 * u, RED).draw(d, status, 56.0 * u, 224.0 * u, clip);
+        let mut top = 254.0 * u;
+        if !heading.is_empty() {
+            Label::poster(34.0 * u).shadow(3.0 * u, RED).draw(d, heading, 52.0 * u, top + 24.0 * u, clip);
+            top += 54.0 * u;
+        }
+        let list = items(self.screen, ctx);
+        self.column(d, &list, [38.0 * u, top, 400.0 * u, clip[3] - top], ctx, false, u, clip);
     }
 
     fn settings(&self, d: &mut HudDrawList, ctx: &Ctx, from_start: bool, u: f32, clip: [f32; 4]) {
@@ -238,7 +302,9 @@ impl Menus {
     fn column(&self, d: &mut HudDrawList, list: &[Item], r: [f32; 4], ctx: &Ctx, gothic: bool, u: f32, clip: [f32; 4]) {
         let focus = self.focused(list, ctx);
         let mut y = r[1];
-        let sep = 8.0 * u;
+        // The GameNight menu: big left-set buttons 46 tall, 4 apart.
+        let gn = ctx.party.is_some() && matches!(self.screen, Screen::Pause | Screen::Advanced);
+        let sep = if gn { 4.0 } else { 8.0 } * u;
         let cream = [0.94, 0.84, 0.64, 1.0];
         for (k, it) in list.iter().enumerate() {
             let fk = |j: usize| focus == Some((k, j));
@@ -282,10 +348,38 @@ impl Menus {
                     y += fh + sep;
                 }
                 Item::Button(t, _, enabled) => {
-                    let bh = 32.0 * u;
+                    let bh = if gn { 46.0 } else { 32.0 } * u;
                     let br = [r[0], y, r[2], bh];
-                    if gothic { gothic_button(d, br, t, fk(0), enabled, u, clip) } else { arena_button(d, br, t, fk(0), enabled, 1.0, u, clip) }
+                    if gothic { gothic_button(d, br, t, fk(0), enabled, u, clip) } else if gn { gn_button(d, br, t, fk(0), enabled, u, clip) } else { arena_button(d, br, t, fk(0), enabled, 1.0, u, clip) }
                     y += bh + sep;
+                }
+                Item::Bots(label) => {
+                    // Godot: "-" 46 x 46, the count (display 24) in 44, "+" 46 x 46.
+                    let bh = if gn { 46.0 } else { 34.0 } * u;
+                    let bw = bh;
+                    let cw = 44.0 * u;
+                    let x0 = if label.is_empty() { r[0] + r[2] * 0.5 - (bw * 2.0 + cw + 16.0 * u) * 0.5 } else { r[0] + r[2] - bw * 2.0 - cw - 16.0 * u };
+                    if !label.is_empty() { Label::new(bold(), 28.0 * u, BONE_DIM).draw(d, label, r[0] + 14.0 * u, y + bh * 0.5, clip); }
+                    for (j, t) in ["-", "+"].iter().enumerate() {
+                        let bx = if j == 0 { x0 } else { x0 + bw + cw + 16.0 * u };
+                        let on = bots_enabled(j, ctx);
+                        if gn { gn_button(d, [bx, y, bw, bh], t, fk(j), on, u, clip) } else { arena_button(d, [bx, y, bw, bh], t, fk(j), on, 1.0, u, clip) }
+                    }
+                    Label::poster(24.0 * u).shadow(2.0 * u, RED).center().draw(d, &ctx.bots.to_string(), x0 + bw + 8.0 * u + cw * 0.5, y + bh * 0.5, clip);
+                    y += bh + sep;
+                }
+                Item::Party(i) => {
+                    let Some(&(name, v, lo, hi)) = ctx.party.as_ref().and_then(|p| p.0.get(i)) else { continue };
+                    let rh = 36.0 * u;
+                    let mid = y + rh * 0.5;
+                    Label::new(bold(), 17.0 * u, if fk(0) { BONE } else { BONE_DIM }).draw(d, name, r[0] + 14.0 * u, mid, clip);
+                    let (sx, sw) = (r[0] + 250.0 * u, r[2] - 250.0 * u - 52.0 * u);
+                    d.rect([sx, mid - 2.0 * u, sw, 4.0 * u], [0.25, 0.22, 0.24, 1.0], clip);
+                    let k = ((v - lo) as f32 / (hi - lo).max(1) as f32).clamp(0.0, 1.0);
+                    d.rect([sx, mid - 2.0 * u, sw * k, 4.0 * u], if fk(0) { RED } else { [0.6, 0.55, 0.55, 1.0] }, clip);
+                    d.circle([sx + sw * k, mid], 7.0 * u, if fk(0) { BONE } else { [0.8, 0.78, 0.75, 1.0] }, clip);
+                    Label::new(bold(), 17.0 * u, BONE).right().draw(d, &v.to_string(), r[0] + r[2], mid, clip);
+                    y += rh + sep;
                 }
                 Item::Row(row) => {
                     let bh = 32.0 * u;
@@ -324,9 +418,40 @@ impl Menus {
 fn column_height(list: &[Item], u: f32) -> f32 {
     let sep = 8.0;
     list.iter().map(|it| match it {
+        Item::Bots(_) => 34.0 + sep, Item::Party(_) => 36.0 + sep,
         Item::Text(..) => 20.0, Item::Note(t) => if *t == "BOTS" { 24.0 * 1.3 } else { 12.0 * 1.3 },
         Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
     }).sum::<f32>() * u
+}
+
+/// The GameNight menu's buttons: Barlow ExtraBold 28, left-set 14 in,
+/// a slanted red plate when focused.
+fn gn_button(d: &mut HudDrawList, r: [f32; 4], text: &str, focused: bool, enabled: bool, u: f32, clip: [f32; 4]) {
+    if focused && enabled { plate(d, r, RED, None, clip); }
+    let c = if !enabled { with_alpha(BONE, 0.3) } else if focused { BONE } else { BONE_DIM };
+    let lab = Label::new(bold(), fit(text, bold(), 28.0 * u, r[2] - 20.0 * u), c);
+    if text.len() <= 1 { lab.center().draw(d, text, r[0] + r[2] * 0.5, r[1] + r[3] * 0.5, clip) } else { lab.draw(d, text, r[0] + 14.0 * u, r[1] + r[3] * 0.5, clip) }
+}
+
+/// `arena_menu_backdrop.gd`: the match dimmed, a dark slab down the left
+/// 42 % wide with a slanted red edge and faint red hatching.
+fn slab(d: &mut HudDrawList, u: f32, clip: [f32; 4]) {
+    let [w, h] = [clip[2], clip[3]];
+    d.rect(clip, [0.0, 0.0, 0.0, 0.42], clip);
+    let top = w * 0.42;
+    let bottom = top - h * SKEW * 0.5;
+    d.polygon(&[[0.0, 0.0], [top, 0.0], [bottom, h], [0.0, h]], with_alpha(darkened(INK, 0.3), 0.94), clip);
+    let mut x = -h;
+    while x < top {
+        // Hatching from bottom left to top right, kept inside the slab's narrower edge.
+        let (a, b) = ([x, h], [x + h, 0.0]);
+        let inside = [0.0, 0.0, bottom, h];
+        d.line(a, b, 3.0 * u, with_alpha(RED, 0.05), inside);
+        x += 14.0 * u;
+    }
+    let edge = 8.0 * u;
+    d.polygon(&[[top, 0.0], [top + edge, 0.0], [bottom + edge, h], [bottom, h]], RED, clip);
+    d.line([top - 14.0 * u, 0.0], [bottom - 14.0 * u, h], 2.0 * u, with_alpha(BONE, 0.12), clip);
 }
 
 /// Godot's Arena button: no plate until focused, then a slanted red plate.
@@ -407,14 +532,30 @@ pub fn gothic_frame(d: &mut HudDrawList, rect: [f32; 4], u: f32, seed: u32, clip
     d.arc([cx, cy - 2.0 * u], 13.0 * u, std::f32::consts::PI * 1.08, std::f32::consts::PI * 1.92, 1.5 * u, GOLD_DIM, clip);
 }
 
-/// The GROWING GUNS logo in poster type (the original is a texture: bone
-/// letters with a red-orange block shadow).
-pub fn logo(d: &mut HudDrawList, center: [f32; 2], height: f32, clip: [f32; 4]) {
+static LOGO_PNG: &[u8] = include_bytes!("../../../assets/branding/logo.png");
+const LOGO: render::hud::HudImage = render::hud::HudImage(0x6767_0001);
+
+fn logo_picture() -> Option<&'static std::sync::Arc<render::picture::Picture>> {
+    static P: std::sync::OnceLock<Option<std::sync::Arc<render::picture::Picture>>> = std::sync::OnceLock::new();
+    P.get_or_init(|| render::picture::decode(LOGO_PNG, 1.0).map_err(|e| eprintln!("logo: {e}")).ok().map(std::sync::Arc::new)).as_ref()
+}
+
+/// The cover-art logo (`assets/branding/logo.png`) kept to its aspect and
+/// centred in `r` (Godot `STRETCH_KEEP_ASPECT_CENTERED`).
+pub fn logo(d: &mut HudDrawList, r: [f32; 4], clip: [f32; 4]) {
+    let Some(p) = logo_picture() else { return logo_text(d, [r[0] + r[2] * 0.5, r[1] + r[3] * 0.5], r[3] * 0.9, clip) };
+    let aspect = p.width as f32 / p.height.max(1) as f32;
+    let (w, h) = if r[2] / r[3] > aspect { (r[3] * aspect, r[3]) } else { (r[2], r[2] / aspect) };
+    d.provide_image(LOGO, p, render::hud::ImageFilter::Linear);
+    d.image([r[0] + (r[2] - w) * 0.5, r[1] + (r[3] - h) * 0.5, w, h], LOGO, [0.0, 0.0, 1.0, 1.0], [1.0; 4], clip);
+}
+
+/// The logo in poster type, should the picture not decode.
+fn logo_text(d: &mut HudDrawList, center: [f32; 2], height: f32, clip: [f32; 4]) {
     let size = height * 0.5;
     for (k, word) in ["GROWING", "GUNS"].iter().enumerate() {
         let y = center[1] - height * 0.24 + k as f32 * height * 0.48;
         let lab = Label::new(display(), size, [0.98, 0.93, 0.84, 1.0]).center();
-        // Extruded shadow: a stack of offset copies, dark red under orange.
         for s in (1..=5).rev() {
             let o = s as f32 * size * 0.022;
             let c = if s > 3 { [0.32, 0.06, 0.05, 1.0] } else { [0.93, 0.33, 0.12, 1.0] };
