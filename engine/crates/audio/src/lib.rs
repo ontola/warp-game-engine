@@ -14,6 +14,7 @@ pub mod mix;
 pub mod sfx;
 pub mod sounds;
 pub mod stream;
+pub mod synth;
 pub mod tyres;
 
 pub use engine::{Controls, EngineSound, EngineVoice, Model};
