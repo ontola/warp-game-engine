@@ -114,13 +114,40 @@ pub struct Devices {
     kb: Keyboard,
     gilrs: Option<Gilrs>,
     pads: Vec<(GamepadId, u32)>,
+    /// Live rumble per pad; dropping an effect stops it.
+    rumble: std::collections::HashMap<GamepadId, gilrs::ff::Effect>,
 }
 
 impl Devices {
     pub fn new(keyboard_enabled: bool) -> Self {
         let gilrs = Gilrs::new().map_err(|e| eprintln!("gamepads unavailable: {e}")).ok();
         let pads = gilrs.as_ref().map_or(Vec::new(), |g| g.gamepads().map(|(id, _)| (id, 0)).collect());
-        Self { tuning: Tuning::default(), keyboard_enabled, mouse_captured: false, kb: Keyboard::default(), gilrs, pads }
+        Self { tuning: Tuning::default(), keyboard_enabled, mouse_captured: false, kb: Keyboard::default(), gilrs, pads, rumble: Default::default() }
+    }
+
+    /// Vibrate local pad `pad` (in `controls` order, after the keyboard):
+    /// `weak` is the light buzzy motor, `strong` the heavy one, both 0..1, for
+    /// `seconds` (at most 5). Each call replaces the last; zeros stop it.
+    /// Under GameNight a game rumbles through `gamenight::Client::rumble`.
+    /// Returns false when the pad cannot vibrate.
+    pub fn rumble(&mut self, pad: usize, weak: f32, strong: f32, seconds: f32) -> bool {
+        use gilrs::ff::{BaseEffect, BaseEffectType, EffectBuilder, Replay, Ticks};
+        let Some(g) = &mut self.gilrs else { return false };
+        let Some(&(id, _)) = self.pads.get(pad) else { return false };
+        self.rumble.remove(&id);
+        let (weak, strong) = (weak.clamp(0.0, 1.0), strong.clamp(0.0, 1.0));
+        if weak == 0.0 && strong == 0.0 { return true; }
+        if !g.gamepad(id).is_ff_supported() { return false; }
+        let ms = (seconds.clamp(0.0, 5.0) * 1000.0) as u32;
+        let base = |kind| BaseEffect { kind, scheduling: Replay { play_for: Ticks::from_ms(ms), ..Default::default() }, envelope: Default::default() };
+        let effect = EffectBuilder::new()
+            .add_effect(base(BaseEffectType::Weak { magnitude: (weak * 65535.0) as u16 }))
+            .add_effect(base(BaseEffectType::Strong { magnitude: (strong * 65535.0) as u16 }))
+            .gamepads(&[id]).finish(g);
+        match effect.and_then(|e| e.play().map(|_| e)) {
+            Ok(e) => { self.rumble.insert(id, e); true }
+            Err(_) => false,
+        }
     }
 
     pub fn pad_count(&self) -> usize { self.pads.len() }

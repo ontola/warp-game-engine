@@ -291,6 +291,8 @@ enum Incoming { Json(Value, Instant), Disconnected(String) }
 pub struct Client {
     pub state: State,
     pub launched_by_daemon: bool,
+    /// Per seat: whether the last rumble sent was a stop.
+    rumble_quiet: BTreeMap<usize, bool>,
     outgoing: Sender<Value>,
     incoming: Receiver<Incoming>,
 }
@@ -307,7 +309,7 @@ impl Client {
         std::thread::Builder::new().name("gamenight".into()).spawn(move || {
             if let Err(error) = transport(config, send_rx, &recv_tx) { let _ = recv_tx.send(Incoming::Disconnected(error)); }
         }).map_err(|e| format!("Cannot start GameNight connection thread: {e}"))?;
-        Ok(Self { state, launched_by_daemon, outgoing, incoming })
+        Ok(Self { state, launched_by_daemon, rumble_quiet: BTreeMap::new(), outgoing, incoming })
     }
 
     pub fn poll(&mut self) -> Vec<Command> {
@@ -359,6 +361,20 @@ impl Client {
             self.send_json(json!({"type":"controller_input", "session":self.state.session, "controller":controller}))?;
         }
         Ok(())
+    }
+    /// Vibrate the controller on seat `seat`: `weak` is the light buzzy motor,
+    /// `strong` the heavy one, both 0..1, for `seconds` (at most 5). Each call
+    /// replaces the last for that seat; call it a few times a second while the
+    /// effect lasts and with zeros to stop. Only while the session runs in
+    /// front (the host ignores it otherwise); repeated stops are sent once.
+    pub fn rumble(&mut self, seat: usize, weak: f64, strong: f64, seconds: f64) -> Result<(), String> {
+        if !self.state.is_running() || seat > 255 { return Ok(()); }
+        let (weak, strong) = (weak.clamp(0.0, 1.0), strong.clamp(0.0, 1.0));
+        let quiet = weak == 0.0 && strong == 0.0;
+        if quiet && *self.rumble_quiet.get(&seat).unwrap_or(&true) { return Ok(()); }
+        self.rumble_quiet.insert(seat, quiet);
+        self.send_json(json!({"type":"rumble", "session":self.state.session, "seat":seat,
+            "weak":(weak * 65535.0) as u32, "strong":(strong * 65535.0) as u32, "ms":((seconds * 1000.0) as i64).clamp(0, 5000)}))
     }
     pub fn room_log(&self, text: &str) -> Result<(), String> {
         if !self.state.is_running() || !self.state.has_sdk6_options() { return Ok(()); }
@@ -639,10 +655,28 @@ mod tests {
     }
 
     #[test]
+    fn rumble_runs_only_in_a_running_session_and_sends_one_stop() {
+        let (outgoing, sent) = mpsc::channel();
+        let (_receive, incoming) = mpsc::channel();
+        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming };
+        client.rumble(0, 1.0, 0.5, 0.2).unwrap();
+        assert!(sent.try_recv().is_err(), "not running: nothing sent");
+        client.state = running();
+        client.rumble(1, 1.0, 0.5, 9.0).unwrap();
+        assert_eq!(sent.try_recv().unwrap(), json!({"type":"rumble","session":"s1","seat":1,"weak":65535,"strong":32767,"ms":5000}));
+        client.rumble(1, 0.0, 0.0, 0.0).unwrap();
+        client.rumble(1, 0.0, 0.0, 0.0).unwrap();
+        assert_eq!(sent.try_recv().unwrap()["weak"], 0);
+        assert!(sent.try_recv().is_err(), "one stop only");
+        client.rumble(2, 0.0, 0.0, 0.0).unwrap();
+        assert!(sent.try_recv().is_err(), "a seat that never rumbled needs no stop");
+    }
+
+    #[test]
     fn queued_prepares_and_dispose_do_not_overtake_ready_handling() {
         let (outgoing, sent) = mpsc::channel();
         let (receive, incoming) = mpsc::channel();
-        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, outgoing, incoming };
+        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming };
         let now=Instant::now();
         let mut second=prepare(); second["session"]=json!("s2");
         for msg in [json!({"type":"welcome","protocol_version":1,"party":{}}),prepare(),second,json!({"type":"dispose","session":"s2"})] {
