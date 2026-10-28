@@ -1,10 +1,11 @@
 # Warp documentation
 
-Warp is a Rust game engine for couch games: up to four players on one
-screen, a deterministic simulation that replays bit for bit, and a running
-game that an AI can play, inspect and change over MCP. Its focus so far is
-procedural outdoor worlds and short iteration loops, with headless
-rendering, scripted playtests and hot-reloaded Luau.
+Warp is a Rust game engine designed for fast iteration with AI. Everything
+is code and text, there is no visual editor, every run replays bit for bit,
+and a running game can be inspected and changed by an AI over MCP. It is
+made for couch games with up to four players on one screen. Its focus so
+far is procedural outdoor worlds, with headless rendering, scripted
+playtests and hot-reloaded Luau.
 
 Games on it: [Sideways](../../games/sideways/README.md), a gravel rally
 game, and [Growing Guns](../../games/growing-guns/README.md), an arena

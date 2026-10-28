@@ -145,7 +145,22 @@ figcaption code { color: var(--ink); overflow-wrap: anywhere; }
 .section-head p { margin: 0; max-width: 40rem; }
 @media (min-width: 52rem) { .section-head { grid-template-columns: 18rem 1fr; } .section-head h2 { margin: 0; } }
 
-.live, .contact, .games, .parts, .start, .status { margin-top: 4.5rem; }
+.loop, .without, .live, .contact, .games, .parts, .start, .status { margin-top: 4.5rem; }
+
+/* The loop: real costs, so the big figures are measurements, not decoration. */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 1.5rem 2.5rem; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 40rem) { .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 72rem) { .steps { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.steps li { display: grid; gap: 0.35rem; align-content: start; }
+.step-n { font: italic 800 2.75rem/1 var(--display); color: var(--ink); }
+.step-t { color: var(--ink); }
+
+.without-grid { display: grid; gap: 2rem 3rem; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 52rem) { .without-grid { grid-template-columns: 3fr 2fr; } }
+.without-grid > div { min-width: 0; }
+.without h3 { font: 600 1.4rem/1.1 var(--display); margin: 0 0 0.75rem; padding-bottom: 0.4rem; border-bottom: 2px solid var(--ink); }
+.without ul { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.6rem; }
+.without li { max-width: 40rem; }
 
 /* The contact sheet: script steps in order, so the numbers are real. */
 .frames {
