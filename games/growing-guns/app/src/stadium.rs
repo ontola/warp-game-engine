@@ -8,7 +8,7 @@
 use crate::crowd_sound::CrowdSound;
 use audio::sfx::Listener;
 use glam::{Affine3A, Quat, Vec2, Vec3};
-use growing_guns::stadium::{sq, Stadium, ROWS, ROW_DEPTH, ROW_RISE, SEGMENTS};
+use growing_guns::stadium::{sq, Stadium, PieceKind, ROWS, ROW_DEPTH, ROW_RISE, SEGMENTS};
 use growing_guns::{Event, World};
 use render::crowd::{Crowd, Seat};
 use render::headlights::LocalLight;
@@ -98,6 +98,7 @@ pub struct StadiumVisuals {
     tv_mesh: [usize; 2],
     /// Stone per quarry (sandstone 0..3, limestone 3..6), roof stone likewise.
     stone: [usize; 6],
+    masonry: Option<[[usize; 2]; 6]>,
     roof_stone: [usize; 6],
     lamp: usize,
     shaft: usize,
@@ -135,6 +136,13 @@ impl StadiumVisuals {
             m
         };
         let stone: [usize; 6] = std::array::from_fn(|i| { let m = quarry_mat(scene, quarry[i]); cube(scene, m) });
+        // One shared clustered panel per material/type. No per-brick instances,
+        // physics bodies, updates, or extra shadow casters.
+        let masonry = (std::env::var("GG_STADIUM_BRICKS").as_deref() != Ok("0")).then(||
+            std::array::from_fn(|i| {
+                let m = quarry_mat(scene, quarry[i]);
+                [(4, 8), (6, 1)].map(|(cols, rows)| scene.add_mesh(&render::masonry::panel(m, cols, rows, 11).mesh()))
+            }));
         let roof_stone: [usize; 6] = std::array::from_fn(|i| { let m = quarry_mat(scene, quarry[i].map(|v| v * 0.75)); cube(scene, m) });
         let lamp = { let m = glow(scene, [1.0, 0.85, 0.6], 9000.0); cube(scene, m) };
         let shaft = { let m = mat(scene, [0.16, 0.16, 0.18], 0.8); cube(scene, m) };
@@ -176,7 +184,7 @@ impl StadiumVisuals {
         let marks = Slots::reserve(scene, MARKS);
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let crowd = Crowd::reserve(scene, CROWD_MAX);
-        StadiumVisuals { stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -196,7 +204,12 @@ impl StadiumVisuals {
         let quarry = if self.rng.f() < 0.5 { 0 } else { 3 } + self.rng.below(3);
         let box_xf = |c: Vec3, size: Vec3, yaw: f32| Affine3A::from_scale_rotation_translation(size, Quat::from_rotation_y(yaw), c);
         for p in self.geo.pieces() {
-            self.stands.add(scene, self.stone[quarry], box_xf(p.center, p.size, p.yaw));
+            let mesh = self.masonry.as_ref().and_then(|m| match p.kind {
+                PieceKind::Facade => Some(m[quarry][0]),
+                PieceKind::Step => Some(m[quarry][1]),
+                _ => None,
+            }).unwrap_or(self.stone[quarry]);
+            self.stands.add(scene, mesh, box_xf(p.center, p.size, p.yaw));
         }
         // Roof canopy over the back half of the rows, inner lip dipping.
         let seg = Stadium::seg_ang();

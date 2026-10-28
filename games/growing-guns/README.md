@@ -70,6 +70,12 @@ rubble share the surface. This is a visual prototype: the fracture pattern still
 needs less regularity. See [stone surfaces](../../engine/docs/stone-surfaces.md)
 for the engine API, reproducible comparisons and remaining work.
 
+The colosseum's inner facade and stepped seating now use shared masonry panels
+with real stone courses and clustered geometry LOD. Collision and instance
+counts are unchanged. `GG_STADIUM_BRICKS=0` restores the flat sections for A/B
+inspection. See [stadium masonry](../../engine/docs/stadium-masonry.md) for
+captures, geometry budgets and the measured four-view cost.
+
 Spawn cages descend and open their trapdoors at the simulation's existing
 release time, then winch away. Four stadium screens share a live feed of player
 0 before HUD, capped at 30 Hz without another scene render. Eliminated humans
