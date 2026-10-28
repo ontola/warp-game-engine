@@ -20,12 +20,17 @@ const CLAIM_FOR: Duration = Duration::from_secs(6);
 /// Where a parked window goes.
 const PARKED: PhysicalPosition<i32> = PhysicalPosition::new(-30000, -30000);
 
-pub(crate) struct Manners {
+/// Also used by games with their own winit loop (Sideways).
+pub struct Manners {
     pub screen: Screen,
     since: Instant,
     asked: Option<Instant>,
     settled: bool,
     parked: bool,
+}
+
+impl Default for Manners {
+    fn default() -> Self { Self::new() }
 }
 
 impl Manners {

@@ -14,6 +14,7 @@ kern.workspace = true
 gdcompat.workspace = true
 serde_json.workspace = true
 render = { path = "../../../engine/crates/render" }
+app = { path = "../../../engine/crates/app" }
 audio = { path = "../../../engine/crates/audio" }
 toml.workspace = true
 glam = "0.31"
