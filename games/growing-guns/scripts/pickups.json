@@ -1,0 +1,9 @@
+{
+  "size": [960, 540],
+  "steps": [
+    {"cmd": ["bots pause", "cage", "pickup heart -4 -3", "pickup laser 3 -5", "pickup bomb 0 -9", "pickup plus_one -7 -8 10", "teleport 0 0 4 4"], "ticks": 20},
+    {"cmd": "aim 0 -2 1.5 -3", "ticks": 1, "capture": "falling.png", "note": "Godot drop beams: tapered coloured columns from 52 m down to each landing spot, glowing ground light under them."},
+    {"ticks": 160, "capture": "landed.png", "note": "Pickups bob on the ground inside their beams."},
+    {"cmd": "sky night:clear", "ticks": 10, "capture": "night.png", "note": "At night the beams and ground lights stand out."}
+  ]
+}

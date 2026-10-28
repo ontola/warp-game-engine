@@ -825,7 +825,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -934,6 +934,16 @@ impl app::Game for Gg {
                 self.vis.grow_gun(p, &self.world.players[p]);
                 let ids: Vec<&str> = self.world.players[p].cards.iter().map(|&c| self.world.cards.get(c).map_or("?", |d| d.id.as_str())).collect();
                 Ok(format!("player {p} has {ids:?}"))
+            }
+            "pickup" => {
+                // A sky drop as the timer spawns it (52 m up unless Y given).
+                let name = w.get(1).ok_or("pickup KIND X Z [Y]")?.to_lowercase();
+                let kind = *growing_guns::PICKUPS.iter().find(|k| format!("{k:?}").to_lowercase() == name.replace('_', ""))
+                    .ok_or(format!("unknown pickup {name} (heart mushroom bomb plus_one laser dice air_strike)"))?;
+                let y = if w.len() > 4 { num(4)? } else { 52.0 };
+                let pos = Vec3::new(num(2)?, y, num(3)?);
+                self.world.pickups.push(growing_guns::Pickup { kind, pos, vy: 0.0, grounded: None });
+                Ok(format!("pickup {kind:?} at {pos}"))
             }
             "teleport" => {
                 let p = player(1, &self.world)?;
