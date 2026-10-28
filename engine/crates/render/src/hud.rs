@@ -97,13 +97,16 @@ pub struct HudDrawList {
     overlay_boundaries: Vec<(usize, usize)>,
     /// (first vertex, picture) where the bound picture changes; plain shapes use None.
     image_runs: Vec<(u32, Option<HudImage>)>,
+    /// Pictures this list brings along ([`HudDrawList::provide_image`]):
+    /// whoever prepares it uploads the ones it does not hold yet.
+    pub pictures: Vec<(HudImage, std::sync::Arc<crate::picture::Picture>, ImageFilter)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HudLayer { vertices: Range<u32>, text: Range<usize> }
 
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { size, vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { size, vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new() } }
 
     fn bind(&mut self, image: Option<HudImage>) {
         let current = self.image_runs.last().and_then(|r| r.1);
@@ -123,6 +126,14 @@ impl HudDrawList {
         }
         if range.end > start { spans.push((start..range.end, image)); }
         spans
+    }
+
+    /// Bring a picture along for [`HudDrawList::image`]: the renderer that
+    /// prepares this list uploads it once (again only when a different
+    /// `Arc` arrives under the same id). Lets a game whose shell owns the
+    /// HUD renderer use pictures without reaching it.
+    pub fn provide_image(&mut self, id: HudImage, picture: &std::sync::Arc<crate::picture::Picture>, filter: ImageFilter) {
+        if !self.pictures.iter().any(|p| p.0 == id) { self.pictures.push((id, picture.clone(), filter)); }
     }
 
     /// Draw `image` into `rect`, sampling `uv` (x/y/width/height in 0..1; a
@@ -337,6 +348,8 @@ pub struct HudRenderer {
     /// Bound for plain shapes and for pictures that are not (or no longer) uploaded.
     blank: wgpu::BindGroup,
     images: HashMap<HudImage, GpuImage>,
+    /// Which provided picture each id holds (by `Arc` address).
+    provided: HashMap<HudImage, usize>,
     spans: Vec<Vec<(Range<u32>, Option<HudImage>)>>,
     uniform: wgpu::Buffer,
     vertices: wgpu::Buffer,
@@ -383,7 +396,7 @@ impl HudRenderer {
         let viewport=Viewport::new(&gpu.device,&cache);
         let mut atlas=TextAtlas::with_color_mode(&gpu.device,&gpu.queue,&cache,format,if format.is_srgb(){ColorMode::Accurate}else{ColorMode::Web});
         let renderer=TextRenderer::new(&mut atlas,&gpu.device,wgpu::MultisampleState::default(),None);
-        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2]})
+        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2]})
     }
 
     /// Upload (or replace) the picture drawn by `HudDrawList::image` with `id`.
@@ -393,12 +406,16 @@ impl HudRenderer {
         let bind=image_bind(gpu,&self.image_layout,sampler,picture,"HUD picture");
         self.images.insert(id,GpuImage{bind,size:[picture.width,picture.height]});
     }
-    pub fn remove_image(&mut self,id:HudImage) {self.images.remove(&id);}
+    pub fn remove_image(&mut self,id:HudImage) {self.images.remove(&id);self.provided.remove(&id);}
     /// Uploaded size, if any.
     pub fn image_size(&self,id:HudImage)->Option<[u32;2]> {self.images.get(&id).map(|i|i.size)}
 
     pub fn prepare(&mut self,gpu:&Gpu,list:&HudDrawList)->Result<HudStats,String> {
         let begin=Instant::now();
+        for (id,picture,filter) in &list.pictures {
+            let at=std::sync::Arc::as_ptr(picture) as usize;
+            if self.provided.get(id)!=Some(&at) {self.set_image(gpu,*id,picture,*filter);self.provided.insert(*id,at);}
+        }
         // A failed prepare must not advertise stale overlay draw buffers.
         self.layers.clear();
         self.spans.clear();
