@@ -93,6 +93,9 @@ struct MeadowSubstrate {
     contact: vec4<f32>, // live density, basal radius, fixed anchor, blade reach
 };
 @group(0) @binding(27) var<uniform> meadow_substrate: MeadowSubstrate;
+// Four small camera-local caches of source-accepted basal occupancy. This is
+// a bounded contact model, not a per-blade or long-range shadow map.
+@group(0) @binding(28) var<storage,read> meadow_edge_field:array<vec4<f32>>;
 
 @group(1) @binding(0) var<uniform> view: View;
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
@@ -133,6 +136,64 @@ struct Gi {
     bounce: vec4<f32>,
     params: vec4<f32>, // contact on, reflection on, sun-free sky cap, unused
 };
+
+fn meadow_edge_covers(p:vec3<f32>,normal:vec3<f32>,sun_query:vec2<f32>,
+    block:u32,origin:vec2<i32>,dimension:u32,radius:f32)->vec2<f32> {
+    // Both visibility terms share25 records. Radius is bounded on the host
+    // using the anchor extent, jitter and half the maximum sun displacement,
+    // so no omitted root can influence either side of this midpoint.
+    let midpoint=(p.xz+sun_query)*0.5;
+    let first=vec2<i32>(floor(midpoint/MEADOW_ROOT_CELL))-vec2<i32>(2);
+    var gap=vec2<f32>(1.0);
+    for(var z=0i;z<5i;z++){for(var x=0i;x<5i;x++) {
+        let cell=first+vec2<i32>(x,z)-origin;
+        if any(cell<vec2<i32>(0)) || any(cell>=vec2<i32>(i32(dimension))) {continue;}
+        let sample=meadow_edge_field[block+4u+u32(cell.y)*dimension+u32(cell.x)];
+        if sample.w<=0.0 {continue;}
+        let sky_delta=p.xz-sample.xz;let sun_delta=sun_query-sample.xz;
+        let distances=vec2<f32>(dot(sky_delta,sky_delta),dot(sun_delta,sun_delta));
+        let footprint=vec2<f32>(1.0)-smoothstep(vec2<f32>(0.0625*radius*radius),
+            vec2<f32>(radius*radius),distances);
+        // Same-plane adjacent terrain and road can receive contact. Raised
+        // road decks or a different-height surface cannot borrow the roots.
+        let separation=abs(dot(p-sample.xyz,normal));
+        let height_gate=1.0-smoothstep(0.04,0.18,separation);
+        gap*=vec2<f32>(1.0)-clamp(sample.w,0.0,1.0)*footprint*height_gate;
+    }}
+    return vec2<f32>(1.0)-gap;
+}
+
+fn meadow_edge_visibility(p:vec3<f32>,normal:vec3<f32>,sun:vec3<f32>)->vec2<f32> {
+    if view.grass.w<0.5 || view.grass.z<0.0 || view.grass.z>=4.0 || normal.y<=0.45 {
+        return vec2<f32>(1.0);
+    }
+    // Dimensions are fixed by the producer; a tiny empty scene binding is
+    // safe even for shaders that do not prepare this optional contact field.
+    let stride=4u+151u*151u;let block=u32(view.grass.z)*stride;
+    if block+stride>arrayLength(&meadow_edge_field) {return vec2<f32>(1.0);}
+    let header=meadow_edge_field[block];let params=meadow_edge_field[block+1u];
+    let fades=meadow_edge_field[block+2u];let camera=meadow_edge_field[block+3u];
+    if header.w<0.5 || header.z!=151.0 || params.x<=0.0 || distance(camera.xyz,view.cam.xyz)>0.001 {
+        return vec2<f32>(1.0);
+    }
+    let distance_to_view=distance(p.xz,view.cam.xz);
+    let fade=(1.0-smoothstep(fades.x,fades.y,distance_to_view))
+        *(1.0-smoothstep(fades.z,fades.w,distance_to_view));
+    if fade<=0.0 {return vec2<f32>(1.0);}
+    let origin=bitcast<vec2<i32>>(header.xy);let dimension=u32(header.z);
+    let sun_active=light.sun_dir.w>0.0 && sun.y>0.0;
+    var offset=vec2<f32>(0.0);
+    if sun_active {
+        // Only a short basal sun footprint. Clip at35cm even at low sun;
+        // full-height blade silhouettes and their wind motion are not traced.
+        offset=sun.xz*(0.20/max(sun.y,0.15));
+        offset*=min(1.0,params.w/max(length(offset),0.0001));
+    }
+    let covers=meadow_edge_covers(p,normal,p.xz+offset,block,origin,dimension,params.x);
+    let sun_cover=select(0.0,covers.y,sun_active);
+    return vec2<f32>(1.0-params.y*covers.x*fade,
+        1.0-params.z*sun_cover*fade*light.sun_color.w);
+}
 
 // Extinction density on three absolute world grids. Blend the densities
 // before tracing, so overlapping levels never count the same forest twice.
@@ -1492,7 +1553,9 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
     // The triangle normal is only for intersection and texture derivatives.
     let visibility_n = surface_n;
     let sky_vis = sky_visibility(p, visibility_n);
-    let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
+    var meadow_edge=vec2<f32>(1.0);
+    if (m.flags&6u)!=0u {meadow_edge=meadow_edge_visibility(p,surface_n,l);}
+    let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y;
     let refl = reflect(dir, n);
     let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x);
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
@@ -1516,9 +1579,10 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocatio
         let response=grass_leaf_response(base,height,v,sun_e,shadow,sky_vis,contact,rough);
         direct=response.direct;indirect=response.indirect;specular=response.specular;
     } else {
-        // Analytic meadow AO affects only diffuse skylight on terrain. Direct
-        // sun/headlights, bounce, reflections, emission and fog remain intact.
-        let ambient=(sky_irradiance(n)*sky_vis*meadow_ground_sky+bounce*(1.0-sky_vis))*ao*contact.x;
+        // Both local contact models attenuate diffuse skylight. The accepted
+        // edge field separately affects incident sun; headlights, bounce,
+        // environment reflection, emission and fog are unchanged.
+        let ambient=(sky_irradiance(n)*sky_vis*meadow_ground_sky*meadow_edge.x+bounce*(1.0-sky_vis))*ao*contact.x;
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);

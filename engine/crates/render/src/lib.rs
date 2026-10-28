@@ -23,6 +23,7 @@ mod pipeline_cache;
 pub mod grass;
 pub mod meadow;
 pub mod meadow_data;
+pub mod meadow_windswept;
 pub(crate) mod meadow_shadow_receivers;
 pub mod receiver_shadow_demand;
 pub mod meadow_aggregate;

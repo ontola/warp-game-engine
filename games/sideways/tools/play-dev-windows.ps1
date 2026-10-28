@@ -29,6 +29,7 @@ param(
     [switch]$WorkReduction,
     [switch]$FrameProfile,
     [switch]$DebugUi,
+    [string]$DebugUiScript,
     [switch]$Windowed,
     [ValidateRange(10, 600)][int]$StartupTimeoutSeconds = 180
 )
@@ -113,6 +114,15 @@ try {
     if ([bool]$PreparedExecutable -ne [bool]$PreparedSha256) { throw 'PreparedExecutable and PreparedSha256 must be supplied together.' }
     if ($PreparedExecutable -and $BuildOnly) { throw 'BuildOnly cannot be combined with a prepared executable.' }
     $preparedArtifact = if ($PreparedExecutable) { Get-PreparedDevArtifact $PreparedExecutable $PreparedSha256 } else { $null }
+    $debugScriptBytes = $null
+    if ($DebugUiScript) {
+        $debugScriptPath = (Resolve-Path -LiteralPath $DebugUiScript -ErrorAction Stop).Path
+        if ((Get-Item -LiteralPath $debugScriptPath).Length -gt 65536) { throw 'DebugUiScript exceeds 64 KiB.' }
+        $debugScriptBytes = [IO.File]::ReadAllBytes($debugScriptPath)
+        $debugScriptText = [Text.Encoding]::UTF8.GetString($debugScriptBytes)
+        $debugScriptRows = @($debugScriptText | ConvertFrom-Json -ErrorAction Stop)
+        if (-not $debugScriptText.TrimStart().StartsWith('[') -or $debugScriptRows.Count -gt 256) { throw 'DebugUiScript must be a JSON array of at most 256 events.' }
+    }
     $dimensions = $Size.Split('x') | ForEach-Object { [int]$_ }
     if ($dimensions[0] -lt 64 -or $dimensions[0] -gt 7680 -or $dimensions[1] -lt 64 -or $dimensions[1] -gt 4320) {
         throw 'Size must be within 64x64..7680x4320.'
@@ -179,6 +189,13 @@ try {
     if ($Autoplay) { $arguments += '--autoplay' }
     if ($FrameProfile) { $arguments += @('--frame-profile', (Join-Path $directory 'frame-profile.jsonl')) }
     if ($DebugUi) { $arguments += '--debug-ui' }
+    $debugScriptRecord = $null
+    if ($null -ne $debugScriptBytes) {
+        $stagedDebugScript = Join-Path $directory 'debug-ui-script.json'
+        [IO.File]::WriteAllBytes($stagedDebugScript, $debugScriptBytes)
+        $arguments += @('--debug-ui-script', $stagedDebugScript)
+        $debugScriptRecord = @{ path = $stagedDebugScript; sha256 = (Get-FileHash -LiteralPath $stagedDebugScript -Algorithm SHA256).Hash.ToLowerInvariant(); events = $debugScriptRows.Count }
+    }
     $sourceRevision = $null
     $sourceDirty = $null
     if (Get-Command git -CommandType Application -ErrorAction SilentlyContinue) {
@@ -201,7 +218,7 @@ try {
     if ($null -ne [Environment]::GetEnvironmentVariable('KERN_MEADOW_CONTACT_AO')) {
         $graphics['KERN_MEADOW_CONTACT_AO'] = $env:KERN_MEADOW_CONTACT_AO
     }
-    foreach ($key in @('KERN_MEADOW_SUBSTRATE', 'KERN_MEADOW_INDEXED', 'KERN_MEADOW_VISIBILITY', 'KERN_MEADOW_SKIP_HIDDEN_SHADE', 'KERN_MEADOW_OCCLUSION', 'KERN_MEADOW_GROUP_CACHE', 'KERN_MEADOW_GROUP_REPLACE', 'SIDEWAYS_MEADOW_SOURCE_RADIUS', 'SIDEWAYS_MEADOW_SOURCE_BAND', 'SIDEWAYS_MEADOW_BLADE_BUDGET', 'SIDEWAYS_RENDER_BASELINE', 'KERN_REUSE_SUN_TEXTURE', 'KERN_ZERO_SUN_FAST_PATH', 'KERN_INSTANCE_GROUPS', 'KERN_SUN_INSTANCE_GROUPS', 'KERN_HEADLIGHT_INSTANCE_GROUPS', 'KERN_CLUSTER_TRAVERSAL', 'KERN_STATIC_SUN_CACHE', 'KERN_SUN_CACHE_GUARD_METRES')) {
+    foreach ($key in @('KERN_MEADOW_SUBSTRATE', 'KERN_MEADOW_INDEXED', 'KERN_MEADOW_VISIBILITY', 'KERN_MEADOW_SKIP_HIDDEN_SHADE', 'KERN_MEADOW_SPATIAL_FILTER', 'KERN_MEADOW_EDGE_SHADOW', 'KERN_MEADOW_OCCLUSION', 'KERN_MEADOW_GROUP_CACHE', 'KERN_MEADOW_GROUP_REPLACE', 'SIDEWAYS_MEADOW_SOURCE_RADIUS', 'SIDEWAYS_MEADOW_SOURCE_BAND', 'SIDEWAYS_MEADOW_BLADE_BUDGET', 'SIDEWAYS_MEADOW_BLADE_SHADING', 'SIDEWAYS_MEADOW_PROFILE', 'SIDEWAYS_MEADOW_WINDSWEPT_RADIUS', 'SIDEWAYS_RENDER_BASELINE', 'KERN_REUSE_SUN_TEXTURE', 'KERN_ZERO_SUN_FAST_PATH', 'KERN_INSTANCE_GROUPS', 'KERN_SUN_INSTANCE_GROUPS', 'KERN_HEADLIGHT_INSTANCE_GROUPS', 'KERN_CLUSTER_TRAVERSAL', 'KERN_STATIC_SUN_CACHE', 'KERN_SUN_CACHE_GUARD_METRES')) {
         $value = [Environment]::GetEnvironmentVariable($key)
         if ($null -ne $value) { $graphics[$key] = $value }
     }
@@ -218,6 +235,7 @@ try {
         cargo_features = $upscaleBuild.features; dlss = $upscaleBuild.dlss; work_reduction_requested = [bool]$WorkReduction;
         upscale_requested = $Upscale; upscale_source = $upscaleSource;
         tree_settings = $treeSettings;
+        debug_ui_script = $debugScriptRecord;
         meadow_settings = @{ aggregate_requested = $meadowAggregateRequested; source = $meadowAggregateSource; scope = 'Launch request; actual constructed representation and counts are in capture metadata.' };
         source_note = 'Working checkout build, not an immutable source snapshot.';
         arguments = $arguments; graphics_environment = $graphics; executable = $stagedExecutable;

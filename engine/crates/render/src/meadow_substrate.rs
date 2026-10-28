@@ -271,7 +271,7 @@ mod tests {
         // Lock the lighting scope: one neutral initializer, one terrain-only
         // assignment, and one diffuse-sky factor. No direct/specular/fog use.
         assert_eq!(shade.matches("meadow_ground_sky").count(),3);
-        assert!(shade.contains("sky_irradiance(n)*sky_vis*meadow_ground_sky+bounce*(1.0-sky_vis)"));
+        assert!(shade.contains("sky_irradiance(n)*sky_vis*meadow_ground_sky*meadow_edge.x+bounce*(1.0-sky_vis)"));
         assert!(shade.contains("if meadow_substrate.control.x != 0u"));
     }
 

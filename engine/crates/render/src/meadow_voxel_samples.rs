@@ -19,7 +19,8 @@ pub struct GpuMeadowVoxelSample {
     pub anchor_branch: [f32; 4],
     /// Unit geometric face normal, separately from shading normal; roughness.
     pub geometric_normal_roughness: [f32; 4],
-    /// Interpolated source normal, before deformation/normalization; W zero.
+    /// Interpolated source normal, before deformation/normalization; W is
+    /// unbent blade height for windswept sources, zero for legacy recipes.
     pub shading_normal: [f32; 4],
     /// Interpolated source linear RGB including the existing height pigment.
     /// World-root pigment and live colour edits are applied by the producer.
@@ -115,6 +116,7 @@ fn partition(points: [DVec3; 3], config: SampleConfig) -> (Vec<Cell>, bool) {
     }
 }
 fn vertex_albedo(vertex: GpuMeadowVertex, height: f32) -> DVec3 {
+    if vertex.anchor[3] > 0.0 { return Vec3::from_slice(&vertex.color).as_dvec3(); }
     let t = (vertex.position[1] / height.max(0.001)).clamp(0.0, 1.0);
     let tint = Vec3::new(0.91, 0.94, 0.86).lerp(Vec3::new(1.10, 1.04, 0.98), t);
     (Vec3::from_slice(&vertex.color) * tint).as_dvec3()
@@ -150,7 +152,7 @@ impl MeadowVoxelSamples {
                     || !(0.0..4.0).contains(&branch)
                     || vertices
                         .iter()
-                        .any(|v| v.position[3] != branch || Vec3::from_slice(&v.anchor) != anchor)
+                        .any(|v| v.position[3] != branch || v.anchor != vertices[0].anchor)
                 {
                     return Err(
                         "meadow sample triangle must retain one basal anchor and wind group".into(),
@@ -210,7 +212,7 @@ impl MeadowVoxelSamples {
                         position_area: position.extend(weight).to_array(),
                         anchor_branch: anchor.extend(branch).to_array(),
                         geometric_normal_roughness: geometric.extend(roughness).to_array(),
-                        shading_normal: normal.extend(0.0).to_array(),
+                        shading_normal: normal.extend(vertices[0].anchor[3]).to_array(),
                         albedo: albedo.extend(0.0).to_array(),
                     });
                 }
@@ -396,16 +398,18 @@ mod tests {
     }
 
     #[test]
-    fn source_renderer_and_brick_producer_share_deformation_without_resource_abi_changes() {
+    fn source_renderer_and_brick_producer_share_profile_dispatch_without_new_resources() {
         let common = include_str!("shaders/meadow_common.wgsl");
         let render = include_str!("shaders/meadow_render.wgsl");
-        assert!(render.contains("let deformed=meadow_deform_source(point.xyz,normal.xyz,normal.xyz,anchor.xyz,root,yaw,sc,"));
+        assert!(render.contains("deformed=meadow_deform_vertex(point.xyz,normal,normal.xyz,anchor,root,yaw,sc,meadow)"));
+        assert!(render.contains("meadow_deform_blade_with_wind(point.xyz,normal.xyz,normal.xyz,anchor,root,yaw,sc,meadow,h,wind)"));
+        assert!(include_str!("shaders/meadow_brick_field.wgsl").contains("let pose=meadow_deform_blade("));
         assert!(!render.contains("let relative=meadow_yaw((point.xyz-anchor.xyz)*root.w,yaw.xy)"));
         assert!(common.contains("if !history_valid {out.previous_world=out.world;}"));
         assert!(common.contains("out.area_scale=root_scale.w*root_scale.w*length(cofactor)"));
         assert!(
             render.find("meadow_road_anchor_allowed").unwrap()
-                < render.find("meadow_deform_source").unwrap()
+                < render.find("meadow_deform_vertex").unwrap()
         );
         let source = format!("{}\n{}", include_str!("shaders/meadow_field.wgsl"), common);
         let module = naga::front::wgsl::parse_str(&source)
@@ -423,6 +427,7 @@ mod tests {
             .unwrap()
             .1;
         assert_eq!(function.arguments.len(), 9);
+        assert!(module.functions.iter().any(|(_, f)| f.name.as_deref() == Some("meadow_deform_blade") && f.arguments.len() == 8));
         assert!(
             module.global_variables.is_empty(),
             "shared deformation must not acquire a renderer binding"

@@ -152,11 +152,11 @@ fn meadow_aggregate_surface(in:MeadowAggregateVertex)->MeadowAggregateSurface {
     sample.color=vec4<f32>(rgb/total,total);sample.normal/=total;
     let anchor=meadow_yaw(sample.anchor.xyz,yaw.xy);
     if !meadow_road_anchor_allowed(meadow_pool[offset+8u],bitcast<f32>(meadow_pool[offset+9u]),anchor.xz,root.xz+anchor.xz,meadow.grid.z){discard;}
-    let branch=min(u32(max(sample.point.w,0.0)),3u);let sc=meadow_read4(offset+12u+branch*4u);let axis=meadow_axis(meadow.previous.yz);
-    let relative=meadow_yaw((sample.point.xyz-sample.anchor.xyz)*root.w,yaw.xy);
+    let branch=min(u32(max(sample.point.w,0.0)),3u);let sc=meadow_read4(offset+12u+branch*4u);
+    let pose=meadow_deform_blade(sample.point.xyz,sample.normal.xyz,sample.normal.xyz,sample.anchor,root,yaw,sc,meadow);
     var result:MeadowAggregateSurface;
-    result.vertex.world=root.xyz+meadow_ground_shear(anchor+meadow_rotate(relative,axis,sc.xy),yaw.zw);
-    result.vertex.previous_world=root.xyz+meadow_ground_shear(anchor+meadow_rotate(relative,axis,sc.zw),yaw.zw);
+    result.vertex.world=pose.world;
+    result.vertex.previous_world=pose.previous_world;
     // A representative atlas texel is not exactly on the current pixel ray.
     // Project it onto that ray and preserve its actual pose displacement so
     // stored depth, fog distance and motion reconstruction describe one point.
@@ -166,9 +166,9 @@ fn meadow_aggregate_surface(in:MeadowAggregateVertex)->MeadowAggregateSurface {
     result.vertex.world=ray_origin+world_ray*ray_distance;
     result.vertex.previous_world=result.vertex.world+delta;
     if meadow.previous.w<0.5 {result.vertex.previous_world=result.vertex.world;}
-    result.vertex.normal=meadow_ground_normal(meadow_rotate(meadow_yaw(sample.normal.xyz,yaw.xy),axis,sc.xy),yaw.zw);
+    result.vertex.normal=pose.normal;
     let height=clamp(sample.point.y/max(meadow.shape.z,0.001),0.0,1.0);
-    let tint=mix(vec3<f32>(0.91,0.94,0.86),vec3<f32>(1.10,1.04,0.98),height)*meadow_unpack_tint(meadow_pool[offset+11u]);
+    let tint=select(mix(vec3<f32>(0.91,0.94,0.86),vec3<f32>(1.10,1.04,0.98),height),vec3<f32>(1.0),sample.anchor.w>0.0)*meadow_unpack_tint(meadow_pool[offset+11u]);
     result.vertex.color=vec4<f32>(sample.color.rgb*tint*meadow.edits.rgb,sample.normal.w);
     // Outer distance fade is applied once to the resolved union. Fading every
     // fragment before product revealage would keep dense stacks opaque.
