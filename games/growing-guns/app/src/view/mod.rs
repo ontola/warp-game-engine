@@ -71,6 +71,8 @@ pub struct Visuals {
     pub stadium: StadiumVisuals,
     /// Seconds on the effects clock for the frame being drawn.
     clock: f32,
+    /// Floodlight strength against Godot's (crate::sky::floodlights).
+    flood: f32,
 }
 
 impl Visuals {
@@ -92,7 +94,7 @@ impl Visuals {
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0 };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0 };
         v.set_arena(world);
         v
     }
@@ -250,19 +252,23 @@ impl Visuals {
         let mut l = self.ion.lights(self.clock);
         l.extend(self.fx.blasts.lights(self.clock));
         l.truncate(MAX_LIGHTS);
-        l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).copied());
+        let flood = self.flood;
+        l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).map(|f| LocalLight { intensity_cd: f.intensity_cd * flood, ..*f }));
         l.extend(self.arena.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         let room = MAX_LIGHTS - l.len();
         l.extend(self.fx.flash_lights(room));
         l
     }
 
+    /// Floodlight strength for the sky (1 for Godot's day).
+    pub fn set_floodlights(&mut self, flood: f32) { self.flood = flood; }
+
     /// Short, distance-attenuated ion impact flash, separately per viewport.
     pub fn ion_flash(&self, eye: Vec3) -> f32 { self.ion.flash(self.clock, eye) }
 }
 
 /// Godot's sky_top to horizon; the ground colour is the darkened horizon.
-fn sky() -> (u32, u32, Vec<[f32; 4]>) {
+pub fn sky() -> (u32, u32, Vec<[f32; 4]>) {
     primitives::gradient_sky(palette::SKY_TOP, palette::HORIZON, palette::HORIZON.map(|c| c * 0.79))
 }
 
