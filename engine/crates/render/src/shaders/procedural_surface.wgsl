@@ -66,7 +66,64 @@ fn ps_srgb_decode(c: vec3<f32>) -> vec3<f32> {
     return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
 }
 
-struct ProcRock { base: vec3<f32>, rough: f32 };
+struct ProcRock { base: vec3<f32>, rough: f32, normal: vec3<f32> };
+
+// One shared, prefiltered quarry surface. Reuse the instance's axes (metres,
+// not stretched unit-cube UVs) and a stable slot seed. Translating/rotating a
+// rubble shard therefore moves its texture with it, independent of the view.
+// Albedo alpha stays opaque; roughness is stored in the LINEAR normal alpha,
+// so foliage alpha-coverage mip correction cannot corrupt the roughness.
+fn textured_rock(inst: Instance, instance_id: u32, p: vec3<f32>, n: vec3<f32>,
+    tint: vec3<f32>, damage: f32, roughness: f32, layer: i32,
+    dx: vec3<f32>, dy: vec3<f32>) -> ProcRock {
+    let ax = vec3<f32>(inst.r0.x, inst.r1.x, inst.r2.x);
+    let ay = vec3<f32>(inst.r0.y, inst.r1.y, inst.r2.y);
+    let az = vec3<f32>(inst.r0.z, inst.r1.z, inst.r2.z);
+    let d = p - vec3<f32>(inst.r0.w, inst.r1.w, inst.r2.w);
+    let ux = safe_normalize(ax); let uy = safe_normalize(ay); let uz = safe_normalize(az);
+    let lp = vec3<f32>(dot(d, ax) / max(dot(ax, ax), 1e-8),
+        dot(d, ay) / max(dot(ay, ay), 1e-8), dot(d, az) / max(dot(az, az), 1e-8));
+    let ap = abs(lp);
+    var u = ux; var v = uy;
+    if ap.x >= ap.y && ap.x >= ap.z { u = uy; v = uz; }
+    else if ap.y >= ap.x && ap.y >= ap.z { u = ux; v = uz; }
+    let h = ps_ihash(i32(instance_id), 9137);
+    var gu = u; var gv = v;
+    switch h & 3u {
+        case 1u: { gu = -v; gv = u; }
+        case 2u: { gu = -u; gv = -v; }
+        case 3u: { gu = v; gv = -u; }
+        default: {}
+    }
+    // Keep in sync with stone_surface::REPEAT_METRES, shared by every block.
+    let repeat_m = 1.5;
+    let offset = vec2<f32>(f32((h >> 2u) & 1023u), f32((h >> 12u) & 1023u)) / 1024.0;
+    let uv = vec2<f32>(dot(d, gu), dot(d, gv)) / repeat_m + offset;
+    let gx = vec2<f32>(dot(dx, gu), dot(dx, gv)) / repeat_m;
+    let gy = vec2<f32>(dot(dy, gu), dot(dy, gv)) / repeat_m;
+    let sampled = textureSampleGrad(albedo, samp, uv, layer, gx, gy);
+    let footprint_m = max(length(gx), length(gy)) * repeat_m;
+    // Fade unresolved millimetre relief continuously; beyond this band only
+    // one albedo mip sample remains. No distance switch or per-stone CPU LOD.
+    let relief = 1.0 - smoothstep(0.025, 0.10, footprint_m);
+    var normal = n;
+    var grain_roughness = 0.93;
+    if relief > 0.0 {
+        let packed = textureSampleGrad(normal_tex, samp, uv, layer, gx, gy);
+        let dressing = mix(0.65, 1.0, f32((h >> 22u) & 255u) / 255.0);
+        let xy = (packed.xy * 2.0 - 1.0) * (relief * dressing);
+        // Preserve the metric UV Jacobian on sloped fracture/bevel faces;
+        // normalizing the projected axes would amplify the physical relief.
+        normal = rock_mapped_normal(n, xy, gu, gv);
+        grain_roughness = mix(grain_roughness, packed.a, relief);
+    }
+    let dmg = clamp(damage, 0.0, 1.0);
+    var result: ProcRock;
+    result.base = tint * sampled.rgb * (1.0 - dmg * 0.24);
+    result.rough = clamp(roughness * grain_roughness + dmg * 0.06, 0.55, 1.0);
+    result.normal = normal;
+    return result;
+}
 
 // Rock noise: uv = world * 0.085 into a 256 px texture of frequency 0.032.
 const PS_ROCK_FREQ: f32 = 0.6963;
@@ -127,6 +184,7 @@ fn proc_rock(inst: Instance, p: vec3<f32>, n: vec3<f32>, tint: vec3<f32>, damage
     var r: ProcRock;
     r.base = ps_to_linear(col);
     r.rough = clamp(0.96 + (1.0 - bevel) * (pit * 0.18 + crack_line * 0.12 + (1.0 - combined) * 0.08), 0.0, 1.0);
+    r.normal = n;
     return r;
 }
 
