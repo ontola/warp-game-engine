@@ -12,6 +12,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 use tungstenite::{Message, stream::MaybeTlsStream};
 
+pub mod lobby;
+pub mod artwork;
+
 const STALE: Duration = Duration::from_millis(250);
 const BUTTON_MASK: u16 = 0x3fff;
 
@@ -364,17 +367,23 @@ impl Client {
 }
 
 fn transport(config: Config, outgoing: Receiver<Value>, incoming: &Sender<Incoming>) -> Result<(), String> {
+    let mut hello = json!({"type":"hello", "role":"game", "game":config.game_id});
+    if !config.token.is_empty() { hello["token"] = json!(config.token); }
+    transport_with(&config.url, hello, outgoing, incoming)
+}
+
+/// One websocket session: send `hello`, then pump both directions until the
+/// caller drops its sender (Ok) or the connection fails (Err, redacted).
+fn transport_with(url: &str, hello: Value, outgoing: Receiver<Value>, incoming: &Sender<Incoming>) -> Result<(), String> {
     let mut diagnostics = TransportDiagnostics::new();
     let mut ws_config = tungstenite::protocol::WebSocketConfig::default();
     ws_config.max_message_size = Some(16 * 1024 * 1024); // SDK6: four avatar/profile payloads may exceed 1 MiB.
-    let (mut socket, _) = tungstenite::client::connect_with_config(config.url.as_str(), Some(ws_config), 3)
+    let (mut socket, _) = tungstenite::client::connect_with_config(url, Some(ws_config), 3)
         .map_err(|error| diagnostics.failure("connect", websocket_error(&error)))?;
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => configure_stream(stream)?,
         _ => return Err("Unexpected GameNight transport".into()),
     }
-    let mut hello = json!({"type":"hello", "role":"game", "game":config.game_id});
-    if !config.token.is_empty() { hello["token"] = json!(config.token); }
     socket.send(Message::Text(hello.to_string().into()))
         .map_err(|error| diagnostics.failure("hello", websocket_error(&error)))?;
     diagnostics.sent_messages += 1;
