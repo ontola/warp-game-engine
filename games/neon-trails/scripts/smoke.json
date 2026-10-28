@@ -1,0 +1,14 @@
+{ "size": [1280, 720],
+  "steps": [
+    { "ticks": 2 },
+    { "expect": "/errors", "equals": [] },
+    { "expect": "/state/riders/0/dx", "equals": 1, "note": "player 1 starts riding right" },
+    { "ticks": 12, "mv": [0, -1], "note": "stick down: turn towards the camera" },
+    { "expect": "/state/riders/0/dy", "equals": 1 },
+    { "expect": "/state/riders/0/alive", "equals": true },
+    { "ticks": 6, "mv": [1, 0], "note": "and right again" },
+    { "expect": "/state/riders/0/dx", "equals": 1 },
+    { "ticks": 400 },
+    { "capture": "trails.png", "state": "trails.json" },
+    { "audio": "trails.wav" }
+  ] }

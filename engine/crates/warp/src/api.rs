@@ -118,6 +118,8 @@ pub struct Core {
     pub tick_rate: f32,
     pub title: String,
     pub requests: Requests,
+    /// One shared view (game.toml `split = false`): every camera call is the viewer's.
+    pub shared_view: bool,
     pub phase: Phase,
 }
 
@@ -283,6 +285,12 @@ fn player(c: &Core, p: Option<i64>) -> mlua::Result<usize> {
     })
 }
 
+/// With one shared view, the player whose camera it is; else `i`.
+fn viewer(c: &Core, i: usize) -> usize {
+    if !c.shared_view { return i; }
+    c.roster.iter().position(|p| p.view.is_some()).unwrap_or(i)
+}
+
 /// A player as Luau sees it.
 pub fn player_table(lua: &Lua, p: &Player) -> mlua::Result<Table> {
     let t = lua.create_table()?;
@@ -382,6 +390,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("set", f!(core, move |_, (p, opts): (i64, Table)| {
             let mut c = lock(&core);
             let i = player(&c, Some(p))?;
+            let i = viewer(&c, i);
             let mut cam = c.roster[i].cam;
             for (k, v) in options(&opts, &["pos", "target", "fov"], "camera.set")? {
                 match k.as_str() {
@@ -396,7 +405,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         })),
         ("get", f!(core, move |lua, p: Option<i64>| {
             let c = lock(&core);
-            let cam = c.roster[player(&c, p)?].cam;
+            let cam = c.roster[viewer(&c, player(&c, p)?)].cam;
             let t = lua.create_table()?;
             t.raw_set("pos", vector(cam.pos))?;
             t.raw_set("target", vector(cam.target))?;
@@ -458,7 +467,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("view", f!(core, move |_, p: Option<i64>| {
             let c = lock(&core);
             let i = player(&c, p)?;
-            let v = c.roster[i].view.and_then(|v| c.views.get(v)).copied().unwrap_or([0.0, 0.0, c.screen[0] as f32, c.screen[1] as f32]);
+            let v = c.roster[viewer(&c, i)].view.and_then(|v| c.views.get(v)).copied().unwrap_or([0.0, 0.0, c.screen[0] as f32, c.screen[1] as f32]);
             Ok((v[0], v[1], v[2], v[3]))
         })),
     ])?;

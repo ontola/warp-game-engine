@@ -113,6 +113,7 @@ impl LuaGame {
             tick_rate: cfg.tick_rate,
             title: cfg.title.clone(),
             requests: Requests::default(),
+            shared_view: !cfg.split,
             phase: Phase::Sim,
         }));
         let shared = core.clone();
@@ -250,7 +251,8 @@ impl LuaGame {
     fn assign_views(&mut self) {
         let mut c = self.core();
         let mut k = 0;
-        for p in &mut c.roster { p.view = (!p.bot).then(|| { k += 1; k - 1 }); }
+        let split = !c.shared_view;
+        for p in &mut c.roster { p.view = (!p.bot && (split || k == 0)).then(|| { k += 1; k - 1 }); }
         if k == 0 && let Some(p) = c.roster.first_mut() { p.view = Some(0); }
     }
 
@@ -321,7 +323,7 @@ impl LuaGame {
                 }
             }
         }
-        let seats: Vec<usize> = self.core().roster.iter().filter(|p| p.view.is_some() && !p.bot).map(|p| p.seat.unwrap_or(usize::MAX)).collect();
+        let seats: Vec<usize> = self.core().roster.iter().filter(|p| !p.bot).map(|p| p.seat.unwrap_or(usize::MAX)).collect();
         let party = self.party.as_mut()?;
         Some(party.running().then(|| party.controls(&seats, dt, false)))
     }
@@ -456,10 +458,11 @@ impl LuaGame {
         ];
         let all = lua.create_table()?;
         let none = Controls::default();
-        let roster: Vec<(u32, Option<usize>, bool)> = self.core().roster.iter().map(|p| (p.id, p.view, p.bot)).collect();
-        for (id, view, bot) in roster {
-            // People's controls in view order; bots get a neutral input.
-            let c = match view { Some(v) if !bot => controls.get(v).unwrap_or(&none), _ => &none };
+        let roster: Vec<(u32, bool)> = self.core().roster.iter().map(|p| (p.id, p.bot)).collect();
+        let mut person = 0;
+        for (id, bot) in roster {
+            // People's controls in roster order; bots get a neutral input.
+            let c = if bot { &none } else { person += 1; controls.get(person - 1).unwrap_or(&none) };
             let p = lua.create_table()?;
             p.raw_set("move_x", c.mv[0])?;
             p.raw_set("move_y", c.mv[1])?;
@@ -620,8 +623,8 @@ impl LuaGame {
 }
 
 impl Game for LuaGame {
-    /// The people (one view each); bots need no controls.
-    fn local_players(&self) -> usize { self.views() }
+    /// The people; bots need no controls.
+    fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot).count().max(1) }
 
     fn tick(&mut self, controls: &[Controls]) {
         if let Some(mut l) = self.live.take() { l.serve(self); self.live = Some(l); }

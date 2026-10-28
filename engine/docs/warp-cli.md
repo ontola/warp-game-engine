@@ -9,7 +9,8 @@ iteration with an AI over MCP.
 
 The crate is `engine/crates/warp`. The example is
 [games/hello-warp](../../games/hello-warp/README.md), the starter that
-`warp new` writes.
+`warp new` writes. [games/neon-trails](../../games/neon-trails/README.md)
+is a LÖVE party game ported to Luau, with one shared view.
 
 ```sh
 cargo build --release -p warp          # target/release/warp
@@ -58,6 +59,7 @@ my-game/
 | `tick_rate` | 60 | Ticks per second; `tick(dt, input)` gets `dt = 1 / tick_rate`. |
 | `id` | the folder name | The GameNight game id (lowercase letters, digits, dashes). A host's `GAMENIGHT_GAME_ID` wins. |
 | `players` | 1 | People without a party host, 1 to 4, in split screen. `--players` overrides it. |
+| `split` | true | One split-screen view per person; false gives one shared view (every `camera.set` moves that camera), as in an arena game. |
 | `bots` | 0 | Bots without a party host, 0 to 7. `--bots` overrides it. |
 | `min_players` | 1 | Bots fill up to this many players, with or without a party host (a duel needs two). 1 to 8. |
 | `seed` | 1 | Seed of the `random` generator. `--seed` overrides it. |

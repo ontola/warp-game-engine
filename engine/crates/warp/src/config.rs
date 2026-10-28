@@ -16,6 +16,9 @@ pub struct GameToml {
     /// People playing without a party host (split screen), 1 to 4.
     /// `--players` overrides it. Under GameNight the host's seats decide.
     pub players: usize,
+    /// One view per person (split screen, the default), or false for one
+    /// shared view: every `camera.set` then moves the same camera.
+    pub split: bool,
     /// Bots without a party host. `--bots` overrides it.
     pub bots: usize,
     /// Bots fill up to this many players, with or without a party host
@@ -37,7 +40,7 @@ pub struct GameToml {
 
 impl Default for GameToml {
     fn default() -> Self {
-        GameToml { title: "Warp game".into(), id: String::new(), tick_rate: 60.0, players: 1, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64 }
+        GameToml { title: "Warp game".into(), id: String::new(), tick_rate: 60.0, players: 1, split: true, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64 }
     }
 }
 

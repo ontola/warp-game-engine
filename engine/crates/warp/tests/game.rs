@@ -376,3 +376,22 @@ return { init = init, tick = tick, players_changed = players_changed, player_joi
     go.send("stop").unwrap();
     host.join().unwrap();
 }
+
+/// Neon Trails, ported from the LÖVE party pack: four riders (one person,
+/// three bots) on one shared view play rounds, and the same seed replays.
+#[test]
+fn neon_trails_plays_rounds_with_bots() {
+    let run = || {
+        let mut g = LuaGame::load(&repo().join("games/neon-trails"), &Overrides { bots: Some(3), ..Default::default() }, None).unwrap();
+        g.echo = false;
+        for _ in 0..3000 { g.tick(&[Controls::default()]); }
+        state(&g)
+    };
+    let s = run();
+    assert_eq!(s["errors"], json!([]), "{s}");
+    assert_eq!(s["cameras"].as_array().unwrap().len(), 1, "one shared view");
+    assert!(s["state"]["round"].as_u64().unwrap() >= 2, "rounds end and start again: {}", s["state"]);
+    let points: u64 = s["state"]["scores"].as_object().unwrap().values().map(|v| v.as_u64().unwrap()).sum();
+    assert!(points >= 3 && points % 3 == 0, "the last rider scores 3: {}", s["state"]["scores"]);
+    assert_eq!(run()["state"], s["state"]);
+}
