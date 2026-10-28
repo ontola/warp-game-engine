@@ -365,6 +365,9 @@ struct App {
     host: Option<Client>, seats: Vec<Seat>, view_order: Vec<usize>, pending_settings: serde_json::Value,
     active_settings: serde_json::Value, input_edges: [(i8,bool);4], look: [[f32;2];4], finished_round: u32,
     resume_fullscreen: Option<Fullscreen>,
+    /// Under a host: minimise on pause and take the screen back on start,
+    /// asking until it takes (app::manners, as the Godot SDK's screen.gd).
+    manners: app::manners::Manners,
     hud_stats: serde_json::Value, hud_samples: Vec<serde_json::Value>,
     screenshot_pending: bool, screenshot_toast: Option<(String, Instant)>,
     sound: Option<crate::audio_out::Sound>, sound_failed: bool,
@@ -406,7 +409,7 @@ impl App {
     }
 
     fn invisible(&self) -> bool {
-        self.args.smoke_frames > 0 || self.window.as_ref().is_some_and(|w|w.is_visible()==Some(false))
+        self.args.smoke_frames > 0 || self.window.as_ref().is_some_and(|w|w.is_visible()==Some(false)||w.is_minimized()==Some(true))
     }
 
     fn smoke_expired(&self) -> bool {
@@ -415,17 +418,17 @@ impl App {
 
     fn managed_screen(&mut self, visible: bool) {
         let Some(window)=&self.window else{return;};
-        if visible {
-            // Hidden acceptance tests must never take over the desktop.
-            if self.args.smoke_frames==0 {
-                window.set_fullscreen(self.resume_fullscreen.clone());
-                window.set_visible(true);
-            }
-        } else {
-            if window.is_visible()==Some(true){self.resume_fullscreen=window.fullscreen();}
-            window.set_fullscreen(None);
-            window.set_visible(false);
+        // Hidden acceptance tests must never take over the desktop.
+        if self.args.smoke_frames>0 {
+            if !visible {window.set_visible(false);}
+            return;
         }
+        // Minimised, not invisible, so Alt+Tab can still reach a paused or
+        // waiting game (the host then resumes or starts it).
+        let wish=if !visible {app::Screen::Hidden} else if self.resume_fullscreen.is_some() {app::Screen::Fullscreen} else {app::Screen::Normal};
+        if visible {window.set_visible(true);}
+        else if window.is_visible()==Some(true) && window.is_minimized()!=Some(true) {self.resume_fullscreen=window.fullscreen();}
+        self.manners.wish(wish,self.focused);
     }
 
     fn snapshot(&self) -> serde_json::Value {
@@ -1592,6 +1595,10 @@ impl ApplicationHandler for App {
         // Check outside RedrawRequested: hidden Win32 windows may never emit it.
         if self.smoke_expired(){self.finish(event_loop,"smoke_timeout");return;}
         if self.window.is_none(){return;}
+        if self.host.is_some() && self.args.smoke_frames==0 {
+            let fullscreen=self.resume_fullscreen.is_some();
+            if let Some(window)=&self.window {self.manners.step(window,self.focused,fullscreen);}
+        }
         if self.invisible() {
             if let Err(e)=self.frame(event_loop){eprintln!("play: {e}");self.error=Some(e);self.finish(event_loop,"frame_error");}
             let idle=self.host.as_ref().is_some_and(|h|!h.state.is_running());
@@ -1697,7 +1704,7 @@ pub fn run(raw:&[String])->i32{
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
     let start_paused=a.start_paused;
-    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],smoke_stage_requested:false};
+    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],smoke_stage_requested:false};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");

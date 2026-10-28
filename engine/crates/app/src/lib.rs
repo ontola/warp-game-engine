@@ -20,7 +20,7 @@ pub mod script;
 pub mod sound;
 pub mod tween;
 pub mod ui;
-mod manners;
+pub mod manners;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
 pub use text::{FieldEvent, TextEvent, TextField};
