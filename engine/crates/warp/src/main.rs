@@ -1,6 +1,7 @@
 //! warp: run a game made only of Luau scripts, synth patches and assets.
 //!
-//!   warp DIR                      (as `warp run DIR`: how a GameNight host starts a game)
+//!   warp DIR                      (as `warp run DIR`)
+//!   warp                          (a packaged game: runs the `game` folder next to the executable)
 //!   warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]
 //!   warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]
 //!   warp serve DIR [--live [PORT]] [--seconds T] [--size WxH] [--sky SKY] [--seed N]
@@ -19,6 +20,8 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
       A GameNight party host (GAMENIGHT=1 or GAMENIGHT_ADDR) decides the players.
   warp DIR
       the same as warp run DIR
+  warp
+      a packaged game: runs the game folder next to warp.exe (how GameNight starts it)
   warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]
       a headless scripted playtest (app::script format); exits 1 on a failed check
   warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]
@@ -69,11 +72,22 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Some("check") => check(&args),
         Some("audio") => audio::cli::run(args[1..].to_vec()).map_err(|e| match e.strip_prefix("usage: ") { Some(u) => format!("usage: warp audio {u}"), None => e }),
         Some("new") => new(&args),
-        Some("help" | "--help" | "-h") | None => { println!("{USAGE}"); Ok(()) }
+        None => match bundled() {
+            Some(game) => play(&["run".to_string(), game.display().to_string()]),
+            None => { println!("{USAGE}"); Ok(()) }
+        },
+        Some("help" | "--help" | "-h") => { println!("{USAGE}"); Ok(()) }
         // A game folder on its own: a runtime launch (the GameNight installer passes the folder).
         Some(d) if Path::new(d).join("main.luau").is_file() => play(&[vec!["run".to_string()], args].concat()),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     }
+}
+
+/// A packaged game: `game/main.luau` next to the executable
+/// (engine/crates/warp/tools/package-windows.ps1 makes such a folder).
+fn bundled() -> Option<PathBuf> {
+    let game = std::env::current_exe().ok()?.parent()?.join("game");
+    game.join("main.luau").is_file().then_some(game)
 }
 
 fn play(args: &[String]) -> Result<(), String> {

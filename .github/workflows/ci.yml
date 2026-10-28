@@ -38,6 +38,19 @@ jobs:
           Compress-Archive -Path build/windows/* -DestinationPath build/sideways-windows.zip
           $hash=(Get-FileHash build/sideways-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  sideways-windows.zip" | Set-Content build/release-sha256.txt
+      - name: Build the warp runtime and package Hello Warp
+        run: |
+          cargo +stable build --locked --release -p warp --bin warp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./engine/crates/warp/tools/package-windows.ps1 -Game games/hello-warp -Executable target/release/warp.exe -OutDirectory build/hello-warp
+          ./build/hello-warp/warp.exe check build/hello-warp/game --ticks 600
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path build/hello-warp/* -DestinationPath build/hello-warp-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hello-warp-windows
+          path: build/hello-warp-windows.zip
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: sideways-windows

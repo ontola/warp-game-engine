@@ -2,6 +2,9 @@
 # playtesters get it on their shelf, once the repository variable
 # GAMENIGHT_PUBLISH_ENABLED is 'true' (off by default) and the
 # GAMENIGHT_API_TOKEN secret holds a publish key for sideways.
+# Hello Warp (a Luau game: warp.exe with its game folder) needs the
+# variable HELLO_WARP_PUBLISH_ENABLED and a publish key for hello-warp in
+# the secret GAMENIGHT_API_TOKEN_HELLO_WARP.
 name: Publish GameNight preview
 on:
   workflow_run:
@@ -21,3 +24,13 @@ jobs:
       game: sideways
       file: sideways-windows.zip
       entrypoint: Sideways.exe
+  hello-warp:
+    if: vars.HELLO_WARP_PUBLISH_ENABLED == 'true'
+    uses: ontola/gamenight/.github/workflows/publish-game.yml@ac5e9b65272ac18cc74aee9f5694c6960c1c0a90
+    secrets:
+      GAMENIGHT_API_TOKEN: ${{ secrets.GAMENIGHT_API_TOKEN_HELLO_WARP }}
+    with:
+      artifact: hello-warp-windows
+      game: hello-warp
+      file: hello-warp-windows.zip
+      entrypoint: warp.exe
