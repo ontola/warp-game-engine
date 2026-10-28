@@ -9,7 +9,9 @@ reads the match, edits a Weapon field or a Luau card, renders the sound
 patch, reloads a shader and takes a screenshot to check the result.
 
 The engine side is the `live` crate (`engine/crates/live`). Growing Guns is
-the first game wired to it (`games/growing-guns/app/src/live.rs`).
+the first game wired to it (`games/growing-guns/app/src/live.rs`); every
+Luau game run by the [`warp` executable](warp-cli.md) has it too
+(`warp run DIR --live`, `warp serve DIR`).
 
 ## Quick start (Growing Guns)
 

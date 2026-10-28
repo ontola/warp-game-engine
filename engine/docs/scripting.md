@@ -4,7 +4,8 @@ The `script` crate runs [Luau](https://luau.org) modules for a game. The
 engine only provides the host: the sandbox, loading and hot reload, and the
 limits. The game decides which hooks exist, what they receive and which
 functions scripts may call. Growing Guns is the worked example: its 52
-cards and its rule hooks are Luau.
+cards and its rule hooks are Luau. The [`warp` executable](warp-cli.md)
+goes further: a whole game in Luau, with a game API of its own.
 
 ## The host
 
