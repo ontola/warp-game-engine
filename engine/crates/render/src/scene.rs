@@ -36,6 +36,11 @@ pub const ROCK: u32 = 2048;
 /// radiance in nits of a white pixel. Follows `Lighting::time`.
 pub const LAVA: u32 = 4096;
 
+/// Pixel art: sample the albedo's top mip (the sharp source pixels, like
+/// Godot's nearest filter without mipmaps) for colour and alpha test. Upload
+/// the image nearest-upscaled so linear filtering keeps hard pixel edges.
+pub const PIXEL_ART: u32 = 8192;
+
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
 pub const CAR_SHIFT: u32 = 16;
@@ -73,6 +78,9 @@ pub struct BlendMaterial {
     pub double_sided: bool,
     /// Add source radiance without attenuating the destination.
     pub additive: bool,
+    /// Sort by the instance origin instead of per triangle (like Godot):
+    /// nested shells at one centre draw in instance order.
+    pub object_sort: bool,
 }
 
 #[repr(C)]
@@ -541,7 +549,12 @@ impl Scene {
     /// The same material is excluded from both depth/shadow and solid proxies.
     pub fn set_material_blend(&mut self, material: u32, alpha: f32, double_sided: bool) {
         self.materials[material as usize].flags |= BLEND | NO_AMBIENT_OCCLUSION;
-        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided, additive: false });
+        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided, additive: false, object_sort: false });
+    }
+
+    /// Sort this blended material's triangles by their instance origin.
+    pub fn set_material_object_sort(&mut self, material: u32) {
+        if let Some(blend) = self.blended_materials.get_mut(&material) { blend.object_sort = true; }
     }
 
     /// Add continuous-alpha radiance without obscuring the scene behind it.

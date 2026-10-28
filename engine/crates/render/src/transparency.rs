@@ -158,7 +158,7 @@ fn source_triangles(
                 });
                 sorting.push(SortTriangle {
                     owner: owner as u32,
-                    center,
+                    center: if blend.object_sort { Vec3::ZERO } else { center },
                 });
                 owners.insert(owner as u32, *instance);
             }
