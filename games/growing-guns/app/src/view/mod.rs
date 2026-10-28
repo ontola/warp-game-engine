@@ -70,6 +70,8 @@ fn omni(p: Vec3, cd: Vec3, range: f32) -> LocalLight {
 /// Scene plus the instance ranges the frame loop rewrites.
 pub struct Visuals {
     pub scene: Scene,
+    /// The sprite images (the drop beams' shaft) are on this renderer.
+    sprite_images: bool,
     /// Everything from here on is uploaded every frame (`dynamic`).
     pub first_dynamic: usize,
     phys: Physics,
@@ -108,7 +110,7 @@ impl Visuals {
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0 };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false };
         v.set_arena(world);
         v
     }
@@ -124,8 +126,18 @@ impl Visuals {
         self.stadium.set_arena(&mut self.scene, world);
     }
 
+    /// The renderer was rebuilt: upload the sprite images again.
+    pub fn invalidate_sprites(&mut self) { self.sprite_images = false; }
+
+    /// World sprites besides the name tags: the drop beams' light shafts.
+    pub fn sprites(&self) -> &[render::sprites::Sprite] { self.things.sprites() }
+
     /// Upload changed slots, debris, effects and the crowd.
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
+        if !std::mem::replace(&mut self.sprite_images, true) {
+            let (id, picture) = things::Things::sprite_picture();
+            renderer.set_sprite_image(gpu, id, &picture, render::hud::ImageFilter::Linear);
+        }
         self.arena.flush(gpu, renderer, &self.scene)?;
         self.players.flush(gpu, renderer, &self.scene)?;
         self.stadium.flush(gpu, renderer, &self.scene, self.clock)?;
@@ -304,6 +316,7 @@ impl Visuals {
     pub fn set_floodlights(&mut self, flood: f32) {
         self.flood = flood;
         self.arena.lava.night = ((flood - 1.0) / (crate::sky::NIGHT_FLOODLIGHTS - 1.0)).clamp(0.0, 1.0);
+        self.things.set_night(self.arena.lava.night);
     }
 
     /// Short, distance-attenuated ion impact flash, separately per viewport.
