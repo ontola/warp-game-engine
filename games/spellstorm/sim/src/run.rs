@@ -1,0 +1,1121 @@
+//! A descent (run.gd): five biomes, one big level each. Walk the level
+//! along its path; each time the wizards get further in, monsters come at
+//! them from ahead. Two clearings on the way are held by a larger pack: beat
+//! it and a shrine of tomes rises there (and the fallen get back up). At the
+//! end of the level is the boss's arena; beat the boss for the last shrine
+//! and the portal on to the next biome. The first level starts with the
+//! practice strip (practice.gd) for wizards who know nothing yet.
+
+use crate::El;
+use crate::enemy::{self, KINDS, Spawn};
+use crate::fx::{self, C, Ev};
+use crate::level::Level;
+use crate::relics;
+use crate::rng::{Pcg, Rand};
+use crate::wizard::{ELEMENT_ORDER, Wizard};
+use crate::world::{Id, Later, World};
+use glam::{Vec2, Vec3};
+use std::collections::BTreeMap;
+
+pub const PORTAL_R: f32 = 1.7;
+/// Everyone stands in the portal's ring this long to go on.
+pub const PORTAL_TIME: f64 = 1.2;
+/// Metres along the path between the packs that come at you on the way.
+pub const WAVE_GAP: f32 = 30.0;
+pub const FIRST_WAVE: f32 = 8.0;
+pub const FIRST_CALM: f32 = 22.0;
+/// Stand in an altar's ring this long to take its tome.
+pub const TAKE_TIME: f64 = 0.9;
+pub const ALTAR_R: f32 = 1.4;
+/// A monster left this far from every wizard no longer holds anything up.
+pub const STRAY_DIST: f32 = 45.0;
+pub const GATE_BACK: f32 = 2.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum State {
+    #[default]
+    Fight,
+    Cleared,
+    Travel,
+    Dead,
+    Won,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EncKind {
+    Wave,
+    /// A clearing's pack, and the shrine it holds.
+    Guard(usize),
+    Boss,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Encounter {
+    /// Metres along the path the front wizard must reach.
+    pub at: f32,
+    pub kind: EncKind,
+}
+
+/// A tome on a shrine.
+#[derive(Clone, Debug)]
+pub struct Altar {
+    pub pos: Vec3,
+    pub relic: usize,
+    pub taken: bool,
+    /// How far the ring has filled, and in whose colour.
+    pub hold: f64,
+    pub fill_c: C,
+    /// "biome_k": each wizard takes one tome per shrine.
+    pub shrine: String,
+    /// Rising (0 to 1), or sinking away once taken (1 to 0).
+    pub rise: f32,
+}
+
+/// What a practice ward waits for before it opens, and what it does then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    Urns,
+    Archer,
+    Caster,
+    Shrine,
+}
+
+/// A wall of mist across the way on (run.gd _wards).
+#[derive(Clone, Debug)]
+pub struct Ward {
+    /// The shrine it waits for, -1 for a practice stop.
+    pub k: i32,
+    pub z: f32,
+    pub at: f32,
+    pub lo: f32,
+    pub hi: f32,
+    pub check: Option<Check>,
+    /// Opening: 1 shut, fading to 0, then gone.
+    pub open: f32,
+    pub opening: bool,
+}
+
+/// The practice strip on the first level (practice.gd).
+#[derive(Clone, Debug, Default)]
+pub struct Practice {
+    pub start: f32,
+    pub urns: Vec<usize>,
+    pub archer: Option<Id>,
+    pub caster: Option<Id>,
+    pub shrine: Option<Vec3>,
+    pub shrine_els: Vec<El>,
+    pub fill: f64,
+    hold: BTreeMap<usize, f64>,
+}
+
+pub mod practice {
+    pub const URNS_AT: f32 = 10.0;
+    pub const WARD_1: f32 = 14.0;
+    pub const ARCHER_AT: f32 = 24.0;
+    pub const WARD_2: f32 = 27.0;
+    pub const CASTER_AT: f32 = 36.0;
+    pub const WARD_3: f32 = 39.0;
+    pub const SHRINE_AT: f32 = 44.0;
+    pub const WARD_4: f32 = 47.0;
+    /// Where the first pack waits, past the strip.
+    pub const END: f32 = 56.0;
+    pub const SHRINE_R: f32 = 1.4;
+    pub const LEARN_TIME: f64 = 0.9;
+}
+
+#[derive(Clone, Debug)]
+pub struct Run {
+    pub biome_index: usize,
+    pub state: State,
+    pub spawn_queue: Vec<(usize, i32)>,
+    incoming: BTreeMap<i32, i32>,
+    tag: i32,
+    spawn_t: f64,
+    pub encounters: Vec<Encounter>,
+    wave_at: f32,
+    pending: Vec<usize>,
+    guard_quiet: BTreeMap<usize, f64>,
+    pub rng: Pcg,
+    pub seed: u64,
+    pub kills: u64,
+    pub altars: Vec<Altar>,
+    pub portal: Option<Vec3>,
+    pub portal_t: f64,
+    end_t: f64,
+    quiet_t: f64,
+    pub boss_fell: bool,
+    pub boss: Option<Id>,
+    pub wards: Vec<Ward>,
+    /// Wizards may not walk further than this (z goes down along a level).
+    pub ward_z: f64,
+    pub practice: Option<Practice>,
+    lead: f32,
+    lead_t: f64,
+}
+
+impl Default for Run {
+    fn default() -> Run {
+        Run {
+            biome_index: 0,
+            state: State::Fight,
+            spawn_queue: Vec::new(),
+            incoming: BTreeMap::new(),
+            tag: -1,
+            spawn_t: 0.0,
+            encounters: Vec::new(),
+            wave_at: -1.0,
+            pending: Vec::new(),
+            guard_quiet: BTreeMap::new(),
+            rng: Pcg::new(1),
+            seed: 1,
+            kills: 0,
+            altars: Vec::new(),
+            portal: None,
+            portal_t: 0.0,
+            end_t: 0.0,
+            quiet_t: 0.0,
+            boss_fell: false,
+            boss: None,
+            wards: Vec::new(),
+            ward_z: f64::NEG_INFINITY,
+            practice: None,
+            lead: 0.0,
+            lead_t: 0.0,
+        }
+    }
+}
+
+impl Run {
+    /// How deep in the run this level is (0 is the first).
+    pub fn depth(&self) -> usize {
+        self.biome_index
+    }
+}
+
+fn xz(v: Vec3) -> Vec2 {
+    Vec2::new(v.x, v.z)
+}
+
+impl World {
+    /// A new run on seed `s` (Run.start). The tomes found stay with you
+    /// into the next run, even after dying.
+    pub fn run_start(&mut self, s: u64) {
+        self.run.seed = s;
+        self.run.rng = Pcg::new(s);
+        self.run.biome_index = 0;
+        self.run.kills = 0;
+        for id in self.wizards.clone() {
+            self.wiz_mut(id).took.clear();
+            self.revive_id(id, 1.0);
+            let mut a = self.am(id);
+            a.hp = a.max_hp;
+        }
+        self.enter_level();
+    }
+
+    pub fn enter_level(&mut self) {
+        self.clear_level();
+        self.run.state = State::Fight;
+        let depth = self.run.depth();
+        self.level = Level::build(
+            self.run.biome_index,
+            self.run.seed.wrapping_mul(31).wrapping_add(depth as u64),
+        );
+        // From the second level on LB and the enchantment are open.
+        if depth >= 1 {
+            for id in self.wizards.clone() {
+                self.unlock_to(id, 3);
+            }
+        }
+        let sz = self.level.start;
+        let starts = [
+            Vec2::new(-1.5, -1.0),
+            Vec2::new(1.5, -1.0),
+            Vec2::new(-3.5, 0.5),
+            Vec2::new(3.5, 0.5),
+            Vec2::new(0.0, 1.5),
+            Vec2::new(-5.0, 1.5),
+        ];
+        for (i, id) in self.wizards.clone().into_iter().enumerate() {
+            if !self.alive(id) {
+                self.revive_id(id, 0.4);
+            }
+            let at = sz + starts[i % starts.len()];
+            {
+                let mut a = self.am(id);
+                a.pos = Vec3::new(at.x, 0.0, at.y);
+                a.vel = Vec3::ZERO;
+                a.push = Vec3::ZERO;
+            }
+            self.wiz_mut(id).aim_dir = Vec3::NEG_Z;
+        }
+        // Packs along the way, evenly spread between the clearings; the two
+        // clearings' packs where they are; the boss at the arena's edge. The
+        // first level starts quiet for a bit, to learn the controls.
+        let mut guards = Vec::new();
+        for k in 0..2 {
+            guards.push(Encounter {
+                at: self.level.clearing_at[k] - self.level.clearings[k].z * 0.6,
+                kind: EncKind::Guard(k),
+            });
+        }
+        let boss_at = self.level.clearing_at[2] - self.level.clearings[2].z * 0.8;
+        let mut first = if self.run.biome_index == 0 {
+            FIRST_CALM
+        } else {
+            FIRST_WAVE
+        };
+        if self.run.biome_index == 0 && self.practice_wanted() {
+            self.practice_build();
+            let start = self.run.practice.as_ref().map(|p| p.start).unwrap_or(0.0);
+            first = first.max(start + practice::END);
+        }
+        let mut stops = vec![first];
+        for g in &guards {
+            if g.at > first + 12.0 {
+                stops.push(g.at);
+            }
+        }
+        stops.push(boss_at);
+        self.run.encounters.push(Encounter {
+            at: first,
+            kind: EncKind::Wave,
+        });
+        for j in 0..stops.len() - 1 {
+            let (a, b) = (stops[j], stops[j + 1]);
+            let n = (((b - a) / WAVE_GAP).ceil() as i32 - 1).max(0);
+            for m in 0..n {
+                let t = (m as f32 + 1.0 + self.run.rng.range(-0.15, 0.15)) / (n as f32 + 1.0);
+                self.run.encounters.push(Encounter {
+                    at: a + (b - a) * t,
+                    kind: EncKind::Wave,
+                });
+            }
+        }
+        self.run.encounters.extend(guards);
+        self.run.encounters.push(Encounter {
+            at: boss_at,
+            kind: EncKind::Boss,
+        });
+        // Godot's sort_custom is not stable either; ties never happen here.
+        self.run.encounters.sort_by(|a, b| a.at.total_cmp(&b.at));
+        self.build_wards();
+        let biome = self.run.biome_index;
+        self.ev(Ev::Level { biome, depth });
+    }
+
+    /// For testing: put the wizards `run` metres along the level, as if the
+    /// packs on the way were never met. Below 0: just short of the boss.
+    pub fn skip_to(&mut self, mut run: f32) {
+        if run < 0.0 {
+            run = self.level.clearing_at[2] - self.level.clearings[2].z - 3.0;
+        }
+        self.run.encounters.retain(|e| e.at >= run);
+        let ca = self.level.clearing_at.clone();
+        self.run.wards.retain(|w| {
+            let at = if w.k < 0 { w.at } else { ca[w.k as usize] };
+            at >= run
+        });
+        let c = self.level.point_at(run);
+        for (i, id) in self.wizards.clone().into_iter().enumerate() {
+            let x = (i % 3) as f32 - 1.0;
+            let z = (i / 3) as f32;
+            self.am(id).pos = Vec3::new(c.x + x * 1.5, 0.0, c.y + z * 1.5);
+        }
+    }
+
+    fn clear_level(&mut self) {
+        for id in self
+            .enemies
+            .drain(..)
+            .chain(self.corpses.drain(..))
+            .chain(self.fx.drain(..))
+            .chain(self.fields.drain(..))
+        {
+            let _ = self.ecs.despawn(id);
+        }
+        self.later.clear();
+        let r = &mut self.run;
+        r.altars.clear();
+        r.portal = None;
+        r.spawn_queue.clear();
+        r.incoming.clear();
+        r.encounters.clear();
+        r.pending.clear();
+        r.guard_quiet.clear();
+        r.wards.clear();
+        r.ward_z = f64::NEG_INFINITY;
+        r.practice = None;
+        r.wave_at = -1.0;
+        // How far the front wizard got belongs to the level just left.
+        r.lead = 0.0;
+        r.lead_t = 0.0;
+        r.boss = None;
+        r.boss_fell = false;
+    }
+
+    fn queue_wave(&mut self, players: usize, scale: f64) {
+        let mix = self.level.biome().enemies;
+        let mut pool: Vec<&str> = Vec::new();
+        for &(k, n) in mix {
+            for _ in 0..n {
+                pool.push(k);
+            }
+        }
+        let depth = self.run.depth() as f64;
+        let mut count = ((2.0 + 1.6 * players as f64)
+            * (1.0 + 0.3 * depth)
+            * self.settings.monster_count
+            * scale) as i64;
+        // The first biome is where you learn to shoot and roll: fewer.
+        if self.run.biome_index == 0 {
+            count = 2.max((count as f64 * 0.6) as i64);
+        }
+        while count > 0 {
+            // Some come in packs (hellhounds): the whole pack at once.
+            let k = enemy::kind(pool[self.run.rng.pick(pool.len())]);
+            if KINDS[k].solo && self.run.spawn_queue.iter().any(|q| q.0 == k) {
+                continue;
+            }
+            for _ in 0..KINDS[k].pack {
+                self.run.spawn_queue.push((k, self.run.tag));
+                count -= 1;
+            }
+        }
+    }
+
+    /// A monster comes in at `at`, after a red circle shows where unless
+    /// `telegraph` is off (Run.spawn_enemy).
+    pub fn spawn_enemy(&mut self, k: usize, at: Vec3, telegraph: bool, tag: i32) {
+        let players = self.wizards.len().max(1) as f64;
+        let depth = self.run.depth() as f64;
+        let hp_scale =
+            (1.0 + 0.35 * (players - 1.0)) * (1.0 + 0.33 * depth) * self.settings.monster_hp;
+        let champ = (self.run.rng.f() as f64) < 0.06 + 0.03 * depth;
+        if telegraph {
+            self.summon_circle(at);
+            *self.run.incoming.entry(tag).or_insert(0) += 1;
+            self.later(
+                0.8,
+                Later::Spawn {
+                    kind: k,
+                    at,
+                    tag,
+                    hp_scale,
+                    champ,
+                },
+            );
+            return;
+        }
+        self.spawned(k, at, tag, hp_scale, champ);
+    }
+
+    /// The summoning is over: in it comes, unless the fight already ended.
+    pub fn summoned(&mut self, k: usize, at: Vec3, tag: i32, hp_scale: f64, champ: bool) {
+        *self.run.incoming.entry(tag).or_insert(1) -= 1;
+        if self.run.state != State::Fight && !KINDS[k].boss {
+            return;
+        }
+        self.spawned(k, at, tag, hp_scale, champ);
+    }
+
+    fn spawned(&mut self, k: usize, at: Vec3, tag: i32, hp_scale: f64, champ: bool) {
+        let id = self.add_enemy(k, at, hp_scale, champ, tag);
+        if KINDS[k].boss {
+            self.run.boss = Some(id);
+        }
+    }
+
+    pub fn run_step(&mut self, dt: f64) {
+        match self.run.state {
+            State::Fight => {
+                self.fight(dt);
+                self.shrines(dt);
+                self.practice_step(dt);
+                self.ward_step();
+            }
+            State::Cleared => {
+                self.shrines(dt);
+                self.portal_step(dt);
+            }
+            State::Dead | State::Won => {
+                self.run.end_t -= dt;
+                if self.run.end_t <= 0.0 {
+                    let died = self.run.state == State::Dead;
+                    self.new_run();
+                    if died {
+                        self.ev(Ev::YouDiedEnd);
+                    }
+                }
+            }
+            State::Travel => {}
+        }
+        for w in &mut self.run.wards {
+            if w.opening {
+                w.open = (w.open - dt as f32 / 1.6).max(0.0);
+            }
+        }
+        self.run.wards.retain(|w| !w.opening || w.open > 0.0);
+        for a in &mut self.run.altars {
+            a.rise = if a.taken {
+                (a.rise - dt as f32 / 0.4).max(0.0)
+            } else {
+                (a.rise + dt as f32 / 0.6).min(1.0)
+            };
+        }
+        if matches!(self.run.state, State::Fight | State::Cleared)
+            && !self.wizards.is_empty()
+            && !self.any_wizard_alive()
+        {
+            self.run.state = State::Dead;
+            // The world goes black and two words say it all; then a new run.
+            self.run.end_t = 4.2;
+            self.ev(Ev::YouDied);
+            self.ev(Ev::RunOver { won: false });
+        }
+    }
+
+    /// A wall of mist just past each shrine's clearing, across all the
+    /// ground you can walk there.
+    fn build_wards(&mut self) {
+        for k in 0..2 {
+            let c = self.level.clearings[k];
+            let mut wd = self.ward_wall(Vec2::new(c.x, c.y - c.z - 1.5));
+            wd.k = k as i32;
+            self.run.wards.push(wd);
+        }
+        self.ward_step();
+    }
+
+    /// A practice ward `at` metres along the path that opens on `check`.
+    fn add_ward(&mut self, at: f32, check: Check) {
+        let p = self.level.point_at(at);
+        let mut wd = self.ward_wall(p);
+        wd.k = -1;
+        wd.at = at;
+        wd.check = Some(check);
+        self.run.wards.push(wd);
+    }
+
+    fn ward_wall(&self, p: Vec2) -> Ward {
+        let l = &self.level;
+        let z = p.y;
+        let mid = l.point_at(l.progress_of(p)).x;
+        let (mut lo, mut hi) = (mid, mid);
+        while lo > -l.half.x + 0.5 && l.bound(Vec2::new(lo - 0.5, z)) < 0.0 {
+            lo -= 0.5;
+        }
+        while hi < l.half.x - 0.5 && l.bound(Vec2::new(hi + 0.5, z)) < 0.0 {
+            hi += 0.5;
+        }
+        Ward {
+            k: -1,
+            z,
+            at: 0.0,
+            lo: lo - 1.0,
+            hi: hi + 1.0,
+            check: None,
+            open: 1.0,
+            opening: false,
+        }
+    }
+
+    /// Opens every wall whose shrine has risen and given each living wizard
+    /// a tome (or has none left they may take), and sets where the rest hold.
+    fn ward_step(&mut self) {
+        self.run.ward_z = f64::NEG_INFINITY;
+        for i in 0..self.run.wards.len() {
+            let wd = self.run.wards[i].clone();
+            if wd.opening {
+                continue;
+            }
+            let done = if let Some(c) = wd.check {
+                let ok = self.practice_check(c);
+                if ok {
+                    self.open_ward(i);
+                    self.practice_open(c);
+                    continue;
+                }
+                false
+            } else {
+                let key = format!("{}_{}", self.run.biome_index, wd.k);
+                let risen = self.run.altars.iter().any(|a| a.shrine == key);
+                let left = self.run.altars.iter().any(|a| a.shrine == key && !a.taken);
+                let mut done = risen;
+                if risen && left {
+                    for &w in &self.wizards {
+                        if self.alive(w) && !self.wiz(w).took.contains(&key) {
+                            done = false;
+                        }
+                    }
+                }
+                done
+            };
+            if done {
+                self.open_ward(i);
+            } else {
+                self.run.ward_z = self.run.ward_z.max(wd.z as f64);
+            }
+        }
+    }
+
+    fn open_ward(&mut self, i: usize) {
+        let wd = &mut self.run.wards[i];
+        wd.opening = true;
+        let at = Vec3::new((wd.lo + wd.hi) * 0.5, 1.6, wd.z);
+        self.burst(at, fx::rgb(0.9, 0.85, 0.7), 24, 3.0, 0.15, None);
+    }
+
+    /// How far along the level's path the front living wizard is.
+    pub fn lead_progress(&self) -> f32 {
+        let mut best = -1.0f32;
+        for &w in &self.wizards {
+            if self.alive(w) {
+                best = best.max(self.level.progress_of(xz(self.pos(w))));
+            }
+        }
+        best
+    }
+
+    fn fight(&mut self, dt: f64) {
+        if self.run.boss_fell {
+            // Beating the boss ends the level: the rest of its horde falls
+            // with it and nothing more comes.
+            self.run.boss_fell = false;
+            self.run.encounters.clear();
+            self.run.spawn_queue.clear();
+            self.run.incoming.clear();
+            for e in self.enemies.clone() {
+                if self.alive(e) {
+                    let hp = self.a(e).hp;
+                    self.take(e, hp + 1.0);
+                }
+            }
+        }
+        // The lead only matters a few times a second.
+        self.run.lead_t -= dt;
+        if self.run.lead_t <= 0.0 {
+            self.run.lead_t = 0.2;
+            self.run.lead = self.lead_progress();
+        }
+        // The next pack holds off while the field is still full.
+        let alive_count = self.near_count();
+        while !self.run.encounters.is_empty()
+            && self.run.lead >= self.run.encounters[0].at
+            && alive_count + self.run.spawn_queue.len() < 9
+        {
+            let enc = self.run.encounters.remove(0);
+            self.run.wave_at = self.run.lead;
+            let players = self.wizards.len().max(1);
+            match enc.kind {
+                EncKind::Wave => self.queue_wave(players, 1.0),
+                EncKind::Guard(k) => {
+                    self.run.tag = k as i32;
+                    self.queue_wave(players, 1.5);
+                    self.run.tag = -1;
+                    self.run.pending.push(k);
+                    self.run.guard_quiet.insert(k, 0.0);
+                }
+                EncKind::Boss => {
+                    let c = self.level.clearings[2];
+                    let b = enemy::kind(self.level.biome().boss);
+                    self.spawn_enemy(b, Vec3::new(c.x, 0.0, c.y), false, -1);
+                    let sub = self.level.biome().name.to_string();
+                    self.ev(Ev::Banner {
+                        title: KINDS[b].name.to_string(),
+                        sub,
+                        c: fx::rgb(1.0, 0.7, 0.3),
+                    });
+                    self.queue_wave(players, 0.5);
+                }
+            }
+        }
+        self.run.spawn_t -= dt;
+        if !self.run.spawn_queue.is_empty() && self.run.spawn_t <= 0.0 {
+            self.run.spawn_t = 0.35;
+            let (k, tag) = self.run.spawn_queue.remove(0);
+            let at = self.spawn_spot(k);
+            self.spawn_enemy(k, at, KINDS[k].spawn != Spawn::Under, tag);
+        }
+        // A shrine rises as soon as its own guards are beaten, whatever
+        // packs came after them.
+        for k in self.run.pending.clone() {
+            let q = if self.guards_left(k as i32) == 0 {
+                self.run.guard_quiet.get(&k).copied().unwrap_or(0.0) + dt
+            } else {
+                0.0
+            };
+            self.run.guard_quiet.insert(k, q);
+            if q >= 1.5 {
+                self.raise_shrine(k);
+                self.run.pending.retain(|&p| p != k);
+            }
+        }
+        let alive_count = self.near_count();
+        self.run.quiet_t = if self.run.spawn_queue.is_empty() && alive_count == 0 {
+            self.run.quiet_t + dt
+        } else {
+            0.0
+        };
+        if self.run.quiet_t < 1.5 {
+            return;
+        }
+        // The field is clear: the shrines of beaten clearings rise.
+        for k in std::mem::take(&mut self.run.pending) {
+            self.raise_shrine(k);
+        }
+        let boss_up = self
+            .run
+            .boss
+            .is_some_and(|b| self.ecs.contains(b) && self.alive(b));
+        if self.run.encounters.is_empty() && !boss_up {
+            self.level_cleared();
+        }
+    }
+
+    fn guards_left(&self, k: i32) -> usize {
+        let mut n = self.run.incoming.get(&k).copied().unwrap_or(0).max(0) as usize;
+        n += self.run.spawn_queue.iter().filter(|q| q.1 == k).count();
+        for &e in &self.enemies {
+            if self.alive(e) && self.enemy(e).guard == k && self.near(e) {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    fn near(&self, e: Id) -> bool {
+        let p = self.pos(e);
+        self.wizards
+            .iter()
+            .any(|&w| self.alive(w) && self.pos(w).distance(p) < STRAY_DIST)
+    }
+
+    fn near_count(&self) -> usize {
+        self.enemies
+            .iter()
+            .filter(|&&e| self.alive(e) && self.near(e))
+            .count()
+    }
+
+    /// Where a monster of `k` comes in, by what it is.
+    fn spawn_spot(&mut self, k: usize) -> Vec3 {
+        let wz: Vec<Vec3> = self.wizards.iter().map(|&w| self.pos(w)).collect();
+        let at = self.run.wave_at;
+        if at < 0.0 {
+            return self.level.spawn_point(&wz);
+        }
+        let l = &mut self.level;
+        match KINDS[k].spawn {
+            Spawn::Far => l.spawn_ahead(at, 15.0, 22.0, &wz, 0.0),
+            Spawn::Under => l.spawn_ahead(at, 4.0, 10.0, &wz, 0.0),
+            Spawn::Flank => l.spawn_ahead(at, -12.0, -5.0, &wz, 0.0),
+            Spawn::Water => l.spawn_ahead(at, 8.0, 16.0, &wz, 1.0),
+            Spawn::Ahead => l.spawn_ahead(at, 7.0, 15.0, &wz, 0.0),
+        }
+    }
+
+    /// Where a wizard with nothing to fight walks to (bots use it).
+    pub fn walk_goal(&self, pos: Vec3) -> Vec3 {
+        let mine = self.level.progress_of(xz(pos));
+        // Far behind the front, follow the path itself: straight at a point
+        // up ahead runs into the walls where the path bends.
+        let run = if self.run.lead - mine > 8.0 {
+            mine + 6.0
+        } else {
+            self.run.lead.max(mine) + 5.0
+        };
+        let p = self.level.point_at(run);
+        Vec3::new(p.x, 0.0, p.y)
+    }
+
+    /// A tome `w` may still take, near enough to walk to.
+    pub fn tome_for(&self, pos: Vec3, w: &Wizard) -> Option<usize> {
+        self.run
+            .altars
+            .iter()
+            .position(|a| !a.taken && !w.took.contains(&a.shrine) && a.pos.distance(pos) < 30.0)
+    }
+
+    /// A shrine of tomes rises at clearing `k` (2 is the boss's arena): one
+    /// for each wizard and one spare, and the fallen get back up.
+    fn raise_shrine(&mut self, k: usize) {
+        let c = self.level.clearings[k];
+        let title = if k < 2 {
+            "A shrine rises".to_string()
+        } else {
+            format!(
+                "{} is slain",
+                KINDS[enemy::kind(self.level.biome().boss)].name
+            )
+        };
+        self.ev(Ev::Banner {
+            title,
+            sub: "Each wizard may take one tome".into(),
+            c: fx::rgb(0.9, 0.75, 0.4),
+        });
+        for id in self.wizards.clone() {
+            if !self.alive(id) {
+                self.revive_id(id, 0.3);
+            }
+        }
+        self.teach(k);
+        let n = self.wizards.len() + 1;
+        let mut taken: Vec<usize> = Vec::new();
+        for &w in &self.wizards {
+            taken.extend(self.wiz(w).relics.iter().copied());
+        }
+        taken.extend(self.run.altars.iter().map(|a| a.relic));
+        let picks = relics::pick(n, &mut self.run.rng, &taken);
+        // Across the path, facing the way on.
+        let along = self.level.clearing_at[k];
+        let dir = (self.level.point_at(along + 1.0) - self.level.point_at(along - 1.0))
+            .normalize_or_zero();
+        let across = Vec2::new(-dir.y, dir.x);
+        let mid = Vec2::new(c.x, c.y) + if k == 2 { dir * -2.0 } else { Vec2::ZERO };
+        let shrine = format!("{}_{}", self.run.biome_index, k);
+        for (i, &relic) in picks.iter().enumerate() {
+            let p = mid + across * (i as f32 - (picks.len() - 1) as f32 * 0.5) * 3.6;
+            let pos = Vec3::new(p.x, 0.0, p.y);
+            self.burst(pos + Vec3::Y, fx::rgb(1.0, 0.8, 0.4), 16, 3.0, 0.15, None);
+            self.run.altars.push(Altar {
+                pos,
+                relic,
+                taken: false,
+                hold: 0.0,
+                fill_c: fx::rgb(1.0, 0.8, 0.45),
+                shrine: shrine.clone(),
+                rise: 0.0,
+            });
+        }
+    }
+
+    /// What a shrine teaches every wizard present: the first shrine water
+    /// and the nova, the first boss poison and the plant, every later boss
+    /// one more LB element.
+    fn teach(&mut self, k: usize) {
+        let depth = self.run.depth();
+        for id in self.wizards.clone() {
+            if depth == 0 && k < 2 {
+                self.unlock_to(id, 1);
+            } else if depth == 0 {
+                self.unlock_to(id, 2);
+            } else if k == 2 {
+                let u = self.wiz(id).unlocks;
+                self.unlock_to(id, u + 1);
+            }
+        }
+    }
+
+    fn level_cleared(&mut self) {
+        if self.run.biome_index == crate::biome::BIOMES.len() - 1 {
+            self.run.state = State::Won;
+            self.run.end_t = 12.0;
+            let sub = format!(
+                "Your names will be sung. {} monsters slain.",
+                self.run.kills
+            );
+            self.ev(Ev::Banner {
+                title: "The Pit is sealed".into(),
+                sub,
+                c: fx::rgb(1.0, 0.8, 0.35),
+            });
+            self.ev(Ev::RunOver { won: true });
+            return;
+        }
+        self.run.state = State::Cleared;
+        self.raise_shrine(2);
+        let pa = self.level.exit_at;
+        self.run.portal = Some(Vec3::new(pa.x, 0.0, pa.y));
+        self.run.portal_t = 0.0;
+    }
+
+    fn shrines(&mut self, dt: f64) {
+        for i in 0..self.run.altars.len() {
+            if self.run.altars[i].taken {
+                continue;
+            }
+            // The ring fills while a wizard who has not taken a tome here
+            // stands in it; full, the tome is theirs.
+            let (apos, shrine) = (self.run.altars[i].pos, self.run.altars[i].shrine.clone());
+            let mut taker = None;
+            for &w in &self.wizards {
+                if !self.alive(w) || self.wiz(w).took.contains(&shrine) {
+                    continue;
+                }
+                if xz(self.pos(w) - apos).length() < ALTAR_R {
+                    taker = Some(w);
+                    break;
+                }
+            }
+            let robe = taker.map(|w| fx::lighten(self.wiz(w).robe, 0.35));
+            let a = &mut self.run.altars[i];
+            a.hold = if taker.is_some() {
+                (a.hold + dt).min(TAKE_TIME)
+            } else {
+                (a.hold - dt * 2.0).max(0.0)
+            };
+            if let Some(c) = robe {
+                a.fill_c = c;
+            }
+            if let (Some(w), true) = (taker, a.hold >= TAKE_TIME) {
+                a.taken = true;
+                let relic = a.relic;
+                self.wiz_mut(w).took.push(shrine);
+                self.give_relic(w, relic);
+                self.burst(
+                    apos + Vec3::Y * 1.3,
+                    fx::rgb(1.0, 0.8, 0.4),
+                    30,
+                    4.0,
+                    0.15,
+                    None,
+                );
+                let c = robe.unwrap();
+                self.ev(Ev::Ring {
+                    at: apos,
+                    c,
+                    r: ALTAR_R + 0.4,
+                    time: 0.4,
+                });
+                let r = &relics::ALL[relic];
+                let text = format!("{} took {}: {}", self.wiz(w).name, r.name, r.text);
+                self.ev(Ev::Toast { text, c });
+            }
+        }
+    }
+
+    fn portal_step(&mut self, dt: f64) {
+        let Some(p) = self.run.portal else { return };
+        let living: Vec<Id> = self
+            .wizards
+            .iter()
+            .copied()
+            .filter(|&w| self.alive(w))
+            .collect();
+        let inside = living
+            .iter()
+            .filter(|&&w| self.pos(w).distance(p) < PORTAL_R)
+            .count();
+        if !living.is_empty() && inside == living.len() {
+            self.run.portal_t += dt;
+            if self.run.portal_t >= PORTAL_TIME {
+                self.travel();
+            }
+        } else {
+            self.run.portal_t = (self.run.portal_t - dt * 2.0).max(0.0);
+        }
+    }
+
+    /// Through the portal: the wizards vanish into it in a flash, the
+    /// screen goes black, and it opens again on the next level.
+    fn travel(&mut self) {
+        self.run.state = State::Travel;
+        let at = self.run.portal.unwrap_or_default();
+        let c = fx::rgb(0.55, 0.75, 1.0);
+        self.burst(at + Vec3::Y * 1.4, c, 40, 6.0, 0.35, None);
+        self.ev(Ev::LightPop {
+            at,
+            c,
+            energy: 6.0,
+            range: 10.0,
+            time: 0.5,
+        });
+        for w in self.wizards.clone() {
+            let robe = fx::lighten(self.wiz(w).robe, 0.3);
+            let p = self.pos(w);
+            self.burst(p + Vec3::Y, robe, 14, 3.0, 0.25, None);
+        }
+        self.ev(Ev::Fade {
+            to: 1.0,
+            time: 0.35,
+        });
+        self.later(0.4, Later::Travel);
+    }
+
+    pub fn travelled(&mut self) {
+        if self.run.state == State::Travel {
+            self.next_level();
+        }
+        self.ev(Ev::Fade { to: 0.0, time: 0.6 });
+    }
+
+    fn next_level(&mut self) {
+        // Every level starts fresh: full health and mana, the fallen up.
+        for id in self.wizards.clone() {
+            if !self.alive(id) {
+                self.revive_id(id, 1.0);
+            }
+            let mut a = self.am(id);
+            a.hp = a.max_hp;
+            drop(a);
+            let mut w = self.wiz_mut(id);
+            w.mana = w.mana_max();
+        }
+        self.run.biome_index += 1;
+        self.enter_level();
+    }
+
+    // --- The practice strip ---------------------------------------------
+
+    /// Does the first level need the strip: someone at the couch knows
+    /// nothing.
+    fn practice_wanted(&self) -> bool {
+        if self.settings.force_practice {
+            return true;
+        }
+        if self.settings.unlock_all || self.settings.forced_unlocks >= 0 {
+            return false;
+        }
+        self.wizards.iter().any(|&w| {
+            let w = self.wiz(w);
+            w.bot.is_none() && w.unlocks < 0
+        })
+    }
+
+    fn practice_build(&mut self) {
+        let start = self.level.progress_of(self.level.start);
+        let mut p = Practice {
+            start,
+            ..Default::default()
+        };
+        let across = self.practice_across(start, practice::URNS_AT);
+        let c = self.level.point_at(start + practice::URNS_AT);
+        for i in 0..3 {
+            let q = c + across * (i as f32 - 1.0) * 2.6;
+            if let Some(u) = self.level.prop("urn", Some(Vec3::new(q.x, 0.0, q.y)), None) {
+                p.urns.push(u);
+            }
+        }
+        self.run.practice = Some(p);
+        self.add_ward(start + practice::WARD_1, Check::Urns);
+        self.add_ward(start + practice::WARD_2, Check::Archer);
+        self.add_ward(start + practice::WARD_3, Check::Caster);
+        self.add_ward(start + practice::WARD_4, Check::Shrine);
+    }
+
+    fn practice_across(&self, start: f32, at: f32) -> Vec2 {
+        let l = &self.level;
+        let dir = (l.point_at(start + at + 1.0) - l.point_at(start + at - 1.0)).normalize_or_zero();
+        Vec2::new(-dir.y, dir.x)
+    }
+
+    /// Wizards at the couch who still have to learn their first elements.
+    fn learners(&self) -> Vec<Id> {
+        self.wizards
+            .iter()
+            .copied()
+            .filter(|&w| {
+                let wz = self.wiz(w);
+                self.alive(w) && wz.bot.is_none() && wz.unlocks < 0
+            })
+            .collect()
+    }
+
+    fn beaten(&self, e: Option<Id>) -> bool {
+        e.is_some_and(|e| !self.ecs.contains(e) || !self.alive(e))
+    }
+
+    fn practice_check(&self, c: Check) -> bool {
+        let Some(p) = &self.run.practice else {
+            return true;
+        };
+        let all = |f: fn(&Wizard) -> bool| self.learners().iter().all(|&w| f(&self.wiz(w)));
+        match c {
+            Check::Urns => p.urns.iter().all(|&u| self.level.props[u].broken),
+            Check::Archer => self.beaten(p.archer) && all(|w| w.rolled),
+            Check::Caster => self.beaten(p.caster) && all(|w| w.deflected),
+            Check::Shrine => p.shrine.is_some() && self.learners().is_empty(),
+        }
+    }
+
+    fn practice_open(&mut self, c: Check) {
+        match c {
+            Check::Urns => {
+                let e = self.practice_spawn("practice_archer", practice::ARCHER_AT);
+                self.run.practice.as_mut().unwrap().archer = Some(e);
+            }
+            Check::Archer => {
+                let e = self.practice_spawn("practice_caster", practice::CASTER_AT);
+                self.run.practice.as_mut().unwrap().caster = Some(e);
+            }
+            Check::Caster => self.practice_shrine(),
+            Check::Shrine => {}
+        }
+    }
+
+    fn practice_spawn(&mut self, kind: &str, at: f32) -> Id {
+        for w in self.wizards.clone() {
+            let mut wz = self.wiz_mut(w);
+            wz.rolled = false;
+            wz.deflected = false;
+        }
+        let start = self.run.practice.as_ref().unwrap().start;
+        let c = self.level.point_at(start + at);
+        let p = Vec3::new(c.x, 0.0, c.y);
+        self.summon_circle(p);
+        self.add_enemy(enemy::kind(kind), p, 1.0, false, -1)
+    }
+
+    /// A low stone with the two first elements floating over it, and the
+    /// ring to stand in.
+    fn practice_shrine(&mut self) {
+        let start = self.run.practice.as_ref().unwrap().start;
+        let c = self.level.point_at(start + practice::SHRINE_AT);
+        let mut els: Vec<El> = Vec::new();
+        for w in self.learners() {
+            let order = ELEMENT_ORDER[self.wiz(w).element_order % ELEMENT_ORDER.len()];
+            for &e in &order[..2] {
+                if !els.contains(&e) {
+                    els.push(e);
+                }
+            }
+        }
+        if els.is_empty() {
+            els = vec![El::Fire, El::Lightning];
+        }
+        let at = Vec3::new(c.x, 0.0, c.y);
+        self.burst(at + Vec3::Y, fx::rgb(1.0, 0.8, 0.45), 16, 3.0, 0.15, None);
+        let p = self.run.practice.as_mut().unwrap();
+        p.shrine = Some(at);
+        p.shrine_els = els;
+    }
+
+    fn practice_step(&mut self, dt: f64) {
+        let Some(at) = self.run.practice.as_ref().and_then(|p| p.shrine) else {
+            return;
+        };
+        let mut best = 0.0f64;
+        for w in self.learners() {
+            let d = xz(self.pos(w) - at).length();
+            let seat = self.wiz(w).seat;
+            let p = self.run.practice.as_mut().unwrap();
+            let h = p.hold.get(&seat).copied().unwrap_or(0.0);
+            let h = if d < practice::SHRINE_R {
+                (h + dt).min(practice::LEARN_TIME)
+            } else {
+                (h - dt * 2.0).max(0.0)
+            };
+            p.hold.insert(seat, h);
+            best = best.max(h);
+            if h >= practice::LEARN_TIME {
+                p.hold.remove(&seat);
+                self.unlock_to(w, 0);
+                let c = fx::lighten(self.wiz(w).robe, 0.35);
+                self.burst(at + Vec3::Y * 1.2, c, 24, 3.5, 0.15, None);
+            }
+        }
+        self.run.practice.as_mut().unwrap().fill = best / practice::LEARN_TIME;
+    }
+
+    /// The nearest urn still standing, for bots.
+    pub fn next_urn(&self, pos: Vec3) -> Option<Vec3> {
+        let p = self.run.practice.as_ref()?;
+        p.urns
+            .iter()
+            .map(|&u| &self.level.props[u])
+            .filter(|u| !u.broken)
+            .map(|u| u.pos)
+            .min_by(|a, b| a.distance(pos).total_cmp(&b.distance(pos)))
+    }
+}

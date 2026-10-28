@@ -1524,7 +1524,12 @@ impl Level {
     /// A prop of `kind` at a free spot, or at `at` facing `yaw`. Returns
     /// its index in `props`, None when it is not a prop (a lantern, or no
     /// room was found).
-    fn prop(&mut self, kind: &'static str, at: Option<Vec3>, yaw: Option<f32>) -> Option<usize> {
+    pub fn prop(
+        &mut self,
+        kind: &'static str,
+        at: Option<Vec3>,
+        yaw: Option<f32>,
+    ) -> Option<usize> {
         let p = match at {
             Some(a) => a,
             None => self.free_spot(2.6)?,
