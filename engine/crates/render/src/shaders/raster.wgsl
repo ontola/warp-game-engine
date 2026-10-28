@@ -126,6 +126,10 @@ fn alpha_cut(in: VOut) -> bool {
     if in.grass_opacity < GRASS_OPAQUE_THRESHOLD { return true; }
     let m = materials[in.material];
     if (m.flags & 1u) != 0u && m.layer >= 0 {
+        // PIXEL_ART keeps the top mip's hard silhouette.
+        let sharp = select(1.0, 0.0, (m.flags & 8192u) != 0u);
+        let dx = dx * sharp;
+        let dy = dy * sharp;
         var a: f32;
         if (m.flags & 64u) != 0u {
             a = textureSampleGrad(albedo, plant_samp, in.uv, m.layer, dx, dy).a;

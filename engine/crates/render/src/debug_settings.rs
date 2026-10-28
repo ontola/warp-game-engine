@@ -17,6 +17,9 @@ pub struct DebugRenderOptions {
     pub bloom_rounds: u32,
     /// Exposed brightness where bloom starts.
     pub bloom_threshold: f32,
+    /// Godot-style glow: smoothstep extraction over 2 stops, the sum of the
+    /// wide rounds (levels 3-6) and a screen blend after tonemapping.
+    pub bloom_screen: bool,
     /// Scale both meadow representation transitions and its outer fade. This
     /// only shrinks the existing allocation; it does not change root density.
     pub meadow_distance_scale: f32,
@@ -43,6 +46,7 @@ impl Default for DebugRenderOptions {
             bloom_strength: crate::bloom::DEFAULT_STRENGTH,
             bloom_rounds: 1,
             bloom_threshold: crate::bloom::THRESHOLD,
+            bloom_screen: false,
             meadow_distance_scale: 1.0,
             meadow_lod_pixels: 1.0,
             meadow_size_scale: 1.0,

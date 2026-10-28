@@ -8,7 +8,7 @@ struct Tone {
     sharpen: f32,   // after TAA, which softens: 0 off
     offset: vec2<u32>, // where this view goes in the output image
     bloom_strength: f32,
-    pad2: u32,
+    screen: u32,    // 1: bloom is Godot's glow, screen-blended after tonemapping
 };
 
 @group(0) @binding(0) var hdr: texture_2d<f32>;
@@ -61,18 +61,29 @@ fn display(px: vec2<i32>) -> vec3<f32> {
     let raw = textureLoad(hdr, p, 0).rgb;
     let finite = select(vec3<f32>(0.0), clamp(raw, vec3<f32>(0.0), vec3<f32>(65504.0)), raw == raw);
     var c = finite * tone.exposure;
+    var glow = vec3<f32>(0.0);
     if tone.bloom_strength>0.0 {
         // Bloom already uses this frame's exposure. Never expose it twice.
         // Separate per-view images and clamp sampling prohibit split bleed.
         let uv=(vec2<f32>(p)+0.5)/vec2<f32>(size);
-        c+=textureSampleLevel(bloom,bloom_sampler,uv,0.0).rgb*tone.bloom_strength;
+        glow=textureSampleLevel(bloom,bloom_sampler,uv,0.0).rgb*tone.bloom_strength;
+        if tone.screen==0u { c+=glow; glow=vec3<f32>(0.0); }
     }
     var v = agx(c);
     // Look: a touch of contrast and saturation around mid grey.
     let luma = dot(v, vec3<f32>(0.2126, 0.7152, 0.0722));
     v = mix(vec3<f32>(luma), v, tone.saturation);
     v = clamp((v - 0.5) * tone.contrast + 0.5, vec3<f32>(0.0), vec3<f32>(1.0));
-    return clamp(agx_eotf(v), vec3<f32>(0.0), vec3<f32>(1.0));
+    let out = clamp(agx_eotf(v), vec3<f32>(0.0), vec3<f32>(1.0));
+    if tone.screen==0u { return out; }
+    // Godot: tonemap the glow on its own, screen it over the image in sRGB.
+    let g = srgb(clamp(agx_eotf(agx(glow)), vec3<f32>(0.0), vec3<f32>(1.0)));
+    let o = srgb(out);
+    return srgb_to_linear(o + g - o * g);
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
 }
 
 // The sharpened pass needs display() of each pixel's four neighbours: the

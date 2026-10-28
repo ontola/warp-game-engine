@@ -9,7 +9,7 @@ use glam::{Affine3A, Mat4, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, Vertex};
 use render::headlights::{LocalLight, SpotLight};
 use render::irradiance_volume::Block;
-use render::scene::{Material, EMISSIVE, TWO_SIDED};
+use render::scene::{Material, ALPHA_TEST, EMISSIVE, PIXEL_ART, TWO_SIDED};
 use render::Scene;
 use serde::Deserialize;
 use serde_json::Value;
@@ -25,6 +25,8 @@ pub struct Dump {
     pub lights: Vec<Value>,
     pub labels: Vec<Value>,
     pub sprites: Vec<Value>,
+    #[serde(default)]
+    pub particles: Vec<Value>,
     pub camera: Value,
     pub environment: Value,
 }
@@ -36,7 +38,7 @@ pub struct SurfaceDump { positions: [usize; 2], normals: [usize; 2], uvs: [usize
 #[derive(Deserialize)]
 pub struct TextureDump { pub file: String }
 #[derive(Deserialize)]
-pub struct InstanceDump { pub name: String, pub mesh: usize, pub materials: Vec<i64>, pub transform: [f32; 16], pub shadow: bool }
+pub struct InstanceDump { pub name: String, pub mesh: usize, pub materials: Vec<i64>, pub transform: [f32; 16], pub shadow: bool, #[serde(default)] pub shadow_only: bool }
 
 /// Godot sRGB colour (may exceed 1 for HDR) to linear, as its shaders do.
 pub fn linear(c: &Value) -> Vec3 {
@@ -47,6 +49,15 @@ pub fn linear(c: &Value) -> Vec3 {
 fn alpha(c: &Value) -> f32 { c[3].as_f64().unwrap_or(1.0) as f32 }
 fn num(v: &Value, k: &str) -> f32 { v[k].as_f64().unwrap_or(0.0) as f32 }
 pub fn mat4(v: &Value) -> Mat4 { let a: Vec<f32> = v.as_array().map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect()).unwrap_or_default(); Mat4::from_cols_slice(&a) }
+
+/// `xf` turned to face the camera, keeping its position and scale.
+pub fn billboard(xf: Mat4, camera: &render::Camera) -> Mat4 {
+    let (scale, _, trans) = xf.to_scale_rotation_translation();
+    let back = (camera.pos - camera.target).normalize_or(Vec3::Z);
+    let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
+    let up = back.cross(right);
+    Mat4::from_cols((right * scale.x).extend(0.0), (up * scale.y).extend(0.0), (back * scale.z).extend(0.0), trans.extend(1.0))
+}
 
 pub struct Tuning {
     /// Lux on a surface facing a Godot light of energy 1 at 1 m.
@@ -140,6 +151,8 @@ impl Room {
             };
             let (scale, rot, trans) = xf.to_scale_rotation_translation();
             scene.add_instance(id, Affine3A::from_scale_rotation_translation(scale, rot, trans));
+            // The players' capsule bodies: shadow casters no camera sees.
+            if inst.shadow_only { scene.instances.last_mut().unwrap().hide_in_views(0xff); continue; }
             if !blended && local_min.x < local_max.x {
                 // Thin quads still block light in the bake.
                 let pad = (Vec3::splat(0.02) - (local_max - local_min)).max(Vec3::ZERO) * 0.5;
@@ -171,6 +184,93 @@ impl Room {
             (scene.add_image(&format!("godot#{tex}"), square), Vec2::new(w as f32 / side as f32, h as f32 / side as f32))
         })
     }
+
+    /// Sprite3D players and door faces as alpha-tested quads in the scene, so
+    /// they are lit per pixel, shadowed and fogged like Godot's shaded sprites.
+    pub fn add_sprites(&self, scene: &mut Scene, camera: &render::Camera) {
+        let mut layers: HashMap<usize, (i32, Vec2)> = HashMap::new();
+        for s in &self.dump.sprites {
+            let tex = s["texture"].as_i64().unwrap_or(-1);
+            if tex < 0 { continue; }
+            let img = &self.images[tex as usize];
+            let (layer, uv_factor) = *layers.entry(tex as usize).or_insert_with(|| {
+                // Pixel art: a nearest upscale keeps hard pixels under linear filtering.
+                let k = (2048 / img.width().max(img.height())).clamp(1, 8);
+                let big = image::imageops::resize(img, img.width() * k, img.height() * k, image::imageops::FilterType::Nearest);
+                // A full-size layer: no resampling on upload.
+                let side = big.width().max(big.height()).max(2048);
+                let mut square = image::RgbaImage::new(side, side);
+                image::imageops::overlay(&mut square, &big, 0, 0);
+                (scene.add_image(&format!("sprite#{tex}"), square), Vec2::new(big.width() as f32 / side as f32, big.height() as f32 / side as f32))
+            });
+            let (hf, vf) = (s["hframes"].as_u64().unwrap_or(1).max(1) as u32, s["vframes"].as_u64().unwrap_or(1).max(1) as u32);
+            let frame = s["frame"].as_u64().unwrap_or(0) as u32;
+            let px = num(s, "pixel_size");
+            let (fw, fh) = ((img.width() / hf) as f32 * px, (img.height() / vf) as f32 * px);
+            let offset = Vec2::new(s["offset"][0].as_f64().unwrap_or(0.0) as f32, s["offset"][1].as_f64().unwrap_or(0.0) as f32) * px;
+            let (mut u0, v0, mut du, dv) = ((frame % hf) as f32 / hf as f32, (frame / hf) as f32 / vf as f32, 1.0 / hf as f32, 1.0 / vf as f32);
+            if s["flip_h"].as_bool().unwrap_or(false) { u0 += du; du = -du; }
+            let corner = |x: f32, y: f32| Vertex {
+                pos: [offset.x + (x - 0.5) * fw, offset.y + (0.5 - y) * fh, 0.0], normal: [0.0, 0.0, 1.0],
+                uv: (Vec2::new(u0 + x * du, v0 + y * dv) * uv_factor).to_array() };
+            let verts = [corner(0.0, 1.0), corner(1.0, 1.0), corner(1.0, 0.0), corner(0.0, 0.0)];
+            let shaded = s["shaded"].as_bool().unwrap_or(false);
+            let modulate = linear(&s["modulate"]);
+            let peak = modulate.max_element().max(1e-6);
+            let material = scene.add_material(Material { tint: (modulate / if shaded { 1.0 } else { peak }).to_array(), layer, roughness: 1.0,
+                flags: ALPHA_TEST | TWO_SIDED | if shaded { 0 } else { EMISSIVE } | if s["filter"].as_i64().unwrap_or(0) == 0 { PIXEL_ART } else { 0 }, scale: if shaded { 1.0 } else { peak }, metal: 0.0 });
+            let mesh = scene.add_mesh(&ClusterMesh::build(&[Part { vertices: &verts, indices: &[0, 1, 2, 0, 2, 3], material }]));
+            let mut xf = mat4(&s["transform"]);
+            if s["billboard"].as_i64().unwrap_or(0) != 0 { xf = billboard(xf, camera); }
+            let (scale, rot, trans) = xf.to_scale_rotation_translation();
+            scene.add_instance(mesh, Affine3A::from_scale_rotation_translation(scale, rot, trans));
+        }
+    }
+
+    /// CPUParticles3D as they were at the capture: one camera-facing quad per
+    /// live particle (Godot's particle billboards), unshaded in its colour.
+    pub fn add_particles(&self, scene: &mut Scene, camera: &render::Camera) -> Result<(), String> {
+        let bin = std::fs::read(self.dir.join("meshes.bin")).map_err(|e| format!("meshes.bin: {e}"))?;
+        let back = (camera.pos - camera.target).normalize_or(Vec3::Z);
+        let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
+        let up = back.cross(right);
+        for p in &self.particles() {
+            let Some(range) = p["buffer"].as_array().map(|r| [r[0].as_u64().unwrap_or(0) as usize, r[1].as_u64().unwrap_or(0) as usize]) else { continue };
+            let stride = p["stride"].as_u64().unwrap_or(0) as usize;
+            if stride < 16 || p["material"].as_i64().unwrap_or(-1) < 0 { continue; }
+            let f: Vec<f32> = bin[range[0]..range[0] + range[1]].chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+            let m = &self.dump.materials[p["material"].as_i64().unwrap() as usize];
+            let vertex_color = m["vertex_color"].as_bool().unwrap_or(false);
+            let albedo = Vec3::new(m["albedo"][0].as_f64().unwrap_or(1.0) as f32, m["albedo"][1].as_f64().unwrap_or(1.0) as f32, m["albedo"][2].as_f64().unwrap_or(1.0) as f32);
+            let transparent = m["transparency"].as_i64().unwrap_or(0) != 0;
+            let emitter = mat4(&p["transform"]);
+            let quad = Vec2::new(p["quad_size"][0].as_f64().unwrap_or(0.1) as f32, p["quad_size"][1].as_f64().unwrap_or(0.1) as f32);
+            let mut verts = vec![];
+            let mut parts = vec![];
+            for k in f.chunks_exact(stride) {
+                let scale = Vec3::new(k[0], k[4], k[8]).length();
+                if scale <= 1e-5 { continue; }
+                // The multimesh is in the emitter's space.
+                let at = emitter.transform_point3(Vec3::new(k[3], k[7], k[11]));
+                // Godot multiplies albedo by the (linear) vertex colour.
+                let color = if vertex_color { albedo * Vec3::new(k[12], k[13], k[14]) } else { linear(&m["albedo"]) };
+                let peak = color.max_element().max(1e-6);
+                let material = scene.add_material(Material { tint: (color / peak).to_array(), layer: -1, roughness: 1.0, flags: EMISSIVE | TWO_SIDED, scale: peak, metal: 0.0 });
+                if transparent { scene.set_material_blend(material, alpha(&m["albedo"]), true); scene.set_material_object_sort(material); }
+                let (r, u) = (right * quad.x * scale * 0.5, up * quad.y * scale * 0.5);
+                let corner = |c: Vec3, uv: [f32; 2]| Vertex { pos: c.to_array(), normal: back.to_array(), uv };
+                verts.push([corner(at - r - u, [0.0, 1.0]), corner(at + r - u, [1.0, 1.0]), corner(at + r + u, [1.0, 0.0]), corner(at - r + u, [0.0, 0.0])]);
+                parts.push(material);
+            }
+            if parts.is_empty() { continue; }
+            let parts: Vec<Part> = verts.iter().zip(&parts).map(|(v, &material)| Part { vertices: v, indices: &[0, 1, 2, 0, 2, 3], material }).collect();
+            let mesh = scene.add_mesh(&ClusterMesh::build(&parts));
+            scene.add_instance(mesh, Affine3A::IDENTITY);
+        }
+        Ok(())
+    }
+
+    fn particles(&self) -> Vec<Value> { self.dump.particles.iter().filter(|p| p["emitting"].as_bool().unwrap_or(false)).cloned().collect() }
 
     /// Average linear colour of a texture (for the bake).
     fn average(&self, tex: i64) -> Vec3 {
@@ -219,6 +319,7 @@ impl Room {
         let transparency = d["transparency"].as_i64().unwrap_or(0);
         if transparency != 0 {
             scene.set_material_blend(id, alpha(&d["albedo"]), out.flags & TWO_SIDED != 0);
+            scene.set_material_object_sort(id);
         }
         cache.insert(m, (id, albedo, emission, uv_factor));
         Ok((id, albedo, emission, uv_factor))

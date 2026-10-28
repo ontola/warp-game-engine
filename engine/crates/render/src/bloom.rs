@@ -6,14 +6,18 @@ pub const DEFAULT_STRENGTH:f32=0.04;
 pub const THRESHOLD:f32=2.0;
 pub const KNEE:f32=1.0;
 pub const MAX_EXPOSED:f32=64.0;
-pub const MAX_ROUNDS:u32=5;
+pub const MAX_ROUNDS:u32=6;
+/// Screen glow: Godot's glow_hdr_scale (stops of smoothstep) and luminance cap.
+pub const SCREEN_STOPS:f32=2.0;
+pub const SCREEN_CAP:f32=12.0;
 
 pub fn dimensions(width:u32,height:u32)->[u32;2] {[width.div_ceil(4).max(1),height.div_ceil(4).max(1)]}
 pub fn active(enabled:bool,strength:f32)->bool {enabled && strength>0.0}
 
 /// Bind groups for one input texture (TAA alternates two histories).
 struct Cached {input:wgpu::Texture,binds:[wgpu::BindGroup;3],round_binds:Vec<[wgpu::BindGroup;2]>}
-struct Targets {size:[u32;2],_a:wgpu::Texture,_b:wgpu::Texture,a_view:wgpu::TextureView,b_view:wgpu::TextureView,uniform:wgpu::Buffer,steps:Vec<wgpu::Buffer>,cached:Vec<Cached>}
+struct Targets {size:[u32;2],_a:wgpu::Texture,_b:wgpu::Texture,_c:wgpu::Texture,_d:wgpu::Texture,a_view:wgpu::TextureView,b_view:wgpu::TextureView,
+    c_view:wgpu::TextureView,d_view:wgpu::TextureView,uniform:wgpu::Buffer,steps:Vec<wgpu::Buffer>,cached:Vec<Cached>}
 pub(crate) struct Bloom {
     layout:wgpu::BindGroupLayout,
     pipelines:[wgpu::ComputePipeline;3],
@@ -35,6 +39,8 @@ impl Bloom {
             wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format:wgpu::TextureFormat::Rgba16Float,view_dimension:wgpu::TextureViewDimension::D2},
             wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:wgpu::BufferSize::new(16)},
             wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},
+            wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format:wgpu::TextureFormat::Rgba16Float,view_dimension:wgpu::TextureViewDimension::D2},
         ];
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("bloom"),
             entries:&types.into_iter().enumerate().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding:binding as u32,
@@ -53,42 +59,47 @@ impl Bloom {
     pub fn set_view_count(&self,count:usize) {self.views.lock().unwrap().truncate(count);}
 
     pub fn render(&self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,view:usize,input:&wgpu::Texture,
-        exposure:f32,threshold:f32,rounds:u32,timestamps:Option<(&wgpu::QuerySet,u32)>)->wgpu::TextureView {
+        exposure:f32,threshold:f32,rounds:u32,screen:bool,timestamps:Option<(&wgpu::QuerySet,u32)>)->wgpu::TextureView {
         let size=dimensions(input.width(),input.height());
         let mut views=self.views.lock().unwrap();
         let make=|size:[u32;2]| {
-            let (a,b)=(texture(gpu,size),texture(gpu,size));
+            let (a,b,c,d)=(texture(gpu,size),texture(gpu,size),texture(gpu,size),texture(gpu,size));
             let (a_view,b_view)=(a.create_view(&Default::default()),b.create_view(&Default::default()));
+            let (c_view,d_view)=(c.create_view(&Default::default()),d.create_view(&Default::default()));
             // One exposure buffer per view: split views never share a value.
             let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bloom exposure"),size:16,
                 usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
             // Later blur rounds sample further apart (dilated Gaussian).
-            let steps=(1..MAX_ROUNDS).map(|r|{let b=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bloom round"),size:16,
-                usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-                gpu.queue.write_buffer(&b,0,bytemuck::cast_slice(&[0.0f32,0.0,0.0,(1u32<<r) as f32]));b}).collect();
-            Targets{size,_a:a,_b:b,a_view,b_view,uniform,steps,cached:Vec::new()}
+            let steps=(1..MAX_ROUNDS).map(|_|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("bloom round"),size:16,
+                usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false})).collect();
+            Targets{size,_a:a,_b:b,_c:c,_d:d,a_view,b_view,c_view,d_view,uniform,steps,cached:Vec::new()}
         };
         while views.len()<=view {views.push(make([1,1]));}
         let target=&mut views[view];
         if target.size!=size {*target=make(size);}
         let exposure=if exposure.is_finite(){exposure.clamp(0.0,65504.0)}else{0.0};
-        gpu.queue.write_buffer(&target.uniform,0,bytemuck::cast_slice(&[exposure,threshold.max(0.0),KNEE.min(threshold.max(0.01)),MAX_EXPOSED]));
+        let (knee,cap)=if screen {(-SCREEN_STOPS,SCREEN_CAP)}else{(KNEE.min(threshold.max(0.01)),MAX_EXPOSED)};
+        gpu.queue.write_buffer(&target.uniform,0,bytemuck::cast_slice(&[exposure,threshold.max(0.0),knee,cap]));
+        // Screen glow sums the rounds from spacing 4 on (Godot's levels 3-6);
+        // later rounds sample further apart (dilated Gaussian).
+        for (i,b) in target.steps.iter().enumerate() {let r=i+1;
+            gpu.queue.write_buffer(b,0,bytemuck::cast_slice(&[0.0f32,0.0,if screen&&r>=2 {1.0}else{0.0},(1u32<<r) as f32]));}
         if !target.cached.iter().any(|c|c.input==*input) {
             let source=input.create_view(&Default::default());
-            let binds=[(&source,&target.a_view),(&target.a_view,&target.b_view),(&target.b_view,&target.a_view)].map(|(src,dst)|
-                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("bloom view"),layout:&self.layout,entries:&[
-                    wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(src)},
-                    wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(dst)},
-                    wgpu::BindGroupEntry {binding:2,resource:target.uniform.as_entire_binding()},
-                    wgpu::BindGroupEntry {binding:3,resource:wgpu::BindingResource::Sampler(&self.sampler)},
-                ]}));
-            let bind=|src:&wgpu::TextureView,dst:&wgpu::TextureView,uniform:&wgpu::Buffer|gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("bloom round"),layout:&self.layout,entries:&[
+            let bind=|src:&wgpu::TextureView,dst:&wgpu::TextureView,uniform:&wgpu::Buffer,acc:(&wgpu::TextureView,&wgpu::TextureView)|gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("bloom round"),layout:&self.layout,entries:&[
                 wgpu::BindGroupEntry {binding:0,resource:wgpu::BindingResource::TextureView(src)},
                 wgpu::BindGroupEntry {binding:1,resource:wgpu::BindingResource::TextureView(dst)},
                 wgpu::BindGroupEntry {binding:2,resource:uniform.as_entire_binding()},
                 wgpu::BindGroupEntry {binding:3,resource:wgpu::BindingResource::Sampler(&self.sampler)},
+                wgpu::BindGroupEntry {binding:4,resource:wgpu::BindingResource::TextureView(acc.0)},
+                wgpu::BindGroupEntry {binding:5,resource:wgpu::BindingResource::TextureView(acc.1)},
             ]});
-            let round_binds=target.steps.iter().map(|u|[bind(&target.a_view,&target.b_view,u),bind(&target.b_view,&target.a_view,u)]).collect();
+            // The first round writes a zero sum into c; wide round r reads the
+            // sum from c (odd r) or d (even r) and writes it to the other.
+            let (c,d)=(&target.c_view,&target.d_view);
+            let binds=[(&source,&target.a_view),(&target.a_view,&target.b_view),(&target.b_view,&target.a_view)].map(|(src,dst)|bind(src,dst,&target.uniform,(d,c)));
+            let round_binds=target.steps.iter().enumerate().map(|(i,u)|{let acc=if i%2==0 {(c,d)}else{(d,c)};
+                [bind(&target.a_view,&target.b_view,u,acc),bind(&target.b_view,&target.a_view,u,acc)]}).collect();
             if target.cached.len()>=2 {target.cached.remove(0);}
             target.cached.push(Cached{input:input.clone(),binds,round_binds});
         }
@@ -100,13 +111,14 @@ impl Bloom {
             let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some(["bloom highlight extraction","bloom horizontal filter","bloom vertical filter"][i]),timestamp_writes:writes});
             pass.set_pipeline(&self.pipelines[i]);pass.set_bind_group(0,bind,&[]);pass.dispatch_workgroups(size[0].div_ceil(8),size[1].div_ceil(8),1);
         }
-        for round in cached.round_binds.iter().take(rounds.clamp(1,MAX_ROUNDS) as usize-1) {
+        let wide=rounds.clamp(1,MAX_ROUNDS) as usize-1;
+        for round in cached.round_binds.iter().take(wide) {
             let mut pass=enc.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("bloom wide round"),timestamp_writes:None});
             for (i,bind) in round.iter().enumerate() {
                 pass.set_pipeline(&self.pipelines[1+i]);pass.set_bind_group(0,bind,&[]);pass.dispatch_workgroups(size[0].div_ceil(8),size[1].div_ceil(8),1);
             }
         }
-        target.a_view.clone()
+        if !screen {target.a_view.clone()} else if wide%2==1 {target.d_view.clone()} else {target.c_view.clone()}
     }
 }
 

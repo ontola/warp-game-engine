@@ -9,10 +9,8 @@ mod dump;
 
 use dump::{linear, mat4, Room, Tuning};
 use glam::Vec3;
-use render::hud::{HudDrawList, ImageFilter, TextAlign, TextRun};
-use render::irradiance_volume::{self, BoxRoom, Grid};
-use render::picture::Picture;
-use render::sprites::{self, Canvas, Sprite, SpriteImage};
+use render::hud::{HudDrawList, TextAlign, TextRun};
+use render::irradiance_volume::{BoxRoom, Grid};
 use render::{Gpu, Lighting, Renderer, Scene};
 use std::f32::consts::PI;
 use std::path::PathBuf;
@@ -52,7 +50,12 @@ fn run() -> Result<(), String> {
 
     let ev = numf("--ev", godot_ev(num(&room.dump.environment, "tonemap_exposure", 1.0)));
     let light = Lighting { sun_lux: 0.0, sky_lux: 0.0, fog_density: 0.0, fog_start: 1000.0, fog_end: 2000.0, ev100: ev,
-        contrast: num(&room.dump.environment, "adjustment_contrast", 1.0), saturation: num(&room.dump.environment, "adjustment_saturation", 1.0), ..Default::default() };
+        contrast: num(&room.dump.environment, "adjustment_contrast", 1.0), saturation: num(&room.dump.environment, "adjustment_saturation", 1.0),
+        // The lobby uses 2x MSAA, no TAA: crisp pixel art.
+        taa: numf("--taa", 0.0), sharpen: numf("--sharpen", 0.5), ..Default::default() };
+    room.add_sprites(&mut scene, &room.camera);
+    room.add_particles(&mut scene, &room.camera)?;
+    let (label_layer, label_list) = add_labels(&mut scene, &room);
     let gpu = Gpu::new()?;
     let renderer = Renderer::new(&gpu, &scene, &light);
     renderer.set_local_lights(&room.locals)?;
@@ -67,15 +70,16 @@ fn run() -> Result<(), String> {
         cone_blur: numf("--fog-blur", 12.0).to_radians(),
         length: num(env, "volumetric_fog_length", 64.0),
         steps: numf("--fog-steps", 24.0) as u32,
-        spot_energy: room.spot_fog.iter().map(|e| e * numf("--fog", 0.6)).collect(),
-        local_energy: room.local_fog.iter().map(|e| e * numf("--fog", 0.6)).collect(),
+        spot_energy: room.spot_fog.iter().map(|e| e * numf("--fog", 0.4)).collect(),
+        local_energy: room.local_fog.iter().map(|e| e * numf("--fog", 0.4)).collect(),
     });
-    let fog_params = fog.as_ref().map(|f| (f.density, f.length));
     renderer.set_light_extras(fog, &room.spot_falloff);
     let mut options = renderer.debug_options();
-    // Godot's glow: levels 3-6 (wide), threshold 0.9.
-    options.bloom_strength = numf("--bloom", 0.3);
-    options.bloom_rounds = numf("--bloom-rounds", 4.0) as u32;
+    // Godot's glow: levels 3-6 summed, screen-blended. The 0.36 matches its
+    // capture: Godot's levels are smaller per level than our wide rounds.
+    options.bloom_screen = !flag("--bloom-add");
+    options.bloom_strength = numf("--bloom", num(&room.dump.environment, "glow_intensity", 0.8) * 0.36);
+    options.bloom_rounds = numf("--bloom-rounds", 6.0) as u32;
     options.bloom_threshold = numf("--bloom-threshold", num(&room.dump.environment, "glow_hdr_threshold", 2.0));
     renderer.set_debug_options(options)?;
     let all_lights = room.all_lights();
@@ -91,93 +95,9 @@ fn run() -> Result<(), String> {
         probes
     } else { vec![] };
     let bake = bake_start.elapsed();
-    let ambient_at = |p: Vec3, n: Vec3| if probes_on { irradiance_volume::sample(&grid, &probes, p, n) } else { room.ambient };
 
-    // Sprite3D players and door faces.
-    let mut list = vec![];
-    for (i, s) in room.dump.sprites.iter().enumerate() {
-        let tex = s["texture"].as_i64().unwrap_or(-1);
-        if tex < 0 { continue; }
-        let img = &room.images[tex as usize];
-        let id = SpriteImage(1000 + i as u64);
-        let nearest = s["filter"].as_i64().unwrap_or(0) == 0 || s["filter"].as_i64() == Some(1) || s["filter"].as_i64() == Some(4);
-        renderer.set_sprite_image(&gpu, id, &Picture::new(img.width(), img.height(), img.as_raw().clone())?, if nearest { ImageFilter::Nearest } else { ImageFilter::Linear });
-        let (hf, vf) = (s["hframes"].as_u64().unwrap_or(1).max(1) as u32, s["vframes"].as_u64().unwrap_or(1).max(1) as u32);
-        let frame = s["frame"].as_u64().unwrap_or(0) as u32;
-        let px = num(s, "pixel_size", 0.01);
-        let (fw, fh) = (img.width() / hf, img.height() / vf);
-        let xf = mat4(&s["transform"]);
-        let (right, up) = (xf.x_axis.truncate(), xf.y_axis.truncate());
-        let offset = glam::Vec2::new(s["offset"][0].as_f64().unwrap_or(0.0) as f32, s["offset"][1].as_f64().unwrap_or(0.0) as f32);
-        let center = xf.w_axis.truncate() + (right * offset.x + up * offset.y) * px;
-        let size = [fw as f32 * px * right.length(), fh as f32 * px * up.length()];
-        let mut uv = [(frame % hf) as f32 / hf as f32, (frame / hf) as f32 / vf as f32, 1.0 / hf as f32, 1.0 / vf as f32];
-        if s["flip_h"].as_bool().unwrap_or(false) { uv[0] += uv[2]; uv[2] = -uv[2]; }
-        let modulate = linear(&s["modulate"]);
-        let normal = right.cross(up).normalize_or(Vec3::Z);
-        let radiance = if s["shaded"].as_bool().unwrap_or(false) {
-            modulate * lambert(&all_lights, center, normal, ambient_at(center, normal)) / PI
-        } else { modulate };
-        if flag("--debug-sprites") { println!("sprite {i} at {center:.2}: direct {:.2} indirect {:.2}", lambert(&all_lights, center, normal, Vec3::ZERO), ambient_at(center, normal)); }
-        let mut sprite = Sprite::fixed(center, size, right.normalize(), up.normalize(), id, uv, radiance);
-        if s["billboard"].as_i64().unwrap_or(0) != 0 { sprite = Sprite::billboard(center, size, id, uv, radiance); }
-        sprite.depth_bias = 0.02;
-        list.push(sprite);
-    }
-
-    // Label3D tags: canvas text (Outfit), unshaded.
-    let semibold = render::hud::register_font(OUTFIT_600);
-    let bold = render::hud::register_font(OUTFIT_800);
-    let mut canvases = vec![];
-    for (i, l) in room.dump.labels.iter().enumerate() {
-        let text = l["text"].as_str().unwrap_or("").to_string();
-        let face = if l["weight"].as_i64().unwrap_or(600) >= 700 { bold } else { semibold };
-        let ss = 4.0;
-        let size = num(l, "font_size", 32.0) * ss;
-        let outline = num(l, "outline_size", 0.0) * ss;
-        let [tw, th] = render::hud::measure(&text, face, size);
-        let pad = outline + 4.0;
-        let cw = ((tw + pad * 2.0).ceil() as u32).clamp(8, 4096);
-        let ch = ((th + pad * 2.0).ceil() as u32).clamp(8, 4096);
-        let modulate = linear(&l["modulate"]);
-        let peak = modulate.max_element().max(1e-6);
-        let srgb = |v: f32| if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
-        let c = modulate / peak;
-        let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-        let color = [to8(srgb(c.x)), to8(srgb(c.y)), to8(srgb(c.z)), to8(dump_alpha(&l["modulate"]))];
-        let oc = linear(&l["outline_modulate"]);
-        let ocolor = [to8(srgb(oc.x / peak)), to8(srgb(oc.y / peak)), to8(srgb(oc.z / peak)), to8(dump_alpha(&l["outline_modulate"]))];
-        let mut hud = HudDrawList::new([cw, ch]);
-        let run = |id: u64, at: [f32; 2], color: [u8; 4]| TextRun { id, text: text.clone(), position: at, bounds: [0.0, 0.0, cw as f32, ch as f32],
-            font_size: size, color, font: face, align: TextAlign::Left, width: cw as f32 };
-        if outline > 0.0 {
-            for k in 0..16 {
-                let a = k as f32 / 16.0 * std::f32::consts::TAU;
-                hud.text.push(run(k + 1, [pad + a.cos() * outline * 0.5, pad + a.sin() * outline * 0.5], ocolor));
-            }
-        }
-        hud.text.push(run(100, [pad, pad], color));
-        let mut canvas = Canvas::new(&gpu, [cw, ch])?;
-        canvas.draw(&gpu, &hud)?;
-        let id = SpriteImage(2000 + i as u64);
-        renderer.set_sprite_texture(&gpu, id, canvas.texture(), ImageFilter::Linear);
-        canvases.push(canvas);
-        let xf = mat4(&l["transform"]);
-        let px = num(l, "pixel_size", 0.01) / ss;
-        let (right, up) = (xf.x_axis.truncate(), xf.y_axis.truncate());
-        let world = [cw as f32 * px * right.length(), ch as f32 * px * up.length()];
-        let center = xf.w_axis.truncate();
-        let mut sprite = Sprite::fixed(center, world, right.normalize(), up.normalize(), id, [0.0, 0.0, 1.0, 1.0], Vec3::splat(peak));
-        if l["billboard"].as_i64().unwrap_or(0) != 0 { sprite = Sprite::billboard(center, world, id, [0.0, 0.0, 1.0, 1.0], Vec3::splat(peak)); }
-        sprite.alpha_cut = 0.0;
-        sprite.depth_bias = 0.02;
-        list.push(sprite);
-    }
-    // The lamp fog between camera and sprite dims it like the scene behind.
-    if let Some(f) = &fog_params {
-        for s in &mut list { s.radiance *= (-f.0 * room.camera.pos.distance(s.center).min(f.1)).exp(); }
-    }
-    renderer.set_sprites(&gpu, &list)?;
+    let mut screen = render::screen::Screen::new(&gpu)?;
+    screen.draw(&gpu, &renderer, label_layer, [0.0; 4], &label_list)?;
     let setup = started.elapsed();
 
     let frames_start = std::time::Instant::now();
@@ -185,14 +105,68 @@ fn run() -> Result<(), String> {
     for _ in 0..numf("--frames", 8.0) as u32 { rgba = renderer.render(&gpu, &room.camera, &light, w, h).0; }
     image::save_buffer(&out, &rgba, w, h, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
     println!("{} instances, {} local + {} shadowed lights, {} sprites, {} probes; setup {:.2}s (bake {:.2}s), frames {:.2}s",
-        room.dump.instances.len(), room.locals.len(), room.spots.len(), list.len(), probes.len(), setup.as_secs_f32(), bake.as_secs_f32(), frames_start.elapsed().as_secs_f32());
+        room.dump.instances.len(), room.locals.len(), room.spots.len(), room.dump.sprites.len() + room.dump.labels.len(), probes.len(), setup.as_secs_f32(), bake.as_secs_f32(), frames_start.elapsed().as_secs_f32());
     Ok(())
 }
 
-/// Irradiance on a flat sprite from every lamp (unshadowed), like Godot's
-/// shaded Sprite3D, plus the indirect light at its centre.
-fn lambert(lights: &[render::headlights::LocalLight], p: Vec3, n: Vec3, ambient: Vec3) -> Vec3 {
-    lights.iter().filter_map(|l| sprites::light_at(l, p)).map(|(to, e)| e * n.dot(to).max(0.0)).sum::<Vec3>() + ambient
+/// Label3D tags (Outfit, unshaded) as glowing blended quads in the scene, so
+/// fog, depth and anti-aliasing treat them like Godot does. All tags share
+/// one screen layer; returns it and the draw list that fills it.
+fn add_labels(scene: &mut Scene, room: &Room) -> (i32, HudDrawList) {
+    let semibold = render::hud::register_font(OUTFIT_600);
+    let bold = render::hud::register_font(OUTFIT_800);
+    let side = render::screen::SIZE;
+    let layer = scene.add_screen_texture("labels");
+    let mut hud = HudDrawList::new([side, side]);
+    let (mut x, mut y, mut row) = (0.0f32, 0.0f32, 0.0f32);
+    let srgb = |v: f32| if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    for l in &room.dump.labels {
+        let text = l["text"].as_str().unwrap_or("").to_string();
+        let face = if l["weight"].as_i64().unwrap_or(600) >= 700 { bold } else { semibold };
+        let ss = 2.0;
+        let size = num(l, "font_size", 32.0) * ss;
+        let outline = num(l, "outline_size", 0.0) * ss;
+        let [tw, th] = render::hud::measure(&text, face, size);
+        let pad = outline + 4.0;
+        let (cw, ch) = ((tw + pad * 2.0).ceil().min(side as f32), (th + pad * 2.0).ceil().min(side as f32));
+        if x + cw > side as f32 { x = 0.0; y += row; row = 0.0; }
+        if y + ch > side as f32 { eprintln!("game-room: label atlas full, skipping {text:?}"); continue; }
+        let modulate = linear(&l["modulate"]);
+        let peak = modulate.max_element().max(1e-6);
+        let oc = linear(&l["outline_modulate"]) / peak;
+        let color = [255, 255, 255, 255];
+        // The material tints by the text colour; the outline keeps its own ratio to it.
+        let c = modulate / peak;
+        let ocolor = [to8(srgb(oc.x / c.x.max(1e-3))), to8(srgb(oc.y / c.y.max(1e-3))), to8(srgb(oc.z / c.z.max(1e-3))), to8(dump_alpha(&l["outline_modulate"]))];
+        let run = |id: u64, at: [f32; 2], color: [u8; 4]| TextRun { id, text: text.clone(), position: at, bounds: [x, y, cw, ch],
+            font_size: size, color, font: face, align: TextAlign::Left, width: cw };
+        let base = hud.text.len() as u64 * 32;
+        if outline > 0.0 {
+            for k in 0..16 {
+                let a = k as f32 / 16.0 * std::f32::consts::TAU;
+                hud.text.push(run(base + k + 1, [x + pad + a.cos() * outline * 0.5, y + pad + a.sin() * outline * 0.5], ocolor));
+            }
+        }
+        hud.text.push(run(base + 31, [x + pad, y + pad], color));
+        let px = num(l, "pixel_size", 0.01) / ss;
+        let (w, h) = (cw * px, ch * px);
+        let uv = |u: f32, v: f32| [(x + u * cw) / side as f32, (y + v * ch) / side as f32];
+        let corner = |u: f32, v: f32| render::cluster::Vertex { pos: [(u - 0.5) * w, (0.5 - v) * h, 0.0], normal: [0.0, 0.0, 1.0], uv: uv(u, v) };
+        let verts = [corner(0.0, 1.0), corner(1.0, 1.0), corner(1.0, 0.0), corner(0.0, 0.0)];
+        let material = scene.add_material(render::scene::Material { tint: c.to_array(), layer, roughness: 1.0,
+            flags: render::scene::EMISSIVE | render::scene::TWO_SIDED, scale: peak, metal: 0.0 });
+        scene.set_material_blend(material, dump_alpha(&l["modulate"]), true);
+        scene.set_material_object_sort(material);
+        let mesh = scene.add_mesh(&render::cluster::ClusterMesh::build(&[render::cluster::Part { vertices: &verts, indices: &[0, 1, 2, 0, 2, 3], material }]));
+        let mut xf = mat4(&l["transform"]);
+        if l["billboard"].as_i64().unwrap_or(0) != 0 { xf = dump::billboard(xf, &room.camera); }
+        let (scale, rot, trans) = xf.to_scale_rotation_translation();
+        scene.add_instance(mesh, glam::Affine3A::from_scale_rotation_translation(scale, rot, trans));
+        x += cw + 2.0;
+        row = row.max(ch + 2.0);
+    }
+    (layer, hud)
 }
 
 fn num(v: &serde_json::Value, k: &str, d: f32) -> f32 { v[k].as_f64().map(|x| x as f32).unwrap_or(d) }

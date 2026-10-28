@@ -1500,7 +1500,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         base = triplanar(m.layer, p, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0) * m.tint;
         nn = triplanar_n(m.layer, p, n, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0);
     } else if m.layer >= 0 {
-        base = tex_w(m.layer, uv, duv_x, duv_y).rgb * m.tint;
+        // PIXEL_ART samples the top mip: hard source pixels, no blur.
+        let sharp = select(1.0, 0.0, (m.flags & 8192u) != 0u);
+        base = tex_w(m.layer, uv, duv_x * sharp, duv_y * sharp).rgb * m.tint;
         var frame = uv_frame(e1, e2, vi);
         if dot(geo_n, n) < 0.0 {
             // The far side of a two-sided card: its relief is the mirror image.

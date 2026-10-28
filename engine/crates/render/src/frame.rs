@@ -188,7 +188,7 @@ struct ToneUniform {
     sharpen: f32,
     offset: [u32; 2],
     bloom_strength:f32,
-    pad2:u32,
+    screen:u32,
 }
 
 /// Where the camera is and what it sees.
@@ -3197,7 +3197,7 @@ impl Renderer {
                 None
             };
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,debug_options.bloom_strength);
-            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},pad2:0 }));
+            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen) }));
             cpu.mark("view setup");
             let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
                 bind(
@@ -3555,7 +3555,7 @@ impl Renderer {
             // after temporal reconstruction. Every view owns separate targets.
             let bloom_view=if bloom_on {
                 let time=self.query.as_ref().map(|(qs,_,_)|{names.push("bloom");(qs,timestamp_pair(&mut ts))});
-                self.bloom.render(gpu,&mut enc,vi,result,exposure,debug_options.bloom_threshold,debug_options.bloom_rounds,time)
+                self.bloom.render(gpu,&mut enc,vi,result,exposure,debug_options.bloom_threshold,debug_options.bloom_rounds,debug_options.bloom_screen,time)
             }else{self.bloom.disabled_view()};
             let result_view = result.create_view(&Default::default());
             let tone_bind = bind(gpu, &self.tone_layout, &[
