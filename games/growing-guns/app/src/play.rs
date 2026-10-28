@@ -82,7 +82,7 @@ impl Gg {
         let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
             vis.absorb(w, &crate::sounds::ears(w, slots));
             feedback(fb, w, DT);
-            if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); }
+            if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); vis.stadium.sound.loudness_db = s.duck_db(); }
         });
         if snaps > 0 { self.prev = before; self.since_snap = 0.0; } else { self.since_snap += dt; }
         if arena { self.new_arena(); }
@@ -144,7 +144,7 @@ impl app::Game for Gg {
         if self.world.events.contains(&Event::NewArena) { self.new_arena(); }
         self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
         feedback(&mut self.fb, &self.world, DT);
-        if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); }
+        if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); self.vis.stadium.sound.loudness_db = s.duck_db(); }
         self.session.publish(&self.world);
     }
 

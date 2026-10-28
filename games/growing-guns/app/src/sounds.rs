@@ -218,6 +218,9 @@ impl Sounds {
     }
 
 
+    /// How far the loudest recent sound is above "loud" (Godot's crowd duck: HDR max - 112 dB).
+    pub fn duck_db(&self) -> f32 { (self.tx.loudest() - 112.0).max(0.0) }
+
     fn next(&mut self) -> u32 { self.rng ^= self.rng << 13; self.rng ^= self.rng >> 17; self.rng ^= self.rng << 5; self.rng }
     fn u(&mut self, a: f32, b: f32) -> f32 { a + (b - a) * (self.next() >> 8) as f32 / (1u32 << 24) as f32 }
     fn pick(&mut self, set: &[Arc<Patch>]) -> Option<Arc<Patch>> { if set.is_empty() { None } else { let k = self.next() as usize % set.len(); Some(set[k].clone()) } }
