@@ -20,6 +20,7 @@ use growing_guns::{Event, World, EYE};
 use guns::Guns;
 use physics::Physics;
 use players::PlayersView;
+pub use players::TRACERS;
 use render::headlights::LocalLight;
 use render::particles::Burst;
 use render::primitives;
@@ -194,6 +195,13 @@ impl Visuals {
     pub fn ragdolls(&self) -> Vec<[f32; 3]> { self.players.ragdolls(&self.phys) }
 
     pub fn gore_len(&self) -> usize { self.players.gore_len() }
+
+    /// Read-only diagnostics: CPU particles, live GPU debris, uploaded effect
+    /// puffs (including delayed puffs), and cumulative debris spawns.
+    /// Sample after `flush` so finished puffs have been removed.
+    pub fn effect_counts(&self) -> (usize, usize, usize, u64) {
+        (self.fx.particles.len(), self.fx.debris.live(), self.fx.blasts.len(), self.fx.debris.spawned)
+    }
 
     pub fn dynamic(&self) -> &[GpuInstance] { &self.scene.instances[self.first_dynamic..] }
 
