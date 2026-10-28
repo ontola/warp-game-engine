@@ -153,7 +153,7 @@ struct Gi {
     hf: vec4<f32>,
     hf_dims: vec4<u32>,
     bounce: vec4<f32>,
-    params: vec4<f32>, // contact on, reflection on, sun-free sky cap, unused
+    params: vec4<f32>, // contact on, reflection on, sun-free sky cap, irradiance volume aux offset (0: none)
 };
 
 // Extinction density on three absolute world grids. Blend the densities
@@ -597,6 +597,40 @@ fn apply_distance_fog(radiance: vec3<f32>, distance: f32, direction: vec3<f32>) 
 }
 
 // Irradiance (lux) from the sky for a surface facing n.
+// Indoor irradiance probes (irradiance_volume.rs): an ambient cube per grid
+// point in `aux`. Returns irradiance and a weight, 1 inside the grid, fading
+// to 0 over the outer half cell, 0 without a volume.
+fn aux_f32(i: u32) -> f32 { return bitcast<f32>(aux[i]); }
+fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
+    let o = u32(gi.params.w);
+    if o == 0u { return vec4<f32>(0.0); }
+    let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
+    let cell = aux_f32(o + 3u);
+    let dims = vec3<u32>(aux[o + 4u], aux[o + 5u], aux[o + 6u]);
+    let f = (p - origin) / cell;
+    let last = vec3<f32>(dims - vec3<u32>(1u));
+    let outside = max(max(-f, f - last), vec3<f32>(0.0));
+    let weight = clamp(1.0 - max(outside.x, max(outside.y, outside.z)) * 2.0, 0.0, 1.0);
+    if weight <= 0.0 { return vec4<f32>(0.0); }
+    let fc = clamp(f, vec3<f32>(0.0), last);
+    let cell0 = min(floor(fc), last - 1.0);
+    let t = fc - cell0;
+    let n2 = n * n;
+    let axis = vec3<u32>(select(1u, 0u, n.x >= 0.0), select(3u, 2u, n.y >= 0.0), select(5u, 4u, n.z >= 0.0)) * 3u;
+    var e = vec3<f32>(0.0);
+    for (var c = 0u; c < 8u; c++) {
+        let corner = vec3<u32>(c & 1u, (c >> 1u) & 1u, (c >> 2u) & 1u);
+        let w3 = select(1.0 - t, t, corner == vec3<u32>(1u));
+        let g = vec3<u32>(cell0) + corner;
+        let base = o + 8u + (g.x + g.y * dims.x + g.z * dims.x * dims.y) * 18u;
+        let ex = vec3<f32>(aux_f32(base + axis.x), aux_f32(base + axis.x + 1u), aux_f32(base + axis.x + 2u));
+        let ey = vec3<f32>(aux_f32(base + axis.y), aux_f32(base + axis.y + 1u), aux_f32(base + axis.y + 2u));
+        let ez = vec3<f32>(aux_f32(base + axis.z), aux_f32(base + axis.z + 1u), aux_f32(base + axis.z + 2u));
+        e += (ex * n2.x + ey * n2.y + ez * n2.z) * (w3.x * w3.y * w3.z);
+    }
+    return vec4<f32>(e / max(n2.x + n2.y + n2.z, 1e-12), weight);
+}
+
 fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
     let c1 = 0.429043;
     let c2 = 0.511664;
@@ -1582,9 +1616,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     } else {
         // Analytic meadow AO affects only diffuse skylight on terrain. Direct
         // sun/headlights, bounce, reflections, emission and fog remain intact.
-        let ambient=(sky_irradiance(n)*sky_vis*meadow_ground_sky+bounce*(1.0-sky_vis))*ao*contact.x;
+        var ambient=(sky_irradiance(n)*sky_vis*meadow_ground_sky+bounce*(1.0-sky_vis))*ao*contact.x;
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
-        let env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
+        var env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
+        // Inside an indoor irradiance volume its probes replace sky and bounce.
+        let room=irradiance_volume(p+visibility_n*0.05,n);
+        if room.w>0.0 {
+            ambient=mix(ambient,room.rgb*ao*contact.x,room.w);
+            env=mix(env,irradiance_volume(p+visibility_n*0.05,refl).rgb/PI*spec_contact,room.w);
+        }
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
         indirect=diffuse*ambient;
         specular=env*env_brdf(f0,rough,ndv)*ao;

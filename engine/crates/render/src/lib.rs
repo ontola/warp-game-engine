@@ -47,6 +47,7 @@ pub mod hud;
 pub mod picture;
 pub mod screen;
 pub mod sprites;
+pub mod irradiance_volume;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
