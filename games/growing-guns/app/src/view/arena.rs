@@ -50,8 +50,8 @@ pub mod palette {
 /// Godot's hairline mortar gap between bricks.
 const VISUAL_CHUNK_INSET: f32 = 0.992;
 const MARKS: usize = 384;
-/// The largest generated arena has about 9400 chunks.
-const ARENA_SLOTS: usize = 9800;
+/// Every chunk of the largest arena (a sniper fight).
+const ARENA_SLOTS: usize = growing_guns::arena::MAX_PIECES;
 
 /// Stone per palette colour: four tint variants of the intact brick, then
 /// cracked and crumbling bricks for worn chunks, and rubble shards.
@@ -165,12 +165,14 @@ impl ArenaView {
         for (i, c) in a.chunks.iter().enumerate() {
             let slot = c.alive.then(|| {
                 let (mesh, xf) = self.chunk_look(c, self.shown_wear[i]);
-                self.slots.add(scene, mesh, xf).expect("arena slots")
-            });
+                self.slots.add(scene, mesh, xf)
+            }).flatten();
             self.chunk_slots.push(slot);
         }
         // Godot's roof lights are OmniLight3D nodes without visible meshes.
         // Floating emissive cube proxies here looked like exposed spawn markers.
+        // A pool that is somehow still too small drops pieces, never the match.
+        if self.slots.len() == self.slots.capacity() { eprintln!("growing-guns: arena of {} chunks fills all {} slots", a.chunks.len(), ARENA_SLOTS); }
         self.lights = a.lights.iter().take(12).map(|&(p, c)| omni(p, Vec3::from(c) * 900.0, 20.0)).collect();
         self.lava.set(world);
     }

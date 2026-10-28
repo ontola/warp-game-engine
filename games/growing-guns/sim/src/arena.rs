@@ -95,6 +95,10 @@ impl Placer {
 
 fn mirror(p: Vec3) -> Vec3 { Vec3::new(-p.x, p.y, -p.z) }
 
+/// Room for every chunk and light of any arena: the sniper-fight arenas
+/// (110..120 m) reach about 14 600, the default range about 9 700.
+pub const MAX_PIECES: usize = 16_384;
+
 impl Arena {
     /// No geometry (a world before its first round).
     pub fn empty() -> Self {
@@ -474,6 +478,20 @@ mod tests {
         }
         let variants: std::collections::HashSet<_> = (0..60).map(|s| format!("{:?}", Arena::generate(s).variant)).collect();
         assert_eq!(variants.len(), 4);
+    }
+
+    /// Views keep the arena in a fixed pool of MAX_PIECES slots.
+    #[test]
+    fn the_largest_arenas_fit_the_view_pool() {
+        let mut worst = 0;
+        for seed in 0..120u64 {
+            for (lo, hi) in [(55.0, 95.0), (110.0, 120.0)] {
+                let a = Arena::generate_sized(seed.wrapping_mul(2654435761) & 0xffff_ffff, lo, hi);
+                worst = worst.max(a.chunks.len() + a.lights.len());
+            }
+        }
+        assert!(worst > 12_000, "the sniper arenas are the big ones ({worst})");
+        assert!(worst < MAX_PIECES * 9 / 10, "{worst} pieces leave too little headroom");
     }
 
     /// Godot `_validate_lava_platform_graph`: every link within jump reach,
