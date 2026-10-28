@@ -139,7 +139,8 @@ fn hex(s: &str) -> Option<[f32; 3]> {
 /// look rate as a local pad: 3 rad/s, response curve 1.5), as Growing Guns.
 pub fn to_controls(pad: &Pad, prev_triggers: u32, dt: f32) -> Controls {
     let map = [(button::A, Buttons::SOUTH), (button::B, Buttons::EAST), (button::X, Buttons::WEST), (button::Y, Buttons::NORTH),
-        (button::LB, Buttons::LEFT_SHOULDER), (button::RB, Buttons::RIGHT_SHOULDER), (button::START, Buttons::START),
+        (button::LB, Buttons::LEFT_SHOULDER), (button::RB, Buttons::RIGHT_SHOULDER), (button::START, Buttons::START), (button::BACK, Buttons::SELECT),
+        (button::LS, Buttons::LEFT_STICK), (button::RS, Buttons::RIGHT_STICK),
         (button::UP, Buttons::UP), (button::DOWN, Buttons::DOWN), (button::LEFT, Buttons::LEFT), (button::RIGHT, Buttons::RIGHT)];
     let bits = |b: u16| map.iter().filter(|(g, _)| b & g != 0).fold(0u32, |a, (_, o)| a | o);
     let mut held = bits(pad.buttons);

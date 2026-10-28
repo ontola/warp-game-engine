@@ -28,6 +28,9 @@ impl Buttons {
     pub const DOWN: u32 = 2048;
     pub const LEFT: u32 = 4096;
     pub const RIGHT: u32 = 8192;
+    /// Stick clicks (L3, R3).
+    pub const LEFT_STICK: u32 = 16384;
+    pub const RIGHT_STICK: u32 = 32768;
     pub fn has(self, b: u32) -> bool { self.0 & b != 0 }
 }
 
@@ -119,6 +122,8 @@ fn pad_button(b: PadButton) -> u32 {
         PadButton::DPadDown => Buttons::DOWN,
         PadButton::DPadLeft => Buttons::LEFT,
         PadButton::DPadRight => Buttons::RIGHT,
+        PadButton::LeftThumb => Buttons::LEFT_STICK,
+        PadButton::RightThumb => Buttons::RIGHT_STICK,
         _ => 0,
     }
 }
@@ -283,7 +288,8 @@ impl Devices {
                 let mut held = 0;
                 for b in [PadButton::South, PadButton::East, PadButton::West, PadButton::North, PadButton::LeftTrigger, PadButton::RightTrigger,
                     PadButton::LeftTrigger2, PadButton::RightTrigger2, PadButton::Select, PadButton::Start,
-                    PadButton::DPadUp, PadButton::DPadDown, PadButton::DPadLeft, PadButton::DPadRight] {
+                    PadButton::DPadUp, PadButton::DPadDown, PadButton::DPadLeft, PadButton::DPadRight,
+                    PadButton::LeftThumb, PadButton::RightThumb] {
                     let analog = gp.button_data(b).is_some_and(|d| d.value() > 0.4);
                     if gp.is_pressed(b) || analog { held |= pad_button(b); }
                 }
