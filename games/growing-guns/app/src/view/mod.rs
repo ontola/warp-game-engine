@@ -251,7 +251,7 @@ impl Visuals {
     }
 
     /// Rewrite the dynamic instances. `alpha` blends from the previous tick.
-    pub fn pose(&mut self, world: &World, prev: &[Vec3], alpha: f32, dt: f32) {
+    pub fn pose(&mut self, world: &World, prev: &[Pose], alpha: f32, dt: f32) {
         self.clock = (world.tick as f32 - 1.0 + alpha) * growing_guns::DT;
         self.fx.update(world, self.clock, dt);
         self.players.pose(&mut self.scene, world, prev, alpha);
@@ -382,12 +382,32 @@ pub fn lighting() -> Lighting {
     }
 }
 
-pub fn camera(world: &World, i: usize, prev: &[Vec3], alpha: f32) -> Camera {
+/// A player's drawn state: position and look (recoil included). Drawing
+/// blends the previous tick's into the current one, so a 120 Hz screen sees
+/// turning as smooth as moving (the 60 Hz look used to judder).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pose { pub pos: Vec3, pub yaw: f32, pub pitch: f32 }
+
+impl Pose {
+    pub fn of(p: &growing_guns::Player) -> Self { Pose { pos: p.pos, yaw: p.yaw, pitch: p.pitch + p.recoil_pitch } }
+    pub fn all(world: &World) -> Vec<Self> { world.players.iter().map(Self::of).collect() }
+}
+
+/// Player `i` blended from `prev` (the previous tick) by `alpha`.
+pub fn pose(world: &World, i: usize, prev: &[Pose], alpha: f32) -> Pose {
+    let now = Pose::of(&world.players[i]);
+    let Some(q) = prev.get(i) else { return now };
+    let turn = (now.yaw - q.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    Pose { pos: q.pos.lerp(now.pos, alpha), yaw: q.yaw + turn * alpha, pitch: q.pitch + (now.pitch - q.pitch) * alpha }
+}
+
+pub fn camera(world: &World, i: usize, prev: &[Pose], alpha: f32) -> Camera {
     let p = &world.players[i];
-    let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
+    let drawn = pose(world, i, prev, alpha);
+    let pos = drawn.pos;
     if !p.alive && !p.ghost {
         // Spectate from above the arena centre.
-        let a = world.tick as f32 * 0.003 + i as f32;
+        let a = (world.tick as f32 - 1.0 + alpha) * 0.003 + i as f32;
         let r = world.arena.size * 0.55;
         return Camera { pos: Vec3::new(a.cos() * r, 22.0, a.sin() * r), target: Vec3::ZERO, fov_y: FOV_Y, near: 0.05 };
     }
@@ -395,12 +415,23 @@ pub fn camera(world: &World, i: usize, prev: &[Vec3], alpha: f32) -> Camera {
     let eye = pos + Vec3::Y * p.eye_height();
     // Sniper zoom (Godot FOV 30 instead of 75).
     let fov_y = if p.zooming { 30f32.to_radians() } else { FOV_Y };
-    Camera { pos: eye, target: eye + p.forward(), fov_y, near: 0.05 }
+    Camera { pos: eye, target: eye + growing_guns::look_dir(drawn.yaw, drawn.pitch), fov_y, near: 0.05 }
 }
 
 #[cfg(test)]
 mod camera_tests {
     use super::*;
+
+    #[test]
+    fn turning_is_blended_between_ticks_the_short_way_round() {
+        let mut world = World::new(3, &[false; 2]);
+        world.players[0].yaw = -3.0;
+        let before = [Pose { yaw: 3.0, ..Pose::of(&world.players[0]) }];
+        let half = pose(&world, 0, &before, 0.5).yaw;
+        // From 3.0 to -3.0 passes through pi, not through zero.
+        assert!((half.rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI).abs() < 1e-4, "{half}");
+        assert!((pose(&world, 0, &before, 1.0).yaw.sin() - (-3.0f32).sin()).abs() < 1e-5);
+    }
 
     #[test]
     fn ghost_keeps_the_players_interpolated_eye_and_look() {
@@ -414,10 +445,11 @@ mod camera_tests {
         let previous = p.pos - Vec3::X;
         let eye = previous.lerp(p.pos, 0.5) + Vec3::Y * p.eye_height();
         let direction = p.forward();
-        let cam = camera(&world, 0, &[previous], 0.5);
+        let before = [Pose { pos: previous, ..Pose::of(&world.players[0]) }];
+        let cam = camera(&world, 0, &before, 0.5);
         assert_eq!(cam.pos, eye);
         assert!((cam.target - cam.pos - direction).length() < 1e-6);
         world.players[0].ghost = false;
-        assert_ne!(camera(&world, 0, &[previous], 0.5).pos, eye);
+        assert_ne!(camera(&world, 0, &before, 0.5).pos, eye);
     }
 }

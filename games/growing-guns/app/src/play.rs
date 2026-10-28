@@ -37,7 +37,10 @@ fn input(c: &Controls) -> Input {
 
 pub struct Gg {
     pub world: World,
-    prev: Vec<Vec3>,
+    prev: Vec<view::Pose>,
+    /// Whether the last tick advanced the world; a frozen match (paused,
+    /// warming) draws its current state instead of interpolating.
+    stepped: bool,
     pub vis: view::Visuals,
     light: Lighting,
     pub hud: hud::Hud,
@@ -114,7 +117,7 @@ impl Gg {
         let scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
-        Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
+        Gg { prev: view::Pose::all(&world), stepped: true, vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
@@ -131,7 +134,7 @@ impl Gg {
         self.scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
         self.vis = view::Visuals::build(&world);
         self.vis.hide_own_bodies(&slots);
-        self.prev = world.players.iter().map(|p| p.pos).collect();
+        self.prev = view::Pose::all(&world);
         self.hud = hud::Hud::new(&world);
         self.ui.open(hud::menus::Screen::Play);
         self.start_seats.clear();
@@ -180,7 +183,7 @@ impl Gg {
 
     /// Client: apply what the host sent; returns the interpolation alpha.
     pub fn receive(&mut self, dt: f32) -> f32 {
-        let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
+        let before = view::Pose::all(&self.world);
         self.hud.locals.clone_from(&self.slots);
         let names = self.seat_names();
         self.hud.set_names(&self.world, &self.slots, &names);
@@ -220,7 +223,7 @@ impl Gg {
         // Also between ticks (debug commands, live tools): clients need it.
         self.session.mark_arena();
         self.vis.set_arena(&self.world);
-        self.prev = self.world.players.iter().map(|p| p.pos).collect();
+        self.prev = view::Pose::all(&self.world);
     }
 
     /// Choose the sky (`--sky`, the `sky` command). Godot's is the default.
@@ -648,6 +651,7 @@ impl app::Game for Gg {
     }
 
     fn tick(&mut self, controls: &[Controls]) {
+        self.stepped = false;
         let (pointer, pointer_size) = std::mem::take(&mut self.pointer);
         // Live-control requests, between ticks (also while a party is paused).
         crate::live::tick(self);
@@ -739,8 +743,9 @@ impl app::Game for Gg {
         // The pause menu stops a match nobody else is playing (Godot: one human).
         let humans = self.world.players.iter().filter(|p| !p.bot).count();
         if matches!(self.ui.screen, hud::menus::Screen::Pause | hud::menus::Screen::Settings { from_start: false }) && humans <= 1 { return; }
-        self.prev = self.world.players.iter().map(|p| p.pos).collect();
+        self.prev = view::Pose::all(&self.world);
         self.world.step(&inputs);
+        self.stepped = true;
         if self.world.events.contains(&Event::NewArena) { self.new_arena(); }
         self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
         self.hud.tick(&self.world, DT);
@@ -750,7 +755,8 @@ impl app::Game for Gg {
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        let alpha = if self.session.is_client() { self.receive(frame.dt) } else { frame.alpha };
+        // Interpolating a frozen match swings between two ticks (a flicker at 120 Hz).
+        let alpha = if self.session.is_client() { self.receive(frame.dt) } else if self.stepped { frame.alpha } else { 1.0 };
         self.vis.set_tilt(self.ui.tilt);
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if self.sky.live.is_some() { self.cycle_sky(); }
@@ -774,7 +780,7 @@ impl app::Game for Gg {
         r.set_volumetric_beams(&if self.light.volumetric.is_some() { self.vis.volumetric_beams(self.scatter) } else { Vec::new() })?;
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
         // Name tags over everyone not seated here (on the start screen, everyone).
-        let drawn: Vec<Vec3> = self.world.players.iter().enumerate().map(|(i, p)| self.prev.get(i).map_or(p.pos, |q| q.lerp(p.pos, alpha))).collect();
+        let drawn: Vec<Vec3> = (0..self.world.players.len()).map(|i| view::pose(&self.world, i, &self.prev, alpha).pos).collect();
         self.plates.update(frame.gpu, r, &self.world, &self.hud, if start { &[] } else { &self.slots }, &drawn, self.vis.sprites())?;
         let mut list = HudDrawList::new(frame.size);
         self.hud.begin_pointer_frame(frame.size);
@@ -1036,7 +1042,7 @@ impl app::Game for Gg {
                 let to = Vec3::new(num(2)?, num(3)?, num(4)?);
                 self.world.players[p].pos = to;
                 self.world.players[p].vel = Vec3::ZERO;
-                if let Some(q) = self.prev.get_mut(p) { *q = to; }
+                if let Some(q) = self.prev.get_mut(p) { q.pos = to; }
                 Ok(format!("player {p} at {to}"))
             }
             "aim" => {
@@ -1119,7 +1125,7 @@ pub fn rebuild_views(gg: &mut Gg) {
     gg.vis = view::Visuals::build(&gg.world);
     gg.vis.hide_own_bodies(&gg.slots);
     gg.vis.stadium.sound = sound;
-    gg.prev = gg.world.players.iter().map(|p| p.pos).collect();
+    gg.prev = view::Pose::all(&gg.world);
     gg.hud.sync(&gg.world);
     gg.rebuild = true;
 }
