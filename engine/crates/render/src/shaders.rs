@@ -13,9 +13,10 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-pub(crate) const SHARED_NAMES: [&str; 12] = ["wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "foliage_volume.wgsl", "shade.wgsl",
+pub(crate) const SHARED_NAMES: [&str; 13] = ["game_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "foliage_volume.wgsl", "shade.wgsl",
     "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "headlights.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
-const BUILT_IN: [(&str, &str); 16] = [
+const BUILT_IN: [(&str, &str); 17] = [
+    ("game_surface.wgsl", include_str!("shaders/game_surface.wgsl")),
     ("procedural_surface.wgsl", include_str!("shaders/procedural_surface.wgsl")),
     ("foliage_volume.wgsl", include_str!("shaders/foliage_volume.wgsl")),
     ("meadow_field.wgsl", include_str!("shaders/meadow_field.wgsl")),
@@ -60,6 +61,10 @@ impl Snapshot {
                 Err(error) => Err(format!("cannot read shader {}: {error}", path.display())),
             }
         }).collect::<Result<Vec<_>, String>>()?;
+        let mut files = files;
+        if let Some(game) = GAME_SURFACE.lock().unwrap().clone() {
+            files[BUILT_IN.iter().position(|(n, _)| *n == "game_surface.wgsl").unwrap()] = game;
+        }
         Ok(Self { directory, files })
     }
     pub(crate) fn source(&self, name: &str) -> &str {
@@ -87,6 +92,15 @@ impl Snapshot {
         }
         Ok(())
     }
+}
+
+static GAME_SURFACE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Replace game_surface.wgsl (material flag SURFACE) with a game's own
+/// `fn game_surface(s: SurfaceIn) -> SurfaceOut`. Call it before creating
+/// the renderer; it wins over `KERN_SHADER_DIR`.
+pub fn set_game_surface(source: &str) {
+    *GAME_SURFACE.lock().unwrap() = Some(source.to_owned());
 }
 
 /// The override directory, if `KERN_SHADER_DIR` names one.
