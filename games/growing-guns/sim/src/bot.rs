@@ -52,7 +52,7 @@ impl Brain {
 
         // Aim: chest, led by the target's velocity over the bullet flight.
         let o = &w.players[t];
-        let flight = o.pos.distance(eye) / crate::BULLET_SPEED;
+        let flight = o.pos.distance(eye) / p.weapon.bullet_speed();
         let aim = o.pos + Vec3::Y * 0.2 + o.vel * flight - eye;
         let dist = aim.length();
         let d = aim / dist;

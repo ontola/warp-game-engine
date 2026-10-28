@@ -1,7 +1,8 @@
 { "size": [800, 450],
   "steps": [
     { "ticks": 2, "capture": "r1.png", "state": "r1.json" },
-    { "ticks": 2400, "note": "bots play on; player 0 idles until shot" },
-    { "expect": "/round", "min": 2 },
+    { "until": "/players/0/offer", "max_ticks": 6000, "note": "bots play on; player 0 idles until shot" },
+    { "press": ["SOUTH"], "note": "a solo human picks without a deadline (Godot)" },
+    { "until": "/round", "min": 2, "max_ticks": 600 },
     { "capture": "r2.png", "state": "r2.json" }
   ] }

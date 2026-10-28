@@ -23,8 +23,11 @@ const PARAPET_HEIGHT: f32 = 1.35;
 const MERLON: f32 = 1.2;
 const MERLON_HEIGHT: f32 = 1.35;
 pub const WALL_HEIGHT: f32 = 12.0;
-/// Below this a player is in the lava under the floor (instant death).
-pub const LAVA_KILL_Y: f32 = -2.6;
+/// Below this a player is in the lava under the floor (Godot LAVA_POOL_Y:
+/// a kill that skips the phoenix).
+pub const LAVA_KILL_Y: f32 = -3.0;
+/// Within this much above the pool the heat burns 15 per half second.
+pub const LAVA_BURN_BAND: f32 = 1.2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Variant { Walled, Hole, Open }
@@ -70,9 +73,17 @@ impl Placer {
 fn mirror(p: Vec3) -> Vec3 { Vec3::new(-p.x, p.y, -p.z) }
 
 impl Arena {
-    pub fn generate(seed: u64) -> Self {
+    /// No geometry (a world before its first round).
+    pub fn empty() -> Self {
+        Arena { seed: 0, size: 55.0, variant: Variant::Open, blocks: Vec::new(), chunks: Vec::new(), grid: BoxGrid::default(), stadium: crate::stadium::Stadium::new(55.0, false, WALL_HEIGHT), spawns: vec![Vec3::new(0.0, 1.0, 0.0)], lights: Vec::new(), hole: None }
+    }
+
+    /// Godot's default size range (55..95 m).
+    pub fn generate(seed: u64) -> Self { Self::generate_sized(seed, 55.0, 95.0) }
+
+    pub fn generate_sized(seed: u64, lo: f32, hi: f32) -> Self {
         let mut rng = Rng::new(seed);
-        let size = rng.range(50.0, 95.0).round();
+        let size = rng.range(lo, hi).round();
         let roll = rng.f();
         // Godot: 18% island lava (not ported: becomes walled), 24% open, 16% hole.
         let variant = if (0.18..0.42).contains(&roll) { Variant::Open }
@@ -291,7 +302,7 @@ mod tests {
             let b = Arena::generate(seed);
             assert_eq!(a.blocks, b.blocks);
             assert!(a.spawns.len() >= 4, "seed {seed}");
-            assert!((50.0..=95.0).contains(&a.size));
+            assert!((55.0..=95.0).contains(&a.size));
             // Every non-floor block has a mirror twin.
             for blk in a.blocks.iter().filter(|b| b.kind != Kind::Floor && b.kind != Kind::Wall) {
                 let m = mirror(blk.center);

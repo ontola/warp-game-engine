@@ -1,0 +1,437 @@
+//! Parity checks against the Godot numbers (see the module docs for where
+//! each comes from).
+use super::*;
+use shape::{Block, Kind};
+
+/// Two humans on an endless flat floor, cage open, 20 m apart.
+fn flat_world() -> World {
+    let mut w = World::new(1, &[false, false]);
+    w.cards = Arc::new(cards::test_book());
+    w.modifier = None;
+    w.arena.blocks = vec![Block::new(Vec3::new(0.0, -1.5, 0.0), Vec3::new(400.0, 3.0, 400.0), 0.0, Kind::Floor)];
+    w.arena.build_chunks();
+    w.release_cage();
+    w.pickups.clear();
+    w.players[0].pos = Vec3::new(0.0, HALF_HEIGHT, 0.0);
+    w.players[1].pos = Vec3::new(0.0, HALF_HEIGHT, -20.0);
+    w.players[0].yaw = 0.0;
+    w.players[1].yaw = 0.0;
+    w.step(&[Input::default(); 2]);
+    w
+}
+
+fn idle(w: &mut World, ticks: usize) { for _ in 0..ticks { w.step(&vec![Input::default(); w.players.len()]); } }
+
+fn fire() -> Input { Input { fire: true, ..Default::default() } }
+
+/// Player 0 aims at player 1's torso, perfectly still, no bloom.
+fn aim_at(w: &mut World, y: f32) {
+    let eye = w.players[0].eye();
+    let to = w.players[1].pos + Vec3::Y * y - eye;
+    let d = to.normalize();
+    w.players[0].yaw = (-d.x).atan2(-d.z);
+    w.players[0].pitch = d.y.asin();
+    w.players[0].recoil_pitch = 0.0;
+    w.players[0].bloom = 0.0;
+    w.players[0].weapon.spread = 0.0;
+}
+
+fn kills(w: &World, victim: usize) -> bool { w.events.iter().any(|e| matches!(e, Event::Kill { victim: v, .. } if *v == victim)) }
+
+#[test]
+fn walking_reaches_walk_speed_and_stays_on_the_floor() {
+    let mut w = flat_world();
+    let fwd = Input { mv: [0.0, 1.0], ..Default::default() };
+    for _ in 0..60 { w.step(&[fwd, Input::default()]); }
+    let p = &w.players[0];
+    assert!(p.on_floor);
+    assert!((p.vel.length() - WALK_SPEED).abs() < 0.01, "{}", p.vel);
+    assert!((p.pos.y - HALF_HEIGHT).abs() < 0.02, "{}", p.pos);
+}
+
+#[test]
+fn jumps_leave_at_full_speed_and_ledges_leave_two_air_jumps() {
+    let mut w = flat_world();
+    w.step(&[Input { jump: true, ..Default::default() }, Input::default()]);
+    assert_eq!(w.players[0].vel.y, JUMP_VELOCITY - 0.0, "gravity comes before the jump");
+    assert_eq!(w.players[0].jumps_left, 1);
+    let mut peak: f32 = 0.0;
+    for _ in 0..60 { w.step(&[Input::default(); 2]); peak = peak.max(w.players[0].pos.y); }
+    assert!((peak - HALF_HEIGHT - 1.35).abs() < 0.1, "{peak}");
+    // Acrobat: two extra air jumps.
+    w.players[0].weapon.extra_jumps = 2;
+    idle(&mut w, 2);
+    assert_eq!(w.players[0].jumps_left, 4, "grounded: 2 + extra");
+}
+
+#[test]
+fn dash_covers_about_four_metres_and_recharges_in_three_seconds() {
+    let mut w = flat_world();
+    let z0 = w.players[0].pos.z;
+    w.step(&[Input { dash: true, ..Default::default() }, Input::default()]);
+    idle(&mut w, 30);
+    let d = z0 - w.players[0].pos.z;
+    assert!((3.0..6.0).contains(&d), "{d}");
+    assert_eq!(w.players[0].dash_charges, 1);
+    idle(&mut w, 181 - 30);
+    assert_eq!(w.players[0].dash_charges, 2);
+}
+
+#[test]
+fn wall_jump_pushes_away() {
+    let mut w = flat_world();
+    w.arena.blocks.push(Block::new(Vec3::new(0.0, 5.0, -3.0), Vec3::new(10.0, 10.0, 1.0), 0.0, Kind::Wall));
+    w.arena.build_chunks();
+    let fwd = Input { mv: [0.0, 1.0], ..Default::default() };
+    for _ in 0..40 { w.step(&[fwd, Input::default()]); }
+    w.step(&[Input { jump: true, ..fwd }, Input::default()]);
+    for _ in 0..5 { w.step(&[fwd, Input::default()]); }
+    assert!(w.players[0].wall_normal.is_some());
+    let vz = w.players[0].vel.z;
+    w.step(&[Input { jump: true, ..fwd }, Input::default()]);
+    assert!(w.players[0].vel.y > 9.0);
+    assert!(w.players[0].vel.z > vz, "pushed off the wall");
+}
+
+#[test]
+fn five_body_shots_kill_and_the_win_opens_offers_after_a_moment() {
+    let mut w = flat_world();
+    let mut shots = 0;
+    for _ in 0..400 {
+        aim_at(&mut w, 0.16);
+        w.step(&[fire(), Input::default()]);
+        shots += w.events.iter().filter(|e| matches!(e, Event::Shot { player: 0, .. })).count();
+        if kills(&w, 1) { break; }
+    }
+    assert_eq!(shots, 5, "22 damage a shot, 100 health");
+    assert_eq!(w.players[0].score, 1);
+    assert!(w.players[1].offer.is_none(), "offers open 0.35 s after the win");
+    idle(&mut w, 21);
+    assert!(w.players[1].offer.as_ref().is_some_and(|o| o.len() == 3));
+    assert_eq!(w.phase, Phase::Picking);
+    assert!(w.players[0].offer.is_none(), "the surviving winner never picks");
+}
+
+#[test]
+fn headshots_double_and_damage_truncates() {
+    let mut w = flat_world();
+    aim_at(&mut w, 0.64);
+    w.players[0].weapon.damage_mult = 0.9;
+    w.players[0].weapon.bullet_drop = 0.0;
+    w.players[1].health = 1000;
+    for _ in 0..20 { w.step(&[fire(), Input::default()]); if w.players[1].health < 1000 { break; } }
+    assert_eq!(1000 - w.players[1].health, 39, "int(19.8 * 2)");
+}
+
+#[test]
+fn cadence_reload_and_auto_reload_follow_godot_ticks() {
+    let mut w = flat_world();
+    w.players[1].pos.y = -100.0;
+    let mut shot_ticks = Vec::new();
+    for t in 0..200 {
+        w.players[0].pitch = 0.3;
+        w.step(&[fire(), Input::default()]);
+        if w.events.iter().any(|e| matches!(e, Event::Shot { player: 0, .. })) { shot_ticks.push(t); }
+    }
+    let gaps: Vec<i32> = shot_ticks.windows(2).map(|p| p[1] - p[0]).collect();
+    // 0.22 s = 14 ticks between shots; after the 5th, a 1.2 s reload (72 ticks).
+    assert_eq!(&gaps[..5], &[14, 14, 14, 14, 72], "{gaps:?}");
+}
+
+#[test]
+fn shotgun_pellets_cost_one_round() {
+    let mut w = flat_world();
+    w.players[0].weapon.extra_projectiles = 2;
+    w.step(&[fire(), Input::default()]);
+    assert_eq!(w.events.iter().filter(|e| matches!(e, Event::Shot { player: 0, .. })).count(), 3);
+    assert_eq!(w.players[0].ammo, 4);
+}
+
+#[test]
+fn bullets_fall_and_ricochet_and_drill() {
+    // Drop: a level shot lands short of a far wall's centre line.
+    let mut w = flat_world();
+    w.players[1].pos.y = -100.0;
+    w.players[0].weapon.spread = 0.0;
+    w.step(&[fire(), Input::default()]);
+    let vy0 = w.bullets[0].vel.y;
+    idle(&mut w, 10);
+    assert!(w.bullets[0].vel.y < vy0 - 4.0, "30 m/s² drop");
+    // Ricochet: a shot into the floor bounces.
+    let mut w = flat_world();
+    w.players[1].pos.y = -100.0;
+    w.players[0].weapon.ricochet_count = 2;
+    w.players[0].pitch = -0.6;
+    w.step(&[fire(), Input::default()]);
+    let mut bounces = 0;
+    for _ in 0..30 { idle(&mut w, 1); bounces += w.events.iter().filter(|e| matches!(e, Event::Ricochet { .. })).count(); }
+    assert_eq!(bounces, 1, "off the floor, then up into the sky");
+    assert!(w.bullets.len() == 1 && w.bullets[0].ricochet_left == 1 && w.bullets[0].vel.y > 0.0);
+    // Drill: through a wall to a player behind it.
+    let mut w = flat_world();
+    w.arena.blocks.push(Block::new(Vec3::new(0.0, 3.0, -10.0), Vec3::new(10.0, 6.0, 1.0), 0.0, Kind::Wall));
+    w.arena.build_chunks();
+    aim_at(&mut w, 0.16);
+    w.players[0].weapon.world_pierce_count = 2;
+    w.players[1].health = 1000;
+    for _ in 0..20 { w.step(&[fire(), Input::default()]); aim_at(&mut w, 0.16); w.players[0].weapon.world_pierce_count = 2; }
+    assert!(w.players[1].health < 1000, "drilled through");
+}
+
+#[test]
+fn poison_replaces_direct_damage_and_ticks_every_16_ticks() {
+    let mut w = flat_world();
+    aim_at(&mut w, 0.16);
+    w.players[0].weapon.damage_over_time = 0.7;
+    w.players[0].weapon.dot_duration = 3.5;
+    w.step(&[fire(), Input::default()]);
+    w.players[0].ammo = 0;
+    let mut hits = Vec::new();
+    for t in 0..240 {
+        w.step(&[Input::default(); 2]);
+        for e in &w.events { if let Event::Hit { victim: 1, damage, .. } = e { hits.push((t, *damage)); } }
+    }
+    assert_eq!(hits.iter().map(|h| h.1).sum::<i32>(), 37, "round(22 * 1.7)");
+    assert_eq!(hits[1].0 - hits[0].0, 16);
+    assert_eq!(hits[0].1, 3, "ceil(10.57 * 16/60)");
+}
+
+#[test]
+fn slow_lifesteal_and_scavenger() {
+    let mut w = flat_world();
+    aim_at(&mut w, 0.16);
+    let wp = &mut w.players[0].weapon;
+    (wp.slow_on_hit, wp.slow_duration, wp.lifesteal, wp.reload_on_hit) = (0.48, 2.6, 0.4, 2);
+    w.players[0].health = 50;
+    for _ in 0..20 { w.step(&[fire(), Input::default()]); if w.players[1].health < 100 { break; } }
+    assert_eq!(w.players[1].slow_mult, 0.48);
+    assert_eq!(w.players[0].health, 50 + 8, "int(22 * 0.4)");
+    assert_eq!(w.players[0].ammo, 5, "fired one, scavenged two, capped at the mag");
+}
+
+#[test]
+fn phoenix_rises_and_drops_back() {
+    let mut w = flat_world();
+    w.players[1].phoenix_charges = 1;
+    w.players[1].health = 10;
+    aim_at(&mut w, 0.16);
+    for _ in 0..30 { w.step(&[fire(), Input::default()]); if w.players[1].phoenix.is_some() { break; } }
+    assert!(w.players[1].phoenix.is_some() && w.players[1].alive);
+    assert_eq!(w.players[1].health, 35);
+    let y0 = w.players[1].pos.y;
+    w.players[0].ammo = 0;
+    idle(&mut w, 60);
+    assert!(w.players[1].pos.y > y0 + 4.0, "rising");
+    idle(&mut w, 70);
+    assert!(w.players[1].launching.is_some() || w.players[1].on_floor);
+    assert_eq!(w.players[0].score, 0, "no kill");
+}
+
+#[test]
+fn dodge_blocks_damage_but_not_knockback() {
+    let mut w = flat_world();
+    w.players[1].weapon.dash_iframes = true;
+    w.step(&[Input::default(), Input { dash: true, ..Default::default() }]);
+    assert!(w.players[1].iframes > 0.0);
+    w.players[1].poison_left = 0.0;
+    assert!(!w.apply_damage(1, 50, Some(0), player::Blow::plain(Vec3::ZERO)));
+    assert_eq!(w.players[1].health, 100);
+}
+
+#[test]
+fn grenades_explode_on_contact_and_hurt_late() {
+    let mut w = flat_world();
+    w.players[1].pos = Vec3::new(0.0, HALF_HEIGHT, -8.0);
+    w.players[0].pitch = -0.3;
+    w.step(&[Input { special: true, ..Default::default() }, Input::default()]);
+    assert_eq!(w.projectiles.len(), 1);
+    assert!((w.players[0].special_cd - 3.0).abs() < 1e-9);
+    let mut boom = None;
+    for t in 0..200 {
+        w.step(&[Input::default(); 2]);
+        if boom.is_none() && w.events.iter().any(|e| matches!(e, Event::Explosion { .. })) { boom = Some(t); }
+        if w.players[1].health < 100 { break; }
+    }
+    assert!(boom.is_some() && w.projectiles.is_empty(), "went off on the floor");
+    assert!(w.players[1].health < 100);
+}
+
+#[test]
+fn teleport_sword_backstab_and_echo() {
+    let mut w = flat_world();
+    w.players[0].weapon.special = Special::Teleport;
+    w.players[0].weapon.special_echo_count = 1;
+    w.players[0].pitch = -0.2;
+    w.step(&[Input { special: true, ..Default::default() }, Input::default()]);
+    let tps = |w: &World| w.events.iter().filter(|e| matches!(e, Event::Teleport { .. })).count();
+    assert_eq!(tps(&w), 1);
+    let mut echoed = 0;
+    for _ in 0..12 { w.step(&[Input::default(); 2]); echoed += tps(&w); }
+    assert_eq!(echoed, 1, "echo teleports again 0.16 s later");
+    // Backstab: player 1 faces away (-Z), player 0 behind it swings along -Z.
+    let mut w = flat_world();
+    w.players[0].weapon.special = Special::Sword;
+    w.players[0].pos = Vec3::new(0.0, HALF_HEIGHT, -17.5);
+    w.players[0].pitch = 0.0;
+    w.step(&[Input { special: true, ..Default::default() }, Input::default()]);
+    assert!(kills(&w, 1), "9999 from behind");
+}
+
+#[test]
+fn air_strike_echo_lands_twice_and_ion_ignores_cover() {
+    let mut w = flat_world();
+    w.players[0].weapon.special = Special::AirStrike;
+    w.players[0].weapon.special_echo_count = 1;
+    w.players[0].pitch = -0.4;
+    w.players[1].pos.y = -100.0;
+    w.step(&[Input { special: true, ..Default::default() }, Input::default()]);
+    idle(&mut w, 12);
+    assert_eq!(w.strikes.len(), 2, "echoed air strikes are not swallowed");
+    // Ion cannon: a wall between, still at least 101 damage.
+    let mut w = flat_world();
+    w.arena.blocks.push(Block::new(Vec3::new(0.0, 4.0, -5.0), Vec3::new(30.0, 8.0, 1.0), 0.0, Kind::Wall));
+    w.arena.build_chunks();
+    w.players[1].health = 500;
+    w.strikes.push(Strike { kind: StrikeKind::IonCannon, target: Vec3::new(0.0, 0.0, 10.0), owner: Some(0), age: 0.0 });
+    idle(&mut w, 230);
+    assert!(500 - w.players[1].health >= 101);
+}
+
+#[test]
+fn lava_burns_in_the_band_and_kills_below() {
+    let mut w = flat_world();
+    w.arena.blocks.clear();
+    w.arena.build_chunks();
+    w.players[1].pos = Vec3::new(0.0, -2.0, 0.0);
+    w.players[1].phoenix_charges = 1;
+    let mut burns = 0;
+    // f64 time: 30 x 1/60 is just under 0.5, so the first burn is tick 31.
+    for _ in 0..31 {
+        w.players[1].pos.y = -2.0;
+        w.players[1].vel = Vec3::ZERO;
+        idle(&mut w, 1);
+        burns += w.events.iter().filter(|e| matches!(e, Event::Hit { victim: 1, damage: 15, .. })).count();
+    }
+    assert_eq!(burns, 1, "15 per half second");
+    w.players[1].pos.y = -3.5;
+    idle(&mut w, 1);
+    assert!(!w.players[1].alive, "the pool skips the phoenix");
+}
+
+#[test]
+fn same_tick_trades_go_to_whoever_died_second_and_both_pick() {
+    let mut w = flat_world();
+    w.players[0].health = 1;
+    w.players[1].health = 1;
+    w.apply_damage(0, 5, Some(1), player::Blow::plain(Vec3::ZERO));
+    w.apply_damage(1, 5, Some(0), player::Blow::plain(Vec3::ZERO));
+    assert_eq!(w.players[1].score, 1);
+    idle(&mut w, 22);
+    assert!(w.players[0].offer.is_some() && w.players[1].offer.is_some());
+}
+
+#[test]
+fn solo_humans_have_no_pick_timeout_and_bots_pick_after_a_beat() {
+    let mut w = flat_world();
+    w.players[1].bot = true;
+    w.players[0].health = 1;
+    w.apply_damage(0, 5, Some(1), player::Blow::plain(Vec3::ZERO));
+    idle(&mut w, 60 * 15);
+    assert!(w.players[0].offer.is_some(), "one human: waits forever");
+    let round = w.round;
+    w.step(&[Input { pick: Some(1), ..Default::default() }, Input::default()]);
+    assert_eq!(w.round, round + 1, "the next round starts at once");
+    assert!(w.players[0].frozen, "in the cage");
+    assert_eq!(w.cage_left().map(|t| (t * 60.0).round()), Some(164.0));
+}
+
+#[test]
+fn ten_wins_end_the_match() {
+    let mut w = flat_world();
+    w.players[0].score = 9;
+    w.players[1].health = 1;
+    w.apply_damage(1, 5, Some(0), player::Blow::plain(Vec3::ZERO));
+    assert_eq!(w.phase, Phase::MatchOver);
+    assert!(w.events.contains(&Event::MatchOver { winner: 0 }));
+    w.restart_match();
+    assert_eq!((w.players[0].score, w.round, w.phase), (0, 1, Phase::Playing));
+}
+
+#[test]
+fn explosive_rounds_dig_through_the_floor_into_the_lava() {
+    let mut w = World::new(3, &[false, false]);
+    w.modifier = None;
+    w.release_cage();
+    let spot = Vec3::new(5.0, HALF_HEIGHT + 0.05, 5.0);
+    w.players[0].pos = spot;
+    w.players[1].pos = Vec3::new(4.0, HALF_HEIGHT + 0.05, 9.0);
+    let wp = &mut w.players[0].weapon;
+    (wp.explosive_radius, wp.explosive_damage, wp.mag_size_bonus) = (9.0, 75.0, 200);
+    w.players[0].ammo = 200;
+    w.players[0].health = 100_000;
+    w.players[1].health = 100_000;
+    let before = w.arena.alive_chunks();
+    let (mut booms, mut splashed, mut burned) = (0, false, false);
+    for _ in 0..1200 {
+        w.players[0].pitch = -1.4;
+        w.step(&[fire(), Input::default()]);
+        booms += w.events.iter().filter(|e| matches!(e, Event::Explosion { .. })).count();
+        splashed |= w.events.iter().any(|e| matches!(e, Event::Hit { victim: 1, attacker: 0, .. }));
+        if !w.players[0].alive { burned = true; break; }
+    }
+    assert!(booms > 0);
+    assert!(w.arena.alive_chunks() < before, "nothing broke");
+    assert!(splashed, "a player 4 m away in the open takes splash");
+    assert!(burned, "dug through the floor into the lava: {}", w.players[0].pos);
+}
+
+#[test]
+fn pickups_fall_and_heal_past_max() {
+    let mut w = flat_world();
+    w.pickups.push(Pickup { kind: PickupKind::Heart, pos: Vec3::new(0.0, 3.0, 0.0), vy: 0.0, grounded: None });
+    idle(&mut w, 60);
+    assert!(w.pickups.is_empty());
+    assert_eq!(w.players[0].health, 150);
+}
+
+/// Hooks see hits before they land and can change them, and run in the
+/// tick; card scripts mutate the weapon.
+#[test]
+fn hooks_change_damage_and_run_in_the_tick() {
+    use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    #[derive(Default)]
+    struct H { ticks: AtomicU32, picks: AtomicU32 }
+    impl Hooks for H {
+        fn hit(&self, w: &mut World, h: &HitInfo) -> i32 { w.players[h.attacker].health += 1; h.damage * 10 }
+        fn tick(&self, _: &mut World) { self.ticks.fetch_add(1, Relaxed); }
+        fn apply_card(&self, _: &cards::CardDef, w: &mut Weapon) { w.explosive_radius += 3.0; }
+        fn pick(&self, _: &mut World, _: usize, _: cards::Card) { self.picks.fetch_add(1, Relaxed); }
+    }
+    let h = Arc::new(H::default());
+    let mut w = flat_world();
+    w.hooks = HookSlot(Some(h.clone()));
+    aim_at(&mut w, 0.16);
+    for _ in 0..30 { w.step(&[fire(), Input::default()]); if kills(&w, 1) { break; } }
+    assert!(!w.players[1].alive, "x10 damage kills with the first hit");
+    assert_eq!(w.players[0].health, MAX_HEALTH + 1, "the hook ran once, for the one hit");
+    assert!(h.ticks.load(Relaxed) > 0);
+    w.give(0, cards::Card(0));
+    let wp = &w.players[0].weapon;
+    assert_eq!((h.picks.load(Relaxed), wp.explosive_radius, wp.damage_mult), (1, 3.0, 1.5));
+}
+
+#[test]
+fn bots_play_rounds_deterministically() {
+    let run = || {
+        let mut w = World::new(7, &[true; 4]);
+        let mut rounds = 0;
+        for _ in 0..60 * 120 {
+            w.step(&[]);
+            rounds += w.events.iter().filter(|e| matches!(e, Event::RoundOver { .. })).count();
+        }
+        (w.digest(), rounds, w.players.iter().map(|p| p.score).sum::<u32>())
+    };
+    let a = run();
+    assert_eq!(a, run());
+    assert!(a.1 >= 2, "bots finished {} rounds in two minutes", a.1);
+}

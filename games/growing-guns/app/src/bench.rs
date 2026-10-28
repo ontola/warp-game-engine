@@ -24,8 +24,9 @@ fn pct(v: &mut [f64], p: f64) -> f64 {
 /// Godot perf_benchmark's stress build, from the cards both games have
 /// (`--build a,b,c`; `--build none` for stock guns).
 fn armed_world(args: &Args) -> Result<(World, Vec<growing_guns::cards::Card>), String> {
-    let spec = args.value("--build").unwrap_or("rapidfire,rapidfire,explosive,explosive,damage");
-    let mut world = World::new(args.num("--seed", 2u64), &[true; 4]);
+    let spec = args.value("--build").unwrap_or("rapid_fire,rapid_fire,explosive,explosive,dmg_up");
+    let mut world = World::new_with(args.num("--seed", 2u64), &[true; 4], |w| w.modifier_chance = 0.0);
+    world.release_cage();
     crate::scripts::attach(&mut world)?;
     let build: Vec<_> = if spec == "none" { Vec::new() } else { spec.split(',')
         .map(|n| world.cards.find(&n.trim().to_lowercase()).ok_or(format!("unknown card {n}"))).collect::<Result<_, _>>()? };
@@ -35,7 +36,7 @@ fn armed_world(args: &Args) -> Result<(World, Vec<growing_guns::cards::Card>), S
 
 /// Top up surviving bots once a second; this does not prevent deaths.
 fn top_up(world: &mut World, tick: usize) {
-    if tick % TICK_HZ as usize == 0 { for p in &mut world.players { if p.alive { p.health = p.max_health(); } } }
+    if tick.is_multiple_of(TICK_HZ as usize) { for p in &mut world.players { if p.alive { p.health = p.max_health(); } } }
 }
 
 pub fn sim(args: &Args) -> Result<(), String> {
@@ -252,9 +253,8 @@ struct StressFrame {
 }
 
 fn stress_pose(world: &mut World, poses: &[Vec3]) {
-    world.ended = false;
-    world.intermission = 0.0;
-    world.pick_time = 0.0;
+    world.phase = growing_guns::Phase::Playing;
+    world.release_cage();
     for (i, p) in world.players.iter_mut().enumerate() {
         p.pos = poses[i];
         p.vel = Vec3::ZERO;
@@ -264,7 +264,8 @@ fn stress_pose(world: &mut World, poses: &[Vec3]) {
         p.health = 1_000_000;
         p.alive = true;
         p.ammo = p.mag_size();
-        p.reload_timer = 0.0;
+        p.reloading = false;
+        p.rifle_cd = 0.0;
         p.offer = None;
     }
 }
@@ -281,14 +282,14 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
     let views = args.num("--views", 1usize).clamp(1, 4);
     let (w, h) = args.size((1920, 1080));
     let seed = args.num("--seed", 2u64);
-    let mut world = World::new(seed, &[false; 4]);
+    let mut world = World::new_with(seed, &[false; 4], |w| w.modifier_chance = 0.0);
     // Above the arena geometry: neither missing floor nor knockback can
     // stop the fixture. All four rifles shoot into the visible arena.
     let poses: Vec<_> = (0..4).map(|i| Vec3::new(-9.0 + i as f32 * 6.0, 18.0, 14.0)).collect();
     for p in &mut world.players {
-        p.mods.fire_rate = 32.0; // One possible shot per 60 Hz tick.
-        p.mods.recoil = 0.0;
-        p.mods.mag_bonus = 195;
+        p.weapon.fire_rate_mult = 32.0; // One possible shot per 60 Hz tick.
+        p.weapon.recoil_per_shot = 0.0;
+        p.weapon.mag_size_bonus = 195;
     }
     stress_pose(&mut world, &poses);
     let original_arena = world.arena.clone();

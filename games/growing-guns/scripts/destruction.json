@@ -1,7 +1,7 @@
 { "size": [800, 450],
   "steps": [
     { "ticks": 20, "note": "settle on the spawn" },
-    { "cmd": ["bots pause", "give 0 explosive", "give 0 explosive", "give 0 explosive", "give 0 bigmag", "health 0 5000"] },
+    { "cmd": ["bots pause", "give 0 explosive", "give 0 explosive", "give 0 explosive", "give 0 big_mag", "health 0 5000"] },
     { "expect": "/arena/chunks_broken", "equals": 0 },
     { "ticks": 20, "look": [0, -0.06], "note": "look down at the floor in front" },
     { "capture": "before.png" },

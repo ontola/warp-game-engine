@@ -154,26 +154,24 @@ impl CrowdSound {
     pub fn hit(&mut self) {
         if !self.active { return; }
         self.enthusiasm = (self.enthusiasm + 0.18).clamp(0.0, 1.0);
-        if self.ooh_cd <= 0.0 && self.f() < 0.4 {
-            if let Some(c) = self.pick(2) {
+        if self.ooh_cd <= 0.0 && self.f() < 0.4
+            && let Some(c) = self.pick(2) {
                 self.ooh_cd = 1.6;
                 let e = self.enthusiasm;
                 self.oneshot(&c, REACTION_DB - 6.0 + e * 3.0, None, 0.0);
             }
-        }
     }
 
     /// A kill: the bowl roars.
     pub fn roar(&mut self) {
         if !self.active { return; }
         self.enthusiasm = (self.enthusiasm + 0.6).clamp(0.0, 1.0);
-        if self.roar_cd <= 0.0 {
-            if let Some(c) = self.pick(0) {
+        if self.roar_cd <= 0.0
+            && let Some(c) = self.pick(0) {
                 self.roar_cd = 1.4;
                 let e = self.enthusiasm;
                 self.oneshot(&c, REACTION_DB + e * 3.0, None, 0.0);
             }
-        }
     }
 
     pub fn excite(&mut self, amount: f32) { if self.active { self.enthusiasm = (self.enthusiasm + amount).clamp(0.0, 1.0); } }
@@ -183,12 +181,11 @@ impl CrowdSound {
         if !self.active { return; }
         self.fear = (self.fear + amount).clamp(0.0, 1.0);
         self.enthusiasm *= cheer_keep;
-        if self.scream_cd <= 0.0 {
-            if let Some(c) = self.pick(3) {
+        if self.scream_cd <= 0.0
+            && let Some(c) = self.pick(3) {
                 self.scream_cd = 0.55;
                 self.oneshot(&c, REACTION_DB - 4.0 + intensity * 5.0, Some((at, ears)), 35.0);
             }
-        }
     }
 
     /// Per frame (or tick): decay, cooldowns, chants and the bed mix.

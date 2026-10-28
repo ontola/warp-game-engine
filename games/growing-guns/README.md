@@ -41,19 +41,35 @@ them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift or right
 mouse dash, left mouse fire, R reload; on a pad the sticks, A jump, B or RB
 dash, RT fire, X reload. F12 saves a screenshot.
 
-Ported since the first slice: nine stat cards and explosive rounds picked by
-round losers (`scripts/cards.json`), the Godot WAVs (`--sounds DIR` or
-`GG_SOUNDS`, the Godot project's `assets/audio`) plus synthesised impacts
-and explosions (`synth.rs`, from `sfx.gd`), particles (sparks, dust, blood,
-casings, fireballs) and ragdolls on the `physics` crate, and destruction
-(`sim/src/destruct.rs`, after `destructible_solid.gd`): every block,
-including the three floor layers above the lava, is pre-split into about
-6,000 to 9,400 chunks; strong rifle hits wear chunks down, explosions break
-them, the rim of a hole weakens; worn bricks crack, hits leave scorch marks
-and rubble flies as GPU debris (`render::debris`). Breakage goes to clients
-reliably (`ToClient::Broken`). `scripts/destruction.json` digs into the
-lava, `scripts/wall.json` blows a hole in a wall; both use debug commands
-(`cmd` steps, see `help`).
+Gameplay is at parity with Godot 3daf27e (specs from `player.gd`,
+`weapon.gd`, `bullet.gd`, `blast.gd`, `grenade.gd`, `game.gd` and
+`round_modifiers.gd`; checked in `sim/src/tests.rs` against Godot's tick
+counts):
+
+- all 52 cards (`mods/base/cards.luau`, line-for-line from
+  `card_library.gd`, rarity-weighted offers with the pity slot and the
+  trailing-player factor) on a `Weapon` with Godot's fields and getters;
+- the rifle: muzzle-to-crosshair pellets in a centre-biased cone, movement
+  spread, bloom and recoil that wear off, self push, the projectile budget,
+  165 m/s bullets with drop, rays every other tick, three hit ellipsoids that
+  scale with the body cards, ricochet, drill, body bounce, homing, hitscan,
+  grow, last bullet, poison, slow, lifesteal, scavenger, explosive splash
+  (`Blast`, with sound-speed delays), impact mines;
+- the RMB specials: grenade (default), cluster, teleport, zoom, sword with
+  backstabs, air strike, ion cannon, with echo, tactical reload and refresh
+  (several strikes may be under way at once; Godot's single-strike gate was
+  a bug);
+- dash cards (dodge, ninja slash, backblast bomb), acrobat jumps, phoenix
+  ascent and sky drop, lava pool and burn band, falling off the map;
+- rounds: the 2.75 s spawn cage, kills in order (trades go to whoever died
+  second), offers 0.35 s after a win, the dead pick mid-round with 3+
+  players, bot picks after 1.2 s, no pick deadline for a solo human, match
+  end at ten wins (`rematch`, `extend`), the twelve round modifiers, pickups
+  and the lava leak at 30 s.
+
+Debug commands (`cmd` steps, `help`): `give`, `special`, `modifier`,
+`round`, `cage`, `rematch`, `extend`, `lua`, `mods` and more.
+`play --modifier ID`, `--rounds N`.
 
 Mods: the cards and game rules are Luau in [`mods/`](mods/API.md), run by
 `engine/crates/script` (sandboxed, a step budget per call, a load error
@@ -81,8 +97,9 @@ Animated pixels reject temporal history until deformation motion vectors are
 implemented. The older benchmark results below used primitive characters and
 are not measurements of the new roster.
 
-Not ported: the other cards (ricochet, shotgun, specials) and weapons,
-menus beyond card picks, music, GameNight. Online play is tested
+Not ported yet: wave survival (coop), Godot's bot AI (bots still use the
+slice's simple brain), ghosts planting mines (unreachable in Godot at this
+commit), the island lava layout, music, GameNight. Online play is tested
 over loopback (`nettest`), not yet between two machines; clients predict
 only their look direction.
 

@@ -10,7 +10,9 @@
 //!
 //! Godot conventions: -Z forward, +Y up, the receiver centred on the origin.
 use glam::{Affine3A, EulerRot, Quat, Vec3};
-use growing_guns::{Player, FIRE_INTERVAL, MAG_SIZE, SPREAD};
+use growing_guns::weapon::{BASE_FIRE_INTERVAL as FIRE_INTERVAL, BASE_MAG_SIZE, BASE_SPREAD as SPREAD};
+use growing_guns::Player;
+const MAG_SIZE: u32 = BASE_MAG_SIZE as u32;
 use std::f32::consts::{PI, TAU};
 
 /// The weapon stats the look reads (Godot `_lerp_weapon` fields).
@@ -31,7 +33,8 @@ impl Default for Stats {
 
 impl Stats {
     pub fn of(p: &Player) -> Self {
-        Stats { spread: SPREAD * p.mods.spread, damage_mult: p.mods.damage, fire_rate_mult: p.mods.fire_rate, mag: p.mag_size(), explosive_radius: p.mods.explosive_radius, ..Default::default() }
+        let w = &p.weapon;
+        Stats { spread: w.spread(), bullet_scale: w.bullet_scale, damage_mult: w.damage_mult, fire_rate_mult: w.fire_rate_mult, mag: p.mag_size(), shots: w.shots_per_trigger(), explosive_radius: w.explosive_radius }
     }
 
     pub fn lerp(a: &Stats, b: &Stats, t: f32) -> Stats {

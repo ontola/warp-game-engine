@@ -107,8 +107,9 @@ fn shot(args: &Args) -> Result<(), String> {
     let seed = args.num("--seed", 3u64);
     let seconds = args.num("--seconds", 4.0f32);
     let (w, h) = args.size((1600, 900));
-    let world = World::new(seed, &[true; 4]);
+    let world = World::new_with(seed, &[true; 4], |w| play::match_options(args, w, false));
     let mut game = play::Gg::new(world, session::Session::Local, (0..views).collect());
+    game.world.release_cage();
     game.light_mut().taa = 0.0;
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
     let gpu = Gpu::new()?;
@@ -126,8 +127,10 @@ fn script(args: &Args) -> Result<(), String> {
     let out = args.value("--out").unwrap_or("script-out");
     let humans = args.num("--players", 1usize).clamp(1, 4);
     let bots: Vec<bool> = (0..4).map(|i| i >= humans).collect();
-    let world = World::new(args.num("--seed", 3u64), &bots);
+    let world = World::new_with(args.num("--seed", 3u64), &bots, |w| play::match_options(args, w, false));
     let mut game = play::Gg::new(world, session::Session::Local, (0..humans).collect());
+    // Scripts start in play; `--cage` keeps Godot's spawn cage.
+    if !args.flag("--cage") { game.world.release_cage(); }
     game.light_mut().taa = 0.0;
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
     let mixer = sounds::find_dir(args.value("--sounds")).map(|dir| {
@@ -183,7 +186,9 @@ fn nettest(args: &Args) -> Result<(), String> {
     }
     // Drain what the host still sends while it finishes.
     let drain = std::time::Instant::now();
-    while drain.elapsed().as_secs_f32() < 1.0 { client.receive(1.0 / TICK_HZ as f32); std::thread::sleep(std::time::Duration::from_millis(16)); }
+    // until the host has stopped (it plays on for two seconds after us).
+    while !host.is_finished() || drain.elapsed().as_secs_f32() < 1.0 { client.receive(1.0 / TICK_HZ as f32); std::thread::sleep(std::time::Duration::from_millis(16)); }
+    for _ in 0..30 { client.receive(1.0 / TICK_HZ as f32); std::thread::sleep(std::time::Duration::from_millis(10)); }
     let host_state: serde_json::Value = serde_json::from_str(&host.join().map_err(|_| "host thread panicked")??).map_err(|e| e.to_string())?;
     let host_broken = host_state["arena"]["chunks_broken"].as_u64().unwrap_or(0);
     let client_broken = (client.world.arena.chunks.len() - client.world.arena.alive_chunks()) as u64;
