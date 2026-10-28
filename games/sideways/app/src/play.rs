@@ -141,6 +141,12 @@ fn meadow_capture_metadata(renderer: &Renderer, gpu: &Gpu, scene: &render::Scene
     let Some(field) = &scene.meadow else { return Ok(serde_json::Value::Null); };
     let stats = renderer.meadow_diagnostics(gpu)?;
     let pool_bytes: u64 = stats.iter().map(|s| s.pool_bytes).sum();
+    let edge_shadow = renderer.meadow_edge_shadow_stats().map(|s| serde_json::json!({
+        "enabled":s.enabled,"shared_bytes":s.shared_bytes,"radius_m":s.radius_m,
+        "sky_strength":s.sky_strength,"sun_strength":s.sun_strength,"sun_reach_m":s.sun_reach_m,
+        "fade_m":s.fade_m,"grid_dimension":s.grid_dimension,
+        "scope":"Bounded GPU occupancy from the source's accepted roots and road-trimmed blade anchors. Separate soft ground/road ambient and short directional sun attenuation; no individual blade shadow map, no per-frame CPU root streaming."
+    }));
     let views: Vec<_> = stats.iter().map(|s| {
         let mut value = serde_json::json!({
         "view":s.view,"visible_plants_per_lod":s.plants,"source_triangles_per_lod":s.triangles,
@@ -173,6 +179,13 @@ fn meadow_capture_metadata(renderer: &Renderer, gpu: &Gpu, scene: &render::Scene
         // recursion limit without increasing it for the entire application.
         value["aggregate_half_resolution"] = s.aggregate_half_resolution.into();
         value["aggregate_sample_prune_enabled"] = s.aggregate_sample_prune_enabled.into();
+        value["spatial_filter"] = serde_json::json!({
+            "requested":s.spatial_filter_requested,
+            "enabled":s.spatial_filter_enabled,
+            "max_strength":s.spatial_filter_max_strength,
+            "blade_width_m":s.spatial_filter_blade_width_m,
+            "scope":"Native windswept source colour only, filtered over depth-compatible grass neighbours as projected blades become subpixel. Original alpha and silhouette remain exact; no temporal history, geometry replacement or extra render target. Disabled with TAA/DLSS."
+        });
         value["aggregate_target_size"] = serde_json::json!(s.aggregate_target_size);
         value["aggregate_resolution_scale"] = serde_json::json!(s.aggregate_resolution_scale);
         value["aggregate_resolution_scope"] = "Aggregate raster and illumination target relative to the per-view internal DLSS input; source grass, world roots, draw range and output resolution are unchanged. Reduced resolution is an opt-in optical approximation.".into();
@@ -192,6 +205,7 @@ fn meadow_capture_metadata(renderer: &Renderer, gpu: &Gpu, scene: &render::Scene
     Ok(serde_json::json!({
         "views":views,"memory":memory,"lod_order":[0,1,2],
         "substrate_enabled":renderer.meadow_substrate_enabled(),
+        "edge_shadow":edge_shadow,
         "contact_ao":{
             "enabled":renderer.meadow_contact_ao_strength()>0.0,
             "strength":renderer.meadow_contact_ao_strength(),

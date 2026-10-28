@@ -1,0 +1,56 @@
+# Native 4K, one-view start-stage comparisons for the windswept source path.
+# Run with engine/tools/run-frame-scenario.py --hidden --env-file FILE.json.
+# The hidden runner checks actual output dimensions; capture JPEGs are smaller.
+# Keep the executable, environment, seed and section identical across comparisons.
+# ticks_per_frame=0 holds simulation and deterministic scenario wind at t=0;
+# there is no separate wind key in the scenario schema. Default strength is 0.3.
+# Each section has 96 frames including 24 warmup, leaving 72 steady candidates.
+# Capture the last warmup frame so image readback is outside steady samples.
+# --timeout limits the whole process, not each section. For a 30s per-case cap,
+# run single-section copies with capture_frames=[24]; do not treat a truncated
+# three-section run as a complete comparison. Hidden throughput is not gameplay FPS.
+schema = 1
+name = "windswept-grass"
+ticks_per_frame = 0
+capture_frames = [24, 120, 216]
+
+[capture]
+format = "jpg"
+max_width = 1920
+quality = 90
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "3840x2160"
+upscale = "native"
+hud = false
+
+[[sections]]
+name = "normal-drive-start"
+start_tick = 0
+frames = 96
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+# Omit camera to preserve the actual start-stage chase camera.
+
+[[sections]]
+name = "grass-close"
+start_tick = 0
+frames = 96
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-82.5, 2.5, -325.6], target = [-77.8, 1.2, -324.5], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "grass-overview"
+start_tick = 0
+frames = 96
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-115.4, 11.6, -333.3], target = [-77.8, 1.2, -324.5], fov_y_degrees = 64.0}

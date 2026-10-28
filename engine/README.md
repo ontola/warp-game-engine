@@ -18,6 +18,13 @@ AI-driven workflows and fast iteration. A human editor UI, complete indoor
 rendering, water, buildings, people and general animation remain missing.
 Procedural plant wind is not general character animation.
 
+The latest grass experiment adds opt-in native spatial RGB filtering and
+source-accepted basal edge contact. Grass alpha, wind and source geometry stay
+intact; distant shading variance is reduced in a static crop, with a measured
+brightness shift. Final native 4K captures and selected wind poses completed;
+user acceptance remains pending. See
+[r64 implementation, measurements and limits](docs/meadow-edge-grain-r64.md).
+
 ```powershell
 cargo check --locked --workspace
 cargo test --locked -p render --lib
@@ -33,6 +40,9 @@ See the [diagnostics guide](tools/frame-budget.md),
 [four-view grass timing and visual tradeoffs](docs/meadow-half-resolution-r57.md),
 [full-resolution sampling and raw-buffer diagnostics](docs/meadow-sampling-r58.md),
 [analytic grass contact AO](docs/meadow-contact-ao-r59.md),
+[rounded grass blade shading](docs/meadow-rounded-shading-r62.md),
+[curved grass, travelling wind and r63 measurements](docs/meadow-windswept-r63.md),
+[distant grass filtering and edge contact](docs/meadow-edge-grain-r64.md),
 [atmosphere notes](ATMOSPHERE.md), [handoff](HANDOFF.md) and
 [category measurements](docs/render-categories-2026-10-24.md).
 Old development notes are preserved in the game's historical documentation.

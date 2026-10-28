@@ -134,6 +134,16 @@ fn validate_source_recipe(capture:&Value,grass:Option<&Value>,trees:&Value)->Res
     ] {
         if expected.is_null(){continue;}
         let actual=actual.ok_or_else(||format!("captured {name} exists but reconstructed source is absent"))?;
+        // Captures predating rounded blades used flat normals. Do not let an
+        // inherited opt-in silently change their reconstructed lighting.
+        if name == "procedural_grass" && expected["blade_shading"].as_str().unwrap_or("flat")
+            != actual["blade_shading"].as_str().unwrap_or("flat") {
+            return Err("captured procedural_grass.blade_shading differs; restore SIDEWAYS_MEADOW_BLADE_SHADING".into());
+        }
+        if name == "procedural_grass" && expected["profile"].as_str().unwrap_or("classic")
+            != actual["profile"].as_str().unwrap_or("classic") {
+            return Err("captured procedural_grass.profile differs; restore SIDEWAYS_MEADOW_PROFILE (historical captures use classic)".into());
+        }
         for key in keys {
             if let Some(value)=expected.get(*key) {
                 if actual.get(*key)!=Some(value) {
@@ -883,6 +893,19 @@ mod replay_tests {
         assert!(validate_source_recipe(&capture,Some(&grass),&bad).is_err());
         assert!(validate_source_recipe(&capture,None,&trees).is_err());
         assert!(validate_source_recipe(&json!({"render":{}}),None,&trees).is_ok());
+    }
+    #[test]
+    fn construction_guard_preserves_historical_flat_and_explicit_rounded_shading() {
+        let historical=json!({"mode":"gpu_meadow_field"});
+        let flat=json!({"mode":"gpu_meadow_field","blade_shading":"flat"});
+        let rounded=json!({"mode":"gpu_meadow_field","blade_shading":"rounded"});
+        for expected in [&historical,&flat,&rounded] {
+            let capture=json!({"render":{"procedural_grass":expected}});
+            for actual in [&historical,&flat,&rounded] {
+                assert_eq!(validate_source_recipe(&capture,Some(actual),&json!({})).is_ok(),
+                    (expected == &rounded) == (actual == &rounded));
+            }
+        }
     }
     #[test]
     fn local_light_capture_keeps_recorded_emitters_and_rejects_partial_or_inconsistent_data() {

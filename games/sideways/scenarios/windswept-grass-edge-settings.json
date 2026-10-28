@@ -1,0 +1,15 @@
+[
+  {"frame": 1, "key": "toggle"},
+  {"frame": 1, "key": "enter"},
+  {"frame": 1, "key": "down"},
+  {"frame": 1, "key": "enter"},
+  {"frame": 1, "pointer": [956, 958]},
+  {"frame": 1, "pointer_down": true},
+  {"frame": 1, "pointer": [764, 958]},
+  {"frame": 1, "pointer_up": true},
+  {"frame": 1, "pointer": [956, 1034]},
+  {"frame": 1, "pointer_down": true},
+  {"frame": 1, "pointer": [1196, 1034]},
+  {"frame": 1, "pointer_up": true},
+  {"frame": 1, "key": "toggle"}
+]

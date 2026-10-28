@@ -1,0 +1,53 @@
+# Native pixel and timing regression for the user's edge/grain F12:
+# build/screenshots/sideways-1793203778815-187344-0.json.
+# Use --wind 0.8 --wind-time 128.06921080000052 via the scenario runner,
+# plus windswept-grass-edge-settings.json to reproduce size 1.6/density 1.0.
+# The first camera is exact; the second is the earlier confirmed bare-hill view.
+# Morning uses the same edge camera at 24 degrees sun elevation (noon is 60).
+# Three 96-frame sections with 24 warmup; native PNG captures occur in warmup.
+# Compare frozen executables using identical controls and environment, apart
+# from the explicitly named edge-shadow/filter experiment flags.
+schema = 1
+name = "windswept-grass-edge"
+ticks_per_frame = 0
+capture_frames = [24, 120, 216]
+
+[capture]
+format = "png"
+max_width = 0
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "3840x2160"
+upscale = "native"
+hud = false
+
+[[sections]]
+name = "user-f12-edge-grain-noon"
+start_tick = 0
+frames = 96
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-42.18136978149414, 9.14914608001709, -989.0841674804688], target = [-38.512569427490234, 7.999146461486816, -994.6904296875], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "far-hillside-noon"
+start_tick = 0
+frames = 96
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-76.12712860107422, -4.613594055175781, -493.1341247558594], target = [-80.50606536865234, -5.763593673706055, -498.2051086425781], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "user-f12-edge-morning"
+start_tick = 0
+frames = 96
+warmup = 24
+sun = "morning"
+atmosphere = "clear"
+camera = {position = [-42.18136978149414, 9.14914608001709, -989.0841674804688], target = [-38.512569427490234, 7.999146461486816, -994.6904296875], fov_y_degrees = 64.0}

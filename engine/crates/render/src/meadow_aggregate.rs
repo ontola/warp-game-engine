@@ -44,7 +44,8 @@ pub struct AggregateTextureMip {
     /// by filtered coverage. Never interpolate unpremultiplied attributes.
     pub material: Vec<u16>,
     /// Same paired layer layout: [source_point.xyz, integer branch] then
-    /// [basal_anchor.xyz,0]. Use textureLoad at a covered representative texel;
+    /// [basal_anchor.xyz,unbent_height]. Height is zero for legacy recipes.
+    /// Use textureLoad at a covered representative texel;
     /// hardware filtering of these layers would interpolate branch identity.
     pub surface: Vec<u16>,
 }
@@ -66,7 +67,7 @@ pub struct AggregateAtlas {
     ///
     /// Header: [right.xyz,half_width], [up.xyz,half_height],
     /// [toward_viewer.xyz,center_y]. Texel: [source_point.xyz,branch_index],
-    /// [source_normal.xyz,roughness], [linear_rgb,coverage], [anchor.xyz,0].
+    /// [source_normal.xyz,roughness], [linear_rgb,coverage], [anchor.xyz,height].
     pub data: Vec<[f32; 4]>,
     pub view_count: u32,
     pub size: u32,
@@ -275,12 +276,12 @@ impl Default for Sample {
 #[derive(Clone, Copy, Default)]
 struct Texel {
     point: DVec3, normal: DVec3, color: DVec3, anchor: DVec3,
-    roughness: f64, coverage: f64, branch: u8,
+    roughness: f64, coverage: f64, branch: u8, height: f64,
 }
 impl Texel {
     fn words(self) -> [[f32; 4]; TEXEL_WORDS] {
         [word(self.point, self.branch as f32), word(self.normal, self.roughness as f32),
-         word(self.color, self.coverage as f32), word(self.anchor, 0.0)]
+         word(self.color, self.coverage as f32), word(self.anchor, self.height as f32)]
     }
 }
 
@@ -329,7 +330,8 @@ fn raster(vertices: &[GpuMeadowVertex], projection: Projection, side: usize) -> 
                 if normal.dot(projection.toward)<0.0 { normal = -normal; }
                 *sample = Sample { covered: true, depth, surface: Texel {
                     point:p, normal, color, roughness,
-                    anchor:vec3(triangle[0].anchor), branch:triangle[0].position[3] as u8, coverage:1.0,
+                    anchor:vec3(triangle[0].anchor), height:f64::from(triangle[0].anchor[3]),
+                    branch:triangle[0].position[3] as u8, coverage:1.0,
                 }};
             }
         }
@@ -354,6 +356,18 @@ fn combine(values: &[Texel]) -> Texel {
         out.roughness += value.roughness*w; fallback = value.normal;
     }
     out.normal = if out.normal.length_squared()>1e-20 { out.normal.normalize() } else { fallback };
+    // Nonlinear wind needs one actual blade descriptor. Averaging anchors or
+    // heights invents a different lean hash and deforms a fictitious blade.
+    // Keep material/normal moments weighted, but take point/anchor/height from
+    // the strongest covered sample of the selected branch (first wins ties).
+    // Legacy affine recipes retain their original byte-for-byte averaging.
+    let mut representative = None::<&Texel>;
+    for value in values.iter().filter(|v| v.branch as usize == branch && v.coverage > 0.0 && v.height > 0.0) {
+        if representative.is_none_or(|old| value.coverage > old.coverage) { representative = Some(value); }
+    }
+    if let Some(value) = representative {
+        out.point = value.point; out.anchor = value.anchor; out.height = value.height;
+    }
     out
 }
 
@@ -470,12 +484,43 @@ mod tests {
 
     #[test]
     fn mip_coverage_conserves_union_and_attributes_use_an_integer_branch() {
-        let values=[Texel{point:DVec3::X,anchor:DVec3::X,normal:DVec3::Y,color:DVec3::X,roughness:0.7,coverage:1.0,branch:0},
-            Texel{point:DVec3::Z,anchor:DVec3::Z,normal:DVec3::Z,color:DVec3::Z,roughness:0.9,coverage:0.5,branch:3},
+        let values=[Texel{point:DVec3::X,anchor:DVec3::X,normal:DVec3::Y,color:DVec3::X,roughness:0.7,coverage:1.0,branch:0,height:0.0},
+            Texel{point:DVec3::Z,anchor:DVec3::Z,normal:DVec3::Z,color:DVec3::Z,roughness:0.9,coverage:0.5,branch:3,height:0.0},
             Texel::default(),Texel::default()];
         let coarse=downsample(&values,2)[0];assert_eq!(coarse.coverage,0.375);
         assert_eq!(coarse.branch,0);assert_eq!(coarse.point,DVec3::X);assert_eq!(coarse.anchor,DVec3::X);
         assert_eq!(coarse.normal,DVec3::Y);assert_eq!(coarse.color,DVec3::X);
+    }
+
+    #[test]
+    fn windswept_mip_keeps_one_discrete_blade_descriptor_and_weighted_material() {
+        let a = Texel { point: DVec3::new(0.1, 0.2, 0.3), anchor: DVec3::new(0.125, 0.0, -0.25),
+            height: 0.75, normal: DVec3::Y, color: DVec3::X, roughness: 0.8, coverage: 1.0, branch: 1 };
+        let b = Texel { point: DVec3::new(0.4, 0.5, 0.6), anchor: DVec3::new(-0.125, 0.0, 0.25),
+            height: 0.5, normal: DVec3::Z, color: DVec3::Z, roughness: 0.6, coverage: 0.5, branch: 1 };
+        let combined = combine(&[a, b, Texel::default(), Texel::default()]);
+        assert_eq!(combined.coverage, 0.375);
+        assert_eq!(combined.point, a.point); assert_eq!(combined.anchor, a.anchor); assert_eq!(combined.height, a.height);
+        assert!(combined.color.distance((DVec3::X * 2.0 + DVec3::Z) / 3.0) < 1e-12);
+        assert!(combined.normal.distance((DVec3::Y * 2.0 + DVec3::Z).normalize()) < 1e-12);
+        let words = combined.words();
+        for value in words[3] { assert_eq!(half_value(finite_half(value).unwrap()) as f32, value); }
+        let next = combine(&[combined, b]);
+        assert_eq!(next.point, b.point); assert_eq!(next.anchor, b.anchor); assert_eq!(next.height, b.height);
+    }
+
+    #[test]
+    fn windswept_atlas_all_mips_retain_real_quantized_anchor_and_height() {
+        let geometry = MeadowGeometry::cook_windswept(73, 0.0, crate::foliage_assembly::MeadowBladeBudget::Blades120).unwrap();
+        let atlas = AggregateAtlas::cook(&geometry).unwrap();
+        let anchors: std::collections::BTreeSet<_> = geometry.vertices.iter().map(|v| v.anchor.map(f32::to_bits)).collect();
+        for view in atlas.data.chunks_exact(atlas.view_stride as usize) {
+            for texel in view[3..].chunks_exact(4).filter(|t| t[2][3] > 0.0) {
+                assert!(anchors.contains(&texel[3].map(f32::to_bits)), "mip must not invent a new nonlinear blade");
+                for value in texel[3] { assert_eq!(half_value(finite_half(value).unwrap()) as f32, value); }
+            }
+        }
+        atlas.texture_data().unwrap();
     }
 
     #[test]

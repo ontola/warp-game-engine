@@ -1,0 +1,39 @@
+# Matched native Sideways views for the flat/rounded grass shading experiment.
+# Set SIDEWAYS_PROCEDURAL_GRASS=field and compare
+# SIDEWAYS_MEADOW_BLADE_SHADING=flat|rounded with the same remaining environment.
+# Static cameras/poses; not a DLSS, motion-quality or performance acceptance run.
+schema = 1
+name = "rounded-grass"
+ticks_per_frame = 0
+capture_frames = [24, 48]
+
+[capture]
+format = "png"
+max_width = 1920
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "1920x1080"
+upscale = "native"
+hud = false
+
+[[sections]]
+name = "grass-close"
+start_tick = 0
+frames = 24
+warmup = 12
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-82.5, 2.5, -325.6], target = [-77.8, 1.2, -324.5], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "grass-overview"
+start_tick = 0
+frames = 24
+warmup = 12
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-115.4, 11.6, -333.3], target = [-77.8, 1.2, -324.5], fov_y_degrees = 64.0}
