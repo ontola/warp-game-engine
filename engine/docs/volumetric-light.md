@@ -109,11 +109,13 @@ Scatter weights (`view::Scatter`):
 | scatter-only beams (2.5-6.5 degrees, fanned over the field) | 1 | 3 per bank, 12 |
 | lava glows | 1 | up to 14 |
 | roof beacons | 0 | |
+| pickup ground lights (`pickup_scatter`) | 4 | 1 per pickup |
+| pickup drop beams: scatter-only searchlights up from the landing spot (0.6-2.2 degrees) | 4 | 1 per pickup, after the stadium beams |
 
 The beacons have weight 0 because otherwise the 32-light budget runs out.
 
 Tune live with the `command` tool, for example
-`light vol_density=0.0005 vol_anisotropy=0.6 flood_scatter=0.3 lava_scatter=0.5`.
+`light vol_density=0.0005 vol_anisotropy=0.6 flood_scatter=0.3 lava_scatter=0.5 pickup_scatter=2`.
 `light` shows the current values and `light reset` drops them. Overrides
 survive sky changes.
 

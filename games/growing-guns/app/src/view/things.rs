@@ -37,6 +37,8 @@ pub struct Things {
 impl Things {
     /// The pickups' ground lights (Godot `DropLight`).
     pub fn pickup_lights(&self) -> &[LocalLight] { self.beams.lights() }
+    /// The pickups' scatter-only haze over their beams (night air).
+    pub fn pickup_haze(&self) -> &[LocalLight] { self.beams.haze() }
 
     pub fn reserve(scene: &mut Scene) -> Self {
         let dark = material(scene, [0.12, 0.14, 0.12], 0.5);

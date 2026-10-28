@@ -290,7 +290,8 @@ impl Gg {
     }
 
     /// One `light` setting: `Lighting::set`, or the stadium's scatter weights
-    /// `flood_scatter`, `beam_scatter`, `lava_scatter`, `beacon_scatter`.
+    /// `flood_scatter`, `beam_scatter`, `lava_scatter`, `beacon_scatter`,
+    /// `pickup_scatter` (drop beam haze and ground lights).
     fn set_light(&mut self, kv: &str) -> Result<(), String> {
         let weight = |v: &str| v.parse::<f32>().ok().filter(|w| w.is_finite() && (0.0..=100.0).contains(w)).ok_or(format!("{kv}: weight 0..100"));
         match kv.split_once('=') {
@@ -298,6 +299,7 @@ impl Gg {
             Some(("beam_scatter", v)) => self.scatter.beam = weight(v)?,
             Some(("lava_scatter", v)) => self.scatter.lava = weight(v)?,
             Some(("beacon_scatter", v)) => self.scatter.beacon = weight(v)?,
+            Some(("pickup_scatter", v)) => self.scatter.pickup = weight(v)?,
             _ => {
                 let mut probe = self.light.clone();
                 probe.set(kv)?;
