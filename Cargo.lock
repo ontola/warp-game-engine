@@ -260,6 +260,7 @@ name = "audio"
 version = "0.1.0"
 dependencies = [
  "lewton",
+ "mlua",
  "serde",
  "toml",
 ]

@@ -79,6 +79,8 @@ pub enum Unit {
     /// Per-sample formula (see [`super::expr`]): `t`, `sr` and up to six
     /// inputs named by `vars`, e.g. `f1 + (f0 - f1) * exp(-t * k)`.
     Expr { src: String, #[serde(default)] vars: Vec<String> },
+    /// One random value per voice (from its seed), between lo and hi. Inputs: lo, hi.
+    Rand,
 }
 
 /// What the docs and the Luau front end call each unit and its inputs.
@@ -106,6 +108,7 @@ pub const UNITS: &[(&str, &[&str], &str)] = &[
     ("modal", &["x", "freq", "damping"], "Resonator bank (struck metal, wood, stone)."),
     ("pluck", &["x", "freq", "decay", "brightness"], "Karplus-Strong string."),
     ("hold", &["x", "trig"], "Sample and hold on a rising trigger."),
+    ("rand", &["lo", "hi"], "A random value per voice (per-shot variation)."),
     ("expr", &["a", "b", "c", "d", "e", "f"], "Per-sample formula of t, sr and its named inputs."),
 ];
 
@@ -117,7 +120,7 @@ impl Unit {
             Unit::Mul => "mul", Unit::Add => "add", Unit::Clamp => "clamp", Unit::Map { .. } => "map",
             Unit::Filter { .. } => "filter", Unit::LowPass1 => "lowpass1", Unit::HighPass1 => "highpass1", Unit::Comb => "comb",
             Unit::Delay { .. } => "delay", Unit::Drive => "drive", Unit::Fold => "fold", Unit::Crush => "crush",
-            Unit::Modal { .. } => "modal", Unit::Pluck => "pluck", Unit::Hold => "hold", Unit::Expr { .. } => "expr",
+            Unit::Modal { .. } => "modal", Unit::Pluck => "pluck", Unit::Hold => "hold", Unit::Expr { .. } => "expr", Unit::Rand => "rand",
         }
     }
     /// Input names, in order.
@@ -136,7 +139,7 @@ impl Unit {
             (Unit::Delay { .. }, 1) => 0.25, (Unit::Delay { .. }, 2) => 0.3, (Unit::Delay { .. }, 3) => 0.5,
             (Unit::Drive, 1) | (Unit::Fold, 1) => 1.0, (Unit::Crush, 1) => 8.0, (Unit::Crush, 2) => 1.0,
             (Unit::Modal { .. }, 1) => 440.0, (Unit::Modal { .. }, 2) => 1.0,
-            (Unit::Pluck, 1) => 220.0, (Unit::Pluck, 2) => 1.0, (Unit::Pluck, 3) => 0.5,
+            (Unit::Pluck, 1) => 220.0, (Unit::Pluck, 2) => 1.0, (Unit::Pluck, 3) => 0.5, (Unit::Rand, 1) => 1.0,
             _ => 0.0,
         }
     }
@@ -179,7 +182,8 @@ pub(crate) enum State {
     Modal { modes: Vec<Mode>, s: Vec<[f32; 2]> },
     Pluck { buf: Vec<f32>, pos: usize, lp: f32 },
     Hold { held: f32, last: f32 },
-    Expr { e: super::expr::Expr, t: f32 },
+    Expr { e: super::expr::Expr, t: f32, slots: Vec<super::expr::Slot> },
+    Rand { u: f32 },
 }
 
 /// Longest comb / string period: 20 Hz.
@@ -207,11 +211,18 @@ impl State {
             Unit::Modal { modes } => State::Modal { modes: modes.clone(), s: vec![[0.0; 2]; modes.len()] },
             Unit::Pluck => State::Pluck { buf: vec![0.0; (MAX_PERIOD * sr) as usize + 2], pos: 0, lp: 0.0 },
             Unit::Hold => State::Hold { held: 0.0, last: 0.0 },
-            Unit::Expr { src, vars } => State::Expr {
-                e: super::expr::Expr::compile(src, vars).unwrap_or_else(|_| super::expr::Expr::compile("0", &[]).unwrap()),
-                t: 0.0,
-            },
+            Unit::Expr { src, vars } => {
+                let e = super::expr::Expr::compile(src, vars).unwrap_or_else(|_| super::expr::Expr::compile("0", &[]).unwrap());
+                State::Expr { slots: e.slots(), e, t: 0.0 }
+            }
+            Unit::Rand => { let mut r = Noise::new(seed); r.unit(); State::Rand { u: r.unit() } }
         }
+    }
+
+    /// Stateless: the same inputs give the same output, so constant inputs
+    /// make a constant output (computed once per block).
+    pub(crate) fn pure(&self) -> bool {
+        match self { State::Math | State::Map { .. } | State::Rand { .. } => true, State::Expr { e, .. } => !e.uses_t(), _ => false }
     }
 
     /// Whether this unit has run its course (envelopes; voices end when
@@ -237,7 +248,7 @@ impl State {
                     let inc = (f.at(s) * dt).clamp(0.0, 0.5);
                     let p = (*phase + pm.at(s)).rem_euclid(1.0);
                     *o = match shape {
-                        Shape::Sine => (p * TAU).sin(),
+                        Shape::Sine => super::expr::sin_turns(p),
                         Shape::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
                         Shape::Saw => 2.0 * p - 1.0 - poly_blep(p, inc),
                         Shape::Square => {
@@ -324,7 +335,7 @@ impl State {
                 for (s, o) in out.iter_mut().enumerate() {
                     let p = *phase;
                     let v = match shape {
-                        Shape::Sine => (p * TAU).sin(),
+                        Shape::Sine => super::expr::sin_turns(p),
                         Shape::Triangle => 1.0 - 4.0 * (p - 0.5).abs(),
                         Shape::Saw => 2.0 * p - 1.0,
                         Shape::Square => if p < 0.5 { 1.0 } else { -1.0 },
@@ -394,8 +405,10 @@ impl State {
             }
             State::OnePole { y, x1, high } => {
                 let (x, fc) = (i(0), i(1));
+                let coef = |f: f32| 1.0 - (-TAU * f.clamp(1.0, sr * 0.49) / sr).exp();
+                let k = if let Sig::K(f) = fc { Some(coef(f)) } else { None };
                 for (s, o) in out.iter_mut().enumerate() {
-                    let a = 1.0 - (-TAU * fc.at(s).clamp(1.0, sr * 0.49) / sr).exp();
+                    let a = k.unwrap_or_else(|| coef(fc.at(s)));
                     let v = x.at(s);
                     *y += a * (v - *y);
                     *o = if *high { v - *y } else { *y };
@@ -482,13 +495,14 @@ impl State {
                     *o = *held;
                 }
             }
-            State::Expr { e, t } => {
-                let mut v = [0.0f32; 6];
-                for (s, o) in out.iter_mut().enumerate() {
-                    for (k, x) in v.iter_mut().enumerate() { *x = i(k).at(s); }
-                    *o = e.eval(*t, sr, &v);
-                    *t += dt;
-                }
+            State::Rand { u } => {
+                let (lo, hi) = (i(0), i(1));
+                for (s, o) in out.iter_mut().enumerate() { *o = lo.at(s) + (hi.at(s) - lo.at(s)) * *u; }
+            }
+            State::Expr { e, t, slots } => {
+                let v: [Sig; 6] = std::array::from_fn(|k| i(k));
+                e.eval_block(*t, dt, sr, &v, slots, out);
+                *t += dt * out.len() as f32;
             }
         }
         debug_assert!(n == out.len());

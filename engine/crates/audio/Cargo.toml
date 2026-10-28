@@ -9,3 +9,12 @@ description = "Kern's audio: physically inspired engine sound synthesis (after e
 lewton = "0.10"
 serde.workspace = true
 toml.workspace = true
+mlua = { version = "0.12", features = ["luau", "send"], optional = true }
+
+[features]
+# Patches written in Luau, and the warp-audio render tool.
+luau = ["dep:mlua"]
+
+[[bin]]
+name = "warp-audio"
+required-features = ["luau"]

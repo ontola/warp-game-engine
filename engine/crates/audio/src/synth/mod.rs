@@ -7,6 +7,8 @@
 //! Everything renders in blocks of [`BLOCK`] samples, deterministically
 //! from a seed, offline as well as live.
 pub mod expr;
+#[cfg(feature = "luau")]
+pub mod lua;
 pub mod mixer;
 pub mod patch;
 pub mod reverb;
