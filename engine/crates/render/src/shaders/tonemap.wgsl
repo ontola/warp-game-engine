@@ -108,3 +108,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     out = clamp(out + (out * 4.0 - (n + s + w + e)) * amp * 0.25, lo, hi);
     textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(srgb(out), 1.0));
 }
+
+// The same pass evaluating every neighbour itself (KERN_TILED_POST=0),
+// for comparison.
+@compute @workgroup_size(8, 8)
+fn main_direct(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let size = textureDimensions(hdr);
+    if gid.x >= size.x || gid.y >= size.y {
+        return;
+    }
+    let p = vec2<i32>(gid.xy);
+    var out = display(p);
+    if tone.sharpen > 0.0 {
+        // Contrast-adaptive sharpening (after AMD's CAS): sharpen less
+        // where the neighbourhood already has contrast; never overshoot it.
+        let n = display(p + vec2<i32>(0, -1));
+        let s = display(p + vec2<i32>(0, 1));
+        let w = display(p + vec2<i32>(-1, 0));
+        let e = display(p + vec2<i32>(1, 0));
+        let lo = min(out, min(min(n, s), min(w, e)));
+        let hi = max(out, max(max(n, s), max(w, e)));
+        let room = min(lo, 1.0 - hi) / max(hi, vec3<f32>(1e-4));
+        let amp = sqrt(clamp(room, vec3<f32>(0.0), vec3<f32>(1.0))) * tone.sharpen;
+        out = clamp(out + (out * 4.0 - (n + s + w + e)) * amp * 0.25, lo, hi);
+    }
+    textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(srgb(out), 1.0));
+}

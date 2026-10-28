@@ -609,6 +609,15 @@ pub struct Renderer {
     sun_surface_source: bool,
     camera_sun_occlusion: bool,
     shade: wgpu::ComputePipeline,
+    /// Sky tiles (KERN_SKY_TILES=0 turns them off): `shade_classify` writes
+    /// the sky of 8x8 tiles without geometry and lists the rest, and `shade`
+    /// runs indirectly over the listed tiles only. Same image either way.
+    sky_tiles: bool,
+    shade_classify: wgpu::ComputePipeline,
+    /// Per view: tile list (count first) and the indirect dispatch
+    /// arguments copied from it (a buffer cannot be storage and indirect in
+    /// one dispatch).
+    shade_tiles: std::sync::Mutex<Vec<Option<(wgpu::Buffer, wgpu::Buffer)>>>,
     /// Kept to rebuild `shade` when its source changes on disk.
     shade_pl: wgpu::PipelineLayout,
     shade_text: String,
@@ -1166,6 +1175,7 @@ impl Renderer {
                 (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (16, storage(false)),
+                (17, storage(false)),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -1295,15 +1305,24 @@ impl Renderer {
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
         let hidden_meadow_fallback=crate::meadow::MeadowRenderer::hidden_shade_fallback(gpu);
         let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0);
-        let shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
+        let sky_tiles=std::env::var("KERN_SKY_TILES").as_deref()!=Ok("0");
+        let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
+        shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade"),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
+        let shade_classify = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("shade sky tiles"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("classify"),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
+        });
         startup.mark("shade_pipeline");
-        let tone = compute(&pl(&[&tone_layout]), &tone_mod, "main");
+        // Tonemap and TAA read their neighbourhoods from a shared tile;
+        // KERN_TILED_POST=0 selects the direct versions (same image).
+        let post_entry = if std::env::var("KERN_TILED_POST").as_deref() == Ok("0") { "main_direct" } else { "main" };
+        let tone = compute(&pl(&[&tone_layout]), &tone_mod, post_entry);
         let taa_mod = module("taa", include_str!("shaders/taa.wgsl"));
-        let taa = compute(&pl(&[&taa_layout]), &taa_mod, "main");
+        let taa = compute(&pl(&[&taa_layout]), &taa_mod, post_entry);
         startup.mark("tonemap_taa_pipelines");
         let clamp_samp = gpu.device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let density_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("linear canopy"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
@@ -1478,6 +1497,9 @@ impl Renderer {
             camera_sun_occlusion: std::env::var("KERN_CAMERA_SUN_OCCLUSION").as_deref()!=Ok("0"),
             shade,
             shade_pl,
+            sky_tiles,
+            shade_classify,
+            shade_tiles: std::sync::Mutex::new(Vec::new()),
             shade_text: crate::wind::shade_source(),
             shader_wind_text: crate::wind::common_source(),
             shader_generation: 0,
@@ -2060,14 +2082,17 @@ impl Renderer {
         let shade = if sources.shade != self.shade_text {
             Some(crate::shaders::checked(gpu, || {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade"), source: wgpu::ShaderSource::Wgsl(sources.shade.as_str().into()) });
-                gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("shade"),
+                let mut constants = self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()));
+                constants.push(("SKY_TILES", if self.sky_tiles {1.0} else {0.0}));
+                let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
                     layout: Some(&self.shade_pl),
                     module: &module,
-                    entry_point: Some("shade"),
-                    compilation_options: wgpu::PipelineCompilationOptions {constants:&self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled())),..Default::default()},
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                     cache: gpu.pipeline_cache(),
-                })
+                });
+                (make("shade"), make("classify"))
             }).map_err(|e| format!("opaque reload: {e}"))?)
         } else { None };
         // No live assignment above or below until all prepares have succeeded.
@@ -2082,7 +2107,7 @@ impl Renderer {
         let rebuilt = shade.is_some() || transparency.is_some() || grass.is_some() || far_grass.is_some() || voxel.is_some();
         snapshot.ensure_current()?;
         if !rebuilt { return Ok(false); }
-        if let Some(pipeline) = shade { self.shade = pipeline; self.shade_text = sources.shade; }
+        if let Some((pipeline, classify)) = shade { self.shade = pipeline; self.shade_classify = classify; self.shade_text = sources.shade; }
         if let Some(reload) = transparency { self.transparency.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = grass { self.grass.as_mut().unwrap().commit_reload(reload); }
         if let Some(reload) = far_grass { self.far_grass.as_mut().unwrap().commit_reload(reload); }
@@ -3136,6 +3161,21 @@ impl Renderer {
                 Some(meadow.prepare_visibility(gpu,&mut enc,vi,(w,h),&self.scene_bind,&meadow_bindings,
                     &hdr_v,&depth,times,dlss_on,debug_options)?)
             } else {None};
+            // Tile list for this view: reset to an empty indirect dispatch.
+            let shade_tiles = {
+                let tiles = (w.div_ceil(8) * h.div_ceil(8)) as u64;
+                let mut all = self.shade_tiles.lock().unwrap();
+                if all.len() <= vi { all.resize_with(vi + 1, || None); }
+                if all[vi].as_ref().is_none_or(|b| b.0.size() < 16 + 4 * tiles) {
+                    all[vi] = Some((gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade tiles"), size: 16 + 4 * tiles,
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }),
+                        gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("shade tile dispatch"), size: 16,
+                        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })));
+                }
+                let b = all[vi].clone().unwrap();
+                gpu.queue.write_buffer(&b.0, 0, bytemuck::cast_slice(&[0u32, 1, 1, 0]));
+                b
+            };
             let shade_bind = bind(
                 gpu,
                 &self.shade_layout,
@@ -3156,6 +3196,7 @@ impl Renderer {
                     (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                     (15, wgpu::BindingResource::TextureView(&near_view)),
                     (16, hidden_meadow.as_ref().unwrap_or(&self.hidden_meadow_fallback).as_entire_binding()),
+                    (17, shade_tiles.0.as_entire_binding()),
                 ],
             );
             let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = vec![("shade", &self.shade, vec![&self.scene_bind, &shade_bind])];
@@ -3171,16 +3212,35 @@ impl Renderer {
                 if t.is_some() {
                     names.push(label);
                 }
-                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some(label),
-                    timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
-                });
-                pass.set_pipeline(pipe);
-                for (k, b) in bindings.iter().enumerate() {
-                    pass.set_bind_group(k as u32, *b, &[]);
+                if label == "shade" && self.sky_tiles {
+                    // Sky tiles, then the listed tiles; the timestamps span both.
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("shade sky tiles"),
+                        timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: None }),
+                    });
+                    for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
+                    pass.set_pipeline(&self.shade_classify);
+                    pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    drop(pass);
+                    enc.copy_buffer_to_buffer(&shade_tiles.0, 0, &shade_tiles.1, 0, 16);
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some(label),
+                        timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: None, end_of_pass_write_index: Some(i + 1) }),
+                    });
+                    for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
+                    pass.set_pipeline(pipe);
+                    pass.dispatch_workgroups_indirect(&shade_tiles.1, 0);
+                    drop(pass);
+                } else {
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some(label),
+                        timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
+                    });
+                    for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
+                    pass.set_pipeline(pipe);
+                    pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    drop(pass);
                 }
-                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
-                drop(pass);
                 if label == "shade" {
                     let volume_view=(self.far_grass.is_some() || self.voxel_forest.is_some() || self.foliage_world.is_some() || self.meadow_brick_fixture.is_some()).then(||
                         crate::volume_view::VolumeViewInputs {

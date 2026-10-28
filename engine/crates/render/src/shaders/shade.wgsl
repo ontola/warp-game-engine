@@ -136,6 +136,13 @@ override FEATURE_TERRAIN: bool = true;
 override FEATURE_FOLIAGE: bool = true;
 override SKIP_HIDDEN_MEADOW:bool=false;
 var<workgroup> hidden_meadow_count:atomic<u32>;
+// Sky tiles: `classify` writes the sky of 8x8 tiles without geometry and
+// lists the others; `shade` then runs (indirectly) over listed tiles only,
+// so pure sky never occupies the heavy shading kernel.
+override SKY_TILES: bool = false;
+struct ShadeTiles { x: atomic<u32>, y: u32, z: u32, pad: u32, tiles: array<u32> };
+@group(1) @binding(17) var<storage,read_write> shade_tiles: ShadeTiles;
+var<workgroup> tile_has_geometry: atomic<u32>;
 
 struct Gi {
     vol_origins: array<vec4<f32>, 3>,
@@ -1161,9 +1168,41 @@ fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_f
     return result;
 }
 
+// Sky for tiles without geometry; tiles with any are listed for `shade`.
+// Same sky as `shade` writes for its own background pixels.
 @compute @workgroup_size(8, 8)
-fn shade(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+fn classify(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) local: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
     let size = vec2<u32>(view.size.xy);
+    if local == 0u { atomicStore(&tile_has_geometry, 0u); }
+    workgroupBarrier();
+    let inside = all(gid.xy < size);
+    var depth = 0.0;
+    if inside { depth = textureLoad(depth_tex, vec2<i32>(gid.xy), 0); }
+    if depth > 0.0 { atomicOr(&tile_has_geometry, 1u); }
+    workgroupBarrier();
+    let any_geometry = atomicLoad(&tile_has_geometry);
+    if any_geometry != 0u {
+        if local == 0u { shade_tiles.tiles[atomicAdd(&shade_tiles.x, 1u)] = wid.y * groups.x + wid.x; }
+        return;
+    }
+    if !inside { return; }
+    let ndc = vec2<f32>((f32(gid.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(gid.y) + 0.5) / view.size.y * 2.0);
+    let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
+    let dir = normalize(far.xyz / far.w - view.cam.xyz);
+    textureStore(out_hdr, vec2<i32>(gid.xy), vec4<f32>(visible_background_radiance(dir), 1.0));
+}
+
+@compute @workgroup_size(8, 8)
+fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(local_invocation_index) local:u32) {
+    let size = vec2<u32>(view.size.xy);
+    // With sky tiles the dispatch walks the list of tiles with geometry.
+    var tile = wid.xy;
+    if SKY_TILES {
+        let t = shade_tiles.tiles[wid.x];
+        let across = (size.x + 7u) / 8u;
+        tile = vec2<u32>(t % across, t / across);
+    }
+    let gid = vec3<u32>(tile * 8u + lid.xy, 0u);
     var hidden=false;
     if SKIP_HIDDEN_MEADOW {
         // All invocations participate in barriers, including edge workgroups.
