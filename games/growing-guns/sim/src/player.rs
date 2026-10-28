@@ -82,13 +82,8 @@ impl World {
             p.vel = Vec3::ZERO;
             return;
         }
-        if p.pos.y < FELL_OFF_Y {
-            p.pos = self.arena.spawns.get(i % self.arena.spawns.len().max(1))
-                .copied().unwrap_or(Vec3::ZERO) + Vec3::Y * crate::HALF_HEIGHT;
-            p.vel = Vec3::ZERO;
-            p.on_floor = false;
-            p.wall_normal = None;
-        }
+        self.recover_ghost(i);
+        let p = &mut self.players[i];
         p.dash_timer = 0.0;
         p.zooming = false;
         self.cooldowns(i);
@@ -97,6 +92,7 @@ impl World {
         let event_count = self.events.len();
         self.move_player(i, Input { mv: input.mv, look: input.look, jump: input.jump, ..Default::default() });
         self.events.truncate(event_count); // silent ghost footsteps/landings
+        self.recover_ghost(i);
         // A ghost plants mines (Godot `_place_mine`, MINE_RELOAD apart).
         if fire_edge && self.players[i].special_cd <= 0.0 {
             self.players[i].special_cd = MINE_RELOAD;
@@ -109,6 +105,56 @@ impl World {
             self.spawn_projectile(crate::ProjectileKind::Mine, pos, Vec3::ZERO, i);
             self.events.push(crate::Event::MinePlanted { player: i, pos });
         }
+    }
+
+    /// Ghosts remain immune to lava, but must not spend the interval after
+    /// a card pick under its opaque surface. Recover at the visible lava,
+    /// rather than the deep void, and recheck the destructible ground.
+    fn recover_ghost(&mut self, i: usize) {
+        let pos = self.players[i].pos;
+        let surface = self.ghost_lava_surface(pos);
+        if pos.y - crate::HALF_HEIGHT >= surface && pos.y >= FELL_OFF_Y { return; }
+        let ceiling = self.arena.chunks.iter().filter(|c| c.alive)
+            .map(|c| c.center.y + c.half.y).fold(self.arena.stadium.wall_h(), f32::max) + 3.0;
+        let ground = |at: Vec3| -> Option<Vec3> {
+            let from = Vec3::new(at.x, ceiling, at.z);
+            let (t, normal, _) = crate::shape::raycast(&self.arena.grid, from, Vec3::NEG_Y, (ceiling - self.arena.lava_surface()).max(1.0))?;
+            if normal.y < 0.75 { return None; }
+            let feet = from - Vec3::Y * t;
+            if feet.y <= self.ghost_lava_surface(feet) + 0.02 { return None; }
+            let center = feet + Vec3::Y * (crate::HALF_HEIGHT + 0.02);
+            let r = Vec2::splat(crate::RADIUS);
+            let xz = Vec2::new(center.x, center.z);
+            let mut blocked = false;
+            crate::shape::Boxes::near(&self.arena.grid, xz - r, xz + r, &mut |_, b| {
+                blocked |= b.push_out(center, crate::RADIUS, crate::HALF_HEIGHT).is_some();
+            });
+            (!blocked).then_some(center)
+        };
+        let spots = &self.arena.spawns;
+        let safe = spots.iter().cycle().skip(i).take(spots.len()).find_map(|&s| ground(s))
+            .or_else(|| self.arena.chunks.iter().filter(|c| c.alive && c.half.x >= crate::RADIUS && c.half.z >= crate::RADIUS).find_map(|c| ground(c.center)))
+            // Even if the arena was completely destroyed, the solid stands
+            // remain a place for the eliminated player to watch from.
+            .or_else(|| {
+                (0..crate::stadium::ROWS).find_map(|row| {
+                    let r = self.arena.stadium.inner_r + crate::stadium::ROW_DEPTH * (row as f32 + 0.5);
+                    [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z].into_iter().find_map(|d| ground(d * r))
+                })
+            });
+        let p = &mut self.players[i];
+        p.pos = safe.unwrap_or(Vec3::new(pos.x, surface + crate::HALF_HEIGHT + 0.02, pos.z));
+        p.vel = Vec3::ZERO;
+        p.on_floor = false;
+        p.wall_normal = None;
+    }
+
+    fn ghost_lava_surface(&self, pos: Vec3) -> f32 {
+        let l = &self.lava;
+        let covered = l.full || l.floor_t() >= 1.0 || (l.floor_t() > 0.0
+            && pos.x.abs() <= l.half && pos.z.abs() <= l.half
+            && (pos.x.abs() >= l.half - l.inset() || pos.z.abs() >= l.half - l.inset()));
+        if l.active && covered { self.arena.lava_surface().max(l.surface()) } else { self.arena.lava_surface() }
     }
 
     /// Godot `_tick_status_effects`: dodge, slow, poison; runs even while dead.

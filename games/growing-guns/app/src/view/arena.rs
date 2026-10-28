@@ -1,9 +1,9 @@
 //! The arena on screen: every chunk a hewn brick with Godot's rock surface
 //! (worn bricks crack and sit askew, broken ones vanish with their collider),
-//! roof beacons and their lights, scorch and blood marks on the stone, and
+//! roof lighting, scorch and blood marks on the stone, and
 //! the debris occupancy grid kept in step with what still stands.
 use super::effects::{EffectsView, OCC_VOXEL};
-use super::{cube, glow, material, omni, srgb_to_linear};
+use super::{cube, material, omni, srgb_to_linear};
 use glam::{Affine3A, Quat, Vec2, Vec3};
 use growing_guns::shape::Kind;
 use growing_guns::World;
@@ -52,8 +52,6 @@ const VISUAL_CHUNK_INSET: f32 = 0.992;
 const MARKS: usize = 384;
 /// The largest generated arena has about 9400 chunks.
 const ARENA_SLOTS: usize = 9800;
-/// The Godot arena's light colours (towers and building roofs).
-const BEACON_COLORS: [[f32; 3]; 3] = [[1.0, 0.4, 0.3], [1.0, 0.35, 0.2], [1.0, 0.7, 0.2]];
 
 /// Stone per palette colour: four tint variants of the intact brick, then
 /// cracked and crumbling bricks for worn chunks, and rubble shards.
@@ -61,7 +59,7 @@ const BEACON_COLORS: [[f32; 3]; 3] = [[1.0, 0.4, 0.3], [1.0, 0.35, 0.2], [1.0, 0
 pub struct Stone { intact: [usize; 4], cracked: usize, crumbling: usize, pub shards: [usize; 3] }
 
 #[derive(Clone, Copy)]
-struct KindMeshes { floor: Stone, wall: Stone, building: Stone, dark: Stone, accent_a: Stone, accent_b: Stone, beacons: [usize; 3] }
+struct KindMeshes { floor: Stone, wall: Stone, building: Stone, dark: Stone, accent_a: Stone, accent_b: Stone }
 
 impl KindMeshes {
     fn stone(&self, k: Kind) -> Stone {
@@ -116,7 +114,6 @@ pub fn lava_material(scene: &mut Scene) -> u32 {
 impl ArenaView {
     /// Brick meshes, the lava sheet, the arena slots and the marks.
     pub fn reserve(scene: &mut Scene) -> Self {
-        let beacons = BEACON_COLORS.map(|c| { let m = glow(scene, c, 6000.0); cube(scene, m) });
         let set = |scene: &mut Scene, tint: fn([f32; 3]) -> [f32; 3]| KindMeshes {
             floor: stone(scene, tint(palette::FLOOR), 0.9),
             wall: stone(scene, tint(palette::WALL), 0.85),
@@ -124,7 +121,6 @@ impl ArenaView {
             dark: stone(scene, tint(palette::DARK), 0.9),
             accent_a: stone(scene, tint(palette::ACCENT_A), 0.7),
             accent_b: stone(scene, tint(palette::ACCENT_B), 0.7),
-            beacons,
         };
         let kinds = set(scene, |c| c);
         let inferno = set(scene, palette::inferno);
@@ -173,11 +169,8 @@ impl ArenaView {
             });
             self.chunk_slots.push(slot);
         }
-        // Roof beacons where the Godot lights hang, in the nearest colour.
-        for &(p, c) in &a.lights {
-            let nearest = (0..BEACON_COLORS.len()).min_by(|&x, &y| dist(BEACON_COLORS[x], c).total_cmp(&dist(BEACON_COLORS[y], c))).unwrap();
-            self.slots.add(scene, self.kinds.beacons[nearest], Affine3A::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, p)).expect("arena slots");
-        }
+        // Godot's roof lights are OmniLight3D nodes without visible meshes.
+        // Floating emissive cube proxies here looked like exposed spawn markers.
         self.lights = a.lights.iter().take(12).map(|&(p, c)| omni(p, Vec3::from(c) * 900.0, 20.0)).collect();
         self.lava.set(world);
     }
@@ -306,8 +299,6 @@ impl Marks {
         }
     }
 }
-
-fn dist(a: [f32; 3], b: [f32; 3]) -> f32 { (0..3).map(|i| (a[i] - b[i]).powi(2)).sum() }
 
 fn wear_level(w: f32) -> u8 { if w <= 0.08 { 0 } else if w < 0.5 { 1 } else { 2 } }
 

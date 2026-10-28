@@ -36,6 +36,11 @@ cargo run -p growing-guns-app -- script games/growing-guns/scripts/smoke.json --
 cargo test -p growing-guns
 ```
 
+Online hosts and clients must use protocol version 2 (`warp/growing-guns/2`).
+It adds the spawn-cage countdown to snapshots. Version 1 builds cannot join;
+update both peers. Postcard snapshots are positional, so Serde field defaults
+do not make this wire-format change compatible with older builds.
+
 The dev profile is the iteration loop: a code change rebuilds in seconds and
 plays fine. `shot` and `bench` open no window (`KERN_ADAPTER=software` runs
 them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift dash,
@@ -64,6 +69,13 @@ normal relief, fine grain and mipmapped detail at distance. Stadium stone and
 rubble share the surface. This is a visual prototype: the fracture pattern still
 needs less regularity. See [stone surfaces](../../engine/docs/stone-surfaces.md)
 for the engine API, reproducible comparisons and remaining work.
+
+Spawn cages descend and open their trapdoors at the simulation's existing
+release time, then winch away. Four stadium screens share a live feed of player
+0 before HUD, capped at 30 Hz without another scene render. Eliminated humans
+who cross lava recover onto surviving dry ground or stadium steps. The
+[28 October feedback checklist](docs/playtest-20261028.md) records these fixes,
+debris rebuild recovery, tests and outstanding stone refinement.
 
 The ion cannon has eight additive charge shells, nonlinear contraction and
 brightening, rising charge motes, local illumination, a blue-white detonation

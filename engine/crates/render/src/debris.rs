@@ -205,6 +205,24 @@ impl Debris {
         self.meta_dirty = true;
     }
 
+    /// A replacement renderer has empty collision and shard buffers. Resend
+    /// the full grid and keep spawns not yet flushed. Existing live shards
+    /// cannot survive a rebuild: their current state lives only on the GPU.
+    /// Call after rebuilding the renderer, before the next `flush`.
+    pub fn invalidate_renderer(&mut self) {
+        self.occupancy.dirty = Some((0, self.occupancy.words()));
+        self.meta_dirty = true;
+        let queued: Vec<_> = self.pending.iter().map(|s| {
+            let slot = s.mesh[3] as usize;
+            (slot, self.dies[slot])
+        }).collect();
+        self.dies.fill(0.0);
+        for (slot, dies) in queued { self.dies[slot] = dies; }
+        // The new GPU pool is already empty. A pending reset would run after
+        // the spawn dispatch and kill the queued shards along with old ones.
+        self.reset = false;
+    }
+
     /// Shards alive now.
     pub fn live(&self) -> usize { self.dies.iter().filter(|&&t| t > self.time).count() }
 
@@ -479,6 +497,38 @@ mod tests {
         o.fill_box(Vec3::ZERO, Vec3::new(2.0, 1.0, 0.5), 0.0, false);
         assert!(!o.solid(Vec3::new(1.9, 0.9, 0.4)));
         assert!(!o.solid(Vec3::splat(50.0)), "outside is empty");
+    }
+
+    #[test]
+    fn renderer_rebuild_resends_collision_and_keeps_only_unflushed_shards() {
+        let mut scene = Scene::default();
+        let cube = scene.add_mesh(&crate::primitives::cube(0).mesh());
+        let mut occ = Occupancy::new(Vec3::splat(-2.0), Vec3::splat(2.0), 0.5);
+        occ.fill_box(Vec3::new(0.0, -1.0, 0.0), Vec3::new(2.0, 1.0, 2.0), 0.0, true);
+        let mut d = Debris::reserve(&mut scene, 4, occ, false);
+        d.spawn(&scene, cube, Vec3::Y, Vec3::ZERO, Vec3::ONE, 0.0, 10.0);
+        // The first shard and collision upload were consumed by the old
+        // renderer. One later shard still waits for its first upload.
+        d.pending.clear();
+        d.occupancy.dirty = None;
+        d.meta_dirty = false;
+        d.advance(STEP);
+        d.spawn(&scene, cube, Vec3::Y * 2.0, Vec3::NEG_Y, Vec3::ONE, 1.0, 2.0);
+        let pending = d.pending[0];
+        let slot = pending.mesh[3] as usize;
+        let dies = d.dies[slot];
+        let bits = d.occupancy.bits.clone();
+        d.reset = true;
+
+        d.invalidate_renderer();
+
+        assert!(d.meta_dirty);
+        assert_eq!(d.occupancy.dirty, Some((0, d.occupancy.words())));
+        assert_eq!(d.occupancy.bits, bits, "resend the existing collision world");
+        assert_eq!(d.live(), 1, "discarded GPU shards no longer occupy pool slots");
+        assert_eq!(d.dies[slot], dies, "queued lifetime is not extended");
+        assert_eq!(bytemuck::cast_slice::<Shard, u8>(&d.pending), bytemuck::bytes_of(&pending));
+        assert!(!d.reset, "a reset after spawning would erase the queued shard");
     }
 
     #[test]

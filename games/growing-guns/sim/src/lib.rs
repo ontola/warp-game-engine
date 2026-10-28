@@ -399,6 +399,9 @@ pub struct Snapshot {
     pub phase: Phase,
     #[serde(default)]
     pub modifier: Option<Modifier>,
+    /// Round-start cage countdown for remote presentation; clients never step.
+    #[serde(default)]
+    pub cage_left: Option<f32>,
     pub players: Vec<Player>,
     pub bullets: Vec<Bullet>,
     #[serde(default)]
@@ -597,7 +600,7 @@ impl World {
     /// Everything a remote viewer needs for one tick, arena excepted.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            tick: self.tick, round: self.round, phase: self.phase, modifier: self.modifier, players: self.players.clone(), bullets: self.bullets.clone(),
+            tick: self.tick, round: self.round, phase: self.phase, modifier: self.modifier, cage_left: self.cage_left(), players: self.players.clone(), bullets: self.bullets.clone(),
             projectiles: self.projectiles.clone(), strikes: self.strikes.clone(), pickups: self.pickups.clone(), lava: self.lava.clone(),
             waves: self.coop.then(|| self.waves.clone()), events: self.events.clone(),
         }
@@ -609,6 +612,7 @@ impl World {
         self.round = s.round;
         self.phase = s.phase;
         self.modifier = s.modifier;
+        self.apply_cage_left(s.cage_left);
         self.players = s.players;
         self.bullets = s.bullets;
         self.projectiles = s.projectiles;
@@ -625,6 +629,7 @@ impl World {
     pub fn remote(arena: Arena, players: usize) -> Self {
         let mut w = World::new(0, &vec![true; players]);
         w.arena = arena;
+        w.apply_cage_left(None);
         w.events.clear();
         w
     }
