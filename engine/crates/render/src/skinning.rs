@@ -130,13 +130,20 @@ pub fn skin_position(position: Vec3, influence: &Influence, palette: &[Mat4]) ->
 /// Element-wise interpolation of final matrices; position results are convex
 /// combinations of the source poses, preserving their conservative bounds.
 pub fn blend_palette(a: &[Mat4], b: &[Mat4], blend: f32) -> Result<Vec<Mat4>, String> {
-    if a.len() != b.len() || !blend.is_finite() || !(0.0..=1.0).contains(&blend) {
+    let mut out = vec![Mat4::IDENTITY; a.len()];
+    blend_palette_into(a, b, blend, &mut out)?;
+    Ok(out)
+}
+
+/// Sample into a caller-owned palette; no allocation after actor creation.
+pub fn blend_palette_into(a: &[Mat4], b: &[Mat4], blend: f32, out: &mut [Mat4]) -> Result<(), String> {
+    if a.len() != b.len() || a.len() != out.len() || !blend.is_finite() || !(0.0..=1.0).contains(&blend) {
         return Err("skin palette blend needs equal lengths and a 0..1 weight".into());
     }
-    Ok(a.iter()
-        .zip(b)
-        .map(|(a, b)| *a * (1.0 - blend) + *b * blend)
-        .collect())
+    for ((a, b), dst) in a.iter().zip(b).zip(out) {
+        *dst = *a * (1.0 - blend) + *b * blend;
+    }
+    Ok(())
 }
 
 #[repr(C)]
@@ -171,6 +178,7 @@ pub(crate) struct SkinningRenderer {
     bind: wgpu::BindGroup,
     palette: wgpu::Buffer,
     actors: Vec<(u32, usize)>,
+    packed: std::sync::Mutex<Vec<Matrix>>,
     count: u32,
 }
 impl SkinningRenderer {
@@ -223,11 +231,12 @@ impl SkinningRenderer {
                 contents: bytemuck::cast_slice(&sources),
                 usage: wgpu::BufferUsages::STORAGE,
             });
+        let packed = std::sync::Mutex::new(palette);
         let palette = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("actor skin palettes"),
-                contents: bytemuck::cast_slice(&palette),
+                contents: bytemuck::cast_slice(&packed.lock().unwrap()),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
         let module = gpu
@@ -269,6 +278,7 @@ impl SkinningRenderer {
             bind,
             palette,
             actors,
+            packed,
             count: sources.len() as u32,
         })
     }
@@ -278,12 +288,36 @@ impl SkinningRenderer {
         if matrices.len() != count || matrices.iter().any(|m| !valid_matrix(*m)) {
             return Err("invalid skinning palette size or non-affine matrix".into());
         }
-        let packed: Vec<_> = matrices.iter().map(|m| Matrix::new(*m)).collect();
+        let mut packed = self.packed.lock().unwrap();
+        let slice = &mut packed[offset as usize..offset as usize + count];
+        for (dst, m) in slice.iter_mut().zip(matrices) { *dst = Matrix::new(*m); }
         gpu.queue.write_buffer(
             &self.palette,
             offset as u64 * std::mem::size_of::<Matrix>() as u64,
-            bytemuck::cast_slice(&packed),
+            bytemuck::cast_slice(slice),
         );
+        Ok(())
+    }
+
+    /// Upload every actor in scene order with a single staging write. Validate
+    /// the complete batch before changing any retained palette.
+    pub fn set_palettes<'a>(&self, gpu: &Gpu,
+        palettes: impl ExactSizeIterator<Item = &'a [Mat4]> + Clone) -> Result<(), String> {
+        if palettes.len() != self.actors.len() {
+            return Err("skinning batch must contain every actor in scene order".into());
+        }
+        for (matrices, &(_, count)) in palettes.clone().zip(&self.actors) {
+            if matrices.len() != count || matrices.iter().any(|m| !valid_matrix(*m)) {
+                return Err("invalid skinning palette size or non-affine matrix".into());
+            }
+        }
+        let mut packed = self.packed.lock().unwrap();
+        for (matrices, &(offset, count)) in palettes.zip(&self.actors) {
+            for (dst, m) in packed[offset as usize..offset as usize + count].iter_mut().zip(matrices) {
+                *dst = Matrix::new(*m);
+            }
+        }
+        if !packed.is_empty() { gpu.queue.write_buffer(&self.palette, 0, bytemuck::cast_slice(&packed)); }
         Ok(())
     }
 
@@ -387,6 +421,25 @@ mod tests {
             assert!(p.length() <= 1.000001);
         }
         assert!(blend_palette(&a, &[], 0.5).is_err());
+    }
+    #[test]
+    fn retained_palette_matches_previous_arithmetic_and_rejects_bad_batches() {
+        let a: Vec<_> = (0..128).map(|i| Mat4::from_rotation_y(i as f32 * 0.07)).collect();
+        let b: Vec<_> = (0..128).map(|i| Mat4::from_translation(Vec3::new(i as f32, 2.0, -3.0))).collect();
+        let mut out = vec![Mat4::IDENTITY; a.len()];
+        let pointer = out.as_ptr();
+        for step in 0..101 {
+            let weight = step as f32 / 100.0;
+            blend_palette_into(&a, &b, weight, &mut out).unwrap();
+            for ((a, b), value) in a.iter().zip(&b).zip(&out) {
+                assert_eq!(value.to_cols_array(), (*a * (1.0 - weight) + *b * weight).to_cols_array());
+            }
+            assert_eq!(pointer, out.as_ptr());
+        }
+        let previous = out.clone();
+        assert!(blend_palette_into(&a, &b, f32::NAN, &mut out).is_err());
+        assert!(blend_palette_into(&a, &b[..127], 0.5, &mut out).is_err());
+        assert_eq!(out, previous);
     }
     #[test]
     fn skinning_shader_and_layout_validate() {

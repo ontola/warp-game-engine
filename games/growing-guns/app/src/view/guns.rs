@@ -27,6 +27,8 @@ pub struct Guns {
     /// First instance of each player's first-person and third-person block.
     fp: Vec<usize>,
     tp: Vec<usize>,
+    /// Settings: movement tilt (the strafe lean) on.
+    pub tilt: bool,
 }
 
 impl Guns {
@@ -59,7 +61,7 @@ impl Guns {
             fp.push(a);
             tp.push(Slots::reserve(scene, GUN_PARTS).first);
         }
-        Guns { meshes, rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp }
+        Guns { meshes, rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true }
     }
 
     /// A card pick: the gun grows into the new stats.
@@ -90,7 +92,7 @@ impl Guns {
             f.bump -= f.bump * k;
             f.kick -= f.kick * (dt * 14.0).min(1.0);
             let (sy, cy) = p.yaw.sin_cos();
-            let lateral = (p.vel.dot(Vec3::new(cy, 0.0, -sy)) / growing_guns::WALK_SPEED).clamp(-1.0, 1.0);
+            let lateral = if self.tilt { (p.vel.dot(Vec3::new(cy, 0.0, -sy)) / growing_guns::WALK_SPEED).clamp(-1.0, 1.0) } else { 0.0 };
             f.tilt += ((lateral * 3.5f32).to_radians() - f.tilt) * k;
             f.inspect += (if rig.is_growing() { 1.0 } else { 0.0 } - f.inspect) * (dt * 5.0).min(1.0);
         }

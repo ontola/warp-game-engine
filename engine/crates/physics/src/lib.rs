@@ -8,6 +8,8 @@ use kern::collide::YawBox;
 use rapier3d::glamx;
 use rapier3d::prelude::*;
 
+pub mod ragdoll;
+
 fn to(v: Vec3) -> glamx::Vec3 { glamx::Vec3::from_array(v.to_array()) }
 fn from(v: glamx::Vec3) -> Vec3 { Vec3::from_array(v.to_array()) }
 fn to_q(q: Quat) -> glamx::Quat { glamx::Quat::from_array(q.to_array()) }

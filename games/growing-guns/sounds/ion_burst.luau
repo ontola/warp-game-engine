@@ -11,12 +11,11 @@
 --   Godot's right channel is 0.99 x left; this patch is mono.
 length(0.95)
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
 local r = param("radius", 38)
-local function hz(k) return expr("-log(1 - " .. k .. ") * 44100 / tau") end
 
 local R = expr("clamp(r / 38, 0.6, 1.4)", { r = r })
 local dur = expr("clamp(lerp(0.55, 0.85, R) * j, 0.5, 0.95)", { R = R, j = rand(0.95, 1.05) })
@@ -26,8 +25,8 @@ local f1 = f0 * 2 * rand(0.992, 1.008)
 -- Saws from random start phases (cycles), advanced before use as in Godot.
 local saw = expr("(fract(a + f * (t + 1 / sr)) * 2 - 1) * 0.85 + (fract(b + g * (t + 1 / sr)) * 2 - 1) * 0.3", {
   a = rand(0, 1), b = rand(0, 1), f = f0, g = f1 })
-local lp = lowpass1(saw, hz("0.45"))
-local crack = lowpass1(white(), hz("0.5")) * expr("exp(-85 * t)")
+local lp = godot_lp(saw, 0.45)
+local crack = godot_lp(white44(), 0.5) * expr("exp(-85 * t)")
 local env = expr("exp(-t * lerp(4.6, 3.0, R)) * max(1 - t / d, 0) ^ 0.5", { R = R, d = dur })
 
 return expr("tanh((2.4 * a + 1.1 * c) * e) * 0.7 * (t < d)", { a = lp, c = crack, e = env, d = dur })

@@ -19,12 +19,9 @@ local A = param("accuracy", 0.87)
 local V = param("velocity", 1)
 length(0.6)
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
-
--- One-pole "lerp(y, x, k)" coefficients from the Godot code, as cutoffs.
-local function k_hz(k) return expr("-log(1 - k) * 44100 / tau", { k = k }) end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
 local d = expr("max(d, 1)", { d = D })
 local v = expr("clamp(v, 0.5, 3)", { v = V })
@@ -39,17 +36,17 @@ local env = decay(dur, 1.6)
 local raw = noise()
 local thwack_drive = expr("j * lerp(0.9, 1.3, clamp((v - 1) / 2, 0, 1))", { j = rand(4, 8), v = v })
 local thwack = expr("tanh(x * g) * 1.5 * sqrt(sr / 44100) * exp(-t * k)", {
-  x = raw - lowpass1(raw, 434), g = thwack_drive, k = expr("j * sqrt(v)", { j = rand(180, 280), v = v }) })
+  x = godot_hp(raw, 0.06), g = thwack_drive, k = expr("j * sqrt(v)", { j = rand(180, 280), v = v }) })
 
 -- Kick: exponential pitch drop 220 Hz to about 55 Hz (lower for big guns).
 local f0 = 220 * rand(0.88, 1.12)
 local f1 = expr("clamp(55 / sqrt(d), 28, 80) * j", { d = d, j = rand(0.92, 1.10) })
-local kick = lowpass1(sine(sweep(f0, f1, rand(70, 95))), 2503)
+local kick = godot_lp(sine(sweep(f0, f1, rand(70, 95))), 0.30)
   * expr("exp(-t * clamp(35 / sqrt(d), 10, 40)) * lerp(0.55, 1.10, clamp((d - 1) / 3, 0, 1))", { d = d })
 
 -- Noise tail, brighter for accurate guns.
 local bright = expr("clamp(lerp(0.18, 0.55, a) * j, 0.05, 0.95)", { a = a, j = rand(0.85, 1.15) })
-local tail = lowpass1(white(), k_hz(bright)) * 0.5 * expr("exp(-t * j * sqrt(v))", { j = rand(8, 16), v = v })
+local tail = godot_lp(white44(), bright) * 0.5 * expr("exp(-t * j * sqrt(v))", { j = rand(8, 16), v = v })
 
 -- Click: the crack of an accurate round.
 local click = expr("sin(tau * 2400 * j * t) * exp(-t * 280) * 0.3 * a", { j = rand(0.80, 1.25), a = a })
@@ -57,6 +54,6 @@ local click = expr("sin(tau * 2400 * j * t) * exp(-t * 280) * 0.3 * a", { j = ra
 local s = expr("tanh(x * e * 1.4)", { x = mix(thwack, tail, kick, click), e = env })
 -- Damage-scaled output HP. Godot computes k = clamp(2π fc / 44100, 0.005, 0.5),
 -- so the real cutoff is 223 Hz at base damage and never below 35 Hz.
-local out = highpass1(s, k_hz(expr("clamp(tau * clamp(220 / d ^ 1.4, 25, 220) / 44100, 0.005, 0.5)", { d = d })))
+local out = godot_hp(s, expr("clamp(tau * clamp(220 / d ^ 1.4, 25, 220) / 44100, 0.005, 0.5)", { d = d }))
 -- Godot's buffer ends at dur and its WAV conversion hard-clamps to +-1 (the HP can overshoot).
 return expr("clamp(x, -1, 1) * (t < d)", { x = out, d = dur })

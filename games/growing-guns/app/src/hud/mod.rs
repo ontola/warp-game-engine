@@ -53,13 +53,18 @@ pub struct Feedback {
     pub highlight: Vec<f32>,
     /// Stat chips per offered card, worked out when the offer opens.
     pub stats: Vec<Vec<String>>,
+    /// The explosion flash (Godot `_explosion_flash_overlay`): alpha now,
+    /// the target it rises to, and how fast the target falls.
+    pub flash: [f32; 3],
+    /// The phoenix white (Godot `set_phoenix_fade`) and its fade-out rate.
+    pub phoenix: [f32; 2],
     last_offer: Option<Vec<growing_guns::cards::Card>>,
 }
 
 impl Default for Feedback {
     fn default() -> Self {
         Feedback { hit: 9.0, hit_kind: HitKind::Body, arcs: Vec::new(), burned: None, bob: 0.0, special_max: 0.0, last_special: 0.0, toast: None,
-            numbers: Vec::new(), exit: None, pick_closed: 9.0, highlight: Vec::new(), stats: Vec::new(), last_offer: None }
+            numbers: Vec::new(), exit: None, pick_closed: 9.0, highlight: Vec::new(), stats: Vec::new(), flash: [0.0; 3], phoenix: [0.0; 2], last_offer: None }
     }
 }
 
@@ -70,6 +75,8 @@ pub struct Banner { pub text: String, pub size: f32, pub left: f32 }
 /// Everything the HUD remembers between ticks.
 #[derive(Clone, Debug, Default)]
 pub struct Hud {
+    card_hits: std::cell::RefCell<Vec<cards::Hit>>,
+    hit_size: std::cell::Cell<[u32; 2]>,
     pub fb: Vec<Feedback>,
     pub banner: Option<Banner>,
     /// Kill feed lines with their age (Godot: 3+ humans only).
@@ -129,6 +136,21 @@ pub fn modifier_info(m: growing_guns::Modifier) -> (&'static str, &'static str, 
 }
 
 impl Hud {
+    pub fn begin_pointer_frame(&self, size: [u32; 2]) {
+        self.card_hits.borrow_mut().clear();
+        self.hit_size.set(size);
+    }
+
+    /// Animated card bounds from the displayed frame, in reverse paint order.
+    pub fn card_hit(&self, world: &World, player: usize, size: [u32; 2], pos: [f32; 2]) -> Option<usize> {
+        if self.hit_size.get() != size { return None; }
+        let p = world.players.get(player)?;
+        if p.offer_age < 0.75 { return None; }
+        let offer = p.offer.as_ref()?;
+        self.card_hits.borrow().iter().rev().find(|h| h.player == player && offer.get(h.index) == Some(&h.card)
+            && app::ui::contains(h.clip, pos) && app::ui::contains(h.rect, pos)).map(|h| h.index)
+    }
+
     pub fn new(world: &World) -> Self {
         let mut h = Hud { round_age: 9.0, ..Default::default() };
         h.sync(world);
@@ -160,7 +182,12 @@ impl Hud {
 
     /// One tick: advance timers and read this tick's events.
     pub fn tick(&mut self, world: &World, dt: f32) {
-        if self.bots.len() != world.players.len() || self.bots.iter().zip(&world.players).any(|(&b, p)| b != p.bot) { self.sync(world); }
+        if self.bots.len() != world.players.len() || self.bots.iter().zip(&world.players).any(|(&b, p)| b != p.bot) {
+            // A remote player took a seat or left it (Godot "%s joined" / "%s left").
+            let flips: Vec<(usize, bool)> = self.bots.iter().zip(&world.players).enumerate().filter(|(i, (b, p))| **b != p.bot && !self.locals.contains(i)).map(|(i, (_, p))| (i, p.bot)).collect();
+            self.sync(world);
+            for (i, bot) in flips { let n = self.name(i).to_string(); self.announce(if bot { format!("{n} left") } else { format!("{n} joined") }, 2.0, 0.0); }
+        }
         let humans = world.players.iter().filter(|p| !p.bot).count();
         let mut clear_banner = false;
         for (i, f) in self.fb.iter_mut().enumerate() {
@@ -175,6 +202,22 @@ impl Hud {
             if p.special_cd > f.last_special + 1e-6 { f.special_max = p.special_cd; }
             f.last_special = p.special_cd;
             if let Some(t) = &mut f.toast { t.3 += dt; if t.3 > 1.35 { f.toast = None; } }
+            // Phoenix: a card revive whitens the view as it rises (fading out
+            // over 0.9 s once the sky drop starts); a coop down flashes white
+            // and clears by the top of the ascent.
+            let rising = p.phoenix.map(|(_, t)| t as f32 / growing_guns::PHOENIX_TICKS as f32)
+                .or_else(|| world.coop.then(|| world.waves.downed(i)).flatten().map(|d| 1.0 - d.ascent as f32 / growing_guns::PHOENIX_TICKS as f32));
+            if let Some(a) = rising { f.phoenix = [a.clamp(0.0, 1.0), 0.0]; } else if f.phoenix[0] > 0.0 {
+                if f.phoenix[1] <= 0.0 { f.phoenix[1] = f.phoenix[0] / 0.9; }
+                f.phoenix[0] = (f.phoenix[0] - f.phoenix[1] * dt).max(0.0);
+                if f.phoenix[0] <= 0.001 { f.phoenix = [0.0; 2]; }
+            }
+            // Godot `_update_explosion_sidechain`: a quick rise, then the target decays.
+            let [a, target, vel] = &mut f.flash;
+            if *target > 0.0 || *a > 0.001 {
+                *a += (*target - *a) * (dt * 25.0).clamp(0.0, 1.0);
+                *target = (*target - *vel * dt).max(0.0);
+            } else { *a = 0.0; *vel = 0.0; }
             for n in &mut f.numbers { n.age += dt; }
             f.numbers.retain(|n| n.age < 1.0);
             // Card pick: keep the offer for the exit animation, ease highlights.
@@ -249,6 +292,18 @@ impl Hud {
                         self.announce(line, 2.0, 0.0);
                     }
                 }
+                // Godot `trigger_explosion_sidechain` (bullet blasts: peak r / 5),
+                // for every player from their own distance; ion strikes flash on their own.
+                Event::Explosion { pos, radius, kind: growing_guns::ExplosionKind::Conventional, .. } => {
+                    let peak = (radius / 5.0).clamp(0.35, 3.0);
+                    for (f, p) in self.fb.iter_mut().zip(&world.players) {
+                        let reach = (radius * 6.0).max(12.0);
+                        let amount = ((1.0 - pos.distance(p.pos) / reach) * peak).clamp(0.0, peak.max(3.0));
+                        if amount <= 0.0 { continue; }
+                        f.flash[1] = f.flash[1].max((amount * 0.62).min(0.96));
+                        f.flash[2] = f.flash[2].max(7.0 + amount * 4.0);
+                    }
+                }
                 Event::PickedUp { player, kind } => {
                     let (t, s, c) = pickup_info(kind);
                     if let Some(f) = self.fb.get_mut(player) { f.toast = Some((t.into(), s.into(), c, 0.0)); }
@@ -297,9 +352,6 @@ impl Hud {
             let size = (28.0 * l.s).round().max(16.0) * l.u;
             Label::new(BODY, size, [0.72, 0.92, 1.0, 1.0]).outline(5.0 * l.u, [0.0, 0.0, 0.0, 0.9]).center().draw(d, "REVIVING...", cx, y + h - 98.0 * l.u, clip);
         }
-        if world.coop && p.downed && !picking {
-            Label::new(BODY, 24.0 * l.u, [1.0, 0.55, 0.45, 1.0]).outline(5.0 * l.u, [0.0, 0.0, 0.0, 0.9]).center().draw(d, "DOWN — A TEAMMATE CAN REVIVE YOU", cx, y + h - 98.0 * l.u, clip);
-        }
         self.toasts(d, world, i, &l);
         self.round_strip(d, world, i, &l);
         // The death overlay: red after a lava death, then the card pick's
@@ -309,8 +361,12 @@ impl Hud {
         if death[3] > 0.003 { d.begin_overlay(); d.rect(rect, death, clip); }
         if picking {
             d.begin_overlay();
-            cards::pick(d, world, i, &l, f, focus);
+            cards::pick(d, world, i, &l, f, focus, &mut self.card_hits.borrow_mut());
         }
+        // The phoenix white (its own canvas layer over this view's HUD) and the
+        // explosion flash above everything (Godot canvas layer 50).
+        if f.phoenix[0] > 0.003 { d.begin_overlay(); d.rect(rect, [1.0, 1.0, 1.0, f.phoenix[0]], clip); }
+        if f.flash[0] > 0.003 { d.begin_overlay(); d.rect(rect, [1.0, 0.96, 0.88, f.flash[0]], clip); }
         let _ = cy;
     }
 
@@ -468,15 +524,22 @@ impl Hud {
     }
 
     /// Shared overlay: the round banner, kill feed, coop count, match over.
+    /// Round start (Godot `_round_start_flash`, canvas layer 51 over
+    /// everything, menus too): full white held 0.25 s, then a 0.45 s sine
+    /// ease-in fade. Draw last.
+    pub fn round_flash(&self, d: &mut HudDrawList) {
+        if self.round_age >= 0.7 { return; }
+        let clip = [0.0, 0.0, d.size[0] as f32, d.size[1] as f32];
+        let t = ((self.round_age - 0.25) / 0.45).clamp(0.0, 1.0);
+        d.begin_overlay();
+        d.rect(clip, [1.0, 0.98, 0.94, (t * std::f32::consts::FRAC_PI_2).cos()], clip);
+    }
+
+    /// `net`: a network error for Godot's red panel at the top right.
     pub fn global(&self, d: &mut HudDrawList, world: &World, net: Option<&str>) {
         let [w, h] = d.size.map(|v| v as f32);
         let u = h / DESIGN_H;
         let clip = [0.0, 0.0, w, h];
-        // Round start: a white flash, held 0.25 s then faded over 0.45 s.
-        if self.round_age < 0.7 && world.round > 1 {
-            let a = if self.round_age < 0.25 { 1.0 } else { 1.0 - ((self.round_age - 0.25) / 0.45).clamp(0.0, 1.0).powi(2) };
-            d.rect(clip, [1.0, 0.98, 0.94, a * 0.9], clip);
-        }
         // Coop: KILLED n/m, top right (Godot's scoreboard label).
         if world.coop {
             let lab = Label::new(BODY, 24.0 * u, [1.0, 0.8, 0.4, 1.0]).outline(4.0 * u, BLACK).right();
@@ -516,7 +579,15 @@ impl Hud {
             Label { size, ..lab }.draw(d, &b.text, w * 0.5, 115.0 * u + (lines - 1.0) * size * 0.6, clip);
         }
         if let Some(net) = net {
-            Label::new(BODY, 15.0 * u, BONE_DIM).outline(4.0 * u, BLACK).right().draw(d, net, w - 18.0 * u, h - 20.0 * u, clip);
+            // 422 wide from 18 in at the top right, 14 x 10 margins, wrapped 15 px text.
+            let pw = 422.0 * u;
+            let lines = cards::wrap(net, BODY, 15.0 * u, pw - 28.0 * u, 6);
+            let ph = lines.len() as f32 * 18.0 * u + 20.0 * u;
+            let pr = [w - 18.0 * u - pw, 18.0 * u, pw, ph];
+            d.rect(pr, [0.22, 0.03, 0.035, 0.94], clip);
+            frame_rect(d, pr, 2.0 * u, [1.0, 0.35, 0.28, 0.9], clip);
+            let lab = Label::new(BODY, 15.0 * u, [1.0, 0.84, 0.78, 1.0]).outline(4.0 * u, with_alpha(BLACK, 0.95));
+            for (k, line) in lines.iter().enumerate() { lab.draw(d, line, pr[0] + 14.0 * u, pr[1] + 10.0 * u + (k as f32 + 0.5) * 18.0 * u, clip); }
         }
     }
 }
@@ -619,4 +690,39 @@ fn death_color(world: &World, p: &growing_guns::Player, f: &Feedback) -> C {
     } else if f.burned.is_none() { c[3] = 0.0; }
     let _ = PLAYER_COLORS_U8;
     c
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    #[test]
+    fn cards_hit_painted_bounds_with_reveal_clip_and_offer_checks() {
+        let mut w = World::new(1, &[false, true]);
+        // World::new has no mods; the application normally supplies this book.
+        w.cards = std::sync::Arc::new(growing_guns::cards::Book::new(["one", "two", "three"].into_iter()
+            .map(|id| growing_guns::cards::CardDef::new(id, id)).collect()));
+        let cards: Vec<_> = w.cards.enabled().take(3).map(|(c, _)| c).collect();
+        w.players[0].offer = Some(cards.clone());
+        let h = Hud::new(&w);
+        let size = [1600, 900];
+        let rect = [0.0, 0.0, 800.0, 900.0];
+        w.players[0].offer_age = 0.7;
+        h.begin_pointer_frame(size);
+        h.view(&mut HudDrawList::new(size), &w, 0, rect, 0, 0.0, false);
+        assert!(h.card_hits.borrow().is_empty());
+        w.players[0].offer_age = 1.5;
+        h.begin_pointer_frame(size);
+        h.view(&mut HudDrawList::new(size), &w, 0, rect, 0, 0.0, false);
+        assert_eq!(h.card_hits.borrow().len(), 3, "each revealed card has its painted hit target");
+        let hit = h.card_hits.borrow()[1];
+        let pos = [hit.rect[0] + hit.rect[2] * 0.5, hit.rect[1] + hit.rect[3] * 0.5];
+        assert_eq!(h.card_hit(&w, 0, size, pos), Some(1));
+        assert_eq!(h.card_hit(&w, 1, size, pos), None);
+        assert_eq!(h.card_hit(&w, 0, [800, 600], pos), None);
+        assert_eq!(h.card_hit(&w, 0, size, [900.0, pos[1]]), None);
+        w.players[0].offer.as_mut().unwrap()[1] = cards[0];
+        assert_eq!(h.card_hit(&w, 0, size, pos), None);
+        w.players[0].offer = None;
+        assert_eq!(h.card_hit(&w, 0, size, pos), None);
+    }
 }

@@ -303,6 +303,57 @@ fn air_strike_echo_lands_twice_and_ion_ignores_cover() {
 }
 
 #[test]
+fn eliminated_human_walks_and_looks_after_picking_without_combat_or_resurrection() {
+    let mut w = World::new(3, &[false; 3]);
+    w.cards = Arc::new(cards::test_book());
+    w.arena = flat_world().arena;
+    w.modifier = None;
+    w.release_cage();
+    for (i, p) in w.players.iter_mut().enumerate() {
+        p.pos = Vec3::new(i as f32 * 20.0, HALF_HEIGHT, 0.0);
+        p.yaw = 0.0;
+        p.on_floor = true;
+    }
+    w.queue_damage(0, 1000, Some(1));
+    w.step(&[Input::default(); 3]);
+    assert!(w.players[0].ghost && !w.players[0].alive && w.players[0].offer.is_some());
+    let before_pick = w.players[0].pos;
+    w.step(&[Input { mv: [1.0, 0.0], ..Default::default() }]);
+    assert_eq!(w.players[0].pos, before_pick, "card picker still blocks movement");
+    w.step(&[Input { pick: Some(0), ..Default::default() }]);
+    assert!(w.players[0].offer.is_none());
+    let start = w.players[0].pos;
+    for _ in 0..60 {
+        w.step(&[Input { mv: [0.0, 1.0], look: [0.01, 0.002], fire: true, special: true, dash: true, ..Default::default() }]);
+        assert!(!w.events.iter().any(|e| matches!(e, Event::Shot { player: 0, .. } | Event::Dash { player: 0 })));
+    }
+    let p = &w.players[0];
+    assert!(p.pos.distance(start) > 3.0 && p.yaw > 0.5 && p.pitch > 0.1);
+    assert!(p.on_floor && p.ghost && !p.alive && p.health == 0 && !p.targetable());
+    // Held fire planted one mine, and nothing else (no shots, grenades or strikes).
+    assert!(w.bullets.is_empty() && w.strikes.is_empty());
+    assert!(w.projectiles.len() == 1 && w.projectiles[0].kind == ProjectileKind::Mine, "{:?}", w.projectiles.iter().map(|g| g.kind).collect::<Vec<_>>());
+    w.step(&[Input { jump: true, ..Default::default() }]);
+    assert!(w.players[0].vel.y > 0.0 && w.players[0].pos.y > HALF_HEIGHT);
+    w.players[0].pos.y = FELL_OFF_Y - 10.0;
+    w.step(&[]);
+    assert!(w.players[0].pos.y > FELL_OFF_Y && w.players[0].ghost && !w.players[0].alive);
+}
+
+#[test]
+fn parked_ghost_bots_do_not_move_or_respawn() {
+    let mut w = flat_world();
+    let p = &mut w.players[0];
+    p.alive = false;
+    p.ghost = true;
+    p.bot = true;
+    p.pos = Vec3::new(0.0, -500.0, 0.0);
+    let parked = p.pos;
+    idle(&mut w, 120);
+    assert_eq!(w.players[0].pos, parked);
+}
+
+#[test]
 fn old_explosion_events_keep_conventional_effects() {
     let old = r#"{"Explosion":{"pos":[0.0,1.0,2.0],"radius":38.0,"owner":0}}"#;
     let event: Event = serde_json::from_str(old).unwrap();
@@ -638,4 +689,33 @@ fn coop_waves_go_on_with_bots_fighting() {
     assert_eq!(w.players[0].cards.len(), 7, "a card after every wave");
     assert!(seen.contains(&(8, Some(Archetype::Demolition))), "wave 8 opens with a bomber");
     assert!(seen.iter().any(|s| s.1 == Some(Archetype::FlatFragger)));
+}
+
+#[test]
+fn ghosts_plant_mines_that_blow_up_the_living() {
+    let mut w = World::new(5, &[false, true]);
+    w.release_cage();
+    for _ in 0..30 { w.step(&[Input::default(), Input::default()]); }
+    w.bots_paused = true;
+    let (ghost, other) = (0, 1);
+    w.players[ghost].ghost = true;
+    w.players[ghost].alive = false;
+    let fire = Input { fire: true, ..Default::default() };
+    w.step(&[fire, Input::default()]);
+    let mines = |w: &World| w.projectiles.iter().filter(|g| g.kind == ProjectileKind::Mine).count();
+    assert_eq!(mines(&w), 1, "a ghost's trigger plants a mine");
+    assert!(w.events.iter().any(|e| matches!(e, Event::MinePlanted { player: 0, .. })));
+    // Held fire does not plant another; a new press within the reload does not either.
+    w.step(&[fire, Input::default()]);
+    w.step(&[Input::default(), Input::default()]);
+    w.step(&[fire, Input::default()]);
+    assert_eq!(mines(&w), 1);
+    // A living player walking onto it sets it off once armed.
+    let at = w.projectiles.iter().find(|g| g.kind == ProjectileKind::Mine).unwrap().pos;
+    for _ in 0..90 { w.step(&[Input::default(), Input::default()]); }
+    let before = w.players[other].health;
+    w.players[other].pos = at + Vec3::Y * 0.9;
+    for _ in 0..5 { w.step(&[Input::default(), Input::default()]); }
+    assert_eq!(mines(&w), 0, "it went off");
+    assert!(w.players[other].health < before || !w.players[other].alive, "and hurt the living player");
 }

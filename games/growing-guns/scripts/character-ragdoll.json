@@ -1,0 +1,13 @@
+{
+  "size": [960, 540],
+  "steps": [
+    {"cmd": ["bots pause", "cage", "health 0 50000"], "ticks": 30},
+    {"cmd": ["teleport 0 33.5 0.9 37", "teleport 1 37 1.5 37", "aim 0 37 0.8 37"], "ticks": 2, "capture": "alive.png"},
+    {"cmd": "lua g:damage(2, 100, 1)", "ticks": 1, "capture": "death.png"},
+    {"expect": "/players/1/alive", "equals": false},
+    {"ticks": 12, "capture": "falling.png"},
+    {"ticks": 30, "capture": "bending.png"},
+    {"ticks": 180, "capture": "settled.png", "state": "settled.json"},
+    {"expect": "/ragdolls/0/1", "min": -0.5, "max": 8.0}
+  ]
+}

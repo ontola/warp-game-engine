@@ -12,16 +12,20 @@ use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+mod pending;
+pub use pending::HostSender;
 
 pub use tokio::sync::mpsc::error::TryRecvError;
 
 pub trait Message: Serialize + DeserializeOwned + Send + Sync + 'static {}
 impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Message for T {}
 
-async fn write<T: Serialize>(s: &mut SendStream, msg: &T) -> Result<(), String> {
-    let bytes = postcard::to_allocvec(msg).map_err(|e| e.to_string())?;
+async fn write<T: Serialize>(s: &mut SendStream, msg: &T, bytes: &mut Vec<u8>) -> Result<(), String> {
+    bytes.clear();
+    *bytes = postcard::to_extend(msg, std::mem::take(bytes)).map_err(|e| e.to_string())?;
+    if bytes.len() > 1 << 24 { return Err("message too large".into()); }
     s.write_all(&(bytes.len() as u32).to_le_bytes()).await.map_err(|e| e.to_string())?;
-    s.write_all(&bytes).await.map_err(|e| e.to_string())
+    s.write_all(bytes).await.map_err(|e| e.to_string())
 }
 
 async fn read<T: DeserializeOwned>(r: &mut RecvStream) -> Result<T, String> {
@@ -59,7 +63,7 @@ pub fn parse_ticket(t: &str) -> Result<EndpointAddr, String> {
 /// What the host's game loop sees.
 pub enum HostEvent<In, Out> {
     /// A client connected; send to it through `tx`.
-    Joined { client: u64, tx: UnboundedSender<Out> },
+    Joined { client: u64, tx: HostSender<Out> },
     Message { client: u64, msg: In },
     Left { client: u64 },
 }
@@ -103,18 +107,25 @@ impl<In: Message, Out: Message> Host<In, Out> {
 
 async fn serve<In: Message, Out: Message>(conn: Connection, client: u64, etx: UnboundedSender<HostEvent<In, Out>>, latest: fn(&Out) -> bool) -> Result<(), String> {
     let (mut send, mut recv) = conn.accept_bi().await.map_err(|e| e.to_string())?;
-    let (tx, mut rx) = unbounded_channel::<Out>();
+    let (tx, mut rx) = pending::channel::<Out>(latest);
     etx.send(HostEvent::Joined { client, tx }).map_err(|_| "host gone")?;
+    let writer_conn = conn.clone();
     let writer = tokio::spawn(async move {
-        while let Some(mut msg) = rx.recv().await {
-            // A backlog of `latest` messages collapses to the newest.
-            while let Ok(next) = rx.try_recv() {
-                if latest(&msg) && latest(&next) { msg = next; continue; }
-                if write(&mut send, &msg).await.is_err() { return; }
-                msg = next;
-            }
-            if write(&mut send, &msg).await.is_err() { return; }
-        }
+        let mut bytes = Vec::new();
+        let abort = rx.abort_signal();
+        // A saturated peer may be flow-controlled inside write_all. Observe
+        // overflow independently so it also cancels that in-flight write.
+        let failed = tokio::select! {
+            _ = abort.wait() => true,
+            result = async {
+                while let Some(msg) = rx.recv().await {
+                    if write(&mut send, &msg, &mut bytes).await.is_err() { return true; }
+                }
+                rx.aborted()
+            } => result,
+        };
+        if failed { writer_conn.close(0u32.into(), b"host output overflow or failure"); }
+        else { let _ = send.finish(); }
     });
     let result = loop {
         match read::<In>(&mut recv).await {
@@ -162,7 +173,8 @@ impl<In: Message, Out: Message> Client<In, Out> {
         })?;
         rt.spawn(async move {
             // The first write opens the stream for the host's accept_bi.
-            while let Some(msg) = out.recv().await { if write(&mut send, &msg).await.is_err() { break; } }
+            let mut bytes = Vec::new();
+            while let Some(msg) = out.recv().await { if write(&mut send, &msg, &mut bytes).await.is_err() { break; } }
         });
         rt.spawn(async move {
             while let Ok(msg) = read::<Out>(&mut recv).await { if itx.send(msg).is_err() { break; } }

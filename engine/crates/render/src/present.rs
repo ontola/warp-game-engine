@@ -1,12 +1,20 @@
 //! GPU-only presentation, used solely after an explicit interactive launch.
 use crate::Gpu;
 use wgpu::util::DeviceExt;
+use crate::frame::resource_cache::{BindGroups, TextureViews};
+
+#[derive(Default)]
+struct SourceCache {
+    view: TextureViews<1>,
+    bind: BindGroups<1>,
+}
 
 pub struct Presenter {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
+    source: std::sync::Mutex<SourceCache>,
 }
 
 impl Presenter {
@@ -101,17 +109,34 @@ impl Presenter {
         });
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let uniform = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("surface encoding"), contents: bytemuck::cast_slice(&[u32::from(format.is_srgb()), 0, 0, 0]), usage: wgpu::BufferUsages::UNIFORM });
-        Self { layout, pipeline, sampler, uniform }
+        Self { layout, pipeline, sampler, uniform, source: Default::default() }
     }
 
     pub fn present(&self, gpu: &Gpu, picture: &wgpu::Texture, target: &wgpu::TextureView,
         hud: Option<&crate::hud::HudRenderer>, profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
-        let view = picture.create_view(&Default::default());
-        self.present_view(gpu,&view,target,hud,profile)
+        let bind = {
+            let mut source = self.source.lock().unwrap();
+            let view = source.view.get(picture);
+            source.bind.get(gpu, &self.layout, "cached live frame", &[
+                (0, wgpu::BindingResource::TextureView(&view)),
+                (1, wgpu::BindingResource::Sampler(&self.sampler)),
+                (2, self.uniform.as_entire_binding()),
+            ])
+        };
+        self.present_bind(gpu,&bind,target,hud,profile)
+    }
+
+    pub fn resource_cache_stats(&self) -> crate::frame::ResourceCacheStats {
+        let source = self.source.lock().unwrap();
+        let mut stats = source.view.stats();
+        stats.add(source.bind.stats());
+        stats
     }
 
     fn present_view(&self, gpu: &Gpu, view: &wgpu::TextureView, target: &wgpu::TextureView,
-        hud: Option<&crate::hud::HudRenderer>, mut profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
+        hud: Option<&crate::hud::HudRenderer>, profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
+        // A screenshot's alternate-format intermediate is transient and must
+        // never evict the source retained for ordinary surface presentation.
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("live frame"), layout: &self.layout,
             entries: &[
@@ -120,6 +145,11 @@ impl Presenter {
                 wgpu::BindGroupEntry { binding: 2, resource: self.uniform.as_entire_binding() },
             ],
         });
+        self.present_bind(gpu,&bind,target,hud,profile)
+    }
+
+    fn present_bind(&self, gpu: &Gpu, bind: &wgpu::BindGroup, target: &wgpu::TextureView,
+        hud: Option<&crate::hud::HudRenderer>, mut profile: Option<&mut crate::hud_profile::HudProfiler>) -> Result<(), String> {
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -129,7 +159,7 @@ impl Presenter {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind, &[]);
+            pass.set_bind_group(0, bind, &[]);
             pass.draw(0..3, 0..1);
         }
         if let Some(hud) = hud {

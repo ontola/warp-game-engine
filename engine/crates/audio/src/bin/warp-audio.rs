@@ -103,7 +103,7 @@ fn render(args: &[String]) -> Result<(), String> {
         Some(n) => patches.iter().find(|p| &p.name == n).ok_or_else(|| format!("no sound {n} (has {})", patches.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")))?,
         None => &patches[0],
     };
-    let patch = Arc::new(patch.clone());
+    let patch = Arc::new(patch.compile()?);
     let params: Vec<(&str, f32)> = o.set.iter().map(|(n, v)| (n.as_str(), *v)).collect();
     for (n, _) in &params { if !patch.params.iter().any(|p| p.0 == *n) { return Err(format!("{} has no parameter {n} (has {})", patch.name, patch.params.iter().map(|p| p.0.as_str()).collect::<Vec<_>>().join(", "))); } }
     let span = o.every * (o.repeat.max(1) - 1) as f32;

@@ -11,10 +11,13 @@ It has three parts:
 1. engine and tyre sound for vehicles (used by Sideways);
 2. sample playback for game effects, `audio::sfx` (used by Growing Guns);
 3. a procedural synth, `audio::synth`: units, patches as data, and a
-   surround mixer. This is new and not yet used by a game.
+   surround mixer, used by Growing Guns for its procedural effects and
+   recorded footsteps, hurts and deaths.
 
 `app::sound::start(voices)` opens the default output device with `cpal`
 and mixes `sfx` in its callback; without a device the game stays silent.
+Growing Guns uses `app::sound::open` to combine the synth, the crowd's
+sample mixer and its dedicated stem music player at the device's rate.
 
 ## Engine sound
 
@@ -60,8 +63,8 @@ Try it offline: `cargo run --release -p cli -- sound out.wav --car ID`.
 
 ## The procedural synth: `audio::synth`
 
-Sound as a small graph of units, described as data, compiled into voices
-and placed in any speaker layout. It renders in blocks of
+Sound as a small graph of units, described as data, prepared once for
+repeated voices and placed in any speaker layout. It renders in blocks of
 `synth::BLOCK` (64) samples and does not allocate while rendering.
 
 ### Units
@@ -98,8 +101,8 @@ Missing inputs take the unit's default.
 | `engine` | rpm, throttle, load, cut, gear, speed | A car engine (the engine-sim model, Sideways' cars) by car id. |
 | `tyres` | speed, slip, contact, loose, soft, wet | Tyres on a stage: roll, slide, gravel, grass, splash. |
 
-`expr` formulas such as `f1 + (f0 - f1) * exp(-t * k)` compile once into a
-small program that runs a block at a time, with constant parts computed
+`expr` formulas such as `f1 + (f0 - f1) * exp(-t * k)` compile when a patch
+is prepared into a shared program that runs a block at a time, with constant parts computed
 once (fast exp, ln, tanh and sin keep them cheap). They support `+ - * / ^`, unary minus, `<` and `>`
 (1 or 0), and exp, log, sin, cos, tan, tanh, sqrt, abs, sign, floor,
 fract, min, max, pow, clamp, lerp, smoothstep and step, so formulas from
@@ -114,8 +117,20 @@ A `Patch` is a name, a list of nodes, the output node, parameters with
 defaults, an optional `max_length` and a `looping` flag. It derives
 `Serialize` and `Deserialize`. `validate()` checks the graph: inputs only
 from earlier nodes (no cycles), known parameters and input counts within
-the unit's. `voice(params, seed, sr)` compiles it into a `Voice`
-(allocation happens here, off the audio thread).
+the unit's.
+
+Call `compile()` when loading or editing a patch and retain the resulting
+`CompiledPatch`. It validates the source, resolves parameter inputs and
+defaults, and compiles expression programs. The immutable graph, input
+metadata, envelope points and modal definitions are shared across voices.
+`CompiledPatch::voice(params, seed, sr)` allocates only the voice's mutable
+DSP state, parameter values and reusable block buffers, off the audio
+thread. Rendering does not scan the unit registry or recompile formulas.
+
+`Patch::voice` remains available for one-off playback and builds a prepared
+snapshot for that call. Use a retained `CompiledPatch` for repeated sounds.
+Both paths preserve seeds, parameter overrides and glides, sample data,
+voice duration and the rate used for pitch changes.
 
 A struck bell, from the crate's tests:
 
@@ -140,7 +155,7 @@ let bell = Patch {
     out: 3,
     ..Default::default()
 };
-bell.validate()?;
+let bell = bell.compile()?;
 let samples = bell.voice(&[("freq", 440.0)], 1, 48_000.0).render_all(2.0);
 ```
 
@@ -160,12 +175,14 @@ uses), so a patch can wrap a car's engine with its own layers and filters.
 game thread (cheap to clone) and a `Mixer` for the audio callback. The game
 builds voices and sends them; the audio thread only mixes, and hands
 finished voices back so they are dropped elsewhere.
+`SoundSender::play` accepts `Arc<CompiledPatch>` and the original
+`Arc<Patch>` API; the latter prepares a snapshot on each call.
 
 ```rust
 let (tx, mut mix) = synth::mixer(Layout::surround71(), 256, 48_000.0);
 tx.ears(vec![Ear { pos: [0.0; 3], forward: [0.0, 0.0, -1.0], right: [1.0, 0.0, 0.0] }]);
 tx.room(1.5, 0.4, 0.5);                       // reverb: decay s, damping, level
-let bell = std::sync::Arc::new(bell);
+let bell = std::sync::Arc::new(bell);          // the CompiledPatch above
 let h = tx.play(&bell, &[("freq", 300.0)], Play {
     place: Place::At([0.0, 0.0, -68.6]),
     sound_delay: true,                        // arrives after d / 343 m/s
@@ -248,6 +265,38 @@ Growing Guns' sounds are such files (`games/growing-guns/sounds`), ported
 from Godot's sfx.gd and checked against 1:1 references; the game reloads
 them when saved.
 
+The game's `sounds::Bank` compiles each patch during loading and hot reload,
+then supplies `Arc<CompiledPatch>` to gameplay and live sound tools. A
+failed load keeps the last good version. A successful reload replaces the
+snapshot used by future plays; active voices retain their original graph.
+Live `set_param` uses `CompiledPatch::with_default` to replace the default
+snapshot while sharing its compiled graph. Trigger overrides still win,
+and a later file reload restores the file's defaults. Recorded effects are
+also prepared once when loaded.
+
+### Growing Guns music
+
+`games/growing-guns/app/src/music.rs` owns the game's recorded soundtrack:
+two sets of three synchronized stems, bar-aligned energy changes, muffle
+and preview fades, ducking, and per-set filtering and compression. `Music`
+can render directly offline. It is a game-owned player because those
+stem and round rules are specific to Growing Guns.
+
+For live playback, `shared(music)` creates game-side `Controls`, and
+`Player::new(&shared)` transfers the actual `Music` to the audio source
+once during setup. Control producers use a short mutex to serialize
+ordered commands. The callback owns its rendering state and drains the
+channel before rendering; it never acquires that controls mutex. The game
+can continue issuing commands while a device buffer is being rendered.
+
+A lightweight control shadow answers energy, round-level and sample-rate
+queries immediately, including the return value of `start_round`. `update`
+commands carry the original game delta, keeping the existing track clock,
+duck decay and fade timing. Commands retain their order through round
+changes, rebakes, volume changes and stem loads. Stem decoding and bus
+allocation happen on the producer; replaced stem banks return to a
+producer for reclamation after the callback relinquishes them.
+
 ### warp-audio
 
 `cargo run -p audio --features luau --bin warp-audio --`:
@@ -261,3 +310,13 @@ them when saved.
 - `check FILES` validates patches; `units` lists units and helpers;
 - `--engines sounds.toml` registers cars for `engine` units (by default
   Sideways' table when run from the repository).
+
+`warp-audio render` prepares its selected patch once, including when
+`--repeat` starts many voices. For a CPU-only launch/allocation probe:
+
+```powershell
+cargo run --release -p audio --features luau --example patch_launch
+```
+
+See the [28 October efficiency report](engine-efficiency-20261028.md) for
+baseline parity and allocation measurements; these are not frame-rate results.

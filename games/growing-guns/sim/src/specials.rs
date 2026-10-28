@@ -211,7 +211,7 @@ impl World {
             let impulse = dir * kb + Vec3::Y * kb * 0.25;
             if dmg > 0 {
                 let dmg = match owner { Some(o) => self.hooked_damage(j, o, dmg, false, true), None => dmg };
-                self.apply_damage(j, dmg, owner, Blow { pos: target, dir, head: false, blast_radius: ION_RADIUS, severity: falloff, env: false });
+                self.apply_damage(j, dmg, owner, Blow { pos: target, dir, head: false, blast_radius: ION_RADIUS, severity: falloff, env: false, lava: None });
                 if let Some(o) = owner && o != j { self.dealt_damage(o, dmg); }
             }
             self.knockback(j, impulse);
@@ -247,7 +247,7 @@ impl World {
             let dmg = self.hooked_damage(j, i, dmg, false, false);
             let kb = dmg as f32 * crate::weapon::KNOCKBACK_PER_DAMAGE * w.knockback_mult;
             let at = self.players[j].pos + Vec3::Y * 0.6;
-            self.apply_damage(j, dmg, Some(i), Blow { pos: at, dir, head: false, blast_radius: 0.0, severity: 0.0, env: false });
+            self.apply_damage(j, dmg, Some(i), Blow { pos: at, dir, head: false, blast_radius: 0.0, severity: 0.0, env: false, lava: None });
             if kb > 0.0 { self.knockback(j, dir * kb + Vec3::Y * kb * 0.25); }
             self.dealt_damage(i, dmg);
         }
@@ -346,8 +346,6 @@ impl World {
         }
     }
 
-    /// Ghosts can't act (Godot returns before input at health 0).
-    pub(crate) fn ghost_tick(&mut self, i: usize, _fire_edge: bool) { self.players[i].vel = Vec3::ZERO; }
 }
 
 /// Distance from `p` to the segment a..b.

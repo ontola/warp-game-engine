@@ -6,10 +6,12 @@
 //! routes each tick's events, and sets the lighting and cameras.
 mod arena;
 mod characters;
+mod character_ragdoll;
 mod effects;
 mod gore;
 mod guns;
 mod ion;
+mod lava;
 mod players;
 mod things;
 
@@ -37,7 +39,10 @@ pub const PLAYER_COLORS_U8: [[u8; 4]; 4] = [[255, 110, 80, 255], [110, 160, 255,
 /// past this are not drawn; waves reach it around wave 20).
 pub const COOP_VIEW_PLAYERS: usize = 24;
 /// The renderer's limit on local lights per frame.
-const MAX_LIGHTS: usize = 16;
+const MAX_LIGHTS: usize = render::headlights::MAX_LOCAL_LIGHTS;
+/// Of those, the most that ion strikes and blasts take, so the floodlights
+/// and the lava keep theirs.
+const MAX_TRANSIENT_LIGHTS: usize = MAX_LIGHTS - 4 - lava::MAX_LAVA_LIGHTS;
 
 fn srgb_to_linear(c: [f32; 3]) -> [f32; 3] { c.map(|v| v.powf(2.2)) }
 fn cube(scene: &mut Scene, material: u32) -> usize { scene.add_mesh(&primitives::cube(material).mesh()) }
@@ -71,12 +76,16 @@ pub struct Visuals {
     pub stadium: StadiumVisuals,
     /// Seconds on the effects clock for the frame being drawn.
     clock: f32,
+    /// Floodlight strength against Godot's (crate::sky::floodlights).
+    flood: f32,
 }
 
 impl Visuals {
     pub fn build(world: &World) -> Self {
         let mut scene = Scene::default();
         scene.sky = Some(sky());
+        // Godot's lava noise texture, for the lava shader.
+        scene.noise = Some(render::noise_field::NoiseField { size: lava::NOISE_SIZE, values: lava::noise_texture() });
         // Static range first, then the dynamic one; the order is the scene's
         // instance order.
         let arena = ArenaView::reserve(&mut scene);
@@ -92,7 +101,7 @@ impl Visuals {
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0 };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0 };
         v.set_arena(world);
         v
     }
@@ -193,7 +202,7 @@ impl Visuals {
         }
         self.stadium.absorb(s, &mut self.fx.particles, &mut self.fx.blasts, world, ears, now, growing_guns::DT);
         self.guns.tick(world, growing_guns::DT);
-        self.players.tick(world);
+        self.players.tick(world, &mut self.phys);
         self.phys.step();
         self.players.follow_physics(s, &mut self.phys, now);
         let shapes = &world.arena.grid;
@@ -212,7 +221,11 @@ impl Visuals {
         self.players.pose(&mut self.scene, world, prev, alpha);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
         self.things.pose(&mut self.scene, world, self.clock);
+        self.arena.lava.pose(world);
     }
+
+    /// The movement-tilt setting (the first-person gun's strafe lean).
+    pub fn set_tilt(&mut self, on: bool) { self.guns.tilt = on; }
 
     /// Morph a player's gun into their current stats (a card was given).
     pub fn grow_gun(&mut self, i: usize, p: &growing_guns::Player) { self.guns.grow(i, p); }
@@ -242,16 +255,25 @@ impl Visuals {
     pub fn punched(&self, world: &World, i: usize, cam: Camera) -> Camera { self.fx.punched(world, i, cam) }
 
     /// Blast lights first (they matter most while they last), then the
-    /// floodlights, the roof beacons and muzzle flashes.
+    /// floodlights, the lava's glow, the roof beacons and muzzle flashes.
     pub fn local_lights(&self) -> Vec<LocalLight> {
         let mut l = self.ion.lights(self.clock);
         l.extend(self.fx.blasts.lights(self.clock));
-        l.truncate(MAX_LIGHTS);
-        l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).copied());
+        l.truncate(MAX_TRANSIENT_LIGHTS);
+        let flood = self.flood;
+        l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).map(|f| LocalLight { intensity_cd: f.intensity_cd * flood, ..*f }));
+        l.extend(self.arena.lava.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         l.extend(self.arena.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         let room = MAX_LIGHTS - l.len();
         l.extend(self.fx.flash_lights(room));
         l
+    }
+
+    /// Floodlight strength for the sky (1 for Godot's day).
+    /// The lava's night glows fade in with them.
+    pub fn set_floodlights(&mut self, flood: f32) {
+        self.flood = flood;
+        self.arena.lava.night = ((flood - 1.0) / (crate::sky::NIGHT_FLOODLIGHTS - 1.0)).clamp(0.0, 1.0);
     }
 
     /// Short, distance-attenuated ion impact flash, separately per viewport.
@@ -259,9 +281,13 @@ impl Visuals {
 }
 
 /// Godot's sky_top to horizon; the ground colour is the darkened horizon.
-fn sky() -> (u32, u32, Vec<[f32; 4]>) {
+pub fn sky() -> (u32, u32, Vec<[f32; 4]>) {
     primitives::gradient_sky(palette::SKY_TOP, palette::HORIZON, palette::HORIZON.map(|c| c * 0.79))
 }
+
+/// How much emission follows the exposure (render::Lighting): 1 shows it
+/// as at Godot's EV 13.6 under every sky.
+pub const EMISSIVE_COMPENSATION: f32 = 1.0;
 
 pub fn lighting() -> Lighting {
     let (el, az) = (38f32.to_radians(), 140f32.to_radians());
@@ -271,6 +297,10 @@ pub fn lighting() -> Lighting {
         sun_color: Vec3::from(palette::SUN),
         sky_lux: 14_000.0,
         ev100: 13.6,
+        // Emission (lava, tracers, beacons) is tuned at Godot's exposure; a
+        // darker sky lowers the exposure, and the glow would clip to white.
+        emissive_compensation: EMISSIVE_COMPENSATION,
+        emissive_ev100: 13.6,
         fog_start: 40.0,
         fog_end: 320.0,
         ..Default::default()
@@ -280,7 +310,7 @@ pub fn lighting() -> Lighting {
 pub fn camera(world: &World, i: usize, prev: &[Vec3], alpha: f32) -> Camera {
     let p = &world.players[i];
     let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
-    if !p.alive {
+    if !p.alive && !p.ghost {
         // Spectate from above the arena centre.
         let a = world.tick as f32 * 0.003 + i as f32;
         let r = world.arena.size * 0.55;
@@ -291,4 +321,28 @@ pub fn camera(world: &World, i: usize, prev: &[Vec3], alpha: f32) -> Camera {
     // Sniper zoom (Godot FOV 30 instead of 75).
     let fov_y = if p.zooming { 30f32.to_radians() } else { FOV_Y };
     Camera { pos: eye, target: eye + p.forward(), fov_y, near: 0.05 }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+
+    #[test]
+    fn ghost_keeps_the_players_interpolated_eye_and_look() {
+        let mut world = World::new(3, &[false; 3]);
+        let p = &mut world.players[0];
+        p.alive = false;
+        p.ghost = true;
+        p.pos = Vec3::new(4.0, 2.0, -6.0);
+        p.yaw = 0.7;
+        p.pitch = -0.3;
+        let previous = p.pos - Vec3::X;
+        let eye = previous.lerp(p.pos, 0.5) + Vec3::Y * p.eye_height();
+        let direction = p.forward();
+        let cam = camera(&world, 0, &[previous], 0.5);
+        assert_eq!(cam.pos, eye);
+        assert!((cam.target - cam.pos - direction).length() < 1e-6);
+        world.players[0].ghost = false;
+        assert_ne!(camera(&world, 0, &[previous], 0.5).pos, eye);
+    }
 }

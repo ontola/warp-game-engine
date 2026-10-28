@@ -27,6 +27,7 @@ pub use blast::{Blast, Los};
 pub use coop::{Archetype, Waves};
 pub use destruct::{Breakage, Carve, Chunk};
 pub use flow::{Modifier, Phase, PickupKind, CARD_PICK_TIMEOUT, MODIFIERS, PICKUPS, ROUNDS_TO_WIN};
+pub use player::PHOENIX_TICKS;
 pub use specials::{AIR_STRIKE_TRAVEL, ION_CHARGE};
 pub use weapon::{Special, Weapon};
 use glam::Vec3;
@@ -142,7 +143,7 @@ pub struct Player {
     pub dash_recharge: f64,
     pub health: i32,
     pub alive: bool,
-    /// Dead in a 3+ player round: a spectator body nobody can hurt.
+    /// Dead in a 3+ player round: a walking spectator nobody can hurt.
     pub ghost: bool,
     pub ammo: u32,
     pub reloading: bool,
@@ -351,6 +352,8 @@ pub enum Event {
     Empty { player: usize },
     /// Burned by lava (`fall`: the lava killed, Godot's fall sizzle).
     Lava { player: usize, fall: bool },
+    /// A ghost planted a mine.
+    MinePlanted { player: usize, pos: Vec3 },
 }
 
 /// Presentation identity, independent of damage radius. Older recordings
@@ -370,7 +373,7 @@ impl Default for Rules {
 /// How a body goes when it dies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Gib {
-    /// Tumbles whole (a regular hit; lava).
+    /// Tumbles whole (a regular hit).
     #[default]
     Ragdoll,
     /// A headshot: the head bursts, the torso tumbles.
@@ -379,6 +382,10 @@ pub enum Gib {
     /// whole body bursts into chunks. `severity` 0.4..2.5, `blast` when an
     /// explosion did it.
     Burst { severity: f32, blast: bool },
+    /// Lava (Godot `_lava_death`): the body takes the lava's look and
+    /// sinks; `fall` when it fell in (a splash, a deeper, slower sink)
+    /// rather than burning to death standing in it.
+    Lava { fall: bool },
 }
 
 /// A killing blow that leaves health here or lower bursts the body.

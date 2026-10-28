@@ -11,9 +11,9 @@
 --   SPL lerp(95, 135, sn); big-tail send at gain + lerp(-30, -2, sn) when sn > 0.
 length(0.48)
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
 local sf = expr("clamp(s, 0.2, 5)", { s = param("speed_factor", 1) })
 local sc = expr("clamp(s, 0.5, 4)", { s = param("scale_factor", 1) })
@@ -28,9 +28,9 @@ local drive = expr("lerp(1, 3.5, clamp((s - 3) / 2, 0, 1))", { s = sf })
 
 local ph = expr("clamp(t / d, 0, 1)", { d = dur })
 local c = expr("lerp(h, l, p * p * p * (p * (p * 6 - 15) + 10)) * j", { h = hi, l = lo, p = ph, j = rand(0.85, 1.15) })
--- Band edges at 2c and c/2, from Godot's k = 2π f / 44100 (clamped), as exact cutoffs.
-local a = lowpass1(white(), expr("-log(1 - clamp(c * tau * 2 / 44100, 0.04, 0.98)) * 44100 / tau", { c = c }))
-local b = lowpass1(a, expr("-log(1 - clamp(c * tau * 0.5 / 44100, 0.003, 0.6)) * 44100 / tau", { c = c }))
+-- Band edges at 2c and c/2, from Godot's k = 2π f / 44100 (clamped).
+local a = godot_lp(white44(), expr("clamp(c * tau * 2 / 44100, 0.04, 0.98)", { c = c }))
+local b = godot_lp(a, expr("clamp(c * tau * 0.5 / 44100, 0.003, 0.6)", { c = c }))
 local env = expr("(p < f) * p / f + (1 - (p < f)) * exp(-4 * (p - f) / max(1 - f, 0.0001))", { p = ph, f = af })
 
 return expr("tanh(x * e * 0.55 * k * g) * (t < d)", { x = a - b, e = env, k = sc, g = drive, d = dur })

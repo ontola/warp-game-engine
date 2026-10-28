@@ -64,42 +64,42 @@ Short noisy sounds get 4x the seeds, the rocket and lava 2x; deterministic recip
 
 | case | seeds | duration ref / patch (ms) [floor] | peak ref / patch (dBFS) [floor] | RMS env mean abs / bias / max diff (dB) [floor mean] | centroid ref / patch (Hz) | centroid over time diff [floor] | wave err (dB) |
 |---|---|---|---|---|---|---|---|
-| air_strike_inbound 2.25 s | 48 | 2250.0 / 2250.0 [0.0] | -4.2 / -4.2 [0.0] | 0.26 / -0.03 / 1.0 [0.26] | 29 / 29 | 12.5% [13.1%] | - |
-| air_strike_inbound 1.75 s | 48 | 1750.0 / 1750.0 [0.0] | -4.2 / -4.2 [0.0] | 0.27 / -0.05 / 1.0 [0.27] | 29 / 29 | 12.8% [14.7%] | - |
-| air_strike_inbound 6.5 s | 48 | 6500.0 / 6500.0 [0.0] | -4.2 / -4.2 [0.0] | 0.28 / -0.01 / 1.2 [0.27] | 29 / 29 | 13.2% [13.9%] | - |
-| air_strike_inbound distant | 48 | 2250.0 / 2250.0 [0.0] | -4.2 / -4.2 [0.0] | 0.26 / -0.03 / 1.0 [0.26] | 28 / 28 | 12.4% [13.1%] | - |
-| ion_cannon_charge 3.8 s | 48 | 3800.0 / 3800.1 [0.0] | -15.6 / -15.5 [0.0] | 0.19 / -0.02 / 0.6 [0.20] | 306 / 306 | 0.4% [0.4%] | - |
-| ion_cannon_charge 2.5 s | 48 | 2500.0 / 2500.0 [0.0] | -15.6 / -15.6 [0.3] | 0.19 / -0.01 / 0.6 [0.21] | 306 / 306 | 0.4% [0.4%] | - |
-| ion_cannon_charge 6.5 s | 48 | 6500.0 / 6500.0 [0.0] | -15.7 / -15.6 [0.0] | 0.19 / -0.02 / 0.7 [0.20] | 306 / 306 | 0.4% [0.4%] | - |
-| rocket_descent | 96 | 850.0 / 850.0 [0.0] | -8.5 / -8.5 [0.1] | 0.30 / -0.05 / 0.8 [0.31] | 138 / 140 | 3.8% [3.5%] | - |
+| air_strike_inbound 2.25 s | 48 | 2250.0 / 2250.0 [0.0] | -4.2 / -4.2 [0.0] | 0.29 / -0.00 / 1.1 [0.26] | 29 / 29 | 14.0% [13.1%] | - |
+| air_strike_inbound 1.75 s | 48 | 1750.0 / 1750.0 [0.0] | -4.2 / -4.2 [0.0] | 0.29 / -0.02 / 1.1 [0.27] | 29 / 28 | 14.1% [14.7%] | - |
+| air_strike_inbound 6.5 s | 48 | 6500.0 / 6500.0 [0.0] | -4.2 / -4.2 [0.0] | 0.27 / +0.02 / 1.2 [0.27] | 29 / 28 | 12.8% [13.9%] | - |
+| air_strike_inbound distant | 48 | 2250.0 / 2250.0 [0.0] | -4.2 / -4.2 [0.0] | 0.29 / -0.00 / 1.1 [0.26] | 28 / 28 | 13.9% [13.1%] | - |
+| ion_cannon_charge 3.8 s | 48 | 3800.0 / 3800.1 [0.0] | -15.6 / -15.5 [0.0] | 0.16 / -0.02 / 0.5 [0.20] | 306 / 306 | 0.4% [0.4%] | - |
+| ion_cannon_charge 2.5 s | 48 | 2500.0 / 2500.0 [0.0] | -15.6 / -15.7 [0.3] | 0.16 / -0.02 / 0.5 [0.21] | 306 / 306 | 0.4% [0.4%] | - |
+| ion_cannon_charge 6.5 s | 48 | 6500.0 / 6500.0 [0.0] | -15.7 / -15.7 [0.0] | 0.16 / -0.02 / 0.5 [0.20] | 306 / 306 | 0.3% [0.4%] | - |
+| rocket_descent | 96 | 850.0 / 850.0 [0.0] | -8.5 / -8.6 [0.1] | 0.28 / -0.01 / 0.9 [0.31] | 138 / 138 | 3.8% [3.5%] | - |
 | mine_plant | 2 | 350.0 / 350.0 [0.0] | -10.1 / -10.1 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 387 / 388 | 0.0% [0.0%] | -60.1 |
-| dash | 192 | 156.3 / 156.2 [0.0] | -20.7 / -20.7 [0.0] | 0.08 / -0.05 / 0.2 [0.06] | 2449 / 2447 | 0.9% [1.1%] | - |
-| lava_sizzle contact | 96 | 502.6 / 503.0 [2.7] | -12.6 / -12.2 [0.0] | 0.16 / -0.10 / 0.7 [0.24] | 9788 / 9734 | 0.7% [0.5%] | - |
-| lava_sizzle fall | 96 | 1721.6 / 1721.9 [6.7] | -13.5 / -13.3 [0.1] | 0.16 / -0.10 / 0.8 [0.27] | 8772 / 8742 | 1.5% [1.2%] | - |
-| hit_received | 192 | 170.1 / 170.1 [0.0] | -1.7 / -1.5 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 316 / 315 | 0.1% [0.0%] | - |
+| dash | 192 | 156.3 / 156.2 [0.0] | -20.7 / -20.7 [0.0] | 0.09 / -0.07 / 0.2 [0.06] | 2449 / 2470 | 1.1% [1.1%] | - |
+| lava_sizzle contact | 96 | 502.6 / 499.3 [2.7] | -12.6 / -12.2 [0.0] | 0.54 / -0.52 / 2.4 [0.24] | 9788 / 9701 | 0.8% [0.5%] | - |
+| lava_sizzle fall | 96 | 1721.6 / 1713.5 [6.7] | -13.5 / -13.3 [0.1] | 0.52 / -0.49 / 3.3 [0.27] | 8772 / 8712 | 1.3% [1.2%] | - |
+| hit_received | 192 | 170.1 / 170.1 [0.0] | -1.7 / -1.6 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 316 / 313 | 0.4% [0.0%] | - |
 | kill_confirm | 2 | 280.0 / 280.0 [0.0] | -9.0 / -9.0 [0.0] | 0.00 / -0.00 / 0.0 [0.00] | 450 / 450 | 0.0% [0.0%] | -67.3 |
-| hitmarker body r 1 | 192 | 50.0 / 50.0 [0.0] | -2.4 / -2.3 [0.0] | 0.01 / -0.00 / 0.0 [0.01] | 2639 / 2633 | 0.2% [0.1%] | - |
-| hitmarker body r 2 | 192 | 58.0 / 58.0 [0.0] | -2.3 / -2.2 [0.0] | 0.01 / -0.00 / 0.0 [0.00] | 2060 / 2052 | 0.3% [0.0%] | - |
-| hitmarker body r 5 | 192 | 111.1 / 111.1 [0.0] | -2.1 / -2.0 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 1529 / 1523 | 0.2% [0.1%] | - |
-| hitmarker head r 1 | 192 | 50.0 / 50.0 [0.0] | -2.5 / -2.4 [0.1] | 0.01 / -0.01 / 0.0 [0.00] | 3406 / 3399 | 0.2% [0.1%] | - |
-| hitmarker head r 2 | 192 | 58.0 / 58.0 [0.0] | -2.4 / -2.3 [0.0] | 0.01 / -0.00 / 0.0 [0.01] | 2618 / 2614 | 0.1% [0.1%] | - |
-| hitmarker head r .5 | 192 | 50.0 / 50.0 [0.0] | -2.5 / -2.4 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 4477 / 4474 | 0.1% [0.1%] | - |
-| hitmarker kill r 1 | 192 | 50.0 / 50.0 [0.0] | -2.4 / -2.2 [0.0] | 0.01 / -0.00 / 0.0 [0.00] | 2024 / 2016 | 0.3% [0.1%] | - |
+| hitmarker body r 1 | 192 | 50.0 / 50.0 [0.0] | -2.4 / -2.3 [0.0] | 0.01 / -0.01 / 0.0 [0.01] | 2639 / 2642 | 0.1% [0.1%] | - |
+| hitmarker body r 2 | 192 | 58.0 / 58.0 [0.0] | -2.3 / -2.2 [0.0] | 0.01 / -0.00 / 0.0 [0.00] | 2060 / 2060 | 0.0% [0.0%] | - |
+| hitmarker body r 5 | 192 | 111.1 / 111.1 [0.0] | -2.1 / -2.0 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 1529 / 1527 | 0.1% [0.1%] | - |
+| hitmarker head r 1 | 192 | 50.0 / 50.0 [0.0] | -2.5 / -2.4 [0.1] | 0.01 / -0.00 / 0.0 [0.00] | 3406 / 3405 | 0.1% [0.1%] | - |
+| hitmarker head r 2 | 192 | 58.0 / 58.0 [0.0] | -2.4 / -2.3 [0.0] | 0.01 / -0.01 / 0.0 [0.01] | 2618 / 2622 | 0.1% [0.1%] | - |
+| hitmarker head r .5 | 192 | 50.0 / 50.0 [0.0] | -2.5 / -2.4 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 4477 / 4479 | 0.0% [0.1%] | - |
+| hitmarker kill r 1 | 192 | 50.0 / 50.0 [0.0] | -2.4 / -2.2 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 2024 / 2025 | 0.0% [0.1%] | - |
 | pick beep 3 s left | 2 | 160.0 / 160.0 [0.0] | -10.2 / -10.2 [0.0] | 0.00 / -0.00 / 0.0 [0.00] | 440 / 440 | 0.0% [0.0%] | -72.0 |
 | pick beep 2 s left | 2 | 160.0 / 160.0 [0.0] | -10.2 / -10.2 [0.0] | 0.00 / -0.00 / 0.0 [0.00] | 466 / 466 | 0.0% [0.0%] | -71.8 |
 | pick beep 1 s left | 2 | 160.0 / 160.0 [0.0] | -10.2 / -10.2 [0.0] | 0.00 / -0.00 / 0.0 [0.00] | 494 / 494 | 0.0% [0.0%] | -71.7 |
 | pling 1.15 | 2 | 249.9 / 249.9 [0.0] | -6.1 / -6.1 [0.0] | 0.01 / -0.00 / 0.0 [0.00] | 1010 / 1010 | 0.0% [0.0%] | -64.0 |
 | pling 1 | 2 | 249.9 / 249.9 [0.0] | -6.1 / -6.1 [0.0] | 0.01 / -0.01 / 0.0 [0.00] | 878 / 878 | 0.0% [0.0%] | -65.7 |
-| card_flip | 192 | 184.3 / 183.9 [1.6] | -9.2 / -8.7 [0.0] | 0.63 / -0.40 / 4.0 [0.49] | 6411 / 6375 | 1.0% [2.0%] | - |
+| card_flip | 192 | 184.3 / 182.2 [1.6] | -9.2 / -8.5 [0.0] | 0.44 / -0.33 / 2.0 [0.49] | 6411 / 6355 | 2.5% [2.0%] | - |
 | pickup_drop | 2 | 620.0 / 620.0 [0.0] | -10.8 / -10.8 [0.0] | 0.01 / -0.01 / 0.1 [0.00] | 1034 / 1034 | 0.0% [0.0%] | -42.0 |
-| enemy_incoming | 192 | 420.0 / 420.0 [0.0] | -6.8 / -6.7 [0.0] | 0.06 / -0.05 / 0.2 [0.02] | 3935 / 3898 | 0.7% [0.4%] | - |
+| enemy_incoming | 192 | 420.0 / 420.0 [0.0] | -6.8 / -6.7 [0.0] | 0.06 / -0.05 / 0.2 [0.02] | 3935 / 3904 | 0.6% [0.4%] | - |
 
 | lava case | low band (<400 Hz) env mean abs / bias (dB) [floor] | low energy patch - ref (dB) | high band (>2 kHz) env mean abs / bias (dB) [floor] | high energy patch - ref (dB) | 30 Hz AM depth ref / patch [ref 2nd seeds] |
 |---|---|---|---|---|---|
-| lava_sizzle contact | 0.65 / -0.04 [0.51] | -0.00 | 0.16 / -0.12 [0.22] | -0.15 | 0.461 / 0.422 [0.478] |
-| lava_sizzle fall | 0.66 / +0.04 [0.56] | -0.05 | 0.14 / -0.13 [0.23] | -0.16 | 0.607 / 0.612 [0.637] |
+| lava_sizzle contact | 0.54 / -0.12 [0.51] | +0.21 | 0.54 / -0.54 [0.22] | -0.22 | 0.461 / 0.442 [0.478] |
+| lava_sizzle fall | 0.71 / -0.29 [0.56] | +0.06 | 0.54 / -0.54 [0.23] | -0.18 | 0.607 / 0.641 [0.637] |
 
-The air strike's per-10 ms centroid gap (12-13%) sits at its floor: its energy is
+The air strike's per-10 ms centroid gap (13-14%) sits at its floor: its energy is
 at 15-40 Hz, under the 25 Hz resolution of a 40 ms frame, so the per-window
 centroid is mostly leakage noise (as for the explosion rumble). Whole-sound
 centroids agree to 1 Hz and the envelope is at the floor.
@@ -114,7 +114,9 @@ the last 62%, the hiss `(x - lerp(h, x, .08)) * attack * body * (.26 | .11)` (a
 scaled by the body *without* the attack, the per-sample U(22, 38) Hz phase step, and
 `tanh(sum * (1.35 | 1.05))`.
 
-- Duration, peak, envelope and centroid are at or near the floor in both modes.
+- Duration, peak, envelope and centroid were at or near the floor in both modes in
+  the previous run; the latest run reads lower (see Remaining gaps), and the figures
+  below are from the previous run.
 - Bands: the bubble bed (< 400 Hz) matches in energy (0.00 / -0.05 dB) and envelope
   (floor-level scatter); the hiss (> 2 kHz) reads -0.15 dB, which is the comparison's
   own resampler: one 48 -> 44.1 kHz pass of resample_poly removes about 0.14 dB of
@@ -147,12 +149,12 @@ per-voice `rand` for seeded and global draws. Also:
   different leak and clamp.
 - **Large one-pole k** (dash 0.08-0.22, card flip 0.2-0.55): a 44.1 kHz one-pole
   levels off at `k / (2 - k)` near its Nyquist; a 48 kHz one-pole of the same cutoff
-  keeps falling, which left the dash centroid 2.7% low (floor 1.1%). `lp44(x, k)`
-  adds a direct term `c = 0.025 k + 0.06 k²` and lowers the cutoff by `0.025 k`,
-  which fits Godot's power response over 0-20 kHz to 0.03 dB for k up to 0.55 (the
-  high-pass is `x - lp44`). Dash centroid now 2447 / 2449 Hz. The term fades to
-  zero at 44.1 kHz and is fitted at 48 kHz. The same fix would remove the 1-3%
-  centroid gap the weapon patches list.
+  keeps falling, which left the dash centroid 2.7% low (floor 1.1%). The prelude's
+  `godot_lp(x, k)` adds a direct term `c = 0.025 k + 0.06 k²` and lowers the cutoff
+  by `0.025 k`, which fits Godot's power response over 0-20 kHz to 0.03 dB for k up
+  to 0.55 (`godot_hp` is `x - godot_lp`). The term fades to zero at 44.1 kHz and is
+  fitted at 48 kHz. Dash and card flip use it (they carried an identical local
+  `lp44` before; renders are bit-identical), and so do the weapon patches.
 - **Non-integrated chirps** (hit_received, pickup_drop, enemy_incoming) are kept as
   Godot wrote them, `sin(2π f(t) t)`, so their artefacts (pickup_drop's whoosh sweeps
   through 0 Hz near the end) are reproduced.
@@ -164,7 +166,17 @@ per-voice `rand` for seeded and global draws. Also:
 
 ## Remaining gaps
 
-- **Card flip peak +0.5 dB**, envelope 0.63 dB against a 0.49 floor. The peak is the
+- **Re-run drift, not from the patches.** In the latest run (the table above) lava
+  sizzle reads 0.5 dB low in envelope, 3-8 ms short, with its hiss band at
+  -0.54 dB bias (energy -0.2 dB). Card flip reads 2 ms short, with centroid over
+  time 2.5% [2.0%]; dash 2470 / 2449 Hz. The previous run had lava at 0.16 dB and
+  -0.10 bias, card flip at 1.0% and dash at 2447 Hz. Neither lava sizzle nor dash
+  nor card flip changed in between (dash and card flip render bit-identical to the
+  previous patch files), so the shift came from the engine or the binary the
+  earlier table was made with. The durations of both are per-voice `rand` draws,
+  so the voice's draws are the first suspect; `Patch::voice` seeding is unchanged
+  since the murmur3 commit. Not tracked down.
+- **Card flip peak +0.7 dB**, envelope 0.44 dB against a 0.49 floor. The peak is the
   tick's first sample, `(1 - k) n`: the 48 kHz coefficient for the same cutoff is
   smaller, so the onset is up to 0.4 dB higher, plus the noise scaling. The envelope
   excess is in the tick windows, whose start time is a per-voice draw; the wash

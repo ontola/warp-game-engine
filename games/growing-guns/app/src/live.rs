@@ -15,7 +15,7 @@ use crate::play::Gg;
 use crate::Args;
 use growing_guns::weapon::{self, Value as Field};
 use crate::sounds::Bank;
-use audio::synth::{Patch, Play};
+use audio::synth::{CompiledPatch as Patch, Play};
 use live::{Content, Features, LiveGame, Manifest, Reload, Reply, Root, SoundHook, SoundInfo, ToolSpec, Work};
 use serde_json::{json, Value};
 use std::path::PathBuf;

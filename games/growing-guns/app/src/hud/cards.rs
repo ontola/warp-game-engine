@@ -14,6 +14,9 @@ const BASE_W: f32 = 220.0;
 const BASE_H: f32 = 300.0;
 const SEP: f32 = 10.0;
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Hit { pub player: usize, pub index: usize, pub card: Card, pub rect: [f32; 4], pub clip: [f32; 4] }
+
 fn cubic_out(t: f32) -> f32 { 1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3) }
 fn cubic_in(t: f32) -> f32 { t.clamp(0.0, 1.0).powi(3) }
 fn back_out(t: f32) -> f32 { let t = t.clamp(0.0, 1.0); let (c1, c3) = (1.70158, 2.70158); 1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2) }
@@ -147,7 +150,7 @@ fn shadow(d: &mut HudDrawList, r: [f32; 4], size: f32, c: C, clip: [f32; 4]) {
 }
 
 /// The pick overlay for player `i` in its view.
-pub fn pick(d: &mut HudDrawList, world: &World, i: usize, l: &Layout, f: &Feedback, focus: usize) {
+pub(super) fn pick(d: &mut HudDrawList, world: &World, i: usize, l: &Layout, f: &Feedback, focus: usize, hits: &mut Vec<Hit>) {
     let p = &world.players[i];
     let (cards, age, exit): (Vec<Card>, f32, Option<(usize, f32)>) = match (&p.offer, &f.exit) {
         (Some(o), _) => (o.clone(), p.offer_age as f32, None),
@@ -205,6 +208,7 @@ pub fn pick(d: &mut HudDrawList, world: &World, i: usize, l: &Layout, f: &Feedba
         let cy = row_y + slot_h * 0.5 + lift * scale * u;
         let w = bw * flip;
         let r = [cx - w * 0.5, cy - bh * 0.5, w, bh];
+        if !locked && exit.is_none() { hits.push(Hit { player: i, index: k, card, rect: r, clip }); }
         let (sz, sc_col) = if def.rare { (if focused { 36.0 } else { 25.0 }, with_alpha(GOLD, if focused { 0.72 } else { 0.4 })) } else { (if focused { 36.0 } else { 8.0 }, [0.0, 0.0, 0.0, if focused { 0.72 } else { 0.3 }]) };
         shadow(d, r, sz * scale * u * 0.5, with_alpha(sc_col, alpha), clip);
         let desc = super::prompt_text(&def.desc, pad);

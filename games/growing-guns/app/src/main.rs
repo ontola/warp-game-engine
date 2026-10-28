@@ -1,6 +1,7 @@
 //! Growing Guns on Warp.
 //!
 //!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm] [--no-music] [--music DIR] [--live [PORT]]
+//!   (play, shot, script: [--sky godot|TIME[:WEATHER]|rounds|cycle], see sky.rs)
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T] [--trace players.0.health,round [--rows N]]
 //!   growing-guns nettest [--seconds T]   (host + client over iroh loopback, headless)
@@ -21,6 +22,7 @@ mod sounds;
 mod crowd_sound;
 mod gun;
 mod scripts;
+mod sky;
 mod stadium;
 mod music;
 mod view;
@@ -114,6 +116,7 @@ fn shot(args: &Args) -> Result<(), String> {
     let world = World::new_with(seed, &[true; 4], |w| play::match_options(args, w, false));
     let mut game = play::Gg::new(world, session::Session::Local, (0..views).collect());
     game.world.release_cage();
+    game.set_sky(sky::Sky::from_args(args.value("--sky"))?)?;
     game.light_mut().taa = 0.0;
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
     let gpu = Gpu::new()?;
@@ -135,6 +138,7 @@ fn script(args: &Args) -> Result<(), String> {
     let mut game = play::Gg::new(world, session::Session::Local, (0..humans).collect());
     // Scripts start in play; `--cage` keeps Godot's spawn cage.
     if !args.flag("--cage") { game.world.release_cage(); }
+    game.set_sky(sky::Sky::from_args(args.value("--sky"))?)?;
     game.light_mut().taa = 0.0;
     for kv in args.list.windows(2).filter(|w| w[0] == "--set").map(|w| w[1].clone()) { game.light_mut().set(&kv)?; }
     let samples = sounds::find_dir(args.value("--sounds"));
