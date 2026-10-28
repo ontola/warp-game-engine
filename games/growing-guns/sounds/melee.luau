@@ -8,10 +8,10 @@
 -- Game: at the swinging player, -6 dB, room reverb, unit 12 m, SPL 90.
 length(0.2)
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
 local pr = param("pitch_ratio", 0.71)
-local k = expr("-log(1 - clamp(lerp(0.7, 0.18, t / 0.2) * p, 0.01, 0.99)) * 44100 / tau", { p = pr })
-return lowpass1(white(), k) * expr("0.45 * sin(pi * clamp(t / 0.2, 0, 1))")
+local k = expr("clamp(lerp(0.7, 0.18, t / 0.2) * p, 0.01, 0.99)", { p = pr })
+return godot_lp(white44(), k) * expr("0.45 * sin(pi * clamp(t / 0.2, 0, 1))")

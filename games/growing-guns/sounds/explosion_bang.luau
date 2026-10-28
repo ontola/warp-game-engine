@@ -10,12 +10,11 @@
 --   The ion cannon plays this at radius 38 (bucket 24) before ion_burst.
 length(1.6)
 
--- Godot draws one uniform white sample per 44.1 kHz tick; at a higher rate the same
--- variance spreads over more bandwidth, so scale it to keep Godot's noise density.
-local function white() return noise() * expr("sqrt(sr / 44100)") end
+-- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
+-- godot_lp(x, k) / godot_hp(x, k): Godot's one-pole lerp(y, x, k) at 44.1 kHz, matched at
+-- any rate, including its response near Nyquist (built in; see the Luau prelude).
 
 local r = param("radius", 6)
-local function hz(k) return expr("-log(1 - k) * 44100 / tau", { k = k }) end
 
 local R = expr("clamp(r / 6, 0.3, 4)", { r = r })
 local dur = expr("clamp((0.4 + 0.08 * r) * j, 0.4, 1.6)", { r = r, j = rand(0.92, 1.10) })
@@ -23,19 +22,19 @@ local env = expr("exp(-1.4 * t) * max(1 - t / d, 0) ^ 0.6", { d = dur })
 
 -- Thwack: low-passed (k 0.10-0.16, 0.74-1.2 kHz), saturated noise burst.
 local thwack = expr("tanh(x * g) * 1.5 * exp(-t * k)", {
-  x = lowpass1(white(), hz(rand(0.10, 0.16))), g = rand(4, 8), k = rand(180, 280) })
+  x = godot_lp(white44(), rand(0.10, 0.16)), g = rand(4, 8), k = rand(180, 280) })
 
 -- Noise tail (k 0.45 * jitter, 3.4-5.1 kHz) with its own fast decay.
 local bright = expr("clamp(0.45 * j, 0.05, 0.95)", { j = rand(0.85, 1.15) })
-local tail = lowpass1(white(), hz(bright)) * expr("0.5 * exp(-t * k)", { k = rand(8, 15) })
+local tail = godot_lp(white44(), bright) * expr("0.5 * exp(-t * k)", { k = rand(8, 15) })
 
 -- Kick: 220 Hz falling to 28-80 Hz, low-passed at k 0.30 (2.5 kHz).
 local f1 = expr("clamp(55 / sqrt(R), 28, 80) * j", { R = R, j = rand(0.92, 1.10) })
-local kick = lowpass1(sine(sweep(220 * rand(0.88, 1.12), f1, rand(70, 95))), 2503.4)
+local kick = godot_lp(sine(sweep(220 * rand(0.88, 1.12), f1, rand(70, 95))), 0.30)
   * expr("exp(-t * clamp(35 / sqrt(R), 10, 40)) * lerp(0.55, 0.95, clamp((R - 1) / 3, 0, 1))", { R = R })
 
 -- Sub: noise low-passed at k 0.005-0.010 (35-70 Hz), slow decay.
-local sub = lowpass1(white(), hz(rand(0.005, 0.010)))
+local sub = godot_lp(white44(), rand(0.005, 0.010))
   * expr("3.5 * 0.7 * exp(-t * clamp(3.5 / sqrt(R), 1.2, 4))", { R = R })
 
 return expr("tanh(x * e * 1.4)", { x = mix(thwack, tail, kick, sub), e = env })
