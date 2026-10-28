@@ -5988,6 +5988,7 @@ dependencies = [
  "app",
  "assets",
  "audio",
+ "gamenight",
  "glam 0.31.1",
  "image",
  "kern",
@@ -5997,6 +5998,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "tungstenite",
 ]
 
 [[package]]

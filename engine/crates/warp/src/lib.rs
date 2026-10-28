@@ -11,6 +11,7 @@ pub mod api;
 pub mod config;
 pub mod game;
 pub mod luajson;
+pub mod party;
 pub mod sky;
 pub mod sounds;
 pub mod starter;

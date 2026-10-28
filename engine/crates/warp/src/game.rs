@@ -1,7 +1,9 @@
 //! A game folder as an `app::Game`: the Luau modules' hooks at a fixed
 //! tick, the world drawn from the entities, hot reload of scripts and
-//! sound patches, debug commands, and live control over MCP.
-use crate::api::{self, Cam, Core, HudItem, Phase, Rng, Shared};
+//! sound patches, debug commands, live control over MCP, the players (from
+//! a GameNight party host when one launched the game) and the start menu.
+use crate::api::{self, Cam, Core, HudItem, Phase, Player, Requests, Rng, Shared};
+use crate::party::{self, Party, SeatInfo};
 use crate::config::GameToml;
 use crate::luajson;
 use crate::sky::SkyChoice;
@@ -31,6 +33,7 @@ const POLL_TICKS: u64 = 15;
 #[derive(Clone, Debug, Default)]
 pub struct Overrides {
     pub players: Option<usize>,
+    pub bots: Option<usize>,
     pub seed: Option<u64>,
     pub sky: Option<String>,
 }
@@ -54,6 +57,26 @@ pub struct LuaGame {
     default_sky: SkyChoice,
     /// Print log lines to stdout (off for tests that read `logs()`).
     pub echo: bool,
+    /// The GameNight party host that launched the game, if any.
+    pub party: Option<Party>,
+    /// The start menu, when open: the selected item.
+    menu: Option<usize>,
+    /// Stick position in the menu last tick, for one step per push.
+    menu_stick: f32,
+    /// Ticks seen, for the file checks (the game's own tick stops while paused).
+    polls: u64,
+    /// The next player id: ids are never reused in a session.
+    next_id: u32,
+    quit: bool,
+}
+
+/// The start menu's items: Joep's convention for every GameNight game
+/// (the title on top, Resume, then New round; no button hints).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuItem { Resume, NewRound, Quit }
+
+impl MenuItem {
+    pub fn label(self) -> &'static str { match self { MenuItem::Resume => "Resume", MenuItem::NewRound => "New round", MenuItem::Quit => "Quit" } }
 }
 
 const LOG_KEEP: usize = 200;
@@ -67,6 +90,10 @@ impl LuaGame {
             if !(1..=4).contains(&p) { return Err(format!("--players {p}: 1 to 4")); }
             cfg.players = p;
         }
+        if let Some(b) = over.bots {
+            if b > 7 { return Err(format!("--bots {b}: 0 to 7")); }
+            cfg.bots = b;
+        }
         if let Some(s) = over.seed { cfg.seed = s; }
         let default_sky = SkyChoice::parse(over.sky.as_deref().unwrap_or(&cfg.sky))?;
         let sounds_dir = dir.join("sounds");
@@ -75,7 +102,7 @@ impl LuaGame {
         let core: Shared = Arc::new(Mutex::new(Core {
             world: World::new(dir, cfg.max_entities),
             sounds: SoundOut::new(bank, sound),
-            cams: vec![Cam::default(); cfg.players],
+            roster: Vec::new(),
             hud: Vec::new(),
             screen: cfg.size,
             views: Vec::new(),
@@ -84,15 +111,18 @@ impl LuaGame {
             light: Default::default(),
             tick: 0,
             tick_rate: cfg.tick_rate,
-            players: cfg.players,
             title: cfg.title.clone(),
+            requests: Requests::default(),
             phase: Phase::Sim,
         }));
         let shared = core.clone();
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
         let mut g = LuaGame { dir: dir.to_path_buf(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, polls: 0, next_id: 1, quit: false };
+        let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
+            .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None })).collect();
+        g.seat_all(&people, false);
         for l in lines { g.say(l); }
         g.host.watch(dir.to_path_buf());
         g.flush_log();
@@ -169,13 +199,202 @@ impl LuaGame {
             c.tick = 0;
             c.sky = self.default_sky;
             c.light = Default::default();
-            let n = c.players;
-            c.cams = vec![Cam::default(); n];
+            for p in &mut c.roster { p.cam = Cam::default(); }
         }
+        self.menu = None;
         for m in self.host.modules() { let _ = m.state().clear(); }
         self.inited.clear();
         self.say("restarted".into());
         self.start_new();
+    }
+
+    /// The GameNight game id: game.toml's `id`, else the folder name.
+    pub fn game_id(&self) -> String { if self.cfg.id.is_empty() { self.live_name() } else { self.cfg.id.clone() } }
+
+    /// Connect to the party host that launched the game (GAMENIGHT=1 or
+    /// GAMENIGHT_ADDR). The game then waits for the host's `prepare`.
+    pub fn connect_party(&mut self) -> bool {
+        self.party = Party::connect(&self.game_id());
+        if self.party.is_some() { self.say(format!("gamenight: waiting for the party host ({})", self.game_id())); }
+        self.party.is_some()
+    }
+
+    /// Players for these seats (people first, then bots), filled up with
+    /// bots to `min_players`. `seated` keeps the GameNight seat numbers.
+    fn seat_all(&mut self, seats: &[SeatInfo], seated: bool) {
+        // A new session numbers its players from 1 again.
+        self.next_id = 1;
+        let mut roster = Vec::new();
+        let mut order: Vec<&SeatInfo> = seats.iter().filter(|s| !s.bot).take(4).collect();
+        order.extend(seats.iter().filter(|s| s.bot));
+        for s in order {
+            let mut p = Player::new(self.next_id, s.name.clone(), s.color, s.bot);
+            self.next_id += 1;
+            if seated { p.seat = Some(s.seat); }
+            p.couch = s.couch;
+            roster.push(p);
+        }
+        let mut n = roster.iter().filter(|p| p.bot).count();
+        while roster.len() < self.cfg.min_players {
+            n += 1;
+            roster.push(Player::new(self.next_id, format!("Bot {n}"), None, true));
+            self.next_id += 1;
+        }
+        roster.truncate(8);
+        self.core().roster = roster;
+        self.assign_views();
+    }
+
+    /// People look through the split-screen views in roster order. Without
+    /// people, the first player's camera fills the screen (a bots-only demo).
+    fn assign_views(&mut self) {
+        let mut c = self.core();
+        let mut k = 0;
+        for p in &mut c.roster { p.view = (!p.bot).then(|| { k += 1; k - 1 }); }
+        if k == 0 && let Some(p) = c.roster.first_mut() { p.view = Some(0); }
+    }
+
+    fn views(&self) -> usize { self.core().roster.iter().filter(|p| p.view.is_some()).count().max(1) }
+
+    /// The party's seats changed mid-session: names and colours follow,
+    /// a new seat joins (`player_joined(p)`), a gone seat leaves
+    /// (`player_left(p)`), and `players_changed()` runs after any change.
+    fn reseat(&mut self, seats: &[SeatInfo]) {
+        let (mut joined, mut left) = (Vec::new(), Vec::new());
+        let mut changed = false;
+        {
+            let mut c = api::lock(&self.core);
+            for p in &mut c.roster {
+                let Some(seat) = p.seat else { continue };
+                if let Some(s) = seats.iter().find(|s| s.seat == seat) {
+                    let color = s.color.unwrap_or(p.color);
+                    if p.name != s.name || p.color != color || p.couch != s.couch { changed = true; }
+                    p.name = s.name.clone();
+                    p.color = color;
+                    p.couch = s.couch;
+                }
+            }
+            let gone: Vec<usize> = c.roster.iter().enumerate().filter(|(_, p)| p.seat.is_some_and(|seat| !seats.iter().any(|s| s.seat == seat))).map(|(i, _)| i).collect();
+            for i in gone.into_iter().rev() { left.push(c.roster.remove(i)); }
+            let people = c.roster.iter().filter(|p| !p.bot).count();
+            for s in seats.iter().filter(|s| !c.roster.iter().any(|p| p.seat == Some(s.seat))) {
+                if !s.bot && people + joined.iter().filter(|p: &&Player| !p.bot).count() >= 4 { continue; }
+                let mut p = Player::new(self.next_id, s.name.clone(), s.color, s.bot);
+                self.next_id += 1;
+                p.seat = Some(s.seat);
+                p.couch = s.couch;
+                joined.push(p);
+            }
+            for p in &joined {
+                let at = if p.bot { c.roster.len() } else { c.roster.iter().position(|q| q.bot).unwrap_or(c.roster.len()) };
+                c.roster.insert(at, p.clone());
+            }
+        }
+        self.assign_views();
+        let lua = self.host.lua().clone();
+        for p in &left {
+            if let Ok(t) = api::player_table(&lua, p) { self.hook("player_left", || Ok(mlua::MultiValue::from_vec(vec![Value::Table(t.clone())]))); }
+        }
+        for p in &joined {
+            if let Ok(t) = api::player_table(&lua, p) { self.hook("player_joined", || Ok(mlua::MultiValue::from_vec(vec![Value::Table(t.clone())]))); }
+        }
+        if changed || !joined.is_empty() || !left.is_empty() { self.hook("players_changed", || Ok(mlua::MultiValue::new())); }
+    }
+
+    /// GameNight's lifecycle. None without a party; Some(None) while the
+    /// game waits or is paused by the host; else the seats' controls.
+    fn party_tick(&mut self, dt: f32) -> Option<Option<Vec<Controls>>> {
+        let evs = self.party.as_mut()?.poll();
+        for ev in evs {
+            match ev {
+                party::Ev::Prepare(seats) => {
+                    self.seat_all(&seats, true);
+                    self.restart();
+                    self.party.as_mut().expect("party").ready();
+                }
+                party::Ev::Seats(seats) => self.reseat(&seats),
+                party::Ev::Dispose => {
+                    self.menu = None;
+                    let mut c = self.core();
+                    c.world.clear();
+                    c.sounds.stop_all();
+                }
+            }
+        }
+        let seats: Vec<usize> = self.core().roster.iter().filter(|p| p.view.is_some() && !p.bot).map(|p| p.seat.unwrap_or(usize::MAX)).collect();
+        let party = self.party.as_mut()?;
+        Some(party.running().then(|| party.controls(&seats, dt, false)))
+    }
+
+    pub fn menu_items(&self) -> Vec<MenuItem> {
+        let mut items = vec![MenuItem::Resume, MenuItem::NewRound];
+        // Under GameNight the host's overlay (Back) leaves the game.
+        if self.party.is_none() { items.push(MenuItem::Quit); }
+        items
+    }
+
+    pub fn menu_open(&self) -> bool { self.menu.is_some() }
+
+    pub fn open_menu(&mut self) { self.menu = Some(0); self.menu_stick = 0.0; }
+
+    fn close_menu(&mut self) { self.menu = None; }
+
+    fn choose(&mut self, item: MenuItem) {
+        self.close_menu();
+        match item {
+            MenuItem::Resume => {}
+            MenuItem::NewRound => self.restart(),
+            MenuItem::Quit => self.quit = true,
+        }
+    }
+
+    /// Start opens the menu; in the menu the game is frozen and any
+    /// person's controller moves the selection. True while the menu has
+    /// the controls (the game does not tick).
+    fn menu_tick(&mut self, controls: &[Controls]) -> bool {
+        let pressed = |b: u32| controls.iter().any(|c| c.pressed.has(b));
+        let Some(sel) = self.menu else {
+            if pressed(Buttons::START) { self.open_menu(); return true; }
+            return false;
+        };
+        let items = self.menu_items();
+        let stick = controls.iter().map(|c| c.mv[1]).fold(0.0f32, |a, y| if y.abs() > a.abs() { y } else { a });
+        let (up, down) = (pressed(Buttons::UP) || (stick > 0.5 && self.menu_stick <= 0.5), pressed(Buttons::DOWN) || (stick < -0.5 && self.menu_stick >= -0.5));
+        self.menu_stick = stick;
+        let n = items.len();
+        if up { self.menu = Some((sel + n - 1) % n); }
+        if down { self.menu = Some((sel + 1) % n); }
+        if pressed(Buttons::SOUTH) { self.choose(items[self.menu.unwrap_or(0)]); }
+        else if pressed(Buttons::EAST) || pressed(Buttons::START) { self.close_menu(); }
+        true
+    }
+
+    /// Run a menu item by label (`menu resume`, `menu new round`) for scripts and agents.
+    fn menu_command(&mut self, what: &str) -> Result<String, String> {
+        match what.trim() {
+            "" | "open" => { self.open_menu(); Ok("menu open".into()) }
+            "close" => { self.close_menu(); Ok("menu closed".into()) }
+            w => {
+                let item = self.menu_items().into_iter().find(|i| i.label().eq_ignore_ascii_case(w)).ok_or_else(|| format!("menu {w}: one of open, close, {}", self.menu_items().iter().map(|i| i.label().to_lowercase()).collect::<Vec<_>>().join(", ")))?;
+                self.choose(item);
+                Ok(format!("{}", item.label()))
+            }
+        }
+    }
+
+    /// Hand the scripts' requests to the party host (or the log without one).
+    fn send_requests(&mut self) {
+        let r = std::mem::take(&mut self.core().requests);
+        if r == Requests::default() { return; }
+        let seats: Vec<(u32, Option<usize>)> = self.core().roster.iter().map(|p| (p.id, p.seat)).collect();
+        for l in &r.logs { self.say(format!("room log: {l}")); }
+        if r.finish { self.say("game.finish: the match is over".into()); }
+        let Some(party) = self.party.as_mut() else { return };
+        for l in &r.logs { party.room_log(l); }
+        for (id, weak, strong, secs) in r.rumble {
+            if let Some((_, Some(seat))) = seats.iter().find(|(i, _)| *i == id) { party.rumble(*seat, weak, strong, secs); }
+        }
+        if r.finish { party.finished(); }
     }
 
     fn main_state(&self) -> Option<Table> {
@@ -198,11 +417,16 @@ impl LuaGame {
         let c = self.core();
         let mut tags = std::collections::BTreeMap::<&str, u32>::new();
         for e in c.world.entities.values() { *tags.entry(e.tag.as_str()).or_default() += 1; }
-        let cams: Vec<Json> = c.cams.iter().map(|k| json!({ "pos": k.pos.to_array(), "target": k.target.to_array(), "fov": k.fov })).collect();
+        let cams: Vec<Json> = c.roster.iter().filter(|p| p.view.is_some()).map(|p| p.cam).map(|k| json!({ "pos": k.pos.to_array(), "target": k.target.to_array(), "fov": k.fov })).collect();
+        let players: Vec<Json> = c.roster.iter().map(|p| json!({ "id": p.id, "name": p.name, "color": p.color, "bot": p.bot, "seat": p.seat, "couch": p.couch, "view": p.view })).collect();
+        let phase = match self.party.as_ref().map(|p| p.phase) {
+            None => "standalone", Some(party::Phase::Idle) => "waiting", Some(party::Phase::Warm) => "ready", Some(party::Phase::Running) => "running", Some(party::Phase::Paused) => "paused",
+        };
+        let menu = self.menu.map(|i| json!({ "items": self.menu_items().iter().map(|m| m.label()).collect::<Vec<_>>(), "selected": i }));
         let sounds = json!({ "loaded": c.sounds.bank.patches.keys().collect::<Vec<_>>(), "played": c.sounds.played,
             "recent": c.sounds.recent.iter().map(|(n, t)| json!({ "sound": n, "tick": t })).collect::<Vec<_>>() });
         json!({
-            "title": c.title, "tick": c.tick, "time": c.tick as f64 / c.tick_rate as f64, "players": c.players,
+            "title": c.title, "tick": c.tick, "time": c.tick as f64 / c.tick_rate as f64, "players": players, "phase": phase, "menu": menu,
             "sky": c.sky.name(), "entities": c.world.entities.len(), "max_entities": c.world.capacity(), "tags": tags,
             "cameras": cams, "sounds": sounds, "modules": modules, "errors": errors, "state": game,
         })
@@ -219,7 +443,7 @@ impl LuaGame {
     }
 
     pub fn help() -> &'static str {
-        "commands: lua CODE (run Luau against the game; `state` is main.luau's) | reload (scripts and sounds now) | restart (clear the world and state, run init) | sky NAME | sounds | entities [TAG] | logs | help"
+        "commands: lua CODE (run Luau against the game; `state` is main.luau's) | reload (scripts and sounds now) | restart (clear the world and state, run init) | sky NAME | sounds | entities [TAG] | menu [open|close|resume|new round] | logs | help"
     }
 
     fn input(&self, lua: &mlua::Lua, controls: &[Controls]) -> mlua::Result<Table> {
@@ -231,7 +455,11 @@ impl LuaGame {
             ("jump", Buttons::SOUTH), ("fire", Buttons::RIGHT_TRIGGER), ("aim", Buttons::LEFT_TRIGGER),
         ];
         let all = lua.create_table()?;
-        for (i, c) in controls.iter().enumerate() {
+        let none = Controls::default();
+        let roster: Vec<(u32, Option<usize>, bool)> = self.core().roster.iter().map(|p| (p.id, p.view, p.bot)).collect();
+        for (id, view, bot) in roster {
+            // People's controls in view order; bots get a neutral input.
+            let c = match view { Some(v) if !bot => controls.get(v).unwrap_or(&none), _ => &none };
             let p = lua.create_table()?;
             p.raw_set("move_x", c.mv[0])?;
             p.raw_set("move_y", c.mv[1])?;
@@ -241,7 +469,7 @@ impl LuaGame {
             for &(n, b) in NAMES { held.raw_set(n, c.held.has(b))?; pressed.raw_set(n, c.pressed.has(b))?; }
             p.raw_set("held", held)?;
             p.raw_set("pressed", pressed)?;
-            all.raw_set(i + 1, p)?;
+            all.raw_set(id, p)?;
         }
         Ok(all)
     }
@@ -292,7 +520,9 @@ impl LuaGame {
         let mut list = HudDrawList::new(size);
         let full = [0.0, 0.0, size[0] as f32, size[1] as f32];
         let rgba = |c: [f32; 4]| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-        for (k, item) in self.core().hud.iter().enumerate() {
+        // The menu hides the game's HUD so nothing shows through it.
+        let items = if self.menu.is_some() { Vec::new() } else { self.core().hud.clone() };
+        for (k, item) in items.iter().enumerate() {
             match item {
                 HudItem::Box { rect, color } => list.rect(*rect, *color, full),
                 HudItem::Text { text, pos, size: fs, color, align, width } => list.text.push(TextRun {
@@ -301,9 +531,25 @@ impl LuaGame {
                 }),
             }
         }
+        let s = (size[1] as f32 / 720.0).max(0.5);
+        // The start menu over the whole screen: the title, then the items.
+        if let Some(sel) = self.menu {
+            let (w, h) = (size[0] as f32, size[1] as f32);
+            list.rect(full, [0.02, 0.02, 0.05, 0.72], full);
+            let items = self.menu_items();
+            let top = h * 0.5 - (64.0 + 56.0 * items.len() as f32) * s * 0.5;
+            list.text.push(TextRun { id: 20_000, text: self.cfg.title.clone(), position: [0.0, top], bounds: full, font_size: 56.0 * s, color: [255, 255, 255, 255],
+                font: FontFace::Title, align: render::hud::TextAlign::Center, width: w });
+            for (i, item) in items.iter().enumerate() {
+                let y = top + (96.0 + 56.0 * i as f32) * s;
+                let on = i == sel;
+                if on { list.rect([w * 0.5 - 170.0 * s, y - 8.0 * s, 340.0 * s, 48.0 * s], [1.0, 1.0, 1.0, 0.16], full); }
+                list.text.push(TextRun { id: 20_001 + i as u64, text: item.label().into(), position: [0.0, y], bounds: full, font_size: 30.0 * s,
+                    color: if on { [255, 214, 90, 255] } else { [230, 230, 240, 255] }, font: FontFace::Body, align: render::hud::TextAlign::Center, width: w });
+            }
+        }
         // Script errors stay on screen until fixed: live iteration needs to see them.
         let errors = self.errors();
-        let s = (size[1] as f32 / 720.0).max(0.5);
         for (i, e) in errors.iter().take(6).enumerate() {
             list.text.push(TextRun { id: 10_000 + i as u64, text: e.chars().take(200).collect(), position: [12.0 * s, size[1] as f32 - (24.0 + 22.0 * (errors.len().min(6) - i) as f32) * s],
                 bounds: full, font_size: 16.0 * s, color: [255, 110, 90, 255], font: FontFace::Body, align: render::hud::TextAlign::Left, width: size[0] as f32 - 24.0 * s });
@@ -314,7 +560,7 @@ impl LuaGame {
     /// Listeners at the cameras.
     fn ears(&self) {
         let mut c = self.core();
-        let ears = c.cams.iter().map(|k| {
+        let ears = c.roster.iter().filter(|p| p.view.is_some()).map(|p| p.cam).map(|k| {
             let f = (k.target - k.pos).try_normalize().unwrap_or(Vec3::NEG_Z);
             let r = f.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
             Ear { pos: k.pos.to_array(), forward: f.to_array(), right: r.to_array() }
@@ -338,6 +584,7 @@ impl LuaGame {
                 Ok(if lines.is_empty() { "no entities".into() } else { lines.join("\n") })
             }
             "logs" => Ok(self.logs().join("\n")),
+            "menu" => self.menu_command(rest),
             other => Err(format!("unknown command {other:?}; {}", Self::help())),
         }
     }
@@ -373,22 +620,41 @@ impl LuaGame {
 }
 
 impl Game for LuaGame {
-    fn local_players(&self) -> usize { self.cfg.players }
+    /// The people (one view each); bots need no controls.
+    fn local_players(&self) -> usize { self.views() }
 
     fn tick(&mut self, controls: &[Controls]) {
         if let Some(mut l) = self.live.take() { l.serve(self); self.live = Some(l); }
-        let tick = self.core().tick;
-        if tick % POLL_TICKS == 0 && tick > 0 { self.reload(); }
+        if self.polls % POLL_TICKS == 0 && self.polls > 0 { self.reload(); }
+        self.polls += 1;
         let dt = 1.0 / self.cfg.tick_rate;
-        let input = match self.input(self.host.lua(), controls) { Ok(t) => t, Err(e) => { self.say(format!("input: {e}")); return; } };
+        // Under GameNight the party's controllers drive the seats; the game
+        // only runs while the host says so.
+        let controls = match self.party_tick(dt) {
+            None => controls.to_vec(),
+            Some(None) => { self.send_requests(); return; }
+            Some(Some(c)) => c,
+        };
+        if self.menu_tick(&controls) { return; }
+        let input = match self.input(self.host.lua(), &controls) { Ok(t) => t, Err(e) => { self.say(format!("input: {e}")); return; } };
         self.hook("tick", || Ok(mlua::MultiValue::from_vec(vec![Value::Number(dt as f64), Value::Table(input.clone())])));
         self.core().tick += 1;
         self.ears();
+        self.send_requests();
     }
 
+    fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
+
+    /// Escape opens and closes the start menu.
+    fn escape(&mut self) -> bool {
+        if self.menu.is_some() { self.close_menu(); } else { self.open_menu(); }
+        true
+    }
+
+    fn quit(&self) -> bool { self.quit }
+
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        let players = self.cfg.players;
-        let views = frame.rects(players);
+        let views = frame.rects(self.views());
         {
             let mut c = self.core();
             c.screen = frame.size;
@@ -411,7 +677,10 @@ impl Game for LuaGame {
         }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush(frame.gpu, r)?;
-        let cameras = c.cams.iter().map(|k| Camera { pos: k.pos, target: k.target, fov_y: k.fov.to_radians(), near: 0.05 }).collect();
+        let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam))).collect();
+        seen.sort_by_key(|(v, _)| *v);
+        if seen.is_empty() { seen.push((0, Cam::default())); }
+        let cameras = seen.into_iter().map(|(_, k)| k).map(|k| Camera { pos: k.pos, target: k.target, fov_y: k.fov.to_radians(), near: 0.05 }).collect();
         drop(c);
         let hud = self.hud(frame.size);
         Ok(Draw { cameras, light, hud })

@@ -13,8 +13,19 @@
 --   tick(dt, input)      every tick, at game.toml's tick_rate; dt = 1 / tick_rate
 --   draw()               every displayed frame: HUD and camera only
 --   reload()             after a saved edit reloads the module
+--   player_joined(p)     GameNight seated someone new mid-game (p: Player)
+--   player_left(p)       a player left mid-game
+--   players_changed()    names, colours or seats changed (after joins and leaves too)
 -- Modules run their hooks in path order. `state` is a table per module that
 -- survives reloads; main.luau's `state` is the game's JSON state (`/state`).
+--
+-- Players: people on controllers and bots, `players.list()`. Under
+-- GameNight the party's seats decide them (a seat change never restarts
+-- the game); without it game.toml's players and bots (or --players and
+-- --bots), filled with bots up to min_players. `input[p.id]` is a
+-- person's controls; a bot's input is neutral and the scripts drive it.
+-- Start (Enter, Escape) opens the start menu (title, Resume, New round):
+-- the game is frozen while it is open, and New round restarts it.
 --
 -- Determinism: the same seed and inputs play out the same way. Everything
 -- that changes the game (world.spawn/set/remove/move/clear, random.*,
@@ -56,6 +67,16 @@ export type EntityOptions = {
 	tag: string?, -- for world.find, overlap and raycast filters
 }
 
+export type Player = {
+	id: number, -- 1, 2, ...: stable for the session, never reused
+	name: string,
+	color: Vec, -- sRGB 0..1, the lobby's colour under GameNight
+	bot: boolean,
+	human: boolean,
+	seat: number?, -- the GameNight seat
+	couch: number?, -- couch position from the lobby, 0 leftmost
+}
+
 export type Entity = {
 	id: number, shape: string, pos: Vec, rot: Vec, size: Vec, color: Vec,
 	emissive: number, roughness: number, metal: number, solid: boolean, visible: boolean, tag: string,
@@ -94,8 +115,19 @@ declare world: {
 	move: (id: number, vel: Vec, dt: number, opts: Query?) -> (Vec, boolean),
 }
 
+declare players: {
+	-- Every player: people first, in split-screen order, then bots.
+	list: () -> { Player },
+	get: (id: number) -> Player?,
+	count: () -> number,
+	-- Rumble a person's controller: strength 0..1 for `seconds` (default 0.2).
+	-- Only under GameNight while the game runs; otherwise nothing happens.
+	rumble: (id: number, strength: number, seconds: number?) -> (),
+}
+
 declare camera: {
-	-- Player 1 .. game.players(). fov is vertical, in degrees (default 60).
+	-- A player's camera (each person has a view). fov is vertical, in degrees (default 60).
+	-- Bots' cameras are kept but not shown.
 	set: (player: number, opts: { pos: Vec?, target: Vec?, fov: number? }) -> (),
 	get: (player: number?) -> { pos: Vec, target: Vec, fov: number },
 }
@@ -119,7 +151,7 @@ declare hud: {
 	box: (x: number, y: number, w: number, h: number, color: Color?) -> (),
 	-- The output size in pixels.
 	size: () -> (number, number),
-	-- A player's split-screen view: x, y, width, height in pixels.
+	-- A person's split-screen view: x, y, width, height in pixels (a bot: the whole output).
 	view: (player: number?) -> (number, number, number, number),
 }
 
@@ -150,8 +182,12 @@ declare game: {
 	tick: () -> number, -- ticks since the start
 	time: () -> number, -- seconds of game time (tick / tick_rate)
 	dt: () -> number,
-	players: () -> number,
+	players: () -> number, -- players.count()
 	title: () -> string,
+	-- The match is over: under GameNight the party moves on to the next game.
+	finish: () -> (),
+	-- A line for the room log in the GameNight app ("Joep won"), at most 120 characters.
+	log: (text: any) -> (),
 }
 
 -- Per module, kept across reloads; main.luau's is the game's JSON state.
