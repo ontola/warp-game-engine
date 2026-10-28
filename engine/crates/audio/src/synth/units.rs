@@ -81,7 +81,35 @@ pub enum Unit {
     Expr { src: String, #[serde(default)] vars: Vec<String> },
     /// One random value per voice (from its seed), between lo and hi. Inputs: lo, hi.
     Rand,
+    /// A car engine (the engine-sim model): `car` names its table in the
+    /// sounds registered with [`register_engines`] unless `spec` is set.
+    /// Inputs: rpm, throttle, load (-1..1), cut (> 0.5), gear, speed (m/s).
+    Engine { car: String, #[serde(default)] fluid: bool, #[serde(skip)] spec: EngineSpec },
+    /// Tyres on the stage: roll, slide, gravel, grass, splash. Inputs:
+    /// speed, slip (m/s), contact, loose, soft, wet (0..1).
+    Tyres,
 }
+
+/// An engine table carried by a patch built in code (compared by identity).
+#[derive(Clone, Default)]
+pub struct EngineSpec(pub Option<std::sync::Arc<crate::EngineSound>>);
+impl PartialEq for EngineSpec { fn eq(&self, o: &Self) -> bool { match (&self.0, &o.0) { (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b), (None, None) => true, _ => false } } }
+impl std::fmt::Debug for EngineSpec { fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}", self.0.as_ref().map_or("registry", |s| s.name.as_str())) } }
+
+static ENGINES: std::sync::RwLock<Vec<(String, std::sync::Arc<crate::EngineSound>)>> = std::sync::RwLock::new(Vec::new());
+
+/// Make every car in `sounds` available to `engine` units by id.
+pub fn register_engines(sounds: &crate::Sounds) {
+    let mut e = ENGINES.write().unwrap();
+    for id in sounds.ids() {
+        if let Ok(spec) = sounds.get(&id) {
+            e.retain(|(k, _)| *k != id);
+            e.push((id, std::sync::Arc::new(spec)));
+        }
+    }
+}
+
+fn engine_spec(car: &str) -> Option<std::sync::Arc<crate::EngineSound>> { ENGINES.read().unwrap().iter().find(|(k, _)| k == car).map(|e| e.1.clone()) }
 
 /// What the docs and the Luau front end call each unit and its inputs.
 pub const UNITS: &[(&str, &[&str], &str)] = &[
@@ -109,6 +137,8 @@ pub const UNITS: &[(&str, &[&str], &str)] = &[
     ("pluck", &["x", "freq", "decay", "brightness"], "Karplus-Strong string."),
     ("hold", &["x", "trig"], "Sample and hold on a rising trigger."),
     ("rand", &["lo", "hi"], "A random value per voice (per-shot variation)."),
+    ("engine", &["rpm", "throttle", "load", "cut", "gear", "speed"], "A car engine (engine-sim model) by car id."),
+    ("tyres", &["speed", "slip", "contact", "loose", "soft", "wet"], "Tyres: rolling, sliding, gravel, grass and splash."),
     ("expr", &["a", "b", "c", "d", "e", "f"], "Per-sample formula of t, sr and its named inputs."),
 ];
 
@@ -120,7 +150,7 @@ impl Unit {
             Unit::Mul => "mul", Unit::Add => "add", Unit::Clamp => "clamp", Unit::Map { .. } => "map",
             Unit::Filter { .. } => "filter", Unit::LowPass1 => "lowpass1", Unit::HighPass1 => "highpass1", Unit::Comb => "comb",
             Unit::Delay { .. } => "delay", Unit::Drive => "drive", Unit::Fold => "fold", Unit::Crush => "crush",
-            Unit::Modal { .. } => "modal", Unit::Pluck => "pluck", Unit::Hold => "hold", Unit::Expr { .. } => "expr", Unit::Rand => "rand",
+            Unit::Modal { .. } => "modal", Unit::Pluck => "pluck", Unit::Hold => "hold", Unit::Expr { .. } => "expr", Unit::Rand => "rand", Unit::Engine { .. } => "engine", Unit::Tyres => "tyres",
         }
     }
     /// Input names, in order.
@@ -139,7 +169,7 @@ impl Unit {
             (Unit::Delay { .. }, 1) => 0.25, (Unit::Delay { .. }, 2) => 0.3, (Unit::Delay { .. }, 3) => 0.5,
             (Unit::Drive, 1) | (Unit::Fold, 1) => 1.0, (Unit::Crush, 1) => 8.0, (Unit::Crush, 2) => 1.0,
             (Unit::Modal { .. }, 1) => 440.0, (Unit::Modal { .. }, 2) => 1.0,
-            (Unit::Pluck, 1) => 220.0, (Unit::Pluck, 2) => 1.0, (Unit::Pluck, 3) => 0.5, (Unit::Rand, 1) => 1.0,
+            (Unit::Pluck, 1) => 220.0, (Unit::Pluck, 2) => 1.0, (Unit::Pluck, 3) => 0.5, (Unit::Rand, 1) => 1.0, (Unit::Engine { .. }, 0) => 900.0, (Unit::Tyres, 2) => 1.0,
             _ => 0.0,
         }
     }
@@ -184,6 +214,8 @@ pub(crate) enum State {
     Hold { held: f32, last: f32 },
     Expr { e: super::expr::Expr, t: f32, slots: Vec<super::expr::Slot> },
     Rand { u: f32 },
+    Engine(Option<Box<crate::engine::EngineVoice>>),
+    Tyres(Box<crate::tyres::TyreVoice>),
 }
 
 /// Longest comb / string period: 20 Hz.
@@ -216,6 +248,12 @@ impl State {
                 State::Expr { slots: e.slots(), e, t: 0.0 }
             }
             Unit::Rand => { let mut r = Noise::new(seed); r.unit(); State::Rand { u: r.unit() } }
+            Unit::Engine { car, fluid, spec } => {
+                let spec = spec.0.clone().or_else(|| engine_spec(car));
+                let model = if *fluid { crate::Model::Fluid } else { crate::Model::Pulse };
+                State::Engine(spec.map(|s| Box::new(crate::engine::EngineVoice::with_model((*s).clone(), sr, seed, model))))
+            }
+            Unit::Tyres => State::Tyres(Box::new(crate::tyres::TyreVoice::new(sr, seed))),
         }
     }
 
@@ -494,6 +532,18 @@ impl State {
                     *last = tr;
                     *o = *held;
                 }
+            }
+            State::Engine(v) => {
+                out.fill(0.0);
+                if let Some(v) = v {
+                    v.set(crate::Controls { rpm: i(0).first(), throttle: i(1).first(), load: i(2).first(), cut: i(3).first() > 0.5, gear: i(4).first().round() as i32, speed: i(5).first() });
+                    v.render_add(out, 1.0);
+                }
+            }
+            State::Tyres(v) => {
+                out.fill(0.0);
+                v.set(crate::tyres::TyreControls { speed: i(0).first(), slip: i(1).first(), contact: i(2).first(), loose: i(3).first(), soft: i(4).first(), wet: i(5).first() });
+                v.render_add(out, 1.0);
             }
             State::Rand { u } => {
                 let (lo, hi) = (i(0), i(1));

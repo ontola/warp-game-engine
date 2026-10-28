@@ -5,6 +5,7 @@
 //!       [--repeat 4 --every 0.12] [--out shot.wav] [--json]
 //!   warp-audio check sounds/*.luau
 //!   warp-audio units
+//!   (any: --engines sounds.toml for engine(...) units)
 //!
 //! Render prints the length, peak, loudness, spectral centroid, per-speaker
 //! levels and a text spectrogram, so a sound can be judged (by a person or a
@@ -17,7 +18,12 @@ use std::sync::Arc;
 const SR: f32 = 48_000.0;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Car engines for `engine(...)` units: --engines FILE (a sounds.toml),
+    // WARP_ENGINES, or Sideways' table when run from the repository.
+    let engines = args.iter().position(|a| a == "--engines").map(|k| { args.remove(k); if k < args.len() { args.remove(k) } else { String::new() } })
+        .or_else(|| std::env::var("WARP_ENGINES").ok()).unwrap_or_else(|| "games/sideways/data/sounds.toml".into());
+    if let Ok(s) = audio::Sounds::load(&engines) { synth::register_engines(&s); }
     let r = match args.first().map(String::as_str) {
         Some("render") => render(&args[1..]),
         Some("check") => check(&args[1..]),

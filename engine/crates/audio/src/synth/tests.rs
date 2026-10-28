@@ -211,3 +211,27 @@ fn the_godot_master_compresses_hot_mixes() {
     let (plain, godot) = (level(None), level(Some(Master::godot())));
     assert!(plain > 0.88 && godot < plain * 0.9, "{plain} {godot}");
 }
+
+#[test]
+fn engines_and_tyres_play_as_units() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../games/sideways/data/sounds.toml");
+    let Ok(sounds) = crate::Sounds::load(path) else { return };
+    register_engines(&sounds);
+    let car = sounds.ids()[0].clone();
+    let src = format!("loop() local rpm = param('rpm', 3000) local thr = param('throttle', 0.8) return engine('{car}', rpm, thr, 0.6) + tyres(20, 4, 1, 1) * 0.25");
+    let p = Arc::new(crate::synth::lua::load("car", &src).unwrap().remove(0));
+    // The engine levels itself; the firing frequency follows the rpm.
+    let centroid = |x: &[f32]| { let s = spectrum(&x[..8192], 8192); let (a, b) = s.iter().enumerate().take(800).fold((0.0, 0.0), |(a, b), (k, m)| (a + k as f32 * m, b + m)); a / b * SR / 8192.0 };
+    let e = crate::synth::lua::load("e", &format!("return engine('{car}', param('rpm', 6000), 0.8, 0.6)")).unwrap().remove(0);
+    let idle = e.voice(&[("rpm", 900.0)], 1, SR).render_all(1.0);
+    let pull = e.voice(&[], 1, SR).render_all(1.0);
+    assert!(rms(&idle) > 1e-3 && rms(&pull) > 1e-3);
+    assert!(centroid(&pull[24000..]) > centroid(&idle[24000..]) * 1.1, "{} {}", centroid(&idle[24000..]), centroid(&pull[24000..]));
+    // In the mixer, behind and to the left on 7.1.
+    let (tx, mut mix) = mixer(Layout::surround71(), 8, SR);
+    tx.ears(vec![Ear { pos: [0.0; 3], forward: [0.0, 0.0, -1.0], right: [1.0, 0.0, 0.0] }]);
+    tx.play(&p, &[], Play::at([-3.0, 0.0, 3.0]));
+    let out = mix.render_seconds(0.5);
+    let ch = |c: usize| rms(&out.iter().skip(c).step_by(8).copied().collect::<Vec<_>>());
+    assert!(ch(4) > ch(1) * 3.0, "left back leads: {} vs {}", ch(4), ch(1));
+}
