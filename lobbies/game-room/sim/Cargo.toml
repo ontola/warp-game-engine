@@ -1,0 +1,13 @@
+[package]
+name = "game-room-sim"
+edition.workspace = true
+version.workspace = true
+description = "The Game Room platformer: players, items, weapons and the room layout, stepped at 60 Hz"
+
+[dependencies]
+kern.workspace = true
+gdcompat.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+kern.workspace = true

@@ -1456,6 +1456,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "game-room-sim"
+version = "0.1.0"
+dependencies = [
+ "gdcompat",
+ "kern",
+ "serde_json",
+]
+
+[[package]]
 name = "gamenight"
 version = "0.1.0"
 dependencies = [
