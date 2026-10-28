@@ -1,0 +1,20 @@
+[package]
+name = "spellstorm-app"
+edition.workspace = true
+version.workspace = true
+description = "Spellstorm on Warp: the Godot game's look over the hecs sim"
+
+[[bin]]
+name = "spellstorm"
+path = "src/main.rs"
+
+[dependencies]
+spellstorm.workspace = true
+kern.workspace = true
+render = { path = "../../../engine/crates/render" }
+app = { path = "../../../engine/crates/app" }
+glam = "0.31"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { workspace = true }
+serde_json.workspace = true
+flate2 = "1"

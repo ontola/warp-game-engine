@@ -114,6 +114,7 @@ mod rock_mapping;
 pub use frame::{Camera, FrameStats, Lighting, Renderer, SplitLayout, ViewRect, split_rects, split_rects_with};
 pub use gpu::{Gpu, Stopwatch, write_png};
 pub use scene::Scene;
+pub use shaders::set_game_surface;
 /// A test frame: a compute shader fills an RGBA8 image with a gradient.
 /// Proves the device, compute, readback and PNG path end to end.
 pub fn test_frame(gpu: &Gpu, w: u32, h: u32) -> Vec<u8> {
