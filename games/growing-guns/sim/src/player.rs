@@ -58,7 +58,7 @@ impl World {
         self.cooldowns(i);
         self.decay_recoil(i);
         self.move_player(i, input);
-        self.combat_input(i, input, special_edge);
+        self.combat_input(i, input, special_edge, fire_edge);
         if self.players[i].alive && self.players[i].pos.y < FELL_OFF_Y {
             let hp = self.players[i].health.max(100);
             self.apply_damage(i, hp, Some(i), Blow { env: true, ..Blow::plain(self.players[i].pos) });
@@ -210,6 +210,7 @@ impl World {
     pub(crate) fn slide(&mut self, i: usize) {
         let p = &mut self.players[i];
         let snap = p.on_floor && p.vel.y <= 0.0;
+        let (was_on_floor, fall) = (p.on_floor, -p.vel.y);
         if snap { p.vel.y = -FLOOR_SNAP / DT; }
         // Sub-steps short enough that no thin block is skipped.
         let contact = MOVER.slide(&self.arena.grid, &mut p.pos, &mut p.vel, DT, 0.25);
@@ -220,6 +221,7 @@ impl World {
         }
         p.on_floor = contact.on_floor;
         p.wall_normal = if contact.on_floor { None } else { contact.wall_normal };
+        if contact.on_floor && !was_on_floor { self.events.push(crate::Event::Landed { player: i, speed: fall.max(0.0) }); }
     }
 
     /// Godot `_on_dash_ended`: the ninja slash.
@@ -238,6 +240,8 @@ impl World {
         let contact = MOVER.slide(&self.arena.grid, &mut p.pos, &mut p.vel, DT, 0.25);
         p.on_floor = contact.on_floor;
         if contact.on_floor || p.pos.y < FELL_OFF_Y {
+            if contact.on_floor { self.events.push(crate::Event::Landed { player: i, speed }); }
+            let p = &mut self.players[i];
             p.launching = None;
             p.vel = Vec3::ZERO;
         }
@@ -333,14 +337,19 @@ impl World {
         // Dodge still blocks it; the arena retries every tick.
         if iframes > 0.0 { p.frozen = frozen; return; }
         let pos = p.pos;
+        self.events.push(crate::Event::Lava { player: i, fall: true });
         self.apply_damage(i, lethal, Some(i), Blow { env: true, severity: -1.0, ..Blow::plain(pos) });
     }
 
     /// Godot `apply_environmental_damage` (lava contact), from nobody.
+    /// Lava damage (the only environmental damage over time).
     pub(crate) fn environmental_damage(&mut self, i: usize, amount: i32) {
         let p = &self.players[i];
         if p.ghost || !p.alive || p.frozen || p.launching.is_some() || p.phoenix.is_some() { return; }
         let pos = p.pos;
+        let lethal = amount >= p.health;
+        self.events.push(crate::Event::Lava { player: i, fall: false });
+        if lethal { self.events.push(crate::Event::Lava { player: i, fall: true }); }
         self.apply_damage(i, amount, None, Blow::plain(pos));
     }
 

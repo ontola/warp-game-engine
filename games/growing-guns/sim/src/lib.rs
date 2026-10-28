@@ -343,6 +343,14 @@ pub enum Event {
     Picked { player: usize, card: cards::Card },
     /// A fresh arena was generated: rebuild the scene.
     NewArena,
+    /// Landed on the floor after falling at `speed` m/s.
+    Landed { player: usize, speed: f32 },
+    /// A reload started; it takes `seconds`.
+    Reload { player: usize, seconds: f32 },
+    /// The trigger was pulled with nothing to fire (reloading or empty).
+    Empty { player: usize },
+    /// Burned by lava (`fall`: the lava killed, Godot's fall sizzle).
+    Lava { player: usize, fall: bool },
 }
 
 /// Presentation identity, independent of damage radius. Older recordings

@@ -25,8 +25,10 @@ pub(crate) enum Target {
 }
 
 impl World {
-    pub(crate) fn combat_input(&mut self, i: usize, input: Input, special_edge: bool) {
+    pub(crate) fn combat_input(&mut self, i: usize, input: Input, special_edge: bool, fire_edge: bool) {
         let playing = self.phase == crate::Phase::Playing || !self.players[i].bot;
+        let p = &self.players[i];
+        if fire_edge && playing && (p.reloading || p.ammo == 0) { self.events.push(crate::Event::Empty { player: i }); }
         let p = &self.players[i];
         if input.fire && playing && !p.reloading && p.ammo > 0 && p.rifle_cd <= 0.0 {
             let interval = p.weapon.fire_interval();
@@ -52,6 +54,8 @@ impl World {
         if p.reloading || p.ammo >= p.mag_size() { return; }
         p.reloading = true;
         p.rifle_cd = p.weapon.reload_time();
+        let seconds = p.rifle_cd as f32;
+        self.events.push(crate::Event::Reload { player: i, seconds });
     }
 
     /// Godot `_fire_rifle`.
