@@ -1,0 +1,208 @@
+# Audio
+
+The `audio` crate makes sound rather than only playing it back. Everything
+is deterministic from a seed and runs offline as well as live, so a test
+or an agent can render a WAV and check it. The sample rate constant is
+`audio::SAMPLE_RATE` (48 kHz); the newer synth takes the rate as an
+argument.
+
+It has three parts:
+
+1. engine and tyre sound for vehicles (used by Sideways);
+2. sample playback for game effects, `audio::sfx` (used by Growing Guns);
+3. a procedural synth, `audio::synth`: units, patches as data, and a
+   surround mixer. This is new and not yet used by a game.
+
+`app::sound::start(voices)` opens the default output device with `cpal`
+and mixes `sfx` in its callback; without a device the game stays silent.
+
+## Engine sound
+
+The engine voice follows Ange Yaghi's engine-sim: the sound is the exhaust
+pressure of a running engine, not a recording. Each cylinder blows down
+when its exhaust valve opens, at its own crank angle and firing order, with
+a pulse whose strength follows load, misfires and cuts. Pulses travel their
+own header, meet in the collector, pass the turbine and ring in the main
+pipe, a digital waveguide with reflections at both ends. Intake,
+valvetrain, turbo, gear whine and overrun pops are layered on top. It is
+driven from the game's engine state (rpm, throttle, load, gear, speed).
+
+- `EngineVoice` has two exhaust models: `Model::Pulse` (delay-line
+  headers and a linear waveguide; cheap) and `Model::Fluid` (`fluid`:
+  0D cylinders over a slider-crank, compressible valve flow, and the 1D
+  Euler equations in each header and the pipe; costly).
+- `es` is a port of engine-sim's synthesizer and filters (MIT), including
+  convolution with a recorded exhaust impulse response.
+- `tyres` makes rolling roar, gravel crunch and stones from grains, not
+  steady noise.
+- `Sounds` holds caller-supplied engine presets (TOML, with a `base`
+  table merged under each model). Games own their presets; Sideways keeps
+  them in its `data/`.
+- `stream` runs each car on its own worker thread a few milliseconds ahead;
+  the device callback only places and mixes finished blocks, so a slow
+  voice drops out briefly instead of stalling the callback.
+
+Try it offline: `cargo run --release -p cli -- sound out.wav --car ID`.
+`audio::analysis` writes WAVs and spectra for tests.
+
+## Effects: `audio::sfx`
+
+- Clips: `load_clip` decodes WAV (PCM 8/16/24/32-bit or float) and Ogg
+  Vorbis to mono at `SAMPLE_RATE`.
+- `sfx(max_voices, sr)` returns a sender for the game and a mixer for the
+  audio callback. The sender plays clips with gain, pitch, equal-power pan
+  and a distance low-pass, and runs looping beds whose gain the game moves
+  every frame (ambience, crowds).
+- `spatial(at, listeners, unit)` places a sound for one or more
+  listeners; in split screen each sound is heard from the nearest player.
+- `SfxMixer::render_stereo(seconds)` mixes offline. A script `audio` step
+  uses this to record what played.
+
+## The procedural synth: `audio::synth`
+
+Sound as a small graph of units, described as data, compiled into voices
+and placed in any speaker layout. It renders in blocks of
+`synth::BLOCK` (64) samples and does not allocate while rendering.
+
+### Units
+
+Every unit reads its inputs and writes one block of mono samples. Inputs
+are constants, named patch parameters, or the output of an earlier node.
+Missing inputs take the unit's default.
+
+| Unit | Inputs | What it is |
+| --- | --- | --- |
+| `osc` | freq, pm, width | Band-limited oscillator: sine, triangle, saw, square, random (stepped). |
+| `noise` | | White, pink or brown noise. |
+| `dust` | density, gain | Random clicks, `density` per second (crackle, rain, gravel). |
+| `clip` | rate | A recorded sound (48 kHz mono) at `rate`, optionally looping. |
+| `env` | | Envelope through `{time, level, curve}` points from 0, starting with the voice. |
+| `adsr` | attack, decay, sustain, release | Envelope on the voice's gate; releases when stopped. |
+| `lfo` | rate, depth | Low-frequency modulator. |
+| `wander` | rate | Smooth random wander in -1..1. |
+| `mul`, `add` | a, b | Arithmetic. |
+| `clamp` | x, lo, hi | Clamp. |
+| `map` | x, in_lo, in_hi, out_lo, out_hi | Map a range onto another, optionally exponential (frequencies). |
+| `filter` | x, cutoff, q | State-variable filter: low, high, band, notch, peak. |
+| `lowpass1`, `highpass1` | x, cutoff | One-pole filters. |
+| `comb` | x, freq, feedback | Feedback comb (metal, tubes). |
+| `delay` | x, time, feedback, mix | Delay line with feedback. |
+| `drive` | x, drive | tanh saturation. |
+| `fold` | x, amount | Wave folder. |
+| `crush` | x, bits, hold | Bit and sample-rate reduction. |
+| `modal` | x, freq, damping | Bank of damped resonators (struck metal, wood, stone). |
+| `pluck` | x, freq, decay, brightness | Karplus-Strong string. |
+| `hold` | x, trig | Sample and hold on a rising trigger. |
+| `expr` | up to six named | Per-sample formula of `t`, `sr` and its inputs. |
+
+`expr` formulas such as `f1 + (f0 - f1) * exp(-t * k)` compile once into a
+small stack program. They support `+ - * / ^`, unary minus, `<` and `>`
+(1 or 0), and exp, log, sin, cos, tan, tanh, sqrt, abs, sign, floor,
+fract, min, max, pow, clamp, lerp, smoothstep and step, so formulas from
+procedural sound code in GDScript or C port as they are.
+
+The table above is also in the code as `synth::units::UNITS`, which is
+what the docs and the Luau front end name units by.
+
+### Patches as data
+
+A `Patch` is a name, a list of nodes, the output node, parameters with
+defaults, an optional `max_length` and a `looping` flag. It derives
+`Serialize` and `Deserialize`. `validate()` checks the graph: inputs only
+from earlier nodes (no cycles), known parameters and input counts within
+the unit's. `voice(params, seed, sr)` compiles it into a `Voice`
+(allocation happens here, off the audio thread).
+
+A struck bell, from the crate's tests:
+
+```rust
+use audio::synth::*;
+
+let bell = Patch {
+    name: "bell".into(),
+    params: vec![("freq".into(), 600.0)],
+    nodes: vec![
+        Node { unit: Unit::Noise { color: NoiseColor::White }, inputs: vec![] },
+        Node { unit: Unit::Env { points: vec![
+            Point { time: 0.001, level: 1.0, curve: 0.0 },
+            Point { time: 0.01, level: 0.0, curve: 4.0 },
+        ] }, inputs: vec![] },
+        Node { unit: Unit::Mul, inputs: vec![In::N(0), In::N(1)] },
+        Node { unit: Unit::Modal { modes: vec![
+            Mode { ratio: 1.0, decay: 0.6, gain: 1.0 },
+            Mode { ratio: 2.76, decay: 0.3, gain: 0.5 },
+        ] }, inputs: vec![In::N(2), In::P("freq".into())] },
+    ],
+    out: 3,
+    ..Default::default()
+};
+bell.validate()?;
+let samples = bell.voice(&[("freq", 440.0)], 1, 48_000.0).render_all(2.0);
+```
+
+A voice ends when its envelopes are done and it has been quiet for about
+0.1 s, at `max_length`, or (when `looping`) after release. Parameters set
+while playing glide over the next block.
+
+### The mixer
+
+`synth::mixer(layout, max_voices, sr)` returns a `SoundSender` for the
+game thread (cheap to clone) and a `Mixer` for the audio callback. The game
+builds voices and sends them; the audio thread only mixes, and hands
+finished voices back so they are dropped elsewhere.
+
+```rust
+let (tx, mut mix) = synth::mixer(Layout::surround71(), 256, 48_000.0);
+tx.ears(vec![Ear { pos: [0.0; 3], forward: [0.0, 0.0, -1.0], right: [1.0, 0.0, 0.0] }]);
+tx.room(1.5, 0.4, 0.5);                       // reverb: decay s, damping, level
+let bell = std::sync::Arc::new(bell);
+let h = tx.play(&bell, &[("freq", 300.0)], Play {
+    place: Place::At([0.0, 0.0, -68.6]),
+    sound_delay: true,                        // arrives after d / 343 m/s
+    reverb: 0.2,
+    ..Default::default()
+});
+tx.set(&h, "freq", 320.0);                    // glides over one block
+let out = mix.render_seconds(1.0);            // offline, interleaved
+```
+
+What it does with each voice:
+
+- **Layouts:** mono, stereo, quad, 5.1 (L R C LFE Ls Rs) and 7.1 (L R C
+  LFE Lb Rb Ls Rs), or any ring of up to 16 speakers given by azimuth.
+  `Layout::for_channels(n)` picks the usual one for a device.
+- **Panning:** pairwise constant-power amplitude panning between the two
+  speakers around the source on the horizontal ring (VBAP), blended toward
+  all speakers by `spread`. Stereo folds sounds behind onto the front. The
+  LFE channel gets a send, not panning.
+- **Several listeners:** a sound is placed for the nearest ear; with
+  several ears (split screen on one set of speakers) the image widens.
+- **Distance:** full gain within `Falloff::reference` (default 4 m), then
+  reference / distance, silent beyond `max` (default 400 m).
+- **Air absorption:** highs fall with distance (`air`, the fraction of
+  20 kHz lost per 100 m), applied as a low-pass.
+- **Occlusion:** 0 (clear) to 1 (behind walls) lowers gain and the
+  low-pass cutoff.
+- **Speed of sound:** with `sound_delay`, a voice starts after distance /
+  343 m/s. A test checks that a sound 68.6 m away arrives at 0.2 s.
+- **Reverb:** a feedback delay network of eight lines (30 to 75 ms) with
+  one decorrelated output per speaker, so the tail surrounds the listener
+  in any layout. `room(decay, damping, level)` sets it; `Play::reverb` is
+  each voice's send.
+- **Limiter:** master gain and a peak limiter at -1 dBFS.
+
+`Mixer::render(out, channels)` fills an interleaved device buffer: a
+device with more channels than the layout gets silence on the rest, one
+with fewer folds the extra channels into the first ones. A test renders
+100 struck-metal voices in 7.1 with reverb and asserts it runs faster than
+real time.
+
+### In progress
+
+Being built in another branch, not yet committed, so not documented here
+in detail:
+
+- a Luau front end that writes patches as Luau (unit names from `UNITS`);
+- `warp-audio`, a command-line tool to render patches to audio files.
+
+Until then, patches are built in Rust as above.

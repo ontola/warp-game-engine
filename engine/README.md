@@ -10,6 +10,10 @@ the game owns its simulation, assets, tuning and integration.
 | `render` | Cluster LOD, GPU visibility, shading, shadows, vegetation, atmosphere, HUD and reconstruction |
 | `audio` | Synthesis, mixing and explicit caller-provided sound configuration |
 | `app` | Game shell: window, fixed tick, input, split screen, headless frames and scripted playtests |
+| `physics` | Rigid bodies on Rapier: boxes, spheres, capsules, impulses, blasts, joints, rays |
+| `assets` | glTF import with materials and textures; baked weighted characters |
+| `net` | Online play over iroh: typed host/client messages behind polled channels |
+| `script` | Luau modules: sandbox, hot reload, deterministic step budget |
 
 `assets/` contains licensed default fonts, reusable audio resources and
 explicit renderer test fixtures. Game runtime meshes belong to Sideways.
@@ -28,7 +32,9 @@ python engine/tools/render-category-report.py --help
 ```
 
 New game? Read [making a game](docs/making-a-game.md) and run
-`cargo run -p app --example hello`.
+`cargo run -p app --example hello`. The [documentation index](docs/README.md)
+has guides for every crate (`physics`, `assets`, `net` and `script` too)
+and lists the dated engineering notes.
 
 See the [diagnostics guide](tools/frame-budget.md),
 [live render debug panel](docs/debug-ui.md),
