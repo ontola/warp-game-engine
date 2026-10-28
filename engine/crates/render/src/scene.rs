@@ -32,8 +32,11 @@ pub const EMISSIVE: u32 = 1024;
 /// and moss on a block's faces, tinted by `tint`; `scale` 0..1 is damage
 /// (more and darker cracks). Meant for unit-cube blocks (hewn bricks).
 pub const ROCK: u32 = 2048;
-/// Procedural flowing lava (Growing Guns' lava_flow), unlit; `scale` is the
-/// radiance in nits of a white pixel. Follows `Lighting::time`.
+/// Procedural flowing lava (Growing Guns' lava_flow), unlit: an animated
+/// emissive surface in world XZ; `tint * scale` is the radiance in nits of a
+/// white pixel. Follows `Lighting::time`. Reads its noise from
+/// `Scene::noise` (Godot's 256 px lava texture) when the scene has one,
+/// else from a built-in gradient noise of the same statistics.
 pub const LAVA: u32 = 4096;
 
 /// Material flags from this bit up hold 1 + an index into
@@ -384,6 +387,9 @@ pub struct Scene {
     pub terrain_visibility_complete: bool,
     /// Game data for materials (Sideways: road surface per 2 m row).
     pub aux: Vec<u32>,
+    /// A tiling scalar field procedural materials sample (`noise_field`):
+    /// LAVA reads it as Godot's lava noise texture when it is there.
+    pub noise: Option<crate::noise_field::NoiseField>,
     /// Equirectangular HDR sky, linear RGB.
     pub sky: Option<(u32, u32, Vec<[f32; 4]>)>,
     /// Absolute, sun-disc-free radiance with its solar state supplied by the
