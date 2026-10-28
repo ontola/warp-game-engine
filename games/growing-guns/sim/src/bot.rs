@@ -5,6 +5,17 @@
 //! gap jumps, ledge climbs, random hops and dashes, fleeing strikes, going
 //! for pickups and using the RMB special by distance.
 //!
+//! On island arenas (Godot `_bot_on_lava_map`) every move, hop, dash, gap
+//! jump, climb and pickup is checked against the islands' safe disks first,
+//! except in a 0.6 s lapse a bot rolls into 7% of seconds. Two additions
+//! (Godot's bots, as written, never gap-jump while careful, since the safe
+//! direction is chosen before the gap check, and they turn back over the
+//! gap in mid-air, since that check also runs in the air): a careful bot
+//! keeps heading for its target when a gap lies ahead with a safe landing
+//! across it, and flies a gap jump to the landing it checked: steering for
+//! it in the air, braking over it and double jumping only if it would fall
+//! short.
+//!
 //! Godot uses one global random stream; each bot here has its own, seeded
 //! from the match seed, drawn in Godot's order.
 use crate::rng::Rng;
@@ -19,6 +30,9 @@ const MISS_CHANCE: f32 = 0.45;
 const JUMP_CHANCE: f32 = 0.008;
 const DASH_CHANCE: f32 = 0.018;
 const EDGE_PROBE: f32 = 1.8;
+const LAVA_EDGE_PROBE: f32 = 3.0;
+const LAVA_MISTAKE_CHANCE: f32 = 0.07;
+const LAVA_JUMP_CHANCE: f32 = 0.0015;
 const STRIKE_FLEE: f32 = 40.0;
 const STRIKE_PANIC: f32 = 22.0;
 const GAP_LANDINGS: [f32; 5] = [4.5, 6.5, 8.5, 10.5, 12.0];
@@ -54,13 +68,34 @@ pub struct Brain {
     pickup: Option<Vec3>,
     pickup_scan: f32,
     pickup_give_up: f32,
+    /// Island arenas: a lapse window in which the lava checks are skipped,
+    /// and the countdown to the next roll for one.
+    lava_risk: f32,
+    lava_roll: f32,
+    /// Island arenas: the landing (ground point) of a gap jump under way,
+    /// until the bot lands (or until the tick in `leap_until`).
+    leap: Option<Vec3>,
+    leap_until: u64,
 }
 
 impl Brain {
+    /// In a lapse of the lava checks (tests).
+    #[cfg(test)]
+    pub(crate) fn lapse(&self) -> bool { self.lava_risk > 0.0 }
+
     pub fn new(seed: u64) -> Self { Brain { rng: Some(Rng::new(seed)), reaction: 0.35, approach: 1.0, ..Default::default() } }
 }
 
 fn pick(rng: &mut Rng, of: &[f32]) -> f32 { of[rng.below(of.len() as u32) as usize] }
+
+/// Island arenas: whether a gap jump at walking speed, with the double jump
+/// and (past 7 m, as Godot's gap jump) a dash, lands `d` m on and `rise` m
+/// up. The jumps top out 2.55 m up; the dash adds about 3 m.
+fn leap_reaches(d: f32, rise: f32) -> bool {
+    if rise > 2.0 { return false; }
+    let t = (JUMP_VELOCITY + DOUBLE_JUMP_VELOCITY) / GRAVITY + (2.0 * (2.55 - rise) / GRAVITY).sqrt();
+    d <= 0.85 * BOT_MOVE_SPEED * t + if d > 7.0 { 3.0 } else { 0.0 }
+}
 
 impl World {
     /// Godot `_bot_physics`, after the status effects and early outs.
@@ -94,6 +129,20 @@ impl World {
         b.climb_until = (b.climb_until - DT).max(0.0);
         b.pickup_scan -= DT;
         b.pickup_give_up -= DT;
+        // Island arenas: roll once a second for a lapse (Godot rolls on every
+        // map; here only where it matters, so other arenas keep their stream).
+        let lava = self.arena.variant == crate::arena::Variant::Island;
+        if lava {
+            b.lava_risk = (b.lava_risk - DT).max(0.0);
+            b.lava_roll -= DT;
+            if b.lava_roll <= 0.0 {
+                b.lava_roll = 1.0;
+                if rng.f() < LAVA_MISTAKE_CHANCE { b.lava_risk = 0.6; }
+            }
+        }
+        let careful = lava && b.lava_risk <= 0.0;
+        if self.players[i].on_floor || self.tick > b.leap_until { b.leap = None; }
+        let probe = if lava { LAVA_EDGE_PROBE } else { EDGE_PROBE };
         // Aim wobble: a random walk in metres.
         b.aim_retarget -= DT;
         if b.aim_retarget <= 0.0 {
@@ -145,7 +194,7 @@ impl World {
         if b.pickup.is_none() && b.pickup_scan <= 0.0 {
             b.pickup_scan = rng.range(1.4, 2.8);
             if !self.coop && rng.f() < PICKUP_NOTICE {
-                b.pickup = self.pickups.iter().filter(|p| p.grounded.is_some() && (-6.0..=3.0).contains(&(p.pos.y - me.y)) && p.pos.distance(me) < PICKUP_RANGE)
+                b.pickup = self.pickups.iter().filter(|p| p.grounded.is_some() && (-6.0..=3.0).contains(&(p.pos.y - me.y)) && p.pos.distance(me) < PICKUP_RANGE && self.arena.spawn_safe(p.pos))
                     .min_by(|a, c| a.pos.distance_squared(me).total_cmp(&c.pos.distance_squared(me))).map(|p| p.pos);
                 b.pickup_give_up = rng.range(4.0, 7.0);
             }
@@ -162,16 +211,34 @@ impl World {
         if strike_dist < STRIKE_FLEE {
             let away = strike.unwrap().0;
             flee = if away.length() > 1e-3 { Vec3::new(away.x, 0.0, away.y).normalize() } else { Vec3::new(rng.range(-1.0, 1.0), 0.0, rng.range(-1.0, 1.0)).normalize_or_zero() };
+            if careful { flee = self.lava_safe_dir(i, me, flee); }
             if flee != Vec3::ZERO { mv = flee; b.approach = 0.0; b.strafe = 0.0; }
+        } else if let Some(l) = b.leap.filter(|_| lava && !self.players[i].on_floor) {
+            // Fly to the landing; brake over it.
+            let to = Vec3::new(l.x - me.x, 0.0, l.z - me.z);
+            mv = if to.length() < 0.4 { Vec3::ZERO } else { to.normalize() * (to.length() / 1.2).min(1.0) };
+        } else if careful {
+            // A gap towards the target with a safe landing across: jump it
+            // (below) rather than turn away from the edge; past 7 m only
+            // with a dash ready.
+            let p = &self.players[i];
+            let leap = p.on_floor && p.dash_timer <= 0.0 && mv.length_squared() > 0.01 && !self.floor_ahead(me, mv, probe, true)
+                && { let d = self.gap_landing(me, mv, true); d > 0.0 && (d <= 7.0 || (p.dash_charges > 0 && b.dash_cd <= 0.0)) };
+            if !leap { mv = self.lava_safe_dir(i, me, mv); }
         }
         // Edges and gaps.
         let on_floor = self.players[i].on_floor;
         let moving = mv.length_squared() > 0.01;
         let mut gap_jump = false;
-        if on_floor && moving && !self.floor_ahead(me, mv, EDGE_PROBE) {
-            let landing = self.gap_landing(me, mv);
-            if landing > 0.0 {
+        if on_floor && moving && !self.floor_ahead(me, mv, probe, careful) {
+            let found = self.gap_landing_at(me, mv, careful);
+            let landing = found.map_or(0.0, |f| f.0);
+            if let Some((d, y)) = found {
                 gap_jump = true;
+                if careful {
+                    let at = me + mv.normalize() * d;
+                    (b.leap, b.leap_until) = (Some(Vec3::new(at.x, y, at.z)), self.tick + 90);
+                }
                 self.bot_jump(i, JUMP_VELOCITY, true);
                 b.jump_cd = rng.range(0.8, 1.8);
                 let p = &self.players[i];
@@ -186,8 +253,18 @@ impl World {
                 mv = Vec3::ZERO;
                 b.strafe_timer = 0.0;
             }
+        } else if let Some(l) = b.leap.filter(|_| !on_floor) {
+            // Double jump only when the fall from here lands short.
+            let p = &self.players[i];
+            if p.vel.y < 1.0 && p.jumps_left > 0 {
+                let drop = me.y - (l.y + crate::HALF_HEIGHT);
+                let disc = p.vel.y * p.vel.y + 2.0 * gravity * drop;
+                let fall = if disc > 0.0 { (p.vel.y + disc.sqrt()) / gravity } else { 0.0 };
+                let dist = glam::Vec2::new(l.x - me.x, l.z - me.z).length();
+                if BOT_MOVE_SPEED * fall < dist - 0.3 { self.bot_double_jump(i); }
+            }
         } else if !on_floor && self.players[i].vel.y < 1.0 && self.players[i].jumps_left > 0 && moving
-            && !self.floor_ahead(me, mv, EDGE_PROBE) && self.gap_landing(me, mv) > 0.0 {
+            && !self.floor_ahead(me, mv, probe, careful) && self.gap_landing(me, mv, careful) > 0.0 {
             self.bot_double_jump(i);
         }
         // Ledge climbs.
@@ -207,16 +284,18 @@ impl World {
             let p = &self.players[i];
             if b.climb_until > 0.0 && !p.on_floor && p.vel.y < 1.0 && p.jumps_left > 0 && p.pos.y < b.climb_y - 0.2 { self.bot_double_jump(i); }
         }
-        // Random hop.
-        if !gap_jump && self.players[i].on_floor && b.jump_cd <= 0.0 && rng.f() < JUMP_CHANCE {
+        // Random hop, rarer on islands and never towards the lava.
+        let hop = if lava { LAVA_JUMP_CHANCE } else { JUMP_CHANCE };
+        if !gap_jump && self.players[i].on_floor && b.jump_cd <= 0.0 && rng.f() < hop && (!lava || self.move_lava_safe(me, mv, probe + 1.5)) {
             self.bot_jump(i, JUMP_VELOCITY, false);
             b.jump_cd = rng.range(2.0, 4.5);
         }
         // Dash: panic near strikes, else now and then.
         let panic = strike_dist < STRIKE_PANIC;
+        let dash_ok = moving && (!careful || self.move_lava_safe(me, mv, probe + 1.2));
         {
             let p = &self.players[i];
-            if p.dash_timer <= 0.0 && p.dash_charges > 0 && b.dash_cd <= 0.0 && (panic || (rng.f() < DASH_CHANCE && moving)) {
+            if p.dash_timer <= 0.0 && p.dash_charges > 0 && b.dash_cd <= 0.0 && (panic || (rng.f() < DASH_CHANCE && dash_ok)) {
                 let wish = if panic && flee != Vec3::ZERO { flee } else if moving { mv } else { fwd };
                 self.start_dash(i, wish);
                 b.dash_cd = rng.range(2.5, 5.5);
@@ -343,7 +422,8 @@ impl World {
         let skip = match sp {
             Special::Zoom => true,
             Special::Sword => dist > 4.5,
-            Special::Teleport => dist < 13.0 || rng.f() < 0.4,
+            // Not on islands: the blink is blind to what it lands on.
+            Special::Teleport => dist < 13.0 || self.arena.variant == crate::arena::Variant::Island || rng.f() < 0.4,
             Special::AirStrike | Special::IonCannon => dist < 9.0 || rng.f() < 0.35,
             Special::Grenade | Special::ClusterGrenade => !(5.0..=30.0).contains(&dist) || rng.f() < 0.35,
         };
@@ -372,22 +452,62 @@ impl World {
         self.events.push(Event::Jump { player: i });
     }
 
-    fn floor_ahead(&self, me: Vec3, dir: Vec3, d: f32) -> bool {
-        let probe = me + dir.normalize_or_zero() * d + Vec3::Y * 0.8;
-        shape::raycast(&self.arena.grid, probe, Vec3::NEG_Y, 3.0).is_some()
+    /// Godot `_bot_has_floor_ahead`; `careful` on islands: the spot ahead
+    /// and the ground under it must be safe too.
+    fn floor_ahead(&self, me: Vec3, dir: Vec3, d: f32, careful: bool) -> bool {
+        if dir.length_squared() <= 0.001 { return true; }
+        let ahead = me + dir.normalize() * d;
+        let probe = ahead + Vec3::Y * 0.8;
+        let Some((t, _, _)) = shape::raycast(&self.arena.grid, probe, Vec3::NEG_Y, 3.0) else { return false };
+        if careful && (!self.arena.spawn_safe(ahead) || !self.arena.spawn_safe(probe - Vec3::Y * (t - 0.9))) { return false; }
+        true
     }
 
-    /// Godot `_bot_gap_landing_distance`: a floor to jump to, or 0.
-    fn gap_landing(&self, me: Vec3, dir: Vec3) -> f32 {
+    /// Godot `_bot_gap_landing_distance`: a floor to jump to, or 0;
+    /// `careful` on islands skips landings off a safe disk.
+    fn gap_landing(&self, me: Vec3, dir: Vec3, careful: bool) -> f32 { self.gap_landing_at(me, dir, careful).map_or(0.0, |f| f.0) }
+
+    /// The same with the landing's height: (distance, ground y).
+    fn gap_landing_at(&self, me: Vec3, dir: Vec3, careful: bool) -> Option<(f32, f32)> {
         let dir = dir.normalize_or_zero();
         for d in GAP_LANDINGS {
             let probe = me + dir * d + Vec3::Y * 3.0;
             if let Some((t, _, _)) = shape::raycast(&self.arena.grid, probe, Vec3::NEG_Y, 9.0) {
                 let y = probe.y - t;
-                if y >= me.y - 4.5 && y <= me.y + 3.5 { return d; }
+                if careful && !self.arena.spawn_safe(Vec3::new(probe.x, y + 0.9, probe.z)) { continue; }
+                // Islands: only what a jump, a double jump and a dash reach.
+                if careful && !leap_reaches(d, y - (me.y - crate::HALF_HEIGHT)) { continue; }
+                if y >= me.y - 4.5 && y <= me.y + 3.5 { return Some((d, y)); }
             }
         }
-        0.0
+        None
+    }
+
+    /// Godot `_bot_has_floor_at`: ground within 2.7 m below.
+    fn has_floor_at(&self, p: Vec3) -> bool { shape::raycast(&self.arena.grid, p + Vec3::Y * 0.8, Vec3::NEG_Y, 3.5).is_some() }
+
+    /// Godot `_bot_move_is_lava_safe`: on islands, safe ground with a floor
+    /// under it 0.9, 1.6 and `look` m along `dir`.
+    fn move_lava_safe(&self, me: Vec3, dir: Vec3, look: f32) -> bool {
+        if self.arena.variant != crate::arena::Variant::Island || dir.length_squared() < 0.001 { return true; }
+        let dir = dir.normalize();
+        [0.9, 1.6, look].into_iter().all(|d| { let p = me + dir * d; self.arena.spawn_safe(p) && self.has_floor_at(p) })
+    }
+
+    /// Godot `_bot_lava_safe_move_dir`: the wanted direction if it is safe,
+    /// else towards the centre or across it, else back, forward, left or
+    /// right of the body; else stand still.
+    fn lava_safe_dir(&self, i: usize, me: Vec3, want: Vec3) -> Vec3 {
+        if want.length_squared() > 0.01 && self.move_lava_safe(me, want, LAVA_EDGE_PROBE) { return want.normalize(); }
+        let mut cands = Vec::with_capacity(7);
+        let to_centre = Vec3::new(-me.x, 0.0, -me.z);
+        if to_centre.length_squared() > 0.01 {
+            let c = to_centre.normalize();
+            cands.extend([c, Vec3::new(-c.z, 0.0, c.x), Vec3::new(c.z, 0.0, -c.x)]);
+        }
+        let (s, c) = self.players[i].yaw.sin_cos();
+        cands.extend([Vec3::new(s, 0.0, c), Vec3::new(-s, 0.0, -c), Vec3::new(-c, 0.0, s), Vec3::new(c, 0.0, -s)]);
+        cands.into_iter().find(|&d| self.move_lava_safe(me, d, LAVA_EDGE_PROBE)).unwrap_or(Vec3::ZERO)
     }
 
     /// Godot `_bot_climbable_ledge_height`: a wall ahead with a top 1..2.6 m up.
@@ -399,6 +519,8 @@ impl World {
         let top_from = Vec3::new(wall.x, me.y + 3.4, wall.z) + dir * 0.6;
         let Some((t2, _, _)) = shape::raycast(&self.arena.grid, top_from, Vec3::NEG_Y, 3.8) else { return 0.0 };
         let h = top_from.y - t2 - me.y;
-        if (CLIMB.0..=CLIMB.1).contains(&h) { h } else { 0.0 }
+        if !(CLIMB.0..=CLIMB.1).contains(&h) { return 0.0; }
+        if !self.arena.spawn_safe(Vec3::new(top_from.x, top_from.y - t2 + 0.9, top_from.z)) { return 0.0; }
+        h
     }
 }

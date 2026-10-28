@@ -193,7 +193,7 @@ impl World {
     /// The beam: a 38 m vertical column through any cover.
     fn ion_detonate(&mut self, target: Vec3, owner: Option<usize>) {
         self.events.push(Event::Explosion { pos: target, radius: ION_RADIUS, owner: owner.unwrap_or(0), kind: crate::ExplosionKind::Ion });
-        let bottom = crate::arena::LAVA_KILL_Y - 20.0;
+        let bottom = self.arena.lava_surface() - 20.0;
         let top = target.y + 880.0;
         for j in 0..self.players.len() {
             let p = &self.players[j];

@@ -53,6 +53,8 @@ pub struct Gg {
     since_snap: f32,
     since_poll: u32,
     rebuild: bool,
+    /// The atmosphere shown is the island arenas' (Godot's sky only).
+    inferno: bool,
     pub(crate) sounds: Option<crate::sounds::Sounds>,
     /// The soundtrack and game.gd's music logic.
     music: Option<(crate::music::Shared, crate::music::Director)>,
@@ -111,7 +113,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false }
             .with_split()
@@ -140,6 +142,7 @@ impl Gg {
         self.rebuild = true;
         // The fresh visuals carry Godot's sky: apply the chosen one again.
         self.sky.applied = None;
+        self.inferno = false;
         let choice = self.sky.choice;
         if let Err(e) = self.set_sky(choice) { eprintln!("sky: {e}"); }
         // A new match for the music too.
@@ -235,10 +238,10 @@ impl Gg {
     fn apply_sky(&mut self) -> Result<(), String> {
         match self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) {
             None if self.sky.applied.is_some() => {
-                self.vis.scene.sky = Some(view::sky());
+                self.vis.scene.sky = Some(view::sky_for(self.inferno));
                 self.vis.scene.sky_physical = false;
                 let taa = self.light.taa;
-                self.light = Lighting { taa, ..view::lighting() };
+                self.light = Lighting { taa, ..view::lighting_for(self.inferno) };
                 self.vis.set_floodlights(1.0);
                 self.apply_light_overrides();
                 self.sky.applied = None;
@@ -253,6 +256,22 @@ impl Gg {
             Some(_) => {}
         }
         Ok(())
+    }
+
+    /// Godot's island arenas have their own atmosphere (`_inferno_palette`):
+    /// under Godot's sky, swap the sky and sun when a round changes between
+    /// an island arena and another (a renderer rebuild, only then). The
+    /// procedural skies keep theirs.
+    fn sync_atmosphere(&mut self) {
+        let inferno = self.world.arena.variant == growing_guns::arena::Variant::Island;
+        if inferno == self.inferno { return; }
+        self.inferno = inferno;
+        if self.sky.applied.is_some() { return; }
+        self.vis.scene.sky = Some(view::sky_for(inferno));
+        let taa = self.light.taa;
+        self.light = Lighting { taa, ..view::lighting_for(inferno) };
+        self.apply_light_overrides();
+        self.rebuild = true;
     }
 
     fn show_sky(&mut self, prepared: render::sky::PreparedSky) {
@@ -685,6 +704,7 @@ impl app::Game for Gg {
         self.vis.set_tilt(self.ui.tilt);
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if self.sky.live.is_some() { self.cycle_sky(); }
+        self.sync_atmosphere();
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
             frame.set_scene(&self.vis.scene, &self.light);
             self.plates.invalidate();
@@ -805,7 +825,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -881,12 +901,19 @@ impl app::Game for Gg {
                 Ok(s.status())
             }
             "arena" => {
-                let seed = num(1)? as u64;
-                self.world.arena = growing_guns::Arena::generate(seed);
+                // `arena SEED`, or `arena island [SEED]`: the island layout
+                // whatever the seed rolls (Godot `force_all_floor_lava`).
+                let island = w.get(1) == Some(&"island");
+                let seed = if island { w.get(2).map_or(Ok(1.0), |_| num(2))? } else { num(1)? } as u64;
+                self.world.arena = growing_guns::Arena::generate_with(seed, 55.0, 95.0, island);
+                self.world.lava = Default::default();
+                // On islands everyone moves onto one (anywhere else is lava).
+                if island { self.world.place_on_spawns(); }
                 self.new_arena();
                 let a = &self.world.arena;
                 let hole = a.hole.map(|(c, s)| format!(", hole {s:.1} m at {:.1} {:.1}", c.x, c.y)).unwrap_or_default();
-                Ok(format!("arena {seed}: {:?}, {} m, {} chunks{hole}", a.variant, a.size, a.chunks.len()))
+                let islands = if a.islands.is_empty() { String::new() } else { format!(", {} islands", a.islands.len()) };
+                Ok(format!("arena {seed}: {:?}, {} m, {} chunks{hole}{islands}", a.variant, a.size, a.chunks.len()))
             }
             "lava" => {
                 // Godot's dev key L; `lava S` as if the leak began S seconds ago.
@@ -954,7 +981,8 @@ impl app::Game for Gg {
             "tick": w.tick, "round": w.round, "phase": w.phase, "screen": format!("{:?}", self.ui.screen), "net": self.session.status(&self.slots), "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
             "projectiles": w.projectiles.len(), "strikes": w.strikes.len(), "pickups": w.pickups.len(),
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
-                "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
+                "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks(),
+                "islands": w.arena.islands.len(), "lava_surface": w.arena.lava_surface(), "leak_surface": w.lava.active.then(|| w.lava.surface()) },
             "players": players, "waves": w.coop.then_some(&w.waves), "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
             "sky": { "choice": self.sky.choice.name(), "applied": self.sky.applied.map(|s| s.metadata()) },
             "local": { "seats": self.slots, "split": self.split, "devices": self.binding.iter().map(|b| b.iter().map(|d| d.to_string()).collect::<Vec<_>>()).collect::<Vec<_>>(),
@@ -1002,7 +1030,8 @@ pub fn rebuild_views(gg: &mut Gg) {
 fn card_id(w: &World, c: growing_guns::cards::Card) -> String { w.cards.get(c).map_or_else(|| format!("#{}", c.0), |d| d.id.clone()) }
 
 /// `--modifier ID` forces a round modifier (`none` for none), `--rounds N`
-/// sets the wins that end the match, `--coop` plays wave survival.
+/// sets the wins that end the match, `--coop` plays wave survival,
+/// `--island` makes every arena an island arena.
 /// Headless tools roll no modifiers unless asked.
 pub fn match_options(args: &Args, w: &mut World, play: bool) {
     if !play { w.modifier_chance = 0.0; }
@@ -1016,6 +1045,7 @@ pub fn match_options(args: &Args, w: &mut World, play: bool) {
     }
     w.rounds_to_win = args.num("--rounds", w.rounds_to_win);
     w.coop = args.flag("--coop");
+    w.force_island = args.flag("--island");
 }
 
 pub fn run(args: &Args) -> Result<(), String> {

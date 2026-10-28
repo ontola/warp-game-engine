@@ -68,12 +68,18 @@ pub struct LavaLeak {
     pub rise: f32,
     pub has_walls: bool,
     pub half: f32,
+    /// An island arena: the floor is lava already (Godot
+    /// `_lava_floor_already_full`), so it rises from the start, burns 1.15 m
+    /// up instead of 2.4, everywhere, and shows no fronts or sheets.
+    #[serde(default)]
+    pub full: bool,
 }
 
 impl LavaLeak {
     pub fn wall_t(&self) -> f32 { if self.has_walls { (self.elapsed / LEAK_WALL_FLOW).clamp(0.0, 1.0) } else { 1.0 } }
     fn wall_s(&self) -> f32 { if self.has_walls { LEAK_WALL_FLOW } else { 0.0 } }
     pub fn floor_t(&self) -> f32 {
+        if self.full { return 1.0; }
         let fe = (self.elapsed - self.wall_s()).max(0.0);
         let mut t = (fe / (self.spread - self.wall_s()).max(0.1)).clamp(0.0, 1.0);
         if self.has_walls && self.wall_t() >= 1.0 && t <= 0.0 { t = 0.001; }
@@ -125,7 +131,7 @@ impl World {
             Some(MODIFIERS[self.rng.below(MODIFIERS.len() as u32) as usize].0)
         } else { None };
         let (lo, hi) = if self.modifier == Some(Modifier::SniperFight) { (110.0, 120.0) } else { (55.0, 95.0) };
-        self.arena = Arena::generate_sized(arena_seed, lo, hi);
+        self.arena = Arena::generate_with(arena_seed, lo, hi, self.force_island);
         self.carves.clear();
         self.breakage = crate::Breakage::default();
         self.lava = LavaLeak::default();
@@ -355,7 +361,10 @@ impl World {
                         Some((t, _, _)) => { pk.pos.y -= t; pk.pos.y += 0.42; pk.grounded = Some(0.0); }
                         None => pk.pos.y += step,
                     }
-                    if pk.pos.y < crate::FELL_OFF_Y { self.pickups.remove(k); continue; }
+                    // Over an island arena's lava a missed drop falls on for the
+                    // rest of the round, holding its place under the cap of four
+                    // (Godot frees a pickup only when taken or after landing).
+                    if pk.pos.y < crate::FELL_OFF_Y && self.arena.variant != crate::arena::Variant::Island { self.pickups.remove(k); continue; }
                 }
             }
             let taker = self.players.iter().position(|p| {
@@ -448,7 +457,8 @@ impl World {
 
     fn start_lava_leak(&mut self) {
         let has_walls = self.arena.variant == crate::arena::Variant::Walled || self.arena.variant == crate::arena::Variant::Hole;
-        self.lava = LavaLeak { active: true, elapsed: 0.0, spread: LAVA_LEAK_SPREAD, rise: 0.0, has_walls, half: self.arena.size * 0.5 };
+        let full = self.arena.variant == crate::arena::Variant::Island;
+        self.lava = LavaLeak { active: true, elapsed: 0.0, spread: LAVA_LEAK_SPREAD, rise: 0.0, has_walls, half: self.arena.size * 0.5, full };
     }
 
     /// Start the leak as if it began `elapsed` seconds ago (Godot
@@ -478,7 +488,7 @@ impl World {
             if !p.alive || p.ghost { continue; }
             let (x, y, z) = (p.pos.x, p.pos.y, p.pos.z);
             if y < surface { self.kill_environmental(i); continue; }
-            if y > surface + 2.4 { self.players[i].lava_accum = 0.0; continue; }
+            if y > surface + if l.full { 1.15 } else { 2.4 } { self.players[i].lava_accum = 0.0; continue; }
             let in_floor = floor_active && (x.abs() > half - inset || z.abs() > half - inset);
             let near = |a: f32, b: f32| (a.abs() - half).abs() <= 1.25 && b.abs() <= half;
             let in_wall = l.has_walls && (near(x, z) || near(z, x)) && y >= wall_h - (0.05 + (wall_h - 0.05) * wall_t) - 0.8 && y <= wall_h + 0.8;
@@ -495,7 +505,8 @@ impl World {
     pub(crate) fn sky_drop_spot(&self, _i: usize, near: Vec3) -> Vec3 {
         let ground = shape::raycast(&self.arena.grid, near + Vec3::Y * 0.2, Vec3::NEG_Y, 40.0)
             .filter(|(_, n, _)| n.y >= 0.65)
-            .map(|(t, _, _)| near + Vec3::Y * (0.2 - t + crate::HALF_HEIGHT));
+            .map(|(t, _, _)| near + Vec3::Y * (0.2 - t + crate::HALF_HEIGHT))
+            .filter(|&g| self.arena.spawn_safe(g));
         let base = ground.unwrap_or_else(|| pick_spawn(&self.arena.spawns, &self.players.iter().map(|p| p.pos).collect::<Vec<_>>()));
         base + Vec3::Y * SKY_DROP_HEIGHT
     }
@@ -568,6 +579,22 @@ pub fn modifier_weapon(m: Modifier, w: &mut crate::Weapon) {
 }
 
 impl World {
+    /// Set everyone on a spawn of the current arena, spaced as a round's
+    /// spawns but without the shuffle (debug: a new arena mid-round).
+    pub fn place_on_spawns(&mut self) {
+        let mut used: Vec<Vec3> = Vec::new();
+        for i in 0..self.players.len() {
+            let pick = pick_spawn(&self.arena.spawns, &used);
+            used.push(pick);
+            let p = &mut self.players[i];
+            (p.pos, p.vel, p.frozen, p.lava_accum) = (pick, Vec3::ZERO, false, 0.0);
+            let to = -Vec2::new(pick.x, pick.z);
+            p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
+        }
+        self.flow.cage = None;
+        self.flow.cage_targets = used;
+    }
+
     /// Open the spawn cage now and set everyone on their spawn (tests, debug).
     pub fn release_cage(&mut self) {
         self.flow.cage = None;

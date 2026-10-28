@@ -296,13 +296,17 @@ pub struct ArenaWire {
     hole: Option<(glam::Vec2, f32)>,
     /// Chunks that differ from fresh: (index, health); dead at health <= 0.
     wear: Vec<(u32, f32)>,
+    #[serde(default)]
+    islands: Vec<(Vec3, f32)>,
+    #[serde(default)]
+    links: Vec<(Vec3, Vec3)>,
 }
 
 impl From<Arena> for ArenaWire {
     fn from(a: Arena) -> Self {
         let wear = a.chunks.iter().enumerate().filter(|(_, c)| !c.alive || c.hp < c.max_hp)
             .map(|(i, c)| (i as u32, if c.alive { c.hp } else { 0.0 })).collect();
-        ArenaWire { seed: a.seed, size: a.size, variant: a.variant, blocks: a.blocks, spawns: a.spawns, lights: a.lights, hole: a.hole, wear }
+        ArenaWire { seed: a.seed, size: a.size, variant: a.variant, blocks: a.blocks, spawns: a.spawns, lights: a.lights, hole: a.hole, wear, islands: a.islands, links: a.links }
     }
 }
 
@@ -310,7 +314,7 @@ impl From<ArenaWire> for Arena {
     fn from(w: ArenaWire) -> Self {
         let mut a = Arena { seed: w.seed, size: w.size, variant: w.variant, blocks: w.blocks, chunks: Vec::new(), grid: BoxGrid::default(),
             stadium: crate::stadium::Stadium::new(w.size, w.variant != crate::arena::Variant::Open, crate::arena::WALL_HEIGHT),
-            spawns: w.spawns, lights: w.lights, hole: w.hole };
+            spawns: w.spawns, lights: w.lights, hole: w.hole, islands: w.islands, links: w.links };
         a.build_chunks();
         let removed = w.wear.iter().filter(|x| x.1 <= 0.0).map(|x| x.0).collect();
         let worn = w.wear.iter().filter(|x| x.1 > 0.0).copied().collect();
@@ -325,8 +329,10 @@ mod tests {
 
     #[test]
     fn chunks_tile_the_arena_deterministically() {
-        let a = Arena::generate(5);
-        let b = Arena::generate(5);
+        // Seed 15: walled, 89 m (seeds 4, 5, 10 and 11 roll islands since
+        // those are ported).
+        let a = Arena::generate(15);
+        let b = Arena::generate(15);
         assert_eq!(a.chunks, b.chunks);
         assert!(a.chunks.len() > 1000, "{}", a.chunks.len());
         assert!(a.chunks.iter().all(|c| c.half.max_element() * 2.0 < 4.5), "chunks stay brick sized");
@@ -339,7 +345,7 @@ mod tests {
     fn walls_and_floors_have_no_holes() {
         let solid = |a: &Arena, p: Vec3| a.grid.query(glam::Vec2::new(p.x, p.z), glam::Vec2::new(p.x, p.z)).into_iter()
             .any(|i| a.chunks[i].shape().push_out(p, 0.01, 0.01).is_some());
-        for seed in [4, 10] {
+        for seed in [0, 15] {
             let a = Arena::generate(seed);
             let half = a.size * 0.5;
             let mut missing = Vec::new();
@@ -361,7 +367,7 @@ mod tests {
 
     #[test]
     fn weak_hits_mark_strong_hits_break_and_rims_weaken() {
-        let mut a = Arena::generate(5);
+        let mut a = Arena::generate(15);
         let floor = a.chunks.iter().position(|c| c.kind == Kind::Floor && c.center.y > -1.0 && c.center.x.abs() < 10.0 && c.center.z.abs() < 10.0).unwrap();
         let p = a.chunks[floor].center + Vec3::Y * a.chunks[floor].half.y;
         // Base rifle: 16 damage, below the threshold.
