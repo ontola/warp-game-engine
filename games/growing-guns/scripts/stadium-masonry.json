@@ -1,0 +1,9 @@
+{
+  "seed_note": "--players 1 --seed 52 --sky noon. GG_STADIUM_BRICKS=0 is the same-executable baseline; default enables brick panels.",
+  "size": [1600, 900],
+  "steps": [
+    {"cmd": ["bots pause", "menu none", "teleport 0 40 7 0", "aim 0 55 10 8"], "ticks": 1, "capture": "facade.png"},
+    {"cmd": ["teleport 0 49 17 0", "aim 0 60 20 7"], "ticks": 1, "capture": "steps.png"},
+    {"cmd": ["teleport 0 15 18 25", "aim 0 65 25 0"], "ticks": 1, "capture": "overview.png", "state": "state.json"}
+  ]
+}

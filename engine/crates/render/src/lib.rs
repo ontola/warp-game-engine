@@ -57,6 +57,7 @@ pub mod noise_field;
 pub mod stone_surface;
 pub mod primitives;
 pub mod quarried_block;
+pub mod masonry;
 pub mod slots;
 pub mod particles;
 pub mod shade_features;
