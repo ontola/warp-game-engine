@@ -352,9 +352,6 @@ impl Hud {
             let size = (28.0 * l.s).round().max(16.0) * l.u;
             Label::new(BODY, size, [0.72, 0.92, 1.0, 1.0]).outline(5.0 * l.u, [0.0, 0.0, 0.0, 0.9]).center().draw(d, "REVIVING...", cx, y + h - 98.0 * l.u, clip);
         }
-        if world.coop && p.downed && !picking {
-            Label::new(BODY, 24.0 * l.u, [1.0, 0.55, 0.45, 1.0]).outline(5.0 * l.u, [0.0, 0.0, 0.0, 0.9]).center().draw(d, "DOWN — A TEAMMATE CAN REVIVE YOU", cx, y + h - 98.0 * l.u, clip);
-        }
         self.toasts(d, world, i, &l);
         self.round_strip(d, world, i, &l);
         // The death overlay: red after a lava death, then the card pick's
@@ -527,16 +524,22 @@ impl Hud {
     }
 
     /// Shared overlay: the round banner, kill feed, coop count, match over.
+    /// Round start (Godot `_round_start_flash`, canvas layer 51 over
+    /// everything, menus too): full white held 0.25 s, then a 0.45 s sine
+    /// ease-in fade. Draw last.
+    pub fn round_flash(&self, d: &mut HudDrawList) {
+        if self.round_age >= 0.7 { return; }
+        let clip = [0.0, 0.0, d.size[0] as f32, d.size[1] as f32];
+        let t = ((self.round_age - 0.25) / 0.45).clamp(0.0, 1.0);
+        d.begin_overlay();
+        d.rect(clip, [1.0, 0.98, 0.94, (t * std::f32::consts::FRAC_PI_2).cos()], clip);
+    }
+
     /// `net`: a network error for Godot's red panel at the top right.
     pub fn global(&self, d: &mut HudDrawList, world: &World, net: Option<&str>) {
         let [w, h] = d.size.map(|v| v as f32);
         let u = h / DESIGN_H;
         let clip = [0.0, 0.0, w, h];
-        // Round start: a white flash, held 0.25 s then faded over 0.45 s.
-        if self.round_age < 0.7 && world.round > 1 {
-            let a = if self.round_age < 0.25 { 1.0 } else { 1.0 - ((self.round_age - 0.25) / 0.45).clamp(0.0, 1.0).powi(2) };
-            d.rect(clip, [1.0, 0.98, 0.94, a * 0.9], clip);
-        }
         // Coop: KILLED n/m, top right (Godot's scoreboard label).
         if world.coop {
             let lab = Label::new(BODY, 24.0 * u, [1.0, 0.8, 0.4, 1.0]).outline(4.0 * u, BLACK).right();
