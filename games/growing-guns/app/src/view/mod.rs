@@ -10,6 +10,7 @@ mod effects;
 mod gore;
 mod guns;
 mod players;
+mod things;
 
 use crate::stadium::StadiumVisuals;
 use arena::{palette, ArenaView};
@@ -17,7 +18,7 @@ use audio::sfx::Listener;
 use effects::{EffectsView, BLAST_TINT};
 use glam::{Affine3A, Quat, Vec3};
 use growing_guns::shape::Boxes;
-use growing_guns::{Event, World, EYE};
+use growing_guns::{Event, World};
 use guns::Guns;
 use physics::Physics;
 use players::PlayersView;
@@ -60,6 +61,7 @@ pub struct Visuals {
     fx: EffectsView,
     players: PlayersView,
     guns: Guns,
+    things: things::Things,
     /// The colosseum, its crowd and their voice.
     pub stadium: StadiumVisuals,
     /// Seconds on the effects clock for the frame being drawn.
@@ -80,9 +82,10 @@ impl Visuals {
         let first_dynamic = scene.instances.len();
         players.reserve_dynamic(&mut scene, world.players.len());
         let guns = Guns::reserve(&mut scene, world.players.len());
+        let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, stadium, clock: 0.0 };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, stadium, clock: 0.0 };
         v.set_arena(world);
         v
     }
@@ -149,6 +152,19 @@ impl Visuals {
                     self.players.kill(s, &mut self.phys, &mut self.fx, &mut self.arena, world, victim, attacker, gib, dir, now);
                 }
                 Event::Picked { player, .. } => self.guns.grow(player, &world.players[player]),
+                Event::Teleport { from, to, .. } => {
+                    for at in [from, to] { self.fx.particles.burst(s, at, Vec3::Y, &Burst { mesh: m.spark, count: 24, ..Burst::sparks() }); }
+                }
+                Event::Slash { from, dir, range, .. } => {
+                    for k in 0..6 {
+                        let at = from + dir * (range * (k as f32 + 0.5) / 6.0);
+                        self.fx.particles.burst(s, at, dir, &Burst { mesh: m.spark, count: 3, ..Burst::sparks() });
+                    }
+                }
+                Event::Phoenix { player } => {
+                    let at = world.players[player].pos;
+                    self.fx.blasts.explosion(now, at, 3.0, BLAST_TINT);
+                }
                 Event::Jump { player } => self.guns.jump(player),
                 Event::Shot { player, from, dir } => {
                     let p = &world.players[player];
@@ -181,6 +197,7 @@ impl Visuals {
         self.fx.update(world, self.clock, dt);
         self.players.pose(&mut self.scene, world, prev, alpha);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
+        self.things.pose(&mut self.scene, world, self.clock);
     }
 
     /// Morph a player's gun into their current stats (a card was given).
@@ -252,6 +269,8 @@ pub fn camera(world: &World, i: usize, prev: &[Vec3], alpha: f32) -> Camera {
         return Camera { pos: Vec3::new(a.cos() * r, 22.0, a.sin() * r), target: Vec3::ZERO, fov_y: FOV_Y, near: 0.05 };
     }
     // The player's own model is hidden from this view (hide_own_bodies).
-    let eye = pos + Vec3::Y * EYE;
-    Camera { pos: eye, target: eye + p.forward(), fov_y: FOV_Y, near: 0.05 }
+    let eye = pos + Vec3::Y * p.eye_height();
+    // Sniper zoom (Godot FOV 30 instead of 75).
+    let fov_y = if p.zooming { 30f32.to_radians() } else { FOV_Y };
+    Camera { pos: eye, target: eye + p.forward(), fov_y, near: 0.05 }
 }

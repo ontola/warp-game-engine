@@ -2,7 +2,8 @@
 //! game rules in `games/growing-guns/mods`, hot-reloaded while playing.
 //!
 //! A module returns a table; these keys mean something:
-//! - `cards`: card definitions (see `mods/base/cards.luau`);
+//! - `cards`: card definitions (see `mods/base/cards.luau`); a card's
+//!   `apply(w)` mutates the player's Weapon (Godot field names);
 //! - `hit(g, e)`, `kill(g, e)`, `tick(g)`, `round_start(g)`: hooks the sim
 //!   calls inline (World::hooks), in module path order.
 //!
@@ -10,7 +11,8 @@
 //! Everything runs on the host inside the sim tick, so a match with the same
 //! mods replays exactly; clients only load the card data for their menus.
 use glam::Vec3;
-use growing_guns::cards::{Card, CardDef, Stat, STATS};
+use growing_guns::cards::{Card, CardDef};
+use growing_guns::weapon::{self, Weapon};
 use growing_guns::{HitInfo, HookSlot, Hooks, World};
 use script::mlua::{self, Function, Lua, Table, Value, Vector};
 use script::{Host, Limits};
@@ -38,9 +40,11 @@ pub const API: &[(&str, &str, &str)] = &[
     ("ammo", "(self, p: number): number", "Rounds in the magazine."),
     ("set_ammo", "(self, p: number, n: number)", "Set rounds in the magazine."),
     ("score", "(self, p: number): number", "Rounds won."),
-    ("stat", "(self, p: number, name: string): number", "A card stat (see stats())."),
-    ("set_stat", "(self, p: number, name: string, value: number)", "Change a card stat."),
-    ("stats", "(self): {string}", "Names of the card stats."),
+    ("stat", "(self, p: number, name: string): any", "A field of player p's Weapon (see stats()): number, boolean, vector or the special's name."),
+    ("set_stat", "(self, p: number, name: string, value: any)", "Change a Weapon field for this round (cards are re-applied each round)."),
+    ("stats", "(self): {string}", "Names of the Weapon fields."),
+    ("special_cooldown", "(self, p: number): number", "Seconds until player p's RMB special is ready."),
+    ("modifier", "(self): string?", "This round's modifier id, or nil."),
     ("cards", "(self, p: number): {string}", "Ids of the cards player p holds, in pick order."),
     ("card_ids", "(self): {string}", "Ids of every card on offer this match."),
     ("give", "(self, p: number, id: string): boolean", "Give a card at the start of the next tick (stats and pick hook). False over quota."),
@@ -67,6 +71,8 @@ struct Inner {
     seen: u64,
     /// Card id -> the module that defined it and its `pick` function.
     picks: Vec<(String, usize, Function)>,
+    /// Card id -> its `apply(w)`.
+    applies: Vec<(String, usize, Function)>,
     /// Recent log lines, for the `mods` command.
     recent: Vec<String>,
 }
@@ -89,12 +95,12 @@ pub fn find_dir() -> Option<PathBuf> {
 pub fn attach(world: &mut World) -> Result<Arc<Scripts>, String> { attach_dir(world, find_dir()) }
 
 pub fn attach_dir(world: &mut World, dir: Option<PathBuf>) -> Result<Arc<Scripts>, String> {
-    let mut host = Host::new(Limits::default(), |lua, _| register(lua))?;
+    let mut host = Host::new(Limits::default(), |lua, api| { register(lua)?; godot_helpers(lua, api) })?;
     match &dir {
         Some(d) => { host.watch(d); }
         None => host.add_source("base/cards.luau", BUILTIN)?,
     }
-    let s = Arc::new(Scripts { inner: Mutex::new(Inner { host, seen: u64::MAX, picks: Vec::new(), recent: Vec::new() }) });
+    let s = Arc::new(Scripts { inner: Mutex::new(Inner { host, seen: u64::MAX, picks: Vec::new(), applies: Vec::new(), recent: Vec::new() }) });
     s.refresh(world);
     world.hooks = HookSlot(Some(s.clone()));
     Ok(s)
@@ -112,9 +118,10 @@ impl Scripts {
         let mut st = self.inner.lock().unwrap();
         if st.host.generation() != st.seen {
             st.seen = st.host.generation();
-            let (defs, picks, errors) = collect_cards(&st.host);
+            let (defs, picks, applies, errors) = collect_cards(&st.host);
             world.cards = Arc::new(world.cards.merged(defs));
             st.picks = picks;
+            st.applies = applies;
             for e in errors { st.host_log(e); }
         }
         let lines = st.host.drain_log();
@@ -168,6 +175,12 @@ impl Inner {
 }
 
 impl Hooks for Scripts {
+    fn apply_card(&self, def: &CardDef, w: &mut Weapon) {
+        let mut st = self.inner.lock().unwrap();
+        let Some((_, m, f)) = st.applies.iter().find(|(i, _, _)| *i == def.id).cloned() else { return };
+        st.host.run(m, &format!("apply {}", def.id), |lua| lua.scope(|s| f.call::<()>(s.create_any_userdata_ref_mut(w)?)));
+    }
+
     fn pick(&self, w: &mut World, player: usize, card: Card) {
         let mut st = self.inner.lock().unwrap();
         let Some(id) = w.cards.get(card).map(|d| d.id.clone()) else { return };
@@ -204,49 +217,64 @@ impl Hooks for Scripts {
 }
 
 /// Card definitions from every module's `cards`, in module order.
-fn collect_cards(host: &Host) -> (Vec<CardDef>, Vec<(String, usize, Function)>, Vec<String>) {
-    let (mut defs, mut picks, mut errors) = (Vec::new(), Vec::new(), Vec::new());
+type Fns = Vec<(String, usize, Function)>;
+
+fn collect_cards(host: &Host) -> (Vec<CardDef>, Fns, Fns, Vec<String>) {
+    let (mut defs, mut picks, mut applies, mut errors) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (m, module) in host.modules().iter().enumerate() {
         let Some(list) = module.exports.as_ref().and_then(|e| e.raw_get::<Option<Table>>("cards").ok().flatten()) else { continue };
         for (k, t) in list.sequence_values::<Table>().enumerate() {
             match t.map_err(|e| script::short(&e)).and_then(|t| card(&t).map(|d| (d, t))) {
                 Ok((d, t)) => {
-                    if defs.iter().any(|x: &CardDef| x.id == d.id) { errors.push(format!("{}: card {}: id {} is used twice; the later one wins", module.name, k + 1, d.id)); defs.retain(|x| x.id != d.id); picks.retain(|p: &(String, usize, Function)| p.0 != d.id); }
+                    if defs.iter().any(|x: &CardDef| x.id == d.id) {
+                        errors.push(format!("{}: card {}: id {} is used twice; the later one wins", module.name, k + 1, d.id));
+                        defs.retain(|x| x.id != d.id);
+                        picks.retain(|p: &(String, usize, Function)| p.0 != d.id);
+                        applies.retain(|p: &(String, usize, Function)| p.0 != d.id);
+                    }
                     if let Ok(Some(f)) = t.raw_get::<Option<Function>>("pick") { picks.push((d.id.clone(), m, f)); }
+                    if let Ok(Some(f)) = t.raw_get::<Option<Function>>("apply") { applies.push((d.id.clone(), m, f)); }
                     defs.push(d);
                 }
                 Err(e) => errors.push(format!("{}: card {}: {e}", module.name, k + 1)),
             }
         }
     }
-    (defs, picks, errors)
+    (defs, picks, applies, errors)
 }
 
 fn card(t: &Table) -> Result<CardDef, String> {
     let s = |k: &str| t.raw_get::<Option<String>>(k).map_err(|_| format!("{k} must be a string"));
     let id = s("id")?.ok_or("needs an id")?;
-    let ops = |k: &str| -> Result<Vec<(Stat, f32)>, String> {
-        let Some(m) = t.raw_get::<Option<Table>>(k).map_err(|_| format!("{id}: {k} must be a table of stat = number"))? else { return Ok(Vec::new()) };
+    let ops = |k: &str| -> Result<Vec<(String, f32)>, String> {
+        let Some(m) = t.raw_get::<Option<Table>>(k).map_err(|_| format!("{id}: {k} must be a table of field = number"))? else { return Ok(Vec::new()) };
         let mut out = Vec::new();
         for kv in m.pairs::<String, f64>() {
-            let (name, v) = kv.map_err(|_| format!("{id}: {k} must be a table of stat = number"))?;
-            let stat = Stat::named(&name).ok_or_else(|| format!("{id}: unknown stat {name} (stats: {})", STATS.map(|s| s.1).join(", ")))?;
-            out.push((stat, v as f32));
+            let (name, v) = kv.map_err(|_| format!("{id}: {k} must be a table of field = number"))?;
+            if !weapon::FIELDS.iter().any(|(f, kind)| *f == name && (*kind == "f32" || *kind == "i32")) {
+                return Err(format!("{id}: {k}: {name} is not a numeric Weapon field (see stats())"));
+            }
+            out.push((name, v as f32));
         }
-        // Table order is not defined: apply in the fixed stat order.
-        out.sort_by_key(|(s, _)| STATS.iter().position(|x| x.0 == *s));
+        // Table order is not defined: apply in the fixed field order.
+        out.sort_by_key(|(n, _)| weapon::FIELDS.iter().position(|(f, _)| f == n));
         Ok(out)
     };
-    let color = match t.raw_get::<Option<Vec<f32>>>("color").map_err(|_| format!("{id}: color must be {{r, g, b}}"))? {
-        Some(c) if c.len() == 3 => [c[0], c[1], c[2]],
-        Some(_) => return Err(format!("{id}: color must be {{r, g, b}}")),
-        None => [1.0; 3],
+    let color = match t.raw_get::<Value>("color").map_err(|e| script::short(&e))? {
+        Value::Vector(v) => [v.x(), v.y(), v.z()],
+        Value::Table(c) if c.raw_len() == 3 => [c.raw_get(1).unwrap_or(1.0), c.raw_get(2).unwrap_or(1.0), c.raw_get(3).unwrap_or(1.0)],
+        Value::Nil => [1.0; 3],
+        _ => return Err(format!("{id}: color must be Color(r, g, b) or {{r, g, b}}")),
     };
+    let tags: Vec<String> = t.raw_get::<Option<Vec<String>>>("tags").map_err(|_| format!("{id}: tags must be a list of strings"))?.unwrap_or_default();
+    let rarity = s("rarity")?.unwrap_or_else(|| "common".into());
+    if rarity != "common" && rarity != "rare" { return Err(format!("{id}: rarity must be \"common\" or \"rare\"")); }
     Ok(CardDef {
         name: s("name")?.unwrap_or_else(|| id.to_uppercase()),
-        text: s("text")?.unwrap_or_default(),
+        desc: s("desc")?.or(s("text")?).unwrap_or_default(),
         color,
-        firepower: t.raw_get::<Option<bool>>("firepower").ok().flatten().unwrap_or(false),
+        firepower: tags.iter().any(|t| t == "firepower") || t.raw_get::<Option<bool>>("firepower").ok().flatten().unwrap_or(false),
+        rare: rarity == "rare",
         mul: ops("mul")?,
         add: ops("add")?,
         enabled: true,
@@ -262,8 +290,28 @@ fn pl(w: &World, p: i64) -> mlua::Result<usize> {
     if p >= 1 && (p as usize) <= w.players.len() { Ok(p as usize - 1) } else { Err(mlua::Error::runtime(format!("no player {p} (players are 1..{})", w.players.len()))) }
 }
 
-fn stat(name: &str) -> mlua::Result<Stat> {
-    Stat::named(name).ok_or_else(|| mlua::Error::runtime(format!("unknown stat {name} (stats: {})", STATS.map(|s| s.1).join(", "))))
+fn to_lua(lua: &Lua, v: weapon::Value) -> mlua::Result<Value> {
+    Ok(match v {
+        weapon::Value::Num(x) => Value::Number(x as f64),
+        weapon::Value::Bool(b) => Value::Boolean(b),
+        weapon::Value::Vec(v) => Value::Vector(vector(v)),
+        weapon::Value::Text(t) => Value::String(lua.create_string(&t)?),
+    })
+}
+
+fn from_lua(v: Value) -> mlua::Result<weapon::Value> {
+    Ok(match v {
+        Value::Number(x) => weapon::Value::Num(x as f32),
+        Value::Integer(x) => weapon::Value::Num(x as f32),
+        Value::Boolean(b) => weapon::Value::Bool(b),
+        Value::Vector(v) => weapon::Value::Vec(v3(v)),
+        Value::String(s) => weapon::Value::Text(s.to_str()?.to_string()),
+        other => return Err(mlua::Error::runtime(format!("a Weapon field can't be a {}", other.type_name()))),
+    })
+}
+
+fn field(w: &Weapon, name: &str) -> mlua::Result<weapon::Value> {
+    w.get(name).ok_or_else(|| mlua::Error::runtime(format!("no Weapon field {name} (see stats())")))
 }
 
 /// `g`'s methods on the borrowed World.
@@ -294,9 +342,14 @@ fn register(lua: &Lua) -> mlua::Result<()> {
         r.add_method("ammo", |_, w, p: i64| Ok(w.players[pl(w, p)?].ammo));
         r.add_method_mut("set_ammo", |_, w, (p, n): (i64, f64)| { let i = pl(w, p)?; w.players[i].ammo = n.round().clamp(0.0, 100_000.0) as u32; Ok(()) });
         r.add_method("score", |_, w, p: i64| Ok(w.players[pl(w, p)?].score));
-        r.add_method("stat", |_, w, (p, name): (i64, String)| Ok(w.players[pl(w, p)?].mods.get(stat(&name)?)));
-        r.add_method_mut("set_stat", |_, w, (p, name, v): (i64, String, f64)| { let i = pl(w, p)?; let s = stat(&name)?; w.players[i].mods.set(s, v as f32); Ok(()) });
-        r.add_method("stats", |_, _, ()| Ok(STATS.map(|s| s.1).to_vec()));
+        r.add_method("stat", |lua, w, (p, name): (i64, String)| to_lua(lua, field(&w.players[pl(w, p)?].weapon, &name)?));
+        r.add_method_mut("set_stat", |_, w, (p, name, v): (i64, String, Value)| {
+            let i = pl(w, p)?;
+            w.players[i].weapon.set(&name, from_lua(v)?).map_err(mlua::Error::runtime)
+        });
+        r.add_method("stats", |_, _, ()| Ok(weapon::FIELDS.iter().map(|f| f.0).chain(["special"]).collect::<Vec<_>>()));
+        r.add_method("special_cooldown", |_, w, p: i64| Ok(w.players[pl(w, p)?].special_cd));
+        r.add_method("modifier", |_, w, ()| Ok(w.modifier.map(|m| m.id())));
         r.add_method("cards", |_, w, p: i64| { let i = pl(w, p)?; Ok(w.players[i].cards.iter().filter_map(|&c| w.cards.get(c).map(|d| d.id.clone())).collect::<Vec<_>>()) });
         r.add_method("card_ids", |_, w, ()| Ok(w.cards.enabled().map(|(_, d)| d.id.clone()).collect::<Vec<_>>()));
         r.add_method_mut("give", |_, w, (p, id): (i64, String)| {
@@ -315,7 +368,40 @@ fn register(lua: &Lua) -> mlua::Result<()> {
         r.add_method("round", |_, w, ()| Ok(w.round));
         r.add_method("between_rounds", |_, w, ()| Ok(w.between_rounds()));
         r.add_method_mut("random", |_, w, ()| Ok(w.script_rng.f() as f64));
-    })
+    })?;
+    // A card's `apply(w)` gets the Weapon itself: w.damage_mult *= 1.5.
+    lua.register_userdata_type::<Weapon>(|r| {
+        use script::mlua::{MetaMethod, UserDataMethods};
+        r.add_meta_method(MetaMethod::Index, |lua, w, name: String| match w.get(&name) {
+            Some(v) => to_lua(lua, v),
+            None => Err(mlua::Error::runtime(format!("no Weapon field {name}"))),
+        });
+        r.add_meta_method_mut(MetaMethod::NewIndex, |_, w, (name, v): (String, Value)| w.set(&name, from_lua(v)?).map_err(mlua::Error::runtime));
+    })?;
+    Ok(())
+}
+
+/// Godot-named helpers, so card code reads like `card_library.gd`.
+fn godot_helpers(lua: &Lua, api: &Table) -> mlua::Result<()> {
+    let v = |lua: &Lua, x: f32, y: f32, z: f32| -> mlua::Result<Value> { let _ = lua; Ok(Value::Vector(Vector::new(x, y, z))) };
+    api.raw_set("Color", lua.create_function(move |lua, (r, g, b): (f32, f32, f32)| v(lua, r, g, b))?)?;
+    api.raw_set("Vector3", lua.create_function(move |lua, (x, y, z): (f32, f32, f32)| v(lua, x, y, z))?)?;
+    api.raw_set("deg_to_rad", lua.create_function(|_, d: f64| Ok(d.to_radians()))?)?;
+    api.raw_set("max", lua.create_function(|_, (a, b): (f64, f64)| Ok(a.max(b)))?)?;
+    api.raw_set("min", lua.create_function(|_, (a, b): (f64, f64)| Ok(a.min(b)))?)?;
+    api.raw_set("maxf", lua.create_function(|_, (a, b): (f64, f64)| Ok(a.max(b)))?)?;
+    api.raw_set("minf", lua.create_function(|_, (a, b): (f64, f64)| Ok(a.min(b)))?)?;
+    api.raw_set("clampf", lua.create_function(|_, (x, a, b): (f64, f64, f64)| Ok(x.clamp(a, b)))?)?;
+    api.raw_set("lerp", lua.create_function(|_, (a, b, t): (Value, Value, f64)| match (a, b) {
+        (Value::Vector(a), Value::Vector(b)) => Ok(Value::Vector(vector(v3(a).lerp(v3(b), t as f32)))),
+        (a, b) => {
+            let n = |v: &Value| v.as_number().or(v.as_integer().map(|i| i as f64));
+            match (n(&a), n(&b)) { (Some(a), Some(b)) => Ok(Value::Number(a + (b - a) * t)), _ => Err(mlua::Error::runtime("lerp wants two numbers or two vectors")) }
+        }
+    })?)?;
+    // Bone warps (cosmetic): warp(w, "Neck", Vector3(1, 1.5, 1)).
+    api.raw_set("warp", lua.create_function(|_, (w, bone, by): (mlua::AnyUserData, String, Vector)| { w.borrow_mut_scoped::<Weapon, _>(|w| w.warp(&bone, v3(by)))?; Ok(()) })?)?;
+    Ok(())
 }
 
 /// The API reference for people and models writing mods (mods/API.md).
@@ -329,8 +415,12 @@ pub fn api_doc() -> String {
     s += "```\n\n";
     for (k, _, doc) in HOOKS { s += &format!("- `{k}`: {doc}\n"); }
     s += "\n```luau\ntype Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }\ntype Kill = { victim: number, attacker: number? }  -- attacker nil: lava\n```\n\n";
-    s += "## Cards\n\n```luau\ntype Card = {\n  id: string,             -- stable; what `give P ID` uses\n  name: string?, text: string?,\n  color: { number }?,     -- sRGB {r, g, b}, 0..1\n  firepower: boolean?,    -- improves the gun (every offer has one)\n  mul: { [string]: number }?,  -- stat multipliers, applied first\n  add: { [string]: number }?,  -- stat additions, applied second\n  pick: ((g: Game, p: number) -> ())?,  -- runs once when taken\n}\n```\n\nStats:\n\n";
-    for (_, name, doc) in STATS { s += &format!("- `{name}`: {doc}\n"); }
+    s += "## Cards\n\nThe pool is `mods/base/cards.luau`, a port of Godot's `card_library.gd`. A card's `apply(w)` mutates the player's `Weapon` exactly like the GDScript card does; the Godot helpers exist under the same names: `Color(r, g, b)`, `Vector3(x, y, z)`, `deg_to_rad`, `max`, `min`, `maxf`, `minf`, `clampf`, `lerp(a, b, t)` (numbers or vectors) and `warp(w, bone, scale)` for cosmetic bone scales. Weapons are rebuilt from the cards every round, so `apply` must only depend on `w`.\n\n```luau\ntype Card = {\n  id: string,             -- stable; what `give P ID` uses\n  name: string?, desc: string?,\n  color: vector?,         -- Color(r, g, b), sRGB 0..1\n  tags: { string }?,      -- \"firepower\": improves the gun (every offer has one)\n  rarity: string?,        -- \"common\" (weight 1) or \"rare\" (0.15, more for trailing players)\n  apply: ((w: Weapon) -> ())?,  -- the card's effect\n  mul: { [string]: number }?,  -- or as data: field multipliers, then\n  add: { [string]: number }?,  -- field additions\n  pick: ((g: Game, p: number) -> ())?,  -- runs once when taken (match effects)\n}\n```\n\n## `Weapon` fields\n\nNames match Godot's `weapon.gd`; read and write them as `w.field` in `apply`, or with `g:stat` / `g:set_stat`. Numbers unless noted.\n\n";
+    for (name, kind) in weapon::FIELDS {
+        let k = match *kind { "i32" => "whole number", "bool" => "boolean", "vec" => "vector", "color" => "colour (vector)", _ => "number" };
+        s += &format!("- `{name}` ({k})\n");
+    }
+    s += "- `special` (string): one of grenade, teleport, zoom, sword, air_strike, ion_cannon, cluster_grenade\n";
     s += "\n## `g`: the match\n\nPlayers are numbers 1..`g:players()`. `g` is only valid during the call that received it.\n\n";
     for (k, sig, doc) in API { s += &format!("- `g:{k}{}`: {doc}\n", sig.replacen("self, ", "", 1).replacen("(self)", "()", 1)); }
     s
@@ -370,14 +460,28 @@ mod tests {
     fn base_cards_load_from_luau() {
         let (mut w, s) = world();
         let ids: Vec<String> = w.cards.enabled().map(|(_, d)| d.id.clone()).collect();
-        assert_eq!(ids, ["damage", "healthy", "steadyhands", "precision", "sneakers", "rapidfire", "fastrounds", "bigmag", "quickreload", "explosive"]);
-        // The explosive pick hook: 4 m first, then +2.5 m.
+        assert_eq!(ids.len(), 52, "Godot's card pool");
+        assert_eq!(&ids[..3], ["dmg_up", "healthy", "steady_hands"]);
+        let rare = w.cards.enabled().filter(|(_, d)| d.rare).count();
+        assert_eq!(rare, 14, "card_library.gd has 14 rare cards");
+        // Explosive: 4 m first, then +2.5 m; the special swaps and bodies scale.
         let e = w.cards.find("explosive").unwrap();
         w.give(0, e);
         w.give(0, e);
-        let m = w.players[0].mods;
-        assert_eq!((m.explosive_radius, m.explosive_damage), (6.5, 50.0));
+        let wp = &w.players[0].weapon;
+        assert_eq!((wp.explosive_radius, wp.explosive_damage), (6.5, 50.0));
         assert_eq!(s.console(&mut w, "g:stat(1, 'explosive_radius')").unwrap(), "6.5");
+        for id in ["sniper", "slenderman", "shotgun", "chilling_rounds"] { let c = w.cards.find(id).unwrap(); w.give(1, c); }
+        let wp = &w.players[1].weapon;
+        assert_eq!(wp.special, growing_guns::Special::Zoom);
+        assert_eq!(wp.body_scale_axes, Vec3::new(0.72, 1.8, 0.72));
+        assert_eq!(wp.bone_warps.len(), 3);
+        assert_eq!(wp.extra_projectiles, 2);
+        assert!((wp.spread - (0.0008f32.max(2f32.to_radians()) + 2f32.to_radians())).abs() < 1e-6, "{}", wp.spread);
+        assert!((wp.slow_on_hit - 0.48).abs() < 1e-6 && wp.slow_duration == 2.6);
+        // Weapons are rebuilt from the cards each round.
+        w.rebuild_weapon(1);
+        assert_eq!(w.players[1].weapon.special, growing_guns::Special::Zoom);
     }
 
     #[test]

@@ -63,7 +63,7 @@ impl Default for Tuning {
 fn key_button(k: KeyCode) -> u32 {
     match k {
         KeyCode::Space => Buttons::SOUTH,
-        KeyCode::ShiftLeft | KeyCode::ShiftRight => Buttons::EAST,
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => Buttons::RIGHT_SHOULDER,
         KeyCode::KeyR => Buttons::WEST,
         KeyCode::KeyF => Buttons::NORTH,
         KeyCode::KeyQ => Buttons::LEFT_SHOULDER,
@@ -136,7 +136,7 @@ impl Devices {
     }
 
     pub fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
-        let b = match button { MouseButton::Left => Buttons::RIGHT_TRIGGER, MouseButton::Right => Buttons::EAST, _ => 0 };
+        let b = match button { MouseButton::Left => Buttons::RIGHT_TRIGGER, MouseButton::Right => Buttons::LEFT_TRIGGER, _ => 0 };
         if state == ElementState::Pressed && self.mouse_captured { self.kb.mouse |= b; self.kb.pressed |= b; } else { self.kb.mouse &= !b; }
     }
 

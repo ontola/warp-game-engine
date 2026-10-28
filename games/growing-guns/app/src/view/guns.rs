@@ -71,7 +71,7 @@ impl Guns {
     pub fn shot(&mut self, player: usize, p: &Player) {
         self.rigs[player].fire(&Stats::of(p));
         let f = &mut self.feel[player];
-        f.kick = f.kick.max(0.08 * p.mods.recoil.clamp(0.2, 2.5));
+        f.kick = f.kick.max(0.08 * (p.weapon.recoil() / growing_guns::weapon::BASE_RECOIL).clamp(0.2, 2.5));
     }
 
     /// One tick of gun state: rigs follow their stats (morphs, heat, bolt,
@@ -103,7 +103,7 @@ impl Guns {
             let heat = rig.heat_level();
             let f = &self.feel[i];
             let (r_off, r_tilt, mag_drop) = if p.reloading() {
-                gun::reload_pose(1.0 - p.reload_timer * p.mods.reload / growing_guns::RELOAD_TIME)
+                gun::reload_pose(p.reload_progress())
             } else { (Vec3::ZERO, 0.0, 0.0) };
             // Long barrels pull the gun back against the shoulder.
             let pull = ((rig.build.barrel_length - 0.5) * 0.3).clamp(0.0, 0.3);

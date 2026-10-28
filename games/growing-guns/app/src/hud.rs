@@ -24,12 +24,15 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
     let p = &world.players[i];
     let id = 1000 * (i as u64 + 1);
     let (cx, cy) = (x + w * 0.5, y + h * 0.5);
-    if let Some(offer) = p.offer {
+    if let Some(offer) = &p.offer {
         let cards: Vec<app::ui::Card> = offer.iter().map(|&c| match world.cards.get(c) {
-            Some(d) => app::ui::Card { title: &d.name, body: &d.text, color: d.color },
+            Some(d) => app::ui::Card { title: &d.name, body: &d.desc, color: d.color },
             None => app::ui::Card { title: "?", body: "", color: [1.0; 3] },
         }).collect();
-        let footer = format!("{:.0} s   (stick or arrows, A or Space to take)", world.pick_time.ceil());
+        let humans = world.players.iter().filter(|p| !p.bot).count();
+        let footer = if humans > 1 {
+            format!("{:.0} s   (stick or arrows, A or Space to take)", (growing_guns::CARD_PICK_TIMEOUT - p.offer_age).max(0.0).ceil())
+        } else { "stick or arrows, A or Space to take".into() };
         app::ui::cards(d, id + 200, rect, "PICK A CARD", &cards, card_focus, &footer, &app::ui::Style::for_height(h));
         return;
     }
@@ -89,6 +92,12 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
             d.rect([ax - (k + 1) as f32 * pip, ay, pip * 0.56, 30.0 * s], c, clip);
         }
     }
+    // Special (RMB), bottom left: name and cooldown.
+    let sp = if p.air_strike_charges > 0 { format!("AIR STRIKE x{}", p.air_strike_charges) } else { p.weapon.special.name().replace('_', " ").to_uppercase() };
+    let ready = p.special_cd <= 0.0;
+    let line = if ready { sp } else { format!("{sp}  {:.1}", p.special_cd) };
+    text(d, id + 5, line, [x + 40.0 * s, y + h - 60.0 * s], 26.0 * s, if ready { [140, 220, 255, 255] } else { MUTED }, TextAlign::Left, 400.0 * s, clip);
+    text(d, id + 6, format!("{} HP", p.health), [x + 40.0 * s, y + h - 96.0 * s], 30.0 * s, WHITE, TextAlign::Left, 300.0 * s, clip);
     // Player tag, top left of the view.
     text(d, id + 4, format!("P{}", i + 1), [x + 20.0 * s, y + 16.0 * s], 30.0 * s, PLAYER_COLORS_U8[i % 4], TextAlign::Left, 100.0 * s, clip);
 }
@@ -109,13 +118,20 @@ pub fn global(d: &mut HudDrawList, world: &World, net: Option<&str>) {
         text(d, 10 + i as u64, format!("{tag}{} {}", i + 1, p.score), [x0 + cell * (i as f32 + 0.5), 8.0 * s], 28.0 * s, c, TextAlign::Center, cell, clip);
     }
     text(d, 20, format!("ROUND {}", world.round), [w * 0.5, 54.0 * s], 20.0 * s, MUTED, TextAlign::Center, 300.0 * s, clip);
-    if world.ended && world.intermission <= 0.0 {
-        d.rect([0.0, 0.0, w, 40.0 * s], [0.0, 0.0, 0.0, 0.0], clip);
-        text(d, 23, format!("waiting for card picks  {:.0} s", world.pick_time.ceil()), [w * 0.5, 80.0 * s], 24.0 * s, MUTED, TextAlign::Center, w, clip);
+    if world.phase == growing_guns::Phase::Picking && world.players.iter().any(|p| p.offer.is_some()) {
+        text(d, 23, "waiting for card picks".into(), [w * 0.5, 80.0 * s], 24.0 * s, MUTED, TextAlign::Center, w, clip);
     }
-    if world.intermission > 0.0 {
-        let winner = world.players.iter().position(|p| p.alive);
-        let msg = match winner { Some(i) => format!("P{} WINS THE ROUND", i + 1), None => "DRAW".into() };
+    if let Some(t) = world.cage_left() {
+        let line = match world.modifier { Some(m) => format!("{}  {}", m.title(), m.subtitle()), None => format!("{:.0}", t.ceil()) };
+        text(d, 24, line, [w * 0.5, h * 0.22], 40.0 * s, WHITE, TextAlign::Center, w, clip);
+    }
+    if world.round_over() {
+        let winner = world.round_winner();
+        let msg = match winner {
+            Some(i) if world.phase == growing_guns::Phase::MatchOver => format!("P{} WINS THE MATCH", i + 1),
+            Some(i) => format!("P{} WINS THE ROUND", i + 1),
+            None => "DRAW".into(),
+        };
         let c = winner.map_or(WHITE, |i| PLAYER_COLORS_U8[i % 4]);
         d.rect([0.0, h * 0.12 - 10.0 * s, w, 100.0 * s], [0.0, 0.0, 0.0, 0.55], clip);
         text(d, 21, msg, [w * 0.5, h * 0.12], 52.0 * s, c, TextAlign::Center, w, clip);

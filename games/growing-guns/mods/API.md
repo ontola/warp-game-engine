@@ -31,31 +31,74 @@ type Kill = { victim: number, attacker: number? }  -- attacker nil: lava
 
 ## Cards
 
+The pool is `mods/base/cards.luau`, a port of Godot's `card_library.gd`. A card's `apply(w)` mutates the player's `Weapon` exactly like the GDScript card does; the Godot helpers exist under the same names: `Color(r, g, b)`, `Vector3(x, y, z)`, `deg_to_rad`, `max`, `min`, `maxf`, `minf`, `clampf`, `lerp(a, b, t)` (numbers or vectors) and `warp(w, bone, scale)` for cosmetic bone scales. Weapons are rebuilt from the cards every round, so `apply` must only depend on `w`.
+
 ```luau
 type Card = {
   id: string,             -- stable; what `give P ID` uses
-  name: string?, text: string?,
-  color: { number }?,     -- sRGB {r, g, b}, 0..1
-  firepower: boolean?,    -- improves the gun (every offer has one)
-  mul: { [string]: number }?,  -- stat multipliers, applied first
-  add: { [string]: number }?,  -- stat additions, applied second
-  pick: ((g: Game, p: number) -> ())?,  -- runs once when taken
+  name: string?, desc: string?,
+  color: vector?,         -- Color(r, g, b), sRGB 0..1
+  tags: { string }?,      -- "firepower": improves the gun (every offer has one)
+  rarity: string?,        -- "common" (weight 1) or "rare" (0.15, more for trailing players)
+  apply: ((w: Weapon) -> ())?,  -- the card's effect
+  mul: { [string]: number }?,  -- or as data: field multipliers, then
+  add: { [string]: number }?,  -- field additions
+  pick: ((g: Game, p: number) -> ())?,  -- runs once when taken (match effects)
 }
 ```
 
-Stats:
+## `Weapon` fields
 
-- `damage`: bullet damage multiplier
-- `fire_rate`: shots per second multiplier
-- `spread`: spread cone multiplier (lower is tighter)
-- `recoil`: recoil multiplier
-- `speed`: move speed multiplier
-- `bullet_speed`: bullet speed multiplier
-- `reload`: reload speed multiplier
-- `mag_bonus`: extra rounds per magazine
-- `hp_bonus`: extra max health
-- `explosive_radius`: bullet blast radius in metres (0: no blast)
-- `explosive_damage`: blast damage at the centre
+Names match Godot's `weapon.gd`; read and write them as `w.field` in `apply`, or with `g:stat` / `g:set_stat`. Numbers unless noted.
+
+- `damage_mult` (number)
+- `fire_rate_mult` (number)
+- `reload_mult` (number)
+- `headshot_mult` (number)
+- `mag_size_bonus` (whole number)
+- `extra_projectiles` (whole number)
+- `ricochet_count` (whole number)
+- `body_ricochet_count` (whole number)
+- `last_shot_damage_mult` (number)
+- `silencer_stacks` (whole number)
+- `spread` (number)
+- `recoil_per_shot` (number)
+- `lifesteal` (number)
+- `explosive_radius` (number)
+- `explosive_damage` (number)
+- `move_speed_mult` (number)
+- `knockback_mult` (number)
+- `special_cooldown_mult` (number)
+- `melee_damage_mult` (number)
+- `melee_scale` (number)
+- `homing` (number)
+- `damage_over_time` (number)
+- `dot_duration` (number)
+- `slow_on_hit` (number)
+- `slow_duration` (number)
+- `grow_damage_per_meter` (number)
+- `ricochet_damage_mult` (number)
+- `reload_on_hit` (whole number)
+- `phoenix_revives` (whole number)
+- `world_pierce_count` (whole number)
+- `impact_mines` (whole number)
+- `bullet_color` (colour (vector))
+- `bullet_speed_mult` (number)
+- `bullet_scale` (number)
+- `bullet_drop` (number)
+- `head_scale` (number)
+- `body_scale` (number)
+- `body_scale_axes` (vector)
+- `max_hp_bonus` (whole number)
+- `extra_jumps` (whole number)
+- `special_echo_count` (whole number)
+- `special_reload_amount` (whole number)
+- `special_cooldown_refund_on_hit` (number)
+- `teleport_blast_radius` (number)
+- `dash_iframes` (boolean)
+- `dash_end_melee` (boolean)
+- `dash_spawn_bomb` (boolean)
+- `special` (string): one of grenade, teleport, zoom, sword, air_strike, ion_cannon, cluster_grenade
 
 ## `g`: the match
 
@@ -76,9 +119,11 @@ Players are numbers 1..`g:players()`. `g` is only valid during the call that rec
 - `g:ammo(p: number): number`: Rounds in the magazine.
 - `g:set_ammo(p: number, n: number)`: Set rounds in the magazine.
 - `g:score(p: number): number`: Rounds won.
-- `g:stat(p: number, name: string): number`: A card stat (see stats()).
-- `g:set_stat(p: number, name: string, value: number)`: Change a card stat.
-- `g:stats(): {string}`: Names of the card stats.
+- `g:stat(p: number, name: string): any`: A field of player p's Weapon (see stats()): number, boolean, vector or the special's name.
+- `g:set_stat(p: number, name: string, value: any)`: Change a Weapon field for this round (cards are re-applied each round).
+- `g:stats(): {string}`: Names of the Weapon fields.
+- `g:special_cooldown(p: number): number`: Seconds until player p's RMB special is ready.
+- `g:modifier(): string?`: This round's modifier id, or nil.
 - `g:cards(p: number): {string}`: Ids of the cards player p holds, in pick order.
 - `g:card_ids(): {string}`: Ids of every card on offer this match.
 - `g:give(p: number, id: string): boolean`: Give a card at the start of the next tick (stats and pick hook). False over quota.

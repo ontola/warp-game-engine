@@ -33,10 +33,13 @@ fn input(c: &Controls) -> Input {
     Input {
         mv: c.mv,
         look: [-c.look[0], c.look[1]],
-        jump: c.pressed.has(Buttons::SOUTH),
-        dash: c.pressed.has(Buttons::EAST | Buttons::RIGHT_SHOULDER | Buttons::LEFT_TRIGGER),
+        // Godot's bindings: A or LB jump, Y or RB (Shift) dash, X reload,
+        // RT (LMB) fire, LT or B (RMB) special.
+        jump: c.pressed.has(Buttons::SOUTH | Buttons::LEFT_SHOULDER),
+        dash: c.pressed.has(Buttons::NORTH | Buttons::RIGHT_SHOULDER),
         reload: c.pressed.has(Buttons::WEST),
         fire: c.held.has(Buttons::RIGHT_TRIGGER),
+        special: c.held.has(Buttons::LEFT_TRIGGER | Buttons::EAST),
         pick: None,
     }
 }
@@ -117,12 +120,16 @@ impl app::Game for Gg {
             if let Some(s) = &self.scripts { for line in s.poll(&mut self.world) { eprintln!("mods: {line}"); } }
         }
         let mut local: Vec<Input> = controls.iter().map(input).collect();
+        // Sniper zoom slows the look (Godot x0.4).
+        for (k, &s) in self.slots.iter().enumerate() {
+            if self.world.players.get(s).is_some_and(|p| p.zooming) && let Some(i) = local.get_mut(k) { i.look = i.look.map(|v| v * 0.4); }
+        }
         // Card picks: the menu takes this player's controls while an offer is open.
         self.menus.resize_with(self.slots.len(), Default::default);
         for (k, &s) in self.slots.iter().enumerate() {
-            if self.world.players.get(s).is_none_or(|p| p.offer.is_none()) { continue; }
+            let Some(n) = self.world.players.get(s).and_then(|p| p.offer.as_ref()).map(|o| o.len()) else { continue };
             if let (Some(c), Some(i)) = (controls.get(k), local.get_mut(k)) {
-                if let app::ui::MenuEvent::Select(n) = self.menus[k].update(c, 3, 3, DT) { i.pick = Some(n as u8); }
+                if let app::ui::MenuEvent::Select(n) = self.menus[k].update(c, n, n, DT) { i.pick = Some(n as u8); }
                 i.fire = false;
                 i.jump = false;
             }
@@ -173,7 +180,24 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods".into()),
+            "help" => Ok("give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            "special" => {
+                let p = player(1, &self.world)?;
+                let name = w.get(2).ok_or("special P NAME")?;
+                let sp = growing_guns::Special::named(name).ok_or(format!("unknown special {name}"))?;
+                self.world.players[p].weapon.special = sp;
+                Ok(format!("player {p} special {name}"))
+            }
+            "modifier" => {
+                let id = w.get(1).copied().unwrap_or("none");
+                self.world.forced_modifier = if id == "none" { None } else { Some(growing_guns::Modifier::named(id).ok_or(format!("unknown modifier {id}"))?) };
+                if id == "none" { self.world.modifier_chance = 0.0; }
+                Ok(format!("modifier {id} from the next round (round: start it now)"))
+            }
+            "round" => { self.world.next_round(); self.new_arena(); Ok(format!("round {}", self.world.round)) }
+            "cage" => { self.world.release_cage(); Ok("cage open".into()) }
+            "rematch" => { self.world.restart_match(); self.new_arena(); Ok("rematch".into()) }
+            "extend" => { self.world.extend_match(); Ok(format!("first to {}", self.world.rounds_to_win)) }
             "lua" => {
                 let code = cmd.trim_start().strip_prefix("lua").unwrap_or("").trim();
                 self.scripts.as_ref().ok_or("no mods loaded")?.console(&mut self.world, code)
@@ -243,10 +267,11 @@ impl app::Game for Gg {
             "alive": p.alive, "health": p.health, "score": p.score, "ammo": p.ammo, "reloading": p.reloading(),
             "pos": p.pos.to_array(), "vel": p.vel.to_array(), "yaw": p.yaw, "pitch": p.pitch,
             "on_floor": p.on_floor, "on_wall": p.wall_normal.is_some(), "dash_charges": p.dash_charges,
-            "cards": p.cards.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>(), "offer": p.offer.map(|o| o.map(|c| card_id(w, c))), "max_health": p.max_health(), "mag": p.mag_size(),
+            "cards": p.cards.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>(), "offer": p.offer.as_ref().map(|o| o.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>()), "max_health": p.max_health(), "mag": p.mag_size(),
         })).collect();
         Some(serde_json::json!({
-            "tick": w.tick, "round": w.round, "intermission": w.intermission, "ended": w.ended, "pick_time": w.pick_time,
+            "tick": w.tick, "round": w.round, "phase": w.phase, "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
+            "projectiles": w.projectiles.len(), "strikes": w.strikes.len(), "pickups": w.pickups.len(),
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
                 "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
             "players": players, "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
@@ -255,6 +280,23 @@ impl app::Game for Gg {
 }
 
 fn card_id(w: &World, c: growing_guns::cards::Card) -> String { w.cards.get(c).map_or_else(|| format!("#{}", c.0), |d| d.id.clone()) }
+
+/// `--modifier ID` forces a round modifier (`none` for none), `--rounds N`
+/// sets the wins that end the match, `--coop` plays wave survival.
+/// Headless tools roll no modifiers unless asked.
+pub fn match_options(args: &Args, w: &mut World, play: bool) {
+    if !play { w.modifier_chance = 0.0; }
+    match args.value("--modifier") {
+        Some("none") => w.modifier_chance = 0.0,
+        Some(id) => match growing_guns::Modifier::named(id) {
+            Some(m) => w.forced_modifier = Some(m),
+            None => eprintln!("unknown modifier {id}; one of {}", growing_guns::MODIFIERS.map(|m| m.1).join(", ")),
+        },
+        None => {}
+    }
+    w.rounds_to_win = args.num("--rounds", w.rounds_to_win);
+    w.coop = args.flag("--coop");
+}
 
 pub fn run(args: &Args) -> Result<(), String> {
     let total = args.num("--total", 4usize).clamp(1, 8);
@@ -272,7 +314,7 @@ pub fn run(args: &Args) -> Result<(), String> {
             println!("hosting. Others join with:\n  growing-guns play --join {t}{}", if lan { " --lan" } else { "" });
             let _ = std::fs::write("growing-guns-ticket.txt", t);
         }
-        (session, World::new(seed, &bots), (0..humans).collect())
+        (session, World::new_with(seed, &bots, |w| match_options(args, w, true)), (0..humans).collect())
     };
     println!("seed {seed}, {} local, {} players", slots.len(), world.players.len());
     let mut game = Gg::new(world, session, slots);

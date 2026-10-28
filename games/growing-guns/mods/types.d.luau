@@ -31,12 +31,16 @@ export type Game = {
 	set_ammo: (self: Game, p: number, n: number) -> (),
 	-- Rounds won.
 	score: (self: Game, p: number) -> number,
-	-- A card stat (see stats()).
-	stat: (self: Game, p: number, name: string) -> number,
-	-- Change a card stat.
-	set_stat: (self: Game, p: number, name: string, value: number) -> (),
-	-- Names of the card stats.
+	-- A field of player p's Weapon (see stats()): number, boolean, vector or the special's name.
+	stat: (self: Game, p: number, name: string) -> any,
+	-- Change a Weapon field for this round (cards are re-applied each round).
+	set_stat: (self: Game, p: number, name: string, value: any) -> (),
+	-- Names of the Weapon fields.
 	stats: (self: Game) -> {string},
+	-- Seconds until player p's RMB special is ready.
+	special_cooldown: (self: Game, p: number) -> number,
+	-- This round's modifier id, or nil.
+	modifier: (self: Game) -> string?,
 	-- Ids of the cards player p holds, in pick order.
 	cards: (self: Game, p: number) -> {string},
 	-- Ids of every card on offer this match.

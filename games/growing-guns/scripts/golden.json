@@ -8,7 +8,7 @@
     { "capture": "stands.png", "compare": "golden/stands.png", "tolerance": 0.5 },
     { "cmd": ["teleport 0 0 8 -30", "aim 0 0 0 -60"] }, { "ticks": 1 },
     { "capture": "lava.png", "compare": "golden/lava.png", "tolerance": 0.5 },
-    { "cmd": ["give 0 precision", "give 0 precision", "give 0 damage", "give 0 damage", "give 0 bigmag", "give 0 explosive",
+    { "cmd": ["give 0 precision", "give 0 precision", "give 0 dmg_up", "give 0 dmg_up", "give 0 big_mag", "give 0 explosive",
               "teleport 0 33.5 0.9 37", "aim 0 37 0.2 33"] },
     { "ticks": 130 },
     { "capture": "gun.png", "compare": "golden/gun.png", "tolerance": 0.5 },
