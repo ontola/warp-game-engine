@@ -30,8 +30,10 @@ pub struct Things {
     marker: usize,
     rocket: usize,
     lava: usize,
-    lasers: airstrike::Lasers,
     beams: dropbeam::Beams,
+    /// The air strikes' targeting lasers, then the drop beams.
+    laser_sprites: Vec<render::sprites::Sprite>,
+    sprites: Vec<render::sprites::Sprite>,
 }
 
 impl Things {
@@ -41,10 +43,10 @@ impl Things {
     pub fn pickup_haze(&self) -> &[LocalLight] { self.beams.haze() }
     /// 0 by day, 1 at night: the shafts are brighter against the day sky.
     pub fn set_night(&mut self, night: f32) { self.beams.gain = dropbeam::DAY_GAIN + (1.0 - dropbeam::DAY_GAIN) * night.clamp(0.0, 1.0); }
-    /// The drop beams' sprite image.
-    pub fn sprite_picture() -> (render::sprites::SpriteImage, render::picture::Picture) { (dropbeam::IMAGE, dropbeam::picture()) }
-    /// The pickups' light shafts (sprites).
-    pub fn sprites(&self) -> &[render::sprites::Sprite] { self.beams.sprites() }
+    /// The sprite images: the drop beams' and the lasers' shafts.
+    pub fn sprite_pictures() -> [(render::sprites::SpriteImage, render::picture::Picture); 2] { [(dropbeam::IMAGE, dropbeam::picture()), (airstrike::IMAGE, airstrike::picture())] }
+    /// The light shafts: targeting lasers and drop beams.
+    pub fn sprites(&self) -> &[render::sprites::Sprite] { &self.sprites }
 
     pub fn reserve(scene: &mut Scene) -> Self {
         let dark = material(scene, [0.12, 0.14, 0.12], 0.5);
@@ -68,8 +70,9 @@ impl Things {
             marker: { let m = glow(scene, [1.0, 0.1, 0.05], 12000.0); scene.add_mesh(&render::primitives::torus(m, 0.04, 24, 6).mesh()) },
             rocket: { let m = glow(scene, [1.0, 0.55, 0.2], 40000.0); cube(scene, m) },
             lava: cube(scene, lava_m),
-            lasers: airstrike::Lasers::reserve(scene),
             beams: dropbeam::Beams::reserve(scene),
+            laser_sprites: Vec::new(),
+            sprites: Vec::new(),
         }
     }
 
@@ -162,8 +165,11 @@ impl Things {
             i.cluster_count = 0;
             i.sphere = [0.0; 4];
         }
-        self.lasers.pose(scene, &world.strikes);
+        self.laser_sprites = airstrike::sprites(&world.strikes);
         self.beams.pose(scene, world, clock);
+        self.sprites.clear();
+        self.sprites.extend_from_slice(&self.laser_sprites);
+        self.sprites.extend_from_slice(self.beams.sprites());
     }
 }
 

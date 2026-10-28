@@ -225,9 +225,21 @@ fn fx_column(in: V) -> @location(0) vec4<f32> {
     let radiance = max(0.0, mix(p.body.x, p.body.y, power)
         + sin((u.clock.x - p.timing.x) * p.extra.x) * p.extra.y * power);
     let color = mix(p.ay.rgb, p.az.rgb, smoothstep(p.timing.z, p.timing.w, in.age));
+    // A column of glowing air, not a tube: weight each surface by how
+    // squarely it faces the camera across the (vertical) axis, as the path
+    // through a lit cylinder shortens towards its silhouette, so the light
+    // falls off softly to the edges. Both faces draw; 1.4 keeps the energy
+    // of the flat shell (the mean of facing^1.5 across the width is ~0.72).
+    let radial = in.world.xz - p.center_kind.xz;
+    let view = u.camera_near.xz - in.world.xz;
+    var facing = 1.0;
+    if dot(radial, radial) > 1e-8 && dot(view, view) > 1e-8 {
+        facing = abs(dot(normalize(radial), normalize(view)));
+    }
+    let soft = pow(facing, 1.5) * 1.4;
     // Apply opacity before limiting HDR: a low-alpha high-radiance beam must
     // not lose energy merely because its unweighted radiance exceeds fp16.
-    return vec4<f32>(fp16_safe(color * (radiance * alpha)), 0.0);
+    return vec4<f32>(fp16_safe(color * (radiance * alpha * soft)), 0.0);
 }
 
 @fragment

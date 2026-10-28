@@ -59,11 +59,15 @@ pub struct Sprite {
     /// Adds its light without covering what is behind it (glows, beams):
     /// the texel alpha and `opacity` only scale the radiance.
     pub additive: bool,
+    /// Never narrower on screen than this many pixels (0: off). The texture
+    /// keeps its radiance as it widens, so a thin bright laser far away
+    /// still shows its core and glow, as a bloom would spread it.
+    pub min_pixels: f32,
 }
 
 impl Sprite {
     pub fn billboard(center: Vec3, size: [f32; 2], image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
-        Self { center, size, facing: Facing::Billboard, image, uv, radiance, opacity: 1.0, alpha_cut: 0.5, depth_bias: 0.05, additive: false }
+        Self { center, size, facing: Facing::Billboard, image, uv, radiance, opacity: 1.0, alpha_cut: 0.5, depth_bias: 0.05, additive: false, min_pixels: 0.0 }
     }
     /// Turned about `up` towards the camera, additive and blended (no cut).
     pub fn shaft(center: Vec3, size: [f32; 2], up: Vec3, image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
@@ -242,7 +246,7 @@ impl SpriteRenderer {
                 }
             };
             GpuSprite { center: s.center.extend(s.depth_bias).to_array(), right: right.extend(s.size[0]).to_array(), up: up.extend(s.size[1]).to_array(),
-                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, if s.additive { 1.0 } else { 0.0 }, 0.0, 0.0] }
+                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, if s.additive { 1.0 } else { 0.0 }, s.min_pixels.max(0.0), 0.0] }
         }).collect();
         let size = (input.width(), input.height());
         if self.targets.len() <= index { self.targets.resize_with(index + 1, || None); }
@@ -257,7 +261,7 @@ impl SpriteRenderer {
         }
         let t = self.targets[index].as_ref().unwrap();
         let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(),
-            camera_near: camera.pos.extend(camera.near).to_array(), camera_right: cam_right.extend(0.0).to_array() };
+            camera_near: camera.pos.extend(camera.near).to_array(), camera_right: cam_right.extend(size.0 as f32).to_array() };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         gpu.queue.write_buffer(&t.instances, 0, bytemuck::cast_slice(&gpu_sprites));
         enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());
@@ -301,7 +305,18 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32>,
     let s = sprites[i];
     let corners = array<vec2<f32>, 6>(vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
     let c = corners[v];
-    let world = s.center.xyz + s.right.xyz * (c.x - 0.5) * s.right.w + s.up.xyz * (0.5 - c.y) * s.up.w;
+    let along = s.center.xyz + s.up.xyz * (0.5 - c.y) * s.up.w;
+    var width = s.right.w;
+    if s.misc.z > 0.0 {
+        // Pixels per metre across the sprite here (camera_right.w: width px).
+        let a = u.view_proj * vec4<f32>(along, 1.0);
+        let b = u.view_proj * vec4<f32>(along + s.right.xyz * 0.01, 1.0);
+        if a.w > 1e-4 && b.w > 1e-4 {
+            let px = length(b.xy / b.w - a.xy / a.w) * 0.5 * u.camera_right.w / 0.01;
+            width = max(width, s.misc.z / max(px, 1e-6));
+        }
+    }
+    let world = along + s.right.xyz * (c.x - 0.5) * width;
     var out: Out;
     out.position = u.view_proj * vec4<f32>(world, 1.0);
     out.uv = s.uv.xy + c * s.uv.zw;
@@ -324,8 +339,13 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     // Linear premultiplied texel; cut-out sprites draw opaque inside.
     let a = select(texel.a, 1.0, s.misc.x > 0.0) * s.color.a;
     let rgb = texel.rgb / max(texel.a, 1.0 / 255.0) * s.color.rgb;
+    // The HDR target is fp16: keep the hue and leave headroom for what an
+    // additive sprite lands on (a very bright, thin laser may ask for more).
+    var light = rgb * a;
+    let peak = max(light.r, max(light.g, light.b));
+    light *= min(1.0, 40000.0 / max(peak, 1e-6));
     // Additive: premultiplied with zero alpha keeps what is behind.
-    return vec4<f32>(rgb * a, select(a, 0.0, s.misc.y > 0.5));
+    return vec4<f32>(light, select(a, 0.0, s.misc.y > 0.5));
 }
 "#;
 

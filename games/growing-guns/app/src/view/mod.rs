@@ -129,14 +129,15 @@ impl Visuals {
     /// The renderer was rebuilt: upload the sprite images again.
     pub fn invalidate_sprites(&mut self) { self.sprite_images = false; }
 
-    /// World sprites besides the name tags: the drop beams' light shafts.
+    /// World sprites besides the name tags: the light shafts.
     pub fn sprites(&self) -> &[render::sprites::Sprite] { self.things.sprites() }
 
     /// Upload changed slots, debris, effects and the crowd.
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
         if !std::mem::replace(&mut self.sprite_images, true) {
-            let (id, picture) = things::Things::sprite_picture();
-            renderer.set_sprite_image(gpu, id, &picture, render::hud::ImageFilter::Linear);
+            for (id, picture) in things::Things::sprite_pictures() {
+                renderer.set_sprite_image(gpu, id, &picture, render::hud::ImageFilter::Linear);
+            }
         }
         self.arena.flush(gpu, renderer, &self.scene)?;
         self.players.flush(gpu, renderer, &self.scene)?;

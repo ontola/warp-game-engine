@@ -1,102 +1,106 @@
-//! Air-strike targeting laser from `scripts/air_strike.gd`: a white core
-//! inside a red additive sheath, connecting the rocket's origin to its target.
-use glam::{Affine3A, Quat, Vec3};
+//! Air-strike targeting laser from `scripts/air_strike.gd`: a thin
+//! white-hot core inside a red glow, connecting the rocket's origin to its
+//! target. Drawn as an additive light shaft (a sprite turned about the
+//! laser towards each camera) whose texture carries the soft falloff from
+//! the core into the red glow, so it reads as light, not as a box.
+use glam::Vec3;
 use growing_guns::{Strike, StrikeKind, AIR_STRIKE_TRAVEL};
-use render::scene::NO_SHADOW;
-use render::Scene;
+use render::picture::Picture;
+use render::sprites::{Sprite, SpriteImage};
 
 pub(super) const SKY_OFFSET: Vec3 = Vec3::new(0.0, 263.0, 93.0);
 const MAX_STRIKES: usize = 32;
-const WIDTHS: [f32; 2] = [0.035, 0.085];
-
-pub(super) struct Lasers { first: usize, meshes: [usize; 2] }
+pub(super) const IMAGE: SpriteImage = SpriteImage(0x6c61_7365);
+/// The sprite's full width; Godot's core is 3.5 cm and its sheath 8.5 cm.
+const WIDTH: f32 = 0.5;
+const CORE: f32 = 0.022;
+const SHEATH: f32 = 0.05;
+const GLOW: f32 = 0.16;
+/// Godot `MARKER_COLOR` (linear) for the sheath and glow.
+const RED: [f32; 3] = [1.0, 0.08, 0.04];
+/// Peak radiance: very bright (Godot core emission 16). The sprite shader
+/// limits what reaches the fp16 target, so the white-hot core saturates up
+/// close while a distant laser, a pixel or two wide, still burns bright.
+const NITS: f32 = 160_000.0;
+/// The laser's glow never narrows below this on screen, so far up it still
+/// reads as a burning line.
+const MIN_PIXELS: f32 = 10.0;
 
 pub(super) fn active(strike: &Strike) -> bool {
     strike.kind == StrikeKind::AirStrike && strike.target.is_finite()
         && strike.age.is_finite() && (0.0..AIR_STRIKE_TRAVEL).contains(&strike.age)
 }
 
-fn transform(target: Vec3, width: f32) -> Affine3A {
-    Affine3A::from_scale_rotation_translation(
-        Vec3::new(width, width, SKY_OFFSET.length()),
-        Quat::from_rotation_arc(Vec3::Z, SKY_OFFSET.normalize()), target + SKY_OFFSET * 0.5)
+/// The laser's texture: across, a white core, a red sheath and a faint red
+/// glow (Gaussian, windowed to the edge); the same along its length.
+pub(super) fn picture() -> Picture {
+    let (w, h) = (256u32, 4u32);
+    let half = WIDTH * 0.5;
+    let mut row = Vec::with_capacity(w as usize * 4);
+    for x in 0..w {
+        let d = ((x as f32 + 0.5) / w as f32 * 2.0 - 1.0) * half;
+        let g = |s: f32| (-(d / s).powi(2)).exp();
+        let window = (1.0 - (d / half).powi(2)).max(0.0).powi(2);
+        let (core, sheath, glow) = (g(CORE), 0.5 * g(SHEATH), 0.3 * g(GLOW));
+        // Premultiplied light: white from the core, red from the rest.
+        let rgb = [0, 1, 2].map(|c| (core + (sheath + glow) * RED[c]) * window);
+        let scale = rgb.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
+        // A picture is straight sRGB with alpha: alpha carries the light's
+        // brightest channel, the colour its hue.
+        let col = rgb.map(|v| ((v / scale).max(0.0).powf(1.0 / 2.2) * 255.0 + 0.5) as u8);
+        row.extend([col[0], col[1], col[2], (scale.min(1.0) * 255.0 + 0.5) as u8]);
+    }
+    Picture::new(w, h, row.repeat(h as usize)).expect("fixed size")
 }
 
-impl Lasers {
-    pub fn reserve(scene: &mut Scene) -> Self {
-        let core = super::super::glow(scene, [1.0; 3], 30_000.0);
-        let sheath = super::super::glow(scene, [1.0, 0.08, 0.04], 8_000.0);
-        // Closed cubes need front faces only: drawing their backs too would
-        // double the additive energy and risk overflowing the fp16 HDR target.
-        scene.set_material_additive(core, 1.0, false);
-        scene.set_material_additive(sheath, 0.9, false);
-        let meshes = [core, sheath].map(|material| super::super::cube(scene, material));
-        let first = scene.instances.len();
-        for _ in 0..MAX_STRIKES {
-            for mesh in meshes {
-                // Transparency registers triangle owners once at startup.
-                // Keep geometry in dormant slots; zero scale hides them.
-                scene.add_instance(mesh, Affine3A::from_scale(Vec3::ZERO));
-                scene.instances.last_mut().unwrap().flags |= NO_SHADOW;
-            }
-        }
-        Self { first, meshes }
-    }
-
-    pub fn pose(&self, scene: &mut Scene, strikes: &[Strike]) {
-        let mut count = 0;
-        for strike in strikes.iter().filter(|strike| active(strike)).take(MAX_STRIKES) {
-            for (layer, width) in WIDTHS.into_iter().enumerate() {
-                scene.update_instance(self.first + count * 2 + layer, self.meshes[layer], transform(strike.target, width));
-            }
-            count += 1;
-        }
-        for slot in count * 2..MAX_STRIKES * 2 {
-            if scene.instances[self.first + slot].scale > 0.0 {
-                scene.update_instance(self.first + slot, self.meshes[slot % 2], Affine3A::from_scale(Vec3::ZERO));
-            }
-        }
-    }
+/// One shaft per live air strike, from its target up to where the rocket
+/// comes from.
+pub(super) fn sprites(strikes: &[Strike]) -> Vec<Sprite> {
+    let axis = SKY_OFFSET.normalize();
+    strikes.iter().filter(|s| active(s)).take(MAX_STRIKES).map(|s| {
+        let mut sprite = Sprite::shaft(s.target + SKY_OFFSET * 0.5, [WIDTH, SKY_OFFSET.length()], axis, IMAGE, [0.0, 0.0, 1.0, 1.0], Vec3::splat(NITS));
+        sprite.depth_bias = 0.0;
+        sprite.min_pixels = MIN_PIXELS;
+        sprite
+    }).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use render::sprites::Facing;
 
     fn strike(kind: StrikeKind, age: f64) -> Strike {
         Strike { kind, target: Vec3::new(4.0, 1.5, -8.0), owner: Some(0), age }
     }
 
     #[test]
-    fn laser_spans_the_rocket_path_with_thin_nested_layers() {
+    fn laser_spans_the_rocket_path() {
+        let s = &sprites(&[strike(StrikeKind::AirStrike, 0.0)])[0];
         let target = strike(StrikeKind::AirStrike, 0.0).target;
-        for width in WIDTHS {
-            let xf = transform(target, width);
-            assert!(xf.transform_point3(Vec3::NEG_Z * 0.5).abs_diff_eq(target, 0.0001));
-            assert!(xf.transform_point3(Vec3::Z * 0.5).abs_diff_eq(target + SKY_OFFSET, 0.0001));
-            assert!((xf.transform_vector3(Vec3::X).length() - width).abs() < 0.00001);
-            assert!((xf.transform_vector3(Vec3::Y).length() - width).abs() < 0.00001);
-        }
-        assert!(WIDTHS[0] < WIDTHS[1]);
+        let Facing::Axis { up } = s.facing else { panic!("a shaft") };
+        assert!((s.center - up * s.size[1] * 0.5).abs_diff_eq(target, 0.001));
+        assert!((s.center + up * s.size[1] * 0.5).abs_diff_eq(target + SKY_OFFSET, 0.001));
+        assert!(s.additive && s.size[0] <= 0.5);
     }
 
     #[test]
-    fn additive_laser_lasts_until_airstrike_impact_and_never_marks_ion() {
-        let mut scene = Scene::default();
-        let lasers = Lasers::reserve(&mut scene);
-        assert!(scene.instances.iter().all(|i| i.cluster_count > 0 && i.scale == 0.0));
-        assert!(scene.blended_materials.values().all(|m| m.additive && !m.double_sided));
+    fn laser_lasts_until_airstrike_impact_and_never_marks_ion() {
         for age in [0.0, 0.5, AIR_STRIKE_TRAVEL - growing_guns::DT64] {
-            lasers.pose(&mut scene, &[strike(StrikeKind::AirStrike, age), strike(StrikeKind::IonCannon, age)]);
-            assert_eq!(scene.instances.iter().filter(|i| i.scale > 0.0).count(), 2);
-            assert!(scene.instances.iter().all(|i| i.flags & NO_SHADOW != 0));
+            assert_eq!(sprites(&[strike(StrikeKind::AirStrike, age), strike(StrikeKind::IonCannon, age)]).len(), 1);
         }
         for age in [-1.0, AIR_STRIKE_TRAVEL, AIR_STRIKE_TRAVEL + 1.0, f64::NAN] {
-            lasers.pose(&mut scene, &[strike(StrikeKind::AirStrike, age)]);
-            assert!(scene.instances.iter().all(|i| i.scale == 0.0 && i.cluster_count > 0));
+            assert!(sprites(&[strike(StrikeKind::AirStrike, age)]).is_empty());
         }
-        lasers.pose(&mut scene, &[strike(StrikeKind::AirStrike, 0.0)]);
-        lasers.pose(&mut scene, &[]);
-        assert!(scene.instances.iter().all(|i| i.scale == 0.0));
+    }
+
+    #[test]
+    fn laser_core_is_white_and_its_edge_red() {
+        let p = picture();
+        let px = |x: u32| &p.rgba[(x * 4) as usize..(x * 4 + 4) as usize];
+        let centre = px(p.width / 2);
+        assert!(centre[0] > 240 && centre[1] > 200 && centre[3] > 240);
+        let edge = px(p.width / 2 + p.width / 7);
+        assert!(edge[0] > edge[1] * 3 && edge[3] < centre[3]);
     }
 }
