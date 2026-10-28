@@ -1,6 +1,7 @@
 //! Sprites: textured quads in the world, for pixel-art characters, name tags
 //! and floating button prompts. Billboards face each view's camera; fixed
-//! sprites keep their own axes (a 2.5D room seen from one side).
+//! sprites keep their own axes (a 2.5D room seen from one side); shafts turn
+//! about one axis towards each camera and add their light (beams, glows).
 //!
 //! Drawn in HDR after temporal reconstruction, like `fx`: crisp (no TAA blur
 //! or ghosting on pixel art), hidden behind the opaque scene by its depth,
@@ -33,6 +34,9 @@ pub enum Facing {
     Billboard,
     /// Its own right and up axes (unit length; sizes scale them).
     Fixed { right: Vec3, up: Vec3 },
+    /// Keeps `up` (unit length) and turns about it to face each camera's
+    /// position: a light shaft, a laser or a column of smoke.
+    Axis { up: Vec3 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,11 +56,18 @@ pub struct Sprite {
     /// Metres towards the camera before the depth test, so a sprite standing
     /// on a floor or against a wall is not cut by it.
     pub depth_bias: f32,
+    /// Adds its light without covering what is behind it (glows, beams):
+    /// the texel alpha and `opacity` only scale the radiance.
+    pub additive: bool,
 }
 
 impl Sprite {
     pub fn billboard(center: Vec3, size: [f32; 2], image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
-        Self { center, size, facing: Facing::Billboard, image, uv, radiance, opacity: 1.0, alpha_cut: 0.5, depth_bias: 0.05 }
+        Self { center, size, facing: Facing::Billboard, image, uv, radiance, opacity: 1.0, alpha_cut: 0.5, depth_bias: 0.05, additive: false }
+    }
+    /// Turned about `up` towards the camera, additive and blended (no cut).
+    pub fn shaft(center: Vec3, size: [f32; 2], up: Vec3, image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
+        Self { facing: Facing::Axis { up }, alpha_cut: 0.0, additive: true, ..Self::billboard(center, size, image, uv, radiance) }
     }
     pub fn fixed(center: Vec3, size: [f32; 2], right: Vec3, up: Vec3, image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
         Self { facing: Facing::Fixed { right, up }, ..Self::billboard(center, size, image, uv, radiance) }
@@ -224,9 +235,14 @@ impl SpriteRenderer {
             let (right, up) = match s.facing {
                 Facing::Billboard => { let r = Vec3::new(cam_right.x, 0.0, cam_right.z).try_normalize().unwrap_or(Vec3::X); (r, Vec3::Y) }
                 Facing::Fixed { right, up } => (right, up),
+                Facing::Axis { up } => {
+                    let to_camera = camera.pos - s.center;
+                    let r = up.cross(to_camera).try_normalize().unwrap_or_else(|| up.any_orthonormal_vector());
+                    (r, up)
+                }
             };
             GpuSprite { center: s.center.extend(s.depth_bias).to_array(), right: right.extend(s.size[0]).to_array(), up: up.extend(s.size[1]).to_array(),
-                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, 0.0, 0.0, 0.0] }
+                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, if s.additive { 1.0 } else { 0.0 }, 0.0, 0.0] }
         }).collect();
         let size = (input.width(), input.height());
         if self.targets.len() <= index { self.targets.resize_with(index + 1, || None); }
@@ -308,7 +324,8 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     // Linear premultiplied texel; cut-out sprites draw opaque inside.
     let a = select(texel.a, 1.0, s.misc.x > 0.0) * s.color.a;
     let rgb = texel.rgb / max(texel.a, 1.0 / 255.0) * s.color.rgb;
-    return vec4<f32>(rgb * a, a);
+    // Additive: premultiplied with zero alpha keeps what is behind.
+    return vec4<f32>(rgb * a, select(a, 0.0, s.misc.y > 0.5));
 }
 "#;
 
