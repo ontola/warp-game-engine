@@ -3,6 +3,11 @@
 //! follows how open the floor is, and one over the leak as it floods the
 //! arena. Both are unshadowed, as in Godot, so the pool light reaches the
 //! walls and buildings through the floor.
+//!
+//! At night (not in Godot) local glows join them, fading in with the
+//! floodlights: one over each patch of exposed lava in the floor (holes and
+//! broken floor, brighter the more lava shows) and a ring past the arena's
+//! edge that lights the stands and the outside of the arena.
 use glam::{Vec2, Vec3};
 use growing_guns::arena::LAVA_KILL_Y;
 use growing_guns::shape::Kind;
@@ -22,6 +27,20 @@ const ENERGY_CD: f32 = 37_000.0;
 const POOL_ENERGY: f32 = 5.5;
 /// Leak glow: Godot `LavaLeakGlow`, up to 7.5.
 const LEAK_ENERGY: f32 = 7.5;
+/// Night glows over exposed floor lava: at most this many, one per tile of
+/// `TILE` cells with at least `PATCH_MIN_M2` of lava showing.
+pub const PATCH_LIGHTS: usize = 4;
+const TILE: i32 = 4;
+const PATCH_MIN_M2: f32 = 4.0;
+/// Candela per square metre of exposed lava (inverse-square falloff).
+const PATCH_CD_PER_M2: f32 = 12_000.0;
+/// Night glows over the pool past the arena's edge, around the ring between
+/// the edge and the stands.
+pub const RING_LIGHTS: usize = 8;
+/// Lux at 1 m of each ring glow (falloff 1, as the floodlights).
+const RING_LUX: f32 = 100_000.0;
+/// Most lights the lava asks for in a frame.
+pub const MAX_LAVA_LIGHTS: usize = 2 + PATCH_LIGHTS + RING_LIGHTS;
 
 /// Godot `ArenaGenerator.get_lava_noise_texture`: the 256 px tiling noise
 /// the lava shader reads, FastNoiseLite OpenSimplex2S ("simplex smooth")
@@ -47,7 +66,14 @@ pub struct LavaLight {
     side: i32,
     /// Sealed fraction (0 open .. 1 covered) per cell, Godot `_cell_block`.
     block: Vec<f32>,
+    /// Lava actually showing per cell, 0..1 (nothing over it at all; unlike
+    /// Godot's ray this reads an intact floor as covered).
+    exposed: Vec<f32>,
     ratio: f32,
+    /// Night glows: (position, exposed area m²) per patch of floor lava.
+    patches: Vec<(Vec3, f32)>,
+    /// How much of the night glows to show, 0 (day, Godot) .. 1 (night).
+    pub night: f32,
     lights: Vec<LocalLight>,
 }
 
@@ -58,7 +84,8 @@ impl LavaLight {
         self.min = (-half / CELL).floor() as i32;
         self.side = (half / CELL).floor() as i32 - self.min + 1;
         self.block = vec![1.0; (self.side * self.side) as usize];
-        for i in 0..self.block.len() { self.block[i] = self.measure(world, i); }
+        self.exposed = vec![0.0; self.block.len()];
+        for i in 0..self.block.len() { self.block[i] = self.measure(world, i); self.exposed[i] = self.exposure(world, i); }
         self.update_ratio();
     }
 
@@ -73,6 +100,7 @@ impl LavaLight {
                 for x in lo.0.max(0)..=hi.0.min(self.side - 1) {
                     let k = (z * self.side + x) as usize;
                     self.block[k] = self.measure(world, k);
+                    self.exposed[k] = self.exposure(world, k);
                 }
             }
         }
@@ -94,12 +122,69 @@ impl LavaLight {
             let energy = LEAK_ENERGY * spread * exposure.powf(0.72);
             if energy > 0.0 { self.lights.push(glow(Vec3::new(0.0, l.surface() + 0.45, 0.0), energy, l.half * 1.35)); }
         }
+        let night = self.night.clamp(0.0, 1.0);
+        if night <= 0.0 { return; }
+        let color = Vec3::from(GLOW_COLOR);
+        // Over each patch: higher and wider the larger it is, so the floor
+        // around a hole catches the light; below the leak once it covers them.
+        for &(p, area) in &self.patches {
+            let r = (area / std::f32::consts::PI).sqrt();
+            let y = (0.3 + 0.3 * r).min(2.0);
+            self.lights.push(LocalLight {
+                position: p + Vec3::Y * y, direction: Vec3::NEG_Y, intensity_cd: color * (PATCH_CD_PER_M2 * area * night),
+                range_m: (4.0 * r + 10.0).clamp(6.0, 40.0), inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 1.0, falloff: 2.0,
+            });
+        }
+        // The ring: halfway from the arena's edge to the stands, above the
+        // floor when there are no walls (the floor's rim catches it), below
+        // the floor otherwise, so it does not shine through the walls onto it.
+        let a = &world.arena;
+        let half = size * 0.5;
+        let y = if a.variant == growing_guns::arena::Variant::Open { 0.5 } else { -1.0 };
+        for i in 0..RING_LIGHTS {
+            let t = std::f32::consts::TAU * i as f32 / RING_LIGHTS as f32;
+            let (s, c) = t.sin_cos();
+            let edge = half / s.abs().max(c.abs());
+            let r = 0.5 * (edge + a.stadium.inner_r.max(edge + 4.0));
+            self.lights.push(LocalLight {
+                position: Vec3::new(c * r, y, s * r), direction: Vec3::NEG_Y, intensity_cd: color * (RING_LUX * night),
+                range_m: (size * 0.6).clamp(20.0, 80.0), inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 1.0, falloff: 1.0,
+            });
+        }
     }
 
     pub fn lights(&self) -> &[LocalLight] { &self.lights }
 
     fn update_ratio(&mut self) {
         self.ratio = if self.block.is_empty() { 0.0 } else { self.block.iter().map(|b| 1.0 - b.clamp(0.0, 1.0)).sum::<f32>() / self.block.len() as f32 };
+        // Patches: the exposed lava per tile of TILE x TILE cells, the
+        // largest first, at the centroid of what shows.
+        let tiles = (self.side + TILE - 1) / TILE;
+        let mut sums = vec![(Vec2::ZERO, 0.0f32); (tiles * tiles).max(0) as usize];
+        for (k, &e) in self.exposed.iter().enumerate() {
+            if e <= 0.0 { continue; }
+            let (x, z) = (k as i32 % self.side, k as i32 / self.side);
+            let c = Vec2::new(((x + self.min) as f32 + 0.5) * CELL, ((z + self.min) as f32 + 0.5) * CELL);
+            let t = &mut sums[((z / TILE) * tiles + x / TILE) as usize];
+            t.0 += c * e;
+            t.1 += e;
+        }
+        let mut patches: Vec<_> = sums.into_iter().filter(|t| t.1 * CELL * CELL >= PATCH_MIN_M2).map(|(c, w)| (c / w, w * CELL * CELL)).collect();
+        patches.sort_by(|a, b| b.1.total_cmp(&a.1));
+        patches.truncate(PATCH_LIGHTS);
+        self.patches = patches.into_iter().map(|(c, area)| (Vec3::new(c.x, 0.0, c.y), area)).collect();
+    }
+
+    /// How much of a cell shows lava: of 2 x 2 points, those with nothing
+    /// over them between the lava and RAY_TOP_Y.
+    fn exposure(&self, world: &World, k: usize) -> f32 {
+        let (x, z) = ((k as i32 % self.side) + self.min, (k as i32 / self.side) + self.min);
+        let mut open = 0;
+        for (u, v) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
+            let p = Vec2::new((x as f32 + u) * CELL, (z as f32 + v) * CELL);
+            if !world.arena.grid.query(p, p).into_iter().any(|j| world.arena.chunk(j).is_some_and(|c| covers(c, p))) { open += 1; }
+        }
+        open as f32 / 4.0
     }
 
     fn cell_of(&self, p: Vec2) -> (i32, i32) { ((p.x / CELL).floor() as i32 - self.min, (p.y / CELL).floor() as i32 - self.min) }
@@ -131,6 +216,16 @@ impl LavaLight {
             Some(_) => 1.0,
         }
     }
+}
+
+/// A chunk standing over `p` anywhere between the lava and RAY_TOP_Y.
+fn covers(c: &growing_guns::Chunk, p: Vec2) -> bool {
+    let (bottom, top) = (c.center.y - c.half.y, c.center.y + c.half.y);
+    if top < LAVA_KILL_Y + 0.18 || bottom > RAY_TOP_Y { return false; }
+    let (s, co) = c.yaw.sin_cos();
+    let d = p - Vec2::new(c.center.x, c.center.z);
+    let local = Vec2::new(co * d.x - s * d.y, s * d.x + co * d.y);
+    local.x.abs() <= c.half.x && local.y.abs() <= c.half.z
 }
 
 fn glow(position: Vec3, energy: f32, range: f32) -> LocalLight {

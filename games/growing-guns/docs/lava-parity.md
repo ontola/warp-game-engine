@@ -66,9 +66,17 @@ Mean CIELAB difference (ΔE76) from the Godot captures, per lava region:
 |---|---|---|---|---|---|
 | Before (approx. noise, 12000 nits, sRGB-space mix) | 19.6 | 58.2 | 29.1 | 51.5 | 39.6 |
 | Earlier WIP (approx. noise, 30000 nits, linear mix) | 18.9 | 43.4 | 23.3 | 40.2 | 31.5 |
-| Now (Godot noise, 45000 nits, tint 1, 0.92, 0) | 15.2 | 31.0 | 25.3 | 10.2 | 20.4 |
+| Fit (Godot noise, 45000 nits, tint 1, 0.92, 0; no leak fronts yet) | 15.2 | 31.0 | 25.3 | 10.2 | 20.4 |
+| Now (the same, with the leak fronts, pool level and lava light) | 15.1 | 33.9 | 27.4 | 9.2 | 21.4 |
 
-Mean colour over the same regions, sRGB:
+Other radiances were rendered and measured the same way. A fit of the
+tonemapper alone suggested tint (1, 0.808, 0) at 21450 nits, but rendered it
+scores 26.6; (1, 0.85, 0) at 26000 to 55000 nits scores 21.0 to 23.7. The
+regions, in the 960 x 540 captures: hole x 380..560, y 200..300; open x
+0..500, y 300..539; leak_eye x 0..500, y 350..539; leak_mid x 0..100, y
+280..400.
+
+Mean colour over the same regions, sRGB (the fit):
 
 | Shot | Godot | Now |
 |---|---|---|
@@ -112,6 +120,50 @@ There was none before.
 - **Calibration.** Godot energy converts to the engine at 37000 per unit, as
   for the blast lights.
 
+### At night
+
+Godot has no night; the port's procedural skies (`--sky night`,
+`app/src/sky.rs`) expose a floodlit stadium at EV 11 instead of Godot's
+13.6. Two things keep the lava reading as lava there.
+
+- **Emission held at the day exposure.** `render::Lighting` has
+  `emissive_compensation` (0 off, the default, to 1) and `emissive_ev100`.
+  Emitted radiance (EMISSIVE and LAVA materials, car lamps; opaque and
+  transparent) is multiplied by
+  2^((ev100 - emissive_ev100) * emissive_compensation), so with 1 it is
+  shown as at `emissive_ev100` under every sky. Growing Guns sets 1 and
+  13.6 (`view::lighting`, `EMISSIVE_COMPENSATION`): at night the lava,
+  tracers and beacons keep their day colour instead of clipping to white, and
+  at noon (EV 14) they are 1.3 times brighter, as the exposure asks. The
+  light that local lights cast is not scaled, so against the dark sky the
+  lava's glow on its surroundings stands out more than by day. Sideways
+  leaves it off and is unchanged. The explosion puffs (`render::fx`) are
+  already scaled to the light of the scene and are untouched.
+- **Night glows** (`view/lava.rs`, not in Godot). They fade in with the
+  floodlights (`Visuals::set_floodlights`: 0 in daylight, 1 below -4 deg of
+  sun), so the day look stays the Godot one, pixel for pixel.
+  - Over exposed floor lava: up to 4 inverse-square omni lights, one per
+    11.2 m tile with at least 4 m² of lava showing, at the centroid of the
+    exposed cells, 0.3 + 0.3 r m above the floor (r: the patch's radius),
+    12000 cd per m² showing. Exposure is measured per 2.8 m cell from 2 x 2
+    columns with nothing over them at all (an intact floor reads covered,
+    unlike Godot's ray), and re-measured as chunks break, so breaking the
+    floor brightens and adds glows.
+  - Past the arena's edge: 8 lights (falloff 1, 100000 lux at 1 m) around
+    the ring halfway from the edge to the stands; they light the crowd, the
+    stands and the outside of the arena. Above the floor in open arenas, so
+    its rim catches them; below it in walled ones, so they do not shine
+    through the walls onto the floor.
+  - The colour is Godot's lava light colour, as the pool and leak glows.
+- **Light budget.** Growing Guns now uses all 32 local lights the renderer
+  allows (was 16): ion strikes and blasts up to 14, then the 4 floodlights,
+  the lava (pool, leak, 4 + 8 night glows: at most 14), the roof beacons and
+  muzzle flashes in what is left.
+
+`scripts/lava-night.json` shows the night views: the arena, the stands
+over the pool, a floor hole with a player at its rim, an open arena's edge
+and the leak.
+
 ### Edges against stone
 
 Both draw the lava as plain geometry meeting the stone, with no blending
@@ -149,7 +201,9 @@ Bodies burnt to death left no corpse, only a blood burst.
 The port now matches Godot:
 
 - **Sim.** `Gib::Lava { fall }` on the kill event, set through `Blow::lava`.
-  It does not change the world state or the versus digest.
+  It does not change the world state or the versus digest: bots-only
+  versus runs of 180 s for seeds 1, 7, 42, 99 and 4242 (4 to 38 lava events
+  each) give the same digests and scores before and after.
 - **View.** `view/players.rs` (`lava_death`, `pose_lava`) draws the sinking
   body and the splash.
   - **Skinned characters.** Each gets a lava twin: the same skeleton and
