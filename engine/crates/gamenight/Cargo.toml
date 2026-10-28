@@ -1,0 +1,10 @@
+[package]
+name = "gamenight"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "GameNight client for Warp games: party sessions, seats, settings, actions and controller frames over the host's websocket"
+
+[dependencies]
+serde_json.workspace = true
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
