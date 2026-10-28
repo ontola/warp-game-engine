@@ -40,7 +40,7 @@ pub fn bytes(c: C) -> [u8; 4] { c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as
 
 /// Text ids: one per run in draw order, so a frame laid out like the last
 /// reuses its shaped text.
-fn next_id(d: &HudDrawList) -> u64 { (0x6767 << 32) + d.text.len() as u64 }
+pub(crate) fn next_id(d: &HudDrawList) -> u64 { (0x6767 << 32) + d.text.len() as u64 }
 
 /// One line of text. `x` is the left edge, centre or right edge by `align`;
 /// `y` is the vertical centre of the line.

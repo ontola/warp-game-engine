@@ -141,6 +141,11 @@ impl Session {
     /// tool); the tick's events are cleared before publishing, so say so.
     pub fn mark_arena(&mut self) { if let Session::Host { arena, .. } = self { *arena = true; } }
 
+    /// Host: the world slots remote players hold.
+    pub fn remote_slots(&self) -> Vec<usize> {
+        match self { Session::Host { remotes, .. } => remotes.iter().flat_map(|r| r.slots.iter().copied()).collect(), _ => Vec::new() }
+    }
+
     /// Host: players playing from other machines.
     pub fn remote_players(&self) -> usize {
         match self { Session::Host { remotes, .. } => remotes.iter().map(|r| r.slots.len()).sum(), _ => 0 }

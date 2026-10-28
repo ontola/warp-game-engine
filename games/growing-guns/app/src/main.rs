@@ -165,11 +165,14 @@ fn nettest(args: &Args) -> Result<(), String> {
     use app::{Buttons, Controls, Game};
     let seconds = args.num("--seconds", 4.0f32);
     let ticks = (seconds * TICK_HZ as f32) as u32;
+    // COPY must not touch this machine's clipboard.
+    app::clipboard::memory_only();
     let (ticket_tx, ticket_rx) = std::sync::mpsc::channel();
     // The host runs in real time on its own thread, as it would in play.
     let host = std::thread::spawn(move || -> Result<String, String> {
         let mut host = play::Gg::new(World::new(9, &[false, true, true, true]), session::Session::host(true)?, vec![0]);
-        ticket_tx.send(host.session().ticket().unwrap().to_string()).map_err(|e| e.to_string())?;
+        let copied = host.command("copy").map(|_| app::clipboard::get())?;
+        ticket_tx.send((host.session().ticket().unwrap().to_string(), copied)).map_err(|e| e.to_string())?;
         let start = std::time::Instant::now();
         for k in 0..ticks + 120 {
             // Destruction mid-game: clients must end with the same arena.
@@ -182,11 +185,23 @@ fn nettest(args: &Args) -> Result<(), String> {
         }
         host.state().ok_or("no state".into())
     });
-    let ticket = ticket_rx.recv_timeout(std::time::Duration::from_secs(20)).map_err(|e| format!("host did not start: {e}"))?;
+    let (ticket, copied) = ticket_rx.recv_timeout(std::time::Duration::from_secs(20)).map_err(|e| format!("host did not start: {e}"))?;
+    if copied != ticket { return Err(format!("nettest failed: COPY put {copied:?} on the clipboard")); }
+    // The client joins as a player would: the ticket pasted into the pause
+    // menu's join field (a valid ID connects at once).
     let t = std::time::Instant::now();
-    let (session, world, slots) = session::Session::join(&ticket, 1, true)?;
-    println!("joined in {:.0} ms as player {}", t.elapsed().as_secs_f64() * 1000.0, slots[0] + 1);
-    let mut client = play::Gg::new(world, session, slots.clone());
+    let mut client = play::Gg::new(World::new(1, &[false, true]), session::Session::Local, vec![0]);
+    client.lan = true;
+    client.command("menu pause")?;
+    client.command("focus join")?;
+    client.text(app::TextEvent::Paste(format!("my game:\n{ticket}\n")));
+    while !client.session().is_client() {
+        if t.elapsed().as_secs() > 25 { return Err(format!("nettest failed: the menu join did not connect ({:?})", client.ui.notice)); }
+        client.tick(&[Controls::default()]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let slots = client.slots.clone();
+    println!("joined from the menu in {:.0} ms as player {}", t.elapsed().as_secs_f64() * 1000.0, slots[0] + 1);
     let me = slots[0];
     let mut start_pos = None;
     let mut last_tick = 0;
