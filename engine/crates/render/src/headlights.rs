@@ -98,7 +98,43 @@ struct GpuSpot {
 }
 #[repr(C)]
 #[derive(Clone,Copy,Pod,Zeroable)]
-struct Uniform {lights:[GpuSpot;MAX_LIGHTS],count:[u32;4],local:[GpuLocal;MAX_LOCAL_LIGHTS],local_min:[f32;4],local_max:[f32;4]}
+struct Uniform {lights:[GpuSpot;MAX_LIGHTS],count:[u32;4],local:[GpuLocal;MAX_LOCAL_LIGHTS],local_min:[f32;4],local_max:[f32;4],
+    /// Extras: x density, y anisotropy, z march length (m), w steps.
+    fog:[f32;4],fog_albedo:[f32;4],fog_emission:[f32;4],
+    spot_fog:[[f32;4];2],local_fog:[[f32;4];8],spot_falloff:[[f32;4];2],fog_extra:[f32;4]}
+
+/// Indoor volumetric fog lit by the shadowed spots and local lights, ray
+/// marched per pixel in the shade pass (Godot's volumetric fog, roughly).
+/// Light energies are per lamp, in the order the lamps were set.
+#[derive(Clone,Debug,PartialEq)]
+pub struct VolumetricFog {
+    /// Extinction per metre.
+    pub density:f32,
+    /// Scattering colour (linear).
+    pub albedo:Vec3,
+    /// Radiance the fog itself adds per metre of view ray (nits/m).
+    pub emission:Vec3,
+    /// Henyey-Greenstein g: 0 even, towards 1 bright looking into a lamp.
+    pub anisotropy:f32,
+    /// How much the indoor probe grid lights the fog (Godot's GI inject).
+    pub gi_inject:f32,
+    /// Extra cone half-angle (radians) lamps get in the fog, power kept.
+    pub cone_blur:f32,
+    /// March distance from the camera (m) and steps per pixel.
+    pub length:f32,
+    pub steps:u32,
+    pub spot_energy:Vec<f32>,
+    pub local_energy:Vec<f32>,
+}
+
+/// Per-lamp settings beyond the lamp structs.
+#[derive(Clone,Debug,Default,PartialEq)]
+pub struct LightExtras {
+    pub fog:Option<VolumetricFog>,
+    /// Distance exponent per shadowed spot (default 2, inverse square).
+    pub spot_falloff:Vec<f32>,
+    pub frame:u32,
+}
 impl Uniform {
     fn from_lights(lights:&[SpotLight],local:&[LocalLight])->Self {
         let mut result=Self::zeroed();result.count[0]=lights.len()as u32;
@@ -119,6 +155,7 @@ impl Uniform {
                 source:[src.source_radius_m*src.source_radius_m,src.falloff,0.0,0.0]};
         }
         if !local.is_empty() {result.local_min=lower.extend(0.0).to_array();result.local_max=upper.extend(0.0).to_array();}
+        for i in 0..MAX_LIGHTS {result.spot_falloff[i/4][i%4]=2.0;}
         result
     }
 }
@@ -141,7 +178,19 @@ impl Resources {
             contents:bytemuck::bytes_of(&Uniform::zeroed()),usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST});
         Self {uniform,texture:tex,sampled,empty}
     }
-    pub fn upload(&self,gpu:&Gpu,lights:&[SpotLight],local:&[LocalLight]) {gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&Uniform::from_lights(lights,local)));}
+    pub fn upload(&self,gpu:&Gpu,lights:&[SpotLight],local:&[LocalLight],extras:&LightExtras) {
+        let mut u=Uniform::from_lights(lights,local);
+        for (i,f) in extras.spot_falloff.iter().take(MAX_LIGHTS).enumerate() {u.spot_falloff[i/4][i%4]=f.clamp(0.1,4.0);}
+        if let Some(fog)=&extras.fog {
+            u.fog=[fog.density.max(0.0),fog.anisotropy.clamp(-0.95,0.95),fog.length.max(0.0),fog.steps.clamp(1,128) as f32];
+            u.fog_albedo=fog.albedo.extend((extras.frame%64) as f32).to_array();
+            u.fog_emission=fog.emission.extend(fog.gi_inject.max(0.0)).to_array();
+            u.fog_extra=[fog.cone_blur.clamp(0.0,1.5),0.0,0.0,0.0];
+            for (i,e) in fog.spot_energy.iter().take(MAX_LIGHTS).enumerate() {u.spot_fog[i/4][i%4]=e.max(0.0);}
+            for (i,e) in fog.local_energy.iter().take(MAX_LOCAL_LIGHTS).enumerate() {u.local_fog[i/4][i%4]=e.max(0.0);}
+        }
+        gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&u));
+    }
     pub fn layer(&self,index:u32)->wgpu::TextureView {self.texture.create_view(&wgpu::TextureViewDescriptor {
         dimension:Some(wgpu::TextureViewDimension::D2),base_array_layer:index,array_layer_count:Some(1),..Default::default()})}
 
@@ -178,7 +227,7 @@ mod tests {
         for bad in [SpotLight {range_m:f32::NAN,..lamp()},SpotLight {up:Vec3::NEG_Z,..lamp()},
             SpotLight {inner_angle_radians:0.7,..lamp()},SpotLight {intensity_cd:Vec3::splat(-1.0),..lamp()}] {assert!(bad.validated().is_err());}
         assert_eq!(std::mem::size_of::<GpuSpot>(),112);assert_eq!(std::mem::size_of::<GpuLocal>(),64);
-        assert_eq!(std::mem::size_of::<Uniform>(),1968+16*64);
+        assert_eq!(std::mem::size_of::<Uniform>(),1968+16*64+16*16);
         assert_eq!(Uniform::from_lights(&[],&[]).count,[0;4]);
     }
     #[test] fn local_spill_has_an_independent_budget_and_zeroes_expired_lights() {

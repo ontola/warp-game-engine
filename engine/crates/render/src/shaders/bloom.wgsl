@@ -2,7 +2,7 @@
 // Never modify scene HDR/history. Storage is bounded well below half-float max.
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var output: texture_storage_2d<rgba16float,write>;
-@group(0) @binding(2) var<uniform> params: vec4<f32>; // exposure, threshold, knee, cap
+@group(0) @binding(2) var<uniform> params: vec4<f32>; // exposure, threshold, knee, cap (extract); (0, 0, 0, tap spacing) in wide rounds
 @group(0) @binding(3) var linear_sampler: sampler;
 
 fn highlight(raw:vec3<f32>)->vec3<f32> {
@@ -27,7 +27,10 @@ fn extract(@builtin(global_invocation_id) id:vec3<u32>) {
 }
 
 fn filtered(p:vec2<u32>,axis:vec2<f32>)->vec4<f32> {
-    let size=vec2<f32>(textureDimensions(source));let uv=(vec2<f32>(p)+0.5)/size;let d=axis/size;
+    // A wide round's uniform is (0, 0, 0, tap spacing); the first round
+    // shares the extract uniform and samples neighbouring texels.
+    let spacing=select(1.0,params.w,params.x==0.0 && params.y==0.0);
+    let size=vec2<f32>(textureDimensions(source));let uv=(vec2<f32>(p)+0.5)/size;let d=axis*spacing/size;
     var c=textureSampleLevel(source,linear_sampler,uv,0.0)*0.227027027;
     c+=(textureSampleLevel(source,linear_sampler,uv+d*1.384615385,0.0)+textureSampleLevel(source,linear_sampler,uv-d*1.384615385,0.0))*0.316216216;
     c+=(textureSampleLevel(source,linear_sampler,uv+d*3.230769231,0.0)+textureSampleLevel(source,linear_sampler,uv-d*3.230769231,0.0))*0.070270270;

@@ -12,6 +12,11 @@ pub struct DebugRenderOptions {
     /// Post-reconstruction highlight bloom; never modifies temporal history.
     pub bloom_enabled: bool,
     pub bloom_strength: f32,
+    /// Blur rounds, each twice as wide: 1 is a small halo, 4 a wide glow
+    /// (Godot's glow levels 3-6).
+    pub bloom_rounds: u32,
+    /// Exposed brightness where bloom starts.
+    pub bloom_threshold: f32,
     /// Scale both meadow representation transitions and its outer fade. This
     /// only shrinks the existing allocation; it does not change root density.
     pub meadow_distance_scale: f32,
@@ -36,6 +41,8 @@ impl Default for DebugRenderOptions {
             wheel_particles_enabled: true,
             bloom_enabled: true,
             bloom_strength: crate::bloom::DEFAULT_STRENGTH,
+            bloom_rounds: 1,
+            bloom_threshold: crate::bloom::THRESHOLD,
             meadow_distance_scale: 1.0,
             meadow_lod_pixels: 1.0,
             meadow_size_scale: 1.0,
@@ -47,8 +54,11 @@ impl Default for DebugRenderOptions {
 
 impl DebugRenderOptions {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.bloom_strength.is_finite() || !(0.0..=0.2).contains(&self.bloom_strength) {
-            return Err("bloom strength must be finite and in 0.0..=0.2".into());
+        if !self.bloom_strength.is_finite() || !(0.0..=2.0).contains(&self.bloom_strength) {
+            return Err("bloom strength must be finite and in 0.0..=2.0".into());
+        }
+        if !(1..=crate::bloom::MAX_ROUNDS).contains(&self.bloom_rounds) || !self.bloom_threshold.is_finite() || !(0.0..=16.0).contains(&self.bloom_threshold) {
+            return Err(format!("bloom rounds must be 1..={} and threshold 0..=16", crate::bloom::MAX_ROUNDS));
         }
         if !self.meadow_distance_scale.is_finite()
             || !(0.25..=1.0).contains(&self.meadow_distance_scale)
@@ -102,7 +112,7 @@ mod tests {
         let defaults = DebugRenderOptions::default();
         assert!(defaults.validate().is_ok());
         assert!(defaults.bloom_enabled);assert_eq!(defaults.bloom_strength,0.04);
-        for bad in [f32::NAN,f32::INFINITY,-0.01,0.201] {
+        for bad in [f32::NAN,f32::INFINITY,-0.01,2.001] {
             assert!(DebugRenderOptions{bloom_strength:bad,..defaults}.validate().is_err());
         }
         assert_eq!(defaults.meadow_size_scale,1.0);
