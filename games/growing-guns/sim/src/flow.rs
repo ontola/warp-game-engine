@@ -104,6 +104,8 @@ pub(crate) struct State {
 }
 
 impl State {
+    pub(crate) fn is_eliminated(&self, i: usize) -> bool { self.eliminated.contains(&i) }
+
     pub(crate) fn strike_finished(&mut self, kind: StrikeKind, modifier: bool) {
         if !modifier { return; }
         match kind { StrikeKind::AirStrike => self.air_pending = false, StrikeKind::IonCannon => self.ion_pending = false }
@@ -117,6 +119,8 @@ impl World {
         let arena_seed = self.rng.next_u32() as u64;
         let prev_mult = self.pickup_mult();
         self.flow = State { pickup_timer: self.rng.range(10.0, 24.0) as f64 / prev_mult.max(0.1) as f64, ..State::default() };
+        // Coop: the last wave's enemies go before anyone respawns.
+        if self.coop { self.coop_clear_enemies(); }
         self.modifier = if self.coop { None } else if self.forced_modifier.is_some() { self.forced_modifier } else if self.rng.f() < self.modifier_chance {
             Some(MODIFIERS[self.rng.below(MODIFIERS.len() as u32) as usize].0)
         } else { None };
@@ -137,6 +141,7 @@ impl World {
         if self.modifier == Some(Modifier::SupplyStorm) { self.spawn_pickup(); }
         if self.modifier == Some(Modifier::SuddenDeath) { self.start_lava_leak(); }
         self.flow.cage = Some(0.0);
+        if self.coop { self.coop_begin_wave(); }
         if self.modifier == Some(Modifier::AirStrikes) { self.flow.air_timer = Some(self.rng.range(0.5, 1.25) as f64); }
         if self.modifier == Some(Modifier::IonCannon) { self.flow.ion_timer = Some(self.rng.range(0.75, 1.5) as f64); }
         self.phase = Phase::Playing;
@@ -225,7 +230,7 @@ impl World {
         self.maybe_finish_picks();
     }
 
-    fn begin_pick(&mut self, i: usize) {
+    pub(crate) fn begin_pick(&mut self, i: usize) {
         if self.flow.completed.contains(&i) || self.players[i].offer.is_some() { return; }
         let f = self.score_factor(i);
         let cards = self.cards.offer(&mut self.rng, f, CARDS_PER_PICK);
@@ -250,10 +255,12 @@ impl World {
         self.maybe_finish_picks();
     }
 
-    fn maybe_finish_picks(&mut self) {
+    pub(crate) fn maybe_finish_picks(&mut self) {
         if self.phase != Phase::Picking { return; }
         let waiting = if self.coop {
-            (0..self.players.len()).any(|i| !self.players[i].bot && !self.flow.completed.contains(&i))
+            // Every human who got an offer at the wave's end (a player who
+            // joined since has none and does not hold the next wave up).
+            self.players.iter().any(|p| p.offer.is_some())
         } else {
             self.flow.eliminated.iter().any(|i| !self.flow.completed.contains(i))
         };
@@ -266,7 +273,12 @@ impl World {
     /// Per tick: picks, the cage, the win pause, strikes, pickups, the leak.
     pub(crate) fn flow_tick(&mut self, inputs: &[Input]) {
         let humans = self.players.iter().filter(|p| !p.bot).count();
-        for i in 0..self.players.len() {
+        // A pick can start the next round, which in coop drops the wave's
+        // enemies: the length is read every time.
+        let mut next = 0;
+        while next < self.players.len() {
+            let i = next;
+            next += 1;
             let Some(n) = self.players[i].offer.as_ref().map(|o| o.len()) else { continue };
             self.players[i].offer_age += DT64;
             let p = &self.players[i];
@@ -279,6 +291,9 @@ impl World {
             } else { None };
             if let Some(k) = choice { self.finalize_pick(i, k); }
         }
+        // Coop: a wave's end where nobody got cards goes on here, at a point
+        // where the enemies can be dropped.
+        if self.coop { self.maybe_finish_picks(); }
         if let Some(t) = self.flow.cage.as_mut() {
             *t += DT64;
             let t = *t;
@@ -477,6 +492,7 @@ impl World {
     pub fn next_round(&mut self) {
         for p in &mut self.players { p.offer = None; }
         self.round += 1;
+        if self.coop { self.coop_next_wave(); }
         self.start_round();
     }
 
@@ -484,12 +500,14 @@ impl World {
     pub fn restart_match(&mut self) {
         for p in &mut self.players { p.score = 0; p.cards.clear(); p.offer = None; p.air_strike_charges = 0; }
         self.round = 1;
+        if self.coop { self.coop_restart(); }
         self.start_round();
     }
 
     /// Five more rounds: everyone but the winner picks a card first.
     pub fn extend_match(&mut self) {
-        if self.phase != Phase::MatchOver { return; }
+        // Coop has no extend: a lost run is over (Godot offers a rematch).
+        if self.phase != Phase::MatchOver || self.coop { return; }
         self.rounds_to_win += 5;
         self.phase = Phase::Picking;
         let winner = self.flow.winner;

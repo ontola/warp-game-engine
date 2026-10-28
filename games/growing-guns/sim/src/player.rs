@@ -25,6 +25,8 @@ impl Blow {
 
 impl World {
     pub(crate) fn player_tick(&mut self, i: usize, input: Input) {
+        // Coop: an enemy rising out of the ground does nothing else.
+        if self.coop && self.emerge_tick(i) { return; }
         self.status_tick(i);
         let p = &self.players[i];
         let special_edge = input.special && !p.held_special;
@@ -41,7 +43,8 @@ impl World {
             self.ghost_tick(i, fire_edge);
             return;
         }
-        if !p.alive || p.downed { self.players[i].vel = Vec3::ZERO; return; }
+        if p.downed { self.downed_tick(i, input.look); return; }
+        if !p.alive { self.players[i].vel = Vec3::ZERO; return; }
         if p.phoenix.is_some() { self.phoenix_tick(i); return; }
         if let Some(speed) = p.launching { self.launch_tick(i, speed); return; }
         if p.frozen {
@@ -260,6 +263,7 @@ impl World {
             let p = &mut self.players[i];
             p.pos = at;
             p.launching = Some(SKY_DROP_SPEED);
+            if self.coop { self.coop_spawn_health(i); }
         }
     }
 
@@ -289,6 +293,8 @@ impl World {
             self.events.push(Event::Phoenix { player: i });
             return true;
         }
+        // Coop: a human goes down while a teammate stands.
+        if self.coop && self.coop_down(i) { return true; }
         let gib = if blow.blast_radius > 0.0 {
             let severity = if overkill { ((-new + OVERKILL_HEALTH) as f32 / 50.0).clamp(0.4, 2.5) } else { 0.0 };
             Gib::Burst { severity: severity.max(blow.severity.clamp(0.4, 2.5)), blast: true }

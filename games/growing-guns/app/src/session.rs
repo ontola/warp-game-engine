@@ -45,8 +45,9 @@ impl Session {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             match client.rx.try_recv() {
-                Ok(ToClient::Welcome { slots, players, arena }) => {
-                    let world = World::remote(arena, players);
+                Ok(ToClient::Welcome { slots, players, arena, coop }) => {
+                    let mut world = World::remote(arena, players);
+                    world.coop = coop;
                     let base = vec![(0.0, 0.0); slots.len()];
                     return Ok((Session::Client { client, ack: 0, seq: 0, sent: VecDeque::new(), base_look: base, closed: false, broken: Breakage::default() }, world, slots));
                 }
@@ -77,10 +78,12 @@ impl Session {
                     let Some(k) = joining.iter().position(|j| j.0 == client) else { continue };
                     let tx = joining.remove(k).1;
                     let taken: Vec<usize> = remotes.iter().flat_map(|r| r.slots.iter().copied()).collect();
-                    let free: Vec<usize> = (1..world.players.len()).filter(|i| world.players[*i].bot && !taken.contains(i)).take(players as usize).collect();
+                    // Coop: only the match's seats, never a wave's enemies.
+                    let seats = if world.coop { world.waves.seats.min(world.players.len()) } else { world.players.len() };
+                    let free: Vec<usize> = (1..seats).filter(|i| world.players[*i].bot && !taken.contains(i)).take(players as usize).collect();
                     if free.len() < players as usize || players == 0 { let _ = tx.send(ToClient::Full); continue; }
                     for &s in &free { world.set_bot(s, false); }
-                    let _ = tx.send(ToClient::Welcome { slots: free.clone(), players: world.players.len(), arena: world.arena.clone() });
+                    let _ = tx.send(ToClient::Welcome { slots: free.clone(), players: world.players.len(), arena: world.arena.clone(), coop: world.coop });
                     println!("client {client} joined as players {:?}", free.iter().map(|s| s + 1).collect::<Vec<_>>());
                     remotes.push(Remote { client, pending: vec![Input::default(); free.len()], slots: free, tx, seq: 0 });
                 }

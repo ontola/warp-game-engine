@@ -36,10 +36,27 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
         app::ui::cards(d, id + 200, rect, "PICK A CARD", &cards, card_focus, &footer, &app::ui::Style::for_height(h));
         return;
     }
-    if !p.alive {
-        text(d, id, "ELIMINATED".into(), [cx, cy - 40.0 * s], 54.0 * s, [255, 90, 70, 255], TextAlign::Center, w, clip);
-        text(d, id + 1, "spectating until the round ends".into(), [cx, cy + 24.0 * s], 26.0 * s, MUTED, TextAlign::Center, w, clip);
+    if world.coop && p.downed {
+        text(d, id, "DOWN: hold near to revive".into(), [cx, cy - 40.0 * s], 48.0 * s, [255, 90, 70, 255], TextAlign::Center, w, clip);
+        if let Some(r) = world.waves.downed(i).filter(|r| r.reviver.is_some()) {
+            let f = (r.progress / growing_guns::coop::REVIVE_SECONDS).clamp(0.0, 1.0);
+            text(d, id + 1, format!("REVIVING  {:.0}%", f * 100.0), [cx, cy + 24.0 * s], 30.0 * s, [140, 220, 255, 255], TextAlign::Center, w, clip);
+        }
         return;
+    }
+    if !p.alive {
+        let until = if world.coop { "spectating until the wave ends" } else { "spectating until the round ends" };
+        text(d, id, "ELIMINATED".into(), [cx, cy - 40.0 * s], 54.0 * s, [255, 90, 70, 255], TextAlign::Center, w, clip);
+        text(d, id + 1, until.into(), [cx, cy + 24.0 * s], 26.0 * s, MUTED, TextAlign::Center, w, clip);
+        return;
+    }
+    // Coop: reviving a teammate, or one waiting for it.
+    if world.coop {
+        let line = match world.waves.reviving(i) {
+            Some((v, f)) => Some((format!("REVIVING P{}  {:.0}%", v + 1, f * 100.0), [140, 220, 255, 255])),
+            None => world.waves.downed.first().map(|v| (format!("P{} DOWN: hold near to revive", v.player + 1), [255, 150, 120, 255])),
+        };
+        if let Some((line, c)) = line { text(d, id + 7, line, [cx, cy + 70.0 * s], 28.0 * s, c, TextAlign::Center, w, clip); }
     }
     // Damage flash: red edges.
     if fb.hurt > 0.0 {
@@ -72,7 +89,9 @@ pub fn view(d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], fb: &F
     // Health bar and dash pips, bottom left.
     let (bx, by, bw, bh) = (x + 36.0 * s, y + h - 70.0 * s, 300.0 * s, 22.0 * s);
     d.rect([bx - 3.0 * s, by - 3.0 * s, bw + 6.0 * s, bh + 6.0 * s], [0.0, 0.0, 0.0, 0.55], clip);
-    let frac = (p.health.max(0) as f32 / p.max_health() as f32).clamp(0.0, 1.0);
+    // Coop humans have triple health.
+    let full = if world.coop && !p.bot { (p.max_health() as f64 * growing_guns::coop::HUMAN_HEALTH_MULT).ceil() as i32 } else { p.max_health() };
+    let frac = (p.health.max(0) as f32 / full.max(1) as f32).clamp(0.0, 1.0);
     let hc = if frac > 0.5 { [0.35, 0.85, 0.35, 0.95] } else if frac > 0.25 { [0.95, 0.75, 0.2, 0.95] } else { [0.95, 0.25, 0.2, 0.95] };
     d.rect([bx, by, bw * frac, bh], hc, clip);
     text(d, id + 2, format!("{}", p.health.max(0)), [bx + 8.0 * s, by - 2.0 * s], 22.0 * s, WHITE, TextAlign::Left, 100.0 * s, clip);
@@ -107,17 +126,22 @@ pub fn global(d: &mut HudDrawList, world: &World, net: Option<&str>) {
     let [w, h] = d.size.map(|v| v as f32);
     let s = (h / 1080.0).max(0.4);
     let clip = [0.0, 0.0, w, h];
-    let n = world.players.len() as f32;
+    // Coop: the humans only (enemies come and go), and the wave.
+    let shown: Vec<usize> = (0..world.players.len()).filter(|&i| !world.coop || (i < world.waves.seats && !world.players[i].bot)).collect();
+    let n = shown.len() as f32;
     let cell = 92.0 * s;
     let x0 = w * 0.5 - n * cell * 0.5;
     d.rect([x0 - 8.0 * s, 0.0, n * cell + 16.0 * s, 50.0 * s], [0.0, 0.0, 0.0, 0.5], clip);
-    for (i, p) in world.players.iter().enumerate() {
+    for (k, &i) in shown.iter().enumerate() {
+        let p = &world.players[i];
         let mut c = PLAYER_COLORS_U8[i % 4];
-        if !p.alive { c[3] = 110; }
+        if !p.alive || p.downed { c[3] = 110; }
         let tag = if p.bot { "B" } else { "P" };
-        text(d, 10 + i as u64, format!("{tag}{} {}", i + 1, p.score), [x0 + cell * (i as f32 + 0.5), 8.0 * s], 28.0 * s, c, TextAlign::Center, cell, clip);
+        let label = if world.coop { format!("{tag}{}", i + 1) } else { format!("{tag}{} {}", i + 1, p.score) };
+        text(d, 10 + k as u64, label, [x0 + cell * (k as f32 + 0.5), 8.0 * s], 28.0 * s, c, TextAlign::Center, cell, clip);
     }
-    text(d, 20, format!("ROUND {}", world.round), [w * 0.5, 54.0 * s], 20.0 * s, MUTED, TextAlign::Center, 300.0 * s, clip);
+    let line = if world.coop { format!("WAVE {}  killed {}/{}", world.waves.wave, world.waves.kills, world.waves.total) } else { format!("ROUND {}", world.round) };
+    text(d, 20, line, [w * 0.5, 54.0 * s], 20.0 * s, MUTED, TextAlign::Center, 300.0 * s, clip);
     if world.phase == growing_guns::Phase::Picking && world.players.iter().any(|p| p.offer.is_some()) {
         text(d, 23, "waiting for card picks".into(), [w * 0.5, 80.0 * s], 24.0 * s, MUTED, TextAlign::Center, w, clip);
     }
@@ -125,7 +149,15 @@ pub fn global(d: &mut HudDrawList, world: &World, net: Option<&str>) {
         let line = match world.modifier { Some(m) => format!("{}  {}", m.title(), m.subtitle()), None => format!("{:.0}", t.ceil()) };
         text(d, 24, line, [w * 0.5, h * 0.22], 40.0 * s, WHITE, TextAlign::Center, w, clip);
     }
-    if world.round_over() {
+    let coop_banner = match world.phase {
+        growing_guns::Phase::MatchOver if world.coop => Some((format!("WAVE {} FAILED", world.waves.wave), [255, 90, 70, 255])),
+        growing_guns::Phase::Picking if world.coop => Some((format!("WAVE {} CLEARED", world.waves.wave), WHITE)),
+        _ => None,
+    };
+    if let Some((msg, c)) = coop_banner {
+        d.rect([0.0, h * 0.12 - 10.0 * s, w, 100.0 * s], [0.0, 0.0, 0.0, 0.55], clip);
+        text(d, 21, msg, [w * 0.5, h * 0.12], 52.0 * s, c, TextAlign::Center, w, clip);
+    } else if world.round_over() {
         let winner = world.round_winner();
         let msg = match winner {
             Some(i) if world.phase == growing_guns::Phase::MatchOver => format!("P{} WINS THE MATCH", i + 1),

@@ -63,13 +63,14 @@ impl Guns {
     }
 
     /// A card pick: the gun grows into the new stats.
-    pub fn grow(&mut self, player: usize, p: &Player) { self.rigs[player].grow_to(Stats::of(p)); }
+    pub fn grow(&mut self, player: usize, p: &Player) { if let Some(r) = self.rigs.get_mut(player) { r.grow_to(Stats::of(p)); } }
 
-    pub fn jump(&mut self, player: usize) { self.feel[player].bump = 0.06; }
+    pub fn jump(&mut self, player: usize) { if let Some(f) = self.feel.get_mut(player) { f.bump = 0.06; } }
 
     /// A shot: bolt, spin and heat on the rig, recoil kick on the view model.
     pub fn shot(&mut self, player: usize, p: &Player) {
-        self.rigs[player].fire(&Stats::of(p));
+        let Some(rig) = self.rigs.get_mut(player) else { return };
+        rig.fire(&Stats::of(p));
         let f = &mut self.feel[player];
         f.kick = f.kick.max(0.08 * (p.weapon.recoil() / growing_guns::weapon::BASE_RECOIL).clamp(0.2, 2.5));
     }
@@ -77,7 +78,7 @@ impl Guns {
     /// One tick of gun state: rigs follow their stats (morphs, heat, bolt,
     /// spin) and the first-person feel eases (bob, bump, tilt, kick).
     pub fn tick(&mut self, world: &World, dt: f32) {
-        for (i, p) in world.players.iter().enumerate() {
+        for (i, p) in world.players.iter().enumerate().take(self.rigs.len()) {
             let rig = &mut self.rigs[i];
             rig.follow(Stats::of(p));
             rig.update(dt);
@@ -98,7 +99,12 @@ impl Guns {
     /// Every rig into its two blocks: first person from the (punched)
     /// camera, third person in the right hand, aimed with the head.
     pub fn pose(&self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32, fx: &EffectsView, hands: &[Option<Vec3>]) {
-        for (i, p) in world.players.iter().enumerate() {
+        for i in 0..self.rigs.len() {
+            // Slots past the players (a coop wave's enemies gone): empty.
+            let Some(p) = world.players.get(i) else {
+                for first in [self.fp[i], self.tp[i]] { empty(scene, first, 0); }
+                continue;
+            };
             let rig = &self.rigs[i];
             let heat = rig.heat_level();
             let f = &self.feel[i];
@@ -130,11 +136,7 @@ impl Guns {
                         n += 1;
                     }
                 }
-                // Empty the rest, up to the first already empty slot.
-                for inst in scene.instances[first + n..first + GUN_PARTS].iter_mut().take_while(|i| i.cluster_count != 0) {
-                    inst.cluster_count = 0;
-                    inst.sphere = [0.0; 4];
-                }
+                empty(scene, first, n);
             }
         }
     }
@@ -158,6 +160,14 @@ impl Guns {
             k += if m == gun::Mat::Barrel { gun::HEAT_LEVELS } else { 1 };
         }
         unreachable!("listed material")
+    }
+}
+
+/// Empty a gun block from part `n` on, up to the first already empty slot.
+fn empty(scene: &mut Scene, first: usize, n: usize) {
+    for inst in scene.instances[first + n..first + GUN_PARTS].iter_mut().take_while(|i| i.cluster_count != 0) {
+        inst.cluster_count = 0;
+        inst.sphere = [0.0; 4];
     }
 }
 

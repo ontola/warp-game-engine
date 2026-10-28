@@ -16,7 +16,8 @@ pub enum ToHost {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToClient {
-    Welcome { slots: Vec<usize>, players: usize, arena: Arena },
+    /// `coop`: wave survival (the view makes room for the waves).
+    Welcome { slots: Vec<usize>, players: usize, arena: Arena, #[serde(default)] coop: bool },
     Arena(Arena),
     /// What a tick did to the arena; reliable and in order, never collapsed.
     Broken(Breakage),

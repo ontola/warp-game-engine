@@ -435,3 +435,195 @@ fn bots_play_rounds_deterministically() {
     assert_eq!(a, run());
     assert!(a.1 >= 2, "bots finished {} rounds in two minutes", a.1);
 }
+
+/// Coop on an endless flat floor, cage open, bots paused (enemies stand
+/// still and hold fire). `bots[i]` marks an empty seat.
+fn coop_world(bots: &[bool]) -> World {
+    let mut w = World::new_with(1, bots, |w| w.coop = true);
+    w.cards = Arc::new(cards::test_book());
+    w.arena.blocks = vec![Block::new(Vec3::new(0.0, -1.5, 0.0), Vec3::new(400.0, 3.0, 400.0), 0.0, Kind::Floor)];
+    w.arena.build_chunks();
+    w.release_cage();
+    w.pickups.clear();
+    w.bots_paused = true;
+    for (k, p) in w.players.iter_mut().enumerate().filter(|(_, p)| !p.bot) { p.pos = Vec3::new(3.0 * k as f32, HALF_HEIGHT, 0.0); }
+    w
+}
+
+fn enemies(w: &World) -> Vec<usize> { (w.waves.seats..w.players.len()).collect() }
+
+#[test]
+fn coop_wave_one_has_three_enemies_rising_one_by_one() {
+    let mut w = coop_world(&[false, true]);
+    assert_eq!((w.waves.wave, w.waves.total, w.waves.seats, w.players.len()), (1, 3, 2, 2));
+    assert!(!w.players[1].alive && w.players[1].ghost, "an empty seat is out of play");
+    assert_eq!(w.players[0].health, 300, "humans have triple health");
+    let mut spawned = Vec::new();
+    let mut telegraphed = 0;
+    for t in 0..60 * 8 {
+        let n = w.players.len();
+        let had_incoming = w.waves.incoming.is_some();
+        idle(&mut w, 1);
+        if w.waves.incoming.is_some() && !had_incoming { telegraphed += 1; }
+        if w.players.len() > n {
+            spawned.push(t);
+            let e = &w.players[n];
+            assert!(e.bot && e.alive && e.pos.y < 0.0, "rises from below the floor: {}", e.pos);
+            assert_eq!(e.health, 50, "a grunt has half of 100");
+            assert_eq!(w.waves.archetype(n), Some(Archetype::Grunt));
+        }
+    }
+    assert_eq!(telegraphed, 3);
+    // Pop at 0.65 s, rise 0.5 s later; the next pop 1.35 s after that.
+    assert_eq!(spawned.len(), 3, "{spawned:?}");
+    assert!((68..=70).contains(&spawned[0]), "{spawned:?}");
+    for g in spawned.windows(2) { assert!((109..=113).contains(&(g[1] - g[0])), "{spawned:?}"); }
+    for i in enemies(&w) {
+        let p = &w.players[i];
+        assert!(!w.waves.emerging(i) && (p.pos.y - HALF_HEIGHT).abs() < 0.05, "standing after the rise: {}", p.pos);
+        assert!(glam::Vec2::new(p.pos.x, p.pos.z).length() >= 8.0, "away from the human");
+    }
+}
+
+#[test]
+fn coop_enemy_kills_count_and_the_wave_end_opens_offers_for_humans_only() {
+    let mut w = coop_world(&[false, true]);
+    let mut killed = 0;
+    for _ in 0..60 * 10 {
+        idle(&mut w, 1);
+        for i in enemies(&w) {
+            if w.players[i].alive {
+                // Rising enemies can be hurt.
+                assert!(w.apply_damage(i, 1000, Some(0), player::Blow::plain(w.players[i].pos)));
+                killed += 1;
+                assert_eq!(w.waves.kills, killed);
+            }
+        }
+        if w.phase == Phase::Picking { break; }
+    }
+    assert_eq!((killed, w.phase), (3, Phase::Picking));
+    assert!(w.players[0].offer.as_ref().is_some_and(|o| o.len() == 3));
+    assert!(w.players[1..].iter().all(|p| p.offer.is_none()), "bots and empty seats never pick");
+    w.step(&[Input { pick: Some(0), ..Default::default() }, Input::default()]);
+    assert_eq!((w.round, w.waves.wave, w.phase), (2, 2, Phase::Playing));
+    assert_eq!(w.players.len(), 2, "the last wave's enemies are gone");
+    assert_eq!((w.waves.total, w.waves.kills), (4, 0));
+    assert!(w.events.contains(&Event::NewArena));
+}
+
+#[test]
+fn coop_down_and_revive_by_a_teammate() {
+    let mut w = coop_world(&[false, false]);
+    assert_eq!(w.waves.total, 4, "one more enemy per extra human");
+    let corpse = w.players[1].pos;
+    w.events.clear();
+    assert!(w.apply_damage(1, 1000, None, player::Blow::plain(corpse)));
+    let p = &w.players[1];
+    assert!(p.downed && p.alive && p.health == 0 && !kills(&w, 1), "down, not dead");
+    assert!(!w.apply_damage(1, 10, None, player::Blow::plain(corpse)), "invulnerable while down");
+    idle(&mut w, 120);
+    assert!((w.players[1].pos.y - corpse.y - 10.0).abs() < 1e-3, "rose 10 m: {}", w.players[1].pos);
+    assert!(w.waves.downed(1).is_some_and(|d| d.progress == 0.0), "3 m away does not revive");
+    // The teammate stands where the body fell.
+    let mut ticks = 0;
+    while w.players[1].downed && ticks < 400 {
+        w.players[0].pos = corpse + Vec3::new(0.5, 0.0, 0.0);
+        idle(&mut w, 1);
+        ticks += 1;
+    }
+    assert_eq!(ticks, 180, "three seconds");
+    let p = &w.players[1];
+    assert!(p.launching.is_some() && p.pos.y > 50.0, "a sky drop: {}", p.pos);
+    assert_eq!(p.health, 300);
+    idle(&mut w, 60);
+    let p = &w.players[1];
+    assert!(p.on_floor && glam::Vec2::new(p.pos.x - corpse.x, p.pos.z - corpse.z).length() < 0.01, "{}", p.pos);
+}
+
+#[test]
+fn coop_the_last_human_down_ends_the_match() {
+    let mut w = coop_world(&[false, false]);
+    w.apply_damage(1, 1000, None, player::Blow::plain(Vec3::ZERO));
+    assert!(w.players[1].downed);
+    w.events.clear();
+    w.apply_damage(0, 1000, None, player::Blow::plain(Vec3::ZERO));
+    assert!(kills(&w, 0) && !w.players[0].alive, "nobody left to revive: a real death");
+    assert_eq!(w.phase, Phase::MatchOver);
+    assert!(w.players.iter().all(|p| p.frozen) && w.waves.downed.is_empty());
+    let n = w.players.len();
+    idle(&mut w, 300);
+    assert_eq!(w.players.len(), n, "no more enemies");
+    // Alone: the first death ends the run; a rematch starts again at wave 1.
+    let mut w = coop_world(&[false, true]);
+    w.apply_damage(0, 1000, None, player::Blow::plain(Vec3::ZERO));
+    assert_eq!(w.phase, Phase::MatchOver);
+    w.restart_match();
+    assert_eq!((w.waves.wave, w.phase, w.players.len()), (1, Phase::Playing, 2));
+}
+
+#[test]
+fn coop_allies_cannot_hurt_each_other() {
+    let mut w = coop_world(&[false, false]);
+    assert!(!w.apply_damage(1, 50, Some(0), player::Blow::plain(Vec3::ZERO)));
+    // Splash on the teammate, from player 0.
+    w.queue_explosion(w.players[1].pos, 4.0, 100.0, 0);
+    idle(&mut w, 2);
+    assert_eq!(w.players[1].health, 300);
+    while w.players.len() < 4 { idle(&mut w, 1); }
+    let (a, b) = (2, 3);
+    assert!(!w.apply_damage(a, 10, Some(b), player::Blow::plain(Vec3::ZERO)), "enemies spare each other");
+    assert!(w.apply_damage(a, 10, Some(0), player::Blow::plain(Vec3::ZERO)));
+    assert!(w.apply_damage(0, 10, Some(a), player::Blow::plain(Vec3::ZERO)));
+}
+
+#[test]
+fn coop_archetypes_follow_the_wave() {
+    let mut rng = rng::Rng::new(1);
+    let picks: Vec<Archetype> = (0..12).map(|k| Archetype::pick_for(8, k, &mut rng)).collect();
+    assert_eq!((picks[0], picks[6], picks[5], picks[4]), (Archetype::Demolition, Archetype::Grenadier, Archetype::Sniper, Archetype::FlatFragger));
+    let g = Archetype::Grenadier.weapon(5);
+    assert_eq!((g.max_hp_bonus, g.body_scale, g.explosive_damage), (60, 1.28, 43.0));
+    assert!((g.explosive_radius - 4.0).abs() < 1e-6);
+    let mut p = Player::new(true);
+    p.weapon = g;
+    assert_eq!(p.max_health(), 160);
+    assert_eq!(Archetype::Demolition.weapon(10).special, Special::ClusterGrenade);
+    assert_eq!((coop::enemy_count(1, 1), coop::enemy_count(5, 3)), (3, 9));
+}
+
+#[test]
+fn coop_bots_play_waves_deterministically() {
+    let run = || {
+        let mut w = World::new_with(5, &[false, true], |w| w.coop = true);
+        for _ in 0..60 * 30 { w.step(&[Input::default(), Input::default()]); }
+        (w.digest(), w.players.len(), w.waves.kills, w.phase)
+    };
+    let a = run();
+    assert_eq!(a, run());
+    assert!(a.1 > 2, "enemies came: {a:?}");
+}
+
+#[test]
+fn coop_waves_go_on_with_bots_fighting() {
+    // Real arenas, live bots; the human cannot die and kills each enemy
+    // once it stands, then takes the first card.
+    let mut w = World::new_with(9, &[false, true], |w| w.coop = true);
+    w.cards = Arc::new(cards::test_book());
+    let mut seen = Vec::new();
+    for _ in 0..60 * 200 {
+        w.players[0].health = w.players[0].health.max(1000);
+        let pick = w.players[0].offer.as_ref().map(|_| 0u8);
+        w.step(&[Input { pick, ..Default::default() }, Input::default()]);
+        for i in w.waves.seats..w.players.len() {
+            if w.players[i].alive && !w.waves.emerging(i) {
+                seen.push((w.waves.wave, w.waves.archetype(i)));
+                w.apply_damage(i, 10_000, Some(0), player::Blow::plain(w.players[i].pos));
+            }
+        }
+        if seen.last().is_some_and(|s| s.0 == 8) { break; }
+    }
+    assert_eq!(w.waves.wave, 8, "{:?}", w.waves);
+    assert_eq!(w.players[0].cards.len(), 7, "a card after every wave");
+    assert!(seen.contains(&(8, Some(Archetype::Demolition))), "wave 8 opens with a bomber");
+    assert!(seen.iter().any(|s| s.1 == Some(Archetype::FlatFragger)));
+}

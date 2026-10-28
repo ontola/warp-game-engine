@@ -32,6 +32,9 @@ use render::{Camera, Lighting, Scene};
 pub const FOV_Y: f32 = 75.0 * std::f32::consts::PI / 180.0;
 pub const PLAYER_COLORS: [[f32; 3]; 4] = [[0.85, 0.22, 0.12], [0.15, 0.38, 0.85], [0.20, 0.70, 0.25], [0.90, 0.75, 0.12]];
 pub const PLAYER_COLORS_U8: [[u8; 4]; 4] = [[255, 110, 80, 255], [110, 160, 255, 255], [120, 225, 130, 255], [255, 220, 90, 255]];
+/// Players drawn in a coop match: the seats and the wave's enemies (players
+/// past this are not drawn; waves reach it around wave 20).
+pub const COOP_VIEW_PLAYERS: usize = 24;
 /// The renderer's limit on local lights per frame.
 const MAX_LIGHTS: usize = 16;
 
@@ -80,8 +83,10 @@ impl Visuals {
         let phys = Physics::new(Vec3::new(0.0, -20.0, 0.0), growing_guns::TICK_HZ as f32);
         let stadium = StadiumVisuals::reserve(&mut scene);
         let first_dynamic = scene.instances.len();
-        players.reserve_dynamic(&mut scene, world.players.len());
-        let guns = Guns::reserve(&mut scene, world.players.len());
+        // Coop waves add players as they come.
+        let drawn = if world.coop { world.players.len().max(COOP_VIEW_PLAYERS) } else { world.players.len() };
+        players.reserve_dynamic(&mut scene, drawn);
+        let guns = Guns::reserve(&mut scene, drawn);
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
