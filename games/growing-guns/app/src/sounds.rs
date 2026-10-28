@@ -30,19 +30,23 @@ fn synth_ears(world: &World, slots: &[usize]) -> Vec<Ear> {
     }).collect()
 }
 
-/// The Godot project's sound folder (`--sounds DIR`, `GG_SOUNDS`, or a
-/// sibling checkout `../growing-guns/assets/audio`): footsteps, hurts, deaths.
+/// `name` in the executable's folder (a packaged game).
+pub fn beside_exe(name: &str) -> Option<PathBuf> { std::env::current_exe().ok()?.parent().map(|d| d.join(name)) }
+
+/// The Godot project's sound folder (`--sounds DIR`, `GG_SOUNDS`, `audio`
+/// beside the executable, or a sibling checkout `../growing-guns/assets/audio`):
+/// footsteps, hurts, deaths (and the crowd's samples in `crowd` inside it).
 pub fn find_dir(arg: Option<&str>) -> Option<PathBuf> {
-    let candidates: [Option<String>; 3] = [arg.map(str::to_string), std::env::var("GG_SOUNDS").ok(), Some("../growing-guns/assets/audio".to_string())];
-    candidates.into_iter().flatten().map(PathBuf::from).find(|p| p.join("Step-1.wav").exists())
+    let candidates = [arg.map(PathBuf::from), std::env::var("GG_SOUNDS").ok().map(PathBuf::from), beside_exe("audio"), Some(PathBuf::from("../growing-guns/assets/audio"))];
+    candidates.into_iter().flatten().find(|p| p.join("Step-1.wav").exists())
 }
 
 /// The patch folder: `--sfx DIR`, `GG_SFX`, beside the working directory, or
 /// the source tree this binary was built from.
 pub fn find_patches(arg: Option<&str>) -> Option<PathBuf> {
     let built = concat!(env!("CARGO_MANIFEST_DIR"), "/../sounds").to_string();
-    let candidates = [arg.map(str::to_string), std::env::var("GG_SFX").ok(), Some("games/growing-guns/sounds".into()), Some("sounds".into()), Some(built)];
-    candidates.into_iter().flatten().map(PathBuf::from).find(|p| p.join("shot.luau").exists())
+    let candidates = [arg.map(PathBuf::from), std::env::var("GG_SFX").ok().map(PathBuf::from), beside_exe("sounds"), Some("games/growing-guns/sounds".into()), Some("sounds".into()), Some(built.into())];
+    candidates.into_iter().flatten().find(|p| p.join("shot.luau").exists())
 }
 
 /// Patches by sound name, reloaded when their file changes.

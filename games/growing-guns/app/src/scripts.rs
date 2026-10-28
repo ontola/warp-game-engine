@@ -81,6 +81,8 @@ struct Inner {
 /// working directory or the executable.
 pub fn find_dir() -> Option<PathBuf> {
     if let Some(d) = std::env::var_os("GG_MODS") { return Some(d.into()); }
+    // A packaged game: `mods` beside the executable.
+    if let Some(d) = crate::sounds::beside_exe("mods") && d.is_dir() { return Some(d); }
     let starts = [std::env::current_dir().ok(), std::env::current_exe().ok()];
     for start in starts.into_iter().flatten() {
         for dir in start.ancestors() {
