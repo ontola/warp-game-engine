@@ -240,7 +240,7 @@ impl Gg {
                     self.session = s;
                     self.ui.notice = Some("Hosting: ticket written to growing-guns-ticket.txt".into());
                 }
-                Err(e) => self.ui.notice = Some(format!("could not host: {e}")),
+                Err(e) => { self.ui.notice = Some(format!("could not host: {e}")); self.ui.error = Some(format!("Couldn't start the online host: {e}")); }
             },
             Action::Copy => if let Some(t) = self.session.ticket() {
                 let _ = std::fs::write("growing-guns-ticket.txt", t);
@@ -375,8 +375,8 @@ impl app::Game for Gg {
                 self.hud.view(&mut list, &self.world, s, *rect, self.menus.get(k).map_or(0, |m| m.focus), flash, pad);
             }
             list.begin_overlay();
-            let status = self.session.status(&self.slots);
-            self.hud.global(&mut list, &self.world, status.as_deref());
+            let error = self.session.error().or_else(|| self.ui.error.clone());
+            self.hud.global(&mut list, &self.world, error.as_deref());
             self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect()
         };
         list.begin_overlay();
@@ -422,7 +422,13 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | round | cage | rematch | extend".into()),
+            // Show (or clear with `none`) a network error in the red panel.
+            "net-error" => {
+                let t = cmd.trim_start().strip_prefix("net-error").unwrap_or("").trim();
+                self.ui.error = (t != "none" && !t.is_empty()).then(|| t.to_string());
+                Ok(format!("net error {:?}", self.ui.error))
+            }
             // Party names for the local seats, comma separated (GameNight's `names`).
             "names" => {
                 self.names = cmd.trim_start().strip_prefix("names").unwrap_or("").split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
@@ -531,7 +537,7 @@ impl app::Game for Gg {
             "cards": p.cards.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>(), "offer": p.offer.as_ref().map(|o| o.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>()), "max_health": p.max_health(), "mag": p.mag_size(),
         })).collect();
         Some(serde_json::json!({
-            "tick": w.tick, "round": w.round, "phase": w.phase, "screen": format!("{:?}", self.ui.screen), "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
+            "tick": w.tick, "round": w.round, "phase": w.phase, "screen": format!("{:?}", self.ui.screen), "net": self.session.status(&self.slots), "ended": w.between_rounds(), "modifier": w.modifier.map(|m| m.id()), "cage": w.cage_left(),
             "projectiles": w.projectiles.len(), "strikes": w.strikes.len(), "pickups": w.pickups.len(),
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
                 "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },

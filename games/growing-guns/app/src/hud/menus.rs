@@ -73,11 +73,13 @@ pub struct Menus {
     col: usize,
     /// A short line under the menu ("ticket written to ...").
     pub notice: Option<String>,
+    /// The last network error, for the HUD's red panel.
+    pub error: Option<String>,
 }
 
 impl Default for Menus {
     fn default() -> Self {
-        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None }
+        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None }
     }
 }
 
