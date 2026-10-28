@@ -4,44 +4,88 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Warp game engine</title>
-<meta name="description" content="Warp is a Rust game engine for procedural outdoor worlds and short iteration loops: deterministic simulation, headless rendering, scripted playtests and hot-reloaded Luau.">
+<meta name="description" content="Warp is a Rust game engine for couch games: up to four players on one screen, a deterministic simulation you can replay and test, and a running game that an AI can play, inspect and change over MCP.">
 <link rel="stylesheet" href="{{root}}/style.css">
 <link rel="icon" href="{{root}}/favicon.svg" type="image/svg+xml">
 </head>
 <body class="home">
 <a class="skip" href="#content">Skip to the text</a>
 <header class="bar">
-  <a class="wordmark" href="{{root}}/index.html">Warp</a>
+  <a class="wordmark" href="{{root}}/index.html"><img src="{{root}}/favicon.svg" width="32" height="32" alt="">Warp</a>
   <nav aria-label="Site">
     <a href="{{root}}/docs/index.html">Docs</a>
     <a href="{{root}}/docs/making-a-game.html">Make a game</a>
+    <a href="{{root}}/docs/live-control.html">Live control</a>
     <a href="{{repo}}" rel="noopener">Source</a>
   </nav>
 </header>
 
 <main id="content">
   <section class="hero">
-    <h1 class="hero-mark">Warp</h1>
     <div class="hero-text">
-      <p class="lead">A Rust game engine for procedural outdoor worlds, built so that a person or a coding agent can change a game and see the result in seconds, with or without a screen.</p>
+      <h1 class="hero-title">Couch games, built and tuned live with AI.</h1>
+      <p class="lead">Warp is a Rust game engine for up to four players on one screen. Every game is code, every run can be replayed bit for bit, and while you play, an AI can read the match, change the rules and check the result.</p>
       <p class="actions">
         <a class="button" href="{{root}}/docs/building-and-running.html">Build and run</a>
         <a class="quiet" href="{{root}}/docs/overview.html">What Warp is</a>
       </p>
     </div>
-    <figure class="hero-shot">
-      <img src="{{root}}/img/sideways-stage.jpg" width="960" height="540" alt="Two rally cars side by side on a gravel road through a pine forest, grass on the banks, a pale overcast sky.">
-      <figcaption>
-        <span>Sideways at tick 900, rendered on a CPU rasteriser with no window.</span>
-        <code>KERN_ADAPTER=software sideways shot out.png --frames 900 --taa 4</code>
-      </figcaption>
+    <figure class="hero-views">
+      <div class="views">
+        <img src="{{root}}/img/hero/sideways.jpg" width="960" height="540" alt="Two rally cars side by side on a gravel road through a pine forest.">
+        <img src="{{root}}/img/hero/blast.jpg" width="960" height="540" alt="An explosion throwing stone chunks out of an arena wall.">
+        <img src="{{root}}/img/hero/night.jpg" width="960" height="540" alt="A castle arena at night, light shafts from floodlights over the stands.">
+        <img src="{{root}}/img/hero/stands.jpg" width="960" height="540" alt="Packed stands of spectators around the arena, lava in front.">
+      </div>
+      <figcaption><span>Frames from Sideways and Growing Guns, laid out the way Warp splits one screen into four views.</span></figcaption>
     </figure>
+  </section>
+
+  <section class="pillars" aria-labelledby="pillars-h">
+    <h2 id="pillars-h" class="visually-hidden">Why Warp</h2>
+    <article>
+      <h3>Four players, one screen</h3>
+      <p>Split screen is the starting point, not an add-on. Up to four views render into one output, and the renderer is built to share work between them, so four players do not cost four games. The target is four views at 4K and 120 frames per second.</p>
+      <p><a href="{{root}}/docs/rendering.html">Rendering overview</a></p>
+    </article>
+    <article>
+      <h3>Change the game while you play</h3>
+      <p>A running game serves MCP. Ask Claude or ChatGPT to make the shotgun spread wider and let you hear the new shot: it reads the match, edits a weapon or a Luau card, renders the sound, reloads a shader and takes a screenshot to check.</p>
+      <p><a href="{{root}}/docs/live-control.html">Live control over MCP</a></p>
+    </article>
+    <article>
+      <h3>Every run replays</h3>
+      <p>The simulation advances in fixed ticks, and the same inputs give the same state bit for bit. State digests find the first tick where two runs differ, scripted playtests become tests, and golden images catch a frame that drifts.</p>
+      <p><a href="{{root}}/docs/building-and-running.html#scripted-playtests">Scripted playtests</a></p>
+    </article>
+    <article>
+      <h3>GameNight built in</h3>
+      <p>Warp speaks the <a href="https://gamenight.ontola.io" rel="noopener">GameNight</a> protocol natively: controllers by seat, profiles with names, colours and couch places, phone actions, and the host's pause and resume, from one crate. A game launched from the lobby is ready for the couch.</p>
+      <p><a href="{{repo}}/tree/main/engine/crates/gamenight" rel="noopener">The gamenight crate</a></p>
+    </article>
+  </section>
+
+  <section class="live" aria-labelledby="live-h">
+    <div class="section-head">
+      <h2 id="live-h">Ask, and the game changes</h2>
+      <p>Start any Warp game with <code>--live</code> and connect an assistant. It sees the same tools a developer has: the match state, the game's data and scripts, sound patches, shaders and the screen. Nothing is restarted, and the world keeps its state across a reload.</p>
+    </div>
+<pre class="dialogue"><code><span class="who">you</span>  make the shotgun spread wider and let me hear the new shot
+<span class="who">ai</span>   match_state  player 0         <span class="c"># reads the current Weapon fields</span>
+     set_weapon   spread, for all  <span class="c"># live, until the round ends</span>
+     set_param    shot             <span class="c"># a heavier, longer shot sound</span>
+     render_sound shot             <span class="c"># length, peak, spectrum: judged without speakers</span>
+     screenshot                    <span class="c"># checks the pellet pattern on the wall</span>
+<span class="who">ai</span>   Wider now, and the shot has more weight. Want it as a card, so it stays?</code></pre>
+<p class="aside">An illustration of a session; the tool names are the real ones from the <a href="{{root}}/docs/live-control.html#tools">live control tools</a>.</p>
+<pre><code>cargo run --release -p growing-guns-app -- play --live
+warp run games/hello-warp --live</code></pre>
   </section>
 
   <section class="contact" aria-labelledby="contact-h">
     <div class="section-head">
       <h2 id="contact-h">Pictures from a script</h2>
-      <p>These six frames are Growing Guns' golden images. A JSON script plays the game headless, sets up each moment with debug commands, captures it and compares it with the reference in the repository. A frame that drifts fails the test.</p>
+      <p>These six frames are Growing Guns' golden images. A JSON script plays the game headless, sets up each moment with debug commands, captures it and compares it with the reference in the repository. A frame that drifts fails the test. The same runs work in a container with no GPU, which is where coding agents work.</p>
     </div>
     <ol class="frames">
       <li><figure><img src="{{root}}/img/golden/arena.png" width="320" height="180" loading="lazy" alt="A castle arena from a player's view, with the scoreboard at the top."><figcaption><code>{ "ticks": 20 }</code> arena.png</figcaption></figure></li>
@@ -55,17 +99,32 @@
   </section>
 
   <section class="games" aria-labelledby="games-h">
-    <h2 id="games-h">Two games, one workspace</h2>
-    <div class="game-pair">
+    <h2 id="games-h">Games on Warp</h2>
+    <div class="game-grid">
       <article class="game">
         <h3>Sideways</h3>
-        <p>A gravel rally game for <a href="https://gamenight.ontola.io" rel="noopener">GameNight</a>, up to four players on one screen. Cars with suspension, Pacejka tyres and a drivetrain at 120 Hz, stages through dense procedural forest and meadow, engine sound synthesised from the running engine. Warp grew out of it.</p>
-        <p><a href="{{root}}/docs/sideways.html">Sideways README</a></p>
+        <p>Gravel rally for up to four players on one screen. Suspension, Pacejka tyres and a drivetrain at 120 Hz, stages through dense procedural forest and meadow, engine sound synthesised from the running engine. Warp grew out of it.</p>
+        <p><a href="{{root}}/docs/sideways.html">Sideways</a></p>
       </article>
       <article class="game">
         <h3>Growing Guns</h3>
-        <p>A first-person arena shooter ported from Godot to see what Warp costs a very different game. Procedural castle arenas, 52 cards that grow your rifle, destructible walls, bots, split screen, wave survival and online play. Its cards and rules are Luau that reloads while you play.</p>
-        <p><a href="{{root}}/docs/growing-guns.html">Growing Guns README</a></p>
+        <p>First-person arena shooter. Procedural castle arenas, 52 cards that grow your rifle, destructible walls, bots, split screen, wave survival and online play. Its cards and rules are Luau that reloads while you play.</p>
+        <p><a href="{{root}}/docs/growing-guns.html">Growing Guns</a></p>
+      </article>
+      <article class="game">
+        <h3>Spellstorm</h3>
+        <p>Co-op wizard roguelite, being ported from Godot. The whole simulation already runs on Warp, with an ECS inside the game: bots play full runs in tests and every biome replays deterministically.</p>
+        <p class="state">Port in progress</p>
+      </article>
+      <article class="game">
+        <h3>Game Room</h3>
+        <p>GameNight's lobby, the 2.5D room where players pick up their profile and choose the next game, rendered by Warp from the same models and textures as before.</p>
+        <p class="state">Port in progress</p>
+      </article>
+      <article class="game">
+        <h3>Hello Warp</h3>
+        <p>A game made only of Luau scripts and sound patches, run by the <code>warp</code> executable with nothing to compile. The starting point for a new game.</p>
+        <p><a href="{{root}}/docs/warp-cli.html">The warp executable</a></p>
       </article>
     </div>
   </section>
@@ -77,10 +136,11 @@
         <thead><tr><th>Part</th><th>What it does</th><th>Crate</th></tr></thead>
         <tbody>
           <tr><td>Deterministic simulation</td><td>Fixed ticks where the same inputs give the same state, bit for bit. State digests, the first tick where two runs differ, traces of any value over time.</td><td><code>kern</code></td></tr>
+          <tr><td>Split-screen renderer</td><td>Up to four views in one output. Cluster LOD selected on the GPU, a visibility buffer, HDR shading in lux and EV100, sun and sky, vegetation, effects, DLSS on NVIDIA.</td><td><code>render</code></td></tr>
           <tr><td>Headless rendering</td><td>Every frame renders into a texture. The same path runs on a desktop GPU and on a CPU rasteriser, so tests run in a container.</td><td><code>render</code></td></tr>
-          <tr><td>Scripted playtests</td><td>JSON steps that play, run debug commands, capture frames, check state and compare against golden images.</td><td><code>app</code></td></tr>
-          <tr><td>Cluster renderer</td><td>Cluster LOD selected on the GPU, a visibility buffer, HDR shading in lux and EV100, sun and sky, vegetation, effects, split screen.</td><td><code>render</code></td></tr>
-          <tr><td>Luau mods</td><td>Sandboxed modules with hot reload, state that survives a reload, and a step budget so a runaway loop stops at the same point everywhere.</td><td><code>script</code></td></tr>
+          <tr><td>Live control</td><td>An MCP server inside the running game: state, data, scripts, sounds, shaders and screenshots for an assistant.</td><td><code>live</code></td></tr>
+          <tr><td>GameNight</td><td>The GameNight protocol: seats, controllers and phones, profiles, pause and back from the host.</td><td><code>gamenight</code></td></tr>
+          <tr><td>Luau scripting</td><td>Sandboxed modules with hot reload, state that survives a reload, and a step budget so a runaway loop stops at the same point everywhere.</td><td><code>script</code></td></tr>
           <tr><td>Synthesised sound</td><td>Engine sound from the running engine, effects playback, and a procedural synth that places voices from mono to 7.1 with distance, air, occlusion and reverb.</td><td><code>audio</code></td></tr>
           <tr><td>Online play</td><td>A host and clients exchanging the game's own messages over iroh, with relays and hole punching.</td><td><code>net</code></td></tr>
           <tr><td>Physics</td><td>Box collision and a character mover for gameplay, Rapier rigid bodies for what tumbles and flies.</td><td><code>physics</code></td></tr>
@@ -94,13 +154,13 @@
     <p>From a clone of the repository, with stable Rust:</p>
 <pre><code>cargo run -p app --example hello
 KERN_ADAPTER=software cargo run -p app --example hello -- --shot hello.png
-cargo run -p growing-guns-app -- play</code></pre>
-    <p>The first is a ball rolling over a field in a window. The second renders the same game to a PNG on the CPU. Then read <a href="{{root}}/docs/making-a-game.html">making a game</a>.</p>
+cargo run --release -p growing-guns-app -- play --live</code></pre>
+    <p>The first is a ball rolling over a field in a window. The second renders the same game to a PNG on the CPU. The third starts Growing Guns with live control on; <a href="{{root}}/docs/live-control.html">connect an assistant</a> and ask it to change something. Then read <a href="{{root}}/docs/making-a-game.html">making a game</a>.</p>
   </section>
 
   <section class="status" aria-labelledby="status-h">
     <h2 id="status-h">Where it stands</h2>
-    <p>Warp is young and changes quickly. The Sideways target, four players on one 4K output at 120 frames per second, is not reached: a controlled four-player route measures about 38 to 44.5 ms per frame with DLSS Quality. There is no editor, and no water, buildings, people or general animation yet. The <a href="{{root}}/docs/index.html#engineering-notes">engineering notes</a> record every measured step, including the ones that were rejected.</p>
+    <p>Warp is young and changes quickly. Four views at 4K and 120 frames per second is the target, not yet the result. There is no editor yet, and no water, buildings or general animation. The <a href="{{root}}/docs/handoff.html">handoff</a> has the running status, and the <a href="{{root}}/docs/index.html#engineering-notes">engineering notes</a> record every measured step, including the ones that were rejected.</p>
   </section>
 </main>
 
