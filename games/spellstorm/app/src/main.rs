@@ -1,7 +1,7 @@
 //! Spellstorm on Warp.
 //!
 //!   spellstorm play [--players 1] [--bots 0] [--seed 7] [--fullscreen]
-//!   spellstorm shot --out frame.png [--seed 7] [--bots 3] [--ticks 240] [--size 1920x1080]
+//!   spellstorm shot --out frame.png [--seed 7] [--bots 3] [--ticks 240] [--size 1920x1080] [--menu]
 //!
 //! The sim is games/spellstorm/sim (hecs, the Godot game's rules); the look
 //! comes from the Godot game's own models and materials (assets/kits).
@@ -11,6 +11,7 @@ mod fx;
 mod hud;
 mod kits;
 mod look;
+mod menu;
 mod play;
 mod view;
 
@@ -70,6 +71,9 @@ fn run() -> Result<(), String> {
             }
             if !counts.is_empty() {
                 eprintln!("events: {counts:?}");
+            }
+            if flag("--menu") {
+                game.menu.show(false, &game.world);
             }
             let mut rgba = vec![];
             for _ in 0..numf("--frames", 4.0) as u32 {

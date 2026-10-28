@@ -277,6 +277,27 @@ impl World {
         self.run_start(s);
     }
 
+    /// A fresh run that starts in `biome`, or a random one for -1
+    /// (main.gd start_at).
+    pub fn start_at(&mut self, biome: i32) {
+        use crate::rng::Rand;
+        self.new_run();
+        let n = crate::biome::BIOMES.len();
+        let b = if biome < 0 { self.rng.pick(n) } else { (biome as usize).min(n - 1) };
+        if b > 0 {
+            self.run.biome_index = b;
+            self.enter_level();
+        }
+    }
+
+    /// A setting changed in the menu (main.gd _on_setting).
+    pub fn set_option(&mut self, key: &str, value: &str) {
+        self.settings.set(key, value);
+        if key == "unlocks" {
+            self.unlocks_changed();
+        }
+    }
+
     pub fn order(&mut self) -> Order {
         self.next_order += 1;
         Order(self.next_order)
