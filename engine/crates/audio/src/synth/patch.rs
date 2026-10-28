@@ -72,7 +72,11 @@ impl Patch {
                 In::P(p) => Src::P(self.params.iter().position(|q| &q.0 == p).unwrap_or(0)),
                 In::N(m) => Src::N(*m),
             }).collect();
-            let s = seed.wrapping_mul(0x9E37_79B9).wrapping_add((k as u32).wrapping_mul(0x85EB_CA6B)) | 1;
+            // A finaliser (murmur3) so neighbouring nodes and seeds start
+            // their generators uncorrelated.
+            let mut s = seed.wrapping_mul(0x9E37_79B9) ^ (k as u32).wrapping_mul(0x85EB_CA6B);
+            s ^= s >> 16; s = s.wrapping_mul(0x85EB_CA6B); s ^= s >> 13; s = s.wrapping_mul(0xC2B2_AE35); s ^= s >> 16;
+            let s = s | 1;
             (n.unit.clone(), State::new(&n.unit, sr, s), ins)
         }).collect::<Vec<_>>();
         Voice {
