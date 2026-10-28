@@ -5,6 +5,7 @@
 //! (crate::stadium). This module owns the scene and the physics they share,
 //! routes each tick's events, and sets the lighting and cameras.
 mod arena;
+mod characters;
 mod effects;
 mod gore;
 mod guns;
@@ -162,6 +163,7 @@ impl Visuals {
         }
         self.stadium.absorb(s, &mut self.fx.particles, &mut self.fx.blasts, world, ears, now, growing_guns::DT);
         self.guns.tick(world, growing_guns::DT);
+        self.players.tick(world);
         self.phys.step();
         self.players.follow_physics(s, &mut self.phys, now);
         let shapes = &world.arena.grid;
@@ -178,7 +180,7 @@ impl Visuals {
         self.clock = (world.tick as f32 - 1.0 + alpha) * growing_guns::DT;
         self.fx.update(world, self.clock, dt);
         self.players.pose(&mut self.scene, world, prev, alpha);
-        self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx);
+        self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
     }
 
     /// Morph a player's gun into their current stats (a card was given).

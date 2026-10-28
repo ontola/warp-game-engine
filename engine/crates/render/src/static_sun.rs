@@ -83,13 +83,13 @@ fn class(instance: &GpuInstance, animated: bool, frozen: bool) -> u32 {
     // A tree past the wind freeze radius stands exactly at rest (wind.wgsl),
     // so its depth is as static as a rock until the cameras are re-pinned.
     if frozen && !animated && instance.flags & FOLIAGE != 0
-        && instance.flags & (LIVE_GRASS | WIND_GRASS | PART_WIND) == 0
+        && instance.flags & (LIVE_GRASS | WIND_GRASS | PART_WIND | crate::scene::SKINNED) == 0
         && instance.category() == GeometryCategory::Trees {
         return STATIC;
     }
     // Include provenance as a conservative exclusion even if an asset omitted
     // its wind flag. SOLID alone is not dynamic: buildings/rocks use it too.
-    if animated || instance.flags & (FOLIAGE | LIVE_GRASS | WIND_GRASS | PART_WIND) != 0
+    if animated || instance.flags & (FOLIAGE | LIVE_GRASS | WIND_GRASS | PART_WIND | crate::scene::SKINNED) != 0
         || matches!(instance.category(), GeometryCategory::Trees | GeometryCategory::Grass | GeometryCategory::Cars) {
         DYNAMIC
     } else { STATIC }
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(ids(&p, STATIC), &[0,1]);
         assert_eq!(ids(&p, DYNAMIC), &[2,3,4,5,6,7]);
         assert_eq!(p.counts.skipped, 1);
-        for flag in [LIVE_GRASS, WIND_GRASS, PART_WIND] {
+        for flag in [LIVE_GRASS, WIND_GRASS, PART_WIND, crate::scene::SKINNED] {
             assert_eq!(class(&source(GeometryCategory::Other, flag), false, false), DYNAMIC);
             // Freezing never makes grass, part wind or non-trees static.
             assert_eq!(class(&source(GeometryCategory::Trees, flag | FOLIAGE), false, true), DYNAMIC);

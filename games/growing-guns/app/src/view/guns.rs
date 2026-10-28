@@ -97,7 +97,7 @@ impl Guns {
 
     /// Every rig into its two blocks: first person from the (punched)
     /// camera, third person in the right hand, aimed with the head.
-    pub fn pose(&self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32, fx: &EffectsView) {
+    pub fn pose(&self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32, fx: &EffectsView, hands: &[Option<Vec3>]) {
         for (i, p) in world.players.iter().enumerate() {
             let rig = &self.rigs[i];
             let heat = rig.heat_level();
@@ -118,7 +118,10 @@ impl Guns {
                 * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, s, 0.12 * s, 0.08 * s), Vec3::new(-0.14, 0.04, 0.14) * s);
             let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
             let rot = Quat::from_rotation_y(p.yaw);
-            let tp = Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(p.pitch), pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12));
+            let hand = hands.get(i).copied().flatten().map_or(
+                pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12),
+                |hand| hand + rot * Vec3::new(0.0, 0.085, -0.143));
+            let tp = Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(p.pitch), hand);
             for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {
                 let mut n = 0;
                 if p.alive {

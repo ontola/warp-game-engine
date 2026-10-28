@@ -2,6 +2,7 @@
 //! how bodies go when they die (Godot `do_ragdoll`): a corpse that tumbles,
 //! a head that bursts, or the whole body in gibs with blood all around.
 use super::arena::ArenaView;
+use super::characters::{self, Characters};
 use super::effects::EffectsView;
 use super::gore::{self, Gore};
 use super::{cube, glow, material, PLAYER_COLORS};
@@ -23,7 +24,7 @@ const HEAD: f32 = 0.3;
 struct PlayerMeshes { body: usize, head: usize, eyes: usize }
 
 /// A corpse: jointed bodies, each drawn with one of the player's meshes.
-struct Ragdoll { torso: Body, parts: Vec<(Body, SlotId, usize, Vec3)> }
+struct Ragdoll { torso: Body, parts: Vec<(Body, SlotId, usize, Affine3A)> }
 
 pub struct PlayersView {
     /// First instance of the players' block (then the tracers).
@@ -35,25 +36,36 @@ pub struct PlayersView {
     /// Body, head and eye primitives per player, kept until `reserve_gore`.
     sources: Vec<[primitives::Primitive; 3]>,
     pub gore: Option<Gore>,
+    characters: Option<Characters>,
 }
 
 impl PlayersView {
     /// Corpse slots (static range, before the dynamic instances).
     pub fn reserve_corpses(scene: &mut Scene) -> Self {
-        PlayersView { first: 0, meshes: Vec::new(), tracer: 0, corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None }
+        PlayersView { first: 0, meshes: Vec::new(), tracer: 0, corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None }
     }
 
     /// Player and tracer instances, rewritten every frame.
     pub fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize) {
+        self.characters = match Characters::load() {
+            Ok(characters) => Some(characters),
+            Err(error) => { eprintln!("characters: using primitive fallback: {error}"); None }
+        };
         self.first = scene.instances.len();
         let eye_m = material(scene, [0.05, 0.05, 0.06], 0.3);
         for i in 0..players {
             let body_m = material(scene, PLAYER_COLORS[i % 4], 0.55);
             let prims = [primitives::sphere(body_m, 10, 16), primitives::sphere(body_m, 8, 14), primitives::sphere(eye_m, 6, 8)];
-            let [body, head, eyes] = std::array::from_fn(|k| scene.add_mesh(&prims[k].mesh()));
-            for m in [body, head, eyes] { scene.add_instance(m, Affine3A::from_translation(HIDDEN)); }
+            let [proxy_body, head, eyes] = std::array::from_fn(|k| scene.add_mesh(&prims[k].mesh()));
+            let body = if let Some(characters) = &mut self.characters {
+                characters.reserve_actor(scene, i).expect("valid character actor")
+            } else {
+                scene.add_instance(proxy_body, Affine3A::from_translation(HIDDEN));
+                proxy_body
+            };
+            for m in [head, eyes] { scene.add_instance(m, Affine3A::from_translation(HIDDEN)); }
             self.meshes.push(PlayerMeshes { body, head, eyes });
-            self.sources.push(prims);
+            if self.characters.is_none() { self.sources.push(prims); }
         }
         let tracer_m = glow(scene, [1.0, 0.9, 0.3], 30000.0);
         self.tracer = cube(scene, tracer_m);
@@ -72,10 +84,20 @@ impl PlayersView {
         self.corpses.clear(scene);
         self.ragdolls.clear();
         self.gore().clear(scene, phys);
+        if let Some(characters) = &mut self.characters { characters.reset(); }
     }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene) -> Result<(), String> {
+        if let Some(characters) = &self.characters { characters.flush(gpu, renderer)?; }
         self.corpses.flush(gpu, renderer, scene)
+    }
+
+    pub fn tick(&mut self, world: &World) {
+        if let Some(characters) = &mut self.characters { characters.tick(world); }
+    }
+
+    pub fn hands(&self) -> &[Option<Vec3>] {
+        self.characters.as_ref().map_or(&[], |c| c.hands.as_slice())
     }
 
     /// A death: lava takes the body whole, otherwise by the kill's gib mode.
@@ -89,6 +111,16 @@ impl PlayersView {
             return;
         };
         let push = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
+        if self.characters.is_some() {
+            // Keep the original textured model in its final animated pose.
+            // Mesh-specific dismemberment needs a separate skin-aware bake;
+            // do not replace a humanoid corpse with the old coloured blobs.
+            self.ragdoll(scene, phys, victim, v, push, false);
+            fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.3, 0.8);
+            fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.6, speed: [2.0, 8.0], ..Burst::drops() });
+            blood_splats(scene, arena, world, v.pos, 4, 1.3);
+            return;
+        }
         match gib {
             Gib::Burst { severity, blast } => {
                 // Godot: chaos from the severity, the whole body in chunks,
@@ -119,14 +151,21 @@ impl PlayersView {
         let push = dir.with_y(0.0).normalize_or_zero() * 5.0 + Vec3::Y * 2.0;
         let rot = Quat::from_rotation_y(v.yaw);
         let (b, h) = (self.meshes[victim].body, self.meshes[victim].head);
-        let torso = phys.add(&BodyDesc { rot, vel: v.vel + push, density: 300.0, ..BodyDesc::new(Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25) });
+        let skinned = self.characters.is_some();
+        let (shape, center, local) = if skinned {
+            (Shape::Capsule(0.32, 0.55), v.pos, characters::model_transform(Vec3::ZERO, 0.0))
+        } else { (Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25, Affine3A::from_scale(BODY)) };
+        let torso = phys.add(&BodyDesc { rot, vel: v.vel + push, density: 300.0, ..BodyDesc::new(shape, center) });
         let Some(ts) = self.corpses.add(scene, b, Affine3A::from_translation(v.pos)) else { phys.remove(torso); return };
-        let mut parts = vec![(torso, ts, b, BODY)];
-        if with_head {
+        if skinned {
+            scene.instances[self.corpses.instance(ts)].flags |= render::scene::SKINNED;
+        }
+        let mut parts = vec![(torso, ts, b, local)];
+        if with_head && !skinned {
             let head = phys.add(&BodyDesc { rot, vel: v.vel + push * 1.4, density: 300.0, ..BodyDesc::new(Shape::Sphere(0.28), v.pos + Vec3::Y * 0.55) });
             phys.ball_joint(torso, head, Vec3::Y * 0.52, Vec3::Y * -0.28);
             match self.corpses.add(scene, h, Affine3A::from_translation(v.pos)) {
-                Some(hs) => parts.push((head, hs, h, Vec3::splat(HEAD))),
+                Some(hs) => parts.push((head, hs, h, Affine3A::from_scale(Vec3::splat(HEAD)))),
                 None => phys.remove(head),
             }
         }
@@ -137,16 +176,16 @@ impl PlayersView {
     pub fn follow_physics(&mut self, scene: &mut Scene, phys: &mut Physics, now: f32) {
         self.gore().update(scene, phys, now);
         for r in &self.ragdolls {
-            for &(body, slot, mesh, scale) in &r.parts {
+            for &(body, slot, mesh, local) in &r.parts {
                 if let Some((pos, rot)) = phys.pose(body) {
-                    self.corpses.set(scene, slot, mesh, Affine3A::from_scale_rotation_translation(scale, rot, pos));
+                    self.corpses.set(scene, slot, mesh, Affine3A::from_rotation_translation(rot, pos) * local);
                 }
             }
         }
     }
 
     /// Players (interpolated by `alpha` from `prev`) and tracers.
-    pub fn pose(&self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32) {
+    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32) {
         let mut slot = self.first;
         for (i, p) in world.players.iter().enumerate() {
             let m = &self.meshes[i];
@@ -156,11 +195,16 @@ impl PlayersView {
             }
             let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
             let rot = Quat::from_rotation_y(p.yaw);
-            let body = Affine3A::from_scale_rotation_translation(BODY, rot, pos + Vec3::Y * -0.25);
-            let head = Affine3A::from_scale_rotation_translation(Vec3::splat(HEAD), rot, pos + Vec3::Y * 0.55);
-            let eyes = Affine3A::from_scale_rotation_translation(Vec3::new(0.2, 0.07, 0.05), rot, pos + Vec3::Y * 0.6 + rot * Vec3::new(0.0, 0.0, -0.27));
+            let (body, head, eyes) = if self.characters.is_some() {
+                (characters::model_transform(pos, p.yaw), Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN))
+            } else {
+                (Affine3A::from_scale_rotation_translation(BODY, rot, pos + Vec3::Y * -0.25),
+                 Affine3A::from_scale_rotation_translation(Vec3::splat(HEAD), rot, pos + Vec3::Y * 0.55),
+                 Affine3A::from_scale_rotation_translation(Vec3::new(0.2, 0.07, 0.05), rot, pos + Vec3::Y * 0.6 + rot * Vec3::new(0.0, 0.0, -0.27)))
+            };
             for (mesh, xf) in [(m.body, body), (m.head, head), (m.eyes, eyes)] { scene.update_instance(slot, mesh, xf); slot += 1; }
         }
+        if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha); }
         // Tracers: a short glowing streak behind each live bullet. Skip the
         // first metre so a player's own tracer never fills their screen; the
         // streak then grows to four metres.
