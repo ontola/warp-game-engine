@@ -8,7 +8,7 @@ use wgpu::util::DeviceExt;
 use sha2::{Digest,Sha256};
 
 pub const MAX_LIGHTS:usize=8;
-pub const MAX_LOCAL_LIGHTS:usize=16;
+pub const MAX_LOCAL_LIGHTS:usize=32;
 pub const SHADOW_SIZE:u32=1024;
 pub const SHADOW_NEAR:f32=0.05;
 
@@ -178,7 +178,7 @@ mod tests {
         for bad in [SpotLight {range_m:f32::NAN,..lamp()},SpotLight {up:Vec3::NEG_Z,..lamp()},
             SpotLight {inner_angle_radians:0.7,..lamp()},SpotLight {intensity_cd:Vec3::splat(-1.0),..lamp()}] {assert!(bad.validated().is_err());}
         assert_eq!(std::mem::size_of::<GpuSpot>(),112);assert_eq!(std::mem::size_of::<GpuLocal>(),64);
-        assert_eq!(std::mem::size_of::<Uniform>(),1968);
+        assert_eq!(std::mem::size_of::<Uniform>(),1968+16*64);
         assert_eq!(Uniform::from_lights(&[],&[]).count,[0;4]);
     }
     #[test] fn local_spill_has_an_independent_budget_and_zeroes_expired_lights() {
@@ -193,7 +193,7 @@ mod tests {
             assert!(bad.validated().is_err());
         }
         let before=Uniform::from_lights(&[lamp();MAX_LIGHTS],&local);
-        assert_eq!(before.count,[8,16,0,0]);
+        assert_eq!(before.count,[8,MAX_LOCAL_LIGHTS as u32,0,0]);
         assert_eq!(before.local[0].source[0],0.06*0.06);
         assert_eq!(before.local_min,[-3.0,-3.0,-3.0,0.0]);assert_eq!(before.local_max,[3.0,3.0,3.0,0.0]);
         let after=Uniform::from_lights(&[lamp();MAX_LIGHTS],&[]);

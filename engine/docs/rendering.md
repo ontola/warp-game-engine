@@ -58,7 +58,7 @@ detail, the measurements and the dead ends are in the
 
 - Physical units: sun and sky in lux, exposure in EV100, emissive
   materials in nits. `Lighting::default()` is a sunny day.
-- Sun shadows, plus shadowed spot lights for headlights; up to 16
+- Sun shadows, plus shadowed spot lights for headlights; up to 32
   unshadowed point or spot lights per frame (`set_local_lights`), with a
   `falloff` exponent.
 - A procedural atmosphere bake: Rayleigh and aerosol Mie single scattering

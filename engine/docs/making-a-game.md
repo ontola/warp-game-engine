@@ -83,7 +83,7 @@ complete example with split screen, bots and online play.
 - Debug commands: implement `Game::command` (`give 0 explosive`,
   `teleport 0 1 2 3`) and scripts can set up any scenario with a `cmd`
   step instead of playing up to it.
-- Up to 16 unshadowed point or spot lights per frame:
+- Up to 32 unshadowed point or spot lights per frame:
   `renderer.set_local_lights` (an omni light is `outer_cos: -1.0`).
 
 ## Costs to know

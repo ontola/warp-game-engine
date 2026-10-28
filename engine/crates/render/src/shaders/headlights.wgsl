@@ -2,7 +2,7 @@
 // small spill lights use finite cones/ranges and add no shadow rendering.
 struct Headlight { view_proj:mat4x4<f32>, position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32> };
 struct LocalLight { position_range:vec4<f32>, direction_outer:vec4<f32>, intensity_inner:vec4<f32>, source:vec4<f32> };
-struct Headlights { lights:array<Headlight,8>, count:vec4<u32>, local:array<LocalLight,16>, local_min:vec4<f32>, local_max:vec4<f32> };
+struct Headlights { lights:array<Headlight,8>, count:vec4<u32>, local:array<LocalLight,32>, local_min:vec4<f32>, local_max:vec4<f32> };
 @group(0) @binding(17) var<uniform> headlights:Headlights;
 @group(0) @binding(18) var headlight_depth:texture_depth_2d_array;
 
@@ -12,7 +12,7 @@ fn incident_light_count(p:vec3<f32>)->u32 {
     // A conservative union of the finite light spheres skips the entire extra
     // loop on distant terrain/forest. Each retained light still range-tests.
     if headlights.count.y==0u || any(p<headlights.local_min.xyz) || any(p>headlights.local_max.xyz) {return shadowed;}
-    return shadowed+min(headlights.count.y,16u);
+    return shadowed+min(headlights.count.y,32u);
 }
 fn incident_light_position(index:u32)->vec3<f32> {
     let shadowed=min(headlights.count.x,8u);
