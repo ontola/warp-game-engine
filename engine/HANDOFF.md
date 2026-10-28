@@ -7,7 +7,122 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
-## Latest status — r61 frame hitch fix, opt-in GameNight preview
+## Integration into current main — 28 October 2026
+
+The grass agent's source is preserved in `ac29b0f` and integrated with current
+renderer features and Growing Guns CPU work. Read
+[integration notes](docs/grass-integration-20261028.md) for binding/view-index
+repairs, checks and limits. The r64 playtest below is historical and stopped.
+Optional contact/filter controls remain off; distant source geometry is still
+expensive and the proposed far representation remains unfinished.
+
+## Previous grass status — r64 opt-in distant shading and edge contact
+
+28 October 2026. Read [r64 evidence and remaining checks](docs/meadow-edge-grain-r64.md).
+`KERN_MEADOW_SPATIAL_FILTER=1` adds a native-only depth-aware 3×3 RGB filter
+at source composite. Alpha is exact; near pixels and empty coverage stay
+unchanged. Onset uses the coarse triangle's mean width W/2 times live growth;
+TAA/DLSS, motion and aggregate disable the filter. Current source wind and
+lighting remain live. This does not fix silhouette aliasing or reduce the
+250 m source geometry cost, and is not the proposed distant terrain layer.
+
+`KERN_MEADOW_EDGE_SHADOW=1` builds a source-accepted 151² root grid per view,
+1,459,520 bytes shared across four views. The final receiver shares 25 records
+between sky/sun queries, radius 0.4941 m for this source (bounded to 0.55 m),
+sun reach 0.35 m and fade 24–32 m. It approximates basal contact on terrain/road,
+not wind-animated blade silhouettes. Both flags remain opt-in.
+
+First-probe OFF is pixel-exact with r63e in three native 4K captures. The W/2
+filter-only exploratory distant crop has 76.4% less high-pass display-luma
+variance but 9.0% higher mean display luma; this is static contrast evidence,
+not final appearance or temporal acceptance. Workspace/CLI/launcher checks,
+556 renderer tests (eight ignored) and the 2312-pixel filter GPU oracle passed.
+The contact producer oracle also passed its final rerun after the receiver
+radius change. Final combined static captures and six
+selected wind poses completed. One-view native 4K covered GPU medians are
+23.311/26.326/25.410 ms for edge-noon/hillside/edge-morning, 72/72/69 samples;
+contact remains subtle and road controls are unchanged. No final appearance
+or temporal acceptance. Frozen `sideways-r64-native.exe` SHA256:
+`afc89e31a0e16af50dd2a62450aa7371ff914264310a63f272b653b082a607d0`.
+
+The final native 4K, one-view preview reached a confirmed visible first frame
+at 16:56 UTC, PID 23356, using the frozen final executable and both flags.
+Wind strength is 0.8 with advancing time. The new launcher
+`-DebugUiScript games/sideways/scenarios/windswept-grass-edge-settings.json`
+requests size 1.6/density 1.0, as verified in the static scenarios. No live F12
+was captured to independently verify those controls; the saved 2.0/.55
+baseline is unchanged. The active executable's path and hash match the manifest.
+Manifest: `../games/sideways/build/dev-runs/20261028T165617934Z-5eab5a82/iteration.json`.
+**Do not run GPU fixtures while the playtest is active.** Recheck process state
+before later work; earlier handoff statements below are historical. Evidence:
+`C:/dev/perf/warp-sideways-20261028/r64-grass-edge-grain/`.
+
+## Previous status — r63d validation and interim r63e source range
+
+28 October 2026. Read [the r63 report](docs/meadow-windswept-r63.md).
+The GPU meadow now defaults to `SIDEWAYS_MEADOW_PROFILE=windswept`; choose
+`classic` explicitly for the previous recipe and r62 shading experiment.
+Pinned Quick_Grass equations supply curved blades, fourth-power tip colour
+and travelling noise wind. r63d evaluates pigment/AO per fragment and morphs
+six segments onto the actual one-triangle cut over growth-scaled 3–6 m. The
+cooked three-segment cut is not selected. Aggregate remains forced off for
+windswept; group cache is invalid. The first aggregate-based live attempt was
+prohibitively expensive and remains diagnostic evidence.
+
+Validated r63d, one-view native 3840×2160 on RTX 5070 Ti: normal/close/overview
+fixed cameras measure median covered GPU 23.310/14.321/20.514 ms, with meadow
+6.511/2.620/3.527 ms; 72/72/69 samples after warmup. The interval excludes CPU
+and work outside the instrumented endpoints, including HUD/presentation.
+547 renderer tests (five ignored) and four explicit GPU oracles passed. The
+61-frame approach sweep also completed. The user's r63d freeplay closed normally;
+**no game is active at this handoff**. Earlier PID 48036 is historical.
+
+The user rejected the 100 m disappearance. Current r63e code defaults to a
+250 m source radius with a 200–250 m fade; the explicit
+`SIDEWAYS_MEADOW_WINDSWEPT_RADIUS` control accepts 60–256 m and ignores the
+classic radius/band flags. This is an interim source comparison,
+not the accepted distant representation. The completed 100/250 m hillside
+comparison fills the bare hill but costs more; its timings precede compaction.
+The subsequent homogeneous windswept profile-2 pool uses 75,129,660 bytes/view
+at 250 m instead of 155,267,964; classic/mixed profiles retain 28 plant words.
+550 renderer tests (six ignored), 190 CLI tests (one ignored) and the explicit
+compact-pool GPU sentinel and developer-launcher contracts passed. The release
+build and final matched native-4K hillside capture completed successfully;
+see the r63 report for the compact run's measurements. Frozen executable:
+`sideways-r63e-native.exe`, SHA256
+`088132BAD7274098EA4F9D5565DA60948E43869204AC9212AAFA098045336248`.
+
+The user prefers filtered distant coverage over individual far blades. The
+proposed representation is a source-derived, directionally prefiltered thin
+layer following the terrain, with shared wind and current lighting. It is
+not implemented; do not re-enable the old photo field or per-patch atlas as a
+substitute. No four-player/120 FPS, final visual or temporal-quality claim. Evidence:
+`C:/dev/perf/warp-sideways-20261028/r63-windswept-grass/`.
+
+## Previous status — r62 rounded grass shading, opt-in source experiment
+
+28 October 2026, branch `codex/grass-rounded-shading-20261028`. Read
+[the r62 report](docs/meadow-rounded-shading-r62.md). The supplied grass
+tutorial prompted smooth centreline/rounded transverse shading normals for
+every meadow source LOD and its rebuilt atlas. Select explicitly through
+`SIDEWAYS_MEADOW_BLADE_SHADING=rounded`; unset/flat retains the existing source.
+Geometry, placement, material, wind, saved baseline and registration are unchanged.
+The launcher records the mode; F12 replay treats missing historical mode as flat.
+
+Workspace check, 535 renderer tests (one ignored), CLI/replay tests and launcher
+contracts passed. Eight paired native1280×720 GPU cases retain exact source
+alpha and selected draw counts, exercising all source cuts and the aggregate.
+Two native1920×1080 Sideways camera views also completed A/B capture. Close
+blade shading is softer but the improvement is subtle and geometric silhouettes
+remain angular. Motion/DLSS/all-weather quality and performance are unverified;
+aggregate geometric shadow bias still uses its approximate shading normal.
+
+Evidence and frozen native executables:
+`C:/dev/perf/warp-sideways-20261028/r62-rounded-grass/`.
+Both bounded scene runs exited. No interactive playtest was started or left
+running. GameNight still uses its earlier registered package and profile.
+
+## Previous status — r61 frame hitch fix, opt-in GameNight preview
 
 Current branch: `codex/fourview-budget-20261026`. Read
 [the r61 report](docs/frame-hitches-r61.md). Foliage shadow page updates were

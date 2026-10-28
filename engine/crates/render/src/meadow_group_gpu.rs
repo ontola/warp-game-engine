@@ -612,7 +612,7 @@ impl GpuGroups {
             + 64 * 31 * 4
             + ARGS_BYTES * 2
             + std::mem::size_of::<Table>() as u64 * 6
-            + 4 * (192 + 320 + 16 + 16)
+            + 4 * (std::mem::size_of::<Settings>() as u64 + 320 + 16 + 16)
             + 4 * 16
             + DECISION_WORDS * 4 * 5;
         if bytes > 64 * 1024 * 1024 {
