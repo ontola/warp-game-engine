@@ -20,6 +20,7 @@ pub mod script;
 pub mod sound;
 pub mod tween;
 pub mod ui;
+mod manners;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
 pub use text::{FieldEvent, TextEvent, TextField};
@@ -277,6 +278,7 @@ struct Shell<'g> {
     live: Option<Live>,
     window: Option<Arc<Window>>,
     screen: Screen,
+    manners: manners::Manners,
     focused: bool,
     acc: f32,
     last: Instant,
@@ -295,7 +297,7 @@ struct Shell<'g> {
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let devices = Devices::new(cfg.keyboard);
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, shots: 0, error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, shots: 0, error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -304,17 +306,9 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
 impl Shell<'_> {
     fn frame(&mut self) -> Result<(), String> {
         let wish = self.game.screen();
-        if wish != self.screen {
-            self.screen = wish;
-            if wish == Screen::Hidden { self.capture_mouse(false); }
-            if let Some(w) = &self.window {
-                match wish {
-                    Screen::Hidden => w.set_minimized(true),
-                    Screen::Fullscreen => { w.set_minimized(false); w.set_fullscreen(Some(Fullscreen::Borderless(None))); w.focus_window(); }
-                    Screen::Normal => { w.set_minimized(false); w.set_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None))); }
-                }
-            }
-        }
+        if self.manners.wish(wish, self.focused) && wish == Screen::Hidden { self.capture_mouse(false); }
+        self.screen = self.manners.screen;
+        if let Some(w) = &self.window { self.manners.step(w, self.focused, self.cfg.fullscreen); }
         // Hidden: keep ticking (messages, warm loading) at a few frames a second.
         if self.screen == Screen::Hidden { std::thread::sleep(std::time::Duration::from_millis(50)); }
         let now = Instant::now();
@@ -404,6 +398,8 @@ impl ApplicationHandler for Shell<'_> {
         let result = (|| -> Result<(), String> {
             let attrs = Window::default_attributes().with_title(&self.cfg.title).with_inner_size(PhysicalSize::new(self.cfg.size[0], self.cfg.size[1]))
                 .with_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None)));
+            let attrs = self.manners.first(self.game.screen(), attrs);
+            self.screen = self.manners.screen;
             let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
             let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
