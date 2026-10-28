@@ -1400,6 +1400,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gamenight"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tungstenite",
+]
+
+[[package]]
 name = "gdcompat"
 version = "0.1.0"
 dependencies = [
