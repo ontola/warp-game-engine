@@ -1,6 +1,6 @@
 //! Growing Guns on Warp.
 //!
-//!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm]
+//!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm] [--no-music] [--music DIR]
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T] [--trace players.0.health,round [--rows N]]
 //!   growing-guns nettest [--seconds T]   (host + client over iroh loopback, headless)
@@ -20,6 +20,7 @@ mod crowd_sound;
 mod gun;
 mod scripts;
 mod stadium;
+mod music;
 mod view;
 
 use growing_guns::{Event, World, TICK_HZ};
@@ -136,9 +137,11 @@ fn script(args: &Args) -> Result<(), String> {
     let samples = sounds::find_dir(args.value("--sounds"));
     let patches = sounds::find_patches(args.value("--sfx"));
     let mixer = (samples.is_some() || patches.is_some()).then(|| {
-        let (mix, tx, crowd) = sounds::offline();
+        let music = play::music(args, samples.as_deref(), args.num("--seed", 3u64), false);
+        let (mix, tx, crowd) = sounds::offline(music.as_ref());
         if let Some(dir) = &samples { game.set_crowd(args.value("--crowd"), dir, &crowd); }
         game.set_sounds(sounds::Sounds::new(tx, patches, samples.as_deref()));
+        if let Some(m) = music { game.set_music(m); }
         mix
     });
     let gpu = Gpu::new()?;

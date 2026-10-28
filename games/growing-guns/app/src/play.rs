@@ -57,6 +57,8 @@ pub struct Gg {
     since_poll: u32,
     rebuild: bool,
     sounds: Option<crate::sounds::Sounds>,
+    /// The soundtrack and game.gd's music logic.
+    music: Option<(crate::music::Shared, crate::music::Director)>,
     /// Card menu per local player.
     menus: Vec<app::ui::Menu>,
     /// The mods (cards, rules), hot-reloaded.
@@ -74,7 +76,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
-            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, menus: Vec::new(), scripts, party: None, names: Vec::new() }
+            fb: vec![hud::Feedback::default(); n], world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, sounds: None, music: None, menus: Vec::new(), scripts, party: None, names: Vec::new() }
     }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
@@ -92,6 +94,8 @@ impl Gg {
         self.slots = slots;
         self.menus.clear();
         self.rebuild = true;
+        // A new match for the music too.
+        if let Some((_, d)) = &mut self.music { *d = Default::default(); }
     }
 
     /// GameNight's lifecycle; returns the party's controls while it runs,
@@ -124,11 +128,12 @@ impl Gg {
     /// Client: apply what the host sent; returns the interpolation alpha.
     pub fn receive(&mut self, dt: f32) -> f32 {
         let before: Vec<Vec3> = self.world.players.iter().map(|p| p.pos).collect();
-        let (vis, fb, sounds, slots) = (&mut self.vis, &mut self.fb, &mut self.sounds, &self.slots);
+        let (vis, fb, sounds, music, slots) = (&mut self.vis, &mut self.fb, &mut self.sounds, &mut self.music, &self.slots);
         let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
             vis.absorb(w, &crate::sounds::ears(w, slots));
             feedback(fb, w, DT);
             if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); vis.stadium.sound.loudness_db = s.duck_db(); }
+            follow_music(music, w, slots);
         });
         if snaps > 0 { self.prev = before; self.since_snap = 0.0; } else { self.since_snap += dt; }
         if arena { self.new_arena(); }
@@ -137,6 +142,12 @@ impl Gg {
 
     pub fn session(&self) -> &Session { &self.session }
     pub fn set_sounds(&mut self, s: crate::sounds::Sounds) { self.sounds = Some(s); }
+
+    /// The soundtrack: shots and explosions duck it, round phases drive it.
+    pub fn set_music(&mut self, m: crate::music::Shared) {
+        if let Some(s) = &mut self.sounds { s.music = Some(m.clone()); }
+        self.music = Some((m, Default::default()));
+    }
 
     /// The crowd's recordings (`--crowd DIR`, GG_CROWD, or found beside the
     /// sound folder); without them the crowd still reacts, silently.
@@ -197,6 +208,7 @@ impl app::Game for Gg {
         self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
         feedback(&mut self.fb, &self.world, DT);
         if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); self.vis.stadium.sound.loudness_db = s.duck_db(); }
+        follow_music(&mut self.music, &self.world, &self.slots);
         self.session.publish(&self.world);
     }
 
@@ -335,6 +347,26 @@ impl app::Game for Gg {
     }
 }
 
+fn follow_music(music: &mut Option<(crate::music::Shared, crate::music::Director)>, world: &World, slots: &[usize]) {
+    let Some((m, director)) = music else { return };
+    let mut m = crate::music::lock(m);
+    director.follow(&mut m, world, slots);
+    m.update(DT);
+}
+
+/// The soundtrack unless `--no-music`, its stems from `--music DIR` (see
+/// music::find_dir); loaded on a thread when `background`.
+pub fn music(args: &Args, sounds: Option<&std::path::Path>, seed: u64, background: bool) -> Option<crate::music::Shared> {
+    if args.flag("--no-music") { return None; }
+    let Some(dir) = crate::music::find_dir(args.value("--music"), sounds) else {
+        eprintln!("no music: no stems (--music DIR or GG_MUSIC, the Godot project's assets/music)");
+        return None;
+    };
+    let m = crate::music::shared(crate::music::Music::new(audio::SAMPLE_RATE, seed));
+    crate::music::load_into(&m, dir, background);
+    Some(m)
+}
+
 fn card_id(w: &World, c: growing_guns::cards::Card) -> String { w.cards.get(c).map_or_else(|| format!("#{}", c.0), |d| d.id.clone()) }
 
 /// `--modifier ID` forces a round modifier (`none` for none), `--rounds N`
@@ -385,10 +417,12 @@ pub fn run(args: &Args) -> Result<(), String> {
     let patches = crate::sounds::find_patches(args.value("--sfx"));
     if samples.is_none() { eprintln!("no recordings: footsteps, hurts and deaths are silent (--sounds DIR or GG_SOUNDS, the Godot project's assets/audio)"); }
     if patches.is_none() { eprintln!("no sound patches (--sfx DIR or GG_SFX, games/growing-guns/sounds)"); }
-    let _speaker = match crate::sounds::speakers(args.value("--speakers")) {
+    let music = music(args, samples.as_deref(), seed, true);
+    let _speaker = match crate::sounds::speakers(args.value("--speakers"), music.as_ref()) {
         Ok((speaker, tx, crowd)) => {
             if let Some(dir) = &samples { game.set_crowd(args.value("--crowd"), dir, &crowd); }
             game.set_sounds(crate::sounds::Sounds::new(tx, patches, samples.as_deref()));
+            if let Some(m) = music { game.set_music(m); }
             Some(speaker)
         }
         Err(e) => { eprintln!("silent: {e}"); None }
