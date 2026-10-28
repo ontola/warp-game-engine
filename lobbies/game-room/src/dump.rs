@@ -5,7 +5,7 @@
 //! Godot's non-physical units map onto Warp's photometric ones with one
 //! factor: a Godot light of energy 1 lights white albedo like `LIGHT` lux,
 //! and display values are nits at the exposure `exposure_ev`.
-use glam::{Affine3A, Mat4, Vec2, Vec3};
+use glam::{Affine3A, Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use render::cluster::{ClusterMesh, Part, Vertex};
 use render::headlights::{LocalLight, SpotLight};
 use render::irradiance_volume::Block;
@@ -32,11 +32,19 @@ pub struct Dump {
 }
 
 #[derive(Deserialize)]
-pub struct MeshDump { pub surfaces: Vec<SurfaceDump> }
+pub struct MeshDump { #[serde(rename = "type", default)] pub kind: String, pub surfaces: Vec<SurfaceDump> }
 #[derive(Deserialize)]
-pub struct SurfaceDump { positions: [usize; 2], normals: [usize; 2], uvs: [usize; 2], indices: [usize; 2], material: i64 }
+pub struct SurfaceDump { pub positions: [usize; 2], pub normals: [usize; 2], pub uvs: [usize; 2], pub indices: [usize; 2], pub material: i64 }
 #[derive(Deserialize)]
-pub struct TextureDump { pub file: String }
+pub struct TextureDump {
+    pub file: String,
+    #[serde(default)] pub width: u32,
+    #[serde(default)] pub height: u32,
+    /// "image", or "viewport" for a texture the lobby paints.
+    #[serde(default)] pub kind: String,
+    /// The screen a painted texture belongs to (Rust-built rooms only).
+    #[serde(default)] pub screen: Option<String>,
+}
 #[derive(Deserialize)]
 pub struct InstanceDump { pub name: String, pub mesh: usize, pub materials: Vec<i64>, pub transform: [f32; 16], pub shadow: bool, #[serde(default)] pub shadow_only: bool }
 
@@ -66,9 +74,29 @@ pub struct Tuning {
     pub ambient: f32,
 }
 
+/// Where a painted screen sits: its albedo layer and pixel rectangle there.
+#[derive(Clone, Copy, Debug)]
+pub struct ScreenRect { pub layer: i32, pub rect: [u32; 4] }
+
+/// Painted screens share 2048-pixel layers, packed in shelves.
+#[derive(Default)]
+struct Atlas { layer: i32, x: u32, y: u32, row: u32 }
+
 pub struct Room {
     pub dir: PathBuf,
     pub dump: Dump,
+    pub bin: Vec<u8>,
+    /// Scene instance of each dump instance (None: not drawn).
+    /// Instances left out of the scene (hidden in Godot at the start).
+    pub hidden: Vec<usize>,
+    pub scene_index: Vec<Option<usize>>,
+    /// Warp material of each dump material that is in use.
+    pub material_ids: HashMap<usize, u32>,
+    /// Painted screens by name (a Rust-built room's `ScreenDef`s), and by
+    /// dump texture.
+    pub screens: HashMap<String, ScreenRect>,
+    pub screen_of_texture: HashMap<usize, ScreenRect>,
+    atlas: Atlas,
     pub images: Vec<image::RgbaImage>,
     pub locals: Vec<LocalLight>,
     pub spots: Vec<SpotLight>,
@@ -90,35 +118,52 @@ impl Room {
         let dump: Dump = serde_json::from_str(&text).map_err(|e| format!("scene.json: {e}"))?;
         let images = dump.textures.iter().map(|t| image::open(dir.join(&t.file)).map(|i| i.to_rgba8()).map_err(|e| format!("{}: {e}", t.file)))
             .collect::<Result<Vec<_>, _>>()?;
+        let bin = std::fs::read(dir.join("meshes.bin")).map_err(|e| format!("meshes.bin: {e}"))?;
+        Ok(Self::from_parts(dir.to_path_buf(), dump, bin, images))
+    }
+
+    /// A room from its description in memory (the Rust-built room).
+    pub fn from_parts(dir: PathBuf, dump: Dump, bin: Vec<u8>, images: Vec<image::RgbaImage>) -> Self {
         let cam = mat4(&dump.camera["transform"]);
         let pos = cam.w_axis.truncate();
         let camera = render::Camera { pos, target: pos - cam.z_axis.truncate(), fov_y: num(&dump.camera, "fov_y").to_radians(), near: num(&dump.camera, "near").max(0.05) };
-        Ok(Self { dir: dir.to_path_buf(), dump, images, locals: vec![], spots: vec![], spot_falloff: vec![], spot_fog: vec![], local_fog: vec![], blocks: vec![], ambient: Vec3::ZERO, camera, min: Vec3::ZERO, max: Vec3::ZERO })
+        Self { dir, dump, bin, hidden: vec![], scene_index: vec![], material_ids: HashMap::new(), screens: HashMap::new(), screen_of_texture: HashMap::new(), atlas: Atlas { layer: -1, ..Default::default() }, images, locals: vec![], spots: vec![], spot_falloff: vec![], spot_fog: vec![], local_fog: vec![], blocks: vec![], ambient: Vec3::ZERO, camera, min: Vec3::ZERO, max: Vec3::ZERO }
+    }
+
+    /// The Rust-built room (room.rs).
+    pub fn from_build(build: crate::room::RoomBuild) -> Self {
+        let mut room = Self::from_parts(PathBuf::new(), build.dump, build.bin, build.images);
+        room.hidden = build.hidden;
+        room
     }
 
     /// Fill `scene` with the room's meshes; collect lights and bake blocks.
     pub fn build(&mut self, scene: &mut Scene, tuning: &Tuning) -> Result<(), String> {
-        let bin = std::fs::read(self.dir.join("meshes.bin")).map_err(|e| format!("meshes.bin: {e}"))?;
+        let bin = std::mem::take(&mut self.bin);
         let floats = |r: [usize; 2]| -> Vec<f32> { bin[r[0]..r[0] + r[1]].chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect() };
         let ints = |r: [usize; 2]| -> Vec<u32> { bin[r[0]..r[0] + r[1]].chunks_exact(4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u32).collect() };
-        let mut layers: HashMap<usize, (i32, Vec2)> = HashMap::new();
-        let mut materials: HashMap<usize, (u32, Vec3, Vec3, Vec2)> = HashMap::new();
+        let mut layers: HashMap<usize, (i32, Vec4)> = HashMap::new();
+        let mut materials: HashMap<usize, (u32, Vec3, Vec3, Vec4)> = HashMap::new();
         let mut meshes: HashMap<(usize, Vec<i64>), usize> = HashMap::new();
         let fallback = scene.add_material(Material { tint: [0.8; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
         let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-        for inst in &self.dump.instances {
-            let mesh = &self.dump.meshes[inst.mesh];
-            let key = (inst.mesh, inst.materials.clone());
-            let xf = Mat4::from_cols_array(&inst.transform);
+        self.scene_index = vec![None; self.dump.instances.len()];
+        for index in 0..self.dump.instances.len() {
+            if self.hidden.contains(&index) { continue; }
+            let inst = &self.dump.instances[index];
+            let (mesh_index, inst_materials, transform, shadow_only) = (inst.mesh, inst.materials.clone(), inst.transform, inst.shadow_only);
+            let surfaces: Vec<_> = self.dump.meshes[mesh_index].surfaces.iter().map(|s| (s.positions, s.normals, s.uvs, s.indices, s.material)).collect();
+            let key = (mesh_index, inst_materials.clone());
+            let xf = Mat4::from_cols_array(&transform);
             let mut local_min = Vec3::splat(f32::MAX);
             let mut local_max = Vec3::splat(f32::MIN);
             let mut albedo = Vec3::ZERO;
             let mut emission = Vec3::ZERO;
             let mut blended = false;
             let mut parts_data = vec![];
-            for (s, surface) in mesh.surfaces.iter().enumerate() {
-                let m = inst.materials.get(s).copied().filter(|&m| m >= 0).unwrap_or(surface.material);
-                let (id, a, e, uv_factor) = if m >= 0 { self.material(scene, m as usize, &mut layers, &mut materials)? } else { (fallback, Vec3::splat(0.8), Vec3::ZERO, Vec2::ONE) };
+            for (s, &(positions, normals, uvs, indices, material)) in surfaces.iter().enumerate() {
+                let m = inst_materials.get(s).copied().filter(|&m| m >= 0).unwrap_or(material);
+                let (id, a, e, uv_factor) = if m >= 0 { self.material(scene, m as usize, &mut layers, &mut materials)? } else { (fallback, Vec3::splat(0.8), Vec3::ZERO, Vec4::new(0.0, 0.0, 1.0, 1.0)) };
                 if m >= 0 && self.dump.materials[m as usize]["transparency"].as_i64().unwrap_or(0) != 0 { blended = true; }
                 albedo = a;
                 emission = emission.max(e);
@@ -126,18 +171,18 @@ impl Room {
                 let get = |k: &str, i: usize, def: f64| d.map(|d| d[k][i].as_f64().unwrap_or(def)).unwrap_or(def) as f32;
                 let uv_scale = Vec2::new(get("uv1_scale", 0, 1.0), get("uv1_scale", 1, 1.0));
                 let uv_off = Vec2::new(get("uv1_offset", 0, 0.0), get("uv1_offset", 1, 0.0));
-                let p = floats(surface.positions);
-                let n = floats(surface.normals);
-                let t = floats(surface.uvs);
+                let p = floats(positions);
+                let n = floats(normals);
+                let t = floats(uvs);
                 let verts: Vec<Vertex> = (0..p.len() / 3).map(|i| {
                     let pos = Vec3::new(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
                     let w = xf.transform_point3(pos);
                     local_min = local_min.min(w);
                     local_max = local_max.max(w);
-                    let uv = (Vec2::new(t[i * 2], t[i * 2 + 1]) * uv_scale + uv_off) * uv_factor;
+                    let uv = (Vec2::new(t[i * 2], t[i * 2 + 1]) * uv_scale + uv_off) * uv_factor.zw() + uv_factor.xy();
                     Vertex { pos: pos.to_array(), normal: [n[i * 3], n[i * 3 + 1], n[i * 3 + 2]], uv: uv.to_array() }
                 }).collect();
-                parts_data.push((verts, ints(surface.indices), id));
+                parts_data.push((verts, ints(indices), id));
             }
             if parts_data.is_empty() { continue; }
             let id = match meshes.get(&key) {
@@ -151,8 +196,9 @@ impl Room {
             };
             let (scale, rot, trans) = xf.to_scale_rotation_translation();
             scene.add_instance(id, Affine3A::from_scale_rotation_translation(scale, rot, trans));
+            self.scene_index[index] = Some(scene.instances.len() - 1);
             // The players' capsule bodies: shadow casters no camera sees.
-            if inst.shadow_only { scene.instances.last_mut().unwrap().hide_in_views(0xff); continue; }
+            if shadow_only { scene.instances.last_mut().unwrap().hide_in_views(0xff); continue; }
             if !blended && local_min.x < local_max.x {
                 // Thin quads still block light in the bake.
                 let pad = (Vec3::splat(0.02) - (local_max - local_min)).max(Vec3::ZERO) * 0.5;
@@ -163,26 +209,60 @@ impl Room {
         }
         self.min = min;
         self.max = max;
+        self.bin = bin;
+        self.material_ids = materials.iter().map(|(&k, v)| (k, v.0)).collect();
         self.lights(tuning);
         self.ambient = linear(&self.dump.environment["ambient_light_color"]) * num(&self.dump.environment, "ambient_light_energy") * tuning.ambient;
         Ok(())
     }
 
-    /// Texture layer and the uv factor that maps the image inside it. Layers
-    /// are square: a wide or tall picture sits in the top-left corner of a
-    /// square at its own aspect, so it keeps sharp (isotropic) mips.
-    fn layer(&self, scene: &mut Scene, tex: i64, layers: &mut HashMap<usize, (i32, Vec2)>) -> (i32, Vec2) {
-        if tex < 0 { return (-1, Vec2::ONE); }
+    /// Texture layer and where the image sits in it (uv offset xy, scale
+    /// zw). Layers are square: a wide or tall picture sits in the top-left
+    /// corner of a square at its own aspect, so it keeps sharp (isotropic)
+    /// mips. Painted screens share atlas layers.
+    fn layer(&mut self, scene: &mut Scene, tex: i64, layers: &mut HashMap<usize, (i32, Vec4)>) -> (i32, Vec4) {
+        if tex < 0 { return (-1, Vec4::new(0.0, 0.0, 1.0, 1.0)); }
         let tex = tex as usize;
-        *layers.entry(tex).or_insert_with(|| {
+        if let Some(&v) = layers.get(&tex) { return v; }
+        let t = &self.dump.textures[tex];
+        let v = if let Some(name) = t.screen.clone() {
+            let rect = self.place(scene, t.width, t.height);
+            self.screens.insert(name, rect);
+            self.screen_of_texture.insert(tex, rect);
+            let side = render::screen::SIZE as f32;
+            (rect.layer, Vec4::new(rect.rect[0] as f32 / side, rect.rect[1] as f32 / side, rect.rect[2] as f32 / side, rect.rect[3] as f32 / side))
+        } else {
             let img = &self.images[tex];
             let (w, h) = img.dimensions();
-            if w == h { return (scene.add_image(&format!("godot#{tex}"), img.clone()), Vec2::ONE); }
-            let side = w.max(h);
-            let mut square = image::RgbaImage::new(side, side);
-            image::imageops::overlay(&mut square, img, 0, 0);
-            (scene.add_image(&format!("godot#{tex}"), square), Vec2::new(w as f32 / side as f32, h as f32 / side as f32))
-        })
+            if w == h { (scene.add_image(&format!("godot#{tex}"), img.clone()), Vec4::new(0.0, 0.0, 1.0, 1.0)) } else {
+                let side = w.max(h);
+                let mut square = image::RgbaImage::new(side, side);
+                image::imageops::overlay(&mut square, img, 0, 0);
+                (scene.add_image(&format!("godot#{tex}"), square), Vec4::new(0.0, 0.0, w as f32 / side as f32, h as f32 / side as f32))
+            }
+        };
+        layers.insert(tex, v);
+        v
+    }
+
+    /// A free rectangle for a painted screen, with a margin so mips do not
+    /// bleed between neighbours.
+    fn place(&mut self, scene: &mut Scene, w: u32, h: u32) -> ScreenRect {
+        const PAD: u32 = 8;
+        let side = render::screen::SIZE;
+        let (w, h) = (w.min(side - PAD), h.min(side - PAD));
+        let a = &mut self.atlas;
+        if a.layer >= 0 && a.x + w + PAD > side { a.x = 0; a.y += a.row; a.row = 0; }
+        if a.layer < 0 || a.y + h + PAD > side {
+            a.layer = scene.add_screen_texture("screens");
+            a.x = 0;
+            a.y = 0;
+            a.row = 0;
+        }
+        let rect = ScreenRect { layer: a.layer, rect: [a.x, a.y, w, h] };
+        a.x += w + PAD;
+        a.row = a.row.max(h + PAD);
+        rect
     }
 
     /// Sprite3D players and door faces as alpha-tested quads in the scene, so
@@ -230,7 +310,7 @@ impl Room {
     /// CPUParticles3D as they were at the capture: one camera-facing quad per
     /// live particle (Godot's particle billboards), unshaded in its colour.
     pub fn add_particles(&self, scene: &mut Scene, camera: &render::Camera) -> Result<(), String> {
-        let bin = std::fs::read(self.dir.join("meshes.bin")).map_err(|e| format!("meshes.bin: {e}"))?;
+        let bin = &self.bin;
         let back = (camera.pos - camera.target).normalize_or(Vec3::Z);
         let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
         let up = back.cross(right);
@@ -275,6 +355,8 @@ impl Room {
     /// Average linear colour of a texture (for the bake).
     fn average(&self, tex: i64) -> Vec3 {
         if tex < 0 { return Vec3::ONE; }
+        // A painted screen starts empty: assume a dim picture for the bake.
+        if self.dump.textures[tex as usize].screen.is_some() { return Vec3::splat(0.25); }
         let img = &self.images[tex as usize];
         let l = |v: u8| { let v = v as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
         let mut sum = Vec3::ZERO;
@@ -284,11 +366,13 @@ impl Room {
     }
 
     /// Warp material id, bake albedo and bake emission for Godot material `m`.
-    fn material(&self, scene: &mut Scene, m: usize, layers: &mut HashMap<usize, (i32, Vec2)>, cache: &mut HashMap<usize, (u32, Vec3, Vec3, Vec2)>) -> Result<(u32, Vec3, Vec3, Vec2), String> {
+    fn material(&mut self, scene: &mut Scene, m: usize, layers: &mut HashMap<usize, (i32, Vec4)>, cache: &mut HashMap<usize, (u32, Vec3, Vec3, Vec4)>) -> Result<(u32, Vec3, Vec3, Vec4), String> {
         if let Some(&v) = cache.get(&m) { return Ok(v); }
-        let d = &self.dump.materials[m];
-        let tex = d["albedo_texture"].as_i64().unwrap_or(-1);
+        let tex = self.dump.materials[m]["albedo_texture"].as_i64().unwrap_or(-1);
+        let etex = self.dump.materials[m]["emission_texture"].as_i64().unwrap_or(-1);
         let (layer, mut uv_factor) = self.layer(scene, tex, layers);
+        let elayer = if etex >= 0 && self.dump.materials[m]["emission_enabled"].as_bool().unwrap_or(false) { Some(self.layer(scene, etex, layers)) } else { None };
+        let d = &self.dump.materials[m];
         let tint = linear(&d["albedo"]);
         let mut flags = 0;
         if d["cull"].as_i64().unwrap_or(0) == 2 { flags |= TWO_SIDED; }
@@ -304,14 +388,13 @@ impl Room {
             emission = albedo;
         } else if d["emission_enabled"].as_bool().unwrap_or(false) {
             // Godot adds the emission texture to the emission colour.
-            let etex = d["emission_texture"].as_i64().unwrap_or(-1);
             let color = linear(&d["emission"]) + if etex >= 0 { Vec3::ONE } else { Vec3::ZERO };
             let e = color * num(d, "emission_energy");
             let peak = e.max_element().max(1e-6);
             out.flags |= EMISSIVE;
             out.tint = (e / peak).to_array();
             out.scale = peak;
-            if etex >= 0 { (out.layer, uv_factor) = self.layer(scene, etex, layers); }
+            if let Some(e) = elayer { (out.layer, uv_factor) = e; }
             else if layer >= 0 { out.layer = -1; }
             emission = e * self.average(etex);
         }

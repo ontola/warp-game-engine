@@ -4,6 +4,9 @@ edition.workspace = true
 version.workspace = true
 description = "The GameNight Game Room lobby on Warp"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "game-room"
 path = "src/main.rs"
@@ -14,3 +17,5 @@ glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { workspace = true }
 serde_json.workspace = true
+gdcompat.workspace = true
+game-room-sim = { path = "sim" }
