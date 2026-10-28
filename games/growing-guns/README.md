@@ -115,8 +115,13 @@ and gameplay rules are unchanged. See [asset provenance and regeneration](assets
 loads an alternate roster. Packaged builds should include `assets/characters`
 beside the executable; development builds also find the source assets.
 
-Character limitations: corpses currently tumble as whole models in their last
-pose; skin-aware dismemberment and jointed character ragdolls are not ported.
+Deaths now drive the original weighted skin from 11 connected physics bodies:
+pelvis, chest, head, upper/lower arms and upper/lower legs. Corpses collide with
+the arena, react to blasts and interpolate between physics ticks. A reused
+enemy slot removes its old corpse before animating again; round reset clears
+all ragdoll bodies. The reusable rig is `physics::ragdoll`.
+
+Character limitations: skin-aware dismemberment is not ported.
 Aim/spine and strafe animation layers are not yet equivalent to the original.
 Animated pixels reject temporal history until deformation motion vectors are
 implemented. The older benchmark results below used primitive characters and

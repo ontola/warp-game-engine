@@ -70,6 +70,14 @@ let (pos, rot) = p.pose(crate_body).unwrap();
 - `step()` advances one fixed tick, split into `substeps` if set.
   `pose`, `velocity`, `sleeping`, `body_count`, `clear_bodies`.
 - The crate's test checks that boxes fall, settle and replay identically.
+- `ragdoll::Ragdoll` builds a connected capsule tree from world-space
+  `Segment` endpoints and joint anchors. Each rig has a unique collision-group
+  bit: its limbs ignore one another but collide with the world and other rigs.
+  After each fixed step, call `update`; `delta(part, alpha)` interpolates the
+  rigid transform from that part's initial pose. Apply it to the initial world
+  skin matrix, then the current instance inverse, to deform an existing skin.
+  `remove` releases the bodies and joints. The game owns the skeleton mapping;
+  the physics API has no dependency on a particular model or animation format.
 
 Growing Guns uses it on the presentation side (`app/src/view/`): corpses
 that tumble, ragdolls and gibs. Its deterministic gameplay stays on
@@ -80,5 +88,4 @@ that tumble, ragdolls and gibs. Its deterministic gameplay stays on
 - A collision layer for simple games beyond boxes: no meshes or
   heightfields in `kern::collide`.
 - A general vehicle API; Sideways' car model lives in the game.
-- Jointed character ragdolls from skinned characters; Growing Guns'
-  corpses tumble as whole models.
+- Anatomical angular limits and skin-aware dismemberment for humanoid rigs.
