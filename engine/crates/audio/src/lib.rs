@@ -23,6 +23,35 @@ pub use sounds::Sounds;
 
 pub const SAMPLE_RATE: f32 = 48_000.0;
 
+/// Something that fills interleaved output buffers on the audio thread: a
+/// mixer, a music bed, several of them summed.
+pub trait Source: Send {
+    /// Overwrite `out` (interleaved, `channels` per frame).
+    fn render(&mut self, out: &mut [f32], channels: usize);
+}
+
+impl Source for sfx::SfxMixer {
+    fn render(&mut self, out: &mut [f32], channels: usize) { out.fill(0.0); self.render_add(out, channels); }
+}
+
+/// Several sources mixed (summed, no limiting).
+pub struct Sum(pub Vec<Box<dyn Source>>, Vec<f32>);
+
+impl Sum {
+    pub fn new(sources: Vec<Box<dyn Source>>) -> Self { Sum(sources, Vec::new()) }
+}
+
+impl Source for Sum {
+    fn render(&mut self, out: &mut [f32], channels: usize) {
+        out.fill(0.0);
+        self.1.resize(out.len(), 0.0);
+        for s in &mut self.0 {
+            s.render(&mut self.1, channels);
+            for (o, v) in out.iter_mut().zip(&self.1) { *o += v; }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
