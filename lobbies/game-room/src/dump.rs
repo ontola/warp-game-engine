@@ -67,6 +67,7 @@ pub fn billboard(xf: Mat4, camera: &render::Camera) -> Mat4 {
     Mat4::from_cols((right * scale.x).extend(0.0), (up * scale.y).extend(0.0), (back * scale.z).extend(0.0), trans.extend(1.0))
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct Tuning {
     /// Lux on a surface facing a Godot light of energy 1 at 1 m.
     pub light: f32,
@@ -86,10 +87,17 @@ pub struct Room {
     pub dir: PathBuf,
     pub dump: Dump,
     pub bin: Vec<u8>,
-    /// Scene instance of each dump instance (None: not drawn).
-    /// Instances left out of the scene (hidden in Godot at the start).
+    /// Instances hidden in Godot at the start: left out of the scene, or
+    /// with `live` kept in it, empty, so they can appear later.
     pub hidden: Vec<usize>,
+    pub live: bool,
+    /// Scene instance of each dump instance (None: not drawn), and its mesh.
     pub scene_index: Vec<Option<usize>>,
+    pub scene_mesh: Vec<Option<usize>>,
+    /// Texture placement of each material in use (albedo, emission), so a
+    /// material can be rebuilt after its description changes.
+    material_layers: HashMap<usize, ((i32, Vec4), Option<(i32, Vec4)>)>,
+    tuning: Tuning,
     /// Warp material of each dump material that is in use.
     pub material_ids: HashMap<usize, u32>,
     /// Painted screens by name (a Rust-built room's `ScreenDef`s), and by
@@ -127,7 +135,7 @@ impl Room {
         let cam = mat4(&dump.camera["transform"]);
         let pos = cam.w_axis.truncate();
         let camera = render::Camera { pos, target: pos - cam.z_axis.truncate(), fov_y: num(&dump.camera, "fov_y").to_radians(), near: num(&dump.camera, "near").max(0.05) };
-        Self { dir, dump, bin, hidden: vec![], scene_index: vec![], material_ids: HashMap::new(), screens: HashMap::new(), screen_of_texture: HashMap::new(), atlas: Atlas { layer: -1, ..Default::default() }, images, locals: vec![], spots: vec![], spot_falloff: vec![], spot_fog: vec![], local_fog: vec![], blocks: vec![], ambient: Vec3::ZERO, camera, min: Vec3::ZERO, max: Vec3::ZERO }
+        Self { dir, dump, bin, hidden: vec![], live: false, scene_index: vec![], scene_mesh: vec![], material_layers: HashMap::new(), tuning: Tuning { light: 1.0, ambient: 1.0 }, material_ids: HashMap::new(), screens: HashMap::new(), screen_of_texture: HashMap::new(), atlas: Atlas { layer: -1, ..Default::default() }, images, locals: vec![], spots: vec![], spot_falloff: vec![], spot_fog: vec![], local_fog: vec![], blocks: vec![], ambient: Vec3::ZERO, camera, min: Vec3::ZERO, max: Vec3::ZERO }
     }
 
     /// The Rust-built room (room.rs).
@@ -147,9 +155,12 @@ impl Room {
         let mut meshes: HashMap<(usize, Vec<i64>), usize> = HashMap::new();
         let fallback = scene.add_material(Material { tint: [0.8; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
         let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        self.tuning = *tuning;
         self.scene_index = vec![None; self.dump.instances.len()];
+        self.scene_mesh = vec![None; self.dump.instances.len()];
         for index in 0..self.dump.instances.len() {
-            if self.hidden.contains(&index) { continue; }
+            let hidden = self.hidden.contains(&index);
+            if hidden && !self.live { continue; }
             let inst = &self.dump.instances[index];
             let (mesh_index, inst_materials, transform, shadow_only) = (inst.mesh, inst.materials.clone(), inst.transform, inst.shadow_only);
             let surfaces: Vec<_> = self.dump.meshes[mesh_index].surfaces.iter().map(|s| (s.positions, s.normals, s.uvs, s.indices, s.material)).collect();
@@ -197,6 +208,8 @@ impl Room {
             let (scale, rot, trans) = xf.to_scale_rotation_translation();
             scene.add_instance(id, Affine3A::from_scale_rotation_translation(scale, rot, trans));
             self.scene_index[index] = Some(scene.instances.len() - 1);
+            self.scene_mesh[index] = Some(id);
+            if hidden { scene.instances.last_mut().unwrap().cluster_count = 0; continue; }
             // The players' capsule bodies: shadow casters no camera sees.
             if shadow_only { scene.instances.last_mut().unwrap().hide_in_views(0xff); continue; }
             if !blended && local_min.x < local_max.x {
@@ -370,9 +383,36 @@ impl Room {
         if let Some(&v) = cache.get(&m) { return Ok(v); }
         let tex = self.dump.materials[m]["albedo_texture"].as_i64().unwrap_or(-1);
         let etex = self.dump.materials[m]["emission_texture"].as_i64().unwrap_or(-1);
-        let (layer, mut uv_factor) = self.layer(scene, tex, layers);
+        let base = self.layer(scene, tex, layers);
         let elayer = if etex >= 0 && self.dump.materials[m]["emission_enabled"].as_bool().unwrap_or(false) { Some(self.layer(scene, etex, layers)) } else { None };
+        self.material_layers.insert(m, (base, elayer));
+        let (out, albedo, emission, uv_factor) = self.compose(m, base, elayer);
+        let id = scene.add_material(out);
         let d = &self.dump.materials[m];
+        let transparency = d["transparency"].as_i64().unwrap_or(0);
+        if transparency != 0 {
+            scene.set_material_blend(id, alpha(&d["albedo"]), out.flags & TWO_SIDED != 0);
+            scene.set_material_object_sort(id);
+        }
+        cache.insert(m, (id, albedo, emission, uv_factor));
+        Ok((id, albedo, emission, uv_factor))
+    }
+
+    /// Material `m` as it is described now (after `RoomBuild::pose` changed
+    /// an emission, say), with its scene id. None when no instance uses it.
+    pub fn material_now(&self, m: usize) -> Option<(u32, Material)> {
+        let &id = self.material_ids.get(&m)?;
+        let &(base, elayer) = self.material_layers.get(&m)?;
+        Some((id, self.compose(m, base, elayer).0))
+    }
+
+    /// The Warp material for dump material `m`, its albedo and emission
+    /// (for the bake) and the uv placement of its texture.
+    fn compose(&self, m: usize, (layer, mut uv_factor): (i32, Vec4), elayer: Option<(i32, Vec4)>) -> (Material, Vec3, Vec3, Vec4) {
+        let tex = self.dump.materials[m]["albedo_texture"].as_i64().unwrap_or(-1);
+        let etex = self.dump.materials[m]["emission_texture"].as_i64().unwrap_or(-1);
+        let d = &self.dump.materials[m];
+        let elayer = elayer.filter(|_| d["emission_enabled"].as_bool().unwrap_or(false));
         let tint = linear(&d["albedo"]);
         let mut flags = 0;
         if d["cull"].as_i64().unwrap_or(0) == 2 { flags |= TWO_SIDED; }
@@ -398,14 +438,34 @@ impl Room {
             else if layer >= 0 { out.layer = -1; }
             emission = e * self.average(etex);
         }
-        let id = scene.add_material(out);
-        let transparency = d["transparency"].as_i64().unwrap_or(0);
-        if transparency != 0 {
-            scene.set_material_blend(id, alpha(&d["albedo"]), out.flags & TWO_SIDED != 0);
-            scene.set_material_object_sort(id);
+        (out, albedo, emission, uv_factor)
+    }
+
+    /// Move scene instance of dump instance `index` to its current
+    /// transform, or empty it while hidden. Returns the scene index.
+    pub fn sync_instance(&self, scene: &mut Scene, index: usize, visible: bool) -> Option<usize> {
+        let (i, mesh) = (self.scene_index[index]?, self.scene_mesh[index]?);
+        if visible {
+            let (scale, rot, trans) = Mat4::from_cols_array(&self.dump.instances[index].transform).to_scale_rotation_translation();
+            let flags = scene.instances[i].flags;
+            scene.update_instance(i, mesh, Affine3A::from_scale_rotation_translation(scale, rot, trans));
+            scene.instances[i].flags = flags;
+        } else {
+            scene.instances[i].cluster_count = 0;
+            scene.instances[i].sphere = [0.0; 4];
         }
-        cache.insert(m, (id, albedo, emission, uv_factor));
-        Ok((id, albedo, emission, uv_factor))
+        Some(i)
+    }
+
+    /// Recompute the lights from the description (after `RoomBuild::pose`).
+    pub fn relight(&mut self) {
+        self.locals.clear();
+        self.spots.clear();
+        self.spot_falloff.clear();
+        self.spot_fog.clear();
+        self.local_fog.clear();
+        let tuning = self.tuning;
+        self.lights(&tuning);
     }
 
     fn lights(&mut self, tuning: &Tuning) {
