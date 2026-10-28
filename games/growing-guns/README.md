@@ -65,9 +65,24 @@ match: `lua g:give(1, 'explosive')`, `mods` lists modules and errors.
 `growing-guns mods-api` regenerates `mods/API.md` and `mods/types.d.luau`
 from the Rust side; `GG_MODS=DIR` points at another mods folder.
 
+The original knight, paladin and classic zombie now replace the primitive
+players, including their original textures and idle/run/jump clips. Weighted
+skinning runs once per frame on the GPU, shared across split-screen views and
+shadow maps. Weapons follow the animated right-hand socket. The physics capsule
+and gameplay rules are unchanged. See [asset provenance and regeneration](assets/characters/README.md).
+`GG_CHARACTERS=off` restores the explicit primitive fallback; a directory value
+loads an alternate roster. Packaged builds should include `assets/characters`
+beside the executable; development builds also find the source assets.
+
+Character limitations: corpses currently tumble as whole models in their last
+pose; skin-aware dismemberment and jointed character ragdolls are not ported.
+Aim/spine and strafe animation layers are not yet equivalent to the original.
+Animated pixels reject temporal history until deformation motion vectors are
+implemented. The older benchmark results below used primitive characters and
+are not measurements of the new roster.
+
 Not ported: the other cards (ricochet, shotgun, specials) and weapons,
-skinned characters (the FBX models need converting to glTF
-first), menus beyond card picks, music, GameNight. Online play is tested
+menus beyond card picks, music, GameNight. Online play is tested
 over loopback (`nettest`), not yet between two machines; clients predict
 only their look direction.
 

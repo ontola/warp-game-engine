@@ -546,6 +546,7 @@ pub struct Renderer {
     wind: crate::wind::WindRenderer,
     part_wind: Option<crate::part_wind::PartWindRenderer>,
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
+    skinning: Option<crate::skinning::SkinningRenderer>,
     debris: Option<crate::debris::DebrisRenderer>,
     crowd: Option<crate::crowd::CrowdRenderer>,
     fx: crate::fx::FxSlot,
@@ -1025,6 +1026,10 @@ impl Renderer {
         let baked_animations = scene.baked_animations.as_ref().map(|animation|
             crate::baked_animation::AnimationRenderer::new(gpu, animation, &scene.instances, &instances)
                 .expect("invalid baked animation scene"));
+        let skinning = if scene.skinning.actors.is_empty() { None } else {
+            Some(crate::skinning::SkinningRenderer::new(gpu, &scene.skinning, &scene.vertices, &scene.instances, &vertices)
+                .expect("invalid weighted skinning scene"))
+        };
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
         let crowd = scene.crowd.map(|spec| crate::crowd::CrowdRenderer::new(gpu, &spec, &instances));
         startup.mark("part_wind_animation_resources");
@@ -1441,6 +1446,7 @@ impl Renderer {
             wind,
             part_wind,
             baked_animations,
+            skinning,
             debris,
             crowd,
             fx: Default::default(),
@@ -2046,6 +2052,15 @@ impl Renderer {
         if let Some(animation) = &self.baked_animations {
             if animation.set_time(seconds)? { self.invalidate_dynamic_shadow(); }
         }
+        Ok(())
+    }
+
+    /// Upload one actor's final object-space skin matrices. Call before render;
+    /// one shared compute pass updates color and all shadow views. The palette
+    /// must remain within the actor mesh's declared animation bounds.
+    pub fn set_skinning_palette(&self, gpu: &Gpu, actor: usize, matrices: &[Mat4]) -> Result<(), String> {
+        self.skinning.as_ref().ok_or("scene has no weighted actors")?.set_palette(gpu, actor, matrices)?;
+        self.invalidate_dynamic_shadow();
         Ok(())
     }
 
@@ -2826,6 +2841,11 @@ impl Renderer {
             animation.encode(gpu, &mut enc, times);
             if times.is_some() { names.push("baked crowd animation"); }
         }
+        if let Some(skinning) = &self.skinning {
+            let times = self.query.as_ref().map(|(qs, _, _)| (qs, timestamp_pair(&mut ts)));
+            skinning.encode(&mut enc, times);
+            if times.is_some() { names.push("weighted character skinning"); }
+        }
         if let Some(crowd) = &self.crowd {
             let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
             if crowd.encode(&mut enc, times) && times.is_some() {
@@ -2871,7 +2891,7 @@ impl Renderer {
             if self.grass.is_some()||self.far_grass.is_some() {fallback|=1<<8;}
             if self.voxel_forest.is_some()||self.meadow_brick_fixture.is_some() {fallback|=1<<9;}
             if static_sun.is_some() {fallback|=1<<10;}
-            if self.part_wind.is_some()||self.baked_animations.is_some()||self.debris.is_some()||self.crowd.is_some() {fallback|=1<<11;}
+            if self.part_wind.is_some()||self.baked_animations.is_some()||self.skinning.is_some()||self.debris.is_some()||self.crowd.is_some() {fallback|=1<<11;}
             let time=self.query.as_ref().map(|(qs,_,_)|(qs,timestamp_pair(&mut ts)));
             if time.is_some(){names.push("shadow receiver demand");}
             self.receiver_demand.encode(gpu,&mut enc,(render_sequence as u32).wrapping_add(1).max(1),&cameras,&maps,&extra,fallback,time)?;

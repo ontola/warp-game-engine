@@ -213,6 +213,8 @@ dependencies = [
  "gltf",
  "image",
  "render",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1690,6 +1692,7 @@ name = "growing-guns-app"
 version = "0.1.0"
 dependencies = [
  "app",
+ "assets",
  "audio",
  "glam 0.31.1",
  "growing-guns",

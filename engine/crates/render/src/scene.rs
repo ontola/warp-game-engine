@@ -113,6 +113,9 @@ pub const LIVE_GRASS: u32 = 8;
 pub const WIND_GRASS: u32 = 16;
 /// A rigid vegetation part driven by the shared hierarchical GPU pose pass.
 pub const PART_WIND: u32 = 32;
+/// Weighted vertices are updated by the shared skinning pass. Dynamic shadow
+/// caster; temporal history is rejected until deformation vectors are supplied.
+pub const SKINNED: u32 = 64;
 
 /// Bits 8..15: hidden from camera view 0..7 (still casts shadows and shows in
 /// other views). Set with [`GpuInstance::hide_in_views`].
@@ -361,6 +364,8 @@ pub struct Scene {
     pub part_attachments: Vec<crate::part_wind::PartAttachment>,
     /// Shared baked rigid-part clips. Optional, with bounded actor/part pools.
     pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
+    /// Independent weighted character meshes, with caller-sampled palettes.
+    pub skinning: crate::skinning::Skinning,
     /// A GPU-simulated debris pool (`debris::Debris::reserve`).
     pub debris: Option<crate::debris::DebrisSpec>,
     /// A GPU-posed crowd (`crowd::Crowd::reserve`).
