@@ -38,9 +38,10 @@ Other inputs, copied as they are:
   golden images and `engine/docs/images/volumetric-night-arena.jpg`.
   To be replaced by a real four-view capture.
 - `static/logo.svg`: the logo. A big white W in front of a coarse grid
-  whose horizontal lines bend gently around a warp bubble: one soft rise
-  behind, one soft dip ahead. The yellow grid line runs through the middle
-  of the W. Deep-space blue.
+  whose horizontal lines bend around a warp bubble: a rise behind and a
+  dip ahead, each peak exactly on a vertical grid line. The yellow grid
+  line runs through the middle of the W. Grid lines are one solid grey
+  (#5e6772), not translucent white, so crossings do not add up. Deep-space blue.
   `static/favicon.svg` is the same file (also used next to the wordmark);
   the grid is coarse enough to read at 16 pixels.
 - `assets/sideways-stage.jpg`: a Sideways frame rendered headless on a CPU
