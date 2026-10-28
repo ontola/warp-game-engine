@@ -5,7 +5,7 @@
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
 //! same meshes, materials and textures while the look is matched.
-mod dump;
+use game_room::dump;
 
 use dump::{linear, mat4, Room, Tuning};
 use glam::Vec3;
@@ -15,8 +15,6 @@ use render::{Gpu, Lighting, Renderer, Scene};
 use std::f32::consts::PI;
 use std::path::PathBuf;
 
-static OUTFIT_600: &[u8] = include_bytes!("../assets/fonts/outfit-600.ttf");
-static OUTFIT_800: &[u8] = include_bytes!("../assets/fonts/outfit-800.ttf");
 
 fn main() { if let Err(e) = run() { eprintln!("game-room: {e}"); std::process::exit(1); } }
 
@@ -25,16 +23,28 @@ fn run() -> Result<(), String> {
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
     let flag = |k: &str| args.iter().any(|a| a == k);
     let numf = |k: &str, d: f32| arg(k).and_then(|v| v.parse().ok()).unwrap_or(d);
+    if args.get(1).map(String::as_str) == Some("listing") {
+        // The comparable listing of a Godot export, or of the Rust-built room.
+        let text = match arg("--dump") {
+            Some(dir) => { let r = Room::load(std::path::Path::new(&dir))?; game_room::fixture::listing(&r.dump, &r.bin, &[]) }
+            None => { let mut b = game_room::room::build(); b.pose(numf("--time", 0.0), 0.0, &Default::default()); game_room::fixture::listing(&b.dump, &b.bin, &b.hidden) }
+        };
+        print!("{text}");
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("tone") { return tone(&arg("--out").ok_or("--out FILE")?, numf("--ev", godot_ev(1.05))); }
-    if args.get(1).map(String::as_str) != Some("shot") { return Err("usage: game-room shot --dump DIR --out room.png [--size WxH]".into()); }
-    let dir = PathBuf::from(arg("--dump").ok_or("--dump DIR required")?);
+    if args.get(1).map(String::as_str) != Some("shot") { return Err("usage: game-room shot [--dump DIR] --out room.png [--size WxH]".into()); }
     let out = arg("--out").ok_or("--out FILE required")?;
     let (w, h) = arg("--size").and_then(|s| s.split_once('x').map(|(a, b)| (a.parse().unwrap_or(1280), b.parse().unwrap_or(720)))).unwrap_or((1280u32, 720u32));
     let tuning = Tuning { light: numf("--light", PI), ambient: numf("--ambient", PI) };
     let gi = numf("--gi", 1.6);
     let started = std::time::Instant::now();
 
-    let mut room = Room::load(&dir)?;
+    // A Godot export with --dump, otherwise the room built in Rust.
+    let mut room = match arg("--dump") {
+        Some(dir) => Room::load(&PathBuf::from(dir))?,
+        None => { let mut b = game_room::room::build(); b.pose(numf("--time", 0.0), 0.0, &Default::default()); Room::from_build(b) }
+    };
     let mut scene = Scene::default();
     let bg = linear(&room.dump.environment["background_color"]);
     scene.sky = Some((4, 2, vec![[bg.x, bg.y, bg.z, 1.0]; 8]));
@@ -137,8 +147,8 @@ fn run() -> Result<(), String> {
 /// fog, depth and anti-aliasing treat them like Godot does. All tags share
 /// one screen layer; returns it and the draw list that fills it.
 fn add_labels(scene: &mut Scene, room: &Room) -> (i32, HudDrawList) {
-    let semibold = render::hud::register_font(OUTFIT_600);
-    let bold = render::hud::register_font(OUTFIT_800);
+    let semibold = game_room::fonts::faces().regular;
+    let bold = game_room::fonts::faces().bold;
     let side = render::screen::SIZE;
     let layer = scene.add_screen_texture("labels");
     let mut hud = HudDrawList::new([side, side]);
