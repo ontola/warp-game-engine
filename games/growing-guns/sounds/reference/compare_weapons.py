@@ -64,7 +64,7 @@ CASES = [
     ("bullet_zip sf .2 sc 2", "bullet_zip", {"speed_factor": 0.2, "scale_factor": 2}, "bullet_zip", {"speed_factor": 0.2, "scale_factor": 2}),
     ("bullet_zip sf 4", "bullet_zip", {"speed_factor": 4, "scale_factor": 1}, "bullet_zip", {"speed_factor": 4, "scale_factor": 1}),
     ("bullet_zip sf 5 sc 4", "bullet_zip", {"speed_factor": 5, "scale_factor": 4}, "bullet_zip", {"speed_factor": 5, "scale_factor": 4}),
-    ("impact dmg .5", "impact", {"dmg_ratio": 0.5}, "impact", {"dmg_ratio": 0.5}),
+    ("impact dmg 2", "impact", {"dmg_ratio": 2}, "impact", {"dmg_ratio": 2}),
     ("impact dmg 1", "impact", {"dmg_ratio": 1}, "impact", {"dmg_ratio": 1}),
     ("impact dmg 3", "impact", {"dmg_ratio": 3}, "impact", {"dmg_ratio": 3}),
     ("impact dmg 6", "impact", {"dmg_ratio": 6}, "impact", {"dmg_ratio": 6}),
@@ -81,6 +81,11 @@ CASES = [
 ]
 
 WIN = 0.010
+
+# Short sounds are cheap, and their seed-averaged envelopes are dominated by the
+# slowest-decaying draws, so they get more seeds.
+SEED_MULT = {"shot": 4, "next_round": 4, "empty_chamber": 4, "melee": 4, "casing_drop": 4,
+             "bullet_zip": 4, "impact": 4, "grenade_launch": 2}
 
 
 def q16(x):
@@ -196,7 +201,7 @@ def main():
         for label, patch, pparams, ref_name, rkw in CASES:
             if a.only and a.only not in (patch, label):
                 continue
-            seeds = range(1, a.seeds + 1)
+            seeds = range(1, a.seeds * SEED_MULT.get(patch, 1) + 1)
             refs = [(q16(weapons_ref.SOUNDS[ref_name](weapons_ref.Rng(1000 + s), **rkw)), weapons_ref.SR) for s in seeds]
             pats = [render_patch(a.warp_audio, patch, pparams, s, tmp) for s in seeds]
             refs2 = [(q16(weapons_ref.SOUNDS[ref_name](weapons_ref.Rng(5000 + s), **rkw)), weapons_ref.SR) for s in seeds]
@@ -205,16 +210,17 @@ def main():
             fl = compare(r, r2)
             fl["dur"] = abs(r2["dur"] - r["dur"])
             fl["peak"] = abs(r2["peak"] - r["peak"])
+            fl["seeds"] = len(seeds)
             rows.append((label, r, p, c, fl))
             print(f"{label:34s} dur {r['dur']*1000:6.1f} / {p['dur']*1000:6.1f} [{fl['dur']*1000:4.1f}] ms  peak {r['peak']:5.1f} / {p['peak']:5.1f} dB  "
                   f"env |d| {c['env_mean']:4.1f} bias {c['env_bias']:+4.1f} (max {c['env_max']:4.1f}, spread {c['spread']:4.1f}) dB  "
                   f"centroid {r['cent']:5.0f} / {p['cent']:5.0f} Hz, over time {c['cent_t']:4.1f}%  | floor env {fl['env_mean']:4.1f} cent {fl['cent_t']:4.1f}%", flush=True)
     if a.markdown:
         with open(a.markdown, "w") as f:
-            f.write("| case | duration ref / patch (ms) [floor] | peak ref / patch (dBFS) [floor] | RMS env mean abs / bias / max diff (dB) [floor mean] | centroid ref / patch (Hz) | centroid over time diff [floor] |\n")
-            f.write("|---|---|---|---|---|---|\n")
+            f.write("| case | seeds | duration ref / patch (ms) [floor] | peak ref / patch (dBFS) [floor] | RMS env mean abs / bias / max diff (dB) [floor mean] | centroid ref / patch (Hz) | centroid over time diff [floor] |\n")
+            f.write("|---|---|---|---|---|---|---|\n")
             for label, r, p, c, fl in rows:
-                f.write(f"| {label} | {r['dur']*1000:.1f} / {p['dur']*1000:.1f} [{fl['dur']*1000:.1f}] | {r['peak']:.1f} / {p['peak']:.1f} [{fl['peak']:.1f}] | "
+                f.write(f"| {label} | {fl['seeds']} | {r['dur']*1000:.1f} / {p['dur']*1000:.1f} [{fl['dur']*1000:.1f}] | {r['peak']:.1f} / {p['peak']:.1f} [{fl['peak']:.1f}] | "
                         f"{c['env_mean']:.2f} / {c['env_bias']:+.2f} / {c['env_max']:.1f} [{fl['env_mean']:.2f}] | {r['cent']:.0f} / {p['cent']:.0f} | {c['cent_t']:.1f}% [{fl['cent_t']:.1f}%] |\n")
 
 
