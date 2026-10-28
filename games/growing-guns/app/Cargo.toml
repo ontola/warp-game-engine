@@ -18,6 +18,7 @@ audio = { path = "../../../engine/crates/audio", features = ["luau"] }
 live = { path = "../../../engine/crates/live" }
 physics = { path = "../../../engine/crates/physics" }
 glam = "0.31"
+fastnoise-lite.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 wgpu = "30"
 net = { path = "../../../engine/crates/net" }

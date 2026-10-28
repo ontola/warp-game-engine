@@ -5,7 +5,7 @@ use super::{cube, glow, material, sphere};
 use glam::{Affine3A, Quat, Vec3};
 use glam::Vec2;
 use growing_guns::{PickupKind, ProjectileKind, StrikeKind, World, AIR_STRIKE_TRAVEL, PICKUPS};
-use render::scene::{Material, NO_SHADOW};
+use render::scene::NO_SHADOW;
 use render::slots::Slots;
 use render::Scene;
 
@@ -38,7 +38,7 @@ impl Things {
         let red = glow(scene, [1.0, 0.15, 0.05], 30000.0);
         let teal = glow(scene, [0.0, 0.95, 0.75], 20000.0);
         let pick = |scene: &mut Scene, c: [f32; 3]| { let m = glow(scene, c, 9000.0); cube(scene, m) };
-        let lava_m = scene.add_material(Material { tint: [1.0; 3], layer: -1, roughness: 1.0, flags: render::scene::LAVA, scale: 12000.0, metal: 0.0 });
+        let lava_m = super::arena::lava_material(scene);
         let first = Slots::reserve(scene, SLOTS).first;
         for k in 0..SLOTS { scene.instances[first + k].cluster_count = 0; }
         Things {
@@ -116,17 +116,23 @@ impl Things {
             let r = growing_guns::coop::REVIVE_RADIUS * (1.0 + 0.05 * (clock * 4.0).sin());
             put(scene, self.marker, at(d.corpse - Vec3::Y * (growing_guns::HALF_HEIGHT - 0.06), Vec3::new(r, 1.0, r)), false);
         }
+        // The leak as Godot builds it (`arena_procedural.gd`): four 4.5 cm
+        // floor fronts centred on the surface, creeping in from the edges
+        // (8 cm wide as soon as they show), and 45 cm sheets down the inside
+        // of the walls, growing from the top.
         let l = &world.lava;
         if l.active {
-            let (half, inset, y) = (l.half, l.inset(), l.surface());
-            if inset > 0.01 {
-                for (c, s) in lava_strips(half, inset) { put(scene, self.lava, at(Vec3::new(c.x, y - 0.1, c.y), Vec3::new(s.x, 0.2, s.y)), false); }
+            let (half, y) = (l.half, l.surface());
+            let shown = l.floor_t() > 0.0 || !l.has_walls;
+            if shown {
+                for (c, s) in lava_fronts(half, l.inset().max(0.08).min(half)) {
+                    if s.x > 0.01 && s.y > 0.01 { put(scene, self.lava, at(Vec3::new(c.x, y, c.y), Vec3::new(s.x, LAVA_FRONT_THICKNESS, s.y)), false); }
+                }
             }
-            if l.rise > 0.0 { put(scene, self.lava, at(Vec3::new(0.0, y - 0.1, 0.0), Vec3::new(half * 2.0, 0.2, half * 2.0)), false); }
             if l.has_walls {
-                let h = growing_guns::arena::WALL_HEIGHT * l.wall_t();
                 let top = growing_guns::arena::WALL_HEIGHT;
-                for (c, s) in wall_sheets(half) { put(scene, self.lava, at(Vec3::new(c.x, top - h * 0.5, c.y), Vec3::new(s.x, h.max(0.01), s.y)), false); }
+                let h = 0.05 + (top - 0.05) * l.wall_t();
+                for (c, s) in wall_sheets(half) { put(scene, self.lava, at(Vec3::new(c.x, top - h * 0.5, c.y), Vec3::new(s.x, h, s.y)), false); }
             }
         }
         for k in n..SLOTS {
@@ -139,20 +145,26 @@ impl Things {
     }
 }
 
-/// The four floor bands the leak has covered: centre and size in XZ.
-fn lava_strips(half: f32, inset: f32) -> [(Vec2, Vec2); 4] {
+const LAVA_FRONT_THICKNESS: f32 = 0.045;
+
+/// The four floor fronts the leak has covered, `inset` in from each edge:
+/// centre and size in XZ (north and south span the side, east and west the
+/// rest, as Godot's `_set_front_rect`).
+fn lava_fronts(half: f32, inset: f32) -> [(Vec2, Vec2); 4] {
+    let side = half * 2.0;
+    let centre = (side - inset * 2.0).max(0.0);
     let mid = half - inset * 0.5;
     [
-        (Vec2::new(mid, 0.0), Vec2::new(inset, half * 2.0)), (Vec2::new(-mid, 0.0), Vec2::new(inset, half * 2.0)),
-        (Vec2::new(0.0, mid), Vec2::new(half * 2.0, inset)), (Vec2::new(0.0, -mid), Vec2::new(half * 2.0, inset)),
+        (Vec2::new(0.0, -mid), Vec2::new(side, inset)), (Vec2::new(0.0, mid), Vec2::new(side, inset)),
+        (Vec2::new(-mid, 0.0), Vec2::new(inset, centre)), (Vec2::new(mid, 0.0), Vec2::new(inset, centre)),
     ]
 }
 
-/// Lava running down the inside of the four walls.
+/// Lava running down the inside of the four walls (Godot `LavaWallFlow`).
 fn wall_sheets(half: f32) -> [(Vec2, Vec2); 4] {
-    let d = half - 0.55;
+    let d = half - 0.62;
     [
-        (Vec2::new(d, 0.0), Vec2::new(0.1, half * 2.0)), (Vec2::new(-d, 0.0), Vec2::new(0.1, half * 2.0)),
-        (Vec2::new(0.0, d), Vec2::new(half * 2.0, 0.1)), (Vec2::new(0.0, -d), Vec2::new(half * 2.0, 0.1)),
+        (Vec2::new(d, 0.0), Vec2::new(0.45, half * 2.0)), (Vec2::new(-d, 0.0), Vec2::new(0.45, half * 2.0)),
+        (Vec2::new(0.0, d), Vec2::new(half * 2.0, 0.45)), (Vec2::new(0.0, -d), Vec2::new(half * 2.0, 0.45)),
     ]
 }

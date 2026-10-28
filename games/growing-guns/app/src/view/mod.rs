@@ -11,6 +11,7 @@ mod effects;
 mod gore;
 mod guns;
 mod ion;
+mod lava;
 mod players;
 mod things;
 
@@ -80,6 +81,8 @@ impl Visuals {
     pub fn build(world: &World) -> Self {
         let mut scene = Scene::default();
         scene.sky = Some(sky());
+        // Godot's lava noise texture, for the lava shader.
+        scene.noise = Some(render::noise_field::NoiseField { size: lava::NOISE_SIZE, values: lava::noise_texture() });
         // Static range first, then the dynamic one; the order is the scene's
         // instance order.
         let arena = ArenaView::reserve(&mut scene);
@@ -215,6 +218,7 @@ impl Visuals {
         self.players.pose(&mut self.scene, world, prev, alpha);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
         self.things.pose(&mut self.scene, world, self.clock);
+        self.arena.lava.pose(world);
     }
 
     /// The movement-tilt setting (the first-person gun's strafe lean).
@@ -252,6 +256,7 @@ impl Visuals {
     pub fn local_lights(&self) -> Vec<LocalLight> {
         let mut l = self.ion.lights(self.clock);
         l.extend(self.fx.blasts.lights(self.clock));
+        l.extend(self.arena.lava.lights().iter().copied());
         l.truncate(MAX_LIGHTS);
         let flood = self.flood;
         l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).map(|f| LocalLight { intensity_cd: f.intensity_cd * flood, ..*f }));
