@@ -1,5 +1,5 @@
-//! The Luau game API: the `world`, `camera`, `sound`, `hud`, `sky`,
-//! `light`, `random` and `game` tables every module sees. Documented for
+//! The Luau game API: the `world`, `players`, `camera`, `sound`, `hud`,
+//! `sky`, `light`, `random` and `game` tables every module sees. Documented for
 //! game authors in `starter/types.d.luau` and engine/docs/warp-cli.md.
 //!
 //! The functions share one [`Core`] (the world, sounds, cameras, HUD and
@@ -31,6 +31,43 @@ impl Default for Cam {
 pub enum HudItem {
     Text { text: String, pos: [f32; 2], size: f32, color: [f32; 4], align: TextAlign, width: f32 },
     Box { rect: [f32; 4], color: [f32; 4] },
+}
+
+/// Colours for players without one (GameNight gives its own).
+pub const PLAYER_COLORS: [[f32; 3]; 4] = [[0.91, 0.33, 0.25], [0.25, 0.56, 0.91], [0.95, 0.76, 0.19], [0.31, 0.75, 0.35]];
+
+/// One player of the game: a person on a controller or a bot the scripts
+/// drive. Ids are stable for the session and never reused, so a player
+/// who leaves does not renumber the others.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Player {
+    pub id: u32,
+    pub name: String,
+    /// sRGB 0..1.
+    pub color: [f32; 3],
+    pub bot: bool,
+    /// The GameNight seat, when a party host seated this player.
+    pub seat: Option<usize>,
+    /// Couch position from the lobby (0 is leftmost), when known.
+    pub couch: Option<i64>,
+    pub cam: Cam,
+    /// The split-screen view this player looks through (people only).
+    pub view: Option<usize>,
+}
+
+impl Player {
+    pub fn new(id: u32, name: String, color: Option<[f32; 3]>, bot: bool) -> Self {
+        Player { id, name, color: color.unwrap_or(PLAYER_COLORS[(id as usize - 1) % 4]), bot, seat: None, couch: None, cam: Cam::default(), view: None }
+    }
+}
+
+/// What the scripts asked of the party host this tick.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Requests {
+    pub finish: bool,
+    pub logs: Vec<String>,
+    /// (player id, weak, strong, seconds)
+    pub rumble: Vec<(u32, f64, f64, f64)>,
 }
 
 /// What `light.set` overrides on top of the sky's light.
@@ -67,7 +104,8 @@ impl Rng {
 pub struct Core {
     pub world: World,
     pub sounds: SoundOut,
-    pub cams: Vec<Cam>,
+    /// Every player, people first in view order, then bots.
+    pub roster: Vec<Player>,
     /// The HUD of the frame being drawn (cleared before `draw`).
     pub hud: Vec<HudItem>,
     /// Output size and each player's view rectangle (x, y, w, h), in pixels.
@@ -78,8 +116,8 @@ pub struct Core {
     pub light: LightOverride,
     pub tick: u64,
     pub tick_rate: f32,
-    pub players: usize,
     pub title: String,
+    pub requests: Requests,
     pub phase: Phase,
 }
 
@@ -236,10 +274,26 @@ fn sim(c: &Core, what: &str) -> mlua::Result<()> {
     Ok(())
 }
 
+/// A player id (default: the first player) as an index into the roster.
 fn player(c: &Core, p: Option<i64>) -> mlua::Result<usize> {
-    let p = p.unwrap_or(1);
-    if p < 1 || p as usize > c.players { return Err(rt(format!("player {p}: players are 1 to {}", c.players))); }
-    Ok(p as usize - 1)
+    let Some(p) = p else { return if c.roster.is_empty() { Err(rt("there are no players")) } else { Ok(0) } };
+    c.roster.iter().position(|x| x.id as i64 == p).ok_or_else(|| {
+        let ids: Vec<String> = c.roster.iter().map(|x| x.id.to_string()).collect();
+        rt(format!("player {p}: no such player (the players are {}; use players.list())", ids.join(", ")))
+    })
+}
+
+/// A player as Luau sees it.
+pub fn player_table(lua: &Lua, p: &Player) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    t.raw_set("id", p.id)?;
+    t.raw_set("name", p.name.as_str())?;
+    t.raw_set("color", Value::Vector(Vector::new(p.color[0], p.color[1], p.color[2])))?;
+    t.raw_set("bot", p.bot)?;
+    t.raw_set("human", !p.bot)?;
+    if let Some(s) = p.seat { t.raw_set("seat", s)?; }
+    if let Some(c) = p.couch { t.raw_set("couch", c)?; }
+    Ok(t)
 }
 
 /// Add the API tables to a module base (`Host::new`'s `api`).
@@ -328,7 +382,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("set", f!(core, move |_, (p, opts): (i64, Table)| {
             let mut c = lock(&core);
             let i = player(&c, Some(p))?;
-            let mut cam = c.cams[i];
+            let mut cam = c.roster[i].cam;
             for (k, v) in options(&opts, &["pos", "target", "fov"], "camera.set")? {
                 match k.as_str() {
                     "pos" => cam.pos = vec3(&v, "camera pos")?,
@@ -337,12 +391,12 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
                     _ => unreachable!(),
                 }
             }
-            c.cams[i] = cam;
+            c.roster[i].cam = cam;
             Ok(())
         })),
         ("get", f!(core, move |lua, p: Option<i64>| {
             let c = lock(&core);
-            let cam = c.cams[player(&c, p)?];
+            let cam = c.roster[player(&c, p)?].cam;
             let t = lua.create_table()?;
             t.raw_set("pos", vector(cam.pos))?;
             t.raw_set("target", vector(cam.target))?;
@@ -404,7 +458,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("view", f!(core, move |_, p: Option<i64>| {
             let c = lock(&core);
             let i = player(&c, p)?;
-            let v = c.views.get(i).copied().unwrap_or([0.0, 0.0, c.screen[0] as f32, c.screen[1] as f32]);
+            let v = c.roster[i].view.and_then(|v| c.views.get(v)).copied().unwrap_or([0.0, 0.0, c.screen[0] as f32, c.screen[1] as f32]);
             Ok((v[0], v[1], v[2], v[3]))
         })),
     ])?;
@@ -456,8 +510,39 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
         ("tick", f!(core, move |_, ()| Ok(lock(&core).tick))),
         ("time", f!(core, move |_, ()| { let c = lock(&core); Ok(c.tick as f64 / c.tick_rate as f64) })),
         ("dt", f!(core, move |_, ()| Ok(1.0 / lock(&core).tick_rate))),
-        ("players", f!(core, move |_, ()| Ok(lock(&core).players))),
+        ("players", f!(core, move |_, ()| Ok(lock(&core).roster.len()))),
         ("title", f!(core, move |_, ()| Ok(lock(&core).title.clone()))),
+        ("finish", f!(core, move |_, ()| { let mut c = lock(&core); sim(&c, "game.finish")?; c.requests.finish = true; Ok(()) })),
+        ("log", f!(core, move |_, text: Value| {
+            let text = match &text { Value::String(s) => s.to_string_lossy(), other => other.to_string()? };
+            let mut c = lock(&core);
+            sim(&c, "game.log")?;
+            if c.requests.logs.len() < 8 { c.requests.logs.push(text.chars().take(120).collect()); }
+            Ok(())
+        })),
+    ])?;
+
+    table("players", vec![
+        ("list", f!(core, move |lua, ()| {
+            let c = lock(&core);
+            let all = lua.create_table()?;
+            for (i, p) in c.roster.iter().enumerate() { all.raw_set(i + 1, player_table(lua, p)?)?; }
+            Ok(all)
+        })),
+        ("get", f!(core, move |lua, id: i64| {
+            let c = lock(&core);
+            match c.roster.iter().find(|p| p.id as i64 == id) { Some(p) => Ok(Value::Table(player_table(lua, p)?)), None => Ok(Value::Nil) }
+        })),
+        ("count", f!(core, move |_, ()| Ok(lock(&core).roster.len()))),
+        ("rumble", f!(core, move |_, (id, strength, seconds): (i64, f64, Option<f64>)| {
+            let mut c = lock(&core);
+            sim(&c, "players.rumble")?;
+            let i = player(&c, Some(id))?;
+            let id = c.roster[i].id;
+            let s = strength.clamp(0.0, 1.0);
+            if c.requests.rumble.len() < 16 { c.requests.rumble.push((id, s, s, seconds.unwrap_or(0.2).clamp(0.0, 5.0))); }
+            Ok(())
+        })),
     ])?;
     Ok(())
 }

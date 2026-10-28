@@ -8,10 +8,19 @@ use std::path::Path;
 pub struct GameToml {
     /// Window title and the name in `state`.
     pub title: String,
+    /// The GameNight game id (lowercase letters, digits and dashes). Default:
+    /// the folder name. A party host's GAMENIGHT_GAME_ID wins.
+    pub id: String,
     /// Simulation ticks per second; `tick(dt, input)` gets `dt = 1 / tick_rate`.
     pub tick_rate: f32,
-    /// Local players (split screen), 1 to 4. `--players` overrides it.
+    /// People playing without a party host (split screen), 1 to 4.
+    /// `--players` overrides it. Under GameNight the host's seats decide.
     pub players: usize,
+    /// Bots without a party host. `--bots` overrides it.
+    pub bots: usize,
+    /// Bots fill up to this many players, with or without a party host
+    /// (a versus game that needs two, say). 1 to 8.
+    pub min_players: usize,
     /// Seed of the `random` generator. `--seed` overrides it.
     pub seed: u64,
     /// Entities alive at once (render slots reserved up front).
@@ -28,7 +37,7 @@ pub struct GameToml {
 
 impl Default for GameToml {
     fn default() -> Self {
-        GameToml { title: "Warp game".into(), tick_rate: 60.0, players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64 }
+        GameToml { title: "Warp game".into(), id: String::new(), tick_rate: 60.0, players: 1, bots: 0, min_players: 1, seed: 1, max_entities: 1024, size: [1280, 720], sky: "gradient".into(), steps: 200_000, memory_mb: 64 }
     }
 }
 
@@ -54,6 +63,9 @@ impl GameToml {
     fn check(&self) -> Result<(), String> {
         if !(1.0..=1000.0).contains(&self.tick_rate) { return Err(format!("game.toml: tick_rate {} (1 to 1000)", self.tick_rate)); }
         if !(1..=4).contains(&self.players) { return Err(format!("game.toml: players {} (1 to 4)", self.players)); }
+        if self.bots > 7 { return Err(format!("game.toml: bots {} (0 to 7)", self.bots)); }
+        if !(1..=8).contains(&self.min_players) { return Err(format!("game.toml: min_players {} (1 to 8)", self.min_players)); }
+        if !self.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') { return Err(format!("game.toml: id {:?}: lowercase letters, digits and dashes", self.id)); }
         if !(1..=65536).contains(&self.max_entities) { return Err(format!("game.toml: max_entities {} (1 to 65536)", self.max_entities)); }
         if self.size[0] < 64 || self.size[1] < 64 { return Err("game.toml: size is at least [64, 64]".into()); }
         crate::sky::SkyChoice::parse(&self.sky).map_err(|e| format!("game.toml: {e}"))?;

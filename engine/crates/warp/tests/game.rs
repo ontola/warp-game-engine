@@ -50,14 +50,14 @@ fn warp_new_writes_a_game_that_plays() {
     ticks(&mut g, 30, Controls::default());
     let s = state(&g);
     assert_eq!(s["errors"], json!([]), "{s}");
-    assert_eq!((s["state"]["score"].clone(), s["state"]["grounded"].clone()), (json!(0), json!(true)));
+    assert_eq!((s["state"]["runners"][0]["score"].clone(), s["state"]["runners"][0]["grounded"].clone()), (json!(0), json!(true)));
     assert_eq!(s["tags"], json!({ "crate": 3, "floor": 1, "orb": 6, "player": 1 }));
     // Hold forward and jump: the player moves and leaves the ground.
     ticks(&mut g, 20, Controls { mv: [0.0, 1.0], ..Default::default() });
     g.tick(&[Controls { pressed: Buttons(Buttons::SOUTH), held: Buttons(Buttons::SOUTH), ..Default::default() }]);
     ticks(&mut g, 5, Controls::default());
     let s = state(&g);
-    assert!(s["state"]["vel"][1].as_f64().unwrap() > 3.0, "jumping: {s}");
+    assert!(s["state"]["runners"][0]["vel"][1].as_f64().unwrap() > 3.0, "jumping: {s}");
     assert_eq!(s["sounds"]["recent"].as_array().unwrap().last().unwrap()["sound"], "jump");
 }
 
@@ -207,4 +207,172 @@ fn sound_patches_reload_and_play() {
     write(&dir.join("sounds/beep.luau"), "length(0.2)\nreturn saw(param('freq', 220)) * decay(0.2, 2)");
     assert!(g.reload().iter().any(|l| l.contains("beep.luau: reloaded")));
     assert_eq!(state(&g)["errors"], json!([]));
+}
+
+#[test]
+fn bots_play_split_screen_and_replay_exactly() {
+    let run = || {
+        let mut g = LuaGame::load(&repo().join("games/hello-warp"), &Overrides { players: Some(2), bots: Some(2), ..Default::default() }, None).unwrap();
+        g.echo = false;
+        assert_eq!(g.local_players(), 2, "two people, two views; bots need no controls");
+        for _ in 0..900 { g.tick(&[Controls::default(), Controls::default()]); }
+        state(&g)
+    };
+    let s = run();
+    assert_eq!(s["errors"], json!([]), "{s}");
+    let players = s["players"].as_array().unwrap();
+    assert_eq!(players.iter().map(|p| (p["id"].as_u64().unwrap(), p["bot"].as_bool().unwrap())).collect::<Vec<_>>(), vec![(1, false), (2, false), (3, true), (4, true)]);
+    assert_eq!(players.iter().map(|p| p["view"].clone()).collect::<Vec<_>>(), vec![json!(0), json!(1), Value::Null, Value::Null]);
+    assert_eq!(s["cameras"].as_array().unwrap().len(), 2);
+    let runners = s["state"]["runners"].as_array().unwrap();
+    assert_eq!(runners.len(), 4);
+    assert!(runners[2..].iter().any(|r| r["score"].as_u64().unwrap() > 0), "bots collect orbs: {runners:?}");
+    assert_eq!(run()["state"], s["state"], "the same seed replays exactly, bots included");
+}
+
+#[test]
+fn min_players_fills_with_bots() {
+    let dir = folder("min");
+    std::fs::write(dir.join("game.toml"), "min_players = 3\nid = \"duel\"").unwrap();
+    std::fs::write(dir.join("main.luau"), "return { init = function() state.n = players.count(); state.names = {}; for _, p in players.list() do table.insert(state.names, p.name) end; state.bad = tostring(select(2, pcall(camera.set, 9, {}))) end }").unwrap();
+    let g = game(&dir);
+    let s = state(&g);
+    assert_eq!(s["state"]["names"], json!(["Player 1", "Bot 1", "Bot 2"]), "{s}");
+    assert!(s["state"]["bad"].as_str().unwrap().contains("player 9: no such player"), "{s}");
+    assert_eq!(g.game_id(), "duel");
+}
+
+#[test]
+fn the_start_menu_freezes_the_game_and_starts_a_new_round() {
+    let mut g = game(&repo().join("games/hello-warp"));
+    ticks(&mut g, 10, Controls::default());
+    let start = Controls { pressed: Buttons(Buttons::START), held: Buttons(Buttons::START), ..Default::default() };
+    g.tick(&[start]);
+    let s = state(&g);
+    assert_eq!(s["menu"], json!({ "items": ["Resume", "New round", "Quit"], "selected": 0 }), "{s}");
+    ticks(&mut g, 30, Controls::default());
+    assert_eq!(state(&g)["tick"], json!(10), "the game is frozen while the menu is open");
+    // Down to New round, then confirm: the game starts over.
+    g.tick(&[Controls { pressed: Buttons(Buttons::DOWN), ..Default::default() }]);
+    assert_eq!(state(&g)["menu"]["selected"], json!(1));
+    g.tick(&[Controls { pressed: Buttons(Buttons::SOUTH), ..Default::default() }]);
+    let s = state(&g);
+    assert_eq!((s["menu"].clone(), s["tick"].clone()), (Value::Null, json!(0)), "{s}");
+    // Scripts and agents use the console.
+    assert_eq!(g.command_line("menu").unwrap(), "menu open");
+    assert_eq!(g.command_line("menu resume").unwrap(), "Resume");
+    assert!(!g.menu_open());
+}
+
+/// A fake party host on loopback: one couch seat and one AI seat; the game
+/// starts over with them, reports ready, runs on `start`, follows the
+/// seat's controller, renames live, takes a new seat mid-game and reports
+/// the room log and the end of the match.
+#[test]
+fn a_party_host_seats_the_players() {
+    use std::net::TcpListener;
+    use tungstenite::Message;
+    let dir = folder("party");
+    std::fs::write(dir.join("main.luau"), r#"
+local function init()
+    state.runs = (state.runs or 0) + 1
+    state.ticks = 0
+    state.names = {}
+    state.joined = {}
+    for _, p in players.list() do table.insert(state.names, p.name) end
+end
+local function tick(dt, input)
+    state.ticks += 1
+    state.forward = input[1].move_y
+    if state.ticks == 5 then game.log("hello room"); game.finish() end
+end
+local function players_changed()
+    state.names = {}
+    for _, p in players.list() do table.insert(state.names, p.name) end
+end
+local function player_joined(p) table.insert(state.joined, p.name) end
+return { init = init, tick = tick, players_changed = players_changed, player_joined = player_joined }
+"#).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (tx, got) = std::sync::mpsc::channel::<String>();
+    let (go, step) = std::sync::mpsc::channel::<&str>();
+    let host = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(20))).unwrap();
+        let mut ws = tungstenite::accept(stream).unwrap();
+        let send = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, v: Value| ws.send(Message::Text(v.to_string().into())).unwrap();
+        let seats = json!([{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}},{"index":1,"occupant":{"kind":"ai"}}]);
+        let mut sent_welcome = false;
+        loop {
+            match ws.read() {
+                Ok(Message::Text(t)) => {
+                    let v: Value = serde_json::from_str(t.as_str()).unwrap();
+                    let kind = v["type"].as_str().unwrap_or_default().to_string();
+                    if kind == "hello" && !sent_welcome {
+                        sent_welcome = true;
+                        send(&mut ws, json!({"type":"welcome","protocol_version":1,"godot_sdk":6,"party":{}}));
+                        send(&mut ws, json!({"type":"prepare","game":v["game"],"session":"s1","seats":seats,"players":[{"id":"p1","name":"Joep","color":"#ff0000","couch":0}]}));
+                    }
+                    if kind == "room_log" { tx.send(format!("room_log {}", v["text"].as_str().unwrap())).unwrap(); } else { tx.send(kind).unwrap(); }
+                }
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                Err(_) => return,
+            }
+            match step.try_recv() {
+                Ok("start") => send(&mut ws, json!({"type":"start","session":"s1"})),
+                Ok("drive") => send(&mut ws, json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":0,"axes":[0,-32767,0,0,0,0]}]})),
+                Ok("rename") => send(&mut ws, json!({"type":"players_updated","session":"s1","players":[{"id":"p1","name":"Joep B","color":"#ff0000","couch":0}]})),
+                Ok("join") => send(&mut ws, json!({"type":"party_updated","session":"s1",
+                    "seats":[{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}},{"index":1,"occupant":{"kind":"ai"}},{"index":2,"controller":"pad-b","occupant":{"kind":"local","player_id":"p2"}}],
+                    "players":[{"id":"p1","name":"Joep B","couch":0},{"id":"p2","name":"Polle","couch":1}]})),
+                Ok(_) => return,
+                Err(_) => {}
+            }
+        }
+    });
+    let mut g = game(&dir);
+    let client = gamenight::Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "party-test".into(), token: String::new(), launched_by_daemon: true }).unwrap();
+    g.party = Some(warp::party::Party::new(client));
+    let mut seen = Vec::new();
+    let mut wait = |g: &mut LuaGame, what: &str, seen: &mut Vec<String>| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            g.tick(&[Controls::default()]);
+            while let Ok(m) = got.try_recv() { seen.push(m); }
+            if seen.iter().any(|m| m == what) { return; }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("no {what}: {seen:?}\n{}\n{:?}", state(g), g.logs());
+    };
+    wait(&mut g, "ready", &mut seen);
+    let s = state(&g);
+    assert_eq!((s["phase"].clone(), s["state"]["names"].clone(), s["state"]["ticks"].clone()), (json!("ready"), json!(["Joep", "Player 2"]), json!(0)), "the AI seat is a bot; nothing ticks before start: {s}");
+    assert_eq!(s["players"][0]["color"], json!([1.0, 0.0, 0.0]));
+    assert_eq!(g.screen(), app::Screen::Hidden);
+    go.send("start").unwrap();
+    wait(&mut g, "room_log hello room", &mut seen);
+    wait(&mut g, "finished", &mut seen);
+    assert_eq!(g.screen(), app::Screen::Fullscreen);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while state(&g)["state"]["forward"].as_f64().unwrap_or(0.0) < 0.9 {
+        go.send("drive").unwrap();
+        g.tick(&[Controls::default()]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(std::time::Instant::now() < deadline, "the seat's controller drives player 1: {}", state(&g));
+    }
+    go.send("rename").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while state(&g)["state"]["names"][0] != json!("Joep B") { g.tick(&[Controls::default()]); std::thread::sleep(std::time::Duration::from_millis(2)); assert!(std::time::Instant::now() < deadline); }
+    go.send("join").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while state(&g)["state"]["joined"] != json!(["Polle"]) { g.tick(&[Controls::default()]); std::thread::sleep(std::time::Duration::from_millis(2)); assert!(std::time::Instant::now() < deadline, "{}", state(&g)); }
+    let s = state(&g);
+    assert_eq!(s["state"]["runs"], json!(1), "a seat change never restarts the game");
+    assert_eq!(s["players"].as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap().to_string(), p["view"].clone())).collect::<Vec<_>>(),
+        vec![("Joep B".to_string(), json!(0)), ("Polle".to_string(), json!(1)), ("Player 2".to_string(), Value::Null)], "people first, each with a view");
+    assert_eq!(g.local_players(), 2);
+    go.send("stop").unwrap();
+    host.join().unwrap();
 }

@@ -15,6 +15,7 @@ render = { path = "../render" }
 audio = { path = "../audio", features = ["luau"] }
 script = { path = "../script" }
 live = { path = "../live" }
+gamenight = { path = "../gamenight" }
 assets = { path = "../assets" }
 kern.workspace = true
 glam = "0.31"
@@ -23,4 +24,5 @@ serde_json.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 image = { version = "0.25", default-features = false, features = ["png"] }

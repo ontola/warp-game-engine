@@ -1,11 +1,14 @@
 # Hello Warp
 
 A Warp game made of Luau scripts and sound patches, run by the `warp`
-executable without compiling anything. A capsule runs and jumps on a
-floor, collects glowing orbs (with a pickup sound) and shows the score.
+executable without compiling anything. Capsules run and jump on a floor
+and collect glowing orbs (with a pickup sound); first to 10 wins. Each
+person gets a split-screen view, bots chase the nearest orb, and under
+GameNight the party's seats are the players. Start opens the menu.
 
 ```sh
-warp run .                      # play in a window (WASD, mouse, Space)
+warp run .                      # play in a window (WASD, mouse, Space, Enter for the menu)
+warp run . --players 2 --bots 2 # two people in split screen and two bots
 warp run . --live               # ... and let an AI change it over MCP
 warp check .                    # init and 120 ticks without a GPU; prints the state
 warp script . scripts/smoke.json --out /tmp/hello   # headless playtest with frames

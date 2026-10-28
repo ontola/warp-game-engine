@@ -38,7 +38,7 @@ fn hello_warp_smoke_script_runs_headless() {
     assert!(r.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&r.stderr));
     assert!(stdout.contains(r#""failed":0"#), "{stdout}");
     let state: Value = serde_json::from_str(&std::fs::read_to_string(out.join("hello.json")).unwrap()).unwrap();
-    assert_eq!(state["state"]["score"], 1);
+    assert_eq!(state["state"]["runners"][0]["score"], 1);
     // The frame: a sky above, the green floor below, the red capsule in the middle, the HUD's dark box.
     let img = image::open(out.join("hello.png")).unwrap().to_rgba8();
     assert_eq!(img.dimensions(), (640, 360));
@@ -109,9 +109,9 @@ fn serve_under_live_control() {
     assert_eq!(s["structuredContent"]["errors"], json!([]), "{s}");
     assert!(text(&call("describe", json!({}))).contains("main.luau"));
     // Score a point through Luau, then edit main.luau: the score survives the reload.
-    assert_eq!(text(&call("run_luau", json!({ "code": "state.score = 41; return state.score" }))), "41");
+    assert_eq!(text(&call("run_luau", json!({ "code": "state.runners[1].score = 41; return state.runners[1].score" }))), "41");
     let src = text(&call("read_file", json!({ "path": "game/main.luau" })));
-    let edited = src.replace("local SPEED = 6 ", "local SPEED = 9 ").replace("return { init = init", "state.edited = true\nreturn { init = init");
+    let edited = src.replace("local SPEED = 6 ", "local SPEED = 9 ").replace("return {\n", "state.edited = true\nreturn {\n");
     assert_ne!(src, edited);
     let w = text(&call("write_file", json!({ "path": "game/main.luau", "content": edited })));
     assert!(w.contains("main.luau: reloaded"), "{w}");
@@ -136,7 +136,7 @@ fn serve_under_live_control() {
     assert_eq!(png["mimeType"], "image/png");
     assert!(png["data"].as_str().unwrap().len() > 2000);
     assert!(text(&call("restart", json!({}))).contains("restarted"));
-    assert_eq!(text(&call("run_luau", json!({ "code": "state.score" }))), "0");
+    assert_eq!(text(&call("run_luau", json!({ "code": "state.runners[1].score" }))), "0");
     assert!(text(&call("command", json!({ "line": "sky night" }))).contains("night:clear"));
     let logs = text(&call("logs", json!({ "lines": 200 })));
     assert!(logs.contains("loaded main.luau"), "{logs}");

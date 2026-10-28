@@ -22,7 +22,8 @@ warp run my-game --live                # ... and let Claude change it over MCP
 
 | Command | What it does |
 | --- | --- |
-| `warp run DIR [--players N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play in a window, with sound. `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). |
+| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play in a window, with sound. `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a GameNight party host, the host's seats decide the players (see [GameNight](#gamenight)). |
+| `warp DIR` | The same as `warp run DIR`. This is how a GameNight host starts an installed game: the runtime gets the game folder. |
 | `warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]` | A headless playtest in the [`app::script` format](building-and-running.md): ticks with controls, `cmd` lines, `expect` and `until` checks, `capture` (PNG), `state` (JSON) and `audio` (WAV). Exits with status 1 when a check fails. |
 | `warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]` | Headless in real time with live control on (port 7878 by default). Renders a frame only for a screenshot. Sound plays into a mixer that is never heard. |
 | `warp check DIR [--ticks N]` | Load, run `init` and N idle ticks (default 120) without a GPU, then print the state. Exits with status 1 on any script or patch error. The fastest check of an edit. |
@@ -55,7 +56,10 @@ my-game/
 | --- | --- | --- |
 | `title` | the folder name | The window title. |
 | `tick_rate` | 60 | Ticks per second; `tick(dt, input)` gets `dt = 1 / tick_rate`. |
-| `players` | 1 | Local players, 1 to 4, in split screen. `--players` overrides it. |
+| `id` | the folder name | The GameNight game id (lowercase letters, digits, dashes). A host's `GAMENIGHT_GAME_ID` wins. |
+| `players` | 1 | People without a party host, 1 to 4, in split screen. `--players` overrides it. |
+| `bots` | 0 | Bots without a party host, 0 to 7. `--bots` overrides it. |
+| `min_players` | 1 | Bots fill up to this many players, with or without a party host (a duel needs two). 1 to 8. |
 | `seed` | 1 | Seed of the `random` generator. `--seed` overrides it. |
 | `sky` | `gradient` | The sky at start. `--sky` overrides it; scripts call `sky.set`. |
 | `max_entities` | 1024 | Entities alive at once (render slots reserved up front). |
@@ -91,8 +95,12 @@ A module returns a table of hooks. All of them are optional.
 | `tick(dt, input)` | Every tick, at `tick_rate`. `input[1]` is player 1's input. |
 | `draw()` | Every displayed frame. For the HUD (and cameras). |
 | `reload()` | After a saved edit has reloaded the module. |
+| `player_joined(p)` | A GameNight seat was added mid-game (`p` is a player table). |
+| `player_left(p)` | A player left mid-game. |
+| `players_changed()` | Names, colours or seats changed, after any join or leave too. |
 
-`input[p]` holds `move_x` and `move_y` (left stick or WASD, -1 to 1,
+`input[id]` is the input of the player with that id (see
+[players](#players)); a bot's input is always neutral. It holds `move_x` and `move_y` (left stick or WASD, -1 to 1,
 y forward), `look_x` and `look_y` (radians this tick, mouse or right stick,
 right and up positive), and `held` and `pressed` tables of buttons:
 `south`, `east`, `west`, `north`, `left_shoulder`, `right_shoulder`,
@@ -106,13 +114,14 @@ keyboard mapping is in `app::input`.
 | Table | Functions |
 | --- | --- |
 | `world` | `spawn(shape, opts) -> id`, `set(id, opts)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
+| `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
 | `camera` | `set(player, {pos, target, fov})`, `get(player)` |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h` |
 | `sky` | `set(name)`, `get()` |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, fog_start, fog_end, fog_density})`, `reset()` |
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
-| `game` | `tick()`, `time()`, `dt()`, `players()`, `title()` |
+| `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
 
 - **Entities**: `world.spawn` takes a shape (`"cube"`, `"sphere"`,
   `"capsule"`, or a glTF path inside the game folder such as
@@ -142,6 +151,55 @@ keyboard mapping is in `app::input`.
   exposure. `light.set` overrides parts of that.
 - **Random**: SplitMix64 from the game's seed. `restart` reseeds it.
 
+### Players
+
+`players.list()` returns every player, people first in split-screen
+order, then bots: `{id, name, color, bot, human, seat, couch}`. Ids start
+at 1, stay the same for the whole session and are never reused, so a
+player who leaves does not renumber the others. Each person has a camera
+and a view (`camera.set(p.id, ...)`, `hud.view(p.id)`); bots have none
+(setting a bot's camera does nothing visible). With only bots, the first
+bot's camera fills the screen, which makes a demo. The scripts drive bots
+themselves; the starter shows a simple one that runs to the nearest orb.
+
+Without a party host the players come from `game.toml` (`players`,
+`bots`, `--players`, `--bots`) and are called "Player 1" and "Bot 1".
+`min_players` adds bots in both cases.
+
+### The start menu
+
+Start on a controller (Enter or Escape on the keyboard) opens the menu
+every GameNight game has: the game's title, Resume and New round (and Quit
+without a party host; under GameNight the host's own overlay leaves the
+game). No button hints. While it is open the game is frozen: `tick` does not
+run. New round runs `restart`. Up and down (or the stick) choose, A
+confirms, B or Start closes. Scripts and agents use the console:
+`menu`, `menu new round`, `menu resume`, `menu close`.
+
+### GameNight
+
+`warp run` and `warp DIR` connect to a party host when one launched them
+(`GAMENIGHT=1`) or `GAMENIGHT_ADDR` points at one, using the
+[`gamenight` crate](../crates/gamenight/src/lib.rs) as Growing Guns does:
+
+- The window stays hidden until the host starts the session, then goes
+  fullscreen.
+- `prepare` starts the game over (`restart`) with the host's seats as
+  players: a couch seat is a person, an AI seat a bot, with the lobby's
+  name and colour. The game reports ready and does not tick until `start`.
+- The seats' controllers are `input[id]`. Back belongs to the host. A host
+  pause freezes the game; `dispose` clears the world and waits again.
+- Names and colours follow the lobby live (`players_changed`). A seat added
+  or removed mid-game joins or leaves without a restart (`player_joined`,
+  `player_left`); at most four people play.
+- `game.finish()` tells the host the match is over, `game.log(text)` writes
+  a line in the room log in the app, and `players.rumble(id, strength,
+  seconds)` buzzes a person's controller. Without a host, finish and log
+  only print.
+
+`state` shows `players` and `phase` (`standalone`, `waiting`, `ready`,
+`running` or `paused`).
+
 ### State
 
 Every module has a global `state` table that survives reloads. **main.luau's
@@ -151,7 +209,7 @@ clients read it with `state` and `query`. Numbers, strings, booleans,
 vectors (`[x, y, z]`) and tables become JSON. Functions are left out.
 
 The engine adds its own fields next to it: `tick`, `time`, `players`,
-`sky`, `entities`, `tags` (entities per tag), `cameras`, `sounds`
+`phase`, `menu`, `sky`, `entities`, `tags` (entities per tag), `cameras`, `sounds`
 (`loaded`, `played`, `recent`), `modules` and `errors`.
 
 ### Determinism
@@ -232,13 +290,17 @@ The same commands work in scripts, as `cmd` steps:
 
 `cargo test -p warp` covers:
 
-- unit tests: `game.toml`, sky names, Luau-to-JSON, the world (spawning,
+- unit tests: `game.toml`, sky names, Luau-to-JSON, party colours and pads, the world (spawning,
   mesh reuse, rays, overlaps, the mover) and colour parsing;
 - `tests/game.rs`, without a GPU: the starter equals games/hello-warp, `warp
   new` writes a game that plays and jumps, the same seed replays exactly,
   the API (rays, overlaps, typos, seeded numbers, the console), hot reload
   (state kept, `reload()` instead of `init`, a broken edit keeping the last
-  version, runtime errors, restart) and patch reload and playback;
+  version, runtime errors, restart), patch reload and playback, bots in
+  split screen (replaying exactly), `min_players`, the start menu, and a
+  fake GameNight host on loopback (prepare, ready, start, a seat's
+  controller, a live rename, a seat joining mid-game, the room log and
+  `finished`);
 - `tests/headless.rs`, as child processes on `KERN_ADAPTER=software` (no
   window): `warp script games/hello-warp scripts/smoke.json` (the player
   runs into an orb, scores 1, jumps; the test reads the PNG and the WAV)
@@ -261,3 +323,5 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
   host-authoritative play possible later.
 - `game.toml` and assets do not hot-reload.
 - No interpolation between ticks: entities move at the tick rate.
+- GameNight party settings (`declare_settings`), phone buttons
+  (`declare_actions`) and per-player settings are not exposed to Luau yet.

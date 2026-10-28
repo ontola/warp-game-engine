@@ -1,6 +1,7 @@
 //! warp: run a game made only of Luau scripts, synth patches and assets.
 //!
-//!   warp run DIR [--players N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]
+//!   warp DIR                      (as `warp run DIR`: how a GameNight host starts a game)
+//!   warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]
 //!   warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]
 //!   warp serve DIR [--live [PORT]] [--seconds T] [--size WxH] [--sky SKY] [--seed N]
 //!   warp check DIR [--ticks N]
@@ -13,8 +14,11 @@ use warp::{LuaGame, Overrides};
 
 const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and assets (engine/docs/warp-cli.md)
 
-  warp run DIR [--players N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]
-      play in a window; --live serves MCP for an AI (engine/docs/live-control.md)
+  warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]
+      play in a window; --live serves MCP for an AI (engine/docs/live-control.md).
+      A GameNight party host (GAMENIGHT=1 or GAMENIGHT_ADDR) decides the players.
+  warp DIR
+      the same as warp run DIR
   warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]
       a headless scripted playtest (app::script format); exits 1 on a failed check
   warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]
@@ -49,7 +53,7 @@ fn size(args: &[String], default: [u32; 2]) -> Result<[u32; 2], String> {
 }
 
 fn overrides(args: &[String]) -> Result<Overrides, String> {
-    Ok(Overrides { players: parse(args, "--players")?, seed: parse(args, "--seed")?, sky: value(args, "--sky") })
+    Ok(Overrides { players: parse(args, "--players")?, bots: parse(args, "--bots")?, seed: parse(args, "--seed")?, sky: value(args, "--sky") })
 }
 
 /// The game folder: the first argument after the command.
@@ -66,6 +70,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Some("audio") => audio::cli::run(args[1..].to_vec()).map_err(|e| match e.strip_prefix("usage: ") { Some(u) => format!("usage: warp audio {u}"), None => e }),
         Some("new") => new(&args),
         Some("help" | "--help" | "-h") | None => { println!("{USAGE}"); Ok(()) }
+        // A game folder on its own: a runtime launch (the GameNight installer passes the folder).
+        Some(d) if Path::new(d).join("main.luau").is_file() => play(&[vec!["run".to_string()], args].concat()),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     }
 }
@@ -82,6 +88,7 @@ fn play(args: &[String]) -> Result<(), String> {
     });
     if let Err(e) = &speaker { eprintln!("sound off: {e}"); }
     let mut game = LuaGame::load(&dir, &overrides(args)?, sender)?;
+    game.connect_party();
     if let Some(cfg) = live::Config::from_args(&game.live_name(), args)? { game.start_live(cfg)?; }
     let cfg = app::Config {
         title: game.cfg.title.clone(), size: size(args, game.cfg.size)?, tick_hz: game.cfg.tick_rate,
