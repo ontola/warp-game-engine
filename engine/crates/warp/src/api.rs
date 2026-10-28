@@ -1,0 +1,485 @@
+//! The Luau game API: the `world`, `camera`, `sound`, `hud`, `sky`,
+//! `light`, `random` and `game` tables every module sees. Documented for
+//! game authors in `starter/types.d.luau` and engine/docs/warp-cli.md.
+//!
+//! The functions share one [`Core`] (the world, sounds, cameras, HUD and
+//! random generator) behind a mutex. The game never holds the lock while
+//! Luau runs, so a hook can call any function.
+//!
+//! Determinism: everything that changes the game (spawning, moving,
+//! removing, random numbers, sounds) is refused inside `draw`, which runs a
+//! variable number of times per tick (never, in a headless script, unless
+//! a frame is captured). Cameras, the HUD, the sky and the light may be set
+//! anywhere.
+use crate::sky::SkyChoice;
+use crate::sounds::SoundOut;
+use crate::world::{Entity, Filter, Look, Shape, Spawn, World};
+use glam::Vec3;
+use render::hud::TextAlign;
+use script::mlua::{self, Lua, Table, Value, Vector};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+/// A local player's camera. `fov` is vertical, in degrees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cam { pub pos: Vec3, pub target: Vec3, pub fov: f32 }
+
+impl Default for Cam {
+    fn default() -> Self { Cam { pos: Vec3::new(0.0, 6.0, 12.0), target: Vec3::new(0.0, 1.0, 0.0), fov: 60.0 } }
+}
+
+#[derive(Clone, Debug)]
+pub enum HudItem {
+    Text { text: String, pos: [f32; 2], size: f32, color: [f32; 4], align: TextAlign, width: f32 },
+    Box { rect: [f32; 4], color: [f32; 4] },
+}
+
+/// What `light.set` overrides on top of the sky's light.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LightOverride {
+    pub sun: Option<Vec3>,
+    pub sun_lux: Option<f32>,
+    pub sky_lux: Option<f32>,
+    pub ev100: Option<f32>,
+    pub fog: [Option<f32>; 3],
+}
+
+/// Which hook is running: `draw` may not change the game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase { Sim, Draw }
+
+/// A small seeded generator (SplitMix64): the same seed gives the same
+/// numbers on every machine.
+#[derive(Clone, Copy, Debug)]
+pub struct Rng(pub u64);
+
+impl Rng {
+    pub fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    /// Uniform in [0, 1).
+    pub fn float(&mut self) -> f64 { (self.next() >> 11) as f64 / (1u64 << 53) as f64 }
+}
+
+pub struct Core {
+    pub world: World,
+    pub sounds: SoundOut,
+    pub cams: Vec<Cam>,
+    /// The HUD of the frame being drawn (cleared before `draw`).
+    pub hud: Vec<HudItem>,
+    /// Output size and each player's view rectangle (x, y, w, h), in pixels.
+    pub screen: [u32; 2],
+    pub views: Vec<[f32; 4]>,
+    pub rng: Rng,
+    pub sky: SkyChoice,
+    pub light: LightOverride,
+    pub tick: u64,
+    pub tick_rate: f32,
+    pub players: usize,
+    pub title: String,
+    pub phase: Phase,
+}
+
+pub type Shared = Arc<Mutex<Core>>;
+
+pub fn lock(core: &Shared) -> MutexGuard<'_, Core> { core.lock().unwrap_or_else(|p| p.into_inner()) }
+
+fn rt(msg: impl std::fmt::Display) -> mlua::Error { mlua::Error::runtime(msg) }
+
+fn num(v: &Value) -> Option<f32> {
+    match v { Value::Integer(i) => Some(*i as f32), Value::Number(x) => Some(*x as f32), _ => None }
+}
+
+/// A vector, `{x=, y=, z=}` or `{1, 2, 3}`.
+pub fn vec3(v: &Value, what: &str) -> mlua::Result<Vec3> {
+    match v {
+        Value::Vector(v) => Ok(Vec3::new(v.x(), v.y(), v.z())),
+        Value::Table(t) => {
+            let get = |k: &str, i: i64| -> mlua::Result<f32> {
+                let a: Value = t.raw_get(k)?;
+                let a = if a.is_nil() { t.raw_get(i)? } else { a };
+                num(&a).ok_or_else(|| rt(format!("{what}: needs numbers x, y and z")))
+            };
+            Ok(Vec3::new(get("x", 1)?, get("y", 2)?, get("z", 3)?))
+        }
+        _ => Err(rt(format!("{what}: expected a vector (vector.create(x, y, z)), got a {}", v.type_name()))),
+    }
+}
+
+fn vector(v: Vec3) -> Value { Value::Vector(Vector::new(v.x, v.y, v.z)) }
+
+/// A size: a number (every axis) or a vector.
+fn size(v: &Value, what: &str) -> mlua::Result<Vec3> {
+    match num(v) { Some(s) => Ok(Vec3::splat(s)), None => vec3(v, what) }
+}
+
+/// sRGB colour 0..1 with alpha: `"#rrggbb"`/`"#rrggbbaa"`, a vector (rgb),
+/// `{r, g, b, a}` (named or listed) or a number (grey).
+pub fn color(v: &Value, what: &str) -> mlua::Result<[f32; 4]> {
+    let bad = || rt(format!("{what}: a colour is \"#rrggbb\", \"#rrggbbaa\", a vector or {{r, g, b, a}} with values 0 to 1"));
+    match v {
+        Value::String(s) => {
+            let s = s.to_string_lossy();
+            let hex = s.trim_start_matches('#');
+            if !(hex.len() == 6 || hex.len() == 8) { return Err(bad()); }
+            let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).map(|b| b as f32 / 255.0).map_err(|_| bad());
+            Ok([byte(0)?, byte(2)?, byte(4)?, if hex.len() == 8 { byte(6)? } else { 1.0 }])
+        }
+        Value::Vector(c) => Ok([c.x(), c.y(), c.z(), 1.0]),
+        Value::Table(t) => {
+            let get = |k: &str, i: i64, d: Option<f32>| -> mlua::Result<f32> {
+                let a: Value = t.raw_get(k)?;
+                let a = if a.is_nil() { t.raw_get(i)? } else { a };
+                if a.is_nil() { return d.ok_or_else(bad); }
+                num(&a).ok_or_else(bad)
+            };
+            Ok([get("r", 1, None)?, get("g", 2, None)?, get("b", 3, None)?, get("a", 4, Some(1.0))?])
+        }
+        _ => num(v).map(|g| [g, g, g, 1.0]).ok_or_else(bad),
+    }
+}
+
+/// Options tables reject unknown keys, so a typo is an error, not a no-op.
+fn options(t: &Table, allowed: &[&str], what: &str) -> mlua::Result<Vec<(String, Value)>> {
+    let mut out = Vec::new();
+    for pair in t.pairs::<Value, Value>() {
+        let (k, v) = pair?;
+        let Value::String(k) = k else { return Err(rt(format!("{what}: option names are strings"))) };
+        let k = k.to_string_lossy();
+        if !allowed.is_empty() && !allowed.contains(&k.as_str()) { return Err(rt(format!("{what}: unknown option {k:?} (options: {})", allowed.join(", ")))); }
+        out.push((k, v));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+pub fn shape(name: &str) -> mlua::Result<Shape> {
+    Ok(match name {
+        "cube" | "box" => Shape::Cube,
+        "sphere" | "ball" => Shape::Sphere,
+        "capsule" => Shape::Capsule,
+        p if p.ends_with(".glb") || p.ends_with(".gltf") => Shape::Model(p.to_string()),
+        other => return Err(rt(format!("unknown shape {other:?}: cube, sphere, capsule or a model path such as \"assets/crate.glb\""))),
+    })
+}
+
+const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "solid", "visible", "tag"];
+
+fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
+    match v { Value::Boolean(b) => Ok(*b), _ => Err(rt(format!("{what}: expected true or false"))) }
+}
+
+fn number(v: &Value, what: &str) -> mlua::Result<f32> { num(v).ok_or_else(|| rt(format!("{what}: expected a number"))) }
+
+/// Apply `world.spawn`/`world.set` options to an entity's fields.
+#[allow(clippy::too_many_arguments)]
+fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mut Vec3, rot: &mut Vec3, sz: &mut Vec3, solid: &mut bool, visible: &mut bool, tag: &mut String) -> mlua::Result<()> {
+    for (k, v) in opts {
+        match k.as_str() {
+            "shape" => *shape_ = shape(&v.to_string()?)?,
+            "pos" => *pos = vec3(v, "pos")?,
+            "rot" => *rot = vec3(v, "rot")?,
+            "size" => *sz = size(v, "size")?,
+            "color" => { let c = color(v, "color")?; look.color = [c[0], c[1], c[2]]; }
+            "emissive" => look.emissive = number(v, "emissive")?.max(0.0),
+            "roughness" => look.roughness = number(v, "roughness")?,
+            "metal" => look.metal = number(v, "metal")?,
+            "solid" => *solid = boolean(v, "solid")?,
+            "visible" => *visible = boolean(v, "visible")?,
+            "tag" => *tag = v.to_string()?,
+            _ => unreachable!("checked by options"),
+        }
+    }
+    Ok(())
+}
+
+fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    t.raw_set("id", id)?;
+    t.raw_set("shape", e.shape.name())?;
+    t.raw_set("pos", vector(e.pos))?;
+    t.raw_set("rot", vector(e.rot))?;
+    t.raw_set("size", vector(e.size))?;
+    t.raw_set("color", Value::Vector(Vector::new(e.look.color[0], e.look.color[1], e.look.color[2])))?;
+    t.raw_set("emissive", e.look.emissive)?;
+    t.raw_set("roughness", e.look.roughness)?;
+    t.raw_set("metal", e.look.metal)?;
+    t.raw_set("solid", e.solid)?;
+    t.raw_set("visible", e.visible)?;
+    t.raw_set("tag", e.tag.as_str())?;
+    Ok(t)
+}
+
+/// `{tag=, ignore= id or {ids}, all=}` for queries.
+fn filter(opts: Option<Table>) -> mlua::Result<Filter> {
+    let mut f = Filter::default();
+    let Some(t) = opts else { return Ok(f) };
+    for (k, v) in options(&t, &["tag", "ignore", "all"], "query")? {
+        match k.as_str() {
+            "tag" => f.tag = Some(v.to_string()?),
+            "all" => f.all = boolean(&v, "all")?,
+            "ignore" => match &v {
+                Value::Table(ids) => for id in ids.sequence_values::<u32>() { f.ignore.push(id?); },
+                other => f.ignore.push(num(other).ok_or_else(|| rt("ignore: an entity id or a list of ids"))? as u32),
+            },
+            _ => unreachable!(),
+        }
+    }
+    Ok(f)
+}
+
+fn sim(c: &Core, what: &str) -> mlua::Result<()> {
+    if c.phase == Phase::Draw { return Err(rt(format!("{what} changes the game, so it belongs in init or tick, not in draw (draw runs a varying number of times per tick)"))); }
+    Ok(())
+}
+
+fn player(c: &Core, p: Option<i64>) -> mlua::Result<usize> {
+    let p = p.unwrap_or(1);
+    if p < 1 || p as usize > c.players { return Err(rt(format!("player {p}: players are 1 to {}", c.players))); }
+    Ok(p as usize - 1)
+}
+
+/// Add the API tables to a module base (`Host::new`'s `api`).
+pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
+    let table = |name: &str, fns: Vec<(&str, mlua::Function)>| -> mlua::Result<()> {
+        let t = lua.create_table()?;
+        for (k, f) in fns { t.raw_set(k, f)?; }
+        t.set_readonly(true);
+        api.raw_set(name, t)
+    };
+    macro_rules! f {
+        ($core:ident, $body:expr) => {{ let $core = core.clone(); lua.create_function($body)? }};
+    }
+
+    table("world", vec![
+        ("spawn", f!(core, move |_, (name, opts): (String, Option<Table>)| {
+            let mut s = Spawn { shape: shape(&name)?, ..Default::default() };
+            if let Some(t) = opts {
+                let o = options(&t, &ENTITY_KEYS[1..], "world.spawn")?;
+                apply(&o, &mut s.shape, &mut s.look, &mut s.pos, &mut s.rot, &mut s.size, &mut s.solid, &mut s.visible, &mut s.tag)?;
+            }
+            let mut c = lock(&core);
+            sim(&c, "world.spawn")?;
+            c.world.spawn(s).map_err(rt)
+        })),
+        ("set", f!(core, move |_, (id, opts): (u32, Table)| {
+            let o = options(&opts, ENTITY_KEYS, "world.set")?;
+            let mut c = lock(&core);
+            sim(&c, "world.set")?;
+            let mut result = Ok(());
+            c.world.update(id, |e| result = apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.tag)).map_err(rt)?;
+            result
+        })),
+        ("get", f!(core, move |lua, id: u32| {
+            let c = lock(&core);
+            match c.world.get(id) { Some(e) => Ok(Value::Table(entity_table(lua, id, e)?)), None => Ok(Value::Nil) }
+        })),
+        ("exists", f!(core, move |_, id: u32| Ok(lock(&core).world.get(id).is_some()))),
+        ("remove", f!(core, move |_, id: u32| {
+            let mut c = lock(&core);
+            sim(&c, "world.remove")?;
+            Ok(c.world.remove(id))
+        })),
+        ("clear", f!(core, move |_, ()| {
+            let mut c = lock(&core);
+            sim(&c, "world.clear")?;
+            c.world.clear();
+            Ok(())
+        })),
+        ("find", f!(core, move |lua, tag: String| lua.create_sequence_from(lock(&core).world.find(&tag)))),
+        ("count", f!(core, move |_, ()| Ok(lock(&core).world.entities.len()))),
+        ("raycast", f!(core, move |lua, (origin, dir, max, opts): (Value, Value, Option<f32>, Option<Table>)| {
+            let (o, d) = (vec3(&origin, "raycast origin")?, vec3(&dir, "raycast direction")?);
+            let f = filter(opts)?;
+            let c = lock(&core);
+            let Some(h) = c.world.raycast(o, d, max.unwrap_or(1000.0), &f) else { return Ok(Value::Nil) };
+            let t = lua.create_table()?;
+            t.raw_set("id", h.id)?;
+            t.raw_set("distance", h.distance)?;
+            t.raw_set("point", vector(h.point))?;
+            t.raw_set("normal", vector(h.normal))?;
+            Ok(Value::Table(t))
+        })),
+        ("overlap", f!(core, move |lua, (center, radius, opts): (Value, f32, Option<Table>)| {
+            let p = vec3(&center, "overlap centre")?;
+            let f = filter(opts)?;
+            lua.create_sequence_from(lock(&core).world.overlap(p, radius, &f))
+        })),
+        ("move", f!(core, move |_, (id, vel, dt, opts): (u32, Value, f32, Option<Table>)| {
+            let v = vec3(&vel, "move velocity")?;
+            let mut f = filter(opts)?;
+            f.ignore.push(id);
+            let mut c = lock(&core);
+            sim(&c, "world.move")?;
+            let e = c.world.get(id).ok_or_else(|| rt(format!("world.move: no entity {id}")))?;
+            let b = e.bounds();
+            let (radius, height) = (b.half.x.min(b.half.z), b.half.y * 2.0);
+            let (center, vel, grounded) = c.world.move_body(b.center, v, dt, radius, height, &f);
+            let shift = center - b.center;
+            c.world.update(id, |e| e.pos += shift).map_err(rt)?;
+            Ok((vector(vel), grounded))
+        })),
+    ])?;
+
+    table("camera", vec![
+        ("set", f!(core, move |_, (p, opts): (i64, Table)| {
+            let mut c = lock(&core);
+            let i = player(&c, Some(p))?;
+            let mut cam = c.cams[i];
+            for (k, v) in options(&opts, &["pos", "target", "fov"], "camera.set")? {
+                match k.as_str() {
+                    "pos" => cam.pos = vec3(&v, "camera pos")?,
+                    "target" => cam.target = vec3(&v, "camera target")?,
+                    "fov" => cam.fov = number(&v, "fov")?.clamp(5.0, 170.0),
+                    _ => unreachable!(),
+                }
+            }
+            c.cams[i] = cam;
+            Ok(())
+        })),
+        ("get", f!(core, move |lua, p: Option<i64>| {
+            let c = lock(&core);
+            let cam = c.cams[player(&c, p)?];
+            let t = lua.create_table()?;
+            t.raw_set("pos", vector(cam.pos))?;
+            t.raw_set("target", vector(cam.target))?;
+            t.raw_set("fov", cam.fov)?;
+            Ok(t)
+        })),
+    ])?;
+
+    table("sound", vec![
+        ("play", f!(core, move |_, (name, opts): (String, Option<Table>)| {
+            let (mut params, mut at, mut db, mut pitch) = (Vec::new(), None, 0.0, 1.0);
+            if let Some(t) = opts {
+                for (k, v) in options(&t, &[], "sound.play")? {
+                    match k.as_str() {
+                        "at" => at = Some(vec3(&v, "at")?.to_array()),
+                        "db" => db = number(&v, "db")?,
+                        "pitch" => pitch = number(&v, "pitch")?,
+                        _ => { let x = number(&v, &k)?; params.push((k, x)); }
+                    }
+                }
+            }
+            let mut c = lock(&core);
+            sim(&c, "sound.play")?;
+            let tick = c.tick;
+            c.sounds.play(&name, &params, at, db, pitch, tick).map_err(rt)
+        })),
+        ("set_param", f!(core, move |_, (h, param, value): (u32, String, f32)| { lock(&core).sounds.set(h, &param, value); Ok(()) })),
+        ("stop", f!(core, move |_, h: u32| { lock(&core).sounds.stop(h); Ok(()) })),
+        ("list", f!(core, move |lua, ()| lua.create_sequence_from(lock(&core).sounds.bank.patches.keys().cloned().collect::<Vec<_>>()))),
+    ])?;
+
+    table("hud", vec![
+        ("text", f!(core, move |_, (text, x, y, opts): (Value, f32, f32, Option<Table>)| {
+            let text = match &text { Value::String(s) => s.to_string_lossy(), other => other.to_string()? };
+            let (mut size, mut col, mut align, mut width) = (24.0, [1.0; 4], TextAlign::Left, 0.0);
+            if let Some(t) = opts {
+                for (k, v) in options(&t, &["size", "color", "align", "width"], "hud.text")? {
+                    match k.as_str() {
+                        "size" => size = number(&v, "size")?.clamp(4.0, 400.0),
+                        "color" => col = color(&v, "color")?,
+                        "width" => width = number(&v, "width")?,
+                        "align" => align = match v.to_string()?.as_str() {
+                            "left" => TextAlign::Left, "center" => TextAlign::Center, "right" => TextAlign::Right,
+                            a => return Err(rt(format!("align {a:?}: left, center or right"))),
+                        },
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            lock(&core).hud.push(HudItem::Text { text, pos: [x, y], size, color: col, align, width });
+            Ok(())
+        })),
+        ("box", f!(core, move |_, (x, y, w, h, col): (f32, f32, f32, f32, Option<Value>)| {
+            let col = match col { Some(v) => color(&v, "hud.box colour")?, None => [0.0, 0.0, 0.0, 0.5] };
+            lock(&core).hud.push(HudItem::Box { rect: [x, y, w, h], color: col });
+            Ok(())
+        })),
+        ("size", f!(core, move |_, ()| { let s = lock(&core).screen; Ok((s[0], s[1])) })),
+        ("view", f!(core, move |_, p: Option<i64>| {
+            let c = lock(&core);
+            let i = player(&c, p)?;
+            let v = c.views.get(i).copied().unwrap_or([0.0, 0.0, c.screen[0] as f32, c.screen[1] as f32]);
+            Ok((v[0], v[1], v[2], v[3]))
+        })),
+    ])?;
+
+    table("sky", vec![
+        ("set", f!(core, move |_, name: String| {
+            let choice = SkyChoice::parse(&name).map_err(rt)?;
+            lock(&core).sky = choice;
+            Ok(())
+        })),
+        ("get", f!(core, move |_, ()| Ok(lock(&core).sky.name()))),
+    ])?;
+
+    table("light", vec![
+        ("set", f!(core, move |_, opts: Table| {
+            let mut c = lock(&core);
+            for (k, v) in options(&opts, &["sun", "sun_lux", "sky_lux", "exposure", "fog_start", "fog_end", "fog_density"], "light.set")? {
+                let l = &mut c.light;
+                match k.as_str() {
+                    "sun" => l.sun = Some(vec3(&v, "sun")?.try_normalize().ok_or_else(|| rt("sun: a direction towards the sun, not zero"))?),
+                    "sun_lux" => l.sun_lux = Some(number(&v, &k)?.max(0.0)),
+                    "sky_lux" => l.sky_lux = Some(number(&v, &k)?.max(0.0)),
+                    "exposure" => l.ev100 = Some(number(&v, &k)?),
+                    "fog_start" => l.fog[0] = Some(number(&v, &k)?),
+                    "fog_end" => l.fog[1] = Some(number(&v, &k)?),
+                    "fog_density" => l.fog[2] = Some(number(&v, &k)?.max(0.0)),
+                    _ => unreachable!(),
+                }
+            }
+            Ok(())
+        })),
+        ("reset", f!(core, move |_, ()| { lock(&core).light = LightOverride::default(); Ok(()) })),
+    ])?;
+
+    table("random", vec![
+        ("float", f!(core, move |_, ()| { let mut c = lock(&core); sim(&c, "random")?; Ok(c.rng.float()) })),
+        ("range", f!(core, move |_, (lo, hi): (f64, f64)| { let mut c = lock(&core); sim(&c, "random")?; Ok(lo + (hi - lo) * c.rng.float()) })),
+        ("int", f!(core, move |_, (lo, hi): (i64, i64)| {
+            if hi < lo { return Err(rt(format!("random.int({lo}, {hi}): the second bound is below the first"))); }
+            let mut c = lock(&core);
+            sim(&c, "random")?;
+            Ok(lo + (c.rng.next() % ((hi - lo) as u64 + 1)) as i64)
+        })),
+        ("chance", f!(core, move |_, p: f64| { let mut c = lock(&core); sim(&c, "random")?; Ok(c.rng.float() < p) })),
+        ("seed", f!(core, move |_, s: i64| { let mut c = lock(&core); sim(&c, "random")?; c.rng = Rng(s as u64); Ok(()) })),
+    ])?;
+
+    table("game", vec![
+        ("tick", f!(core, move |_, ()| Ok(lock(&core).tick))),
+        ("time", f!(core, move |_, ()| { let c = lock(&core); Ok(c.tick as f64 / c.tick_rate as f64) })),
+        ("dt", f!(core, move |_, ()| Ok(1.0 / lock(&core).tick_rate))),
+        ("players", f!(core, move |_, ()| Ok(lock(&core).players))),
+        ("title", f!(core, move |_, ()| Ok(lock(&core).title.clone()))),
+    ])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colours_vectors_and_random() {
+        let lua = Lua::new();
+        let v = |s: &str| -> Value { lua.load(s).eval().unwrap() };
+        assert_eq!(color(&v("'#ff8000'"), "c").unwrap(), [1.0, 128.0 / 255.0, 0.0, 1.0]);
+        assert_eq!(color(&v("{0.5, 0.25, 1, 0.5}"), "c").unwrap(), [0.5, 0.25, 1.0, 0.5]);
+        assert_eq!(color(&v("{r = 1, g = 0, b = 0}"), "c").unwrap(), [1.0, 0.0, 0.0, 1.0]);
+        assert!(color(&v("'#ff80'"), "c").is_err());
+        assert_eq!(vec3(&v("vector.create(1, 2, 3)"), "p").unwrap(), Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(vec3(&v("{x = 1, y = 2, z = 3}"), "p").unwrap(), Vec3::new(1.0, 2.0, 3.0));
+        assert!(vec3(&v("'up'"), "p").is_err());
+        let (mut a, mut b) = (Rng(7), Rng(7));
+        let xs: Vec<f64> = (0..100).map(|_| a.float()).collect();
+        assert!(xs.iter().all(|x| (0.0..1.0).contains(x)));
+        assert_eq!(xs, (0..100).map(|_| b.float()).collect::<Vec<_>>(), "the same seed, the same numbers");
+    }
+}

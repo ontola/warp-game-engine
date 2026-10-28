@@ -5881,6 +5881,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "warp"
+version = "0.1.0"
+dependencies = [
+ "app",
+ "assets",
+ "audio",
+ "glam 0.31.1",
+ "image",
+ "kern",
+ "live",
+ "render",
+ "script",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
