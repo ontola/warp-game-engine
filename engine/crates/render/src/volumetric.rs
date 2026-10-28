@@ -44,10 +44,21 @@ pub struct Volumetric {
     pub anisotropy: f32,
     /// Artistic multiplier on the physical result.
     pub intensity: f32,
+    /// How much the medium dims the scene behind it: the surface radiance is
+    /// multiplied by `exp(-extinction * density * distance)`. 0 (default)
+    /// only adds light, as Growing Guns wants; 1 is physical (Godot's fog).
+    pub extinction: f32,
+    /// Light the medium scatters from everywhere (ambient and bounce light
+    /// times the medium albedo, plus its own emission), as radiance it
+    /// converges to over a long ray: adds `ambient * (1 - exp(-density * t))`.
+    pub ambient: Vec3,
+    /// Metres from the camera the medium reaches (Godot's fog length);
+    /// 0 is unbounded.
+    pub length: f32,
 }
 
 impl Default for Volumetric {
-    fn default() -> Self { Self { density: 0.004, color: Vec3::ONE, anisotropy: 0.35, intensity: 1.0 } }
+    fn default() -> Self { Self { density: 0.004, color: Vec3::ONE, anisotropy: 0.35, intensity: 1.0, extinction: 0.0, ambient: Vec3::ZERO, length: 0.0 } }
 }
 
 impl Volumetric {
@@ -55,16 +66,22 @@ impl Volumetric {
         if !(self.density.is_finite() && (0.0..=1.0).contains(&self.density))
             || !self.color.is_finite() || self.color.min_element() < 0.0 || self.color.max_element() > 100.0
             || !(self.anisotropy.is_finite() && self.anisotropy.abs() < 0.95)
-            || !(self.intensity.is_finite() && (0.0..=1000.0).contains(&self.intensity)) {
-            return Err("volumetric light needs density 0..1 per metre, colour 0..100, |anisotropy| < 0.95 and intensity 0..1000".into());
+            || !(self.intensity.is_finite() && (0.0..=1000.0).contains(&self.intensity))
+            || !(self.extinction.is_finite() && (0.0..=1.0).contains(&self.extinction))
+            || !self.ambient.is_finite() || self.ambient.min_element() < 0.0
+            || !(self.length.is_finite() && self.length >= 0.0) {
+            return Err("volumetric light needs density 0..1 per metre, colour 0..100, |anisotropy| < 0.95, intensity 0..1000, extinction 0..1, ambient >= 0 and length >= 0".into());
         }
         Ok(self)
     }
     /// Whether it adds anything at all.
-    pub fn active(&self) -> bool { self.density > 0.0 && self.intensity > 0.0 && self.color.max_element() > 0.0 }
+    pub fn active(&self) -> bool { self.density > 0.0 && ((self.intensity > 0.0 && self.color.max_element() > 0.0) || self.extinction > 0.0 || self.ambient.max_element() > 0.0) }
+
+    /// The ray length the medium covers for a ray ending at `tmax`.
+    pub fn reach(&self, tmax: f32) -> f32 { if self.length > 0.0 { tmax.min(self.length) } else { tmax } }
 
     /// Set a field from `Lighting::set` keys: `vol_density`, `vol_anisotropy`,
-    /// `vol_intensity`, `vol_r`, `vol_g`, `vol_b`.
+    /// `vol_intensity`, `vol_r`, `vol_g`, `vol_b`, `vol_extinction`, `vol_length`.
     pub fn set(&mut self, key: &str, value: f32) -> Result<(), String> {
         let mut next = *self;
         match key {
@@ -74,6 +91,8 @@ impl Volumetric {
             "vol_r" => next.color.x = value,
             "vol_g" => next.color.y = value,
             "vol_b" => next.color.z = value,
+            "vol_extinction" => next.extinction = value,
+            "vol_length" => next.length = value,
             _ => return Err(format!("unknown volumetric setting {key}")),
         }
         *self = next.validated()?;
@@ -106,6 +125,7 @@ struct Uniform {
     output: [f32; 4],
     medium: [f32; 4],
     tint: [f32; 4],
+    ambient: [f32; 4],
     lights: [GpuLight; MAX_LOCAL_LIGHTS],
 }
 
@@ -204,9 +224,13 @@ pub fn light_scatter(o: Vec3, v: Vec3, tmax: f32, light: &GpuLight, sigma: f32, 
 
 /// Radiance the passes add along one view ray (`v` normalised).
 pub fn scatter_ray(medium: &Volumetric, lights: &[GpuLight], o: Vec3, v: Vec3, tmax: f32) -> Vec3 {
+    let tmax = medium.reach(tmax);
     let sum: Vec3 = lights.iter().map(|l| light_scatter(o, v, tmax, l, medium.density, medium.anisotropy)).sum();
-    sum * medium.color * (medium.density * medium.intensity)
+    sum * medium.color * (medium.density * medium.intensity) + medium.ambient * (1.0 - (-medium.density * tmax).exp())
 }
+
+/// What the medium leaves of the surface radiance at `distance`.
+pub fn transmittance(medium: &Volumetric, distance: f32) -> f32 { (-medium.extinction * medium.density * medium.reach(distance)).exp() }
 
 // ---- GPU passes ----
 
@@ -288,7 +312,8 @@ impl VolumetricSlot {
         uniform.sizes = [dw as f32, dh as f32, half.0 as f32, half.1 as f32];
         uniform.output = [size.0 as f32, size.1 as f32, 0.0, 0.0];
         uniform.medium = [medium.density, medium.anisotropy, medium.intensity, lights.len() as f32];
-        uniform.tint = medium.color.extend(0.0).to_array();
+        uniform.tint = medium.color.extend(medium.extinction).to_array();
+        uniform.ambient = medium.ambient.extend(medium.length).to_array();
         uniform.lights[..lights.len()].copy_from_slice(&lights);
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         let view_of = |tex: &wgpu::Texture| tex.create_view(&Default::default());
@@ -473,7 +498,7 @@ mod tests {
             omni(Vec3::new(-3.0, 2.0, -12.0), 15.0, 2.0, 0.2), spot(Vec3::new(-8.0, 6.0, -30.0), Vec3::new(1.0, -0.4, 0.3), 2.0)]).unwrap();
         slot.set_lights(&lights, &[1.0, 1.0, 0.5]);
         let scattering = scattering_lights(&lights, &[1.0, 1.0, 0.5]);
-        let medium = Volumetric { density: 0.01, anisotropy: 0.4, color: Vec3::new(1.0, 0.9, 0.8), intensity: 2.0 };
+        let medium = Volumetric { density: 0.01, anisotropy: 0.4, color: Vec3::new(1.0, 0.9, 0.8), intensity: 2.0, ..Default::default() };
         let (w, h) = (64u32, 48u32);
         let camera = Vec3::new(0.0, 1.5, 0.0);
         let vp = Mat4::perspective_infinite_reverse_rh(1.0, w as f32 / h as f32, 0.1) * Mat4::look_at_rh(camera, Vec3::new(0.0, 2.5, -10.0), Vec3::Y);
@@ -563,12 +588,28 @@ mod tests {
     }
 
     #[test]
+    fn ambient_and_extinction_follow_the_medium_and_default_off() {
+        let off = Volumetric::default();
+        assert_eq!(transmittance(&off, 50.0), 1.0, "the default only adds light");
+        assert_eq!(scatter_ray(&off, &[], Vec3::ZERO, Vec3::NEG_Z, 50.0), Vec3::ZERO);
+        let fog = Volumetric { density: 0.05, extinction: 1.0, ambient: Vec3::new(2.0, 1.0, 0.5), length: 20.0, ..off };
+        assert!(fog.active());
+        // Bounded by the medium length: the same past 20 m.
+        assert_eq!(transmittance(&fog, 100.0), transmittance(&fog, 20.0));
+        assert!((transmittance(&fog, 10.0) - (-0.5f32).exp()).abs() < 1e-6);
+        let a = scatter_ray(&fog, &[], Vec3::ZERO, Vec3::NEG_Z, 10.0);
+        assert!((a - fog.ambient * (1.0 - (-0.5f32).exp())).abs().max_element() < 1e-5);
+        // Surface radiance s: s * T + ambient * (1 - T) tends to the ambient.
+        assert!(Volumetric { extinction: 1.5, ..fog }.validated().is_err());
+    }
+
+    #[test]
     fn wgsl_validates_and_layout_matches() {
         let module = naga::front::wgsl::parse_str(shader_source()).unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
         assert_eq!(std::mem::size_of::<GpuLight>(), 64);
-        assert_eq!(std::mem::size_of::<Uniform>(), 64 + 5 * 16 + 32 * 64);
+        assert_eq!(std::mem::size_of::<Uniform>(), 64 + 6 * 16 + 32 * 64);
         for (name, value) in [("SAMPLES", format!("{SAMPLES}u")), ("SKY_DISTANCE", format!("{SKY_DISTANCE:.1}"))] {
             assert!(shader_source().contains(&format!("const {name}: {} = {value};", if name == "SAMPLES" { "u32" } else { "f32" })), "{name} must match the CPU mirror");
         }

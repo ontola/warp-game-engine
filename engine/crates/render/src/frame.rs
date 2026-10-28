@@ -593,7 +593,7 @@ pub struct Renderer {
     wheel_particles: crate::wheel_particles::WheelParticles,
     headlight_state: std::sync::Mutex<Vec<crate::headlights::SpotLight>>,
     local_light_state: std::sync::Mutex<Vec<crate::headlights::LocalLight>>,
-    light_extras: std::sync::Mutex<crate::headlights::LightExtras>,
+    spot_falloff: std::sync::Mutex<Vec<f32>>,
     lighting_focus: std::sync::Mutex<Vec<Vec3>>,
     diagnostic_sun_focus: std::sync::Mutex<Vec<Vec3>>,
     legacy_light_lookahead: bool,
@@ -1528,7 +1528,7 @@ impl Renderer {
             wheel_particles,
             headlight_state: Default::default(),
             local_light_state: Default::default(),
-            light_extras: Default::default(),
+            spot_falloff: Default::default(),
             lighting_focus: Default::default(),
             diagnostic_sun_focus: Default::default(),
             legacy_light_lookahead: std::env::var("KERN_LEGACY_LIGHT_LOOKAHEAD").is_ok_and(|v|v=="1"),
@@ -2061,10 +2061,10 @@ impl Renderer {
         Ok(())
     }
 
-    /// Volumetric fog lit by the lamps, and per-spot falloff exponents
-    /// (Godot's `spot_attenuation`); `None`/empty restore the defaults.
-    pub fn set_light_extras(&self,fog:Option<crate::headlights::VolumetricFog>,spot_falloff:&[f32]) {
-        let mut e=self.light_extras.lock().unwrap();e.fog=fog;e.spot_falloff=spot_falloff.to_vec();
+    /// Distance exponent per shadowed spot, in `set_headlights` order
+    /// (Godot's `spot_attenuation`); missing entries are 2 (inverse square).
+    pub fn set_spot_falloff(&self,spot_falloff:&[f32]) {
+        *self.spot_falloff.lock().unwrap()=spot_falloff.to_vec();
     }
     pub fn set_headlights(&self,lights:&[crate::headlights::SpotLight])->Result<(),String> {
         let validated=crate::headlights::validate(lights)?;
@@ -3068,8 +3068,8 @@ impl Renderer {
             self.headlight_state.lock().unwrap().clone()
         } else { Vec::new() };
         let local_lights=self.local_light_state.lock().unwrap().clone();
-        let mut extras=self.light_extras.lock().unwrap().clone();extras.frame=frame as u32;
-        self.headlights.upload(gpu,&headlights,&local_lights,&extras);
+        let spot_falloff=self.spot_falloff.lock().unwrap().clone();
+        self.headlights.upload(gpu,&headlights,&local_lights,&spot_falloff);
         let mut headlight_targets=self.headlight_targets.lock().unwrap();
         while headlight_targets.len()<headlights.len() {
             headlight_targets.push(self.view_targets_capacity(gpu,"headlight shadow",self.shadow_capacity,false,self.instance_groups.headlight_enabled));

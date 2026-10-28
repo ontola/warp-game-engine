@@ -9,11 +9,19 @@ beam in the night air and warm lamps (Growing Guns' lava) a haze. Code:
 ## API
 
 - `Lighting::volumetric: Option<Volumetric>`, default `None`.
-  `Volumetric { density, color, anisotropy, intensity }`: scattering per
-  metre (also the extinction inside the integral), albedo tint,
-  Henyey-Greenstein g, artistic multiplier.
+  `Volumetric { density, color, anisotropy, intensity, extinction, ambient, length }`:
+  scattering per metre (also the extinction inside the integral), albedo
+  tint, Henyey-Greenstein g, artistic multiplier; then, for indoor fog like
+  Godot's (the Game Room lobby):
+  - `extinction` (0..1, default 0): the scene behind is multiplied by
+    `exp(-extinction * density * distance)`. 0 only adds light.
+  - `ambient` (default 0): radiance the medium converges to from light
+    arriving from everywhere (ambient or bounce light times albedo, plus
+    emission); a ray adds `ambient * (1 - exp(-density * t))`.
+  - `length` (default 0, unbounded): metres from the camera the medium
+    reaches (Godot's `volumetric_fog_length`).
 - `Lighting::set` keys: `volumetric=0|1`, `vol_density`, `vol_anisotropy`,
-  `vol_intensity`, `vol_r`, `vol_g`, `vol_b`.
+  `vol_intensity`, `vol_r`, `vol_g`, `vol_b`, `vol_extinction`, `vol_length`.
 - `Renderer::set_local_lights_scattering(lights, weights)`: the local
   lights, plus a scatter weight each (missing weights are 0). Surface light
   ignores the weights. `set_local_lights` is the same with no weights.
@@ -124,8 +132,9 @@ survive sky changes.
 - No occlusion of the air: there are no shadows in the beams, and a lamp
   behind a wall still glows in front of it if the ray reaches its sphere.
 - Single scattering in a homogeneous medium, with no height falloff.
-  Transmittance is approximate, and the scene behind the medium is not
-  dimmed.
+  Transmittance is approximate. The scene behind is dimmed only with
+  `extinction`, by the opaque depth, so a blended surface in front of a wall
+  is dimmed as if at the wall.
 - Half resolution: thin silhouettes can show a slightly soft haze edge.
   There is no temporal filtering, and none is needed.
 - The beams are scatter-only by design. Narrow surface spots would light the

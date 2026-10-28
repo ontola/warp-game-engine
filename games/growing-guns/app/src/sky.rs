@@ -127,7 +127,7 @@ pub fn volumetric(settings: &LiveSettings) -> Option<Volumetric> {
 /// Scattering per metre of clear night air over the arena (`volumetric`).
 pub const NIGHT_AIR_DENSITY: f32 = 0.0003;
 /// The night medium apart from its density: slightly warm, forward scattering.
-pub const NIGHT_AIR: Volumetric = Volumetric { density: NIGHT_AIR_DENSITY, color: glam::Vec3::new(1.0, 0.97, 0.92), anisotropy: 0.45, intensity: 1.0 };
+pub const NIGHT_AIR: Volumetric = Volumetric { density: NIGHT_AIR_DENSITY, color: glam::Vec3::new(1.0, 0.97, 0.92), anisotropy: 0.45, intensity: 1.0, extinction: 0.0, ambient: glam::Vec3::ZERO, length: 0.0 };
 
 /// 0 in daylight, 1 below -4 deg: the dusk ramp of `floodlights`.
 fn night_weight(elevation_degrees: f64) -> f32 {

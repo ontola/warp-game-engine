@@ -1664,8 +1664,6 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // LAVA: unlit, flowing molten rock; `tint * scale` is the radiance of white.
     if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x, max(length(fp.dx), length(fp.dy))) * m.tint * m.scale * emit; }
     rad = apply_distance_fog(rad, dist, dir);
-    let lamp_haze = lamp_fog(view.cam.xyz, p, gid.xy);
-    rad = rad * lamp_haze.a + lamp_haze.rgb;
     // Component diagnostics retain the exact material, pose and lighting.
     if light.sky.z > 0.5 && light.sky.z < 1.5 {
         rad = vec3<f32>(sky_vis) * 6000.0;
@@ -1713,77 +1711,4 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     // fp16 target: a blast light next to a wall must saturate, not become inf.
     textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), 1.0));
-}
-
-// Volumetric fog lit by the lamps (headlights.wgsl) and the probe grid: march camera -> p, returning in-scattered
-// radiance (rgb) and transmittance (a). Jittered per pixel and frame; TAA
-// averages the steps.
-fn lamp_fog(cam:vec3<f32>,p:vec3<f32>,pixel:vec2<u32>)->vec4<f32> {
-    let density=headlights.fog.x;
-    if density<=0.0 {return vec4<f32>(0.0,0.0,0.0,1.0);}
-    let total=distance(cam,p);
-    if total<1e-4 {return vec4<f32>(0.0,0.0,0.0,1.0);}
-    let dir=(p-cam)/total;
-    let len=min(total,headlights.fog.z);
-    let steps=u32(headlights.fog.w);
-    let dt=len/f32(steps);
-    let frame=headlights.fog_albedo.w;
-    // Interleaved gradient noise, shifted by a golden-ratio step each frame.
-    let jitter=fract(fract(52.9829189*fract(dot(vec2<f32>(pixel),vec2<f32>(0.06711056,0.00583715))))+frame*0.61803399);
-    let g=headlights.fog.y;
-    let step_t=exp(-density*dt);
-    var transmittance=1.0;
-    var light=vec3<f32>(0.0);
-    let shadowed=min(headlights.count.x,8u);
-    let local_count=min(headlights.count.y,32u);
-    for (var i=0u;i<steps;i++) {
-        let x=cam+dir*((f32(i)+jitter)*dt);
-        var e=vec3<f32>(0.0);
-        for (var j=0u;j<shadowed;j++) {
-            let energy=headlights.spot_fog[j/4u][j%4u];
-            if energy<=0.0 {continue;}
-            let l=headlights.lights[j];
-            e+=fog_lamp(x,dir,g,l.position_range,l.direction_outer,l.intensity_inner.rgb,0.04,headlights.spot_falloff[j/4u][j%4u])*energy;
-        }
-        for (var j=0u;j<local_count;j++) {
-            let energy=headlights.local_fog[j/4u][j%4u];
-            if energy<=0.0 {continue;}
-            let l=headlights.local[j];
-            e+=fog_lamp(x,dir,g,l.position_range,l.direction_outer,l.intensity_inner.rgb,l.source.x,l.source.y)*energy;
-        }
-        // Indirect light scatters too (Godot's GI inject): the probe grid's
-        // mean irradiance, spread evenly over the sphere.
-        let room=irradiance_volume(x,vec3<f32>(0.0,1.0,0.0));
-        let room2=irradiance_volume(x,vec3<f32>(0.0,-1.0,0.0));
-        e+=(room.rgb+room2.rgb)*0.5*room.w*headlights.fog_emission.w/(4.0*3.14159265);
-        let scatter=e*headlights.fog_albedo.rgb*density+headlights.fog_emission.rgb;
-        // Exact integral of constant in-scattering over the step.
-        light+=transmittance*scatter*(1.0-step_t)/density;
-        transmittance*=step_t;
-    }
-    return vec4<f32>(light,transmittance);
-}
-// One lamp's light scattered towards the camera at x. Cones are widened by
-// fog_extra.x radians with their power kept: a voxel fog cannot resolve a
-// 6 degree beam either, so beams read as soft shafts. Unshadowed.
-fn fog_lamp(x:vec3<f32>,dir:vec3<f32>,g:f32,position_range:vec4<f32>,direction_outer:vec4<f32>,intensity:vec3<f32>,near:f32,falloff:f32)->vec3<f32> {
-    let offset=x-position_range.xyz;
-    let d2=dot(offset,offset);let range=position_range.w;
-    if d2>=range*range || d2<1e-10 {return vec3<f32>(0.0);}
-    let outward=offset*inverseSqrt(d2);
-    var cone=1.0;
-    if direction_outer.w>-0.99 {
-        let outer=acos(clamp(direction_outer.w,-1.0,1.0));
-        let wide=min(outer+headlights.fog_extra.x,3.0);
-        let angle=acos(clamp(dot(outward,direction_outer.xyz),-1.0,1.0));
-        cone=(1.0-smoothstep(0.0,wide,angle))*(1.0-cos(outer))/max(1.0-cos(wide),1e-4)*2.0;
-        if cone<=0.0 {return vec3<f32>(0.0);}
-    }
-    let normalized=d2/(range*range);let fade=max(0.0,1.0-normalized*normalized);
-    let spread=pow(max(d2,near),falloff*0.5);
-    return intensity*(cone*fade*fade/spread)*lamp_fog_phase(dot(-outward,dir),g);
-}
-fn lamp_fog_phase(cos_theta:f32,g:f32)->f32 {
-    let d=1.0+g*g-2.0*g*cos_theta;
-    return (1.0-g*g)/(4.0*3.14159265*d*sqrt(d));
 }
