@@ -609,7 +609,7 @@ pub struct Renderer {
     sun_surface_source: bool,
     camera_sun_occlusion: bool,
     shade: wgpu::ComputePipeline,
-    /// Sky tiles (KERN_SKY_TILES=0 turns them off): `shade_classify` writes
+    /// Sky tiles (off by default, KERN_SKY_TILES=1: slower on an RTX 5070 Ti, shade 1.74 vs 1.56 ms at 4K x4): `shade_classify` writes
     /// the sky of 8x8 tiles without geometry and lists the rest, and `shade`
     /// runs indirectly over the listed tiles only. Same image either way.
     sky_tiles: bool,
@@ -1305,7 +1305,7 @@ impl Renderer {
         let skip_hidden_meadow=meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled());
         let hidden_meadow_fallback=crate::meadow::MeadowRenderer::hidden_shade_fallback(gpu);
         let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0);
-        let sky_tiles=std::env::var("KERN_SKY_TILES").as_deref()!=Ok("0");
+        let sky_tiles=std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
