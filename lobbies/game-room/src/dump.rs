@@ -16,7 +16,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Dump {
     pub meshes: Vec<MeshDump>,
     pub materials: Vec<Value>,
@@ -31,11 +31,11 @@ pub struct Dump {
     pub environment: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct MeshDump { #[serde(rename = "type", default)] pub kind: String, pub surfaces: Vec<SurfaceDump> }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct SurfaceDump { pub positions: [usize; 2], pub normals: [usize; 2], pub uvs: [usize; 2], pub indices: [usize; 2], pub material: i64 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct TextureDump {
     pub file: String,
     #[serde(default)] pub width: u32,
@@ -45,7 +45,7 @@ pub struct TextureDump {
     /// The screen a painted texture belongs to (Rust-built rooms only).
     #[serde(default)] pub screen: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct InstanceDump { pub name: String, pub mesh: usize, pub materials: Vec<i64>, pub transform: [f32; 16], pub shadow: bool, #[serde(default)] pub shadow_only: bool }
 
 /// Godot sRGB colour (may exceed 1 for HDR) to linear, as its shaders do.

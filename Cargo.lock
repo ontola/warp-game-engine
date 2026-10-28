@@ -1448,6 +1448,7 @@ dependencies = [
 name = "game-room"
 version = "0.1.0"
 dependencies = [
+ "app",
  "game-room-sim",
  "gdcompat",
  "glam 0.31.1",

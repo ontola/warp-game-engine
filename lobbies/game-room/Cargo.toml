@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 render = { path = "../../engine/crates/render" }
+app = { path = "../../engine/crates/app" }
 glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { workspace = true }
