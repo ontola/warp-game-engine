@@ -154,8 +154,8 @@ enum Later {
 /// Start the speakers with the synth mixer (Godot's sound) and the simple
 /// effects mixer (the crowd), summed. `layout` overrides the device's own
 /// channel count (stereo, 5.1, 7.1). Returns the speaker (keep it alive) and
-/// both senders.
-pub fn speakers(layout: Option<&str>) -> Result<(app::sound::Speaker, SoundSender, audio::sfx::SfxSender), String> {
+/// both senders. `music` joins the sum at the device's rate.
+pub fn speakers(layout: Option<&str>, music: Option<&crate::music::Shared>) -> Result<(app::sound::Speaker, SoundSender, audio::sfx::SfxSender), String> {
     let mut made = None;
     let named = layout.and_then(synth::Layout::named);
     let speaker = app::sound::open(|rate, channels| {
@@ -164,17 +164,21 @@ pub fn speakers(layout: Option<&str>) -> Result<(app::sound::Speaker, SoundSende
         if let Some(trash) = mix.take_trash() { std::thread::Builder::new().name("sfx-trash".into()).spawn(move || for g in trash { drop(g) }).ok(); }
         let (crowd, cmix) = audio::sfx::sfx(32, rate);
         made = Some((tx, crowd));
-        Box::new(audio::Sum::new(vec![Box::new(mix), Box::new(cmix)]))
+        let mut sum: Vec<Box<dyn audio::Source>> = vec![Box::new(mix), Box::new(cmix)];
+        if let Some(m) = music { crate::music::lock(m).set_sample_rate(rate as f32); sum.push(Box::new(crate::music::Player(m.clone()))); }
+        Box::new(audio::Sum::new(sum))
     })?;
     let (tx, crowd) = made.expect("built in open");
     Ok((speaker, tx, crowd))
 }
 
 /// The same pair offline at 48 kHz stereo, for scripted runs.
-pub fn offline() -> (Box<dyn audio::Source>, SoundSender, audio::sfx::SfxSender) {
+pub fn offline(music: Option<&crate::music::Shared>) -> (Box<dyn audio::Source>, SoundSender, audio::sfx::SfxSender) {
     let (tx, mix) = synth::mixer(synth::Layout::stereo(), 160, audio::SAMPLE_RATE);
     let (crowd, cmix) = audio::sfx::sfx(32, audio::SAMPLE_RATE);
-    (Box::new(audio::Sum::new(vec![Box::new(mix), Box::new(cmix)])), tx, crowd)
+    let mut sum: Vec<Box<dyn audio::Source>> = vec![Box::new(mix), Box::new(cmix)];
+    if let Some(m) = music { crate::music::lock(m).set_sample_rate(audio::SAMPLE_RATE); sum.push(Box::new(crate::music::Player(m.clone()))); }
+    (Box::new(audio::Sum::new(sum)), tx, crowd)
 }
 
 pub struct Sounds {
@@ -198,6 +202,8 @@ pub struct Sounds {
     offers: Vec<(bool, f64)>,
     shot_tick: Vec<u64>,
     ears: Vec<Vec3>,
+    /// Ducked by shots and explosions (sfx.gd's `ProceduralMusic.duck`).
+    pub music: Option<crate::music::Shared>,
 }
 
 impl Sounds {
@@ -218,12 +224,14 @@ impl Sounds {
         if samples.is_some() { println!("sounds: {} recordings", steps.len() + hurts.len() + deaths.len()); }
         Sounds { tx, bank: Bank::load(patches), steps, hurts, deaths, rng: 0x1234_5678, time: 0.0, later: Vec::new(), walked: Vec::new(), last_zip: -1.0,
             lava_at: Vec::new(), explosions: Vec::new(), reloads: HashMap::new(), strikes: Vec::new(), descents: HashMap::new(), pickups: 0, incoming: None,
-            offers: Vec::new(), shot_tick: Vec::new(), ears: Vec::new() }
+            offers: Vec::new(), shot_tick: Vec::new(), ears: Vec::new(), music: None }
     }
 
 
     /// How far the loudest recent sound is above "loud" (Godot's crowd duck: HDR max - 112 dB).
     pub fn duck_db(&self) -> f32 { (self.tx.loudest() - 112.0).max(0.0) }
+
+    fn duck_music(&self, amount: f32) { if let Some(m) = &self.music { crate::music::lock(m).duck(amount); } }
 
     fn next(&mut self) -> u32 { self.rng ^= self.rng << 13; self.rng ^= self.rng >> 17; self.rng ^= self.rng << 5; self.rng }
     fn u(&mut self, a: f32, b: f32) -> f32 { a + (b - a) * (self.next() >> 8) as f32 / (1u32 << 24) as f32 }
@@ -374,6 +382,7 @@ impl Sounds {
         if silenced { self_base -= 10.0; world_base -= 12.0; pitch *= 1.08; }
         let dry = if is_self { self_base } else { world_base } + dmg_db;
         let spl = 105.0 + 7.0 * d.max(1.0).log2();
+        self.duck_music(crate::music::shot_duck(w.damage_for_shot(last)));
         let params = [("damage", (w.damage() / 22.0).max(1.0)), ("accuracy", (1.0 - w.spread() / 0.06).clamp(0.0, 1.0)), ("velocity", w.bullet_speed_mult.clamp(0.5, 3.0))];
         if let Some(shot) = self.bank.get("shot") {
             let g = if is_self { G { center: true, pan, unit: 6.0, ..G::ui(dry) } } else { G::at(from, dry, 3.0).dry() };
@@ -424,6 +433,7 @@ impl Sounds {
         let rb = r.clamp(2.0, 24.0).round();
         let (bang_unit, rumble_unit) = ((0.8 * r).clamp(4.0, 24.0), (4.5 * r).clamp(20.0, 100.0));
         let spl = 165.0 + 5.0 * (r / 6.0).max(1.0).log2();
+        self.duck_music(crate::music::explosion_duck(r));
         self.named(world, "explosion_bang", &[("radius", rb)], G::at(pos, 12.0, bang_unit).dry().spl(spl));
         self.named(world, "explosion_bang", &[("radius", rb)], G::at(pos, 10.0, bang_unit).spl(spl));
         self.named(world, "explosion_rumble", &[("radius", rb)], G::at(pos, 10.0, rumble_unit).spl(spl));
