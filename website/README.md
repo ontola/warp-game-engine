@@ -33,6 +33,12 @@ Other inputs, copied as they are:
 - `templates/index.html`: the landing page; `templates/page.html`: every
   docs page. Placeholders look like `{{root}}`.
 - `static/`: `style.css` and the favicon.
+- `assets/hero/`: the four frames of the landing page's split-screen
+  picture, cropped to 16:9 from `sideways-stage.jpg`, two Growing Guns
+  golden images and `engine/docs/images/volumetric-night-arena.jpg`.
+  To be replaced by a real four-view capture.
+- `static/favicon.svg`: the logo mark, a spacetime grid bent into a W by
+  two gravity wells (warp drive), on deep-space blue with one yellow line.
 - `assets/sideways-stage.jpg`: a Sideways frame rendered headless on a CPU
   rasteriser (`KERN_ADAPTER=software sideways shot out.png --size 960x540
   --frames 900 --taa 4`, llvmpipe, 28 October 2026), converted to JPEG.

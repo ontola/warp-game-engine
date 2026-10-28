@@ -1,12 +1,17 @@
 # Warp documentation
 
-Warp is a Rust game engine for procedural outdoor worlds, built for short
-iteration loops: a deterministic simulation, headless rendering, scripted
-playtests and hot-reloaded Luau. Two games run on it:
-[Sideways](../../games/sideways/README.md), a gravel rally game, and
-[Growing Guns](../../games/growing-guns/README.md), an arena shooter. The
-`warp` executable runs games made only of Luau scripts and sound patches,
-such as [Hello Warp](../../games/hello-warp/README.md), with no Rust.
+Warp is a Rust game engine for couch games: up to four players on one
+screen, a deterministic simulation that replays bit for bit, and a running
+game that an AI can play, inspect and change over MCP. Its focus so far is
+procedural outdoor worlds and short iteration loops, with headless
+rendering, scripted playtests and hot-reloaded Luau.
+
+Games on it: [Sideways](../../games/sideways/README.md), a gravel rally
+game, and [Growing Guns](../../games/growing-guns/README.md), an arena
+shooter. Spellstorm, a co-op wizard roguelite, and GameNight's Game Room
+lobby are being ported. The `warp` executable runs games made only of Luau
+scripts and sound patches, such as
+[Hello Warp](../../games/hello-warp/README.md), with no Rust.
 
 Start with the overview, then build and run something.
 
