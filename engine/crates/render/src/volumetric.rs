@@ -525,6 +525,43 @@ mod tests {
         }
     }
 
+    /// Wall time of both passes (submit to idle), sky depth (every ray at
+    /// full length), for a GG-like night set. Prints; asserts nothing:
+    /// cargo test --release -p render --lib volumetric::tests::gpu_cost -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs a GPU adapter; a measurement"]
+    fn gpu_cost() {
+        let gpu = Gpu::new().unwrap();
+        println!("adapter {:?} {:?}", gpu.info.name, gpu.info.device_type);
+        let mut set = Vec::new();
+        for i in 0..4 { let a = std::f32::consts::TAU * (i as f32 + 0.5) / 4.0; let p = Vec3::new(a.cos() * 50.0, 22.0, a.sin() * 50.0);
+            set.push(LocalLight { range_m: 80.0, ..spot(p, -p, 1.0) });
+            for k in 0..3 { let q = glam::Quat::from_rotation_y((k as f32 - 1.0) * 0.34);
+                set.push(LocalLight { inner_cos: 2.5f32.to_radians().cos(), outer_cos: 6.5f32.to_radians().cos(), range_m: 80.0, ..spot(p, q * -p, 1.0) }); } }
+        for i in 0..14 { let a = std::f32::consts::TAU * i as f32 / 14.0; set.push(omni(Vec3::new(a.cos() * 40.0, 1.0, a.sin() * 40.0), 40.0, 1.0, 1.0)); }
+        let medium = Volumetric::default();
+        for (w, h) in [(1280u32, 720u32), (1920, 1080)] { for count in [1usize, 8, set.len()] {
+            let slot = VolumetricSlot::default();
+            let lights = crate::headlights::validate_local(&set[..count]).unwrap();
+            slot.set_lights(&lights, &vec![1.0; count]);
+            let texture = |format, usage| gpu.device.create_texture(&wgpu::TextureDescriptor { label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+                dimension: wgpu::TextureDimension::D2, format, usage, view_formats: &[] });
+            let depth = texture(wgpu::TextureFormat::Depth32Float, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+            let depth_view = depth.create_view(&Default::default());
+            let input = texture(wgpu::TextureFormat::Rgba16Float, wgpu::TextureUsages::TEXTURE_BINDING);
+            let camera = Vec3::new(0.0, 8.0, 30.0);
+            let vp = Mat4::perspective_infinite_reverse_rh(1.2, w as f32 / h as f32, 0.1) * Mat4::look_at_rh(camera, Vec3::new(0.0, 10.0, 0.0), Vec3::Y);
+            let run = || { let mut enc = gpu.device.create_command_encoder(&Default::default());
+                slot.render(&gpu, &mut enc, &medium, ViewInput { index: 0, input: &input, depth: &depth_view, depth_size: (w, h), camera, near: 0.1, depth_vp: vp }).unwrap();
+                gpu.queue.submit([enc.finish()]); gpu.wait(); };
+            run();
+            let n = 3;
+            let t = std::time::Instant::now();
+            for _ in 0..n { run(); }
+            println!("{w}x{h} internal, {count} lights: {:.2} ms per view (mean of {n})", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
+        }}
+    }
+
     #[test]
     fn wgsl_validates_and_layout_matches() {
         let module = naga::front::wgsl::parse_str(shader_source()).unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
