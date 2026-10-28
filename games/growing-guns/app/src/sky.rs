@@ -14,6 +14,7 @@
 //! Chosen with `--sky` (or `GG_SKY`), and at runtime with the `sky` command.
 use render::atmosphere::{AtmosphereCache, BakeQuality, SolarState};
 use render::sky::{bake_live, exposure_for_elevation, DayTime, LiveSettings, LiveSky, PreparedSky, WeatherLook};
+use render::volumetric::Volumetric;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,14 +103,37 @@ pub const MIN_EV100: f32 = 11.0;
 /// daylight, rising through dusk to `NIGHT_FLOODLIGHTS` below -4 deg, so the
 /// lamps carry the arena at the night exposure.
 pub fn floodlights(elevation_degrees: f64) -> f32 {
-    let t = ((8.0 - elevation_degrees) / 12.0).clamp(0.0, 1.0) as f32;
-    1.0 + (NIGHT_FLOODLIGHTS - 1.0) * t * t * (3.0 - 2.0 * t)
+    1.0 + (NIGHT_FLOODLIGHTS - 1.0) * night_weight(elevation_degrees)
 }
 
 /// Tuned on the night captures (scripts/sky.json): at EV 11 and 12x the floor,
 /// walls and players read clearly. The banks point
 /// at the centre, so the crowd in the stands falls dark.
 pub const NIGHT_FLOODLIGHTS: f32 = 12.0;
+
+/// Volumetric light (the floodlight beams, haze around the lamps) for a sky:
+/// only once the sun is below the horizon (fading in to -6 deg), so day,
+/// sunrise and sunset look exactly as before; thicker air in haze and mist.
+/// The default `godot` sky never gets it.
+pub fn volumetric(settings: &LiveSettings) -> Option<Volumetric> {
+    let elevation = settings.solar().elevation_degrees;
+    if elevation >= 0.0 { return None; }
+    let t = (-elevation / 6.0).clamp(0.0, 1.0) as f32;
+    let night = t * t * (3.0 - 2.0 * t);
+    let density = match settings.atmosphere { WeatherLook::Clear => NIGHT_AIR_DENSITY, WeatherLook::Haze => 2.5 * NIGHT_AIR_DENSITY, WeatherLook::Mist => 5.0 * NIGHT_AIR_DENSITY };
+    Some(Volumetric { density: density * night, ..NIGHT_AIR })
+}
+
+/// Scattering per metre of clear night air over the arena (`volumetric`).
+pub const NIGHT_AIR_DENSITY: f32 = 0.0003;
+/// The night medium apart from its density: slightly warm, forward scattering.
+pub const NIGHT_AIR: Volumetric = Volumetric { density: NIGHT_AIR_DENSITY, color: glam::Vec3::new(1.0, 0.97, 0.92), anisotropy: 0.45, intensity: 1.0 };
+
+/// 0 in daylight, 1 below -4 deg: the dusk ramp of `floodlights`.
+fn night_weight(elevation_degrees: f64) -> f32 {
+    let t = ((8.0 - elevation_degrees) / 12.0).clamp(0.0, 1.0) as f32;
+    t * t * (3.0 - 2.0 * t)
+}
 
 /// The sun over one cycle (`day` in days, 0 = morning): from -12 deg at
 /// midnight to the noon preset's 60 deg, turning once around the sky. The
@@ -183,5 +207,15 @@ mod tests {
         assert_eq!((preset.exposure(), preset.time_key()), (MIN_EV100, "night"));
         assert_eq!(SkyChoice::parse("noon").unwrap().settings(1, 0.0).unwrap().exposure(), 14.0);
         assert_eq!((floodlights(60.0), floodlights(-12.0)), (1.0, NIGHT_FLOODLIGHTS));
+    }
+
+    #[test]
+    fn volumetric_light_only_at_night_and_thicker_in_mist() {
+        let at = |s: &str| volumetric(&SkyChoice::parse(s).unwrap().settings(1, 0.0).unwrap());
+        for day in ["noon", "morning", "afternoon", "noon:mist", "sunrise", "sunset:haze"] { assert_eq!(at(day), None, "{day}"); }
+        let (clear, haze, mist) = (at("night").unwrap(), at("night:haze").unwrap(), at("night:mist").unwrap());
+        assert_eq!(clear.density, NIGHT_AIR_DENSITY);
+        assert!(clear.density < haze.density && haze.density < mist.density);
+        assert!(clear.validated().is_ok() && mist.validated().is_ok());
     }
 }

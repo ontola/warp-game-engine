@@ -78,6 +78,9 @@ pub struct StadiumVisuals {
     gore: usize,
     pub geo: Stadium,
     lights: Vec<LocalLight>,
+    /// Narrow scatter-only beams inside each floodlight's cone, for the
+    /// night's volumetric light (they light no surface).
+    beams: Vec<LocalLight>,
     rng: Rng,
 }
 
@@ -118,7 +121,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let crowd = Crowd::reserve(scene, CROWD_MAX);
         StadiumVisuals { stands, roof, stone, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
-            scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), rng: Rng(1) }
+            scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
     /// Give the crowd its voice (recordings and a speaker).
@@ -161,6 +164,7 @@ impl StadiumVisuals {
         }
         // Floodlight towers on the four corners, banks leaning over the bowl.
         self.lights.clear();
+        self.beams.clear();
         let tower_h = wall_h + 9.0;
         for i in 0..4 {
             let ang = TAU * (i as f32 + 0.5) / 4.0;
@@ -173,6 +177,16 @@ impl StadiumVisuals {
             // Godot SpotLight3D: energy 5, 38 degrees, aimed at the centre.
             self.lights.push(LocalLight { position: at, direction: (-at).normalize(), intensity_cd: Vec3::new(1.0, 0.96, 0.86) * 5.0 * 37_000.0,
                 range_m: (r + 30.0).min(200.0), inner_cos: (30f32).to_radians().cos(), outer_cos: (38f32).to_radians().cos(), source_radius_m: 1.0, falloff: 1.0 });
+            // Three lamps across the bank, fanned over the field: the beams one
+            // sees in the night air. Same intensity and falloff as the flood.
+            let flood = *self.lights.last().unwrap();
+            let right = flood.direction.cross(Vec3::Y).normalize();
+            for k in 0..3 {
+                let side = k as f32 - 1.0;
+                let turn = Quat::from_axis_angle(Vec3::Y, side * 0.34) * Quat::from_axis_angle(right, if k == 1 { -0.1 } else { 0.05 });
+                self.beams.push(LocalLight { position: flood.position + right * side * 2.0, direction: turn * flood.direction,
+                    inner_cos: 2.5f32.to_radians().cos(), outer_cos: 6.5f32.to_radians().cos(), source_radius_m: 0.5, ..flood });
+            }
         }
         self.seat(scene, base, inner);
         self.sound.kickoff();
@@ -286,6 +300,8 @@ impl StadiumVisuals {
     }
 
     pub fn lights(&self) -> &[LocalLight] { &self.lights }
+    /// Scatter-only beams (`render::Renderer::set_volumetric_beams`).
+    pub fn beams(&self) -> &[LocalLight] { &self.beams }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, now: f32) -> Result<(), String> {
         self.stands.flush(gpu, renderer, scene)?;
