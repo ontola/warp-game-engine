@@ -3,6 +3,12 @@
 //! pickup's colour from where it was dropped (52 m up) down to where it
 //! lands, pulsing, with a coloured omni light on the landing spot. It stays
 //! for the pickup's whole life, so players see where the next one falls.
+//!
+//! Volumetric: the column is a bright core in a faint wider shell (a soft
+//! edge instead of a hard tube), and at night, when the arena air scatters
+//! (`Lighting::volumetric`), a scatter-only searchlight from the landing
+//! spot shines up along it, brightest near the ground, and the ground light
+//! glows in the air around the pickup.
 use glam::{Affine3A, Quat, Vec3};
 use growing_guns::{Pickup, PickupKind, World, PICKUPS};
 use render::headlights::LocalLight;
@@ -14,8 +20,16 @@ const PER_KIND: usize = 4;
 /// Godot `CylinderMesh` radii (height is the sky-to-ground distance).
 const TOP_RADIUS: f32 = 0.12;
 const BOTTOM_RADIUS: f32 = 0.36;
-/// Godot albedo alpha.
-const ALPHA: f32 = 0.78;
+/// Godot albedo alpha for the core; the shells (radius times `scale`)
+/// fade it out: (scale, alpha).
+const SHELLS: [(f32, f32); 2] = [(1.0, 0.78), (1.9, 0.08)];
+/// Scatter-only searchlight per beam, up from the landing spot: half
+/// angles of its soft (inner) and outer edge, candela (unshadowed; tuned
+/// at `sky night`) and reach.
+const HAZE_INNER_DEG: f32 = 0.6;
+const HAZE_OUTER_DEG: f32 = 2.2;
+const HAZE_CD: f32 = 2.0e7;
+const HAZE_RANGE: f32 = 60.0;
 /// Nits for Godot's `emission_energy_multiplier` 13 (its pulse is
 /// 11 + 2.5 sin(4.2 t), carried here by the light and a slight swell).
 const NITS: f32 = 6_000.0;
@@ -44,7 +58,9 @@ pub(super) fn beam_color(kind: PickupKind) -> [f32; 3] {
 
 fn linear(c: [f32; 3]) -> Vec3 { Vec3::from(c.map(|v| v.powf(2.2))) }
 
-pub(super) struct Beams { first: usize, meshes: [usize; 7], lights: Vec<LocalLight> }
+pub(super) struct Beams { first: usize, meshes: [[usize; 2]; 7], lights: Vec<LocalLight>, haze: Vec<LocalLight> }
+
+const SLOTS_PER_KIND: usize = PER_KIND * SHELLS.len();
 
 /// Where a pickup comes down: straight below its drop point.
 fn landing(world: &World, p: &Pickup) -> Vec3 {
@@ -58,28 +74,31 @@ fn landing(world: &World, p: &Pickup) -> Vec3 {
 
 impl Beams {
     pub fn reserve(scene: &mut Scene) -> Self {
-        let meshes = PICKUPS.map(|kind| {
+        let meshes = PICKUPS.map(|kind| SHELLS.map(|(scale, alpha)| {
             let m = super::super::glow(scene, linear(beam_color(kind)).to_array(), NITS);
             // The column is seen from inside and out as it towers over the
             // arena; additive so it never darkens what is behind it.
-            scene.set_material_additive(m, ALPHA, true);
-            scene.add_mesh(&render::primitives::cylinder(m, TOP_RADIUS, BOTTOM_RADIUS, 12).mesh())
-        });
+            scene.set_material_additive(m, alpha, true);
+            scene.add_mesh(&render::primitives::cylinder(m, TOP_RADIUS * scale, BOTTOM_RADIUS * scale, 12).mesh())
+        }));
         let first = scene.instances.len();
-        for mesh in meshes {
+        for kind in meshes {
             for _ in 0..PER_KIND {
-                // Transparency registers triangle owners once at startup:
-                // dormant slots keep their mesh, zero scale hides them.
-                scene.add_instance(mesh, Affine3A::from_scale(Vec3::ZERO));
-                scene.instances.last_mut().unwrap().flags |= NO_SHADOW;
+                for mesh in kind {
+                    // Transparency registers triangle owners once at startup:
+                    // dormant slots keep their mesh, zero scale hides them.
+                    scene.add_instance(mesh, Affine3A::from_scale(Vec3::ZERO));
+                    scene.instances.last_mut().unwrap().flags |= NO_SHADOW;
+                }
             }
         }
-        Self { first, meshes, lights: Vec::new() }
+        Self { first, meshes, lights: Vec::new(), haze: Vec::new() }
     }
 
     pub fn pose(&mut self, scene: &mut Scene, world: &World, clock: f32) {
         let mut used = [0usize; 7];
         self.lights.clear();
+        self.haze.clear();
         let pulse = (clock * 4.2).sin();
         for p in &world.pickups {
             let k = PICKUPS.iter().position(|&q| q == p.kind).unwrap_or(0);
@@ -90,24 +109,33 @@ impl Beams {
                 intensity_cd: color * (LIGHT_ENERGY * ENERGY_CD * (1.0 + 0.15 * pulse)),
                 range_m: LIGHT_RANGE, inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 0.2, falloff: 1.0,
             });
+            self.haze.push(LocalLight {
+                position: land + Vec3::Y * 0.3, direction: Vec3::Y,
+                intensity_cd: color * (HAZE_CD * (1.0 + 0.2 * pulse)),
+                range_m: HAZE_RANGE, inner_cos: HAZE_INNER_DEG.to_radians().cos(), outer_cos: HAZE_OUTER_DEG.to_radians().cos(),
+                source_radius_m: 0.2, falloff: 1.0,
+            });
+            let span = (SKY_Y - land.y).max(0.5);
             if used[k] >= PER_KIND { continue; }
             let sky = Vec3::new(land.x, SKY_Y, land.z);
-            let height = (sky.y - land.y).max(0.5);
             let swell = 1.0 + 0.08 * pulse;
-            let xf = Affine3A::from_scale_rotation_translation(Vec3::new(swell, height, swell), Quat::IDENTITY, (sky + land) * 0.5);
-            scene.update_instance(self.first + k * PER_KIND + used[k], self.meshes[k], xf);
+            let xf = Affine3A::from_scale_rotation_translation(Vec3::new(swell, span, swell), Quat::IDENTITY, (sky + land) * 0.5);
+            let base = self.first + k * SLOTS_PER_KIND + used[k] * SHELLS.len();
+            for (s, &mesh) in self.meshes[k].iter().enumerate() { scene.update_instance(base + s, mesh, xf); }
             used[k] += 1;
         }
         for (k, &n) in used.iter().enumerate() {
-            for slot in n..PER_KIND {
-                let i = self.first + k * PER_KIND + slot;
-                if scene.instances[i].scale > 0.0 { scene.update_instance(i, self.meshes[k], Affine3A::from_scale(Vec3::ZERO)); }
+            for slot in n * SHELLS.len()..SLOTS_PER_KIND {
+                let i = self.first + k * SLOTS_PER_KIND + slot;
+                if scene.instances[i].scale > 0.0 { scene.update_instance(i, self.meshes[k][slot % SHELLS.len()], Affine3A::from_scale(Vec3::ZERO)); }
             }
         }
     }
 
     /// The ground lights, one per pickup.
     pub fn lights(&self) -> &[LocalLight] { &self.lights }
+    /// The scatter-only haze spots, one per pickup.
+    pub fn haze(&self) -> &[LocalLight] { &self.haze }
 }
 
 /// Godot's per-kind pickup visual (`_build_visual`): unshaded emissive

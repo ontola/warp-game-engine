@@ -48,8 +48,8 @@ const MAX_TRANSIENT_LIGHTS: usize = MAX_LIGHTS - 4 - lava::MAX_LAVA_LIGHTS;
 /// night captures. At most 32 lights scatter (the renderer's limit; local
 /// lights before beams): 4 floods + 14 lava + 12 beams leaves the beacons out.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Scatter { pub flood: f32, pub beam: f32, pub lava: f32, pub beacon: f32 }
-impl Default for Scatter { fn default() -> Self { Self { flood: 0.2, beam: 1.0, lava: 1.0, beacon: 0.0 } } }
+pub struct Scatter { pub flood: f32, pub beam: f32, pub lava: f32, pub beacon: f32, pub pickup: f32 }
+impl Default for Scatter { fn default() -> Self { Self { flood: 0.2, beam: 1.0, lava: 1.0, beacon: 0.0, pickup: 4.0 } } }
 
 fn srgb_to_linear(c: [f32; 3]) -> [f32; 3] { c.map(|v| v.powf(2.2)) }
 fn cube(scene: &mut Scene, material: u32) -> usize { scene.add_mesh(&primitives::cube(material).mesh()) }
@@ -282,17 +282,21 @@ impl Visuals {
         l.extend(self.arena.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         w.resize(l.len(), scatter.beacon);
         l.extend(self.things.pickup_lights().iter().take(MAX_LIGHTS - l.len()).copied());
-        w.resize(l.len(), scatter.beacon);
+        w.resize(l.len(), scatter.pickup);
         let room = MAX_LIGHTS - l.len();
         l.extend(self.fx.flash_lights(room));
         w.resize(l.len(), 0.0);
         (l, w)
     }
 
-    /// The floodlight beams that only scatter (night volumetric light).
+    /// The floodlight beams and the pickups' drop-beam searchlights, which
+    /// only scatter (night volumetric light).
     pub fn volumetric_beams(&self, scatter: Scatter) -> Vec<LocalLight> {
         let flood = self.flood * scatter.beam;
-        self.stadium.beams().iter().map(|b| LocalLight { intensity_cd: b.intensity_cd * flood, ..*b }).collect()
+        // The pickups' haze last: the renderer takes at most 32 scattering
+        // lights, so when the lava glows fill the budget the floods keep theirs.
+        let haze = self.things.pickup_haze().iter().map(|b| LocalLight { intensity_cd: (b.intensity_cd * scatter.pickup).min(Vec3::splat(1.0e8)), ..*b });
+        self.stadium.beams().iter().map(|b| LocalLight { intensity_cd: b.intensity_cd * flood, ..*b }).chain(haze).collect()
     }
 
     /// Floodlight strength for the sky (1 for Godot's day).
