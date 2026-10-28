@@ -41,6 +41,11 @@ detail, the measurements and the dead ends are in the
   uploads one under a `HudImage` id (mipmapped linear, or nearest for pixel
   art) and `HudDrawList::image` draws it with a uv rectangle (negative to
   mirror) and a tint. Uploading needs no renderer rebuild.
+- **Screens in the world.** `Scene::add_screen_texture` reserves an albedo
+  layer; `screen::Screen::draw` renders a HUD list (2048 square) into it
+  and rebuilds its mips on the GPU, after the renderer exists. Put it on
+  `primitives::quad` (uv top-left is the list's top-left) with an EMISSIVE
+  material for a glowing TV, or a plain one for a printed sign or cover.
 
 ## Light
 
