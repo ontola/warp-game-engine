@@ -65,11 +65,13 @@ pub struct GpuCarMaterial {
     pub axles: [f32; 4],
 }
 
-/// glTF alphaMode=BLEND data, separate from the fixed GPU material layout.
+/// Forward blend data, separate from the fixed GPU material layout.
 #[derive(Clone, Copy, Debug)]
 pub struct BlendMaterial {
     pub alpha: f32,
     pub double_sided: bool,
+    /// Add source radiance without attenuating the destination.
+    pub additive: bool,
 }
 
 #[repr(C)]
@@ -534,7 +536,15 @@ impl Scene {
     /// The same material is excluded from both depth/shadow and solid proxies.
     pub fn set_material_blend(&mut self, material: u32, alpha: f32, double_sided: bool) {
         self.materials[material as usize].flags |= BLEND | NO_AMBIENT_OCCLUSION;
-        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided });
+        self.blended_materials.insert(material, BlendMaterial { alpha: alpha.clamp(0.0, 1.0), double_sided, additive: false });
+    }
+
+    /// Add continuous-alpha radiance without obscuring the scene behind it.
+    /// EMISSIVE surfaces use only their emission, attenuated by fog transmission.
+    /// Like ordinary blending, this excludes opaque depth, shadows and proxies.
+    pub fn set_material_additive(&mut self, material: u32, alpha: f32, double_sided: bool) {
+        self.set_material_blend(material, alpha, double_sided);
+        self.blended_materials.get_mut(&material).unwrap().additive = true;
     }
 
     /// Load an image file into the texture array; returns its layer.

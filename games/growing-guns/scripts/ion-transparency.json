@@ -1,0 +1,13 @@
+{
+  "size": [960, 540],
+  "steps": [
+    {"cmd": ["bots pause", "cage", "health 0 50000", "special 0 ion_cannon"], "ticks": 30},
+    {"cmd": "aim 0 0 0 0", "capture": "before.png", "state": "before.json"},
+    {"ticks": 1, "hold": ["LEFT_TRIGGER"]},
+    {"expect": "/strikes", "min": 1},
+    {"ticks": 45, "capture": "charge.png", "state": "charge.json", "note": "Scene must remain visible through the outer beam."},
+    {"ticks": 150, "capture": "late-charge.png"},
+    {"ticks": 60, "capture": "after.png", "note": "No beam should remain after the strike."},
+    {"expect": "/strikes", "equals": 0}
+  ]
+}
