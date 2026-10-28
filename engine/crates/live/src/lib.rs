@@ -19,7 +19,8 @@
 //!
 //! Generic tools: `describe`, `state`, `query`, `screenshot`, `run_luau`,
 //! `list_files`, `read_file`, `write_file`, `reload_shaders`, `logs`,
-//! `play_sound`, `set_param`; each is listed only when the game supports it.
+//! `play_sound`, `set_param`, `render_sound`; each is listed only when the
+//! game supports it.
 mod console;
 mod files;
 mod server;
@@ -147,6 +148,9 @@ pub enum Content {
 
 pub type Reply = Result<Vec<Content>, String>;
 
+/// Slow work the game hands back to run off its thread (an offline render).
+pub type Work = Box<dyn FnOnce() -> Reply + Send>;
+
 /// A sound the game can play, with its parameters and defaults.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct SoundInfo {
@@ -165,6 +169,14 @@ pub trait SoundHook {
     /// Change a parameter of `sound` (its default for later plays, and any
     /// playing voice the game can reach).
     fn set_param(&mut self, sound: &str, param: &str, value: f32) -> Result<String, String>;
+    /// Render `name` offline (no speakers) for `seconds` (None: its own
+    /// length) and measure it: levels and a text spectrogram, as
+    /// `warp-audio render` prints. Return the work; the server runs it off
+    /// the game thread.
+    fn render(&mut self, name: &str, params: &[(String, f32)], seconds: Option<f32>) -> Result<Work, String> {
+        let _ = (params, seconds);
+        Err(format!("this game cannot render {name} offline"))
+    }
 }
 
 /// The game side, called on the game thread from [`Live::serve`].
@@ -229,12 +241,14 @@ pub(crate) enum Job {
     Sounds,
     Play { name: String, params: Vec<(String, f32)>, at: Option<[f32; 3]> },
     SetParam { sound: String, param: String, value: f32 },
+    Render { name: String, params: Vec<(String, f32)>, seconds: Option<f32> },
 }
 
 pub(crate) enum Answer {
     Done(Reply),
     Value(Result<Value, String>),
     Frame { size: [u32; 2], rgba: Vec<u8> },
+    Work(Work),
 }
 
 pub(crate) struct Request { pub job: Job, pub reply: oneshot::Sender<Answer> }
@@ -340,6 +354,11 @@ impl Live {
                     Some(s) => s.set_param(&sound, &param, value).map(|t| vec![Content::Text(t)]),
                     None => Err("this game has no sound hook".into()),
                 }),
+                Job::Render { name, params, seconds } => match game.sound().map(|s| s.render(&name, &params, seconds)) {
+                    Some(Ok(w)) => Answer::Work(w),
+                    Some(Err(e)) => Answer::Done(Err(e)),
+                    None => Answer::Done(Err("this game has no sound hook".into())),
+                },
             };
             let _ = reply.send(answer);
         }
