@@ -152,13 +152,12 @@ impl Look {
         }
     }
 
-    pub fn barrel_length(&self) -> f32 { self.barrel_length }
 }
 
-/// A built gun: parts in gun space, where bullets leave, how far the bolt
-/// travels and where it rests.
+/// A built gun: parts in gun space, how far the bolt travels, whether the
+/// barrels spin, and the barrel length (the view pulls long guns back).
 #[derive(Clone, Debug, Default)]
-pub struct Build { pub parts: Vec<Part>, pub muzzle: Vec3, pub bolt_travel: f32, pub minigun: bool, pub barrel_length: f32 }
+pub struct Build { pub parts: Vec<Part>, pub bolt_travel: f32, pub minigun: bool, pub barrel_length: f32 }
 
 struct B { parts: Vec<Part> }
 impl B {
@@ -199,7 +198,6 @@ pub fn build(l: &Look) -> Build {
     let front = -rs.z * 0.5;
     let barrel_z = front - l.barrel_length * 0.5;
     let muzzle_z = front - l.barrel_length - MUZZLE_LENGTH * 0.5;
-    let muzzle = Vec3::new(0.0, 0.0, muzzle_z - MUZZLE_LENGTH * 0.5);
     // Picatinny rail with its teeth.
     let rail_y = rs.y * 0.5 + RAIL_HEIGHT * 0.5;
     let rail = Vec3::new((rs.x * 0.8).min(0.04), RAIL_HEIGHT, rs.z * 0.85);
@@ -278,7 +276,7 @@ pub fn build(l: &Look) -> Build {
         b.cyl(Shape::Cyl, bell_r * 0.85, 0.005, Vec3::new(0.0, sy, -SCOPE_LENGTH * 0.5 - bell_len - 0.004), Lens, Motion::Fixed);
     }
     b.bx(INDICATOR, Vec3::new(l.receiver.x * 0.5 + INDICATOR.x * 0.5, 0.0, 0.0), Indicator);
-    Build { parts: b.parts, muzzle, bolt_travel: travel, minigun: l.minigun, barrel_length: l.barrel_length }
+    Build { parts: b.parts, bolt_travel: travel, minigun: l.minigun, barrel_length: l.barrel_length }
 }
 
 /// Godot `_add_barrel_shroud`: four slotted plates around the barrels.

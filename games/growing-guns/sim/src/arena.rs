@@ -263,9 +263,9 @@ impl Arena {
         self.blocks.push(Block::new(pos, size, yaw, Kind::Building));
         let ledge_face = (face + 2) % 4;
         let ang = yaw + ledge_face as f32 * PI * 0.5;
-        let off = if ledge_face % 2 == 0 { size.x } else { size.z } * 0.5 + 1.0;
+        let off = if ledge_face.is_multiple_of(2) { size.x } else { size.z } * 0.5 + 1.0;
         let ledge = pos + Vec3::new(ang.cos() * off, size.y * 0.6 - size.y * 0.5, ang.sin() * off);
-        let align = if ledge_face % 2 == 0 { PI * 0.5 } else { 0.0 };
+        let align = if ledge_face.is_multiple_of(2) { PI * 0.5 } else { 0.0 };
         self.blocks.push(Block::new(ledge, Vec3::new(6.0, 0.5, 2.0), yaw + align, Kind::Ledge));
         self.lights.push((pos + Vec3::new(0.0, size.y * 0.5 + 2.0, 0.0), light));
     }

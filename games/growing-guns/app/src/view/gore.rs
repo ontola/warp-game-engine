@@ -157,5 +157,4 @@ impl Gore {
         for pc in self.pieces.drain(..) { phys.remove(pc.body); self.slots.remove(scene, pc.slot); }
     }
 
-    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene) -> Result<(), String> { self.slots.flush(gpu, renderer, scene) }
 }
