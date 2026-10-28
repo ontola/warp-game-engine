@@ -152,7 +152,7 @@ async fn message(shared: &Shared, m: Value) -> Option<Value> {
             Ok(json!({
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false }, "logging": {} },
-                "serverInfo": { "name": format!("warp-live-{}", shared.manifest.name), "title": format!("{} (Warp live control)", shared.manifest.name), "version": shared.manifest.version },
+                "serverInfo": { "name": format!("warp-live-{}", shared.manifest.name.to_lowercase().replace(' ', "-")), "title": format!("{} (Warp live control)", shared.manifest.name), "version": shared.manifest.version },
                 "instructions": instructions(&shared.manifest),
             }))
         }
@@ -214,6 +214,7 @@ async fn done(shared: &Shared, job: Job, wait: Duration) -> Reply {
         Answer::Done(r) => r,
         Answer::Value(v) => v.map(|v| vec![Content::Json(v)]),
         Answer::Frame { .. } => Err("unexpected frame".into()),
+        Answer::Work(w) => tokio::task::spawn_blocking(w).await.map_err(|e| format!("the work failed: {e}"))?,
     }
 }
 
@@ -272,17 +273,18 @@ async fn call(shared: &Shared, name: &str, args: &Value) -> Reply {
             match ask(shared, Job::Screenshot, FRAME_WAIT).await? {
                 Answer::Frame { size, rgba } => tokio::task::spawn_blocking(move || png(size, rgba, max)).await.map_err(|e| e.to_string())?,
                 Answer::Done(r) => r,
-                Answer::Value(_) => Err("unexpected answer".into()),
+                Answer::Value(_) | Answer::Work(_) => Err("unexpected answer".into()),
             }
+        }
+        "render_sound" => {
+            let name = arg_str(args, "name").ok_or("render_sound needs a sound name (play_sound without a name lists them)")?.to_string();
+            let seconds = args.get("seconds").and_then(Value::as_f64).map(|s| (s as f32).clamp(0.05, 30.0));
+            done(shared, Job::Render { name, params: sound_params(args)?, seconds }, GAME_WAIT).await
         }
         "play_sound" => match arg_str(args, "name") {
             None => done(shared, Job::Sounds, GAME_WAIT).await,
             Some(n) => {
-                let params = match args.get("params") {
-                    Some(Value::Object(o)) => o.iter().map(|(k, v)| v.as_f64().map(|x| (k.clone(), x as f32)).ok_or(format!("param {k} must be a number"))).collect::<Result<Vec<_>, _>>()?,
-                    None | Some(Value::Null) => Vec::new(),
-                    _ => return Err("params must be an object of name: number".into()),
-                };
+                let params = sound_params(args)?;
                 let at = match args.get("at") {
                     Some(Value::Array(a)) if a.len() == 3 => Some([0, 1, 2].map(|k| a[k].as_f64().unwrap_or(0.0) as f32)),
                     None | Some(Value::Null) => None,
@@ -298,6 +300,14 @@ async fn call(shared: &Shared, name: &str, args: &Value) -> Reply {
             done(shared, Job::SetParam { sound, param, value }, GAME_WAIT).await
         }
         _ => done(shared, Job::Call { tool: name.to_string(), args: args.clone() }, GAME_WAIT).await,
+    }
+}
+
+fn sound_params(args: &Value) -> Result<Vec<(String, f32)>, String> {
+    match args.get("params") {
+        Some(Value::Object(o)) => o.iter().map(|(k, v)| v.as_f64().map(|x| (k.clone(), x as f32)).ok_or(format!("param {k} must be a number"))).collect(),
+        None | Some(Value::Null) => Ok(Vec::new()),
+        _ => Err("params must be an object of name: number".into()),
     }
 }
 
@@ -356,8 +366,11 @@ pub(crate) fn tools(m: &Manifest) -> Vec<Value> {
         t.push(("play_sound", "Play a sound once with parameter values; without a name, list the sounds and their parameters.".into(),
             schema(json!({ "name": { "type": "string" }, "params": { "type": "object", "additionalProperties": { "type": "number" } },
                 "at": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "world position; default: at the listener" } }), &[]), false));
-        t.push(("set_param", "Set a sound parameter (its default for later plays, and playing voices).".into(),
+        t.push(("set_param", "Set a sound parameter's default for every later play of that sound (values the game passes per trigger still win).".into(),
             schema(json!({ "sound": { "type": "string" }, "param": { "type": "string" }, "value": { "type": "number" } }), &["sound", "param", "value"]), false));
+        t.push(("render_sound", "Render a sound offline (silently) and measure it: length, peak, RMS, loudest 50 ms, spectral centroid and a text spectrogram (rows are bands from 40 Hz to 20 kHz, columns time), so you can judge an edit without hearing it.".into(),
+            schema(json!({ "name": { "type": "string" }, "params": { "type": "object", "additionalProperties": { "type": "number" } },
+                "seconds": { "type": "number", "description": "default: the sound's own length" } }), &["name"]), true));
     }
     let mut out: Vec<Value> = t.into_iter().map(|(name, desc, input, ro)| tool_json(name, &desc, input, ro)).collect();
     out.extend(m.tools.iter().map(|g| tool_json(&g.name, &g.description, g.input_schema.clone(), g.read_only)));

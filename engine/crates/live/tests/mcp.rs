@@ -26,6 +26,12 @@ impl SoundHook for Fake {
     fn sounds(&mut self) -> Vec<SoundInfo> { vec![SoundInfo { name: "shot".into(), params: vec![("damage".into(), 1.0)], about: String::new() }] }
     fn play(&mut self, name: &str, params: &[(String, f32)], _at: Option<[f32; 3]>) -> Result<String, String> { Ok(format!("played {name} {params:?}")) }
     fn set_param(&mut self, _: &str, _: &str, v: f32) -> Result<String, String> { self.volume = v; Ok("set".into()) }
+    fn render(&mut self, name: &str, _: &[(String, f32)], seconds: Option<f32>) -> Result<live::Work, String> {
+        let name = name.to_string();
+        // Runs on the server's blocking pool, not the game thread.
+        let game = std::thread::current().id();
+        Ok(Box::new(move || Ok(vec![Content::Text(format!("rendered {name} for {seconds:?} off the game thread: {}", std::thread::current().id() != game))])))
+    }
 }
 
 /// One HTTP/1.1 request; returns status, headers and body.
@@ -121,7 +127,7 @@ fn mcp_handshake_tools_and_calls() {
 
     let list = rpc(2, "tools/list", json!({}));
     let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for n in ["describe", "state", "query", "screenshot", "run_luau", "list_files", "read_file", "write_file", "reload_shaders", "logs", "play_sound", "set_param", "jump"] {
+    for n in ["describe", "state", "query", "screenshot", "run_luau", "list_files", "read_file", "write_file", "reload_shaders", "logs", "play_sound", "set_param", "render_sound", "jump"] {
         assert!(names.contains(&n), "{n} missing from {names:?}");
     }
     assert!(list["result"]["tools"].as_array().unwrap().iter().all(|t| t["inputSchema"]["type"] == "object"));
@@ -149,6 +155,7 @@ fn mcp_handshake_tools_and_calls() {
     assert!(text(&tool(13, "play_sound", json!({}))).contains("\"damage\""));
     assert!(text(&tool(14, "play_sound", json!({ "name": "shot", "params": { "damage": 3 } }))).contains("played shot"));
     tool(15, "set_param", json!({ "sound": "shot", "param": "damage", "value": 0.5 }));
+    assert_eq!(text(&tool(21, "render_sound", json!({ "name": "shot", "seconds": 0.5 }))), "rendered shot for Some(0.5) off the game thread: true");
     let logs = text(&tool(16, "logs", json!({ "filter": "jump" })));
     assert!(logs.contains("jump {\"times\":2} -> ok"), "{logs}");
     // Unknown tools are protocol errors; unknown methods too.
