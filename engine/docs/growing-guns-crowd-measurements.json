@@ -1,0 +1,233 @@
+{
+  "scope": "RTX 5070 Ti Vulkan; native 4K 4 views; seed52; warmup30 measured120; serialized offscreen; 120/120 GPU samples each",
+  "runs": [
+    {
+      "mode": "blocks",
+      "repeat": 1,
+      "geometry": {
+        "alive": 8359,
+        "alive_source_triangle_upper_bound": 401232,
+        "instances_per_person": 2,
+        "max_clusters_per_person": 4,
+        "max_root_triangles_per_person": 48,
+        "max_source_triangles_per_person": 48,
+        "seated": 8363,
+        "shared_looks": 33
+      },
+      "frame_ms": {
+        "cpu_median": 3.08,
+        "cpu_p95": 5.45,
+        "wall_median": 10.09,
+        "wall_p95": 14.08,
+        "gpu_median": 4.0,
+        "gpu_p95": 7.75
+      },
+      "pass_means_ms": {
+        "shade": 1.412,
+        "raster": 0.62,
+        "tonemap": 0.611,
+        "bloom": 0.546,
+        "near shadow cull": 0.374,
+        "taa": 0.341,
+        "near shadow raster": 0.333,
+        "cull": 0.253,
+        "fx": 0.247,
+        "shadow raster": 0.088,
+        "shadow cull": 0.045,
+        "weighted character skinning": 0.02,
+        "crowd": 0.018,
+        "live screens": 0.011
+      }
+    },
+    {
+      "mode": "people",
+      "repeat": 1,
+      "geometry": {
+        "alive": 8359,
+        "alive_source_triangle_upper_bound": 1571492,
+        "instances_per_person": 2,
+        "max_clusters_per_person": 4,
+        "max_root_triangles_per_person": 188,
+        "max_source_triangles_per_person": 188,
+        "seated": 8363,
+        "shared_looks": 33
+      },
+      "frame_ms": {
+        "cpu_median": 3.01,
+        "cpu_p95": 6.05,
+        "wall_median": 10.43,
+        "wall_p95": 18.44,
+        "gpu_median": 4.14,
+        "gpu_p95": 8.02
+      },
+      "pass_means_ms": {
+        "shade": 1.588,
+        "raster": 0.788,
+        "bloom": 0.68,
+        "tonemap": 0.565,
+        "taa": 0.541,
+        "near shadow raster": 0.327,
+        "cull": 0.229,
+        "fx": 0.178,
+        "near shadow cull": 0.171,
+        "shadow raster": 0.088,
+        "shadow cull": 0.045,
+        "weighted character skinning": 0.02,
+        "crowd": 0.018,
+        "live screens": 0.009
+      }
+    },
+    {
+      "mode": "blocks",
+      "repeat": 2,
+      "geometry": {
+        "alive": 8359,
+        "alive_source_triangle_upper_bound": 401232,
+        "instances_per_person": 2,
+        "max_clusters_per_person": 4,
+        "max_root_triangles_per_person": 48,
+        "max_source_triangles_per_person": 48,
+        "seated": 8363,
+        "shared_looks": 33
+      },
+      "frame_ms": {
+        "cpu_median": 2.44,
+        "cpu_p95": 4.21,
+        "wall_median": 9.57,
+        "wall_p95": 15.16,
+        "gpu_median": 3.83,
+        "gpu_p95": 7.76
+      },
+      "pass_means_ms": {
+        "shade": 1.296,
+        "bloom": 0.686,
+        "raster": 0.62,
+        "taa": 0.418,
+        "tonemap": 0.381,
+        "near shadow raster": 0.333,
+        "near shadow cull": 0.268,
+        "cull": 0.226,
+        "fx": 0.218,
+        "shadow raster": 0.088,
+        "shadow cull": 0.045,
+        "live screens": 0.034,
+        "weighted character skinning": 0.024,
+        "crowd": 0.018
+      }
+    },
+    {
+      "mode": "people",
+      "repeat": 2,
+      "geometry": {
+        "alive": 8359,
+        "alive_source_triangle_upper_bound": 1571492,
+        "instances_per_person": 2,
+        "max_clusters_per_person": 4,
+        "max_root_triangles_per_person": 188,
+        "max_source_triangles_per_person": 188,
+        "seated": 8363,
+        "shared_looks": 33
+      },
+      "frame_ms": {
+        "cpu_median": 2.85,
+        "cpu_p95": 4.16,
+        "wall_median": 10.78,
+        "wall_p95": 14.47,
+        "gpu_median": 4.35,
+        "gpu_p95": 7.98
+      },
+      "pass_means_ms": {
+        "shade": 1.805,
+        "raster": 0.789,
+        "bloom": 0.683,
+        "taa": 0.677,
+        "tonemap": 0.398,
+        "near shadow raster": 0.326,
+        "cull": 0.245,
+        "fx": 0.224,
+        "near shadow cull": 0.174,
+        "shadow raster": 0.088,
+        "shadow cull": 0.045,
+        "live screens": 0.035,
+        "weighted character skinning": 0.02,
+        "crowd": 0.018
+      }
+    },
+    {
+      "mode": "blocks",
+      "repeat": 3,
+      "geometry": {
+        "alive": 8359,
+        "alive_source_triangle_upper_bound": 401232,
+        "instances_per_person": 2,
+        "max_clusters_per_person": 4,
+        "max_root_triangles_per_person": 48,
+        "max_source_triangles_per_person": 48,
+        "seated": 8363,
+        "shared_looks": 33
+      },
+      "frame_ms": {
+        "cpu_median": 3.12,
+        "cpu_p95": 5.89,
+        "wall_median": 10.17,
+        "wall_p95": 14.26,
+        "gpu_median": 3.85,
+        "gpu_p95": 7.59
+      },
+      "pass_means_ms": {
+        "shade": 1.332,
+        "raster": 0.624,
+        "bloom": 0.557,
+        "taa": 0.456,
+        "tonemap": 0.412,
+        "near shadow raster": 0.331,
+        "near shadow cull": 0.252,
+        "cull": 0.231,
+        "fx": 0.208,
+        "shadow raster": 0.088,
+        "shadow cull": 0.045,
+        "live screens": 0.035,
+        "weighted character skinning": 0.02,
+        "crowd": 0.018
+      }
+    },
+    {
+      "mode": "people",
+      "repeat": 3,
+      "geometry": {
+        "alive": 8359,
+        "alive_source_triangle_upper_bound": 1571492,
+        "instances_per_person": 2,
+        "max_clusters_per_person": 4,
+        "max_root_triangles_per_person": 188,
+        "max_source_triangles_per_person": 188,
+        "seated": 8363,
+        "shared_looks": 33
+      },
+      "frame_ms": {
+        "cpu_median": 2.92,
+        "cpu_p95": 5.84,
+        "wall_median": 10.31,
+        "wall_p95": 15.61,
+        "gpu_median": 4.2,
+        "gpu_p95": 7.77
+      },
+      "pass_means_ms": {
+        "shade": 1.679,
+        "raster": 0.786,
+        "bloom": 0.598,
+        "taa": 0.589,
+        "tonemap": 0.385,
+        "near shadow raster": 0.327,
+        "cull": 0.233,
+        "fx": 0.22,
+        "near shadow cull": 0.186,
+        "shadow raster": 0.088,
+        "shadow cull": 0.045,
+        "weighted character skinning": 0.02,
+        "crowd": 0.018,
+        "live screens": 0.008
+      }
+    }
+  ]
+}

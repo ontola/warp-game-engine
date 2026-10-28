@@ -66,6 +66,7 @@ pub struct Crowd {
     dirty: Option<(usize, usize)>,
     excitement: f32,
     panic: f32,
+    arm_pivot: f32,
     ring: Vec2,
     flee: [[f32; 4]; 4],
     flee_start: [f32; 4],
@@ -88,7 +89,7 @@ impl Crowd {
         }
         scene.crowd = Some(CrowdSpec { first: first as u32, capacity: capacity as u32 });
         Crowd { first, capacity, count: 0, seats: Vec::new(), seats_dirty: true, positions: Vec::new(), alive: vec![0; capacity], dirty: Some((0, capacity)),
-            excitement: 0.0, panic: 0.0, ring: Vec2::ZERO, flee: [[0.0; 4]; 4], flee_start: [-1e6; 4], flee_hold: [FLEE_HOLD; 4] }
+            excitement: 0.0, panic: 0.0, arm_pivot: 0.0, ring: Vec2::ZERO, flee: [[0.0; 4]; 4], flee_start: [-1e6; 4], flee_hold: [FLEE_HOLD; 4] }
     }
 
     /// Seat a new crowd (a new level); everyone alive, nobody fleeing.
@@ -117,6 +118,10 @@ impl Crowd {
 
     /// Body language: 0..1 each (the crowd sound's enthusiasm and fear).
     pub fn mood(&mut self, excitement: f32, panic: f32) { self.excitement = excitement.clamp(0.0, 1.0); self.panic = panic.clamp(0.0, 1.0); }
+
+    /// Rotate both arms forward around this local shoulder height. Zero keeps
+    /// the legacy translating pose. Arm meshes must share this pivot plane.
+    pub fn arm_pivot(&mut self, height: f32) { self.arm_pivot = height.max(0.0); }
 
     pub fn kill(&mut self, i: usize) {
         if std::mem::replace(&mut self.alive[i], 0) != 0 {
@@ -173,7 +178,7 @@ impl Crowd {
         let alive = self.dirty.take().map(|(a, b)| (a, &self.alive[a..b]));
         let seats = std::mem::take(&mut self.seats_dirty).then_some(bytemuck::cast_slice::<_, u8>(&self.seats));
         let u = Uniform {
-            mood: [time, self.excitement, self.panic, 0.0],
+            mood: [time, self.excitement, self.panic, self.arm_pivot],
             ring: [self.ring.x, self.ring.y, 0.0, 0.0],
             // All reserved seats run: unseated ones are dead and empty out.
             counts: [self.capacity as u32, self.first as u32, 0, 0],

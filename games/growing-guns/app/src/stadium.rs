@@ -159,10 +159,18 @@ impl StadiumVisuals {
         // Spectators: torso + head and the two arms, one look per tunic
         // colour and shade (Godot tints per instance; Warp per material).
         let mut looks = Vec::new();
+        let detailed = std::env::var("GG_CROWD_MODE").as_deref() != Ok("blocks");
         for c in CROWD_COLORS.iter().chain(CROWD_ACCENTS.iter()) {
-            for &sh in &SHADES {
+            for (variant, &sh) in SHADES.iter().enumerate() {
                 let tunic = mat(scene, c.map(|v| v * sh), 1.0);
-                let skin = mat(scene, [0.68, 0.52, 0.40].map(|v| v * sh), 1.0);
+                let skin_tint = if detailed { [[0.76, 0.59, 0.46], [0.48, 0.31, 0.21], [0.64, 0.44, 0.30]][variant] } else { [0.68, 0.52, 0.40].map(|v| v * sh) };
+                let skin = mat(scene, skin_tint, 1.0);
+                if detailed {
+                    let dark = mat(scene, [[0.16, 0.18, 0.23], [0.24, 0.17, 0.11], [0.20, 0.22, 0.16]][variant], 1.0);
+                    let (body, arms) = crate::spectators::meshes(tunic, skin, dark, variant);
+                    looks.push((scene.add_mesh(&body), scene.add_mesh(&arms)));
+                    continue;
+                }
                 let torso = block(tunic, Vec3::new(0.0, 0.31, 0.0), Vec3::new(0.30, 0.62, 0.19));
                 let head = block(skin, Vec3::new(0.0, 0.78, 0.0), Vec3::new(0.22, 0.24, 0.20));
                 let body = scene.add_mesh(&ClusterMesh::build(&[torso.part(), head.part()]));
@@ -183,7 +191,8 @@ impl StadiumVisuals {
         for i in 0..tv.capacity() { scene.instances[tv.first + i].flags |= NO_SHADOW; }
         let marks = Slots::reserve(scene, MARKS);
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
-        let crowd = Crowd::reserve(scene, CROWD_MAX);
+        let mut crowd = Crowd::reserve(scene, CROWD_MAX);
+        if detailed { crowd.arm_pivot(0.655); }
         StadiumVisuals { stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
@@ -401,6 +410,27 @@ impl StadiumVisuals {
         self.tv.flush(gpu, renderer, scene)?;
         self.marks.flush(gpu, renderer, scene)?;
         self.crowd.flush(gpu, renderer, now)
+    }
+
+    /// For state dumps.
+    pub fn geometry_counts(&self, scene: &Scene) -> serde_json::Value {
+        let (mut source, mut root, mut clusters) = (0usize, 0usize, 0usize);
+        for &(body, arms) in &self.looks {
+            let mut counts = [0usize; 3];
+            for mesh in [body, arms] {
+                let m = &scene.meshes[mesh];
+                for c in &scene.clusters[m.first_cluster as usize..(m.first_cluster + m.cluster_count) as usize] {
+                    if c.own_error == 0.0 { counts[0] += c.tri_count as usize; }
+                    if c.parent_error > 1e30 { counts[1] += c.tri_count as usize; }
+                    counts[2] += 1;
+                }
+            }
+            source = source.max(counts[0]); root = root.max(counts[1]); clusters = clusters.max(counts[2]);
+        }
+        serde_json::json!({"seated": self.crowd.len(), "alive": self.crowd.alive(),
+            "instances_per_person": 2, "shared_looks": self.looks.len(),
+            "max_source_triangles_per_person": source, "max_root_triangles_per_person": root,
+            "max_clusters_per_person": clusters, "alive_source_triangle_upper_bound": self.crowd.alive() * source})
     }
 
     /// For state dumps.
