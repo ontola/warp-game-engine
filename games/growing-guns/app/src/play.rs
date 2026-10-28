@@ -160,6 +160,8 @@ impl app::Game for Gg {
         let cameras = self.slots.iter().map(|&s| self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha))).collect();
         let mut list = HudDrawList::new(frame.size);
         for (k, (rect, &s)) in rects.iter().zip(&self.slots).enumerate() {
+            let flash = self.vis.ion_flash(self.world.players[s].eye());
+            if flash > 0.0 { list.rect(*rect, [0.96, 0.99, 1.0, flash], *rect); }
             hud::view(&mut list, &self.world, s, *rect, &self.fb[s], self.menus.get(k).map_or(0, |m| m.focus));
         }
         let status = self.session.status(&self.slots);

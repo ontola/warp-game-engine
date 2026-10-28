@@ -55,7 +55,12 @@ fn srgb(c: vec3<f32>) -> vec3<f32> {
 fn display(px: vec2<i32>) -> vec3<f32> {
     let size = vec2<i32>(textureDimensions(hdr));
     let p=clamp(px,vec2<i32>(0),size-1);
-    var c = textureLoad(hdr, p, 0).rgb * tone.exposure;
+    // Additive overlap can exceed fp16 even when individual effects are
+    // finite. Contain it before AgX mixes channels and sharpening samples
+    // neighbours. This cannot recover radiance already lost to overflow.
+    let raw = textureLoad(hdr, p, 0).rgb;
+    let finite = select(vec3<f32>(0.0), clamp(raw, vec3<f32>(0.0), vec3<f32>(65504.0)), raw == raw);
+    var c = finite * tone.exposure;
     if tone.bloom_strength>0.0 {
         // Bloom already uses this frame's exposure. Never expose it twice.
         // Separate per-view images and clamp sampling prohibit split bleed.

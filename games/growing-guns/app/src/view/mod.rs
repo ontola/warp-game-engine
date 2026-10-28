@@ -9,6 +9,7 @@ mod characters;
 mod effects;
 mod gore;
 mod guns;
+mod ion;
 mod players;
 mod things;
 
@@ -18,7 +19,7 @@ use audio::sfx::Listener;
 use effects::{EffectsView, BLAST_TINT};
 use glam::{Affine3A, Quat, Vec3};
 use growing_guns::shape::Boxes;
-use growing_guns::{Event, World};
+use growing_guns::{Event, ExplosionKind, World};
 use guns::Guns;
 use physics::Physics;
 use players::PlayersView;
@@ -65,6 +66,7 @@ pub struct Visuals {
     players: PlayersView,
     guns: Guns,
     things: things::Things,
+    ion: ion::IonFx,
     /// The colosseum, its crowd and their voice.
     pub stadium: StadiumVisuals,
     /// Seconds on the effects clock for the frame being drawn.
@@ -90,7 +92,7 @@ impl Visuals {
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, stadium, clock: 0.0 };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, guns, things, ion: Default::default(), stadium, clock: 0.0 };
         v.set_arena(world);
         v
     }
@@ -98,6 +100,8 @@ impl Visuals {
     /// Fill the arena from the world's current arena (a new round). Call
     /// `flush` afterwards to upload; the renderer stays.
     pub fn set_arena(&mut self, world: &World) {
+        self.ion.reset();
+        self.fx.blasts.clear();
         self.players.clear(&mut self.scene, &mut self.phys);
         self.phys.clear_bodies();
         self.arena.set(&mut self.scene, &mut self.phys, &mut self.fx, world);
@@ -117,6 +121,7 @@ impl Visuals {
     /// reactions.
     pub fn absorb(&mut self, world: &World, ears: &[Listener]) {
         let now = world.tick as f32 * growing_guns::DT;
+        self.ion.sync(world, &mut self.fx.blasts, now);
         self.fx.debris.advance(growing_guns::DT);
         self.arena.break_chunks(&mut self.scene, &mut self.phys, &mut self.fx, world);
         let s = &mut self.scene;
@@ -142,10 +147,14 @@ impl Visuals {
                         self.arena.scorch(s, xf, c as u32);
                     }
                 }
-                Event::Explosion { pos, radius, .. } => {
+                Event::Explosion { pos, radius, kind, .. } => {
                     // Godot's spawn_bullet_blast: billowing fire and smoke,
                     // flame tongues, embers, heat shell, flash and glow lights.
-                    self.fx.blasts.explosion(now, pos, radius, BLAST_TINT);
+                    if kind == ExplosionKind::Ion {
+                        self.ion.detonate(&mut self.fx.blasts, now, pos, radius);
+                    } else {
+                        self.fx.blasts.explosion(now, pos, radius, BLAST_TINT);
+                    }
                     self.fx.blast_punch(world, now, pos, radius);
                     self.phys.blast(pos, radius, 9.0);
                 }
@@ -235,7 +244,8 @@ impl Visuals {
     /// Blast lights first (they matter most while they last), then the
     /// floodlights, the roof beacons and muzzle flashes.
     pub fn local_lights(&self) -> Vec<LocalLight> {
-        let mut l = self.fx.blasts.lights(self.clock);
+        let mut l = self.ion.lights(self.clock);
+        l.extend(self.fx.blasts.lights(self.clock));
         l.truncate(MAX_LIGHTS);
         l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         l.extend(self.arena.lights().iter().take(MAX_LIGHTS - l.len()).copied());
@@ -243,6 +253,9 @@ impl Visuals {
         l.extend(self.fx.flash_lights(room));
         l
     }
+
+    /// Short, distance-attenuated ion impact flash, separately per viewport.
+    pub fn ion_flash(&self, eye: Vec3) -> f32 { self.ion.flash(self.clock, eye) }
 }
 
 /// Godot's sky_top to horizon; the ground colour is the darkened horizon.
