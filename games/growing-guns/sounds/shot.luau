@@ -33,10 +33,12 @@ local a = expr("clamp(a, 0, 1)", { a = A })
 local dur = expr("clamp((0.08 + 0.08 * log(d) / log(2)) * j / sqrt(v), 0.04, 0.35)", { d = d, j = rand(0.90, 1.12), v = v })
 local env = decay(dur, 1.6)
 
--- Thwack: high-passed, saturated noise burst.
-local raw = white()
+-- Thwack: high-passed, saturated noise burst. The tanh flattens the noise into
+-- nearly full-scale broadband noise, so keep Godot's per-sample level going in
+-- and scale the result to Godot's noise density instead.
+local raw = noise()
 local thwack_drive = expr("j * lerp(0.9, 1.3, clamp((v - 1) / 2, 0, 1))", { j = rand(4, 8), v = v })
-local thwack = expr("tanh(x * g) * 1.5 * exp(-t * k)", {
+local thwack = expr("tanh(x * g) * 1.5 * sqrt(sr / 44100) * exp(-t * k)", {
   x = raw - lowpass1(raw, 434), g = thwack_drive, k = expr("j * sqrt(v)", { j = rand(180, 280), v = v }) })
 
 -- Kick: exponential pitch drop 220 Hz to about 55 Hz (lower for big guns).
