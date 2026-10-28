@@ -281,6 +281,8 @@ impl Visuals {
         w.resize(l.len(), scatter.lava);
         l.extend(self.arena.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         w.resize(l.len(), scatter.beacon);
+        l.extend(self.things.pickup_lights().iter().take(MAX_LIGHTS - l.len()).copied());
+        w.resize(l.len(), scatter.beacon);
         let room = MAX_LIGHTS - l.len();
         l.extend(self.fx.flash_lights(room));
         w.resize(l.len(), 0.0);
