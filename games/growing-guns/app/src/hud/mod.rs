@@ -53,13 +53,16 @@ pub struct Feedback {
     pub highlight: Vec<f32>,
     /// Stat chips per offered card, worked out when the offer opens.
     pub stats: Vec<Vec<String>>,
+    /// The explosion flash (Godot `_explosion_flash_overlay`): alpha now,
+    /// the target it rises to, and how fast the target falls.
+    pub flash: [f32; 3],
     last_offer: Option<Vec<growing_guns::cards::Card>>,
 }
 
 impl Default for Feedback {
     fn default() -> Self {
         Feedback { hit: 9.0, hit_kind: HitKind::Body, arcs: Vec::new(), burned: None, bob: 0.0, special_max: 0.0, last_special: 0.0, toast: None,
-            numbers: Vec::new(), exit: None, pick_closed: 9.0, highlight: Vec::new(), stats: Vec::new(), last_offer: None }
+            numbers: Vec::new(), exit: None, pick_closed: 9.0, highlight: Vec::new(), stats: Vec::new(), flash: [0.0; 3], last_offer: None }
     }
 }
 
@@ -180,6 +183,12 @@ impl Hud {
             if p.special_cd > f.last_special + 1e-6 { f.special_max = p.special_cd; }
             f.last_special = p.special_cd;
             if let Some(t) = &mut f.toast { t.3 += dt; if t.3 > 1.35 { f.toast = None; } }
+            // Godot `_update_explosion_sidechain`: a quick rise, then the target decays.
+            let [a, target, vel] = &mut f.flash;
+            if *target > 0.0 || *a > 0.001 {
+                *a += (*target - *a) * (dt * 25.0).clamp(0.0, 1.0);
+                *target = (*target - *vel * dt).max(0.0);
+            } else { *a = 0.0; *vel = 0.0; }
             for n in &mut f.numbers { n.age += dt; }
             f.numbers.retain(|n| n.age < 1.0);
             // Card pick: keep the offer for the exit animation, ease highlights.
@@ -254,6 +263,18 @@ impl Hud {
                         self.announce(line, 2.0, 0.0);
                     }
                 }
+                // Godot `trigger_explosion_sidechain` (bullet blasts: peak r / 5),
+                // for every player from their own distance; ion strikes flash on their own.
+                Event::Explosion { pos, radius, kind: growing_guns::ExplosionKind::Conventional, .. } => {
+                    let peak = (radius / 5.0).clamp(0.35, 3.0);
+                    for (f, p) in self.fb.iter_mut().zip(&world.players) {
+                        let reach = (radius * 6.0).max(12.0);
+                        let amount = ((1.0 - pos.distance(p.pos) / reach) * peak).clamp(0.0, peak.max(3.0));
+                        if amount <= 0.0 { continue; }
+                        f.flash[1] = f.flash[1].max((amount * 0.62).min(0.96));
+                        f.flash[2] = f.flash[2].max(7.0 + amount * 4.0);
+                    }
+                }
                 Event::PickedUp { player, kind } => {
                     let (t, s, c) = pickup_info(kind);
                     if let Some(f) = self.fb.get_mut(player) { f.toast = Some((t.into(), s.into(), c, 0.0)); }
@@ -316,6 +337,8 @@ impl Hud {
             d.begin_overlay();
             cards::pick(d, world, i, &l, f, focus);
         }
+        // The explosion flash sits above everything (Godot canvas layer 50).
+        if f.flash[0] > 0.003 { d.begin_overlay(); d.rect(rect, [1.0, 0.96, 0.88, f.flash[0]], clip); }
         let _ = cy;
     }
 
