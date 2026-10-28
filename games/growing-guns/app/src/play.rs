@@ -233,6 +233,8 @@ impl Gg {
                 self.world.restart_match();
                 self.new_arena();
                 self.hud = hud::Hud::new(&self.world);
+                // A match starts on the round flash, as every round does.
+                self.hud.round_age = 0.0;
                 self.ui.open(Screen::Play);
             }
             Action::Host if matches!(self.session, Session::Local) => match Session::host(false) {
@@ -248,7 +250,7 @@ impl Gg {
                 println!("ticket: {t}");
                 self.ui.notice = Some("Ticket written to growing-guns-ticket.txt".into());
             },
-            Action::Rematch if host => { self.world.restart_match(); self.new_arena(); self.ui.open(Screen::Play); }
+            Action::Rematch if host => { self.world.restart_match(); self.new_arena(); self.hud.round_age = 0.0; self.ui.open(Screen::Play); }
             Action::Advanced => self.ui.open(Screen::Advanced),
             Action::Party(k, v) => {
                 if let Some(p) = &mut self.party { p.set(k, v); } else if let Some(s) = &mut self.gn_preview && let Some(key) = s.key(k) { s.change(&key, &serde_json::json!(v)); }
@@ -405,6 +407,7 @@ impl app::Game for Gg {
         let ticket = self.session.ticket().map(str::to_string);
         let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
         self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
+        self.hud.round_flash(&mut list);
         let mut light = self.light.clone();
         // The lava flows on the game clock.
         light.time = (self.world.tick as f32 - 1.0 + alpha) * DT;
