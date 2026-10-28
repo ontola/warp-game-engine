@@ -4,13 +4,16 @@
 use super::{cube, glow, material, sphere};
 use glam::{Affine3A, Quat, Vec3};
 use glam::Vec2;
-use growing_guns::{PickupKind, ProjectileKind, StrikeKind, World, AIR_STRIKE_TRAVEL, PICKUPS};
+use growing_guns::{ProjectileKind, StrikeKind, World, AIR_STRIKE_TRAVEL, PICKUPS};
 use render::scene::NO_SHADOW;
 use render::slots::Slots;
 use render::Scene;
+use render::headlights::LocalLight;
 
 #[path = "airstrike.rs"]
 mod airstrike;
+#[path = "dropbeam.rs"]
+mod dropbeam;
 
 const SLOTS: usize = 192;
 
@@ -28,16 +31,19 @@ pub struct Things {
     rocket: usize,
     lava: usize,
     lasers: airstrike::Lasers,
+    beams: dropbeam::Beams,
 }
 
 impl Things {
+    /// The pickups' ground lights (Godot `DropLight`).
+    pub fn pickup_lights(&self) -> &[LocalLight] { self.beams.lights() }
+
     pub fn reserve(scene: &mut Scene) -> Self {
         let dark = material(scene, [0.12, 0.14, 0.12], 0.5);
         let orange = material(scene, [0.55, 0.25, 0.08], 0.5);
         let mine_m = material(scene, [0.08, 0.1, 0.1], 0.4);
         let red = glow(scene, [1.0, 0.15, 0.05], 30000.0);
         let teal = glow(scene, [0.0, 0.95, 0.75], 20000.0);
-        let pick = |scene: &mut Scene, c: [f32; 3]| { let m = glow(scene, c, 9000.0); cube(scene, m) };
         let lava_m = super::arena::lava_material(scene);
         let first = Slots::reserve(scene, SLOTS).first;
         for k in 0..SLOTS { scene.instances[first + k].cluster_count = 0; }
@@ -50,18 +56,16 @@ impl Things {
             mine_light: sphere(scene, teal, 4, 8),
             bomb: sphere(scene, red, 6, 10),
             beacon: sphere(scene, red, 4, 8),
-            pickups: [
-                pick(scene, [1.0, 0.2, 0.25]), pick(scene, [0.9, 0.3, 0.9]), pick(scene, [1.0, 0.45, 0.08]), pick(scene, [1.0, 0.8, 0.2]),
-                pick(scene, [0.3, 0.9, 1.0]), pick(scene, [1.0, 1.0, 1.0]), pick(scene, [1.0, 0.28, 0.12]),
-            ],
+            pickups: PICKUPS.map(|k| dropbeam::pickup_mesh(scene, k)),
             marker: { let m = glow(scene, [1.0, 0.1, 0.05], 12000.0); scene.add_mesh(&render::primitives::torus(m, 0.04, 24, 6).mesh()) },
             rocket: { let m = glow(scene, [1.0, 0.55, 0.2], 40000.0); cube(scene, m) },
             lava: cube(scene, lava_m),
             lasers: airstrike::Lasers::reserve(scene),
+            beams: dropbeam::Beams::reserve(scene),
         }
     }
 
-    pub fn pose(&self, scene: &mut Scene, world: &World, clock: f32) {
+    pub fn pose(&mut self, scene: &mut Scene, world: &World, clock: f32) {
         let mut n = 0;
         let mut put = |scene: &mut Scene, mesh: usize, xf: Affine3A, shadow: bool| {
             if n >= SLOTS { return; }
@@ -86,8 +90,8 @@ impl Things {
         }
         for p in &world.pickups {
             let k = PICKUPS.iter().position(|&q| q == p.kind).unwrap_or(0);
-            let bob = (clock * 2.4 + p.pos.x).sin() * 0.12;
-            let xf = Affine3A::from_scale_rotation_translation(Vec3::splat(if p.kind == PickupKind::Mushroom { 0.6 } else { 0.45 }), Quat::from_rotation_y(clock * 1.8), p.pos + Vec3::Y * bob);
+            let bob = (clock * 4.2 + p.pos.x).sin() * 0.08; // Godot BOB_SPEED, BOB_AMOUNT
+            let xf = Affine3A::from_scale_rotation_translation(Vec3::ONE, Quat::from_rotation_y(clock * 1.8), p.pos + Vec3::Y * bob);
             put(scene, self.pickups[k], xf, true);
         }
         for s in &world.strikes {
@@ -151,6 +155,7 @@ impl Things {
             i.sphere = [0.0; 4];
         }
         self.lasers.pose(scene, &world.strikes);
+        self.beams.pose(scene, world, clock);
     }
 }
 
