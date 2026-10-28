@@ -17,6 +17,8 @@ glam = { version = "0.31", features = ["bytemuck"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "hdr", "webp"] }
 sha2.workspace = true
 glyphon = "0.12"
+# SVG rasterising for runtime pictures (QR codes, icons); no text, no raster images.
+resvg = { version = "0.45", default-features = false }
 ash = { version = "0.38", optional = true }
 
 [build-dependencies]
