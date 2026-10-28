@@ -4,25 +4,32 @@
 //! lands, pulsing, with a coloured omni light on the landing spot. It stays
 //! for the pickup's whole life, so players see where the next one falls.
 //!
-//! Volumetric: the column is a bright core in a faint wider shell (a soft
-//! edge instead of a hard tube), and at night, when the arena air scatters
+//! Volumetric look: no hard tube but a light shaft, an additive sprite
+//! turned about the vertical towards each camera whose texture falls off
+//! softly from a bright core into a wide glow (as a beam through hazy air
+//! looks), tapering to the top. At night, when the arena air scatters
 //! (`Lighting::volumetric`), a scatter-only searchlight from the landing
-//! spot shines up along it, brightest near the ground, and the ground light
-//! glows in the air around the pickup.
-use glam::{Affine3A, Quat, Vec3};
-use growing_guns::{Pickup, PickupKind, World, PICKUPS};
+//! spot also lights the air along it and the ground light glows around
+//! the pickup.
+use glam::Vec3;
+use growing_guns::{Pickup, PickupKind, World};
 use render::headlights::LocalLight;
-use render::scene::NO_SHADOW;
+use render::picture::Picture;
+use render::sprites::{Sprite, SpriteImage};
 use render::Scene;
 
-/// Beams at once per kind (pickups seldom overlap; extras go without).
-const PER_KIND: usize = 4;
-/// Godot `CylinderMesh` radii (height is the sky-to-ground distance).
+/// The shaft's texture.
+pub(super) const IMAGE: SpriteImage = SpriteImage(0x6265_616d);
+/// Half-width of the glow at the ground (the texture's edge), metres.
+const HALF_WIDTH: f32 = 1.1;
+/// Godot `CylinderMesh` radii: the core's taper from ground to sky.
 const TOP_RADIUS: f32 = 0.12;
 const BOTTOM_RADIUS: f32 = 0.36;
-/// Godot albedo alpha for the core; the shells (radius times `scale`)
-/// fade it out: (scale, alpha).
-const SHELLS: [(f32, f32); 2] = [(1.0, 0.78), (1.9, 0.08)];
+/// The core's and the glow's spread, in metres at the ground (scaled by
+/// the taper higher up), and the glow's strength relative to the core.
+const CORE: f32 = 0.24;
+const GLOW: f32 = 0.55;
+const GLOW_SHARE: f32 = 0.4;
 /// Scatter-only searchlight per beam, up from the landing spot: half
 /// angles of its soft (inner) and outer edge, candela (unshadowed; tuned
 /// at `sky night`) and reach.
@@ -30,9 +37,12 @@ const HAZE_INNER_DEG: f32 = 0.6;
 const HAZE_OUTER_DEG: f32 = 2.2;
 const HAZE_CD: f32 = 2.0e7;
 const HAZE_RANGE: f32 = 60.0;
-/// Nits for Godot's `emission_energy_multiplier` 13 (its pulse is
-/// 11 + 2.5 sin(4.2 t), carried here by the light and a slight swell).
-const NITS: f32 = 6_000.0;
+/// Nits of the core for Godot's `emission_energy_multiplier` 13 at alpha
+/// 0.78 (its pulse 11 + 2.5 sin(4.2 t)).
+const NITS: f32 = 5_000.0;
+/// Shaft brightness in full daylight relative to the night (the floodlit
+/// night is exposed brighter, the beam must hold up against the day sky).
+pub(super) const DAY_GAIN: f32 = 2.5;
 /// Godot `pickup_item.gd` drop height (flow.rs `PICKUP_HEIGHT`).
 const SKY_Y: f32 = 52.0;
 /// Godot `_compute_landing_pos`: ray hit plus 0.42 m.
@@ -58,9 +68,35 @@ pub(super) fn beam_color(kind: PickupKind) -> [f32; 3] {
 
 fn linear(c: [f32; 3]) -> Vec3 { Vec3::from(c.map(|v| v.powf(2.2))) }
 
-pub(super) struct Beams { first: usize, meshes: [[usize; 2]; 7], lights: Vec<LocalLight>, haze: Vec<LocalLight> }
+/// The shaft's texture, white with the falloff in alpha: across, a core
+/// and a wide glow (both Gaussian, windowed to zero at the edge); along
+/// (v = 0 at the sky), Godot's taper and a fade into the sky.
+pub(super) fn picture() -> Picture {
+    let (w, h) = (128u32, 256u32);
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let v = (y as f32 + 0.5) / h as f32;
+        let taper = (TOP_RADIUS + (BOTTOM_RADIUS - TOP_RADIUS) * v) / BOTTOM_RADIUS;
+        let sky_fade = (v / 0.12).min(1.0);
+        for x in 0..w {
+            let d = ((x as f32 + 0.5) / w as f32 * 2.0 - 1.0) * HALF_WIDTH;
+            let g = |s: f32| (-(d / (s * taper)).powi(2)).exp();
+            let window = (1.0 - (d / HALF_WIDTH).powi(2)).max(0.0).powi(2);
+            let a = ((1.0 - GLOW_SHARE) * g(CORE) + GLOW_SHARE * g(GLOW)) * window * sky_fade * sky_fade;
+            rgba.extend([255, 255, 255, (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8]);
+        }
+    }
+    Picture::new(w, h, rgba).expect("fixed size")
+}
 
-const SLOTS_PER_KIND: usize = PER_KIND * SHELLS.len();
+#[derive(Default)]
+pub(super) struct Beams {
+    lights: Vec<LocalLight>,
+    haze: Vec<LocalLight>,
+    sprites: Vec<Sprite>,
+    /// Extra shaft brightness against the bright day sky (1 at night).
+    pub gain: f32,
+}
 
 /// Where a pickup comes down: straight below its drop point.
 fn landing(world: &World, p: &Pickup) -> Vec3 {
@@ -73,35 +109,14 @@ fn landing(world: &World, p: &Pickup) -> Vec3 {
 }
 
 impl Beams {
-    pub fn reserve(scene: &mut Scene) -> Self {
-        let meshes = PICKUPS.map(|kind| SHELLS.map(|(scale, alpha)| {
-            let m = super::super::glow(scene, linear(beam_color(kind)).to_array(), NITS);
-            // The column is seen from inside and out as it towers over the
-            // arena; additive so it never darkens what is behind it.
-            scene.set_material_additive(m, alpha, true);
-            scene.add_mesh(&render::primitives::cylinder(m, TOP_RADIUS * scale, BOTTOM_RADIUS * scale, 12).mesh())
-        }));
-        let first = scene.instances.len();
-        for kind in meshes {
-            for _ in 0..PER_KIND {
-                for mesh in kind {
-                    // Transparency registers triangle owners once at startup:
-                    // dormant slots keep their mesh, zero scale hides them.
-                    scene.add_instance(mesh, Affine3A::from_scale(Vec3::ZERO));
-                    scene.instances.last_mut().unwrap().flags |= NO_SHADOW;
-                }
-            }
-        }
-        Self { first, meshes, lights: Vec::new(), haze: Vec::new() }
-    }
+    pub fn reserve(_scene: &mut Scene) -> Self { Self { gain: DAY_GAIN, ..Self::default() } }
 
-    pub fn pose(&mut self, scene: &mut Scene, world: &World, clock: f32) {
-        let mut used = [0usize; 7];
+    pub fn pose(&mut self, _scene: &mut Scene, world: &World, clock: f32) {
         self.lights.clear();
         self.haze.clear();
+        self.sprites.clear();
         let pulse = (clock * 4.2).sin();
         for p in &world.pickups {
-            let k = PICKUPS.iter().position(|&q| q == p.kind).unwrap_or(0);
             let land = landing(world, p);
             let color = linear(beam_color(p.kind));
             self.lights.push(LocalLight {
@@ -115,20 +130,14 @@ impl Beams {
                 range_m: HAZE_RANGE, inner_cos: HAZE_INNER_DEG.to_radians().cos(), outer_cos: HAZE_OUTER_DEG.to_radians().cos(),
                 source_radius_m: 0.2, falloff: 1.0,
             });
+            // Godot's pulse: emission 11 + 2.5 sin(4.2 t) around 13.
             let span = (SKY_Y - land.y).max(0.5);
-            if used[k] >= PER_KIND { continue; }
-            let sky = Vec3::new(land.x, SKY_Y, land.z);
-            let swell = 1.0 + 0.08 * pulse;
-            let xf = Affine3A::from_scale_rotation_translation(Vec3::new(swell, span, swell), Quat::IDENTITY, (sky + land) * 0.5);
-            let base = self.first + k * SLOTS_PER_KIND + used[k] * SHELLS.len();
-            for (s, &mesh) in self.meshes[k].iter().enumerate() { scene.update_instance(base + s, mesh, xf); }
-            used[k] += 1;
-        }
-        for (k, &n) in used.iter().enumerate() {
-            for slot in n * SHELLS.len()..SLOTS_PER_KIND {
-                let i = self.first + k * SLOTS_PER_KIND + slot;
-                if scene.instances[i].scale > 0.0 { scene.update_instance(i, self.meshes[k][slot % SHELLS.len()], Affine3A::from_scale(Vec3::ZERO)); }
-            }
+            let nits = NITS * self.gain * (11.0 + 2.5 * pulse) / 13.0;
+            // Sunk 0.3 m so the floor cuts it, not the texture's bottom row.
+            let centre = Vec3::new(land.x, land.y + span * 0.5 - 0.3, land.z);
+            let mut s = Sprite::shaft(centre, [HALF_WIDTH * 2.0, span + 0.6], Vec3::Y, IMAGE, [0.0, 0.0, 1.0, 1.0], color * nits);
+            s.depth_bias = 0.0;
+            self.sprites.push(s);
         }
     }
 
@@ -136,6 +145,8 @@ impl Beams {
     pub fn lights(&self) -> &[LocalLight] { &self.lights }
     /// The scatter-only haze spots, one per pickup.
     pub fn haze(&self) -> &[LocalLight] { &self.haze }
+    /// The light shafts, one per pickup.
+    pub fn sprites(&self) -> &[Sprite] { &self.sprites }
 }
 
 /// Godot's per-kind pickup visual (`_build_visual`): unshaded emissive
