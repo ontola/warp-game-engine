@@ -52,6 +52,19 @@ pub fn measure(text: &str, face: FontFace, size: f32) -> [f32; 2] {
     for run in buffer.layout_runs() { w = w.max(run.line_w); lines += 1; }
     [w, lines.max(1) as f32 * size * 1.2]
 }
+/// Distance from a run's `position` (layout top) down to the first line's
+/// baseline, for callers that place text by its baseline (as Godot does).
+pub fn baseline(face: FontFace, size: f32) -> f32 {
+    static CACHE: std::sync::Mutex<Option<FontCache>> = std::sync::Mutex::new(None);
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_none() { *guard = FontCache::new().ok(); }
+    let Some(cache) = guard.as_mut() else { return size };
+    cache.sync_registered();
+    if !size.is_finite() || size <= 0.0 { return 0.0; }
+    let buffer = cache.buffer("Hg", face, size, 1.0e6, TextAlign::Left, Wrap::None);
+    buffer.layout_runs().next().map_or(size, |run| run.line_y)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextAlign { Left, Center, Right }
 

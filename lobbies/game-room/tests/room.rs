@@ -14,3 +14,17 @@ fn the_room_matches_the_godot_export() {
     assert!(diff.is_empty(), "room differs from Godot:\n{}", diff.join("\n"));
     assert_eq!(godot.lines().count(), ours.lines().count(), "line count differs");
 }
+
+#[test]
+fn every_screen_has_a_painter() {
+    use game_room::paint::{paint, Canvas, Prompt, Show};
+    let room = game_room::room::build();
+    let prompts = room.prompts.iter().map(|p| (p.name.clone(), Prompt {
+        items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
+    let mut list = render::hud::HudDrawList::new([render::screen::SIZE; 2]);
+    for s in &room.screens {
+        let mut canvas = Canvas::new(&mut list, [0, 0, s.size[0], s.size[1]]);
+        assert!(paint(&mut canvas, &s.name, &Show::default(), &prompts), "no painter for {}", s.name);
+    }
+    assert!(!list.text.is_empty());
+}
