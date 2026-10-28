@@ -168,8 +168,10 @@ impl CharPicker {
         }
     }
 
-    /// The grid, centred in `rect`, with a hint line under it.
+    /// The grid, centred in `rect`, with a hint line under it, on a new
+    /// overlay layer so it covers everything drawn before.
     pub fn draw(&self, d: &mut HudDrawList, id: u64, rect: [f32; 4], st: &Style) {
+        d.begin_overlay();
         let s = st.scale;
         let (kw, kh, gap) = (56.0 * s, 48.0 * s, 6.0 * s);
         let rows = Self::count().div_ceil(PICKER_COLUMNS);
