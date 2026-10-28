@@ -1,0 +1,14 @@
+{ "size": [960, 540],
+  "steps": [
+    { "note": "Phoenix (Godot set_phoenix_fade): the reviving player's view whitens as they rise, then fades over 0.9 s as the sky drop starts. Also the explosion flash." },
+    { "cmd": ["bots pause", "give 0 phoenix", "teleport 0 0 3 0", "health 0 5"] },
+    { "ticks": 5 },
+    { "cmd": ["boom 0 3 -2 3 200"] },
+    { "ticks": 3 },
+    { "capture": "boom-flash.png" },
+    { "until": "/players/0/health", "max": 900, "max_ticks": 200 },
+    { "ticks": 60 },
+    { "capture": "phoenix-rising.png" },
+    { "ticks": 70 },
+    { "capture": "phoenix-fading.png" }
+  ] }
