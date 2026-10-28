@@ -6,6 +6,7 @@
 //! routes each tick's events, and sets the lighting and cameras.
 mod arena;
 mod characters;
+mod character_ragdoll;
 mod effects;
 mod gore;
 mod guns;
@@ -195,7 +196,7 @@ impl Visuals {
         }
         self.stadium.absorb(s, &mut self.fx.particles, &mut self.fx.blasts, world, ears, now, growing_guns::DT);
         self.guns.tick(world, growing_guns::DT);
-        self.players.tick(world);
+        self.players.tick(world, &mut self.phys);
         self.phys.step();
         self.players.follow_physics(s, &mut self.phys, now);
         let shapes = &world.arena.grid;

@@ -23,7 +23,7 @@ const HEAD: f32 = 0.3;
 
 /// `skinned`: an animated character (the renderer has room for a few);
 /// the rest are drawn as the primitive blob.
-struct PlayerMeshes { body: usize, head: usize, eyes: usize, skinned: bool }
+struct PlayerMeshes { body: usize, head: usize, eyes: usize, skinned: bool, own_views: u8 }
 
 /// A corpse: jointed bodies, each drawn with one of the player's meshes.
 struct Ragdoll { torso: Body, parts: Vec<(Body, SlotId, usize, Affine3A)> }
@@ -66,7 +66,7 @@ impl PlayersView {
                 proxy_body
             });
             for m in [head, eyes] { scene.add_instance(m, Affine3A::from_translation(HIDDEN)); }
-            self.meshes.push(PlayerMeshes { body, head, eyes, skinned });
+            self.meshes.push(PlayerMeshes { body, head, eyes, skinned, own_views: 0 });
             self.sources.push(prims);
         }
         // Gore only for blob bodies (indexed by player).
@@ -88,7 +88,7 @@ impl PlayersView {
         self.corpses.clear(scene);
         self.ragdolls.clear();
         self.gore().clear(scene, phys);
-        if let Some(characters) = &mut self.characters { characters.reset(); }
+        if let Some(characters) = &mut self.characters { characters.reset(phys); }
     }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene) -> Result<(), String> {
@@ -96,8 +96,8 @@ impl PlayersView {
         self.corpses.flush(gpu, renderer, scene)
     }
 
-    pub fn tick(&mut self, world: &World) {
-        if let Some(characters) = &mut self.characters { characters.tick(world); }
+    pub fn tick(&mut self, world: &World, phys: &mut Physics) {
+        if let Some(characters) = &mut self.characters { characters.tick(world, phys); }
     }
 
     pub fn hands(&self) -> &[Option<Vec3>] {
@@ -121,10 +121,11 @@ impl PlayersView {
         };
         let push = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
         if skinned {
-            // Keep the original textured model in its final animated pose.
-            // Mesh-specific dismemberment needs a separate skin-aware bake;
-            // do not replace a humanoid corpse with the old coloured blobs.
-            self.ragdoll(scene, phys, victim, v, push, false);
+            // Drive the original textured skin from articulated limb bodies.
+            // Dismemberment is separate; a frozen whole-body capsule is not a ragdoll.
+            if let Some(characters) = &mut self.characters {
+                if let Err(error) = characters.kill(phys, victim, v, push) { eprintln!("ragdoll: {error}"); }
+            }
             fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.3, 0.8);
             fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.6, speed: [2.0, 8.0], ..Burst::drops() });
             blood_splats(scene, arena, world, v.pos, 4, 1.3);
@@ -160,17 +161,11 @@ impl PlayersView {
         let push = dir.with_y(0.0).normalize_or_zero() * 5.0 + Vec3::Y * 2.0;
         let rot = Quat::from_rotation_y(v.yaw);
         let (b, h) = (self.meshes[victim].body, self.meshes[victim].head);
-        let skinned = self.meshes[victim].skinned;
-        let (shape, center, local) = if skinned {
-            (Shape::Capsule(0.32, 0.55), v.pos, characters::model_transform(Vec3::ZERO, 0.0))
-        } else { (Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25, Affine3A::from_scale(BODY)) };
+        let (shape, center, local) = (Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25, Affine3A::from_scale(BODY));
         let torso = phys.add(&BodyDesc { rot, vel: v.vel + push, density: 300.0, ..BodyDesc::new(shape, center) });
         let Some(ts) = self.corpses.add(scene, b, Affine3A::from_translation(v.pos)) else { phys.remove(torso); return };
-        if skinned {
-            scene.instances[self.corpses.instance(ts)].flags |= render::scene::SKINNED;
-        }
         let mut parts = vec![(torso, ts, b, local)];
-        if with_head && !skinned {
+        if with_head {
             let head = phys.add(&BodyDesc { rot, vel: v.vel + push * 1.4, density: 300.0, ..BodyDesc::new(Shape::Sphere(0.28), v.pos + Vec3::Y * 0.55) });
             phys.ball_joint(torso, head, Vec3::Y * 0.52, Vec3::Y * -0.28);
             match self.corpses.add(scene, h, Affine3A::from_translation(v.pos)) {
@@ -184,6 +179,7 @@ impl PlayersView {
     /// One tick after the physics step: corpses and gore follow their bodies.
     pub fn follow_physics(&mut self, scene: &mut Scene, phys: &mut Physics, now: f32) {
         self.gore().update(scene, phys, now);
+        if let Some(characters) = &mut self.characters { characters.follow_physics(phys); }
         for r in &self.ragdolls {
             for &(body, slot, mesh, local) in &r.parts {
                 if let Some((pos, rot)) = phys.pose(body) {
@@ -195,10 +191,17 @@ impl PlayersView {
 
     /// Players (interpolated by `alpha` from `prev`) and tracers.
     pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32) {
+        if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha); }
         let mut slot = self.first;
         for (i, m) in self.meshes.iter().enumerate() {
             let Some(p) = world.players.get(i).filter(|p| p.alive) else {
-                for mesh in [m.body, m.head, m.eyes] { scene.update_instance(slot, mesh, Affine3A::from_translation(HIDDEN)); slot += 1; }
+                let corpse = self.characters.as_ref().and_then(|c| c.corpse_transform(i));
+                for (part, mesh) in [m.body, m.head, m.eyes].into_iter().enumerate() {
+                    let xf = if part == 0 { corpse.unwrap_or(Affine3A::from_translation(HIDDEN)) } else { Affine3A::from_translation(HIDDEN) };
+                    scene.update_instance(slot, mesh, xf);
+                    scene.instances[slot].hide_in_views(0);
+                    slot += 1;
+                }
                 continue;
             };
             let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
@@ -210,9 +213,12 @@ impl PlayersView {
                  Affine3A::from_scale_rotation_translation(Vec3::splat(HEAD), rot, pos + Vec3::Y * 0.55),
                  Affine3A::from_scale_rotation_translation(Vec3::new(0.2, 0.07, 0.05), rot, pos + Vec3::Y * 0.6 + rot * Vec3::new(0.0, 0.0, -0.27)))
             };
-            for (mesh, xf) in [(m.body, body), (m.head, head), (m.eyes, eyes)] { scene.update_instance(slot, mesh, xf); slot += 1; }
+            for (mesh, xf) in [(m.body, body), (m.head, head), (m.eyes, eyes)] {
+                scene.update_instance(slot, mesh, xf);
+                scene.instances[slot].hide_in_views(m.own_views);
+                slot += 1;
+            }
         }
-        if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha); }
         // Tracers: a short glowing streak behind each live bullet. Skip the
         // first metre so a player's own tracer never fills their screen; the
         // streak then grows to four metres.
@@ -230,15 +236,19 @@ impl PlayersView {
 
     /// First person: hide each local player's own model from their view
     /// (`slots[k]` is drawn in view k). It still casts its shadow.
-    pub fn hide_own(&self, scene: &mut Scene, slots: &[usize]) {
+    pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
+        for m in &mut self.meshes { m.own_views = 0; }
         for (k, &s) in slots.iter().enumerate().take(8) {
+            if let Some(m) = self.meshes.get_mut(s) { m.own_views |= 1 << k; }
             for part in 0..PARTS { scene.instances[self.first + s * PARTS + part].hide_in_views(1 << k); }
         }
     }
 
     /// Ragdoll torso positions (for state dumps).
     pub fn ragdolls(&self, phys: &Physics) -> Vec<[f32; 3]> {
-        self.ragdolls.iter().filter_map(|r| phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect()
+        let mut positions: Vec<_> = self.ragdolls.iter().filter_map(|r| phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect();
+        if let Some(c) = &self.characters { positions.extend(c.ragdolls()); }
+        positions
     }
 
     pub fn gore_len(&self) -> usize { self.gore.as_ref().map_or(0, |g| g.len()) }
