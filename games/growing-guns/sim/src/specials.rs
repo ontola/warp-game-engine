@@ -346,8 +346,6 @@ impl World {
         }
     }
 
-    /// Ghosts can't act (Godot returns before input at health 0).
-    pub(crate) fn ghost_tick(&mut self, i: usize, _fire_edge: bool) { self.players[i].vel = Vec3::ZERO; }
 }
 
 /// Distance from `p` to the segment a..b.

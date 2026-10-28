@@ -118,9 +118,14 @@ These numbers do not represent an entire game tick.
   the comparison still checks every generated character apart from line endings.
 - `cargo check --locked -p render --example resource_cache_probe`: passed.
 
-The dedicated `resource_cache_probe` exercises steady frames, same-sized replacements,
-presentation, resize, TAA histories and split views. Its GPU run is deferred
-while the user is playtesting; do not run it concurrently with the game.
+After the playtest exited, `resource_cache_probe` passed on the RTX 5070 Ti
+(Vulkan). It checked steady frames, same-sized source/output replacements,
+uniform updates, presentation, resize/restore, TAA ping-pong/reset and split
+views with pixel oracles and no validation errors. Steady frames had **zero
+new cached views/bind groups** after warmup, including TAA and split views;
+changed resource identities caused misses and rebuilt bindings as intended.
+The report is `cache-probe/report.json` in the evidence directory. This
+fixture covers the core frame/presentation caches, not all meadow modes.
 
 Any later frame-time comparison must identify its executable,
 scene, player count, resolution, reconstruction settings and sample count, and

@@ -75,6 +75,8 @@ pub struct Banner { pub text: String, pub size: f32, pub left: f32 }
 /// Everything the HUD remembers between ticks.
 #[derive(Clone, Debug, Default)]
 pub struct Hud {
+    card_hits: std::cell::RefCell<Vec<cards::Hit>>,
+    hit_size: std::cell::Cell<[u32; 2]>,
     pub fb: Vec<Feedback>,
     pub banner: Option<Banner>,
     /// Kill feed lines with their age (Godot: 3+ humans only).
@@ -134,6 +136,21 @@ pub fn modifier_info(m: growing_guns::Modifier) -> (&'static str, &'static str, 
 }
 
 impl Hud {
+    pub fn begin_pointer_frame(&self, size: [u32; 2]) {
+        self.card_hits.borrow_mut().clear();
+        self.hit_size.set(size);
+    }
+
+    /// Animated card bounds from the displayed frame, in reverse paint order.
+    pub fn card_hit(&self, world: &World, player: usize, size: [u32; 2], pos: [f32; 2]) -> Option<usize> {
+        if self.hit_size.get() != size { return None; }
+        let p = world.players.get(player)?;
+        if p.offer_age < 0.75 { return None; }
+        let offer = p.offer.as_ref()?;
+        self.card_hits.borrow().iter().rev().find(|h| h.player == player && offer.get(h.index) == Some(&h.card)
+            && app::ui::contains(h.clip, pos) && app::ui::contains(h.rect, pos)).map(|h| h.index)
+    }
+
     pub fn new(world: &World) -> Self {
         let mut h = Hud { round_age: 9.0, ..Default::default() };
         h.sync(world);
@@ -347,7 +364,7 @@ impl Hud {
         if death[3] > 0.003 { d.begin_overlay(); d.rect(rect, death, clip); }
         if picking {
             d.begin_overlay();
-            cards::pick(d, world, i, &l, f, focus);
+            cards::pick(d, world, i, &l, f, focus, &mut self.card_hits.borrow_mut());
         }
         // The phoenix white (its own canvas layer over this view's HUD) and the
         // explosion flash above everything (Godot canvas layer 50).
@@ -670,4 +687,39 @@ fn death_color(world: &World, p: &growing_guns::Player, f: &Feedback) -> C {
     } else if f.burned.is_none() { c[3] = 0.0; }
     let _ = PLAYER_COLORS_U8;
     c
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::*;
+    #[test]
+    fn cards_hit_painted_bounds_with_reveal_clip_and_offer_checks() {
+        let mut w = World::new(1, &[false, true]);
+        // World::new has no mods; the application normally supplies this book.
+        w.cards = std::sync::Arc::new(growing_guns::cards::Book::new(["one", "two", "three"].into_iter()
+            .map(|id| growing_guns::cards::CardDef::new(id, id)).collect()));
+        let cards: Vec<_> = w.cards.enabled().take(3).map(|(c, _)| c).collect();
+        w.players[0].offer = Some(cards.clone());
+        let h = Hud::new(&w);
+        let size = [1600, 900];
+        let rect = [0.0, 0.0, 800.0, 900.0];
+        w.players[0].offer_age = 0.7;
+        h.begin_pointer_frame(size);
+        h.view(&mut HudDrawList::new(size), &w, 0, rect, 0, 0.0, false);
+        assert!(h.card_hits.borrow().is_empty());
+        w.players[0].offer_age = 1.5;
+        h.begin_pointer_frame(size);
+        h.view(&mut HudDrawList::new(size), &w, 0, rect, 0, 0.0, false);
+        assert_eq!(h.card_hits.borrow().len(), 3, "each revealed card has its painted hit target");
+        let hit = h.card_hits.borrow()[1];
+        let pos = [hit.rect[0] + hit.rect[2] * 0.5, hit.rect[1] + hit.rect[3] * 0.5];
+        assert_eq!(h.card_hit(&w, 0, size, pos), Some(1));
+        assert_eq!(h.card_hit(&w, 1, size, pos), None);
+        assert_eq!(h.card_hit(&w, 0, [800, 600], pos), None);
+        assert_eq!(h.card_hit(&w, 0, size, [900.0, pos[1]]), None);
+        w.players[0].offer.as_mut().unwrap()[1] = cards[0];
+        assert_eq!(h.card_hit(&w, 0, size, pos), None);
+        w.players[0].offer = None;
+        assert_eq!(h.card_hit(&w, 0, size, pos), None);
+    }
 }

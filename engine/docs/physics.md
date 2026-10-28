@@ -23,9 +23,14 @@ cylinder character.
 - `Mover { radius, half_height }.slide(boxes, &mut pos, &mut vel, dt,
   max_step)`: Godot's `move_and_slide` for boxes. Sub-steps of at most
   `max_step` metres, up to four push-out passes each; velocity loses its
-  component into walls, floors and ceilings; small ledges are stepped up.
+  component into walls, floors and ceilings.
   It returns a `Contact` with `on_floor`, `on_ceiling` and the last
   `wall_normal`.
+- `slide_with_step(..., step_height, grounded)` opts into climbing low
+  obstacles when ordinary movement is blocked. It requires real ground
+  support, clear headroom and a supported landing; jumping and airborne
+  movement retain ordinary sliding. The height budget applies to the whole
+  call. Growing Guns uses 0.35 m. Existing `slide` callers are unchanged.
 - The `Boxes` trait is what movers and rays query. A plain slice has no
   broadphase, which is fine for a few hundred boxes. `BoxGrid` is a uniform
   XZ grid for thousands: `remove` and `restore` boxes without a rebuild,
