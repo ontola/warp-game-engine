@@ -21,6 +21,7 @@ Start with the overview, then build and run something.
 | [Live control over MCP](live-control.md) | Change a running game with Claude, ChatGPT or an in-game assistant: setup, tools, security. |
 | [Networking](networking.md) | Host and clients over iroh, and Growing Guns' host-authoritative play. |
 | [Physics](physics.md) | `kern::collide` for characters and levels, the Rapier-based `physics` crate. |
+| [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
 | [Rendering overview](rendering.md) | Clusters, visibility buffer, lighting, content systems, and where performance stands. |
 
 Reference that lives next to the code:

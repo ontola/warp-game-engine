@@ -1,5 +1,100 @@
 # Live sky controls
 
+The procedural sky with time of day and weather is an engine feature,
+`render::sky`. Sideways uses it from its pause menu and GameNight; Growing Guns
+uses it from `--sky` and the `sky` console command (also reachable through the
+live MCP server's `command` tool). The dated Sideways notes follow the engine
+and Growing Guns sections.
+
+## Engine API: `render::sky`
+
+- `DayTime` (sunrise, morning, noon, afternoon, sunset, night) and
+  `WeatherLook` (clear, haze, mist): `key`, `label`, `parse`, `step`.
+  `DayTime::solar()` and `DayTime::exposure()` (EV100) give the authored sun
+  and exposure; `WeatherLook::model()` gives the baked `Atmosphere` and
+  `WeatherLook::fog()` the distance fog (start m, end m, density per m).
+- `exposure_for_elevation(degrees)`: EV100 for any sun height, piecewise linear
+  through the presets, for continuous cycles.
+- `LiveSettings`: a time and weather (`LiveSettings::preset`), optionally with a
+  custom sun and exposure (`with_sun`) or just an exposure (`with_exposure`).
+  `changed("sky_time" | "sky_weather", value)` is the menu/GameNight vocabulary;
+  `solar()`, `exposure()`, `metadata()` and `apply_presentation(light)` (fog,
+  exposure, shadow strength).
+- `bake_live(revision, settings, cache, quality) -> PreparedSky`: one
+  synchronous bake (or a reuse from the `AtmosphereCache`), with metadata
+  including `bake_cpu_ms` and `night_environment` (`night_metadata`).
+- `PreparedSky::apply_scene(scene, light)`: sky texture, sun, skylight, fog and
+  exposure together. For a running renderer also call
+  `Renderer::update_sky(gpu, &prepared.sky, light)`; from an `app::Game`, reach
+  the renderer through `Frame::renderer_mut()`.
+- `LiveSky`: the background path. `LiveSky::new(initial_metadata, light)`
+  starts from a world's existing sky (an unmatched sun becomes **Current**);
+  `LiveSky::starting(settings, initial_metadata)` starts from known settings.
+  `request(settings, now)`, then every frame `poll(now)`; hand a returned sky to
+  the renderer and call `accepted` (or `failed`). `status()`, `busy()`,
+  `metadata()`, `restore()` and `applied_snapshot()` cover menus and rebuilds.
+  The worker thread is named `sky-bake`.
+
+Nothing in the module bakes per frame or per camera.
+
+## Growing Guns
+
+Rendering only: the simulation never sees the sky, so replays, the network
+and the bots are unchanged. `games/growing-guns/app/src/sky.rs`:
+
+- `--sky godot` (default, also `GG_SKY`): Godot's gradient sky and fixed sun,
+  exactly as before, so the golden images hold.
+- `--sky TIME[:WEATHER]`, e.g. `noon`, `sunset:haze`, `night:mist` (a bare
+  weather means noon).
+- `--sky rounds[:WEATHER]`: the time of day steps each round, from morning.
+- `--sky cycle[:WEATHER][:MINUTES]`: a slow day and night on the game clock
+  (default 12 minutes a day) through `LiveSky`, off the frame loop.
+- The same values at runtime: `sky night`, `sky godot`, ... in the console or
+  through MCP `command`. `state` reports `sky.choice` and `sky.applied`.
+
+A preset chosen with `--sky` or the `sky` command bakes synchronously (about
+0.2 s, see below) and updates the renderer in place; going back to `godot`
+rebuilds the scene. `rounds` and `cycle` bake through `LiveSky` in the
+background, so a round change never stalls the frame; the new sky appears a
+few frames later (150 ms debounce plus the bake). Exposure never goes below EV 11: the lava, beacons and
+tracers have fixed radiance tuned for Godot's day (EV 13.6) and wash out at
+the night preset's EV 6. The stadium floodlights carry the night instead:
+they scale from 1x in daylight to 16x below -4 deg of sun, so the floor, the
+walls and the players read clearly. The banks point at the centre, so the crowd
+in the stands falls dark at night.
+
+`games/growing-guns/scripts/sky.json` captures every preset over the arena
+and the stands:
+`KERN_ADAPTER=software target/debug/growing-guns script games/growing-guns/scripts/sky.json --out DIR`.
+
+### Bake cost
+
+`bake_live` at the default `BakeQuality`, release build, CPU wall time on
+the 2-CPU Linux build machine, 2026-10-28
+(`cargo test --release -p render --lib sky::tests::bake_cost -- --ignored --nocapture`):
+
+| Time | Clear | Haze | Mist |
+| --- | --- | --- | --- |
+| Sunrise (first of a weather, includes the transmittance table) | 307 ms | 273 ms | 227 ms |
+| Morning | 193 ms | 268 ms | 205 ms |
+| Noon | 197 ms | 208 ms | 207 ms |
+| Afternoon | 217 ms | 251 ms | 236 ms |
+| Sunset | 194 ms | 232 ms | 236 ms |
+| Night | 138 ms | 132 ms | 138 ms |
+
+About 0.2 s per sky, so baking is never per frame. Repeats are free: the
+worker keeps the last eight skies, and Growing Guns' synchronous path shares
+one `AtmosphereCache`.
+
+The cycle is cheap enough to keep as an opt-in. The sun is quantised to
+1/720 of a day (about 0.5 deg of sun per step), so a 12-minute day bakes once
+a second on the `sky-bake` thread: roughly 20% of one core, and nothing on the
+frame thread except the `update_sky` upload. A shorter day costs
+proportionally more (at `cycle:3`, four bakes a second, close to a whole core),
+so do not go much below a few minutes on a 2-CPU machine.
+
+## Sideways notes (2026-10-24)
+
 Implemented 2026-10-24. CLI/controller/HUD CPU checks pass. The parent task owns
 the exclusive GPU check and restart; this task did not interrupt the playtest.
 
@@ -39,7 +134,7 @@ and distance fog. They do not claim volumetric clouds or rain.
 
 ## Update path
 
-`procedural_sky::LiveSky` owns a lazy background worker and a latest-wins
+`render::sky::LiveSky` (formerly `procedural_sky::LiveSky`) owns a lazy background worker and a latest-wins
 scheduler. Requests debounce for 150 ms. At most one bake runs and one newest
 request waits; stale results are discarded before any live state is changed.
 The worker retains at most eight completed skies, plus the bounded atmosphere
