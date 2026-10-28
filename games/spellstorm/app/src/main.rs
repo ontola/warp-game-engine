@@ -8,6 +8,7 @@
 //! SPELLSTORM_EVENTS=1 makes a shot count the sim's events.
 mod anim;
 mod fx;
+mod hud;
 mod kits;
 mod look;
 mod play;
