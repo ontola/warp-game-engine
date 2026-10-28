@@ -203,6 +203,19 @@ pub fn cube(material: u32) -> Primitive {
     p.outward()
 }
 
+/// Unit quad (side 1) in the XY plane facing +Z, counter-clockwise seen
+/// from +Z. uv (0,0) is the top-left corner (+Y up), as a picture or a
+/// `screen::Screen` draw list is laid out. One-sided unless the material is
+/// TWO_SIDED.
+pub fn quad(material: u32) -> Primitive {
+    let mut p = Primitive { material, ..Default::default() };
+    for (x, y) in [(-0.5f32, -0.5f32), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)] {
+        p.vertices.push(Vertex { pos: [x, y, 0.0], normal: [0.0, 0.0, 1.0], uv: [x + 0.5, 0.5 - y] });
+    }
+    p.indices.extend([0, 1, 2, 0, 2, 3]);
+    p
+}
+
 /// Hand-hewn unit brick (side 1): a cube with `subdiv` quads per face edge,
 /// edges rounded by `bevel` (0.09 reads as cut stone) and, when `rough` > 0,
 /// the surface pitted inwards by up to `rough` with a pattern from `seed`

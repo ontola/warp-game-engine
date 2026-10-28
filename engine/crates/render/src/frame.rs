@@ -17,7 +17,8 @@ pub(crate) mod texture_mips;
 
 pub const MAX_VISIBLE: u32 = 4 << 20;
 /// Albedo array resolution: the Poly Haven sets are 2K.
-const TEXTURE_SIZE: u32 = 2048;
+/// Side of every albedo array layer; `screen::Screen` draws layers at this size.
+pub const TEXTURE_SIZE: u32 = 2048;
 /// Normal map array resolution.
 const NORMAL_SIZE: u32 = 1024;
 const SHADOW_SIZE: u32 = 4096;
@@ -511,6 +512,7 @@ struct MeadowBrickFixture {
 
 pub struct Renderer {
     resource_device: wgpu::Device,
+    albedo_array: wgpu::Texture,
     sun_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
     headlight_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
     geometry_diagnostics: crate::geometry_diagnostics::State,
@@ -746,7 +748,8 @@ fn texture_array(gpu: &Gpu, label: &'static str, images: &[Option<&image::RgbaIm
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        // RENDER_ATTACHMENT: `screen::Screen` redraws live layers on the GPU.
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
     let allocation_cpu_ms=crate::startup_profile::elapsed(allocation_start);
@@ -896,6 +899,10 @@ fn eval_irradiance_up(sh: &[[f32; 4]; 9]) -> f32 {
 }
 
 impl Renderer {
+    /// The albedo texture array (sRGB, TEXTURE_SIZE square, mipmapped). Live
+    /// layers are redrawn through `screen::Screen`; do not resize it.
+    pub fn albedo_array(&self) -> &wgpu::Texture { &self.albedo_array }
+
     pub fn new(gpu: &Gpu, scene: &Scene, light: &Lighting) -> Renderer {
         let mut startup=crate::startup_profile::Trace::new();
         let geometry_diagnostics=crate::geometry_diagnostics::State::new(scene);
@@ -1415,6 +1422,7 @@ impl Renderer {
         startup.mark("wheel_particle_resources_pipelines");
         let mut renderer=Renderer {
             resource_device: gpu.device.clone(),
+            albedo_array: albedo.clone(),
             geometry_diagnostics,
             debug_options: Default::default(),
             upscaling: Default::default(),

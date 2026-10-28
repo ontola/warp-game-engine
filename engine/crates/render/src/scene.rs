@@ -25,7 +25,8 @@ pub const BLEND: u32 = 256;
 /// True leaf/needle geometry: thin-leaf lighting without alpha-tested cards.
 pub const THIN_FOLIAGE: u32 = 512;
 /// Self-lit surface (lava, lamps, tracers): adds `tint * scale` nits of
-/// radiance. Use with `layer: -1`; `scale` is then the emission, not a repeat.
+/// radiance; `scale` is the emission, not a repeat. With a texture `layer`
+/// (uv-mapped) the textured colour glows instead: screens and signs.
 pub const EMISSIVE: u32 = 1024;
 /// Procedural rock (Growing Guns' rock_surface): world-space pits, cracks
 /// and moss on a block's faces, tinted by `tint`; `scale` 0..1 is damage
@@ -574,6 +575,13 @@ impl Scene {
     }
 
     /// Add an already decoded image to the texture array; returns its layer.
+    /// Reserve an albedo layer that `screen::Screen` draws at runtime (TVs,
+    /// signs, covers that arrive later). Black until the first draw. Pair it
+    /// with an EMISSIVE material for a glowing screen.
+    pub fn add_screen_texture(&mut self, name: &str) -> i32 {
+        self.add_image(name, image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255])))
+    }
+
     pub fn add_image(&mut self, name: &str, rgba: image::RgbaImage) -> i32 {
         self.textures.push(TextureSource { name: name.to_string(), rgba, normal: None });
         (self.textures.len() - 1) as i32
