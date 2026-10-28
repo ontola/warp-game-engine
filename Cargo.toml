@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["engine/crates/kern", "engine/crates/render", "engine/crates/audio", "engine/crates/app", "engine/crates/physics", "engine/crates/assets", "engine/crates/net", "engine/crates/script", "engine/crates/gamenight", "engine/crates/live", "engine/crates/warp", "games/sideways/determinism", "games/sideways/sim", "games/sideways/app", "games/growing-guns/sim", "games/growing-guns/app", "lobbies/game-room"]
+members = ["engine/crates/kern", "engine/crates/render", "engine/crates/audio", "engine/crates/app", "engine/crates/physics", "engine/crates/assets", "engine/crates/net", "engine/crates/script", "engine/crates/gamenight", "engine/crates/live", "engine/crates/warp", "games/sideways/determinism", "games/sideways/sim", "games/sideways/app", "games/growing-guns/sim", "games/growing-guns/app", "games/spellstorm/sim", "lobbies/game-room"]
 
 [workspace.package]
 edition = "2024"
@@ -13,6 +13,7 @@ gamenight = { path = "engine/crates/gamenight" }
 gdcompat = { path = "games/sideways/determinism" }
 sideways = { path = "games/sideways/sim" }
 growing-guns = { path = "games/growing-guns/sim" }
+spellstorm = { path = "games/spellstorm/sim" }
 rapier3d = { version = "0.36", features = ["enhanced-determinism"] }
 fastnoise-lite = "1.1"
 serde = { version = "1", features = ["derive"] }
