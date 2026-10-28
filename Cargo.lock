@@ -5229,6 +5229,7 @@ dependencies = [
  "app",
  "flate2",
  "glam 0.31.1",
+ "hecs",
  "image",
  "kern",
  "render",
