@@ -47,6 +47,10 @@ pub const LAVA: u32 = 4096;
 /// the image nearest-upscaled so linear filtering keeps hard pixel edges.
 pub const PIXEL_ART: u32 = 8192;
 
+/// Live display layer: only mip 2 (512 square) and below contain video.
+/// Use with EMISSIVE and `Scene::add_live_screen_texture`.
+pub const LIVE_SCREEN: u32 = 16384;
+
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
 pub const CAR_SHIFT: u32 = 16;
@@ -391,6 +395,7 @@ pub struct Scene {
     /// A GPU-posed crowd (`crowd::Crowd::reserve`).
     pub crowd: Option<crate::crowd::CrowdSpec>,
     pub textures: Vec<TextureSource>,
+    pub live_screen_feeds: Vec<crate::screen_feed::Feed>,
     pub heightfield: Heightfield,
     /// Explicit declaration that heightfield sentinel holes and outside its
     /// bounds contain no loaded TERRAIN geometry. Does not cover meshes or
@@ -620,6 +625,16 @@ impl Scene {
     /// with an EMISSIVE material for a glowing screen.
     pub fn add_screen_texture(&mut self, name: &str) -> i32 {
         self.add_image(name, image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255])))
+    }
+
+    /// Broadcast a completed scene view to this layer at up to 30 Hz, before
+    /// HUD, with one frame of latency and no extra scene render. All screens
+    /// can share the returned layer. Pair with EMISSIVE | LIVE_SCREEN.
+    pub fn add_live_screen_texture(&mut self, name: &str, source_view: usize, aspect: f32) -> Result<i32, String> {
+        if !aspect.is_finite() || aspect <= 0.0 || source_view >= 4 { return Err("live screen requires view 0..3 and a positive finite aspect".into()); }
+        let layer = self.add_screen_texture(name);
+        self.live_screen_feeds.push(crate::screen_feed::Feed { layer: layer as u32, source_view, aspect });
+        Ok(layer)
     }
 
     pub fn add_image(&mut self, name: &str, rgba: image::RgbaImage) -> i32 {

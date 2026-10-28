@@ -1,7 +1,8 @@
 //! The colosseum on screen and in the ears, after Godot's
 //! `colosseum_builder.gd`, `colosseum_crowd.gd` and `crowd_audio.gd`: stepped
 //! stone stands, a shadow-casting roof with a lamp ring, floodlight towers,
-//! up to 15,000 spectators (`render::crowd`) who cheer, cower and flee, die
+//! four live stadium screens, up to 15,000 spectators (`render::crowd`)
+//! who cheer, cower and flee, die
 //! where shots and blasts land (blood, scorch, gore, a red mist) and a crowd
 //! sound that follows the match.
 use crate::crowd_sound::CrowdSound;
@@ -14,7 +15,7 @@ use render::headlights::LocalLight;
 use render::particles::{Burst, Particles};
 use render::primitives::{self, Primitive};
 use render::cluster::ClusterMesh;
-use render::scene::{Material, EMISSIVE, NO_SHADOW};
+use render::scene::{Material, EMISSIVE, LIVE_SCREEN, NO_SHADOW};
 use render::slots::{SlotId, Slots};
 use render::Scene;
 use std::f32::consts::{PI, TAU};
@@ -25,6 +26,12 @@ const CROWD_SKIP_CHANCE: f32 = 0.08;
 const ROOF_COVER_FRAC: f32 = 0.5;
 const ROOF_DROP: f32 = 3.0;
 const MARKS: usize = 256;
+const TV_COUNT: usize = 4;
+const TV_WIDTH: f32 = 26.0;
+const TV_HEIGHT: f32 = TV_WIDTH * 9.0 / 16.0;
+const TV_TILT: f32 = 0.22;
+const TV_OBSERVER_HEIGHT: f32 = 2.0;
+const TV_CANOPY_CLEARANCE: f32 = 1.0;
 
 const SANDSTONE: [[f32; 3]; 3] = [[0.74, 0.61, 0.42], [0.70, 0.57, 0.40], [0.77, 0.65, 0.46]];
 const LIMESTONE: [[f32; 3]; 3] = [[0.72, 0.66, 0.53], [0.68, 0.63, 0.51], [0.75, 0.69, 0.56]];
@@ -37,6 +44,32 @@ const ARENA_STONE: [f32; 3] = [0.48, 0.456, 0.424];
 fn lin(c: [f32; 3]) -> [f32; 3] { c.map(|v| v.powf(2.2)) }
 fn mat(scene: &mut Scene, c: [f32; 3], roughness: f32) -> u32 { scene.add_material(Material { tint: lin(c), layer: -1, roughness, flags: 0, scale: 1.0, metal: 0.0 }) }
 fn glow(scene: &mut Scene, c: [f32; 3], nits: f32) -> u32 { scene.add_material(Material { tint: c, layer: -1, roughness: 0.8, flags: EMISSIVE, scale: nits, metal: 0.0 }) }
+
+/// Godot's stadium_tv.gd: side midpoints leave the corners for floodlights.
+/// The picture faces local +Z, toward the field and slightly downwards.
+fn tv_pose(geo: Stadium, index: usize) -> (Vec3, Quat) {
+    let angle = TAU * index as f32 / TV_COUNT as f32;
+    let dir = Vec3::new(angle.cos(), 0.0, angle.sin());
+    let radius = geo.wall_r() - 1.35;
+    let half_height = TV_HEIGHT * 0.5;
+    // Merely clearing the rim in world Y leaves the lower picture hidden by
+    // the canopy's inner lip. Solve the eye-to-bottom-corner sightline over
+    // the actual tilted roof's upper inner edge, with one metre of clearance.
+    // sq(angle) >= 1, so the side-midpoint lip is the nearest possible roof.
+    let roof_len = ROWS as f32 * ROW_DEPTH * ROOF_COVER_FRAC;
+    let pitch = ROOF_DROP.atan2(roof_len);
+    let lip_r = geo.inner_r + ROWS as f32 * ROW_DEPTH + 1.0 - roof_len * 0.5
+        - roof_len * 0.5 * pitch.cos() - 0.25 * pitch.sin();
+    let lip_y = geo.wall_h() + 0.6 - ROOF_DROP * 0.5
+        - roof_len * 0.5 * pitch.sin() + 0.25 * pitch.cos();
+    let bottom_r = (radius + half_height * TV_TILT.sin()).hypot(TV_WIDTH * 0.5);
+    let min_bottom_y = TV_OBSERVER_HEIGHT
+        + (lip_y + TV_CANOPY_CLEARANCE - TV_OBSERVER_HEIGHT) * bottom_r / lip_r;
+    let height = (geo.wall_h() + TV_HEIGHT * 0.62).max(min_bottom_y + half_height * TV_TILT.cos());
+    let position = dir * radius + Vec3::Y * height;
+    let rotation = Quat::from_rotation_y(-angle - PI * 0.5) * Quat::from_rotation_x(TV_TILT);
+    (position, rotation)
+}
 
 /// A box primitive at `center` with `size` (for composing small figures).
 fn block(material: u32, center: Vec3, size: Vec3) -> Primitive {
@@ -60,6 +93,9 @@ impl Rng {
 pub struct StadiumVisuals {
     stands: Slots,
     roof: Slots,
+    tv: Slots,
+    /// Shared picture quad and dark housing cube, also used for the legs.
+    tv_mesh: [usize; 2],
     /// Stone per quarry (sandstone 0..3, limestone 3..6), roof stone likewise.
     stone: [usize; 6],
     roof_stone: [usize; 6],
@@ -103,6 +139,15 @@ impl StadiumVisuals {
         let lamp = { let m = glow(scene, [1.0, 0.85, 0.6], 9000.0); cube(scene, m) };
         let shaft = { let m = mat(scene, [0.16, 0.16, 0.18], 0.8); cube(scene, m) };
         let bank = { let m = glow(scene, [1.0, 0.96, 0.85], 11000.0); cube(scene, m) };
+        // All four screens share the primary view before its HUD. The renderer
+        // refreshes this layer after rendering all views, so the picture is
+        // safely sampled on the following frame without another scene render.
+        let tv_layer = scene.add_live_screen_texture("growing-guns-stadium-tv", 0, TV_WIDTH / TV_HEIGHT)
+            .expect("the stadium screen uses a valid source view and aspect ratio");
+        let tv_material = scene.add_material(Material { tint: [1.0; 3], layer: tv_layer,
+            roughness: 1.0, flags: EMISSIVE | LIVE_SCREEN, scale: 12000.0, metal: 0.0 });
+        let tv_picture = scene.add_mesh(&primitives::quad(tv_material).mesh());
+        let tv_housing = { let m = mat(scene, [0.09, 0.09, 0.11], 0.85); cube(scene, m) };
         // Spectators: torso + head and the two arms, one look per tunic
         // colour and shade (Godot tints per instance; Warp per material).
         let mut looks = Vec::new();
@@ -126,10 +171,12 @@ impl StadiumVisuals {
         let stands = Slots::reserve(scene, pieces);
         for i in 0..pieces { scene.instances[stands.first + i].flags |= NO_SHADOW; }
         let roof = Slots::reserve(scene, SEGMENTS);
+        let tv = Slots::reserve(scene, TV_COUNT * 4);
+        for i in 0..tv.capacity() { scene.instances[tv.first + i].flags |= NO_SHADOW; }
         let marks = Slots::reserve(scene, MARKS);
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let crowd = Crowd::reserve(scene, CROWD_MAX);
-        StadiumVisuals { stands, roof, stone, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -143,6 +190,7 @@ impl StadiumVisuals {
         self.rng = Rng(a.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         self.stands.clear(scene);
         self.roof.clear(scene);
+        self.tv.clear(scene);
         self.marks.clear(scene);
         self.mark_ring.clear();
         let quarry = if self.rng.f() < 0.5 { 0 } else { 3 } + self.rng.below(3);
@@ -195,6 +243,28 @@ impl StadiumVisuals {
                 let turn = Quat::from_axis_angle(Vec3::Y, side * 0.34) * Quat::from_axis_angle(right, if k == 1 { -0.1 } else { 0.05 });
                 self.beams.push(LocalLight { position: flood.position + right * side * 2.0, direction: turn * flood.direction,
                     inner_cos: 2.5f32.to_radians().cos(), outer_cos: 6.5f32.to_radians().cos(), source_radius_m: 0.5, ..flood });
+            }
+        }
+        // The original boards are raised enough to see over the canopy.
+        // The housing follows the tilted face; the vertical mounts stop below
+        // its bottom edge rather than crossing the picture.
+        for i in 0..TV_COUNT {
+            let (at, rot) = tv_pose(self.geo, i);
+            self.tv.add(scene, self.tv_mesh[0], Affine3A::from_scale_rotation_translation(
+                Vec3::new(TV_WIDTH, TV_HEIGHT, 1.0), rot, at));
+            self.tv.add(scene, self.tv_mesh[1], Affine3A::from_scale_rotation_translation(
+                Vec3::new(TV_WIDTH + 1.2, TV_HEIGHT + 5.0, 0.8), rot,
+                at + rot * Vec3::new(0.0, -1.9, -0.45)));
+            let dir = Vec3::new(at.x, 0.0, at.z).normalize();
+            let tangent = Vec3::new(-dir.z, 0.0, dir.x);
+            let leg_top = at.y - TV_HEIGHT * 0.5 - 0.4;
+            // Keep the original anchored foot when sightline clearance raises
+            // the board; the extra span belongs to the narrow support legs.
+            let leg_height = 16.0 + at.y - (self.geo.wall_h() + TV_HEIGHT * 0.62);
+            for side in [-1.0, 1.0] {
+                let leg = dir * (self.geo.wall_r() - 1.05) + tangent * (side * TV_WIDTH * 0.3)
+                    + Vec3::Y * (leg_top - leg_height * 0.5);
+                self.tv.add(scene, self.tv_mesh[1], box_xf(leg, Vec3::new(0.9, leg_height, 0.9), 0.0));
             }
         }
         self.seat(scene, base, inner);
@@ -315,14 +385,90 @@ impl StadiumVisuals {
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, now: f32) -> Result<(), String> {
         self.stands.flush(gpu, renderer, scene)?;
         self.roof.flush(gpu, renderer, scene)?;
+        self.tv.flush(gpu, renderer, scene)?;
         self.marks.flush(gpu, renderer, scene)?;
         self.crowd.flush(gpu, renderer, now)
     }
 
     /// For state dumps.
     pub fn state(&self) -> serde_json::Value {
+        let tv_positions: [[f32; 3]; TV_COUNT] = std::array::from_fn(|i| tv_pose(self.geo, i).0.to_array());
         serde_json::json!({ "spectators": self.crowd.len(), "alive": self.crowd.alive(), "enthusiasm": self.sound.enthusiasm, "fear": self.sound.fear,
-            "inner_r": self.geo.inner_r, "base_y": self.geo.base_y })
+            "inner_r": self.geo.inner_r, "base_y": self.geo.base_y,
+            "tv": { "screens": self.tv.len() / 4, "source_view": 0, "aspect": TV_WIDTH / TV_HEIGHT, "positions": tv_positions } })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stadium_screens_face_inward_and_down_without_flipping_the_picture() {
+        let geo = Stadium::new(80.0, true, 12.0);
+        let picture = primitives::quad(0);
+        for i in 0..TV_COUNT {
+            let (at, rot) = tv_pose(geo, i);
+            let xf = Affine3A::from_scale_rotation_translation(Vec3::new(TV_WIDTH, TV_HEIGHT, 1.0), rot, at);
+            let vertices: Vec<Vec3> = picture.vertices.iter().map(|v| xf.transform_point3(Vec3::from(v.pos))).collect();
+            let normal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]).normalize();
+            let inward = -Vec3::new(at.x, 0.0, at.z).normalize();
+            assert!(normal.dot(inward) > 0.97, "screen {i} must face the field");
+            assert!(normal.y < -0.2 && normal.y > -0.23, "screen {i} must tilt down");
+            assert!((vertices[3] - vertices[0]).y > TV_HEIGHT * 0.97, "screen {i} must keep the picture upright");
+            assert!((normal.dot(Vec3::Y * 2.0 - at)) > 0.0, "screen {i} must show its front from the floor");
+            assert!(((vertices[1] - vertices[0]).length() - TV_WIDTH).abs() < 1e-4);
+            assert!(((vertices[3] - vertices[0]).length() - TV_HEIGHT).abs() < 1e-4);
+            assert!(vertices.iter().all(|v| v.y > geo.wall_h() + 0.6), "screen {i} must clear the rim");
+        }
+    }
+
+    #[test]
+    fn stadium_screen_bottom_sightlines_clear_the_canopy_geometry() {
+        // Trace several rays across each lower picture edge against the actual
+        // rotated roof boxes, including segment joins and different bowls.
+        fn crosses_unit_box(a: Vec3, b: Vec3) -> bool {
+            let d = b - a;
+            let (mut lo, mut hi) = (0.0f32, 1.0f32);
+            for axis in 0..3 {
+                if d[axis].abs() < 1e-6 {
+                    if a[axis].abs() > 0.5 { return false; }
+                } else {
+                    let t0 = (-0.5 - a[axis]) / d[axis];
+                    let t1 = (0.5 - a[axis]) / d[axis];
+                    lo = lo.max(t0.min(t1));
+                    hi = hi.min(t0.max(t1));
+                    if lo > hi { return false; }
+                }
+            }
+            true
+        }
+        for size in [45.0, 80.0, 120.0] {
+            for wall_height in [0.0, 12.0, 24.0] {
+                let geo = Stadium::new(size, wall_height > 0.0, wall_height);
+                let roof_len = ROWS as f32 * ROW_DEPTH * ROOF_COVER_FRAC;
+                let pitch = ROOF_DROP.atan2(roof_len);
+                let roofs: Vec<Affine3A> = (0..SEGMENTS).map(|segment| {
+                    let ang = Stadium::seg_ang() * (segment as f32 + 0.5);
+                    let dir = Vec3::new(ang.cos(), 0.0, ang.sin());
+                    let radius = (geo.inner_r + ROWS as f32 * ROW_DEPTH - roof_len * 0.5 + 1.0) * sq(ang);
+                    let width = 2.0 * (radius + roof_len * 0.5) * (Stadium::seg_ang() * 0.5).tan() + 0.9;
+                    Affine3A::from_scale_rotation_translation(Vec3::new(width, 0.5, roof_len),
+                        Quat::from_rotation_y(-ang + PI * 0.5) * Quat::from_rotation_x(-pitch),
+                        dir * radius + Vec3::Y * (geo.wall_h() + 0.6 - ROOF_DROP * 0.5)).inverse()
+                }).collect();
+                for screen in 0..TV_COUNT {
+                    let (at, rot) = tv_pose(geo, screen);
+                    for fraction in [-0.5, -0.25, 0.0, 0.25, 0.5] {
+                        let bottom = at + rot * Vec3::new(TV_WIDTH * fraction, -TV_HEIGHT * 0.5, 0.0);
+                        for roof in &roofs {
+                            assert!(!crosses_unit_box(roof.transform_point3(Vec3::Y * TV_OBSERVER_HEIGHT), roof.transform_point3(bottom)),
+                                "screen {screen}, width fraction {fraction}, arena {size}, wall {wall_height}: canopy blocks the picture");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

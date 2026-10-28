@@ -563,6 +563,7 @@ struct MeadowBrickFixture {
 pub struct Renderer {
     resource_device: wgpu::Device,
     albedo_array: wgpu::Texture,
+    live_screens: Option<std::sync::Mutex<crate::screen_feed::LiveScreens>>,
     aux_buffer: wgpu::Buffer,
     irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
     sun_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
@@ -1512,6 +1513,7 @@ impl Renderer {
         let mut renderer=Renderer {
             resource_device: gpu.device.clone(),
             albedo_array: albedo.clone(),
+            live_screens: (!scene.live_screen_feeds.is_empty()).then(|| std::sync::Mutex::new(crate::screen_feed::LiveScreens::new(gpu, &albedo, &scene.live_screen_feeds))),
             aux_buffer: aux.clone(),
             irradiance_volume: scene.irradiance_volume,
             geometry_diagnostics,
@@ -3727,6 +3729,20 @@ impl Renderer {
             cpu.mark("view effects, bloom, tonemap");
         }
         if let Some(motion) = &up.motion { motion.finish_frame(&mut enc); }
+        // Every view has finished sampling the albedo array. Update shared
+        // displays now for the NEXT frame, before app HUD/UI is composed.
+        if let Some(screens) = &self.live_screens {
+            let mut screens = screens.lock().unwrap();
+            if screens.due(views, &ldr) {
+                let screen_time = self.query.as_ref().map(|(qs, _, _)| {
+                    names.push("live screens"); (qs, timestamp_pair(&mut ts))
+                });
+                if let Some((qs, i)) = screen_time { enc.write_timestamp(qs, i); }
+                screens.encode(gpu, &mut enc, &ldr, views);
+                if let Some((qs, i)) = screen_time { enc.write_timestamp(qs, i + 1); }
+                cpu.mark("live screens");
+            }
+        }
         // One shared previous wind state, advanced only after every view has
         // encoded both meadow color and motion for this rendered frame.
         if let Some(meadow) = &self.meadow { meadow.finish_frame(); }

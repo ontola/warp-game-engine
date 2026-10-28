@@ -1563,6 +1563,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         tw /= tw.x + tw.y + tw.z;
         base = triplanar(m.layer, p, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0) * m.tint;
         nn = triplanar_n(m.layer, p, n, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0);
+    } else if m.layer >= 0 && (m.flags & 16384u) != 0u {
+        // LIVE_SCREEN writes mip 2 (512 square) and below. Never sample the
+        // uninitialized higher-resolution levels or the unrelated normal map.
+        let footprint = max(length(duv_x), length(duv_y)) * f32(textureDimensions(albedo).x);
+        base = textureSampleLevel(albedo, samp, uv, m.layer, max(2.0, log2(max(footprint, 1.0)))).rgb * m.tint;
     } else if m.layer >= 0 && (m.flags & 2048u) == 0u {
         // PIXEL_ART samples the top mip: hard source pixels, no blur.
         let sharp = select(1.0, 0.0, (m.flags & 8192u) != 0u);

@@ -47,6 +47,7 @@ pub mod far_grass;
 pub mod hud;
 pub mod picture;
 pub mod screen;
+pub mod screen_feed;
 pub mod sprites;
 pub mod irradiance_volume;
 pub mod hud_profile;

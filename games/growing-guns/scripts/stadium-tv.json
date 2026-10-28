@@ -1,0 +1,9 @@
+{
+  "seed_note": "Run with --players 2 --seed 52 --sky noon. View 0 broadcasts; view 1 observes the east screen. Two captures prime then display the GPU feed.",
+  "size": [1600, 900],
+  "steps": [
+    {"cmd": ["bots pause", "menu none", "teleport 0 0 8 30", "aim 0 0 2 -10", "teleport 1 50 30 0", "aim 1 90.49 64.33 0", "health 0 50000", "health 1 50000"], "ticks": 1, "capture": "prime.png", "state": "state.json"},
+    {"expect": "/stadium/tv/screens", "equals": 4},
+    {"ticks": 2, "capture": "tv.png"}
+  ]
+}

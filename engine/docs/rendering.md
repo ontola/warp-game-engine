@@ -90,6 +90,18 @@ detail, the measurements and the dead ends are in the
 - **Dynamic objects:** `render::slots::Slots` reserves instances up front;
   add, move, re-mesh and remove at runtime without a renderer rebuild.
   New meshes or materials still need a new renderer.
+- **Live in-world screens:** `Scene::add_live_screen_texture(name, source_view,
+  aspect)` reserves a shared layer for an `EMISSIVE | LIVE_SCREEN` material.
+  After all views finish, the GPU copies the selected view before HUD into
+  mip 2 (512 square) and generates smaller mips, at most 30 times per second.
+  Displays sample it on the next frame: no extra scene camera or CPU readback.
+  Split-view cropping, aspect fitting, gamma conversion and output resize are
+  handled by `screen_feed`. The shared GPU pass is reported as `live screens`.
+  The texture array still allocates a full layer; only update/sample cost is
+  restricted to the smaller mips. First frame and missing source views are black.
+  For headless captures render twice to prime the feed. Growing Guns' example
+  is `games/growing-guns/scripts/stadium-tv.json`. Ads and a separate TV camera
+  are game-level work, not part of this API.
 - **Characters:** weighted GPU skinning, evaluated once per frame before
   all views and shadow maps (`skinning.rs`), fed by `assets::skinned`.
 - **Effects:** CPU particles on slots (`particles`), explosions with fire,
