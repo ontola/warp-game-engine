@@ -4,6 +4,8 @@
 
 use crate::character::{self, Look, FRAMES};
 use crate::dump::{linear, Room};
+use crate::host::{get, Host};
+use crate::lobby::{Menu, Toast, Web};
 use crate::paint::{Prompt, Show};
 use crate::props::Props;
 use crate::room::{self, Mood, RoomBuild};
@@ -19,7 +21,8 @@ use render::hud::{HudDrawList, HudImage, ImageFilter};
 use render::scene::{Material, Scene, ALPHA_TEST, PIXEL_ART, TWO_SIDED};
 use render::screen::Screen;
 use render::slots::{SlotId, Slots};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{Receiver, Sender};
 use std::f32::consts::PI;
 
 pub const MAX_ACTORS: usize = 8;
@@ -80,9 +83,12 @@ struct Actor {
     prev: [f64; 2],
 }
 
-/// A profile as the lobby shows it.
+/// A party player as the lobby shows it.
 #[derive(Clone, Debug, Default)]
 pub struct Profile {
+    pub id: String,
+    pub name: String,
+    pub couch: Option<i64>,
     pub color: String,
     pub skin: String,
     /// The drawn face, as GameNight sends it (face.rs).
@@ -95,28 +101,69 @@ struct Bot { target: f64, next: f64, jump: f64 }
 
 pub struct Lobby {
     build: RoomBuild,
-    stage: Stage,
+    pub(crate) stage: Stage,
     actors_view: ActorMeshes,
     pub world: World,
-    pub profiles: HashMap<String, Profile>,
+    /// What the host's snapshot says, and what follows from it.
+    pub host: Host,
+    pub(crate) client: Option<gamenight::lobby::Lobby>,
+    /// Party players, in the host's order.
+    pub profiles: Vec<Profile>,
     actors: HashMap<String, Actor>,
     next_order: usize,
     sheets_dirty: bool,
     screen: Option<Screen>,
     pub show: Show,
     pub prompts: HashMap<String, Prompt>,
+    pub(crate) prompt_active: HashMap<String, bool>,
+    /// Each prompt's glow, easing towards lit while someone stands there.
+    prompt_glow: HashMap<String, f32>,
     pub mood: Mood,
     /// Dump instances and materials RoomBuild::pose changes.
     animated: (Vec<usize>, Vec<usize>),
-    time: f32,
+    pub(crate) time: f32,
     since_paint: f32,
+    pub(crate) screens_dirty: bool,
+    /// Keyboard and pad players of a demo (`play`).
     local: Vec<String>,
     bots: HashMap<String, Bot>,
     rng: Pcg,
     uploaded: bool,
-    props: Props,
+    pub(crate) props: Props,
     events: Vec<world::Event>,
+    // main.gd's state
+    pub(crate) controllers: HashMap<String, String>,
+    pub(crate) held: HashMap<String, u32>,
+    pub(crate) input_blocked: HashSet<String>,
+    pub(crate) menus: HashMap<String, Menu>,
+    pub(crate) bench: Vec<String>,
+    pub(crate) phones: Vec<String>,
+    pub(crate) lost_since: HashMap<String, f32>,
+    pub(crate) toasts: Vec<Toast>,
+    pub(crate) unjoined: HashMap<String, (u32, bool)>,
+    pub(crate) holds: HashMap<String, (String, f32)>,
+    pub(crate) station_cooldown: HashMap<String, f64>,
+    pub(crate) pickup_cooldown: f64,
+    pub(crate) item_presses: HashMap<u32, (world::Kind, Vec3, f32)>,
+    pub(crate) pressed_flash: HashMap<String, f32>,
+    pub(crate) claims: HashMap<String, (serde_json::Value, f32)>,
+    pub(crate) pop_box: Option<(f32, f32)>,
+    pub(crate) featured_visible: bool,
+    pub(crate) bumpers_visible: bool,
+    display_active: Option<bool>,
+    pub(crate) quit: bool,
+    pub(crate) web_tx: Sender<Web>,
+    web_rx: Receiver<Web>,
+    links_due: f32,
+    last_queue: Vec<String>,
+    /// Hidden-by-default room parts the lobby shows (featured box, bumpers).
+    featured: Vec<usize>,
+    bumpers: Vec<usize>,
+    hud_size: [u32; 2],
 }
+
+/// Width of every prompt screen in the live lobby.
+const PROMPT_WIDTH: u32 = 1024;
 
 const NAMES: [&str; 6] = ["Joep", "Mango", "Disco", "Waffle", "Pickle", "Rocket"];
 /// The host's guest colours and skins (demo.gd).
@@ -124,42 +171,76 @@ const COLORS: [&str; 6] = ["#e36c76", "#49b8bc", "#d7ad43", "#a67bdd", "#4daf7c"
 const SKINS: [&str; 6] = ["#f5e9be", "#d99b72", "#efc39a", "#905c40", "#bf855b", "#654332"];
 
 impl Lobby {
-    /// The room with `local` keyboard/pad players and `bots` demo bots.
+    /// The demo: an offline party of `local` keyboard/pad players and
+    /// `bots` demo bots (demo.gd), with a library, a queue and music.
     pub fn new(options: Options, local: usize, bots: usize) -> Result<Self, String> {
+        let mut lobby = Self::build(options, None)?;
+        lobby.host.demo = true;
+        let count = (local + bots).min(MAX_ACTORS);
+        let (party, links) = crate::lobby::demo_party(count, &NAMES, &COLORS, &SKINS);
+        lobby.set_party(party);
+        lobby.set_links(links);
+        for i in 0..count {
+            let id = format!("p{i}");
+            if i < local { lobby.local.push(id); continue; }
+            let x = lobby.world.player(&id).map_or(0.0, |p| p.x);
+            let next = lobby.rng.randf_range_f32(0.5, 2.0) as f64;
+            lobby.bots.insert(id, Bot { target: x, next, jump: 0.0 });
+        }
+        Ok(lobby)
+    }
+
+    /// The lobby of a GameNight host (GAMENIGHT_ADDR, GAMENIGHT_GAME_ID,
+    /// GAMENIGHT_TOKEN, GAMENIGHT_LINKS_URL).
+    pub fn connect(options: Options) -> Result<Self, String> {
+        Self::connect_with(options, gamenight::lobby::Config::from_env("game-room"))
+    }
+
+    pub fn connect_with(options: Options, config: gamenight::lobby::Config) -> Result<Self, String> {
+        Self::build(options, Some(gamenight::lobby::Lobby::connect(config)))
+    }
+
+    fn build(options: Options, client: Option<gamenight::lobby::Lobby>) -> Result<Self, String> {
         let mut build = room::build();
         let kit = crate::kit::add(&mut build);
         let animated = build.animated();
-        let mut room = Room::from_build(build.clone());
+        let mut parts = build.clone();
+        // Prompts change their buttons at run time: give each a screen wide
+        // enough for any of them, and stretch its quad to match.
+        for p in &build.prompts {
+            if let Some(screen) = build.screens.iter().find(|s| s.name == format!("prompt_{}", p.name)) {
+                parts.dump.textures[screen.texture].width = PROMPT_WIDTH;
+            }
+        }
+        let mut room = Room::from_build(parts);
         room.live = true;
         let (mut actors_view, mut props) = (None, None);
         let stage = Stage::new(room, options, |scene, room| {
             actors_view = Some(ActorMeshes::reserve(scene));
             props = Some(Props::reserve(kit, scene, room));
         })?;
+        let lobby_id = client.as_ref().map_or_else(|| "game-room".to_string(), |c| c.config.lobby_id.clone());
+        let featured = build.dump.instances.iter().enumerate().filter(|(_, i)| i.name.starts_with("featured/")).map(|(k, _)| k).collect();
+        let bumpers = build.dump.instances.iter().enumerate().filter(|(_, i)| i.name == "shelf_lb" || i.name == "shelf_rb").map(|(k, _)| k).collect();
+        let (web_tx, web_rx) = std::sync::mpsc::channel();
         let mut lobby = Self {
-            build, stage, actors_view: actors_view.expect("actor meshes"), world: World::new(7), profiles: HashMap::new(), actors: HashMap::new(),
-            next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), mood: Mood::default(),
-            animated, time: 0.0, since_paint: 0.0, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
-            props: props.expect("props"), events: vec![],
+            build, stage, actors_view: actors_view.expect("actor meshes"), world: World::new(7), host: Host::new(&lobby_id), client, profiles: vec![], actors: HashMap::new(),
+            next_order: 0, sheets_dirty: true, screen: None, show: Show::default(), prompts: HashMap::new(), prompt_active: HashMap::new(), prompt_glow: HashMap::new(),
+            mood: Mood::default(), animated, time: 0.0, since_paint: 0.0, screens_dirty: true, local: vec![], bots: HashMap::new(), rng: Pcg::new(42), uploaded: false,
+            props: props.expect("props"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
+            bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
+            pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
+            bumpers_visible: false, display_active: None, quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080],
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
-        for i in 0..(local + bots).min(MAX_ACTORS) {
-            let id = format!("p{i}");
-            lobby.profiles.insert(id.clone(), Profile { color: COLORS[i % 6].into(), skin: SKINS[i % 6].into(), avatar: crate::face::demo(i) });
-            lobby.world.ensure_player(&id, i);
-            if i < local { lobby.local.push(id.clone()); } else {
-                let x = lobby.world.player(&id).map_or(0.0, |p| p.x);
-                let next = lobby.rng.randf_range_f32(0.5, 2.0) as f64;
-                lobby.bots.insert(id.clone(), Bot { target: x, next, jump: 0.0 });
-            }
-        }
-        lobby.show.humans = local + bots;
-        lobby.show.profile_colors = (0..local + bots).map(|i| COLORS[i % 6].to_string()).collect();
         Ok(lobby)
     }
 
     pub fn names() -> &'static [&'static str] { &NAMES }
+
+    /// The z a player is drawn at (view.gd `depth`).
+    pub fn actor_depth(&self, id: &str) -> f32 { self.actors.get(id).map_or(0.0, |a| a.depth + (a.order % 8) as f32 * 0.03) }
 
     /// Show an event as if the world had sent it.
     pub fn event(&mut self, e: world::Event) { self.events.push(e); }
@@ -185,7 +266,7 @@ impl Lobby {
             } else if bot.jump > 0.2 { buttons |= world::BTN_A; }
             if self.rng.randf() < 0.01 { buttons |= world::BTN_B; }
             if self.rng.randf() < 0.02 { buttons |= world::BTN_RT; }
-            self.world.set_input(&id, buttons, stick);
+            self.input(&id, buttons, stick);
         }
     }
 
@@ -226,9 +307,10 @@ impl Lobby {
         let tuning = std::f32::consts::PI;
         for id in &ids {
             let p = self.world.player(id).unwrap().clone();
-            let profile = self.profiles.get(id).cloned().unwrap_or_default();
+            let profile = self.profile(id).cloned().unwrap_or_default();
+            let phone = self.phones.contains(id);
             let avatar = { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); profile.avatar.hash(&mut h); h.finish() };
-            let key = format!("{}|{}|{avatar}|{}", profile.color, profile.skin, p.hat);
+            let key = format!("{}|{}|{avatar}|{}|{phone}", profile.color, profile.skin, p.hat);
             if !self.actors.contains_key(id) {
                 let Some(slot) = self.actors_view.slots.add(&mut self.stage.scene, self.actors_view.meshes[0][0][0], Affine3A::IDENTITY) else { continue };
                 let body = self.actors_view.bodies.add(&mut self.stage.scene, self.actors_view.body, Affine3A::IDENTITY).expect("as many bodies as sprites");
@@ -278,15 +360,16 @@ impl Lobby {
 
     /// Draw every actor's sheet into the actor layer.
     fn paint_sheets(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
-        let screen = self.screen.as_mut().unwrap();
+        let mut screen = self.screen.take().unwrap();
         let mut list = HudDrawList::new([render::screen::SIZE; 2]);
         let side = render::screen::SIZE as f32;
         for (id, actor) in &self.actors {
             let p = self.world.player(id);
-            let profile = self.profiles.get(id).cloned().unwrap_or_default();
+            let profile = self.profile(id).cloned().unwrap_or_default();
+            let phone = self.phones.contains(id);
             let face = crate::face::decode(&profile.avatar);
             let mut sheet = character::build(&Look { color: &profile.color, skin: &profile.skin, hat: p.map_or("none", |p| p.hat.as_str()),
-                face: face.as_ref().map(|f| character::Face { image: &f.image, center: f.center }), ..Default::default() });
+                face: face.as_ref().map(|f| character::Face { image: &f.image, center: f.center }), phone });
             // Clear pixels take the outline's colour, so filtering never
             // brings in Godot's transparent white.
             for px in sheet.pixels_mut() { if px[3] == 0 { *px = image::Rgba([11, 11, 18, 0]); } }
@@ -297,7 +380,9 @@ impl Lobby {
             let [x, y] = sheet_origin(actor.slot.0);
             list.image([x as f32, y as f32, (SHEET_W * UP) as f32, (character::H * UP) as f32], image, [0.0, 0.0, 1.0, 1.0], [1.0; 4], [0.0, 0.0, side, side]);
         }
-        screen.draw(gpu, renderer, self.actors_view.layer, [0.0; 4], &list)
+        let drawn = screen.draw(gpu, renderer, self.actors_view.layer, [0.0; 4], &list);
+        self.screen = Some(screen);
+        drawn
     }
 }
 
@@ -324,20 +409,228 @@ fn buttons(c: &Controls) -> (u32, [f32; 2]) {
     (held, [c.mv[0], -c.mv[1]])
 }
 
+impl Lobby {
+    /// Host messages, web replies and the links poll.
+    fn poll(&mut self, delta: f32) {
+        let events = self.client.as_mut().map(|c| c.poll()).unwrap_or_default();
+        for event in events {
+            use gamenight::lobby::Event;
+            match event {
+                Event::Connected => { self.screens_dirty = true; }
+                Event::Party => { let party = self.client.as_ref().unwrap().party.clone(); self.set_party(party); }
+                Event::Focus(active) => self.focus_changed(active),
+                Event::Controllers(frames) => self.controllers_changed(&frames),
+                Event::Rejected(message) => self.toast(message, crate::lobby::PINK),
+                Event::Disconnected(_) => {
+                    self.display_active = None;
+                    self.suspend_input();
+                    self.toast("Reconnecting… your party is still here.", crate::lobby::AMBER);
+                }
+            }
+        }
+        while let Ok(reply) = self.web_rx.try_recv() {
+            match reply {
+                Web::Links(links) => self.set_links(links),
+                Web::PickupRefused => { self.drop_claims(); self.toast("That profile could not be picked up. Try again.", crate::lobby::PINK); }
+            }
+        }
+        // The room QR code, its join code and the profiles waiting at the doors.
+        let base = self.client.as_ref().map(|c| c.config.links_base.clone()).unwrap_or_default();
+        self.links_due -= delta;
+        if !base.is_empty() && self.links_due <= 0.0 {
+            self.links_due = 1.0;
+            let tx = self.web_tx.clone();
+            std::thread::spawn(move || {
+                let links = gamenight::lobby::http(&base, "GET", "/api/player-links", &[]).ok()
+                    .and_then(|body| serde_json::from_slice(&body).ok()).unwrap_or_else(|| serde_json::json!({}));
+                let _ = tx.send(Web::Links(links));
+            });
+        }
+    }
+
+    /// Only a host ownership change may claim the screen.
+    fn focus_changed(&mut self, active: bool) {
+        if self.display_active == Some(active) { return; }
+        self.display_active = Some(active);
+        self.suspend_input();
+    }
+
+    /// What the screens show, from the party (main.gd's painters' inputs).
+    fn refresh_show(&mut self) {
+        use crate::paint::{Banner, Game as ShowGame, Track};
+        let h = &self.host;
+        let game_of = |meta: &serde_json::Value| ShowGame { id: get(meta, "id", ""), title: get(meta, "title", "Game"), color: get(meta, "color", "") };
+        let mut tv = None;
+        let upcoming = h.upcoming();
+        if let Some(game) = h.current_game() {
+            let id = get(&game, "id", "");
+            let mut banner = Banner { kicker: if game["phase"] == "paused" { "PAUSED".into() } else { "NOW PLAYING".into() }, color: crate::lobby::GREEN,
+                detail: "Press Y at the TV to resume".into(), loading: None };
+            if let Some(loading) = h.loading_session(&id) {
+                banner.kicker = h.loading_kicker(&id);
+                banner.color = crate::lobby::AMBER;
+                banner.detail = loading.label;
+                banner.loading = h.loading_shown(&id);
+            } else if !h.fits_party(&game) {
+                let action = h.tv_station();
+                banner.detail = if action.enabled { format!("Y at TV: {}", action.label) } else { "This game needs a different player count".into() };
+            }
+            tv = Some((game_of(&game), banner));
+        } else if let Some(first) = upcoming.first() {
+            let meta = h.game_meta(&first.game).cloned().unwrap_or_else(|| serde_json::json!({"id": first.game, "title": first.title}));
+            let id = get(&meta, "id", "");
+            let mut banner = Banner { kicker: "UP NEXT".into(), color: crate::godot::rgb(0.6, 0.75, 1.0), detail: "Press Y at the TV to start".into(), loading: None };
+            let issue = h.issue(&id);
+            let warm = &h.party["warm_session"];
+            if !issue.is_empty() {
+                banner.kicker = issue.to_uppercase();
+                banner.color = crate::lobby::PINK;
+                banner.detail = "Press Y at the TV to retry".into();
+            } else if let Some(loading) = h.loading_session(&id) {
+                banner.kicker = h.loading_kicker(&id);
+                banner.color = crate::lobby::AMBER;
+                banner.detail = loading.label;
+                banner.loading = h.loading_shown(&id);
+            } else if warm.is_object() && get(warm, "game", "") == id && warm["phase"] == "ready" {
+                banner.kicker = "UP NEXT · READY".into();
+                banner.color = crate::lobby::GREEN;
+            }
+            tv = Some((game_of(&meta), banner));
+        }
+        let cabinet = h.cabinet_queue();
+        let queue: Vec<ShowGame> = cabinet.iter().map(|e| h.game_meta(&e.game).map(game_of).unwrap_or(ShowGame { id: e.game.clone(), title: e.title.clone(), color: String::new() })).collect();
+        let first = cabinet.first().map(|e| e.game.clone());
+        let show = &mut self.show;
+        show.tv = tv;
+        show.queue = queue;
+        show.queue_status = first.as_ref().map(|g| (h.queue_status(g), !h.issue(g).is_empty())).filter(|s| !s.0.is_empty());
+        show.queue_loading = first.as_ref().and_then(|g| h.loading_shown(g));
+        show.tv_has_next = !upcoming.is_empty();
+        show.queue_first = upcoming.len() - cabinet.len();
+        show.shelf = h.shelf_games().iter().map(|g| game_of(g)).collect();
+        show.shelf_offset = h.shelf_offset;
+        show.humans = h.human_count();
+        show.profile_colors = self.profiles.iter().map(|p| p.color.clone()).collect();
+        show.now_playing = h.has_track().then(|| {
+            let t = &h.party["now_playing"];
+            let mut artist = get(t, "artist", "");
+            if artist.is_empty() { artist = get(t, "source", ""); }
+            Track { title: get(t, "title", ""), artist, playing: t["playing"].as_bool().unwrap_or(false) }
+        });
+        self.mood.music_playing = show.now_playing.as_ref().is_some_and(|t| t.playing);
+        // The TV light leans towards the next game's colour.
+        let next = h.current_game().or_else(|| upcoming.first().and_then(|e| h.game_meta(&e.game).cloned()));
+        self.mood.color = next.map_or(room::VIOLET, |g| crate::godot::Color::from_string(&get(&g, "color", ""), room::VIOLET));
+        let ids: Vec<String> = cabinet.iter().map(|e| e.game.clone()).collect();
+        if ids != self.last_queue { self.last_queue = ids; }
+    }
+
+    /// Room parts the lobby moves: prompts (shown, bobbing, glowing), the
+    /// featured box and the shelf bumpers.
+    fn pose_parts(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, delta: f32) -> Result<(), String> {
+        let mut changed = vec![];
+        for p in &self.build.prompts {
+            let active = self.prompt_active.get(&p.name).copied().unwrap_or(false);
+            let screen = self.build.screens.iter().find(|s| s.name == format!("prompt_{}", p.name));
+            let stretch = screen.map_or(1.0, |s| PROMPT_WIDTH as f32 / s.size[0] as f32);
+            let bob = Vec3::new(0.0, (self.time * 2.2 + p.pos.x).sin() * 0.05, 0.0);
+            let at = Affine3A::from_scale_rotation_translation(Vec3::new(stretch, 1.0, 1.0), Quat::IDENTITY, p.pos + bob);
+            self.stage.room.dump.instances[p.instance].transform = glam::Mat4::from(at).to_cols_array();
+            changed.push((p.instance, active));
+            let glow = self.prompt_glow.entry(p.name.clone()).or_insert(0.85);
+            let target = if active { 1.6 } else { 0.85 };
+            let next = if (*glow - target).abs() <= delta * 3.0 { target } else { *glow + (target - *glow).signum() * delta * 3.0 };
+            if next != *glow {
+                *glow = next;
+                let m = &mut self.stage.room.dump.materials[p.material];
+                m["albedo"] = serde_json::json!([next, next, next, if active { 1.0 } else { 0.8 }]);
+                if let Some((id, material)) = self.stage.room.material_now(p.material) { renderer.update_materials(gpu, id as usize, &[material])?; }
+            }
+        }
+        // Little hop of the featured box when browsing (0.35 s, back easing).
+        let pop = self.pop_box.map(|(step, at)| (step, ((self.time - at) / 0.35).min(1.0)));
+        if pop.is_some_and(|(_, t)| t >= 1.0) { self.pop_box = None; }
+        let back = |t: f32| { let c1 = 1.70158; let c3 = c1 + 1.0; 1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2) };
+        let (yaw, scale) = pop.map_or((0.0, 1.0), |(step, t)| { let k = back(t); (-0.6 * step * (1.0 - k), 0.9 + 0.1 * k) });
+        let root = self.featured_root();
+        for &k in &self.featured {
+            let local = root.inverse() * Affine3A::from_mat4(glam::Mat4::from_cols_array(&self.build.dump.instances[k].transform));
+            let at = root * Affine3A::from_scale_rotation_translation(Vec3::splat(scale), Quat::from_rotation_y(yaw), Vec3::ZERO) * local;
+            self.stage.room.dump.instances[k].transform = glam::Mat4::from(at).to_cols_array();
+            changed.push((k, self.featured_visible));
+        }
+        for &k in &self.bumpers { changed.push((k, self.bumpers_visible)); }
+        for (k, visible) in changed {
+            if let Some(i) = self.stage.room.sync_instance(&mut self.stage.scene, k, visible) {
+                renderer.update_instances(gpu, i, &self.stage.scene.instances[i..i + 1])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Where the featured box stands (room.rs `game_shelf`).
+    fn featured_root(&self) -> Affine3A {
+        let bx = ((game_room_sim::layout::BOOKCASE.0 + game_room_sim::layout::BOOKCASE.1) / 2.0) as f32;
+        Affine3A::from_rotation_translation(Quat::from_rotation_x(-0.06), Vec3::new(bx, 3.56, game_room_sim::layout::BACK as f32 + 0.5))
+    }
+
+    /// Host messages and the lobby's per-frame logic, without drawing
+    /// (`draw` calls it; tests drive it directly).
+    pub fn update(&mut self, delta: f32) {
+        self.poll(delta);
+        self.process(delta);
+    }
+
+    /// Per-frame lobby work (main.gd `_process`).
+    fn process(&mut self, delta: f32) {
+        self.host.time = self.time;
+        self.host.connected = self.client.as_ref().is_some_and(|c| c.connected);
+        self.remove_lost(delta);
+        self.update_sleep();
+        self.update_holds();
+        self.mood.pad_activity = (self.mood.pad_activity - delta).max(0.0);
+        self.mood.pad_hop += delta;
+        self.update_prompts();
+        self.host.update_loading(delta);
+        self.refresh_show();
+        let mut animating = false;
+        for p in self.prompts.values_mut() {
+            if let Some((_, v)) = &mut p.pressed {
+                *v = (*v - delta / 0.36).max(0.0);
+                animating = true;
+                if *v == 0.0 { p.pressed = None; }
+            }
+        }
+        for v in &mut self.show.bumper_presses { if *v > 0.0 { *v = (*v - delta / 0.36).max(0.0); animating = true; } }
+        if animating || !self.holds.is_empty() { self.screens_dirty = true; }
+        let time = self.time;
+        self.toasts.retain(|t| t.until > time);
+        self.item_presses.retain(|_, p| time - p.2 < 0.2);
+    }
+}
+
 impl Game for Lobby {
     fn local_players(&self) -> usize { self.local.len() }
 
     fn tick(&mut self, controls: &[Controls]) {
         for (id, c) in self.local.clone().iter().zip(controls) {
             let (held, stick) = buttons(c);
-            self.world.set_input(id, held, stick);
+            self.input(id, held, stick);
         }
         self.bot_inputs();
         for p in &self.world.players { if let Some(a) = self.actors.get_mut(&p.id) { a.prev = [p.x, p.y]; } }
         self.props.prev = self.world.items.iter().map(|i| (i.id, [i.x, i.y])).collect();
+        // The world only runs while the room is on screen.
+        if !self.accepts_input() { return; }
         self.world.step();
         let events = self.world.take_events();
         self.events.extend(events);
+        // Carried to the exit and thrown out: an away player leaves the party.
+        for id in std::mem::take(&mut self.world.ejected) {
+            let name = self.name(&id);
+            self.toast(format!("{name} was thrown out of the party."), crate::lobby::DIM);
+            self.command(serde_json::json!({"type": "leave_party", "player_id": id}));
+        }
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
@@ -351,6 +644,7 @@ impl Game for Lobby {
             self.uploaded = true;
             self.since_paint = 1.0;
         }
+        self.update(delta);
         let glows = self.place_actors(frame.alpha, delta);
         for e in std::mem::take(&mut self.events) { self.props.event(&e); }
         self.props.camera(&mut self.stage.room.camera, self.time, delta);
@@ -363,18 +657,34 @@ impl Game for Lobby {
         self.actors_view.slots.flush(gpu, renderer, &self.stage.scene)?;
         self.actors_view.bodies.flush(gpu, renderer, &self.stage.scene)?;
         self.props.flush(gpu, renderer, &self.stage.room, &mut self.stage.scene)?;
+        self.pose_parts(gpu, renderer, delta)?;
         self.stage.relight_with(renderer, &lights)?;
         if std::mem::take(&mut self.sheets_dirty) { self.paint_sheets(gpu, renderer)?; }
-        // The idle TV cycles its colours: repaint the screens ten times a second.
+        // The idle TV cycles its colours: repaint the screens ten times a
+        // second, and at once when something on them changed.
         self.since_paint += delta;
-        if self.since_paint >= 0.1 {
+        if self.since_paint >= 0.1 || (self.screens_dirty && self.since_paint >= 1.0 / 30.0) {
             self.since_paint = 0.0;
+            self.screens_dirty = false;
             self.show.time = self.time;
             let screen = self.screen.as_mut().unwrap();
             self.stage.paint(gpu, renderer, screen, &self.show, &self.prompts, None)?;
         }
-        Ok(Draw { cameras: vec![self.stage.room.camera], light: self.stage.light.clone(), hud: HudDrawList::new(frame.size) })
+        self.hud_size = frame.size;
+        let hud = crate::hud::draw(self, frame.size, frame.alpha);
+        Ok(Draw { cameras: vec![self.stage.room.camera], light: self.stage.light.clone(), hud })
     }
 
     fn title(&self) -> Option<String> { Some("GameNight Game Room".into()) }
+
+    fn screen(&self) -> app::Screen {
+        if self.client.is_none() { return app::Screen::Normal; }
+        match self.display_active {
+            Some(true) if std::env::var("GAMENIGHT_LOBBY_FULLSCREEN").as_deref() != Ok("0") => app::Screen::Fullscreen,
+            Some(false) => app::Screen::Hidden,
+            _ => app::Screen::Normal,
+        }
+    }
+
+    fn quit(&self) -> bool { self.quit }
 }

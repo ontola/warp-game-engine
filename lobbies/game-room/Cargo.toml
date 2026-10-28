@@ -20,3 +20,7 @@ serde = { workspace = true }
 serde_json.workspace = true
 gdcompat.workspace = true
 game-room-sim = { path = "sim" }
+gamenight = { path = "../../engine/crates/gamenight" }
+
+[dev-dependencies]
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

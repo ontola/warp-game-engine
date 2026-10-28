@@ -81,6 +81,9 @@ impl<'a> Canvas<'a> {
     }
 
     fn clip(&self) -> [f32; 4] { [self.origin[0], self.origin[1], self.size[0], self.size[1]] }
+    /// Draw `dx` further right (a prompt centred in a wider screen).
+    pub fn shift(&mut self, dx: f32) { self.origin[0] += dx; self.size[0] -= dx; }
+
     fn at(&self, p: [f32; 2]) -> [f32; 2] { [self.origin[0] + p[0], self.origin[1] + p[1]] }
 
     /// Later shapes go over the text drawn so far (text otherwise draws last).
@@ -479,7 +482,16 @@ pub fn paint(c: &mut Canvas, name: &str, show: &Show, prompts: &std::collections
         "bumper_LB" => shelf_bumper(c, show, false),
         "bumper_RB" => shelf_bumper(c, show, true),
         _ if name.starts_with("music_icon") => music_icon(c, name["music_icon".len()..].parse().unwrap_or(0)),
-        _ if name.starts_with("prompt_") => match prompts.get(&name["prompt_".len()..]) { Some(p) => prompt(c, p), None => return false },
+        _ if name.starts_with("prompt_") => match prompts.get(&name["prompt_".len()..]) {
+            Some(p) => {
+                // The live lobby gives prompts a wider screen; centre the pills in it.
+                let items: Vec<(String, String)> = p.items.iter().map(|(k, t, _)| (k.clone(), t.clone())).collect();
+                let need = crate::room::prompt_size(&items)[0] as f32;
+                c.shift(((c.size[0] - need) / 2.0).max(0.0).floor());
+                prompt(c, p)
+            }
+            None => return false,
+        },
         _ => return false,
     }
     true

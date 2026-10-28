@@ -1450,12 +1450,14 @@ version = "0.1.0"
 dependencies = [
  "app",
  "game-room-sim",
+ "gamenight",
  "gdcompat",
  "glam 0.31.1",
  "image",
  "render",
  "serde",
  "serde_json",
+ "tungstenite",
 ]
 
 [[package]]

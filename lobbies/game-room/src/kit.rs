@@ -35,6 +35,9 @@ pub const PALETTES: [(&str, &[&str]); 8] = [
     ("spawn", &["7c5cff", "ffb454", "f2f1f8"]),
 ];
 
+/// main.gd `_celebrate`'s confetti: amber, violet, green, pink.
+pub const CONFETTI: [&str; 4] = ["ffb454", "7c5cff", "3ddc97", "ff4f8b"];
+
 /// room.gd's two fireballs per explosion: colour and radius.
 pub const FIREBALL_KINDS: [(&str, f32); 2] = [("ff6a2a", 1.4), ("ffd27a", 0.7)];
 
@@ -235,6 +238,16 @@ pub fn add(r: &mut RoomBuild) -> Kit {
         }).collect();
         kit.sparks.insert(name, quads);
     }
+    // Confetti: lit paper in the brand colours, taller than wide.
+    let quads = (0..RAMP).map(|k| {
+        let c = ramp(&CONFETTI, k as f32 / (RAMP - 1) as f32);
+        let mut m = mat(c, 0.7, 0.0, Color::BLACK, 0.0);
+        m.cull_disabled = true;
+        let i = r.quad(Vec2::new(1.0, 0.6), Vec3::ZERO, &m);
+        r.hidden.push(i);
+        i
+    }).collect();
+    kit.sparks.insert("confetti", quads);
 
     // Fireballs: each its own material, so each fades on its own.
     r.group = "kit/fireballs".into();

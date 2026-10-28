@@ -19,7 +19,7 @@ use std::f32::consts::PI;
 const ITEM_SLOTS: usize = 320;
 const FX_SLOTS: usize = 640;
 
-struct Spark { quad: usize, pos: Vec3, vel: Vec3, damping: f32, gravity: f32, size: f32, age: f32, life: f32 }
+struct Spark { quad: usize, pos: Vec3, vel: Vec3, damping: f32, gravity: f32, size: f32, age: f32, life: f32, spin: f32, angle: f32 }
 struct Flash { pos: Vec3, color: Color, energy: f32, start: f32, range: f32 }
 struct Fireball { pos: Vec3, age: f32 }
 struct Beam { x0: f32, x1: f32, y: f32, age: f32 }
@@ -90,9 +90,23 @@ impl Props {
             let age = -self.randf() * life * 0.05;
             let damping = 1.0 + self.randf() * 2.0;
             let scale = 0.6 + self.randf() * 0.6;
-            self.sparks.push(Spark { quad, pos, vel: dir * v, damping, gravity: -3.0, size: size * scale, age, life });
+            self.sparks.push(Spark { quad, pos, vel: dir * v, damping, gravity: -3.0, size: size * scale, age, life, spin: 0.0, angle: 0.0 });
         }
     }
+
+    /// Confetti for a used station (main.gd `_celebrate`): falls and flutters.
+    pub fn confetti(&mut self, pos: Vec3) {
+        let first = self.sparks.len();
+        self.burst(pos, 28, "confetti", 4.5, 0.9, 0.07);
+        for k in first..self.sparks.len() {
+            let spin = (self.randf() * 2.0 - 1.0) * 400f32.to_radians();
+            let s = &mut self.sparks[k];
+            s.gravity = -9.0;
+            s.spin = spin;
+        }
+    }
+
+    pub fn flash_at(&mut self, pos: Vec3, color: Color, energy: f32, range: f32) { self.flash_color(pos, color, energy, range); }
 
     fn flash(&mut self, pos: Vec3, color: &str, energy: f32, range: f32) { self.flash_color(pos, Color::hex(color), energy, range); }
     fn flash_color(&mut self, pos: Vec3, color: Color, energy: f32, range: f32) {
@@ -263,13 +277,19 @@ impl Props {
             if speed > 0.0 { s.vel *= (speed - s.damping * delta).max(0.0) / speed; }
             s.vel.y += s.gravity * delta;
             s.pos += s.vel * delta;
+            s.angle += s.spin * delta;
         }
         self.sparks.retain(|s| s.age < s.life);
         for s in &self.sparks {
             if s.age < 0.0 { continue; }
-            let xf = billboard(Mat4::from_scale_rotation_translation(Vec3::new(s.size, s.size, 1.0), Quat::IDENTITY, s.pos), &room.camera);
-            let (sc, r, t) = xf.to_scale_rotation_translation();
-            if self.fx.add(scene, mesh(room, s.quad), Affine3A::from_scale_rotation_translation(sc, r, t)).is_none() { break; }
+            let at = if s.spin != 0.0 {
+                // Confetti turns about y instead of facing the camera.
+                Affine3A::from_scale_rotation_translation(Vec3::new(s.size, s.size, 1.0), Quat::from_rotation_y(s.angle), s.pos)
+            } else {
+                let (sc, r, t) = billboard(Mat4::from_scale_rotation_translation(Vec3::new(s.size, s.size, 1.0), Quat::IDENTITY, s.pos), &room.camera).to_scale_rotation_translation();
+                Affine3A::from_scale_rotation_translation(sc, r, t)
+            };
+            if self.fx.add(scene, mesh(room, s.quad), at).is_none() { break; }
         }
 
         // Fireballs grow fast (cubic ease out over 0.22 s) and fade from 0.08 s.
