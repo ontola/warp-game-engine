@@ -553,6 +553,7 @@ pub struct Renderer {
     debris: Option<crate::debris::DebrisRenderer>,
     crowd: Option<crate::crowd::CrowdRenderer>,
     fx: crate::fx::FxSlot,
+    sprites: crate::sprites::SpriteSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
     meadow: Option<crate::meadow::MeadowRenderer>,
@@ -1468,6 +1469,7 @@ impl Renderer {
             debris,
             crowd,
             fx: Default::default(),
+            sprites: Default::default(),
             transparency,
             grass,
             meadow,
@@ -2498,6 +2500,14 @@ impl Renderer {
 
     /// Blast effects (`fx::Effects::flush`): the clock, and the live puffs
     /// when they changed.
+    /// Sprites for the next frames (`sprites::Sprite`), replacing the last set.
+    pub fn set_sprites(&self, gpu: &Gpu, sprites: &[crate::sprites::Sprite]) -> Result<(), String> { self.sprites.set(gpu, sprites) }
+    /// Upload a sprite picture (sheets, faces, prompts) under `id`.
+    pub fn set_sprite_image(&self, gpu: &Gpu, id: crate::sprites::SpriteImage, picture: &crate::picture::Picture, filter: crate::hud::ImageFilter) { self.sprites.set_picture(gpu, id, picture, filter) }
+    /// Use a texture (a `sprites::Canvas`, sRGB premultiplied) as sprite `id`.
+    pub fn set_sprite_texture(&self, gpu: &Gpu, id: crate::sprites::SpriteImage, texture: &wgpu::Texture, filter: crate::hud::ImageFilter) { self.sprites.set_texture(gpu, id, texture, filter) }
+    pub fn remove_sprite_image(&self, id: crate::sprites::SpriteImage) { self.sprites.remove(id) }
+
     pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
         self.fx.set(gpu, time, puffs);
         Ok(())
@@ -3474,6 +3484,21 @@ impl Renderer {
                 }
             };
             let resolved = fx_output.unwrap_or(resolved);
+            // Sprites (characters, tags, prompts) over the resolved HDR.
+            let sprite_output = {
+                let mut sprites = self.sprites.0.lock().unwrap();
+                match sprites.as_mut() {
+                    Some(sprites) => {
+                        let time = self.query.as_ref().map(|(qs, _, _)| { names.push("sprites"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        let out = sprites.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp)?;
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                        out
+                    }
+                    None => None,
+                }
+            };
+            let resolved = sprite_output.unwrap_or(resolved);
             let exhaust_output = if debug_options.exhaust_enabled {
                 let exhaust_time = self.query.as_ref().map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))

@@ -46,6 +46,13 @@ detail, the measurements and the dead ends are in the
   and rebuilds its mips on the GPU, after the renderer exists. Put it on
   `primitives::quad` (uv top-left is the list's top-left) with an EMISSIVE
   material for a glowing TV, or a plain one for a printed sign or cover.
+- **Sprites.** `Renderer::set_sprites` draws textured quads (billboards
+  that turn to each camera, or fixed axes) in HDR after reconstruction:
+  pixel art stays crisp, the opaque scene's depth hides them, back to
+  front per view. Images come from `set_sprite_image` (pictures, nearest or
+  mipmapped) or `set_sprite_texture` with a `sprites::Canvas` (a HUD list
+  drawn offscreen: name tags, 3D text, button prompts). Colour is radiance;
+  `sprites::irradiance` lights a sprite from the scene's local lights.
 
 ## Light
 
