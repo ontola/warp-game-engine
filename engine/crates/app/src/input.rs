@@ -53,6 +53,8 @@ pub struct Pointer {
     pub moved: bool,
     pub pressed: bool,
     pub held: bool,
+    /// Wheel lines scrolled since the last tick, positive away from the user (up).
+    pub wheel: f32,
 }
 
 impl Pointer {
@@ -60,6 +62,7 @@ impl Pointer {
         let sample = *self;
         self.moved = false;
         self.pressed = false;
+        self.wheel = 0.0;
         sample
     }
 }
@@ -195,6 +198,11 @@ impl Devices {
         if self.mouse_captured { self.kb.look[0] += dx; self.kb.look[1] += dy; }
     }
 
+    /// The mouse wheel over the free cursor, in lines (positive up).
+    pub fn wheel(&mut self, lines: f32) {
+        if !self.mouse_captured { self.pointer.wheel += lines; }
+    }
+
     pub fn cursor(&mut self, position: Option<[f32; 2]>) {
         self.pointer.moved |= self.pointer.position != position;
         self.pointer.position = position;
@@ -213,6 +221,7 @@ impl Devices {
         self.pointer.pressed = false;
         self.pointer.held = false;
         self.pointer.moved = false;
+        self.pointer.wheel = 0.0;
     }
 
     /// Drain pad events (edges) once per frame.

@@ -4,7 +4,8 @@
 //! benchmarks. A game implements [`Game`]; the shell owns the GPU.
 //!
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
-//! released), F11 toggles fullscreen, F12 saves `screenshot-N.png`.
+//! released), F11 toggles fullscreen, F12 saves `screenshot-N.png`. F1 to
+//! F10 go to [`Game::function_key`] first (a debug overlay on F3).
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
 //! ([`Game::text`] gets characters, IME commits, editing keys and
@@ -105,6 +106,9 @@ pub trait Game {
     /// close its own menu). Otherwise the shell releases the mouse, or quits
     /// when it is already released.
     fn escape(&mut self) -> bool { false }
+    /// Function key F`n` (1..=10) was pressed, also while typing: return
+    /// true when the game used it. F11 and F12 stay the shell's.
+    fn function_key(&mut self, _n: u8) -> bool { false }
     /// The game asks the shell to close (an Exit menu item).
     fn quit(&self) -> bool { false }
     /// Adjust input tuning (look sensitivity) from the game's settings;
@@ -122,6 +126,12 @@ pub trait Game {
     fn text_input(&self) -> bool { false }
     /// Text typed while [`Game::text_input`] holds.
     fn text(&mut self, _event: TextEvent) {}
+}
+
+/// F1..F10 as 1..=10.
+fn function_key(code: KeyCode) -> Option<u8> {
+    use KeyCode::*;
+    [F1, F2, F3, F4, F5, F6, F7, F8, F9, F10].iter().position(|&k| k == code).map(|i| i as u8 + 1)
 }
 
 /// One tick's controls through the game's seat binding: `devices` goes to
@@ -432,6 +442,10 @@ impl ApplicationHandler for Shell<'_> {
             }
             WindowEvent::CursorMoved { position, .. } => self.devices.cursor(Some([position.x as f32, position.y as f32])),
             WindowEvent::CursorLeft { .. } => self.devices.cursor(None),
+            WindowEvent::MouseWheel { delta, .. } => self.devices.wheel(match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+            }),
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
                     self.capture_mouse(true);
@@ -447,6 +461,7 @@ impl ApplicationHandler for Shell<'_> {
             },
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
+                if event.state == ElementState::Pressed && !event.repeat && let Some(n) = function_key(code) && self.game.function_key(n) { self.sync_capture(); return; }
                 if self.game.text_input() && event.state == ElementState::Pressed {
                     // Text entry: editing keys and typed text go to the game;
                     // only menu movement still presses buttons.

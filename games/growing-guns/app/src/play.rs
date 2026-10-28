@@ -105,6 +105,8 @@ pub struct Gg {
     saved_name: String,
     /// Menu joins skip relays (`--lan`, tests).
     pub lan: bool,
+    /// The F3 debug overlay (hud/debug.rs): it runs the commands below.
+    pub debug: hud::debug::DebugMenu,
 }
 
 impl Gg {
@@ -115,7 +117,7 @@ impl Gg {
         Gg { prev: world.players.iter().map(|p| p.pos).collect(), vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default(),
-            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false }
+            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
             .with_split()
     }
 
@@ -573,6 +575,38 @@ impl Gg {
 }
 
 impl Gg {
+    /// What the debug overlay shows of the match.
+    fn debug_ctx(&self) -> hud::debug::Ctx {
+        let w = &self.world;
+        let p = self.debug.player.min(w.players.len().saturating_sub(1));
+        let target = w.players.get(p);
+        hud::debug::Ctx {
+            cards: w.cards.enabled().map(|(_, d)| (d.id.clone(), d.name.clone(), hud::style::rgb(d.color), d.rare)).collect(),
+            players: w.players.iter().enumerate().map(|(i, q)| (self.hud.name(i).to_string(), q.pos.to_array(), q.bot)).collect(),
+            held: target.map_or(Vec::new(), |t| t.cards.iter().map(|&c| card_id(w, c)).collect()),
+            special: target.map_or("grenade", |t| t.weapon.special.name()),
+            max_health: target.map_or(100, |t| t.max_health()),
+            mag: target.map_or(1, |t| t.mag_size()),
+            sky: self.sky.choice.name(),
+            modifier: w.modifier.map(|m| m.id()),
+            forced: w.forced_modifier.map(|m| m.id()),
+            bots_paused: w.bots_paused,
+            round: w.round,
+            seed: w.arena.seed,
+            lava: w.lava.active,
+            island: w.arena.variant == growing_guns::arena::Variant::Island,
+        }
+    }
+
+    /// Run the debug overlay's commands; the last reply shows in it.
+    fn run_debug(&mut self, cmds: Vec<String>) {
+        for c in cmds {
+            let r = app::Game::command(self, &c);
+            match &r { Ok(t) => println!("debug: {c}: {t}"), Err(e) => eprintln!("debug: {c}: {e}") }
+            self.debug.reply(r.map(|t| format!("{c}: {t}")).map_err(|e| format!("{c}: {e}")));
+        }
+    }
+
     /// Godot's per-player PLAYER MENU: a joined seat's Start opens it; it
     /// then takes that seat's controls (A or X select, B or Start resume).
     fn player_menus(&mut self, controls: &mut [Controls]) {
@@ -609,7 +643,7 @@ impl app::Game for Gg {
     }
 
     fn mouse_capture(&self) -> Option<bool> {
-        Some(!self.no_kbm && !self.ui.is_open() && self.hud.match_over.is_none()
+        Some(!self.no_kbm && !self.ui.is_open() && !self.debug.open && self.hud.match_over.is_none()
             && !self.slots.first().and_then(|&s| self.world.players.get(s)).is_some_and(|p| p.offer.is_some()))
     }
 
@@ -650,16 +684,30 @@ impl app::Game for Gg {
         let names = self.seat_names();
         self.hud.set_names(&self.world, &self.slots, &names);
         // Menus take the local players' controls (merged) while open.
-        let merged = merge(controls);
+        let mut merged = merge(controls);
+        // Back + Start on a pad (Tab + Enter) toggles the debug overlay, as F3 does.
+        if merged.held.has(Buttons::SELECT) && merged.pressed.has(Buttons::START) {
+            self.debug.toggle();
+            merged.pressed.0 &= !Buttons::START;
+        } else if self.debug.open {
+            let dctx = self.debug_ctx();
+            let mut cmds = self.debug.update(&merged, &dctx, DT);
+            if cmds.is_empty() { cmds = self.debug.pointer(pointer, pointer_size, &dctx); }
+            self.run_debug(cmds);
+        }
+        let debug = self.debug.open;
         let ctx_ticket = self.session.ticket().map(str::to_string);
         let ctx = menu_ctx(&self.session, &self.world, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
-        let modal = self.ui.is_open() || self.hud.match_over.is_some();
-        let mut action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
-        if action == hud::menus::Action::None {
-            action = self.ui.pointer(pointer, pointer_size, &self.world, self.hud.match_over, &ctx);
+        let modal = self.ui.is_open() || self.hud.match_over.is_some() || debug;
+        // The debug overlay takes the controls; the match runs on under it.
+        if !debug {
+            let mut action = self.ui.update(&merged, &self.world, self.hud.match_over, &ctx, DT);
+            if action == hud::menus::Action::None {
+                action = self.ui.pointer(pointer, pointer_size, &self.world, self.hud.match_over, &ctx);
+            }
+            self.act(action);
         }
-        self.act(action);
-        let menu_open = self.ui.is_open();
+        let menu_open = self.ui.is_open() || debug;
         let mut local: Vec<Input> = if menu_open { vec![Input::default(); controls.len()] } else { controls.iter().map(input).collect() };
         // Sniper zoom slows the look (Godot x0.4).
         for (k, &s) in self.slots.iter().enumerate() {
@@ -755,6 +803,7 @@ impl app::Game for Gg {
         let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
         self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
         self.hud.round_flash(&mut list);
+        if self.debug.open { let dctx = self.debug_ctx(); self.debug.draw(&mut list, &dctx); }
         let mut light = self.light.clone();
         // The lava flows on the game clock.
         light.time = (self.world.tick as f32 - 1.0 + alpha) * DT;
@@ -771,6 +820,7 @@ impl app::Game for Gg {
 
     fn escape(&mut self) -> bool {
         use hud::menus::Screen;
+        if self.debug.open { self.debug.set_open(false); return true; }
         match self.ui.screen {
             // Esc on the start screen leaves the game (the shell first frees the mouse).
             Screen::Start => false,
@@ -779,6 +829,13 @@ impl app::Game for Gg {
     }
 
     fn quit(&self) -> bool { self.quit }
+
+    /// F3: the debug overlay.
+    fn function_key(&mut self, n: u8) -> bool {
+        if n != 3 { return false; }
+        self.debug.toggle();
+        true
+    }
 
     fn tuning(&self, t: &mut app::Tuning) {
         let d = app::Tuning::default();
@@ -810,11 +867,18 @@ impl app::Game for Gg {
     fn seats(&self) -> Option<Vec<Vec<Device>>> { (self.split && self.party.is_none()).then(|| self.binding.clone()) }
 
     fn text_input(&self) -> bool {
+        if self.debug.open { return self.debug.text_focus(&self.debug_ctx()); }
         let (ticket, _) = self.ctx_parts();
         self.ui.text_focus(&self.ctx(ticket.as_deref())).is_some()
     }
 
     fn text(&mut self, ev: app::TextEvent) {
+        if self.debug.open {
+            let dctx = self.debug_ctx();
+            let cmds = self.debug.text(ev, &dctx);
+            self.run_debug(cmds);
+            return;
+        }
         let (ticket, _) = self.ctx_parts();
         let a = { let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.text(ev, &ctx) };
         self.act(a);
@@ -828,7 +892,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -871,6 +935,25 @@ impl app::Game for Gg {
                     m => return Err(format!("menu start|pause|settings|gamenight|advanced|none, not {m}")),
                 }
                 Ok(format!("menu {:?}", self.ui.screen))
+            }
+            // The F3 overlay, for scripts: open or close it, pick its tab,
+            // target player and focused line (then press, type as a player would).
+            "debug" => {
+                let dctx = self.debug_ctx();
+                match (w.get(1).copied(), w.get(2).copied()) {
+                    (None, _) => self.debug.toggle(),
+                    (Some("on"), _) => self.debug.set_open(true),
+                    (Some("off"), _) => self.debug.set_open(false),
+                    (Some("tab"), Some(t)) => {
+                        let k = hud::debug::TABS.iter().position(|n| n.eq_ignore_ascii_case(t)).or_else(|| t.parse().ok()).ok_or(format!("debug tab {}", hud::debug::TABS.join("|").to_lowercase()))?;
+                        self.debug.set_tab(k);
+                    }
+                    (Some("player"), Some(_)) => self.debug.player = player(2, &self.world)?,
+                    (Some("focus"), Some("search")) => if !self.debug.focus_search(&dctx) { return Err("no search field on this tab".into()) },
+                    (Some("focus"), Some(_)) => if !self.debug.focus(num(2)? as usize, &dctx) { return Err(format!("no line {} on this tab", w[2])) },
+                    _ => return Err("debug [on|off] | debug tab NAME | debug player P | debug focus search|N".into()),
+                }
+                Ok(self.debug.describe(&self.debug_ctx()).to_string())
             }
             "special" => {
                 let p = player(1, &self.world)?;
@@ -1004,6 +1087,7 @@ impl app::Game for Gg {
             "menu": { "join_field": self.ui.join.text(), "joining": self.ui.joining, "player_name": self.ui.player_name, "name_field": self.ui.name.text(),
                 "text_input": app::Game::text_input(self), "picker": self.ui.picker.is_some(), "copied": self.ui.copied > 0.0, "notice": self.ui.notice,
                 "clipboard": app::clipboard::get() },
+            "debug": self.debug.describe(&self.debug_ctx()),
         }).to_string())
     }
 }

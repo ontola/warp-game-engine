@@ -42,6 +42,14 @@ them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift dash,
 left mouse fire, right mouse special, R reload; on a pad the sticks, A/LB
 jump, Y/RB dash, RT fire, LT/B special, X reload. F12 saves a screenshot.
 
+F3 (Back + Start on a pad) opens the debug overlay over the running match:
+give any card to any player (type to search), set specials, drop pickups,
+pick the sky (time of day, weather, per round, day cycle), force a round
+modifier such as Blackout and start it at once, start the lava leak, an
+island arena, next round, open the cage, pause the bots. Its entries run the
+debug commands (`help`); scripts open it with `debug on`
+(scripts/debug-menu.json).
+
 Menus and card choices accept mouse hover/click as well as keyboard and pads;
 settings sliders can be dragged. The cursor is released while the keyboard
 player is choosing a card or a menu is open, and captured again on returning
