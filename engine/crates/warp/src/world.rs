@@ -136,6 +136,47 @@ pub struct World {
     /// Meshes or materials were added since the renderer was made.
     pub rebuild: bool,
     dir: PathBuf,
+    fx: Fx,
+}
+
+/// Effects the engine animates on its own (`fx.burst`, `fx.ring`): plain
+/// entities tagged `fx`, moved every tick and removed when spent. Looks
+/// only; they never collide. When the world is full, effects are skipped.
+#[derive(Default)]
+struct Fx { parts: Vec<Part>, rings: Vec<Ring>, rng: u64 }
+
+struct Part { id: u32, vel: Vec3, gravity: f32, age: f32, life: f32, size: Vec3, stretch: f32 }
+
+struct Ring { ids: Vec<u32>, center: Vec3, radius: f32, width: f32, age: f32, life: f32 }
+
+/// A particle burst: `count` pieces flying out from `pos`.
+#[derive(Clone, Debug)]
+pub struct Burst {
+    pub shape: Shape,
+    pub look: Look,
+    pub count: usize,
+    /// Fastest speed in m/s; each piece gets 25 % to 100 % of it.
+    pub speed: f32,
+    /// Longest life in seconds; each piece lives 50 % to 100 % of it.
+    pub life: f32,
+    pub size: f32,
+    /// Seconds of velocity as extra length along the flight (streaks).
+    pub stretch: f32,
+    pub gravity: f32,
+    /// Fly out in the ground plane only.
+    pub flat: bool,
+}
+
+impl Default for Burst {
+    fn default() -> Self { Burst { shape: Shape::Cube, look: Look { emissive: 0.06, ..Look::default() }, count: 12, speed: 4.0, life: 0.4, size: 0.12, stretch: 0.0, gravity: 0.0, flat: false } }
+}
+
+/// A ring that grows to `radius` in the ground plane and thins out.
+#[derive(Clone, Debug)]
+pub struct RingFx { pub look: Look, pub radius: f32, pub life: f32, pub width: f32, pub segments: usize }
+
+impl Default for RingFx {
+    fn default() -> Self { RingFx { look: Look { emissive: 0.06, ..Look::default() }, radius: 2.0, life: 0.35, width: 0.08, segments: 24 } }
 }
 
 impl World {
@@ -145,7 +186,7 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, dir: dir.to_path_buf() };
+        let mut w = World { entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, dir: dir.to_path_buf(), fx: Fx::default() };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
@@ -249,7 +290,113 @@ impl World {
     pub fn clear(&mut self) {
         let ids: Vec<u32> = self.entities.keys().copied().collect();
         for id in ids { self.remove(id); }
+        self.fx = Fx::default();
     }
+
+    /// Add a shape and look's mesh now (in `init`), so spawning it later
+    /// never stalls on a new renderer.
+    pub fn warm(&mut self, shape: &Shape, look: &Look) -> Result<(), String> { self.mesh(shape, look).map(|_| ()) }
+
+    /// Move an entity without touching anything else (the hot path).
+    pub fn place(&mut self, id: u32, pos: Vec3, yaw: Option<f32>) -> Result<(), String> {
+        self.transform(id, |e| { e.pos = pos; if let Some(y) = yaw { e.rot.y = y; } })
+    }
+
+    /// Change only where an entity is, how it is turned and its size.
+    fn transform(&mut self, id: u32, f: impl FnOnce(&mut Entity)) -> Result<(), String> {
+        let e = self.entities.get_mut(&id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
+        f(e);
+        if let Some(slot) = e.slot { let (mesh, t) = (e.mesh, e.transform()); self.slots.set(&mut self.scene, slot, mesh, t); }
+        Ok(())
+    }
+
+    fn fx_float(&mut self) -> f32 {
+        let mut r = crate::api::Rng(self.fx.rng);
+        let x = r.float() as f32;
+        self.fx.rng = r.0;
+        x
+    }
+
+    fn room(&self) -> usize { self.slots.capacity().saturating_sub(self.entities.len()) }
+
+    pub fn burst(&mut self, pos: Vec3, b: &Burst) -> Result<(), String> {
+        self.warm(&b.shape, &b.look)?;
+        for _ in 0..b.count.min(self.room()) {
+            let yaw = self.fx_float() * std::f32::consts::TAU;
+            let up = if b.flat { 0.0 } else { self.fx_float() * 2.0 - 1.0 };
+            let flat = (1.0 - up * up).sqrt();
+            let speed = b.speed * (0.25 + 0.75 * self.fx_float());
+            let vel = Vec3::new(yaw.cos() * flat, up, yaw.sin() * flat) * speed;
+            let life = b.life * (0.5 + 0.5 * self.fx_float());
+            let size = Vec3::splat(b.size);
+            let id = self.spawn(Spawn { shape: b.shape.clone(), look: b.look, pos, size, solid: false, tag: "fx".into(), ..Default::default() })?;
+            self.fx.parts.push(Part { id, vel, gravity: b.gravity, age: 0.0, life, size, stretch: b.stretch });
+        }
+        Ok(())
+    }
+
+    pub fn ring(&mut self, center: Vec3, r: &RingFx) -> Result<(), String> {
+        let n = r.segments.clamp(3, 96);
+        if self.room() < n { return Ok(()); }
+        let mut ids = Vec::with_capacity(n);
+        for _ in 0..n { ids.push(self.spawn(Spawn { look: r.look, pos: center, size: Vec3::ZERO, solid: false, tag: "fx".into(), ..Default::default() })?); }
+        self.fx.rings.push(Ring { ids, center, radius: r.radius, width: r.width, age: 0.0, life: r.life.max(0.01) });
+        self.place_ring(self.fx.rings.len() - 1);
+        Ok(())
+    }
+
+    /// LÖVE Neon Siege's ring: from an eighth of the radius out to all of it.
+    fn place_ring(&mut self, i: usize) {
+        let ring = &self.fx.rings[i];
+        let k = (ring.age / ring.life).min(1.0);
+        let radius = ring.radius * (0.125 + 0.875 * k);
+        let n = ring.ids.len();
+        let len = std::f32::consts::TAU * radius / n as f32 * 1.08;
+        let width = ring.width * (1.0 - k * 0.8);
+        let (center, ids) = (ring.center, ring.ids.clone());
+        for (j, id) in ids.into_iter().enumerate() {
+            let a = j as f32 / n as f32 * std::f32::consts::TAU;
+            let pos = center + Vec3::new(a.cos(), 0.0, a.sin()) * radius;
+            // A segment's length runs along the tangent (its local X turned by -a).
+            let _ = self.transform(id, |e| { e.pos = pos; e.rot.y = -a + std::f32::consts::FRAC_PI_2; e.size = Vec3::new(len, width, width); });
+        }
+    }
+
+    /// Animate the effects one tick.
+    pub fn step_fx(&mut self, dt: f32) {
+        let mut parts = std::mem::take(&mut self.fx.parts);
+        parts.retain_mut(|p| {
+            p.age += dt;
+            if p.age >= p.life || !self.entities.contains_key(&p.id) { self.remove(p.id); return false; }
+            p.vel.y -= p.gravity * dt;
+            let k = 1.0 - p.age / p.life;
+            let (vel, size, stretch) = (p.vel, p.size * k, p.stretch);
+            let _ = self.transform(p.id, |e| {
+                e.pos += vel * dt;
+                e.size = size;
+                if stretch > 0.0 {
+                    let flat = Vec3::new(vel.x, 0.0, vel.z);
+                    e.size.z += flat.length() * stretch;
+                    e.rot.y = (-vel.x).atan2(-vel.z);
+                }
+            });
+            true
+        });
+        self.fx.parts = parts;
+        let mut i = 0;
+        while i < self.fx.rings.len() {
+            self.fx.rings[i].age += dt;
+            if self.fx.rings[i].age >= self.fx.rings[i].life {
+                for id in self.fx.rings.remove(i).ids { self.remove(id); }
+            } else {
+                self.place_ring(i);
+                i += 1;
+            }
+        }
+    }
+
+    /// Effects alive now: (particles, rings).
+    pub fn fx_count(&self) -> (usize, usize) { (self.fx.parts.len(), self.fx.rings.len()) }
 
     /// Entities with this tag, in id order.
     pub fn find(&self, tag: &str) -> Vec<u32> { self.entities.iter().filter(|(_, e)| e.tag == tag).map(|(&id, _)| id).collect() }

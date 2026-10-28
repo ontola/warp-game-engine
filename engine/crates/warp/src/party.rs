@@ -150,7 +150,7 @@ pub fn to_controls(pad: &Pad, prev_triggers: u32, dt: f32) -> Controls {
     let r = pad.stick(1);
     let m = r[0].hypot(r[1]);
     let k = if m > 0.0 { m.powf(1.5) / m * 3.0 * dt as f64 } else { 0.0 };
-    Controls { mv: [l[0] as f32, -l[1] as f32], look: [(r[0] * k) as f32, (-r[1] * k) as f32], held: Buttons(held), pressed: Buttons(pressed) }
+    Controls { mv: [l[0] as f32, -l[1] as f32], look: [(r[0] * k) as f32, (-r[1] * k) as f32], aim: [r[0] as f32, -r[1] as f32], held: Buttons(held), pressed: Buttons(pressed) }
 }
 
 #[cfg(test)]
@@ -165,5 +165,7 @@ mod tests {
         let c = to_controls(&pad, 0, 1.0 / 60.0);
         assert!(c.held.has(Buttons::SOUTH) && c.pressed.has(Buttons::START) && c.held.has(Buttons::RIGHT_TRIGGER));
         assert!(c.mv[1] > 0.9, "up on the stick is forward");
+        let up = Pad { axes: [0.0, 0.0, 0.0, -1.0, 0.0, 0.0], ..pad };
+        assert!(to_controls(&up, 0, 1.0 / 60.0).aim[1] > 0.99, "the right stick's position, y up");
     }
 }

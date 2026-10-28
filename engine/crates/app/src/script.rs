@@ -16,7 +16,7 @@
 //! ```
 //!
 //! A step with `ticks` (default 1 when it has controls) runs that many ticks;
-//! `press` applies on its first tick only, `hold`, `mv` and `look` on every
+//! `press` applies on its first tick only, `hold`, `mv`, `look` and `aim` on every
 //! tick (look is per tick, x right and y up, radians). Other players idle.
 //! `capture` and `state` write into the output directory. `expect` reads a
 //! JSON pointer (RFC 6901) from the game's state and compares it with
@@ -64,6 +64,8 @@ pub struct Step {
     pub player: usize,
     pub mv: Option<[f32; 2]>,
     pub look: Option<[f32; 2]>,
+    /// The right stick's position (twin-stick aim), x right, y up.
+    pub aim: Option<[f32; 2]>,
     #[serde(default)]
     pub hold: Vec<String>,
     #[serde(default)]
@@ -175,7 +177,7 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
     let mut tick = 0u64;
     let mut failed = 0;
     for (i, step) in script.steps.iter().enumerate() {
-        let has_controls = step.mv.is_some() || step.look.is_some() || !step.hold.is_empty() || !step.press.is_empty();
+        let has_controls = step.mv.is_some() || step.look.is_some() || step.aim.is_some() || !step.hold.is_empty() || !step.press.is_empty();
         let ticks = if step.until.is_some() { step.max_ticks.unwrap_or(3600) } else { step.ticks.unwrap_or(u32::from(has_controls)) };
         let mut reached = None;
         let (hold, press) = (mask(&step.hold)?, mask(&step.press)?);
@@ -201,6 +203,7 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
             let mine = Controls {
                 mv: step.mv.unwrap_or_default(),
                 look: step.look.unwrap_or_default(),
+                aim: step.aim.unwrap_or_default(),
                 held: Buttons(hold | if t == 0 { press } else { 0 }),
                 pressed: Buttons(if t == 0 { press } else { 0 }),
             };

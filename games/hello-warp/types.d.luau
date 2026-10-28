@@ -49,6 +49,8 @@ export type Input = {
 	move_y: number, -- left stick or W/S: -1 back .. 1 forward
 	look_x: number, -- look change this tick, radians, right positive (mouse, right stick)
 	look_y: number, -- up positive
+	aim_x: number, -- where the right stick points (twin-stick aim): -1 left .. 1 right, 0 on keyboard and mouse
+	aim_y: number, -- -1 down .. 1 up
 	held: Buttons, -- held now
 	pressed: Buttons, -- pressed since the previous tick
 }
@@ -97,6 +99,11 @@ declare world: {
 	spawn: (shape: string, opts: EntityOptions?) -> number,
 	-- Change any options of an entity.
 	set: (id: number, opts: EntityOptions) -> (),
+	-- Only move (and turn, yaw in radians) an entity: the cheap call for
+	-- things that move every tick.
+	place: (id: number, pos: Vec, yaw: number?) -> (),
+	-- Prepare a shape and look in init, so spawning it later never stalls.
+	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number? }?) -> (),
 	-- An entity's fields, or nil once removed.
 	get: (id: number) -> Entity?,
 	exists: (id: number) -> boolean,
@@ -113,6 +120,21 @@ declare world: {
 	-- height), sliding along solid boxes.
 	-- Returns the velocity after collisions and whether it stands on something.
 	move: (id: number, vel: Vec, dt: number, opts: Query?) -> (Vec, boolean),
+}
+
+-- Effects the engine animates and removes on its own: entities tagged "fx",
+-- never solid, skipped when the world is full. Warm their look in init.
+declare fx: {
+	-- Pieces flying out from pos: each at 25-100 % of speed (m/s), living
+	-- 50-100 % of life (s) and shrinking. flat: in the ground plane only;
+	-- stretch: seconds of velocity as length (streaks); gravity: m/s^2 down.
+	-- Defaults: 12 cubes of 0.12 m, speed 4, life 0.4, emissive 0.06.
+	burst: (pos: Vec, opts: { color: Color?, emissive: number?, roughness: number?, metal: number?, shape: string?, count: number?, speed: number?, life: number?, size: number?, stretch: number?, gravity: number?, flat: boolean? }?) -> (),
+	-- A ring of thin cubes in the ground plane, growing out to radius (m)
+	-- over life (s). Defaults: radius 2, life 0.35, width 0.08, 24 segments.
+	ring: (pos: Vec, opts: { color: Color?, emissive: number?, roughness: number?, metal: number?, radius: number?, life: number?, width: number?, segments: number? }?) -> (),
+	-- Effects alive now: particles, rings.
+	count: () -> (number, number),
 }
 
 declare players: {
@@ -153,6 +175,9 @@ declare hud: {
 	size: () -> (number, number),
 	-- A person's split-screen view: x, y, width, height in pixels (a bot: the whole output).
 	view: (player: number?) -> (number, number, number, number),
+	-- Where a world point shows in pixels (in that player's view; default
+	-- the first), for labels over things. nil when behind the camera.
+	project: (pos: Vec, player: number?) -> (number?, number?),
 }
 
 declare sky: {
