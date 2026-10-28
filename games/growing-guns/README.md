@@ -102,8 +102,16 @@ point with lead and wobble, reaction time, their own spread, held range and
 strafing, gap jumps, ledge climbs, hops, dashes, strike fleeing, pickups and
 specials by distance.
 
-Not ported yet: wave survival (coop), ghosts planting mines (unreachable in Godot at this
-commit), the island lava layout, music, GameNight. Online play is tested
+Wave survival: `--coop` on `play` or `script` (`sim/src/coop.rs`). The humans
+hold off endless waves of grunts, snipers, grenadiers, fraggers and bombers that
+rise out of the ground; a downed human is revived by a teammate standing where
+they fell for three seconds. Wave enemies are bot players appended after the
+match's seats for the wave; empty seats sit out (a remote player can still take
+one, from the next wave). The view draws up to 24 players in coop (8 animated
+characters, the rest as blobs). `scripts/coop.json` plays it headless with
+`--coop --players 2`.
+
+Not ported yet: ghosts planting mines (unreachable in Godot at thiscommit), the island lava layout, music, GameNight. Online play is tested
 over loopback (`nettest`), not yet between two machines; clients predict
 only their look direction.
 

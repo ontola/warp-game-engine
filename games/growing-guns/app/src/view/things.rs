@@ -110,6 +110,19 @@ impl Things {
                 }
             }
         }
+        // Coop: where the next enemy rises (Godot's pentagram), and the
+        // revive circle where a downed teammate fell.
+        if let Some(inc) = world.waves.incoming.as_ref().filter(|_| world.coop) {
+            let grow = (1.0 - inc.left as f32 / growing_guns::coop::TELEGRAPH as f32).clamp(0.2, 1.0);
+            let r = 1.6 * grow * (1.0 + 0.12 * (clock * 14.0).sin());
+            for k in [1.0, 0.7, 0.4] { put(scene, self.marker, at(inc.ground + Vec3::Y * 0.06, Vec3::new(r * k, 1.0, r * k)), false); }
+            // The beam over the spot (Godot's pentagram column).
+            put(scene, self.rocket, at(inc.ground + Vec3::Y * 6.0, Vec3::new(0.12 * grow, 12.0, 0.12 * grow)), false);
+        }
+        for d in world.waves.downed.iter().filter(|_| world.coop) {
+            let r = growing_guns::coop::REVIVE_RADIUS * (1.0 + 0.05 * (clock * 4.0).sin());
+            put(scene, self.marker, at(d.corpse - Vec3::Y * (growing_guns::HALF_HEIGHT - 0.06), Vec3::new(r, 1.0, r)), false);
+        }
         let l = &world.lava;
         if l.active {
             let (half, inset, y) = (l.half, l.inset(), l.surface());

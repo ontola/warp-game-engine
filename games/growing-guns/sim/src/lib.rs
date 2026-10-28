@@ -13,7 +13,7 @@ pub mod destruct;
 mod blast;
 mod bot;
 mod combat;
-mod coop;
+pub mod coop;
 mod flow;
 mod player;
 pub mod rng;
@@ -24,6 +24,7 @@ pub mod weapon;
 
 pub use arena::Arena;
 pub use blast::{Blast, Los};
+pub use coop::{Archetype, Waves};
 pub use destruct::{Breakage, Carve, Chunk};
 pub use flow::{Modifier, Phase, PickupKind, CARD_PICK_TIMEOUT, MODIFIERS, PICKUPS, ROUNDS_TO_WIN};
 pub use specials::{AIR_STRIKE_TRAVEL, ION_CHARGE};
@@ -379,6 +380,9 @@ pub struct Snapshot {
     pub pickups: Vec<Pickup>,
     #[serde(default)]
     pub lava: flow::LavaLeak,
+    /// Wave survival state (coop matches only).
+    #[serde(default)]
+    pub waves: Option<coop::Waves>,
     pub events: Vec<Event>,
 }
 
@@ -412,6 +416,8 @@ pub struct World {
     pub forced_modifier: Option<Modifier>,
     /// Wave survival instead of versus.
     pub coop: bool,
+    /// The waves, kills and downed humans (coop).
+    pub waves: coop::Waves,
     pub lava: flow::LavaLeak,
     pub events: Vec<Event>,
     /// What this tick did to the arena (sent reliably to clients).
@@ -446,7 +452,7 @@ impl World {
         let mut w = World {
             arena: Arena::empty(), players, bullets: Vec::new(), projectiles: Vec::new(), strikes: Vec::new(), pickups: Vec::new(),
             tick: 0, round: 1, phase: Phase::Playing, rounds_to_win: flow::ROUNDS_TO_WIN, modifier: None, modifier_chance: flow::MODIFIER_CHANCE,
-            forced_modifier: None, coop: false, lava: flow::LavaLeak::default(),
+            forced_modifier: None, coop: false, waves: coop::Waves::default(), lava: flow::LavaLeak::default(),
             events: Vec::new(), breakage: Breakage::default(), bots_paused: false,
             cards: Arc::default(), hooks: HookSlot::default(), script_rng: Rng::new(seed ^ 0x5C21_97E5), flow: flow::State::default(),
             carves: Vec::new(), booms: Vec::new(), rng, brains, gives: Vec::new(), damages: Vec::new(), delayed: Vec::new(),
@@ -555,7 +561,8 @@ impl World {
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             tick: self.tick, round: self.round, phase: self.phase, modifier: self.modifier, players: self.players.clone(), bullets: self.bullets.clone(),
-            projectiles: self.projectiles.clone(), strikes: self.strikes.clone(), pickups: self.pickups.clone(), lava: self.lava.clone(), events: self.events.clone(),
+            projectiles: self.projectiles.clone(), strikes: self.strikes.clone(), pickups: self.pickups.clone(), lava: self.lava.clone(),
+            waves: self.coop.then(|| self.waves.clone()), events: self.events.clone(),
         }
     }
 
@@ -571,6 +578,8 @@ impl World {
         self.strikes = s.strikes;
         self.pickups = s.pickups;
         self.lava = s.lava;
+        self.coop = s.waves.is_some();
+        if let Some(w) = s.waves { self.waves = w; }
         self.events = s.events;
     }
 

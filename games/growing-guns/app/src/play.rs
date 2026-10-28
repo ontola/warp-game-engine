@@ -264,7 +264,7 @@ impl app::Game for Gg {
         let w = &self.world;
         let players: Vec<_> = w.players.iter().enumerate().map(|(i, p)| serde_json::json!({
             "index": i, "bot": p.bot, "local_view": self.slots.iter().position(|&s| s == i),
-            "alive": p.alive, "health": p.health, "score": p.score, "ammo": p.ammo, "reloading": p.reloading(),
+            "alive": p.alive, "downed": p.downed, "ghost": p.ghost, "health": p.health, "score": p.score, "ammo": p.ammo, "reloading": p.reloading(),
             "pos": p.pos.to_array(), "vel": p.vel.to_array(), "yaw": p.yaw, "pitch": p.pitch,
             "on_floor": p.on_floor, "on_wall": p.wall_normal.is_some(), "dash_charges": p.dash_charges,
             "cards": p.cards.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>(), "offer": p.offer.as_ref().map(|o| o.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>()), "max_health": p.max_health(), "mag": p.mag_size(),
@@ -274,7 +274,7 @@ impl app::Game for Gg {
             "projectiles": w.projectiles.len(), "strikes": w.strikes.len(), "pickups": w.pickups.len(),
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
                 "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks() },
-            "players": players, "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
+            "players": players, "waves": w.coop.then_some(&w.waves), "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
         }).to_string())
     }
 }

@@ -21,7 +21,9 @@ const HIDDEN: Vec3 = Vec3::new(0.0, -500.0, 0.0);
 const BODY: Vec3 = Vec3::new(0.42, 0.5, 0.42);
 const HEAD: f32 = 0.3;
 
-struct PlayerMeshes { body: usize, head: usize, eyes: usize }
+/// `skinned`: an animated character (the renderer has room for a few);
+/// the rest are drawn as the primitive blob.
+struct PlayerMeshes { body: usize, head: usize, eyes: usize, skinned: bool }
 
 /// A corpse: jointed bodies, each drawn with one of the player's meshes.
 struct Ragdoll { torso: Body, parts: Vec<(Body, SlotId, usize, Affine3A)> }
@@ -57,16 +59,18 @@ impl PlayersView {
             let body_m = material(scene, PLAYER_COLORS[i % 4], 0.55);
             let prims = [primitives::sphere(body_m, 10, 16), primitives::sphere(body_m, 8, 14), primitives::sphere(eye_m, 6, 8)];
             let [proxy_body, head, eyes] = std::array::from_fn(|k| scene.add_mesh(&prims[k].mesh()));
-            let body = if let Some(characters) = &mut self.characters {
-                characters.reserve_actor(scene, i).expect("valid character actor")
-            } else {
+            let actor = self.characters.as_mut().and_then(|c| c.reserve_actor(scene, i).ok());
+            let skinned = actor.is_some();
+            let body = actor.unwrap_or_else(|| {
                 scene.add_instance(proxy_body, Affine3A::from_translation(HIDDEN));
                 proxy_body
-            };
+            });
             for m in [head, eyes] { scene.add_instance(m, Affine3A::from_translation(HIDDEN)); }
-            self.meshes.push(PlayerMeshes { body, head, eyes });
-            if self.characters.is_none() { self.sources.push(prims); }
+            self.meshes.push(PlayerMeshes { body, head, eyes, skinned });
+            self.sources.push(prims);
         }
+        // Gore only for blob bodies (indexed by player).
+        if self.meshes.iter().all(|m| m.skinned) { self.sources.clear(); }
         let tracer_m = glow(scene, [1.0, 0.9, 0.3], 30000.0);
         self.tracer = cube(scene, tracer_m);
         for _ in 0..TRACERS { scene.add_instance(self.tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
@@ -106,12 +110,17 @@ impl PlayersView {
         victim: usize, attacker: Option<usize>, gib: Gib, dir: Vec3, now: f32) {
         let v = &world.players[victim];
         let blood = fx.meshes.blood;
+        // Past the view's player capacity (a big coop wave): blood only.
+        let Some(skinned) = self.meshes.get(victim).map(|m| m.skinned) else {
+            fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
+            return;
+        };
         let Some(a) = attacker else {
             fx.particles.burst(scene, v.pos, Vec3::Y, &Burst { mesh: blood, count: 40, spread: 1.6, speed: [2.0, 7.0], ..Burst::drops() });
             return;
         };
         let push = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
-        if self.characters.is_some() {
+        if skinned {
             // Keep the original textured model in its final animated pose.
             // Mesh-specific dismemberment needs a separate skin-aware bake;
             // do not replace a humanoid corpse with the old coloured blobs.
@@ -151,7 +160,7 @@ impl PlayersView {
         let push = dir.with_y(0.0).normalize_or_zero() * 5.0 + Vec3::Y * 2.0;
         let rot = Quat::from_rotation_y(v.yaw);
         let (b, h) = (self.meshes[victim].body, self.meshes[victim].head);
-        let skinned = self.characters.is_some();
+        let skinned = self.meshes[victim].skinned;
         let (shape, center, local) = if skinned {
             (Shape::Capsule(0.32, 0.55), v.pos, characters::model_transform(Vec3::ZERO, 0.0))
         } else { (Shape::Capsule(0.12, 0.4), v.pos - Vec3::Y * 0.25, Affine3A::from_scale(BODY)) };
@@ -187,15 +196,14 @@ impl PlayersView {
     /// Players (interpolated by `alpha` from `prev`) and tracers.
     pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[Vec3], alpha: f32) {
         let mut slot = self.first;
-        for (i, p) in world.players.iter().enumerate() {
-            let m = &self.meshes[i];
-            if !p.alive {
+        for (i, m) in self.meshes.iter().enumerate() {
+            let Some(p) = world.players.get(i).filter(|p| p.alive) else {
                 for mesh in [m.body, m.head, m.eyes] { scene.update_instance(slot, mesh, Affine3A::from_translation(HIDDEN)); slot += 1; }
                 continue;
-            }
+            };
             let pos = prev.get(i).map_or(p.pos, |&q| q.lerp(p.pos, alpha));
             let rot = Quat::from_rotation_y(p.yaw);
-            let (body, head, eyes) = if self.characters.is_some() {
+            let (body, head, eyes) = if m.skinned {
                 (characters::model_transform(pos, p.yaw), Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN))
             } else {
                 (Affine3A::from_scale_rotation_translation(BODY, rot, pos + Vec3::Y * -0.25),
