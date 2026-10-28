@@ -40,8 +40,8 @@ Other inputs, copied as they are:
 - `static/logo.svg`: the logo. A white W in front of a spacetime grid
   bent by a warp bubble: flat inside, space rising behind and sinking ahead.
   The yellow grid line runs through the middle of the W. Deep-space blue.
-  `static/favicon.svg` is the same mark with a coarser grid and thicker
-  lines, for 16 to 32 pixels (also used next to the wordmark).
+  `static/favicon.svg` is the same file (also used next to the wordmark);
+  the grid is coarse enough to read at 16 pixels.
 - `assets/sideways-stage.jpg`: a Sideways frame rendered headless on a CPU
   rasteriser (`KERN_ADAPTER=software sideways shot out.png --size 960x540
   --frames 900 --taa 4`, llvmpipe, 28 October 2026), converted to JPEG.
