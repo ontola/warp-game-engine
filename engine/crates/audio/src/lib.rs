@@ -6,6 +6,8 @@
 //! their voice presets and can render WAVs and spectrograms for testing.
 
 pub mod analysis;
+#[cfg(feature = "luau")]
+pub mod cli;
 pub mod dsp;
 pub mod engine;
 pub mod es;
