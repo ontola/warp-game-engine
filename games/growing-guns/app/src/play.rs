@@ -519,7 +519,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | names NAME,NAME.. | net-error TEXT|none | give P CARD | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | round | cage | rematch | extend".into()),
             // Show (or clear with `none`) a network error in the red panel.
             "net-error" => {
                 let t = cmd.trim_start().strip_prefix("net-error").unwrap_or("").trim();
@@ -580,7 +580,15 @@ impl app::Game for Gg {
                 self.world.arena = growing_guns::Arena::generate(seed);
                 self.new_arena();
                 let a = &self.world.arena;
-                Ok(format!("arena {seed}: {:?}, {} m, {} chunks", a.variant, a.size, a.chunks.len()))
+                let hole = a.hole.map(|(c, s)| format!(", hole {s:.1} m at {:.1} {:.1}", c.x, c.y)).unwrap_or_default();
+                Ok(format!("arena {seed}: {:?}, {} m, {} chunks{hole}", a.variant, a.size, a.chunks.len()))
+            }
+            "lava" => {
+                // Godot's dev key L; `lava S` as if the leak began S seconds ago.
+                let s = w.get(1).map_or(Ok(0.0), |_| num(1))?;
+                self.world.start_lava_leak_at(s);
+                let l = &self.world.lava;
+                Ok(format!("lava leak at {s} s: inset {:.1} m, surface {:.2} m", l.inset(), l.surface()))
             }
             "cards" => Ok(self.world.cards.enabled().map(|(_, d)| d.id.clone()).collect::<Vec<_>>().join(" ")),
             "give" => {

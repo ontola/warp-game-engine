@@ -451,6 +451,18 @@ impl World {
         self.lava = LavaLeak { active: true, elapsed: 0.0, spread: LAVA_LEAK_SPREAD, rise: 0.0, has_walls, half: self.arena.size * 0.5 };
     }
 
+    /// Start the leak as if it began `elapsed` seconds ago (Godot
+    /// `start_lava_leak(spread, start_elapsed)`, the dev key L and late
+    /// joiners): for scripts and tools.
+    pub fn start_lava_leak_at(&mut self, elapsed: f32) {
+        self.start_lava_leak();
+        let l = &mut self.lava;
+        l.elapsed = elapsed.max(0.0);
+        let floor_s = (l.spread - l.wall_s()).max(0.1);
+        l.rise = ((l.elapsed - l.wall_s()).max(0.0) - floor_s).max(0.0) * LEAK_RISE_SPEED;
+        l.rise = l.rise.min(LEAK_MAX_RISE);
+    }
+
     /// The leak's flow and its damage (runs in every phase until the next arena).
     pub(crate) fn lava_leak_tick(&mut self) {
         if !self.lava.active { return; }
