@@ -447,6 +447,9 @@ pub struct World {
     pub card_pick_seconds: f64,
     /// Force this modifier every round (debug).
     pub forced_modifier: Option<Modifier>,
+    /// Every new arena is an island arena (Godot `force_all_floor_lava`;
+    /// `--island`, the `arena island` command).
+    pub force_island: bool,
     /// Wave survival instead of versus.
     pub coop: bool,
     /// The waves, kills and downed humans (coop).
@@ -486,7 +489,7 @@ impl World {
             arena: Arena::empty(), players, bullets: Vec::new(), projectiles: Vec::new(), strikes: Vec::new(), pickups: Vec::new(),
             tick: 0, round: 1, phase: Phase::Playing, rounds_to_win: flow::ROUNDS_TO_WIN, modifier: None, modifier_chance: flow::MODIFIER_CHANCE,
             rules: Rules::default(), card_pick_seconds: flow::CARD_PICK_TIMEOUT,
-            forced_modifier: None, coop: false, waves: coop::Waves::default(), lava: flow::LavaLeak::default(),
+            forced_modifier: None, force_island: false, coop: false, waves: coop::Waves::default(), lava: flow::LavaLeak::default(),
             events: Vec::new(), breakage: Breakage::default(), bots_paused: false,
             cards: Arc::default(), hooks: HookSlot::default(), script_rng: Rng::new(seed ^ 0x5C21_97E5), flow: flow::State::default(),
             carves: Vec::new(), booms: Vec::new(), rng, brains, gives: Vec::new(), damages: Vec::new(), delayed: Vec::new(),

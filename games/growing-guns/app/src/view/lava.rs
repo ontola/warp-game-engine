@@ -27,6 +27,9 @@ const ENERGY_CD: f32 = 37_000.0;
 const POOL_ENERGY: f32 = 5.5;
 /// Leak glow: Godot `LavaLeakGlow`, up to 7.5.
 const LEAK_ENERGY: f32 = 7.5;
+/// Island arenas: Godot `_build_lava_floor_surface`'s LavaGlow, energy 8,
+/// range 0.78 x the arena, 0.35 m over the lava floor.
+const FLOOR_ENERGY: f32 = 8.0;
 /// Night glows over exposed floor lava: at most this many, one per tile of
 /// `TILE` cells with at least `PATCH_MIN_M2` of lava showing.
 pub const PATCH_LIGHTS: usize = 4;
@@ -107,16 +110,22 @@ impl LavaLight {
         self.update_ratio();
     }
 
-    /// This frame's lights (pool, then leak).
+    /// This frame's lights (pool, then leak; on islands the lava floor's).
     pub fn pose(&mut self, world: &World) {
         self.lights.clear();
         let size = world.arena.size;
-        if self.ratio > 0.0 {
+        // Island arenas: one glow over the lava floor and no pool or leak
+        // light (Godot sets up no openness there and hides the leak glow).
+        let island = world.arena.variant == growing_guns::arena::Variant::Island;
+        let floor_y = super::things::floor_lava_y(world);
+        if island {
+            self.lights.push(glow(Vec3::new(0.0, floor_y + 0.35, 0.0), FLOOR_ENERGY, size * 0.78));
+        } else if self.ratio > 0.0 {
             let energy = POOL_ENERGY * self.ratio.powf(0.72);
             self.lights.push(glow(Vec3::new(0.0, LAVA_KILL_Y + 0.6, 0.0), energy, size * 0.85));
         }
         let l = &world.lava;
-        if l.active && (l.floor_t() > 0.0 || !l.has_walls) {
+        if l.active && !l.full && (l.floor_t() > 0.0 || !l.has_walls) {
             let exposure = self.ratio.max((l.inset() / l.half.max(0.01)).clamp(0.0, 1.0) * 0.92);
             let spread = (l.floor_t() * 1.4).clamp(0.0, 1.0);
             let energy = LEAK_ENERGY * spread * exposure.powf(0.72);
@@ -127,9 +136,12 @@ impl LavaLight {
         let color = Vec3::from(GLOW_COLOR);
         // Over each patch: higher and wider the larger it is, so the floor
         // around a hole catches the light; below the leak once it covers them.
+        // On islands the patches are open lava between the islands, over the
+        // lava floor.
+        let base = if island { floor_y } else { 0.0 };
         for &(p, area) in &self.patches {
             let r = (area / std::f32::consts::PI).sqrt();
-            let y = (0.3 + 0.3 * r).min(2.0);
+            let y = base + (0.3 + 0.3 * r).min(2.0);
             self.lights.push(LocalLight {
                 position: p + Vec3::Y * y, direction: Vec3::NEG_Y, intensity_cd: color * (PATCH_CD_PER_M2 * area * night),
                 range_m: (4.0 * r + 10.0).clamp(6.0, 40.0), inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 1.0, falloff: 2.0,

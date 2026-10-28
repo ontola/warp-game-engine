@@ -1,6 +1,6 @@
 { "size": [1280, 720],
   "steps": [
-    { "cmd": ["bots pause", "arena 10", "health 0 50000", "teleport 0 20 1 30", "aim 0 20 2 15"],
+    { "cmd": ["bots pause", "arena 85", "health 0 50000", "teleport 0 20 1 30", "aim 0 20 2 15"],
       "note": "Godot explosion_lab framing: radius 8 at 2 m, camera 15 m away" },
     { "ticks": 20 },
     { "cmd": "boom 20 2 15 8" },

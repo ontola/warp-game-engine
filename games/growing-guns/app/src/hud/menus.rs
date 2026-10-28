@@ -3,14 +3,19 @@
 //! buttons, and its Tab scoreboard. Focus moves with the D-pad, arrows,
 //! WASD or stick; A/Space/Enter takes, B/Esc backs out; left and right move
 //! sliders. Mouse hover focuses, clicks activate and dragging adjusts sliders.
-//! Online joining by pasted ID has no text entry here: join with
-//! `play --join TICKET` (the menu says so). Under GameNight the pause
+//! The join field and the Player name take typed text and Ctrl+V while
+//! focused (`app::TextField`); a pad opens an on-screen keyboard on them
+//! with A (`app::ui::CharPicker`, with PASTE). A valid pasted ID joins at
+//! once, as Godot's field does. COPY puts the match ID on the clipboard.
+//! Splitscreen (`splitscreen_manager.gd`): the pause menu's SPLITSCREEN, the
+//! "PRESS X TO JOIN" prompt, the hint and the per-player PLAYER MENU are
+//! drawn here; play.rs seats the pads. Under GameNight the pause
 //! menu is Godot's `_build_gamenight_pause_menu`: a slab down the left with
 //! the logo, what is being played, and RESUME, NEW MATCH, the other mode,
 //! AI PLAYERS, ADVANCED (the party's match settings) and SETTINGS.
 use super::style::*;
 use super::{Hud, DESIGN_H};
-use app::{Buttons, Controls};
+use app::{Buttons, Controls, FieldEvent, TextEvent, TextField};
 use growing_guns::{Phase, World};
 use render::hud::HudDrawList;
 use std::cell::{Cell, RefCell};
@@ -20,6 +25,10 @@ pub enum Screen { Play, Start, Pause, Settings { from_start: bool }, Advanced }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { None, Resume, Versus, Wave, Settings, Back, Host, Copy, Quit, Rematch, Extend, AddBot, RemoveBot, Advanced,
+    /// Join the match in the join field (`Menus::join_ticket`).
+    Join,
+    /// Turn splitscreen on or off (Godot `_pause_toggle_splitscreen`).
+    Splitscreen,
     /// A party setting (index into `Ctx::party`) changed to this value.
     Party(usize, i64) }
 
@@ -32,7 +41,7 @@ enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'st
     /// A GameNight setting slider (index into `Ctx::party`).
     Party(usize) }
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Field { Ticket, Join }
+pub enum Field { Ticket, Join, /** Settings: Player name. */ Name }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Slider { Music, Mouse, Stick, /** One per GameNight seat ("Aim: NAME"). */ Aim(usize) }
 
@@ -50,6 +59,17 @@ pub struct Ctx<'a> {
     pub party: Option<(Vec<(&'static str, i64, i64, i64)>, String)>,
     /// Names of the GameNight seats here (their own aim sliders).
     pub seats: Vec<String>,
+}
+
+/// What the join field holds (Godot `_update_join_form`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinState { Empty, Invalid, Own, Valid, Connecting }
+
+/// Godot `extract_iroh_node_id`: the first piece of the pasted text that is
+/// a ticket, else the text itself (trimmed).
+pub fn extract_ticket(text: &str) -> String {
+    let t = text.trim();
+    t.split_whitespace().find(|p| net::parse_ticket(p).is_ok()).unwrap_or(t).to_string()
 }
 
 #[derive(Clone, Debug)]
@@ -83,11 +103,23 @@ pub struct Menus {
     hits: RefCell<Vec<Hit>>,
     hit_size: Cell<[u32; 2]>,
     drag: Option<Hit>,
+    /// "Or join a friend": the pasted match ID.
+    pub join: TextField,
+    /// A join is connecting (play.rs runs it).
+    pub joining: bool,
+    /// Settings: the Player name being edited, and the committed one.
+    pub name: TextField,
+    pub player_name: String,
+    /// A pad typing into the focused field.
+    pub picker: Option<app::ui::CharPicker>,
+    /// Seconds left showing COPIED! on the COPY button.
+    pub copied: f32,
 }
 
 impl Default for Menus {
     fn default() -> Self {
-        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None }
+        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None,
+            join: TextField::new(256), joining: false, name: TextField::new(20), player_name: String::new(), picker: None, copied: 0.0 }
     }
 }
 
@@ -119,6 +151,7 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Text("Or join a friend:", label), Item::Field(Field::Join), Item::Note("Paste an iroh game ID"),
             Item::Text("Bots:", label), Item::Bots(""), Item::Gap(4.0),
             Item::Button("VERSUS", Action::Versus, !ctx.client), Item::Button("WAVE SURVIVAL", Action::Wave, !ctx.client),
+            Item::Button("SPLITSCREEN", Action::Splitscreen, !ctx.client),
             Item::Button("SETTINGS", Action::Settings, true), Item::Button("RESUME", Action::Resume, true), Item::Button("EXIT GAME", Action::Quit, true),
         ],
         Screen::Settings { .. } => settings_items(ctx),
@@ -126,11 +159,13 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
     }
 }
 
-/// Godot `build_settings_panel`: music, mouse, one stick slider (or one
-/// "Aim" slider per GameNight seat), movement tilt, BACK. (Player name and
-/// the retro shader have no counterpart here.)
+/// Godot `build_settings_panel`: Player name, music, mouse, one stick
+/// slider (or one "Aim" slider per GameNight seat), movement tilt, BACK.
+/// (The retro shader has no counterpart here; under GameNight the party
+/// names the players, so there is no Player name.)
 fn settings_items(ctx: &Ctx) -> Vec<Item> {
-    let mut v = vec![Item::Slider(Slider::Music), Item::Slider(Slider::Mouse)];
+    let mut v = if ctx.seats.is_empty() { vec![Item::Field(Field::Name)] } else { vec![] };
+    v.extend([Item::Slider(Slider::Music), Item::Slider(Slider::Mouse)]);
     if ctx.seats.is_empty() { v.push(Item::Slider(Slider::Stick)); } else { v.extend((0..ctx.seats.len()).map(|k| Item::Slider(Slider::Aim(k)))); }
     v.extend([Item::Tilt, Item::Gap(8.0), Item::Button("BACK", Action::Back, true)]);
     v
@@ -146,11 +181,14 @@ fn bots_enabled(j: usize, ctx: &Ctx) -> bool { !ctx.client && !ctx.coop && if j 
 
 fn row_enabled(t: &str, ctx: &Ctx) -> bool { !(ctx.client || (t == "COPY" && ctx.ticket.is_none()) || (t == "HOST ONLINE" && ctx.ticket.is_some())) }
 
-/// Focusable lines: item index and the enabled entries in it (a row has several).
-fn lines(items: &[Item], ctx: &Ctx) -> Vec<(usize, Vec<usize>)> {
+/// Focusable lines: item index and the enabled entries in it (a row has
+/// several; the join field's JOIN button is entry 1, when it can join).
+fn lines(items: &[Item], ctx: &Ctx, join_ok: bool) -> Vec<(usize, Vec<usize>)> {
     let mut out = Vec::new();
     for (k, it) in items.iter().enumerate() {
         match it {
+            Item::Field(Field::Join) if !ctx.client => out.push((k, if join_ok { vec![0, 1] } else { vec![0] })),
+            Item::Field(Field::Name) => out.push((k, vec![0])),
             Item::Button(_, _, true) | Item::Slider(_) | Item::Party(_) | Item::Tilt => out.push((k, vec![0])),
             Item::Bots(_) => {
                 let on: Vec<usize> = [0, 1].into_iter().filter(|&j| bots_enabled(j, ctx)).collect();
@@ -171,7 +209,65 @@ fn match_buttons(world: &World) -> Vec<(&'static str, Action)> {
 }
 
 impl Menus {
-    pub fn open(&mut self, s: Screen) { self.screen = s; self.menu = Default::default(); self.col = 0; self.age = 0.0; self.notice = None; self.hits.get_mut().clear(); self.drag = None; }
+    pub fn open(&mut self, s: Screen) {
+        self.commit_name();
+        if matches!(s, Screen::Settings { .. }) { let n = self.player_name.clone(); self.name.set(&n); }
+        self.screen = s; self.menu = Default::default(); self.col = 0; self.age = 0.0; self.notice = None; self.hits.get_mut().clear(); self.drag = None; self.picker = None;
+    }
+
+    /// What the join field holds.
+    pub fn join_state(&self, ctx: &Ctx) -> JoinState {
+        let t = self.join.text().trim();
+        if self.joining { JoinState::Connecting } else if t.is_empty() { JoinState::Empty } else if ctx.ticket == Some(t) { JoinState::Own }
+        else if net::parse_ticket(t).is_ok() { JoinState::Valid } else { JoinState::Invalid }
+    }
+    fn join_ok(&self, ctx: &Ctx) -> bool { !ctx.client && self.join_state(ctx) == JoinState::Valid }
+    /// The match ID to join.
+    pub fn join_ticket(&self) -> String { self.join.text().trim().to_string() }
+
+    /// Godot `commit_name`: a non-empty, changed name is kept (the field
+    /// shows the kept one again otherwise).
+    fn commit_name(&mut self) {
+        let entered = self.name.text().trim().to_string();
+        if !matches!(self.screen, Screen::Settings { .. }) { return; }
+        if entered.is_empty() { let n = self.player_name.clone(); self.name.set(&n); } else { self.player_name = entered; }
+    }
+
+    /// Put the focus on a text field (scripts' `focus` command).
+    pub fn focus_field(&mut self, f: Field, ctx: &Ctx) -> bool {
+        let list = items(self.screen, ctx);
+        let Some(n) = lines(&list, ctx, self.join_ok(ctx)).iter().position(|(k, _)| list[*k] == Item::Field(f)) else { return false };
+        self.menu.focus = n;
+        self.col = 0;
+        true
+    }
+
+    /// The text field with the focus, if any: the keyboard types into it.
+    pub fn text_focus(&self, ctx: &Ctx) -> Option<Field> {
+        if !self.is_open() { return None; }
+        let list = items(self.screen, ctx);
+        match self.focused(&list, ctx) { Some((k, 0)) => match list[k] { Item::Field(f @ (Field::Join | Field::Name)) => Some(f), _ => None }, _ => None }
+    }
+
+    /// Typed text for the focused field (keyboard, IME, paste, a pad's picker).
+    pub fn text(&mut self, ev: TextEvent, ctx: &Ctx) -> Action {
+        let Some(f) = self.text_focus(ctx) else { return Action::None };
+        let field = if f == Field::Join { &mut self.join } else { &mut self.name };
+        match field.apply(&ev) {
+            FieldEvent::Changed if f == Field::Join => {
+                // Godot `_on_join_input_changed`: keep the ID out of a pasted
+                // line, and connect as soon as it is a valid one.
+                let id = extract_ticket(self.join.text());
+                if id != self.join.text() { self.join.set(&id); }
+                if self.join_ok(ctx) { return Action::Join; }
+                Action::None
+            }
+            FieldEvent::Submit if f == Field::Join => if self.join_ok(ctx) { Action::Join } else { Action::None },
+            FieldEvent::Submit => { self.commit_name(); Action::None }
+            FieldEvent::Cancel => Action::Back,
+            _ => Action::None,
+        }
+    }
     pub fn is_open(&self) -> bool { self.screen != Screen::Play }
 
     fn hit(&self, rect: [f32; 4], item: usize, entry: usize) {
@@ -194,8 +290,9 @@ impl Menus {
             return if p.pressed { match_buttons(world).get(hit.item).map_or(Action::None, |b| b.1) } else { Action::None };
         }
         let list = items(self.screen, ctx);
-        let foci = lines(&list, ctx);
+        let foci = lines(&list, ctx, self.join_ok(ctx));
         let Some((focus, (_, entries))) = foci.iter().enumerate().find(|(_, (k, entries))| *k == hit.item && entries.contains(&hit.entry)) else { return Action::None };
+        if self.text_focus(ctx) == Some(Field::Name) && !matches!(list[hit.item], Item::Field(Field::Name)) && p.pressed { self.commit_name(); }
         self.menu.focus = focus;
         self.col = entries.iter().position(|&j| j == hit.entry).unwrap_or(0);
         let item = list[hit.item];
@@ -205,6 +302,7 @@ impl Menus {
         let t = ((pos[0] - hit.rect[0]) / hit.rect[2].max(1.0)).clamp(0.0, 1.0);
         match item {
             Item::Button(_, a, true) => a,
+            Item::Field(Field::Join) if hit.entry == 1 => Action::Join,
             Item::Row(row) => row[hit.entry].1,
             Item::Bots(_) => if hit.entry == 0 { Action::RemoveBot } else { Action::AddBot },
             Item::Tilt => { self.tilt = !self.tilt; Action::None }
@@ -241,9 +339,20 @@ impl Menus {
             if c.pressed.has(Buttons::START) { self.open(Screen::Pause); }
             return Action::None;
         }
+        self.copied = (self.copied - dt).max(0.0);
+        self.join.tick(dt);
+        self.name.tick(dt);
+        // A pad typing: the picker takes the controls until done or cancelled.
+        if let Some(p) = &mut self.picker {
+            let Some(ev) = p.update(c, dt) else { return Action::None };
+            if matches!(ev, TextEvent::Enter | TextEvent::Escape) { self.picker = None; }
+            if ev == TextEvent::Escape { return Action::None; }
+            return self.text(ev, ctx);
+        }
         if self.screen == Screen::Pause && c.pressed.has(Buttons::START) { return Action::Resume; }
         let list = items(self.screen, ctx);
-        let foci = lines(&list, ctx);
+        let foci = lines(&list, ctx, self.join_ok(ctx));
+        let was_name = self.text_focus(ctx) == Some(Field::Name);
         // Sliders: left and right, with repeat.
         let dx = (c.held.has(Buttons::RIGHT) as i32 - c.held.has(Buttons::LEFT) as i32) + if c.mv[0] > 0.6 { 1 } else if c.mv[0] < -0.6 { -1 } else { 0 };
         let dx = dx.signum();
@@ -271,11 +380,18 @@ impl Menus {
         // Rows move left and right within themselves.
         if let Some((_, on)) = &focus && step != 0 { self.col = (self.col as i32 + step).clamp(0, on.len() as i32 - 1) as usize; }
         if ev == app::ui::MenuEvent::Moved { self.col = 0; }
+        if was_name && self.text_focus(ctx) != Some(Field::Name) { self.commit_name(); }
         match ev {
             app::ui::MenuEvent::Select(n) => {
                 let (k, on) = &foci[n];
                 let j = on[self.col.min(on.len() - 1)];
-                match list[*k] { Item::Button(_, a, _) => a, Item::Row(r) => r[j].1, Item::Bots(_) => if j == 0 { Action::RemoveBot } else { Action::AddBot }, _ => Action::None }
+                match list[*k] {
+                    Item::Button(_, a, _) => a, Item::Row(r) => r[j].1, Item::Bots(_) => if j == 0 { Action::RemoveBot } else { Action::AddBot },
+                    Item::Field(Field::Join) if j == 1 => Action::Join,
+                    // A on a text field: the on-screen keyboard (a keyboard types directly).
+                    Item::Field(Field::Join | Field::Name) => { self.picker = Some(Default::default()); Action::None }
+                    _ => Action::None,
+                }
             }
             app::ui::MenuEvent::Back => self.back(),
             _ => Action::None,
@@ -293,7 +409,7 @@ impl Menus {
 
     /// The settings as JSON (Godot keeps them in `user://settings.cfg`).
     pub fn settings_json(&self) -> serde_json::Value {
-        serde_json::json!({ "music_db": self.music_db, "mouse": self.mouse, "stick": self.stick, "tilt": self.tilt,
+        serde_json::json!({ "name": self.player_name, "music_db": self.music_db, "mouse": self.mouse, "stick": self.stick, "tilt": self.tilt,
             "aim": self.aim.iter().map(|(n, v)| (n.clone(), serde_json::json!(v))).collect::<serde_json::Map<_, _>>() })
     }
     pub fn load_settings(&mut self, v: &serde_json::Value) {
@@ -302,6 +418,7 @@ impl Menus {
         self.mouse = f("mouse", 0.3, 3.0, self.mouse);
         self.stick = f("stick", 0.3, 2.5, self.stick);
         self.tilt = v.get("tilt").and_then(|x| x.as_bool()).unwrap_or(self.tilt);
+        if let Some(n) = v.get("name").and_then(|x| x.as_str()) { self.player_name = n.chars().take(20).collect::<String>().trim().to_string(); }
         if let Some(m) = v.get("aim").and_then(|x| x.as_object()) { self.aim = m.iter().filter_map(|(n, x)| Some((n.clone(), (x.as_f64()? as f32).clamp(0.3, 2.5)))).collect(); }
     }
 
@@ -343,10 +460,15 @@ impl Menus {
             Screen::Pause => self.pause(d, world, ctx, u, clip),
             Screen::Settings { from_start } => self.settings(d, ctx, from_start, u, clip),
         }
+        if let Some(p) = &self.picker {
+            // The on-screen keyboard over the lower half, in the menus' colours.
+            let st = app::ui::Style { panel: [0.06, 0.03, 0.035, 1.0], item: [0.13, 0.11, 0.10, 0.98], focus: RED, text: bytes(BONE), muted: bytes(BONE_DIM), scale: u * 0.75 };
+            p.draw(d, 0x6767_5000, [0.0, h * 0.42, w, h * 0.58], &st);
+        }
     }
 
     fn focused(&self, list: &[Item], ctx: &Ctx) -> Option<(usize, usize)> {
-        let f = lines(list, ctx);
+        let f = lines(list, ctx, self.join_ok(ctx));
         f.get(self.menu.focus.min(f.len().saturating_sub(1))).map(|(k, on)| (*k, on[self.col.min(on.len() - 1)]))
     }
 
@@ -434,7 +556,17 @@ impl Menus {
                 Item::Note(t) => {
                     let (text, c) = match t {
                         "BOTS" => (format!("{}", ctx.bots), [1.0, 0.95, 0.78, 1.0]),
-                        "Paste an iroh game ID" => ("No paste here: join with play --join TICKET".into(), [0.55, 0.6, 0.72, 1.0]),
+                        "Paste an iroh game ID" => {
+                            // Godot `_update_join_form`'s notice and colours.
+                            let (t, c) = match self.join_state(ctx) {
+                                JoinState::Connecting => ("Connecting...", [0.76, 0.92, 1.0, 1.0]),
+                                JoinState::Empty => ("Paste an iroh game ID", [0.55, 0.6, 0.72, 1.0]),
+                                JoinState::Own => ("That's your own game ID — share it with someone else", [1.0, 0.72, 0.42, 1.0]),
+                                JoinState::Valid => ("Valid ID - connecting automatically", [0.58, 1.0, 0.65, 1.0]),
+                                JoinState::Invalid => ("Paste the full iroh game ID", [1.0, 0.62, 0.5, 1.0]),
+                            };
+                            (t.to_string(), c)
+                        }
                         _ => (t.to_string(), [0.57, 0.52, 0.44, 1.0]),
                     };
                     let size = if t == "BOTS" { 24.0 } else if gothic { 11.0 } else { 12.0 } * u;
@@ -443,12 +575,39 @@ impl Menus {
                     lab.draw(d, &text, r[0] + r[2] * 0.5, y + size * 0.65, clip);
                     y += size * 1.3;
                 }
+                Item::Field(Field::Name) => {
+                    // Godot's name row: the label (128 wide), then the LineEdit (34 high).
+                    let rh = 36.0 * u;
+                    let mid = y + rh * 0.5;
+                    Label::new(BODY, 14.0 * u, if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] }).draw(d, "Player name", r[0], mid, clip);
+                    let fr = [r[0] + 142.0 * u, y + u, r[2] - 142.0 * u, 34.0 * u];
+                    self.hit(fr, k, 0);
+                    self.field_box(d, fr, gothic, fk(0), u, clip);
+                    let inner = [fr[0] + 10.0 * u, fr[1], fr[2] - 20.0 * u, fr[3]];
+                    self.name.draw(d, super::style::next_id(d), inner, BODY, 14.0 * u, bytes(cream), ("Your callsign…", bytes([0.55, 0.5, 0.42, 1.0])), fk(0).then_some(BONE));
+                    y += rh + 14.0 * u;
+                }
+                Item::Field(Field::Join) => {
+                    // Godot's join row: the field, then JOIN (70 wide) 8 to its right.
+                    let fh = 34.0 * u;
+                    let bw = 70.0 * u;
+                    let fr = [r[0], y, r[2] - bw - 8.0 * u, fh];
+                    if !ctx.client { self.hit(fr, k, 0); }
+                    self.field_box(d, fr, gothic, fk(0), u, clip);
+                    let inner = [fr[0] + 10.0 * u, fr[1], fr[2] - 20.0 * u, fr[3]];
+                    let placeholder = if gothic { "Paste friend's Game ID..." } else { "Paste a Game ID…" };
+                    self.join.draw(d, super::style::next_id(d), inner, BODY, 13.0 * u, bytes(cream), (placeholder, bytes([0.55, 0.5, 0.42, 1.0])), fk(0).then_some(BONE));
+                    let br = [fr[0] + fr[2] + 8.0 * u, y, bw, fh];
+                    let ok = self.join_ok(ctx);
+                    if ok { self.hit(br, k, 1); }
+                    let label = if self.joining { "..." } else { "JOIN" };
+                    if gothic { gothic_button(d, br, label, fk(1), ok, u, clip) } else { arena_button(d, br, label, fk(1), ok, 1.0, u, clip) }
+                    y += fh + sep;
+                }
                 Item::Field(f) => {
                     let fh = 34.0 * u;
-                    let (text, placeholder) = match f {
-                        Field::Ticket => (ctx.ticket.map(|t| t.to_string()), if gothic { "Offline — click Host online" } else { "(offline — not hosting)" }),
-                        Field::Join => (None, if gothic { "Paste friend's Game ID..." } else { "Paste a Game ID…" }),
-                    };
+                    let _ = f;
+                    let (text, placeholder) = (ctx.ticket.map(|t| t.to_string()), if gothic { "Offline — click Host online" } else { "(offline — not hosting)" });
                     let fr = [r[0], y, r[2], fh];
                     if gothic {
                         d.rect(fr, [0.07, 0.06, 0.055, 0.98], clip);
@@ -509,6 +668,7 @@ impl Menus {
                     for (j, (t, _)) in row.iter().enumerate() {
                         let br = [r[0] + j as f32 * (bw + gap), y, bw, bh];
                         let enabled = row_enabled(t, ctx);
+                        let t = if *t == "COPY" && self.copied > 0.0 { "COPIED!" } else { *t };
                         if enabled { self.hit(br, k, j); }
                         if gothic { gothic_button(d, br, t, fk(j), enabled, u, clip) } else { arena_button(d, br, t, fk(j), enabled, 1.0, u, clip) }
                     }
@@ -560,12 +720,26 @@ impl Menus {
     }
 }
 
+impl Menus {
+    /// A text field's box: the start screen's stone with a gold edge, or the
+    /// pause menu's dark plate; brighter edged while it has the focus.
+    fn field_box(&self, d: &mut HudDrawList, fr: [f32; 4], gothic: bool, focused: bool, u: f32, clip: [f32; 4]) {
+        if gothic {
+            d.rect(fr, [0.07, 0.06, 0.055, 0.98], clip);
+            frame_rect(d, fr, if focused { 2.0 * u } else { u.max(1.0) }, if focused { [0.95, 0.72, 0.28, 1.0] } else { darkened([0.48, 0.34, 0.14, 1.0], 0.15) }, clip);
+        } else {
+            d.rect(fr, [0.1, 0.08, 0.09, 0.9], clip);
+            frame_rect(d, fr, if focused { 2.0 * u } else { u.max(1.0) }, if focused { RED } else { [0.25, 0.2, 0.22, 1.0] }, clip);
+        }
+    }
+}
+
 fn column_height(list: &[Item], u: f32) -> f32 {
     let sep = 8.0;
     list.iter().map(|it| match it {
         Item::Bots(_) => 34.0 + sep, Item::Party(_) => 36.0 + sep,
         Item::Text(..) => 20.0, Item::Note(t) => if *t == "BOTS" { 24.0 * 1.3 } else { 12.0 * 1.3 },
-        Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Tilt => 44.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
+        Item::Field(Field::Name) => 50.0, Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Tilt => 44.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
     }).sum::<f32>() * u
 }
 
@@ -761,6 +935,44 @@ fn scoreboard(d: &mut HudDrawList, world: &World, hud: &Hud, u: f32, clip: [f32;
     let _ = Phase::Playing;
 }
 
+/// Godot `splitscreen_manager.gd` `_join_label`: "PRESS X TO JOIN" across
+/// the top (22, gold, black outline 8) while seats are open.
+pub fn join_prompt(d: &mut HudDrawList) {
+    let [w, h] = d.size.map(|v| v as f32);
+    let u = h / DESIGN_H;
+    Label::new(BODY, 22.0 * u, [1.0, 0.9, 0.45, 1.0]).outline(8.0 * u, [0.0, 0.0, 0.0, 0.8]).center().draw(d, "PRESS X TO JOIN", w * 0.5, 33.0 * u, [0.0, 0.0, w, h]);
+}
+
+/// Godot `_build_splitscreen_hint`: top left, 14, gold, outline 4.
+pub fn splitscreen_hint(d: &mut HudDrawList) {
+    let [w, h] = d.size.map(|v| v as f32);
+    let u = h / DESIGN_H;
+    Label::new(BODY, 14.0 * u, [1.0, 0.9, 0.45, 1.0]).outline(4.0 * u, [0.0, 0.0, 0.0, 0.85]).draw(d, "2-PLAYER: open menu (Esc) → SPLITSCREEN", 16.0 * u, 24.0 * u, [0.0, 0.0, w, h]);
+}
+
+/// The per-player PLAYER MENU (Godot `_build_pause_menu` in
+/// splitscreen_manager.gd): a 340 x 184 panel in the screen's centre with
+/// the title, "A SELECT   B RESUME" and RESUME / LEAVE, `focus` marked as
+/// "> RESUME <". `who`: the player's name.
+pub fn player_menu(d: &mut HudDrawList, who: &str, focus: usize) {
+    let [w, h] = d.size.map(|v| v as f32);
+    let u = h / DESIGN_H;
+    let clip = [0.0, 0.0, w, h];
+    let r = [w * 0.5 - 170.0 * u, h * 0.5 - 92.0 * u, 340.0 * u, 184.0 * u];
+    menu_panel(d, r, u, clip);
+    let cx = r[0] + r[2] * 0.5;
+    Label::new(BODY, 18.0 * u, BONE).center().draw(d, &format!("PLAYER MENU  ·  {who}"), cx, r[1] + 26.0 * u, clip);
+    Label::new(BODY, 13.0 * u, BONE_DIM).center().draw(d, "A SELECT   B RESUME", cx, r[1] + 50.0 * u, clip);
+    for (k, t) in PLAYER_MENU.iter().enumerate() {
+        let br = [cx - 105.0 * u, r[1] + 70.0 * u + k as f32 * 44.0 * u, 210.0 * u, 34.0 * u];
+        let text = if k == focus { format!("> {t} <") } else { t.to_string() };
+        arena_button(d, br, &text, k == focus, true, 1.0, u, clip);
+    }
+}
+
+/// The PLAYER MENU's entries.
+pub const PLAYER_MENU: [&str; 2] = ["RESUME", "LEAVE"];
+
 #[cfg(test)]
 mod pointer_tests {
     use super::*;
@@ -815,6 +1027,102 @@ mod pointer_tests {
         assert_eq!(m.pointer(at(r, true), SIZE, &w, Some(1.0), &c), Action::None);
     }
 
+    /// A ticket that parses (the ed25519 base point as the key, no addresses).
+    pub(crate) fn fake_ticket() -> String {
+        let key = format!("58{}", "66".repeat(31));
+        [format!("{key}00"), format!("20{key}00"), format!("{key}0000")].into_iter().find(|t| net::parse_ticket(t).is_ok()).expect("a ticket encoding")
+    }
+
+    fn typed(m: &mut Menus, c: &Ctx, s: &str) -> Action { m.text(TextEvent::Insert(s.into()), c) }
+
+    #[test]
+    fn join_field_types_extracts_pasted_ids_and_joins_valid_ones() {
+        let w = World::new(1, &[false, true]);
+        let h = Hud::new(&w);
+        let mut c = ctx();
+        let mut m = Menus::default();
+        m.open(Screen::Pause);
+        assert_eq!(m.text_focus(&c), None, "the first focus is a button");
+        assert!(m.focus_field(Field::Join, &c));
+        assert_eq!(m.text_focus(&c), Some(Field::Join));
+        assert_eq!(typed(&mut m, &c, "abc"), Action::None);
+        assert_eq!(m.join_state(&c), JoinState::Invalid);
+        assert_eq!(m.text(TextEvent::Enter, &c), Action::None, "no join with a bad ID");
+        for _ in 0..3 { m.text(TextEvent::Backspace, &c); }
+        assert_eq!(m.join_state(&c), JoinState::Empty);
+        // A pasted block with the ID on its own line: the ID is kept and joins.
+        let t = fake_ticket();
+        assert_eq!(m.text(TextEvent::Paste(format!("Join me!\n{t}\n")), &c), Action::Join);
+        assert_eq!(m.join.text(), t);
+        assert_eq!(m.join_ticket(), t);
+        assert_eq!(m.text(TextEvent::Enter, &c), Action::Join);
+        // JOIN is entry 1 of the field's line, drawn and clickable.
+        draw(&m, &w, &h, &c);
+        let k = items(Screen::Pause, &c).iter().position(|i| *i == Item::Field(Field::Join)).unwrap();
+        let b = m.hits.borrow().iter().find(|h| h.item == k && h.entry == 1).unwrap().rect;
+        assert_eq!(m.pointer(at(b, true), SIZE, &w, None, &c), Action::Join);
+        // Our own ID does not join.
+        c.ticket = Some(Box::leak(t.clone().into_boxed_str()));
+        assert_eq!(m.join_state(&c), JoinState::Own);
+        assert_eq!(m.text(TextEvent::Enter, &c), Action::None);
+        c.ticket = None;
+        m.joining = true;
+        assert_eq!(m.join_state(&c), JoinState::Connecting);
+        m.joining = false;
+        m.focus_field(Field::Join, &c);
+        assert_eq!(m.text(TextEvent::Escape, &c), Action::Back);
+    }
+
+    #[test]
+    fn player_name_commits_trimmed_and_restores_empty_names() {
+        let w = World::new(1, &[false, true]);
+        let c = ctx();
+        let mut m = Menus::default();
+        m.player_name = "Joep".into();
+        m.open(Screen::Settings { from_start: false });
+        assert_eq!(m.name.text(), "Joep");
+        assert_eq!(m.text_focus(&c), Some(Field::Name), "the name is the first line");
+        for _ in 0..4 { m.text(TextEvent::Backspace, &c); }
+        assert_eq!(m.text(TextEvent::Enter, &c), Action::None);
+        assert_eq!((m.player_name.as_str(), m.name.text()), ("Joep", "Joep"), "an empty name is not kept");
+        m.text(TextEvent::Insert("Ace ".into()), &c);
+        // Moving off the field keeps the name, as Godot's focus_exited does.
+        let down = Controls { held: Buttons(Buttons::DOWN), pressed: Buttons(Buttons::DOWN), ..Default::default() };
+        m.update(&down, &w, None, &c, 0.016);
+        assert_eq!(m.player_name, "JoepAce", "trimmed");
+        assert_eq!(m.text_focus(&c), None);
+        assert_eq!(m.settings_json()["name"], "JoepAce");
+        let mut n = Menus::default();
+        n.load_settings(&m.settings_json());
+        assert_eq!(n.player_name, "JoepAce");
+        // A pad: A on the field opens the on-screen keyboard; DONE closes it.
+        m.menu.focus = 0;
+        let press = |b: u32| Controls { held: Buttons(b), pressed: Buttons(b), ..Default::default() };
+        m.update(&press(Buttons::SOUTH), &w, None, &c, 0.016);
+        assert!(m.picker.is_some());
+        m.update(&press(Buttons::SOUTH), &w, None, &c, 0.016);
+        assert_eq!(m.name.text(), "JoepAce a");
+        m.update(&press(Buttons::START), &w, None, &c, 0.016);
+        assert!(m.picker.is_none());
+        assert_eq!(m.player_name, "JoepAce a");
+        // East on the picker cancels it without leaving the menu.
+        m.update(&press(Buttons::SOUTH), &w, None, &c, 0.016);
+        m.update(&press(Buttons::EAST), &w, None, &c, 0.016);
+        assert!(m.picker.is_none() && matches!(m.screen, Screen::Settings { .. }));
+    }
+
+    #[test]
+    fn pause_offers_splitscreen_to_hosts_only() {
+        let mut c = ctx();
+        let has = |c: &Ctx| items(Screen::Pause, c).contains(&Item::Button("SPLITSCREEN", Action::Splitscreen, true));
+        assert!(has(&c));
+        c.client = true;
+        assert!(!has(&c));
+        c.client = false;
+        c.party = Some((vec![], String::new()));
+        assert!(!items(Screen::Pause, &c).iter().any(|i| matches!(i, Item::Button("SPLITSCREEN", ..))), "GameNight's menu has none");
+    }
+
     #[test]
     fn slider_drag_clamps_and_release_ends_drag() {
         let w = World::new(1, &[false, true]);
@@ -823,7 +1131,7 @@ mod pointer_tests {
         let mut m = Menus::default();
         m.open(Screen::Settings { from_start: false });
         draw(&m, &w, &h, &c);
-        let r = m.hits.borrow()[0].rect;
+        let r = m.hits.borrow().iter().find(|h| h.item == 1).unwrap().rect;
         m.pointer(at(r, true), SIZE, &w, None, &c);
         let drag = app::Pointer { position: Some([r[0] + r[2] + 100.0, r[1]]), moved: true, pressed: false, held: true };
         m.pointer(drag, SIZE, &w, None, &c);

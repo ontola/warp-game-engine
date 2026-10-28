@@ -1,6 +1,6 @@
 { "size": [800, 450],
   "steps": [
-    { "cmd": ["bots pause", "arena 10", "give 0 explosive", "give 0 explosive", "give 0 big_mag", "health 0 5000",
+    { "cmd": ["bots pause", "arena 85", "give 0 explosive", "give 0 explosive", "give 0 big_mag", "health 0 5000",
               "teleport 0 8 1 -20", "aim 0 8 3.5 -38"], "note": "walled 77 m arena, 18 m from the north wall" },
     { "ticks": 10 },
     { "capture": "wall-before.png" },

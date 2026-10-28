@@ -719,3 +719,44 @@ fn ghosts_plant_mines_that_blow_up_the_living() {
     assert_eq!(mines(&w), 0, "it went off");
     assert!(w.players[other].health < before || !w.players[other].alive, "and hurt the living player");
 }
+
+/// Island arenas (Godot `_bot_on_lava_map`): bots keep to the islands,
+/// jump between them and still fight. Their falls come from Godot's lapses
+/// (a 0.6 s window of recklessness in 7% of seconds), not from moving on
+/// purpose (bot.rs).
+#[test]
+fn bots_keep_to_the_islands_and_jump_between_them() {
+    let (mut careless, mut careful, mut kills, mut moves) = (0, 0, 0, 0);
+    for seed in [1, 2, 3, 4] {
+        let mut w = World::new_with(seed, &[true; 4], |w| { w.force_island = true; w.modifier_chance = 0.0; });
+        assert_eq!(w.arena.variant, arena::Variant::Island);
+        let mut on: Vec<Option<usize>> = vec![None; 4];
+        // When each bot last had a lapse or was high above the islands
+        // (the cage, a sky drop).
+        let mut wild = [0u64; 4];
+        for _ in 0..60 * 120 {
+            w.step(&[]);
+            for (i, p) in w.players.iter().enumerate() {
+                if w.brains[i].lapse() || p.pos.y > 12.0 { wild[i] = w.tick; }
+            }
+            for e in &w.events {
+                match *e {
+                    Event::Lava { player, fall: true } if !w.lava.active => if w.tick - wild[player] < 90 { careless += 1 } else { careful += 1 },
+                    Event::Kill { victim, attacker: Some(a), .. } if a != victim => kills += 1,
+                    _ => {}
+                }
+            }
+            // Which island each bot stands on; count changes.
+            for (i, p) in w.players.iter().enumerate() {
+                if !p.on_floor || !p.alive { continue; }
+                let here = w.arena.islands.iter().position(|&(t, r)| (p.pos.x - t.x).abs() <= r && (p.pos.z - t.z).abs() <= r && (p.pos.y - HALF_HEIGHT - t.y).abs() < 0.3);
+                if here.is_some() && here != on[i] { if on[i].is_some() { moves += 1; } on[i] = here; }
+            }
+            if w.events.iter().any(|e| matches!(e, Event::NewArena)) { on = vec![None; 4]; }
+        }
+    }
+    eprintln!("islands: {kills} kills, {moves} island changes, falls: {careful} careful, {careless} in a lapse or a drop");
+    assert!(kills >= 20, "the bots fight: {kills} kills");
+    assert!(moves >= 80, "the bots move between islands: {moves}");
+    assert!(careful <= 8, "careful bots rarely fall: {careful}");
+}
