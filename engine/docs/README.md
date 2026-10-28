@@ -26,6 +26,7 @@ Start with the overview, then build and run something.
 | [Physics](physics.md) | `kern::collide` for characters and levels, the Rapier-based `physics` crate. |
 | [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
 | [Rendering overview](rendering.md) | Clusters, visibility buffer, lighting, content systems, and where performance stands. |
+| [Quarried stone surfaces](stone-surfaces.md) | Shared stone meshes, physical normal relief, footprint filtering and the Growing Guns prototype's remaining visual issues. |
 
 Reference that lives next to the code:
 

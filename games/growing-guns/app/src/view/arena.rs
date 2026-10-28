@@ -311,26 +311,36 @@ fn dist(a: [f32; 3], b: [f32; 3]) -> f32 { (0..3).map(|i| (a[i] - b[i]).powi(2))
 
 fn wear_level(w: f32) -> u8 { if w <= 0.08 { 0 } else if w < 0.5 { 1 } else { 2 } }
 
-/// Godot's rock_surface on a brick: procedural pits, cracks and moss;
-/// `damage` 0..1 brings out more and darker cracks.
+/// Shared textured stone, filtered by the screen footprint. Damage remains
+/// independent of the recipe and keeps the existing worn/crumbling shapes.
 fn rock(scene: &mut Scene, tint: [f32; 3], rough: f32, damage: f32) -> u32 {
-    scene.add_material(Material { tint: srgb_to_linear(tint), layer: -1, roughness: rough, flags: render::scene::ROCK, scale: damage, metal: 0.0 })
+    let layer = super::stone_layer(scene);
+    scene.add_material(Material { tint: srgb_to_linear(tint), layer, roughness: rough, flags: render::scene::ROCK, scale: damage, metal: 0.0 })
 }
 
 fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
+    let legacy = super::stone_layer(scene) < 0;
     // Per-brick brightness variation (Godot's INSTANCE_CUSTOM) as four tints.
     let intact = [0.88, 0.96, 1.04, 1.12].map(|k| {
         let m = rock(scene, tint.map(|c| (c * k).min(1.0)), rough, 0.0);
-        scene.add_mesh(&primitives::hewn_block(m, 3, 0.09, 0.0, 0).mesh())
+        let shape = if legacy { primitives::hewn_block(m, 3, 0.09, 0.0, 0) }
+            else { render::quarried_block::quarried_block(m, 0.0, (k * 12.5) as u32) };
+        scene.add_mesh(&shape.mesh())
     });
     let dark = |k: f32| tint.map(|c| c * k);
     let cm = rock(scene, dark(0.9), rough, 0.5);
-    let cracked = scene.add_mesh(&primitives::hewn_block(cm, 4, 0.11, 0.07, 1).mesh());
+    let cracked_shape = if legacy { primitives::hewn_block(cm, 4, 0.11, 0.07, 1) }
+        else { render::quarried_block::quarried_block(cm, 0.5, 1) };
+    let cracked = scene.add_mesh(&cracked_shape.mesh());
     let km = rock(scene, dark(0.8), rough, 1.0);
-    let crumbling = scene.add_mesh(&primitives::hewn_block(km, 4, 0.14, 0.16, 2).mesh());
+    let crumbling_shape = if legacy { primitives::hewn_block(km, 4, 0.14, 0.16, 2) }
+        else { render::quarried_block::quarried_block(km, 1.0, 1) };
+    let crumbling = scene.add_mesh(&crumbling_shape.mesh());
     // Rubble: rough shards in three shades (Godot: base colour x 0.72..1.17).
     let shards = [0.72, 0.92, 1.12].map(|k| {
-        let m = material(scene, tint.map(|c| (c * k).min(1.0)), rough);
+        let shard_tint = tint.map(|c| (c * k).min(1.0));
+        let m = if super::stone_layer(scene) < 0 { material(scene, shard_tint, rough) }
+            else { rock(scene, shard_tint, rough, 0.35) };
         scene.add_mesh(&primitives::hewn_block(m, 2, 0.15, 0.22, (k * 100.0) as u32).mesh())
     });
     Stone { intact, cracked, crumbling, shards }

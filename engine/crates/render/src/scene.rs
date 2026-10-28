@@ -31,6 +31,9 @@ pub const EMISSIVE: u32 = 1024;
 /// Procedural rock (Growing Guns' rock_surface): world-space pits, cracks
 /// and moss on a block's faces, tinted by `tint`; `scale` 0..1 is damage
 /// (more and darker cracks). Meant for unit-cube blocks (hewn bricks).
+/// With a texture layer, samples a shared mipmapped stone surface instead:
+/// RGB albedo, normal XY and normal alpha roughness multiplier. The repeat
+/// is `stone_surface::REPEAT_METRES`; `scale` still carries damage.
 pub const ROCK: u32 = 2048;
 /// Procedural flowing lava (Growing Guns' lava_flow), unlit: an animated
 /// emissive surface in world XZ; `tint * scale` is the radiance in nits of a

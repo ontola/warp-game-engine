@@ -59,6 +59,13 @@ fn material(scene: &mut Scene, tint: [f32; 3], roughness: f32) -> u32 {
     scene.add_material(Material { tint: srgb_to_linear(tint), layer: -1, roughness, flags: 0, scale: 1.0, metal: 0.0 })
 }
 
+/// Shared quarry surface, cooked once and cached by the engine. The legacy
+/// switch is for same-executable visual/performance comparisons only.
+pub(crate) fn stone_layer(scene: &mut Scene) -> i32 {
+    if std::env::var("GG_STONE_SURFACE").as_deref() == Ok("legacy") { -1 }
+    else { render::stone_surface::add_to_scene(scene) }
+}
+
 fn glow(scene: &mut Scene, tint: [f32; 3], nits: f32) -> u32 {
     scene.add_material(Material { tint, layer: -1, roughness: 0.8, flags: EMISSIVE, scale: nits, metal: 0.0 })
 }

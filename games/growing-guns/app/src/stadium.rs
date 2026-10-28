@@ -89,8 +89,17 @@ impl StadiumVisuals {
     pub fn reserve(scene: &mut Scene) -> Self {
         let cube = |scene: &mut Scene, m: u32| scene.add_mesh(&primitives::cube(m).mesh());
         let quarry: Vec<[f32; 3]> = SANDSTONE.iter().chain(LIMESTONE.iter()).map(|c| [0, 1, 2].map(|k| c[k] + (ARENA_STONE[k] - c[k]) * 0.22)).collect();
-        let stone: [usize; 6] = std::array::from_fn(|i| { let m = mat(scene, quarry[i], 1.0); cube(scene, m) });
-        let roof_stone: [usize; 6] = std::array::from_fn(|i| { let m = mat(scene, quarry[i].map(|v| v * 0.75), 1.0); cube(scene, m) });
+        let layer = crate::view::stone_layer(scene);
+        let quarry_mat = |scene: &mut Scene, tint: [f32; 3]| {
+            let m = mat(scene, tint, 0.95);
+            if layer >= 0 {
+                let stone = &mut scene.materials[m as usize];
+                stone.layer = layer; stone.flags = render::scene::ROCK; stone.scale = 0.0;
+            } else { scene.materials[m as usize].roughness = 1.0; }
+            m
+        };
+        let stone: [usize; 6] = std::array::from_fn(|i| { let m = quarry_mat(scene, quarry[i]); cube(scene, m) });
+        let roof_stone: [usize; 6] = std::array::from_fn(|i| { let m = quarry_mat(scene, quarry[i].map(|v| v * 0.75)); cube(scene, m) });
         let lamp = { let m = glow(scene, [1.0, 0.85, 0.6], 9000.0); cube(scene, m) };
         let shaft = { let m = mat(scene, [0.16, 0.16, 0.18], 0.8); cube(scene, m) };
         let bank = { let m = glow(scene, [1.0, 0.96, 0.85], 11000.0); cube(scene, m) };

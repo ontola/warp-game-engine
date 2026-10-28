@@ -59,6 +59,12 @@ can walk, look and jump from their own view while remaining eliminated and
 unable to shoot. The airstrike marker is a thin additive white/red laser
 along the incoming rocket path, visible until impact.
 
+Arena blocks now use angular quarried shapes and a shared stone surface with
+normal relief, fine grain and mipmapped detail at distance. Stadium stone and
+rubble share the surface. This is a visual prototype: the fracture pattern still
+needs less regularity. See [stone surfaces](../../engine/docs/stone-surfaces.md)
+for the engine API, reproducible comparisons and remaining work.
+
 The ion cannon has eight additive charge shells, nonlinear contraction and
 brightening, rising charge motes, local illumination, a blue-white detonation
 column, 40 ascending streaks and a brief per-view impact flash. `view/ion.rs`

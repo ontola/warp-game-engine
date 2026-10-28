@@ -1563,7 +1563,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         tw /= tw.x + tw.y + tw.z;
         base = triplanar(m.layer, p, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0) * m.tint;
         nn = triplanar_n(m.layer, p, n, tw, m.scale, mat2x2<f32>(1.0, 0.0, 0.0, 1.0), 0.0);
-    } else if m.layer >= 0 {
+    } else if m.layer >= 0 && (m.flags & 2048u) == 0u {
         // PIXEL_ART samples the top mip: hard source pixels, no blur.
         let sharp = select(1.0, 0.0, (m.flags & 8192u) != 0u);
         base = tex_w(m.layer, uv, duv_x * sharp, duv_y * sharp).rgb * m.tint;
@@ -1591,9 +1591,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         rough_m=mix(rough_m,0.72,tracks.y*0.65);
     }
     if FEATURE_PROCEDURAL && (m.flags & 2048u) != 0u {
-        let rs = proc_rock(inst, p, n, m.tint, m.scale, max(length(fp.dx), length(fp.dy)));
+        var rs: ProcRock;
+        if m.layer >= 0 {
+            rs = textured_rock(inst, vis.x, p, n, m.tint, m.scale, m.roughness, m.layer, fp.dx, fp.dy);
+        } else {
+            rs = proc_rock(inst, p, n, m.tint, m.scale, max(length(fp.dx), length(fp.dy)));
+        }
         base = rs.base;
         rough_m = rs.rough;
+        n = rs.normal;
     }
     var metal = m.metal;
     var coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
