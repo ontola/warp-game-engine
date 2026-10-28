@@ -1,0 +1,24 @@
+[package]
+name = "live"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Live control of a running Warp game over MCP (Streamable HTTP on localhost, plus a stdio bridge) for Claude, ChatGPT and in-game assistants"
+
+[[bin]]
+name = "warp-mcp"
+path = "src/bin/warp-mcp.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "net", "sync", "time", "io-util", "io-std", "macros"] }
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+getrandom = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
