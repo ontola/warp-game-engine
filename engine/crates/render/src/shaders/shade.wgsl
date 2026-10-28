@@ -1612,6 +1612,21 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var coat_n = n;
     var glint = vec3<f32>(0.0);
     var car_debug = vec3<f32>(0.0);
+    var surface_emit = vec3<f32>(0.0);
+    if (m.flags & 32768u) != 0u {
+        var local = vec3<f32>(0.0);
+        for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
+        let corner = array<vec2<f32>, 3>(vec2<f32>(vertices[vi[0] + 6u], vertices[vi[0] + 7u]),
+            vec2<f32>(vertices[vi[1] + 6u], vertices[vi[1] + 7u]), vec2<f32>(vertices[vi[2] + 6u], vertices[vi[2] + 7u]));
+        let so = game_surface(SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+            corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x));
+        base = so.albedo;
+        n = so.normal;
+        coat_n = n;
+        rough_m = so.rough;
+        metal = so.metal;
+        surface_emit = so.emission;
+    }
     if FEATURE_CARS && car != 0u {
         let cs = car_surface(car_materials[car - 1u], inst, p, n, dir, uv, base, m.roughness, m.metal);
         base = cs.base;
@@ -1737,6 +1752,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // EMISSIVE: a glowing surface, `scale` is its radiance in nits for white;
     // with a texture layer the picture glows (screens), else the tint.
     if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * m.scale * emit; }
+    rad += surface_emit * emit;
     // LAVA: unlit, flowing molten rock; `tint * scale` is the radiance of white.
     if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x, max(length(fp.dx), length(fp.dy))) * m.tint * m.scale * emit; }
     rad = apply_distance_fog(rad, dist, dir);

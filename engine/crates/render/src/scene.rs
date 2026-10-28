@@ -51,6 +51,11 @@ pub const PIXEL_ART: u32 = 8192;
 /// Use with EMISSIVE and `Scene::add_live_screen_texture`.
 pub const LIVE_SCREEN: u32 = 16384;
 
+/// A game's own surface shader: `render::set_game_surface` supplies
+/// `game_surface` (see shaders/game_surface.wgsl), which sets albedo,
+/// normal, roughness, metalness and emission. `layer` holds -2 - kind.
+pub const SURFACE: u32 = 32768;
+
 /// Material flags from this bit up hold 1 + an index into
 /// `Scene::car_materials`: a procedural car surface (car_material.wgsl).
 pub const CAR_SHIFT: u32 = 16;
