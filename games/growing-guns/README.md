@@ -160,6 +160,10 @@ its old results or with Godot's differently staged stress scenes.
 
 Recorded measurements from 2026-10-28:
 
+- [Current roster benchmark and installed Godot comparison](tools/benchmark-comparison-20261028.md):
+  exact playtest commit `34a1895`, three repeats per workload/layout, with current
+  animated characters, raw CPU/GPU timings and background-load evidence. The
+  Godot and Warp fixtures differ; the report does not claim an engine speed ratio.
 - [Sustained bullet/explosion results](tools/stress-results-20261028.json):
   three alternating pairs per layout, retained executable identity and workload
   counts. These measurements precede the rebase onto the newer renderer; do not

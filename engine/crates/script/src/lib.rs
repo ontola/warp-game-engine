@@ -51,6 +51,11 @@ pub struct Module {
     pub broken: bool,
 }
 
+impl Module {
+    /// The module's `state` table, which survives reloads.
+    pub fn state(&self) -> &Table { &self.state }
+}
+
 pub struct Host {
     lua: Lua,
     root: Option<PathBuf>,
@@ -64,6 +69,8 @@ pub struct Host {
     /// Bumped on every successful load or removal.
     generation: u64,
     hooks: Vec<String>,
+    /// Top-level folders under the root that hold no modules.
+    ignored: Vec<String>,
 }
 
 const BASE: &[&str] = &[
@@ -113,7 +120,7 @@ impl Host {
             Ok(base)
         })().map_err(err)?;
         let console = env(&lua, &base, &lua.create_table().map_err(err)?).map_err(err)?;
-        Ok(Host { lua, root: None, base, console, modules: Vec::new(), steps, limits, log, generation: 0, hooks: Vec::new() })
+        Ok(Host { lua, root: None, base, console, modules: Vec::new(), steps, limits, log, generation: 0, hooks: Vec::new(), ignored: Vec::new() })
     }
 
     /// Load every `*.luau` under `root` and watch it from now on ([`Host::poll`]).
@@ -121,6 +128,10 @@ impl Host {
         self.root = Some(root.into());
         self.poll()
     }
+
+    /// Skip these top-level folders of the root when scanning for modules
+    /// (a game folder whose `sounds/` hold synth patches, not modules).
+    pub fn ignore(&mut self, folders: &[&str]) { self.ignored = folders.iter().map(|f| f.to_string()).collect(); }
 
     /// A module from a string that never reloads (built-in content, tests).
     pub fn add_source(&mut self, name: &str, source: &str) -> Result<(), String> {
@@ -137,6 +148,7 @@ impl Host {
         let Some(root) = self.root.clone() else { return Vec::new() };
         let mut found = Vec::new();
         scan(&root, &root, &mut found);
+        found.retain(|(name, _)| !self.ignored.iter().any(|f| name.strip_prefix(f.as_str()).is_some_and(|r| r.starts_with('/'))));
         found.sort();
         let mut changed = Vec::new();
         let before = self.modules.len();
@@ -348,6 +360,12 @@ mod tests {
         let e = h.modules()[0].error.clone().unwrap();
         assert!(e.contains("sub/m.luau:3"), "{e}");
         assert!(h.poll().is_empty(), "unchanged files do not reload");
+        assert_eq!(h.modules()[0].state().get::<f64>("n").unwrap(), 2.0);
+        // Ignored folders hold no modules.
+        std::fs::create_dir_all(dir.join("sounds")).unwrap();
+        std::fs::write(dir.join("sounds/beep.luau"), "return 1").unwrap();
+        h.ignore(&["sounds"]);
+        assert!(h.poll().is_empty(), "sounds/ is ignored");
         std::fs::remove_file(&file).unwrap();
         h.poll();
         assert!(h.modules().is_empty());

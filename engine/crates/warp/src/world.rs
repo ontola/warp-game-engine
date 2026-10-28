@@ -1,0 +1,353 @@
+//! The entities a Luau game spawns, their collision boxes and the scene that
+//! shows them. Simulation data only: no GPU here, so it runs in tests and
+//! `warp check`. The scene is uploaded by the game's `draw`.
+//!
+//! Every entity sits in a [`Slots`] block reserved up front, so spawning,
+//! moving and removing never rebuild the renderer. A shape and look (colour,
+//! emissive, roughness, metal) seen for the first time adds a material and a
+//! mesh, which needs a new renderer on the next frame (`rebuild`): free
+//! during `init`, a short stall later.
+use glam::{Affine3A, EulerRot, Quat, Vec3};
+use kern::collide::{Mover, YawBox};
+use render::primitives;
+use render::scene::{Material, Scene, EMISSIVE};
+use render::slots::{SlotId, Slots};
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Component, Path, PathBuf};
+
+/// Emissive 1 means this many nits: a clear glow in daylight.
+pub const EMISSIVE_NITS: f32 = 4000.0;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shape {
+    Cube,
+    Sphere,
+    Capsule,
+    /// A glTF file inside the game folder (`assets/crate.glb`).
+    Model(String),
+}
+
+impl Shape {
+    pub fn name(&self) -> &str {
+        match self { Shape::Cube => "cube", Shape::Sphere => "sphere", Shape::Capsule => "capsule", Shape::Model(p) => p }
+    }
+}
+
+/// Surface: colour in sRGB 0..1 (as a colour picker shows it), emissive
+/// glow (0 off, 1 bright in daylight), roughness and metalness 0..1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub color: [f32; 3],
+    pub emissive: f32,
+    pub roughness: f32,
+    pub metal: f32,
+}
+
+impl Default for Look {
+    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0 } }
+}
+
+impl Look {
+    fn key(&self) -> [i32; 6] {
+        let q = |v: f32| (v.clamp(0.0, 1000.0) * 1000.0).round() as i32;
+        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal)]
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Entity {
+    pub shape: Shape,
+    pub look: Look,
+    pub pos: Vec3,
+    /// Euler angles in radians: x pitch, y yaw, z roll (applied yaw, pitch, roll).
+    pub rot: Vec3,
+    /// Size in metres along each axis. Every shape fills a 1 m box at size 1,
+    /// except the capsule, which is 2 m tall.
+    pub size: Vec3,
+    /// Solid entities block `world.move` and are hit by `world.raycast`.
+    pub solid: bool,
+    pub visible: bool,
+    pub tag: String,
+    slot: Option<SlotId>,
+    mesh: usize,
+    /// Collision box at size 1: centre offset and half extents.
+    local: (Vec3, Vec3),
+}
+
+impl Entity {
+    /// The collision box: rotated about Y only (pitch and roll are ignored).
+    pub fn bounds(&self) -> YawBox {
+        let (offset, half) = self.local;
+        let center = self.pos + Quat::from_rotation_y(self.rot.y) * (offset * self.size);
+        YawBox { center, half: half * self.size.abs(), yaw: self.rot.y }
+    }
+
+    fn transform(&self) -> Affine3A {
+        Affine3A::from_scale_rotation_translation(self.size, Quat::from_euler(EulerRot::YXZ, self.rot.y, self.rot.x, self.rot.z), self.pos)
+    }
+}
+
+/// What `world.spawn` asks for.
+#[derive(Clone, Debug)]
+pub struct Spawn {
+    pub shape: Shape,
+    pub look: Look,
+    pub pos: Vec3,
+    pub rot: Vec3,
+    pub size: Vec3,
+    pub solid: bool,
+    pub visible: bool,
+    pub tag: String,
+}
+
+impl Default for Spawn {
+    fn default() -> Self { Spawn { shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, tag: String::new() } }
+}
+
+/// A ray's first hit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hit { pub id: u32, pub distance: f32, pub point: Vec3, pub normal: Vec3 }
+
+/// Which entities a query sees.
+#[derive(Clone, Debug, Default)]
+pub struct Filter {
+    pub tag: Option<String>,
+    pub ignore: Vec<u32>,
+    /// Include entities that are not solid.
+    pub all: bool,
+}
+
+impl Filter {
+    fn wants(&self, id: u32, e: &Entity, solid_only: bool) -> bool {
+        (!solid_only || self.all || e.solid) && !self.ignore.contains(&id) && self.tag.as_ref().is_none_or(|t| &e.tag == t)
+    }
+}
+
+struct ModelInfo { mesh: usize, min: Vec3, max: Vec3 }
+
+pub struct World {
+    pub entities: BTreeMap<u32, Entity>,
+    next: u32,
+    pub scene: Scene,
+    slots: Slots,
+    materials: HashMap<[i32; 6], u32>,
+    meshes: HashMap<(u8, u32), usize>,
+    models: HashMap<String, ModelInfo>,
+    /// Meshes or materials were added since the renderer was made.
+    pub rebuild: bool,
+    dir: PathBuf,
+}
+
+impl World {
+    /// `dir` is the game folder (models load from inside it).
+    pub fn new(dir: &Path, max_entities: usize) -> Self {
+        let mut scene = Scene::default();
+        let m = scene.add_material(material(&Look::default()));
+        let cube = scene.add_mesh(&primitives::cube(m).mesh());
+        let slots = Slots::reserve(&mut scene, max_entities);
+        let mut w = World { entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, dir: dir.to_path_buf() };
+        w.materials.insert(Look::default().key(), m);
+        w.meshes.insert((0, m), cube);
+        w
+    }
+
+    pub fn capacity(&self) -> usize { self.slots.capacity() }
+
+    fn material(&mut self, look: &Look) -> u32 {
+        if let Some(&m) = self.materials.get(&look.key()) { return m; }
+        let m = self.scene.add_material(material(look));
+        self.materials.insert(look.key(), m);
+        self.rebuild = true;
+        m
+    }
+
+    /// The mesh and unit collision box for a shape and look.
+    fn mesh(&mut self, shape: &Shape, look: &Look) -> Result<(usize, (Vec3, Vec3)), String> {
+        let half = Vec3::splat(0.5);
+        let kind = match shape {
+            Shape::Cube => 0,
+            Shape::Sphere => 1,
+            Shape::Capsule => 2,
+            Shape::Model(path) => {
+                if !self.models.contains_key(path) {
+                    let file = self.asset(path)?;
+                    let model = assets::gltf::load(&mut self.scene, &file)?;
+                    self.models.insert(path.clone(), ModelInfo { mesh: model.mesh, min: model.min, max: model.max });
+                    self.rebuild = true;
+                }
+                let m = &self.models[path];
+                return Ok((m.mesh, ((m.min + m.max) * 0.5, ((m.max - m.min) * 0.5).max(Vec3::splat(1e-3)))));
+            }
+        };
+        let local = (Vec3::ZERO, if kind == 2 { Vec3::new(0.5, 1.0, 0.5) } else { half });
+        let m = self.material(look);
+        if let Some(&mesh) = self.meshes.get(&(kind, m)) { return Ok((mesh, local)); }
+        let mut p = match kind {
+            0 => primitives::cube(m),
+            1 => primitives::sphere(m, 16, 24),
+            // Radius 1, 2 m straight middle: halved below to 1 m wide, 2 m tall.
+            _ => primitives::capsule(m, 2.0, 12, 20),
+        };
+        if kind != 0 { for v in &mut p.vertices { v.pos = v.pos.map(|c| c * 0.5); } }
+        let mesh = self.scene.add_mesh(&p.mesh());
+        self.meshes.insert((kind, m), mesh);
+        self.rebuild = true;
+        Ok((mesh, local))
+    }
+
+    /// A path inside the game folder: relative, no `..`.
+    fn asset(&self, path: &str) -> Result<PathBuf, String> {
+        let rel = Path::new(path);
+        if rel.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) {
+            return Err(format!("{path}: model paths are relative to the game folder, without '..'"));
+        }
+        let file = self.dir.join(rel);
+        if !file.exists() { return Err(format!("{path}: no such file in the game folder")); }
+        Ok(file)
+    }
+
+    pub fn spawn(&mut self, s: Spawn) -> Result<u32, String> {
+        if self.entities.len() >= self.slots.capacity() { return Err(format!("too many entities: {} at most (max_entities in game.toml)", self.slots.capacity())); }
+        let (mesh, local) = self.mesh(&s.shape, &s.look)?;
+        let id = self.next;
+        self.next += 1;
+        let mut e = Entity { shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, tag: s.tag, slot: None, mesh, local };
+        if e.visible { e.slot = self.slots.add(&mut self.scene, mesh, e.transform()); }
+        self.entities.insert(id, e);
+        Ok(id)
+    }
+
+    pub fn get(&self, id: u32) -> Option<&Entity> { self.entities.get(&id) }
+
+    /// Change an entity; `f` edits it, then its mesh and slot follow.
+    pub fn update(&mut self, id: u32, f: impl FnOnce(&mut Entity)) -> Result<(), String> {
+        let mut e = self.entities.remove(&id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
+        let (shape, look) = (e.shape.clone(), e.look);
+        f(&mut e);
+        if e.shape != shape || e.look != look {
+            match self.mesh(&e.shape, &e.look) {
+                Ok((mesh, local)) => { e.mesh = mesh; e.local = local; }
+                Err(err) => { e.shape = shape; e.look = look; self.entities.insert(id, e); return Err(err); }
+            }
+        }
+        match (e.visible, e.slot) {
+            (true, Some(slot)) => self.slots.set(&mut self.scene, slot, e.mesh, e.transform()),
+            (true, None) => e.slot = self.slots.add(&mut self.scene, e.mesh, e.transform()),
+            (false, Some(slot)) => { self.slots.remove(&mut self.scene, slot); e.slot = None; }
+            (false, None) => {}
+        }
+        self.entities.insert(id, e);
+        Ok(())
+    }
+
+    pub fn remove(&mut self, id: u32) -> bool {
+        let Some(e) = self.entities.remove(&id) else { return false };
+        if let Some(slot) = e.slot { self.slots.remove(&mut self.scene, slot); }
+        true
+    }
+
+    pub fn clear(&mut self) {
+        let ids: Vec<u32> = self.entities.keys().copied().collect();
+        for id in ids { self.remove(id); }
+    }
+
+    /// Entities with this tag, in id order.
+    pub fn find(&self, tag: &str) -> Vec<u32> { self.entities.iter().filter(|(_, e)| e.tag == tag).map(|(&id, _)| id).collect() }
+
+    /// The first solid entity along a ray (`dir` need not be unit length).
+    pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32, filter: &Filter) -> Option<Hit> {
+        let dir = dir.try_normalize()?;
+        let mut best: Option<Hit> = None;
+        for (&id, e) in &self.entities {
+            if !filter.wants(id, e, true) { continue; }
+            if let Some((t, n)) = e.bounds().ray(origin, dir, best.map_or(max, |h| h.distance)) {
+                if best.is_none_or(|h| t < h.distance) { best = Some(Hit { id, distance: t, point: origin + dir * t, normal: n }); }
+            }
+        }
+        best
+    }
+
+    /// Entities (solid or not) whose box touches a sphere, in id order.
+    pub fn overlap(&self, center: Vec3, radius: f32, filter: &Filter) -> Vec<u32> {
+        self.entities.iter().filter(|&(&id, e)| filter.wants(id, e, false) && sphere_touches(&e.bounds(), center, radius)).map(|(&id, _)| id).collect()
+    }
+
+    /// Move an upright cylinder (`center`, `radius`, `height`) by `vel * dt`,
+    /// sliding along solid boxes. Returns the new position and velocity and
+    /// whether it stands on something.
+    pub fn move_body(&self, center: Vec3, vel: Vec3, dt: f32, radius: f32, height: f32, filter: &Filter) -> (Vec3, Vec3, bool) {
+        let boxes: Vec<YawBox> = self.entities.iter().filter(|&(&id, e)| filter.wants(id, e, true)).map(|(_, e)| e.bounds()).collect();
+        let (mut pos, mut vel) = (center, vel);
+        let mover = Mover { radius: radius.max(0.01), half_height: (height * 0.5).max(0.01) };
+        let contact = mover.slide(&boxes, &mut pos, &mut vel, dt, (radius * 0.5).clamp(0.05, 0.5));
+        (pos, vel, contact.on_floor)
+    }
+
+    /// Upload moved slots to a renderer made from this scene.
+    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> { self.slots.flush(gpu, renderer, &self.scene) }
+}
+
+fn material(look: &Look) -> Material {
+    let tint = look.color.map(|c| c.clamp(0.0, 1.0).powf(2.2));
+    let (flags, scale) = if look.emissive > 0.0 { (EMISSIVE, look.emissive * EMISSIVE_NITS) } else { (0, 1.0) };
+    Material { tint, layer: -1, roughness: look.roughness.clamp(0.02, 1.0), flags, scale, metal: look.metal.clamp(0.0, 1.0) }
+}
+
+/// A sphere against a box rotated about Y.
+fn sphere_touches(b: &YawBox, p: Vec3, r: f32) -> bool {
+    let d = p - b.center;
+    let (s, c) = b.yaw.sin_cos();
+    // Into the box's frame (kern's convention: positive yaw turns +X to -Z).
+    let local = Vec3::new(c * d.x - s * d.z, d.y, s * d.x + c * d.z);
+    let nearest = local.clamp(-b.half, b.half);
+    (local - nearest).length_squared() <= r * r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn world() -> World { World::new(Path::new("."), 16) }
+
+    #[test]
+    fn spawn_move_remove_and_reuse_meshes() {
+        let mut w = world();
+        let a = w.spawn(Spawn { pos: Vec3::new(0.0, -0.5, 0.0), size: Vec3::new(10.0, 1.0, 10.0), ..Default::default() }).unwrap();
+        let meshes = w.scene.meshes.len();
+        let b = w.spawn(Spawn { pos: Vec3::Y * 3.0, ..Default::default() }).unwrap();
+        assert_eq!(w.scene.meshes.len(), meshes, "the same shape and look share a mesh");
+        w.spawn(Spawn { shape: Shape::Sphere, look: Look { color: [1.0, 0.0, 0.0], emissive: 2.0, ..Default::default() }, ..Default::default() }).unwrap();
+        assert_eq!(w.scene.meshes.len(), meshes + 1);
+        assert_eq!(w.scene.materials.last().unwrap().flags, EMISSIVE);
+        w.update(b, |e| e.pos.x = 2.0).unwrap();
+        assert_eq!(w.get(b).unwrap().pos.x, 2.0);
+        assert!(w.remove(a) && !w.remove(a));
+        assert!(w.update(a, |_| {}).is_err());
+        for _ in 0..14 { w.spawn(Spawn::default()).unwrap(); }
+        assert!(w.spawn(Spawn::default()).unwrap_err().contains("max_entities"));
+        assert!(w.spawn(Spawn { shape: Shape::Model("../x.glb".into()), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn rays_overlaps_and_moves() {
+        let mut w = world();
+        let floor = w.spawn(Spawn { pos: Vec3::new(0.0, -0.5, 0.0), size: Vec3::new(20.0, 1.0, 20.0), ..Default::default() }).unwrap();
+        let wall = w.spawn(Spawn { pos: Vec3::new(0.0, 1.0, -5.0), size: Vec3::new(4.0, 2.0, 1.0), tag: "wall".into(), ..Default::default() }).unwrap();
+        let orb = w.spawn(Spawn { shape: Shape::Sphere, pos: Vec3::new(2.0, 1.0, 0.0), size: Vec3::splat(0.5), solid: false, tag: "orb".into(), ..Default::default() }).unwrap();
+        let hit = w.raycast(Vec3::new(0.0, 1.0, 0.0), Vec3::NEG_Z, 100.0, &Filter::default()).unwrap();
+        assert_eq!(hit.id, wall);
+        assert!((hit.distance - 4.5).abs() < 1e-4 && hit.normal == Vec3::Z, "{hit:?}");
+        assert_eq!(w.raycast(Vec3::Y, Vec3::NEG_Y, 10.0, &Filter::default()).unwrap().id, floor);
+        assert!(w.raycast(Vec3::new(0.0, 1.0, 0.0), Vec3::X, 10.0, &Filter::default()).is_none(), "the orb is not solid");
+        assert_eq!(w.raycast(Vec3::new(0.0, 1.0, 0.0), Vec3::X, 10.0, &Filter { all: true, ..Default::default() }).unwrap().id, orb);
+        assert_eq!(w.overlap(Vec3::new(1.5, 1.0, 0.0), 0.3, &Filter { tag: Some("orb".into()), ..Default::default() }), vec![orb]);
+        assert!(w.overlap(Vec3::new(0.5, 1.0, 0.0), 0.3, &Filter { tag: Some("orb".into()), ..Default::default() }).is_empty());
+        // A body falls onto the floor and stops at the wall.
+        let (mut p, mut v) = (Vec3::new(0.0, 3.0, 0.0), Vec3::ZERO);
+        let mut grounded = false;
+        for _ in 0..120 { v.y -= 20.0 / 60.0; (p, v, grounded) = w.move_body(p, v, 1.0 / 60.0, 0.4, 1.8, &Filter::default()); }
+        assert!(grounded && (p.y - 0.9).abs() < 0.02, "{p}");
+        for _ in 0..120 { v = Vec3::new(0.0, v.y - 20.0 / 60.0, -6.0); (p, v, _) = w.move_body(p, v, 1.0 / 60.0, 0.4, 1.8, &Filter::default()); }
+        assert!((p.z - (-4.5 + 0.4)).abs() < 0.05, "stopped by the wall: {p}");
+    }
+}

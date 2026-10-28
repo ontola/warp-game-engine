@@ -1,6 +1,8 @@
 # Making a game on Warp
 
-For people and coding agents. Start from
+For people and coding agents. To make a game without Rust, in Luau
+scripts and sound patches only, use the [`warp` executable](warp-cli.md)
+instead. For a Rust game, start from
 [`engine/crates/app/examples/hello.rs`](../crates/app/examples/hello.rs)
 (about 150 lines); [Growing Guns](../../games/growing-guns/README.md) is a
 complete example with split screen, bots and online play.

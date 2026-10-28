@@ -294,6 +294,9 @@ pub struct Lighting {
     pub grass_reference: f32,
     /// Sharpening after TAA, 0..1.
     pub sharpen: f32,
+    /// Opt-in in-scattering from local lights with a scatter weight
+    /// (`Renderer::set_local_lights_scattering`); `None` adds no pass.
+    pub volumetric: Option<crate::volumetric::Volumetric>,
 }
 
 impl Lighting {
@@ -334,6 +337,9 @@ impl Lighting {
             "alpha_cut" => self.alpha_cut = f,
             "grass_reference" if f == 0.0 || f == 1.0 || f == 2.0 => self.grass_reference = f,
             "sharpen" => self.sharpen = f,
+            // `volumetric=0` turns it off, `volumetric=1` on with defaults.
+            "volumetric" if f == 0.0 || f == 1.0 => self.volumetric = (f == 1.0).then(|| self.volumetric.unwrap_or_default()),
+            k if k.starts_with("vol_") => self.volumetric.get_or_insert_with(Default::default).set(k, f)?,
             "sun_elevation" | "sun_azimuth" => {
                 let el = if k == "sun_elevation" { f } else { self.sun_dir.y.asin().to_degrees() };
                 let az = if k == "sun_azimuth" { f } else { self.sun_dir.x.atan2(-self.sun_dir.z).to_degrees() };
@@ -382,6 +388,7 @@ impl Default for Lighting {
             alpha_cut: 0.42,
             grass_reference: 0.0,
             sharpen: 0.5,
+            volumetric: None,
         }
     }
 }
@@ -599,6 +606,7 @@ pub struct Renderer {
     debris: Option<crate::debris::DebrisRenderer>,
     crowd: Option<crate::crowd::CrowdRenderer>,
     fx: crate::fx::FxSlot,
+    volumetric: crate::volumetric::VolumetricSlot,
     sprites: crate::sprites::SpriteSlot,
     transparency: Option<crate::transparency::Transparency>,
     grass: Option<crate::grass::GrassRenderer>,
@@ -1533,6 +1541,7 @@ impl Renderer {
             debris,
             crowd,
             fx: Default::default(),
+            volumetric: Default::default(),
             sprites: Default::default(),
             transparency,
             grass,
@@ -2066,8 +2075,25 @@ impl Renderer {
     /// No shadow target allocation or culling/raster pass is added. Call with
     /// an empty set when emitters expire; invalid sets leave the old set intact.
     pub fn set_local_lights(&self,lights:&[crate::headlights::LocalLight])->Result<(),String> {
+        self.set_local_lights_scattering(lights,&[])
+    }
+
+    /// `set_local_lights`, plus a scatter weight per light (in order; missing
+    /// weights are zero) for `Lighting::volumetric`. Weight 1 scatters the
+    /// light's own intensity; surface lighting is unaffected by the weights.
+    pub fn set_local_lights_scattering(&self,lights:&[crate::headlights::LocalLight],scatter:&[f32])->Result<(),String> {
         let validated=crate::headlights::validate_local(lights)?;
+        self.volumetric.set_lights(&validated,scatter);
         *self.local_light_state.lock().unwrap()=validated;Ok(())
+    }
+
+    /// Lights that only scatter in `Lighting::volumetric` and light no
+    /// surface: for example narrow visible beams inside a wide floodlight
+    /// whose surface light is one `set_local_lights` entry. Together with
+    /// the weighted local lights at most 32 scatter (local lights first).
+    pub fn set_volumetric_beams(&self,beams:&[crate::headlights::LocalLight])->Result<(),String> {
+        let validated=crate::headlights::validate_local(beams)?;
+        self.volumetric.set_beams(&validated);Ok(())
     }
 
     /// Physical receivers in view order (for example each player car), not
@@ -3563,6 +3589,18 @@ impl Renderer {
                 let hh = hist.as_ref().unwrap(); hh.tex[hh.cur].clone()
             } else { hdr.clone() };
             cpu.mark("view temporal");
+            // Opt-in in-scattering from local lights, into a separate output.
+            let resolved = match light.volumetric.as_ref() {
+                Some(medium) => {
+                    let time = self.query.as_ref().map(|(qs, _, _)| { names.push("volumetric"); (qs, timestamp_pair(&mut ts)) });
+                    if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                    let out = self.volumetric.render(gpu, &mut enc, medium, crate::volumetric::ViewInput { index: vi, input: &resolved,
+                        depth: &depth_v, depth_size: (w, h), camera: cam.pos, near: cam.near, depth_vp: vp })?;
+                    if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                    out.unwrap_or(resolved)
+                }
+                None => resolved,
+            };
             // Compose after temporal reconstruction into a separate output.
             // Never write heat/smoke back into TAA or DLSS history.
             // Blast effects (fire, smoke, embers, heat) over the resolved HDR.

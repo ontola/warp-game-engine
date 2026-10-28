@@ -4,7 +4,9 @@ Warp is a Rust game engine for procedural outdoor worlds, built for short
 iteration loops: a deterministic simulation, headless rendering, scripted
 playtests and hot-reloaded Luau. Two games run on it:
 [Sideways](../../games/sideways/README.md), a gravel rally game, and
-[Growing Guns](../../games/growing-guns/README.md), an arena shooter.
+[Growing Guns](../../games/growing-guns/README.md), an arena shooter. The
+`warp` executable runs games made only of Luau scripts and sound patches,
+such as [Hello Warp](../../games/hello-warp/README.md), with no Rust.
 
 Start with the overview, then build and run something.
 
@@ -15,6 +17,7 @@ Start with the overview, then build and run something.
 | [What Warp is](overview.md) | Design goals: deterministic sim, fast iteration, headless runs, physical units, live tweaking by an AI as a direction. |
 | [Workspace and crates](workspace.md) | The repository layout, the eight engine crates, the game packages and the build profiles. |
 | [Building and running](building-and-running.md) | Checks and tests, running the games, software rendering, scripted playtests, golden images, environment variables. |
+| [Games in Luau: the warp executable](warp-cli.md) | `warp new`, `run`, `script`, `serve`, `check`: a game of Luau scripts, sound patches and glTF assets with hot reload and live MCP control. The Luau game API. |
 | [Making a game](making-a-game.md) | The `app::Game` trait, the loop, building a scene, costs and gotchas. Starts from the `hello` example. |
 | [Scripting and modding](scripting.md) | The Luau host: sandbox, hot reload, step budget. Growing Guns' mod API as the worked example. |
 | [Audio](audio.md) | Engine sound synthesis, effects playback, and the procedural synth with its surround mixer. |
@@ -99,6 +102,7 @@ Sky, fog and terrain:
 - [Live sky controls](live-sky-controls.md)
 - [Camera terrain occlusion of solar haze](camera-sun-fog.md)
 - [Finite-distance aerosol layer](finite-distance-fog.md)
+- [Volumetric light from local lights](volumetric-light.md)
 - [Terrain normals follow the rendered surface](terrain-surface-normals.md)
 - [Shared terrain visibility foundation](terrain-world-visibility.md)
 - [Repetitive roadside wedges, r52](roadside-verge-r52.md)

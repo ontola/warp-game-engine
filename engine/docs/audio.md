@@ -299,7 +299,9 @@ producer for reclamation after the callback relinquishes them.
 
 ### warp-audio
 
-`cargo run -p audio --features luau --bin warp-audio --`:
+`cargo run -p audio --features luau --bin warp-audio --` (also
+`warp audio ...` in the [warp executable](warp-cli.md); the command line
+is `audio::cli`):
 
 - `render FILE.luau [--sound NAME] [--set k=v] [--seed N] [--seconds S]
   [--layout 5.1] [--at x,y,z] [--reverb R] [--repeat N --every S]
