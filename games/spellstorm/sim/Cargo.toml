@@ -1,0 +1,14 @@
+[package]
+name = "spellstorm"
+edition.workspace = true
+version.workspace = true
+description = "Spellstorm gameplay simulation on Warp: spells, wizards, monsters, levels and the run"
+
+[dependencies]
+kern.workspace = true
+gdcompat.workspace = true
+glam = { version = "0.31", features = ["serde"] }
+hecs = "0.10"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+fastnoise-lite.workspace = true
