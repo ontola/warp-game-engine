@@ -37,9 +37,10 @@ Other inputs, copied as they are:
   picture, cropped to 16:9 from `sideways-stage.jpg`, two Growing Guns
   golden images and `engine/docs/images/volumetric-night-arena.jpg`.
   To be replaced by a real four-view capture.
-- `static/logo.svg`: the logo. A white W in front of a spacetime grid
-  bent by a warp bubble: flat inside, space rising behind and sinking ahead.
-  The yellow grid line runs through the middle of the W. Deep-space blue.
+- `static/logo.svg`: the logo. A big white W in front of a coarse grid
+  whose horizontal lines bend gently around a warp bubble: one soft rise
+  behind, one soft dip ahead. The yellow grid line runs through the middle
+  of the W. Deep-space blue.
   `static/favicon.svg` is the same file (also used next to the wordmark);
   the grid is coarse enough to read at 16 pixels.
 - `assets/sideways-stage.jpg`: a Sideways frame rendered headless on a CPU
