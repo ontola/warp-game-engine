@@ -1,16 +1,18 @@
 //! Growing Guns on Warp.
 //!
-//!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm] [--no-music] [--music DIR]
+//!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm] [--no-music] [--music DIR] [--live [PORT]]
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T] [--trace players.0.health,round [--rows N]]
 //!   growing-guns nettest [--seconds T]   (host + client over iroh loopback, headless)
 //!   growing-guns mods-api   (writes mods/API.md and mods/types.d.luau)
+//!   growing-guns serve --live [PORT] [--seconds T] [--total N]   (headless, real time, live control; live.rs)
 //!   growing-guns script FILE.json --out DIR [--players N] [--seed S]   (app::script; exit 1 on a failed expect)
 //!
 //! Online: `play --host` prints a ticket; `play --join TICKET` joins it.
 //! `--lan` skips relays and address lookup (direct addresses only).
 mod bench;
 mod hud;
+mod live;
 mod net;
 mod play;
 mod session;
@@ -52,6 +54,7 @@ fn main() {
         "bench" => bench::run(&args),
         "script" => script(&args),
         "nettest" => nettest(&args),
+        "serve" => live::serve(&args),
         "mods-api" => mods_api(),
         _ => Err(format!("unknown command {cmd}; use play, shot or sim")),
     };
@@ -166,6 +169,8 @@ fn nettest(args: &Args) -> Result<(), String> {
         let start = std::time::Instant::now();
         for k in 0..ticks + 120 {
             // Destruction mid-game: clients must end with the same arena.
+            // Changes between ticks (debug console, live tools) reach clients.
+            if k == 30 { host.command("round")?; host.command("give 2 explosive")?; }
             if k == 90 || k == 150 { host.command(&format!("blast {} 0 {} 5 400", k as f32 * 0.1 - 10.0, 6.0))?; }
             host.tick(&[Controls::default()]);
             let due = start + std::time::Duration::from_secs_f32((k + 1) as f32 / TICK_HZ as f32);
@@ -199,6 +204,10 @@ fn nettest(args: &Args) -> Result<(), String> {
     let client_broken = (client.world.arena.chunks.len() - client.world.arena.alive_chunks()) as u64;
     println!("destruction: host broke {host_broken} chunks, client sees {client_broken}");
     if host_broken == 0 || host_broken != client_broken { return Err("nettest failed: arenas differ".into()); }
+    let seeds = (host_state["arena"]["seed"].as_u64().unwrap_or(0), client.world.arena.seed);
+    let card = client.world.players[2].cards.iter().any(|&c| client.world.cards.get(c).is_some_and(|d| d.id == "explosive"));
+    println!("host-side tweaks: arena seed host {} client {}, player 3 has the given card on the client: {card}", seeds.0, seeds.1);
+    if seeds.0 != seeds.1 || !card { return Err("nettest failed: a host tweak did not reach the client".into()); }
     let moved = start_pos.map_or(0.0, |p| p.distance(client.world.players[me].pos));
     let human = host_state["players"][me]["bot"] == serde_json::Value::Bool(false);
     println!("client followed to host tick {last_tick}; player {} moved {moved:.1} m; host sees it as human: {human}; ammo {}",
