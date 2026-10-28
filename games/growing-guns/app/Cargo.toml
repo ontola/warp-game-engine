@@ -14,7 +14,7 @@ kern.workspace = true
 render = { path = "../../../engine/crates/render" }
 assets = { path = "../../../engine/crates/assets" }
 app = { path = "../../../engine/crates/app" }
-audio = { path = "../../../engine/crates/audio" }
+audio = { path = "../../../engine/crates/audio", features = ["luau"] }
 physics = { path = "../../../engine/crates/physics" }
 glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
