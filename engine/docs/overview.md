@@ -85,8 +85,10 @@ builds on:
 - Sideways has a live render debug panel (F3) and `shot --watch`, which
   re-renders when the car material data or shading shaders change.
 
-There is no general protocol yet for an outside agent to attach to a
-running game.
+The `live` crate ties these together: a game started with `--live`
+serves MCP on localhost, so Claude or ChatGPT can read its state, take
+screenshots, run Luau, edit mods, sound patches and shaders, and use the
+game's own tools while you play. See [live control](live-control.md).
 
 ## Not goals (for now)
 

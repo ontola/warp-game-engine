@@ -18,6 +18,7 @@ Start with the overview, then build and run something.
 | [Making a game](making-a-game.md) | The `app::Game` trait, the loop, building a scene, costs and gotchas. Starts from the `hello` example. |
 | [Scripting and modding](scripting.md) | The Luau host: sandbox, hot reload, step budget. Growing Guns' mod API as the worked example. |
 | [Audio](audio.md) | Engine sound synthesis, effects playback, and the procedural synth with its surround mixer. |
+| [Live control over MCP](live-control.md) | Change a running game with Claude, ChatGPT or an in-game assistant: setup, tools, security. |
 | [Networking](networking.md) | Host and clients over iroh, and Growing Guns' host-authoritative play. |
 | [Physics](physics.md) | `kern::collide` for characters and levels, the Rapier-based `physics` crate. |
 | [Rendering overview](rendering.md) | Clusters, visibility buffer, lighting, content systems, and where performance stands. |

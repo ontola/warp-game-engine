@@ -32,6 +32,7 @@ website/                    the static site built from these docs
 | `physics` | Rigid bodies on Rapier with enhanced determinism: static boxes, dynamic boxes, spheres and capsules, impulses, radial blasts, ball joints and rays. | rapier3d, kern, glam |
 | `assets` | Asset import: static glTF models with materials and textures (`assets::gltf`), and baked weighted characters (`assets::skinned`). | render, gltf, image |
 | `net` | Online play over iroh (QUIC with hole punching and relays): a host and clients exchange the game's own typed messages through channels the game loop polls. | iroh, tokio, postcard |
+| `live` | Live control over MCP: a Streamable HTTP server on localhost with a bearer token, off the game thread; games add tools through the `LiveGame` trait. The `warp-mcp` stdio bridge. See [live control](live-control.md). | tokio, hyper, image |
 | `script` | Luau scripting: sandboxed modules from a folder, hot reload, a step budget per call and a memory cap. | mlua (Luau) |
 
 How the crates depend on each other:
@@ -40,12 +41,12 @@ How the crates depend on each other:
 kern  <-  physics
 render  <-  assets
 render, audio  <-  app
-net, script: standalone
+net, script, live: standalone
 ```
 
 A game picks what it needs. Sideways uses `kern`, `render` and `audio`
-directly, with Rapier in its own simulation crate. Growing Guns uses all
-eight.
+directly, with Rapier in its own simulation crate. Growing Guns uses all of
+them.
 
 ## Game packages
 
@@ -55,7 +56,7 @@ eight.
 | `gdcompat` | `games/sideways/determinism` | Stable RNG, noise and math. Not a Godot runtime dependency. |
 | `cli` | `games/sideways/app` | Builds the `sideways` executable: play, shot, sim, bench, sound, gpu-run. |
 | `growing-guns` | `games/growing-guns/sim` | 60 Hz gameplay: arena generator, movement, weapons, rounds, bots, wave survival. Implements `kern::Sim`. |
-| `growing-guns-app` | `games/growing-guns/app` | Builds the `growing-guns` executable: play, shot, bench, sim, script, nettest, mods-api. |
+| `growing-guns-app` | `games/growing-guns/app` | Builds the `growing-guns` executable: play, shot, bench, sim, script, nettest, serve, mods-api. |
 
 Package names are kept stable for scripts and tools, which is why the
 Sideways app package is still called `cli`.
