@@ -39,6 +39,9 @@ pub struct Controls {
     /// Look change this tick in radians: x right, y up. Mouse and the right
     /// stick (rate times tick) both land here.
     pub look: [f32; 2],
+    /// The right stick's position: x right, y up, length at most 1 (0 on
+    /// keyboard and mouse). For twin-stick aiming, where `look` is a rate.
+    pub aim: [f32; 2],
     /// Held now.
     pub held: Buttons,
     /// Pressed since the previous tick (never lost between ticks).
@@ -267,6 +270,7 @@ impl Devices {
             devices.push((Device::Keyboard, Controls {
                 mv,
                 look: [k.look[0] as f32 * t.mouse, -k.look[1] as f32 * t.mouse],
+                aim: [0.0; 2],
                 held: Buttons(held),
                 pressed: Buttons(std::mem::take(&mut k.pressed)),
             }));
@@ -283,9 +287,11 @@ impl Devices {
                     let analog = gp.button_data(b).is_some_and(|d| d.value() > 0.4);
                     if gp.is_pressed(b) || analog { held |= pad_button(b); }
                 }
+                let aim = [shape(gp.value(Axis::RightStickX), &t), shape(gp.value(Axis::RightStickY), &t)];
                 devices.push((Device::Pad(usize::from(*id) as u32), Controls {
                     mv: [shape(gp.value(Axis::LeftStickX), &t), shape(gp.value(Axis::LeftStickY), &t)],
-                    look: [shape(gp.value(Axis::RightStickX), &t) * t.stick * dt, shape(gp.value(Axis::RightStickY), &t) * t.stick * dt],
+                    look: [aim[0] * t.stick * dt, aim[1] * t.stick * dt],
+                    aim,
                     held: Buttons(held),
                     pressed: Buttons(std::mem::take(pressed)),
                 }));

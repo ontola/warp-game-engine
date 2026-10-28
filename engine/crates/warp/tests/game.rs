@@ -395,3 +395,58 @@ fn neon_trails_plays_rounds_with_bots() {
     assert!(points >= 3 && points % 3 == 0, "the last rider scores 3: {}", s["state"]["scores"]);
     assert_eq!(run()["state"], s["state"]);
 }
+
+const FX_GAME: &str = r##"
+local function init()
+    world.warm("cube", { color = "#ff00ff", emissive = 0.06 })
+    state.box = world.spawn("cube", { solid = false })
+    fx.burst(vector.create(0, 1, 0), { color = "#ff00ff", count = 20, speed = 5, life = 0.5, stretch = 0.02, flat = true })
+    fx.ring(vector.create(0, 0.1, 0), { color = "#ff00ff", radius = 3, segments = 12 })
+    local parts, rings = fx.count()
+    state.parts, state.rings, state.fx = parts, rings, #world.find("fx")
+    state.typo = tostring(select(2, pcall(fx.burst, vector.create(0, 0, 0), { colour = "red" })))
+end
+local function tick(dt, input)
+    world.place(state.box, vector.create(2, 0, 3), 1.5)
+    state.aim = input[1].aim_x
+    local parts, rings = fx.count()
+    state.left = parts + rings
+end
+return { init = init, tick = tick }
+"##;
+
+#[test]
+fn effects_fly_out_and_are_gone_after_their_life() {
+    let dir = folder("fx");
+    std::fs::write(dir.join("main.luau"), FX_GAME).unwrap();
+    let mut g = game(&dir);
+    let s = state(&g);
+    assert_eq!((s["state"]["parts"].clone(), s["state"]["rings"].clone(), s["state"]["fx"].clone()), (json!(20), json!(1), json!(32)), "{s}");
+    assert!(s["state"]["typo"].as_str().unwrap().contains("unknown option \"colour\""), "{s}");
+    ticks(&mut g, 10, Controls { aim: [0.5, 0.0], ..Default::default() });
+    assert_eq!(state(&g)["state"]["aim"], json!(0.5), "the right stick's position");
+    ticks(&mut g, 50, Controls::default());
+    let s = state(&g);
+    assert_eq!(s["state"]["left"], json!(0), "spent after their life: {s}");
+    assert_eq!(g.command_line("lua #world.find('fx')").unwrap(), "0");
+    assert_eq!(g.command_line("lua world.get(state.box).pos.z").unwrap(), "3");
+    assert_eq!(g.command_line("lua world.get(state.box).rot.y").unwrap(), "1.5");
+}
+
+#[test]
+fn neon_siege_bots_clear_waves_and_replay_exactly() {
+    let run = || {
+        let mut g = LuaGame::load(&repo().join("games/neon-siege"), &Overrides { bots: Some(3), ..Default::default() }, None).unwrap();
+        g.echo = false;
+        for _ in 0..3000 { g.tick(&[Controls::default()]); }
+        state(&g)
+    };
+    let s = run();
+    assert_eq!(s["errors"], json!([]), "{s}");
+    assert_eq!(s["cameras"].as_array().unwrap().len(), 1, "one shared view");
+    let siege = &s["state"]["s"];
+    assert!(siege["wave"].as_u64().unwrap() >= 3, "the bots clear waves: wave {}", siege["wave"]);
+    assert!(siege["teamScore"].as_u64().unwrap() > 0 && siege["kills"].as_u64().unwrap() > 20, "{}", siege["kills"]);
+    assert_eq!(siege["players"].as_array().unwrap().len(), 4);
+    assert_eq!(run()["state"], s["state"], "the same seed plays the same siege");
+}

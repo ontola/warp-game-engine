@@ -10,7 +10,9 @@ iteration with an AI over MCP.
 The crate is `engine/crates/warp`. The example is
 [games/hello-warp](../../games/hello-warp/README.md), the starter that
 `warp new` writes. [games/neon-trails](../../games/neon-trails/README.md)
-is a LÖVE party game ported to Luau, with one shared view.
+and [games/neon-siege](../../games/neon-siege/README.md) are LÖVE party
+games ported to Luau, with one shared view; Neon Siege is a co-op
+twin-stick shooter with hundreds of shots, bursts and rings at once.
 
 ```sh
 cargo build --release -p warp          # target/release/warp
@@ -104,7 +106,9 @@ A module returns a table of hooks. All of them are optional.
 `input[id]` is the input of the player with that id (see
 [players](#players)); a bot's input is always neutral. It holds `move_x` and `move_y` (left stick or WASD, -1 to 1,
 y forward), `look_x` and `look_y` (radians this tick, mouse or right stick,
-right and up positive), and `held` and `pressed` tables of buttons:
+right and up positive), `aim_x` and `aim_y` (where the right stick points,
+-1 to 1, up positive, 0 on keyboard and mouse: twin-stick aiming), and
+`held` and `pressed` tables of buttons:
 `south`, `east`, `west`, `north`, `left_shoulder`, `right_shoulder`,
 `left_trigger`, `right_trigger`, `select`, `start`, `up`, `down`, `left`,
 `right`, with the aliases `jump` (`south`: Space, gamepad A), `fire`
@@ -115,11 +119,12 @@ keyboard mapping is in `app::input`.
 
 | Table | Functions |
 | --- | --- |
-| `world` | `spawn(shape, opts) -> id`, `set(id, opts)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
+| `world` | `spawn(shape, opts) -> id`, `set(id, opts)`, `place(id, pos, yaw?)`, `warm(shape, look)`, `get(id) -> entity or nil`, `exists(id)`, `remove(id)`, `clear()`, `find(tag) -> ids`, `count()`, `raycast(origin, dir, max?, query?) -> hit or nil`, `overlap(center, radius, query?) -> ids`, `move(id, vel, dt, query?) -> vel, grounded` |
+| `fx` | `burst(pos, {color, emissive, shape, count, speed, life, size, stretch, gravity, flat})`, `ring(pos, {color, emissive, radius, life, width, segments})`, `count() -> particles, rings` |
 | `players` | `list() -> players`, `get(id) -> player or nil`, `count()`, `rumble(id, strength, seconds?)` |
 | `camera` | `set(player, {pos, target, fov})`, `get(player)` |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
-| `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h` |
+| `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
 | `sky` | `set(name)`, `get()` |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, fog_start, fog_end, fog_density})`, `reset()` |
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
@@ -131,7 +136,20 @@ keyboard mapping is in `app::input`.
   `size` (a number or a vector; 1 fills a 1 m box, and the capsule is 2 m
   tall), `color`, `emissive` (0 off, 1 a clear glow in daylight),
   `roughness`, `metal`, `solid` (default true), `visible` and `tag`.
-  `world.set` takes the same options plus `shape`.
+  `world.set` takes the same options plus `shape`. `world.place(id, pos,
+  yaw?)` only moves (and turns) an entity: the cheap call for things that
+  move every tick. `world.warm(shape, {color, emissive, roughness, metal})`
+  prepares a look in `init` without spawning anything (see
+  [Costs](#costs)).
+- **Effects**: `fx.burst(pos, opts)` throws `count` pieces (default 12
+  cubes, 0.12 m) out from `pos`, each at 25 % to 100 % of `speed` (m/s) and
+  living 50 % to 100 % of `life` (s), shrinking as they go; `flat` keeps
+  them in the ground plane, `stretch` (seconds of velocity) draws them as
+  streaks, `gravity` pulls them down. `fx.ring(pos, opts)` grows a ring of
+  `segments` thin cubes in the ground plane out to `radius` over `life`.
+  The engine moves them every tick and removes them when spent; they are
+  entities tagged `fx`, never solid, and are skipped when the world is
+  full. Their look needs warming like any other.
 - **Collision** is boxes. Each entity's box follows its position, size and
   yaw (pitch and roll are ignored). `raycast` hits solid boxes and returns
   `{id, distance, point, normal}`. `overlap` finds every box touching a
@@ -146,6 +164,9 @@ keyboard mapping is in `app::input`.
   error. The listeners are the cameras.
 - **HUD** coordinates are pixels from the top left of the output. HUD
   calls belong in `draw`, because the HUD is cleared before every frame.
+  `hud.project(pos, player?)` is where a world point shows (in that
+  player's view, by default the first), for labels over things; nil when
+  it is behind the camera.
   Script and patch errors show in red at the bottom of the screen until
   they are fixed.
 - **Sky and light**: `sky.set("sunset:haze")` bakes a procedural sky
@@ -232,7 +253,13 @@ moving and removing are cheap. A shape and look (colour, emissive,
 roughness, metal) seen for the first time adds a mesh and a material.
 That rebuilds the renderer on the next frame: free during `init`, a stall
 of a second or so later (longer on the software rasteriser). Reuse looks
-for things that come and go, as the starter's orbs do.
+for things that come and go, as the starter's orbs do, and warm every
+other look in `init` with `world.warm` (Neon Siege warms each enemy's
+normal, spawning and hit looks, every player's colour and the effects).
+
+Luau runs every tick under a step budget (`steps` in game.toml). Neon
+Siege, with 96 enemies, 600 shots, their hits and the bursts, takes about
+half a millisecond a tick.
 
 ## Hot reload
 
@@ -299,7 +326,9 @@ The same commands work in scripts, as `cmd` steps:
   the API (rays, overlaps, typos, seeded numbers, the console), hot reload
   (state kept, `reload()` instead of `init`, a broken edit keeping the last
   version, runtime errors, restart), patch reload and playback, bots in
-  split screen (replaying exactly), `min_players`, the start menu, and a
+  split screen (replaying exactly), `min_players`, the start menu, effects
+  (bursts and rings spent after their life, `world.place`, `aim_x`), Neon
+  Siege with bots clearing waves and replaying exactly, and a
   fake GameNight host on loopback (prepare, ready, start, a seat's
   controller, a live rename, a seat joining mid-game, the room log and
   `finished`);
@@ -318,7 +347,7 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 
 ## Not yet
 
-- Skinned and animated glTF, particles, local lights, physics bodies
+- Skinned and animated glTF, local lights, physics bodies
   (the `physics` crate) and terrain are not exposed to Luau yet.
 - No `require`: modules cannot share code.
 - No online play. The determinism rules are meant to make lockstep or

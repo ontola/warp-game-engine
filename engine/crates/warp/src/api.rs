@@ -1,4 +1,4 @@
-//! The Luau game API: the `world`, `players`, `camera`, `sound`, `hud`,
+//! The Luau game API: the `world`, `fx`, `players`, `camera`, `sound`, `hud`,
 //! `sky`, `light`, `random` and `game` tables every module sees. Documented for
 //! game authors in `starter/types.d.luau` and engine/docs/warp-cli.md.
 //!
@@ -13,7 +13,7 @@
 //! anywhere.
 use crate::sky::SkyChoice;
 use crate::sounds::SoundOut;
-use crate::world::{Entity, Filter, Look, Shape, Spawn, World};
+use crate::world::{Burst, Entity, Filter, Look, RingFx, Shape, Spawn, World};
 use glam::Vec3;
 use render::hud::TextAlign;
 use script::mlua::{self, Lua, Table, Value, Vector};
@@ -223,10 +223,7 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
             "pos" => *pos = vec3(v, "pos")?,
             "rot" => *rot = vec3(v, "rot")?,
             "size" => *sz = size(v, "size")?,
-            "color" => { let c = color(v, "color")?; look.color = [c[0], c[1], c[2]]; }
-            "emissive" => look.emissive = number(v, "emissive")?.max(0.0),
-            "roughness" => look.roughness = number(v, "roughness")?,
-            "metal" => look.metal = number(v, "metal")?,
+            "color" | "emissive" | "roughness" | "metal" => { look_key(look, k, v)?; }
             "solid" => *solid = boolean(v, "solid")?,
             "visible" => *visible = boolean(v, "visible")?,
             "tag" => *tag = v.to_string()?,
@@ -234,6 +231,54 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
         }
     }
     Ok(())
+}
+
+/// A look's keys (color, emissive, roughness, metal); false for any other key.
+fn look_key(look: &mut Look, k: &str, v: &Value) -> mlua::Result<bool> {
+    match k {
+        "color" => { let c = color(v, "color")?; look.color = [c[0], c[1], c[2]]; }
+        "emissive" => look.emissive = number(v, "emissive")?.max(0.0),
+        "roughness" => look.roughness = number(v, "roughness")?,
+        "metal" => look.metal = number(v, "metal")?,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn burst(opts: Option<Table>) -> mlua::Result<Burst> {
+    let mut b = Burst::default();
+    let Some(t) = opts else { return Ok(b) };
+    for (k, v) in options(&t, &["shape", "color", "emissive", "roughness", "metal", "count", "speed", "life", "size", "stretch", "gravity", "flat"], "fx.burst")? {
+        if look_key(&mut b.look, &k, &v)? { continue; }
+        match k.as_str() {
+            "shape" => b.shape = shape(&v.to_string()?)?,
+            "count" => b.count = number(&v, "count")?.clamp(0.0, 256.0) as usize,
+            "speed" => b.speed = number(&v, "speed")?.max(0.0),
+            "life" => b.life = number(&v, "life")?.clamp(0.01, 10.0),
+            "size" => b.size = number(&v, "size")?.max(0.0),
+            "stretch" => b.stretch = number(&v, "stretch")?.max(0.0),
+            "gravity" => b.gravity = number(&v, "gravity")?,
+            "flat" => b.flat = boolean(&v, "flat")?,
+            _ => unreachable!(),
+        }
+    }
+    Ok(b)
+}
+
+fn ring(opts: Option<Table>) -> mlua::Result<RingFx> {
+    let mut r = RingFx::default();
+    let Some(t) = opts else { return Ok(r) };
+    for (k, v) in options(&t, &["color", "emissive", "roughness", "metal", "radius", "life", "width", "segments"], "fx.ring")? {
+        if look_key(&mut r.look, &k, &v)? { continue; }
+        match k.as_str() {
+            "radius" => r.radius = number(&v, "radius")?.max(0.0),
+            "life" => r.life = number(&v, "life")?.clamp(0.01, 10.0),
+            "width" => r.width = number(&v, "width")?.max(0.0),
+            "segments" => r.segments = number(&v, "segments")?.clamp(3.0, 96.0) as usize,
+            _ => unreachable!(),
+        }
+    }
+    Ok(r)
 }
 
 fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
@@ -291,6 +336,17 @@ fn viewer(c: &Core, i: usize) -> usize {
     c.roster.iter().position(|p| p.view.is_some()).unwrap_or(i)
 }
 
+/// Where a world point shows in a view rectangle (pixels), or None behind the camera.
+pub fn project(cam: &Cam, view: [f32; 4], at: Vec3) -> Option<[f32; 2]> {
+    let aspect = (view[2] / view[3].max(1.0)).max(1e-3);
+    let proj = glam::Mat4::perspective_rh(cam.fov.to_radians(), aspect, 0.05, 10_000.0);
+    let look = glam::Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
+    let clip = proj * look * at.extend(1.0);
+    if clip.w <= 1e-4 { return None; }
+    let ndc = clip.truncate() / clip.w;
+    Some([view[0] + (ndc.x * 0.5 + 0.5) * view[2], view[1] + (0.5 - ndc.y * 0.5) * view[3]])
+}
+
 /// A player as Luau sees it.
 pub fn player_table(lua: &Lua, p: &Player) -> mlua::Result<Table> {
     let t = lua.create_table()?;
@@ -334,6 +390,20 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let mut result = Ok(());
             c.world.update(id, |e| result = apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.tag)).map_err(rt)?;
             result
+        })),
+        ("place", f!(core, move |_, (id, pos, yaw): (u32, Value, Option<f32>)| {
+            let p = vec3(&pos, "world.place position")?;
+            let mut c = lock(&core);
+            sim(&c, "world.place")?;
+            c.world.place(id, p, yaw).map_err(rt)
+        })),
+        ("warm", f!(core, move |_, (name, opts): (String, Option<Table>)| {
+            let s = shape(&name)?;
+            let mut look = Look::default();
+            if let Some(t) = opts {
+                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal"], "world.warm")? { look_key(&mut look, &k, &v)?; }
+            }
+            lock(&core).world.warm(&s, &look).map_err(rt)
         })),
         ("get", f!(core, move |lua, id: u32| {
             let c = lock(&core);
@@ -384,6 +454,22 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             c.world.update(id, |e| e.pos += shift).map_err(rt)?;
             Ok((vector(vel), grounded))
         })),
+    ])?;
+
+    table("fx", vec![
+        ("burst", f!(core, move |_, (pos, opts): (Value, Option<Table>)| {
+            let (p, b) = (vec3(&pos, "fx.burst position")?, burst(opts)?);
+            let mut c = lock(&core);
+            sim(&c, "fx.burst")?;
+            c.world.burst(p, &b).map_err(rt)
+        })),
+        ("ring", f!(core, move |_, (pos, opts): (Value, Option<Table>)| {
+            let (p, r) = (vec3(&pos, "fx.ring position")?, ring(opts)?);
+            let mut c = lock(&core);
+            sim(&c, "fx.ring")?;
+            c.world.ring(p, &r).map_err(rt)
+        })),
+        ("count", f!(core, move |_, ()| { let (p, r) = lock(&core).world.fx_count(); Ok((p, r)) })),
     ])?;
 
     table("camera", vec![
@@ -464,6 +550,13 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("size", f!(core, move |_, ()| { let s = lock(&core).screen; Ok((s[0], s[1])) })),
+        ("project", f!(core, move |_, (pos, p): (Value, Option<i64>)| {
+            let at = vec3(&pos, "hud.project position")?;
+            let c = lock(&core);
+            let i = viewer(&c, player(&c, p)?);
+            let v = c.roster[i].view.and_then(|v| c.views.get(v)).copied().unwrap_or([0.0, 0.0, c.screen[0] as f32, c.screen[1] as f32]);
+            Ok(match project(&c.roster[i].cam, v, at) { Some([x, y]) => (Value::Number(x as f64), Value::Number(y as f64)), None => (Value::Nil, Value::Nil) })
+        })),
         ("view", f!(core, move |_, p: Option<i64>| {
             let c = lock(&core);
             let i = player(&c, p)?;
@@ -575,5 +668,11 @@ mod tests {
         let xs: Vec<f64> = (0..100).map(|_| a.float()).collect();
         assert!(xs.iter().all(|x| (0.0..1.0).contains(x)));
         assert_eq!(xs, (0..100).map(|_| b.float()).collect::<Vec<_>>(), "the same seed, the same numbers");
+        let cam = Cam { pos: Vec3::new(0.0, 10.0, 0.01), target: Vec3::ZERO, fov: 60.0 };
+        let mid = project(&cam, [0.0, 0.0, 200.0, 100.0], Vec3::ZERO).unwrap();
+        assert!((mid[0] - 100.0).abs() < 0.01 && (mid[1] - 50.0).abs() < 0.01, "{mid:?}");
+        let right = project(&cam, [0.0, 0.0, 200.0, 100.0], Vec3::X).unwrap();
+        assert!(right[0] > 100.0, "+X is to the right looking down with -Z up the screen");
+        assert!(project(&cam, [0.0, 0.0, 200.0, 100.0], Vec3::new(0.0, 20.0, 0.0)).is_none(), "behind the camera");
     }
 }

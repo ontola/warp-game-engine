@@ -468,6 +468,8 @@ impl LuaGame {
             p.raw_set("move_y", c.mv[1])?;
             p.raw_set("look_x", c.look[0])?;
             p.raw_set("look_y", c.look[1])?;
+            p.raw_set("aim_x", c.aim[0])?;
+            p.raw_set("aim_y", c.aim[1])?;
             let (held, pressed) = (lua.create_table()?, lua.create_table()?);
             for &(n, b) in NAMES { held.raw_set(n, c.held.has(b))?; pressed.raw_set(n, c.pressed.has(b))?; }
             p.raw_set("held", held)?;
@@ -641,7 +643,11 @@ impl Game for LuaGame {
         if self.menu_tick(&controls) { return; }
         let input = match self.input(self.host.lua(), &controls) { Ok(t) => t, Err(e) => { self.say(format!("input: {e}")); return; } };
         self.hook("tick", || Ok(mlua::MultiValue::from_vec(vec![Value::Number(dt as f64), Value::Table(input.clone())])));
-        self.core().tick += 1;
+        {
+            let mut c = self.core();
+            c.world.step_fx(dt);
+            c.tick += 1;
+        }
         self.ears();
         self.send_requests();
     }

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ontola/gamenight/main/catalog/schema.json",
+  "id": "neon-siege-warp",
+  "title": "Neon Siege",
+  "tagline": "One swarm. One team. Keep moving.",
+  "developer": "Joep Meindertsma",
+  "players": {
+    "min": 1,
+    "max": 4,
+    "best": 4
+  },
+  "match_minutes": 15,
+  "price": "free",
+  "tags": [
+    "co-op",
+    "shooter",
+    "arcade",
+    "warp",
+    "luau"
+  ],
+  "integration": {
+    "level": "integrated",
+    "protocol": 1
+  },
+  "links": {}
+}

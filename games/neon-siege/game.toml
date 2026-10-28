@@ -1,0 +1,18 @@
+# Neon Siege, ported from the LÖVE party pack (gamenight-games
+# love-party/games/siege*.lua) to a Luau game on the warp runtime.
+title = "Neon Siege"
+# A separate id from the LÖVE version (neon-siege) while both exist.
+id = "neon-siege-warp"
+tick_rate = 60
+# One shared view over the arena, as on the LÖVE screen.
+split = false
+# Co-op: on your own, a bot flies with you.
+players = 1
+bots = 1
+min_players = 1
+seed = 5
+sky = "night:clear"
+# Enemies, 600 shots, 240 enemy bullets, bursts and rings at once.
+max_entities = 4000
+# The swarm, the shots and their hits run in Luau every tick.
+steps = 2000000
