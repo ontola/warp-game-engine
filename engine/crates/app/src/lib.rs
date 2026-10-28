@@ -49,6 +49,8 @@ impl Frame<'_> {
         *self.renderer = Some(Renderer::new(self.gpu, scene, light));
     }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
+    /// The renderer, for changes such as [`Renderer::reload_shaders`].
+    pub fn renderer_mut(&mut self) -> Option<&mut Renderer> { self.renderer.as_mut() }
     /// Split-screen rectangles for `views` views, as x, y, width, height.
     pub fn rects(&self, views: usize) -> Vec<[f32; 4]> {
         render::split_rects(views, self.size[0], self.size[1]).into_iter().map(|(x, y, w, h)| [x as f32, y as f32, w as f32, h as f32]).collect()
@@ -74,6 +76,11 @@ pub trait Game {
     /// How the window should be: the shell follows changes every frame
     /// (a party host keeps a warm game hidden until its match starts).
     fn screen(&self) -> Screen { Screen::Normal }
+    /// The game wants this frame in memory (a live-control screenshot): the
+    /// shell renders it offscreen as well and passes it to [`Game::captured`].
+    fn wants_capture(&self) -> bool { false }
+    /// The frame asked for by [`Game::wants_capture`], RGBA8, top row first.
+    fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) { let _ = (size, rgba); }
 }
 
 /// What the game wants from its window.
@@ -168,6 +175,33 @@ pub fn capture(game: &mut dyn Game, gpu: &Gpu, size: [u32; 2], ticks: u32, tick_
     Headless::new(gpu, size, tick_hz)?.frame(game)
 }
 
+/// Run a game in real time without a window (live control on a machine
+/// whose screen must stay untouched, test servers): idle controls at
+/// `cfg.tick_hz`, a frame rendered only when the game asks for one
+/// ([`Game::wants_capture`]), at `cfg.size`. Stops after `seconds` (0: never).
+pub fn run_headless(cfg: &Config, game: &mut dyn Game, gpu: &Gpu, seconds: f32) -> Result<(), String> {
+    let step = std::time::Duration::from_secs_f32(1.0 / cfg.tick_hz);
+    let start = Instant::now();
+    let mut headless = None;
+    let mut due = start;
+    loop {
+        if seconds > 0.0 && start.elapsed().as_secs_f32() >= seconds { return Ok(()); }
+        game.tick(&vec![Controls::default(); game.local_players()]);
+        if game.wants_capture() {
+            if headless.is_none() { headless = Some(Headless::new(gpu, cfg.size, cfg.tick_hz)?); }
+            let h = headless.as_mut().unwrap();
+            let rgba = h.frame(game)?;
+            game.captured(h.size, rgba);
+        }
+        due += step;
+        match due.checked_duration_since(Instant::now()) {
+            Some(wait) => std::thread::sleep(wait),
+            // Fell behind (a slow software frame): do not try to catch up.
+            None => due = Instant::now(),
+        }
+    }
+}
+
 struct Live {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -243,13 +277,18 @@ impl Shell<'_> {
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,
                 align: render::hud::TextAlign::Left, width: size[0] as f32 * 0.6 });
         }
-        if std::mem::take(&mut self.screenshot) {
+        let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
+        if to_file || to_game {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
             Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(&live.gpu, renderer, &draw, size, &target.create_view(&Default::default()))?;
-            self.shots += 1;
-            let path = format!("screenshot-{}.png", self.shots);
-            render::write_png(std::path::Path::new(&path), size[0], size[1], &live.gpu.read_rgba8(&target))?;
-            println!("saved {path}");
+            let rgba = live.gpu.read_rgba8(&target);
+            if to_file {
+                self.shots += 1;
+                let path = format!("screenshot-{}.png", self.shots);
+                render::write_png(std::path::Path::new(&path), size[0], size[1], &rgba)?;
+                println!("saved {path}");
+            }
+            if to_game { self.game.captured(size, rgba); }
         }
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
