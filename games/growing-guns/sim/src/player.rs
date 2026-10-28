@@ -18,6 +18,11 @@ pub const SKY_DROP_HEIGHT: f32 = 60.0;
 pub const SKY_DROP_SPEED: f32 = 80.0;
 
 /// What a blow carries besides its damage, for the death it may cause.
+/// Seconds between a ghost's mines (Godot MINE_RELOAD).
+pub const MINE_RELOAD: f64 = 2.5;
+/// How far in front of a ghost its mine lands (Godot MINE_FORWARD_OFFSET).
+pub const MINE_FORWARD_OFFSET: f32 = 0.9;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Blow { pub pos: Vec3, pub dir: Vec3, pub head: bool, pub blast_radius: f32, pub severity: f32, pub env: bool }
 
@@ -41,7 +46,7 @@ impl World {
         }
         let p = &self.players[i];
         if p.ghost {
-            self.ghost_tick(i, input);
+            self.ghost_tick(i, input, fire_edge);
             return;
         }
         if p.downed { self.downed_tick(i, input.look); return; }
@@ -68,7 +73,7 @@ impl World {
 
     /// A dead local/remote player can walk around after choosing a card.
     /// Keep the eliminated body non-targetable and never enter combat input.
-    fn ghost_tick(&mut self, i: usize, input: Input) {
+    fn ghost_tick(&mut self, i: usize, input: Input, fire_edge: bool) {
         let p = &mut self.players[i];
         // Dead bots include the parked co-op enemy pool; do not simulate them.
         if p.bot || p.offer.is_some() || self.phase != Phase::Playing {
@@ -90,6 +95,18 @@ impl World {
         let event_count = self.events.len();
         self.move_player(i, Input { mv: input.mv, look: input.look, jump: input.jump, ..Default::default() });
         self.events.truncate(event_count); // silent ghost footsteps/landings
+        // A ghost plants mines (Godot `_place_mine`, MINE_RELOAD apart).
+        if fire_edge && self.players[i].special_cd <= 0.0 {
+            self.players[i].special_cd = MINE_RELOAD;
+            let p = &self.players[i];
+            let start = p.pos + Vec3::Y * 0.6 + look_dir(p.yaw, 0.0) * MINE_FORWARD_OFFSET;
+            let pos = match crate::shape::raycast(&self.arena.grid, start, Vec3::NEG_Y, 3.0) {
+                Some((t, _, _)) => start + Vec3::NEG_Y * t + Vec3::Y * 0.12,
+                None => start + Vec3::NEG_Y * 0.6,
+            };
+            self.spawn_projectile(crate::ProjectileKind::Mine, pos, Vec3::ZERO, i);
+            self.events.push(crate::Event::MinePlanted { player: i, pos });
+        }
     }
 
     /// Godot `_tick_status_effects`: dodge, slow, poison; runs even while dead.

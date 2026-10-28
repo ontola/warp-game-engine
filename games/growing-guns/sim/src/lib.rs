@@ -352,6 +352,8 @@ pub enum Event {
     Empty { player: usize },
     /// Burned by lava (`fall`: the lava killed, Godot's fall sizzle).
     Lava { player: usize, fall: bool },
+    /// A ghost planted a mine.
+    MinePlanted { player: usize, pos: Vec3 },
 }
 
 /// Presentation identity, independent of damage radius. Older recordings

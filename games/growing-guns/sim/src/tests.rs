@@ -330,7 +330,9 @@ fn eliminated_human_walks_and_looks_after_picking_without_combat_or_resurrection
     let p = &w.players[0];
     assert!(p.pos.distance(start) > 3.0 && p.yaw > 0.5 && p.pitch > 0.1);
     assert!(p.on_floor && p.ghost && !p.alive && p.health == 0 && !p.targetable());
-    assert!(w.bullets.is_empty() && w.projectiles.is_empty() && w.strikes.is_empty());
+    // Held fire planted one mine, and nothing else (no shots, grenades or strikes).
+    assert!(w.bullets.is_empty() && w.strikes.is_empty());
+    assert!(w.projectiles.len() == 1 && w.projectiles[0].kind == ProjectileKind::Mine, "{:?}", w.projectiles.iter().map(|g| g.kind).collect::<Vec<_>>());
     w.step(&[Input { jump: true, ..Default::default() }]);
     assert!(w.players[0].vel.y > 0.0 && w.players[0].pos.y > HALF_HEIGHT);
     w.players[0].pos.y = FELL_OFF_Y - 10.0;
@@ -687,4 +689,33 @@ fn coop_waves_go_on_with_bots_fighting() {
     assert_eq!(w.players[0].cards.len(), 7, "a card after every wave");
     assert!(seen.contains(&(8, Some(Archetype::Demolition))), "wave 8 opens with a bomber");
     assert!(seen.iter().any(|s| s.1 == Some(Archetype::FlatFragger)));
+}
+
+#[test]
+fn ghosts_plant_mines_that_blow_up_the_living() {
+    let mut w = World::new(5, &[false, true]);
+    w.release_cage();
+    for _ in 0..30 { w.step(&[Input::default(), Input::default()]); }
+    w.bots_paused = true;
+    let (ghost, other) = (0, 1);
+    w.players[ghost].ghost = true;
+    w.players[ghost].alive = false;
+    let fire = Input { fire: true, ..Default::default() };
+    w.step(&[fire, Input::default()]);
+    let mines = |w: &World| w.projectiles.iter().filter(|g| g.kind == ProjectileKind::Mine).count();
+    assert_eq!(mines(&w), 1, "a ghost's trigger plants a mine");
+    assert!(w.events.iter().any(|e| matches!(e, Event::MinePlanted { player: 0, .. })));
+    // Held fire does not plant another; a new press within the reload does not either.
+    w.step(&[fire, Input::default()]);
+    w.step(&[Input::default(), Input::default()]);
+    w.step(&[fire, Input::default()]);
+    assert_eq!(mines(&w), 1);
+    // A living player walking onto it sets it off once armed.
+    let at = w.projectiles.iter().find(|g| g.kind == ProjectileKind::Mine).unwrap().pos;
+    for _ in 0..90 { w.step(&[Input::default(), Input::default()]); }
+    let before = w.players[other].health;
+    w.players[other].pos = at + Vec3::Y * 0.9;
+    for _ in 0..5 { w.step(&[Input::default(), Input::default()]); }
+    assert_eq!(mines(&w), 0, "it went off");
+    assert!(w.players[other].health < before || !w.players[other].alive, "and hurt the living player");
 }

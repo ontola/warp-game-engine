@@ -378,6 +378,7 @@ impl Sounds {
                     let g = if local(player) { G::ui(-14.0) } else { G::at(world.players[player].eye(), -14.0, 12.0) };
                     if let Some(h) = self.named(world, "reload", &[("duration", seconds)], g.spl(70.0)) { self.reloads.insert(player, h); }
                 }
+                Event::MinePlanted { pos, .. } => { self.named(world, "mine_plant", &[], G::at(pos, -10.0, 12.0).spl(90.0)); }
                 Event::Empty { player } => { let at = world.players[player].eye(); self.named(world, "empty_chamber", &[], G::at(at, -10.0, 5.0).dry().spl(55.0)); }
                 Event::PickedUp { player, .. } => if local(player) { self.named(world, "pling", &[("pitch_ratio", 1.15)], G::ui(-10.0).spl(70.0)); },
                 _ => {}
