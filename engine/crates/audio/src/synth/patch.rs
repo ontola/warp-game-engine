@@ -77,6 +77,7 @@ impl Patch {
         }).collect::<Vec<_>>();
         Voice {
             bufs: vec![[0.0; BLOCK]; nodes.len()],
+            konst: vec![None; nodes.len()],
             nodes, out: self.out, sr, prev: values.clone(), values,
             gate: true, time: 0.0, quiet: 0, max_length: self.max_length, looping: self.looping,
             has_env: self.nodes.iter().any(|n| matches!(n.unit, Unit::Env { .. } | Unit::Adsr | Unit::Clip { looping: false, .. })),
@@ -92,6 +93,8 @@ enum Src { K(f32), P(usize), N(usize) }
 pub struct Voice {
     nodes: Vec<(Unit, State, Vec<Src>)>,
     bufs: Vec<[f32; BLOCK]>,
+    /// Nodes whose output is constant this block (inputs read them as K).
+    konst: Vec<Option<f32>>,
     out: usize,
     sr: f32,
     values: Vec<f32>,
@@ -130,13 +133,23 @@ impl Voice {
                 ins[j] = match *s {
                     Src::K(v) => Sig::K(v),
                     Src::P(p) => { let (a, b) = (self.prev[p], self.values[p]); if a == b { Sig::K(b) } else { Sig::Ramp(a, b) } }
-                    Src::N(m) => Sig::B(&done[m]),
+                    Src::N(m) => match self.konst[m] { Some(v) => Sig::K(v), None => Sig::B(&done[m]) },
                 };
             }
             let n = srcs.len().min(6);
             // Inputs past the connected ones take defaults.
             let defaults: [Sig; 6] = std::array::from_fn(|j| if j < n { ins[j] } else { Sig::K(unit.default_input(j)) });
-            state.run(&defaults[..unit.inputs().len().max(n)], &mut rest[0], self.sr, self.gate, unit);
+            let ins = &defaults[..unit.inputs().len().max(n)];
+            if state.pure() && ins.iter().all(|s| matches!(s, Sig::K(_))) {
+                // Constant this block: one sample.
+                state.run(ins, &mut rest[0][..1], self.sr, self.gate, unit);
+                let v = rest[0][0];
+                self.konst[k] = Some(v);
+                if k == self.out { rest[0].fill(v); }
+            } else {
+                self.konst[k] = None;
+                state.run(ins, &mut rest[0], self.sr, self.gate, unit);
+            }
         }
         self.prev.copy_from_slice(&self.values);
         out.copy_from_slice(&self.bufs[self.out]);
