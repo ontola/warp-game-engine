@@ -200,7 +200,7 @@ pub struct RoomBuild {
     /// Each pad's pose as last posed.
     pad_pose: Vec<Affine3A>,
     meshes: HashMap<String, usize>,
-    group: String,
+    pub(crate) group: String,
     rng: Pcg,
 }
 
@@ -272,7 +272,7 @@ impl RoomBuild {
         self.dump.materials.len() - 1
     }
 
-    fn image(&mut self, img: image::RgbaImage) -> i64 {
+    pub(crate) fn image(&mut self, img: image::RgbaImage) -> i64 {
         let (w, h) = img.dimensions();
         self.dump.textures.push(TextureDump { file: String::new(), width: w, height: h, kind: "image".into(), screen: None });
         self.images.push(img);
@@ -313,34 +313,34 @@ impl RoomBuild {
         parent * Affine3A::from_translation(pos)
     }
 
-    fn box_(&mut self, size: Vec3, pos: Vec3, material: &Mat) -> usize {
+    pub(crate) fn box_(&mut self, size: Vec3, pos: Vec3, material: &Mat) -> usize {
         self.put(Shape::Box(size), material, Affine3A::from_translation(pos), true)
     }
 
-    fn box_flat(&mut self, size: Vec3, pos: Vec3, material: &Mat) -> usize {
+    pub(crate) fn box_flat(&mut self, size: Vec3, pos: Vec3, material: &Mat) -> usize {
         self.put(Shape::Box(size), material, Affine3A::from_translation(pos), false)
     }
 
-    fn cylinder(&mut self, radius: f32, height: f32, pos: Vec3, material: &Mat) -> usize {
+    pub(crate) fn cylinder(&mut self, radius: f32, height: f32, pos: Vec3, material: &Mat) -> usize {
         self.put(cyl(radius, height), material, Affine3A::from_translation(pos), true)
     }
 
-    fn sphere(&mut self, radius: f32, pos: Vec3, material: &Mat) -> usize {
+    pub(crate) fn sphere(&mut self, radius: f32, pos: Vec3, material: &Mat) -> usize {
         self.put(sph(radius), material, Affine3A::from_translation(pos), true)
     }
 
-    fn quad(&mut self, size: Vec2, pos: Vec3, material: &Mat) -> usize {
+    pub(crate) fn quad(&mut self, size: Vec2, pos: Vec3, material: &Mat) -> usize {
         self.put(Shape::Quad(size), material, Affine3A::from_translation(pos), false)
     }
 
-    fn rotate(&mut self, instance: usize, basis: Mat3A) {
+    pub(crate) fn rotate(&mut self, instance: usize, basis: Mat3A) {
         let t = &mut self.dump.instances[instance].transform;
         let x = glam::Mat4::from_cols_array(t);
         let pos = x.w_axis.truncate();
         *t = glam::Mat4::from(xf(basis, pos)).to_cols_array();
     }
 
-    fn material_of(&self, instance: usize) -> usize {
+    pub(crate) fn material_of(&self, instance: usize) -> usize {
         self.dump.instances[instance].materials[0] as usize
     }
 
