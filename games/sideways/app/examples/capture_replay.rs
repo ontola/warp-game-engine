@@ -69,6 +69,7 @@ fn captured_controls(capture:&Value)->Result<CapturedControls,String> {
         exhaust_enabled:boolean(field("exhaust"))?,
         wheel_particles_enabled:boolean(field("wheel_particles"))?,
         bloom_enabled:false,bloom_strength:0.0,
+        bloom_rounds:1,bloom_threshold:DebugRenderOptions::default().bloom_threshold,bloom_screen:false,
         meadow_distance_scale:scalar(field("grass_distance_scale"))?,
         meadow_lod_pixels:scalar(field("grass_lod_pixels"))?,
         meadow_size_scale:scalar(field("grass_size_scale"))?,
@@ -811,6 +812,7 @@ mod replay_tests {
         assert_eq!(c.trees,Some(tree_tuning::Settings{size_scale:1.5,density:0.45,color_multiplier:[1.0,1.15,0.9]}));
         assert_eq!(c.options,DebugRenderOptions{meadow_enabled:true,headlights_enabled:false,
             transparency_enabled:false,exhaust_enabled:true,wheel_particles_enabled:false,bloom_enabled:true,bloom_strength:0.04,
+            bloom_rounds:1,bloom_threshold:DebugRenderOptions::default().bloom_threshold,bloom_screen:false,
             meadow_distance_scale:0.75,meadow_lod_pixels:4.0,meadow_size_scale:2.0,meadow_density:0.55,
             meadow_color_multiplier:[1.3,0.9,1.3]});
         let off=replay_options(c.options,true);
