@@ -14,6 +14,9 @@ The crate is `engine/crates/warp`. The example is
 [games/ricochet-club](../../games/ricochet-club/README.md) are LÖVE party
 games ported to Luau, with one shared view; Neon Siege is a co-op
 twin-stick shooter with hundreds of shots, bursts and rings at once.
+[games/bumper-royale](../../games/bumper-royale/README.md) (pucks on a
+shrinking ring) and [games/paint-rush](../../games/paint-rush/README.md)
+(592 floor tiles repainted live) are two more.
 
 ```sh
 cargo build --release -p warp          # target/release/warp
