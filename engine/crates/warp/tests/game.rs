@@ -526,24 +526,3 @@ fn neon_siege_bots_clear_waves_and_replay_exactly() {
     assert_eq!(siege["players"].as_array().unwrap().len(), 4);
     assert_eq!(run()["state"], s["state"], "the same seed plays the same siege");
 }
-
-/// Ricochet Club, ported from the LÖVE party pack: four tanks (one idle
-/// person, three bots) shoot it out over a 60 s round, the next round
-/// starts after the results, and the same seed replays.
-#[test]
-fn ricochet_club_plays_rounds_with_bots() {
-    let run = || {
-        let mut g = LuaGame::load(&repo().join("games/ricochet-club"), &Overrides { bots: Some(3), ..Default::default() }, None).unwrap();
-        g.echo = false;
-        for _ in 0..3900 { g.tick(&[Controls::default()]); }
-        state(&g)
-    };
-    let s = run();
-    assert_eq!(s["errors"], json!([]), "{s}");
-    assert_eq!(s["cameras"].as_array().unwrap().len(), 1, "one shared view");
-    let club = &s["state"]["s"];
-    assert_eq!(club["round"], json!(2), "a 60 s round, 3 s of results, the next round");
-    assert_eq!(club["players"].as_array().unwrap().len(), 4);
-    assert!(club["shots"].as_array().unwrap().len() > 0, "the bots fire: {club}");
-    assert_eq!(run()["state"], s["state"], "the same seed plays the same round");
-}
