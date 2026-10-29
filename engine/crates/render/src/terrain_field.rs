@@ -168,9 +168,13 @@ fn boulders(x: f32, z: f32, density: f32, cut: f32, seed: u32) -> (f32, f32) {
             if w <= 0.0 { continue; }
             let dx = (x - ox) * (0.75 + 0.5 * (h2 & 255) as f32 / 255.0);
             let dz = (z - oz) * (0.75 + 0.5 * ((h2 >> 8) & 255) as f32 / 255.0);
-            let s = (dx * dx + dz * dz) / (r * r);
+            // Skewed, half-buried and rounded: a low cap with a soft foot,
+            // not a bell with walls the texture smears down.
+            let skew = ((h2 >> 24) & 255) as f32 / 255.0 - 0.5;
+            let d2 = dx * dx + dz * dz;
+            let s = d2 / (r * r) * (1.0 + 0.6 * skew * dx * dz / (d2 + 1e-6));
             if s < 1.0 {
-                let b = r * (0.4 + 0.3 * ((h2 >> 16) & 255) as f32 / 255.0) * (1.0 - s * s) * w;
+                let b = r * (0.22 + 0.2 * ((h2 >> 16) & 255) as f32 / 255.0) * (1.0 - s).sqrt() * smooth(0.0, 0.25, 1.0 - s) * w;
                 best = best.max(b);
                 cover = cover.max(smooth(0.0, 0.3, 1.0 - s) * w);
             }
@@ -198,13 +202,18 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let river_n = noised(p * 0.7 + warp * 0.3 + Vec2::new(9.1, 4.4), sd(4));
     let river_on = smooth(-0.15, 0.15, 2.2 * st.rivers - 1.1 + noised(p * 0.35 + Vec2::new(2.7, 5.1), sd(20)).x)
         .max(smooth(0.3, 0.7, alpine));
-    let river = mix(1000.0, line(river_n, 0.7), river_on);
+    let rl = line(river_n, 0.7);
+    let river = mix(1000.0, rl, river_on);
     let rn = Vec2::new(river_n.y, river_n.z) / ((river_n.y * river_n.y + river_n.z * river_n.z).sqrt() + 1e-6) * sign(river_n.x >= 0.0);
-    let rs = (river / 1400.0).clamp(0.0, 1.0);
+    // Distance from the trough with a rounded centre: a crease there would
+    // kink the slope, and stream masks read the slope.
+    let ra = (rl * rl + 2500.0).sqrt();
+    let rs = (mix(1000.0, ra, river_on) / 1400.0).clamp(0.0, 1.0);
+    let drs = rn * (river_on * rl / ra / 1400.0);
     // High peaks stand back from the troughs: the relief grows away from them.
     let pt = ((rs - 0.3) / 0.7).clamp(0.0, 1.0);
     let amp = 100.0 * st.hills + 640.0 * mountains - 340.0 * alpine + 1100.0 * alpine * pt * pt * (3.0 - 2.0 * pt);
-    let damp = rn * (alpine * 1100.0 * 6.0 * pt * (1.0 - pt) / (0.7 * 1400.0));
+    let damp = drs * (alpine * 1100.0 * 6.0 * pt * (1.0 - pt) / 0.7);
     let mut h = 0.0f32;
     let mut low = 0.0f32;
     let mut low1 = 0.0f32;
@@ -244,7 +253,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let fu = ((0.55 - fold) / 0.45).clamp(0.0, 1.0);
     let uplift = alpine * (300.0 + 700.0 * rs * rs * (3.0 - 2.0 * rs) + 800.0 * fu * fu * (3.0 - 2.0 * fu));
     let duplift = Vec2::new(big.y, big.z) * (-alpine * 800.0 * 6.0 * fu * (1.0 - fu) / 0.45 * big.x / fold * (0.5 / BASE))
-        + rn * (alpine * 700.0 * 6.0 * rs * (1.0 - rs) / 1400.0);
+        + drs * (alpine * 700.0 * 6.0 * rs * (1.0 - rs));
     let mut y = h * amp + uplift;
     let mut g = slope * (amp / BASE) + damp * h + duplift;
     let g0 = g;
@@ -266,7 +275,10 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
 
     // High troughs keep only the broadest shapes, so their floors run level.
     let gl = mix2(low_slope, low_slope1, alpine) * (amp / BASE);
-    let floor_y = (mix(low, low1, alpine) - 0.1) * amp + uplift - river.min(600.0) * (gl.x * rn.x + gl.y * rn.y);
+    let floor_y = (mix(low, low1, alpine) - 0.1) * amp + uplift
+        // rn flips sign on the centre line, so extrapolate by the true
+        // distance there: a faded river must not step the floor.
+        - river_on * rl.min(600.0) * (gl.x * rn.x + gl.y * rn.y);
     let relief = (y - floor_y).max(0.0);
     // Glaciers carved the high valleys into troughs: a broad flat floor,
     // walls that rise steeply and ease into shoulders (Lauterbrunnen).
@@ -280,7 +292,9 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     y = floor_y + (y - floor_y) * rv;
     g = g * rv + rn * (relief * drv);
     let meander = noised(p * 9.0 + warp, sd(13)).x * 0.7 * floor_w;
-    let ch = (river.min(600.0) * sign(river_n.x >= 0.0) - meander).abs();
+    // Across the river by the true signed distance, so the channel has no
+    // seam where the sign flips on a faded river.
+    let ch = (rl.min(600.0) * sign(river_n.x >= 0.0) - meander).abs() + 1000.0 * (1.0 - river_on);
     let ch_w = 3.5 + 0.02 * relief;
     let rb = smooth(0.0, ch_w, ch);
     let channel = fade(1.6, cut);
@@ -309,23 +323,23 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let rf = fade(2.0 * ch_w, cut);
     let near_wet = ((ch - ch_w).max(0.0) + 1000.0 * (1.0 - rf)).min(stream + 1000.0 * (1.0 - notch));
 
-    let tor_n = noised(p * 30.0 + warp * 2.0, sd(9));
+    let tor_n = noised(p * 55.0 + warp * 2.0, sd(9));
     let tor_zone = smooth(0.65 - st.rocks, 0.9 - st.rocks, noised(p * 4.0 + Vec2::new(6.3, 2.2), sd(17)).x) * smooth(5.0, 40.0, relief);
-    let tor_fade = fade(20.0, cut);
-    let tor_h = (8.0 + 14.0 * mountains) * bedrock * tor_zone * smooth(30.0, 80.0, near_water) * tor_fade;
-    let tt = ((tor_n.x - 0.22) / 0.08).clamp(0.0, 1.0);
+    let tor_fade = fade(12.0, cut);
+    let tor_h = (5.0 + 9.0 * mountains) * bedrock * tor_zone * smooth(30.0, 80.0, near_water) * tor_fade;
+    let tt = ((tor_n.x - 0.15) / 0.3).clamp(0.0, 1.0);
     let tor = tt * tt * (3.0 - 2.0 * tt);
     let mut th = tor_h * (tor + 0.5 * (tor_n.x - 0.3).max(0.0));
     if th > 0.0 {
         let s = th / 2.5;
         let fl = s.floor();
         let tb = ((s - fl - 0.5) / 0.5).clamp(0.0, 1.0);
-        th = 2.5 * (fl + 0.25 * (s - fl) + 0.75 * tb * tb * (3.0 - 2.0 * tb)) * fade(5.0, cut) + th * (1.0 - fade(5.0, cut));
+        th = 2.5 * (fl + 0.5 * (s - fl) + 0.5 * tb * tb * (3.0 - 2.0 * tb)) * fade(5.0, cut) + th * (1.0 - fade(5.0, cut));
         let joint = line(noised(p * 110.0, sd(14)), 110.0).min(line(noised(p * 70.0 + Vec2::new(4.1, 0.7), sd(15)), 70.0));
         th *= 1.0 - 0.6 * (1.0 - smooth(0.3, 1.6, joint)) * fade(3.0, cut);
     }
     y += th;
-    g += Vec2::new(tor_n.y, tor_n.z) * (tor_h * 6.0 * tt * (1.0 - tt) / 0.08 * (30.0 / BASE));
+    g += Vec2::new(tor_n.y, tor_n.z) * (tor_h * 6.0 * tt * (1.0 - tt) / 0.3 * (55.0 / BASE));
     let steep = (g.x * g.x + g.y * g.y).sqrt();
     let up = 1.0 / (1.0 + steep * steep).sqrt();
 
@@ -334,7 +348,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let scree = smooth(0.85, 0.72, up) * (1.0 - smooth(0.65, 0.55, up)) * (0.4 + 0.6 * bedrock) * mountains
         + 0.9 * smooth(2.0, 0.6, stream) * notch + 0.8 * rf * smooth(ch_w + 2.5, ch_w, ch) * smooth(-0.1, 0.2, noised(p * 40.0, sd(16)).x);
 
-    let tor_foot = smooth(0.12, 0.2, tor_n.x) * (1.0 - tor) * bedrock;
+    let tor_foot = smooth(0.05, 0.15, tor_n.x) * (1.0 - tor) * bedrock;
     let boulder_density = (0.02 + 0.45 * tor_foot + 0.2 * crag + 0.3 * smooth(5.0, 1.0, stream) + 0.25 * smooth(ch_w + 3.0, ch_w, ch)).clamp(0.0, 0.6);
     let (bh, bc) = boulders(x, z, (boulder_density * st.boulders).min(0.8), cut, seed);
     y += bh;
@@ -369,7 +383,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
         let layer = y / 5.5 + 2.0 * noised(p * 5.0, sd(5)).x + 0.8 * noised(p * 24.0, sd(5)).x;
         let t = layer - layer.floor();
         let ledge = smooth(0.0, 0.18, t) * (1.0 - smooth(0.45, 1.0, t)) - 0.35;
-        let push = 1.8 * smooth(0.8, 0.6, up) * ledge * fade(5.5, cut) * smooth(-0.3, 0.3, noised(p * 8.0, sd(24)).x);
+        let push = 1.8 * smooth(0.8, 0.6, up) * ledge * fade(5.5, cut) * smooth(-0.3, 0.3, noised(p * 8.0, sd(24)).x) * (1.0 - bc);
         pos.x -= g.x / steep * push;
         pos.z -= g.y / steep * push;
     }
