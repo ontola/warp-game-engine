@@ -1,4 +1,4 @@
-//! The system clipboard (text only) through `arboard`, with an in-memory
+//! The system clipboard (text, and images for screenshots) through `arboard`, with an in-memory
 //! fallback: where there is no clipboard (headless, no display server) or
 //! after [`memory_only`] (scripted playtests, tests), copy and paste stay
 //! inside the process, so a script never touches the user's clipboard.
@@ -32,6 +32,13 @@ pub fn set(text: &str) -> bool {
         s.memory = text.to_string();
         system(s).is_some_and(|c| c.set_text(text.to_string()).map_err(|e| eprintln!("clipboard: {e}")).is_ok())
     })
+}
+
+/// Put an RGBA8 image (top row first) on the system clipboard. False when
+/// there is none or the clipboard is in-process only.
+pub fn set_image(width: u32, height: u32, rgba: &[u8]) -> bool {
+    let image = arboard::ImageData { width: width as usize, height: height as usize, bytes: rgba.into() };
+    with(|s| system(s).is_some_and(|c| c.set_image(image).map_err(|e| eprintln!("clipboard: {e}")).is_ok()))
 }
 
 /// The clipboard's text (the system's when it has text, else the last

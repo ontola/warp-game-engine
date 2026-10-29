@@ -1559,7 +1559,7 @@ impl Renderer {
             ..Default::default()
         });
         startup.mark("sky_sh_integration_upload");
-        let query = if gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+        let query = if gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
             let n = TIMESTAMP_CAPACITY;
             let qs = gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("timestamps"), ty: wgpu::QueryType::Timestamp, count: n });
             let resolve = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 8 * n as u64, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });

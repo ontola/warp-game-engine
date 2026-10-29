@@ -4,7 +4,8 @@
 //! benchmarks. A game implements [`Game`]; the shell owns the GPU.
 //!
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
-//! released), F11 toggles fullscreen, F12 saves `screenshot-N.png`. F1 to
+//! released), F11 toggles fullscreen, F12 saves a feedback screenshot (PNG, JSON
+//! metadata and the clipboard; see [`screenshot`]). F1 to
 //! F10 go to [`Game::function_key`] first (a debug overlay on F3).
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
@@ -21,6 +22,7 @@ pub mod sound;
 pub mod tween;
 pub mod ui;
 pub mod manners;
+pub mod screenshot;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
 pub use text::{FieldEvent, TextEvent, TextField};
@@ -192,6 +194,18 @@ impl Output {
     }
 }
 
+/// A screenshot's line along the bottom of the screen.
+fn toast(hud: &mut HudDrawList, line: &str) {
+    let [w, h] = hud.size.map(|v| v as f32);
+    let s = (h / 1080.0).clamp(0.6, 2.0);
+    let (bw, bh) = ((1000.0 * s).min(w - 24.0).max(1.0), 48.0 * s);
+    let (x, y) = ((w - bw) * 0.5, (h - 90.0 * s).max(0.0));
+    let clip = [0.0, 0.0, w, h];
+    hud.rect([x, y, bw, bh], [0.02, 0.03, 0.045, 0.92], clip);
+    hud.text.push(render::hud::TextRun { id: u64::MAX - 2, text: line.into(), position: [x + 12.0 * s, y + 11.0 * s], bounds: clip,
+        font_size: 22.0 * s, color: [255, 255, 255, 255], font: render::hud::FontFace::Body, align: render::hud::TextAlign::Center, width: bw - 24.0 * s });
+}
+
 fn offscreen(gpu: &Gpu, size: [u32; 2], format: wgpu::TextureFormat) -> wgpu::Texture {
     gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("capture"), size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
@@ -288,7 +302,10 @@ struct Shell<'g> {
     started: Instant,
     frames: u64,
     screenshot: bool,
-    shots: u32,
+    /// The last screenshot's line and until when it shows.
+    toast: Option<(String, Instant)>,
+    /// Smoothed frames per second, for screenshot metadata.
+    fps: f32,
     error: Option<String>,
     modifiers: ModifiersState,
     /// IME composition in progress: key text is the IME's until it commits.
@@ -300,7 +317,7 @@ struct Shell<'g> {
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let devices = Devices::new(cfg.keyboard);
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, shots: 0, error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -331,6 +348,7 @@ impl Shell<'_> {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
+        if dt > 0.0 { self.fps += (1.0 / dt - self.fps) * 0.05; }
         self.devices.poll();
         self.game.tuning(&mut self.devices.tuning);
         self.sync_capture();
@@ -368,13 +386,19 @@ impl Shell<'_> {
             Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(&live.gpu, renderer, &draw, size, split, &target.create_view(&Default::default()))?;
             let rgba = live.gpu.read_rgba8(&target);
             if to_file {
-                self.shots += 1;
-                let path = format!("screenshot-{}.png", self.shots);
-                render::write_png(std::path::Path::new(&path), size[0], size[1], &rgba)?;
-                println!("saved {path}");
+                let state = self.game.state().map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)));
+                let metadata = serde_json::json!({
+                    "schema": 1, "game": self.cfg.title, "title": self.game.title(), "state": state,
+                    "cameras": draw.cameras.iter().map(|c| serde_json::json!({"position": c.pos.to_array(), "target": c.target.to_array(), "fov_y_deg": c.fov_y.to_degrees(), "near": c.near})).collect::<Vec<_>>(),
+                    "render": {"adapter": live.gpu.info.name, "backend": format!("{:?}", live.gpu.info.backend), "driver": live.gpu.info.driver, "size": size, "fps": self.fps, "frame": self.frames, "uptime_s": self.started.elapsed().as_secs_f32()},
+                });
+                let line = screenshot::save(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }).unwrap_or_else(|e| { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") });
+                self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
             }
             if to_game { self.game.captured(size, rgba); }
         }
+        if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() > *until) { self.toast = None; }
+        if let Some((line, _)) = &self.toast { toast(&mut draw.hud, line); }
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
                 live.out.draw(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()))?;
