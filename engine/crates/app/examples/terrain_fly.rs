@@ -5,7 +5,7 @@
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --seed 3
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
-//!   ... --no-trees --grass
+//!   ... --no-trees --grass --recipe N   (N nearest trees as recipe spruces, default 8)
 //!   cargo run --release -p app --example terrain_fly -- --bench 120 [--size 2560x1440]   # headless GPU pass times
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
@@ -22,7 +22,9 @@ use app::{Buttons, Controls, Draw, Frame, Game, Pointer};
 use glam::{Affine3A, Quat, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, SimplificationPolicy};
 use render::debug_ui::{DebugAction, DebugControl, DebugMenu, DebugValue};
+use render::plant_recipe::{self, BuildOptions, CrownProfile, FoliageKind, WoodyRecipe};
 use render::scene::{GeometryCategory, ALPHA_TEST, TWO_SIDED};
+use render::vegetation_asset::{AttachLimits, CookedPlant, PlantInstance, SceneVegetation};
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, SolarState};
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 use render::procedural_terrain::{self, ProceduralTerrain, Settings, Stats, TerrainView};
@@ -42,6 +44,10 @@ const STYLES: [&str; 3] = ["default", "lowland", "alpine"];
 const GRASS_RECENTRE: f32 = 120.0;
 /// Without grass in view, trees follow the camera in bigger steps.
 const TREES_RECENTRE: f32 = 300.0;
+/// Recipe spruces only matter up close: low over the ground (below
+/// `RECIPE_CEILING`) the scene follows every `RECIPE_RECENTRE` metres.
+const RECIPE_RECENTRE: f32 = 60.0;
+const RECIPE_CEILING: f32 = 80.0;
 /// Above this height over the ground the grass is too small to matter and
 /// is not followed.
 const GRASS_CEILING: f32 = 120.0;
@@ -61,6 +67,9 @@ struct World {
     tree_density: f32,
     /// Trees are placed this far around the camera (metres).
     tree_radius: f32,
+    /// The nearest this many trees are recipe spruces (the vegetation
+    /// push's approved r4 spruce); the rest are Sideways' fir meshes.
+    recipe_trees: u32,
 }
 
 // Debug menu ids (app::debug::GAME_IDS and up).
@@ -71,6 +80,7 @@ const TREE_DENSITY: u32 = 1003;
 const TREE_RADIUS: u32 = 1004;
 const CELL_PX: u32 = 1005;
 const ERROR_PX: u32 = 1006;
+const RECIPE_TREES: u32 = 1007;
 
 struct Fly {
     seed: u32,
@@ -136,7 +146,9 @@ impl Fly {
     fn world_stale(&self) -> bool {
         let want = World { grass: self.grass_wanted(), ..self.world };
         if want != self.built_world { return true; }
-        let reach = if want.grass { GRASS_RECENTRE } else if want.trees { TREES_RECENTRE } else { return false };
+        let low = self.pos.y - self.ground(self.pos.x, self.pos.z) < RECIPE_CEILING;
+        let reach = if want.trees && want.recipe_trees > 0 && low { RECIPE_RECENTRE }
+            else if want.grass { GRASS_RECENTRE } else if want.trees { TREES_RECENTRE } else { return false };
         self.world_at.is_none_or(|c| (c - self.pos).with_y(0.0).length() > reach)
     }
 
@@ -252,6 +264,7 @@ impl Game for Fly {
         (menu, vec![
             toggle(TREES, "Trees", w.trees, "Fir forest around the camera (Sideways' fir meshes)."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
+            number(RECIPE_TREES, "Recipe spruces near camera", f64::from(w.recipe_trees), (0.0, 32.0, 1.0, 0), "", "The nearest trees use the new recipe spruce (shared detailed sprays, branch wind). Each is millions of triangles."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
             toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (120 m radius) below 120 m above ground. Expensive. The Grass menu only hides it."),
             number(CELL_PX, "Terrain cell size", f64::from(t.cell_pixels), (4.0, 96.0, 4.0, 0), "px", "Largest projected terrain cell before a patch splits."),
@@ -265,6 +278,7 @@ impl Game for Fly {
             DebugAction::SetToggle { id: TREES, value } => self.world.trees = value,
             DebugAction::SetToggle { id: GRASS, value } => self.world.grass = value,
             DebugAction::SetNumber { id: TREE_DENSITY, value } => self.world.tree_density = (value / 100.0).clamp(0.05, 1.0) as f32,
+            DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 32.0) as u32,
             DebugAction::SetNumber { id: TREE_RADIUS, value } => self.world.tree_radius = value.clamp(200.0, 3000.0) as f32,
             DebugAction::SetNumber { id: CELL_PX, value } => self.terrain_settings.cell_pixels = value.clamp(4.0, 96.0) as f32,
             DebugAction::SetNumber { id: ERROR_PX, value } => self.terrain_settings.error_pixels = value.clamp(0.25, 12.0) as f32,
@@ -279,7 +293,7 @@ impl Game for Fly {
         let g = terrain_field::eval(self.pos.x, self.pos.z, 0.0, self.seed, &self.style());
         Some(serde_json::json!({
             "style": STYLES[self.style], "seed": self.seed, "pos": self.pos.to_array(),
-            "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius,
+            "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "recipe_trees": self.world.recipe_trees,
             "yaw_deg": self.yaw.to_degrees(), "pitch_deg": self.pitch.to_degrees(),
             "above_ground_m": self.pos.y - g.pos.y, "speed": self.speed, "ground_hug": self.hug, "fps": self.fps,
             "terrain": {"patches": self.stats.patches, "overflow": self.stats.overflow, "finest_level": self.stats.finest_level, "lod_scale": self.stats.lod_scale},
@@ -316,7 +330,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0 } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 8 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -344,10 +358,14 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
         let crown = scene.add_texture(&assets.join("trees/authored_pine_albedo.png"))?;
         scene.add_material(Material { tint: [0.62, 0.66, 0.55], ..m(crown, ALPHA_TEST | TWO_SIDED) });
         let meshes: Vec<usize> = tree_meshes()?.iter().map(|cm| scene.add_mesh(cm)).collect();
-        for (pos, yaw, scale, variant) in forest(seed, &style, centre, world) {
+        let mut trees = forest(seed, &style, centre, world);
+        trees.sort_by(|a, b| (a.0 - centre).length_squared().total_cmp(&(b.0 - centre).length_squared()));
+        let near = (world.recipe_trees as usize).min(trees.len());
+        for &(pos, yaw, scale, variant) in &trees[near..] {
             scene.add_classified_instance(meshes[variant], Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(yaw), pos), GeometryCategory::Trees);
             scene.mark_foliage();
         }
+        recipe_spruces(&mut scene, &trees[..near])?;
     }
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     let mut light = Lighting::default();
@@ -360,6 +378,34 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     // still camera with TAA, ~300 without). Sideways plays without TAA too.
     light.taa = 0.0;
     Ok((scene, light, pool, (world.grass || world.trees).then_some(centre)))
+}
+
+/// Sideways' approved r4 spruce recipe (games/sideways plant_species.rs);
+/// copied here because the engine must not depend on Sideways.
+const SPRUCE: WoodyRecipe = WoodyRecipe {
+    id: 0x5350_5255_4345, height: 16.0, trunk_radius: 0.22, crown_base: 0.18, crown_radius: 2.9, crown_profile: CrownProfile::Conical,
+    tiers: 10, branches_per_tier: 3, branch_rise: 0.04, branch_radius: 0.065, stiffness: 0.72, foliage: FoliageKind::Needle,
+    sprays_per_branch: 84, spray_scale: 1.15, spray_axial_bias: 0.40, foliage_colour: [0.065, 0.135, 0.045], wood_colour: [0.16, 0.105, 0.062],
+    protected_trunk_height: 5.5,
+};
+
+/// Recipe spruces at these spots: three seeds, cooked once and shared.
+fn recipe_spruces(scene: &mut Scene, spots: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
+    if spots.is_empty() { return Ok(()); }
+    static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
+    let cooked = COOKED.get_or_init(|| (0..3u64).map(|seed| {
+        let assembly = plant_recipe::build(&SPRUCE, BuildOptions::new(seed + 1), plant_recipe::recipe_limits())?;
+        CookedPlant::cook_source(&assembly)
+    }).collect()).as_ref().map_err(Clone::clone)?;
+    let limits = AttachLimits { max_poses: 64 * spots.len().max(4), max_primitive_instances: render::part_wind::MAX_ATTACHMENTS, ..Default::default() };
+    let mut vegetation = SceneVegetation::new(scene, limits)?;
+    for (i, &(pos, yaw, scale, variant)) in spots.iter().enumerate() {
+        // The firs are ~15 m; the recipe is 16 m, scaled like them.
+        let root = glam::Mat4::from_scale_rotation_translation(Vec3::splat(scale.y), Quat::from_rotation_y(yaw), pos);
+        vegetation.append(&cooked[variant], PlantInstance { id: i as u64 + 1, generation: 0, root, category: GeometryCategory::Trees })?;
+    }
+    vegetation.finish_source()?;
+    Ok(())
 }
 
 /// Sideways' three firs as cluster meshes, built once: wood uses
@@ -440,7 +486,8 @@ fn main() -> Result<(), String> {
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine")).transpose()?.unwrap_or(0);
-    let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"), ..World::default() };
+    let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
+        recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(World::default().recipe_trees), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
     if let Some(path) = arg("--from") {
