@@ -70,6 +70,9 @@ impl Frame<'_> {
         let ms = t.elapsed().as_millis();
         if ms >= 100 { println!("{} renderer: scene built in {ms} ms", manners::stamp()); }
     }
+    /// Use a renderer the game built itself, e.g. on another thread with a
+    /// clone of [`Frame::gpu`], so a scene swap does not stall the frame.
+    pub fn set_renderer(&mut self, renderer: Renderer) { *self.renderer = Some(renderer); }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
     /// The renderer, for changes such as [`Renderer::reload_shaders`].
     pub fn renderer_mut(&mut self) -> Option<&mut Renderer> { self.renderer.as_mut() }

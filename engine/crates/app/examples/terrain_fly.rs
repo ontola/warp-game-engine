@@ -63,6 +63,10 @@ const GRASS_CEILING: f32 = 120.0;
 const GRASS_RADIUS: f32 = 120.0;
 
 type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
+/// A scene from the builder thread, with its renderer when the thread had
+/// the GPU (every rebuild after the first): the swap then costs nothing on
+/// the frame instead of ~300 ms of uploads.
+type Ready = Result<(Option<(render::Renderer, ProceduralTerrain)>, Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
 
 /// What goes into a scene besides the terrain; changing it rebuilds.
 #[derive(Clone, Copy, PartialEq)]
@@ -101,7 +105,10 @@ struct Fly {
     hug: Option<f32>,
     wheel: f32,
     /// A scene being built on another thread (style, seed or grass moved).
-    building: Option<Receiver<Built>>,
+    building: Option<Receiver<Ready>>,
+    /// The GPU, cloned from the first frame, for building renderers off the
+    /// frame thread.
+    gpu: Option<render::Gpu>,
     /// Another rebuild was asked for while one was building.
     stale: bool,
     world: World,
@@ -121,7 +128,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, speed: 40.0, hug: None, wheel: 0.0,
-            building: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0 };
+            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0 };
         fly.pos = Vec3::new(0.0, fly.ground(0.0, 0.0) + 60.0, 0.0);
         fly.prev = fly.pos;
         fly.rebuild()?;
@@ -139,7 +146,14 @@ impl Fly {
         let world = World { grass: self.grass_wanted(), ..self.world };
         self.built_world = world;
         let (tx, rx) = channel();
-        std::thread::spawn(move || { let _ = tx.send(build_scene(seed, style, pos, world)); });
+        let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
+        std::thread::spawn(move || {
+            let ready = build_scene(seed, style, pos, world).map(|(scene, light, pool, at)| {
+                let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool, settings));
+                (built, scene, light, pool, at)
+            });
+            let _ = tx.send(ready);
+        });
         self.building = Some(rx);
         Ok(())
     }
@@ -167,6 +181,8 @@ impl Fly {
         self.pos = Vec3::new(x, self.ground(x, z) + 120.0, z);
         self.prev = self.pos;
     }
+
+    fn camera(&self, pos: Vec3) -> Camera { Camera { pos, target: pos + self.forward(), fov_y: 65f32.to_radians(), near: 0.05 } }
 
     fn forward(&self) -> Vec3 {
         Vec3::new(-self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), -self.yaw.cos() * self.pitch.cos())
@@ -218,6 +234,7 @@ impl Game for Fly {
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
+        if self.gpu.is_none() { self.gpu = Some(frame.gpu.clone()); }
         // The first scene is waited for; later ones swap in when ready.
         let ready = match &self.building {
             Some(rx) if self.terrain.is_none() => Some(rx.recv().map_err(|e| e.to_string())),
@@ -226,16 +243,18 @@ impl Game for Fly {
         };
         if let Some(built) = ready {
             self.building = None;
-            let (scene, light, pool, world_at) = built??;
-            frame.set_scene(&scene, &light);
-            self.terrain = Some(ProceduralTerrain::new(pool, self.terrain_settings));
+            let (prebuilt, scene, light, pool, world_at) = built??;
+            match prebuilt {
+                Some((renderer, terrain)) => { frame.set_renderer(renderer); self.terrain = Some(terrain); }
+                None => { frame.set_scene(&scene, &light); self.terrain = Some(ProceduralTerrain::new(pool, self.terrain_settings)); }
+            }
             self.light = light;
             self.world_at = world_at;
             if std::mem::take(&mut self.stale) { self.rebuild()?; }
         }
         if self.building.is_none() && self.world_stale() { self.rebuild()?; }
         let pos = self.prev.lerp(self.pos, frame.alpha);
-        let cam = Camera { pos, target: pos + self.forward(), fov_y: 65f32.to_radians(), near: 0.05 };
+        let cam = self.camera(pos);
         let [w, h] = frame.size;
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
@@ -391,6 +410,14 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     Ok((scene, light, pool, Some(centre)))
 }
 
+/// The renderer for `scene`, built on the scene thread: the swap then
+/// costs the frame nothing instead of ~300 ms of uploads. (Also warming it
+/// up with a first terrain update and a small frame did not measurably help
+/// and competed with the live frames for the GPU.)
+fn renderer_for(gpu: &render::Gpu, scene: &Scene, light: &Lighting, pool: procedural_terrain::TerrainSpec, settings: Settings) -> (render::Renderer, ProceduralTerrain) {
+    (render::Renderer::new(gpu, scene, light), ProceduralTerrain::new(pool, settings))
+}
+
 /// Sideways' approved r4 spruce recipe (games/sideways plant_species.rs);
 /// copied here because the engine must not depend on Sideways.
 const SPRUCE: WoodyRecipe = WoodyRecipe {
@@ -531,6 +558,28 @@ fn main() -> Result<(), String> {
         let (fps, passes) = app::bench(&mut game, &gpu, [w, h], n.parse().map_err(|_| "--bench N")?, TICK_HZ)?;
         println!("{w}x{h}: {fps:.1} fps");
         for (pass, ms) in passes.iter().filter(|p| p.1 >= 0.05) { println!("  {pass:>28} {ms:7.2} ms"); }
+        return Ok(());
+    }
+    // --fly N: N headless frames flying straight ahead at --speed (m/s,
+    // default 80), one tick per frame; prints frame-time percentiles, so
+    // hitches from scene rebuilds show without a window.
+    if let Some(n) = arg("--fly") {
+        let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1280, 720]);
+        game.speed = arg("--speed").and_then(|s| s.parse().ok()).unwrap_or(80.0);
+        let gpu = render::Gpu::new()?;
+        let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
+        let mut times = Vec::new();
+        let forward = Controls { mv: [0.0, 1.0], ..Default::default() };
+        for i in 0..n.parse::<u32>().map_err(|_| "--fly N")? {
+            let t = std::time::Instant::now();
+            game.tick(&[forward]);
+            headless.frame(&mut game)?;
+            if i >= 5 { times.push(t.elapsed().as_secs_f64() * 1e3); }
+        }
+        times.sort_by(f64::total_cmp);
+        let p = |q: f64| times[((times.len() - 1) as f64 * q) as usize];
+        let slow = times.iter().filter(|&&t| t > 3.0 * p(0.5)).count();
+        println!("{w}x{h} {} frames at {} m/s: p50 {:.1} ms  p99 {:.1} ms  max {:.1} ms  {} frames over 3x p50", times.len(), game.speed, p(0.5), p(0.99), p(1.0), slow);
         return Ok(());
     }
     // --dump N DIR: N consecutive headless frames as PNGs (flicker checks).
