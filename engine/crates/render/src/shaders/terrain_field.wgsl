@@ -23,6 +23,25 @@ struct TerrainSample {
     water: f32,
     // 0..1 vegetation kind: 0 short grass, 1 heather and moss.
     moor: f32,
+    // 0..1 lying snow.
+    snow: f32,
+};
+
+// A game designer's choices for one world (terrain_field.rs Style). 0.5 is
+// the reference look for the 0..1 amounts; multipliers default to 1.
+struct TerrainStyle {
+    mountains: f32,
+    peaks: f32,
+    snow_line: f32,
+    hills: f32,
+    rivers: f32,
+    streams: f32,
+    rocks: f32,
+    boulders: f32,
+    moor: f32,
+    grass: f32,
+    pad0: f32,
+    pad1: f32,
 };
 
 const TF_BASE: f32 = 2048.0;
@@ -116,19 +135,22 @@ fn tf_boulders(x: f32, z: f32, density: f32, cut: f32, seed: u32) -> vec2<f32> {
     return vec2<f32>(best, cover);
 }
 
-fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
+fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> TerrainSample {
     let p = vec2<f32>(x, z) / TF_BASE;
-    // Regions, kilometres across: lowland or mountain, soil or bedrock.
+    // Regions, kilometres across: lowland or mountain, soil or bedrock, and
+    // high massifs whose peaks rise kilometres above the valleys.
     let region = tf_noised(p * 0.25 + vec2<f32>(3.1, 7.7), seed + 1u).x + 0.5 * tf_noised(p * 0.5 + vec2<f32>(1.3, 2.9), seed + 1u).x;
-    let mountains = tf_smooth(-0.1, 0.45, region);
+    let alpine = tf_smooth(0.0, 0.45, tf_noised(p * 0.15 + vec2<f32>(8.3, 1.9), seed + 18u).x + 0.3 * region + 0.8 * (st.peaks - 0.5))
+        * tf_smooth(0.0, 0.1, st.peaks);
+    let mountains = max(tf_smooth(-0.1, 0.45, region + 1.2 * (st.mountains - 0.5)), alpine);
     let bedrock = tf_smooth(-0.1, 0.3, tf_noised(p * 0.6 + vec2<f32>(5.5, 0.4), seed + 2u).x);
-    let moor = tf_smooth(-0.2, 0.25, tf_noised(p * 0.9 + vec2<f32>(2.2, 8.1), seed + 6u).x);
+    let moor = tf_smooth(-0.2, 0.25, tf_noised(p * 0.9 + vec2<f32>(2.2, 8.1), seed + 6u).x + 1.2 * (st.moor - 0.5));
     let warp = vec2<f32>(tf_noised(p * 1.5 + vec2<f32>(5.2, 1.3), seed + 3u).x, tf_noised(p * 1.5 + vec2<f32>(1.7, 9.2), seed + 3u).x);
     var q = p + warp * 0.12;
 
     // Eroded fBm: accumulated slope damps finer octaves, so peaks stay
     // sharp and valleys smooth. 2 km down to 32 m.
-    let amp = 60.0 + 640.0 * mountains;
+    let amp = 100.0 * st.hills + 640.0 * mountains + 700.0 * alpine;
     var h = 0.0;
     var low = 0.0;
     var low_slope = vec2<f32>(0.0);
@@ -160,14 +182,22 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
         wl *= 0.5;
         q = tf_rotate(q);
     }
-    var y = h * amp;
-    var g = slope * (amp / TF_BASE);
+    // Massifs stand on a broad uplift that lifts their valleys a little and
+    // carry long ridges a few kilometres apart. The fold is rounded and
+    // eased, so the slope has no kink anywhere.
+    let big = tf_noised(p * 0.5 + vec2<f32>(4.4, 7.3), seed + 21u);
+    let fold = sqrt(big.x * big.x + 0.01);
+    let fu = clamp((0.55 - fold) / 0.45, 0.0, 1.0);
+    let uplift = alpine * (300.0 + 1500.0 * fu * fu * (3.0 - 2.0 * fu));
+    let duplift = big.yz * (-alpine * 1500.0 * 6.0 * fu * (1.0 - fu) / 0.45 * big.x / fold * (0.5 / TF_BASE));
+    var y = h * amp + uplift;
+    var g = slope * (amp / TF_BASE) + duplift;
     let g0 = g;
     let up0 = 1.0 / sqrt(1.0 + g.x * g.x + g.y * g.y);
 
     // Crags: bedrock mountainsides break into cliff bands and grassy
     // benches, about 24 m apart.
-    let crag = bedrock * tf_smooth(0.2, 0.7, mountains) * tf_smooth(0.97, 0.85, up0) * tf_fade(24.0, cut);
+    let crag = min(2.0 * st.rocks, 1.0) * bedrock * tf_smooth(0.2, 0.7, mountains) * tf_smooth(0.97, 0.85, up0) * tf_fade(24.0, cut);
     if crag > 0.0 {
         let s = y / 24.0 + 0.6 * tf_noised(p * 6.0 + warp, seed + 12u).x;
         let fl = floor(s);
@@ -182,10 +212,12 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
     // with walls that scale with the relief they cut through, and meander
     // inside it. The floor is the kilometre shapes at the centre line.
     let river_n = tf_noised(p * 0.7 + warp * 0.3 + vec2<f32>(9.1, 4.4), seed + 4u);
-    let river = tf_line(river_n, 0.7);
+    // Only some rivers flow; `rivers` sets how many.
+    let river_on = tf_smooth(-0.15, 0.15, 2.2 * st.rivers - 1.1 + tf_noised(p * 0.35 + vec2<f32>(2.7, 5.1), seed + 20u).x);
+    let river = mix(1000.0, tf_line(river_n, 0.7), river_on);
     let rn = river_n.yz / (sqrt(river_n.y * river_n.y + river_n.z * river_n.z) + 1e-6) * select(-1.0, 1.0, river_n.x >= 0.0);
     let gl = low_slope * (amp / TF_BASE);
-    let floor_y = (low - 0.1) * amp - min(river, 600.0) * (gl.x * rn.x + gl.y * rn.y);
+    let floor_y = (low - 0.1) * amp + uplift - min(river, 600.0) * (gl.x * rn.x + gl.y * rn.y);
     let relief = max(y - floor_y, 0.0);
     let floor_w = 20.0 + 0.12 * relief;
     let wall = 50.0 + 2.0 * relief;
@@ -211,7 +243,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
     let depth = clamp(0.05 * relief + 0.8, 0.8, 4.0);
     let sw = 3.0 + 5.0 * depth;
     let across = abs(g0.x * sn.x + g0.y * sn.y);
-    let streams_here = tf_smooth(-0.35, -0.1, tf_noised(p * 0.8 + vec2<f32>(7.4, 2.5), seed + 8u).x)
+    let streams_here = tf_smooth(0.4 - 1.5 * st.streams, 0.65 - 1.5 * st.streams, tf_noised(p * 0.8 + vec2<f32>(7.4, 2.5), seed + 8u).x)
         * tf_smooth(0.85, 0.93, up0) * tf_smooth(0.6 * depth / sw, 0.3 * depth / sw, across) * tf_smooth(floor_w * 0.5, floor_w, ch);
     let stream = mix(1000.0, stream_line, streams_here);
     let notch = tf_fade(sw, cut) * streams_here;
@@ -224,12 +256,15 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
     let sb = tf_smooth(0.0, 1.2, stream_line);
     y = mix(y, min(y, stream_level - 0.35 * (1.0 - sb * sb)), channel * notch * (1.0 - sb));
     let open = rv * (1.0 - notch * (1.0 - sv));
+    // Banks too narrow for this cell would leave single wet vertices.
     let near_water = min(max(ch - ch_w, 0.0), stream);
+    let rf = tf_fade(2.0 * ch_w, cut);
+    let near_wet = min(max(ch - ch_w, 0.0) + 1000.0 * (1.0 - rf), stream + 1000.0 * (1.0 - notch));
 
     // Bedrock tors: blocky outcrops with cliff sides, in groups on the
     // higher ground, away from water.
     let tor_n = tf_noised(p * 30.0 + warp * 2.0, seed + 9u);
-    let tor_zone = tf_smooth(0.15, 0.4, tf_noised(p * 4.0 + vec2<f32>(6.3, 2.2), seed + 17u).x) * tf_smooth(5.0, 40.0, relief);
+    let tor_zone = tf_smooth(0.65 - st.rocks, 0.9 - st.rocks, tf_noised(p * 4.0 + vec2<f32>(6.3, 2.2), seed + 17u).x) * tf_smooth(5.0, 40.0, relief);
     let tor_fade = tf_fade(20.0, cut);
     let tor_h = (8.0 + 14.0 * mountains) * bedrock * tor_zone * tf_smooth(30.0, 80.0, near_water) * tor_fade;
     let tt = clamp((tor_n.x - 0.22) / 0.08, 0.0, 1.0);
@@ -252,12 +287,12 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
 
     var rock = clamp(tf_smooth(0.8, 0.6, up) + 0.7 * bedrock * tf_smooth(0.95, 0.85, up) + tf_smooth(0.0, 0.15, tor * tor_h) * tor_fade, 0.0, 1.0);
     let scree = tf_smooth(0.85, 0.72, up) * (1.0 - tf_smooth(0.65, 0.55, up)) * (0.4 + 0.6 * bedrock) * mountains
-        + 0.9 * tf_smooth(2.0, 0.6, stream) + 0.8 * tf_smooth(ch_w + 2.5, ch_w, ch) * tf_smooth(-0.1, 0.2, tf_noised(p * 40.0, seed + 16u).x);
+        + 0.9 * tf_smooth(2.0, 0.6, stream) * notch + 0.8 * rf * tf_smooth(ch_w + 2.5, ch_w, ch) * tf_smooth(-0.1, 0.2, tf_noised(p * 40.0, seed + 16u).x);
 
     // Boulders: at the foot of tors and crags, in stream and river beds.
     let tor_foot = tf_smooth(0.12, 0.2, tor_n.x) * (1.0 - tor) * bedrock;
     let boulder_density = clamp(0.02 + 0.45 * tor_foot + 0.2 * crag + 0.3 * tf_smooth(5.0, 1.0, stream) + 0.25 * tf_smooth(ch_w + 3.0, ch_w, ch), 0.0, 0.6);
-    let bo = tf_boulders(x, z, boulder_density, cut, seed);
+    let bo = tf_boulders(x, z, min(boulder_density * st.boulders, 0.8), cut, seed);
     y += bo.x;
     rock = max(rock, bo.y);
 
@@ -278,7 +313,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
 
     // Water: the bed stays where it is; the surface is level.
     let water_r = select(0.0, max(river_level - y, 0.0), ch < ch_w);
-    let water_s = select(0.0, max(stream_level - y, 0.0), stream_line < 1.2 && notch > 0.0);
+    let water_s = select(0.0, max(stream_level - y, 0.0) * notch, stream_line < 1.2 && notch > 0.0);
     let water = max(water_r, water_s) * channel;
 
     // Bedrock strata: ledges stick out of steep rock and overhang a little.
@@ -296,8 +331,10 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
     o.up = up;
     o.rock = rock;
     o.scree = clamp(scree, 0.0, 1.0);
-    o.wet = tf_smooth(8.0, 1.0, near_water);
+    o.wet = tf_smooth(8.0, 1.0, near_wet);
     o.water = water;
     o.moor = moor;
+    // Snow lies above the snow line on all but steep faces, in drifts.
+    o.snow = tf_smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * tf_noised(p * 12.0, seed + 19u).x) * tf_smooth(0.62, 0.8, up);
     return o;
 }

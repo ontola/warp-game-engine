@@ -1,7 +1,7 @@
 // Shading for procedural terrain (procedural_terrain.rs): materials with
-// both TERRAIN and SURFACE set. Vertices carry three 8-bit attributes per
+// both TERRAIN and SURFACE set. Vertices pack attributes into 24 bits per
 // uv channel (procedural_terrain.wgsl): uv.x = rock, scree, wet; uv.y = up,
-// water depth (/2.55 m), moor. Texture layers from Material::layer on:
+// water depth (/2.55 m), moor, snow. Texture layers from Material::layer on:
 // grass, moor (moss and heather), soil, rock, gravel, mossy rock.
 
 struct FieldAttr {
@@ -11,24 +11,25 @@ struct FieldAttr {
     up: f32,
     water: f32,
     moor: f32,
+    snow: f32,
 };
 
-fn field_unpack(uv: vec2<f32>) -> array<f32, 6> {
+fn field_unpack(uv: vec2<f32>) -> array<f32, 7> {
     // Exact integers below 2^24; adding 0.5 would round odd values up and
     // carry a full byte into the next one.
     let a = u32(round(max(uv.x, 0.0)));
     let b = u32(round(max(uv.y, 0.0)));
-    return array<f32, 6>(f32(a & 255u) / 255.0, f32((a >> 8u) & 255u) / 255.0, f32((a >> 16u) & 255u) / 255.0,
-        f32(b & 255u) / 255.0, f32((b >> 8u) & 255u) / 255.0 * 2.55, f32((b >> 16u) & 255u) / 255.0);
+    return array<f32, 7>(f32(a & 255u) / 255.0, f32((a >> 8u) & 255u) / 255.0, f32((a >> 16u) & 255u) / 255.0,
+        f32(b & 255u) / 255.0, f32((b >> 8u) & 63u) / 63.0 * 2.55, f32((b >> 14u) & 31u) / 31.0, f32((b >> 19u) & 31u) / 31.0);
 }
 
 fn field_attr(s: SurfaceIn) -> FieldAttr {
     let a = field_unpack(s.uv0);
     let b = field_unpack(s.uv1);
     let c = field_unpack(s.uv2);
-    var v: array<f32, 6>;
-    for (var k = 0; k < 6; k++) { v[k] = a[k] * s.bary.x + b[k] * s.bary.y + c[k] * s.bary.z; }
-    return FieldAttr(v[0], v[1], v[2], v[3], v[4], v[5]);
+    var v: array<f32, 7>;
+    for (var k = 0; k < 7; k++) { v[k] = a[k] * s.bary.x + b[k] * s.bary.y + c[k] * s.bary.z; }
+    return FieldAttr(v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
 }
 
 // Integer-hash value noise: the shared sin hash breaks up into flat
@@ -119,6 +120,15 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Damp ground darkens near water.
     c *= 1.0 - 0.35 * f.wet * (1.0 - m_rock * 0.5);
     var rough = mix(0.95, 0.55, f.wet * 0.6);
+
+    // Snow over everything but water: bright, fairly smooth, thinning into
+    // patches at its edge.
+    let m_snow = smoothstep(0.3, 0.7, f.snow + (mottle - 0.5) * 0.5 + (broad - 0.5) * 0.3);
+    if m_snow > 0.0 {
+        c = mix(c, vec3<f32>(0.84, 0.87, 0.92) * (0.93 + 0.1 * mottle), m_snow);
+        nn = normalize(mix(nn, n, m_snow * 0.8));
+        rough = mix(rough, 0.6, m_snow);
+    }
 
     // Water: a dark, smooth, level surface, clearer where shallow.
     if f.water > 0.01 {

@@ -9,6 +9,7 @@ struct Params {
     first_cluster: u32,
     count: u32,
     seed: u32,
+    style: TerrainStyle,
 };
 
 struct Job {
@@ -32,9 +33,9 @@ const N: i32 = 8;
 const B: i32 = 11; // with border
 
 var<workgroup> pos: array<vec3<f32>, 121>;
-// (rock, scree, wet, up) and (water, moor) per point.
+// (rock, scree, wet, up) and (water, moor, snow) per point.
 var<workgroup> attr: array<vec4<f32>, 121>;
-var<workgroup> attr2: array<vec2<f32>, 121>;
+var<workgroup> attr2: array<vec3<f32>, 121>;
 
 fn cell(i: i32, j: i32) -> i32 { return (j + 1) * B + (i + 1); }
 
@@ -65,10 +66,10 @@ fn build(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index)
         // Exact in f32: power-of-two spacing, origin a multiple of the patch.
         let x = job.origin.x + f32(i) * s;
         let z = job.origin.y + f32(j) * s;
-        let e = terrain_eval(x, z, cut_at(i, j, s, job.mask), params.seed);
+        let e = terrain_eval(x, z, cut_at(i, j, s, job.mask), params.seed, params.style);
         pos[t] = e.pos;
         attr[t] = vec4<f32>(e.rock, e.scree, e.wet, e.up);
-        attr2[t] = vec2<f32>(e.water, e.moor);
+        attr2[t] = vec3<f32>(e.water, e.moor, e.snow);
     }
     workgroupBarrier();
     // Odd vertices on a coarser edge sit on that edge's straight segment.
@@ -108,12 +109,13 @@ fn build(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index)
         vertices[v + 3u] = n.x;
         vertices[v + 4u] = n.y;
         vertices[v + 5u] = n.z;
-        // Three 8-bit attributes per uv channel; exact integers in f32.
-        // The surface shader unpacks them per corner before blending.
+        // 24 bits per uv channel, exact integers in f32: rock, scree, wet
+        // at 8 bits; up at 8, water at 6, moor and snow at 5. The surface
+        // shader unpacks them per corner before blending.
         let a = clamp(attr[c], vec4<f32>(0.0), vec4<f32>(1.0));
-        let w = vec2<f32>(clamp(attr2[c].x / 2.55, 0.0, 1.0), clamp(attr2[c].y, 0.0, 1.0));
+        let w = vec3<f32>(clamp(attr2[c].x / 2.55, 0.0, 1.0), clamp(attr2[c].y, 0.0, 1.0), clamp(attr2[c].z, 0.0, 1.0));
         vertices[v + 6u] = round(a.x * 255.0) + round(a.y * 255.0) * 256.0 + round(a.z * 255.0) * 65536.0;
-        vertices[v + 7u] = round(a.w * 255.0) + round(w.x * 255.0) * 256.0 + round(w.y * 255.0) * 65536.0;
+        vertices[v + 7u] = round(a.w * 255.0) + round(w.x * 63.0) * 256.0 + round(w.y * 31.0) * 16384.0 + round(w.z * 31.0) * 524288.0;
     }
     if t == 0u {
         var lo = pos[cell(0, 0)];
