@@ -325,11 +325,9 @@ fn shader_with(game: Option<&str>) -> String {
 /// image under `uv`, premultiplied). It returns a colour that the sprite's
 /// radiance scales and its coverage in alpha. Checked here: on an error
 /// the shader in use stays. Sprites pick it up on their next frame.
-pub fn set_game_sprite(source: &str) -> Result<(), String> {
+pub fn set_game_sprite(gpu: &Gpu, source: &str) -> Result<(), String> {
     let full = shader_with(Some(source));
-    let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module)
-        .map_err(|e| e.emit_to_string(&full))?;
+    crate::shaders::checked(gpu, || gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("game sprites"), source: wgpu::ShaderSource::Wgsl(full.into()) }))?;
     let mut g = GAME_SPRITE.lock().unwrap();
     g.0 += 1;
     g.1 = Some(source.to_owned());
