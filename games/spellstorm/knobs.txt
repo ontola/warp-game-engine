@@ -17,6 +17,6 @@ first_calm = 22  # Metres before the first wave of a run's first level (a calm s
 revive_need = 40  # Revive progress needed to raise a fallen wizard.
 revive_rate = 14  # Revive progress per second for each friend at the grave.
 tome_time = 0.9  # Seconds standing in an altar's ring to take its tome.
-wards = 1  # 1: walls of mist hold the way on until the fight there is done; 0: no walls.
+wards = 0  # 1: walls of mist hold the way on until the fight there is done; 0: no walls.
 ward_needs_tomes = 1  # 1: a shrine's wall opens once every wizard took a tome; 0: as soon as the shrine rises.
 practice = 1  # 1: players who know nothing start on the practice strip; 0: never.
