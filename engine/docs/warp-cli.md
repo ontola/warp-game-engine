@@ -337,7 +337,10 @@ right away on the `reload` command or tool.
   code. `init` does not run again; `reload()` runs instead, if the module
   exports it. To start over with the new code, use `restart`, which
   clears the world and every `state`, reseeds the random generator and runs
-  `init`.
+  `init`. Things `init` spawns once (an arena, a background) are not
+  rebuilt by a reload, so a module that wants edits to them to show live
+  removes them by tag in `reload()` and spawns them again (Neon Siege
+  does this for its arena, stars and post settings).
 - A load error (a syntax error, a module that returns something other than
   a table) keeps the previous version running and reports the file and
   line. A runtime error in a hook turns that module's hooks off until the
@@ -354,7 +357,9 @@ right away on the `reload` command or tool.
 file and for `warp-mcp --game NAME` is the folder name (`hello-warp`).
 
 Generic tools: `describe`, `state`, `query`, `screenshot`, `run_luau`
-(Luau against the live game; `state` there is main.luau's), `list_files`,
+(Luau against the live game; main.luau's globals, its exports and its
+`state` are in scope, so `run_luau("debug.wave(12)")` calls a function
+main.luau exports as `debug`), `list_files`,
 `read_file` and `write_file` on the folder `game` (`.luau`, `.toml`, `.md`
 and `.json` files; a write reloads at once and the reply says whether the
 file loaded), `logs`, `play_sound`, `set_param` and `render_sound`.
@@ -365,7 +370,28 @@ Warp's own tools:
 | --- | --- |
 | `reload` | Reload edited modules and patches now; returns what changed and any errors. |
 | `restart` | Start over: clear the world and every `state`, reseed, run `init`. |
-| `command` | One console line: `lua CODE`, `reload`, `restart`, `sky NAME`, `sounds`, `entities [TAG]`, `logs`, `help`. |
+| `knobs` | The tuning knobs of main.luau: name, value, comment and line. |
+| `set_knob` | `{name, value}`: write one knob's value into main.luau and reload. A value that does not load is put back and reported. |
+| `command` | One console line: `lua CODE`, `reload`, `restart`, `knobs`, `knob NAME VALUE`, `sky NAME`, `sounds`, `entities [TAG]`, `logs`, `help`. |
+
+### Knobs
+
+Tuning values a player wants to tweak while playing go in one block in
+main.luau, one per line, between `-- @knobs` and `-- @end`:
+
+```lua
+-- @knobs
+local KNOBS = {
+  bloom = 0.55,      -- glow strength
+  line_width = 3.2,  -- outline width in arena pixels
+}
+-- @end
+```
+
+`knobs` lists them and `set_knob` changes the value in the file itself,
+so the change is saved and reviewable in git. The game reloads at once;
+values that feed things `init` built only show when `reload()` rebuilds
+them (see Hot reload).
 
 A session with Claude Code:
 

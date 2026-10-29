@@ -17,6 +17,29 @@ local START_WAVE = 1
 local LIVES = 3
 local GRAVITY = 100 -- percent
 
+-- The look, tweakable live: the `knobs` and `set_knob` tools (or the
+-- `knob NAME VALUE` command) change a value here and reload the game.
+-- @knobs
+local KNOBS = {
+	bloom = 0.55, -- glow strength around everything that shines, 0 to 2
+	bloom_radius = 2, -- how far the glow spreads, 1 (tight) to 6
+	bloom_threshold = 0.9, -- how bright something must be before it glows
+	line_glow = 0.04, -- brightness of enemy, pilot and pickup outlines
+	shot_glow = 0.05, -- brightness of shots and enemy bullets
+	spark_glow = 0.045, -- brightness of explosion sparks and rings
+	grid_glow = 0.0016, -- brightness of the grid (major lines are about twice it)
+	line_width = 3.2, -- outline width in arena units (the arena is 800 high)
+	draw_scale = 1.3, -- how much larger things are drawn than they collide
+	stars = 320, -- stars far below the arena
+	star_glow = 0.012, -- brightness of the stars
+	vignette = 0.4, -- dark corners, 0 to 1
+	grain = 0.1, -- film grain, 0 to 1
+	aberration = 0.8, -- colour fringes at the corners, in pixels
+	saturation = 1.25, -- colour strength, 1 neutral
+	contrast = 1.1, -- 1 neutral
+}
+-- @end
+
 local FINAL_WAVE = 24
 local WIDTH, HEIGHT = 1422, 800 -- arena units, 16:9
 local S = 1 / 40 -- metres per arena unit
@@ -83,19 +106,12 @@ local SHAPES = {
 }
 -- The line every outline is drawn with, in arena units (the LÖVE 2 px line
 -- plus its glow).
-local LINE = 3.2
+local LINE = KNOBS.line_width
 -- Everything is drawn a little larger than it collides, so it reads on a TV.
-local DRAW = 1.3
+local DRAW = KNOBS.draw_scale
 -- The camera looks straight down; a narrow lens keeps the view nearly flat.
 local CAMERA_FOV = 28
 local CAMERA_HEIGHT = 10.6 / math.tan(math.rad(CAMERA_FOV / 2))
--- The nebula far below: soft clouds in the LÖVE sky's colours.
-local NEBULA = {
-	{ x = -11, z = -5, r = 9, stretch = 1.4, color = { 0.1, 0.3, 0.75 } },
-	{ x = 12, z = 6, r = 10, stretch = 1.3, color = { 0.75, 0.15, 0.55 } },
-	{ x = 4, z = -9, r = 6, stretch = 1.6, color = { 0.35, 0.15, 0.8 } },
-}
-local NEBULA_GLOW = 0.0001
 -- Grid colours per boss stage (each stage's nebula in the LÖVE sky).
 local STAGE_GRID = { { 0.3, 0.32, 1 }, { 0.95, 0.45, 0.3 }, { 1, 0.55, 0.15 }, { 0.2, 0.85, 0.75 }, { 1, 0.3, 0.7 }, { 0.62, 0.3, 1 } }
 
@@ -177,7 +193,7 @@ local function multiplier()
 	return math.min(5, 1 + math.floor(s.chain / 12))
 end
 
-local FX_GLOW = 0.045
+local FX_GLOW = KNOBS.spark_glow
 
 -- Effects are the engine's: a ring grows out, a burst of streaks flies off.
 local function ring(x, y, r, color)
@@ -1110,7 +1126,16 @@ end
 -- Showing it: entities follow the simulation every tick.
 
 -- Glow: how bright the lines burn (emissive), per kind of thing.
-local GLOW = { dim = 0.025, line = 0.04, white = 0.05, warm = 0.006, shot = 0.05, grid = 0.0016, major = 0.003, hostile = 0.03 }
+local GLOW = {
+	dim = KNOBS.line_glow * 0.6,
+	line = KNOBS.line_glow,
+	white = KNOBS.line_glow * 1.25,
+	warm = KNOBS.line_glow * 0.15,
+	shot = KNOBS.shot_glow,
+	grid = KNOBS.grid_glow,
+	major = KNOBS.grid_glow * 1.9,
+	hostile = KNOBS.shot_glow * 0.6,
+}
 
 -- The outline shape name for a polygon of radius r (arena units): its line
 -- stays LINE wide whatever the size, in steps so few meshes are made.
@@ -1444,6 +1469,8 @@ local function warm_all()
 	end
 	world.warm("sphere", { color = rgb(HOSTILE_COLOR), emissive = GLOW.hostile })
 	world.warm("sphere", { color = "#000000", roughness = 1 })
+	world.warm("cube", { color = "#dfe8ff", emissive = KNOBS.star_glow * 2.5 })
+	world.warm("cube", { color = "#b8c8ff", emissive = KNOBS.star_glow })
 	world.warm(outline(32, 64), { color = rgb(COLORS.singularity), emissive = GLOW.white })
 	world.warm("cube", { color = rgb(COLORS.singularity), emissive = GLOW.line })
 	for _, p in players.list() do warm(p) end
@@ -1453,21 +1480,13 @@ end
 -- a bright rim, and dust far below for depth.
 local function arena()
 	local w, h = s.width * S, s.height * S
-	-- Deep space: black, with a faint nebula and stars far below the grid.
+	-- Deep space: black, with stars far below the grid. (Stacked discs for a
+	-- nebula showed their rings, so for now it is only stars.)
 	world.spawn("cube", { pos = vector.create(0, -12, 0), size = vector.create(w * 3, 0.2, h * 3), color = "#000000", roughness = 1, tag = "space" })
-	-- Each cloud is a stack of thin discs, widest and faintest at the bottom,
-	-- so it fades out towards its edge.
-	for _, cloud in NEBULA do
-		for i = 1, 16 do
-			local k = 1 - (i - 1) / 16
-			local r = cloud.r * k
-			world.spawn("sphere", { pos = vector.create(cloud.x, -11 + i * 0.005, cloud.z), size = vector.create(r * 2 * cloud.stretch, 0.005, r * 2), color = rgb(cloud.color, 0.3 + 0.7 * i / 16), emissive = NEBULA_GLOW * i, solid = false, tag = "space" })
-		end
-	end
-	for i = 1, 320 do
+	for i = 1, KNOBS.stars do
 		local big = i % 9 == 0
 		local size = if big then 0.09 else random.range(0.035, 0.06)
-		world.spawn("cube", { pos = vector.create(random.range(-26, 26), -10.5, random.range(-16, 16)), size = vector.create(size, 0.01, size), color = if big then "#dfe8ff" else "#b8c8ff", emissive = if big then 0.03 else 0.012, solid = false, tag = "space" })
+		world.spawn("cube", { pos = vector.create(random.range(-26, 26), -10.5, random.range(-16, 16)), size = vector.create(size, 0.01, size), color = if big then "#dfe8ff" else "#b8c8ff", emissive = if big then KNOBS.star_glow * 2.5 else KNOBS.star_glow, solid = false, tag = "space" })
 	end
 	s.grid, s.stage = {}, 1
 	local c = STAGE_GRID[1]
@@ -1479,6 +1498,12 @@ local function arena()
 		local major = y % 160 == 0
 		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create(0, 0.005, (y - s.height / 2) * S), size = vector.create(w, 0.01, 0.025), color = rgb(c, if major then 0.6 else 0.4), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
 	end
+end
+
+-- Light and post: no sky light or haze, only what glows shows.
+local function look()
+	light.set({ sun_lux = 0, sky_lux = 0.05, fog_density = 0 })
+	post.set({ bloom = KNOBS.bloom, bloom_radius = KNOBS.bloom_radius, bloom_threshold = KNOBS.bloom_threshold, bloom_wide = false, saturation = KNOBS.saturation, contrast = KNOBS.contrast, vignette = KNOBS.vignette, grain = KNOBS.grain, aberration = KNOBS.aberration })
 end
 
 local function init()
@@ -1518,13 +1543,25 @@ local function init()
 	warm_all()
 	arena()
 	-- Soft neon glow, a darker frame and a little film.
-	-- No sky light or haze: only what glows shows.
-	light.set({ sun_lux = 0, sky_lux = 0.05, fog_density = 0 })
-	post.set({ bloom = 0.55, bloom_radius = 2, bloom_threshold = 0.9, bloom_wide = false, saturation = 1.25, contrast = 1.1, vignette = 0.4, grain = 0.1, aberration = 0.8 })
+	look()
 	for i, p in players.list() do
 		table.insert(s.players, new_pilot(p, i))
 	end
 	sync()
+end
+
+-- The file changed (a knob or an edit): rebuild the arena and re-apply the
+-- look, keeping the match going.
+local function reload()
+	s = state.s
+	if not s then return end
+	for _, tag in { "arena", "space" } do
+		for _, id in world.find(tag) do world.remove(id) end
+	end
+	warm_all()
+	arena()
+	look()
+	for _, e in s.enemies do e.mode = nil end
 end
 
 local SOUNDS = { "shot", "hit", "burst", "hurt", "death", "pulse", "pickup", "wave", "boss", "win" }
@@ -1547,12 +1584,34 @@ local function finish(won)
 	sfx(if won then "win" else "death")
 	local text = if won then "Neon Siege beaten with " .. s.teamScore .. " points" else "Neon Siege: wave " .. math.max(1, s.wave) .. ", " .. s.teamScore .. " points"
 	game.log(text)
-	game.finish()
+	-- A win ends the session; after a wipe-out the team can play again (A).
+	if won then game.finish() end
 end
 
 local function tick(dt, input)
 	s = state.s
 	if s.over then
+		s.overClock = (s.overClock or 0) + dt
+		-- The swarm drifts on aimlessly behind the end screen.
+		s.time += dt
+		for _, e in s.enemies do
+			if not e.dead and e.kind ~= "segment" and e.kind ~= "node" then
+				local a = e.phase + s.time * 0.5 + math.sin(s.time * 0.7 + e.phase * 3)
+				local speed = math.min(60, SPECS[e.kind].speed * 0.4)
+				e.x = math.clamp(e.x + math.cos(a) * speed * dt, e.r, s.width - e.r)
+				e.y = math.clamp(e.y + math.sin(a) * speed * dt, e.r, s.height - e.r)
+			end
+		end
+		if s.overClock >= 1 then
+			for _, p in s.players do
+				local i = not p.bot and input[p.id]
+				if i and i.pressed.south then
+					world.clear()
+					init()
+					return
+				end
+			end
+		end
 		sync()
 		return
 	end
@@ -1634,8 +1693,14 @@ local function draw()
 		end
 	end
 	if s.over or s.won then
+		-- Dim the arena over a second and a half so the text reads.
+		local fade = math.min(1, (s.overClock or 0) / 1.5)
+		hud.box(0, 0, w, h, { 0, 0, 0, 0.55 * fade })
 		hud.text(if s.won then "THE SIEGE IS BROKEN" else "WIPED OUT", 0, h * 0.42, { size = 54 * k, align = "center", width = w })
-		hud.text(tostring(s.teamScore), 0, h * 0.42 + 70 * k, { size = 26 * k, align = "center", width = w, color = dim })
+		hud.text(tostring(s.teamScore), 0, h * 0.42 + 70 * k, { size = 26 * k, align = "center", width = w, color = { 0.85, 0.95, 1, 0.95 } })
+		if (s.overClock or 0) >= 1 and not s.won then
+			hud.text("PRESS A TO PLAY AGAIN", 0, h * 0.42 + 120 * k, { size = 22 * k, align = "center", width = w, color = { 0.85, 0.95, 1, 0.6 + 0.3 * math.sin(s.overClock * 3) } })
+		end
 	end
 end
 
@@ -1668,4 +1733,25 @@ local function players_changed()
 	end
 end
 
-return { init = init, tick = tick, draw = draw, player_joined = player_joined, player_left = player_left, players_changed = players_changed }
+-- Helpers for the live console (run_luau, `lua`): debug.wave(12) jumps to
+-- wave 12, debug.spawn("sun", 700, 300) drops an enemy, debug.lose() ends.
+local debug = {
+	wave = function(n)
+		s = state.s
+		s.wave, s.enemies, s.hostile, s.waveQueue = n - 1, {}, {}, {}
+		s.wavePhase, s.waveRest = "rest", 0.01
+		for _, p in s.players do p.hp, p.invul = s.lives, 3 end
+		return "next: wave " .. n
+	end,
+	spawn = function(kind, x, y)
+		s = state.s
+		return spawn(kind, x or s.width / 2, y or s.height / 3, 0)
+	end,
+	lose = function()
+		s = state.s
+		finish(false)
+		return "wiped out"
+	end,
+}
+
+return { init = init, tick = tick, draw = draw, reload = reload, debug = debug, player_joined = player_joined, player_left = player_left, players_changed = players_changed }
