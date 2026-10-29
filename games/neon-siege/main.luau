@@ -1362,33 +1362,66 @@ local function shot_color(b)
 	return WHITE
 end
 
--- A pilot is a neon dart pointing where it aims; a downed one is a ring.
+-- The pilots are tiny doctors in spaceships: a hull of neon lines in the
+-- player's colour (x points where they aim, units are arena units), a white
+-- cockpit and two engines that flicker.
+local SHIP_HULL = { { 20, 0 }, { 6, 4 }, { -2, 15 }, { -10, 15 }, { -7, 5 }, { -12, 5 }, { -12, -5 }, { -7, -5 }, { -10, -15 }, { -2, -15 }, { 6, -4 } }
+local SHIP_ENGINES = { { -12, 3 }, { -12, -3 } }
+
+-- A segment of the ship from local (x1, y1) to (x2, y2), placed for heading a.
+local function place_ship_line(id, p, a, x1, y1, x2, y2)
+	local c, sn = math.cos(a), math.sin(a)
+	local mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+	local dx, dy = (x2 - x1) * c - (y2 - y1) * sn, (x2 - x1) * sn + (y2 - y1) * c
+	world.place(id, at(p.x + mx * c - my * sn, p.y + mx * sn + my * c, 0.15), math.atan2(-dx, -dy))
+end
+
 local function show_pilot(p)
 	local a = math.atan2(p.aimY, p.aimX)
 	local pos = at(p.x, p.y, 0.15)
 	local mode = if not alive(p) then "down" elseif p.invul > 0 and math.floor(s.time * 12) % 2 == 0 then "blink" else "up"
-	if not p.dart then
-		p.dart = world.spawn(outline(3, 22, 3.6), { pos = pos, size = vector.create(54 * S, 0.04, 36 * S), color = p.color, emissive = GLOW.line, solid = false, tag = "pilot" })
-		p.nose = world.spawn(outline(3, 8, 2.6), { pos = pos, size = vector.create(19 * S, 0.04, 12 * S), color = "#ffffff", emissive = GLOW.white, solid = false, tag = "pilot" })
+	if not p.hull then
+		p.hull = {}
+		for i, q in SHIP_HULL do
+			local r = SHIP_HULL[i % #SHIP_HULL + 1]
+			table.insert(p.hull, world.spawn("cube", { pos = pos, size = vector.create(3 * S, 0.03, len(r[1] - q[1], r[2] - q[2]) * S), color = p.color, emissive = GLOW.line, solid = false, tag = "pilot" }))
+		end
+		p.cockpit = world.spawn(outline(16, 4, 2), { pos = pos, size = vector.create(12 * S, 0.04, 7 * S), color = "#ffffff", emissive = GLOW.white, solid = false, tag = "pilot" })
+		p.engines = {}
+		for _ in SHIP_ENGINES do
+			table.insert(p.engines, world.spawn("sphere", { pos = pos, size = vector.create(6 * S, 0.02, 4 * S), color = "#ffffff", emissive = GLOW.white, solid = false, tag = "pilot" }))
+		end
 		p.halo = world.spawn(outline(24, 20), { pos = pos, size = 40 * S, color = p.color, emissive = GLOW.line, solid = false, visible = false, tag = "pilot" })
 		p.mode = "up"
 	end
 	if p.mode ~= mode then
-		world.set(p.dart, { visible = mode == "up" })
-		world.set(p.nose, { visible = mode == "up" })
+		local up = mode == "up"
+		for _, id in p.hull do world.set(id, { visible = up }) end
+		for _, id in p.engines do world.set(id, { visible = up }) end
+		world.set(p.cockpit, { visible = up })
 		world.set(p.halo, { visible = mode == "down" })
 		p.mode = mode
 	end
-	world.place(p.dart, pos, -a)
-	world.place(p.nose, at(p.x + math.cos(a) * 7, p.y + math.sin(a) * 7, 0.16), -a)
+	for i, q in SHIP_HULL do
+		local r = SHIP_HULL[i % #SHIP_HULL + 1]
+		place_ship_line(p.hull[i], p, a, q[1], q[2], r[1], r[2])
+		seen(p.hull[i])
+	end
+	local c, sn = math.cos(a), math.sin(a)
+	world.place(p.cockpit, at(p.x + 5 * c, p.y + 5 * sn, 0.16), -a)
+	seen(p.cockpit)
+	for i, e in SHIP_ENGINES do
+		-- Engines burn behind the hull, flickering.
+		local back = e[1] - 3 - math.sin(s.time * 31 + i * 2 + p.id) * 1.5
+		world.place(p.engines[i], at(p.x + back * c - e[2] * sn, p.y + back * sn + e[2] * c, 0.14), -a)
+		seen(p.engines[i])
+	end
 	if mode == "down" then
 		-- The ring fills in as the revive comes closer.
 		local k = math.min(1, math.max(p.revive / REVIVE_TIME, p.downTime / 6))
 		-- The ring sits where the pilot went down (it was left at its spawn point).
 		world.set(p.halo, { pos = pos, size = vector.create((40 + 10 * k + math.sin(s.time * 5) * 4) * S, 0.04, (40 + 10 * k + math.sin(s.time * 5) * 4) * S) })
 	end
-	seen(p.dart)
-	seen(p.nose)
 	seen(p.halo)
 end
 
