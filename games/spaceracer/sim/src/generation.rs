@@ -733,7 +733,7 @@ impl Generated {
                         n.section = if n.rails {
                             "SKYWAY"
                         } else {
-                            "OPEN SKY Â· NO RAILS"
+                            "OPEN SKY Ã‚Â· NO RAILS"
                         }
                         .into();
                     }
@@ -748,7 +748,7 @@ impl Generated {
                         n.geometry.shape_angle = PI * blend;
                         n.geometry.width = mix(n.geometry.width, PI * 30.0 * size, blend);
                         n.rails = difficulty == "easy";
-                        n.section = "360Â° MAGNETIC TUBE".into();
+                        n.section = "360Ã‚Â° MAGNETIC TUBE".into();
                     }
                     "split" => {
                         n.split_gap = 18.0 * size * blend;
@@ -759,9 +759,9 @@ impl Generated {
                             n.preferred_route = -n.dead_side;
                             n.dead_gap = q >= 0.59;
                             n.section = if n.dead_side > 0.0 {
-                                "DEAD END Â· KEEP LEFT"
+                                "DEAD END Ã‚Â· KEEP LEFT"
                             } else {
-                                "DEAD END Â· KEEP RIGHT"
+                                "DEAD END Ã‚Â· KEEP RIGHT"
                             }
                             .into();
                         }
@@ -782,7 +782,7 @@ impl Generated {
                 n.section = if v.kind == "spiral" {
                     "SPIRAL ASCENT"
                 } else {
-                    "HAIRPIN Â· BRAKE"
+                    "HAIRPIN Ã‚Â· BRAKE"
                 }
                 .into();
                 if v.kind == "hairpin" {
@@ -812,14 +812,14 @@ impl Generated {
                 n.section = if n.air_gap {
                     "FLIGHT GAP"
                 } else if t < v.lip {
-                    "JUMP Â· KEEP SPEED"
+                    "JUMP Ã‚Â· KEEP SPEED"
                 } else {
                     "LANDING ZONE"
                 }
                 .into();
                 if v.turbo {
                     n.section = if t < v.land {
-                        "TURBO JUMP Â· NOSE DOWN"
+                        "TURBO JUMP Ã‚Â· NOSE DOWN"
                     } else {
                         "LANDING ZONE"
                     }
@@ -1000,5 +1000,96 @@ mod generated_tests {
                 );
             }
         }
+    }
+}
+
+impl Generated {
+    pub fn checkpoints(&self) -> Vec<crate::race_rules::Gate> {
+        let mut spans: Vec<(f64, bool, f64)> = self
+            .centreline
+            .loops
+            .iter()
+            .map(|l| ((l.start + l.end) * 0.5, true, l.start))
+            .collect();
+        spans.extend(
+            self.centreline
+                .components
+                .iter()
+                .filter(|c| c.kind == "spiral")
+                .map(|c| (mix(c.start, c.end, 0.48), true, c.start)),
+        );
+        let mut selected: Vec<(f64, crate::race_rules::Gate)> = Vec::new();
+        for u in [0.25, 0.55, 0.80] {
+            spans.push((u, false, u));
+        }
+        for (u, is_loop, entry) in spans {
+            if !is_loop && selected.iter().any(|(v, _)| (v - u).abs() < 0.14) {
+                continue;
+            }
+            let Some((i, n)) = self
+                .track
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| !n.air_gap && (is_loop || !n.is_loop))
+                .min_by(|(_, a), (_, b)| (a.u - u).abs().total_cmp(&(b.u - u).abs()))
+            else {
+                continue;
+            };
+            let mut respawn = i as f64 * self.track.step - 100.0;
+            if is_loop {
+                if let Some(k) = self.track.nodes[..i].iter().position(|n| n.u >= entry) {
+                    respawn = k as f64 * self.track.step - 100.0;
+                }
+            }
+            let height = if n.tunnel {
+                13.0
+            } else if n.geometry.shape_angle > 2.0 {
+                2.0 * n.geometry.width / n.geometry.shape_angle + 6.0
+            } else if is_loop {
+                24.0
+            } else {
+                32.0
+            };
+            selected.push((
+                n.u,
+                crate::race_rules::Gate {
+                    pose: crate::race_rules::Pose {
+                        origin: n.geometry.p,
+                        basis: n.geometry.basis(),
+                    },
+                    distance: i as f64 * self.track.step,
+                    width: n.geometry.width + 6.0,
+                    height,
+                    respawn: respawn.max(0.0),
+                },
+            ));
+        }
+        selected.sort_by(|a, b| a.1.distance.total_cmp(&b.1.distance));
+        selected.into_iter().map(|(_, g)| g).collect()
+    }
+    pub fn safe_respawn(&self, distance: f64) -> f64 {
+        let local = distance.rem_euclid(self.track.length);
+        let u = self.track.nodes[(local / self.track.step) as usize].u;
+        if self.track.difficulty == "hard" {
+            let mut rng = Pcg::new((self.track.seed + 91837) as u64);
+            for &(kind, start, end) in &self.centreline.recipe.sections {
+                let shift = range(&mut rng, -0.006, 0.006);
+                let _size = range(&mut rng, 0.90, 1.10);
+                if kind == "split" && u >= start + shift && u < end + shift {
+                    if let Some(i) = self.track.nodes.iter().position(|n| n.u >= start + shift) {
+                        return (distance / self.track.length).floor() * self.track.length
+                            + i as f64 * self.track.step
+                            - 180.0;
+                    }
+                }
+            }
+        }
+        for j in &self.jump_distances {
+            if local >= j[0] - 260.0 && local < j[1] {
+                return (distance / self.track.length).floor() * self.track.length + j[2];
+            }
+        }
+        distance
     }
 }

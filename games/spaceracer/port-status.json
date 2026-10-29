@@ -38,7 +38,7 @@
     {
       "path": "src/chase.gd",
       "sha256": "7736dc52e5beb97da94a7f27b1d340e84465faf49e3d2e8a177f80478909e01e",
-      "status": "pending"
+      "status": "normal chase, roll, shake and split aspect FOV source-validated across 1800 ticks; crash/respawn camera pending"
     },
     {
       "path": "src/checkpoints.gd",
@@ -108,7 +108,7 @@
     {
       "path": "src/flight.gd",
       "sha256": "f994ab929f75becd65170ccc7e539df28d5219d09a70353d9e4b69541164d2f5",
-      "status": "partial: aerodynamic integration validated; transitions/collisions pending"
+      "status": "aerodynamics and landing/crash/underside rules source-validated; full race/world integration and crash VFX pending"
     },
     {
       "path": "src/forest.gd",
@@ -203,7 +203,7 @@
     {
       "path": "src/racer_design.gd",
       "sha256": "21ed4aeacc617ac60d1d9f49c352df957a9ea0b3a2e467a4074c2326cae621ac",
-      "status": "pending"
+      "status": "all five source geometries exported with instance material parameters; native rendering pending"
     },
     {
       "path": "src/railgun.gd",
@@ -253,7 +253,7 @@
     {
       "path": "src/ship.gd",
       "sha256": "70a1631fc1ce050ba926cdb53de9363dcbaefc5cb7125cf540a80c1e737b211b",
-      "status": "pending"
+      "status": "all five generated ship hierarchies exported, geometry/pivots/effects retained; native animation and material rendering pending"
     },
     {
       "path": "src/showpiece.gd",
@@ -337,8 +337,20 @@
     "track_sample_fixtures": 18,
     "slipstream_ticks": 700,
     "bump_ticks": 1680,
-    "tests_passed": 7,
+    "tests_passed": 10,
     "generated_centreline_cases": 90,
-    "generated_full_ribbons": 18
-  }
+    "generated_full_ribbons": 18,
+    "chase_camera_ticks": 1800,
+    "landing_scenarios": 5,
+    "ship_variants_preserved": 5,
+    "source_assets_preserved": 102,
+    "renderer_camera_math_tests": 1
+  },
+  "next_required": [
+    "Full race state integration: contacts, recovery, checkpoints, victory",
+    "AI and all weapons with source trace comparisons",
+    "Native world/rendering for all biomes, source materials and effects",
+    "HUD, menus, audio and GameNight/controller parity",
+    "Equal-content screenshot/replay review before CPU/GPU benchmarking"
+  ]
 }
