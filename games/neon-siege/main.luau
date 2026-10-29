@@ -35,6 +35,7 @@ local KNOBS = {
 	stars = 0, -- stars far below the arena (off until the cell backdrop shader lands)
 	star_glow = 0.012, -- brightness of the stars
 	star_drift = 0.6, -- how fast the star field drifts past (m/s for the nearest layer)
+	shot_jitter = 0.05, -- random wobble in each shot's direction, radians either way
 	cells = 0, -- big faint cells drifting under the stars (stand-in, off: the shader replaces them)
 	cell_glow = 0.0025, -- brightness of the cell walls and nuclei
 	vignette = 0.4, -- dark corners, 0 to 1
@@ -574,6 +575,7 @@ local function shoot(p, dx, dy)
 	local special = if p.powers.pierce then "pierce" elseif p.powers.spread then "spread" elseif p.powers.rapid then "rapid" else nil
 	for _, a in angles do
 		if #s.shots >= LIMITS.shots then break end
+		a += random.range(-KNOBS.shot_jitter, KNOBS.shot_jitter)
 		local x, y = dx * math.cos(a) - dy * math.sin(a), dx * math.sin(a) + dy * math.cos(a)
 		table.insert(s.shots, {
 			x = p.x + x * 15,
