@@ -213,7 +213,7 @@
     {
       "path": "src/recharge_strips.gd",
       "sha256": "2d0e07b16aeac1cbbbfc350bad9cdde81545393811021b771051b3e7f15625d8",
-      "status": "pending"
+      "status": "native placement and recharge handling validated; visual integration pending"
     },
     {
       "path": "src/render_warmup.gd",
@@ -278,17 +278,17 @@
     {
       "path": "src/track.gd",
       "sha256": "ee954c6e877949e64ef7244a5082ee7fb7c3f03458dc8aeb653d5bb8dce560d0",
-      "status": "partial: surface/sample/project ported; generator pending; tests use source nodes"
+      "status": "native centreline, banked frames, features, jumps and recharge validated against 18 source ribbons; hazards, warning metadata and world integration pending"
     },
     {
       "path": "src/track_components.gd",
       "sha256": "f7f1e6ca4c11e8438a3a6bd5a6a8fe8a4865c598b6517e6da58b54d27f1a9abb",
-      "status": "pending"
+      "status": "native recipes and curve pieces validated across 90 layout/difficulty/biome centreline cases"
     },
     {
       "path": "src/track_profiles.gd",
       "sha256": "e37fb3ddf9ce47cf722af091bcdb5ba5e9a59a9c927f2075d7f5971edf036e3e",
-      "status": "pending"
+      "status": "native recipes and curve pieces validated across 90 layout/difficulty/biome centreline cases"
     },
     {
       "path": "src/turn_markers.gd",
@@ -337,6 +337,8 @@
     "track_sample_fixtures": 18,
     "slipstream_ticks": 700,
     "bump_ticks": 1680,
-    "tests_passed": 5
+    "tests_passed": 7,
+    "generated_centreline_cases": 90,
+    "generated_full_ribbons": 18
   }
 }
