@@ -401,6 +401,9 @@ pub fn lighting() -> Lighting {
         // darker sky lowers the exposure, and the glow would clip to white.
         emissive_compensation: EMISSIVE_COMPENSATION,
         emissive_ev100: 13.6,
+        // Godot's blast fire and smoke are unshaded: as bright at night
+        // (exposed for the floodlights) as by day, never black.
+        fx_white_floor: 1.0,
         fog_start: 40.0,
         fog_end: 320.0,
         ..Default::default()
