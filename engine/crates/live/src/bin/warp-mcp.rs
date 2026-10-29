@@ -8,7 +8,8 @@
 //! (`<temp>/warp-live/<game>.json`, or the newest one there; `WARP_LIVE_DIR`
 //! moves it), and reads it again when the game restarts. Until a game is
 //! running it answers on its own with one `warp_status` tool, and tells the
-//! client (tools/list_changed) when a game appears or goes away.
+//! client (tools/list_changed) when a game appears or goes away. The
+//! `feedback` tool (the newest F12 captures) always works, game or not.
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use serde_json::{json, Value};
@@ -97,7 +98,7 @@ fn offline(msg: &Value, why: &str) -> Option<Value> {
         }),
         "ping" => json!({}),
         "tools/list" => json!({ "tools": [{ "name": "warp_status", "description": "Whether a Warp game with live control is running; its tools appear once it is.",
-            "inputSchema": { "type": "object", "properties": {} }, "annotations": { "readOnlyHint": true } }] }),
+            "inputSchema": { "type": "object", "properties": {} }, "annotations": { "readOnlyHint": true } }, live::feedback::tool()] }),
         "tools/call" => json!({ "content": [{ "type": "text", "text": help }], "isError": true }),
         "resources/list" => json!({ "resources": [] }),
         "prompts/list" => json!({ "prompts": [] }),
@@ -146,6 +147,12 @@ async fn main() {
                 Ok(v) => v,
                 Err(e) => { let _ = out.send(json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": e.to_string() } })); return; }
             };
+            // F12 captures are files: answered here, with or without a game.
+            if msg.get("method").and_then(Value::as_str) == Some("tools/call") && msg.pointer("/params/name").and_then(Value::as_str) == Some("feedback") && let Some(id) = msg.get("id") {
+                let args = msg.pointer("/params/arguments").cloned().unwrap_or(json!({}));
+                let _ = out.send(json!({ "jsonrpc": "2.0", "id": id, "result": live::feedback::mcp_result(&args) }));
+                return;
+            }
             if msg.pointer("/params/name").and_then(Value::as_str) == Some("warp_status") && let Some(id) = msg.get("id") {
                 let text = match bridge.forward(r#"{"jsonrpc":"2.0","id":0,"method":"ping"}"#).await {
                     Ok(_) => { let t = bridge.current.lock().unwrap().clone(); format!("connected to {} at {}; list the tools again to see its tools", t.as_ref().map_or("?", |t| t.game.as_str()), t.as_ref().map_or("?", |t| t.url.as_str())) }

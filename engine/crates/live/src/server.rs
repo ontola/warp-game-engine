@@ -181,7 +181,10 @@ async fn message(shared: &Shared, m: Value) -> Option<Value> {
     })
 }
 
-async fn result(r: Reply) -> Value {
+async fn result(r: Reply) -> Value { to_mcp(r) }
+
+/// A tool reply as an MCP `tools/call` result.
+pub(crate) fn to_mcp(r: Reply) -> Value {
     match r {
         Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
         Ok(parts) => {
@@ -224,6 +227,7 @@ async fn call(shared: &Shared, name: &str, args: &Value) -> Reply {
     let m = &shared.manifest;
     match name {
         "describe" => Ok(vec![Content::Text(describe(m))]),
+        "feedback" => crate::feedback::reply(args),
         "logs" => {
             let n = args.get("lines").and_then(Value::as_u64).unwrap_or(100).clamp(1, 1000) as usize;
             let lines = shared.logs.tail(n, arg_str(args, "filter"));
@@ -373,6 +377,7 @@ pub(crate) fn tools(m: &Manifest) -> Vec<Value> {
                 "seconds": { "type": "number", "description": "default: the sound's own length" } }), &["name"]), true));
     }
     let mut out: Vec<Value> = t.into_iter().map(|(name, desc, input, ro)| tool_json(name, &desc, input, ro)).collect();
+    out.push(crate::feedback::tool());
     out.extend(m.tools.iter().map(|g| tool_json(&g.name, &g.description, g.input_schema.clone(), g.read_only)));
     out
 }

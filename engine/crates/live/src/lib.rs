@@ -22,6 +22,7 @@
 //! `play_sound`, `set_param`, `render_sound`; each is listed only when the
 //! game supports it.
 mod console;
+pub mod feedback;
 mod files;
 mod server;
 

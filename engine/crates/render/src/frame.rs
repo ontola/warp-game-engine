@@ -257,6 +257,11 @@ pub struct Lighting {
     pub emissive_compensation: f32,
     /// The exposure (EV100) emission is shown at with full compensation.
     pub emissive_ev100: f32,
+    /// Blast fire and smoke (`fx`) are unlit and drawn as white under the
+    /// sun and sky. They are drawn at least as bright as this fraction of
+    /// the exposure's white (1.2 * 2^ev100), so a night lit by lamps does
+    /// not turn them black. 0 (default): sun and sky only.
+    pub fx_white_floor: f32,
     pub fog_start: f32,
     pub fog_end: f32,
     pub fog_density: f32,
@@ -327,6 +332,7 @@ impl Lighting {
             "ev100" => self.ev100 = f,
             "emissive_compensation" if (0.0..=1.0).contains(&f) => self.emissive_compensation = f,
             "emissive_ev100" if f.is_finite() => self.emissive_ev100 = f,
+            "fx_white_floor" if f.is_finite() && f >= 0.0 => self.fx_white_floor = f,
             "fog_start" => self.fog_start = f,
             "fog_end" => self.fog_end = f,
             "fog_density" => self.fog_density = f,
@@ -380,6 +386,7 @@ impl Default for Lighting {
             ev100: 14.0,
             emissive_compensation: 0.0,
             emissive_ev100: 14.0,
+            fx_white_floor: 0.0,
             fog_start: 140.0,
             fog_end: 750.0,
             fog_density: 0.0,
@@ -3841,7 +3848,8 @@ impl Renderer {
                 let mut fx = self.fx.0.lock().unwrap();
                 match fx.as_mut() {
                     Some(fx) => {
-                        let white = (light.sun_lux * light.sun_dir.y.max(0.0) + light.sky_lux) / std::f32::consts::PI;
+                        let white = ((light.sun_lux * light.sun_dir.y.max(0.0) + light.sky_lux) / std::f32::consts::PI)
+                            .max(light.fx_white_floor.max(0.0) * 1.2 * 2f32.powf(light.ev100));
                         let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
                         let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white)?;

@@ -70,6 +70,10 @@ pub struct LuaGame {
     menu_stick: f32,
     /// Ticks the party has been running since its start or resume.
     running_for: u32,
+    /// A `prepare` was handled; tell the host ready after the next frame.
+    ready_due: bool,
+    /// A window shell reported startup ([`app::Game::loading`]).
+    windowed: bool,
     /// Ticks seen, for the file checks (the game's own tick stops while paused).
     polls: u64,
     /// The next player id: ids are never reused in a session.
@@ -141,7 +145,7 @@ impl LuaGame {
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, ready_due: false, windowed: false, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None };
         g.surface.install();
         let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
             .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None })).collect();
@@ -351,7 +355,10 @@ impl LuaGame {
                 party::Ev::Prepare(seats) => {
                     self.seat_all(&seats, true);
                     self.restart();
-                    self.party.as_mut().expect("party").ready();
+                    // In a window, ready once a frame of the new match is
+                    // drawn: the scene is built then, so the host never shows
+                    // a game still loading. Headless, at once.
+                    if self.windowed { self.ready_due = true; } else { self.party.as_mut().expect("party").ready(); }
                 }
                 party::Ev::Seats(seats) => self.reseat(&seats),
                 party::Ev::Dispose => {
@@ -845,6 +852,11 @@ impl Game for LuaGame {
 
     fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
 
+    fn loading(&mut self, percent: u32, step: &str) {
+        self.windowed = true;
+        if let Some(p) = self.party.as_mut() { p.loading(percent, step); }
+    }
+
     /// Escape opens and closes the start menu.
     fn escape(&mut self) -> bool {
         if self.menu.is_some() { self.close_menu(); } else { self.say(format!("{} menu: opened by Escape", app::manners::stamp())); self.open_menu(); }
@@ -906,6 +918,7 @@ impl Game for LuaGame {
         if let Some(line) = surface_line { self.say(line); }
         if let Some(line) = late { self.say(line); }
         let hud = self.hud(frame.size);
+        if std::mem::take(&mut self.ready_due) && let Some(p) = self.party.as_mut() { p.ready(); }
         Ok(Draw { cameras, light, hud })
     }
 

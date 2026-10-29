@@ -90,6 +90,9 @@ impl Party {
         if self.phase == Phase::Running { app::Screen::Fullscreen } else { app::Screen::Hidden }
     }
 
+    /// Startup progress for the host's loading screen ([`app::Game::loading`]).
+    pub fn loading(&mut self, percent: u32, step: &str) { self.client.loading(percent, step); }
+
     pub fn running(&self) -> bool {
         self.phase == Phase::Running
     }
@@ -118,7 +121,7 @@ impl Party {
                     Command::Connected => self.declare(),
                     Command::Prepare { session, seats } => {
                         println!("[gamenight] prepare {session} ({} seats)", seats.len());
-                        let _ = self.client.notify_progress(&session, 5, "starting the game");
+                        let _ = self.client.notify_progress(&session, 85, "setting up the match");
                         out.push(Ev::Prepare(seated(&seats)));
                         self.session = session;
                         self.phase = Phase::Warm;

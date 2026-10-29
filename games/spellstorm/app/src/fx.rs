@@ -981,6 +981,105 @@ impl Fx {
         self.live(w, dt);
     }
 
+    /// A cataclysm while it plays (OverloadFx): the meteor falling, the
+    /// tidal wave rolling, the black hole pulling, the storm's cloud. The
+    /// looks of the wave and the hole are fx.wgsl `wave` and `black_hole`.
+    fn overload(&mut self, o: &spellstorm::spells::Overload, key: u64, dt: f32) {
+        use spellstorm::spells::{WAVE_TIME, WAVE_WIDTH};
+        let t = self.time;
+        let ot = o.t as f32;
+        let c = o.spell.primary.map(el_c).unwrap_or([1.0, 0.8, 0.5, 1.0]);
+        match o.spell.primary {
+            Some(El::Fire) => {
+                let Some(off) = o.thing else { return };
+                let at = o.target + off;
+                // A molten rock with a long burning tail.
+                self.halo(at, c, 6.0, 1.1);
+                let mut rock = glow_sprite(at, 2.2, Cell::Puff, linear3([1.0, 0.75, 0.4]) * 6.0);
+                rock.effect = crate::effects::MOLTEN;
+                rock.params = [(key % 97) as f32, t, 0.0, 0.0];
+                self.live.push(rock);
+                let mut p = particles(c, 80, 0.6, 1.4);
+                p.cell = Cell::Flame;
+                p.sphere = 0.9;
+                p.gravity = Vec3::ZERO;
+                self.stream((key, 1), p, at, dt);
+                self.light(at, c, 4.0, 10.0);
+            }
+            Some(El::Water) => {
+                let Some(at) = o.thing else { return };
+                let dir = o.wave_dir.normalize_or(Vec3::NEG_Z);
+                let side = Vec3::new(-dir.z, 0.0, dir.x);
+                // It rears up as it sets off and sinks into a flood at the end.
+                let rise = (ot / 0.25).clamp(0.0, 1.0);
+                let sink = 1.0 - ((ot - WAVE_TIME as f32 + 0.3) / 0.3).clamp(0.0, 1.0);
+                let h = 2.7 * ((0.2 + 0.8 * rise) * sink).max(0.05);
+                // Leaning forward a little, the way it rolls.
+                let up = (Vec3::Y + dir * 0.35).normalize();
+                let mut wall = Sprite::fixed(at + up * h * 0.5, [WAVE_WIDTH, h], side, up, IMAGE, uv(Cell::Patch), Vec3::splat(1.0));
+                wall.alpha_cut = 0.0;
+                wall.depth_bias = 0.2;
+                wall.effect = crate::effects::WAVE;
+                wall.params = [t, sink, 0.0, 0.0];
+                self.live.push(wall);
+                // Spray torn off the crest, foam churning along its foot.
+                let white = [0.9, 0.96, 1.0, 1.0];
+                let mut spray = particles(white, 160, 0.8, 0.35);
+                spray.dir = (Vec3::Y + dir * 1.5).normalize();
+                spray.spread = 25.0;
+                spray.v = (2.0, 5.0);
+                spray.gravity = Vec3::new(0.0, -9.0, 0.0);
+                for k in 0..5 {
+                    let x = (k as f32 / 4.0 - 0.5) * WAVE_WIDTH * 0.9;
+                    self.stream((key, 10 + k), Em { amount: 32, ..spray }, at + side * x + Vec3::Y * h * 0.95 + dir * 0.6, dt);
+                    let mut foot = particles(white, 24, 0.6, 0.45);
+                    foot.cell = Cell::Puff;
+                    foot.dir = (Vec3::Y + dir).normalize();
+                    foot.v = (0.0, 2.5);
+                    self.stream((key, 20 + k), foot, at + side * x + dir * 1.0 + Vec3::Y * 0.1, dt);
+                }
+                self.light(at + Vec3::Y * 2.0 + dir * 1.5, [0.4, 0.75, 1.0, 1.0], 1.5, 7.0);
+            }
+            Some(El::Void) => {
+                // Opens smoothly, holds, then falls in on itself.
+                let open = smooth(0.0, 0.6, ot) * (1.0 - smooth(2.6, 3.0, ot) * 0.9);
+                let at = o.target + Vec3::Y * 1.2;
+                // Facing the camera, which looks down the level from above.
+                let up = Vec3::new(0.0, 12.0, -20.0).normalize();
+                let mut hole = Sprite::fixed(at, [7.5, 7.5], Vec3::X, up, IMAGE, uv(Cell::Patch), linear3([c[0], c[1], c[2]]) * 2.0);
+                hole.alpha_cut = 0.0;
+                hole.depth_bias = 1.5;
+                hole.effect = crate::effects::BLACK_HOLE;
+                hole.params = [open, t, 0.0, 0.0];
+                self.live.push(hole);
+                // Motes swirling round and in.
+                let c3 = linear3([c[0], c[1], c[2]]);
+                for j in 0..60 {
+                    let h = key as f32 * 0.37 + j as f32 * 1.618;
+                    let ph = (t * 0.9 + (h * 12.9898).sin().abs().fract()).fract();
+                    let r = 3.6 * (1.0 - ph) * open.max(0.2);
+                    let a = h * 6.283 + t * 2.0 + 3.0 * ph * ph;
+                    let p = at + Vec3::new(a.cos() * r, (h * 3.1).sin() * 0.6 * (1.0 - ph), a.sin() * r);
+                    self.live.push(glow_sprite(p, 0.22, Cell::Dot, c3 * 1.8 * smooth(0.0, 0.2, ph) * (1.0 - smooth(0.8, 1.0, ph))));
+                }
+                self.light(at, c, 2.0 * open, 8.0);
+            }
+            Some(El::Lightning) => {
+                let Some(cloud) = o.cloud else { return };
+                // A dark cloud gathering over the fight, see-through.
+                for j in 0..9 {
+                    let a = j as f32 * 2.399 + key as f32;
+                    let r = if j == 0 { 0.0 } else { 1.6 + (j % 3) as f32 * 0.9 };
+                    let at = cloud + Vec3::new(a.cos() * r, 6.0 + (j % 2) as f32 * 0.5, a.sin() * r);
+                    let mut s = glow_sprite(at, 4.2, Cell::Puff, Vec3::splat(0.04)).solid();
+                    s.opacity = 0.45 * smooth(0.0, 0.4, ot);
+                    self.live.push(s);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn halo(&mut self, at: Vec3, c: C, size: f32, strength: f32) {
         let c3 = linear3([c[0], c[1], c[2]]);
         let inner = linear3([c[0] + (1.0 - c[0]) * 0.6, c[1] + (1.0 - c[1]) * 0.6, c[2] + (1.0 - c[2]) * 0.6]) * 0.8;
@@ -1011,6 +1110,10 @@ impl Fx {
         let t = self.time;
         for &id in &w.fx {
             let key = id.to_bits().get();
+            if let Ok(o) = w.ecs.get::<&spellstorm::spells::Overload>(id) {
+                self.overload(&o, key, dt);
+                continue;
+            }
             if let Ok(b) = w.ecs.get::<&SBolt>(id) {
                 if b.flight.zap {
                     continue;
@@ -1083,10 +1186,16 @@ impl Fx {
                 }
             } else if let Ok(g) = w.ecs.get::<&Globe>(id) {
                 if g.visible() {
-                    let c = rgba(0.9, 0.06, 0.05, 1.0);
-                    let bob = Vec3::Y * (0.5 + 0.08 * (t * 3.0 + key as f32).sin());
-                    self.live.push(glow_sprite(g.pos + bob, 0.45, Cell::Drop, linear3([0.9, 0.06, 0.05]) * 1.6));
-                    self.halo(g.pos + bob, c, 1.6, 0.6);
+                    // A pool of blood on the floor that reaches for the
+                    // nearest wizard and runs into them (spells.wgsl `blood`).
+                    let to = g.to;
+                    let reach = 0.8 + to.length();
+                    let mut pool = flat_sprite(Vec3::new(g.pos.x, 0.03, g.pos.z), reach, Cell::Patch, Vec3::splat(LIT * 2.5)).solid();
+                    pool.effect = crate::effects::BLOOD;
+                    let pull = (g.pull as f32).clamp(0.0, 0.999);
+                    let suck = (g.slurp / spellstorm::pickups::GLOBE_SLURP).clamp(0.0, 1.0) as f32;
+                    pool.params = [to.x, to.y, pull + (suck * 1000.0).floor(), t + (key % 97) as f32];
+                    self.live.push(pool);
                 }
             } else if let Ok(s) = w.ecs.get::<&Soul>(id) {
                 let c = rgba(0.25, 0.5, 1.0, 1.0);
