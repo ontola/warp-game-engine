@@ -445,6 +445,12 @@ local function init()
     local parts, rings = fx.count()
     state.parts, state.rings, state.fx = parts, rings, #world.find("fx")
     state.typo = tostring(select(2, pcall(fx.burst, vector.create(0, 0, 0), { colour = "red" })))
+    post.set({ bloom = 0.5, bloom_radius = 3, vignette = 0.5, grain = 0.2, aberration = 1 })
+    local many = {}
+    for i = 1, 33 do many[i] = { pos = vector.create(i, 1, 0), color = "#ff8000", intensity = 100 } end
+    state.too_many = tostring(select(2, pcall(lights.set, many)))
+    table.remove(many)
+    lights.set(many)
 end
 local function tick(dt, input)
     world.place(state.box, vector.create(2, 0, 3), 1.5)
@@ -463,6 +469,10 @@ fn effects_fly_out_and_are_gone_after_their_life() {
     let s = state(&g);
     assert_eq!((s["state"]["parts"].clone(), s["state"]["rings"].clone(), s["state"]["fx"].clone()), (json!(20), json!(1), json!(32)), "{s}");
     assert!(s["state"]["typo"].as_str().unwrap().contains("unknown option \"colour\""), "{s}");
+    assert!(s["state"]["too_many"].as_str().unwrap().contains("at most 32 lights"), "{s}");
+    assert_eq!(g.core().lamps.len(), 32);
+    let post = g.core().post.clone();
+    assert_eq!((post.bloom, post.vignette), (Some(0.5), 0.5));
     ticks(&mut g, 10, Controls { aim: [0.5, 0.0], ..Default::default() });
     assert_eq!(state(&g)["state"]["aim"], json!(0.5), "the right stick's position");
     ticks(&mut g, 50, Controls::default());

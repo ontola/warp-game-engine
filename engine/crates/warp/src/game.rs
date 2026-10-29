@@ -119,6 +119,8 @@ impl LuaGame {
             rng: Rng(cfg.seed),
             sky: default_sky,
             light: Default::default(),
+            post: Default::default(),
+            lamps: Vec::new(),
             tick: 0,
             tick_rate: cfg.tick_rate,
             title: cfg.title.clone(),
@@ -222,6 +224,8 @@ impl LuaGame {
             c.tick = 0;
             c.sky = self.default_sky;
             c.light = Default::default();
+            c.post = Default::default();
+            c.lamps.clear();
             for p in &mut c.roster { p.cam = Cam::default(); }
         }
         self.menu = None;
@@ -540,6 +544,14 @@ impl LuaGame {
         if let Some(v) = o.fog[0] { l.fog_start = v; }
         if let Some(v) = o.fog[1] { l.fog_end = v; }
         if let Some(v) = o.fog[2] { l.fog_density = v; }
+        let c = self.core();
+        let p = c.post;
+        l.contrast = p.contrast;
+        l.saturation = p.saturation;
+        l.vignette = p.vignette;
+        l.grain = p.grain;
+        l.aberration = p.aberration;
+        l.time = c.tick as f32 / c.tick_rate;
         l
     }
 
@@ -647,6 +659,34 @@ impl LuaGame {
     }
 }
 
+/// Bloom and the scripts' lamps onto the renderer (cheap when unchanged).
+fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp]) -> Result<(), String> {
+    let mut o = r.debug_options();
+    let before = o;
+    if let Some(b) = p.bloom {
+        o.bloom_enabled = b > 0.0;
+        o.bloom_strength = b;
+        o.bloom_rounds = p.bloom_radius;
+        o.bloom_threshold = p.bloom_threshold;
+        o.bloom_screen = true;
+    }
+    if o != before { r.set_debug_options(o)?; }
+    let lights: Vec<render::headlights::LocalLight> = lamps.iter().map(|l| {
+        let lin = l.color.map(|c| c.clamp(0.0, 1.0).powf(2.2));
+        render::headlights::LocalLight {
+            position: l.pos,
+            direction: glam::Vec3::NEG_Y,
+            intensity_cd: glam::Vec3::from(lin) * l.intensity,
+            range_m: l.range,
+            inner_cos: 1.0,
+            outer_cos: -1.0,
+            source_radius_m: 0.1_f32.min(l.range * 0.5),
+            falloff: 1.5,
+        }
+    }).collect();
+    r.set_local_lights(&lights)
+}
+
 impl Game for LuaGame {
     /// The people; bots need no controls.
     fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot).count().max(1) }
@@ -709,6 +749,7 @@ impl Game for LuaGame {
         }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush(frame.gpu, r)?;
+        post(r, &c.post, &c.lamps)?;
         let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam))).collect();
         seen.sort_by_key(|(v, _)| *v);
         if seen.is_empty() { seen.push((0, Cam::default())); }
