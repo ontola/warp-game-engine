@@ -91,6 +91,9 @@ impl Rng {
 }
 
 pub struct StadiumVisuals {
+    sky_boxes: Vec<Affine3A>,
+    sky_probes: Vec<render::irradiance_volume::Probe>,
+    sky_dirty: bool,
     stands: Slots,
     roof: Slots,
     tv: Slots,
@@ -193,7 +196,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -212,7 +215,9 @@ impl StadiumVisuals {
         self.mark_ring.clear();
         let quarry = if self.rng.f() < 0.5 { 0 } else { 3 } + self.rng.below(3);
         let box_xf = |c: Vec3, size: Vec3, yaw: f32| Affine3A::from_scale_rotation_translation(size, Quat::from_rotation_y(yaw), c);
+        let mut sky_boxes = Vec::new();
         for p in self.geo.pieces() {
+            sky_boxes.push(box_xf(p.center, p.size, p.yaw));
             let mesh = self.masonry.as_ref().and_then(|m| match p.kind {
                 PieceKind::Facade => Some(m[quarry][0]),
                 PieceKind::Step => Some(m[quarry][1]),
@@ -234,11 +239,25 @@ impl StadiumVisuals {
             let mid_r = (inner + ROWS as f32 * ROW_DEPTH - roof_len * 0.5 + 1.0) * s;
             let len = 2.0 * (mid_r + roof_len * 0.5) * (seg * 0.5).tan() + 0.9;
             let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-pitch);
-            self.roof.add(scene, self.roof_stone[quarry], Affine3A::from_scale_rotation_translation(Vec3::new(len, 0.5, roof_len), rot, dir * mid_r + Vec3::Y * (wall_h + 0.6 - ROOF_DROP * 0.5)));
+            let roof_xf = Affine3A::from_scale_rotation_translation(Vec3::new(len, 0.5, roof_len), rot, dir * mid_r + Vec3::Y * (wall_h + 0.6 - ROOF_DROP * 0.5));
+            sky_boxes.push(roof_xf);
+            self.roof.add(scene, self.roof_stone[quarry], roof_xf);
             // Lamp housings under the lip, every other segment.
             if i % 2 == 0 {
                 let lip = (inner + ROWS as f32 * ROW_DEPTH + 1.0 - roof_len) * s;
                 self.stands.add(scene, self.lamp, box_xf(dir * lip + Vec3::Y * (wall_h + 0.6 - ROOF_DROP - 0.7), Vec3::new(1.6, 0.55, 0.55), yaw));
+            }
+        }
+        if let Some((offset, grid)) = scene.irradiance_volume {
+            if sky_boxes != self.sky_boxes {
+                let start = std::time::Instant::now();
+                self.sky_probes = render::sky_occlusion::bake(&grid, &sky_boxes, 96).expect("valid stadium occluders");
+                self.sky_boxes = sky_boxes;
+                let mut words = render::irradiance_volume::pack(&grid, &self.sky_probes).unwrap();
+                words[7] = 1;
+                scene.aux[offset..offset + words.len()].copy_from_slice(&words);
+                self.sky_dirty = true;
+                eprintln!("stadium sky cache: {} boxes, {} probes, {:.1} ms bake", self.sky_boxes.len(), self.sky_probes.len(), start.elapsed().as_secs_f64()*1000.0);
             }
         }
         // Floodlight towers on the four corners, banks leaning over the bowl.
@@ -405,6 +424,10 @@ impl StadiumVisuals {
     pub fn beams(&self) -> &[LocalLight] { &self.beams }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, now: f32) -> Result<(), String> {
+        if self.sky_dirty {
+            renderer.set_sky_occlusion(gpu, &self.sky_probes)?;
+            self.sky_dirty = false;
+        }
         self.stands.flush(gpu, renderer, scene)?;
         self.roof.flush(gpu, renderer, scene)?;
         self.tv.flush(gpu, renderer, scene)?;

@@ -1,0 +1,173 @@
+{
+  "scope": "RTX 5070 Ti Vulkan; native 4K 4 views; seed52; warmup30 measured600; serialized offscreen; other CPU compilations active; frozen exe plus frozen tetra shader override",
+  "runs": [
+    {
+      "enabled": false,
+      "repeat": 1,
+      "frame_ms": {
+        "cpu_median": 4.58,
+        "cpu_p95": 8.04,
+        "wall_median": 12.29,
+        "wall_p95": 17.6,
+        "gpu_median": 4.07,
+        "gpu_p95": 7.82
+      },
+      "pass_means_ms": {
+        "shade": 1.541,
+        "bloom": 0.924,
+        "raster": 0.855,
+        "taa": 0.435,
+        "near shadow raster": 0.399,
+        "tonemap": 0.301,
+        "cull": 0.24,
+        "near shadow cull": 0.183,
+        "fx": 0.111,
+        "shadow raster": 0.088,
+        "shadow cull": 0.046,
+        "live screens": 0.04,
+        "weighted character skinning": 0.02,
+        "crowd": 0.019
+      }
+    },
+    {
+      "enabled": true,
+      "repeat": 1,
+      "frame_ms": {
+        "cpu_median": 4.44,
+        "cpu_p95": 8.28,
+        "wall_median": 12.74,
+        "wall_p95": 18.39,
+        "gpu_median": 4.55,
+        "gpu_p95": 7.97
+      },
+      "pass_means_ms": {
+        "shade": 2.059,
+        "raster": 0.866,
+        "taa": 0.779,
+        "bloom": 0.658,
+        "near shadow raster": 0.364,
+        "tonemap": 0.286,
+        "cull": 0.239,
+        "near shadow cull": 0.188,
+        "shadow raster": 0.089,
+        "shadow cull": 0.046,
+        "fx": 0.046,
+        "live screens": 0.023,
+        "weighted character skinning": 0.021,
+        "crowd": 0.019
+      }
+    },
+    {
+      "enabled": false,
+      "repeat": 2,
+      "frame_ms": {
+        "cpu_median": 4.38,
+        "cpu_p95": 7.57,
+        "wall_median": 12.17,
+        "wall_p95": 17.51,
+        "gpu_median": 4.19,
+        "gpu_p95": 7.83
+      },
+      "pass_means_ms": {
+        "shade": 1.609,
+        "bloom": 0.927,
+        "raster": 0.887,
+        "taa": 0.503,
+        "near shadow raster": 0.368,
+        "tonemap": 0.298,
+        "cull": 0.246,
+        "near shadow cull": 0.182,
+        "fx": 0.098,
+        "shadow raster": 0.089,
+        "shadow cull": 0.046,
+        "live screens": 0.04,
+        "weighted character skinning": 0.021,
+        "crowd": 0.019
+      }
+    },
+    {
+      "enabled": true,
+      "repeat": 2,
+      "frame_ms": {
+        "cpu_median": 4.37,
+        "cpu_p95": 7.45,
+        "wall_median": 12.53,
+        "wall_p95": 17.33,
+        "gpu_median": 4.57,
+        "gpu_p95": 7.95
+      },
+      "pass_means_ms": {
+        "shade": 1.995,
+        "raster": 0.871,
+        "taa": 0.85,
+        "bloom": 0.609,
+        "near shadow raster": 0.392,
+        "tonemap": 0.351,
+        "cull": 0.239,
+        "near shadow cull": 0.167,
+        "shadow raster": 0.088,
+        "fx": 0.048,
+        "shadow cull": 0.047,
+        "weighted character skinning": 0.02,
+        "crowd": 0.019,
+        "live screens": 0.018
+      }
+    },
+    {
+      "enabled": false,
+      "repeat": 3,
+      "frame_ms": {
+        "cpu_median": 4.52,
+        "cpu_p95": 7.88,
+        "wall_median": 12.13,
+        "wall_p95": 17.02,
+        "gpu_median": 4.12,
+        "gpu_p95": 7.74
+      },
+      "pass_means_ms": {
+        "shade": 1.599,
+        "raster": 0.908,
+        "bloom": 0.824,
+        "taa": 0.502,
+        "near shadow raster": 0.406,
+        "tonemap": 0.27,
+        "cull": 0.233,
+        "near shadow cull": 0.174,
+        "fx": 0.163,
+        "shadow raster": 0.089,
+        "live screens": 0.06,
+        "shadow cull": 0.046,
+        "weighted character skinning": 0.021,
+        "crowd": 0.019
+      }
+    },
+    {
+      "enabled": true,
+      "repeat": 3,
+      "frame_ms": {
+        "cpu_median": 4.38,
+        "cpu_p95": 7.48,
+        "wall_median": 12.41,
+        "wall_p95": 17.08,
+        "gpu_median": 4.39,
+        "gpu_p95": 7.94
+      },
+      "pass_means_ms": {
+        "shade": 1.931,
+        "raster": 0.904,
+        "taa": 0.707,
+        "bloom": 0.571,
+        "near shadow raster": 0.369,
+        "tonemap": 0.337,
+        "cull": 0.247,
+        "near shadow cull": 0.19,
+        "shadow raster": 0.09,
+        "fx": 0.075,
+        "shadow cull": 0.046,
+        "live screens": 0.022,
+        "weighted character skinning": 0.021,
+        "crowd": 0.019
+      }
+    }
+  ]
+}
