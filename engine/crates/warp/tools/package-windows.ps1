@@ -5,7 +5,9 @@
 param([Parameter(Mandatory=$true)][string]$Game,[Parameter(Mandatory=$true)][string]$Executable,[Parameter(Mandatory=$true)][string]$OutDirectory)
 $ErrorActionPreference='Stop'
 $gameRoot=(Resolve-Path -LiteralPath $Game).Path
-if(-not (Test-Path -LiteralPath (Join-Path $gameRoot 'main.luau'))){throw "$Game has no main.luau"}
+# A game folder holds main.luau, or exactly one other .luau file (a one-file game).
+$scriptsAtTop=@(Get-ChildItem -LiteralPath $gameRoot -File -Filter '*.luau' | Where-Object { $_.Name -notlike '*.d.luau' })
+if(-not (Test-Path -LiteralPath (Join-Path $gameRoot 'main.luau')) -and $scriptsAtTop.Count -ne 1){throw "$Game has no main.luau (or one .luau file)"}
 $destination=[IO.Path]::GetFullPath($OutDirectory)
 if(Test-Path -LiteralPath $destination){throw 'Package output must be a new directory'}
 New-Item -ItemType Directory -Path $destination | Out-Null

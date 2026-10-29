@@ -26,7 +26,8 @@ The LÖVE bot is ported as is: it drifts side to side, steps towards a star
 above it and away from a meteor, and never dashes.
 
 Not ported: LÖVE's automatic rematch after the results (the round ends with
-`game.finish()`; New round in the start menu plays again). GameNight's
-Windows packaging (`engine/crates/warp/tools/package-windows.ps1`) still
-expects a `main.luau`: rename or copy `meteor-dash.luau` to `main.luau` to
-package it.
+`game.finish()`; New round in the start menu plays again).
+
+The folder is a game too (`warp run games/meteor-dash`): its only script is the
+game, so GameNight's Windows packaging (`engine/crates/warp/tools/package-windows.ps1`)
+packages it as it is.

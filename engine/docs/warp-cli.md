@@ -78,7 +78,9 @@ warp run orb-hunt.luau      # or just: warp orb-hunt.luau
 warp check orb-hunt.luau
 ```
 
-Every command that takes a game folder takes such a file. Only that file
+Every command that takes a game folder takes such a file, or a folder whose only
+`.luau` script (type files aside) is the game, which is how a packaged one-file
+game runs. Only that file
 loads (other `.luau` files beside it are not part of the game); glTF paths
 and a `sounds/` folder, if there is one, are read relative to its folder,
 and with `--live` that folder is what the AI can edit. Saving the file

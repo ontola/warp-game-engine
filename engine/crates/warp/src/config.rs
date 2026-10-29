@@ -44,6 +44,23 @@ impl Default for GameToml {
     }
 }
 
+/// A folder's one-file game: no `main.luau` and exactly one other `.luau`
+/// file at the top (type files `*.d.luau` aside), such as
+/// `meteor-dash/meteor-dash.luau`. A packaged copy keeps working.
+pub fn one_file_in(dir: &Path) -> Option<std::path::PathBuf> {
+    if dir.join("main.luau").exists() { return None; }
+    let mut files = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "luau") && !p.to_string_lossy().ends_with(".d.luau"));
+    let one = files.next()?;
+    files.next().is_none().then_some(one)
+}
+
+/// A game: a folder with `main.luau`, a folder holding one `.luau` game, or
+/// a `.luau` file.
+pub fn is_game(p: &Path) -> bool {
+    p.join("main.luau").is_file() || (p.is_file() && p.extension().is_some_and(|e| e == "luau")) || (p.is_dir() && one_file_in(p).is_some())
+}
+
 impl GameToml {
     pub fn parse(text: &str) -> Result<Self, String> {
         let cfg: GameToml = toml::from_str(text).map_err(|e| format!("game.toml: {e}"))?;
