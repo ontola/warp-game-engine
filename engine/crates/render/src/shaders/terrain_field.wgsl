@@ -197,9 +197,12 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
 
     // Crags: bedrock mountainsides break into cliff bands and grassy
     // benches, about 24 m apart.
-    let crag = min(2.0 * st.rocks, 1.0) * bedrock * tf_smooth(0.2, 0.7, mountains) * tf_smooth(0.97, 0.85, up0) * tf_fade(24.0, cut);
+    // Crag bands come and go along the slope, wander in height and sink
+    // under the snow, so they never read as stairs.
+    let crag = min(2.0 * st.rocks, 1.0) * bedrock * tf_smooth(0.2, 0.7, mountains) * tf_smooth(0.97, 0.85, up0) * tf_fade(24.0, cut)
+        * tf_smooth(-0.15, 0.35, tf_noised(p * 3.0 + warp, seed + 22u).x) * (1.0 - 0.8 * tf_smooth(st.snow_line - 300.0, st.snow_line, y));
     if crag > 0.0 {
-        let s = y / 24.0 + 0.6 * tf_noised(p * 6.0 + warp, seed + 12u).x;
+        let s = y / 24.0 + 1.4 * tf_noised(p * 2.5 + warp, seed + 12u).x + 0.4 * tf_noised(p * 9.0, seed + 23u).x;
         let fl = floor(s);
         let t = s - fl;
         let tb = clamp((t - 0.6) / 0.4, 0.0, 1.0);
@@ -319,10 +322,10 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     // Bedrock strata: ledges stick out of steep rock and overhang a little.
     var pos = vec3<f32>(x, y + water, z);
     if rock > 0.0 && steep > 0.0 {
-        let layer = y / 5.5 + 0.8 * tf_noised(p * 24.0, seed + 5u).x;
+        let layer = y / 5.5 + 2.0 * tf_noised(p * 5.0, seed + 5u).x + 0.8 * tf_noised(p * 24.0, seed + 5u).x;
         let t = layer - floor(layer);
         let ledge = tf_smooth(0.0, 0.18, t) * (1.0 - tf_smooth(0.45, 1.0, t)) - 0.35;
-        let push = 1.8 * tf_smooth(0.8, 0.6, up) * ledge * tf_fade(5.5, cut);
+        let push = 1.8 * tf_smooth(0.8, 0.6, up) * ledge * tf_fade(5.5, cut) * tf_smooth(-0.3, 0.3, tf_noised(p * 8.0, seed + 24u).x);
         pos.x -= g.x / steep * push;
         pos.z -= g.y / steep * push;
     }
@@ -335,6 +338,9 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     o.water = water;
     o.moor = moor;
     // Snow lies above the snow line on all but steep faces, in drifts.
-    o.snow = tf_smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * tf_noised(p * 12.0, seed + 19u).x) * tf_smooth(0.62, 0.8, up);
+    // Snow follows the broad slope, so ledges and steps do not stripe it;
+    // only sheer walls stay bare.
+    o.snow = tf_smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * tf_noised(p * 12.0, seed + 19u).x)
+        * tf_smooth(0.62, 0.8, up0) * tf_smooth(0.35, 0.55, up);
     return o;
 }
