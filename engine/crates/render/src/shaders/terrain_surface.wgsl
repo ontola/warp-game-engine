@@ -41,6 +41,67 @@ fn field_hash(i: vec2<f32>) -> f32 {
     return f32(((w >> 22u) ^ w) >> 8u) / 16777215.0;
 }
 
+// Hex tiling (Mikkelsen 2022): three samples per point from the corners of a
+// triangle grid, each with its own random turn and offset, blended so no
+// tile repeat lines up. `uv` is in texture tiles.
+struct HexTap { uv: array<vec2<f32>, 3>, r: array<mat2x2<f32>, 3>, w: vec3<f32> }
+
+fn hex_taps(uv: vec2<f32>) -> HexTap {
+    let g = uv * 2.0;
+    let sk = vec2<f32>(g.x, -0.57735027 * g.x + 1.15470054 * g.y);
+    let base = floor(sk);
+    let fr = sk - base;
+    let fz = 1.0 - fr.x - fr.y;
+    let s = select(0.0, 1.0, fz < 0.0);
+    let s2 = 2.0 * s - 1.0;
+    var w = vec3<f32>(-fz * s2, s - fr.y * s2, s - fr.x * s2);
+    let v = array<vec2<f32>, 3>(base + vec2<f32>(s, s), base + vec2<f32>(s, 1.0 - s), base + vec2<f32>(1.0 - s, s));
+    var t: HexTap;
+    for (var i = 0; i < 3; i++) {
+        let a = field_hash(v[i] + 91.0) * 6.2831853;
+        let c = cos(a);
+        let sn = sin(a);
+        t.r[i] = mat2x2<f32>(vec2<f32>(c, sn), vec2<f32>(-sn, c));
+        t.uv[i] = t.r[i] * uv + vec2<f32>(field_hash(v[i] + 13.0), field_hash(v[i] + 57.0)) * 7.0;
+    }
+    w = w * w * w;
+    t.w = w / (w.x + w.y + w.z);
+    return t;
+}
+
+fn hex_tex(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec3<f32> {
+    let t = hex_taps(uv);
+    var c = vec3<f32>(0.0);
+    for (var i = 0; i < 3; i++) { c += tex_w(l, t.uv[i], t.r[i] * dx, t.r[i] * dy).rgb * t.w[i]; }
+    return c;
+}
+
+fn hex_nrm(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec2<f32> {
+    let t = hex_taps(uv);
+    var g = vec2<f32>(0.0);
+    for (var i = 0; i < 3; i++) { g += transpose(t.r[i]) * nrm(l, t.uv[i], t.r[i] * dx, t.r[i] * dy) * t.w[i]; }
+    return g;
+}
+
+// Triplanar with hex tiling on each plane; planes with little weight are skipped.
+fn hex_triplanar(l: i32, p: vec3<f32>, tw: vec3<f32>, scale: f32) -> vec3<f32> {
+    let k = 1.0 / scale;
+    var c = vec3<f32>(0.0);
+    if tw.x > 0.02 { c += hex_tex(l, p.zy * k, fp.dx.zy * k, fp.dy.zy * k) * tw.x; }
+    if tw.y > 0.02 { c += hex_tex(l, p.xz * k, fp.dx.xz * k, fp.dy.xz * k) * tw.y; }
+    if tw.z > 0.02 { c += hex_tex(l, p.xy * k, fp.dx.xy * k, fp.dy.xy * k) * tw.z; }
+    return c / max(dot(tw, vec3<f32>(f32(tw.x > 0.02), f32(tw.y > 0.02), f32(tw.z > 0.02))), 1e-4);
+}
+
+fn hex_triplanar_n(l: i32, p: vec3<f32>, n: vec3<f32>, tw: vec3<f32>, scale: f32) -> vec3<f32> {
+    let k = 1.0 / scale;
+    var acc = vec3<f32>(0.0);
+    if tw.x > 0.02 { acc += perturb(n, hex_nrm(l, p.zy * k, fp.dx.zy * k, fp.dy.zy * k), vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.0, -1.0, 0.0)) * tw.x; }
+    if tw.y > 0.02 { acc += perturb(n, hex_nrm(l, p.xz * k, fp.dx.xz * k, fp.dy.xz * k), vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 0.0, -1.0)) * tw.y; }
+    if tw.z > 0.02 { acc += perturb(n, hex_nrm(l, p.xy * k, fp.dx.xy * k, fp.dy.xy * k), vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, -1.0, 0.0)) * tw.z; }
+    return safe_normalize(acc);
+}
+
 fn field_vnoise(p: vec2<f32>) -> f32 {
     let i = floor(p);
     let f = p - i;
@@ -111,16 +172,13 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         tw = tw * tw * tw * tw;
         tw /= tw.x + tw.y + tw.z;
         let rot = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
-        let turn = mat2x2<f32>(vec2<f32>(0.825, 0.565), vec2<f32>(-0.565, 0.825));
-        // Two turned copies at scales with no common period, blended by
-        // noise, so the 6 m tile never lines up into a grid.
-        let mix_r = smoothstep(0.25, 0.75, field_fbm(wuv / 23.0 + 7.0, footprint / 23.0));
-        let bare0 = mix(triplanar(layer + 3, p, tw, 6.0, rot, 0.0), triplanar(layer + 3, p, tw, 15.7, turn, 0.53), mix_r);
+        // Hex tiling: every few metres a new random turn, so no repeat shows.
+        let bare0 = hex_triplanar(layer + 3, p, tw, 7.0);
         let bare = mix(vec3<f32>(dot(bare0, vec3<f32>(0.3, 0.59, 0.11))), bare0, 0.35) * vec3<f32>(1.0, 1.04, 1.1) * (0.85 + 0.3 * broad);
         let mossy = triplanar(layer + 5, p, tw, 3.5, rot, 0.37);
         let m_moss = smoothstep(0.55, 0.9, n.y) * (0.5 + 0.5 * f.moor) * smoothstep(0.3, 0.7, broad);
         let rc = mix(bare, mossy, m_moss);
-        let bare_n = normalize(mix(triplanar_n(layer + 3, p, n, tw, 6.0, rot, 0.0), triplanar_n(layer + 3, p, n, tw, 15.7, turn, 0.53), mix_r));
+        let bare_n = hex_triplanar_n(layer + 3, p, n, tw, 7.0);
         let rn = normalize(mix(bare_n, triplanar_n(layer + 5, p, n, tw, 3.5, rot, 0.37), m_moss));
         c = mix(c, rc, m_rock);
         nn = normalize(mix(nn, rn, m_rock));
