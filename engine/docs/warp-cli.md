@@ -312,6 +312,34 @@ script it runs only for a captured frame. Cameras, the HUD, the sky and the
 light may be set anywhere. Set cameras in `tick` when sound positions
 matter, because the listeners follow them.
 
+### Your own shader
+
+A file `surface.wgsl` in the game folder is the game's own surface
+shader. An entity (or `world.warm` look) with `surface = N` is drawn by it,
+and `N` (0 to 255) tells its surfaces apart:
+
+```lua
+world.spawn("cube", { pos = vector.create(0, -11.5, 0), size = vector.create(80, 0.1, 50), emissive = 0.002, surface = 0 })
+```
+
+The file replaces the engine's
+[game_surface.wgsl](../crates/render/src/shaders/game_surface.wgsl): copy
+that file (it holds the `SurfaceIn` and `SurfaceOut` structs) and fill in
+`fn game_surface(s: SurfaceIn) -> SurfaceOut`. It gets the world position,
+the normal, the view direction, the entity's colour (`tint`, linear),
+roughness and metal, `time` in seconds and `kind`; it returns the albedo,
+normal, roughness, metal and an emission in nits. `scale` holds the
+entity's `emissive` in nits (emissive × 4000), so a Luau knob can set the
+brightness. Prefix your own functions (`bd_noise`), because the file is
+compiled together with the engine's shading code.
+
+An edit recompiles on the next frame, on screen and over MCP (`write_file`
+takes `.wgsl`). A version that does not compile keeps the last good one
+running and shows the compiler's message in `errors` until a good one
+loads. `warp check` has no GPU and does not compile it; `warp script`
+does. Neon Siege's tissue backdrop is an example
+(games/neon-siege/surface.wgsl and backdrop.luau).
+
 ### Costs
 
 Entities live in a block of render slots reserved at start, so spawning,
@@ -343,7 +371,10 @@ right away on the `reload` command or tool.
   does this for its arena, stars and post settings).
 - A load error (a syntax error, a module that returns something other than
   a table) keeps the previous version running and reports the file and
-  line. A runtime error in a hook turns that module's hooks off until the
+  line. A runtime error in a hook of a fresh edit puts back the version
+  that ran before it (after 30 good calls a version counts as working); the
+  message stays until the next good load. A runtime error in a version
+  with nothing to fall back to turns that module's hooks off until the
   file changes again. Both appear in `/errors`, in the log and on screen.
 - **sounds/*.luau**: an edited patch is compiled and used by every later
   play. A broken patch keeps the last good version. `set_param` (MCP)
@@ -361,7 +392,7 @@ Generic tools: `describe`, `state`, `query`, `screenshot`, `run_luau`
 `state` are in scope, so `run_luau("debug.wave(12)")` calls a function
 main.luau exports as `debug`), `list_files`,
 `read_file` and `write_file` on the folder `game` (`.luau`, `.toml`, `.md`
-and `.json` files; a write reloads at once and the reply says whether the
+`.json` and `.wgsl` files; a write reloads at once and the reply says whether the
 file loaded), `logs`, `play_sound`, `set_param` and `render_sound`.
 
 Warp's own tools:

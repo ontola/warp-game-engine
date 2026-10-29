@@ -51,7 +51,15 @@ pub struct Module {
     pub error: Option<String>,
     /// A hook failed at runtime: this module's hooks stay off until it reloads.
     pub broken: bool,
+    /// The last version that ran for a while (exports, globals), to fall
+    /// back to when a fresh edit fails at runtime.
+    proven: Option<(Table, Table)>,
+    /// Calls the current version has completed, up to PROVEN_AFTER.
+    calls: u32,
 }
+
+/// Successful calls after which a version counts as working.
+const PROVEN_AFTER: u32 = 30;
 
 impl Module {
     /// The module's `state` table, which survives reloads.
@@ -144,7 +152,7 @@ impl Host {
     /// A module from a string that never reloads (built-in content, tests).
     pub fn add_source(&mut self, name: &str, source: &str) -> Result<(), String> {
         let state = self.lua.create_table().map_err(err)?;
-        self.modules.push(Module { name: name.into(), path: None, stamp: None, exports: None, env: None, state, error: None, broken: false });
+        self.modules.push(Module { name: name.into(), path: None, stamp: None, exports: None, env: None, state, error: None, broken: false, proven: None, calls: 0 });
         let i = self.modules.len() - 1;
         self.load(i, source);
         self.modules[i].error.clone().map_or(Ok(()), Err)
@@ -152,6 +160,12 @@ impl Host {
 
     /// Reload what changed under the root: new and edited files load (in
     /// path order), deleted ones drop. Returns the names that changed.
+    /// Load `name` again on the next poll even if its time and size match
+    /// (an edit that keeps the length within the file system's clock tick).
+    pub fn forget(&mut self, name: &str) {
+        if let Some(m) = self.modules.iter_mut().find(|m| m.name == name) { m.stamp = None; }
+    }
+
     pub fn poll(&mut self) -> Vec<String> {
         let Some(root) = self.root.clone() else { return Vec::new() };
         let mut found = Vec::new();
@@ -170,7 +184,7 @@ impl Host {
                 Some(i) => i,
                 None => {
                     let Ok(state) = self.lua.create_table() else { continue };
-                    self.modules.push(Module { name: name.clone(), path: Some(path.clone()), stamp: None, exports: None, env: None, state, error: None, broken: false });
+                    self.modules.push(Module { name: name.clone(), path: Some(path.clone()), stamp: None, exports: None, env: None, state, error: None, broken: false, proven: None, calls: 0 });
                     self.modules.len() - 1
                 }
             };
@@ -195,8 +209,8 @@ impl Host {
         });
         let m = &mut self.modules[i];
         match result {
-            Ok((Value::Table(t), e)) => { m.exports = Some(t); m.env = Some(e); m.error = None; m.broken = false; }
-            Ok((Value::Nil, e)) => { m.exports = self.lua.create_table().ok(); m.env = Some(e); m.error = None; m.broken = false; }
+            Ok((Value::Table(t), e)) => { m.exports = Some(t); m.env = Some(e); m.error = None; m.broken = false; m.calls = 0; }
+            Ok((Value::Nil, e)) => { m.exports = self.lua.create_table().ok(); m.env = Some(e); m.error = None; m.broken = false; m.calls = 0; }
             Ok((v, _)) => m.error = Some(format!("{name}: must return a table of exports, not a {}", v.type_name())),
             Err(e) => m.error = Some(short(&e)),
         }
@@ -204,6 +218,10 @@ impl Host {
             None => { self.generation += 1; self.say(format!("loaded {name}")); }
             Some(e) => { let keep = if m.exports.is_some() { " (keeping the previous version)" } else { "" }; let e = format!("{e}{keep}"); self.say(e); }
         }
+        self.rehook();
+    }
+
+    fn rehook(&mut self) {
         self.hooks = self.modules.iter().filter_map(|m| m.exports.as_ref()).flat_map(|t| t.pairs::<String, Value>().filter_map(|kv| kv.ok()).filter(|(_, v)| v.is_function()).map(|(k, _)| k).collect::<Vec<_>>()).collect();
         self.hooks.sort();
         self.hooks.dedup();
@@ -229,16 +247,39 @@ impl Host {
             .collect()
     }
 
-    /// Run one call on behalf of `module` with a fresh step budget; a
-    /// failure is logged and turns that module's hooks off until it reloads.
+    /// Run one call on behalf of `module` with a fresh step budget. A
+    /// failure is logged. A fresh edit that fails falls back to the version
+    /// that ran before it (the error stays shown until the next good load);
+    /// otherwise the module's hooks are off until it reloads.
     pub fn run<R>(&mut self, module: usize, what: &str, f: impl FnOnce(&Lua) -> mlua::Result<R>) -> Option<R> {
         self.steps.store(self.limits.steps, Ordering::Relaxed);
         match f(&self.lua) {
-            Ok(r) => Some(r),
+            Ok(r) => {
+                let m = &mut self.modules[module];
+                if m.calls < PROVEN_AFTER {
+                    m.calls += 1;
+                    if m.calls == PROVEN_AFTER && let (Some(x), Some(e)) = (&m.exports, &m.env) { m.proven = Some((x.clone(), e.clone())); }
+                }
+                Some(r)
+            }
             Err(e) => {
                 let m = &mut self.modules[module];
-                m.broken = true;
-                let line = format!("{} ({what}): {} (its hooks are off until the file changes)", m.name, short(&e));
+                let fresh = m.calls < PROVEN_AFTER;
+                let line = match m.proven.clone().filter(|(x, _)| fresh && m.exports.as_ref() != Some(x)) {
+                    Some((x, env)) => {
+                        m.exports = Some(x);
+                        m.env = Some(env);
+                        m.calls = PROVEN_AFTER;
+                        let line = format!("{} ({what}): {} (back to the version that ran before this edit)", m.name, short(&e));
+                        m.error = Some(line.clone());
+                        self.rehook();
+                        line
+                    }
+                    None => {
+                        m.broken = true;
+                        format!("{} ({what}): {} (its hooks are off until the file changes)", m.name, short(&e))
+                    }
+                };
                 self.say(line);
                 None
             }
@@ -399,6 +440,30 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         h.poll();
         assert!(h.modules().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fresh_edit_that_fails_falls_back_to_the_version_before() {
+        let dir = std::env::temp_dir().join(format!("warp-script-back-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("m.luau");
+        std::fs::write(&file, "return { v = function() return 1 end }").unwrap();
+        let mut h = host();
+        h.watch(&dir);
+        let call = |h: &mut Host| { let (m, f) = h.each("v").pop()?; h.run(m, "v", |_| f.call::<f64>(())) };
+        for _ in 0..PROVEN_AFTER { assert_eq!(call(&mut h), Some(1.0)); }
+        std::fs::write(&file, "return { v = function() return nil + 1 end }   ").unwrap();
+        h.poll();
+        assert_eq!(call(&mut h), None, "the edit fails");
+        assert!(!h.modules()[0].broken);
+        assert!(h.modules()[0].error.as_deref().unwrap().contains("back to the version"));
+        assert_eq!(call(&mut h), Some(1.0), "the version before runs again");
+        std::fs::write(&file, "return { v = function() return 3 end }").unwrap();
+        h.poll();
+        assert_eq!(call(&mut h), Some(3.0));
+        assert!(h.modules()[0].error.is_none(), "a good load clears the message");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

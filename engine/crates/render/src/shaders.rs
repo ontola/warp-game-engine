@@ -131,7 +131,7 @@ pub(crate) fn source(name: &str) -> String {
 
 /// Run `build` under a validation error scope: the compiler's message
 /// instead of a panic when new shader code does not validate.
-pub(crate) fn checked<T>(gpu: &crate::Gpu, build: impl FnOnce() -> T) -> Result<T, String> {
+pub fn checked<T>(gpu: &crate::Gpu, build: impl FnOnce() -> T) -> Result<T, String> {
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let value = build();
     match pollster::block_on(scope.pop()) {

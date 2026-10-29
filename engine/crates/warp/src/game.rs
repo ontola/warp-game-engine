@@ -8,6 +8,7 @@ use crate::config::GameToml;
 use crate::{knobs, luajson};
 use crate::sky::SkyChoice;
 use crate::sounds::{check_params, Bank, SoundOut};
+use crate::surface::GameSurface;
 use crate::world::World;
 use app::{Buttons, Controls, Draw, Frame, Game};
 use audio::synth::{Ear, SoundSender};
@@ -74,6 +75,8 @@ pub struct LuaGame {
     /// The next player id: ids are never reused in a session.
     next_id: u32,
     quit: bool,
+    /// The game's own surface shader (surface.wgsl).
+    surface: GameSurface,
 }
 
 /// The start menu's items: Joep's convention for every GameNight game
@@ -136,7 +139,8 @@ impl LuaGame {
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, polls: 0, next_id: 1, quit: false };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir) };
+        g.surface.install();
         let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
             .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None })).collect();
         g.seat_all(&people, false);
@@ -196,6 +200,7 @@ impl LuaGame {
     /// Reload edited scripts and sound patches now. Returns what changed.
     pub fn reload(&mut self) -> Vec<String> {
         let mut lines = self.core().sounds.bank.scan();
+        lines.extend(self.surface.scan());
         let changed = self.host.poll();
         self.flush_log();
         if !changed.is_empty() { self.inline_sounds(); }
@@ -447,6 +452,7 @@ impl LuaGame {
     pub fn errors(&self) -> Vec<String> {
         let mut out: Vec<String> = self.host.modules().iter().filter_map(|m| m.error.clone().or_else(|| m.broken.then(|| format!("{}: a hook failed; its hooks are off until the file changes (see logs)", m.name)))).collect();
         out.extend(self.core().sounds.bank.errors.iter().map(|(f, e)| match f.strip_prefix("inline:") { Some(n) => format!("sound {n}: {e}"), None => format!("sounds/{f}: {e}") }));
+        out.extend(self.surface.error.clone());
         if self.host.modules().is_empty() { out.push("no Luau modules loaded".into()); }
         out
     }
@@ -501,10 +507,13 @@ impl LuaGame {
         let before = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
         let after = knobs::set(&before, name, value)?;
         std::fs::write(&file, &after).map_err(|e| e.to_string())?;
-        let lines = self.reload();
         let main = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // 0.55 -> 0.28 keeps the size, and the time may not have moved yet.
+        self.host.forget(&main);
+        let lines = self.reload();
         if let Some(err) = self.host.modules().iter().find(|m| m.name == main).and_then(|m| m.error.clone()) {
             std::fs::write(&file, &before).map_err(|e| e.to_string())?;
+            self.host.forget(&main);
             self.reload();
             return Err(format!("{name} = {value} does not load, kept the old value: {err}"));
         }
@@ -687,7 +696,7 @@ impl LuaGame {
             about: format!("\"{}\", a Warp game made of Luau scripts (main.luau), synth patches (sounds/*.luau) and assets, run by the `warp` executable.", self.cfg.title),
             guide: "Call `knobs` first: the values the game marks as tweakable, set with `set_knob` (live, and saved in main.luau). For anything else, edit the game with write_file in the `game` folder: main.luau holds init(), tick(dt, input) and draw(); sounds/NAME.luau is the patch `NAME`. A saved file reloads at once: the world and the `state` table stay, so change code without losing the play session; call `restart` to run init again. The Luau API is in the folder's types.d.luau. `state` is the game's JSON (its `state` field is main.luau's state table); `run_luau` runs Luau against the live game, with main.luau's globals and exports in scope (call its functions: export a `debug` table of helpers); `screenshot` shows the frame; `render_sound` measures a patch without speakers. Errors appear in `state.errors`, `logs` and on screen.".into(),
             tools,
-            roots: vec![live::Root::new("game", &self.dir, live::Reload::Game, "The game folder: main.luau and other modules, sounds/*.luau patches, game.toml, types.d.luau. A write reloads the scripts and sounds and reports load errors.").extensions(&["luau", "toml", "md", "json"])],
+            roots: vec![live::Root::new("game", &self.dir, live::Reload::Game, "The game folder: main.luau and other modules, sounds/*.luau patches, game.toml, types.d.luau. A write reloads the scripts and sounds and reports load errors.").extensions(&["luau", "toml", "md", "json", "wgsl"])],
             features: live::Features { state: true, screenshot: true, luau: true, shaders: false, sound: true },
         };
         let live = live::start(cfg, manifest)?;
@@ -792,13 +801,33 @@ impl Game for LuaGame {
         self.update_sky();
         let light = self.lighting();
         let mut c = api::lock(&self.core);
+        let mut surface_line = None;
+        let added = std::mem::take(&mut c.world.added);
+        let mut late = None;
         if std::mem::take(&mut c.world.rebuild) || frame.renderer().is_none() {
-            frame.set_scene(&c.world.scene, &light);
+            // A look first seen after the start stalls the game while the
+            // renderer is rebuilt: name it so it can be warmed in init.
+            if frame.renderer().is_some() && !added.is_empty() {
+                let more = if added.len() > 4 { format!(" and {} more", added.len() - 4) } else { String::new() };
+                late = Some(format!("renderer rebuilt mid-game for new looks: {}{more} (warm them in init with world.warm, or reuse a look)", added[..added.len().min(4)].join(", ")));
+            }
+            if self.surface.pending() {
+                let gpu = frame.gpu;
+                surface_line = self.surface.apply(|| render::validated(gpu, || frame.set_scene(&c.world.scene, &light)));
+            } else {
+                frame.set_scene(&c.world.scene, &light);
+            }
             self.sky_upload = None;
-        } else if let Some(p) = self.sky_upload.take() {
-            let gpu = frame.gpu;
-            let mut l = light.clone();
-            if let Some(r) = frame.renderer_mut() && let Err(e) = r.update_sky(gpu, &p.sky, &mut l) { eprintln!("sky unchanged on the GPU: {e}"); }
+        } else {
+            if self.surface.pending() {
+                let gpu = frame.gpu;
+                surface_line = self.surface.apply(|| frame.renderer_mut().ok_or("no renderer".to_string())?.reload_shaders(gpu).map(|_| ()));
+            }
+            if let Some(p) = self.sky_upload.take() {
+                let gpu = frame.gpu;
+                let mut l = light.clone();
+                if let Some(r) = frame.renderer_mut() && let Err(e) = r.update_sky(gpu, &p.sky, &mut l) { eprintln!("sky unchanged on the GPU: {e}"); }
+            }
         }
         let r = frame.renderer().ok_or("no renderer")?;
         c.world.flush(frame.gpu, r)?;
@@ -808,6 +837,8 @@ impl Game for LuaGame {
         if seen.is_empty() { seen.push((0, Cam::default())); }
         let cameras = seen.into_iter().map(|(_, k)| k).map(|k| Camera { pos: k.pos, target: k.target, fov_y: k.fov.to_radians(), near: 0.05 }).collect();
         drop(c);
+        if let Some(line) = surface_line { self.say(line); }
+        if let Some(line) = late { self.say(line); }
         let hud = self.hud(frame.size);
         Ok(Draw { cameras, light, hud })
     }
@@ -848,6 +879,7 @@ impl live::LiveGame for LuaGame {
     fn luau(&mut self, code: &str) -> Result<String, String> { LuaGame::luau(self, code) }
 
     fn file_written(&mut self, _root: &str, path: &str) -> Option<String> {
+        self.host.forget(path);
         let lines = self.reload();
         let mine: Vec<&String> = lines.iter().filter(|l| l.starts_with(path) || l.contains(path)).collect();
         Some(if mine.is_empty() { format!("{path}: written (no module or patch changed: {})", if lines.is_empty() { "nothing reloaded".into() } else { lines.join("; ") }) } else { mine.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n") })

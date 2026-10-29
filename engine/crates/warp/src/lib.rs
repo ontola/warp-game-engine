@@ -16,6 +16,7 @@ pub mod party;
 pub mod sky;
 pub mod sounds;
 pub mod starter;
+pub mod surface;
 pub mod world;
 
 pub use game::{LuaGame, Overrides};
