@@ -636,6 +636,8 @@ impl Game for Lobby {
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
+        // Behind a game: a few frames a second, the GPU is the game's.
+        if self.display_active == Some(false) { std::thread::sleep(std::time::Duration::from_millis(100)); }
         let delta = frame.dt;
         self.time += delta;
         if !self.uploaded {
@@ -651,7 +653,9 @@ impl Game for Lobby {
         for e in std::mem::take(&mut self.events) { self.props.event(&e); }
         self.props.camera(&mut self.stage.room.camera, self.time, delta);
         let light = self.stage.options.tuning.light;
-        let (mut lights, shots) = self.props.update(&self.world, &mut self.stage.room, &mut self.stage.scene, frame.alpha, delta, self.time, light);
+        let depths: HashMap<String, f32> = self.actors.keys().map(|id| (id.clone(), self.actor_depth(id))).collect();
+        let actor_depth = |id: &str| depths.get(id).copied().unwrap_or(0.0);
+        let (mut lights, shots) = self.props.update(&self.world, &mut self.stage.room, &mut self.stage.scene, frame.alpha, delta, self.time, light, &actor_depth);
         let pending = self.host.pending_profiles();
         let shelf: Vec<(String, String)> = self.show.shelf.iter().map(|g| (g.title.clone(), g.color.clone())).collect();
         self.board.update(&mut self.stage.room, &mut self.stage.scene, &pending, &shelf, self.host.shelf_offset, light);
@@ -689,7 +693,10 @@ impl Game for Lobby {
         if self.client.is_none() { return app::Screen::Normal; }
         match self.display_active {
             Some(true) if std::env::var("GAMENIGHT_LOBBY_FULLSCREEN").as_deref() != Ok("0") => app::Screen::Fullscreen,
-            Some(false) => app::Screen::Hidden,
+            // A game has the screen: stay fullscreen behind it, never
+            // minimised, so Back reveals the room and not the desktop, the
+            // taskbar or another app while the lobby climbs back up.
+            Some(false) => app::Screen::Normal,
             _ => app::Screen::Normal,
         }
     }

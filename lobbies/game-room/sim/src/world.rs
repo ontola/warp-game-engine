@@ -178,6 +178,8 @@ pub struct Item {
     pub ammo: i32,
     pub age: f64,
     pub spin: f64,
+    /// Angular velocity (rad/s, counter-clockwise); spin is its integral.
+    pub av: f64,
     pub thrower: Option<String>,
     pub dead: bool,
 }
@@ -285,6 +287,9 @@ fn length32(x: f64, y: f64) -> f32 {
 }
 
 pub struct World {
+    /// Move free items as the Godot lobby did (no rolling or tumbling), for
+    /// the line-for-line parity test against the original.
+    pub classic_items: bool,
     /// In join order, like the Godot dictionary.
     pub players: Vec<Player>,
     pub items: Vec<Item>,
@@ -309,6 +314,7 @@ impl Default for World {
 impl World {
     pub fn new(seed: u64) -> World {
         World {
+            classic_items: false,
             players: Vec::new(),
             items: Vec::new(),
             shots: Vec::new(),
@@ -741,12 +747,16 @@ impl World {
         if thrown {
             item.vx = p.facing * 11.0 + p.vx * 0.5;
             item.vy = 6.5;
+            // Released with the hand rolling over it: forward spin (a box tumbles).
+            let body = Body::of(item.kind);
+            item.av = -p.facing * if body.rolling.is_some() { 6.0 / body.radius * 0.25 } else { 11.0 };
             item.thrower = Some(p.id.clone());
             let e = ev(Ev::Throw, item.x, item.y, Some(&p.id));
             self.events.push(e);
         } else {
             item.vx = p.vx;
             item.vy = 2.0;
+            item.av = 0.0;
         }
     }
 
@@ -909,6 +919,7 @@ impl World {
         let item = &mut self.items[it];
         item.vx = p.facing * 5.5 * power + p.vx * 0.6;
         item.vy = 5.0 * power;
+        item.av = -item.vx / Body::of(item.kind).radius * 0.5;
         let e = ev(Ev::Kick, item.x, item.y, Some(&p.id));
         self.events.push(e);
     }
@@ -933,6 +944,7 @@ impl World {
             ammo: kind.weapon().map_or(0, |w| w.ammo),
             age: 0.0,
             spin: 0.0,
+            av: 0.0,
             thrower: None,
             dead: false,
         });
@@ -959,6 +971,89 @@ impl World {
         self.events.push(e);
     }
 
+    /// A free item as the Godot lobby moved it (the parity test).
+    fn classic_item(&mut self, it: usize) {
+        let item = &mut self.items[it];
+        let ball = item.kind == Kind::Ball;
+        item.vy = (item.vy - GRAVITY * if ball { 0.55 } else { 1.0 } * DT).max(-TERMINAL);
+        let old_y = item.y;
+        item.x += item.vx * DT;
+        item.y += item.vy * DT;
+        item.spin += item.vx * DT * 2.0;
+        let half = if ball { 0.45 } else { 0.25 };
+        if item.x - half < layout::LEFT {
+            item.x = layout::LEFT + half;
+            item.vx = item.vx.abs() * 0.7;
+        }
+        if item.x + half > layout::RIGHT {
+            item.x = layout::RIGHT - half;
+            item.vx = -item.vx.abs() * 0.7;
+        }
+        if item.y + half * 2.0 > layout::CEILING {
+            item.y = layout::CEILING - half * 2.0;
+            item.vy = -item.vy.abs() * 0.5;
+        }
+        let top = landing(item.x, half, old_y, item.y, false);
+        if item.vy <= 0.0 && top > f64::NEG_INFINITY {
+            item.y = top;
+            if item.vy.abs() > 3.0 {
+                item.vy = -item.vy * if ball { 0.72 } else { 0.3 };
+                let mut e = ev(Ev::Bounce, item.x, item.y, None);
+                e.kind = Some(item.kind);
+                self.events.push(e);
+            } else {
+                item.vy = 0.0;
+            }
+            item.vx *= if ball { 0.97 } else { 0.8 };
+        }
+    }
+
+    /// A free item: thrown, kicked or dropped, under gravity, rolling or
+    /// sliding (see [`Body`]).
+    fn free_item(&mut self, it: usize) {
+        let item = &mut self.items[it];
+        let body = Body::of(item.kind);
+        let half = body.radius;
+        item.vy = (item.vy - GRAVITY * body.gravity * DT).max(-TERMINAL);
+        item.vx *= 1.0 - AIR_DRAG * DT;
+        let old_y = item.y;
+        item.x += item.vx * DT;
+        item.y += item.vy * DT;
+        item.spin += item.av * DT;
+        if item.x - half < layout::LEFT {
+            item.x = layout::LEFT + half;
+            item.vx = item.vx.abs() * body.restitution;
+        }
+        if item.x + half > layout::RIGHT {
+            item.x = layout::RIGHT - half;
+            item.vx = -item.vx.abs() * body.restitution;
+        }
+        if item.y + half * 2.0 > layout::CEILING {
+            item.y = layout::CEILING - half * 2.0;
+            item.vy = -item.vy.abs() * 0.5;
+        }
+        let top = landing(item.x, half, old_y, item.y, false);
+        if item.vy <= 0.0 && top > f64::NEG_INFINITY {
+            item.y = top;
+            // The floor pushes back with this much impulse (per mass):
+            // the impact, or just holding it up against gravity.
+            let impact = -item.vy;
+            let normal = if impact > 1.2 { impact * (1.0 + body.restitution) } else { GRAVITY * body.gravity * DT };
+            if impact > 1.2 {
+                item.vy = impact * body.restitution;
+                if impact > 3.0 {
+                    let mut e = ev(Ev::Bounce, item.x, item.y, None);
+                    e.kind = Some(item.kind);
+                    self.events.push(e);
+                }
+            } else {
+                item.vy = 0.0;
+            }
+            let item = &mut self.items[it];
+            body.contact(item, normal);
+        }
+    }
+
     fn step_items(&mut self) {
         for it in 0..self.items.len() {
             if self.items[it].dead {
@@ -976,42 +1071,14 @@ impl World {
                         item.vx = p.vx;
                         item.vy = p.vy;
                         item.age = 0.0;
+                        item.spin = 0.0;
+                        item.av = 0.0;
                     }
                 }
             } else {
-                let item = &mut self.items[it];
-                let ball = item.kind == Kind::Ball;
-                item.vy = (item.vy - GRAVITY * if ball { 0.55 } else { 1.0 } * DT).max(-TERMINAL);
-                let old_y = item.y;
-                item.x += item.vx * DT;
-                item.y += item.vy * DT;
-                item.spin += item.vx * DT * 2.0;
-                let half = if ball { 0.45 } else { 0.25 };
-                if item.x - half < layout::LEFT {
-                    item.x = layout::LEFT + half;
-                    item.vx = item.vx.abs() * 0.7;
-                }
-                if item.x + half > layout::RIGHT {
-                    item.x = layout::RIGHT - half;
-                    item.vx = -item.vx.abs() * 0.7;
-                }
-                if item.y + half * 2.0 > layout::CEILING {
-                    item.y = layout::CEILING - half * 2.0;
-                    item.vy = -item.vy.abs() * 0.5;
-                }
-                let top = landing(item.x, half, old_y, item.y, false);
-                if item.vy <= 0.0 && top > f64::NEG_INFINITY {
-                    item.y = top;
-                    if item.vy.abs() > 3.0 {
-                        item.vy = -item.vy * if ball { 0.72 } else { 0.3 };
-                        let mut e = ev(Ev::Bounce, item.x, item.y, None);
-                        e.kind = Some(item.kind);
-                        self.events.push(e);
-                    } else {
-                        item.vy = 0.0;
-                    }
-                    item.vx *= if ball { 0.97 } else { 0.8 };
-                }
+                let ball = self.items[it].kind == Kind::Ball;
+                let half = if self.classic_items { 0.45 } else { Body::of(Kind::Ball).radius };
+                if self.classic_items { self.classic_item(it); } else { self.free_item(it); }
                 if ball {
                     for p in &self.players {
                         let item = &mut self.items[it];
@@ -1152,6 +1219,64 @@ impl World {
 }
 
 /// Highest surface crossed while falling from old_y to new_y, or -inf.
+/// Air slows everything a little (per second).
+const AIR_DRAG: f64 = 0.08;
+
+/// How a free item moves: a rolling sphere (bomb, ball) or a tumbling box
+/// (the weapons and the rest), with Coulomb friction at the contact point.
+#[derive(Clone, Copy, Debug)]
+pub struct Body {
+    pub radius: f64,
+    pub gravity: f64,
+    pub restitution: f64,
+    pub friction: f64,
+    /// Moment of inertia over m·r² (2/5 a solid sphere, 2/3 a hollow one).
+    pub inertia: f64,
+    /// Rolling resistance (m/s²); boxes do not roll.
+    pub rolling: Option<f64>,
+}
+
+impl Body {
+    pub fn of(kind: Kind) -> Body {
+        match kind {
+            Kind::Ball => Body { radius: 0.45, gravity: 0.55, restitution: 0.72, friction: 0.5, inertia: 2.0 / 3.0, rolling: Some(0.35) },
+            Kind::Bomb => Body { radius: 0.25, gravity: 1.0, restitution: 0.42, friction: 0.6, inertia: 0.4, rolling: Some(0.9) },
+            _ => Body { radius: 0.25, gravity: 1.0, restitution: 0.25, friction: 0.55, inertia: 1.0 / 6.0, rolling: None },
+        }
+    }
+
+    /// Friction from one contact with the floor carrying `normal` impulse
+    /// per mass: it brings the contact point's slip (vx + av·r) towards
+    /// zero, trading speed for spin, and a sphere then rolls.
+    fn contact(&self, item: &mut Item, normal: f64) {
+        let r = self.radius;
+        match self.rolling {
+            Some(resistance) => {
+                let slip = item.vx + item.av * r;
+                // Impulse that stops the slip, at most mu·N.
+                let stop = -slip / (1.0 + 1.0 / self.inertia);
+                let j = stop.clamp(-self.friction * normal, self.friction * normal);
+                item.vx += j;
+                item.av += j / (self.inertia * r);
+                // Rolling resistance slows a rolling ball to a stop.
+                if (item.vx + item.av * r).abs() < 0.05 {
+                    let v = move_toward(item.vx, 0.0, resistance * DT);
+                    item.vx = v;
+                    item.av = -v / r;
+                }
+            }
+            None => {
+                // A box slides to a stop and topples flat: its spin dies on
+                // the floor and its angle settles to the nearest side.
+                item.vx = move_toward(item.vx, 0.0, self.friction * normal);
+                item.av *= if normal > GRAVITY * DT * 1.5 { 0.35 } else { 0.85 };
+                let flat = (item.spin / std::f64::consts::PI).round() * std::f64::consts::PI;
+                item.spin += (flat - item.spin) * 0.25;
+            }
+        }
+    }
+}
+
 pub fn landing(x: f64, half: f64, old_y: f64, new_y: f64, dropping: bool) -> f64 {
     if new_y <= 0.0 {
         return 0.0;

@@ -37,6 +37,9 @@ pub struct Props {
     pub prev: HashMap<u32, [f64; 2]>,
     /// Each saber's blade angle.
     blades: HashMap<u32, f32>,
+    /// Each item's z: in front of whoever holds it, else the surface below
+    /// it (the couch, a shelf), eased like the players' depth.
+    depths: HashMap<u32, f32>,
     shake: f32,
     rng: Pcg,
     /// Kit instances moved this frame (fireballs, beam).
@@ -70,7 +73,7 @@ impl Props {
         }
         if let Some(i) = room.scene_index[kit.beam] { scene.instances[i].flags |= NO_SHADOW; }
         let fireballs = kit.fireballs.iter().map(|p| p.iter().map(|_| None).collect()).collect();
-        Self { kit, items, fx, sparks: vec![], flashes: vec![], fireballs, beam: None, prev: HashMap::new(), blades: HashMap::new(),
+        Self { kit, items, fx, sparks: vec![], flashes: vec![], fireballs, beam: None, prev: HashMap::new(), blades: HashMap::new(), depths: HashMap::new(),
             shake: 0.0, rng: Pcg::new(9), moved: vec![], faded: vec![] }
     }
 
@@ -175,7 +178,9 @@ impl Props {
 
     /// Lay out every prop for this frame; returns the lights they cast:
     /// flashes and items, then the shots'.
-    pub fn update(&mut self, world: &World, room: &mut Room, scene: &mut Scene, alpha: f32, delta: f32, time: f32, light: f32) -> (Vec<(LocalLight, f32)>, Vec<(LocalLight, f32)>) {
+    /// `actor_depth`: the z a player is drawn at.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, world: &World, room: &mut Room, scene: &mut Scene, alpha: f32, delta: f32, time: f32, light: f32, actor_depth: &dyn Fn(&str) -> f32) -> (Vec<(LocalLight, f32)>, Vec<(LocalLight, f32)>) {
         let mut lights = vec![];
         self.items.clear(scene);
         self.fx.clear(scene);
@@ -191,6 +196,7 @@ impl Props {
         // Items.
         let mut item_lights = vec![];
         self.blades.retain(|id, _| world.items.iter().any(|i| i.id == *id));
+        self.depths.retain(|id, _| world.items.iter().any(|i| i.id == *id));
         for item in &world.items {
             let [px, py] = self.prev.get(&item.id).copied().unwrap_or([item.x, item.y]);
             let x = px + (item.x - px) * alpha as f64;
@@ -202,7 +208,7 @@ impl Props {
             let mut scale = 1.0;
             let mut turn = 0.0;
             match item.kind {
-                Kind::Ball => turn = -item.spin as f32,
+                Kind::Ball => turn = item.spin as f32,
                 Kind::Bomb if item.fuse >= 0.0 => {
                     let period = if item.fuse > 1.0 { 0.4 } else { 0.15 };
                     if item.fuse.rem_euclid(period) < 0.07 { scale = 1.12; }
@@ -226,7 +232,16 @@ impl Props {
                 }
                 turn = *blade;
             }
-            let node = Affine3A::from_scale_rotation_translation(Vec3::splat(scale), Quat::from_rotation_y(yaw), Vec3::new(x as f32, y as f32, 0.05));
+            let target = match &item.holder { Some(h) => actor_depth(h) + 0.12, None => game_room_sim::layout::depth_at(item.x, item.y) as f32 + 0.05 };
+            let depth = self.depths.entry(item.id).or_insert(target);
+            *depth += (target - *depth) * (1.0 - (-delta * 12.0).exp());
+            let mut node = Affine3A::from_scale_rotation_translation(Vec3::splat(scale), Quat::from_rotation_y(yaw), Vec3::new(x as f32, y as f32, *depth));
+            if holder.is_none() && item.kind != Kind::Ball && item.spin != 0.0 {
+                // Tumbling or rolling about its middle (world::Body).
+                let r = world::Body::of(item.kind).radius as f32;
+                let about = Vec3::new(x as f32, y as f32 + r, *depth);
+                node = Affine3A::from_translation(about) * Affine3A::from_rotation_z(item.spin as f32) * Affine3A::from_translation(-about) * node;
+            }
             let pivot = node * Affine3A::from_translation(self.kit.pivots.get(&key).copied().unwrap_or(Vec3::ZERO)) * Affine3A::from_rotation_z(turn);
             for part in &self.kit.items[&key] {
                 let at = if part.pivot { pivot } else { node } * part.local;

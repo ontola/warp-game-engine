@@ -216,26 +216,25 @@ fn short(value: &str, length: usize) -> String {
 pub fn logo(c: &mut Canvas) {
     let wordmark = faces().wordmark;
     let words = [("Game", AMBER), ("Night", NIGHT_LILAC)];
-    let mut size = 180.0;
+    // Narrow enough to clear the wall shelves on both sides (Joep).
+    let mut size = 140.0;
     let widths = |size: f32| words.map(|w| render::hud::measure(w.0, wordmark, size)[0]);
     let mut w = widths(size);
     let mut total = w[0] + w[1];
-    if total > 1200.0 {
-        size = (size * 1200.0 / total).floor();
+    if total > 920.0 {
+        size = (size * 920.0 / total).floor();
         w = widths(size);
         total = w[0] + w[1];
     }
     let mut x = (1280.0 - total) / 2.0;
     for (i, (word, color)) in words.into_iter().enumerate() {
-        let at = [x, 196.0];
+        // Centred in the sign now that the subtitle is gone.
+        let at = [x, 160.0 + size * 0.36];
         for k in [30.0, 18.0, 10.0] { c.text_outline(wordmark, at, word, TextAlign::Left, -1.0, size, k, color.with_alpha(0.2)); }
         c.text_outline(wordmark, at, word, TextAlign::Left, -1.0, size, 4.0, color.lightened(0.2));
         c.text(wordmark, at, word, TextAlign::Left, -1.0, size, color);
         x += w[i];
     }
-    let sub = "COUCH MULTIPLAYER CLUB";
-    for k in [16.0, 9.0, 5.0] { c.text_outline(regular(), [0.0, 286.0], sub, TextAlign::Center, 1280.0, 46.0, k, VIOLET.with_alpha(0.15)); }
-    c.text(regular(), [0.0, 286.0], sub, TextAlign::Center, 1280.0, 46.0, Color::hex("d9d0ff"));
 }
 
 /// A game without artwork: its colour as a gradient, the title in caps.

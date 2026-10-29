@@ -7,6 +7,8 @@ use game_room_sim::{Kind, World};
 
 fn trace() -> Vec<String> {
     let mut w = World::new(7);
+    // The Warp lobby throws items with real physics; Godot did not.
+    w.classic_items = true;
     for k in 0..4 {
         w.ensure_player(&format!("p{k}"), k);
     }
