@@ -5,7 +5,7 @@ use crate::kits::Kit;
 use glam::{EulerRot, Mat3, Mat4, Quat, Vec3};
 use spellstorm::actor::{Actor, HURT_TIME};
 use spellstorm::enemy::{Attack, Enemy, BOSS_WIND};
-use spellstorm::wizard::{Wizard, ROLL_TIME, SWING_COOLDOWN, SWING_REACH};
+use spellstorm::wizard::{swing_reach, Wizard, ROLL_TIME, SWING_COOLDOWN};
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
@@ -91,7 +91,7 @@ impl WizardAnim {
             self.body_yaw = body_rot.y;
         } else {
             let rest = Vec3::new(-0.4, 0.74, 0.12 - self.walk.sin() * self.stride * 0.08);
-            let length = w.enchant_reach().max(SWING_REACH) - SWORD_HAND + 0.05;
+            let length = w.enchant_reach().max(swing_reach()) - SWORD_HAND + 0.05;
             let dip = ((rest.y - 0.12) / length).clamp(0.0, 1.0).asin() * 0.9;
             self.sword_pos = self.sword_pos.lerp(rest, k12);
             self.sword_rot = self.sword_rot.lerp(Vec3::new(PI * 0.5 + dip, 0.0, 0.32 + self.walk.sin() * self.stride * 0.05), k12);

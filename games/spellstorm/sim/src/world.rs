@@ -291,6 +291,15 @@ impl World {
     }
 
     /// A setting changed in the menu (main.gd _on_setting).
+    /// Knobs were turned (live): what they set at the start applies now too.
+    pub fn knobs_changed(&mut self) {
+        for &id in &self.wizards {
+            if let Ok(mut a) = self.ecs.get::<&mut Actor>(id) {
+                a.speed = crate::knobs::wizard_speed() * a.mods.speed;
+            }
+        }
+    }
+
     pub fn set_option(&mut self, key: &str, value: &str) {
         self.settings.set(key, value);
         if key == "unlocks" {
@@ -455,7 +464,7 @@ impl World {
         let mut top_el = None;
         let mut top_d = 0.0;
         for &(e, count) in mix {
-            let n = count * scale * mods.el[e.idx()];
+            let n = count * scale * mods.el[e.idx()] * if src_team == Some(WIZARDS) { crate::knobs::spell_damage() } else { 1.0 };
             let eff = *e.effect();
             let mult = 1.0 - a.resistance(e);
             if eff.dmg > 0.0 {

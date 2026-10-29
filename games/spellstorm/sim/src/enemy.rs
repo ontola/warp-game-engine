@@ -796,7 +796,7 @@ impl Enemy {
         rng: &mut impl Rand,
     ) -> (Actor, Enemy) {
         let c = &KINDS[k];
-        let speed = c.speed * rng.range(0.92, 1.08) as f64;
+        let speed = c.speed * rng.range(0.92, 1.08) as f64 * crate::knobs::monster_speed();
         let mut a = Actor::new(MONSTERS, at, c.hp * hp_scale, 0.42 * c.size, speed);
         a.mass = c.mass;
         a.undead = c.undead;
@@ -876,7 +876,7 @@ impl World {
     }
 
     fn damage_scale(&self) -> f64 {
-        self.settings.monster_damage
+        self.settings.monster_damage * crate::knobs::monster_damage()
     }
 
     /// One monster's tick (Enemy._physics_process). Its Enemy component is

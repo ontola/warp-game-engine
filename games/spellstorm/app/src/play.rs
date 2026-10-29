@@ -28,6 +28,10 @@ pub struct Spellstorm {
     /// build never stalls a started game.
     ready_after_build: bool,
     interp: crate::interp::Interp,
+    pub tuning: crate::live::Tuning,
+    pub shader: crate::live::Shader,
+    pub live: Option<Box<crate::live::SsLive>>,
+    pub scan_t: u64,
 }
 
 /// The shell's buttons as pad.gd's.
@@ -78,6 +82,11 @@ impl Spellstorm {
         let bots = if party.is_some() { bots.max(1) } else { bots };
         let mut seats: Vec<Seat> = (0..humans).map(|i| Seat::player(i, NAMES[i % NAMES.len()])).collect();
         seats.extend((humans..humans + bots).map(Seat::bot));
+        // The balance knobs and the surface shader from the repository.
+        let dir = crate::live::game_dir();
+        let tuning = crate::live::Tuning::new(dir.as_deref());
+        let shader = crate::live::Shader::new(dir.as_deref());
+        render::set_game_surface(&shader.good);
         let world = World::new(&seats, seed, Settings::default());
         let mut hud = crate::hud::Hud::default();
         hud.level(&world);
@@ -85,7 +94,7 @@ impl Spellstorm {
         if humans > 0 {
             menu.show(true, &world);
         }
-        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, ready_after_build: false, interp: Default::default() }
+        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, ready_after_build: false, interp: Default::default(), tuning, shader, live: None, scan_t: 0 }
     }
 
     /// The party's seats (main.gd _on_prepared): a wizard for each, couch
@@ -151,6 +160,7 @@ impl Spellstorm {
 
     /// One tick with these players' controls.
     pub fn step(&mut self, controls: &[Controls]) {
+        self.live_tick();
         let from_party = self.party_tick();
         let controls = from_party.as_deref().unwrap_or(controls);
         let host_paused = self.party.as_ref().is_some_and(|p| !p.running());
@@ -201,6 +211,7 @@ impl app::Game for Spellstorm {
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
+        self.live_frame(frame);
         if !self.built || self.view.stale(&self.world) {
             self.view.build(&self.world)?;
             frame.set_scene(&self.view.scene, &self.view.light);
@@ -233,6 +244,18 @@ impl app::Game for Spellstorm {
             _ => self.menu.escape(&self.world),
         }
         true
+    }
+
+    fn command(&mut self, line: &str) -> Result<String, String> {
+        self.console(line)
+    }
+
+    fn wants_capture(&self) -> bool {
+        self.live_wants_capture()
+    }
+
+    fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) {
+        self.live_captured(size, rgba)
     }
 
     fn quit(&self) -> bool {

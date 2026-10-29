@@ -261,9 +261,9 @@ impl World {
         }
         let boss_at = self.level.clearing_at[2] - self.level.clearings[2].z * 0.8;
         let mut first = if self.run.biome_index == 0 {
-            FIRST_CALM
+            crate::knobs::first_calm() as f32
         } else {
-            FIRST_WAVE
+            crate::knobs::first_wave() as f32
         };
         if self.run.biome_index == 0 && self.practice_wanted() {
             self.practice_build();
@@ -283,7 +283,7 @@ impl World {
         });
         for j in 0..stops.len() - 1 {
             let (a, b) = (stops[j], stops[j + 1]);
-            let n = (((b - a) / WAVE_GAP).ceil() as i32 - 1).max(0);
+            let n = (((b - a) / crate::knobs::wave_gap() as f32).ceil() as i32 - 1).max(0);
             for m in 0..n {
                 let t = (m as f32 + 1.0 + self.run.rng.range(-0.15, 0.15)) / (n as f32 + 1.0);
                 self.run.encounters.push(Encounter {
@@ -366,6 +366,7 @@ impl World {
         let mut count = ((2.0 + 1.6 * players as f64)
             * (1.0 + 0.3 * depth)
             * self.settings.monster_count
+            * crate::knobs::monster_count()
             * scale) as i64;
         // The first biome is where you learn to shoot and roll: fewer.
         if self.run.biome_index == 0 {
@@ -390,7 +391,7 @@ impl World {
         let players = self.wizards.len().max(1) as f64;
         let depth = self.run.depth() as f64;
         let hp_scale =
-            (1.0 + 0.35 * (players - 1.0)) * (1.0 + 0.33 * depth) * self.settings.monster_hp;
+            (1.0 + 0.35 * (players - 1.0)) * (1.0 + 0.33 * depth) * self.settings.monster_hp * crate::knobs::monster_hp();
         let champ = (self.run.rng.f() as f64) < 0.06 + 0.03 * depth;
         if telegraph {
             self.summon_circle(at);
@@ -529,6 +530,12 @@ impl World {
             if wd.opening {
                 continue;
             }
+            // Knob `wards` 0: no walls hold the way (the practice strip's
+            // stops still run their lessons as they open).
+            if crate::knobs::wards() < 0.5 && wd.check.is_none() {
+                self.open_ward(i);
+                continue;
+            }
             let done = if let Some(c) = wd.check {
                 let ok = self.practice_check(c);
                 if ok {
@@ -542,7 +549,7 @@ impl World {
                 let risen = self.run.altars.iter().any(|a| a.shrine == key);
                 let left = self.run.altars.iter().any(|a| a.shrine == key && !a.taken);
                 let mut done = risen;
-                if risen && left {
+                if risen && left && crate::knobs::ward_needs_tomes() > 0.5 {
                     for &w in &self.wizards {
                         if self.alive(w) && !self.wiz(w).took.contains(&key) {
                             done = false;
@@ -851,14 +858,14 @@ impl World {
             let robe = taker.map(|w| fx::lighten(self.wiz(w).robe, 0.35));
             let a = &mut self.run.altars[i];
             a.hold = if taker.is_some() {
-                (a.hold + dt).min(TAKE_TIME)
+                (a.hold + dt).min(crate::knobs::tome_time())
             } else {
                 (a.hold - dt * 2.0).max(0.0)
             };
             if let Some(c) = robe {
                 a.fill_c = c;
             }
-            if let (Some(w), true) = (taker, a.hold >= TAKE_TIME) {
+            if let (Some(w), true) = (taker, a.hold >= crate::knobs::tome_time()) {
                 a.taken = true;
                 let relic = a.relic;
                 self.wiz_mut(w).took.push(shrine);
@@ -964,7 +971,7 @@ impl World {
         if self.settings.force_practice {
             return true;
         }
-        if self.settings.unlock_all || self.settings.forced_unlocks >= 0 {
+        if self.settings.unlock_all || self.settings.forced_unlocks >= 0 || crate::knobs::practice() < 0.5 {
             return false;
         }
         self.wizards.iter().any(|&w| {

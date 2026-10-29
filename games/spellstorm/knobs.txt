@@ -1,0 +1,22 @@
+# Spellstorm's live knobs: `name = value  # what it does`. Read at start
+# and whenever this file changes; `spellstorm play --live` sets them too.
+wizard_speed = 5.2  # Wizard walking speed, m/s.
+roll_speed = 12.5  # Dodge roll speed at its push off, m/s.
+roll_cooldown = 0.95  # Seconds between two rolls.
+swing_recover = 0.7  # Seconds after a sword swing before the next one.
+swing_reach = 1.7  # The sword's reach, m.
+mana_regen = 3  # Mana back per second.
+spell_damage = 1  # Scales the damage of every wizard spell, bolt and sword hit.
+monster_hp = 1  # Scales monster health (on top of the difficulty setting).
+monster_damage = 1  # Scales the damage monsters do (on top of the difficulty setting).
+monster_count = 1  # Scales how many monsters a wave brings (on top of the difficulty setting).
+monster_speed = 1  # Scales monster walking speed.
+wave_gap = 30  # Metres of path between two waves.
+first_wave = 8  # Metres before the first wave of a level.
+first_calm = 22  # Metres before the first wave of a run's first level (a calm start).
+revive_need = 40  # Revive progress needed to raise a fallen wizard.
+revive_rate = 14  # Revive progress per second for each friend at the grave.
+tome_time = 0.9  # Seconds standing in an altar's ring to take its tome.
+wards = 1  # 1: walls of mist hold the way on until the fight there is done; 0: no walls.
+ward_needs_tomes = 1  # 1: a shrine's wall opens once every wizard took a tome; 0: as soon as the shrine rises.
+practice = 1  # 1: players who know nothing start on the practice strip; 0: never.

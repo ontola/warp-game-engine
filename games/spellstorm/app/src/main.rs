@@ -11,6 +11,7 @@ mod fx;
 mod hud;
 mod interp;
 mod kits;
+mod live;
 mod look;
 mod marks;
 mod menu;
@@ -32,13 +33,13 @@ fn run() -> Result<(), String> {
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
     let numf = |k: &str, d: f32| arg(k).and_then(|v| v.parse().ok()).unwrap_or(d);
     let flag = |k: &str| args.iter().any(|a| a == k);
-    render::set_game_surface(include_str!("surface.wgsl"));
     let seed = numf("--seed", 7.0) as u64;
     match args.get(1).map(String::as_str).unwrap_or("play") {
         "play" => {
             let humans = (numf("--players", 1.0) as usize).max(1);
             let party = party::Party::connect();
             let mut game = play::Spellstorm::with_party(kits::Kits::load(None)?, humans, numf("--bots", 0.0) as usize, seed, party);
+            game.live = live::start(&args, live::game_dir().as_deref())?.map(Box::new);
             let cfg = app::Config { title: "Spellstorm".into(), size: [1920, 1080], tick_hz: 60.0, fullscreen: flag("--fullscreen"), keyboard: true, frames: numf("--frames", 0.0) as u64, max_render_height: None };
             app::run(cfg, &mut game)
         }
@@ -95,6 +96,6 @@ fn run() -> Result<(), String> {
             }
             image::save_buffer(&out, &rgba, w, h, image::ColorType::Rgba8).map_err(|e| e.to_string())
         }
-        _ => Err("usage: spellstorm play [--players N] [--bots N] | shot --out frame.png [--seed 7] [--bots 3] [--ticks 240]".into()),
+        _ => Err("usage: spellstorm play [--players N] [--bots N] [--live [PORT]] | shot --out frame.png [--seed 7] [--bots 3] [--ticks 240]".into()),
     }
 }
