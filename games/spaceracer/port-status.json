@@ -1,0 +1,342 @@
+{
+  "source": "https://github.com/joepio/spaceracer",
+  "commit": "66508c8539f5e4b348c0797b649b67b6d7a43dfc",
+  "godot": "4.5.2",
+  "tick_hz": 120,
+  "status": "in progress; not benchmark-equivalent yet",
+  "modules": [
+    {
+      "path": "src/ai_pilot.gd",
+      "sha256": "0765604b0227f8c8140fe65d0a355d6e47114ac1dcc553b2136094ddaa32115a",
+      "status": "pending"
+    },
+    {
+      "path": "src/blast_vfx.gd",
+      "sha256": "36b459b3ce3264985b7ee688478ac65f26eac4f96c5b7b84c9432d1de41c3347",
+      "status": "pending"
+    },
+    {
+      "path": "src/boost_trails.gd",
+      "sha256": "250d95e0450bdd2bf933de45cc0d939c28c981885a51c211aaac2b0189c3df56",
+      "status": "pending"
+    },
+    {
+      "path": "src/bridge.gd",
+      "sha256": "082b1a642098f8e43cce0c9b678ed18626ef16c2049862238293f4e257274167",
+      "status": "pending"
+    },
+    {
+      "path": "src/bump.gd",
+      "sha256": "c4a687067d0705935286daadd96da961c3125051f853d6d7ec138c004b645ab6",
+      "status": "begin/velocity validated; strike integration pending"
+    },
+    {
+      "path": "src/cell.gd",
+      "sha256": "7626ec980443c80d5341a537ffc4b585b9dc7bb6255b102c4949b310760ff55e",
+      "status": "pending"
+    },
+    {
+      "path": "src/chase.gd",
+      "sha256": "7736dc52e5beb97da94a7f27b1d340e84465faf49e3d2e8a177f80478909e01e",
+      "status": "pending"
+    },
+    {
+      "path": "src/checkpoints.gd",
+      "sha256": "3ae199a032ebd2480baeaa3ef0530ad35f4ee819e1791ea19dbd3713101fb93e",
+      "status": "gate crossing/progress ported; gate generation and rendering pending"
+    },
+    {
+      "path": "src/city_accents.gd",
+      "sha256": "e7e89c03f6a0fb12efbe11a658107bf80708465e0d6da1344d8c93b7a19bc94d",
+      "status": "pending"
+    },
+    {
+      "path": "src/city_layout.gd",
+      "sha256": "36f8dd98f1491c511cc866f7aa22f120f026277db38e026309164884500da306",
+      "status": "pending"
+    },
+    {
+      "path": "src/city_traffic.gd",
+      "sha256": "e8ef105d85a6e0d88b19032f9cf4e600d257052d6cc2e709828ec01c5956c601",
+      "status": "pending"
+    },
+    {
+      "path": "src/corner_warnings.gd",
+      "sha256": "0bb70e881db19763487feec463a192f6a49f448996ec38bac675fa02c66570a3",
+      "status": "pending"
+    },
+    {
+      "path": "src/crash_vfx.gd",
+      "sha256": "ef9820ebd634179563d3250a506e0da2e5720b6db9a8e107595717468e9ec1f9",
+      "status": "pending"
+    },
+    {
+      "path": "src/cue_bank.gd",
+      "sha256": "a55e9521fe54b5cec44296409824041bdd8fc019b16e35739dec48e252f50fd0",
+      "status": "pending"
+    },
+    {
+      "path": "src/desert.gd",
+      "sha256": "b01c61f1e5413f803534e387591077bcf07e32d8bf67bbbcedafb1d1dc8cd32e",
+      "status": "pending"
+    },
+    {
+      "path": "src/desert_terrain.gd",
+      "sha256": "32e7deb088987e88ad4e6f99a6ddcedd2330ee59aa4a34db1b93d9cdcb50a652",
+      "status": "pending"
+    },
+    {
+      "path": "src/dev_cheats.gd",
+      "sha256": "0f912ae5ef1fe5e5af8f5130d08699c26377b44a93e30c3dccf7354995e2732e",
+      "status": "pending"
+    },
+    {
+      "path": "src/dive_bomb.gd",
+      "sha256": "a3b5132bc67ccd5d6ad51d0b5f5459b14b4bb1134ab1649d3fc22190fc69681b",
+      "status": "pending"
+    },
+    {
+      "path": "src/emp_sparks.gd",
+      "sha256": "2b91b0d3deb08f0de2c0fe450faadb64b217eac806152694f23639e125ed52c8",
+      "status": "pending"
+    },
+    {
+      "path": "src/engine_audio.gd",
+      "sha256": "e893cdad850096efaf28cf7ee61364674f1c23df346455d09555e20242c3245c",
+      "status": "pending"
+    },
+    {
+      "path": "src/flight.gd",
+      "sha256": "f994ab929f75becd65170ccc7e539df28d5219d09a70353d9e4b69541164d2f5",
+      "status": "partial: aerodynamic integration validated; transitions/collisions pending"
+    },
+    {
+      "path": "src/forest.gd",
+      "sha256": "9130917ceb08ed0f3580e17f947cfcfd38cf46b180fc57b6f6912136bcd0f293",
+      "status": "pending"
+    },
+    {
+      "path": "src/forest_assets.gd",
+      "sha256": "ddc08526efcc3e16973d8469d378906579fe5de33f6f2effec4835346618193e",
+      "status": "pending"
+    },
+    {
+      "path": "src/forest_terrain.gd",
+      "sha256": "2e24bae02eee0173862dce6942e7f94c6c3cf8a43de3be928146701b8c9eca9d",
+      "status": "pending"
+    },
+    {
+      "path": "src/game_audio.gd",
+      "sha256": "442743e3df9d605b2ed0b3b4ffbcca02e941b56c744b2eae0aa1f1027fdd43fc",
+      "status": "pending"
+    },
+    {
+      "path": "src/global_lighting.gd",
+      "sha256": "069dcfa860f5e5a71691920c7aefce53697e4e919fdcac85a045fb69dfdf387b",
+      "status": "pending"
+    },
+    {
+      "path": "src/ground_traffic.gd",
+      "sha256": "bcd2aeac29f11a31f77b770e204e2a694034af03ebf4f0f30098d04bdcac5b1f",
+      "status": "pending"
+    },
+    {
+      "path": "src/hud.gd",
+      "sha256": "5d695b0664429a72730b7d6be31864121f0e65fda02f84822447f2ae71c8c539",
+      "status": "pending"
+    },
+    {
+      "path": "src/impact_vfx.gd",
+      "sha256": "fc1b0532dcfcc0e2d1c1f392fc99e188b2fb92ac245ab5f3ddc29c05535e021e",
+      "status": "pending"
+    },
+    {
+      "path": "src/main.gd",
+      "sha256": "47141d2e788f66cf0ca916e76aa759b1c06e0617677aab87b1afb62ef3aaba4f",
+      "status": "pending"
+    },
+    {
+      "path": "src/missile_audio.gd",
+      "sha256": "59bc22dcceb0faf932feaad03acb4866da97c413b9927f641e1a841e267f9aeb",
+      "status": "pending"
+    },
+    {
+      "path": "src/motion_blur.gd",
+      "sha256": "460c33af66f9538faf55d8991717882c0348435f2bf5ae5c88f4ffc2cb2567ba",
+      "status": "pending"
+    },
+    {
+      "path": "src/obstacles.gd",
+      "sha256": "79d018e84d909882a13a4f3ff568f561b8d9b52a227e734e84594be7c2e3acbf",
+      "status": "pending"
+    },
+    {
+      "path": "src/ocean.gd",
+      "sha256": "be33d6387004fba56ff71935eec597e5c77ebd13b466393805f837dd52fa3ff5",
+      "status": "pending"
+    },
+    {
+      "path": "src/ocean_life.gd",
+      "sha256": "01005e570b460671eb299dbb8045faab7db088a9f120dfcba2e762144e251ec1",
+      "status": "pending"
+    },
+    {
+      "path": "src/ocean_terrain.gd",
+      "sha256": "0d8733a0216feff28b45189fce30531e4aefbd13bafbd9fb5214f7e8cbf0c4e8",
+      "status": "pending"
+    },
+    {
+      "path": "src/pilot_face.gd",
+      "sha256": "6d9ab8dec313ffac88ba60c68d54c3b33a14f7be351c3e0cd2692fbdeb229059",
+      "status": "pending"
+    },
+    {
+      "path": "src/race.gd",
+      "sha256": "1b4f787d032687a178307eb63bd56fb36b750f61e8c3e893c079e34adf09fbe1",
+      "status": "partial: ground handling kernel validated; full race integration pending"
+    },
+    {
+      "path": "src/race_audio_mix.gd",
+      "sha256": "5d3ca550ea63ba3d30ac8f3db71658ccd2b49689f6030fe1d2646d4cce798411",
+      "status": "pending"
+    },
+    {
+      "path": "src/racer_design.gd",
+      "sha256": "21ed4aeacc617ac60d1d9f49c352df957a9ea0b3a2e467a4074c2326cae621ac",
+      "status": "pending"
+    },
+    {
+      "path": "src/railgun.gd",
+      "sha256": "67bbe57fa41f0407f31960a1dd9a984d2bf511f774c380fb7b9a66a058dff274",
+      "status": "pending"
+    },
+    {
+      "path": "src/recharge_strips.gd",
+      "sha256": "2d0e07b16aeac1cbbbfc350bad9cdde81545393811021b771051b3e7f15625d8",
+      "status": "pending"
+    },
+    {
+      "path": "src/render_warmup.gd",
+      "sha256": "cf01764a21fda40a38415e8a5e2f0e05d3963d1d577474d001fa819c93ec42e5",
+      "status": "pending"
+    },
+    {
+      "path": "src/respawn_vfx.gd",
+      "sha256": "d41e20b54ec82aab4971718adcf0dbc3b54a278603441b4479b14e6d55168caa",
+      "status": "pending"
+    },
+    {
+      "path": "src/sandworm.gd",
+      "sha256": "26dfa9c452f0368bbc4160b31f10e3c7da91616d046321c35312fc303171b34e",
+      "status": "pending"
+    },
+    {
+      "path": "src/scenery.gd",
+      "sha256": "c4485ab6a3ad37872dc623de7da7ad93e5119fc9e4ef291abf9759912a171604",
+      "status": "pending"
+    },
+    {
+      "path": "src/searchlights.gd",
+      "sha256": "da8cac667edff889a04d4de2f51ead4a00a5ba99ee303b62d70735ca239d8a4b",
+      "status": "pending"
+    },
+    {
+      "path": "src/settings.gd",
+      "sha256": "fcc8d0ef6e4dd4fb548db0696c6eeb25cf19c68841c2a6ebf0e58c297e6bbf6a",
+      "status": "pending"
+    },
+    {
+      "path": "src/shadows.gd",
+      "sha256": "1f8d2ef516beff9eee0b55b9dbb4eb7e4bb8736c64dff34fe38b9a261b517a2e",
+      "status": "pending"
+    },
+    {
+      "path": "src/ship.gd",
+      "sha256": "70a1631fc1ce050ba926cdb53de9363dcbaefc5cb7125cf540a80c1e737b211b",
+      "status": "pending"
+    },
+    {
+      "path": "src/showpiece.gd",
+      "sha256": "9551d4f97c87431f93d4e5cb9e17696bf19d3ee736b21f169427d44572e6e1eb",
+      "status": "pending"
+    },
+    {
+      "path": "src/slipstream.gd",
+      "sha256": "cee748786037f158a1c2deabc1fa165f4dd38bfed5cc0536a655db22776d9a71",
+      "status": "kernel validated against source; race integration pending"
+    },
+    {
+      "path": "src/speed_effects.gd",
+      "sha256": "7df7f9e0adffeea84a275b8172af56d66ac6e8dd4be460a16f8273a0c0cad22f",
+      "status": "pending"
+    },
+    {
+      "path": "src/touch_controls.gd",
+      "sha256": "6b910863dae3149ba115a2f407da54bfe201b374f46a79e249d5a2ff23744f70",
+      "status": "pending"
+    },
+    {
+      "path": "src/track.gd",
+      "sha256": "ee954c6e877949e64ef7244a5082ee7fb7c3f03458dc8aeb653d5bb8dce560d0",
+      "status": "partial: surface/sample/project ported; generator pending; tests use source nodes"
+    },
+    {
+      "path": "src/track_components.gd",
+      "sha256": "f7f1e6ca4c11e8438a3a6bd5a6a8fe8a4865c598b6517e6da58b54d27f1a9abb",
+      "status": "pending"
+    },
+    {
+      "path": "src/track_profiles.gd",
+      "sha256": "e37fb3ddf9ce47cf722af091bcdb5ba5e9a59a9c927f2075d7f5971edf036e3e",
+      "status": "pending"
+    },
+    {
+      "path": "src/turn_markers.gd",
+      "sha256": "d7316c0aaf27d098620e17474202993d08b465f2f738eaa4bb5bb20ac32dd6dc",
+      "status": "pending"
+    },
+    {
+      "path": "src/vehicle_wear.gd",
+      "sha256": "296af0c864dc44725763a1fe6331167f74265707a6072571af74f5bf89ce0673",
+      "status": "pending"
+    },
+    {
+      "path": "src/victory.gd",
+      "sha256": "393ea55253624413a0cfb46c9a6643cf1e512630735677c108053f0f31cda58a",
+      "status": "pending"
+    },
+    {
+      "path": "src/visor.gd",
+      "sha256": "cc3446ac56bb3f153c110ccdcf5b90f00ec7e0b98d1346ad292e7460fea45b5a",
+      "status": "pending"
+    },
+    {
+      "path": "src/weapon_vfx.gd",
+      "sha256": "9feffe73011990fd44c12e01db52ea5b3c93bb56a5279ff191e75d88d6c7bb72",
+      "status": "pending"
+    },
+    {
+      "path": "src/weapons.gd",
+      "sha256": "7a9bba8dcdc06d579144f9b8e1f2522457727784d419317acc23c379eeadf9fc",
+      "status": "pending"
+    },
+    {
+      "path": "src/world.gd",
+      "sha256": "38d30882fdaac74baa22a17ca488ba82912fb74457eaefd8c8c3290ffc283c71",
+      "status": "pending"
+    },
+    {
+      "path": "src/wreck.gd",
+      "sha256": "f4eb861146bd826a7d2ff768e3fd6426c0c08ec8c4c8f9de493c073e042edc16",
+      "status": "pending"
+    }
+  ],
+  "verified": {
+    "ground_ticks": 4800,
+    "flight_ticks": 1800,
+    "track_sample_fixtures": 18,
+    "slipstream_ticks": 700,
+    "bump_ticks": 1680,
+    "tests_passed": 5
+  }
+}

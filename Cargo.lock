@@ -5210,6 +5210,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea06cc588e43c632923a55450401b8f25e628131571d4e1baea1bdfdb2b5ed06"
 
 [[package]]
+name = "spaceracer"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "glam 0.31.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "spade"
 version = "2.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
