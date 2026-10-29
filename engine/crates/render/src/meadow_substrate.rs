@@ -125,7 +125,7 @@ mod tests {
                 color: [0.2, 0.4, 0.1, 0.9], anchor: [0.0; 4],
             }).to_vec();
         MeadowGeometry {
-            vertices, lod_ranges: [[[0, 3]; LODS]; VARIANTS], lod_errors: [[0.0; LODS]; VARIANTS],
+            vertices, variant_patch_metres: 0.0, lod_ranges: [[[0, 3]; LODS]; VARIANTS], lod_errors: [[0.0; LODS]; VARIANTS],
             branch_pivots: [[[0.0; 4]; 4]; VARIANTS], max_tuft_radius: 0.3, max_tuft_height: 1.0,
             max_anchor_radius: 0.3, max_blade_radius: 0.3,
         }

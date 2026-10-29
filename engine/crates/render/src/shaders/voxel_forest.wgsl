@@ -11,12 +11,12 @@ struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u3
 @group(2) @binding(1) var<storage,read> volume_indices: array<u32>;
 @group(2) @binding(2) var<storage,read> volume_cells: array<VolumeCell>;
 @group(2) @binding(3) var<storage,read> volume_trees: array<VolumeTree>;
-@group(2) @binding(4) var<storage,read_write> volume_tiles: array<u32>;
+@group(2) @binding(4) var<storage,read_write> volume_tiles: array<atomic<u32>>;
 @group(2) @binding(5) var<storage,read_write> volume_stats: array<atomic<u32>>;
 @group(2) @binding(6) var volume_output: texture_storage_2d<rgba16float,write>;
 @group(2) @binding(7) var<uniform> volume_config: VolumeConfig;
 @group(2) @binding(8) var<storage,read_write> volume_jobs: array<atomic<u32>>;
-@group(2) @binding(9) var<uniform> volume_selection: array<vec4<u32>,256>;
+@group(2) @binding(9) var<uniform> volume_selection: array<vec4<u32>,4096>;
 // VOLUME_MOTION_BEGIN
 // Included only in the temporal pipeline; native specialization removes all
 // these blocks, including the extra bindings and every moment calculation.
@@ -24,6 +24,10 @@ struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u3
 @group(2) @binding(11) var<storage,read> volume_previous_instances: array<Instance>;
 // VOLUME_MOTION_END
 
+// Shared immutable bounds/references plus a per-view deduplication mask.
+@group(2) @binding(12) var<storage,read> volume_bricks: array<u32>;
+@group(2) @binding(13) var<storage,read_write> volume_brick_mask: array<atomic<u32>>;
+const VOLUME_BRICK_VISIBILITY: bool = false;
 const VOLUME_TILE: u32 = 16u;
 const VOLUME_CANDIDATES: u32 = 64u;
 const VOLUME_MAX_STEPS: u32 = 4096u;
@@ -33,7 +37,7 @@ const VOLUME_EMPTY_CEILING: bool = false;
 // Portable minimum workgroup-count limit. Four 8x8 groups cover a 16x16 tile.
 const VOLUME_JOB_ROW: u32 = 65535u;
 
-// Per-ray u32 sums are bounded by 4096 steps x256 volumes x16 cell fetches.
+// Per-ray u32 sums are bounded by 4096 steps x4096 volumes x16 cell fetches.
 // Frame totals can exceed 2^32, so atomically add low-word contributions with
 // an exact carry. No atomics occur inside the sample/march loops.
 fn volume_add_total(low_index:u32,value:u32) {
@@ -42,42 +46,91 @@ fn volume_add_total(low_index:u32,value:u32) {
     if previous>0xffffffffu-value {atomicAdd(&volume_stats[low_index+1u],1u);}
 }
 
-// One invocation owns one tile; its candidate ordering is deterministic.
-// Optional job append order affects scheduling only, never pixel integration.
-// Near-plane intersections conservatively cover the whole screen.
-@compute @workgroup_size(8,8)
-fn voxel_tiles(@builtin(global_invocation_id) id: vec3<u32>) {
+// Project each selected volume once. The host clears tile counters before
+// this pass; the following pass sees all atomic appends. Overflow is counted
+// even after storage fills, so integration can scan the complete volume set.
+@compute @workgroup_size(64)
+fn voxel_bins(@builtin(global_invocation_id) id:vec3<u32>) {
+    let work=id.x+id.y*65535u*64u;
+    var i=work;var brick_min=vec3<f32>(0.0);var brick_max=vec3<f32>(0.0);
+    if VOLUME_BRICK_VISIBILITY {
+        if work>=volume_bricks[0] {return;}
+        let reference=volume_bricks[1]+work*4u;i=volume_bricks[reference];
+        if volume_selection[i].x!=1u || volume_selection[i].y!=volume_bricks[reference+1u] {return;}
+        let brick=4u+volume_bricks[reference+2u]*8u;
+        brick_min=vec3<f32>(bitcast<f32>(volume_bricks[brick]),bitcast<f32>(volume_bricks[brick+1u]),bitcast<f32>(volume_bricks[brick+2u]));
+        brick_max=vec3<f32>(bitcast<f32>(volume_bricks[brick+4u]),bitcast<f32>(volume_bricks[brick+5u]),bitcast<f32>(volume_bricks[brick+6u]));
+    } else {if i>=volume_config.size_count.w || volume_selection[i].x!=1u {return;}}
     let tile_dims=(volume_config.size_count.xy+vec2<u32>(15u))/16u;
-    if any(id.xy>=tile_dims) { return; }
-    let start=(id.y*tile_dims.x+id.x)*(VOLUME_CANDIDATES+1u);
-    let tile_lo=vec2<f32>(id.xy*VOLUME_TILE);
-    let tile_hi=tile_lo+vec2<f32>(16.0);
-    var count=0u;
-    for(var i=0u;i<volume_config.size_count.w;i++) {
-        if volume_selection[i].x==0u {continue;}
-        let tree=volume_trees[i];
-        var lo=vec2<f32>(1e30);
-        var hi=vec2<f32>(-1e30);
-        var in_front=0u;
-        for(var corner=0u;corner<8u;corner++) {
-            let p=vec3<f32>(
-                select(tree.bounds_min.x,tree.bounds_max.x,(corner&1u)!=0u),
-                select(tree.bounds_min.y,tree.bounds_max.y,(corner&2u)!=0u),
-                select(tree.bounds_min.z,tree.bounds_max.z,(corner&4u)!=0u));
-            let clip=view.view_proj*vec4<f32>(p,1.0);
-            if clip.w>view.params.y {
-                in_front++;
-                let pixel=(clip.xy/clip.w*vec2<f32>(0.5,-0.5)+0.5)*vec2<f32>(volume_config.size_count.xy);
-                lo=min(lo,pixel); hi=max(hi,pixel);
-            }
+    let tree=volume_trees[i];
+    var lo=vec2<f32>(1e30);var hi=vec2<f32>(-1e30);var in_front=0u;
+    for(var corner=0u;corner<8u;corner++) {
+        var p=vec3<f32>(
+            select(tree.bounds_min.x,tree.bounds_max.x,(corner&1u)!=0u),
+            select(tree.bounds_min.y,tree.bounds_max.y,(corner&2u)!=0u),
+            select(tree.bounds_min.z,tree.bounds_max.z,(corner&4u)!=0u));
+        if VOLUME_BRICK_VISIBILITY {
+            let local=vec4<f32>(select(brick_min.x,brick_max.x,(corner&1u)!=0u),
+                select(brick_min.y,brick_max.y,(corner&2u)!=0u),
+                select(brick_min.z,brick_max.z,(corner&4u)!=0u),1.0);
+            let owner=instances[tree.identity.x];
+            p=vec3<f32>(dot(owner.r0,local),dot(owner.r1,local),dot(owner.r2,local));
         }
-        if in_front==0u { continue; }
-        if in_front<8u || (all(hi>=tile_lo)&&all(lo<=tile_hi)) {
-            if count<VOLUME_CANDIDATES {volume_tiles[start+1u+count]=i;}
-            count++;
+        let clip=view.view_proj*vec4<f32>(p,1.0);
+        if clip.w>view.params.y {
+            in_front++;
+            let pixel=(clip.xy/clip.w*vec2<f32>(0.5,-0.5)+0.5)*vec2<f32>(volume_config.size_count.xy);
+            lo=min(lo,pixel);hi=max(hi,pixel);
         }
     }
-    volume_tiles[start]=count;
+    if in_front==0u {return;}
+    var first=vec2<u32>(0u);var last=tile_dims-vec2<u32>(1u);
+    if in_front==8u {
+        // Match the previous inclusive box/tile overlap, including a box
+        // exactly on a tile edge and a partially filled final screen tile.
+        if any(hi<vec2<f32>(0.0)) || any(lo>vec2<f32>(tile_dims*VOLUME_TILE)) {return;}
+        first=vec2<u32>(clamp(ceil(lo/f32(VOLUME_TILE))-1.0,vec2<f32>(0.0),vec2<f32>(last)));
+        last=vec2<u32>(clamp(floor(hi/f32(VOLUME_TILE)),vec2<f32>(0.0),vec2<f32>(last)));
+        if any(first>last) {return;}
+    }
+    // Near-plane intersections conservatively bin to the whole screen.
+    for(var y=first.y;y<=last.y;y++) {
+        for(var x=first.x;x<=last.x;x++) {
+            let start=(y*tile_dims.x+x)*(VOLUME_CANDIDATES+1u);
+            // Multiple bricks may project to the same tile. Append the source
+            // volume exactly once, including overlapping reconstruction halos.
+            if VOLUME_BRICK_VISIBILITY {
+                let mask=(y*tile_dims.x+x)*((volume_config.size_count.w+31u)/32u)+i/32u;
+                let bit=1u<<(i%32u);
+                if (atomicOr(&volume_brick_mask[mask],bit)&bit)!=0u {continue;}
+            }
+            let slot=atomicAdd(&volume_tiles[start],1u);
+            if slot<VOLUME_CANDIDATES {atomicStore(&volume_tiles[start+1u+slot],i);}
+        }
+    }
+}
+
+// One invocation finalizes each tile. Atomic append arrival order is arbitrary;
+// sorting the complete nonoverflow list by source ID restores the previous
+// deterministic summation/tie order. Overflow ignores the stored subset.
+@compute @workgroup_size(8,8)
+fn voxel_tiles(@builtin(global_invocation_id) id:vec3<u32>) {
+    let tile_dims=(volume_config.size_count.xy+vec2<u32>(15u))/16u;
+    if any(id.xy>=tile_dims) {return;}
+    let start=(id.y*tile_dims.x+id.x)*(VOLUME_CANDIDATES+1u);
+    let count=atomicLoad(&volume_tiles[start]);
+    if count<=VOLUME_CANDIDATES {
+        for(var j=1u;j<count;j++) {
+            let value=atomicLoad(&volume_tiles[start+1u+j]);var k=j;
+            for(var move_count=0u;move_count<VOLUME_CANDIDATES;move_count++) {
+                if k==0u {break;}
+                let previous=atomicLoad(&volume_tiles[start+k]);
+                if previous<=value {break;}
+                atomicStore(&volume_tiles[start+1u+k],previous);k--;
+            }
+            atomicStore(&volume_tiles[start+1u+k],value);
+        }
+    }
     atomicMax(&volume_stats[4],count);
     if count>VOLUME_CANDIDATES {atomicAdd(&volume_stats[0],1u);}
     if count>0u {
@@ -88,6 +141,7 @@ fn voxel_tiles(@builtin(global_invocation_id) id: vec3<u32>) {
     if count>0u && volume_config.dispatch.x!=0u {
         let job=atomicAdd(&volume_jobs[3],1u);
         atomicStore(&volume_jobs[4u+job],id.y*tile_dims.x+id.x);
+        if VOLUME_BRICK_VISIBILITY {atomicStore(&volume_brick_mask[id.y*tile_dims.x+id.x],job+1u);}
         atomicMax(&volume_jobs[0],min(job+1u,VOLUME_JOB_ROW));
         atomicMax(&volume_jobs[1],4u*(job/VOLUME_JOB_ROW+1u));
         atomicStore(&volume_jobs[2],1u);
@@ -119,6 +173,18 @@ fn volume_interval(tree:VolumeTree,origin:vec3<f32>,direction:vec3<f32>,limit:f3
 }
 
 // Resource-dependent adapters deliberately stay out of the shared module.
+// 4^3 aggregate-brick directory, or the legacy dense level encoding.
+fn volume_cell_address(level:VolumeLevel,c:vec3<u32>)->u32 {
+    let base=level.dims_offset.w&0x7fffffffu;
+    if (level.dims_offset.w&0x80000000u)==0u {
+        return volume_indices[base+c.x+level.dims_offset.x*(c.y+level.dims_offset.y*c.z)];
+    }
+    let bd=(level.dims_offset.xyz+vec3<u32>(3u))/4u;let b=c/4u;
+    let address=volume_indices[base+b.x+bd.x*(b.y+bd.y*b.z)];
+    if address==0u {return 0u;}
+    let k=c%4u;
+    return volume_indices[address-1u+k.x+4u*k.y+16u*k.z];
+}
 fn volume_sample_level(level:VolumeLevel,local:vec3<f32>,direction:VolumeDirection)->VolumeSample {
     let grid=(local-level.origin_cell.xyz)/level.origin_cell.w-0.5;
     let base=vec3<i32>(floor(grid));
@@ -131,7 +197,7 @@ fn volume_sample_level(level:VolumeLevel,local:vec3<f32>,direction:VolumeDirecti
         let weight3=select(1.0-fraction,fraction,offset!=vec3<i32>(0));
         let weight=weight3.x*weight3.y*weight3.z;
         let c=vec3<u32>(coord);
-        let index=volume_indices[level.dims_offset.w+c.x+level.dims_offset.x*(c.y+level.dims_offset.y*c.z)];
+        let index=volume_cell_address(level,c);
         if index==0u {continue;}
         let cell=volume_cells[index-1u];
         let sigma=volume_sigma(cell,direction)*weight;
@@ -200,7 +266,7 @@ fn volume_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
     let scale=length(local_direction);
     let angular=volume_direction(local_direction/max(scale,1e-8));
     let identity=(index<<12u)|angular.indices.x|(angular.indices.y<<4u)|(angular.indices.z<<8u);
-    var lod_step=vec4<f32>(0.0);
+    var lod_step=vec4<f32>(0.0,volume_levels[tree.identity.y].origin_cell.w*0.5/max(scale,1e-8),0.0,0.0);
     if volume_config.march.w>0.0 {
         let projected=volume_projected_cell(tree,direction);
         lod_step=vec4<f32>(projected.x,volume_levels[tree.identity.y].origin_cell.w*0.5/max(scale,1e-8),projected.y,0.0);
@@ -209,8 +275,12 @@ fn volume_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
         angular.weights,identity,vec2<f32>(-1.0,0.0),lod_step);
 }
 fn volume_lod(ray:VolumeRay,t:f32)->f32 {
-    if volume_config.march.w<=0.0 {return 0.0;}
     let tree=volume_trees[ray.identity>>12u];
+    let selected=volume_selection[ray.identity>>12u];
+    // Aggregate errors were measured for this exact representation. Sampling
+    // a different finer mip would not implement the selected candidate.
+    if selected.w==1u {return f32(min(tree.identity.z-1u,selected.y));}
+    if volume_config.march.w<=0.0 {return 0.0;}
     // Solve target = diameter_px*2^lod / (distance-radius*2^lod).
     // Cells touching the near plane therefore cannot pick a coarse level.
     let denominator=ray.lod_step.x+volume_config.march.w*ray.lod_step.z;
@@ -219,6 +289,7 @@ fn volume_lod(ray:VolumeRay,t:f32)->f32 {
     return clamp(log2(max(footprint,1e-8)),0.0,f32(ceiling));
 }
 fn volume_ray_step(ray:VolumeRay,t:f32)->f32 {
+    if volume_config.march.w<=0.0 && volume_selection[ray.identity>>12u].w!=1u {return volume_config.march.x;}
     return ray.lod_step.y*exp2(floor(volume_lod(ray,t)));
 }
 fn volume_ray_direction(ray:VolumeRay)->VolumeDirection {
@@ -227,7 +298,7 @@ fn volume_ray_direction(ray:VolumeRay)->VolumeDirection {
 fn volume_index(level:VolumeLevel,coord:vec3<i32>)->u32 {
     if any(coord<vec3<i32>(0)) || any(coord>=vec3<i32>(level.dims_offset.xyz)) {return 0u;}
     let c=vec3<u32>(coord);
-    return volume_indices[level.dims_offset.w+c.x+level.dims_offset.x*(c.y+level.dims_offset.y*c.z)];
+    return volume_cell_address(level,c);
 }
 fn volume_empty_brick_level(ray:VolumeRay,t:f32,relative:u32)->vec2<f32> {
     let tree=volume_trees[ray.identity>>12u];
@@ -258,6 +329,9 @@ fn volume_empty_brick_level(ray:VolumeRay,t:f32,relative:u32)->vec2<f32> {
     return vec2<f32>(leave,1.0);
 }
 fn volume_empty_brick(ray:VolumeRay,t:f32)->vec2<f32> {
+    if volume_selection[ray.identity>>12u].w==1u {
+        return volume_empty_brick_level(ray,t,u32(volume_lod(ray,t)));
+    }
     if volume_config.march.w<=0.0 {return volume_empty_brick_level(ray,t,0u);}
     let tree=volume_trees[ray.identity>>12u];
     let relative=u32(floor(volume_lod(ray,t)));
@@ -349,6 +423,359 @@ fn volume_radiance(sample:VolumeSample,tree:VolumeTree,p:vec3<f32>,v:vec3<f32>,s
     return rad;
 }
 
+// SHARED_VOLUME_HELPERS_END
+
+// Opt-in global interval stream. It extends volume_jobs, preserving every
+// resource binding and all immutable cell/tree ABIs. Header z identifies four
+// counters; w is the admitted pixel-slot count. Each slot stores offset/count,
+// followed by bounded 16-byte (enter,exit,volume,pad) records. Metadata overflow
+// and record overflow always use a complete scan for that pixel.
+const VOLUME_INTERVAL_STREAM_WORDS:u32=8388608u;
+const VOLUME_STREAM_FALLBACK:u32=0xffffffffu;
+struct VolumePixelRay {direction:vec3<f32>,near:f32,limit:f32};
+fn volume_pixel_ray(id:vec2<u32>)->VolumePixelRay {
+    let ndc=(vec2<f32>(id)+0.5)/vec2<f32>(volume_config.size_count.xy)*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
+    let far=view.inv_view_proj*vec4<f32>(ndc,1e-4,1.0);
+    let direction=normalize(far.xyz/far.w-view.cam.xyz);
+    let near_point=view.inv_view_proj*vec4<f32>(ndc,1.0,1.0);
+    let near_distance=distance(view.cam.xyz,near_point.xyz/near_point.w);
+    let depth=textureLoad(depth_tex,vec2<i32>(id),0);var limit=1e30;
+    if depth>0.0 {let hit=view.inv_view_proj*vec4<f32>(ndc,depth,1.0);limit=distance(view.cam.xyz,hit.xyz/hit.w);}
+    return VolumePixelRay(direction,near_distance,limit);
+}
+fn volume_stream_pool()->u32 {return volume_config.dispatch.z+4u+volume_config.dispatch.w*2u;}
+fn volume_stream_capacity()->u32 {return (VOLUME_INTERVAL_STREAM_WORDS-4u-volume_config.dispatch.w*2u)/4u;}
+fn volume_stream_read(first:u32,index:u32)->VolumeInterval {
+    let at=volume_stream_pool()+(first+index)*4u;
+    return VolumeInterval(vec2<f32>(bitcast<f32>(atomicLoad(&volume_jobs[at])),bitcast<f32>(atomicLoad(&volume_jobs[at+1u]))),
+        atomicLoad(&volume_jobs[at+2u]),0u);
+}
+// Compact support visibility. Regions are disjoint in each pose's local
+// space, including the trilinear halo; different branches still overlap and
+// are integrated jointly. No opaque hit substitutes for fractional density.
+fn volume_brick_interval(brick:u32,origin:vec3<f32>,direction:vec3<f32>,near:f32,limit:f32)->vec2<f32> {
+    let base=4u+brick*8u;var enter=near;var leave=limit;
+    for(var axis=0u;axis<3u;axis++) {
+        let lo=bitcast<f32>(volume_bricks[base+axis]);let hi=bitcast<f32>(volume_bricks[base+4u+axis]);
+        if abs(direction[axis])<1e-12 {
+            // Half-open ownership at lattice boundaries prevents two adjacent
+            // regions from integrating the same boundary-parallel ray.
+            if origin[axis]<lo || origin[axis]>=hi {return vec2<f32>(1.0,0.0);}
+        } else {
+            let a=(lo-origin[axis])/direction[axis];let b=(hi-origin[axis])/direction[axis];
+            enter=max(enter,min(a,b));leave=min(leave,max(a,b));
+        }
+    }
+    return vec2<f32>(enter,leave);
+}
+fn volume_stream_write(first:u32,index:u32,value:VolumeInterval) {
+    let at=volume_stream_pool()+(first+index)*4u;
+    atomicStore(&volume_jobs[at],bitcast<u32>(value.time.x));atomicStore(&volume_jobs[at+1u],bitcast<u32>(value.time.y));
+    atomicStore(&volume_jobs[at+2u],value.index);atomicStore(&volume_jobs[at+3u],0u);
+}
+fn volume_interval_less(a:VolumeInterval,b:VolumeInterval)->bool {
+    return a.time.x<b.time.x || (a.time.x==b.time.x && (a.index<b.index || (a.index==b.index && a.time.y<b.time.y)));
+}
+fn volume_stream_sift(first:u32,start:u32,count:u32) {
+    var root=start;
+    loop {
+        var child=root*2u+1u;if child>=count {break;}
+        if child+1u<count && volume_interval_less(volume_stream_read(first,child),volume_stream_read(first,child+1u)) {child++;}
+        let value=volume_stream_read(first,root);let larger=volume_stream_read(first,child);
+        if !volume_interval_less(value,larger) {break;}
+        volume_stream_write(first,root,larger);volume_stream_write(first,child,value);root=child;
+    }
+}
+fn volume_stream_sort(first:u32,count:u32) {
+    if count<2u {return;}
+    var parent=count/2u;loop {if parent==0u {break;}parent--;volume_stream_sift(first,parent,count);}
+    var end=count;loop {if end<=1u {break;}end--;
+        let last=volume_stream_read(first,end);volume_stream_write(first,end,volume_stream_read(first,0u));
+        volume_stream_write(first,0u,last);volume_stream_sift(first,0u,end);
+    }
+}
+// Bounded reservation, without a globally contended compare-exchange loop.
+// Once full, at most one racing reservation per invocation can overshoot:
+// <4M catalog references plus 262144*512 gather records, safely below u32.
+// Capacity failure flags a complete branch fallback, never an invalid write.
+fn volume_stream_reserve(count:u32)->u32 {
+    let capacity=volume_stream_capacity();
+    if atomicLoad(&volume_jobs[volume_config.dispatch.z])>=capacity {return VOLUME_STREAM_FALLBACK;}
+    let first=atomicAdd(&volume_jobs[volume_config.dispatch.z],count);
+    if first>capacity || count>capacity-first {return VOLUME_STREAM_FALLBACK;}
+    return first;
+}
+fn volume_brick_rect(brick:u32,tree:VolumeTree)->vec4<i32> {
+    let base=4u+brick*8u;let owner=instances[tree.identity.x];
+    let low=vec3<f32>(bitcast<f32>(volume_bricks[base]),bitcast<f32>(volume_bricks[base+1u]),bitcast<f32>(volume_bricks[base+2u]));
+    let high=vec3<f32>(bitcast<f32>(volume_bricks[base+4u]),bitcast<f32>(volume_bricks[base+5u]),bitcast<f32>(volume_bricks[base+6u]));
+    var lo=vec2<f32>(1e30);var hi=vec2<f32>(-1e30);var front=0u;
+    for(var corner=0u;corner<8u;corner++) {
+        let local=vec4<f32>(select(low.x,high.x,(corner&1u)!=0u),select(low.y,high.y,(corner&2u)!=0u),select(low.z,high.z,(corner&4u)!=0u),1.0);
+        let p=vec3<f32>(dot(owner.r0,local),dot(owner.r1,local),dot(owner.r2,local));let clip=view.view_proj*vec4<f32>(p,1.0);
+        if clip.w>view.params.y {front++;let pixel=(clip.xy/clip.w*vec2<f32>(0.5,-0.5)+0.5)*vec2<f32>(volume_config.size_count.xy);lo=min(lo,pixel);hi=max(hi,pixel);}
+    }
+    if front==0u {return vec4<i32>(0);}
+    let size=vec2<i32>(volume_config.size_count.xy);
+    if front<8u {return vec4<i32>(vec2<i32>(0),size);}
+    // Conservative pixel centres, bounded before f32 -> integer conversion.
+    let first=vec2<i32>(clamp(floor(lo-0.5),vec2<f32>(0.0),vec2<f32>(size)));
+    let last=vec2<i32>(clamp(ceil(hi+0.5),vec2<f32>(0.0),vec2<f32>(size)));
+    return vec4<i32>(first,last);
+}
+@compute @workgroup_size(64)
+fn voxel_brick_scatter(@builtin(global_invocation_id) id:vec3<u32>) {
+    if !VOLUME_BRICK_VISIBILITY {return;}
+    let work=id.x+id.y*65535u*64u;if work>=volume_bricks[0] {return;}
+    let reference=volume_bricks[1]+work*4u;let index=volume_bricks[reference];
+    if volume_selection[index].x!=1u || volume_selection[index].y!=volume_bricks[reference+1u] {return;}
+    let brick=volume_bricks[reference+2u];let tree=volume_trees[index];let rect=volume_brick_rect(brick,tree);
+    let p=vec4<f32>(view.cam.xyz,1.0);let origin=vec3<f32>(dot(tree.inverse[0],p),dot(tree.inverse[1],p),dot(tree.inverse[2],p));
+    var tests=0u;
+    for(var y=rect.y;y<rect.w;y++) {for(var x=rect.x;x<rect.z;x++) {
+        let pixel_id=vec2<u32>(u32(x),u32(y));var slot=u32(y)*volume_config.size_count.x+u32(x);
+        if volume_config.dispatch.x!=0u {
+            let tile=pixel_id/16u;let job=atomicLoad(&volume_brick_mask[tile.y*volume_config.size_count.z+tile.x]);
+            if job==0u {continue;}slot=(job-1u)*256u+(pixel_id.y%16u)*16u+pixel_id.x%16u;
+        }
+        if slot>=volume_config.dispatch.w {continue;}
+        let metadata=volume_config.dispatch.z+4u+slot*2u;
+        if (atomicLoad(&volume_jobs[metadata+1u])&0x80000000u)!=0u {continue;}
+        let pixel=volume_pixel_ray(pixel_id);let d=vec4<f32>(pixel.direction,0.0);
+        let direction=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
+        tests++;let interval=volume_brick_interval(brick,origin,direction,pixel.near,pixel.limit);
+        if interval.y<=interval.x {continue;}
+        let record=volume_stream_reserve(1u);
+        if record==VOLUME_STREAM_FALLBACK {atomicOr(&volume_jobs[metadata+1u],0x80000000u);continue;}
+        let count=atomicAdd(&volume_jobs[metadata+1u],1u);
+        if (count&0x7fffffffu)>=512u {atomicOr(&volume_jobs[metadata+1u],0x80000000u);continue;}
+        let previous=atomicExchange(&volume_jobs[metadata],record+1u);
+        volume_stream_write(record,0u,VolumeInterval(interval,index,0u));
+        atomicStore(&volume_jobs[volume_stream_pool()+record*4u+3u],previous);
+    }}
+    volume_add_total(20u,tests);
+}
+fn voxel_brick_intervals_pixel(id:vec2<u32>,slot:u32) {
+    if any(id>=volume_config.size_count.xy) || slot>=volume_config.dispatch.w {return;}
+    let metadata=volume_config.dispatch.z+4u+slot*2u;let count=atomicLoad(&volume_jobs[metadata+1u]);
+    if count==0u {return;}
+    if count>512u {atomicStore(&volume_jobs[metadata+1u],VOLUME_STREAM_FALLBACK);return;}
+    let first=volume_stream_reserve(count);
+    if first==VOLUME_STREAM_FALLBACK {atomicStore(&volume_jobs[metadata+1u],VOLUME_STREAM_FALLBACK);return;}
+    var link=atomicLoad(&volume_jobs[metadata]);
+    for(var j=0u;j<count;j++) {
+        // Broken chains must never produce a partially populated span.
+        if link==0u {atomicStore(&volume_jobs[metadata+1u],VOLUME_STREAM_FALLBACK);return;}
+        let record=link-1u;let value=volume_stream_read(record,0u);
+        link=atomicLoad(&volume_jobs[volume_stream_pool()+record*4u+3u]);volume_stream_write(first,j,value);
+    }
+    volume_stream_sort(first,count);atomicStore(&volume_jobs[metadata],first);
+    atomicAdd(&volume_jobs[volume_config.dispatch.z+2u],count);
+}
+
+// No per-ray private lists. A scalar first scan counts exact intersections;
+// the second fills a contiguous global span in stable source-ID order.
+fn voxel_intervals_pixel(id:vec2<u32>,slot:u32) {
+    if VOLUME_BRICK_VISIBILITY {voxel_brick_intervals_pixel(id,slot);return;}
+    if any(id>=volume_config.size_count.xy) || slot>=volume_config.dispatch.w {return;}
+    let metadata=volume_config.dispatch.z+4u+slot*2u;
+    atomicStore(&volume_jobs[metadata],0u);atomicStore(&volume_jobs[metadata+1u],0u);
+    let tile=id/16u;let start=(tile.y*volume_config.size_count.z+tile.x)*(VOLUME_CANDIDATES+1u);
+    let count=atomicLoad(&volume_tiles[start]);if count==0u {return;}
+    let tile_fallback=count>VOLUME_CANDIDATES;
+    let candidates=select(count,volume_config.size_count.w,tile_fallback);let pixel_ray=volume_pixel_ray(id);
+    var ray_count=0u;var interval_tests=0u;
+    for(var j=0u;j<candidates;j++) {
+        var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+        if volume_selection[index].x!=1u {continue;}
+        interval_tests++;
+        var interval=volume_interval(volume_trees[index],view.cam.xyz,pixel_ray.direction,pixel_ray.limit);
+        interval.x=max(interval.x,pixel_ray.near);
+        if interval.y>interval.x {ray_count++;}
+    }
+    if ray_count==0u {volume_add_total(20u,interval_tests);return;}
+    // At most262144 admitted slots x4096 volumes: reservation cannot wrap u32.
+    let first=atomicAdd(&volume_jobs[volume_config.dispatch.z],ray_count);
+    let capacity=volume_stream_capacity();
+    if first>capacity || ray_count>capacity-first {
+        atomicStore(&volume_jobs[metadata+1u],VOLUME_STREAM_FALLBACK);
+        volume_add_total(20u,interval_tests);return;
+    }
+    var written=0u;
+    for(var j=0u;j<candidates;j++) {
+        var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+        if volume_selection[index].x!=1u {continue;}
+        interval_tests++;
+        var interval=volume_interval(volume_trees[index],view.cam.xyz,pixel_ray.direction,pixel_ray.limit);
+        interval.x=max(interval.x,pixel_ray.near);if interval.y<=interval.x {continue;}
+        let at=volume_stream_pool()+(first+written)*4u;
+        atomicStore(&volume_jobs[at],bitcast<u32>(interval.x));atomicStore(&volume_jobs[at+1u],bitcast<u32>(interval.y));
+        atomicStore(&volume_jobs[at+2u],index);atomicStore(&volume_jobs[at+3u],0u);written++;
+    }
+    atomicStore(&volume_jobs[metadata],first);atomicStore(&volume_jobs[metadata+1u],written);
+    atomicAdd(&volume_jobs[volume_config.dispatch.z+2u],written);volume_add_total(20u,interval_tests);
+}
+fn volume_stream_pixel(group:vec3<u32>,local:vec3<u32>)->vec4<u32> {
+    let job=group.x+(group.y/4u)*VOLUME_JOB_ROW;
+    if job>=atomicLoad(&volume_jobs[3]) {return vec4<u32>(0u);}
+    let tile_index=atomicLoad(&volume_jobs[4u+job]);let tile_width=volume_config.size_count.z;
+    let tile=vec2<u32>(tile_index%tile_width,tile_index/tile_width);
+    let offset=vec2<u32>(group.y&1u,(group.y>>1u)&1u)*8u+local.xy;
+    return vec4<u32>(tile*16u+offset,job*256u+offset.y*16u+offset.x,1u);
+}
+@compute @workgroup_size(8,8)
+fn voxel_intervals(@builtin(global_invocation_id) id:vec3<u32>) {
+    voxel_intervals_pixel(id.xy,id.y*volume_config.size_count.x+id.x);
+}
+@compute @workgroup_size(8,8)
+fn voxel_intervals_active(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_id) local:vec3<u32>) {
+    let pixel=volume_stream_pixel(group,local);if pixel.w!=0u {voxel_intervals_pixel(pixel.xy,pixel.z);}
+}
+
+// Aggregate selections already specify an exact mip. Computing a perspective
+// diameter for them is unnecessary; legacy providers retain their exact LOD.
+fn volume_stream_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
+    let tree=volume_trees[index];let p=vec4<f32>(view.cam.xyz,1.0);let d=vec4<f32>(direction,0.0);
+    let local_origin=vec3<f32>(dot(tree.inverse[0],p),dot(tree.inverse[1],p),dot(tree.inverse[2],p));
+    let local_direction=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
+    let scale=length(local_direction);let angular=volume_direction(local_direction/max(scale,1e-8));
+    let identity=(index<<12u)|angular.indices.x|(angular.indices.y<<4u)|(angular.indices.z<<8u);
+    var lod_step=vec4<f32>(0.0,volume_levels[tree.identity.y].origin_cell.w*0.5/max(scale,1e-8),0.0,0.0);
+    if volume_config.march.w>0.0 && volume_selection[index].w!=1u {
+        let projected=volume_projected_cell(tree,direction);lod_step.x=projected.x;lod_step.z=projected.y;
+    }
+    return VolumeRay(vec4<f32>(local_origin,leave),vec4<f32>(local_direction,scale),angular.weights,identity,vec2<f32>(-1.0,0.0),lod_step);
+}
+@compute @workgroup_size(8,8)
+fn voxel_integrate_global(@builtin(global_invocation_id) id:vec3<u32>) {
+    voxel_integrate_global_pixel(id.xy,id.y*volume_config.size_count.x+id.x);
+}
+@compute @workgroup_size(8,8)
+fn voxel_integrate_global_active(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_id) local:vec3<u32>) {
+    let pixel=volume_stream_pixel(group,local);if pixel.w!=0u {voxel_integrate_global_pixel(pixel.xy,pixel.z);}
+}
+fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
+    if any(id>=volume_config.size_count.xy) {return;}
+    let px=vec2<i32>(id);textureStore(volume_output,px,vec4<f32>(0.0));
+    // VOLUME_MOTION_BEGIN
+    textureStore(volume_motion_output,px,vec4<f32>(0.0));
+    // VOLUME_MOTION_END
+    let tile=id/16u;let start=(tile.y*volume_config.size_count.z+tile.x)*(VOLUME_CANDIDATES+1u);
+    let count=atomicLoad(&volume_tiles[start]);if count==0u {return;}
+    let tile_fallback=count>VOLUME_CANDIDATES;let candidates=select(count,volume_config.size_count.w,tile_fallback);
+    let pixel_ray=volume_pixel_ray(id);let direction=pixel_ray.direction;let near_distance=pixel_ray.near;let limit=pixel_ray.limit;
+    var first=0u;var ray_count=VOLUME_STREAM_FALLBACK;
+    if slot<volume_config.dispatch.w {
+        let metadata=volume_config.dispatch.z+4u+slot*2u;
+        first=atomicLoad(&volume_jobs[metadata]);ray_count=atomicLoad(&volume_jobs[metadata+1u]);
+    }
+    let streamed=ray_count!=VOLUME_STREAM_FALLBACK;
+    var interval_tests=0u;var begin=1e30;var end=0.0;
+    if streamed {
+        for(var j=0u;j<ray_count;j++) {let interval=volume_stream_read(first,j).time;begin=min(begin,interval.x);end=max(end,interval.y);}
+    } else {
+        ray_count=0u;
+        for(var j=0u;j<candidates;j++) {
+            var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+            if volume_selection[index].x!=1u {continue;}interval_tests++;
+            var interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
+            if interval.y<=interval.x {continue;}ray_count++;begin=min(begin,interval.x);end=max(end,interval.y);
+        }
+    }
+    atomicMax(&volume_stats[5],ray_count);
+    if ray_count==0u {volume_add_total(20u,interval_tests);return;}
+    if !streamed {atomicAdd(&volume_jobs[volume_config.dispatch.z+1u],1u);}
+    atomicAdd(&volume_stats[2],1u);
+    let query_count=select(candidates,ray_count,streamed);
+    var first_live=0u;var t=begin;var transmittance=1.0;var color=vec3<f32>(0.0);var steps=0u;
+    var max_resident=0u;var empty_skips=0u;var next_empty_check=-1.0;var cached_empty=false;
+    var next_light=-1.0;var cached_sky=1.0;var max_occupied_lod=0.0;var volume_samples=0u;var cell_samples=0u;
+    // VOLUME_MOTION_BEGIN
+    var motion_moment=vec4<f32>(0.0);var motion_valid=true;
+    // VOLUME_MOTION_END
+    loop {
+        if t>=end || transmittance<=0.001 || steps>=VOLUME_MAX_STEPS {break;}steps++;
+        if streamed && VOLUME_BRICK_VISIBILITY {
+            loop {if first_live>=query_count || volume_stream_read(first,first_live).time.y>t {break;}first_live++;}
+        }
+        var next_entry=end;var segment_end=end;var inside_count=0u;var march_step=1e30;
+        let test_empty=volume_config.march.z>0.5 && t>=next_empty_check;
+        var empty_until=end;var all_empty=true;
+        for(var j=first_live;j<query_count;j++) {
+            var interval:vec2<f32>;var index=j;
+            if streamed {let record=volume_stream_read(first,j);interval=record.time;index=record.index;}
+            else {
+                if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+                if volume_selection[index].x!=1u {continue;}interval_tests++;
+                interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
+            }
+            if interval.y<=interval.x || interval.y<=t {continue;}
+            if interval.x>t {next_entry=min(next_entry,interval.x);if streamed && VOLUME_BRICK_VISIBILITY {break;}continue;}
+            inside_count++;segment_end=min(segment_end,interval.y);
+            let ray=volume_stream_ray(index,interval.y,direction);march_step=min(march_step,volume_ray_step(ray,t));
+            if test_empty {let empty=volume_empty_brick(ray,t);empty_until=min(empty_until,empty.x);all_empty=all_empty&&empty.y>0.5;}
+        }
+        max_resident=max(max_resident,inside_count);
+        if inside_count==0u {if next_entry<=t {break;}t=next_entry;continue;}
+        if test_empty {next_empty_check=min(empty_until,min(segment_end,next_entry));cached_empty=all_empty;}
+        if volume_config.march.z>0.5 && cached_empty && next_empty_check>t {t=next_empty_check;empty_skips++;continue;}
+        let ds=min(march_step,min(segment_end-t,next_entry-t));if ds<=0.0 || t+ds<=t {break;}
+        let sample_t=t+0.5*ds;let p=view.cam.xyz+direction*sample_t;
+        var total_sigma=0.0;var emission=vec3<f32>(0.0);var shadow=1.0;var shadow_ready=false;
+        // VOLUME_MOTION_BEGIN
+        var delta_sigma=vec3<f32>(0.0);
+        // VOLUME_MOTION_END
+        for(var j=first_live;j<query_count;j++) {
+            var interval:vec2<f32>;var index=j;
+            if streamed {let record=volume_stream_read(first,j);interval=record.time;index=record.index;}
+            else {
+                if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+                if volume_selection[index].x!=1u {continue;}interval_tests++;
+                interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
+            }
+            if streamed && VOLUME_BRICK_VISIBILITY && sample_t<interval.x {break;}
+            if sample_t<interval.x || sample_t>interval.y || interval.y<=interval.x {continue;}
+            let ray=volume_stream_ray(index,interval.y,direction);let tree=volume_trees[index];
+            let local=ray.origin_exit.xyz+ray.direction_scale.xyz*sample_t;let lod=volume_lod(ray,sample_t);
+            let sample=volume_sample_local(tree,local,volume_ray_direction(ray),lod);volume_samples++;cell_samples+=sample.cell_samples;
+            let sigma=sample.sigma*ray.direction_scale.w;if sigma<=0.0 {continue;}max_occupied_lod=max(max_occupied_lod,lod);
+            if !shadow_ready {
+                if sample_t>=next_light {cached_sky=sky_visibility(p,vec3<f32>(0.0,1.0,0.0));next_light=sample_t+1.0;}
+                shadow=mix(1.0,shadow_at(p,vec3<f32>(0.0,1.0,0.0)),light.sun_color.w);shadow_ready=true;
+            }
+            total_sigma+=sigma;emission+=sigma*volume_radiance(sample,tree,p,-direction,shadow,cached_sky);
+            // VOLUME_MOTION_BEGIN
+            if volume_config.dispatch.y!=0u {
+                if tree.identity.x>=arrayLength(&volume_previous_instances) {motion_valid=false;}
+                else {
+                    let old=volume_previous_instances[tree.identity.x];let point=vec4<f32>(local,1.0);
+                    let previous=vec3<f32>(dot(old.r0,point),dot(old.r1,point),dot(old.r2,point));
+                    if all(abs(previous)<vec3<f32>(1e30)) {delta_sigma+=sigma*(previous-p);}else {motion_valid=false;}
+                }
+            }
+            // VOLUME_MOTION_END
+        }
+        if total_sigma>0.0 {
+            let transport=volume_transport_segment(transmittance,total_sigma,ds);color+=transport.opacity_weight*emission/total_sigma;
+            // VOLUME_MOTION_BEGIN
+            motion_moment+=transport.opacity_weight*vec4<f32>(delta_sigma/total_sigma,sample_t);
+            // VOLUME_MOTION_END
+            transmittance=transport.transmittance;
+        }
+        t+=ds;
+    }
+    volume_add_total(14u,steps);volume_add_total(16u,volume_samples);volume_add_total(18u,cell_samples);volume_add_total(20u,interval_tests);
+    atomicMax(&volume_stats[3],steps);atomicMax(&volume_stats[7],max_resident);atomicMax(&volume_stats[9],empty_skips);
+    if max_occupied_lod>0.0 {atomicMax(&volume_stats[10],u32(ceil(max_occupied_lod*256.0)));atomicAdd(&volume_stats[11],1u);}
+    if t<end && transmittance>0.001 {atomicAdd(&volume_stats[1],1u);textureStore(volume_output,px,vec4<f32>(6000.0,0.0,6000.0,1.0));}
+    else {
+        textureStore(volume_output,px,vec4<f32>(color,1.0-transmittance));
+        // VOLUME_MOTION_BEGIN
+        let alpha=1.0-transmittance;if motion_valid && alpha>0.0 {textureStore(volume_motion_output,px,motion_moment/alpha);}
+        // VOLUME_MOTION_END
+    }
+}
+
 @compute @workgroup_size(8,8)
 fn voxel_integrate(@builtin(global_invocation_id) id:vec3<u32>) {
     voxel_integrate_pixel(id);
@@ -376,7 +803,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
     let tile_dims=(volume_config.size_count.xy+vec2<u32>(15u))/16u;
     let tile=id.xy/16u;
     let start=(tile.y*tile_dims.x+tile.x)*(VOLUME_CANDIDATES+1u);
-    let count=volume_tiles[start];
+    let count=atomicLoad(&volume_tiles[start]);
     if count==0u {return;}
     let tile_fallback=count>VOLUME_CANDIDATES;
     let candidates=select(count,volume_config.size_count.w,tile_fallback);
@@ -396,8 +823,8 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
     var interval_tests=0u;
     var begin=1e30;var end=0.0;
     for(var j=0u;j<candidates;j++) {
-        var index=j;if !tile_fallback {index=volume_tiles[start+1u+j];}
-        if volume_selection[index].x==0u {continue;}
+        var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+        if volume_selection[index].x!=1u {continue;}
         interval_tests++;
         var interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
         interval.x=max(interval.x,near_distance);
@@ -439,8 +866,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
         // Every path, including gaps and failed float progress, is bounded.
         steps++;
         var next_entry=end;var segment_end=end;var inside_count=0u;
-        var march_step=volume_config.march.x;
-        if volume_config.march.w>0.0 {march_step=1e30;}
+        var march_step=1e30;
         if cached {
             var slot=0u;
             for(var removal=0u;removal<VOLUME_ACTIVE;removal++) {
@@ -469,7 +895,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
             if cursor<ray_count {next_entry=intervals[cursor].time.x;}
             for(var j=0u;j<resident_count;j++) {
                 segment_end=min(segment_end,rays[j].origin_exit.w);
-                if volume_config.march.w>0.0 {march_step=min(march_step,volume_ray_step(rays[j],t));}
+                march_step=min(march_step,volume_ray_step(rays[j],t));
             }
         } else {
             let query_count=select(candidates,ray_count,compact);
@@ -477,8 +903,8 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
                 var interval:vec2<f32>;var index=j;
                 if compact {interval=intervals[j].time;index=intervals[j].index;}
                 else {
-                    if !tile_fallback {index=volume_tiles[start+1u+j];}
-                    if volume_selection[index].x==0u {continue;}
+                    if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+                    if volume_selection[index].x!=1u {continue;}
                     interval_tests++;
                     interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
                     interval.x=max(interval.x,near_distance);
@@ -487,7 +913,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
                 if interval.x>t {next_entry=min(next_entry,interval.x);}
                 else {
                     inside_count++;segment_end=min(segment_end,interval.y);
-                    if volume_config.march.w>0.0 {march_step=min(march_step,volume_ray_step(volume_ray(index,interval.y,direction),t));}
+                    march_step=min(march_step,volume_ray_step(volume_ray(index,interval.y,direction),t));
                 }
             }
         }
@@ -526,8 +952,8 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
                 var index=j;var interval:vec2<f32>;
                 if compact {index=intervals[j].index;interval=intervals[j].time;}
                 else {
-                    if !tile_fallback {index=volume_tiles[start+1u+j];}
-                    if volume_selection[index].x==0u {continue;}
+                    if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
+                    if volume_selection[index].x!=1u {continue;}
                     interval_tests++;
                     interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
                 }

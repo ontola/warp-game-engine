@@ -8,13 +8,18 @@ use crate::{meadow_data::MeadowGeometry, Gpu};
 pub(super) const MAX_STRENGTH: f32 = 0.65;
 const SOURCE: &str = include_str!("shaders/meadow_spatial_filter.wgsl");
 
-/// Average actual basal diameter, not a game-specific hardcoded width. Only
+/// Actual basal diameter, not a game-specific hardcoded width. Single-form
+/// sources retain their original average exactly. A mixed-form field uses
+/// the narrowest blade so its subpixel shading cannot escape the shared
+/// filter threshold; broader forms can consequently soften earlier. Only
 /// homogeneous authored-t sources qualify; legacy metadata has no t contract.
 pub(super) fn source_dimensions(geometry: &MeadowGeometry) -> Option<[f32; 2]> {
     if geometry.vertices.is_empty() || geometry.vertices.iter().any(|v| v.anchor[3] <= 0.0) {
         return None;
     }
     let mut diameter = 0.0f64;
+    let mut minimum_diameter = f32::INFINITY;
+    let mut maximum_diameter = 0.0f32;
     let mut count = 0;
     let mut height = 0.0f32;
     for vertex in &geometry.vertices {
@@ -22,11 +27,19 @@ pub(super) fn source_dimensions(geometry: &MeadowGeometry) -> Option<[f32; 2]> {
         if vertex.normal[3] == 0.0 {
             let offset = glam::Vec3::from_slice(&vertex.position) - glam::Vec3::from_slice(&vertex.anchor);
             diameter += 2.0 * f64::from(offset.length());
+            minimum_diameter = minimum_diameter.min(2.0 * offset.length());
+            maximum_diameter = maximum_diameter.max(2.0 * offset.length());
             count += 1;
         }
     }
     if count == 0 || diameter <= 0.0 || !diameter.is_finite() { return None; }
-    Some([(diameter / f64::from(count)) as f32, height])
+    let average = (diameter / f64::from(count)) as f32;
+    // Quantized roots plus f32 yaw produce tiny subtraction differences even
+    // for one authored width. Preserve that source's exact previous average.
+    // A genuinely varied source uses the minimum regardless of its spatial
+    // variant selection mode (callers may still choose independent hashes).
+    let width = if maximum_diameter - minimum_diameter > average * 1e-4 { minimum_diameter } else { average };
+    Some([width, height])
 }
 
 pub(super) struct Filter {

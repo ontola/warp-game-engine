@@ -13,6 +13,8 @@
 #[path="../src/procedural_rocks.rs"] mod procedural_rocks;
 #[path="../src/roadside_crowds.rs"] mod roadside_crowds;
 #[path="../src/tree_assets.rs"] mod tree_assets;
+#[path="../src/plant_species.rs"] mod plant_species;
+#[path="../src/plant_population.rs"] mod plant_population;
 #[path="../src/voxel_tree_patch.rs"] mod voxel_tree_patch;
 #[path="../src/visuals.rs"] mod visuals;
 

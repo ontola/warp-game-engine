@@ -1,0 +1,49 @@
+# Historical V1 cameras, reusable for the grass-species comparison.
+# Native single-view evidence, not a four-player target result. Keep
+# SIDEWAYS_TREE_SPECIES=reference; the detailed tree assemblies are preview-only.
+# Enable SIDEWAYS_MEADOW_SPECIES=mixed for the grass candidate. Fixed wind via runner.
+schema = 1
+name = "plant-species"
+ticks_per_frame = 0
+capture_frames = [24, 96, 168]
+
+[capture]
+format = "jpg"
+max_width = 1920
+quality = 93
+
+[scene]
+seed = 1
+km = 3.0
+weather = "clear"
+views = 1
+size = "1920x1080"
+upscale = "native"
+hud = false
+
+[[sections]]
+name = "forest-close"
+start_tick = 0
+frames = 72
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-72.12802124, 4.13761520, -335.08944702], target = [-76.23734283, 2.98761511, -337.04077148], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "grass-and-road"
+start_tick = 0
+frames = 72
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-42.18136978149414, 9.14914608001709, -989.0841674804688], target = [-38.512569427490234, 7.999146461486816, -994.6904296875], fov_y_degrees = 64.0}
+
+[[sections]]
+name = "distant-hillside"
+start_tick = 0
+frames = 72
+warmup = 24
+sun = "noon"
+atmosphere = "clear"
+camera = {position = [-76.12712860107422, -4.613594055175781, -493.1341247558594], target = [-80.50606536865234, -5.763593673706055, -498.2051086425781], fov_y_degrees = 64.0}
