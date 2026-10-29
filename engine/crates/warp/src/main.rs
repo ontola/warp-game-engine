@@ -122,7 +122,7 @@ fn play(args: &[String]) -> Result<(), String> {
     }
     let cfg = app::Config {
         title: game.cfg.title.clone(), size: size(args, game.cfg.size)?, tick_hz: game.cfg.tick_rate,
-        fullscreen: args.iter().any(|a| a == "--fullscreen"), keyboard: true, frames: parse(args, "--frames")?.unwrap_or(0),
+        fullscreen: args.iter().any(|a| a == "--fullscreen"), keyboard: true, frames: parse(args, "--frames")?.unwrap_or(0), max_render_height: None,
     };
     let r = app::run(cfg, &mut game);
     drop(speaker);

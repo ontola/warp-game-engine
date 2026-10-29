@@ -37,7 +37,7 @@ fn run() -> Result<(), String> {
             let humans = (numf("--players", 1.0) as usize).max(1);
             let party = party::Party::connect();
             let mut game = play::Spellstorm::with_party(kits::Kits::load(None)?, humans, numf("--bots", 0.0) as usize, seed, party);
-            let cfg = app::Config { title: "Spellstorm".into(), size: [1920, 1080], tick_hz: 60.0, fullscreen: flag("--fullscreen"), keyboard: true, frames: numf("--frames", 0.0) as u64 };
+            let cfg = app::Config { title: "Spellstorm".into(), size: [1920, 1080], tick_hz: 60.0, fullscreen: flag("--fullscreen"), keyboard: true, frames: numf("--frames", 0.0) as u64, max_render_height: None };
             app::run(cfg, &mut game)
         }
         "shot" => {

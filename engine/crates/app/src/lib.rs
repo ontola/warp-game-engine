@@ -169,10 +169,14 @@ pub struct Config {
     pub keyboard: bool,
     /// Smoke test: quit after this many frames and print the frame rate.
     pub frames: u64,
+    /// Render the 3D views at most this many pixels tall and scale them up
+    /// (the HUD stays sharp): a 5K Retina screen shades 7x the pixels of
+    /// 1080p. `WARP_RENDER_HEIGHT` overrides it, 0 for native.
+    pub max_render_height: Option<u32>,
 }
 
 impl Default for Config {
-    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: false, keyboard: true, frames: 0 } }
+    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: false, keyboard: true, frames: 0, max_render_height: None } }
 }
 
 /// The present path shared by the window and headless capture.
@@ -182,7 +186,8 @@ impl Output {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Self, String> {
         Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None })
     }
-    fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView) -> Result<(), String> {
+    fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>) -> Result<(), String> {
+        let size = match max_height { Some(m) if m > 0 && size[1] > m => [(size[0] as u64 * m as u64 / size[1] as u64).max(1) as u32, m], _ => size };
         let rects = render::split_rects_with(draw.cameras.len(), size[0], size[1], split);
         let views: Vec<ViewRect> = draw.cameras.iter().zip(&rects).map(|(&cam, &(x, y, w, h))| ViewRect { cam, x, y, w, h }).collect();
         // One output texture, reused while the size holds.
@@ -239,7 +244,7 @@ impl<'g> Headless<'g> {
         let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, split, renderer: &mut self.renderer };
         let draw = game.draw(&mut frame)?;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
-        self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()))?;
+        self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), None)?;
         Ok(self.gpu.read_rgba8(&self.target))
     }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
@@ -380,10 +385,11 @@ impl Shell<'_> {
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,
                 align: render::hud::TextAlign::Left, width: size[0] as f32 * 0.6 });
         }
+        let render_height = std::env::var("WARP_RENDER_HEIGHT").ok().and_then(|v| v.parse().ok()).or(self.cfg.max_render_height);
         let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
         if to_file || to_game {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
-            Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(&live.gpu, renderer, &draw, size, split, &target.create_view(&Default::default()))?;
+            Output::new(&live.gpu, wgpu::TextureFormat::Rgba8UnormSrgb)?.draw(&live.gpu, renderer, &draw, size, split, &target.create_view(&Default::default()), render_height)?;
             let rgba = live.gpu.read_rgba8(&target);
             if to_file {
                 let state = self.game.state().map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)));
@@ -401,7 +407,7 @@ impl Shell<'_> {
         if let Some((line, _)) = &self.toast { toast(&mut draw.hud, line); }
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-                live.out.draw(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()))?;
+                live.out.draw(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()), render_height)?;
                 if let Some(w) = &self.window { w.pre_present_notify(); }
                 live.gpu.queue.present(tex);
                 if let Some(w) = &self.window { self.manners.presented(w, size); }

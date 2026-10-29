@@ -4,6 +4,7 @@
 //!   cargo run --release -p app --example terrain_fly
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --seed 3
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
+//!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
 //! Q or LB sinks, Shift/E or RB goes fast, the wheel or arrows up/down set
@@ -240,5 +241,8 @@ fn main() -> Result<(), String> {
         let rgba = app::capture(&mut game, &gpu, [w, h], 10, TICK_HZ)?;
         return render::write_png(std::path::Path::new(&out), w, h, &rgba);
     }
-    app::run(app::Config { title: "Terrain fly".into(), tick_hz: TICK_HZ, ..Default::default() }, &mut game)
+    let frames = arg("--frames").map(|s| s.parse().map_err(|_| "--frames N")).transpose()?.unwrap_or(0);
+    app::run(app::Config { title: "Terrain fly".into(), tick_hz: TICK_HZ, fullscreen: args.iter().any(|a| a == "--fullscreen"), frames,
+        // Shading dominates at 5K; WARP_RENDER_HEIGHT=0 renders native.
+        max_render_height: Some(1440), ..Default::default() }, &mut game)
 }
