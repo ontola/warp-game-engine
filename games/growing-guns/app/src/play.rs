@@ -842,6 +842,8 @@ impl app::Game for Gg {
     fn wants_capture(&self) -> bool { crate::live::wants_capture(self) }
     fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) { crate::live::captured(self, size, rgba) }
 
+    fn loading(&mut self, percent: u32, step: &str) { if let Some(p) = self.party.as_mut() { p.loading(percent, step); } }
+
     fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
 
     fn split(&self) -> render::SplitLayout { render::SplitLayout::SideBySide }

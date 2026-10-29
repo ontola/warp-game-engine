@@ -295,6 +295,10 @@ pub struct Client {
     rumble_quiet: BTreeMap<usize, bool>,
     outgoing: Sender<Value>,
     incoming: Receiver<Incoming>,
+    /// Read ahead by [`Client::loading`], still to be handled by `poll`.
+    held: std::collections::VecDeque<Incoming>,
+    /// A `prepare` seen ahead by [`Client::loading`]: whose progress to report.
+    loading_session: Option<String>,
 }
 
 impl Client {
@@ -309,12 +313,12 @@ impl Client {
         std::thread::Builder::new().name("gamenight".into()).spawn(move || {
             if let Err(error) = transport(config, send_rx, &recv_tx) { let _ = recv_tx.send(Incoming::Disconnected(error)); }
         }).map_err(|e| format!("Cannot start GameNight connection thread: {e}"))?;
-        Ok(Self { state, launched_by_daemon, rumble_quiet: BTreeMap::new(), outgoing, incoming })
+        Ok(Self { state, launched_by_daemon, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None })
     }
 
     pub fn poll(&mut self) -> Vec<Command> {
         let mut commands = vec![];
-        while let Ok(item) = self.incoming.try_recv() {
+        while let Some(item) = self.held.pop_front().or_else(|| self.incoming.try_recv().ok()) {
             match item {
                 Incoming::Json(value, received_at) => commands.extend(self.state.receive(value, received_at)),
                 Incoming::Disconnected(error) => {
@@ -332,6 +336,22 @@ impl Client {
             if !commands.is_empty() { break; }
         }
         commands
+    }
+
+    /// Startup progress for the host's loading screen, before the game
+    /// handles its `prepare` (the window, the GPU, the scene). Reads ahead
+    /// for that `prepare` without handling it; `poll` still does.
+    pub fn loading(&mut self, percent: u32, text: &str) {
+        while let Ok(item) = self.incoming.try_recv() {
+            if let Incoming::Json(msg, _) = &item
+                && msg["type"] == "prepare" && msg["game"] == self.state.game_id.as_str()
+                && let Some(session) = msg["session"].as_str().filter(|s| !s.is_empty()) {
+                self.loading_session = Some(session.to_string());
+            }
+            self.held.push_back(item);
+        }
+        let session = if self.state.phase == "preparing" { Some(self.state.session.clone()) } else { self.loading_session.clone() };
+        if let Some(session) = session { let _ = self.notify_progress(&session, percent, text); }
     }
 
     pub fn send_json(&self, value: Value) -> Result<(), String> { self.outgoing.send(value).map_err(|_| "GameNight is disconnected".into()) }
@@ -666,7 +686,7 @@ mod tests {
     fn rumble_runs_only_in_a_running_session_and_sends_one_stop() {
         let (outgoing, sent) = mpsc::channel();
         let (_receive, incoming) = mpsc::channel();
-        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming };
+        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None };
         client.rumble(0, 1.0, 0.5, 0.2).unwrap();
         assert!(sent.try_recv().is_err(), "not running: nothing sent");
         client.state = running();
@@ -681,10 +701,27 @@ mod tests {
     }
 
     #[test]
+    fn startup_progress_reports_against_a_prepare_read_ahead() {
+        let (outgoing, sent) = mpsc::channel();
+        let (receive, incoming) = mpsc::channel();
+        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None };
+        client.loading(20, "opening the window");
+        assert!(sent.try_recv().is_err(), "no session yet: nothing to report against");
+        receive.send(Incoming::Json(json!({"type":"welcome","protocol_version":1}), Instant::now())).unwrap();
+        receive.send(Incoming::Json(prepare(), Instant::now())).unwrap();
+        client.loading(35, "starting the graphics card");
+        assert_eq!(sent.try_recv().unwrap(), json!({"type":"progress","session":"s1","percent":35,"text":"starting the graphics card"}));
+        assert_eq!(client.state.phase, "idle", "read ahead, not handled");
+        let mut prepared = false;
+        for _ in 0..4 { prepared |= client.poll().iter().any(|c| matches!(c, Command::Prepare { .. })); }
+        assert!(prepared, "poll still handles the prepare");
+    }
+
+    #[test]
     fn live_control_is_offered_with_its_token_file() {
         let (outgoing, sent) = mpsc::channel();
         let (_receive, incoming) = mpsc::channel();
-        let client = Client { state: State::new("neon-siege".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming };
+        let client = Client { state: State::new("neon-siege".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None };
         client.declare_commands("Change it live", &[], Some(std::path::Path::new("/tmp/warp-live/neon-siege.json"))).unwrap();
         assert_eq!(sent.try_recv().unwrap(), json!({"type":"declare_commands","description":"Change it live","examples":[],"mcp":"/tmp/warp-live/neon-siege.json"}));
         client.declare_commands("Items", &["give me 1 bread"], None).unwrap();
@@ -695,7 +732,7 @@ mod tests {
     fn queued_prepares_and_dispose_do_not_overtake_ready_handling() {
         let (outgoing, sent) = mpsc::channel();
         let (receive, incoming) = mpsc::channel();
-        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming };
+        let mut client = Client { state: State::new("sideways".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming, held: Default::default(), loading_session: None };
         let now=Instant::now();
         let mut second=prepare(); second["session"]=json!("s2");
         for msg in [json!({"type":"welcome","protocol_version":1,"party":{}}),prepare(),second,json!({"type":"dispose","session":"s2"})] {
