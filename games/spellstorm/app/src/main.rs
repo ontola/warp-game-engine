@@ -9,6 +9,7 @@
 mod anim;
 mod fx;
 mod hud;
+mod interp;
 mod kits;
 mod look;
 mod marks;
@@ -64,7 +65,7 @@ fn run() -> Result<(), String> {
             let until_swing = flag("--until-swing");
             for t in 0..ticks * if until_swing { 20 } else { 1 } {
                 game.step(&[]);
-                if until_swing && t >= ticks && game.world.wizards.iter().any(|&id| { let s = game.world.wiz(id).swing_t; s > 0.1 && s < 0.2 }) {
+                if until_swing && t >= ticks && game.world.wizards.iter().any(|&id| { let s = game.world.wiz(id).swing_t; let at: f64 = std::env::var("SPELLSTORM_SWING").ok().and_then(|v| v.parse().ok()).unwrap_or(0.15); s > at - 0.017 && s <= at }) {
                     break;
                 }
                 if std::env::var_os("SPELLSTORM_EVENTS").is_some() {

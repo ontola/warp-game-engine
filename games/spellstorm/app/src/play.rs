@@ -27,6 +27,7 @@ pub struct Spellstorm {
     /// Prepared: tell the host ready once the run's scene is built, so the
     /// build never stalls a started game.
     ready_after_build: bool,
+    interp: crate::interp::Interp,
 }
 
 /// The shell's buttons as pad.gd's.
@@ -84,7 +85,7 @@ impl Spellstorm {
         if humans > 0 {
             menu.show(true, &world);
         }
-        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, ready_after_build: false }
+        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, ready_after_build: false, interp: Default::default() }
     }
 
     /// The party's seats (main.gd _on_prepared): a wizard for each, couch
@@ -169,6 +170,7 @@ impl Spellstorm {
                 self.world.wiz_mut(id).input = pad(c);
             }
         }
+        self.interp.keep(&mut self.world);
         self.world.step();
         if let Some(p) = &mut self.party {
             for e in &self.world.events {
@@ -213,9 +215,13 @@ impl app::Game for Spellstorm {
             }
         }
         let r = frame.renderer().ok_or("no renderer")?;
-        self.view.pose(frame.gpu, r, &self.world, frame.dt)?;
+        // Drawn between the last two ticks, so a fast screen moves smoothly.
+        self.interp.ease(&mut self.world, frame.alpha);
+        let posed = self.view.pose(frame.gpu, r, &self.world, frame.dt);
         let mut hud = HudDrawList::new(frame.size);
         self.hud.draw(&mut hud, &self.world, &self.view.camera, frame.size);
+        self.interp.restore(&mut self.world);
+        posed?;
         self.menu.draw(&mut hud, &self.world, frame.size);
         Ok(Draw { cameras: vec![self.view.camera], light: self.view.light.clone(), hud })
     }
@@ -242,6 +248,11 @@ impl app::Game for Spellstorm {
     }
 
     /// Twin-stick aiming reads the raw sticks; Pad::dead shapes them.
+    /// Pads and keys only: the mouse is never captured, nor asked for.
+    fn mouse_capture(&self) -> Option<bool> {
+        Some(false)
+    }
+
     fn tuning(&self, t: &mut app::Tuning) {
         t.deadzone = 0.0;
         t.curve = 1.0;

@@ -121,12 +121,12 @@ impl Marks {
     /// goes and fading as the swing ends: it shows how far the sword reaches.
     fn swing(&mut self, pos: Vec3, w: &Wizard) {
         let sweep = 1.0 - (w.swing_t / SWING_COOLDOWN) as f32;
-        let e = 1.0 - (1.0 - (sweep * 1.6).min(1.0)).powi(3);
+        // The lead runs ahead with the blade; the tail follows it the same
+        // way, so the arc fades out in the direction of the cut.
+        let lead = 1.0 - (1.0 - (sweep * 1.6).min(1.0)).powi(3);
+        let tail = smooth(0.3, 1.0, sweep) * 1.3 - 0.15;
         let enchanted = w.enchant_time > 0.0;
-        let strength = (1.0 - smooth(0.55, 1.0, sweep)) * if enchanted { 0.45 } else { 1.0 };
-        if strength <= 0.0 {
-            return;
-        }
+        let strength = if enchanted { 0.45 } else { 1.0 };
         let sc: C = w.bolt_el.map(el_c).unwrap_or([1.0, 0.85, 0.5, 1.0]);
         let c = Vec3::new(sc[0], sc[1], sc[2]).lerp(Vec3::new(1.0, 0.9, 0.6), 0.5);
         let r1 = if enchanted { w.enchant_reach() + 0.3 } else { SWING_REACH + 0.3 };
@@ -134,18 +134,20 @@ impl Marks {
         let yaw = dir.x.atan2(dir.z);
         let half = spellstorm::wizard::SWING_ARC;
         let at = Vec3::new(pos.x, 0.06, pos.z);
-        for i in 0..SLICES {
-            // Mirrored: the blade cuts from right to left.
-            let u = 1.0 - (i as f32 + 0.5) / SLICES as f32;
-            if u > e {
+        // Slice centres from one end of the arc to the other, both ends on it.
+        for i in 0..=SLICES {
+            // u runs the way the blade goes: it cuts from right to left.
+            let u = 1.0 - i as f32 / SLICES as f32;
+            let shown = smooth(0.0, 0.18, lead - u) * smooth(0.0, 0.3, u - tail);
+            if shown <= 0.0 {
                 continue;
             }
-            let lead = (-(u - e).abs() * 10.0).exp() * if e < 0.999 { 1.0 } else { 0.0 };
-            let ang = yaw + half - (i as f32 + 0.5) * SLICE;
+            let edge = (-(u - lead).abs() * 10.0).exp() * (1.0 - smooth(0.9, 1.0, lead));
+            let ang = yaw + half - i as f32 * SLICE;
             let up = Vec3::new(ang.sin(), 0.0, ang.cos());
             let right = Vec3::new(up.z, 0.0, -up.x);
-            let k = (1.0 + lead * 1.2) * strength;
-            let col = linear3(c.lerp(Vec3::ONE, 0.25 + lead * 0.5).to_array()) * 0.8 * k;
+            let k = (1.0 + edge * 1.2) * shown * strength;
+            let col = linear3(c.lerp(Vec3::ONE, 0.25 + edge * 0.5).to_array()) * 0.8 * k;
             let mut s = Sprite::fixed(at, [r1 * 2.0, r1 * 2.0], right, up, IMAGE, uv(Cell::Slice), col);
             s.additive = true;
             s.alpha_cut = 0.0;
