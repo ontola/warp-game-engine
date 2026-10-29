@@ -2,7 +2,7 @@
 //! props, torches), the wizards and monsters posed from the sim every frame
 //! into a pool of instances, the Godot camera, moon, ambient and fog.
 use crate::anim;
-use crate::kits::{Kit, Kits};
+use crate::kits::Kits;
 use crate::look::{self, linear3, push_f32, surface_layer, Look, Piece, FLOOR};
 use glam::{Affine3A, Mat3, Mat4, Quat, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, Vertex};
@@ -423,7 +423,15 @@ impl View {
                 }
             }
             if !ea.scattered {
-                push_kit(&mut out, kit, &pieces, at);
+                // Its eyes swell while it winds up a blow (Enemy._tell).
+                let eyes = if e.wind > 0.0 { 1.0 + 1.5 * (1.0 - e.wind / e.wind_time()) as f32 } else { 1.0 };
+                for p in &pieces {
+                    let mut xf = at * kit.model_xf(p.node);
+                    if eyes != 1.0 && kit.eyes.contains(&p.node) {
+                        xf *= Mat4::from_scale(Vec3::splat(eyes));
+                    }
+                    out.push((p.mesh, look::affine(xf), p.shadow));
+                }
             }
         }
         self.enemy_anims.retain(|id, _| seen.contains(id));
@@ -538,12 +546,6 @@ pub fn facing(cam: &Camera) -> Mat3 {
     let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
     let up = back.cross(right);
     Mat3::from_cols(right, up, back)
-}
-
-fn push_kit(out: &mut Vec<(usize, Affine3A, bool)>, kit: &Kit, pieces: &[Piece], at: Mat4) {
-    for p in pieces {
-        out.push((p.mesh, look::affine(at * kit.model_xf(p.node)), p.shadow));
-    }
 }
 
 /// A Godot OmniLight3D as a Warp local light.

@@ -9,6 +9,7 @@ use render::headlights::LocalLight;
 use render::sprites::Sprite;
 use spellstorm::fx::{el_c, C};
 use spellstorm::wizard::{self, swing_reach, Wizard, NOVA_HOLD, SWING_COOLDOWN};
+use spellstorm::enemy::Attack;
 use spellstorm::World;
 use std::collections::HashMap;
 
@@ -61,6 +62,23 @@ impl Marks {
         }
         for wd in &w.run.wards {
             self.ward(wd.z, wd.lo, wd.hi, wd.open, time);
+        }
+        // A shot winding up: a ball of its element swells in front of the
+        // monster, the way it will go (Enemy._warning).
+        for &id in &w.enemies {
+            let Ok(e) = w.ecs.get::<&spellstorm::enemy::Enemy>(id) else { continue };
+            let Some(a) = w.actor(id) else { continue };
+            if !a.alive || e.wind <= 0.0 || !matches!(e.cfg().attack, Attack::Ranged | Attack::Lob) {
+                continue;
+            }
+            let k = (1.0 - e.wind / e.wind_time()) as f32;
+            let at = a.pos + e.lock * (a.radius + 0.35) + Vec3::Y;
+            let c = el_c(e.attack_el());
+            let lin = linear3([c[0], c[1], c[2]]);
+            let size = 0.5 * (0.4 + 1.1 * k);
+            let inner = linear3([c[0] + (1.0 - c[0]) * 0.6, c[1] + (1.0 - c[1]) * 0.6, c[2] + (1.0 - c[2]) * 0.6]) * 0.8;
+            self.sprites.push(glow(at, size, Cell::HaloOut, lin * 0.9 * 1.4));
+            self.sprites.push(glow(at, size, Cell::HaloIn, inner * 0.9 * 1.4));
         }
     }
 
