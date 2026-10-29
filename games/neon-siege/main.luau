@@ -1341,8 +1341,240 @@ local function enemy_angle(e)
 	return angle
 end
 
+-- Germs in 3D: neon wire meshes that tumble and move. A mesh is a function
+-- of time and the enemy that returns its points (model units: radius about
+-- 1, +x forward, +y up) and a fixed list of edges { i, j, white? }. Heading
+-- meshes point +x where the germ swims; the rest tumble freely.
+local function v3(x, y, z) return vector.create(x, y, z) end
+local OCTA = { v3(1, 0, 0), v3(-1, 0, 0), v3(0, 1, 0), v3(0, -1, 0), v3(0, 0, 1), v3(0, 0, -1) }
+local OCTA_EDGES = { { 1, 3 }, { 1, 4 }, { 1, 5 }, { 1, 6 }, { 2, 3 }, { 2, 4 }, { 2, 5 }, { 2, 6 }, { 3, 5 }, { 3, 6 }, { 4, 5 }, { 4, 6 } }
+local TETRA = { v3(0.577, 0.577, 0.577), v3(0.577, -0.577, -0.577), v3(-0.577, 0.577, -0.577), v3(-0.577, -0.577, 0.577) }
+local TETRA_EDGES = { { 1, 2 }, { 1, 3 }, { 1, 4 }, { 2, 3 }, { 2, 4 }, { 3, 4 } }
+local CUBE = {}
+for _, x in { -0.577, 0.577 } do for _, y in { -0.577, 0.577 } do for _, z in { -0.577, 0.577 } do table.insert(CUBE, v3(x, y, z)) end end end
+local CUBE_EDGES = {}
+for i = 1, 8 do
+	for j = i + 1, 8 do
+		local d = CUBE[i] - CUBE[j]
+		if math.abs(d.x * d.x + d.y * d.y + d.z * d.z - 1.332) < 0.01 then table.insert(CUBE_EDGES, { i, j }) end
+	end
+end
+local PHI = (1 + math.sqrt(5)) / 2
+local ICOSA = {}
+for _, p in { { 0, 1, PHI }, { 0, -1, PHI }, { 0, 1, -PHI }, { 0, -1, -PHI }, { 1, PHI, 0 }, { -1, PHI, 0 }, { 1, -PHI, 0 }, { -1, -PHI, 0 }, { PHI, 0, 1 }, { -PHI, 0, 1 }, { PHI, 0, -1 }, { -PHI, 0, -1 } } do
+	local n = math.sqrt(p[1] ^ 2 + p[2] ^ 2 + p[3] ^ 2)
+	table.insert(ICOSA, v3(p[1] / n, p[2] / n, p[3] / n))
+end
+local ICOSA_EDGES = {}
+for i = 1, 12 do
+	for j = i + 1, 12 do
+		local d = ICOSA[i] - ICOSA[j]
+		if math.abs(d.x * d.x + d.y * d.y + d.z * d.z - 1.1056) < 0.01 then table.insert(ICOSA_EDGES, { i, j }) end
+	end
+end
+
+-- Append a shape's points (scaled, moved) and edges (offset) to a mesh.
+local function add(points, edges, shape, shape_edges, scale, at_, white)
+	local base = #points
+	for _, p in shape do table.insert(points, p * scale + at_) end
+	for _, e in shape_edges do table.insert(edges, { e[1] + base, e[2] + base, white }) end
+end
+
+local ZERO = v3(0, 0, 0)
+local MESHES = {}
+
+-- A virus: an octahedral capsid with six spikes that pulse.
+MESHES.chaser = function(t, e)
+	local pts, edges = {}, {}
+	add(pts, edges, OCTA, OCTA_EDGES, 0.7, ZERO)
+	for i, p in OCTA do
+		table.insert(pts, p * (1.3 + 0.12 * math.sin(t * 6 + i + e.phase)))
+		table.insert(edges, { i, #pts })
+	end
+	return pts, edges
+end
+
+-- A small virus: a tetrahedron with four long spikes.
+MESHES.shard = function(t, e)
+	local pts, edges = {}, {}
+	add(pts, edges, TETRA, TETRA_EDGES, 0.8, ZERO)
+	for i, p in TETRA do
+		table.insert(pts, p * (1.5 + 0.1 * math.sin(t * 8 + i)))
+		table.insert(edges, { i, #pts })
+	end
+	return pts, edges
+end
+
+-- A corona-like virus: a capsid with six stalks, each crowned by a bar.
+MESHES.orbiter = function(t, e)
+	local pts, edges = {}, {}
+	add(pts, edges, OCTA, OCTA_EDGES, 0.65, ZERO)
+	for i, p in OCTA do
+		local tip = p * 1.1
+		-- A bar across the stalk: the cross product with a fixed slant.
+		local cx, cy, cz = p.y * 0.7 - p.z * 0.6, p.z * 0.3 - p.x * 0.7, p.x * 0.6 - p.y * 0.3
+		local cn = math.sqrt(cx * cx + cy * cy + cz * cz)
+		local side = v3(cx / cn, cy / cn, cz / cn) * 0.22
+		table.insert(pts, tip)
+		table.insert(edges, { i, #pts })
+		table.insert(pts, tip + side)
+		table.insert(pts, tip - side)
+		table.insert(edges, { #pts - 1, #pts })
+	end
+	return pts, edges
+end
+
+-- A bacillus: a rod of pentagon rings with pointed caps, rolling as it
+-- swims, two flagella whipping behind.
+MESHES.weaver = function(t, e)
+	local pts, edges = {}, {}
+	local function ring(x)
+		local first = #pts + 1
+		for i = 0, 4 do
+			local a = i * 2 * math.pi / 5
+			table.insert(pts, v3(x, math.cos(a) * 0.42, math.sin(a) * 0.42))
+		end
+		for i = 0, 4 do table.insert(edges, { first + i, first + (i + 1) % 5 }) end
+		return first
+	end
+	local front, back = ring(0.75), ring(-0.75)
+	for i = 0, 4 do table.insert(edges, { front + i, back + i }) end
+	table.insert(pts, v3(1.2, 0, 0))
+	for i = 0, 4 do table.insert(edges, { front + i, #pts }) end
+	table.insert(pts, v3(-1.2, 0, 0))
+	local tail = #pts
+	for i = 0, 4 do table.insert(edges, { back + i, tail }) end
+	for side = -1, 1, 2 do
+		local last = tail
+		for k = 1, 4 do
+			local wave = math.sin(t * 14 - k * 1.3 + side + e.phase) * 0.22 * k / 4
+			table.insert(pts, v3(-1.2 - k * 0.38, wave, side * 0.12 * k))
+			table.insert(edges, { last, #pts })
+			last = #pts
+		end
+	end
+	return pts, edges
+end
+
+-- A phage: an octahedral head, a three-sided sheath and three walking legs.
+MESHES.dasher = function(t, e)
+	local pts, edges = {}, {}
+	add(pts, edges, OCTA, OCTA_EDGES, 0.42, v3(0.75, 0, 0))
+	local function tri(x)
+		local first = #pts + 1
+		for i = 0, 2 do
+			local a = i * 2 * math.pi / 3
+			table.insert(pts, v3(x, math.cos(a) * 0.12, math.sin(a) * 0.12))
+		end
+		for i = 0, 2 do table.insert(edges, { first + i, first + (i + 1) % 3 }) end
+		return first
+	end
+	local top, bottom = tri(0.33), tri(-0.45)
+	for i = 0, 2 do table.insert(edges, { top + i, bottom + i }) end
+	table.insert(edges, { 2, top })
+	for leg = 0, 2 do
+		local a = leg * 2 * math.pi / 3 + math.pi / 3
+		local step = math.sin(t * 9 + leg * 2.1 + e.phase) * 0.15
+		table.insert(pts, v3(-0.55 + step, math.cos(a) * 0.45, math.sin(a) * 0.45))
+		table.insert(edges, { bottom + leg, #pts })
+		table.insert(pts, v3(-0.85 + step, math.cos(a) * 0.7, math.sin(a) * 0.7))
+		table.insert(edges, { #pts - 1, #pts })
+	end
+	return pts, edges
+end
+
+-- A dividing cell: two capsules pulling apart and back together.
+MESHES.splitter = function(t, e)
+	local pts, edges = {}, {}
+	local gap = 0.35 + 0.12 * math.sin(t * 3 + e.phase)
+	add(pts, edges, OCTA, OCTA_EDGES, 0.6, v3(gap, 0, 0))
+	add(pts, edges, OCTA, OCTA_EDGES, 0.6, v3(-gap, 0, 0))
+	return pts, edges
+end
+
+-- A cyst: a hard cube shell around a turning core.
+MESHES.fort = function(t, e)
+	local pts, edges = {}, {}
+	add(pts, edges, CUBE, CUBE_EDGES, 0.9, ZERO)
+	add(pts, edges, OCTA, OCTA_EDGES, 0.45 + 0.05 * math.sin(t * 4), ZERO, true)
+	return pts, edges
+end
+
+-- A metastasis: a lumpy cell whose corners never sit still, around a nucleus.
+MESHES.metastasis = function(t, e)
+	local pts, edges = {}, {}
+	for i, p in OCTA do table.insert(pts, p * (0.85 + 0.22 * math.sin(t * 5 + i * 1.7 + e.phase))) end
+	for _, ed in OCTA_EDGES do table.insert(edges, { ed[1], ed[2] }) end
+	add(pts, edges, TETRA, TETRA_EDGES, 0.35, ZERO, true)
+	return pts, edges
+end
+
+-- The tumour: a big icosahedral mass bulging and shrinking, a nucleus inside.
+MESHES.tumor = function(t, e)
+	local pts, edges = {}, {}
+	for i, p in ICOSA do table.insert(pts, p * (1 + 0.12 * math.sin(t * 3 + i * 2.1))) end
+	for _, ed in ICOSA_EDGES do table.insert(edges, { ed[1], ed[2] }) end
+	add(pts, edges, OCTA, OCTA_EDGES, 0.4, ZERO, true)
+	return pts, edges
+end
+
+-- Meshes that point where they swim (the rest tumble).
+local MESH_HEADING = { weaver = true, dasher = true }
+local WIRE = 0.02 -- edge thickness, metres
+
+local function show_mesh(e, mode, grow, angle)
+	local t = s.time
+	local pts, edges = MESHES[e.kind](t, e)
+	local color, glow = part_look(e.kind, {}, mode)
+	if not e.wire or #e.wire ~= #edges then
+		e.wire = {}
+		for _, ed in edges do
+			local c, g = color, glow
+			if ed[3] then c, g = part_look(e.kind, { white = true }, mode) end
+			table.insert(e.wire, world.spawn("cube", { size = vector.create(WIRE, WIRE, 0.1), color = c, emissive = g, solid = false, tag = "enemy" }))
+		end
+		e.wireMode = mode
+	end
+	if e.wireMode ~= mode then
+		for i, ed in edges do
+			local c, g = color, glow
+			if ed[3] then c, g = part_look(e.kind, { white = true }, mode) end
+			world.set(e.wire[i], { color = c, emissive = g })
+		end
+		e.wireMode = mode
+	end
+	-- Model to world: roll or tumble, then turn to the heading; scale to size.
+	local scale = draw_r(e.kind) * S * grow
+	local center = at(e.x, e.y, 0.4)
+	local r1, r2, yaw
+	if MESH_HEADING[e.kind] then
+		r1, r2, yaw = t * 2 + e.phase, 0, -angle
+	else
+		r1, r2, yaw = t * 0.9 + e.phase, t * 0.6 + e.phase * 2, -(t * 0.5 + e.phase)
+	end
+	local c1, s1, c2, s2, cy, sy = math.cos(r1), math.sin(r1), math.cos(r2), math.sin(r2), math.cos(yaw), math.sin(yaw)
+	local world_pts = {}
+	for i, p in pts do
+		-- roll about x
+		local x, y, z = p.x, p.y * c1 - p.z * s1, p.y * s1 + p.z * c1
+		-- tilt about z
+		x, y = x * c2 - y * s2, x * s2 + y * c2
+		-- turn about the world's up axis
+		x, z = x * cy + z * sy, -x * sy + z * cy
+		world_pts[i] = center + v3(x, y, z) * scale
+	end
+	local thick = WIRE * math.max(0.4, grow)
+	for i, ed in edges do
+		local a, b = world_pts[ed[1]], world_pts[ed[2]]
+		local d = b - a
+		local n = math.max(1e-5, math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z))
+		world.set(e.wire[i], { pos = (a + b) * 0.5, rot = v3(math.asin(math.clamp(-d.y / n, -1, 1)), math.atan2(d.x, d.z), 0), size = v3(thick, thick, n) })
+		seen(e.wire[i])
+	end
+end
+
 local function show_enemy(e)
-	local parts = SHAPES[e.kind]
+	local parts = if MESHES[e.kind] then {} else SHAPES[e.kind]
 	-- Bosses and armour take fire all the time: their bar shows the damage, not a flash.
 	-- A shielded tumour is drawn dim: bright means it can be hurt.
 	local mode = if e.warm > 0 or shielded(e) then "warm" elseif e.flash > 0 and not tough(e) then "flash" else "normal"
@@ -1375,9 +1607,10 @@ local function show_enemy(e)
 		seen(id)
 	end
 	e.grow = grow
+	if MESHES[e.kind] then show_mesh(e, mode, grow, angle) end
 	-- Spikes, flagella and legs grow in with the body while it spawns, so the
 	-- germ has its real shape from the first frame.
-	local spikes = SPIKES[e.kind]
+	local spikes = not MESHES[e.kind] and SPIKES[e.kind]
 	if spikes then
 		local r = draw_r(e.kind) * grow
 		local color, glow = part_look(e.kind, parts[1], mode)
@@ -1420,7 +1653,7 @@ local function show_enemy(e)
 		end
 	end
 	-- Flagella: a travelling sine wave that grows towards the tip.
-	local flagella = FLAGELLA[e.kind]
+	local flagella = not MESHES[e.kind] and FLAGELLA[e.kind]
 	if flagella then
 		local r = draw_r(e.kind) * grow
 		local color, glow = part_look(e.kind, parts[1], mode)
