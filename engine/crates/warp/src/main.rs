@@ -20,6 +20,8 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
       A GameNight party host (GAMENIGHT=1 or GAMENIGHT_ADDR) decides the players.
   warp DIR
       the same as warp run DIR
+  warp run GAME.luau, warp GAME.luau (and script, serve, check)
+      a one-file game: settings in its leading `--! key = value` lines
   warp
       a packaged game: runs the game folder next to warp.exe (how GameNight starts it)
   warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]
@@ -31,7 +33,7 @@ const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and as
   warp audio render FILE.luau [...] | check FILES | units
       render and measure sound patches (as warp-audio)
   warp new DIR [--title TITLE]
-      write a starter game
+      write a starter game (warp new GAME.luau: the same game in one file)
 
 SKY: gradient | sunrise | morning | noon | afternoon | sunset | night, optionally :clear | :haze | :mist";
 
@@ -59,9 +61,9 @@ fn overrides(args: &[String]) -> Result<Overrides, String> {
     Ok(Overrides { players: parse(args, "--players")?, bots: parse(args, "--bots")?, seed: parse(args, "--seed")?, sky: value(args, "--sky") })
 }
 
-/// The game folder: the first argument after the command.
+/// The game folder or one-file game: the first argument after the command.
 fn dir(args: &[String]) -> Result<PathBuf, String> {
-    args.get(1).filter(|a| !a.starts_with("--")).map(PathBuf::from).ok_or_else(|| format!("{}: which game folder?\n\n{USAGE}", args[0]))
+    args.get(1).filter(|a| !a.starts_with("--")).map(PathBuf::from).ok_or_else(|| format!("{}: which game (a folder or a .luau file)?\n\n{USAGE}", args[0]))
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
@@ -77,10 +79,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
             None => { println!("{USAGE}"); Ok(()) }
         },
         Some("help" | "--help" | "-h") => { println!("{USAGE}"); Ok(()) }
-        // A game folder on its own: a runtime launch (the GameNight installer passes the folder).
-        Some(d) if Path::new(d).join("main.luau").is_file() => play(&[vec!["run".to_string()], args].concat()),
+        // A game folder (or one-file game) on its own: a runtime launch (the
+        // GameNight installer passes the folder; a file manager, the file).
+        Some(d) if is_game(Path::new(d)) => play(&[vec!["run".to_string()], args].concat()),
         Some(other) => Err(format!("unknown command {other}\n\n{USAGE}")),
     }
+}
+
+/// A game folder (with main.luau) or a one-file game (a `.luau` file).
+fn is_game(p: &Path) -> bool {
+    p.join("main.luau").is_file() || (p.is_file() && p.extension().is_some_and(|e| e == "luau"))
 }
 
 /// A packaged game: `game/main.luau` next to the executable
@@ -155,9 +163,16 @@ fn check(args: &[String]) -> Result<(), String> {
 fn new(args: &[String]) -> Result<(), String> {
     let dir = dir(args)?;
     let title = value(args, "--title").unwrap_or_else(|| {
-        let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Hello Warp".into());
+        let name = dir.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Hello Warp".into());
         name.split(['-', '_', ' ']).filter(|w| !w.is_empty()).map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }).collect::<Vec<_>>().join(" ")
     });
+    if dir.extension().is_some_and(|e| e == "luau") {
+        warp::starter::write_file(&dir, &title)?;
+        println!("wrote {} ({title}), a one-file game", dir.display());
+        println!("play it:  warp run {}", dir.display());
+        println!("check it: warp check {}  (no GPU)", dir.display());
+        return Ok(());
+    }
     let files = warp::starter::write(&dir, &title)?;
     println!("wrote {} ({}): {}", dir.display(), title, files.join(", "));
     println!("play it:  warp run {}", dir.display());

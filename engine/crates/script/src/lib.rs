@@ -71,6 +71,8 @@ pub struct Host {
     hooks: Vec<String>,
     /// Top-level folders under the root that hold no modules.
     ignored: Vec<String>,
+    /// Load only this module of the root (a one-file game).
+    only: Option<String>,
 }
 
 const BASE: &[&str] = &[
@@ -120,7 +122,7 @@ impl Host {
             Ok(base)
         })().map_err(err)?;
         let console = env(&lua, &base, &lua.create_table().map_err(err)?).map_err(err)?;
-        Ok(Host { lua, root: None, base, console, modules: Vec::new(), steps, limits, log, generation: 0, hooks: Vec::new(), ignored: Vec::new() })
+        Ok(Host { lua, root: None, base, console, modules: Vec::new(), steps, limits, log, generation: 0, hooks: Vec::new(), ignored: Vec::new(), only: None })
     }
 
     /// Load every `*.luau` under `root` and watch it from now on ([`Host::poll`]).
@@ -132,6 +134,10 @@ impl Host {
     /// Skip these top-level folders of the root when scanning for modules
     /// (a game folder whose `sounds/` hold synth patches, not modules).
     pub fn ignore(&mut self, folders: &[&str]) { self.ignored = folders.iter().map(|f| f.to_string()).collect(); }
+
+    /// Load and watch only the root's module `name` (a path relative to the
+    /// root, such as `game.luau`): a one-file game in a folder of other things.
+    pub fn only(&mut self, name: &str) { self.only = Some(name.to_string()); }
 
     /// A module from a string that never reloads (built-in content, tests).
     pub fn add_source(&mut self, name: &str, source: &str) -> Result<(), String> {
@@ -149,6 +155,7 @@ impl Host {
         let mut found = Vec::new();
         scan(&root, &root, &mut found);
         found.retain(|(name, _)| !self.ignored.iter().any(|f| name.strip_prefix(f.as_str()).is_some_and(|r| r.starts_with('/'))));
+        if let Some(only) = &self.only { found.retain(|(name, _)| name == only); }
         found.sort();
         let mut changed = Vec::new();
         let before = self.modules.len();

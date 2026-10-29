@@ -62,6 +62,36 @@ fn warp_new_writes_a_game_that_plays() {
 }
 
 #[test]
+fn a_one_file_game_plays_alone_with_its_sounds_inside() {
+    let dir = folder("one-file");
+    let file = dir.join("orb-hunt.luau");
+    warp::starter::write_file(&file, "Orb Hunt").unwrap();
+    assert!(warp::starter::write_file(&file, "again").unwrap_err().contains("exists"));
+    // Other scripts beside it are not part of the game.
+    write(&dir.join("other.luau"), "error('not a module of orb-hunt.luau')");
+    let mut g = game(&file);
+    assert_eq!((g.cfg.title.as_str(), g.cfg.seed, g.cfg.sky.as_str()), ("Orb Hunt", 7, "afternoon"));
+    assert_eq!(g.live_name(), "orb-hunt");
+    ticks(&mut g, 30, Controls::default());
+    let s = state(&g);
+    assert_eq!(s["errors"], json!([]), "{s}");
+    assert_eq!(s["modules"].as_array().unwrap().len(), 1, "{s}");
+    assert_eq!(s["tags"], json!({ "crate": 3, "floor": 1, "orb": 6, "player": 1 }));
+    g.tick(&[Controls { pressed: Buttons(Buttons::SOUTH), held: Buttons(Buttons::SOUTH), ..Default::default() }]);
+    ticks(&mut g, 3, Controls::default());
+    let s = state(&g);
+    assert_eq!(s["sounds"]["recent"].as_array().unwrap().last().unwrap()["sound"], "jump", "the inline patch plays: {s}");
+    // Editing an inline patch reloads it; a broken one keeps the last good one.
+    let text = std::fs::read_to_string(&file).unwrap();
+    write(&file, &text.replace("length(0.18)", "length(0.2"));
+    g.reload();
+    assert!(state(&g)["errors"].to_string().contains("sound jump"), "{}", state(&g));
+    write(&file, &text.replace("length(0.18)", "length(0.25)"));
+    g.reload();
+    assert_eq!(state(&g)["errors"], json!([]));
+}
+
+#[test]
 fn the_same_seed_plays_the_same() {
     let dir = repo().join("games/hello-warp");
     let run = |seed| {

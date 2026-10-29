@@ -49,13 +49,36 @@ impl Bank {
         out
     }
 
+    /// Patches written in a script (a module's exported `sounds` table, so a
+    /// one-file game needs no `sounds/` folder): compile `src` as the sound
+    /// `name` unless it is unchanged. Returns a line when it (re)loaded or failed.
+    pub fn add_source(&mut self, name: &str, src: &str) -> Option<String> {
+        let key = format!("inline:{name}");
+        let hash = { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); src.hash(&mut h); h.finish() };
+        let stamp = (SystemTime::UNIX_EPOCH, hash);
+        if self.files.get(&PathBuf::from(&key)) == Some(&stamp) { return None; }
+        let again = self.files.insert(PathBuf::from(&key), stamp).is_some();
+        match synth::lua::load(name, src).and_then(|ps| ps.iter().map(Patch::compile).collect::<Result<Vec<_>, _>>()) {
+            Ok(ps) => {
+                self.errors.remove(&key);
+                let names: Vec<String> = ps.iter().map(|p| p.name.clone()).collect();
+                for p in ps { self.patches.insert(p.name.clone(), Arc::new(p)); }
+                Some(format!("sound {name}: {} {}", if again { "reloaded" } else { "loaded" }, names.join(", ")))
+            }
+            Err(e) => {
+                self.errors.insert(key, e.clone());
+                Some(format!("sound {name}: {e} (keeping the last good version)"))
+            }
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<CompiledPatch>> { self.patches.get(name).cloned() }
 
     /// A loaded patch, or an error that lists the loaded ones.
     pub fn find(&self, name: &str) -> Result<Arc<CompiledPatch>, String> {
         self.get(name).ok_or_else(|| {
             let names: Vec<&str> = self.patches.keys().map(String::as_str).collect();
-            if names.is_empty() { format!("no sound {name:?}: the game has no sounds/*.luau patches") } else { format!("no sound {name:?}; sounds: {}", names.join(", ")) }
+            if names.is_empty() { format!("no sound {name:?}: the game has no sounds/*.luau patches (or `sounds` table)") } else { format!("no sound {name:?}; sounds: {}", names.join(", ")) }
         })
     }
 

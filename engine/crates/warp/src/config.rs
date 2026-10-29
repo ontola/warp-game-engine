@@ -51,6 +51,27 @@ impl GameToml {
         Ok(cfg)
     }
 
+    /// A one-file game's settings: the `--!` lines of its leading comment
+    /// block are `game.toml` (`--! title = "Orbs"`). Without a title, the
+    /// file's name.
+    pub fn parse_header(source: &str, stem: &str) -> Result<Self, String> {
+        let toml: Vec<&str> = source.lines().map(str::trim_start).take_while(|l| l.is_empty() || l.starts_with("--"))
+            .filter_map(|l| l.strip_prefix("--!")).collect();
+        let text = toml.join("\n");
+        let titled = toml.iter().any(|l| l.trim_start().starts_with("title"));
+        let mut cfg: GameToml = toml::from_str(&text).map_err(|e| format!("--! header: {e}"))?;
+        if !titled { cfg.title = stem.to_string(); }
+        cfg.check()?;
+        Ok(cfg)
+    }
+
+    /// A one-file game (`warp run game.luau`): its `--!` header.
+    pub fn load_file(file: &Path) -> Result<Self, String> {
+        let source = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Warp game".into());
+        Self::parse_header(&source, &stem)
+    }
+
     /// `DIR/game.toml`, or the defaults (titled after the folder) without one.
     pub fn load(dir: &Path) -> Result<Self, String> {
         if !dir.join("main.luau").exists() { return Err(format!("{}: not a game folder (no main.luau); `warp new {}` makes one", dir.display(), dir.display())); }
@@ -79,6 +100,15 @@ impl GameToml {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_file_header() {
+        let c = GameToml::parse_header("-- Orbs: collect them.\n--! tick_rate = 30\n--! sky = \"night\"\n\nlocal x = 1\n--! players = 4", "orbs").unwrap();
+        assert_eq!((c.title.as_str(), c.tick_rate, c.sky.as_str(), c.players), ("orbs", 30.0, "night", 1));
+        assert_eq!(GameToml::parse_header("--! title = \"Orb Hunt\"", "orbs").unwrap().title, "Orb Hunt");
+        assert!(GameToml::parse_header("--! nonsense = 1", "x").is_err());
+        assert!(GameToml::parse_header("--! players = 9", "x").is_err());
+    }
 
     #[test]
     fn defaults_and_errors() {
