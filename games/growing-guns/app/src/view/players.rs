@@ -1,11 +1,12 @@
-//! Players on screen: body, head and eyes per player, bullet tracers, and
+//! Players on screen: body, head and eyes per player, bullets (Godot
+//! `bullet.gd`: a brass body, a nose and a glowing streak behind), and
 //! how bodies go when they die (Godot `do_ragdoll`): a corpse that tumbles,
 //! a head that bursts, or the whole body in gibs with blood all around.
 use super::arena::ArenaView;
 use super::characters::{self, Characters};
 use super::effects::EffectsView;
 use super::gore::{self, Gore};
-use super::{cube, glow, material, PLAYER_COLORS};
+use super::{material, PLAYER_COLORS};
 use glam::{Affine3A, Quat, Vec3};
 use growing_guns::{Gib, Player, World};
 use physics::{Body, BodyDesc, Physics, Shape};
@@ -15,6 +16,47 @@ use render::slots::{SlotId, Slots};
 use render::Scene;
 
 pub const TRACERS: usize = 64;
+/// Godot `BULLET_BODY_RADIUS`, `BULLET_BODY_LENGTH`, `BULLET_NOSE_LENGTH`.
+const BULLET_RADIUS: f32 = 0.016;
+const BULLET_LENGTH: f32 = 0.05;
+const NOSE_LENGTH: f32 = 0.024;
+pub const TRAIL_IMAGE: render::sprites::SpriteImage = render::sprites::SpriteImage(0x7472_6169);
+/// Nits per unit of the streak's Godot HDR (head strength x bloom gain 10).
+const TRAIL_NITS: f32 = 1_500.0;
+
+/// The streak's texture (`bullet_trail.gdshader`): across, exp(-0.85 r²)
+/// with r in streak radii (the image spans 3 radii either side); along,
+/// from the bullet (v 0) (1 - v)² faded to nothing at the tail.
+pub fn trail_picture() -> render::picture::Picture {
+    let (w, h) = (32u32, 128u32);
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let v = (y as f32 + 0.5) / h as f32;
+        let t = ((v - 1.0) / (0.06 - 1.0)).clamp(0.0, 1.0);
+        let along = (1.0 - v).powi(2) * t * t * (3.0 - 2.0 * t);
+        for x in 0..w {
+            let r = (((x as f32 + 0.5) / w as f32) * 2.0 - 1.0).abs() * 3.0;
+            let a = (-0.85 * r * r).exp() * along;
+            px.extend([255, 255, 255, (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8]);
+        }
+    }
+    render::picture::Picture::new(w, h, px).expect("fixed size")
+}
+
+/// A bullet's streak (Godot `_trail_inst`): 4 cm x scale thick, as long as
+/// it has flown up to `speed_mult` x 6 + 1 m (a bazooka keeps a stubby
+/// tail, a sniper round a long one), in the bullet's colour lifted 18 %
+/// toward white, its head strength 3.2 x scale (2.4 to 9).
+fn bullet_trail(head: Vec3, dir: Vec3, scale: f32, color: [f32; 3], speed_mult: f32, flown: f32) -> render::sprites::Sprite {
+    let len = flown.clamp(0.05, (speed_mult * 6.0 + 1.0).clamp(1.0, 28.0));
+    let radius = 0.02 * scale;
+    let tint = Vec3::from(color.map(|c| (c + (1.0 - c) * 0.18).powf(2.2)));
+    let strength = (3.2 * scale).clamp(2.4, 9.0) * 10.0;
+    let mut s = render::sprites::Sprite::shaft(head - dir * len * 0.5, [radius * 6.0, len], dir, TRAIL_IMAGE, [0.0, 0.0, 1.0, 1.0], tint * strength * TRAIL_NITS);
+    s.depth_bias = 0.0;
+    s.min_pixels = 2.0;
+    s
+}
 /// Instances per player in the dynamic range: body, head, eyes.
 pub const PARTS: usize = 3;
 const HIDDEN: Vec3 = Vec3::new(0.0, -500.0, 0.0);
@@ -76,7 +118,10 @@ pub struct PlayersView {
     /// First instance of the players' block (then the tracers).
     pub first: usize,
     meshes: Vec<PlayerMeshes>,
-    tracer: usize,
+    /// The bullet's brass body and its nose (Godot BULLET_BODY / NOSE).
+    bullet: [usize; 2],
+    /// This frame's bullet streaks (additive shafts in the bullet's colour).
+    pub trails: Vec<render::sprites::Sprite>,
     corpses: Slots,
     ragdolls: Vec<Ragdoll>,
     /// Body, head and eye primitives per player, kept until `reserve_gore`.
@@ -90,7 +135,7 @@ pub struct PlayersView {
 impl PlayersView {
     /// Corpse slots (static range, before the dynamic instances).
     pub fn reserve_corpses(scene: &mut Scene) -> Self {
-        PlayersView { first: 0, meshes: Vec::new(), tracer: 0, corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None, lava: Vec::new(), lava_meshes: LavaMeshes::default() }
+        PlayersView { first: 0, meshes: Vec::new(), bullet: [0; 2], trails: Vec::new(), corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None, lava: Vec::new(), lava_meshes: LavaMeshes::default() }
     }
 
     /// Player and tracer instances, rewritten every frame.
@@ -117,9 +162,16 @@ impl PlayersView {
         }
         // Gore only for blob bodies (indexed by player).
         if self.meshes.iter().all(|m| m.skinned) { self.sources.clear(); }
-        let tracer_m = glow(scene, [1.0, 0.9, 0.3], 30000.0);
-        self.tracer = cube(scene, tracer_m);
-        for _ in 0..TRACERS { scene.add_instance(self.tracer, Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
+        // Godot: an 8-sided brass cylinder (radius 1.6 cm, 5 cm, metallic
+        // 0.88, roughness 0.32) and a 2.4 cm cone, both scaled by the shot's
+        // bullet scale (a bazooka round is twice the size and more).
+        let brass = scene.add_material(render::scene::Material { tint: [0.84f32, 0.70, 0.24].map(|c| c.powf(2.2)), layer: -1, roughness: 0.32, flags: 0, scale: 1.0, metal: 0.88 });
+        let tip = scene.add_material(render::scene::Material { tint: [0.80f32, 0.78, 0.66].map(|c| c.powf(2.2)), layer: -1, roughness: 0.24, flags: 0, scale: 1.0, metal: 0.82 });
+        self.bullet = [
+            scene.add_mesh(&primitives::cylinder(brass, BULLET_RADIUS, BULLET_RADIUS * 1.04, 8).mesh()),
+            scene.add_mesh(&primitives::cylinder(tip, 0.0, BULLET_RADIUS, 8).mesh()),
+        ];
+        for k in 0..TRACERS * 2 { scene.add_instance(self.bullet[k % 2], Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
         // Lava deaths: twins of the characters after the tracers (outside
         // the players' block), blobs and the splash in the lava material.
         let lava_m = super::arena::lava_material(scene);
@@ -334,18 +386,29 @@ impl PlayersView {
             }
         }
         self.pose_lava(scene, world, (world.tick as f32 - 1.0 + alpha) * growing_guns::DT);
-        // Tracers: a short glowing streak behind each live bullet. Skip the
-        // first metre so a player's own tracer never fills their screen; the
-        // streak then grows to four metres.
+        // Bullets, drawn where they are at this frame (between ticks), nose
+        // first: the body and nose once clear of the muzzle, the streak
+        // from the first metre on so a player's own never fills the screen.
+        self.trails.clear();
+        let behind = (1.0 - alpha).clamp(0.0, 1.0) * growing_guns::DT;
         for t in 0..TRACERS {
-            let xf = world.bullets.get(t).filter(|b| b.travelled > 1.0).map_or(Affine3A::from_translation(HIDDEN), |b| {
+            let shown = world.bullets.get(t).filter(|b| b.travelled > 0.4 && b.vel.length_squared() > 1e-6);
+            let (body, nose) = shown.map_or((Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN)), |b| {
+                let w = world.players.get(b.owner).map(|p| &p.weapon);
+                let scale = w.map_or(1.0, |w| w.bullet_scale_for_shot(b.last_in_mag)).clamp(0.3, 8.0);
                 let dir = b.vel.normalize();
-                let len = (b.travelled - 1.0).clamp(0.3, 4.0);
-                let rot = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
-                Affine3A::from_scale_rotation_translation(Vec3::new(0.035, 0.035, len), rot, b.pos - dir * len * 0.5)
+                let pos = b.pos - b.vel * behind;
+                let rot = Quat::from_rotation_arc(Vec3::Y, dir);
+                let (body_len, nose_len) = (BULLET_LENGTH * scale, NOSE_LENGTH * scale);
+                if b.travelled > 1.0 && let Some(w) = w {
+                    self.trails.push(bullet_trail(pos - dir * body_len, dir, scale, w.bullet_color, w.bullet_speed_mult, b.travelled - 1.0));
+                }
+                (Affine3A::from_scale_rotation_translation(Vec3::new(scale, body_len, scale), rot, pos - dir * body_len * 0.5),
+                 Affine3A::from_scale_rotation_translation(Vec3::new(scale, nose_len, scale), rot, pos + dir * nose_len * 0.5))
             });
-            scene.update_instance(slot, self.tracer, xf);
-            slot += 1;
+            scene.update_instance(slot, self.bullet[0], body);
+            scene.update_instance(slot + 1, self.bullet[1], nose);
+            slot += 2;
         }
     }
 

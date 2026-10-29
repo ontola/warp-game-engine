@@ -99,6 +99,8 @@ pub struct Visuals {
     /// Air strike targets in flight last tick, and when the last one hit.
     air_targets: Vec<Vec3>,
     air_impact: f32,
+    /// World sprites: the light shafts, then the bullet streaks.
+    sprites: Vec<render::sprites::Sprite>,
 }
 
 impl Visuals {
@@ -129,7 +131,7 @@ impl Visuals {
                 origin: Vec3::new(-192.0, -6.0, -192.0), cell: 6.0, dims: [65, 13, 65],
             }).expect("stadium sky grid");
         }
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, sprites: Vec::new() };
         v.set_arena(world);
         v
     }
@@ -154,13 +156,13 @@ impl Visuals {
         self.fx.debris.invalidate_renderer();
     }
 
-    /// World sprites besides the name tags: the light shafts.
-    pub fn sprites(&self) -> &[render::sprites::Sprite] { self.things.sprites() }
+    /// World sprites besides the name tags: the light shafts and bullet streaks.
+    pub fn sprites(&self) -> &[render::sprites::Sprite] { &self.sprites }
 
     /// Upload changed slots, debris, effects and the crowd.
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, light: &Lighting) -> Result<(), String> {
         if !std::mem::replace(&mut self.sprite_images, true) {
-            for (id, picture) in things::Things::sprite_pictures() {
+            for (id, picture) in things::Things::sprite_pictures().into_iter().chain([(players::TRAIL_IMAGE, players::trail_picture())]) {
                 renderer.set_sprite_image(gpu, id, &picture, render::hud::ImageFilter::Linear);
             }
         }
@@ -271,6 +273,9 @@ impl Visuals {
         self.cages.pose(&mut self.scene, world, prev, alpha, self.clock);
         self.guns.pose(&mut self.scene, world, prev, alpha, &self.fx, self.players.hands());
         self.things.pose(&mut self.scene, world, self.clock);
+        self.sprites.clear();
+        self.sprites.extend_from_slice(self.things.sprites());
+        self.sprites.extend_from_slice(&self.players.trails);
         self.arena.lava.pose(world);
     }
 
