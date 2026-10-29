@@ -38,38 +38,80 @@ pub struct TerrainSpec {
     pub style: terrain_field::Style,
 }
 
-/// A heightfield of the terrain for sun visibility past the shadow maps
-/// (`Scene::world_terrain_visibility`): `size` metres square around
-/// `centre` at `cell` spacing. Each height is the lowest of its own and its
-/// neighbours' samples less `margin`, so the field stays under the finer
-/// mesh and never shadows the ground it is meant to light; mountains lose
-/// a few metres, which far shadows do not show.
-pub fn shadow_heightfield(seed: u32, style: &terrain_field::Style, centre: [f32; 2], size: f32, cell: f32, margin: f32) -> crate::scene::Heightfield {
-    let n = (size / cell).ceil() as u32 + 1;
+/// Sun visibility baked for `size` metres square around `centre` at `cell`
+/// spacing, for terrain shadows past the shadow maps: returns the grid for
+/// `Scene::heightfield` and the visibility for `Scene::terrain_sun`. The
+/// grid's heights are the "unknown" sentinel: the coarse samples would lie
+/// above the finer mesh in places, and the heightfield's ground tests would
+/// then black out the ground under them.
+pub fn sun_heightfield(seed: u32, style: &terrain_field::Style, centre: [f32; 2], size: f32, cell: f32, sun: Vec3)
+    -> (crate::scene::Heightfield, Vec<f32>) {
+    let n = (size / cell).ceil() as usize + 1;
     let origin = [(centre[0] / cell).floor() * cell - (n / 2) as f32 * cell, (centre[1] / cell).floor() * cell - (n / 2) as f32 * cell];
-    let mut raw = vec![0.0f32; (n * n) as usize];
     let threads = std::thread::available_parallelism().map_or(4, |t| t.get());
-    let rows = (n as usize).div_ceil(threads);
+    let rows = n.div_ceil(threads);
+    let mut raw = vec![0.0f32; n * n];
     std::thread::scope(|s| {
-        for (k, chunk) in raw.chunks_mut(rows * n as usize).enumerate() {
+        for (k, chunk) in raw.chunks_mut(rows * n).enumerate() {
             s.spawn(move || {
                 for (i, h) in chunk.iter_mut().enumerate() {
-                    let (x, z) = ((i % n as usize) as f32, (k * rows + i / n as usize) as f32);
+                    let (x, z) = ((i % n) as f32, (k * rows + i / n) as f32);
                     *h = terrain_field::eval(origin[0] + x * cell, origin[1] + z * cell, cell, seed, style).pos.y;
                 }
             });
         }
     });
-    let at = |x: i32, z: i32| raw[(z.clamp(0, n as i32 - 1) as u32 * n + x.clamp(0, n as i32 - 1) as u32) as usize];
-    let mut heights = vec![0.0f32; raw.len()];
-    for z in 0..n as i32 {
-        for x in 0..n as i32 {
-            let mut lo = f32::MAX;
-            for dz in -1..=1 { for dx in -1..=1 { lo = lo.min(at(x + dx, z + dz)); } }
-            heights[(z as u32 * n + x as u32) as usize] = lo - margin;
+    let sun_vis = bake_sun(&raw, n, cell, sun);
+    (crate::scene::Heightfield { origin, cell, w: n as u32, h: n as u32, heights: vec![-1e9; n * n] }, sun_vis)
+}
+
+/// Sun visibility per sample of an n x n height grid: march toward the sun
+/// and compare the steepest rise on the way with the sun's elevation, with
+/// a few degrees of soft edge so shadows past the shadow maps are not
+/// stair-stepped by the grid.
+fn bake_sun(raw: &[f32], n: usize, cell: f32, sun: Vec3) -> Vec<f32> {
+    let flat = (sun.x * sun.x + sun.z * sun.z).sqrt();
+    if sun.y <= 0.0 { return vec![0.0; raw.len()]; }
+    if flat < 1e-4 { return vec![1.0; raw.len()]; }
+    let (dx, dz, rise) = (sun.x / flat, sun.z / flat, sun.y / flat);
+    let top = raw.iter().copied().fold(f32::MIN, f32::max);
+    let soft = 0.05f32;
+    let sample = |x: f32, z: f32| -> Option<f32> {
+        if x < 0.0 || z < 0.0 || x >= (n - 1) as f32 || z >= (n - 1) as f32 { return None; }
+        let (ix, iz) = (x as usize, z as usize);
+        let (fx, fz) = (x - ix as f32, z - iz as f32);
+        let r = |i: usize, j: usize| raw[j * n + i];
+        Some((r(ix, iz) * (1.0 - fx) + r(ix + 1, iz) * fx) * (1.0 - fz) + (r(ix, iz + 1) * (1.0 - fx) + r(ix + 1, iz + 1) * fx) * fz)
+    };
+    let threads = std::thread::available_parallelism().map_or(4, |t| t.get());
+    let rows = n.div_ceil(threads);
+    let mut vis = vec![1.0f32; n * n];
+    std::thread::scope(|s| {
+        for (k, chunk) in vis.chunks_mut(rows * n).enumerate() {
+            s.spawn(move || {
+                for (i, v) in chunk.iter_mut().enumerate() {
+                    let (x, z) = ((i % n) as f32, (k * rows + i / n) as f32);
+                    let h0 = raw[(k * rows + i / n) * n + i % n];
+                    let mut steepest = f32::MIN;
+                    // Steps in grid cells; past `top` nothing can block.
+                    let mut t = 1.5f32;
+                    loop {
+                        let Some(h) = sample(x + dx * t, z + dz * t) else { break };
+                        steepest = steepest.max((h - h0) / (t * cell));
+                        if steepest > rise + soft || h0 + t * cell * (rise - soft) > top { break; }
+                        t += 1.0;
+                    }
+                    *v = 1.0 - smooth(rise - soft, rise + soft, steepest);
+                }
+            });
         }
-    }
-    crate::scene::Heightfield { origin, cell, w: n, h: n, heights }
+    });
+    vis
+}
+
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Reserve `capacity` patch slots that draw with `material`.

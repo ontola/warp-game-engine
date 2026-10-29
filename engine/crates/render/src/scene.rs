@@ -419,6 +419,9 @@ pub struct Scene {
     /// Trace the sun through `heightfield` for terrain shadows past the
     /// shadow maps (as `KERN_WORLD_TERRAIN_VISIBILITY=1`; `=0` still wins).
     pub world_terrain_visibility: bool,
+    /// Sun visibility 0..1 baked per `heightfield` sample (same grid). When
+    /// present, terrain visibility reads it instead of tracing per pixel.
+    pub terrain_sun: Vec<f32>,
     /// Game data for materials (Sideways: road surface per 2 m row).
     pub aux: Vec<u32>,
     /// A tiling scalar field procedural materials sample (`noise_field`):

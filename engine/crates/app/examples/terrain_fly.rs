@@ -373,15 +373,15 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
         }
         recipe_spruces(&mut scene, &trees[..near])?;
     }
-    // The sun traced through a coarse heightfield shades the valleys behind
-    // mountains past the reach of the shadow maps.
-    scene.heightfield = procedural_terrain::shadow_heightfield(seed, &style, [centre.x, centre.z], SHADOW_SIZE, SHADOW_CELL, 3.0);
-    scene.terrain_visibility_complete = true;
-    scene.world_terrain_visibility = true;
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     let mut light = Lighting::default();
     let sky = AtmosphereCache::default().get_or_bake(&Atmosphere::default(), SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
     sky.apply(&mut scene, &mut light);
+    // Sun visibility baked on a coarse heightfield shades the valleys behind
+    // mountains past the reach of the shadow maps.
+    (scene.heightfield, scene.terrain_sun) = procedural_terrain::sun_heightfield(seed, &style, [centre.x, centre.z], SHADOW_SIZE, SHADOW_CELL, light.sun_dir);
+    scene.terrain_visibility_complete = true;
+    scene.world_terrain_visibility = true;
     light.fog_density = 0.00003;
     light.fog_end = 60000.0;
     // TAA's history clamp rejects the jittered sub-pixel fir needles, so

@@ -1213,6 +1213,9 @@ impl Renderer {
         startup.mark("headlight_track_resources");
         let hf = scene.heightfield.clone();
         let (hw, hh, hdata) = if hf.w > 1 && hf.h > 1 { (hf.w, hf.h, hf.heights.clone()) } else { (2, 2, vec![-1e9f32; 4]) };
+        // Green holds the baked sun visibility (Scene::terrain_sun), 1 without one.
+        let sun_ok = scene.terrain_sun.len() == hdata.len();
+        let hdata: Vec<f32> = hdata.iter().enumerate().flat_map(|(i, &h)| [h, if sun_ok { scene.terrain_sun[i] } else { 1.0 }]).collect();
         let hf_tex = gpu.device.create_texture_with_data(
             &gpu.queue,
             &wgpu::TextureDescriptor {
@@ -1221,7 +1224,7 @@ impl Renderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R32Float,
+                format: wgpu::TextureFormat::Rg32Float,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
@@ -1714,7 +1717,7 @@ impl Renderer {
             rock_variation,
             shade_features,
             cpu_spans: crate::cpu_spans::Collector::from_env(),
-            empty_gi_volume: scene.heightfield.heights.is_empty() && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
+            empty_gi_volume: scene.heightfield.heights.iter().all(|&h| h <= -1e8) && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
                 && !scene.instances.iter().any(|i| i.flags & crate::scene::FOLIAGE != 0),
             car_materials,
             car_material_count: car_list.len(),
