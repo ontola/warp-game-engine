@@ -6,7 +6,8 @@
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
 //! released), F11 toggles fullscreen, F12 saves a feedback screenshot (PNG, JSON
 //! metadata and the clipboard; see [`screenshot`]). F1 to
-//! F10 go to [`Game::function_key`] first (a debug overlay on F3).
+//! F10 go to [`Game::function_key`] first; an unused F3 opens the engine's
+//! debug menu ([`debug`]), where games add their own controls.
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
 //! ([`Game::text`] gets characters, IME commits, editing keys and
@@ -15,6 +16,7 @@
 //! each tick and [`Game::seats`] can bind devices to seats, so a game can
 //! let a spare pad join mid-match.
 pub mod clipboard;
+pub mod debug;
 pub mod input;
 pub mod text;
 pub mod script;
@@ -117,6 +119,12 @@ pub trait Game {
     fn function_key(&mut self, _n: u8) -> bool { false }
     /// The game asks the shell to close (an Exit menu item).
     fn quit(&self) -> bool { false }
+    /// Extra menus and controls for the F3 debug menu, with ids from
+    /// [`debug::GAME_IDS`] up (a control's `menu` may name an engine menu).
+    fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { (Vec::new(), Vec::new()) }
+    /// One of the game's debug controls changed, or the menu was reset
+    /// (`ResetDefaults`).
+    fn debug_action(&mut self, _action: render::debug_ui::DebugAction) {}
     /// Adjust input tuning (look sensitivity) from the game's settings;
     /// called before every frame's ticks.
     fn tuning(&self, _tuning: &mut Tuning) {}
@@ -311,6 +319,7 @@ struct Shell<'g> {
     toast: Option<(String, Instant)>,
     /// Smoothed frames per second, for screenshot metadata.
     fps: f32,
+    debug: debug::EngineDebug,
     error: Option<String>,
     modifiers: ModifiersState,
     /// IME composition in progress: key text is the IME's until it commits.
@@ -322,7 +331,7 @@ struct Shell<'g> {
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let devices = Devices::new(cfg.keyboard);
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug: Default::default(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -337,6 +346,7 @@ impl Shell<'_> {
         if self.cfg.frames > 0 && self.frames >= self.cfg.frames {
             let s = self.started.elapsed().as_secs_f64();
             println!("smoke: {} frames in {s:.1} s ({:.1} fps)", self.frames, self.frames as f64 / s);
+            for (pass, ms) in self.debug.passes() { println!("  gpu {pass:>28} {ms:6.2} ms"); }
             event_loop.exit();
             return;
         }
@@ -379,13 +389,20 @@ impl Shell<'_> {
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, renderer: &mut live.renderer };
         let mut draw = self.game.draw(&mut frame)?;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
+        draw.light = self.debug.light(draw.light);
+        self.debug.sync(renderer);
+        self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0);
+        if self.debug.open() {
+            self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps);
+            if let Some(a) = self.debug.tick(f64::from(dt), size) { self.game.debug_action(a); }
+        }
         if !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
             let s = (size[1] as f32 / 1080.0).max(0.5);
             draw.hud.text.push(render::hud::TextRun { id: u64::MAX - 1, text: "click to capture the mouse, Esc releases".into(), position: [16.0 * s, size[1] as f32 - 34.0 * s],
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,
                 align: render::hud::TextAlign::Left, width: size[0] as f32 * 0.6 });
         }
-        let render_height = std::env::var("WARP_RENDER_HEIGHT").ok().and_then(|v| v.parse().ok()).or(self.cfg.max_render_height);
+        let render_height = self.debug.render_height().unwrap_or_else(|| std::env::var("WARP_RENDER_HEIGHT").ok().and_then(|v| v.parse().ok()).or(self.cfg.max_render_height));
         let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
         if to_file || to_game {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
@@ -396,7 +413,7 @@ impl Shell<'_> {
                 let metadata = serde_json::json!({
                     "schema": 1, "game": self.cfg.title, "title": self.game.title(), "state": state,
                     "cameras": draw.cameras.iter().map(|c| serde_json::json!({"position": c.pos.to_array(), "target": c.target.to_array(), "fov_y_deg": c.fov_y.to_degrees(), "near": c.near})).collect::<Vec<_>>(),
-                    "render": {"adapter": live.gpu.info.name, "backend": format!("{:?}", live.gpu.info.backend), "driver": live.gpu.info.driver, "size": size, "fps": self.fps, "frame": self.frames, "uptime_s": self.started.elapsed().as_secs_f32()},
+                    "debug": self.debug.metadata(), "render": {"adapter": live.gpu.info.name, "backend": format!("{:?}", live.gpu.info.backend), "driver": live.gpu.info.driver, "size": size, "fps": self.fps, "frame": self.frames, "uptime_s": self.started.elapsed().as_secs_f32()},
                 });
                 let line = screenshot::save(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }).unwrap_or_else(|e| { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") });
                 self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
@@ -405,6 +422,7 @@ impl Shell<'_> {
         }
         if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() > *until) { self.toast = None; }
         if let Some((line, _)) = &self.toast { toast(&mut draw.hud, line); }
+        if self.debug.open() { self.debug.draw(&mut draw.hud); }
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
                 live.out.draw(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()), render_height)?;
@@ -430,6 +448,34 @@ impl Shell<'_> {
             w.set_cursor_visible(true);
             self.devices.mouse_captured = false;
         }
+    }
+
+    fn size(&self) -> [u32; 2] { self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]) }
+
+    /// F3 opens and closes the debug menu; while it is open it takes the
+    /// navigation keys. True when the key was used.
+    fn debug_key(&mut self, code: KeyCode, repeat: bool) -> bool {
+        use render::debug_ui::DebugKey;
+        let key = match code {
+            KeyCode::F3 if !repeat => DebugKey::Toggle,
+            _ if !self.debug.open() => return false,
+            KeyCode::Escape if !repeat => DebugKey::Close,
+            KeyCode::ArrowUp => DebugKey::Up,
+            KeyCode::ArrowDown => DebugKey::Down,
+            KeyCode::ArrowLeft => DebugKey::Left,
+            KeyCode::ArrowRight => DebugKey::Right,
+            KeyCode::Enter | KeyCode::NumpadEnter if !repeat => DebugKey::Enter,
+            KeyCode::PageUp => DebugKey::PageUp,
+            KeyCode::PageDown => DebugKey::PageDown,
+            _ => return false,
+        };
+        let was_open = self.debug.open();
+        self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps);
+        let (used, action) = self.debug.key(key, self.size());
+        if let Some(a) = action { self.game.debug_action(a); }
+        // The pointer works the menu while it is open.
+        if !was_open && self.debug.open() { self.capture_mouse(false); }
+        used
     }
 
     fn sync_capture(&mut self) {
@@ -496,13 +542,26 @@ impl ApplicationHandler for Shell<'_> {
                 self.focused = focused;
                 if !focused { self.capture_mouse(false); self.devices.cursor(None); }
             }
-            WindowEvent::CursorMoved { position, .. } => self.devices.cursor(Some([position.x as f32, position.y as f32])),
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = [position.x as f32, position.y as f32];
+                self.debug.pointer_move(p);
+                self.devices.cursor(Some(p));
+            }
             WindowEvent::CursorLeft { .. } => self.devices.cursor(None),
-            WindowEvent::MouseWheel { delta, .. } => self.devices.wheel(match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => y,
-                winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
-            }),
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
+                };
+                if self.debug.open() && self.debug.scroll(lines, self.size()) { return; }
+                self.devices.wheel(lines);
+            }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.debug.open() && button == MouseButton::Left {
+                    let action = if state == ElementState::Pressed { self.debug.pointer_down(self.size()).1 } else { self.debug.pointer_up() };
+                    if let Some(a) = action { self.game.debug_action(a); }
+                    return;
+                }
                 if button == MouseButton::Left && state == ElementState::Pressed && !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
                     self.capture_mouse(true);
                     return;
@@ -518,6 +577,7 @@ impl ApplicationHandler for Shell<'_> {
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 if event.state == ElementState::Pressed && !event.repeat && let Some(n) = function_key(code) && self.game.function_key(n) { self.sync_capture(); return; }
+                if event.state == ElementState::Pressed && self.debug_key(code, event.repeat) { return; }
                 if self.game.text_input() && event.state == ElementState::Pressed {
                     // Text entry: editing keys and typed text go to the game;
                     // only menu movement still presses buttons.
