@@ -93,6 +93,11 @@ fn run() -> Result<(), String> {
             if !counts.is_empty() {
                 eprintln!("events: {counts:?}");
             }
+            // --lua CODE: a Luau line against the world before the picture.
+            if let Some(code) = arg("--lua") {
+                eprintln!("lua: {}", spellstorm::rules::console(&mut game.world, &code)?);
+                game.step(&[]);
+            }
             if flag("--menu") {
                 game.menu.show(false, &game.world);
             }
