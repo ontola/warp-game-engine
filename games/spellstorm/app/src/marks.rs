@@ -53,6 +53,7 @@ impl Marks {
             let tip = wizard::staff_tip(a.pos, &wz);
             if a.alive {
                 self.staff(&wz, a.hp as f32 / a.max_hp.max(1.0) as f32, tip, time, dt);
+                self.cast_mark(&wz, time);
                 if wz.swing_t > 0.0 {
                     self.swing(a.pos, &wz);
                 }
@@ -156,6 +157,51 @@ impl Marks {
             s.alpha_cut = 0.0;
             s.depth_bias = 0.6;
             self.sprites.push(s);
+        }
+    }
+
+    /// The spot a charging spell is aimed at (CastMark): runes turning on
+    /// the floor and the element welling up there, faint at first and
+    /// stronger as the spell fills.
+    fn cast_mark(&mut self, w: &Wizard, time: f32) {
+        let (Some(s), Some(at)) = (w.charging.as_ref(), w.mark) else { return };
+        let k = (w.charge_t / w.charge_need.max(0.01)).clamp(0.0, 1.0) as f32;
+        let r = match s.shape {
+            spellstorm::Shape::Overload => spellstorm::spells::overload_reach(s.primary),
+            spellstorm::Shape::Projectile => (s.n.splash as f32 * 0.8).max(0.9),
+            spellstorm::Shape::Strike => s.n.radius as f32,
+            _ => 0.9,
+        };
+        let c = s.primary.map(el_c).unwrap_or([1.0, 0.85, 0.5, 1.0]);
+        let lin = linear3([c[0], c[1], c[2]]);
+        let fill = 0.25 + 0.75 * k;
+        let centre = Vec3::new(at.x, 0.05, at.z);
+        let (sn, cs) = (time * 0.6).sin_cos();
+        let (right, up) = (Vec3::new(cs, 0.0, -sn), Vec3::new(sn, 0.0, cs));
+        let edge = linear3(Vec3::from([c[0], c[1], c[2]]).lerp(Vec3::ONE, 0.2).to_array());
+        let mut m = Sprite::fixed(centre, [r * 2.0, r * 2.0], right, up, IMAGE, uv(Cell::Runes), edge * fill * 0.65 * 1.4);
+        m.additive = true;
+        m.alpha_cut = 0.0;
+        m.depth_bias = 0.2;
+        self.sprites.push(m);
+        // The glow welling up in the middle.
+        let well = (0.35 + 0.15 * (time * 4.0).sin()) * k;
+        let mut g = Sprite::fixed(centre, [r * 1.8, r * 1.8], Vec3::X, Vec3::Z, IMAGE, uv(Cell::HaloOut), lin * well * 1.4);
+        g.additive = true;
+        g.alpha_cut = 0.0;
+        g.depth_bias = 0.2;
+        self.sprites.push(g);
+        // The element seeping up out of the ground in a ring.
+        let speed = 0.5 + 0.7 * k;
+        for j in 0..24 {
+            let h = w.seat as f32 * 9.1 + j as f32 * 1.37;
+            let ph = (time * speed / 0.9 + hash(h)).fract();
+            let t = ph * 0.9;
+            let a = hash(h + 0.3) * std::f32::consts::TAU;
+            let rr = r * (0.3 + 0.55 * hash(h + 0.5).sqrt());
+            let p = Vec3::new(at.x + a.cos() * rr, 0.05 + (0.4 + 0.7 * hash(h + 0.7)) * t + 0.3 * t * t, at.z + a.sin() * rr);
+            let fade = smooth(0.0, 0.15, ph) * (1.0 - smooth(0.5, 1.0, ph));
+            self.sprites.push(glow(p, 0.18, Cell::Dot, lin * fade * 1.4));
         }
     }
 
