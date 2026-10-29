@@ -388,7 +388,7 @@ impl StadiumVisuals {
                     let colour = if self.rng.f() < 0.08 { CROWD_COLORS.len() + self.rng.below(CROWD_ACCENTS.len()) } else { self.rng.below(CROWD_COLORS.len()) };
                     let look = self.looks[colour * SHADES.len() + self.rng.below(SHADES.len())];
                     let hop = if self.rng.f() < 0.3 { 0.0 } else { self.rng.range(0.15, 0.42) };
-                    seats.push(Seat { pos, yaw: -a - PI * 0.5, scale: self.rng.range(1.5, 1.85), phase: self.rng.f(), tempo: self.rng.f(), hop, body: look.0, arms: look.1 });
+                    seats.push(Seat { pos, yaw: -a - PI * 0.5, scale: self.rng.range(1.55, 1.95), width: self.rng.range(0.72, 0.98), phase: self.rng.f(), tempo: self.rng.f(), hop, body: look.0, arms: look.1 });
                     if seats.len() >= CROWD_MAX { break 'all; }
                 }
             }

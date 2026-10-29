@@ -10,6 +10,8 @@ struct Seat {
     params: vec4<f32>,
     // body first cluster, count; arms first cluster, count
     meshes: vec4<u32>,
+    // shoulder width relative to the height, unused x3
+    shape: vec4<f32>,
 };
 struct Instance { r0: vec4<f32>, r1: vec4<f32>, r2: vec4<f32>, sphere: vec4<f32>, first_cluster: u32, cluster_count: u32, scale: f32, flags: u32 };
 struct Uniform {
@@ -89,12 +91,12 @@ fn animate(@builtin(global_invocation_id) id: vec3<u32>) {
         run = max(run, prox * clamp(outp * (1.0 - outp) * 4.0 + retp * (1.0 - retp) * 4.0, 0.0, 1.0));
     }
     lift += abs(sin(time * 10.5 + phase * 41.0)) * 0.17 * run;
-    // Local frame: yaw about Y, uniform scale; figure +Z faces the arena.
+    // Local frame: yaw about Y, scaled by height, narrowed by the shape; figure +Z faces the arena.
     let c = cos(s.pos_yaw.w);
     let sn = sin(s.pos_yaw.w);
-    let ex = vec3<f32>(c, 0.0, -sn) * scale;
+    let ex = vec3<f32>(c, 0.0, -sn) * scale * s.shape.x;
     let ey = vec3<f32>(0.0, 1.0, 0.0) * scale;
-    let ez = vec3<f32>(sn, 0.0, c) * scale;
+    let ez = vec3<f32>(sn, 0.0, c) * scale * s.shape.x;
     let origin = seat + vec3<f32>(disp.x, 0.0, disp.y) + ey * lift;
     // Body: crouch squashes Y, shear leans X with height.
     let by = ey * crouch + ex * shear * crouch;
