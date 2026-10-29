@@ -62,9 +62,14 @@ fn headlight_sample(index:u32,p:vec3<f32>,bias_normal:vec3<f32>)->HeadlightSampl
     if any(abs(ndc.xy)>vec2<f32>(1.0)) || ndc.z<0.0 || ndc.z>1.0 {return result;}
     let uv=ndc.xy*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5);
     let visibility=spot_visibility(index,uv,ndc.z-0.00001,lamp);
-    let fade=1.0-smoothstep(lamp.position_range.w*0.8,lamp.position_range.w,dist);
-    // Falloff exponent per spot: 2 is inverse square (the default).
-    let k=headlights.spot_falloff[index/4u][index%4u];
+    // Falloff exponent per spot: 2 is inverse square (the default). A
+    // negative exponent uses its size with the local lights' (Godot's)
+    // window (1 - (d/range)^4)^2 instead of a fade over the last fifth.
+    let kk=headlights.spot_falloff[index/4u][index%4u];
+    let k=abs(kk);
+    let nr=d2/(lamp.position_range.w*lamp.position_range.w);
+    let window=max(0.0,1.0-nr*nr);
+    let fade=select(1.0-smoothstep(lamp.position_range.w*0.8,lamp.position_range.w,dist),window*window,kk<0.0);
     let spread=select(pow(max(d2,0.04),k*0.5),max(d2,0.04),k==2.0);
     result.irradiance=lamp.intensity_inner.rgb*(cone*fade*visibility/spread);
     return result;
