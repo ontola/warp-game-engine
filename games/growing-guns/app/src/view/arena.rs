@@ -49,7 +49,7 @@ pub mod palette {
 
 /// Godot's hairline mortar gap between bricks.
 const VISUAL_CHUNK_INSET: f32 = 0.992;
-const MARKS: usize = 384;
+const MARKS: usize = 1024;
 /// Every chunk of the largest arena (a sniper fight).
 const ARENA_SLOTS: usize = growing_guns::arena::MAX_PIECES;
 
@@ -76,7 +76,7 @@ impl KindMeshes {
 
 /// Scorch and blood marks: a ring of slots, oldest reused first; each knows
 /// the chunk it sits on and goes when that chunk breaks.
-struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, scorch: usize, blood: usize }
+struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, scorch: usize, blood: usize, fresh: usize }
 
 pub struct ArenaView {
     slots: Slots,
@@ -136,7 +136,9 @@ impl ArenaView {
         let slots = Slots::reserve(scene, ARENA_SLOTS);
         let scorch_m = material(scene, [0.06, 0.055, 0.05], 0.95);
         let blood_m = material(scene, [0.36, 0.02, 0.015], 0.35);
-        let marks = Marks { slots: Slots::reserve(scene, MARKS), ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
+        // Freshly broken stone: paler than the weathered face around it.
+        let fresh_m = material(scene, [0.58, 0.54, 0.48], 0.97);
+        let marks = Marks { slots: Slots::reserve(scene, MARKS), ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10), fresh: super::sphere(scene, fresh_m, 4, 7) };
         ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), static_set: Default::default(), static_shapes: Vec::new(), shown_wear: Vec::new(), marks, lights: Vec::new(), occupancy_repair: Default::default(), lava: Default::default() }
     }
 
@@ -194,6 +196,24 @@ impl ArenaView {
 
     /// A scorch mark on the stone a bullet hit.
     pub fn scorch(&mut self, scene: &mut Scene, xf: Affine3A, chunk: u32) { self.marks.place(scene, self.marks.scorch, xf, chunk) }
+
+    /// A bullet hole: a ragged patch of pale, freshly broken stone where
+    /// chips came off, with a dark pit and two smaller pits in it.
+    pub fn bullet_hole(&mut self, scene: &mut Scene, pos: Vec3, normal: Vec3, r: f32, seed: u32, chunk: u32) {
+        let rot = Quat::from_rotation_arc(Vec3::Y, normal);
+        let (t, b) = normal.any_orthonormal_pair();
+        let rnd = |k: u32| ((seed.wrapping_mul(2654435761).rotate_left(k * 7) >> 8) & 0xffff) as f32 / 65535.0;
+        let spin = rot * Quat::from_rotation_y(rnd(1) * std::f32::consts::TAU);
+        let patch = Vec3::new(r * (1.1 + rnd(2) * 0.5), 0.016, r * (0.8 + rnd(3) * 0.4));
+        self.marks.place(scene, self.marks.fresh, Affine3A::from_scale_rotation_translation(patch, spin, pos), chunk);
+        self.marks.place(scene, self.marks.scorch, Affine3A::from_scale_rotation_translation(Vec3::new(r * 0.55, 0.026, r * 0.5), spin, pos), chunk);
+        for k in 0..2 {
+            let a = rnd(4 + k) * std::f32::consts::TAU;
+            let at = pos + (t * a.cos() + b * a.sin()) * r * (0.45 + rnd(6 + k) * 0.35);
+            let s = r * (0.18 + rnd(8 + k) * 0.17);
+            self.marks.place(scene, self.marks.scorch, Affine3A::from_scale_rotation_translation(Vec3::new(s, 0.024, s * 0.8), spin, at), chunk);
+        }
+    }
 
     /// A blood splat on the stone.
     pub fn blood(&mut self, scene: &mut Scene, xf: Affine3A, chunk: u32) { self.marks.place(scene, self.marks.blood, xf, chunk) }
