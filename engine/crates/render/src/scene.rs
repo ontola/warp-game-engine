@@ -143,6 +143,10 @@ pub const PART_WIND: u32 = 32;
 /// caster; temporal history is rejected until deformation vectors are supplied.
 pub const SKINNED: u32 = 64;
 
+// Bit 7 is reserved for part_wind::HISTORY_EPOCH. The GPU toggles it when a
+// sleeping assembly wakes, so motion history rejects the old pose once while
+// ordinary foliage/material and per-camera visibility flags remain unchanged.
+
 /// Bits 8..15: hidden from camera view 0..7 (still casts shadows and shows in
 /// other views). Set with [`GpuInstance::hide_in_views`].
 pub const HIDE_IN_VIEW_SHIFT: u32 = 8;
@@ -388,6 +392,10 @@ pub struct Scene {
     /// Reused primitive meshes following shared branch poses on the GPU.
     /// Empty preserves the original one-source-instance-per-branch path.
     pub part_attachments: Vec<crate::part_wind::PartAttachment>,
+    /// Optional GPU source/aggregate error selection; absent preserves legacy planning.
+    pub aggregate_lod: Option<crate::aggregate_lod::Selection>,
+    /// GPU all-consumer visibility and projected-motion scheduling for rigid branches.
+    pub part_wind_lod: bool,
     /// Shared baked rigid-part clips. Optional, with bounded actor/part pools.
     pub baked_animations: Option<crate::baked_animation::BakedAnimations>,
     /// Independent weighted character meshes, with caller-sampled palettes.

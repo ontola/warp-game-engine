@@ -389,8 +389,12 @@ fn tree_mesh(variant:u32, crown:u32, bark:u32) -> ClusterMesh {
     ClusterMesh::build(&[Part{vertices:&verts[0],indices:&indices[0],material:crown},Part{vertices:&verts[1],indices:&indices[1],material:bark}])
 }
 
-pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,source_tree_meshes:&[usize],mesh_names:&mut Vec<String>,config:Config)->Result<String,String>{
+pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,source_tree_meshes:&[usize],mesh_names:&mut Vec<String>,config:Config,mixed_species:bool)->Result<String,String>{
     let started=Instant::now();
+    if mixed_species && (source_tree_meshes.len()!=crate::plant_population::TREE_IDS.len()
+        || std::env::var("SIDEWAYS_GENERIC_VOXEL_TREES").as_deref()==Ok("1")) {
+        return Err("mixed distant forest requires the four matching modular tree sources".into());
+    }
     if chunks.is_empty() || stage.points.is_empty(){return Err("no native terrain to attach background to".into());}
     if (scene.heightfield.cell-2.0).abs()>1e-6{return Err("background requires the native 2 m heightfield".into());}
     let ground=Ground::new(stage,chunks.iter().map(|c|(c.cell,c)).collect());
@@ -453,10 +457,12 @@ pub fn add(scene:&mut Scene,stage:&Stage,chunks:&[Chunk],terrain_material:u32,so
         let scale=crate::tree_assets::scale_from_units(unit(key.rotate_left(7)),unit(key.rotate_left(19)),phenotype);
         let transform=Affine3A::from_scale_rotation_translation(scale,Quat::from_rotation_y(unit(key.rotate_left(3))*std::f32::consts::TAU),Vec3::new(x,y-0.12,z));
         let family=phenotype.archetype.index();
-        scene.add_classified_instance(tree_ids[family%tree_ids.len()],transform,GeometryCategory::Trees);scene.mark_foliage();
+        let species=if mixed_species {crate::plant_population::stage_index(stage,x,z)}else{family};
+        scene.add_classified_instance(tree_ids[species%tree_ids.len()],transform,GeometryCategory::Trees);scene.mark_foliage();
         families[family]+=1;juveniles+=usize::from(phenotype.juvenile);
     }
-    let representation=if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes, {} canopy / {} tapered conifer / {} stout trunk, {juveniles} juveniles",tree_ids.len(),families[0],families[1],families[2])}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
+    let representation=if mixed_species {format!("matching modular species / 4 reused near-tree CLOD meshes with shared world-grove selection; {juveniles} juveniles")}
+        else if !generic_voxels && !source_tree_meshes.is_empty(){format!("matching source trees / {} reused near-tree cluster LOD meshes, {} canopy / {} tapered conifer / {} stout trunk, {juveniles} juveniles",tree_ids.len(),families[0],families[1],families[2])}else{format!("experimental generic voxel trees / 3 shared meshes ({tree_triangles} leaf / {tree_roots} root tris total; {})",tree_lods.join("; "))};
     let far_density=if habitat_m2>0.0{trees.len() as f64/habitat_m2}else{0.0};
     let parity=if trees.len()==requested{"matched count"}else if requested>budget{"LIMITED BY INSTANCE BUDGET"}else{"LIMITED BY FOREST CANDIDATES"};
     let total_m2=tiles.len() as f64*(TILE*TILE) as f64;

@@ -41,6 +41,18 @@ fn compact_pool_requires_homogeneous_windswept_and_keeps_mixed_branches() {
 }
 
 #[test]
+fn species_recipes_share_one_compact_pool_and_unchanged_capacity() {
+    use crate::{foliage_assembly::MeadowBladeBudget,meadow_data::MeadowGeometry,meadow_windswept::WindsweptRecipe};
+    let geometry=MeadowGeometry::cook_windswept_recipes(73,0.0,MeadowBladeBudget::Blades120,
+        [WindsweptRecipe {height_scale:0.5,width_scale:0.9,..Default::default()},
+            WindsweptRecipe {height_scale:0.7,width_scale:1.4,..Default::default()},
+            WindsweptRecipe {height_scale:1.15,..Default::default()}],12.0).unwrap();
+    let profile=meadow_pool_profile(&geometry);
+    assert_eq!(profile,2.0);assert_eq!(meadow_pool_plant_words(profile),12);
+    assert_eq!(meadow_pool_bytes(1_252_161,profile),75_129_660);
+}
+
+#[test]
 fn compact_pool_ranges_are_disjoint_and_250m_fits_128mib_binding() {
     let dimension = ((250.0 / crate::meadow_data::ROOT_CELL).ceil() as u32 + 3) * 2 + 1;
     let capacity = dimension * dimension;

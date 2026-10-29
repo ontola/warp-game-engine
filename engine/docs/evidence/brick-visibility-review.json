@@ -1,0 +1,152 @@
+{
+  "brick-baseline-64": [
+    {
+      "distance": 1000.0,
+      "mode": "auto",
+      "total_ms": 112.115632,
+      "voxel_pass_ms": {
+        "voxel bins": 0.00488,
+        "voxel composite": 0.007584,
+        "voxel integrate": 82.35324800000001,
+        "voxel tiles": 0.173456,
+        "voxel visibility": 2.9690559999999997
+      },
+      "triangles": 29186,
+      "shadow_triangles": 177593316,
+      "diagnostics": "Some([VoxelViewDiagnostics { candidate_overflow_tiles: 25, step_overflow_rays: 0, traced_rays: 5088, max_steps_used: 590, max_tile_candidates: 600, max_ray_candidates: 78, ray_candidate_overflow_rays: 0, max_active_volumes: 20, active_cache_overflow_rays: 0, max_empty_brick_skips: 196, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 35, scheduled_pixels: 8960, total_steps: 989002, volume_samples: 4747443, occupied_cell_samples: 1966032, aabb_interval_tests: 42401827, interval_stream_overflow_rays: 0, interval_stream_records: 143701 }])"
+    }
+  ],
+  "brick-parallel-64": [
+    {
+      "distance": 1000.0,
+      "mode": "auto",
+      "total_ms": 236.00063999999998,
+      "voxel_pass_ms": {
+        "voxel bins": 0.028319999999999998,
+        "voxel composite": 0.007872,
+        "voxel integrate": 20.161935999999997,
+        "voxel tiles": 0.10848,
+        "voxel visibility": 188.559472
+      },
+      "triangles": 29186,
+      "shadow_triangles": 177593316,
+      "diagnostics": "Some([VoxelViewDiagnostics { candidate_overflow_tiles: 22, step_overflow_rays: 0, traced_rays: 4239, max_steps_used: 289, max_tile_candidates: 476, max_ray_candidates: 114, ray_candidate_overflow_rays: 0, max_active_volumes: 9, active_cache_overflow_rays: 0, max_empty_brick_skips: 9, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 33, scheduled_pixels: 8448, total_steps: 437099, volume_samples: 888103, occupied_cell_samples: 2272607, aabb_interval_tests: 2188121, interval_stream_overflow_rays: 0, interval_stream_records: 148211 }])"
+    }
+  ],
+  "brick-atomic-64": [
+    {
+      "distance": 1000.0,
+      "mode": "auto",
+      "total_ms": 49.205648,
+      "voxel_pass_ms": {
+        "voxel bins": 0.025136,
+        "voxel composite": 0.007344,
+        "voxel integrate": 20.767296,
+        "voxel tiles": 0.102768,
+        "voxel visibility": 0.6422399999999999
+      },
+      "triangles": 29186,
+      "shadow_triangles": 177593316,
+      "diagnostics": "Some([VoxelViewDiagnostics { candidate_overflow_tiles: 22, step_overflow_rays: 0, traced_rays: 4239, max_steps_used: 289, max_tile_candidates: 476, max_ray_candidates: 114, ray_candidate_overflow_rays: 0, max_active_volumes: 9, active_cache_overflow_rays: 0, max_empty_brick_skips: 9, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 33, scheduled_pixels: 8448, total_steps: 437099, volume_samples: 888103, occupied_cell_samples: 2272607, aabb_interval_tests: 2188121, interval_stream_overflow_rays: 0, interval_stream_records: 148211 }])"
+    }
+  ],
+  "brick-atomic-four": [
+    {
+      "distance": 1000.0,
+      "mode": "auto",
+      "total_ms": 64.22521599999999,
+      "voxel_pass_ms": {
+        "voxel bins": 0.03168,
+        "voxel composite": 0.014960000000000001,
+        "voxel integrate": 31.456992,
+        "voxel tiles": 0.232208,
+        "voxel visibility": 0.49488
+      },
+      "triangles": 7304,
+      "shadow_triangles": 226596066,
+      "diagnostics": "Some([VoxelViewDiagnostics { candidate_overflow_tiles: 2, step_overflow_rays: 0, traced_rays: 123, max_steps_used: 132, max_tile_candidates: 116, max_ray_candidates: 45, ray_candidate_overflow_rays: 0, max_active_volumes: 7, active_cache_overflow_rays: 0, max_empty_brick_skips: 3, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 4, scheduled_pixels: 1024, total_steps: 7412, volume_samples: 15102, occupied_cell_samples: 37853, aabb_interval_tests: 100579, interval_stream_overflow_rays: 0, interval_stream_records: 2374 }, VoxelViewDiagnostics { candidate_overflow_tiles: 2, step_overflow_rays: 0, traced_rays: 127, max_steps_used: 143, max_tile_candidates: 115, max_ray_candidates: 42, ray_candidate_overflow_rays: 0, max_active_volumes: 7, active_cache_overflow_rays: 0, max_empty_brick_skips: 3, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 4, scheduled_pixels: 1024, total_steps: 7194, volume_samples: 14618, occupied_cell_samples: 37465, aabb_interval_tests: 99838, interval_stream_overflow_rays: 0, interval_stream_records: 2266 }, VoxelViewDiagnostics { candidate_overflow_tiles: 2, step_overflow_rays: 0, traced_rays: 124, max_steps_used: 152, max_tile_candidates: 116, max_ray_candidates: 53, ray_candidate_overflow_rays: 0, max_active_volumes: 7, active_cache_overflow_rays: 0, max_empty_brick_skips: 5, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 4, scheduled_pixels: 1024, total_steps: 7489, volume_samples: 15260, occupied_cell_samples: 38848, aabb_interval_tests: 100737, interval_stream_overflow_rays: 0, interval_stream_records: 2406 }, VoxelViewDiagnostics { candidate_overflow_tiles: 2, step_overflow_rays: 0, traced_rays: 127, max_steps_used: 157, max_tile_candidates: 115, max_ray_candidates: 44, ray_candidate_overflow_rays: 0, max_active_volumes: 6, active_cache_overflow_rays: 0, max_empty_brick_skips: 2, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 4, scheduled_pixels: 1024, total_steps: 7199, volume_samples: 14826, occupied_cell_samples: 38635, aabb_interval_tests: 100456, interval_stream_overflow_rays: 0, interval_stream_records: 2341 }])"
+    }
+  ],
+  "brick-atomic-one": [
+    {
+      "distance": 50.0,
+      "mode": "source",
+      "total_ms": 7.210544,
+      "voxel_pass_ms": {
+        "voxel bins": 0.002656,
+        "voxel composite": 0.00664,
+        "voxel integrate": 0.005312,
+        "voxel tiles": 0.018639999999999997,
+        "voxel visibility": 0.0092
+      },
+      "triangles": 32099798,
+      "shadow_triangles": 14619068,
+      "diagnostics": "Some([VoxelViewDiagnostics { candidate_overflow_tiles: 0, step_overflow_rays: 0, traced_rays: 0, max_steps_used: 0, max_tile_candidates: 0, max_ray_candidates: 0, ray_candidate_overflow_rays: 0, max_active_volumes: 0, active_cache_overflow_rays: 0, max_empty_brick_skips: 0, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 0, scheduled_pixels: 0, total_steps: 0, volume_samples: 0, occupied_cell_samples: 0, aabb_interval_tests: 0, interval_stream_overflow_rays: 0, interval_stream_records: 0 }])"
+    },
+    {
+      "distance": 50.0,
+      "mode": "auto",
+      "total_ms": 6.0301599999999995,
+      "voxel_pass_ms": {
+        "voxel bins": 0.002496,
+        "voxel composite": 0.006512,
+        "voxel integrate": 0.00528,
+        "voxel tiles": 0.018672,
+        "voxel visibility": 0.009343999999999998
+      },
+      "triangles": 22260566,
+      "shadow_triangles": 14619068,
+      "diagnostics": "Some([VoxelViewDiagnostics { candidate_overflow_tiles: 0, step_overflow_rays: 0, traced_rays: 0, max_steps_used: 0, max_tile_candidates: 0, max_ray_candidates: 0, ray_candidate_overflow_rays: 0, max_active_volumes: 0, active_cache_overflow_rays: 0, max_empty_brick_skips: 0, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 0, scheduled_pixels: 0, total_steps: 0, volume_samples: 0, occupied_cell_samples: 0, aabb_interval_tests: 0, interval_stream_overflow_rays: 0, interval_stream_records: 0 }])"
+    },
+    {
+      "distance": 1000.0,
+      "mode": "source",
+      "total_ms": 7.580144,
+      "voxel_pass_ms": {
+        "voxel bins": 0.0025759999999999997,
+        "voxel composite": 0.006656,
+        "voxel integrate": 0.0052,
+        "voxel tiles": 0.018704,
+        "voxel visibility": 0.009392000000000001
+      },
+      "triangles": 32099798,
+      "shadow_triangles": 14619068,
+      "diagnostics": "Some([VoxelViewDiagnostics { candidate_overflow_tiles: 0, step_overflow_rays: 0, traced_rays: 0, max_steps_used: 0, max_tile_candidates: 0, max_ray_candidates: 0, ray_candidate_overflow_rays: 0, max_active_volumes: 0, active_cache_overflow_rays: 0, max_empty_brick_skips: 0, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 0, scheduled_pixels: 0, total_steps: 0, volume_samples: 0, occupied_cell_samples: 0, aabb_interval_tests: 0, interval_stream_overflow_rays: 0, interval_stream_records: 0 }])"
+    },
+    {
+      "distance": 1000.0,
+      "mode": "auto",
+      "total_ms": 10.263247999999999,
+      "voxel_pass_ms": {
+        "voxel bins": 0.005776,
+        "voxel composite": 0.006768,
+        "voxel integrate": 5.964447999999999,
+        "voxel tiles": 0.186384,
+        "voxel visibility": 0.1264
+      },
+      "triangles": 458,
+      "shadow_triangles": 14619068,
+      "diagnostics": "Some([VoxelViewDiagnostics { candidate_overflow_tiles: 0, step_overflow_rays: 0, traced_rays: 144, max_steps_used: 113, max_tile_candidates: 56, max_ray_candidates: 47, ray_candidate_overflow_rays: 0, max_active_volumes: 7, active_cache_overflow_rays: 0, max_empty_brick_skips: 2, max_occupied_lod_x256: 0, occupied_coarse_mip_rays: 0, active_tiles: 4, scheduled_pixels: 1024, total_steps: 7505, volume_samples: 15349, occupied_cell_samples: 39277, aabb_interval_tests: 34152, interval_stream_overflow_rays: 0, interval_stream_records: 2413 }])"
+    }
+  ],
+  "forest_64_opacity": {
+    "scope": "8-bit exported native opacity PNG, red channel; not full-precision optical source acceptance",
+    "baseline_coverage_pixels": 3471.301960784314,
+    "candidate_coverage_pixels": 3471.3333333333335,
+    "coverage_ratio": 1.0000090376894244,
+    "fuzzy_iou": 0.9996272664739747,
+    "relative_l1": 0.00037280468875327334,
+    "max_alpha_difference": 0.00784313725490196
+  },
+  "serial_parallel_opacity": {
+    "scope": "8-bit exported native opacity PNG, red channel; not full-precision optical source acceptance",
+    "baseline_coverage_pixels": 79.7921568627451,
+    "candidate_coverage_pixels": 79.7921568627451,
+    "coverage_ratio": 1.0,
+    "fuzzy_iou": 1.0,
+    "relative_l1": 0.0,
+    "max_alpha_difference": 0.0
+  },
+  "source_preservation_scope": "Same source/selection/materials; source-vs-LOD discrepancy remains. Timings are 8 samples after 8 warmup frames with uncontrolled background GPU work.",
+  "executable_sha256": "af8beaf50bb6a6bd26aff278371211b60d8dae3dd507c814d6d6735f1aa4adee"
+}

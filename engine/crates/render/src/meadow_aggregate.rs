@@ -450,7 +450,7 @@ mod tests {
 
     fn geometry(vertices: Vec<GpuMeadowVertex>) -> MeadowGeometry {
         let count = vertices.len() as u32;
-        MeadowGeometry { vertices, lod_ranges:[[[0,count];3];3], lod_errors:[[0.0;3];3],
+        MeadowGeometry { vertices, variant_patch_metres:0.0, lod_ranges:[[[0,count];3];3], lod_errors:[[0.0;3];3],
             branch_pivots:[[[0.0;4];4];3],max_tuft_radius:2.0,max_tuft_height:2.0,max_anchor_radius:2.0,max_blade_radius:3.0 }
     }
     fn vertex(p: [f32;3], normal: [f32;3], branch:u8, color:[f32;3]) -> GpuMeadowVertex {

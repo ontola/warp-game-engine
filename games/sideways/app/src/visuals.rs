@@ -628,9 +628,18 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     // Three shared evergreen archetypes, used unchanged by every distance LOD.
     let t = std::time::Instant::now();
     let tree_fullness = crate::tree_assets::configured_fullness()?;
-    log.push(format!("tree crown source: fullness={tree_fullness:.3}, stem-anchored frond expansion; shared near/far source, unchanged tree counts, wood/colliders, triangle counts and alpha"));
+    let mixed_species = crate::plant_population::configured()?;
+    if !mixed_species {
+        log.push(format!("tree crown source: fullness={tree_fullness:.3}, stem-anchored frond expansion; shared near/far source, unchanged tree counts, wood/colliders, triangle counts and alpha"));
+    }
     let mut tree_meshes = Vec::new();
     let mut tree_source_archetypes = Vec::new();
+    let mixed_sources = if mixed_species {
+        Some(crate::plant_population::cook(&mut scene, stage, tree_fullness, &mut mesh_names)?)
+    } else { None };
+    if let Some(sources) = &mixed_sources {
+        tree_meshes.extend_from_slice(&sources.trees);
+    } else {
     for archetype in sideways::vegetation::TreeArchetype::ALL {
         let surfaces = crate::tree_assets::load_with_fullness(&r, archetype, tree_fullness)?;
         let crown_fronds = crate::tree_assets::crown_frond_count(&surfaces)?;
@@ -664,15 +673,18 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         tree_meshes.push(scene.add_mesh(&cm));
         mesh_names.push(format!("evergreen {}", archetype.label()));
     }
-    let tree_source = serde_json::json!({"fullness":tree_fullness,
+    }
+    let mut tree_source = mixed_sources.as_ref().map(|sources| sources.metadata.clone()).unwrap_or_else(|| serde_json::json!({"fullness":tree_fullness,
         "recipe":"stem_anchored_frond_expansion_v1","source_archetypes":tree_source_archetypes,
-        "shared_near_far":true,"alpha_modified":false,"wood_modified_by_fullness":false});
+        "shared_near_far":true,"alpha_modified":false,"wood_modified_by_fullness":false}));
     let mut trees = 0;
     let mut families = [0usize; 3]; let mut juveniles = 0usize;
+    let mut species_counts = [0usize; 4];
     for c in &chunks {
         for spot in &c.trees {
             let phenotype = stage.vegetation.tree(stage.noise_seed as u64, spot.pos.0, spot.pos.2);
-            let variant = phenotype.archetype.index();
+            let family = phenotype.archetype.index();
+            let variant = if mixed_species { crate::plant_population::stage_index(stage, spot.pos.0, spot.pos.2) } else { family };
             let xf = Affine3A::from_scale_rotation_translation(
                 crate::tree_assets::native_scale(spot),
                 Quat::from_rotation_y(spot.yaw),
@@ -681,15 +693,22 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
             scene.add_classified_instance(tree_meshes[variant], xf, GeometryCategory::Trees);
             scene.mark_foliage();
             trees += 1;
-            families[variant] += 1; juveniles += usize::from(phenotype.juvenile);
+            families[family] += 1; species_counts[variant] += 1; juveniles += usize::from(phenotype.juvenile);
         }
     }
-    log.push(format!("trees: {trees} instances, {} canopy / {} tapered conifer / {} stout trunk; {juveniles} juveniles; 3 shared evergreen source archetypes, {:.0} ms", families[0], families[1], families[2], t.elapsed().as_secs_f64() * 1e3));
+    if let Some(sources) = &mixed_sources {
+        let shrubs = crate::plant_population::add_shrubs(&mut scene, stage, &chunks, &sources.shrubs);
+        tree_source["native_species_counts"] = serde_json::json!(species_counts);
+        tree_source["shrub_instances"] = serde_json::json!(shrubs);
+        log.push(format!("modular vegetation: {trees} existing tree roots, species counts {species_counts:?}, {shrubs} decorative shrubs, 6 shared source meshes, {:.0} ms", t.elapsed().as_secs_f64() * 1e3));
+    } else {
+        log.push(format!("trees: {trees} instances, {} canopy / {} tapered conifer / {} stout trunk; {juveniles} juveniles; 3 shared evergreen source archetypes, {:.0} ms", families[0], families[1], families[2], t.elapsed().as_secs_f64() * 1e3));
+    }
 
     // World-fixed trees extend the forested horizon, using the same source
     // models and LOD as the near forest. Native road/physics are retained.
     if std::env::var("SIDEWAYS_DISTANT_FOREST").as_deref() != Ok("0") {
-        match crate::distant_forest::add(&mut scene, stage, &chunks, terrain_mat, &tree_meshes, &mut mesh_names, Default::default()) {
+        match crate::distant_forest::add(&mut scene, stage, &chunks, terrain_mat, &tree_meshes, &mut mesh_names, Default::default(), mixed_species) {
             Ok(summary) => log.push(summary),
             Err(reason) => log.push(format!("distant forest unavailable: {reason}")),
         }
