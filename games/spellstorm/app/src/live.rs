@@ -434,7 +434,7 @@ impl LiveGame for Ctx<'_> {
             g.world.knobs_changed();
             return line;
         }
-        if path.ends_with("fx.wgsl") {
+        if path.ends_with("fx.wgsl") || path.ends_with("spells.wgsl") {
             return crate::effects::scan().or(Some("fx.wgsl: unchanged".into()));
         }
         if path.ends_with("surface.wgsl") {

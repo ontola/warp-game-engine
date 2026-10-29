@@ -79,6 +79,13 @@ fn flight(s: &Strike) -> Option<Flight> {
     Some(Flight { pos: sky.lerp(s.target, u * u), dir: (s.target - sky).normalize(), approach: u * u })
 }
 
+/// The strikes as drawn `behind` seconds before the world's tick (the
+/// effects clock trails the simulation by part of a tick): at 240 m/s the
+/// rocket would otherwise jump 4 m per tick and judder at 120 Hz.
+pub(super) fn drawn(strikes: &[Strike], behind: f32) -> Vec<Strike> {
+    strikes.iter().map(|s| Strike { age: (s.age - behind.clamp(0.0, growing_guns::DT) as f64).max(0.0), ..s.clone() }).collect()
+}
+
 /// The rocket's parts (`_build_rocket_visual`), unshaded and glowing.
 pub(super) struct Rocket { body: usize, nose: usize, engine: usize }
 
@@ -151,17 +158,22 @@ pub(super) fn plume_picture() -> Picture {
 }
 
 /// The engine lights (`EngineCoreLight` 2 m and `EngineLight` 3 m behind
-/// the nose), rising 16 -> 34 and 22 -> 46 with the approach.
+/// the nose), rising 16 -> 34 and 22 -> 46 with the approach, and the red
+/// marker light 35 cm over each target (`StrikeTargetLight`, energy 6, 7 m).
 pub(super) fn lights(strikes: &[Strike], clock: f32) -> Vec<LocalLight> {
     let pulse = (clock * 14.0).sin();
-    strikes.iter().filter_map(flight).take(4).flat_map(|f| {
+    let markers = strikes.iter().filter(|s| active(s)).take(4).map(|s| LocalLight {
+        position: s.target + Vec3::Y * 0.35, direction: Vec3::NEG_Y, intensity_cd: Vec3::from(RED) * 6.0 * CD_PER_ENERGY,
+        range_m: 7.0, inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 0.1, falloff: 1.0,
+    });
+    markers.chain(strikes.iter().filter_map(flight).take(4).flat_map(|f| {
         let a = f.approach;
         [(-2.0, [1.0, 0.82, 0.42], 16.0 + 18.0 * a + pulse * 3.0, 28.0), (-3.0, [1.0, 0.62, 0.16], 22.0 + 24.0 * a + pulse * 4.0, 44.0)]
             .map(|(y, color, energy, range): (f32, [f32; 3], f32, f32)| LocalLight {
                 position: f.pos + f.dir * y, direction: Vec3::NEG_Y, intensity_cd: Vec3::from(color) * energy * CD_PER_ENERGY,
                 range_m: range, inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 0.3, falloff: 1.0,
             })
-    }).collect()
+    })).collect()
 }
 
 /// One shaft per live air strike, from its target up to where the rocket

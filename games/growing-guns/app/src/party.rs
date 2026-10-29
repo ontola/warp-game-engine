@@ -101,6 +101,9 @@ impl Party {
         if self.phase == Phase::Running { app::Screen::Fullscreen } else { app::Screen::Hidden }
     }
 
+    /// Startup progress for the host's loading screen ([`app::Game::loading`]).
+    pub fn loading(&mut self, percent: u32, step: &str) { self.client.loading(percent, step); }
+
     pub fn running(&self) -> bool { self.phase == Phase::Running }
 
     fn humans(seats: &[Seat]) -> Vec<Seat> { seats.iter().filter(|s| !s.ai).take(4).cloned().collect() }
@@ -116,7 +119,7 @@ impl Party {
                     Command::Setting { key, value } => { if !self.settings.change(&key, &value) { eprintln!("gamenight: ignored setting {key} = {value}"); } }
                     Command::Prepare { session, seats } => {
                         println!("[gamenight] prepare {session} ({} seats)", seats.len());
-                        let _ = self.client.notify_progress(&session, 5, "setting up the match");
+                        let _ = self.client.notify_progress(&session, 85, "setting up the match");
                         self.seats = Self::humans(&seats);
                         // Versus needs two: bots fill the gap (Godot `_configure_meta_from_seats`).
                         let ai = seats.iter().filter(|s| s.ai).count();

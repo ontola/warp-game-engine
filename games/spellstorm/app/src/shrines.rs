@@ -46,6 +46,8 @@ pub struct Shrines {
     shrine_t: Option<f32>,
     pub sprites: Vec<Sprite>,
     pub lights: Vec<LocalLight>,
+    /// Each wizard's gem on the posed staff (by wizard index), from the view.
+    pub gems: Vec<Option<Vec3>>,
 }
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
@@ -184,7 +186,7 @@ impl Shrines {
         }
         // The queued elements ride on the staff: small balls circling its
         // gem, spinning faster and wider while RB winds up a burst.
-        for &id in &w.wizards {
+        for (wi, &id) in w.wizards.iter().enumerate() {
             let Some(a) = w.actor(id) else { continue };
             if !a.alive {
                 continue;
@@ -195,7 +197,7 @@ impl Shrines {
                 continue;
             }
             let nova_k = if wz.rb_t > 0.12 { (wz.rb_t / spellstorm::wizard::NOVA_HOLD).clamp(0.0, 1.0) as f32 } else { 0.0 };
-            let gem = spellstorm::wizard::staff_tip(a.pos, &wz);
+            let gem = self.gems.get(wi).copied().flatten().unwrap_or_else(|| spellstorm::wizard::staff_tip(a.pos, &wz));
             for (i, &e) in slots.iter().enumerate() {
                 let ang = time * (3.0 + 9.0 * nova_k) + i as f32 * std::f32::consts::TAU / slots.len() as f32;
                 let r = 0.24 + 0.14 * nova_k;

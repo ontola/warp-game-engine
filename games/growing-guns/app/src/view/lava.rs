@@ -4,10 +4,10 @@
 //! arena. Both are unshadowed, as in Godot, so the pool light reaches the
 //! walls and buildings through the floor.
 //!
-//! At night (not in Godot) local glows join them, fading in with the
-//! floodlights: one over each patch of exposed lava in the floor (holes and
-//! broken floor, brighter the more lava shows) and a ring past the arena's
-//! edge that lights the stands and the outside of the arena.
+//! At night (not in Godot) local glows take over from the pool light,
+//! fading in with the floodlights: one over each patch of exposed lava in
+//! the floor (holes and broken floor, brighter the more lava shows) and a
+//! ring past the arena's edge that lights the stands.
 use glam::{Vec2, Vec3};
 use growing_guns::arena::LAVA_KILL_Y;
 use growing_guns::shape::Kind;
@@ -139,8 +139,11 @@ impl LavaLight {
         let floor_y = super::things::floor_lava_y(world);
         if island {
             self.lights.push(glow(Vec3::new(0.0, floor_y + 0.35, 0.0), FLOOR_ENERGY, size * 0.78));
-        } else if self.ratio > 0.0 {
-            let energy = POOL_ENERGY * self.ratio.powf(0.72);
+        } else if self.ratio > 0.0 && self.night < 1.0 {
+            // At night the patch glows light the open lava instead: the pool
+            // light is unshadowed and would paint the inside of the walls
+            // orange through the floor, brighter the higher the exposure.
+            let energy = POOL_ENERGY * self.ratio.powf(0.72) * (1.0 - self.night.clamp(0.0, 1.0));
             self.lights.push(glow(Vec3::new(0.0, LAVA_KILL_Y + 0.6, 0.0), energy, size * 0.85));
         }
         let l = &world.lava;
@@ -169,6 +172,9 @@ impl LavaLight {
         // The ring: halfway from the arena's edge to the stands, above the
         // floor when there are no walls (the floor's rim catches it), below
         // the floor otherwise, so it does not shine through the walls onto it.
+        // Each is a wide spot facing away from the arena (outward and up to
+        // the stands): unshadowed, an omni would light the inside of the far
+        // walls across the arena.
         let a = &world.arena;
         let half = size * 0.5;
         let y = if a.variant == growing_guns::arena::Variant::Open { 0.5 } else { -1.0 };
@@ -178,8 +184,8 @@ impl LavaLight {
             let edge = half / s.abs().max(c.abs());
             let r = 0.5 * (edge + a.stadium.inner_r.max(edge + 4.0));
             self.lights.push(LocalLight {
-                position: Vec3::new(c * r, y, s * r), direction: Vec3::NEG_Y, intensity_cd: color * (RING_LUX * night),
-                range_m: (size * 0.6).clamp(20.0, 80.0), inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 1.0, falloff: 1.0,
+                position: Vec3::new(c * r, y, s * r), direction: Vec3::new(c, 0.35, s).normalize(), intensity_cd: color * (RING_LUX * night),
+                range_m: (size * 0.6).clamp(20.0, 80.0), inner_cos: 0.25, outer_cos: -0.05, source_radius_m: 1.0, falloff: 1.0,
             });
         }
     }
