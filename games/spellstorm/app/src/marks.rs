@@ -63,6 +63,13 @@ impl Marks {
         for wd in &w.run.wards {
             self.ward(wd.z, wd.lo, wd.hi, wd.open, time);
         }
+        for &id in w.wizards.iter().chain(&w.enemies) {
+            if let Some(a) = w.actor(id) {
+                if a.alive {
+                    self.status(&a, id.id() as f32, time);
+                }
+            }
+        }
         // A shot winding up: a ball of its element swells in front of the
         // monster, the way it will go (Enemy._warning).
         for &id in &w.enemies {
@@ -79,6 +86,76 @@ impl Marks {
             let inner = linear3([c[0] + (1.0 - c[0]) * 0.6, c[1] + (1.0 - c[1]) * 0.6, c[2] + (1.0 - c[2]) * 0.6]) * 0.8;
             self.sprites.push(glow(at, size, Cell::HaloOut, lin * 0.9 * 1.4));
             self.sprites.push(glow(at, size, Cell::HaloIn, inner * 0.9 * 1.4));
+        }
+    }
+
+    /// What ails a body (Actor.setup_status_fx and its overlay): flames
+    /// licking up while it burns, sickly bubbles while poisoned, and one
+    /// tint over it, the strongest first: the white of a fresh hit, then
+    /// frozen, chilled, wet, mired, poisoned.
+    fn status(&mut self, a: &spellstorm::actor::Actor, seed: f32, time: f32) {
+        let r = a.radius;
+        if a.burn > 0.0 {
+            let c = linear3(spellstorm::el::El::Fire.color()) * 1.4;
+            for j in 0..24 {
+                let h = seed * 3.1 + j as f32 * 1.73;
+                let ph = (time / 0.6 + hash(h)).fract();
+                let t = ph * 0.6;
+                let ang = hash(h + 0.2) * std::f32::consts::TAU;
+                let o = Vec3::new(ang.cos(), (hash(h + 0.4) - 0.5) * 1.2, ang.sin()) * r * hash(h + 0.6).sqrt();
+                let p = a.pos + Vec3::Y * 0.8 + o + Vec3::Y * ((0.5 + hash(h + 0.8)) * t + t * t);
+                let k = smooth(0.0, 0.15, ph) * (1.0 - smooth(0.4, 1.0, ph));
+                let size = 0.35 * (1.0 - 0.5 * ph);
+                let mut s = Sprite::billboard(p, [size, size * 1.3], IMAGE, uv(Cell::Flame), c * k);
+                s.additive = true;
+                s.alpha_cut = 0.0;
+                self.sprites.push(s);
+            }
+        }
+        if a.poison > 0.0 {
+            let c = linear3(spellstorm::el::El::Poison.color()) * 1.4;
+            for j in 0..10 {
+                let h = seed * 5.7 + j as f32 * 2.31;
+                let ph = (time / 0.9 + hash(h)).fract();
+                let t = ph * 0.9;
+                let ang = hash(h + 0.3) * std::f32::consts::TAU;
+                let o = Vec3::new(ang.cos(), 0.0, ang.sin()) * r * hash(h + 0.5).sqrt();
+                let p = a.pos + Vec3::Y * 0.9 + o + Vec3::Y * ((0.2 + 0.4 * hash(h + 0.7)) * t + 0.4 * t * t);
+                let k = smooth(0.0, 0.2, ph) * (1.0 - smooth(0.6, 1.0, ph));
+                let mut s = Sprite::billboard(p, [0.12, 0.12], IMAGE, uv(Cell::Drop), c * k);
+                s.additive = true;
+                s.alpha_cut = 0.0;
+                self.sprites.push(s);
+            }
+        }
+        let tint = if a.hurt_t > 0.0 {
+            let k = (a.hurt_t / spellstorm::actor::HURT_TIME) as f32;
+            Some(([1.0, 0.97, 0.92], 0.8 * k * k))
+        } else if a.frozen > 0.0 {
+            Some(([0.6, 0.9, 1.0], 0.55))
+        } else if a.flash > 0.0 {
+            Some(([1.0, 0.35, 0.3], 0.4))
+        } else if a.chill > 0.0 {
+            Some(([0.6, 0.85, 1.0], (a.chill as f32 * 0.12).min(0.35)))
+        } else if a.wet > 0.0 {
+            Some(([0.15, 0.35, 0.8], 0.25))
+        } else if a.slow > 0.0 {
+            Some(([0.35, 0.25, 0.12], 0.35))
+        } else if a.poison > 0.0 {
+            Some(([0.45, 0.85, 0.1], 0.3))
+        } else {
+            None
+        };
+        if let Some((c, k)) = tint {
+            // A glow over the body in the tint's colour.
+            let at = a.pos + Vec3::Y * 0.9;
+            let size = r * 2.0 + 1.2;
+            let lin = linear3(c);
+            let mut s = Sprite::billboard(at, [size, size], IMAGE, uv(Cell::HaloOut), lin * k * 1.6);
+            s.additive = true;
+            s.alpha_cut = 0.0;
+            s.depth_bias = 0.6;
+            self.sprites.push(s);
         }
     }
 
