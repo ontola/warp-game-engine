@@ -34,7 +34,13 @@ pub const REVIVE_REACH: f32 = 1.9;
 pub const SAVE_HOLD: f64 = 0.6;
 pub const SWING_COOLDOWN: f64 = 0.34;
 pub const SWING_RECOVER: f64 = 0.7;
+/// The sword's reach by default (knob `swing_reach`).
 pub const SWING_REACH: f32 = 1.7;
+
+/// The sword's reach now.
+pub fn swing_reach() -> f32 {
+    crate::knobs::swing_reach() as f32
+}
 pub const SWING_ARC: f32 = 1.3;
 pub const NOVA_HOLD: f64 = 0.45;
 pub const ROLL_TIME: f64 = 0.5;
@@ -213,7 +219,7 @@ pub struct Wizard {
 
 impl Wizard {
     pub fn make(i: usize, s: &Seat, robe: C, settings: &Settings) -> (Actor, Wizard) {
-        let mut a = Actor::new(WIZARDS, Vec3::ZERO, 100.0, 0.45, 5.2);
+        let mut a = Actor::new(WIZARDS, Vec3::ZERO, 100.0, 0.45, crate::knobs::wizard_speed());
         a.wizard = true;
         a.freeze_time = 0.9;
         a.freeze_immunity = 4.0;
@@ -372,10 +378,10 @@ impl Wizard {
             .map(|e| e.counts.iter().map(|c| c.1 as u32).sum())
             .unwrap_or(0);
         if n == 0 {
-            return SWING_REACH;
+            return swing_reach();
         }
-        SWING_REACH
-            + (SWORD_MAX - SWING_REACH) * (n.min(queue::SIZE as u32) as f32) / queue::SIZE as f32
+        swing_reach()
+            + (SWORD_MAX - swing_reach()) * (n.min(queue::SIZE as u32) as f32) / queue::SIZE as f32
     }
 
     /// How much of the enchantment is left, 1 to 0.
@@ -496,7 +502,7 @@ impl World {
             return;
         }
         w.tomb_t = 0.0;
-        w.mana = w.mana_max().min(w.mana + b::MANA_REGEN * dt);
+        w.mana = w.mana_max().min(w.mana + crate::knobs::mana_regen() * dt);
         w.learned_t = (w.learned_t - dt).max(0.0);
         if w.enchant_time > 0.0 {
             w.enchant_time -= dt;
@@ -508,7 +514,7 @@ impl World {
         self.read_input(id, w, dt);
         if w.roll_t > 0.0 {
             w.roll_t -= dt;
-            let v = w.roll_dir * (ROLL_SPEED * roll_speed(1.0 - w.roll_t / ROLL_TIME)) as f32;
+            let v = w.roll_dir * (crate::knobs::roll_speed() * roll_speed(1.0 - w.roll_t / ROLL_TIME)) as f32;
             self.drive(id, v, dt);
             if w.roll_t <= 0.0 {
                 w.roll_recover = ROLL_RECOVER;
@@ -743,7 +749,7 @@ impl World {
             return;
         }
         w.swing_t = SWING_COOLDOWN;
-        w.swing_cd = SWING_COOLDOWN + SWING_RECOVER;
+        w.swing_cd = SWING_COOLDOWN + crate::knobs::swing_recover();
         self.count("swings");
         let touch = w.bolt_spell();
         let enchanted = w.enchant_time > 0.0 && w.enchant.is_some();
@@ -758,7 +764,7 @@ impl World {
                 (ac.pos, ac.radius)
             };
             let to = flat(ap - pos);
-            if to.length() > SWING_REACH + ar
+            if to.length() > swing_reach() + ar
                 || signed_angle(w.aim_dir, to).abs() > SWING_ARC + ar.atan2(to.length().max(0.1))
             {
                 continue;
@@ -780,7 +786,7 @@ impl World {
         let cut = if enchanted {
             w.enchant_reach()
         } else {
-            SWING_REACH
+            swing_reach()
         };
         for i in 0..self.level.props.len() {
             let p = &self.level.props[i];
@@ -826,7 +832,7 @@ impl World {
             }
             let to2 = flat(bp - pos);
             let d = to2.length();
-            if d > SWING_REACH + 0.3 + br {
+            if d > swing_reach() + 0.3 + br {
                 continue;
             }
             if d > 0.6 && signed_angle(w.swing_dir, to2).abs() > SWING_ARC + br.atan2(d) {
@@ -936,7 +942,7 @@ impl World {
         }
         w.roll_dir = d.normalize();
         w.roll_t = ROLL_TIME;
-        w.roll_cd = ROLL_COOLDOWN;
+        w.roll_cd = crate::knobs::roll_cooldown();
         {
             let mut a = self.am(id);
             a.invuln = ROLL_IFRAMES;
@@ -1293,10 +1299,10 @@ impl World {
             }
         }
         if n == 0 {
-            w.revive = (w.revive - REVIVE_RATE * 0.5 * dt).max(0.0);
+            w.revive = (w.revive - crate::knobs::revive_rate() * 0.5 * dt).max(0.0);
         } else {
-            w.revive += REVIVE_RATE * n as f64 * dt;
-            if w.revive >= REVIVE_NEED {
+            w.revive += crate::knobs::revive_rate() * n as f64 * dt;
+            if w.revive >= crate::knobs::revive_need() {
                 self.revive(id, w, 0.4);
             }
         }
@@ -1354,7 +1360,7 @@ impl World {
         };
         let mut a = self.am(id);
         a.mods = mods;
-        a.speed = 5.2 * mods.speed;
+        a.speed = crate::knobs::wizard_speed() * mods.speed;
         let old = a.max_hp;
         a.max_hp = 100.0 + mods.hp;
         a.hp += a.max_hp - old;

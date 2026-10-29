@@ -8,7 +8,7 @@ use glam::Vec3;
 use render::headlights::LocalLight;
 use render::sprites::Sprite;
 use spellstorm::fx::{el_c, C};
-use spellstorm::wizard::{self, Wizard, NOVA_HOLD, SWING_COOLDOWN, SWING_REACH};
+use spellstorm::wizard::{self, swing_reach, Wizard, NOVA_HOLD, SWING_COOLDOWN};
 use spellstorm::World;
 use std::collections::HashMap;
 
@@ -129,7 +129,7 @@ impl Marks {
         let strength = if enchanted { 0.45 } else { 1.0 };
         let sc: C = w.bolt_el.map(el_c).unwrap_or([1.0, 0.85, 0.5, 1.0]);
         let c = Vec3::new(sc[0], sc[1], sc[2]).lerp(Vec3::new(1.0, 0.9, 0.6), 0.5);
-        let r1 = if enchanted { w.enchant_reach() + 0.3 } else { SWING_REACH + 0.3 };
+        let r1 = if enchanted { w.enchant_reach() + 0.3 } else { swing_reach() + 0.3 };
         let dir = Vec3::new(w.swing_dir.x, 0.0, w.swing_dir.z).normalize_or(Vec3::Z);
         let yaw = dir.x.atan2(dir.z);
         let half = spellstorm::wizard::SWING_ARC;

@@ -5244,6 +5244,7 @@ dependencies = [
  "hecs",
  "image",
  "kern",
+ "live",
  "render",
  "serde",
  "serde_json",

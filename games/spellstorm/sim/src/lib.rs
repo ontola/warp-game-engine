@@ -12,6 +12,7 @@ pub mod el;
 pub mod enemy;
 pub mod fx;
 pub mod grammar;
+pub mod knobs;
 pub mod ground;
 pub mod level;
 pub mod pickups;
