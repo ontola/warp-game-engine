@@ -15,8 +15,8 @@ cpal = "0.18"
 serde.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json.workspace = true
-# Text copy and paste; no image support needed.
-arboard = { version = "3.6", default-features = false }
+# Text copy and paste, and F12 screenshots onto the clipboard.
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 
 # Windows controllers are exposed through XInput; WGI can miss them.
 [target.'cfg(windows)'.dependencies]

@@ -8,7 +8,8 @@
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
 //! Q or LB sinks, Shift/E or RB goes fast, the wheel or arrows up/down set
 //! the speed. F1 default, F2 lowland, F4 alpine (F3 stays the debug
-//! overlay), F5 the next seed, F6 jumps somewhere new, F7 hugs the ground.
+//! overlay), F5 the next seed, F6 jumps somewhere new, F7 hugs the ground,
+//! F12 saves a screenshot with its position and terrain stats for feedback.
 use app::{Buttons, Controls, Draw, Frame, Game, Pointer};
 use glam::Vec3;
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, SolarState};
@@ -159,7 +160,7 @@ impl Game for Fly {
             format!("speed {:.0} m/s{}", self.speed, if self.hug.is_some() { "  ground hug" } else { "" }),
             format!("patches {}  overflow {}  finest {}", self.stats.patches, self.stats.overflow, self.stats.finest_level),
             format!("ground: rock {:.2}  scree {:.2}  snow {:.2}  water {:.2}  slope {:.0}°", s.rock, s.scree, s.snow, s.water, s.up.clamp(0.0, 1.0).acos().to_degrees()),
-            "F1 default  F2 lowland  F4 alpine  F5 seed  F6 jump  F7 hug  wheel speed".to_string(),
+            "F1 default  F2 lowland  F4 alpine  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
         for (i, text) in lines.into_iter().enumerate() {
@@ -172,8 +173,15 @@ impl Game for Fly {
     fn title(&self) -> Option<String> { Some(format!("Terrain fly: {} seed {}", STYLES[self.style], self.seed)) }
 
     fn state(&self) -> Option<String> {
-        Some(format!(r#"{{"style":"{}","seed":{},"pos":[{},{},{}],"speed":{},"patches":{}}}"#,
-            STYLES[self.style], self.seed, self.pos.x, self.pos.y, self.pos.z, self.speed, self.stats.patches))
+        let g = terrain_field::eval(self.pos.x, self.pos.z, 0.0, self.seed, &self.style());
+        Some(serde_json::json!({
+            "style": STYLES[self.style], "seed": self.seed, "pos": self.pos.to_array(),
+            "yaw_deg": self.yaw.to_degrees(), "pitch_deg": self.pitch.to_degrees(),
+            "above_ground_m": self.pos.y - g.pos.y, "speed": self.speed, "ground_hug": self.hug, "fps": self.fps,
+            "terrain": {"patches": self.stats.patches, "overflow": self.stats.overflow, "finest_level": self.stats.finest_level},
+            "ground": {"rock": g.rock, "scree": g.scree, "snow": g.snow, "water": g.water, "slope_deg": g.up.clamp(0.0, 1.0).acos().to_degrees()},
+            "repro": format!("teleport {:.1} {:.1} {:.1} | look {:.1} {:.1}", self.pos.x, self.pos.z, self.pos.y - g.pos.y, self.yaw.to_degrees(), self.pitch.to_degrees()),
+        }).to_string())
     }
 
     fn command(&mut self, cmd: &str) -> Result<String, String> {
