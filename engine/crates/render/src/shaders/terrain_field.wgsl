@@ -299,13 +299,17 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     // higher ground, away from water.
     let tor_n = tf_noised(p * 55.0 + warp * 2.0, seed + 9u);
     let tor_zone = tf_smooth(0.65 - st.rocks, 0.9 - st.rocks, tf_noised(p * 4.0 + vec2<f32>(6.3, 2.2), seed + 17u).x) * tf_smooth(5.0, 40.0, relief);
+    // A tor too small for this cell blurs into a lower, broader mound (its
+    // edge widens with the cell) rather than vanishing and popping back.
     let tor_fade = tf_fade(12.0, cut);
-    let tor_h = (5.0 + 9.0 * mountains) * bedrock * tor_zone * tf_smooth(30.0, 80.0, near_water) * tor_fade;
-    let tt = clamp((tor_n.x - 0.15) / 0.3, 0.0, 1.0);
+    let tor_amp = (5.0 + 9.0 * mountains) * bedrock * tor_zone * tf_smooth(30.0, 80.0, near_water);
+    let tor_h = tor_amp * tf_fade(48.0, cut);
+    let tor_w = 0.3 + 0.054 * cut;
+    let tt = clamp((tor_n.x - 0.15) / tor_w, 0.0, 1.0);
     let tor = tt * tt * (3.0 - 2.0 * tt);
     // Horizontal sheets about 2.5 m thick and vertical joints split the
     // outcrop into blocks.
-    var th = tor_h * (tor + 0.5 * max(tor_n.x - 0.3, 0.0));
+    var th = tor_h * (tor + 0.5 * max(tor_n.x - 0.3, 0.0) * tor_fade);
     if th > 0.0 {
         let s = th / 2.5;
         let fl = floor(s);
@@ -315,12 +319,12 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
         th *= 1.0 - 0.6 * (1.0 - tf_smooth(0.3, 1.6, joint)) * tf_fade(3.0, cut);
     }
     y += th;
-    g += tor_n.yz * (tor_h * 6.0 * tt * (1.0 - tt) / 0.3 * (55.0 / TF_BASE));
+    g += tor_n.yz * (tor_h * 6.0 * tt * (1.0 - tt) / tor_w * (55.0 / TF_BASE));
     let steep = sqrt(g.x * g.x + g.y * g.y);
     let up = 1.0 / sqrt(1.0 + steep * steep);
 
     var rock = clamp(tf_smooth(0.8, 0.6, up) + 0.7 * bedrock * tf_smooth(0.95, 0.85, up) + 0.5 * mountains * tf_smooth(0.85, 0.7, up)
-        + tf_smooth(st.snow_line - 500.0, st.snow_line, y) * tf_smooth(0.93, 0.8, up) + tf_smooth(0.0, 0.15, tor * tor_h) * tor_fade, 0.0, 1.0);
+        + tf_smooth(st.snow_line - 500.0, st.snow_line, y) * tf_smooth(0.93, 0.8, up) + tf_smooth(0.0, 0.15, tor * tor_h), 0.0, 1.0);
     let scree = tf_smooth(0.85, 0.72, up) * (1.0 - tf_smooth(0.65, 0.55, up)) * (0.4 + 0.6 * bedrock) * mountains
         + 0.9 * tf_smooth(2.0, 0.6, stream) * notch + 0.8 * rf * tf_smooth(ch_w + 2.5, ch_w, ch) * tf_smooth(-0.1, 0.2, tf_noised(p * 40.0, seed + 16u).x);
 
