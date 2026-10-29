@@ -427,7 +427,11 @@ impl App {
         }
         // Minimised, not invisible, so Alt+Tab can still reach a paused or
         // waiting game (the host then resumes or starts it).
-        let wish=if !visible {app::Screen::Hidden} else if self.resume_fullscreen.is_some() {app::Screen::Fullscreen} else {app::Screen::Normal};
+        // Under a party host a running game always takes the whole screen
+        // and the foreground (Normal never claims focus, so the game stayed
+        // behind the lobby until Alt+Tab).
+        let hosted=self.host.as_ref().is_some_and(|h|h.launched_by_daemon);
+        let wish=if !visible {app::Screen::Hidden} else if hosted || self.resume_fullscreen.is_some() {app::Screen::Fullscreen} else {app::Screen::Normal};
         if visible {window.set_visible(true);}
         else if window.is_visible()==Some(true) && window.is_minimized()!=Some(true) {self.resume_fullscreen=window.fullscreen();}
         self.manners.wish(wish,self.focused);
@@ -1611,7 +1615,7 @@ impl ApplicationHandler for App {
         if self.smoke_expired(){self.finish(event_loop,"smoke_timeout");return;}
         if self.window.is_none(){return;}
         if self.host.is_some() && self.args.smoke_frames==0 {
-            let fullscreen=self.resume_fullscreen.is_some();
+            let fullscreen=self.resume_fullscreen.is_some()||self.host.as_ref().is_some_and(|h|h.launched_by_daemon);
             if let Some(window)=&self.window {self.manners.step(window,self.focused,fullscreen);}
         }
         if self.invisible() {
