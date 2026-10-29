@@ -59,6 +59,10 @@ pub struct Gg {
     /// The atmosphere shown is the island arenas' (Godot's sky only).
     inferno: bool,
     pub(crate) sounds: Option<crate::sounds::Sounds>,
+    /// The crowd's mixer, muted while a host keeps the match off screen
+    /// (warming, paused), as the Godot SDK mutes the master bus.
+    crowd_tx: Option<audio::sfx::SfxSender>,
+    crowd_audible: bool,
     /// The soundtrack and game.gd's music logic.
     music: Option<(crate::music::Shared, crate::music::Director)>,
     /// Card menu per local player.
@@ -118,7 +122,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: view::Pose::all(&world), stepped: true, vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
             .with_split()
@@ -132,7 +136,11 @@ impl Gg {
     /// mods; the renderer, sound and party stay.
     pub fn reset(&mut self, mut world: World, slots: Vec<usize>) {
         self.scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
+        // The crowd's voices outlive the stadium they cheer in.
+        let crowd = std::mem::replace(&mut self.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
         self.vis = view::Visuals::build(&world);
+        self.vis.stadium.set_sound(crowd);
+        self.vis.stadium.sound.kickoff();
         self.vis.hide_own_bodies(&slots);
         self.prev = view::Pose::all(&world);
         self.hud = hud::Hud::new(&world);
@@ -213,7 +221,13 @@ impl Gg {
     pub fn set_crowd(&mut self, arg: Option<&str>, sounds: &std::path::Path, tx: &audio::sfx::SfxSender) {
         let Some(dir) = crate::crowd_sound::find_dir(arg, Some(sounds)) else { eprintln!("silent crowd: no crowd_sound samples (--crowd DIR or GG_CROWD)"); return };
         match crate::crowd_sound::Samples::load(&dir) {
-            Ok(s) => { let mut c = crate::crowd_sound::CrowdSound::new(Some((tx.clone(), s))); c.kickoff(); self.vis.stadium.set_sound(c); }
+            Ok(s) => {
+                let mut c = crate::crowd_sound::CrowdSound::new(Some((tx.clone(), s)));
+                c.kickoff();
+                self.vis.stadium.set_sound(c);
+                self.crowd_tx = Some(tx.clone());
+                self.crowd_audible = true;
+            }
             Err(e) => eprintln!("silent crowd: {e}"),
         }
     }
@@ -657,6 +671,11 @@ impl app::Game for Gg {
         crate::live::tick(self);
         self.poll_join();
         if self.ui.player_name != self.saved_name { self.saved_name = self.ui.player_name.clone(); self.save_settings(); }
+        let audible = self.party.as_ref().is_none_or(|p| p.running());
+        if audible != self.crowd_audible {
+            self.crowd_audible = audible;
+            if let Some(tx) = &self.crowd_tx { tx.volume(if audible { 1.0 } else { 0.0 }); }
+        }
         let party_controls = match self.party_tick() {
             None => None,
             Some(None) => return,

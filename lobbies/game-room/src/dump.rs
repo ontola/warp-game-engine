@@ -9,7 +9,7 @@ use glam::{Affine3A, Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use render::cluster::{ClusterMesh, Part, Vertex};
 use render::headlights::{LocalLight, SpotLight};
 use render::irradiance_volume::Block;
-use render::scene::{Material, ALPHA_TEST, EMISSIVE, PIXEL_ART, TWO_SIDED};
+use render::scene::{Material, ALPHA_TEST, BLEND, EMISSIVE, NO_AMBIENT_OCCLUSION, PIXEL_ART, TWO_SIDED};
 use render::Scene;
 use serde::Deserialize;
 use serde_json::Value;
@@ -91,6 +91,8 @@ pub struct Room {
     /// with `live` kept in it, empty, so they can appear later.
     pub hidden: Vec<usize>,
     pub live: bool,
+    /// Hidden instances with blended materials (see `build`).
+    blended_hidden: std::collections::HashSet<usize>,
     /// Scene instance of each dump instance (None: not drawn), and its mesh.
     pub scene_index: Vec<Option<usize>>,
     pub scene_mesh: Vec<Option<usize>>,
@@ -135,7 +137,7 @@ impl Room {
         let cam = mat4(&dump.camera["transform"]);
         let pos = cam.w_axis.truncate();
         let camera = render::Camera { pos, target: pos - cam.z_axis.truncate(), fov_y: num(&dump.camera, "fov_y").to_radians(), near: num(&dump.camera, "near").max(0.05) };
-        Self { dir, dump, bin, hidden: vec![], live: false, scene_index: vec![], scene_mesh: vec![], material_layers: HashMap::new(), tuning: Tuning { light: 1.0, ambient: 1.0 }, material_ids: HashMap::new(), screens: HashMap::new(), screen_of_texture: HashMap::new(), atlas: Atlas { layer: -1, ..Default::default() }, images, locals: vec![], spots: vec![], spot_falloff: vec![], spot_fog: vec![], local_fog: vec![], blocks: vec![], ambient: Vec3::ZERO, camera, min: Vec3::ZERO, max: Vec3::ZERO }
+        Self { dir, dump, bin, hidden: vec![], live: false, blended_hidden: Default::default(), scene_index: vec![], scene_mesh: vec![], material_layers: HashMap::new(), tuning: Tuning { light: 1.0, ambient: 1.0 }, material_ids: HashMap::new(), screens: HashMap::new(), screen_of_texture: HashMap::new(), atlas: Atlas { layer: -1, ..Default::default() }, images, locals: vec![], spots: vec![], spot_falloff: vec![], spot_fog: vec![], local_fog: vec![], blocks: vec![], ambient: Vec3::ZERO, camera, min: Vec3::ZERO, max: Vec3::ZERO }
     }
 
     /// The Rust-built room (room.rs).
@@ -209,7 +211,19 @@ impl Room {
             scene.add_instance(id, Affine3A::from_scale_rotation_translation(scale, rot, trans));
             self.scene_index[index] = Some(scene.instances.len() - 1);
             self.scene_mesh[index] = Some(id);
-            if hidden { scene.instances.last_mut().unwrap().cluster_count = 0; continue; }
+            if hidden {
+                // Blended triangles are gathered when the renderer is built,
+                // so a hidden blended instance (a button prompt) keeps its
+                // clusters and hides by shrinking instead.
+                if blended {
+                    self.blended_hidden.insert(index);
+                    let i = scene.instances.len() - 1;
+                    scene.update_instance(i, id, Affine3A::from_scale_rotation_translation(Vec3::splat(1e-4), rot, trans));
+                } else {
+                    scene.instances.last_mut().unwrap().cluster_count = 0;
+                }
+                continue;
+            }
             // The players' capsule bodies: shadow casters no camera sees.
             if shadow_only { scene.instances.last_mut().unwrap().hide_in_views(0xff); continue; }
             if !blended && local_min.x < local_max.x {
@@ -403,7 +417,11 @@ impl Room {
     pub fn material_now(&self, m: usize) -> Option<(u32, Material)> {
         let &id = self.material_ids.get(&m)?;
         let &(base, elayer) = self.material_layers.get(&m)?;
-        Some((id, self.compose(m, base, elayer).0))
+        let mut out = self.compose(m, base, elayer).0;
+        // Keep the blend `set_material_blend` gave it, or a live update
+        // turns a transparent screen (the button prompts) opaque.
+        if self.dump.materials[m]["transparency"].as_i64().unwrap_or(0) != 0 { out.flags |= BLEND | NO_AMBIENT_OCCLUSION; }
+        Some((id, out))
     }
 
     /// The Warp material for dump material `m`, its albedo and emission
@@ -449,6 +467,10 @@ impl Room {
             let (scale, rot, trans) = Mat4::from_cols_array(&self.dump.instances[index].transform).to_scale_rotation_translation();
             let flags = scene.instances[i].flags;
             scene.update_instance(i, mesh, Affine3A::from_scale_rotation_translation(scale, rot, trans));
+            scene.instances[i].flags = flags;
+        } else if self.blended_hidden.contains(&index) {
+            let flags = scene.instances[i].flags;
+            scene.update_instance(i, mesh, Affine3A::from_scale(Vec3::splat(1e-4)));
             scene.instances[i].flags = flags;
         } else {
             scene.instances[i].cluster_count = 0;
