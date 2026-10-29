@@ -513,6 +513,7 @@ impl View {
         let spots = &self.marks.spots[..self.marks.spots.len().min(render::headlights::MAX_LIGHTS)];
         renderer.set_headlights(spots)?;
         renderer.set_spot_falloff(&vec![crate::marks::STAFF_FALLOFF; spots.len()]);
+        renderer.set_spot_softness(spellstorm::knobs::shadow_softness() as f32);
         // Lamps light the haze (Godot's light_volumetric_fog_energy is 1).
         if self.light.volumetric.is_some() {
             // The haze takes each gem's light whole (the spots do not scatter).
