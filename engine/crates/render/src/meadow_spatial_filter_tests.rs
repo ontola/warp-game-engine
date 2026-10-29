@@ -19,6 +19,21 @@ fn spatial_filter_uses_actual_authored_width_and_rejects_legacy() {
     assert!(source_dimensions(&legacy).is_none());
 }
 
+#[test]
+fn mixed_species_filter_uses_narrowest_actual_blade_for_shared_threshold() {
+    use crate::{foliage_assembly::MeadowBladeBudget,meadow_data::MeadowGeometry,meadow_windswept::{WindsweptRecipe,WIDTH}};
+    let source=MeadowGeometry::cook_windswept_recipes(73,0.0,MeadowBladeBudget::Blades120,
+        [WindsweptRecipe {height_scale:0.5,width_scale:0.9,..Default::default()},
+            WindsweptRecipe {height_scale:0.7,width_scale:1.4,..Default::default()},
+            WindsweptRecipe {height_scale:1.15,..Default::default()}],12.0).unwrap();
+    let dimensions=source_dimensions(&source).unwrap();
+    assert!((dimensions[0]-WIDTH*0.9).abs()<1e-7);
+    assert_eq!(dimensions[1],source.vertices.iter().map(|v|v.anchor[3]).fold(0.0f32,f32::max));
+    let mut independent=source.clone();independent.variant_patch_metres=0.0;
+    assert_eq!(source_dimensions(&independent).unwrap(),dimensions,
+        "the actual shared source width governs filtering, not the layout selector");
+}
+
 fn compute_source() -> String {
     // The same production pixel function and texture loads. R32Float depth
     // uploads let the bounded fixture supply arbitrary opaque discontinuities;

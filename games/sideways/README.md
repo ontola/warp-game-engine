@@ -41,6 +41,16 @@ Windswept forces the aggregate off and rejects group cache. Use
 experiments below and r62 rounded shading.
 See [r63 source equations, runtime choices and measurements](../../engine/docs/meadow-windswept-r63.md).
 
+Detailed woody species are now built from reusable twig/foliage assemblies.
+`tree_species_compare` renders each candidate beside the retained textured tree
+at the same metre scale; `plant_spray_gallery` exposes all six component variants.
+The source path shares meshes and evaluates branch/tip poses on the GPU.
+`SIDEWAYS_TREE_SPECIES=mixed` currently fails explicitly: the rejected v1
+whole-tree flattening path has been removed, and forest-scale assembly LOD/pose
+selection is not ready. The default live forest retains its reference assets.
+`SIDEWAYS_MEADOW_SPECIES=mixed` still selects three windswept grass forms in
+coherent world patches. See [species architecture and evidence](../../engine/docs/vegetation-species.md).
+
 The current [r64 grass experiment](../../engine/docs/meadow-edge-grain-r64.md)
 adds two opt-in flags: `KERN_MEADOW_SPATIAL_FILTER=1` filters distant rendered
 RGB while preserving grass alpha exactly; `KERN_MEADOW_EDGE_SHADOW=1` adds

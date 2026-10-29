@@ -2,6 +2,7 @@
 //! pool, photographed fallback, or bounded demonstration rectangle.
 use render::{
     meadow_data::{MAX_FIELD_SAMPLES, MeadowField, MeadowGeometry, ROOT_CELL},
+    meadow_windswept::WindsweptRecipe,
     foliage_assembly::MeadowBladeBudget,
     scene::Heightfield,
 };
@@ -38,6 +39,26 @@ fn profile(value: Option<&str>) -> Result<&'static str, String> {
         Some(_) => Err("SIDEWAYS_MEADOW_PROFILE must be classic or windswept".into()),
     }
 }
+
+fn mixed_species(value: Option<&str>, profile: &str) -> Result<bool, String> {
+    match value {
+        None | Some("off") | Some("0") => Ok(false),
+        Some("mixed") if profile == "windswept" => Ok(true),
+        Some("mixed") => Err("SIDEWAYS_MEADOW_SPECIES=mixed requires SIDEWAYS_MEADOW_PROFILE=windswept".into()),
+        Some(_) => Err("SIDEWAYS_MEADOW_SPECIES must be off or mixed".into()),
+    }
+}
+
+// Game-authored forms; all share one renderer, one world-root pool, the same
+// curved opaque ribbon and identical blade counts. These are visual species,
+// not biological models. Modest pigment differences avoid new distant grain.
+const SPECIES_PATCH_METRES: f32 = 12.0;
+const SPECIES_NAMES: [&str; 3] = ["short_grass", "broad_grass", "tall_grass"];
+const SPECIES_RECIPES: [WindsweptRecipe; 3] = [
+    WindsweptRecipe { height_scale: 0.50, width_scale: 0.90, tint: [0.98, 1.04, 0.96] },
+    WindsweptRecipe { height_scale: 0.70, width_scale: 1.40, tint: [0.87, 0.96, 0.94] },
+    WindsweptRecipe { height_scale: 1.15, width_scale: 1.00, tint: [1.06, 1.02, 0.94] },
+];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SourceRange {
@@ -179,6 +200,7 @@ pub fn build(
     vegetation: Vegetation,
 ) -> Result<(MeadowField, String, serde_json::Value), String> {
     let profile = profile(std::env::var("SIDEWAYS_MEADOW_PROFILE").ok().as_deref())?;
+    let mixed_species = mixed_species(std::env::var("SIDEWAYS_MEADOW_SPECIES").ok().as_deref(), profile)?;
     let override_radius = std::env::var("SIDEWAYS_MEADOW_SOURCE_RADIUS").ok();
     let override_band = std::env::var("SIDEWAYS_MEADOW_SOURCE_BAND").ok();
     let source_range = if profile == "windswept" {
@@ -200,7 +222,9 @@ pub fn build(
     let budget = blade_budget(requested_budget.as_deref().or(if profile == "windswept" {Some("120")} else {None}))?;
     let blades = if profile == "windswept" {budget.blades() / 3} else {budget.blades()};
     let shading = blade_shading(std::env::var("SIDEWAYS_MEADOW_BLADE_SHADING").ok().as_deref())?;
-    let geometry = if profile == "windswept" {
+    let geometry = if mixed_species {
+        MeadowGeometry::cook_windswept_recipes(vegetation.seed, dry_season, budget, SPECIES_RECIPES, SPECIES_PATCH_METRES)?
+    } else if profile == "windswept" {
         MeadowGeometry::cook_windswept(vegetation.seed, dry_season, budget)?
     } else if shading == "rounded" {
         MeadowGeometry::cook_with_blade_budget_and_rounded_normals(vegetation.seed, dry_season, budget)?
@@ -229,7 +253,7 @@ pub fn build(
         geometry,
     };
     field.validate()?;
-    let summary = format!(
+    let mut summary = format!(
         "GPU meadow ({profile}): full terrain field {}x{} ({} valid samples / {} MiB), fixed {:.2} m world cells, 3 shared patch variants x {blades} opaque ribbon blades, source triangles {:?} per LOD, {} KiB shared vertices, anchored blade roots, source radius {} m / transition {}..{} m; renderer reports distant aggregate configuration; no photographed grass or CPU tuft pool",
         field.width,
         field.height,
@@ -239,6 +263,9 @@ pub fn build(
         triangles[0],
         geometry_bytes.div_ceil(1024), field.radius, field.fade_start, field.radius
     );
+    if mixed_species {
+        summary.push_str("; mixed short/broad/tall ribbon species in coherent 12 m noise patches, unchanged per-patch blade budget");
+    }
     let mut metadata = serde_json::json!({
         "mode":"gpu_meadow_field", "recipe":"meadow_patch_v2", "world_cell_metres":ROOT_CELL,
         "source_blades_per_root":blades, "source_variants":3, "triangles_per_variant_lod":triangles,
@@ -268,6 +295,22 @@ pub fn build(
     metadata["blade_shading"] = serde_json::json!(shading);
     metadata["blade_shading_scope"] = serde_json::json!("Rounded is opt-in source shading, shared by every source LOD and the rebuilt distant atlas. Geometry, material, placement and wind remain unchanged. Distant aggregate shadow bias still uses its existing approximate resolved shading normal.");
     metadata["profile"] = serde_json::json!(profile);
+    metadata["species_mode"] = serde_json::json!(if mixed_species { "mixed" } else { "off" });
+    metadata["variant_patch_metres"] = serde_json::json!(field.geometry.variant_patch_metres);
+    if mixed_species {
+        metadata["species"] = serde_json::json!(SPECIES_RECIPES.iter().enumerate().map(|(i, recipe)| {
+            let [first, count] = field.geometry.lod_ranges[i][0];
+            let source = &field.geometry.vertices[first as usize..(first + count) as usize];
+            let min_height = source.iter().map(|v| v.anchor[3]).fold(f32::INFINITY, f32::min);
+            let max_height = source.iter().map(|v| v.anchor[3]).fold(0.0f32, f32::max);
+            serde_json::json!({ "id":SPECIES_NAMES[i], "variant":i,
+                "height_scale":recipe.height_scale, "width_scale":recipe.width_scale,
+                "base_and_tip_linear_tint":recipe.tint, "source_height_metres":[min_height,max_height],
+                "basal_width_metres":render::meadow_windswept::WIDTH * recipe.width_scale,
+                "blades_per_patch":blades })
+        }).collect::<Vec<_>>());
+        metadata["species_scope"] = serde_json::json!("Three visual forms of the same ribbon primitive. Height/width and uniform base+tip tint differ; lean 0.1..0.4 radians, analytic material ratio, topology and wind response remain shared. Species is stable world-space noise at 12 m, identical across cameras/LODs/contact. No additional root population or draw layer. Existing world patch origins are unchanged, but source layout and conservative geometry/road bounds can change accepted blades. Filter uses the narrowest species width, so broad blades can soften earlier.");
+    }
     if profile == "windswept" {
         metadata["recipe"] = serde_json::json!("meadow_windswept_v1");
         metadata["blade_budget"] = serde_json::json!(budget.blades());
@@ -293,6 +336,25 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mixed_grass_species_is_explicit_validated_and_bounded() {
+        for value in [None, Some("off"), Some("0")] {
+            assert!(!mixed_species(value, "windswept").unwrap());
+            assert!(!mixed_species(value, "classic").unwrap());
+        }
+        assert!(mixed_species(Some("mixed"), "windswept").unwrap());
+        assert!(mixed_species(Some("mixed"), "classic").unwrap_err().contains("requires"));
+        for value in ["", "all", "Mixed", "1"] { assert!(mixed_species(Some(value), "windswept").is_err()); }
+        for recipe in SPECIES_RECIPES { recipe.validate().unwrap(); }
+        assert!(SPECIES_RECIPES[0].height_scale < SPECIES_RECIPES[1].height_scale);
+        assert!(SPECIES_RECIPES[1].width_scale > SPECIES_RECIPES[2].width_scale);
+        assert!(SPECIES_RECIPES[2].height_scale > 1.0 && SPECIES_RECIPES[2].height_scale <= 1.25);
+        let source = MeadowGeometry::cook_windswept_recipes(73, 0.0, MeadowBladeBudget::Blades120,
+            SPECIES_RECIPES, SPECIES_PATCH_METRES).unwrap();
+        assert_eq!(source.variant_patch_metres, 12.0);
+        assert!(source.vertices.iter().all(|v| v.anchor[3] > 0.0), "preserve compact windswept pool");
+        for ranges in source.lod_ranges { assert_eq!(ranges.map(|range|range[1]), [40*33,40*15,40*3]); }
+    }
     #[test]
     fn grass_profile_default_and_legacy_are_explicit() {
         assert_eq!(profile(None).unwrap(), "windswept");

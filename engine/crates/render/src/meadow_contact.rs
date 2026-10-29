@@ -242,8 +242,15 @@ mod tests {
         const ACTIVE: usize = 2;
         let controls = [[ACTIVE as f32, D as f32, contact_radius(0.315), SUN_REACH], [1.0f32; 4], [SKY_STRENGTH, SUN_STRENGTH, 24.0, 32.0]];
         let controls = buffer(&gpu, "oracle controls", bytemuck::cast_slice(&controls), wgpu::BufferUsages::UNIFORM);
-        for profile in [0.0, 2.0] {
-            let geometry = if profile > 0.0 { MeadowGeometry::cook_windswept(73, 0.0, MeadowBladeBudget::Blades120) }
+        for mode in 0..3 {
+            let profile=if mode==0 {0.0} else {2.0};
+            let geometry = if mode==2 {
+                use crate::meadow_windswept::WindsweptRecipe;
+                MeadowGeometry::cook_windswept_recipes(73,0.0,MeadowBladeBudget::Blades120,
+                    [WindsweptRecipe {height_scale:0.5,width_scale:0.9,..Default::default()},
+                        WindsweptRecipe {height_scale:0.7,width_scale:1.4,..Default::default()},
+                        WindsweptRecipe {height_scale:1.15,..Default::default()}],12.0)
+            } else if profile > 0.0 { MeadowGeometry::cook_windswept(73, 0.0, MeadowBladeBudget::Blades120) }
                 else { MeadowGeometry::cook_with_blade_budget(73, 0.0, MeadowBladeBudget::Blades120) }.unwrap();
             let mut recipe = vec![[0.0f32; 4]; 21];
             for variant in 0..VARIANTS {
@@ -253,6 +260,7 @@ mod tests {
                 }
                 for branch in 0..4 { recipe[9 + variant * 4 + branch] = geometry.branch_pivots[variant][branch]; }
             }
+            recipe[0][2]=geometry.variant_patch_metres;
             for vertex in &geometry.vertices { recipe.extend([vertex.position, vertex.normal, vertex.color, vertex.anchor]); }
             let recipe = buffer(&gpu, "oracle recipe", bytemuck::cast_slice(&recipe), wgpu::BufferUsages::STORAGE);
             for case in 0..5 {

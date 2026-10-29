@@ -2,7 +2,7 @@
 //!
 //! Integrates all overlapping crown densities together, clipped by opaque
 //! scene depth. Crowns write C/T, never a false opaque first-hit depth. Current
-//! 256-part limit is deliberate, not full-forest streaming support. Optional
+//! 4096-selection-slot limit is deliberate, not full-forest streaming support. Optional
 //! per-view projected mip selection shares the same immutable asset pyramid.
 use crate::{Gpu, Scene};
 use bytemuck::{Pod, Zeroable};
@@ -14,6 +14,25 @@ const CANDIDATES: u32 = 64;
 // Four exact 64-bit aggregate counters follow the fourteen original u32s.
 // WGSL uses atomic low words plus carry; no optional GPU u64 feature is needed.
 const COUNTER_BYTES: u64 = 88;
+// Additional opt-in scratch, per view, beyond the existing tile worklist.
+const INTERVAL_STREAM_BYTES:u64=32*1024*1024;
+const INTERVAL_STREAM_PIXEL_SLOTS:u32=262_144;
+#[derive(Clone,Copy,Debug)]
+struct IntervalStreamLayout { header_word:u32,pixel_slots:u32,records:u32,bytes:u64 }
+fn interval_stream_layout(size:(u32,u32),binding_limit:u64)->Result<IntervalStreamLayout,String> {
+    if size.0==0 || size.1==0 {return Err("global voxel intervals require nonzero dimensions".into());}
+    let tiles=u64::from(size.0.div_ceil(TILE))*u64::from(size.1.div_ceil(TILE));
+    let header=4+tiles;let slots=tiles.min(u64::from(INTERVAL_STREAM_PIXEL_SLOTS)/256)*256;
+    // Four counters, then (record offset,count) per admitted pixel. The rest
+    // contains 16-byte intervals. Pixels without a slot use complete scans.
+    let records=(INTERVAL_STREAM_BYTES/4-4-slots*2)/4;
+    let bytes=header.checked_mul(4).and_then(|n|n.checked_add(INTERVAL_STREAM_BYTES))
+        .ok_or("global voxel interval buffer size overflow")?;
+    if bytes>binding_limit || header>u64::from(u32::MAX) || bytes/4>u64::from(u32::MAX) {
+        return Err("global voxel interval stream exceeds device storage limits".into());
+    }
+    Ok(IntervalStreamLayout {header_word:header as u32,pixel_slots:slots as u32,records:records as u32,bytes})
+}
 
 /// Accepted selected-mip empty-space skipping fix, fixed for a renderer's
 /// lifetime. Explicit env=0 retains the baseline for matched diagnostics.
@@ -24,20 +43,25 @@ struct IntegratorOptions {
     // Experimental register/BRDF specialization; immutable packed cells must
     // first prove exact antipodal symmetry. The 176-byte upload ABI is unchanged.
     antipodal_normals: bool,
+    global_intervals: bool,
+    brick_visibility: bool,
 }
 impl Default for IntegratorOptions {
-    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false } }
+    fn default() -> Self { Self { empty_ceiling: true, antipodal_normals: false,global_intervals:false,brick_visibility:false } }
 }
 impl IntegratorOptions {
     fn from_environment() -> Self {
         Self {
             empty_ceiling: std::env::var("KERN_VOXEL_EMPTY_CEILING").map_or(true, |value| value != "0"),
             antipodal_normals: std::env::var("KERN_VOXEL_ANTIPODAL_NORMALS").is_ok_and(|value| value == "1"),
+            brick_visibility: std::env::var("KERN_VOXEL_BRICK_VISIBILITY").is_ok_and(|v|v=="1"),
+            global_intervals: std::env::var("KERN_VOXEL_GLOBAL_INTERVALS").is_ok_and(|value|value=="1"),
         }
     }
     fn specialize(self, source: &str) -> Result<String, String> {
         let mut result = source.to_owned();
         let changes = [
+            (self.brick_visibility, "const VOLUME_BRICK_VISIBILITY: bool = false;", "const VOLUME_BRICK_VISIBILITY: bool = true;"),
             (self.empty_ceiling, "const VOLUME_EMPTY_CEILING: bool = false;", "const VOLUME_EMPTY_CEILING: bool = true;"),
         ];
         for (enabled, from, to) in changes {
@@ -92,7 +116,7 @@ fn diagnostic_u64(bytes: &[u8], word: usize) -> u64 {
 // against WebGPU's per-stage limit (10 scene + 7 volume = 17). Keep this
 // interface small instead of increasing the requested hardware limit.
 pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 26];
-pub(crate) const MAX_VIEW_GROUPS: usize = 256;
+pub(crate) const MAX_VIEW_GROUPS: usize = 4096;
 pub(crate) fn default_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] {
     [[1, u32::MAX, 0, 0]; MAX_VIEW_GROUPS]
 }
@@ -103,6 +127,7 @@ pub struct VoxelViewDiagnostics {
     pub traced_rays: u32,
     pub max_steps_used: u32,
     pub max_tile_candidates: u32,
+    /// Branch intervals in the baseline; disjoint support intervals in brick visibility.
     pub max_ray_candidates: u32,
     /// Complete scan fallback, not dropped candidates.
     pub ray_candidate_overflow_rays: u32,
@@ -128,6 +153,12 @@ pub struct VoxelViewDiagnostics {
     /// Actual ray/AABB interval tests, including misses and complete-scan fallbacks.
     /// Does not count tile projection or imply any box was rasterized.
     pub aabb_interval_tests: u64,
+    /// Rays that used the exact complete scan because bounded stream space
+    /// or pixel metadata was unavailable. Zero in the legacy path.
+    pub interval_stream_overflow_rays:u32,
+    /// Final contiguous 16-byte visibility records, not capacity. Parallel
+    /// brick construction also uses one temporary linked record per intersection.
+    pub interval_stream_records:u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -137,15 +168,18 @@ struct Config {
     dispatch: [u32; 4],
 }
 struct Targets {
+    brick_mask: wgpu::Buffer,
     size: (u32, u32),
     layer: wgpu::Texture,
     bind: wgpu::BindGroup,
     composite: wgpu::BindGroup,
     counters: wgpu::Buffer,
+    tiles: wgpu::Buffer,
     jobs: wgpu::Buffer,
     indirect: wgpu::Buffer,
     config: wgpu::Buffer,
     motion: Option<wgpu::Texture>,
+    interval_stream:Option<IntervalStreamLayout>,
 }
 pub(crate) struct TemporalInputs<'a> {
     pub previous_instances: &'a wgpu::Buffer,
@@ -154,12 +188,15 @@ pub(crate) struct TemporalInputs<'a> {
 struct TemporalPipelines {
     data_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
-    pipelines: [wgpu::ComputePipeline;3],
+    pipelines: [wgpu::ComputePipeline;6],
 }
 pub(crate) struct VoxelRenderer {
+    bins: wgpu::ComputePipeline,
     tiles: wgpu::ComputePipeline,
     clear: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
+    intervals:wgpu::ComputePipeline,
+    scatter:wgpu::ComputePipeline,
     pipeline_layout: wgpu::PipelineLayout,
     scene_layout: wgpu::BindGroupLayout,
     view_layout: wgpu::BindGroupLayout,
@@ -170,6 +207,8 @@ pub(crate) struct VoxelRenderer {
     data_layout: wgpu::BindGroupLayout,
     composite_layout: wgpu::BindGroupLayout,
     data: [wgpu::Buffer; 4],
+    brick_catalog: wgpu::Buffer,
+    bin_count: u32,
     count: u32,
     step: f32,
     empty_skip: bool,
@@ -179,7 +218,7 @@ pub(crate) struct VoxelRenderer {
     owners: Vec<u32>,
     targets: Mutex<Vec<Option<Targets>>>,
 }
-pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 3], temporal: Option<[wgpu::ComputePipeline;3]>, source: String }
+pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 6], temporal: Option<[wgpu::ComputePipeline;6]>, source: String }
 /// Native generation contains neither temporal resources nor per-sample work.
 /// Explicit blocks keep shader reload transactional for both pipeline sets.
 fn temporal_source(source:&str,enabled:bool)->Result<String,String> {
@@ -200,16 +239,19 @@ fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
     let output=|format|wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format,view_dimension:wgpu::TextureViewDimension::D2};
     let mut entries=vec![(0,storage(true)),(1,storage(true)),(2,storage(true)),(3,storage(true)),
         (4,storage(false)),(5,storage(false)),(6,output(wgpu::TextureFormat::Rgba16Float)),
-        (7,uniform),(8,storage(false)),(9,uniform)];
+        (7,uniform),(8,storage(false)),(9,uniform),(12,storage(true)),(13,storage(false))];
     if temporal {entries.extend([(10,output(wgpu::TextureFormat::Rgba32Float)),(11,storage(true))]);}
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
         entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
 }
-fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool) -> [wgpu::ComputePipeline; 3] {
+fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool) -> [wgpu::ComputePipeline; 6] {
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("voxel forest"), source: wgpu::ShaderSource::Wgsl(source.into()),
     });
-    ["voxel_tiles", "voxel_clear", if active_tiles {"voxel_integrate_active"} else {"voxel_integrate"}]
+    ["voxel_bins", "voxel_tiles", "voxel_clear", match (active_tiles,global_intervals) {
+        (true,true)=>"voxel_integrate_global_active",(false,true)=>"voxel_integrate_global",
+        (true,false)=>"voxel_integrate_active",(false,false)=>"voxel_integrate"},
+        if active_tiles {"voxel_intervals_active"} else {"voxel_intervals"},"voxel_brick_scatter"]
         .map(|entry| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(layout), module: &module, entry_point: Some(entry),
             compilation_options: Default::default(), cache: gpu.pipeline_cache(),
@@ -260,16 +302,8 @@ pub(crate) fn valid_skip_levels(forest: &crate::foliage_volume_data::GpuForest, 
                 return false;
             }
         }
-        let index = |level: &crate::foliage_volume_data::GpuLevel, x: u32, y: u32, z: u32| {
-            let offset = u64::from(level.dims_offset[3])
-                + u64::from(x)
-                + u64::from(level.dims_offset[0])
-                    * (u64::from(y) + u64::from(level.dims_offset[1]) * u64::from(z));
-            usize::try_from(offset)
-                .ok()
-                .and_then(|offset| forest.indices.get(offset))
-                .copied()
-        };
+        let index = |level: &crate::foliage_volume_data::GpuLevel, x: u32, y: u32, z: u32|
+            crate::foliage_volume_data::cell_index(forest,level,[x,y,z]);
         for z in 0..fine.dims_offset[2] {
             for y in 0..fine.dims_offset[1] {
                 for x in 0..fine.dims_offset[0] {
@@ -360,8 +394,8 @@ impl VoxelRenderer {
             return None;
         }
         assert!(
-            forest.instances.len() <= 256,
-            "bounded voxel renderer supports at most256 trees"
+            forest.instances.len() <= MAX_VIEW_GROUPS,
+            "voxel renderer exceeds checked selection capacity"
         );
         let upload = |name, data: &[u8]| {
             gpu.device
@@ -413,7 +447,7 @@ impl VoxelRenderer {
         assert!(lod_pixels.is_finite() && lod_pixels >= 0.0, "invalid voxel pixel error");
         // Dynamic LOD assumes the baker's consecutive dyadic mip levels.
         // Unrelated user-constructed grids must not silently select nonsense.
-        if lod_pixels > 0.0 {
+        if lod_pixels > 0.0 || scene.aggregate_lod.is_some() {
             for tree in &forest.instances {
                 let levels = &forest.levels[tree.meta[1] as usize..][..tree.meta[2] as usize];
                 assert!(!levels.is_empty(), "voxel LOD requires at least one level");
@@ -425,7 +459,7 @@ impl VoxelRenderer {
                 }
             }
         }
-        let empty_skip = if lod_pixels > 0.0 { valid_skip_levels(forest, true) }
+        let empty_skip = if lod_pixels > 0.0 || scene.aggregate_lod.is_some() { valid_skip_levels(forest, true) }
             else { valid_empty_skip_hierarchy(forest) };
         let tex = |sample_type, view_dimension| wgpu::BindingType::Texture {
             sample_type,
@@ -465,16 +499,33 @@ impl VoxelRenderer {
             });
         let source = shader_source();
         let mut integrator_options = IntegratorOptions::from_environment();
+        let mut catalog_words=vec![0u32;4];
+        let mut bin_count=forest.instances.len() as u32;
+        if integrator_options.brick_visibility {
+            // Exact-mip aggregate selection is required. Legacy fractional
+            // mip blending retains whole-volume conservative visibility.
+            let catalog=scene.aggregate_lod.as_ref().ok_or("brick visibility requires aggregate selection".to_owned())
+                .and_then(|_|crate::voxel_bricks::build(forest,64*1024*1024-16));
+            match catalog {
+                Ok(catalog)=>{bin_count=catalog.references.len() as u32;catalog_words=catalog.words();},
+                Err(error)=>{eprintln!("brick visibility fallback: {error}");integrator_options.brick_visibility=false;}
+            }
+        }
+        let brick_catalog=upload("voxel shared brick catalog",bytemuck::cast_slice(&catalog_words));
+        eprintln!("voxel brick visibility: enabled={} references={} catalog_bytes={}",integrator_options.brick_visibility,bin_count,catalog_words.len()*4);
+        integrator_options.global_intervals |= integrator_options.brick_visibility;
         let antipodal_requested=integrator_options.antipodal_normals;
         let antipodal_eligible=antipodal_normal_cells(&forest.cells);
         integrator_options.antipodal_normals &= antipodal_eligible;
         let specialized_source = integrator_options.specialize(&temporal_source(&source,false).expect("invalid voxel temporal blocks"))
             .expect("invalid voxel integrator option shader");
-        let [tiles, clear, integrate] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles);
+        let [bins, tiles, clear, integrate,intervals,scatter] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals);
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
         eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=176 (experimental; exact pairs, generic fallback)",
             integrator_options.antipodal_normals,if integrator_options.antipodal_normals {3}else{6});
+        eprintln!("voxel global intervals: enabled={} stream_bytes_per_view={} maximum_pixel_slots={} (experimental; complete scan on overflow)",
+            integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
         let lighting_layout = pipeline_layout;
         let composite_layout = layout(
             "voxel composite",
@@ -524,9 +575,12 @@ impl VoxelRenderer {
                 cache: gpu.pipeline_cache(),
             });
         Some(Self {
+            bins,
             tiles,
             clear,
             integrate,
+            intervals,
+            scatter,
             pipeline_layout: lighting_layout,
             scene_layout: scene_layout.clone(),
             view_layout: volume_view_layout.clone(),
@@ -537,6 +591,8 @@ impl VoxelRenderer {
             data_layout,
             composite_layout,
             data,
+            brick_catalog,
+            bin_count,
             count: forest.instances.len() as u32,
             step,
             empty_skip,
@@ -549,6 +605,7 @@ impl VoxelRenderer {
     }
     /// Shared rigid-part compute writes poses before volume tile/bin passes.
     /// Asset grids and cells remain immutable; the 96-byte tree layout is unchanged.
+    pub(crate) fn has_visibility_stream(&self)->bool {self.integrator_options.global_intervals}
     pub(crate) fn tree_buffer(&self) -> &wgpu::Buffer { &self.data[3] }
     pub(crate) fn contains_owner_range(&self, first: usize, count: usize) -> bool {
         self.owners
@@ -564,7 +621,7 @@ impl VoxelRenderer {
             let data_layout=create_data_layout(gpu,true);
             let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:Some("temporal voxel forest"),bind_group_layouts:&[Some(&self.scene_layout),Some(&self.view_layout),Some(&data_layout)],immediate_size:0});
-            let pipelines=pipelines(gpu,&layout,&source,self.active_tiles);
+            let pipelines=pipelines(gpu,&layout,&source,self.active_tiles,self.integrator_options.global_intervals);
             TemporalPipelines {data_layout,layout,pipelines}
         })?;
         *temporal=Some(prepared);Ok(())
@@ -575,15 +632,15 @@ impl VoxelRenderer {
     pub(crate) fn prepare_reload(&self, gpu: &Gpu, source: String) -> Result<Option<Reload>, String> {
         if source == self.source { return Ok(None); }
         let specialized_source = self.integrator_options.specialize(&temporal_source(&source,false)?)?;
-        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.pipeline_layout, &specialized_source, self.active_tiles))?;
+        let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.pipeline_layout, &specialized_source, self.active_tiles,self.integrator_options.global_intervals))?;
         let temporal=if let Some(temporal)=self.temporal.lock().unwrap().as_ref() {
             let specialized=self.integrator_options.specialize(&temporal_source(&source,true)?)?;
-            Some(crate::shaders::checked(gpu,||self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles))?)
+            Some(crate::shaders::checked(gpu,||self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals))?)
         } else {None};
         Ok(Some(Reload { pipelines, temporal, source }))
     }
     pub(crate) fn commit_reload(&mut self, reload: Reload) {
-        [self.tiles, self.clear, self.integrate] = reload.pipelines;
+        [self.bins, self.tiles, self.clear, self.integrate,self.intervals,self.scatter] = reload.pipelines;
         if let Some(pipelines)=reload.temporal {self.temporal.lock().unwrap().as_mut().unwrap().pipelines=pipelines;}
         self.source = reload.source;
     }
@@ -593,7 +650,11 @@ impl VoxelRenderer {
         targets.resize_with(count, || None);
     }
     fn targets(&self, gpu: &Gpu, size: (u32, u32), selection: &wgpu::Buffer,
-        temporal:Option<(&wgpu::BindGroupLayout,&wgpu::Buffer)>) -> Targets {
+        temporal:Option<(&wgpu::BindGroupLayout,&wgpu::Buffer)>) -> Result<Targets,String> {
+        let limits=gpu.device.limits();
+        let interval_stream=if self.integrator_options.global_intervals {
+            Some(interval_stream_layout(size,limits.max_buffer_size.min(u64::from(limits.max_storage_buffer_binding_size)))?)
+        } else {None};
         let layer = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("voxel C and alpha"),
             size: wgpu::Extent3d {
@@ -617,10 +678,19 @@ impl VoxelRenderer {
             usage:wgpu::TextureUsages::STORAGE_BINDING|wgpu::TextureUsages::TEXTURE_BINDING|wgpu::TextureUsages::COPY_SRC,view_formats:&[]}));
         let motion_view=motion.as_ref().map(|texture|texture.create_view(&Default::default()));
         let tile_count = u64::from(size.0.div_ceil(TILE)) * u64::from(size.1.div_ceil(TILE));
+        if let Some(stream)=interval_stream {eprintln!("voxel interval target: {}x{} pixel_slots={} records={} total_worklist_bytes={}",
+            size.0,size.1,stream.pixel_slots,stream.records,stream.bytes);}
+        let mask_bytes=if self.integrator_options.brick_visibility {tile_count*u64::from(self.count.div_ceil(32))*4} else {4};
+        if mask_bytes>u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) {
+            return Err("voxel brick visibility mask exceeds device limit".into());
+        }
+        let brick_mask=gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label:Some("voxel brick tile deduplication"),size:mask_bytes,
+            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         let tiles = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel tile candidates"),
             size: tile_count * u64::from(CANDIDATES + 1) * 4,
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -636,7 +706,7 @@ impl VoxelRenderer {
         // as storage, which cannot alias an indirect-dispatch argument buffer.
         let jobs = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel active tile worklist"),
-            size: (4 + tile_count) * 4,
+            size: interval_stream.map_or((4+tile_count)*4,|s|s.bytes),
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
@@ -655,11 +725,14 @@ impl VoxelRenderer {
                 contents: bytemuck::bytes_of(&Config {
                     size_count: [size.0, size.1, size.0.div_ceil(TILE), self.count],
                     march: [self.step, 1024.0, u32::from(self.empty_skip) as f32, self.lod_pixels],
-                    dispatch: [u32::from(self.active_tiles), 0, 0, 0],
+                    dispatch: [u32::from(self.active_tiles), 0, interval_stream.map_or(0,|s|s.header_word),
+                        interval_stream.map_or(0,|s|s.pixel_slots)],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
         let mut entries=vec![
+                wgpu::BindGroupEntry {binding:12,resource:self.brick_catalog.as_entire_binding()},
+                wgpu::BindGroupEntry {binding:13,resource:brick_mask.as_entire_binding()},
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: self.data[0].as_entire_binding(),
@@ -713,17 +786,20 @@ impl VoxelRenderer {
                 resource: wgpu::BindingResource::TextureView(&layer_view),
             }],
         });
-        Targets {
+        Ok(Targets {
+            brick_mask,
             size,
             layer,
             bind,
             composite,
             counters,
+            tiles,
             jobs,
             indirect,
             config,
             motion,
-        }
+            interval_stream,
+        })
     }
     pub(crate) fn render(
         &self,
@@ -736,35 +812,61 @@ impl VoxelRenderer {
         hdr: &wgpu::TextureView,
         selection: &wgpu::Buffer,
         temporal: Option<TemporalInputs<'_>>,
-        times: [Option<(&wgpu::QuerySet, u32)>; 3],
-    ) {
+        times: [Option<(&wgpu::QuerySet, u32)>; 5],
+    ) -> Result<(),String> {
         let temporal_guard=self.temporal.lock().unwrap();
         let temporal_pipelines=temporal.as_ref().map(|_|temporal_guard.as_ref().expect("prepare_temporal before voxel render"));
         let mut targets = self.targets.lock().unwrap();
         if !targets[index].as_ref().is_some_and(|t| t.size == size && t.motion.is_some()==temporal.is_some()) {
             targets[index] = Some(self.targets(gpu, size, selection,
-                temporal.as_ref().zip(temporal_pipelines).map(|(input,pipes)|(&pipes.data_layout,input.previous_instances))));
+                temporal.as_ref().zip(temporal_pipelines).map(|(input,pipes)|(&pipes.data_layout,input.previous_instances)))?);
         }
         let target = targets[index].as_ref().unwrap();
         if let Some(input)=&temporal {
-            gpu.queue.write_buffer(&target.config,32,bytemuck::cast_slice(&[u32::from(self.active_tiles),u32::from(input.snapshot_valid),0,0]));
+            // Only the temporal snapshot flag changes. z/w retain the bounded
+            // stream layout installed with this target's immutable size.
+            gpu.queue.write_buffer(&target.config,36,bytemuck::bytes_of(&u32::from(input.snapshot_valid)));
         }
-        let [tiles,clear,integrate]=temporal_pipelines.map_or([&self.tiles,&self.clear,&self.integrate],|p|[&p.pipelines[0],&p.pipelines[1],&p.pipelines[2]]);
+        let [bins,tiles,clear,integrate,intervals,scatter]=temporal_pipelines.map_or([&self.bins,&self.tiles,&self.clear,&self.integrate,&self.intervals,&self.scatter],
+            |p|[&p.pipelines[0],&p.pipelines[1],&p.pipelines[2],&p.pipelines[3],&p.pipelines[4],&p.pipelines[5]]);
         encoder.clear_buffer(&target.counters, 0, None);
+        // Counts and slots share a buffer; clearing it preserves a bounded
+        // zero-allocation append path and prevents old counts surviving views.
+        encoder.clear_buffer(&target.tiles, 0, None);
+        if self.integrator_options.brick_visibility {encoder.clear_buffer(&target.brick_mask,0,None);}
         if self.active_tiles {
             encoder.clear_buffer(&target.jobs, 0, Some(16));
         }
-        for (stage, pipeline) in [tiles, integrate].into_iter().enumerate() {
-            if stage == 1 && self.active_tiles {
+        if let Some(stream)=target.interval_stream {
+            let bytes=if self.integrator_options.brick_visibility {16+u64::from(stream.pixel_slots)*8}else{16};
+            encoder.clear_buffer(&target.jobs,u64::from(stream.header_word)*4,Some(bytes));
+        }
+        for (stage, pipeline) in [bins, tiles, integrate].into_iter().enumerate() {
+            if stage == 2 && self.active_tiles {
                 encoder.copy_buffer_to_buffer(&target.jobs, 0, &target.indirect, 0, 12);
             }
+            if stage==2 && self.integrator_options.brick_visibility {
+                let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label:Some("parallel voxel brick visibility"),timestamp_writes:times[2].map(|(query_set,i)|
+                        wgpu::ComputePassTimestampWrites {query_set,beginning_of_pass_write_index:Some(i),end_of_pass_write_index:None})});
+                pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
+                pass.set_pipeline(scatter);let groups=self.bin_count.div_ceil(64);
+                pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
+            }
+            if stage==2 && target.interval_stream.is_some() {
+                // Separate passes make every interval write visible before
+                // any ray consumes it. Visibility has its own GPU timing scope.
+                let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label:Some("voxel brick visibility stream"),timestamp_writes:times[2].map(|(query_set,i)|
+                        wgpu::ComputePassTimestampWrites {query_set,beginning_of_pass_write_index:if self.integrator_options.brick_visibility {None}else{Some(i)},end_of_pass_write_index:Some(i+1)})});
+                pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
+                pass.set_pipeline(intervals);
+                if self.active_tiles {pass.dispatch_workgroups_indirect(&target.indirect,0);}
+                    else {pass.dispatch_workgroups(size.0.div_ceil(8),size.1.div_ceil(8),1);}
+            }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some(if stage == 0 {
-                    "voxel tiles"
-                } else {
-                    "voxel integrate"
-                }),
-                timestamp_writes: times[stage].map(|(query_set, i)| {
+                label: Some(["voxel bins", "voxel tiles", "voxel integrate"][stage]),
+                timestamp_writes: times[if stage==2 {3}else{stage}].map(|(query_set, i)| {
                     wgpu::ComputePassTimestampWrites {
                         query_set,
                         beginning_of_pass_write_index: Some(i),
@@ -775,21 +877,22 @@ impl VoxelRenderer {
             pass.set_bind_group(0, scene, &[]);
             pass.set_bind_group(1, view, &[]);
             pass.set_bind_group(2, &target.bind, &[]);
-            if stage == 0 && self.active_tiles {
+            if stage == 1 && self.active_tiles {
                 // Count the necessary clear in the tile-pass GPU timestamp.
                 // This entry point never reaches the large per-ray arrays.
                 pass.set_pipeline(clear);
                 pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
             }
             pass.set_pipeline(pipeline);
-            let dims = if stage == 0 {
-                (size.0.div_ceil(TILE), size.1.div_ceil(TILE))
-            } else {
-                size
-            };
-            if stage == 1 && self.active_tiles {
+            if stage == 0 {
+                let groups=self.bin_count.div_ceil(64);
+                pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535).max(1), 1);
+            } else if stage == 2 && self.active_tiles {
                 pass.dispatch_workgroups_indirect(&target.indirect, 0);
             } else {
+                let dims = if stage == 1 {
+                    (size.0.div_ceil(TILE), size.1.div_ceil(TILE))
+                } else { size };
                 pass.dispatch_workgroups(dims.0.div_ceil(8), dims.1.div_ceil(8), 1);
             }
         }
@@ -805,7 +908,7 @@ impl VoxelRenderer {
                 },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: times[2].map(|(query_set, i)| wgpu::RenderPassTimestampWrites {
+            timestamp_writes: times[4].map(|(query_set, i)| wgpu::RenderPassTimestampWrites {
                 query_set,
                 beginning_of_pass_write_index: Some(i),
                 end_of_pass_write_index: Some(i + 1),
@@ -816,6 +919,7 @@ impl VoxelRenderer {
         pass.set_pipeline(&self.composite);
         pass.set_bind_group(0, &target.composite, &[]);
         pass.draw(0..3, 0..1);
+        Ok(())
     }
     pub(crate) fn motion_layer(&self,index:usize)->Option<(wgpu::TextureView,wgpu::TextureView)> {
         let targets=self.targets.lock().unwrap();let target=targets.get(index)?.as_ref()?;
@@ -828,7 +932,8 @@ impl VoxelRenderer {
         if targets.is_empty() {
             return Ok(Vec::new());
         }
-        let size = COUNTER_BYTES * targets.len() as u64;
+        let stride=COUNTER_BYTES+8;
+        let size = stride * targets.len() as u64;
         let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel diagnostics readback"),
             size,
@@ -841,9 +946,13 @@ impl VoxelRenderer {
                 &target.counters,
                 0,
                 &read,
-                i as u64 * COUNTER_BYTES,
+                i as u64 * stride,
                 COUNTER_BYTES,
             );
+            if let Some(stream)=target.interval_stream {
+                encoder.copy_buffer_to_buffer(&target.jobs,(u64::from(stream.header_word)+1)*4,
+                    &read,i as u64*stride+COUNTER_BYTES,8);
+            }
         }
         let submission = gpu.queue.submit([encoder.finish()]);
         let (send, receive) = std::sync::mpsc::sync_channel(1);
@@ -867,7 +976,7 @@ impl VoxelRenderer {
                 .get_mapped_range()
                 .map_err(|e| format!("voxel diagnostics range failed: {e:?}"))?;
             bytes
-                .chunks_exact(COUNTER_BYTES as usize)
+                .chunks_exact(stride as usize)
                 .map(|bytes| {
                     let value =
                         |i: usize| u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
@@ -890,6 +999,8 @@ impl VoxelRenderer {
                         volume_samples: diagnostic_u64(bytes, 16),
                         occupied_cell_samples: diagnostic_u64(bytes, 18),
                         aabb_interval_tests: diagnostic_u64(bytes, 20),
+                        interval_stream_overflow_rays:value(22),
+                        interval_stream_records:value(23),
                     }
                 })
                 .collect()
@@ -973,6 +1084,135 @@ impl VoxelRenderer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn volume_bins_match_inclusive_tile_overlap_at_edges_and_near_plane() {
+        // Independent reference: intersect every tile's closed pixel rectangle.
+        // Candidate: enumerate the bin range once per projected volume. Include
+        // the partial last tile, exact boundaries and a near-plane crossing.
+        let dims=[13i32,7i32];
+        let rects=[([-30.0,-20.0],[0.0,0.0],8u32),([16.0,32.0],[16.0,32.0],8),
+            ([16.0001,31.9999],[31.9999,32.0001],8),([-100.0,-100.0],[-0.01,50.0],8),
+            ([208.0,112.0],[240.0,140.0],8),([208.01,112.01],[250.0,140.0],8),
+            ([-1.0e20,-1.0e20],[1.0e20,1.0e20],8),([500.0,500.0],[600.0,600.0],3),
+            ([0.0,0.0],[200.0,100.0],0)];
+        for (lo,hi,in_front) in rects {
+            let mut expected=std::collections::BTreeSet::new();
+            for y in 0..dims[1] {for x in 0..dims[0] {
+                if in_front>0 && (in_front<8 || (0..2).all(|a|hi[a]>=([x,y][a]*16)as f32&&lo[a]<=(([x,y][a]+1)*16)as f32)) {
+                    expected.insert([x,y]);
+                }
+            }}
+            let mut actual=std::collections::BTreeSet::new();
+            if in_front>0 && (in_front<8 || (0..2).all(|a|hi[a]>=0.0&&lo[a]<=(dims[a]*16)as f32)) {
+                let first:[i32;2]=std::array::from_fn(|a|if in_front<8 {0}else{
+                    ((lo[a]/16.0).ceil()-1.0).clamp(0.0,(dims[a]-1)as f32)as i32});
+                let last:[i32;2]=std::array::from_fn(|a|if in_front<8 {dims[a]-1}else{
+                    (hi[a]/16.0).floor().clamp(0.0,(dims[a]-1)as f32)as i32});
+                for y in first[1]..=last[1] {for x in first[0]..=last[0] {actual.insert([x,y]);}}
+            }
+            assert_eq!(actual,expected,"projected box {lo:?}..{hi:?}, front corners {in_front}");
+        }
+    }
+
+    #[test]
+    fn appended_tile_candidates_restore_stable_order_and_overflow_keeps_every_volume() {
+        let capacity=super::CANDIDATES as usize;
+        for count in [0,1,16,64,65,256,super::MAX_VIEW_GROUPS] {
+            // IDs deliberately have tied per-ray entry distances. Stable source
+            // ID order must not inherit atomic scheduling order, including an
+            // overflow whose stored subset consists entirely of the largest IDs.
+            let reference:Vec<_>=(0..count as u32).collect();
+            for reverse in [false,true] {
+                let arrival:Vec<_>=if reverse {reference.iter().copied().rev().collect()}else{reference.clone()};
+                let mut stored:Vec<_>=arrival.into_iter().take(capacity).collect();
+                let consumed=if count>capacity {reference.clone()}else {stored.sort_unstable();stored};
+                assert_eq!(consumed,reference);
+                let entry=|id:u32|((id%11)/3)as f32;
+                let mut intervals:Vec<_>=consumed.iter().map(|&id|(entry(id),id)).collect();
+                intervals.sort_by(|a,b|a.0.total_cmp(&b.0));
+                assert!(intervals.windows(2).all(|w|w[0].0<w[1].0||w[0].1<w[1].1));
+            }
+        }
+    }
+
+    #[test]
+    fn chosen_aggregate_level_is_exact_and_legacy_level_remains_a_ceiling() {
+        // At a near distance the legacy footprint would select zero, even if
+        // the admissible ceiling is two. A measured aggregate candidate must
+        // actually reconstruct level two and advance by its half-cell width.
+        for chosen in 0..4u32 {
+            for footprint in [0.125f32,0.5,1.0,2.0,32.0] {
+                let legacy=footprint.log2().clamp(0.0,chosen as f32);
+                let aggregate=chosen as f32;
+                assert_eq!(aggregate.floor(),aggregate);
+                assert_eq!(0.125*2.0f32.powf(aggregate),0.125*(1u32<<chosen)as f32);
+                if chosen>0 && footprint<1.0 {assert_ne!(aggregate,legacy);}
+            }
+        }
+        let shader=include_str!("shaders/voxel_forest.wgsl");
+        assert!(shader.contains("if selected.w==1u {return f32(min(tree.identity.z-1u,selected.y));}"));
+        assert!(shader.contains("return volume_empty_brick_level(ray,t,u32(volume_lod(ray,t)));") );
+        // Both native and temporal variants, including the new bins entry
+        // point, are parsed and validated by the existing variant tests below.
+    }
+
+    #[test]
+    fn global_interval_stream_bounds_cover_metadata_records_and_device_limits() {
+        assert!(!super::IntegratorOptions::default().global_intervals);
+        for size in [(1,1),(16,16),(1920,1080),(3840,2160),(7680,4320)] {
+            let stream=super::interval_stream_layout(size,u64::MAX).unwrap();
+            let tiles=u64::from(size.0.div_ceil(16))*u64::from(size.1.div_ceil(16));
+            assert_eq!(u64::from(stream.header_word),4+tiles);
+            assert_eq!(stream.bytes,(4+tiles)*4+super::INTERVAL_STREAM_BYTES);
+            assert_eq!(u64::from(stream.pixel_slots),(tiles*256).min(u64::from(super::INTERVAL_STREAM_PIXEL_SLOTS)));
+            let records_start=u64::from(stream.header_word)+4+u64::from(stream.pixel_slots)*2;
+            let records_end=records_start+u64::from(stream.records)*4;
+            assert!(records_end*4<=stream.bytes && stream.bytes-records_end*4<16);
+            // Every admitted pixel can see the complete provider without
+            // wrapping the u32 atomic reservation counter, even after full.
+            assert!(u64::from(stream.pixel_slots)*(super::MAX_VIEW_GROUPS as u64)<u64::from(u32::MAX));
+            assert!(super::interval_stream_layout(size,stream.bytes).is_ok());
+            assert!(super::interval_stream_layout(size,stream.bytes-1).is_err());
+            let last_metadata=u64::from(stream.header_word)+4+(u64::from(stream.pixel_slots)-1)*2;
+            assert_eq!(last_metadata+2,records_start);
+        }
+        for size in [(0,64),(64,0),(u32::MAX,u32::MAX)] {
+            assert!(super::interval_stream_layout(size,u64::MAX).is_err());
+        }
+        let source=include_str!("shaders/voxel_forest.wgsl");
+        assert!(source.contains(&format!("const VOLUME_INTERVAL_STREAM_WORDS:u32={}u;",super::INTERVAL_STREAM_BYTES/4)));
+    }
+
+    #[test]
+    fn bounded_stream_overflow_retains_every_intersection_in_stable_source_order() {
+        // Independently enumerate intersections of overlapping segments,
+        // including a miss, a clipped entry, a tangent and a distant segment.
+        let intervals:[(f32,f32);6]=[(-2.0,0.75),(0.25,1.5),(0.5,0.5),(1.0,2.0),(3.0,4.0),(-4.0,-1.0)];
+        let near=0.1f32;let limit=3.5f32;
+        let exact:Vec<_>=intervals.iter().enumerate().filter_map(|(id,&(a,b))| {
+            let entry=a.max(near);let exit=b.min(limit);(exit>entry).then_some((id,entry,exit))
+        }).collect();
+        assert_eq!(exact.iter().map(|v|v.0).collect::<Vec<_>>(),[0,1,3,4]);
+        for capacity in [0,1,exact.len()-1,exact.len(),exact.len()+7] {
+            for pixel_slot in [0usize,2] {
+                let metadata_slots=2;
+                let stored=if pixel_slot<metadata_slots && exact.len()<=capacity {Some(exact.clone())}else{None};
+                // A failed stream reservation selects the complete original
+                // candidate set, then performs the same geometric test. It
+                // does not consume a prefix of the records that happened to fit.
+                let consumed=stored.unwrap_or_else(||intervals.iter().enumerate().filter_map(|(id,&(a,b))| {
+                    let entry=a.max(near);let exit=b.min(limit);(exit>entry).then_some((id,entry,exit))
+                }).collect());
+                assert_eq!(consumed,exact);
+                for t in [0.2,0.6,1.1,1.75,3.25] {
+                    let density=|list:&[(usize,f32,f32)]|list.iter().filter(|(_,a,b)|t>=*a&&t<=*b)
+                        .map(|(id,_,_)|(*id+1) as f32).sum::<f32>();
+                    assert_eq!(density(&consumed),density(&exact));
+                }
+            }
+        }
+    }
+
     #[test]
     fn empty_ceiling_variants_validate_and_disabled_keeps_baseline_unchanged() {
         assert!(super::IntegratorOptions::default().empty_ceiling);
@@ -1107,7 +1347,8 @@ mod tests {
     fn volume_entry_points_fit_reduced_scene_binding_contract() {
         for temporal in [false,true] {
         for antipodal_normals in [false,true] {
-        let options=super::IntegratorOptions {antipodal_normals,..Default::default()};
+        for brick_visibility in [false,true] {
+        let options=super::IntegratorOptions {antipodal_normals,brick_visibility,..Default::default()};
         let source = options.specialize(&super::temporal_source(&super::shader_source(),temporal).unwrap()).unwrap();
         assert_eq!(source.contains("var volume_motion_output"),temporal);
         assert_eq!(source.contains("var<storage,read> volume_previous_instances"),temporal);
@@ -1145,7 +1386,8 @@ mod tests {
             // bindings already (opaque materials exceed the WebGPU base8).
             // Temporal adds one previous-owner buffer, remaining below the
             // existing 16-storage limit. Native has no motion buffer or writes.
-            assert!(storage_count <= if temporal {11}else{10}, "{} uses {storage_count} storage buffers", entry.name);
+            assert!(storage_count <= if temporal {14}else{13}, "{} uses {storage_count} storage buffers", entry.name);
+        }
         }
         }
         }
@@ -1492,7 +1734,7 @@ mod tests {
     #[test]
     fn per_ray_work_fits_local_u32_while_full_resolution_totals_require_u64() {
         let steps=4096u64;
-        let volumes=256u64;
+        let volumes=super::MAX_VIEW_GROUPS as u64;
         let volume_samples=steps*volumes;
         // Every interpolation can fetch eight cells in each of two mips.
         // Empty-brick tests read only indirection, not occupied cell records.
@@ -1506,7 +1748,8 @@ mod tests {
         // The shader's literal caps are the premises of this local bound.
         let source=include_str!("shaders/voxel_forest.wgsl");
         assert!(source.contains("const VOLUME_MAX_STEPS: u32 = 4096u;"));
-        assert_eq!(crate::foliage_volume_data::MAX_INSTANCES,256);
+        assert_eq!(super::MAX_VIEW_GROUPS,4096);
+        assert!(source.contains("var<uniform> volume_selection: array<vec4<u32>,4096>"));
     }
 
 }

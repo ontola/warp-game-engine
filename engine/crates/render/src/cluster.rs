@@ -48,14 +48,17 @@ pub struct Part<'a> {
 }
 
 /// Material-aware simplification is opt-in: opaque geometry keeps the existing
-/// spatial policy. Alpha cards must retain their texture mapping and folds;
-/// an opaque geometric error alone cannot describe their visible silhouette.
+/// spatial policy. Alpha cards and thin foliage also preserve their projected
+/// area; a positional error alone cannot describe disappearing crown coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimplificationPolicy {
     Geometry,
     AlphaCards,
-    /// Preserve authored normals, UV seams and folds without alpha-area credit.
+    /// Preserve authored normals, UV seams and folds without projected-area credit.
     TexturedGeometry,
+    /// Opaque thin leaves/needles: preserve authored orientation and attributes,
+    /// and carry projected-area loss through the DAG. No alpha-test assumption.
+    ThinFoliage,
     /// Smooth terrain normals and bounded road-distance material coordinates.
     Terrain,
 }
@@ -269,7 +272,8 @@ mod constraint_tests {
         let (vertices, indices) = folded_grid();
         let parts = [Part { vertices: &vertices, indices: &indices, material: 4 }];
         for policy in [SimplificationPolicy::Geometry, SimplificationPolicy::Terrain,
-            SimplificationPolicy::TexturedGeometry, SimplificationPolicy::AlphaCards] {
+            SimplificationPolicy::TexturedGeometry, SimplificationPolicy::AlphaCards,
+            SimplificationPolicy::ThinFoliage] {
             let baseline = ClusterMesh::build_with_policy(&parts, |_| policy);
             let constrained = ClusterMesh::build_with_constraints(&parts, |_| policy, |_, _| false);
             assert_eq!(bytemuck::cast_slice::<Vertex, u8>(&baseline.vertices), bytemuck::cast_slice::<Vertex, u8>(&constrained.vertices));
@@ -282,11 +286,14 @@ mod constraint_tests {
     }
 }
 
-/// Cutout-card coverage is not represented by positional simplification error:
-/// a planar card can shrink without moving any surviving point off its plane.
+/// Thin-surface coverage is not represented by positional simplification error:
+/// a planar card can shrink without moving any surviving point off its plane,
+/// and a tiny closed leaf can collapse while its whole crown remains visible.
 /// Carry original projected-area credit through the DAG and include cumulative
 /// area loss in its existing world-space error, with no new GPU data or work.
-/// This is summed geometric area, not alpha-union coverage (cards can overlap).
+/// This is summed geometric area, not alpha/opaque-union coverage (leaves can
+/// overlap, and both sides of a closed leaf contribute). That multiplicity is
+/// retained in source and replacement credit; no alpha data is read or changed.
 fn protect_card_coverage(vertices: &[Vertex], groups: &mut [[f32; 5]], pending: &[PendingCluster]) {
     let areas:Vec<_>=pending.iter().map(|(_,_,indices,_)|projected_triangle_area(vertices,indices)).collect();
     let mut replacement=vec![0.0f32;groups.len()];
@@ -445,7 +452,8 @@ impl ClusterMesh {
             let attributes: Vec<f32>;
             let mut vertex_locks = Vec::new();
             let selected_policy=policy(part);
-            let alpha_cards=selected_policy == SimplificationPolicy::AlphaCards;
+            let thin_foliage=selected_policy == SimplificationPolicy::ThinFoliage;
+            let coverage=selected_policy == SimplificationPolicy::AlphaCards || thin_foliage;
             let terrain=selected_policy == SimplificationPolicy::Terrain;
             if selected_policy != SimplificationPolicy::Geometry {
                 attributes = part.vertices.iter().flat_map(|v| [v.normal[0], v.normal[1], v.normal[2],
@@ -506,12 +514,12 @@ impl ClusterMesh {
                 out.levels = out.levels.max(group.depth as u32 + 1);
                 gid as i32
             });
-            if selected_policy == SimplificationPolicy::TexturedGeometry {
+            if selected_policy == SimplificationPolicy::TexturedGeometry || thin_foliage {
                 protect_surface_orientation(part, &mut groups, &pending);
                 #[cfg(test)]
                 policy_tests::assert_complete_dag_cuts(&groups, &pending);
             }
-            if alpha_cards {
+            if coverage {
                 protect_card_coverage(part.vertices,&mut groups,&pending);
                 #[cfg(test)]
                 policy_tests::assert_complete_dag_cuts(&groups,&pending);
@@ -725,6 +733,106 @@ impl ClusterMesh {
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+
+    /// Closed, disconnected leaves have no alpha mask and are not a terrain
+    /// sheet. Each lens has six positions and eight outward triangles; face
+    /// vertices are split to retain authored folds and local texture coordinates.
+    fn disconnected_closed_leaves() -> (Vec<Vertex>, Vec<u32>) {
+        use glam::{Quat, Vec3};
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let local = [Vec3::ZERO, Vec3::new(-0.12,0.20,0.0),
+            Vec3::new(0.0,0.20,0.008), Vec3::new(0.12,0.20,0.0),
+            Vec3::new(0.0,0.20,-0.008), Vec3::new(0.0,0.45,0.016)];
+        for row in 0..12 { for col in 0..14 {
+            let phase = col as f32 * 1.71 + row as f32 * 0.43;
+            let origin = Vec3::new((col as f32 - 6.5)*0.29, row as f32*0.34, phase.sin()*0.65);
+            let rotation = Quat::from_rotation_y(phase) * Quat::from_rotation_z(phase.cos()*0.4);
+            for side in 0..4 {
+                let a = side+1; let b = (side+1)%4+1;
+                for triangle in [[0,b,a],[5,a,b]] {
+                    let p = triangle.map(|i| local[i]);
+                    let normal = rotation * (p[1]-p[0]).cross(p[2]-p[0]).normalize();
+                    for p in p {
+                        indices.push(vertices.len() as u32);
+                        vertices.push(Vertex {pos:(origin+rotation*p).to_array(),normal:normal.to_array(),
+                            uv:[p.x/0.24+0.5,p.y/0.45]});
+                    }
+                }
+            }
+        }}
+        (vertices,indices)
+    }
+
+    /// Independent f64 measurement over the actual selected packed triangles.
+    /// This is directional geometric area, not union coverage or radiance.
+    fn directional_cut_area(mesh: &ClusterMesh, select: impl Fn(&GpuCluster)->bool) -> (usize, glam::DVec3) {
+        let mut count = 0usize;
+        let mut area = glam::DVec3::ZERO;
+        for cluster in mesh.clusters.iter().filter(|c| select(c)) {
+            let centre = glam::DVec3::new(cluster.cull[0] as f64,cluster.cull[1] as f64,cluster.cull[2] as f64);
+            for packed in &mesh.tris[cluster.first_tri as usize..(cluster.first_tri+cluster.tri_count) as usize] {
+                let points:[glam::DVec3;3]=std::array::from_fn(|k| {
+                    let id=mesh.cluster_verts[cluster.first_vert as usize+((packed>>(8*k))&255) as usize];
+                    let p=mesh.vertices[id as usize].pos;
+                    glam::DVec3::new(p[0] as f64,p[1] as f64,p[2] as f64)
+                });
+                assert!(points.iter().all(|p| p.distance(centre)<=cluster.cull[3] as f64+1e-5),
+                    "selected triangle escaped its unchanged culling sphere");
+                area+=(points[1]-points[0]).cross(points[2]-points[0]).abs()*0.5;
+                count+=1;
+            }
+        }
+        (count,area)
+    }
+
+    #[test]
+    fn thin_foliage_keeps_disconnected_closed_leaf_area_without_disabling_lod() {
+        let (vertices,indices)=disconnected_closed_leaves();
+        let parts=[Part {vertices:&vertices,indices:&indices,material:17}];
+        let positional=ClusterMesh::build_with_policy(&parts,|_|SimplificationPolicy::TexturedGeometry);
+        let foliage=ClusterMesh::build_with_policy(&parts,|_|SimplificationPolicy::ThinFoliage);
+        // The extra error credit must not alter source geometry, any actual
+        // simplified triangle, material IDs, culling bounds or DAG topology.
+        assert_eq!(bytemuck::cast_slice::<Vertex,u8>(&positional.vertices),bytemuck::cast_slice::<Vertex,u8>(&foliage.vertices));
+        assert_eq!(bytemuck::cast_slice::<Vertex,u8>(&vertices),bytemuck::cast_slice::<Vertex,u8>(&foliage.vertices));
+        assert_eq!(positional.tris,foliage.tris);
+        assert_eq!(positional.cluster_verts,foliage.cluster_verts);
+        assert_eq!(positional.sphere,foliage.sphere);
+        assert_eq!(positional.levels,foliage.levels);
+        assert_eq!(positional.clusters.len(),foliage.clusters.len());
+        let mut raised=0;
+        for (before,after) in positional.clusters.iter().zip(&foliage.clusters) {
+            assert!(after.own_error<=after.parent_error,"nonmonotonic DAG transition");
+            assert!(after.own_error>=before.own_error&&after.parent_error>=before.parent_error);
+            raised+=usize::from(after.own_error>before.own_error||after.parent_error>before.parent_error);
+            let mut neutral=*after;neutral.own_error=before.own_error;neutral.parent_error=before.parent_error;
+            assert_eq!(bytemuck::bytes_of(before),bytemuck::bytes_of(&neutral));
+        }
+        assert!(raised>0,"fixture did not exercise projected-area credit");
+        let (full,source)=directional_cut_area(&foliage,|c|c.own_error==0.0);
+        assert_eq!(full,indices.len()/3);
+        assert!(source.min_element()>0.1,"fixture must have coverage in all three axes");
+        assert!(foliage.levels>1&&foliage.root_triangles()<full/2,"distant source simplification was disabled");
+        // build_with_policy also audits original-leaf DAG credit at every
+        // transition and mixed perspective cut via assert_complete_dag_cuts.
+        let mut largest_improvement=0.0f64;
+        for radius_px in [8.0f32,16.0,32.0,64.0,128.0,256.0] {
+            let scale=radius_px/foliage.sphere[3];
+            let selected=|c:&GpuCluster|(c.parent_error>1e30||c.parent_error*scale>1.0)&&c.own_error*scale<=1.0;
+            let (old_count,old_area)=directional_cut_area(&positional,selected);
+            let (count,area)=directional_cut_area(&foliage,selected);
+            let before=old_area.element_sum()/source.element_sum();
+            let after=area.element_sum()/source.element_sum();
+            largest_improvement=largest_improvement.max(after-before);
+            eprintln!("thin closed leaves: radius={radius_px}px tris={old_count}->{count}/{full} area={before:.4}->{after:.4} axes={:?}",area/source);
+            assert!(count>0&&count<=full,"invalid selected budget at {radius_px}px");
+            if radius_px>=128.0 {
+                assert!(after>=0.60,"visible crown lost most of its geometric leaf area at {radius_px}px: {after}");
+            }
+        }
+        assert!(largest_improvement>0.10,"closed-leaf fixture must expose a meaningful positional-only coverage regression");
+    }
 
     #[test]
     fn textured_wood_keeps_authored_surface_orientation_until_subpixel() {

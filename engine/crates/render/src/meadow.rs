@@ -574,6 +574,9 @@ impl MeadowRenderer {
             packed.push(vertex.color);
             packed.push(vertex.anchor);
         }
+        // Header X/Y remain bitcast draw ranges. Z is an ordinary f32 world
+        // patch scale; zero retains the original independent variant hash.
+        packed[0][2] = field.geometry.variant_patch_metres;
         let atlas_base = packed.len() as u32;
         let atlas = if aggregate_enabled {
             let atlas = crate::meadow_aggregate::AggregateAtlas::cook(&field.geometry)?;

@@ -14,6 +14,31 @@ pub const WIDTH: f32 = 0.04;
 pub const SEGMENTS: [usize; LODS] = [6, 3, 1];
 pub const QUANTIZATION: f32 = 1024.0;
 
+/// Bounded, game-independent forms of the same windswept ribbon. Lean, blade
+/// order, segment counts and wind response deliberately remain the reference
+/// contract. Tint multiplies BOTH base and tip so shader tip reconstruction
+/// stays exact; this is not an independently authored two-colour palette.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindsweptRecipe {
+    pub height_scale: f32,
+    pub width_scale: f32,
+    pub tint: [f32; 3],
+}
+impl Default for WindsweptRecipe {
+    fn default() -> Self { Self { height_scale: 1.0, width_scale: 1.0, tint: [1.0; 3] } }
+}
+impl WindsweptRecipe {
+    pub fn validate(self) -> Result<(), String> {
+        if !self.height_scale.is_finite() || !(0.35..=1.25).contains(&self.height_scale)
+            || !self.width_scale.is_finite() || !(0.75..=1.5).contains(&self.width_scale)
+            || self.tint.iter().any(|v| !v.is_finite() || !(0.5..=1.5).contains(v))
+        {
+            return Err("windswept recipe requires height 0.35..1.25, width 0.75..1.5 and tint 0.5..1.5".into());
+        }
+        Ok(())
+    }
+}
+
 /// Shared Rust/WGSL contract. Source anchors are exact binary16-compatible
 /// multiples of 1/1024; seed/variant differences are already in those anchors.
 pub fn anchor_hash(anchor: [f32; 3], salt: u32) -> u32 {
@@ -37,10 +62,10 @@ pub fn lean(anchor: [f32; 3]) -> f32 {
 /// E(h)<=Mtt*h²/8+Mts*h/4 on either strip triangle. Summing fine/coarse E bounds
 /// their two-way distance, including different diagonals. The omitted zero-area
 /// tip triangle has its image on the retained edge and preserves this mapping.
-fn animated_cut_error(height: f32, radius: f32, segments: usize) -> f32 {
+fn animated_cut_error(height: f32, width: f32, radius: f32, segments: usize) -> f32 {
     let a = 1.875f64; // 1.25 source amplitude times supported 1.5 multiplier
     let l = 0.4f64;
-    let width = f64::from(WIDTH);
+    let width = f64::from(width);
     let mtt = f64::from(height) * (2.0 * (a + 2.0*l) + (a + 2.0*l).powi(2) + 2.0*l)
         + width * (1.0 + 2.0*a + 0.5*a*a);
     // |D'|<=W*(2t+A*(1-t²)); its maximum is A+1/A at t=1/A.
@@ -52,7 +77,7 @@ fn animated_cut_error(height: f32, radius: f32, segments: usize) -> f32 {
 }
 
 #[derive(Clone, Copy)]
-struct Blade { anchor: Vec3, height: f32, yaw: Quat, lean: f32, branch: usize, base: Vec3, tip: Vec3, shade: f32 }
+struct Blade { anchor: Vec3, height: f32, width: f32, yaw: Quat, lean: f32, branch: usize, base: Vec3, tip: Vec3, shade: f32 }
 impl Blade {
     fn new(anchor: Vec3, branch: usize, dry: f32) -> Self {
         let anchor = (anchor * QUANTIZATION).round() / QUANTIZATION;
@@ -60,16 +85,25 @@ impl Blade {
         let height = ((0.6 * (0.75 + 0.75 * random(anchor, 0xb5297a4d)) * QUANTIZATION).round()
             .clamp((0.45 * QUANTIZATION).ceil(), (0.9 * QUANTIZATION).floor())) / QUANTIZATION;
         let dry_multiplier = Vec3::ONE.lerp(Vec3::new(0.24 / 0.105, 0.19 / 0.18, 0.075 / 0.039), dry);
-        Self { anchor, height, yaw: Quat::from_rotation_y(random(anchor, 0x1b56c4e9) * std::f32::consts::TAU),
+        Self { anchor, height, width: WIDTH, yaw: Quat::from_rotation_y(random(anchor, 0x1b56c4e9) * std::f32::consts::TAU),
             lean: lean(anchor.to_array()), branch,
             base: Vec3::new(0.02, 0.075, 0.01).lerp(Vec3::new(0.025, 0.1, 0.01), random(anchor, 0x9e3779b9)) * dry_multiplier,
             tip: Vec3::new(0.65, 0.8, 0.25).lerp(Vec3::new(0.8, 0.9, 0.4), random(anchor, 0x7f4a7c15)) * dry_multiplier,
             shade: 0.75 + 0.25 * random(anchor, 0x94d049bb) }
     }
+    fn with_recipe(mut self, recipe: WindsweptRecipe) -> Self {
+        // Preserve binary16-compatible heights, including exact reference
+        // bytes for the neutral recipe. Root positions never scale.
+        self.height = (self.height * recipe.height_scale * QUANTIZATION).round() / QUANTIZATION;
+        self.width *= recipe.width_scale;
+        self.base *= Vec3::from_array(recipe.tint);
+        self.tip *= Vec3::from_array(recipe.tint);
+        self
+    }
     fn vertex(self, t: f32, side: f32) -> GpuMeadowVertex {
         let angle = self.lean * t * t;
         let (sin, cos) = angle.sin_cos();
-        let p = Vec3::new(side * WIDTH * (1.0 - t * t), self.height * t * cos, self.height * t * sin);
+        let p = Vec3::new(side * self.width * (1.0 - t * t), self.height * t * cos, self.height * t * sin);
         // Analytic derivative of y=Ht*cos(lean*t²), z=Ht*sin(lean*t²).
         let tangent = Vec3::new(0.0, cos - 2.0 * angle * sin, sin + 2.0 * angle * cos).normalize();
         let centre_normal = Vec3::X.cross(tangent).normalize();
@@ -85,8 +119,18 @@ impl Blade {
 }
 
 pub(crate) fn cook(seed: u64, dry: f32, budget: MeadowBladeBudget) -> Result<MeadowGeometry, String> {
+    cook_recipes(seed, dry, budget, [WindsweptRecipe::default(); VARIANTS], 0.0)
+}
+
+pub(crate) fn cook_recipes(seed: u64, dry: f32, budget: MeadowBladeBudget,
+    recipes: [WindsweptRecipe; VARIANTS], variant_patch_metres: f32,
+) -> Result<MeadowGeometry, String> {
     if !dry.is_finite() || !(0.0..=1.0).contains(&dry) { return Err("invalid windswept season".into()); }
-    let mut result = MeadowGeometry { vertices: Vec::new(), lod_ranges: [[[0; 2]; LODS]; VARIANTS],
+    for recipe in recipes { recipe.validate()?; }
+    if !variant_patch_metres.is_finite() || (variant_patch_metres != 0.0 && !(4.0..=64.0).contains(&variant_patch_metres)) {
+        return Err("windswept variant patches must be 0 or 4..64 metres".into());
+    }
+    let mut result = MeadowGeometry { vertices: Vec::new(), variant_patch_metres, lod_ranges: [[[0; 2]; LODS]; VARIANTS],
         lod_errors: [[0.0; LODS]; VARIANTS], branch_pivots: [[[0.0; 4]; BRANCHES]; VARIANTS],
         max_tuft_radius: 0.0, max_tuft_height: 0.0, max_anchor_radius: 0.0, max_blade_radius: 0.0 };
     for (variant, salt) in [101u64, 303, 707].into_iter().enumerate() {
@@ -98,7 +142,7 @@ pub(crate) fn cook(seed: u64, dry: f32, budget: MeadowBladeBudget) -> Result<Mea
             let index = group_indices[branch]; group_indices[branch] += 1;
             if index % 3 != 0 { return None; }
             let anchor = (poses[placement.branch as usize] * placement.rest).transform_point3(Vec3::ZERO);
-            Some(Blade::new(anchor, branch, dry))
+            Some(Blade::new(anchor, branch, dry).with_recipe(recipes[variant]))
         }).collect();
         if blades.len() != budget.blades() / 3 { return Err("windswept blade budget mismatch".into()); }
         let mut anchors = std::collections::BTreeSet::new();
@@ -108,7 +152,7 @@ pub(crate) fn cook(seed: u64, dry: f32, budget: MeadowBladeBudget) -> Result<Mea
             // All rest and animated vertices are successive rotations of a
             // root-relative vector of at most this length, even with an angle
             // varying with height. The .001 guard covers cook-time f32 error.
-            result.max_blade_radius = result.max_blade_radius.max((blade.height * blade.height + WIDTH * WIDTH * 0.25).sqrt() + 0.001);
+            result.max_blade_radius = result.max_blade_radius.max((blade.height * blade.height + blade.width * blade.width * 0.25).sqrt() + 0.001);
         }
         for branch in 0..BRANCHES { result.branch_pivots[variant][branch] = [0.0, 0.0, 0.0, 1.25]; }
         for (lod, segments) in SEGMENTS.into_iter().enumerate() {
@@ -134,9 +178,10 @@ pub(crate) fn cook(seed: u64, dry: f32, budget: MeadowBladeBudget) -> Result<Mea
         result.max_tuft_height = result.max_tuft_height.max(vertex.position[1].abs());
     }
     let height = result.vertices.iter().map(|v| v.anchor[3]).fold(0.0f32, f32::max);
+    let width = recipes.iter().map(|recipe| WIDTH * recipe.width_scale).fold(0.0f32, f32::max);
     for errors in &mut result.lod_errors { *errors = [0.0,
-        animated_cut_error(height, result.max_blade_radius, 3),
-        animated_cut_error(height, result.max_blade_radius, 1)]; }
+        animated_cut_error(height, width, result.max_blade_radius, 3),
+        animated_cut_error(height, width, result.max_blade_radius, 1)]; }
     result.validate()?;
     Ok(result)
 }
@@ -144,6 +189,167 @@ pub(crate) fn cook(seed: u64, dry: f32, budget: MeadowBladeBudget) -> Result<Mea
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn varied_recipes() -> [WindsweptRecipe; VARIANTS] {
+        [WindsweptRecipe { height_scale:0.5, width_scale:0.9, tint:[0.98,1.04,0.96] },
+            WindsweptRecipe { height_scale:0.7, width_scale:1.4, tint:[0.87,0.96,0.94] },
+            WindsweptRecipe { height_scale:1.15, width_scale:1.0, tint:[1.06,1.02,0.94] }]
+    }
+
+    #[test]
+    fn species_neutral_recipe_preserves_reference_vertices_bit_exactly() {
+        // Blade::new is the unchanged pre-species reference constructor.
+        // Check the new parameter step independently from the cook wrapper.
+        for i in 0..64 {
+            for dry in [0.0,0.5,0.8,1.0] {
+                let reference = Blade::new(Vec3::new(i as f32*0.003-0.12,0.0,0.29-i as f32*0.007),i%4,dry);
+                let neutral = reference.with_recipe(WindsweptRecipe::default());
+                for t in (0..=6).map(|n|n as f32/6.0) { for side in [-0.5,0.0,0.5] {
+                    assert_eq!(reference.vertex(t,side),neutral.vertex(t,side));
+                }}
+            }
+        }
+        let baseline = cook(73,0.8,MeadowBladeBudget::Blades120).unwrap();
+        assert_eq!(baseline.variant_patch_metres,0.0);
+    }
+
+    #[test]
+    fn species_recipes_reject_unsupported_dimensions_tints_and_patch_modes() {
+        for value in [f32::NAN,f32::INFINITY,0.0,0.34,1.26] {
+            assert!(WindsweptRecipe {height_scale:value,..Default::default()}.validate().is_err());
+        }
+        for value in [f32::NAN,-1.0,0.74,1.51] {
+            assert!(WindsweptRecipe {width_scale:value,..Default::default()}.validate().is_err());
+        }
+        for value in [f32::NAN,f32::INFINITY,0.49,1.51] {
+            assert!(WindsweptRecipe {tint:[1.0,value,1.0],..Default::default()}.validate().is_err());
+        }
+        for metres in [f32::NAN,f32::INFINITY,-1.0,0.1,3.9,64.1] {
+            assert!(cook_recipes(73,0.0,MeadowBladeBudget::Blades120,varied_recipes(),metres).is_err());
+        }
+        let mut legacy = MeadowGeometry::cook_with_blade_budget(73,0.0,MeadowBladeBudget::Blades120).unwrap();
+        legacy.variant_patch_metres=12.0;
+        assert!(legacy.validate().unwrap_err().contains("windswept"));
+    }
+
+    #[test]
+    fn species_keep_source_roots_lod_correspondence_material_contract_and_bounds() {
+        let recipes=varied_recipes();
+        for budget in [MeadowBladeBudget::Blades120,MeadowBladeBudget::Blades360] {
+            let baseline=cook(73,0.8,budget).unwrap();
+            let source=cook_recipes(73,0.8,budget,recipes,12.0).unwrap();
+            assert_eq!(source.lod_ranges,baseline.lod_ranges);
+            assert_eq!(source.branch_pivots,baseline.branch_pivots);
+            assert_eq!(source.max_anchor_radius,baseline.max_anchor_radius);
+            for (a,b) in source.vertices.iter().zip(&baseline.vertices) {
+                assert_eq!(&a.anchor[..3],&b.anchor[..3],"authored variant anchors never scale");
+                assert_eq!(a.position[3],b.position[3]);assert_eq!(a.normal,b.normal);
+                assert!(a.anchor[3]>0.0 && (a.anchor[3]*QUANTIZATION).fract()==0.0);
+            }
+            for variant in 0..VARIANTS {
+                let mut roots=std::collections::BTreeSet::new();
+                for lod in 0..LODS {
+                    let [first,count]=source.lod_ranges[variant][lod];
+                    let stream=&source.vertices[first as usize..(first+count) as usize];
+                    let stride=(SEGMENTS[lod]*2-1)*3;
+                    assert_eq!(stream.len()/stride,budget.blades()/3);
+                    let mut current=std::collections::BTreeSet::new();
+                    for blade in stream.chunks_exact(stride) {
+                        let root=blade[0];
+                        current.insert(root.anchor.map(f32::to_bits));
+                        assert!(blade.iter().all(|v|v.anchor==root.anchor));
+                        let anchor=Vec3::from_slice(&root.anchor);
+                        let original=Blade::new(anchor,root.position[3] as usize,0.0);
+                        // Same ratio used by meadow_windswept_tip in WGSL.
+                        let original_base=Vec3::new(0.02,0.075,0.01).lerp(Vec3::new(0.025,0.1,0.01),random(anchor,0x9e3779b9));
+                        let original_tip=Vec3::new(0.65,0.8,0.25).lerp(Vec3::new(0.8,0.9,0.4),random(anchor,0x7f4a7c15));
+                        let base=Vec3::from_slice(&root.color)*4.0;
+                        let tip=base*(original_tip/original_base);
+                        for vertex in blade {
+                            let t=vertex.normal[3];
+                            let expected=(base.lerp(tip,t.powi(4))*(0.25+0.75*t*t)).clamp(Vec3::ZERO,Vec3::ONE);
+                            assert!((expected-Vec3::from_slice(&vertex.color)).abs().max_element()<5e-7);
+                            let relative=Vec3::from_slice(&vertex.position)-anchor;
+                            for angle in [-1.875f32,0.0,1.875] {
+                                let posed=Quat::from_axis_angle(Vec3::new(0.6,0.0,0.8),angle*t)*relative;
+                                assert!(posed.length()<=source.max_blade_radius);
+                            }
+                        }
+                        let expected_height=(original.height*recipes[variant].height_scale*QUANTIZATION).round()/QUANTIZATION;
+                        assert_eq!(root.anchor[3],expected_height);
+                    }
+                    if lod==0 {roots=current;} else {assert_eq!(current,roots);}
+                }
+            }
+            source.validate().unwrap();
+        }
+    }
+
+    fn species_selector_source() -> String {
+        let generate=include_str!("shaders/meadow_generate.wgsl");
+        let first=generate.find("fn meadow_source_variant(").unwrap();
+        let end=generate[first..].find("fn meadow_generate_cell(").unwrap()+first;
+        format!("{}\n{}\n{}",include_str!("shaders/meadow_field.wgsl"),&generate[first..end],r#"
+@group(0) @binding(0) var<storage,read_write> output:array<vec4<u32>>;
+@compute @workgroup_size(8,8) fn verify(@builtin(global_invocation_id) id:vec3<u32>) {
+    if any(id.xy>=vec2<u32>(256u)) {return;}
+    let cell=vec2<i32>(id.xy)-vec2<i32>(128);
+    let xz=(vec2<f32>(cell)+meadow_root_fraction(cell,73u))*MEADOW_ROOT_CELL;
+    output[id.y*256u+id.x]=vec4<u32>(
+        meadow_source_variant(cell,xz,73u,3u,0.0),
+        meadow_source_variant(cell,xz,73u,3u,12.0),
+        meadow_source_variant(cell,xz,74u,3u,12.0),
+        meadow_source_variant(cell,xz,73u,1u,12.0));
+}
+"#)
+    }
+
+    #[test]
+    fn species_selector_production_shader_validates() {
+        let source=species_selector_source();
+        let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all())
+            .validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
+    }
+
+    #[test]
+    #[ignore = "serial GPU fixture; requires an idle adapter"]
+    fn species_selector_gpu_preserves_default_identity_and_coherent_groups() {
+        let gpu=crate::Gpu::new().expect("headless GPU");
+        let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:Some("production species selector"),source:wgpu::ShaderSource::Wgsl(species_selector_source().into()) });
+        let pipeline=gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("species identity oracle"),layout:None,module:&module,entry_point:Some("verify"),
+            compilation_options:Default::default(),cache:None });
+        let result=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("species identities"),
+            size:256*256*16,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false});
+        let read=gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("species identity readback"),
+            size:result.size(),usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+        let group=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {label:Some("species oracle"),
+            layout:&pipeline.get_bind_group_layout(0),entries:&[wgpu::BindGroupEntry {binding:0,resource:result.as_entire_binding()}]});
+        let mut encoder=gpu.device.create_command_encoder(&Default::default());
+        {let mut pass=encoder.begin_compute_pass(&Default::default());pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0,&group,&[]);pass.dispatch_workgroups(32,32,1);}
+        encoder.copy_buffer_to_buffer(&result,0,&read,0,result.size());gpu.queue.submit([encoder.finish()]);
+        read.slice(..).map_async(wgpu::MapMode::Read,|r|r.expect("map species identities"));gpu.wait();
+        let bytes=read.slice(..).get_mapped_range().unwrap();let actual:&[[u32;4]]=bytemuck::cast_slice(&bytes);
+        let hash=|x:i32,z:i32| {let mut h=(x as u32).wrapping_mul(0x9e3779b1)^(z as u32).wrapping_mul(0x85ebca77)
+                ^67u32.wrapping_mul(0xc2b2ae3d)^73u32;
+            h^=h>>16;h=h.wrapping_mul(0x7feb352d);h^=h>>15;h=h.wrapping_mul(0x846ca68b);(h^(h>>16))%3};
+        let mut counts=[0usize;3];let mut changed_seed=0;let mut mixed_edges=0;let mut hash_edges=0;let mut edges=0;
+        for (i,&value) in actual.iter().enumerate() {
+            let x=i%256;let z=i/256;
+            assert_eq!(value[0],hash(x as i32-128,z as i32-128),"zero mode is exact original cell hash");
+            assert!(value[..3].iter().all(|&v|v<3));assert_eq!(value[3],0);
+            counts[value[1] as usize]+=1;changed_seed+=usize::from(value[1]!=value[2]);
+            for next in [if x<255 {Some(i+1)} else {None},if z<255 {Some(i+256)} else {None}].into_iter().flatten() {
+                mixed_edges+=usize::from(value[1]!=actual[next][1]);hash_edges+=usize::from(value[0]!=actual[next][0]);edges+=1;
+            }
+        }
+        assert!(counts.iter().all(|&n|n>actual.len()/10),"all three species present: {counts:?}");
+        assert!(changed_seed>actual.len()/4,"independent stage seed changes spatial identities");
+        assert!(mixed_edges*8<hash_edges,"coherent patches must remove most cell-scale boundaries");
+        eprintln!("species selector: {} cells, counts {counts:?}, mixed neighbour changes {mixed_edges}/{edges}, baseline {hash_edges}/{edges}",actual.len());
+    }
     #[test]
     fn windswept_anchor_hash_contract_matches_unsigned_reference_vectors() {
         for (qx, qz, expected) in [(0, 0, 0x484f3259), (-135, 283, 0x564e5b62), (243, -177, 0xab429e71)] {
@@ -253,7 +459,7 @@ mod tests {
             for axis in [Vec3::X,Vec3::Z,Vec3::new(0.6,0.0,0.8)] {
                 for amplitude in [-1.875,0.0,1.875] {
                     for segments in [3,1] {
-                        let bound = animated_cut_error(blade.height,radius,segments);
+                        let bound = animated_cut_error(blade.height,blade.width,radius,segments);
                         for i in 0..=120 { for j in 0..=20 {
                             let t=i as f32/120.0;let s=j as f32/20.0-0.5;
                             let fine=interpolate(blade,6,t,s,axis,amplitude);

@@ -7,6 +7,178 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## Parallel brick visibility implemented - 29 October 2026
+
+See [architecture, validation and actual captures](docs/vegetation-brick-visibility.md).
+`KERN_VOXEL_BRICK_VISIBILITY=1` enables shared disjoint support bounds, existing
+GPU poses, parallel visibility construction, bounded per-pixel sorted intervals
+and front-to-back integration. It automatically enables the global stream.
+The live forest/default remains unchanged. No new species geometry or fake bones.
+
+The final 64-tree diagnostic (`aggregate-lod/brick-atomic-64`) measures 0.642 ms
+visibility plus 20.767 ms integration, versus 2.969 + 82.353 ms in the matched
+branch baseline. Covered interval 49.206 versus 112.116 ms. Eight samples each,
+uncontrolled competing GPU work: not game FPS. Camera/shadow triangle counts
+match; exported opacity IoU 0.999627. Four views and source/LOD captures pass
+without stream/step overflow. The rejected CAS allocator (`brick-parallel-64`)
+measured 188.559 ms visibility; do not use it as the final result.
+
+675 render tests pass, 16 ignored; the new GPU sort/boundary/concurrent-overflow
+oracle passed separately. 189 Sideways tests, workspace all-target check and
+launcher contracts pass. New tests and evidence do not certify DLSS motion or
+source LOD appearance. The prior +12.37% far source coverage bias remains.
+Integration/material lighting and triangle shadow maps remain expensive; this
+is not full Nanite voxel raster/GBuffer shading or voxel shadow casting.
+Keep the existing 4,096 selection limit and bounded complete fallbacks explicit.
+The original common Git directory is still missing; no commit/merge to main.
+
+## Sideways r4 source and opt-in aggregate LOD — 29 October 2026
+
+The user rejected the coarse v1 species gallery. The denser r4 source is now
+the approved baseline to preserve, particularly the spruce; this does not
+approve distant LOD, transitions or a live forest. V2 uses shared detailed
+wood/foliage sprays. See [architecture, evidence and limits](docs/vegetation-species.md).
+
+**Do not describe the current consumer as Nanite voxel rasterization.** Warp
+ray-integrates branch volumes and evaluates BRDFs at occupied samples. Epic's
+documented route separately bins compact voxel clusters, uses front-to-back
+depth buckets and samples a normal distribution into the GBuffer before
+shading. Warp's tile bins and `KERN_VOXEL_GLOBAL_INTERVALS=1` worklist remain
+integrator optimizations. For each new issue or fix, compare the actual Warp
+mechanism with [Epic Nanite Foliage](https://dev.epicgames.com/documentation/en-us/unreal-engine/nanite-foliage)
+and state the gap; matching 128×4³ storage is not renderer equivalence.
+
+`cook_source`/`finish_source` retain unique geometry and compact placements;
+`tree_species_compare` pairs that source with the textured reference at common
+scale, and `plant_spray_gallery` exposes its components.
+
+`cook_aggregate`/`finish_aggregate` now add branch/subtree candidates with at most
+128 bricks of 4³ cells per level and GPU per-view selection. Directional opacity
+and material errors compare against a finer source-derived medium: sampled
+optical-model evidence, not exact raster visibility. Per-volume tile bins retain
+deterministic candidate order, exact ray interval sorting and complete overflow
+fallbacks. A chosen aggregate mip is sampled exactly; the legacy world consumer
+keeps its footprint/ceiling behavior without a new selection ABI. Finer source
+cuts now execute in the fixture but lack optical/temporal acceptance. Source shadows still
+rasterize triangles; forest residency, DLSS transitions and optical parity remain
+open. This experiment is not live Sideways. The rejected flattened `mixed`
+route stays explicitly disabled; mixed grass is a separate opt-in experiment.
+
+Dynamic pose buffers and all-camera/dynamic-shadow GPU motion scheduling now
+dispatch active attachment pages indirectly. 64 poses per assembly remains;
+legacy admission defaults can be raised explicitly. Runtime ceilings are
+262,144 poses, 1,048,576 attachments and 512 MiB internal animation buffers,
+also bounded by device limits. These are not measured forest capacities.
+Source-instance/attachment residency still scales with placements.
+
+V2 r4 evidence: `C:/dev/perf/warp-sideways-20261028/species-v2` contains all six
+reference pairs, component closeups and the far source-vs-CLOD oracle. The
+spruce places 32.1M source triangles from 1.312 MiB shared geometry excluding
+instances/poses; its 975 MiB expanded counterfactual is not allocated memory.
+Normal 1 px far CLOD loses much of the crown that full source retains. Native
+grain and distant optics remain unresolved despite source approval. Earlier
+render/CLI tests passed 649/189 before r4; focused r4 recipe/catalogue tests and
+workspace check passed. Those historical tests do not certify aggregate edits.
+
+`C:/dev/perf/warp-sideways-20261028/aggregate-lod/smoke-2/report.json` records the
+completed single-tree source/auto fixture: native 1920×1080, one view, TAA off,
+two warmups/two measured frames per case, RTX 5070 Ti/Vulkan. At 50/150/400 m all
+61 groups remain full source and RGB/native opacity match exactly. At 1,000 m
+auto selects 60 mip-0 branch volumes and submits 458 colour triangles including
+ground versus 32,099,798 source triangles. Both shadow maps retain 14,619,068
+source triangles. Coverage becomes 79.266 versus 68.000 pixel-equivalents,
+fuzzy IoU 0.630; this transition is not accepted. Unrelated background GPU work
+and the tiny sample window prevent a performance conclusion. Offscreen is not
+isolated: separate idle observations still showed roughly 40% competing GPU
+activity. No speedup,
+four-view result or DLSS proof. This run predates ongoing source-cut refinements.
+
+Later reports under the same evidence root supersede the initial selection
+experiment without changing approved r4 source shapes:
+
+- `fine-global-1/report.json`: 0.025 m reference grid, refinements and global
+  intervals. The 0.08 optical gate keeps full source at every tested distance,
+  including 1,000 m. Preparation is 139.47 s, packed volumes 23,388,756 bytes.
+  Configuration rejected. Source/auto TAA phases differed; image and opacity
+  metrics from this run are invalid as LOD-quality evidence. Capture sampling
+  was subsequently corrected using `reset_capture_sampling()`.
+- `global-reference-1/report.json`: corrected capture phase, 0.075 m grid,
+  refinements/global stream, TAA with 32 frozen-pose capture frames. At 50 m,
+  source cuts reduce camera triangles from 32,099,798 to 22,260,566; raw coverage
+  falls 3.44%. At 1,000 m, 60 volumes leave 458 camera triangles, raw coverage
+  exceeds source by 12.37%, and fuzzy IoU is 0.656. Shadow maps retain 14,619,068
+  source triangles. No volume overflow is reported. Eight contended samples
+  show 14.56 ms integration alone versus 12.90 ms full-source covered interval
+  (auto covered interval 20.27 ms). This is no isolated speed estimate or
+  performance win; the global stream is not promoted.
+
+The [source/auto review image](C:/dev/perf/warp-sideways-20261028/aggregate-lod/global-reference-1/source-auto-review.png)
+shows the corrected reference comparison. Subsequent diagnostic evidence:
+
+- `global-cheap-brdf-1` / `global-density-1`: 13.44/15.25 ms integration versus
+  14.56 ms full shading; eight contended samples each. Opacity PNG SHA-256 and
+  all traversal counters are identical. No material/lighting win demonstrated.
+- `four-tree-four-view-1`: four trees, four 960×540 views in one 1920×1080 output,
+  TAA off, four samples. Camera triangles fall 513,596,744→7,304; shadow triangles
+  remain 226,596,066. Covered interval source 138.40 ms, auto 145.15 ms; auto
+  integration 101.30 ms. No ready four-player result follows.
+- `forest-64-guard-1`: 64 trees, one native 1080p view, TAA off, two samples;
+  auto completes with 3,840 volume groups, 64 source groups, 29,186 camera and
+  177,593,316 shadow triangles. Integration 98.73 ms, covered interval 135.14 ms.
+  Twenty-five tile-list overflows use complete fallback; step/pool overflow zero.
+  5,088 rays perform 4,747,443 volume samples and 42,401,827 AABB tests.
+
+All these timings have uncontrolled competing GPU work. The fixture deliberately
+pins both near and main shadow maps to the forest, unlike camera-relative
+gameplay: report source-shadow stress counts, not game FPS. The current feature
+is far from ready. `taa-null-2` uses `--error 0.01` to force finest source in
+both modes: native opacity matches exactly (IoU 1, L1 0, coverage 31,649).
+RGB differs in 24/2,073,600 pixels, MAE 0.00000916 on the 0–255 scale. The
+capture-phase fix has opacity parity, not bit-exact RGB or temporal-motion proof.
+
+Latest checks: `render-tests-5.log` has 672 pass/15 ignored;
+`selector-gpu-2.log` separately passes the GPU hierarchy/exact-cut/scale oracle;
+`cli-tests.log` has 189 pass/one ignored. Workspace all-target checking and
+developer-launcher contracts pass. These checks do not accept optical quality,
+forest scale or moving TAA/DLSS.
+
+The next milestone is compact spatial voxel clusters and separate visibility/
+material resolve followed by shading, compared directly with Epic's documented
+boundary and the current source oracle. Do not spend the next iteration polishing
+branch ray integration or changing the approved source to hide its cost.
+
+`vegetation_forest_lod` excludes warmup and image/debug readbacks from async
+GPU timestamp windows. Begin with one source/auto tree before longer isolated
+runs. Four full-source trees are about 128M triangles per camera before light
+passes. The completed 64-tree guard case is not a universal capacity guarantee:
+preflight both consumers against 4,194,304 visible clusters/pass. Do not silently coarsen the
+source oracle, disable shadows or report truncated work as a gain. Four-view
+sun focus now has one anchor per view. Shared-helper and timestamp regressions
+are covered by the passing latest suite; do not reuse an earlier failing log.
+Recheck GPU process state before measuring; do not assume other workloads stopped.
+
+Working source is `C:/dev/warp-sideways-plant-species-20261028`. Its original
+common Git directory `C:/dev/warp-game-engine/.git` disappeared during this task;
+files remain, but metadata must be recovered before merging. Do not reset or
+recreate history blindly. No commit/push/merge was made here.
+
+### Rescue snapshot before further source work
+
+The final rescue snapshot is the root agent's responsibility; this instruction
+does not claim it exists. Use a fresh directory outside the worktree. Copy the
+source tree, workspace manifests/lockfile, shaders and docs, including
+`plant_species.rs`, `plant_recipe.rs`, `plant_spray.rs`, assembly/cook/animation/
+selector code and preview fixtures. Preserve the r4 gallery and all aggregate reports
+with their binaries/manifests where available. Include required ignored assets
+explicitly; source alone or the broken `.git` pointer cannot reconstruct them.
+
+Write a relative-path/byte-count/SHA-256 manifest and verify copied files before
+repairing Git metadata or editing approved source. Record the original worktree,
+capture commands, known build/test state and missing Git directory. Do not
+overwrite older snapshots or fabricate a revision. Append the actual snapshot
+destination and verification result only after completion; recovery/merge is
+separate work.
+
 ## Growing Guns feedback fixes — 28 October 2026
 
 See [the feedback checklist](../games/growing-guns/docs/playtest-20261028.md).

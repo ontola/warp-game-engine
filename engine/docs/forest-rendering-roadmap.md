@@ -1,5 +1,104 @@
 # Bosrendering in Warp
 
+Nieuwe opt-in stap, **29 oktober 2026 - parallelle brickzichtbaarheid**:
+`KERN_VOXEL_BRICK_VISIBILITY=1` projecteert gedeelde, niet-overlappende
+reconstructieregio's met bestaande GPU-poses en bouwt parallel een gesorteerde
+zichtbaarheidslijst voor materiaal-/lichtintegratie. De bron blijft gelijk;
+voxel-schaduwrasterisatie en volledige Nanite-pariteit ontbreken nog. Zie
+[architectuur, limieten en meetbewijs](vegetation-brick-visibility.md).
+De tekst hieronder beschrijft de voorafgaande branchvolume-baseline.
+
+Actuele aanvulling, **29 oktober 2026 — gedeelde r4-bron en aggregate-LOD**:
+de gebruiker heeft de dichtere r4-bron als uitgangspunt geaccepteerd; behoud die
+bron en verander haar niet om een afstandsbenchmark goedkoper te maken.
+[Vegetatiesoorten](vegetation-species.md) beschrijft de huidige code en grenzen.
+
+**Het grootste verschil met Nanite zit nog in de renderer:** Warp integreert
+branchvolumes langs stralen en berekent de BRDF per bezet sample. Epic beschrijft
+compacte voxelclusters in aparte rasterbins, front-to-back-dieptebuckets en een
+normalenverdeling die vóór shading naar de GBuffer wordt gesampled. Onze
+tegelbins en `KERN_VOXEL_GLOBAL_INTERVALS=1` veranderen de scheduling van de
+rayintegrator; ze implementeren die voxelrasterisatie niet. Leg bij ieder
+probleem of voorstel vast hoe Epics gedocumenteerde techniek het behandelt,
+wat Warp werkelijk doet en welk verschil nog openblijft.
+[Epic Nanite Foliage](https://dev.epicgames.com/documentation/en-us/unreal-engine/nanite-foliage).
+
+De nieuwe offline cooker verwerkt gedeelde primitives zonder een complete boom
+te expanderen, met maximaal 128 bricks van 4³ cellen per kandidaatniveau.
+Trianglecuts en volumes worden vergeleken met hetzelfde fijnere bronmedium via
+gesamplede directionele optische fouten. Een GPU-selector kiest per view en
+onderdrukt onderliggende branches bij een gekozen subtree-aggregate.
+Fijnere tussenliggende trianglecuts draaien nu in de fixture; optische en
+temporele acceptatie blijft open.
+
+De volumeconsumer projecteert geselecteerde volumes eenmaal naar schermtegelbins;
+deterministische kandidaten en exacte straalintervalvolgorde blijven behouden,
+met een volledige terugval bij overflow. Dit zijn geen algemene clusterdiepte-
+buckets. Dynamische branchposebuffers, GPU-bewegings-LOD voor alle camera- en
+schaduwconsumers en indirecte attachmentpagina's vervangen de vaste runtimepool;
+scene-instances per bronplacement blijven wel resident. Schaduwen rasteren nog
+brontriangles, dus alleen de kleurrepresentatie vervangen schaalt het hele bos
+niet vanzelf.
+
+De single-tree-proef `aggregate-lod/smoke-2` draait op native 1920×1080, TAA uit.
+Op 50/150/400 m blijft auto volledig bron en zijn RGB en dekking exact gelijk.
+Op 1.000 m daalt kleurgeometrie van 32.099.798 naar 458 triangles inclusief grond,
+maar blijven 14.619.068 brontriangles in de schaduwkaarten. De dekkingsintegraal
+wordt 79,266 tegenover 68,000; fuzzy IoU is 0,630. Dit is geen optische acceptatie.
+Twee meetframes na twee warmups en ander actief GPU-werk maken de tijden
+ongeschikt als geïsoleerd prestatieresultaat: **geen snelheidswinst aangetoond**.
+Offscreen renderen is geen GPU-isolatie; er bleef ook buiten de fixture
+ongecontroleerde GPU-belasting zichtbaar.
+Bewijs: `C:/dev/perf/warp-sideways-20261028/aggregate-lod/smoke-2/report.json`.
+Nieuwere sourcecut-aanpassingen vallen buiten die vastgelegde proef.
+
+De vervolgrun `fine-global-1` met een 0,025 m referentieraster is afgewezen:
+de 0,08-optiekgrens houdt op alle vier afstanden volledig brongeometrie, zelfs
+op 1.000 m, ondanks 139,47 s voorbereiding en 23,39 MB volumepayload. Bovendien
+verschilde de TAA-samplefase tussen bron en kandidaat; de beeld- en dekkingsfouten
+uit die run zijn geen LOD-kwaliteitsbewijs. De capturefase is daarna hersteld
+met `reset_capture_sampling()`.
+
+`global-reference-1` gebruikt 0,075 m, verfijnde cuts, globale intervallen en de
+gecorrigeerde TAA-capture. Op 50 m dalen camera-triangles van 32.099.798 naar
+22.260.566 via broncuts. Op 1.000 m blijven 458 triangles en 60 volumes; ruwe
+dekking is 12,37% hoger dan de bron en fuzzy IoU 0,656. Geen volume-overflow,
+maar 14,56 ms integratiemediaan tegenover 12,90 ms voor het hele gemeten
+bron-GPU-interval; auto meet 20,27 ms. Dit zijn slechts acht meetframes met
+ongecontroleerd ander GPU-werk. De intervalstream is **geen aangetoonde
+prestatiewinst en niet gepromoveerd**. Schaduwen houden 14.619.068 brontriangles.
+Bronvormen zijn gelijk; 32 stilstaande TAA-frames bewijzen geen bewegende overgang.
+Beide rapporten staan onder dezelfde `aggregate-lod`-bewijsmap.
+
+De shadingdiagnoses behouden exact dezelfde opacity-PNG-hash en traversaltellers:
+cheap-BRDF meet 13,44 ms integratie, density-only 15,25 ms tegenover 14,56 ms
+volledig. Acht frames met concurrerend GPU-werk bewijzen geen materiaal-/lichtwinst.
+Vier bomen/vier views (samen 1920×1080, TAA uit, vier samples) reduceren camera-
+triangles van 513.596.744 naar 7.304, maar meten 138,40 ms bron tegenover 145,15 ms
+auto; 226.596.066 schaduwtriangles blijven. De 64-bomenproef (één view, twee
+samples) draait met 3.840 volumes, 98,73 ms integratie en 135,14 ms covered
+interval. Bij 25 volle tegelkandidatenlijsten blijft de complete fallback actief;
+step-/pooloverflow is nul. De fixture pint nabije en hoofdschaduwkaarten bewust
+op het bos, anders dan de camerarelatie in gameplay. Dit zijn dus schaduwstresstests
+met ongecontroleerde GPU-belasting, geen gameplay-FPS of klaar bosrenderpad.
+[Details en vergelijkingsbeeld](vegetation-species.md#latest-aggregate-experiments-neither-promoted).
+
+De actuele checks slagen: 672 rendertests, één aparte GPU-selectortest, 189
+Sideways-tests, workspace all-target-check en launchercontracten. `taa-null-2`
+forceert de fijnste bron met `--error 0.01`: opacity is exact gelijk (IoU 1,
+L1 0, dekking 31.649); 24 RGB-pixels verschillen minimaal. De gecorrigeerde
+capturefase klopt dus voor opacity, zonder bitexacte RGB- of bewegingsclaim.
+
+Volgende architectuurgrens: compacte **ruimtelijke voxelclusters** met aparte
+zichtbaarheid/materiaalresolve en shading, zoals de gedocumenteerde scheiding
+bij Epic. Verder poetsen aan branch-rayintegratie is niet de volgende mijlpaal.
+Vergelijk de nieuwe clusterroute tegen de onveranderde bron en de huidige
+integrator, inclusief dekking, materiaalrespons en kleur- én schaduwbudget.
+DLSS-transities, bewegende camera's, meerdere bomen
+en vier views volgen afzonderlijk. Het experiment is niet het live Sideways-bos;
+het oude flattened `mixed`-pad blijft uit. De historische metingen hieronder
+blijven hun eigen bron, instellingen en beperkingen houden.
+
 Actuele opt-in aanvulling, **26 oktober 2026**:
 [wind freeze en statische zoncache](wind-freeze-sun-cache-r52.md).
 Camera-Z, bewegende camera's en gewijzigde frozen owners zijn gecorrigeerd.
@@ -79,7 +178,7 @@ De beperkte r45-wind/cameracutproef is inmiddels voltooid: alle twaalf capture-i
 
 ### Wat Epic beschrijft, en wat Warp werkelijk doet
 
-- **Assemblies verminderen ook ver werk.** Epic deelt onderdeelgeometrie en kan verre part-roots samenvoegen totdat een assembly één grof cluster wordt. Gewone instancing houdt werk per instantie over. Warp deelt primitive-meshes en branchposes in de begrensde `CookedPlant`-proef, maar heeft nog geen gezamenlijke grove assemblyselectie. Het speelbos bestaat nog uit drie alpha-cardarchetypen. [Epic Assemblies](https://dev.epicgames.com/documentation/en-us/unreal-engine/nanite-assemblies), [Warp assetbuilder](../crates/render/src/vegetation_asset.rs).
+- **Assemblies verminderen ook ver werk.** Epic deelt onderdeelgeometrie en kan verre part-roots samenvoegen totdat een assembly één grof cluster wordt. Gewone instancing houdt werk per instantie over. Warp heeft sinds de aanvulling van 29 oktober branchaggregates en een subtree-rootkandidaat in de opt-in `CookedPlant`-proef; wereldresidentie en gezamenlijke kleur/schaduwschaalbaarheid zijn nog niet gevalideerd. Het speelbos bestaat nog uit drie alpha-cardarchetypen. [Epic Assemblies](https://dev.epicgames.com/documentation/en-us/unreal-engine/nanite-assemblies), [Warp assetbuilder](../crates/render/src/vegetation_asset.rs).
 - **Nanite-voxels zijn niet onze huidige multi-owner raymarcher.** Epic beschrijft clusters van maximaal 128 bricks van 4³ voxels, foutgestuurde triangle/voxelkeuze, aparte rasterbins en front-to-back-dieptevolgorde. Een normalenverdeling bewaart meerdere bladrichtingen. De Witcher-demo gebruikte directe shading van die verdeling; de huidige algemene documentatie beschrijft daarnaast een stochastische GBuffer-route. Warp heeft normale-/extinctiemomenten en een begrensd volumeprototype, maar geen equivalente schaalbare brickrasterhiërarchie. De live meadow-atlas is geen voxelvolume. [Epic Nanite Foliage](https://dev.epicgames.com/documentation/en-us/unreal-engine/nanite-foliage), [Warp volumeveldplan](meadow-volume-field.md).
 - **Compute-shading ontbreekt niet.** De hoofdvisibilitybuffer wordt al per pixel in compute belicht. Het huidige gras gebruikt eigen geometrie- en aggregatepasses. Het zinvolle verschil zit in hun selectie-, vertex-, overdraw- en geheugenkosten, niet in opnieuw de hoofdlichtpass naar compute verplaatsen. [Hoofdshader](../crates/render/src/shaders/shade.wgsl), [meadow renderer](../crates/render/src/meadow.rs).
 - **Gaten maken overdraw moeilijk.** Epic waarschuwt dat veel losse bladeren en lagen met gaten zowel vereenvoudiging als occlusion hinderen; masked-out pixels blijven duur. Geometrische bladeren zijn een geschikte bron, maar miljoenen opaque microtriangles zonder grove aggregatie lossen dit niet automatisch op. [Epic over aggregate geometry en foliage](https://dev.epicgames.com/documentation/unreal-engine/working-with-naniteenabled-content).
@@ -223,7 +322,7 @@ We bouwen eigen technieken rond onze meetbare problemen. We claimen geen volledi
 | HZB en occlusion culling | Meadow; r38-boomroute in beperkte speelproef | Actuele minimum-depthpiramide met windbounds. Bomen krijgen twee main-colour-fasen; echte alpha-openingen blijven in de occluderdiepte. Statische6/6 en split2/2 pixelpariteit exact. | Temporele1-pixelfout nog verklaren; diagnostic-only rejection-bypass nog ongebouwd. Fase2-bomen occluderen elkaar niet; geen volledige wereld-HLOD of120FPS-bewijs. [r38](forest-occlusion-r38.md), [meadow](meadow-field-r34.md). |
 | Wereldstreaming en HLOD | Gedeeltelijk / ontbreekt | Gras heeft begrensde CPU-tegelresidency en een GPU-pool; stages bouwen asynchroon met laadstatus. | Geen algemene wereldcelstreaming, geometriepage-residency of HLOD-vervanging van uitgeladen bosdelen. [live_ground_cover.rs](../../games/sideways/app/src/live_ground_cover.rs), [play.rs](../../games/sideways/app/src/play.rs). |
 | Huidig gras | Nieuw veld in opt-in speelproef | r34 vervangt fotografische pollen over het terrein met gedeelde procedural brongeometrie. GPU bepaalt roots, variant, bron-LOD, zichtbaarheid en wind per groep bladen; native en DLSS. | Verre voxelaggregatie en eigen grasschaduwen ontbreken; brongeometrie is op open terrein nog duur. Huidige grens 100 m. [Meadow-architectuur en cijfers](meadow-field-r34.md). |
-| Gedeelde plantaardige bron en voxels | Proef, toegepast op gemengde patch | `CookedPlant` bewaart unieke primitives; `SceneVegetation` deelt meshes over planten en verbindt members aan één branchpose/LOD-besluit. GPU scatter past de gedeelde pose toe. r30-stageproef: 23 graspollen + 2 jonge coniferen, 966 primitive-instances en 102 volume-owners. Bronbeelden bij drie windstanden zijn exact gelijk aan het onafhankelijke expanded-orakel. | Native-only, standaard uit. Gezamenlijke grove hiërarchie, optische voxelpariteit en schaalbare kosten ontbreken nog; 256 poses/owners is een proeflimiet. [API, bewijs en grenzen](unified-vegetation.md). |
+| Gedeelde plantaardige bron en voxels | r30-patchbewijs; nieuwe r4-aggregateproef opt-in | `CookedPlant` deelt primitives en poses. Nieuwe branch/subtree-kandidaten gebruiken 128×4³-brickniveaus, gesamplede directionele fouten en GPU-keuze; dynamische posebuffers en attachmentpagina's zijn aanwezig. Het oudere r30-bronorakel blijft eigen bewijs. | Nieuwe single-tree-proef toont uitvoering, geen optische pariteit of geïsoleerde winst. Source-schaduwen, residentie, DLSS-transities en vier-viewbos blijven open. [API, bewijs en grenzen](unified-vegetation.md). |
 | Wind | Speelpad + proef | Huidig pad berekent één shearcoëfficiënt per instance op GPU, gedeeld tussen views. Proef berekent hiërarchische branchposes met huidige/vorige matrices; bron en volume delen pose en bounds. | Volledige bosanimatie-LOD, stabiele source/voxel-motionvectors en DLSS voor part-wind ontbreken. Statistische verre graslaag beweegt niet als individuele bladen. [wind.rs](../crates/render/src/wind.rs), [part_wind.rs](../crates/render/src/part_wind.rs), [motion.rs](../crates/render/src/motion.rs). |
 | Directe zon op terrein | GPU-gevalideerde opt-in; speelproef actief | Gedeelde min/max-hiërarchie traceert echte hoogtevelddriehoeken. Hit, bewezen clear en unknown blijven verschillend; geen vaste 50 m horizon. In de vastgelegde lichtdemo ingeschakeld. | Kosten amortiseren en ambiguïteit tussen verfijnde rendergeometrie en fysiek terrein bewaken. Geen mesh-SDF of volledige scene-tracer; geen algemene standaardpromotie. [terrain-world-visibility.md](terrain-world-visibility.md). |
 | Verre boomschaduwen | GPU-fixture en gerichte replays geslaagd; speelproef actief | World-fixed, gecachte source-alpha-schaduwpagina’s: vastgelegde demo gebruikt 256 m pages. Noon-replay heeft 151/151 pages resident en een probleemkroon dicht bij een onafhankelijke bronschaduwreferentie; sunset-approach heeft op vier afstanden 154/154 pages resident. | Volledige bosoptische kalibratie, verre restpose onder wind en volledige vier-viewrouteprestaties blijven open. CPU requests en gedeelde pagepool: geen volledige VSM. [foliage_sun_pages.rs](../crates/render/src/foliage_sun_pages.rs), [shader](../crates/render/src/shaders/foliage_sun_pages.wgsl). |
@@ -291,7 +390,7 @@ M2 en het materiaalwerk voor M4 kunnen parallel. Een kleine GPU-plaatsingsproef 
 | Frame | Doel ≤8,33 ms; rapporteer gemiddelde, p95, p99 en hitches op een vaste rijroute. CPU-mainthread en GPU apart, plus volledige present-to-present tijd. Doel nog onbewezen. |
 | Resolutie | Native 3840×2160 en DLSS met exacte input/output apart meten; frame generation telt niet als echte sim/render-FPS. Eén en vier views, inclusief vier gescheiden bosgebieden. |
 | Schaduwpagina’s | Standaard pagebreedte 64 m; gecontroleerde bosreplay gebruikt expliciet 256 m. Beide: 512² depth per page, maximaal 256 pages, 8 page-updates per frame en ≤256 MiB depthpayload; metadata/transients apart. Grotere pages verruilen ruimtelijke resolutie voor dekking. Nog geen geaccepteerde route-/vier-viewtijdmeting. |
-| Vegetatieproef | Maximaal 256 volume-owners/partnodes, maximaal 64 branches per assembly; toegepaste patch ≤32 graspollen + 4 jonge coniferen. Dit is een proeflimiet, geen wereldbudget. |
+| Vegetatieproef | Historische patch: ≤32 graspollen + 4 saplings, 256 poses. Nieuwe opt-in selector: maximaal 4.096 volumegroepen; dynamische animatielimieten 262.144 poses/1.048.576 attachments/512 MiB, 64 branches per assembly en apparaatlimieten. Dit zijn bovengrenzen, geen gevalideerd wereldbudget; broninstances en source-schaduwen blijven apart tellen. |
 | Radianceproef | Maximaal 2.048 probes, 96 richtingen, 4 probe-updates per CPU-call; GPU-cache circa 3,38 MiB inclusief keys. Productieplanning moet ook traversalkosten, surface-atlas en lookups begrenzen. |
 | Residency | Huidig standaardgras: 70k gedeelde slots single / 115k split; extended is expliciet een grotere proef. Iedere toekomstige cache rapporteert misses, evictions, clipped work en peak bytes. |
 | Iteratie | Meet stagegeneratie, visuals/vegetatie, GPU-upload en eerste zichtbare frame afzonderlijk. Geen winstclaim door gameplay te bevriezen of werk buiten de timer te verplaatsen. |
@@ -341,7 +440,11 @@ Dit zijn ontwerpprincipes voor een eigen implementatie. Epics huidige documentat
 
 Hier betekent **virtual instancing** het voorgestelde compacte, op aanvraag geëvalueerde onderdelenmodel. Het is niet hetzelfde als onze huidige retained instancebuffer. Epics beschreven assemblies ondersteunen momenteel één instancinglaag; skeletal parts bewegen daar rigide in hun bind pose en zijn niet willekeurig geneste, afzonderlijk geanimeerde skeletons. We nemen geen onbewezen claim over een onbeperkte hiërarchie of gratis wind over. [Epic beperkingen](https://dev.epicgames.com/documentation/unreal-engine/nanite-assemblies).
 
-### Concrete gaten tussen broncode en doel
+### Historische r30-gaten tussen broncode en doel
+
+Onderstaande tabel bewaart de r30-audit. De actuele aggregate-, source- en
+posebudgetstatus staat bovenaan; de toenmalige 256-posegrens en ontbrekende
+aggregatekeuze beschrijven niet de nieuwe opt-in code.
 
 | Gat | Actuele bron en beperking | Eerstvolgende levering |
 | --- | --- | --- |
@@ -351,7 +454,7 @@ Hier betekent **virtual instancing** het voorgestelde compacte, op aanvraag geë
 | Branchwind met reconstructie | Part-wind deelt huidige/vorige poses, maar `Renderer::set_upscale` weigert DLSS bij voxel/branch-foliage. Productiebomen gebruiken nog instance-shear. | Stabiele plant/branch/generation-ID’s, vorige pose en gekozen representatie naar motion/depth doorgeven; gewisselde of gerecyclede geschiedenis afwijzen. Normals inverse-transpose, schaduwpose en windbounds gelijk houden. [Part-wind](../crates/render/src/part_wind.rs), [frame](../crates/render/src/frame.rs). |
 | Visibility en wereldbudget | Frustum/CLOD en actuele meadow-/r38-boom-Hi-Z aanwezig; boomtemporaliteit heeft nog een1-pixelfout. Geen algemene geometry-page-streaming of GPU-boomhabitatplaatsing; meadow genereert roots al op de GPU. | Temporele occlusie verklaren en gezamenlijke world-cell-residency toevoegen; vier views delen assets/poses, maar hebben eigen zichtbaarheid. Alle extra selectiekosten meenemen. |
 
-### Eerstvolgende patch en acceptatie
+### Historisch r30-vervolg en acceptatie
 
 **r30 heeft de niet-geëxpandeerde bron, gedeelde GPU-branchposes en een toegepaste gemengde strook. M2 blijft open.** De eerstvolgende gates zijn de gemeten voxel-kosten, gezamenlijke grove selectie, mooiere recepten en optische equivalentie. Het scenario `games/sideways/scenarios/unified-vegetation.toml` legt de strook en camera's vast. Rustgegevens worden per recept/groeistadium gedeeld; world-cell-ID, materiaalvariant en windfase blijven door alle representaties gelijk. Volledige cooking-cache en wereldresidency volgen nog.
 

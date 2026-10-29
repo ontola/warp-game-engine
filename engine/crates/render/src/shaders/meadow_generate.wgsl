@@ -129,6 +129,16 @@ struct MeadowCandidate {plant:MeadowPlant,radius:f32,lod:u32,valid:bool};
 // group pipeline replaces this pure hook, after the SAME habitat/frustum/Hi-Z
 // tests and before wind evaluation or any compact-list/pool writes.
 fn meadow_retain_root(cell:vec2<i32>,root:vec3<f32>)->bool {return true;}
+// Recipe header 0.z is a world-space species patch scale, not a draw range.
+// Pure spatial identity is shared by all views, source LODs and contact. Keep
+// the zero mode's existing hash exactly; no per-cell colour speckle in mixed.
+fn meadow_source_variant(cell:vec2<i32>,xz:vec2<f32>,seed:u32,count:u32,patch_metres:f32)->u32 {
+    let variants=max(1u,min(count,3u));
+    if patch_metres<=0.0 {return meadow_hash(cell,67u,seed)%variants;}
+    let field=meadow_noise(xz/patch_metres+vec2<f32>(23.4,-9.7),seed^0x7a31d5b9u);
+    let variant=select(select(0u,1u,field>=0.38),2u,field>=0.62);
+    return min(variant,variants-1u);
+}
 fn meadow_generate_cell(cell:vec2<i32>,page:bool)->MeadowCandidate {
     var result:MeadowCandidate;
     let seed=meadow.grid.z;
@@ -141,7 +151,7 @@ fn meadow_generate_cell(cell:vec2<i32>,page:bool)->MeadowCandidate {
     if !page && (horizontal>=meadow.range.x || (meadow.support.z>1.5 && horizontal<meadow.shape.w)) {return result;}
     let scale=meadow_growth_factor(xz,cell,seed)*meadow.shape.x;
     if scale<=0.0 {return result;}
-    let variant=meadow_hash(cell,67u,seed)%max(1u,min(meadow.grid.w,3u));
+    let variant=meadow_source_variant(cell,xz,seed,meadow.grid.w,meadow_recipe[0].z);
     var max_angle=0.0;
     for(var branch=0u;branch<4u;branch++) {
         let pivot=meadow_recipe[9u+variant*4u+branch];
