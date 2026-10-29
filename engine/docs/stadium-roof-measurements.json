@@ -1,0 +1,190 @@
+{
+  "scope": "same executable 4K native 4 views seed52 30 warmup 600 measured, alternating full/packed; all600profiles noerrors",
+  "exe_sha256": "55171419cd523b8b9c88096a01e6f5012295dd59c3760ce38293641a4f6db9ec",
+  "runs": [
+    {
+      "packed": false,
+      "repeat": 1,
+      "frame_ms": {
+        "cpu_median": 5.15,
+        "cpu_p95": 14.64,
+        "wall_median": 16.04,
+        "wall_p95": 32.0,
+        "gpu_median": 7.47,
+        "gpu_p95": 8.22
+      },
+      "pass_means_ms": {
+        "shade": 3.343,
+        "raster": 0.899,
+        "near shadow raster": 0.392,
+        "bloom": 0.365,
+        "taa": 0.355,
+        "cull": 0.233,
+        "tonemap": 0.232,
+        "near shadow cull": 0.192,
+        "shadow raster": 0.081,
+        "fx": 0.047,
+        "shadow cull": 0.045,
+        "live screens": 0.024,
+        "crowd": 0.021
+      }
+    },
+    {
+      "packed": true,
+      "repeat": 1,
+      "frame_ms": {
+        "cpu_median": 4.54,
+        "cpu_p95": 9.09,
+        "wall_median": 12.8,
+        "wall_p95": 23.01,
+        "gpu_median": 7.39,
+        "gpu_p95": 8.24
+      },
+      "pass_means_ms": {
+        "shade": 3.25,
+        "raster": 0.91,
+        "near shadow raster": 0.394,
+        "taa": 0.323,
+        "bloom": 0.294,
+        "tonemap": 0.276,
+        "cull": 0.246,
+        "near shadow cull": 0.173,
+        "shadow raster": 0.082,
+        "fx": 0.047,
+        "shadow cull": 0.047,
+        "weighted character skinning": 0.022,
+        "crowd": 0.021
+      }
+    },
+    {
+      "packed": false,
+      "repeat": 2,
+      "frame_ms": {
+        "cpu_median": 4.39,
+        "cpu_p95": 6.16,
+        "wall_median": 12.68,
+        "wall_p95": 16.42,
+        "gpu_median": 7.47,
+        "gpu_p95": 8.45
+      },
+      "pass_means_ms": {
+        "shade": 3.242,
+        "raster": 1.009,
+        "near shadow raster": 0.396,
+        "bloom": 0.337,
+        "taa": 0.317,
+        "cull": 0.307,
+        "tonemap": 0.254,
+        "near shadow cull": 0.179,
+        "shadow raster": 0.081,
+        "shadow cull": 0.045,
+        "fx": 0.042,
+        "weighted character skinning": 0.021,
+        "crowd": 0.021
+      }
+    },
+    {
+      "packed": true,
+      "repeat": 2,
+      "frame_ms": {
+        "cpu_median": 4.53,
+        "cpu_p95": 8.12,
+        "wall_median": 12.44,
+        "wall_p95": 19.11,
+        "gpu_median": 4.66,
+        "gpu_p95": 8.32
+      },
+      "pass_means_ms": {
+        "shade": 2.972,
+        "raster": 0.939,
+        "near shadow raster": 0.369,
+        "taa": 0.336,
+        "bloom": 0.298,
+        "cull": 0.244,
+        "tonemap": 0.238,
+        "near shadow cull": 0.18,
+        "shadow raster": 0.082,
+        "fx": 0.053,
+        "shadow cull": 0.046,
+        "weighted character skinning": 0.022,
+        "crowd": 0.021
+      }
+    },
+    {
+      "packed": false,
+      "repeat": 3,
+      "frame_ms": {
+        "cpu_median": 4.25,
+        "cpu_p95": 5.86,
+        "wall_median": 12.6,
+        "wall_p95": 15.96,
+        "gpu_median": 7.56,
+        "gpu_p95": 8.4
+      },
+      "pass_means_ms": {
+        "shade": 3.437,
+        "raster": 0.949,
+        "near shadow raster": 0.368,
+        "taa": 0.358,
+        "bloom": 0.354,
+        "cull": 0.256,
+        "tonemap": 0.232,
+        "near shadow cull": 0.177,
+        "shadow raster": 0.085,
+        "fx": 0.054,
+        "shadow cull": 0.045,
+        "crowd": 0.021,
+        "weighted character skinning": 0.021
+      }
+    },
+    {
+      "packed": true,
+      "repeat": 3,
+      "frame_ms": {
+        "cpu_median": 4.44,
+        "cpu_p95": 6.59,
+        "wall_median": 12.43,
+        "wall_p95": 15.94,
+        "gpu_median": 4.83,
+        "gpu_p95": 8.14
+      },
+      "pass_means_ms": {
+        "shade": 3.016,
+        "raster": 0.91,
+        "near shadow raster": 0.4,
+        "bloom": 0.333,
+        "taa": 0.323,
+        "cull": 0.286,
+        "tonemap": 0.238,
+        "near shadow cull": 0.174,
+        "shadow raster": 0.085,
+        "shadow cull": 0.045,
+        "fx": 0.04,
+        "crowd": 0.021,
+        "weighted character skinning": 0.02
+      }
+    }
+  ],
+  "image_deltas": {
+    "facade": {
+      "mean": 0.0510400462962963,
+      "p99": 1.0,
+      "max": 3.0
+    },
+    "steps": {
+      "mean": 0.023185416666666667,
+      "p99": 1.0,
+      "max": 2.0
+    },
+    "overview": {
+      "mean": 0.02863912037037037,
+      "p99": 1.0,
+      "max": 4.0
+    },
+    "roof-top": {
+      "mean": 0.01357199074074074,
+      "p99": 1.0,
+      "max": 2.0
+    }
+  }
+}
