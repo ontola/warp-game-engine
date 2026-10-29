@@ -611,6 +611,7 @@ pub struct Renderer {
     headlight_state: std::sync::Mutex<Vec<crate::headlights::SpotLight>>,
     local_light_state: std::sync::Mutex<Vec<crate::headlights::LocalLight>>,
     spot_falloff: std::sync::Mutex<Vec<f32>>,
+    spot_softness: std::sync::Mutex<f32>,
     lighting_focus: std::sync::Mutex<Vec<Vec3>>,
     diagnostic_sun_focus: std::sync::Mutex<Vec<Vec3>>,
     legacy_light_lookahead: bool,
@@ -1634,6 +1635,7 @@ impl Renderer {
             headlight_state: Default::default(),
             local_light_state: Default::default(),
             spot_falloff: Default::default(),
+            spot_softness: Default::default(),
             lighting_focus: Default::default(),
             diagnostic_sun_focus: Default::default(),
             legacy_light_lookahead: std::env::var("KERN_LEGACY_LIGHT_LOOKAHEAD").is_ok_and(|v|v=="1"),
@@ -2176,6 +2178,12 @@ impl Renderer {
     /// (Godot's `spot_attenuation`); missing entries are 2 (inverse square).
     pub fn set_spot_falloff(&self,spot_falloff:&[f32]) {
         *self.spot_falloff.lock().unwrap()=spot_falloff.to_vec();
+    }
+    /// Soft shadows for the shadowed spots: the light's size in metres
+    /// (0, the default: hard). Shadows are sharp at the foot of what casts
+    /// them and widen with the distance to it (PCSS).
+    pub fn set_spot_softness(&self,light_size_m:f32) {
+        *self.spot_softness.lock().unwrap()=light_size_m;
     }
     pub fn set_headlights(&self,lights:&[crate::headlights::SpotLight])->Result<(),String> {
         let validated=crate::headlights::validate(lights)?;
@@ -3276,7 +3284,8 @@ impl Renderer {
         // active depth attachment is never simultaneously bound for reading.
         let local_lights=self.local_light_state.lock().unwrap().clone();
         let spot_falloff=self.spot_falloff.lock().unwrap().clone();
-        self.headlights.upload(gpu,&headlights,&local_lights,&spot_falloff);
+        let softness=*self.spot_softness.lock().unwrap();
+        self.headlights.upload(gpu,&headlights,&local_lights,&spot_falloff,softness);
         let mut headlight_targets=self.headlight_targets.lock().unwrap();
         while headlight_targets.len()<headlights.len() {
             headlight_targets.push(self.view_targets_capacity(gpu,"headlight shadow",self.shadow_capacity,false,self.instance_groups.headlight_enabled));
