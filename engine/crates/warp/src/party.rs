@@ -65,6 +65,9 @@ impl Party {
 
     pub fn running(&self) -> bool { self.phase == Phase::Running }
 
+    /// Startup progress for the host's loading screen ([`app::Game::loading`]).
+    pub fn loading(&mut self, percent: u32, step: &str) { self.client.loading(percent, step); }
+
     fn seats(seats: &[Seat]) -> Vec<SeatInfo> { seats.iter().map(SeatInfo::from).collect() }
 
     pub fn poll(&mut self) -> Vec<Ev> {
@@ -76,7 +79,7 @@ impl Party {
                 match c {
                     Command::Prepare { session, seats } => {
                         println!("{} [gamenight] prepare {session} ({} seats)", app::manners::stamp(), seats.len());
-                        let _ = self.client.notify_progress(&session, 5, "starting the game");
+                        let _ = self.client.notify_progress(&session, 85, "setting up the match");
                         out.push(Ev::Prepare(Self::seats(&seats)));
                         self.session = session;
                         self.phase = Phase::Warm;

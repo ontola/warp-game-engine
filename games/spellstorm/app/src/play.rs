@@ -209,6 +209,8 @@ impl app::Game for Spellstorm {
         if self.party.is_some() { 0 } else { self.humans }
     }
 
+    fn loading(&mut self, percent: u32, step: &str) { if let Some(p) = self.party.as_mut() { p.loading(percent, step); } }
+
     fn screen(&self) -> app::Screen {
         self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen())
     }

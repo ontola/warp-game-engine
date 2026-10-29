@@ -117,6 +117,10 @@ pub trait Game {
     /// close its own menu). Otherwise the shell releases the mouse, or quits
     /// when it is already released.
     fn escape(&mut self) -> bool { false }
+    /// Startup progress (percent, what is happening) for a party host's
+    /// loading screen: the shell reports opening the window, starting the
+    /// GPU and building the first scene. Party games pass it to their host.
+    fn loading(&mut self, percent: u32, step: &str) { let _ = (percent, step); }
     /// Function key F`n` (1..=10) was pressed, also while typing: return
     /// true when the game used it. F11 and F12 stay the shell's.
     fn function_key(&mut self, _n: u8) -> bool { false }
@@ -421,6 +425,7 @@ impl Shell<'_> {
         let Some(live) = &mut self.live else { return Ok(()) };
         let size = [live.config.width, live.config.height];
         let split = self.game.split();
+        if live.renderer.is_none() { self.game.loading(75, "building the scene"); }
         let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, renderer: &mut live.renderer };
         let mut draw = self.game.draw(&mut frame)?;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
@@ -537,9 +542,11 @@ impl ApplicationHandler for Shell<'_> {
                 .with_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None)));
             let attrs = self.manners.first(self.game.screen(), attrs);
             self.screen = self.manners.screen;
+            self.game.loading(20, "opening the window");
             let t = Instant::now();
             let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
             let made = t.elapsed().as_millis();
+            self.game.loading(35, "starting the graphics card");
             let size = window.inner_size();
             let open = |instance: wgpu::Instance| -> Result<_, String> {
                 let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
@@ -553,6 +560,7 @@ impl ApplicationHandler for Shell<'_> {
                 None => open(render::gpu::instance())?,
             };
             let devised = t.elapsed().as_millis();
+            self.game.loading(55, "preparing the screen");
             surface.configure(&gpu.device, &config);
             let out = Output::new(&gpu, config.format)?;
             println!("{} startup: window {made} ms, instance and surface {} ms, adapter and device {} ms, swapchain and presenter {} ms", manners::stamp(), surfaced - made, devised - surfaced, t.elapsed().as_millis() - devised);
