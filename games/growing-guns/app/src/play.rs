@@ -817,6 +817,10 @@ impl app::Game for Gg {
                 let flash = self.vis.ion_flash(self.world.players[s].eye());
                 let pad = k > 0 || self.no_kbm;
                 self.hud.view(&mut list, &self.world, s, *rect, self.menus.get(k).map_or(0, |m| m.focus), flash, pad);
+                // An air strike's impact whites out every view for two frames
+                // (Godot `flash_air_strike_impact`).
+                let impact = self.vis.air_impact_flash();
+                if impact > 0.0 { list.begin_overlay(); list.rect(*rect, [1.0, 0.95, 0.86, impact * 0.92], *rect); }
             }
             list.begin_overlay();
             let error = self.session.error().or_else(|| self.ui.error.clone());

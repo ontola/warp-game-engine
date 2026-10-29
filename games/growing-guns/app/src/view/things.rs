@@ -43,8 +43,8 @@ impl Things {
     /// The pickups' ground lights (Godot `DropLight`).
     pub fn pickup_lights(&self) -> &[LocalLight] { self.beams.lights() }
     /// The incoming rocket's lens flare into one view (HUD layer).
-    pub fn airstrike_flare(list: &mut render::hud::HudDrawList, rect: [f32; 4], cam: &render::Camera, world: &World) {
-        airstrike::flare::draw(list, rect, cam, &world.strikes);
+    pub fn airstrike_flare(list: &mut render::hud::HudDrawList, rect: [f32; 4], cam: &render::Camera, world: &World, clock: f32) {
+        airstrike::flare::draw(list, rect, cam, &airstrike::drawn(&world.strikes, world.tick as f32 * growing_guns::DT - clock));
     }
     /// The air-strike rockets' engine lights.
     pub fn strike_lights(&self) -> &[LocalLight] { &self.strike_lights }
@@ -124,7 +124,8 @@ impl Things {
                 StrikeKind::AirStrike | StrikeKind::IonCannon => {}
             }
         }
-        for (mesh, xf) in self.strike_rocket.parts(&world.strikes) { put(scene, mesh, xf, false); }
+        let strikes = airstrike::drawn(&world.strikes, world.tick as f32 * growing_guns::DT - clock);
+        for (mesh, xf) in self.strike_rocket.parts(&strikes) { put(scene, mesh, xf, false); }
         // Coop: where the next enemy rises (Godot's pentagram), and the
         // revive circle where a downed teammate fell.
         if let Some(inc) = world.waves.incoming.as_ref().filter(|_| world.coop) {
@@ -173,8 +174,8 @@ impl Things {
             i.sphere = [0.0; 4];
         }
         self.laser_sprites = airstrike::sprites(&world.strikes);
-        self.laser_sprites.extend(airstrike::plumes(&world.strikes, clock));
-        self.strike_lights = airstrike::lights(&world.strikes, clock);
+        self.laser_sprites.extend(airstrike::plumes(&strikes, clock));
+        self.strike_lights = airstrike::lights(&strikes, clock);
         self.beams.pose(scene, world, clock);
         self.sprites.clear();
         self.sprites.extend_from_slice(&self.laser_sprites);

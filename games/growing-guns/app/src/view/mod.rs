@@ -96,6 +96,9 @@ pub struct Visuals {
     clock: f32,
     /// Floodlight strength against Godot's (crate::sky::floodlights).
     flood: f32,
+    /// Air strike targets in flight last tick, and when the last one hit.
+    air_targets: Vec<Vec3>,
+    air_impact: f32,
 }
 
 impl Visuals {
@@ -126,7 +129,7 @@ impl Visuals {
                 origin: Vec3::new(-192.0, -6.0, -192.0), cell: 6.0, dims: [65, 13, 65],
             }).expect("stadium sky grid");
         }
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY };
         v.set_arena(world);
         v
     }
@@ -205,6 +208,8 @@ impl Visuals {
                     if kind == ExplosionKind::Ion {
                         self.ion.detonate(&mut self.fx.blasts, now, pos, radius, world.arena.lava_surface());
                     } else {
+                        // An air strike's rocket hit (its blast is 10 cm over the target).
+                        if self.air_targets.iter().any(|t| t.distance(pos - Vec3::Y * 0.1) < 0.05) { self.air_impact = now; }
                         self.fx.blasts.explosion(now, pos, radius, BLAST_TINT);
                     }
                     self.fx.blast_punch(world, now, pos, radius);
@@ -243,6 +248,7 @@ impl Visuals {
                 _ => {}
             }
         }
+        self.air_targets = world.strikes.iter().filter(|s| s.kind == growing_guns::StrikeKind::AirStrike).map(|s| s.target).collect();
         self.stadium.absorb(s, &mut self.fx.particles, &mut self.fx.blasts, world, ears, now, growing_guns::DT);
         self.guns.tick(world, growing_guns::DT);
         self.players.tick(world, &mut self.phys);
@@ -348,7 +354,16 @@ impl Visuals {
     /// Short, distance-attenuated ion impact flash, separately per viewport.
     pub fn ion_flash(&self, eye: Vec3) -> f32 { self.ion.flash(self.clock, eye) }
     /// The incoming air-strike rocket's lens flare over one view.
-    pub fn airstrike_flare(&self, list: &mut render::hud::HudDrawList, rect: [f32; 4], cam: &Camera, world: &World) { things::Things::airstrike_flare(list, rect, cam, world) }
+    pub fn airstrike_flare(&self, list: &mut render::hud::HudDrawList, rect: [f32; 4], cam: &Camera, world: &World) { things::Things::airstrike_flare(list, rect, cam, world, self.clock) }
+
+    /// The air strike impact's white-out (Godot `trigger_impact_flash`: two
+    /// frames of an additive wash over every view), as an overlay alpha.
+    pub fn air_impact_flash(&self) -> f32 {
+        let t = self.clock - self.air_impact;
+        if !(t > -growing_guns::DT) { return 0.0; }
+        let t = t.max(0.0);
+        if t < 1.0 / 30.0 { 1.0 } else { (1.0 - (t - 1.0 / 30.0) / 0.06).clamp(0.0, 1.0) }
+    }
 }
 
 /// Godot's sky_top to horizon; the ground colour is the darkened horizon.
