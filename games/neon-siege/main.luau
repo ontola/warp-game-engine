@@ -1367,32 +1367,28 @@ local function show_pilot(p)
 	local a = math.atan2(p.aimY, p.aimX)
 	local pos = at(p.x, p.y, 0.15)
 	local mode = if not alive(p) then "down" elseif p.invul > 0 and math.floor(s.time * 12) % 2 == 0 then "blink" else "up"
-	-- A pilot is a white blood cell: a soft white membrane, and a nucleus in
-	-- the player's colour that leans towards where they aim.
-	if not p.cell then
-		p.cell = world.spawn(outline(20, 20, 3), { pos = pos, size = 40 * S, color = rgb(WHITE), emissive = GLOW.white * 0.7, solid = false, tag = "pilot" })
-		p.mark = world.spawn(outline(3, 8, 3), { pos = pos, size = vector.create(19 * S, 0.04, 14 * S), color = p.color, emissive = GLOW.line, solid = false, tag = "pilot" })
+	if not p.dart then
+		p.dart = world.spawn(outline(3, 22, 3.6), { pos = pos, size = vector.create(54 * S, 0.04, 36 * S), color = p.color, emissive = GLOW.line, solid = false, tag = "pilot" })
+		p.nose = world.spawn(outline(3, 8, 2.6), { pos = pos, size = vector.create(19 * S, 0.04, 12 * S), color = "#ffffff", emissive = GLOW.white, solid = false, tag = "pilot" })
 		p.halo = world.spawn(outline(24, 20), { pos = pos, size = 40 * S, color = p.color, emissive = GLOW.line, solid = false, visible = false, tag = "pilot" })
 		p.mode = "up"
 	end
 	if p.mode ~= mode then
-		world.set(p.cell, { visible = mode == "up" })
-		world.set(p.mark, { visible = mode == "up" })
+		world.set(p.dart, { visible = mode == "up" })
+		world.set(p.nose, { visible = mode == "up" })
 		world.set(p.halo, { visible = mode == "down" })
 		p.mode = mode
 	end
-	-- The membrane breathes a little, like a cell crawling.
-	local wobble = math.sin(s.time * 4 + p.id) * 0.06
-	world.set(p.cell, { pos = pos, size = vector.create(40 * S * (1 + wobble), 0.04, 40 * S * (1 - wobble)) })
-	world.place(p.mark, at(p.x + math.cos(a) * 6, p.y + math.sin(a) * 6, 0.16), -a)
+	world.place(p.dart, pos, -a)
+	world.place(p.nose, at(p.x + math.cos(a) * 7, p.y + math.sin(a) * 7, 0.16), -a)
 	if mode == "down" then
 		-- The ring fills in as the revive comes closer.
 		local k = math.min(1, math.max(p.revive / REVIVE_TIME, p.downTime / 6))
 		-- The ring sits where the pilot went down (it was left at its spawn point).
 		world.set(p.halo, { pos = pos, size = vector.create((40 + 10 * k + math.sin(s.time * 5) * 4) * S, 0.04, (40 + 10 * k + math.sin(s.time * 5) * 4) * S) })
 	end
-	seen(p.cell)
-	seen(p.mark)
+	seen(p.dart)
+	seen(p.nose)
 	seen(p.halo)
 end
 
