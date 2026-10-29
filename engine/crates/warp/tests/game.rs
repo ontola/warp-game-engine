@@ -445,7 +445,9 @@ local function init()
     local parts, rings = fx.count()
     state.parts, state.rings, state.fx = parts, rings, #world.find("fx")
     state.typo = tostring(select(2, pcall(fx.burst, vector.create(0, 0, 0), { colour = "red" })))
-    post.set({ bloom = 0.5, bloom_radius = 3, vignette = 0.5, grain = 0.2, aberration = 1 })
+    post.set({ bloom = 0.5, bloom_radius = 3, bloom_wide = false, vignette = 0.5, grain = 0.2, aberration = 1 })
+    state.ring = world.get(world.spawn("outline6:0.05", { solid = false })).shape
+    state.bad_ring = tostring(select(2, pcall(world.spawn, "outline2")))
     local many = {}
     for i = 1, 33 do many[i] = { pos = vector.create(i, 1, 0), color = "#ff8000", intensity = 100 } end
     state.too_many = tostring(select(2, pcall(lights.set, many)))
@@ -472,7 +474,9 @@ fn effects_fly_out_and_are_gone_after_their_life() {
     assert!(s["state"]["too_many"].as_str().unwrap().contains("at most 32 lights"), "{s}");
     assert_eq!(g.core().lamps.len(), 32);
     let post = g.core().post.clone();
-    assert_eq!((post.bloom, post.vignette), (Some(0.5), 0.5));
+    assert_eq!((post.bloom, post.vignette, post.bloom_wide), (Some(0.5), 0.5, false));
+    assert_eq!(s["state"]["ring"], json!("outline6:0.05"));
+    assert!(s["state"]["bad_ring"].as_str().unwrap().contains("3 to 64 sides"), "{s}");
     ticks(&mut g, 10, Controls { aim: [0.5, 0.0], ..Default::default() });
     assert_eq!(state(&g)["state"]["aim"], json!(0.5), "the right stick's position");
     ticks(&mut g, 50, Controls::default());

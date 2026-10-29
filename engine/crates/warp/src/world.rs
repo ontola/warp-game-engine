@@ -23,13 +23,16 @@ pub enum Shape {
     Cube,
     Sphere,
     Capsule,
+    /// A hollow regular polygon in the XZ plane (`outline6`, `outline4:0.05`):
+    /// corners on a 1 m circle, the edge `width` thousandths of a metre at size 1.
+    Outline { sides: u32, width: u32 },
     /// A glTF file inside the game folder (`assets/crate.glb`).
     Model(String),
 }
 
 impl Shape {
-    pub fn name(&self) -> &str {
-        match self { Shape::Cube => "cube", Shape::Sphere => "sphere", Shape::Capsule => "capsule", Shape::Model(p) => p }
+    pub fn name(&self) -> String {
+        match self { Shape::Cube => "cube".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone() }
     }
 }
 
@@ -131,7 +134,7 @@ pub struct World {
     pub scene: Scene,
     slots: Slots,
     materials: HashMap<[i32; 6], u32>,
-    meshes: HashMap<(u8, u32), usize>,
+    meshes: HashMap<(usize, u32), usize>,
     models: HashMap<String, ModelInfo>,
     /// Meshes or materials were added since the renderer was made.
     pub rebuild: bool,
@@ -209,6 +212,7 @@ impl World {
             Shape::Cube => 0,
             Shape::Sphere => 1,
             Shape::Capsule => 2,
+            Shape::Outline { sides, width } => 3 + (*sides as usize) * 1000 + *width as usize,
             Shape::Model(path) => {
                 if !self.models.contains_key(path) {
                     let file = self.asset(path)?;
@@ -227,9 +231,13 @@ impl World {
             0 => primitives::cube(m),
             1 => primitives::sphere(m, 16, 24),
             // Radius 1, 2 m straight middle: halved below to 1 m wide, 2 m tall.
-            _ => primitives::capsule(m, 2.0, 12, 20),
+            2 => primitives::capsule(m, 2.0, 12, 20),
+            _ => match shape {
+                Shape::Outline { sides, width } => primitives::outline(m, *sides, *width as f32 / 1000.0),
+                _ => unreachable!(),
+            },
         };
-        if kind != 0 { for v in &mut p.vertices { v.pos = v.pos.map(|c| c * 0.5); } }
+        if kind == 1 || kind == 2 { for v in &mut p.vertices { v.pos = v.pos.map(|c| c * 0.5); } }
         let mesh = self.scene.add_mesh(&p.mesh());
         self.meshes.insert((kind, m), mesh);
         self.rebuild = true;

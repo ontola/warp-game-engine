@@ -203,6 +203,35 @@ pub fn cube(material: u32) -> Primitive {
     p.outward()
 }
 
+/// A hollow regular polygon (outline) in the XZ plane, height 1 along Y
+/// (centred): corners on a circle of radius 0.5, the first at +X, and an
+/// edge of constant `width` (mitred corners). Flat-shaded top, bottom,
+/// outer and inner walls; neon line art drawn from above.
+pub fn outline(material: u32, sides: u32, width: f32) -> Primitive {
+    let n = sides.max(3);
+    let mut p = Primitive { material, ..Default::default() };
+    let half = std::f32::consts::PI / n as f32;
+    let outer = 0.5;
+    let inner = ((outer * half.cos() - width).max(0.0)) / half.cos();
+    let corner = |i: u32, r: f32| { let a = std::f32::consts::TAU * i as f32 / n as f32; Vec3::new(a.cos() * r, 0.0, a.sin() * r) };
+    let quad = |p: &mut Primitive, q: [Vec3; 4], normal: Vec3| {
+        let base = p.vertices.len() as u32;
+        for (k, v) in q.iter().enumerate() { p.vertices.push(Vertex { pos: v.to_array(), normal: normal.to_array(), uv: [(k & 1) as f32, (k >> 1) as f32] }); }
+        p.indices.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+    };
+    let (up, down) = (Vec3::Y * 0.5, Vec3::Y * -0.5);
+    for i in 0..n {
+        let (o0, o1, i0, i1) = (corner(i, outer), corner(i + 1, outer), corner(i, inner), corner(i + 1, inner));
+        let mid = std::f32::consts::TAU * (i as f32 + 0.5) / n as f32;
+        let out = Vec3::new(mid.cos(), 0.0, mid.sin());
+        quad(&mut p, [o0 + up, o1 + up, i0 + up, i1 + up], Vec3::Y);
+        quad(&mut p, [o0 + down, o1 + down, i0 + down, i1 + down], Vec3::NEG_Y);
+        quad(&mut p, [o0 + down, o1 + down, o0 + up, o1 + up], out);
+        quad(&mut p, [i0 + down, i1 + down, i0 + up, i1 + up], -out);
+    }
+    p.along_normals()
+}
+
 /// Unit quad (side 1) in the XY plane facing +Z, counter-clockwise seen
 /// from +Z. uv (0,0) is the top-left corner (+Y up), as a picture or a
 /// `screen::Screen` draw list is laid out. One-sided unless the material is
