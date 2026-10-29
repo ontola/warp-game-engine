@@ -117,6 +117,9 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
 /// Reserve `capacity` patch slots that draw with `material`.
 pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32, style: terrain_field::Style) -> TerrainSpec {
     assert!(scene.procedural_terrain.is_none(), "one procedural terrain per scene");
+    // terrain_surface.wgsl reads the seed from the material's metalness
+    // (terrain is never metal) for detail finer than the mesh.
+    scene.materials[material as usize].metal = seed as f32;
     let first_vertex = scene.vertices.len() as u32;
     let first_tri = scene.tris.len() as u32;
     let first_cluster = scene.clusters.len() as u32;
