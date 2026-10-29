@@ -4,7 +4,7 @@
 -- comes back on the next tick.
 
 -- Brightness of the cells (emissive; surface.wgsl's colours are scaled by it).
-local GLOW = 0.0016
+local GLOW = 0.001
 
 local function spawn()
 	world.spawn("cube", { pos = vector.create(0, -11.5, 0), size = vector.create(80, 0.1, 50), color = "#000000", emissive = GLOW, surface = 0, solid = false, tag = "backdrop" })
