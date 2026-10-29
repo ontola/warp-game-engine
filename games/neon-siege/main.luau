@@ -1388,14 +1388,26 @@ local function show_enemy(e)
 	-- The singularity: a black core inside spinning rings of light.
 	if e.kind == "singularity" and e.warm <= 0 then
 		local phase = e.phase or 1
+		-- Seven rings kept from tick to tick (spawning them anew every tick in
+		-- an ever-changing colour dropped the game to ~20 fps); the colour
+		-- steps through 24 hues so only a few looks ever exist.
+		e.rings = e.rings or {}
 		for i = 1, 7 do
 			local k = i / 7
 			local r = e.r * (1.3 + k * 1.6)
 			local squash = 0.32 + 0.1 * math.sin(s.time + i)
-			local hue = s.time * (0.2 + phase * 0.15) + k * 4
+			local hue = math.floor((s.time * (0.2 + phase * 0.15) + k * 4) * 24 / (2 * math.pi)) * 2 * math.pi / 24
 			local color = rgb({ 0.6 + 0.4 * math.sin(hue), 0.35 + 0.3 * math.sin(hue + 2), 1 }, 1 - k * 0.5)
-			local id = seen(world.spawn(outline(32, r, LINE * 1.2), { pos = pos, size = vector.create(r * 2 * S, 0.04, r * 2 * squash * S), color = color, emissive = GLOW.line, solid = false, tag = "enemy" }))
-			world.place(id, pos, -s.time * (0.6 + k) * (if i % 2 == 0 then 1 else -1))
+			if not e.rings[i] then
+				e.rings[i] = world.spawn(outline(32, r, LINE * 1.2), { pos = pos, size = 1, color = color, emissive = GLOW.line, solid = false, tag = "enemy" })
+			end
+			local id = e.rings[i]
+			if e["ringHue" .. i] ~= hue then
+				world.set(id, { color = color })
+				e["ringHue" .. i] = hue
+			end
+			world.set(id, { pos = pos, rot = vector.create(0, -s.time * (0.6 + k) * (if i % 2 == 0 then 1 else -1), 0), size = vector.create(r * 2 * S, 0.04, r * 2 * squash * S) })
+			seen(id)
 		end
 	end
 	-- A dasher shows its charge line before the rush.
