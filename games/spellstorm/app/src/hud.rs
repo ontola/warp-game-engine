@@ -385,17 +385,12 @@ impl Painter<'_> {
             TextAlign::Right => x * s - w,
         };
         let top = y * s - h * 0.5;
-        let run = |d: &mut HudDrawList, dx: f32, dy: f32, c: C| {
-            d.text.push(TextRun { id: 0x5ee1_0000_0000 + d.text.len() as u64, text: text.into(), position: [left + dx, top + dy], bounds: NO_CLIP, font_size: px, color: bytes(c), font, align, width: w });
-        };
+        let id = 0x5ee1_0000_0000 + self.d.text.len() as u64;
+        self.d.text.push(TextRun { id, text: text.into(), position: [left, top], bounds: NO_CLIP, font_size: px, color: bytes(c), font, align, width: w });
+        // Godot's outline_size is the whole stroke; a real one round the glyphs.
         if outline > 0.0 {
-            let o = outline * s * 0.5;
-            let oc = [0.0, 0.0, 0.0, 0.9 * c[3]];
-            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (0.0, -1.4), (0.0, 1.4), (-1.4, 0.0), (1.4, 0.0)] {
-                run(self.d, dx * o, dy * o, oc);
-            }
+            self.d.outline(id, outline * s * 0.5, bytes([0.0, 0.0, 0.0, 0.9 * c[3]]));
         }
-        run(self.d, 0.0, 0.0, c);
     }
     /// Centred, with a soft shadow below (the level card).
     fn shadow_text(&mut self, text: &str, x: f32, y: f32, font: FontFace, size: f32, c: C) {
