@@ -27,9 +27,19 @@ pub struct GpuInfo {
 /// primary backends (Vulkan, DX12 for WARP): starting OpenGL as well costs
 /// a cold launch seconds and is never picked there. `WGPU_BACKEND` still
 /// overrides.
-pub fn instance() -> wgpu::Instance {
+pub fn instance() -> wgpu::Instance { instance_for(wgpu::Backends::PRIMARY) }
+
+/// A game window on Windows tries Vulkan alone first: creating the DX12
+/// instance and its adapters as well costs every launch hundreds of ms.
+/// `instance()` is the fallback when Vulkan cannot present.
+pub fn window_instance() -> Option<wgpu::Instance> {
+    let pinned = std::env::var_os("WGPU_BACKEND").is_some() || std::env::var_os("KERN_ADAPTER").is_some();
+    (cfg!(windows) && !pinned).then(|| instance_for(wgpu::Backends::VULKAN))
+}
+
+fn instance_for(windows: wgpu::Backends) -> wgpu::Instance {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    if cfg!(windows) { desc.backends = wgpu::Backends::PRIMARY; }
+    if cfg!(windows) { desc.backends = windows; }
     wgpu::Instance::new(desc.with_env())
 }
 
