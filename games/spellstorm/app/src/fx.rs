@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::f32::consts::PI;
 
 pub const IMAGE: SpriteImage = SpriteImage(0x5ee1_0001);
-const SIDE: usize = 4;
+const SIDE: usize = 5;
 const CELL: usize = 128;
 /// Godot light energy to Warp (view.rs LIGHT).
 pub(crate) const LIGHT: f32 = PI;
@@ -41,9 +41,11 @@ pub(crate) enum Cell {
     Slice,
     Wisp,
     Band,
+    Pillar,
+    Runes,
 }
 
-const CELLS: [Cell; 16] = [
+const CELLS: [Cell; 18] = [
     Cell::Dot,
     Cell::Flame,
     Cell::Drop,
@@ -60,6 +62,8 @@ const CELLS: [Cell; 16] = [
     Cell::Slice,
     Cell::Wisp,
     Cell::Band,
+    Cell::Pillar,
+    Cell::Runes,
 ];
 
 pub(crate) fn uv(c: Cell) -> [f32; 4] {
@@ -123,6 +127,26 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
             let core = 1.0 - smooth(0.0, 0.3, x);
             let edge = (1.0 - x).max(0.0).powi(2);
             (1.0, (core + 0.6 * edge).min(1.0))
+        }
+        // A piece of a pillar of light (grave_beam.gdshader): bright down
+        // the middle, soft at the sides, and a tent along it, so pieces
+        // half their height apart add up to one even column.
+        Cell::Pillar => {
+            let x = u.abs();
+            let core = (1.0 - x).max(0.0).powi(2);
+            (1.0, core * (1.0 - v.abs()))
+        }
+        // Where a charging spell will land (cast_mark.gdshader): two circles
+        // with rune marks between them; the mark turns as a whole.
+        Cell::Runes => {
+            let ang = v.atan2(u);
+            let ring = 1.0 - smooth(0.0, 0.05, (r - 0.9).abs());
+            let inner = (1.0 - smooth(0.0, 0.035, (r - 0.72).abs())) * 0.6;
+            let turn = |n: f32| (ang * n / std::f32::consts::TAU).rem_euclid(1.0);
+            // Soft edges: a hard step aliases into blocks at this cell size.
+            let band = |x: f32, a: f32, b: f32, f: f32| smooth(a - f, a + f, x) * (1.0 - smooth(b - f, b + f, x));
+            let marks = band(turn(12.0), 0.55, 0.95, 0.06) * band(r, 0.76, 0.86, 0.02) * (0.5 + 0.5 * band(turn(3.0), 0.5, 0.98, 0.03));
+            (1.0, ((ring * 0.9 + inner + marks * 0.7) * (1.0 - smooth(0.95, 1.0, r))).min(1.0))
         }
         // A ragged patch for a field on the ground: solid, frayed rim.
         Cell::Patch => {

@@ -9,6 +9,7 @@ use render::headlights::LocalLight;
 use render::sprites::Sprite;
 use spellstorm::fx::{el_c, C};
 use spellstorm::wizard::{self, swing_reach, Wizard, NOVA_HOLD, SWING_COOLDOWN};
+use spellstorm::enemy::Attack;
 use spellstorm::World;
 use std::collections::HashMap;
 
@@ -52,6 +53,7 @@ impl Marks {
             let tip = wizard::staff_tip(a.pos, &wz);
             if a.alive {
                 self.staff(&wz, a.hp as f32 / a.max_hp.max(1.0) as f32, tip, time, dt);
+                self.cast_mark(&wz, time);
                 if wz.swing_t > 0.0 {
                     self.swing(a.pos, &wz);
                 }
@@ -61,6 +63,171 @@ impl Marks {
         }
         for wd in &w.run.wards {
             self.ward(wd.z, wd.lo, wd.hi, wd.open, time);
+        }
+        for &id in w.wizards.iter().chain(&w.enemies) {
+            if let Some(a) = w.actor(id) {
+                if a.alive {
+                    self.status(&a, id.id() as f32, time);
+                }
+            }
+        }
+        // A shot winding up: a ball of its element swells in front of the
+        // monster, the way it will go (Enemy._warning).
+        for &id in &w.enemies {
+            let Ok(e) = w.ecs.get::<&spellstorm::enemy::Enemy>(id) else { continue };
+            let Some(a) = w.actor(id) else { continue };
+            if !a.alive || e.wind <= 0.0 || !matches!(e.cfg().attack, Attack::Ranged | Attack::Lob) {
+                continue;
+            }
+            let k = (1.0 - e.wind / e.wind_time()) as f32;
+            let at = a.pos + e.lock * (a.radius + 0.35) + Vec3::Y;
+            let c = el_c(e.attack_el());
+            let lin = linear3([c[0], c[1], c[2]]);
+            let size = 0.5 * (0.4 + 1.1 * k);
+            let inner = linear3([c[0] + (1.0 - c[0]) * 0.6, c[1] + (1.0 - c[1]) * 0.6, c[2] + (1.0 - c[2]) * 0.6]) * 0.8;
+            self.sprites.push(glow(at, size, Cell::HaloOut, lin * 0.9 * 1.4));
+            self.sprites.push(glow(at, size, Cell::HaloIn, inner * 0.9 * 1.4));
+        }
+    }
+
+    /// What ails a body (Actor.setup_status_fx and its overlay): flames
+    /// licking up while it burns, sickly bubbles while poisoned, and one
+    /// tint over it, the strongest first: the white of a fresh hit, then
+    /// frozen, chilled, wet, mired, poisoned.
+    fn status(&mut self, a: &spellstorm::actor::Actor, seed: f32, time: f32) {
+        let r = a.radius;
+        if a.burn > 0.0 {
+            let c = linear3(spellstorm::el::El::Fire.color()) * 1.4;
+            for j in 0..24 {
+                let h = seed * 3.1 + j as f32 * 1.73;
+                let ph = (time / 0.6 + hash(h)).fract();
+                let t = ph * 0.6;
+                let ang = hash(h + 0.2) * std::f32::consts::TAU;
+                let o = Vec3::new(ang.cos(), (hash(h + 0.4) - 0.5) * 1.2, ang.sin()) * r * hash(h + 0.6).sqrt();
+                let p = a.pos + Vec3::Y * 0.8 + o + Vec3::Y * ((0.5 + hash(h + 0.8)) * t + t * t);
+                let k = smooth(0.0, 0.15, ph) * (1.0 - smooth(0.4, 1.0, ph));
+                let size = 0.35 * (1.0 - 0.5 * ph);
+                let mut s = Sprite::billboard(p, [size, size * 1.3], IMAGE, uv(Cell::Flame), c * k);
+                s.additive = true;
+                s.alpha_cut = 0.0;
+                self.sprites.push(s);
+            }
+        }
+        if a.poison > 0.0 {
+            let c = linear3(spellstorm::el::El::Poison.color()) * 1.4;
+            for j in 0..10 {
+                let h = seed * 5.7 + j as f32 * 2.31;
+                let ph = (time / 0.9 + hash(h)).fract();
+                let t = ph * 0.9;
+                let ang = hash(h + 0.3) * std::f32::consts::TAU;
+                let o = Vec3::new(ang.cos(), 0.0, ang.sin()) * r * hash(h + 0.5).sqrt();
+                let p = a.pos + Vec3::Y * 0.9 + o + Vec3::Y * ((0.2 + 0.4 * hash(h + 0.7)) * t + 0.4 * t * t);
+                let k = smooth(0.0, 0.2, ph) * (1.0 - smooth(0.6, 1.0, ph));
+                let mut s = Sprite::billboard(p, [0.12, 0.12], IMAGE, uv(Cell::Drop), c * k);
+                s.additive = true;
+                s.alpha_cut = 0.0;
+                self.sprites.push(s);
+            }
+        }
+        let tint = if a.hurt_t > 0.0 {
+            let k = (a.hurt_t / spellstorm::actor::HURT_TIME) as f32;
+            Some(([1.0, 0.97, 0.92], 0.8 * k * k))
+        } else if a.frozen > 0.0 {
+            Some(([0.6, 0.9, 1.0], 0.55))
+        } else if a.flash > 0.0 {
+            Some(([1.0, 0.35, 0.3], 0.4))
+        } else if a.chill > 0.0 {
+            Some(([0.6, 0.85, 1.0], (a.chill as f32 * 0.12).min(0.35)))
+        } else if a.wet > 0.0 {
+            Some(([0.15, 0.35, 0.8], 0.25))
+        } else if a.slow > 0.0 {
+            Some(([0.35, 0.25, 0.12], 0.35))
+        } else if a.poison > 0.0 {
+            Some(([0.45, 0.85, 0.1], 0.3))
+        } else {
+            None
+        };
+        if let Some((c, k)) = tint {
+            // A glow over the body in the tint's colour.
+            let at = a.pos + Vec3::Y * 0.9;
+            let size = r * 2.0 + 1.2;
+            let lin = linear3(c);
+            let mut s = Sprite::billboard(at, [size, size], IMAGE, uv(Cell::HaloOut), lin * k * 1.6);
+            s.additive = true;
+            s.alpha_cut = 0.0;
+            s.depth_bias = 0.6;
+            self.sprites.push(s);
+        }
+    }
+
+    /// Embers rising off the torches near the view (Arena._torch): 14
+    /// sparks each, half a second up and gone.
+    pub fn torches(&mut self, torches: &[Vec3], near: Vec3, time: f32) {
+        let c = linear3([1.0, 0.5, 0.15]) * 1.6;
+        for (i, &t) in torches.iter().enumerate() {
+            if t.distance_squared(near) > 900.0 {
+                continue;
+            }
+            for j in 0..14 {
+                let h = i as f32 * 7.3 + j as f32 * 1.91;
+                let ph = (time / 0.5 + hash(h)).fract();
+                let s = ph * 0.5;
+                let ang = hash(h + 0.2) * std::f32::consts::TAU;
+                let v = 0.2 + 0.4 * hash(h + 0.4);
+                let side = Vec3::new(ang.cos(), 0.0, ang.sin()) * v * 0.35 * s;
+                let p = t + Vec3::Y * (0.15 + v * s + s * s) + side;
+                let k = smooth(0.0, 0.15, ph) * (1.0 - smooth(0.4, 1.0, ph));
+                let size = 0.24 * (1.0 - 0.5 * ph);
+                let mut f = Sprite::billboard(p, [size, size * 1.3], IMAGE, uv(Cell::Flame), c * k);
+                f.additive = true;
+                f.alpha_cut = 0.0;
+                self.sprites.push(f);
+            }
+        }
+    }
+
+    /// The spot a charging spell is aimed at (CastMark): runes turning on
+    /// the floor and the element welling up there, faint at first and
+    /// stronger as the spell fills.
+    fn cast_mark(&mut self, w: &Wizard, time: f32) {
+        let (Some(s), Some(at)) = (w.charging.as_ref(), w.mark) else { return };
+        let k = (w.charge_t / w.charge_need.max(0.01)).clamp(0.0, 1.0) as f32;
+        let r = match s.shape {
+            spellstorm::Shape::Overload => spellstorm::spells::overload_reach(s.primary),
+            spellstorm::Shape::Projectile => (s.n.splash as f32 * 0.8).max(0.9),
+            spellstorm::Shape::Strike => s.n.radius as f32,
+            _ => 0.9,
+        };
+        let c = s.primary.map(el_c).unwrap_or([1.0, 0.85, 0.5, 1.0]);
+        let lin = linear3([c[0], c[1], c[2]]);
+        let fill = 0.25 + 0.75 * k;
+        let centre = Vec3::new(at.x, 0.05, at.z);
+        let (sn, cs) = (time * 0.6).sin_cos();
+        let (right, up) = (Vec3::new(cs, 0.0, -sn), Vec3::new(sn, 0.0, cs));
+        let edge = linear3(Vec3::from([c[0], c[1], c[2]]).lerp(Vec3::ONE, 0.2).to_array());
+        let mut m = Sprite::fixed(centre, [r * 2.0, r * 2.0], right, up, IMAGE, uv(Cell::Runes), edge * fill * 0.65 * 1.4);
+        m.additive = true;
+        m.alpha_cut = 0.0;
+        m.depth_bias = 0.2;
+        self.sprites.push(m);
+        // The glow welling up in the middle.
+        let well = (0.35 + 0.15 * (time * 4.0).sin()) * k;
+        let mut g = Sprite::fixed(centre, [r * 1.8, r * 1.8], Vec3::X, Vec3::Z, IMAGE, uv(Cell::HaloOut), lin * well * 1.4);
+        g.additive = true;
+        g.alpha_cut = 0.0;
+        g.depth_bias = 0.2;
+        self.sprites.push(g);
+        // The element seeping up out of the ground in a ring.
+        let speed = 0.5 + 0.7 * k;
+        for j in 0..24 {
+            let h = w.seat as f32 * 9.1 + j as f32 * 1.37;
+            let ph = (time * speed / 0.9 + hash(h)).fract();
+            let t = ph * 0.9;
+            let a = hash(h + 0.3) * std::f32::consts::TAU;
+            let rr = r * (0.3 + 0.55 * hash(h + 0.5).sqrt());
+            let p = Vec3::new(at.x + a.cos() * rr, 0.05 + (0.4 + 0.7 * hash(h + 0.7)) * t + 0.3 * t * t, at.z + a.sin() * rr);
+            let fade = smooth(0.0, 0.15, ph) * (1.0 - smooth(0.5, 1.0, ph));
+            self.sprites.push(glow(p, 0.18, Cell::Dot, lin * fade * 1.4));
         }
     }
 

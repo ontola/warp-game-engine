@@ -240,7 +240,9 @@ impl Hud {
             let grow = 0.97 + 0.07 * ((t - 0.9) / 4.2).clamp(0.0, 1.0);
             let cy = 540.0;
             let col = [0.86, 0.8, 0.68, a];
-            p.shadow_text(&self.card, sw * 0.5, cy - 20.0, title(), 96.0 * grow, col);
+            // The name itself keeps one size: every new size rasterises a whole
+            // alphabet into the glyph atlas, and a growing one filled it at 4K.
+            p.shadow_text(&self.card, sw * 0.5, cy - 20.0, title(), 96.0, col);
             p.rect([sw * 0.5 - 380.0 * grow, cy + 44.0 * grow, 760.0 * grow, 2.0], [0.86, 0.8, 0.68, 0.55 * a]);
         }
         // Black for portals and for the end of a run, over everything.
@@ -254,8 +256,8 @@ impl Hud {
             let black = (t / 1.4).min(1.0) * out;
             p.rect([0.0, 0.0, sw, 1080.0], [0.0, 0.0, 0.0, black]);
             let a = ((t - 0.5) / 1.6).clamp(0.0, 1.0) * out;
-            let grow = 0.94 + 0.18 * (t / 6.0).min(1.0);
-            let size = if words.len() < 20 { 140.0 } else { 100.0 } * grow;
+            // One size, as the level card (the atlas).
+            let size = if words.len() < 20 { 150.0 } else { 108.0 };
             let lines: Vec<&str> = words.lines().collect();
             for (k, l) in lines.iter().enumerate() {
                 let y = 540.0 + (k as f32 - (lines.len() as f32 - 1.0) * 0.5) * size * 1.1;
@@ -371,7 +373,10 @@ impl Painter<'_> {
             return;
         }
         let s = self.s;
-        let px = size * s;
+        // Sizes on a 4% grid: each new size costs the glyph atlas a whole
+        // alphabet, so text that scales with the camera must not make one a frame.
+        let px = (size * s).max(1.0);
+        let px = if px < 16.0 { px.round() } else { 1.04f32.powf((px.ln() / 1.04f32.ln()).round()) }.min(500.0);
         let w = render::hud::measure(text, font, px)[0] + 4.0;
         let h = px * 1.2;
         let left = match align {

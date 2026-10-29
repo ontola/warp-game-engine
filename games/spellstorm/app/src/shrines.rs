@@ -2,7 +2,8 @@
 //! fills while you stand in it (Run._altar, _fill_ring), the practice
 //! strip's little shrine with the first two elements over it
 //! (Practice._raise_shrine), and the portal on to the next biome
-//! (Run._portal).
+//! (Run._portal), and a fallen wizard's grave with its pillar of light
+//! (Wizard.die, _grave_lights).
 use crate::fx::{uv, Cell, BAND, BANDS, BAND_AT, BAND_SIZE, IMAGE, LIGHT};
 use crate::look::linear3;
 use glam::{Affine3A, EulerRot, Mat4, Quat, Vec3};
@@ -18,6 +19,10 @@ use std::f32::consts::FRAC_PI_2;
 
 const GOLD: [f32; 3] = [1.0, 0.8, 0.45];
 const PORTAL: [f32; 3] = [0.3, 0.55, 1.0];
+/// Wizard.GRAVE_CALM and GRAVE_WARM.
+const CALM: [f32; 3] = [0.62, 0.8, 1.0];
+const WARM: [f32; 3] = [1.0, 0.82, 0.45];
+const GRAVE_BEAM: f32 = 16.0;
 
 /// The meshes, made with the scene.
 #[derive(Default)]
@@ -30,6 +35,8 @@ struct Meshes {
     stump: usize,
     orbs: Vec<(El, usize)>,
     torus: usize,
+    /// Art.tombstone: slab, round top, the cross's two bars, the dirt.
+    tomb: [usize; 5],
 }
 
 #[derive(Default)]
@@ -84,6 +91,16 @@ impl Shrines {
         let page = scene.add_mesh(&primitives::cube(paper).mesh());
         let lit_page = scene.add_mesh(&primitives::cube(lit).mesh());
         let torus = scene.add_mesh(&primitives::torus(ring, 0.1 / 1.35, 32, 8).mesh());
+        let grey = scene.add_material(Material { tint: linear3([0.38, 0.37, 0.4]).to_array(), layer: -1, roughness: 0.5, flags: 0, scale: 1.0, metal: 0.0 });
+        let dark = solid(scene, [0.2, 0.2, 0.22]);
+        let dirt = solid(scene, [0.22, 0.18, 0.12]);
+        let tomb = [
+            scene.add_mesh(&primitives::cube(grey).mesh()),
+            scene.add_mesh(&primitives::cylinder(grey, 0.35, 0.35, 20).mesh()),
+            scene.add_mesh(&primitives::cube(dark).mesh()),
+            scene.add_mesh(&primitives::cube(dark).mesh()),
+            scene.add_mesh(&primitives::cube(dirt).mesh()),
+        ];
         // element.gdshader at energy 1.6: the element's colour, glowing.
         let orbs = el::ALL
             .iter()
@@ -95,7 +112,7 @@ impl Shrines {
                 (e, scene.add_mesh(&primitives::sphere(m, 8, 12).mesh()))
             })
             .collect();
-        self.meshes = Some(Meshes { column, slab, cover, page, lit_page, stump, orbs, torus });
+        self.meshes = Some(Meshes { column, slab, cover, page, lit_page, stump, orbs, torus, tomb });
         self.shrine_t = None;
     }
 
@@ -165,6 +182,74 @@ impl Shrines {
             self.lights.push(omni(mid + Vec3::Z * 0.6, PORTAL, 2.5, 7.0));
             rings.push((at, PORTAL_R, (w.run.portal_t / PORTAL_TIME) as f32, [0.55, 0.75, 1.0], [0.55, 0.75, 1.0], 1.0));
         }
+        // The queued elements ride on the staff: small balls circling its
+        // gem, spinning faster and wider while RB winds up a burst.
+        for &id in &w.wizards {
+            let Some(a) = w.actor(id) else { continue };
+            if !a.alive {
+                continue;
+            }
+            let wz = w.wiz(id);
+            let slots = &wz.queue.slots;
+            if slots.is_empty() {
+                continue;
+            }
+            let nova_k = if wz.rb_t > 0.12 { (wz.rb_t / spellstorm::wizard::NOVA_HOLD).clamp(0.0, 1.0) as f32 } else { 0.0 };
+            let gem = spellstorm::wizard::staff_tip(a.pos, &wz);
+            for (i, &e) in slots.iter().enumerate() {
+                let ang = time * (3.0 + 9.0 * nova_k) + i as f32 * std::f32::consts::TAU / slots.len() as f32;
+                let r = 0.24 + 0.14 * nova_k;
+                let at = gem + Vec3::new(ang.cos() * r, (ang * 2.0).sin() * 0.03 - 0.02, ang.sin() * r);
+                let big = if e.is_fused() { 1.3 } else { 1.0 };
+                if let Some(&(_, mesh)) = m.orbs.iter().find(|o| o.0 == e) {
+                    out.push((mesh, crate::look::affine(Mat4::from_scale_rotation_translation(Vec3::splat(0.065 * big * (1.0 + 0.4 * nova_k)), Quat::IDENTITY, at)), false));
+                }
+            }
+        }
+        // Graves: the stone rises beside the body, a pillar of light calls
+        // out, and the ring fills while a friend stands there.
+        for &id in &w.wizards {
+            let Some(a) = w.actor(id) else { continue };
+            if a.alive {
+                continue;
+            }
+            let wz = w.wiz(id);
+            let Some(at) = wz.tomb else { continue };
+            let t = wz.tomb_t as f32;
+            let up = ((t - 1.2) / 0.6).clamp(0.0, 1.0);
+            let y = -1.2 * (1.0 - up) * (1.0 - up);
+            let node = Mat4::from_translation(Vec3::new(at.x, y, at.z));
+            let [slab, top, bar, cross, dirt] = m.tomb;
+            out.push((slab, part(node, Vec3::new(0.0, 0.45, 0.0), Vec3::new(0.7, 0.9, 0.18), Vec3::ZERO), true));
+            out.push((top, part(node, Vec3::new(0.0, 0.9, 0.0), Vec3::new(1.0, 0.18, 1.0), Vec3::new(90.0, 0.0, 0.0)), true));
+            out.push((bar, part(node, Vec3::new(0.0, 0.62, 0.1), Vec3::new(0.08, 0.4, 0.04), Vec3::ZERO), true));
+            out.push((cross, part(node, Vec3::new(0.0, 0.72, 0.1), Vec3::new(0.28, 0.08, 0.04), Vec3::ZERO), true));
+            out.push((dirt, part(node, Vec3::new(0.0, 0.06, 0.1), Vec3::new(1.0, 0.12, 0.6), Vec3::ZERO), true));
+            let need = spellstorm::knobs::revive_need().max(1.0);
+            let k = (wz.revive / need).clamp(0.0, 1.0) as f32;
+            let friend = w.wizards.iter().copied().find(|&o| o != id && w.alive(o) && w.grave_dist(id, &wz, w.pos(o)) < spellstorm::wizard::REVIVE_REACH);
+            let near = friend.is_some();
+            let warm = if near { 1.0 } else { k };
+            let c = Vec3::from(CALM).lerp(Vec3::from(WARM), warm).to_array();
+            // Fades in once the stone is up.
+            let grave_in = ((t - 1.8) * 1.2).clamp(0.0, 1.0);
+            let base = Vec3::new(at.x, 0.0, at.z);
+            self.beam(base, c, grave_in * (1.0 + if near { 0.6 } else { 0.0 } + 1.6 * k), time);
+            let pool = grave_in * (0.6 + if near { 0.3 } else { 0.0 } + 0.6 * k);
+            let mut s = Sprite::billboard(base + Vec3::Y * 0.3, [4.5, 4.5], IMAGE, uv(Cell::HaloOut), linear3(c) * pool * 1.4);
+            s.additive = true;
+            s.alpha_cut = 0.0;
+            self.sprites.push(s);
+            self.lights.push(omni(base + Vec3::Y * 1.4, c, grave_in * (1.5 + if near { 1.5 } else { 0.0 } + 3.0 * k), 7.0));
+            if near {
+                self.grave_motes(base, time, 1.0 + 1.5 * k);
+            }
+            let fill_c = friend.map(|o| {
+                let r = w.wiz(o).robe;
+                [r[0] + (1.0 - r[0]) * 0.35, r[1] + (1.0 - r[1]) * 0.35, r[2] + (1.0 - r[2]) * 0.35]
+            });
+            rings.push((base, spellstorm::wizard::REVIVE_REACH, k, GOLD, fill_c.unwrap_or(GOLD), up));
+        }
         // A faint guide in the ring's own colour, and the fill in its taker's.
         for (at, r, fill, guide, c, k) in rings {
             self.ring(at, r, 1.0, guide, 0.45 * k);
@@ -197,6 +282,47 @@ impl Shrines {
             s.additive = true;
             s.alpha_cut = 0.0;
             s.depth_bias = 0.2;
+            self.sprites.push(s);
+        }
+    }
+
+    /// grave_beam.gdshader: a pillar of light up out of the grave, soft at
+    /// its sides, fading out high up, breathing.
+    fn beam(&mut self, base: Vec3, c: [f32; 3], strength: f32, time: f32) {
+        if strength <= 0.0 {
+            return;
+        }
+        let breathe = 0.85 + 0.15 * (time * 2.2).sin();
+        let lin = linear3(Vec3::from(c).lerp(Vec3::ONE, 0.2).to_array());
+        // Pieces half their height apart: their tents add up to one even
+        // column, fading as it rises.
+        let n = 16;
+        let step = GRAVE_BEAM / n as f32;
+        for i in 0..=n {
+            let h = i as f32 / n as f32;
+            let fade = (1.0 - smooth(0.0, 0.85, h)) * smooth(0.0, 0.03, h + 0.02);
+            let width = 2.0 * (0.7 + 0.3 * h);
+            let at = base + Vec3::Y * (step * i as f32);
+            let mut s = Sprite::shaft(at, [width, step * 2.0], Vec3::Y, IMAGE, uv(Cell::Pillar), lin * fade * breathe * strength * 0.8 * 0.6);
+            s.depth_bias = 0.3;
+            self.sprites.push(s);
+        }
+    }
+
+    /// Motes streaming up into the pillar while a friend raises the fallen.
+    fn grave_motes(&mut self, base: Vec3, time: f32, speed: f32) {
+        let col = linear3(WARM) * 1.4;
+        for j in 0..24 {
+            let h = j as f32 * 1.91 + 0.7;
+            let ph = (time * speed / 1.6 + hash(h)).fract();
+            let t = ph * 1.6;
+            let a = hash(h + 0.4) * std::f32::consts::TAU;
+            let r = (0.9 + 0.3 * hash(h + 0.8) - 1.3 * t * t * 0.5).max(0.1);
+            let p = base + Vec3::new(a.cos() * r, 0.1 + (1.5 + 1.5 * hash(h + 1.1)) * t, a.sin() * r);
+            let fade = smooth(0.0, 0.15, ph) * (1.0 - smooth(0.5, 1.0, ph));
+            let mut s = Sprite::billboard(p, [0.14, 0.14], IMAGE, uv(Cell::Spark), col * fade);
+            s.additive = true;
+            s.alpha_cut = 0.0;
             self.sprites.push(s);
         }
     }
