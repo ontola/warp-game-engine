@@ -158,7 +158,7 @@ impl Game for Fly {
             format!("{}  seed {}  {:.0} fps", STYLES[self.style], self.seed, self.fps),
             format!("x {:.0}  z {:.0}  height {:.0} m  {:.0} m above ground", pos.x, pos.z, pos.y, above),
             format!("speed {:.0} m/s{}", self.speed, if self.hug.is_some() { "  ground hug" } else { "" }),
-            format!("patches {}  overflow {}  finest {}", self.stats.patches, self.stats.overflow, self.stats.finest_level),
+            format!("patches {}  overflow {}  finest {}  lod x{:.2}", self.stats.patches, self.stats.overflow, self.stats.finest_level, self.stats.lod_scale),
             format!("ground: rock {:.2}  scree {:.2}  snow {:.2}  water {:.2}  slope {:.0}°", s.rock, s.scree, s.snow, s.water, s.up.clamp(0.0, 1.0).acos().to_degrees()),
             "F1 default  F2 lowland  F4 alpine  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
         ];
@@ -178,7 +178,7 @@ impl Game for Fly {
             "style": STYLES[self.style], "seed": self.seed, "pos": self.pos.to_array(),
             "yaw_deg": self.yaw.to_degrees(), "pitch_deg": self.pitch.to_degrees(),
             "above_ground_m": self.pos.y - g.pos.y, "speed": self.speed, "ground_hug": self.hug, "fps": self.fps,
-            "terrain": {"patches": self.stats.patches, "overflow": self.stats.overflow, "finest_level": self.stats.finest_level},
+            "terrain": {"patches": self.stats.patches, "overflow": self.stats.overflow, "finest_level": self.stats.finest_level, "lod_scale": self.stats.lod_scale},
             "ground": {"rock": g.rock, "scree": g.scree, "snow": g.snow, "water": g.water, "slope_deg": g.up.clamp(0.0, 1.0).acos().to_degrees()},
             "repro": format!("teleport {:.1} {:.1} {:.1} | look {:.1} {:.1}", self.pos.x, self.pos.z, self.pos.y - g.pos.y, self.yaw.to_degrees(), self.pitch.to_degrees()),
         }).to_string())

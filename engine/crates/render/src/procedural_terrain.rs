@@ -159,6 +159,8 @@ pub struct Stats {
     /// Patches dropped because the pool was full.
     pub overflow: usize,
     pub finest_level: u32,
+    /// Pixel thresholds were multiplied by this to fit the pool (1 = as set).
+    pub lod_scale: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -178,11 +180,18 @@ pub struct ProceduralTerrain {
     pub settings: Settings,
     slots: HashMap<(Node, u32), u32>,
     free: Vec<u32>,
+    /// Multiplies the pixel thresholds when the views want more patches than
+    /// the pool holds; eases back towards 1 when there is room again.
+    lod: f32,
 }
+
+/// Share of the pool the selection may fill; the rest absorbs the patches
+/// that balancing and the next frame's movement add.
+const BUDGET: f32 = 0.9;
 
 impl ProceduralTerrain {
     pub fn new(spec: TerrainSpec, settings: Settings) -> Self {
-        ProceduralTerrain { spec, settings, slots: HashMap::new(), free: (0..spec.capacity).rev().collect() }
+        ProceduralTerrain { spec, settings, slots: HashMap::new(), free: (0..spec.capacity).rev().collect(), lod: 1.0 }
     }
 
     fn cell(&self, level: u32) -> f32 { self.settings.finest * (1u32 << level) as f32 }
@@ -205,7 +214,7 @@ impl ProceduralTerrain {
             let dy = (v.pos.y - centre_y).abs() - reach;
             let d = (dx.max(0.0).powi(2) + dz.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt().max(0.05);
             // Out of view, patches only cast shadows: much coarser is fine.
-            let scale = if v.sees(centre, radius) { 1.0 } else { self.settings.offscreen_factor };
+            let scale = self.lod * if v.sees(centre, radius) { 1.0 } else { self.settings.offscreen_factor };
             let px = v.pixels_per_radian / d;
             cell * px > self.settings.cell_pixels * scale || error * px > self.settings.error_pixels * scale
         })
@@ -238,11 +247,27 @@ impl ProceduralTerrain {
         leaves
     }
 
+    /// [`Self::select`], coarsened until it fits the pool. Patches fall
+    /// roughly with the square of the thresholds, so each retry scales them
+    /// by the square root of the excess. Between frames the scale relaxes
+    /// slowly, so it does not flicker between two levels of detail.
+    fn select_within_budget(&mut self, views: &[TerrainView]) -> HashSet<Node> {
+        let budget = (self.spec.capacity as f32 * BUDGET) as usize;
+        let mut leaves = self.select(views);
+        for _ in 0..8 {
+            if leaves.len() <= budget { break; }
+            self.lod *= (leaves.len() as f32 / budget as f32).sqrt().max(1.05) * 1.05;
+            leaves = self.select(views);
+        }
+        if leaves.len() < budget * 2 / 3 { self.lod = (self.lod * 0.98).max(1.0); }
+        leaves
+    }
+
     /// Choose this frame's patches, build the new ones on the GPU and hide
     /// the ones no longer needed. Call once per frame before rendering.
     pub fn update(&mut self, gpu: &Gpu, renderer: &Renderer, views: &[TerrainView]) -> Result<Stats, String> {
-        let leaves = self.select(views);
-        let mut stats = Stats { patches: leaves.len(), finest_level: u32::MAX, ..Default::default() };
+        let leaves = self.select_within_budget(views);
+        let mut stats = Stats { patches: leaves.len(), finest_level: u32::MAX, lod_scale: self.lod, ..Default::default() };
         let wanted: HashMap<(Node, u32), ()> = leaves.iter().map(|&n| ((n, mask(&leaves, n, self.settings.root_level)), ())).collect();
         let mut changed: Vec<(u32, GpuInstance)> = Vec::new();
         self.slots.retain(|key, slot| {
@@ -255,7 +280,9 @@ impl ProceduralTerrain {
         let mut jobs = Vec::new();
         // Deterministic order: nearest-first would need sorting anyway.
         let mut new: Vec<_> = wanted.keys().filter(|k| !self.slots.contains_key(k)).copied().collect();
-        new.sort_by_key(|(n, m)| (n.level, n.ix, n.iz, *m));
+        // Coarse first: if the pool still runs out, far ground stays and only
+        // some detail goes missing.
+        new.sort_by_key(|(n, m)| (std::cmp::Reverse(n.level), n.ix, n.iz, *m));
         for key in new {
             let Some(slot) = self.free.pop() else { stats.overflow += 1; continue; };
             let (n, m) = key;
@@ -491,5 +518,26 @@ mod tests {
         eprintln!("cam {:?} level6 seen {seen} dist p10 {} p50 {} p90 {}", views[0].pos, far[far.len()/10], far[far.len()/2], far[far.len()*9/10]);
         eprintln!("{} patches {:?}, unbalanced {} root size {rs}", leaves.len(), hist, raw.len());
         assert!(leaves.len() < 20000, "{} patches", leaves.len());
+    }
+
+    #[test]
+    fn alpine_views_fit_the_pool() {
+        let style = terrain_field::Style::named("alpine").unwrap();
+        let mut t = ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 16384, seed: 1, style }, Settings::default());
+        // (x, z, metres above ground, yaw, pitch in degrees); the last two
+        // are F12 screenshots that were mostly holes.
+        for (x, z, above, yaw, pitch) in [(0.0f32, 0.0f32, 60.0, 35.0f32, -9.0f32), (-350.0, -742.0, 3.0, 35.0, -6.0), (542.0, -375.0, 257.0, 35.0, -17.0),
+            (2000.0, 1500.0, 900.0, 35.0, -27.0), (-32.7, -28.1, 61.9, 86.6, -13.0), (-63.5, -77.1, 45.6, 108.0, -10.2)] {
+            let pos = Vec3::new(x, terrain_field::height(x, z, 1, &style) + above, z);
+            let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
+            let forward = Vec3::new(-yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos());
+            let camera = Camera { pos, target: pos + forward, fov_y: 65f32.to_radians(), near: 0.05 };
+            // A Retina window at 5K renders at 5120x2880.
+            let views = [TerrainView::new(&camera, 5120, 2880)];
+            let raw = t.select(&views).len();
+            let fit = t.select_within_budget(&views).len();
+            eprintln!("at {pos:?}: wanted {raw}, fits {fit} at lod {:.2}", t.lod);
+            assert!(fit <= 16384 * 9 / 10, "{fit} patches");
+        }
     }
 }
