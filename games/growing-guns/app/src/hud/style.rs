@@ -25,6 +25,29 @@ static BARLOW_EXTRA_BOLD: &[u8] = include_bytes!("../../../assets/fonts/BarlowCo
 #[allow(dead_code)]
 pub const FONT_LICENSES: [&str; 2] = [include_str!("../../../assets/fonts/OFL-Anton.txt"), include_str!("../../../assets/fonts/OFL-BarlowCondensed.txt")];
 
+/// The game's type, three roles (keep to them; Joep asked for one system):
+///
+/// - Headline: Anton in bone white with a hard red shadow (`Label::poster`).
+///   Everything that announces: banners ("JOEP DIED", "AIR STRIKE
+///   INCOMING"), round results, "PICK A CARD", menu and board titles.
+///   Always capitals. Sizes `size::XL` (match over), `L` (screen banner),
+///   `M` (a view's headline, the card picker's title).
+/// - Label: Barlow Condensed ExtraBold (`Label::label`), capitals, outlined
+///   on the scene: buttons, card bands, toasts, prompts, the kill feed.
+///   Sizes `S` and `XS`.
+/// - Body: Barlow Condensed SemiBold (`BODY`): descriptions, small print,
+///   settings rows. `XS` and smaller.
+///
+/// One headline at a time per place: a new one fades the old out first
+/// (the banner gives way to the card picker's title).
+pub mod size {
+    pub const XL: f32 = 92.0;
+    pub const L: f32 = 44.0;
+    pub const M: f32 = 30.0;
+    pub const S: f32 = 22.0;
+    pub const XS: f32 = 16.0;
+}
+
 /// Poster face (Anton): HUD numbers, titles, banners.
 pub fn display() -> FontFace { render::hud::register_font(ANTON) }
 /// Barlow Condensed ExtraBold: buttons, card bands, prompts.
@@ -55,6 +78,8 @@ impl Label {
     pub fn shadow(mut self, px: f32, c: C) -> Self { self.shadow = Some((px, c)); self }
     /// A dark edge all round (Godot's `outline_size`), drawn as offset copies.
     pub fn outline(mut self, px: f32, c: C) -> Self { self.outline = Some((px, c)); self }
+    /// The label role: Barlow ExtraBold with a dark outline (`size` px).
+    pub fn label(size: f32, color: C) -> Self { Label::new(bold(), size, color).outline((size * 0.2).max(2.0), with_alpha(BLACK, 0.9)) }
     /// Poster display text: bone white with a hard red shadow of 7% of the size.
     pub fn poster(size: f32) -> Self { Label::new(display(), size, BONE).shadow((size * 0.07).max(2.0), RED) }
 

@@ -526,13 +526,13 @@ impl Menus {
             let ph = inner + 84.0 * u;
             let panel = [62.0 * u, clip[3] * 0.5 - ph * 0.5, pw, ph];
             gothic_frame(d, panel, u, 424242, clip);
-            Label::new(BODY, 26.0 * u, [0.98, 0.82, 0.38, 1.0]).outline(5.0 * u, [0.32, 0.05, 0.06, 1.0]).center().draw(d, "SETTINGS", panel[0] + pw * 0.5, panel[1] + 70.0 * u, clip);
+            Label::poster(size::M * u).center().draw(d, "SETTINGS", panel[0] + pw * 0.5, panel[1] + 70.0 * u, clip);
             self.column(d, &list, [panel[0] + 30.0 * u, panel[1] + 110.0 * u, pw - 60.0 * u, inner], ctx, true, u, clip);
         } else {
             let ph = inner + 40.0 * u;
             let panel = [clip[2] * 0.5 - pw * 0.5 - 20.0 * u, clip[3] * 0.5 - ph * 0.5, pw + 40.0 * u, ph];
             menu_panel(d, panel, u, clip);
-            Label::new(BODY, 28.0 * u, [1.0, 0.9, 0.45, 1.0]).outline(4.0 * u, [0.4, 0.0, 0.1, 1.0]).center().draw(d, "SETTINGS", panel[0] + panel[2] * 0.5, panel[1] + 38.0 * u, clip);
+            Label::poster(size::M * u).center().draw(d, "SETTINGS", panel[0] + panel[2] * 0.5, panel[1] + 38.0 * u, clip);
             self.column(d, &list, [panel[0] + 40.0 * u, panel[1] + 80.0 * u, pw - 40.0 * u, inner], ctx, false, u, clip);
         }
     }
@@ -895,7 +895,7 @@ fn scoreboard(d: &mut HudDrawList, world: &World, hud: &Hud, u: f32, clip: [f32;
     let x1 = pr[0] + pr[2] - 20.0 * u;
     let mut y = pr[1] + 16.0 * u;
     let head = if world.coop { format!("CO-OP WAVE {}", world.waves.wave) } else { "SCOREBOARD".into() };
-    Label::new(BODY, 28.0 * u, [1.0, 0.9, 0.5, 1.0]).center().draw(d, &head, w * 0.5, y + 17.0 * u, clip);
+    Label::poster(size::M * u).center().draw(d, &head, w * 0.5, y + 17.0 * u, clip);
     y += 38.0 * u;
     let sub = if world.coop { "clear the wave, choose cards, survive".to_string() } else { format!("first to {} rounds wins", world.rounds_to_win) };
     Label::new(BODY, 13.0 * u, [0.65, 0.65, 0.8, 1.0]).center().draw(d, &sub, w * 0.5, y + 8.0 * u, clip);
@@ -940,7 +940,7 @@ fn scoreboard(d: &mut HudDrawList, world: &World, hud: &Hud, u: f32, clip: [f32;
 pub fn join_prompt(d: &mut HudDrawList) {
     let [w, h] = d.size.map(|v| v as f32);
     let u = h / DESIGN_H;
-    Label::new(BODY, 22.0 * u, [1.0, 0.9, 0.45, 1.0]).outline(8.0 * u, [0.0, 0.0, 0.0, 0.8]).center().draw(d, "PRESS X TO JOIN", w * 0.5, 33.0 * u, [0.0, 0.0, w, h]);
+    Label::label(size::S * u, [1.0, 0.9, 0.45, 1.0]).center().draw(d, "PRESS X TO JOIN", w * 0.5, 33.0 * u, [0.0, 0.0, w, h]);
 }
 
 /// Godot `_build_splitscreen_hint`: top left, 14, gold, outline 4.
