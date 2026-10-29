@@ -85,7 +85,9 @@ impl Party {
         if !self.client.launched_by_daemon {
             return app::Screen::Normal;
         }
-        if matches!(self.phase, Phase::Running | Phase::Paused) { app::Screen::Fullscreen } else { app::Screen::Hidden }
+        // A host pause (Back, Alt+Tab) hands the screen to the lobby; staying
+        // fullscreen made the lobby and the game fight over the screen.
+        if self.phase == Phase::Running { app::Screen::Fullscreen } else { app::Screen::Hidden }
     }
 
     pub fn running(&self) -> bool {
