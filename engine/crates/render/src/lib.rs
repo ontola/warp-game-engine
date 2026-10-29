@@ -50,6 +50,7 @@ pub mod screen;
 pub mod screen_feed;
 pub mod sprites;
 pub mod irradiance_volume;
+pub mod sky_occlusion;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;

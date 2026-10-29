@@ -665,9 +665,15 @@ fn apply_distance_fog(radiance: vec3<f32>, distance: f32, direction: vec3<f32>) 
 // point in `aux`. Returns irradiance and a weight, 1 inside the grid, fading
 // to 0 over the outer half cell, 0 without a volume.
 fn aux_f32(i: u32) -> f32 { return bitcast<f32>(aux[i]); }
+// Visibility stores the same scalar in RGB; avoid fetching its duplicate channels.
+fn probe_axis(base: u32, visibility: bool) -> vec3<f32> {
+    if visibility { return vec3<f32>(aux_f32(base)); }
+    return vec3<f32>(aux_f32(base),aux_f32(base+1u),aux_f32(base+2u));
+}
 fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
     let o = u32(gi.params.w);
     if o == 0u { return vec4<f32>(0.0); }
+    let visibility = aux[o + 7u] == 1u;
     let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
     let cell = aux_f32(o + 3u);
     let dims = vec3<u32>(aux[o + 4u], aux[o + 5u], aux[o + 6u]);
@@ -681,15 +687,38 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
     let t = fc - cell0;
     let n2 = n * n;
     let axis = vec3<u32>(select(1u, 0u, n.x >= 0.0), select(3u, 2u, n.y >= 0.0), select(5u, 4u, n.z >= 0.0)) * 3u;
+    if visibility {
+        // Four-probe tetrahedral interpolation: continuous across cell faces,
+        // half the fetches of trilinear, scalar visibility only.
+        var high=0u; var low=0u;
+        if t.y>t.x { high=1u; } if t.z>t[high] { high=2u; }
+        if t.y<t.x { low=1u; } if t.z<t[low] { low=2u; }
+        // Resolve equal fractions deterministically to distinct axes.
+        if high==low { high=0u; low=2u; }
+        let middle=3u-high-low;
+        var corner=vec3<u32>(0u);
+        let weights=vec4<f32>(1.0-t[high],t[high]-t[middle],t[middle]-t[low],t[low]);
+        var value=0.0;
+        for(var c=0u;c<4u;c++) {
+            if c==1u { corner[high]=1u; }
+            if c==2u { corner[middle]=1u; }
+            if c==3u { corner[low]=1u; }
+            let g=vec3<u32>(cell0)+corner;
+            let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
+            let v=vec3<f32>(aux_f32(base+axis.x),aux_f32(base+axis.y),aux_f32(base+axis.z));
+            value+=dot(v,n2)*weights[c];
+        }
+        return vec4<f32>(vec3<f32>(value/max(dot(n2,vec3<f32>(1.0)),1e-12)),weight);
+    }
     var e = vec3<f32>(0.0);
     for (var c = 0u; c < 8u; c++) {
         let corner = vec3<u32>(c & 1u, (c >> 1u) & 1u, (c >> 2u) & 1u);
         let w3 = select(1.0 - t, t, corner == vec3<u32>(1u));
         let g = vec3<u32>(cell0) + corner;
         let base = o + 8u + (g.x + g.y * dims.x + g.z * dims.x * dims.y) * 18u;
-        let ex = vec3<f32>(aux_f32(base + axis.x), aux_f32(base + axis.x + 1u), aux_f32(base + axis.x + 2u));
-        let ey = vec3<f32>(aux_f32(base + axis.y), aux_f32(base + axis.y + 1u), aux_f32(base + axis.y + 2u));
-        let ez = vec3<f32>(aux_f32(base + axis.z), aux_f32(base + axis.z + 1u), aux_f32(base + axis.z + 2u));
+        let ex = probe_axis(base + axis.x, visibility);
+        let ey = probe_axis(base + axis.y, visibility);
+        let ez = probe_axis(base + axis.z, visibility);
         e += (ex * n2.x + ey * n2.y + ez * n2.z) * (w3.x * w3.y * w3.z);
     }
     return vec4<f32>(e / max(n2.x + n2.y + n2.z, 1e-12), weight);
@@ -1720,8 +1749,14 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Inside an indoor irradiance volume its probes replace sky and bounce.
         let room=irradiance_volume(p+visibility_n*0.05,n);
         if room.w>0.0 {
+          if aux[u32(gi.params.w)+7u] == 1u {
+            let access=mix(1.0,clamp(room.x,0.0,1.0),room.w);
+            ambient *= access;
+            env *= access;
+          } else {
             ambient=mix(ambient,room.rgb*ao*contact.x,room.w);
             env=mix(env,irradiance_volume(p+visibility_n*0.05,refl).rgb/PI*spec_contact,room.w);
+          }
         }
         direct=diffuse*sun_e*sun+sun_e*back/PI+sun_e*ggx(n,v,l,rough,f0);
         indirect=diffuse*ambient;

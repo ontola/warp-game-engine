@@ -979,6 +979,15 @@ impl Renderer {
         Ok(())
     }
 
+    /// Upload geometry-only ambient visibility into the reserved probe grid.
+    pub fn set_sky_occlusion(&self, gpu: &Gpu, probes: &[crate::irradiance_volume::Probe]) -> Result<(), String> {
+        let (offset, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
+        let mut words = crate::irradiance_volume::pack(&grid, probes)?;
+        words[7] = 1;
+        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        Ok(())
+    }
+
     pub fn new(gpu: &Gpu, scene: &Scene, light: &Lighting) -> Renderer {
         let mut startup=crate::startup_profile::Trace::new();
         let geometry_diagnostics=crate::geometry_diagnostics::State::new(scene);

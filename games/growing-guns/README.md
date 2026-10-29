@@ -203,6 +203,9 @@ its old results or with Godot's differently staged stress scenes.
 
 Recorded measurements from 2026-10-28:
 
+- [Cached stadium ambient visibility](../../engine/docs/stadium-sky-occlusion.md):
+  Geometry-derived darkening under roofs, shared across views. Measured +0.43 ms
+  GPU at native 4K/four views; no indirect light bounces yet.
 - [Crowd silhouettes and measurements](../../engine/docs/growing-guns-crowd.md):
   8,363 spectators, shared low-poly figures and GPU shoulder pivots. Three
   alternating 4K/four-view pairs measure about 0.35 ms added GPU time;

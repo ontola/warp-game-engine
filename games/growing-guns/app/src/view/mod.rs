@@ -120,6 +120,12 @@ impl Visuals {
         let things = things::Things::reserve(&mut scene);
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
+        // Shared geometry cache, reserved after all game-owned aux data.
+        if std::env::var("GG_SKY_OCCLUSION").as_deref() != Ok("0") {
+            scene.reserve_irradiance_volume(render::irradiance_volume::Grid {
+                origin: Vec3::new(-192.0, -6.0, -192.0), cell: 6.0, dims: [65, 13, 65],
+            }).expect("stadium sky grid");
+        }
         let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false };
         v.set_arena(world);
         v
