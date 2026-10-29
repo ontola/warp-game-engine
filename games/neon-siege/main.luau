@@ -17,7 +17,7 @@ local START_WAVE = 1
 local LIVES = 3
 -- Seconds a teammate has to stay close to revive a downed pilot.
 local REVIVE_TIME = 2.5
-local GRAVITY = 100 -- percent
+local GRAVITY = 0 -- percent; 0 turns the black hole off (Joep: the mechanic may go)
 
 -- The look, tweakable live: the `knobs` and `set_knob` tools (or the
 -- `knob NAME VALUE` command) change a value here and reload the game.
@@ -430,6 +430,15 @@ local function hurt(p)
 		p.downTime = 0
 		p.revive = 0
 		ring(p.x, p.y, 70, { 1, 0.25, 0.3 })
+		-- The ship blows apart: shards of hull in its colour, white sparks,
+		-- and a shockwave that sweeps across the whole arena so a teammate
+		-- sees it too.
+		local pos = at(p.x, p.y, 0.2)
+		fx.burst(pos, { color = rgb(p.rgb), count = 36, speed = 7, life = 1.3, emissive = FX_GLOW, size = 0.08, stretch = 0.06, flat = true })
+		fx.burst(pos, { color = rgb(WHITE), count = 24, speed = 12, life = 0.6, emissive = FX_GLOW, size = 0.04, stretch = 0.04, flat = true })
+		fx.ring(at(p.x, p.y, 0.15), { color = rgb(p.rgb), radius = 30, life = 0.9, width = 0.12, emissive = FX_GLOW, segments = 48 })
+		fx.ring(at(p.x, p.y, 0.15), { color = rgb(WHITE), radius = 6, life = 0.4, width = 0.08, emissive = FX_GLOW, segments = 32 })
+		s.shake = 14
 		if not p.bot then players.rumble(p.id, 1, 0.5) end
 	end
 	return true
@@ -571,6 +580,14 @@ local function waves(dt)
 		s.waveRest = WAVE_REST
 		-- Stray turret bullets must not spoil the earned breathing room.
 		s.hostile = {}
+		-- Clearing a wave brings every downed pilot back.
+		for _, p in s.players do
+			if p.hp <= 0 then
+				p.hp, p.invul, p.revive, p.downTime = s.lives, 2, 0, 0
+				sfx("pickup")
+				ring(p.x, p.y, 55, { 0.3, 1, 0.8 })
+			end
+		end
 	end
 end
 
@@ -615,9 +632,11 @@ local function pilot_step(p, c, dt)
 		if helper and (helper.x - p.x) ^ 2 + (helper.y - p.y) ^ 2 < 120 ^ 2 then
 			p.revive += dt
 		else
-			p.revive = math.max(0, p.revive - dt * 0.5)
+			-- Leave and the progress drains fast: you have to stay to revive.
+			p.revive = math.max(0, p.revive - dt * 2)
 		end
-		if helper and (p.revive >= REVIVE_TIME or p.downTime >= 6) then
+		-- No revive by waiting: only a teammate (or clearing the wave) brings you back.
+		if helper and p.revive >= REVIVE_TIME then
 			p.hp = s.lives
 			p.invul = 2
 			p.revive = 0
@@ -1300,10 +1319,11 @@ local function show_enemy(e)
 		seen(id)
 	end
 	e.grow = grow
-	-- Spikes, flagella and legs, once the germ has formed.
+	-- Spikes, flagella and legs grow in with the body while it spawns, so the
+	-- germ has its real shape from the first frame.
 	local spikes = SPIKES[e.kind]
-	if spikes and e.warm <= 0 then
-		local r = draw_r(e.kind)
+	if spikes then
+		local r = draw_r(e.kind) * grow
 		local color, glow = part_look(e.kind, parts[1], mode)
 		if not e.spikes then
 			e.spikes = {}
@@ -1323,6 +1343,13 @@ local function show_enemy(e)
 			end
 			e.spikeMode = mode
 		end
+		if e.spikeGrow ~= grow then
+			for i, sp in spikes do
+				world.set(e.spikes[i].line, { size = vector.create(2.2 * S, 0.03, r * sp.len * S) })
+				if e.spikes[i].knob then world.set(e.spikes[i].knob, { size = 8 * S * grow }) end
+			end
+			e.spikeGrow = grow
+		end
 		for i, sp in spikes do
 			local a = angle + sp.a
 			local dx, dy = math.cos(a), math.sin(a)
@@ -1338,8 +1365,8 @@ local function show_enemy(e)
 	end
 	-- Flagella: a travelling sine wave that grows towards the tip.
 	local flagella = FLAGELLA[e.kind]
-	if flagella and e.warm <= 0 then
-		local r = draw_r(e.kind)
+	if flagella then
+		local r = draw_r(e.kind) * grow
 		local color, glow = part_look(e.kind, parts[1], mode)
 		if not e.flagella then
 			e.flagella = {}
@@ -1351,6 +1378,10 @@ local function show_enemy(e)
 		if e.flagellaMode ~= mode then
 			for _, id in e.flagella do world.set(id, { color = color, emissive = glow * 0.8 }) end
 			e.flagellaMode = mode
+		end
+		if e.flagellaGrow ~= grow then
+			for _, id in e.flagella do world.set(id, { size = vector.create(1.8 * S, 0.03, r * FLAG_LENGTH / FLAG_SEGMENTS * 1.2 * S) }) end
+			e.flagellaGrow = grow
 		end
 		local n = 0
 		for f, fl in flagella do
@@ -1388,14 +1419,26 @@ local function show_enemy(e)
 	-- The singularity: a black core inside spinning rings of light.
 	if e.kind == "singularity" and e.warm <= 0 then
 		local phase = e.phase or 1
+		-- Seven rings kept from tick to tick (spawning them anew every tick in
+		-- an ever-changing colour dropped the game to ~20 fps); the colour
+		-- steps through 24 hues so only a few looks ever exist.
+		e.rings = e.rings or {}
 		for i = 1, 7 do
 			local k = i / 7
 			local r = e.r * (1.3 + k * 1.6)
 			local squash = 0.32 + 0.1 * math.sin(s.time + i)
-			local hue = s.time * (0.2 + phase * 0.15) + k * 4
+			local hue = math.floor((s.time * (0.2 + phase * 0.15) + k * 4) * 24 / (2 * math.pi)) * 2 * math.pi / 24
 			local color = rgb({ 0.6 + 0.4 * math.sin(hue), 0.35 + 0.3 * math.sin(hue + 2), 1 }, 1 - k * 0.5)
-			local id = seen(world.spawn(outline(32, r, LINE * 1.2), { pos = pos, size = vector.create(r * 2 * S, 0.04, r * 2 * squash * S), color = color, emissive = GLOW.line, solid = false, tag = "enemy" }))
-			world.place(id, pos, -s.time * (0.6 + k) * (if i % 2 == 0 then 1 else -1))
+			if not e.rings[i] then
+				e.rings[i] = world.spawn(outline(32, r, LINE * 1.2), { pos = pos, size = 1, color = color, emissive = GLOW.line, solid = false, tag = "enemy" })
+			end
+			local id = e.rings[i]
+			if e["ringHue" .. i] ~= hue then
+				world.set(id, { color = color })
+				e["ringHue" .. i] = hue
+			end
+			world.set(id, { pos = pos, rot = vector.create(0, -s.time * (0.6 + k) * (if i % 2 == 0 then 1 else -1), 0), size = vector.create(r * 2 * S, 0.04, r * 2 * squash * S) })
+			seen(id)
 		end
 	end
 	-- A dasher shows its charge line before the rush.
@@ -1459,7 +1502,7 @@ local function show_pilot(p)
 		for _, id in p.hull do world.set(id, { visible = up }) end
 		for _, id in p.engines do world.set(id, { visible = up }) end
 		world.set(p.cockpit, { visible = up })
-		world.set(p.halo, { visible = mode == "down" })
+		world.set(p.halo, { visible = false }) -- the HUD's ring of dots shows a downed pilot
 		p.mode = mode
 	end
 	for i, q in SHIP_HULL do
@@ -1476,8 +1519,8 @@ local function show_pilot(p)
 		world.place(p.engines[i], at(p.x + back * c - e[2] * sn, p.y + back * sn + e[2] * c, 0.14), -a)
 		seen(p.engines[i])
 	end
-	-- Active powers ride under the ship: the pickup's icon in a ring that
-	-- shrinks as that power's ammo runs out.
+	-- Active powers ride under the ship: the pickup's icon, small, shrinking
+	-- further as that power's ammo runs out (no ring: that read as a pickup).
 	p.badges = p.badges or {}
 	local active = {}
 	for _, kind in POWER_ORDER do
@@ -1486,20 +1529,22 @@ local function show_pilot(p)
 	for i, kind in active do
 		local color = rgb(PICKUP_COLORS[kind])
 		local b = p.badges[kind]
-		if not b then
-			b = { ring = world.spawn(outline(24, 14, 2), { pos = pos, size = 28 * S, color = color, emissive = GLOW.line, solid = false, tag = "pilot" }), icon = {} }
-			for _, seg in PICKUP_ICONS[kind] do
-				table.insert(b.icon, world.spawn("cube", { pos = pos, size = vector.create(1.8 * S, 0.03, len(seg[3] - seg[1], seg[4] - seg[2]) * 0.55 * S), color = color, emissive = GLOW.line, solid = false, tag = "pilot" }))
+		if not b or b.ring then
+			b = { icon = {} }
+			for _ in PICKUP_ICONS[kind] do
+				table.insert(b.icon, world.spawn("cube", { pos = pos, size = vector.create(1.6 * S, 0.03, S), color = color, emissive = GLOW.line, solid = false, tag = "pilot" }))
 			end
 			p.badges[kind] = b
 		end
-		local bx, by = p.x + (i - (#active + 1) / 2) * 26, p.y + 40
-		local d = (10 + 18 * p.powers[kind] / AMMO[kind]) * S
-		world.set(b.ring, { pos = at(bx, by, 0.15), size = vector.create(d, 0.04, d) })
-		seen(b.ring)
+		local bx, by = p.x + (i - (#active + 1) / 2) * 16, p.y + 34
+		local k = 0.45 * (0.4 + 0.6 * p.powers[kind] / AMMO[kind])
 		for j, seg in PICKUP_ICONS[kind] do
 			local dx, dy = seg[3] - seg[1], seg[4] - seg[2]
-			world.place(b.icon[j], at(bx + (seg[1] + seg[3]) / 2 * 0.55, by + (seg[2] + seg[4]) / 2 * 0.55, 0.16), math.atan2(-dx, -dy))
+			world.set(b.icon[j], {
+				pos = at(bx + (seg[1] + seg[3]) / 2 * k, by + (seg[2] + seg[4]) / 2 * k, 0.16),
+				rot = vector.create(0, math.atan2(-dx, -dy), 0),
+				size = vector.create(1.6 * S, 0.03, math.max(1, len(dx, dy) * k) * S),
+			})
 			seen(b.icon[j])
 		end
 	end
@@ -1973,14 +2018,12 @@ local function draw()
 			end
 		end
 	end
-	-- A downed pilot asks for help: fly over to revive them.
+	-- A downed pilot is a ring of dots that fills while a teammate stays close.
 	if not s.over then
 		for _, p in s.players do
 			if p.hp <= 0 then
 				local x, y = hud.project(at(p.x, p.y, 0.15))
 				if x then
-					local blink = 0.65 + 0.35 * math.sin(s.time * 6)
-					hud.text("REVIVE", x - 60 * k, y - 46 * k, { size = 16 * k, align = "center", width = 120 * k, color = { p.rgb[1], p.rgb[2], p.rgb[3], blink } })
 					-- A ring of dots fills clockwise while a teammate stays close.
 					local done = math.floor(math.min(1, p.revive / REVIVE_TIME) * 24 + 0.5)
 					for i = 1, 24 do
