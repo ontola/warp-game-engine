@@ -13,7 +13,7 @@
 //! anywhere.
 use crate::sky::SkyChoice;
 use crate::sounds::SoundOut;
-use crate::world::{Burst, Entity, Filter, Look, RingFx, Shape, Spawn, World};
+use crate::world::{Burst, Entity, Filter, Look, RingFx, Shape, Spawn, Wire, World};
 use glam::Vec3;
 use render::hud::TextAlign;
 use script::mlua::{self, Lua, Table, Value, Vector};
@@ -232,6 +232,7 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
         "cube" | "box" => Shape::Cube,
         "sphere" | "ball" => Shape::Sphere,
         "capsule" => Shape::Capsule,
+        "wire" => Shape::Wire,
         p if p.starts_with("outline") => {
             let bad = || rt(format!("{p:?}: outline<sides>[:<width>], such as \"outline6\" or \"outline4:0.05\" (3 to 64 sides, width 0.005 to 0.5)"));
             let (sides, width) = p["outline".len()..].split_once(':').map_or((&p["outline".len()..], None), |(a, b)| (a, Some(b)));
@@ -245,7 +246,7 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
     })
 }
 
-const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "tag"];
+const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "tag", "points", "edges", "width"];
 
 fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
     match v { Value::Boolean(b) => Ok(*b), _ => Err(rt(format!("{what}: expected true or false"))) }
@@ -266,8 +267,46 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
             "solid" => *solid = boolean(v, "solid")?,
             "visible" => *visible = boolean(v, "visible")?,
             "tag" => *tag = v.to_string()?,
+            "points" | "edges" | "width" => {}
             _ => unreachable!("checked by options"),
         }
+    }
+    Ok(())
+}
+
+/// A wire's keys: `points` (vectors in the entity's own space), `edges`
+/// (pairs of 1-based point numbers, as `{ {1, 2}, {2, 3} }` or flat
+/// `{ 1, 2, 2, 3 }`) and `width` (metres at size 1).
+fn apply_wire(opts: &[(String, Value)], wire: &mut Option<Wire>) -> mlua::Result<()> {
+    let wants = opts.iter().any(|(k, _)| matches!(k.as_str(), "points" | "edges" | "width"));
+    if !wants { return Ok(()); }
+    let Some(w) = wire else { return Err(rt("points, edges and width are for shape \"wire\"")) };
+    for (k, v) in opts {
+        match k.as_str() {
+            "points" => {
+                let Value::Table(t) = v else { return Err(rt("points: a list of vectors")) };
+                w.points = t.sequence_values::<Value>().map(|p| p.and_then(|p| vec3(&p, "points"))).collect::<mlua::Result<_>>()?;
+            }
+            "edges" => {
+                let Value::Table(t) = v else { return Err(rt("edges: a list of point pairs")) };
+                let mut flat = Vec::new();
+                for item in t.sequence_values::<Value>() {
+                    match item? {
+                        Value::Table(pair) => for n in pair.sequence_values::<f64>() { flat.push(n?); },
+                        Value::Integer(n) => flat.push(n as f64),
+                        Value::Number(n) => flat.push(n),
+                        _ => return Err(rt("edges: pairs of point numbers")),
+                    }
+                }
+                if flat.len() % 2 != 0 { return Err(rt("edges: an even number of point numbers (pairs)")) }
+                w.edges = flat.chunks(2).map(|c| [c[0] as i64 - 1, c[1] as i64 - 1]).map(|[a, b]| [a.clamp(0, u16::MAX as i64) as u16, b.clamp(0, u16::MAX as i64) as u16]).collect();
+            }
+            "width" => w.width = number(v, "width")?.max(0.0),
+            _ => {}
+        }
+    }
+    if let Some(bad) = w.edges.iter().flatten().find(|&&i| i as usize >= w.points.len()) {
+        return Err(rt(format!("edges: point {} does not exist ({} points)", bad + 1, w.points.len())));
     }
     Ok(())
 }
@@ -426,6 +465,8 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             if let Some(t) = opts {
                 let o = options(&t, &ENTITY_KEYS[1..], "world.spawn")?;
                 apply(&o, &mut s.shape, &mut s.look, &mut s.pos, &mut s.rot, &mut s.size, &mut s.solid, &mut s.visible, &mut s.tag)?;
+                if s.shape == Shape::Wire { s.wire = Some(Wire { points: Vec::new(), edges: Vec::new(), width: 0.05 }); }
+                apply_wire(&o, &mut s.wire)?;
             }
             let mut c = lock(&core);
             sim(&c, "world.spawn")?;
@@ -436,7 +477,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let mut c = lock(&core);
             sim(&c, "world.set")?;
             let mut result = Ok(());
-            c.world.update(id, |e| result = apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.tag)).map_err(rt)?;
+            c.world.update(id, |e| result = apply(&o, &mut e.shape, &mut e.look, &mut e.pos, &mut e.rot, &mut e.size, &mut e.solid, &mut e.visible, &mut e.tag).and_then(|_| apply_wire(&o, &mut e.wire))).map_err(rt)?;
             result
         })),
         ("place", f!(core, move |_, (id, pos, yaw): (u32, Value, Option<f32>)| {

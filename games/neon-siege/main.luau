@@ -1522,27 +1522,23 @@ end
 local MESH_HEADING = { weaver = true, dasher = true }
 local WIRE = 0.02 -- edge thickness, metres
 
+-- Does this engine have wire entities (one entity per mesh)? Older builds
+-- only have cubes, so the cube path below stays as a fallback.
+local wire_ok = nil
+local function has_wire()
+	if wire_ok == nil then
+		wire_ok = pcall(function()
+			world.remove(world.spawn("wire", { points = { v3(0, 0, 0), v3(0, 0, 1) }, edges = { { 1, 2 } }, width = 0.01, solid = false, visible = false }))
+		end)
+	end
+	return wire_ok
+end
+
 local function show_mesh(e, mode, grow, angle)
 	local t = s.time
 	local pts, edges = MESHES[e.kind](t, e)
 	local color, glow = part_look(e.kind, {}, mode)
-	if not e.wire or #e.wire ~= #edges then
-		e.wire = {}
-		for _, ed in edges do
-			local c, g = color, glow
-			if ed[3] then c, g = part_look(e.kind, { white = true }, mode) end
-			table.insert(e.wire, world.spawn("cube", { size = vector.create(WIRE, WIRE, 0.1), color = c, emissive = g, solid = false, tag = "enemy" }))
-		end
-		e.wireMode = mode
-	end
-	if e.wireMode ~= mode then
-		for i, ed in edges do
-			local c, g = color, glow
-			if ed[3] then c, g = part_look(e.kind, { white = true }, mode) end
-			world.set(e.wire[i], { color = c, emissive = g })
-		end
-		e.wireMode = mode
-	end
+	local white, whiteGlow = part_look(e.kind, { white = true }, mode)
 	-- Model to world: roll or tumble, then turn to the heading; scale to size.
 	local scale = draw_r(e.kind) * S * grow
 	local center = at(e.x, e.y, 0.4)
@@ -1553,7 +1549,7 @@ local function show_mesh(e, mode, grow, angle)
 		r1, r2, yaw = t * 0.9 + e.phase, t * 0.6 + e.phase * 2, -(t * 0.5 + e.phase)
 	end
 	local c1, s1, c2, s2, cy, sy = math.cos(r1), math.sin(r1), math.cos(r2), math.sin(r2), math.cos(yaw), math.sin(yaw)
-	local world_pts = {}
+	local rel = {}
 	for i, p in pts do
 		-- roll about x
 		local x, y, z = p.x, p.y * c1 - p.z * s1, p.y * s1 + p.z * c1
@@ -1561,11 +1557,50 @@ local function show_mesh(e, mode, grow, angle)
 		x, y = x * c2 - y * s2, x * s2 + y * c2
 		-- turn about the world's up axis
 		x, z = x * cy + z * sy, -x * sy + z * cy
-		world_pts[i] = center + v3(x, y, z) * scale
+		rel[i] = v3(x, y, z) * scale
 	end
 	local thick = WIRE * math.max(0.4, grow)
+	if has_wire() then
+		-- One wire for the coloured edges and one for the white nucleus.
+		if not e.wires then
+			local body, core = {}, {}
+			for _, ed in edges do table.insert(if ed[3] then core else body, { ed[1], ed[2] }) end
+			e.wires = { world.spawn("wire", { pos = center, points = rel, edges = body, width = thick, color = color, emissive = glow, solid = false, tag = "enemy" }) }
+			if #core > 0 then
+				table.insert(e.wires, world.spawn("wire", { pos = center, points = rel, edges = core, width = thick, color = white, emissive = whiteGlow, solid = false, tag = "enemy" }))
+			end
+			e.wireMode = mode
+		end
+		if e.wireMode ~= mode then
+			world.set(e.wires[1], { color = color, emissive = glow })
+			if e.wires[2] then world.set(e.wires[2], { color = white, emissive = whiteGlow }) end
+			e.wireMode = mode
+		end
+		for _, id in e.wires do
+			world.set(id, { pos = center, points = rel, width = thick })
+			seen(id)
+		end
+		return
+	end
+	if not e.wire or #e.wire ~= #edges then
+		e.wire = {}
+		for _, ed in edges do
+			local c, g = color, glow
+			if ed[3] then c, g = white, whiteGlow end
+			table.insert(e.wire, world.spawn("cube", { size = vector.create(WIRE, WIRE, 0.1), color = c, emissive = g, solid = false, tag = "enemy" }))
+		end
+		e.wireMode = mode
+	end
+	if e.wireMode ~= mode then
+		for i, ed in edges do
+			local c, g = color, glow
+			if ed[3] then c, g = white, whiteGlow end
+			world.set(e.wire[i], { color = c, emissive = g })
+		end
+		e.wireMode = mode
+	end
 	for i, ed in edges do
-		local a, b = world_pts[ed[1]], world_pts[ed[2]]
+		local a, b = center + rel[ed[1]], center + rel[ed[2]]
 		local d = b - a
 		local n = math.max(1e-5, math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z))
 		world.set(e.wire[i], { pos = (a + b) * 0.5, rot = v3(math.asin(math.clamp(-d.y / n, -1, 1)), math.atan2(d.x, d.z), 0), size = v3(thick, thick, n) })
