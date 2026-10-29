@@ -71,6 +71,10 @@ local SPECS = {
 	sun = { hp = 300, r = 54, speed = 28, value = 2400, boss = true },
 	singularity = { hp = 520, r = 60, speed = 0, value = 6000, boss = true, final = true },
 	node = { hp = 1, r = 15, speed = 0, value = 0, armor = true },
+	-- The final boss: a tumour that keeps dividing; while its offspring live it
+	-- cannot be hurt. Metastases are those offspring.
+	tumor = { hp = 420, r = 56, speed = 22, value = 6000, boss = true, final = true },
+	metastasis = { hp = 5, r = 16, speed = 85, value = 60 },
 }
 
 local COLORS = {
@@ -89,6 +93,8 @@ local COLORS = {
 	sun = { 1, 0.62, 0.18 },
 	singularity = { 0.78, 0.4, 1 },
 	node = { 0.55, 0.3, 0.95 },
+	tumor = { 0.95, 0.3, 0.45 },
+	metastasis = { 1, 0.5, 0.6 },
 }
 
 -- How each kind is drawn: neon outlines seen from above, as the LÖVE
@@ -113,6 +119,9 @@ local SHAPES = {
 	sun = { { n = 32, still = true }, { n = 32, k = 0.62, still = true, white = true }, { n = 12, k = 1.3, spin = 0.6 }, { n = 12, k = 1.5, spin = -0.4, dim = true } },
 	singularity = { { n = 32, k = 1.04, still = true, white = true }, { n = 32, k = 1.18, still = true } },
 	node = { { n = 3 } },
+	-- Lumpy, turning membranes around a white nucleus.
+	tumor = { { n = 11 }, { n = 9, k = 0.78, spin = -0.6 }, { n = 7, k = 0.38, spin = 1.3, white = true } },
+	metastasis = { { n = 9 }, { n = 6, k = 0.4, spin = -1, white = true } },
 }
 
 -- Lines that stick out of a body, turning with it: a = angle from the
@@ -127,6 +136,8 @@ local SPIKES = {
 	chaser = around(8, 0.45, true),
 	shard = around(6, 0.55, true),
 	orbiter = around(10, 0.35, true),
+	tumor = around(9, 0.1, true),
+	metastasis = around(5, 0.18, true),
 	-- The phage: a tail behind its head and three legs splayed at its end.
 	dasher = { { a = math.pi, len = 1.1 }, { a = math.pi - 0.55, from = 1.9, len = 0.7 }, { a = math.pi, from = 2.1, len = 0.5 }, { a = math.pi + 0.55, from = 1.9, len = 0.7 } },
 }
@@ -175,7 +186,7 @@ local BOSSES = {
 	{ kind = "serpent", name = "SERPENT" },
 	{ kind = "prism", name = "PRISM TWINS" },
 	{ kind = "sun", name = "SOLAR WARDEN" },
-	{ kind = "singularity", name = "THE SINGULARITY" },
+	{ kind = "tumor", name = "THE TUMOR" },
 }
 local WAVE_REST, WAVE_WARNING = 2, 1.4
 -- Beam timings in seconds: off, warn, live.
@@ -233,6 +244,15 @@ end
 
 local function tough(e)
 	return SPECS[e.kind].boss or SPECS[e.kind].armor
+end
+
+-- The tumour cannot be hurt while any of its metastases is alive.
+local function shielded(e)
+	if e.kind ~= "tumor" then return false end
+	for _, other in s.enemies do
+		if other.kind == "metastasis" and not other.dead then return true end
+	end
+	return false
 end
 
 local function multiplier()
@@ -361,7 +381,7 @@ local function boss_killed(e)
 	local twin = enemy(e.twin)
 	if e.kind == "prism" and twin then
 		ring(twin.x, twin.y, 120, COLORS.prism)
-	elseif e.kind == "singularity" then
+	elseif e.kind == "singularity" or e.kind == "tumor" then
 		s.won = true
 		s.victoryClock = 0
 		ring(e.x, e.y, 400, WHITE)
@@ -397,7 +417,7 @@ function kill(e)
 			if seg then kill(seg) end
 		end
 	end
-	if e.kind == "prism" or e.kind == "sun" or e.kind == "singularity" then boss_killed(e) end
+	if e.kind == "prism" or e.kind == "sun" or e.kind == "singularity" or e.kind == "tumor" then boss_killed(e) end
 	if SPECS[e.kind].boss then
 		s.shake = 5
 		ring(e.x, e.y, 160, color)
@@ -546,7 +566,7 @@ local function plan(number, count_players)
 	-- Every fourth wave a boss joins the formation.
 	if number % 4 == 0 then
 		local boss = BOSSES[math.min(#BOSSES, number / 4)]
-		local middle = boss.kind == "singularity" or boss.kind == "prism"
+		local middle = boss.kind == "singularity" or boss.kind == "prism" or boss.kind == "tumor"
 		table.insert(out, { x = if boss.kind == "prism" then width * 0.2 else width / 2, y = if middle then height / 2 else 50, kind = boss.kind, at = 0 })
 		return out, boss.name, true
 	end
@@ -904,7 +924,38 @@ local function late_boss(e, dx, dy, dt)
 end
 
 -- The speed for the kinds that do more than chase, or nil to keep chasing.
+-- The tumour divides: while it is unprotected a clock runs down and it buds
+-- off metastases (more as it weakens), and at two thirds and one third of
+-- its health it bursts into five at once. Kill them to hurt it again.
+local function tumor_step(e, dt)
+	local stage = if e.hp > e.maxHp * 2 / 3 then 1 elseif e.hp > e.maxHp / 3 then 2 else 3
+	local count = 0
+	if stage ~= (e.stage or 1) then
+		e.stage = stage
+		count = 5
+	end
+	if not shielded(e) then
+		e.divide = (e.divide or 2.5) - dt
+		if e.divide <= 0 then
+			e.divide = ({ 6, 5, 4 })[stage]
+			count = math.max(count, stage + 1)
+		end
+	end
+	if count > 0 then
+		local start = random.float() * math.pi * 2
+		for i = 1, count do
+			local a = start + i * 2 * math.pi / count
+			spawn("metastasis", e.x + math.cos(a) * e.r, e.y + math.sin(a) * e.r, 0.35)
+		end
+		ring(e.x, e.y, 140, COLORS.tumor)
+		sfx("boss")
+		s.shake = math.max(s.shake, 4)
+	end
+	return nil
+end
+
 local function special(e, dx, dy, length, dt)
+	if e.kind == "tumor" then return tumor_step(e, dt) end
 	if e.kind == "dasher" then
 		-- Telegraphed charge: stop, lock a line, then rush along it.
 		e.fire -= dt
@@ -1139,7 +1190,7 @@ local function shots_step(dt)
 			if not best then break end
 			b.hit[best.uid] = true
 			b.hits -= 1
-			if not SPECS[best.kind].armor then best.hp -= b.damage end
+			if not SPECS[best.kind].armor and not shielded(best) then best.hp -= b.damage end
 			best.flash = 0.09
 			burst(b.x + (x - b.x) * t, b.y + (y - b.y) * t, { 0.8, 0.9, 1 }, 3)
 			if best.hp <= 0 then kill(best) else sfx("hit") end
@@ -1293,7 +1344,8 @@ end
 local function show_enemy(e)
 	local parts = SHAPES[e.kind]
 	-- Bosses and armour take fire all the time: their bar shows the damage, not a flash.
-	local mode = if e.warm > 0 then "warm" elseif e.flash > 0 and not tough(e) then "flash" else "normal"
+	-- A shielded tumour is drawn dim: bright means it can be hurt.
+	local mode = if e.warm > 0 or shielded(e) then "warm" elseif e.flash > 0 and not tough(e) then "flash" else "normal"
 	local grow = if e.warm > 0 then 0.35 + 0.65 * (1 - math.min(1, e.warm / WAVE_WARNING)) else 1
 	local angle = enemy_angle(e)
 	local pos = at(e.x, e.y, 0.1)
