@@ -142,11 +142,14 @@ local STAGE_GRID = { { 0.3, 0.32, 1 }, { 0.95, 0.45, 0.3 }, { 1, 0.55, 0.15 }, {
 
 local PICKUP_COLORS = { repair = { 1, 0.3, 0.42 }, spread = { 1, 0.75, 0.2 }, pierce = { 1, 0.45, 0.85 }, rapid = { 0.25, 1, 1 } }
 -- What a pickup does, drawn inside its white ring as line segments
--- {x1, y1, x2, y2} in arena units (y grows downwards): repair is a plus,
+-- {x1, y1, x2, y2} in arena units (y grows downwards): repair is a heart,
 -- spread a fan of three shots, pierce an arrow through a wall, rapid a
 -- double chevron.
 local PICKUP_ICONS = {
-	repair = { { -7, 0, 7, 0 }, { 0, -7, 0, 7 } },
+	repair = {
+		{ 0, 7, -8, -1 }, { -8, -1, -8, -4 }, { -8, -4, -6, -7 }, { -6, -7, -3, -7 }, { -3, -7, 0, -4 },
+		{ 0, -4, 3, -7 }, { 3, -7, 6, -7 }, { 6, -7, 8, -4 }, { 8, -4, 8, -1 }, { 8, -1, 0, 7 },
+	},
 	spread = { { 0, 7, -7, -6 }, { 0, 7, 0, -8 }, { 0, 7, 7, -6 } },
 	pierce = { { -9, 0, 9, 0 }, { 9, 0, 4, -4 }, { 9, 0, 4, 4 }, { -1, -7, -1, 7 } },
 	rapid = { { -7, -6, -1, 0 }, { -1, 0, -7, 6 }, { 0, -6, 6, 0 }, { 6, 0, 0, 6 } },
@@ -1553,7 +1556,8 @@ local function sync()
 		local pulse = 1 + 0.08 * math.sin(s.time * 6)
 		-- A white ring sets pickups apart from the coloured enemies; the
 		-- upgrade is the colour of the dot inside.
-		if not q.ring then
+		-- (Rebuilt when an icon gains or loses lines in a live edit.)
+		if not q.ring or #q.icon ~= #PICKUP_ICONS[q.kind] then
 			q.ring = world.spawn(outline(24, 18), { pos = pos, size = 36 * S, color = rgb(WHITE), emissive = GLOW.white, solid = false, tag = "pickup" })
 			q.icon = {}
 			for _, seg in PICKUP_ICONS[q.kind] do
