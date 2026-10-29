@@ -89,6 +89,13 @@ local DRAW = 1.3
 -- The camera looks straight down; a narrow lens keeps the view nearly flat.
 local CAMERA_FOV = 28
 local CAMERA_HEIGHT = 10.6 / math.tan(math.rad(CAMERA_FOV / 2))
+-- The nebula far below: soft clouds in the LÖVE sky's colours.
+local NEBULA = {
+	{ x = -11, z = -5, r = 9, stretch = 1.4, color = { 0.1, 0.3, 0.75 } },
+	{ x = 12, z = 6, r = 10, stretch = 1.3, color = { 0.75, 0.15, 0.55 } },
+	{ x = 4, z = -9, r = 6, stretch = 1.6, color = { 0.35, 0.15, 0.8 } },
+}
+local NEBULA_GLOW = 0.0001
 -- Grid colours per boss stage (each stage's nebula in the LÖVE sky).
 local STAGE_GRID = { { 0.3, 0.32, 1 }, { 0.95, 0.45, 0.3 }, { 1, 0.55, 0.15 }, { 0.2, 0.85, 0.75 }, { 1, 0.3, 0.7 }, { 0.62, 0.3, 1 } }
 
@@ -1103,7 +1110,7 @@ end
 -- Showing it: entities follow the simulation every tick.
 
 -- Glow: how bright the lines burn (emissive), per kind of thing.
-local GLOW = { dim = 0.025, line = 0.04, white = 0.05, warm = 0.006, shot = 0.05, grid = 0.003, major = 0.006, rim = 0.015, hostile = 0.03 }
+local GLOW = { dim = 0.025, line = 0.04, white = 0.05, warm = 0.006, shot = 0.05, grid = 0.0016, major = 0.003, hostile = 0.03 }
 
 -- The outline shape name for a polygon of radius r (arena units): its line
 -- stays LINE wide whatever the size, in steps so few meshes are made.
@@ -1355,27 +1362,12 @@ local function sync()
 		end
 	end
 	show_hole()
-	-- Light pools on the dark floor under pilots, bosses and explosions.
-	local lamps = {}
-	local function lamp(pos, color, intensity, range)
-		if #lamps < 32 then table.insert(lamps, { pos = pos, color = color, intensity = intensity, range = range }) end
-	end
-	for _, f in s.flashes do lamp(at(f.x, f.y, 1.2), rgb(f.color), 400 * f.power * f.ttl / 0.3, 5) end
-	for _, p in s.players do
-		if alive(p) then lamp(at(p.x, p.y, 1.2), p.color, 60, 3) end
-	end
-	for _, e in s.enemies do
-		if not e.dead and e.warm <= 0 and SPECS[e.kind].boss then lamp(at(e.x, e.y, 2), rgb(COLORS[e.kind]), 400, 7) end
-	end
-	local f = fields()[1]
-	if f then lamp(at(f.x, f.y, 1.5), rgb(COLORS.singularity), 250 * strength(), 7) end
-	lights.set(lamps)
 	-- The grid takes the colour of each boss stage.
 	local stage = math.clamp(math.ceil(math.max(1, s.wave) / 4), 1, 6)
 	if stage ~= s.stage then
 		s.stage = stage
 		for _, g in s.grid do
-			world.set(g.id, { color = rgb(STAGE_GRID[stage], if g.major then 0.7 else 0.45), emissive = if g.major then GLOW.major else GLOW.grid })
+			world.set(g.id, { color = rgb(STAGE_GRID[stage], if g.major then 0.6 else 0.4), emissive = if g.major then GLOW.major else GLOW.grid })
 		end
 	end
 	-- Straight down on the arena; it shakes a little on hits and kills.
@@ -1447,8 +1439,8 @@ local function warm_all()
 		world.warm(outline(PICKUP_SIGNS[kind], 8), { color = rgb(c), emissive = GLOW.line })
 	end
 	for _, c in STAGE_GRID do
-		world.warm("cube", { color = rgb(c, 0.45), emissive = GLOW.grid })
-		world.warm("cube", { color = rgb(c, 0.7), emissive = GLOW.major })
+		world.warm("cube", { color = rgb(c, 0.4), emissive = GLOW.grid })
+		world.warm("cube", { color = rgb(c, 0.6), emissive = GLOW.major })
 	end
 	world.warm("sphere", { color = rgb(HOSTILE_COLOR), emissive = GLOW.hostile })
 	world.warm("sphere", { color = "#000000", roughness = 1 })
@@ -1461,23 +1453,31 @@ end
 -- a bright rim, and dust far below for depth.
 local function arena()
 	local w, h = s.width * S, s.height * S
-	-- Rough and dark, so the lamps leave soft coloured pools on it.
-	world.spawn("cube", { pos = vector.create(0, -0.1, 0), size = vector.create(w, 0.2, h), color = "#0b0c16", roughness = 0.95, tag = "arena" })
-	world.spawn("cube", { pos = vector.create(0, -0.4, 0), size = vector.create(w * 4, 0.2, h * 4), color = "#000000", roughness = 1, tag = "arena" })
+	-- Deep space: black, with a faint nebula and stars far below the grid.
+	world.spawn("cube", { pos = vector.create(0, -12, 0), size = vector.create(w * 3, 0.2, h * 3), color = "#000000", roughness = 1, tag = "space" })
+	-- Each cloud is a stack of thin discs, widest and faintest at the bottom,
+	-- so it fades out towards its edge.
+	for _, cloud in NEBULA do
+		for i = 1, 16 do
+			local k = 1 - (i - 1) / 16
+			local r = cloud.r * k
+			world.spawn("sphere", { pos = vector.create(cloud.x, -11 + i * 0.005, cloud.z), size = vector.create(r * 2 * cloud.stretch, 0.005, r * 2), color = rgb(cloud.color, 0.3 + 0.7 * i / 16), emissive = NEBULA_GLOW * i, solid = false, tag = "space" })
+		end
+	end
+	for i = 1, 320 do
+		local big = i % 9 == 0
+		local size = if big then 0.09 else random.range(0.035, 0.06)
+		world.spawn("cube", { pos = vector.create(random.range(-26, 26), -10.5, random.range(-16, 16)), size = vector.create(size, 0.01, size), color = if big then "#dfe8ff" else "#b8c8ff", emissive = if big then 0.03 else 0.012, solid = false, tag = "space" })
+	end
 	s.grid, s.stage = {}, 1
 	local c = STAGE_GRID[1]
 	for x = 40, s.width - 1, 40 do
 		local major = x % 160 == 0
-		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create((x - s.width / 2) * S, 0.005, 0), size = vector.create(if major then 0.05 else 0.03, 0.01, h), color = rgb(c, if major then 0.7 else 0.45), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
+		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create((x - s.width / 2) * S, 0.005, 0), size = vector.create(0.025, 0.01, h), color = rgb(c, if major then 0.6 else 0.4), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
 	end
 	for y = 40, s.height - 1, 40 do
 		local major = y % 160 == 0
-		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create(0, 0.005, (y - s.height / 2) * S), size = vector.create(w, 0.01, if major then 0.05 else 0.03), color = rgb(c, if major then 0.7 else 0.45), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
-	end
-	-- The rim: a bright line round the arena.
-	for _, side in { -1, 1 } do
-		world.spawn("cube", { pos = vector.create(side * (w / 2 + 0.04), 0.02, 0), size = vector.create(0.08, 0.03, h + 0.16), color = "#5f8fff", emissive = GLOW.rim, solid = false, tag = "arena" })
-		world.spawn("cube", { pos = vector.create(0, 0.02, side * (h / 2 + 0.04)), size = vector.create(w + 0.16, 0.03, 0.08), color = "#5f8fff", emissive = GLOW.rim, solid = false, tag = "arena" })
+		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create(0, 0.005, (y - s.height / 2) * S), size = vector.create(w, 0.01, 0.025), color = rgb(c, if major then 0.6 else 0.4), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
 	end
 end
 
@@ -1520,7 +1520,7 @@ local function init()
 	-- Soft neon glow, a darker frame and a little film.
 	-- No sky light or haze: only what glows shows.
 	light.set({ sun_lux = 0, sky_lux = 0.05, fog_density = 0 })
-	post.set({ bloom = 1.2, bloom_radius = 2, bloom_threshold = 0.6, bloom_wide = false, saturation = 1.25, contrast = 1.1, vignette = 0.4, grain = 0.1, aberration = 0.8 })
+	post.set({ bloom = 0.55, bloom_radius = 2, bloom_threshold = 0.9, bloom_wide = false, saturation = 1.25, contrast = 1.1, vignette = 0.4, grain = 0.1, aberration = 0.8 })
 	for i, p in players.list() do
 		table.insert(s.players, new_pilot(p, i))
 	end
