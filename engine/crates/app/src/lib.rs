@@ -329,6 +329,11 @@ struct Live {
     renderer: Option<Renderer>,
 }
 
+/// Started by or pointed at a GameNight host (GAMENIGHT=1 or GAMENIGHT_ADDR).
+fn under_host() -> bool {
+    std::env::var("GAMENIGHT").as_deref() == Ok("1") || std::env::var("GAMENIGHT_ADDR").is_ok_and(|a| !a.is_empty())
+}
+
 struct Shell<'g> {
     cfg: Config,
     game: &'g mut dyn Game,
@@ -426,7 +431,9 @@ impl Shell<'_> {
             self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps);
             if let Some(a) = self.debug.tick(f64::from(dt), size) { self.game.debug_action(a); }
         }
-        if !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() {
+        // The hint is for a developer at a desk: never on a GameNight TV,
+        // nor once a controller is plugged in.
+        if !self.devices.mouse_captured && self.cfg.keyboard && self.game.mouse_capture().is_none() && !under_host() && self.devices.pad_count() == 0 {
             let s = (size[1] as f32 / 1080.0).max(0.5);
             draw.hud.text.push(render::hud::TextRun { id: u64::MAX - 1, text: "click to capture the mouse, Esc releases".into(), position: [16.0 * s, size[1] as f32 - 34.0 * s],
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,

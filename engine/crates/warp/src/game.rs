@@ -814,6 +814,12 @@ impl Game for LuaGame {
     fn mouse_capture(&self) -> Option<bool> { self.party.as_ref().map(|_| false) }
 
     fn tick(&mut self, controls: &[Controls]) {
+        // Frames until the next tick are drawn from here (Frame::alpha).
+        {
+            let mut c = self.core();
+            c.world.tick_start();
+            for p in &mut c.roster { p.cam_prev = p.cam; }
+        }
         if let Some(mut l) = self.live.take() { l.serve(self); self.live = Some(l); }
         if self.polls % POLL_TICKS == 0 && self.polls > 0 { self.reload(); }
         self.polls += 1;
@@ -890,9 +896,9 @@ impl Game for LuaGame {
             }
         }
         let r = frame.renderer().ok_or("no renderer")?;
-        c.world.flush(frame.gpu, r)?;
+        c.world.flush_at(frame.gpu, r, frame.alpha)?;
         post(r, &c.post, &c.lamps)?;
-        let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam))).collect();
+        let mut seen: Vec<(usize, Cam)> = c.roster.iter().filter_map(|p| p.view.map(|v| (v, p.cam_prev.towards(&p.cam, frame.alpha)))).collect();
         seen.sort_by_key(|(v, _)| *v);
         if seen.is_empty() { seen.push((0, Cam::default())); }
         let cameras = seen.into_iter().map(|(_, k)| k).map(|k| Camera { pos: k.pos, target: k.target, fov_y: k.fov.to_radians(), near: 0.05 }).collect();

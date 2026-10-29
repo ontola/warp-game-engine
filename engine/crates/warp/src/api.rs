@@ -23,6 +23,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cam { pub pos: Vec3, pub target: Vec3, pub fov: f32 }
 
+impl Cam {
+    /// `self` drawn `alpha` (0..1) of the way to `to`; a jump snaps.
+    pub fn towards(&self, to: &Cam, alpha: f32) -> Cam {
+        if self.pos.distance(to.pos) > 4.0 { return *to; }
+        Cam { pos: self.pos.lerp(to.pos, alpha), target: self.target.lerp(to.target, alpha), fov: self.fov + (to.fov - self.fov) * alpha }
+    }
+}
+
 impl Default for Cam {
     fn default() -> Self { Cam { pos: Vec3::new(0.0, 6.0, 12.0), target: Vec3::new(0.0, 1.0, 0.0), fov: 60.0 } }
 }
@@ -51,13 +59,16 @@ pub struct Player {
     /// Couch position from the lobby (0 is leftmost), when known.
     pub couch: Option<i64>,
     pub cam: Cam,
+    /// The camera at the start of the current tick: frames between ticks
+    /// are drawn from here towards `cam` (smooth at 120 Hz on a 60 Hz tick).
+    pub cam_prev: Cam,
     /// The split-screen view this player looks through (people only).
     pub view: Option<usize>,
 }
 
 impl Player {
     pub fn new(id: u32, name: String, color: Option<[f32; 3]>, bot: bool) -> Self {
-        Player { id, name, color: color.unwrap_or(PLAYER_COLORS[(id as usize - 1) % 4]), bot, seat: None, couch: None, cam: Cam::default(), view: None }
+        Player { id, name, color: color.unwrap_or(PLAYER_COLORS[(id as usize - 1) % 4]), bot, seat: None, couch: None, cam: Cam::default(), cam_prev: Cam::default(), view: None }
     }
 }
 

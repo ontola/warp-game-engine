@@ -74,6 +74,13 @@ Physics stays at 120 Hz with four substeps. Reorganization must preserve
 simulation output and retained asset bytes. The Godot implementation, export
 pipeline and comparison workflow are retired.
 
+Games are played on 120 Hz screens while most simulations tick at 60 Hz:
+anything that moves must be drawn between its last two ticks with
+`Frame::alpha`, or it looks blurred and doubled. Objects in `render::slots`
+get this from `Slots::tick` (start of every tick) plus `Slots::flush_at`
+(draw); cameras and anything else blend prev/cur themselves. The `warp`
+Luau runtime does both for every Luau game.
+
 Someone may be playing on the machine you run on. Measure and verify headless
 (`--shot`, `--dump`, `--bench`, unit tests, render examples); open a game
 window only when a person asks to play, and never start, focus or kill windows
