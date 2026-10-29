@@ -56,7 +56,8 @@ local POWER_ORDER = { "spread", "pierce", "rapid" }
 local SEGMENTS = 12
 
 local SPECS = {
-	boss = { hp = 180, r = 38, speed = 60, value = 1000, boss = true },
+	-- The first boss (wave 4): a giant virion, tough enough to need a plan.
+	boss = { hp = 650, r = 46, speed = 50, value = 1000, boss = true, extra = 140 },
 	chaser = { hp = 1, r = 11, speed = 115, value = 10 },
 	weaver = { hp = 1, r = 10, speed = 145, value = 15 },
 	splitter = { hp = 4, r = 21, speed = 65, value = 45 },
@@ -64,11 +65,11 @@ local SPECS = {
 	shard = { hp = 1, r = 7, speed = 190, value = 8 },
 	dasher = { hp = 2, r = 12, speed = 70, value = 25 },
 	orbiter = { hp = 2, r = 13, speed = 150, value = 30 },
-	hive = { hp = 150, r = 44, speed = 32, value = 1200, boss = true },
-	serpent = { hp = 120, r = 24, speed = 155, value = 1400, boss = true },
+	hive = { hp = 650, r = 46, speed = 32, value = 1200, boss = true, extra = 140 },
+	serpent = { hp = 450, r = 24, speed = 155, value = 1400, boss = true, extra = 100 },
 	segment = { hp = 1, r = 17, speed = 0, value = 5, armor = true },
-	prism = { hp = 130, r = 26, speed = 0, value = 1600, boss = true },
-	sun = { hp = 300, r = 54, speed = 28, value = 2400, boss = true },
+	prism = { hp = 420, r = 30, speed = 0, value = 1600, boss = true, extra = 90 },
+	sun = { hp = 1000, r = 56, speed = 28, value = 2400, boss = true, extra = 200 },
 	singularity = { hp = 520, r = 60, speed = 0, value = 6000, boss = true, final = true },
 	node = { hp = 1, r = 15, speed = 0, value = 0, armor = true },
 	-- The final boss: a tumour that keeps dividing; while its offspring live it
@@ -181,7 +182,7 @@ local WHITE = { 1, 1, 1 }
 
 local WAVE_NAMES = { "SWEEP", "PINCER", "CORNERS", "CROSSWIND" }
 local BOSSES = {
-	{ kind = "boss", name = "OVERSEER" },
+	{ kind = "boss", name = "THE VIRION" },
 	{ kind = "hive", name = "HIVE QUEEN" },
 	{ kind = "serpent", name = "SERPENT" },
 	{ kind = "prism", name = "PRISM TWINS" },
@@ -354,7 +355,7 @@ function spawn(kind, x, y, delay)
 		fire = 1.0 + random.float(),
 		flash = 0,
 	}
-	if def.boss then e.hp = def.hp + math.max(0, #s.players - 1) * 60 end
+	if def.boss then e.hp = def.hp + math.max(0, #s.players - 1) * (def.extra or 60) end
 	e.maxHp = e.hp
 	table.insert(s.enemies, e)
 	byid[e.uid] = e
@@ -1086,6 +1087,17 @@ local function enemies_step(dt)
 						-- A rotating radial volley has visible lanes to dodge.
 						for i = 1, 12 do hostile_shot(e.x, e.y, i * math.pi / 6 + s.time * 0.4, 190, 6) end
 					end
+					-- Wounded, it sheds new virus particles from its spikes.
+					if e.hp < e.maxHp / 2 then
+						e.shed = (e.shed or 4) - dt
+						if e.shed <= 0 then
+							e.shed = 5
+							for i = 1, 3 do
+								local a = s.time + i * 2 * math.pi / 3
+								spawn("chaser", e.x + math.cos(a) * e.r * 1.4, e.y + math.sin(a) * e.r * 1.4, 0.4)
+							end
+						end
+					end
 				end
 				speed = special(e, dx, dy, length, dt) or speed
 				if e.kind == "fort" then
@@ -1501,6 +1513,111 @@ MESHES.fort = function(t, e)
 	return pts, edges
 end
 
+-- The virion (first boss): an icosahedral capsid with twelve spike fibres,
+-- each ending in a three-pronged head, a membrane ring turning around it
+-- and a white genome core spinning the other way.
+MESHES.boss = function(t, e)
+	local pts, edges = {}, {}
+	local pulse = 1 + 0.05 * math.sin(t * 2.5)
+	add(pts, edges, ICOSA, ICOSA_EDGES, 0.72 * pulse, ZERO)
+	for i, p in ICOSA do
+		local reach = 1.2 + 0.1 * math.sin(t * 4 + i * 0.9)
+		local tip = p * reach
+		table.insert(pts, tip)
+		local stem = #pts
+		table.insert(edges, { i, stem })
+		-- Two directions across the fibre for its prongs.
+		local ref = if math.abs(p.y) < 0.9 then v3(0, 1, 0) else v3(1, 0, 0)
+		local ax, ay, az = p.y * ref.z - p.z * ref.y, p.z * ref.x - p.x * ref.z, p.x * ref.y - p.y * ref.x
+		local an = math.sqrt(ax * ax + ay * ay + az * az)
+		local a = v3(ax / an, ay / an, az / an)
+		local b = v3(p.y * a.z - p.z * a.y, p.z * a.x - p.x * a.z, p.x * a.y - p.y * a.x)
+		for k = 0, 2 do
+			local turn = k * 2 * math.pi / 3 + t * 1.5
+			table.insert(pts, tip + p * 0.12 + (a * math.cos(turn) + b * math.sin(turn)) * 0.13)
+			table.insert(edges, { stem, #pts })
+		end
+	end
+	-- The membrane ring, turning on its own.
+	local first = #pts + 1
+	for k = 0, 19 do
+		local a = k * 2 * math.pi / 20 + t * 0.7
+		table.insert(pts, v3(math.cos(a) * 0.98, 0.08 * math.sin(a * 3 + t * 3), math.sin(a) * 0.98))
+	end
+	for k = 0, 19 do table.insert(edges, { first + k, first + (k + 1) % 20 }) end
+	-- The genome core, counter-spinning.
+	local spin = -t * 2
+	local core = {}
+	for _, p in OCTA do
+		table.insert(core, v3(p.x * math.cos(spin) - p.z * math.sin(spin), p.y, p.x * math.sin(spin) + p.z * math.cos(spin)))
+	end
+	add(pts, edges, core, OCTA_EDGES, 0.3, ZERO, true)
+	return pts, edges
+end
+
+-- The hive queen: a colony mother. A soft icosahedral body, six egg sacs
+-- on tethers around her that swell as the next hatch comes near, and a
+-- white nucleus.
+MESHES.hive = function(t, e)
+	local pts, edges = {}, {}
+	add(pts, edges, ICOSA, ICOSA_EDGES, 0.62 + 0.04 * math.sin(t * 2), ZERO)
+	local swell = 1 - math.clamp((e.hatch or 2) / 3.4, 0, 1)
+	for i = 0, 5 do
+		local a = i * math.pi / 3 + t * 0.4
+		local at_ = v3(math.cos(a) * 1.15, 0.15 * math.sin(t * 3 + i), math.sin(a) * 1.15)
+		local before = #pts
+		add(pts, edges, OCTA, OCTA_EDGES, 0.16 + 0.12 * swell, at_)
+		-- A tether from the nearest body corner to the sac.
+		local best, d = 1, math.huge
+		for k, p in ICOSA do
+			local q = p * 0.62 - at_
+			local dd = q.x * q.x + q.y * q.y + q.z * q.z
+			if dd < d then best, d = k, dd end
+		end
+		table.insert(edges, { best, before + 1 })
+	end
+	add(pts, edges, TETRA, TETRA_EDGES, 0.25, ZERO, true)
+	return pts, edges
+end
+
+-- A prism twin: a long crystal (two hexagonal pyramids on a hexagonal
+-- prism), a white seed spinning inside.
+MESHES.prism = function(t, e)
+	local pts, edges = {}, {}
+	local function hex(y, r)
+		local first = #pts + 1
+		for k = 0, 5 do
+			local a = k * math.pi / 3
+			table.insert(pts, v3(math.cos(a) * r, y, math.sin(a) * r))
+		end
+		for k = 0, 5 do table.insert(edges, { first + k, first + (k + 1) % 6 }) end
+		return first
+	end
+	local top, bottom = hex(0.45, 0.55), hex(-0.45, 0.55)
+	for k = 0, 5 do table.insert(edges, { top + k, bottom + k }) end
+	table.insert(pts, v3(0, 1.25, 0))
+	for k = 0, 5 do table.insert(edges, { top + k, #pts }) end
+	table.insert(pts, v3(0, -1.25, 0))
+	for k = 0, 5 do table.insert(edges, { bottom + k, #pts }) end
+	add(pts, edges, OCTA, OCTA_EDGES, 0.22 + 0.04 * math.sin(t * 6), ZERO, true)
+	return pts, edges
+end
+
+-- The solar warden: a radiolarian, a glassy shell inside a shell with
+-- long spines that breathe in and out.
+MESHES.sun = function(t, e)
+	local pts, edges = {}, {}
+	add(pts, edges, ICOSA, ICOSA_EDGES, 0.85, ZERO)
+	add(pts, edges, ICOSA, ICOSA_EDGES, 0.45, ZERO)
+	for i = 1, 12 do table.insert(edges, { i, 12 + i }) end
+	for i, p in ICOSA do
+		table.insert(pts, p * (1.45 + 0.18 * math.sin(t * 2 + i)))
+		table.insert(edges, { i, #pts })
+	end
+	add(pts, edges, OCTA, OCTA_EDGES, 0.2, ZERO, true)
+	return pts, edges
+end
+
 -- A metastasis: a lumpy cell whose corners never sit still, around a nucleus.
 MESHES.metastasis = function(t, e)
 	local pts, edges = {}, {}
@@ -1733,7 +1850,7 @@ local function show_enemy(e)
 		end
 	end
 	-- The hive's six cells ring its core.
-	if e.kind == "hive" and e.warm <= 0 then
+	if e.kind == "hive" and e.warm <= 0 and not MESHES.hive then
 		local color, glow = part_look("hive", parts[1], mode)
 		for i = 1, 6 do
 			local a = i * math.pi / 3 + e.phase
@@ -2111,6 +2228,15 @@ local function warm_all()
 		world.warm("cube", { color = rgb(c), emissive = FX_GLOW })
 	end
 	for _, c in SHOT_COLORS do world.warm("cube", { color = rgb(c), emissive = GLOW.shot }) end
+	-- 3D wire germs: their coloured and white edges in every mode.
+	for kind in MESHES do
+		for _, mode in { "normal", "warm", "flash" } do
+			for _, part in { {}, { white = true } } do
+				local color, glow = part_look(kind, part, mode)
+				world.warm("cube", { color = color, emissive = glow })
+			end
+		end
+	end
 	-- Spikes, flagella and legs share their body's look; knobs are outlines.
 	for kind in SPIKES do
 		for _, mode in { "normal", "warm", "flash" } do
