@@ -228,9 +228,12 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let g0 = g;
     let up0 = 1.0 / (1.0 + g.x * g.x + g.y * g.y).sqrt();
 
-    let crag = (2.0 * st.rocks).min(1.0) * bedrock * smooth(0.2, 0.7, mountains) * smooth(0.97, 0.85, up0) * fade(24.0, cut);
+    // Crag bands come and go along the slope, wander in height and sink
+    // under the snow, so they never read as stairs.
+    let crag = (2.0 * st.rocks).min(1.0) * bedrock * smooth(0.2, 0.7, mountains) * smooth(0.97, 0.85, up0) * fade(24.0, cut)
+        * smooth(-0.15, 0.35, noised(p * 3.0 + warp, sd(22)).x) * (1.0 - 0.8 * smooth(st.snow_line - 300.0, st.snow_line, y));
     if crag > 0.0 {
-        let s = y / 24.0 + 0.6 * noised(p * 6.0 + warp, sd(12)).x;
+        let s = y / 24.0 + 1.4 * noised(p * 2.5 + warp, sd(12)).x + 0.4 * noised(p * 9.0, sd(23)).x;
         let fl = s.floor();
         let t = s - fl;
         let tb = ((t - 0.6) / 0.4).clamp(0.0, 1.0);
@@ -333,14 +336,17 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
 
     let mut pos = Vec3::new(x, y + water, z);
     if rock > 0.0 && steep > 0.0 {
-        let layer = y / 5.5 + 0.8 * noised(p * 24.0, sd(5)).x;
+        let layer = y / 5.5 + 2.0 * noised(p * 5.0, sd(5)).x + 0.8 * noised(p * 24.0, sd(5)).x;
         let t = layer - layer.floor();
         let ledge = smooth(0.0, 0.18, t) * (1.0 - smooth(0.45, 1.0, t)) - 0.35;
-        let push = 1.8 * smooth(0.8, 0.6, up) * ledge * fade(5.5, cut);
+        let push = 1.8 * smooth(0.8, 0.6, up) * ledge * fade(5.5, cut) * smooth(-0.3, 0.3, noised(p * 8.0, sd(24)).x);
         pos.x -= g.x / steep * push;
         pos.z -= g.y / steep * push;
     }
-    let snow = smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * noised(p * 12.0, sd(19)).x) * smooth(0.62, 0.8, up);
+    // Snow follows the broad slope, so ledges and steps do not stripe it;
+    // only sheer walls stay bare.
+    let snow = smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * noised(p * 12.0, sd(19)).x)
+        * smooth(0.62, 0.8, up0) * smooth(0.35, 0.55, up);
     Sample { pos, up, rock, scree: scree.clamp(0.0, 1.0), wet: smooth(8.0, 1.0, near_wet), water, moor, snow, amp }
 }
 
