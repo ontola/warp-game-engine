@@ -127,11 +127,18 @@ local SPIKES = {
 	chaser = around(8, 0.45, true),
 	shard = around(6, 0.55, true),
 	orbiter = around(10, 0.35, true),
-	-- Two flagella trail behind the bacterium.
-	weaver = { { a = math.pi - 0.18, from = 1.6, len = 0.9 }, { a = math.pi + 0.18, from = 1.6, len = 0.9 } },
 	-- The phage: a tail behind its head and three legs splayed at its end.
 	dasher = { { a = math.pi, len = 1.1 }, { a = math.pi - 0.55, from = 1.9, len = 0.7 }, { a = math.pi, from = 2.1, len = 0.5 }, { a = math.pi + 0.55, from = 1.9, len = 0.7 } },
 }
+
+-- Flagella: wavy tails that whip as a germ swims. a and from as for spikes;
+-- heading = trail behind the way it swims (towards the nearest pilot)
+-- instead of turning with the body.
+local FLAGELLA = {
+	weaver = { { a = math.pi - 0.15, from = 1.6 }, { a = math.pi + 0.15, from = 1.6 } },
+	chaser = { { a = math.pi, from = 1.15, heading = true } },
+}
+local FLAG_SEGMENTS, FLAG_LENGTH = 8, 1.7 -- pieces per tail, length in body radii
 -- The line every outline is drawn with, in arena units (the LÖVE 2 px line
 -- plus its glow).
 local LINE = KNOBS.line_width
@@ -1326,6 +1333,46 @@ local function show_enemy(e)
 			if ids.knob then
 				world.place(ids.knob, at(e.x + dx * r2, e.y + dy * r2, 0.1))
 				seen(ids.knob)
+			end
+		end
+	end
+	-- Flagella: a travelling sine wave that grows towards the tip.
+	local flagella = FLAGELLA[e.kind]
+	if flagella and e.warm <= 0 then
+		local r = draw_r(e.kind)
+		local color, glow = part_look(e.kind, parts[1], mode)
+		if not e.flagella then
+			e.flagella = {}
+			for _ = 1, #flagella * FLAG_SEGMENTS do
+				table.insert(e.flagella, world.spawn("cube", { size = vector.create(1.8 * S, 0.03, r * FLAG_LENGTH / FLAG_SEGMENTS * 1.2 * S), color = color, emissive = glow * 0.8, solid = false, tag = "enemy" }))
+			end
+			e.flagellaMode = mode
+		end
+		if e.flagellaMode ~= mode then
+			for _, id in e.flagella do world.set(id, { color = color, emissive = glow * 0.8 }) end
+			e.flagellaMode = mode
+		end
+		local n = 0
+		for f, fl in flagella do
+			local base = angle
+			if fl.heading then
+				local target = nearest(e.x, e.y)
+				if target then base = math.atan2(target.y - e.y, target.x - e.x) end
+			end
+			local c, sn = math.cos(base + fl.a), math.sin(base + fl.a)
+			local px, py
+			for i = 0, FLAG_SEGMENTS do
+				local t = i / FLAG_SEGMENTS
+				local along = r * (fl.from + t * FLAG_LENGTH)
+				local side = math.sin(t * 9 - s.time * 14 + e.phase + f) * r * 0.3 * t
+				local x, y = e.x + c * along - sn * side, e.y + sn * along + c * side
+				if i > 0 then
+					n += 1
+					local dx, dy = x - px, y - py
+					world.place(e.flagella[n], at((x + px) / 2, (y + py) / 2, 0.1), math.atan2(-dx, -dy))
+					seen(e.flagella[n])
+				end
+				px, py = x, y
 			end
 		end
 	end
