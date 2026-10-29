@@ -15,6 +15,8 @@
 local DIFFICULTY = "standard" -- relaxed, standard or intense
 local START_WAVE = 1
 local LIVES = 3
+-- Seconds a teammate has to stay close to revive a downed pilot.
+local REVIVE_TIME = 2.5
 local GRAVITY = 100 -- percent
 
 -- The look, tweakable live: the `knobs` and `set_knob` tools (or the
@@ -601,10 +603,11 @@ local function pilot_step(p, c, dt)
 		else
 			p.revive = math.max(0, p.revive - dt * 0.5)
 		end
-		if helper and (p.revive >= 1.2 or p.downTime >= 6) then
+		if helper and (p.revive >= REVIVE_TIME or p.downTime >= 6) then
 			p.hp = s.lives
 			p.invul = 2
 			p.revive = 0
+			p.downTime = 0
 			sfx("pickup")
 			ring(p.x, p.y, 55, { 0.3, 1, 0.8 })
 		end
@@ -1384,7 +1387,7 @@ local function show_pilot(p)
 	world.place(p.mark, at(p.x + math.cos(a) * 6, p.y + math.sin(a) * 6, 0.16), -a)
 	if mode == "down" then
 		-- The ring fills in as the revive comes closer.
-		local k = math.min(1, math.max(p.revive / 1.2, p.downTime / 6))
+		local k = math.min(1, math.max(p.revive / REVIVE_TIME, p.downTime / 6))
 		-- The ring sits where the pilot went down (it was left at its spawn point).
 		world.set(p.halo, { pos = pos, size = vector.create((40 + 10 * k + math.sin(s.time * 5) * 4) * S, 0.04, (40 + 10 * k + math.sin(s.time * 5) * 4) * S) })
 	end
@@ -1852,6 +1855,14 @@ local function draw()
 				if x then
 					local blink = 0.65 + 0.35 * math.sin(s.time * 6)
 					hud.text("REVIVE", x - 60 * k, y - 46 * k, { size = 16 * k, align = "center", width = 120 * k, color = { p.rgb[1], p.rgb[2], p.rgb[3], blink } })
+					-- A ring of dots fills clockwise while a teammate stays close.
+					local done = math.floor(math.min(1, p.revive / REVIVE_TIME) * 24 + 0.5)
+					for i = 1, 24 do
+						local a = -math.pi / 2 + (i - 0.5) * math.pi / 12
+						local lit = i <= done
+						local d = (if lit then 5 else 3) * k
+						hud.box(x + math.cos(a) * 30 * k - d / 2, y + math.sin(a) * 30 * k - d / 2, d, d, if lit then { p.rgb[1], p.rgb[2], p.rgb[3], 1 } else { 1, 1, 1, 0.18 })
+					end
 				end
 			end
 		end
