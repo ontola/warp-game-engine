@@ -68,7 +68,7 @@ the clipboard (the in-process one).
 | Round-win strip | `show_round_win` | YOU WIN THE ROUND / NAME WINS THE ROUND / ROUND WON - WAITING FOR ... (display 30, red shadow) | done |
 | Revive label | `_build_revive_panel` | REVIVING... above the plates while reviving a teammate (coop) | done |
 | Phoenix white | `set_phoenix_fade` | card phoenix: white rising with the ascent, 0.9 s fade at the sky drop; coop down: white clearing by the apex | done |
-| Lens flare / impact wash | `lens_flare_overlay.gd` | shader flare on rockets and flashlights, 2-frame wash on air-strike impacts | missing: a screen-space flare shader the renderer lacks (render work, not HUD) |
+| Lens flare / impact wash | `lens_flare_overlay.gd` | shader flare on rockets and flashlights, 2-frame wash on air-strike impacts | air-strike rocket: the ghost chain as HUD discs per view (`view/airstrike.rs` `flare`; blended, Godot adds); impact: the existing explosion flash; flashlights missing |
 
 ## Shared overlays (`game.gd`)
 

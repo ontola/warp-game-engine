@@ -309,6 +309,7 @@ impl Visuals {
     pub fn local_lights_scattering(&self, scatter: Scatter) -> (Vec<LocalLight>, Vec<f32>) {
         let mut l = self.ion.lights(self.clock);
         l.extend(self.fx.blasts.lights(self.clock));
+        l.extend(self.things.strike_lights().iter().copied());
         l.truncate(MAX_TRANSIENT_LIGHTS);
         let mut w = vec![0.0; l.len()];
         let flood = self.flood;
@@ -346,6 +347,8 @@ impl Visuals {
 
     /// Short, distance-attenuated ion impact flash, separately per viewport.
     pub fn ion_flash(&self, eye: Vec3) -> f32 { self.ion.flash(self.clock, eye) }
+    /// The incoming air-strike rocket's lens flare over one view.
+    pub fn airstrike_flare(&self, list: &mut render::hud::HudDrawList, rect: [f32; 4], cam: &Camera, world: &World) { things::Things::airstrike_flare(list, rect, cam, world) }
 }
 
 /// Godot's sky_top to horizon; the ground colour is the darkened horizon.
