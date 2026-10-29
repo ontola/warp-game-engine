@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::f32::consts::PI;
 
 pub const IMAGE: SpriteImage = SpriteImage(0x5ee1_0001);
-const SIDE: usize = 4;
+const SIDE: usize = 5;
 const CELL: usize = 128;
 /// Godot light energy to Warp (view.rs LIGHT).
 pub(crate) const LIGHT: f32 = PI;
@@ -41,9 +41,10 @@ pub(crate) enum Cell {
     Slice,
     Wisp,
     Band,
+    Pillar,
 }
 
-const CELLS: [Cell; 16] = [
+const CELLS: [Cell; 17] = [
     Cell::Dot,
     Cell::Flame,
     Cell::Drop,
@@ -60,6 +61,7 @@ const CELLS: [Cell; 16] = [
     Cell::Slice,
     Cell::Wisp,
     Cell::Band,
+    Cell::Pillar,
 ];
 
 pub(crate) fn uv(c: Cell) -> [f32; 4] {
@@ -123,6 +125,14 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
             let core = 1.0 - smooth(0.0, 0.3, x);
             let edge = (1.0 - x).max(0.0).powi(2);
             (1.0, (core + 0.6 * edge).min(1.0))
+        }
+        // A piece of a pillar of light (grave_beam.gdshader): bright down
+        // the middle, soft at the sides, and a tent along it, so pieces
+        // half their height apart add up to one even column.
+        Cell::Pillar => {
+            let x = u.abs();
+            let core = (1.0 - x).max(0.0).powi(2);
+            (1.0, core * (1.0 - v.abs()))
         }
         // A ragged patch for a field on the ground: solid, frayed rim.
         Cell::Patch => {

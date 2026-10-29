@@ -136,6 +136,8 @@ pub struct View {
     pub fx: crate::fx::Fx,
     pub marks: crate::marks::Marks,
     pub shrines: crate::shrines::Shrines,
+    /// How long each wizard has lain fallen.
+    wizard_fallen: Vec<f32>,
 }
 
 fn level_key(l: &Level) -> u64 {
@@ -172,6 +174,7 @@ impl View {
             probes: vec![],
             wizard_pieces: HashMap::new(),
             wizard_anims: vec![],
+            wizard_fallen: vec![],
             enemy_anims: HashMap::new(),
             debris: Vec::new(),
             cam_center: Vec3::ZERO,
@@ -390,7 +393,13 @@ impl View {
             let Some(pieces) = self.wizard_pieces.get(&i) else { continue };
             let Some(kit) = self.kits.kit("wizard") else { continue };
             let pose = self.wizard_anims[i].pose(kit, &a, &wz, dt);
-            let at = Mat4::from_translation(a.pos);
+            // A fallen wizard lies down beside the grave.
+            self.wizard_fallen.resize(w.wizards.len(), 0.0);
+            let f = &mut self.wizard_fallen[i];
+            *f = if a.alive { 0.0 } else { *f + dt };
+            let k = (*f / 0.5).min(1.0);
+            let k = k * k * (3.0 - 2.0 * k);
+            let at = Mat4::from_translation(a.pos + Vec3::Y * 0.12 * k) * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2 * k);
             for p in pieces {
                 out.push((p.mesh, look::affine(at * anim::posed(kit, &pose, p.node)), p.shadow));
             }
