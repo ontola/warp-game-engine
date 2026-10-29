@@ -41,13 +41,13 @@ const TICK_HZ: f32 = 60.0;
 const STYLES: [&str; 3] = ["default", "lowland", "alpine"];
 /// Grass is a field of roots around one point; it is rebuilt around the
 /// camera once the camera is this far (metres, horizontally) from it.
-const GRASS_RECENTRE: f32 = 120.0;
+const GRASS_RECENTRE: f32 = 150.0;
 /// Without grass in view, trees follow the camera in bigger steps.
 const TREES_RECENTRE: f32 = 300.0;
 /// Recipe spruces only matter up close: low over the ground (below
 /// `RECIPE_CEILING`) the scene follows every `RECIPE_RECENTRE` metres.
-const RECIPE_RECENTRE: f32 = 60.0;
-const RECIPE_CEILING: f32 = 80.0;
+const RECIPE_RECENTRE: f32 = 100.0;
+const RECIPE_CEILING: f32 = 30.0;
 /// Mountain shadows past the shadow maps come from a heightfield this many
 /// metres square at this spacing, rebuilt once the camera has moved
 /// `SHADOW_RECENTRE` from its centre.
