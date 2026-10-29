@@ -387,6 +387,8 @@ impl View {
         let mut out: Vec<(usize, Affine3A, bool)> = Vec::new();
         let time = w.time as f32;
         self.wizard_anims.resize_with(w.wizards.len(), Default::default);
+        // Where each staff's gem is as the staff moves: its light and orbs sit there.
+        let mut gems = vec![None; w.wizards.len()];
         for (i, &id) in w.wizards.iter().enumerate() {
             let a = w.a(id);
             let wz = w.wiz(id);
@@ -403,7 +405,12 @@ impl View {
             for p in pieces {
                 out.push((p.mesh, look::affine(at * anim::posed(kit, &pose, p.node)), p.shadow));
             }
+            if let Some(&g) = kit.named.get("gem") {
+                gems[i] = Some((at * anim::posed(kit, &pose, g)).w_axis.truncate());
+            }
         }
+        self.marks.gems = gems.clone();
+        self.shrines.gems = gems;
         let mut seen = Vec::new();
         for &id in w.enemies.iter().chain(&w.corpses) {
             let Some(a) = w.actor(id) else { continue };

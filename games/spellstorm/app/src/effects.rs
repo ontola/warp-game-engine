@@ -2,7 +2,8 @@
 //! shaders, ported): every particle cell can be drawn by it, and some
 //! effects (the mist walls, the ground fields) only are. The file reloads
 //! while the game runs: save it and the next frame draws with it; a file
-//! that does not compile keeps the last good one and says why.
+//! that does not compile keeps the last good one and says why. The
+//! signature spells (tidal wave, black hole, meteor) are in spells.wgsl.
 use crate::fx::{cell_at, Cell};
 use render::sprites::Sprite;
 use render::Gpu;
@@ -10,7 +11,18 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-pub const SOURCE: &str = include_str!("fx.wgsl");
+const FX: &str = include_str!("fx.wgsl");
+const SPELLS: &str = include_str!("spells.wgsl");
+
+/// fx.wgsl and spells.wgsl as one shader: fx.wgsl's game_sprite becomes
+/// fx_sprite, which spells.wgsl's own game_sprite hands the rest to.
+fn combine(fx: &str, spells: &str) -> String {
+    format!("{}\n{spells}", fx.replacen("fn game_sprite(", "fn fx_sprite(", 1))
+}
+
+fn builtin() -> String {
+    combine(FX, SPELLS)
+}
 
 /// A cell's own look: effect 1 + the cell's index (fx.wgsl `cell_look`).
 pub fn of_cell(c: Cell) -> u32 {
@@ -21,30 +33,44 @@ pub const WARD: u32 = 64;
 /// A field on the ground: params (kind, radius, seed, time); kind is the
 /// element's index (El).
 pub const GROUND: u32 = 65;
+/// The tidal wave's wall of water: params (time, sink, 0, 0).
+pub const WAVE: u32 = 66;
+/// The black hole: params (open, time, 0, 0).
+pub const BLACK_HOLE: u32 = 67;
+/// A molten rock (the meteor): params (seed, time, 0, 0).
+pub const MOLTEN: u32 = 68;
 
 struct State {
+    /// The game's app/src, where fx.wgsl and spells.wgsl are.
     path: Option<PathBuf>,
     seen: Option<SystemTime>,
     good: Option<String>,
     pending: Option<String>,
     lines: Vec<String>,
+    /// The first install was tried (a broken one is not retried every frame).
+    started: bool,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { path: None, seen: None, good: None, pending: None, lines: Vec::new() });
+static STATE: Mutex<State> = Mutex::new(State { path: None, seen: None, good: None, pending: None, lines: Vec::new(), started: false });
 
-fn stamp(p: &std::path::Path) -> Option<SystemTime> {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+fn stamp(dir: &std::path::Path) -> Option<SystemTime> {
+    ["fx.wgsl", "spells.wgsl"].iter().filter_map(|n| std::fs::metadata(dir.join(n)).and_then(|m| m.modified()).ok()).max()
 }
 
-/// Watch `dir`/app/src/fx.wgsl (the repository's), else use the built-in one.
+fn read(dir: &std::path::Path) -> Option<String> {
+    Some(combine(&std::fs::read_to_string(dir.join("fx.wgsl")).ok()?, &std::fs::read_to_string(dir.join("spells.wgsl")).ok()?))
+}
+
+/// Watch `dir`/app/src/fx.wgsl and spells.wgsl (the repository's), else
+/// use the built-in ones.
 pub fn watch(dir: Option<&std::path::Path>) {
     let mut s = STATE.lock().unwrap();
-    s.path = dir.map(|d| d.join("app/src/fx.wgsl"));
+    s.path = dir.map(|d| d.join("app/src"));
     s.seen = s.path.as_deref().and_then(stamp);
-    s.pending = Some(s.path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_else(|| SOURCE.to_string()));
+    s.pending = Some(s.path.as_deref().and_then(read).unwrap_or_else(builtin));
 }
 
-/// Has fx.wgsl changed on disk? Then it compiles on the next frame.
+/// Has fx.wgsl or spells.wgsl changed on disk? Then they compile on the next frame.
 pub fn scan() -> Option<String> {
     let mut s = STATE.lock().unwrap();
     let p = s.path.clone()?;
@@ -53,7 +79,7 @@ pub fn scan() -> Option<String> {
         return None;
     }
     s.seen = st;
-    let text = std::fs::read_to_string(&p).ok()?;
+    let text = read(&p)?;
     if Some(&text) == s.good.as_ref() {
         return None;
     }
@@ -64,9 +90,10 @@ pub fn scan() -> Option<String> {
 /// On a frame with the GPU: install what is pending.
 pub fn sync(gpu: &Gpu) {
     let mut s = STATE.lock().unwrap();
-    if s.good.is_none() && s.pending.is_none() {
-        s.pending = Some(SOURCE.to_string());
+    if !s.started && s.pending.is_none() {
+        s.pending = Some(builtin());
     }
+    s.started = true;
     let Some(new) = s.pending.take() else { return };
     match render::sprites::set_game_sprite(gpu, &new) {
         Ok(()) => {
@@ -76,9 +103,9 @@ pub fn sync(gpu: &Gpu) {
             s.good = Some(new);
         }
         Err(e) => {
-            s.lines.push(format!("fx.wgsl: {e} (the last good version keeps running)"));
-            if s.good.is_none() && new != SOURCE {
-                s.pending = Some(SOURCE.to_string());
+            s.lines.push(format!("fx.wgsl/spells.wgsl: {e} (the last good version keeps running)"));
+            if s.good.is_none() && new != builtin() {
+                s.pending = Some(builtin());
             }
         }
     }
