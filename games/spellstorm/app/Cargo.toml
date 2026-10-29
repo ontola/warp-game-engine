@@ -13,9 +13,13 @@ spellstorm.workspace = true
 kern.workspace = true
 render = { path = "../../../engine/crates/render" }
 app = { path = "../../../engine/crates/app" }
+gamenight = { path = "../../../engine/crates/gamenight" }
 glam = "0.31"
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { workspace = true }
 serde_json.workspace = true
 flate2 = "1"
 hecs = "0.10"
+
+[dev-dependencies]
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

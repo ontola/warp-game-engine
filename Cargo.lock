@@ -5229,6 +5229,7 @@ version = "0.1.0"
 dependencies = [
  "app",
  "flate2",
+ "gamenight",
  "glam 0.31.1",
  "hecs",
  "image",
@@ -5237,6 +5238,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spellstorm",
+ "tungstenite",
 ]
 
 [[package]]

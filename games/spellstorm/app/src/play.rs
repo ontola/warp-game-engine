@@ -7,6 +7,8 @@ use app::{Buttons, Controls, Draw, Frame};
 use glam::Vec2;
 use render::hud::HudDrawList;
 use spellstorm::wizard::Pad;
+use crate::party::{Ev as PartyEv, Party};
+use spellstorm::world::NAMES;
 use spellstorm::{Seat, Settings, World};
 
 pub struct Spellstorm {
@@ -15,6 +17,11 @@ pub struct Spellstorm {
     pub hud: crate::hud::Hud,
     pub menu: crate::menu::Menu,
     humans: usize,
+    /// The wizard each player's controls drive, in controls order.
+    drive: Vec<usize>,
+    /// Under a party: its seat for each entry of `drive`.
+    pub party: Option<Party>,
+    party_seats: Vec<usize>,
     quit: bool,
     built: bool,
 }
@@ -57,20 +64,94 @@ pub fn pad(c: &Controls) -> Pad {
 impl Spellstorm {
     /// `humans` seats for local players first, then `bots`.
     pub fn new(kits: Kits, humans: usize, bots: usize, seed: u64) -> Spellstorm {
-        let mut seats: Vec<Seat> = (0..humans).map(|i| Seat::player(i, spellstorm::world::NAMES[i % 6])).collect();
+        Self::with_party(kits, humans, bots, seed, None)
+    }
+
+    /// Under a party the host seats everyone (`prepare`); until then the
+    /// bots play hidden.
+    pub fn with_party(kits: Kits, humans: usize, bots: usize, seed: u64, party: Option<Party>) -> Spellstorm {
+        let humans = if party.is_some() { 0 } else { humans };
+        let bots = if party.is_some() { bots.max(1) } else { bots };
+        let mut seats: Vec<Seat> = (0..humans).map(|i| Seat::player(i, NAMES[i % NAMES.len()])).collect();
         seats.extend((humans..humans + bots).map(Seat::bot));
         let world = World::new(&seats, seed, Settings::default());
         let mut hud = crate::hud::Hud::default();
         hud.level(&world);
-        let mut menu = crate::menu::Menu::new(true);
+        let mut menu = crate::menu::Menu::new(party.is_none());
         if humans > 0 {
             menu.show(true, &world);
         }
-        Spellstorm { world, view: View::new(kits), hud, menu, humans, quit: false, built: false }
+        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false }
+    }
+
+    /// The party's seats (main.gd _on_prepared): a wizard for each, couch
+    /// seats as players, AI seats as bots, and a fresh run.
+    fn seat(&mut self, list: Vec<crate::party::Seated>) {
+        let mut seats = vec![];
+        self.drive.clear();
+        self.party_seats.clear();
+        for s in &list {
+            let i = seats.len();
+            if s.bot {
+                seats.push(Seat::bot(i));
+                continue;
+            }
+            let mut seat = Seat::player(i, if s.name.is_empty() { NAMES[i % NAMES.len()] } else { &s.name });
+            if let Some(c) = s.color {
+                seat.robe = [c[0], c[1], c[2], 1.0];
+            }
+            seat.player_id = s.player_id.clone();
+            self.drive.push(i);
+            self.party_seats.push(s.seat);
+            seats.push(seat);
+        }
+        if seats.is_empty() {
+            seats.push(Seat::bot(0));
+        }
+        let settings = self.world.settings.clone();
+        let seed = self.world.seed.wrapping_add(1);
+        self.world = World::new(&seats, seed, settings);
+        self.humans = self.drive.len();
+        self.hud = crate::hud::Hud::default();
+        self.hud.level(&self.world);
+        self.view.fx = crate::fx::Fx::default();
+        self.menu.open = false;
+        self.built = false;
+    }
+
+    /// The party's news, then its controllers for this tick.
+    fn party_tick(&mut self) -> Option<Vec<Controls>> {
+        let evs = self.party.as_mut()?.poll();
+        for ev in evs {
+            match ev {
+                PartyEv::Prepare(list) => {
+                    self.seat(list);
+                    if let Some(p) = &mut self.party {
+                        p.ready();
+                    }
+                }
+                PartyEv::Names(names) => {
+                    for id in self.world.wizards.clone() {
+                        let mut w = self.world.wiz_mut(id);
+                        if let Some((_, n)) = names.iter().find(|(pid, n)| !pid.is_empty() && *pid == w.player_id && !n.is_empty()) {
+                            w.name = n.clone();
+                        }
+                    }
+                }
+                PartyEv::Setting(k, v) => self.world.set_option(&k, &v),
+                PartyEv::NewRun => self.world.new_run(),
+                PartyEv::Dispose => self.menu.open = false,
+            }
+        }
+        let p = self.party.as_mut()?;
+        Some(p.controls(&self.party_seats, spellstorm::world::DT as f32, self.menu.open))
     }
 
     /// One tick with these players' controls.
     pub fn step(&mut self, controls: &[Controls]) {
+        let from_party = self.party_tick();
+        let controls = from_party.as_deref().unwrap_or(controls);
+        let host_paused = self.party.as_ref().is_some_and(|p| !p.running());
         let was_open = self.menu.open;
         match self.menu.update(&mut self.world, controls, spellstorm::world::DT as f32) {
             crate::menu::Action::StartAt(b) => self.world.start_at(b),
@@ -79,15 +160,24 @@ impl Spellstorm {
         }
         // The game stands still under the menu; the press that closed it
         // does not reach the wizards.
-        self.world.paused = self.menu.open;
+        self.world.paused = self.menu.open || host_paused;
         let idle = self.menu.open || was_open;
-        for (i, c) in controls.iter().enumerate().take(self.humans) {
+        for (k, c) in controls.iter().enumerate() {
             let c = if idle { &Controls::default() } else { c };
-            if let Some(&id) = self.world.wizards.get(i) {
+            if let Some(&id) = self.drive.get(k).and_then(|&i| self.world.wizards.get(i)) {
                 self.world.wiz_mut(id).input = pad(c);
             }
         }
         self.world.step();
+        if let Some(p) = &mut self.party {
+            for e in &self.world.events {
+                match e {
+                    spellstorm::fx::Ev::RunOver { .. } => p.finished(),
+                    spellstorm::fx::Ev::Level { depth: 0, .. } => p.room_log("New run"),
+                    _ => {}
+                }
+            }
+        }
         self.view.fx.absorb(&self.world);
         self.hud.absorb(&self.world);
         self.hud.update(spellstorm::world::DT as f32);
@@ -96,7 +186,11 @@ impl Spellstorm {
 
 impl app::Game for Spellstorm {
     fn local_players(&self) -> usize {
-        self.humans
+        if self.party.is_some() { 0 } else { self.humans }
+    }
+
+    fn screen(&self) -> app::Screen {
+        self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen())
     }
 
     fn tick(&mut self, controls: &[Controls]) {
@@ -119,8 +213,12 @@ impl app::Game for Spellstorm {
         Ok(Draw { cameras: vec![self.view.camera], light: self.view.light.clone(), hud })
     }
 
+    /// Esc: the host's overlay in a party, else the menu.
     fn escape(&mut self) -> bool {
-        self.menu.escape(&self.world);
+        match &self.party {
+            Some(p) if !p.session.is_empty() => p.overlay(),
+            _ => self.menu.escape(&self.world),
+        }
         true
     }
 
