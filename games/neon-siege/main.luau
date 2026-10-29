@@ -1255,7 +1255,8 @@ local function pickups_step(dt)
 				p.powers[q.kind] = AMMO[q.kind]
 			end
 			q.ttl = 0
-			sfx("pickup")
+			-- Each upgrade has its own sound (sounds/up_KIND.luau).
+			sfx("up_" .. q.kind)
 			ring(p.x, p.y, 40, { 0.5, 1, 0.7 })
 		end
 		if q.ttl <= 0 then table.remove(s.pickups, i) end
@@ -2341,7 +2342,7 @@ local function reload()
 	for _, e in s.enemies do e.mode = nil end
 end
 
-local SOUNDS = { "shot", "hit", "burst", "hurt", "death", "pulse", "pickup", "wave", "boss", "win" }
+local SOUNDS = { "shot", "hit", "burst", "hurt", "death", "pulse", "pickup", "up_repair", "up_spread", "up_pierce", "up_rapid", "wave", "boss", "win" }
 
 local function play_sounds()
 	-- One of each per tick; shots at most every fourth tick (they repeat fast).
