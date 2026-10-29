@@ -2318,21 +2318,13 @@ local function draw()
 	-- Only the score, the multiplier and the wave, small in the corners.
 	hud.text(tostring(s.teamScore), 20 * k, 12 * k, { size = 26 * k, color = { 0.85, 0.95, 1, 0.95 } })
 	hud.text("x" .. multiplier(), 20 * k, 42 * k, { size = 16 * k, color = dim })
-	-- A new wave's number appears big in the middle and flies up into the
-	-- corner, so the change catches the eye.
-	local fly = if s.waveAt then (s.time - s.waveAt) / 1.4 else 1
-	local wave_text = math.max(1, s.wave) .. "/" .. FINAL_WAVE
-	if fly < 1 then
-		local hold = math.clamp((fly - 0.35) / 0.65, 0, 1)
-		local ease = hold * hold * (3 - 2 * hold)
-		local size = (64 + (20 - 64) * ease) * k
-		local x = (w / 2 - 100 * k) + ((w - 120 * k) - (w / 2 - 100 * k)) * ease
-		local y = (h * 0.3) + (12 * k - h * 0.3) * ease
-		local glow = { 1, 0.95, 0.75, math.min(1, fly * 6) }
-		hud.text(wave_text, x - 100 * k, y, { size = size, align = "center", width = 200 * k + 100 * k * (1 - ease), color = glow })
-	else
-		hud.text(wave_text, w - 220 * k, 12 * k, { size = 20 * k, align = "right", width = 200 * k, color = dim })
-	end
+	-- A new wave's number is the same corner text, popping: it slides down
+	-- into place, swells and glows, then settles back to its usual size and colour.
+	local t = if s.waveAt then math.clamp((s.time - s.waveAt) / 1.2, 0, 1) else 1
+	local pop = math.sin(t * math.pi)
+	local settle = 1 - (1 - t) ^ 3
+	local color = { dim[1] + (1 - dim[1]) * pop, dim[2] + (0.95 - dim[2]) * pop, dim[3] + (0.75 - dim[3]) * pop, dim[4] + (1 - dim[4]) * pop }
+	hud.text(math.max(1, s.wave) .. "/" .. FINAL_WAVE, w - 220 * k, (12 - 24 * (1 - settle)) * k, { size = 20 * k * (1 + 0.6 * pop), align = "right", width = 200 * k, color = color })
 	-- One thin bar for the boss, no name.
 	local total, max = 0, 0
 	local c
