@@ -2,7 +2,7 @@
 //! Coordinates and clips are physical pixels; all rectangles are x/y/width/height.
 use crate::Gpu;
 use bytemuck::{Pod, Zeroable};
-use glyphon::{Attrs, Buffer, Cache, Color, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap};
+use glyphon::{Attrs, Buffer, Cache, Color, ColorMode, ContentType, CustomGlyph, CustomGlyphId, RasterizedCustomGlyph, Family, FontSystem, Metrics, Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap};
 use glyphon::cosmic_text::Align;
 use std::{collections::{HashMap, HashSet}, ops::Range, time::Instant};
 use wgpu::util::DeviceExt;
@@ -83,6 +83,11 @@ pub struct TextRun {
     pub width: f32,
 }
 
+/// A stroke around a text run ([`HudDrawList::outline`]): `width` pixels
+/// outside the letters, in straight-alpha sRGB `color`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Outline { pub width: f32, pub color: [u8; 4] }
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct HudVertex {
@@ -113,13 +118,21 @@ pub struct HudDrawList {
     /// Pictures this list brings along ([`HudDrawList::provide_image`]):
     /// whoever prepares it uploads the ones it does not hold yet.
     pub pictures: Vec<(HudImage, std::sync::Arc<crate::picture::Picture>, ImageFilter)>,
+    /// Text runs drawn with a stroke, by run id.
+    pub outlines: HashMap<u64, Outline>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HudLayer { vertices: Range<u32>, text: Range<usize> }
 
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { size, vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { size, vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
+
+    /// Draw text run `id` with a real stroke of `width` pixels around its
+    /// letters (under the fill), for text over busy scenes.
+    pub fn outline(&mut self, id: u64, width: f32, color: [u8; 4]) {
+        if width > 0.0 && width.is_finite() { self.outlines.insert(id, Outline { width: width.min(64.0), color }); }
+    }
 
     fn bind(&mut self, image: Option<HudImage>) {
         let current = self.image_runs.last().and_then(|r| r.1);
@@ -380,11 +393,34 @@ pub struct HudRenderer {
     cache: Cache,
     format: wgpu::TextureFormat,
     full_said: bool,
+    /// Stroked glyphs, by glyph and stroke width: their custom-glyph id
+    /// and placement. The id indexes `stroke_images`.
+    strokes: HashMap<(glyphon::CacheKey,u32),Option<(CustomGlyphId,swash::zeno::Placement)>>,
+    stroke_images: Vec<Vec<u8>>,
+    stroke_context: swash::scale::ScaleContext,
 }
+
+/// Custom glyph ids are 16 bit; past this the stroke cache (and the atlas
+/// that holds them) starts over.
+const MAX_STROKES: usize = 60_000;
 
 /// Larger text (titles) is not warmed with the whole alphabet: at 4K that
 /// alone can fill the glyph atlas.
 const WARM_MAX_PX: f32 = 96.0;
+
+/// A glyph's outline stroked `width` pixels each side of its edge (the
+/// fill covers the inner half), as an alpha mask and its placement.
+fn stroke_image(fonts:&mut FontSystem,context:&mut swash::scale::ScaleContext,key:glyphon::CacheKey,width:f32)->Option<(swash::zeno::Placement,Vec<u8>)> {
+    use swash::scale::{Render,Source};
+    use swash::zeno::{Cap,Format,Join,Stroke,Vector};
+    let font=fonts.get_font(key.font_id,key.font_weight)?;
+    let mut scaler=context.builder(font.as_swash()).size(f32::from_bits(key.font_size_bits)).hint(false).build();
+    let mut stroke=Stroke::new(width*2.0);
+    stroke.join(Join::Round).cap(Cap::Round);
+    let image=Render::new(&[Source::Outline]).format(Format::Alpha).style(stroke)
+        .offset(Vector::new(key.x_bin.as_float(),key.y_bin.as_float())).render(&mut scaler,key.glyph_id)?;
+    (image.placement.width>0 && image.placement.height>0).then_some((image.placement,image.data))
+}
 
 fn new_atlas(gpu:&Gpu,cache:&Cache,format:wgpu::TextureFormat)->TextAtlas {
     TextAtlas::with_color_mode(&gpu.device,&gpu.queue,cache,format,if format.is_srgb(){ColorMode::Accurate}else{ColorMode::Web})
@@ -421,7 +457,7 @@ impl HudRenderer {
         let viewport=Viewport::new(&gpu.device,&cache);
         let mut atlas=new_atlas(gpu,&cache,format);
         let renderer=TextRenderer::new(&mut atlas,&gpu.device,wgpu::MultisampleState::default(),None);
-        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false})
+        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false,strokes:HashMap::new(),stroke_images:Vec::new(),stroke_context:swash::scale::ScaleContext::new()})
     }
 
     /// Upload (or replace) the picture drawn by `HudDrawList::image` with `id`.
@@ -477,11 +513,13 @@ impl HudRenderer {
                 self.atlas=new_atlas(gpu,&self.cache,self.format);
                 self.renderers.clear();
                 self.warmed.clear();
+                self.strokes.clear();self.stroke_images.clear();
                 if let Err(e)=self.prepare_text(gpu,list,&layers) {
                     if !std::mem::replace(&mut self.full_said,true) { eprintln!("HUD text left out: {e}"); }
                     self.atlas=new_atlas(gpu,&self.cache,self.format);
                     self.renderers.clear();
                     self.warmed.clear();
+                    self.strokes.clear();self.stroke_images.clear();
                     let none=HudDrawList::new(list.size);
                     self.prepare_text(gpu,&none,&none.layer_ranges()?).map_err(|e|format!("HUD text preparation: {e}"))?;
                     self.renderers.resize_with(layers.len().max(1),||TextRenderer::new(&mut self.atlas,&gpu.device,wgpu::MultisampleState::default(),None));
@@ -521,16 +559,51 @@ impl HudRenderer {
         // One retained glyph buffer per layer, one shared atlas/font cache.
         // Do not trim between layers: earlier glyphs stay pinned while later
         // overlays are prepared. Atlas growth preserves glyph coordinates.
+        if self.stroke_images.len()>MAX_STROKES { return Err(glyphon::PrepareError::AtlasFull); }
+        let strokes:Vec<Vec<CustomGlyph>>=list.text.iter().map(|run| list.outlines.get(&run.id).map_or_else(Vec::new,|o|self.stroke_glyphs(run.id,o))).collect();
+        let images=&self.stroke_images;
         for (renderer, layer) in self.renderers.iter_mut().zip(layers) {
-            let areas=list.text[layer.text.clone()].iter().map(|run| {
+            let areas=list.text[layer.text.clone()].iter().zip(&strokes[layer.text.clone()]).map(|(run,stroke)| {
                 let [x,y,w,h]=run.bounds;
                 TextArea{buffer:&self.text.buffers[&run.id].buffer,left:run.position[0],top:run.position[1],scale:1.0,
                     bounds:TextBounds{left:x.ceil() as i32,top:y.ceil() as i32,right:(x+w).floor() as i32,bottom:(y+h).floor() as i32},
-                    default_color:Color::rgba(run.color[0],run.color[1],run.color[2],run.color[3]),custom_glyphs:&[]}
+                    default_color:Color::rgba(run.color[0],run.color[1],run.color[2],run.color[3]),custom_glyphs:stroke}
             });
-            renderer.prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash)?;
+            // Custom glyphs (the strokes) go down before the area's letters.
+            renderer.prepare_with_custom(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash,
+                |req| images.get(req.id as usize).map(|data| RasterizedCustomGlyph{data:data.clone(),content_type:ContentType::Mask}))?;
         }
         Ok(())
+    }
+
+    /// The stroke under every letter of run `id`, as custom glyphs placed
+    /// like glyphon places the letters themselves.
+    fn stroke_glyphs(&mut self,id:u64,outline:&Outline)->Vec<CustomGlyph> {
+        let Some(text)=self.text.buffers.get(&id) else { return Vec::new() };
+        let c=outline.color;
+        let color=Some(Color::rgba(c[0],c[1],c[2],c[3]));
+        let mut out=Vec::new();
+        for run in text.buffer.layout_runs() {
+            for glyph in run.glyphs.iter() {
+                let physical=glyph.physical((0.0,0.0),1.0);
+                let key=(physical.cache_key,outline.width.to_bits());
+                let entry=match self.strokes.get(&key) {
+                    Some(e)=>*e,
+                    None=>{
+                        let e=stroke_image(&mut self.text.fonts,&mut self.stroke_context,physical.cache_key,outline.width).map(|(placement,data)| {
+                            self.stroke_images.push(data);
+                            ((self.stroke_images.len()-1) as CustomGlyphId,placement)
+                        });
+                        self.strokes.insert(key,e);
+                        e
+                    }
+                };
+                let Some((gid,p))=entry else { continue };
+                out.push(CustomGlyph{id:gid,left:(physical.x+p.left) as f32,top:(run.line_y.round() as i32+physical.y-p.top) as f32,
+                    width:p.width as f32,height:p.height as f32,color,snap_to_physical_pixel:true,metadata:0});
+            }
+        }
+        out
     }
 
     pub fn render(&self,pass:&mut wgpu::RenderPass<'_>)->Result<(),String> {
@@ -622,6 +695,33 @@ mod tests {
         assert_eq!(px(56,8),[255,255,255],"missing picture draws nothing");
         assert_eq!(px(8,24),[0,0,0],"plain shapes still draw");
     }
+    #[test]
+    fn outlined_text_gets_a_real_stroke() {
+        let gpu=Gpu::new().unwrap();let format=wgpu::TextureFormat::Rgba8Unorm;
+        let presenter=crate::present::Presenter::new(&gpu,format);
+        let mut hud=HudRenderer::new(&gpu,format).unwrap();
+        let (w,h)=(240usize,80usize);
+        let background=gpu.device.create_texture_with_data(&gpu.queue,&wgpu::TextureDescriptor{label:None,size:wgpu::Extent3d{width:w as u32,height:h as u32,depth_or_array_layers:1},
+            mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8Unorm,usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]},
+            Default::default(),&[128u8,128,128,255].repeat(w*h));
+        let shot=|hud:&mut HudRenderer,outline:bool| {
+            let mut list=HudDrawList::new([w as u32,h as u32]);
+            list.text.push(TextRun{id:7,text:"Wave 3".into(),position:[12.0,10.0],bounds:[0.0,0.0,w as f32,h as f32],font_size:48.0,color:[255;4],font:FontFace::Body,align:TextAlign::Left,width:w as f32});
+            if outline { list.outline(7,4.0,[0,0,0,255]); }
+            hud.prepare(&gpu,&list).unwrap();
+            presenter.capture_rgba(&gpu,&background,format,Some(hud)).unwrap()
+        };
+        let count=|px:&[u8],f:&dyn Fn(&[u8])->bool| px.chunks(4).filter(|p|f(p)).count();
+        let plain=shot(&mut hud,false);
+        let stroked=shot(&mut hud,true);
+        if let Ok(dir)=std::env::var("HUD_OUTLINE_PNG") { crate::write_png(std::path::Path::new(&dir),w as u32,h as u32,&stroked).unwrap(); }
+        let dark=|p:&[u8]|p[0]<40&&p[1]<40&&p[2]<40;
+        let white=|p:&[u8]|p[0]>230;
+        assert_eq!(count(&plain,&dark),0,"no stroke without an outline");
+        assert!(count(&stroked,&dark)>300,"a dark stroke around the letters: {}",count(&stroked,&dark));
+        assert!(count(&stroked,&white)*10>count(&plain,&white)*7,"the white fill stays on top");
+    }
+
     #[test]
     fn a_full_glyph_atlas_never_fails_the_frame() {
         // A small device: one huge title fills its largest glyph atlas.
