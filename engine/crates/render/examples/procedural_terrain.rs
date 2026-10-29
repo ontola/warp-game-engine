@@ -6,6 +6,8 @@ use glam::Vec3;
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, SolarState};
 use render::procedural_terrain::{self, ProceduralTerrain, Settings, TerrainView};
 use render::scene::{Material, SURFACE, TERRAIN};
+use render::foliage_assembly::MeadowBladeBudget;
+use render::meadow_data::{MeadowField, MeadowGeometry};
 use render::terrain_field;
 use render::{Camera, Gpu, Lighting, Renderer, Scene};
 use std::path::PathBuf;
@@ -82,8 +84,54 @@ fn run() -> Result<(), String> {
     }).transpose()?.unwrap_or((1920u32, 1080u32));
     let only = arg("--only");
 
+    let grass = args.iter().any(|a| a == "--grass");
+    let capacity = arg("--capacity").and_then(|s| s.parse().ok()).unwrap_or(16384);
+    let cube = args.iter().any(|a| a == "--cube");
+    let (scene, pool, mut light) = make_scene(seed, capacity, cube, None)?;
+    if let Some(d) = arg("--debug") { light.debug = d.parse().map_err(|_| "--debug N")?; }
+    if args.iter().any(|a| a == "--no-fog") { light.fog_density = 0.0; }
+    eprintln!("fog density {} height {}", light.fog_density, light.fog_height_m);
+
+    let gpu = Gpu::new()?;
+    let mut world = Some((Renderer::new(&gpu, &scene, &light), ProceduralTerrain::new(pool, Settings::default())));
+    for shot in shots(seed) {
+        if only.as_deref().is_some_and(|o| o != shot.name) { continue; }
+        // Grass needs its field around this camera, so each shot gets a scene.
+        if grass {
+            let (scene, pool, _) = make_scene(seed, capacity, cube, Some(meadow(seed, shot.pos)?))?;
+            world = Some((Renderer::new(&gpu, &scene, &light), ProceduralTerrain::new(pool, Settings::default())));
+        }
+        let (renderer, terrain) = world.as_mut().unwrap();
+        render_shot(&gpu, renderer, terrain, &light, &shot, (w, h), &out, seed, args.iter().any(|a| a == "--dump"))?;
+    }
+    Ok(())
+}
+
+/// Windswept meadow roots on a 0.5 m grid of the terrain function, 300 m
+/// around `centre`. Rock, scree and water are holes.
+fn meadow(seed: u32, centre: Vec3) -> Result<MeadowField, String> {
+    let (cell, n) = (0.5f32, 1200u32);
+    let origin = [(centre.x / cell).floor() * cell - n as f32 * cell * 0.5, (centre.z / cell).floor() * cell - n as f32 * cell * 0.5];
+    let mut samples = Vec::with_capacity((n * n) as usize);
+    for j in 0..n {
+        for i in 0..n {
+            let s = terrain_field::eval(origin[0] + i as f32 * cell, origin[1] + j as f32 * cell, 0.0, seed);
+            let bare = s.rock > 0.5 || s.scree > 0.8 || s.water > 0.02;
+            samples.push(if bare { [0.0; 4] } else { [s.pos.y, 100.0, 1.0, 0.0] });
+        }
+    }
+    let field = MeadowField {
+        origin, cell, width: n, height: n, samples, seed, growth: 1.0, dry_season: 0.0, radius: 250.0, fade_start: 200.0,
+        geometry: MeadowGeometry::cook_windswept(seed as u64, 0.0, MeadowBladeBudget::Blades120)?,
+    };
+    field.validate()?;
+    Ok(field)
+}
+
+fn make_scene(seed: u32, capacity: u32, cube: bool, meadow: Option<MeadowField>) -> Result<(Scene, procedural_terrain::TerrainSpec, Lighting), String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets/textures");
     let mut scene = Scene::default();
+    scene.meadow = meadow;
     // Layers in the order terrain_surface.wgsl reads them.
     let t0 = scene.add_texture(&root.join("grass_ground_albedo.jpg"))?;
     scene.add_texture(&root.join("forest_leaves_02_albedo.jpg"))?; // moor
@@ -92,11 +140,10 @@ fn run() -> Result<(), String> {
     scene.add_texture_with_normal_encoding(&root.join("gravel_ground_01_albedo.jpg"), render::scene::NormalEncoding::SrgbTransferred)?;
     scene.add_texture(&root.join("mossy_rock_albedo.jpg"))?;
     let material = scene.add_material(Material { tint: [1.0, 1.0, 1.0], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
-    if args.iter().any(|a| a == "--cube") {
+    if cube {
         let m = scene.add_mesh(&render::primitives::cube(material).mesh());
         scene.add_instance(m, glam::Affine3A::from_scale_rotation_translation(Vec3::splat(100.0), glam::Quat::IDENTITY, Vec3::new(300.0, 0.0, 200.0)));
     }
-    let capacity = arg("--capacity").and_then(|s| s.parse().ok()).unwrap_or(16384);
     let pool = procedural_terrain::reserve(&mut scene, capacity, material, seed);
 
     let mut light = Lighting::default();
@@ -105,31 +152,28 @@ fn run() -> Result<(), String> {
     sky.apply(&mut scene, &mut light);
     light.fog_density = 0.00003;
     light.fog_end = 60000.0;
-    if args.iter().any(|a| a == "--no-fog") { light.fog_density = 0.0; }
-    if let Some(d) = arg("--debug") { light.debug = d.parse().map_err(|_| "--debug N")?; }
-    eprintln!("fog density {} height {}", light.fog_density, light.fog_height_m);
+    Ok((scene, pool, light))
+}
 
-    let gpu = Gpu::new()?;
-    let renderer = Renderer::new(&gpu, &scene, &light);
-    let mut terrain = ProceduralTerrain::new(pool, Settings::default());
-    for shot in shots(seed) {
-        if only.as_deref().is_some_and(|o| o != shot.name) { continue; }
+fn render_shot(gpu: &Gpu, renderer: &Renderer, terrain: &mut ProceduralTerrain, light: &Lighting, shot: &Shot, (w, h): (u32, u32),
+    out: &std::path::Path, seed: u32, dump: bool) -> Result<(), String> {
+    {
         let cam = Camera { pos: shot.pos, target: shot.target, fov_y: shot.fov.to_radians(), near: 0.05 };
         let started = std::time::Instant::now();
         let mut rgba = Vec::new();
         let mut stats = Default::default();
         for frame in 0..6 {
-            let s = terrain.update(&gpu, &renderer, &[TerrainView::new(&cam, w, h)])?;
+            let s = terrain.update(gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
             if frame == 0 { stats = s; }
-            let (img, fs) = renderer.render(&gpu, &cam, &light, w, h);
+            let (img, fs) = renderer.render(gpu, &cam, light, w, h);
             rgba = img;
             if frame == 5 { eprintln!("clusters {} triangles {} broadphase {}", fs.clusters, fs.triangles, fs.instance_broadphase); }
         }
-        if args.iter().any(|a| a == "--dump") {
+        if dump {
             // GPU vertices against the CPU mirror (interior points only).
             let (mut bad, mut total) = (0, 0);
             for slot in 0..stats.patches as u32 {
-                let (v, _, _) = renderer.procedural_terrain_debug(&gpu, slot).unwrap();
+                let (v, _, _) = renderer.procedural_terrain_debug(gpu, slot).unwrap();
                 let s = v[8] - v[0];
                 if !(s > 0.0) { continue; }
                 for j in 1..8 {

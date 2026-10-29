@@ -78,7 +78,9 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // The grass texture is dry; tint it to wet upland pasture, lusher in
     // hollows and near water, paler on dry patches.
     let lush = clamp(0.5 + (broad - 0.5) * 1.2 + 0.4 * f.wet, 0.0, 1.0);
-    let grass = terrain_layer(layer, wuv, 2.6, mapping) * mix(vec3<f32>(0.95, 1.15, 0.7), vec3<f32>(0.68, 1.5, 0.78), lush);
+    // Darker than a lawn: seen from afar a meadow is mostly blade shadow,
+    // so the ground matches the grass where the blades fade out.
+    let grass = terrain_layer(layer, wuv, 2.6, mapping) * mix(vec3<f32>(0.62, 0.78, 0.42), vec3<f32>(0.45, 0.98, 0.5), lush);
     // Moor: dark olive heather and bracken with grass between.
     let moor = mix(terrain_layer(layer + 1, wuv, 3.2, mapping) * vec3<f32>(0.6, 0.72, 0.7), grass * 0.8, 0.3);
     let soil = terrain_layer(layer + 2, wuv, 3.0, mapping) * vec3<f32>(0.85, 0.8, 0.75);
