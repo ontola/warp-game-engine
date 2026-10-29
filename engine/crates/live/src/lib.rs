@@ -321,6 +321,8 @@ fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 impl Live {
     pub fn url(&self) -> &str { &self.url }
     pub fn token(&self) -> &str { &self.token }
+    /// Where `{game, url, token, pid}` was written, if anywhere.
+    pub fn token_file(&self) -> Option<&std::path::Path> { self.token_file.as_deref() }
     pub fn logs(&self) -> &Logs { &self.logs }
     /// Add a line to the `logs` tool (console capture adds stdout/stderr).
     pub fn log(&self, line: impl Into<String>) { self.logs.push(line); }

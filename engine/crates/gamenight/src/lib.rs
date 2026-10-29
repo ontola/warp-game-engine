@@ -343,6 +343,14 @@ impl Client {
         }
         self.send_json(json!({"type":"declare_actions", "actions":actions}))
     }
+    /// Plain-text requests from players and the session assistant. With
+    /// `mcp` (a live-control token file) the host's assistant changes the
+    /// game through its MCP tools instead of sending text.
+    pub fn declare_commands(&self, description: &str, examples: &[&str], mcp: Option<&std::path::Path>) -> Result<(), String> {
+        let mut msg = json!({"type":"declare_commands", "description":description, "examples":examples});
+        if let Some(path) = mcp { msg["mcp"] = json!(path.to_string_lossy()); }
+        self.send_json(msg)
+    }
     pub fn notify_participation(&self, session: &str, instant_join: bool) -> Result<(), String> { self.send_json(json!({"type":"participation", "session":session, "instant_join":instant_join})) }
     pub fn notify_ready(&mut self, session: &str) -> Result<(), String> {
         if !self.state.ready(session) { return Err("Ready does not match a preparing GameNight session".into()); }
@@ -670,6 +678,17 @@ mod tests {
         assert!(sent.try_recv().is_err(), "one stop only");
         client.rumble(2, 0.0, 0.0, 0.0).unwrap();
         assert!(sent.try_recv().is_err(), "a seat that never rumbled needs no stop");
+    }
+
+    #[test]
+    fn live_control_is_offered_with_its_token_file() {
+        let (outgoing, sent) = mpsc::channel();
+        let (_receive, incoming) = mpsc::channel();
+        let client = Client { state: State::new("neon-siege".into()), launched_by_daemon:true, rumble_quiet: BTreeMap::new(), outgoing, incoming };
+        client.declare_commands("Change it live", &[], Some(std::path::Path::new("/tmp/warp-live/neon-siege.json"))).unwrap();
+        assert_eq!(sent.try_recv().unwrap(), json!({"type":"declare_commands","description":"Change it live","examples":[],"mcp":"/tmp/warp-live/neon-siege.json"}));
+        client.declare_commands("Items", &["give me 1 bread"], None).unwrap();
+        assert!(sent.try_recv().unwrap().get("mcp").is_none());
     }
 
     #[test]
