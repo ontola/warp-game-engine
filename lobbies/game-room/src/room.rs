@@ -751,8 +751,12 @@ fn up_next(r: &mut RoomBuild) {
     r.neon_line(NEXT_POSITION + Vec3::new(-1.35, 0.92, 0.02), NEXT_POSITION + Vec3::new(1.35, 0.92, 0.02), GREEN, 1.5, 0.025, 0.0);
 }
 
-fn shelves(r: &mut RoomBuild) {
+fn shelves(room: &mut RoomBuild) {
     let wood = m(Color::hex("5b3b2a"), 0.55);
+    // The highest ledge, over the neon shelf, is gone: it blocked jumps
+    // there (Joep). It is still built, into a scratch room, so the props on
+    // the other shelves stay as they were.
+    let mut scratch = RoomBuild::new();
     let defs: [[f32; 3]; 9] = [
         [-11.6, -8.6, 4.7],
         [-7.4, -5.2, 5.9],
@@ -766,6 +770,7 @@ fn shelves(r: &mut RoomBuild) {
     ];
     let mut rng = Pcg::new(5);
     for d in defs {
+        let r: &mut RoomBuild = if d[2] == 9.2 { &mut scratch } else { &mut *room };
         // The TV shelf stays clear for the neon sign.
         let bare = d[2] == 6.55;
         let x0 = d[0].max(-11.95);
