@@ -50,6 +50,8 @@ local WIDTH, HEIGHT = 1422, 800 -- arena units, 16:9
 local S = 1 / 40 -- metres per arena unit
 local LIMITS = { enemies = 96, shots = 600, hostile = 240, pickups = 36, rings = 40 }
 local AMMO = { spread = 90, pierce = 60, rapid = 300 }
+-- The order the active powers sit in under a ship.
+local POWER_ORDER = { "spread", "pierce", "rapid" }
 local SEGMENTS = 12
 
 local SPECS = {
@@ -1418,6 +1420,36 @@ local function show_pilot(p)
 		local back = e[1] - 3 - math.sin(s.time * 31 + i * 2 + p.id) * 1.5
 		world.place(p.engines[i], at(p.x + back * c - e[2] * sn, p.y + back * sn + e[2] * c, 0.14), -a)
 		seen(p.engines[i])
+	end
+	-- Active powers ride under the ship: the pickup's icon in a ring that
+	-- shrinks as that power's ammo runs out.
+	p.badges = p.badges or {}
+	local active = {}
+	for _, kind in POWER_ORDER do
+		if p.powers[kind] and mode ~= "down" then table.insert(active, kind) end
+	end
+	for i, kind in active do
+		local color = rgb(PICKUP_COLORS[kind])
+		local b = p.badges[kind]
+		if not b then
+			b = { ring = world.spawn(outline(24, 14, 2), { pos = pos, size = 28 * S, color = color, emissive = GLOW.line, solid = false, tag = "pilot" }), icon = {} }
+			for _, seg in PICKUP_ICONS[kind] do
+				table.insert(b.icon, world.spawn("cube", { pos = pos, size = vector.create(1.8 * S, 0.03, len(seg[3] - seg[1], seg[4] - seg[2]) * 0.55 * S), color = color, emissive = GLOW.line, solid = false, tag = "pilot" }))
+			end
+			p.badges[kind] = b
+		end
+		local bx, by = p.x + (i - (#active + 1) / 2) * 26, p.y + 40
+		local d = (10 + 18 * p.powers[kind] / AMMO[kind]) * S
+		world.set(b.ring, { pos = at(bx, by, 0.15), size = vector.create(d, 0.04, d) })
+		seen(b.ring)
+		for j, seg in PICKUP_ICONS[kind] do
+			local dx, dy = seg[3] - seg[1], seg[4] - seg[2]
+			world.place(b.icon[j], at(bx + (seg[1] + seg[3]) / 2 * 0.55, by + (seg[2] + seg[4]) / 2 * 0.55, 0.16), math.atan2(-dx, -dy))
+			seen(b.icon[j])
+		end
+	end
+	for kind in p.badges do
+		if not p.powers[kind] or mode == "down" then p.badges[kind] = nil end
 	end
 	if mode == "down" then
 		-- The ring fills in as the revive comes closer.
