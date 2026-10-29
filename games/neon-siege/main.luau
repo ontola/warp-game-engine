@@ -1703,7 +1703,10 @@ local function warm_all()
 		end
 	end
 	world.warm(outline(24, 18), { color = rgb(WHITE), emissive = GLOW.white })
-	for _, c in PICKUP_COLORS do world.warm("cube", { color = rgb(c), emissive = GLOW.line }) end
+	for _, c in PICKUP_COLORS do
+		world.warm("cube", { color = rgb(c), emissive = GLOW.line })
+		world.warm(outline(24, 14, 2), { color = rgb(c), emissive = GLOW.line }) -- power badges
+	end
 	for _, c in STAGE_GRID do
 		world.warm("cube", { color = rgb(c, 0.4), emissive = GLOW.grid })
 		world.warm("cube", { color = rgb(c, 0.6), emissive = GLOW.major })
