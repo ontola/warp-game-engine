@@ -72,6 +72,9 @@ pub struct EngineDebug {
     profiling: Option<usize>,
     /// Smoothed milliseconds per GPU pass, in first-seen order.
     passes: Vec<(&'static str, f64)>,
+    /// When a setting last changed, so the shell can re-render the scene
+    /// soon after instead of every frame while the menu is used.
+    pub changed: Option<std::time::Instant>,
 }
 
 impl EngineDebug {
@@ -140,6 +143,7 @@ impl EngineDebug {
     /// Apply an engine action; a game's action (or a reset, which the game
     /// should also see) is returned for [`crate::Game::debug_action`].
     fn apply(&mut self, action: DebugAction) -> Option<DebugAction> {
+        self.changed = Some(std::time::Instant::now());
         let s = &mut self.s;
         let pct = |v: f64, lo: f64, hi: f64| (v / 100.0).clamp(lo, hi) as f32;
         match action {

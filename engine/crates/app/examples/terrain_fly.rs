@@ -5,7 +5,8 @@
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --seed 3
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
-//!   ... --no-trees --no-grass
+//!   ... --no-trees --grass
+//!   cargo run --release -p app --example terrain_fly -- --bench 120 [--size 2560x1440]   # headless GPU pass times
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
 //! Q or LB sinks, Shift/E or RB goes fast, the wheel or arrows up/down set
@@ -43,7 +44,11 @@ const GRASS_RECENTRE: f32 = 120.0;
 const TREES_RECENTRE: f32 = 300.0;
 /// Above this height over the ground the grass is too small to matter and
 /// is not followed.
-const GRASS_CEILING: f32 = 250.0;
+const GRASS_CEILING: f32 = 120.0;
+/// Grass radius. Sideways' 250 m covers a road corridor; here it covers the
+/// whole screen, and at 1440p on an M5 Pro the meadow passes took ~550 ms a
+/// frame seen from 60 m up (120 m: ~51 ms).
+const GRASS_RADIUS: f32 = 120.0;
 
 type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
 
@@ -248,7 +253,7 @@ impl Game for Fly {
             toggle(TREES, "Trees", w.trees, "Fir forest around the camera (Sideways' fir meshes)."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
-            toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow below 250 m above ground. The Grass menu only hides it."),
+            toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (120 m radius) below 120 m above ground. Expensive. The Grass menu only hides it."),
             number(CELL_PX, "Terrain cell size", f64::from(t.cell_pixels), (4.0, 96.0, 4.0, 0), "px", "Largest projected terrain cell before a patch splits."),
             number(ERROR_PX, "Terrain error", f64::from(t.error_pixels), (0.25, 12.0, 0.25, 2), "px", "Largest projected height error before a patch splits."),
         ])
@@ -311,7 +316,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: true, trees: true, tree_density: 0.6, tree_radius: 900.0 } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0 } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -419,7 +424,7 @@ fn meadow(seed: u32, style: &Style, centre: Vec3) -> Result<MeadowField, String>
         }
     }
     let field = MeadowField {
-        origin, cell, width: n, height: n, samples, seed, growth: 1.0, dry_season: 0.0, radius: 250.0, fade_start: 200.0,
+        origin, cell, width: n, height: n, samples, seed, growth: 1.0, dry_season: 0.0, radius: GRASS_RADIUS, fade_start: GRASS_RADIUS * 0.8,
         geometry: MeadowGeometry::cook_windswept(seed as u64, 0.0, MeadowBladeBudget::Blades120)?,
     };
     field.validate()?;
@@ -431,7 +436,7 @@ fn main() -> Result<(), String> {
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine")).transpose()?.unwrap_or(0);
-    let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: !args.iter().any(|a| a == "--no-grass"), ..World::default() };
+    let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
     if let Some(path) = arg("--from") {
@@ -448,6 +453,15 @@ fn main() -> Result<(), String> {
         if let Some(p) = f("pitch_deg") { game.pitch = p.to_radians(); }
         if let Some(s) = f("speed") { game.speed = s; }
         game.rebuild()?;
+    }
+    // --bench N: N headless frames at --size (default 2560x1440), GPU pass times.
+    if let Some(n) = arg("--bench") {
+        let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([2560, 1440]);
+        let gpu = render::Gpu::new()?;
+        let (fps, passes) = app::bench(&mut game, &gpu, [w, h], n.parse().map_err(|_| "--bench N")?, TICK_HZ)?;
+        println!("{w}x{h}: {fps:.1} fps");
+        for (pass, ms) in passes.iter().filter(|p| p.1 >= 0.05) { println!("  {pass:>28} {ms:7.2} ms"); }
+        return Ok(());
     }
     if let Some(out) = arg("--shot") {
         let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1280, 720]);
