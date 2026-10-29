@@ -1245,13 +1245,14 @@ impl Fx {
                 out.push(s);
             }
         }
+        let flash_k = spellstorm::knobs::flash_brightness() as f32;
         for g in &self.glows {
             let k = g.age / g.time;
             let size = g.size * (1.0 - 0.85 * k * k);
             let c3 = linear3([g.c[0], g.c[1], g.c[2]]);
             let inner = c3.lerp(Vec3::ONE, 0.6) * 0.8;
-            out.push(glow_sprite(g.at, size, Cell::HaloOut, c3 * 0.9 * 1.4));
-            out.push(glow_sprite(g.at, size, Cell::HaloIn, inner * 0.9 * 1.4));
+            out.push(glow_sprite(g.at, size, Cell::HaloOut, c3 * 0.9 * 1.4 * flash_k));
+            out.push(glow_sprite(g.at, size, Cell::HaloIn, inner * 0.9 * 1.4 * flash_k));
         }
         for z in &self.zaps {
             let c3 = linear3([z.c[0], z.c[1], z.c[2]]);
@@ -1310,8 +1311,9 @@ impl Fx {
     /// The flashes and burning things this frame, brightest first.
     pub fn lights(&self) -> Vec<LocalLight> {
         let mut out = self.live_lights.clone();
+        let light_k = spellstorm::knobs::flash_light() as f32;
         for p in &self.pops {
-            let k = 1.0 - p.age / p.time;
+            let k = (1.0 - p.age / p.time) * light_k;
             out.push(LocalLight {
                 position: p.at,
                 direction: Vec3::NEG_Y,
@@ -1323,7 +1325,7 @@ impl Fx {
                 falloff: 1.0,
             });
         }
-        out.extend(self.blasts.lights(self.time));
+        out.extend(self.blasts.lights(self.time).into_iter().map(|l| LocalLight { intensity_cd: l.intensity_cd * light_k, ..l }));
         out
     }
 

@@ -277,7 +277,8 @@ impl Marks {
         }
         let s = self.shine.entry(w.seat).or_insert(want);
         *s += (want - *s) * (8.0 * dt).min(1.0);
-        let shine = *s + 0.7 * w.bloom;
+        // A shot's flare on the gem, as bright as the flash_light knob says.
+        let shine = *s + 0.7 * w.bloom * spellstorm::knobs::flash_light() as f32 * 2.0;
         let flash = Vec3::new(w.flash_c[0], w.flash_c[1], w.flash_c[2]);
         let color = tint.lerp(flash, w.bloom * 0.7);
         let lin = linear3(color.to_array());

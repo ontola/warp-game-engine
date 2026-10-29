@@ -29,6 +29,10 @@ knobs! {
     mana_regen = 3.0;
     /// Scales the damage of every wizard spell, bolt and sword hit.
     spell_damage = 1.0;
+    /// Scales how bright the glow of a hit, shot or burst is (looks only).
+    flash_brightness = 0.5;
+    /// Scales how much light a hit, shot or burst throws around (looks only).
+    flash_light = 0.5;
     /// Scales monster health (on top of the difficulty setting).
     monster_hp = 1.0;
     /// Scales the damage monsters do (on top of the difficulty setting).
