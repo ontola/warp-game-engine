@@ -20,6 +20,7 @@ use render::terrain_field::{self, Style};
 use render::{Camera, Lighting, Scene};
 use std::path::PathBuf;
 
+const POOL: u32 = 16384;
 const TICK_HZ: f32 = 60.0;
 const STYLES: [&str; 3] = ["default", "lowland", "alpine"];
 
@@ -69,7 +70,7 @@ impl Fly {
         scene.add_texture_with_normal_encoding(&root.join("gravel_ground_01_albedo.jpg"), render::scene::NormalEncoding::SrgbTransferred)?;
         scene.add_texture(&root.join("mossy_rock_albedo.jpg"))?;
         let material = scene.add_material(Material { tint: [1.0; 3], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
-        let pool = procedural_terrain::reserve(&mut scene, 16384, material, self.seed, self.style());
+        let pool = procedural_terrain::reserve(&mut scene, POOL, material, self.seed, self.style());
         let mut light = Lighting::default();
         let sky = AtmosphereCache::default().get_or_bake(&Atmosphere::default(), SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
         sky.apply(&mut scene, &mut light);
@@ -217,10 +218,27 @@ fn main() -> Result<(), String> {
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine")).transpose()?.unwrap_or(0);
     let mut game = Fly::new(seed, style)?;
+    // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
+    if let Some(path) = arg("--from") {
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?;
+        let st = v.get("state").unwrap_or(&v);
+        let f = |k: &str| st.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
+        if let Some(name) = st.get("style").and_then(|x| x.as_str()) { game.style = STYLES.iter().position(|n| *n == name).ok_or("unknown style")?; }
+        if let Some(seed) = st.get("seed").and_then(|x| x.as_u64()) { game.seed = seed as u32; }
+        game.rebuild()?;
+        if let Some(p) = st.get("pos").and_then(|x| x.as_array()) {
+            let c: Vec<f32> = p.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
+            if c.len() == 3 { game.pos = Vec3::new(c[0], c[1], c[2]); game.prev = game.pos; }
+        }
+        if let Some(y) = f("yaw_deg") { game.yaw = y.to_radians(); }
+        if let Some(p) = f("pitch_deg") { game.pitch = p.to_radians(); }
+        if let Some(s) = f("speed") { game.speed = s; }
+    }
     if let Some(out) = arg("--shot") {
+        let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1280, 720]);
         let gpu = render::Gpu::new()?;
-        let rgba = app::capture(&mut game, &gpu, [1280, 720], 10, TICK_HZ)?;
-        return render::write_png(std::path::Path::new(&out), 1280, 720, &rgba);
+        let rgba = app::capture(&mut game, &gpu, [w, h], 10, TICK_HZ)?;
+        return render::write_png(std::path::Path::new(&out), w, h, &rgba);
     }
     app::run(app::Config { title: "Terrain fly".into(), tick_hz: TICK_HZ, ..Default::default() }, &mut game)
 }
