@@ -1525,7 +1525,7 @@ impl ApplicationHandler for App {
             // and presentation pipelines are being initialized.
             let attrs = Window::default_attributes().with_title("Sideways | loading stage").with_inner_size(PhysicalSize::new(self.args.size.0,self.args.size.1)).with_visible(false).with_fullscreen(if self.args.fullscreen && self.args.smoke_frames == 0 && self.host.is_none() { Some(Fullscreen::Borderless(None)) } else { None });
             let window = Arc::new(event_loop.create_window(attrs).map_err(|e|e.to_string())?);
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+            let instance = render::gpu::instance();
             let surface = instance.create_surface(window.clone()).map_err(|e|e.to_string())?;
             let size = window.inner_size();
             self.startup_timing.mark("window_surface_creation");
