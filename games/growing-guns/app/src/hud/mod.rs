@@ -69,9 +69,13 @@ impl Default for Feedback {
     }
 }
 
-/// The shared round banner (Godot `RoundBanner`): text, size, seconds left.
+/// Seconds a banner takes to fade out (also when it gives way).
+const BANNER_FADE_OUT: f32 = 0.15;
+
+/// The shared round banner (Godot `RoundBanner`): text, size, seconds left
+/// of `total`.
 #[derive(Clone, Debug)]
-pub struct Banner { pub text: String, pub size: f32, pub left: f32 }
+pub struct Banner { pub text: String, pub size: f32, pub left: f32, pub total: f32 }
 
 /// Everything the HUD remembers between ticks.
 #[derive(Clone, Debug, Default)]
@@ -179,7 +183,9 @@ impl Hud {
 
     pub fn name(&self, i: usize) -> &str { self.names.get(i).map_or("Player", |s| s.as_str()) }
 
-    pub fn announce(&mut self, text: impl Into<String>, seconds: f32, size: f32) { self.banner = Some(Banner { text: text.into(), size, left: seconds }); }
+    pub fn announce(&mut self, text: impl Into<String>, seconds: f32, size: f32) {
+        self.banner = Some(Banner { text: text.into().to_uppercase(), size, left: seconds, total: seconds });
+    }
 
     /// One tick: advance timers and read this tick's events.
     pub fn tick(&mut self, world: &World, dt: f32) {
@@ -326,7 +332,8 @@ impl Hud {
                 _ => {}
             }
         }
-        if clear_banner { self.banner = None; }
+        // Give way with a short fade, not a cut.
+        if clear_banner && let Some(b) = &mut self.banner { b.left = b.left.min(BANNER_FADE_OUT); }
     }
 
     /// The HUD for local view `k` (world player `i`).
@@ -351,7 +358,7 @@ impl Hud {
         // Coop: reviving a teammate.
         if world.coop && world.waves.reviving(i).is_some() && !picking {
             let size = (28.0 * l.s).round().max(16.0) * l.u;
-            Label::new(BODY, size, [0.72, 0.92, 1.0, 1.0]).outline(5.0 * l.u, [0.0, 0.0, 0.0, 0.9]).center().draw(d, "REVIVING...", cx, y + h - 98.0 * l.u, clip);
+            Label::poster(size).center().draw(d, "REVIVING...", cx, y + h - 98.0 * l.u, clip);
         }
         self.toasts(d, world, i, &l);
         self.round_strip(d, world, i, &l);
@@ -477,12 +484,12 @@ impl Hud {
         // Round modifier: 2.5 s at the top of each view.
         if let Some(m) = world.modifier && self.round_age < 2.5 && !world.coop {
             let (t, s, c) = modifier_info(m);
-            let lab = Label::new(BODY, 24.0 * l.u, c).outline(5.0 * l.u, [0.0, 0.0, 0.0, 0.92]).center();
-            lab.draw(d, &format!("{t}\n{s}"), cx, top + 76.0 * l.u, clip);
+            let lab = Label::label(size::S * l.u, c).center();
+            lab.draw(d, &format!("{t}\n{s}").to_uppercase(), cx, top + 76.0 * l.u, clip);
         }
         if let Some((t, s, c, _)) = &f.toast {
             let text = if s.is_empty() { t.clone() } else { format!("{t}\n{}", prompt_text(s, l.controller)) };
-            let lab = Label::new(BODY, 22.0 * l.u, *c).outline(5.0 * l.u, [0.0, 0.0, 0.0, 0.92]).center();
+            let lab = Label::label(size::S * l.u, *c).center();
             let w = lab.width(&text).max(360.0 * l.u - 36.0 * l.u) + 36.0 * l.u;
             let (th, ty) = (60.0 * l.u, top + 72.0 * l.u);
             plate(d, [cx - w * 0.5, ty, w, th], PLATE, Some((5.0 * l.u, RED)), clip);
@@ -513,7 +520,7 @@ impl Hud {
             } else { None }
         } else { None };
         if let Some(t) = text {
-            let lab = Label::new(display(), 30.0 * l.u, BONE).shadow(3.0 * l.u, RED).center();
+            let lab = Label::poster(size::M * l.u).center();
             let size = fit(&t, display(), lab.size, l.rect[2] * 0.96);
             Label { size, ..lab }.draw(d, &t, l.rect[0] + l.rect[2] * 0.5, l.rect[1] + 32.0 * l.u, l.rect);
         }
@@ -543,13 +550,13 @@ impl Hud {
         let clip = [0.0, 0.0, w, h];
         // Coop: KILLED n/m, top right (Godot's scoreboard label).
         if world.coop {
-            let lab = Label::new(BODY, 24.0 * u, [1.0, 0.8, 0.4, 1.0]).outline(4.0 * u, BLACK).right();
+            let lab = Label::label(size::S * u, [1.0, 0.8, 0.4, 1.0]).right();
             lab.draw(d, &format!("KILLED   {}/{}", world.waves.kills, world.waves.total), w - 20.0 * u, 34.0 * u, clip);
         }
         // Kill feed: top right from y 96, newest last, fading after 3 s.
         for (k, (line, age)) in self.feed.iter().enumerate() {
             let a = if *age < 3.0 { 1.0 } else { 1.0 - (age - 3.0) / 0.35 };
-            let lab = Label::new(BODY, 16.0 * u, with_alpha([1.0, 0.94, 0.8, 1.0], a)).outline(4.0 * u, with_alpha(BLACK, 0.95)).right();
+            let lab = Label::label(size::XS * u, with_alpha([1.0, 0.94, 0.8, 1.0], a)).right();
             let tw = lab.width(line) + 20.0 * u;
             let (ex, ey, eh) = (w - 18.0 * u - tw, 96.0 * u + k as f32 * 36.0 * u, 30.0 * u);
             d.rect([ex, ey, tw, eh], [0.02, 0.025, 0.03, 0.78 * a], clip);
@@ -566,18 +573,19 @@ impl Hud {
                     None => "MATCH OVER".to_string(),
                 }
             };
-            banner = Some(Banner { text, size: 92.0, left: 99.0 });
+            banner = Some(Banner { text, size: size::XL, left: 99.0, total: 99.0 });
             // Pop in from 0.4 with an overshoot over 0.55 s, then breathe.
             pop = if t < 0.55 { let k = t / 0.55; 0.4 + 0.6 * back_out(k) } else { 1.0 + 0.05 * (0.5 - 0.5 * ((t - 0.55) / 0.9 * std::f32::consts::PI).cos()) };
             if t < 0.3 { pop *= 1.0; }
         }
         if let Some(b) = banner {
-            let size = if b.size > 0.0 { b.size } else { 56.0 } * u * pop;
-            let alpha = self.match_over.map_or(1.0, |t| (t / 0.3).min(1.0));
-            let lab = Label::new(BODY, size, [1.0, 0.95, 0.5, alpha]).outline(6.0 * u * pop, BLACK).center();
+            let size = if b.size > 0.0 { b.size } else { size::L } * u * pop;
+            let fade = ((b.total - b.left) / 0.12).min(b.left / BANNER_FADE_OUT).clamp(0.0, 1.0);
+            let alpha = self.match_over.map_or(fade, |t| (t / 0.3).min(1.0));
             let lines = b.text.lines().count().max(1) as f32;
-            let size = fit(b.text.lines().max_by_key(|l| l.len()).unwrap_or(""), BODY, size, w * 0.98);
-            Label { size, ..lab }.draw(d, &b.text, w * 0.5, 115.0 * u + (lines - 1.0) * size * 0.6, clip);
+            let size = fit(b.text.lines().max_by_key(|l| l.len()).unwrap_or(""), display(), size, w * 0.98);
+            let lab = Label::poster(size).center();
+            Label { color: with_alpha(lab.color, alpha), ..lab }.draw(d, &b.text, w * 0.5, 115.0 * u + (lines - 1.0) * size * 0.6, clip);
         }
         if let Some(net) = net {
             // 422 wide from 18 in at the top right, 14 x 10 margins, wrapped 15 px text.
