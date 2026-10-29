@@ -318,8 +318,8 @@ impl Menu {
         enum Line {
             Name(String, [f32; 4]),
             Plain(&'static str),
-            Tome(&'static str),
-            Text(&'static str),
+            Tome(String),
+            Text(String),
             Gap,
         }
         let mut lines = vec![];
@@ -331,9 +331,9 @@ impl Menu {
                 lines.push(Line::Plain("No tomes yet"));
             }
             for &t in &wz.relics {
-                if let Some(rel) = spellstorm::relics::ALL.get(t) {
-                    lines.push(Line::Tome(rel.name));
-                    lines.push(Line::Text(rel.text));
+                if let Some(rel) = spellstorm::relics::all().get(t) {
+                    lines.push(Line::Tome(rel.name.clone()));
+                    lines.push(Line::Text(rel.text.clone()));
                 }
             }
             lines.push(Line::Gap);

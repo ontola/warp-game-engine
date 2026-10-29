@@ -275,11 +275,12 @@ fn tome_labels(p: &mut Painter, w: &World, cam: &Camera, vp: &Mat4, size: [u32; 
         let c = *vp * Vec4::new(at.x, at.y, at.z, 1.0);
         (c.w > 0.0).then(|| Vec2::new((c.x / c.w * 0.5 + 0.5) * size[0] as f32 / ps, (0.5 - c.y / c.w * 0.5) * size[1] as f32 / ps))
     };
+    let tomes = spellstorm::relics::all();
     for a in &w.run.altars {
         if a.rise <= 0.0 || a.taken {
             continue;
         }
-        let Some(relic) = spellstorm::relics::ALL.get(a.relic) else { continue };
+        let Some(relic) = tomes.get(a.relic) else { continue };
         let k = a.rise.min(1.0);
         let base = a.pos.with_y(0.0);
         let (Some(top), Some(under), Some(side)) = (screen(base + Vec3::Y * 2.68 * k), screen(base + Vec3::Y * 2.58 * k), screen(base + Vec3::Y * 2.58 * k + right)) else { continue };
@@ -287,8 +288,8 @@ fn tome_labels(p: &mut Painter, w: &World, cam: &Camera, vp: &Mat4, size: [u32; 
         let m = (side - under).length();
         let (title_px, text_px) = (80.0 * 0.0035 * m, 60.0 * 0.0035 * m);
         let wrap = 720.0 * 0.0035 * m;
-        p.text(relic.name, top.x, top.y - title_px * 0.6, title(), title_px, [1.0, 0.8, 0.42, k], TextAlign::Center, title_px * 0.225);
-        for (i, line) in wrapped(relic.text, body(), text_px * p.s, wrap * p.s).iter().enumerate() {
+        p.text(&relic.name, top.x, top.y - title_px * 0.6, title(), title_px, [1.0, 0.8, 0.42, k], TextAlign::Center, title_px * 0.225);
+        for (i, line) in wrapped(&relic.text, body(), text_px * p.s, wrap * p.s).iter().enumerate() {
             p.text(line, under.x, under.y + text_px * (0.6 + 1.2 * i as f32), body(), text_px, [0.86, 0.84, 0.8, k], TextAlign::Center, text_px * 0.3);
         }
     }

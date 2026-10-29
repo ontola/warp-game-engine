@@ -907,9 +907,10 @@ impl World {
                     r: ALTAR_R + 0.4,
                     time: 0.4,
                 });
-                let r = &relics::ALL[relic];
-                let text = format!("{} took {}: {}", self.wiz(w).name, r.name, r.text);
-                self.ev(Ev::Toast { text, c });
+                if let Some(r) = relics::all().get(relic) {
+                    let text = format!("{} took {}: {}", self.wiz(w).name, r.name, r.text);
+                    self.ev(Ev::Toast { text, c });
+                }
             }
         }
     }

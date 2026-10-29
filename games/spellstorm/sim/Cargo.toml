@@ -9,6 +9,7 @@ kern.workspace = true
 gdcompat.workspace = true
 glam = { version = "0.31", features = ["serde"] }
 hecs = "0.10"
+script = { path = "../../../engine/crates/script" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 fastnoise-lite.workspace = true

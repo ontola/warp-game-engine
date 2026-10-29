@@ -213,7 +213,7 @@ pub fn worth(s: &Spell) -> Worth {
         poison += eff.poison * c;
         burn += eff.burn * c;
         chill += eff.chill * c;
-        util += utility(eff, c);
+        util += utility(&eff, c);
     }
     // Shock hits a wet monster twice as hard.
     if soaks && shock_dmg > 0.0 {
@@ -359,7 +359,7 @@ pub fn skill(e: El) -> f64 {
 pub fn shot_worth(e: El, scale: f64, rate: f64) -> f64 {
     let eff = e.effect();
     let mut w = eff.dmg * scale;
-    w += utility(eff, scale);
+    w += utility(&eff, scale);
     if eff.burn > 0.0 {
         w += BURN_DPS * (eff.burn * scale * rate).min(1.0) / rate;
     }
@@ -476,7 +476,7 @@ pub fn enchant_swing(s: &Spell) -> f64 {
         let eff = e.effect();
         let n = c as f64 * ENCHANT_SWING;
         w += eff.dmg * n;
-        w += utility(eff, n);
+        w += utility(&eff, n);
         w += over_time(BURN_DPS, BURN_MAX.min(4.0 * eff.burn * n), 0.0);
         w += POISON_CAP.min(POISON_DOSE * eff.poison * n) * POISON_CREDIT;
         w += FREEZE_WORTH * (eff.chill * n / 3.0).min(1.0).floor();

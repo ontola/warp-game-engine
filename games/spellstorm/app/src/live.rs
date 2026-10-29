@@ -221,6 +221,9 @@ pub fn start(args: &[String], dir: Option<&Path>) -> Result<Option<SsLive>, Stri
     if let Some(d) = dir {
         roots.push(Root::new("game", d, Reload::Game, "games/spellstorm: knobs.txt (the balance knobs) and app/src/surface.wgsl (the game's floor, stone and cloth shading); a write applies on the next frame, a shader that does not compile keeps the last good one").extensions(&["txt", "wgsl", "md"]));
     }
+    if let Some(d) = spellstorm::rules::find_dir() {
+        roots.push(Root::new("mods", d, Reload::Game, "the spell rules in Luau (read README.md first): base/spells.luau (the grammar: which spell a queue and a form make, names, numbers; what each element does), base/tomes.luau (the shrines' tomes); new modules add hooks (cast, hit, tick). A write reloads at once and reports errors; a broken file keeps the last good version").extensions(&["luau", "md"]));
+    }
     let shaders = render::shaders::dir();
     if let Some(d) = &shaders {
         roots.push(Root::new("shaders", d, Reload::Shaders, "the engine's WGSL shading chain from KERN_SHADER_DIR; a write recompiles it on the next frame, a failure keeps the old shaders").extensions(&["wgsl"]));
@@ -234,12 +237,13 @@ pub fn start(args: &[String], dir: Option<&Path>) -> Result<Option<SsLive>, Stri
              - Balance: `knobs` lists them; `set_knob` changes one now and saves it in knobs.txt (`persist: false` only in the running game, then `keep` or `revert`). Walking and rolling speeds, cooldowns and reach, mana, damage and health scales, wave spacing, revives, tome time and the mist walls' rules (wards, ward_needs_tomes, practice).\n\
              - Runs: `new_run`, `start_at` (a biome from 0), `setting` (friendly_fire off|half|full, difficulty easy|normal|hard, unlocks earned|all), `command` (the same as a console line; `help`).\n\
              - Shading: edit `game/app/src/surface.wgsl` with write_file (Spellstorm's floor, stone and cloth, ported from Godot's shaders); it compiles on the next frame. {}\n\
-             - Spells, monsters and rules are Rust (games/spellstorm/sim): they change with a rebuild, not live.",
+             - Spells are Luau in `mods/` (read mods/README.md): edit base/spells.luau or base/tomes.luau with write_file, or add a module like mods/live/my_idea.luau with `cast`, `hit` or `tick` hooks; it reloads at once and the next cast uses it. `run_luau` runs a line against the live world as `g` (g:nova(g:pos(g:wizards()[1]), 4, 'fire')); `command mods` shows the modules and their errors.\n\
+             - Monsters, levels and the rest of the sim are Rust (games/spellstorm/sim): they change with a rebuild.",
             if shaders.is_some() { "The engine's own shaders are in `shaders/` (reload_shaders)." } else { "Start with KERN_SHADER_DIR=engine/crates/render/src/shaders to edit the engine's shaders too." }
         ),
         tools: tools(),
         roots,
-        features: Features { state: true, screenshot: true, luau: false, shaders: shaders.is_some(), sound: false },
+        features: Features { state: true, screenshot: true, luau: true, shaders: shaders.is_some(), sound: false },
     };
     Ok(Some(SsLive { live: live::start(cfg, manifest)? }))
 }
@@ -259,7 +263,7 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new("start_at", "Start a run at a biome (0 the chapel; the state lists the run).", obj(json!({ "biome": { "type": "integer", "minimum": 0 } }), &["biome"])),
         ToolSpec::new("setting", "A party setting: friendly_fire off|half|full, difficulty easy|normal|hard, unlocks earned|all.",
             obj(json!({ "key": { "type": "string" }, "value": { "type": "string" } }), &["key", "value"])),
-        ToolSpec::new("command", "One console line: knobs, knob NAME VALUE (saved), trial NAME VALUE (temporary), keep, revert, new_run, biome N, skip (past this level's fights to its shrine and portal), setting KEY VALUE, help.",
+        ToolSpec::new("command", "One console line: knobs, knob NAME VALUE (saved), trial NAME VALUE (temporary), keep, revert, new_run, biome N, skip (past this level's fights to its shrine and portal), mods (the Luau modules and their errors), lua CODE, setting KEY VALUE, help.",
             obj(json!({ "line": { "type": "string" } }), &["line"])),
     ]
 }
@@ -294,6 +298,8 @@ impl Spellstorm {
                 self.world.start_at(b);
                 format!("a run at biome {b}")
             }
+            "mods" => spellstorm::rules::status(),
+            "lua" | "luau" => spellstorm::rules::console(&mut self.world, &rest.join(" "))?,
             "skip" => {
                 self.world.skip_level();
                 "the level's fights skipped: shrine and portal up".into()
@@ -303,7 +309,7 @@ impl Spellstorm {
                 self.world.set_option(k, v);
                 format!("{k} = {v}")
             }
-            "help" | "" => "knobs | knob NAME VALUE (saved in knobs.txt) | trial NAME VALUE (only the running game) | keep | revert | new_run | biome N | skip (this level's fights) | setting KEY VALUE".into(),
+            "help" | "" => "knobs | knob NAME VALUE (saved in knobs.txt) | trial NAME VALUE (only the running game) | keep | revert | new_run | biome N | skip (this level's fights) | mods (the Luau modules) | lua CODE (against the world as g) | setting KEY VALUE".into(),
             _ => return Err(format!("unknown command {cmd} (help lists them)")),
         };
         Ok(out)
@@ -319,6 +325,9 @@ impl Spellstorm {
             }
             if let Some(line) = self.shader.scan() {
                 self.log(line);
+            }
+            for line in spellstorm::rules::poll() {
+                self.log(format!("mods: {line}"));
             }
         }
         let Some(mut l) = self.live.take() else { return };
@@ -404,8 +413,16 @@ impl LiveGame for Ctx<'_> {
         }
     }
 
-    fn file_written(&mut self, _root: &str, path: &str) -> Option<String> {
+    fn luau(&mut self, code: &str) -> Result<String, String> {
+        spellstorm::rules::console(&mut self.g.world, code)
+    }
+
+    fn file_written(&mut self, root: &str, path: &str) -> Option<String> {
         let g = &mut *self.g;
+        if root == "mods" {
+            let lines = spellstorm::rules::poll();
+            return Some(if lines.is_empty() { format!("{path}: unchanged") } else { lines.join("\n") });
+        }
         if path.ends_with("knobs.txt") {
             let line = g.tuning.scan();
             g.world.knobs_changed();
