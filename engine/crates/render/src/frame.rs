@@ -1018,6 +1018,16 @@ impl Renderer {
         let (offset, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
         let mut words = crate::irradiance_volume::pack(&grid, probes)?;
         words[7] = 3;
+        if std::env::var("WARP_SKY_PACKED").as_deref()==Ok("1") {
+            words[7]=4;
+            for (i,p) in probes.iter().enumerate() {
+                for (a,v) in p.axes.iter().enumerate() {
+                    let invalid=u32::from(v.z>1.5);
+                    let q=|x:f32| (x.clamp(0.0,1.0)*1023.0).round() as u32;
+                    words[8+i*18+a*3]=q(v.x)|(q(v.y)<<10)|(q(v.z)<<20)|(invalid<<31);
+                }
+            }
+        }
         gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
         Ok(())
     }

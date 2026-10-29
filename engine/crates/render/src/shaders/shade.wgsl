@@ -670,6 +670,9 @@ fn probe_axis(base: u32, visibility: bool) -> vec3<f32> {
     if visibility { return vec3<f32>(aux_f32(base)); }
     return vec3<f32>(aux_f32(base),aux_f32(base+1u),aux_f32(base+2u));
 }
+fn unpack_sky_transport(word:u32)->vec3<f32> {
+    return vec3<f32>(f32(word&1023u),f32((word>>10u)&1023u),f32((word>>20u)&1023u))/1023.0;
+}
 fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
     let o = u32(gi.params.w);
     if o == 0u { return vec4<f32>(0.0); }
@@ -708,6 +711,15 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
             if c==3u { corner[low]=1u; }
             let g=vec3<u32>(cell0)+corner;
             let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
+            if aux[o+7u]==4u {
+                let valid=select(1.0,0.0,(aux[base]&0x80000000u)!=0u);
+                let v=unpack_sky_transport(aux[base+axis.x])*n2.x
+                    +unpack_sky_transport(aux[base+axis.y])*n2.y
+                    +unpack_sky_transport(aux[base+axis.z])*n2.z;
+                value+=v*weights[c]*valid;
+                valid_weight+=weights[c]*valid;
+                continue;
+            }
             let v=vec3<f32>(aux_f32(base+axis.x),aux_f32(base+axis.y),aux_f32(base+axis.z));
             var valid=1.0; var bounce_value=0.0; var sun_value=0.0;
             if transport {

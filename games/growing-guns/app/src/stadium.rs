@@ -23,8 +23,56 @@ use std::f32::consts::{PI, TAU};
 pub const CROWD_MAX: usize = 15_000;
 const CROWD_SPACING: f32 = 0.9;
 const CROWD_SKIP_CHANCE: f32 = 0.08;
-const ROOF_COVER_FRAC: f32 = 0.5;
 const ROOF_DROP: f32 = 3.0;
+const ROOF_STEPS: usize = 224;
+const ROOF_INNER: f32 = 0.8135;
+
+// A closed, continuous superellipse canopy. Adjacent sections share exactly
+// the same boundary positions; no overlapping slab ends or internal caps.
+fn roof_point(angle: f32, inner: bool) -> Vec3 {
+    let r=if inner {ROOF_INNER} else {1.0};
+    Vec3::new(angle.cos()*sq(angle)*r, if inner {-ROOF_DROP} else {0.0}, angle.sin()*sq(angle)*r)
+}
+fn roof_mesh(material: u32) -> Primitive {
+    use render::cluster::Vertex;
+    let mut mesh=Primitive {material,..Default::default()};
+    for i in 0..ROOF_STEPS {
+        let a=TAU*i as f32/ROOF_STEPS as f32;
+        let b=TAU*((i+1)%ROOF_STEPS) as f32/ROOF_STEPS as f32;
+        let [o0,o1,i0,i1]=[roof_point(a,false),roof_point(b,false),roof_point(a,true),roof_point(b,true)];
+        for (points,side) in [([o0,i0,i1,o1],1i32),([o1,i1,i0,o0],-1),([o0,o1,o1,o0],2),([i1,i0,i0,i1],-2)] {
+            let base=mesh.vertices.len() as u32;
+            for (j,mut pos) in points.into_iter().enumerate() {
+                pos.y+=if side.abs()==1 {side as f32*0.25} else {if j<2 {0.25} else {-0.25}};
+                let angle=pos.z.atan2(pos.x);
+                let tangent=roof_point(angle+0.0001,false)-roof_point(angle-0.0001,false);
+                let radial=roof_point(angle,false)-roof_point(angle,true);
+                let normal=if side.abs()==1 {tangent.cross(radial).normalize()*side as f32} else {Vec3::Y.cross(tangent).normalize()*if side>0 {1.0} else {-1.0}};
+                mesh.vertices.push(Vertex {pos:pos.to_array(),normal:normal.to_array(),uv:[pos.x,pos.z]});
+            }
+            // Explicitly wind to the expected outward normals.
+            for mut t in [[base,base+1,base+2],[base,base+2,base+3]] {
+                let [v0,v1,v2]=t.map(|k| mesh.vertices[k as usize]);
+                if (Vec3::from(v1.pos)-Vec3::from(v0.pos)).cross(Vec3::from(v2.pos)-Vec3::from(v0.pos)).dot(Vec3::from(v0.normal))<0.0 {t.swap(1,2);}
+                mesh.indices.extend(t);
+            }
+        }
+    }
+    mesh
+}
+fn roof_radius(geo: Stadium) -> f32 {geo.inner_r+ROWS as f32*ROW_DEPTH+1.0}
+fn roof_proxies(geo: Stadium) -> Vec<Affine3A> {
+    let radius=roof_radius(geo);
+    (0..ROOF_STEPS).map(|i| {
+        let a=TAU*(i as f32+0.5)/ROOF_STEPS as f32;
+        let outer=roof_point(a,false)*Vec3::new(radius,1.0,radius)+Vec3::Y*(geo.wall_h()+0.6);
+        let inner=roof_point(a,true)*Vec3::new(radius,1.0,radius)+Vec3::Y*(geo.wall_h()+0.6);
+        let radial=outer-inner;
+        let tangent=(roof_point(a+TAU/ROOF_STEPS as f32*0.5,false)-roof_point(a-TAU/ROOF_STEPS as f32*0.5,false))*Vec3::new(radius,1.0,radius);
+        // Thin conservative static-light proxy follows the same roof curve.
+        Affine3A::from_cols(tangent.into(),(Vec3::Y*0.5).into(),radial.into(),((outer+inner)*0.5).into())
+    }).collect()
+}
 const MARKS: usize = 256;
 const TV_COUNT: usize = 4;
 const TV_WIDTH: f32 = 26.0;
@@ -56,12 +104,8 @@ fn tv_pose(geo: Stadium, index: usize) -> (Vec3, Quat) {
     // the canopy's inner lip. Solve the eye-to-bottom-corner sightline over
     // the actual tilted roof's upper inner edge, with one metre of clearance.
     // sq(angle) >= 1, so the side-midpoint lip is the nearest possible roof.
-    let roof_len = ROWS as f32 * ROW_DEPTH * ROOF_COVER_FRAC;
-    let pitch = ROOF_DROP.atan2(roof_len);
-    let lip_r = geo.inner_r + ROWS as f32 * ROW_DEPTH + 1.0 - roof_len * 0.5
-        - roof_len * 0.5 * pitch.cos() - 0.25 * pitch.sin();
-    let lip_y = geo.wall_h() + 0.6 - ROOF_DROP * 0.5
-        - roof_len * 0.5 * pitch.sin() + 0.25 * pitch.cos();
+    let lip_r=roof_radius(geo)*ROOF_INNER;
+    let lip_y=geo.wall_h()+0.6-ROOF_DROP+0.25;
     let bottom_r = (radius + half_height * TV_TILT.sin()).hypot(TV_WIDTH * 0.5);
     let min_bottom_y = TV_OBSERVER_HEIGHT
         + (lip_y + TV_CANOPY_CLEARANCE - TV_OBSERVER_HEIGHT) * bottom_r / lip_r;
@@ -148,7 +192,7 @@ impl StadiumVisuals {
                 let m = quarry_mat(scene, quarry[i]);
                 [(4, 8), (6, 1)].map(|(cols, rows)| scene.add_mesh(&render::masonry::panel(m, cols, rows, 11).mesh()))
             }));
-        let roof_stone: [usize; 6] = std::array::from_fn(|i| { let m = quarry_mat(scene, quarry[i].map(|v| v * 0.75)); cube(scene, m) });
+        let roof_stone: [usize; 6] = std::array::from_fn(|i| { let m = quarry_mat(scene, quarry[i].map(|v| v * 0.75)); scene.add_mesh(&roof_mesh(m).mesh()) });
         let lamp = { let m = glow(scene, [1.0, 0.85, 0.6], 9000.0); cube(scene, m) };
         let shaft = { let m = mat(scene, [0.16, 0.16, 0.18], 0.8); cube(scene, m) };
         let bank = { let m = glow(scene, [1.0, 0.96, 0.85], 11000.0); cube(scene, m) };
@@ -191,7 +235,7 @@ impl StadiumVisuals {
         let pieces = SEGMENTS * (ROWS + 4) + SEGMENTS / 2 + 16;
         let stands = Slots::reserve(scene, pieces);
         for i in 0..pieces { scene.instances[stands.first + i].flags |= NO_SHADOW; }
-        let roof = Slots::reserve(scene, SEGMENTS);
+        let roof = Slots::reserve(scene, 1);
         let tv = Slots::reserve(scene, TV_COUNT * 4);
         for i in 0..tv.capacity() { scene.instances[tv.first + i].flags |= NO_SHADOW; }
         let marks = Slots::reserve(scene, MARKS);
@@ -227,28 +271,16 @@ impl StadiumVisuals {
             }).unwrap_or(self.stone[quarry]);
             self.stands.add(scene, mesh, box_xf(p.center, p.size, p.yaw));
         }
-        // Roof canopy over the back half of the rows, inner lip dipping.
-        let seg = Stadium::seg_ang();
+        // A single watertight rounded ring, with no overlapping plate ends.
         let (inner, base) = (self.geo.inner_r, self.geo.base_y);
-        let roof_len = ROWS as f32 * ROW_DEPTH * ROOF_COVER_FRAC;
-        let wall_h = self.geo.wall_h();
-        let pitch = ROOF_DROP.atan2(roof_len);
-        for i in 0..SEGMENTS {
-            let ang = seg * (i as f32 + 0.5);
-            let s = sq(ang);
-            let dir = Vec3::new(ang.cos(), 0.0, ang.sin());
-            let yaw = -ang + PI * 0.5;
-            let mid_r = (inner + ROWS as f32 * ROW_DEPTH - roof_len * 0.5 + 1.0) * s;
-            let len = 2.0 * (mid_r + roof_len * 0.5) * (seg * 0.5).tan() + 0.9;
-            let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-pitch);
-            let roof_xf = Affine3A::from_scale_rotation_translation(Vec3::new(len, 0.5, roof_len), rot, dir * mid_r + Vec3::Y * (wall_h + 0.6 - ROOF_DROP * 0.5));
-            sky_boxes.push(roof_xf);
-            self.roof.add(scene, self.roof_stone[quarry], roof_xf);
-            // Lamp housings under the lip, every other segment.
-            if i % 2 == 0 {
-                let lip = (inner + ROWS as f32 * ROW_DEPTH + 1.0 - roof_len) * s;
-                self.stands.add(scene, self.lamp, box_xf(dir * lip + Vec3::Y * (wall_h + 0.6 - ROOF_DROP - 0.7), Vec3::new(1.6, 0.55, 0.55), yaw));
-            }
+        let wall_h=self.geo.wall_h();
+        let radius=roof_radius(self.geo);
+        self.roof.add(scene,self.roof_stone[quarry],Affine3A::from_scale_rotation_translation(Vec3::new(radius,1.0,radius),Quat::IDENTITY,Vec3::Y*(wall_h+0.6)));
+        sky_boxes.extend(roof_proxies(self.geo));
+        for i in (0..SEGMENTS).step_by(2) {
+            let ang=Stadium::seg_ang()*(i as f32+0.5);
+            let at=roof_point(ang,true)*Vec3::new(radius,1.0,radius)+Vec3::Y*(wall_h+0.6-0.7);
+            self.stands.add(scene,self.lamp,box_xf(at,Vec3::new(1.6,0.55,0.55),-ang+PI*0.5));
         }
         if let Some((offset, grid)) = scene.irradiance_volume {
             let mesh=&scene.meshes[self.stone[quarry]];
@@ -485,6 +517,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn canopy_is_closed_with_no_overlapping_internal_faces() {
+        use std::collections::HashMap;
+        let mesh=roof_mesh(0);
+        assert_eq!(mesh.indices.len()/3,ROOF_STEPS*8);
+        let mut edges=HashMap::new();
+        let key=|p:[f32;3]| p.map(|v| (v*1_000_000.0).round() as i32);
+        for t in mesh.indices.chunks_exact(3) {
+            let p=t.iter().map(|&i| mesh.vertices[i as usize]).collect::<Vec<_>>();
+            let cross=(Vec3::from(p[1].pos)-Vec3::from(p[0].pos)).cross(Vec3::from(p[2].pos)-Vec3::from(p[0].pos));
+            assert!(cross.length_squared()>1e-16);
+            assert!(cross.dot(Vec3::from(p[0].normal))>0.0);
+            for e in 0..3 {let a=key(p[e].pos);let b=key(p[(e+1)%3].pos);*edges.entry(if a<b {(a,b)} else {(b,a)}).or_insert(0)+=1;}
+        }
+        assert!(edges.values().all(|&n| n==2),"each edge must have exactly two adjacent triangles");
+    }
+
+    #[test]
     fn stadium_screens_face_inward_and_down_without_flipping_the_picture() {
         let geo = Stadium::new(80.0, true, 12.0);
         let picture = primitives::quad(0);
@@ -527,17 +576,7 @@ mod tests {
         for size in [45.0, 80.0, 120.0] {
             for wall_height in [0.0, 12.0, 24.0] {
                 let geo = Stadium::new(size, wall_height > 0.0, wall_height);
-                let roof_len = ROWS as f32 * ROW_DEPTH * ROOF_COVER_FRAC;
-                let pitch = ROOF_DROP.atan2(roof_len);
-                let roofs: Vec<Affine3A> = (0..SEGMENTS).map(|segment| {
-                    let ang = Stadium::seg_ang() * (segment as f32 + 0.5);
-                    let dir = Vec3::new(ang.cos(), 0.0, ang.sin());
-                    let radius = (geo.inner_r + ROWS as f32 * ROW_DEPTH - roof_len * 0.5 + 1.0) * sq(ang);
-                    let width = 2.0 * (radius + roof_len * 0.5) * (Stadium::seg_ang() * 0.5).tan() + 0.9;
-                    Affine3A::from_scale_rotation_translation(Vec3::new(width, 0.5, roof_len),
-                        Quat::from_rotation_y(-ang + PI * 0.5) * Quat::from_rotation_x(-pitch),
-                        dir * radius + Vec3::Y * (geo.wall_h() + 0.6 - ROOF_DROP * 0.5)).inverse()
-                }).collect();
+                let roofs:Vec<_>=roof_proxies(geo).into_iter().map(|xf| xf.inverse()).collect();
                 for screen in 0..TV_COUNT {
                     let (at, rot) = tv_pose(geo, screen);
                     for fraction in [-0.5, -0.25, 0.0, 0.25, 0.5] {
@@ -552,4 +591,3 @@ mod tests {
         }
     }
 }
-

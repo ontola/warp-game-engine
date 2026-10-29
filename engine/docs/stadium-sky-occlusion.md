@@ -1,5 +1,32 @@
 # Stadium diffuse sky and sun transport
 
+## Continuous canopy and compact transport experiment
+
+The roof is now one closed superellipse ring, replacing 56 overlapping boxes.
+224 continuous sections, shared boundary coordinates, smooth surface normals,
+1,792 source triangles versus 672 previously. One roof instance (was56), with
+cluster culling/LOD; 1,428 static light proxies total (was1,260). The proxy roof
+uses 224 narrow conservative slabs following the same curve, not exact triangle
+intersections. Small edge over-occlusion is still possible. Inner radius is
+81.35% of outer radius; coverage scales with arena size. Lights and TV clearance
+use the new rim. Tests cover closed manifold edges, nondegenerate/outward faces
+and screen clearance over three arena sizes and wall heights. Three tests pass.
+
+A separate engine experiment packs each sky/sky-return/sun-return lobe into
+three 10-bit UNORM values plus an invalid flag. It reduces per-corner loads,
+without a new pass. **Opt-in: WARP_SKY_PACKED=1**; full precision remains default.
+Four actual same-camera image pairs differ by mean 0.014–0.051 of 255 per channel,
+p99 1/255, maximum 4/255. No obvious visual degradation in inspected views.
+
+Native4K/four-view repeated GPU medians: full 7.47/7.47/7.56 ms, packed
+7.39/4.66/4.83 ms. The packed result is unstable; do not claim a reliable 35%
+frame-time win from the median alone. Per-pass means show a smaller shade saving.
+All six runs captured600/600 profiles without errors. CPU load differed during
+runs (first wall-time outlier16.04ms), so these are not gameplay FPS.
+[Raw data and image deltas](stadium-roof-measurements.json).
+Evidence C:/dev/warp-bench/roof-20261029/{full,packed}/ and bench-*.log.
+No interactive playtest launched. Sun-direction cache rebuild cost remains.
+
 ## Sun return follow-up, 29 October 2026
 
 The sky-only correction below was also rejected as too dark. The current version
