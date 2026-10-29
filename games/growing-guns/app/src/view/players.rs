@@ -43,12 +43,18 @@ pub fn trail_picture() -> render::picture::Picture {
     render::picture::Picture::new(w, h, px).expect("fixed size")
 }
 
-/// A bullet's streak (Godot `_trail_inst`): 4 cm x scale thick, as long as
-/// it has flown up to `speed_mult` x 6 + 1 m (a bazooka keeps a stubby
-/// tail, a sniper round a long one), in the bullet's colour lifted 18 %
-/// toward white, its head strength 3.2 x scale (2.4 to 9).
-fn bullet_trail(head: Vec3, dir: Vec3, scale: f32, color: [f32; 3], speed_mult: f32, flown: f32) -> render::sprites::Sprite {
-    let len = flown.clamp(0.05, (speed_mult * 6.0 + 1.0).clamp(1.0, 28.0));
+/// Metres over which a round's drawn path joins the sim's (barrel exit to
+/// the crosshair's line).
+const CONVERGE: f32 = 12.0;
+
+/// A bullet's streak (Godot `_trail_inst`) from `tail` to `head`: 4 cm x
+/// scale thick, as long as it has flown up to `speed_mult` x 6 + 1 m (a
+/// bazooka keeps a stubby tail, a sniper round a long one), in the
+/// bullet's colour lifted 18 % toward white, its head strength 3.2 x scale
+/// (2.4 to 9).
+fn bullet_trail(head: Vec3, tail: Vec3, scale: f32, color: [f32; 3]) -> render::sprites::Sprite {
+    let len = head.distance(tail);
+    let dir = (head - tail) / len;
     let radius = 0.02 * scale;
     let tint = Vec3::from(color.map(|c| (c + (1.0 - c) * 0.18).powf(2.2)));
     let strength = (3.2 * scale).clamp(2.4, 9.0) * 10.0;
@@ -122,6 +128,8 @@ pub struct PlayersView {
     bullet: [usize; 2],
     /// This frame's bullet streaks (additive shafts in the bullet's colour).
     pub trails: Vec<render::sprites::Sprite>,
+    /// Per player: drawn barrel exit minus the sim's muzzle at the last shot.
+    shot_offset: Vec<Vec3>,
     corpses: Slots,
     ragdolls: Vec<Ragdoll>,
     /// Body, head and eye primitives per player, kept until `reserve_gore`.
@@ -135,7 +143,7 @@ pub struct PlayersView {
 impl PlayersView {
     /// Corpse slots (static range, before the dynamic instances).
     pub fn reserve_corpses(scene: &mut Scene) -> Self {
-        PlayersView { first: 0, meshes: Vec::new(), bullet: [0; 2], trails: Vec::new(), corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None, lava: Vec::new(), lava_meshes: LavaMeshes::default() }
+        PlayersView { first: 0, meshes: Vec::new(), bullet: [0; 2], trails: Vec::new(), shot_offset: Vec::new(), corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None, lava: Vec::new(), lava_meshes: LavaMeshes::default() }
     }
 
     /// Player and tracer instances, rewritten every frame.
@@ -394,16 +402,26 @@ impl PlayersView {
         self.trails.clear();
         let behind = (1.0 - alpha).clamp(0.0, 1.0) * growing_guns::DT;
         for t in 0..TRACERS {
-            let shown = world.bullets.get(t).filter(|b| b.travelled > 0.4 && b.vel.length_squared() > 1e-6);
+            let shown = world.bullets.get(t).filter(|b| b.travelled > 0.05 && b.vel.length_squared() > 1e-6);
             let (body, nose) = shown.map_or((Affine3A::from_translation(HIDDEN), Affine3A::from_translation(HIDDEN)), |b| {
                 let w = world.players.get(b.owner).map(|p| &p.weapon);
                 let scale = w.map_or(1.0, |w| w.bullet_scale_for_shot(b.last_in_mag)).clamp(0.3, 8.0);
                 let dir = b.vel.normalize();
-                let pos = b.pos - b.vel * behind;
-                let rot = Quat::from_rotation_arc(Vec3::Y, dir);
+                // Where the round is at distance `d` from the muzzle: on the
+                // sim's path, pulled to the drawn barrel near its start.
+                let flown = (b.travelled - b.vel.length() * behind).max(0.0);
+                let offset = self.shot_offset.get(b.owner).copied().unwrap_or(Vec3::ZERO);
+                let sim_pos = b.pos - b.vel * behind;
+                let at = |d: f32| sim_pos - dir * (flown - d) + offset * (1.0 - d / CONVERGE).max(0.0);
+                let pos = at(flown);
                 let (body_len, nose_len) = (BULLET_LENGTH * scale, NOSE_LENGTH * scale);
-                if b.travelled > 1.0 && let Some(w) = w {
-                    self.trails.push(bullet_trail(pos - dir * body_len, dir, scale, w.bullet_color, w.bullet_speed_mult, b.travelled - 1.0));
+                let dir = (pos - at((flown - 0.5).max(0.0))).normalize_or(dir);
+                let rot = Quat::from_rotation_arc(Vec3::Y, dir);
+                if let Some(w) = w {
+                    let len = (w.bullet_speed_mult * 6.0 + 1.0).clamp(1.0, 28.0);
+                    let head = pos - dir * body_len;
+                    let tail = at((flown - len).max(0.0));
+                    if head.distance(tail) > 0.05 { self.trails.push(bullet_trail(head, tail, scale, w.bullet_color)); }
                 }
                 (Affine3A::from_scale_rotation_translation(Vec3::new(scale, body_len, scale), rot, pos - dir * body_len * 0.5),
                  Affine3A::from_scale_rotation_translation(Vec3::new(scale, nose_len, scale), rot, pos + dir * nose_len * 0.5))
@@ -412,6 +430,13 @@ impl PlayersView {
             scene.update_instance(slot + 1, self.bullet[1], nose);
             slot += 2;
         }
+    }
+
+    /// A shot left player `p`'s drawn barrel `offset` from the sim's muzzle.
+    pub fn shot_from(&mut self, p: usize, offset: Vec3) {
+        if self.shot_offset.len() <= p { self.shot_offset.resize(p + 1, Vec3::ZERO); }
+        // A wild offset (a teleport, a respawn between frames) is ignored.
+        self.shot_offset[p] = if offset.length() < 4.0 { offset } else { Vec3::ZERO };
     }
 
     /// First person: hide each local player's own model from their view

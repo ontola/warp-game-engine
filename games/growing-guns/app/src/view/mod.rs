@@ -162,12 +162,13 @@ impl Visuals {
     /// Upload changed slots, debris, effects and the crowd.
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, light: &Lighting) -> Result<(), String> {
         if !std::mem::replace(&mut self.sprite_images, true) {
-            for (id, picture) in things::Things::sprite_pictures().into_iter().chain([(players::TRAIL_IMAGE, players::trail_picture())]) {
+            for (id, picture) in things::Things::sprite_pictures().into_iter().chain([(players::TRAIL_IMAGE, players::trail_picture()), (effects::FLASH_IMAGE, effects::flash_picture())]) {
                 renderer.set_sprite_image(gpu, id, &picture, render::hud::ImageFilter::Linear);
             }
         }
         self.arena.flush(gpu, renderer, &self.scene)?;
         self.players.flush(gpu, renderer, &self.scene)?;
+        self.guns.flush(gpu, renderer)?;
         self.stadium.poll_sky(&mut self.scene);
         self.stadium.flush(gpu, renderer, &self.scene, self.clock, light)?;
         self.fx.flush(gpu, renderer, &self.scene, self.clock)
@@ -242,7 +243,17 @@ impl Visuals {
                 Event::Shot { player, from, dir } => {
                     let p = &world.players[player];
                     self.guns.shot(player, p);
-                    self.fx.flash(from + dir * 0.8);
+                    // Bullets and flash leave the barrel as drawn (the sim's
+                    // muzzle is the receiver): the bullets' offset fades out
+                    // over their first metres (Godot aims muzzle to crosshair).
+                    let exit = self.guns.muzzle(player).unwrap_or(from + dir * 0.8);
+                    self.players.shot_from(player, exit - from);
+                    let w = &p.weapon;
+                    let last = p.ammo == 0;
+                    if w.silencer_stacks <= 0 {
+                        let bright = ((w.damage_for_shot(last) / growing_guns::weapon::BASE_DAMAGE).powf(0.88) * 1.5).clamp(0.85, 8.0);
+                        self.fx.flash(now - growing_guns::DT, exit, dir, w.bullet_color, w.bullet_scale_for_shot(last), bright);
+                    }
                     let (sy, cy) = p.yaw.sin_cos();
                     let right = Vec3::new(cy, 0.0, -sy);
                     self.fx.particles.burst_with(s, from + right * 0.35 - Vec3::Y * 0.25 + dir * 0.3, right + Vec3::Y * 0.6, p.vel, &Burst { mesh: m.casing, ..Burst::debris() });
@@ -276,6 +287,7 @@ impl Visuals {
         self.sprites.clear();
         self.sprites.extend_from_slice(self.things.sprites());
         self.sprites.extend_from_slice(&self.players.trails);
+        self.fx.flash_sprites(&mut self.sprites);
         self.arena.lava.pose(world);
     }
 
@@ -321,6 +333,8 @@ impl Visuals {
         let mut l = self.ion.lights(self.clock);
         l.extend(self.fx.blasts.lights(self.clock));
         l.extend(self.things.strike_lights().iter().copied());
+        // Muzzle flashes before the steady lights: a shot must light up.
+        l.extend(self.fx.flash_lights(4));
         l.truncate(MAX_TRANSIENT_LIGHTS);
         let mut w = vec![0.0; l.len()];
         let flood = self.flood;
@@ -334,9 +348,6 @@ impl Visuals {
         w.resize(l.len(), scatter.beacon);
         l.extend(self.things.pickup_lights().iter().take(MAX_LIGHTS - l.len()).copied());
         w.resize(l.len(), scatter.pickup);
-        let room = MAX_LIGHTS - l.len();
-        l.extend(self.fx.flash_lights(room));
-        w.resize(l.len(), 0.0);
         (l, w)
     }
 
