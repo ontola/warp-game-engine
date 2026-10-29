@@ -362,6 +362,8 @@ return { init = init, tick = tick, players_changed = players_changed, player_joi
             }
             match step.try_recv() {
                 Ok("start") => send(&mut ws, json!({"type":"start","session":"s1"})),
+                Ok("tap") => send(&mut ws, json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":128,"axes":[0,0,0,0,0,0]}]})),
+                Ok("release") => send(&mut ws, json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":0,"axes":[0,0,0,0,0,0]}]})),
                 Ok("drive") => send(&mut ws, json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":0,"axes":[0,-32767,0,0,0,0]}]})),
                 Ok("rename") => send(&mut ws, json!({"type":"players_updated","session":"s1","players":[{"id":"p1","name":"Joep B","color":"#ff0000","couch":0}]})),
                 Ok("join") => send(&mut ws, json!({"type":"party_updated","session":"s1",
@@ -395,6 +397,18 @@ return { init = init, tick = tick, players_changed = players_changed, player_joi
     wait(&mut g, "room_log hello room", &mut seen);
     wait(&mut g, "finished", &mut seen);
     assert_eq!(g.screen(), app::Screen::Fullscreen);
+    // A Start tapped as the game starts does not open it on its menu.
+    let tap = |g: &mut LuaGame, go: &std::sync::mpsc::Sender<&str>| for step in ["release", "tap", "release"] {
+        go.send(step).unwrap();
+        for _ in 0..8 { g.tick(&[Controls::default()]); std::thread::sleep(std::time::Duration::from_millis(8)); }
+    };
+    tap(&mut g, &go);
+    assert_eq!(state(&g)["menu"], Value::Null, "Start in the first second of play: {:?}", g.logs());
+    for _ in 0..70 { g.tick(&[Controls::default()]); }
+    tap(&mut g, &go);
+    assert_eq!(state(&g)["menu"]["selected"], json!(0), "Start once the game runs opens the menu");
+    tap(&mut g, &go);
+    assert_eq!(state(&g)["menu"], Value::Null);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while state(&g)["state"]["forward"].as_f64().unwrap_or(0.0) < 0.9 {
         go.send("drive").unwrap();

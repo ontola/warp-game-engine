@@ -28,6 +28,8 @@ pub const NOT_MODULES: &[&str] = &["sounds", "assets", "scripts"];
 
 /// How often (in ticks) files are checked for edits: about 4 times a second at 60 Hz.
 const POLL_TICKS: u64 = 15;
+/// Seconds of play before Start opens the menu (under a party host).
+const START_GRACE: f32 = 1.0;
 
 /// Options from the command line that override `game.toml`.
 #[derive(Clone, Debug, Default)]
@@ -65,6 +67,8 @@ pub struct LuaGame {
     menu: Option<usize>,
     /// Stick position in the menu last tick, for one step per push.
     menu_stick: f32,
+    /// Ticks the party has been running since its start or resume.
+    running_for: u32,
     /// Ticks seen, for the file checks (the game's own tick stops while paused).
     polls: u64,
     /// The next player id: ids are never reused in a session.
@@ -132,7 +136,7 @@ impl LuaGame {
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, polls: 0, next_id: 1, quit: false };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, polls: 0, next_id: 1, quit: false };
         let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
             .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None })).collect();
         g.seat_all(&people, false);
@@ -351,6 +355,7 @@ impl LuaGame {
         }
         let seats: Vec<usize> = self.core().roster.iter().filter(|p| !p.bot).map(|p| p.seat.unwrap_or(usize::MAX)).collect();
         let party = self.party.as_mut()?;
+        self.running_for = if party.running() { self.running_for.saturating_add(1) } else { 0 };
         Some(party.running().then(|| party.controls(&seats, dt, false)))
     }
 
@@ -382,7 +387,15 @@ impl LuaGame {
     fn menu_tick(&mut self, controls: &[Controls]) -> bool {
         let pressed = |b: u32| controls.iter().any(|c| c.pressed.has(b));
         let Some(sel) = self.menu else {
-            if pressed(Buttons::START) { self.open_menu(); return true; }
+            // Not in the first moments of play: a Start tapped in the lobby
+            // or while the game was loading must not open the game on its menu.
+            let settled = self.party.is_none() || self.running_for as f32 >= START_GRACE * self.cfg.tick_rate;
+            if pressed(Buttons::START) && settled {
+                let who = controls.iter().position(|c| c.pressed.has(Buttons::START)).unwrap_or(0);
+                self.say(format!("{} menu: opened by Start (player {})", app::manners::stamp(), who + 1));
+                self.open_menu();
+                return true;
+            }
             return false;
         };
         let items = self.menu_items();
@@ -400,7 +413,7 @@ impl LuaGame {
     /// Run a menu item by label (`menu resume`, `menu new round`) for scripts and agents.
     fn menu_command(&mut self, what: &str) -> Result<String, String> {
         match what.trim() {
-            "" | "open" => { self.open_menu(); Ok("menu open".into()) }
+            "" | "open" => { self.say(format!("{} menu: opened by a command", app::manners::stamp())); self.open_menu(); Ok("menu open".into()) }
             "close" => { self.close_menu(); Ok("menu closed".into()) }
             w => {
                 let item = self.menu_items().into_iter().find(|i| i.label().eq_ignore_ascii_case(w)).ok_or_else(|| format!("menu {w}: one of open, close, {}", self.menu_items().iter().map(|i| i.label().to_lowercase()).collect::<Vec<_>>().join(", ")))?;
@@ -719,7 +732,7 @@ impl Game for LuaGame {
 
     /// Escape opens and closes the start menu.
     fn escape(&mut self) -> bool {
-        if self.menu.is_some() { self.close_menu(); } else { self.open_menu(); }
+        if self.menu.is_some() { self.close_menu(); } else { self.say(format!("{} menu: opened by Escape", app::manners::stamp())); self.open_menu(); }
         true
     }
 

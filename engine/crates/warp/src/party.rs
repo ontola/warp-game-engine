@@ -69,17 +69,18 @@ impl Party {
             for c in cmds {
                 match c {
                     Command::Prepare { session, seats } => {
-                        println!("[gamenight] prepare {session} ({} seats)", seats.len());
+                        println!("{} [gamenight] prepare {session} ({} seats)", app::manners::stamp(), seats.len());
                         let _ = self.client.notify_progress(&session, 5, "starting the game");
                         out.push(Ev::Prepare(Self::seats(&seats)));
                         self.session = session;
                         self.phase = Phase::Warm;
                         self.finished = false;
                     }
-                    Command::Start { session } if session == self.session => { println!("[gamenight] start {session}"); self.phase = Phase::Running; }
-                    Command::Pause { session } if session == self.session => self.phase = Phase::Paused,
-                    Command::Resume { session } if session == self.session => self.phase = Phase::Running,
+                    Command::Start { session } if session == self.session => { println!("{} [gamenight] start {session}", app::manners::stamp()); self.phase = Phase::Running; }
+                    Command::Pause { session } if session == self.session => { println!("{} [gamenight] pause", app::manners::stamp()); self.phase = Phase::Paused; }
+                    Command::Resume { session } if session == self.session => { println!("{} [gamenight] resume", app::manners::stamp()); self.phase = Phase::Running; }
                     Command::Dispose { session } if session == self.session => {
+                        println!("{} [gamenight] dispose", app::manners::stamp());
                         self.session.clear();
                         self.phase = Phase::Idle;
                         out.push(Ev::Dispose);

@@ -76,7 +76,7 @@ impl Manners {
         // Hand the foreground over before minimising: afterwards this
         // process can no longer give it to the lobby.
         if wish == Screen::Hidden && focused { allow_foreground(); }
-        println!("window: {:?} -> {wish:?}", self.screen);
+        println!("{} window: {:?} -> {wish:?}", stamp(), self.screen);
         self.screen = wish;
         self.since = Instant::now();
         self.asked = None;
@@ -105,7 +105,7 @@ impl Manners {
                 let minimized = w.is_minimized();
                 if minimized == Some(true) || (minimized.is_none() && self.asked.is_some()) { self.settled = true; return; }
                 if now - self.since >= OFF_SCREEN_AFTER {
-                    println!("window: could not minimise; parking it off-screen");
+                    println!("{} window: could not minimise; parking it off-screen", stamp());
                     w.set_fullscreen(None);
                     w.set_outer_position(PARKED);
                     self.parked = true;
@@ -129,7 +129,7 @@ impl Manners {
                     return;
                 }
                 if now - self.since >= CLAIM_FOR {
-                    println!("window: the window server kept the screen from us");
+                    println!("{} window: the window server kept the screen from us", stamp());
                     self.settled = true;
                     return;
                 }
@@ -153,6 +153,13 @@ impl Manners {
     fn monitor(&self, w: &Window) -> Option<winit::monitor::MonitorHandle> {
         if self.parked { w.primary_monitor() } else { None }
     }
+}
+
+/// The time of day (UTC, as the host's log) for log lines that must line up
+/// with the host's: `10:47:08.421`.
+pub fn stamp() -> String {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) % 86_400_000;
+    format!("{:02}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
 }
 
 /// Windows keeps a background process from taking focus unless the
