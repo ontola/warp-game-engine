@@ -656,6 +656,18 @@ impl Fx {
     }
 
     /// `n` particles of `e` at `at`, the first `age0` seconds into life.
+    /// A small spurt of blood off a hit wizard, thrown the way the blow
+    /// pushed them.
+    pub fn spurt(&mut self, at: Vec3, dir: Vec3) {
+        let mut p = particles(rgba(0.45, 0.04, 0.03, 1.0), 9, 0.5, 0.22);
+        style(&mut p, El::Water, false);
+        p.ramp = Ramp::new(&[rgba(0.5, 0.05, 0.03, 0.95), rgba(0.3, 0.02, 0.02, 0.0)], &[0.0, 1.0]);
+        p.dir = (dir.normalize_or_zero() + Vec3::Y * 0.8).normalize();
+        p.spread = 35.0;
+        p.v = (1.5, 3.5);
+        self.emit(p, at, p.amount);
+    }
+
     pub fn emit(&mut self, e: Em, at: Vec3, n: u32) {
         let idx = self.em(e);
         for _ in 0..n {

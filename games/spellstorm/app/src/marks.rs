@@ -146,9 +146,9 @@ impl Marks {
                 self.sprites.push(s);
             }
         }
+        // A hit flashes the body itself white (View: set_hit_flash).
         let tint = if a.hurt_t > 0.0 {
-            let k = (a.hurt_t / spellstorm::actor::HURT_TIME) as f32;
-            Some(([1.0, 0.97, 0.92], 0.8 * k * k))
+            None
         } else if a.frozen > 0.0 {
             Some(([0.6, 0.9, 1.0], 0.55))
         } else if a.flash > 0.0 {

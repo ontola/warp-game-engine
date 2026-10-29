@@ -138,6 +138,8 @@ pub struct View {
     pub shrines: crate::shrines::Shrines,
     /// How long each wizard has lain fallen.
     wizard_fallen: Vec<f32>,
+    /// Each wizard's hurt_t last frame: a new hit spurts blood.
+    wizard_hurt: Vec<f64>,
 }
 
 fn level_key(l: &Level) -> u64 {
@@ -175,6 +177,7 @@ impl View {
             wizard_pieces: HashMap::new(),
             wizard_anims: vec![],
             wizard_fallen: vec![],
+            wizard_hurt: vec![],
             enemy_anims: HashMap::new(),
             debris: Vec::new(),
             cam_center: Vec3::ZERO,
@@ -385,7 +388,10 @@ impl View {
     /// Pose everything that moves, the camera and the nearest lights.
     pub fn pose(&mut self, gpu: &Gpu, renderer: &Renderer, w: &World, dt: f32) -> Result<(), String> {
         let mut out: Vec<(usize, Affine3A, bool)> = Vec::new();
+        // Bodies that flash white from a hit or are bloodied: (out range, flash, wounds).
+        let mut marked: Vec<(std::ops::Range<usize>, f32, f32)> = Vec::new();
         let time = w.time as f32;
+        self.wizard_hurt.resize(w.wizards.len(), 0.0);
         self.wizard_anims.resize_with(w.wizards.len(), Default::default);
         // Where each staff's gem is as the staff moves: its light and orbs sit there.
         let mut gems = vec![None; w.wizards.len()];
@@ -402,9 +408,18 @@ impl View {
             let k = (*f / 0.5).min(1.0);
             let k = k * k * (3.0 - 2.0 * k);
             let at = Mat4::from_translation(a.pos + Vec3::Y * 0.12 * k) * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2 * k);
+            let from = out.len();
             for p in pieces {
                 out.push((p.mesh, look::affine(at * anim::posed(kit, &pose, p.node)), p.shadow));
             }
+            // Low on health the robe gets bloodier; a new hit spurts blood.
+            let life = if a.alive { (a.hp / a.max_hp.max(1e-6)) as f32 } else { 0.0 };
+            let wounds = ((0.5 - life) / 0.4).clamp(0.0, 1.0);
+            marked.push((from..out.len(), hit_flash(&a), wounds));
+            if a.alive && a.hurt_t > self.wizard_hurt[i] + 1e-6 {
+                self.fx.spurt(a.pos + Vec3::Y * 1.1, a.hurt_dir);
+            }
+            self.wizard_hurt[i] = a.hurt_t;
             if let Some(&g) = kit.named.get("gem") {
                 gems[i] = Some((at * anim::posed(kit, &pose, g)).w_axis.truncate());
             }
@@ -441,6 +456,7 @@ impl View {
             if !ea.scattered {
                 // Its eyes swell while it winds up a blow (Enemy._tell).
                 let eyes = if e.wind > 0.0 { 1.0 + 1.5 * (1.0 - e.wind / e.wind_time()) as f32 } else { 1.0 };
+                marked.push((out.len()..out.len() + pieces.len(), hit_flash(&a), 0.0));
                 for p in &pieces {
                     let mut xf = at * kit.model_xf(p.node);
                     if eyes != 1.0 && kit.eyes.contains(&p.node) {
@@ -466,6 +482,13 @@ impl View {
                     self.scene.instances[slot].flags = flags;
                 }
                 None => self.scene.instances[slot].cluster_count = 0,
+            }
+        }
+        for (r, flash, wounds) in marked {
+            for i in r.filter(|&i| i < POOL) {
+                let inst = &mut self.scene.instances[first + i];
+                inst.set_hit_flash(flash);
+                inst.set_wounds(wounds);
             }
         }
         // Props broken since the scene was made disappear.
@@ -574,6 +597,15 @@ impl View {
 }
 
 /// The camera's rotation: a card with it faces the camera.
+/// The white a hit leaves on a body (Actor's overlay: 0.8 k², gone in a blink).
+fn hit_flash(a: &spellstorm::actor::Actor) -> f32 {
+    if a.hurt_t <= 0.0 || !a.alive {
+        return 0.0;
+    }
+    let k = (a.hurt_t / spellstorm::actor::HURT_TIME) as f32;
+    0.8 * k * k
+}
+
 pub fn facing(cam: &Camera) -> Mat3 {
     let back = (cam.pos - cam.target).normalize_or(Vec3::Z);
     let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
