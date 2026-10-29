@@ -18,7 +18,7 @@ const OFF_SCREEN_AFTER: Duration = Duration::from_secs(8);
 /// Stop asking for the screen after this; the window server said no.
 const CLAIM_FOR: Duration = Duration::from_secs(6);
 /// A window still waiting for its first frame shows itself after this.
-const SHOW_ANYWAY: Duration = Duration::from_secs(3);
+const SHOW_ANYWAY: Duration = Duration::from_secs(5);
 /// Where a parked window goes.
 const PARKED: PhysicalPosition<i32> = PhysicalPosition::new(-30000, -30000);
 
@@ -47,6 +47,8 @@ impl Manners {
     /// take the focus from the game being played.
     pub fn first(&mut self, wish: Screen, attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
         let attrs = attrs.with_visible(false);
+        // SHOW_ANYWAY counts from the window, not from loading the game.
+        self.since = Instant::now();
         if wish != Screen::Hidden { return attrs; }
         self.screen = Screen::Hidden;
         attrs.with_fullscreen(None).with_active(false)

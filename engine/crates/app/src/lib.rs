@@ -421,14 +421,22 @@ impl ApplicationHandler for Shell<'_> {
             let t = Instant::now();
             let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
             let made = t.elapsed().as_millis();
-            let instance = render::gpu::instance();
-            let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-            let surfaced = t.elapsed().as_millis();
             let size = window.inner_size();
-            let (gpu, config) = Gpu::for_surface(&instance, &surface, size.width, size.height)?;
-            println!("{} startup: window {made} ms, instance and surface {} ms, adapter and device {} ms", manners::stamp(), surfaced - made, t.elapsed().as_millis() - surfaced);
+            let open = |instance: wgpu::Instance| -> Result<_, String> {
+                let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+                let surfaced = t.elapsed().as_millis();
+                let (gpu, config) = Gpu::for_surface(&instance, &surface, size.width, size.height)?;
+                Ok((surface, gpu, config, surfaced))
+            };
+            let (surface, gpu, config, surfaced) = match render::gpu::window_instance().map(&open) {
+                Some(Ok(v)) => v,
+                Some(Err(e)) => { println!("{} Vulkan: {e}; trying the other backends", manners::stamp()); open(render::gpu::instance())? }
+                None => open(render::gpu::instance())?,
+            };
+            let devised = t.elapsed().as_millis();
             surface.configure(&gpu.device, &config);
             let out = Output::new(&gpu, config.format)?;
+            println!("{} startup: window {made} ms, instance and surface {} ms, adapter and device {} ms, swapchain and presenter {} ms", manners::stamp(), surfaced - made, devised - surfaced, t.elapsed().as_millis() - devised);
             println!("{} GPU {} ({}), {}x{}", manners::stamp(), gpu.info.name, gpu.info.backend, size.width, size.height);
             self.live = Some(Live { surface, config, gpu, out, renderer: None });
             self.window = Some(window.clone());
