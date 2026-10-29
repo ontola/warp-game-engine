@@ -30,10 +30,10 @@ local KNOBS = {
 	grid_glow = 0.0016, -- brightness of the grid (major lines are about twice it)
 	line_width = 3.2, -- outline width in arena units (the arena is 800 high)
 	draw_scale = 1.3, -- how much larger things are drawn than they collide
-	stars = 320, -- stars far below the arena
+	stars = 0, -- stars far below the arena (off until the cell backdrop shader lands)
 	star_glow = 0.012, -- brightness of the stars
 	star_drift = 0.6, -- how fast the star field drifts past (m/s for the nearest layer)
-	cells = 18, -- big faint cells drifting under the stars
+	cells = 0, -- big faint cells drifting under the stars (stand-in, off: the shader replaces them)
 	cell_glow = 0.0025, -- brightness of the cell walls and nuclei
 	vignette = 0.4, -- dark corners, 0 to 1
 	grain = 0.1, -- film grain, 0 to 1
@@ -1357,27 +1357,31 @@ local function show_pilot(p)
 	local a = math.atan2(p.aimY, p.aimX)
 	local pos = at(p.x, p.y, 0.15)
 	local mode = if not alive(p) then "down" elseif p.invul > 0 and math.floor(s.time * 12) % 2 == 0 then "blink" else "up"
-	if not p.ent then
-		p.ent = world.spawn(outline(3, 22, 3.6), { pos = pos, size = vector.create(54 * S, 0.04, 36 * S), color = p.color, emissive = GLOW.line, solid = false, tag = "pilot" })
-		p.nose = world.spawn(outline(3, 8, 2.6), { pos = pos, size = vector.create(19 * S, 0.04, 12 * S), color = "#ffffff", emissive = GLOW.white, solid = false, tag = "pilot" })
+	-- A pilot is a white blood cell: a soft white membrane, and a nucleus in
+	-- the player's colour that leans towards where they aim.
+	if not p.cell then
+		p.cell = world.spawn(outline(20, 20, 3), { pos = pos, size = 40 * S, color = rgb(WHITE), emissive = GLOW.white * 0.7, solid = false, tag = "pilot" })
+		p.mark = world.spawn(outline(3, 8, 3), { pos = pos, size = vector.create(19 * S, 0.04, 14 * S), color = p.color, emissive = GLOW.line, solid = false, tag = "pilot" })
 		p.halo = world.spawn(outline(24, 20), { pos = pos, size = 40 * S, color = p.color, emissive = GLOW.line, solid = false, visible = false, tag = "pilot" })
 		p.mode = "up"
 	end
 	if p.mode ~= mode then
-		world.set(p.ent, { visible = mode == "up" })
-		world.set(p.nose, { visible = mode == "up" })
+		world.set(p.cell, { visible = mode == "up" })
+		world.set(p.mark, { visible = mode == "up" })
 		world.set(p.halo, { visible = mode == "down" })
 		p.mode = mode
 	end
-	world.place(p.ent, pos, -a)
-	world.place(p.nose, at(p.x + math.cos(a) * 7, p.y + math.sin(a) * 7, 0.16), -a)
+	-- The membrane breathes a little, like a cell crawling.
+	local wobble = math.sin(s.time * 4 + p.id) * 0.06
+	world.set(p.cell, { pos = pos, size = vector.create(40 * S * (1 + wobble), 0.04, 40 * S * (1 - wobble)) })
+	world.place(p.mark, at(p.x + math.cos(a) * 6, p.y + math.sin(a) * 6, 0.16), -a)
 	if mode == "down" then
 		-- The ring fills in as the revive comes closer.
 		local k = math.min(1, math.max(p.revive / 1.2, p.downTime / 6))
 		world.set(p.halo, { size = vector.create((40 + 10 * k + math.sin(s.time * 5) * 4) * S, 0.04, (40 + 10 * k + math.sin(s.time * 5) * 4) * S) })
 	end
-	seen(p.ent)
-	seen(p.nose)
+	seen(p.cell)
+	seen(p.mark)
 	seen(p.halo)
 end
 
