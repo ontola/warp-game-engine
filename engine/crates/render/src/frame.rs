@@ -3193,7 +3193,7 @@ impl Renderer {
             near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
-            anim: [light.time, light.emissive_scale(), 0.0, 0.0],
+            anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), 0.0],
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 

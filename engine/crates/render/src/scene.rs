@@ -157,6 +157,15 @@ pub const HIDE_IN_VIEW_MASK: u32 = 0xff << HIDE_IN_VIEW_SHIFT;
 pub const INSTANCE_CATEGORY_SHIFT: u32 = 24;
 pub const INSTANCE_CATEGORY_MASK: u32 = 7 << INSTANCE_CATEGORY_SHIFT;
 
+/// Bits 16..23: a hit flash, 0..255 (the body glows white for a moment,
+/// strongest at its edges). Set with [`GpuInstance::set_hit_flash`].
+pub const HIT_FLASH_SHIFT: u32 = 16;
+pub const HIT_FLASH_MASK: u32 = 0xff << HIT_FLASH_SHIFT;
+/// Bits 27..31: wounds, 0..31 (wet blood stains spreading over the
+/// surface). Set with [`GpuInstance::set_wounds`].
+pub const WOUNDS_SHIFT: u32 = 27;
+pub const WOUNDS_MASK: u32 = 0x1f << WOUNDS_SHIFT;
+
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum GeometryCategory {
@@ -195,6 +204,18 @@ impl GpuInstance {
     /// e.g. a first-person player's own body. Shadows are unaffected.
     pub fn hide_in_views(&mut self, mask: u8) {
         self.flags = (self.flags & !HIDE_IN_VIEW_MASK) | (u32::from(mask) << HIDE_IN_VIEW_SHIFT);
+    }
+
+    /// How white the body flashes this frame, 0 (not) to 1.
+    pub fn set_hit_flash(&mut self, k: f32) {
+        let v = (k.clamp(0.0, 1.0) * 255.0).round() as u32;
+        self.flags = (self.flags & !HIT_FLASH_MASK) | (v << HIT_FLASH_SHIFT);
+    }
+
+    /// How bloodied the body is, 0 (clean) to 1 (covered).
+    pub fn set_wounds(&mut self, k: f32) {
+        let v = (k.clamp(0.0, 1.0) * 31.0).round() as u32;
+        self.flags = (self.flags & !WOUNDS_MASK) | (v << WOUNDS_SHIFT);
     }
 
     pub fn set_category(&mut self, category: GeometryCategory) {
