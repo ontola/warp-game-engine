@@ -135,6 +135,7 @@ pub struct View {
     pub fresh: bool,
     pub fx: crate::fx::Fx,
     pub marks: crate::marks::Marks,
+    pub shrines: crate::shrines::Shrines,
 }
 
 fn level_key(l: &Level) -> u64 {
@@ -179,6 +180,7 @@ impl View {
             fresh: true,
             fx: crate::fx::Fx::default(),
             marks: crate::marks::Marks::default(),
+            shrines: crate::shrines::Shrines::default(),
         }
     }
 
@@ -304,6 +306,7 @@ impl View {
             self.place(&mut look, &mut scene, "lamp", Affine3A::from_rotation_translation(Quat::from_rotation_y(lamp.yaw), lamp.pos));
         }
 
+        self.shrines.build(&mut scene);
         // The pool for whatever moves: every kit it may show is built now.
         for (i, &id) in w.wizards.iter().enumerate() {
             let robe = w.wiz(id).robe;
@@ -428,6 +431,7 @@ impl View {
         for d in &self.debris {
             d.push(&mut out);
         }
+        self.shrines.update(w, time, &mut out);
         let first = self.pool_first;
         for i in 0..POOL {
             let slot = first + i;
@@ -478,7 +482,7 @@ impl View {
         locals.sort_by(|a, b| b.intensity_cd.max_element().total_cmp(&a.intensity_cd.max_element()));
         locals.truncate(12);
         // Every wizard's staff light, always.
-        locals.splice(0..0, self.marks.lights.iter().copied());
+        locals.splice(0..0, self.marks.lights.iter().chain(&self.shrines.lights).copied());
         let room = render::headlights::MAX_LOCAL_LIGHTS - locals.len();
         locals.extend(near.iter().take(room).map(|l| l.light));
         renderer.set_local_lights(&locals)?;
@@ -488,6 +492,7 @@ impl View {
         }
         self.light.time = w.time as f32;
         let mut sprites = self.marks.sprites.clone();
+        sprites.extend_from_slice(&self.shrines.sprites);
         sprites.extend(self.fx.sprites(&self.camera));
         sprites.truncate(render::sprites::MAX_SPRITES);
         renderer.set_sprites(gpu, &sprites)?;
