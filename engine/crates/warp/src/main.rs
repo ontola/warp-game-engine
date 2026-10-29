@@ -97,6 +97,7 @@ fn bundled() -> Option<PathBuf> {
 }
 
 fn play(args: &[String]) -> Result<(), String> {
+    println!("{} warp: starting", app::manners::stamp());
     let dir = dir(args)?;
     // The speakers, with the synth mixer for the device's channel layout.
     let mut sender = None;
@@ -107,8 +108,9 @@ fn play(args: &[String]) -> Result<(), String> {
         Box::new(mix)
     });
     if let Err(e) = &speaker { eprintln!("sound off: {e}"); }
+    println!("{} warp: sound open", app::manners::stamp());
     let mut game = LuaGame::load(&dir, &overrides(args)?, sender)?;
-    game.connect_party();
+    if game.connect_party() { println!("{} warp: connected to the party host", app::manners::stamp()); }
     if let Some(cfg) = live::Config::from_args(&game.live_name(), args)? { game.start_live(cfg)?; }
     let cfg = app::Config {
         title: game.cfg.title.clone(), size: size(args, game.cfg.size)?, tick_hz: game.cfg.tick_rate,

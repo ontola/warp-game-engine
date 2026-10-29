@@ -61,7 +61,10 @@ pub struct Frame<'a> {
 impl Frame<'_> {
     /// Upload a scene: creates the renderer, or replaces it.
     pub fn set_scene(&mut self, scene: &Scene, light: &Lighting) {
+        let t = std::time::Instant::now();
         *self.renderer = Some(Renderer::new(self.gpu, scene, light));
+        let ms = t.elapsed().as_millis();
+        if ms >= 100 { println!("{} renderer: scene built in {ms} ms", manners::stamp()); }
     }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
     /// The renderer, for changes such as [`Renderer::reload_shaders`].
@@ -422,7 +425,7 @@ impl ApplicationHandler for Shell<'_> {
             let (gpu, config) = Gpu::for_surface(&instance, &surface, size.width, size.height)?;
             surface.configure(&gpu.device, &config);
             let out = Output::new(&gpu, config.format)?;
-            println!("GPU {}, {}x{}", gpu.info.name, size.width, size.height);
+            println!("{} GPU {} ({}), {}x{}", manners::stamp(), gpu.info.name, gpu.info.backend, size.width, size.height);
             self.live = Some(Live { surface, config, gpu, out, renderer: None });
             self.window = Some(window.clone());
             self.last = Instant::now();

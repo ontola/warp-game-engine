@@ -64,6 +64,7 @@ impl Manners {
         let size = w.inner_size();
         if [size.width, size.height] != surface { return; }
         w.set_visible(true);
+        println!("{} window: shown with its first frame", stamp());
         if self.screen == Screen::Fullscreen { w.focus_window(); }
         self.shown = true;
         self.settled = false;
@@ -92,6 +93,7 @@ impl Manners {
         // show it anyway rather than never.
         if !self.shown && self.screen != Screen::Hidden && self.since.elapsed() >= SHOW_ANYWAY {
             w.set_visible(true);
+            println!("{} window: shown without a matching frame", stamp());
             self.shown = true;
         }
         if self.settled { return; }
