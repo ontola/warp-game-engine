@@ -17,7 +17,7 @@ local START_WAVE = 1
 local LIVES = 3
 -- Seconds a teammate has to stay close to revive a downed pilot.
 local REVIVE_TIME = 2.5
-local GRAVITY = 100 -- percent
+local GRAVITY = 0 -- percent; 0 turns the black hole off (Joep: the mechanic may go)
 
 -- The look, tweakable live: the `knobs` and `set_knob` tools (or the
 -- `knob NAME VALUE` command) change a value here and reload the game.
