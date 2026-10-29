@@ -159,6 +159,35 @@ fn geometry(boxes: &[Affine3A]) -> Result<Vec<Shape>, String> {
     }
     Ok(shapes)
 }
+/// Experimental nearest-surface separation planes, cached with static geometry.
+/// Not full DDGI visibility: one plane cannot represent corners or openings.
+/// xyz points into the probe's half-space; w is the plane offset. Zero = no wall.
+pub fn bake_separation_planes(grid: &Grid, boxes: &[Affine3A]) -> Result<Vec<[f32;4]>, String> {
+    grid.validate()?;
+    let shapes=geometry(boxes)?;
+    if shapes.is_empty() { return Ok(vec![[0.0;4];grid.count()]); }
+    let tree=Node::build(shapes);
+    let directions:Vec<Vec3>=(-1..=1).flat_map(|x| (-1..=1).flat_map(move |y| (-1..=1).filter_map(move |z| {
+        let d=Vec3::new(x as f32,y as f32,z as f32);
+        (d.length_squared()>0.0).then(||d.normalize())
+    }))).collect();
+    Ok((0..grid.count()).map(|i| {
+        let p=grid.position(i);
+        if tree.contains(p) { return [0.0;4]; }
+        let mut nearest=grid.cell*1.75;
+        let mut plane=[0.0;4];
+        for &d in &directions {
+            if let Some((t,n))=tree.hit(p,d) {
+                if t<nearest && n.dot(d)<0.0 {
+                    nearest=t;
+                    plane=[n.x,n.y,n.z,-n.dot(p+d*t)];
+                }
+            }
+        }
+        plane
+    }).collect())
+}
+
 /// Cosine-weighted visibility on six axes. Boxes are transformed unit cubes.
 pub fn bake(grid: &Grid, boxes: &[Affine3A], rays: usize) -> Result<Vec<Probe>, String> {
     grid.validate()?;
@@ -407,6 +436,18 @@ fn sample_valid(grid: &Grid, probes: &[Probe], p: Vec3, n: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn separation_plane_rejects_other_side_of_thin_wall() {
+        let grid=Grid { origin:Vec3::new(-1.0,0.0,0.0),cell:2.0,dims:[2,2,2] };
+        let wall=Affine3A::from_scale_rotation_translation(Vec3::new(0.2,20.0,20.0),glam::Quat::from_rotation_y(0.2),Vec3::ZERO);
+        let planes=bake_separation_planes(&grid,&[wall]).unwrap();
+        for i in 0..2 {
+            let a=planes[i]; let n=Vec3::new(a[0],a[1],a[2]);
+            assert!(n.dot(grid.position(i))+a[3]>0.5);
+            assert!(n.dot(grid.position(1-i))+a[3]< -0.5);
+        }
+        assert_eq!(bake_separation_planes(&grid,&[]).unwrap()[0],[0.0;4]);
+    }
     #[test]
     fn sun_return_is_shadowed_and_night_is_zero() {
         let grid = Grid {

@@ -1021,8 +1021,8 @@ impl Renderer {
         let (offset, grid) = self.irradiance_volume.ok_or("no reserved probe volume")?;
         let mut words = crate::irradiance_volume::pack(&grid, probes)?;
         words[7] = 3;
-        if std::env::var("WARP_SKY_PACKED").as_deref()==Ok("1") {
-            words[7]=4;
+        if std::env::var("WARP_SKY_PACKED").as_deref()==Ok("1") || std::env::var("WARP_SKY_TRILINEAR").as_deref()==Ok("1") {
+            words[7]=if std::env::var("WARP_SKY_TRILINEAR").as_deref()==Ok("1") { 6 } else { 4 };
             for (i,p) in probes.iter().enumerate() {
                 for (a,v) in p.axes.iter().enumerate() {
                     let invalid=u32::from(v.z>1.5);
@@ -1032,6 +1032,23 @@ impl Renderer {
             }
         }
         gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        Ok(())
+    }
+
+    /// Opt-in packed transport with a nearest-static-surface separation plane.
+    pub fn set_sky_sun_separated(&self, gpu:&Gpu, probes:&[crate::irradiance_volume::Probe], planes:&[[f32;4]]) -> Result<(),String> {
+        let (offset,grid)=self.irradiance_volume.ok_or("no reserved probe volume")?;
+        let mut words=crate::irradiance_volume::pack(&grid,probes)?;
+        if planes.len()!=probes.len() || planes.iter().flatten().any(|x|!x.is_finite()) { return Err("invalid separation planes".into()); }
+        words[7]=5;
+        for (i,p) in probes.iter().enumerate() {
+            for (a,v) in p.axes.iter().enumerate() {
+                let q=|x:f32| (x.clamp(0.0,1.0)*1023.0).round() as u32;
+                words[8+i*18+a*3]=q(v.x)|(q(v.y)<<10)|(q(v.z)<<20)|(u32::from(v.z>1.5)<<31);
+            }
+            for (j,slot) in [1,2,4,5].into_iter().enumerate() { words[8+i*18+slot]=planes[i][j].to_bits(); }
+        }
+        gpu.queue.write_buffer(&self.aux_buffer,(offset*4) as u64,bytemuck::cast_slice(&words));
         Ok(())
     }
 
