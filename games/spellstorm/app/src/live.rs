@@ -219,7 +219,7 @@ pub fn start(args: &[String], dir: Option<&Path>) -> Result<Option<SsLive>, Stri
     let Some(cfg) = live::Config::from_args("spellstorm", args)? else { return Ok(None) };
     let mut roots = Vec::new();
     if let Some(d) = dir {
-        roots.push(Root::new("game", d, Reload::Game, "games/spellstorm: knobs.txt (the balance knobs) and app/src/surface.wgsl (the game's floor, stone and cloth shading); a write applies on the next frame, a shader that does not compile keeps the last good one").extensions(&["txt", "wgsl", "md"]));
+        roots.push(Root::new("game", d, Reload::Game, "games/spellstorm: knobs.txt (the balance knobs), app/src/surface.wgsl (the game's floor, stone and cloth shading) and app/src/fx.wgsl (the spell effects: fire, smoke, glows, ground fields, mist walls); a write applies on the next frame, a shader that does not compile keeps the last good one").extensions(&["txt", "wgsl", "md"]));
     }
     if let Some(d) = spellstorm::rules::find_dir() {
         roots.push(Root::new("mods", d, Reload::Game, "the spell rules in Luau (read README.md first): base/spells.luau (the grammar: which spell a queue and a form make, names, numbers; what each element does), base/tomes.luau (the shrines' tomes); new modules add hooks (cast, hit, tick). A write reloads at once and reports errors; a broken file keeps the last good version").extensions(&["luau", "md"]));
@@ -236,7 +236,7 @@ pub fn start(args: &[String], dir: Option<&Path>) -> Result<Option<SsLive>, Stri
             "- Look first: `state`, `screenshot`, `knobs`, `logs`.\n\
              - Balance: `knobs` lists them; `set_knob` changes one now and saves it in knobs.txt (`persist: false` only in the running game, then `keep` or `revert`). Walking and rolling speeds, cooldowns and reach, mana, damage and health scales, wave spacing, revives, tome time and the mist walls' rules (wards, ward_needs_tomes, practice).\n\
              - Runs: `new_run`, `start_at` (a biome from 0), `setting` (friendly_fire off|half|full, difficulty easy|normal|hard, unlocks earned|all), `command` (the same as a console line; `help`).\n\
-             - Shading: edit `game/app/src/surface.wgsl` with write_file (Spellstorm's floor, stone and cloth, ported from Godot's shaders); it compiles on the next frame. {}\n\
+             - Shading: edit `game/app/src/surface.wgsl` with write_file (Spellstorm's floor, stone and cloth, ported from Godot's shaders); it compiles on the next frame. The spell effects' looks (flames, smoke puffs, glows, puddles and other ground fields, the mist walls) are `game/app/src/fx.wgsl`, the same way. {}\n\
              - Spells are Luau in `mods/` (read mods/README.md): edit base/spells.luau or base/tomes.luau with write_file, or add a module like mods/live/my_idea.luau with `cast`, `hit` or `tick` hooks; it reloads at once and the next cast uses it. `run_luau` runs a line against the live world as `g` (g:nova(g:pos(g:wizards()[1]), 4, 'fire')); `command mods` shows the modules and their errors.\n\
              - Monsters, levels and the rest of the sim are Rust (games/spellstorm/sim): they change with a rebuild.",
             if shaders.is_some() { "The engine's own shaders are in `shaders/` (reload_shaders)." } else { "Start with KERN_SHADER_DIR=engine/crates/render/src/shaders to edit the engine's shaders too." }
@@ -326,9 +326,15 @@ impl Spellstorm {
             if let Some(line) = self.shader.scan() {
                 self.log(line);
             }
+            if let Some(line) = crate::effects::scan() {
+                self.log(line);
+            }
             for line in spellstorm::rules::poll() {
                 self.log(format!("mods: {line}"));
             }
+        }
+        for line in crate::effects::lines() {
+            self.log(line);
         }
         let Some(mut l) = self.live.take() else { return };
         l.live.serve(&mut Ctx { g: self });
@@ -427,6 +433,9 @@ impl LiveGame for Ctx<'_> {
             let line = g.tuning.scan();
             g.world.knobs_changed();
             return line;
+        }
+        if path.ends_with("fx.wgsl") {
+            return crate::effects::scan().or(Some("fx.wgsl: unchanged".into()));
         }
         if path.ends_with("surface.wgsl") {
             return g.shader.scan().or(Some("surface.wgsl: unchanged".into()));
