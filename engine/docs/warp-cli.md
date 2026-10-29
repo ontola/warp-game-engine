@@ -31,7 +31,9 @@ warp run my-game --live                # ... and let Claude change it over MCP
 | `warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]` | Headless in real time with live control on (port 7878 by default). Renders a frame only for a screenshot. Sound plays into a mixer that is never heard. |
 | `warp check DIR [--ticks N]` | Load, run `init` and N idle ticks (default 120) without a GPU, then print the state. Exits with status 1 on any script or patch error. The fastest check of an edit. |
 | `warp audio render FILE.luau [...]`, `check FILES`, `units` | The [`warp-audio`](audio.md#warp-audio) tool: render a patch and print its levels and a text spectrogram, check patches, list units. |
-| `warp new DIR [--title TITLE]` | Write the starter game into a new folder. |
+| `warp new DIR [--title TITLE]` | Write the starter game into a new folder; `warp new GAME.luau` writes it as [one file](#a-game-in-one-file). |
+
+`DIR` can also be a [one-file game](#a-game-in-one-file) (`GAME.luau`).
 
 `SKY` is `gradient`, or `TIME[:WEATHER]` with TIME `sunrise`, `morning`,
 `noon`, `afternoon`, `sunset` or `night` and WEATHER `clear`, `haze` or
@@ -40,6 +42,44 @@ warp run my-game --live                # ... and let Claude change it over MCP
 Headless commands use any GPU adapter; `KERN_ADAPTER=software` runs them
 on a CPU rasteriser on machines without a GPU. None of them opens a
 window.
+
+## A game in one file
+
+A whole game can be one `.luau` file. Its settings are the `--!` lines of
+its leading comment block (the `game.toml` keys below), and its sound
+patches are source strings in the module's exported `sounds` table:
+
+```lua
+-- Orb Hunt: collect the orbs.
+--! title = "Orb Hunt"
+--! sky = "sunset:haze"
+--! bots = 2
+
+local SOUNDS = {
+	ping = [==[
+length(0.3)
+return expr("sin(tau * 880 * t) * exp(-t * 12) * 0.4")
+]==],
+}
+
+local function init() ... end
+local function tick(dt, input) ... sound.play("ping") ... end
+
+return { sounds = SOUNDS, init = init, tick = tick }
+```
+
+```sh
+warp new orb-hunt.luau      # the starter game in one file
+warp run orb-hunt.luau      # or just: warp orb-hunt.luau
+warp check orb-hunt.luau
+```
+
+Every command that takes a game folder takes such a file. Only that file
+loads (other `.luau` files beside it are not part of the game); glTF paths
+and a `sounds/` folder, if there is one, are read relative to its folder,
+and with `--live` that folder is what the AI can edit. Saving the file
+reloads the code and any changed inline patch. Any module may export a
+`sounds` table, in a folder game too.
 
 ## A game folder
 

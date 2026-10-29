@@ -40,6 +40,8 @@ pub struct Overrides {
 
 pub struct LuaGame {
     pub dir: PathBuf,
+    /// A one-file game: its file name in `dir` (the only module).
+    pub single: Option<String>,
     pub cfg: GameToml,
     host: Host,
     core: Shared,
@@ -82,10 +84,15 @@ impl MenuItem {
 const LOG_KEEP: usize = 200;
 
 impl LuaGame {
-    /// Load a game folder. `sound` is where sounds go (the speakers, an
-    /// offline mixer, or None for silence).
-    pub fn load(dir: &Path, over: &Overrides, sound: Option<SoundSender>) -> Result<Self, String> {
-        let mut cfg = GameToml::load(dir)?;
+    /// Load a game folder, or a one-file game (a `.luau` file whose `--!`
+    /// header holds its settings; `sounds/` beside it still holds patches).
+    /// `sound` is where sounds go (the speakers, an offline mixer, or None
+    /// for silence).
+    pub fn load(path: &Path, over: &Overrides, sound: Option<SoundSender>) -> Result<Self, String> {
+        let single = path.is_file().then(|| path.file_name().map(|n| n.to_string_lossy().into_owned())).flatten();
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let dir = if single.is_some() { parent } else { path };
+        let mut cfg = if single.is_some() { GameToml::load_file(path)? } else { GameToml::load(dir)? };
         if let Some(p) = over.players {
             if !(1..=4).contains(&p) { return Err(format!("--players {p}: 1 to 4")); }
             cfg.players = p;
@@ -119,14 +126,16 @@ impl LuaGame {
         let shared = core.clone();
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
-        let mut g = LuaGame { dir: dir.to_path_buf(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
+        let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
             log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, polls: 0, next_id: 1, quit: false };
         let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
             .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None })).collect();
         g.seat_all(&people, false);
         for l in lines { g.say(l); }
+        if let Some(name) = &single { g.host.only(name); }
         g.host.watch(dir.to_path_buf());
         g.flush_log();
+        g.inline_sounds();
         g.start_new();
         Ok(g)
     }
@@ -155,6 +164,15 @@ impl LuaGame {
         self.flush_log();
     }
 
+    /// Sound patches the modules export as source (`sounds = { name = [[...]] }`).
+    fn inline_sounds(&mut self) {
+        let found: Vec<(String, String)> = self.host.modules().iter().filter_map(|m| m.exports.as_ref())
+            .filter_map(|e| e.raw_get::<Option<mlua::Table>>("sounds").ok().flatten())
+            .flat_map(|t| t.pairs::<String, String>().filter_map(|kv| kv.ok()).collect::<Vec<_>>()).collect();
+        let lines: Vec<String> = { let mut c = self.core(); found.iter().filter_map(|(n, src)| c.sounds.bank.add_source(n, src)).collect() };
+        for l in lines { self.say(l); }
+    }
+
     /// `init` for every loaded module that has not had it yet.
     fn start_new(&mut self) {
         let fresh: Vec<(usize, String)> = self.host.modules().iter().enumerate()
@@ -171,6 +189,7 @@ impl LuaGame {
         let mut lines = self.core().sounds.bank.scan();
         let changed = self.host.poll();
         self.flush_log();
+        if !changed.is_empty() { self.inline_sounds(); }
         // Changed modules that already ran init get `reload()` instead.
         for name in &changed {
             let Some(i) = self.host.modules().iter().position(|m| &m.name == name) else { continue };
@@ -407,7 +426,7 @@ impl LuaGame {
     /// Errors to show: load errors and modules whose hooks are off.
     pub fn errors(&self) -> Vec<String> {
         let mut out: Vec<String> = self.host.modules().iter().filter_map(|m| m.error.clone().or_else(|| m.broken.then(|| format!("{}: a hook failed; its hooks are off until the file changes (see logs)", m.name)))).collect();
-        out.extend(self.core().sounds.bank.errors.iter().map(|(f, e)| format!("sounds/{f}: {e}")));
+        out.extend(self.core().sounds.bank.errors.iter().map(|(f, e)| match f.strip_prefix("inline:") { Some(n) => format!("sound {n}: {e}"), None => format!("sounds/{f}: {e}") }));
         if self.host.modules().is_empty() { out.push("no Luau modules loaded".into()); }
         out
     }
@@ -618,7 +637,8 @@ impl LuaGame {
     }
 
     pub fn live_name(&self) -> String {
-        let name = self.dir.canonicalize().ok().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| self.cfg.title.clone());
+        let stem = self.single.as_deref().and_then(|f| Path::new(f).file_stem()).map(|s| s.to_string_lossy().into_owned());
+        let name = stem.or_else(|| self.dir.canonicalize().ok().and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))).unwrap_or_else(|| self.cfg.title.clone());
         let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
         slug.trim_matches('-').to_string()
     }
