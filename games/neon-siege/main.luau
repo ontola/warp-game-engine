@@ -1300,10 +1300,11 @@ local function show_enemy(e)
 		seen(id)
 	end
 	e.grow = grow
-	-- Spikes, flagella and legs, once the germ has formed.
+	-- Spikes, flagella and legs grow in with the body while it spawns, so the
+	-- germ has its real shape from the first frame.
 	local spikes = SPIKES[e.kind]
-	if spikes and e.warm <= 0 then
-		local r = draw_r(e.kind)
+	if spikes then
+		local r = draw_r(e.kind) * grow
 		local color, glow = part_look(e.kind, parts[1], mode)
 		if not e.spikes then
 			e.spikes = {}
@@ -1323,6 +1324,13 @@ local function show_enemy(e)
 			end
 			e.spikeMode = mode
 		end
+		if e.spikeGrow ~= grow then
+			for i, sp in spikes do
+				world.set(e.spikes[i].line, { size = vector.create(2.2 * S, 0.03, r * sp.len * S) })
+				if e.spikes[i].knob then world.set(e.spikes[i].knob, { size = 8 * S * grow }) end
+			end
+			e.spikeGrow = grow
+		end
 		for i, sp in spikes do
 			local a = angle + sp.a
 			local dx, dy = math.cos(a), math.sin(a)
@@ -1338,8 +1346,8 @@ local function show_enemy(e)
 	end
 	-- Flagella: a travelling sine wave that grows towards the tip.
 	local flagella = FLAGELLA[e.kind]
-	if flagella and e.warm <= 0 then
-		local r = draw_r(e.kind)
+	if flagella then
+		local r = draw_r(e.kind) * grow
 		local color, glow = part_look(e.kind, parts[1], mode)
 		if not e.flagella then
 			e.flagella = {}
@@ -1351,6 +1359,10 @@ local function show_enemy(e)
 		if e.flagellaMode ~= mode then
 			for _, id in e.flagella do world.set(id, { color = color, emissive = glow * 0.8 }) end
 			e.flagellaMode = mode
+		end
+		if e.flagellaGrow ~= grow then
+			for _, id in e.flagella do world.set(id, { size = vector.create(1.8 * S, 0.03, r * FLAG_LENGTH / FLAG_SEGMENTS * 1.2 * S) }) end
+			e.flagellaGrow = grow
 		end
 		local n = 0
 		for f, fl in flagella do
