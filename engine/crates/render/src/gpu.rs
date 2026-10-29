@@ -23,12 +23,22 @@ pub struct GpuInfo {
     pub timestamps: bool,
 }
 
+/// The wgpu instance every window and tool starts from. On Windows only the
+/// primary backends (Vulkan, DX12 for WARP): starting OpenGL as well costs
+/// a cold launch seconds and is never picked there. `WGPU_BACKEND` still
+/// overrides.
+pub fn instance() -> wgpu::Instance {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    if cfg!(windows) { desc.backends = wgpu::Backends::PRIMARY; }
+    wgpu::Instance::new(desc.with_env())
+}
+
 impl Gpu {
     /// The best adapter there is. `KERN_ADAPTER=software` forces the
     /// fallback (lavapipe/WARP); any other value picks the first adapter
     /// whose name contains it.
     pub fn new() -> Result<Gpu, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance = instance();
         Self::request(&instance, None).map(|(gpu, _)| gpu)
     }
 

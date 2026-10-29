@@ -418,11 +418,15 @@ impl ApplicationHandler for Shell<'_> {
                 .with_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None)));
             let attrs = self.manners.first(self.game.screen(), attrs);
             self.screen = self.manners.screen;
+            let t = Instant::now();
             let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+            let made = t.elapsed().as_millis();
+            let instance = render::gpu::instance();
             let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+            let surfaced = t.elapsed().as_millis();
             let size = window.inner_size();
             let (gpu, config) = Gpu::for_surface(&instance, &surface, size.width, size.height)?;
+            println!("{} startup: window {made} ms, instance and surface {} ms, adapter and device {} ms", manners::stamp(), surfaced - made, t.elapsed().as_millis() - surfaced);
             surface.configure(&gpu.device, &config);
             let out = Output::new(&gpu, config.format)?;
             println!("{} GPU {} ({}), {}x{}", manners::stamp(), gpu.info.name, gpu.info.backend, size.width, size.height);

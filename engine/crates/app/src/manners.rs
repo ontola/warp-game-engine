@@ -64,7 +64,7 @@ impl Manners {
         let size = w.inner_size();
         if [size.width, size.height] != surface { return; }
         w.set_visible(true);
-        println!("{} window: shown with its first frame", stamp());
+        println!("{} window: shown with its first frame, {}x{}", stamp(), surface[0], surface[1]);
         if self.screen == Screen::Fullscreen { w.focus_window(); }
         self.shown = true;
         self.settled = false;
@@ -125,10 +125,17 @@ impl Manners {
             }
             Screen::Fullscreen => {
                 // Shown and fullscreen: one more raise, then leave it be.
-                if w.is_minimized() != Some(true) && w.fullscreen().is_some() && !self.parked {
+                if w.is_minimized() != Some(true) && w.fullscreen().is_some() && !self.parked && fills(w) {
                     if !focused { w.focus_window(); }
                     self.settled = true;
                     return;
+                }
+                // Made fullscreen while invisible, some window servers keep
+                // the old size: leave fullscreen and ask again.
+                if w.fullscreen().is_some() && !fills(w) {
+                    let (s, m) = (w.inner_size(), w.current_monitor().map(|m| m.size()).unwrap_or_default());
+                    println!("{} window: {}x{} on a {}x{} screen; fullscreen again", stamp(), s.width, s.height, m.width, m.height);
+                    w.set_fullscreen(None);
                 }
                 if now - self.since >= CLAIM_FOR {
                     println!("{} window: the window server kept the screen from us", stamp());
@@ -142,6 +149,7 @@ impl Manners {
             }
             Screen::Normal => {
                 w.set_minimized(false);
+                if fullscreen && w.fullscreen().is_some() && !fills(w) { w.set_fullscreen(None); }
                 w.set_fullscreen(fullscreen.then(|| Fullscreen::Borderless(self.monitor(w))));
                 if self.parked && !fullscreen { w.set_outer_position(PhysicalPosition::new(64, 64)); }
                 self.parked = false;
@@ -155,6 +163,13 @@ impl Manners {
     fn monitor(&self, w: &Window) -> Option<winit::monitor::MonitorHandle> {
         if self.parked { w.primary_monitor() } else { None }
     }
+}
+
+/// The window covers its monitor (true when that cannot be told).
+fn fills(w: &Window) -> bool {
+    let Some(m) = w.current_monitor() else { return true };
+    let (s, m) = (w.inner_size(), m.size());
+    m.width == 0 || (s.width >= m.width && s.height >= m.height)
 }
 
 /// The time of day (UTC, as the host's log) for log lines that must line up
