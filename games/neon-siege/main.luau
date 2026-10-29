@@ -1045,6 +1045,8 @@ local function enemies_step(dt)
 					end
 				end
 				e.x, e.y = e.x + dx * speed * dt, e.y + dy * speed * dt
+				-- Where it is swimming, for germs drawn nose-first (flagella behind).
+				if speed > 0 then e.heading = math.atan2(dy, dx) end
 				touch(e, true)
 			end
 		end
@@ -1276,6 +1278,8 @@ local function enemy_angle(e)
 	elseif e.kind == "serpent" and e.segments and e.segments[1] then
 		local seg = enemy(e.segments[1])
 		if seg then angle = math.atan2(e.y - seg.y, e.x - seg.x) end
+	elseif (e.kind == "weaver" or e.kind == "chaser") and e.heading then
+		angle = e.heading
 	elseif e.kind == "segment" or e.kind == "hive" then
 		angle = e.phase
 	elseif e.kind == "prism" then
