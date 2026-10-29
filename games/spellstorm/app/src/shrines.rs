@@ -182,6 +182,30 @@ impl Shrines {
             self.lights.push(omni(mid + Vec3::Z * 0.6, PORTAL, 2.5, 7.0));
             rings.push((at, PORTAL_R, (w.run.portal_t / PORTAL_TIME) as f32, [0.55, 0.75, 1.0], [0.55, 0.75, 1.0], 1.0));
         }
+        // The queued elements ride on the staff: small balls circling its
+        // gem, spinning faster and wider while RB winds up a burst.
+        for &id in &w.wizards {
+            let Some(a) = w.actor(id) else { continue };
+            if !a.alive {
+                continue;
+            }
+            let wz = w.wiz(id);
+            let slots = &wz.queue.slots;
+            if slots.is_empty() {
+                continue;
+            }
+            let nova_k = if wz.rb_t > 0.12 { (wz.rb_t / spellstorm::wizard::NOVA_HOLD).clamp(0.0, 1.0) as f32 } else { 0.0 };
+            let gem = spellstorm::wizard::staff_tip(a.pos, &wz);
+            for (i, &e) in slots.iter().enumerate() {
+                let ang = time * (3.0 + 9.0 * nova_k) + i as f32 * std::f32::consts::TAU / slots.len() as f32;
+                let r = 0.24 + 0.14 * nova_k;
+                let at = gem + Vec3::new(ang.cos() * r, (ang * 2.0).sin() * 0.03 - 0.02, ang.sin() * r);
+                let big = if e.is_fused() { 1.3 } else { 1.0 };
+                if let Some(&(_, mesh)) = m.orbs.iter().find(|o| o.0 == e) {
+                    out.push((mesh, crate::look::affine(Mat4::from_scale_rotation_translation(Vec3::splat(0.065 * big * (1.0 + 0.4 * nova_k)), Quat::IDENTITY, at)), false));
+                }
+            }
+        }
         // Graves: the stone rises beside the body, a pillar of light calls
         // out, and the ring fills while a friend stands there.
         for &id in &w.wizards {
