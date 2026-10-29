@@ -1627,6 +1627,7 @@ local function warm(p)
 	world.warm(outline(24, 20), { color = c, emissive = GLOW.line })
 	world.warm("cube", { color = rgb({ p.color.x, p.color.y, p.color.z }), emissive = GLOW.shot })
 	world.warm("cube", { color = c, emissive = FX_GLOW })
+	world.warm("cube", { color = c, emissive = GLOW.line }) -- ship hull
 end
 
 local function warm_all()
@@ -1669,6 +1670,8 @@ local function warm_all()
 	world.warm("cube", { color = "#b8c8ff", emissive = KNOBS.star_glow })
 	world.warm(outline(32, 64), { color = rgb(COLORS.singularity), emissive = GLOW.white })
 	world.warm("cube", { color = rgb(COLORS.singularity), emissive = GLOW.line })
+	world.warm(outline(16, 4, 2), { color = rgb(WHITE), emissive = GLOW.white }) -- cockpit
+	world.warm("sphere", { color = rgb(WHITE), emissive = GLOW.white }) -- engines
 	for _, p in players.list() do warm(p) end
 end
 
