@@ -53,8 +53,9 @@ knobs! {
     wards = 1.0;
     /// 1: a shrine's wall opens once every wizard took a tome; 0: as soon as the shrine rises.
     ward_needs_tomes = 1.0;
-    /// 1: players who know nothing start on the practice strip; 0: never.
-    practice = 1.0;
+    /// 1: players who know nothing start on the practice strip; 0: never
+    /// (the default until its mist walls look as good as in Godot).
+    practice = 0.0;
 }
 
 pub fn index(name: &str) -> Option<usize> {
