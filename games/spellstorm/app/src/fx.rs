@@ -1186,10 +1186,16 @@ impl Fx {
                 }
             } else if let Ok(g) = w.ecs.get::<&Globe>(id) {
                 if g.visible() {
-                    let c = rgba(0.9, 0.06, 0.05, 1.0);
-                    let bob = Vec3::Y * (0.5 + 0.08 * (t * 3.0 + key as f32).sin());
-                    self.live.push(glow_sprite(g.pos + bob, 0.45, Cell::Drop, linear3([0.9, 0.06, 0.05]) * 1.6));
-                    self.halo(g.pos + bob, c, 1.6, 0.6);
+                    // A pool of blood on the floor that reaches for the
+                    // nearest wizard and runs into them (spells.wgsl `blood`).
+                    let to = g.to;
+                    let reach = 0.8 + to.length();
+                    let mut pool = flat_sprite(Vec3::new(g.pos.x, 0.03, g.pos.z), reach, Cell::Patch, Vec3::splat(LIT * 2.5)).solid();
+                    pool.effect = crate::effects::BLOOD;
+                    let pull = (g.pull as f32).clamp(0.0, 0.999);
+                    let suck = (g.slurp / spellstorm::pickups::GLOBE_SLURP).clamp(0.0, 1.0) as f32;
+                    pool.params = [to.x, to.y, pull + (suck * 1000.0).floor(), t + (key % 97) as f32];
+                    self.live.push(pool);
                 }
             } else if let Ok(s) = w.ecs.get::<&Soul>(id) {
                 let c = rgba(0.25, 0.5, 1.0, 1.0);

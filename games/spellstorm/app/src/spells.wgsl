@@ -105,11 +105,58 @@ fn molten(s: GameSprite) -> vec4<f32> {
     return vec4(c, smoothstep(1.0, 0.94, r));
 }
 
+// ---- A pool of blood (blood.gdshader) ----
+// params: where the nearest wizard is (x, z from the middle, metres), pull
+// (0..1, fraction) + 1000 x suck (how far it has been drunk), time. The
+// side facing the wizard runs out to them in a tongue; drinking draws the
+// whole pool along it, thinning to nothing.
+
+fn blood(s: GameSprite) -> vec4<f32> {
+    let to = s.params.xy;
+    let pull = fract(s.params.z);
+    let suck = floor(s.params.z) / 1000.0;
+    let t = s.params.w;
+    // This pixel in metres from the pool's middle (x east, y south).
+    let v = (s.uv - 0.5) * s.size;
+    let dist = length(to);
+    let d = select(vec2(0.0, 1.0), to / max(dist, 1e-4), dist > 1e-4);
+    let side = vec2(-d.y, d.x);
+    // Drunk: it runs along the tongue towards them, narrow and small.
+    let shift = dist * 0.8 * suck * suck;
+    let shrink = 1.0 - 0.6 * suck * suck;
+    var along = (dot(v, d) - shift) / shrink;
+    let across = dot(v, side) / (shrink * (1.0 - 0.85 * suck));
+    // A ragged edge, different on every pool, slowly breathing.
+    let ang = atan2(across, along);
+    let rag = sn_fbm(vec3(cos(ang) * 1.6 + fract(t * 0.0103) * 50.0, sin(ang) * 1.6, t * 0.25));
+    let radius = 0.35 * (0.75 + 0.55 * rag);
+    let body = length(vec2(along, across)) / radius;
+    // The tongue: a tapering strip out to the drinker.
+    let reach = pull * 0.55 * radius / 0.3 * 2.2 + suck * dist;
+    let k = clamp(along / max(reach, 1e-3), 0.0, 1.0);
+    let half = radius * 0.55 * (1.0 - k * 0.7);
+    let tongue = select(9.0, abs(across) / max(half, 1e-3) + step(reach, along) * 9.0, along > 0.0 && reach > 0.01);
+    let f = min(body, tongue);
+    let inside = 1.0 - smoothstep(0.85, 1.0, f);
+    if inside <= 0.0 {
+        return vec4(0.0);
+    }
+    // Dark, wet and glossy, lighter red where it is thin at the edge, a
+    // sheen sliding over it.
+    let rim = smoothstep(0.5, 1.0, f);
+    let sheen = smoothstep(0.65, 0.9, sn_noise(vec3(v * 5.0, t * 0.6)));
+    var c = mix(vec3(0.16, 0.0, 0.005), vec3(0.42, 0.02, 0.02), rim * 0.6);
+    c += vec3(0.5, 0.15, 0.15) * sheen * (1.0 - rim) * 0.35;
+    c += vec3(0.12, 0.0, 0.0) * (0.6 + 0.8 * pull);
+    return vec4(lin(c), inside * (1.0 - 0.5 * suck));
+}
+
 fn game_sprite(s: GameSprite) -> vec4<f32> {
     switch s.effect {
         case 66u: { return wave(s); }
         case 67u: { return black_hole(s); }
         case 68u: { return molten(s); }
+        case 69u: { return blood(s); }
         default: { return fx_sprite(s); }
     }
 }
