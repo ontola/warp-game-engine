@@ -7,7 +7,7 @@ fn main() {
     for i in 0..=steps {
         let t = i as f32 / steps as f32;
         let (x, z) = (a[0] + (a[2] - a[0]) * t, a[1] + (a[3] - a[1]) * t);
-        let s = terrain_field::eval(x, z, 0.0, 1);
+        let s = terrain_field::eval(x, z, 0.0, 1, &terrain_field::Style::default());
         println!("{x:8.1} {z:8.1} y {:7.2} up {:.2} rock {:.2} scree {:.2} wet {:.2} water {:.2}", s.pos.y, s.up, s.rock, s.scree, s.wet, s.water);
     }
 }

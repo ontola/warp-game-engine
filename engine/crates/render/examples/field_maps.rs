@@ -13,7 +13,7 @@ fn main() {
         for i in 0..n {
             let x = cx + (i as f32 / n as f32 - 0.5) * size;
             let z = cz + (j as f32 / n as f32 - 0.5) * size;
-            let s = terrain_field::eval(x, z, cut, 1);
+            let s = terrain_field::eval(x, z, cut, 1, &terrain_field::Style::default());
             let k = ((j * n + i) * 3) as usize;
             let shade = (s.up * 255.0) as u8;
             maps[0][k] = (s.rock * 255.0) as u8;

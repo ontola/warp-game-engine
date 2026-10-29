@@ -6,7 +6,7 @@
 //! normal cluster pipeline culls, rasters, shades and shadows it.
 //!
 //! ```ignore
-//! let pool = procedural_terrain::reserve(&mut scene, 16384, terrain_material, seed);
+//! let pool = procedural_terrain::reserve(&mut scene, 16384, terrain_material, seed, Style::default());
 //! let renderer = Renderer::new(&gpu, &scene, &light);
 //! let mut terrain = ProceduralTerrain::new(pool, Settings::default());
 //! terrain.update(&gpu, &renderer, &[TerrainView::new(&camera, height_px)])?; // per frame
@@ -35,10 +35,11 @@ pub struct TerrainSpec {
     pub first_vertex: u32,
     pub capacity: u32,
     pub seed: u32,
+    pub style: terrain_field::Style,
 }
 
 /// Reserve `capacity` patch slots that draw with `material`.
-pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32) -> TerrainSpec {
+pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32, style: terrain_field::Style) -> TerrainSpec {
     assert!(scene.procedural_terrain.is_none(), "one procedural terrain per scene");
     let first_vertex = scene.vertices.len() as u32;
     let first_tri = scene.tris.len() as u32;
@@ -78,7 +79,7 @@ pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32) -> Te
             flags: PROCEDURAL | (GeometryCategory::Terrain as u32) << INSTANCE_CATEGORY_SHIFT,
         });
     }
-    let spec = TerrainSpec { first_instance, first_cluster, first_vertex, capacity, seed };
+    let spec = TerrainSpec { first_instance, first_cluster, first_vertex, capacity, seed, style };
     scene.procedural_terrain = Some(spec);
     spec
 }
@@ -192,7 +193,7 @@ impl ProceduralTerrain {
         let size = self.size(n.level);
         let cell = self.cell(n.level);
         let (x0, z0) = (n.ix as f32 * size, n.iz as f32 * size);
-        let sample = terrain_field::eval(x0 + size * 0.5, z0 + size * 0.5, cell * CELLS as f32, self.spec.seed);
+        let sample = terrain_field::eval(x0 + size * 0.5, z0 + size * 0.5, cell * CELLS as f32, self.spec.seed, &self.spec.style);
         let centre_y = sample.pos.y;
         let error = sample.error(cell);
         let reach = size * 0.75 + 8.0;
@@ -262,7 +263,7 @@ impl ProceduralTerrain {
             let cell = self.cell(n.level);
             let origin = [n.ix as f32 * size, n.iz as f32 * size];
             jobs.push(Job { origin, spacing: cell, mask: m, slot, _pad: [0; 3] });
-            let centre_y = terrain_field::eval(origin[0] + size * 0.5, origin[1] + size * 0.5, cell * CELLS as f32, self.spec.seed).pos.y;
+            let centre_y = terrain_field::eval(origin[0] + size * 0.5, origin[1] + size * 0.5, cell * CELLS as f32, self.spec.seed, &self.spec.style).pos.y;
             let half = size * 0.5;
             let radius = (2.0 * half * half).sqrt() + size + 8.0 + terrain_field::MAX_PUSH;
             let mut inst = hidden_instance(&self.spec, slot);
@@ -370,7 +371,7 @@ impl TerrainRenderer {
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("procedural terrain"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("procedural terrain build"), layout: Some(&pipeline_layout),
             module: &module, entry_point: Some("build"), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
-        let params = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("procedural terrain params"), size: 16,
+        let params = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("procedural terrain params"), size: 64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let jobs = Self::job_buffer(gpu, 1024);
         let bind = Self::bind(gpu, &layout, &params, &jobs, vertices, clusters);
@@ -437,6 +438,7 @@ impl TerrainRenderer {
         gpu.queue.write_buffer(&held.0, 0, bytemuck::cast_slice(&jobs));
         let params = [self.spec.first_vertex, self.spec.first_cluster, jobs.len() as u32, self.spec.seed];
         gpu.queue.write_buffer(&self.params, 0, bytemuck::cast_slice(&params));
+        gpu.queue.write_buffer(&self.params, 16, bytemuck::bytes_of(&self.spec.style));
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("procedural terrain"), timestamp_writes: None });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &held.1, &[]);
@@ -451,13 +453,13 @@ mod tests {
     use super::*;
 
     fn terrain() -> ProceduralTerrain {
-        ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 1 << 16, seed: 1 }, Settings::default())
+        ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 1 << 16, seed: 1, style: terrain_field::Style::default() }, Settings::default())
     }
 
     #[test]
     fn selection_is_balanced_and_detailed_near_the_camera() {
         let t = terrain();
-        let y = terrain_field::height(10.0, 20.0, 1);
+        let y = terrain_field::height(10.0, 20.0, 1, &terrain_field::Style::default());
         let pos = Vec3::new(10.0, y + 1.7, 20.0);
         let camera = Camera { pos, target: pos + Vec3::new(1.0, -0.1, 0.3), fov_y: 1.0, near: 0.1 };
         let views = [TerrainView::new(&camera, 1920, 1080)];

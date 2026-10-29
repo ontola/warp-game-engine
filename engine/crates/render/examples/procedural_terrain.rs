@@ -2,13 +2,14 @@
 //! stream bank up to a view over the whole range, with only the function,
 //! the patch pool and Sideways' ground textures.
 //! Run: procedural_terrain --out DIR [--seed N] [--size 1920x1080] [--only NAME]
+//!   [--style alpine,peaks=1,snow_line=1200,...] [--grass]
 use glam::Vec3;
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, SolarState};
 use render::procedural_terrain::{self, ProceduralTerrain, Settings, TerrainView};
 use render::scene::{Material, SURFACE, TERRAIN};
 use render::foliage_assembly::MeadowBladeBudget;
 use render::meadow_data::{MeadowField, MeadowGeometry};
-use render::terrain_field;
+use render::terrain_field::{self, Style};
 use render::{Camera, Gpu, Lighting, Renderer, Scene};
 use std::path::PathBuf;
 
@@ -17,51 +18,66 @@ fn main() { if let Err(e) = run() { eprintln!("procedural terrain: {e}"); std::p
 struct Shot { name: &'static str, pos: Vec3, target: Vec3, fov: f32 }
 
 /// First point on a spiral around the origin that `want` accepts.
-fn find(seed: u32, want: impl Fn(&terrain_field::Sample) -> bool) -> Option<(f32, f32)> {
+fn find(seed: u32, style: &Style, want: impl Fn(&terrain_field::Sample) -> bool) -> Option<(f32, f32)> {
     for k in 0..40000 {
         let r = 40.0 * (k as f32).sqrt();
         let a = k as f32 * 2.399963;
         let (x, z) = (r * a.cos(), r * a.sin());
-        if want(&terrain_field::eval(x, z, 0.0, seed)) { return Some((x, z)); }
+        if want(&terrain_field::eval(x, z, 0.0, seed, style)) { return Some((x, z)); }
     }
     None
 }
 
-fn ground(x: f32, z: f32, seed: u32) -> f32 { terrain_field::height(x, z, seed) }
+fn ground(x: f32, z: f32, seed: u32, style: &Style) -> f32 { terrain_field::height(x, z, seed, style) }
 
-fn shots(seed: u32) -> Vec<Shot> {
+fn shots(seed: u32, style: &Style) -> Vec<Shot> {
     let mut v = Vec::new();
-    let eye = |x: f32, z: f32, h: f32| Vec3::new(x, ground(x, z, seed) + h, z);
-    if let Some((x, z)) = find(seed, |s| s.water > 0.3 && s.amp < 200.0) {
+    let eye = |x: f32, z: f32, h: f32| Vec3::new(x, ground(x, z, seed, style) + h, z);
+    if let Some((x, z)) = find(seed, style, |s| s.water > 0.3 && s.amp < 200.0) {
         let pos = eye(x - 9.0, z - 6.0, 1.7);
-        v.push(Shot { name: "stream", pos, target: Vec3::new(x + 12.0, ground(x + 12.0, z + 8.0, seed), z + 8.0), fov: 60.0 });
+        v.push(Shot { name: "stream", pos, target: Vec3::new(x + 12.0, ground(x + 12.0, z + 8.0, seed, style), z + 8.0), fov: 60.0 });
     }
     // A beck: shallow water away from the wide river floors.
-    if let Some((x, z)) = find(seed, |s| s.water > 0.15 && s.water < 0.4 && s.up < 0.97 && s.amp > 120.0) {
+    if let Some((x, z)) = find(seed, style, |s| s.water > 0.15 && s.water < 0.4 && s.up < 0.97 && s.amp > 120.0) {
         let pos = eye(x - 7.0, z - 5.0, 1.7);
-        v.push(Shot { name: "beck", pos, target: Vec3::new(x + 10.0, ground(x + 10.0, z + 7.0, seed), z + 7.0), fov: 60.0 });
+        v.push(Shot { name: "beck", pos, target: Vec3::new(x + 10.0, ground(x + 10.0, z + 7.0, seed, style), z + 7.0), fov: 60.0 });
     }
-    if let Some((x, z)) = find(seed, |s| s.rock > 0.9 && s.up < 0.8) {
+    if let Some((x, z)) = find(seed, style, |s| s.rock > 0.9 && s.up < 0.8) {
         let pos = eye(x - 30.0, z - 30.0, 1.7);
-        v.push(Shot { name: "rock", pos, target: Vec3::new(x, ground(x, z, seed) + 4.0, z), fov: 60.0 });
+        v.push(Shot { name: "rock", pos, target: Vec3::new(x, ground(x, z, seed, style) + 4.0, z), fov: 60.0 });
         let pos = eye(x - 2.5, z - 2.5, 1.2);
-        v.push(Shot { name: "rock-close", pos, target: Vec3::new(x, ground(x, z, seed), z), fov: 60.0 });
+        v.push(Shot { name: "rock-close", pos, target: Vec3::new(x, ground(x, z, seed, style), z), fov: 60.0 });
     }
-    if let Some((x, z)) = find(seed, |s| s.rock < 0.1 && s.amp < 150.0 && s.up > 0.97 && s.wet < 0.01) {
+    if let Some((x, z)) = find(seed, style, |s| s.rock < 0.1 && s.amp < 150.0 && s.up > 0.97 && s.wet < 0.01) {
         let pos = eye(x, z, 1.7);
         v.push(Shot { name: "hills", pos, target: pos + Vec3::new(100.0, -4.0, 60.0), fov: 60.0 });
         let pos = eye(x, z, 0.6);
         v.push(Shot { name: "ground-close", pos, target: pos + Vec3::new(2.0, -1.2, 1.0), fov: 60.0 });
     }
     // Mountains: a view along a high valley, and crags from below.
-    if let Some((x, z)) = find(seed, |s| s.amp > 550.0 && s.up > 0.95 && s.water == 0.0 && s.rock < 0.2) {
+    if let Some((x, z)) = find(seed, style, |s| s.amp > 550.0 && s.up > 0.95 && s.water == 0.0 && s.rock < 0.2) {
         let pos = eye(x, z, 2.0);
-        let t = Vec3::new(x + 600.0, ground(x + 600.0, z + 350.0, seed) + 60.0, z + 350.0);
+        let t = Vec3::new(x + 600.0, ground(x + 600.0, z + 350.0, seed, style) + 60.0, z + 350.0);
         v.push(Shot { name: "mountains", pos, target: t, fov: 60.0 });
     }
-    if let Some((x, z)) = find(seed, |s| s.amp > 400.0 && s.rock > 0.8 && s.up < 0.6) {
+    if let Some((x, z)) = find(seed, style, |s| s.amp > 400.0 && s.rock > 0.8 && s.up < 0.6) {
         let pos = eye(x - 90.0, z - 60.0, 2.0);
-        v.push(Shot { name: "crags", pos, target: Vec3::new(x, ground(x, z, seed) + 10.0, z), fov: 60.0 });
+        v.push(Shot { name: "crags", pos, target: Vec3::new(x, ground(x, z, seed, style) + 10.0, z), fov: 60.0 });
+    }
+    // High mountains: from a valley up to the snow, and over the summits.
+    if let Some((x, z)) = find(seed, style, |s| s.amp > 900.0 && s.up > 0.9 && s.snow < 0.05 && s.water == 0.0 && s.rock < 0.5) {
+        let pos = eye(x, z, 2.0);
+        if let Some((px, pz)) = (0..64).map(|k| {
+            let a = k as f32 * 0.098;
+            (x + 2500.0 * a.cos(), z + 2500.0 * a.sin())
+        }).max_by(|a, b| ground(a.0, a.1, seed, style).total_cmp(&ground(b.0, b.1, seed, style))) {
+            let t = Vec3::new(px, ground(px, pz, seed, style), pz);
+            v.push(Shot { name: "alpine", pos, target: t, fov: 55.0 });
+        }
+    }
+    if let Some((x, z)) = find(seed, style, |s| s.snow > 0.8 && s.amp > 900.0) {
+        let pos = eye(x - 2200.0, z - 1500.0, 900.0);
+        v.push(Shot { name: "summits", pos, target: Vec3::new(x, ground(x, z, seed, style), z), fov: 55.0 });
     }
     let pos = eye(0.0, 0.0, 40.0);
     v.push(Shot { name: "down", pos, target: pos + Vec3::new(0.01, -1.0, 0.0), fov: 60.0 });
@@ -87,36 +103,59 @@ fn run() -> Result<(), String> {
     let grass = args.iter().any(|a| a == "--grass");
     let capacity = arg("--capacity").and_then(|s| s.parse().ok()).unwrap_or(16384);
     let cube = args.iter().any(|a| a == "--cube");
-    let (scene, pool, mut light) = make_scene(seed, capacity, cube, None)?;
+    let style = arg("--style").map(|s| parse_style(&s)).transpose()?.unwrap_or_default();
+    eprintln!("{style:?}");
+    let (scene, pool, mut light) = make_scene(seed, &style, capacity, cube, None)?;
     if let Some(d) = arg("--debug") { light.debug = d.parse().map_err(|_| "--debug N")?; }
     if args.iter().any(|a| a == "--no-fog") { light.fog_density = 0.0; }
     eprintln!("fog density {} height {}", light.fog_density, light.fog_height_m);
 
     let gpu = Gpu::new()?;
     let mut world = Some((Renderer::new(&gpu, &scene, &light), ProceduralTerrain::new(pool, Settings::default())));
-    for shot in shots(seed) {
+    for shot in shots(seed, &style) {
         if only.as_deref().is_some_and(|o| o != shot.name) { continue; }
         // Grass needs its field around this camera, so each shot gets a scene.
         if grass {
-            let (scene, pool, _) = make_scene(seed, capacity, cube, Some(meadow(seed, shot.pos)?))?;
+            let (scene, pool, _) = make_scene(seed, &style, capacity, cube, Some(meadow(seed, &style, shot.pos)?))?;
             world = Some((Renderer::new(&gpu, &scene, &light), ProceduralTerrain::new(pool, Settings::default())));
         }
         let (renderer, terrain) = world.as_mut().unwrap();
-        render_shot(&gpu, renderer, terrain, &light, &shot, (w, h), &out, seed, args.iter().any(|a| a == "--dump"))?;
+        render_shot(&gpu, renderer, terrain, &light, &shot, (w, h), &out, seed, &style, args.iter().any(|a| a == "--dump"))?;
     }
     Ok(())
 }
 
+/// `--style alpine,snow_line=1200,...`: an optional named style, then
+/// Style fields by name.
+fn parse_style(text: &str) -> Result<Style, String> {
+    let mut st = Style::default();
+    for part in text.split(',').filter(|p| !p.is_empty()) {
+        if let Some(named) = Style::named(part) { st = named; continue; }
+        let (k, v) = part.split_once('=').ok_or("--style key=value,...")?;
+        let v: f32 = v.parse().map_err(|_| format!("--style {k}: not a number"))?;
+        *match k {
+            "mountains" => &mut st.mountains, "peaks" => &mut st.peaks, "snow_line" => &mut st.snow_line, "hills" => &mut st.hills,
+            "rivers" => &mut st.rivers, "streams" => &mut st.streams, "rocks" => &mut st.rocks, "boulders" => &mut st.boulders,
+            "moor" => &mut st.moor, "grass" => &mut st.grass,
+            _ => return Err(format!("--style: no field {k}")),
+        } = v;
+    }
+    Ok(st)
+}
+
 /// Windswept meadow roots on a 0.5 m grid of the terrain function, 300 m
 /// around `centre`. Rock, scree and water are holes.
-fn meadow(seed: u32, centre: Vec3) -> Result<MeadowField, String> {
+fn meadow(seed: u32, style: &Style, centre: Vec3) -> Result<MeadowField, String> {
     let (cell, n) = (0.5f32, 1200u32);
     let origin = [(centre.x / cell).floor() * cell - n as f32 * cell * 0.5, (centre.z / cell).floor() * cell - n as f32 * cell * 0.5];
     let mut samples = Vec::with_capacity((n * n) as usize);
     for j in 0..n {
         for i in 0..n {
-            let s = terrain_field::eval(origin[0] + i as f32 * cell, origin[1] + j as f32 * cell, 0.0, seed);
-            let bare = s.rock > 0.5 || s.scree > 0.8 || s.water > 0.02;
+            let (x, z) = (origin[0] + i as f32 * cell, origin[1] + j as f32 * cell);
+            let s = terrain_field::eval(x, z, 0.0, seed, style);
+            // `grass` leaves bare patches tens of metres across.
+            let sparse = 0.5 + 0.8 * terrain_field::noised(glam::Vec2::new(x, z) / 40.0, seed.wrapping_add(31)).x > style.grass;
+            let bare = sparse || s.rock > 0.5 || s.scree > 0.8 || s.water > 0.02 || s.snow > 0.3;
             samples.push(if bare { [0.0; 4] } else { [s.pos.y, 100.0, 1.0, 0.0] });
         }
     }
@@ -128,7 +167,7 @@ fn meadow(seed: u32, centre: Vec3) -> Result<MeadowField, String> {
     Ok(field)
 }
 
-fn make_scene(seed: u32, capacity: u32, cube: bool, meadow: Option<MeadowField>) -> Result<(Scene, procedural_terrain::TerrainSpec, Lighting), String> {
+fn make_scene(seed: u32, style: &Style, capacity: u32, cube: bool, meadow: Option<MeadowField>) -> Result<(Scene, procedural_terrain::TerrainSpec, Lighting), String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets/textures");
     let mut scene = Scene::default();
     scene.meadow = meadow;
@@ -144,7 +183,7 @@ fn make_scene(seed: u32, capacity: u32, cube: bool, meadow: Option<MeadowField>)
         let m = scene.add_mesh(&render::primitives::cube(material).mesh());
         scene.add_instance(m, glam::Affine3A::from_scale_rotation_translation(Vec3::splat(100.0), glam::Quat::IDENTITY, Vec3::new(300.0, 0.0, 200.0)));
     }
-    let pool = procedural_terrain::reserve(&mut scene, capacity, material, seed);
+    let pool = procedural_terrain::reserve(&mut scene, capacity, material, seed, *style);
 
     let mut light = Lighting::default();
     let mut cache = AtmosphereCache::default();
@@ -156,7 +195,7 @@ fn make_scene(seed: u32, capacity: u32, cube: bool, meadow: Option<MeadowField>)
 }
 
 fn render_shot(gpu: &Gpu, renderer: &Renderer, terrain: &mut ProceduralTerrain, light: &Lighting, shot: &Shot, (w, h): (u32, u32),
-    out: &std::path::Path, seed: u32, dump: bool) -> Result<(), String> {
+    out: &std::path::Path, seed: u32, style: &Style, dump: bool) -> Result<(), String> {
     {
         let cam = Camera { pos: shot.pos, target: shot.target, fov_y: shot.fov.to_radians(), near: 0.05 };
         let started = std::time::Instant::now();
@@ -180,7 +219,7 @@ fn render_shot(gpu: &Gpu, renderer: &Renderer, terrain: &mut ProceduralTerrain, 
                     for i in 1..8 {
                         let k = (j * 9 + i) * 8;
                         let (x0, z0) = (v[0] + i as f32 * s, v[2] + j as f32 * s);
-                        let c = terrain_field::eval(x0, z0, s, seed);
+                        let c = terrain_field::eval(x0, z0, s, seed, style);
                         let up = (v[k + 7] as u32 & 255) as f32 / 255.0;
                         let rock = (v[k + 6] as u32 & 255) as f32 / 255.0;
                         total += 1;
