@@ -70,5 +70,6 @@ measurements remain as evidence, without ongoing comparisons.
 [Third-party asset credits](games/sideways/CREDITS.md).
 
 Growing Guns stadium lighting now has [cached diffuse sky return](engine/docs/stadium-sky-occlusion.md),
-including invalid-probe rejection. Native 4K/four-view fixture: +0.43 ms GPU;
-covered rows retain more detail. Direct-sun bounce remains missing.
+including invalid-probe rejection and a shadowed first bounce of sunlight.
+Sun direction changes currently require a synchronous cache rebuild; animated
+day/night and multiple bounces remain future work. See the report for timings.

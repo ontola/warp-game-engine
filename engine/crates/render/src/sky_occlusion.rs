@@ -299,6 +299,85 @@ pub fn bake_diffuse(
     });
     Ok(result)
 }
+/// Add one diffuse sun bounce to a sky cache. Z is sun transfer, or 2 for
+/// embedded probes. Recompute on sun direction changes, not colour/intensity.
+/// Shadow tests use static scene geometry, independent of camera/view range.
+pub fn bake_sun(
+    grid: &Grid,
+    boxes: &[Affine3A],
+    sky: &[Probe],
+    rays: usize,
+    reflectance: f32,
+    sun: Vec3,
+) -> Result<Vec<Probe>, String> {
+    grid.validate()?;
+    if sky.len() != grid.count()
+        || rays < 8
+        || !sun.is_finite()
+        || sun.length_squared() < 0.5
+        || !reflectance.is_finite()
+        || !(0.0..=1.0).contains(&reflectance)
+    {
+        return Err("invalid sun transport inputs".into());
+    }
+    let mut result = sky.to_vec();
+    let tree = Node::build(geometry(boxes)?);
+    let sun = sun.normalize();
+    let axes = [
+        Vec3::X,
+        Vec3::NEG_X,
+        Vec3::Y,
+        Vec3::NEG_Y,
+        Vec3::Z,
+        Vec3::NEG_Z,
+    ];
+    let directions: Vec<Vec3> = (0..rays)
+        .map(|i| {
+            let y = 1. - 2. * (i as f32 + 0.5) / rays as f32;
+            let a = i as f32 * 2.3999632;
+            let r = (1. - y * y).sqrt();
+            Vec3::new(r * a.cos(), y, r * a.sin())
+        })
+        .collect();
+    let denom: [f32; 6] =
+        std::array::from_fn(|a| directions.iter().map(|d| axes[a].dot(*d).max(0.)).sum());
+    let chunk = grid.count().div_ceil(4);
+    std::thread::scope(|scope| {
+        for (group, out) in result.chunks_mut(chunk).enumerate() {
+            let tree = &tree;
+            let directions = &directions;
+            scope.spawn(move || {
+                for (local, p) in out.iter_mut().enumerate() {
+                    if p.axes[0].z == 0. {
+                        for a in &mut p.axes {
+                            a.z = 2.;
+                        }
+                        continue;
+                    }
+                    let origin = grid.position(group * chunk + local);
+                    let mut returned = [0.; 6];
+                    if sun.y > 0. {
+                        for d in directions {
+                            if let Some((t, n)) = tree.hit(origin, *d) {
+                                let cosine = n.dot(sun).max(0.);
+                                if cosine > 0. && !tree.blocked(origin + *d * t + n * 0.03, sun) {
+                                    for a in 0..6 {
+                                        returned[a] +=
+                                            reflectance * cosine * axes[a].dot(*d).max(0.);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for a in 0..6 {
+                        p.axes[a].z = returned[a] / denom[a];
+                    }
+                }
+            });
+        }
+    });
+    Ok(result)
+}
 fn sample_valid(grid: &Grid, probes: &[Probe], p: Vec3, n: Vec3) -> f32 {
     let max = Vec3::new(
         grid.dims[0] as f32 - 1.,
@@ -328,6 +407,39 @@ fn sample_valid(grid: &Grid, probes: &[Probe], p: Vec3, n: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sun_return_is_shadowed_and_night_is_zero() {
+        let grid = Grid {
+            origin: Vec3::new(0., 1., 0.),
+            cell: 1.,
+            dims: [2, 2, 2],
+        };
+        let floor = Affine3A::from_scale_rotation_translation(
+            Vec3::new(100., 0.5, 100.),
+            glam::Quat::IDENTITY,
+            Vec3::ZERO,
+        );
+        let sky = bake_diffuse(&grid, &[floor], 64, 0.7).unwrap();
+        let day = bake_sun(&grid, &[floor], &sky, 64, 0.7, Vec3::Y).unwrap();
+        assert!(
+            day[0].axes[3].z > 0.6,
+            "sunlit floor must return sunlight upward"
+        );
+        let roof = Affine3A::from_scale_rotation_translation(
+            Vec3::new(200., 0.5, 200.),
+            glam::Quat::IDENTITY,
+            Vec3::Y * 4.,
+        );
+        let blocked = bake_sun(&grid, &[floor, roof], &sky, 64, 0.7, Vec3::Y).unwrap();
+        let night = bake_sun(&grid, &[floor], &sky, 64, 0.7, Vec3::NEG_Y).unwrap();
+        assert!(
+            blocked[0].axes[3].z < 0.001,
+            "roof must block the floor's sun source"
+        );
+        assert_eq!(night[0].axes[3].z, 0.);
+        assert_eq!(day[0].axes[3].x, sky[0].axes[3].x);
+        crate::irradiance_volume::pack(&grid, &day).unwrap();
+    }
     #[test]
     fn diffuse_return_depends_on_material_and_rejects_embedded_probes() {
         let grid = Grid {

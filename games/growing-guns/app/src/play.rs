@@ -792,7 +792,7 @@ impl app::Game for Gg {
         }
         crate::live::frame(self, frame);
         let r = frame.renderer().expect("scene set above");
-        self.vis.flush(frame.gpu, r)?;
+        self.vis.flush(frame.gpu, r, &self.light)?;
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
         let (lights, scatter) = self.vis.local_lights_scattering(self.scatter);
         r.set_local_lights_scattering(&lights, &scatter)?;

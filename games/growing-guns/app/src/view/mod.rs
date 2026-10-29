@@ -147,6 +147,7 @@ impl Visuals {
     /// collision grid/metadata that lived on the previous GPU renderer.
     pub fn invalidate_sprites(&mut self) {
         self.sprite_images = false;
+        self.stadium.invalidate_lighting();
         self.fx.debris.invalidate_renderer();
     }
 
@@ -154,7 +155,7 @@ impl Visuals {
     pub fn sprites(&self) -> &[render::sprites::Sprite] { self.things.sprites() }
 
     /// Upload changed slots, debris, effects and the crowd.
-    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
+    pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, light: &Lighting) -> Result<(), String> {
         if !std::mem::replace(&mut self.sprite_images, true) {
             for (id, picture) in things::Things::sprite_pictures() {
                 renderer.set_sprite_image(gpu, id, &picture, render::hud::ImageFilter::Linear);
@@ -162,7 +163,7 @@ impl Visuals {
         }
         self.arena.flush(gpu, renderer, &self.scene)?;
         self.players.flush(gpu, renderer, &self.scene)?;
-        self.stadium.flush(gpu, renderer, &self.scene, self.clock)?;
+        self.stadium.flush(gpu, renderer, &self.scene, self.clock, light)?;
         self.fx.flush(gpu, renderer, &self.scene, self.clock)
     }
 
