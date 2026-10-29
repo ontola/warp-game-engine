@@ -116,8 +116,6 @@ local CAMERA_HEIGHT = 10.6 / math.tan(math.rad(CAMERA_FOV / 2))
 local STAGE_GRID = { { 0.3, 0.32, 1 }, { 0.95, 0.45, 0.3 }, { 1, 0.55, 0.15 }, { 0.2, 0.85, 0.75 }, { 1, 0.3, 0.7 }, { 0.62, 0.3, 1 } }
 
 local PICKUP_COLORS = { repair = { 1, 0.3, 0.42 }, spread = { 1, 0.75, 0.2 }, pierce = { 1, 0.45, 0.85 }, rapid = { 0.25, 1, 1 } }
--- A pickup is a ring with a sign inside: sides of the inner outline.
-local PICKUP_SIGNS = { repair = 4, spread = 3, pierce = 5, rapid = 6 }
 local SHOT_COLORS = { pierce = { 1, 0.45, 0.85 }, spread = { 1, 0.75, 0.2 }, rapid = { 0.25, 1, 1 } }
 local HOSTILE_COLOR = { 1, 0.62, 0.3 }
 local WHITE = { 1, 1, 1 }
@@ -1370,15 +1368,16 @@ local function sync()
 	for _, q in s.pickups do
 		local pos = at(q.x, q.y + math.sin(s.time * 3 + q.x) * 2, 0.12)
 		local pulse = 1 + 0.08 * math.sin(s.time * 6)
-		if not q.ent then
-			local c = rgb(PICKUP_COLORS[q.kind])
-			q.ent = world.spawn(outline(24, 18), { pos = pos, size = 36 * S, color = c, emissive = GLOW.dim, solid = false, tag = "pickup" })
-			q.sign = world.spawn(outline(PICKUP_SIGNS[q.kind], 8), { pos = pos, size = 16 * S, color = c, emissive = GLOW.line, solid = false, tag = "pickup" })
+		-- A white ring sets pickups apart from the coloured enemies; the
+		-- upgrade is the colour of the dot inside.
+		if not q.ring then
+			q.ring = world.spawn(outline(24, 18), { pos = pos, size = 36 * S, color = rgb(WHITE), emissive = GLOW.white, solid = false, tag = "pickup" })
+			q.dot = world.spawn("sphere", { pos = pos, size = vector.create(18 * S, 0.02, 18 * S), color = rgb(PICKUP_COLORS[q.kind]), emissive = GLOW.line, solid = false, tag = "pickup" })
 		end
-		world.set(q.ent, { pos = pos, size = vector.create(36 * S * pulse, 0.04, 36 * S * pulse) })
-		world.place(q.sign, pos, s.time * 2)
-		seen(q.ent)
-		seen(q.sign)
+		world.set(q.ring, { pos = pos, size = vector.create(36 * S * pulse, 0.04, 36 * S * pulse) })
+		world.place(q.dot, pos)
+		seen(q.ring)
+		seen(q.dot)
 	end
 	for id, stamp in s.ents do
 		if stamp ~= s.stamp then
@@ -1459,10 +1458,8 @@ local function warm_all()
 		world.warm("cube", { color = rgb(c), emissive = FX_GLOW })
 	end
 	for _, c in SHOT_COLORS do world.warm("cube", { color = rgb(c), emissive = GLOW.shot }) end
-	for kind, c in PICKUP_COLORS do
-		world.warm(outline(24, 18), { color = rgb(c), emissive = GLOW.dim })
-		world.warm(outline(PICKUP_SIGNS[kind], 8), { color = rgb(c), emissive = GLOW.line })
-	end
+	world.warm(outline(24, 18), { color = rgb(WHITE), emissive = GLOW.white })
+	for _, c in PICKUP_COLORS do world.warm("sphere", { color = rgb(c), emissive = GLOW.line }) end
 	for _, c in STAGE_GRID do
 		world.warm("cube", { color = rgb(c, 0.4), emissive = GLOW.grid })
 		world.warm("cube", { color = rgb(c, 0.6), emissive = GLOW.major })
