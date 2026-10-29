@@ -493,6 +493,14 @@ fn meadow(seed: u32, style: &Style, centre: Vec3) -> Result<MeadowField, String>
 }
 
 fn main() -> Result<(), String> {
+    // Distant trees cast shadows from cached foliage sun pages; without them
+    // tree shadows popped in at the edge of the near shadow map. Headless
+    // 1440p: the same GPU time, and unlike KERN_FAR_SUN_SHADOW no striping
+    // on the terrain. An explicit KERN_PAGED_FOLIAGE_SUN=0 still wins.
+    if std::env::var_os("KERN_PAGED_FOLIAGE_SUN").is_none() {
+        // Single-threaded here: nothing has started yet.
+        unsafe { std::env::set_var("KERN_PAGED_FOLIAGE_SUN", "1"); }
+    }
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
