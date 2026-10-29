@@ -1224,7 +1224,16 @@ impl Fx {
                 if let Some(sm) = smoke {
                     self.stream((key, 1), sm, s.at, dt);
                 }
-                self.light(s.at + s.dir * 2.0, el_c(e), 1.2, 6.0);
+                if e == El::Fire {
+                    // A flamethrower floods its surroundings: brighter, wider
+                    // and warmer (orange-yellow) than other sprays, and lit
+                    // along the jet as well as at the staff.
+                    let warm = rgba(1.0, 0.62, 0.22, 1.0);
+                    self.light(s.at + s.dir * 1.0, warm, 3.2, 11.0);
+                    self.light(s.at + s.dir * 4.0, warm, 2.4, 9.0);
+                } else {
+                    self.light(s.at + s.dir * 2.0, el_c(e), 1.2, 6.0);
+                }
             } else if let Ok(b) = w.ecs.get::<&Beam>(id) {
                 let e = b.spell.primary.unwrap_or(El::Lightning);
                 let c = el_c(e);
