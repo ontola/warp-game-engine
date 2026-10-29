@@ -89,6 +89,16 @@ fn a_one_file_game_plays_alone_with_its_sounds_inside() {
     write(&file, &text.replace("length(0.18)", "length(0.25)"));
     g.reload();
     assert_eq!(state(&g)["errors"], json!([]));
+    // A folder whose only script is the game runs it (a packaged one-file game).
+    let packed = folder("one-file-packed");
+    std::fs::copy(&file, packed.join("orb-hunt.luau")).unwrap();
+    write(&packed.join("types.d.luau"), "-- types");
+    assert!(warp::config::is_game(&packed));
+    let mut g = game(&packed);
+    ticks(&mut g, 5, Controls::default());
+    assert_eq!((state(&g)["errors"].clone(), g.cfg.title.as_str()), (json!([]), "Orb Hunt"));
+    write(&packed.join("second.luau"), "return {}");
+    assert!(!warp::config::is_game(&packed), "two scripts and no main.luau: which one?");
 }
 
 #[test]

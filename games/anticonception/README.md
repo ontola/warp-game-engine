@@ -30,7 +30,8 @@ swimmer to a guard that is closer to it. In LÖVE, bots that chase the same
 swimmer stay stacked on one spot for the rest of the round.
 
 Not ported: LÖVE's automatic rematch after the results (the round ends with
-`game.finish()`; New round in the start menu plays again). GameNight's
-Windows packaging (`engine/crates/warp/tools/package-windows.ps1`) still
-expects a `main.luau`: rename or copy `anticonception.luau` to `main.luau`
-to package it.
+`game.finish()`; New round in the start menu plays again).
+
+The folder is a game too (`warp run games/anticonception`): its only script is the
+game, so GameNight's Windows packaging (`engine/crates/warp/tools/package-windows.ps1`)
+packages it as it is.

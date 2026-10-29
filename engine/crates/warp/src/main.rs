@@ -87,15 +87,13 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 /// A game folder (with main.luau) or a one-file game (a `.luau` file).
-fn is_game(p: &Path) -> bool {
-    p.join("main.luau").is_file() || (p.is_file() && p.extension().is_some_and(|e| e == "luau"))
-}
+fn is_game(p: &Path) -> bool { warp::config::is_game(p) }
 
 /// A packaged game: `game/main.luau` next to the executable
 /// (engine/crates/warp/tools/package-windows.ps1 makes such a folder).
 fn bundled() -> Option<PathBuf> {
     let game = std::env::current_exe().ok()?.parent()?.join("game");
-    game.join("main.luau").is_file().then_some(game)
+    is_game(&game).then_some(game)
 }
 
 fn play(args: &[String]) -> Result<(), String> {
