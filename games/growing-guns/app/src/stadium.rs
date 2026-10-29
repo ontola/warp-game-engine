@@ -33,20 +33,22 @@ fn roof_point(angle: f32, inner: bool) -> Vec3 {
     let r=if inner {ROOF_INNER} else {1.0};
     Vec3::new(angle.cos()*sq(angle)*r, if inner {-ROOF_DROP} else {0.0}, angle.sin()*sq(angle)*r)
 }
-fn roof_mesh(material: u32) -> Primitive {
+fn roof_mesh(material: u32) -> Primitive { ring_mesh(material, ROOF_INNER, ROOF_DROP, 0.5) }
+fn ring_mesh(material: u32, inner_ratio: f32, drop: f32, thickness: f32) -> Primitive {
+    let point=|angle:f32,inner:bool| {let r=if inner {inner_ratio} else {1.0}; Vec3::new(angle.cos()*sq(angle)*r,if inner {-drop} else {0.0},angle.sin()*sq(angle)*r)};
     use render::cluster::Vertex;
     let mut mesh=Primitive {material,..Default::default()};
     for i in 0..ROOF_STEPS {
         let a=TAU*i as f32/ROOF_STEPS as f32;
         let b=TAU*((i+1)%ROOF_STEPS) as f32/ROOF_STEPS as f32;
-        let [o0,o1,i0,i1]=[roof_point(a,false),roof_point(b,false),roof_point(a,true),roof_point(b,true)];
+        let [o0,o1,i0,i1]=[point(a,false),point(b,false),point(a,true),point(b,true)];
         for (points,side) in [([o0,i0,i1,o1],1i32),([o1,i1,i0,o0],-1),([o0,o1,o1,o0],2),([i1,i0,i0,i1],-2)] {
             let base=mesh.vertices.len() as u32;
             for (j,mut pos) in points.into_iter().enumerate() {
-                pos.y+=if side.abs()==1 {side as f32*0.25} else {if j<2 {0.25} else {-0.25}};
+                pos.y+=if side.abs()==1 {side as f32*thickness*0.5} else {if j<2 {thickness*0.5} else {-thickness*0.5}};
                 let angle=pos.z.atan2(pos.x);
-                let tangent=roof_point(angle+0.0001,false)-roof_point(angle-0.0001,false);
-                let radial=roof_point(angle,false)-roof_point(angle,true);
+                let tangent=point(angle+0.0001,false)-point(angle-0.0001,false);
+                let radial=point(angle,false)-point(angle,true);
                 let normal=if side.abs()==1 {tangent.cross(radial).normalize()*side as f32} else {Vec3::Y.cross(tangent).normalize()*if side>0 {1.0} else {-1.0}};
                 mesh.vertices.push(Vertex {pos:pos.to_array(),normal:normal.to_array(),uv:[pos.x,pos.z]});
             }
@@ -149,6 +151,7 @@ pub struct StadiumVisuals {
     stone: [usize; 6],
     masonry: Option<[[usize; 2]; 6]>,
     roof_stone: [usize; 6],
+    wall_stone: [usize; 6],
     lamp: usize,
     shaft: usize,
     bank: usize,
@@ -193,6 +196,7 @@ impl StadiumVisuals {
                 [(4, 8), (6, 1)].map(|(cols, rows)| scene.add_mesh(&render::masonry::panel(m, cols, rows, 11).mesh()))
             }));
         let roof_stone: [usize; 6] = std::array::from_fn(|i| { let m = quarry_mat(scene, quarry[i].map(|v| v * 0.75)); scene.add_mesh(&roof_mesh(m).mesh()) });
+        let wall_stone: [usize;6]=std::array::from_fn(|i| {let m=quarry_mat(scene,quarry[i]);scene.add_mesh(&ring_mesh(m,0.9795,0.0,1.0).mesh())});
         let lamp = { let m = glow(scene, [1.0, 0.85, 0.6], 9000.0); cube(scene, m) };
         let shaft = { let m = mat(scene, [0.16, 0.16, 0.18], 0.8); cube(scene, m) };
         let bank = { let m = glow(scene, [1.0, 0.96, 0.85], 11000.0); cube(scene, m) };
@@ -242,7 +246,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -263,13 +267,22 @@ impl StadiumVisuals {
         let box_xf = |c: Vec3, size: Vec3, yaw: f32| Affine3A::from_scale_rotation_translation(size, Quat::from_rotation_y(yaw), c);
         let mut sky_boxes = Vec::new();
         for p in self.geo.pieces() {
-            sky_boxes.push(box_xf(p.center, p.size, p.yaw));
+            if !matches!(p.kind, PieceKind::Wall) { sky_boxes.push(box_xf(p.center, p.size, p.yaw)); }
             let mesh = self.masonry.as_ref().and_then(|m| match p.kind {
                 PieceKind::Facade => Some(m[quarry][0]),
                 PieceKind::Step => Some(m[quarry][1]),
                 _ => None,
             }).unwrap_or(self.stone[quarry]);
-            self.stands.add(scene, mesh, box_xf(p.center, p.size, p.yaw));
+            if !matches!(p.kind, PieceKind::Wall) { self.stands.add(scene, mesh, box_xf(p.center, p.size, p.yaw)); }
+        }
+        let wall_outer=self.geo.wall_r()+1.1;
+        self.stands.add(scene,self.wall_stone[quarry],Affine3A::from_scale_rotation_translation(Vec3::new(wall_outer,self.geo.wall_h()+0.6,wall_outer),Quat::IDENTITY,Vec3::Y*(self.geo.wall_h()+0.6)*0.5));
+        for i in 0..ROOF_STEPS {
+            let angle=TAU*(i as f32+0.5)/ROOF_STEPS as f32;
+            let point=|a:f32| Vec3::new(a.cos()*sq(a),0.0,a.sin()*sq(a))*wall_outer;
+            let outer=point(angle); let inner=outer*0.9795;
+            let tangent=point(angle+TAU/ROOF_STEPS as f32*0.5)-point(angle-TAU/ROOF_STEPS as f32*0.5);
+            sky_boxes.push(Affine3A::from_cols(tangent.into(),(Vec3::Y*(self.geo.wall_h()+0.6)).into(),(outer-inner).into(),((outer+inner)*0.5+Vec3::Y*(self.geo.wall_h()+0.6)*0.5).into()));
         }
         // A single watertight rounded ring, with no overlapping plate ends.
         let (inner, base) = (self.geo.inner_r, self.geo.base_y);
@@ -519,7 +532,7 @@ mod tests {
     #[test]
     fn canopy_is_closed_with_no_overlapping_internal_faces() {
         use std::collections::HashMap;
-        let mesh=roof_mesh(0);
+        for mesh in [roof_mesh(0),ring_mesh(0,0.9795,0.0,1.0)] {
         assert_eq!(mesh.indices.len()/3,ROOF_STEPS*8);
         let mut edges=HashMap::new();
         let key=|p:[f32;3]| p.map(|v| (v*1_000_000.0).round() as i32);
@@ -531,6 +544,7 @@ mod tests {
             for e in 0..3 {let a=key(p[e].pos);let b=key(p[(e+1)%3].pos);*edges.entry(if a<b {(a,b)} else {(b,a)}).or_insert(0)+=1;}
         }
         assert!(edges.values().all(|&n| n==2),"each edge must have exactly two adjacent triangles");
+        }
     }
 
     #[test]
