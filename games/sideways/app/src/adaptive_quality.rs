@@ -1,5 +1,5 @@
 //! Adaptive quality: hold the display's frame rate by trading render
-//! resolution and grass reach, one rung of a fixed ladder at a time.
+//! resolution and grass (down to none), one rung of a fixed ladder at a time.
 //!
 //! The only signal is the presented frame interval. With vsync a frame that
 //! fits shows up at the refresh period, so there is no measure of headroom:
@@ -9,16 +9,22 @@ use std::time::{Duration, Instant};
 
 /// Best first. Render scale applies to both axes of the output; the grass
 /// factors multiply the debug menu's own distance and patch-count values.
-const LADDER: [Rung; 9] = [
+/// Grass is the costliest layer, so it gives way before resolution drops far:
+/// a mild resolution cut, then grass down to nothing, then the rest of the
+/// resolution. 0.25 is the shortest reach the meadow accepts.
+const LADDER: [Rung; 12] = [
     Rung { scale: 1.00, grass_distance: 1.00, grass_count: 1.00 },
     Rung { scale: 0.90, grass_distance: 1.00, grass_count: 1.00 },
-    Rung { scale: 0.80, grass_distance: 0.90, grass_count: 1.00 },
-    Rung { scale: 0.75, grass_distance: 0.80, grass_count: 0.90 },
-    Rung { scale: 0.70, grass_distance: 0.70, grass_count: 0.80 },
-    Rung { scale: 0.65, grass_distance: 0.60, grass_count: 0.70 },
-    Rung { scale: 0.60, grass_distance: 0.50, grass_count: 0.60 },
-    Rung { scale: 0.55, grass_distance: 0.40, grass_count: 0.55 },
-    Rung { scale: 0.50, grass_distance: 0.30, grass_count: 0.50 },
+    Rung { scale: 0.85, grass_distance: 0.80, grass_count: 0.90 },
+    Rung { scale: 0.80, grass_distance: 0.65, grass_count: 0.75 },
+    Rung { scale: 0.80, grass_distance: 0.50, grass_count: 0.60 },
+    Rung { scale: 0.80, grass_distance: 0.40, grass_count: 0.45 },
+    Rung { scale: 0.80, grass_distance: 0.30, grass_count: 0.30 },
+    Rung { scale: 0.80, grass_distance: 0.25, grass_count: 0.15 },
+    Rung { scale: 0.75, grass_distance: 0.25, grass_count: 0.05 },
+    Rung { scale: 0.70, grass_distance: 0.25, grass_count: 0.00 },
+    Rung { scale: 0.60, grass_distance: 0.25, grass_count: 0.00 },
+    Rung { scale: 0.50, grass_distance: 0.25, grass_count: 0.00 },
 ];
 const WINDOW: usize = 24;
 /// A median this far over the period means frames are being missed.
@@ -73,7 +79,8 @@ impl AdaptiveQuality {
             if self.probing.take().is_some_and(|t| now.duration_since(t) < self.try_up) {
                 self.try_up = (self.try_up * 2).min(MAX_TRY_UP);
             }
-            return self.step(1, now);
+            // Far behind: skip a rung so a heavy scene settles within seconds.
+            return self.step(if median > self.target_ms * 1.6 { 2 } else { 1 }, now);
         }
         if self.probing.is_some_and(|t| now.duration_since(t) >= self.try_up) {
             self.probing = None;
