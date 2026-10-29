@@ -37,6 +37,8 @@ struct Meshes {
     torus: usize,
     /// Art.tombstone: slab, round top, the cross's two bars, the dirt.
     tomb: [usize; 5],
+    /// SentryFx: the stone foot, the pillar and the head's barrel.
+    sentry: [usize; 3],
 }
 
 #[derive(Default)]
@@ -114,7 +116,13 @@ impl Shrines {
                 (e, scene.add_mesh(&primitives::sphere(m, 8, 12).mesh()))
             })
             .collect();
-        self.meshes = Some(Meshes { column, slab, cover, page, lit_page, stump, orbs, torus, tomb });
+        let sentry_stone = scene.add_material(Material { tint: linear3([0.22, 0.2, 0.24]).to_array(), layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
+        let sentry = [
+            scene.add_mesh(&primitives::cylinder(sentry_stone, 0.45, 0.6, 8).mesh()),
+            scene.add_mesh(&primitives::cylinder(sentry_stone, 0.14, 0.3, 6).mesh()),
+            scene.add_mesh(&primitives::cylinder(sentry_stone, 0.05, 0.09, 6).mesh()),
+        ];
+        self.meshes = Some(Meshes { column, slab, cover, page, lit_page, stump, orbs, torus, tomb, sentry });
         self.shrine_t = None;
     }
 
@@ -183,6 +191,28 @@ impl Shrines {
             self.portal_motes(mid, time);
             self.lights.push(omni(mid + Vec3::Z * 0.6, PORTAL, 2.5, 7.0));
             rings.push((at, PORTAL_R, (w.run.portal_t / PORTAL_TIME) as f32, [0.55, 0.75, 1.0], [0.55, 0.75, 1.0], 1.0));
+        }
+        // Sentries (SentryFx): a stone pillar with the queue's elements in a
+        // ring round its foot and the lead element's orb on top, bobbing,
+        // its barrel turned at what it shoots.
+        for &id in &w.fx {
+            let Ok(sn) = w.ecs.get::<&spellstorm::spells::Sentry>(id) else { continue };
+            let orb = |e: El| m.orbs.iter().find(|o| o.0 == e).map(|o| o.1);
+            let node = Mat4::from_translation(sn.pos);
+            out.push((m.sentry[0], part(node, Vec3::new(0.0, 0.12, 0.0), Vec3::new(1.0, 0.25, 1.0), Vec3::ZERO), true));
+            out.push((m.sentry[1], part(node, Vec3::new(0.0, 0.85, 0.0), Vec3::new(1.0, 1.3, 1.0), Vec3::ZERO), true));
+            let n = sn.spell.slots.len().max(1);
+            for (i, &e) in sn.spell.slots.iter().enumerate() {
+                let a = i as f32 * std::f32::consts::TAU / n as f32;
+                if let Some(o) = orb(e) {
+                    out.push((o, part(node, Vec3::new(a.cos() * 0.36, 0.3, a.sin() * 0.36), Vec3::splat(0.1), Vec3::ZERO), false));
+                }
+            }
+            let head = node * Mat4::from_translation(Vec3::Y * 1.65) * Mat4::from_rotation_y(sn.head_yaw);
+            if let Some(o) = sn.spell.primary.and_then(orb) {
+                out.push((o, part(head, Vec3::new(0.0, (sn.t as f32 * 3.0).sin() * 0.06, 0.0), Vec3::splat(0.3), Vec3::ZERO), false));
+            }
+            out.push((m.sentry[2], part(head, Vec3::new(0.0, 0.0, 0.35), Vec3::new(1.0, 0.45, 1.0), Vec3::new(90.0, 0.0, 0.0)), true));
         }
         // The queued elements ride on the staff: small balls circling its
         // gem, spinning faster and wider while RB winds up a burst.
