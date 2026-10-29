@@ -106,10 +106,16 @@ pub struct Practice {
     pub shrine_els: Vec<El>,
     pub fill: f64,
     hold: BTreeMap<usize, f64>,
+    /// How long the current lesson's monster has lain beaten: its wall
+    /// opens a little later even if nobody rolled or deflected, so the
+    /// strip never holds a player who missed the hint.
+    beaten_t: f64,
 }
 
 pub mod practice {
     pub const URNS_AT: f32 = 10.0;
+    /// Seconds after a lesson's monster falls that its wall opens anyway.
+    pub const GRACE: f64 = 3.0;
     pub const WARD_1: f32 = 14.0;
     pub const ARCHER_AT: f32 = 24.0;
     pub const WARD_2: f32 = 27.0;
@@ -265,6 +271,15 @@ impl World {
         } else {
             crate::knobs::first_wave() as f32
         };
+        // Knob `practice` 0: nobody walks the strip, so nobody starts
+        // without their first two elements either.
+        if crate::knobs::practice() < 0.5 {
+            for id in self.wizards.clone() {
+                if self.wiz(id).unlocks < 0 {
+                    self.unlock_to(id, 0);
+                }
+            }
+        }
         if self.run.biome_index == 0 && self.practice_wanted() {
             self.practice_build();
             let start = self.run.practice.as_ref().map(|p| p.start).unwrap_or(0.0);
@@ -532,8 +547,11 @@ impl World {
             }
             // Knob `wards` 0: no walls hold the way (the practice strip's
             // stops still run their lessons as they open).
-            if crate::knobs::wards() < 0.5 && wd.check.is_none() {
+            if crate::knobs::wards() < 0.5 {
                 self.open_ward(i);
+                if let Some(c) = wd.check {
+                    self.practice_open(c);
+                }
                 continue;
             }
             let done = if let Some(c) = wd.check {
@@ -1053,8 +1071,8 @@ impl World {
         let all = |f: fn(&Wizard) -> bool| self.learners().iter().all(|&w| f(&self.wiz(w)));
         match c {
             Check::Urns => p.urns.iter().all(|&u| self.level.props[u].broken),
-            Check::Archer => self.beaten(p.archer) && all(|w| w.rolled),
-            Check::Caster => self.beaten(p.caster) && all(|w| w.deflected),
+            Check::Archer => self.beaten(p.archer) && (all(|w| w.rolled) || p.beaten_t > practice::GRACE),
+            Check::Caster => self.beaten(p.caster) && (all(|w| w.deflected) || p.beaten_t > practice::GRACE),
             Check::Shrine => p.shrine.is_some() && self.learners().is_empty(),
         }
     }
@@ -1075,6 +1093,7 @@ impl World {
     }
 
     fn practice_spawn(&mut self, kind: &str, at: f32) -> Id {
+        self.run.practice.as_mut().unwrap().beaten_t = 0.0;
         for w in self.wizards.clone() {
             let mut wz = self.wiz_mut(w);
             wz.rolled = false;
@@ -1112,6 +1131,12 @@ impl World {
     }
 
     fn practice_step(&mut self, dt: f64) {
+        if let Some(p) = &self.run.practice {
+            let lesson = if p.caster.is_some() { p.caster } else { p.archer };
+            if self.beaten(lesson) {
+                self.run.practice.as_mut().unwrap().beaten_t += dt;
+            }
+        }
         let Some(at) = self.run.practice.as_ref().and_then(|p| p.shrine) else {
             return;
         };

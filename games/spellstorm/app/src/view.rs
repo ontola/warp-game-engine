@@ -2,7 +2,7 @@
 //! props, torches), the wizards and monsters posed from the sim every frame
 //! into a pool of instances, the Godot camera, moon, ambient and fog.
 use crate::anim;
-use crate::kits::{Kit, Kits};
+use crate::kits::Kits;
 use crate::look::{self, linear3, push_f32, surface_layer, Look, Piece, FLOOR};
 use glam::{Affine3A, Mat3, Mat4, Quat, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, Vertex};
@@ -136,6 +136,8 @@ pub struct View {
     pub fx: crate::fx::Fx,
     pub marks: crate::marks::Marks,
     pub shrines: crate::shrines::Shrines,
+    /// How long each wizard has lain fallen.
+    wizard_fallen: Vec<f32>,
 }
 
 fn level_key(l: &Level) -> u64 {
@@ -172,6 +174,7 @@ impl View {
             probes: vec![],
             wizard_pieces: HashMap::new(),
             wizard_anims: vec![],
+            wizard_fallen: vec![],
             enemy_anims: HashMap::new(),
             debris: Vec::new(),
             cam_center: Vec3::ZERO,
@@ -390,7 +393,13 @@ impl View {
             let Some(pieces) = self.wizard_pieces.get(&i) else { continue };
             let Some(kit) = self.kits.kit("wizard") else { continue };
             let pose = self.wizard_anims[i].pose(kit, &a, &wz, dt);
-            let at = Mat4::from_translation(a.pos);
+            // A fallen wizard lies down beside the grave.
+            self.wizard_fallen.resize(w.wizards.len(), 0.0);
+            let f = &mut self.wizard_fallen[i];
+            *f = if a.alive { 0.0 } else { *f + dt };
+            let k = (*f / 0.5).min(1.0);
+            let k = k * k * (3.0 - 2.0 * k);
+            let at = Mat4::from_translation(a.pos + Vec3::Y * 0.12 * k) * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2 * k);
             for p in pieces {
                 out.push((p.mesh, look::affine(at * anim::posed(kit, &pose, p.node)), p.shadow));
             }
@@ -423,7 +432,15 @@ impl View {
                 }
             }
             if !ea.scattered {
-                push_kit(&mut out, kit, &pieces, at);
+                // Its eyes swell while it winds up a blow (Enemy._tell).
+                let eyes = if e.wind > 0.0 { 1.0 + 1.5 * (1.0 - e.wind / e.wind_time()) as f32 } else { 1.0 };
+                for p in &pieces {
+                    let mut xf = at * kit.model_xf(p.node);
+                    if eyes != 1.0 && kit.eyes.contains(&p.node) {
+                        xf *= Mat4::from_scale(Vec3::splat(eyes));
+                    }
+                    out.push((p.mesh, look::affine(xf), p.shadow));
+                }
             }
         }
         self.enemy_anims.retain(|id, _| seen.contains(id));
@@ -461,6 +478,7 @@ impl View {
         self.follow(w, dt);
         self.fx.update(w, dt);
         self.marks.update(w, self.fx.time, dt);
+        self.marks.torches(&w.level.torches, self.camera.target, self.fx.time);
         let shake = self.fx.shake_offset();
         self.camera.pos += shake;
         self.camera.target += shake;
@@ -475,8 +493,8 @@ impl View {
         }
         // The 32 lights nearest the middle of the view.
         let mid = self.camera.target;
-        let mut near: Vec<&Lamp> = self.lamps.iter().collect();
-        near.sort_by(|a, b| a.pos.distance_squared(mid).total_cmp(&b.pos.distance_squared(mid)));
+        let mut near: Vec<(usize, &Lamp)> = self.lamps.iter().enumerate().collect();
+        near.sort_by(|a, b| a.1.pos.distance_squared(mid).total_cmp(&b.1.pos.distance_squared(mid)));
         // Spell lights first, the level's lamps after.
         let mut locals: Vec<LocalLight> = self.fx.lights();
         locals.sort_by(|a, b| b.intensity_cd.max_element().total_cmp(&a.intensity_cd.max_element()));
@@ -484,7 +502,13 @@ impl View {
         // Every wizard's staff light, always.
         locals.splice(0..0, self.marks.lights.iter().chain(&self.shrines.lights).copied());
         let room = render::headlights::MAX_LOCAL_LIGHTS - locals.len();
-        locals.extend(near.iter().take(room).map(|l| l.light));
+        // Every lamp flickers a little (Arena's torch loop).
+        let t = w.time as f32;
+        locals.extend(near.iter().take(room).map(|&(i, l)| {
+            let i = i as f32;
+            let k = 0.85 + 0.1 * (t * 9.0 + i * 1.7).sin() + 0.05 * (t * 23.0 + i).sin();
+            LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light }
+        }));
         renderer.set_local_lights(&locals)?;
         // Lamps light the haze (Godot's light_volumetric_fog_energy is 1).
         if self.light.volumetric.is_some() {
@@ -538,12 +562,6 @@ pub fn facing(cam: &Camera) -> Mat3 {
     let right = Vec3::Y.cross(back).normalize_or(Vec3::X);
     let up = back.cross(right);
     Mat3::from_cols(right, up, back)
-}
-
-fn push_kit(out: &mut Vec<(usize, Affine3A, bool)>, kit: &Kit, pieces: &[Piece], at: Mat4) {
-    for p in pieces {
-        out.push((p.mesh, look::affine(at * kit.model_xf(p.node)), p.shadow));
-    }
 }
 
 /// A Godot OmniLight3D as a Warp local light.
