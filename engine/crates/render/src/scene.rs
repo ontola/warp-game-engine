@@ -395,6 +395,8 @@ pub struct Scene {
     /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
     /// word offset of their header and the grid.
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
+    /// A procedural terrain patch pool (`procedural_terrain::reserve`).
+    pub procedural_terrain: Option<crate::procedural_terrain::TerrainSpec>,
     /// A GPU-simulated debris pool (`debris::Debris::reserve`).
     pub debris: Option<crate::debris::DebrisSpec>,
     /// A GPU-posed crowd (`crowd::Crowd::reserve`).

@@ -53,6 +53,8 @@ pub mod irradiance_volume;
 pub mod hud_profile;
 pub mod present;
 pub mod scene;
+pub mod terrain_field;
+pub mod procedural_terrain;
 pub mod noise_field;
 pub mod stone_surface;
 pub mod primitives;

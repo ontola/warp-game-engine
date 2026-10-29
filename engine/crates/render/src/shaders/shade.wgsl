@@ -1404,7 +1404,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var base = m.tint;
     var nn = n; // the normal after normal maps
     var meadow_ground_sky = 1.0;
-    if FEATURE_TERRAIN && (m.flags & 2u) != 0u {
+    if FEATURE_TERRAIN && (m.flags & 2u) != 0u && (m.flags & 32768u) == 0u {
         // Terrain (src/shaders/terrain.gdshader): moss, needles, a grassy
         // verge, bare ground beside the road and rock where it is steep.
         // uv.x is metres from the road edge. Layers m.layer .. m.layer+4.
@@ -1618,8 +1618,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
         let corner = array<vec2<f32>, 3>(vec2<f32>(vertices[vi[0] + 6u], vertices[vi[0] + 7u]),
             vec2<f32>(vertices[vi[1] + 6u], vertices[vi[1] + 7u]), vec2<f32>(vertices[vi[2] + 6u], vertices[vi[2] + 7u]));
-        let so = game_surface(SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
-            corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x));
+        let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+            corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x);
+        // TERRAIN + SURFACE: the engine's procedural terrain, not the game's.
+        var so: SurfaceOut;
+        if (m.flags & 2u) != 0u { so = field_surface(si, m.layer); } else { so = game_surface(si); }
         base = so.albedo;
         n = so.normal;
         coat_n = n;

@@ -605,6 +605,7 @@ pub struct Renderer {
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
     skinning: Option<crate::skinning::SkinningRenderer>,
     debris: Option<crate::debris::DebrisRenderer>,
+    procedural_terrain: Option<crate::procedural_terrain::TerrainRenderer>,
     crowd: Option<crate::crowd::CrowdRenderer>,
     fx: crate::fx::FxSlot,
     volumetric: crate::volumetric::VolumetricSlot,
@@ -982,10 +983,10 @@ impl Renderer {
         let mut startup=crate::startup_profile::Trace::new();
         let geometry_diagnostics=crate::geometry_diagnostics::State::new(scene);
         let u = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
-        let vertices = buffer(gpu, "vertices", bytemuck::cast_slice(&scene.vertices), u);
+        let vertices = buffer(gpu, "vertices", bytemuck::cast_slice(&scene.vertices), u | wgpu::BufferUsages::COPY_SRC);
         let cverts = buffer(gpu, "cluster verts", bytemuck::cast_slice(&scene.cluster_verts), u);
         let tris = buffer(gpu, "tris", bytemuck::cast_slice(&scene.tris), u);
-        let clusters = buffer(gpu, "clusters", bytemuck::cast_slice(&scene.clusters), u);
+        let clusters = buffer(gpu, "clusters", bytemuck::cast_slice(&scene.clusters), u | wgpu::BufferUsages::COPY_SRC);
         let instances = buffer(gpu, "instances", bytemuck::cast_slice(&scene.instances), u | wgpu::BufferUsages::COPY_SRC);
         let materials = buffer(gpu, "materials", bytemuck::cast_slice(&scene.materials), u);
         let aux = buffer(gpu, "aux", bytemuck::cast_slice(&scene.aux), u);
@@ -1126,6 +1127,7 @@ impl Renderer {
                 .expect("invalid weighted skinning scene"))
         };
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
+        let procedural_terrain = scene.procedural_terrain.map(|spec| crate::procedural_terrain::TerrainRenderer::new(gpu, spec, &vertices, &clusters));
         let crowd = scene.crowd.map(|spec| crate::crowd::CrowdRenderer::new(gpu, &spec, &instances));
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
@@ -1563,6 +1565,7 @@ impl Renderer {
             baked_animations,
             skinning,
             debris,
+            procedural_terrain,
             crowd,
             fx: Default::default(),
             volumetric: Default::default(),
@@ -2694,6 +2697,33 @@ impl Renderer {
         if self.debris.as_ref().is_some_and(|d| d.contains_owner_range(first, instances.len())) {
             return Err("debris instances are written by the GPU debris pass".into());
         }
+        if self.procedural_terrain.as_ref().is_some_and(|t| t.contains_owner_range(first, instances.len())) {
+            return Err("procedural terrain instances are written by procedural_terrain::ProceduralTerrain".into());
+        }
+        self.write_instances(gpu, first, instances)
+    }
+
+    /// Patch slot updates from `procedural_terrain::ProceduralTerrain`.
+    pub fn write_procedural_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
+        let t = self.procedural_terrain.as_ref().ok_or("this scene reserved no procedural terrain")?;
+        if !t.contains_owner_range(first, instances.len()) || !t.contains_owner_range(first + instances.len() - 1, 1) {
+            return Err("write outside the procedural terrain pool".into());
+        }
+        self.write_instances(gpu, first, instances)
+    }
+
+    /// Validation readback of one procedural terrain slot.
+    pub fn procedural_terrain_debug(&self, gpu: &Gpu, slot: u32) -> Option<(Vec<f32>, Vec<u32>, Vec<f32>)> {
+        self.procedural_terrain.as_ref().map(|t| t.debug_slot(gpu, slot, &self.instance_buffer))
+    }
+
+    /// Queue patches for the GPU build at the start of the next frame.
+    pub fn queue_procedural_terrain(&self, jobs: Vec<crate::procedural_terrain::Job>) -> Result<(), String> {
+        self.procedural_terrain.as_ref().ok_or("this scene reserved no procedural terrain")?.queue(jobs);
+        Ok(())
+    }
+
+    fn write_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.part_wind.as_ref().is_some_and(|parts|parts.contains_owner_range(first,instances.len())) {
             return Err("procedural part owners are driven by shared GPU poses, not CPU instance updates".into());
         }
@@ -3058,6 +3088,9 @@ impl Renderer {
                 timestamp_pair(&mut ts);
                 names.push("crowd");
             }
+        }
+        if let Some(terrain) = &self.procedural_terrain {
+            terrain.encode(gpu, &mut enc);
         }
         if let Some(debris) = &self.debris {
             let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
