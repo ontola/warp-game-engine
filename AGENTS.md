@@ -29,7 +29,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | `engine/HANDOFF.md` | Running log of the latest state per topic, newest first. |
 | `games/sideways/` | The rally game: `sim` (simulation), `app` (renderer integration, the `cli` package builds the `sideways` executable), `determinism` (`gdcompat`: deterministic math/RNG, not Godot), assets, scenarios, tools. |
 | `games/growing-guns/`, `games/spellstorm/` | Rust games with `sim` and `app` crates. |
-| `games/hello-warp/`, `bumper-royale/`, `neon-siege/`, `neon-trails/` | Luau games run by `warp run games/NAME` (no Rust). |
+| `games/hello-warp/`, `neon-siege/`, `neon-trails/` | Luau games run by `warp run games/NAME` (no Rust). |
 | `lobbies/game-room/` | GameNight's lobby game. |
 | `website/` | Static site generator for the engine's site. |
 | `build/` | Ignored output: screenshots (`build/screenshots`), captures, caches. |
