@@ -188,6 +188,17 @@ keyboard mapping is in `app::input`.
   outline is a hollow regular polygon lying flat (3 to 64 sides, corners
   on the 1 m box's circle, the first towards +X) whose edge is the given
   share of the box wide (default 0.06): neon line art seen from above.
+- **Wires**: `world.spawn("wire", { points = {...}, edges = {...}, width = 0.05 })`
+  is a 3D wire frame: glowing edges between points, one entity with one
+  transform. `points` are vectors in the entity's own space (scaled by
+  `size`, turned by `rot` in all three axes), `edges` pairs of 1-based
+  point numbers (`{ {1, 2}, {2, 3} }` or flat `{ 1, 2, 2, 3 }`), `width`
+  the edge's thickness in metres at size 1. Each edge takes one entity
+  slot (count them in `max_entities`). Tumble it with `rot`; animate it
+  (legs, tails, a breathing hull) by setting new `points` with `world.set`
+  each tick: the engine moves every edge, so one call per wire is enough.
+  It is a cube look, so `world.warm("wire", look)` and `world.warm("cube",
+  look)` warm the same thing.
   `world.set` takes the same options plus `shape`. `world.place(id, pos,
   yaw?)` only moves (and turns) an entity: the cheap call for things that
   move every tick. `world.warm(shape, {color, emissive, roughness, metal})`
@@ -402,8 +413,10 @@ Warp's own tools:
 | `reload` | Reload edited modules and patches now; returns what changed and any errors. |
 | `restart` | Start over: clear the world and every `state`, reseed, run `init`. |
 | `knobs` | The tuning knobs of main.luau: name, value, comment and line. |
-| `set_knob` | `{name, value}`: write one knob's value into main.luau and reload. A value that does not load is put back and reported. |
-| `command` | One console line: `lua CODE`, `reload`, `restart`, `knobs`, `knob NAME VALUE`, `sky NAME`, `sounds`, `entities [TAG]`, `logs`, `help`. |
+| `set_knob` | `{name, value, persist}`: set one knob and reload. With `persist` (default true) the value is written into main.luau; with false only the running game changes. A value that does not load is put back and reported. |
+| `keep` | Save temporary knob changes (`persist: false`) into main.luau. |
+| `revert` | Undo temporary knob changes: run main.luau as saved. |
+| `command` | One console line: `lua CODE`, `reload`, `restart`, `knobs`, `knob NAME VALUE`, `trial NAME VALUE` (temporary), `keep`, `revert`, `sky NAME`, `sounds`, `entities [TAG]`, `logs`, `help`. |
 
 ### Knobs
 
@@ -420,7 +433,10 @@ local KNOBS = {
 ```
 
 `knobs` lists them and `set_knob` changes the value in the file itself,
-so the change is saved and reviewable in git. The game reloads at once;
+so the change is saved and reviewable in git. A player trying values
+from the GameNight app gets temporary changes instead (`persist: false`):
+the game runs the edited source while the file stays as it was, until
+`keep` saves them or `revert` (or an edit of the file on disk) drops them. The game reloads at once;
 values that feed things `init` built only show when `reload()` rebuilds
 them (see Hot reload).
 

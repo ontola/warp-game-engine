@@ -158,6 +158,15 @@ impl Host {
         self.modules[i].error.clone().map_or(Ok(()), Err)
     }
 
+    /// Load a watched module from `source` instead of its file (a trial
+    /// edit). The file is not touched; editing it on disk loads it again.
+    /// Returns the load error, if any (the previous version keeps running).
+    pub fn load_text(&mut self, name: &str, source: &str) -> Result<(), String> {
+        let i = self.modules.iter().position(|m| m.name == name).ok_or_else(|| format!("no module {name}"))?;
+        self.load(i, source);
+        self.modules[i].error.clone().map_or(Ok(()), Err)
+    }
+
     /// Reload what changed under the root: new and edited files load (in
     /// path order), deleted ones drop. Returns the names that changed.
     /// Load `name` again on the next poll even if its time and size match

@@ -77,6 +77,8 @@ pub struct LuaGame {
     quit: bool,
     /// The game's own surface shader (surface.wgsl).
     surface: GameSurface,
+    /// main.luau as it runs after temporary knob changes (not saved yet).
+    trial: Option<String>,
 }
 
 /// The start menu's items: Joep's convention for every GameNight game
@@ -139,7 +141,7 @@ impl LuaGame {
         let mut host = Host::new(Limits { memory: cfg.memory_mb << 20, steps: cfg.steps }, move |lua, base| api::register(lua, base, shared))?;
         host.ignore(NOT_MODULES);
         let mut g = LuaGame { dir: dir.to_path_buf(), single: single.clone(), seed: cfg.seed, cfg, host, core, inited: BTreeSet::new(), light: Lighting::default(), applied_sky: None, sky_upload: None,
-            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir) };
+            log: VecDeque::new(), live: None, live_logs: None, default_sky, echo: true, party: None, menu: None, menu_stick: 0.0, running_for: 0, polls: 0, next_id: 1, quit: false, surface: GameSurface::new(dir), trial: None };
         g.surface.install();
         let people: Vec<SeatInfo> = (0..g.cfg.players).map(|i| SeatInfo { seat: i, name: format!("Player {}", i + 1), color: None, bot: false, couch: None })
             .chain((0..g.cfg.bots).map(|i| SeatInfo { seat: 100 + i, name: format!("Bot {}", i + 1), color: None, bot: true, couch: None })).collect();
@@ -204,6 +206,8 @@ impl LuaGame {
         let changed = self.host.poll();
         self.flush_log();
         if !changed.is_empty() { self.inline_sounds(); }
+        // An edit on disk wins over temporary changes.
+        if changed.iter().any(|n| *n == self.main_name()) { self.trial = None; }
         // Changed modules that already ran init get `reload()` instead.
         for name in &changed {
             let Some(i) = self.host.modules().iter().position(|m| &m.name == name) else { continue };
@@ -495,24 +499,56 @@ impl LuaGame {
     fn main_file(&self) -> PathBuf { self.dir.join(self.single.as_deref().unwrap_or("main.luau")) }
 
     /// The game's knobs (see [`crate::knobs`]) with their current values.
-    pub fn knobs(&self) -> Result<String, String> {
-        let src = std::fs::read_to_string(self.main_file()).map_err(|e| e.to_string())?;
-        Ok(knobs::list(&knobs::parse(&src)))
+    fn main_name(&self) -> String { self.single.clone().unwrap_or_else(|| "main.luau".into()) }
+
+    /// main.luau as it runs: with temporary changes, else the file.
+    fn main_source(&self) -> Result<String, String> {
+        match &self.trial { Some(t) => Ok(t.clone()), None => std::fs::read_to_string(self.main_file()).map_err(|e| e.to_string()) }
     }
 
-    /// Change a knob in the file and reload it; a value that does not load
-    /// is put back.
-    pub fn set_knob(&mut self, name: &str, value: &str) -> Result<String, String> {
-        let file = self.main_file();
-        let before = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+    pub fn knobs(&self) -> Result<String, String> {
+        let list = knobs::list(&knobs::parse(&self.main_source()?));
+        Ok(if self.trial.is_some() { format!("{list}\n(some values are temporary: `keep` saves them in {}, `revert` undoes them)", self.main_name()) } else { list })
+    }
+
+    /// Run a module's `reload()` hook (after a load that did not come from
+    /// a file poll).
+    fn reloaded(&mut self, name: &str) {
+        let Some(i) = self.host.modules().iter().position(|m| m.name == name) else { return };
+        let m = &self.host.modules()[i];
+        if m.error.is_some() || !self.inited.contains(name) { return; }
+        if let Some(f) = m.exports.as_ref().and_then(|e| e.raw_get::<Option<Function>>("reload").ok().flatten()) {
+            self.call_one(i, "reload", &f, &|| Ok(mlua::MultiValue::new()));
+        }
+    }
+
+    /// Change a knob and reload. `persist` writes it into the file (ready
+    /// to commit); otherwise only the running game changes, until `keep`
+    /// saves or `revert` undoes it. A value that does not load is put back.
+    pub fn set_knob(&mut self, name: &str, value: &str, persist: bool) -> Result<String, String> {
+        let main = self.main_name();
+        let before = self.main_source()?;
         let after = knobs::set(&before, name, value)?;
+        if !persist {
+            if let Err(err) = self.host.load_text(&main, &after) {
+                let _ = self.host.load_text(&main, &before);
+                self.flush_log();
+                return Err(format!("{name} = {value} does not load, kept the old value: {err}"));
+            }
+            self.flush_log();
+            self.trial = Some(after);
+            self.reloaded(&main);
+            let broken = self.errors();
+            return Ok(format!("{name} = {} (temporary: the game runs it, {main} is unchanged; `keep` saves, `revert` undoes){}", value.trim(), if broken.is_empty() { String::new() } else { format!("; {}", broken.join("; ")) }));
+        }
+        let file = self.main_file();
+        let on_disk = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
         std::fs::write(&file, &after).map_err(|e| e.to_string())?;
-        let main = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         // 0.55 -> 0.28 keeps the size, and the time may not have moved yet.
         self.host.forget(&main);
         let lines = self.reload();
         if let Some(err) = self.host.modules().iter().find(|m| m.name == main).and_then(|m| m.error.clone()) {
-            std::fs::write(&file, &before).map_err(|e| e.to_string())?;
+            std::fs::write(&file, &on_disk).map_err(|e| e.to_string())?;
             self.host.forget(&main);
             self.reload();
             return Err(format!("{name} = {value} does not load, kept the old value: {err}"));
@@ -521,8 +557,27 @@ impl LuaGame {
         Ok(format!("{name} = {} (saved in {main}; {})", value.trim(), if broken.is_empty() { lines.join("; ") } else { broken.join("; ") }))
     }
 
+    /// Save temporary changes into the file.
+    pub fn keep(&mut self) -> Result<String, String> {
+        let Some(t) = self.trial.take() else { return Ok("nothing temporary to keep".into()) };
+        std::fs::write(self.main_file(), &t).map_err(|e| e.to_string())?;
+        let main = self.main_name();
+        self.host.forget(&main);
+        self.reload();
+        Ok(format!("saved the temporary changes in {main}"))
+    }
+
+    /// Undo temporary changes: run the file again.
+    pub fn revert(&mut self) -> Result<String, String> {
+        if self.trial.take().is_none() { return Ok("nothing temporary to undo".into()); }
+        let main = self.main_name();
+        self.host.forget(&main);
+        self.reload();
+        Ok(format!("back to {main} as saved"))
+    }
+
     pub fn help() -> &'static str {
-        "commands: lua CODE (run Luau against the game; `state` is main.luau's, and main.luau's globals and exports are in scope) | reload (scripts and sounds now) | restart (clear the world and state, run init) | sky NAME | sounds | entities [TAG] | menu [open|close|resume|new round] | knobs | knob NAME VALUE (saved in main.luau) | logs | help"
+        "commands: lua CODE (run Luau against the game; `state` is main.luau's, and main.luau's globals and exports are in scope) | reload (scripts and sounds now) | restart (clear the world and state, run init) | sky NAME | sounds | entities [TAG] | menu [open|close|resume|new round] | knobs | knob NAME VALUE (saved in main.luau) | trial NAME VALUE (only the running game) | keep | revert | logs | help"
     }
 
     fn input(&self, lua: &mlua::Lua, controls: &[Controls]) -> mlua::Result<Table> {
@@ -676,7 +731,10 @@ impl LuaGame {
             "logs" => Ok(self.logs().join("\n")),
             "menu" => self.menu_command(rest),
             "knobs" => self.knobs(),
-            "knob" => { let (name, value) = rest.split_once(' ').ok_or("knob NAME VALUE")?; self.set_knob(name.trim(), value) }
+            "knob" => { let (name, value) = rest.split_once(' ').ok_or("knob NAME VALUE")?; self.set_knob(name.trim(), value, true) }
+            "trial" => { let (name, value) = rest.split_once(' ').ok_or("trial NAME VALUE")?; self.set_knob(name.trim(), value, false) }
+            "keep" => self.keep(),
+            "revert" => self.revert(),
             other => Err(format!("unknown command {other:?}; {}", Self::help())),
         }
     }
@@ -688,13 +746,15 @@ impl LuaGame {
             live::ToolSpec::new("restart", "Start the game over: remove every entity, clear every module's `state`, reseed the random generator and run `init` again.", json!({ "type": "object", "properties": {} })),
             live::ToolSpec::new("command", "One debug console line. `help` lists them: lua CODE, reload, restart, sky NAME, sounds, entities [TAG], knobs, knob NAME VALUE, logs.", json!({ "type": "object", "properties": { "line": { "type": "string" } }, "required": ["line"] })),
             live::ToolSpec::new("knobs", "The game's tweakable values (its `-- @knobs` block in main.luau) with their current values and what each does. Start here to change the look or feel.", json!({ "type": "object", "properties": {} })).read_only(),
-            live::ToolSpec::new("set_knob", "Set one knob: writes the new value into main.luau (so it is ready to commit) and hot-reloads; the game's reload() hook applies it at once. A value that does not load is put back.", json!({ "type": "object", "properties": { "name": { "type": "string" }, "value": { "type": "string", "description": "one Luau value, such as 0.5, true or \"#ff00ff\"" } }, "required": ["name", "value"] })),
+            live::ToolSpec::new("set_knob", "Set one knob and hot-reload; the game's reload() hook applies it at once. With persist (the default) the value is written into main.luau, ready to commit. With persist false only the running game changes: `keep` saves such changes, `revert` undoes them. A value that does not load is put back.", json!({ "type": "object", "properties": { "name": { "type": "string" }, "value": { "type": "string", "description": "one Luau value, such as 0.5, true or \"#ff00ff\"" }, "persist": { "type": "boolean", "description": "write into main.luau (default true); false changes only the running game" } }, "required": ["name", "value"] })),
+            live::ToolSpec::new("keep", "Save the temporary knob changes (set_knob with persist false) into main.luau.", json!({ "type": "object", "properties": {} })),
+            live::ToolSpec::new("revert", "Undo the temporary knob changes: run main.luau as saved again.", json!({ "type": "object", "properties": {} })),
         ];
         let manifest = live::Manifest {
             name: self.live_name(),
             version: env!("CARGO_PKG_VERSION").into(),
             about: format!("\"{}\", a Warp game made of Luau scripts (main.luau), synth patches (sounds/*.luau) and assets, run by the `warp` executable.", self.cfg.title),
-            guide: "Call `knobs` first: the values the game marks as tweakable, set with `set_knob` (live, and saved in main.luau). For anything else, edit the game with write_file in the `game` folder: main.luau holds init(), tick(dt, input) and draw(); sounds/NAME.luau is the patch `NAME`. A saved file reloads at once: the world and the `state` table stay, so change code without losing the play session; call `restart` to run init again. The Luau API is in the folder's types.d.luau. `state` is the game's JSON (its `state` field is main.luau's state table); `run_luau` runs Luau against the live game, with main.luau's globals and exports in scope (call its functions: export a `debug` table of helpers); `screenshot` shows the frame; `render_sound` measures a patch without speakers. Errors appear in `state.errors`, `logs` and on screen.".into(),
+            guide: "Call `knobs` first: the values the game marks as tweakable, set with `set_knob` (live, and saved in main.luau; `persist: false` changes only the running game until `keep` or `revert`). For anything else, edit the game with write_file in the `game` folder: main.luau holds init(), tick(dt, input) and draw(); sounds/NAME.luau is the patch `NAME`. A saved file reloads at once: the world and the `state` table stay, so change code without losing the play session; call `restart` to run init again. The Luau API is in the folder's types.d.luau. `state` is the game's JSON (its `state` field is main.luau's state table); `run_luau` runs Luau against the live game, with main.luau's globals and exports in scope (call its functions: export a `debug` table of helpers); `screenshot` shows the frame; `render_sound` measures a patch without speakers. Errors appear in `state.errors`, `logs` and on screen.".into(),
             tools,
             roots: vec![live::Root::new("game", &self.dir, live::Reload::Game, "The game folder: main.luau and other modules, sounds/*.luau patches, game.toml, types.d.luau. A write reloads the scripts and sounds and reports load errors.").extensions(&["luau", "toml", "md", "json", "wgsl"])],
             features: live::Features { state: true, screenshot: true, luau: true, shaders: false, sound: true },
@@ -868,8 +928,10 @@ impl live::LiveGame for LuaGame {
             "knobs" => self.knobs()?,
             "set_knob" => {
                 let value = match &args["value"] { Json::String(v) => v.clone(), Json::Null => return Err("set_knob needs `value`".into()), v => v.to_string() };
-                self.set_knob(args["name"].as_str().ok_or("set_knob needs `name`")?, &value)?
+                self.set_knob(args["name"].as_str().ok_or("set_knob needs `name`")?, &value, args["persist"].as_bool().unwrap_or(true))?
             }
+            "keep" => self.keep()?,
+            "revert" => self.revert()?,
             other => return Err(format!("no tool {other}")),
         };
         let errors = self.errors();

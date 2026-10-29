@@ -56,7 +56,7 @@ export type Input = {
 }
 
 export type EntityOptions = {
-	shape: string?, -- world.set only: "cube", "sphere", "capsule", "outline6" or "assets/x.glb"
+	shape: string?, -- world.set only: "cube", "sphere", "capsule", "outline6", "wire" or "assets/x.glb"
 	pos: Vec?, -- centre, default (0, 0, 0)
 	rot: Vec?, -- radians: x pitch, y yaw, z roll; collision boxes follow the yaw only
 	size: (Vec | number)?, -- metres; 1 fills a 1 m box (the capsule is 2 m tall at size 1)
@@ -65,6 +65,9 @@ export type EntityOptions = {
 	roughness: number?, -- 0 mirror .. 1 matte (default 0.7)
 	metal: number?, -- 0 .. 1
 	surface: number?, -- a kind (0 .. 255) of the game's own shader, surface.wgsl; false for none
+	points: { Vec }?, -- "wire" only: points in the entity's own space (set them each tick to animate)
+	edges: { { number } }?, -- "wire" only: pairs of 1-based point numbers, or a flat list
+	width: number?, -- "wire" only: edge thickness in metres at size 1 (default 0.05)
 	solid: boolean?, -- blocks world.move and raycasts (default true)
 	visible: boolean?, -- default true
 	tag: string?, -- for world.find, overlap and raycast filters
