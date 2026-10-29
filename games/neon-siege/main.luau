@@ -1476,8 +1476,8 @@ local function show_pilot(p)
 		world.place(p.engines[i], at(p.x + back * c - e[2] * sn, p.y + back * sn + e[2] * c, 0.14), -a)
 		seen(p.engines[i])
 	end
-	-- Active powers ride under the ship: the pickup's icon in a ring that
-	-- shrinks as that power's ammo runs out.
+	-- Active powers ride under the ship: the pickup's icon, small, shrinking
+	-- further as that power's ammo runs out (no ring: that read as a pickup).
 	p.badges = p.badges or {}
 	local active = {}
 	for _, kind in POWER_ORDER do
@@ -1486,20 +1486,22 @@ local function show_pilot(p)
 	for i, kind in active do
 		local color = rgb(PICKUP_COLORS[kind])
 		local b = p.badges[kind]
-		if not b then
-			b = { ring = world.spawn(outline(24, 14, 2), { pos = pos, size = 28 * S, color = color, emissive = GLOW.line, solid = false, tag = "pilot" }), icon = {} }
-			for _, seg in PICKUP_ICONS[kind] do
-				table.insert(b.icon, world.spawn("cube", { pos = pos, size = vector.create(1.8 * S, 0.03, len(seg[3] - seg[1], seg[4] - seg[2]) * 0.55 * S), color = color, emissive = GLOW.line, solid = false, tag = "pilot" }))
+		if not b or b.ring then
+			b = { icon = {} }
+			for _ in PICKUP_ICONS[kind] do
+				table.insert(b.icon, world.spawn("cube", { pos = pos, size = vector.create(1.6 * S, 0.03, S), color = color, emissive = GLOW.line, solid = false, tag = "pilot" }))
 			end
 			p.badges[kind] = b
 		end
-		local bx, by = p.x + (i - (#active + 1) / 2) * 26, p.y + 40
-		local d = (10 + 18 * p.powers[kind] / AMMO[kind]) * S
-		world.set(b.ring, { pos = at(bx, by, 0.15), size = vector.create(d, 0.04, d) })
-		seen(b.ring)
+		local bx, by = p.x + (i - (#active + 1) / 2) * 16, p.y + 34
+		local k = 0.45 * (0.4 + 0.6 * p.powers[kind] / AMMO[kind])
 		for j, seg in PICKUP_ICONS[kind] do
 			local dx, dy = seg[3] - seg[1], seg[4] - seg[2]
-			world.place(b.icon[j], at(bx + (seg[1] + seg[3]) / 2 * 0.55, by + (seg[2] + seg[4]) / 2 * 0.55, 0.16), math.atan2(-dx, -dy))
+			world.set(b.icon[j], {
+				pos = at(bx + (seg[1] + seg[3]) / 2 * k, by + (seg[2] + seg[4]) / 2 * k, 0.16),
+				rot = vector.create(0, math.atan2(-dx, -dy), 0),
+				size = vector.create(1.6 * S, 0.03, math.max(1, len(dx, dy) * k) * S),
+			})
 			seen(b.icon[j])
 		end
 	end
