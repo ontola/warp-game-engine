@@ -500,7 +500,7 @@ impl View {
         locals.sort_by(|a, b| b.intensity_cd.max_element().total_cmp(&a.intensity_cd.max_element()));
         locals.truncate(12);
         // Every wizard's staff light, always.
-        locals.splice(0..0, self.marks.lights.iter().chain(&self.shrines.lights).copied());
+        locals.splice(0..0, self.marks.spill.iter().chain(&self.shrines.lights).copied());
         let room = render::headlights::MAX_LOCAL_LIGHTS - locals.len();
         // Every lamp flickers a little (Arena's torch loop).
         let t = w.time as f32;
@@ -510,9 +510,16 @@ impl View {
             LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light }
         }));
         renderer.set_local_lights(&locals)?;
+        let spots = &self.marks.spots[..self.marks.spots.len().min(render::headlights::MAX_LIGHTS)];
+        renderer.set_headlights(spots)?;
+        renderer.set_spot_falloff(&vec![crate::marks::STAFF_FALLOFF; spots.len()]);
         // Lamps light the haze (Godot's light_volumetric_fog_energy is 1).
         if self.light.volumetric.is_some() {
-            renderer.set_volumetric_beams(&locals)?;
+            // The haze takes each gem's light whole (the spots do not scatter).
+            let n = self.marks.spill.len();
+            let mut beams = locals.clone();
+            beams.splice(0..n, self.marks.lights.iter().copied());
+            renderer.set_volumetric_beams(&beams)?;
         }
         self.light.time = w.time as f32;
         let mut sprites = self.marks.sprites.clone();

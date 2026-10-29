@@ -5,7 +5,7 @@
 use crate::fx::{uv, Cell, IMAGE, LIGHT, LIT, SLICE, SLICES};
 use crate::look::linear3;
 use glam::Vec3;
-use render::headlights::LocalLight;
+use render::headlights::{LocalLight, SpotLight};
 use render::sprites::Sprite;
 use spellstorm::fx::{el_c, C};
 use spellstorm::wizard::{self, swing_reach, Wizard, NOVA_HOLD, SWING_COOLDOWN};
@@ -24,8 +24,21 @@ pub struct Marks {
     /// Each wizard's gem brightness, eased (Wizard._shine), by seat.
     shine: HashMap<usize, f32>,
     pub sprites: Vec<Sprite>,
+    /// Each staff's gem light as a whole sphere: what lights the haze.
     pub lights: Vec<LocalLight>,
+    /// The same light on surfaces: a shadowed spot straight down from the
+    /// gem (Godot's shadowed omni; the engine shadows spots only, up to
+    /// 1.3 rad) and an unshadowed rest for everything outside that cone.
+    pub spots: Vec<SpotLight>,
+    pub spill: Vec<LocalLight>,
 }
+
+/// The shadowed cone under each gem: full inside INNER, gone past OUTER,
+/// where the unshadowed spill takes over with the mirrored edge.
+const SPOT_INNER: f32 = 0.9;
+const SPOT_OUTER: f32 = 1.3;
+/// Godot's omni_attenuation of the staff light.
+pub const STAFF_FALLOFF: f32 = 1.1;
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
@@ -47,6 +60,8 @@ impl Marks {
     pub fn update(&mut self, w: &World, time: f32, dt: f32) {
         self.sprites.clear();
         self.lights.clear();
+        self.spots.clear();
+        self.spill.clear();
         for &id in &w.wizards {
             let Some(a) = w.actor(id) else { continue };
             let wz = w.wiz(id);
@@ -266,7 +281,7 @@ impl Marks {
         let flash = Vec3::new(w.flash_c[0], w.flash_c[1], w.flash_c[2]);
         let color = tint.lerp(flash, w.bloom * 0.7);
         let lin = linear3(color.to_array());
-        self.lights.push(LocalLight {
+        let gem = LocalLight {
             position: tip + Vec3::Y * 0.15,
             direction: Vec3::NEG_Y,
             intensity_cd: lin * HERO_LIGHT * shine * LIGHT,
@@ -274,8 +289,20 @@ impl Marks {
             inner_cos: -0.999,
             outer_cos: -1.0,
             source_radius_m: 0.05,
-            falloff: 1.1,
+            falloff: STAFF_FALLOFF,
+        };
+        self.lights.push(gem);
+        self.spots.push(SpotLight {
+            position: gem.position,
+            direction: Vec3::NEG_Y,
+            up: Vec3::NEG_Z,
+            intensity_cd: gem.intensity_cd,
+            range_m: gem.range_m,
+            inner_angle_radians: SPOT_INNER,
+            outer_angle_radians: SPOT_OUTER,
         });
+        // Pointing up with the cone's edge mirrored: 1 minus the spot's.
+        self.spill.push(LocalLight { direction: Vec3::Y, inner_cos: -SPOT_OUTER.cos(), outer_cos: -SPOT_INNER.cos(), ..gem });
         // The soft bloom round the gem (Fx.halo, strength 0.55 * shine).
         let size = 0.6 * (0.45 + 0.25 * shine) * 2.0;
         let k = 0.55 * shine * 1.4;
