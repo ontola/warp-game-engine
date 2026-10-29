@@ -51,6 +51,12 @@ fn instance_for(windows: wgpu::Backends) -> wgpu::Instance {
     wgpu::Instance::new(desc.with_env())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests on this thread get devices with this largest texture side.
+    pub(crate) static TEST_MAX_TEXTURE: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
 impl Gpu {
     /// The best adapter there is. `KERN_ADAPTER=software` forces the
     /// fallback (lavapipe/WARP); any other value picks the first adapter
@@ -106,6 +112,8 @@ impl Gpu {
         // is the 17th); desktop adapters allow far more than WebGPU's 16.
         limits.max_sampled_textures_per_shader_stage = al.max_sampled_textures_per_shader_stage.min(32);
         limits.max_compute_workgroups_per_dimension = al.max_compute_workgroups_per_dimension;
+        #[cfg(test)]
+        if let Some(side) = TEST_MAX_TEXTURE.with(|c| c.get()) { limits.max_texture_dimension_2d = side; }
         let descriptor = wgpu::DeviceDescriptor {
             label: Some("kern"),
             required_features: features,
