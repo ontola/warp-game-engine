@@ -1,0 +1,1040 @@
+{
+  "version": "spacesynth-2026-10-18",
+  "sample_rate": 48000,
+  "params": {
+    "drive": {
+      "f0": 45.0,
+      "roll": 1.159,
+      "f1": 563.0525,
+      "f1g": 2.3971,
+      "f2": 4964.1759,
+      "f2g": 0.2127,
+      "vib": 4.0,
+      "nlo": 45.8337,
+      "nhi": 18000.0,
+      "pulse": 0.5989,
+      "sub": 4.0,
+      "whine": 4.0,
+      "noise": 0.272,
+      "jet": 0.6698
+    },
+    "idle": {
+      "f0": 62.0944,
+      "wobble": 0.4466,
+      "buzz": 0.0814,
+      "hiss": 0.0,
+      "jet": 0.0712
+    },
+    "air": {
+      "lo": 2000.0,
+      "hi": 18000.0,
+      "bright": 3.0,
+      "gust": 0.5,
+      "whistle_hz": 7974.4975,
+      "whistle": 0.0631
+    },
+    "boost_loop": {
+      "up": 1.5,
+      "noise": 0.4,
+      "jet": 0.3
+    },
+    "boost": {
+      "length": 0.7684,
+      "drop_hz": 123.5053,
+      "open": 0.4701,
+      "decay": 1.9965,
+      "rise_hz": 558.0118,
+      "sub": 0.2971,
+      "tone": 0.2529,
+      "jet": 0.0183
+    },
+    "launch": {
+      "bright": 3000.0,
+      "fall": 1.5965,
+      "decay": 4.0,
+      "ignite": 0.343,
+      "thump": 0.2661,
+      "jet": 0.4305
+    },
+    "explosion": {
+      "kick_hz": 42.1803,
+      "kick": 2.9174,
+      "bright": 3098.0598,
+      "fall": 1.6924,
+      "decay": 5.3216,
+      "debris": 0.0658,
+      "metal": 0.6144
+    },
+    "rail": {
+      "bolt_hz": 3611.9337,
+      "bolt_end_hz": 183.5946,
+      "curve": 0.3285,
+      "decay": 0.8,
+      "zap": 0.0,
+      "ring": 0.885,
+      "boom": 0.0,
+      "echo": 0.7
+    },
+    "sentry": {
+      "bolt": 0.045,
+      "hz": 2600.0,
+      "end_hz": 700.0,
+      "body": 0.5
+    },
+    "emp": {
+      "hz": 950.0,
+      "density": 2500.0,
+      "sparks": 0.83,
+      "field": 0.58,
+      "thump": 1.0
+    },
+    "warp": {
+      "from_hz": 69.0064,
+      "to_hz": 1526.5643,
+      "curve": 2.3455,
+      "tone": 2.4165,
+      "pop": 0.1798,
+      "jet": 0.1886
+    },
+    "pickup": {
+      "pitch": 1.0,
+      "detune": 0.004,
+      "odd": 5,
+      "cutoff": 6000.0,
+      "decay": 4.5
+    },
+    "lap": {
+      "pitch": 1.0,
+      "detune": 0.004,
+      "odd": 5,
+      "cutoff": 6000.0,
+      "decay": 4.5
+    },
+    "finish": {
+      "pitch": 1.0,
+      "detune": 0.004,
+      "odd": 5,
+      "cutoff": 6000.0,
+      "decay": 4.5,
+      "arp": 0
+    },
+    "tick": {
+      "pitch": 1.4054,
+      "detune": 0.004,
+      "odd": 5,
+      "cutoff": 4404.083,
+      "decay": 0.8
+    },
+    "go": {
+      "pitch": 1.7422,
+      "detune": 0.0015,
+      "odd": 5,
+      "cutoff": 5954.5493,
+      "decay": 0.8,
+      "arp": 0
+    },
+    "warning": {
+      "pitch": 1.889,
+      "detune": 0.02,
+      "odd": 5,
+      "cutoff": 7516.7482,
+      "decay": 0.8694
+    }
+  },
+  "source_records": [
+    {
+      "id": 407540,
+      "author": "Sojan",
+      "source_url": "https://freesound.org/people/Sojan/sounds/407540/",
+      "download_url": "https://cdn.freesound.org/previews/407/407540_5477651-hq.mp3",
+      "license": "CC0-1.0",
+      "checked_on": "2026-10-06",
+      "sha256": "6fe0b8dec89f0fd111c1e626e43745cbbc514f8c51472f7fc445ecc624b1125a"
+    },
+    {
+      "id": 152509,
+      "author": "minian89",
+      "source_url": "https://freesound.org/people/minian89/sounds/152509/",
+      "download_url": "https://cdn.freesound.org/previews/152/152509_2467357-hq.mp3",
+      "license": "CC0-1.0",
+      "checked_on": "2026-10-06",
+      "sha256": "84c3f0c54f31d3594620b386529ab362febecb7bf299e82ed4651b820740215f"
+    }
+  ],
+  "kenney": {
+    "url": "https://kenney.nl/assets/impact-sounds",
+    "license": "CC0-1.0",
+    "archive_sha256": "029d734af1582474edf3a694d1b0cebc97c1c152f2f39fa34d4c2bafc5de77f8"
+  },
+  "assets": [
+    {
+      "file": "assets/audio/racer/drive.wav",
+      "sha256": "d39534b3923aa68907c72c3cb3e36c49ef373803e5d520bc87b9cba651fcf49c",
+      "seconds": 4.0,
+      "peak": 0.82,
+      "rms": 0.24492968295132328,
+      "loop": true,
+      "sources": [
+        "original turbine synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/idle.wav",
+      "sha256": "b5dbb65b9558a0d4f778efa822e553bf05a4b551136a9a09931f50ef76d05f3c",
+      "seconds": 2.0,
+      "peak": 0.44324259935886445,
+      "rms": 0.14084053714120823,
+      "loop": true,
+      "sources": [
+        "original hover hum synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/air.wav",
+      "sha256": "61020d9e1a45d16e6164fe869984b7890f02fb6d55ab159a4e5ebbb84573e711",
+      "seconds": 4.0,
+      "peak": 0.82,
+      "rms": 0.13495412046819513,
+      "loop": true,
+      "sources": [
+        "original filtered noise"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/boost_loop.wav",
+      "sha256": "c582da85bd5a18c628a32ad5b654f156313e75915f1e6cba91870f9995b7d151",
+      "seconds": 4.0,
+      "peak": 0.5317903650711976,
+      "rms": 0.14543998392547441,
+      "loop": true,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/boost_1.wav",
+      "sha256": "b938cdcfa44c1868ff1ea5ccdee33f8113ec84fd0d874c7a9d275aa948aa08c3",
+      "seconds": 0.7683958333333333,
+      "peak": 0.8198635707204024,
+      "rms": 0.16596559013918205,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/boost_2.wav",
+      "sha256": "610918a5b8f5371baa094d36ebb1ba5325f4e62ec7457e3a16b0da6688662bc6",
+      "seconds": 0.7683958333333333,
+      "peak": 0.8198486433675847,
+      "rms": 0.16797521796572826,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/boost_3.wav",
+      "sha256": "d00d61e3049d0995bf66e3ce30053b5c696cae9e69a6420d847efbb123d713f6",
+      "seconds": 0.7683958333333333,
+      "peak": 0.82,
+      "rms": 0.15842974645898086,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/boost_4.wav",
+      "sha256": "ed57073b483d06430c0094a7f5dc0b1a5d1db21b572a4b4c43e4132e871b1be6",
+      "seconds": 0.7683958333333333,
+      "peak": 0.8198680694413668,
+      "rms": 0.13535740443723598,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/boost_5.wav",
+      "sha256": "05a4965b12b5fbeb49114ebf5f8c6e57f215e94593c855a4a55b79e7af4167b4",
+      "seconds": 0.7683958333333333,
+      "peak": 0.82,
+      "rms": 0.15491967076288762,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/launch_1.wav",
+      "sha256": "604fea42d1a9dc79d1de90b89abbe7e8faf35fbce64041346eac4a5ea66be0c4",
+      "seconds": 0.75,
+      "peak": 0.82,
+      "rms": 0.08830575307027651,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/launch_2.wav",
+      "sha256": "20ed64689c253344d63666660766e039475eabd6a0cdd9cb105eafd44be55e61",
+      "seconds": 0.75,
+      "peak": 0.82,
+      "rms": 0.07742457843114388,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/launch_3.wav",
+      "sha256": "edc947d55ba26aebfba23854cb8f5767239ee39b0ba528a40a645774d3927771",
+      "seconds": 0.75,
+      "peak": 0.8199398169752857,
+      "rms": 0.10021031129219837,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/launch_4.wav",
+      "sha256": "2a5d737dbdc076359eb7d28371f17c4adb25a3fa66d50a04df5e337fc43921f6",
+      "seconds": 0.75,
+      "peak": 0.819926607192383,
+      "rms": 0.08990607051424267,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/launch_5.wav",
+      "sha256": "7ccd4353a9412cc1fa70c7cf0ace11f4bf0e31d24dc4a0897e7c447871c83f04",
+      "seconds": 0.75,
+      "peak": 0.8199273289108723,
+      "rms": 0.09316191458265229,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/explosion_1.wav",
+      "sha256": "7db326e81efd0c8073680c6ad9b81a20e5f66c8975ff2ccd1a01e3ea6085dd6e",
+      "seconds": 1.85,
+      "peak": 0.82,
+      "rms": 0.06304961871764703,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy",
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/explosion_2.wav",
+      "sha256": "9d58825d4ea1e5688cb2e9cac7a3663858149c15b312138850633941d2818670",
+      "seconds": 1.85,
+      "peak": 0.8018818380343962,
+      "rms": 0.0718336115004196,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy",
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/explosion_3.wav",
+      "sha256": "8028def7d724f13a22e4c22a0b6bfef64027cd20dc60db583f037f9ceea6f835",
+      "seconds": 1.85,
+      "peak": 0.82,
+      "rms": 0.06414548391438024,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy",
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/explosion_4.wav",
+      "sha256": "a04aa0b3f3158488622bfdaf8e7bcb79df87bc7627054497020e59d1bef5c0a3",
+      "seconds": 1.85,
+      "peak": 0.82,
+      "rms": 0.06173574289007219,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy",
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/explosion_5.wav",
+      "sha256": "a1d0e161c1f733356991c46a66d2df2a8fc6429245aaee9f4ef02534f0ade7e8",
+      "seconds": 1.85,
+      "peak": 0.82,
+      "rms": 0.057888504749048275,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy",
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/rail_1.wav",
+      "sha256": "2acd13a70c0023cc3ef1db31719c65059bd4ac0cfbfa8b61a1cc76f38519587d",
+      "seconds": 0.9,
+      "peak": 0.82,
+      "rms": 0.02751818358365043,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/rail_2.wav",
+      "sha256": "dfdeab227eb37c4396b099a485ac9a1758d0b236ad9e9ac3635402a196e9d9c7",
+      "seconds": 0.9,
+      "peak": 0.82,
+      "rms": 0.02733372662805248,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/rail_3.wav",
+      "sha256": "405398ddf64f0fce54641d275e30617d8c563d39edc6bed3a0f894fbb2aa49ce",
+      "seconds": 0.9,
+      "peak": 0.82,
+      "rms": 0.024939397086623113,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/rail_4.wav",
+      "sha256": "5ce112308d54298c0e8412a3ea9752b520fd0f50d87725b8ca466d0534819daa",
+      "seconds": 0.9,
+      "peak": 0.82,
+      "rms": 0.02423654404353204,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/rail_5.wav",
+      "sha256": "3799f7041824bb53dda2277b046fd5a392cea6a72aaa690bab86893f6a3d7f51",
+      "seconds": 0.9,
+      "peak": 0.82,
+      "rms": 0.024781180418299,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/sentry.wav",
+      "sha256": "692ff4d6f9dcececf396f051f806c3126a4b0164c2af5b1fdc7dd008675568fc",
+      "seconds": 0.5,
+      "peak": 0.5741583365580039,
+      "rms": 0.12000000000000001,
+      "loop": true,
+      "sources": [
+        "original laser synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/emp_1.wav",
+      "sha256": "e6b26532f8e7a846db19ca6380bfe000ce2b952b31439a40a4524a74660406aa",
+      "seconds": 1.1,
+      "peak": 0.8197704383519085,
+      "rms": 0.09281229302153643,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/emp_2.wav",
+      "sha256": "d7bf85b3d7259788c080a5953e063cc126e94b136b497f361a6b68df3732d436",
+      "seconds": 1.1,
+      "peak": 0.8197668413680007,
+      "rms": 0.09409168274219899,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/emp_3.wav",
+      "sha256": "be186a0b0e907f8f3c54c3bdc7cd74cd16cc7fcf7ad2f03a629f53a5751cd333",
+      "seconds": 1.1,
+      "peak": 0.82,
+      "rms": 0.10500812690081651,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/emp_4.wav",
+      "sha256": "a7285c672f2cd13c514b64ada2c8199971382ace9ede92c39bddaebc5c1f7876",
+      "seconds": 1.1,
+      "peak": 0.8197853234935037,
+      "rms": 0.08674907940630895,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/emp_5.wav",
+      "sha256": "240be33690d12354d154447dab3e7f319aedcbd9c27e290329888a74c0bdd5f0",
+      "seconds": 1.1,
+      "peak": 0.82,
+      "rms": 0.08270073274064656,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warp_1.wav",
+      "sha256": "e18ffff806b8c31fda4ea7fa12b169049754a7c8ee12287739fafe4dd1cc3226",
+      "seconds": 1.0,
+      "peak": 0.8199981993460718,
+      "rms": 0.17971335243717854,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warp_2.wav",
+      "sha256": "1078e2b5fe1bf14d9a4e2e38f2c8da26f05647031f005b24c551c1189af09e7e",
+      "seconds": 1.0,
+      "peak": 0.8199979688217357,
+      "rms": 0.17909158837883987,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warp_3.wav",
+      "sha256": "cf15b1fb8ba40107da6df0dc1b57dd7f1b484e1a0c9ff61a51a27e41bd3deb9e",
+      "seconds": 1.0,
+      "peak": 0.82,
+      "rms": 0.16833858875306107,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warp_4.wav",
+      "sha256": "e3f5a64407e183f50ae24a875a0a6506e03ac9ec49c14630d47d65b7fe52e657",
+      "seconds": 1.0,
+      "peak": 0.82,
+      "rms": 0.1833204290382518,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warp_5.wav",
+      "sha256": "6f589d4c2cd165e717d1b5f9d24b59303359171d812753bdcba39e791b9d9bd7",
+      "seconds": 1.0,
+      "peak": 0.8199985257736387,
+      "rms": 0.15623530404838445,
+      "loop": false,
+      "sources": [
+        "original synthesis",
+        "Freesound:152509"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/pickup_1.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "seconds": 0.16,
+      "peak": 0.7823606966959707,
+      "rms": 0.24855802543814348,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/pickup_2.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "seconds": 0.16,
+      "peak": 0.7823606966959707,
+      "rms": 0.24855802543814348,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/pickup_3.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "seconds": 0.16,
+      "peak": 0.7823606966959707,
+      "rms": 0.24855802543814348,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/pickup_4.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "seconds": 0.16,
+      "peak": 0.7823606966959707,
+      "rms": 0.24855802543814348,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/pickup_5.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "seconds": 0.16,
+      "peak": 0.7823606966959707,
+      "rms": 0.24855802543814348,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/lap_1.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "seconds": 0.3,
+      "peak": 0.8123485875914948,
+      "rms": 0.2556220380719577,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/lap_2.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "seconds": 0.3,
+      "peak": 0.8123485875914948,
+      "rms": 0.2556220380719577,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/lap_3.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "seconds": 0.3,
+      "peak": 0.8123485875914948,
+      "rms": 0.2556220380719577,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/lap_4.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "seconds": 0.3,
+      "peak": 0.8123485875914948,
+      "rms": 0.2556220380719577,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/lap_5.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "seconds": 0.3,
+      "peak": 0.8123485875914948,
+      "rms": 0.2556220380719577,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/finish_1.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "seconds": 0.9,
+      "peak": 0.819994321083834,
+      "rms": 0.09462613293786426,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/finish_2.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "seconds": 0.9,
+      "peak": 0.819994321083834,
+      "rms": 0.09462613293786426,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/finish_3.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "seconds": 0.9,
+      "peak": 0.819994321083834,
+      "rms": 0.09462613293786426,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/finish_4.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "seconds": 0.9,
+      "peak": 0.819994321083834,
+      "rms": 0.09462613293786426,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/finish_5.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "seconds": 0.9,
+      "peak": 0.819994321083834,
+      "rms": 0.09462613293786426,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/tick_1.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "seconds": 0.14,
+      "peak": 0.7847267226353958,
+      "rms": 0.3346711423058263,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/tick_2.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "seconds": 0.14,
+      "peak": 0.7847267226353958,
+      "rms": 0.3346711423058263,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/tick_3.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "seconds": 0.14,
+      "peak": 0.7847267226353958,
+      "rms": 0.3346711423058263,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/tick_4.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "seconds": 0.14,
+      "peak": 0.7847267226353958,
+      "rms": 0.3346711423058263,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/tick_5.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "seconds": 0.14,
+      "peak": 0.7847267226353958,
+      "rms": 0.3346711423058263,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/go_1.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "seconds": 0.45,
+      "peak": 0.82,
+      "rms": 0.23655453861068998,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/go_2.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "seconds": 0.45,
+      "peak": 0.82,
+      "rms": 0.23655453861068998,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/go_3.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "seconds": 0.45,
+      "peak": 0.82,
+      "rms": 0.23655453861068998,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/go_4.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "seconds": 0.45,
+      "peak": 0.82,
+      "rms": 0.23655453861068998,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/go_5.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "seconds": 0.45,
+      "peak": 0.82,
+      "rms": 0.23655453861068998,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warning_1.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "seconds": 0.36,
+      "peak": 0.8199912776155459,
+      "rms": 0.270058466575033,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warning_2.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "seconds": 0.36,
+      "peak": 0.8199912776155459,
+      "rms": 0.270058466575033,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warning_3.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "seconds": 0.36,
+      "peak": 0.8199912776155459,
+      "rms": 0.270058466575033,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warning_4.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "seconds": 0.36,
+      "peak": 0.8199912776155459,
+      "rms": 0.270058466575033,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/warning_5.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "seconds": 0.36,
+      "peak": 0.8199912776155459,
+      "rms": 0.270058466575033,
+      "loop": false,
+      "sources": [
+        "original synthesis"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/scrape.wav",
+      "sha256": "a104274ad1ddc0116a4ab50b0ee11118d651ec7d2fce1b5db4b3b0467b148fb7",
+      "seconds": 6.8,
+      "peak": 0.82,
+      "rms": 0.139296216232861,
+      "loop": true,
+      "sources": [
+        "original filtered noise"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/contact_1.wav",
+      "sha256": "dc3b0cb63fea86bb7c72d4db353d04be2304b03da666f7444c7a820e0b136f95",
+      "seconds": 0.36,
+      "peak": 0.82,
+      "rms": 0.05315365124250091,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy_000",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/land_1.wav",
+      "sha256": "300cd87bf3f16bccc29549a9de02db79062242a03c71d17d19348a5eb537c99c",
+      "seconds": 0.36,
+      "peak": 0.6636554128073008,
+      "rms": 0.1134839824954952,
+      "loop": false,
+      "sources": [
+        "Kenney:impactPunch_heavy_000",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/contact_2.wav",
+      "sha256": "939a12c130e21466db4cd646be7693fe274f883395696de93f85e9075b4a2943",
+      "seconds": 0.36,
+      "peak": 0.82,
+      "rms": 0.05566410554501729,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy_001",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/land_2.wav",
+      "sha256": "1f4f3cc6c47c02b7b7cc1cb1f6e1007645dcfe651c1674d43cc2182b0b11003e",
+      "seconds": 0.36,
+      "peak": 0.7694320999918023,
+      "rms": 0.11882533875588723,
+      "loop": false,
+      "sources": [
+        "Kenney:impactPunch_heavy_001",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/contact_3.wav",
+      "sha256": "2dbd72f3af9b5bcf55f6830f0d762403027350697c97dd9d2b33de6d06399d32",
+      "seconds": 0.36,
+      "peak": 0.82,
+      "rms": 0.0584619690280657,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy_002",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/land_3.wav",
+      "sha256": "31212b70c39b52ac41158bef1cb251459ec488e719755adbd8fbe71dcc6f4003",
+      "seconds": 0.36,
+      "peak": 0.7492505947811746,
+      "rms": 0.12557059807278528,
+      "loop": false,
+      "sources": [
+        "Kenney:impactPunch_heavy_002",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/contact_4.wav",
+      "sha256": "9ee22feeec0d83894a6cc538d014fd29e008754d76a63987dbf8cbf6654364d8",
+      "seconds": 0.36,
+      "peak": 0.82,
+      "rms": 0.05641229360316795,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy_003",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/land_4.wav",
+      "sha256": "9eed729dad88691b77ae25bfd282a38c5c07a80d4075dfd4991323b4f983f459",
+      "seconds": 0.36,
+      "peak": 0.7906675947233702,
+      "rms": 0.12558515257923178,
+      "loop": false,
+      "sources": [
+        "Kenney:impactPunch_heavy_003",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/contact_5.wav",
+      "sha256": "fd2951c6abffba3df851235bf67daed3b7e54c140d0f22c6a4c4e38f09e82e96",
+      "seconds": 0.36,
+      "peak": 0.82,
+      "rms": 0.05828661596853154,
+      "loop": false,
+      "sources": [
+        "Kenney:impactMetal_heavy_004",
+        "original bass"
+      ]
+    },
+    {
+      "file": "assets/audio/racer/land_5.wav",
+      "sha256": "e134931274e61d9a08b7abbcee69609c3e3620df1958307859b0af501eea8740",
+      "seconds": 0.36,
+      "peak": 0.7471133570986216,
+      "rms": 0.11764260789418195,
+      "loop": false,
+      "sources": [
+        "Kenney:impactPunch_heavy_004",
+        "original bass"
+      ]
+    }
+  ]
+}

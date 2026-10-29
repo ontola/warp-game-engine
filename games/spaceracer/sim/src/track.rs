@@ -26,6 +26,8 @@ impl Geometry {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
+    #[serde(default)]
+    pub u: f64,
     #[serde(flatten)]
     pub geometry: Geometry,
     pub heading: f64,

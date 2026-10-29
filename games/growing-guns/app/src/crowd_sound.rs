@@ -36,15 +36,18 @@ const BED_CHANT: u32 = 104;
 /// The recorded set (samples/ in the addon).
 pub struct Samples { cheer: Clip, panic: Clip, surge: Clip, roar: Vec<Clip>, goal: Vec<Clip>, ooh: Vec<Clip>, scream: Vec<Clip>, chant: Vec<Clip> }
 
-/// The addon's sample folder: `--crowd DIR`, `GG_CROWD`, next to the Godot
-/// project's audio folder, or a `crowd` folder inside the sound folder.
+/// The addon's sample folder: `--crowd DIR`, `GG_CROWD`, a `crowd` folder
+/// inside the sound folder, next to the Godot project's audio folder,
+/// `audio/crowd` beside the executable, or a Godot checkout found by
+/// `sounds::godot_checkout`.
 pub fn find_dir(arg: Option<&str>, sounds: Option<&Path>) -> Option<PathBuf> {
     let mut c: Vec<PathBuf> = [arg.map(PathBuf::from), std::env::var("GG_CROWD").ok().map(PathBuf::from)].into_iter().flatten().collect();
     if let Some(s) = sounds {
         c.push(s.join("crowd"));
         c.push(s.join("../../addons/crowd_sound/samples"));
     }
-    c.push(PathBuf::from("../growing-guns/addons/crowd_sound/samples"));
+    c.extend(crate::sounds::beside_exe("audio/crowd"));
+    c.extend(crate::sounds::godot_checkout("addons/crowd_sound/samples"));
     c.into_iter().find(|p| p.join("cheer_loop.ogg").exists())
 }
 

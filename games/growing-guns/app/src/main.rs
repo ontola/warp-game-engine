@@ -153,7 +153,7 @@ fn script(args: &Args) -> Result<(), String> {
     let mixer = (samples.is_some() || patches.is_some()).then(|| {
         let music = play::music(args, samples.as_deref(), args.num("--seed", 3u64), false);
         let (mix, tx, crowd) = sounds::offline(music.as_ref());
-        if let Some(dir) = &samples { game.set_crowd(args.value("--crowd"), dir, &crowd); }
+        game.set_crowd(args.value("--crowd"), samples.as_deref(), &crowd);
         game.set_sounds(sounds::Sounds::new(tx, patches, samples.as_deref()));
         if let Some(m) = music { game.set_music(m); }
         mix

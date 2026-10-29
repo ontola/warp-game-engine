@@ -136,7 +136,27 @@ impl Rng {
     fn below(&mut self, n: usize) -> usize { (self.f() * n as f32) as usize % n.max(1) }
 }
 
+type Probes = Vec<render::irradiance_volume::Probe>;
+
+/// One stadium sky-occlusion bake (`render::sky_occlusion::bake_diffuse`).
+struct SkyBake { probes: Probes, planes: Vec<[f32;4]>, ms: f64 }
+
+fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectance: f32) -> SkyBake {
+    let start = std::time::Instant::now();
+    let probes = render::sky_occlusion::bake_diffuse(&grid, boxes, 96, reflectance).expect("valid stadium occluders");
+    let planes = if std::env::var("GG_SKY_SEPARATION").as_deref()==Ok("1") {
+        render::sky_occlusion::bake_separation_planes(&grid, boxes).expect("valid separation geometry")
+    } else { Vec::new() };
+    SkyBake { probes, planes, ms: start.elapsed().as_secs_f64()*1000.0 }
+}
+
 pub struct StadiumVisuals {
+    /// Bake the sky cache on worker threads and keep the previous one until
+    /// it lands (play: a bake is 0.25 to 1.3 s, which stalled the frame and
+    /// the audio). Off for scripts and benches, so their captures stay exact.
+    pub bake_in_background: bool,
+    sky_job: Option<std::sync::mpsc::Receiver<SkyBake>>,
+    sun_job: Option<(Vec3, std::sync::mpsc::Receiver<Result<Probes, String>>)>,
     sky_boxes: Vec<Affine3A>,
     sky_planes: Vec<[f32;4]>,
     sky_probes: Vec<render::irradiance_volume::Probe>,
@@ -247,7 +267,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -302,18 +322,18 @@ impl StadiumVisuals {
             let reflectance=Vec3::from(scene.materials[material].tint).dot(Vec3::new(0.2126,0.7152,0.0722)).clamp(0.0,0.95);
             if sky_boxes != self.sky_boxes || reflectance != self.sky_reflectance {
                 self.sky_reflectance=reflectance;
-                self.sky_sun=None;
-                let start = std::time::Instant::now();
-                self.sky_probes = render::sky_occlusion::bake_diffuse(&grid, &sky_boxes, 96, reflectance).expect("valid stadium occluders");
-                if std::env::var("GG_SKY_SEPARATION").as_deref()==Ok("1") {
-                    self.sky_planes=render::sky_occlusion::bake_separation_planes(&grid,&sky_boxes).expect("valid separation geometry");
-                }
                 self.sky_boxes = sky_boxes;
-                let mut words = render::irradiance_volume::pack(&grid, &self.sky_probes).unwrap();
-                words[7] = 2;
-                scene.aux[offset..offset + words.len()].copy_from_slice(&words);
-                self.sky_dirty = true;
-                eprintln!("stadium sky cache: {} boxes, {} probes, {:.1} ms bake", self.sky_boxes.len(), self.sky_probes.len(), start.elapsed().as_secs_f64()*1000.0);
+                if self.bake_in_background {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let boxes = self.sky_boxes.clone();
+                    std::thread::spawn(move || { let _ = tx.send(bake_sky(grid, &boxes, reflectance)); });
+                    // A newer arena replaces a bake still running.
+                    self.sky_job = Some(rx);
+                } else {
+                    self.sky_job = None;
+                    let bake = bake_sky(grid, &self.sky_boxes, reflectance);
+                    self.apply_sky(scene, offset, grid, bake);
+                }
             }
         }
         // Floodlight towers on the four corners, banks leaning over the bowl.
@@ -475,7 +495,36 @@ impl StadiumVisuals {
         }
     }
 
+    fn apply_sky(&mut self, scene: &mut Scene, offset: usize, grid: render::irradiance_volume::Grid, bake: SkyBake) {
+        self.sky_probes = bake.probes;
+        self.sky_planes = bake.planes;
+        let mut words = render::irradiance_volume::pack(&grid, &self.sky_probes).unwrap();
+        words[7] = 2;
+        scene.aux[offset..offset + words.len()].copy_from_slice(&words);
+        self.sky_sun = None;
+        self.sky_dirty = true;
+        eprintln!("stadium sky cache: {} boxes, {} probes, {:.1} ms bake", self.sky_boxes.len(), self.sky_probes.len(), bake.ms);
+    }
+
+    /// Take a finished background sky bake (`bake_in_background`).
+    pub fn poll_sky(&mut self, scene: &mut Scene) {
+        let Some(rx) = &self.sky_job else { return };
+        match rx.try_recv() {
+            Ok(bake) => {
+                self.sky_job = None;
+                if let Some((offset, grid)) = scene.irradiance_volume { self.apply_sky(scene, offset, grid, bake); }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => { eprintln!("stadium sky bake failed"); self.sky_job = None; }
+        }
+    }
+
     pub fn invalidate_lighting(&mut self) { self.sky_dirty=true; }
+
+    fn upload_sun(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, probes: &[render::irradiance_volume::Probe]) -> Result<(), String> {
+        if self.sky_planes.is_empty() { renderer.set_sky_sun(gpu, probes) }
+        else { renderer.set_sky_sun_separated(gpu, probes, &self.sky_planes) }
+    }
 
     pub fn lights(&self) -> &[LocalLight] { &self.lights }
     /// Scatter-only beams (`render::Renderer::set_volumetric_beams`).
@@ -483,14 +532,36 @@ impl StadiumVisuals {
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, now: f32, light: &render::Lighting) -> Result<(), String> {
         if let Some((_,grid))=scene.irradiance_volume {
-            if self.sky_dirty || self.sky_sun!=Some(light.sun_dir) {
-                let start=std::time::Instant::now();
-                let probes=render::sky_occlusion::bake_sun(&grid,&self.sky_boxes,&self.sky_probes,96,self.sky_reflectance,light.sun_dir)?;
-                if self.sky_planes.is_empty() { renderer.set_sky_sun(gpu,&probes)?; }
-                else { renderer.set_sky_sun_separated(gpu,&probes,&self.sky_planes)?; }
-                self.sky_sun=Some(light.sun_dir);
+            if let Some((sun, rx)) = &self.sun_job {
+                match rx.try_recv() {
+                    Ok(probes) => {
+                        let sun = *sun;
+                        self.sun_job = None;
+                        self.upload_sun(gpu, renderer, &probes?)?;
+                        self.sky_sun = Some(sun);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.sun_job = None; return Err("stadium sun bake failed".into()); }
+                }
+            }
+            // Wait for the sky bake: the sun return builds on its probes.
+            if self.sky_job.is_none() && self.sun_job.is_none() && (self.sky_dirty || self.sky_sun!=Some(light.sun_dir)) {
                 self.sky_dirty=false;
-                eprintln!("stadium sun return: {:.1} ms bake",start.elapsed().as_secs_f64()*1000.0);
+                let (boxes, sky, reflectance, sun) = (self.sky_boxes.clone(), self.sky_probes.clone(), self.sky_reflectance, light.sun_dir);
+                let bake = move || {
+                    let start=std::time::Instant::now();
+                    let probes=render::sky_occlusion::bake_sun(&grid,&boxes,&sky,96,reflectance,sun);
+                    eprintln!("stadium sun return: {:.1} ms bake",start.elapsed().as_secs_f64()*1000.0);
+                    probes
+                };
+                if self.bake_in_background {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || { let _ = tx.send(bake()); });
+                    self.sun_job = Some((sun, rx));
+                } else {
+                    self.upload_sun(gpu, renderer, &bake()?)?;
+                    self.sky_sun = Some(sun);
+                }
             }
         }
         self.stands.flush(gpu, renderer, scene)?;
