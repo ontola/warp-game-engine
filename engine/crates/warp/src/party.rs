@@ -55,10 +55,12 @@ impl Party {
 
     pub fn new(client: Client) -> Party { Party { client, session: String::new(), phase: Phase::Idle, finished: false, triggers: Vec::new(), live: None } }
 
-    /// Under a daemon the window stays minimised until a match starts.
+    /// Under a daemon the window is on screen only while the match runs: a
+    /// pause from the host (Back, Alt+Tab) hands the screen to the lobby.
+    /// The game's own Start menu is not a host pause and stays on screen.
     pub fn screen(&self) -> app::Screen {
         if !self.client.launched_by_daemon { return app::Screen::Normal; }
-        if matches!(self.phase, Phase::Running | Phase::Paused) { app::Screen::Fullscreen } else { app::Screen::Hidden }
+        if self.phase == Phase::Running { app::Screen::Fullscreen } else { app::Screen::Hidden }
     }
 
     pub fn running(&self) -> bool { self.phase == Phase::Running }

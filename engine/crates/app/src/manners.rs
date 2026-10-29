@@ -66,7 +66,7 @@ impl Manners {
         let size = w.inner_size();
         if [size.width, size.height] != surface { return; }
         w.set_visible(true);
-        println!("{} window: shown with its first frame, {}x{}", stamp(), surface[0], surface[1]);
+        println!("{} window ({}): shown with its first frame, {}x{}", stamp(), process(), surface[0], surface[1]);
         if self.screen == Screen::Fullscreen { w.focus_window(); }
         self.shown = true;
         self.settled = false;
@@ -76,10 +76,11 @@ impl Manners {
     /// A new wish from the game. Returns true when it changed.
     pub fn wish(&mut self, wish: Screen, focused: bool) -> bool {
         if wish == self.screen { return false; }
-        // Hand the foreground over before minimising: afterwards this
-        // process can no longer give it to the lobby.
-        if wish == Screen::Hidden && focused { allow_foreground(); }
-        println!("{} window: {:?} -> {wish:?}", stamp(), self.screen);
+        // Hand the foreground over before minimising or stepping back (a
+        // lobby behind the game being resumed): afterwards this process can
+        // no longer give it away.
+        if wish != Screen::Fullscreen && focused { allow_foreground(); }
+        println!("{} window ({}): {:?} -> {wish:?}", stamp(), process(), self.screen);
         self.screen = wish;
         self.since = Instant::now();
         self.asked = None;
@@ -95,7 +96,7 @@ impl Manners {
         // show it anyway rather than never.
         if !self.shown && self.screen != Screen::Hidden && self.since.elapsed() >= SHOW_ANYWAY {
             w.set_visible(true);
-            println!("{} window: shown without a matching frame", stamp());
+            println!("{} window ({}): shown without a matching frame", stamp(), process());
             self.shown = true;
         }
         if self.settled { return; }
@@ -109,7 +110,7 @@ impl Manners {
                 let minimized = w.is_minimized();
                 if minimized == Some(true) || (minimized.is_none() && self.asked.is_some()) { self.settled = true; return; }
                 if now - self.since >= OFF_SCREEN_AFTER {
-                    println!("{} window: could not minimise; parking it off-screen", stamp());
+                    println!("{} window ({}): could not minimise; parking it off-screen", stamp(), process());
                     w.set_fullscreen(None);
                     w.set_outer_position(PARKED);
                     self.parked = true;
@@ -136,11 +137,11 @@ impl Manners {
                 // the old size: leave fullscreen and ask again.
                 if w.fullscreen().is_some() && !fills(w) {
                     let (s, m) = (w.inner_size(), w.current_monitor().map(|m| m.size()).unwrap_or_default());
-                    println!("{} window: {}x{} on a {}x{} screen; fullscreen again", stamp(), s.width, s.height, m.width, m.height);
+                    println!("{} window ({}): {}x{} on a {}x{} screen; fullscreen again", stamp(), process(), s.width, s.height, m.width, m.height);
                     w.set_fullscreen(None);
                 }
                 if now - self.since >= CLAIM_FOR {
-                    println!("{} window: the window server kept the screen from us", stamp());
+                    println!("{} window ({}): the window server kept the screen from us", stamp(), process());
                     self.settled = true;
                     return;
                 }
@@ -165,6 +166,12 @@ impl Manners {
     fn monitor(&self, w: &Window) -> Option<winit::monitor::MonitorHandle> {
         if self.parked { w.primary_monitor() } else { None }
     }
+}
+
+/// This executable's name, to tell a game's window lines from the lobby's.
+fn process() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())).unwrap_or_default())
 }
 
 /// The window covers its monitor (true when that cannot be told).

@@ -362,6 +362,8 @@ return { init = init, tick = tick, players_changed = players_changed, player_joi
             }
             match step.try_recv() {
                 Ok("start") => send(&mut ws, json!({"type":"start","session":"s1"})),
+                Ok("pause") => send(&mut ws, json!({"type":"pause","session":"s1"})),
+                Ok("resume") => send(&mut ws, json!({"type":"resume","session":"s1"})),
                 Ok("tap") => send(&mut ws, json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":128,"axes":[0,0,0,0,0,0]}]})),
                 Ok("release") => send(&mut ws, json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":0,"axes":[0,0,0,0,0,0]}]})),
                 Ok("drive") => send(&mut ws, json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":0,"axes":[0,-32767,0,0,0,0]}]})),
@@ -427,6 +429,12 @@ return { init = init, tick = tick, players_changed = players_changed, player_joi
     assert_eq!(s["players"].as_array().unwrap().iter().map(|p| (p["name"].as_str().unwrap().to_string(), p["view"].clone())).collect::<Vec<_>>(),
         vec![("Joep B".to_string(), json!(0)), ("Polle".to_string(), json!(1)), ("Player 2".to_string(), Value::Null)], "people first, each with a view");
     assert_eq!(g.local_players(), 2);
+    // A host pause (Back, Alt+Tab) hands the screen to the lobby.
+    for (step, screen) in [("pause", app::Screen::Hidden), ("resume", app::Screen::Fullscreen)] {
+        go.send(step).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while g.screen() != screen { g.tick(&[Controls::default()]); std::thread::sleep(std::time::Duration::from_millis(2)); assert!(std::time::Instant::now() < deadline, "{step}: {:?}", g.screen()); }
+    }
     go.send("stop").unwrap();
     host.join().unwrap();
 }
