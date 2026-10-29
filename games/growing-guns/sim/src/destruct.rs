@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// A hit must deal this much to cost a chunk health (weaker guns only mark it).
-pub const MIN_DESTRUCTION_DAMAGE: f32 = 17.0;
+pub const MIN_DESTRUCTION_DAMAGE: f32 = 12.0;
 /// A chunk breaks when its health runs out or one sweep's damage exceeds
 /// what is left by this margin.
 pub const MIN_REMOVE_DAMAGE: f32 = 12.0;
@@ -370,8 +370,8 @@ mod tests {
         let mut a = Arena::generate(15);
         let floor = a.chunks.iter().position(|c| c.kind == Kind::Floor && c.center.y > -1.0 && c.center.x.abs() < 10.0 && c.center.z.abs() < 10.0).unwrap();
         let p = a.chunks[floor].center + Vec3::Y * a.chunks[floor].half.y;
-        // Base rifle: 16 damage, below the threshold.
-        let (dmg, r) = rifle_chip(1.0);
+        // A weak round (a third of the base damage) only marks.
+        let (dmg, r) = rifle_chip(0.2);
         assert!(dmg < MIN_DESTRUCTION_DAMAGE);
         assert!(a.carve(&[Carve { pos: p, radius: r, damage: dmg }]).is_empty());
         // Damage card x1.5: 19.5 per hit wears the chunk down.
