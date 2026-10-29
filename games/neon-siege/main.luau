@@ -1146,9 +1146,15 @@ local function pickups_step(dt)
 		local q = s.pickups[i]
 		q.ttl -= dt
 		local p, d = nearest(q.x, q.y)
-		if p and d < 80 ^ 2 then
-			q.x += (p.x - q.x) * dt * 8
-			q.y += (p.y - q.y) * dt * 8
+		-- Once a pickup notices you it keeps homing in and speeds up, so it
+		-- always catches you (a fixed pull trailed a fleeing pilot forever).
+		if p and (q.magnet or d < 80 ^ 2) then
+			q.magnet = true
+			q.speed = (q.speed or 200) + 1600 * dt
+			local dist = math.max(1, math.sqrt(d))
+			local step = math.min(dist, q.speed * dt)
+			q.x += (p.x - q.x) / dist * step
+			q.y += (p.y - q.y) / dist * step
 		end
 		if p and d < 22 ^ 2 then
 			if q.kind == "repair" then
