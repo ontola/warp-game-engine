@@ -48,6 +48,12 @@ const TREES_RECENTRE: f32 = 300.0;
 /// `RECIPE_CEILING`) the scene follows every `RECIPE_RECENTRE` metres.
 const RECIPE_RECENTRE: f32 = 60.0;
 const RECIPE_CEILING: f32 = 80.0;
+/// Mountain shadows past the shadow maps come from a heightfield this many
+/// metres square at this spacing, rebuilt once the camera has moved
+/// `SHADOW_RECENTRE` from its centre.
+const SHADOW_SIZE: f32 = 20000.0;
+const SHADOW_CELL: f32 = 20.0;
+const SHADOW_RECENTRE: f32 = 4000.0;
 /// Above this height over the ground the grass is too small to matter and
 /// is not followed.
 const GRASS_CEILING: f32 = 120.0;
@@ -148,7 +154,7 @@ impl Fly {
         if want != self.built_world { return true; }
         let low = self.pos.y - self.ground(self.pos.x, self.pos.z) < RECIPE_CEILING;
         let reach = if want.trees && want.recipe_trees > 0 && low { RECIPE_RECENTRE }
-            else if want.grass { GRASS_RECENTRE } else if want.trees { TREES_RECENTRE } else { return false };
+            else if want.grass { GRASS_RECENTRE } else if want.trees { TREES_RECENTRE } else { SHADOW_RECENTRE };
         self.world_at.is_none_or(|c| (c - self.pos).with_y(0.0).length() > reach)
     }
 
@@ -334,7 +340,7 @@ impl Default for World {
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
-/// `centre` as `world` asks. Returns the centre when there is grass or trees.
+/// `centre` as `world` asks, and the shadow heightfield around it. Returns the centre.
 fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
@@ -367,6 +373,11 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
         }
         recipe_spruces(&mut scene, &trees[..near])?;
     }
+    // The sun traced through a coarse heightfield shades the valleys behind
+    // mountains past the reach of the shadow maps.
+    scene.heightfield = procedural_terrain::shadow_heightfield(seed, &style, [centre.x, centre.z], SHADOW_SIZE, SHADOW_CELL, 3.0);
+    scene.terrain_visibility_complete = true;
+    scene.world_terrain_visibility = true;
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     let mut light = Lighting::default();
     let sky = AtmosphereCache::default().get_or_bake(&Atmosphere::default(), SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
@@ -377,7 +388,7 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     // distant trees flickered (headless: 0.5-5k changed pixels a frame from a
     // still camera with TAA, ~300 without). Sideways plays without TAA too.
     light.taa = 0.0;
-    Ok((scene, light, pool, (world.grass || world.trees).then_some(centre)))
+    Ok((scene, light, pool, Some(centre)))
 }
 
 /// Sideways' approved r4 spruce recipe (games/sideways plant_species.rs);

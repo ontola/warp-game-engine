@@ -38,6 +38,40 @@ pub struct TerrainSpec {
     pub style: terrain_field::Style,
 }
 
+/// A heightfield of the terrain for sun visibility past the shadow maps
+/// (`Scene::world_terrain_visibility`): `size` metres square around
+/// `centre` at `cell` spacing. Each height is the lowest of its own and its
+/// neighbours' samples less `margin`, so the field stays under the finer
+/// mesh and never shadows the ground it is meant to light; mountains lose
+/// a few metres, which far shadows do not show.
+pub fn shadow_heightfield(seed: u32, style: &terrain_field::Style, centre: [f32; 2], size: f32, cell: f32, margin: f32) -> crate::scene::Heightfield {
+    let n = (size / cell).ceil() as u32 + 1;
+    let origin = [(centre[0] / cell).floor() * cell - (n / 2) as f32 * cell, (centre[1] / cell).floor() * cell - (n / 2) as f32 * cell];
+    let mut raw = vec![0.0f32; (n * n) as usize];
+    let threads = std::thread::available_parallelism().map_or(4, |t| t.get());
+    let rows = (n as usize).div_ceil(threads);
+    std::thread::scope(|s| {
+        for (k, chunk) in raw.chunks_mut(rows * n as usize).enumerate() {
+            s.spawn(move || {
+                for (i, h) in chunk.iter_mut().enumerate() {
+                    let (x, z) = ((i % n as usize) as f32, (k * rows + i / n as usize) as f32);
+                    *h = terrain_field::eval(origin[0] + x * cell, origin[1] + z * cell, cell, seed, style).pos.y;
+                }
+            });
+        }
+    });
+    let at = |x: i32, z: i32| raw[(z.clamp(0, n as i32 - 1) as u32 * n + x.clamp(0, n as i32 - 1) as u32) as usize];
+    let mut heights = vec![0.0f32; raw.len()];
+    for z in 0..n as i32 {
+        for x in 0..n as i32 {
+            let mut lo = f32::MAX;
+            for dz in -1..=1 { for dx in -1..=1 { lo = lo.min(at(x + dx, z + dz)); } }
+            heights[(z as u32 * n + x as u32) as usize] = lo - margin;
+        }
+    }
+    crate::scene::Heightfield { origin, cell, w: n, h: n, heights }
+}
+
 /// Reserve `capacity` patch slots that draw with `material`.
 pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32, style: terrain_field::Style) -> TerrainSpec {
     assert!(scene.procedural_terrain.is_none(), "one procedural terrain per scene");
