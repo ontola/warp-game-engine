@@ -50,8 +50,12 @@ cargo run --release -p warp -- run games/hello-warp                   # a Luau g
 
 Feedback loop with a playtester: F12 writes `build/screenshots/<game>-<ms>.png`
 plus a `.json` with the game's state, camera, GPU, fps and debug-menu settings,
-and copies the image to the clipboard. `terrain_fly --from <that.json>` puts
-the camera back where it was. F3 opens the engine debug menu (render and
+and copies the image to the clipboard, for every game on the `app` shell
+(Sideways included). Each capture is also noted in
+`<temp>/warp-live/feedback.jsonl`; the live MCP tool `feedback` (in every
+`--live` game and in `warp-mcp`, also with no game running) returns the
+newest captures, image and JSON together. `terrain_fly --from <that.json>`
+puts the camera back where it was. F3 opens the engine debug menu (render and
 light switches, LOD, render height, GPU pass times; games add their own).
 
 Procedural terrain has one height function in two copies that must stay

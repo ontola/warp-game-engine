@@ -29,7 +29,6 @@ mod render_baseline;
 mod procedural_rocks;
 mod procedural_sky;
 mod roadside_crowds;
-mod screenshot;
 mod gamenight;
 mod shot;
 mod visuals;
