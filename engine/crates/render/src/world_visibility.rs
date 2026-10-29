@@ -17,7 +17,9 @@ impl Resources {
         let start=std::time::Instant::now();
         let budget=std::env::var("KERN_TERRAIN_NODE_BUDGET").ok().and_then(|v|v.parse::<u32>().ok())
             .unwrap_or(crate::terrain_trace::DEFAULT_NODE_BUDGET).min(crate::terrain_trace::MAX_NODE_BUDGET);
-        let buffer=if enabled {
+        // A baked sun visibility replaces the per-pixel trace and its hierarchy.
+        let baked=enabled && !scene.terrain_sun.is_empty() && scene.terrain_sun.len()==scene.heightfield.heights.len();
+        let buffer=if enabled && !baked {
             let coverage=if scene.terrain_visibility_complete {Coverage::CompleteLoadedTerrain}else{Coverage::UnknownOutside};
             let hierarchy=GpuHierarchy::new(gpu,&scene.heightfield,coverage,Some(height_view))?;
             let mut encoder=gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label:Some("world terrain hierarchy once")});
@@ -30,7 +32,7 @@ impl Resources {
             gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("disabled world visibility"),size:320,
                 usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false})
         };
-        let params=[u32::from(enabled) as f32,budget as f32,scene.terrain_visual_offset_m.max(0.0),0.0];
+        let params=[u32::from(enabled) as f32,budget as f32,scene.terrain_visual_offset_m.max(0.0),u32::from(baked) as f32];
         let uniform=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("world visibility policy"),
             contents:bytemuck::cast_slice(&params),usage:wgpu::BufferUsages::UNIFORM});
         let bytes=buffer.size()+uniform.size();
