@@ -54,8 +54,8 @@ const BD_NEAR_CELL: f32 = 3.4;
 const BD_FAR_CELL: f32 = 8.0;
 const BD_NEAR_DRIFT: vec2<f32> = vec2<f32>(0.05, 0.025);
 const BD_FAR_DRIFT: vec2<f32> = vec2<f32>(-0.03, 0.012);
-const BD_MEMBRANE: vec3<f32> = vec3<f32>(0.9, 0.35, 0.45);
-const BD_FAR: vec3<f32> = vec3<f32>(0.22, 0.07, 0.2);
+const BD_MEMBRANE: vec3<f32> = vec3<f32>(0.42, 0.3, 0.38);
+const BD_FAR: vec3<f32> = vec3<f32>(0.1, 0.06, 0.1);
 const BD_PLASMA: vec3<f32> = vec3<f32>(0.03, 0.006, 0.018);
 
 fn bd_hash(p: vec2<f32>) -> vec2<f32> {
