@@ -23,7 +23,7 @@ const fn p(x0: f64, x1: f64, top: f64, depth: f64) -> Platform {
 
 pub const TV_CONSOLE: Platform = p(-3.3, 3.3, 0.9, -1.8);
 
-pub const PLATFORMS: [Platform; 17] = [
+pub const PLATFORMS: [Platform; 16] = [
     // Game bookcase and the display stand.
     p(-10.3, -8.9, 2.65, -1.95),
     p(-8.7, -6.5, 0.8, -1.75),
@@ -42,10 +42,10 @@ pub const PLATFORMS: [Platform; 17] = [
     // Shelf over the couch and the plaque ledge on the right.
     p(5.2, 7.7, 4.3, -2.0),
     p(8.6, 11.6, 3.15, -2.0),
-    // High ledges for the brave.
+    // High ledges for the brave. None above the neon shelf: it blocked
+    // jumps there (Joep).
     p(-11.6, -9.6, 7.3, -2.0),
     p(-6.4, -4.4, 8.2, -2.0),
-    p(-1.2, 1.2, 9.2, -2.0),
     p(4.4, 6.4, 8.2, -2.0),
     p(9.0, 11.6, 6.6, -2.0),
 ];
