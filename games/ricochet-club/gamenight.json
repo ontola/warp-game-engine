@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ontola/gamenight/main/catalog/schema.json",
+  "id": "ricochet-club-warp",
+  "title": "Ricochet Club",
+  "tagline": "Every wall is another angle.",
+  "developer": "Joep Meindertsma",
+  "players": {
+    "min": 1,
+    "max": 4,
+    "best": 4
+  },
+  "match_minutes": 1,
+  "price": "free",
+  "tags": [
+    "versus",
+    "arcade",
+    "shooter",
+    "warp",
+    "luau"
+  ],
+  "integration": {
+    "level": "integrated",
+    "protocol": 1
+  },
+  "links": {}
+}
