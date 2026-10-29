@@ -148,12 +148,28 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     let warp = vec2<f32>(tf_noised(p * 1.5 + vec2<f32>(5.2, 1.3), seed + 3u).x, tf_noised(p * 1.5 + vec2<f32>(1.7, 9.2), seed + 3u).x);
     var q = p + warp * 0.12;
 
+    // Rivers (about 3 km apart) run on a flat valley floor, level across,
+    // with walls that scale with the relief they cut through, and meander
+    // inside it. The floor is the kilometre shapes at the centre line;
+    // in the high mountains these are glacial troughs.
+    let river_n = tf_noised(p * 0.7 + warp * 0.3 + vec2<f32>(9.1, 4.4), seed + 4u);
+    // Only some rivers flow; `rivers` sets how many.
+    let river_on = max(tf_smooth(-0.15, 0.15, 2.2 * st.rivers - 1.1 + tf_noised(p * 0.35 + vec2<f32>(2.7, 5.1), seed + 20u).x),
+        tf_smooth(0.3, 0.7, alpine));
+    let river = mix(1000.0, tf_line(river_n, 0.7), river_on);
+    let rn = river_n.yz / (sqrt(river_n.y * river_n.y + river_n.z * river_n.z) + 1e-6) * select(-1.0, 1.0, river_n.x >= 0.0);
+    let rs = clamp(river / 1400.0, 0.0, 1.0);
+    // High peaks stand back from the troughs: the relief grows away from them.
+    let pt = clamp((rs - 0.3) / 0.7, 0.0, 1.0);
     // Eroded fBm: accumulated slope damps finer octaves, so peaks stay
     // sharp and valleys smooth. 2 km down to 32 m.
-    let amp = 100.0 * st.hills + 640.0 * mountains + 700.0 * alpine;
+    let amp = 100.0 * st.hills + 640.0 * mountains - 340.0 * alpine + 1100.0 * alpine * pt * pt * (3.0 - 2.0 * pt);
+    let damp = rn * (alpine * 1100.0 * 6.0 * pt * (1.0 - pt) / (0.7 * 1400.0));
     var h = 0.0;
     var low = 0.0;
+    var low1 = 0.0;
     var low_slope = vec2<f32>(0.0);
+    var low_slope1 = vec2<f32>(0.0);
     var b = 1.0;
     var d = vec2<f32>(0.0);
     var slope = vec2<f32>(0.0);
@@ -174,6 +190,10 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
         // Valley floors follow the unfolded kilometre shapes, which match
         // the slope estimate.
         low += b * n.x * e * w * select(0.0, 1.0, i <= 2);
+        low1 += b * n.x * e * w * select(0.0, 1.0, i <= 1);
+        if i == 1 {
+            low_slope1 = slope;
+        }
         if i == 2 {
             low_slope = slope;
         }
@@ -182,23 +202,23 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
         wl *= 0.5;
         q = tf_rotate(q);
     }
-    // Massifs stand on a broad uplift that lifts their valleys a little and
-    // carry long ridges a few kilometres apart. The fold is rounded and
-    // eased, so the slope has no kink anywhere.
+    // Massifs rise between the trough valleys, with long ridges a few
+    // kilometres apart on top. Folds and rises are eased, so the slope has
+    // no kink anywhere.
     let big = tf_noised(p * 0.5 + vec2<f32>(4.4, 7.3), seed + 21u);
     let fold = sqrt(big.x * big.x + 0.01);
     let fu = clamp((0.55 - fold) / 0.45, 0.0, 1.0);
-    let uplift = alpine * (300.0 + 1500.0 * fu * fu * (3.0 - 2.0 * fu));
-    let duplift = big.yz * (-alpine * 1500.0 * 6.0 * fu * (1.0 - fu) / 0.45 * big.x / fold * (0.5 / TF_BASE));
+    let uplift = alpine * (300.0 + 700.0 * rs * rs * (3.0 - 2.0 * rs) + 800.0 * fu * fu * (3.0 - 2.0 * fu));
+    let duplift = big.yz * (-alpine * 800.0 * 6.0 * fu * (1.0 - fu) / 0.45 * big.x / fold * (0.5 / TF_BASE))
+        + rn * (alpine * 700.0 * 6.0 * rs * (1.0 - rs) / 1400.0);
     var y = h * amp + uplift;
-    var g = slope * (amp / TF_BASE) + duplift;
+    var g = slope * (amp / TF_BASE) + damp * h + duplift;
     let g0 = g;
     let up0 = 1.0 / sqrt(1.0 + g.x * g.x + g.y * g.y);
 
     // Crags: bedrock mountainsides break into cliff bands and grassy
-    // benches, about 24 m apart.
-    // Crag bands come and go along the slope, wander in height and sink
-    // under the snow, so they never read as stairs.
+    // benches, about 24 m apart. Bands come and go along the slope, wander
+    // in height and sink under the snow, so they never read as stairs.
     let crag = min(2.0 * st.rocks, 1.0) * bedrock * tf_smooth(0.2, 0.7, mountains) * tf_smooth(0.97, 0.85, up0) * tf_fade(24.0, cut)
         * tf_smooth(-0.15, 0.35, tf_noised(p * 3.0 + warp, seed + 22u).x) * (1.0 - 0.8 * tf_smooth(st.snow_line - 300.0, st.snow_line, y));
     if crag > 0.0 {
@@ -211,22 +231,19 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
         g *= 1.0 + crag * (k - 1.0);
     }
 
-    // Rivers (about 3 km apart) run on a flat valley floor, level across,
-    // with walls that scale with the relief they cut through, and meander
-    // inside it. The floor is the kilometre shapes at the centre line.
-    let river_n = tf_noised(p * 0.7 + warp * 0.3 + vec2<f32>(9.1, 4.4), seed + 4u);
-    // Only some rivers flow; `rivers` sets how many.
-    let river_on = tf_smooth(-0.15, 0.15, 2.2 * st.rivers - 1.1 + tf_noised(p * 0.35 + vec2<f32>(2.7, 5.1), seed + 20u).x);
-    let river = mix(1000.0, tf_line(river_n, 0.7), river_on);
-    let rn = river_n.yz / (sqrt(river_n.y * river_n.y + river_n.z * river_n.z) + 1e-6) * select(-1.0, 1.0, river_n.x >= 0.0);
-    let gl = low_slope * (amp / TF_BASE);
-    let floor_y = (low - 0.1) * amp + uplift - min(river, 600.0) * (gl.x * rn.x + gl.y * rn.y);
+    // High troughs keep only the broadest shapes, so their floors run level.
+    let gl = mix(low_slope, low_slope1, alpine) * (amp / TF_BASE);
+    let floor_y = (mix(low, low1, alpine) - 0.1) * amp + uplift - min(river, 600.0) * (gl.x * rn.x + gl.y * rn.y);
     let relief = max(y - floor_y, 0.0);
-    let floor_w = 20.0 + 0.12 * relief;
-    let wall = 50.0 + 2.0 * relief;
-    let rv = tf_smooth(floor_w, floor_w + wall, river);
+    // Glaciers carved the high valleys into troughs: a broad flat floor,
+    // walls that rise steeply and ease into shoulders (Lauterbrunnen).
+    let floor_w = mix(20.0 + 0.12 * relief, 80.0 + 0.3 * relief, alpine);
+    let wall = mix(50.0 + 2.0 * relief, 200.0 + 1.4 * relief, alpine);
     let rt = clamp((river - floor_w) / wall, 0.0, 1.0);
-    let drv = 6.0 * rt * (1.0 - rt) / wall;
+    let ru = 1.0 - rt;
+    let rv = mix(rt * rt * (3.0 - 2.0 * rt), 1.0 - ru * ru * ru, alpine);
+    // The floor is flat: no slope where rt is clamped at 0.
+    let drv = select(0.0, mix(6.0 * rt * ru, 3.0 * ru * ru, alpine) / wall, rt > 0.0);
     y = floor_y + (y - floor_y) * rv;
     g = g * rv + rn * (relief * drv);
     let meander = tf_noised(p * 9.0 + warp, seed + 13u).x * 0.7 * floor_w;
@@ -288,7 +305,8 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     let steep = sqrt(g.x * g.x + g.y * g.y);
     let up = 1.0 / sqrt(1.0 + steep * steep);
 
-    var rock = clamp(tf_smooth(0.8, 0.6, up) + 0.7 * bedrock * tf_smooth(0.95, 0.85, up) + tf_smooth(0.0, 0.15, tor * tor_h) * tor_fade, 0.0, 1.0);
+    var rock = clamp(tf_smooth(0.8, 0.6, up) + 0.7 * bedrock * tf_smooth(0.95, 0.85, up) + 0.5 * mountains * tf_smooth(0.85, 0.7, up)
+        + tf_smooth(st.snow_line - 500.0, st.snow_line, y) * tf_smooth(0.93, 0.8, up) + tf_smooth(0.0, 0.15, tor * tor_h) * tor_fade, 0.0, 1.0);
     let scree = tf_smooth(0.85, 0.72, up) * (1.0 - tf_smooth(0.65, 0.55, up)) * (0.4 + 0.6 * bedrock) * mountains
         + 0.9 * tf_smooth(2.0, 0.6, stream) * notch + 0.8 * rf * tf_smooth(ch_w + 2.5, ch_w, ch) * tf_smooth(-0.1, 0.2, tf_noised(p * 40.0, seed + 16u).x);
 
@@ -302,14 +320,20 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     // Fine relief, far rougher on rock; calm on valley floors.
     let rough = 0.15 + 0.85 * rock;
     var db = b * amp;
+    // Ground keeps getting rougher the closer you look, whatever the relief:
+    // metres of roughness per octave fall off as wavelength^0.6, from
+    // 0.8 m at 16 m: hummocks a hand high on pasture. Rock breaks into
+    // sharp creases.
+    var da = 0.8 * mix(0.6 + 0.8 * tf_smooth(0.97, 0.8, up0) + 0.3 * moor, 2.5, rock);
     for (var i = 7; i < 17; i++) {
         let w = tf_fade(wl, cut);
         if w <= 0.0 { break; }
         let n = tf_noised(q, seed + 10u + u32(i));
         d += n.yz;
         let e = 1.0 / (1.0 + 0.25 * (d.x * d.x + d.y * d.y));
-        y += db * n.x * e * w * rough * (0.35 + 0.65 * open);
+        y += (db * n.x * rough + da * mix(n.x, 0.45 - abs(n.x), rock)) * e * w * (0.35 + 0.65 * open);
         db *= 0.5;
+        da *= 0.6597539;
         wl *= 0.5;
         q = tf_rotate(q);
     }
@@ -341,6 +365,6 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     // Snow follows the broad slope, so ledges and steps do not stripe it;
     // only sheer walls stay bare.
     o.snow = tf_smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * tf_noised(p * 12.0, seed + 19u).x)
-        * tf_smooth(0.62, 0.8, up0) * tf_smooth(0.35, 0.55, up);
+        * tf_smooth(0.5, 0.7, up0) * tf_smooth(0.35, 0.55, up);
     return o;
 }

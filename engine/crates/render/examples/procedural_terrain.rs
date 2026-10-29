@@ -64,8 +64,19 @@ fn shots(seed: u32, style: &Style) -> Vec<Shot> {
         let pos = eye(x - 90.0, z - 60.0, 2.0);
         v.push(Shot { name: "crags", pos, target: Vec3::new(x, ground(x, z, seed, style) + 10.0, z), fov: 60.0 });
     }
-    // High mountains: from a valley up to the snow, and over the summits.
-    if let Some((x, z)) = find(seed, style, |s| s.amp > 900.0 && s.up > 0.9 && s.snow < 0.05 && s.water == 0.0 && s.rock < 0.5) {
+    // High mountains: along a trough valley, from its floor up to the snow,
+    // and over the summits.
+    if let Some((x, z)) = find(seed, style, |s| s.amp > 350.0 && s.pos.y > 300.0 && s.up > 0.99 && s.snow == 0.0 && s.water == 0.0 && s.rock < 0.1 && s.pos.y < 900.0) {
+        let low = (0..64).map(|k| {
+            let a = k as f32 * 0.098;
+            (a, ground(x + 1500.0 * a.cos(), z + 1500.0 * a.sin(), seed, style))
+        }).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap().0;
+        let (dx, dz) = (low.cos(), low.sin());
+        let t = Vec3::new(x + 4000.0 * dx, ground(x + 4000.0 * dx, z + 4000.0 * dz, seed, style) + 300.0, z + 4000.0 * dz);
+        v.push(Shot { name: "trough", pos: eye(x - 600.0 * dx, z - 600.0 * dz, 250.0), target: t, fov: 60.0 });
+        v.push(Shot { name: "valley-floor", pos: eye(x, z, 1.8), target: t, fov: 60.0 });
+    }
+    if let Some((x, z)) = find(seed, style, |s| s.amp > 350.0 && s.pos.y > 300.0 && s.up > 0.9 && s.snow < 0.05 && s.water == 0.0 && s.rock < 0.5) {
         let pos = eye(x, z, 2.0);
         if let Some((px, pz)) = (0..64).map(|k| {
             let a = k as f32 * 0.098;
@@ -75,7 +86,7 @@ fn shots(seed: u32, style: &Style) -> Vec<Shot> {
             v.push(Shot { name: "alpine", pos, target: t, fov: 55.0 });
         }
     }
-    if let Some((x, z)) = find(seed, style, |s| s.snow > 0.8 && s.amp > 900.0) {
+    if let Some((x, z)) = find(seed, style, |s| s.snow > 0.8 && s.amp > 350.0 && s.pos.y > 300.0) {
         let pos = eye(x - 2200.0, z - 1500.0, 900.0);
         v.push(Shot { name: "summits", pos, target: Vec3::new(x, ground(x, z, seed, style), z), fov: 55.0 });
     }

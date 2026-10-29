@@ -43,7 +43,8 @@ impl Sample {
     pub fn error(&self, cell: f32) -> f32 {
         let rough = 0.15 + 0.85 * self.rock.max(((cell - 2.0) / 6.0).clamp(0.0, 1.0));
         let ledges = if cell * 4.0 > 5.5 { 0.0 } else { 1.2 * self.rock };
-        0.5 * cell * self.amp / BASE * rough + ledges * (cell / 1.4).min(1.0)
+        let fine = 0.03 * (1.4 + 1.1 * self.rock) * cell.powf(0.6);
+        0.5 * cell * self.amp / BASE * rough + fine + ledges * (cell / 1.4).min(1.0)
     }
 }
 
@@ -86,7 +87,7 @@ impl Style {
     /// Rolling farmland: low hills, rivers, no high ground.
     pub fn lowland() -> Self { Style { mountains: 0.0, peaks: 0.0, hills: 1.2, rivers: 0.8, rocks: 0.2, moor: 0.3, ..Style::default() } }
     /// High snowy massifs over green valleys.
-    pub fn alpine() -> Self { Style { mountains: 0.8, peaks: 1.0, snow_line: 1700.0, rocks: 0.8, moor: 0.2, ..Style::default() } }
+    pub fn alpine() -> Self { Style { mountains: 0.8, peaks: 1.0, snow_line: 1500.0, rocks: 0.8, moor: 0.2, ..Style::default() } }
     /// A style by name: default, lowland or alpine.
     pub fn named(name: &str) -> Option<Self> {
         match name { "default" => Some(Style::default()), "lowland" => Some(Style::lowland()), "alpine" => Some(Style::alpine()), _ => None }
@@ -145,6 +146,8 @@ fn rotate(q: Vec2) -> Vec2 { Vec2::new(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * 
 
 fn mix(a: f32, b: f32, t: f32) -> f32 { a * (1.0 - t) + b * t }
 
+fn mix2(a: Vec2, b: Vec2, t: f32) -> Vec2 { a * (1.0 - t) + b * t }
+
 fn boulders(x: f32, z: f32, density: f32, cut: f32, seed: u32) -> (f32, f32) {
     let cell = 7.0f32;
     let cx = (x / cell).floor() as i32;
@@ -192,10 +195,21 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let warp = Vec2::new(noised(p * 1.5 + Vec2::new(5.2, 1.3), sd(3)).x, noised(p * 1.5 + Vec2::new(1.7, 9.2), sd(3)).x);
     let mut q = p + warp * 0.12;
 
-    let amp = 100.0 * st.hills + 640.0 * mountains + 700.0 * alpine;
+    let river_n = noised(p * 0.7 + warp * 0.3 + Vec2::new(9.1, 4.4), sd(4));
+    let river_on = smooth(-0.15, 0.15, 2.2 * st.rivers - 1.1 + noised(p * 0.35 + Vec2::new(2.7, 5.1), sd(20)).x)
+        .max(smooth(0.3, 0.7, alpine));
+    let river = mix(1000.0, line(river_n, 0.7), river_on);
+    let rn = Vec2::new(river_n.y, river_n.z) / ((river_n.y * river_n.y + river_n.z * river_n.z).sqrt() + 1e-6) * sign(river_n.x >= 0.0);
+    let rs = (river / 1400.0).clamp(0.0, 1.0);
+    // High peaks stand back from the troughs: the relief grows away from them.
+    let pt = ((rs - 0.3) / 0.7).clamp(0.0, 1.0);
+    let amp = 100.0 * st.hills + 640.0 * mountains - 340.0 * alpine + 1100.0 * alpine * pt * pt * (3.0 - 2.0 * pt);
+    let damp = rn * (alpine * 1100.0 * 6.0 * pt * (1.0 - pt) / (0.7 * 1400.0));
     let mut h = 0.0f32;
     let mut low = 0.0f32;
+    let mut low1 = 0.0f32;
     let mut low_slope = Vec2::ZERO;
+    let mut low_slope1 = Vec2::ZERO;
     let mut b = 1.0f32;
     let mut d = Vec2::ZERO;
     let mut slope = Vec2::ZERO;
@@ -210,6 +224,10 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
         let k = if (1..=4).contains(&i) { 0.8 * mountains } else { 0.0 };
         h += b * (n.x + k * (0.4 - n.x.abs() - n.x)) * e * w;
         if i <= 2 { low += b * n.x * e * w; }
+        if i <= 1 { low1 += b * n.x * e * w; }
+        if i == 1 {
+            low_slope1 = slope;
+        }
         if i == 2 {
             low_slope = slope;
         }
@@ -218,13 +236,17 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
         wl *= 0.5;
         q = rotate(q);
     }
+    // Massifs rise between the trough valleys, with long ridges a few
+    // kilometres apart on top. Folds and rises are eased, so the slope has
+    // no kink anywhere.
     let big = noised(p * 0.5 + Vec2::new(4.4, 7.3), sd(21));
     let fold = (big.x * big.x + 0.01).sqrt();
     let fu = ((0.55 - fold) / 0.45).clamp(0.0, 1.0);
-    let uplift = alpine * (300.0 + 1500.0 * fu * fu * (3.0 - 2.0 * fu));
-    let duplift = Vec2::new(big.y, big.z) * (-alpine * 1500.0 * 6.0 * fu * (1.0 - fu) / 0.45 * big.x / fold * (0.5 / BASE));
+    let uplift = alpine * (300.0 + 700.0 * rs * rs * (3.0 - 2.0 * rs) + 800.0 * fu * fu * (3.0 - 2.0 * fu));
+    let duplift = Vec2::new(big.y, big.z) * (-alpine * 800.0 * 6.0 * fu * (1.0 - fu) / 0.45 * big.x / fold * (0.5 / BASE))
+        + rn * (alpine * 700.0 * 6.0 * rs * (1.0 - rs) / 1400.0);
     let mut y = h * amp + uplift;
-    let mut g = slope * (amp / BASE) + duplift;
+    let mut g = slope * (amp / BASE) + damp * h + duplift;
     let g0 = g;
     let up0 = 1.0 / (1.0 + g.x * g.x + g.y * g.y).sqrt();
 
@@ -242,18 +264,19 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
         g *= 1.0 + crag * (k - 1.0);
     }
 
-    let river_n = noised(p * 0.7 + warp * 0.3 + Vec2::new(9.1, 4.4), sd(4));
-    let river_on = smooth(-0.15, 0.15, 2.2 * st.rivers - 1.1 + noised(p * 0.35 + Vec2::new(2.7, 5.1), sd(20)).x);
-    let river = mix(1000.0, line(river_n, 0.7), river_on);
-    let rn = Vec2::new(river_n.y, river_n.z) / ((river_n.y * river_n.y + river_n.z * river_n.z).sqrt() + 1e-6) * sign(river_n.x >= 0.0);
-    let gl = low_slope * (amp / BASE);
-    let floor_y = (low - 0.1) * amp + uplift - river.min(600.0) * (gl.x * rn.x + gl.y * rn.y);
+    // High troughs keep only the broadest shapes, so their floors run level.
+    let gl = mix2(low_slope, low_slope1, alpine) * (amp / BASE);
+    let floor_y = (mix(low, low1, alpine) - 0.1) * amp + uplift - river.min(600.0) * (gl.x * rn.x + gl.y * rn.y);
     let relief = (y - floor_y).max(0.0);
-    let floor_w = 20.0 + 0.12 * relief;
-    let wall = 50.0 + 2.0 * relief;
-    let rv = smooth(floor_w, floor_w + wall, river);
+    // Glaciers carved the high valleys into troughs: a broad flat floor,
+    // walls that rise steeply and ease into shoulders (Lauterbrunnen).
+    let floor_w = mix(20.0 + 0.12 * relief, 80.0 + 0.3 * relief, alpine);
+    let wall = mix(50.0 + 2.0 * relief, 200.0 + 1.4 * relief, alpine);
     let rt = ((river - floor_w) / wall).clamp(0.0, 1.0);
-    let drv = 6.0 * rt * (1.0 - rt) / wall;
+    let ru = 1.0 - rt;
+    let rv = mix(rt * rt * (3.0 - 2.0 * rt), 1.0 - ru * ru * ru, alpine);
+    // The floor is flat: no slope where rt is clamped at 0.
+    let drv = if rt > 0.0 { mix(6.0 * rt * ru, 3.0 * ru * ru, alpine) / wall } else { 0.0 };
     y = floor_y + (y - floor_y) * rv;
     g = g * rv + rn * (relief * drv);
     let meander = noised(p * 9.0 + warp, sd(13)).x * 0.7 * floor_w;
@@ -306,7 +329,8 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     let steep = (g.x * g.x + g.y * g.y).sqrt();
     let up = 1.0 / (1.0 + steep * steep).sqrt();
 
-    let mut rock = (smooth(0.8, 0.6, up) + 0.7 * bedrock * smooth(0.95, 0.85, up) + smooth(0.0, 0.15, tor * tor_h) * tor_fade).clamp(0.0, 1.0);
+    let mut rock = (smooth(0.8, 0.6, up) + 0.7 * bedrock * smooth(0.95, 0.85, up) + 0.5 * mountains * smooth(0.85, 0.7, up)
+        + smooth(st.snow_line - 500.0, st.snow_line, y) * smooth(0.93, 0.8, up) + smooth(0.0, 0.15, tor * tor_h) * tor_fade).clamp(0.0, 1.0);
     let scree = smooth(0.85, 0.72, up) * (1.0 - smooth(0.65, 0.55, up)) * (0.4 + 0.6 * bedrock) * mountains
         + 0.9 * smooth(2.0, 0.6, stream) * notch + 0.8 * rf * smooth(ch_w + 2.5, ch_w, ch) * smooth(-0.1, 0.2, noised(p * 40.0, sd(16)).x);
 
@@ -318,14 +342,20 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
 
     let rough = 0.15 + 0.85 * rock;
     let mut db = b * amp;
+    // Ground keeps getting rougher the closer you look, whatever the relief:
+    // metres of roughness per octave fall off as wavelength^0.6, from
+    // 0.8 m at 16 m: hummocks a hand high on pasture. Rock breaks into
+    // sharp creases.
+    let mut da = 0.8 * mix(0.6 + 0.8 * smooth(0.97, 0.8, up0) + 0.3 * moor, 2.5, rock);
     for i in 7..17u32 {
         let w = fade(wl, cut);
         if w <= 0.0 { break; }
         let n = noised(q, sd(10 + i));
         d += Vec2::new(n.y, n.z);
         let e = 1.0 / (1.0 + 0.25 * (d.x * d.x + d.y * d.y));
-        y += db * n.x * e * w * rough * (0.35 + 0.65 * open);
+        y += (db * n.x * rough + da * mix(n.x, 0.45 - n.x.abs(), rock)) * e * w * (0.35 + 0.65 * open);
         db *= 0.5;
+        da *= 0.659_753_9;
         wl *= 0.5;
         q = rotate(q);
     }
@@ -346,7 +376,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     // Snow follows the broad slope, so ledges and steps do not stripe it;
     // only sheer walls stay bare.
     let snow = smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * noised(p * 12.0, sd(19)).x)
-        * smooth(0.62, 0.8, up0) * smooth(0.35, 0.55, up);
+        * smooth(0.5, 0.7, up0) * smooth(0.35, 0.55, up);
     Sample { pos, up, rock, scree: scree.clamp(0.0, 1.0), wet: smooth(8.0, 1.0, near_wet), water, moor, snow, amp }
 }
 
