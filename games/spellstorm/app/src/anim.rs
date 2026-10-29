@@ -147,6 +147,50 @@ pub struct EnemyAnim {
     rot_x: f32,
     scale: f32,
     spin: f32,
+    /// Seconds since it died.
+    pub dead_t: Option<f32>,
+    /// Thrown apart into pieces (the view's debris has them now).
+    pub scattered: bool,
+}
+
+/// How a monster's body goes (Enemy._death), by its model.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fall {
+    /// Falls apart into pieces flung `power` sideways and `up` upward,
+    /// lying `life` seconds before they sink.
+    Scatter { power: f32, up: f32, life: f32 },
+    /// Swells for its fuse, then bursts into pieces.
+    BlowUp,
+    /// Slumps flat into the floor (burnt robes, an emptied necromancer).
+    Slump { time: f32 },
+    /// Unravels upward into mist.
+    Unravel,
+    /// Topples like a felled tree, lies, then sinks.
+    Topple,
+}
+
+pub fn fall(model: &str, big: f32) -> Fall {
+    match model {
+        "skeleton" => Fall::Scatter { power: 1.8 * big, up: 3.0, life: 5.0 },
+        "ghoul" => Fall::Scatter { power: 2.6, up: 4.0, life: 3.0 },
+        "frost_brute" => Fall::Scatter { power: 3.5 * big, up: 5.0, life: 3.0 },
+        "lurker" => Fall::Scatter { power: 2.4, up: 3.0, life: 3.0 },
+        "drowned" | "toad" => Fall::Scatter { power: 1.5 * big, up: 2.0, life: 0.6 },
+        "bile" => Fall::Scatter { power: 5.0 * big, up: 5.0, life: 2.0 },
+        "imp" | "sprite" | "watcher" | "demon" => Fall::BlowUp,
+        "necromancer" => Fall::Slump { time: 0.7 },
+        "cultist" | "hellhound" => Fall::Slump { time: 0.9 },
+        "wraith" => Fall::Unravel,
+        _ => Fall::Topple,
+    }
+}
+
+/// The blow-up's pieces (Enemy._blow_up's scatter).
+pub const BLOWN: Fall = Fall::Scatter { power: 6.0, up: 6.0, life: 1.5 };
+
+fn ease_in(k: f32) -> f32 {
+    let k = k.clamp(0.0, 1.0);
+    k * k
 }
 
 impl EnemyAnim {
@@ -158,6 +202,9 @@ impl EnemyAnim {
         }
         let moving = a.vel.length() > 0.4;
         self.walk += dt * if moving { 8.0 } else { 0.0 } * a.speed as f32 / 3.0;
+        if !a.alive {
+            *self.dead_t.get_or_insert(0.0) += dt;
+        }
         let mut pos = Vec3::new(0.0, (self.walk.sin()).abs() * 0.06, 0.0);
         let mut rot = Vec3::new(self.rot_x, 0.0, self.walk.sin() * 0.06);
         let mut scale = Vec3::splat(self.scale);
@@ -214,6 +261,32 @@ impl EnemyAnim {
             pos += local * 0.18 * k;
             rot.x += local.z * 0.45 * k;
             rot.z += -local.x * 0.45 * k;
+        }
+        if let Some(t) = self.dead_t {
+            let big = if cfg.model.is_some() { cfg.size as f32 } else { 1.0 };
+            let b = Vec3::splat(base);
+            match fall(model, big) {
+                Fall::Scatter { .. } => {}
+                Fall::BlowUp => scale = b * (1.0 + 0.45 * ease_in(t / e.fuse.max(0.05) as f32)),
+                Fall::Slump { time } => {
+                    scale = b.lerp(b * Vec3::new(1.25, 0.08, 1.25), ease_in(t / time));
+                    pos.y = -0.4 * ((t - time - 1.5) / 1.0).clamp(0.0, 1.0);
+                }
+                Fall::Unravel => {
+                    let k = ease_in(t / 0.6);
+                    scale = b.lerp(b * Vec3::new(0.1, 2.2, 0.1), k);
+                    pos.y = 1.5 * k;
+                    if t >= 0.6 {
+                        scale = Vec3::ZERO;
+                    }
+                }
+                Fall::Topple => {
+                    let k = ease_in(t / 0.5);
+                    rot = Vec3::new(-PI / 2.0 * k, rot.y, 0.0);
+                    pos.y = 0.15 * k - 1.95 * ((t - 2.0) / 1.4).clamp(0.0, 1.0);
+                    scale = b;
+                }
+            }
         }
         trs(pos, euler(rot), Vec3::new(scale.x, scale.y, scale.z))
     }
