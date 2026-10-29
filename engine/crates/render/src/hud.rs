@@ -376,6 +376,18 @@ pub struct HudRenderer {
     renderers: Vec<TextRenderer>,
     warmed: HashSet<(FontFace,u32)>,
     size: [u32;2],
+    /// To start a fresh glyph atlas when the old one is full.
+    cache: Cache,
+    format: wgpu::TextureFormat,
+    full_said: bool,
+}
+
+/// Larger text (titles) is not warmed with the whole alphabet: at 4K that
+/// alone can fill the glyph atlas.
+const WARM_MAX_PX: f32 = 96.0;
+
+fn new_atlas(gpu:&Gpu,cache:&Cache,format:wgpu::TextureFormat)->TextAtlas {
+    TextAtlas::with_color_mode(&gpu.device,&gpu.queue,cache,format,if format.is_srgb(){ColorMode::Accurate}else{ColorMode::Web})
 }
 
 impl HudRenderer {
@@ -407,9 +419,9 @@ impl HudRenderer {
         let vertices=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("HUD vertices"),size:vertex_capacity,usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         let cache=Cache::new(&gpu.device);
         let viewport=Viewport::new(&gpu.device,&cache);
-        let mut atlas=TextAtlas::with_color_mode(&gpu.device,&gpu.queue,&cache,format,if format.is_srgb(){ColorMode::Accurate}else{ColorMode::Web});
+        let mut atlas=new_atlas(gpu,&cache,format);
         let renderer=TextRenderer::new(&mut atlas,&gpu.device,wgpu::MultisampleState::default(),None);
-        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2]})
+        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false})
     }
 
     /// Upload (or replace) the picture drawn by `HudDrawList::image` with `id`.
@@ -457,34 +469,25 @@ impl HudRenderer {
             self.text.load_fallback();self.swash=SwashCache::new();self.warmed.clear();
             reshaped+=self.text.update(&list.text);
         }
-        // Release last frame's pin set, preserving the atlas's resident glyphs.
-        self.atlas.trim();
-        // Prepare invisible warm text first: uploads the complete instrument
-        // alphabet before changing digits can introduce a rasterization hitch.
-        let mut warm=Vec::new();
-        for run in &list.text {
-            if self.warmed.insert((run.font,run.font_size.to_bits())) {
-                warm.push(self.text.buffer(WARM_TEXT,run.font,run.font_size,list.size[0] as f32,TextAlign::Left,Wrap::Glyph));
+        // A full glyph atlas (huge titles at 4K) starts a fresh one once; if
+        // the text still does not fit, this frame draws without it rather
+        // than failing the game.
+        match self.prepare_text(gpu,list,&layers) {
+            Err(glyphon::PrepareError::AtlasFull) => {
+                self.atlas=new_atlas(gpu,&self.cache,self.format);
+                self.renderers.clear();
+                self.warmed.clear();
+                if let Err(e)=self.prepare_text(gpu,list,&layers) {
+                    if !std::mem::replace(&mut self.full_said,true) { eprintln!("HUD text left out: {e}"); }
+                    self.atlas=new_atlas(gpu,&self.cache,self.format);
+                    self.renderers.clear();
+                    self.warmed.clear();
+                    let none=HudDrawList::new(list.size);
+                    self.prepare_text(gpu,&none,&none.layer_ranges()?).map_err(|e|format!("HUD text preparation: {e}"))?;
+                    self.renderers.resize_with(layers.len().max(1),||TextRenderer::new(&mut self.atlas,&gpu.device,wgpu::MultisampleState::default(),None));
+                }
             }
-        }
-        if !warm.is_empty() {
-            let areas=warm.iter().map(|buffer|TextArea{buffer,left:0.0,top:0.0,scale:1.0,bounds:TextBounds::default(),default_color:Color::rgba(255,255,255,0),custom_glyphs:&[]});
-            self.renderers[0].prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash).map_err(|e|format!("HUD font warmup: {e}"))?;
-        }
-        while self.renderers.len() < layers.len() {
-            self.renderers.push(TextRenderer::new(&mut self.atlas,&gpu.device,wgpu::MultisampleState::default(),None));
-        }
-        // One retained glyph buffer per layer, one shared atlas/font cache.
-        // Do not trim between layers: earlier glyphs stay pinned while later
-        // overlays are prepared. Atlas growth preserves glyph coordinates.
-        for (renderer, layer) in self.renderers.iter_mut().zip(&layers) {
-            let areas=list.text[layer.text.clone()].iter().map(|run| {
-                let [x,y,w,h]=run.bounds;
-                TextArea{buffer:&self.text.buffers[&run.id].buffer,left:run.position[0],top:run.position[1],scale:1.0,
-                    bounds:TextBounds{left:x.ceil() as i32,top:y.ceil() as i32,right:(x+w).floor() as i32,bottom:(y+h).floor() as i32},
-                    default_color:Color::rgba(run.color[0],run.color[1],run.color[2],run.color[3]),custom_glyphs:&[]}
-            });
-            renderer.prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash).map_err(|e|format!("HUD text preparation: {e}"))?;
+            r => r.map_err(|e|format!("HUD text preparation: {e}"))?,
         }
         self.spans = layers.iter().map(|layer| list.image_spans(layer.vertices.clone())).collect();
         self.layers = layers;
@@ -493,6 +496,41 @@ impl HudRenderer {
         // repeated window sizes or many changing Unicode names expand it.
         if self.swash.image_cache.len()>16_384 {self.swash.image_cache.clear();self.swash.outline_command_cache.clear();}
         Ok(HudStats{text_runs:list.text.len(),glyphs,vertices:list.vertices.len(),reshaped,prepare_ms:begin.elapsed().as_secs_f64()*1000.0})
+    }
+
+    /// Glyphs for every text layer into the shared atlas.
+    fn prepare_text(&mut self,gpu:&Gpu,list:&HudDrawList,layers:&[HudLayer])->Result<(),glyphon::PrepareError> {
+        // Release last frame's pin set, preserving the atlas's resident glyphs.
+        self.atlas.trim();
+        // Prepare invisible warm text first: uploads the complete instrument
+        // alphabet before changing digits can introduce a rasterization hitch.
+        let mut warm=Vec::new();
+        for run in &list.text {
+            if run.font_size<=WARM_MAX_PX && self.warmed.insert((run.font,run.font_size.to_bits())) {
+                warm.push(self.text.buffer(WARM_TEXT,run.font,run.font_size,list.size[0] as f32,TextAlign::Left,Wrap::Glyph));
+            }
+        }
+        if !warm.is_empty() {
+            let areas=warm.iter().map(|buffer|TextArea{buffer,left:0.0,top:0.0,scale:1.0,bounds:TextBounds::default(),default_color:Color::rgba(255,255,255,0),custom_glyphs:&[]});
+            if self.renderers.is_empty() { self.renderers.push(TextRenderer::new(&mut self.atlas,&gpu.device,wgpu::MultisampleState::default(),None)); }
+            self.renderers[0].prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash)?;
+        }
+        while self.renderers.len() < layers.len() {
+            self.renderers.push(TextRenderer::new(&mut self.atlas,&gpu.device,wgpu::MultisampleState::default(),None));
+        }
+        // One retained glyph buffer per layer, one shared atlas/font cache.
+        // Do not trim between layers: earlier glyphs stay pinned while later
+        // overlays are prepared. Atlas growth preserves glyph coordinates.
+        for (renderer, layer) in self.renderers.iter_mut().zip(layers) {
+            let areas=list.text[layer.text.clone()].iter().map(|run| {
+                let [x,y,w,h]=run.bounds;
+                TextArea{buffer:&self.text.buffers[&run.id].buffer,left:run.position[0],top:run.position[1],scale:1.0,
+                    bounds:TextBounds{left:x.ceil() as i32,top:y.ceil() as i32,right:(x+w).floor() as i32,bottom:(y+h).floor() as i32},
+                    default_color:Color::rgba(run.color[0],run.color[1],run.color[2],run.color[3]),custom_glyphs:&[]}
+            });
+            renderer.prepare(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash)?;
+        }
+        Ok(())
     }
 
     pub fn render(&self,pass:&mut wgpu::RenderPass<'_>)->Result<(),String> {
@@ -584,6 +622,21 @@ mod tests {
         assert_eq!(px(56,8),[255,255,255],"missing picture draws nothing");
         assert_eq!(px(8,24),[0,0,0],"plain shapes still draw");
     }
+    #[test]
+    fn a_full_glyph_atlas_never_fails_the_frame() {
+        // A small device: one huge title fills its largest glyph atlas.
+        crate::gpu::TEST_MAX_TEXTURE.with(|c| c.set(Some(1024)));
+        let gpu=Gpu::new().unwrap();
+        crate::gpu::TEST_MAX_TEXTURE.with(|c| c.set(None));
+        let mut hud=HudRenderer::new(&gpu,wgpu::TextureFormat::Rgba8Unorm).unwrap();
+        let mut list=HudDrawList::new([3840,2160]);
+        list.text.push(TextRun{id:1,text:"ABCDEFGHIJKLMNOPQRSTUVWXYZ".into(),position:[0.0;2],bounds:[0.0,0.0,3840.0,2160.0],font_size:400.0,color:[255;4],font:FontFace::Body,align:TextAlign::Left,width:3840.0});
+        hud.prepare(&gpu,&list).expect("a full atlas leaves text out, never errors");
+        list.text[0].text="Level 2".into();
+        list.text[0].font_size=120.0;
+        hud.prepare(&gpu,&list).expect("and the next frame draws again");
+    }
+
     fn run()->TextRun {TextRun{id:1,text:"Zoë Ångström 120 km/h".into(),position:[0.0;2],bounds:[0.0,0.0,600.0,100.0],font_size:32.0,color:[255;4],font:FontFace::Body,align:TextAlign::Left,width:600.0}}
     #[test]
     fn registered_fonts_shape_and_measure() {
