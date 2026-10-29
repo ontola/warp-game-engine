@@ -168,6 +168,7 @@ impl Visuals {
         }
         self.arena.flush(gpu, renderer, &self.scene)?;
         self.players.flush(gpu, renderer, &self.scene)?;
+        self.stadium.poll_sky(&mut self.scene);
         self.stadium.flush(gpu, renderer, &self.scene, self.clock, light)?;
         self.fx.flush(gpu, renderer, &self.scene, self.clock)
     }
