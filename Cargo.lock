@@ -5229,6 +5229,7 @@ dependencies = [
  "glam 0.31.1",
  "hecs",
  "kern",
+ "script",
  "serde",
  "serde_json",
 ]
