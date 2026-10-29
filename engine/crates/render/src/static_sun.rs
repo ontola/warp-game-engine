@@ -79,6 +79,8 @@ pub struct CasterCounts {
 }
 
 fn class(instance: &GpuInstance, animated: bool, frozen: bool) -> u32 {
+    // Procedural terrain slots fill at runtime; an empty one is still dynamic.
+    if instance.flags & crate::procedural_terrain::PROCEDURAL != 0 && instance.flags & NO_SHADOW == 0 { return DYNAMIC; }
     if instance.cluster_count == 0 || instance.flags & NO_SHADOW != 0 { return SKIPPED; }
     // A tree past the wind freeze radius stands exactly at rest (wind.wgsl),
     // so its depth is as static as a rock until the cameras are re-pinned.
@@ -89,7 +91,7 @@ fn class(instance: &GpuInstance, animated: bool, frozen: bool) -> u32 {
     }
     // Include provenance as a conservative exclusion even if an asset omitted
     // its wind flag. SOLID alone is not dynamic: buildings/rocks use it too.
-    if animated || instance.flags & (FOLIAGE | LIVE_GRASS | WIND_GRASS | PART_WIND | crate::scene::SKINNED) != 0
+    if animated || instance.flags & (FOLIAGE | LIVE_GRASS | WIND_GRASS | PART_WIND | crate::scene::SKINNED | crate::procedural_terrain::PROCEDURAL) != 0
         || matches!(instance.category(), GeometryCategory::Trees | GeometryCategory::Grass | GeometryCategory::Cars) {
         DYNAMIC
     } else { STATIC }
