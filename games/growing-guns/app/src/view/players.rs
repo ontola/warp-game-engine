@@ -160,8 +160,6 @@ impl PlayersView {
             self.meshes.push(PlayerMeshes { body, head, eyes, skinned, own_views: 0 });
             self.sources.push(prims);
         }
-        // Gore only for blob bodies (indexed by player).
-        if self.meshes.iter().all(|m| m.skinned) { self.sources.clear(); }
         // Godot: an 8-sided brass cylinder (radius 1.6 cm, 5 cm, metallic
         // 0.88, roughness 0.32) and a 2.4 cm cone, both scaled by the shot's
         // bullet scale (a bazooka round is twice the size and more).
@@ -237,11 +235,15 @@ impl PlayersView {
             return;
         };
         let push = if dir.length_squared() > 1e-4 { dir } else { (v.pos - world.players[a].pos).with_y(0.0).normalize_or(Vec3::Y) };
-        if skinned {
+        // A burst (overkill, explosions) shatters skinned bodies as well: no
+        // corpse, so the character stays hidden while the chunks fly.
+        if skinned && !matches!(gib, Gib::Burst { .. }) {
             // Drive the original textured skin from articulated limb bodies.
-            // Dismemberment is separate; a frozen whole-body capsule is not a ragdoll.
             if let Some(characters) = &mut self.characters {
                 if let Err(error) = characters.kill(phys, victim, v, push) { eprintln!("ragdoll: {error}"); }
+            }
+            if matches!(gib, Gib::Head) {
+                self.gore().burst(scene, phys, victim, &[gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push, 0.5, now);
             }
             fx.blasts.gib_mist(now, v.pos + Vec3::Y * 0.3, 0.8);
             fx.particles.burst(scene, v.pos, push + Vec3::Y * 0.5, &Burst { mesh: blood, count: 28, spread: 1.6, speed: [2.0, 8.0], ..Burst::drops() });
