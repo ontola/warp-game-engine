@@ -229,6 +229,36 @@ pub struct Camera {
     pub near: f32,
 }
 
+/// A finite orthonormal view even when the craft points straight up/down.
+fn camera_view(cam: Camera, requested_up: Option<Vec3>) -> Mat4 {
+    let direction=(cam.target-cam.pos).try_normalize().unwrap_or(-Vec3::Z);
+    let mut up=requested_up.filter(|u|u.is_finite()).and_then(Vec3::try_normalize).unwrap_or(Vec3::Y);
+    if direction.cross(up).length_squared()<1e-8 {
+        up=if direction.y.abs()<0.9 {Vec3::Y}else{Vec3::Z};
+    }
+    let target=if (cam.target-cam.pos).length_squared()>1e-12 {cam.target}else{cam.pos+direction};
+    Mat4::look_at_rh(cam.pos,target,up)
+}
+
+#[cfg(test)]
+mod flight_camera_tests {
+    use super::*;
+    #[test]
+    fn view_roll_preserves_position_and_forward_and_handles_poles() {
+        let cam=Camera{pos:Vec3::new(1.0,2.0,3.0),target:Vec3::new(1.0,2.0,4.0),fov_y:1.0,near:0.1};
+        for up in [Vec3::Y,-Vec3::Y,Vec3::X,-Vec3::X] {
+            let view=camera_view(cam,Some(up));
+            assert!(view.transform_point3(cam.pos).length()<1e-5);
+            assert!((view.transform_point3(cam.target)+Vec3::Z).length()<1e-5);
+            assert!((view.transform_vector3(up)-Vec3::Y).length()<1e-5);
+        }
+        for direction in [Vec3::Y,-Vec3::Y,Vec3::ZERO] {
+            let view=camera_view(Camera{target:cam.pos+direction,..cam},Some(Vec3::Y));
+            assert!(view.is_finite());assert!((view.determinant()-1.0).abs()<1e-5);
+        }
+    }
+}
+
 /// Light and look for a frame, in physical units.
 #[derive(Clone, Debug)]
 pub struct Lighting {
@@ -584,6 +614,8 @@ struct MeadowBrickFixture {
 }
 
 pub struct Renderer {
+    // Optional per-view roll for flight games. Empty preserves world-up cameras.
+    camera_up_axes: std::sync::Mutex<Vec<Vec3>>,
     resource_device: wgpu::Device,
     albedo_array: wgpu::Texture,
     live_screens: Option<std::sync::Mutex<crate::screen_feed::LiveScreens>>,
@@ -993,6 +1025,13 @@ fn eval_irradiance_up(sh: &[[f32; 4]; 9]) -> f32 {
 }
 
 impl Renderer {
+    /// Set independent up axes for split-screen cameras (roll/loops/free flight).
+    /// Pass an empty slice to restore the legacy world-up convention.
+    pub fn set_camera_up_axes(&self, axes: &[Vec3]) {
+        let mut stored = self.camera_up_axes.lock().unwrap();
+        stored.clear(); stored.extend_from_slice(axes);
+    }
+
     /// The albedo texture array (sRGB, TEXTURE_SIZE square, mipmapped). Live
     /// layers are redrawn through `screen::Screen`; do not resize it.
     pub fn albedo_array(&self) -> &wgpu::Texture { &self.albedo_array }
@@ -1640,6 +1679,7 @@ impl Renderer {
             exhaust,
             wheel_particles,
             headlight_state: Default::default(),
+            camera_up_axes: Default::default(),
             local_light_state: Default::default(),
             spot_falloff: Default::default(),
             spot_softness: Default::default(),
@@ -3009,16 +3049,17 @@ impl Renderer {
         let headlights = if debug_options.headlights_enabled {
             self.headlight_state.lock().unwrap().clone()
         } else { Vec::new() };
+        let camera_up_axes=self.camera_up_axes.lock().unwrap().clone();
         let mut part_animation_views=Vec::new();
         if self.part_wind_lod && self.part_wind.is_some() {
             use crate::part_wind::AnimationView;
-            for view in views {
+            for (vi,view) in views.iter().enumerate() {
                 let (w,h)=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(view.w,view.h))?}
                     else {(view.w,view.h)};
                 let mut projection=Mat4::perspective_infinite_reverse_rh(view.cam.fov_y,view.w as f32/view.h as f32,view.cam.near);
                 projection.z_axis.x+=jx*2.0/w as f32;projection.z_axis.y+=jy*2.0/h as f32;
                 part_animation_views.push(AnimationView {
-                    view_projection:projection*Mat4::look_at_rh(view.cam.pos,view.cam.target,Vec3::Y),
+                    view_projection:projection*camera_view(view.cam,camera_up_axes.get(vi).copied()),
                     // Preserve the error budget in final output pixels when
                     // the color pass shades at a lower internal resolution.
                     viewport:[view.w,view.h],
@@ -3271,7 +3312,7 @@ impl Renderer {
                 let (w,h)=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(v.w,v.h))?}else{(v.w,v.h)};
                 let mut proj=Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near);
                 proj.z_axis.x+=jx*2.0/w as f32;proj.z_axis.y+=jy*2.0/h as f32;
-                let vp=proj*Mat4::look_at_rh(v.cam.pos,v.cam.target,Vec3::Y);
+                let vp=proj*camera_view(v.cam,camera_up_axes.get(vi).copied());
                 let mask=1|if near_enabled {1<<(vi+1)}else{0};
                 cameras.push(ReceiverCamera {view_projection:vp,map_mask:mask});
                 if let Some(meadow)=&self.meadow_receivers {meadow.append(v.cam.pos,vp,0.5*v.h as f32/(v.cam.fov_y*0.5).tan(),mask,debug_options,&mut extra);}
@@ -3456,7 +3497,7 @@ impl Renderer {
             let (vis_v, depth_v, hdr_v) = (resources.targets[0].get(&vis), resources.targets[1].get(&depth), resources.targets[2].get(&hdr));
             cpu.mark("view lights and targets");
             // Reversed-Z infinite perspective.
-            let view_m = Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
+            let view_m = camera_view(*cam,camera_up_axes.get(vi).copied());
             let proj = Mat4::perspective_infinite_reverse_rh(cam.fov_y, view.w as f32 / view.h as f32, cam.near);
             let mut jittered = proj;
             jittered.z_axis.x += jx * 2.0 / w as f32;
