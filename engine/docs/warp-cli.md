@@ -171,7 +171,7 @@ keyboard mapping is in `app::input`.
 | `camera` | `set(player, {pos, target, fov})`, `get(player)` |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
-| `post` | `set({bloom, bloom_radius, bloom_threshold, contrast, saturation, vignette, grain, aberration})`, `reset()` |
+| `post` | `set({bloom, bloom_radius, bloom_threshold, bloom_wide, contrast, saturation, vignette, grain, aberration})`, `reset()` |
 | `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `clear()` |
 | `sky` | `set(name)`, `get()` |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, fog_start, fog_end, fog_density})`, `reset()` |
@@ -179,11 +179,15 @@ keyboard mapping is in `app::input`.
 | `game` | `tick()`, `time()`, `dt()`, `players()`, `title()`, `finish()`, `log(text)` |
 
 - **Entities**: `world.spawn` takes a shape (`"cube"`, `"sphere"`,
-  `"capsule"`, or a glTF path inside the game folder such as
-  `"assets/crate.glb"`) and options: `pos`, `rot` (pitch, yaw, roll),
+  `"capsule"`, an outline such as `"outline6"` or `"outline4:0.05"`, or a
+  glTF path inside the game folder such as `"assets/crate.glb"`) and
+  options: `pos`, `rot` (pitch, yaw, roll),
   `size` (a number or a vector; 1 fills a 1 m box, and the capsule is 2 m
   tall), `color`, `emissive` (0 off, 1 a clear glow in daylight),
-  `roughness`, `metal`, `solid` (default true), `visible` and `tag`.
+  `roughness`, `metal`, `solid` (default true), `visible` and `tag`. An
+  outline is a hollow regular polygon lying flat (3 to 64 sides, corners
+  on the 1 m box's circle, the first towards +X) whose edge is the given
+  share of the box wide (default 0.06): neon line art seen from above.
   `world.set` takes the same options plus `shape`. `world.place(id, pos,
   yaw?)` only moves (and turns) an entity: the cheap call for things that
   move every tick. `world.warm(shape, {color, emissive, roughness, metal})`
@@ -221,16 +225,19 @@ keyboard mapping is in `app::input`.
   (about 0.2 s, on the next frame) and sets its sun, skylight, fog and
   exposure. `light.set` overrides parts of that.
 - **Post and lights**: `post.set` is the look after lighting: `bloom`
-  (0 to 2; the glow is screen-blended, Godot style), `bloom_radius` (blur
-  rounds 1 to 6), `bloom_threshold` (exposed brightness where it starts),
+  (0 to 2), `bloom_radius` (blur rounds 1 to 6), `bloom_threshold`
+  (exposed brightness where it starts), `bloom_wide` (true, the default: a
+  wide screen-blended glow, Godot style; false: a tight halo added around
+  what glows, for neon lines),
   `contrast`, `saturation`, `vignette` (0 to 1), `grain` (film grain, 0 to
   1) and `aberration` (pixels of red and blue apart at the corners).
   `lights.set` replaces the coloured point lights (no shadows): `intensity`
   is roughly lux at 1 m, `range` in metres. Under the `night` sky a few
   hundred lights a dark floor well. Both are looks only, allowed in `draw`
-  too, and reset on restart. Neon Siege and Neon Trails show a neon look:
-  deep colours at a low emissive (0.03) with soft bloom, a glossy dark deck
-  and a lamp over each player.
+  too, and reset on restart. Neon Trails shows a neon look: deep colours
+  at a low emissive (0.03) with soft wide bloom, a glossy dark deck and a
+  lamp over each player. Neon Siege is Geometry Wars style: outlines at
+  emissive 0.14 under a tight bloom, a camera straight down, no sky light.
 - **Random**: SplitMix64 from the game's seed. `restart` reseeds it.
 
 ### Players

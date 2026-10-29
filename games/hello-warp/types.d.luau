@@ -56,7 +56,7 @@ export type Input = {
 }
 
 export type EntityOptions = {
-	shape: string?, -- world.set only: "cube", "sphere", "capsule" or "assets/x.glb"
+	shape: string?, -- world.set only: "cube", "sphere", "capsule", "outline6" or "assets/x.glb"
 	pos: Vec?, -- centre, default (0, 0, 0)
 	rot: Vec?, -- radians: x pitch, y yaw, z roll; collision boxes follow the yaw only
 	size: (Vec | number)?, -- metres; 1 fills a 1 m box (the capsule is 2 m tall at size 1)
@@ -93,7 +93,8 @@ export type Query = {
 export type Hit = { id: number, distance: number, point: Vec, normal: Vec }
 
 declare world: {
-	-- A new entity; returns its id. Shapes: "cube", "sphere", "capsule", or a
+	-- A new entity; returns its id. Shapes: "cube", "sphere", "capsule",
+	-- "outline<sides>[:<width>]" (a flat hollow polygon, "outline6"), or a
 	-- glTF model in the game folder ("assets/crate.glb"). A new shape and look
 	-- adds a mesh: free in init, a short stall later.
 	spawn: (shape: string, opts: EntityOptions?) -> number,
@@ -182,11 +183,12 @@ declare hud: {
 
 -- The look after lighting. Looks only (allowed in draw); restart resets it.
 declare post: {
-	-- bloom 0..2 (soft screen-blended glow), bloom_radius 1..6 blur rounds,
+	-- bloom 0..2, bloom_radius 1..6 blur rounds, bloom_wide (true: soft
+	-- screen-blended glow; false: a tight halo for neon lines),
 	-- bloom_threshold (exposed brightness where it starts), contrast and
 	-- saturation (1 neutral), vignette 0..1, grain 0..1, aberration (pixels
 	-- of red and blue apart at the corners).
-	set: (opts: { bloom: number?, bloom_radius: number?, bloom_threshold: number?, contrast: number?, saturation: number?, vignette: number?, grain: number?, aberration: number? }) -> (),
+	set: (opts: { bloom: number?, bloom_radius: number?, bloom_threshold: number?, bloom_wide: boolean?, contrast: number?, saturation: number?, vignette: number?, grain: number?, aberration: number? }) -> (),
 	reset: () -> (),
 }
 

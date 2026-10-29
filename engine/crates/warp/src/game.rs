@@ -668,7 +668,7 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp]) -> Result<(), 
         o.bloom_strength = b;
         o.bloom_rounds = p.bloom_radius;
         o.bloom_threshold = p.bloom_threshold;
-        o.bloom_screen = true;
+        o.bloom_screen = p.bloom_wide;
     }
     if o != before { r.set_debug_options(o)?; }
     let lights: Vec<render::headlights::LocalLight> = lamps.iter().map(|l| {

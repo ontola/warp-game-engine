@@ -89,6 +89,9 @@ pub struct Post {
     pub bloom_radius: u32,
     /// Exposed brightness where the glow starts.
     pub bloom_threshold: f32,
+    /// Wide (Godot-style screen glow, from the far blur rounds) or tight
+    /// (an added halo hugging what glows: neon lines).
+    pub bloom_wide: bool,
     pub contrast: f32,
     pub saturation: f32,
     pub vignette: f32,
@@ -97,7 +100,7 @@ pub struct Post {
 }
 
 impl Default for Post {
-    fn default() -> Self { Post { bloom: None, bloom_radius: 4, bloom_threshold: 1.0, contrast: 1.0, saturation: 1.0, vignette: 0.0, grain: 0.0, aberration: 0.0 } }
+    fn default() -> Self { Post { bloom: None, bloom_radius: 4, bloom_threshold: 1.0, bloom_wide: true, contrast: 1.0, saturation: 1.0, vignette: 0.0, grain: 0.0, aberration: 0.0 } }
 }
 
 /// A coloured point light (`lights.set`): no shadows, it lights what is near.
@@ -229,8 +232,16 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
         "cube" | "box" => Shape::Cube,
         "sphere" | "ball" => Shape::Sphere,
         "capsule" => Shape::Capsule,
+        p if p.starts_with("outline") => {
+            let bad = || rt(format!("{p:?}: outline<sides>[:<width>], such as \"outline6\" or \"outline4:0.05\" (3 to 64 sides, width 0.005 to 0.5)"));
+            let (sides, width) = p["outline".len()..].split_once(':').map_or((&p["outline".len()..], None), |(a, b)| (a, Some(b)));
+            let sides: u32 = sides.parse().map_err(|_| bad())?;
+            let width: f32 = match width { Some(w) => w.parse().map_err(|_| bad())?, None => 0.06 };
+            if !(3..=64).contains(&sides) || !(0.005..=0.5).contains(&width) { return Err(bad()); }
+            Shape::Outline { sides, width: (width * 1000.0).round() as u32 }
+        }
         p if p.ends_with(".glb") || p.ends_with(".gltf") => Shape::Model(p.to_string()),
-        other => return Err(rt(format!("unknown shape {other:?}: cube, sphere, capsule or a model path such as \"assets/crate.glb\""))),
+        other => return Err(rt(format!("unknown shape {other:?}: cube, sphere, capsule, outline6 or a model path such as \"assets/crate.glb\""))),
     })
 }
 
@@ -626,7 +637,8 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
     table("post", vec![
         ("set", f!(core, move |_, opts: Table| {
             let mut c = lock(&core);
-            for (k, v) in options(&opts, &["bloom", "bloom_radius", "bloom_threshold", "contrast", "saturation", "vignette", "grain", "aberration"], "post.set")? {
+            for (k, v) in options(&opts, &["bloom", "bloom_radius", "bloom_threshold", "bloom_wide", "contrast", "saturation", "vignette", "grain", "aberration"], "post.set")? {
+                if k == "bloom_wide" { c.post.bloom_wide = boolean(&v, "bloom_wide")?; continue; }
                 let x = number(&v, &k)?;
                 let p = &mut c.post;
                 match k.as_str() {

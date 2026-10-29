@@ -8,7 +8,8 @@
 -- Ported from the LÖVE party pack (love-party/games/siege*.lua): the same
 -- arena units (800 high), enemies, waves, bosses, black hole, power-ups,
 -- scoring and bot. The simulation runs in those 2D units; sync() shows it
--- in 3D, 40 units to the metre, on a dark floor under a night sky.
+-- in 3D, 40 units to the metre, seen straight down: neon outlines on a
+-- glowing grid, Geometry Wars style.
 
 -- Settings (the LÖVE pack's defaults).
 local DIFFICULTY = "standard" -- relaxed, standard or intense
@@ -59,33 +60,44 @@ local COLORS = {
 	node = { 0.55, 0.3, 0.95 },
 }
 
--- How each kind looks in 3D: shape, size as a share of its diameter, height
--- above the floor and how it turns.
-local LOOKS = {
-	boss = { shape = "cube", k = 0.8, spin = 0.7 },
-	chaser = { shape = "cube", k = 0.8, spin = 1 },
-	weaver = { shape = "sphere", k = 1 },
-	splitter = { shape = "cube", k = 0.85, spin = 0.5 },
-	fort = { shape = "cube", k = 0.9, tall = 0.6 },
-	shard = { shape = "cube", k = 0.9, spin = 2 },
-	dasher = { shape = "cube", k = 0.7, long = 1.8 },
-	orbiter = { shape = "sphere", k = 1 },
-	hive = { shape = "sphere", k = 1 },
-	serpent = { shape = "sphere", k = 1 },
-	segment = { shape = "cube", k = 0.8 },
-	prism = { shape = "cube", k = 0.85, spin = 1.2, tilt = true },
-	sun = { shape = "sphere", k = 1 },
-	singularity = { shape = "sphere", k = 1 },
-	node = { shape = "sphere", k = 0.9 },
+-- How each kind is drawn: neon outlines seen from above, as the LÖVE
+-- screen draws them. Each part is a polygon with n sides at a share k of
+-- the kind's radius, turning with the kind (spin -1 turns the other way).
+-- Hollow parts have their own line width; `solid` parts are filled.
+local SHAPES = {
+	boss = { { n = 8 }, { n = 8, k = 0.65, spin = -1 } },
+	chaser = { { n = 4 } },
+	weaver = { { n = 3 } },
+	splitter = { { n = 6 }, { n = 6, k = 0.45, spin = -1 } },
+	fort = { { n = 4 }, { n = 16, k = 0.33, still = true } },
+	shard = { { n = 3 } },
+	dasher = { { n = 3, long = 1.6 } },
+	orbiter = { { n = 5 }, { n = 24, k = 0.45, still = true } },
+	hive = { { n = 6 }, { n = 6, k = 0.65, spin = -1 } },
+	serpent = { { n = 7 }, { n = 24, k = 0.4, still = true } },
+	segment = { { n = 6 } },
+	prism = { { n = 4, k = 1.25 }, { n = 4, k = 0.8, spin = -1.5 }, { n = 4, k = 0.45, spin = 2, white = true } },
+	sun = { { n = 32, still = true }, { n = 32, k = 0.62, still = true, white = true }, { n = 12, k = 1.3, spin = 0.6 }, { n = 12, k = 1.5, spin = -0.4, dim = true } },
+	singularity = { { n = 32, k = 1.04, still = true, white = true }, { n = 32, k = 1.18, still = true } },
+	node = { { n = 3 } },
 }
+-- The line every outline is drawn with, in arena units (the LÖVE 2 px line
+-- plus its glow).
+local LINE = 3.2
+-- Everything is drawn a little larger than it collides, so it reads on a TV.
+local DRAW = 1.3
+-- The camera looks straight down; a narrow lens keeps the view nearly flat.
+local CAMERA_FOV = 28
+local CAMERA_HEIGHT = 10.6 / math.tan(math.rad(CAMERA_FOV / 2))
+-- Grid colours per boss stage (each stage's nebula in the LÖVE sky).
+local STAGE_GRID = { { 0.3, 0.32, 1 }, { 0.95, 0.45, 0.3 }, { 1, 0.55, 0.15 }, { 0.2, 0.85, 0.75 }, { 1, 0.3, 0.7 }, { 0.62, 0.3, 1 } }
 
 local PICKUP_COLORS = { repair = { 1, 0.3, 0.42 }, spread = { 1, 0.75, 0.2 }, pierce = { 1, 0.45, 0.85 }, rapid = { 0.25, 1, 1 } }
-local PICKUP_NAMES = { repair = "LIFE", spread = "SPREAD", pierce = "PIERCE", rapid = "RAPID" }
+-- A pickup is a ring with a sign inside: sides of the inner outline.
+local PICKUP_SIGNS = { repair = 4, spread = 3, pierce = 5, rapid = 6 }
 local SHOT_COLORS = { pierce = { 1, 0.45, 0.85 }, spread = { 1, 0.75, 0.2 }, rapid = { 0.25, 1, 1 } }
 local HOSTILE_COLOR = { 1, 0.62, 0.3 }
 local WHITE = { 1, 1, 1 }
--- The floor's tint per boss stage (each wave's nebula in the LÖVE sky).
-local STAGE_TINTS = { { 0.05, 0.07, 0.16 }, { 0.09, 0.06, 0.05 }, { 0.12, 0.06, 0.03 }, { 0.04, 0.09, 0.08 }, { 0.11, 0.04, 0.09 }, { 0.07, 0.04, 0.13 } }
 
 local WAVE_NAMES = { "SWEEP", "PINCER", "CORNERS", "CROSSWIND" }
 local BOSSES = {
@@ -119,11 +131,6 @@ end
 local function rgb(c, k)
 	k = k or 1
 	return vector.create(c[1] ^ 1.4 * k, c[2] ^ 1.4 * k, c[3] ^ 1.4 * k)
-end
-
--- The deck's colour for a stage: lifted so the lamps show on it.
-local function deck(c)
-	return vector.create(c[1] * 1.6, c[2] * 1.6, c[3] * 1.6)
 end
 
 local function neon(v)
@@ -163,17 +170,20 @@ local function multiplier()
 	return math.min(5, 1 + math.floor(s.chain / 12))
 end
 
+local FX_GLOW = 0.045
+
 -- Effects are the engine's: a ring grows out, a burst of streaks flies off.
 local function ring(x, y, r, color)
 	if s.rings >= LIMITS.rings then return end
 	s.rings += 1
 	-- A short flash of light on the deck, the bigger the ring the brighter.
 	if #s.flashes < 12 then table.insert(s.flashes, { x = x, y = y, color = color, power = math.min(3, r / 60), ttl = 0.3 }) end
-	fx.ring(at(x, y, 0.15), { color = rgb(color), radius = r * S, life = 0.35, width = 0.06, emissive = 0.03, segments = if r > 100 then 32 else 16 })
+	fx.ring(at(x, y, 0.15), { color = rgb(color), radius = r * S, life = 0.35, width = 0.05, emissive = FX_GLOW, segments = if r > 100 then 32 else 16 })
 end
 
 local function burst(x, y, color, count)
-	fx.burst(at(x, y, 0.3), { color = rgb(color), count = count, speed = 7, life = 0.55, emissive = 0.03, size = 0.07, stretch = 0.022, flat = true })
+	-- Geometry Wars sparks: many thin fast streaks.
+	fx.burst(at(x, y, 0.2), { color = rgb(color), count = math.ceil(count * 1.5), speed = 10, life = 0.7, emissive = FX_GLOW, size = 0.045, stretch = 0.035, flat = true })
 end
 
 -- The black hole: late, every other wave from HOLE_WAVE, and it kills.
@@ -1092,19 +1102,27 @@ end
 ----------------------------------------------------------------------------
 -- Showing it: entities follow the simulation every tick.
 
-local function look_of(kind, mode)
-	local c = COLORS[kind]
-	if mode == "flash" then return rgb(WHITE), 0.06 end
-	if mode == "warm" then return rgb(c, 0.4), 0.005 end
-	return rgb(c), if SPECS[kind].boss then 0.025 else 0.03
+-- Glow: how bright the lines burn (emissive), per kind of thing.
+local GLOW = { dim = 0.025, line = 0.04, white = 0.05, warm = 0.006, shot = 0.05, grid = 0.003, major = 0.006, rim = 0.015, hostile = 0.03 }
+
+-- The outline shape name for a polygon of radius r (arena units): its line
+-- stays LINE wide whatever the size, in steps so few meshes are made.
+local function outline(n, r, line)
+	local w = (line or LINE) / (2 * r)
+	w = math.clamp(math.round(w * 200) / 200, 0.005, 0.5)
+	return "outline" .. n .. ":" .. w
 end
 
-local function enemy_size(e, k)
-	local l = LOOKS[e.kind]
-	local d = e.r * 2 * S * l.k * (k or 1)
-	if l.long then return vector.create(d * 0.7, d * 0.7, d * l.long) end
-	if l.tall then return vector.create(d, d * l.tall, d) end
-	return vector.create(d, d, d)
+local function part_look(kind, part, mode)
+	local c = COLORS[kind]
+	if mode == "flash" or (part.white and mode ~= "warm") then return rgb(WHITE), GLOW.white end
+	if mode == "warm" then return rgb(c, 0.5), GLOW.warm end
+	if part.dim then return rgb(c, 0.6), GLOW.line * 0.5 end
+	return rgb(c), GLOW.line
+end
+
+local function part_shape(kind, part)
+	return outline(part.n, SPECS[kind].r * DRAW * (part.k or 1))
 end
 
 -- Remember every entity this tick shows; the rest are spent.
@@ -1123,49 +1141,106 @@ local function clip(x1, y1, x2, y2)
 	return x1 + dx * t, y1 + dy * t
 end
 
+-- A flat line from (x1, y1) to (x2, y2) in arena units.
+local function line(x1, y1, x2, y2, width, color, glow, tag)
+	local dx, dy = x2 - x1, y2 - y1
+	return world.spawn("cube", {
+		pos = at((x1 + x2) / 2, (y1 + y2) / 2, 0.12),
+		rot = vector.create(0, math.atan2(-dx, -dy), 0),
+		size = vector.create(width * S, 0.03, len(dx, dy) * S),
+		color = color,
+		emissive = glow,
+		solid = false,
+		tag = tag,
+	})
+end
+
+-- The angle the LÖVE screen turns a kind's polygon to.
+local function enemy_angle(e)
+	local angle = if e.kind == "fort" then math.pi / 4 else s.time * 0.7 + e.phase
+	if e.kind == "dasher" then
+		if e.lockX and ((e.aim or 0) > 0 or (e.rush or 0) > 0) then angle = math.atan2(e.lockY, e.lockX) end
+	elseif e.kind == "serpent" and e.segments and e.segments[1] then
+		local seg = enemy(e.segments[1])
+		if seg then angle = math.atan2(e.y - seg.y, e.x - seg.x) end
+	elseif e.kind == "segment" or e.kind == "hive" then
+		angle = e.phase
+	elseif e.kind == "prism" then
+		angle = s.time * (if enemy(e.twin) then 0.8 else 2.2)
+	elseif e.kind == "node" then
+		angle = e.phase * 2
+	end
+	return angle
+end
+
 local function show_enemy(e)
-	local l = LOOKS[e.kind]
+	local parts = SHAPES[e.kind]
 	-- Bosses and armour take fire all the time: their bar shows the damage, not a flash.
 	local mode = if e.warm > 0 then "warm" elseif e.flash > 0 and not tough(e) then "flash" else "normal"
-	local k = if e.warm > 0 then 0.35 + 0.65 * (1 - math.min(1, e.warm / WAVE_WARNING)) else 1
-	local h = if e.kind == "singularity" or e.kind == "sun" then 0.2 else 0.4
-	local pos = at(e.x, e.y, h + e.r * S * 0.3)
-	local yaw = -(s.time * (l.spin or 0) + e.phase)
-	if e.kind == "dasher" and e.lockX and ((e.aim or 0) > 0 or (e.rush or 0) > 0) then
-		yaw = math.atan2(-e.lockX, -e.lockY)
+	local grow = if e.warm > 0 then 0.35 + 0.65 * (1 - math.min(1, e.warm / WAVE_WARNING)) else 1
+	local angle = enemy_angle(e)
+	local pos = at(e.x, e.y, 0.1)
+	if not e.parts then
+		e.parts = {}
+		for _, part in parts do
+			local color, glow = part_look(e.kind, part, mode)
+			table.insert(e.parts, world.spawn(part_shape(e.kind, part), { pos = pos, size = 1, color = color, emissive = glow, solid = false, tag = "enemy" }))
+		end
+		e.grow = -1
 	end
-	if not e.ent then
-		local color, glow = look_of(e.kind, mode)
-		e.ent = world.spawn(l.shape, { pos = pos, rot = vector.create(if l.tilt then 0.62 else 0, yaw, if l.tilt then 0.62 else 0), size = enemy_size(e, k), color = color, emissive = glow, solid = false, tag = "enemy" })
+	if e.mode ~= mode then
+		for i, part in parts do
+			local color, glow = part_look(e.kind, part, mode)
+			world.set(e.parts[i], { color = color, emissive = glow })
+		end
 		e.mode = mode
-	elseif e.mode ~= mode or mode == "warm" then
-		local color, glow = look_of(e.kind, mode)
-		world.set(e.ent, { pos = pos, size = enemy_size(e, k), color = color, emissive = glow })
-		world.place(e.ent, pos, yaw)
-		e.mode = mode
-	else
-		world.place(e.ent, pos, yaw)
 	end
-	seen(e.ent)
-	-- The singularity's dark core shows its edge; a dasher shows its line.
+	for i, part in parts do
+		local id = e.parts[i]
+		if e.grow ~= grow then
+			local d = SPECS[e.kind].r * DRAW * 2 * S * (part.k or 1) * grow
+			world.set(id, { size = vector.create(d * (part.long or 1), 0.04, d) })
+		end
+		local a = if part.still then 0 else angle * (part.spin or 1)
+		world.place(id, pos, -a)
+		seen(id)
+	end
+	e.grow = grow
+	-- The hive's six cells ring its core.
+	if e.kind == "hive" and e.warm <= 0 then
+		local color, glow = part_look("hive", parts[1], mode)
+		for i = 1, 6 do
+			local a = i * math.pi / 3 + e.phase
+			local id = seen(world.spawn(outline(6, 12), { pos = at(e.x + math.cos(a) * 26, e.y + math.sin(a) * 26, 0.1), size = vector.create(24 * S, 0.04, 24 * S), color = color, emissive = glow, solid = false, tag = "enemy" }))
+			world.place(id, at(e.x + math.cos(a) * 26, e.y + math.sin(a) * 26, 0.1), -e.phase)
+		end
+	end
+	-- The singularity: a black core inside spinning rings of light.
+	if e.kind == "singularity" and e.warm <= 0 then
+		local phase = e.phase or 1
+		for i = 1, 7 do
+			local k = i / 7
+			local r = e.r * (1.3 + k * 1.6)
+			local squash = 0.32 + 0.1 * math.sin(s.time + i)
+			local hue = s.time * (0.2 + phase * 0.15) + k * 4
+			local color = rgb({ 0.6 + 0.4 * math.sin(hue), 0.35 + 0.3 * math.sin(hue + 2), 1 }, 1 - k * 0.5)
+			local id = seen(world.spawn(outline(32, r, LINE * 1.2), { pos = pos, size = vector.create(r * 2 * S, 0.04, r * 2 * squash * S), color = color, emissive = GLOW.line, solid = false, tag = "enemy" }))
+			world.place(id, pos, -s.time * (0.6 + k) * (if i % 2 == 0 then 1 else -1))
+		end
+	end
+	-- A dasher shows its charge line before the rush.
 	if e.kind == "dasher" and (e.aim or 0) > 0 and e.lockX then
-		local x2, y2 = e.x + e.lockX * 300, e.y + e.lockY * 300
-		seen(world.spawn("cube", { pos = at((e.x + x2) / 2, (e.y + y2) / 2, 0.08), rot = vector.create(0, math.atan2(-e.lockX, -e.lockY), 0), size = vector.create(0.05, 0.02, 300 * S), color = rgb(COLORS.dasher), emissive = 0.04, solid = false, tag = "beam" }))
+		local x2, y2 = clip(e.x, e.y, e.x + e.lockX * 300, e.y + e.lockY * 300)
+		seen(line(e.x, e.y, x2, y2, 1.5, rgb(COLORS.dasher, 0.8), GLOW.line * 0.6, "beam"))
 	end
 	for _, b in e.beams or {} do
 		local x2, y2 = clip(b[1], b[2], b[3], b[4])
-		local dx, dy = x2 - b[1], y2 - b[2]
-		local live = b.state == "live"
-		local w = if live then 0.45 else 0.05
-		seen(world.spawn("cube", {
-			pos = at(b[1] + dx / 2, b[2] + dy / 2, 0.25),
-			rot = vector.create(0, math.atan2(-dx, -dy), 0),
-			size = vector.create(w, if live then 0.12 else 0.02, len(dx, dy) * S),
-			color = if live then rgb(COLORS[e.kind], 1) else rgb(COLORS[e.kind], 0.6),
-			emissive = if live then 0.05 else 0.025,
-			solid = false,
-			tag = "beam",
-		}))
+		if b.state == "live" then
+			seen(line(b[1], b[2], x2, y2, 14, rgb(COLORS[e.kind]), GLOW.line, "beam"))
+			seen(line(b[1], b[2], x2, y2, 4, rgb(WHITE), GLOW.white, "beam"))
+		else
+			seen(line(b[1], b[2], x2, y2, 2, rgb(COLORS[e.kind], 0.7), GLOW.line * 0.5, "beam"))
+		end
 	end
 end
 
@@ -1177,25 +1252,33 @@ local function shot_color(b)
 	return WHITE
 end
 
+-- A pilot is a neon dart pointing where it aims; a downed one is a ring.
 local function show_pilot(p)
-	local yaw = math.atan2(-p.aimX, -p.aimY)
-	local pos = at(p.x, p.y, 0.35)
+	local a = math.atan2(p.aimY, p.aimX)
+	local pos = at(p.x, p.y, 0.15)
 	local mode = if not alive(p) then "down" elseif p.invul > 0 and math.floor(s.time * 12) % 2 == 0 then "blink" else "up"
 	if not p.ent then
-		p.ent = world.spawn("cube", { pos = pos, size = vector.create(0.5, 0.22, 0.6), color = p.color, emissive = 0.03, solid = false, tag = "pilot" })
-		p.nose = world.spawn("cube", { pos = pos, size = vector.create(0.18, 0.2, 0.4), color = "#ffffff", emissive = 0.04, solid = false, tag = "pilot" })
+		p.ent = world.spawn(outline(3, 22, 3.6), { pos = pos, size = vector.create(54 * S, 0.04, 36 * S), color = p.color, emissive = GLOW.line, solid = false, tag = "pilot" })
+		p.nose = world.spawn(outline(3, 8, 2.6), { pos = pos, size = vector.create(19 * S, 0.04, 12 * S), color = "#ffffff", emissive = GLOW.white, solid = false, tag = "pilot" })
+		p.halo = world.spawn(outline(24, 20), { pos = pos, size = 40 * S, color = p.color, emissive = GLOW.line, solid = false, visible = false, tag = "pilot" })
 		p.mode = "up"
 	end
 	if p.mode ~= mode then
-		local down = mode == "down"
-		world.set(p.ent, { color = if down then p.color * 0.35 else p.color, emissive = if down then 0.005 else 0.03, visible = mode ~= "blink" })
+		world.set(p.ent, { visible = mode == "up" })
 		world.set(p.nose, { visible = mode == "up" })
+		world.set(p.halo, { visible = mode == "down" })
 		p.mode = mode
 	end
-	world.place(p.ent, pos, yaw)
-	world.place(p.nose, pos + vector.create(-math.sin(yaw), 0, -math.cos(yaw)) * 0.38, yaw)
+	world.place(p.ent, pos, -a)
+	world.place(p.nose, at(p.x + math.cos(a) * 7, p.y + math.sin(a) * 7, 0.16), -a)
+	if mode == "down" then
+		-- The ring fills in as the revive comes closer.
+		local k = math.min(1, math.max(p.revive / 1.2, p.downTime / 6))
+		world.set(p.halo, { size = vector.create((40 + 10 * k + math.sin(s.time * 5) * 4) * S, 0.04, (40 + 10 * k + math.sin(s.time * 5) * 4) * S) })
+	end
 	seen(p.ent)
 	seen(p.nose)
+	seen(p.halo)
 end
 
 local function show_hole()
@@ -1204,34 +1287,24 @@ local function show_hole()
 	if not f then
 		if s.hole then
 			for _, id in s.hole do world.remove(id) end
-			world.remove(s.glow)
-			s.hole, s.glow = nil, nil
+			s.hole = nil
 		end
 		return
 	end
 	local k = strength() * (0.3 + 0.7 * ramp())
-	if s.hole then
-		local r = 120 * S * 2 * (0.2 + 0.8 * k)
-		world.set(s.glow, { size = vector.create(r, 0.02, r) })
-	end
 	if not s.hole then
-		s.hole = { world.spawn("sphere", { pos = at(f.x, f.y, 0.2), size = f.r * 2 * S, color = "#020308", roughness = 0.2, solid = false, tag = "hole" }) }
-		for _ = 1, 36 do
-			table.insert(s.hole, world.spawn("cube", { size = vector.create(0.14, 0.04, 0.04), color = rgb(COLORS.singularity), emissive = 0.06, solid = false, tag = "hole" }))
+		s.hole = { world.spawn("sphere", { pos = at(f.x, f.y, 0.05), size = vector.create(f.r * 2 * S, 0.02, f.r * 2 * S), color = "#000000", roughness = 1, solid = false, tag = "hole" }) }
+		table.insert(s.hole, world.spawn(outline(32, f.r + 4), { pos = at(f.x, f.y, 0.1), size = (f.r + 4) * 2 * S, color = rgb(COLORS.singularity), emissive = GLOW.white, solid = false, tag = "hole" }))
+		for _ = 1, 12 do
+			table.insert(s.hole, world.spawn("cube", { size = vector.create(0.3, 0.03, 0.04), color = rgb(COLORS.singularity), emissive = GLOW.line, solid = false, tag = "hole" }))
 		end
-		-- A purple glow on the floor, so the black core shows against it.
-		s.glow = world.spawn("sphere", { pos = at(f.x, f.y, 0), size = vector.create(0.1, 0.02, 0.1), color = rgb(COLORS.singularity, 0.22), emissive = 0.005, solid = false, tag = "hole" })
 	end
-	-- An edge ring and twelve spokes that wheel around the core.
-	for i = 2, #s.hole do
-		local j = i - 2
-		local a, r
-		if j < 24 then
-			a, r = j / 24 * math.pi * 2 + s.time * 0.6, (f.r + 4) * S
-		else
-			a, r = (j - 24) * math.pi / 6 + s.time * 0.9, (34 + (math.sin(s.time * 3 + j) + 1) * 6) * S
-		end
-		local p = at(f.x, f.y, 0.2) + vector.create(math.cos(a), 0, math.sin(a)) * (r * (0.4 + 0.6 * k))
+	-- Twelve spokes wheel in around the core.
+	for i = 3, #s.hole do
+		local j = i - 3
+		local a = j * math.pi / 6 + s.time * 0.9
+		local r = (34 + (math.sin(s.time * 3 + j) + 1) * 6) * S
+		local p = at(f.x, f.y, 0.12) + vector.create(math.cos(a), 0, math.sin(a)) * (r * (0.4 + 0.6 * k))
 		world.place(s.hole[i], p, -a + math.pi / 2)
 	end
 end
@@ -1244,32 +1317,36 @@ local function sync()
 	end
 	for _, b in s.shots do
 		local yaw = math.atan2(-b.vx, -b.vy)
-		local pos = at(b.x, b.y, 0.35)
+		local pos = at(b.x, b.y, 0.14)
 		if not b.ent then
-			local special = b.special ~= nil
-			b.ent = world.spawn("cube", { pos = pos, rot = vector.create(0, yaw, 0), size = vector.create(if special then 0.1 else 0.06, 0.06, if b.special == "pierce" then 0.6 else 0.42), color = rgb(shot_color(b)), emissive = 0.05, solid = false, tag = "shot" })
+			local width = if b.special == "pierce" then 0.14 elseif b.special then 0.09 else 0.06
+			b.ent = world.spawn("cube", { pos = pos, rot = vector.create(0, yaw, 0), size = vector.create(width, 0.03, if b.special == "pierce" then 0.7 else 0.5), color = rgb(shot_color(b)), emissive = GLOW.shot, solid = false, tag = "shot" })
 		else
 			world.place(b.ent, pos, yaw)
 		end
 		seen(b.ent)
 	end
 	for _, b in s.hostile do
-		local pos = at(b.x, b.y, 0.35)
+		local pos = at(b.x, b.y, 0.14)
 		if not b.ent then
-			b.ent = world.spawn("sphere", { pos = pos, size = 0.24, color = rgb(HOSTILE_COLOR), emissive = 0.05, solid = false, tag = "hostile" })
+			b.ent = world.spawn("sphere", { pos = pos, size = vector.create(0.17, 0.05, 0.17), color = rgb(HOSTILE_COLOR), emissive = GLOW.hostile, solid = false, tag = "hostile" })
 		else
 			world.place(b.ent, pos)
 		end
 		seen(b.ent)
 	end
 	for _, q in s.pickups do
-		local pos = at(q.x, q.y + math.sin(s.time * 3 + q.x) * 2, 0.4)
+		local pos = at(q.x, q.y + math.sin(s.time * 3 + q.x) * 2, 0.12)
+		local pulse = 1 + 0.08 * math.sin(s.time * 6)
 		if not q.ent then
-			q.ent = world.spawn("cube", { pos = pos, size = 0.38, color = rgb(PICKUP_COLORS[q.kind]), emissive = 0.04, solid = false, tag = "pickup" })
-		else
-			world.place(q.ent, pos, s.time * 2)
+			local c = rgb(PICKUP_COLORS[q.kind])
+			q.ent = world.spawn(outline(24, 18), { pos = pos, size = 36 * S, color = c, emissive = GLOW.dim, solid = false, tag = "pickup" })
+			q.sign = world.spawn(outline(PICKUP_SIGNS[q.kind], 8), { pos = pos, size = 16 * S, color = c, emissive = GLOW.line, solid = false, tag = "pickup" })
 		end
+		world.set(q.ent, { pos = pos, size = vector.create(36 * S * pulse, 0.04, 36 * S * pulse) })
+		world.place(q.sign, pos, s.time * 2)
 		seen(q.ent)
+		seen(q.sign)
 	end
 	for id, stamp in s.ents do
 		if stamp ~= s.stamp then
@@ -1278,32 +1355,33 @@ local function sync()
 		end
 	end
 	show_hole()
-	-- Light: the beacons, every pilot, the bosses, the hole and the flashes.
+	-- Light pools on the dark floor under pilots, bosses and explosions.
 	local lamps = {}
 	local function lamp(pos, color, intensity, range)
 		if #lamps < 32 then table.insert(lamps, { pos = pos, color = color, intensity = intensity, range = range }) end
 	end
-	for _, f in s.flashes do lamp(at(f.x, f.y, 0.8), rgb(f.color), 600 * f.power * f.ttl / 0.3, 6) end
+	for _, f in s.flashes do lamp(at(f.x, f.y, 1.2), rgb(f.color), 400 * f.power * f.ttl / 0.3, 5) end
 	for _, p in s.players do
-		if alive(p) then lamp(at(p.x, p.y, 0.9), p.color, 300, 5) end
+		if alive(p) then lamp(at(p.x, p.y, 1.2), p.color, 60, 3) end
 	end
 	for _, e in s.enemies do
-		if not e.dead and e.warm <= 0 and SPECS[e.kind].boss then lamp(at(e.x, e.y, 1.6), rgb(COLORS[e.kind]), 1200, 10) end
+		if not e.dead and e.warm <= 0 and SPECS[e.kind].boss then lamp(at(e.x, e.y, 2), rgb(COLORS[e.kind]), 400, 7) end
 	end
 	local f = fields()[1]
-	if f then lamp(at(f.x, f.y, 1.2), rgb(COLORS.singularity), 500 * strength(), 9) end
-	for _, b in s.beacons do lamp(b, "#2f7fff", 200, 6) end
+	if f then lamp(at(f.x, f.y, 1.5), rgb(COLORS.singularity), 250 * strength(), 7) end
 	lights.set(lamps)
-	-- The floor takes the colour of each boss stage.
+	-- The grid takes the colour of each boss stage.
 	local stage = math.clamp(math.ceil(math.max(1, s.wave) / 4), 1, 6)
 	if stage ~= s.stage then
 		s.stage = stage
-		world.set(s.floor, { color = deck(STAGE_TINTS[stage]), emissive = 0.004, roughness = 0.3, metal = 0.25 })
+		for _, g in s.grid do
+			world.set(g.id, { color = rgb(STAGE_GRID[stage], if g.major then 0.7 else 0.45), emissive = if g.major then GLOW.major else GLOW.grid })
+		end
 	end
-	-- Shake the camera a little on hits and kills.
+	-- Straight down on the arena; it shakes a little on hits and kills.
 	local sx, sy = math.sin(s.time * 83) * s.shake * S, math.cos(s.time * 97) * s.shake * 0.6 * S
 	for _, p in players.list() do
-		camera.set(p.id, { pos = vector.create(sx, 25.5, 10.5 + sy), target = vector.create(sx, 0, 0.9 + sy), fov = 50 })
+		camera.set(p.id, { pos = vector.create(sx, CAMERA_HEIGHT, sy + 0.05), target = vector.create(sx, 0, sy), fov = CAMERA_FOV })
 		break
 	end
 end
@@ -1338,91 +1416,68 @@ end
 -- Every look a game uses, prepared now so nothing stalls mid-wave.
 local function warm(p)
 	local c = neon(p.color)
-	world.warm("cube", { color = c, emissive = 0.03 })
-	world.warm("cube", { color = c * 0.35, emissive = 0.005 })
-	world.warm("cube", { color = rgb({ p.color.x, p.color.y, p.color.z }), emissive = 0.05 })
+	world.warm(outline(3, 22, 3.6), { color = c, emissive = GLOW.line })
+	world.warm(outline(24, 20), { color = c, emissive = GLOW.line })
+	world.warm("cube", { color = rgb({ p.color.x, p.color.y, p.color.z }), emissive = GLOW.shot })
+	world.warm("cube", { color = c, emissive = FX_GLOW })
 end
 
 local function warm_all()
-	for kind, l in LOOKS do
-		for _, mode in { "normal", "warm", "flash" } do
-			local color, glow = look_of(kind, mode)
-			world.warm(l.shape, { color = color, emissive = glow })
+	for kind, parts in SHAPES do
+		for _, part in parts do
+			for _, mode in { "normal", "warm", "flash" } do
+				local color, glow = part_look(kind, part, mode)
+				world.warm(part_shape(kind, part), { color = color, emissive = glow })
+			end
 		end
-		world.warm("cube", { color = rgb(COLORS[kind]), emissive = 0.03 }) -- bursts and rings
-		world.warm("cube", { color = rgb(COLORS[kind]), emissive = 0.05 }) -- live beams
-		world.warm("cube", { color = rgb(COLORS[kind], 0.6), emissive = 0.025 }) -- warning beams
+		world.warm("cube", { color = rgb(COLORS[kind]), emissive = FX_GLOW }) -- bursts and rings
+		world.warm("cube", { color = rgb(COLORS[kind]), emissive = GLOW.line }) -- live beams
+		world.warm("cube", { color = rgb(COLORS[kind], 0.7), emissive = GLOW.line * 0.5 }) -- warning beams
 	end
+	world.warm(outline(6, 12), { color = rgb(COLORS.hive), emissive = GLOW.line })
+	world.warm(outline(6, 12), { color = rgb(WHITE), emissive = GLOW.white })
+	world.warm("cube", { color = rgb(COLORS.dasher, 0.8), emissive = GLOW.line * 0.6 })
+	world.warm("cube", { color = rgb(WHITE), emissive = GLOW.white })
 	for _, c in { WHITE, { 0.75, 0.85, 1 }, { 0.8, 0.9, 1 }, { 1, 0.25, 0.3 }, { 0.4, 0.85, 1 }, { 0.3, 1, 0.8 }, { 0.3, 0.8, 1 }, { 0.5, 1, 0.7 } } do
-		world.warm("cube", { color = rgb(c), emissive = 0.03 })
+		world.warm("cube", { color = rgb(c), emissive = FX_GLOW })
 	end
-	for _, c in SHOT_COLORS do world.warm("cube", { color = rgb(c), emissive = 0.05 }) end
-	for _, c in PICKUP_COLORS do world.warm("cube", { color = rgb(c), emissive = 0.04 }) end
-	for _, c in STAGE_TINTS do world.warm("cube", { color = deck(c), emissive = 0.004, roughness = 0.3, metal = 0.25 }) end
-	world.warm("sphere", { color = rgb(HOSTILE_COLOR), emissive = 0.05 })
-	world.warm("sphere", { color = "#020308", roughness = 0.2 })
-	world.warm("cube", { color = rgb(COLORS.singularity), emissive = 0.06 })
-	world.warm("sphere", { color = rgb(COLORS.singularity, 0.22), emissive = 0.005 })
-	world.warm("cube", { color = "#ffffff", emissive = 0.04 })
-	world.warm("cube", { color = rgb(COLORS.dasher), emissive = 0.04 })
+	for _, c in SHOT_COLORS do world.warm("cube", { color = rgb(c), emissive = GLOW.shot }) end
+	for kind, c in PICKUP_COLORS do
+		world.warm(outline(24, 18), { color = rgb(c), emissive = GLOW.dim })
+		world.warm(outline(PICKUP_SIGNS[kind], 8), { color = rgb(c), emissive = GLOW.line })
+	end
+	for _, c in STAGE_GRID do
+		world.warm("cube", { color = rgb(c, 0.45), emissive = GLOW.grid })
+		world.warm("cube", { color = rgb(c, 0.7), emissive = GLOW.major })
+	end
+	world.warm("sphere", { color = rgb(HOSTILE_COLOR), emissive = GLOW.hostile })
+	world.warm("sphere", { color = "#000000", roughness = 1 })
+	world.warm(outline(32, 64), { color = rgb(COLORS.singularity), emissive = GLOW.white })
+	world.warm("cube", { color = rgb(COLORS.singularity), emissive = GLOW.line })
 	for _, p in players.list() do warm(p) end
 end
 
--- The arena floats in space: a glossy dark deck with a glowing rim and
--- grid, beacons on its corners, and stars far below.
+-- The arena as Geometry Wars draws it: a dark floor under a glowing grid,
+-- a bright rim, and dust far below for depth.
 local function arena()
 	local w, h = s.width * S, s.height * S
-	s.floor = world.spawn("cube", { pos = vector.create(0, -0.15, 0), size = vector.create(w, 0.3, h), color = deck(STAGE_TINTS[1]), emissive = 0.004, roughness = 0.3, metal = 0.25, tag = "arena" })
-	s.stage = 1
-	-- The deck's edge: a dark lip with a bright strip on top.
+	-- Rough and dark, so the lamps leave soft coloured pools on it.
+	world.spawn("cube", { pos = vector.create(0, -0.1, 0), size = vector.create(w, 0.2, h), color = "#0b0c16", roughness = 0.95, tag = "arena" })
+	world.spawn("cube", { pos = vector.create(0, -0.4, 0), size = vector.create(w * 4, 0.2, h * 4), color = "#000000", roughness = 1, tag = "arena" })
+	s.grid, s.stage = {}, 1
+	local c = STAGE_GRID[1]
+	for x = 40, s.width - 1, 40 do
+		local major = x % 160 == 0
+		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create((x - s.width / 2) * S, 0.005, 0), size = vector.create(if major then 0.05 else 0.03, 0.01, h), color = rgb(c, if major then 0.7 else 0.45), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
+	end
+	for y = 40, s.height - 1, 40 do
+		local major = y % 160 == 0
+		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create(0, 0.005, (y - s.height / 2) * S), size = vector.create(w, 0.01, if major then 0.05 else 0.03), color = rgb(c, if major then 0.7 else 0.45), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
+	end
+	-- The rim: a bright line round the arena.
 	for _, side in { -1, 1 } do
-		world.spawn("cube", { pos = vector.create(side * (w / 2 + 0.2), -0.05, 0), size = vector.create(0.4, 0.4, h + 0.8), color = "#0b1220", roughness = 0.35, metal = 0.6, tag = "arena" })
-		world.spawn("cube", { pos = vector.create(0, -0.05, side * (h / 2 + 0.2)), size = vector.create(w + 0.8, 0.4, 0.4), color = "#0b1220", roughness = 0.35, metal = 0.6, tag = "arena" })
-		world.spawn("cube", { pos = vector.create(side * (w / 2 + 0.05), 0.16, 0), size = vector.create(0.05, 0.03, h + 0.1), color = "#2f7fff", emissive = 0.05, solid = false, tag = "arena" })
-		world.spawn("cube", { pos = vector.create(0, 0.16, side * (h / 2 + 0.05)), size = vector.create(w + 0.1, 0.03, 0.05), color = "#2f7fff", emissive = 0.05, solid = false, tag = "arena" })
-	end
-	-- Beacons on the corners.
-	s.beacons = {}
-	for _, cx in { -1, 1 } do
-		for _, cz in { -1, 1 } do
-			local x, z = cx * (w / 2 + 0.6), cz * (h / 2 + 0.6)
-			world.spawn("cube", { pos = vector.create(x, 0.3, z), size = vector.create(0.7, 1.0, 0.7), color = "#101a2c", roughness = 0.3, metal = 0.7, tag = "arena" })
-			world.spawn("cube", { pos = vector.create(x, 0.86, z), size = vector.create(0.5, 0.12, 0.5), color = "#2f7fff", emissive = 0.06, solid = false, tag = "arena" })
-			table.insert(s.beacons, vector.create(x, 1.4, z))
-		end
-	end
-	-- Deck plates: every other 160-unit square a shade lighter and less glossy.
-	for gx = 0, math.ceil(s.width / 160) - 1 do
-		for gy = 0, math.ceil(s.height / 160) - 1 do
-			if (gx + gy) % 2 == 0 then
-				local x0, y0 = gx * 160, gy * 160
-				local x1, y1 = math.min(s.width, x0 + 160), math.min(s.height, y0 + 160)
-				world.spawn("cube", { pos = vector.create(((x0 + x1) / 2 - s.width / 2) * S, 0.001, ((y0 + y1) / 2 - s.height / 2) * S), size = vector.create((x1 - x0) * S, 0.002, (y1 - y0) * S), color = "#141d30", roughness = 0.55, metal = 0.2, solid = false, tag = "arena" })
-			end
-		end
-	end
-	-- Running lights along the rim.
-	for x = 40, s.width, 80 do
-		for _, side in { -1, 1 } do
-			world.spawn("cube", { pos = vector.create((x - s.width / 2) * S, 0.05, side * (h / 2 + 0.3)), size = vector.create(0.12, 0.06, 0.12), color = "#7fd0ff", emissive = 0.05, solid = false, tag = "arena" })
-		end
-	end
-	for y = 40, s.height, 80 do
-		for _, side in { -1, 1 } do
-			world.spawn("cube", { pos = vector.create(side * (w / 2 + 0.3), 0.05, (y - s.height / 2) * S), size = vector.create(0.12, 0.06, 0.12), color = "#7fd0ff", emissive = 0.05, solid = false, tag = "arena" })
-		end
-	end
-	-- A faint grid every 80 units.
-	for x = 80, s.width - 1, 80 do
-		world.spawn("cube", { pos = vector.create((x - s.width / 2) * S, 0.004, 0), size = vector.create(0.025, 0.01, h), color = "#1d4f8f", emissive = 0.005, solid = false, tag = "arena" })
-	end
-	for y = 80, s.height - 1, 80 do
-		world.spawn("cube", { pos = vector.create(0, 0.004, (y - s.height / 2) * S), size = vector.create(w, 0.01, 0.025), color = "#1d4f8f", emissive = 0.005, solid = false, tag = "arena" })
-	end
-	-- Deep space below.
-	for _ = 1, 260 do
-		local size = random.range(0.06, 0.14)
-		world.spawn("cube", { pos = vector.create(random.range(-90, 90), random.range(-70, -35), random.range(-60, 60)), size = size, color = "#cfe0ff", emissive = 0.04, solid = false, tag = "space" })
+		world.spawn("cube", { pos = vector.create(side * (w / 2 + 0.04), 0.02, 0), size = vector.create(0.08, 0.03, h + 0.16), color = "#5f8fff", emissive = GLOW.rim, solid = false, tag = "arena" })
+		world.spawn("cube", { pos = vector.create(0, 0.02, side * (h / 2 + 0.04)), size = vector.create(w + 0.16, 0.03, 0.08), color = "#5f8fff", emissive = GLOW.rim, solid = false, tag = "arena" })
 	end
 end
 
@@ -1463,7 +1518,9 @@ local function init()
 	warm_all()
 	arena()
 	-- Soft neon glow, a darker frame and a little film.
-	post.set({ bloom = 0.55, bloom_radius = 3, bloom_threshold = 0.35, saturation = 1.2, contrast = 1.08, vignette = 0.55, grain = 0.2, aberration = 1.2 })
+	-- No sky light or haze: only what glows shows.
+	light.set({ sun_lux = 0, sky_lux = 0.05, fog_density = 0 })
+	post.set({ bloom = 1.2, bloom_radius = 2, bloom_threshold = 0.6, bloom_wide = false, saturation = 1.25, contrast = 1.1, vignette = 0.4, grain = 0.1, aberration = 0.8 })
 	for i, p in players.list() do
 		table.insert(s.players, new_pilot(p, i))
 	end
@@ -1542,85 +1599,43 @@ end
 ----------------------------------------------------------------------------
 -- HUD
 
-local function describe(p)
-	if p.hp == 0 then return "DOWN / REVIVING" end
-	local active = {}
-	for _, kind in { "spread", "pierce", "rapid" } do
-		if p.powers[kind] then table.insert(active, string.upper(kind) .. " " .. p.powers[kind]) end
-	end
-	return (if #active > 0 then table.concat(active, " + ") else "UNLIMITED FIRE") .. "  /  B " .. (if p.pulseClock == 0 then "READY" else math.ceil(p.pulseClock) .. "s")
-end
-
 local function draw()
 	s = state.s
 	if not s then return end
 	local w, h = hud.size()
 	local k = h / 720
-	local dim = { 0.55, 0.7, 0.75, 0.9 }
-	-- Score and multiplier top left, the wave top right.
-	hud.text(tostring(s.teamScore), 24 * k, 14 * k, { size = 40 * k })
-	hud.text("x" .. multiplier(), 24 * k, 58 * k, { size = 24 * k, color = dim })
-	hud.text("WAVE " .. math.max(1, s.wave) .. " / " .. FINAL_WAVE, w - 324 * k, 18 * k, { size = 28 * k, align = "right", width = 300 * k, color = dim })
-	if s.wavePhase == "rest" and not s.over then
-		hud.text("WAVE " .. (s.wave + 1) .. "  /  " .. math.ceil(s.waveRest), 0, 70 * k, { size = 30 * k, align = "center", width = w, color = dim })
-	elseif s.waveClock < 2 then
-		hud.text("WAVE " .. s.wave .. "  /  " .. s.waveName, 0, 70 * k, { size = 30 * k, align = "center", width = w, color = dim })
-	end
-	-- Boss bars along the top.
-	local row = 0
+	local dim = { 0.55, 0.7, 0.85, 0.8 }
+	-- Only the score, the multiplier and the wave, small in the corners.
+	hud.text(tostring(s.teamScore), 20 * k, 12 * k, { size = 26 * k, color = { 0.85, 0.95, 1, 0.95 } })
+	hud.text("x" .. multiplier(), 20 * k, 42 * k, { size = 16 * k, color = dim })
+	hud.text(math.max(1, s.wave) .. "/" .. FINAL_WAVE, w - 220 * k, 12 * k, { size = 20 * k, align = "right", width = 200 * k, color = dim })
+	-- One thin bar for the boss, no name.
+	local total, max = 0, 0
+	local c
 	for _, e in s.enemies do
-		if SPECS[e.kind].boss and not e.dead and e.warm <= 0 and not (e.kind == "prism" and e.follower and enemy(e.twin)) then
-			local c = COLORS[e.kind]
-			local y = (24 + row * 40) * k
-			local name = e.kind
-			for _, b in BOSSES do
-				if b.kind == e.kind then name = b.name end
-			end
-			hud.text(name, w / 2 - 200 * k, y - 2 * k, { size = 18 * k, align = "center", width = 400 * k, color = { c[1], c[2], c[3], 1 } })
-			hud.box(w / 2 - 200 * k, y + 22 * k, 400 * k, 8 * k, { 0.15, 0.1, 0.2, 0.9 })
-			local hp = math.max(0, e.hp / e.maxHp)
-			if e.kind == "prism" then
-				local twin = enemy(e.twin)
-				if twin then hp = math.max(0, (e.hp + twin.hp) / (e.maxHp + twin.maxHp)) end
-			end
-			hud.box(w / 2 - 200 * k, y + 22 * k, 400 * k * hp, 8 * k, { c[1], c[2], c[3], 1 })
-			row += 1
+		if SPECS[e.kind].boss and not e.dead and e.warm <= 0 then
+			total, max = total + math.max(0, e.hp), max + e.maxHp
+			c = c or COLORS[e.kind]
 		end
 	end
-	-- Lives under each pilot, REVIVE over a downed one, pickup names.
+	if max > 0 then
+		hud.box(w / 2 - 180 * k, 18 * k, 360 * k, 3 * k, { 0.15, 0.1, 0.2, 0.8 })
+		hud.box(w / 2 - 180 * k, 18 * k, 360 * k * total / max, 3 * k, { c[1], c[2], c[3], 1 })
+	end
+	-- Lives as small dots under each pilot.
 	for _, p in s.players do
-		local x, y = hud.project(at(p.x, p.y, 0.35))
-		if x then
-			if p.hp == 0 then
-				hud.text("REVIVE", x - 60 * k, y + 18 * k, { size = 16 * k, align = "center", width = 120 * k, color = p.color })
-				hud.box(x - 30 * k, y + 38 * k, 60 * k, 4 * k, { 0.15, 0.1, 0.2, 0.9 })
-				hud.box(x - 30 * k, y + 38 * k, 60 * k * math.min(1, math.max(p.revive / 1.2, p.downTime / 6)), 4 * k, p.color)
-			else
+		if p.hp > 0 then
+			local x, y = hud.project(at(p.x, p.y, 0.15))
+			if x then
 				for i = 1, p.hp do
-					hud.box(x + (i - (p.hp + 1) / 2) * 9 * k - 2.5 * k, y + 22 * k, 5 * k, 5 * k, p.color)
+					hud.box(x + (i - (p.hp + 1) / 2) * 8 * k - 2 * k, y + 20 * k, 4 * k, 4 * k, p.color)
 				end
 			end
 		end
 	end
-	for _, q in s.pickups do
-		local x, y = hud.project(at(q.x, q.y, 0.4))
-		if x then
-			local c = PICKUP_COLORS[q.kind]
-			hud.text(PICKUP_NAMES[q.kind], x - 50 * k, y + 14 * k, { size = 14 * k, align = "center", width = 100 * k, color = { c[1], c[2], c[3], 0.9 } })
-		end
-	end
-	-- Each pilot's fire and pulse along the bottom.
-	local slot = w / math.max(1, #s.players)
-	for i, p in s.players do
-		local x = (i - 1) * slot
-		hud.text(p.name, x, h - 64 * k, { size = 20 * k, align = "center", width = slot, color = p.color })
-		hud.text(describe(p), x, h - 38 * k, { size = 16 * k, align = "center", width = slot, color = dim })
-	end
 	if s.over or s.won then
-		local title = if s.won then "THE SIEGE IS BROKEN" else "WIPED OUT"
-		hud.box(0, h * 0.36, w, h * 0.24, { 0, 0, 0, 0.55 })
-		hud.text(title, 0, h * 0.39, { size = 64 * k, align = "center", width = w })
-		hud.text(s.teamScore .. " POINTS  /  WAVE " .. math.max(1, s.wave) .. "  /  " .. s.kills .. " KILLS", 0, h * 0.39 + 80 * k, { size = 26 * k, align = "center", width = w, color = dim })
+		hud.text(if s.won then "THE SIEGE IS BROKEN" else "WIPED OUT", 0, h * 0.42, { size = 54 * k, align = "center", width = w })
+		hud.text(tostring(s.teamScore), 0, h * 0.42 + 70 * k, { size = 26 * k, align = "center", width = w, color = dim })
 	end
 end
 
