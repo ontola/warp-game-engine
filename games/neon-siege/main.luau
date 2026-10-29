@@ -1185,8 +1185,15 @@ local function part_look(kind, part, mode)
 	return rgb(c), GLOW.line
 end
 
+-- How big a kind is drawn, apart from how big it is to hit: the weak germs
+-- (one or two hits) look smaller, so size reads as toughness.
+local DRAW_SCALE = { chaser = 0.7, shard = 0.75, weaver = 0.75, dasher = 0.8, orbiter = 0.85 }
+local function draw_r(kind)
+	return SPECS[kind].r * DRAW * (DRAW_SCALE[kind] or 1)
+end
+
 local function part_shape(kind, part)
-	return outline(part.n, SPECS[kind].r * DRAW * (part.k or 1))
+	return outline(part.n, draw_r(kind) * (part.k or 1))
 end
 
 -- Remember every entity this tick shows; the rest are spent.
@@ -1262,7 +1269,7 @@ local function show_enemy(e)
 	for i, part in parts do
 		local id = e.parts[i]
 		if e.grow ~= grow then
-			local d = SPECS[e.kind].r * DRAW * 2 * S * (part.k or 1) * grow
+			local d = draw_r(e.kind) * 2 * S * (part.k or 1) * grow
 			world.set(id, { size = vector.create(d * (part.long or 1), 0.04, d) })
 		end
 		local a = if part.still then 0 else angle * (part.spin or 1)
@@ -1273,7 +1280,7 @@ local function show_enemy(e)
 	-- Spikes, flagella and legs, once the germ has formed.
 	local spikes = SPIKES[e.kind]
 	if spikes and e.warm <= 0 then
-		local r = SPECS[e.kind].r * DRAW
+		local r = draw_r(e.kind)
 		local color, glow = part_look(e.kind, parts[1], mode)
 		if not e.spikes then
 			e.spikes = {}
