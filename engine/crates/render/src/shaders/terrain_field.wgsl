@@ -209,7 +209,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
     let sn = stream_n.yz / (sqrt(stream_n.y * stream_n.y + stream_n.z * stream_n.z) + 1e-6);
     let stream_line = tf_line(stream_n, 2.1);
     let depth = clamp(0.05 * relief + 0.8, 0.8, 4.0);
-    let sw = 2.0 + 3.0 * depth;
+    let sw = 3.0 + 5.0 * depth;
     let across = abs(g0.x * sn.x + g0.y * sn.y);
     let streams_here = tf_smooth(-0.35, -0.1, tf_noised(p * 0.8 + vec2<f32>(7.4, 2.5), seed + 8u).x)
         * tf_smooth(0.85, 0.93, up0) * tf_smooth(0.6 * depth / sw, 0.3 * depth / sw, across) * tf_smooth(floor_w * 0.5, floor_w, ch);
@@ -251,7 +251,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32) -> TerrainSample {
     let up = 1.0 / sqrt(1.0 + steep * steep);
 
     var rock = clamp(tf_smooth(0.8, 0.6, up) + 0.7 * bedrock * tf_smooth(0.95, 0.85, up) + tf_smooth(0.0, 0.15, tor * tor_h) * tor_fade, 0.0, 1.0);
-    let scree = tf_smooth(0.92, 0.8, up) * (1.0 - tf_smooth(0.7, 0.6, up)) * (0.4 + 0.6 * bedrock) * mountains
+    let scree = tf_smooth(0.85, 0.72, up) * (1.0 - tf_smooth(0.65, 0.55, up)) * (0.4 + 0.6 * bedrock) * mountains
         + 0.9 * tf_smooth(2.0, 0.6, stream) + 0.8 * tf_smooth(ch_w + 2.5, ch_w, ch) * tf_smooth(-0.1, 0.2, tf_noised(p * 40.0, seed + 16u).x);
 
     // Boulders: at the foot of tors and crags, in stream and river beds.
