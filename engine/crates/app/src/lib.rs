@@ -195,13 +195,20 @@ impl Output {
         Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None })
     }
     fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>) -> Result<(), String> {
+        self.draw_with(gpu, renderer, draw, size, split, target, max_height, true)
+    }
+    /// With `scene` false the last scene picture is presented again under a
+    /// new HUD (a debug menu stays responsive when the scene is slow).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_with(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>, scene: bool) -> Result<(), String> {
         let size = match max_height { Some(m) if m > 0 && size[1] > m => [(size[0] as u64 * m as u64 / size[1] as u64).max(1) as u32, m], _ => size };
         let rects = render::split_rects_with(draw.cameras.len(), size[0], size[1], split);
         let views: Vec<ViewRect> = draw.cameras.iter().zip(&rects).map(|(&cam, &(x, y, w, h))| ViewRect { cam, x, y, w, h }).collect();
         // One output texture, reused while the size holds.
-        if self.picture.as_ref().is_none_or(|p| [p.width(), p.height()] != size) { self.picture = Some(Renderer::output_texture(gpu, size[0], size[1])); }
+        let fresh = self.picture.as_ref().is_none_or(|p| [p.width(), p.height()] != size);
+        if fresh { self.picture = Some(Renderer::output_texture(gpu, size[0], size[1])); }
         let picture = self.picture.as_ref().unwrap();
-        renderer.try_render_into(gpu, &views, &draw.light, picture)?;
+        if scene || fresh { renderer.try_render_into(gpu, &views, &draw.light, picture)?; }
         self.hud.prepare(gpu, &draw.hud)?;
         self.presenter.present(gpu, picture, target, Some(&self.hud), None)
     }
@@ -256,6 +263,24 @@ impl<'g> Headless<'g> {
         Ok(self.gpu.read_rgba8(&self.target))
     }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
+}
+
+/// Headless benchmark: `frames` frames at `size` with idle controls, no
+/// window. Returns frames per second (wall time, including readback) and
+/// the smoothed GPU milliseconds per pass.
+pub fn bench(game: &mut dyn Game, gpu: &Gpu, size: [u32; 2], frames: u32, tick_hz: f32) -> Result<(f64, Vec<(&'static str, f64)>), String> {
+    let mut h = Headless::new(gpu, size, tick_hz)?;
+    let mut profile = debug::EngineDebug::default();
+    let players = game.local_players();
+    let mut started = Instant::now();
+    for i in 0..frames {
+        // The first frames build the scene; time from the third on.
+        if i == 2 { started = Instant::now(); }
+        game.tick(&vec![Controls::default(); players]);
+        h.frame(game)?;
+        if let Some(r) = h.renderer() { profile.profile(gpu, r, true); }
+    }
+    Ok((f64::from(frames.saturating_sub(2)) / started.elapsed().as_secs_f64(), profile.passes().to_vec()))
 }
 
 /// Headless: run `ticks` steps with idle controls, draw one frame and return
@@ -320,6 +345,8 @@ struct Shell<'g> {
     /// Smoothed frames per second, for screenshot metadata.
     fps: f32,
     debug: debug::EngineDebug,
+    /// When the scene was last rendered (see [`Shell::scene_due`]).
+    last_scene: Instant,
     error: Option<String>,
     modifiers: ModifiersState,
     /// IME composition in progress: key text is the IME's until it commits.
@@ -331,7 +358,7 @@ struct Shell<'g> {
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let devices = Devices::new(cfg.keyboard);
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug: Default::default(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug: Default::default(), last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -403,6 +430,12 @@ impl Shell<'_> {
                 align: render::hud::TextAlign::Left, width: size[0] as f32 * 0.6 });
         }
         let render_height = self.debug.render_height().unwrap_or_else(|| std::env::var("WARP_RENDER_HEIGHT").ok().and_then(|v| v.parse().ok()).or(self.cfg.max_render_height));
+        // While the debug menu is open the scene renders about once a second
+        // and shortly after a change; frames in between only redraw the HUD,
+        // so the menu answers clicks even when the scene takes 500 ms.
+        let scene = !self.debug.open() || self.last_scene.elapsed().as_secs_f32() >= 1.0
+            || self.debug.changed.is_some_and(|t| t > self.last_scene && t.elapsed().as_secs_f32() >= 0.25);
+        if scene { self.last_scene = Instant::now(); }
         let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
         if to_file || to_game {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
@@ -425,7 +458,7 @@ impl Shell<'_> {
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-                live.out.draw(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()), render_height)?;
+                live.out.draw_with(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()), render_height, scene)?;
                 if let Some(w) = &self.window { w.pre_present_notify(); }
                 live.gpu.queue.present(tex);
                 if let Some(w) = &self.window { self.manners.presented(w, size); }
