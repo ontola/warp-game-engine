@@ -673,7 +673,8 @@ fn probe_axis(base: u32, visibility: bool) -> vec3<f32> {
 fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
     let o = u32(gi.params.w);
     if o == 0u { return vec4<f32>(0.0); }
-    let visibility = aux[o + 7u] == 1u;
+    let transport = aux[o + 7u] == 2u;
+    let visibility = aux[o + 7u] >= 1u;
     let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
     let cell = aux_f32(o + 3u);
     let dims = vec3<u32>(aux[o + 4u], aux[o + 5u], aux[o + 6u]);
@@ -698,7 +699,8 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
         let middle=3u-high-low;
         var corner=vec3<u32>(0u);
         let weights=vec4<f32>(1.0-t[high],t[high]-t[middle],t[middle]-t[low],t[low]);
-        var value=0.0;
+        var value=vec2<f32>(0.0);
+        var valid_weight=0.0;
         for(var c=0u;c<4u;c++) {
             if c==1u { corner[high]=1u; }
             if c==2u { corner[middle]=1u; }
@@ -706,9 +708,18 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
             let g=vec3<u32>(cell0)+corner;
             let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
             let v=vec3<f32>(aux_f32(base+axis.x),aux_f32(base+axis.y),aux_f32(base+axis.z));
-            value+=dot(v,n2)*weights[c];
+            var valid=1.0; var bounce_value=0.0;
+            if transport {
+                valid=aux_f32(base+2u);
+                let b=vec3<f32>(aux_f32(base+axis.x+1u),aux_f32(base+axis.y+1u),aux_f32(base+axis.z+1u));
+                bounce_value=dot(b,n2);
+            }
+            value+=vec2<f32>(dot(v,n2),bounce_value)*weights[c]*valid;
+            valid_weight+=weights[c]*valid;
         }
-        return vec4<f32>(vec3<f32>(value/max(dot(n2,vec3<f32>(1.0)),1e-12)),weight);
+        if valid_weight<1e-5 { return vec4<f32>(0.0); }
+        value/=max(dot(n2,vec3<f32>(1.0)),1e-12)*valid_weight;
+        return vec4<f32>(value,0.0,weight);
     }
     var e = vec3<f32>(0.0);
     for (var c = 0u; c < 8u; c++) {
@@ -1749,10 +1760,15 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         // Inside an indoor irradiance volume its probes replace sky and bounce.
         let room=irradiance_volume(p+visibility_n*0.05,n);
         if room.w>0.0 {
-          if aux[u32(gi.params.w)+7u] == 1u {
-            let access=mix(1.0,clamp(room.x,0.0,1.0),room.w);
-            ambient *= access;
-            env *= access;
+          if aux[u32(gi.params.w)+7u] >= 1u {
+            let access=clamp(room.x,0.0,1.0);
+            // Attenuate only sky. Preserve the existing bounce term and add
+            // the cached diffuse return from static surfaces under unit sky.
+            let returned=sky_irradiance(vec3<f32>(0.0,1.0,0.0))*room.y;
+            let corrected=(sky_irradiance(n)*sky_vis*meadow_ground_sky*meadow_edge.x*access
+                +bounce*(1.0-sky_vis)+returned)*ao*contact.x;
+            ambient=mix(ambient,corrected,room.w);
+            // No blanket suppression of glossy reflections with diffuse AO.
           } else {
             ambient=mix(ambient,room.rgb*ao*contact.x,room.w);
             env=mix(env,irradiance_volume(p+visibility_n*0.05,refl).rgb/PI*spec_contact,room.w);

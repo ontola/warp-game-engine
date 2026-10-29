@@ -94,6 +94,7 @@ pub struct StadiumVisuals {
     sky_boxes: Vec<Affine3A>,
     sky_probes: Vec<render::irradiance_volume::Probe>,
     sky_dirty: bool,
+    sky_reflectance: f32,
     stands: Slots,
     roof: Slots,
     tv: Slots,
@@ -196,7 +197,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -249,12 +250,16 @@ impl StadiumVisuals {
             }
         }
         if let Some((offset, grid)) = scene.irradiance_volume {
-            if sky_boxes != self.sky_boxes {
+            let mesh=&scene.meshes[self.stone[quarry]];
+            let material=scene.clusters[mesh.first_cluster as usize].material as usize;
+            let reflectance=Vec3::from(scene.materials[material].tint).dot(Vec3::new(0.2126,0.7152,0.0722)).clamp(0.0,0.95);
+            if sky_boxes != self.sky_boxes || reflectance != self.sky_reflectance {
+                self.sky_reflectance=reflectance;
                 let start = std::time::Instant::now();
-                self.sky_probes = render::sky_occlusion::bake(&grid, &sky_boxes, 96).expect("valid stadium occluders");
+                self.sky_probes = render::sky_occlusion::bake_diffuse(&grid, &sky_boxes, 96, reflectance).expect("valid stadium occluders");
                 self.sky_boxes = sky_boxes;
                 let mut words = render::irradiance_volume::pack(&grid, &self.sky_probes).unwrap();
-                words[7] = 1;
+                words[7] = 2;
                 scene.aux[offset..offset + words.len()].copy_from_slice(&words);
                 self.sky_dirty = true;
                 eprintln!("stadium sky cache: {} boxes, {} probes, {:.1} ms bake", self.sky_boxes.len(), self.sky_probes.len(), start.elapsed().as_secs_f64()*1000.0);
@@ -425,7 +430,7 @@ impl StadiumVisuals {
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, now: f32) -> Result<(), String> {
         if self.sky_dirty {
-            renderer.set_sky_occlusion(gpu, &self.sky_probes)?;
+            renderer.set_sky_diffuse(gpu, &self.sky_probes)?;
             self.sky_dirty = false;
         }
         self.stands.flush(gpu, renderer, scene)?;

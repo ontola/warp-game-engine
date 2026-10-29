@@ -1,0 +1,176 @@
+{
+  "scope": "RTX 5070 Ti Vulkan; native 3840x2160 four views; seed52; 30 warmup + 600 measured; serialized offscreen, not gameplay FPS",
+  "runs": [
+    {
+      "enabled": false,
+      "repeat": 1,
+      "frame_ms": {
+        "cpu_median": 4.72,
+        "cpu_p95": 7.85,
+        "wall_median": 12.31,
+        "wall_p95": 16.89,
+        "gpu_median": 4.14,
+        "gpu_p95": 7.79
+      },
+      "pass_means_ms": {
+        "shade": 1.629,
+        " bloom": 0.932,
+        " raster": 0.901,
+        " taa": 0.449,
+        " near shadow raster": 0.361,
+        " tonemap": 0.262,
+        " cull": 0.256,
+        " near shadow cull": 0.169,
+        " fx": 0.103,
+        " shadow raster": 0.091,
+        " shadow cull": 0.046,
+        " live screens": 0.044,
+        " weighted character skinning": 0.02,
+        " crowd": 0.019
+      }
+    },
+    {
+      "enabled": true,
+      "repeat": 1,
+      "frame_ms": {
+        "cpu_median": 4.5,
+        "cpu_p95": 7.23,
+        "wall_median": 12.5,
+        "wall_p95": 16.79,
+        "gpu_median": 4.58,
+        "gpu_p95": 7.94
+      },
+      "pass_means_ms": {
+        "shade": 2.378,
+        " raster": 0.868,
+        " taa": 0.778,
+        " near shadow raster": 0.377,
+        " bloom": 0.377,
+        " cull": 0.263,
+        " tonemap": 0.221,
+        " near shadow cull": 0.169,
+        " shadow raster": 0.089,
+        " fx": 0.047,
+        " shadow cull": 0.046,
+        " weighted character skinning": 0.021,
+        " crowd": 0.019,
+        " live screens": 0.017
+      }
+    },
+    {
+      "enabled": false,
+      "repeat": 2,
+      "frame_ms": {
+        "cpu_median": 4.48,
+        "cpu_p95": 6.74,
+        "wall_median": 11.89,
+        "wall_p95": 16.06,
+        "gpu_median": 4.17,
+        "gpu_p95": 7.84
+      },
+      "pass_means_ms": {
+        "shade": 1.668,
+        " raster": 0.958,
+        " bloom": 0.668,
+        " taa": 0.528,
+        " near shadow raster": 0.405,
+        " tonemap": 0.271,
+        " cull": 0.241,
+        " near shadow cull": 0.175,
+        " fx": 0.1,
+        " shadow raster": 0.09,
+        " shadow cull": 0.045,
+        " weighted character skinning": 0.021,
+        " crowd": 0.02,
+        " live screens": 0.01
+      }
+    },
+    {
+      "enabled": true,
+      "repeat": 2,
+      "frame_ms": {
+        "cpu_median": 4.82,
+        "cpu_p95": 7.27,
+        "wall_median": 12.86,
+        "wall_p95": 17.14,
+        "gpu_median": 4.62,
+        "gpu_p95": 8.04
+      },
+      "pass_means_ms": {
+        "shade": 2.384,
+        " raster": 0.923,
+        " taa": 0.675,
+        " near shadow raster": 0.44,
+        " bloom": 0.39,
+        " tonemap": 0.248,
+        " cull": 0.239,
+        " near shadow cull": 0.19,
+        " shadow raster": 0.088,
+        " fx": 0.058,
+        " shadow cull": 0.046,
+        " live screens": 0.028,
+        " weighted character skinning": 0.02,
+        " crowd": 0.019
+      }
+    },
+    {
+      "enabled": false,
+      "repeat": 3,
+      "frame_ms": {
+        "cpu_median": 4.69,
+        "cpu_p95": 7.44,
+        "wall_median": 11.96,
+        "wall_p95": 16.01,
+        "gpu_median": 4.15,
+        "gpu_p95": 7.66
+      },
+      "pass_means_ms": {
+        "shade": 1.56,
+        " raster": 0.87,
+        " bloom": 0.761,
+        " taa": 0.516,
+        " near shadow raster": 0.374,
+        " tonemap": 0.315,
+        " cull": 0.258,
+        " near shadow cull": 0.18,
+        " fx": 0.099,
+        " shadow raster": 0.089,
+        " shadow cull": 0.045,
+        " live screens": 0.038,
+        " weighted character skinning": 0.021,
+        " crowd": 0.019
+      }
+    },
+    {
+      "enabled": true,
+      "repeat": 3,
+      "frame_ms": {
+        "cpu_median": 4.32,
+        "cpu_p95": 6.56,
+        "wall_median": 12.19,
+        "wall_p95": 16.25,
+        "gpu_median": 4.57,
+        "gpu_p95": 8.04
+      },
+      "pass_means_ms": {
+        "shade": 2.399,
+        " raster": 0.913,
+        " taa": 0.703,
+        " near shadow raster": 0.381,
+        " bloom": 0.342,
+        " tonemap": 0.253,
+        " cull": 0.251,
+        " near shadow cull": 0.199,
+        " shadow raster": 0.09,
+        " fx": 0.052,
+        " shadow cull": 0.046,
+        " weighted character skinning": 0.02,
+        " crowd": 0.02,
+        " live screens": 0.009
+      }
+    }
+  ],
+  "exe_sha256": "e949469c15801f4ddae764aa6453105917c2093e95135776ea726a39c42d7e56",
+  "shader_sha256": "2593da3710181470735f39754c7dfad1d0cd9bb4960e0c012781e6a8a9b8d060",
+  "evidence": "C:\\dev\\warp-bench\\sky-bounce-20261029"
+}
