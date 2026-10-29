@@ -22,6 +22,7 @@ const FOG: u32 = 14;
 const LOD: u32 = 15;
 const EXPOSURE: u32 = 16;
 const RESOLUTION: u32 = 17;
+const TAA: u32 = 18;
 const SUN: u32 = 20;
 const SHADOWS: u32 = 21;
 const NEAR_SHADOWS: u32 = 22;
@@ -40,6 +41,8 @@ const HEIGHTS: [u32; 6] = [0, 2160, 1800, 1440, 1080, 720];
 struct Settings {
     options: DebugRenderOptions,
     fog: bool,
+    /// Temporal AA as the game set it (false switches it off).
+    taa: bool,
     lod_pixels: Option<f32>,
     exposure: f32,
     /// None: the game's own [`crate::Config::max_render_height`].
@@ -54,7 +57,7 @@ struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { options: DebugRenderOptions::default(), fog: true, lod_pixels: None, exposure: 0.0, render_height: None,
+        Settings { options: DebugRenderOptions::default(), fog: true, taa: true, lod_pixels: None, exposure: 0.0, render_height: None,
             sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true }
     }
 }
@@ -89,6 +92,7 @@ impl EngineDebug {
         toggle(GLASS, RENDER_MENU, "Transparency", s.options.transparency_enabled, "Skips the transparent-material pass.");
         toggle(BLOOM, RENDER_MENU, "Highlight bloom", s.options.bloom_enabled, "Screen-space halo around bright highlights.");
         toggle(FOG, RENDER_MENU, "Distance fog", s.fog, "Off: no distance extinction and no fog culling.");
+        toggle(TAA, RENDER_MENU, "Temporal AA", s.taa, "Off disables temporal anti-aliasing if the game uses it (it cannot switch it on).");
         toggle(NEAR_SHADOWS, LIGHT_MENU, "Near shadows", s.near_shadows, "The detailed shadow map close to the camera.");
         toggle(CONTACT, LIGHT_MENU, "Contact occlusion", s.contact, "Small-scale darkening where surfaces meet.");
         toggle(GI, LIGHT_MENU, "Global illumination", s.gi, "Bounced light; off leaves sun and sky only.");
@@ -153,6 +157,7 @@ impl EngineDebug {
                 GLASS => s.options.transparency_enabled = value,
                 BLOOM => s.options.bloom_enabled = value,
                 FOG => s.fog = value,
+                TAA => s.taa = value,
                 NEAR_SHADOWS => s.near_shadows = value,
                 CONTACT => s.contact = value,
                 GI => s.gi = value,
@@ -186,6 +191,7 @@ impl EngineDebug {
         if let Some(px) = s.lod_pixels { l.lod_pixels = px; }
         l.ev100 += s.exposure;
         if !s.fog { l.fog_density = 0.0; l.fog_culling = false; }
+        if !s.taa { l.taa = 0.0; }
         l.sun_lux *= s.sun;
         l.shadow_strength *= s.shadows;
         if !s.near_shadows { l.near_shadows = 0.0; }
@@ -237,7 +243,7 @@ impl EngineDebug {
         let o = &s.options;
         serde_json::json!({
             "grass": o.meadow_enabled, "transparency": o.transparency_enabled, "bloom": o.bloom_enabled, "bloom_strength": o.bloom_strength,
-            "fog": s.fog, "lod_pixels": s.lod_pixels, "exposure_offset_ev": s.exposure, "render_height": s.render_height,
+            "fog": s.fog, "taa": s.taa, "lod_pixels": s.lod_pixels, "exposure_offset_ev": s.exposure, "render_height": s.render_height,
             "sun_scale": s.sun, "shadow_scale": s.shadows, "near_shadows": s.near_shadows, "contact_occlusion": s.contact, "gi": s.gi,
             "reflection_occlusion": s.reflection, "grass_distance": o.meadow_distance_scale, "grass_size": o.meadow_size_scale,
             "grass_count": o.meadow_density, "grass_lod_pixels": o.meadow_lod_pixels,

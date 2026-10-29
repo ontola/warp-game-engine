@@ -355,6 +355,10 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     sky.apply(&mut scene, &mut light);
     light.fog_density = 0.00003;
     light.fog_end = 60000.0;
+    // TAA's history clamp rejects the jittered sub-pixel fir needles, so
+    // distant trees flickered (headless: 0.5-5k changed pixels a frame from a
+    // still camera with TAA, ~300 without). Sideways plays without TAA too.
+    light.taa = 0.0;
     Ok((scene, light, pool, (world.grass || world.trees).then_some(centre)))
 }
 
@@ -461,6 +465,20 @@ fn main() -> Result<(), String> {
         let (fps, passes) = app::bench(&mut game, &gpu, [w, h], n.parse().map_err(|_| "--bench N")?, TICK_HZ)?;
         println!("{w}x{h}: {fps:.1} fps");
         for (pass, ms) in passes.iter().filter(|p| p.1 >= 0.05) { println!("  {pass:>28} {ms:7.2} ms"); }
+        return Ok(());
+    }
+    // --dump N DIR: N consecutive headless frames as PNGs (flicker checks).
+    if let Some(n) = arg("--dump") {
+        let dir = args.windows(3).find(|w| w[0] == "--dump").map(|w| w[2].clone()).ok_or("--dump N DIR")?;
+        let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1280, 720]);
+        let gpu = render::Gpu::new()?;
+        let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        for i in 0..n.parse::<u32>().map_err(|_| "--dump N DIR")? {
+            game.tick(&[Controls::default()]);
+            let rgba = headless.frame(&mut game)?;
+            render::write_png(&PathBuf::from(&dir).join(format!("{i:03}.png")), w, h, &rgba)?;
+        }
         return Ok(());
     }
     if let Some(out) = arg("--shot") {
