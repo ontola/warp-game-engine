@@ -1578,6 +1578,11 @@ impl ApplicationHandler for App {
             self.quality=if measured {None} else {crate::adaptive_quality::AdaptiveQuality::new(refresh,Instant::now())};
             if let Some(q)=&self.quality {println!("play: adaptive quality, {}",q.label());}
             if self.args.smoke_frames==0 && self.host.is_none(){window.set_visible(true);window.request_redraw();}
+            // Under a party host the window stays invisible until the host
+            // starts the stage. Without this the window manners' show-anyway
+            // fallback put the starting game over the lobby after 5 s, and
+            // minimising it again failed while it loaded.
+            if self.args.smoke_frames==0 && self.host.as_ref().is_some_and(|h|h.launched_by_daemon) {self.manners.wish(app::Screen::Hidden,false);}
             Ok(())
         })();
         if let Err(e)=result { self.error=Some(e); self.finish(event_loop,"initialization_error"); }
