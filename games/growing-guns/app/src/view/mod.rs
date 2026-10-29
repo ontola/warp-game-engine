@@ -197,11 +197,11 @@ impl Visuals {
                     let size = 2.4 * (0.05 + damage * 0.0022).clamp(0.05, 0.35);
                     let radius = growing_guns::destruct::rifle_chip(damage / 16.0).1;
                     self.fx.debris.burst(s, &render::debris::BurstSpec::chips(pos + normal * 0.15, radius * 0.3, amount, size, &stone.shards));
-                    // A scorch mark on the stone, bigger for strong rounds.
+                    // A bullet hole where the chips came off, bigger for strong rounds.
                     if let Some(c) = chunk {
-                        let r = if strong { 0.32 } else { 0.22 };
-                        let xf = Affine3A::from_scale_rotation_translation(Vec3::new(r, 0.02, r), Quat::from_rotation_arc(Vec3::Y, normal), pos);
-                        self.arena.scorch(s, xf, c as u32);
+                        let r = if strong { 0.3 } else { 0.2 };
+                        let seed = (pos.x * 7919.0 + pos.y * 104729.0 + pos.z * 1299709.0) as i64 as u32;
+                        self.arena.bullet_hole(s, pos, normal, r, seed, c as u32);
                     }
                 }
                 Event::Explosion { pos, radius, kind, .. } => {
