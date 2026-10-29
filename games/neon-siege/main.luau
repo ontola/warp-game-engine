@@ -580,6 +580,14 @@ local function waves(dt)
 		s.waveRest = WAVE_REST
 		-- Stray turret bullets must not spoil the earned breathing room.
 		s.hostile = {}
+		-- Clearing a wave brings every downed pilot back.
+		for _, p in s.players do
+			if p.hp <= 0 then
+				p.hp, p.invul, p.revive, p.downTime = s.lives, 2, 0, 0
+				sfx("pickup")
+				ring(p.x, p.y, 55, { 0.3, 1, 0.8 })
+			end
+		end
 	end
 end
 
@@ -624,9 +632,11 @@ local function pilot_step(p, c, dt)
 		if helper and (helper.x - p.x) ^ 2 + (helper.y - p.y) ^ 2 < 120 ^ 2 then
 			p.revive += dt
 		else
-			p.revive = math.max(0, p.revive - dt * 0.5)
+			-- Leave and the progress drains fast: you have to stay to revive.
+			p.revive = math.max(0, p.revive - dt * 2)
 		end
-		if helper and (p.revive >= REVIVE_TIME or p.downTime >= 6) then
+		-- No revive by waiting: only a teammate (or clearing the wave) brings you back.
+		if helper and p.revive >= REVIVE_TIME then
 			p.hp = s.lives
 			p.invul = 2
 			p.revive = 0
