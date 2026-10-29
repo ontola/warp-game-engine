@@ -18,6 +18,9 @@ use growing_guns::{Event, Input, World, DT, TICK_HZ};
 use render::hud::HudDrawList;
 use render::Lighting;
 
+/// The floodlight banks' size for their soft shadows (metres).
+const FLOOD_SOFTNESS: f32 = 0.6;
+
 /// Engine controls to this game's input. Look x is right-positive in the
 /// shell and left-positive (yaw) in the simulation.
 fn input(c: &Controls) -> Input {
@@ -796,6 +799,12 @@ impl app::Game for Gg {
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
         let (lights, scatter) = self.vis.local_lights_scattering(self.scatter);
         r.set_local_lights_scattering(&lights, &scatter)?;
+        // At night the floodlights are shadowed spots: falloff 1 and the
+        // range window of Godot's lights (the sign), as the unshadowed ones.
+        let spots = self.vis.flood_spots();
+        r.set_spot_falloff(&vec![-1.0; spots.len()]);
+        r.set_spot_softness(if spots.is_empty() { 0.0 } else { FLOOD_SOFTNESS });
+        r.set_headlights(&spots)?;
         r.set_volumetric_beams(&if self.light.volumetric.is_some() { self.vis.volumetric_beams(self.scatter) } else { Vec::new() })?;
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
         // Name tags over everyone not seated here (on the start screen, everyone).

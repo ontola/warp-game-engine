@@ -72,7 +72,7 @@ impl SpotLight {
         if ![self.position,self.direction,self.up,self.intensity_cd].iter().all(|v|v.is_finite())
             || self.direction.length_squared()<1e-8 || self.up.length_squared()<1e-8
             || self.direction.normalize().cross(self.up.normalize()).length_squared()<1e-5
-            || self.intensity_cd.min_element()<0.0 || self.intensity_cd.max_element()>1_000_000.0
+            || self.intensity_cd.min_element()<0.0 || self.intensity_cd.max_element()>100_000_000.0
             || !self.range_m.is_finite() || !(1.0..=200.0).contains(&self.range_m)
             || !self.inner_angle_radians.is_finite() || !self.outer_angle_radians.is_finite()
             || self.inner_angle_radians<0.0 || self.inner_angle_radians>=self.outer_angle_radians
@@ -150,7 +150,7 @@ impl Resources {
     pub fn upload(&self,gpu:&Gpu,lights:&[SpotLight],local:&[LocalLight],spot_falloff:&[f32],softness:f32) {
         let mut u=Uniform::from_lights(lights,local);
         u.count[2]=softness.clamp(0.0,1.0).to_bits();
-        for (i,f) in spot_falloff.iter().take(MAX_LIGHTS).enumerate() {u.spot_falloff[i/4][i%4]=f.clamp(0.1,4.0);}
+        for (i,f) in spot_falloff.iter().take(MAX_LIGHTS).enumerate() {u.spot_falloff[i/4][i%4]=if *f<0.0 {-(-f).clamp(0.1,4.0)} else {f.clamp(0.1,4.0)};}
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&u));
     }
     pub fn layer(&self,index:u32)->wgpu::TextureView {self.texture.create_view(&wgpu::TextureViewDescriptor {

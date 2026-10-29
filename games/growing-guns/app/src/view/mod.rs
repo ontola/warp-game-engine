@@ -324,8 +324,10 @@ impl Visuals {
         l.truncate(MAX_TRANSIENT_LIGHTS);
         let mut w = vec![0.0; l.len()];
         let flood = self.flood;
-        l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).map(|f| LocalLight { intensity_cd: f.intensity_cd * flood, ..*f }));
-        w.resize(l.len(), scatter.flood);
+        if !self.flood_shadows() {
+            l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).map(|f| LocalLight { intensity_cd: f.intensity_cd * flood, ..*f }));
+            w.resize(l.len(), scatter.flood);
+        }
         l.extend(self.arena.lava.lights().iter().take(MAX_LIGHTS - l.len()).copied());
         w.resize(l.len(), scatter.lava);
         l.extend(self.arena.lights().iter().take(MAX_LIGHTS - l.len()).copied());
@@ -338,6 +340,27 @@ impl Visuals {
         (l, w)
     }
 
+    /// At night the floodlights cast shadows (the walls shade the field):
+    /// they are the renderer's shadowed spots then, not local lights. Off
+    /// with `GG_FLOOD_SHADOWS=0`; by day they stay unshadowed, as in Godot.
+    pub fn flood_shadows(&self) -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        self.flood > 1.01 && *ON.get_or_init(|| std::env::var("GG_FLOOD_SHADOWS").as_deref() != Ok("0"))
+    }
+
+    /// The floodlights as shadowed spots (empty unless `flood_shadows`).
+    pub fn flood_spots(&self) -> Vec<render::headlights::SpotLight> {
+        if !self.flood_shadows() { return Vec::new(); }
+        self.stadium.lights().iter().take(render::headlights::MAX_LIGHTS).map(|f| {
+            let side = f.direction.cross(Vec3::Y).normalize_or(Vec3::X);
+            render::headlights::SpotLight {
+                position: f.position, direction: f.direction, up: side.cross(f.direction),
+                intensity_cd: (f.intensity_cd * self.flood).min(Vec3::splat(1.0e8)), range_m: f.range_m.clamp(1.0, 200.0),
+                inner_angle_radians: f.inner_cos.clamp(-1.0, 1.0).acos(), outer_angle_radians: f.outer_cos.clamp(-1.0, 1.0).acos().min(1.3),
+            }
+        }).collect()
+    }
+
     /// The floodlight beams and the pickups' drop-beam searchlights, which
     /// only scatter (night volumetric light).
     pub fn volumetric_beams(&self, scatter: Scatter) -> Vec<LocalLight> {
@@ -345,7 +368,9 @@ impl Visuals {
         // The pickups' haze last: the renderer takes at most 32 scattering
         // lights, so when the lava glows fill the budget the floods keep theirs.
         let haze = self.things.pickup_haze().iter().map(|b| LocalLight { intensity_cd: (b.intensity_cd * scatter.pickup).min(Vec3::splat(1.0e8)), ..*b });
-        self.stadium.beams().iter().map(|b| LocalLight { intensity_cd: b.intensity_cd * flood, ..*b }).chain(haze).collect()
+        // Shadowed floodlights still light the haze, as when they were local lights.
+        let floods = self.stadium.lights().iter().filter(|_| self.flood_shadows()).map(|f| LocalLight { intensity_cd: f.intensity_cd * self.flood * scatter.flood, ..*f });
+        self.stadium.beams().iter().map(|b| LocalLight { intensity_cd: b.intensity_cd * flood, ..*b }).chain(floods).chain(haze).collect()
     }
 
     /// Floodlight strength for the sky (1 for Godot's day).

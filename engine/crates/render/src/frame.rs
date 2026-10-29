@@ -2183,6 +2183,8 @@ impl Renderer {
 
     /// Distance exponent per shadowed spot, in `set_headlights` order
     /// (Godot's `spot_attenuation`); missing entries are 2 (inverse square).
+    /// A negative value is the exponent with the local lights' range window
+    /// (Godot's (1 - (d/range)^4)^2) instead of a fade over the last fifth.
     pub fn set_spot_falloff(&self,spot_falloff:&[f32]) {
         *self.spot_falloff.lock().unwrap()=spot_falloff.to_vec();
     }
