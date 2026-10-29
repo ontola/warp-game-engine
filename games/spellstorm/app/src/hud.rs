@@ -211,6 +211,7 @@ impl Hud {
             let y = (0.5 - c.y / c.w * 0.5) * size[1] as f32 / s;
             p.text(&wz.name, x, y + 14.0, body(), 26.0, lighten(wz.robe, 0.4), TextAlign::Center, 9.0);
         }
+        tome_labels(&mut p, w, cam, &vp, size);
         p.d.begin_overlay();
         for (i, &id) in w.wizards.iter().enumerate() {
             let right = i % 2 == 1;
@@ -262,6 +263,53 @@ impl Hud {
             }
         }
     }
+}
+
+/// Over each altar its tome's name in the title face and gold, and under it
+/// what it does in pale plain text (Run._altar_label: 80 and 60 px at
+/// 0.0035 m a pixel, wrapped at 720 px, always on top).
+fn tome_labels(p: &mut Painter, w: &World, cam: &Camera, vp: &Mat4, size: [u32; 2]) {
+    let right = (cam.target - cam.pos).cross(Vec3::Y).normalize_or_zero();
+    let ps = p.s;
+    let screen = move |at: Vec3| {
+        let c = *vp * Vec4::new(at.x, at.y, at.z, 1.0);
+        (c.w > 0.0).then(|| Vec2::new((c.x / c.w * 0.5 + 0.5) * size[0] as f32 / ps, (0.5 - c.y / c.w * 0.5) * size[1] as f32 / ps))
+    };
+    for a in &w.run.altars {
+        if a.rise <= 0.0 || a.taken {
+            continue;
+        }
+        let Some(relic) = spellstorm::relics::ALL.get(a.relic) else { continue };
+        let k = a.rise.min(1.0);
+        let base = a.pos.with_y(0.0);
+        let (Some(top), Some(under), Some(side)) = (screen(base + Vec3::Y * 2.68 * k), screen(base + Vec3::Y * 2.58 * k), screen(base + Vec3::Y * 2.58 * k + right)) else { continue };
+        // Screen units a metre is, there.
+        let m = (side - under).length();
+        let (title_px, text_px) = (80.0 * 0.0035 * m, 60.0 * 0.0035 * m);
+        let wrap = 720.0 * 0.0035 * m;
+        p.text(relic.name, top.x, top.y - title_px * 0.6, title(), title_px, [1.0, 0.8, 0.42, k], TextAlign::Center, title_px * 0.225);
+        for (i, line) in wrapped(relic.text, body(), text_px * p.s, wrap * p.s).iter().enumerate() {
+            p.text(line, under.x, under.y + text_px * (0.6 + 1.2 * i as f32), body(), text_px, [0.86, 0.84, 0.8, k], TextAlign::Center, text_px * 0.3);
+        }
+    }
+}
+
+/// `text` broken into lines no wider than `width` px at `px`.
+fn wrapped(text: &str, font: FontFace, px: f32, width: f32) -> Vec<String> {
+    let mut lines: Vec<String> = vec![];
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let next = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+        if !line.is_empty() && render::hud::measure(&next, font, px)[0] > width {
+            lines.push(std::mem::replace(&mut line, word.to_string()));
+        } else {
+            line = next;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// The camera's view and projection, as the renderer builds them.

@@ -259,7 +259,7 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new("start_at", "Start a run at a biome (0 the chapel; the state lists the run).", obj(json!({ "biome": { "type": "integer", "minimum": 0 } }), &["biome"])),
         ToolSpec::new("setting", "A party setting: friendly_fire off|half|full, difficulty easy|normal|hard, unlocks earned|all.",
             obj(json!({ "key": { "type": "string" }, "value": { "type": "string" } }), &["key", "value"])),
-        ToolSpec::new("command", "One console line: knobs, knob NAME VALUE (saved), trial NAME VALUE (temporary), keep, revert, new_run, biome N, setting KEY VALUE, help.",
+        ToolSpec::new("command", "One console line: knobs, knob NAME VALUE (saved), trial NAME VALUE (temporary), keep, revert, new_run, biome N, skip (past this level's fights to its shrine and portal), setting KEY VALUE, help.",
             obj(json!({ "line": { "type": "string" } }), &["line"])),
     ]
 }
@@ -294,12 +294,16 @@ impl Spellstorm {
                 self.world.start_at(b);
                 format!("a run at biome {b}")
             }
+            "skip" => {
+                self.world.skip_level();
+                "the level's fights skipped: shrine and portal up".into()
+            }
             "setting" => {
                 let (k, v) = (rest.first().ok_or("setting KEY VALUE")?, rest.get(1).ok_or("setting KEY VALUE")?);
                 self.world.set_option(k, v);
                 format!("{k} = {v}")
             }
-            "help" | "" => "knobs | knob NAME VALUE (saved in knobs.txt) | trial NAME VALUE (only the running game) | keep | revert | new_run | biome N | setting KEY VALUE".into(),
+            "help" | "" => "knobs | knob NAME VALUE (saved in knobs.txt) | trial NAME VALUE (only the running game) | keep | revert | new_run | biome N | skip (this level's fights) | setting KEY VALUE".into(),
             _ => return Err(format!("unknown command {cmd} (help lists them)")),
         };
         Ok(out)

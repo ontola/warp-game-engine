@@ -814,6 +814,28 @@ impl World {
         }
     }
 
+    /// Skip this level's fights (the live tools' and shots' shortcut):
+    /// every monster falls, no more come, the walls open, the boss's shrine
+    /// and the portal rise, and the wizards stand before the way out.
+    pub fn skip_level(&mut self) {
+        self.run.encounters.clear();
+        self.run.spawn_queue.clear();
+        self.run.pending.clear();
+        for id in self.enemies.clone() {
+            self.take(id, 1e9);
+        }
+        self.flush_deaths();
+        for wd in &mut self.run.wards {
+            wd.opening = true;
+        }
+        self.level_cleared();
+        let pa = self.level.exit_at;
+        let n = self.wizards.len() as f32;
+        for (i, id) in self.wizards.clone().into_iter().enumerate() {
+            self.am(id).pos = Vec3::new(pa.x + (i as f32 - (n - 1.0) * 0.5) * 1.2, 0.0, pa.y + 3.5);
+        }
+    }
+
     fn level_cleared(&mut self) {
         if self.run.biome_index == crate::biome::BIOMES.len() - 1 {
             self.run.state = State::Won;

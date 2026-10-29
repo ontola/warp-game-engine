@@ -17,6 +17,7 @@ mod marks;
 mod menu;
 mod party;
 mod play;
+mod shrines;
 mod view;
 
 use render::Gpu;
@@ -53,6 +54,11 @@ fn run() -> Result<(), String> {
                 game.world.new_run();
             }
             let ticks = numf("--ticks", 240.0) as u32;
+            // --skip: past this level's fights to its last shrine and portal.
+            if flag("--skip") {
+                game.step(&[]);
+                game.world.skip_level();
+            }
             let gpu = Gpu::new()?;
             let started = std::time::Instant::now();
             let mut shot = app::Headless::new(&gpu, [w, h], 60.0)?;

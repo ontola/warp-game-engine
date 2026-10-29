@@ -40,9 +40,10 @@ pub(crate) enum Cell {
     Shock,
     Slice,
     Wisp,
+    Band,
 }
 
-const CELLS: [Cell; 15] = [
+const CELLS: [Cell; 16] = [
     Cell::Dot,
     Cell::Flame,
     Cell::Drop,
@@ -58,6 +59,7 @@ const CELLS: [Cell; 15] = [
     Cell::Shock,
     Cell::Slice,
     Cell::Wisp,
+    Cell::Band,
 ];
 
 pub(crate) fn uv(c: Cell) -> [f32; 4] {
@@ -143,6 +145,21 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
             let body = 0.25 + 0.75 * y * y;
             (1.0, ((body * 0.55 + rim * 0.8) * ring).min(1.0) * tent)
         }
+        // One piece of a ring to stand in (Run._fill_ring, slash.gdshader
+        // round a whole circle): the cell holds only the piece near the rim,
+        // BAND_AT out from the circle's middle along up (v < 0), BAND_SIZE
+        // across, both in radii. A tent across it, so pieces side by side
+        // add up to one even ring.
+        Cell::Band => {
+            let (px, py) = (u * BAND_SIZE * 0.5, BAND_AT - v * BAND_SIZE * 0.5);
+            let r = (px * px + py * py).sqrt();
+            let tent = (1.0 - px.atan2(py).abs() / BAND).clamp(0.0, 1.0);
+            let y = ((r - BAND_IN) / (1.0 - BAND_IN)).clamp(0.0, 1.0);
+            let ring = smooth(0.0, 0.02, r - BAND_IN) * (1.0 - smooth(0.97, 1.0, r));
+            let rim = smooth(0.75, 1.0, y) + 0.35 * (1.0 - smooth(0.0, 0.25, y));
+            let body = 0.25 + 0.75 * y * y;
+            (1.0, ((body * 0.55 + rim * 0.8) * ring).min(1.0) * tent)
+        }
         // A curl of haze for the mist walls: a lumpy soft blob.
         Cell::Wisp => {
             let ang = v.atan2(u);
@@ -163,6 +180,16 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
 pub(crate) const SLICE: f32 = 2.0 * spellstorm::wizard::SWING_ARC / SLICES as f32;
 pub(crate) const SLICES: usize = 24;
 pub(crate) const SLICE_IN: f32 = 0.55 / (spellstorm::wizard::SWING_REACH + 0.3);
+
+/// The pieces of a ring to stand in: how many round it, how far apart
+/// they stand (each spreads twice that), where the band starts (inner over
+/// outer radius, Run._fill_ring's r - 0.18 at ALTAR_R), and the square each
+/// piece's cell covers: its middle out from the circle's and its side.
+pub(crate) const BANDS: usize = 32;
+pub(crate) const BAND: f32 = std::f32::consts::TAU / BANDS as f32;
+pub(crate) const BAND_IN: f32 = 1.0 - 0.18 / spellstorm::run::ALTAR_R;
+pub(crate) const BAND_AT: f32 = 0.5 + 0.5 * BAND_IN * 0.98;
+pub(crate) const BAND_SIZE: f32 = 0.42;
 
 /// The atlas of every cell, to give the renderer once.
 pub fn atlas() -> Picture {
