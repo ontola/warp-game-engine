@@ -304,6 +304,20 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
 }
 
 impl Shell<'_> {
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        if let Err(e) = self.frame() { self.error = Some(e); event_loop.exit(); return; }
+        if self.game.quit() { event_loop.exit(); return; }
+        self.frames += 1;
+        if self.frames % 60 == 0 { if let (Some(w), Some(t)) = (&self.window, self.game.title()) { w.set_title(&format!("{} | {t}", self.cfg.title)); } }
+        if self.cfg.frames > 0 && self.frames >= self.cfg.frames {
+            let s = self.started.elapsed().as_secs_f64();
+            println!("smoke: {} frames in {s:.1} s ({:.1} fps)", self.frames, self.frames as f64 / s);
+            event_loop.exit();
+            return;
+        }
+        if let Some(w) = &self.window { w.request_redraw(); }
+    }
+
     fn frame(&mut self) -> Result<(), String> {
         let wish = self.game.screen();
         if self.manners.wish(wish, self.focused) && wish == Screen::Hidden { self.capture_mouse(false); }
@@ -363,6 +377,7 @@ impl Shell<'_> {
                 live.out.draw(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()))?;
                 if let Some(w) = &self.window { w.pre_present_notify(); }
                 live.gpu.queue.present(tex);
+                if let Some(w) = &self.window { self.manners.presented(w, size); }
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => live.surface.configure(&live.gpu.device, &live.config),
             _ => {}
@@ -501,22 +516,17 @@ impl ApplicationHandler for Shell<'_> {
                 }
                 self.devices.key(code, event.state, event.repeat);
             }
-            WindowEvent::RedrawRequested => {
-                if let Err(e) = self.frame() { self.error = Some(e); event_loop.exit(); return; }
-                if self.game.quit() { event_loop.exit(); return; }
-                self.frames += 1;
-                if self.frames % 60 == 0 { if let (Some(w), Some(t)) = (&self.window, self.game.title()) { w.set_title(&format!("{} | {t}", self.cfg.title)); } }
-                if self.cfg.frames > 0 && self.frames >= self.cfg.frames {
-                    let s = self.started.elapsed().as_secs_f64();
-                    println!("smoke: {} frames in {s:.1} s ({:.1} fps)", self.frames, self.frames as f64 / s);
-                    event_loop.exit();
-                    return;
-                }
-                if let Some(w) = &self.window { w.request_redraw(); }
-            }
+            // Off screen, `about_to_wait` drives the frames.
+            WindowEvent::RedrawRequested if !self.manners.offscreen() => self.redraw(event_loop),
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) { event_loop.set_control_flow(ControlFlow::Poll); }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(ControlFlow::Poll);
+        // Invisible and minimised windows may get no redraw events (Win32),
+        // yet a warm or paused game must keep answering its host, and a new
+        // window must draw the first frame it appears with.
+        if self.window.is_some() && self.manners.offscreen() && !event_loop.exiting() { self.redraw(event_loop); }
+    }
 }

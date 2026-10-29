@@ -17,6 +17,8 @@ const RETRY: Duration = Duration::from_millis(250);
 const OFF_SCREEN_AFTER: Duration = Duration::from_secs(8);
 /// Stop asking for the screen after this; the window server said no.
 const CLAIM_FOR: Duration = Duration::from_secs(6);
+/// A window still waiting for its first frame shows itself after this.
+const SHOW_ANYWAY: Duration = Duration::from_secs(3);
 /// Where a parked window goes.
 const PARKED: PhysicalPosition<i32> = PhysicalPosition::new(-30000, -30000);
 
@@ -27,6 +29,9 @@ pub struct Manners {
     asked: Option<Instant>,
     settled: bool,
     parked: bool,
+    /// The window has been shown. It opens invisible and appears with its
+    /// first frame, never as an empty (white) rectangle.
+    shown: bool,
 }
 
 impl Default for Manners {
@@ -34,17 +39,35 @@ impl Default for Manners {
 }
 
 impl Manners {
-    pub fn new() -> Self { Self { screen: Screen::Normal, since: Instant::now(), asked: None, settled: true, parked: false } }
+    pub fn new() -> Self { Self { screen: Screen::Normal, since: Instant::now(), asked: None, settled: true, parked: false, shown: false } }
 
-    /// Window attributes for the first wish: a game that starts hidden (a
-    /// warm launch) opens parked and inactive, so it cannot flash over the
-    /// game being played or take its focus.
+    /// Window attributes for the first wish: the window opens invisible and
+    /// shows itself with its first presented frame (`presented`). A game
+    /// that starts hidden (a warm launch) also opens inactive, so it cannot
+    /// take the focus from the game being played.
     pub fn first(&mut self, wish: Screen, attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+        let attrs = attrs.with_visible(false);
         if wish != Screen::Hidden { return attrs; }
         self.screen = Screen::Hidden;
+        attrs.with_fullscreen(None).with_active(false)
+    }
+
+    /// Not on screen: never shown yet, or hidden. Such a window may get no
+    /// redraw events, so the shell drives its frames itself.
+    pub fn offscreen(&self) -> bool { !self.shown || self.screen == Screen::Hidden }
+
+    /// A frame of `surface` size was presented: show a window that is due
+    /// to appear once its surface matches the window (no stretched or
+    /// empty first frame).
+    pub fn presented(&mut self, w: &Window, surface: [u32; 2]) {
+        if self.shown || self.screen == Screen::Hidden { return; }
+        let size = w.inner_size();
+        if [size.width, size.height] != surface { return; }
+        w.set_visible(true);
+        if self.screen == Screen::Fullscreen { w.focus_window(); }
+        self.shown = true;
         self.settled = false;
-        self.parked = true;
-        attrs.with_fullscreen(None).with_active(false).with_position(PARKED)
+        self.asked = None;
     }
 
     /// A new wish from the game. Returns true when it changed.
@@ -63,11 +86,21 @@ impl Manners {
 
     /// Called every frame: ask again until the window is where it should be.
     pub fn step(&mut self, w: &Window, focused: bool, fullscreen: bool) {
+        // A window shown by its owner (Sideways shows its own).
+        if !self.shown && w.is_visible() == Some(true) { self.shown = true; }
+        // A window server that keeps an invisible window from presenting:
+        // show it anyway rather than never.
+        if !self.shown && self.screen != Screen::Hidden && self.since.elapsed() >= SHOW_ANYWAY {
+            w.set_visible(true);
+            self.shown = true;
+        }
         if self.settled { return; }
         let now = Instant::now();
         if self.asked.is_some_and(|t| now - t < RETRY) { return; }
         match self.screen {
             Screen::Hidden => {
+                // Never shown: invisible is as off-screen as it gets.
+                if !self.shown { self.settled = true; return; }
                 // No answer (some window servers can't tell): asked once is all we can do.
                 let minimized = w.is_minimized();
                 if minimized == Some(true) || (minimized.is_none() && self.asked.is_some()) { self.settled = true; return; }
@@ -80,6 +113,13 @@ impl Manners {
                     return;
                 }
                 w.set_minimized(true);
+            }
+            Screen::Fullscreen if !self.shown => {
+                // Size it while invisible; `presented` shows it.
+                if w.fullscreen().is_none() { w.set_fullscreen(Some(Fullscreen::Borderless(self.monitor(w)))); }
+            }
+            Screen::Normal if !self.shown => {
+                if w.fullscreen().is_some() != fullscreen { w.set_fullscreen(fullscreen.then(|| Fullscreen::Borderless(self.monitor(w)))); }
             }
             Screen::Fullscreen => {
                 // Shown and fullscreen: one more raise, then leave it be.
