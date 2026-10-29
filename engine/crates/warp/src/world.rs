@@ -10,7 +10,7 @@
 use glam::{Affine3A, EulerRot, Quat, Vec3};
 use kern::collide::{Mover, YawBox};
 use render::primitives;
-use render::scene::{Material, Scene, EMISSIVE};
+use render::scene::{Material, Scene, EMISSIVE, SURFACE};
 use render::slots::{SlotId, Slots};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
@@ -38,22 +38,24 @@ impl Shape {
 
 /// Surface: colour in sRGB 0..1 (as a colour picker shows it), emissive
 /// glow (0 off, 1 bright in daylight), roughness and metalness 0..1.
+/// `surface` picks one of the game's own surfaces in `surface.wgsl`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     pub color: [f32; 3],
     pub emissive: f32,
     pub roughness: f32,
     pub metal: f32,
+    pub surface: Option<u8>,
 }
 
 impl Default for Look {
-    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0 } }
+    fn default() -> Self { Look { color: [0.8, 0.8, 0.8], emissive: 0.0, roughness: 0.7, metal: 0.0, surface: None } }
 }
 
 impl Look {
-    fn key(&self) -> [i32; 6] {
+    fn key(&self) -> [i32; 7] {
         let q = |v: f32| (v.clamp(0.0, 1000.0) * 1000.0).round() as i32;
-        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal)]
+        [q(self.color[0]), q(self.color[1]), q(self.color[2]), q(self.emissive), q(self.roughness), q(self.metal), self.surface.map_or(-1, i32::from)]
     }
 }
 
@@ -133,11 +135,13 @@ pub struct World {
     next: u32,
     pub scene: Scene,
     slots: Slots,
-    materials: HashMap<[i32; 6], u32>,
+    materials: HashMap<[i32; 7], u32>,
     meshes: HashMap<(usize, u32), usize>,
     models: HashMap<String, ModelInfo>,
     /// Meshes or materials were added since the renderer was made.
     pub rebuild: bool,
+    /// The shapes and looks that caused it (for the log).
+    pub added: Vec<String>,
     dir: PathBuf,
     fx: Fx,
 }
@@ -189,7 +193,7 @@ impl World {
         let m = scene.add_material(material(&Look::default()));
         let cube = scene.add_mesh(&primitives::cube(m).mesh());
         let slots = Slots::reserve(&mut scene, max_entities);
-        let mut w = World { entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, dir: dir.to_path_buf(), fx: Fx::default() };
+        let mut w = World { entities: BTreeMap::new(), next: 1, scene, slots, materials: HashMap::new(), meshes: HashMap::new(), models: HashMap::new(), rebuild: true, added: Vec::new(), dir: dir.to_path_buf(), fx: Fx::default() };
         w.materials.insert(Look::default().key(), m);
         w.meshes.insert((0, m), cube);
         w
@@ -227,6 +231,8 @@ impl World {
         let local = (Vec3::ZERO, if kind == 2 { Vec3::new(0.5, 1.0, 0.5) } else { half });
         let m = self.material(look);
         if let Some(&mesh) = self.meshes.get(&(kind, m)) { return Ok((mesh, local)); }
+        let c = look.color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+        self.added.push(format!("{} #{:02x}{:02x}{:02x} emissive {}", shape.name(), c[0], c[1], c[2], look.emissive));
         let mut p = match kind {
             0 => primitives::cube(m),
             1 => primitives::sphere(m, 16, 24),
@@ -445,6 +451,12 @@ impl World {
 fn material(look: &Look) -> Material {
     let tint = look.color.map(|c| c.clamp(0.0, 1.0).powf(2.2));
     let (flags, scale) = if look.emissive > 0.0 { (EMISSIVE, look.emissive * EMISSIVE_NITS) } else { (0, 1.0) };
+    // The game's own surface decides its glow itself: `scale` hands it the
+    // emissive in nits, and the EMISSIVE flag would add the tint on top.
+    if let Some(kind) = look.surface {
+        let scale = if look.emissive > 0.0 { look.emissive * EMISSIVE_NITS } else { 1.0 };
+        return Material { tint, layer: -2 - i32::from(kind), roughness: look.roughness.clamp(0.02, 1.0), flags: SURFACE, scale, metal: look.metal.clamp(0.0, 1.0) };
+    }
     Material { tint, layer: -1, roughness: look.roughness.clamp(0.02, 1.0), flags, scale, metal: look.metal.clamp(0.0, 1.0) }
 }
 

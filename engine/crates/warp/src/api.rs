@@ -245,7 +245,7 @@ pub fn shape(name: &str) -> mlua::Result<Shape> {
     })
 }
 
-const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "solid", "visible", "tag"];
+const ENTITY_KEYS: &[&str] = &["shape", "pos", "rot", "size", "color", "emissive", "roughness", "metal", "surface", "solid", "visible", "tag"];
 
 fn boolean(v: &Value, what: &str) -> mlua::Result<bool> {
     match v { Value::Boolean(b) => Ok(*b), _ => Err(rt(format!("{what}: expected true or false"))) }
@@ -262,7 +262,7 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
             "pos" => *pos = vec3(v, "pos")?,
             "rot" => *rot = vec3(v, "rot")?,
             "size" => *sz = size(v, "size")?,
-            "color" | "emissive" | "roughness" | "metal" => { look_key(look, k, v)?; }
+            "color" | "emissive" | "roughness" | "metal" | "surface" => { look_key(look, k, v)?; }
             "solid" => *solid = boolean(v, "solid")?,
             "visible" => *visible = boolean(v, "visible")?,
             "tag" => *tag = v.to_string()?,
@@ -272,13 +272,21 @@ fn apply(opts: &[(String, Value)], shape_: &mut Shape, look: &mut Look, pos: &mu
     Ok(())
 }
 
-/// A look's keys (color, emissive, roughness, metal); false for any other key.
+/// A look's keys (color, emissive, roughness, metal, surface); false for any other key.
 fn look_key(look: &mut Look, k: &str, v: &Value) -> mlua::Result<bool> {
     match k {
         "color" => { let c = color(v, "color")?; look.color = [c[0], c[1], c[2]]; }
         "emissive" => look.emissive = number(v, "emissive")?.max(0.0),
         "roughness" => look.roughness = number(v, "roughness")?,
         "metal" => look.metal = number(v, "metal")?,
+        "surface" => look.surface = match v {
+            Value::Nil | Value::Boolean(false) => None,
+            _ => {
+                let n = number(v, "surface")?;
+                if n.fract() != 0.0 || !(0.0..=255.0).contains(&n) { return Err(rt("surface: a whole number 0 to 255 (the kind in surface.wgsl), or false")); }
+                Some(n as u8)
+            }
+        },
         _ => return Ok(false),
     }
     Ok(true)
@@ -331,6 +339,7 @@ fn entity_table(lua: &Lua, id: u32, e: &Entity) -> mlua::Result<Table> {
     t.raw_set("emissive", e.look.emissive)?;
     t.raw_set("roughness", e.look.roughness)?;
     t.raw_set("metal", e.look.metal)?;
+    if let Some(k) = e.look.surface { t.raw_set("surface", k)?; }
     t.raw_set("solid", e.solid)?;
     t.raw_set("visible", e.visible)?;
     t.raw_set("tag", e.tag.as_str())?;
@@ -440,7 +449,7 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             let s = shape(&name)?;
             let mut look = Look::default();
             if let Some(t) = opts {
-                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal"], "world.warm")? { look_key(&mut look, &k, &v)?; }
+                for (k, v) in options(&t, &["color", "emissive", "roughness", "metal", "surface"], "world.warm")? { look_key(&mut look, &k, &v)?; }
             }
             lock(&core).world.warm(&s, &look).map_err(rt)
         })),

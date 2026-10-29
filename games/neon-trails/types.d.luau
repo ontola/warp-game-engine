@@ -64,6 +64,7 @@ export type EntityOptions = {
 	emissive: number?, -- glow: 0 off, 1 bright in daylight
 	roughness: number?, -- 0 mirror .. 1 matte (default 0.7)
 	metal: number?, -- 0 .. 1
+	surface: number?, -- a kind (0 .. 255) of the game's own shader, surface.wgsl; false for none
 	solid: boolean?, -- blocks world.move and raycasts (default true)
 	visible: boolean?, -- default true
 	tag: string?, -- for world.find, overlap and raycast filters
@@ -81,7 +82,7 @@ export type Player = {
 
 export type Entity = {
 	id: number, shape: string, pos: Vec, rot: Vec, size: Vec, color: Vec,
-	emissive: number, roughness: number, metal: number, solid: boolean, visible: boolean, tag: string,
+	emissive: number, roughness: number, metal: number, surface: number?, solid: boolean, visible: boolean, tag: string,
 }
 
 export type Query = {
@@ -104,7 +105,7 @@ declare world: {
 	-- things that move every tick.
 	place: (id: number, pos: Vec, yaw: number?) -> (),
 	-- Prepare a shape and look in init, so spawning it later never stalls.
-	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number? }?) -> (),
+	warm: (shape: string, look: { color: Color?, emissive: number?, roughness: number?, metal: number?, surface: number? }?) -> (),
 	-- An entity's fields, or nil once removed.
 	get: (id: number) -> Entity?,
 	exists: (id: number) -> boolean,
