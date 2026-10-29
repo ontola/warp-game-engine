@@ -32,6 +32,9 @@ local KNOBS = {
 	draw_scale = 1.3, -- how much larger things are drawn than they collide
 	stars = 320, -- stars far below the arena
 	star_glow = 0.012, -- brightness of the stars
+	star_drift = 0.6, -- how fast the star field drifts past (m/s for the nearest layer)
+	cells = 18, -- big faint cells drifting under the stars
+	cell_glow = 0.0025, -- brightness of the cell walls and nuclei
 	vignette = 0.4, -- dark corners, 0 to 1
 	grain = 0.1, -- film grain, 0 to 1
 	aberration = 0.8, -- colour fringes at the corners, in pixels
@@ -89,13 +92,15 @@ local COLORS = {
 -- Hollow parts have their own line width; `solid` parts are filled.
 local SHAPES = {
 	boss = { { n = 8 }, { n = 8, k = 0.65, spin = -1 } },
-	chaser = { { n = 4 } },
-	weaver = { { n = 3 } },
+	-- The swarm is a germ zoo: round spiky viruses, a rod-shaped bacterium
+	-- and a phage (see SPIKES for their spikes, flagella and legs).
+	chaser = { { n = 16 } },
+	weaver = { { n = 20, long = 1.7 } },
 	splitter = { { n = 6 }, { n = 6, k = 0.45, spin = -1 } },
 	fort = { { n = 4 }, { n = 16, k = 0.33, still = true } },
-	shard = { { n = 3 } },
-	dasher = { { n = 3, long = 1.6 } },
-	orbiter = { { n = 5 }, { n = 24, k = 0.45, still = true } },
+	shard = { { n = 12 } },
+	dasher = { { n = 6 } },
+	orbiter = { { n = 20 }, { n = 24, k = 0.45, still = true } },
 	hive = { { n = 6 }, { n = 6, k = 0.65, spin = -1 } },
 	serpent = { { n = 7 }, { n = 24, k = 0.4, still = true } },
 	segment = { { n = 6 } },
@@ -103,6 +108,24 @@ local SHAPES = {
 	sun = { { n = 32, still = true }, { n = 32, k = 0.62, still = true, white = true }, { n = 12, k = 1.3, spin = 0.6 }, { n = 12, k = 1.5, spin = -0.4, dim = true } },
 	singularity = { { n = 32, k = 1.04, still = true, white = true }, { n = 32, k = 1.18, still = true } },
 	node = { { n = 3 } },
+}
+
+-- Lines that stick out of a body, turning with it: a = angle from the
+-- body's heading, from = where it starts (in body radii), len = its length
+-- (in body radii), knob = a small ball at the tip.
+local function around(count, len, knob)
+	local list = {}
+	for i = 1, count do table.insert(list, { a = i * 2 * math.pi / count, len = len, knob = knob }) end
+	return list
+end
+local SPIKES = {
+	chaser = around(8, 0.45, true),
+	shard = around(6, 0.55, true),
+	orbiter = around(10, 0.35, true),
+	-- Two flagella trail behind the bacterium.
+	weaver = { { a = math.pi - 0.18, from = 1.6, len = 0.9 }, { a = math.pi + 0.18, from = 1.6, len = 0.9 } },
+	-- The phage: a tail behind its head and three legs splayed at its end.
+	dasher = { { a = math.pi, len = 1.1 }, { a = math.pi - 0.55, from = 1.9, len = 0.7 }, { a = math.pi, from = 2.1, len = 0.5 }, { a = math.pi + 0.55, from = 1.9, len = 0.7 } },
 }
 -- The line every outline is drawn with, in arena units (the LÖVE 2 px line
 -- plus its glow).
@@ -118,7 +141,17 @@ local STAGE_GRID = { { 0.3, 0.32, 1 }, { 0.95, 0.45, 0.3 }, { 1, 0.55, 0.15 }, {
 local PICKUP_COLORS = { repair = { 1, 0.3, 0.42 }, spread = { 1, 0.75, 0.2 }, pierce = { 1, 0.45, 0.85 }, rapid = { 0.25, 1, 1 } }
 -- A pickup is a ring with a sign inside: sides of the inner outline.
 local PICKUP_SIGNS = { repair = 4, spread = 3, pierce = 5, rapid = 6 }
-local SHOT_COLORS = { pierce = { 1, 0.45, 0.85 }, spread = { 1, 0.75, 0.2 }, rapid = { 0.25, 1, 1 } }
+-- What a pickup does, drawn inside its white ring as line segments
+-- {x1, y1, x2, y2} in arena units (y grows downwards): repair is a plus,
+-- spread a fan of three shots, pierce an arrow through a wall, rapid a
+-- double chevron.
+local PICKUP_ICONS = {
+	repair = { { -7, 0, 7, 0 }, { 0, -7, 0, 7 } },
+	spread = { { 0, 7, -7, -6 }, { 0, 7, 0, -8 }, { 0, 7, 7, -6 } },
+	pierce = { { -9, 0, 9, 0 }, { 9, 0, 4, -4 }, { 9, 0, 4, 4 }, { -1, -7, -1, 7 } },
+	rapid = { { -7, -6, -1, 0 }, { -1, 0, -7, 6 }, { 0, -6, 6, 0 }, { 6, 0, 0, 6 } },
+}
+local SHOT_COLORS ={ pierce = { 1, 0.45, 0.85 }, spread = { 1, 0.75, 0.2 }, rapid = { 0.25, 1, 1 } }
 local HOSTILE_COLOR = { 1, 0.62, 0.3 }
 local WHITE = { 1, 1, 1 }
 
@@ -564,7 +597,8 @@ local function pilot_step(p, c, dt)
 	if not alive(p) then
 		p.downTime += dt
 		local helper = nearest(p.x, p.y)
-		if helper and (helper.x - p.x) ^ 2 + (helper.y - p.y) ^ 2 < 65 ^ 2 then
+		-- A teammate within about two ship lengths revives (65 was too tight to notice).
+		if helper and (helper.x - p.x) ^ 2 + (helper.y - p.y) ^ 2 < 120 ^ 2 then
 			p.revive += dt
 		else
 			p.revive = math.max(0, p.revive - dt * 0.5)
@@ -1238,6 +1272,42 @@ local function show_enemy(e)
 		seen(id)
 	end
 	e.grow = grow
+	-- Spikes, flagella and legs, once the germ has formed.
+	local spikes = SPIKES[e.kind]
+	if spikes and e.warm <= 0 then
+		local r = SPECS[e.kind].r * DRAW
+		local color, glow = part_look(e.kind, parts[1], mode)
+		if not e.spikes then
+			e.spikes = {}
+			for _, sp in spikes do
+				local l = r * sp.len
+				table.insert(e.spikes, {
+					line = world.spawn("cube", { size = vector.create(2.2 * S, 0.03, l * S), color = color, emissive = glow, solid = false, tag = "enemy" }),
+					knob = sp.knob and world.spawn(outline(16, 4), { size = 8 * S, color = color, emissive = glow, solid = false, tag = "enemy" }) or nil,
+				})
+			end
+			e.spikeMode = mode
+		end
+		if e.spikeMode ~= mode then
+			for _, ids in e.spikes do
+				world.set(ids.line, { color = color, emissive = glow })
+				if ids.knob then world.set(ids.knob, { color = color, emissive = glow }) end
+			end
+			e.spikeMode = mode
+		end
+		for i, sp in spikes do
+			local a = angle + sp.a
+			local dx, dy = math.cos(a), math.sin(a)
+			local r1, r2 = r * (sp.from or 1), r * ((sp.from or 1) + sp.len)
+			local ids = e.spikes[i]
+			world.place(ids.line, at(e.x + dx * (r1 + r2) / 2, e.y + dy * (r1 + r2) / 2, 0.1), math.atan2(-dx, -dy))
+			seen(ids.line)
+			if ids.knob then
+				world.place(ids.knob, at(e.x + dx * r2, e.y + dy * r2, 0.1))
+				seen(ids.knob)
+			end
+		end
+	end
 	-- The hive's six cells ring its core.
 	if e.kind == "hive" and e.warm <= 0 then
 		local color, glow = part_look("hive", parts[1], mode)
@@ -1341,8 +1411,77 @@ local function show_hole()
 	end
 end
 
+-- Deep space drifts past far below: three layers of stars, the nearer ones
+-- bigger and faster, and the bright ones twinkle.
+local CELL_COLORS = { { 0.9, 0.35, 0.6 }, { 0.5, 0.4, 1 }, { 0.3, 0.8, 0.75 } }
+local STAR_LAYERS ={ { speed = 0.35, size = 0.035 }, { speed = 0.6, size = 0.05 }, { speed = 1, size = 0.075 } }
+
+local function build_stars()
+	s.stars = {}
+	for i = 1, KNOBS.stars do
+		local layer = STAR_LAYERS[i % 3 + 1]
+		local big = i % 9 == 0
+		local size = layer.size * (if big then 1.6 else random.range(0.8, 1.1))
+		local x, z = random.range(-26, 26), random.range(-16, 16)
+		local glow = if big then KNOBS.star_glow * 2.5 else KNOBS.star_glow
+		local id = world.spawn("cube", { pos = vector.create(x, -10.5, z), size = vector.create(size, 0.01, size), color = if big then "#dfe8ff" else "#b8c8ff", emissive = glow, solid = false, tag = "stars" })
+		table.insert(s.stars, { id = id, x = x, z = z, speed = layer.speed, glow = glow, big = big, phase = random.float() * 6.28 })
+	end
+end
+
+local function drift_stars()
+	-- After a hot reload: drop the old still stars and the coloured grid.
+	if not s.stars then
+		for _, id in world.find("space") do
+			local e = world.get(id)
+			if e and e.size.x < 1 then world.remove(id) end
+		end
+		build_stars()
+	end
+	if s.grid and #s.grid > 0 then
+		for _, g in s.grid do world.remove(g.id) end
+		s.grid = {}
+	end
+	local dt = game.dt()
+	-- The drift slowly swings, so the field never moves in a straight line.
+	local angle = math.sin(s.time * 0.05) * 0.6
+	local dx, dz = -math.cos(angle) * KNOBS.star_drift * dt, math.sin(angle) * KNOBS.star_drift * dt
+	for _, st in s.stars do
+		st.x += dx * st.speed
+		st.z += dz * st.speed
+		if st.x < -26 then st.x += 52 elseif st.x > 26 then st.x -= 52 end
+		if st.z < -16 then st.z += 32 elseif st.z > 16 then st.z -= 32 end
+		world.place(st.id, vector.create(st.x, -10.5, st.z))
+		if st.big then world.set(st.id, { emissive = st.glow * (0.6 + 0.4 * math.sin(s.time * 2.3 + st.phase)) }) end
+	end
+	-- Under the stars, a field of big faint cells drifts and breathes: a
+	-- stand-in until the backdrop shader exists.
+	if not s.cells then
+		s.cells = {}
+		for i = 1, KNOBS.cells do
+			local r = random.range(1.4, 3.4)
+			local c = CELL_COLORS[i % #CELL_COLORS + 1]
+			local cell = { x = random.range(-24, 24), z = random.range(-14, 14), r = r, phase = random.float() * 6.28, spin = random.range(-0.15, 0.15), nx = random.range(-0.3, 0.3), nz = random.range(-0.3, 0.3) }
+			cell.wall = world.spawn(outline(32, r * 40, 2.4), { size = r * 2, color = rgb(c), emissive = KNOBS.cell_glow, solid = false, tag = "cells" })
+			cell.core = world.spawn(outline(24, r * 12, 1.2), { size = r * 0.6, color = rgb(c, 0.7), emissive = KNOBS.cell_glow, solid = false, tag = "cells" })
+			table.insert(s.cells, cell)
+		end
+	end
+	for _, cell in s.cells do
+		cell.x += dx * 0.25
+		cell.z += dz * 0.25
+		if cell.x < -28 then cell.x += 56 elseif cell.x > 28 then cell.x -= 56 end
+		if cell.z < -18 then cell.z += 36 elseif cell.z > 18 then cell.z -= 36 end
+		local wobble = math.sin(s.time * 0.8 + cell.phase) * 0.08
+		local d = cell.r * 2
+		world.set(cell.wall, { pos = vector.create(cell.x, -11, cell.z), size = vector.create(d * (1 + wobble), 0.02, d * (1 - wobble)) })
+		world.place(cell.core, vector.create(cell.x + cell.nx * cell.r, -10.95, cell.z + cell.nz * cell.r), s.time * cell.spin)
+	end
+end
+
 local function sync()
 	s.stamp += 1
+	drift_stars()
 	for _, p in s.players do show_pilot(p) end
 	for _, e in s.enemies do
 		if not e.dead then show_enemy(e) end
@@ -1370,15 +1509,24 @@ local function sync()
 	for _, q in s.pickups do
 		local pos = at(q.x, q.y + math.sin(s.time * 3 + q.x) * 2, 0.12)
 		local pulse = 1 + 0.08 * math.sin(s.time * 6)
-		if not q.ent then
-			local c = rgb(PICKUP_COLORS[q.kind])
-			q.ent = world.spawn(outline(24, 18), { pos = pos, size = 36 * S, color = c, emissive = GLOW.dim, solid = false, tag = "pickup" })
-			q.sign = world.spawn(outline(PICKUP_SIGNS[q.kind], 8), { pos = pos, size = 16 * S, color = c, emissive = GLOW.line, solid = false, tag = "pickup" })
+		-- A white ring sets pickups apart from the coloured enemies; the
+		-- upgrade is the colour of the dot inside.
+		if not q.ring then
+			q.ring = world.spawn(outline(24, 18), { pos = pos, size = 36 * S, color = rgb(WHITE), emissive = GLOW.white, solid = false, tag = "pickup" })
+			q.icon = {}
+			for _, seg in PICKUP_ICONS[q.kind] do
+				local length = len(seg[3] - seg[1], seg[4] - seg[2])
+				table.insert(q.icon, world.spawn("cube", { size = vector.create(2.4 * S, 0.03, length * S), color = rgb(PICKUP_COLORS[q.kind]), emissive = GLOW.line, solid = false, tag = "pickup" }))
+			end
 		end
-		world.set(q.ent, { pos = pos, size = vector.create(36 * S * pulse, 0.04, 36 * S * pulse) })
-		world.place(q.sign, pos, s.time * 2)
-		seen(q.ent)
-		seen(q.sign)
+		world.set(q.ring, { pos = pos, size = vector.create(36 * S * pulse, 0.04, 36 * S * pulse) })
+		seen(q.ring)
+		local bob = math.sin(s.time * 3 + q.x) * 2
+		for i, seg in PICKUP_ICONS[q.kind] do
+			local dx, dy = seg[3] - seg[1], seg[4] - seg[2]
+			world.place(q.icon[i], at(q.x + (seg[1] + seg[3]) / 2, q.y + bob + (seg[2] + seg[4]) / 2, 0.13), math.atan2(-dx, -dy))
+			seen(q.icon[i])
+		end
 	end
 	for id, stamp in s.ents do
 		if stamp ~= s.stamp then
@@ -1483,21 +1631,9 @@ local function arena()
 	-- Deep space: black, with stars far below the grid. (Stacked discs for a
 	-- nebula showed their rings, so for now it is only stars.)
 	world.spawn("cube", { pos = vector.create(0, -12, 0), size = vector.create(w * 3, 0.2, h * 3), color = "#000000", roughness = 1, tag = "space" })
-	for i = 1, KNOBS.stars do
-		local big = i % 9 == 0
-		local size = if big then 0.09 else random.range(0.035, 0.06)
-		world.spawn("cube", { pos = vector.create(random.range(-26, 26), -10.5, random.range(-16, 16)), size = vector.create(size, 0.01, size), color = if big then "#dfe8ff" else "#b8c8ff", emissive = if big then KNOBS.star_glow * 2.5 else KNOBS.star_glow, solid = false, tag = "space" })
-	end
+	build_stars()
+	-- No grid: the coloured lines drew the eye away from the fight.
 	s.grid, s.stage = {}, 1
-	local c = STAGE_GRID[1]
-	for x = 40, s.width - 1, 40 do
-		local major = x % 160 == 0
-		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create((x - s.width / 2) * S, 0.005, 0), size = vector.create(0.025, 0.01, h), color = rgb(c, if major then 0.6 else 0.4), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
-	end
-	for y = 40, s.height - 1, 40 do
-		local major = y % 160 == 0
-		table.insert(s.grid, { major = major, id = world.spawn("cube", { pos = vector.create(0, 0.005, (y - s.height / 2) * S), size = vector.create(w, 0.01, 0.025), color = rgb(c, if major then 0.6 else 0.4), emissive = if major then GLOW.major else GLOW.grid, solid = false, tag = "arena" }) })
-	end
 end
 
 -- Light and post: no sky light or haze, only what glows shows.
@@ -1688,6 +1824,18 @@ local function draw()
 			if x then
 				for i = 1, p.hp do
 					hud.box(x + (i - (p.hp + 1) / 2) * 8 * k - 2 * k, y + 20 * k, 4 * k, 4 * k, p.color)
+				end
+			end
+		end
+	end
+	-- A downed pilot asks for help: fly over to revive them.
+	if not s.over then
+		for _, p in s.players do
+			if p.hp <= 0 then
+				local x, y = hud.project(at(p.x, p.y, 0.15))
+				if x then
+					local blink = 0.65 + 0.35 * math.sin(s.time * 6)
+					hud.text("REVIVE", x - 60 * k, y - 46 * k, { size = 16 * k, align = "center", width = 120 * k, color = { p.rgb[1], p.rgb[2], p.rgb[3], blink } })
 				end
 			end
 		end
