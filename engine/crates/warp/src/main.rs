@@ -112,6 +112,14 @@ fn play(args: &[String]) -> Result<(), String> {
     let mut game = LuaGame::load(&dir, &overrides(args)?, sender)?;
     if game.connect_party() { println!("{} warp: connected to the party host", app::manners::stamp()); }
     if let Some(cfg) = live::Config::from_args(&game.live_name(), args)? { game.start_live(cfg)?; }
+    else if game.party.is_some() && std::env::var("WARP_LIVE").as_deref() != Ok("0") {
+        // Under GameNight the session assistant changes the game through
+        // live control (engine/docs/live-control.md): any free local port.
+        let mut cfg = live::Config::new(&game.live_name());
+        cfg.port = 0;
+        cfg.announce = false;
+        if let Err(e) = game.start_live(cfg) { eprintln!("live: {e}"); }
+    }
     let cfg = app::Config {
         title: game.cfg.title.clone(), size: size(args, game.cfg.size)?, tick_hz: game.cfg.tick_rate,
         fullscreen: args.iter().any(|a| a == "--fullscreen"), keyboard: true, frames: parse(args, "--frames")?.unwrap_or(0),

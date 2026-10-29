@@ -8,6 +8,7 @@
 //! leaves the game without a restart.
 use app::{Buttons, Controls};
 use gamenight::{button, Client, Command, Pad, Seat};
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +38,9 @@ pub struct Party {
     pub phase: Phase,
     finished: bool,
     triggers: Vec<u32>,
+    /// Live control to offer the session assistant: what it can change and
+    /// the token file. Declared again after every (re)connect.
+    live: Option<(String, PathBuf)>,
 }
 
 impl Party {
@@ -49,7 +53,7 @@ impl Party {
         }
     }
 
-    pub fn new(client: Client) -> Party { Party { client, session: String::new(), phase: Phase::Idle, finished: false, triggers: Vec::new() } }
+    pub fn new(client: Client) -> Party { Party { client, session: String::new(), phase: Phase::Idle, finished: false, triggers: Vec::new(), live: None } }
 
     /// Under a daemon the window stays minimised until a match starts.
     pub fn screen(&self) -> app::Screen {
@@ -86,6 +90,7 @@ impl Party {
                         out.push(Ev::Dispose);
                     }
                     Command::Roster { seats } | Command::PlayersUpdated { seats } if !self.session.is_empty() => out.push(Ev::Seats(Self::seats(&seats))),
+                    Command::Connected => self.declare_live(),
                     Command::Disconnected(e) => { eprintln!("gamenight: {e}"); self.phase = Phase::Idle; }
                     Command::Error(e) => eprintln!("gamenight: {e}"),
                     _ => {}
@@ -107,6 +112,17 @@ impl Party {
         if self.finished || self.session.is_empty() { return; }
         self.finished = true;
         let _ = self.client.notify_finished(&self.session);
+    }
+
+    /// Let the session assistant change the game through live control.
+    pub fn offer_live(&mut self, description: String, token_file: PathBuf) {
+        self.live = Some((description, token_file));
+        if self.client.state.connected { self.declare_live(); }
+    }
+
+    fn declare_live(&self) {
+        let Some((description, file)) = &self.live else { return };
+        if let Err(e) = self.client.declare_commands(description, &[], Some(file)) { eprintln!("gamenight: {e}"); }
     }
 
     pub fn room_log(&self, text: &str) { let _ = self.client.room_log(text); }

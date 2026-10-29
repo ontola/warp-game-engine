@@ -691,6 +691,9 @@ impl LuaGame {
             features: live::Features { state: true, screenshot: true, luau: true, shaders: false, sound: true },
         };
         let live = live::start(cfg, manifest)?;
+        if let (Some(party), Some(file)) = (self.party.as_mut(), live.token_file()) {
+            party.offer_live(format!("{} can be changed live while you play: its speed, difficulty, enemies, rules, colours, look and sounds, by editing the running game. Send any request to change the game as it is said.", self.cfg.title), file.to_path_buf());
+        }
         for l in &self.log { live.log(l.clone()); }
         self.live_logs = Some(live.logs().clone());
         self.live = Some(live);
