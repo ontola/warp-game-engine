@@ -18,10 +18,12 @@ costs are reported separately. Source attribution: licenses/SpaceRacer-MIT.txt.
 
 ## Current verification
 
-Run `cargo test -p spaceracer --lib`. Five checks cover 4,800 source ground
+Run `cargo test -p spaceracer --lib`. Seven checks cover 4,800 source ground
 ticks, 1,800 flight ticks, 700 drafting ticks, 1,680 bump ticks, physical gate
 rejection and 18 source track fixtures (six layouts × three difficulties).
-Track fixtures test sampling, not native procedural generation. Flight tests
+Native generation now also matches all nodes and gameplay features in the 18
+reference ribbons within 3 cm positional tolerance. Base and raw centrelines
+are checked across 90 layout/difficulty/biome combinations. Flight tests
 cover the integrator, not takeoff/landing/collision integration. No full-game
 performance result or visual-parity claim is available yet.
 

@@ -1,5 +1,7 @@
 //! Native Space Racer simulation. Source provenance and parity gates live beside this crate.
+mod curve;
 pub mod flight;
+pub mod generation;
 pub mod handling;
 pub mod race_rules;
 pub mod track;
@@ -8,6 +10,7 @@ pub mod track;
 fn oracle(name: &str) -> String {
     use std::io::Read;
     let bytes: &[u8] = match name {
+        "generation" => include_bytes!("../../tests/fixtures/generation.json.gz"),
         "rules" => include_bytes!("../../tests/fixtures/rules.json.gz"),
         "handling" => include_bytes!("../../tests/fixtures/handling.json.gz"),
         "flight" => include_bytes!("../../tests/fixtures/flight.json.gz"),
