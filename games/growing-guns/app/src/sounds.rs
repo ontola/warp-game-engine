@@ -156,6 +156,8 @@ impl G {
 }
 
 const TAIL_SEND: f32 = 0.063; // -24 dB
+/// sfx.gd `air_strike_inbound_db`.
+const AIR_STRIKE_DB: f32 = -4.0;
 /// Godot RaytracedReverb wet level (dry 1.0).
 const ROOM_SEND: f32 = 0.35;
 
@@ -485,7 +487,12 @@ impl Sounds {
                     let u = (s.age / growing_guns::AIR_STRIKE_TRAVEL).clamp(0.0, 1.0) as f32;
                     let sky = s.target + Vec3::new(0.0, 263.0, 93.0);
                     let at = sky.lerp(s.target, u * u);
-                    if let Some(h) = self.strikes[k].2.first() { self.tx.move_to(h, Place::At(at.to_array()), 0.0); }
+                    if let Some(h) = self.strikes[k].2.first() {
+                        self.tx.move_to(h, Place::At(at.to_array()), 0.0);
+                        // air_strike.gd `_process`: the woosh swells on top of its
+                        // own envelope, -4 dB + linear_to_db(lerp(0.62, 1, u²)).
+                        self.tx.gain(h, 10f32.powf(AIR_STRIKE_DB / 20.0) * (0.62 + 0.38 * u * u));
+                    }
                 }
                 continue;
             }
@@ -495,7 +502,11 @@ impl Sounds {
                     let travel = growing_guns::AIR_STRIKE_TRAVEL as f32;
                     let sky = s.target + Vec3::new(0.0, 263.0, 93.0);
                     self.tx.lift(0.42);
-                    if let Some(h) = self.named(world, "air_strike_inbound", &[("travel_seconds", travel), ("distant", 0.0)], G { delay: false, ..G::at(sky, -4.0, 58.0) }) { handles.push(h); }
+                    if let Some(h) = self.named(world, "air_strike_inbound", &[("travel_seconds", travel), ("distant", 0.0)], G { delay: false, ..G::at(sky, AIR_STRIKE_DB, 58.0) }) {
+                        // The swell starts at 0.62 (air_strike.gd `_process`).
+                        self.tx.gain(&h, 10f32.powf(AIR_STRIKE_DB / 20.0) * 0.62);
+                        handles.push(h);
+                    }
                     // The telegraph at the target.
                     self.named(world, "mine_plant", &[], G::at(s.target, -10.0, 12.0).spl(90.0));
                 }

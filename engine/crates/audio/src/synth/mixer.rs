@@ -128,6 +128,7 @@ enum Cmd {
     Play(Box<Playing>),
     Param(u32, u16, f32),
     Move(u32, Place, f32),
+    Gain(u32, f32),
     Release(u32),
     Stop(u32),
     StopAll,
@@ -220,6 +221,9 @@ impl SoundSender {
         if let Some(k) = h.patch.params.iter().position(|p| p.0 == name) { let _ = self.tx.send(Cmd::Param(h.id, k as u16, value)); }
     }
     pub fn move_to(&self, h: &Handle, place: Place, occlusion: f32) { let _ = self.tx.send(Cmd::Move(h.id, place, occlusion)); }
+    /// Replace a playing voice's linear gain (`Play::gain`, `db` included),
+    /// as Godot sets a player's `volume_db` while it plays.
+    pub fn gain(&self, h: &Handle, gain: f32) { let _ = self.tx.send(Cmd::Gain(h.id, gain)); }
     /// Gate off: ADSRs release, loops end after their tails.
     pub fn release(&self, h: &Handle) { let _ = self.tx.send(Cmd::Release(h.id)); }
     pub fn stop(&self, h: &Handle) { let _ = self.tx.send(Cmd::Stop(h.id)); }
@@ -279,6 +283,7 @@ impl Mixer {
                     p.play.occlusion = occ;
                     place_voice(&self.layout, &self.ears, p);
                 },
+                Cmd::Gain(id, g) => if let Some(p) = self.voices.iter_mut().find(|p| p.id == id) { p.play.gain = g.max(0.0) },
                 Cmd::Release(id) => if let Some(p) = self.voices.iter_mut().find(|p| p.id == id) { p.voice.release() },
                 Cmd::Stop(id) => if let Some(p) = self.voices.iter_mut().find(|p| p.id == id) { p.stopping = true },
                 Cmd::StopAll => for p in &mut self.voices { p.stopping = true },
