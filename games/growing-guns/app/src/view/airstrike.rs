@@ -1,12 +1,15 @@
-//! Air-strike targeting laser from `scripts/air_strike.gd`: a thin
-//! white-hot core inside a red glow, connecting the rocket's origin to its
-//! target. Drawn as an additive light shaft (a sprite turned about the
-//! laser towards each camera) whose texture carries the soft falloff from
-//! the core into the red glow, so it reads as light, not as a box.
-use glam::Vec3;
+//! The air strike from `scripts/air_strike.gd`: the targeting laser (a thin
+//! white-hot core inside a red glow from the rocket's origin to its target,
+//! an additive light shaft whose texture carries the falloff) and the
+//! rocket itself (`_build_rocket_visual`): a glowing body, nose and engine
+//! core, three additive exhaust plumes that lengthen and brighten as it
+//! nears the ground (`_process`), and its two engine lights.
+use glam::{Affine3A, Quat, Vec3};
 use growing_guns::{Strike, StrikeKind, AIR_STRIKE_TRAVEL};
+use render::headlights::LocalLight;
 use render::picture::Picture;
 use render::sprites::{Sprite, SpriteImage};
+use render::Scene;
 
 pub(super) const SKY_OFFSET: Vec3 = Vec3::new(0.0, 263.0, 93.0);
 const MAX_STRIKES: usize = 32;
@@ -25,6 +28,17 @@ const NITS: f32 = 160_000.0;
 /// The laser's glow never narrows below this on screen, so far up it still
 /// reads as a burning line.
 const MIN_PIXELS: f32 = 10.0;
+
+pub(super) const PLUME_IMAGE: SpriteImage = SpriteImage(0x706c_756d);
+/// Radiance per unit of Godot emission energy, as for the laser (16 ->
+/// 160 000 nits); the sprite shader caps what reaches the fp16 target.
+const NITS_PER_ENERGY: f32 = 10_000.0;
+/// The plumes at that scale burn out to white in daylight; this keeps the
+/// orange plume and halo orange around a white-hot core, as Godot's
+/// tonemapped glow reads.
+const PLUME_GAIN: f32 = 0.25;
+/// Godot light energy to candela (`render::fx::Effects::light_scale`).
+const CD_PER_ENERGY: f32 = 37_000.0;
 
 pub(super) fn active(strike: &Strike) -> bool {
     strike.kind == StrikeKind::AirStrike && strike.target.is_finite()
@@ -51,6 +65,103 @@ pub(super) fn picture() -> Picture {
         row.extend([col[0], col[1], col[2], (scale.min(1.0) * 255.0 + 0.5) as u8]);
     }
     Picture::new(w, h, row.repeat(h as usize)).expect("fixed size")
+}
+
+/// A falling rocket: where it is, its unit flight direction and
+/// `approach`, u² of the flight fraction u (Godot's swell).
+struct Flight { pos: Vec3, dir: Vec3, approach: f32 }
+
+/// Godot tweens the rocket along the straight path with a quadratic ease-in.
+fn flight(s: &Strike) -> Option<Flight> {
+    if !active(s) { return None; }
+    let u = (s.age / AIR_STRIKE_TRAVEL) as f32;
+    let sky = s.target + SKY_OFFSET;
+    Some(Flight { pos: sky.lerp(s.target, u * u), dir: (s.target - sky).normalize(), approach: u * u })
+}
+
+/// The rocket's parts (`_build_rocket_visual`), unshaded and glowing.
+pub(super) struct Rocket { body: usize, nose: usize, engine: usize }
+
+impl Rocket {
+    pub fn new(scene: &mut Scene) -> Self {
+        let mut part = |tint: [f32; 3], energy: f32, top: f32, bottom: f32| {
+            let m = super::glow(scene, tint, energy * NITS_PER_ENERGY);
+            scene.add_mesh(&render::primitives::cylinder(m, top, bottom, 8).mesh())
+        };
+        Rocket {
+            body: part([1.0, 0.55, 0.12], 18.0, 0.22, 0.28),
+            nose: part([1.0, 0.95, 0.82], 22.0, 0.07, 0.22),
+            // Godot ramps 75 -> 165 over the flight; a shared material keeps the middle.
+            engine: part([1.0, 0.82, 0.35], 120.0, 0.34, 0.16),
+        }
+    }
+
+    /// Each falling rocket's parts as (mesh, transform): nose first along
+    /// the path, the engine behind (Godot +Y is the nose).
+    pub fn parts(&self, strikes: &[Strike]) -> Vec<(usize, Affine3A)> {
+        strikes.iter().filter_map(flight).take(MAX_STRIKES).flat_map(|f| {
+            let rot = Quat::from_rotation_arc(Vec3::Y, f.dir);
+            let at = |mesh: usize, y: f32, height: f32| (mesh, Affine3A::from_scale_rotation_translation(Vec3::new(1.0, height, 1.0), rot, f.pos + f.dir * y));
+            [at(self.body, 0.0, 3.2), at(self.nose, 2.0, 0.8), at(self.engine, -1.95, 0.75)]
+        }).collect()
+    }
+}
+
+/// Three additive cones behind the engine (`EnginePlume`, `EngineCorePlume`,
+/// `EngineHaloPlume`): Godot's lengths, offsets, widest radius and colour,
+/// and its emission ramps; the main plume stretches 0.85 -> 2.4 times.
+pub(super) fn plumes(strikes: &[Strike], clock: f32) -> Vec<Sprite> {
+    let pulse = (clock * 14.0).sin();
+    strikes.iter().filter_map(flight).take(MAX_STRIKES).flat_map(|f| {
+        let a = f.approach;
+        let lerp = |x: f32, y: f32| x + (y - x) * a;
+        [
+            // (centre behind the rocket, length, widest radius, colour, energy)
+            (-6.2, 6.8 * lerp(0.85, 2.4), 0.82, [1.0, 0.58, 0.12], (lerp(110.0, 240.0) + pulse * 16.0) * lerp(0.55, 0.82)),
+            (-4.6, 4.8, 0.34, [1.0, 0.94, 0.78], lerp(180.0, 360.0) + pulse * 20.0),
+            (-7.0, 9.0, 1.35, [1.0, 0.42, 0.06], 70.0 * 0.14),
+        ].map(|(y, length, radius, color, energy): (f32, f32, f32, [f32; 3], f32)| {
+            let mut sprite = Sprite::shaft(f.pos + f.dir * y, [radius * 2.0, length], f.dir, PLUME_IMAGE, [0.0, 0.0, 1.0, 1.0], Vec3::from(color) * energy * NITS_PER_ENERGY * PLUME_GAIN);
+            sprite.depth_bias = 0.0;
+            // Far up the rocket is a few pixels across; like Godot's distance
+            // boost (and its bloom), the glow keeps a readable width.
+            sprite.min_pixels = 4.0 + 4.0 * radius;
+            sprite
+        })
+    }).collect()
+}
+
+/// The cone across and along: a soft core whose width narrows from the
+/// engine end (row 0, the shaft's top towards the rocket) to 22 % at the
+/// tail, brightest at the engine and fading out at both ends.
+pub(super) fn plume_picture() -> Picture {
+    let (w, h) = (64u32, 128u32);
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let v = (y as f32 + 0.5) / h as f32;
+        let width = 1.0 + (0.22 - 1.0) * v;
+        let along = (1.0 - v).powf(0.7) * (v / 0.06).min(1.0) * ((1.0 - v) / 0.25).min(1.0);
+        for x in 0..w {
+            let d = ((x as f32 + 0.5) / w as f32 * 2.0 - 1.0).abs() / width;
+            let across = (-(d / 0.55).powi(2)).exp() * (1.0 - d.min(1.0)).powf(0.5);
+            rgba.extend([255, 255, 255, ((across * along).clamp(0.0, 1.0) * 255.0 + 0.5) as u8]);
+        }
+    }
+    Picture::new(w, h, rgba).expect("fixed size")
+}
+
+/// The engine lights (`EngineCoreLight` 2 m and `EngineLight` 3 m behind
+/// the nose), rising 16 -> 34 and 22 -> 46 with the approach.
+pub(super) fn lights(strikes: &[Strike], clock: f32) -> Vec<LocalLight> {
+    let pulse = (clock * 14.0).sin();
+    strikes.iter().filter_map(flight).take(4).flat_map(|f| {
+        let a = f.approach;
+        [(-2.0, [1.0, 0.82, 0.42], 16.0 + 18.0 * a + pulse * 3.0, 28.0), (-3.0, [1.0, 0.62, 0.16], 22.0 + 24.0 * a + pulse * 4.0, 44.0)]
+            .map(|(y, color, energy, range): (f32, [f32; 3], f32, f32)| LocalLight {
+                position: f.pos + f.dir * y, direction: Vec3::NEG_Y, intensity_cd: Vec3::from(color) * energy * CD_PER_ENERGY,
+                range_m: range, inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 0.3, falloff: 1.0,
+            })
+    }).collect()
 }
 
 /// One shaft per live air strike, from its target up to where the rocket
@@ -95,6 +206,34 @@ mod tests {
     }
 
     #[test]
+    fn rocket_falls_nose_first_with_plumes_behind_and_lights_that_swell() {
+        let early = strike(StrikeKind::AirStrike, 0.2);
+        let late = strike(StrikeKind::AirStrike, AIR_STRIKE_TRAVEL - 0.1);
+        let f = flight(&late).unwrap();
+        assert!(f.dir.y < -0.9 && f.pos.y > late.target.y);
+        let behind = plumes(&[late.clone()], 0.0);
+        assert_eq!(behind.len(), 3);
+        // Every plume sits behind the rocket (towards the sky).
+        assert!(behind.iter().all(|p| (p.center - f.pos).dot(f.dir) < 0.0));
+        let sum = |s: &Strike| lights(&[s.clone()], 0.0).iter().map(|l| l.intensity_cd.x).sum::<f32>();
+        assert!(sum(&late) > 1.8 * sum(&early));
+        assert!(plumes(&[strike(StrikeKind::IonCannon, 1.0)], 0.0).is_empty());
+        assert!(lights(&[strike(StrikeKind::AirStrike, AIR_STRIKE_TRAVEL)], 0.0).is_empty());
+    }
+
+    #[test]
+    fn flare_shows_only_as_the_rocket_closes_in() {
+        let cam = render::Camera { pos: Vec3::new(4.0, 3.0, 20.0), target: Vec3::new(4.0, 120.0, -8.0), fov_y: 1.2, near: 0.1 };
+        let drawn = |age: f64| {
+            let mut list = render::hud::HudDrawList::new([960, 540]);
+            flare::draw(&mut list, [0.0, 0.0, 960.0, 540.0], &cam, &[strike(StrikeKind::AirStrike, age)]);
+            !list.vertices.is_empty()
+        };
+        assert!(!drawn(0.3), "far up the flare is below Godot's 0.015 cut");
+        assert!(drawn(AIR_STRIKE_TRAVEL - 0.15));
+    }
+
+    #[test]
     fn laser_core_is_white_and_its_edge_red() {
         let p = picture();
         let px = |x: u32| &p.rgba[(x * 4) as usize..(x * 4 + 4) as usize];
@@ -102,5 +241,95 @@ mod tests {
         assert!(centre[0] > 240 && centre[1] > 200 && centre[3] > 240);
         let edge = px(p.width / 2 + p.width / 7);
         assert!(edge[0] > edge[1] * 3 && edge[3] < centre[3]);
+    }
+}
+
+/// The lens flare on an incoming rocket (`lens_flare_overlay.gd` with
+/// `shaders/lens_flare.gdshader`, a port of shadertoy 4sX3Rs): only its ghost
+/// chain, aimed through the view's centre from the rocket's tail. The source
+/// is the strongest rocket (intensity = closeness², closeness = u² here),
+/// strength lerp(0.03, 1.05, I^0.65), tint (1.08, 0.88, 0.62), gain 0.52.
+/// Godot adds it; the HUD blends, so each ghost is a soft disc whose alpha is
+/// the light it would add.
+pub(crate) mod flare {
+    use super::{flight, Strike, Vec3};
+    use render::hud::{HudDrawList, HudImage, ImageFilter};
+    use render::picture::Picture;
+    use std::sync::{Arc, OnceLock};
+
+    const TINT: [f32; 3] = [1.08, 0.88, 0.62];
+    const GAIN: f32 = 0.52;
+    /// One ghost group: positions along the axis (multiples of the source's
+    /// offset from centre; negative is across the centre), per-channel
+    /// weights and peak, the picture (its profile) and its radius in screen
+    /// heights.
+    struct Ghost { k: f32, weight: [f32; 3], peak: f32, image: HudImage, radius: f32 }
+    const HALO: HudImage = HudImage(0x6767_f1a1);
+    const DISC: HudImage = HudImage(0x6767_f1a2);
+    const GHOSTS: [Ghost; 4] = [
+        // f2: 1 / (1 + 32 d²) at -0.8/-0.85/-0.9, weights .25/.23/.21.
+        Ghost { k: -0.85, weight: [0.25, 0.23, 0.21], peak: 1.0, image: HALO, radius: 0.6 },
+        // f4: max(0.01 - d^2.4, 0) x 6/5/3 at -0.4/-0.45/-0.5.
+        Ghost { k: -0.45, weight: [6.0, 5.0, 3.0], peak: 0.01, image: DISC, radius: 0.147 },
+        // f5: max(0.01 - d^5.5, 0) x 2 at -0.2/-0.4/-0.6 (wide and faint).
+        Ghost { k: -0.4, weight: [2.0, 2.0, 2.0], peak: 0.01, image: DISC, radius: 0.43 },
+        // f6: max(0.01 - d^1.6, 0) x 6/3/5 on the source's side, 0.3-0.35.
+        Ghost { k: 0.325, weight: [6.0, 3.0, 5.0], peak: 0.01, image: DISC, radius: 0.056 },
+    ];
+
+    fn picture(profile: impl Fn(f32) -> f32) -> Arc<Picture> {
+        let n = 64u32;
+        let mut rgba = Vec::with_capacity((n * n * 4) as usize);
+        for y in 0..n { for x in 0..n {
+            let d = Vec3::new((x as f32 + 0.5) / n as f32 * 2.0 - 1.0, (y as f32 + 0.5) / n as f32 * 2.0 - 1.0, 0.0).length();
+            rgba.extend([255, 255, 255, (profile(d.min(1.0)).clamp(0.0, 1.0) * 255.0 + 0.5) as u8]);
+        } }
+        Arc::new(Picture::new(n, n, rgba).expect("fixed size"))
+    }
+    fn halo() -> &'static Arc<Picture> {
+        static P: OnceLock<Arc<Picture>> = OnceLock::new();
+        // 1 / (1 + 32 d²) over 0.6 screen heights, windowed to the edge.
+        P.get_or_init(|| picture(|d| { let r = d * 0.6; 1.0 / (1.0 + 32.0 * r * r) * (1.0 - d * d) }))
+    }
+    fn disc() -> &'static Arc<Picture> {
+        static P: OnceLock<Arc<Picture>> = OnceLock::new();
+        P.get_or_init(|| picture(|d| 1.0 - d.powf(2.4)))
+    }
+
+    /// Draw the flare of the strongest incoming rocket into one view.
+    pub fn draw(list: &mut HudDrawList, rect: [f32; 4], cam: &render::Camera, strikes: &[Strike]) {
+        let [x, y, w, h] = rect;
+        if w < 2.0 || h < 2.0 { return; }
+        let view = glam::Mat4::look_at_rh(cam.pos, cam.target, Vec3::Y);
+        let proj = glam::Mat4::perspective_rh(cam.fov_y, w / h, cam.near.max(0.01), 5000.0);
+        let best = strikes.iter().filter_map(flight).filter_map(|f| {
+            let intensity = f.approach * f.approach;
+            if intensity < 0.015 { return None; }
+            let tail = f.pos - f.dir * 5.2;
+            let clip = proj * view * tail.extend(1.0);
+            if clip.w <= 0.0 { return None; }
+            let ndc = clip.truncate() / clip.w;
+            let (sx, sy) = (x + (ndc.x * 0.5 + 0.5) * w, y + (0.5 - ndc.y * 0.5) * h);
+            if sx < x - 80.0 || sx > x + w + 80.0 || sy < y - 80.0 || sy > y + h + 80.0 { return None; }
+            Some((intensity, sx, sy))
+        }).max_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((intensity, sx, sy)) = best else { return };
+        let strength = 0.03 + (1.05 - 0.03) * intensity.powf(0.65);
+        list.provide_image(HALO, halo(), ImageFilter::Linear);
+        list.provide_image(DISC, disc(), ImageFilter::Linear);
+        // The source's offset from the view centre, in screen heights.
+        let (cx, cy) = (x + w * 0.5, y + h * 0.5);
+        let (px, py) = ((sx - cx) / h, (sy - cy) / h);
+        let clip = [x, y, w, h];
+        for g in &GHOSTS {
+            let light = g.weight.map(|v| v * g.peak * 1.3 * GAIN * strength);
+            let rgb = [0, 1, 2].map(|c| light[c] * TINT[c]);
+            let alpha = rgb.iter().cloned().fold(0.0, f32::max).min(1.0);
+            if alpha < 0.002 { continue; }
+            let color = rgb.map(|v| (v / alpha).min(1.0));
+            let (gx, gy) = (cx + g.k * px * h, cy + g.k * py * h);
+            let r = g.radius * h;
+            list.image([gx - r, gy - r, r * 2.0, r * 2.0], g.image, [0.0, 0.0, 1.0, 1.0], [color[0], color[1], color[2], alpha], clip);
+        }
     }
 }

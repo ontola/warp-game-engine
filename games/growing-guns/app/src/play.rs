@@ -811,6 +811,9 @@ impl app::Game for Gg {
         } else {
             let rects = frame.rects(self.slots.len());
             for (k, (rect, &s)) in rects.iter().zip(&self.slots).enumerate() {
+                // Under the HUD (Godot's flare overlay sits below the crosshair).
+                let cam = self.vis.punched(&self.world, s, view::camera(&self.world, s, &self.prev, alpha));
+                self.vis.airstrike_flare(&mut list, *rect, &cam, &self.world);
                 let flash = self.vis.ion_flash(self.world.players[s].eye());
                 let pad = k > 0 || self.no_kbm;
                 self.hud.view(&mut list, &self.world, s, *rect, self.menus.get(k).map_or(0, |m| m.focus), flash, pad);
