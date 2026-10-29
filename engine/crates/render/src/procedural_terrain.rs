@@ -117,12 +117,18 @@ pub struct TerrainView {
     pub cos_half_cone: f32,
 }
 
+/// Pixel thresholds count pixels of a view at most this tall. Patches grow
+/// with the square of the height, so a 5K Retina view wanted four times the
+/// geometry of 1440p (and ran at a quarter of the frame rate) for detail
+/// finer than its pixels show; shading stays at full resolution.
+pub const LOD_HEIGHT_PX: u32 = 1440;
+
 impl TerrainView {
     pub fn new(camera: &Camera, width_px: u32, height_px: u32) -> Self {
         let tan_y = (camera.fov_y * 0.5).tan();
         let tan_x = tan_y * width_px as f32 / height_px.max(1) as f32;
         let corner = (tan_x * tan_x + tan_y * tan_y).sqrt();
-        TerrainView { pos: camera.pos, pixels_per_radian: height_px as f32 * 0.5 / tan_y,
+        TerrainView { pos: camera.pos, pixels_per_radian: height_px.min(LOD_HEIGHT_PX) as f32 * 0.5 / tan_y,
             forward: (camera.target - camera.pos).normalize_or(Vec3::NEG_Z), cos_half_cone: 1.0 / (1.0 + corner * corner).sqrt() }
     }
 
@@ -183,7 +189,13 @@ pub struct ProceduralTerrain {
     /// Multiplies the pixel thresholds when the views want more patches than
     /// the pool holds; eases back towards 1 when there is room again.
     lod: f32,
+    /// Centre height and geometric error per node: the field never changes,
+    /// and evaluating it was most of the per-frame selection time.
+    samples: std::cell::RefCell<HashMap<Node, (f32, f32)>>,
 }
+
+/// Cached node samples before the cache starts over.
+const SAMPLE_CACHE: usize = 1 << 20;
 
 /// Share of the pool the selection may fill; the rest absorbs the patches
 /// that balancing and the next frame's movement add.
@@ -191,20 +203,30 @@ const BUDGET: f32 = 0.9;
 
 impl ProceduralTerrain {
     pub fn new(spec: TerrainSpec, settings: Settings) -> Self {
-        ProceduralTerrain { spec, settings, slots: HashMap::new(), free: (0..spec.capacity).rev().collect(), lod: 1.0 }
+        ProceduralTerrain { spec, settings, slots: HashMap::new(), free: (0..spec.capacity).rev().collect(), lod: 1.0, samples: Default::default() }
     }
 
     fn cell(&self, level: u32) -> f32 { self.settings.finest * (1u32 << level) as f32 }
     fn size(&self, level: u32) -> f32 { self.cell(level) * CELLS as f32 }
+
+    /// A node's centre height and geometric error.
+    fn sample(&self, n: Node) -> (f32, f32) {
+        let mut cache = self.samples.borrow_mut();
+        if let Some(&s) = cache.get(&n) { return s; }
+        if cache.len() >= SAMPLE_CACHE { cache.clear(); }
+        let (size, cell) = (self.size(n.level), self.cell(n.level));
+        let e = terrain_field::eval((n.ix as f32 + 0.5) * size, (n.iz as f32 + 0.5) * size, cell * CELLS as f32, self.spec.seed, &self.spec.style);
+        let s = (e.pos.y, e.error(cell));
+        cache.insert(n, s);
+        s
+    }
 
     fn wants_split(&self, n: Node, views: &[TerrainView]) -> bool {
         if n.level == 0 { return false; }
         let size = self.size(n.level);
         let cell = self.cell(n.level);
         let (x0, z0) = (n.ix as f32 * size, n.iz as f32 * size);
-        let sample = terrain_field::eval(x0 + size * 0.5, z0 + size * 0.5, cell * CELLS as f32, self.spec.seed, &self.spec.style);
-        let centre_y = sample.pos.y;
-        let error = sample.error(cell);
+        let (centre_y, error) = self.sample(n);
         let reach = size * 0.75 + 8.0;
         let centre = Vec3::new(x0 + size * 0.5, centre_y, z0 + size * 0.5);
         let radius = (size * size * 0.5 + reach * reach).sqrt();
@@ -290,7 +312,7 @@ impl ProceduralTerrain {
             let cell = self.cell(n.level);
             let origin = [n.ix as f32 * size, n.iz as f32 * size];
             jobs.push(Job { origin, spacing: cell, mask: m, slot, _pad: [0; 3] });
-            let centre_y = terrain_field::eval(origin[0] + size * 0.5, origin[1] + size * 0.5, cell * CELLS as f32, self.spec.seed, &self.spec.style).pos.y;
+            let centre_y = self.sample(n).0;
             let half = size * 0.5;
             let radius = (2.0 * half * half).sqrt() + size + 8.0 + terrain_field::MAX_PUSH;
             let mut inst = hidden_instance(&self.spec, slot);
@@ -535,8 +557,12 @@ mod tests {
             // A Retina window at 5K renders at 5120x2880.
             let views = [TerrainView::new(&camera, 5120, 2880)];
             let raw = t.select(&views).len();
+            let started = std::time::Instant::now();
             let fit = t.select_within_budget(&views).len();
-            eprintln!("at {pos:?}: wanted {raw}, fits {fit} at lod {:.2}", t.lod);
+            let first = started.elapsed().as_secs_f64() * 1e3;
+            let started = std::time::Instant::now();
+            t.select_within_budget(&views);
+            eprintln!("at {pos:?}: wanted {raw}, fits {fit} at lod {:.2} in {first:.1} ms, next frame {:.1} ms", t.lod, started.elapsed().as_secs_f64() * 1e3);
             assert!(fit <= 16384 * 9 / 10, "{fit} patches");
         }
     }

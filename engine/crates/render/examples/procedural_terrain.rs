@@ -217,7 +217,7 @@ fn render_shot(gpu: &Gpu, renderer: &Renderer, terrain: &mut ProceduralTerrain, 
             if frame == 0 { stats = s; }
             let (img, fs) = renderer.render(gpu, &cam, light, w, h);
             rgba = img;
-            if frame == 5 { eprintln!("clusters {} triangles {} broadphase {}", fs.clusters, fs.triangles, fs.instance_broadphase); }
+            if frame == 5 { eprintln!("clusters {} triangles {} broadphase {}", fs.clusters, fs.triangles, fs.instance_broadphase); for (pass, ms) in &fs.gpu_ms { eprintln!("  {pass:>28} {ms:6.2} ms"); } }
         }
         if dump {
             // GPU vertices against the CPU mirror (interior points only).

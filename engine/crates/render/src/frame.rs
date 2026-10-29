@@ -1576,7 +1576,7 @@ impl Renderer {
             ..Default::default()
         });
         startup.mark("sky_sh_integration_upload");
-        let query = if gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+        let query = if gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY) {
             let n = TIMESTAMP_CAPACITY;
             let qs = gpu.device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("timestamps"), ty: wgpu::QueryType::Timestamp, count: n });
             let resolve = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 8 * n as u64, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
@@ -2701,7 +2701,7 @@ impl Renderer {
             (12,self.cluster_traversal.buffer.as_entire_binding()),(13,v.traversal_counter.as_entire_binding()),
             (14,self.receiver_demand.buffer().as_entire_binding())]));
         self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree occluder cull",RasterPass::Color,Some(&phases[0]),false);
-        let time=self.query.as_ref().map(|(qs,_,_)|{names.push("tree occlusion pyramid");(qs,timestamp_pair(ts))});
+        let time=self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs,_,_)|{names.push("tree occlusion pyramid");(qs,timestamp_pair(ts))});
         pyramid.encode(gpu,enc,depth,target,time);
         if let Some((qs,i))=time {enc.write_timestamp(qs,i+1);}
         self.cull_and_raster_pass(enc,gpu,v,Some(color),depth,ts,names,"tree remaining cull",RasterPass::Color,Some(&phases[1]),true);
@@ -3793,7 +3793,7 @@ impl Renderer {
                         far_grass: far_motion_layer.as_ref().map(|layer| (&layer.color, &layer.distance)),
                         voxel:voxel_motion.as_ref().map(|(color,reprojection)|(color,reprojection)),
                         meadow:meadow_motion.as_ref().map(|(color,reprojection)|(color,reprojection)) }, motion_time)?;
-                let dlss_time = self.query.as_ref().map(|(qs, _, _)| {
+                let dlss_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("dlss"); (qs, timestamp_pair(&mut ts))
                 });
                 if let Some((qs, i)) = dlss_time { enc.write_timestamp(qs, i); }
@@ -3813,7 +3813,7 @@ impl Renderer {
             // Opt-in in-scattering from local lights, into a separate output.
             let resolved = match light.volumetric.as_ref() {
                 Some(medium) => {
-                    let time = self.query.as_ref().map(|(qs, _, _)| { names.push("volumetric"); (qs, timestamp_pair(&mut ts)) });
+                    let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("volumetric"); (qs, timestamp_pair(&mut ts)) });
                     if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
                     let out = self.volumetric.render(gpu, &mut enc, medium, crate::volumetric::ViewInput { index: vi, input: &resolved,
                         depth: &depth_v, depth_size: (w, h), camera: cam.pos, near: cam.near, depth_vp: vp })?;
@@ -3830,7 +3830,7 @@ impl Renderer {
                 match fx.as_mut() {
                     Some(fx) => {
                         let white = (light.sun_lux * light.sun_dir.y.max(0.0) + light.sky_lux) / std::f32::consts::PI;
-                        let time = self.query.as_ref().map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
+                        let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
                         let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white)?;
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
@@ -3845,7 +3845,7 @@ impl Renderer {
                 let mut sprites = self.sprites.0.lock().unwrap();
                 match sprites.as_mut() {
                     Some(sprites) => {
-                        let time = self.query.as_ref().map(|(qs, _, _)| { names.push("sprites"); (qs, timestamp_pair(&mut ts)) });
+                        let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("sprites"); (qs, timestamp_pair(&mut ts)) });
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
                         let out = sprites.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp)?;
                         if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
@@ -3856,7 +3856,7 @@ impl Renderer {
             };
             let resolved = sprite_output.unwrap_or(resolved);
             let exhaust_output = if debug_options.exhaust_enabled {
-                let exhaust_time = self.query.as_ref().map(|(qs, _, _)| {
+                let exhaust_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("exhaust"); (qs, timestamp_pair(&mut ts))
                 });
                 if let Some((qs, i)) = exhaust_time { enc.write_timestamp(qs, i); }
@@ -3868,7 +3868,7 @@ impl Renderer {
             // Reuse disposable exhaust output; a particle-only frame takes one
             // copy instead. Neither path writes to native/DLSS temporal history.
             let particle_output = if debug_options.wheel_particles_enabled {
-                let particles_time = self.query.as_ref().map(|(qs, _, _)| {
+                let particles_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("wheel particles"); (qs, timestamp_pair(&mut ts))
                 });
                 if let Some((qs, i)) = particles_time { enc.write_timestamp(qs, i); }
@@ -3917,7 +3917,7 @@ impl Renderer {
         if let Some(screens) = &self.live_screens {
             let mut screens = screens.lock().unwrap();
             if screens.due(views, &ldr) {
-                let screen_time = self.query.as_ref().map(|(qs, _, _)| {
+                let screen_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("live screens"); (qs, timestamp_pair(&mut ts))
                 });
                 if let Some((qs, i)) = screen_time { enc.write_timestamp(qs, i); }
