@@ -286,10 +286,11 @@ fn tome_labels(p: &mut Painter, w: &World, cam: &Camera, vp: &Mat4, size: [u32; 
         let k = a.rise.min(1.0);
         let base = a.pos.with_y(0.0);
         let (Some(top), Some(under), Some(side)) = (screen(base + Vec3::Y * 2.68 * k), screen(base + Vec3::Y * 2.58 * k), screen(base + Vec3::Y * 2.58 * k + right)) else { continue };
-        // Screen units a metre is, there.
-        let m = (side - under).length();
-        let (title_px, text_px) = (80.0 * 0.0035 * m, 60.0 * 0.0035 * m);
-        let wrap = 720.0 * 0.0035 * m;
+        // A fixed size on screen: scaling with the distance stepped through
+        // font sizes as the camera moved (`side` only anchors the label now).
+        let _ = side;
+        let (title_px, text_px) = (34.0, 22.0);
+        let wrap = 320.0;
         p.text(&relic.name, top.x, top.y - title_px * 0.6, title(), title_px, [1.0, 0.8, 0.42, k], TextAlign::Center, title_px * 0.225);
         for (i, line) in wrapped(&relic.text, body(), text_px * p.s, wrap * p.s).iter().enumerate() {
             p.text(line, under.x, under.y + text_px * (0.6 + 1.2 * i as f32), body(), text_px, [0.86, 0.84, 0.8, k], TextAlign::Center, text_px * 0.3);

@@ -101,8 +101,11 @@ pub fn tag(sprites: &mut [Sprite], time: f32) {
         if (s.uv[2].abs() - crate::fx::cell_size()).abs() > 0.01 || (s.uv[3].abs() - crate::fx::cell_size()).abs() > 0.01 {
             continue;
         }
-        let seed = (s.center.x * 12.9898 + s.center.z * 78.233 + s.center.y * 37.719).sin() * 43758.547;
+        // Particles bring their own seed and age (params.w = 1); anything else
+        // gets a seed from where it is.
+        let own = s.params[3] == 1.0;
+        let seed = if own { s.params[0] } else { ((s.center.x * 12.9898 + s.center.z * 78.233 + s.center.y * 37.719).sin() * 43758.547).fract().abs() * 97.0 };
         s.effect = of_cell(c);
-        s.params = [seed.fract().abs() * 97.0, time, 0.0, 0.0];
+        s.params = [seed, time, if own { s.params[2] } else { 0.0 }, 0.0];
     }
 }

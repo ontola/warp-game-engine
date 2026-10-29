@@ -89,17 +89,27 @@ fn flame(s: GameSprite) -> vec4<f32> {
     let p = vec2(s.uv.x * 2.0 - 1.0, 1.0 - s.uv.y);
     let seed = s.params.x;
     let t = s.params.y;
-    let n = sn_fbm(vec3(p.x * 2.0, p.y * 2.5 - t * 2.8, seed));
-    let sway = (n - 0.5) * 0.7 * p.y;
-    // A teardrop: round at the foot, narrowing to a tip the noise tears up.
-    let w = 0.5 * pow(max(1.0 - p.y, 0.0), 0.7) * smoothstep(-0.05, 0.2, p.y);
-    let d = abs(p.x + sway) / max(w, 0.001);
-    let body = (1.0 - smoothstep(0.3, 1.0, d)) * (1.0 - smoothstep(0.35, 0.9, p.y + (n - 0.5) * 0.7));
-    let hot = (1.0 - smoothstep(0.0, 0.6, d)) * (1.0 - smoothstep(0.1, 0.55, p.y));
-    // Deep red at the edge, the sprite's colour in the body, nearly white inside.
-    var c = mix(vec3(0.55, 0.25, 0.2), vec3(1.0), body);
-    c = mix(c, vec3(1.3, 1.5, 2.2), hot);
-    return vec4(c * 1.2, clamp(body, 0.0, 1.0));
+    // Domain-warped noise rising through the quad: a first noise bends the
+    // coordinates of a second, so the flame curls and tears instead of
+    // sliding as a rigid pattern.
+    // No little flame shape per sprite (many of those read as tiny cartoon
+    // fires): each particle is a soft ball of burning gas whose edge the
+    // noise eats away, so overlapping particles merge into one body of fire.
+    let c2 = s.uv * 2.0 - 1.0;
+    let q = vec2(c2.x * 1.4, c2.y * 1.4 + t * 1.6);
+    let warp = vec2(sn_fbm(vec3(q, seed)), sn_fbm(vec3(q + vec2(5.2, 1.3), seed + 3.1)));
+    let n = sn_fbm(vec3(q * 1.8 + (warp - 0.5) * 1.8, seed + 7.7 + t * 0.4));
+    // params.z: the particle's age 0..1 (0 from older builds). Young gas at a
+    // flamethrower's nozzle burns white-hot; it cools to orange and dark red.
+    let age = s.params.z;
+    let r = length(c2);
+    let heat = clamp((1.0 - smoothstep(0.15, 1.0, r + (n - 0.5) * 0.9)) * (0.55 + 0.9 * n) * (1.15 - 0.85 * age), 0.0, 1.0);
+    // Blackbody ramp: ember red, orange, yellow, a white-hot heart.
+    var c = mix(vec3(0.45, 0.06, 0.02), vec3(1.0, 0.45, 0.1), smoothstep(0.05, 0.4, heat));
+    c = mix(c, vec3(1.15, 0.95, 0.45), smoothstep(0.4, 0.75, heat));
+    c = mix(c, vec3(1.5, 1.45, 1.3), smoothstep(0.75, 1.0, heat));
+    let a = smoothstep(0.04, 0.3, heat);
+    return vec4(c * 1.3, a);
 }
 
 // A soft, ragged puff of smoke that turns as it goes.
