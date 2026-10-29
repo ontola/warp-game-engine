@@ -33,6 +33,9 @@ knobs! {
     flash_brightness = 0.5;
     /// Scales how much light a hit, shot or burst throws around (looks only).
     flash_light = 0.5;
+    /// How big the staff's light is, in metres, for its shadows: 0 hard,
+    /// larger softer, the more so the further from what casts them (looks only).
+    shadow_softness = 0.05;
     /// Scales monster health (on top of the difficulty setting).
     monster_hp = 1.0;
     /// Scales the damage monsters do (on top of the difficulty setting).

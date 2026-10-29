@@ -145,8 +145,11 @@ impl Resources {
         Self {uniform,texture:tex,sampled,empty}
     }
     /// `spot_falloff`: distance exponent per spot (missing: 2, inverse square).
-    pub fn upload(&self,gpu:&Gpu,lights:&[SpotLight],local:&[LocalLight],spot_falloff:&[f32]) {
+    /// `softness`: the shadowed spots' light size in metres (0: hard
+    /// shadows); the penumbra widens with the distance from what casts it.
+    pub fn upload(&self,gpu:&Gpu,lights:&[SpotLight],local:&[LocalLight],spot_falloff:&[f32],softness:f32) {
         let mut u=Uniform::from_lights(lights,local);
+        u.count[2]=softness.clamp(0.0,1.0).to_bits();
         for (i,f) in spot_falloff.iter().take(MAX_LIGHTS).enumerate() {u.spot_falloff[i/4][i%4]=f.clamp(0.1,4.0);}
         gpu.queue.write_buffer(&self.uniform,0,bytemuck::bytes_of(&u));
     }
