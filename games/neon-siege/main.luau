@@ -21,7 +21,7 @@ local GRAVITY = 100 -- percent
 -- `knob NAME VALUE` command) change a value here and reload the game.
 -- @knobs
 local KNOBS = {
-	bloom = 0.55, -- glow strength around everything that shines, 0 to 2
+	bloom = 0.28, -- glow strength around everything that shines, 0 to 2
 	bloom_radius = 2, -- how far the glow spreads, 1 (tight) to 6
 	bloom_threshold = 0.9, -- how bright something must be before it glows
 	line_glow = 0.04, -- brightness of enemy, pilot and pickup outlines
