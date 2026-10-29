@@ -63,11 +63,15 @@ pub struct Sprite {
     /// keeps its radiance as it widens, so a thin bright laser far away
     /// still shows its core and glow, as a bloom would spread it.
     pub min_pixels: f32,
+    /// 0: the image texel. Otherwise the game's own `game_sprite` WGSL
+    /// (`set_game_sprite`) colours it, told this number and `params`.
+    pub effect: u32,
+    pub params: [f32; 4],
 }
 
 impl Sprite {
     pub fn billboard(center: Vec3, size: [f32; 2], image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
-        Self { center, size, facing: Facing::Billboard, image, uv, radiance, opacity: 1.0, alpha_cut: 0.5, depth_bias: 0.05, additive: false, min_pixels: 0.0 }
+        Self { center, size, facing: Facing::Billboard, image, uv, radiance, opacity: 1.0, alpha_cut: 0.5, depth_bias: 0.05, additive: false, min_pixels: 0.0, effect: 0, params: [0.0; 4] }
     }
     /// Turned about `up` towards the camera, additive and blended (no cut).
     pub fn shaft(center: Vec3, size: [f32; 2], up: Vec3, image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
@@ -141,7 +145,7 @@ impl Canvas {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
-struct GpuSprite { center: [f32; 4], right: [f32; 4], up: [f32; 4], uv: [f32; 4], color: [f32; 4], misc: [f32; 4] }
+struct GpuSprite { center: [f32; 4], right: [f32; 4], up: [f32; 4], uv: [f32; 4], color: [f32; 4], misc: [f32; 4], params: [f32; 4] }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -153,6 +157,8 @@ pub(crate) struct SpriteRenderer {
     layout: wgpu::BindGroupLayout,
     image_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    /// The GAME_SPRITE version `pipeline` was built from.
+    game: u64,
     linear: wgpu::Sampler,
     nearest: wgpu::Sampler,
     images: HashMap<SpriteImage, wgpu::BindGroup>,
@@ -172,18 +178,25 @@ impl SpriteRenderer {
             entry(0, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             entry(1, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
         ] });
-        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sprites"), source: wgpu::ShaderSource::Wgsl(shader_source().into()) });
-        let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sprites"), bind_group_layouts: &[Some(&layout), Some(&image_layout)], immediate_size: 0 });
-        let pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("sprites"), layout: Some(&pl),
+        let (game, pipeline) = Self::pipeline(gpu, &layout, &image_layout);
+        let sampler = |mag, mip| gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("sprite"), address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge, mag_filter: mag, min_filter: wgpu::FilterMode::Linear, mipmap_filter: mip, ..Default::default() });
+        Self { layout, image_layout, pipeline, game, linear: sampler(wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear),
+            nearest: sampler(wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest), images: HashMap::new(), sprites: Vec::new(), targets: Vec::new() }
+    }
+
+    /// The pipeline with the game's sprite shader as it is now, and which
+    /// version of it that is.
+    fn pipeline(gpu: &Gpu, layout: &wgpu::BindGroupLayout, image_layout: &wgpu::BindGroupLayout) -> (u64, wgpu::RenderPipeline) {
+        let (game, source) = { let g = GAME_SPRITE.lock().unwrap(); (g.0, shader_with(g.1.as_deref())) };
+        let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sprites"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sprites"), bind_group_layouts: &[Some(layout), Some(image_layout)], immediate_size: 0 });
+        (game, gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("sprites"), layout: Some(&pl),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
             primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() }, depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs"), compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
-            multiview_mask: None, cache: gpu.pipeline_cache() });
-        let sampler = |mag, mip| gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("sprite"), address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge, mag_filter: mag, min_filter: wgpu::FilterMode::Linear, mipmap_filter: mip, ..Default::default() });
-        Self { layout, image_layout, pipeline, linear: sampler(wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear),
-            nearest: sampler(wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest), images: HashMap::new(), sprites: Vec::new(), targets: Vec::new() }
+            multiview_mask: None, cache: gpu.pipeline_cache() }))
     }
 
     fn bind_texture(&mut self, gpu: &Gpu, id: SpriteImage, texture: &wgpu::Texture, filter: ImageFilter) {
@@ -231,6 +244,9 @@ impl SpriteRenderer {
             .map(|(i, s)| (i, s.center.distance_squared(camera.pos))).collect();
         if order.is_empty() { return Ok(None); }
         if input.format() != wgpu::TextureFormat::Rgba16Float { return Err("sprites require an HDR input".into()); }
+        if GAME_SPRITE.lock().unwrap().0 != self.game {
+            (self.game, self.pipeline) = Self::pipeline(gpu, &self.layout, &self.image_layout);
+        }
         order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let inverse = view.inverse();
         let cam_right = inverse.x_axis.truncate().normalize_or_zero();
@@ -246,7 +262,7 @@ impl SpriteRenderer {
                 }
             };
             GpuSprite { center: s.center.extend(s.depth_bias).to_array(), right: right.extend(s.size[0]).to_array(), up: up.extend(s.size[1]).to_array(),
-                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, if s.additive { 1.0 } else { 0.0 }, s.min_pixels.max(0.0), 0.0] }
+                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, if s.additive { 1.0 } else { 0.0 }, s.min_pixels.max(0.0), s.effect as f32], params: s.params }
         }).collect();
         let size = (input.width(), input.height());
         if self.targets.len() <= index { self.targets.resize_with(index + 1, || None); }
@@ -290,17 +306,46 @@ impl SpriteRenderer {
     }
 }
 
-pub fn shader_source() -> &'static str { SHADER }
+pub fn shader_source() -> String { shader_with(None) }
+
+/// The game's sprite effects, and how often they were replaced.
+static GAME_SPRITE: Mutex<(u64, Option<String>)> = Mutex::new((0, None));
+
+/// Without a game's own: every effect draws nothing.
+const NO_GAME_SPRITE: &str = "fn game_sprite(s: GameSprite) -> vec4<f32> { return vec4<f32>(0.0); }";
+
+fn shader_with(game: Option<&str>) -> String {
+    format!("{SHADER}\n{}\n", game.unwrap_or(NO_GAME_SPRITE))
+}
+
+/// A game's own sprite looks: WGSL with
+/// `fn game_sprite(s: GameSprite) -> vec4<f32>`, run for every sprite whose
+/// `effect` is not 0. `GameSprite` holds `uv` (0..1 across the quad, y
+/// down), `size` (metres), `world`, `effect`, `params` and `texel` (the
+/// image under `uv`, premultiplied). It returns a colour that the sprite's
+/// radiance scales and its coverage in alpha. Checked here: on an error
+/// the shader in use stays. Sprites pick it up on their next frame.
+pub fn set_game_sprite(source: &str) -> Result<(), String> {
+    let full = shader_with(Some(source));
+    let module = naga::front::wgsl::parse_str(&full).map_err(|e| e.emit_to_string(&full))?;
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module)
+        .map_err(|e| e.emit_to_string(&full))?;
+    let mut g = GAME_SPRITE.lock().unwrap();
+    g.0 += 1;
+    g.1 = Some(source.to_owned());
+    Ok(())
+}
 
 const SHADER: &str = r#"
 struct Uniform { view_proj: mat4x4<f32>, depth_vp: mat4x4<f32>, camera_near: vec4<f32>, camera_right: vec4<f32> };
-struct Sprite { center: vec4<f32>, right: vec4<f32>, up: vec4<f32>, uv: vec4<f32>, color: vec4<f32>, misc: vec4<f32> };
+struct Sprite { center: vec4<f32>, right: vec4<f32>, up: vec4<f32>, uv: vec4<f32>, color: vec4<f32>, misc: vec4<f32>, params: vec4<f32> };
+struct GameSprite { uv: vec2<f32>, size: vec2<f32>, world: vec3<f32>, effect: u32, params: vec4<f32>, texel: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: Uniform;
 @group(0) @binding(1) var<storage, read> sprites: array<Sprite>;
 @group(0) @binding(2) var scene_depth: texture_depth_2d;
 @group(1) @binding(0) var image: texture_2d<f32>;
 @group(1) @binding(1) var image_sampler: sampler;
-struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) world: vec3<f32>, @location(2) @interpolate(flat) id: u32 };
+struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) world: vec3<f32>, @location(2) @interpolate(flat) id: u32, @location(3) local: vec2<f32> };
 @vertex fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> Out {
     let s = sprites[i];
     let corners = array<vec2<f32>, 6>(vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
@@ -322,6 +367,7 @@ struct Out { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32>,
     out.uv = s.uv.xy + c * s.uv.zw;
     out.world = world;
     out.id = i;
+    out.local = c;
     return out;
 }
 fn depth_metres(uv: vec2<f32>) -> f32 {
@@ -331,7 +377,13 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
 }
 @fragment fn fs(in: Out) -> @location(0) vec4<f32> {
     let s = sprites[in.id];
-    let texel = textureSample(image, image_sampler, in.uv);
+    var texel = textureSample(image, image_sampler, in.uv);
+    if s.misc.w > 0.5 {
+        // The game's effect: straight colour and coverage, made premultiplied.
+        let g = game_sprite(GameSprite(in.local, vec2<f32>(s.right.w, s.up.w), in.world, u32(s.misc.w + 0.5), s.params, texel));
+        let ga = clamp(g.a, 0.0, 1.0);
+        texel = vec4<f32>(max(g.rgb, vec3<f32>(0.0)) * ga, ga);
+    }
     let clip = u.depth_vp * vec4<f32>(in.world, 1.0);
     let duv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + 0.5;
     if depth_metres(duv) + s.center.w < clip.w { discard; }
@@ -378,9 +430,10 @@ mod tests {
 
     #[test]
     fn sprite_wgsl_validates_and_layouts_match() {
-        let module = naga::front::wgsl::parse_str(shader_source()).unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
+        let source = shader_source();
+        let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
-        assert_eq!(std::mem::size_of::<GpuSprite>(), 96);
+        assert_eq!(std::mem::size_of::<GpuSprite>(), 112);
         assert_eq!(std::mem::size_of::<Uniform>(), 160);
     }
 
