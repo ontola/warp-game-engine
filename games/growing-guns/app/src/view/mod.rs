@@ -20,7 +20,7 @@ use crate::stadium::StadiumVisuals;
 use arena::{palette, ArenaView};
 use audio::sfx::Listener;
 use effects::{EffectsView, BLAST_TINT};
-use glam::{Affine3A, Quat, Vec3};
+use glam::Vec3;
 use growing_guns::shape::Boxes;
 use growing_guns::{Event, ExplosionKind, World};
 use guns::Guns;
@@ -200,9 +200,8 @@ impl Visuals {
                     self.fx.debris.burst(s, &render::debris::BurstSpec::chips(pos + normal * 0.15, radius * 0.3, amount, size, &stone.shards));
                     // A bullet hole where the chips came off, bigger for strong rounds.
                     if let Some(c) = chunk {
-                        let r = if strong { 0.3 } else { 0.2 };
-                        let seed = (pos.x * 7919.0 + pos.y * 104729.0 + pos.z * 1299709.0) as i64 as u32;
-                        self.arena.bullet_hole(s, pos, normal, r, seed, c as u32);
+                        let r = if strong { 0.24 } else { 0.15 };
+                        self.arena.bullet_hole(pos, r, c as u32);
                     }
                 }
                 Event::Explosion { pos, radius, kind, .. } => {

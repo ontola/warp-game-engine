@@ -620,6 +620,7 @@ pub struct Renderer {
     albedo_array: wgpu::Texture,
     live_screens: Option<std::sync::Mutex<crate::screen_feed::LiveScreens>>,
     aux_buffer: wgpu::Buffer,
+    dents: Option<(usize, usize)>,
     irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
     sun_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
     headlight_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
@@ -1035,6 +1036,14 @@ impl Renderer {
     /// The albedo texture array (sRGB, TEXTURE_SIZE square, mipmapped). Live
     /// layers are redrawn through `screen::Screen`; do not resize it.
     pub fn albedo_array(&self) -> &wgpu::Texture { &self.albedo_array }
+
+    /// Replace the bullet dents reserved with `Scene::reserve_dents`.
+    pub fn set_dents(&self, gpu: &Gpu, dents: &[crate::dents::Dent]) -> Result<(), String> {
+        let (offset, capacity) = self.dents.ok_or("the scene reserved no dents")?;
+        let words = crate::dents::pack(capacity, dents);
+        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        Ok(())
+    }
 
     /// Replace the probes reserved with `Scene::reserve_irradiance_volume`
     /// (for example after `irradiance_volume::BoxRoom::bake`).
@@ -1647,6 +1656,7 @@ impl Renderer {
             live_screens: (!scene.live_screen_feeds.is_empty()).then(|| std::sync::Mutex::new(crate::screen_feed::LiveScreens::new(gpu, &albedo, &scene.live_screen_feeds))),
             aux_buffer: aux.clone(),
             irradiance_volume: scene.irradiance_volume,
+            dents: scene.dents,
             geometry_diagnostics,
             debug_options: Default::default(),
             upscaling: Default::default(),
@@ -3447,7 +3457,7 @@ impl Renderer {
                 vol_anchors: canopy.anchors,
                 vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], if light.gi>0.0 {1|((canopy.compact_support as u32)<<1)|((self.empty_gi_volume as u32)<<2)} else {0}],
                 hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3), 0.0],
-                hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, 0],
+                hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, self.dents.map_or(0, |(offset, _)| offset as u32)],
                 // Reflectance, conditioned on local sun and sky visibility.
                 bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
                 params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit,
