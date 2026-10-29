@@ -1512,7 +1512,7 @@ impl App {
                     "triangles":s.far_sun_triangles,"submitted_vertices":s.far_sun_submitted_vertices});
             }
             let saved=g.presenter.capture_rgba(&g.gpu,&image,g.config.format,g.hud.as_ref().filter(|_|draw_list.is_some()))
-                .and_then(|rgba|crate::screenshot::save(self.window.as_ref().unwrap(),size.width,size.height,&rgba,metadata));
+                .and_then(|rgba|app::screenshot::save(app::screenshot::Shot{title:"Sideways",size:[size.width,size.height],rgba:&rgba,metadata}));
             let message=match saved{Ok(message)=>message,Err(error)=>{eprintln!("screenshot failed: {error}");format!("Screenshot failed: {error}")}};
             self.window.as_ref().unwrap().set_title(&format!("Sideways | {message}"));
             self.screenshot_toast=Some((message,Instant::now()+Duration::from_secs(4)));

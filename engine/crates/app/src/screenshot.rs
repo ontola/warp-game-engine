@@ -43,8 +43,22 @@ pub fn save(shot: Shot) -> Result<String, String> {
     let json_path = png.with_extension("json");
     let wrote = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&json_path, b).map_err(|e| e.to_string()));
     if let Err(e) = &wrote { eprintln!("screenshot metadata: {e}"); }
+    note(shot.title, &png, wrote.is_ok().then_some(&json_path), ms);
     println!("screenshot: {}", png.display());
     Ok(format!("{name}.png{}{}", if copied { "  copied, paste with Cmd/Ctrl+V" } else { "  saved" }, if wrote.is_err() { "  (no metadata)" } else { "" }))
+}
+
+/// Note the capture where the `feedback` live tool (live::feedback) finds
+/// it: `feedback.jsonl` in `WARP_LIVE_DIR`, else `<temp>/warp-live`.
+fn note(game: &str, png: &std::path::Path, json: Option<&PathBuf>, ms: u128) {
+    let dir = std::env::var_os("WARP_LIVE_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join("warp-live"));
+    let line = json!({ "game": game, "png": png, "json": json, "unix_ms": ms as u64, "time": crate::manners::stamp() });
+    let written = std::fs::create_dir_all(&dir).and_then(|_| {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("feedback.jsonl"))?;
+        writeln!(f, "{line}")
+    });
+    if let Err(e) = written { eprintln!("screenshot feedback index: {e}"); }
 }
 
 #[cfg(test)]
@@ -53,7 +67,7 @@ mod tests {
     fn saves_png_and_metadata() {
         crate::clipboard::memory_only();
         let dir = std::env::temp_dir().join(format!("warp-shot-{}", std::process::id()));
-        unsafe { std::env::set_var("WARP_SCREENSHOTS", &dir); }
+        unsafe { std::env::set_var("WARP_SCREENSHOTS", &dir); std::env::set_var("WARP_LIVE_DIR", &dir); }
         let line = super::save(super::Shot { title: "Terrain fly", size: [2, 1], rgba: &[255, 0, 0, 255, 0, 255, 0, 255], metadata: serde_json::json!({"state": {"seed": 3}}) }).unwrap();
         assert!(line.starts_with("terrain-fly-") && line.contains("saved"));
         let json = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).find(|p| p.extension().is_some_and(|e| e == "json")).unwrap();
