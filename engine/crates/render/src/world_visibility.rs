@@ -13,7 +13,7 @@ pub(crate) struct Resources {
 
 impl Resources {
     pub fn new(gpu: &Gpu, scene: &Scene, height_view: &wgpu::TextureView) -> Result<Self,String> {
-        let enabled=std::env::var("KERN_WORLD_TERRAIN_VISIBILITY").as_deref()==Ok("1");
+        let enabled=match std::env::var("KERN_WORLD_TERRAIN_VISIBILITY").as_deref() {Ok("1")=>true,Ok("0")=>false,_=>scene.world_terrain_visibility};
         let start=std::time::Instant::now();
         let budget=std::env::var("KERN_TERRAIN_NODE_BUDGET").ok().and_then(|v|v.parse::<u32>().ok())
             .unwrap_or(crate::terrain_trace::DEFAULT_NODE_BUDGET).min(crate::terrain_trace::MAX_NODE_BUDGET);
