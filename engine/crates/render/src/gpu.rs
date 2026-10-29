@@ -34,7 +34,15 @@ pub fn instance() -> wgpu::Instance { instance_for(wgpu::Backends::PRIMARY) }
 /// `instance()` is the fallback when Vulkan cannot present.
 pub fn window_instance() -> Option<wgpu::Instance> {
     let pinned = std::env::var_os("WGPU_BACKEND").is_some() || std::env::var_os("KERN_ADAPTER").is_some();
-    (cfg!(windows) && !pinned).then(|| instance_for(wgpu::Backends::VULKAN))
+    if !cfg!(windows) || pinned { return None; }
+    // Store overlays (Steam, Epic, GOG) hook every Vulkan app as implicit
+    // layers and cost a launch up to 0.7 s; a Warp game uses none of them.
+    // An explicit VK_LOADER_LAYERS_DISABLE (even empty) is kept.
+    if std::env::var_os("VK_LOADER_LAYERS_DISABLE").is_none() {
+        // SAFETY: read only by the Vulkan loader, at instance creation just below.
+        unsafe { std::env::set_var("VK_LOADER_LAYERS_DISABLE", "~implicit~") };
+    }
+    Some(instance_for(wgpu::Backends::VULKAN))
 }
 
 fn instance_for(windows: wgpu::Backends) -> wgpu::Instance {
