@@ -17,14 +17,14 @@ pub const IMAGE: SpriteImage = SpriteImage(0x5ee1_0001);
 const SIDE: usize = 4;
 const CELL: usize = 128;
 /// Godot light energy to Warp (view.rs LIGHT).
-const LIGHT: f32 = PI;
+pub(crate) const LIGHT: f32 = PI;
 /// About how bright an unlit see-through thing shows in the dark levels
 /// (smoke, drops, chips, puddles), as if the moon and lamps lit it.
-const LIT: f32 = 0.3;
+pub(crate) const LIT: f32 = 0.3;
 
 /// The particle shapes, one cell each in the atlas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cell {
+pub(crate) enum Cell {
     Dot,
     Flame,
     Drop,
@@ -38,9 +38,11 @@ pub enum Cell {
     Line,
     Patch,
     Shock,
+    Slice,
+    Wisp,
 }
 
-const CELLS: [Cell; 13] = [
+const CELLS: [Cell; 15] = [
     Cell::Dot,
     Cell::Flame,
     Cell::Drop,
@@ -54,9 +56,11 @@ const CELLS: [Cell; 13] = [
     Cell::Line,
     Cell::Patch,
     Cell::Shock,
+    Cell::Slice,
+    Cell::Wisp,
 ];
 
-fn uv(c: Cell) -> [f32; 4] {
+pub(crate) fn uv(c: Cell) -> [f32; 4] {
     let i = c as usize;
     let s = 1.0 / SIDE as f32;
     let pad = 0.5 / (SIDE * CELL) as f32;
@@ -125,6 +129,25 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
             let a = 1.0 - smooth(0.72, 0.98, r + fray);
             (1.0 - 0.15 * r, a)
         }
+        // One slice of the sword's arc on the ground (slash.gdshader), its
+        // circle's middle at the cell's: brightest at the rim, a faint
+        // band at the inner edge. Up the cell (v < 0) is the slice's middle.
+        Cell::Slice => {
+            let ang = u.atan2(-v).abs();
+            let inside = 1.0 - smooth(SLICE * 0.5 - 0.004, SLICE * 0.5 + 0.004, ang);
+            let y = ((r - SLICE_IN) / (1.0 - SLICE_IN)).clamp(0.0, 1.0);
+            let ring = smooth(0.0, 0.02, r - SLICE_IN) * (1.0 - smooth(0.97, 1.0, r));
+            let rim = smooth(0.75, 1.0, y) + 0.35 * (1.0 - smooth(0.0, 0.25, y));
+            let body = 0.25 + 0.75 * y * y;
+            (1.0, ((body * 0.55 + rim * 0.8) * inside * ring).min(1.0))
+        }
+        // A curl of haze for the mist walls: a lumpy soft blob.
+        Cell::Wisp => {
+            let ang = v.atan2(u);
+            let lump = 0.12 * (ang * 3.0 + 0.7).sin() + 0.08 * (ang * 5.0 + 2.1).sin() + 0.05 * (ang * 9.0).sin();
+            let a = (1.0 - smooth(0.1, 0.95, r + lump * r)).powf(1.4) * (1.0 - smooth(0.7, 0.98, r));
+            (0.85 + 0.15 * (1.0 - r), a)
+        }
         // A nova's shock: a hot wide front.
         Cell::Shock => {
             let band = (-((r - 0.8) / 0.14).powi(2)).exp();
@@ -132,6 +155,12 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
         }
     }
 }
+
+/// The sword arc's slices: how wide each is, and where the ring starts
+/// (inner over outer radius of Wizard._arc_mesh).
+pub(crate) const SLICE: f32 = 2.0 * spellstorm::wizard::SWING_ARC / SLICES as f32;
+pub(crate) const SLICES: usize = 16;
+pub(crate) const SLICE_IN: f32 = 0.55 / (spellstorm::wizard::SWING_REACH + 0.3);
 
 /// The atlas of every cell, to give the renderer once.
 pub fn atlas() -> Picture {

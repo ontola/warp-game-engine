@@ -11,6 +11,7 @@ mod fx;
 mod hud;
 mod kits;
 mod look;
+mod marks;
 mod menu;
 mod party;
 mod play;
@@ -44,6 +45,11 @@ fn run() -> Result<(), String> {
             let out = arg("--out").ok_or("--out FILE required")?;
             let (w, h) = arg("--size").and_then(|s| s.split_once('x').map(|(a, b)| (a.parse().unwrap_or(1920), b.parse().unwrap_or(1080)))).unwrap_or((1920u32, 1080u32));
             let mut game = play::Spellstorm::new(kits::Kits::load(None)?, 0, numf("--bots", 3.0) as usize, seed);
+            if flag("--practice") {
+                // The practice strip, as for players who know nothing yet.
+                game.world.settings.force_practice = true;
+                game.world.new_run();
+            }
             let ticks = numf("--ticks", 240.0) as u32;
             let gpu = Gpu::new()?;
             let started = std::time::Instant::now();
@@ -54,15 +60,20 @@ fn run() -> Result<(), String> {
             let v = &game.view;
             eprintln!("scene: {} instances, {} meshes, {} materials, {} lamps in {:.2}s", v.scene.instances.len(), v.scene.meshes.len(), v.scene.materials.len(), v.lamps.len(), started.elapsed().as_secs_f32());
             let mut counts = std::collections::BTreeMap::new();
-            for t in 0..ticks {
+            // --until-swing: run on past --ticks until a sword is mid-swing.
+            let until_swing = flag("--until-swing");
+            for t in 0..ticks * if until_swing { 20 } else { 1 } {
                 game.step(&[]);
+                if until_swing && t >= ticks && game.world.wizards.iter().any(|&id| { let s = game.world.wiz(id).swing_t; s > 0.1 && s < 0.2 }) {
+                    break;
+                }
                 if std::env::var_os("SPELLSTORM_EVENTS").is_some() {
                     for e in &game.world.events {
                         let d = format!("{e:?}");
                         *counts.entry(d.split([' ', '(', '{']).next().unwrap_or("").to_string()).or_insert(0u32) += 1;
                     }
                 }
-                if t % 4 == 0 && t + 1 < ticks {
+                if t % 4 == 0 && (until_swing || t + 1 < ticks) {
                     if game.view.stale(&game.world) {
                         shot.frame(&mut game)?;
                     } else {
@@ -78,7 +89,7 @@ fn run() -> Result<(), String> {
                 game.menu.show(false, &game.world);
             }
             let mut rgba = vec![];
-            for _ in 0..numf("--frames", 4.0) as u32 {
+            for _ in 0..numf("--frames", if until_swing { 1.0 } else { 4.0 }) as u32 {
                 rgba = shot.frame(&mut game)?;
             }
             image::save_buffer(&out, &rgba, w, h, image::ColorType::Rgba8).map_err(|e| e.to_string())

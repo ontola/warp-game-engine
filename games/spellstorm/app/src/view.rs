@@ -127,11 +127,14 @@ pub struct View {
     wizard_pieces: HashMap<usize, Vec<Piece>>,
     wizard_anims: Vec<anim::WizardAnim>,
     enemy_anims: HashMap<hecs::Entity, anim::EnemyAnim>,
+    /// Pieces of dead monsters lying about.
+    debris: Vec<Debris>,
     cam_center: Vec3,
     cam_height: f32,
     pub camera: Camera,
     pub fresh: bool,
     pub fx: crate::fx::Fx,
+    pub marks: crate::marks::Marks,
 }
 
 fn level_key(l: &Level) -> u64 {
@@ -169,11 +172,13 @@ impl View {
             wizard_pieces: HashMap::new(),
             wizard_anims: vec![],
             enemy_anims: HashMap::new(),
+            debris: Vec::new(),
             cam_center: Vec3::ZERO,
             cam_height: 18.5,
             camera: Camera { pos: Vec3::new(0.0, 20.0, 12.0), target: Vec3::ZERO, fov_y: 42f32.to_radians(), near: 0.1 },
             fresh: true,
             fx: crate::fx::Fx::default(),
+            marks: crate::marks::Marks::default(),
         }
     }
 
@@ -193,6 +198,7 @@ impl View {
         self.cards.clear();
         self.prop_ranges.clear();
         self.prop_broken.clear();
+        self.debris.clear();
         self.wizard_pieces.clear();
 
         // The floor, in 10 m chunks, each with only the bits of path,
@@ -394,12 +400,34 @@ impl View {
             let pieces = self.look.pieces(&self.kits, &mut self.scene, &name);
             let Some(kit) = self.kits.kit(&name) else { continue };
             let seed = id.id();
-            let model = self.enemy_anims.entry(id).or_default().model(kit.base_scale, &a, &e, time, seed, dt);
+            let ea = self.enemy_anims.entry(id).or_default();
+            let model = ea.model(kit.base_scale, &a, &e, time, seed, dt);
             seen.push(id);
             let at = Mat4::from_rotation_translation(Quat::from_rotation_y(a.yaw), a.pos) * model;
-            push_kit(&mut out, kit, &pieces, at);
+            // Bodies that fall apart go to pieces once (a blow-up after its fuse).
+            if let Some(t) = ea.dead_t.filter(|_| !ea.scattered) {
+                let c = e.cfg();
+                let big = if c.model.is_some() { c.size as f32 } else { 1.0 };
+                let how = match anim::fall(c.model.unwrap_or(c.key), big) {
+                    f @ anim::Fall::Scatter { .. } => Some(f),
+                    anim::Fall::BlowUp if t >= e.fuse as f32 => Some(anim::BLOWN),
+                    _ => None,
+                };
+                if let Some(anim::Fall::Scatter { power, up, life }) = how {
+                    ea.scattered = true;
+                    let parts = pieces.iter().map(|p| (p.mesh, at * kit.model_xf(p.node), p.shadow)).collect();
+                    self.debris.push(Debris::new(&self.scene, parts, a.pos, power, up, life, seed));
+                }
+            }
+            if !ea.scattered {
+                push_kit(&mut out, kit, &pieces, at);
+            }
         }
         self.enemy_anims.retain(|id, _| seen.contains(id));
+        self.debris.retain_mut(|d| d.step(dt));
+        for d in &self.debris {
+            d.push(&mut out);
+        }
         let first = self.pool_first;
         for i in 0..POOL {
             let slot = first + i;
@@ -428,6 +456,7 @@ impl View {
         renderer.update_instances(gpu, first, &self.scene.instances[first..first + POOL])?;
         self.follow(w, dt);
         self.fx.update(w, dt);
+        self.marks.update(w, self.fx.time, dt);
         let shake = self.fx.shake_offset();
         self.camera.pos += shake;
         self.camera.target += shake;
@@ -448,6 +477,8 @@ impl View {
         let mut locals: Vec<LocalLight> = self.fx.lights();
         locals.sort_by(|a, b| b.intensity_cd.max_element().total_cmp(&a.intensity_cd.max_element()));
         locals.truncate(12);
+        // Every wizard's staff light, always.
+        locals.splice(0..0, self.marks.lights.iter().copied());
         let room = render::headlights::MAX_LOCAL_LIGHTS - locals.len();
         locals.extend(near.iter().take(room).map(|l| l.light));
         renderer.set_local_lights(&locals)?;
@@ -456,7 +487,10 @@ impl View {
             renderer.set_volumetric_beams(&locals)?;
         }
         self.light.time = w.time as f32;
-        renderer.set_sprites(gpu, &self.fx.sprites(&self.camera))?;
+        let mut sprites = self.marks.sprites.clone();
+        sprites.extend(self.fx.sprites(&self.camera));
+        sprites.truncate(render::sprites::MAX_SPRITES);
+        renderer.set_sprites(gpu, &sprites)?;
         let t = self.fx.time;
         self.fx.blasts.flush(gpu, renderer, t)?;
         Ok(())
@@ -602,5 +636,90 @@ fn lighting(w: &World, ambient: Vec3) -> Lighting {
             length: 80.0,
         }),
         ..Default::default()
+    }
+}
+
+/// Pieces of a dead monster with their own little physics (debris.gd): they
+/// fly, fall, bounce and tumble on the floor, settle, lie a while and sink.
+struct Debris {
+    parts: Vec<Bit>,
+    life: f32,
+    t: f32,
+}
+
+struct Bit {
+    mesh: usize,
+    pos: Vec3,
+    rot: Quat,
+    scale: Vec3,
+    vel: Vec3,
+    spin: Vec3,
+    rest: f32,
+    shadow: bool,
+}
+
+impl Debris {
+    const GRAVITY: f32 = 20.0;
+
+    fn new(scene: &Scene, parts: Vec<(usize, Mat4, bool)>, from: Vec3, power: f32, up: f32, life: f32, seed: u32) -> Debris {
+        let mut r = seed.wrapping_mul(2654435761).max(1);
+        let mut f = move || {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            (r as f32) / (u32::MAX as f32)
+        };
+        let parts = parts
+            .into_iter()
+            .map(|(mesh, xf, shadow)| {
+                let (scale, rot, pos) = xf.to_scale_rotation_translation();
+                let mut away = pos - from;
+                away.y = 0.0;
+                if away.length() < 0.05 {
+                    let a = f() * std::f32::consts::TAU;
+                    away = Vec3::new(a.cos(), 0.0, a.sin());
+                }
+                let vel = away.normalize() * power * (0.5 + 0.7 * f()) + Vec3::Y * up * (0.6 + 0.6 * f());
+                let spin = Vec3::new(f() * 2.0 - 1.0, f() * 2.0 - 1.0, f() * 2.0 - 1.0) * (4.0 + 8.0 * f());
+                let radius = scene.meshes.get(mesh).map_or(0.1, |m| m.sphere[3]);
+                let rest = (radius * scale.min_element() * 0.4).clamp(0.03, 0.3);
+                Bit { mesh, pos, rot, scale, vel, spin, rest, shadow }
+            })
+            .collect();
+        Debris { parts, life, t: 0.0 }
+    }
+
+    /// False once it has sunk away.
+    fn step(&mut self, dt: f32) -> bool {
+        self.t += dt;
+        let sink = (self.t - self.life).max(0.0);
+        for b in &mut self.parts {
+            if sink > 0.0 {
+                b.pos.y -= dt * 0.6;
+                continue;
+            }
+            b.vel.y -= Self::GRAVITY * dt;
+            let mut at = b.pos + b.vel * dt;
+            if at.y < b.rest {
+                at.y = b.rest;
+                b.vel.y = if b.vel.y < -2.0 { -b.vel.y * 0.35 } else { 0.0 };
+                // Rolling on the floor slows a piece and its tumbling down.
+                b.vel.x *= 0.7;
+                b.vel.z *= 0.7;
+                b.spin *= 0.6;
+            }
+            b.pos = at;
+            let w = b.spin.length();
+            if w > 0.05 {
+                b.rot = (Quat::from_axis_angle(b.spin / w, w * dt) * b.rot).normalize();
+            }
+        }
+        sink <= 1.6
+    }
+
+    fn push(&self, out: &mut Vec<(usize, Affine3A, bool)>) {
+        for b in &self.parts {
+            out.push((b.mesh, Affine3A::from_scale_rotation_translation(b.scale, b.rot, b.pos), b.shadow));
+        }
     }
 }

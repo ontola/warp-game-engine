@@ -24,6 +24,9 @@ pub struct Spellstorm {
     party_seats: Vec<usize>,
     quit: bool,
     built: bool,
+    /// Prepared: tell the host ready once the run's scene is built, so the
+    /// build never stalls a started game.
+    ready_after_build: bool,
 }
 
 /// The shell's buttons as pad.gd's.
@@ -81,7 +84,7 @@ impl Spellstorm {
         if humans > 0 {
             menu.show(true, &world);
         }
-        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false }
+        Spellstorm { world, view: View::new(kits), hud, menu, humans, drive: (0..humans).collect(), party, party_seats: vec![], quit: false, built: false, ready_after_build: false }
     }
 
     /// The party's seats (main.gd _on_prepared): a wizard for each, couch
@@ -126,9 +129,7 @@ impl Spellstorm {
             match ev {
                 PartyEv::Prepare(list) => {
                     self.seat(list);
-                    if let Some(p) = &mut self.party {
-                        p.ready();
-                    }
+                    self.ready_after_build = true;
                 }
                 PartyEv::Names(names) => {
                     for id in self.world.wizards.clone() {
@@ -204,6 +205,12 @@ impl app::Game for Spellstorm {
             let r = frame.renderer().ok_or("no renderer")?;
             self.view.upload(frame.gpu, r)?;
             self.built = true;
+        }
+        if self.ready_after_build {
+            self.ready_after_build = false;
+            if let Some(p) = &mut self.party {
+                p.ready();
+            }
         }
         let r = frame.renderer().ok_or("no renderer")?;
         self.view.pose(frame.gpu, r, &self.world, frame.dt)?;
