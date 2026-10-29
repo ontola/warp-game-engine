@@ -508,6 +508,13 @@ impl World {
 
     /// Upload moved slots to a renderer made from this scene.
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> { self.slots.flush(gpu, renderer, &self.scene) }
+
+    /// A simulation tick starts (see [`World::flush_at`]).
+    pub fn tick_start(&mut self) { self.slots.tick(&self.scene); }
+
+    /// [`World::flush`], with moving entities drawn `alpha` of the way
+    /// between their previous and current tick.
+    pub fn flush_at(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, alpha: f32) -> Result<(), String> { self.slots.flush_at(gpu, renderer, &self.scene, alpha) }
 }
 
 fn material(look: &Look) -> Material {
