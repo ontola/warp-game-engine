@@ -124,9 +124,13 @@ fn tf_boulders(x: f32, z: f32, density: f32, cut: f32, seed: u32) -> vec2<f32> {
             if w <= 0.0 { continue; }
             let dx = (x - ox) * (0.75 + 0.5 * f32(h2 & 255u) / 255.0);
             let dz = (z - oz) * (0.75 + 0.5 * f32((h2 >> 8u) & 255u) / 255.0);
-            let s = (dx * dx + dz * dz) / (r * r);
+            // Skewed, half-buried and rounded: a low cap with a soft foot,
+            // not a bell with walls the texture smears down.
+            let skew = f32((h2 >> 24u) & 255u) / 255.0 - 0.5;
+            let d2 = dx * dx + dz * dz;
+            let s = d2 / (r * r) * (1.0 + 0.6 * skew * dx * dz / (d2 + 1e-6));
             if s < 1.0 {
-                let b = r * (0.4 + 0.3 * f32((h2 >> 16u) & 255u) / 255.0) * (1.0 - s * s) * w;
+                let b = r * (0.22 + 0.2 * f32((h2 >> 16u) & 255u) / 255.0) * sqrt(1.0 - s) * tf_smooth(0.0, 0.25, 1.0 - s) * w;
                 best = max(best, b);
                 cover = max(cover, tf_smooth(0.0, 0.3, 1.0 - s) * w);
             }
@@ -156,15 +160,20 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     // Only some rivers flow; `rivers` sets how many.
     let river_on = max(tf_smooth(-0.15, 0.15, 2.2 * st.rivers - 1.1 + tf_noised(p * 0.35 + vec2<f32>(2.7, 5.1), seed + 20u).x),
         tf_smooth(0.3, 0.7, alpine));
-    let river = mix(1000.0, tf_line(river_n, 0.7), river_on);
+    let rl = tf_line(river_n, 0.7);
+    let river = mix(1000.0, rl, river_on);
     let rn = river_n.yz / (sqrt(river_n.y * river_n.y + river_n.z * river_n.z) + 1e-6) * select(-1.0, 1.0, river_n.x >= 0.0);
-    let rs = clamp(river / 1400.0, 0.0, 1.0);
+    // Distance from the trough with a rounded centre: a crease there would
+    // kink the slope, and stream masks read the slope.
+    let ra = sqrt(rl * rl + 2500.0);
+    let rs = clamp(mix(1000.0, ra, river_on) / 1400.0, 0.0, 1.0);
+    let drs = rn * (river_on * rl / ra / 1400.0);
     // High peaks stand back from the troughs: the relief grows away from them.
     let pt = clamp((rs - 0.3) / 0.7, 0.0, 1.0);
     // Eroded fBm: accumulated slope damps finer octaves, so peaks stay
     // sharp and valleys smooth. 2 km down to 32 m.
     let amp = 100.0 * st.hills + 640.0 * mountains - 340.0 * alpine + 1100.0 * alpine * pt * pt * (3.0 - 2.0 * pt);
-    let damp = rn * (alpine * 1100.0 * 6.0 * pt * (1.0 - pt) / (0.7 * 1400.0));
+    let damp = drs * (alpine * 1100.0 * 6.0 * pt * (1.0 - pt) / 0.7);
     var h = 0.0;
     var low = 0.0;
     var low1 = 0.0;
@@ -210,7 +219,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     let fu = clamp((0.55 - fold) / 0.45, 0.0, 1.0);
     let uplift = alpine * (300.0 + 700.0 * rs * rs * (3.0 - 2.0 * rs) + 800.0 * fu * fu * (3.0 - 2.0 * fu));
     let duplift = big.yz * (-alpine * 800.0 * 6.0 * fu * (1.0 - fu) / 0.45 * big.x / fold * (0.5 / TF_BASE))
-        + rn * (alpine * 700.0 * 6.0 * rs * (1.0 - rs) / 1400.0);
+        + drs * (alpine * 700.0 * 6.0 * rs * (1.0 - rs));
     var y = h * amp + uplift;
     var g = slope * (amp / TF_BASE) + damp * h + duplift;
     let g0 = g;
@@ -233,7 +242,10 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
 
     // High troughs keep only the broadest shapes, so their floors run level.
     let gl = mix(low_slope, low_slope1, alpine) * (amp / TF_BASE);
-    let floor_y = (mix(low, low1, alpine) - 0.1) * amp + uplift - min(river, 600.0) * (gl.x * rn.x + gl.y * rn.y);
+    let floor_y = (mix(low, low1, alpine) - 0.1) * amp + uplift
+        // rn flips sign on the centre line, so extrapolate by the true
+        // distance there: a faded river must not step the floor.
+        - river_on * min(rl, 600.0) * (gl.x * rn.x + gl.y * rn.y);
     let relief = max(y - floor_y, 0.0);
     // Glaciers carved the high valleys into troughs: a broad flat floor,
     // walls that rise steeply and ease into shoulders (Lauterbrunnen).
@@ -247,7 +259,9 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     y = floor_y + (y - floor_y) * rv;
     g = g * rv + rn * (relief * drv);
     let meander = tf_noised(p * 9.0 + warp, seed + 13u).x * 0.7 * floor_w;
-    let ch = abs(min(river, 600.0) * select(-1.0, 1.0, river_n.x >= 0.0) - meander);
+    // Across the river by the true signed distance, so the channel has no
+    // seam where the sign flips on a faded river.
+    let ch = abs(min(rl, 600.0) * select(-1.0, 1.0, river_n.x >= 0.0) - meander) + 1000.0 * (1.0 - river_on);
     let ch_w = 3.5 + 0.02 * relief;
     let rb = tf_smooth(0.0, ch_w, ch);
     let channel = tf_fade(1.6, cut);
@@ -283,11 +297,11 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
 
     // Bedrock tors: blocky outcrops with cliff sides, in groups on the
     // higher ground, away from water.
-    let tor_n = tf_noised(p * 30.0 + warp * 2.0, seed + 9u);
+    let tor_n = tf_noised(p * 55.0 + warp * 2.0, seed + 9u);
     let tor_zone = tf_smooth(0.65 - st.rocks, 0.9 - st.rocks, tf_noised(p * 4.0 + vec2<f32>(6.3, 2.2), seed + 17u).x) * tf_smooth(5.0, 40.0, relief);
-    let tor_fade = tf_fade(20.0, cut);
-    let tor_h = (8.0 + 14.0 * mountains) * bedrock * tor_zone * tf_smooth(30.0, 80.0, near_water) * tor_fade;
-    let tt = clamp((tor_n.x - 0.22) / 0.08, 0.0, 1.0);
+    let tor_fade = tf_fade(12.0, cut);
+    let tor_h = (5.0 + 9.0 * mountains) * bedrock * tor_zone * tf_smooth(30.0, 80.0, near_water) * tor_fade;
+    let tt = clamp((tor_n.x - 0.15) / 0.3, 0.0, 1.0);
     let tor = tt * tt * (3.0 - 2.0 * tt);
     // Horizontal sheets about 2.5 m thick and vertical joints split the
     // outcrop into blocks.
@@ -296,12 +310,12 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
         let s = th / 2.5;
         let fl = floor(s);
         let tb = clamp((s - fl - 0.5) / 0.5, 0.0, 1.0);
-        th = 2.5 * (fl + 0.25 * (s - fl) + 0.75 * tb * tb * (3.0 - 2.0 * tb)) * tf_fade(5.0, cut) + th * (1.0 - tf_fade(5.0, cut));
+        th = 2.5 * (fl + 0.5 * (s - fl) + 0.5 * tb * tb * (3.0 - 2.0 * tb)) * tf_fade(5.0, cut) + th * (1.0 - tf_fade(5.0, cut));
         let joint = min(tf_line(tf_noised(p * 110.0, seed + 14u), 110.0), tf_line(tf_noised(p * 70.0 + vec2<f32>(4.1, 0.7), seed + 15u), 70.0));
         th *= 1.0 - 0.6 * (1.0 - tf_smooth(0.3, 1.6, joint)) * tf_fade(3.0, cut);
     }
     y += th;
-    g += tor_n.yz * (tor_h * 6.0 * tt * (1.0 - tt) / 0.08 * (30.0 / TF_BASE));
+    g += tor_n.yz * (tor_h * 6.0 * tt * (1.0 - tt) / 0.3 * (55.0 / TF_BASE));
     let steep = sqrt(g.x * g.x + g.y * g.y);
     let up = 1.0 / sqrt(1.0 + steep * steep);
 
@@ -311,7 +325,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
         + 0.9 * tf_smooth(2.0, 0.6, stream) * notch + 0.8 * rf * tf_smooth(ch_w + 2.5, ch_w, ch) * tf_smooth(-0.1, 0.2, tf_noised(p * 40.0, seed + 16u).x);
 
     // Boulders: at the foot of tors and crags, in stream and river beds.
-    let tor_foot = tf_smooth(0.12, 0.2, tor_n.x) * (1.0 - tor) * bedrock;
+    let tor_foot = tf_smooth(0.05, 0.15, tor_n.x) * (1.0 - tor) * bedrock;
     let boulder_density = clamp(0.02 + 0.45 * tor_foot + 0.2 * crag + 0.3 * tf_smooth(5.0, 1.0, stream) + 0.25 * tf_smooth(ch_w + 3.0, ch_w, ch), 0.0, 0.6);
     let bo = tf_boulders(x, z, min(boulder_density * st.boulders, 0.8), cut, seed);
     y += bo.x;
@@ -349,7 +363,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
         let layer = y / 5.5 + 2.0 * tf_noised(p * 5.0, seed + 5u).x + 0.8 * tf_noised(p * 24.0, seed + 5u).x;
         let t = layer - floor(layer);
         let ledge = tf_smooth(0.0, 0.18, t) * (1.0 - tf_smooth(0.45, 1.0, t)) - 0.35;
-        let push = 1.8 * tf_smooth(0.8, 0.6, up) * ledge * tf_fade(5.5, cut) * tf_smooth(-0.3, 0.3, tf_noised(p * 8.0, seed + 24u).x);
+        let push = 1.8 * tf_smooth(0.8, 0.6, up) * ledge * tf_fade(5.5, cut) * tf_smooth(-0.3, 0.3, tf_noised(p * 8.0, seed + 24u).x) * (1.0 - bo.y);
         pos.x -= g.x / steep * push;
         pos.z -= g.y / steep * push;
     }

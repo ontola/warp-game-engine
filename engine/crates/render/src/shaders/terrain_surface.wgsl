@@ -111,12 +111,17 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         tw = tw * tw * tw * tw;
         tw /= tw.x + tw.y + tw.z;
         let rot = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
-        let bare0 = triplanar(layer + 3, p, tw, 6.0, rot, 0.0);
+        let turn = mat2x2<f32>(vec2<f32>(0.825, 0.565), vec2<f32>(-0.565, 0.825));
+        // Two turned copies at scales with no common period, blended by
+        // noise, so the 6 m tile never lines up into a grid.
+        let mix_r = smoothstep(0.25, 0.75, field_fbm(wuv / 23.0 + 7.0, footprint / 23.0));
+        let bare0 = mix(triplanar(layer + 3, p, tw, 6.0, rot, 0.0), triplanar(layer + 3, p, tw, 15.7, turn, 0.53), mix_r);
         let bare = mix(vec3<f32>(dot(bare0, vec3<f32>(0.3, 0.59, 0.11))), bare0, 0.35) * vec3<f32>(1.0, 1.04, 1.1) * (0.85 + 0.3 * broad);
         let mossy = triplanar(layer + 5, p, tw, 3.5, rot, 0.37);
         let m_moss = smoothstep(0.55, 0.9, n.y) * (0.5 + 0.5 * f.moor) * smoothstep(0.3, 0.7, broad);
         let rc = mix(bare, mossy, m_moss);
-        let rn = normalize(mix(triplanar_n(layer + 3, p, n, tw, 6.0, rot, 0.0), triplanar_n(layer + 5, p, n, tw, 3.5, rot, 0.37), m_moss));
+        let bare_n = normalize(mix(triplanar_n(layer + 3, p, n, tw, 6.0, rot, 0.0), triplanar_n(layer + 3, p, n, tw, 15.7, turn, 0.53), mix_r));
+        let rn = normalize(mix(bare_n, triplanar_n(layer + 5, p, n, tw, 3.5, rot, 0.37), m_moss));
         c = mix(c, rc, m_rock);
         nn = normalize(mix(nn, rn, m_rock));
     }
