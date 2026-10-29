@@ -209,7 +209,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32) -> Sample {
     let sn = Vec2::new(stream_n.y, stream_n.z) / ((stream_n.y * stream_n.y + stream_n.z * stream_n.z).sqrt() + 1e-6);
     let stream_line = line(stream_n, 2.1);
     let depth = (0.05 * relief + 0.8).clamp(0.8, 4.0);
-    let sw = 2.0 + 3.0 * depth;
+    let sw = 3.0 + 5.0 * depth;
     let across = (g0.x * sn.x + g0.y * sn.y).abs();
     let streams_here = smooth(-0.35, -0.1, noised(p * 0.8 + Vec2::new(7.4, 2.5), sd(8)).x)
         * smooth(0.85, 0.93, up0) * smooth(0.6 * depth / sw, 0.3 * depth / sw, across) * smooth(floor_w * 0.5, floor_w, ch);
@@ -245,7 +245,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32) -> Sample {
     let up = 1.0 / (1.0 + steep * steep).sqrt();
 
     let mut rock = (smooth(0.8, 0.6, up) + 0.7 * bedrock * smooth(0.95, 0.85, up) + smooth(0.0, 0.15, tor * tor_h) * tor_fade).clamp(0.0, 1.0);
-    let scree = smooth(0.92, 0.8, up) * (1.0 - smooth(0.7, 0.6, up)) * (0.4 + 0.6 * bedrock) * mountains
+    let scree = smooth(0.85, 0.72, up) * (1.0 - smooth(0.65, 0.55, up)) * (0.4 + 0.6 * bedrock) * mountains
         + 0.9 * smooth(2.0, 0.6, stream) + 0.8 * smooth(ch_w + 2.5, ch_w, ch) * smooth(-0.1, 0.2, noised(p * 40.0, sd(16)).x);
 
     let tor_foot = smooth(0.12, 0.2, tor_n.x) * (1.0 - tor) * bedrock;
