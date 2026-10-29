@@ -80,6 +80,32 @@ pub struct LightOverride {
     pub fog: [Option<f32>; 3],
 }
 
+/// The look after the scene is lit (`post.set`): bloom and the tone pass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Post {
+    /// Glow strength, 0 (the renderer's faint default) to 2.
+    pub bloom: Option<f32>,
+    /// Blur rounds, 1 (a tight halo) to 6 (a wide soft glow).
+    pub bloom_radius: u32,
+    /// Exposed brightness where the glow starts.
+    pub bloom_threshold: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub vignette: f32,
+    pub grain: f32,
+    pub aberration: f32,
+}
+
+impl Default for Post {
+    fn default() -> Self { Post { bloom: None, bloom_radius: 4, bloom_threshold: 1.0, contrast: 1.0, saturation: 1.0, vignette: 0.0, grain: 0.0, aberration: 0.0 } }
+}
+
+/// A coloured point light (`lights.set`): no shadows, it lights what is near.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lamp { pub pos: Vec3, pub color: [f32; 3], pub intensity: f32, pub range: f32 }
+
+pub const MAX_LAMPS: usize = render::headlights::MAX_LOCAL_LIGHTS;
+
 /// Which hook is running: `draw` may not change the game.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase { Sim, Draw }
@@ -114,6 +140,8 @@ pub struct Core {
     pub rng: Rng,
     pub sky: SkyChoice,
     pub light: LightOverride,
+    pub post: Post,
+    pub lamps: Vec<Lamp>,
     pub tick: u64,
     pub tick_rate: f32,
     pub title: String,
@@ -593,6 +621,53 @@ pub fn register(lua: &Lua, api: &Table, core: Shared) -> mlua::Result<()> {
             Ok(())
         })),
         ("reset", f!(core, move |_, ()| { lock(&core).light = LightOverride::default(); Ok(()) })),
+    ])?;
+
+    table("post", vec![
+        ("set", f!(core, move |_, opts: Table| {
+            let mut c = lock(&core);
+            for (k, v) in options(&opts, &["bloom", "bloom_radius", "bloom_threshold", "contrast", "saturation", "vignette", "grain", "aberration"], "post.set")? {
+                let x = number(&v, &k)?;
+                let p = &mut c.post;
+                match k.as_str() {
+                    "bloom" => p.bloom = Some(x.clamp(0.0, 2.0)),
+                    "bloom_radius" => p.bloom_radius = x.round().clamp(1.0, render::bloom::MAX_ROUNDS as f32) as u32,
+                    "bloom_threshold" => p.bloom_threshold = x.clamp(0.0, 16.0),
+                    "contrast" => p.contrast = x.clamp(0.5, 2.0),
+                    "saturation" => p.saturation = x.clamp(0.0, 2.0),
+                    "vignette" => p.vignette = x.clamp(0.0, 1.0),
+                    "grain" => p.grain = x.clamp(0.0, 1.0),
+                    "aberration" => p.aberration = x.clamp(0.0, 16.0),
+                    _ => unreachable!(),
+                }
+            }
+            Ok(())
+        })),
+        ("reset", f!(core, move |_, ()| { lock(&core).post = Post::default(); Ok(()) })),
+    ])?;
+
+    table("lights", vec![
+        ("set", f!(core, move |_, list: Table| {
+            let mut lamps = Vec::new();
+            for item in list.sequence_values::<Table>() {
+                let t = item?;
+                let mut l = Lamp { pos: Vec3::ZERO, color: [1.0; 3], intensity: 1.0, range: 6.0 };
+                for (k, v) in options(&t, &["pos", "color", "intensity", "range"], "lights.set")? {
+                    match k.as_str() {
+                        "pos" => l.pos = vec3(&v, "light pos")?,
+                        "color" => { let c = color(&v, "light color")?; l.color = [c[0], c[1], c[2]]; }
+                        "intensity" => l.intensity = number(&v, "intensity")?.clamp(0.0, 10_000.0),
+                        "range" => l.range = number(&v, "range")?.clamp(0.5, 200.0),
+                        _ => unreachable!(),
+                    }
+                }
+                if lamps.len() == MAX_LAMPS { return Err(rt(format!("lights.set: at most {MAX_LAMPS} lights"))); }
+                lamps.push(l);
+            }
+            lock(&core).lamps = lamps;
+            Ok(())
+        })),
+        ("clear", f!(core, move |_, ()| { lock(&core).lamps.clear(); Ok(()) })),
     ])?;
 
     table("random", vec![

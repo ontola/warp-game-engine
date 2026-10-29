@@ -180,6 +180,23 @@ declare hud: {
 	project: (pos: Vec, player: number?) -> (number?, number?),
 }
 
+-- The look after lighting. Looks only (allowed in draw); restart resets it.
+declare post: {
+	-- bloom 0..2 (soft screen-blended glow), bloom_radius 1..6 blur rounds,
+	-- bloom_threshold (exposed brightness where it starts), contrast and
+	-- saturation (1 neutral), vignette 0..1, grain 0..1, aberration (pixels
+	-- of red and blue apart at the corners).
+	set: (opts: { bloom: number?, bloom_radius: number?, bloom_threshold: number?, contrast: number?, saturation: number?, vignette: number?, grain: number?, aberration: number? }) -> (),
+	reset: () -> (),
+}
+
+-- Coloured point lights without shadows, at most 32. intensity is about
+-- lux at 1 m (a few hundred under the night sky), range in metres.
+declare lights: {
+	set: (list: { { pos: Vec, color: Color?, intensity: number?, range: number? } }) -> (),
+	clear: () -> (),
+}
+
 declare sky: {
 	-- "gradient" or TIME[:WEATHER]: sunrise, morning, noon, afternoon, sunset,
 	-- night; clear, haze, mist ("sunset:haze"). A preset bakes in about 0.2 s.

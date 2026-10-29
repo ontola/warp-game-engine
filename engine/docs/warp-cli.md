@@ -171,6 +171,8 @@ keyboard mapping is in `app::input`.
 | `camera` | `set(player, {pos, target, fov})`, `get(player)` |
 | `sound` | `play(name, {at, db, pitch, <param> = value}) -> handle`, `set_param(handle, param, value)`, `stop(handle)`, `list()` |
 | `hud` | `text(text, x, y, {size, color, align, width})`, `box(x, y, w, h, color)`, `size() -> w, h`, `view(player) -> x, y, w, h`, `project(pos, player?) -> x, y or nil` |
+| `post` | `set({bloom, bloom_radius, bloom_threshold, contrast, saturation, vignette, grain, aberration})`, `reset()` |
+| `lights` | `set({{pos, color, intensity, range}, ...})` (at most 32), `clear()` |
 | `sky` | `set(name)`, `get()` |
 | `light` | `set({sun, sun_lux, sky_lux, exposure, fog_start, fog_end, fog_density})`, `reset()` |
 | `random` | `float()`, `range(lo, hi)`, `int(lo, hi)`, `chance(p)`, `seed(n)` |
@@ -218,6 +220,17 @@ keyboard mapping is in `app::input`.
 - **Sky and light**: `sky.set("sunset:haze")` bakes a procedural sky
   (about 0.2 s, on the next frame) and sets its sun, skylight, fog and
   exposure. `light.set` overrides parts of that.
+- **Post and lights**: `post.set` is the look after lighting: `bloom`
+  (0 to 2; the glow is screen-blended, Godot style), `bloom_radius` (blur
+  rounds 1 to 6), `bloom_threshold` (exposed brightness where it starts),
+  `contrast`, `saturation`, `vignette` (0 to 1), `grain` (film grain, 0 to
+  1) and `aberration` (pixels of red and blue apart at the corners).
+  `lights.set` replaces the coloured point lights (no shadows): `intensity`
+  is roughly lux at 1 m, `range` in metres. Under the `night` sky a few
+  hundred lights a dark floor well. Both are looks only, allowed in `draw`
+  too, and reset on restart. Neon Siege and Neon Trails show a neon look:
+  deep colours at a low emissive (0.03) with soft bloom, a glossy dark deck
+  and a lamp over each player.
 - **Random**: SplitMix64 from the game's seed. `restart` reseeds it.
 
 ### Players

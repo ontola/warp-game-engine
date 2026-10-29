@@ -20,6 +20,12 @@ local START_Y = { 6, 19, 19, 6 }
 local START_DX = { 1, -1, 1, -1 }
 
 local TRAIL = vector.create(0.9, 0.6, 0.9)
+
+-- A trail cell runs on into the next along the rider's way: one unbroken wall.
+local function trail_size(r)
+	if r.dx ~= 0 then return vector.create(1.02, 0.5, 0.55) end
+	return vector.create(0.55, 0.5, 1.02)
+end
 local HEAD = vector.create(0.62, 0.9, 0.62)
 
 local function key(x, y)
@@ -35,10 +41,16 @@ local function dim(c)
 	return c * 0.35
 end
 
+-- Neon: deepen a colour (1 stays 1, the rest drops), so it stays a colour
+-- under the glow instead of fading to pastel.
+local function neon(v)
+	return vector.create(v.x ^ 1.4, v.y ^ 1.4, v.z ^ 1.4)
+end
+
 -- Every look a round uses, spawned once (hidden) so later spawns never
 -- rebuild the renderer mid-round.
 local function warm(p)
-	for _, look in { { p.color, 0.06 }, { dim(p.color), 0.01 } } do
+	for _, look in { { neon(p.color), 0.03 }, { dim(neon(p.color)), 0.004 } } do
 		local id = world.spawn("cube", { size = TRAIL, color = look[1], emissive = look[2], visible = false, solid = false, tag = "warm" })
 		world.remove(id)
 	end
@@ -64,7 +76,7 @@ local function new_round()
 		local r = {
 			id = p.id,
 			bot = p.bot,
-			color = p.color,
+			color = neon(p.color),
 			x = START_X[i],
 			y = START_Y[i],
 			dx = START_DX[i],
@@ -72,9 +84,9 @@ local function new_round()
 			alive = true,
 			cells = {},
 		}
-		r.head = world.spawn("cube", { pos = at(r.x, r.y, 0.45), size = HEAD, color = "#ffffff", emissive = 0.2, solid = false, tag = "head" })
+		r.head = world.spawn("cube", { pos = at(r.x, r.y, 0.45), size = HEAD, color = "#ffffff", emissive = 0.06, solid = false, tag = "head" })
 		state.grid[key(r.x, r.y)] = r.id
-		table.insert(r.cells, world.spawn("cube", { pos = at(r.x, r.y, 0.3), size = TRAIL, color = r.color, emissive = 0.06, solid = false, tag = "trail" }))
+		table.insert(r.cells, world.spawn("cube", { pos = at(r.x, r.y, 0.25), size = trail_size(r), color = r.color, emissive = 0.03, solid = false, tag = "trail" }))
 		table.insert(riders, r)
 	end
 	state.riders = riders
@@ -89,16 +101,42 @@ local function add_score(id, n)
 end
 
 local function init()
-	-- The floor, a raised rim and a faint grid line every 8 cells.
-	world.spawn("cube", { pos = vector.create(0, -0.1, 0), size = vector.create(W + 2, 0.2, H + 2), color = "#1a2232", roughness = 0.9, tag = "arena" })
-	world.spawn("cube", { pos = vector.create(0, 0.01, 0), size = vector.create(W, 0.02, H), color = "#0e1420", roughness = 0.8, tag = "arena" })
+	-- A glossy dark deck floating in space, a glowing rim with running
+	-- lights, beacons on the corners and a faint grid every 8 cells.
+	world.spawn("cube", { pos = vector.create(0, -0.15, 0), size = vector.create(W + 1, 0.3, H + 1), color = "#0e1626", emissive = 0.004, roughness = 0.3, metal = 0.25, tag = "arena" })
 	for _, side in { -1, 1 } do
-		world.spawn("cube", { pos = vector.create(side * (W / 2 + 0.5), 0.25, 0), size = vector.create(0.3, 0.5, H + 1.3), color = "#3a5a8a", emissive = 0.03, tag = "arena" })
-		world.spawn("cube", { pos = vector.create(0, 0.25, side * (H / 2 + 0.5)), size = vector.create(W + 1.3, 0.5, 0.3), color = "#3a5a8a", emissive = 0.03, tag = "arena" })
+		world.spawn("cube", { pos = vector.create(side * (W / 2 + 0.7), 0.05, 0), size = vector.create(0.4, 0.6, H + 1.8), color = "#0b1220", roughness = 0.35, metal = 0.6, tag = "arena" })
+		world.spawn("cube", { pos = vector.create(0, 0.05, side * (H / 2 + 0.7)), size = vector.create(W + 1.8, 0.6, 0.4), color = "#0b1220", roughness = 0.35, metal = 0.6, tag = "arena" })
+		world.spawn("cube", { pos = vector.create(side * (W / 2 + 0.5), 0.36, 0), size = vector.create(0.06, 0.04, H + 1.1), color = "#2f7fff", emissive = 0.05, solid = false, tag = "arena" })
+		world.spawn("cube", { pos = vector.create(0, 0.36, side * (H / 2 + 0.5)), size = vector.create(W + 1.1, 0.04, 0.06), color = "#2f7fff", emissive = 0.05, solid = false, tag = "arena" })
+		for x = 2, W - 1, 4 do
+			world.spawn("cube", { pos = vector.create(x - W / 2, 0.38, side * (H / 2 + 0.7)), size = vector.create(0.14, 0.06, 0.14), color = "#7fd0ff", emissive = 0.05, solid = false, tag = "arena" })
+		end
+		for y = 2, H - 1, 4 do
+			world.spawn("cube", { pos = vector.create(side * (W / 2 + 0.7), 0.38, y - H / 2), size = vector.create(0.14, 0.06, 0.14), color = "#7fd0ff", emissive = 0.05, solid = false, tag = "arena" })
+		end
+	end
+	state.beacons = {}
+	for _, cx in { -1, 1 } do
+		for _, cz in { -1, 1 } do
+			local x, z = cx * (W / 2 + 1.3), cz * (H / 2 + 1.3)
+			world.spawn("cube", { pos = vector.create(x, 0.4, z), size = vector.create(0.8, 1.2, 0.8), color = "#101a2c", roughness = 0.3, metal = 0.7, tag = "arena" })
+			world.spawn("cube", { pos = vector.create(x, 1.06, z), size = vector.create(0.6, 0.12, 0.6), color = "#2f7fff", emissive = 0.06, solid = false, tag = "arena" })
+			table.insert(state.beacons, vector.create(x, 1.6, z))
+		end
 	end
 	for x = 8, W - 1, 8 do
-		world.spawn("cube", { pos = vector.create(x - W / 2, 0.025, 0), size = vector.create(0.04, 0.01, H), color = "#1d2a40", emissive = 0.2, solid = false, tag = "arena" })
+		world.spawn("cube", { pos = vector.create(x - W / 2, 0.004, 0), size = vector.create(0.04, 0.01, H), color = "#1d4f8f", emissive = 0.006, solid = false, tag = "arena" })
 	end
+	for y = 8, H - 1, 8 do
+		world.spawn("cube", { pos = vector.create(0, 0.004, y - H / 2), size = vector.create(W, 0.01, 0.04), color = "#1d4f8f", emissive = 0.006, solid = false, tag = "arena" })
+	end
+	for _ = 1, 260 do
+		world.spawn("cube", { pos = vector.create(random.range(-90, 90), random.range(-70, -35), random.range(-60, 60)), size = random.range(0.06, 0.14), color = "#cfe0ff", emissive = 0.08, solid = false, tag = "space" })
+	end
+	state.flashes = {}
+	-- Soft neon glow, a darker frame and a little film.
+	post.set({ bloom = 0.55, bloom_radius = 3, bloom_threshold = 0.35, saturation = 1.2, contrast = 1.08, vignette = 0.55, grain = 0.2, aberration = 1.2 })
 	for _, p in players.list() do
 		warm(p)
 	end
@@ -144,9 +182,12 @@ local function crash(r)
 	r.alive = false
 	world.remove(r.head)
 	for _, id in r.cells do
-		world.set(id, { color = dim(r.color), emissive = 0.01 })
+		world.set(id, { color = dim(r.color), emissive = 0.004 })
 	end
 	sound.play("crash", { at = at(r.x, r.y, 0.5) })
+	table.insert(state.flashes, { pos = at(r.x, r.y, 1), color = r.color, ttl = 0.5 })
+	fx.burst(at(r.x, r.y, 0.4), { color = r.color, emissive = 0.03, count = 24, speed = 6, life = 0.6, size = 0.1, stretch = 0.03, flat = true })
+	fx.ring(at(r.x, r.y, 0.2), { color = r.color, emissive = 0.03, radius = 3, life = 0.4, width = 0.08 })
 	players.rumble(r.id, 0.8, 0.3)
 end
 
@@ -175,7 +216,7 @@ local function step()
 	for _, r in state.riders do
 		if r.alive then
 			state.grid[key(r.x, r.y)] = r.id
-			table.insert(r.cells, world.spawn("cube", { pos = at(r.x, r.y, 0.3), size = TRAIL, color = r.color, emissive = 0.06, solid = false, tag = "trail" }))
+			table.insert(r.cells, world.spawn("cube", { pos = at(r.x, r.y, 0.25), size = trail_size(r), color = r.color, emissive = 0.03, solid = false, tag = "trail" }))
 			world.set(r.head, { pos = at(r.x, r.y, 0.45) })
 		end
 	end
@@ -196,7 +237,23 @@ local function step()
 	end
 end
 
+-- Light: a lamp over every rider's head, crash flashes and the beacons.
+local function light_up(dt)
+	local lamps = {}
+	for i = #state.flashes, 1, -1 do
+		local f = state.flashes[i]
+		f.ttl -= dt
+		if f.ttl <= 0 then table.remove(state.flashes, i) elseif #lamps < 24 then table.insert(lamps, { pos = f.pos, color = f.color, intensity = 1500 * f.ttl, range = 8 }) end
+	end
+	for _, r in state.riders do
+		if r.alive then table.insert(lamps, { pos = at(r.x, r.y, 1), color = r.color, intensity = 300, range = 6 }) end
+	end
+	for _, b in state.beacons do table.insert(lamps, { pos = b, color = "#2f7fff", intensity = 200, range = 6 }) end
+	lights.set(lamps)
+end
+
 local function tick(dt, input)
+	light_up(dt)
 	if state.winner then return end
 	if state.pause then
 		state.pause -= dt

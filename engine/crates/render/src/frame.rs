@@ -214,6 +214,10 @@ struct ToneUniform {
     offset: [u32; 2],
     bloom_strength:f32,
     screen:u32,
+    vignette: f32,
+    grain: f32,
+    aberration: f32,
+    time: f32,
 }
 
 /// Where the camera is and what it sees.
@@ -294,6 +298,12 @@ pub struct Lighting {
     pub grass_reference: f32,
     /// Sharpening after TAA, 0..1.
     pub sharpen: f32,
+    /// Darkening towards each view's corners, 0 (off) to 1.
+    pub vignette: f32,
+    /// Film grain, 0 (off) to 1 (strong); it moves with `time`.
+    pub grain: f32,
+    /// Chromatic aberration towards the corners, in pixels at the corner (0 off).
+    pub aberration: f32,
     /// Opt-in in-scattering from local lights with a scatter weight
     /// (`Renderer::set_local_lights_scattering`); `None` adds no pass.
     pub volumetric: Option<crate::volumetric::Volumetric>,
@@ -337,6 +347,9 @@ impl Lighting {
             "alpha_cut" => self.alpha_cut = f,
             "grass_reference" if f == 0.0 || f == 1.0 || f == 2.0 => self.grass_reference = f,
             "sharpen" => self.sharpen = f,
+            "vignette" if (0.0..=1.0).contains(&f) => self.vignette = f,
+            "grain" if (0.0..=1.0).contains(&f) => self.grain = f,
+            "aberration" if (0.0..=16.0).contains(&f) => self.aberration = f,
             // `volumetric=0` turns it off, `volumetric=1` on with defaults.
             "volumetric" if f == 0.0 || f == 1.0 => self.volumetric = (f == 1.0).then(|| self.volumetric.unwrap_or_default()),
             k if k.starts_with("vol_") => self.volumetric.get_or_insert_with(Default::default).set(k, f)?,
@@ -388,6 +401,9 @@ impl Default for Lighting {
             alpha_cut: 0.42,
             grass_reference: 0.0,
             sharpen: 0.5,
+            vignette: 0.0,
+            grain: 0.0,
+            aberration: 0.0,
             volumetric: None,
         }
     }
@@ -3384,7 +3400,7 @@ impl Renderer {
                 None
             };
             let bloom_on=crate::bloom::active(debug_options.bloom_enabled,debug_options.bloom_strength);
-            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen) }));
+            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen), vignette: light.vignette, grain: light.grain, aberration: light.aberration, time: light.time }));
             cpu.mark("view setup");
             let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
                 resources.taa.get(

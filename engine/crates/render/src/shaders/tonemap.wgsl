@@ -9,6 +9,10 @@ struct Tone {
     offset: vec2<u32>, // where this view goes in the output image
     bloom_strength: f32,
     screen: u32,    // 1: bloom is Godot's glow, screen-blended after tonemapping
+    vignette: f32,  // darkening towards the corners, 0 off
+    grain: f32,     // film grain, 0 off
+    aberration: f32, // red and blue apart towards the corners, pixels at the corner
+    time: f32,      // seconds, moves the grain
 };
 
 @group(0) @binding(0) var hdr: texture_2d<f32>;
@@ -58,7 +62,15 @@ fn display(px: vec2<i32>) -> vec3<f32> {
     // Additive overlap can exceed fp16 even when individual effects are
     // finite. Contain it before AgX mixes channels and sharpening samples
     // neighbours. This cannot recover radiance already lost to overflow.
-    let raw = textureLoad(hdr, p, 0).rgb;
+    var raw = textureLoad(hdr, p, 0).rgb;
+    // From the view's centre: -1..1 on each axis.
+    let centred = (vec2<f32>(p) + 0.5) / vec2<f32>(size) * 2.0 - 1.0;
+    if tone.aberration > 0.0 {
+        // Red outwards, blue inwards, growing towards the corners.
+        let shift = vec2<i32>(round(centred * centred * sign(centred) * tone.aberration));
+        raw.r = textureLoad(hdr, clamp(p + shift, vec2<i32>(0), size - 1), 0).r;
+        raw.b = textureLoad(hdr, clamp(p - shift, vec2<i32>(0), size - 1), 0).b;
+    }
     let finite = select(vec3<f32>(0.0), clamp(raw, vec3<f32>(0.0), vec3<f32>(65504.0)), raw == raw);
     var c = finite * tone.exposure;
     var glow = vec3<f32>(0.0);
@@ -74,12 +86,31 @@ fn display(px: vec2<i32>) -> vec3<f32> {
     let luma = dot(v, vec3<f32>(0.2126, 0.7152, 0.0722));
     v = mix(vec3<f32>(luma), v, tone.saturation);
     v = clamp((v - 0.5) * tone.contrast + 0.5, vec3<f32>(0.0), vec3<f32>(1.0));
-    let out = clamp(agx_eotf(v), vec3<f32>(0.0), vec3<f32>(1.0));
-    if tone.screen==0u { return out; }
-    // Godot: tonemap the glow on its own, screen it over the image in sRGB.
-    let g = srgb(clamp(agx_eotf(agx(glow)), vec3<f32>(0.0), vec3<f32>(1.0)));
-    let o = srgb(out);
-    return srgb_to_linear(o + g - o * g);
+    var out = clamp(agx_eotf(v), vec3<f32>(0.0), vec3<f32>(1.0));
+    if tone.screen!=0u {
+        // Godot: tonemap the glow on its own, screen it over the image in sRGB.
+        let g = srgb(clamp(agx_eotf(agx(glow)), vec3<f32>(0.0), vec3<f32>(1.0)));
+        let o = srgb(out);
+        out = srgb_to_linear(o + g - o * g);
+    }
+    return finish(out, p, centred);
+}
+
+// Vignette and film grain, on the display-referred image.
+fn finish(c: vec3<f32>, p: vec2<i32>, centred: vec2<f32>) -> vec3<f32> {
+    var out = c;
+    if tone.vignette > 0.0 {
+        let d = dot(centred, centred) * 0.5; // 0 centre, 1 corner
+        out *= 1.0 - tone.vignette * smoothstep(0.15, 1.0, d);
+    }
+    if tone.grain > 0.0 {
+        let frame = floor(tone.time * 24.0);
+        let h = fract(sin(dot(vec2<f32>(p) + frame * vec2<f32>(17.0, 59.0), vec2<f32>(12.9898, 78.233))) * 43758.5453);
+        // Even in sRGB terms, so the darks get as much as the lights.
+        let s = srgb(out) + (h - 0.5) * tone.grain * 0.08;
+        out = srgb_to_linear(clamp(s, vec3<f32>(0.0), vec3<f32>(1.0)));
+    }
+    return out;
 }
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
