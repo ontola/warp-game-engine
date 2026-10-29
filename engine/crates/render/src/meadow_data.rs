@@ -37,6 +37,10 @@ pub struct GpuMeadowVertex {
 #[derive(Clone, Debug)]
 pub struct MeadowGeometry {
     pub vertices: Vec<GpuMeadowVertex>,
+    /// Zero preserves independently hashed source variants. Positive metres
+    /// selects variants in coherent world-space patches on the GPU. This is
+    /// a source recipe property, not a camera-dependent pool or extra layer.
+    pub variant_patch_metres: f32,
     /// [variant][LOD] = [first vertex, vertex count], flat triangle streams.
     pub lod_ranges: [[[u32; 2]; LODS]; VARIANTS],
     /// Conservative assembly-space geometry error, before instance growth.
@@ -59,6 +63,14 @@ impl MeadowGeometry {
     /// their geometry and shading bytes; this is a separate source recipe.
     pub fn cook_windswept(seed: u64, dry_season: f32, budget: MeadowBladeBudget) -> Result<Self, String> {
         crate::meadow_windswept::cook(seed, dry_season, budget)
+    }
+    /// Three authored forms of the same opaque ribbon primitive. The recipes
+    /// retain the existing blade roots, topology, analytic pigment and wind
+    /// contracts; only dimensions and a shared base/tip tint differ.
+    pub fn cook_windswept_recipes(seed: u64, dry_season: f32, budget: MeadowBladeBudget,
+        recipes: [crate::meadow_windswept::WindsweptRecipe; VARIANTS], variant_patch_metres: f32,
+    ) -> Result<Self, String> {
+        crate::meadow_windswept::cook_recipes(seed, dry_season, budget, recipes, variant_patch_metres)
     }
     /// Cook only three reusable assets. Growth stays at one here and is
     /// applied once at the world root. A coarser requested level repeats the
@@ -89,6 +101,7 @@ impl MeadowGeometry {
     fn cook_shading(seed: u64, dry_season: f32, budget: MeadowBladeBudget, rounded: bool) -> Result<Self, String> {
         let mut result = Self {
             vertices: Vec::new(),
+            variant_patch_metres: 0.0,
             lod_ranges: [[[0; 2]; LODS]; VARIANTS],
             lod_errors: [[0.0; LODS]; VARIANTS],
             branch_pivots: [[[0.0; 4]; BRANCHES]; VARIANTS],
@@ -229,6 +242,12 @@ impl MeadowGeometry {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if !self.variant_patch_metres.is_finite()
+            || (self.variant_patch_metres != 0.0 && !(4.0..=64.0).contains(&self.variant_patch_metres))
+            || (self.variant_patch_metres > 0.0 && self.vertices.iter().any(|v| v.anchor[3] <= 0.0))
+        {
+            return Err("meadow variant patches require windswept sources and 0 or 4..64 metres".into());
+        }
         if self.vertices.is_empty()
             || self.vertices.len() > 100_000
             || !self.max_tuft_radius.is_finite()

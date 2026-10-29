@@ -12,7 +12,7 @@ use glam::{Mat4, Vec3, Vec4};
 use std::collections::HashSet;
 
 /// Must match the runtime prototype's bounded candidate-list capacity.
-pub const MAX_INSTANCES: usize = 256;
+pub const MAX_INSTANCES: usize = 4096;
 /// Replace every source material for a procedural part. Its voxel albedo
 /// already contains the individual source materials' linear colours.
 pub const ALL_MATERIALS: u32 = u32::MAX;
@@ -80,7 +80,7 @@ impl PackedAssets {
 impl Default for PackLimits {
     fn default() -> Self {
         Self {
-            max_instances: MAX_INSTANCES,
+            max_instances: 256,
             max_assets: 3,
             levels_per_asset: 3,
             first_level_bounds: false,
@@ -155,6 +155,67 @@ impl GpuForest {
             + self.cells.len() * std::mem::size_of::<GpuCell>()
             + self.instances.len() * std::mem::size_of::<GpuTree>()
     }
+}
+
+/// Aggregate levels use a sparse directory of 4x4x4 bricks. Bit31 of the
+/// level offset tags this encoding; ordinary providers retain dense indices.
+pub const BRICK_INDIRECTION: u32 = 1 << 31;
+pub(crate) fn cell_index(forest:&GpuForest,level:&GpuLevel,c:[u32;3])->Option<u32> {
+    if (0..3).any(|a|c[a]>=level.dims_offset[a]) {return Some(0);}
+    let base=(level.dims_offset[3]&!BRICK_INDIRECTION)as usize;
+    if level.dims_offset[3]&BRICK_INDIRECTION==0 {
+        return forest.indices.get(base+c[0]as usize+level.dims_offset[0]as usize*
+            (c[1]as usize+level.dims_offset[1]as usize*c[2]as usize)).copied();
+    }
+    let dx=level.dims_offset[0].div_ceil(4)as usize;let dy=level.dims_offset[1].div_ceil(4)as usize;
+    let brick=*forest.indices.get(base+(c[0]/4)as usize+dx*((c[1]/4)as usize+dy*(c[2]/4)as usize))?;
+    if brick==0 {return Some(0);}
+    forest.indices.get((brick-1)as usize+(c[0]%4+4*(c[1]%4)+16*(c[2]%4))as usize).copied()
+}
+
+/// Convert only an aggregate provider after packing. Every level is bounded
+/// independently; failure leaves the original provider unchanged.
+pub fn pack_bricks(forest:&mut GpuForest,max_bricks_per_level:usize)->Result<Vec<usize>,String> {
+    if max_bricks_per_level==0||max_bricks_per_level>128 {return Err("aggregate brick limit must be1..128".into());}
+    let mut indices=Vec::new();let mut levels=forest.levels.clone();let mut counts=Vec::new();
+    for level in &mut levels {
+        let dims=[level.dims_offset[0],level.dims_offset[1],level.dims_offset[2]];
+        if dims.contains(&0) {return Err("aggregate brick dimensions must be positive".into());}
+        let bd=dims.map(|v|v.div_ceil(4));
+        let count=bd.into_iter().try_fold(1usize,|n,v|n.checked_mul(v as usize)).ok_or("brick directory overflow")?;
+        // A valid source already stores at least this many directory/dense
+        // entries. Reject forged dimensions before allocating their directory;
+        // neither dense nor already-bricked input can justify a larger one.
+        let source_base=(level.dims_offset[3]&!BRICK_INDIRECTION)as usize;
+        let source_count=if level.dims_offset[3]&BRICK_INDIRECTION!=0 {count} else {
+            dims.into_iter().try_fold(1usize,|n,v|n.checked_mul(v as usize)).ok_or("original aggregate grid overflow")?
+        };
+        if count>forest.indices.len() || source_base.checked_add(source_count)
+            .is_none_or(|end|end>forest.indices.len()) {
+            return Err("invalid original aggregate directory/grid range".into());
+        }
+        let base=indices.len();let end=base.checked_add(count).ok_or("brick directory overflow")?;
+        if end>=BRICK_INDIRECTION as usize {return Err("brick directory exceeds31bit addressing".into());}
+        indices.resize(end,0);let mut occupied=0;
+        for z in 0..bd[2] {for y in 0..bd[1] {for x in 0..bd[0] {
+            let mut cells=[0u32;64];
+            for cz in 0..4 {for cy in 0..4 {for cx in 0..4 {
+                let reference=cell_index(forest,level,[x*4+cx,y*4+cy,z*4+cz])
+                    .ok_or("invalid original aggregate cell address")?;
+                if reference as usize>forest.cells.len() {return Err("invalid original aggregate sparse-cell reference".into());}
+                cells[(cx+4*cy+16*cz)as usize]=reference;
+            }}}
+            if cells.iter().all(|v|*v==0){continue;}
+            occupied+=1;if occupied>max_bricks_per_level {return Err("aggregate level exceeds128-brick cluster budget".into());}
+            if indices.len().checked_add(64).is_none_or(|end|end>=BRICK_INDIRECTION as usize) {
+                return Err("brick payload exceeds31bit addressing".into());
+            }
+            indices[base+x as usize+bd[0]as usize*(y as usize+bd[1]as usize*z as usize)]=indices.len()as u32+1;
+            indices.extend(cells);
+        }}}
+        level.dims_offset[3]=base as u32|BRICK_INDIRECTION;counts.push(occupied);
+    }
+    forest.indices=indices;forest.levels=levels;Ok(counts)
 }
 
 fn valid_nonnegative(values: &[f32]) -> bool {
@@ -550,5 +611,111 @@ mod tests {
         assert!(pack(&[bad], &[], &[], PackLimits::default()).is_err());
         let mut bad = source; bad.levels[0].voxels[0].directional_area[0] = f32::NAN;
         assert!(pack(&[bad], &[], &[], PackLimits::default()).is_err());
+    }
+
+    fn brick_fixture() -> GpuForest {
+        let mut wide=asset();wide.origin=[-2.0,3.0,1.5];
+        wide.levels=vec![
+            VoxelLevel {cell_size:0.25,dimensions:[9,6,5],voxels:
+                [[0,0,0],[3,3,3],[4,0,0],[8,5,4],[1,4,4]].into_iter()
+                    .enumerate().map(|(i,c)|voxel(c,0.01*(i+1)as f32)).collect()},
+            VoxelLevel {cell_size:0.5,dimensions:[5,3,3],voxels:
+                vec![voxel([0,0,0],0.07),voxel([4,2,2],0.08)]},
+            VoxelLevel {cell_size:1.0,dimensions:[3,2,2],voxels:vec![]},
+        ];
+        let instances=[instance(Affine3A::IDENTITY),instance(Affine3A::from_scale_rotation_translation(
+            Vec3::new(1.2,0.8,1.7),Quat::from_rotation_y(0.3),Vec3::new(7.0,2.0,-4.0)))];
+        pack(&[asset(),wide],&[binding(0,0),binding(1,1)],&instances,PackLimits::default()).unwrap()
+    }
+
+    fn assert_same_forest(a:&GpuForest,b:&GpuForest) {
+        assert_eq!(bytemuck::cast_slice::<_,u8>(&a.levels),bytemuck::cast_slice::<_,u8>(&b.levels));
+        assert_eq!(a.indices,b.indices);
+        assert_eq!(bytemuck::cast_slice::<_,u8>(&a.cells),bytemuck::cast_slice::<_,u8>(&b.cells));
+        assert_eq!(bytemuck::cast_slice::<_,u8>(&a.instances),bytemuck::cast_slice::<_,u8>(&b.instances));
+    }
+
+    #[test]
+    fn pack_bricks_roundtrip_preserves_every_cell_across_assets_mips_and_partial_edges() {
+        let dense=brick_fixture();let mut sparse=dense.clone();
+        let counts=pack_bricks(&mut sparse,128).unwrap();
+        assert_eq!(counts,[1,1,4,2,0]);
+        assert_eq!(bytemuck::cast_slice::<_,u8>(&dense.cells),bytemuck::cast_slice::<_,u8>(&sparse.cells));
+        assert_eq!(bytemuck::cast_slice::<_,u8>(&dense.instances),bytemuck::cast_slice::<_,u8>(&sparse.instances));
+        for ((original,packed),&occupied) in dense.levels.iter().zip(&sparse.levels).zip(&counts) {
+            assert_eq!(original.origin_cell,packed.origin_cell);
+            assert_eq!(original.dims_offset[..3],packed.dims_offset[..3]);
+            assert_ne!(packed.dims_offset[3]&BRICK_INDIRECTION,0);
+            let [nx,ny,nz,old_base]=original.dims_offset;
+            let base=(packed.dims_offset[3]&!BRICK_INDIRECTION)as usize;
+            let brick_dims=[nx.div_ceil(4),ny.div_ceil(4),nz.div_ceil(4)];
+            let directory_len=brick_dims.into_iter().product::<u32>()as usize;
+            assert_eq!(sparse.indices[base..base+directory_len].iter().filter(|&&p|p!=0).count(),occupied);
+            // Compare against the original dense addressing, independently of
+            // the production lookup. Include zero cells and incomplete bricks.
+            for z in 0..nz {for y in 0..ny {for x in 0..nx {
+                let expected=dense.indices[(old_base+x+nx*(y+ny*z))as usize];
+                let pointer=sparse.indices[base+(x/4+brick_dims[0]*(y/4+brick_dims[1]*(z/4)))as usize];
+                let actual=if pointer==0 {0} else {
+                    sparse.indices[(pointer-1+x%4+4*(y%4)+16*(z%4))as usize]
+                };
+                assert_eq!(actual,expected,"cell {x},{y},{z}");
+                assert_eq!(cell_index(&sparse,packed,[x,y,z]),Some(expected));
+            }}}
+            for c in [[nx,0,0],[0,ny,0],[0,0,nz]] {
+                assert_eq!(cell_index(&sparse,packed,c),Some(0));
+            }
+        }
+        let once=sparse.clone();
+        assert_eq!(pack_bricks(&mut sparse,128).unwrap(),counts);
+        assert_same_forest(&once,&sparse);
+    }
+
+    #[test]
+    fn pack_bricks_failure_rolls_back_completed_levels_and_all_original_payloads() {
+        let original=brick_fixture();
+        for cap in [0,1,129] {
+            let mut forest=original.clone();
+            assert!(pack_bricks(&mut forest,cap).is_err());
+            assert_same_forest(&original,&forest);
+        }
+        // Bad data in the final level is reached after earlier temporary
+        // levels have already been built; none of them may be committed.
+        for bad in 0..4 {
+            let mut forest=original.clone();
+            let last=forest.levels.last_mut().unwrap();
+            match bad {
+                0=>last.dims_offset[0]=0,
+                1=>last.dims_offset=[1_000_000,1_000_000,1_000_000,0],
+                2=>last.dims_offset[3]=forest.indices.len()as u32,
+                _=>forest.indices[last.dims_offset[3]as usize]=forest.cells.len()as u32+1,
+            }
+            let before=forest.clone();
+            assert!(pack_bricks(&mut forest,128).is_err());
+            assert_same_forest(&before,&forest);
+        }
+        let mut forest=original;pack_bricks(&mut forest,128).unwrap();
+        let level=&forest.levels[2];let base=(level.dims_offset[3]&!BRICK_INDIRECTION)as usize;
+        forest.indices[base]=u32::MAX;
+        let before=forest.clone();
+        assert!(pack_bricks(&mut forest,128).is_err());
+        assert_same_forest(&before,&forest);
+    }
+
+    #[test]
+    fn pack_bricks_accepts_exactly_128_occupied_bricks_and_rejects_129_transactionally() {
+        let build=|bricks:u32| {
+            let mut indices=vec![0;bricks as usize*4];
+            for i in 0..bricks {indices[i as usize*4]=1;}
+            GpuForest {levels:vec![GpuLevel {origin_cell:[0.0,0.0,0.0,0.25],dims_offset:[bricks*4,1,1,0]}],
+                indices,cells:vec![pack_cell(&voxel([0;3],0.03),0.25).unwrap()],instances:vec![]}
+        };
+        let mut valid=build(128);
+        assert_eq!(pack_bricks(&mut valid,128).unwrap(),[128]);
+        assert_eq!(valid.indices.len(),128+128*64);
+        for x in 0..512 {assert_eq!(cell_index(&valid,&valid.levels[0],[x,0,0]),Some(u32::from(x%4==0)));}
+        let mut invalid=build(129);let before=invalid.clone();
+        assert!(pack_bricks(&mut invalid,128).is_err());
+        assert_same_forest(&before,&invalid);
     }
 }

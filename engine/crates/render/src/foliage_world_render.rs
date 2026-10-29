@@ -73,9 +73,7 @@ pub(crate) fn shader_source() -> Result<String, String> {
     let start = forest
         .find("fn volume_interval(")
         .ok_or("volume helper start missing")?;
-    let end = forest
-        .find("@compute @workgroup_size(8,8)\nfn voxel_integrate(")
-        .or_else(|| forest.find("@compute @workgroup_size(8,8)\r\nfn voxel_integrate("))
+    let end = forest.find("// SHARED_VOLUME_HELPERS_END")
         .ok_or("volume helper end missing")?;
     let mut helpers = forest[start..end].to_owned();
     for (from, to) in [
@@ -87,6 +85,13 @@ pub(crate) fn shader_source() -> Result<String, String> {
         (
             "min(tree.identity.z-1u,volume_selection[ray.identity>>12u].y)",
             "tree.identity.z-1u",
+        ),
+        // This consumer uses the legacy footprint-selected mip chain, not
+        // aggregate candidate decisions. Specialize the shared exact-level
+        // branches to the explicit legacy sentinel without adding a binding.
+        (
+            "volume_selection[ray.identity>>12u]",
+            "vec4<u32>(1u,0xffffffffu,0u,0u)",
         ),
         // The world-space wind shear has norm <= 1+|shear|. Keep the footprint
         // conservative without rebuilding instance matrices on the CPU.
@@ -775,6 +780,8 @@ mod tests {
     #[test]
     fn world_consumer_shader_validates() {
         let source = super::shader_source().unwrap();
+        assert!(!source.contains("volume_selection["),
+            "legacy world optics must not acquire the aggregate selection ABI");
         let module = naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
         naga::valid::Validator::new(

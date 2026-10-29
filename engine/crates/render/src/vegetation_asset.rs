@@ -1,8 +1,9 @@
 //! Cooked shared vegetation primitives and bounded scene attachment.
 //!
-//! Cooking may expand the source for the voxel baker. Attachment never does:
+//! Source-only cooking and attachment never expand placement geometry. The
+//! optional voxel cook may expand the source for optical derivation:
 //! every blade/needle/wood member references an immutable primitive mesh and
-//! a branch-local transform. Equal geometry AND material bytes share a mesh,
+//! a branch-local transform. Equal geometry, material AND CLOD policy share a mesh,
 //! even across different cooked variants. This is not yet hierarchical coarse
 //! geometry aggregation or a whole-forest residency/streaming system.
 
@@ -28,6 +29,12 @@ struct Primitive {
     key: Vec<u8>,
 }
 
+/// The actual mesh builder belongs to shared-mesh identity. An optical cook
+/// and a source-only cook can request different fallback coverage constraints
+/// for identical source bytes; recognized closed sweeps use the same builder.
+#[repr(u8)]
+enum PrimitivePolicy { ClosedSweep, TexturedGeometry, ThinFoliage }
+
 #[derive(Clone, Debug)]
 struct Placement {
     id: u64,
@@ -44,6 +51,8 @@ struct Branch {
     assembly_rest: Mat4,
     max_angle: f32,
     volume: Option<VoxelAsset>,
+    aggregate: Vec<crate::aggregate_lod::Candidate>,
+    aggregate_motion_error: f32,
 }
 
 /// Immutable CPU asset. Its source meshes contain only unique primitives,
@@ -106,7 +115,18 @@ fn primitive_key(
 }
 
 impl CookedPlant {
+    /// Cook reusable source primitives and branch placements without expanding
+    /// whole plants or baking volumes. Runtime still uses the bounded shared
+    /// GPU part-pose/attachment path, not a forest-scale assembly hierarchy.
+    pub fn cook_source(source: &Assembly) -> Result<Self, String> {
+        Self::cook_internal(source, None)
+    }
+
     pub fn cook(source: &Assembly, config: BakeConfig) -> Result<Self, String> {
+        Self::cook_internal(source, Some(config))
+    }
+
+    fn cook_internal(source: &Assembly, config: Option<BakeConfig>) -> Result<Self, String> {
         source.validate()?;
         for instance in &source.instances {
             validate_root(instance.rest).map_err(|e| format!("primitive {}: {e}", instance.id))?;
@@ -119,7 +139,10 @@ impl CookedPlant {
         let rest = source.branch_transforms()?;
         // The only expanded geometry path in this module: offline/cook-time
         // optical derivation, not the meshes subsequently attached to Scene.
-        let baked = source.bake_branches(config)?;
+        let baked = match config {
+            Some(config) => source.bake_branches(config)?,
+            None => Vec::new(),
+        };
         let mut branches: Vec<_> = source
             .branches
             .iter()
@@ -135,6 +158,8 @@ impl CookedPlant {
                     0.22 * (1.0 - branch.stiffness).clamp(0.15, 1.0)
                 },
                 volume: None,
+                aggregate: Vec::new(),
+                aggregate_motion_error: 0.0,
             })
             .collect();
         for branch in baked {
@@ -158,18 +183,34 @@ impl CookedPlant {
                 };
                 // Tiny closed blades/needles fit below the generic cluster
                 // target and otherwise never get intermediate source LODs.
-                // Derive closed reductions from the same source; textures or
-                // unrecognized topology keep the ordinary protected cooker.
-                let mesh = if material.layer < 0 && material.flags & crate::scene::THIN_FOLIAGE != 0 {
+                // Derive closed reductions from the same source. Source-only
+                // leafy sprays may contain disconnected leaves; keep their
+                // orientation/projected area when the sweep recognizer declines.
+                // Existing optical cooks retain their established CLOD bytes.
+                let thin_source = config.is_none()
+                    && material.flags & crate::scene::THIN_FOLIAGE != 0;
+                let sweep = if material.layer < 0 && material.flags & crate::scene::THIN_FOLIAGE != 0 {
                     crate::vegetation_clod::build(&part)
-                } else { None }.unwrap_or_else(|| ClusterMesh::build_with_policy(&[part], |_| {
-                    SimplificationPolicy::TexturedGeometry
-                }));
+                } else { None };
+                let (mesh, policy) = if let Some(mesh) = sweep {
+                    (mesh, PrimitivePolicy::ClosedSweep)
+                } else if thin_source {
+                    (ClusterMesh::build_with_policy(&[part], |_| SimplificationPolicy::ThinFoliage),
+                        PrimitivePolicy::ThinFoliage)
+                } else {
+                    (ClusterMesh::build_with_policy(&[part], |_| SimplificationPolicy::TexturedGeometry),
+                        PrimitivePolicy::TexturedGeometry)
+                };
                 stats.primitive_vertices += mesh.vertices.len();
                 stats.primitive_triangles += mesh.leaf_triangles();
                 stats.primitive_bytes += mesh_bytes(&mesh);
                 let index = primitives.len();
+                // Within one cook the configuration is constant, so the source
+                // key can avoid rebuilding identical primitives. Across cooks,
+                // retain the concrete builder in the scene-sharing key as well.
                 keys.insert(key.clone(), index);
+                let mut key = key;
+                key.push(policy as u8);
                 primitives.push(Primitive {
                     mesh,
                     material,
@@ -201,6 +242,47 @@ impl CookedPlant {
         })
     }
 
+    /// Build branch-local aggregates and one coarse subtree root without
+    /// materializing the expanded tree. Optical diagnostics remain sampled;
+    /// runtime use requires an explicit aggregate policy opt-in.
+    pub fn cook_aggregate(source: &Assembly, config: crate::vegetation_aggregate::Config) -> Result<Self, String> {
+        let mut plant = Self::cook_source(source)?;
+        let roots: Vec<_> = plant.branches.iter().enumerate().filter(|(_,b)|b.parent.is_none()).map(|(i,_)|i).collect();
+        if roots.len()!=1 || roots[0]!=0 { return Err("aggregate plants require one leading root".into()); }
+        if !plant.placements.iter().any(|p|p.branch==0) {
+            return Err("aggregate hierarchy currently requires source members on its root".into());
+        }
+        let cooker = crate::vegetation_aggregate::Cooker::new(source,config)?;
+        for branch in 0..plant.branches.len() {
+            let members: Vec<u32> = plant.placements.iter().enumerate().filter(|(_,p)|p.branch==branch).map(|(i,_)|i as u32).collect();
+            if members.is_empty() { continue; }
+            let asset = cooker.cook(&members,plant.branches[branch].assembly_rest)
+                .map_err(|e|format!("aggregate branch {branch}: {e}"))?;
+            plant.branches[branch].aggregate = aggregate_candidates(&asset,0.0);
+            plant.branches[branch].volume = Some(asset.volume);
+        }
+        // Root represents every descendant at rest. Conservatively bound the
+        // discarded relative animation with each branch's full ancestor chain.
+        let motion = plant.branches.iter().enumerate().filter_map(|(i,b)|b.volume.as_ref().map(|a|wind_margin(&plant,i,a,1.0)))
+            .fold(0.0,f32::max);
+        let root_config = crate::vegetation_aggregate::Config {
+            // Coarse subtree uses the same explicit work/memory caps. Callers
+            // must budget for their full root; never silently enlarge a cap.
+            reference_cell_size: config.reference_cell_size * 4.0,
+            triangle_refinements: false,
+            ..config
+        };
+        let root_cooker = crate::vegetation_aggregate::Cooker::new(source,root_config)?;
+        let all:Vec<_>=(0..source.instances.len() as u32).collect();
+        let root = root_cooker.cook_static_subtree(&all,0,plant.branches[0].assembly_rest)
+            .map_err(|e|format!("aggregate subtree root: {e}"))?;
+        plant.branches[0].aggregate = aggregate_candidates(&root,motion);
+        plant.branches[0].aggregate_motion_error = motion;
+        plant.branches[0].volume = Some(root.volume);
+        plant.stats.volume_assets = plant.branches.iter().filter(|b|b.volume.is_some()).count();
+        Ok(plant)
+    }
+
     pub fn stats(&self) -> CookStats {
         self.stats
     }
@@ -211,6 +293,26 @@ impl CookedPlant {
             .iter()
             .map(|p| (p.id, self.branches[p.branch].id))
     }
+}
+
+fn aggregate_candidates(asset: &crate::vegetation_aggregate::ClusterAsset, motion:f32) -> Vec<crate::aggregate_lod::Candidate> {
+    let mut candidates:Vec<_>=asset.triangle_refinements.iter().map(|m|crate::aggregate_lod::Candidate {
+        source_only:true,level:0,spatial_error:m.cut_error_m+motion,
+        voxel_coverage_error:1.0,voxel_color_error:1.0,
+        triangle_coverage_error:m.sampled_error.rms_opacity as f32,
+        triangle_color_error:m.sampled_error.premultiplied_albedo_rmse as f32,
+        triangle_error:m.cut_error_m,
+    }).collect();
+    candidates.extend(asset.levels.iter().enumerate().map(|(i,m)|crate::aggregate_lod::Candidate {
+        source_only:false,level:i as u32,
+        spatial_error:1.5*3.0f32.sqrt()*asset.volume.levels[i].cell_size+motion,
+        voxel_coverage_error:m.sampled_error.rms_opacity as f32,
+        voxel_color_error:m.sampled_error.premultiplied_albedo_rmse as f32,
+        triangle_coverage_error:m.triangle_sampled_error.rms_opacity as f32,
+        triangle_color_error:m.triangle_sampled_error.premultiplied_albedo_rmse as f32,
+        triangle_error:m.triangle_cut_error_m,
+    }));
+    candidates
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -228,14 +330,15 @@ pub struct PlantHandle {
     pub instance_range: Range<usize>,
     pub pose_range: Range<usize>,
     pub volume_range: Range<usize>,
-    /// Original assembly branch order; empty rig branches have no proxy.
+    /// Original assembly branch order; source-only and empty rig branches have no proxy.
     pub branch_owners: Vec<Option<u32>>,
-    /// Original assembly branch order; empty branches have no representation.
+    /// Original assembly branch order; source-only branches have no volume representation.
     pub group_keys: Vec<Option<GroupKey>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct AttachLimits {
+    pub max_poses: usize,
     pub max_primitive_instances: usize,
     pub max_primitive_meshes: usize,
     pub pack: PackLimits,
@@ -244,6 +347,7 @@ pub struct AttachLimits {
 impl Default for AttachLimits {
     fn default() -> Self {
         Self {
+            max_poses: MAX_PARTS,
             max_primitive_instances: 16_384,
             max_primitive_meshes: 256,
             pack: PackLimits {
@@ -290,6 +394,7 @@ struct Checkpoint {
     policy: Policy,
     lod_pixels: f32,
     active_tiles: bool,
+    part_wind_lod: bool,
 }
 
 /// One scene-construction transaction. Normal scene geometry may already be
@@ -307,6 +412,7 @@ pub struct SceneVegetation<'a> {
     ids: BTreeSet<u64>,
     report: AttachmentReport,
     committed: bool,
+    aggregate_groups: Vec<crate::aggregate_lod::Group>,
 }
 
 fn max_axis(m: Mat4) -> f32 {
@@ -396,11 +502,14 @@ impl<'a> SceneVegetation<'a> {
             || !scene.foliage_representations.is_empty()
             || !scene.foliage_source_groups.is_empty()
             || !scene.part_attachments.is_empty()
+            || scene.aggregate_lod.is_some()
         {
             return Err("shared vegetation requires an unused bounded foliage/part pool".into());
         }
         if limits.max_primitive_instances == 0
-            || limits.max_primitive_instances > crate::part_wind::MAX_ATTACHMENTS
+            || limits.max_primitive_instances > crate::part_wind::RuntimeLimits::default().max_attachments
+            || limits.max_poses == 0
+            || limits.max_poses > crate::part_wind::RuntimeLimits::default().max_poses
             || limits.max_primitive_meshes == 0
             || limits.pack.max_instances > foliage_volume_data::MAX_INSTANCES
             || limits.pack.first_level_bounds
@@ -420,6 +529,7 @@ impl<'a> SceneVegetation<'a> {
             policy: scene.foliage_representation_policy,
             lod_pixels: scene.voxel_lod_pixels,
             active_tiles: scene.voxel_active_tiles,
+            part_wind_lod: scene.part_wind_lod,
         };
         Ok(Self {
             scene,
@@ -432,6 +542,7 @@ impl<'a> SceneVegetation<'a> {
             ids: BTreeSet::new(),
             report: AttachmentReport::default(),
             committed: false,
+            aggregate_groups: Vec::new(),
         })
     }
 
@@ -444,7 +555,7 @@ impl<'a> SceneVegetation<'a> {
         if self.ids.contains(&instance.id) {
             return Err("duplicate stable plant ID in scene vegetation".into());
         }
-        if self.scene.part_wind.len() + plant.branches.len() > MAX_PARTS
+        if self.scene.part_wind.len() + plant.branches.len() > self.limits.max_poses
             || self.bindings.len() + plant.stats.volume_assets > self.limits.pack.max_instances
             || self.report.primitive_instances + plant.placements.len()
                 > self.limits.max_primitive_instances
@@ -472,6 +583,7 @@ impl<'a> SceneVegetation<'a> {
         let owner_base = self.scene.instances.len();
         let volume_base = self.bindings.len();
         let scale = max_axis(instance.root);
+        let aggregate_base = self.aggregate_groups.len();
         // Prepare every fallible geometric decision before appending source
         // meshes/instances. No partial plant is committed on this error path.
         let mut groups = Vec::with_capacity(plant.branches.len());
@@ -491,7 +603,7 @@ impl<'a> SceneVegetation<'a> {
                     },
                     asset,
                     rest,
-                    wind_margin(plant, i, asset, scale),
+                    wind_margin(plant, i, asset, scale) + branch.aggregate_motion_error * scale,
                     OpticalEvidence::Unvalidated,
                 )?;
                 Some(group)
@@ -581,41 +693,48 @@ impl<'a> SceneVegetation<'a> {
                     asset: asset_indices[i].unwrap(),
                     crown_material: ALL_MATERIALS,
                 });
+                if !branch.aggregate.is_empty() {
+                    self.aggregate_groups.push(crate::aggregate_lod::Group {
+                        volume,center:group.center,radius:group.radius,scale,
+                        parent:if i==0 {None} else {Some(aggregate_base as u32)},
+                        candidates:branch.aggregate.clone(),
+                    });
+                }
                 group_keys[i] = Some(group.key);
                 self.scene.foliage_representations.push(Binding {
                     owner,
                     volume,
                     group,
                 });
-                let mut members = Vec::new();
-                for placement in plant.placements.iter().filter(|p| p.branch == i) {
-                    let mesh = mesh_indices[placement.primitive];
-                    let member = self.scene.instances.len() as u32;
-                    self.scene.add_classified_instance(
-                        mesh,
-                        Affine3A::from_mat4(rest * placement.rest),
-                        instance.category,
-                    );
-                    let source = self.scene.instances.last_mut().unwrap();
-                    source.flags |= PART_WIND;
-                    // Keep Scene's scale/radius convention here. The shared
-                    // attachment pass derives the primitive-local sphere and
-                    // applies the conservative root x rest stretch once.
-                    self.scene.part_attachments.push(PartAttachment {
-                        pose: (pose_base + i) as u32,
-                        owner: member,
-                        rest: placement.rest,
-                    });
-                    members.push(member);
-                }
-                self.scene
-                    .foliage_source_groups
-                    .push(SourceGroup { owner, members });
                 branch_owners[i] = Some(owner);
                 (Some(owner), Some(volume))
             } else {
                 (None, None)
             };
+            let mut members = Vec::new();
+            for placement in plant.placements.iter().filter(|p| p.branch == i) {
+                let mesh = mesh_indices[placement.primitive];
+                let member = self.scene.instances.len() as u32;
+                self.scene.add_classified_instance(
+                    mesh,
+                    Affine3A::from_mat4(rest * placement.rest),
+                    instance.category,
+                );
+                let source = self.scene.instances.last_mut().unwrap();
+                source.flags |= PART_WIND;
+                // Keep Scene's scale/radius convention here. The shared
+                // attachment pass derives the primitive-local sphere and
+                // applies the conservative root x rest stretch once.
+                self.scene.part_attachments.push(PartAttachment {
+                    pose: (pose_base + i) as u32,
+                    owner: member,
+                    rest: placement.rest,
+                });
+                members.push(member);
+            }
+            if let Some(owner) = owner {
+                self.scene.foliage_source_groups.push(SourceGroup { owner, members });
+            }
             self.scene.part_wind.push(PartWind {
                 parent: branch.parent.map(|p| pose_base as u32 + p),
                 owner,
@@ -648,9 +767,49 @@ impl<'a> SceneVegetation<'a> {
         })
     }
 
+    /// Commit source-only assemblies. Optically cooked assets must use finish
+    /// instead; never silently discard their requested volume representations.
+    pub fn finish_source(mut self) -> Result<AttachmentReport, String> {
+        if self.report.plants == 0 {
+            return Err("cannot finish an empty vegetation attachment".into());
+        }
+        if !self.assets.is_empty() || !self.bindings.is_empty() {
+            return Err("source-only finish requires plants cooked with cook_source".into());
+        }
+        crate::part_wind::validate_bindings(&self.scene.part_wind, &self.scene.part_attachments,
+            &self.scene.instances, None)?;
+        self.committed = true;
+        Ok(self.report.clone())
+    }
+
+    pub fn finish_aggregate(mut self, policy: crate::aggregate_lod::Policy) -> Result<AttachmentReport, String> {
+        if self.aggregate_groups.is_empty() || self.aggregate_groups.len()!=self.bindings.len() {
+            return Err("aggregate finish requires exclusively aggregate-cooked plants".into());
+        }
+        let selection=crate::aggregate_lod::Selection { groups:self.aggregate_groups.clone(),policy };
+        crate::aggregate_lod::validate(&selection)?;
+        let mut forest=foliage_volume_data::pack(&self.assets,&self.bindings,&self.scene.instances,self.limits.pack)?;
+        foliage_volume_data::pack_bricks(&mut forest,128)?;
+        self.report.packed_volume_bytes=forest.byte_len();
+        self.scene.voxel_forest=Some(forest);
+        self.scene.aggregate_lod=Some(selection);
+        crate::aggregate_lod::validate_scene(self.scene)?;
+        self.scene.part_wind_lod=true;
+        self.scene.voxel_lod_pixels=policy.max_error_pixels;
+        self.scene.voxel_active_tiles=true;
+        crate::foliage_representation::validate_bindings(self.scene)?;
+        crate::part_wind::validate_bindings(&self.scene.part_wind,&self.scene.part_attachments,
+            &self.scene.instances,self.scene.voxel_forest.as_ref())?;
+        self.committed=true;
+        Ok(self.report.clone())
+    }
+
     pub fn finish(mut self, policy: Policy) -> Result<AttachmentReport, String> {
         if self.report.plants == 0 {
             return Err("cannot finish an empty vegetation attachment".into());
+        }
+        if self.bindings.is_empty() {
+            return Err("source-only vegetation must use finish_source".into());
         }
         let forest = foliage_volume_data::pack(
             &self.assets,
@@ -664,9 +823,10 @@ impl<'a> SceneVegetation<'a> {
         self.scene.voxel_lod_pixels = policy.max_error_pixels;
         self.scene.voxel_active_tiles = true;
         crate::foliage_representation::validate_bindings(self.scene)?;
-        // Also checks hierarchy, root scaling and every animation descriptor
-        // without constructing a GPU resource or sampling a moving frame.
-        crate::part_wind::sample_poses(&self.scene.part_wind, &crate::wind::WindState::default())?;
+        // Use the same CPU validation as GPU upload, including composed
+        // attachment transforms and bounds, while rollback is still possible.
+        crate::part_wind::validate_bindings(&self.scene.part_wind, &self.scene.part_attachments,
+            &self.scene.instances, self.scene.voxel_forest.as_ref())?;
         self.committed = true;
         Ok(self.report.clone())
     }
@@ -693,6 +853,8 @@ impl Drop for SceneVegetation<'_> {
         self.scene.foliage_representation_policy = c.policy;
         self.scene.voxel_lod_pixels = c.lod_pixels;
         self.scene.voxel_active_tiles = c.active_tiles;
+        self.scene.aggregate_lod = None;
+        self.scene.part_wind_lod = c.part_wind_lod;
     }
 }
 
@@ -817,87 +979,328 @@ mod tests {
     #[test]
     fn member_vertices_normals_and_rest_poses_equal_expanded_oracle() {
         for parameters in [Parameters::grass(5), Parameters::conifer_twig(7)] {
-            let (source, cooked) = cook(parameters);
-            let oracle = source.flatten_rest().unwrap();
-            let root = Mat4::from_scale_rotation_translation(
-                Vec3::new(1.2, 0.8, 1.4),
-                Quat::from_rotation_y(0.43),
-                Vec3::new(3.0, 1.0, -7.0),
-            );
-            let root_normal = Mat3::from_mat4(root).inverse().transpose();
-            let mut scene = Scene::default();
-            let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
-            let handle = builder.append(&cooked, instance(19, root)).unwrap();
-            builder.finish(Policy::default()).unwrap();
-            let poses = crate::part_wind::sample_poses(
-                &scene.part_wind,
-                &crate::wind::WindState::default(),
-            )
-            .unwrap();
-            for attachment in &scene.part_attachments {
-                let local_branch = attachment.pose as usize - handle.pose_range.start;
-                let members: Vec<_> = scene
-                    .part_attachments
-                    .iter()
-                    .filter(|a| a.pose == attachment.pose)
-                    .collect();
-                let member_index = members
-                    .iter()
-                    .position(|a| a.owner == attachment.owner)
-                    .unwrap();
-                let placement = cooked
-                    .placements
-                    .iter()
-                    .filter(|p| p.branch == local_branch)
-                    .nth(member_index)
-                    .unwrap();
-                let primitive = &cooked.primitives[placement.primitive];
-                let expected = oracle
-                    .iter()
-                    .find(|p| p.identity.instance == placement.id)
-                    .unwrap();
-                let actual = matrix(&scene.instances[attachment.owner as usize]);
-                assert!(
-                    actual.abs_diff_eq(poses[attachment.pose as usize] * attachment.rest, 2e-5)
+            let (source, optical) = cook(parameters);
+            for (cooked, source_only) in [(optical, false), (CookedPlant::cook_source(&source).unwrap(), true)] {
+                let oracle = source.flatten_rest().unwrap();
+                let root = Mat4::from_scale_rotation_translation(
+                    Vec3::new(1.2, 0.8, 1.4),
+                    Quat::from_rotation_y(0.43),
+                    Vec3::new(3.0, 1.0, -7.0),
                 );
-                // Resident meshes now also contain coarse CLOD vertices.
-                // Reconstruct the actual finest DAG cut, and prove it still
-                // references every original vertex and oriented triangle
-                // exactly once before comparing the transformed source.
-                let triangle_key = |t: [u32; 3]| {
-                    let first = if t[0] <= t[1] && t[0] <= t[2] { 0 }
-                        else if t[1] <= t[2] { 1 } else { 2 };
-                    [t[first], t[(first + 1) % 3], t[(first + 2) % 3]]
-                };
-                let mut source_vertices = BTreeSet::new();
-                let mut actual_triangles = BTreeMap::new();
-                for cluster in primitive.mesh.clusters.iter().filter(|c| c.own_error == 0.0) {
-                    for &packed in &primitive.mesh.tris[cluster.first_tri as usize..][..cluster.tri_count as usize] {
-                        let indices = [packed & 255, (packed >> 8) & 255, (packed >> 16) & 255]
-                            .map(|local| primitive.mesh.cluster_verts[(cluster.first_vert + local) as usize]);
-                        source_vertices.extend(indices);
-                        *actual_triangles.entry(triangle_key(indices)).or_insert(0usize) += 1;
+                let root_normal = Mat3::from_mat4(root).inverse().transpose();
+                let mut scene = Scene::default();
+                let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
+                let handle = builder.append(&cooked, instance(19, root)).unwrap();
+                if source_only { builder.finish_source().unwrap(); }
+                else { builder.finish(Policy::default()).unwrap(); }
+                let poses = crate::part_wind::sample_poses(
+                    &scene.part_wind,
+                    &crate::wind::WindState::default(),
+                )
+                .unwrap();
+                for attachment in &scene.part_attachments {
+                    let local_branch = attachment.pose as usize - handle.pose_range.start;
+                    let members: Vec<_> = scene
+                        .part_attachments
+                        .iter()
+                        .filter(|a| a.pose == attachment.pose)
+                        .collect();
+                    let member_index = members
+                        .iter()
+                        .position(|a| a.owner == attachment.owner)
+                        .unwrap();
+                    let placement = cooked
+                        .placements
+                        .iter()
+                        .filter(|p| p.branch == local_branch)
+                        .nth(member_index)
+                        .unwrap();
+                    let primitive = &cooked.primitives[placement.primitive];
+                    let expected = oracle
+                        .iter()
+                        .find(|p| p.identity.instance == placement.id)
+                        .unwrap();
+                    let actual = matrix(&scene.instances[attachment.owner as usize]);
+                    assert!(
+                        actual.abs_diff_eq(poses[attachment.pose as usize] * attachment.rest, 2e-5)
+                    );
+                    // Resident meshes now also contain coarse CLOD vertices.
+                    // Reconstruct the actual finest DAG cut, and prove it still
+                    // references every original vertex and oriented triangle
+                    // exactly once before comparing the transformed source.
+                    let triangle_key = |t: [u32; 3]| {
+                        let first = if t[0] <= t[1] && t[0] <= t[2] { 0 }
+                            else if t[1] <= t[2] { 1 } else { 2 };
+                        [t[first], t[(first + 1) % 3], t[(first + 2) % 3]]
+                    };
+                    let mut source_vertices = BTreeSet::new();
+                    let mut actual_triangles = BTreeMap::new();
+                    for cluster in primitive.mesh.clusters.iter().filter(|c| c.own_error == 0.0) {
+                        for &packed in &primitive.mesh.tris[cluster.first_tri as usize..][..cluster.tri_count as usize] {
+                            let indices = [packed & 255, (packed >> 8) & 255, (packed >> 16) & 255]
+                                .map(|local| primitive.mesh.cluster_verts[(cluster.first_vert + local) as usize]);
+                            source_vertices.extend(indices);
+                            *actual_triangles.entry(triangle_key(indices)).or_insert(0usize) += 1;
+                        }
                     }
+                    let mut expected_triangles = BTreeMap::new();
+                    for triangle in expected.indices.chunks_exact(3) {
+                        *expected_triangles.entry(triangle_key([triangle[0], triangle[1], triangle[2]]))
+                            .or_insert(0usize) += 1;
+                    }
+                    assert_eq!(actual_triangles, expected_triangles);
+                    assert_eq!(source_vertices, (0..expected.vertices.len() as u32).collect());
+                    let normal_matrix = Mat3::from_mat4(actual).inverse().transpose();
+                    for (&index, expanded) in source_vertices.iter().zip(&expected.vertices) {
+                        let vertex = &primitive.mesh.vertices[index as usize];
+                        let p = actual.transform_point3(Vec3::from(vertex.pos));
+                        let n = (normal_matrix * Vec3::from(vertex.normal)).normalize();
+                        let expected_p = root.transform_point3(Vec3::from(expanded.pos));
+                        let expected_n = (root_normal * Vec3::from(expanded.normal)).normalize();
+                        assert!(p.distance(expected_p) < 3e-5);
+                        assert!(n.distance(expected_n) < 3e-5);
+                        assert_eq!(vertex.uv, expanded.uv);
+                    }
+                    assert_eq!(source_vertices.len(), expected.vertices.len());
                 }
-                let mut expected_triangles = BTreeMap::new();
-                for triangle in expected.indices.chunks_exact(3) {
-                    *expected_triangles.entry(triangle_key([triangle[0], triangle[1], triangle[2]]))
-                        .or_insert(0usize) += 1;
-                }
-                assert_eq!(actual_triangles, expected_triangles);
-                assert_eq!(source_vertices, (0..expected.vertices.len() as u32).collect());
-                let normal_matrix = Mat3::from_mat4(actual).inverse().transpose();
-                for (&index, expanded) in source_vertices.iter().zip(&expected.vertices) {
-                    let vertex = &primitive.mesh.vertices[index as usize];
-                    let p = actual.transform_point3(Vec3::from(vertex.pos));
-                    let n = (normal_matrix * Vec3::from(vertex.normal)).normalize();
-                    let expected_p = root.transform_point3(Vec3::from(expanded.pos));
-                    let expected_n = (root_normal * Vec3::from(expanded.normal)).normalize();
-                    assert!(p.distance(expected_p) < 3e-5);
-                    assert!(n.distance(expected_n) < 3e-5);
-                    assert_eq!(vertex.uv, expanded.uv);
-                }
-                assert_eq!(source_vertices.len(), expected.vertices.len());
+            }
+        }
+    }
+
+    #[test]
+    fn source_only_repeated_plants_share_geometry_without_volume_resources() {
+        let source = foliage_assembly::generate(Parameters::grass(101), Limits::default()).unwrap();
+        let cooked = CookedPlant::cook_source(&source).unwrap();
+        assert_eq!(cooked.stats.volume_assets, 0);
+        assert!(cooked.branches.iter().all(|b| b.volume.is_none()));
+        let mut scene = Scene::default();
+        let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
+        let first = builder.append(&cooked, instance(1, Mat4::IDENTITY)).unwrap();
+        let bytes = builder.report.shared_geometry_bytes;
+        let vertices = builder.scene.vertices.len();
+        let second = builder.append(&cooked, instance(2, Mat4::from_translation(Vec3::X))).unwrap();
+        assert_eq!(builder.report.shared_geometry_bytes, bytes);
+        assert_eq!(builder.scene.vertices.len(), vertices);
+        for handle in [first, second] {
+            assert_eq!(handle.instance_range.len(), source.instances.len());
+            assert!(handle.volume_range.is_empty());
+            assert!(handle.branch_owners.iter().all(Option::is_none));
+            assert!(handle.group_keys.iter().all(Option::is_none));
+        }
+        let report = builder.finish_source().unwrap();
+        assert_eq!(report.primitive_instances, source.instances.len() * 2);
+        assert_eq!(report.pose_nodes, source.branches.len() * 2);
+        assert_eq!(report.source_triangles_shared, cooked.stats.primitive_triangles);
+        assert_eq!(report.branch_proxies + report.volume_instances + report.volume_assets + report.packed_volume_bytes, 0);
+        assert!(scene.voxel_forest.is_none());
+        assert!(scene.foliage_representations.is_empty() && scene.foliage_source_groups.is_empty());
+        assert_eq!(scene.instances.len(), report.primitive_instances);
+        assert_eq!(scene.part_attachments.len(), report.primitive_instances);
+        assert!(scene.instances.iter().all(|i| i.cluster_count > 0 && i.flags & PART_WIND != 0));
+        assert!(scene.part_wind.iter().all(|p| p.owner.is_none() && p.volume.is_none()));
+        crate::foliage_representation::validate_bindings(&scene).unwrap();
+    }
+
+    #[test]
+    fn source_only_disconnected_leaf_spray_retains_all_source_triangles() {
+        let mut source = foliage_assembly::generate(Parameters::grass(17), Limits::default()).unwrap();
+        let first = source.instances[0].clone();
+        let part = &mut source.parts[first.part as usize];
+        let leaf = part.clone();
+        part.vertices.clear();
+        part.indices.clear();
+        for copy in 0..16 {
+            let offset = part.vertices.len() as u32;
+            let translation = Vec3::new((copy % 4) as f32 * 0.13, (copy / 4) as f32 * 0.17, 0.0);
+            part.vertices.extend(leaf.vertices.iter().map(|v| {
+                let mut v = *v;
+                v.pos = (Vec3::from(v.pos) + translation).to_array();
+                v
+            }));
+            part.indices.extend(leaf.indices.iter().map(|i| i + offset));
+        }
+        assert!(crate::vegetation_clod::build(&Part { vertices: &part.vertices,
+            indices: &part.indices, material: first.material }).is_none());
+        let source_triangles = part.indices.len() / 3;
+        let source_vertices = part.vertices.len();
+        source.instances = vec![first.clone(), crate::foliage_assembly::PartInstance {
+            id: first.id.wrapping_add(1), rest: Mat4::from_translation(Vec3::X * 2.0) * first.rest, ..first
+        }];
+        let cooked = CookedPlant::cook_source(&source).unwrap();
+        assert_eq!(cooked.stats.primitive_meshes, 1);
+        assert_eq!(cooked.stats.primitive_triangles, source_triangles);
+        assert_eq!(cooked.stats.expanded_source_triangles, source_triangles * 2);
+        assert_eq!(finest_vertex_count(&cooked.primitives[0].mesh), source_vertices);
+        let mut scene = Scene::default();
+        let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
+        builder.append(&cooked, instance(1, Mat4::IDENTITY)).unwrap();
+        let report = builder.finish_source().unwrap();
+        assert_eq!(report.primitive_instances, 2);
+        assert_eq!(report.source_triangles_shared, source_triangles);
+        assert_eq!(scene.instances[0].first_cluster, scene.instances[1].first_cluster);
+        assert!(scene.voxel_forest.is_none());
+    }
+
+    #[test]
+    fn mixed_cooks_share_only_matching_clod_policies_in_either_append_order() {
+        for disconnected in [false, true] {
+            let mut source = foliage_assembly::generate(
+                Parameters { density: 1, ..Parameters::grass(17) }, Limits::default()).unwrap();
+            if disconnected {
+                let part = &mut source.parts[source.instances[0].part as usize];
+                let leaf = part.clone();
+                let offset = part.vertices.len() as u32;
+                part.vertices.extend(leaf.vertices.iter().map(|v| {
+                    let mut v = *v;
+                    v.pos[0] += 2.0;
+                    v
+                }));
+                part.indices.extend(leaf.indices.iter().map(|i| i + offset));
+                assert!(crate::vegetation_clod::build(&Part { vertices: &part.vertices,
+                    indices: &part.indices, material: 0 }).is_none());
+            }
+            let source_only = CookedPlant::cook_source(&source).unwrap();
+            let optical = CookedPlant::cook(&source, BakeConfig {
+                projection_measure: ProjectionMeasure::ClosedSurfaceEntries,
+                cell_size: 0.08, levels: 2, samples_per_cell: 2,
+                max_samples: 1_000_000, max_voxels: 65_536, max_texture_texels: 0,
+                ..Default::default()
+            }).unwrap();
+            assert_eq!(source_only.primitives.len(), 1);
+            assert_eq!(optical.primitives.len(), 1);
+            assert_eq!(source_only.primitives[0].key == optical.primitives[0].key, !disconnected,
+                "recognized closed sweeps share across cook modes; distinct fallback policies do not");
+            let expected_meshes = if disconnected { 2 } else { 1 };
+            let expected_bytes = source_only.stats.primitive_bytes
+                + if disconnected { optical.stats.primitive_bytes } else { 0 };
+            for reverse in [false, true] {
+                let order = if reverse { [&optical, &source_only] } else { [&source_only, &optical] };
+                let mut scene = Scene::default();
+                let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
+                builder.append(order[0], instance(1, Mat4::IDENTITY)).unwrap();
+                builder.append(order[1], instance(2, Mat4::from_translation(Vec3::X))).unwrap();
+                let owners: Vec<_> = builder.scene.part_attachments.iter().map(|a| a.owner as usize).collect();
+                assert_eq!(builder.scene.instances[owners[0]].first_cluster
+                    == builder.scene.instances[owners[1]].first_cluster, !disconnected);
+                builder.append(order[1], instance(3, Mat4::from_translation(Vec3::Z))).unwrap();
+                let report = builder.finish(Policy::default()).unwrap();
+                assert_eq!(report.primitive_meshes, expected_meshes);
+                assert_eq!(report.shared_geometry_bytes, expected_bytes);
+                assert_eq!(report.primitive_instances, 3);
+                crate::foliage_representation::validate_bindings(&scene).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn source_only_capacity_and_failed_finish_preserve_existing_scene() {
+        let source = foliage_assembly::generate(Parameters::grass(13), Limits::default()).unwrap();
+        let cooked = CookedPlant::cook_source(&source).unwrap();
+        let mut scene = Scene::default();
+        scene.add_material(Material { tint: [0.1; 3], layer: -1, roughness: 1.0,
+            flags: 0, scale: 1.0, metal: 0.0 });
+        let mesh = scene.add_mesh(&cooked.primitives[0].mesh);
+        scene.add_instance(mesh, Affine3A::IDENTITY);
+        let before = (scene.vertices.len(), scene.cluster_verts.len(), scene.tris.len(),
+            scene.clusters.len(), scene.meshes.len(), scene.materials.len(), scene.instances.len());
+        {
+            let limits = AttachLimits { max_primitive_instances: source.instances.len(), ..Default::default() };
+            let mut builder = SceneVegetation::new(&mut scene, limits).unwrap();
+            builder.append(&cooked, instance(1, Mat4::IDENTITY)).unwrap();
+            let added = (builder.scene.instances.len(), builder.scene.vertices.len(),
+                builder.scene.part_wind.len(), builder.scene.part_attachments.len(), builder.report.plants);
+            assert!(builder.append(&cooked, instance(2, Mat4::IDENTITY)).is_err());
+            assert_eq!((builder.scene.instances.len(), builder.scene.vertices.len(),
+                builder.scene.part_wind.len(), builder.scene.part_attachments.len(), builder.report.plants), added);
+            assert!(builder.append(&cooked, instance(1, Mat4::IDENTITY)).is_err());
+            // Source-only assets cannot accidentally enter the volume finish path.
+            assert!(builder.finish(Policy::default()).is_err());
+        }
+        assert_eq!((scene.vertices.len(), scene.cluster_verts.len(), scene.tris.len(),
+            scene.clusters.len(), scene.meshes.len(), scene.materials.len(), scene.instances.len()), before);
+        assert!(scene.part_wind.is_empty() && scene.part_attachments.is_empty());
+        assert!(scene.voxel_forest.is_none() && scene.foliage_source_groups.is_empty());
+        {
+            let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
+            for id in 0..MAX_PARTS / source.branches.len() {
+                builder.append(&cooked, instance(id as u64, Mat4::IDENTITY)).unwrap();
+            }
+            let count = builder.scene.part_wind.len();
+            assert!(builder.append(&cooked, instance(u64::MAX, Mat4::IDENTITY)).is_err());
+            assert_eq!(builder.scene.part_wind.len(), count);
+            // Dropping an uncommitted successful batch restores the checkpoint too.
+        }
+        assert_eq!((scene.vertices.len(), scene.cluster_verts.len(), scene.tris.len(),
+            scene.clusters.len(), scene.meshes.len(), scene.materials.len(), scene.instances.len()), before);
+        assert!(scene.part_wind.is_empty() && scene.part_attachments.is_empty());
+    }
+
+    #[test]
+    fn source_finish_rejects_optical_assets_instead_of_discarding_them() {
+        let (_, optical) = cook(Parameters::grass(19));
+        let mut scene = Scene::default();
+        let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
+        builder.append(&optical, instance(1, Mat4::IDENTITY)).unwrap();
+        assert!(builder.finish_source().unwrap_err().contains("cook_source"));
+        assert!(scene.instances.is_empty() && scene.vertices.is_empty() && scene.materials.is_empty());
+        assert!(scene.part_wind.is_empty() && scene.part_attachments.is_empty());
+        assert!(scene.voxel_forest.is_none() && scene.foliage_representations.is_empty());
+    }
+
+    #[test]
+    fn source_finish_rejects_composed_member_overflow_and_restores_existing_scene() {
+        let source = foliage_assembly::generate(
+            Parameters { density: 1, ..Parameters::grass(19) }, Limits::default()).unwrap();
+        let ordinary = CookedPlant::cook_source(&source).unwrap();
+        let mut shifted = source;
+        let shift = Mat4::from_translation(Vec3::X * 2e38);
+        shifted.instances[0].rest = shift;
+        let cooked = CookedPlant::cook_source(&shifted).unwrap();
+        let mut scene = Scene::default();
+        scene.add_material(ordinary.primitives[0].material);
+        let mesh = scene.add_mesh(&ordinary.primitives[0].mesh);
+        scene.add_instance(mesh, Affine3A::IDENTITY);
+        let original_instance = bytemuck::bytes_of(&scene.instances[0]).to_vec();
+        let before = (scene.vertices.len(), scene.cluster_verts.len(), scene.tris.len(),
+            scene.clusters.len(), scene.meshes.len(), scene.materials.len(), scene.instances.len());
+        let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
+        builder.append(&cooked, instance(1, shift)).unwrap();
+        assert!(builder.scene.part_wind.iter().all(|part| part.rest.is_finite()));
+        let owner = builder.scene.part_attachments[0].owner as usize;
+        assert!(!matrix(&builder.scene.instances[owner]).is_finite());
+        let error = builder.finish_source().unwrap_err();
+        assert!(error.contains("world bind transform is singular/non-finite"), "{error}");
+        assert_eq!((scene.vertices.len(), scene.cluster_verts.len(), scene.tris.len(),
+            scene.clusters.len(), scene.meshes.len(), scene.materials.len(), scene.instances.len()), before);
+        assert_eq!(bytemuck::bytes_of(&scene.instances[0]), original_instance.as_slice());
+        assert!(scene.part_wind.is_empty() && scene.part_attachments.is_empty());
+        assert!(scene.voxel_forest.is_none() && scene.foliage_representations.is_empty()
+            && scene.foliage_source_groups.is_empty());
+    }
+
+    #[test]
+    fn both_finish_routes_validate_member_bounds_and_scale_before_commit() {
+        let (source, optical) = cook(Parameters { density: 1, ..Parameters::grass(23) });
+        let source_only = CookedPlant::cook_source(&source).unwrap();
+        for source_mode in [true, false] {
+            for invalid_scale in [false, true] {
+                let mut scene = Scene::default();
+                let mut builder = SceneVegetation::new(&mut scene, AttachLimits::default()).unwrap();
+                builder.append(if source_mode { &source_only } else { &optical },
+                    instance(1, Mat4::IDENTITY)).unwrap();
+                let owner = builder.scene.part_attachments[0].owner as usize;
+                // A finite rig/member matrix does not prove the derived sphere
+                // or its scale is usable. Exercise those independent upload checks.
+                assert!(matrix(&builder.scene.instances[owner]).is_finite());
+                if invalid_scale { builder.scene.instances[owner].scale = 0.0; }
+                else { builder.scene.instances[owner].sphere[3] = f32::INFINITY; }
+                let result = if source_mode { builder.finish_source() }
+                    else { builder.finish(Policy::default()) };
+                assert!(result.is_err());
+                assert!(scene.instances.is_empty() && scene.vertices.is_empty() && scene.materials.is_empty());
+                assert!(scene.part_wind.is_empty() && scene.part_attachments.is_empty());
+                assert!(scene.voxel_forest.is_none() && scene.foliage_representations.is_empty()
+                    && scene.foliage_source_groups.is_empty());
             }
         }
     }
@@ -1002,5 +1405,152 @@ mod tests {
                 }
             }
         }
+    }
+
+    // Tiny closed solids exercise the real optical cooker and scene adapter
+    // without depending on game recipes or flattening a production tree.
+    fn aggregate_fixture() -> Assembly {
+        use crate::foliage_assembly::{BranchGroup,PartGeometry,PartInstance};
+        let positions=[Vec3::ZERO,Vec3::X*0.24,Vec3::Y*0.38,Vec3::Z*0.20];
+        let mut geometry=PartGeometry {id:1,vertices:vec![],indices:vec![]};
+        for tri in [[0,2,1],[0,1,3],[0,3,2],[1,2,3]] {
+            let [a,b,c]=tri.map(|i|positions[i]);let normal=(b-a).cross(c-a).normalize();
+            for p in [a,b,c] {
+                geometry.indices.push(geometry.vertices.len()as u32);
+                geometry.vertices.push(crate::cluster::Vertex {pos:p.to_array(),normal:normal.to_array(),uv:[0.0;2]});
+            }
+        }
+        let branches=vec![
+            BranchGroup {id:10,parent:None,rest:Mat4::IDENTITY,stiffness:1.0},
+            BranchGroup {id:11,parent:Some(0),rest:Mat4::from_translation(Vec3::new(0.35,0.2,0.0)),stiffness:0.7},
+            BranchGroup {id:12,parent:Some(1),rest:Mat4::from_translation(Vec3::new(0.2,0.3,0.05)),stiffness:0.4},
+        ];
+        let instances=[0,1,1,2].into_iter().enumerate().map(|(i,branch)|PartInstance {
+            id:100+i as u64,part:0,branch,material:0,
+            rest:Mat4::from_translation(if i==2 {Vec3::Z*0.15}else{Vec3::ZERO})
+        }).collect();
+        Assembly::from_parts(Parameters {density:1,..Parameters::conifer_twig(17)},vec![geometry],branches,
+            instances,vec![Material {tint:[0.17,0.32,0.09],layer:-1,roughness:0.8,
+                flags:crate::scene::THIN_FOLIAGE|crate::scene::TWO_SIDED,scale:1.0,metal:0.0}],Limits::default()).unwrap()
+    }
+
+    fn aggregate_config() -> crate::vegetation_aggregate::Config {
+        crate::vegetation_aggregate::Config {reference_cell_size:0.05,triangle_refinements:true,levels:2,diagnostic_resolution:4,
+            max_placements:4,max_source_triangles:16,max_samples:100_000,max_reference_voxels:4096,
+            max_diagnostic_steps:2_000_000,..Default::default()}
+    }
+
+    #[test]
+    fn aggregate_integration_preserves_memberships_hierarchy_bricks_and_scales_once() {
+        let source=aggregate_fixture();let cooked=CookedPlant::cook_aggregate(&source,aggregate_config()).unwrap();
+        assert_eq!(cooked.stats.volume_assets,3);
+        assert_eq!(cooked.source_ids().collect::<Vec<_>>(),source.instances.iter()
+            .map(|p|(p.id,source.branches[p.branch as usize].id)).collect::<Vec<_>>());
+        let root_asset=cooked.branches[0].volume.as_ref().unwrap();
+        let source_poses=source.branch_transforms().unwrap();
+        for p in &source.instances {for v in &source.parts[p.part as usize].vertices {
+            let point=(source_poses[p.branch as usize]*p.rest).transform_point3(Vec3::from(v.pos));
+            assert!(point.cmpge(Vec3::from(root_asset.source_bounds[0])-Vec3::splat(1e-6)).all());
+            assert!(point.cmple(Vec3::from(root_asset.source_bounds[1])+Vec3::splat(1e-6)).all());
+        }}
+        assert!(cooked.branches[0].aggregate_motion_error>0.0);
+        assert!(cooked.branches[0].aggregate.iter().all(|c|!c.source_only));
+        for branch in &cooked.branches[1..] {
+            assert_eq!(branch.aggregate.iter().filter(|c|c.source_only).count(),3);
+            assert!(branch.aggregate[..3].iter().all(|c|c.source_only));
+        }
+        let mut scene=Scene::default();let mut builder=SceneVegetation::new(&mut scene,AttachLimits::default()).unwrap();
+        let small=builder.append(&cooked,instance(31,Mat4::from_scale(Vec3::splat(0.5)))).unwrap();
+        let large=builder.append(&cooked,instance(32,Mat4::from_scale_rotation_translation(Vec3::splat(2.0),
+            Quat::IDENTITY,Vec3::X*5.0))).unwrap();
+        let report=builder.finish_aggregate(crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
+        assert_eq!(report.plants,2);assert_eq!(report.primitive_instances,8);
+        assert_eq!(report.volume_instances,6);assert_eq!(report.volume_assets,3);
+        assert_eq!(report.primitive_meshes,1);assert_eq!(report.pose_nodes,6);
+        let selection=scene.aggregate_lod.as_ref().unwrap();assert_eq!(selection.groups.len(),6);
+        let mut seen=BTreeSet::new();
+        for (plant_index,handle) in [&small,&large].into_iter().enumerate() {
+            for branch in 0..3 {
+                let g=&selection.groups[plant_index*3+branch];
+                assert_eq!(g.volume,(handle.volume_range.start+branch)as u32);
+                assert_eq!(g.parent,if branch==0 {None}else{Some((plant_index*3)as u32)});
+                assert_eq!(g.scale,if plant_index==0 {0.5}else{2.0});
+                let owner=handle.branch_owners[branch].unwrap();
+                let members=&scene.foliage_source_groups.iter().find(|g|g.owner==owner).unwrap().members;
+                let expected=scene.part_attachments.iter().filter(|p|p.pose==(handle.pose_range.start+branch)as u32)
+                    .map(|p|p.owner).collect::<BTreeSet<_>>();
+                assert_eq!(members.iter().copied().collect::<BTreeSet<_>>(),expected);
+                assert_eq!(members.len(),[1,2,1][branch]);
+                for &member in members {assert!(seen.insert(member));}
+                assert_eq!(scene.part_wind[handle.pose_range.start+branch].parent,
+                    source.branches[branch].parent.map(|p|handle.pose_range.start as u32+p));
+                for (actual,local) in g.candidates.iter().zip(&cooked.branches[branch].aggregate) {
+                    // CPU metadata stays local; the selector applies g.scale
+                    // exactly once. Multiplying here too caused scale squared.
+                    assert_eq!(actual.spatial_error.to_bits(),local.spatial_error.to_bits());
+                    assert_eq!(actual.triangle_error.to_bits(),local.triangle_error.to_bits());
+                }
+            }
+        }
+        assert_eq!(seen.len(),scene.part_attachments.len());
+        for branch in 0..3 {
+            let a=&selection.groups[branch];let b=&selection.groups[3+branch];
+            assert!((b.radius/a.radius-4.0).abs()<1e-5);
+            for (ac,bc) in a.candidates.iter().zip(&b.candidates) {
+                assert!((bc.spatial_error*b.scale/(ac.spatial_error*a.scale)-4.0).abs()<1e-5);
+            }
+        }
+        let forest=scene.voxel_forest.as_ref().unwrap();
+        assert!(forest.levels.iter().all(|l|l.dims_offset[3]&foliage_volume_data::BRICK_INDIRECTION!=0));
+        assert_eq!(forest.instances.len(),6);assert_eq!(report.packed_volume_bytes,forest.byte_len());
+        crate::foliage_representation::validate_bindings(&scene).unwrap();
+        crate::part_wind::validate_bindings(&scene.part_wind,&scene.part_attachments,&scene.instances,Some(forest)).unwrap();
+    }
+
+    #[test]
+    fn aggregate_integration_invalid_policy_and_late_validation_restore_existing_scene() {
+        let cooked=CookedPlant::cook_aggregate(&aggregate_fixture(),aggregate_config()).unwrap();
+        for invalid_policy in [true,false] {
+            let mut scene=Scene::default();scene.add_material(cooked.primitives[0].material);
+            let mesh=scene.add_mesh(&cooked.primitives[0].mesh);scene.add_instance(mesh,Affine3A::IDENTITY);
+            scene.voxel_lod_pixels=2.75;scene.voxel_active_tiles=false;scene.part_wind_lod=false;
+            scene.foliage_representation_policy.max_error_pixels=3.25;
+            let counts=(scene.vertices.len(),scene.cluster_verts.len(),scene.tris.len(),scene.clusters.len(),
+                scene.meshes.len(),scene.instances.len(),scene.materials.len());
+            let prior=bytemuck::bytes_of(&scene.instances[0]).to_vec();
+            let vertices=bytemuck::cast_slice::<_,u8>(&scene.vertices).to_vec();
+            let mut builder=SceneVegetation::new(&mut scene,AttachLimits::default()).unwrap();
+            builder.append(&cooked,instance(50,Mat4::IDENTITY)).unwrap();
+            let mut policy=crate::aggregate_lod::Policy::default();
+            if invalid_policy {policy.max_error_pixels=f32::NAN;} else {
+                let owner=builder.scene.part_attachments[0].owner as usize;
+                builder.scene.instances[owner].scale=0.0;
+            }
+            assert!(builder.finish_aggregate(policy).is_err());
+            assert_eq!((scene.vertices.len(),scene.cluster_verts.len(),scene.tris.len(),scene.clusters.len(),
+                scene.meshes.len(),scene.instances.len(),scene.materials.len()),counts);
+            assert_eq!(bytemuck::bytes_of(&scene.instances[0]),prior.as_slice());
+            assert_eq!(bytemuck::cast_slice::<_,u8>(&scene.vertices),vertices.as_slice());
+            assert!(scene.aggregate_lod.is_none()&&scene.voxel_forest.is_none());
+            assert!(scene.part_wind.is_empty()&&scene.part_attachments.is_empty());
+            assert!(scene.foliage_representations.is_empty()&&scene.foliage_source_groups.is_empty());
+            assert_eq!(scene.voxel_lod_pixels,2.75);assert!(!scene.voxel_active_tiles&&!scene.part_wind_lod);
+            assert_eq!(scene.foliage_representation_policy.max_error_pixels,3.25);
+        }
+    }
+
+    #[test]
+    fn aggregate_integration_root_cook_honors_explicit_work_limits_and_root_membership() {
+        let source=aggregate_fixture();
+        // Each individual branch fits both limits; the entire subtree does
+        // not. These failures prove root cooking does not silently enlarge caps.
+        for config in [crate::vegetation_aggregate::Config {max_source_triangles:12,..aggregate_config()},
+            crate::vegetation_aggregate::Config {max_placements:3,..aggregate_config()}] {
+            let error=CookedPlant::cook_aggregate(&source,config).err().expect("root budget must fail");
+            assert!(error.contains("aggregate subtree root"),"{error}");
+        }
+        let mut empty_root=source;empty_root.instances[0].branch=1;
+        let error=CookedPlant::cook_aggregate(&empty_root,aggregate_config()).err().expect("empty root must fail at cook");
+        assert!(error.contains("source members on its root"),"{error}");
     }
 }

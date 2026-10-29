@@ -15,6 +15,8 @@
 #[path="../src/procedural_rocks.rs"] mod procedural_rocks;
 #[path="../src/roadside_crowds.rs"] mod roadside_crowds;
 #[path="../src/tree_assets.rs"] mod tree_assets;
+#[path="../src/plant_species.rs"] mod plant_species;
+#[path="../src/plant_population.rs"] mod plant_population;
 #[path="../src/tree_tuning.rs"] mod tree_tuning;
 #[path="../src/voxel_tree_patch.rs"] mod voxel_tree_patch;
 #[path="../src/visuals.rs"] mod visuals;
@@ -130,7 +132,8 @@ fn validate_source_recipe(capture:&Value,grass:Option<&Value>,trees:&Value)->Res
     for (name,expected,actual,keys) in [
         ("procedural_grass",&capture["render"]["procedural_grass"],grass,&[
             "mode","recipe","source_blades_per_root","blade_budget","blade_width_multiplier",
-            "triangles_per_variant_lod","radius_metres","fade_start_metres","growth_scale","dry_season"] as &[_]),
+            "triangles_per_variant_lod","radius_metres","fade_start_metres","growth_scale","dry_season",
+            "species","variant_patch_metres"] as &[_]),
         ("tree_source",&capture["render"]["tree_source"],Some(trees),&["recipe","fullness","source_archetypes"] as &[_]),
     ] {
         if expected.is_null(){continue;}
@@ -144,6 +147,23 @@ fn validate_source_recipe(capture:&Value,grass:Option<&Value>,trees:&Value)->Res
         if name == "procedural_grass" && expected["profile"].as_str().unwrap_or("classic")
             != actual["profile"].as_str().unwrap_or("classic") {
             return Err("captured procedural_grass.profile differs; restore SIDEWAYS_MEADOW_PROFILE (historical captures use classic)".into());
+        }
+        if name == "procedural_grass" {
+            // Historical windswept captures have the same recipe/profile and
+            // triangle budget as mixed species. Absence means reference/off;
+            // inherited mixed mode must never silently reconstruct another
+            // field. Malformed present metadata is not a historical default.
+            let species_mode=|source:&Value|->Result<&'static str,String> {
+                match source.get("species_mode") {
+                    None => Ok("off"),
+                    Some(Value::String(mode)) if mode=="off" => Ok("off"),
+                    Some(Value::String(mode)) if mode=="mixed" => Ok("mixed"),
+                    Some(_) => Err("invalid procedural_grass.species_mode; expected off or mixed".into()),
+                }
+            };
+            if species_mode(expected)?!=species_mode(actual)? {
+                return Err("captured procedural_grass.species_mode differs; restore SIDEWAYS_MEADOW_SPECIES (historical captures use off)".into());
+            }
         }
         for key in keys {
             if let Some(value)=expected.get(*key) {
@@ -908,6 +928,49 @@ mod replay_tests {
                 assert_eq!(validate_source_recipe(&capture,Some(actual),&json!({})).is_ok(),
                     (expected == &rounded) == (actual == &rounded));
             }
+        }
+    }
+    #[test]
+    fn construction_guard_preserves_historical_reference_and_rejects_species_mode_mismatch() {
+        let historical=json!({"mode":"gpu_meadow_field","recipe":"meadow_windswept_v1",
+            "profile":"windswept","blade_shading":"curved","blade_budget":120});
+        let mut reference=historical.clone();reference["species_mode"]=json!("off");
+        let mut mixed=historical.clone();mixed["species_mode"]=json!("mixed");
+        for expected in [&historical,&reference,&mixed] {
+            let capture=json!({"render":{"procedural_grass":expected}});
+            for actual in [&historical,&reference,&mixed] {
+                let result=validate_source_recipe(&capture,Some(actual),&json!({}));
+                let matches=(expected==&mixed)==(actual==&mixed);
+                assert_eq!(result.is_ok(),matches);
+                if !matches {assert!(result.unwrap_err().contains("SIDEWAYS_MEADOW_SPECIES"));}
+            }
+        }
+        for malformed in [json!(null),json!(true),json!(1),json!("unknown")] {
+            let mut broken=reference.clone();broken["species_mode"]=malformed;
+            let capture=json!({"render":{"procedural_grass":broken}});
+            assert!(validate_source_recipe(&capture,Some(&reference),&json!({})).unwrap_err().contains("invalid"));
+            let capture=json!({"render":{"procedural_grass":reference}});
+            assert!(validate_source_recipe(&capture,Some(&broken),&json!({})).unwrap_err().contains("invalid"));
+        }
+    }
+    #[test]
+    fn construction_guard_checks_recorded_species_recipes_and_world_patch_scale() {
+        let mixed=json!({"mode":"gpu_meadow_field","recipe":"meadow_windswept_v1",
+            "profile":"windswept","blade_shading":"curved","blade_budget":120,
+            "species_mode":"mixed","variant_patch_metres":12.0,
+            "species":[{"id":"short_grass","height_scale":0.5,"width_scale":0.9,
+                "base_and_tip_linear_tint":[0.98,1.04,0.96]}]});
+        let capture=json!({"render":{"procedural_grass":mixed}});
+        assert!(validate_source_recipe(&capture,Some(&mixed),&json!({})).is_ok());
+        let mut different=mixed.clone();different["variant_patch_metres"]=json!(16.0);
+        assert!(validate_source_recipe(&capture,Some(&different),&json!({})).unwrap_err().contains("variant_patch_metres"));
+        let mut different=mixed.clone();different["species"][0]["height_scale"]=json!(0.7);
+        assert!(validate_source_recipe(&capture,Some(&different),&json!({})).unwrap_err().contains("species"));
+        let mut different=mixed.clone();different["species"][0]["base_and_tip_linear_tint"]=json!([1.0,1.0,1.0]);
+        assert!(validate_source_recipe(&capture,Some(&different),&json!({})).unwrap_err().contains("species"));
+        for key in ["species","variant_patch_metres"] {
+            let mut missing=mixed.clone();missing.as_object_mut().unwrap().remove(key);
+            assert!(validate_source_recipe(&capture,Some(&missing),&json!({})).is_err());
         }
     }
     #[test]

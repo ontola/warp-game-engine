@@ -33,6 +33,8 @@ mod gamenight;
 mod shot;
 mod visuals;
 mod tree_assets;
+mod plant_species;
+mod plant_population;
 mod voxel_tree_patch;
 
 fn main() {

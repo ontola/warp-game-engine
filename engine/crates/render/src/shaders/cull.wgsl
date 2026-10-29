@@ -70,7 +70,7 @@ struct CullMaterial {
 // Four draw records followed by four bucket starts.
 @group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
 @group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
-@group(1) @binding(5) var<uniform> foliage_selection: array<vec4<u32>,256>;
+@group(1) @binding(5) var<uniform> foliage_selection: array<vec4<u32>,4096>;
 @group(1) @binding(6) var<uniform> tree_phase: vec4<f32>; // x: 0 reference, 1 occluders, 2 remainder; y split metres; z enables Hi-Z rejection
 @group(1) @binding(7) var tree_hiz: texture_2d<f32>;
 // Original source-owner IDs, independent of camera visibility. Header:
@@ -230,6 +230,17 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
 
 var<workgroup> keep: bool;
 
+// A GPU aggregate decision may retain a measured world-error triangle cut.
+// Negative means the legacy screen-error policy. Shadows are independent.
+fn aggregate_triangle_error(id:u32)->f32 {
+    if view.params.z>=0.5 || view.extra.y>=1.5 {return -1.0;}
+    let replacement=cull_voxel_replacement[id];
+    if replacement==0xffffffffu || (replacement&0x80000000u)==0u {return -1.0;}
+    let selected=foliage_selection[replacement&0x7fffffffu];
+    if selected.w==0u {return -1.0;}
+    return bitcast<f32>(selected.z);
+}
+
 fn cull_instance(id: u32, li: u32) {
     if id >= arrayLength(&instances) { return; }
     let inst = instances[id];
@@ -262,7 +273,7 @@ fn cull_instance(id: u32, li: u32) {
     let base_thr = select(view.params.x, 0.0, (inst.flags & 2u) != 0u);
     // Shared cluster BVH only accelerates camera predicates. Shadow caster
     // thresholds and independently selected offscreen casters keep the flat path.
-    if view.params.z<0.5 && view.extra.y<1.5 {
+    if view.params.z<0.5 && view.extra.y<1.5 && aggregate_triangle_error(id)<0.0 {
         if cluster_traverse(id,inst,li,base_thr,wind_pad) {return;}
     }
     for (var c = li; c < inst.cluster_count; c += 64u) {
@@ -293,14 +304,21 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
     // sides of every parent/child cut so the DAG stays complete.
     let error_scale = s * (1.0 + length(cull_wind[id].xy));
     let pc = to_world(inst, cl.parent.xyz);
-    let parent_px = select(projected(cl.parent_error * error_scale, pc, cl.parent.w * s + wind_pad), 1e30, cl.parent_error > 1e30);
+    let aggregate_error=aggregate_triangle_error(id);
+    var parent_px = select(projected(cl.parent_error * error_scale, pc, cl.parent.w * s + wind_pad), 1e30, cl.parent_error > 1e30);
+    if aggregate_error>=0.0 {
+        thr=aggregate_error;
+        parent_px=select(cl.parent_error*error_scale,1e30,cl.parent_error>1e30);
+    }
     if parent_px <= thr {
         return; // a coarser cluster covers this patch
     }
     // Every cluster, the DAG's roots included, must itself be fine
     // enough; where it is not, its finer clusters are drawn instead.
     let oc = to_world(inst, cl.own.xyz);
-    if projected(cl.own_error * error_scale, oc, cl.own.w * s + wind_pad) > thr {
+    var own_px=projected(cl.own_error * error_scale, oc, cl.own.w * s + wind_pad);
+    if aggregate_error>=0.0 {own_px=cl.own_error*error_scale;}
+    if own_px > thr {
         return;
     }
     let cc = to_world(inst, cl.cull.xyz);

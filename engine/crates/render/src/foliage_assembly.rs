@@ -41,7 +41,9 @@ pub struct Parameters {
     pub growth: f32,
     /// 0 = green, 1 = dry/dormant palette. Does not erase source identities.
     pub season: f32,
-    /// Exact blade/needle count, 1..=128 (MeadowPatch: 1..=360), independent
+    /// Exact blade/needle count, 1..=128 (MeadowPatch: 1..=360) for built-in
+    /// generators. Custom assemblies use their explicit placement limits.
+    /// Independent
     /// of growth and season. MeadowPatch places 90 radial/angle strata per
     /// quadrant in a feathered, rounded footprint; it does not discard roots.
     pub density: u32,
@@ -544,6 +546,28 @@ fn valid_transform(m: Mat4) -> bool {
 }
 
 impl Assembly {
+    /// Construct an authored recipe from reusable primitives and placements.
+    /// The same validation and resource limits apply as to built-in recipes.
+    /// `parameters` stores seed/growth/season provenance; it does not dispatch
+    /// generation again. Closed custom leaves use the ConiferTwig optical
+    /// contract, while open sheets must use the MeadowPatch contract.
+    pub fn from_parts(
+        parameters: Parameters,
+        parts: Vec<PartGeometry>,
+        branches: Vec<BranchGroup>,
+        instances: Vec<PartInstance>,
+        materials: Vec<Material>,
+        limits: Limits,
+    ) -> Result<Self, String> {
+        if !parameters.growth.is_finite() || !(0.1..=1.5).contains(&parameters.growth)
+            || !parameters.season.is_finite() || !(0.0..=1.0).contains(&parameters.season)
+            || parameters.density == 0
+        { return Err("invalid authored assembly parameters".into()); }
+        let assembly = Self { parameters, parts, branches, instances, materials, limits };
+        assembly.validate()?;
+        Ok(assembly)
+    }
+
     /// Also validates public records after caller edits; no truncation/fallback.
     pub fn validate(&self) -> Result<(), String> {
         if self.parts.len() > self.limits.max_parts || self.branches.is_empty()
@@ -643,9 +667,24 @@ impl Assembly {
     /// groups remain separate so their future motion is not baked twice.
     pub fn flatten_branch(&self, branch: u32) -> Result<Vec<SourceMesh>, String> { self.flatten(Some(branch)) }
 
+    /// Exact rest bounds without expanding shared geometry or copying indices.
+    /// Retain flatten_rest's transformed-normal checks as well as its positions:
+    /// a finite AABB must not hide an invalid source transform.
     pub fn bounds(&self) -> Result<[[f32; 3]; 2], String> {
+        let transforms = self.branch_transforms()?;
         let mut lo = Vec3::splat(f32::INFINITY); let mut hi = Vec3::splat(f32::NEG_INFINITY);
-        for mesh in self.flatten_rest()? { for vertex in mesh.vertices { let p = Vec3::from(vertex.pos); lo = lo.min(p); hi = hi.max(p); } }
+        for instance in &self.instances {
+            let matrix = transforms[instance.branch as usize] * instance.rest;
+            let normal_matrix = Mat3::from_mat4(matrix).inverse().transpose();
+            for vertex in &self.parts[instance.part as usize].vertices {
+                let p = matrix.transform_point3(Vec3::from(vertex.pos));
+                let normal = (normal_matrix * Vec3::from(vertex.normal)).normalize();
+                if !p.is_finite() || !normal.is_finite() {
+                    return Err("foliage transformed vertex overflow".into());
+                }
+                lo = lo.min(p); hi = hi.max(p);
+            }
+        }
         if !lo.is_finite() { return Err("foliage assembly has no source geometry".into()); }
         Ok([lo.to_array(), hi.to_array()])
     }
@@ -1045,6 +1084,76 @@ mod tests {
             }
             assert_ne!(full.materials[1].tint, young.materials[1].tint);
         }
+    }
+
+    fn expanded_bounds_oracle(assembly: &Assembly) -> Result<[[f32; 3]; 2], String> {
+        let mut lo = Vec3::splat(f32::INFINITY); let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for mesh in assembly.flatten_rest()? { for vertex in mesh.vertices {
+            let p = Vec3::from(vertex.pos); lo = lo.min(p); hi = hi.max(p);
+        }}
+        if !lo.is_finite() { return Err("foliage assembly has no source geometry".into()); }
+        Ok([lo.to_array(), hi.to_array()])
+    }
+
+    #[test]
+    fn shared_bounds_equal_expanded_oracle_after_growth_and_nested_rotations() {
+        for base in [Parameters::grass(17), Parameters::conifer_twig(29), Parameters::meadow_grass(41),
+            Parameters::meadow_patch(73)] {
+            for growth in [0.1, 0.5, 1.5] {
+                let mut assembly = generate(Parameters { growth, ..base }, Limits::meadow_patch()).unwrap();
+                // Turn the ordinary root's four child groups into a deep rig.
+                // Independent rotations exercise full parent composition, while
+                // growth and nonuniform part scales remain in the source placements.
+                for index in 1..assembly.branches.len() {
+                    let branch = &mut assembly.branches[index];
+                    branch.parent = Some(index as u32 - 1);
+                    branch.rest = Mat4::from_rotation_translation(
+                        Quat::from_rotation_x(0.17 * index as f32)
+                            * Quat::from_rotation_z(-0.23 * index as f32),
+                        Vec3::new(0.07 * index as f32, 0.11, -0.03) * growth) * branch.rest;
+                }
+                assert_eq!(assembly.bounds().unwrap().map(|v| v.map(f32::to_bits)),
+                    expanded_bounds_oracle(&assembly).unwrap().map(|v| v.map(f32::to_bits)));
+            }
+        }
+    }
+
+    #[test]
+    fn shared_bounds_preserve_expanded_oracle_validation_errors() {
+        let base = generate(Parameters::grass(17), Limits::default()).unwrap();
+        let mut invalid = base.clone();
+        invalid.branches[1].parent = Some(1);
+        assert_eq!(invalid.bounds(), expanded_bounds_oracle(&invalid));
+        let mut over_budget = base.clone();
+        over_budget.limits.max_source_bytes = 1;
+        assert_eq!(over_budget.bounds(), expanded_bounds_oracle(&over_budget));
+        let mut empty = base.clone();
+        empty.instances.clear();
+        assert_eq!(empty.bounds().unwrap_err(), "foliage assembly has no source geometry");
+        assert_eq!(empty.bounds(), expanded_bounds_oracle(&empty));
+
+        // Both local transforms are valid; their composition overflows only
+        // when an instance is transformed, after branch validation succeeds.
+        let mut overflow = base.clone();
+        overflow.instances.truncate(1);
+        overflow.instances[0].branch = 1;
+        let shift = Vec3::X * (f32::MAX * 0.75);
+        overflow.branches[1].rest = Mat4::from_translation(shift);
+        overflow.instances[0].rest = Mat4::from_translation(shift);
+        assert!(overflow.branch_transforms().is_ok());
+        assert_eq!(overflow.bounds().unwrap_err(), "foliage transformed vertex overflow");
+        assert_eq!(overflow.bounds(), expanded_bounds_oracle(&overflow));
+
+        // Finite positions alone are insufficient: an extreme positive scale
+        // can underflow a transformed normal's squared length before normalization.
+        let mut invalid_normal = base;
+        invalid_normal.instances.truncate(1);
+        invalid_normal.instances[0].rest = Mat4::from_scale(Vec3::new(1e24, 1e-12, 1e-12));
+        let part = invalid_normal.instances[0].part as usize;
+        for vertex in &mut invalid_normal.parts[part].vertices { vertex.normal = Vec3::X.to_array(); }
+        assert!(invalid_normal.branch_transforms().is_ok());
+        assert_eq!(invalid_normal.bounds().unwrap_err(), "foliage transformed vertex overflow");
+        assert_eq!(invalid_normal.bounds(), expanded_bounds_oracle(&invalid_normal));
     }
 
     #[test]

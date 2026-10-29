@@ -49,7 +49,7 @@ const NORMAL_SIZE: u32 = 1024;
 const SHADOW_SIZE: u32 = 4096;
 const NEAR_SHADOW_SIZE: u32 = 2048;
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
-const TIMESTAMP_CAPACITY: u32 = 400; // includes per-view aggregate depth/material/illumination
+const TIMESTAMP_CAPACITY: u32 = 512; // includes per-view aggregate depth/material/illumination
 
 /// Keep the grass rejection in culling identical to its opaque raster path.
 pub(crate) fn cull_source() -> String {
@@ -618,6 +618,9 @@ pub struct Renderer {
     instance_buffer: wgpu::Buffer,
     wind: crate::wind::WindRenderer,
     part_wind: Option<crate::part_wind::PartWindRenderer>,
+    part_wind_lod: bool,
+    aggregate_lod: Option<crate::aggregate_lod::Selector>,
+    aggregate_lod_enabled: std::sync::atomic::AtomicBool,
     baked_animations: Option<crate::baked_animation::AnimationRenderer>,
     skinning: Option<crate::skinning::SkinningRenderer>,
     debris: Option<crate::debris::DebrisRenderer>,
@@ -1151,6 +1154,9 @@ impl Renderer {
             crate::far_grass::FarGrassRenderer::new(gpu, field, &voxel_scene_layout, &volume_view_layout)
                 .expect("invalid far grass field"));
         startup.mark("far_grass_resources_pipelines");
+        crate::aggregate_lod::validate_scene(scene).expect("valid aggregate scene");
+        let aggregate_lod=scene.aggregate_lod.as_ref().map(|s|crate::aggregate_lod::Selector::new(gpu,s))
+            .transpose().expect("invalid aggregate error selection");
         let voxel_forest = crate::voxel_forest::VoxelRenderer::new(gpu, scene, &voxel_scene_layout, &volume_view_layout);
         let foliage_world=scene.foliage_world.as_ref().map(|field|
             crate::foliage_world_render::WorldRenderer::new(gpu,field,scene.instances.len()as u32,
@@ -1615,6 +1621,9 @@ impl Renderer {
             instance_buffer: instances,
             wind,
             part_wind,
+            part_wind_lod: scene.part_wind_lod,
+            aggregate_lod,
+            aggregate_lod_enabled: std::sync::atomic::AtomicBool::new(true),
             baked_animations,
             skinning,
             debris,
@@ -1922,7 +1931,7 @@ impl Renderer {
 
     fn view_targets_capacity(&self, gpu: &Gpu, label: &str, capacity: u32,camera:bool,light_groups:bool) -> ViewTargets {
         let foliage_selection = buffer(gpu, "per-view foliage representation", bytemuck::cast_slice(&crate::voxel_forest::default_selection()),
-            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<ViewUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let visible = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("visible"), size: capacity as u64 * 8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let counter = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("counter"), size: crate::tree_occlusion::COUNTER_BYTES, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
@@ -2366,6 +2375,14 @@ impl Renderer {
         up.foliage_selection.clear();
     }
 
+    /// Restart subpixel sampling for a deterministic stationary A/B capture.
+    /// Render/profile sequence IDs remain monotonic. Normal camera cuts should
+    /// call reset_history() and let the temporal sampling sequence continue.
+    pub fn reset_capture_sampling(&self) {
+        self.reset_history();
+        self.frame.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Select an explicit reconstruction mode. Failure keeps the prior mode.
     /// Native allocates no DLSS feature or motion history.
     pub fn set_upscale(&self, gpu: &Gpu, mode: crate::upscale::UpscaleMode) -> Result<(), String> {
@@ -2602,6 +2619,10 @@ impl Renderer {
         self.voxel_forest.as_ref().map(|forest|forest.diagnostics(gpu)).transpose()
     }
     /// Explicit experimental native comparison; no interactive default changes.
+    pub fn set_aggregate_lod_enabled(&self,enabled:bool) {
+        self.aggregate_lod_enabled.store(enabled,std::sync::atomic::Ordering::Relaxed);
+        self.reset_history();
+    }
     pub fn set_foliage_world_enabled(&self,enabled:bool) {
         self.foliage_world_enabled.store(enabled,std::sync::atomic::Ordering::Relaxed);
     }
@@ -2946,6 +2967,46 @@ impl Renderer {
         } else {sun_projection(centre,extent,SHADOW_SIZE)};
         let shared_eye=guard_depth.map_or_else(||sun_eye(centre),|range|crate::stability::shadow_eye(shared_centre,light.sun_dir,range));
         let sun_needed = sun_visibility_required(self.zero_sun_fast_path, light.sun_lux, light.debug);
+        // Snapshot the same lamps used by the shadow passes below. Animation
+        // scheduling must see all consumers before any source transforms move.
+        let headlights = if debug_options.headlights_enabled {
+            self.headlight_state.lock().unwrap().clone()
+        } else { Vec::new() };
+        let mut part_animation_views=Vec::new();
+        if self.part_wind_lod && self.part_wind.is_some() {
+            use crate::part_wind::AnimationView;
+            for view in views {
+                let (w,h)=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(view.w,view.h))?}
+                    else {(view.w,view.h)};
+                let mut projection=Mat4::perspective_infinite_reverse_rh(view.cam.fov_y,view.w as f32/view.h as f32,view.cam.near);
+                projection.z_axis.x+=jx*2.0/w as f32;projection.z_axis.y+=jy*2.0/h as f32;
+                part_animation_views.push(AnimationView {
+                    view_projection:projection*Mat4::look_at_rh(view.cam.pos,view.cam.target,Vec3::Y),
+                    // Preserve the error budget in final output pixels when
+                    // the color pass shades at a lower internal resolution.
+                    viewport:[view.w,view.h],
+                });
+            }
+            if sun_needed {part_animation_views.push(AnimationView {view_projection:svp,viewport:[SHADOW_SIZE;2]});}
+            if light.near_shadows>0.5 && light.shadow_strength>0.0 && light.sun_lux>0.0 {
+                for (vi,view) in views.iter().enumerate() {
+                    let center=if !diagnostic_sun.is_empty(){anchors[vi]}
+                        else if self.legacy_light_lookahead{view.cam.target}else{focus[vi]};
+                    part_animation_views.push(AnimationView {
+                        view_projection:sun_projection(center,NEAR_SHADOW_EXTENT,NEAR_SHADOW_SIZE),
+                        viewport:[NEAR_SHADOW_SIZE;2],
+                    });
+                }
+            }
+            for lamp in &headlights {part_animation_views.push(AnimationView {
+                view_projection:lamp.shadow_matrix(),viewport:[crate::headlights::SHADOW_SIZE;2],
+            });}
+            // Far/static foliage maps own immutable copies of their instance
+            // buffers and do not consume the animated PartWind transforms.
+            if self.part_wind.as_ref().unwrap().animation_views_changed(&part_animation_views)? {
+                self.invalidate_dynamic_shadow();
+            }
+        }
         let page_views:Vec<_>=views.iter().map(|view|crate::foliage_sun_pages::ReceiverView {
             camera:view.cam,aspect:view.w as f32/view.h as f32,
         }).collect();
@@ -3120,7 +3181,9 @@ impl Renderer {
         }
         if let Some(parts) = &self.part_wind {
             let times = self.query.as_ref().map(|(qs, _, _)| (qs, ts));
-            if parts.encode(gpu, &mut enc, times) && times.is_some() {
+            let encoded=if self.part_wind_lod {parts.encode_with_views(gpu,&mut enc,&part_animation_views,times)?}
+                else {parts.encode(gpu,&mut enc,times)};
+            if encoded && times.is_some() {
                 timestamp_pair(&mut ts);
                 names.push("vegetation branch poses");
             }
@@ -3191,9 +3254,6 @@ impl Renderer {
         // One perspective map per headlamp, shared by every split view. The
         // shadow bind group contains a different dummy sampled texture so the
         // active depth attachment is never simultaneously bound for reading.
-        let headlights = if debug_options.headlights_enabled {
-            self.headlight_state.lock().unwrap().clone()
-        } else { Vec::new() };
         let local_lights=self.local_light_state.lock().unwrap().clone();
         let spot_falloff=self.spot_falloff.lock().unwrap().clone();
         self.headlights.upload(gpu,&headlights,&local_lights,&spot_falloff);
@@ -3365,7 +3425,12 @@ impl Renderer {
             jittered.z_axis.y += jy * 2.0 / h as f32;
             let main = self.view_targets(gpu, "view", vi + 1);
             let mut foliage_changed=false;
-            if !self.foliage_representations.is_empty() {
+            if let Some(selector)=&self.aggregate_lod {
+                let time=self.query.as_ref().map(|(q,_,_)|(q,timestamp_pair(&mut ts)));
+                if time.is_some(){names.push("aggregate error selection");}
+                selector.encode(gpu,&mut enc,&main.foliage_selection,proj*view_m,[view.w,view.h],
+                    self.aggregate_lod_enabled.load(std::sync::atomic::Ordering::Relaxed),time)?;
+            } else if !self.foliage_representations.is_empty() {
                 // Output-pixel, unjittered selection; every split view owns its
                 // own history and the same 4 KiB source/volume decision buffer.
                 let decisions = foliage_planners[vi].plan(&self.foliage_representations,
@@ -3594,13 +3659,14 @@ impl Renderer {
                             &main.spatial_owners,&self.instance_groups.owners,times);
                     }
                     if let Some(forest) = &self.voxel_forest {
-                        let times = ["voxel tiles", "voxel integrate", "voxel composite"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
-                            let i=timestamp_pair(&mut ts); names.push(name); (qs,i)
-                        }));
+                        let times = ["voxel bins", "voxel tiles", "voxel visibility", "voxel integrate", "voxel composite"].map(|name|{
+                            if name=="voxel visibility" && !forest.has_visibility_stream() {return None;}
+                            self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts); names.push(name); (qs,i)})
+                        });
                         forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
                             volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
                             up.motion.as_ref().filter(|_|dlss_on).map(|motion|crate::voxel_forest::TemporalInputs {
-                                previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),times);
+                                previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),times)?;
                     }
                     if let Some(grass) = self.grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()) {
                         let transition_times = self.query.as_ref().map(|(qs, _, _)| {
@@ -4585,19 +4651,24 @@ mod layout_tests {
         for _ in 0..5 {timestamp_pair(&mut next);}
         assert_eq!(next,364);
         assert!(next<=TIMESTAMP_CAPACITY);
+        // Aggregate error selection and volume binning add two passes per view.
+        for _ in 0..8 {timestamp_pair(&mut next);}
+        assert_eq!(next,380);
         timestamp_pair(&mut next); // shared receiver demand build + OR hierarchy
-        assert_eq!(next,366);
+        assert_eq!(next,382);
         assert!(next<=TIMESTAMP_CAPACITY);
         for _ in 0..4 {timestamp_pair(&mut next);} // one bounded bloom scope per view
-        assert_eq!(next,374);
+        assert_eq!(next,390);
         assert!(next<=TIMESTAMP_CAPACITY);
         // The legacy aggregate envelope aliases depth-start/illumination-end.
         // Three physical pairs replace its one pair: only two extra per view.
         for _ in 0..(4 * 2) { timestamp_pair(&mut next); }
-        assert_eq!(next,390);
+        assert_eq!(next,406);
         assert!(next<=TIMESTAMP_CAPACITY);
         for _ in 0..4 { timestamp_pair(&mut next); } // per-view local grass occupancy
-        assert_eq!(next,398);
+        assert_eq!(next,414);
+        for _ in 0..4 {timestamp_pair(&mut next);} // separate voxel visibility stream per view
+        assert_eq!(next,422);
         assert!(next<=TIMESTAMP_CAPACITY);
         let brick_fixture_upper_bound = 330 - 4*6*2 + (8+4*3)*2;
         assert!(brick_fixture_upper_bound <= TIMESTAMP_CAPACITY);

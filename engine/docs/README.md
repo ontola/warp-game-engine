@@ -16,6 +16,11 @@ scripts and sound patches, such as
 
 Start with the overview, then build and run something.
 
+## Vegetation development hand-off
+
+[Continue the shared-assembly and brick-visibility work](vegetation-next-agent.md):
+reproduction commands, current performance, source reference and next steps.
+
 ## Guides
 
 | Guide | What it covers |
@@ -76,6 +81,7 @@ Meadow and grass:
 Trees and vegetation:
 
 - [Unified vegetation: shared primitives and branch poses](unified-vegetation.md)
+- [Species recipes from shared primitives](vegetation-species.md)
 - [Vegetation work by distance, r31](vegetation-distance-budget.md)
 - [Vegetation source LOD and volume work, r32](vegetation-optimization-r32.md)
 - [Forest fullness and current-frame culling, r38](forest-occlusion-r38.md)
