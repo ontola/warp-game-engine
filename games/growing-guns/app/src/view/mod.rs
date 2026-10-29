@@ -43,6 +43,9 @@ pub const COOP_VIEW_PLAYERS: usize = 24;
 const MAX_LIGHTS: usize = render::headlights::MAX_LOCAL_LIGHTS;
 /// Of those, the most that ion strikes and blasts take, so the floodlights
 /// and the lava keep theirs.
+/// Share of the floods' intensity that comes back off the field as fill
+/// (`flood_bounce`; `GG_BOUNCE` overrides).
+const FLOOD_BOUNCE: f32 = 0.15;
 const MAX_TRANSIENT_LIGHTS: usize = MAX_LIGHTS - 4 - lava::MAX_LAVA_LIGHTS;
 /// Scatter weights for the night's volumetric light: the wide floodlights,
 /// their narrow beams, the lava's glow and the roof beacons. Tuned on the
@@ -338,6 +341,12 @@ impl Visuals {
         l.truncate(MAX_TRANSIENT_LIGHTS);
         let mut w = vec![0.0; l.len()];
         let flood = self.flood;
+        // Shadowed floods: their light bouncing off the field fills the
+        // shade (else pitch black at night), as unshadowed soft lights.
+        if self.flood_shadows() {
+            l.extend(self.flood_bounce().into_iter().take(MAX_LIGHTS - l.len()));
+            w.resize(l.len(), 0.0);
+        }
         if !self.flood_shadows() {
             l.extend(self.stadium.lights().iter().take(MAX_LIGHTS - l.len()).map(|f| LocalLight { intensity_cd: f.intensity_cd * flood, ..*f }));
             w.resize(l.len(), scatter.flood);
@@ -369,6 +378,24 @@ impl Visuals {
                 intensity_cd: (f.intensity_cd * self.flood).min(Vec3::splat(1.0e8)), range_m: f.range_m.clamp(1.0, 200.0),
                 inner_angle_radians: f.inner_cos.clamp(-1.0, 1.0).acos(), outer_angle_radians: f.outer_cos.clamp(-1.0, 1.0).acos().min(1.3),
             }
+        }).collect()
+    }
+
+    /// The floods' light off the field (cheap GI for `flood_shadows`): one
+    /// soft light high over the centre and one toward each tower, together
+    /// a share of what the floods put on the field.
+    fn flood_bounce(&self) -> Vec<LocalLight> {
+        let floods = self.stadium.lights();
+        if floods.is_empty() { return Vec::new(); }
+        let k: f32 = std::env::var("GG_BOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(FLOOD_BOUNCE);
+        // The field's stone lifts the floods' white a little toward warm.
+        let tint = Vec3::new(1.0, 0.93, 0.84);
+        let total: Vec3 = floods.iter().map(|f| f.intensity_cd).sum::<Vec3>() * self.flood * k * tint;
+        let spots: Vec<Vec3> = std::iter::once(Vec3::ZERO).chain(floods.iter().map(|f| f.position.with_y(0.0) * 0.35)).collect();
+        let reach = floods.iter().map(|f| f.position.with_y(0.0).length()).fold(0.0, f32::max);
+        spots.iter().map(|&p| LocalLight {
+            position: p + Vec3::Y * 4.0, direction: Vec3::NEG_Y, intensity_cd: total / spots.len() as f32,
+            range_m: (reach * 0.8).clamp(10.0, 120.0), inner_cos: -0.99, outer_cos: -1.0, source_radius_m: 1.0, falloff: 2.0,
         }).collect()
     }
 
