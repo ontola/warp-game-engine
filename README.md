@@ -68,3 +68,7 @@ are experimental, disabled by default, and still require GPU/visual validation.
 The Godot implementation and export workflow are retired. Historical
 measurements remain as evidence, without ongoing comparisons.
 [Third-party asset credits](games/sideways/CREDITS.md).
+
+Growing Guns stadium lighting now has [cached diffuse sky return](engine/docs/stadium-sky-occlusion.md),
+including invalid-probe rejection. Native 4K/four-view fixture: +0.43 ms GPU;
+covered rows retain more detail. Direct-sun bounce remains missing.
