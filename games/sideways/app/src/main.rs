@@ -17,6 +17,7 @@ mod grass_field;
 mod live_ground_cover;
 mod nature;
 mod upscale;
+mod adaptive_quality;
 mod far_ground_cover;
 mod input;
 mod hud;
