@@ -359,7 +359,8 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     // Ground keeps getting rougher the closer you look, whatever the relief:
     // metres of roughness per octave fall off as wavelength^0.6, from
     // 0.8 m at 16 m: hummocks a hand high on pasture. Rock breaks into
-    // sharp creases.
+    // sharp creases, only where the mesh has the vertices to hold them
+    // (a crease between vertices shows as a dotted grid).
     let mut da = 0.8 * mix(0.6 + 0.8 * smooth(0.97, 0.8, up0) + 0.3 * moor, 2.5, rock);
     for i in 7..17u32 {
         let w = fade(wl, cut);
@@ -367,7 +368,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
         let n = noised(q, sd(10 + i));
         d += Vec2::new(n.y, n.z);
         let e = 1.0 / (1.0 + 0.25 * (d.x * d.x + d.y * d.y));
-        y += (db * n.x * rough + da * mix(n.x, 0.45 - n.x.abs(), rock)) * e * w * (0.35 + 0.65 * open);
+        y += (db * n.x * rough + da * mix(n.x, 0.45 - n.x.abs(), rock * fade(0.5 * wl, cut))) * e * w * (0.35 + 0.65 * open);
         db *= 0.5;
         da *= 0.659_753_9;
         wl *= 0.5;
