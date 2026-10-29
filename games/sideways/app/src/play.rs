@@ -387,6 +387,8 @@ struct App {
     /// frame) is never the texture the next frame renders into.
     outputs: [Option<wgpu::Texture>; 2],
     deferred_host: Vec<Command>,
+    /// A prepared session to report ready after its first rendered frame.
+    ready_due: Option<String>,
     smoke_stage_requested: bool,
     /// Interactive play only: render scale and grass reach follow the frame rate.
     quality: Option<crate::adaptive_quality::AdaptiveQuality>,
@@ -958,7 +960,11 @@ impl App {
                     self.ambient_clock=AmbientClock::new(self.args.smoke_frames>0);
                     let seats=self.seats.clone();self.profiles(&seats);self.paused=false;self.finished_round=0;self.reset_round_input();
                     self.rebuild()?;
-                    let host=self.host.as_mut().unwrap();host.notify_participation(&session,false)?;host.notify_ready(&session)?;
+                    let host=self.host.as_mut().unwrap();host.notify_participation(&session,false)?;
+                    // Ready once a frame of this stage is rendered (offscreen
+                    // while hidden): the host must not bring the game forward
+                    // onto a loading screen; that work belongs behind the lobby.
+                    self.ready_due=Some(session);
                 }
                 Command::Start{..}|Command::Resume{..}=>{self.paused=false;self.input_edges=[(0,false);4];self.accumulator=0.0;self.last_frame=Instant::now();self.managed_screen(true);}
                 Command::Pause{..}=>{self.accumulator=0.0;self.input_edges=[(0,false);4];self.managed_screen(false);}
@@ -1349,6 +1355,7 @@ impl App {
         }
         let presented_before=self.presented;
         let mut hidden_target=None;
+        let mut ready_now=false;
         if self.rendered==1 { println!("play: first scene frame submitted"); }
         frame_profile::section(trace,"present_acquire");
         if invisible {
@@ -1364,12 +1371,14 @@ impl App {
             frame_profile::section(trace,"present_submit");
             g.presenter.present(&g.gpu,&image,&target.create_view(&Default::default()),g.hud.as_ref().filter(|_|draw_list.is_some()),g.hud_profile.as_mut())?;
             hidden_target=Some(target);
+            ready_now=true;
         } else { match g.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 frame_profile::section(trace,"present_submit");
                 g.presenter.present(&g.gpu, &image, &frame.texture.create_view(&Default::default()),g.hud.as_ref().filter(|_|draw_list.is_some()),None)?;
                 self.window.as_ref().unwrap().pre_present_notify();
                 g.gpu.queue.present(frame); self.presented += 1;
+                ready_now=true;
             }
             wgpu::CurrentSurfaceTexture::Outdated => g.surface.configure(&g.gpu.device, &g.config),
             wgpu::CurrentSurfaceTexture::Lost => {
@@ -1379,6 +1388,9 @@ impl App {
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {},
             wgpu::CurrentSurfaceTexture::Validation => return Err("surface validation failure".into()),
         }}
+        if ready_now && let Some(session)=self.ready_due.take() && let Some(host)=self.host.as_mut() {
+            if host.state.session==session {host.notify_ready(&session)?;}
+        }
         frame_profile::section(trace,"diagnostic_wait");
         // Hidden smoke deliberately waits: there is no swapchain backpressure
         // to bound queued frames. Its samples remain diagnostic_sync; actual
@@ -1723,7 +1735,7 @@ pub fn run(raw:&[String])->i32{
     let mut exhaust=crate::exhaust_fx::ExhaustFx::new(a.seed);exhaust.step(&race);
     let mut wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);wheel_effects.step(&race);
     let start_paused=a.start_paused;
-    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],smoke_stage_requested:false,quality:None};
+    let mut app=App{debug,upscale_error:None,gpu_profile,frame_profile,scenario,startup_timing,requested_output_size:[a.size.0,a.size.1],args:a,race,built,light,exhaust,wheel_effects,sky_metadata,sky_controls,pause_menu:Default::default(),input:Input::new(),window:None,graphics:None,startup:None,last_startup:serde_json::Value::Null,focused:true,paused:start_paused,last_frame:now,started:now,last_title:now,last_trace:now,accumulator:0.0,ambient_clock,rendered:0,presented:0,initial_positions:poses.iter().map(|p|p.pos.to_array()).collect(),controls:vec![],yaw:[0.0;4],far:[false;4],orbit_active:[false;4],camera_rest,error:None,exit_reason:String::new(),host,seats,view_order,pending_settings:settings.clone(),active_settings:settings,input_edges:[(0,false);4],look:[[0.0;2];4],finished_round:0,resume_fullscreen,manners:Default::default(),hud_stats:serde_json::Value::Null,hud_samples:vec![],screenshot_pending:false,screenshot_toast:None,live_edit:crate::car_look::LiveEdit::new(looks),sound:None,sound_failed:false,loading:None,tree_baseline,tree_loading:None,tree_loading_settings:tree_settings,last_tree_load:serde_json::Value::Null,last_stage_load:serde_json::Value::Null,loading_error:None,cached_picture:None,outputs:[None,None],deferred_host:vec![],ready_due:None,smoke_stage_requested:false,quality:None};
     app.startup_timing.mark("host_input_application_setup");
     let events=match EventLoop::new(){Ok(e)=>e,Err(e)=>{eprintln!("play event loop: {e}");return 1;}};
     app.startup_timing.mark("event_loop_creation");
