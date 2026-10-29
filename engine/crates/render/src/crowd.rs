@@ -32,6 +32,8 @@ pub struct Seat {
     pub yaw: f32,
     /// Height in metres.
     pub scale: f32,
+    /// Shoulder width and depth relative to the height (1 the mesh as built).
+    pub width: f32,
     /// 0..1: animation phase and how far it runs when scared.
     pub phase: f32,
     /// 0..1: cheer tempo.
@@ -44,7 +46,7 @@ pub struct Seat {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct GpuSeat { pos_yaw: [f32; 4], params: [f32; 4], meshes: [u32; 4] }
+struct GpuSeat { pos_yaw: [f32; 4], params: [f32; 4], meshes: [u32; 4], shape: [f32; 4] }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -99,7 +101,7 @@ impl Crowd {
         self.seats = seats.iter().map(|s| {
             let (b, a) = (&scene.meshes[s.body], &scene.meshes[s.arms]);
             GpuSeat { pos_yaw: s.pos.extend(s.yaw).to_array(), params: [s.scale, s.phase, s.tempo, s.hop],
-                meshes: [b.first_cluster, b.cluster_count, a.first_cluster, a.cluster_count] }
+                meshes: [b.first_cluster, b.cluster_count, a.first_cluster, a.cluster_count], shape: [s.width, 0.0, 0.0, 0.0] }
         }).collect();
         self.count = seats.len();
         self.positions = seats.iter().map(|s| s.pos).collect();
@@ -260,7 +262,7 @@ mod tests {
     fn crowd_wgsl_validates_and_layouts_match() {
         let module = naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
-        assert_eq!(std::mem::size_of::<GpuSeat>(), 48);
+        assert_eq!(std::mem::size_of::<GpuSeat>(), 64);
         assert_eq!(std::mem::size_of::<Uniform>(), 144);
     }
 
@@ -269,7 +271,7 @@ mod tests {
         let mut scene = Scene::default();
         let m = scene.add_material(crate::scene::Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: 0, scale: 1.0, metal: 0.0 });
         let cube = scene.add_mesh(&crate::primitives::cube(m).mesh());
-        let seats: Vec<Seat> = (0..10).map(|i| Seat { pos: Vec3::new(i as f32, 0.0, 30.0), yaw: 0.0, scale: 1.7, phase: 0.5, tempo: 0.5, hop: 0.2, body: cube, arms: cube }).collect();
+        let seats: Vec<Seat> = (0..10).map(|i| Seat { pos: Vec3::new(i as f32, 0.0, 30.0), yaw: 0.0, scale: 1.7, width: 1.0, phase: 0.5, tempo: 0.5, hop: 0.2, body: cube, arms: cube }).collect();
         let mut c = Crowd::reserve(&mut scene, 12);
         assert_eq!(scene.instances.len(), 24);
         c.set_seats(&scene, &seats, Vec2::ZERO);
