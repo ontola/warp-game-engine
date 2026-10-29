@@ -2297,7 +2297,9 @@ local function tick(dt, input)
 		if alive(p) then live += 1 end
 	end
 	if live == 0 and #s.players > 0 then s.wipe += dt else s.wipe = 0 end
-	if s.wipe >= 2 then finish(false) end
+	-- Alone there is no one to revive you: straight to the end screen after
+	-- the ship has blown apart; together the others get two seconds.
+	if s.wipe >= (if #s.players > 1 then 2 else 0.8) then finish(false) end
 	if s.won and not s.over then
 		s.victoryClock += dt
 		if s.victoryClock >= 2.5 then finish(true) end
@@ -2352,7 +2354,7 @@ local function draw()
 	-- A downed pilot is a ring of dots that fills while a teammate stays close.
 	if not s.over then
 		for _, p in s.players do
-			if p.hp <= 0 then
+			if p.hp <= 0 and #s.players > 1 then
 				local x, y = hud.project(at(p.x, p.y, 0.15))
 				if x then
 					-- A ring of dots fills clockwise while a teammate stays close.
