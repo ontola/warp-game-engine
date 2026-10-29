@@ -424,6 +424,8 @@ pub struct Scene {
     /// Indoor irradiance probes in `aux` (`reserve_irradiance_volume`): the
     /// word offset of their header and the grid.
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
+    /// Bullet dents in ROCK surfaces (`reserve_dents`): word offset and capacity.
+    pub dents: Option<(usize, usize)>,
     /// A procedural terrain patch pool (`procedural_terrain::reserve`).
     pub procedural_terrain: Option<crate::procedural_terrain::TerrainSpec>,
     /// A GPU-simulated debris pool (`debris::Debris::reserve`).
@@ -648,6 +650,18 @@ impl Scene {
     }
 
     /// Add an already decoded image to the texture array; returns its layer.
+    /// Reserve room in `aux` for `capacity` bullet dents (`dents`), none
+    /// until `Renderer::set_dents`. Call after the game's own `aux` data.
+    pub fn reserve_dents(&mut self, capacity: usize) -> Result<(), String> {
+        if self.dents.is_some() { return Err("the scene already has dents".into()); }
+        if self.aux.is_empty() { self.aux.push(0); }
+        let words = crate::dents::words(capacity);
+        if self.aux.len() + words >= 1 << 24 { return Err("aux too large for a dent offset".into()); }
+        self.dents = Some((self.aux.len(), capacity));
+        self.aux.extend(crate::dents::pack(capacity, &[]));
+        Ok(())
+    }
+
     /// Reserve indoor irradiance probes (`irradiance_volume`) in `aux`, dark
     /// until `Renderer::set_irradiance_volume`. Call after the game's own
     /// `aux` data is in place; one volume per scene.

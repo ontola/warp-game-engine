@@ -49,7 +49,9 @@ pub mod palette {
 
 /// Godot's hairline mortar gap between bricks.
 const VISUAL_CHUNK_INSET: f32 = 0.992;
-const MARKS: usize = 1024;
+const MARKS: usize = 384;
+/// Bullet dents the stone shader carves at once (oldest go first).
+const DENTS: usize = 2048;
 /// Every chunk of the largest arena (a sniper fight).
 const ARENA_SLOTS: usize = growing_guns::arena::MAX_PIECES;
 
@@ -76,7 +78,7 @@ impl KindMeshes {
 
 /// Scorch and blood marks: a ring of slots, oldest reused first; each knows
 /// the chunk it sits on and goes when that chunk breaks.
-struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, scorch: usize, blood: usize, fresh: usize }
+struct Marks { slots: Slots, ring: Vec<(SlotId, u32)>, next: usize, scorch: usize, blood: usize }
 
 pub struct ArenaView {
     slots: Slots,
@@ -92,6 +94,10 @@ pub struct ArenaView {
     /// Wear level shown per chunk (0 intact, 1 cracked, 2 crumbling).
     shown_wear: Vec<u8>,
     marks: Marks,
+    /// Live bullet dents and the chunk each sits on; uploaded when changed.
+    dents: Vec<(render::dents::Dent, u32)>,
+    next_dent: usize,
+    dents_changed: bool,
     lights: Vec<LocalLight>,
     occupancy_repair: OccupancyRepair,
     /// The light the lava casts.
@@ -136,10 +142,9 @@ impl ArenaView {
         let slots = Slots::reserve(scene, ARENA_SLOTS);
         let scorch_m = material(scene, [0.06, 0.055, 0.05], 0.95);
         let blood_m = material(scene, [0.36, 0.02, 0.015], 0.35);
-        // Freshly broken stone: paler than the weathered face around it.
-        let fresh_m = material(scene, [0.58, 0.54, 0.48], 0.97);
-        let marks = Marks { slots: Slots::reserve(scene, MARKS), ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10), fresh: super::sphere(scene, fresh_m, 4, 7) };
-        ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), static_set: Default::default(), static_shapes: Vec::new(), shown_wear: Vec::new(), marks, lights: Vec::new(), occupancy_repair: Default::default(), lava: Default::default() }
+        let marks = Marks { slots: Slots::reserve(scene, MARKS), ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
+        if let Err(e) = scene.reserve_dents(DENTS) { eprintln!("growing-guns: no bullet dents: {e}"); }
+        ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), static_set: Default::default(), static_shapes: Vec::new(), shown_wear: Vec::new(), marks, dents: Vec::new(), next_dent: 0, dents_changed: false, lights: Vec::new(), occupancy_repair: Default::default(), lava: Default::default() }
     }
 
     /// Fill the slots, colliders and debris grid from the world's arena (a
@@ -148,6 +153,7 @@ impl ArenaView {
         self.slots.clear(scene);
         self.marks.slots.clear(scene);
         self.marks.ring.clear();
+        if !self.dents.is_empty() { self.dents.clear(); self.dents_changed = true; }
         let a = &world.arena;
         self.island = a.variant == growing_guns::arena::Variant::Island;
         // Keep chunk indices (including holes) stable, then the stands. An
@@ -181,6 +187,11 @@ impl ArenaView {
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene) -> Result<(), String> {
         self.slots.flush(gpu, renderer, scene)?;
+        if self.dents_changed {
+            self.dents_changed = false;
+            let dents: Vec<_> = self.dents.iter().map(|d| d.0).collect();
+            renderer.set_dents(gpu, &dents)?;
+        }
         self.marks.slots.flush(gpu, renderer, scene)
     }
 
@@ -197,22 +208,12 @@ impl ArenaView {
     /// A scorch mark on the stone a bullet hit.
     pub fn scorch(&mut self, scene: &mut Scene, xf: Affine3A, chunk: u32) { self.marks.place(scene, self.marks.scorch, xf, chunk) }
 
-    /// A bullet hole: a ragged patch of pale, freshly broken stone where
-    /// chips came off, with a dark pit and two smaller pits in it.
-    pub fn bullet_hole(&mut self, scene: &mut Scene, pos: Vec3, normal: Vec3, r: f32, seed: u32, chunk: u32) {
-        let rot = Quat::from_rotation_arc(Vec3::Y, normal);
-        let (t, b) = normal.any_orthonormal_pair();
-        let rnd = |k: u32| ((seed.wrapping_mul(2654435761).rotate_left(k * 7) >> 8) & 0xffff) as f32 / 65535.0;
-        let spin = rot * Quat::from_rotation_y(rnd(1) * std::f32::consts::TAU);
-        let patch = Vec3::new(r * (1.1 + rnd(2) * 0.5), 0.016, r * (0.8 + rnd(3) * 0.4));
-        self.marks.place(scene, self.marks.fresh, Affine3A::from_scale_rotation_translation(patch, spin, pos), chunk);
-        self.marks.place(scene, self.marks.scorch, Affine3A::from_scale_rotation_translation(Vec3::new(r * 0.55, 0.026, r * 0.5), spin, pos), chunk);
-        for k in 0..2 {
-            let a = rnd(4 + k) * std::f32::consts::TAU;
-            let at = pos + (t * a.cos() + b * a.sin()) * r * (0.45 + rnd(6 + k) * 0.35);
-            let s = r * (0.18 + rnd(8 + k) * 0.17);
-            self.marks.place(scene, self.marks.scorch, Affine3A::from_scale_rotation_translation(Vec3::new(s, 0.024, s * 0.8), spin, at), chunk);
-        }
+    /// A bullet hole: a dent the stone shader carves into the chunk at `pos`
+    /// (on its surface), `radius` metres; it goes when the chunk breaks.
+    pub fn bullet_hole(&mut self, pos: Vec3, radius: f32, chunk: u32) {
+        let dent = (render::dents::Dent { pos: pos.to_array(), radius }, chunk);
+        if self.dents.len() < DENTS { self.dents.push(dent); } else { self.dents[self.next_dent % DENTS] = dent; self.next_dent += 1; }
+        self.dents_changed = true;
     }
 
     /// A blood splat on the stone.
@@ -254,6 +255,9 @@ impl ArenaView {
             if let Some(slot) = self.chunk_slots[i as usize].take() { self.slots.remove(scene, slot); }
             if let Some(h) = self.statics[i as usize].take() { phys.remove_static(h); }
             self.marks.drop_on(scene, i);
+            let before = self.dents.len();
+            self.dents.retain(|d| d.1 != i);
+            if self.dents.len() != before { self.dents_changed = true; self.next_dent = 0; }
         }
         self.occupancy_repair.apply(fx.debris.occupancy_mut(), &world.arena, &b.removed);
         // Rubble from each blast (Godot `request_burst`): 70 shards per

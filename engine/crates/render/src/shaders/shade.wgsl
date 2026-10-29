@@ -665,6 +665,62 @@ fn apply_distance_fog(radiance: vec3<f32>, distance: f32, direction: vec3<f32>) 
 // point in `aux`. Returns irradiance and a weight, 1 inside the grid, fading
 // to 0 over the outer half cell, 0 without a volume.
 fn aux_f32(i: u32) -> f32 { return bitcast<f32>(aux[i]); }
+
+// Bullet dents (dents.rs): the aux offset of their grid, 0 for none.
+fn view_hf_dents() -> u32 { return gi.hf_dims.w; }
+
+// The craters around p on a ROCK face with geometric normal `face`: a
+// ragged paraboloid bowl per dent bends `normal` towards its centre and
+// darkens the inside (occlusion), with a paler rim of fresh stone.
+// Returns (normal, albedo multiplier).
+fn rock_dents(p: vec3<f32>, face: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
+    let o = view_hf_dents();
+    let buckets = aux[o];
+    let index_cap = aux[o + 2u];
+    let cell_m = aux_f32(o + 3u);
+    let c = vec3<i32>(floor(p / cell_m));
+    let h = (u32(c.x) * 73856093u) ^ (u32(c.y) * 19349663u) ^ (u32(c.z) * 83492791u);
+    let entry = aux[o + 4u + (h & (buckets - 1u))];
+    let count = min(entry & 255u, 15u);
+    var nn = normal;
+    var dim = 1.0;
+    let list = o + 4u + buckets + (entry >> 8u);
+    let dent_base = o + 4u + buckets + index_cap;
+    for (var k = 0u; k < count; k++) {
+        let i = aux[list + k];
+        let q = dent_base + i * 4u;
+        let centre = vec3<f32>(aux_f32(q), aux_f32(q + 1u), aux_f32(q + 2u));
+        let r = aux_f32(q + 3u);
+        let v = p - centre;
+        let along = dot(v, face);
+        if abs(along) > r * 0.6 { continue; }
+        let t = v - face * along;
+        let d = length(t);
+        if d >= r * 1.25 { continue; }
+        // Ragged outline: the edge wobbles with the angle around the centre.
+        let tx = safe_normalize(cross(face, select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(face.y) > 0.9)));
+        let ty = cross(face, tx);
+        let a = atan2(dot(t, ty), dot(t, tx));
+        let seed = f32(i % 97u) * 1.7;
+        let edge = r * (0.82 + 0.13 * sin(a * 3.0 + seed) + 0.08 * sin(a * 7.0 + seed * 2.3) + 0.05 * sin(a * 13.0 + seed * 0.7));
+        let x = d / edge;
+        if x < 1.0 {
+            // Bowl depth 45% of the radius; its slope tips the normal inwards.
+            let depth = 0.45;
+            let slope = 2.0 * depth * x;
+            let inward = select(vec3<f32>(0.0), -t / d, d > 1e-5);
+            nn = safe_normalize(nn + inward * slope * 1.6);
+            // Pits inside the bowl: chipped facets.
+            let grain = sin(a * 5.0 + x * 9.0 + seed) * 0.5 + 0.5;
+            dim *= mix(0.42, 1.0, x * x) * mix(0.9, 1.05, grain);
+        } else if x < 1.25 {
+            // The rim of freshly broken stone, paler than the weathered face.
+            let rim = 1.0 - abs(x - 1.08) / 0.17;
+            dim *= 1.0 + 0.22 * clamp(rim, 0.0, 1.0);
+        }
+    }
+    return vec4<f32>(nn, dim);
+}
 // Visibility stores the same scalar in RGB; avoid fetching its duplicate channels.
 fn probe_axis(base: u32, visibility: bool) -> vec3<f32> {
     if visibility { return vec3<f32>(aux_f32(base)); }
@@ -1673,7 +1729,13 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         }
         base = rs.base;
         rough_m = rs.rough;
+        let face = n;
         n = rs.normal;
+        if view_hf_dents() != 0u {
+            let dent = rock_dents(p, face, n);
+            base *= dent.w;
+            n = dent.xyz;
+        }
     }
     var metal = m.metal;
     var coat = select(0.0, 1.0, (m.flags & 32u) != 0u);
