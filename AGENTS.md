@@ -54,10 +54,21 @@ and copies the image to the clipboard. `terrain_fly --from <that.json>` puts
 the camera back where it was. F3 opens the engine debug menu (render and
 light switches, LOD, render height, GPU pass times; games add their own).
 
+Procedural terrain has one height function in two copies that must stay
+line for line identical: `render/src/terrain_field.rs` (CPU: LOD error,
+collision, baking) and `render/src/shaders/terrain_field.wgsl` (GPU patches).
+Check parity with `cargo run --release -p render --example procedural_terrain
+-- --dump --only NAME` (one shot at a time; the full suite reports false
+mismatches). Surface shading lives in `shaders/terrain_surface.wgsl`. Far
+mountain shadows are baked (`procedural_terrain::sun_heightfield` into
+`Scene::terrain_sun`); keep heightfield heights at the -1e9 sentinel for
+procedural terrain, real coarse heights black out pixels in GI/transmittance.
+
 ## Rules
 
 Preserve attribution, licenses and unrelated work. Never reset or stash another
 task's changes. Check absolute paths and dependencies before moves/deletions.
+Commit and push straight to `main` (no pull requests); never force push.
 
 Physics stays at 120 Hz with four substeps. Reorganization must preserve
 simulation output and retained asset bytes. The Godot implementation, export
