@@ -1061,6 +1061,16 @@ impl World {
         self.on_cast(&s);
         let pos = self.pos(id);
         let mods = self.mods(id);
+        // Wind-up spells ask the Luau hooks when they are let go.
+        let s = if crate::spells::winds_up(s.shape) {
+            s
+        } else {
+            match crate::rules::cast(self, id, w.seat, w.aim_dir, &s) {
+                crate::rules::Cast::Keep => s,
+                crate::rules::Cast::Skip => return,
+                crate::rules::Cast::Instead(t) => *t,
+            }
+        };
         match s.shape {
             Shape::Spray | Shape::Beam | Shape::Strike | Shape::Projectile | Shape::Overload => {
                 w.charge_t = 0.0;
@@ -1126,6 +1136,11 @@ impl World {
         let s = *w.charging.take().unwrap();
         w.mark = None;
         w.cast_anim = 0.3;
+        let s = match crate::rules::cast(self, id, w.seat, w.aim_dir, &s) {
+            crate::rules::Cast::Keep => s,
+            crate::rules::Cast::Skip => return,
+            crate::rules::Cast::Instead(t) => *t,
+        };
         let tip = staff_tip(self.pos(id), w);
         // The spell leaves the staff with a flash.
         self.burst(tip, crate::spells::color(&s), 14, 4.0, 0.14, None);

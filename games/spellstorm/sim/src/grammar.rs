@@ -297,8 +297,14 @@ fn adjectives(payload: &[El]) -> String {
 }
 
 /// `slots` in queue order. `mods` are the caster's tomes; they change
-/// numbers, never the shape or the name.
+/// numbers, never the shape or the name. The Luau rules decide when they
+/// are installed (crate::rules), else the built-in grammar below.
 pub fn compose(slots: &[El], form: Form, mods: &Mods) -> Spell {
+    crate::rules::compose(slots, form, mods).unwrap_or_else(|| builtin(slots, form, mods))
+}
+
+/// The built-in grammar (grammar.gd), which mods/base/spells.luau ports.
+pub fn builtin(slots: &[El], form: Form, mods: &Mods) -> Spell {
     let mut counts: Vec<(El, u8)> = Vec::new();
     for &e in slots {
         match counts.iter_mut().find(|c| c.0 == e) {

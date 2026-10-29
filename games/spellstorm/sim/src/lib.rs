@@ -19,6 +19,7 @@ pub mod pickups;
 pub mod queue;
 pub mod relics;
 pub mod rng;
+pub mod rules;
 pub mod run;
 pub mod sim;
 pub mod spells;

@@ -116,6 +116,32 @@ pub const ALL: [Relic; 16] = [
     ),
 ];
 
+/// A tome as the game uses it: the built-in ones, or the Luau rules'
+/// (mods/base/tomes.luau).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tome {
+    pub name: String,
+    pub text: String,
+    pub mods: Vec<Mod>,
+}
+
+static TOMES: std::sync::RwLock<Option<std::sync::Arc<Vec<Tome>>>> = std::sync::RwLock::new(None);
+
+/// Every tome a shrine may offer, by index.
+pub fn all() -> std::sync::Arc<Vec<Tome>> {
+    if let Some(t) = TOMES.read().unwrap().as_ref() {
+        return t.clone();
+    }
+    let built: std::sync::Arc<Vec<Tome>> = std::sync::Arc::new(ALL.iter().map(|r| Tome { name: r.name.into(), text: r.text.into(), mods: r.mods.to_vec() }).collect());
+    *TOMES.write().unwrap() = Some(built.clone());
+    built
+}
+
+/// The tomes from now on; None goes back to the built-in ones.
+pub fn set_tomes(t: Option<Vec<Tome>>) {
+    *TOMES.write().unwrap() = t.map(std::sync::Arc::new);
+}
+
 /// A wizard's tomes folded together: factors multiply, health adds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mods {
@@ -157,8 +183,10 @@ impl Default for Mods {
 impl Mods {
     pub fn of(relics: &[usize]) -> Mods {
         let mut m = Mods::default();
+        let all = all();
         for &i in relics {
-            for md in ALL[i].mods {
+            let Some(t) = all.get(i) else { continue };
+            for md in &t.mods {
                 match *md {
                     M::El(e, f) => m.el[e.idx()] *= f,
                     M::Charge(f) => m.charge *= f,
@@ -182,7 +210,7 @@ impl Mods {
 
 /// `n` different tomes, none of them in `avoid` (indices into ALL).
 pub fn pick(n: usize, rng: &mut Pcg, avoid: &[usize]) -> Vec<usize> {
-    let mut pool: Vec<usize> = (0..ALL.len()).filter(|i| !avoid.contains(i)).collect();
+    let mut pool: Vec<usize> = (0..all().len()).filter(|i| !avoid.contains(i)).collect();
     let mut out = Vec::new();
     while out.len() < n && !pool.is_empty() {
         let i = rng.next_u32() as usize % pool.len();

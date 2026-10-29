@@ -102,6 +102,13 @@ const fn eff(dmg: f64) -> Effect {
     }
 }
 
+static EFFECTS: std::sync::RwLock<[Effect; 13]> = std::sync::RwLock::new(EFFECT);
+
+/// Every element's effect from now on (the Luau rules set them).
+pub fn set_effects(e: [Effect; 13]) {
+    *EFFECTS.write().unwrap() = e;
+}
+
 pub const EFFECT: [Effect; 13] = [
     Effect {
         poison: 1.0,
@@ -175,8 +182,9 @@ impl El {
         COLOR[self as usize]
     }
 
-    pub fn effect(self) -> &'static Effect {
-        &EFFECT[self as usize]
+    /// What one unit does on a hit: the Luau rules' `effects`, else EFFECT.
+    pub fn effect(self) -> Effect {
+        EFFECTS.read().unwrap()[self as usize]
     }
 
     pub fn kind(self) -> Kind {

@@ -415,6 +415,7 @@ impl World {
         dir: Vec3,
         ff: f64,
     ) -> f64 {
+        let scale = crate::rules::hit(self, target, src, mix, scale);
         let (src_team, mods) =
             match src.and_then(|s| self.ecs.get::<&Actor>(s).ok().map(|a| (a.team, a.mods))) {
                 Some((t, m)) => (Some(t), m),
@@ -465,7 +466,7 @@ impl World {
         let mut top_d = 0.0;
         for &(e, count) in mix {
             let n = count * scale * mods.el[e.idx()] * if src_team == Some(WIZARDS) { crate::knobs::spell_damage() } else { 1.0 };
-            let eff = *e.effect();
+            let eff = e.effect();
             let mult = 1.0 - a.resistance(e);
             if eff.dmg > 0.0 {
                 if mult > 1.05 {
@@ -761,6 +762,8 @@ impl World {
         self.enemies.retain(|&e| self.ecs.contains(e));
         self.corpse_step(dt);
         self.later_step(dt);
+        self.flush_deaths();
+        crate::rules::tick(self);
         self.flush_deaths();
     }
 
