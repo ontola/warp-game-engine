@@ -34,6 +34,9 @@ pub struct Sample {
     pub snow: f32,
     /// Height scale of the large shapes here (metres).
     pub amp: f32,
+    /// Height of the tors this ground can raise (metres), wherever the
+    /// sample itself falls: the LOD refines tor ground before they blur.
+    pub tors: f32,
 }
 
 impl Sample {
@@ -44,7 +47,7 @@ impl Sample {
         let rough = 0.15 + 0.85 * self.rock.max(((cell - 2.0) / 6.0).clamp(0.0, 1.0));
         let ledges = if cell * 4.0 > 5.5 { 0.0 } else { 1.2 * self.rock };
         let fine = 0.03 * (1.4 + 1.1 * self.rock) * cell.powf(0.6);
-        0.5 * cell * self.amp / BASE * rough + fine + ledges * (cell / 1.4).min(1.0)
+        0.5 * cell * self.amp / BASE * rough + fine + ledges * (cell / 1.4).min(1.0) + 0.15 * self.tors * (cell / 12.0).min(1.0)
     }
 }
 
@@ -325,11 +328,15 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
 
     let tor_n = noised(p * 55.0 + warp * 2.0, sd(9));
     let tor_zone = smooth(0.65 - st.rocks, 0.9 - st.rocks, noised(p * 4.0 + Vec2::new(6.3, 2.2), sd(17)).x) * smooth(5.0, 40.0, relief);
+    // A tor too small for this cell blurs into a lower, broader mound (its
+    // edge widens with the cell) rather than vanishing and popping back.
     let tor_fade = fade(12.0, cut);
-    let tor_h = (5.0 + 9.0 * mountains) * bedrock * tor_zone * smooth(30.0, 80.0, near_water) * tor_fade;
-    let tt = ((tor_n.x - 0.15) / 0.3).clamp(0.0, 1.0);
+    let tor_amp = (5.0 + 9.0 * mountains) * bedrock * tor_zone * smooth(30.0, 80.0, near_water);
+    let tor_h = tor_amp * fade(48.0, cut);
+    let tor_w = 0.3 + 0.054 * cut;
+    let tt = ((tor_n.x - 0.15) / tor_w).clamp(0.0, 1.0);
     let tor = tt * tt * (3.0 - 2.0 * tt);
-    let mut th = tor_h * (tor + 0.5 * (tor_n.x - 0.3).max(0.0));
+    let mut th = tor_h * (tor + 0.5 * (tor_n.x - 0.3).max(0.0) * tor_fade);
     if th > 0.0 {
         let s = th / 2.5;
         let fl = s.floor();
@@ -339,12 +346,12 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
         th *= 1.0 - 0.6 * (1.0 - smooth(0.3, 1.6, joint)) * fade(3.0, cut);
     }
     y += th;
-    g += Vec2::new(tor_n.y, tor_n.z) * (tor_h * 6.0 * tt * (1.0 - tt) / 0.3 * (55.0 / BASE));
+    g += Vec2::new(tor_n.y, tor_n.z) * (tor_h * 6.0 * tt * (1.0 - tt) / tor_w * (55.0 / BASE));
     let steep = (g.x * g.x + g.y * g.y).sqrt();
     let up = 1.0 / (1.0 + steep * steep).sqrt();
 
     let mut rock = (smooth(0.8, 0.6, up) + 0.7 * bedrock * smooth(0.95, 0.85, up) + 0.5 * mountains * smooth(0.85, 0.7, up)
-        + smooth(st.snow_line - 500.0, st.snow_line, y) * smooth(0.93, 0.8, up) + smooth(0.0, 0.15, tor * tor_h) * tor_fade).clamp(0.0, 1.0);
+        + smooth(st.snow_line - 500.0, st.snow_line, y) * smooth(0.93, 0.8, up) + smooth(0.0, 0.15, tor * tor_h)).clamp(0.0, 1.0);
     let scree = smooth(0.85, 0.72, up) * (1.0 - smooth(0.65, 0.55, up)) * (0.4 + 0.6 * bedrock) * mountains
         + 0.9 * smooth(2.0, 0.6, stream) * notch + 0.8 * rf * smooth(ch_w + 2.5, ch_w, ch) * smooth(-0.1, 0.2, noised(p * 40.0, sd(16)).x);
 
@@ -392,7 +399,7 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     // only sheer walls stay bare.
     let snow = smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * noised(p * 12.0, sd(19)).x)
         * smooth(0.5, 0.7, up0) * smooth(0.35, 0.55, up);
-    Sample { pos, up, rock, scree: scree.clamp(0.0, 1.0), wet: smooth(8.0, 1.0, near_wet), water, moor, snow, amp }
+    Sample { pos, up, rock, scree: scree.clamp(0.0, 1.0), wet: smooth(8.0, 1.0, near_wet), water, moor, snow, amp, tors: tor_amp }
 }
 
 /// Ground height under world (x, z) at full detail, for physics. The strata
