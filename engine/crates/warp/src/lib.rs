@@ -10,6 +10,7 @@
 pub mod api;
 pub mod config;
 pub mod game;
+pub mod knobs;
 pub mod luajson;
 pub mod party;
 pub mod sky;

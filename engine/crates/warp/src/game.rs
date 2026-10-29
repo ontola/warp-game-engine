@@ -5,7 +5,7 @@
 use crate::api::{self, Cam, Core, HudItem, Phase, Player, Requests, Rng, Shared};
 use crate::party::{self, Party, SeatInfo};
 use crate::config::GameToml;
-use crate::luajson;
+use crate::{knobs, luajson};
 use crate::sky::SkyChoice;
 use crate::sounds::{check_params, Bank, SoundOut};
 use crate::world::World;
@@ -476,6 +476,8 @@ impl LuaGame {
     /// One Luau chunk in the console, with `state` bound to main.luau's.
     pub fn luau(&mut self, code: &str) -> Result<String, String> {
         if let Some(s) = self.main_state() { let _ = self.host.console().raw_set("state", s); }
+        let main = { let m = self.host.modules(); m.iter().position(|m| m.name == "main.luau").or((!m.is_empty()).then_some(0)) };
+        self.host.console_in(main).map_err(|e| script::short(&e))?;
         let f = self.host.console_line(code)?;
         let r = f.call::<mlua::MultiValue>(()).map_err(|e| script::short(&e));
         self.flush_log();
@@ -483,8 +485,35 @@ impl LuaGame {
         Ok(if vals.is_empty() { "ok".into() } else { vals.iter().map(luajson::show).collect::<Vec<_>>().join("\t") })
     }
 
+    /// The main script file (a one-file game's own file).
+    fn main_file(&self) -> PathBuf { self.dir.join(self.single.as_deref().unwrap_or("main.luau")) }
+
+    /// The game's knobs (see [`crate::knobs`]) with their current values.
+    pub fn knobs(&self) -> Result<String, String> {
+        let src = std::fs::read_to_string(self.main_file()).map_err(|e| e.to_string())?;
+        Ok(knobs::list(&knobs::parse(&src)))
+    }
+
+    /// Change a knob in the file and reload it; a value that does not load
+    /// is put back.
+    pub fn set_knob(&mut self, name: &str, value: &str) -> Result<String, String> {
+        let file = self.main_file();
+        let before = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+        let after = knobs::set(&before, name, value)?;
+        std::fs::write(&file, &after).map_err(|e| e.to_string())?;
+        let lines = self.reload();
+        let main = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Some(err) = self.host.modules().iter().find(|m| m.name == main).and_then(|m| m.error.clone()) {
+            std::fs::write(&file, &before).map_err(|e| e.to_string())?;
+            self.reload();
+            return Err(format!("{name} = {value} does not load, kept the old value: {err}"));
+        }
+        let broken = self.errors();
+        Ok(format!("{name} = {} (saved in {main}; {})", value.trim(), if broken.is_empty() { lines.join("; ") } else { broken.join("; ") }))
+    }
+
     pub fn help() -> &'static str {
-        "commands: lua CODE (run Luau against the game; `state` is main.luau's) | reload (scripts and sounds now) | restart (clear the world and state, run init) | sky NAME | sounds | entities [TAG] | menu [open|close|resume|new round] | logs | help"
+        "commands: lua CODE (run Luau against the game; `state` is main.luau's, and main.luau's globals and exports are in scope) | reload (scripts and sounds now) | restart (clear the world and state, run init) | sky NAME | sounds | entities [TAG] | menu [open|close|resume|new round] | knobs | knob NAME VALUE (saved in main.luau) | logs | help"
     }
 
     fn input(&self, lua: &mlua::Lua, controls: &[Controls]) -> mlua::Result<Table> {
@@ -637,6 +666,8 @@ impl LuaGame {
             }
             "logs" => Ok(self.logs().join("\n")),
             "menu" => self.menu_command(rest),
+            "knobs" => self.knobs(),
+            "knob" => { let (name, value) = rest.split_once(' ').ok_or("knob NAME VALUE")?; self.set_knob(name.trim(), value) }
             other => Err(format!("unknown command {other:?}; {}", Self::help())),
         }
     }
@@ -646,13 +677,15 @@ impl LuaGame {
         let tools = vec![
             live::ToolSpec::new("reload", "Reload edited Luau modules and sound patches now (they also reload by themselves within a quarter second of a save). Returns what changed and any load error. A reload keeps the world and each module's `state` table and calls the module's `reload()` hook; `init` does not run again.", json!({ "type": "object", "properties": {} })),
             live::ToolSpec::new("restart", "Start the game over: remove every entity, clear every module's `state`, reseed the random generator and run `init` again.", json!({ "type": "object", "properties": {} })),
-            live::ToolSpec::new("command", "One debug console line. `help` lists them: lua CODE, reload, restart, sky NAME, sounds, entities [TAG], logs.", json!({ "type": "object", "properties": { "line": { "type": "string" } }, "required": ["line"] })),
+            live::ToolSpec::new("command", "One debug console line. `help` lists them: lua CODE, reload, restart, sky NAME, sounds, entities [TAG], knobs, knob NAME VALUE, logs.", json!({ "type": "object", "properties": { "line": { "type": "string" } }, "required": ["line"] })),
+            live::ToolSpec::new("knobs", "The game's tweakable values (its `-- @knobs` block in main.luau) with their current values and what each does. Start here to change the look or feel.", json!({ "type": "object", "properties": {} })).read_only(),
+            live::ToolSpec::new("set_knob", "Set one knob: writes the new value into main.luau (so it is ready to commit) and hot-reloads; the game's reload() hook applies it at once. A value that does not load is put back.", json!({ "type": "object", "properties": { "name": { "type": "string" }, "value": { "type": "string", "description": "one Luau value, such as 0.5, true or \"#ff00ff\"" } }, "required": ["name", "value"] })),
         ];
         let manifest = live::Manifest {
             name: self.live_name(),
             version: env!("CARGO_PKG_VERSION").into(),
             about: format!("\"{}\", a Warp game made of Luau scripts (main.luau), synth patches (sounds/*.luau) and assets, run by the `warp` executable.", self.cfg.title),
-            guide: "Edit the game with write_file in the `game` folder: main.luau holds init(), tick(dt, input) and draw(); sounds/NAME.luau is the patch `NAME`. A saved file reloads at once: the world and the `state` table stay, so change code without losing the play session; call `restart` to run init again. The Luau API is in the folder's types.d.luau. `state` is the game's JSON (its `state` field is main.luau's state table); `run_luau` runs Luau against the live game; `screenshot` shows the frame; `render_sound` measures a patch without speakers. Errors appear in `state.errors`, `logs` and on screen.".into(),
+            guide: "Call `knobs` first: the values the game marks as tweakable, set with `set_knob` (live, and saved in main.luau). For anything else, edit the game with write_file in the `game` folder: main.luau holds init(), tick(dt, input) and draw(); sounds/NAME.luau is the patch `NAME`. A saved file reloads at once: the world and the `state` table stay, so change code without losing the play session; call `restart` to run init again. The Luau API is in the folder's types.d.luau. `state` is the game's JSON (its `state` field is main.luau's state table); `run_luau` runs Luau against the live game, with main.luau's globals and exports in scope (call its functions: export a `debug` table of helpers); `screenshot` shows the frame; `render_sound` measures a patch without speakers. Errors appear in `state.errors`, `logs` and on screen.".into(),
             tools,
             roots: vec![live::Root::new("game", &self.dir, live::Reload::Game, "The game folder: main.luau and other modules, sounds/*.luau patches, game.toml, types.d.luau. A write reloads the scripts and sounds and reports load errors.").extensions(&["luau", "toml", "md", "json"])],
             features: live::Features { state: true, screenshot: true, luau: true, shaders: false, sound: true },
@@ -703,6 +736,10 @@ fn post(r: &render::Renderer, p: &api::Post, lamps: &[api::Lamp]) -> Result<(), 
 impl Game for LuaGame {
     /// The people; bots need no controls.
     fn local_players(&self) -> usize { self.core().roster.iter().filter(|p| !p.bot).count().max(1) }
+
+    /// Under GameNight the party's controllers play: never grab the mouse
+    /// (and so no click-to-capture hint on the TV).
+    fn mouse_capture(&self) -> Option<bool> { self.party.as_ref().map(|_| false) }
 
     fn tick(&mut self, controls: &[Controls]) {
         if let Some(mut l) = self.live.take() { l.serve(self); self.live = Some(l); }
@@ -794,6 +831,11 @@ impl live::LiveGame for LuaGame {
             "reload" => { let l = self.reload(); if l.is_empty() { "nothing changed on disk".to_string() } else { l.join("\n") } }
             "restart" => { self.restart(); format!("restarted at seed {}", self.seed) }
             "command" => self.command_line(args["line"].as_str().ok_or("command needs `line`")?)?,
+            "knobs" => self.knobs()?,
+            "set_knob" => {
+                let value = match &args["value"] { Json::String(v) => v.clone(), Json::Null => return Err("set_knob needs `value`".into()), v => v.to_string() };
+                self.set_knob(args["name"].as_str().ok_or("set_knob needs `name`")?, &value)?
+            }
             other => return Err(format!("no tool {other}")),
         };
         let errors = self.errors();

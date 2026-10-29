@@ -44,6 +44,8 @@ pub struct Module {
     stamp: Option<(SystemTime, u64)>,
     /// What the module returned; `None` until it first loads.
     pub exports: Option<Table>,
+    /// The module's own globals from its last good load.
+    env: Option<Table>,
     state: Table,
     /// The last load error, while the previous version (if any) still runs.
     pub error: Option<String>,
@@ -142,7 +144,7 @@ impl Host {
     /// A module from a string that never reloads (built-in content, tests).
     pub fn add_source(&mut self, name: &str, source: &str) -> Result<(), String> {
         let state = self.lua.create_table().map_err(err)?;
-        self.modules.push(Module { name: name.into(), path: None, stamp: None, exports: None, state, error: None, broken: false });
+        self.modules.push(Module { name: name.into(), path: None, stamp: None, exports: None, env: None, state, error: None, broken: false });
         let i = self.modules.len() - 1;
         self.load(i, source);
         self.modules[i].error.clone().map_or(Ok(()), Err)
@@ -168,7 +170,7 @@ impl Host {
                 Some(i) => i,
                 None => {
                     let Ok(state) = self.lua.create_table() else { continue };
-                    self.modules.push(Module { name: name.clone(), path: Some(path.clone()), stamp: None, exports: None, state, error: None, broken: false });
+                    self.modules.push(Module { name: name.clone(), path: Some(path.clone()), stamp: None, exports: None, env: None, state, error: None, broken: false });
                     self.modules.len() - 1
                 }
             };
@@ -189,13 +191,13 @@ impl Host {
         let name = m.name.clone();
         let result = env(&self.lua, &self.base, &m.state).and_then(|e| {
             self.steps.store(self.limits.steps, Ordering::Relaxed);
-            self.lua.load(source).set_name(format!("@{name}")).set_environment(e).eval::<Value>()
+            self.lua.load(source).set_name(format!("@{name}")).set_environment(e.clone()).eval::<Value>().map(|v| (v, e))
         });
         let m = &mut self.modules[i];
         match result {
-            Ok(Value::Table(t)) => { m.exports = Some(t); m.error = None; m.broken = false; }
-            Ok(Value::Nil) => { m.exports = self.lua.create_table().ok(); m.error = None; m.broken = false; }
-            Ok(v) => m.error = Some(format!("{name}: must return a table of exports, not a {}", v.type_name())),
+            Ok((Value::Table(t), e)) => { m.exports = Some(t); m.env = Some(e); m.error = None; m.broken = false; }
+            Ok((Value::Nil, e)) => { m.exports = self.lua.create_table().ok(); m.env = Some(e); m.error = None; m.broken = false; }
+            Ok((v, _)) => m.error = Some(format!("{name}: must return a table of exports, not a {}", v.type_name())),
             Err(e) => m.error = Some(short(&e)),
         }
         match &m.error {
@@ -256,6 +258,27 @@ impl Host {
     }
 
     pub fn console(&self) -> &Table { &self.console }
+
+    /// Let console lines see a module: its globals, then its exports (so
+    /// `spawn("chaser", 100, 100)` or a function the module returns works),
+    /// then the base library. Console assignments stay in the console.
+    pub fn console_in(&self, module: Option<usize>) -> mlua::Result<()> {
+        let m = module.and_then(|i| self.modules.get(i));
+        let (env, exports) = (m.and_then(|m| m.env.clone()), m.and_then(|m| m.exports.clone()));
+        let base = self.base.clone();
+        let index = self.lua.create_function(move |_, (_, k): (Value, Value)| {
+            for t in [&env, &exports].into_iter().flatten() {
+                let v: Value = t.raw_get(k.clone())?;
+                if !v.is_nil() { return Ok(v); }
+            }
+            base.raw_get::<Value>(k)
+        })?;
+        let meta = self.lua.create_table()?;
+        meta.raw_set("__index", index)?;
+        meta.raw_set("__metatable", false)?;
+        self.console.set_metatable(Some(meta))?;
+        Ok(())
+    }
 
     /// Lines from `print` and from loads and failures, oldest first.
     pub fn drain_log(&mut self) -> Vec<String> { std::mem::take(&mut *self.log.lock().unwrap()) }
@@ -377,6 +400,18 @@ mod tests {
         h.poll();
         assert!(h.modules().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_console_sees_a_modules_globals_and_exports() {
+        let mut h = host();
+        h.add_source("a.luau", "function spawn(n) return n + 1 end local function hidden() end return { peek = function() return 7 end }").unwrap();
+        assert!(h.console_line("spawn").unwrap().call::<Value>(()).unwrap().is_nil());
+        h.console_in(Some(0)).unwrap();
+        assert_eq!(h.console_line("spawn(41)").unwrap().call::<f64>(()).unwrap(), 42.0);
+        assert_eq!(h.console_line("peek()").unwrap().call::<f64>(()).unwrap(), 7.0);
+        assert_eq!(h.console_line("twice(2)").unwrap().call::<f64>(()).unwrap(), 4.0);
+        assert!(h.console_line("hidden").unwrap().call::<Value>(()).unwrap().is_nil());
     }
 
     #[test]
