@@ -358,61 +358,17 @@ impl Marks {
         if open <= 0.0 {
             return;
         }
+        // One curtain across the way, its haze and runes drawn by fx.wgsl
+        // `ward` (Run._ward_wall: 2 m wider than the way, 3.2 m high).
         let width = hi - lo + 2.0;
-        let x0 = lo - 1.0;
-        let step = 0.7;
-        let n = (width / step).ceil() as usize + 1;
-        let mist = Vec3::from(MIST);
-        for i in 0..n {
-            let x = x0 + i as f32 * step;
-            let edge = smooth(0.0, 1.2, x - x0) * smooth(0.0, 1.2, x0 + width - x);
-            if edge <= 0.0 {
-                continue;
-            }
-            for row in 0..4 {
-                let seed = i as f32 * 3.17 + row as f32 * 11.3;
-                // Each wisp rises and fades over its own little cycle.
-                let cycle = 3.0 + hash(seed) * 2.0;
-                let ph = ((time / cycle) + hash(seed + 1.0)).fract();
-                let h = row as f32 * 0.6 + ph * 1.2;
-                let hk = (h / 3.2).min(1.0);
-                let thick = 0.55 + 0.45 * smooth(0.25, 0.75, noise(x * 0.35 + time * 0.12 + row as f32 * 5.0));
-                let fade = smooth(0.0, 0.2, ph) * (1.0 - smooth(0.6, 1.0, ph));
-                // Opening thins it from the top down.
-                let gone = smooth(open - 0.15, open + 0.15, hk * 0.6 + thick * 0.4);
-                let a = edge * thick * fade * (1.0 - hk) * (1.0 - gone) * open * 0.8;
-                if a < 0.01 {
-                    continue;
-                }
-                let drift = (time * 0.4 + seed).sin() * 0.25;
-                let at = Vec3::new(x + drift, 0.3 + h, z + (hash(seed + 2.0) - 0.5) * 0.4);
-                let size = 1.6 + 0.8 * hash(seed + 3.0) + 0.6 * ph;
-                let col = linear3(mist.lerp(mist * 0.6, hk).to_array()) * LIT * 3.4;
-                let mut s = Sprite::billboard(at, [size, size], IMAGE, uv(Cell::Wisp), col);
-                s.alpha_cut = 0.0;
-                s.opacity = a;
-                // Not cut by the floor it rises from.
-                s.depth_bias = 0.8;
-                self.sprites.push(s);
-            }
-        }
-        // The runes: short bright marks that come and go along the foot.
-        let mut x = x0 + 0.35;
-        while x < x0 + width {
-            let cell = (x / 0.7).floor();
-            let lit = hash(cell * 7.1 + (time * 0.8 + cell * 0.37).floor()) > 0.55;
-            let edge = smooth(0.0, 1.2, x - x0) * smooth(0.0, 1.2, x0 + width - x);
-            if lit && edge > 0.0 {
-                let col = linear3(MIST) * 3.0 * edge * open;
-                let mut s = Sprite::fixed(Vec3::new(x, 0.12, z), [0.12, 0.34], Vec3::X, Vec3::Y, IMAGE, uv(Cell::Spark), col);
-                s.additive = true;
-                s.alpha_cut = 0.0;
-                s.depth_bias = 0.1;
-                self.sprites.push(s);
-                self.sprites.push(glow(Vec3::new(x, 0.15, z), 0.7, Cell::HaloOut, col * 0.4));
-            }
-            x += 0.7;
-        }
+        let height = 3.2;
+        let at = Vec3::new((lo + hi) * 0.5, height * 0.5, z);
+        let mut s = Sprite::fixed(at, [width, height], Vec3::X, Vec3::Y, IMAGE, uv(Cell::Wisp), linear3(MIST) * LIT * 3.4);
+        s.alpha_cut = 0.0;
+        s.depth_bias = 0.3;
+        s.effect = crate::effects::WARD;
+        s.params = [width, height, open, time];
+        self.sprites.push(s);
     }
 }
 

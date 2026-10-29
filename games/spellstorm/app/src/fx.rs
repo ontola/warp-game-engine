@@ -66,11 +66,26 @@ const CELLS: [Cell; 18] = [
     Cell::Runes,
 ];
 
+/// The width and height of a whole cell in the atlas, as `uv` gives it.
+pub(crate) fn cell_size() -> f32 {
+    1.0 / SIDE as f32 - 1.0 / (SIDE * CELL) as f32
+}
+
 pub(crate) fn uv(c: Cell) -> [f32; 4] {
     let i = c as usize;
     let s = 1.0 / SIDE as f32;
     let pad = 0.5 / (SIDE * CELL) as f32;
     [(i % SIDE) as f32 * s + pad, (i / SIDE) as f32 * s + pad, s - 2.0 * pad, s - 2.0 * pad]
+}
+
+/// The cell an atlas rectangle lies in (a crop of one, mirrored or not).
+pub(crate) fn cell_at(r: [f32; 4]) -> Option<Cell> {
+    let (x, y) = (r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
+    if !(0.0..1.0).contains(&x) || !(0.0..1.0).contains(&y) {
+        return None;
+    }
+    let i = (y * SIDE as f32) as usize * SIDE + (x * SIDE as f32) as usize;
+    CELLS.get(i).copied()
 }
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
@@ -1135,8 +1150,12 @@ impl Fx {
             let at = f.pos + Vec3::Y * 0.04;
             match f.kind {
                 El::Fire | El::Magma => {
-                    let k = if f.kind == El::Magma { 1.2 } else { 0.7 };
-                    self.live.push(flat_sprite(at, r, Cell::Patch, c3 * k * fade));
+                    // fx.wgsl `ground`: scorched earth and embers, or molten seams.
+                    let mut s = flat_sprite(at, r, Cell::Patch, Vec3::splat(1.2)).solid();
+                    s.opacity = fade;
+                    s.effect = crate::effects::GROUND;
+                    s.params = [f.kind.idx() as f32, r, (key % 97) as f32, t];
+                    self.live.push(s);
                     let mut p = particles(c, (3.0 * r * r) as u32 + 4, 1.1, 0.5);
                     p.dir = Vec3::Y;
                     p.sphere = r * 0.8;
@@ -1177,10 +1196,17 @@ impl Fx {
                         El::Mud => ([0.19, 0.13, 0.07], 0.95, 0.0),
                         _ => ([c[0] * 0.6, c[1] * 0.6, c[2] * 0.6], 0.7, 0.25),
                     };
-                    let mut s = flat_sprite(at, r, Cell::Patch, linear3(col) * LIT).solid();
-                    s.opacity = a * fade;
+                    // fx.wgsl `ground` draws the kinds it knows in their own
+                    // colours, the rest in the element's.
+                    let own = matches!(f.kind, El::Water | El::Frost | El::Ice | El::Mud | El::Steam | El::Poison | El::Void);
+                    let tint = if own { Vec3::splat(LIT * 2.2) } else { linear3(col) * LIT };
+                    let mut s = flat_sprite(at, r, Cell::Patch, tint).solid();
+                    s.opacity = fade;
+                    s.effect = crate::effects::GROUND;
+                    s.params = [f.kind.idx() as f32, r, (key % 97) as f32, t];
                     self.live.push(s);
-                    if glow > 0.0 {
+                    let _ = a;
+                    if glow > 0.0 && !own {
                         self.live.push(flat_sprite(at + Vec3::Y * 0.01, r, Cell::Patch, c3 * glow * fade));
                     }
                     if f.kind == El::Poison || f.kind == El::Void {
