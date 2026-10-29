@@ -929,6 +929,17 @@ impl World {
                     let text = format!("{} took {}: {}", self.wiz(w).name, r.name, r.text);
                     self.ev(Ev::Toast { text, c });
                 }
+                // Once every living wizard has a tome from this shrine, the
+                // other altars there sink away too (their labels fade with them).
+                let shrine = self.run.altars[i].shrine.clone();
+                let done = self.wizards.iter().all(|&w| !self.alive(w) || self.wiz(w).took.contains(&shrine));
+                if done {
+                    for a in &mut self.run.altars {
+                        if a.shrine == shrine {
+                            a.taken = true;
+                        }
+                    }
+                }
             }
         }
     }

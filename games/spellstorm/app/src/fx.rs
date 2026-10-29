@@ -1102,6 +1102,15 @@ impl Fx {
                 p.gravity = Vec3::ZERO;
                 p.damp = (2.0, 4.0);
                 let smoke = style(&mut p, e, true);
+                if e == El::Fire {
+                    // A flamethrower: a tight, fast jet from the staff whose
+                    // flames swell as they burn out down the stream.
+                    p.amount = 90;
+                    p.spread = 8.0;
+                    p.v = (10.0, 14.0);
+                    p.curve = [0.35, 1.1, 1.7];
+                    p.gravity = Vec3::Y * 1.5;
+                }
                 self.stream((key, 0), p, s.at, dt);
                 if let Some(sm) = smoke {
                     self.stream((key, 1), sm, s.at, dt);
@@ -1309,6 +1318,10 @@ impl Fx {
             };
             let mut sp = Sprite::fixed(p.pos, [s, s], r, u, IMAGE, uv(e.cell), col);
             sp.alpha_cut = 0.0;
+            // fx.wgsl gets a seed that stays with the particle (from its own
+            // random life and size, not where it is) and its age 0..1;
+            // effects::tag keeps both (params.w = 1).
+            sp.params = [(p.life * 91.7 + p.size * 37.3).fract() * 97.0, 0.0, k, 1.0];
             if e.glow > 0.0 {
                 sp.additive = true;
                 sp.radiance = col * e.glow;
