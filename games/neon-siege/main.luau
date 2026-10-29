@@ -1378,7 +1378,8 @@ local function show_pilot(p)
 	if mode == "down" then
 		-- The ring fills in as the revive comes closer.
 		local k = math.min(1, math.max(p.revive / 1.2, p.downTime / 6))
-		world.set(p.halo, { size = vector.create((40 + 10 * k + math.sin(s.time * 5) * 4) * S, 0.04, (40 + 10 * k + math.sin(s.time * 5) * 4) * S) })
+		-- The ring sits where the pilot went down (it was left at its spawn point).
+		world.set(p.halo, { pos = pos, size = vector.create((40 + 10 * k + math.sin(s.time * 5) * 4) * S, 0.04, (40 + 10 * k + math.sin(s.time * 5) * 4) * S) })
 	end
 	seen(p.cell)
 	seen(p.mark)
