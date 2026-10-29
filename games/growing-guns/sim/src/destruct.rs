@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// A hit must deal this much to cost a chunk health (weaker guns only mark it).
-pub const MIN_DESTRUCTION_DAMAGE: f32 = 12.0;
+pub const MIN_DESTRUCTION_DAMAGE: f32 = 17.0;
 /// A chunk breaks when its health runs out or one sweep's damage exceeds
 /// what is left by this margin.
 pub const MIN_REMOVE_DAMAGE: f32 = 12.0;
