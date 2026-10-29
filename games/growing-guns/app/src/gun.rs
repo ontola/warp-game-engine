@@ -160,7 +160,7 @@ impl Look {
 /// A built gun: parts in gun space, how far the bolt travels, whether the
 /// barrels spin, and the barrel length (the view pulls long guns back).
 #[derive(Clone, Debug, Default)]
-pub struct Build { pub parts: Vec<Part>, pub bolt_travel: f32, pub minigun: bool, pub barrel_length: f32 }
+pub struct Build { pub parts: Vec<Part>, pub bolt_travel: f32, pub minigun: bool, pub barrel_length: f32, /** Gun-space barrel exit. */ pub muzzle: Vec3 }
 
 struct B { parts: Vec<Part> }
 impl B {
@@ -279,7 +279,7 @@ pub fn build(l: &Look) -> Build {
         b.cyl(Shape::Cyl, bell_r * 0.85, 0.005, Vec3::new(0.0, sy, -SCOPE_LENGTH * 0.5 - bell_len - 0.004), Lens, Motion::Fixed);
     }
     b.bx(INDICATOR, Vec3::new(l.receiver.x * 0.5 + INDICATOR.x * 0.5, 0.0, 0.0), Indicator);
-    Build { parts: b.parts, bolt_travel: travel, minigun: l.minigun, barrel_length: l.barrel_length }
+    Build { parts: b.parts, bolt_travel: travel, minigun: l.minigun, barrel_length: l.barrel_length, muzzle: Vec3::new(0.0, 0.0, muzzle_z - MUZZLE_LENGTH * 0.5) }
 }
 
 /// Godot `_add_barrel_shroud`: four slotted plates around the barrels.
@@ -327,7 +327,6 @@ impl Default for Rig {
 }
 
 pub const GROW_SECONDS: f32 = 2.0;
-pub const HEAT_LEVELS: usize = 8;
 
 impl Rig {
     /// Snap to these stats (a new round, a respawn).
@@ -375,11 +374,8 @@ impl Rig {
         self.spin_speed *= (-2.5 * dt).exp();
     }
 
-    /// Heat glow bucket for the barrel material (0 = cold steel).
-    pub fn heat_level(&self) -> usize {
-        let t = smoothstep(0.15, 1.0, self.heat);
-        ((t * (HEAT_LEVELS - 1) as f32).round() as usize).min(HEAT_LEVELS - 1)
-    }
+    /// Barrel glow 0 (cold steel) to 1, continuous.
+    pub fn heat_glow_t(&self) -> f32 { smoothstep(0.15, 1.0, self.heat) }
 
     /// Every part's gun-space transform this frame. `mag_drop` lowers the
     /// magazine (reload).
@@ -399,9 +395,8 @@ impl Rig {
 
 pub fn smoothstep(a: f32, b: f32, x: f32) -> f32 { let t = ((x - a) / (b - a)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) }
 
-/// Godot's blackbody-ish heat colour and emission energy at a glow level.
-pub fn heat_glow(level: usize) -> ([f32; 3], f32) {
-    let t = level as f32 / (HEAT_LEVELS - 1) as f32;
+/// Godot's blackbody-ish heat colour and emission energy at glow `t` (0..1).
+pub fn heat_glow(t: f32) -> ([f32; 3], f32) {
     ([1.0, 0.7 * t.powf(1.4), 0.3 * t.powi(3)], 6.0 * t)
 }
 
@@ -455,7 +450,7 @@ mod tests {
         for _ in 0..30 { r.update(0.05); }
         assert!(!r.is_growing() && r.shown == to && r.build.barrel_length > 1.3);
         for _ in 0..200 { r.fire(&Stats { damage_mult: 3.0, ..to }); }
-        assert_eq!(r.heat_level(), HEAT_LEVELS - 1);
+        assert_eq!(r.heat_glow_t(), 1.0);
         assert!(r.bolt_back > 0.0);
         r.update(0.5);
         assert_eq!(r.bolt_back, 0.0);

@@ -20,8 +20,16 @@ const GUN_PARTS: usize = 192;
 struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect: f32 }
 
 pub struct Guns {
-    /// Mesh per shape, then per material (barrel: one per heat level).
+    /// Mesh per shape, then per material (barrel: one per player, each
+    /// with its own material that follows the heat every frame).
     meshes: Vec<Vec<usize>>,
+    /// First of the players' barrel materials (consecutive) and their values.
+    barrel_first: u32,
+    barrels: Vec<Material>,
+    /// Each player's barrel exit this frame: first person, third person.
+    muzzles: Vec<Option<[Vec3; 2]>>,
+    /// Players seen in first person by a local view.
+    local: Vec<bool>,
     rigs: Vec<Rig>,
     feel: Vec<GunFeel>,
     /// First instance of each player's first-person and third-person block.
@@ -34,12 +42,15 @@ pub struct Guns {
 impl Guns {
     pub fn reserve(scene: &mut Scene, players: usize) -> Self {
         let mut meshes = Vec::new();
+        let barrels: Vec<Material> = (0..players).map(|_| barrel_material(0.0)).collect();
+        let barrel_first = scene.materials.len() as u32;
+        for &m in &barrels { scene.add_material(m); }
         for shape in gun::SHAPES {
             let mut row = Vec::new();
             for m in gun::MATS {
-                let levels = if m == gun::Mat::Barrel { gun::HEAT_LEVELS } else { 1 };
+                let levels = if m == gun::Mat::Barrel { players } else { 1 };
                 for h in 0..levels {
-                    let mat = gun_material(scene, m, h);
+                    let mat = if m == gun::Mat::Barrel { barrel_first + h as u32 } else { gun_material(scene, m) };
                     let prim = match shape {
                         gun::Shape::Box => primitives::hewn_block(mat, 1, 0.1, 0.0, 0),
                         gun::Shape::Cyl => primitives::cylinder(mat, 1.0, 1.0, 8),
@@ -61,7 +72,7 @@ impl Guns {
             fp.push(a);
             tp.push(Slots::reserve(scene, GUN_PARTS).first);
         }
-        Guns { meshes, rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true }
+        Guns { meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true }
     }
 
     /// A card pick: the gun grows into the new stats.
@@ -100,7 +111,7 @@ impl Guns {
 
     /// Every rig into its two blocks: first person from the (punched)
     /// camera, third person in the right hand, aimed with the head.
-    pub fn pose(&self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, fx: &EffectsView, hands: &[Option<Vec3>]) {
+    pub fn pose(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, fx: &EffectsView, hands: &[Option<Vec3>]) {
         for i in 0..self.rigs.len() {
             // Slots past the players (a coop wave's enemies gone): empty.
             let Some(p) = world.players.get(i) else {
@@ -108,7 +119,7 @@ impl Guns {
                 continue;
             };
             let rig = &self.rigs[i];
-            let heat = rig.heat_level();
+            self.barrels[i] = barrel_material(rig.heat_glow_t());
             let f = &self.feel[i];
             let (r_off, r_tilt, mag_drop) = if p.reloading() {
                 gun::reload_pose(p.reload_progress())
@@ -130,11 +141,12 @@ impl Guns {
                 pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12),
                 |hand| hand + rot * Vec3::new(0.0, 0.085, -0.143));
             let tp = Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch), hand);
+            self.muzzles[i] = p.alive.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
             for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {
                 let mut n = 0;
                 if p.alive {
                     for (part, local) in rig.pose(drop).take(GUN_PARTS) {
-                        scene.update_instance(first + n, self.mesh(part.shape, part.mat, heat), xf * local);
+                        scene.update_instance(first + n, self.mesh(part.shape, part.mat, i), xf * local);
                         n += 1;
                     }
                 }
@@ -145,7 +157,9 @@ impl Guns {
 
     /// Each local player sees only their own first-person gun, and not
     /// their own third-person one.
-    pub fn hide_own(&self, scene: &mut Scene, slots: &[usize]) {
+    pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
+        self.local.fill(false);
+        for &s in slots { if let Some(l) = self.local.get_mut(s) { *l = true; } }
         for (k, &s) in slots.iter().enumerate().take(8) {
             for n in 0..GUN_PARTS {
                 scene.instances[self.tp[s] + n].hide_in_views(1 << k);
@@ -154,12 +168,23 @@ impl Guns {
         }
     }
 
-    fn mesh(&self, shape: gun::Shape, mat: gun::Mat, heat: usize) -> usize {
+    /// Where player `i`'s gun barrel ends as drawn last frame: in their own
+    /// first-person view when local, else in their hand.
+    pub fn muzzle(&self, i: usize) -> Option<Vec3> {
+        self.muzzles.get(i).copied().flatten().map(|[fp, tp]| if self.local[i] { fp } else { tp })
+    }
+
+    /// Upload the barrels' heat glow.
+    pub fn flush(&self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
+        renderer.update_materials(gpu, self.barrel_first as usize, &self.barrels)
+    }
+
+    fn mesh(&self, shape: gun::Shape, mat: gun::Mat, player: usize) -> usize {
         let s = gun::SHAPES.iter().position(|&x| x == shape).expect("listed shape");
         let mut k = 0;
         for m in gun::MATS {
-            if m == mat { return self.meshes[s][k + if m == gun::Mat::Barrel { heat } else { 0 }]; }
-            k += if m == gun::Mat::Barrel { gun::HEAT_LEVELS } else { 1 };
+            if m == mat { return self.meshes[s][k + if m == gun::Mat::Barrel { player } else { 0 }]; }
+            k += if m == gun::Mat::Barrel { self.rigs.len() } else { 1 };
         }
         unreachable!("listed material")
     }
@@ -175,7 +200,7 @@ fn empty(scene: &mut Scene, first: usize, n: usize) {
 
 /// Godot `_make_material` and `_make_polymer`: machined metal lifted toward
 /// gunmetal, matte polymer; the barrel glows with heat.
-fn gun_material(scene: &mut Scene, m: gun::Mat, heat: usize) -> u32 {
+fn gun_material(scene: &mut Scene, m: gun::Mat) -> u32 {
     use gun::Mat::*;
     let rc = [0.13f32, 0.14, 0.17];
     let metal = |scene: &mut Scene, col: [f32; 3], metallic: f32, rough: f32| {
@@ -188,8 +213,7 @@ fn gun_material(scene: &mut Scene, m: gun::Mat, heat: usize) -> u32 {
     match m {
         Metal => metal(scene, rc, 0.85, 0.32),
         Dark => metal(scene, k(0.6), 0.95, 0.22),
-        Barrel if heat == 0 => metal(scene, k(0.6), 0.95, 0.22),
-        Barrel => { let (c, e) = gun::heat_glow(heat); glow(scene, c, e * 4000.0) }
+        Barrel => unreachable!("per-player barrel_material"),
         Polymer => material(scene, [0.3, 0.25, 0.18], 0.7),
         Pad => material(scene, [0.07, 0.07, 0.075], 0.7),
         Recess => metal(scene, k(0.2), 0.3, 0.8),
@@ -198,4 +222,17 @@ fn gun_material(scene: &mut Scene, m: gun::Mat, heat: usize) -> u32 {
         Lens => glow(scene, [0.35, 0.7, 1.0], 7000.0),
         Indicator => glow(scene, [0.4, 1.0, 0.95], 10000.0),
     }
+}
+
+/// The barrel at heat glow `t`: cold machined steel, then Godot's glow
+/// (emission only) once it starts to show, continuous from there.
+fn barrel_material(t: f32) -> Material {
+    if t <= 0.02 {
+        let col = [0.13f32, 0.14, 0.17].map(|c| c * 0.6);
+        let (gm, lift) = ([0.62, 0.64, 0.68], 0.06 + (0.3 - 0.06) * 0.95);
+        let tint = [0, 1, 2].map(|i| col[i] + (gm[i] - col[i]) * lift);
+        return Material { tint: srgb_to_linear(tint), layer: -1, roughness: 0.32, flags: 0, scale: 1.0, metal: 0.95 };
+    }
+    let (c, e) = gun::heat_glow(t);
+    Material { tint: c, layer: -1, roughness: 0.8, flags: render::scene::EMISSIVE, scale: e * 4000.0, metal: 0.0 }
 }
