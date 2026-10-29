@@ -138,6 +138,7 @@ impl Rng {
 
 pub struct StadiumVisuals {
     sky_boxes: Vec<Affine3A>,
+    sky_planes: Vec<[f32;4]>,
     sky_probes: Vec<render::irradiance_volume::Probe>,
     sky_dirty: bool,
     sky_reflectance: f32,
@@ -246,7 +247,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -304,6 +305,9 @@ impl StadiumVisuals {
                 self.sky_sun=None;
                 let start = std::time::Instant::now();
                 self.sky_probes = render::sky_occlusion::bake_diffuse(&grid, &sky_boxes, 96, reflectance).expect("valid stadium occluders");
+                if std::env::var("GG_SKY_SEPARATION").as_deref()==Ok("1") {
+                    self.sky_planes=render::sky_occlusion::bake_separation_planes(&grid,&sky_boxes).expect("valid separation geometry");
+                }
                 self.sky_boxes = sky_boxes;
                 let mut words = render::irradiance_volume::pack(&grid, &self.sky_probes).unwrap();
                 words[7] = 2;
@@ -482,7 +486,8 @@ impl StadiumVisuals {
             if self.sky_dirty || self.sky_sun!=Some(light.sun_dir) {
                 let start=std::time::Instant::now();
                 let probes=render::sky_occlusion::bake_sun(&grid,&self.sky_boxes,&self.sky_probes,96,self.sky_reflectance,light.sun_dir)?;
-                renderer.set_sky_sun(gpu,&probes)?;
+                if self.sky_planes.is_empty() { renderer.set_sky_sun(gpu,&probes)?; }
+                else { renderer.set_sky_sun_separated(gpu,&probes,&self.sky_planes)?; }
                 self.sky_sun=Some(light.sun_dir);
                 self.sky_dirty=false;
                 eprintln!("stadium sun return: {:.1} ms bake",start.elapsed().as_secs_f64()*1000.0);

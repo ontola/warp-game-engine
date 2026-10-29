@@ -147,3 +147,46 @@ bench-{0,1}-{1,2,3}.log, shaders/shade.wgsl and frozen growing-guns.exe.
 Previous rejected images: C:/dev/warp-bench/sky-20261029/final-view/.
 Command: growing-guns bench --views 4 --size 3840x2160 --frames 600 --seed 52 --build none.
 Use GG_SKY_OCCLUSION=0/1 and KERN_SHADER_DIR pointing to the recorded snapshot.
+
+
+## Interpolation/visibility experiments, 29 October 2026
+
+Same executable, native 3840x2160, four views, seed52, 30 warmup and 600 measured
+frames, three alternating full/packed/trilinear runs. All nine retain 600/600
+GPU profiles, zero drops/errors. GPU frame medians (ms):
+
+| Variant | Run 1 | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| Full precision, four probes (unchanged default) | 4.09 | 4.08 | 4.08 |
+| Packed, four probes | 4.08 | 4.08 | 4.05 |
+| Packed, eight probes | 4.32 | 4.31 | 4.29 |
+
+Eight-probe trilinear interpolation costs about 0.23 ms on this fixture and
+visibly smooths the diagonal patches on the rear wall/roof. Enable explicitly
+with `WARP_SKY_TRILINEAR=1` (implies packed transport, aux mode 6). Recommended
+quality experiment; default remains unchanged pending acceptance. This does
+not fix cross-wall leakage or implement dynamic GI. Three fixed camera views
+were inspected; moving-camera stability is not yet assessed. Historical
+7+ ms measurements are not a comparable baseline: do not claim that reduction
+as an optimization. Per-pass values in the JSON are means, not medians.
+
+`GG_SKY_SEPARATION=1` is a deliberately opt-in, visually rejected experiment:
+26 directions find the nearest static surface plane per probe during baking;
+packed aux mode 5 stores the plane in spare words and rejects contributions
+from its opposite side. A rotated thin-wall test passes, but real stadium
+renders develop dark roof patches. Infinite planes cannot represent finite
+surfaces, corners, and openings; four remaining samples can all be rejected,
+in which case the existing outdoor fallback also remains a leakage risk.
+Do not enable this by default or describe it as DDGI/Neural Light Grid.
+
+Next substantial correctness improvement needs directional distance visibility
+and sufficiently placed valid probes, or surface-space transport for the fixed
+architecture. Merely rejecting more probes makes this sparse volume worse.
+Public and destructible rocks receive the volume; neither contributes geometry
+to its bake. The fixed geometry still uses conservative box proxies.
+
+Evidence: `C:/dev/warp-bench/gi-separation-20261029/`, `growing-guns-v2.exe`,
+`full/`, `trilinear/`, `separated/`, and nine `bench-*.log` files.
+[Machine-readable results](stadium-gi-interpolation-measurements.json).
+Four sky-occlusion unit tests passed; all variants compiled and rendered on GPU.
+No interactive playtest was started.

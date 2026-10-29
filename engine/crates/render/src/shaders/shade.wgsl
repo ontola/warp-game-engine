@@ -705,19 +705,31 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
         let weights=vec4<f32>(1.0-t[high],t[high]-t[middle],t[middle]-t[low],t[low]);
         var value=vec3<f32>(0.0);
         var valid_weight=0.0;
-        for(var c=0u;c<4u;c++) {
+        let trilinear=aux[o+7u]==6u;
+        for(var c=0u;c<select(4u,8u,trilinear);c++) {
             if c==1u { corner[high]=1u; }
             if c==2u { corner[middle]=1u; }
             if c==3u { corner[low]=1u; }
+            var blend_weight=weights[min(c,3u)];
+            if trilinear {
+                corner=vec3<u32>(c&1u,(c>>1u)&1u,(c>>2u)&1u);
+                let w3=select(1.0-t,t,corner==vec3<u32>(1u));
+                blend_weight=w3.x*w3.y*w3.z;
+            }
             let g=vec3<u32>(cell0)+corner;
             let base=o+8u+(g.x+g.y*dims.x+g.z*dims.x*dims.y)*18u;
-            if aux[o+7u]==4u {
-                let valid=select(1.0,0.0,(aux[base]&0x80000000u)!=0u);
+            if aux[o+7u]>=4u {
+                var valid=select(1.0,0.0,(aux[base]&0x80000000u)!=0u);
+                if aux[o+7u]==5u {
+                    let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
+                    // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
+                    valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
+                }
                 let v=unpack_sky_transport(aux[base+axis.x])*n2.x
                     +unpack_sky_transport(aux[base+axis.y])*n2.y
                     +unpack_sky_transport(aux[base+axis.z])*n2.z;
-                value+=v*weights[c]*valid;
-                valid_weight+=weights[c]*valid;
+                value+=v*blend_weight*valid;
+                valid_weight+=blend_weight*valid;
                 continue;
             }
             let v=vec3<f32>(aux_f32(base+axis.x),aux_f32(base+axis.y),aux_f32(base+axis.z));
@@ -731,8 +743,8 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
                 let b=vec3<f32>(aux_f32(base+axis.x+1u),aux_f32(base+axis.y+1u),aux_f32(base+axis.z+1u));
                 bounce_value=dot(b,n2);
             }
-            value+=vec3<f32>(dot(v,n2),bounce_value,sun_value)*weights[c]*valid;
-            valid_weight+=weights[c]*valid;
+            value+=vec3<f32>(dot(v,n2),bounce_value,sun_value)*blend_weight*valid;
+            valid_weight+=blend_weight*valid;
         }
         if valid_weight<1e-5 { return vec4<f32>(0.0); }
         value/=max(dot(n2,vec3<f32>(1.0)),1e-12)*valid_weight;
