@@ -221,8 +221,9 @@ impl Gg {
 
     /// The crowd's recordings (`--crowd DIR`, GG_CROWD, or found beside the
     /// sound folder); without them the crowd still reacts, silently.
-    pub fn set_crowd(&mut self, arg: Option<&str>, sounds: &std::path::Path, tx: &audio::sfx::SfxSender) {
-        let Some(dir) = crate::crowd_sound::find_dir(arg, Some(sounds)) else { eprintln!("silent crowd: no crowd_sound samples (--crowd DIR or GG_CROWD)"); return };
+    pub fn set_crowd(&mut self, arg: Option<&str>, sounds: Option<&std::path::Path>, tx: &audio::sfx::SfxSender) {
+        let Some(dir) = crate::crowd_sound::find_dir(arg, sounds) else { eprintln!("silent crowd: no crowd_sound samples (--crowd DIR or GG_CROWD)"); return };
+        eprintln!("crowd: samples from {}", dir.display());
         match crate::crowd_sound::Samples::load(&dir) {
             Ok(s) => {
                 let mut c = crate::crowd_sound::CrowdSound::new(Some((tx.clone(), s)));
@@ -1208,6 +1209,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     };
     println!("seed {seed}, {} local, {} players", slots.len(), world.players.len());
     let mut game = Gg::new(world, session, slots);
+    // Round changes must not stall the frame (and the audio) on the sky bake.
+    game.vis.stadium.bake_in_background = true;
     game.party = crate::party::Party::connect();
     if game.party.is_some() { println!("gamenight: waiting for the party host"); }
     game.live = crate::live::start(args)?.map(Box::new);
@@ -1233,7 +1236,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     let music = music(args, samples.as_deref(), seed, true);
     let _speaker = match crate::sounds::speakers(args.value("--speakers"), music.as_ref()) {
         Ok((speaker, tx, crowd)) => {
-            if let Some(dir) = &samples { game.set_crowd(args.value("--crowd"), dir, &crowd); }
+            game.set_crowd(args.value("--crowd"), samples.as_deref(), &crowd);
             game.set_sounds(crate::sounds::Sounds::new(tx, patches, samples.as_deref()));
             if let Some(m) = music { game.set_music(m); }
             Some(speaker)

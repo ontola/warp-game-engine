@@ -18,13 +18,32 @@ costs are reported separately. Source attribution: licenses/SpaceRacer-MIT.txt.
 
 ## Current verification
 
-Run `cargo test -p spaceracer --lib`. Five checks cover 4,800 source ground
+Run `cargo test -p spaceracer --lib`. Ten checks cover 4,800 source ground
 ticks, 1,800 flight ticks, 700 drafting ticks, 1,680 bump ticks, physical gate
-rejection and 18 source track fixtures (six layouts × three difficulties).
-Track fixtures test sampling, not native procedural generation. Flight tests
+rejection and 18 source track fixtures (six layouts Ã— three difficulties).
+Native generation now also matches all nodes and gameplay features in the 18
+reference ribbons within 3 cm positional tolerance. Base and raw centrelines
+are checked across 90 layout/difficulty/biome combinations. Flight tests
 cover the integrator, not takeoff/landing/collision integration. No full-game
 performance result or visual-parity claim is available yet.
 
 The offline tools export fixtures with the pinned Godot source checkout.
 Fixtures are compressed with deterministic gzip metadata. The production
 simulation crate has no Godot dependency.
+
+Camera chase is checked for 1,800 ticks across three viewport aspect ratios,
+including roll and boost shake. Five landing scenarios compare capture, damage,
+crashes and underside rejection with the source. The renderer has opt-in
+per-view up axes (`Renderer::set_camera_up_axes`) for loops and free flight.
+
+`assets/ships.json.gz` preserves five authored variants, 218 meshes, 145 material
+records, control pivots, shader parameters and optical effect geometry. This is
+asset extraction, not proof that the native renderer already implements these
+materials. `assets/manifest.json` records the hashes of 102 unchanged original
+asset files. The source shaders are reference inputs for the material port;
+Warp does not execute Godot shader source.
+
+Remaining integration is explicitly tracked in `port-status.json`: full race
+lifecycle, contacts, AI/weapons, all biome scenery, shaders/effects, menus/HUD,
+audio, GameNight and controller bindings. There is intentionally no play or
+benchmark launcher advertised until those parity gates are met.

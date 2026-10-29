@@ -1,0 +1,515 @@
+{
+  "source_commit": "66508c8539f5e4b348c0797b649b67b6d7a43dfc",
+  "files": [
+    {
+      "path": "source/assets/audio/racer/air.wav",
+      "sha256": "61020d9e1a45d16e6164fe869984b7890f02fb6d55ab159a4e5ebbb84573e711",
+      "bytes": 384044
+    },
+    {
+      "path": "source/assets/audio/racer/boost_1.wav",
+      "sha256": "b938cdcfa44c1868ff1ea5ccdee33f8113ec84fd0d874c7a9d275aa948aa08c3",
+      "bytes": 73810
+    },
+    {
+      "path": "source/assets/audio/racer/boost_2.wav",
+      "sha256": "610918a5b8f5371baa094d36ebb1ba5325f4e62ec7457e3a16b0da6688662bc6",
+      "bytes": 73810
+    },
+    {
+      "path": "source/assets/audio/racer/boost_3.wav",
+      "sha256": "d00d61e3049d0995bf66e3ce30053b5c696cae9e69a6420d847efbb123d713f6",
+      "bytes": 73810
+    },
+    {
+      "path": "source/assets/audio/racer/boost_4.wav",
+      "sha256": "ed57073b483d06430c0094a7f5dc0b1a5d1db21b572a4b4c43e4132e871b1be6",
+      "bytes": 73810
+    },
+    {
+      "path": "source/assets/audio/racer/boost_5.wav",
+      "sha256": "05a4965b12b5fbeb49114ebf5f8c6e57f215e94593c855a4a55b79e7af4167b4",
+      "bytes": 73810
+    },
+    {
+      "path": "source/assets/audio/racer/boost_loop.wav",
+      "sha256": "c582da85bd5a18c628a32ad5b654f156313e75915f1e6cba91870f9995b7d151",
+      "bytes": 384044
+    },
+    {
+      "path": "source/assets/audio/racer/contact_1.wav",
+      "sha256": "dc3b0cb63fea86bb7c72d4db353d04be2304b03da666f7444c7a820e0b136f95",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/contact_2.wav",
+      "sha256": "939a12c130e21466db4cd646be7693fe274f883395696de93f85e9075b4a2943",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/contact_3.wav",
+      "sha256": "2dbd72f3af9b5bcf55f6830f0d762403027350697c97dd9d2b33de6d06399d32",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/contact_4.wav",
+      "sha256": "9ee22feeec0d83894a6cc538d014fd29e008754d76a63987dbf8cbf6654364d8",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/contact_5.wav",
+      "sha256": "fd2951c6abffba3df851235bf67daed3b7e54c140d0f22c6a4c4e38f09e82e96",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/drive.wav",
+      "sha256": "d39534b3923aa68907c72c3cb3e36c49ef373803e5d520bc87b9cba651fcf49c",
+      "bytes": 384044
+    },
+    {
+      "path": "source/assets/audio/racer/emp_1.wav",
+      "sha256": "e6b26532f8e7a846db19ca6380bfe000ce2b952b31439a40a4524a74660406aa",
+      "bytes": 105644
+    },
+    {
+      "path": "source/assets/audio/racer/emp_2.wav",
+      "sha256": "d7bf85b3d7259788c080a5953e063cc126e94b136b497f361a6b68df3732d436",
+      "bytes": 105644
+    },
+    {
+      "path": "source/assets/audio/racer/emp_3.wav",
+      "sha256": "be186a0b0e907f8f3c54c3bdc7cd74cd16cc7fcf7ad2f03a629f53a5751cd333",
+      "bytes": 105644
+    },
+    {
+      "path": "source/assets/audio/racer/emp_4.wav",
+      "sha256": "a7285c672f2cd13c514b64ada2c8199971382ace9ede92c39bddaebc5c1f7876",
+      "bytes": 105644
+    },
+    {
+      "path": "source/assets/audio/racer/emp_5.wav",
+      "sha256": "240be33690d12354d154447dab3e7f319aedcbd9c27e290329888a74c0bdd5f0",
+      "bytes": 105644
+    },
+    {
+      "path": "source/assets/audio/racer/explosion_1.wav",
+      "sha256": "7db326e81efd0c8073680c6ad9b81a20e5f66c8975ff2ccd1a01e3ea6085dd6e",
+      "bytes": 177644
+    },
+    {
+      "path": "source/assets/audio/racer/explosion_2.wav",
+      "sha256": "9d58825d4ea1e5688cb2e9cac7a3663858149c15b312138850633941d2818670",
+      "bytes": 177644
+    },
+    {
+      "path": "source/assets/audio/racer/explosion_3.wav",
+      "sha256": "8028def7d724f13a22e4c22a0b6bfef64027cd20dc60db583f037f9ceea6f835",
+      "bytes": 177644
+    },
+    {
+      "path": "source/assets/audio/racer/explosion_4.wav",
+      "sha256": "a04aa0b3f3158488622bfdaf8e7bcb79df87bc7627054497020e59d1bef5c0a3",
+      "bytes": 177644
+    },
+    {
+      "path": "source/assets/audio/racer/explosion_5.wav",
+      "sha256": "a1d0e161c1f733356991c46a66d2df2a8fc6429245aaee9f4ef02534f0ade7e8",
+      "bytes": 177644
+    },
+    {
+      "path": "source/assets/audio/racer/finish_1.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/finish_2.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/finish_3.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/finish_4.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/finish_5.wav",
+      "sha256": "a375cab6a117fad51a5513e2ad76b16cc7d17f05ac32275a5efacc000c4b18a5",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/go_1.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "bytes": 43244
+    },
+    {
+      "path": "source/assets/audio/racer/go_2.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "bytes": 43244
+    },
+    {
+      "path": "source/assets/audio/racer/go_3.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "bytes": 43244
+    },
+    {
+      "path": "source/assets/audio/racer/go_4.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "bytes": 43244
+    },
+    {
+      "path": "source/assets/audio/racer/go_5.wav",
+      "sha256": "2c602f22c9c97abd84ed647ac02dc788d8dc388b5fcc275a90dd61517a050af7",
+      "bytes": 43244
+    },
+    {
+      "path": "source/assets/audio/racer/idle.wav",
+      "sha256": "b5dbb65b9558a0d4f778efa822e553bf05a4b551136a9a09931f50ef76d05f3c",
+      "bytes": 192044
+    },
+    {
+      "path": "source/assets/audio/racer/land_1.wav",
+      "sha256": "300cd87bf3f16bccc29549a9de02db79062242a03c71d17d19348a5eb537c99c",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/land_2.wav",
+      "sha256": "1f4f3cc6c47c02b7b7cc1cb1f6e1007645dcfe651c1674d43cc2182b0b11003e",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/land_3.wav",
+      "sha256": "31212b70c39b52ac41158bef1cb251459ec488e719755adbd8fbe71dcc6f4003",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/land_4.wav",
+      "sha256": "9eed729dad88691b77ae25bfd282a38c5c07a80d4075dfd4991323b4f983f459",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/land_5.wav",
+      "sha256": "e134931274e61d9a08b7abbcee69609c3e3620df1958307859b0af501eea8740",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/lap_1.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "bytes": 28844
+    },
+    {
+      "path": "source/assets/audio/racer/lap_2.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "bytes": 28844
+    },
+    {
+      "path": "source/assets/audio/racer/lap_3.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "bytes": 28844
+    },
+    {
+      "path": "source/assets/audio/racer/lap_4.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "bytes": 28844
+    },
+    {
+      "path": "source/assets/audio/racer/lap_5.wav",
+      "sha256": "dbc2d50533d3dcba16c8989b64159eec9fece354573266cab5221da8e26f5a17",
+      "bytes": 28844
+    },
+    {
+      "path": "source/assets/audio/racer/launch_1.wav",
+      "sha256": "604fea42d1a9dc79d1de90b89abbe7e8faf35fbce64041346eac4a5ea66be0c4",
+      "bytes": 72044
+    },
+    {
+      "path": "source/assets/audio/racer/launch_2.wav",
+      "sha256": "20ed64689c253344d63666660766e039475eabd6a0cdd9cb105eafd44be55e61",
+      "bytes": 72044
+    },
+    {
+      "path": "source/assets/audio/racer/launch_3.wav",
+      "sha256": "edc947d55ba26aebfba23854cb8f5767239ee39b0ba528a40a645774d3927771",
+      "bytes": 72044
+    },
+    {
+      "path": "source/assets/audio/racer/launch_4.wav",
+      "sha256": "2a5d737dbdc076359eb7d28371f17c4adb25a3fa66d50a04df5e337fc43921f6",
+      "bytes": 72044
+    },
+    {
+      "path": "source/assets/audio/racer/launch_5.wav",
+      "sha256": "7ccd4353a9412cc1fa70c7cf0ace11f4bf0e31d24dc4a0897e7c447871c83f04",
+      "bytes": 72044
+    },
+    {
+      "path": "source/assets/audio/racer/manifest.json",
+      "sha256": "f316bae603d4596625c05a7132dec52f6c06f29c7865c81cc9ea91b11e9ab6fc",
+      "bytes": 29128
+    },
+    {
+      "path": "source/assets/audio/racer/pickup_1.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "bytes": 15404
+    },
+    {
+      "path": "source/assets/audio/racer/pickup_2.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "bytes": 15404
+    },
+    {
+      "path": "source/assets/audio/racer/pickup_3.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "bytes": 15404
+    },
+    {
+      "path": "source/assets/audio/racer/pickup_4.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "bytes": 15404
+    },
+    {
+      "path": "source/assets/audio/racer/pickup_5.wav",
+      "sha256": "31bd4ccfcbecedc72eb454561b482aa217e88980d4fe7c21fb9e9497f5fbea5b",
+      "bytes": 15404
+    },
+    {
+      "path": "source/assets/audio/racer/rail_1.wav",
+      "sha256": "2acd13a70c0023cc3ef1db31719c65059bd4ac0cfbfa8b61a1cc76f38519587d",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/rail_2.wav",
+      "sha256": "dfdeab227eb37c4396b099a485ac9a1758d0b236ad9e9ac3635402a196e9d9c7",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/rail_3.wav",
+      "sha256": "405398ddf64f0fce54641d275e30617d8c563d39edc6bed3a0f894fbb2aa49ce",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/rail_4.wav",
+      "sha256": "5ce112308d54298c0e8412a3ea9752b520fd0f50d87725b8ca466d0534819daa",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/rail_5.wav",
+      "sha256": "3799f7041824bb53dda2277b046fd5a392cea6a72aaa690bab86893f6a3d7f51",
+      "bytes": 86444
+    },
+    {
+      "path": "source/assets/audio/racer/scrape.wav",
+      "sha256": "a104274ad1ddc0116a4ab50b0ee11118d651ec7d2fce1b5db4b3b0467b148fb7",
+      "bytes": 652844
+    },
+    {
+      "path": "source/assets/audio/racer/sentry.wav",
+      "sha256": "692ff4d6f9dcececf396f051f806c3126a4b0164c2af5b1fdc7dd008675568fc",
+      "bytes": 48044
+    },
+    {
+      "path": "source/assets/audio/racer/tick_1.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "bytes": 13484
+    },
+    {
+      "path": "source/assets/audio/racer/tick_2.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "bytes": 13484
+    },
+    {
+      "path": "source/assets/audio/racer/tick_3.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "bytes": 13484
+    },
+    {
+      "path": "source/assets/audio/racer/tick_4.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "bytes": 13484
+    },
+    {
+      "path": "source/assets/audio/racer/tick_5.wav",
+      "sha256": "8b37f52094953fd3ed6247f966b05aa7e7b1aa2b76412dec014a7a55b25ce566",
+      "bytes": 13484
+    },
+    {
+      "path": "source/assets/audio/racer/warning_1.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/warning_2.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/warning_3.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/warning_4.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/warning_5.wav",
+      "sha256": "028e20153351448f2ea787534adc5691c6d60fcebec112632914b9873e3e9e9a",
+      "bytes": 34604
+    },
+    {
+      "path": "source/assets/audio/racer/warp_1.wav",
+      "sha256": "e18ffff806b8c31fda4ea7fa12b169049754a7c8ee12287739fafe4dd1cc3226",
+      "bytes": 96044
+    },
+    {
+      "path": "source/assets/audio/racer/warp_2.wav",
+      "sha256": "1078e2b5fe1bf14d9a4e2e38f2c8da26f05647031f005b24c551c1189af09e7e",
+      "bytes": 96044
+    },
+    {
+      "path": "source/assets/audio/racer/warp_3.wav",
+      "sha256": "cf15b1fb8ba40107da6df0dc1b57dd7f1b484e1a0c9ff61a51a27e41bd3deb9e",
+      "bytes": 96044
+    },
+    {
+      "path": "source/assets/audio/racer/warp_4.wav",
+      "sha256": "e3f5a64407e183f50ae24a875a0a6506e03ac9ec49c14630d47d65b7fe52e657",
+      "bytes": 96044
+    },
+    {
+      "path": "source/assets/audio/racer/warp_5.wav",
+      "sha256": "6f589d4c2cd165e717d1b5f9d24b59303359171d812753bdcba39e791b9d9bd7",
+      "bytes": 96044
+    },
+    {
+      "path": "source/assets/branding/logo.png",
+      "sha256": "3595af3100d3ee865402754a0b1ccaab5a623eb5e49848855d96cb3dfda7f0b0",
+      "bytes": 219721
+    },
+    {
+      "path": "source/assets/city-billboards.png",
+      "sha256": "bb0f9cd081e34d3dd3fbafa097472e667c377f5b8c60330e13b06bc66f52f688",
+      "bytes": 2797147
+    },
+    {
+      "path": "source/assets/corporate-posters.png",
+      "sha256": "fe0979bedec23d46198b4f5e30dda7ffdf0368f08d42074a485f5ba3d4001948",
+      "bytes": 4670598
+    },
+    {
+      "path": "source/assets/forest/authored/birch-tree-1/scene.bin",
+      "sha256": "3ef4ea90839f6dddadece67612bf5743d5a2b140b6099d139a4ac5a16905c16b",
+      "bytes": 1503640
+    },
+    {
+      "path": "source/assets/forest/authored/birch-tree-1/scene.gltf",
+      "sha256": "d32a9d93b5a8c97254ccc2e33992d557c700b5bde11cc90c8bffae6c0513bffc",
+      "bytes": 6279
+    },
+    {
+      "path": "source/assets/forest/authored/birch-tree-1/textures/Leaves_diffuse.png",
+      "sha256": "6625dbb685d42a12cff85490652e23831b826026556f3890a6a8e0c26c49433e",
+      "bytes": 335152
+    },
+    {
+      "path": "source/assets/forest/authored/birch-tree-1/textures/Material.002_diffuse.png",
+      "sha256": "367a2b449efa1a27c96705886c9f48bdfd8042f69f95736f5d4fca0d6e2d166b",
+      "bytes": 1368058
+    },
+    {
+      "path": "source/assets/forest/authored/pine-tree-1/scene.bin",
+      "sha256": "0f92fc387df765db08cae65f55d17f834974eeec1f96198d8526bfdec61a653e",
+      "bytes": 259620
+    },
+    {
+      "path": "source/assets/forest/authored/pine-tree-1/scene.gltf",
+      "sha256": "511506e3925f9d6b4046f1e647b604f5a17905d50cc455f1a9e847f52abc370e",
+      "bytes": 7803
+    },
+    {
+      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_0Mat_baseColor.png",
+      "sha256": "a12894d4509728f3242c4077005051b9bdbcae3b26d62f691d8ff220ab77db66",
+      "bytes": 712347
+    },
+    {
+      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_0Mat_metallicRoughness.png",
+      "sha256": "21c48a84eb9b5b1f2cdc4bdfe16318d0e76c2608389e380509b685dd58e7d491",
+      "bytes": 247292
+    },
+    {
+      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_0Mat_normal.png",
+      "sha256": "521d61a8c79e67fb89b6674c1856c2a314414d999a2750644fee99a5ffba2ead",
+      "bytes": 919457
+    },
+    {
+      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_1Mat_baseColor.png",
+      "sha256": "b2c077d2e2ff3f83e45349d07fb6164cd0272cc506ef77cc2fea7d59779a2831",
+      "bytes": 647939
+    },
+    {
+      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_1Mat_metallicRoughness.png",
+      "sha256": "cb2d4639e70838e38a6b404857ae5e4ed84bc9aa2b1e4045dff2b40a8261de61",
+      "bytes": 289108
+    },
+    {
+      "path": "source/assets/forest/authored/pine-tree-1/textures/Tree_1Mat_normal.png",
+      "sha256": "f275fe21b0070a0f90f1bbf3c225e082ed941ea29d1c4a82bed7a06f585c6446",
+      "bytes": 1174693
+    },
+    {
+      "path": "source/assets/gamenight/cover.png",
+      "sha256": "1871afb984dee4185e51ce0b2a3287a6496d19c709f559b9d03088133d5fa920",
+      "bytes": 122684
+    },
+    {
+      "path": "source/assets/gamenight/icon.png",
+      "sha256": "32d8d2edbefc5a0e8029bfd005253893f5651aace2dbe8c03438957a1304cacb",
+      "bytes": 14537
+    },
+    {
+      "path": "source/assets/generation-prompts.json",
+      "sha256": "f57ff656f1e2047a1a4485bbb4ecca8e201d7f018cf5839631afe5eef6edf054",
+      "bytes": 2151
+    },
+    {
+      "path": "source/assets/icon.ico",
+      "sha256": "edc76f6fd774a0249975ce7427c77030c1182f7bea835387b6f5099cde9beea3",
+      "bytes": 29545
+    },
+    {
+      "path": "source/assets/icon.svg",
+      "sha256": "d6b07a2c17bb12141508c63385d465098a22e61d85fa89960f4d3e18ca5a3aeb",
+      "bytes": 314
+    },
+    {
+      "path": "source/assets/neon-signs-preview.png",
+      "sha256": "6c4ef5369667b2b9346f048568a5532fd2bcc277a153334540fccf407f951444",
+      "bytes": 902933
+    },
+    {
+      "path": "source/assets/neon-signs.png",
+      "sha256": "90af163fb1fd21465e0d4ec0e27c88239680bf9f286a1483fa32af22078cb0f6",
+      "bytes": 184892
+    },
+    {
+      "path": "source/assets/office-facade.png",
+      "sha256": "46b0fb63ed601b595084781469326ff9caae992d04218ef81bb04fb1f71ffabc",
+      "bytes": 2098341
+    },
+    {
+      "path": "source/assets/paint-wear.png",
+      "sha256": "aff3198f470a3a6dc83fad45d0a3340093f017f07c6bc9e102795793fc086da3",
+      "bytes": 311469
+    },
+    {
+      "path": "source/assets/README.md",
+      "sha256": "e2321e22546fef2e88dcacc8d9529554762f858acb9c77dbec73798155c69006",
+      "bytes": 2878
+    }
+  ]
+}

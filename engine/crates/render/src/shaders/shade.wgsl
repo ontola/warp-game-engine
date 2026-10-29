@@ -26,7 +26,7 @@ struct Light {
     near_shadow_view_proj: mat4x4<f32>,
     near_shadow: vec4<f32>, // world texel size, blend-start radius, enabled
     night_stars: vec4<f32>, // peak radiance, zenith optical depth, zero-sun fast path, seed
-    anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale
+    anim: vec4<f32>,        // x: seconds for animated procedural materials, y: emission scale, z: radiance shown as white
 };
 
 struct Cluster {
@@ -1711,6 +1711,21 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         glint = cs.glint;
         car_debug = cs.debug;
     }
+    // Wounds (instance bits 27..31): wet blood stains in the body's own
+    // space, spreading from a few blotches to most of it.
+    let wounds = f32(inst.pad >> 27u) / 31.0;
+    if wounds > 0.0 {
+        let o = (pos_of(vi[0]) * b0 + pos_of(vi[1]) * b1 + pos_of(vi[2]) * b2) * inst.scale;
+        let blot = 0.5 * vnoise(o.xy * 3.1 + o.z * 1.7) + 0.5 * vnoise(o.zy * 3.3 - o.x * 1.9 + 7.0);
+        let fleck = vnoise(o.xz * 17.0 + o.y * 11.0);
+        let cut = 1.0 - wounds * 0.55;
+        let stain = max(smoothstep(cut, cut + 0.05, blot), smoothstep(0.98 - wounds * 0.25, 1.0 - wounds * 0.25, fleck));
+        // Dried dark at the heart of a stain, fresher red at its edge.
+        let blood = mix(vec3<f32>(0.075, 0.003, 0.003), vec3<f32>(0.03, 0.001, 0.001), smoothstep(cut + 0.05, cut + 0.2, blot));
+        base = mix(base, blood, stain * 0.95);
+        rough_m = mix(rough_m, 0.3, stain);
+        metal = mix(metal, 0.0, stain);
+    }
     let l = light.sun_dir.xyz;
     let ndl = dot(n, l);
     var sun = max(ndl, 0.0);
@@ -1839,6 +1854,14 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     rad += surface_emit * emit;
     // LAVA: unlit, flowing molten rock; `tint * scale` is the radiance of white.
     if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x, max(length(fp.dx), length(fp.dy))) * m.tint * m.scale * emit; }
+    // Hit flash (instance bits 16..23): white over the body, strongest at
+    // its edges so it keeps its shape (a sheen, not a flat blob).
+    let flash = f32((inst.pad >> 16u) & 0xffu) / 255.0;
+    if flash > 0.0 {
+        let rim = pow(1.0 - clamp(dot(n, -dir), 0.0, 1.0), 2.0);
+        let white = vec3<f32>(1.0, 0.97, 0.92) * light.anim.z;
+        rad = mix(rad, white, clamp(flash * (0.35 + 0.9 * rim), 0.0, 1.0));
+    }
     rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
     if light.sky.z > 0.5 && light.sky.z < 1.5 {

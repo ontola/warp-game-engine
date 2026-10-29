@@ -37,8 +37,24 @@ pub fn beside_exe(name: &str) -> Option<PathBuf> { std::env::current_exe().ok()?
 /// beside the executable, or a sibling checkout `../growing-guns/assets/audio`):
 /// footsteps, hurts, deaths (and the crowd's samples in `crowd` inside it).
 pub fn find_dir(arg: Option<&str>) -> Option<PathBuf> {
-    let candidates = [arg.map(PathBuf::from), std::env::var("GG_SOUNDS").ok().map(PathBuf::from), beside_exe("audio"), Some(PathBuf::from("../growing-guns/assets/audio"))];
-    candidates.into_iter().flatten().find(|p| p.join("Step-1.wav").exists())
+    let candidates = [arg.map(PathBuf::from), std::env::var("GG_SOUNDS").ok().map(PathBuf::from), beside_exe("audio")];
+    candidates.into_iter().flatten().chain(godot_checkout("assets/audio")).find(|p| p.join("Step-1.wav").exists())
+}
+
+/// `rel` inside a Godot checkout called `growing-guns` beside any folder
+/// above the working directory, the executable or the source tree this
+/// binary was built from (C:/dev/growing-guns next to C:/dev/warp-gg, as on
+/// the Mancave, wherever GameNight starts the game from).
+pub fn godot_checkout(rel: &str) -> Vec<PathBuf> {
+    let starts = [std::env::current_dir().ok(), std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)), Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")))];
+    let mut out: Vec<PathBuf> = Vec::new();
+    for start in starts.into_iter().flatten() {
+        for dir in start.ancestors() {
+            let p = dir.join("growing-guns").join(rel);
+            if !out.contains(&p) { out.push(p); }
+        }
+    }
+    out
 }
 
 /// The patch folder: `--sfx DIR`, `GG_SFX`, beside the working directory, or
