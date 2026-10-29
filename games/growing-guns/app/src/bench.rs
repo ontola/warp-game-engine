@@ -152,7 +152,7 @@ pub fn run(args: &Args) -> Result<(), String> {
             }
             vis.absorb(&world, &[]);
             vis.pose(&world, &prev, 1.0, 1.0 / 60.0);
-            vis.flush(&gpu, &renderer)?;
+            vis.flush(&gpu, &renderer, &light)?;
             renderer.set_sprites(&gpu, vis.sprites())?;
             renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
             renderer.set_local_lights(&vis.local_lights())?;
@@ -364,7 +364,7 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
     let output = Renderer::output_texture(&gpu, w, h);
     let t = Instant::now();
     vis.pose(&world, &view::Pose::all(&world), 1.0, growing_guns::DT);
-    vis.flush(&gpu, &renderer)?;
+    vis.flush(&gpu, &renderer, &light)?;
     renderer.set_sprites(&gpu, vis.sprites())?;
     renderer.update_instances(&gpu, vis.first_dynamic, vis.dynamic())?;
     renderer.set_local_lights(&vis.local_lights())?;
@@ -457,7 +457,7 @@ fn stress(args: &Args, mode: StressMode) -> Result<(), String> {
         let scene_ms = ms(t);
         thread_ms[3] = thread.mark();
         let t = Instant::now();
-        vis.flush(&gpu, &renderer)?;
+        vis.flush(&gpu, &renderer, &light)?;
         // World effects remain part of a HUD-free benchmark/capture.
         renderer.set_sprites(&gpu, vis.sprites())?;
         let flush_ms = ms(t);
