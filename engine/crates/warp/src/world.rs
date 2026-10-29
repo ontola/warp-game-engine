@@ -28,11 +28,33 @@ pub enum Shape {
     Outline { sides: u32, width: u32 },
     /// A glTF file inside the game folder (`assets/crate.glb`).
     Model(String),
+    /// Glowing edges between points (the entity's `wire`): one thin box per
+    /// edge, moved by the engine whenever the entity or its points move.
+    Wire,
+}
+
+/// A wire frame in the entity's own space (scaled by its size, turned by
+/// its rotation): points, edges between them (0-based), and the edge width
+/// in metres at size 1.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wire {
+    pub points: Vec<Vec3>,
+    pub edges: Vec<[u16; 2]>,
+    pub width: f32,
+}
+
+impl Wire {
+    /// The box around the points, as a centre and half extents.
+    fn bounds(&self) -> (Vec3, Vec3) {
+        if self.points.is_empty() { return (Vec3::ZERO, Vec3::splat(0.5)); }
+        let (lo, hi) = self.points.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        ((lo + hi) * 0.5, ((hi - lo) * 0.5 + self.width * 0.5).max(Vec3::splat(1e-3)))
+    }
 }
 
 impl Shape {
     pub fn name(&self) -> String {
-        match self { Shape::Cube => "cube".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone() }
+        match self { Shape::Cube => "cube".into(), Shape::Sphere => "sphere".into(), Shape::Capsule => "capsule".into(), Shape::Outline { sides, width } => format!("outline{sides}:{}", *width as f32 / 1000.0), Shape::Model(p) => p.clone(), Shape::Wire => "wire".into() }
     }
 }
 
@@ -73,7 +95,11 @@ pub struct Entity {
     pub solid: bool,
     pub visible: bool,
     pub tag: String,
+    /// Shape::Wire: its points and edges.
+    pub wire: Option<Wire>,
     slot: Option<SlotId>,
+    /// A wire's slots, one per edge.
+    edge_slots: Vec<SlotId>,
     mesh: usize,
     /// Collision box at size 1: centre offset and half extents.
     local: (Vec3, Vec3),
@@ -103,10 +129,41 @@ pub struct Spawn {
     pub solid: bool,
     pub visible: bool,
     pub tag: String,
+    pub wire: Option<Wire>,
 }
 
 impl Default for Spawn {
-    fn default() -> Self { Spawn { shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, tag: String::new() } }
+    fn default() -> Self { Spawn { shape: Shape::Cube, look: Look::default(), pos: Vec3::ZERO, rot: Vec3::ZERO, size: Vec3::ONE, solid: true, visible: true, tag: String::new(), wire: None } }
+}
+
+/// Put an entity's slots where it is: one for a shape, one per edge for a
+/// wire (as many as fit), none while hidden.
+fn show(slots: &mut Slots, scene: &mut Scene, e: &mut Entity) {
+    let Some(w) = &e.wire else {
+        match (e.visible, e.slot) {
+            (true, Some(slot)) => slots.set(scene, slot, e.mesh, e.transform()),
+            (true, None) => e.slot = slots.add(scene, e.mesh, e.transform()),
+            (false, Some(slot)) => { slots.remove(scene, slot); e.slot = None; }
+            (false, None) => {}
+        }
+        return;
+    };
+    let want = if e.visible { w.edges.len() } else { 0 };
+    while e.edge_slots.len() > want { slots.remove(scene, e.edge_slots.pop().unwrap()); }
+    let xf = e.transform();
+    let width = w.width * e.size.abs().max_element();
+    for (i, [a, b]) in w.edges.iter().take(want).enumerate() {
+        let (Some(a), Some(b)) = (w.points.get(*a as usize), w.points.get(*b as usize)) else { continue };
+        let (a, b) = (xf.transform_point3(*a), xf.transform_point3(*b));
+        let d = b - a;
+        let length = d.length();
+        let turn = if length > 1e-6 { Quat::from_rotation_arc(Vec3::Z, d / length) } else { Quat::IDENTITY };
+        let edge = Affine3A::from_scale_rotation_translation(Vec3::new(width, width, length.max(1e-4)), turn, (a + b) * 0.5);
+        match e.edge_slots.get(i) {
+            Some(&slot) => slots.set(scene, slot, e.mesh, edge),
+            None => match slots.add(scene, e.mesh, edge) { Some(slot) => e.edge_slots.push(slot), None => break },
+        }
+    }
 }
 
 /// A ray's first hit.
@@ -213,7 +270,7 @@ impl World {
     fn mesh(&mut self, shape: &Shape, look: &Look) -> Result<(usize, (Vec3, Vec3)), String> {
         let half = Vec3::splat(0.5);
         let kind = match shape {
-            Shape::Cube => 0,
+            Shape::Cube | Shape::Wire => 0,
             Shape::Sphere => 1,
             Shape::Capsule => 2,
             Shape::Outline { sides, width } => 3 + (*sides as usize) * 1000 + *width as usize,
@@ -263,11 +320,13 @@ impl World {
 
     pub fn spawn(&mut self, s: Spawn) -> Result<u32, String> {
         if self.entities.len() >= self.slots.capacity() { return Err(format!("too many entities: {} at most (max_entities in game.toml)", self.slots.capacity())); }
-        let (mesh, local) = self.mesh(&s.shape, &s.look)?;
+        if s.shape == Shape::Wire && s.wire.is_none() { return Err("wire: needs points and edges".into()); }
+        let (mesh, mut local) = self.mesh(&s.shape, &s.look)?;
+        if let Some(w) = &s.wire { local = w.bounds(); }
         let id = self.next;
         self.next += 1;
-        let mut e = Entity { shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, tag: s.tag, slot: None, mesh, local };
-        if e.visible { e.slot = self.slots.add(&mut self.scene, mesh, e.transform()); }
+        let mut e = Entity { shape: s.shape, look: s.look, pos: s.pos, rot: s.rot, size: s.size, solid: s.solid, visible: s.visible, tag: s.tag, wire: s.wire, slot: None, edge_slots: Vec::new(), mesh, local };
+        show(&mut self.slots, &mut self.scene, &mut e);
         self.entities.insert(id, e);
         Ok(id)
     }
@@ -279,18 +338,19 @@ impl World {
         let mut e = self.entities.remove(&id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
         let (shape, look) = (e.shape.clone(), e.look);
         f(&mut e);
+        if (e.shape == Shape::Wire) != (shape == Shape::Wire) {
+            e.shape = shape;
+            self.entities.insert(id, e);
+            return Err("shape: a wire stays a wire, and other shapes cannot become one (spawn a new entity)".into());
+        }
         if e.shape != shape || e.look != look {
             match self.mesh(&e.shape, &e.look) {
                 Ok((mesh, local)) => { e.mesh = mesh; e.local = local; }
                 Err(err) => { e.shape = shape; e.look = look; self.entities.insert(id, e); return Err(err); }
             }
         }
-        match (e.visible, e.slot) {
-            (true, Some(slot)) => self.slots.set(&mut self.scene, slot, e.mesh, e.transform()),
-            (true, None) => e.slot = self.slots.add(&mut self.scene, e.mesh, e.transform()),
-            (false, Some(slot)) => { self.slots.remove(&mut self.scene, slot); e.slot = None; }
-            (false, None) => {}
-        }
+        if let Some(w) = &e.wire { e.local = w.bounds(); }
+        show(&mut self.slots, &mut self.scene, &mut e);
         self.entities.insert(id, e);
         Ok(())
     }
@@ -298,6 +358,7 @@ impl World {
     pub fn remove(&mut self, id: u32) -> bool {
         let Some(e) = self.entities.remove(&id) else { return false };
         if let Some(slot) = e.slot { self.slots.remove(&mut self.scene, slot); }
+        for slot in e.edge_slots { self.slots.remove(&mut self.scene, slot); }
         true
     }
 
@@ -320,7 +381,8 @@ impl World {
     fn transform(&mut self, id: u32, f: impl FnOnce(&mut Entity)) -> Result<(), String> {
         let e = self.entities.get_mut(&id).ok_or_else(|| format!("no entity {id} (removed, or never spawned)"))?;
         f(e);
-        if let Some(slot) = e.slot { let (mesh, t) = (e.mesh, e.transform()); self.slots.set(&mut self.scene, slot, mesh, t); }
+        if e.wire.is_some() { show(&mut self.slots, &mut self.scene, e); }
+        else if let Some(slot) = e.slot { let (mesh, t) = (e.mesh, e.transform()); self.slots.set(&mut self.scene, slot, mesh, t); }
         Ok(())
     }
 
@@ -475,6 +537,25 @@ mod tests {
     use super::*;
 
     fn world() -> World { World::new(Path::new("."), 16) }
+
+    #[test]
+    fn a_wire_takes_one_slot_per_edge_and_follows_its_points() {
+        let mut w = World::new(Path::new("."), 16);
+        let wire = Wire { points: vec![Vec3::ZERO, Vec3::X, Vec3::Z], edges: vec![[0, 1], [1, 2], [2, 0]], width: 0.1 };
+        let id = w.spawn(Spawn { shape: Shape::Wire, wire: Some(wire), solid: false, ..Default::default() }).unwrap();
+        assert_eq!(w.slots.len(), 3);
+        w.update(id, |e| { e.wire.as_mut().unwrap().edges.pop(); }).unwrap();
+        assert_eq!(w.slots.len(), 2);
+        w.update(id, |e| e.visible = false).unwrap();
+        assert_eq!(w.slots.len(), 0);
+        w.update(id, |e| e.visible = true).unwrap();
+        w.place(id, Vec3::Y, Some(1.0)).unwrap();
+        assert_eq!(w.slots.len(), 2);
+        assert!(w.update(id, |e| e.shape = Shape::Cube).is_err(), "a wire stays a wire");
+        assert!(w.spawn(Spawn { shape: Shape::Wire, ..Default::default() }).is_err(), "a wire needs points");
+        w.remove(id);
+        assert_eq!(w.slots.len(), 0);
+    }
 
     #[test]
     fn spawn_move_remove_and_reuse_meshes() {
