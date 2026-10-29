@@ -89,7 +89,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     var c = mix(grass, moor, m_moor);
     var nt = mix(terrain_layer_normal(layer, wuv, 2.6, mapping), terrain_layer_normal(layer + 1, wuv, 3.2, mapping), m_moor);
     // Worn soil only on steep banks and the odd bare patch.
-    let m_soil = clamp(smoothstep(0.9, 0.75, f.up) * 0.7 + smoothstep(0.7, 0.85, mottle) * 0.25, 0.0, 1.0);
+    let m_soil = clamp(smoothstep(0.9, 0.75, f.up) * 0.35 + smoothstep(0.7, 0.85, mottle) * 0.25, 0.0, 1.0);
     c = mix(c, soil, m_soil);
     nt = mix(nt, terrain_layer_normal(layer + 2, wuv, 3.0, mapping), m_soil);
     var nn = perturb_xz(n, nt);
@@ -97,7 +97,10 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
 
     // Loose stone.
     let m_scree = smoothstep(0.2, 0.7, f.scree + (mottle - 0.5) * 0.4);
-    let gravel = terrain_layer(layer + 4, wuv, 1.8, mapping) * vec3<f32>(0.95, 0.93, 0.9);
+    // Mountain stone is grey limestone and gneiss: the textures are warm, so
+    // most of their colour goes.
+    let gravel0 = terrain_layer(layer + 4, wuv, 1.8, mapping);
+    let gravel = mix(vec3<f32>(dot(gravel0, vec3<f32>(0.3, 0.59, 0.11))), gravel0, 0.5) * vec3<f32>(0.95, 0.97, 1.0);
     c = mix(c, gravel, m_scree);
     nn = normalize(mix(nn, perturb_xz(n, terrain_layer_normal(layer + 4, wuv, 1.8, mapping)), m_scree));
 
@@ -108,7 +111,8 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         tw = tw * tw * tw * tw;
         tw /= tw.x + tw.y + tw.z;
         let rot = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
-        let bare = triplanar(layer + 3, p, tw, 6.0, rot, 0.0) * vec3<f32>(1.05, 1.25, 1.55) * (0.85 + 0.3 * broad);
+        let bare0 = triplanar(layer + 3, p, tw, 6.0, rot, 0.0);
+        let bare = mix(vec3<f32>(dot(bare0, vec3<f32>(0.3, 0.59, 0.11))), bare0, 0.35) * vec3<f32>(1.0, 1.04, 1.1) * (0.85 + 0.3 * broad);
         let mossy = triplanar(layer + 5, p, tw, 3.5, rot, 0.37);
         let m_moss = smoothstep(0.55, 0.9, n.y) * (0.5 + 0.5 * f.moor) * smoothstep(0.3, 0.7, broad);
         let rc = mix(bare, mossy, m_moss);

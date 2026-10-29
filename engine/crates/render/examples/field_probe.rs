@@ -1,13 +1,15 @@
 //! Prints the terrain function's attributes along a line, for tuning.
-//! Run: field_probe X0 Z0 X1 Z1 [STEPS]
+//! Run: field_probe X0 Z0 X1 Z1 [STEPS] [STYLE]
 use render::terrain_field;
 fn main() {
-    let a: Vec<f32> = std::env::args().skip(1).map(|s| s.parse().unwrap()).collect();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let a: Vec<f32> = args.iter().take(5).map(|s| s.parse().unwrap()).collect();
+    let style = args.get(5).and_then(|n| terrain_field::Style::named(n)).unwrap_or_default();
     let steps = a.get(4).copied().unwrap_or(40.0) as usize;
     for i in 0..=steps {
         let t = i as f32 / steps as f32;
         let (x, z) = (a[0] + (a[2] - a[0]) * t, a[1] + (a[3] - a[1]) * t);
-        let s = terrain_field::eval(x, z, 0.0, 1, &terrain_field::Style::default());
-        println!("{x:8.1} {z:8.1} y {:7.2} up {:.2} rock {:.2} scree {:.2} wet {:.2} water {:.2}", s.pos.y, s.up, s.rock, s.scree, s.wet, s.water);
+        let s = terrain_field::eval(x, z, 0.0, 1, &style);
+        println!("{x:8.1} {z:8.1} y {:7.2} up {:.2} rock {:.2} scree {:.2} wet {:.2} water {:.2} moor {:.2} snow {:.2}", s.pos.y, s.up, s.rock, s.scree, s.wet, s.water, s.moor, s.snow);
     }
 }
