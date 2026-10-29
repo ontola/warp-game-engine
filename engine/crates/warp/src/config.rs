@@ -46,7 +46,7 @@ impl Default for GameToml {
 
 /// A folder's one-file game: no `main.luau` and exactly one other `.luau`
 /// file at the top (type files `*.d.luau` aside), such as
-/// `meteor-dash/meteor-dash.luau`. A packaged copy keeps working.
+/// `my-game/my-game.luau`. A packaged copy keeps working.
 pub fn one_file_in(dir: &Path) -> Option<std::path::PathBuf> {
     if dir.join("main.luau").exists() { return None; }
     let mut files = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path())
