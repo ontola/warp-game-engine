@@ -478,6 +478,7 @@ impl View {
         self.follow(w, dt);
         self.fx.update(w, dt);
         self.marks.update(w, self.fx.time, dt);
+        self.marks.torches(&w.level.torches, self.camera.target, self.fx.time);
         let shake = self.fx.shake_offset();
         self.camera.pos += shake;
         self.camera.target += shake;
@@ -492,8 +493,8 @@ impl View {
         }
         // The 32 lights nearest the middle of the view.
         let mid = self.camera.target;
-        let mut near: Vec<&Lamp> = self.lamps.iter().collect();
-        near.sort_by(|a, b| a.pos.distance_squared(mid).total_cmp(&b.pos.distance_squared(mid)));
+        let mut near: Vec<(usize, &Lamp)> = self.lamps.iter().enumerate().collect();
+        near.sort_by(|a, b| a.1.pos.distance_squared(mid).total_cmp(&b.1.pos.distance_squared(mid)));
         // Spell lights first, the level's lamps after.
         let mut locals: Vec<LocalLight> = self.fx.lights();
         locals.sort_by(|a, b| b.intensity_cd.max_element().total_cmp(&a.intensity_cd.max_element()));
@@ -501,7 +502,13 @@ impl View {
         // Every wizard's staff light, always.
         locals.splice(0..0, self.marks.lights.iter().chain(&self.shrines.lights).copied());
         let room = render::headlights::MAX_LOCAL_LIGHTS - locals.len();
-        locals.extend(near.iter().take(room).map(|l| l.light));
+        // Every lamp flickers a little (Arena's torch loop).
+        let t = w.time as f32;
+        locals.extend(near.iter().take(room).map(|&(i, l)| {
+            let i = i as f32;
+            let k = 0.85 + 0.1 * (t * 9.0 + i * 1.7).sin() + 0.05 * (t * 23.0 + i).sin();
+            LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light }
+        }));
         renderer.set_local_lights(&locals)?;
         // Lamps light the haze (Godot's light_volumetric_fog_energy is 1).
         if self.light.volumetric.is_some() {

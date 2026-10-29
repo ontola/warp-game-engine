@@ -160,6 +160,32 @@ impl Marks {
         }
     }
 
+    /// Embers rising off the torches near the view (Arena._torch): 14
+    /// sparks each, half a second up and gone.
+    pub fn torches(&mut self, torches: &[Vec3], near: Vec3, time: f32) {
+        let c = linear3([1.0, 0.5, 0.15]) * 1.6;
+        for (i, &t) in torches.iter().enumerate() {
+            if t.distance_squared(near) > 900.0 {
+                continue;
+            }
+            for j in 0..14 {
+                let h = i as f32 * 7.3 + j as f32 * 1.91;
+                let ph = (time / 0.5 + hash(h)).fract();
+                let s = ph * 0.5;
+                let ang = hash(h + 0.2) * std::f32::consts::TAU;
+                let v = 0.2 + 0.4 * hash(h + 0.4);
+                let side = Vec3::new(ang.cos(), 0.0, ang.sin()) * v * 0.35 * s;
+                let p = t + Vec3::Y * (0.15 + v * s + s * s) + side;
+                let k = smooth(0.0, 0.15, ph) * (1.0 - smooth(0.4, 1.0, ph));
+                let size = 0.24 * (1.0 - 0.5 * ph);
+                let mut f = Sprite::billboard(p, [size, size * 1.3], IMAGE, uv(Cell::Flame), c * k);
+                f.additive = true;
+                f.alpha_cut = 0.0;
+                self.sprites.push(f);
+            }
+        }
+    }
+
     /// The spot a charging spell is aimed at (CastMark): runes turning on
     /// the floor and the element welling up there, faint at first and
     /// stronger as the spell fills.
