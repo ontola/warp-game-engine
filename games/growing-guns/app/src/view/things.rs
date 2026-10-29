@@ -4,7 +4,7 @@
 use super::{cube, glow, material, sphere};
 use glam::{Affine3A, Quat, Vec3};
 use glam::Vec2;
-use growing_guns::{ProjectileKind, StrikeKind, World, AIR_STRIKE_TRAVEL, PICKUPS};
+use growing_guns::{ProjectileKind, StrikeKind, World, PICKUPS};
 use render::scene::NO_SHADOW;
 use render::slots::Slots;
 use render::Scene;
@@ -29,22 +29,33 @@ pub struct Things {
     pickups: [usize; 7],
     marker: usize,
     rocket: usize,
+    strike_rocket: airstrike::Rocket,
     lava: usize,
     beams: dropbeam::Beams,
-    /// The air strikes' targeting lasers, then the drop beams.
+    /// The air strikes' targeting lasers and rocket plumes, then the drop beams.
     laser_sprites: Vec<render::sprites::Sprite>,
+    /// The falling rockets' engine lights.
+    strike_lights: Vec<LocalLight>,
     sprites: Vec<render::sprites::Sprite>,
 }
 
 impl Things {
     /// The pickups' ground lights (Godot `DropLight`).
     pub fn pickup_lights(&self) -> &[LocalLight] { self.beams.lights() }
+    /// The incoming rocket's lens flare into one view (HUD layer).
+    pub fn airstrike_flare(list: &mut render::hud::HudDrawList, rect: [f32; 4], cam: &render::Camera, world: &World) {
+        airstrike::flare::draw(list, rect, cam, &world.strikes);
+    }
+    /// The air-strike rockets' engine lights.
+    pub fn strike_lights(&self) -> &[LocalLight] { &self.strike_lights }
     /// The pickups' scatter-only haze over their beams (night air).
     pub fn pickup_haze(&self) -> &[LocalLight] { self.beams.haze() }
     /// 0 by day, 1 at night: the shafts are brighter against the day sky.
     pub fn set_night(&mut self, night: f32) { self.beams.gain = dropbeam::DAY_GAIN + (1.0 - dropbeam::DAY_GAIN) * night.clamp(0.0, 1.0); }
     /// The sprite images: the drop beams' and the lasers' shafts.
-    pub fn sprite_pictures() -> [(render::sprites::SpriteImage, render::picture::Picture); 2] { [(dropbeam::IMAGE, dropbeam::picture()), (airstrike::IMAGE, airstrike::picture())] }
+    pub fn sprite_pictures() -> [(render::sprites::SpriteImage, render::picture::Picture); 3] {
+        [(dropbeam::IMAGE, dropbeam::picture()), (airstrike::IMAGE, airstrike::picture()), (airstrike::PLUME_IMAGE, airstrike::plume_picture())]
+    }
     /// The light shafts: targeting lasers and drop beams.
     pub fn sprites(&self) -> &[render::sprites::Sprite] { &self.sprites }
 
@@ -69,9 +80,11 @@ impl Things {
             pickups: PICKUPS.map(|k| dropbeam::pickup_mesh(scene, k)),
             marker: { let m = glow(scene, [1.0, 0.1, 0.05], 12000.0); scene.add_mesh(&render::primitives::torus(m, 0.04, 24, 6).mesh()) },
             rocket: { let m = glow(scene, [1.0, 0.55, 0.2], 40000.0); cube(scene, m) },
+            strike_rocket: airstrike::Rocket::new(scene),
             lava: cube(scene, lava_m),
             beams: dropbeam::Beams::reserve(scene),
             laser_sprites: Vec::new(),
+            strike_lights: Vec::new(),
             sprites: Vec::new(),
         }
     }
@@ -107,17 +120,11 @@ impl Things {
         }
         for s in &world.strikes {
             match s.kind {
-                StrikeKind::AirStrike => {
-                    if !airstrike::active(s) { continue; }
-                    let t = (s.age / AIR_STRIKE_TRAVEL) as f32;
-                    let sky = s.target + airstrike::SKY_OFFSET;
-                    let pos = sky.lerp(s.target, t * t);
-                    let dir = (s.target - sky).normalize();
-                    put(scene, self.rocket, Affine3A::from_scale_rotation_translation(Vec3::new(0.35, 2.2, 0.35), Quat::from_rotation_arc(Vec3::Y, -dir), pos), false);
-                }
-                StrikeKind::IonCannon => {}
+                // The rockets are posed below, all of their parts at once.
+                StrikeKind::AirStrike | StrikeKind::IonCannon => {}
             }
         }
+        for (mesh, xf) in self.strike_rocket.parts(&world.strikes) { put(scene, mesh, xf, false); }
         // Coop: where the next enemy rises (Godot's pentagram), and the
         // revive circle where a downed teammate fell.
         if let Some(inc) = world.waves.incoming.as_ref().filter(|_| world.coop) {
@@ -166,6 +173,8 @@ impl Things {
             i.sphere = [0.0; 4];
         }
         self.laser_sprites = airstrike::sprites(&world.strikes);
+        self.laser_sprites.extend(airstrike::plumes(&world.strikes, clock));
+        self.strike_lights = airstrike::lights(&world.strikes, clock);
         self.beams.pose(scene, world, clock);
         self.sprites.clear();
         self.sprites.extend_from_slice(&self.laser_sprites);

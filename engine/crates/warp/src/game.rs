@@ -98,7 +98,7 @@ impl LuaGame {
     /// `sound` is where sounds go (the speakers, an offline mixer, or None
     /// for silence).
     pub fn load(path: &Path, over: &Overrides, sound: Option<SoundSender>) -> Result<Self, String> {
-        // A folder whose only script is its game (`meteor-dash/meteor-dash.luau`).
+        // A folder whose only script is its game (`my-game/my-game.luau`).
         let found = if path.is_dir() { crate::config::one_file_in(path) } else { None };
         let path = found.as_deref().unwrap_or(path);
         let single = path.is_file().then(|| path.file_name().map(|n| n.to_string_lossy().into_owned())).flatten();

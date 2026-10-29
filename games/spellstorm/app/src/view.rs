@@ -526,6 +526,8 @@ impl View {
         sprites.extend_from_slice(&self.shrines.sprites);
         sprites.extend(self.fx.sprites(&self.camera));
         sprites.truncate(render::sprites::MAX_SPRITES);
+        crate::effects::sync(gpu);
+        crate::effects::tag(&mut sprites, self.fx.time);
         renderer.set_sprites(gpu, &sprites)?;
         let t = self.fx.time;
         self.fx.blasts.flush(gpu, renderer, t)?;

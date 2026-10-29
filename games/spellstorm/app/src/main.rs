@@ -7,6 +7,7 @@
 //! comes from the Godot game's own models and materials (assets/kits).
 //! SPELLSTORM_EVENTS=1 makes a shot count the sim's events.
 mod anim;
+mod effects;
 mod fx;
 mod hud;
 mod interp;
@@ -47,11 +48,20 @@ fn run() -> Result<(), String> {
         "shot" => {
             let out = arg("--out").ok_or("--out FILE required")?;
             let (w, h) = arg("--size").and_then(|s| s.split_once('x').map(|(a, b)| (a.parse().unwrap_or(1920), b.parse().unwrap_or(1080)))).unwrap_or((1920u32, 1080u32));
-            let mut game = play::Spellstorm::new(kits::Kits::load(None)?, 0, numf("--bots", 3.0) as usize, seed);
+            // --humans N: seats nobody drives (they stand where they start).
+            let mut game = play::Spellstorm::new(kits::Kits::load(None)?, numf("--humans", 0.0) as usize, numf("--bots", 3.0) as usize, seed);
+            // Seats nobody drives would sit in the start menu.
+            game.menu.open = false;
             if flag("--practice") {
                 // The practice strip, as for players who know nothing yet.
                 game.world.settings.force_practice = true;
                 game.world.new_run();
+            }
+            // --at M: the wizards M metres along the level, packs and walls
+            // before it left out (a look at a wall, a clearing).
+            if let Some(m) = arg("--at").and_then(|v| v.parse::<f32>().ok()) {
+                game.step(&[]);
+                game.world.skip_to(m);
             }
             let ticks = numf("--ticks", 240.0) as u32;
             // --skip: past this level's fights to its last shrine and portal.
