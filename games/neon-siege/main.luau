@@ -430,6 +430,15 @@ local function hurt(p)
 		p.downTime = 0
 		p.revive = 0
 		ring(p.x, p.y, 70, { 1, 0.25, 0.3 })
+		-- The ship blows apart: shards of hull in its colour, white sparks,
+		-- and a shockwave that sweeps across the whole arena so a teammate
+		-- sees it too.
+		local pos = at(p.x, p.y, 0.2)
+		fx.burst(pos, { color = rgb(p.rgb), count = 36, speed = 7, life = 1.3, emissive = FX_GLOW, size = 0.08, stretch = 0.06, flat = true })
+		fx.burst(pos, { color = rgb(WHITE), count = 24, speed = 12, life = 0.6, emissive = FX_GLOW, size = 0.04, stretch = 0.04, flat = true })
+		fx.ring(at(p.x, p.y, 0.15), { color = rgb(p.rgb), radius = 30, life = 0.9, width = 0.12, emissive = FX_GLOW, segments = 48 })
+		fx.ring(at(p.x, p.y, 0.15), { color = rgb(WHITE), radius = 6, life = 0.4, width = 0.08, emissive = FX_GLOW, segments = 32 })
+		s.shake = 14
 		if not p.bot then players.rumble(p.id, 1, 0.5) end
 	end
 	return true
