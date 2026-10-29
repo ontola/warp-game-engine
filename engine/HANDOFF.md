@@ -17,6 +17,15 @@ Older notes below about the missing original Git directory describe the
 pre-recovery situation; the original checkout remains a backup, not the main
 checkout to use. Do not reset or repair that old directory to continue work.
 
+Integration validation: 682 render tests passed (16 ignored), 189 Sideways
+tests passed (one ignored), the explicit GPU visibility/sort/boundary oracle
+passed, and the developer launcher contract checks passed. A fresh 1920x1080
+one-tree 1000 m aggregate smoke capture completed; this is a correctness smoke
+check, not a performance benchmark. The workspace all-targets check passed again
+after merging upstream through `cb005a6` (terrain-fly and wire-entity changes).
+The only additional integration fix updates a stale contact-AO shader assertion
+to cover both diffuse-sky lighting paths; rendering behavior is unchanged.
+
 ## Parallel brick visibility implemented - 29 October 2026
 
 See [architecture, validation and actual captures](docs/vegetation-brick-visibility.md).
