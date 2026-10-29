@@ -133,13 +133,15 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
         // circle's middle at the cell's: brightest at the rim, a faint
         // band at the inner edge. Up the cell (v < 0) is the slice's middle.
         Cell::Slice => {
+            // A tent across the slice, twice its width: side by side the
+            // slices add up to one even arc, with no seams between them.
             let ang = u.atan2(-v).abs();
-            let inside = 1.0 - smooth(SLICE * 0.5 - 0.004, SLICE * 0.5 + 0.004, ang);
+            let tent = (1.0 - ang / SLICE).clamp(0.0, 1.0);
             let y = ((r - SLICE_IN) / (1.0 - SLICE_IN)).clamp(0.0, 1.0);
             let ring = smooth(0.0, 0.02, r - SLICE_IN) * (1.0 - smooth(0.97, 1.0, r));
             let rim = smooth(0.75, 1.0, y) + 0.35 * (1.0 - smooth(0.0, 0.25, y));
             let body = 0.25 + 0.75 * y * y;
-            (1.0, ((body * 0.55 + rim * 0.8) * inside * ring).min(1.0))
+            (1.0, ((body * 0.55 + rim * 0.8) * ring).min(1.0) * tent)
         }
         // A curl of haze for the mist walls: a lumpy soft blob.
         Cell::Wisp => {
@@ -156,10 +158,10 @@ fn texel(c: Cell, u: f32, v: f32) -> (f32, f32) {
     }
 }
 
-/// The sword arc's slices: how wide each is, and where the ring starts
+/// The sword arc's slices: how far apart they stand (each spreads twice that), and where the ring starts
 /// (inner over outer radius of Wizard._arc_mesh).
 pub(crate) const SLICE: f32 = 2.0 * spellstorm::wizard::SWING_ARC / SLICES as f32;
-pub(crate) const SLICES: usize = 16;
+pub(crate) const SLICES: usize = 24;
 pub(crate) const SLICE_IN: f32 = 0.55 / (spellstorm::wizard::SWING_REACH + 0.3);
 
 /// The atlas of every cell, to give the renderer once.
