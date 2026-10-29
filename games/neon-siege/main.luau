@@ -1483,7 +1483,7 @@ local function show_pilot(p)
 		for _, id in p.hull do world.set(id, { visible = up }) end
 		for _, id in p.engines do world.set(id, { visible = up }) end
 		world.set(p.cockpit, { visible = up })
-		world.set(p.halo, { visible = mode == "down" })
+		world.set(p.halo, { visible = false }) -- the HUD's ring of dots shows a downed pilot
 		p.mode = mode
 	end
 	for i, q in SHIP_HULL do
@@ -1999,14 +1999,12 @@ local function draw()
 			end
 		end
 	end
-	-- A downed pilot asks for help: fly over to revive them.
+	-- A downed pilot is a ring of dots that fills while a teammate stays close.
 	if not s.over then
 		for _, p in s.players do
 			if p.hp <= 0 then
 				local x, y = hud.project(at(p.x, p.y, 0.15))
 				if x then
-					local blink = 0.65 + 0.35 * math.sin(s.time * 6)
-					hud.text("REVIVE", x - 60 * k, y - 46 * k, { size = 16 * k, align = "center", width = 120 * k, color = { p.rgb[1], p.rgb[2], p.rgb[3], blink } })
 					-- A ring of dots fills clockwise while a teammate stays close.
 					local done = math.floor(math.min(1, p.revive / REVIVE_TIME) * 24 + 0.5)
 					for i = 1, 24 do
