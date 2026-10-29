@@ -125,6 +125,74 @@ fn field_fbm(p: vec2<f32>, footprint: f32) -> f32 {
     return v;
 }
 
+// The terrain function's gradient noise, as terrain_field.wgsl (same hash,
+// so detail lines up with the geometry it stands in for).
+fn fs_hash(ix: i32, iz: i32, seed: u32) -> u32 {
+    let h = (bitcast<u32>(ix) * 0x8da6b343u) ^ (bitcast<u32>(iz) * 0xd8163841u) ^ (seed * 0xcb1ab31fu);
+    let s = h * 747796405u + 2891336453u;
+    let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+fn fs_grad(ix: i32, iz: i32, seed: u32) -> vec2<f32> {
+    let h = fs_hash(ix, iz, seed);
+    return vec2<f32>(f32(h & 0xffffu) / 32767.5 - 1.0, f32(h >> 16u) / 32767.5 - 1.0);
+}
+
+fn fs_noised(p: vec2<f32>, seed: u32) -> vec3<f32> {
+    let fl = floor(p);
+    let ix = i32(fl.x);
+    let iz = i32(fl.y);
+    let f = p - fl;
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+    let ga = fs_grad(ix, iz, seed);
+    let gb = fs_grad(ix + 1, iz, seed);
+    let gc = fs_grad(ix, iz + 1, seed);
+    let gd = fs_grad(ix + 1, iz + 1, seed);
+    let va = ga.x * f.x + ga.y * f.y;
+    let vb = gb.x * (f.x - 1.0) + gb.y * f.y;
+    let vc = gc.x * f.x + gc.y * (f.y - 1.0);
+    let vd = gd.x * (f.x - 1.0) + gd.y * (f.y - 1.0);
+    let k = va - vb - vc + vd;
+    let v = va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * k;
+    let dx = ga.x + u.x * (gb.x - ga.x) + u.y * (gc.x - ga.x) + u.x * u.y * (ga.x - gb.x - gc.x + gd.x) + du.x * (u.y * k + vb - va);
+    let dz = ga.y + u.x * (gb.y - ga.y) + u.y * (gc.y - ga.y) + u.x * u.y * (ga.y - gb.y - gc.y + gd.y) + du.y * (u.x * k + vc - va);
+    return vec3<f32>(v, dx, dz);
+}
+
+// Slope (d/dx, d/dz) of the terrain function's fine roughness octaves that
+// the mesh is too coarse to carry but a pixel can still show: the same
+// octaves terrain_field.wgsl adds as geometry closer in. The mesh cell is
+// taken as ~24 pixels (procedural_terrain::Settings::cell_pixels).
+fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f32, moor: f32) -> vec2<f32> {
+    let p = xz / 2048.0;
+    let warp = vec2<f32>(fs_noised(p * 1.5 + vec2<f32>(5.2, 1.3), seed + 3u).x, fs_noised(p * 1.5 + vec2<f32>(1.7, 9.2), seed + 3u).x);
+    var q = p + warp * 0.12;
+    let r = mat2x2<f32>(vec2<f32>(1.6, 1.2), vec2<f32>(-1.2, 1.6));
+    var j = mat2x2<f32>(vec2<f32>(1.0 / 2048.0, 0.0), vec2<f32>(0.0, 1.0 / 2048.0));
+    for (var i = 0; i < 7; i++) { q = r * q; j = r * j; }
+    let cut = 24.0 * footprint;
+    var wl = 16.0;
+    var da = 0.8 * mix(0.6 + 0.8 * smoothstep(0.97, 0.8, up) + 0.3 * moor, 2.5, rock);
+    var g = vec2<f32>(0.0);
+    for (var i = 7u; i < 17u; i++) {
+        let w_pix = clamp(wl / (4.0 * footprint) - 1.0, 0.0, 1.0);
+        if w_pix <= 0.0 { break; }
+        let w = w_pix * (1.0 - clamp(wl / (2.0 * cut) - 1.0, 0.0, 1.0));
+        if w > 0.0 {
+            let n = fs_noised(q, seed + 10u + i);
+            let dq = mix(n.yz, -sign(n.x) * n.yz, rock);
+            g += transpose(j) * dq * (da * 0.6 * w);
+        }
+        da *= 0.6597539;
+        wl *= 0.5;
+        q = r * q;
+        j = r * j;
+    }
+    return g;
+}
+
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let f = field_attr(s);
     let p = s.p;
@@ -183,6 +251,11 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         c = mix(c, rc, m_rock);
         nn = normalize(mix(nn, rn, m_rock));
     }
+
+    // Roughness finer than the mesh, from the terrain function itself (the
+    // material's metal carries the seed: terrain is never metal).
+    let ds = field_detail_slope(p.xz, u32(s.metal + 0.5), footprint, f.rock, f.up, f.moor);
+    nn = normalize(nn + vec3<f32>(-ds.x, 0.0, -ds.y));
 
     // Damp ground darkens near water.
     c *= 1.0 - 0.35 * f.wet * (1.0 - m_rock * 0.5);
