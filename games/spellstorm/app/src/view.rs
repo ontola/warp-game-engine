@@ -119,6 +119,8 @@ pub struct View {
     /// Scene instance ranges of each prop (hidden once broken).
     prop_ranges: Vec<std::ops::Range<usize>>,
     prop_broken: Vec<bool>,
+    /// Each prop cut into chunks (mesh, where, shadow), thrown when it breaks.
+    prop_chunks: Vec<Vec<(usize, Mat4, bool)>>,
     pub lamps: Vec<Lamp>,
     /// Camera-facing cards in the level: instance, mesh, centre, scale.
     cards: Vec<(usize, usize, Vec3, Vec3)>,
@@ -172,6 +174,7 @@ impl View {
             pool_first: 0,
             prop_ranges: vec![],
             prop_broken: vec![],
+            prop_chunks: vec![],
             lamps: vec![],
             cards: vec![],
             probes: vec![],
@@ -207,6 +210,7 @@ impl View {
         self.cards.clear();
         self.prop_ranges.clear();
         self.prop_broken.clear();
+        self.prop_chunks.clear();
         self.debris.clear();
         self.wizard_pieces.clear();
         self.dolls = Default::default();
@@ -299,11 +303,29 @@ impl View {
         for p in &l.props {
             let variants = self.kits.prop_variants(biome.id, p.kind);
             let first = scene.instances.len();
+            let mut chunks = Vec::new();
             if variants > 0 {
                 let name = format!("prop/{}/{}/{}", biome.id, p.kind, p.seed as usize % variants);
                 let at = Affine3A::from_rotation_translation(Quat::from_rotation_y(p.yaw), p.pos);
                 self.place(&mut look, &mut scene, &name, at);
+                // What it breaks into (prop.gd): each piece cut in chunks.
+                if p.breakable {
+                    if let Some(kit) = self.kits.kit(&name) {
+                        let at = Mat4::from(at);
+                        for (i, n) in kit.nodes.iter().enumerate() {
+                            let Some(mesh) = n.mesh else { continue };
+                            if !kit.shown(i) {
+                                continue;
+                            }
+                            let xf = at * kit.model_xf(i);
+                            for (m, mid) in look.chunks(&self.kits, &mut scene, mesh, n.material) {
+                                chunks.push((m, xf * Mat4::from_translation(mid), n.shadow));
+                            }
+                        }
+                    }
+                }
             }
+            self.prop_chunks.push(chunks);
             self.prop_ranges.push(first..scene.instances.len());
             self.prop_broken.push(p.broken);
         }
@@ -528,6 +550,13 @@ impl View {
                 }
                 if !r.is_empty() {
                     renderer.update_instances(gpu, r.start, &self.scene.instances[r])?;
+                }
+                // Its chunks fly off from the blow, tumble and settle.
+                let chunks = self.prop_chunks.get(i).cloned().unwrap_or_default();
+                if !chunks.is_empty() {
+                    let (from, power) = self.fx.prop_hits.remove(&i).unwrap_or((p.pos - Vec3::Y, 2.0));
+                    let from = Vec3::new(from.x, p.pos.y + 0.3, from.z);
+                    self.debris.push(Debris::new(&self.scene, chunks, from, 1.5 + power * 0.45, 3.0 + power * 0.25, 5.0, i as u32 * 7919 + 13));
                 }
             }
         }
