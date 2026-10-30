@@ -130,6 +130,8 @@ so unhandled native key events cannot stall Android input dispatch.
 Tracked weapon origins retain the simulation's cover clipping and 2.5m bound.
 Room-scale movement offsets the viewpoint; it does not move the simulated
 player capsule, and leaning through scenery is still a limitation.
+Desktop replay recording remains available on PC. The native adapter skips
+recording because the replay format does not include tracked head/hand poses.
 
 ## Validation
 
@@ -148,6 +150,16 @@ OpenXR lifecycle, physical tracking, headset readability or sustained framerate.
 The APK tool verifies signature and alignment. Actual Quest launch/render and
 controller checks must be recorded separately; neither compilation nor an
 installed APK proves those behaviors.
+
+The full-resolution/minimum build was rebuilt on 30 October 2026 after merging
+the desktop replay changes. Workspace/all-target checks passed, as did 81
+Growing Guns app tests (two ignored), two XR tests and the four focused
+minimum-renderer/sprite tests. The simple-mesh fixture matched the reference
+pixels exactly in all three activation/hiding phases. APK signature and
+alignment verification passed. Installation of this revision and sustained
+120 FPS remain unverified: the attached Quest was reporting `unauthorized`
+over USB. Earlier device-only GPU throughput measurements exclude the runtime
+compositor and must not be presented as headset FPS.
 
 For diagnostics, use `adb logcat --pid=$(adb shell pidof com.ontola.warp.growingguns)`.
 Startup errors are tagged `WarpXR`. Preserve logs before restarting the app.
