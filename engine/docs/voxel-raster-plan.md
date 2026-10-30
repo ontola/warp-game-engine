@@ -57,3 +57,27 @@ per branch group from projected error. Nothing in the cook changes.
 
 Measure with GPU pass scopes and the triangle/splat counters. Report the
 whole frame, not a pass sum.
+
+## Status
+
+**M1 built (opt-in, `KERN_VOXEL_RASTER=1`).** `voxel_forest.rs` lists every
+occupied cell of every level once at load (`splat_cells`). Per view,
+`voxel_splats` keeps the cells of each tree's selected level that pass the
+frustum and have opacity `1 - exp(-sigma * mean chord)` above 1/255, and
+appends them to an indirect draw. `voxel_splat_raster.wgsl` draws three
+camera-facing faces per cell into an R32 id and reversed-Z depth target and
+discards each pixel with the cell's opacity (hash of pixel and cell, so a
+still image does not shimmer). `voxel_splat_resolve` shades the winning cell
+once per pixel with the integrator's own `volume_radiance` and writes the same
+colour/alpha layer, so the existing composite is unchanged. Opaque scene
+depth in front wins. GPU scopes: `voxel splats`, `voxel splat raster`,
+`voxel splat resolve`.
+
+First headless check (lavapipe, CPU rasterizer, so only relative), one spruce
+at 150 m, `--error 16` so all 60 branch groups pick level 0, 960x540:
+coverage 938 versus 931 pixels for the integrator (under 1% apart); voxel
+passes 88 ms versus 153 ms for brick visibility plus integration. The raster
+pass is most of that on a software rasterizer; on a real GPU it is the cheap
+part. Without TAA the result is dithered; TAA averages it (M4 adds motion).
+
+Not yet: the 64-tree acceptance run on a real GPU, Hi-Z culling, shadows (M2).

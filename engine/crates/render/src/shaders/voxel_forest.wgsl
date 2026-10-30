@@ -1032,3 +1032,112 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
         // VOLUME_MOTION_END
     }
 }
+
+// Opt-in rasterized voxels (KERN_VOXEL_RASTER=1, docs/voxel-raster-plan.md).
+// Nanite-style: each occupied cell of the selected level is an opaque cube
+// kept with probability 1-exp(-optical depth), so the nearest kept cell is
+// the stochastic first hit. voxel_splats lists the cells per view,
+// voxel_splat_raster.wgsl draws them into an id/depth buffer and
+// voxel_splat_resolve shades the winning cell once per pixel.
+// Static cells: tree, level relative to the tree, cell index, packed coord.
+@group(2) @binding(14) var<storage,read> volume_splat_cells: array<vec4<u32>>;
+// Header (VOLUME_SPLAT_HEADER vec4s: view-projection columns), then four
+// vec4s per splat: centre+alpha, x half axis+static cell, y half axis+faces, z half axis.
+@group(2) @binding(15) var<storage,read_write> volume_splats: array<vec4<f32>>;
+// Indirect draw arguments: vertex count, instance count, first vertex, first instance.
+@group(2) @binding(16) var<storage,read_write> volume_splat_draw: array<atomic<u32>>;
+@group(2) @binding(17) var volume_splat_id: texture_2d<u32>;
+@group(2) @binding(18) var volume_splat_depth: texture_depth_2d;
+const VOLUME_SPLAT_HEADER: u32 = 8u;
+
+fn volume_splat_level(index:u32)->u32 {
+    let tree=volume_trees[index];
+    let selected=volume_selection[index];
+    let ceiling=min(tree.identity.z-1u,selected.y);
+    if selected.w==1u || volume_config.march.w<=0.0 {return select(0u,ceiling,selected.w==1u);}
+    // The integrator's projected-footprint rule, once at the crown centre so
+    // a tree never mixes two levels.
+    let owner=instances[tree.identity.x];
+    let centre=vec4<f32>(0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz),1.0);
+    let world=vec3<f32>(dot(owner.r0,centre),dot(owner.r1,centre),dot(owner.r2,centre));
+    let t=max(distance(world,view.cam.xyz),1e-3);
+    let projected=volume_projected_cell(tree,(world-view.cam.xyz)/t);
+    let footprint=volume_config.march.w*t/max(projected.x+volume_config.march.w*projected.y,1e-8);
+    return u32(clamp(floor(log2(max(footprint,1e-8))),0.0,f32(ceiling)));
+}
+
+@compute @workgroup_size(64)
+fn voxel_splats(@builtin(global_invocation_id) id:vec3<u32>) {
+    let work=id.x+id.y*65535u*64u;
+    if work==0u {
+        for(var c=0u;c<4u;c++) {volume_splats[c]=view.view_proj[c];}
+        atomicStore(&volume_splat_draw[0],18u);
+    }
+    if work>=arrayLength(&volume_splat_cells) {return;}
+    let entry=volume_splat_cells[work];
+    if volume_selection[entry.x].x!=1u || entry.y!=volume_splat_level(entry.x) {return;}
+    let tree=volume_trees[entry.x];
+    let level=volume_levels[tree.identity.y+entry.y];
+    let coord=vec3<f32>(f32(entry.w&1023u),f32((entry.w>>10u)&1023u),f32(entry.w>>20u));
+    let cell_size=level.origin_cell.w;
+    let local=level.origin_cell.xyz+(coord+0.5)*cell_size;
+    let owner=instances[tree.identity.x];
+    let point=vec4<f32>(local,1.0);
+    let centre=vec3<f32>(dot(owner.r0,point),dot(owner.r1,point),dot(owner.r2,point));
+    let half=0.5*cell_size;
+    let ax=vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x)*half;
+    let ay=vec3<f32>(owner.r0.y,owner.r1.y,owner.r2.y)*half;
+    let az=vec3<f32>(owner.r0.z,owner.r1.z,owner.r2.z)*half;
+    let radius=length(ax)+length(ay)+length(az);
+    for(var i=0u;i<6u;i++) {
+        if dot(view.planes[i].xyz,centre)+view.planes[i].w < -radius {return;}
+    }
+    // Optical depth of the mean chord through this cell along the view.
+    let eye=vec4<f32>(view.cam.xyz,1.0);
+    let eye_local=vec3<f32>(dot(tree.inverse[0],eye),dot(tree.inverse[1],eye),dot(tree.inverse[2],eye));
+    let d=normalize(local-eye_local);
+    let sigma=volume_sigma(volume_cells[entry.z],volume_direction(d));
+    let alpha=1.0-exp(-sigma*cell_size/max(dot(abs(d),vec3<f32>(1.0)),1.0));
+    if alpha<1.0/255.0 {return;}
+    let faces=select(0u,1u,eye_local.x>local.x)|select(0u,2u,eye_local.y>local.y)|select(0u,4u,eye_local.z>local.z);
+    let slot=atomicAdd(&volume_splat_draw[1],1u);
+    let base=VOLUME_SPLAT_HEADER+slot*4u;
+    if base+4u>arrayLength(&volume_splats) {return;}
+    volume_splats[base]=vec4<f32>(centre,alpha);
+    volume_splats[base+1u]=vec4<f32>(ax,bitcast<f32>(work));
+    volume_splats[base+2u]=vec4<f32>(ay,bitcast<f32>(faces));
+    volume_splats[base+3u]=vec4<f32>(az,0.0);
+}
+
+@compute @workgroup_size(8,8)
+fn voxel_splat_resolve(@builtin(global_invocation_id) id:vec3<u32>) {
+    if any(id.xy>=volume_config.size_count.xy) {return;}
+    let px=vec2<i32>(id.xy);
+    textureStore(volume_output,px,vec4<f32>(0.0));
+    // VOLUME_MOTION_BEGIN
+    // Splat motion is milestone M4; zero rejects history.
+    textureStore(volume_motion_output,px,vec4<f32>(0.0));
+    // VOLUME_MOTION_END
+    let splat=textureLoad(volume_splat_id,px,0).x;
+    if splat==0u {return;}
+    let depth=textureLoad(volume_splat_depth,px,0);
+    // Reversed Z: opaque scene geometry in front wins.
+    if textureLoad(depth_tex,px,0)>=depth {return;}
+    let ndc=(vec2<f32>(id.xy)+0.5)/vec2<f32>(volume_config.size_count.xy)*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
+    let hit=view.inv_view_proj*vec4<f32>(ndc,depth,1.0);
+    let p=hit.xyz/hit.w;
+    let direction=normalize(p-view.cam.xyz);
+    let work=bitcast<u32>(volume_splats[VOLUME_SPLAT_HEADER+(splat-1u)*4u+1u].w);
+    let entry=volume_splat_cells[work];
+    let tree=volume_trees[entry.x];
+    let cell=volume_cells[entry.z];
+    let d=vec4<f32>(direction,0.0);
+    let local_d=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
+    let sigma=max(volume_sigma(cell,volume_direction(normalize(local_d))),1e-6);
+    var empty:VolumeSample;
+    let sample=volume_normalize_sample(volume_accumulate_cell(empty,cell,sigma));
+    let up=vec3<f32>(0.0,1.0,0.0);
+    let shadow=mix(1.0,shadow_at(p,up),light.sun_color.w);
+    let rad=volume_radiance(sample,tree,p,-direction,shadow,sky_visibility(p,up));
+    textureStore(volume_output,px,vec4<f32>(rad,1.0));
+}

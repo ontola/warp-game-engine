@@ -222,7 +222,7 @@ mod shader_tests {
 
     #[test]
     fn voxel_forest_shaders_validate() {
-        for src in [crate::voxel_forest::shader_source(),include_str!("shaders/voxel_composite.wgsl").to_owned()] {
+        for src in [crate::voxel_forest::shader_source(),include_str!("shaders/voxel_composite.wgsl").to_owned(),include_str!("shaders/voxel_splat_raster.wgsl").to_owned()] {
             let module=naga::front::wgsl::parse_str(&src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&src)));
         }

@@ -3748,8 +3748,8 @@ impl Renderer {
                             &main.spatial_owners,&self.instance_groups.owners,times);
                     }
                     if let Some(forest) = &self.voxel_forest {
-                        let times = ["voxel bins", "voxel tiles", "voxel visibility", "voxel integrate", "voxel composite"].map(|name|{
-                            if name=="voxel visibility" && !forest.has_visibility_stream() {return None;}
+                        let times = forest.timing_names().map(|name|{
+                            let name=name?;
                             self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts); names.push(name); (qs,i)})
                         });
                         forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
