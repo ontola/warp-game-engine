@@ -211,6 +211,26 @@ impl Guns {
     }
 }
 
+/// Isolated review scene using the exact gameplay meshes and materials.
+/// Empty reserved slots remain hidden; only the settled gun is instantiated.
+pub(crate) fn review_scene(stats: Stats) -> (Scene, Vec3, Vec3, usize) {
+    let mut scene = Scene::default();
+    let guns = Guns::reserve(&mut scene, 1);
+    let mut rig = Rig::default();
+    rig.set(stats);
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for (part, xf) in rig.pose(0.0) {
+        scene.add_instance(guns.mesh(part.shape, part.mat, 0), xf);
+        let half = if part.shape == gun::Shape::Box { Vec3::splat(0.5) } else { Vec3::new(1.0, 0.5, 1.0) };
+        for x in [-1.0, 1.0] { for y in [-1.0, 1.0] { for z in [-1.0, 1.0] {
+            let p = xf.transform_point3(half * Vec3::new(x, y, z));
+            lo = lo.min(p); hi = hi.max(p);
+        } } }
+    }
+    (scene, lo, hi, rig.build.parts.len())
+}
+
 /// Empty a gun block from part `n` on, up to the first already empty slot.
 fn empty(scene: &mut Scene, first: usize, n: usize) {
     for inst in scene.instances[first + n..first + GUN_PARTS].iter_mut().take_while(|i| i.cluster_count != 0) {

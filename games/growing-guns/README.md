@@ -19,6 +19,7 @@ missing.
 |---|---|---|
 | Movement | Done | Jump, double jump, wall jump, dash, step-ups (0.35 m), lava burn and kill, falling off the map |
 | The gun | Done | Projectile rounds with drop, spread, bloom, recoil, ricochet, drill, homing, hitscan, poison, slow, lifesteal, explosive splash, impact mines, three hit ellipsoids |
+| Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Trigger and distinct poison/chilling details remain missing; joints and finish need a modelling pass |
 | Cards | Done | All 52 cards, Luau in `mods/base/cards.luau`, line for line from `card_library.gd`; rarity, pity slot, trailing-player factor |
 | Specials (RMB) | Done | Grenade, cluster, teleport, zoom, sword with backstabs, air strike, ion cannon; echo, tactical reload, refresh |
 | Rounds and match | Done | Spawn cage, kill order, card picks (the dead pick mid-round with 3+ players), first to ten wins, rematch, extend |
@@ -82,6 +83,16 @@ For the native standalone Quest APK, run `python3 engine/tools/build-quest-nativ
 Add `--install` with an authorized USB-connected headset. See
 [Native Quest / OpenXR](../../engine/docs/quest-native.md) for controls and test limits.
 The earlier [simplified browser demo](../../engine/docs/quest-vr.md) remains available.
+
+## Gun modelling review
+
+`cargo run --release -p growing-guns-app -- gun-review --out build/gun-review`
+renders eight real card combinations with fixed neutral lighting, in three-quarter,
+side and receiver/trigger-detail views. It writes PNGs and `manifest.json` with
+cards, visual stats, dimensions and part counts. Use `--only base` for a quick
+iteration or `--size 2000x1250` for larger images. Each overview fits the model
+individually; detail views share a fixed camera. Meshes and materials are exactly
+those used during gameplay, with no modelling or roughness corrections applied.
 
 ## Replay a moment while editing graphics
 
