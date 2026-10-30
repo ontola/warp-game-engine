@@ -146,33 +146,45 @@ impl Marks {
                 self.sprites.push(s);
             }
         }
-        // A hit flashes the body itself white (View: set_hit_flash).
-        let tint = if a.hurt_t > 0.0 {
-            None
-        } else if a.frozen > 0.0 {
-            Some(([0.6, 0.9, 1.0], 0.55))
-        } else if a.flash > 0.0 {
-            Some(([1.0, 0.35, 0.3], 0.4))
-        } else if a.chill > 0.0 {
-            Some(([0.6, 0.85, 1.0], (a.chill as f32 * 0.12).min(0.35)))
-        } else if a.wet > 0.0 {
-            Some(([0.15, 0.35, 0.8], 0.25))
-        } else if a.slow > 0.0 {
-            Some(([0.35, 0.25, 0.12], 0.35))
-        } else if a.poison > 0.0 {
-            Some(([0.45, 0.85, 0.1], 0.3))
-        } else {
-            None
-        };
-        if let Some((c, k)) = tint {
-            // A glow over the body in the tint's colour.
-            let at = a.pos + Vec3::Y * 0.9;
-            let size = r * 2.0 + 1.2;
-            let lin = linear3(c);
-            let mut s = Sprite::billboard(at, [size, size], IMAGE, uv(Cell::HaloOut), lin * k * 1.6);
-            s.additive = true;
+        // No tinted haze over the body for any status: each shows as a few
+        // small particles of its own (Joep). A hit flashes the body itself
+        // white (View: set_hit_flash).
+        if a.frozen > 0.0 || a.chill > 0.0 {
+            // Frost flakes glinting as they drift down off it.
+            let n = if a.frozen > 0.0 { 10 } else { 5 };
+            self.drips(a.pos, r, seed * 2.3, time, n, 1.4, Cell::Flake, linear3([0.75, 0.92, 1.0]) * 1.3, 0.09, 0.6, true);
+        }
+        if a.wet > 0.0 {
+            // Water dripping off it: small pale drops falling to the floor.
+            self.drips(a.pos, r, seed * 4.1, time, 6, 0.7, Cell::Drop, linear3([0.75, 0.88, 1.0]) * 0.9, 0.06, 4.0, true);
+        }
+        if a.slow > 0.0 {
+            // Mud: dark heavy drops, not glowing.
+            self.drips(a.pos, r * 0.8, seed * 6.7, time, 5, 0.8, Cell::Drop, linear3([0.3, 0.22, 0.12]) * LIT * 2.0, 0.08, 4.5, false);
+        }
+    }
+
+    /// `n` little things leaving a body every `period` seconds, each from a
+    /// random spot on it, falling from rest with `fall` m/s² and fading.
+    #[allow(clippy::too_many_arguments)]
+    fn drips(&mut self, pos: Vec3, r: f32, seed: f32, time: f32, n: usize, period: f32, cell: Cell, c: Vec3, size: f32, fall: f32, glow: bool) {
+        for j in 0..n {
+            let h = seed + j as f32 * 1.97;
+            let ph = (time / period + hash(h)).fract();
+            let t = ph * period;
+            let ang = hash(h + 0.3) * std::f32::consts::TAU;
+            let o = Vec3::new(ang.cos(), 0.0, ang.sin()) * r * (0.5 + 0.5 * hash(h + 0.5));
+            let y = 0.5 + 0.9 * hash(h + 0.7) - 0.5 * fall * t * t;
+            if y < 0.03 {
+                continue;
+            }
+            let k = smooth(0.0, 0.1, ph) * (1.0 - smooth(0.75, 1.0, ph));
+            let mut s = Sprite::billboard(pos + o + Vec3::Y * y, [size, size], IMAGE, uv(cell), c * k);
+            s.additive = glow;
             s.alpha_cut = 0.0;
-            s.depth_bias = 0.6;
+            if !glow {
+                s.opacity = k;
+            }
             self.sprites.push(s);
         }
     }
