@@ -1080,7 +1080,12 @@ impl app::Game for Gg {
                     Ok(r) => self.replay = Some(Box::new(r)),
                     Err(e) => self.hud.announce(e, 4.0, 0.0),
                 }
-            } else { self.hud.announce("Press F12 during play to save a replay first.", 4.0, 0.0); }
+            } else {
+                match crate::replay::open_latest() {
+                    Ok(r) => self.replay = Some(Box::new(r)),
+                    Err(e) => self.hud.announce(e, 4.0, 0.0),
+                }
+            }
             return true;
         }
         if self.replay.is_some() { return true; }

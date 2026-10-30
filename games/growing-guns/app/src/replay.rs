@@ -301,6 +301,11 @@ impl Game for Viewer {
     }
 }
 
+pub fn open_latest() -> Result<Viewer, String> {
+    let path = latest()?;
+    Viewer::new(Tape::read(&path)?, path)
+}
+
 fn latest() -> Result<PathBuf, String> {
     std::fs::read_dir(app::screenshot::directory()).map_err(|e| e.to_string())?
         .filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "ggreplay"))
@@ -467,6 +472,10 @@ mod tests {
         assert!(game.fixed_quality());
         assert!(game.escape());
         assert!(!game.fixed_quality());
+        game.recorder.last = None; // A fresh process has no in-memory capture.
+        assert!(game.function_key(9));
+        assert!(game.fixed_quality(), "F9 did not reopen the saved file");
+        assert!(game.escape());
         println!("GPU review saved to {}", root.display());
     }
 }
