@@ -1315,6 +1315,15 @@ impl Fx {
                     mist.v = (8.0, 11.0);
                     mist.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 0.0), rgba(0.95, 0.98, 1.0, 0.3), rgba(0.9, 0.95, 1.0, 0.0)], &[0.0, 0.5, 1.0]);
                     self.stream((key, 2), mist, s.at, dt);
+                    // Its body: spells.wgsl `jet` on a shaft along the spray,
+                    // the drops and mist above flying off it.
+                    let len = s.spell.n.range as f32;
+                    let mut body = Sprite::shaft(s.at + s.dir * len * 0.5, [0.55, len], s.dir, IMAGE, uv(Cell::Patch), Vec3::splat(0.7));
+                    body.additive = false;
+                    body.depth_bias = 0.3;
+                    body.effect = crate::effects::JET;
+                    body.params = [t, (key % 97) as f32, 0.0, 0.0];
+                    self.live.push(body);
                 }
                 self.stream((key, 0), p, s.at, dt);
                 if let Some(sm) = smoke {
