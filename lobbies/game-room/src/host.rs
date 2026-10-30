@@ -333,6 +333,14 @@ impl Host {
         let on_tv_console = (p.y - console.top).abs() <= 0.1 && p.x >= console.x0 && p.x <= console.x1;
         if at_tv_floor || on_tv_console { return Some(Station { id: "tv".into(), kind: "tv".into(), ..self.tv_station() }); }
         if !on_floor { return None; }
+        self.station_at(x, Some(&p.id))
+    }
+
+    /// The station of the furniture at `x` on the furniture plane, for
+    /// `player`; None for the mouse at the exit and the doors, which only
+    /// work for somebody.
+    pub fn station_at(&self, x: f64, player: Option<&str>) -> Option<Station> {
+        if x >= l::TV_STATION.0 && x <= l::TV_STATION.1 { return Some(Station { id: "tv".into(), kind: "tv".into(), ..self.tv_station() }); }
         let shelf = self.shelf_games();
         if x >= l::GAME_SHELF.0 && x <= l::GAME_SHELF.1 && !shelf.is_empty() {
             let game = shelf[self.shelf_offset % shelf.len()];
@@ -352,6 +360,7 @@ impl Host {
             return Some(Station { id: "music1".into(), kind: "music".into(), label: if playing { "Pause music" } else { "Play music" }.into(),
                 action: "play_pause".into(), enabled: true, extra: "LB previous RB next".into(), ..Default::default() });
         }
+        let id = player?;
         if (x - l::EXIT_DOOR).abs() <= 0.6 {
             return Some(Station { id: "exit".into(), kind: "exit".into(), label: "Leave".into(), enabled: true, ..Default::default() });
         }
@@ -359,7 +368,7 @@ impl Host {
         for (i, entry) in pending.iter().enumerate().take(l::PROFILE_DOORS.len()) {
             if (x - l::PROFILE_DOORS[i]).abs() <= l::DOOR_HALF {
                 // Already someone else: swapping drops that profile, so it takes a hold.
-                let linked = self.links["linked"].get(&p.id).is_some();
+                let linked = self.links["linked"].get(id).is_some();
                 let name = get(&entry["profile"], "display_name", "Player");
                 return Some(Station { id: format!("door{i}"), kind: "door".into(), pending: get(entry, "id", ""),
                     label: if linked { format!("Hold Y to become {name}") } else { format!("Pick up {name}") }, enabled: true, hold: linked, ..Default::default() });

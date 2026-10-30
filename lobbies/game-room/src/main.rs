@@ -2,7 +2,7 @@
 //!
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
 //!   game-room play [--players 1] [--bots 3] [--fullscreen]
-//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx]
+//!   game-room live-shot --out room.png [--ticks 180] [--bots 3] [--items] [--fx] [--mouse X,Y] [--mouse-menu]
 //!
 //! For now the room comes from the Godot lobby's export (tools/
 //! warp_export.gd in gamenight/lobbies/game-room), so both engines draw the
@@ -38,8 +38,8 @@ fn run() -> Result<(), String> {
         // fullscreen unless --windowed.
         let options = game_room::stage::Options::from_args(numf, flag, |k| arg(k).is_some());
         let mut lobby = game_room::live::Lobby::connect(options)?;
-        // Controllers come from the host as frames; no local keyboard or mouse.
-        let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), keyboard: false, frames: numf("--frames", 0.0) as u64, ..Default::default() };
+        // Controllers come from the host as frames; the mouse points and clicks but is nobody.
+        let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), keyboard: false, pointer: true, frames: numf("--frames", 0.0) as u64, ..Default::default() };
         return app::run(cfg, &mut lobby);
     }
     if matches!(args.get(1).map(String::as_str), Some("play") | Some("live-shot")) {
@@ -73,6 +73,12 @@ fn run() -> Result<(), String> {
                 let e = |ev, x, y, value| Event { ev, x, y, player: None, kind: None, value };
                 for ev in [e(Ev::Explode, 3.0, 1.5, 0.0), e(Ev::Laser, -8.0, 3.0, -2.0), e(Ev::Spawn, -5.0, 0.0, 0.0), e(Ev::Hit, 6.0, 2.0, 0.0)] { lobby.event(ev); }
             }
+            // `--mouse X,Y`: the cursor over that point of the furniture plane.
+            if let Some((x, y)) = arg("--mouse").and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)))) {
+                let at = lobby.screen_point(Vec3::new(x, y, game_room_sim::layout::OBJECTS_Z as f32), [w, h]);
+                app::Game::pointer(&mut lobby, app::Pointer { position: at, moved: true, ..Default::default() }, [w, h]);
+            }
+            if flag("--mouse-menu") && t == 0 { app::Game::escape(&mut lobby); }
             app::Game::tick(&mut lobby, &vec![app::Controls::default(); local]);
             // A real host answers in real time.
             if flag("--host") { std::thread::sleep(std::time::Duration::from_millis(16)); }

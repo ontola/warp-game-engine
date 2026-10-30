@@ -142,6 +142,9 @@ struct Keyboard { keys: HashSet<KeyCode>, mouse: u32, look: [f64; 2], pressed: u
 pub struct Devices {
     pub tuning: Tuning,
     pub keyboard_enabled: bool,
+    /// The free cursor reaches the game even without a keyboard player
+    /// (a party lobby: the mouse points and clicks but is nobody).
+    pub pointer_enabled: bool,
     /// The mouse only steers while captured.
     pub mouse_captured: bool,
     pointer: Pointer,
@@ -161,7 +164,7 @@ impl Devices {
         let gilrs = Gilrs::new().map_err(|e| eprintln!("gamepads unavailable: {e}")).ok();
         #[cfg(not(target_os = "android"))]
         let pads = gilrs.as_ref().map_or(Vec::new(), |g| g.gamepads().map(|(id, _)| (id, 0)).collect());
-        Self { tuning: Tuning::default(), keyboard_enabled, mouse_captured: false, pointer: Pointer::default(), kb: Keyboard::default(),
+        Self { tuning: Tuning::default(), keyboard_enabled, pointer_enabled: false, mouse_captured: false, pointer: Pointer::default(), kb: Keyboard::default(),
             #[cfg(not(target_os = "android"))] gilrs,
             #[cfg(not(target_os = "android"))] pads,
             #[cfg(not(target_os = "android"))] rumble: Default::default() }
@@ -211,7 +214,7 @@ impl Devices {
     }
 
     pub fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
-        if button == MouseButton::Left && !self.mouse_captured && self.keyboard_enabled {
+        if button == MouseButton::Left && !self.mouse_captured && (self.keyboard_enabled || self.pointer_enabled) {
             self.pointer.held = state == ElementState::Pressed;
             self.pointer.pressed |= self.pointer.held;
         }
@@ -235,7 +238,7 @@ impl Devices {
 
     pub fn pointer(&mut self) -> Pointer {
         let p = self.pointer.take();
-        if self.keyboard_enabled && !self.mouse_captured { p } else { Pointer::default() }
+        if (self.keyboard_enabled || self.pointer_enabled) && !self.mouse_captured { p } else { Pointer::default() }
     }
 
     /// Capture transitions must not carry a menu click or old look delta into play.
@@ -388,7 +391,7 @@ mod tests {
 
     #[test]
     fn pointer_edges_are_consumed_once_and_menu_clicks_do_not_fire() {
-        let mut d = Devices { tuning: Tuning::default(), keyboard_enabled: true, mouse_captured: false,
+        let mut d = Devices { tuning: Tuning::default(), keyboard_enabled: true, pointer_enabled: false, mouse_captured: false,
             pointer: Pointer::default(), kb: Keyboard::default(), gilrs: None, pads: vec![], rumble: Default::default() };
         d.cursor(Some([30.0, 40.0]));
         d.mouse_button(MouseButton::Left, ElementState::Pressed);
