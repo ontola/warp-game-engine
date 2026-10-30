@@ -51,6 +51,15 @@ pub fn parse_next_modifier(option: &str) -> Result<Option<Option<Modifier>>, Str
     MODIFIERS.iter().find(|m| modifier_option(m.0) == option).map(|m| Some(Some(m.0))).ok_or_else(|| format!("unknown modifier {option:?}"))
 }
 
+/// Each player's own stick sensitivity, in percent (scope player: saved
+/// with their profile, set in the app's "My settings").
+pub const STICK: &str = "stick_sensitivity";
+
+fn stick_spec() -> Value {
+    json!({"key": STICK, "label": "Stick sensitivity %", "kind": "number", "default": 100, "min": 30, "max": 250, "scope": "player",
+        "description": "How fast your controller's right stick turns your view."})
+}
+
 /// The spec labels, in `specs()` order.
 const LABELS: [&str; 7] = ["Rounds to win (next match)", "Modifiers % (next round)", "Card time, s (next pick)", "Gravity % (next round)",
     "Bullet drop % (next round)", "Body shot damage % (next round)", "Random pickup rate % (next round)"];
@@ -97,6 +106,8 @@ pub enum Ev {
     /// Build this match: `humans` seated players (names), `bots` more.
     Prepare { humans: Vec<String>, bots: usize },
     Names(Vec<String>),
+    /// Seated players' own stick sensitivity (seat order, multiplier).
+    Sticks(Vec<(usize, f32)>),
     /// The app picked the next round's modifier (None: back to random).
     NextModifier(Option<Option<Modifier>>),
     Dispose,
@@ -115,13 +126,15 @@ pub struct Party {
     live: Option<(String, std::path::PathBuf)>,
     /// The app's "Next round" pick, until that round starts.
     pub next_modifier: Option<Option<Modifier>>,
+    /// Players' own stick sensitivity (multiplier), by player id.
+    sticks: std::collections::HashMap<String, f32>,
 }
 
 impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect() -> Option<Party> {
         match Client::connect_from_env("growing-guns") {
-            Ok(Some(client)) => Some(Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None }),
+            Ok(Some(client)) => Some(Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None, sticks: Default::default() }),
             Ok(None) => None,
             Err(e) => { eprintln!("gamenight: {e}"); None }
         }
@@ -158,6 +171,12 @@ impl Party {
                         Some(Err(e)) => eprintln!("gamenight: {e}"),
                         None => if !self.settings.change(&key, &value) { eprintln!("gamenight: ignored setting {key} = {value}"); },
                     },
+                    Command::PlayerSettings { player_id, values } => {
+                        if let Some(v) = values.get(STICK).and_then(Value::as_f64).filter(|v| v.is_finite()) {
+                            self.sticks.insert(player_id, (v as f32 / 100.0).clamp(0.3, 2.5));
+                            out.push(self.sticks_ev());
+                        }
+                    }
                     Command::Prepare { session, seats } => {
                         println!("[gamenight] prepare {session} ({} seats)", seats.len());
                         let _ = self.client.notify_progress(&session, 85, "setting up the match");
@@ -166,6 +185,7 @@ impl Party {
                         let ai = seats.iter().filter(|s| s.ai).count();
                         let bots = ai.max(2usize.saturating_sub(self.seats.len()));
                         out.push(Ev::Prepare { humans: self.seats.iter().map(|s| s.name.clone()).collect(), bots });
+                        out.push(self.sticks_ev());
                         self.session = session;
                         self.phase = Phase::Warm;
                         self.finished = false;
@@ -197,7 +217,7 @@ impl Party {
     /// The settings (the party's and the knobs as percent sliders) and,
     /// with live control on, the session assistant's way in.
     fn declare(&self) {
-        let mut all = vec![next_modifier_spec()];
+        let mut all = vec![next_modifier_spec(), stick_spec()];
         all.extend(specs().as_array().cloned().unwrap_or_default());
         for k in crate::knobs::settings() {
             all.push(json!({"key": k.key, "label": k.label, "kind": "number", "default": k.value, "min": k.min, "max": k.max}));
@@ -217,6 +237,20 @@ impl Party {
         let Ok(v) = value.trim().parse::<f64>() else { return };
         let key = format!("{}{name}", crate::knobs::SETTING_PREFIX);
         if let Err(e) = self.client.send_json(json!({"type": "set_setting", "key": key, "value": (v * 100.0).round() as i64})) { eprintln!("gamenight: {e}"); }
+    }
+
+    fn sticks_ev(&self) -> Ev {
+        Ev::Sticks(self.seats.iter().enumerate().filter_map(|(k, s)| self.sticks.get(&s.player_id).map(|&v| (k, v))).collect())
+    }
+
+    /// Seat `k` changed their stick sensitivity in the game's menu: saved
+    /// with their profile, and the app shows it.
+    pub fn set_stick(&mut self, k: usize, v: f32) {
+        let Some(seat) = self.seats.get(k) else { return };
+        if self.sticks.get(&seat.player_id).is_some_and(|&old| (old - v).abs() < 0.005) { return; }
+        self.sticks.insert(seat.player_id.clone(), v);
+        let msg = json!({"type": "set_player_setting", "player_id": seat.player_id, "key": STICK, "value": (v * 100.0).round() as i64});
+        if let Err(e) = self.client.send_json(msg) { eprintln!("gamenight: {e}"); }
     }
 
     /// The picked round has started: the app's buttons go back to Random.
@@ -283,6 +317,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stick_sensitivity_is_each_players_own_setting() {
+        let spec = stick_spec();
+        assert_eq!((spec["scope"].as_str(), spec["default"].as_i64(), spec["min"].as_i64(), spec["max"].as_i64()), (Some("player"), Some(100), Some(30), Some(250)));
+    }
+
+    #[test]
     fn the_next_round_pick_is_one_round_of_that_modifier() {
         let spec = next_modifier_spec();
         let options: Vec<&str> = spec["options"].as_array().unwrap().iter().map(|o| o.as_str().unwrap()).collect();
@@ -330,7 +370,9 @@ mod tests {
             assert_eq!(read(&mut ws)["type"], "hello");
             let send = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, v: Value| ws.send(Message::Text(v.to_string().into())).unwrap();
             send(&mut ws, json!({"type":"welcome","protocol_version":1,"godot_sdk":6,"party":{}}));
-            assert_eq!(read(&mut ws)["type"], "declare_settings");
+            let declared = read(&mut ws);
+            assert_eq!(declared["type"], "declare_settings");
+            assert!(declared["settings"].as_array().unwrap().iter().any(|s| s["key"] == STICK && s["scope"] == "player"));
             send(&mut ws, json!({"type":"setting_changed","key":"rounds_to_win","value":4}));
             send(&mut ws, json!({"type":"prepare","game":"growing-guns","session":"s1",
                 "seats":[{"index":0,"controller":"pad-a","occupant":{"kind":"local","player_id":"p1"}},{"index":1,"occupant":{"kind":"ai"}}],
@@ -338,19 +380,31 @@ mod tests {
             let mut got = vec![];
             while !got.contains(&"ready".to_string()) { got.push(read(&mut ws)["type"].as_str().unwrap().to_string()); }
             assert!(got.contains(&"progress".to_string()));
+            send(&mut ws, json!({"type":"player_settings","player_id":"p1","values":{"stick_sensitivity":150}}));
             send(&mut ws, json!({"type":"start","session":"s1"}));
             for _ in 0..200 {
                 send(&mut ws, json!({"type":"controller_frame","controllers":[{"controller":"pad-a","buttons":0,"axes":[0,-32767,0,0,0,32767]}]}));
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
+            // The game's own menu changed it: back into the profile.
+            loop {
+                let m = read(&mut ws);
+                if m["type"] == "set_player_setting" { assert_eq!((m["player_id"].as_str(), m["key"].as_str(), m["value"].as_i64()), (Some("p1"), Some(STICK), Some(80))); break; }
+            }
         });
         let client = Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
-        let mut party = Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None };
+        let mut party = Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None, sticks: Default::default() };
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
-        let (mut prepared, mut fired) = (None, false);
+        let (mut prepared, mut fired, mut stick) = (None, false, None);
         assert_eq!(party.screen(), app::Screen::Hidden);
-        while Instant::now() < deadline && !fired {
-            for ev in party.poll() { if let Ev::Prepare { humans, bots } = ev { prepared = Some((humans, bots)); party.ready(); } }
+        while Instant::now() < deadline && !(fired && stick.is_some()) {
+            for ev in party.poll() {
+                match ev {
+                    Ev::Prepare { humans, bots } => { prepared = Some((humans, bots)); party.ready(); }
+                    Ev::Sticks(s) if !s.is_empty() => stick = Some(s),
+                    _ => {}
+                }
+            }
             if party.running() {
                 let c = party.controls(1, 1.0 / 60.0);
                 fired = c[0].held.has(Buttons::RIGHT_TRIGGER) && c[0].mv[1] > 0.9;
@@ -360,6 +414,8 @@ mod tests {
         assert_eq!(prepared, Some((vec!["Joep".to_string()], 1)));
         assert_eq!(party.settings.value("rounds_to_win"), 4);
         assert!(fired, "the seat's controller drives the player");
+        assert_eq!(stick, Some(vec![(0, 1.5)]));
+        party.set_stick(0, 0.8);
         assert_eq!(party.screen(), app::Screen::Fullscreen);
         host.join().unwrap();
     }

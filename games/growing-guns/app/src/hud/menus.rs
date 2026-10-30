@@ -403,7 +403,7 @@ impl Menus {
     }
     /// A GameNight player's stick sensitivity (Godot `stick_sens_for`: the shared one until set).
     pub fn aim_for(&self, name: &str) -> f32 { self.aim.iter().find(|a| a.0 == name).map_or(self.stick, |a| a.1) }
-    fn set_aim(&mut self, name: &str, v: f32) {
+    pub fn set_aim(&mut self, name: &str, v: f32) {
         match self.aim.iter_mut().find(|a| a.0 == name) { Some(a) => a.1 = v, None => self.aim.push((name.to_string(), v)) }
     }
 

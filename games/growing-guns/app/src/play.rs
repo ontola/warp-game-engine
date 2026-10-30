@@ -86,6 +86,8 @@ pub struct Gg {
     gn_preview: Option<crate::party::Settings>,
     /// Party names for the seated players, in slot order.
     pub names: Vec<String>,
+    /// `ui.aim` as last sent to or taken from GameNight (players' own setting).
+    aim_synced: Vec<(String, f32)>,
     /// Live control (`--live`, live.rs).
     pub(crate) live: Option<Box<crate::live::GgLive>>,
     /// Rendering only: Godot's sky or a procedural one (crate::sky).
@@ -125,7 +127,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { prev: view::Pose::all(&world), stepped: true, vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), live: None,
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
             .with_split()
@@ -185,6 +187,10 @@ impl Gg {
                 }
                 crate::party::Ev::Names(n) => self.names = n,
                 crate::party::Ev::NextModifier(m) => self.world.next_modifier = m,
+                crate::party::Ev::Sticks(sticks) => {
+                    for (k, v) in sticks { if let Some(n) = self.names.get(k).cloned() { self.ui.set_aim(&n, v); } }
+                    self.aim_synced.clone_from(&self.ui.aim);
+                }
                 crate::party::Ev::Dispose => {}
             }
         }
@@ -701,6 +707,14 @@ impl app::Game for Gg {
         // A seat that joined this tick: its X was the join, not a reload.
         for k in std::mem::take(&mut self.joined_now) { if let Some(c) = controls.get_mut(k) { *c = Controls::default(); } }
         self.player_menus(&mut controls);
+        // A player's sensitivity changed in the game's menu: into their profile.
+        if self.ui.aim != self.aim_synced && let Some(party) = self.party.as_mut() {
+            for (n, v) in &self.ui.aim {
+                if self.aim_synced.iter().any(|a| a.0 == *n && a.1 == *v) { continue; }
+                if let Some(k) = self.names.iter().position(|m| m == n) { party.set_stick(k, *v); }
+            }
+            self.aim_synced.clone_from(&self.ui.aim);
+        }
         let controls: &[Controls] = &controls;
         // The music volume setting.
         if let Some((m, _)) = &self.music && self.music_db != Some(self.ui.music_db) {
