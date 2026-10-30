@@ -161,6 +161,8 @@ pub struct Run {
     /// calm moment (Joep: never mid-fight), `calm_t` seconds so far.
     learn: Vec<(Id, i32)>,
     calm_t: f64,
+    /// This level's first shrine has taught.
+    taught: bool,
 }
 
 impl Default for Run {
@@ -193,6 +195,7 @@ impl Default for Run {
             lead_t: 0.0,
             learn: Vec::new(),
             calm_t: 0.0,
+            taught: false,
         }
     }
 }
@@ -233,12 +236,8 @@ impl World {
             self.run.biome_index,
             self.run.seed.wrapping_mul(31).wrapping_add(depth as u64),
         );
-        // From the second level on LB and the enchantment are open.
-        if depth >= 1 {
-            for id in self.wizards.clone() {
-                self.learn_later(id, 3);
-            }
-        }
+        // Each level teaches once at its first shrine and once at its boss.
+        self.run.taught = false;
         let sz = self.level.start;
         let starts = [
             Vec2::new(-1.5, -1.0),
@@ -842,21 +841,21 @@ impl World {
         }
     }
 
-    /// What a shrine teaches every wizard present: the first shrine water
-    /// and the nova, the first boss poison and the plant, every later boss
-    /// one more LB element.
-    /// Given once the fight is over (learn_step).
+    /// What a shrine teaches every wizard present: the next step of the
+    /// unlock ladder (wizard::STAGE_*), given once the fight is over
+    /// (learn_step).
     fn teach(&mut self, k: usize) {
-        let depth = self.run.depth();
-        for id in self.wizards.clone() {
-            if depth == 0 && k < 2 {
-                self.learn_later(id, 1);
-            } else if depth == 0 {
-                self.learn_later(id, 2);
-            } else if k == 2 {
-                let u = self.learned_by(id);
-                self.learn_later(id, u + 1);
+        // One step of the ladder (wizard::STAGE_*) at a level's first
+        // shrine and one at its boss: it runs over five levels (Joep).
+        if k < 2 {
+            if self.run.taught {
+                return;
             }
+            self.run.taught = true;
+        }
+        for id in self.wizards.clone() {
+            let u = self.learned_by(id).max(0);
+            self.learn_later(id, (u + 1).min(crate::wizard::STAGES as i32 - 1));
         }
     }
 

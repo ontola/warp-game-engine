@@ -62,15 +62,20 @@ pub const ELEMENT_ORDER: [[El; 4]; 4] = [
     [El::Poison, El::Fire, El::Water, El::Lightning],
 ];
 pub const LB_ORDER: [El; 4] = [El::Frost, El::Earth, El::Air, El::Void];
-/// By stage: the mana you hold, the queue's slots and the spell forms.
-pub const STAGE_MANA: [f64; 4] = [50.0, 65.0, 80.0, 100.0];
-pub const STAGE_SLOTS: [usize; 4] = [1, 2, 2, 3];
-pub const STAGE_FORMS: [&[Form]; 4] = [
-    &[Form::Cast],
-    &[Form::Cast, Form::Nova],
-    &[Form::Cast, Form::Nova, Form::Plant],
-    &[Form::Cast, Form::Nova, Form::Plant, Form::Enchant],
-];
+/// The unlock ladder, one step at a level's first shrine and one at its
+/// boss, so it runs over five of the six levels (Joep: not all at once).
+/// By step: the mana you hold, the queue's slots, the spell forms, how many
+/// of your four base elements and of the four LB elements are open.
+pub const STAGES: usize = 10;
+pub const STAGE_MANA: [f64; STAGES] = [50.0, 50.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 100.0];
+pub const STAGE_SLOTS: [usize; STAGES] = [1, 1, 2, 2, 2, 2, 3, 3, 3, 3];
+const CAST: &[Form] = &[Form::Cast];
+const NOVA: &[Form] = &[Form::Cast, Form::Nova];
+const PLANT: &[Form] = &[Form::Cast, Form::Nova, Form::Plant];
+const ENCHANT: &[Form] = &[Form::Cast, Form::Nova, Form::Plant, Form::Enchant];
+pub const STAGE_FORMS: [&[Form]; STAGES] = [CAST, CAST, NOVA, NOVA, PLANT, PLANT, PLANT, ENCHANT, ENCHANT, ENCHANT];
+const STAGE_BASE: [i32; STAGES] = [2, 3, 3, 4, 4, 4, 4, 4, 4, 4];
+const STAGE_LB: [i32; STAGES] = [0, 0, 0, 0, 0, 1, 1, 2, 3, 4];
 pub const ALL_UNLOCKED: i32 = 99;
 
 /// One controller, read the same way whatever it is (pad.gd).
@@ -263,7 +268,7 @@ impl Wizard {
     }
 
     pub fn lb_open(&self) -> bool {
-        self.level >= 3
+        self.level >= 0 && STAGE_LB[(self.level as usize).min(STAGES - 1)] > 0
     }
 
     pub fn element_open(&self, e: El) -> bool {
@@ -272,13 +277,14 @@ impl Wizard {
             return false;
         }
         let order = ELEMENT_ORDER[self.element_order % ELEMENT_ORDER.len()];
+        let step = (u as usize).min(STAGES - 1);
         if let Some(i) = order.iter().position(|&x| x == e) {
-            return (i as i32) < 2 + u;
+            return (i as i32) < STAGE_BASE[step];
         }
         LB_ORDER
             .iter()
             .position(|&x| x == e)
-            .is_some_and(|i| (i as i32) < u - 2)
+            .is_some_and(|i| (i as i32) < STAGE_LB[step])
     }
 
     pub fn open_elements(&self) -> Vec<El> {
@@ -299,7 +305,7 @@ impl Wizard {
             self.unlocks
         };
         self.stage = if self.bot.is_some() && s.forced_unlocks < 0 {
-            3
+            STAGES - 1
         } else {
             group_stage
         };

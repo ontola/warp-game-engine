@@ -218,7 +218,7 @@ impl Hud {
                 continue;
             }
             humans += 1;
-            let forms = spellstorm::wizard::STAGE_FORMS[wz.stage.min(3)].len();
+            let forms = spellstorm::wizard::STAGE_FORMS[wz.stage.min(spellstorm::wizard::STAGES - 1)].len();
             let now = (forms, wz.lb_open(), wz.learned_t);
             // A wizard first seen (joining, a new run) shows nothing.
             let mut new: Vec<Learned> = vec![];
@@ -226,7 +226,7 @@ impl Hud {
                 if wz.learned_t > t0 + 1.0 {
                     new.extend(wz.learned.iter().map(|&e| Learned::Element(e)));
                 }
-                for &f in &spellstorm::wizard::STAGE_FORMS[wz.stage.min(3)][f0.min(forms)..] {
+                for &f in &spellstorm::wizard::STAGE_FORMS[wz.stage.min(spellstorm::wizard::STAGES - 1)][f0.min(forms)..] {
                     new.push(Learned::Move(f));
                 }
                 if now.1 && !lb0 {
@@ -242,7 +242,7 @@ impl Hud {
             for e in wz.open_elements() {
                 self.seen.insert((seat, Learned::Element(e).key()));
             }
-            for &f in spellstorm::wizard::STAGE_FORMS[wz.stage.min(3)] {
+            for &f in spellstorm::wizard::STAGE_FORMS[wz.stage.min(spellstorm::wizard::STAGES - 1)] {
                 self.seen.insert((seat, Learned::Move(f).key()));
             }
             if wz.lb_open() {
