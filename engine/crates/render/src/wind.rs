@@ -91,7 +91,22 @@ pub struct WindFreeze {
 }
 
 impl WindFreeze {
-    /// `KERN_WIND_FREEZE=start,end` in metres, e.g. `50,70`. Unset or invalid: off.
+    /// On by default: past ~90 m sway is a pixel or less, and trees at rest
+    /// match the rest-pose foliage sun pages and can be cached shadow
+    /// casters. Only the near shadow map still sees moving trees.
+    pub const DEFAULT: Self = Self { fade_start: 60.0, frozen_beyond: 90.0 };
+
+    /// `KERN_WIND_FREEZE`: unset gives [`Self::DEFAULT`], `0` or `off` turns
+    /// freezing off, `start,end` in metres sets it.
+    pub fn configured(value: Option<&str>) -> Option<Self> {
+        match value.map(str::trim) {
+            None | Some("") => Some(Self::DEFAULT),
+            Some("0") | Some("off") => None,
+            other => Self::parse(other),
+        }
+    }
+
+    /// `start,end` in metres, e.g. `50,70`. Unset or invalid: off.
     pub fn parse(value: Option<&str>) -> Option<Self> {
         let (a, b) = value?.split_once(',')?;
         let (a, b) = (a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?);
@@ -263,6 +278,15 @@ pub(crate) fn shade_source() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freeze_is_on_by_default_and_can_be_turned_off_or_set() {
+        assert_eq!(WindFreeze::configured(None), Some(WindFreeze::DEFAULT));
+        assert_eq!(WindFreeze::configured(Some("0")), None);
+        assert_eq!(WindFreeze::configured(Some("off")), None);
+        assert_eq!(WindFreeze::configured(Some("50,70")), Some(WindFreeze { fade_start: 50.0, frozen_beyond: 70.0 }));
+        assert_eq!(WindFreeze::configured(Some("70,50")), None);
+    }
 
     #[test]
     fn freeze_uniform_uses_actual_xz_for_nonzero_z_cameras() {

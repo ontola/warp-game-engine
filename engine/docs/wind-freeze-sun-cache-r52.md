@@ -1,6 +1,11 @@
 # Optional distance-based tree wind freeze and static sun cache
 
-Status: opt-in only. No default promotion or large performance gain is claimed.
+Status, 30 October 2026: the wind freeze is **on by default** at 60 to 90 m
+(`WindFreeze::DEFAULT`; `KERN_WIND_FREEZE=0` turns it off). Distant trees
+now match the rest-pose foliage sun pages. The static sun cache and guard
+remain opt-in. No large performance gain is claimed.
+
+Earlier status: opt-in only. No default promotion or large performance gain is claimed.
 This feature does not depend on opaque tree crowns, software rasterization or
 the experimental voxel representation. Existing source trees and LODs remain.
 
