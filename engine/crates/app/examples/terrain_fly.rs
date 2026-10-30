@@ -393,7 +393,7 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
     // the horizon.
-    if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density); }
+    if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density, &render::forest_field::ForestStyle::default()); }
     let mut light = Lighting::default();
     let sky = AtmosphereCache::default().get_or_bake(&Atmosphere::default(), SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
     sky.apply(&mut scene, &mut light);
