@@ -29,6 +29,7 @@ reproduction commands, current performance, source reference and next steps.
 | [Workspace and crates](workspace.md) | The repository layout, the eight engine crates, the game packages and the build profiles. |
 | [Building and running](building-and-running.md) | Checks and tests, running the games, software rendering, scripted playtests, golden images, environment variables. |
 | [Games in Luau: the warp executable](warp-cli.md) | `warp new`, `run`, `script`, `serve`, `check`: a game of Luau scripts, sound patches and glTF assets with hot reload and live MCP control. The Luau game API. |
+| [Standalone Quest VR demo](quest-vr.md) | WebXR shell, local Rust/Wasm Growing Guns demo, Touch controls, build/serve and physical-headset test limits. |
 | [Making a game](making-a-game.md) | The `app::Game` trait, the loop, building a scene, costs and gotchas. Starts from the `hello` example. |
 | [Scripting and modding](scripting.md) | The Luau host: sandbox, hot reload, step budget. Growing Guns' mod API as the worked example. |
 | [Audio](audio.md) | Engine sound synthesis, effects playback, and the procedural synth with its surround mixer. |

@@ -1803,6 +1803,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "growing-guns-quest"
+version = "0.1.0"
+dependencies = [
+ "glam 0.31.1",
+ "growing-guns",
+ "kern",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
