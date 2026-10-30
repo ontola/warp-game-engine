@@ -221,7 +221,8 @@ fn fx_mote_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     let id = order[ii];
     let p = puffs[id];
     let age = clamp((u.clock.x - p.timing.x) / p.timing.y, 0.0, 1.0);
-    let center = p.center_kind.xyz + p.ax.xyz * pow(age, p.ax.w);
+    let motion_age = clamp((u.clock.x - p.timing.x - p.extra.x) / max(p.timing.y - p.extra.x, 1e-6), 0.0, 1.0);
+    let center = p.center_kind.xyz + p.ax.xyz * pow(motion_age, p.ax.w);
     let q = array<vec2<f32>, 6>(vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0),
         vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0))[vi];
     let right = vec3<f32>(u.view[0].x, u.view[1].x, u.view[2].x);

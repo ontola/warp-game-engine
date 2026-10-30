@@ -121,6 +121,8 @@ for inside/outside, axial, edge-crossing, occlusion and split-view GPU checks.
 
 `Effects::mote(AdditiveMote)` draws soft round light points using six-vertex
 camera-facing quads. Each point has an independent birth, fade and
-`age^motion_power` trajectory (powers above one accelerate from rest). Motion
+`age^motion_power` trajectory (powers above one accelerate from rest). An
+independent `motion_delay` in seconds holds it at the starting point before
+lift-off; `position_at` samples the same delayed path for effect transitions. Motion
 stays on the GPU; subpixel footprints conserve energy and opaque surfaces
 clip the dots.
