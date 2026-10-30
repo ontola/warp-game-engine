@@ -17,7 +17,7 @@ struct WindFreeze { params: vec4<f32>, cameras: array<vec4<f32>, 4> };
 @compute @workgroup_size(64)
 fn update_wind(@builtin(global_invocation_id) id: vec3<u32>) {
     let owner = id.x;
-    if owner >= arrayLength(&wind_instances) || owner >= arrayLength(&output) { return; }
+    if owner >= arrayLength(&output) { return; }
     let inst = wind_instances[owner];
     output[owner] = vec4<f32>(0.0);
     // FOLIAGE=1, LIVE_GRASS=8, WIND_GRASS=16. A volume crown and its source

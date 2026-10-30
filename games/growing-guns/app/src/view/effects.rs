@@ -14,7 +14,7 @@ use render::scene::Material;
 use render::Scene;
 
 /// Godot: MAX_LIVE_PARTICLES 3600 at full quality.
-const DEBRIS: usize = 4096;
+
 /// Occupancy bounds: the largest arena (95 m) plus margin, lava to roofs.
 const OCC_HALF: f32 = 52.0;
 pub const OCC_VOXEL: f32 = 0.5;
@@ -78,9 +78,9 @@ impl EffectsView {
             blood: { let m = material(scene, [0.45, 0.02, 0.02], 0.35); sphere(scene, m, 4, 6) },
             casing: { let m = scene.add_material(Material { tint: [0.75, 0.55, 0.2], layer: -1, roughness: 0.35, flags: 0, scale: 1.0, metal: 1.0 }); cube(scene, m) },
         };
-        let particles = Particles::reserve(scene, 768, seed | 1);
+        let particles = Particles::reserve(scene, crate::graphics::get().particles, seed | 1);
         let occ = Occupancy::new(Vec3::new(-OCC_HALF, -4.0, -OCC_HALF), Vec3::new(OCC_HALF, 30.0, OCC_HALF), OCC_VOXEL);
-        let debris = Debris::reserve(scene, DEBRIS, occ, false);
+        let debris = Debris::reserve(scene, crate::graphics::get().debris_capacity, occ, false);
         EffectsView { particles, meshes, debris, blasts: Effects::default(), flashes: Vec::new(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new() }
     }
 

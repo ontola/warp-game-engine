@@ -1,6 +1,9 @@
 // Cluster culling and LOD selection, one workgroup per instance.
 // A cluster is drawn when its own error projects to at most the threshold
 // and its group's simplified replacement would project above it.
+// Adreno 650 misreports OpArrayLength for struct arrays (four 80-byte
+// instances report two). The renderer already fixes this count at construction.
+override INSTANCE_COUNT: u32 = 0u;
 override CLUSTER_BUCKETS: bool = true;
 override EARLY_GRASS_CULL: bool = true;
 // Scene::voxel_far_distance_m; zero when the scene has no far trees.
@@ -132,14 +135,15 @@ fn tree_occluded(root:vec3<f32>,radius:f32)->bool {
     return false;
 }
 
+override SMALL_CLUSTER_TRIANGLES:u32=8u;
 fn cluster_bucket(triangles: u32) -> u32 {
-    if triangles <= 8u { return 0u; }
+    if triangles <= SMALL_CLUSTER_TRIANGLES { return 0u; }
     if triangles <= 32u { return 1u; }
     if triangles <= 64u { return 2u; }
     return 3u;
 }
 fn bucket_vertices(bucket: u32) -> u32 {
-    return array<u32, 4>(24u, 96u, 192u, 384u)[bucket];
+    return array<u32, 4>(SMALL_CLUSTER_TRIANGLES*3u, 96u, 192u, 384u)[bucket];
 }
 
 fn in_frustum(c: vec3<f32>, r: f32) -> bool {
@@ -256,7 +260,7 @@ fn aggregate_triangle_error(id:u32)->f32 {
 }
 
 fn cull_instance(id: u32, li: u32) {
-    if id >= arrayLength(&instances) { return; }
+    if id >= INSTANCE_COUNT { return; }
     let inst = instances[id];
     let policy = instance_policy(id, inst);
     if policy != 1u {
@@ -381,7 +385,7 @@ fn cull_sun_dynamic(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocat
 @compute @workgroup_size(64)
 fn instance_broadphase(@builtin(global_invocation_id) gid: vec3<u32>) {
     let id = gid.x + gid.y * 65535u * 64u;
-    if id >= arrayLength(&instances) { return; }
+    if id >= INSTANCE_COUNT { return; }
     let inst = instances[id];
     let policy = instance_policy(id, inst);
     if policy == 2u { atomicAdd(&counter[3], 1u); }
@@ -396,7 +400,7 @@ fn instance_broadphase(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn instance_dispatch() {
     let count = atomicLoad(&counter[11]);
     let overflow = count > arrayLength(&draw_map);
-    let dispatch_count = select(count, arrayLength(&instances), overflow);
+    let dispatch_count = select(count, INSTANCE_COUNT, overflow);
     args[0] = min(dispatch_count, 65535u);
     args[1] = (dispatch_count + 65534u) / 65535u;
     args[2] = 1u;
@@ -410,7 +414,7 @@ fn cull_compacted(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocatio
     let slot = wg.x + wg.y * 65535u;
     let count = atomicLoad(&counter[11]);
     let overflow = count > arrayLength(&draw_map);
-    if slot >= select(count, arrayLength(&instances), overflow) { return; }
+    if slot >= select(count, INSTANCE_COUNT, overflow) { return; }
     var id = slot;
     if !overflow { id = draw_map[slot]; }
     cull_instance(id, li);
@@ -502,7 +506,7 @@ fn spatial_dispatch() {
     let count=atomicLoad(&counter[11]);let overflow=count>spatial.header.z;
     let mismatch=atomicLoad(&counter[29])!=atomicLoad(&counter[30]);
     let fallback=overflow || mismatch;
-    let n=select(count,arrayLength(&instances),fallback);
+    let n=select(count,INSTANCE_COUNT,fallback);
     args[0]=min(n,65535u);args[1]=(n+65534u)/65535u;args[2]=1u;
     if fallback {
         // The consumer already recognizes an over-capacity count as the exact
@@ -518,7 +522,7 @@ fn spatial_dispatch() {
 fn cull_spatial(@builtin(workgroup_id) wg:vec3<u32>,@builtin(local_invocation_index) li:u32) {
     let slot=wg.x+wg.y*65535u;let count=atomicLoad(&counter[11]);
     let overflow=count>spatial.header.z;
-    if slot>=select(count,arrayLength(&instances),overflow){return;}
+    if slot>=select(count,INSTANCE_COUNT,overflow){return;}
     var id=slot;if !overflow {id=spatial_owners[slot];}
     cull_instance(id,li);
 }
@@ -576,5 +580,34 @@ fn scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroup
         let bucket = cluster_bucket(clusters[visible[slot].y].tri_count);
         let offset = atomicAdd(&counter[8u + bucket], 1u);
         draw_map[args[16u + bucket] + offset] = slot;
+    }
+}
+
+// Flat scenes without vegetation/replacement experiments can assign one lane
+// per owner, avoiding a full workgroup for every empty slot and one-cluster block.
+@compute @workgroup_size(64)
+fn cull_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let id=gid.x+gid.y*65535u*64u;
+    if id>=INSTANCE_COUNT {return;}
+    let inst=instances[id];
+    if inst.cluster_count==0u {return;}
+    let shadow=view.params.z>0.5 || view.extra.y>1.5;
+    if shadow && (inst.flags&4u)!=0u {return;}
+    if !shadow && view.grass.z>0.5 && ((inst.flags>>8u)&(1u<<(u32(view.grass.z)-1u)))!=0u {return;}
+    if !in_frustum(inst.sphere.xyz,inst.sphere.w) || hidden_by_camera_fog(inst.sphere.xyz,inst.sphere.w) {return;}
+    let threshold=select(view.params.x,0.0,(inst.flags&2u)!=0u);
+    for(var offset=0u;offset<inst.cluster_count;offset++) {
+        let ci=inst.first_cluster+offset;let cl=clusters[ci];
+        if (cull_materials[cl.material].flags&256u)!=0u {continue;}
+        let parent=to_world(inst,cl.parent.xyz);
+        if cl.parent_error<=1e30 && projected(cl.parent_error*inst.scale,parent,cl.parent.w*inst.scale)<=threshold {continue;}
+        let own=to_world(inst,cl.own.xyz);
+        if projected(cl.own_error*inst.scale,own,cl.own.w*inst.scale)>threshold {continue;}
+        if !in_frustum(to_world(inst,cl.cull.xyz),cl.cull.w*inst.scale) {continue;}
+        let slot=atomicAdd(&counter[0],1u);
+        if slot<u32(view.params.w) {
+            visible[slot]=vec2<u32>(id,ci);atomicAdd(&counter[1],cl.tri_count);
+            if CLUSTER_BUCKETS {atomicAdd(&counter[4u+cluster_bucket(cl.tri_count)],1u);}
+        }
     }
 }

@@ -106,6 +106,7 @@ pub mod part_wind;
 pub mod baked_animation;
 pub mod skinning;
 pub mod debris;
+mod direct_draw;
 pub mod fx;
 pub mod crowd;
 pub mod motion;
@@ -242,3 +243,5 @@ mod shader_tests {
         validator.validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
     }
 }
+
+mod forward;

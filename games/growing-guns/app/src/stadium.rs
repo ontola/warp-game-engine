@@ -157,6 +157,7 @@ fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectan
 }
 
 pub struct StadiumVisuals {
+    enabled: bool,
     /// Bake the sky cache on worker threads and keep the previous one until
     /// it lands (play: a bake is 0.25 to 1.3 s, which stalled the frame and
     /// the audio). Off for scripts and benches, so their captures stay exact.
@@ -204,6 +205,16 @@ pub struct StadiumVisuals {
 impl StadiumVisuals {
     /// Meshes and reserved instances; call before the renderer exists.
     pub fn reserve(scene: &mut Scene) -> Self {
+        if !crate::graphics::get().stadium {
+            let crowd = Crowd::reserve(scene, 0);
+            scene.crowd = None; // no GPU crowd buffers or dispatch, not merely invisible seats
+            return Self { enabled:false, bake_in_background:false, sky_job:None,sun_job:None,
+                sky_boxes:Vec::new(),sky_planes:Vec::new(),sky_probes:Vec::new(),sky_emission:Vec::new(),sky_dirty:false,sky_reflectance:0.0,sky_sun:None,
+                stands:Slots::reserve(scene,0),roof:Slots::reserve(scene,0),tv:Slots::reserve(scene,0),tv_mesh:[0;2],
+                stone:[0;6],masonry:None,roof_stone:[0;6],wall_stone:[0;6],lamp:0,shaft:0,bank:0,looks:Vec::new(),
+                crowd,sound:CrowdSound::new(None),marks:Slots::reserve(scene,0),mark_ring:Vec::new(),mark_next:0,
+                scorch:0,blood:0,gore:0,geo:Stadium::new(80.0,true,12.0),lights:Vec::new(),beams:Vec::new(),rng:Rng(1) };
+        }
         let cube = |scene: &mut Scene, m: u32| scene.add_mesh(&primitives::cube(m).mesh());
         let quarry: Vec<[f32; 3]> = SANDSTONE.iter().chain(LIMESTONE.iter()).map(|c| [0, 1, 2].map(|k| c[k] + (ARENA_STONE[k] - c[k]) * 0.22)).collect();
         let layer = crate::view::stone_layer(scene);
@@ -277,7 +288,8 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { enabled:true, bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -286,6 +298,7 @@ impl StadiumVisuals {
 
     /// Build the bowl for this arena (a new round). Upload with `flush`.
     pub fn set_arena(&mut self, scene: &mut Scene, world: &World) {
+        if !self.enabled { self.geo=world.arena.stadium; return; }
         let a = &world.arena;
         self.geo = a.stadium;
         self.rng = Rng(a.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
@@ -435,6 +448,7 @@ impl StadiumVisuals {
     /// blasts and shots reaching the stands kill and terrify.
     #[allow(clippy::too_many_arguments)]
     pub fn absorb(&mut self, scene: &mut Scene, fx: &mut Particles, blasts: &mut render::fx::Effects, world: &World, ears: &[Listener], now: f32, dt: f32) {
+        if !self.enabled { return; }
         for e in &world.events {
             match *e {
                 Event::Hit { .. } => self.sound.hit(),
@@ -547,6 +561,7 @@ impl StadiumVisuals {
     pub fn beams(&self) -> &[LocalLight] { &self.beams }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, now: f32, light: &render::Lighting) -> Result<(), String> {
+        if !self.enabled { return Ok(()); }
         if let Some((_,grid))=scene.irradiance_volume {
             if let Some((sun, rx)) = &self.sun_job {
                 match rx.try_recv() {

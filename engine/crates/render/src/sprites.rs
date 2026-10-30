@@ -149,7 +149,7 @@ struct GpuSprite { center: [f32; 4], right: [f32; 4], up: [f32; 4], uv: [f32; 4]
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct Uniform { view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], camera_near: [f32; 4], camera_right: [f32; 4] }
+struct Uniform { view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], camera_near: [f32; 4], camera_right: [f32; 4], output: [f32;4] }
 
 struct Target { size: (u32, u32), output: wgpu::Texture, uniform: wgpu::Buffer, instances: wgpu::Buffer }
 
@@ -157,6 +157,7 @@ pub(crate) struct SpriteRenderer {
     layout: wgpu::BindGroupLayout,
     image_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    ldr_pipeline: Option<(u64,wgpu::RenderPipeline)>,
     /// The GAME_SPRITE version `pipeline` was built from.
     game: u64,
     linear: wgpu::Sampler,
@@ -178,16 +179,16 @@ impl SpriteRenderer {
             entry(0, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             entry(1, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
         ] });
-        let (game, pipeline) = Self::pipeline(gpu, &layout, &image_layout);
+        let (game, pipeline) = Self::pipeline(gpu, &layout, &image_layout, wgpu::TextureFormat::Rgba16Float);
         let sampler = |mag, mip| gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("sprite"), address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge, mag_filter: mag, min_filter: wgpu::FilterMode::Linear, mipmap_filter: mip, ..Default::default() });
-        Self { layout, image_layout, pipeline, game, linear: sampler(wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear),
+        Self { layout, image_layout, pipeline, ldr_pipeline:None, game, linear: sampler(wgpu::FilterMode::Linear, wgpu::MipmapFilterMode::Linear),
             nearest: sampler(wgpu::FilterMode::Nearest, wgpu::MipmapFilterMode::Nearest), images: HashMap::new(), sprites: Vec::new(), targets: Vec::new() }
     }
 
     /// The pipeline with the game's sprite shader as it is now, and which
     /// version of it that is.
-    fn pipeline(gpu: &Gpu, layout: &wgpu::BindGroupLayout, image_layout: &wgpu::BindGroupLayout) -> (u64, wgpu::RenderPipeline) {
+    fn pipeline(gpu: &Gpu, layout: &wgpu::BindGroupLayout, image_layout: &wgpu::BindGroupLayout, format:wgpu::TextureFormat) -> (u64, wgpu::RenderPipeline) {
         let (game, source) = { let g = GAME_SPRITE.lock().unwrap(); (g.0, shader_with(g.1.as_deref())) };
         let shader = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sprites"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let pl = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sprites"), bind_group_layouts: &[Some(layout), Some(image_layout)], immediate_size: 0 });
@@ -195,7 +196,7 @@ impl SpriteRenderer {
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
             primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() }, depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs"), compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
+                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })] }),
             multiview_mask: None, cache: gpu.pipeline_cache() }))
     }
 
@@ -239,13 +240,22 @@ impl SpriteRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, index: usize, input: &wgpu::Texture, depth: &wgpu::TextureView,
         camera: Camera, view: Mat4, output_vp: Mat4, depth_vp: Mat4) -> Result<Option<wgpu::Texture>, String> {
+        self.render_output(gpu,enc,index,input,depth,camera,view,output_vp,depth_vp,0.0)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_output(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,index:usize,input:&wgpu::Texture,depth:&wgpu::TextureView,
+        camera:Camera,view:Mat4,output_vp:Mat4,depth_vp:Mat4,exposure:f32)->Result<Option<wgpu::Texture>,String> {
+        let ldr=exposure>0.0;
         let mut order: Vec<(usize, f32)> = self.sprites.iter().enumerate()
             .filter(|(_, s)| self.images.contains_key(&s.image) && s.opacity > 0.0)
             .map(|(i, s)| (i, s.center.distance_squared(camera.pos))).collect();
         if order.is_empty() { return Ok(None); }
-        if input.format() != wgpu::TextureFormat::Rgba16Float { return Err("sprites require an HDR input".into()); }
+        if input.format() != if ldr {wgpu::TextureFormat::Rgba8Unorm}else{wgpu::TextureFormat::Rgba16Float} { return Err("sprites require an HDR input".into()); }
         if GAME_SPRITE.lock().unwrap().0 != self.game {
-            (self.game, self.pipeline) = Self::pipeline(gpu, &self.layout, &self.image_layout);
+            (self.game, self.pipeline) = Self::pipeline(gpu, &self.layout, &self.image_layout, wgpu::TextureFormat::Rgba16Float);
+        }
+        if ldr && self.ldr_pipeline.as_ref().is_none_or(|(version,_)|*version!=self.game) {
+            self.ldr_pipeline=Some(Self::pipeline(gpu,&self.layout,&self.image_layout,wgpu::TextureFormat::Rgba8Unorm));
         }
         order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let inverse = view.inverse();
@@ -277,19 +287,19 @@ impl SpriteRenderer {
         }
         let t = self.targets[index].as_ref().unwrap();
         let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(),
-            camera_near: camera.pos.extend(camera.near).to_array(), camera_right: cam_right.extend(size.0 as f32).to_array() };
+            camera_near: camera.pos.extend(camera.near).to_array(), camera_right: cam_right.extend(size.0 as f32).to_array(),output:[exposure,0.,0.,0.] };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         gpu.queue.write_buffer(&t.instances, 0, bytemuck::cast_slice(&gpu_sprites));
-        enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());
+        if !ldr {enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());}
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("sprites view"), layout: &self.layout, entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: t.uniform.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: t.instances.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(depth) }] });
-        let output = t.output.create_view(&Default::default());
+        let output = if ldr {input}else{&t.output}.create_view(&Default::default());
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("sprites"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &output, depth_slice: None,
             resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
             depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(if ldr {&self.ldr_pipeline.as_ref().unwrap().1}else{&self.pipeline});
         pass.set_bind_group(0, &bind, &[]);
         // Back to front; one draw per run of the same image.
         let mut start = 0;
@@ -302,7 +312,7 @@ impl SpriteRenderer {
             start = end;
         }
         drop(pass);
-        Ok(Some(t.output.clone()))
+        Ok(Some(if ldr {input.clone()}else{t.output.clone()}))
     }
 }
 
@@ -335,7 +345,7 @@ pub fn set_game_sprite(gpu: &Gpu, source: &str) -> Result<(), String> {
 }
 
 const SHADER: &str = r#"
-struct Uniform { view_proj: mat4x4<f32>, depth_vp: mat4x4<f32>, camera_near: vec4<f32>, camera_right: vec4<f32> };
+struct Uniform { view_proj: mat4x4<f32>, depth_vp: mat4x4<f32>, camera_near: vec4<f32>, camera_right: vec4<f32>, output:vec4<f32> };
 struct Sprite { center: vec4<f32>, right: vec4<f32>, up: vec4<f32>, uv: vec4<f32>, color: vec4<f32>, misc: vec4<f32>, params: vec4<f32> };
 struct GameSprite { uv: vec2<f32>, size: vec2<f32>, world: vec3<f32>, effect: u32, params: vec4<f32>, texel: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: Uniform;
@@ -394,6 +404,10 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     var light = rgb * a;
     let peak = max(light.r, max(light.g, light.b));
     light *= min(1.0, 40000.0 / max(peak, 1e-6));
+    if u.output.x>0.0 {
+        let exposed=max(rgb*u.output.x,vec3<f32>(0.0));
+        light=sqrt(exposed/(1.0+exposed))*a;
+    }
     // Additive: premultiplied with zero alpha keeps what is behind.
     return vec4<f32>(light, select(a, 0.0, s.misc.y > 0.5));
 }
@@ -432,7 +446,7 @@ mod tests {
         let module = naga::front::wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<GpuSprite>(), 112);
-        assert_eq!(std::mem::size_of::<Uniform>(), 160);
+        assert_eq!(std::mem::size_of::<Uniform>(), 176);
     }
 
     #[test]
@@ -449,7 +463,10 @@ mod tests {
     /// does not; a glowing canvas tag shows its drawn colour.
     #[test]
     fn gpu_sprites_draw_in_front_of_and_hide_behind_the_scene() {
-        let gpu = Gpu::new().unwrap();
+        let mut gpu = Gpu::new().unwrap();
+        // Pixel/occlusion assertions do not depend on GPU timer availability.
+        gpu.features.remove(wgpu::Features::TIMESTAMP_QUERY|wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        for minimum in [false,true] {
         let mut scene = crate::Scene::default();
         let grey = scene.add_material(Material { tint: [0.3; 3], layer: -1, roughness: 1.0, flags: crate::scene::EMISSIVE, scale: 300.0, metal: 0.0 });
         let wall = scene.add_mesh(&crate::primitives::quad(grey).mesh());
@@ -457,6 +474,7 @@ mod tests {
         let mut light = crate::Lighting::default();
         light.sun_lux = 0.0;
         light.sky_lux = 0.0;
+        scene.graphics.minimal_forward=minimum;
         let renderer = crate::Renderer::new(&gpu, &scene, &light);
         renderer.set_sprite_image(&gpu, SpriteImage(1), &Picture::solid(2, 2, [255, 255, 255, 255]), ImageFilter::Nearest);
         let mut canvas = Canvas::new(&gpu, [8, 8]).unwrap();
@@ -478,5 +496,6 @@ mod tests {
         assert!(front[0] > 100 && front[0] > 4 * front[1].max(1), "red sprite in front: {front:?}");
         assert!((front[0] as i32 - behind[0] as i32).abs() > 60 && behind[0] == behind[1], "sprite behind the wall is hidden: {behind:?}");
         assert!(tag[1] > 100 && tag[1] > 4 * tag[0].max(1), "canvas tag is green: {tag:?}");
+        }
     }
 }

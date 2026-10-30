@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.ontola.warp.growingguns" android:versionCode="1" android:versionName="0.1-native-xr">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="32" />
+    <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+    <uses-feature android:name="android.hardware.vulkan.level" android:version="1" android:required="true" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="4198400" android:required="true" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <queries>
+        <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
+        <intent><action android:name="org.khronos.openxr.OpenXRRuntimeService" /></intent>
+        <intent><action android:name="org.khronos.openxr.OpenXRApiLayerService" /></intent>
+    </queries>
+    <application android:label="Growing Guns — Warp VR" android:hasCode="false" android:debuggable="true" android:allowBackup="false" android:extractNativeLibs="true" android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        <meta-data android:name="com.oculus.supportedDevices" android:value="quest2|questpro|quest3|quest3s" />
+        <activity android:name="android.app.NativeActivity" android:exported="true" android:screenOrientation="landscape" android:launchMode="singleTask" android:resizeableActivity="false" android:configChanges="density|orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode" android:excludeFromRecents="false">
+            <meta-data android:name="android.app.lib_name" android:value="growing_guns_app" />
+            <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="com.oculus.intent.category.VR" />
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
