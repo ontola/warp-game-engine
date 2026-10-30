@@ -118,3 +118,9 @@ triangle replaces the two-sided shell; ordinary streaks and blast meshes are
 unchanged. This is additive emission, not participating-media shadow transport.
 Run `cargo run --release -p render --example column_volume_gpu -- build/column`
 for inside/outside, axial, edge-crossing, occlusion and split-view GPU checks.
+
+`Effects::mote(AdditiveMote)` draws soft round light points using six-vertex
+camera-facing quads. Each point has an independent birth, fade and
+`age^motion_power` trajectory (powers above one accelerate from rest). Motion
+stays on the GPU; subpixel footprints conserve energy and opaque surfaces
+clip the dots.

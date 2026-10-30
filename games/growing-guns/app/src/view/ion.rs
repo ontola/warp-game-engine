@@ -3,7 +3,7 @@
 //! their animation on the GPU. The CPU keeps only strike identity and lights.
 use glam::Vec3;
 use growing_guns::{Strike, StrikeKind, World, ION_CHARGE, TICK_HZ};
-use render::fx::{AdditiveColumn, AdditiveStreak, Effects};
+use render::fx::{AdditiveColumn, AdditiveMote, AdditiveStreak, Effects};
 use render::headlights::LocalLight;
 
 const CHARGE: f32 = ION_CHARGE as f32;
@@ -63,7 +63,7 @@ impl IonFx {
             // the GPU samples their current age, rather than restarting them.
             for mote in charge_motes(position, birth, seed(key)) {
                 if mote.birth + mote.life > now {
-                    effects.streak(mote).expect("valid ion mote recipe");
+                    effects.mote(mote).expect("valid ion mote recipe");
                 }
             }
             self.charges.push(Charge { key, position, birth, light_scale: light_scale(effects) });
@@ -185,26 +185,33 @@ fn charge_columns(position: Vec3, birth: f32) -> [AdditiveColumn; 1] {
         bottom_radius_scale: 1.0 }]
 }
 
-fn charge_motes(position: Vec3, birth: f32, seed: u64) -> Vec<AdditiveStreak> {
+fn charge_motes(position: Vec3, birth: f32, seed: u64) -> Vec<AdditiveMote> {
     let mut rng = Rng(seed);
     let mut motes = Vec::with_capacity(400);
     for tick in 0..=(CHARGE / MOTE_INTERVAL) as u32 {
-        let at = tick as f32 * MOTE_INTERVAL;
-        // Full impact footprint, uniform by area; it does not shrink with
-        // the concentrating beam. Seed the warning field immediately.
+        // Uniform by area across the full footprint, with independent births
+        // rather than visible waves. The initial field fades in asynchronously.
         let count = if tick == 0 { 48 } else { 6 };
         for _ in 0..count {
+            let at = tick as f32 * MOTE_INTERVAL + rng.range(0.0, if tick == 0 { 0.45 } else { MOTE_INTERVAL });
+            if CHARGE - at < 0.8 { continue; }
             let angle = rng.range(0.0, std::f32::consts::TAU);
             let dist = rng.unit().sqrt() * growing_guns::ION_RADIUS as f32;
             let start = position + Vec3::new(angle.cos() * dist, rng.range(0.12, 0.9), angle.sin() * dist);
-            let width = rng.range(0.045, 0.095);
-            let life = rng.range(2.2, 3.6).min(CHARGE - at);
-            if life <= 0.0 { continue; }
-            let travel = Vec3::Y * rng.range(0.65, 1.35) * life;
-            motes.push(AdditiveStreak { position: start, travel, birth: birth + at, life,
-                radius: [width; 2], length: [width * 2.0; 2],
-                color: Vec3::new(0.08, 0.38, 1.0), radiance: rng.range(22.0, 36.0) * MOTE_NITS,
-                opacity: rng.range(0.50, 0.80), fade_in: 0.16, fade_out: 0.82, motion_power: 1.0 });
+            let nominal_life = rng.range(2.4, 3.6);
+            let life = nominal_life.min(CHARGE - at);
+            let power = rng.range(2.4, 3.6);
+            // Truncate the original trajectory at impact: late births must not
+            // compress a full rise into their shorter remaining lifetime.
+            let rise = rng.range(1.2, 2.6) * nominal_life / power * (life / nominal_life).powf(power);
+            let travel = Vec3::new(rng.range(-0.06, 0.06), 1.0, rng.range(-0.06, 0.06)) * rise;
+            let fade_in = (rng.range(0.45, 0.95) / life).min(0.8);
+            motes.push(AdditiveMote { position: start, travel, birth: birth + at, life,
+                radius: rng.range(0.025, 0.045),
+                color: Vec3::new(0.12, rng.range(0.42, 0.65), 1.0),
+                radiance: rng.range(22.0, 36.0) * MOTE_NITS,
+                opacity: rng.range(0.50, 0.80), fade_in,
+                fade_out: rng.range(0.22, 0.35).min(1.0 - fade_in), motion_power: power });
         }
     }
     motes
@@ -262,18 +269,26 @@ mod tests {
     }
 
     #[test]
-    fn charge_motes_end_at_detonation_without_speeding_up() {
+    fn charge_motes_fade_in_accelerate_and_end_without_rushing_late_births() {
         let motes = charge_motes(Vec3::ZERO, 10.0, 5);
         assert!((300..450).contains(&motes.len()));
-        assert!(motes.iter().any(|m| m.birth == 10.0));
         let outer=motes.iter().filter(|m| m.position.length()>growing_guns::ION_RADIUS as f32*0.7).count();
         assert!(outer>motes.len()/3, "the whole disc receives motes");
+        assert!(motes.windows(2).any(|m| (m[0].birth - m[1].birth).abs() > 0.01));
+        let mut effects = Effects::default();
         for mote in motes {
+            effects.mote(mote).expect("valid soft-dot recipe");
             assert!(mote.birth >= 10.0);
             assert!(mote.birth + mote.life <= 10.0 + CHARGE + 0.00001);
-            assert!((0.649..=1.351).contains(&(mote.travel.y / mote.life)));
-            assert_eq!(mote.motion_power, 1.0);
-            assert_eq!(mote.travel.x,0.0); assert_eq!(mote.travel.z,0.0);
+            // First fifth of life covers under 3% of the rise; speed increases.
+            assert!(0.2_f32.powf(mote.motion_power) < 0.03);
+            let speed = |age: f32| mote.travel.y / mote.life * mote.motion_power * age.powf(mote.motion_power - 1.0);
+            assert!(speed(0.1) < 0.11);
+            assert!(speed(0.75) > speed(0.25) * 4.0);
+            assert!(speed(1.0) <= 2.601, "late births keep the same speed ceiling");
+            assert!(mote.fade_in * mote.life >= 0.449);
+            assert!((0.025..=0.045).contains(&mote.radius));
+            assert!(mote.travel.x.abs().max(mote.travel.z.abs()) <= mote.travel.y * 0.061);
         }
     }
 
