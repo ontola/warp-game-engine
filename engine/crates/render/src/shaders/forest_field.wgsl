@@ -61,7 +61,7 @@ fn ff_band(scale: f32, footprint: f32) -> f32 {
 // The ground's own leaning towards forest: slopes and ridges carry it,
 // flat and damp ground is meadow.
 fn ff_site(up: f32, wet: f32) -> f32 {
-    return 0.4 - 0.8 * ff_smooth(0.975, 0.998, up) - 0.6 * wet;
+    return 0.45 - 0.4 * ff_smooth(0.975, 0.998, up) - 0.8 * wet;
 }
 
 // Hedgerows: stretches of the edges of 110 by 80 m fields (on a grid

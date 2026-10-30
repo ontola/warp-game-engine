@@ -105,11 +105,11 @@ fn band(scale: f32, footprint: f32) -> f32 {
     (scale / footprint.max(1e-3) * 0.5 - 1.0).clamp(0.0, 1.0)
 }
 
-/// The ground's own leaning towards forest: slopes and ridges carry it,
-/// flat ground (valley floors, plateaus) and damp ground are meadow. From
+/// The ground's own leaning towards forest: forest is the rule, on slopes
+/// and ridges most of all; damp valley floors and some flat ground are meadow. From
 /// the terrain's `up` and `wet` (Sample, or the terrain's vertex attributes).
 pub fn site(up: f32, wet: f32) -> f32 {
-    0.4 - 0.8 * smooth(0.975, 0.998, up) - 0.6 * wet
+    0.45 - 0.4 * smooth(0.975, 0.998, up) - 0.8 * wet
 }
 
 /// Hedgerows: stretches of the edges of 110 by 80 m fields (on a grid
@@ -465,7 +465,9 @@ struct Params { seed: u32, density: f32, pad0: u32, pad1: u32, style: TerrainSty
                 assert_eq!([g.shape[0], g.shape[1], g.shape[2]], [t.scale.x, t.scale.y, t.variant as f32]);
             }
             if f.density > 0.0 && g.forest[0] > 0.0 {
-                assert!((g.forest[0] - f.density).abs() < 1e-3, "density {c:?}: cpu {} gpu {}", f.density, g.forest[0]);
+                // The share ramp (x5) on the site's wetness (x0.8) magnifies
+                // terrain_eval's last bits.
+                assert!((g.forest[0] - f.density).abs() < 5e-3, "density {c:?}: cpu {} gpu {}", f.density, g.forest[0]);
                 assert!((Vec3::new(g.forest[1], g.forest[2], g.forest[3]) - f.colour).abs().max_element() < 1e-3);
                 assert!((g.crown[0] - f.crown_height).abs() < 0.05);
             }
