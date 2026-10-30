@@ -96,7 +96,8 @@ save screenshots only. Recording does not capture audio, menus or private names.
   or use its frame number when rendering from the command line.
 - **F12 moment** returns to the original screenshot's moment.
 
-After editing rendering code, rebuild and reopen the same file. The most recently
+After editing rendering code, rebuild and press **F9** again: it also opens the
+latest saved replay after a restart. You can open a specific file below. The most recently
 saved bookmark opens automatically; the recording's gameplay stays fixed while
 the new code draws its particles, lighting, meshes and effects:
 
