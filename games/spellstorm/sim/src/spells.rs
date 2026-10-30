@@ -1190,13 +1190,8 @@ impl World {
             range: 10.0 + n.radius as f32 * 2.0,
             time: 0.3,
         });
-        self.ev(Ev::Ring {
-            at,
-            c,
-            r: n.radius as f32 + 0.4,
-            time: 0.4,
-        });
-        self.burst(at + Vec3::Y * 0.3, c, 40, 9.0, 0.22, s.primary);
+        // No ring on the floor: a few sparks, and Fx throws up sand (Joep).
+        self.burst(at + Vec3::Y * 0.3, c, 12, 9.0, 0.22, s.primary);
         self.shake(0.35);
     }
 

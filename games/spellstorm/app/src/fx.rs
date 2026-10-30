@@ -756,6 +756,43 @@ impl Fx {
         self.emit(p, at, 14);
     }
 
+    /// Sand and grit kicked up from the floor round `at`, falling back.
+    fn sand(&mut self, at: Vec3, r: f32) {
+        let mut p = particles(rgba(0.52, 0.45, 0.36, 1.0), (10.0 + r * 4.0) as u32, 0.9, 0.22);
+        style(&mut p, El::Earth, false);
+        p.dir = Vec3::Y;
+        p.spread = 35.0;
+        p.sphere = r * 0.35;
+        p.v = (3.0, 6.5);
+        p.scale = (0.4, 1.0);
+        self.emit(p, at + Vec3::Y * 0.1, p.amount);
+        self.puff(at + Vec3::Y * 0.15, rgba(0.5, 0.45, 0.38, 1.0), 0.5 + r * 0.2);
+    }
+
+    /// A burst of fire (a barrel, a fireball): the flamethrower's flames
+    /// (fx.wgsl flame) welling up and out with their smoke, so fire looks
+    /// the same everywhere.
+    fn fire_burst(&mut self, at: Vec3, r: f32) {
+        let r = r.max(0.5);
+        let mut p = particles(el_c(El::Fire), (16.0 + r * 14.0) as u32, 0.7, 0.5 + r * 0.18);
+        let smoke = style(&mut p, El::Fire, true);
+        p.dir = Vec3::Y;
+        p.spread = 75.0;
+        p.sphere = r * 0.35;
+        p.v = (1.0 + r * 0.5, 2.5 + r * 1.2);
+        p.damp = (1.5, 3.0);
+        p.curve = [0.35, 1.1, 1.7];
+        p.gravity = Vec3::Y * 2.0;
+        self.emit(p, at + Vec3::Y * 0.3, p.amount);
+        if let Some(mut s) = smoke {
+            s.amount = (s.amount * 2).max(8);
+            s.sphere = r * 0.4;
+            self.emit(s, at + Vec3::Y * 0.6, s.amount);
+        }
+        // Its light only: light_pop's halo would be a glowing ball.
+        self.pops.push(Pop { at: at + Vec3::Y, c: [1.0, 0.62, 0.22], energy: 4.0 + r, range: 4.0 + r * 2.5, age: 0.0, time: 0.45 });
+    }
+
     pub fn flash(&mut self, at: Vec3, c: C, size: f32, time: f32) {
         self.glows.push(Glow { at, c, size, age: 0.0, time });
     }
@@ -818,12 +855,14 @@ impl Fx {
                     self.zap(p[0], p[1], c, 0.12, 0.4, 0.5, 0.12);
                 }
             }
+            // Where lightning strikes: a few sparks and sand thrown up, no
+            // ring on the floor (Joep).
             Ev::Thunder { at, top, c, width, radius } => {
                 self.zap(top, at, c, width.max(0.2), 1.2, 1.2, 0.18);
                 self.flash(at + Vec3::Y * 0.5, c, radius * 1.6, 0.25);
-                self.ring(at, c, radius, 0.35);
                 self.light_pop(at, c, 6.0, radius * 3.0, 0.3);
-                self.burst(at, c, 18, 6.0, 0.35, Some(El::Lightning));
+                self.burst(at, c, 8, 6.0, 0.35, Some(El::Lightning));
+                self.sand(at, radius);
             }
             Ev::Nova { at, r, ref cs, el } => {
                 let c0 = cs.first().copied().unwrap_or(WHITE);
@@ -841,9 +880,7 @@ impl Fx {
                 self.shot(p, at + Vec3::Y * 0.5, el, true);
                 self.light_pop(at, c0, 3.5, r * 2.5, 0.4);
             }
-            Ev::Boom { at, r, .. } => {
-                self.blasts.explosion(self.time, Vec3::new(at.x, 0.0, at.z), r, Vec3::new(1.0, 0.55, 0.15));
-            }
+            Ev::Boom { at, r, .. } => self.fire_burst(Vec3::new(at.x, 0.0, at.z), r),
             Ev::Shake(a) => self.shake = self.shake.max(a),
             Ev::Summon { at } => {
                 let c = el_c(El::Void);
@@ -1128,6 +1165,26 @@ impl Fx {
                 if b.flight.zap {
                     continue;
                 }
+                if b.el == Some(El::Fire) {
+                    // A fire bolt is a knot of the flamethrower's flames
+                    // licking back along its path, with a little smoke; no
+                    // glowing ball (Joep).
+                    let size = b.size;
+                    let mut p = particles(el_c(El::Fire), (24.0 + 16.0 * size) as u32, 0.32, 0.3 + 0.22 * size);
+                    let smoke = style(&mut p, El::Fire, true);
+                    p.dir = -b.vel.normalize_or(Vec3::Z) + Vec3::Y * 0.4;
+                    p.spread = 30.0;
+                    p.sphere = 0.08 + 0.05 * size;
+                    p.v = (0.5, 1.6);
+                    p.curve = [0.35, 1.1, 1.4];
+                    self.stream((key, 0), p, b.pos, dt);
+                    if let Some(mut s) = smoke {
+                        s.amount = (s.amount / 2).max(3);
+                        self.stream((key, 1), s, b.pos, dt);
+                    }
+                    self.light(b.pos, rgba(1.0, 0.62, 0.22, 1.0), 1.0 + 0.4 * size, 5.0);
+                    continue;
+                }
                 let look = bolt_look(b.el);
                 let size = b.size;
                 let edge = look.edge;
@@ -1210,8 +1267,11 @@ impl Fx {
             } else if let Ok(s) = w.ecs.get::<&Soul>(id) {
                 let c = rgba(0.25, 0.5, 1.0, 1.0);
                 let at = s.pos + Vec3::Y * (0.9 + 0.1 * (t * 4.0 + key as f32).sin());
-                self.live.push(glow_sprite(at, 0.22, Cell::Spark, linear3([0.45, 0.65, 1.0]) * 3.0));
-                self.halo(at, c, 0.12 * 6.0 * 2.0, 0.5);
+                // A small glowing marble: a hard-edged bead with its sheen
+                // (the Drop cell) and a bright heart, the faintest halo (Joep).
+                self.live.push(glow_sprite(at, 0.2, Cell::Drop, linear3([0.35, 0.58, 1.0]) * 1.1));
+                self.live.push(glow_sprite(at, 0.07, Cell::Spark, linear3([0.75, 0.88, 1.0]) * 1.6));
+                self.halo(at, c, 0.4, 0.12);
             } else if let Ok(s) = w.ecs.get::<&Spray>(id) {
                 let e = s.spell.primary.unwrap_or(El::Fire);
                 let mut p = particles(el_c(e), 50, 0.45, 0.7);
@@ -1229,6 +1289,32 @@ impl Fx {
                     p.v = (10.0, 14.0);
                     p.curve = [0.35, 1.1, 1.7];
                     p.gravity = Vec3::Y * 1.5;
+                }
+                if e == El::Water {
+                    // A hose: a dense white jet of water that sags a little
+                    // and breaks into spray at its end, not a blue haze (Joep).
+                    p.amount = 160;
+                    p.life = 0.4;
+                    p.spread = 3.5;
+                    p.v = (12.0, 15.0);
+                    p.damp = (0.5, 1.5);
+                    p.gravity = Vec3::NEG_Y * 5.0;
+                    p.size = 0.16;
+                    p.cell = Cell::Drop;
+                    p.glow = 0.7;
+                    p.solid = false;
+                    p.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 1.0), rgba(0.9, 0.96, 1.0, 0.95), rgba(0.75, 0.88, 1.0, 0.0)], &[0.0, 0.7, 1.0]);
+                    p.tint = (Vec3::ONE, Vec3::ONE);
+                    p.curve = [0.7, 1.0, 1.6];
+                    let mut mist = p;
+                    mist.amount = 24;
+                    mist.cell = Cell::Puff;
+                    mist.size = 0.45;
+                    mist.glow = 0.25;
+                    mist.spread = 9.0;
+                    mist.v = (8.0, 11.0);
+                    mist.ramp = Ramp::new(&[rgba(1.0, 1.0, 1.0, 0.0), rgba(0.95, 0.98, 1.0, 0.3), rgba(0.9, 0.95, 1.0, 0.0)], &[0.0, 0.5, 1.0]);
+                    self.stream((key, 2), mist, s.at, dt);
                 }
                 self.stream((key, 0), p, s.at, dt);
                 if let Some(sm) = smoke {
@@ -1287,12 +1373,15 @@ impl Fx {
             let at = f.pos + Vec3::Y * 0.04;
             match f.kind {
                 El::Fire | El::Magma => {
-                    // fx.wgsl `ground`: scorched earth and embers, or molten seams.
-                    let mut s = flat_sprite(at, r, Cell::Patch, Vec3::splat(1.2)).solid();
-                    s.opacity = fade;
-                    s.effect = crate::effects::GROUND;
-                    s.params = [f.kind.idx() as f32, r, (key % 97) as f32, t];
-                    self.live.push(s);
+                    // Magma: fx.wgsl `ground`'s molten seams. Fire is only
+                    // its flames, no scorched patch (Joep).
+                    if f.kind == El::Magma {
+                        let mut s = flat_sprite(at, r, Cell::Patch, Vec3::splat(1.2)).solid();
+                        s.opacity = fade;
+                        s.effect = crate::effects::GROUND;
+                        s.params = [f.kind.idx() as f32, r, (key % 97) as f32, t];
+                        self.live.push(s);
+                    }
                     let mut p = particles(c, (3.0 * r * r) as u32 + 4, 1.1, 0.5);
                     p.dir = Vec3::Y;
                     p.sphere = r * 0.8;
