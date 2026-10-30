@@ -19,6 +19,48 @@ pub enum Mod {
     Heal(f64),
     Firewalker,
     Afflicted(f64),
+    /// Max mana, added.
+    Mana(f64),
+    /// Mana regen, times.
+    Regen(f64),
+    /// What loading and casting cost, times.
+    Cost(f64),
+    /// Mana from souls, times.
+    Souls(f64),
+    /// How far souls fly to you, times.
+    Magnet(f64),
+    /// Damage you take, times.
+    Guard(f64),
+    /// How deep your burns, poisons and chills go, times.
+    Status(f64),
+    /// How far your spells knock monsters back, times.
+    Push(f64),
+    /// Bolt damage, times.
+    Bolt(f64),
+    /// The staff swing's recovery, times.
+    Swing(f64),
+}
+
+/// What a tome needs before it is any use to a wizard.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Need {
+    Nothing,
+    /// The element, or for a fused one both its parts.
+    El(El),
+    Form(crate::grammar::Form),
+}
+
+impl Mod {
+    pub fn need(self) -> Need {
+        use crate::grammar::Form;
+        match self {
+            M::El(e, _) => Need::El(e),
+            M::Echo => Need::Form(Form::Nova),
+            M::Planter => Need::Form(Form::Plant),
+            M::EnchantTime(_) => Need::Form(Form::Enchant),
+            _ => Need::Nothing,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,7 +77,7 @@ const fn r(name: &'static str, text: &'static str, mods: &'static [Mod]) -> Reli
     Relic { name, text, mods }
 }
 
-pub const ALL: [Relic; 16] = [
+pub const ALL: [Relic; 32] = [
     r(
         "Black Grimoire",
         "Poison and Void +30%",
@@ -114,6 +156,22 @@ pub const ALL: [Relic; 16] = [
         "+25% on wet, burning, chilled or poisoned monsters",
         &[M::Afflicted(1.25)],
     ),
+    r("Pyre Psalter", "Fire and Magma +50%", &[M::El(Fire, 1.5), M::El(Magma, 1.5)]),
+    r("Frozen Heart", "Frost and Ice +50%", &[M::El(Frost, 1.5), M::El(Ice, 1.5)]),
+    r("Thunder Rod", "Lightning and Storm +50%", &[M::El(Lightning, 1.5), M::El(Storm, 1.5)]),
+    r("Tomb Dust", "Poison +60%", &[M::El(Poison, 1.6)]),
+    r("Deep Well", "+40 max mana", &[M::Mana(40.0)]),
+    r("Moon Font", "Mana comes back twice as fast", &[M::Regen(2.0)]),
+    r("Miser's Ledger", "Loading and casting cost 20% less", &[M::Cost(0.8)]),
+    r("Soul Jar", "Souls give 50% more mana", &[M::Souls(1.5)]),
+    r("Lodestone", "Souls fly to you from 3 times as far", &[M::Magnet(3.0)]),
+    r("Iron Skin", "You take 20% less damage", &[M::Guard(0.8)]),
+    r("Plague Primer", "Your burns, poisons and chills go 50% deeper", &[M::Status(1.5)]),
+    r("Ram's Horn", "Your spells knock monsters back twice as far", &[M::Push(2.0)]),
+    r("Keen Gem", "Your bolts hit 40% harder", &[M::Bolt(1.4)]),
+    r("Quicksilver Grip", "The staff swing recovers twice as fast", &[M::Swing(0.5)]),
+    r("Blood Pact", "+25% to all your damage, but you take 25% more", &[M::Dmg(1.25), M::Guard(1.25)]),
+    r("Wayfarer's Charm", "+15 max health and you move 10% faster", &[M::Hp(15.0), M::Speed(1.1)]),
 ];
 
 /// A tome as the game uses it: the built-in ones, or the Luau rules'
@@ -158,6 +216,16 @@ pub struct Mods {
     pub echo: bool,
     pub planter: bool,
     pub firewalker: bool,
+    pub mana: f64,
+    pub regen: f64,
+    pub cost: f64,
+    pub souls: f64,
+    pub magnet: f64,
+    pub guard: f64,
+    pub status: f64,
+    pub push: f64,
+    pub bolt: f64,
+    pub swing: f64,
 }
 
 impl Default for Mods {
@@ -176,6 +244,16 @@ impl Default for Mods {
             echo: false,
             planter: false,
             firewalker: false,
+            mana: 0.0,
+            regen: 1.0,
+            cost: 1.0,
+            souls: 1.0,
+            magnet: 1.0,
+            guard: 1.0,
+            status: 1.0,
+            push: 1.0,
+            bolt: 1.0,
+            swing: 1.0,
         }
     }
 }
@@ -201,6 +279,16 @@ impl Mods {
                     M::Heal(f) => m.heal *= f,
                     M::Firewalker => m.firewalker = true,
                     M::Afflicted(f) => m.afflicted *= f,
+                    M::Mana(f) => m.mana += f,
+                    M::Regen(f) => m.regen *= f,
+                    M::Cost(f) => m.cost *= f,
+                    M::Souls(f) => m.souls *= f,
+                    M::Magnet(f) => m.magnet *= f,
+                    M::Guard(f) => m.guard *= f,
+                    M::Status(f) => m.status *= f,
+                    M::Push(f) => m.push *= f,
+                    M::Bolt(f) => m.bolt *= f,
+                    M::Swing(f) => m.swing *= f,
                 }
             }
         }
@@ -208,13 +296,26 @@ impl Mods {
     }
 }
 
-/// `n` different tomes, none of them in `avoid` (indices into ALL).
-pub fn pick(n: usize, rng: &mut Pcg, avoid: &[usize]) -> Vec<usize> {
-    let mut pool: Vec<usize> = (0..all().len()).filter(|i| !avoid.contains(i)).collect();
+/// Is tome `i` any use to someone who `has` what a need asks for? A tome
+/// with several mods needs only one of them (the fire half of a fire and
+/// frost tome is use enough).
+pub fn usable(i: usize, has: &dyn Fn(Need) -> bool) -> bool {
+    let all = all();
+    let Some(t) = all.get(i) else { return false };
+    t.mods.is_empty() || t.mods.iter().any(|m| has(m.need()))
+}
+
+/// `n` different tomes, none of them in `avoid` (indices into ALL), only
+/// ones that are `usable`. When too few are, any others fill up.
+pub fn pick(n: usize, rng: &mut Pcg, avoid: &[usize], has: &dyn Fn(Need) -> bool) -> Vec<usize> {
+    let open: Vec<usize> = (0..all().len()).filter(|i| !avoid.contains(i)).collect();
+    let (mut pool, mut rest): (Vec<usize>, Vec<usize>) = open.into_iter().partition(|&i| usable(i, has));
     let mut out = Vec::new();
-    while out.len() < n && !pool.is_empty() {
-        let i = rng.next_u32() as usize % pool.len();
-        out.push(pool.remove(i));
+    for pool in [&mut pool, &mut rest] {
+        while out.len() < n && !pool.is_empty() {
+            let i = rng.next_u32() as usize % pool.len();
+            out.push(pool.remove(i));
+        }
     }
     out
 }

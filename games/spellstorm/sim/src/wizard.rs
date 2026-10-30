@@ -255,7 +255,7 @@ impl Wizard {
     }
 
     pub fn mana_max(&self) -> f64 {
-        STAGE_MANA[self.stage]
+        STAGE_MANA[self.stage] + self.mods().mana
     }
 
     pub fn form_open(&self, f: Form) -> bool {
@@ -339,7 +339,7 @@ impl Wizard {
             }
         }
         let front = self.queue.slots[0];
-        let scales = b::bolt_scales(&counts, front, 1.0);
+        let scales = b::bolt_scales(&counts, front, self.mods().bolt);
         BoltSpell {
             counts,
             primary: Some(front),
@@ -401,7 +401,7 @@ impl Wizard {
         let slots = &self.queue.slots;
         for n in (1..=slots.len()).rev() {
             let s = compose(&slots[..n], form, &mods);
-            if self.mana >= Wizard::cost(&s) - 0.01 {
+            if self.mana >= Wizard::cost(&s) * mods.cost - 0.01 {
                 return n;
             }
         }
@@ -502,7 +502,7 @@ impl World {
             return;
         }
         w.tomb_t = 0.0;
-        w.mana = w.mana_max().min(w.mana + crate::knobs::mana_regen() * dt);
+        w.mana = w.mana_max().min(w.mana + crate::knobs::mana_regen() * w.mods().regen * dt);
         w.learned_t = (w.learned_t - dt).max(0.0);
         if w.enchant_time > 0.0 {
             w.enchant_time -= dt;
@@ -749,7 +749,7 @@ impl World {
             return;
         }
         w.swing_t = SWING_COOLDOWN;
-        w.swing_cd = SWING_COOLDOWN + crate::knobs::swing_recover();
+        w.swing_cd = SWING_COOLDOWN + crate::knobs::swing_recover() * w.mods().swing;
         self.count("swings");
         let touch = w.bolt_spell();
         let enchanted = w.enchant_time > 0.0 && w.enchant.is_some();
@@ -955,7 +955,7 @@ impl World {
         // Rolling out of a windup calls the spell off: mana and elements back.
         if let Some(s) = w.charging.take() {
             w.mark = None;
-            w.mana = w.mana_max().min(w.mana + Wizard::cost(&s));
+            w.mana = w.mana_max().min(w.mana + Wizard::cost(&s) * w.mods().cost);
             let mut back = s.slots.clone();
             back.extend(w.queue.slots.iter().copied());
             back.truncate(w.queue.size);
@@ -972,11 +972,12 @@ impl World {
         if trial.add(e) == Added::Full {
             return;
         }
-        if w.mana < b::MANA_PER_LOAD - 0.01 {
+        let price = b::MANA_PER_LOAD * w.mods().cost;
+        if w.mana < price - 0.01 {
             self.no_mana(id, w);
             return;
         }
-        w.mana -= b::MANA_PER_LOAD;
+        w.mana -= price;
         let front = w.queue.slots.first().copied();
         let what = w.queue.add(e);
         // A new or changed front element starts with a full charge.
@@ -995,7 +996,7 @@ impl World {
     /// each slot.
     fn load_slots(&mut self, id: Id, w: &mut Wizard, slots: &[El]) {
         let slots = &slots[..slots.len().min(w.queue.size)];
-        let price = b::MANA_PER_LOAD * slots.len() as f64;
+        let price = b::MANA_PER_LOAD * slots.len() as f64 * w.mods().cost;
         if w.mana < price - 0.01 {
             self.no_mana(id, w);
             return;
@@ -1039,7 +1040,7 @@ impl World {
         if matches!(s.shape, Shape::Fizzle | Shape::Staff) {
             return;
         }
-        let price = Wizard::cost(&s);
+        let price = Wizard::cost(&s) * w.mods().cost;
         if w.mana < price - 0.01 {
             self.no_mana(id, w);
             return;

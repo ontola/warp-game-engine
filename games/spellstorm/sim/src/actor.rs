@@ -246,6 +246,8 @@ impl Actor {
         if !self.alive || self.invuln > 0.0 {
             return false;
         }
+        // Iron Skin, Blood Pact: a wizard's tomes change what reaches them.
+        let dmg = dmg * self.mods.guard;
         self.shown.dmg += dmg.min(self.hp);
         self.hp -= dmg;
         if dmg > 2.5 {

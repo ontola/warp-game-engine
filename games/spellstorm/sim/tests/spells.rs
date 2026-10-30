@@ -133,7 +133,8 @@ fn tomes() {
             }
         }
     }
-    assert_eq!(tomed, [1; 13]);
+    // Every element has a tome, none more than two.
+    assert!(tomed.iter().all(|&n| (1..=2).contains(&n)), "{tomed:?}");
     let far = Mods {
         reach: 1.35,
         ..Mods::default()
@@ -236,4 +237,26 @@ fn enchantments() {
     assert_eq!(store(&[Fire]), 162.0);
     assert_eq!(store(&[Fire, Fire]), 356.0);
     assert_eq!(store(&[Fire, Fire, Fire]), 583.0);
+}
+
+/// A shrine offers a wizard who knows only fire and lightning (and only
+/// casting) no tome for elements or forms they cannot use yet.
+#[test]
+fn shrines_offer_only_tomes_you_can_use() {
+    use relics::Need;
+    let has = |n: Need| match n {
+        Need::Nothing => true,
+        Need::El(e) => e.parts().iter().all(|p| [Fire, Lightning].contains(p)),
+        Need::Form(f) => f == Form::Cast,
+    };
+    for seed in 0..200 {
+        let mut rng = gdcompat::Pcg::new(seed);
+        for i in relics::pick(3, &mut rng, &[], &has) {
+            assert!(relics::usable(i, &has), "{}", relics::all()[i].name);
+        }
+    }
+    let poison_only = relics::ALL.iter().position(|r| r.name == "Tomb Dust").unwrap();
+    assert!(!relics::usable(poison_only, &has));
+    let echo = relics::ALL.iter().position(|r| r.name == "Echo Stone").unwrap();
+    assert!(!relics::usable(echo, &has));
 }
