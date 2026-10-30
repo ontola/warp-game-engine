@@ -2403,7 +2403,12 @@ impl Renderer {
         }
         if self.wind.update(gpu, state)? { self.invalidate_dynamic_shadow(); }
         if let Some(parts) = &self.part_wind {
-            if parts.update(gpu, state)? { self.invalidate_dynamic_shadow(); }
+            // Branch wind moves the shared sun map's casters only when they
+            // cast as source: with voxel casting their groups splat 1 m cells
+            // there (the near map, redrawn each frame, keeps the sway).
+            if parts.update(gpu, state)? && !self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun()) {
+                self.invalidate_dynamic_shadow();
+            }
         }
         if let Some(meadow) = &self.meadow {
             // Ordinary elapsed time retains correspondence with the previous
@@ -3162,7 +3167,10 @@ impl Renderer {
             });}
             // Far/static foliage maps own immutable copies of their instance
             // buffers and do not consume the animated PartWind transforms.
-            if self.part_wind.as_ref().unwrap().animation_views_changed(&part_animation_views)? {
+            // Nor does the shared map with voxel casting (see set_wind): the
+            // views change every frame (TAA jitter), which redrew it each frame.
+            if self.part_wind.as_ref().unwrap().animation_views_changed(&part_animation_views)?
+                && !self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun()) {
                 self.invalidate_dynamic_shadow();
             }
         }
