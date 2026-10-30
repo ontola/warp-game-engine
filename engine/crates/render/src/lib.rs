@@ -76,6 +76,7 @@ pub mod exhaust;
 pub mod wheel_particles;
 pub mod tracks;
 pub mod foliage_voxel;
+pub mod far_trees;
 pub mod foliage_shadow;
 pub mod foliage_assembly;
 pub mod plant_recipe;

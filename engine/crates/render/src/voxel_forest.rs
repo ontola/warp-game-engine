@@ -120,6 +120,8 @@ fn diagnostic_u64(bytes: &[u8], word: usize) -> u64 {
 // interface small instead of increasing the requested hardware limit.
 pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 26];
 pub(crate) const MAX_VIEW_GROUPS: usize = 4096;
+/// Replacement tag of a distance-switched far tree (Scene::voxel_far_distance_m).
+pub(crate) const FAR_TREE: u32 = 0x4000_0000;
 pub(crate) fn default_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] {
     [[1, u32::MAX, 0, 0]; MAX_VIEW_GROUPS]
 }
@@ -174,7 +176,8 @@ struct Config {
 /// static cell list and the id/depth raster pipeline.
 struct SplatRaster {
     cells: wgpu::Buffer,
-    cell_count: u32,
+    /// Splat records per view (splat_capacity).
+    capacity: u64,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     /// Sun map: voxel_sun_splats needs no camera group, so group 1 is empty.
@@ -201,30 +204,27 @@ struct SplatTargets {
     depth: wgpu::TextureView,
     bind: wgpu::BindGroup,
 }
-/// Every occupied cell of every level of every tree: tree, level relative to
-/// the tree, cell index, coordinate packed ten bits per axis. Trees sharing
-/// an asset share its cells.
-pub(crate) fn splat_cells(forest: &crate::foliage_volume_data::GpuForest) -> Result<Vec<[u32; 4]>, String> {
-    let mut assets: std::collections::HashMap<(u32, u32), Vec<[u32; 3]>> = Default::default();
-    let mut result = Vec::new();
-    for (tree_index, tree) in forest.instances.iter().enumerate() {
-        let key = (tree.meta[1], tree.meta[2]);
-        if !assets.contains_key(&key) {
-            let mut cells = Vec::new();
-            for relative in 0..tree.meta[2] {
-                let level = forest.levels.get((tree.meta[1] + relative) as usize).ok_or("voxel level out of range")?;
-                let [dx, dy, dz, _] = level.dims_offset;
-                if dx > 1024 || dy > 1024 || dz > 1024 { return Err("voxel level exceeds 1024 cells per axis".into()); }
-                for z in 0..dz { for y in 0..dy { for x in 0..dx {
-                    let index = crate::foliage_volume_data::cell_index(forest, level, [x, y, z]).unwrap_or(0);
-                    if index != 0 { cells.push([relative, index - 1, x | y << 10 | z << 20]); }
-                }}}
-            }
-            assets.insert(key, cells);
-        }
-        result.extend(assets[&key].iter().map(|c| [tree_index as u32, c[0], c[1], c[2]]));
+/// Per packed level its range of occupied cells (first, count), then the
+/// cells: cell index, coordinate packed ten bits per axis. Trees sharing an
+/// asset share its levels, so this does not grow with the tree count.
+pub(crate) fn splat_cells(forest: &crate::foliage_volume_data::GpuForest) -> Result<Vec<[u32; 2]>, String> {
+    let mut result = vec![[0u32; 2]; forest.levels.len()];
+    for (index, level) in forest.levels.iter().enumerate() {
+        let [dx, dy, dz, _] = level.dims_offset;
+        if dx > 1024 || dy > 1024 || dz > 1024 { return Err("voxel level exceeds 1024 cells per axis".into()); }
+        let first = result.len();
+        for z in 0..dz { for y in 0..dy { for x in 0..dx {
+            let cell = crate::foliage_volume_data::cell_index(forest, level, [x, y, z]).unwrap_or(0);
+            if cell != 0 { result.push([cell - 1, x | y << 10 | z << 20]); }
+        }}}
+        result[index] = [first as u32, (result.len() - first) as u32];
     }
     Ok(result)
+}
+/// Splat records one view may hold: every tree at its finest level, capped.
+fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32; 2]]) -> u64 {
+    const MAX_SPLATS: u64 = 4 << 20;
+    forest.instances.iter().map(|tree| u64::from(cells[tree.meta[1] as usize][1])).sum::<u64>().clamp(1, MAX_SPLATS)
 }
 struct Targets {
     splat: Option<SplatTargets>,
@@ -273,6 +273,8 @@ pub(crate) struct VoxelRenderer {
     brick_catalog: wgpu::Buffer,
     bin_count: u32,
     count: u32,
+    /// Scene::voxel_far_distance_m; written as config march.y.
+    far: f32,
     step: f32,
     empty_skip: bool,
     lod_pixels: f32,
@@ -316,11 +318,11 @@ fn sun_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) ->
     gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("voxel_sun_splats"), layout: Some(layout),
         module: &module, entry_point: Some("voxel_sun_splats"), compilation_options: Default::default(), cache: gpu.pipeline_cache() })
 }
-fn splat_raster(gpu: &Gpu, cells: &[[u32; 4]], scene_layout: &wgpu::BindGroupLayout, data_layout: &wgpu::BindGroupLayout, source: &str) -> SplatRaster {
+fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgpu::BindGroupLayout, data_layout: &wgpu::BindGroupLayout, source: &str) -> SplatRaster {
     let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel splat raster"),
-        entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        entries: &[0].map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
-            count: None }] });
+            count: None }) });
     let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("voxel splat raster"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxel splat raster"),
@@ -356,7 +358,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 4]], scene_layout: &wgpu::BindGroupLay
     let sun_splats = sun_splat_pipeline(gpu, &sun_layout, source);
     let cells_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE });
-    SplatRaster { cells: cells_buffer, cell_count: cells.len() as u32, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster,
+    SplatRaster { cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster,
         sun_target: Mutex::new(None) }
 }
 fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool) -> [wgpu::ComputePipeline; 8] {
@@ -441,6 +443,14 @@ pub(crate) fn valid_skip_levels(forest: &crate::foliage_volume_data::GpuForest, 
 /// Shadows still use original source geometry regardless of this color map.
 pub(crate) fn replacement_materials(scene: &Scene) -> Vec<u32> {
     let mut result = vec![0; scene.instances.len().max(1)];
+    // Far trees: bit 30 plus the tree; cull.wgsl and raster.wgsl switch the
+    // whole owner by camera distance.
+    if let Some(forest) = scene.voxel_forest.as_ref().filter(|_| scene.voxel_far_distance_m > 0.0) {
+        for (index, tree) in forest.instances.iter().enumerate() {
+            result[tree.meta[0] as usize] = FAR_TREE | index as u32;
+        }
+        return result;
+    }
     if let Some(forest) = &scene.voxel_forest {
         for tree in &forest.instances {
             let owner = tree.meta[0] as usize;
@@ -508,10 +518,12 @@ impl VoxelRenderer {
         if forest.instances.is_empty() {
             return None;
         }
-        assert!(
-            forest.instances.len() <= MAX_VIEW_GROUPS,
-            "voxel renderer exceeds checked selection capacity"
-        );
+        let far = scene.voxel_far_distance_m;
+        assert!(far.is_finite() && far >= 0.0, "invalid far tree distance");
+        // Far trees never read the per-group selection.
+        assert!(far > 0.0 || forest.instances.len() <= MAX_VIEW_GROUPS,
+            "voxel renderer exceeds checked selection capacity");
+        assert!(forest.instances.len() < FAR_TREE as usize, "too many far trees");
         let upload = |name, data: &[u8]| {
             gpu.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -614,6 +626,8 @@ impl VoxelRenderer {
             });
         let source = shader_source();
         let mut integrator_options = IntegratorOptions::from_environment();
+        // Far trees exist only as rasterized voxels.
+        integrator_options.raster |= far > 0.0;
         let mut catalog_words=vec![0u32;4];
         let mut bin_count=forest.instances.len() as u32;
         if integrator_options.brick_visibility {
@@ -642,9 +656,10 @@ impl VoxelRenderer {
         eprintln!("voxel global intervals: enabled={} stream_bytes_per_view={} maximum_pixel_slots={} (experimental; complete scan on overflow)",
             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
         let raster = if integrator_options.raster { match splat_cells(forest) {
-            Ok(cells) if !cells.is_empty() => {
-                eprintln!("voxel raster: enabled cells={} (stochastic opaque voxels; integrator off)", cells.len());
-                Some(splat_raster(gpu, &cells, scene_layout, &data_layout, &specialized_source))
+            Ok(cells) if cells.len() > forest.levels.len() => {
+                let capacity = splat_capacity(forest, &cells);
+                eprintln!("voxel raster: enabled cells={} splats_per_view={capacity} (stochastic opaque voxels; integrator off)", cells.len() - forest.levels.len());
+                Some(splat_raster(gpu, &cells, capacity, scene_layout, &data_layout, &specialized_source))
             }
             Ok(_) => { eprintln!("voxel raster fallback: no occupied cells"); None }
             Err(error) => { eprintln!("voxel raster fallback: {error}"); None }
@@ -721,6 +736,7 @@ impl VoxelRenderer {
             brick_catalog,
             bin_count,
             count: forest.instances.len() as u32,
+            far,
             step,
             empty_skip,
             lod_pixels,
@@ -858,7 +874,7 @@ impl VoxelRenderer {
                 label: Some("voxel config"),
                 contents: bytemuck::bytes_of(&Config {
                     size_count: [size.0, size.1, size.0.div_ceil(TILE), self.count],
-                    march: [self.step, 1024.0, u32::from(self.empty_skip) as f32, self.lod_pixels],
+                    march: [self.step, self.far, u32::from(self.empty_skip) as f32, self.lod_pixels],
                     dispatch: [u32::from(self.active_tiles), 0, interval_stream.map_or(0,|s|s.header_word),
                         interval_stream.map_or(0,|s|s.pixel_slots)],
                 }),
@@ -914,10 +930,10 @@ impl VoxelRenderer {
         }).create_view(&Default::default());
         let splat_id = texture("voxel splat id", wgpu::TextureFormat::R32Uint);
         let splat_depth = texture("voxel splat depth", wgpu::TextureFormat::Depth32Float);
-        let splat_capacity = self.raster.as_ref().map_or(0, |r| u64::from(r.cell_count)
-            .min((u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) / 16 - 12) / 4));
+        let splat_capacity = self.raster.as_ref().map_or(0, |r| r.capacity
+            .min((u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) / 16).saturating_sub(12 + 4 * u64::from(self.count))));
         let splat_records = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel splats"), size: (12 + 4 * splat_capacity) * 16,
+            label: Some("voxel splats"), size: (12 + 4 * u64::from(self.count) + splat_capacity) * 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let splat_draw = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel splat draw"), size: 16,
@@ -1019,8 +1035,8 @@ impl VoxelRenderer {
                         query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
                 pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
                 pass.set_pipeline(splats);
-                let groups = raster.cell_count.div_ceil(64);
-                pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535).max(1), 1);
+                // One workgroup per tree.
+                pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);
             }
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1152,8 +1168,7 @@ impl VoxelRenderer {
                     query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
             pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, &raster.sun_empty, &[]); pass.set_bind_group(2, &target.bind, &[]);
             pass.set_pipeline(&raster.sun_splats);
-            let groups = raster.cell_count.div_ceil(64);
-            pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535).max(1), 1);
+            pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("voxel sun splat raster"), color_attachments: &[],
@@ -1383,10 +1398,10 @@ mod tests {
     }
 
     #[test]
-    fn splat_cells_list_every_occupied_cell_once_per_tree_dense_or_bricked() {
+    fn splat_cells_list_every_occupied_cell_of_each_level_dense_or_bricked() {
         use crate::foliage_volume_data::{GpuForest,GpuLevel,GpuTree,GpuCell};
         use bytemuck::Zeroable;
-        use super::splat_cells;
+        use super::{splat_cells,splat_capacity};
         let mut forest=GpuForest::default();
         // 5x2x3 dense level with three occupied cells, then its 3x1x2 parent.
         let mut dense=vec![0u32;30];
@@ -1397,12 +1412,12 @@ mod tests {
         forest.cells=vec![GpuCell::zeroed();4];
         let tree=GpuTree {inverse:[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0]],bounds_min:[0.0;4],bounds_max:[2.5,1.0,1.5,0.0],meta:[0,0,2,0]};
         forest.instances=vec![tree,tree];
-        let dense_cells=splat_cells(&forest).unwrap();
-        assert_eq!(dense_cells.len(),8);
-        assert_eq!(dense_cells[..4],[[0,0,0,0],[0,0,1,4|1<<10],[0,0,2,4|1<<10|2<<20],[0,1,3,0]]);
-        assert!(dense_cells[4..].iter().zip(&dense_cells[..4]).all(|(b,a)|b[0]==1&&b[1..]==a[1..]));
+        let cells=splat_cells(&forest).unwrap();
+        assert_eq!(cells,[[2,3],[5,1],[0,0],[1,4|1<<10],[2,4|1<<10|2<<20],[3,0]]);
+        // Two trees at the finest level.
+        assert_eq!(splat_capacity(&forest,&cells),6);
         crate::foliage_volume_data::pack_bricks(&mut forest,128).unwrap();
-        assert_eq!(splat_cells(&forest).unwrap(),dense_cells);
+        assert_eq!(splat_cells(&forest).unwrap(),cells);
     }
 
     #[test]

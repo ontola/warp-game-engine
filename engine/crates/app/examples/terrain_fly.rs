@@ -80,6 +80,8 @@ struct World {
     /// The nearest this many trees are recipe spruces (the vegetation
     /// push's approved r4 spruce); the rest are Sideways' fir meshes.
     recipe_trees: u32,
+    /// Firs past render::far_trees' distance draw as rasterized voxels.
+    far_voxels: bool,
 }
 
 // Debug menu ids (app::debug::GAME_IDS and up).
@@ -91,6 +93,7 @@ const TREE_RADIUS: u32 = 1004;
 const CELL_PX: u32 = 1005;
 const ERROR_PX: u32 = 1006;
 const RECIPE_TREES: u32 = 1007;
+const FAR_VOXELS: u32 = 1008;
 
 struct Fly {
     seed: u32,
@@ -290,6 +293,7 @@ impl Game for Fly {
             toggle(TREES, "Trees", w.trees, "Fir forest around the camera (Sideways' fir meshes)."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
             number(RECIPE_TREES, "Recipe spruces near camera", f64::from(w.recipe_trees), (0.0, 32.0, 1.0, 0), "", "The nearest trees use the new recipe spruce (shared detailed sprays, branch wind). Each is millions of triangles."),
+            toggle(FAR_VOXELS, "Far trees as voxels", w.far_voxels, "Firs past 120 m draw as rasterized voxels (camera and sun shadow) instead of meshes."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
             toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (45 m of blades, canopy shading beyond) below 120 m above ground. Expensive. The Grass menu only hides it."),
             number(CELL_PX, "Terrain cell size", f64::from(t.cell_pixels), (4.0, 96.0, 4.0, 0), "px", "Largest projected terrain cell before a patch splits."),
@@ -302,6 +306,7 @@ impl Game for Fly {
             DebugAction::ResetDefaults => { self.world = World::default(); self.terrain_settings = Settings::default(); }
             DebugAction::SetToggle { id: TREES, value } => self.world.trees = value,
             DebugAction::SetToggle { id: GRASS, value } => self.world.grass = value,
+            DebugAction::SetToggle { id: FAR_VOXELS, value } => self.world.far_voxels = value,
             DebugAction::SetNumber { id: TREE_DENSITY, value } => self.world.tree_density = (value / 100.0).clamp(0.05, 1.0) as f32,
             DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 32.0) as u32,
             DebugAction::SetNumber { id: TREE_RADIUS, value } => self.world.tree_radius = value.clamp(200.0, 3000.0) as f32,
@@ -318,7 +323,7 @@ impl Game for Fly {
         let g = terrain_field::eval(self.pos.x, self.pos.z, 0.0, self.seed, &self.style());
         Some(serde_json::json!({
             "style": STYLES[self.style], "seed": self.seed, "pos": self.pos.to_array(),
-            "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "recipe_trees": self.world.recipe_trees,
+            "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "recipe_trees": self.world.recipe_trees, "far_voxels": self.world.far_voxels,
             "yaw_deg": self.yaw.to_degrees(), "pitch_deg": self.pitch.to_degrees(),
             "above_ground_m": self.pos.y - g.pos.y, "speed": self.speed, "ground_hug": self.hug, "fps": self.fps,
             "terrain": {"patches": self.stats.patches, "overflow": self.stats.overflow, "finest_level": self.stats.finest_level, "lod_scale": self.stats.lod_scale},
@@ -355,7 +360,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 8 } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 8, far_voxels: true } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -391,6 +396,14 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
             scene.mark_foliage();
         }
         recipe_spruces(&mut scene, &trees[..near])?;
+        if world.far_voxels && near < trees.len() {
+            let parts = fir_surfaces()?.iter().map(|surfaces| surfaces.iter().map(|(name, vertices, indices)|
+                Part { vertices, indices, material: fir_material(name) }).collect()).collect::<Vec<Vec<Part>>>();
+            let meshes: Vec<(usize, Vec<Part>)> = meshes.iter().copied().zip(parts).collect();
+            let report = render::far_trees::attach(&mut scene, &meshes, render::far_trees::FarTrees::default())?;
+            eprintln!("far trees: {} firs as voxels past {} m, {} cells, {:.1} MB, baked in {:.0} ms",
+                report.trees, scene.voxel_far_distance_m, report.cells, report.bytes as f64 / 1e6, report.bake_ms);
+        }
     }
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     let mut light = Lighting::default();
@@ -446,17 +459,31 @@ fn recipe_spruces(scene: &mut Scene, spots: &[(Vec3, f32, Vec3, usize)]) -> Resu
     Ok(())
 }
 
-/// Sideways' three firs as cluster meshes, built once: wood uses
-/// materials 1..=3 (trunk a, trunk b, bark), needles material 4.
-fn tree_meshes() -> Result<&'static [ClusterMesh], String> {
-    static MESHES: std::sync::OnceLock<Result<Vec<ClusterMesh>, String>> = std::sync::OnceLock::new();
-    let built = MESHES.get_or_init(|| {
+type Surfaces = Vec<(String, Vec<render::cluster::Vertex>, Vec<u32>)>;
+
+/// Sideways' three fir meshes as read from disk, once.
+fn fir_surfaces() -> Result<&'static [Surfaces], String> {
+    static SURFACES: std::sync::OnceLock<Result<Vec<Surfaces>, String>> = std::sync::OnceLock::new();
+    SURFACES.get_or_init(|| {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets/meshes");
         ["a", "b", "c"].iter().map(|v| {
             let path = dir.join(format!("fir_{v}_near.kmesh"));
-            let surfaces = render::cluster::read_kmesh(&std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)?;
-            let parts: Vec<Part> = surfaces.iter().map(|(name, vertices, indices)| Part { vertices, indices,
-                material: if name.contains("trunk_b") { 2 } else if name.contains("trunk") { 1 } else if name.contains("bark") { 3 } else { 4 } }).collect();
+            render::cluster::read_kmesh(&std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)
+        }).collect()
+    }).as_deref().map_err(Clone::clone)
+}
+
+/// Wood uses materials 1..=3 (trunk a, trunk b, bark), needles material 4.
+fn fir_material(name: &str) -> u32 {
+    if name.contains("trunk_b") { 2 } else if name.contains("trunk") { 1 } else if name.contains("bark") { 3 } else { 4 }
+}
+
+/// Sideways' three firs as cluster meshes, built once.
+fn tree_meshes() -> Result<&'static [ClusterMesh], String> {
+    static MESHES: std::sync::OnceLock<Result<Vec<ClusterMesh>, String>> = std::sync::OnceLock::new();
+    let built = MESHES.get_or_init(|| {
+        fir_surfaces()?.iter().map(|surfaces| {
+            let parts: Vec<Part> = surfaces.iter().map(|(name, vertices, indices)| Part { vertices, indices, material: fir_material(name) }).collect();
             Ok(ClusterMesh::build_with_policy(&parts, |p| if p.material == 4 { SimplificationPolicy::AlphaCards } else { SimplificationPolicy::TexturedGeometry }))
         }).collect()
     });
@@ -533,6 +560,7 @@ fn main() -> Result<(), String> {
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine")).transpose()?.unwrap_or(0);
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
+        far_voxels: !args.iter().any(|a| a == "--no-far-voxels"),
         recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(World::default().recipe_trees), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.

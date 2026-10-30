@@ -3,6 +3,8 @@
 // and its group's simplified replacement would project above it.
 override CLUSTER_BUCKETS: bool = true;
 override EARLY_GRASS_CULL: bool = true;
+// Scene::voxel_far_distance_m; zero when the scene has no far trees.
+override VOXEL_FAR_M: f32 = 0.0;
 
 struct View {
     view_proj: mat4x4<f32>,
@@ -208,6 +210,14 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     // (selection w 2, see voxel_sun_splats).
     if view.params.z>0.5 && replacement!=0xffffffffu && (replacement&0x80000000u)!=0u
         && foliage_selection[replacement&0x7fffffffu].w==2u {return 0u;}
+    // Far trees (FAR_TREE tag): rasterized voxels draw the whole owner past
+    // the switch distance, and always in the shared sun map once its view
+    // marks voxel casting.
+    if VOXEL_FAR_M>0.0 && replacement!=0xffffffffu && (replacement&0xc0000000u)==0x40000000u {
+        if view.params.z<0.5 && view.extra.y<1.5
+            && distance(vec3<f32>(inst.r0.w,inst.r1.w,inst.r2.w),view.cam.xyz)>VOXEL_FAR_M {return 0u;}
+        if view.params.z>0.5 && foliage_selection[0].w==2u {return 0u;}
+    }
     // Per-view hiding (scene::HIDE_IN_VIEW): a player's own body is absent
     // from that player's camera, yet still casts shadows and shows elsewhere.
     // grass.z holds 1 + the camera view index; other passes leave it zero.

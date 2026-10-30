@@ -396,6 +396,11 @@ pub struct Scene {
     pub foliage_world_error_pixels: f32,
     /// Explicit projected voxel LOD experiment; zero keeps finest-level mode.
     pub voxel_lod_pixels: f32,
+    /// Far trees (far_trees::attach): past this camera distance every
+    /// voxel_forest owner is drawn as rasterized voxels instead of its
+    /// mesh, and the shared sun map takes voxels for all of them. Zero
+    /// keeps per-group selection.
+    pub voxel_far_distance_m: f32,
     /// Experimental GPU worklist: integrate only tiles with volume candidates.
     /// Defaults to the full-screen reference until image/timing validation.
     pub voxel_active_tiles: bool,
