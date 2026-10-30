@@ -863,6 +863,7 @@ impl app::Game for Gg {
     fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) { crate::live::captured(self, size, rgba) }
 
     fn loading(&mut self, percent: u32, step: &str) { if let Some(p) = self.party.as_mut() { p.loading(percent, step); } }
+    fn gpu_reset(&mut self) { self.plates.reset(); self.sky_upload = None; self.rebuild = true; }
 
     fn screen(&self) -> app::Screen { self.party.as_ref().map_or(app::Screen::Normal, |p| p.screen()) }
 
