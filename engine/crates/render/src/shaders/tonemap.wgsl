@@ -13,6 +13,8 @@ struct Tone {
     grain: f32,     // film grain, 0 off
     aberration: f32, // red and blue apart towards the corners, pixels at the corner
     time: f32,      // seconds, moves the grain
+    sun: vec4<f32>, // UV, radius in vertical UV, exposed optical strength
+    sun_tint: vec4<f32>,
 };
 
 @group(0) @binding(0) var hdr: texture_2d<f32>;
@@ -20,6 +22,51 @@ struct Tone {
 @group(0) @binding(2) var<uniform> tone: Tone;
 @group(0) @binding(3) var bloom: texture_2d<f32>;
 @group(0) @binding(4) var bloom_sampler: sampler;
+@group(0) @binding(5) var scene_depth: texture_depth_2d;
+var<workgroup> sun_visibility: f32;
+
+// One sixteen-tap solar-disc test per tile, on the GPU. The depth image and
+// UVs belong to this camera: a wall in one split never occludes another split.
+fn solar_visibility() -> f32 {
+    if tone.sun.w <= 0.0 { return 0.0; }
+    let size = vec2<f32>(textureDimensions(scene_depth));
+    let aspect = size.x / size.y;
+    let radius = max(tone.sun.z, 0.5 / size.y);
+    if any(tone.sun.xy < vec2<f32>(-radius)) || any(tone.sun.xy > vec2<f32>(1.0 + radius)) { return 0.0; }
+    var visible = 0.0;
+    for (var i = 0u; i < 16u; i++) {
+        let a = f32(i) * 2.3999632;
+        let r = sqrt((f32(i) + 0.5) / 16.0) * radius;
+        let uv = tone.sun.xy + vec2<f32>(cos(a) / aspect, sin(a)) * r;
+        if all(uv >= vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)) {
+            // Reverse depth: zero is the distant sky, positive is geometry.
+            visible += select(0.0, 1.0, textureLoad(scene_depth, vec2<i32>(uv * size), 0) <= 0.0000001);
+        }
+    }
+    return visible / 16.0;
+}
+
+fn solar_flare(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
+    if sun_visibility <= 0.0 { return vec3<f32>(0.0); }
+    let axis = vec2<f32>(aspect, 1.0);
+    let d = (uv - tone.sun.xy) * axis;
+    let radius = length(d);
+    let tint = tone.sun_tint.rgb / max(max(tone.sun_tint.r, tone.sun_tint.g), max(tone.sun_tint.b, 0.001));
+    // Soft glare plus a narrow optical streak. Ghosts move along the optical
+    // axis, away from the source, rather than being fixed screen decorations.
+    var flare = tint * (0.16 * exp(-radius * 12.0) + 0.32 * exp(-radius * 70.0));
+    flare += tint * 0.045 * exp(-abs(d.y) * 450.0 - abs(d.x) * 8.0);
+    let centre = vec2<f32>(0.5);
+    let line = centre - tone.sun.xy;
+    for (var i = 0u; i < 3u; i++) {
+        let t = f32(i);
+        let at = centre + line * (0.35 + t * 0.65);
+        let q = length((uv - at) * axis) / (0.025 + t * 0.018);
+        let ghost = exp(-q*q*2.5) * 0.025;
+        flare += mix(vec3<f32>(1.0, 0.46, 0.16), vec3<f32>(0.2, 0.55, 0.7), t*0.5) * ghost;
+    }
+    return flare * sun_visibility * tone.sun.w;
+}
 
 fn agx_contrast(x: vec3<f32>) -> vec3<f32> {
     let x2 = x * x;
@@ -73,6 +120,7 @@ fn display(px: vec2<i32>) -> vec3<f32> {
     }
     let finite = select(vec3<f32>(0.0), clamp(raw, vec3<f32>(0.0), vec3<f32>(65504.0)), raw == raw);
     var c = finite * tone.exposure;
+    c += solar_flare((vec2<f32>(p) + 0.5) / vec2<f32>(size), f32(size.x) / f32(size.y));
     var glow = vec3<f32>(0.0);
     if tone.bloom_strength>0.0 {
         // Bloom already uses this frame's exposure. Never expose it twice.
@@ -126,6 +174,8 @@ fn tile_at(l: vec2<i32>) -> vec3<f32> { return tile[u32(l.y * 10 + l.x)]; }
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+    if li == 0u { sun_visibility = solar_visibility(); }
+    workgroupBarrier();
     let size = textureDimensions(hdr);
     let inside = gid.x < size.x && gid.y < size.y;
     let p = vec2<i32>(gid.xy);
@@ -159,7 +209,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
 // The same pass evaluating every neighbour itself (KERN_TILED_POST=0),
 // for comparison.
 @compute @workgroup_size(8, 8)
-fn main_direct(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn main_direct(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    if li == 0u { sun_visibility = solar_visibility(); }
+    workgroupBarrier();
     let size = textureDimensions(hdr);
     if gid.x >= size.x || gid.y >= size.y {
         return;

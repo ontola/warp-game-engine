@@ -75,7 +75,7 @@ fn run()->Result<(),String> {
             sky.sun_rgb_lux.to_array(),sky.sky_horizontal_rgb_lux.to_array(),stats.triangles));
         println!("{name}: bake {bake_ms:.2}ms, sun {:?}, sky {:?}",sky.sun_rgb_lux,sky.sky_horizontal_rgb_lux);
     }
-    let report=format!("{{\"schema\":1,\"mode\":\"single_scattering_cpu_lut_foundation\",\"real_renderer\":true,\"native_size\":[960,540],\"shared_transmittance_bakes\":{},\"sky_bakes\":{},\"sky_lut\":[{},{}],\"transmittance_lut\":[{},{}],\"fixed_exposure\":true,\"limitations\":[\"no multiple scattering\",\"no volumetric clouds\",\"no aerial perspective LUT\",\"no visible solar disk, moon, stars\",\"no GPU timing or four-player performance claim\"],\"cases\":[{}]}}",
+    let report=format!("{{\"schema\":1,\"mode\":\"single_scattering_cpu_lut_foundation\",\"real_renderer\":true,\"native_size\":[960,540],\"shared_transmittance_bakes\":{},\"sky_bakes\":{},\"sky_lut\":[{},{}],\"transmittance_lut\":[{},{}],\"fixed_exposure\":true,\"limitations\":[\"no multiple scattering\",\"no volumetric clouds\",\"no aerial perspective LUT\",\"no moon\",\"no GPU timing or four-player performance claim\"],\"cases\":[{}]}}",
         cache.transmittance_bakes,cache.sky_bakes,quality.sky_width,quality.sky_height,quality.transmittance_width,quality.transmittance_height,records.join(","));
     std::fs::write(out.join("report.json"),report).map_err(|e|e.to_string())?;
     std::fs::write(out.join("live-update-checks.json"),format!("{{\"renderer_instances\":1,\"in_place_updates\":5,\"return_to_noon_pixel_equal\":{reused_images_equal},\"invalid_update_preserved_pixels\":true,\"four_views_rendered\":true}}"))

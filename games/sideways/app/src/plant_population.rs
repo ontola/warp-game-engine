@@ -55,16 +55,19 @@ pub fn stage_index(stage: &Stage, x: f32, z: f32) -> usize {
 /// build/cook-cache) and shared by every tree. Every tree is a whole-plant
 /// voxel proxy; a pool of SIDEWAYS_POOL_SLOTS (4) full assemblies per species
 /// follows the cameras (Pool::update each frame), standing in for the
-/// nearest trees.
+/// nearest trees; past them, SIDEWAYS_CARD_SLOTS (250) card trees per species
+/// (rigid card meshes) stand in within SIDEWAYS_CARD_RADIUS (80 m).
 pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras: &[Vec3])
     -> Result<(serde_json::Value, render::recipe_forest::Pool), String> {
     let knob = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
     let slots = knob("SIDEWAYS_POOL_SLOTS", 4.0) as usize;
+    let (card_slots, card_radius) = (knob("SIDEWAYS_CARD_SLOTS", 250.0) as usize, knob("SIDEWAYS_CARD_RADIUS", 80.0));
     let started = std::time::Instant::now();
     let variants: Vec<_> = TREE_IDS.iter().map(|id| crate::plant_species::find(id).map(|s| (s.recipe, 1)))
         .collect::<Result<_, _>>()?;
     let cache = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
     let cooked = render::recipe_forest::cook_variants(&variants, Some(&cache))?;
+    let cards = if card_slots > 0 { render::recipe_forest::cook_cards(&variants, Some(&cache))? } else { Vec::new() };
     let cooked_ms = started.elapsed().as_secs_f64() * 1e3;
     let loaded = cooked.iter().filter(|c| c.loaded).count();
     let plants: Vec<_> = cooked.into_iter().map(|c| c.plant).collect();
@@ -82,9 +85,10 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
     // stands close to the road, and at 4 px from 50 m its splats cost two
     // split-screen views ~30 ms more per frame for no visible gain.
     let policy = render::aggregate_lod::Policy { proxy_pixels: 8.0, proxy_pixels_from: 20.0, ..render::recipe_forest::game_policy() };
-    let (_, pool) = render::recipe_forest::plant_streamed(scene, &plants, &trees, slots, policy)?;
+    let (_, mut pool) = render::recipe_forest::plant_streamed(scene, &plants, &trees, slots, policy)?;
+    if card_slots > 0 { render::recipe_forest::add_cards(scene, &mut pool, &cards, card_slots, card_radius)?; }
     Ok((serde_json::json!({"route":"render::recipe_forest::Pool","species":TREE_IDS,"species_counts":counts,"trees":trees.len(),
-        "pool_slots_per_species":slots,"cooked_or_loaded_ms":cooked_ms,"loaded_from_cache":loaded,
+        "pool_slots_per_species":slots,"card_slots_per_species":card_slots,"card_radius_m":card_radius,"cooked_or_loaded_ms":cooked_ms,"loaded_from_cache":loaded,
         "total_ms":started.elapsed().as_secs_f64() * 1e3}), pool))
 }
 

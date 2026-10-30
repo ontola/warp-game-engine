@@ -286,9 +286,20 @@ impl ArenaView {
         for burst in &b.bursts {
             let st = self.kinds().stone(burst.kind);
             let count = crate::graphics::get().debris_count((burst.count * 70).clamp(128, 900));
+            let ion = world.events.iter().any(|e| matches!(e,
+                growing_guns::Event::Explosion { pos, radius, kind: growing_guns::ExplosionKind::Ion, .. }
+                    if pos.distance(burst.center) <= *radius + burst.radius));
             let mut spec = BurstSpec::rubble(burst.center, burst.radius.max(1.0), count, &st.shards);
             spec.size *= crate::graphics::get().debris_size;
-            fx.debris.burst(scene, &spec);
+            if ion {
+                spec.center.y = spec.center.y.max(world.arena.lava_surface() + 0.5);
+                spec.speed = 26.0;
+                spec.life = 5.5;
+                fx.debris.burst_lift(scene, &spec);
+            } else {
+                fx.debris.burst(scene, &spec);
+            }
+
             fx.particles.burst(scene, burst.center, Vec3::Y, &Burst { mesh: fx.meshes.dust, count: 12, spread: 1.5, speed: [0.5, 3.0], size: [0.9, 0.3], life: [0.8, 1.6], ..Burst::dust() });
         }
     }

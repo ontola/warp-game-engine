@@ -6,7 +6,7 @@
 //! This is a foundation, not Hillaire's complete multiple-scattering/aerial
 //! perspective implementation. A configurable artistic night environment and
 //! procedural background stars are artistic additions, not a moon model or GI.
-//! No clouds, moon, or visible solar disc.
+//! No clouds or moon. The renderer adds the visible solar disc and GPU lens flare.
 //!
 //! Model references: https://sebh.github.io/publications/egsr2020.pdf and
 //! https://github.com/sebh/UnrealEngineSkyAtmosphere (author's reference).
@@ -168,6 +168,8 @@ impl BakedSky {
     /// This helper does not bake, allocate a scene, or change exposure/density.
     pub fn apply_lighting(&self,light:&mut crate::Lighting) {
         light.sun_dir=self.sun_dir;
+        light.sun_disc=true;
+        light.lens_flare=0.5;
         light.sun_lux=self.sun_rgb_lux.y.max(self.sun_rgb_lux.max_element()*1e-6);
         light.sun_color=if light.sun_lux>0.0 {self.sun_rgb_lux/light.sun_lux}else{Vec3::ONE};
         light.sky_lux=self.sky_horizontal_rgb_lux.y;

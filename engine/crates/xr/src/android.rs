@@ -61,8 +61,9 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
     let config=instance.enumerate_view_configuration_views(system,VIEW)?;
     ensure!(config.len()==2,"runtime did not return two stereo views");
     // Conservative initial render scale; same geometry/materials/render passes.
-    let size=[config.iter().map(|v|v.recommended_image_rect_width).min().unwrap().min(1024),
-        config.iter().map(|v|v.recommended_image_rect_height).min().unwrap().min(1024)];
+    let limit=game.eye_limit().clamp(256,4096);
+    let size=[config.iter().map(|v|v.recommended_image_rect_width).min().unwrap().min(limit),
+        config.iter().map(|v|v.recommended_image_rect_height).min().unwrap().min(limit)];
     let (bridge,binding)=unsafe {crate::vulkan::Bridge::new(&instance,system)}?;
     log::info!("Warp OpenXR GPU {}, eye size {:?}",bridge.gpu.info.name,size);
     game.diagnose(&bridge.gpu).map_err(anyhow::Error::msg)?;

@@ -2,17 +2,20 @@
 //! variants of a recipe are shared by every tree; the trees nearest the
 //! camera are full assemblies (branch groups pick source or voxels by
 //! projected error), every other tree is the same plant as one whole-plant
-//! voxel proxy (docs/voxel-raster-plan.md). Cooks run in parallel and are
+//! voxel proxy (docs/voxel-raster-plan.md); in between, card trees
+//! (plant_mesh_lod: foliage as quads, wood as geometry; add_cards) take the
+//! middle distance. Cooks run in parallel and are
 //! cached on disk (CookedPlant::cached), so a warm start loads in
 //! milliseconds.
 
 use crate::aggregate_lod::Policy;
+use crate::plant_mesh_lod::PlantCards;
 use crate::plant_recipe::{self, BuildOptions, WoodyRecipe};
-use crate::scene::GeometryCategory;
+use crate::scene::{GeometryCategory, GpuInstance};
 use crate::vegetation_aggregate::Config;
 use crate::vegetation_asset::{AttachLimits, AttachmentReport, CookedPlant, MovablePlant, PlantInstance, SceneVegetation};
 use crate::{Gpu, Renderer, Scene};
-use glam::{Mat4, Quat, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec3};
 use std::path::Path;
 
 /// Levels of the whole-plant proxy: 10 cm cells, then 20 cm .. 3.2 m.
@@ -63,6 +66,29 @@ pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> R
             Ok(Cooked { plant, loaded, millis: started.elapsed().as_secs_f64() * 1000.0 })
         })).collect();
         jobs.into_iter().map(|job| job.join().map_err(|_| "recipe cook panicked".to_string())?).collect()
+    })
+}
+
+/// Wood of the card tier is cut at this error (metres); its foliage is cards.
+pub const CARD_WOOD_ERROR_M: f32 = 0.03;
+
+/// Each (recipe, seed) variant as cards (plant_mesh_lod): the middle
+/// distance's mesh, between the full trees and the proxies. With `cache`,
+/// loaded like the plants.
+pub fn cook_cards(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> Result<Vec<PlantCards>, String> {
+    std::thread::scope(|scope| {
+        let jobs: Vec<_> = variants.iter().map(|(recipe, seed)| scope.spawn(move || -> Result<PlantCards, String> {
+            let cook = || {
+                let assembly = plant_recipe::build(recipe, BuildOptions::new(*seed), plant_recipe::recipe_limits())?;
+                PlantCards::cook(&assembly, CARD_WOOD_ERROR_M)
+            };
+            match cache {
+                Some(dir) => Ok(PlantCards::cached(dir, &format!("{recipe:?} {:?} {:?} {CARD_WOOD_ERROR_M}",
+                    BuildOptions::new(*seed), plant_recipe::recipe_limits()), cook)?.0),
+                None => cook(),
+            }
+        })).collect();
+        jobs.into_iter().map(|job| job.join().map_err(|_| "card cook panicked".to_string())?).collect()
     })
 }
 
@@ -120,9 +146,72 @@ pub struct Pool {
     first_proxy: u32,
     by_variant: Vec<Vec<usize>>,
     last: Vec<Vec3>,
+    cards: Option<Cards>,
+    /// Trees whose proxies are hidden now (a full slot or a card stands there).
+    hidden: std::collections::HashSet<usize>,
 }
 
 struct Slot { variant: usize, plant: MovablePlant, tree: Option<usize> }
+
+/// The card tier (add_cards): a fixed set of card instances per variant that
+/// Pool::update gives to the nearest trees past the full slots, within `radius`.
+struct Cards {
+    meshes: Vec<crate::scene::MeshRef>,
+    first: usize,
+    slots: Vec<(usize, Option<usize>)>,
+    radius: f32,
+}
+
+/// Where unused card instances wait: far below any ground, outside every view.
+const PARKED: Vec3 = Vec3::new(0.0, -100_000.0, 0.0);
+
+fn card_instance(mesh: &crate::scene::MeshRef, root: Mat4) -> GpuInstance {
+    let xf = Affine3A::from_mat4(root);
+    let c = xf.transform_point3(Vec3::from_slice(&mesh.sphere[..3]));
+    let scale = xf.matrix3.x_axis.length().max(xf.matrix3.y_axis.length()).max(xf.matrix3.z_axis.length());
+    let r = root.transpose();
+    let mut instance = GpuInstance { rows: [r.x_axis.to_array(), r.y_axis.to_array(), r.z_axis.to_array()],
+        sphere: [c.x, c.y, c.z, mesh.sphere[3] * scale], first_cluster: mesh.first_cluster, cluster_count: mesh.cluster_count, scale, flags: 0 };
+    instance.set_category(GeometryCategory::Trees);
+    instance
+}
+
+/// Add the card tier to `pool`: `cards` (one per variant, cook_cards) into
+/// `scene` as `per_variant` card instances each, which Pool::update gives to
+/// the trees nearest the cameras past the full slots, within `radius_m`,
+/// hiding their proxies. Call before the renderer is built.
+pub fn add_cards(scene: &mut Scene, pool: &mut Pool, cards: &[PlantCards], per_variant: usize, radius_m: f32) -> Result<(), String> {
+    if cards.len() != pool.by_variant.len() { return Err(format!("{} card sets for {} variants", cards.len(), pool.by_variant.len())); }
+    let mut meshes = Vec::new();
+    for (v, c) in cards.iter().enumerate() {
+        let layer = scene.add_image(&format!("recipe forest cards {v}"), c.atlas.clone());
+        let materials: Vec<u32> = c.materials(layer).into_iter().map(|m| scene.add_material(m)).collect();
+        let mesh = scene.add_mesh(&c.mesh_with_materials(&materials));
+        let m = &scene.meshes[mesh];
+        meshes.push(crate::scene::MeshRef { first_cluster: m.first_cluster, cluster_count: m.cluster_count, sphere: m.sphere });
+    }
+    let first = scene.instances.len();
+    let mut slots = Vec::new();
+    for (v, mesh) in meshes.iter().enumerate() {
+        for _ in 0..per_variant.min(pool.by_variant[v].len()) {
+            scene.instances.push(card_instance(mesh, Mat4::from_translation(PARKED)));
+            slots.push((v, None));
+        }
+    }
+    pool.cards = Some(Cards { meshes, first, slots, radius: radius_m });
+    Ok(())
+}
+
+/// The members of `members` nearest `points`, at most `count`, within
+/// `radius` and not in `skip`.
+fn nearest(trees: &[Tree], members: &[usize], points: &[Vec3], count: usize, radius: f32, skip: &std::collections::HashSet<usize>) -> Vec<usize> {
+    let mut near: Vec<(f32, usize)> = members.iter().filter(|i| !skip.contains(i)).map(|&i| (points.iter()
+        .map(|p| p.distance_squared(trees[i].pos)).fold(f32::INFINITY, f32::min), i)).filter(|&(d, _)| d <= radius * radius).collect();
+    let count = count.min(near.len());
+    if count < near.len() { near.select_nth_unstable_by(count, |a, b| a.0.total_cmp(&b.0)); }
+    near.truncate(count);
+    near.into_iter().map(|(_, i)| i).collect()
+}
 
 /// Pool statistics for logs and tests. `slots` can be fewer than asked:
 /// plant_streamed fits the pool to the renderer's budgets.
@@ -166,7 +255,7 @@ pub fn plant_streamed(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree
     for (i, tree) in trees.iter().enumerate() { vegetation.append_proxy(&variants[tree.variant], instance(i, tree))?; }
     let report = vegetation.finish_aggregate(policy)?;
     let first_proxy = report.volume_instances as u32;
-    Ok((report, Pool { trees: trees.to_vec(), slots: pool, first_proxy, last: Vec::new(),
+    Ok((report, Pool { trees: trees.to_vec(), slots: pool, first_proxy, last: Vec::new(), cards: None, hidden: Default::default(),
         by_variant: (0..variants.len()).map(|v| (0..trees.len()).filter(|&i| trees[i].variant == v).collect()).collect() }))
 }
 
@@ -175,7 +264,9 @@ impl Pool {
     /// scene: the next update places every slot again.
     pub fn reset(&mut self) {
         for slot in &mut self.slots { slot.tree = None; }
+        if let Some(cards) = &mut self.cards { for slot in &mut cards.slots { slot.1 = None; } }
         self.last.clear();
+        self.hidden.clear();
     }
 
     /// Give each variant's slots to its trees nearest `points` (the cameras).
@@ -187,7 +278,6 @@ impl Pool {
         let still = points.len() == self.last.len() && points.iter().zip(&self.last).all(|(a, b)| a.distance(*b) < 1.0);
         if still || points.is_empty() { return Ok(stats); }
         self.last = points.to_vec();
-        let mut hidden = Vec::new();
         for (variant, members) in self.by_variant.iter().enumerate() {
             let mine: Vec<usize> = (0..self.slots.len()).filter(|&k| self.slots[k].variant == variant).collect();
             if mine.is_empty() { continue; }
@@ -206,13 +296,42 @@ impl Pool {
                 let Some(k) = free.pop() else { break; };
                 let slot = &mut self.slots[k];
                 renderer.move_plant(gpu, &slot.plant, root(&self.trees[tree]))?;
-                if let Some(old) = slot.tree { hidden.push((self.first_proxy + old as u32, false)); }
-                hidden.push((self.first_proxy + tree as u32, true));
                 slot.tree = Some(tree);
                 stats.moved += 1;
             }
         }
-        renderer.set_plant_proxies_hidden(gpu, &hidden)?;
+        let full: std::collections::HashSet<usize> = self.slots.iter().filter_map(|s| s.tree).collect();
+        let mut wanted = full.clone();
+        // Cards: the nearest trees past the full ones, within the radius. A
+        // card stays on a tree still wanted; freed cards take the new ones.
+        if let Some(cards) = &mut self.cards {
+            let mut moved = false;
+            for (variant, members) in self.by_variant.iter().enumerate() {
+                let mine: Vec<usize> = (0..cards.slots.len()).filter(|&k| cards.slots[k].0 == variant).collect();
+                if mine.is_empty() { continue; }
+                let near = nearest(&self.trees, members, points, mine.len(), cards.radius, &full);
+                let mut free: Vec<usize> = mine.iter().copied().filter(|&k| cards.slots[k].1.is_none_or(|t| !near.contains(&t))).collect();
+                for &tree in &near {
+                    if mine.iter().any(|&k| cards.slots[k].1 == Some(tree)) { continue; }
+                    let Some(k) = free.pop() else { break; };
+                    cards.slots[k].1 = Some(tree);
+                    moved = true;
+                }
+                for k in free { if cards.slots[k].1.take().is_some() { moved = true; } }
+            }
+            wanted.extend(cards.slots.iter().filter_map(|s| s.1));
+            if moved {
+                let instances: Vec<GpuInstance> = cards.slots.iter().map(|&(v, tree)| card_instance(&cards.meshes[v],
+                    tree.map_or(Mat4::from_translation(PARKED), |t| root(&self.trees[t])))).collect();
+                renderer.update_instances(gpu, cards.first, &instances)?;
+            }
+        }
+        // Proxies hide where a full tree or a card stands, and show again
+        // where none does, in one call (no frame without either).
+        let mut changes: Vec<(u32, bool)> = wanted.difference(&self.hidden).map(|&t| (self.first_proxy + t as u32, true)).collect();
+        changes.extend(self.hidden.difference(&wanted).map(|&t| (self.first_proxy + t as u32, false)));
+        renderer.set_plant_proxies_hidden(gpu, &changes)?;
+        self.hidden = wanted;
         stats.placed = self.slots.iter().filter(|s| s.tree.is_some()).count();
         Ok(stats)
     }
