@@ -25,16 +25,21 @@ pub struct Stats {
     pub mag: u32,
     pub shots: u32,
     pub explosive_radius: f32,
+    pub poison: f32,
+    pub cooling: f32,
 }
 
 impl Default for Stats {
-    fn default() -> Self { Stats { spread: SPREAD, bullet_scale: 1.0, damage_mult: 1.0, fire_rate_mult: 1.0, mag: MAG_SIZE, shots: 1, explosive_radius: 0.0 } }
+    fn default() -> Self { Stats { spread: SPREAD, bullet_scale: 1.0, damage_mult: 1.0, fire_rate_mult: 1.0, mag: MAG_SIZE, shots: 1, explosive_radius: 0.0, poison: 0.0, cooling: 0.0 } }
 }
 
 impl Stats {
     pub fn of(p: &Player) -> Self {
-        let w = &p.weapon;
-        Stats { spread: w.spread(), bullet_scale: w.bullet_scale, damage_mult: w.damage_mult, fire_rate_mult: w.fire_rate_mult, mag: p.mag_size(), shots: w.shots_per_trigger(), explosive_radius: w.explosive_radius }
+        Self::weapon(&p.weapon)
+    }
+
+    pub fn weapon(w: &growing_guns::Weapon) -> Self {
+        Stats { spread: w.spread(), bullet_scale: w.bullet_scale, damage_mult: w.damage_mult, fire_rate_mult: w.fire_rate_mult, mag: w.mag_size(), shots: w.shots_per_trigger(), explosive_radius: w.explosive_radius, poison: w.damage_over_time, cooling: if w.slow_duration > 0.0 { 1.0 - w.slow_on_hit } else { 0.0 } }
     }
 
     pub fn lerp(a: &Stats, b: &Stats, t: f32) -> Stats {
@@ -47,6 +52,8 @@ impl Stats {
             mag: l(a.mag as f32, b.mag as f32).round().max(1.0) as u32,
             shots: l(a.shots as f32, b.shots as f32).round().max(1.0) as u32,
             explosive_radius: l(a.explosive_radius, b.explosive_radius).max(0.0),
+            poison: l(a.poison, b.poison).max(0.0),
+            cooling: l(a.cooling, b.cooling).max(0.0),
         }
     }
 
@@ -61,15 +68,15 @@ pub fn grow_ease(t: f32) -> f32 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Mat { Metal, Dark, Barrel, Polymer, Recess, Slot, Bolt, Pad, Lens, Indicator }
-pub const MATS: [Mat; 10] = [Mat::Metal, Mat::Dark, Mat::Barrel, Mat::Polymer, Mat::Recess, Mat::Slot, Mat::Bolt, Mat::Pad, Mat::Lens, Mat::Indicator];
+pub enum Mat { Metal, Dark, Barrel, Polymer, Recess, Slot, Bolt, Pad, Lens, Indicator, Poison, Cooling, Glass }
+pub const MATS: [Mat; 13] = [Mat::Metal, Mat::Dark, Mat::Barrel, Mat::Polymer, Mat::Recess, Mat::Slot, Mat::Bolt, Mat::Pad, Mat::Lens, Mat::Indicator, Mat::Poison, Mat::Cooling, Mat::Glass];
 
 /// Unit shapes: a box (side 1), cylinders of height 1 along Y with radius 1
 /// at the top (tapering to `bottom` below), rings around Y of radius 1.
 /// Grip shapes instead use the metre-sized GRIP_SECTIONS below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Shape { Box, Cyl, Taper85, Taper105, Ring18, Ring25, Grip, GripPanel }
-pub const SHAPES: [Shape; 8] = [Shape::Box, Shape::Cyl, Shape::Taper85, Shape::Taper105, Shape::Ring18, Shape::Ring25, Shape::Grip, Shape::GripPanel];
+pub enum Shape { Box, Cyl, Taper85, Taper105, Ring18, Ring25, Grip, GripPanel, Drum, Vial }
+pub const SHAPES: [Shape; 10] = [Shape::Box, Shape::Cyl, Shape::Taper85, Shape::Taper105, Shape::Ring18, Shape::Ring25, Shape::Grip, Shape::GripPanel, Shape::Drum, Shape::Vial];
 
 /// How a part moves: bolts slide back on a shot, minigun barrels spin,
 /// the magazine drops out on reload.
@@ -77,7 +84,7 @@ pub const SHAPES: [Shape; 8] = [Shape::Box, Shape::Cyl, Shape::Taper85, Shape::T
 pub enum Motion { Fixed, Bolt, Spin, Mag }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Part { pub shape: Shape, pub mat: Mat, pub xf: Affine3A, pub motion: Motion }
+pub struct Part { pub key: u32, pub shape: Shape, pub mat: Mat, pub xf: Affine3A, pub motion: Motion }
 
 /// The visual parameters (Godot's exports), as `apply_weapon_stats` sets them.
 #[derive(Clone, Copy, Debug)]
@@ -98,6 +105,9 @@ pub struct Look {
     shroud_frac: f32,
     tube: bool,
     tube_length: f32,
+    rail: f32,
+    poison: f32,
+    cooling: f32,
 }
 
 const MUZZLE_FLARE: f32 = 1.55;
@@ -146,12 +156,12 @@ impl Look {
         let barrel_length = lerp(0.20, 1.4, spread_factor.powi(10));
         let dmg = ((w.damage_mult - 1.0) / 4.0).clamp(0.0, 1.0);
         let barrel_radius = (0.022 * w.bullet_scale.max(1.0) * lerp(1.0, 1.7, dmg)).clamp(0.012, 0.10);
-        let receiver = Vec3::new(0.075, lerp(0.10, 0.16, dmg), lerp(0.26, 0.55, dmg));
+        let receiver = Vec3::new(lerp(0.055, 0.075, dmg), lerp(0.072, 0.16, dmg), lerp(0.24, 0.55, dmg));
         let drum = w.mag > 30;
         let mag = if drum {
             Vec3::new(0.07, (0.18 + 0.006 * (w.mag - 30) as f32).clamp(0.18, 0.36), lerp(0.06, 0.11, dmg))
         } else {
-            Vec3::new(0.08, (0.04 + 0.024 * w.mag as f32).clamp(0.06, 0.6), lerp(0.06, 0.11, dmg))
+            Vec3::new(lerp(0.044, 0.070, dmg), (0.04 + 0.020 * w.mag as f32).clamp(0.06, 0.6), lerp(0.045, 0.090, dmg))
         };
         let minigun = w.fire_rate_mult >= 5.0;
         let bps = w.projectiles_per_second();
@@ -166,6 +176,8 @@ impl Look {
             scope: w.spread < 0.003, stock: barrel_length > 0.55 && !tube, foregrip: barrel_length > 0.55,
             shroud: bps >= SHROUD_BPS_APPEAR && !minigun, shroud_extent: if n > 1 { span * 0.5 + clearance } else { clearance }, shroud_frac: lerp(0.34, 0.92, bps_factor),
             tube, tube_length: lerp(0.14, 0.46, blast),
+            rail: ((w.damage_mult - 1.15) / 0.35).clamp(0.0, 1.0),
+            poison: (w.poison / 0.7).clamp(0.0, 1.0), cooling: (w.cooling / 0.52).clamp(0.0, 1.0),
         }
     }
 
@@ -176,10 +188,82 @@ impl Look {
 #[derive(Clone, Debug, Default)]
 pub struct Build { pub parts: Vec<Part>, pub bolt_travel: f32, pub minigun: bool, pub barrel_length: f32, /** Gun-space barrel exit. */ pub muzzle: Vec3 }
 
-struct B { parts: Vec<Part> }
+impl Build {
+    fn same_shape(&self, other: &Self) -> bool {
+        self.parts.len() == other.parts.len() && self.parts.iter().zip(&other.parts).all(|(a, b)| {
+            a.key == b.key && a.shape == b.shape && a.mat == b.mat && a.motion == b.motion &&
+                a.xf.to_cols_array().iter().zip(b.xf.to_cols_array()).all(|(a, b)| (*a - b).abs() < 1e-5)
+        })
+    }
+
+    fn anchor(&self, part: &Part) -> Vec3 {
+        let half = self.parts[0].xf.matrix3.diagonal() * 0.5;
+        let p: Vec3 = part.xf.translation.into();
+        match part.key / 1024 {
+            // A component shares one anchor: its teeth, mounts, bells and
+            // lenses must remain joined while their whole assembly grows.
+            2 | 16 => Vec3::new(0.0, half.y, 0.0),
+            10 if part.key % 1024 == 0 => {
+                let radius = self.parts.iter().find(|p| p.key / 1024 == 3).map_or(0.022, |p| p.xf.matrix3.x_axis.length());
+                Vec3::new(0.0, radius, -half.z - self.barrel_length * 0.85)
+            }
+            10 => Vec3::new(0.0, half.y, half.z * 0.64),
+            3 | 4 | 6 | 14 | 15 => Vec3::new(0.0, 0.0, -half.z),
+            5 => Vec3::new(0.0, -half.y, MAG_REAR_Z),
+            8 => Vec3::new(0.0, -half.y, half.z),
+            9 => Vec3::new(0.0, 0.0, half.z),
+            12 | 13 => Vec3::new(-half.x + 0.003, half.y - 0.003, if part.key / 1024 == 12 { 0.060 } else { -0.060 }),
+            _ => p,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Morph {
+    from: Stats, to: Stats, elapsed: f32,
+    source: Build, target: Build,
+    links: Vec<(Option<usize>, Option<usize>)>,
+}
+
+impl Morph {
+    fn at(&self, t: f32) -> Build {
+        let mut result = Build { parts: Vec::with_capacity(self.links.len()),
+            bolt_travel: lerp(self.source.bolt_travel, self.target.bolt_travel, t),
+            minigun: self.target.minigun, barrel_length: lerp(self.source.barrel_length, self.target.barrel_length, t),
+            muzzle: self.source.muzzle.lerp(self.target.muzzle, t) };
+        let scaled = |build: &Build, index: usize, amount: f32| {
+            let mut p = build.parts[index];
+            let anchor = build.anchor(&p);
+            let moving_anchor = self.source.anchor(&p).lerp(self.target.anchor(&p), t);
+            let amount = amount.max(0.0001);
+            p.xf = Affine3A::from_translation(moving_anchor) * Affine3A::from_scale(Vec3::splat(amount)) * Affine3A::from_translation(-anchor) * p.xf;
+            p
+        };
+        for &(a, b) in &self.links {
+            let p = match (a, b) {
+                (Some(i), Some(j)) => {
+                    let mut p = self.target.parts[j];
+                    let (sa, ra, pa) = self.source.parts[i].xf.to_scale_rotation_translation();
+                    let (sb, rb, pb) = p.xf.to_scale_rotation_translation();
+                    p.xf = Affine3A::from_scale_rotation_translation(sa.lerp(sb, t), ra.slerp(rb, t), pa.lerp(pb, t));
+                    p
+                }
+                (Some(i), None) if t < 1.0 => scaled(&self.source, i, 1.0 - t),
+                (None, Some(j)) if t > 0.0 => scaled(&self.target, j, t),
+                _ => continue,
+            };
+            result.parts.push(p);
+        }
+        result
+    }
+}
+
+struct B { parts: Vec<Part>, group: u32, next: u32 }
 impl B {
+    fn group(&mut self, group: u32) { self.group = group; self.next = 0; }
     fn put(&mut self, shape: Shape, mat: Mat, size: Vec3, pos: Vec3, rot: Quat, motion: Motion) {
-        self.parts.push(Part { shape, mat, xf: Affine3A::from_scale_rotation_translation(size, rot, pos), motion });
+        self.parts.push(Part { key: self.group * 1024 + self.next, shape, mat, xf: Affine3A::from_scale_rotation_translation(size, rot, pos), motion });
+        self.next += 1;
     }
     fn bx(&mut self, size: Vec3, pos: Vec3, mat: Mat) { self.put(Shape::Box, mat, size, pos, Quat::IDENTITY, Motion::Fixed); }
     /// Godot `_add_cylinder`: laid along Z (rotated +90 degrees about X).
@@ -194,17 +278,18 @@ fn euler(x: f32, y: f32, z: f32) -> Quat { Quat::from_euler(EulerRot::YXZ, y, x,
 /// Godot `_rebuild_impl`.
 pub fn build(l: &Look) -> Build {
     use Mat::*;
-    let mut b = B { parts: Vec::with_capacity(96) };
+    let mut b = B { parts: Vec::with_capacity(128), group: 0, next: 0 };
     let n = l.barrels.max(1);
     let pitch = l.barrel_radius * 2.4;
     let span = pitch * (n - 1) as f32;
     let muzzle_r = l.barrel_radius * MUZZLE_FLARE;
     let bundle = l.barrel_radius * 1.8;
-    let min_w = if l.minigun { (bundle + l.barrel_radius) * 2.2 } else { span + l.barrel_radius * 3.0 };
+    let min_w = if l.minigun { (bundle + l.barrel_radius) * 2.2 } else { span + l.barrel_radius * 2.0 + 0.010 };
     let rs = Vec3::new(l.receiver.x.max(min_w), l.receiver.y, l.receiver.z);
     b.bx(rs, Vec3::ZERO, Metal);
     b.bx(Vec3::new(rs.x * 1.04, rs.y * 0.34, rs.z * 0.92), Vec3::new(0.0, -rs.y * 0.34, rs.z * 0.02), Dark);
     b.bx(Vec3::new(0.004, rs.y * 0.26, rs.z * 0.3), Vec3::new(rs.x * 0.5 + 0.001, rs.y * 0.14, -rs.z * 0.12), Recess);
+    b.group(1);
     // Charging handles in their slots, both sides.
     let travel = rs.z * BOLT_TRAVEL_FRAC.clamp(0.0, 0.95);
     let rest_z = -travel * 0.5;
@@ -215,17 +300,22 @@ pub fn build(l: &Look) -> Build {
     let front = -rs.z * 0.5;
     let barrel_z = front - l.barrel_length * 0.5;
     let muzzle_z = front - l.barrel_length - MUZZLE_LENGTH * 0.5;
+    b.group(2);
     // Picatinny rail with its teeth.
-    let rail_y = rs.y * 0.5 + RAIL_HEIGHT * 0.5;
-    let rail = Vec3::new((rs.x * 0.8).min(0.04), RAIL_HEIGHT, rs.z * 0.85);
+    let rail_h = RAIL_HEIGHT * l.rail;
+    let rail_y = rs.y * 0.5 + rail_h * 0.5;
+    let rail = Vec3::new((rs.x * 0.8).min(0.04), rail_h, rs.z * 0.85);
     let base_h = rail.y * 0.5;
-    b.bx(Vec3::new(rail.x, base_h + JOINT, rail.z), Vec3::new(0.0, rail_y - rail.y * 0.5 + (base_h - JOINT) * 0.5, 0.0), Dark);
+    if l.rail > 0.001 {
+    b.bx(Vec3::new(rail.x, base_h + JOINT * l.rail, rail.z), Vec3::new(0.0, rail_y - rail.y * 0.5 + (base_h - JOINT * l.rail) * 0.5, 0.0), Dark);
     let period = 0.022;
     let teeth = ((rail.z / period) as u32).max(1);
     for i in 0..teeth {
         let z = -((teeth - 1) as f32 * period) * 0.5 + i as f32 * period;
-        b.bx(Vec3::new(rail.x * 1.2, base_h + JOINT, 0.012), Vec3::new(0.0, rail_y + rail.y * 0.5 - (base_h + JOINT) * 0.5, z), Dark);
+        b.bx(Vec3::new(rail.x * 1.2, base_h + JOINT * l.rail, 0.012), Vec3::new(0.0, rail_y + rail.y * 0.5 - (base_h + JOINT * l.rail) * 0.5, z), Dark);
     }
+    }
+    b.group(3);
     if l.minigun {
         for i in 0..6 {
             let a = i as f32 * TAU / 6.0;
@@ -244,22 +334,25 @@ pub fn build(l: &Look) -> Build {
             }
         }
     }
+    b.group(4);
     if l.shroud {
         let len = l.barrel_length * l.shroud_frac.clamp(0.05, 0.95);
         shroud(&mut b, front - len * 0.5, len, l.shroud_extent.max(l.barrel_radius + 0.012), l.barrel_radius + 0.012, 5);
     }
+    b.group(5);
     if l.drum {
         let r = l.mag.y * 0.5;
         let mag_z = MAG_REAR_Z - l.mag.x * 0.5;
         // A circular drum otherwise meets the receiver at a single tangent.
         b.put(Shape::Box, Dark, Vec3::new(0.045, 0.04, 0.045), Vec3::new(0.0, -rs.y * 0.5 - 0.012, mag_z), Quat::IDENTITY, Motion::Mag);
-        b.put(Shape::Cyl, Dark, Vec3::new(r, l.mag.x, r), Vec3::new(0.0, -rs.y * 0.5 - r, mag_z), Quat::from_rotation_x(PI * 0.5), Motion::Mag);
+        b.put(Shape::Drum, Dark, Vec3::new(r, l.mag.x, r), Vec3::new(0.0, -rs.y * 0.5 - r, mag_z), Quat::from_rotation_x(PI * 0.5), Motion::Mag);
     } else {
         let y = -rs.y * 0.5 - l.mag.y * 0.5 + JOINT;
         let mag_z = MAG_REAR_Z - l.mag.z * 0.5;
         b.put(Shape::Box, Polymer, l.mag, Vec3::new(0.0, y, mag_z), Quat::IDENTITY, Motion::Mag);
         b.put(Shape::Box, Dark, Vec3::new(l.mag.x * 1.1, 0.012, l.mag.z * 1.15), Vec3::new(0.0, y - l.mag.y * 0.5, mag_z), Quat::IDENTITY, Motion::Mag);
     }
+    b.group(6);
     if l.foregrip {
         let gz = front - FOREGRIP_OFFSET_Z;
         let hg_y = -l.barrel_radius - HANDGUARD_HEIGHT * 0.5 + JOINT;
@@ -269,7 +362,9 @@ pub fn build(l: &Look) -> Build {
         let anchor = Vec3::new(0.0, hg_y - HANDGUARD_HEIGHT * 0.5 + JOINT + FOREGRIP_RADIUS * tilt.sin().abs(), gz + FOREGRIP_RADIUS * 1.1);
         b.put(Shape::Taper85, Polymer, Vec3::new(FOREGRIP_RADIUS, FOREGRIP_LENGTH, FOREGRIP_RADIUS), anchor - rot * Vec3::Y * (FOREGRIP_LENGTH * 0.5), rot, Motion::Fixed);
     }
+    b.group(7);
     controls(&mut b, -rs.y * 0.5);
+    b.group(8);
     if l.stock {
         let (back_h, front_h, half_z) = (STOCK.y, STOCK.y * STOCK_TAPER, STOCK.z * 0.5);
         let bottom = -rs.y * 0.5;
@@ -278,26 +373,33 @@ pub fn build(l: &Look) -> Build {
         b.bx(Vec3::new(STOCK.x * 0.95, front_h, half_z + JOINT), Vec3::new(0.0, bottom + front_h * 0.5, rs.z * 0.5 + (half_z - JOINT) * 0.5), Polymer);
         b.bx(Vec3::new(STOCK.x * 1.04, back_h * 1.04, 0.012), Vec3::new(0.0, bottom + back_h * 0.5, back_z + half_z * 0.5 + 0.006 - JOINT), Pad);
     }
+    b.group(9);
     if l.tube {
         let r = rs.y * 0.5;
         b.cyl(Shape::Cyl, r, l.tube_length, Vec3::new(0.0, 0.0, rs.z * 0.5 + l.tube_length * 0.5 - JOINT), Dark, Motion::Fixed);
     }
+    b.group(10);
     if !l.scope {
         let sight_z = front - l.barrel_length * 0.85;
         let sight_base = if l.minigun {
             let r = bundle + l.barrel_radius + 0.004;
+            b.group(14);
             for z in [front - 0.007, sight_z] { b.cyl(Shape::Cyl, r, 0.02, Vec3::new(0.0, 0.0, z), Dark, Motion::Fixed); }
+            b.group(10);
             r
         } else if n > 1 {
+            b.group(15);
             // Even barrel counts have no central barrel beneath the sight.
             b.bx(Vec3::new(span + l.barrel_radius * 2.0, 0.008, 0.018), Vec3::new(0.0, l.barrel_radius - 0.001, sight_z), Dark);
+            b.group(10);
             l.barrel_radius + 0.003
         } else { l.barrel_radius };
         b.bx(Vec3::new(0.005, SIGHT_POST, 0.012), Vec3::new(0.0, sight_base + SIGHT_POST * 0.5 - JOINT, sight_z), Dark);
-        b.put(Shape::Ring25, Dark, Vec3::splat(REAR_SIGHT_R * 0.875), Vec3::new(0.0, rail_y + RAIL_HEIGHT * 0.5 + REAR_SIGHT_R * 0.4, rs.z * 0.32), Quat::from_rotation_x(PI * 0.5), Motion::Fixed);
+        b.put(Shape::Ring25, Dark, Vec3::splat(REAR_SIGHT_R * 0.875), Vec3::new(0.0, rail_y + rail_h * 0.5 + REAR_SIGHT_R * 0.4, rs.z * 0.32), Quat::from_rotation_x(PI * 0.5), Motion::Fixed);
     } else {
+        b.group(16);
         let (tube_r, bell_r, bell_len) = (0.018, 0.028, 0.04);
-        let top = rail_y + RAIL_HEIGHT * 0.5;
+        let top = rail_y + rail_h * 0.5;
         let sy = top + 0.025;
         let mount_bottom = top - base_h - JOINT;
         for rz in [-SCOPE_LENGTH * 0.3, SCOPE_LENGTH * 0.3] { b.bx(Vec3::new(tube_r * 2.2, sy - mount_bottom, 0.02), Vec3::new(0.0, (mount_bottom + sy) * 0.5, rz), Dark); }
@@ -306,8 +408,35 @@ pub fn build(l: &Look) -> Build {
         b.cyl(Shape::Cyl, bell_r, bell_len, Vec3::new(0.0, sy, SCOPE_LENGTH * 0.5 + bell_len * 0.5), Dark, Motion::Fixed);
         b.cyl(Shape::Cyl, bell_r * 0.85, 0.005, Vec3::new(0.0, sy, -SCOPE_LENGTH * 0.5 - bell_len + 0.002), Lens, Motion::Fixed);
     }
-    b.bx(INDICATOR, Vec3::new(rs.x * 0.52 + INDICATOR.x * 0.5 - 0.001, -rs.y * 0.23, 0.0), Indicator);
+    b.group(11);
+    b.bx(INDICATOR, Vec3::new(rs.x * 0.52 + INDICATOR.x * 0.5 - 0.001, -rs.y * 0.34, 0.0), Indicator);
+    for (amount, z, mat) in [(l.poison, 0.060, Poison), (l.cooling, -0.060, Cooling)] {
+        b.group(if mat == Poison { 12 } else { 13 });
+        if amount > 0.001 { reservoir(&mut b, rs, z, amount, mat); }
+    }
     Build { parts: b.parts, bolt_travel: travel, minigun: l.minigun, barrel_length: l.barrel_length, muzzle: Vec3::new(0.0, 0.0, muzzle_z - MUZZLE_LENGTH * 0.5) }
+}
+
+/// A coloured, glass-covered cartridge leans out from the upper camera-facing
+/// edge. Separate mounts keep both upgrades visible when combined.
+fn reservoir(b: &mut B, receiver: Vec3, z: f32, growth: f32, core: Mat) {
+    let growth = growth * 0.72;
+    let axis = Vec3::new(-0.36, 0.64, -0.68).normalize();
+    let rot = Quat::from_rotation_arc(Vec3::Y, axis);
+    let root = Vec3::new(-receiver.x * 0.5 + 0.003, receiver.y * 0.5 - 0.003, z);
+    let mut cyl = |r: f32, h: f32, y: f32, mat: Mat| {
+        b.put(Shape::Vial, mat, Vec3::new(r, h, r) * growth, root + axis * (y * growth), rot, Motion::Fixed);
+    };
+    cyl(0.020, 0.020, 0.007, Mat::Dark);
+    cyl(0.017, 0.014, 0.023, Mat::Metal);
+    cyl(0.0115, 0.056, 0.055, core);
+    cyl(0.014, 0.060, 0.055, Mat::Glass);
+    cyl(0.018, 0.012, 0.086, Mat::Metal);
+    cyl(0.009, 0.003, 0.093, core);
+    for x in [-0.014, 0.014] {
+        b.put(Shape::Cyl, Mat::Dark, Vec3::new(0.0015, 0.062, 0.0015) * growth,
+            root + rot * Vec3::new(x, 0.055, 0.0) * growth, rot, Motion::Fixed);
+    }
 }
 
 /// Fixed ergonomic assembly below the growing receiver. Z distances and the
@@ -370,16 +499,17 @@ fn shroud(b: &mut B, centre_z: f32, length: f32, half_x: f32, half_y: f32, slots
 pub struct Rig {
     pub shown: Stats,
     pub build: Build,
-    grow: Option<(Stats, Stats, f32)>,
+    grow: Option<Morph>,
     pub heat: f32,
     bolt_back: f32,
     bolt_cycle: f32,
     spin_speed: f32,
     spin: f32,
+    previous_pose: Vec<Affine3A>,
 }
 
 impl Default for Rig {
-    fn default() -> Self { let s = Stats::default(); Rig { shown: s, build: build(&Look::of(&s)), grow: None, heat: 0.0, bolt_back: 0.0, bolt_cycle: 0.08, spin_speed: 0.0, spin: 0.0 } }
+    fn default() -> Self { let s = Stats::default(); Rig { shown: s, build: build(&Look::of(&s)), grow: None, heat: 0.0, bolt_back: 0.0, bolt_cycle: 0.08, spin_speed: 0.0, spin: 0.0, previous_pose: Vec::new() } }
 }
 
 pub const GROW_SECONDS: f32 = 2.0;
@@ -387,25 +517,38 @@ pub const GROW_SECONDS: f32 = 2.0;
 impl Rig {
     /// Snap to these stats (a new round, a respawn).
     pub fn set(&mut self, s: Stats) {
-        self.grow = None;
-        if s != self.shown { self.shown = s; self.build = build(&Look::of(&s)); }
+        let interrupted = self.grow.take().is_some();
+        self.previous_pose.clear();
+        if interrupted || s != self.shown { self.shown = s; self.build = build(&Look::of(&s)); }
     }
 
-    /// Morph from what is shown into `to` (a card pick).
+    /// Morph from the currently visible model, including an interrupted morph.
     pub fn grow_to(&mut self, to: Stats) {
-        if to == self.shown && self.grow.is_none() { return; }
-        let from = self.shown;
-        self.grow = Some((from, to, 0.0));
+        if self.grow.as_ref().is_some_and(|g| g.to == to) { return; }
+        let target = build(&Look::of(&to));
+        if let Some(g) = &mut self.grow {
+            if g.target.same_shape(&target) { g.to = to; return; }
+        }
+        if self.build.same_shape(&target) { self.set(to); return; }
+        let source = self.build.clone();
+        let mut links = Vec::new();
+        let mut used = vec![false; target.parts.len()];
+        for (i, p) in source.parts.iter().enumerate() {
+            let found = target.parts.iter().enumerate().find(|(j, q)| !used[*j] && p.key == q.key && p.shape == q.shape && p.mat == q.mat).map(|(j, _)| j);
+            if let Some(j) = found { used[j] = true; }
+            links.push((Some(i), found));
+        }
+        links.extend(used.iter().enumerate().filter(|(_, used)| !**used).map(|(j, _)| (None, Some(j))));
+        self.grow = Some(Morph { from: self.shown, to, elapsed: 0.0, source, target, links });
     }
 
     pub fn is_growing(&self) -> bool { self.grow.is_some() }
 
     /// Keep the target current: a morph retargets, otherwise a change snaps.
     pub fn follow(&mut self, target: Stats) {
-        match &mut self.grow {
-            Some((_, to, _)) => *to = target,
-            None => self.set(target),
-        }
+        if let Some(g) = &self.grow {
+            if g.to != target { self.grow_to(target); }
+        } else { self.set(target); }
     }
 
     /// A shot: bolt to the rear stop, barrels spin up, heat climbs.
@@ -417,11 +560,17 @@ impl Rig {
     }
 
     pub fn update(&mut self, dt: f32) {
-        if let Some((from, to, t)) = &mut self.grow {
-            *t += dt.min(0.05);
-            let (from, to, t) = (*from, *to, *t);
-            if t >= GROW_SECONDS { self.grow = None; self.shown = to; self.build = build(&Look::of(&to)); }
-            else { let s = Stats::lerp(&from, &to, grow_ease(t / GROW_SECONDS)); self.build = build(&Look::of(&s)); }
+        let previous = self.grow.as_ref().map(|_| self.build.parts.iter().map(|p| ((p.key, p.shape, p.mat), p.xf)).collect::<std::collections::HashMap<_, _>>());
+        if let Some(g) = &mut self.grow {
+            g.elapsed += dt.min(0.05);
+            let t = grow_ease(g.elapsed / GROW_SECONDS);
+            self.shown = Stats::lerp(&g.from, &g.to, t);
+            self.build = g.at(t);
+            if g.elapsed >= GROW_SECONDS { self.shown = g.to; self.build = g.target.clone(); self.grow = None; }
+        }
+        self.previous_pose.clear();
+        if let Some(previous) = previous {
+            self.previous_pose.extend(self.build.parts.iter().map(|p| previous.get(&(p.key, p.shape, p.mat)).copied().unwrap_or(p.xf)));
         }
         self.heat *= (-0.3 * dt).exp();
         if self.heat < 0.001 { self.heat = 0.0; }
@@ -436,13 +585,23 @@ impl Rig {
     /// Every part's gun-space transform this frame. `mag_drop` lowers the
     /// magazine (reload).
     pub fn pose(&self, mag_drop: f32) -> impl Iterator<Item = (&Part, Affine3A)> + '_ {
+        self.pose_at(mag_drop, 1.0)
+    }
+
+    /// Blend the two simulation poses for screens faster than the game tick.
+    pub fn pose_at(&self, mag_drop: f32, alpha: f32) -> impl Iterator<Item = (&Part, Affine3A)> + '_ {
         let spin = Affine3A::from_rotation_z(self.spin);
-        self.build.parts.iter().map(move |p| {
+        self.build.parts.iter().enumerate().map(move |(i, p)| {
+            let local = if let Some(previous) = self.previous_pose.get(i) {
+                let (a, r, t) = previous.to_scale_rotation_translation();
+                let (b, s, u) = p.xf.to_scale_rotation_translation();
+                Affine3A::from_scale_rotation_translation(a.lerp(b, alpha), r.slerp(s, alpha), t.lerp(u, alpha))
+            } else { p.xf };
             let xf = match p.motion {
-                Motion::Fixed => p.xf,
-                Motion::Bolt => Affine3A::from_translation(Vec3::Z * self.bolt_back) * p.xf,
-                Motion::Spin => spin * p.xf,
-                Motion::Mag => Affine3A::from_translation(Vec3::NEG_Y * mag_drop) * p.xf,
+                Motion::Fixed => local,
+                Motion::Bolt => Affine3A::from_translation(Vec3::Z * self.bolt_back) * local,
+                Motion::Spin => spin * local,
+                Motion::Mag => Affine3A::from_translation(Vec3::NEG_Y * mag_drop) * local,
             };
             (p, xf)
         })
@@ -479,6 +638,32 @@ pub fn reload_pose(u: f32) -> (Vec3, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_visible_changes_trigger_growth_and_retargeting_keeps_the_current_pose() {
+        let mut rig = Rig::default();
+        rig.grow_to(Stats { fire_rate_mult: 1.1, ..Default::default() });
+        assert!(!rig.is_growing(), "a fire-rate change below the shroud threshold has no model change");
+        let to = Stats { damage_mult: 5.0, mag: 45, poison: 0.7, ..Default::default() };
+        rig.grow_to(to);
+        for _ in 0..22 { rig.update(1.0 / 30.0); }
+        let before = rig.build.clone();
+        rig.grow_to(Stats { spread: 0.0, cooling: 0.52, ..to });
+        rig.update(0.0);
+        assert!(rig.build.same_shape(&before), "retargeting must not jump back to the original weapon");
+        for _ in 0..61 { rig.update(1.0 / 30.0); assert!(rig.build.parts.len() <= 320); }
+        assert!(!rig.is_growing());
+    }
+
+    #[test]
+    fn base_is_slim_without_a_rail_and_both_elemental_reservoirs_are_visible() {
+        let base = Look::of(&Stats::default());
+        assert!(base.receiver.x < 0.06 && base.receiver.y < 0.08 && base.mag.x < 0.05);
+        assert!(!build(&base).parts.iter().any(|p| p.key / 1024 == 2));
+        let upgraded = build(&Look::of(&Stats { damage_mult: 1.5, poison: 0.7, cooling: 0.52, ..Default::default() }));
+        assert!(upgraded.parts.iter().any(|p| p.key / 1024 == 2));
+        for mat in [Mat::Poison, Mat::Cooling] { assert!(upgraded.parts.iter().any(|p| p.mat == mat)); }
+    }
 
     #[test]
     fn grips_and_stock_remain_seated_across_receiver_sizes() {
@@ -519,7 +704,7 @@ mod tests {
                     assert!(rear < -0.035, "magazine or base plate entered the trigger-guard clearance");
                 } } }
             }
-            let mag = built.parts.iter().find(|p| p.motion == Motion::Mag && (p.mat == Mat::Polymer || p.shape == Shape::Cyl)).unwrap();
+            let mag = built.parts.iter().find(|p| p.motion == Motion::Mag && (p.mat == Mat::Polymer || p.shape == Shape::Drum)).unwrap();
             let rear = if mag.shape == Shape::Box { mag.xf.transform_point3(Vec3::Z * 0.5).z }
                 else { mag.xf.transform_point3(Vec3::Y * 0.5).z };
             assert!((rear - MAG_REAR_Z).abs() < 1e-6, "rear mounting face must remain fixed");
@@ -558,5 +743,22 @@ mod tests {
         assert_eq!(r.bolt_back, 0.0);
         let (_, _, drop) = reload_pose(0.4);
         assert!(drop > 1.0 && reload_pose(1.0).2 == 0.0 && reload_pose(0.0).0 == Vec3::ZERO);
+    }
+
+    #[test]
+    fn new_rail_and_scope_stay_seated_during_receiver_growth() {
+        let mut rig = Rig::default();
+        rig.grow_to(Stats { damage_mult: 3.0, spread: 0.0, ..Default::default() });
+        for _ in 0..59 {
+            rig.update(1.0 / 30.0);
+            let top = rig.build.parts[0].xf.matrix3.y_axis.length() * 0.5;
+            let rail = rig.build.parts.iter().find(|p| p.key == 2 * 1024).unwrap();
+            let bottom = rail.xf.transform_point3(Vec3::NEG_Y * 0.5).y;
+            assert!(bottom <= top + 1e-5 && top - bottom < 0.004, "rail floated off the moving receiver");
+            let scope_parts: Vec<_> = rig.build.parts.iter().filter(|p| p.key / 1024 == 16).collect();
+            let mount_top = scope_parts[0].xf.transform_point3(Vec3::Y * 0.5).y;
+            let scope_center = scope_parts[2].xf.translation.y;
+            assert!((mount_top - scope_center).abs() < 1e-5, "scope separated from its growing mounts");
+        }
     }
 }

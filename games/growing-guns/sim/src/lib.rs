@@ -599,6 +599,18 @@ impl World {
         for c in self.players[player].cards.clone() { self.apply_card_to(player, c); }
     }
 
+    /// Owned loadout without borrowed guns or temporary round modifiers.
+    /// Presentation caches this at round boundaries, not once per frame.
+    pub fn owned_weapon(&self, player: usize) -> Weapon {
+        let mut weapon = Weapon::default();
+        for &card in &self.players[player].cards {
+            let Some(def) = self.cards.get(card) else { continue };
+            self.cards.apply(card, &mut weapon);
+            if let Some(h) = &self.hooks.0 { h.apply_card(def, &mut weapon); }
+        }
+        weapon
+    }
+
     /// Give a card at the start of the next step (scripts); false over quota.
     pub fn queue_give(&mut self, player: usize, card: cards::Card) -> bool {
         if self.gives.len() >= SCRIPT_QUOTA || player >= self.players.len() { return false; }

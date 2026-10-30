@@ -11,13 +11,14 @@ use render::scene::Material;
 use render::slots::Slots;
 use render::Scene;
 
-/// Instances per gun block (the largest build is about 160 parts).
-const GUN_PARTS: usize = 192;
+/// A morph may temporarily contain both old and new attachment shapes.
+/// Reserve once so a card pick never allocates new GPU slots.
+const GUN_PARTS: usize = 320;
 
 /// First-person gun feel (Godot `_update_gun_feel`): walk bob, jump bump,
 /// strafe tilt, recoil kick, the card-growth inspect blend.
 #[derive(Clone, Copy, Default)]
-struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect: f32 }
+struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect: f32, previous_inspect: f32 }
 
 pub struct Guns {
     /// Mesh per shape, then per material (barrel: one per player, each
@@ -39,6 +40,8 @@ pub struct Guns {
     pub tilt: bool,
     tracked: Vec<Option<Affine3A>>,
     tracking: Vec<bool>,
+    own: Vec<Option<Stats>>,
+    round: Option<u32>,
 }
 
 impl Guns {
@@ -62,6 +65,8 @@ impl Guns {
                         gun::Shape::Ring25 => primitives::torus(mat, 0.143, 10, 6),
                         gun::Shape::Grip => grip_mesh(mat, false),
                         gun::Shape::GripPanel => grip_mesh(mat, true),
+                        gun::Shape::Drum => drum_mesh(mat),
+                        gun::Shape::Vial => primitives::cylinder(mat, 1.0, 1.0, 24),
                     };
                     row.push(scene.add_mesh(&prim.mesh()));
                 }
@@ -76,7 +81,7 @@ impl Guns {
             fp.push(a);
             tp.push(Slots::reserve(scene, GUN_PARTS).first);
         }
-        Guns { meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players] }
+        Guns { meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
     }
 
     pub fn track(&mut self, player: usize, pose: Option<Affine3A>) {
@@ -102,8 +107,18 @@ impl Guns {
     /// One tick of gun state: rigs follow their stats (morphs, heat, bolt,
     /// spin) and the first-person feel eases (bob, bump, tilt, kick).
     pub fn tick(&mut self, world: &World, dt: f32) {
+        let new_round = self.round != Some(world.round);
         for (i, p) in world.players.iter().enumerate().take(self.rigs.len()) {
             let rig = &mut self.rigs[i];
+            if new_round || self.own[i].is_none() {
+                let owned = Stats::weapon(&world.owned_weapon(i));
+                let target = Stats::of(p);
+                if let Some(previous) = self.own[i] {
+                    rig.set(previous);
+                    rig.grow_to(target);
+                } else { rig.set(target); }
+                self.own[i] = Some(owned);
+            }
             rig.follow(Stats::of(p));
             rig.update(dt);
             let f = &mut self.feel[i];
@@ -116,8 +131,11 @@ impl Guns {
             let (sy, cy) = p.yaw.sin_cos();
             let lateral = if self.tilt { (p.vel.dot(Vec3::new(cy, 0.0, -sy)) / growing_guns::WALK_SPEED).clamp(-1.0, 1.0) } else { 0.0 };
             f.tilt += ((lateral * 3.5f32).to_radians() - f.tilt) * k;
+            f.previous_inspect = f.inspect;
             f.inspect += (if rig.is_growing() { 1.0 } else { 0.0 } - f.inspect) * (dt * 5.0).min(1.0);
         }
+        for own in self.own.iter_mut().skip(world.players.len()) { *own = None; }
+        self.round = Some(world.round);
     }
 
     /// Every rig into its two blocks: first person from the (punched)
@@ -143,7 +161,7 @@ impl Guns {
             let up = right.cross(fwd);
             let view = Affine3A::from_cols(right.into(), up.into(), (-fwd).into(), cam.pos.into());
             let muzzle = Vec3::new(0.3 + (f.phase * 0.5).sin() * 0.007 * f.bob, -0.3 + f.phase.sin() * 0.012 * f.bob - f.bump, -0.8 + f.kick + pull) + r_off;
-            let s = f.inspect;
+            let s = f.previous_inspect + (f.inspect - f.previous_inspect) * alpha;
             let fp = view * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 0.0, r_tilt, f.tilt), muzzle)
                 * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, s, 0.12 * s, 0.08 * s), Vec3::new(-0.14, 0.04, 0.14) * s);
             let fp = self.tracked[i].unwrap_or(fp);
@@ -158,7 +176,7 @@ impl Guns {
             for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {
                 let mut n = 0;
                 if visible {
-                    for (part, local) in rig.pose(drop).take(GUN_PARTS) {
+                    for (part, local) in rig.pose_at(drop, alpha).take(GUN_PARTS) {
                         scene.update_instance(first + n, self.mesh(part.shape, part.mat, i), xf * local);
                         n += 1;
                     }
@@ -169,6 +187,17 @@ impl Guns {
     }
 
     pub fn capacity(&self) -> usize { self.rigs.len() }
+
+    /// Headless growth review uses the same reserved slots and rig poses.
+    pub(crate) fn review_pose(&self, scene: &mut Scene, rig: &Rig) {
+        let mut n = 0;
+        for (part, xf) in rig.pose(0.0) {
+            assert!(n < GUN_PARTS, "gun morph exceeds reserved visual capacity");
+            scene.update_instance(self.tp[0] + n, self.mesh(part.shape, part.mat, 0), xf);
+            n += 1;
+        }
+        empty(scene, self.tp[0], n);
+    }
 
     /// Each local player sees only their own first-person gun, and not
     /// their own third-person one.
@@ -247,6 +276,50 @@ fn gun_box(material: u32) -> primitives::Primitive {
         face(&[Vec3::new(x * 0.5, y * inner, z * inner), Vec3::new(x * inner, y * 0.5, z * inner),
             Vec3::new(x * inner, y * inner, z * 0.5)], Vec3::new(x, y, z).normalize());
     } } }
+    mesh
+}
+
+/// Round magazine, radius 1 and depth 1 along Y. Forty-eight radial segments
+/// and a rounded rim keep the large silhouette smooth, independently of the
+/// low-sided barrels. Its mounting envelope matches the original cylinder.
+fn drum_mesh(material: u32) -> primitives::Primitive {
+    let mut mesh = primitives::Primitive { material, ..Default::default() };
+    const N: u32 = 48;
+    for side in [-1.0f32, 1.0] {
+        for k in 0..4 {
+            let step = if side < 0.0 { 3 - k } else { k };
+            let angle = step as f32 * std::f32::consts::FRAC_PI_2 / 3.0;
+            let (sn, cs) = angle.sin_cos();
+            let y = side * (0.36 + 0.14 * sn);
+            let radius = 0.94 + 0.06 * cs;
+            for i in 0..N {
+                let a = i as f32 * std::f32::consts::TAU / N as f32;
+                let radial = Vec3::new(a.cos(), 0.0, a.sin());
+                let normal = (radial * (cs / 0.06) + Vec3::Y * (side * sn / 0.14)).normalize();
+                mesh.vertices.push(render::cluster::Vertex { pos: (radial * radius + Vec3::Y * y).to_array(), normal: normal.to_array(), uv: [0.0; 2] });
+            }
+        }
+    }
+    let cap = mesh.vertices.len() as u32;
+    for side in [-1.0f32, 1.0] {
+        mesh.vertices.push(render::cluster::Vertex { pos: [0.0, side * 0.5, 0.0], normal: [0.0, side, 0.0], uv: [0.0; 2] });
+    }
+    let mut triangle = |a: u32, b: u32, c: u32| {
+        let v = [a, b, c].map(|i| mesh.vertices[i as usize]);
+        let p = v.map(|v| Vec3::from(v.pos));
+        let normal: Vec3 = v.iter().map(|v| Vec3::from(v.normal)).sum();
+        mesh.indices.extend(if (p[1] - p[0]).cross(p[2] - p[0]).dot(normal) < 0.0 { [a, c, b] } else { [a, b, c] });
+    };
+    for row in 0..7 {
+        for i in 0..N {
+            let (a, b) = (row * N + i, row * N + (i + 1) % N);
+            triangle(a, b, a + N); triangle(b, b + N, a + N);
+        }
+    }
+    for i in 0..N {
+        triangle(cap, i, (i + 1) % N);
+        triangle(cap + 1, 7 * N + i, 7 * N + (i + 1) % N);
+    }
     mesh
 }
 
@@ -337,6 +410,13 @@ fn gun_material(scene: &mut Scene, m: gun::Mat) -> u32 {
         Bolt => metal(scene, [0.55, 0.57, 0.62], 0.95, 0.18),
         Lens => glow(scene, [0.35, 0.7, 1.0], 7000.0),
         Indicator => glow(scene, [0.4, 1.0, 0.95], 10000.0),
+        Poison => glow(scene, [0.06, 1.0, 0.004], 2800.0),
+        Cooling => glow(scene, [0.012, 0.38, 1.0], 4200.0),
+        Glass => {
+            let mat = material(scene, [0.65, 0.82, 0.9], 0.16);
+            scene.set_material_blend(mat, 0.18, false);
+            mat
+        }
     }
 }
 
@@ -356,6 +436,35 @@ fn barrel_material(t: f32) -> Material {
 #[cfg(test)]
 mod xr_tests {
     use super::*;
+    #[test]
+    fn next_round_uses_owned_gun_and_invisible_cards_do_not_inspect() {
+        let mut world = World::new(7, &[false, false]);
+        let _scripts = crate::scripts::attach(&mut world).unwrap();
+        for (i, card) in [(0, "sniper"), (1, "uzi")] { let c = world.cards.find(card).unwrap(); world.give(i, c); }
+        let own = Stats::weapon(&world.owned_weapon(0));
+        let borrowed = world.owned_weapon(1);
+        let mut scene = Scene::default();
+        let mut guns = Guns::reserve(&mut scene, 2);
+        guns.tick(&world, 0.0);
+        world.modifier = Some(growing_guns::Modifier::GunSwap);
+        world.players[0].weapon = borrowed.clone();
+        guns.tick(&world, 0.0);
+        assert_ne!(guns.rigs[0].shown, own);
+        let card = world.cards.find("acrobat").unwrap(); world.give(0, card);
+        world.round += 1; world.modifier = None; world.rebuild_weapon(0);
+        guns.tick(&world, 0.0);
+        assert_eq!(guns.rigs[0].shown, own);
+        assert!(!guns.rigs[0].is_growing());
+        assert_eq!(guns.feel[0].inspect, 0.0);
+        world.players[0].weapon = borrowed;
+        guns.tick(&world, 0.0);
+        let card = world.cards.find("heavy_rounds").unwrap(); world.give(0, card);
+        world.round += 1; world.rebuild_weapon(0);
+        guns.tick(&world, 0.0);
+        assert!(guns.rigs[0].is_growing());
+        assert_eq!(guns.rigs[0].shown, own, "the previous round's borrowed Uzi must not be the source");
+    }
+
     #[test]
     fn gun_box_preserves_mounting_dimensions_and_is_closed() {
         let mesh = gun_box(0);

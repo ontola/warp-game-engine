@@ -19,7 +19,7 @@ missing.
 |---|---|---|
 | Movement | Done | Jump, double jump, wall jump, dash, step-ups (0.35 m), lava burn and kill, falling off the map |
 | The gun | Done | Projectile rounds with drop, spread, bloom, recoil, ricochet, drill, homing, hitscan, poison, slow, lifesteal, explosive splash, impact mines, three hit ellipsoids |
-| Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Full-size chamfered blocks close assembly gaps. Fixed grip/trigger/magazine clearances survive upgrades; a shaped pistol grip with rubber inserts, a steel trigger and an angular guard replace the intersecting cylinder/ring layout. Distinct poison/chilling details and a broader finish/detail pass remain pending |
+| Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Full-size chamfered blocks close assembly gaps. Large drums have a smooth 48-sided silhouette and rounded rims. Fixed grip/trigger/magazine clearances survive upgrades; a shaped pistol grip with rubber inserts, a steel trigger and an angular guard replace the intersecting cylinder/ring layout. Slim base receiver/magazine, damage-gated rail and separate tilted green poison/blue chilling reservoirs; broader finish/detail refinements remain open |
 | Cards | Done | All 52 cards, Luau in `mods/base/cards.luau`, line for line from `card_library.gd`; rarity, pity slot, trailing-player factor |
 | Specials (RMB) | Done | Grenade, cluster, teleport, zoom, sword with backstabs, air strike, ion cannon; echo, tactical reload, refresh |
 | Rounds and match | Done | Spawn cage, kill order, card picks (the dead pick mid-round with 3+ players), first to ten wins, rematch, extend |
@@ -87,12 +87,23 @@ The earlier [simplified browser demo](../../engine/docs/quest-vr.md) remains ava
 ## Gun modelling review
 
 `cargo run --release -p growing-guns-app -- gun-review --out build/gun-review`
-renders ten real card combinations (including short Shotgun and Uzi builds) with fixed neutral lighting, in three-quarter,
+renders eleven real card combinations (including short Shotgun/Uzi builds and combined poison/chilling) with fixed neutral lighting, in three-quarter,
 side and receiver/trigger-detail views. It writes PNGs and `manifest.json` with
 cards, visual stats, dimensions and part counts. Use `--only base` for a quick
 iteration or `--size 2000x1250` for larger images. Each overview fits the model
 individually; detail views share a fixed camera. Meshes and materials are exactly
 those used during gameplay; the capture tool applies no geometry or material overrides.
+
+`gun-review --growth --out build/gun-growth-review` captures five 90-frame clips at
+30 fps: damage/rail growth, sniper/scope growth, box magazine to drum/minigun, elemental reservoirs,
+and a character-only card with no morph. Use `--only drum-minigun` to isolate one.
+Parts match by stable component IDs; changed attachments grow from their mounts,
+and a retarget continues from the visible pose. Rendering interpolates growth and
+inspection between simulation ticks. Round-start growth uses the previous owned
+card loadout as its source, never the borrowed gun from a Gun Swap round.
+The target is the new round's equipped weapon. Inspection starts only when the
+resulting geometry or material actually differs; early card picks while dead
+wait until the next round to animate.
 
 ## Replay a moment while editing graphics
 
