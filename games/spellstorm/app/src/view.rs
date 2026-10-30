@@ -11,6 +11,7 @@ use render::irradiance_volume::{Grid, Probe};
 use render::scene::{Material, NO_SHADOW, SURFACE};
 use render::{Camera, Gpu, Lighting, Renderer, Scene};
 use spellstorm::level::{Level, WallMesh, PATH_W};
+use spellstorm::fx::Death;
 use spellstorm::World;
 use std::collections::HashMap;
 use std::f32::consts::PI;
@@ -491,12 +492,34 @@ impl View {
             if let Some(t) = ea.dead_t.filter(|_| !ea.scattered) {
                 let c = e.cfg();
                 let big = if c.model.is_some() { c.size as f32 } else { 1.0 };
+                // Frozen it stands until it shatters; a huge blow bursts it
+                // at once: both into chunks of its body (remains.gd).
+                let shatter = match e.how {
+                    Some(Death::Freeze) if t >= 0.7 => Some((3.5, 3.5, 2.5)),
+                    Some(Death::Gore) => Some((5.0 * big.sqrt(), 5.0, 2.5)),
+                    _ => None,
+                };
                 let how = match anim::fall(c.model.unwrap_or(c.key), big) {
+                    _ if matches!(e.how, Some(Death::Freeze | Death::Gore | Death::Shock | Death::Void | Death::Blown)) => None,
                     f @ anim::Fall::Scatter { .. } => Some(f),
                     anim::Fall::BlowUp if t >= e.fuse as f32 => Some(anim::BLOWN),
                     _ => None,
                 };
-                if let Some(anim::Fall::Scatter { power, up, life }) = how {
+                if let Some((power, up, life)) = shatter {
+                    ea.scattered = true;
+                    let mut parts = Vec::new();
+                    for p in &pieces {
+                        let n = &kit.nodes[p.node];
+                        let Some(mesh) = n.mesh else { continue };
+                        let xf = at * kit.model_xf(p.node);
+                        for (m, mid) in self.look.chunks(&self.kits, &mut self.scene, mesh, n.material) {
+                            parts.push((m, xf * Mat4::from_translation(mid), p.shadow));
+                        }
+                    }
+                    if !parts.is_empty() {
+                        self.debris.push(Debris::new(&self.scene, parts, a.pos - a.last_dir.with_y(0.0) * 0.5, power, up, life, seed));
+                    }
+                } else if let Some(anim::Fall::Scatter { power, up, life }) = how {
                     ea.scattered = true;
                     let parts = pieces.iter().map(|p| (p.mesh, at * kit.model_xf(p.node), p.shadow)).collect();
                     self.debris.push(Debris::new(&self.scene, parts, a.pos, power, up, life, seed));
@@ -505,7 +528,9 @@ impl View {
             if !ea.scattered {
                 // Its eyes swell while it winds up a blow (Enemy._tell).
                 let eyes = if e.wind > 0.0 { 1.0 + 1.5 * (1.0 - e.wind / e.wind_time()) as f32 } else { 1.0 };
-                marked.push((out.len()..out.len() + pieces.len(), hit_flash(&a), 0.0));
+                // Frozen to death it stands white as ice until it shatters.
+                let flash = if e.how == Some(Death::Freeze) { 0.6 } else { hit_flash(&a) };
+                marked.push((out.len()..out.len() + pieces.len(), flash, 0.0));
                 for p in &pieces {
                     let mut xf = at * kit.model_xf(p.node);
                     if eyes != 1.0 && kit.eyes.contains(&p.node) {

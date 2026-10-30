@@ -5,6 +5,7 @@ use crate::kits::Kit;
 use glam::{EulerRot, Mat3, Mat4, Quat, Vec3};
 use spellstorm::actor::{Actor, HURT_TIME};
 use spellstorm::enemy::{Attack, Enemy};
+use spellstorm::fx::Death;
 use spellstorm::wizard::{swing_reach, Wizard, ROLL_TIME, SWING_COOLDOWN};
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
@@ -261,6 +262,50 @@ impl EnemyAnim {
             pos += local * 0.18 * k;
             rot.x += local.z * 0.45 * k;
             rot.z += -local.x * 0.45 * k;
+        }
+        // Dying by an element goes that element's way (remains.gd, Joep: by
+        // the element): lightning jolts it before it drops, void lifts it,
+        // stretches it thin and swallows it, wind throws it tumbling away,
+        // frost holds it still until it shatters (the view's debris), and a
+        // huge blow bursts it (the same). Fire and plain blows keep the
+        // model's own fall.
+        if let (Some(t), Some(how)) = (self.dead_t, e.how) {
+            let b = Vec3::splat(base);
+            let mut away = Quat::from_rotation_y(-a.yaw) * a.last_dir;
+            away.y = 0.0;
+            let away = away.normalize_or(Vec3::Z);
+            let sink = -1.95 * ((t - 2.6) / 1.4).clamp(0.0, 1.0);
+            match how {
+                Death::Shock => {
+                    let j = (1.0 - t / 0.8).max(0.0);
+                    pos = Vec3::new((t * 97.0).sin() * 0.07 * j, 0.0, (t * 83.0).cos() * 0.07 * j);
+                    rot = Vec3::new(0.0, (t * 61.0).sin() * 0.2 * j, (t * 71.0).sin() * 0.35 * j);
+                    let k = ease_in((t - 0.8) / 0.45);
+                    rot.x = -PI / 2.0 * k;
+                    pos.y += 0.15 * k + sink;
+                    return trs(pos, euler(rot), b);
+                }
+                Death::Void => {
+                    let k1 = smoothstep(0.0, 0.35, t);
+                    let k2 = ease_in((t - 0.35) / 0.4);
+                    let s = Vec3::ONE.lerp(Vec3::new(0.45, 1.5, 0.45), k1) * (1.0 - 0.98 * k2);
+                    let s = if t >= 0.8 { Vec3::ZERO } else { b * s };
+                    return trs(Vec3::Y * (0.5 * k1 + 1.2 * k2), euler(Vec3::new(0.0, 9.0 * k2, 0.0)), s);
+                }
+                Death::Blown => {
+                    let f = t.min(0.5);
+                    let up = (5.0 * f - 10.0 * f * f).max(0.0);
+                    let slide = 7.0 * f + 1.5 * (1.0 - (-(t - 0.5).max(0.0) * 4.0).exp());
+                    // Tumbles one and a quarter turns, landing on its back.
+                    let turn = -(PI / 2.0 + TAU) * (t / 0.5).min(1.0);
+                    let pos = away * slide + Vec3::Y * (up + 0.15 * (t / 0.5).min(1.0) + sink);
+                    let tilt = Quat::from_axis_angle(Vec3::Y.cross(away).normalize_or(Vec3::X), -turn);
+                    return Mat4::from_translation(pos) * Mat4::from_quat(tilt) * Mat4::from_scale(b);
+                }
+                Death::Freeze => return trs(Vec3::ZERO, euler(Vec3::ZERO), b),
+                Death::Gore => return trs(Vec3::ZERO, euler(Vec3::ZERO), b),
+                _ => {}
+            }
         }
         if let Some(t) = self.dead_t {
             let big = if cfg.model.is_some() { cfg.size as f32 } else { 1.0 };
