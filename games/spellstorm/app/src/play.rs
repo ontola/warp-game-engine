@@ -200,7 +200,9 @@ impl Spellstorm {
         }
         self.view.fx.absorb(&self.world);
         self.hud.absorb(&self.world);
-        self.hud.update(spellstorm::world::DT as f32);
+        if !self.world.paused {
+            self.hud.update(spellstorm::world::DT as f32);
+        }
     }
 }
 
@@ -237,7 +239,9 @@ impl app::Game for Spellstorm {
         let r = frame.renderer().ok_or("no renderer")?;
         // Drawn between the last two ticks, so a fast screen moves smoothly.
         self.interp.ease(&mut self.world, frame.alpha);
-        let posed = self.view.pose(frame.gpu, r, &self.world, frame.dt);
+        // Paused, nothing moves: no animation, particle or effect clock runs.
+        let dt = if self.world.paused { 0.0 } else { frame.dt };
+        let posed = self.view.pose(frame.gpu, r, &self.world, dt);
         let mut hud = HudDrawList::new(frame.size);
         self.hud.draw(&mut hud, &self.world, &self.view.camera, frame.size);
         self.interp.restore(&mut self.world);

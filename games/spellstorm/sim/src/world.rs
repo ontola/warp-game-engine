@@ -720,10 +720,11 @@ impl World {
     pub fn step(&mut self) {
         self.events.clear();
         self.tick += 1;
-        self.time += DT;
+        // Paused, even the clock stops: the shaders and effects run on it.
         if self.paused {
             return;
         }
+        self.time += DT;
         let dt = DT;
         self.confluence(dt);
         self.dmg_t -= dt;
