@@ -459,7 +459,8 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
     let aggregate = !std::env::args().any(|a| a == "--recipe-source");
     if !aggregate && !far.is_empty() { return Err("--recipe-source has no proxies; add --firs".into()); }
     static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
-    let cooked = COOKED.get_or_init(|| (0..3u64).map(|seed| {
+    // The three variants cook on their own threads (each cook is serial).
+    let cooked = COOKED.get_or_init(|| std::thread::scope(|scope| (0..3u64).map(|seed| scope.spawn(move || -> Result<CookedPlant, String> {
         let started = std::time::Instant::now();
         let assembly = plant_recipe::build(&SPRUCE, BuildOptions::new(seed + 1), plant_recipe::recipe_limits())?;
         if !aggregate { return CookedPlant::cook_source(&assembly); }
@@ -477,7 +478,7 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
         eprintln!("spruce {seed}: cooked in {cooked_ms:.0} ms, proxy in {:.0} ms ({} cells at {} m, {} levels)",
             started.elapsed().as_secs_f64() * 1000.0 - cooked_ms, proxy.levels[0].voxels.len(), proxy.levels[0].cell_size, proxy.levels.len());
         Ok(plant)
-    }).collect()).as_ref().map_err(Clone::clone)?;
+    })).collect::<Vec<_>>().into_iter().map(|h| h.join().map_err(|_| "spruce cook panicked".to_string())?).collect())).as_ref().map_err(Clone::clone)?;
     let branches = cooked.iter().map(|c| c.stats().branches).max().unwrap_or(64);
     let mut limits = AttachLimits { max_poses: branches.max(64) * near.len().max(4), max_primitive_instances: render::part_wind::MAX_ATTACHMENTS, ..Default::default() };
     limits.pack.max_instances = limits.max_poses.min(render::foliage_volume_data::MAX_INSTANCES);
