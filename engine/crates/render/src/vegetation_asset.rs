@@ -828,7 +828,12 @@ impl<'a> SceneVegetation<'a> {
                         self.proxy_assets.len() - 1
                     }
                 };
-                let (lo, hi) = support(asset);
+                // The plant itself, not its voxel support: the canopy volume
+                // (GI, sky light) sizes the crown from this sphere, and the
+                // support's padded coarse cells made crowns 1.8x too wide,
+                // darkening clearings. The voxel pass culls by pack_tree's
+                // own (padded) level bounds.
+                let [lo, hi] = asset.source_bounds.map(Vec3::from);
                 self.proxy_lookup.insert(plant.proxy_id, (index, lo, hi));
                 (index, lo, hi)
             }
