@@ -1041,14 +1041,17 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 // voxel_splat_resolve shades the winning cell once per pixel.
 // Static cells: tree, level relative to the tree, cell index, packed coord.
 @group(2) @binding(14) var<storage,read> volume_splat_cells: array<vec4<u32>>;
-// Header (VOLUME_SPLAT_HEADER vec4s: view-projection columns), then four
-// vec4s per splat: centre+alpha, x half axis+static cell, y half axis+faces, z half axis.
+// Header (VOLUME_SPLAT_HEADER vec4s: view-projection columns, then for the
+// sun six frustum planes and direction+texel), then four vec4s per splat:
+// centre+alpha, x half axis+static cell, y half axis+faces, z half axis.
 @group(2) @binding(15) var<storage,read_write> volume_splats: array<vec4<f32>>;
 // Indirect draw arguments: vertex count, instance count, first vertex, first instance.
 @group(2) @binding(16) var<storage,read_write> volume_splat_draw: array<atomic<u32>>;
 @group(2) @binding(17) var volume_splat_id: texture_2d<u32>;
 @group(2) @binding(18) var volume_splat_depth: texture_depth_2d;
-const VOLUME_SPLAT_HEADER: u32 = 8u;
+const VOLUME_SPLAT_HEADER: u32 = 12u;
+// Selection w for the sun map: this group casts as voxels, its source does not.
+const VOLUME_SUN_CASTER: u32 = 2u;
 
 fn volume_splat_level(index:u32)->u32 {
     let tree=volume_trees[index];
@@ -1066,6 +1069,41 @@ fn volume_splat_level(index:u32)->u32 {
     return u32(clamp(floor(log2(max(footprint,1e-8))),0.0,f32(ceiling)));
 }
 
+struct VolumeSplatCell { local:vec3<f32>,centre:vec3<f32>,ax:vec3<f32>,ay:vec3<f32>,az:vec3<f32>,size:f32 };
+fn volume_splat_cell(entry:vec4<u32>)->VolumeSplatCell {
+    let tree=volume_trees[entry.x];
+    let level=volume_levels[tree.identity.y+entry.y];
+    let coord=vec3<f32>(f32(entry.w&1023u),f32((entry.w>>10u)&1023u),f32(entry.w>>20u));
+    let size=level.origin_cell.w;
+    let local=level.origin_cell.xyz+(coord+0.5)*size;
+    let owner=instances[tree.identity.x];
+    let point=vec4<f32>(local,1.0);
+    let half=0.5*size;
+    return VolumeSplatCell(local,vec3<f32>(dot(owner.r0,point),dot(owner.r1,point),dot(owner.r2,point)),
+        vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x)*half,vec3<f32>(owner.r0.y,owner.r1.y,owner.r2.y)*half,
+        vec3<f32>(owner.r0.z,owner.r1.z,owner.r2.z)*half,size);
+}
+fn volume_splat_outside(cell:VolumeSplatCell,plane:vec4<f32>)->bool {
+    let radius=length(cell.ax)+length(cell.ay)+length(cell.az);
+    return dot(plane.xyz,cell.centre)+plane.w < -radius;
+}
+// `toward`: local unit direction from the cell to the viewer. The thirteen
+// extinction directions are antipodal, so its sign does not change sigma.
+fn volume_splat_append(work:u32,entry:vec4<u32>,cell:VolumeSplatCell,toward:vec3<f32>) {
+    // Optical depth of the mean chord through this cell along the view.
+    let sigma=volume_sigma(volume_cells[entry.z],volume_direction(toward));
+    let alpha=1.0-exp(-sigma*cell.size/max(dot(abs(toward),vec3<f32>(1.0)),1.0));
+    if alpha<1.0/255.0 {return;}
+    let faces=select(0u,1u,toward.x>0.0)|select(0u,2u,toward.y>0.0)|select(0u,4u,toward.z>0.0);
+    let slot=atomicAdd(&volume_splat_draw[1],1u);
+    let base=VOLUME_SPLAT_HEADER+slot*4u;
+    if base+4u>arrayLength(&volume_splats) {return;}
+    volume_splats[base]=vec4<f32>(cell.centre,alpha);
+    volume_splats[base+1u]=vec4<f32>(cell.ax,bitcast<f32>(work));
+    volume_splats[base+2u]=vec4<f32>(cell.ay,bitcast<f32>(faces));
+    volume_splats[base+3u]=vec4<f32>(cell.az,0.0);
+}
+
 @compute @workgroup_size(64)
 fn voxel_splats(@builtin(global_invocation_id) id:vec3<u32>) {
     let work=id.x+id.y*65535u*64u;
@@ -1076,37 +1114,35 @@ fn voxel_splats(@builtin(global_invocation_id) id:vec3<u32>) {
     if work>=arrayLength(&volume_splat_cells) {return;}
     let entry=volume_splat_cells[work];
     if volume_selection[entry.x].x!=1u || entry.y!=volume_splat_level(entry.x) {return;}
+    let cell=volume_splat_cell(entry);
+    for(var i=0u;i<6u;i++) {if volume_splat_outside(cell,view.planes[i]) {return;}}
     let tree=volume_trees[entry.x];
-    let level=volume_levels[tree.identity.y+entry.y];
-    let coord=vec3<f32>(f32(entry.w&1023u),f32((entry.w>>10u)&1023u),f32(entry.w>>20u));
-    let cell_size=level.origin_cell.w;
-    let local=level.origin_cell.xyz+(coord+0.5)*cell_size;
-    let owner=instances[tree.identity.x];
-    let point=vec4<f32>(local,1.0);
-    let centre=vec3<f32>(dot(owner.r0,point),dot(owner.r1,point),dot(owner.r2,point));
-    let half=0.5*cell_size;
-    let ax=vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x)*half;
-    let ay=vec3<f32>(owner.r0.y,owner.r1.y,owner.r2.y)*half;
-    let az=vec3<f32>(owner.r0.z,owner.r1.z,owner.r2.z)*half;
-    let radius=length(ax)+length(ay)+length(az);
-    for(var i=0u;i<6u;i++) {
-        if dot(view.planes[i].xyz,centre)+view.planes[i].w < -radius {return;}
-    }
-    // Optical depth of the mean chord through this cell along the view.
     let eye=vec4<f32>(view.cam.xyz,1.0);
     let eye_local=vec3<f32>(dot(tree.inverse[0],eye),dot(tree.inverse[1],eye),dot(tree.inverse[2],eye));
-    let d=normalize(local-eye_local);
-    let sigma=volume_sigma(volume_cells[entry.z],volume_direction(d));
-    let alpha=1.0-exp(-sigma*cell_size/max(dot(abs(d),vec3<f32>(1.0)),1.0));
-    if alpha<1.0/255.0 {return;}
-    let faces=select(0u,1u,eye_local.x>local.x)|select(0u,2u,eye_local.y>local.y)|select(0u,4u,eye_local.z>local.z);
-    let slot=atomicAdd(&volume_splat_draw[1],1u);
-    let base=VOLUME_SPLAT_HEADER+slot*4u;
-    if base+4u>arrayLength(&volume_splats) {return;}
-    volume_splats[base]=vec4<f32>(centre,alpha);
-    volume_splats[base+1u]=vec4<f32>(ax,bitcast<f32>(work));
-    volume_splats[base+2u]=vec4<f32>(ay,bitcast<f32>(faces));
-    volume_splats[base+3u]=vec4<f32>(az,0.0);
+    volume_splat_append(work,entry,cell,normalize(eye_local-cell.local));
+}
+
+// The same cells into the sun map. The host writes the header: the sun's
+// view-projection, frustum planes, direction towards the sun and texel size.
+// Levels follow the texel: the finest whose cell is at least one texel.
+@compute @workgroup_size(64)
+fn voxel_sun_splats(@builtin(global_invocation_id) id:vec3<u32>) {
+    let work=id.x+id.y*65535u*64u;
+    if work==0u {atomicStore(&volume_splat_draw[0],18u);}
+    if work>=arrayLength(&volume_splat_cells) {return;}
+    let entry=volume_splat_cells[work];
+    let selected=volume_selection[entry.x];
+    if selected.x!=1u || selected.w!=VOLUME_SUN_CASTER {return;}
+    let tree=volume_trees[entry.x];
+    let owner=instances[tree.identity.x];
+    let finest=volume_levels[tree.identity.y].origin_cell.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
+    let sun=volume_splats[10u];
+    let level=clamp(floor(log2(max(sun.w/max(finest,1e-6),1e-8))),0.0,f32(min(tree.identity.z-1u,selected.y)));
+    if entry.y!=u32(level) {return;}
+    let cell=volume_splat_cell(entry);
+    for(var i=0u;i<6u;i++) {if volume_splat_outside(cell,volume_splats[4u+i]) {return;}}
+    let d=vec4<f32>(sun.xyz,0.0);
+    volume_splat_append(work,entry,cell,normalize(vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d))));
 }
 
 @compute @workgroup_size(8,8)

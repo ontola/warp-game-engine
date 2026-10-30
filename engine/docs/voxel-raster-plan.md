@@ -80,4 +80,20 @@ passes 88 ms versus 153 ms for brick visibility plus integration. The raster
 pass is most of that on a software rasterizer; on a real GPU it is the cheap
 part. Without TAA the result is dithered; TAA averages it (M4 adds motion).
 
-Not yet: the 64-tree acceptance run on a real GPU, Hi-Z culling, shadows (M2).
+**M2 built (same flag).** `voxel_sun_splats` lists the cells for the shared
+sun map: level from the sun texel (the finest whose cell is at least one
+texel), opacity and faces along the sun direction, frustum from the sun's
+planes (the host writes them into the splat header). They draw depth-only
+after the source sun raster, with the scene's sun bias. The sun view's
+selection marks every replaced group with w 2, and `cull.wgsl` then drops
+its source from that map only. The near shadow map, far sun and foliage sun
+pages keep source triangles; the static/dynamic sun split is not covered yet.
+With near shadows off (`--near-shadows 0`), one spruce at 150 m: sun-map
+triangles 189,998 to 2 (the ground), sun cull plus raster 120 to 66 ms on
+lavapipe plus 126 ms of splats (software raster). The voxel shadow is
+denser than the source's aliased needle shadow at the main map's texel, and
+the crowns self-shadow from it, so they come out darker than the
+integrator's.
+
+Not yet: the 64-tree acceptance run on a real GPU, Hi-Z culling, voxels in
+the near map and sun pages, live forests (M3).

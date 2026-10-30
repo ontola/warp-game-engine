@@ -204,6 +204,10 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
         && (replacement&0x80000000u)!=0u {
         if foliage_selection[replacement&0x7fffffffu].x!=0u {return 0u;}
     }
+    // Rasterized voxels cast this group into this sun map instead
+    // (selection w 2, see voxel_sun_splats).
+    if view.params.z>0.5 && replacement!=0xffffffffu && (replacement&0x80000000u)!=0u
+        && foliage_selection[replacement&0x7fffffffu].w==2u {return 0u;}
     // Per-view hiding (scene::HIDE_IN_VIEW): a player's own body is absent
     // from that player's camera, yet still casts shadows and shows elsewhere.
     // grass.z holds 1 + the camera view index; other passes leave it zero.
