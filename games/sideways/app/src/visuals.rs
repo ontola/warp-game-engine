@@ -24,6 +24,8 @@ pub struct Built {
     /// a later environment-variable snapshot of what might have been built.
     pub tree_source: serde_json::Value,
     live_ground_cover: Option<crate::live_ground_cover::LiveGroundCover>,
+    /// The mixed forest's full trees that follow the cameras.
+    pub tree_pool: Option<render::recipe_forest::Pool>,
 }
 
 pub struct DynamicCar {
@@ -35,6 +37,13 @@ pub struct DynamicCar {
 impl Built {
     pub fn update_ground_cover(&mut self, cameras: &[Vec3]) -> Option<std::ops::Range<usize>> {
         self.live_ground_cover.as_mut()?.update(&mut self.scene, cameras)
+    }
+
+    /// Move the mixed forest's full trees to the trees nearest the cameras.
+    /// Call after Renderer::new and before every frame.
+    pub fn update_trees(&mut self, renderer: &render::Renderer, gpu: &render::Gpu, cameras: &[Vec3])
+        -> Result<Option<render::recipe_forest::PoolStats>, String> {
+        self.tree_pool.as_mut().map(|pool| pool.update(renderer, gpu, cameras)).transpose()
     }
 
     pub fn ground_cover_stats(&self) -> Option<crate::live_ground_cover::Stats> {
@@ -634,9 +643,10 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     }
     let mut tree_meshes = Vec::new();
     let mut tree_source_archetypes = Vec::new();
-    let recipe_forest = if mixed_species {
-        Some(crate::plant_population::plant_forest(&mut scene, stage, &chunks, cameras)?)
-    } else { None };
+    let (recipe_forest, tree_pool) = if mixed_species {
+        let (log, pool) = crate::plant_population::plant_forest(&mut scene, stage, &chunks, cameras)?;
+        (Some(log), Some(pool))
+    } else { (None, None) };
     if recipe_forest.is_none() {
     for archetype in sideways::vegetation::TreeArchetype::ALL {
         let surfaces = crate::tree_assets::load_with_fullness(&r, archetype, tree_fullness)?;
@@ -788,7 +798,7 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         scene.set_instance_categories(first..scene.instances.len(), GeometryCategory::Cars);
     }
     log.push(scene.stats());
-    Ok(Built { scene, mesh_names, log, cars: dynamic_cars, car_slots, live_ground_cover, procedural_grass, tree_source })
+    Ok(Built { scene, mesh_names, log, cars: dynamic_cars, car_slots, live_ground_cover, procedural_grass, tree_source, tree_pool })
 }
 
 #[cfg(test)]

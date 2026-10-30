@@ -414,6 +414,9 @@ pub struct PartWindRenderer {
     views:wgpu::Buffer,schedules:wgpu::Buffer,counter:wgpu::Buffer,dispatch:wgpu::Buffer,dispatch_width:u32,page_count:u32,gpu_bytes:u64,
     attachment_pass:Option<(wgpu::ComputePipeline,wgpu::BindGroup)>,
     assembly_count:u32,part_count:u32,attachment_count:u32,owners:Vec<usize>,state:Mutex<State>,
+    descriptors:wgpu::Buffer,assemblies:wgpu::Buffer,
+    /// Root pose -> its assembly and the root's built rest and envelope.
+    roots:std::collections::HashMap<u32,(u32,Mat4,AssemblyDescriptor)>,
 }
 impl PartWindRenderer {
     pub fn new(gpu:&Gpu,parts:&[PartWind],attachments:&[PartAttachment],scene_instances:&[GpuInstance],instance_buffer:&wgpu::Buffer,
@@ -449,11 +452,13 @@ impl PartWindRenderer {
         let upload=|label,bytes:&[u8],usage|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some(label),contents:bytes,usage});
         let storage=|label,size,extra|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size,
             usage:wgpu::BufferUsages::STORAGE|extra,mapped_at_creation:false});
-        let descriptors=upload("part wind bind poses",bytemuck::cast_slice(&packed.parts),wgpu::BufferUsages::STORAGE);
-        let assemblies=upload("part wind assemblies",bytemuck::cast_slice(&packed.assemblies),wgpu::BufferUsages::STORAGE);
+        let descriptors=upload("part wind bind poses",bytemuck::cast_slice(&packed.parts),wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST);
+        let assemblies=upload("part wind assemblies",bytemuck::cast_slice(&packed.assemblies),wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST);
+        let roots=packed.assemblies.iter().enumerate().map(|(index,a)|
+            (a.range[0],(index as u32,parts[a.range[0] as usize].rest,*a))).collect();
         let uniform=upload("part wind state",bytemuck::bytes_of(&Uniform::zeroed()),wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST);
         let poses=storage("part wind current previous poses",sizes[2],wgpu::BufferUsages::COPY_SRC);
-        let schedules=storage("part wind assembly schedules",sizes[4],wgpu::BufferUsages::COPY_SRC);
+        let schedules=storage("part wind assembly schedules",sizes[4],wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST);
         let active_pages=storage("part wind active attachment pages",sizes[6],wgpu::BufferUsages::empty());
         let views=storage("part wind animation consumers",sizes[7],wgpu::BufferUsages::COPY_DST);
         let counter=storage("part wind active attachment count",4,wgpu::BufferUsages::COPY_DST);
@@ -504,7 +509,27 @@ impl PartWindRenderer {
             dispatch_pass:(dispatch_pipeline,dispatch_bind),views,schedules,counter,dispatch,dispatch_width,
             page_count:packed.pages.len() as u32,gpu_bytes,assembly_count:packed.assemblies.len() as u32,
             part_count:parts.len() as u32,attachment_count:packed.attachments.len() as u32,
-            owners:packed.owners,state:Mutex::new(State {field:[0.0;4],initialized:false,scheduled:false,views:Vec::new()})})
+            owners:packed.owners,state:Mutex::new(State {field:[0.0;4],initialized:false,scheduled:false,views:Vec::new()}),
+            descriptors,assemblies,roots})
+    }
+
+    /// Move the assembly rooted at pose `root`: `delta` maps its built root
+    /// onto the new one, `ratio` (at most 1: bounds were built for the built
+    /// scale) is the scale change. Children follow their parents; the next
+    /// encode rewrites every pose, member and volume once, without motion.
+    pub fn move_assembly(&self,gpu:&Gpu,root:u32,delta:Mat4,ratio:f32)->Result<(),String> {
+        let &(index,rest,built)=self.roots.get(&root).ok_or("moved part is not an assembly root")?;
+        if !delta.is_finite() || !(ratio>0.0 && ratio<=1.0+1e-4) {return Err("an assembly moves rigidly and may only shrink".into());}
+        let rest=delta*rest;
+        gpu.queue.write_buffer(&self.descriptors,(root as usize*std::mem::size_of::<Descriptor>()) as u64,bytemuck::cast_slice(&rows(rest)));
+        let mut moved=built;
+        moved.sphere=delta.transform_point3(Vec3::from_slice(&built.sphere[..3])).extend(built.sphere[3]*ratio).to_array();
+        moved.motion[0]=built.motion[0]*ratio;
+        let at=index as u64;
+        gpu.queue.write_buffer(&self.assemblies,at*std::mem::size_of::<AssemblyDescriptor>() as u64,bytemuck::bytes_of(&moved));
+        // animation.y marks the move for the scheduler (see schedule_assemblies).
+        gpu.queue.write_buffer(&self.schedules,at*std::mem::size_of::<AssemblyState>() as u64+16,bytemuck::cast_slice(&[1.0f32,1.0]));
+        Ok(())
     }
 
     pub fn poses(&self)->&wgpu::Buffer {&self.poses}
