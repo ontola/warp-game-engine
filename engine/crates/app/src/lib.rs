@@ -200,6 +200,9 @@ pub struct Config {
     pub tick_hz: f32,
     pub fullscreen: bool,
     pub keyboard: bool,
+    /// Deliver the free cursor to [`Game::pointer`] even with `keyboard`
+    /// off: the mouse points and clicks without becoming a player.
+    pub pointer: bool,
     /// Smoke test: quit after this many frames and print the frame rate.
     pub frames: u64,
     /// Render the 3D views at most this many pixels tall and scale them up
@@ -212,7 +215,7 @@ pub struct Config {
 }
 
 impl Default for Config {
-    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: false, keyboard: true, frames: 0, max_render_height: None, target_fps: None } }
+    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: false, keyboard: true, pointer: false, frames: 0, max_render_height: None, target_fps: None } }
 }
 
 /// The present path shared by the window and headless capture.
@@ -453,7 +456,8 @@ struct Shell<'g> {
 
 /// Open a window and run the game until it closes.
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
-    let devices = Devices::new(cfg.keyboard);
+    let mut devices = Devices::new(cfg.keyboard);
+    devices.pointer_enabled = cfg.pointer;
     let target_fps = game.target_fps().or(cfg.target_fps);
     let quality = quality::AdaptiveQuality::new(target_fps, None, Instant::now());
     let mut debug = debug::EngineDebug::default();

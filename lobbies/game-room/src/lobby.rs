@@ -253,16 +253,22 @@ impl Lobby {
     }
 
     fn skip_music(&mut self, id: &str, direction: i32) {
-        if self.station_for(id).is_none_or(|s| s.kind != "music") || !self.host.has_track() { return; }
+        if self.station_for(id).is_none_or(|s| s.kind != "music") { return; }
+        self.skip_music_as(Some(id), direction);
+    }
+
+    /// LB/RB at the jukebox, for a player or (None) the mouse.
+    pub(crate) fn skip_music_as(&mut self, id: Option<&str>, direction: i32) {
+        if !self.host.has_track() { return; }
         let action = if direction < 0 { "previous_track" } else { "next_track" };
         let station = if direction < 0 { "music0" } else { "music2" };
         if !self.cooldown(format!("{station}:{action}")) { return; }
         self.press_prompt("music", if direction < 0 { "LB" } else { "RB" });
         self.command(json!({"type": "media_control", "action": action}));
-        self.celebrate(id, station);
+        self.celebrate_as(id, station);
     }
 
-    fn browse(&mut self, step: i64) {
+    pub(crate) fn browse(&mut self, step: i64) {
         let n = self.host.shelf_games().len() as i64;
         if n == 0 { return; }
         self.host.shelf_offset = (self.host.shelf_offset as i64 + step).rem_euclid(n) as usize;
@@ -273,6 +279,12 @@ impl Lobby {
     /// Y uses the station; X is its second button (queue, skip, quit).
     pub fn use_station(&mut self, id: &str, queue: bool) {
         let Some(station) = self.station_for(id) else { return };
+        self.use_station_as(Some(id), station, queue);
+    }
+
+    /// Use `station` for a player, or for the mouse (None), which is nobody:
+    /// it never leaves the party or picks up a profile.
+    pub(crate) fn use_station_as(&mut self, id: Option<&str>, station: Station, queue: bool) {
         if !station.enabled || (!queue && station.loading) { return; }
         if !self.cooldown(format!("{}:{}:{}", station.id, station.action, if queue { "X" } else { "Y" })) { return; }
         self.press_prompt(if station.kind == "music" { "music" } else { &station.id }, if queue { "X" } else { "Y" });
@@ -324,11 +336,13 @@ impl Lobby {
             }
             "music" => self.command(json!({"type": "media_control", "action": station.action})),
             "exit" => {
+                let Some(id) = id else { return };
                 self.command(json!({"type": "leave_party", "player_id": id}));
                 let name = self.name(id);
                 self.toast(format!("{name} left. Press a button to join again."), DIM);
             }
             "door" => {
+                let Some(id) = id else { return };
                 let base = self.client.as_ref().map(|c| c.config.links_base.clone()).unwrap_or_default();
                 let now = monotonic();
                 if base.is_empty() || now < self.pickup_cooldown { return; }
@@ -350,7 +364,14 @@ impl Lobby {
             }
             _ => {}
         }
-        self.celebrate(id, &station.id);
+        self.celebrate_as(id, &station.id);
+    }
+
+    fn celebrate_as(&mut self, id: Option<&str>, station: &str) {
+        match id {
+            Some(id) => self.celebrate(id, station),
+            None => { self.pressed_flash.insert(station.into(), self.time); }
+        }
     }
 
     pub fn celebrate(&mut self, id: &str, station: &str) {
@@ -368,6 +389,7 @@ impl Lobby {
         let page = self.menus.get(id).map(|m| m.page.as_str()).unwrap_or("");
         if page == "lobbies" { return self.lobby_items(); }
         if page == "remove" { return self.remove_items(id); }
+        if id == crate::mouse::MOUSE { return self.mouse_items(); }
         let mut items = vec![MenuItem::new("Close menu", "close"), MenuItem::new("Leave the party", "leave")];
         // Hosts that predate couch positions don't send them.
         if self.profile(id).is_some_and(|p| p.couch.is_some()) { items.insert(1, MenuItem::new("Couch position", "couch")); }
@@ -390,6 +412,15 @@ impl Lobby {
             if p.id == id { p.couch = Some(to); }
         }
         self.command(json!({"type": "set_couch_position", "player_id": id, "position": to}));
+    }
+
+    /// The mouse's menu: nobody's, so only what the room itself can do.
+    fn mouse_items(&self) -> Vec<MenuItem> {
+        let mut items = vec![MenuItem::new("Close menu", "close")];
+        if !self.host.update_ready().is_empty() { items.push(MenuItem::new("Update GameNight now", "update")); }
+        if self.host.party["lobbies"].as_array().is_some_and(|l| l.len() > 1) { items.push(MenuItem::new("Switch lobby", "lobbies")); }
+        items.push(MenuItem::new("Quit GameNight", "quit"));
+        items
     }
 
     fn remove_items(&self, id: &str) -> Vec<MenuItem> {
@@ -419,7 +450,7 @@ impl Lobby {
         items
     }
 
-    fn menu_page(&mut self, id: &str, page: &str) {
+    pub(crate) fn menu_page(&mut self, id: &str, page: &str) {
         let current = self.host.party["lobbies"].as_array().and_then(|l| l.iter().position(|x| x["current"].as_bool().unwrap_or(false)));
         let Some(menu) = self.menus.get_mut(id) else { return };
         menu.page = page.into();
@@ -428,7 +459,7 @@ impl Lobby {
         if page == "lobbies" { if let Some(i) = current { menu.index = i; } }
     }
 
-    fn menu_input(&mut self, id: &str, pressed: u32, stick: [f32; 2]) {
+    pub(crate) fn menu_input(&mut self, id: &str, pressed: u32, stick: [f32; 2]) {
         let items = self.menu_items(id);
         let menu = self.menus.get_mut(id).unwrap();
         menu.index = menu.index.min(items.len() - 1);
@@ -573,6 +604,10 @@ impl Lobby {
             if let Some(station) = self.station_for(id) {
                 if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
             }
+        }
+        // The mouse lights what it points at, as if someone stood there.
+        if let Some(station) = self.mouse_station() {
+            if !occupied.contains_key(&station.id) || station.enabled { occupied.insert(station.id.clone(), station); }
         }
         let tv = self.host.tv_station();
         let tv_items: Vec<(&str, &str, bool)> = if tv.quit { vec![("Y", &tv.short, true), ("X", "Quit", true)] } else { vec![("Y", &tv.short, true)] };

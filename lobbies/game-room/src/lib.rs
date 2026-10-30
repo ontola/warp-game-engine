@@ -12,6 +12,7 @@ pub mod host;
 pub mod kit;
 pub mod live;
 pub mod lobby;
+pub mod mouse;
 pub mod paint;
 pub mod props;
 pub mod qr;

@@ -91,3 +91,57 @@ fn a_seated_player_starts_the_queued_game_at_the_tv() {
     }
     assert!(sent.iter().any(|m| m == &json!({"type": "next"})), "the TV starts the next game: {sent:?}");
 }
+
+#[test]
+fn the_mouse_is_nobody_but_works_the_room() {
+    let party = json!({
+        "players": [],
+        "seats": [],
+        "library": [{"id": "spaceracer", "title": "Space Racer", "color": "#38d6ff"}, {"id": "neon-siege", "title": "Neon Siege", "color": "#ff3df0"}],
+        "playlist": {"entries": [{"game": "spaceracer", "title": "Space Racer"}], "current": null},
+    });
+    let (url, _to_lobby, from_lobby) = fake_host(party);
+    let config = gamenight::lobby::Config { url, lobby_id: "game-room".into(), token: "secret".into(), links_base: String::new() };
+    let mut lobby = Lobby::connect_with(options(), config).unwrap();
+    run_until(&mut lobby, |l| l.accepts_input());
+    let size = [1920, 1080];
+    let point = |lobby: &mut Lobby, at: [f32; 2], pressed: bool, wheel: f32| {
+        app::Game::pointer(lobby, app::Pointer { position: Some(at), moved: true, pressed, held: false, wheel }, size);
+        lobby.update(1.0 / 60.0);
+    };
+    let sent = |from: &mpsc::Receiver<Value>, kind: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(m) = from.recv_timeout(Duration::from_millis(50)) && m["type"] == kind { return m; }
+        }
+        panic!("no {kind} sent");
+    };
+
+    // Pointing at the TV lights its buttons; nobody joins.
+    let tv = lobby.screen_point(glam::Vec3::new(0.0, 3.95, -2.0), size).unwrap();
+    point(&mut lobby, tv, false, 0.0);
+    assert!(lobby.prompt_active["tv"], "the TV's buttons show for the mouse");
+    assert!(lobby.world.players.is_empty() && lobby.profiles.is_empty(), "the mouse is not a player");
+    // A click does Y: start the next game.
+    point(&mut lobby, tv, true, 0.0);
+    sent(&from_lobby, "next");
+
+    // The wheel over the shelf browses it.
+    let shelf_x = ((game_room_sim::layout::GAME_SHELF.0 + game_room_sim::layout::GAME_SHELF.1) / 2.0) as f32;
+    let shelf = lobby.screen_point(glam::Vec3::new(shelf_x, 1.5, -2.0), size).unwrap();
+    point(&mut lobby, shelf, false, 0.0);
+    assert!(lobby.prompt_active["shelf"]);
+    let offset = lobby.host.shelf_offset;
+    point(&mut lobby, shelf, false, -1.0);
+    assert_ne!(lobby.host.shelf_offset, offset, "the wheel browses the shelf");
+
+    // Escape opens the room's own menu; clicking Quit twice quits GameNight.
+    assert!(app::Game::escape(&mut lobby), "Escape never closes the room");
+    assert!(lobby.mouse_menu_open());
+    let (_, rows) = game_room::hud::mouse_menu_rows(&lobby, size).unwrap();
+    let quit = rows.last().unwrap();
+    let at = [quit[0] + quit[2] / 2.0, quit[1] + quit[3] / 2.0];
+    point(&mut lobby, at, true, 0.0);
+    point(&mut lobby, at, true, 0.0);
+    sent(&from_lobby, "quit_party");
+}
