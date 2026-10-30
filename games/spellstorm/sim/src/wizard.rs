@@ -1168,7 +1168,8 @@ impl World {
             Shape::Overload => {
                 let pos = self.pos(id);
                 let at = if s.primary == Some(El::Water) {
-                    pos
+                    // The way it will roll: its start in front of the caster.
+                    pos + w.aim_dir * WAVE_START
                 } else {
                     pos + w.aim_dir * OVERLOAD_REACH
                 };
