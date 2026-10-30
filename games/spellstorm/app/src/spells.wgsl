@@ -151,12 +151,34 @@ fn blood(s: GameSprite) -> vec4<f32> {
     return vec4(lin(c), inside * (1.0 - 0.5 * suck));
 }
 
+// ---- A jet of water (the water spray) ----
+// params: time, seed. A shaft along the jet, its top (uv.y 0) the far end.
+// Dense white water, tight at the staff, streaks rushing outward, the edge
+// ragged and widening until it tears into spray at the end.
+
+fn jet(s: GameSprite) -> vec4<f32> {
+    let t = s.params.x;
+    let a = 1.0 - s.uv.y;
+    let m = a * s.size.y;
+    let x = s.uv.x * 2.0 - 1.0;
+    let n = sn_fbm(vec3(x * 2.5, m * 2.2 - t * 13.0, s.params.y));
+    let w = 0.22 + 0.78 * smoothstep(0.0, 1.0, a);
+    let edge = abs(x) / w + (n - 0.5) * (0.25 + 0.6 * a);
+    let core = 1.0 - smoothstep(0.3, 0.95, edge);
+    let streak = sn_noise(vec3(x * 9.0 / w, m * 1.4 - t * 19.0, s.params.y + 3.1));
+    let tear = 1.0 - smoothstep(0.7, 1.0, a + 0.25 * (n - 0.5));
+    let alpha = core * tear * smoothstep(0.0, 0.05, a) * (0.6 + 0.4 * streak);
+    let c = mix(lin(vec3(0.62, 0.8, 0.95)), vec3(1.0), smoothstep(0.2, 0.8, core) * (0.7 + 0.3 * streak));
+    return vec4(c, clamp(alpha, 0.0, 1.0));
+}
+
 fn game_sprite(s: GameSprite) -> vec4<f32> {
     switch s.effect {
         case 66u: { return wave(s); }
         case 67u: { return black_hole(s); }
         case 68u: { return molten(s); }
         case 69u: { return blood(s); }
+        case 70u: { return jet(s); }
         default: { return fx_sprite(s); }
     }
 }

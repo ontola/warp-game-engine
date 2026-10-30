@@ -42,6 +42,8 @@ pub const MOLTEN: u32 = 68;
 /// A pool of blood: params (to.x, to.z of the nearest wizard, pull +
 /// floor(suck * 1000), time).
 pub const BLOOD: u32 = 69;
+/// A jet of water along a shaft: params (time, seed, 0, 0).
+pub const JET: u32 = 70;
 
 struct State {
     /// The game's app/src, where fx.wgsl and spells.wgsl are.
