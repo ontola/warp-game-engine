@@ -1627,7 +1627,7 @@ mod tests {
         let report=builder.finish_aggregate(crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
         assert_eq!((report.plants,report.plant_proxies),(1,2));
         let forest=scene.voxel_forest.as_ref().unwrap();
-        assert_eq!(scene.voxel_proxies,2);assert_eq!(scene.voxel_proxy_pixels,4.0);assert_eq!(scene.voxel_proxy_pixels_from,100.0);
+        assert_eq!(scene.voxel_proxies,2);assert_eq!(scene.voxel_proxy_pixels,4.0);assert_eq!(scene.voxel_proxy_pixels_from,50.0);
         assert_eq!(scene.aggregate_lod.as_ref().unwrap().groups.len()+2,forest.instances.len());
         let tree=forest.instances[forest.instances.len()-2];
         let source_instance=scene.instances[owner];
