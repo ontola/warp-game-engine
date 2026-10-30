@@ -808,16 +808,14 @@ impl Fx {
                 p.damp = (0.5, 1.5);
                 self.shot(p, at + Vec3::Y * 0.1, Some(el), false);
             }
+            // No halo where a zap lands: a struck body flashes white itself
+            // (a haze in front of it hid the monster).
             Ev::Zap { a, b, c, width, time } => {
                 self.zap(a, b, lerp_c(c, WHITE, 0.0), width.max(0.05), 0.45, 0.5, time.max(0.06));
-                self.flash(b, c, 1.4, 0.14);
             }
             Ev::Chain { ref pts, c } => {
                 for p in pts.windows(2) {
                     self.zap(p[0], p[1], c, 0.12, 0.4, 0.5, 0.12);
-                }
-                if let Some(&l) = pts.last() {
-                    self.flash(l, c, 1.2, 0.12);
                 }
             }
             Ev::Thunder { at, top, c, width, radius } => {
