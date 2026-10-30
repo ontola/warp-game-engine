@@ -127,7 +127,7 @@ impl World {
         self.flow = State { pickup_timer: self.rng.range(10.0, 24.0) as f64 / prev_mult.max(0.1) as f64, ..State::default() };
         // Coop: the last wave's enemies go before anyone respawns.
         if self.coop { self.coop_clear_enemies(); }
-        self.modifier = if self.coop { None } else if self.forced_modifier.is_some() { self.forced_modifier } else if self.rng.f() < self.modifier_chance {
+        self.modifier = if self.coop { None } else if let Some(m) = self.next_modifier.take() { m } else if self.forced_modifier.is_some() { self.forced_modifier } else if self.rng.f() < self.modifier_chance {
             Some(MODIFIERS[self.rng.below(MODIFIERS.len() as u32) as usize].0)
         } else { None };
         let (lo, hi) = if self.modifier == Some(Modifier::SniperFight) { (110.0, 120.0) } else { (55.0, 95.0) };

@@ -8,7 +8,7 @@
 //! next round's rules.
 use app::{Buttons, Controls};
 use gamenight::{button, Client, Command, Pad, Seat};
-use growing_guns::{Rules, World};
+use growing_guns::{Modifier, Rules, World, MODIFIERS};
 use serde_json::{json, Value};
 use std::time::Instant;
 
@@ -23,6 +23,32 @@ fn specs() -> Value {
         {"key":"body_damage", "label":"Body shot damage % (next round)", "kind":"number", "default":100, "min":50, "max":200},
         {"key":"pickup_rate", "label":"Random pickup rate % (next round)", "kind":"number", "default":100, "min":0, "max":200}
     ])
+}
+
+/// The "Next round" pick: a modifier for one round, as buttons in the app.
+pub const NEXT_MODIFIER: &str = "next_modifier";
+const RANDOM: &str = "Random";
+const NO_MODIFIER: &str = "None";
+
+/// "LOW GRAVITY" as the app's button: "Low gravity".
+fn modifier_option(m: Modifier) -> String {
+    let t = m.title().to_lowercase();
+    let mut c = t.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
+fn next_modifier_spec() -> Value {
+    let mut options = vec![RANDOM.to_string(), NO_MODIFIER.to_string()];
+    options.extend(MODIFIERS.iter().map(|m| modifier_option(m.0)));
+    json!({"key": NEXT_MODIFIER, "label": "Next round", "kind": "choice", "default": RANDOM, "options": options,
+        "description": "A modifier for the next round only. Random rolls as usual."})
+}
+
+/// An option of [`next_modifier_spec`]: None for Random, `Some(None)` for no modifier.
+pub fn parse_next_modifier(option: &str) -> Result<Option<Option<Modifier>>, String> {
+    if option == RANDOM { return Ok(None); }
+    if option == NO_MODIFIER { return Ok(Some(None)); }
+    MODIFIERS.iter().find(|m| modifier_option(m.0) == option).map(|m| Some(Some(m.0))).ok_or_else(|| format!("unknown modifier {option:?}"))
 }
 
 /// The spec labels, in `specs()` order.
@@ -71,6 +97,8 @@ pub enum Ev {
     /// Build this match: `humans` seated players (names), `bots` more.
     Prepare { humans: Vec<String>, bots: usize },
     Names(Vec<String>),
+    /// The app picked the next round's modifier (None: back to random).
+    NextModifier(Option<Option<Modifier>>),
     Dispose,
 }
 
@@ -85,13 +113,15 @@ pub struct Party {
     triggers: Vec<u32>,
     /// Live control for the session assistant: its description and token file.
     live: Option<(String, std::path::PathBuf)>,
+    /// The app's "Next round" pick, until that round starts.
+    pub next_modifier: Option<Option<Modifier>>,
 }
 
 impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect() -> Option<Party> {
         match Client::connect_from_env("growing-guns") {
-            Ok(Some(client)) => Some(Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None }),
+            Ok(Some(client)) => Some(Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None }),
             Ok(None) => None,
             Err(e) => { eprintln!("gamenight: {e}"); None }
         }
@@ -118,6 +148,10 @@ impl Party {
             for c in cmds {
                 match c {
                     Command::Connected => { self.declare(); }
+                    Command::Setting { key, value } if key == NEXT_MODIFIER => match parse_next_modifier(value.as_str().unwrap_or("")) {
+                        Ok(m) => { self.next_modifier = m; out.push(Ev::NextModifier(m)); }
+                        Err(e) => eprintln!("gamenight: {e}"),
+                    },
                     Command::Setting { key, value } => match crate::knobs::from_setting(&key, &value) {
                         // A knob: written into its mod, which reloads by itself.
                         Some(Ok(file)) => println!("[gamenight] {key} = {value} (mods/{file})"),
@@ -163,7 +197,8 @@ impl Party {
     /// The settings (the party's and the knobs as percent sliders) and,
     /// with live control on, the session assistant's way in.
     fn declare(&self) {
-        let mut all = specs().as_array().cloned().unwrap_or_default();
+        let mut all = vec![next_modifier_spec()];
+        all.extend(specs().as_array().cloned().unwrap_or_default());
         for k in crate::knobs::settings() {
             all.push(json!({"key": k.key, "label": k.label, "kind": "number", "default": k.value, "min": k.min, "max": k.max}));
         }
@@ -182,6 +217,11 @@ impl Party {
         let Ok(v) = value.trim().parse::<f64>() else { return };
         let key = format!("{}{name}", crate::knobs::SETTING_PREFIX);
         if let Err(e) = self.client.send_json(json!({"type": "set_setting", "key": key, "value": (v * 100.0).round() as i64})) { eprintln!("gamenight: {e}"); }
+    }
+
+    /// The picked round has started: the app's buttons go back to Random.
+    pub fn next_modifier_used(&mut self) {
+        if self.next_modifier.take().is_some() && let Err(e) = self.client.send_json(json!({"type": "set_setting", "key": NEXT_MODIFIER, "value": RANDOM})) { eprintln!("gamenight: {e}"); }
     }
 
     /// Change setting `k` from the game's own menu (Godot `_gn_open_advanced`):
@@ -243,6 +283,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_next_round_pick_is_one_round_of_that_modifier() {
+        let spec = next_modifier_spec();
+        let options: Vec<&str> = spec["options"].as_array().unwrap().iter().map(|o| o.as_str().unwrap()).collect();
+        assert_eq!(&options[..3], &["Random", "None", "Low gravity"]);
+        assert!(options.contains(&"Blackout"));
+        for o in &options { parse_next_modifier(o).expect(o); }
+        assert_eq!(parse_next_modifier("Blackout"), Ok(Some(Some(Modifier::Blackout))));
+        let mut w = World::new_with(5, &[true; 2], |w| w.modifier_chance = 0.0);
+        w.next_modifier = parse_next_modifier("Blackout").unwrap();
+        w.next_round();
+        assert_eq!((w.modifier, w.next_modifier), (Some(Modifier::Blackout), None));
+        w.next_round();
+        assert_eq!(w.modifier, None);
+    }
+
+    #[test]
     fn settings_take_whole_numbers_in_range_and_set_the_world() {
         let mut s = Settings::default();
         assert!(s.change("gravity", &json!(50)));
@@ -289,7 +345,7 @@ mod tests {
             }
         });
         let client = Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
-        let mut party = Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None };
+        let mut party = Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None, next_modifier: None };
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let (mut prepared, mut fired) = (None, false);
         assert_eq!(party.screen(), app::Screen::Hidden);
