@@ -75,6 +75,8 @@ pub struct Piece {
 pub struct Look {
     mats: HashMap<usize, Mat>,
     meshes: HashMap<(usize, usize, usize), usize>,
+    /// Kit meshes cut for breaking, by (mesh, material).
+    chunks: HashMap<(usize, usize), Vec<(usize, Vec3)>>,
     /// Kit texture -> atlas tile (layer * 64 + cell).
     tiles: Vec<u32>,
     /// Built kits: their pieces.
@@ -86,7 +88,7 @@ pub struct Look {
 
 impl Look {
     pub fn empty() -> Look {
-        Look { mats: HashMap::new(), meshes: HashMap::new(), tiles: vec![], built: HashMap::new(), halo_layer: -1, halo_next: 0 }
+        Look { mats: HashMap::new(), meshes: HashMap::new(), chunks: HashMap::new(), tiles: vec![], built: HashMap::new(), halo_layer: -1, halo_next: 0 }
     }
 
     /// Put every noise picture in 2048 px atlas layers (8 x 8 cells).
@@ -115,7 +117,7 @@ impl Look {
         }
         let _ = layer_of;
         let halo_layer = scene.add_image("spellstorm-cards", image::RgbaImage::from_pixel(2048, 2048, image::Rgba([0, 0, 0, 0])));
-        Ok(Look { mats: HashMap::new(), meshes: HashMap::new(), tiles, built: HashMap::new(), halo_layer, halo_next: 0 })
+        Ok(Look { mats: HashMap::new(), meshes: HashMap::new(), chunks: HashMap::new(), tiles, built: HashMap::new(), halo_layer, halo_next: 0 })
     }
 
     /// Godot material `m` (a kit material index) in the scene.
@@ -284,30 +286,7 @@ impl Look {
         if let Some(&id) = self.meshes.get(&key) {
             return Some((id, mats[0]));
         }
-        let mut verts: Vec<Vec<Vertex>> = Vec::new();
-        let mut idx: Vec<Vec<u32>> = Vec::new();
-        for (s, m) in kits.file.meshes[mesh].surfaces.iter().zip(mats) {
-            let a = kits.arrays(s);
-            let v = (0..a.positions.len())
-                .map(|i| {
-                    let n = a.normals.get(i).copied().unwrap_or(Vec3::Y);
-                    let uv = if m.vcol {
-                        let c = a.colors.get(i).copied().unwrap_or([1.0; 4]);
-                        let b = c.map(|x| (x.clamp(0.0, 1.0) * 255.0).round());
-                        [b[0] + 256.0 * b[1], b[2] + 256.0 * b[3]]
-                    } else if let Some(cell) = m.cell {
-                        let uv = a.uvs.get(i).copied().unwrap_or([0.0; 2]);
-                        let (cx, cy) = ((cell % 8) as f32, (cell / 8) as f32);
-                        [(cx + 0.02 + uv[0].clamp(0.0, 1.0) * 0.96) / 8.0, (cy + 0.02 + uv[1].clamp(0.0, 1.0) * 0.96) / 8.0]
-                    } else {
-                        a.uvs.get(i).copied().unwrap_or([0.0; 2])
-                    };
-                    Vertex { pos: a.positions[i].to_array(), normal: n.to_array(), uv }
-                })
-                .collect();
-            verts.push(v);
-            idx.push(a.indices);
-        }
+        let (verts, idx) = surfaces(kits, mesh, mats);
         let parts: Vec<Part> = verts.iter().zip(&idx).zip(mats).filter(|((_, i), _)| !i.is_empty()).map(|((v, i), m)| Part { vertices: v, indices: i, material: m.id }).collect();
         if parts.is_empty() {
             return None;
@@ -315,6 +294,63 @@ impl Look {
         let id = scene.add_mesh(&ClusterMesh::build(&parts));
         self.meshes.insert(key, id);
         Some((id, mats[0]))
+    }
+
+    /// Kit mesh `mesh` cut into chunks for when it breaks (prop.gd's
+    /// pieces): its triangles grouped by a grid over its bounds, a cell to
+    /// about every 35 cm. Each chunk is its own scene mesh, centred on
+    /// itself, with where that middle sits in the kit mesh's space.
+    pub fn chunks(&mut self, kits: &Kits, scene: &mut Scene, mesh: usize, mat: Option<usize>) -> Vec<(usize, Vec3)> {
+        let key = (mesh, mat.unwrap_or(usize::MAX));
+        if let Some(c) = self.chunks.get(&key) {
+            return c.clone();
+        }
+        let mats: Option<Vec<Mat>> = kits.file.meshes[mesh]
+            .surfaces
+            .iter()
+            .map(|s| mat.or((s.material >= 0).then_some(s.material as usize)).map(|m| self.material(kits, scene, m)))
+            .collect();
+        let Some(mats) = mats else { return vec![] };
+        let (verts, idx) = surfaces(kits, mesh, &mats);
+        let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+        for v in verts.iter().flatten() {
+            lo = lo.min(Vec3::from(v.pos));
+            hi = hi.max(Vec3::from(v.pos));
+        }
+        let mut out = Vec::new();
+        if lo.x.is_finite() {
+            let n = ((hi - lo) / 0.35).round().clamp(Vec3::ONE, Vec3::splat(3.0));
+            let cell = |p: Vec3| -> usize {
+                let c = ((p - lo) / (hi - lo).max(Vec3::splat(1e-4)) * n).floor().clamp(Vec3::ZERO, n - 1.0);
+                (c.x + c.y * n.x + c.z * n.x * n.y) as usize
+            };
+            let cells = (n.x * n.y * n.z) as usize;
+            // Per cell, per surface: its triangles' corners.
+            let mut tri: Vec<Vec<Vec<u32>>> = vec![vec![Vec::new(); verts.len()]; cells];
+            for (s, (v, ix)) in verts.iter().zip(&idx).enumerate() {
+                for t in ix.chunks_exact(3) {
+                    let mid = (Vec3::from(v[t[0] as usize].pos) + Vec3::from(v[t[1] as usize].pos) + Vec3::from(v[t[2] as usize].pos)) / 3.0;
+                    tri[cell(mid)][s].extend_from_slice(t);
+                }
+            }
+            for per in tri {
+                let corners: Vec<Vec3> = per.iter().zip(&verts).flat_map(|(ix, v)| ix.iter().map(|&i| Vec3::from(v[i as usize].pos))).collect();
+                if corners.is_empty() {
+                    continue;
+                }
+                let mid = corners.iter().sum::<Vec3>() / corners.len() as f32;
+                let mut cv: Vec<Vec<Vertex>> = Vec::new();
+                let mut ci: Vec<Vec<u32>> = Vec::new();
+                for (ix, v) in per.iter().zip(&verts) {
+                    cv.push(ix.iter().map(|&i| Vertex { pos: (Vec3::from(v[i as usize].pos) - mid).to_array(), ..v[i as usize] }).collect());
+                    ci.push((0..ix.len() as u32).collect());
+                }
+                let parts: Vec<Part> = cv.iter().zip(&ci).zip(&mats).filter(|((_, i), _)| !i.is_empty()).map(|((v, i), m)| Part { vertices: v, indices: i, material: m.id }).collect();
+                out.push((scene.add_mesh(&ClusterMesh::build(&parts)), mid));
+            }
+        }
+        self.chunks.insert(key, out.clone());
+        out
     }
 
     /// The wizard's pieces for seat `seat`, its cloth in the seat's colours
@@ -412,6 +448,35 @@ fn aux_start(scene: &mut Scene) -> usize {
         scene.aux.push(0);
     }
     scene.aux.len()
+}
+
+/// Kit mesh `mesh`'s surfaces as vertices and indices, with these materials.
+fn surfaces(kits: &Kits, mesh: usize, mats: &[Mat]) -> (Vec<Vec<Vertex>>, Vec<Vec<u32>>) {
+    let mut verts: Vec<Vec<Vertex>> = Vec::new();
+    let mut idx: Vec<Vec<u32>> = Vec::new();
+    for (s, m) in kits.file.meshes[mesh].surfaces.iter().zip(mats) {
+        let a = kits.arrays(s);
+        let v = (0..a.positions.len())
+            .map(|i| {
+                let n = a.normals.get(i).copied().unwrap_or(Vec3::Y);
+                let uv = if m.vcol {
+                    let c = a.colors.get(i).copied().unwrap_or([1.0; 4]);
+                    let b = c.map(|x| (x.clamp(0.0, 1.0) * 255.0).round());
+                    [b[0] + 256.0 * b[1], b[2] + 256.0 * b[3]]
+                } else if let Some(cell) = m.cell {
+                    let uv = a.uvs.get(i).copied().unwrap_or([0.0; 2]);
+                    let (cx, cy) = ((cell % 8) as f32, (cell / 8) as f32);
+                    [(cx + 0.02 + uv[0].clamp(0.0, 1.0) * 0.96) / 8.0, (cy + 0.02 + uv[1].clamp(0.0, 1.0) * 0.96) / 8.0]
+                } else {
+                    a.uvs.get(i).copied().unwrap_or([0.0; 2])
+                };
+                Vertex { pos: a.positions[i].to_array(), normal: n.to_array(), uv }
+            })
+            .collect();
+        verts.push(v);
+        idx.push(a.indices);
+    }
+    (verts, idx)
 }
 
 /// Place a node's model transform at `at` (an Affine for the scene).

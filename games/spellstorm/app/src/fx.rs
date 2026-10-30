@@ -559,6 +559,9 @@ pub struct Fx {
     rng: u64,
     pub shake: f32,
     pub blasts: render::fx::Effects,
+    /// Props broken this tick: where the blow came from and how hard, for
+    /// the view to throw their chunks.
+    pub prop_hits: HashMap<usize, (Vec3, f32)>,
     /// Sprites of live things, made in `update`.
     live: Vec<Sprite>,
     live_lights: Vec<LocalLight>,
@@ -606,6 +609,7 @@ impl Default for Fx {
             rng: 0x9e37_79b9_7f4a_7c15,
             shake: 0.0,
             blasts,
+            prop_hits: HashMap::new(),
             live: vec![],
             live_lights: vec![],
             time: 0.0,
@@ -895,6 +899,7 @@ impl Fx {
                 self.emit(p, at, 24);
             }
             Ev::PropBroke { prop, from, power } => {
+                self.prop_hits.insert(prop, (from, power));
                 if let Some(p) = w.level.props.get(prop) {
                     let at = p.pos + Vec3::Y * 0.6;
                     let mut e = particles([0.42, 0.38, 0.33, 1.0], 18, 1.1, 0.5);
