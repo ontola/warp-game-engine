@@ -1760,7 +1760,7 @@ impl Renderer {
             sun_guard_bounds,
             sun_cache_guard_m,
             sun_cache_anchor: Default::default(),
-            wind_freeze: crate::wind::WindFreeze::parse(std::env::var("KERN_WIND_FREEZE").ok().as_deref()),
+            wind_freeze: crate::wind::WindFreeze::configured(std::env::var("KERN_WIND_FREEZE").ok().as_deref()),
             wind_freeze_pin: Default::default(),
             sun_terrain_error: std::env::var("KERN_SUN_TERRAIN_ERROR").as_deref()==Ok("1"),
             sun_surface_source: std::env::var("KERN_SUN_SURFACE_SOURCE").as_deref()==Ok("1"),
