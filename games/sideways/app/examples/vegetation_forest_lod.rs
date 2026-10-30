@@ -48,11 +48,13 @@ struct Args {
     error: f32,
     shadow_lod: f32,
     reference_cell: f32,
+    /// Off shows the shared sun map alone (it holds rasterized voxels).
+    near_shadows: bool,
 }
 
 fn args() -> Result<Args, String> {
     let raw: Vec<_> = std::env::args().skip(1).collect();
-    let usage = "vegetation_forest_lod --root GAME_ROOT --out FRESH_DIRECTORY [--trees 4] [--views 1|4] [--distances 50,150,400] [--spacing 12] [--width 1920] [--height 1080] [--warmup 32] [--samples 48] [--time 4.25] [--step 0.0166666667] [--taa 0|1] [--mode source|auto|both] [--error 1] [--shadow-lod 1] [--reference-cell 0.075]";
+    let usage = "vegetation_forest_lod --root GAME_ROOT --out FRESH_DIRECTORY [--trees 4] [--views 1|4] [--distances 50,150,400] [--spacing 12] [--width 1920] [--height 1080] [--warmup 32] [--samples 48] [--time 4.25] [--step 0.0166666667] [--taa 0|1] [--mode source|auto|both] [--error 1] [--shadow-lod 1] [--reference-cell 0.075] [--near-shadows 1|0]";
     if raw.is_empty() || raw.len() % 2 != 0 {
         return Err(usage.into());
     }
@@ -76,6 +78,7 @@ fn args() -> Result<Args, String> {
             "--error",
             "--shadow-lod",
             "--reference-cell",
+            "--near-shadows",
         ]
         .contains(&pair[0].as_str())
             || map.insert(pair[0].as_str(), pair[1].as_str()).is_some()
@@ -168,6 +171,7 @@ fn args() -> Result<Args, String> {
         error: error as f32,
         shadow_lod: shadow_lod as f32,
         reference_cell: reference_cell as f32,
+        near_shadows: value("--near-shadows", "1") != "0",
     })
 }
 
@@ -729,6 +733,7 @@ fn run(args: Args) -> Result<(), String> {
     let (scene, bounds, inventory) = build_scene(&args)?;
     let mut light = Lighting {
         taa: if args.taa { 1.0 } else { 0.0 },
+        near_shadows: if args.near_shadows { 1.0 } else { 0.0 },
         sharpen: 0.0,
         // Explicit source cuts keep tree camera geometry exact. This separate
         // ordinary renderer CLOD setting bounds triangle shadow cost in both modes.

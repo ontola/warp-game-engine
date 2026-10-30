@@ -177,8 +177,25 @@ struct SplatRaster {
     cell_count: u32,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    /// Sun map: voxel_sun_splats needs no camera group, so group 1 is empty.
+    sun_layout: wgpu::PipelineLayout,
+    sun_empty: wgpu::BindGroup,
+    sun_splats: wgpu::ComputePipeline,
+    sun_raster: wgpu::RenderPipeline,
+    /// The sun target's selection buffer and its splat targets.
+    sun_target: Mutex<Option<(wgpu::Buffer, Targets)>>,
+}
+/// Where render_sun draws: the sun map's depth, view and texel size.
+pub(crate) struct SunSplatView<'a> {
+    pub depth: &'a wgpu::TextureView,
+    pub view_proj: glam::Mat4,
+    pub planes: [[f32; 4]; 6],
+    /// Towards the sun.
+    pub direction: glam::Vec3,
+    pub texel_m: f32,
 }
 struct SplatTargets {
+    records: wgpu::Buffer,
     draw: wgpu::Buffer,
     id: wgpu::TextureView,
     depth: wgpu::TextureView,
@@ -264,7 +281,7 @@ pub(crate) struct VoxelRenderer {
     owners: Vec<u32>,
     targets: Mutex<Vec<Option<Targets>>>,
 }
-pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], temporal: Option<[wgpu::ComputePipeline;8]>, source: String }
+pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], temporal: Option<[wgpu::ComputePipeline;8]>, sun: Option<wgpu::ComputePipeline>, source: String }
 /// Native generation contains neither temporal resources nor per-sample work.
 /// Explicit blocks keep shader reload transactional for both pipeline sets.
 fn temporal_source(source:&str,enabled:bool)->Result<String,String> {
@@ -293,7 +310,13 @@ fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
         entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
 }
-fn splat_raster(gpu: &Gpu, cells: &[[u32; 4]]) -> SplatRaster {
+fn sun_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
+    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("voxel sun splats"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("voxel_sun_splats"), layout: Some(layout),
+        module: &module, entry_point: Some("voxel_sun_splats"), compilation_options: Default::default(), cache: gpu.pipeline_cache() })
+}
+fn splat_raster(gpu: &Gpu, cells: &[[u32; 4]], scene_layout: &wgpu::BindGroupLayout, data_layout: &wgpu::BindGroupLayout, source: &str) -> SplatRaster {
     let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel splat raster"),
         entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
@@ -314,9 +337,27 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 4]]) -> SplatRaster {
             targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
         multiview_mask: None, cache: gpu.pipeline_cache(),
     });
+    // Like the scene's sun raster: ordinary Z with the same bias.
+    let sun_raster = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("voxel sun splat raster"), layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(),
+            bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 } }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_depth"), compilation_options: Default::default(), targets: &[] }),
+        multiview_mask: None, cache: gpu.pipeline_cache(),
+    });
+    let empty_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("voxel sun splats"), entries: &[] });
+    let sun_empty = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel sun splats"), layout: &empty_layout, entries: &[] });
+    let sun_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("voxel sun splats"),
+        bind_group_layouts: &[Some(scene_layout), Some(&empty_layout), Some(data_layout)], immediate_size: 0 });
+    let sun_splats = sun_splat_pipeline(gpu, &sun_layout, source);
     let cells_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE });
-    SplatRaster { cells: cells_buffer, cell_count: cells.len() as u32, layout, pipeline }
+    SplatRaster { cells: cells_buffer, cell_count: cells.len() as u32, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster,
+        sun_target: Mutex::new(None) }
 }
 fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool) -> [wgpu::ComputePipeline; 8] {
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -603,7 +644,7 @@ impl VoxelRenderer {
         let raster = if integrator_options.raster { match splat_cells(forest) {
             Ok(cells) if !cells.is_empty() => {
                 eprintln!("voxel raster: enabled cells={} (stochastic opaque voxels; integrator off)", cells.len());
-                Some(splat_raster(gpu, &cells))
+                Some(splat_raster(gpu, &cells, scene_layout, &data_layout, &specialized_source))
             }
             Ok(_) => { eprintln!("voxel raster fallback: no occupied cells"); None }
             Err(error) => { eprintln!("voxel raster fallback: {error}"); None }
@@ -728,11 +769,13 @@ impl VoxelRenderer {
             let specialized=self.integrator_options.specialize(&temporal_source(&source,true)?)?;
             Some(crate::shaders::checked(gpu,||self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals))?)
         } else {None};
-        Ok(Some(Reload { pipelines, temporal, source }))
+        let sun=self.raster.as_ref().map(|r|crate::shaders::checked(gpu,||sun_splat_pipeline(gpu,&r.sun_layout,&specialized_source))).transpose()?;
+        Ok(Some(Reload { pipelines, temporal, sun, source }))
     }
     pub(crate) fn commit_reload(&mut self, reload: Reload) {
         [self.bins, self.tiles, self.clear, self.integrate,self.intervals,self.scatter,self.splats,self.resolve] = reload.pipelines;
         if let Some(pipelines)=reload.temporal {self.temporal.lock().unwrap().as_mut().unwrap().pipelines=pipelines;}
+        if let (Some(raster),Some(sun))=(self.raster.as_mut(),reload.sun) {raster.sun_splats=sun;}
         self.source = reload.source;
     }
     pub(crate) fn set_view_count(&self, count: usize) {
@@ -872,10 +915,10 @@ impl VoxelRenderer {
         let splat_id = texture("voxel splat id", wgpu::TextureFormat::R32Uint);
         let splat_depth = texture("voxel splat depth", wgpu::TextureFormat::Depth32Float);
         let splat_capacity = self.raster.as_ref().map_or(0, |r| u64::from(r.cell_count)
-            .min((u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) / 16 - 8) / 4));
+            .min((u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) / 16 - 12) / 4));
         let splat_records = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel splats"), size: (8 + 4 * splat_capacity) * 16,
-            usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
+            label: Some("voxel splats"), size: (12 + 4 * splat_capacity) * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let splat_draw = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel splat draw"), size: 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -895,7 +938,7 @@ impl VoxelRenderer {
         let splat = self.raster.as_ref().map(|raster| SplatTargets {
             bind: gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel splat raster"), layout: &raster.layout,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: splat_records.as_entire_binding() }] }),
-            draw: splat_draw.clone(), id: splat_id.clone(), depth: splat_depth.clone(),
+            records: splat_records.clone(), draw: splat_draw.clone(), id: splat_id.clone(), depth: splat_depth.clone(),
         });
         if let Some((_,previous))=temporal {
             entries.push(wgpu::BindGroupEntry {binding:10,resource:wgpu::BindingResource::TextureView(motion_view.as_ref().unwrap())});
@@ -1079,6 +1122,50 @@ impl VoxelRenderer {
         pass.set_pipeline(&self.composite);
         pass.set_bind_group(0, &target.composite, &[]);
         pass.draw(0..3, 0..1);
+        Ok(())
+    }
+    /// Whether render_sun draws this forest into the sun map (rasterized
+    /// voxels on). The caller then marks the sun selection with
+    /// sun_selection, so the replaced source stops casting there.
+    pub(crate) fn casts_sun(&self) -> bool { self.raster.is_some() }
+    pub(crate) fn sun_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] { [[1, u32::MAX, 0, 2]; MAX_VIEW_GROUPS] }
+    /// Draw the voxels of every sun-casting group into the sun map, after
+    /// its source raster. `selection` is the sun view's selection buffer.
+    pub(crate) fn render_sun(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, scene: &wgpu::BindGroup,
+        selection: &wgpu::Buffer, sun: SunSplatView<'_>, times: [Option<(&wgpu::QuerySet, u32)>; 2]) -> Result<(), String> {
+        let Some(raster) = &self.raster else { return Ok(()) };
+        let mut slot = raster.sun_target.lock().unwrap();
+        if !slot.as_ref().is_some_and(|(buffer, _)| buffer == selection) {
+            *slot = Some((selection.clone(), self.targets(gpu, (1, 1), selection, None)?));
+        }
+        let target = &slot.as_ref().unwrap().1;
+        let splat = target.splat.as_ref().unwrap();
+        let mut header = [[0.0f32; 4]; 12];
+        header[..4].copy_from_slice(&sun.view_proj.to_cols_array_2d());
+        header[4..10].copy_from_slice(&sun.planes);
+        header[10] = [sun.direction.x, sun.direction.y, sun.direction.z, sun.texel_m];
+        gpu.queue.write_buffer(&splat.records, 0, bytemuck::cast_slice(&header));
+        encoder.clear_buffer(&splat.draw, 0, None);
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel sun splats"),
+                timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
+                    query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
+            pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, &raster.sun_empty, &[]); pass.set_bind_group(2, &target.bind, &[]);
+            pass.set_pipeline(&raster.sun_splats);
+            let groups = raster.cell_count.div_ceil(64);
+            pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535).max(1), 1);
+        }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("voxel sun splat raster"), color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: sun.depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+            timestamp_writes: times[1].map(|(query_set, i)| wgpu::RenderPassTimestampWrites {
+                query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
+            occlusion_query_set: None, multiview_mask: None,
+        });
+        pass.set_pipeline(&raster.sun_raster);
+        pass.set_bind_group(0, &splat.bind, &[]);
+        pass.draw_indirect(&splat.draw, 0);
         Ok(())
     }
     pub(crate) fn motion_layer(&self,index:usize)->Option<(wgpu::TextureView,wgpu::TextureView)> {

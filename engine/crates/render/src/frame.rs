@@ -3219,6 +3219,11 @@ impl Renderer {
         // Reserve negative values for sun demand without changing alpha mips.
         if self.receiver_demand.enabled() {shadow_uniform.extra[2]=-1.0;}
         if draw_main_sun { gpu.queue.write_buffer(&shadow_t.uniform, 0, bytemuck::bytes_of(&shadow_uniform)); }
+        // Rasterized voxels cast the replaced branch groups in the shared sun
+        // map; their source stops casting there (cull.wgsl, selection w 2).
+        if draw_main_sun && static_sun.is_none() && self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun()) {
+            gpu.queue.write_buffer(&shadow_t.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
+        }
         if draw_static_sun {
             let target = static_targets.get_or_insert_with(||self.view_targets_capacity(gpu,"static shared sun",self.shadow_capacity,false,false));
             gpu.queue.write_buffer(&target.uniform,0,bytemuck::bytes_of(&shadow_uniform));
@@ -3387,6 +3392,12 @@ impl Renderer {
                     &mut ts,&mut names,"dynamic sun cull",RasterPass::SunDynamic(static_counts.dynamic_casters));
             } else {
                 self.cull_and_raster(&mut enc, gpu, &shadow_t, None, &shadow_v, &mut ts, &mut names, "shadow cull",RasterPass::Sun);
+                if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.casts_sun()) {
+                    let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
+                        let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
+                    forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
+                        depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:texel},times)?;
+                }
             }
         }
         if far_updated {

@@ -3,7 +3,7 @@
 // leaves the nearest kept cell. Records come from voxel_splats in
 // voxel_forest.wgsl, which documents the layout.
 @group(0) @binding(0) var<storage,read> splats: array<vec4<f32>>;
-const HEADER: u32 = 8u;
+const HEADER: u32 = 12u;
 struct Out {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) splat: u32,
@@ -32,12 +32,18 @@ fn hash(x: u32) -> u32 {
     h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
     return (h >> 22u) ^ h;
 }
-@fragment fn fs(in: Out) -> @location(0) u32 {
-    // Keyed on the static cell, not the per-frame list slot, so a still
-    // image does not shimmer.
+// Keyed on the static cell, not the per-frame list slot, so a still image
+// does not shimmer.
+fn kept(in: Out) -> bool {
     let cell = bitcast<u32>(splats[HEADER + (in.splat - 1u) * 4u + 1u].w);
     let p = vec2<u32>(in.position.xy);
-    let u = f32(hash(p.x ^ hash(p.y ^ hash(cell))) >> 8u) / 16777216.0;
-    if u >= in.alpha { discard; }
+    return f32(hash(p.x ^ hash(p.y ^ hash(cell))) >> 8u) / 16777216.0 < in.alpha;
+}
+@fragment fn fs(in: Out) -> @location(0) u32 {
+    if !kept(in) { discard; }
     return in.splat;
+}
+// Sun map: depth only.
+@fragment fn fs_depth(in: Out) {
+    if !kept(in) { discard; }
 }
