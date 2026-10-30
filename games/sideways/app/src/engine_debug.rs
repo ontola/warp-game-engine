@@ -113,7 +113,7 @@ impl EngineDebug {
         let mut number=|id,label:&str,value,min,max,step,decimals,unit:&str,help:&str|controls.push(DebugControl {id,label:label.into(),
             value:DebugValue::Number {value,min,max,step,decimals,unit:unit.into()},enabled:true,
             menu:match id {EXPOSURE=>Some(105),LOD=>Some(ADVANCED_MENU),TREE_SIZE..=TREE_BLUE=>Some(TREES_MENU),_=>Some(GRASS_MENU)},advanced:false,help:help.into()});
-        number(DISTANCE,"Grass draw distance",f64::from(self.options.meadow_distance_scale)*100.0,25.0,100.0,5.0,0,"%","Scales both grass representations within allocated range. 100% = 80 m source / 180 m far. Density is unchanged.");
+        number(DISTANCE,"Grass draw distance",f64::from(self.options.meadow_distance_scale)*100.0,10.0,100.0,5.0,0,"%","Scales both grass representations within allocated range. 100% = 80 m source / 180 m far. Density is unchanged.");
         number(LOD,"Geometry LOD error",f64::from(self.lod_pixels),0.5,4.0,0.25,2,"px","Larger error permits simpler tree, rock and other cluster meshes. Grass uses its separate source LOD.");
         number(EXPOSURE,"Exposure offset",f64::from(self.exposure_offset),-3.0,3.0,0.25,2,"EV","Positive EV darkens the image; negative EV brightens it. Relative to the selected time of day.");
         number(GRASS_SIZE,"Plant size",f64::from(self.options.meadow_size_scale)*100.0,50.0,200.0,5.0,0,"%","Live size around each fixed root; near and distant grass use the same scale.");
@@ -168,7 +168,7 @@ impl EngineDebug {
                 GLASS=>self.options.transparency_enabled=value,EXHAUST=>self.options.exhaust_enabled=value,
                 PARTICLES=>self.options.wheel_particles_enabled=value,FOG=>self.fog=value,BLOOM=>self.options.bloom_enabled=value,_=>return},
             DebugAction::SetNumber{id,value} if value.is_finite()=>match id {
-                DISTANCE=>self.options.meadow_distance_scale=(value/100.0).clamp(0.25,1.0) as f32,
+                DISTANCE=>self.options.meadow_distance_scale=(value/100.0).clamp(f64::from(render::debug_settings::MEADOW_DISTANCE_SCALE_MIN),1.0) as f32,
                 GRASS_SIZE=>self.options.meadow_size_scale=(value/100.0).clamp(0.5,2.0) as f32,
                 GRASS_COUNT=>self.options.meadow_density=(value/100.0).clamp(0.0,1.0) as f32,
                 GRASS_RED..=GRASS_BLUE=>self.options.meadow_color_multiplier[(id-GRASS_RED) as usize]=(value/100.0).clamp(0.0,2.0) as f32,

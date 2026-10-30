@@ -13,14 +13,15 @@
 use std::path::PathBuf;
 
 /// The built-in copies of every file that can be read from disk.
-pub(crate) const SHARED_NAMES: [&str; 14] = ["game_surface.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "foliage_volume.wgsl", "shade.wgsl",
+pub(crate) const SHARED_NAMES: [&str; 15] = ["game_surface.wgsl", "terrain_surface.wgsl", "wind_common.wgsl", "terrain_trace.wgsl", "meadow_field.wgsl", "meadow_canopy.wgsl", "foliage_volume.wgsl", "shade.wgsl",
     "world_visibility.wgsl", "foliage_sun_pages.wgsl", "car_material.wgsl", "grass_lighting.wgsl", "headlights.wgsl", "car_lamps.wgsl", "procedural_surface.wgsl"];
-const BUILT_IN: [(&str, &str); 18] = [
+const BUILT_IN: [(&str, &str); 19] = [
     ("game_surface.wgsl", include_str!("shaders/game_surface.wgsl")),
     ("terrain_surface.wgsl", include_str!("shaders/terrain_surface.wgsl")),
     ("procedural_surface.wgsl", include_str!("shaders/procedural_surface.wgsl")),
     ("foliage_volume.wgsl", include_str!("shaders/foliage_volume.wgsl")),
     ("meadow_field.wgsl", include_str!("shaders/meadow_field.wgsl")),
+    ("meadow_canopy.wgsl", include_str!("shaders/meadow_canopy.wgsl")),
     ("foliage_sun_pages.wgsl", include_str!("shaders/foliage_sun_pages.wgsl")),
     ("terrain_trace.wgsl", include_str!("shaders/terrain_trace.wgsl")),
     ("world_visibility.wgsl", include_str!("shaders/world_visibility.wgsl")),

@@ -104,7 +104,7 @@ impl EngineDebug {
         number(EXPOSURE, RENDER_MENU, "Exposure offset", f64::from(s.exposure), (-3.0, 3.0, 0.25, 2), "EV", "Positive darkens, negative brightens.");
         number(SUN, LIGHT_MENU, "Sun", f64::from(s.sun) * 100.0, (0.0, 200.0, 10.0, 0), "%", "Sun illuminance.");
         number(SHADOWS, LIGHT_MENU, "Shadow strength", f64::from(s.shadows) * 100.0, (0.0, 100.0, 10.0, 0), "%", "0% leaves the sun unshadowed.");
-        number(GRASS_DISTANCE, GRASS_MENU, "Grass draw distance", f64::from(s.options.meadow_distance_scale) * 100.0, (25.0, 100.0, 5.0, 0), "%", "Shrinks the grass radius; density unchanged.");
+        number(GRASS_DISTANCE, GRASS_MENU, "Grass draw distance", f64::from(s.options.meadow_distance_scale) * 100.0, (10.0, 100.0, 5.0, 0), "%", "Shrinks the blade radius; past it the ground is shaded as grass. Density unchanged.");
         number(GRASS_SIZE, GRASS_MENU, "Grass size", f64::from(s.options.meadow_size_scale) * 100.0, (50.0, 200.0, 5.0, 0), "%", "Blade size around fixed roots.");
         number(GRASS_COUNT, GRASS_MENU, "Grass patch count", f64::from(s.options.meadow_density) * 100.0, (0.0, 100.0, 5.0, 0), "%", "Share of grass patches drawn.");
         number(GRASS_LOD, GRASS_MENU, "Grass LOD error", f64::from(s.options.meadow_lod_pixels), (0.5, 4.0, 0.25, 2), "px", "Higher picks simpler blades sooner.");
@@ -170,7 +170,7 @@ impl EngineDebug {
                 EXPOSURE => s.exposure = value.clamp(-3.0, 3.0) as f32,
                 SUN => s.sun = pct(value, 0.0, 2.0),
                 SHADOWS => s.shadows = pct(value, 0.0, 1.0),
-                GRASS_DISTANCE => s.options.meadow_distance_scale = pct(value, 0.25, 1.0),
+                GRASS_DISTANCE => s.options.meadow_distance_scale = pct(value, f64::from(render::debug_settings::MEADOW_DISTANCE_SCALE_MIN), 1.0),
                 GRASS_SIZE => s.options.meadow_size_scale = pct(value, 0.5, 2.0),
                 GRASS_COUNT => s.options.meadow_density = pct(value, 0.0, 1.0),
                 GRASS_LOD => s.options.meadow_lod_pixels = value.clamp(0.5, 4.0) as f32,
