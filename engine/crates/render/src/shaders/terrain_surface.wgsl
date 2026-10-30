@@ -231,10 +231,14 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     let sun_xz = length(sun.xz);
     var shade = 0.0;
     if sun.y > 0.02 && sun_xz > 1e-3 && stand < 1.0 {
-        let reach = min(params.style.far.w * sun_xz / sun.y, 120.0);
+        let reach = min(params.style.far.w * 1.3 * sun_xz / sun.y, 160.0);
         let toward = sun.xz / sun_xz;
-        for (var k = 1; k <= 4; k++) {
-            shade = max(shade, far_forest_stand(s.p.xz + toward * reach * f32(k) * 0.25, seed, site, footprint, edge_w));
+        // Crowns differ in height, so the shadow fades out over the last
+        // part of its reach instead of ending in steps one tap apart.
+        for (var k = 1; k <= 8; k++) {
+            let t = f32(k) * 0.125;
+            let tall = 1.0 - smoothstep(0.5, 1.0, t);
+            shade = max(shade, tall * far_forest_stand(s.p.xz + toward * reach * t, seed, site, footprint, edge_w));
         }
     }
     let shaded = ground * mix(1.0, 0.45, shade * (1.0 - stand) * fade);
