@@ -142,6 +142,8 @@ pub struct View {
     /// How long each wizard has lain fallen.
     /// The fallen wizards as ragdolls.
     dolls: crate::ragdoll::Dolls,
+    /// The level's even ambient light (lux), for what is lit game-side.
+    ambient: Vec3,
     /// Each wizard's hurt_t last frame: a new hit spurts blood.
     wizard_hurt: Vec<f64>,
 }
@@ -182,6 +184,7 @@ impl View {
             wizard_pieces: HashMap::new(),
             wizard_anims: vec![],
             dolls: Default::default(),
+            ambient: Vec3::ZERO,
             wizard_hurt: vec![],
             enemy_anims: HashMap::new(),
             debris: Vec::new(),
@@ -373,6 +376,7 @@ impl View {
         // Ambient light: Godot's flat ambient colour, as an even irradiance
         // over the level (one probe every 8 m).
         let amb = linear3(biome.ambient) * 0.45 * LIGHT;
+        self.ambient = amb;
         let lo = Vec3::new(-l.half.x - 40.0, -2.0, -l.half.y - 20.0);
         let cell = 8.0;
         let dims = [((l.half.x * 2.0 + 80.0) / cell) as u32 + 2, 3, ((l.half.y * 2.0 + 40.0) / cell) as u32 + 2];
@@ -621,6 +625,9 @@ impl View {
             LocalLight { intensity_cd: l.light.intensity_cd * k, ..l.light }
         }));
         renderer.set_local_lights(&locals)?;
+        // Blood is lit by these next frame, as the floor is (Fx::lit_at).
+        self.fx.env_lights = locals.clone();
+        self.fx.env_light = self.ambient + self.light.sun_color * self.light.sun_lux * self.light.sun_dir.y.max(0.0);
         let spots = &self.marks.spots[..self.marks.spots.len().min(render::headlights::MAX_LIGHTS)];
         renderer.set_headlights(spots)?;
         renderer.set_spot_falloff(&vec![crate::marks::STAFF_FALLOFF; spots.len()]);

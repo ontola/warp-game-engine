@@ -77,12 +77,15 @@ fn schedule_assemblies(@builtin(global_invocation_id) invocation:vec3<u32>) {
         factor=smoothstep(part_state.lod.x,part_state.lod.y,pixels);
     }
     let first=part_state.counts.z!=0u;let awake=factor>0.0;let was_awake=old.animation.x>0.0;
-    let wake=awake && !was_awake && !first;
+    // The host moved this assembly (PartWindRenderer::move_assembly): write
+    // every pose once, with previous=current so the jump has no motion.
+    let moved=old.animation.y>0.0;
+    let wake=(awake && !was_awake && !first) || moved;
     let idle=select(min(old.state.y+1u,2u),0u,awake);
     // Mode2 writes current poses/members. Mode1 settles previous=current once
     // after entering rest, including volume consumers. Mode0 touches neither.
     var mode=0u;
-    if first || awake || was_awake {mode=2u;} else if old.state.y<2u {mode=1u;}
+    if first || awake || was_awake || moved {mode=2u;} else if old.state.y<2u {mode=1u;}
     let epoch=old.state.z ^ select(0u,128u,wake);
     assembly_states[index]=AssemblyState(vec4<u32>(mode,idle,epoch,u32(first || wake)),vec4<f32>(factor,0.0,0.0,0.0));
     if mode==2u && assembly.range.w!=0u {

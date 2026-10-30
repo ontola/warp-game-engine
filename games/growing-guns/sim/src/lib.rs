@@ -105,6 +105,12 @@ pub const FELL_OFF_Y: f32 = -30.0;
 /// Card body changes scale them into ellipsoids (see `Player::hitboxes`).
 pub const HITBOXES: [(f32, f32, bool); 3] = [(-0.20, 0.31, false), (0.16, 0.37, false), (0.64, 0.27, true)];
 
+/// A tracked weapon pose for one tick, in metres relative to the player's
+/// capsule centre. Kept outside Input/Snapshot so desktop replay and network
+/// wire formats stay unchanged. Desktop callers continue to use `step`.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackedAim { pub offset: Vec3, pub direction: Vec3 }
+
 /// One tick of input for one player. `jump`, `dash` and `reload` are edges
 /// (pressed this tick); `fire` and `special` are held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -476,6 +482,7 @@ pub struct World {
     booms: Vec<(Vec3, f32, f32, usize)>,
     rng: Rng,
     brains: Vec<bot::Brain>,
+    tracked_aims: Vec<Option<TrackedAim>>,
     gives: Vec<(usize, cards::Card)>,
     damages: Vec<(usize, i32, Option<usize>)>,
     delayed: Vec<(u32, Delayed)>,
@@ -498,7 +505,7 @@ impl World {
             forced_modifier: None, next_modifier: None, force_island: false, coop: false, waves: coop::Waves::default(), lava: flow::LavaLeak::default(),
             events: Vec::new(), breakage: Breakage::default(), bots_paused: false,
             cards: Arc::default(), hooks: HookSlot::default(), script_rng: Rng::new(seed ^ 0x5C21_97E5), flow: flow::State::default(),
-            carves: Vec::new(), booms: Vec::new(), rng, brains, gives: Vec::new(), damages: Vec::new(), delayed: Vec::new(),
+            carves: Vec::new(), booms: Vec::new(), rng, brains, tracked_aims: Vec::new(), gives: Vec::new(), damages: Vec::new(), delayed: Vec::new(),
         };
         setup(&mut w);
         w.start_round();
@@ -506,6 +513,19 @@ impl World {
     }
 
     pub fn step(&mut self, inputs: &[Input]) {
+        self.step_tracked(inputs, &[]);
+    }
+
+    /// Step with optional controller aiming. Movement/look still use Input;
+    /// weapon rays use the controller. Invalid/lost poses fall back to normal
+    /// aiming; the caller must release fire on tracking loss.
+    pub fn step_tracked(&mut self, inputs: &[Input], aims: &[Option<TrackedAim>]) {
+        self.tracked_aims.clear();
+        self.tracked_aims.extend(aims.iter().take(self.players.len()).map(|a| a.filter(|a|
+            a.offset.is_finite() && a.offset.length() <= 2.5 &&
+            a.direction.is_finite() && a.direction.length_squared().is_finite() && a.direction.length_squared() > 0.5
+        ).map(|a| TrackedAim { offset: a.offset, direction: a.direction.normalize() })));
+
         self.events.clear();
         self.breakage = Breakage::default();
         self.tick += 1;
@@ -535,6 +555,22 @@ impl World {
         self.flow_tick(&inp);
         self.step_delayed();
         if let Some(h) = self.hooks.0.clone() { h.tick(self); }
+    }
+
+    /// Clip a tracked muzzle against solid geometry so a controller cannot
+    /// shoot through cover while the player's body remains behind it.
+    pub(crate) fn tracked_ray(&self, i: usize) -> Option<(Vec3, Vec3)> {
+        let a = self.tracked_aims.get(i).copied().flatten()?;
+        let p = &self.players[i];
+        let desired = p.pos + a.offset;
+        let delta = desired - p.eye();
+        let distance = delta.length();
+        let from = if distance > 0.001 {
+            let direction = delta / distance;
+            self.ray_world(p.eye(), direction, distance, &[])
+                .map_or(desired, |(t, _, _)| p.eye() + direction * (t - 0.03).max(0.0))
+        } else { desired };
+        Some((from, a.direction))
     }
 
     /// A card's effect and hook, as when picked.

@@ -122,8 +122,11 @@ impl World {
     /// Godot `_fire_grenade_internal`: from the muzzle along the camera.
     fn throw(&mut self, i: usize, kind: ProjectileKind) {
         let p = &self.players[i];
-        let dir = p.forward();
-        let at = p.muzzle() + dir * 0.6;
+        let tracked = self.tracked_ray(i);
+        let (muzzle, dir) = tracked.unwrap_or((p.muzzle(), p.forward()));
+        // Tracked weapons already sit at the physical muzzle; do not push a
+        // grenade through cover by adding the desktop forward offset.
+        let at = if tracked.is_some() { muzzle } else { muzzle + dir * 0.6 };
         self.spawn_projectile(kind, at, dir * GRENADE_SPEED + Vec3::Y * GRENADE_LIFT, i);
     }
 

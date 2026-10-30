@@ -363,6 +363,21 @@ pub struct PlantHandle {
     pub branch_owners: Vec<Option<u32>>,
     /// Original assembly branch order; source-only branches have no volume representation.
     pub group_keys: Vec<Option<GroupKey>>,
+    /// What Renderer::move_plant needs to move this full plant at runtime.
+    pub movable: MovablePlant,
+}
+
+/// A full plant that can stand at another root without rebuilding the scene
+/// (Renderer::move_plant): a pool of these streams full assemblies to the
+/// trees nearest the cameras (recipe_forest::Pool).
+#[derive(Clone, Debug)]
+pub struct MovablePlant {
+    /// The root it was appended with. Moves keep it rigid and may only shrink it.
+    pub built: Mat4,
+    /// Its root pose (PartWind index).
+    pub pose: u32,
+    /// Its aggregate groups, in Scene::aggregate_lod order.
+    pub groups: Range<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -802,6 +817,8 @@ impl<'a> SceneVegetation<'a> {
             volume_range: volume_base..self.bindings.len(),
             branch_owners,
             group_keys,
+            movable: MovablePlant { built: instance.root, pose: pose_base as u32,
+                groups: aggregate_base as u32..self.aggregate_groups.len() as u32 },
         })
     }
 
@@ -1634,6 +1651,40 @@ mod tests {
         crate::vegetation_aggregate::Config {reference_cell_size:0.05,triangle_refinements:true,levels:2,diagnostic_resolution:4,
             max_placements:4,max_source_triangles:16,max_samples:100_000,max_reference_voxels:4096,
             max_diagnostic_steps:2_000_000,..Default::default()}
+    }
+
+    /// A full plant moves to another root at runtime (recipe_forest::Pool):
+    /// cargo test -p render --lib vegetation_asset::tests::a_full_plant_moves_without_a_rebuild -- --ignored
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn a_full_plant_moves_without_a_rebuild() {
+        use crate::{Camera, Lighting, Renderer, ViewRect};
+        let source=aggregate_fixture();
+        let mut cooked=CookedPlant::cook_aggregate(&source,aggregate_config()).unwrap();
+        cooked.cook_proxy(&source,aggregate_config(),3).unwrap();
+        let mut scene=Scene::default();
+        let built=Mat4::from_scale_rotation_translation(Vec3::splat(2.0),Quat::IDENTITY,Vec3::ZERO);
+        let mut builder=SceneVegetation::new(&mut scene,AttachLimits::default()).unwrap();
+        let handle=builder.append(&cooked,instance(1,built)).unwrap();
+        let target=Vec3::new(20.0,0.0,0.0);
+        builder.append_proxy(&cooked,instance(2,Mat4::from_translation(target))).unwrap();
+        let report=builder.finish_aggregate(crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
+        assert_eq!(handle.movable.pose,0);
+        assert_eq!(handle.movable.groups,0..3);
+        let gpu=crate::Gpu::new().unwrap();
+        let light=Lighting::default();
+        let renderer=Renderer::new(&gpu,&scene,&light);
+        let view=[ViewRect {cam:Camera {pos:target+Vec3::new(0.3,0.4,1.6),target:target+Vec3::new(0.3,0.4,0.0),fov_y:1.0,near:0.05},x:0,y:0,w:64,h:64}];
+        let picks:Vec<_>=(0..8).flat_map(|y|(0..8).map(move|x|(4+x*8,4+y*8))).collect();
+        let hits=|renderer:&Renderer|renderer.try_render_views(&gpu,&view,&light,64,64,&picks).unwrap().1.picks.iter()
+            .filter(|p|p.is_some_and(|(i,_,_)|handle.instance_range.contains(&(i as usize)))).count();
+        assert_eq!(hits(&renderer),0,"the full plant stands at its built root");
+        let moved=Mat4::from_scale_rotation_translation(Vec3::splat(1.5),Quat::from_rotation_y(0.3),target);
+        assert!(renderer.move_plant(&gpu,&handle.movable,Mat4::from_scale_rotation_translation(Vec3::splat(2.5),Quat::IDENTITY,target)).is_err(),"never grows");
+        renderer.move_plant(&gpu,&handle.movable,moved).unwrap();
+        renderer.set_plant_proxies_hidden(&gpu,&[(report.volume_instances as u32,true)]).unwrap();
+        assert!(renderer.set_plant_proxies_hidden(&gpu,&[(0,true)]).is_err(),"only proxies hide");
+        assert!(hits(&renderer)>0,"the moved plant draws at its new root");
     }
 
     #[test]

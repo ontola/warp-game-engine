@@ -14,7 +14,7 @@ use crate::level::Level;
 use crate::relics::Mods;
 use crate::rng::{Pcg, Rand};
 use crate::run::Run;
-use crate::wizard::{Pad, Wizard};
+use crate::wizard::{Pad, Wizard, STAGES};
 use glam::{Vec2, Vec3};
 use hecs::Entity;
 use std::collections::BTreeMap;
@@ -980,19 +980,19 @@ impl World {
     /// Mana, queue and forms for everyone: the most learned player's stage.
     pub fn group_stage(&self) -> usize {
         if self.settings.forced_unlocks >= 0 {
-            return self.settings.forced_unlocks.clamp(0, 3) as usize;
+            return self.settings.forced_unlocks.clamp(0, STAGES as i32 - 1) as usize;
         }
         if self.settings.unlock_all {
-            return 3;
+            return STAGES - 1;
         }
         let mut s = -1;
         for &id in &self.wizards {
             let w = self.ecs.get::<&Wizard>(id).unwrap();
             if w.bot.is_none() {
-                s = s.max(w.unlocks.clamp(0, 3));
+                s = s.max(w.unlocks.clamp(0, STAGES as i32 - 1));
             }
         }
-        if s < 0 { 3 } else { s as usize }
+        if s < 0 { STAGES - 1 } else { s as usize }
     }
 
     /// Everyone's queue and mana follow the stage when it changes.

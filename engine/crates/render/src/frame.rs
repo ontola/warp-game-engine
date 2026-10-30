@@ -54,15 +54,18 @@ const NEAR_SHADOW_EXTENT: f32 = 16.0;
 /// a full spruce assembly casts for ~2.5 ms (low2, 8 trees: 18 ms; 2x: 9.5,
 /// 4x: 1.5). But coarser spray cards lose coverage, and the crowns' shadows
 /// on the ground thin out visibly already at 2x, so 1 until their LOD keeps it.
-/// The finest voxel cell the near shadow map splats (texel_m only picks the
-/// level): its 1.6 cm texels would take every tree's 10 cm level, ~80k cells
-/// each. 0.5 m takes the 40 cm level: low2, 3 full spruces, near sun splats
-/// 2.26 -> 0.63 ms and their raster 2.0 -> 0.44 ms, the crowns' ground
-/// shadows only slightly softer. KERN_NEAR_SUN_VOXEL_M overrides it.
-fn near_sun_voxel_m() -> f32 {
-    static CELL: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *CELL.get_or_init(|| std::env::var("KERN_NEAR_SUN_VOXEL_M").ok().and_then(|v| v.parse().ok())
-        .unwrap_or(0.5f32).max(2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32))
+/// The finest voxel cell a sun map splats (texel_m only picks the level):
+/// at their texels (near 1.6 cm, shared ~4.4 cm) every tree would take its
+/// 10 cm level, ~80k cells each. The near map takes 0.5 m cells (the 40 cm
+/// level), the shared map, which only shades past it, 1 m. terrain_fly low2,
+/// 3 full spruces: near sun splats 2.26 -> 0.63 ms, their raster 2.0 -> 0.44;
+/// Sideways' 32k recipe trees, shared map: splats 30 -> 2.4 ms, raster 62 ->
+/// 5.5. Crown shadows only get slightly softer. KERN_SUN_VOXEL_M sets both.
+const NEAR_SUN_VOXEL_M: f32 = 0.5;
+const SHARED_SUN_VOXEL_M: f32 = 1.0;
+fn sun_voxel_m(texel: f32, cell: f32) -> f32 {
+    static CELL: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::env::var("KERN_SUN_VOXEL_M").ok().and_then(|v| v.parse().ok())).unwrap_or(cell).max(texel)
 }
 fn near_sun_source() -> bool {
     static SOURCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -2443,7 +2446,12 @@ impl Renderer {
         }
         if self.wind.update(gpu, state)? { self.invalidate_dynamic_shadow(); }
         if let Some(parts) = &self.part_wind {
-            if parts.update(gpu, state)? { self.invalidate_dynamic_shadow(); }
+            // Branch wind moves the shared sun map's casters only when they
+            // cast as source: with voxel casting their groups splat 1 m cells
+            // there (the near map, redrawn each frame, keeps the sway).
+            if parts.update(gpu, state)? && !self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun()) {
+                self.invalidate_dynamic_shadow();
+            }
         }
         if let Some(meadow) = &self.meadow {
             // Ordinary elapsed time retains correspondence with the previous
@@ -2959,6 +2967,32 @@ impl Renderer {
         Ok(())
     }
 
+    /// Stand a full plant (SceneVegetation::append) at `root`: its built root
+    /// moved rigidly and at most shrunk. Poses, members, branch volumes and
+    /// aggregate groups follow on the GPU from the next frame; no rebuild.
+    pub fn move_plant(&self, gpu: &Gpu, plant: &crate::vegetation_asset::MovablePlant, root: Mat4) -> Result<(), String> {
+        let parts = self.part_wind.as_ref().ok_or("moved plant has no part wind rig")?;
+        let ratio = max_column(root) / max_column(plant.built);
+        let delta = root * plant.built.inverse();
+        parts.move_assembly(gpu, plant.pose, delta, ratio)?;
+        if !plant.groups.is_empty() {
+            self.aggregate_lod.as_ref().ok_or("moved plant has no aggregate selection")?
+                .move_groups(gpu, plant.groups.clone(), delta, ratio)?;
+        }
+        self.invalidate_dynamic_shadow();
+        Ok(())
+    }
+
+    /// Hide whole-plant proxies (forest volume indices) whose plant a moved
+    /// full assembly now stands in for, and show the ones it left.
+    pub fn set_plant_proxies_hidden(&self, gpu: &Gpu, volumes: &[(u32, bool)]) -> Result<(), String> {
+        if volumes.is_empty() { return Ok(()); }
+        let forest = self.voxel_forest.as_ref().ok_or("no voxel forest")?;
+        for &(volume, hidden) in volumes { forest.set_proxy_hidden(gpu, volume, hidden)?; }
+        self.invalidate_dynamic_shadow();
+        Ok(())
+    }
+
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.baked_animations.as_ref().is_some_and(|animation|animation.contains_owner_range(first,instances.len())) {
             return Err("baked actor parts are driven by the shared GPU animation pass".into());
@@ -3202,7 +3236,10 @@ impl Renderer {
             });}
             // Far/static foliage maps own immutable copies of their instance
             // buffers and do not consume the animated PartWind transforms.
-            if self.part_wind.as_ref().unwrap().animation_views_changed(&part_animation_views)? {
+            // Nor does the shared map with voxel casting (see set_wind): the
+            // views change every frame (TAA jitter), which redrew it each frame.
+            if self.part_wind.as_ref().unwrap().animation_views_changed(&part_animation_views)?
+                && !self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun()) {
                 self.invalidate_dynamic_shadow();
             }
         }
@@ -3507,7 +3544,7 @@ impl Renderer {
                     let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
                         let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                     forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
-                        depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:texel},times)?;
+                        depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M)},times)?;
                 }
             }
         }
@@ -3646,7 +3683,7 @@ impl Renderer {
                         let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                     forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&near.targets.foliage_selection,crate::voxel_forest::SunSplatView {
                         depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
-                        texel_m:near_sun_voxel_m()},times)?;
+                        texel_m:sun_voxel_m(2.0*NEAR_SHADOW_EXTENT/NEAR_SHADOW_SIZE as f32,NEAR_SUN_VOXEL_M)},times)?;
                 }
                 view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
                 view_light.near_shadow[2] = 1.0;
@@ -5073,4 +5110,8 @@ mod solar_effect_tests {
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<ToneUniform>(),80);
     }
+}
+
+fn max_column(m: Mat4) -> f32 {
+    m.x_axis.truncate().length().max(m.y_axis.truncate().length()).max(m.z_axis.truncate().length())
 }
