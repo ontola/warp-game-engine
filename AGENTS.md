@@ -63,7 +63,11 @@ line for line identical: `render/src/terrain_field.rs` (CPU: LOD error,
 collision, baking) and `render/src/shaders/terrain_field.wgsl` (GPU patches).
 Check parity with `cargo run --release -p render --example procedural_terrain
 -- --dump --only NAME` (one shot at a time; the full suite reports false
-mismatches). Surface shading lives in `shaders/terrain_surface.wgsl`. Far
+mismatches). Surface shading lives in `shaders/terrain_surface.wgsl`. The forest
+(where trees stand, and what a distant forest looks like) is
+`render/src/forest_field.rs` with `shaders/forest_field.wgsl`, also line for
+line identical (its `gpu_matches_cpu` test checks them); sample the terrain
+at a cut above 0, since `x / 0` in the terrain fade is not portable WGSL. Far
 mountain shadows are baked (`procedural_terrain::sun_heightfield` into
 `Scene::terrain_sun`); keep heightfield heights at the -1e9 sentinel for
 procedural terrain, real coarse heights black out pixels in GI/transmittance.
