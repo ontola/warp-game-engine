@@ -22,8 +22,9 @@ use std::sync::Mutex;
 /// target saturates anyway.
 const MAX_CD: f32 = 100_000_000.0;
 const SPHERE_VERTICES: u32 = 16 * 9 * 6;
-const COLUMN_VERTICES: u32 = 16 * 6;
+const COLUMN_VERTICES: u32 = 3; // One ray-integrated volume, including camera-inside views.
 const STREAK_VERTICES: u32 = 6 * 12;
+const MOTE_VERTICES: u32 = 6;
 const MAX_PUFFS: usize = 16384;
 /// Heat shells only for blasts at least this big (Godot BLAST_DISTORTION_MIN_RADIUS).
 pub const DISTORTION_MIN_RADIUS: f32 = 5.0;
@@ -46,11 +47,13 @@ const EMBER: f32 = 2.0;
 const HEAT: f32 = 3.0;
 const COLUMN: f32 = 4.0;
 const STREAK: f32 = 5.0;
+const MOTE: f32 = 6.0;
 
-/// An unlit, additive cylinder animated entirely from its birth time. Values
-/// are metres, seconds and linear RGB radiance in nits. `position` is the
-/// bottom centre; the cylinder has open ends so long columns have no visible
-/// cap. Several nested columns can describe a soft beam without a volume.
+/// An emissive volume animated entirely from its birth time. Values are
+/// metres, seconds and linear RGB radiance in nits. `position` is the bottom
+/// centre. The GPU integrates a soft radial density along the visible ray,
+/// clipped to opaque geometry; cameras may enter the volume. Tapered columns
+/// use eight density samples, straight cylinders an exact integral.
 #[derive(Clone, Copy, Debug)]
 pub struct AdditiveColumn {
     pub position: Vec3,
@@ -108,6 +111,44 @@ impl Default for AdditiveStreak {
         Self { position: Vec3::ZERO, travel: Vec3::Y, birth: 0.0, life: 1.0,
             radius: [0.05; 2], length: [0.1; 2], color: Vec3::ONE,
             radiance: 1000.0, opacity: 1.0, fade_in: 0.1, fade_out: 0.5, motion_power: 1.0 }
+    }
+}
+
+/// A soft round, camera-facing light point. GPU motion follows age^motion_power:
+/// 1 is linear, values above 1 start at rest and accelerate. Fade durations
+/// are fractions of life. Radius is in metres; no CPU simulation is needed.
+#[derive(Clone, Copy, Debug)]
+pub struct AdditiveMote {
+    pub position: Vec3,
+    pub travel: Vec3,
+    pub birth: f32,
+    pub life: f32,
+    pub radius: f32,
+    pub color: Vec3,
+    pub radiance: f32,
+    pub opacity: f32,
+    pub fade_in: f32,
+    pub fade_out: f32,
+    pub motion_power: f32,
+}
+
+impl Default for AdditiveMote {
+    fn default() -> Self {
+        Self { position: Vec3::ZERO, travel: Vec3::Y, birth: 0.0, life: 2.0,
+            radius: 0.025, color: Vec3::ONE, radiance: 1000.0, opacity: 1.0,
+            fade_in: 0.3, fade_out: 0.3, motion_power: 3.0 }
+    }
+}
+
+impl AdditiveMote {
+    fn puff(self) -> Result<Puff, String> {
+        // Reuse the common additive particle validation and packed layout.
+        let mut puff = AdditiveStreak { position: self.position, travel: self.travel,
+            birth: self.birth, life: self.life, radius: [self.radius; 2], length: [0.0; 2],
+            color: self.color, radiance: self.radiance, opacity: self.opacity,
+            fade_in: self.fade_in, fade_out: self.fade_out, motion_power: self.motion_power }.puff()?;
+        puff.center_kind[3] = MOTE;
+        Ok(puff)
     }
 }
 
@@ -213,6 +254,12 @@ impl Effects {
     }
 
     pub fn streak(&mut self, spec: AdditiveStreak) -> Result<(), String> {
+        let puff = spec.puff()?;
+        self.additive(puff);
+        Ok(())
+    }
+
+    pub fn mote(&mut self, spec: AdditiveMote) -> Result<(), String> {
         let puff = spec.puff()?;
         self.additive(puff);
         Ok(())
@@ -398,7 +445,7 @@ impl Effects {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniform { view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4] }
+struct Uniform { view_proj: [[f32; 4]; 4], inverse_view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4] }
 
 struct Target {
     size: (u32, u32),
@@ -421,16 +468,18 @@ struct DrawOrder {
     embers: Vec<u32>,
     columns: Vec<u32>,
     streaks: Vec<u32>,
+    motes: Vec<u32>,
     ids: Vec<u32>,
 }
 
 impl DrawOrder {
-    fn prepare(&mut self, source: &[Puff], time: f32, camera: Vec3) -> [u32; 5] {
+    fn prepare(&mut self, source: &[Puff], time: f32, camera: Vec3) -> [u32; 6] {
         self.heat.clear();
         self.billows.clear();
         self.embers.clear();
         self.columns.clear();
         self.streaks.clear();
+        self.motes.clear();
         self.ids.clear();
         for (i, p) in source.iter().enumerate() {
             if p.end() <= time || p.timing[0] > time { continue; }
@@ -440,6 +489,7 @@ impl DrawOrder {
                 3 => self.heat.push(i as u32),
                 4 => self.columns.push(i as u32),
                 5 => self.streaks.push(i as u32),
+                6 => self.motes.push(i as u32),
                 _ => {},
             }
         }
@@ -447,9 +497,9 @@ impl DrawOrder {
         // order as stable sort without that algorithm's temporary allocation.
         self.billows.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         self.ids.extend(self.heat.iter().copied().chain(self.billows.iter().map(|b| b.0))
-            .chain(self.embers.iter().copied()).chain(self.columns.iter().copied()).chain(self.streaks.iter().copied()));
+            .chain(self.embers.iter().copied()).chain(self.columns.iter().copied()).chain(self.streaks.iter().copied()).chain(self.motes.iter().copied()));
         [self.heat.len() as u32, self.billows.len() as u32, self.embers.len() as u32,
-            self.columns.len() as u32, self.streaks.len() as u32]
+            self.columns.len() as u32, self.streaks.len() as u32, self.motes.len() as u32]
     }
 }
 
@@ -461,7 +511,8 @@ pub(crate) struct FxRenderer {
     heat: wgpu::RenderPipeline,
     column: wgpu::RenderPipeline,
     streak: wgpu::RenderPipeline,
-    ldr: Option<(wgpu::TextureFormat,[wgpu::RenderPipeline;4])>,
+    mote: wgpu::RenderPipeline,
+    ldr: Option<(wgpu::TextureFormat,[wgpu::RenderPipeline;5])>,
     sampler: wgpu::Sampler,
     puffs: wgpu::Buffer,
     source: Vec<Puff>,
@@ -498,19 +549,20 @@ impl FxRenderer {
         let heat = pipe("fx_vs", "fx_heat", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let column = pipe("fx_column_vs", "fx_column", additive);
         let streak = pipe("fx_streak_vs", "fx_streak", additive);
+        let mote = pipe("fx_mote_vs", "fx_mote", additive);
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("fx background"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
             address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, ..Default::default() });
         let puffs = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("fx puffs"), size: (MAX_PUFFS * std::mem::size_of::<Puff>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        FxRenderer { layout, billow, ember, heat, column, streak, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
+        FxRenderer { layout, billow, ember, heat, column, streak, mote, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
             draw_order: DrawOrder::default(), targets: Vec::new() }
     }
 
-    fn ldr_pipelines(&self,gpu:&Gpu,format:wgpu::TextureFormat)->[wgpu::RenderPipeline;4] {
+    fn ldr_pipelines(&self,gpu:&Gpu,format:wgpu::TextureFormat)->[wgpu::RenderPipeline;5] {
         let shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimum gameplay FX"),source:wgpu::ShaderSource::Wgsl(shader_source().into())});
         let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&self.layout)],immediate_size:0});
         let additive=wgpu::BlendState{color:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::One,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Zero,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add}};
-        [("fx_vs","fx_billow",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),("fx_vs","fx_ember",additive),("fx_column_vs","fx_column",additive),("fx_streak_vs","fx_streak",additive)].map(|(vertex,fragment,blend)|
+        [("fx_vs","fx_billow",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),("fx_vs","fx_ember",additive),("fx_column_vs","fx_column",additive),("fx_streak_vs","fx_streak",additive),("fx_mote_vs","fx_mote",additive)].map(|(vertex,fragment,blend)|
             gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some(fragment),layout:Some(&layout),
                 vertex:wgpu::VertexState{module:&shader,entry_point:Some(vertex),compilation_options:Default::default(),buffers:&[]},
                 primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},depth_stencil:None,multisample:Default::default(),
@@ -551,7 +603,7 @@ impl FxRenderer {
         camera:Camera,view:Mat4,output_vp:Mat4,depth_vp:Mat4,white:f32,exposure:f32)->Result<Option<wgpu::Texture>,String> {
         let ldr=exposure>0.0;
         // Heat first (it refracts the plain scene), then billows back to front, then embers.
-        let [nh, nb, ne, nc, ns] = self.draw_order.prepare(&self.source, self.time, camera.pos);
+        let [nh, nb, ne, nc, ns, nm] = self.draw_order.prepare(&self.source, self.time, camera.pos);
         if self.draw_order.ids.is_empty() { return Ok(None); }
         if if ldr {!matches!(input.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb)||!input.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT)}else{input.format()!=wgpu::TextureFormat::Rgba16Float||!input.usage().contains(wgpu::TextureUsages::COPY_SRC|wgpu::TextureUsages::TEXTURE_BINDING)} {
             return Err("fx requires copyable sampleable HDR input".into());
@@ -575,7 +627,7 @@ impl FxRenderer {
                 backgrounds, binds });
         }
         let t = self.targets[index].as_mut().unwrap();
-        let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(), view: view.to_cols_array_2d(),
+        let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), inverse_view_proj: output_vp.inverse().to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(), view: view.to_cols_array_2d(),
             camera_near: camera.pos.extend(camera.near).to_array(), size: [size.0 as f32, size.1 as f32, 1.0 / size.0 as f32, 1.0 / size.1 as f32],
             clock: [self.time, white, exposure, if input.format().is_srgb(){1.0}else{0.0}] };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
@@ -597,6 +649,7 @@ impl FxRenderer {
         if ne > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[1]}else{&self.ember}); pass.draw(0..SPHERE_VERTICES, nh + nb..nh + nb + ne); }
         if nc > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[2]}else{&self.column}); pass.draw(0..COLUMN_VERTICES, nh + nb + ne..nh + nb + ne + nc); }
         if ns > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[3]}else{&self.streak}); pass.draw(0..STREAK_VERTICES, nh + nb + ne + nc..nh + nb + ne + nc + ns); }
+        if nm > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[4]}else{&self.mote}); pass.draw(0..MOTE_VERTICES, nh + nb + ne + nc + ns..nh + nb + ne + nc + ns + nm); }
         drop(pass);
         Ok((!ldr).then(||t.output.clone()))
     }
@@ -626,17 +679,17 @@ mod tests {
             puff(FIRE, -1.0, 0.0, 1.0), puff(SMOKE, -3.0, 0.0, 1.0), puff(FIRE, 3.0, 0.0, 1.0),
             puff(EMBER, 0.0, 0.0, 1.0), puff(HEAT, 0.0, 0.0, 1.0),
             puff(COLUMN, 0.0, 0.0, 1.0), puff(STREAK, 0.0, 0.0, 1.0),
-            puff(FIRE, -5.0, -1.0, 1.0), puff(HEAT, 0.0, 1.0, 1.0),
+            puff(FIRE, -5.0, -1.0, 1.0), puff(HEAT, 0.0, 1.0, 1.0), puff(MOTE, 0.0, 0.0, 1.0),
         ];
         let mut order = DrawOrder::default();
-        assert_eq!(order.prepare(&source, 0.0, Vec3::ZERO), [1, 3, 1, 1, 1]);
-        assert_eq!(order.ids, [4, 1, 2, 0, 3, 5, 6]);
+        assert_eq!(order.prepare(&source, 0.0, Vec3::ZERO), [1, 3, 1, 1, 1, 1]);
+        assert_eq!(order.ids, [4, 1, 2, 0, 3, 5, 6, 9]);
         // Another view must recompute distance, retaining the same layer order.
-        assert_eq!(order.prepare(&source, 0.0, Vec3::Z * 4.0), [1, 3, 1, 1, 1]);
-        assert_eq!(order.ids, [4, 1, 0, 2, 3, 5, 6]);
-        assert_eq!(order.prepare(&source, 1.0, Vec3::ZERO), [1, 0, 0, 0, 0]);
+        assert_eq!(order.prepare(&source, 0.0, Vec3::Z * 4.0), [1, 3, 1, 1, 1, 1]);
+        assert_eq!(order.ids, [4, 1, 0, 2, 3, 5, 6, 9]);
+        assert_eq!(order.prepare(&source, 1.0, Vec3::ZERO), [1, 0, 0, 0, 0, 0]);
         assert_eq!(order.ids, [8]);
-        assert_eq!(order.prepare(&source, 2.0, Vec3::ZERO), [0; 5]);
+        assert_eq!(order.prepare(&source, 2.0, Vec3::ZERO), [0; 6]);
         assert!(order.ids.is_empty());
     }
 
@@ -645,11 +698,11 @@ mod tests {
         // Deliberately repeat positions across smoke and fire to exercise many
         // equal-depth ties while the camera moves between independent views.
         let source: Vec<_> = (0..256).map(|i| Puff {
-            center_kind: [(i % 5) as f32, 0.0, (i % 7) as f32, (i % 6) as f32],
+            center_kind: [(i % 5) as f32, 0.0, (i % 7) as f32, (i % 7) as f32],
             timing: [0.0, 1.0, 0.0, 0.0], ..Default::default()
         }).collect();
         let capacities = |order: &DrawOrder| [order.heat.capacity(), order.billows.capacity(),
-            order.embers.capacity(), order.columns.capacity(), order.streaks.capacity(), order.ids.capacity()];
+            order.embers.capacity(), order.columns.capacity(), order.streaks.capacity(), order.motes.capacity(), order.ids.capacity()];
         let mut order = DrawOrder::default();
         order.prepare(&source, 0.0, Vec3::ZERO);
         let allocated = capacities(&order);
@@ -671,7 +724,7 @@ mod tests {
         let module = naga::front::wgsl::parse_str(shader_source()).unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<Puff>(), 112);
-        assert_eq!(std::mem::size_of::<Uniform>(), 240);
+        assert_eq!(std::mem::size_of::<Uniform>(), 304);
     }
 
     #[test]
@@ -724,7 +777,7 @@ mod tests {
         assert_eq!(s.ay, [0.1, 0.2, 16.0, 24.0]);
         assert_eq!(s.body, [0.7, 0.0, 0.85, 0.0]);
         assert!(fx.changed);
-        assert_eq!(COLUMN_VERTICES, 96);
+        assert_eq!(COLUMN_VERTICES, 3);
         assert_eq!(STREAK_VERTICES, 72);
         assert!(STREAK_VERTICES < SPHERE_VERTICES / 8);
     }
@@ -755,6 +808,12 @@ mod tests {
             AdditiveStreak { fade_in: 0.5, fade_out: 0.6, ..s },
             AdditiveStreak { motion_power: 33.0, ..s },
         ] { assert!(fx.streak(bad).is_err()); }
+        let m = AdditiveMote::default();
+        for bad in [AdditiveMote { radius: f32::NAN, ..m },
+            AdditiveMote { motion_power: 0.0, ..m },
+            AdditiveMote { fade_in: 0.8, fade_out: 0.8, ..m }] {
+            assert!(fx.mote(bad).is_err());
+        }
         assert!(fx.is_empty());
         assert!(!fx.changed);
     }
