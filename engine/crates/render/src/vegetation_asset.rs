@@ -64,6 +64,9 @@ pub struct CookedPlant {
     stats: CookStats,
     /// The whole plant as one voxel pyramid in the root branch frame.
     proxy: Option<VoxelAsset>,
+    /// Unique per cook_proxy call, so append_proxy finds the shared asset
+    /// and its support without comparing voxels.
+    proxy_id: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -242,6 +245,7 @@ impl CookedPlant {
             branches,
             stats,
             proxy: None,
+            proxy_id: 0,
         })
     }
 
@@ -297,6 +301,8 @@ impl CookedPlant {
             return Err("plant proxy frame differs from the root branch".into());
         }
         self.proxy = Some(asset);
+        static NEXT_PROXY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.proxy_id = NEXT_PROXY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -438,6 +444,8 @@ pub struct SceneVegetation<'a> {
     aggregate_groups: Vec<crate::aggregate_lod::Group>,
     proxy_assets: Vec<VoxelAsset>,
     proxy_bindings: Vec<VolumeBinding>,
+    /// CookedPlant::proxy_id: its proxy_assets index and support.
+    proxy_lookup: std::collections::HashMap<u64, (usize, Vec3, Vec3)>,
 }
 
 fn max_axis(m: Mat4) -> f32 {
@@ -570,6 +578,7 @@ impl<'a> SceneVegetation<'a> {
             aggregate_groups: Vec::new(),
             proxy_assets: Vec::new(),
             proxy_bindings: Vec::new(),
+            proxy_lookup: std::collections::HashMap::new(),
         })
     }
 
@@ -804,19 +813,28 @@ impl<'a> SceneVegetation<'a> {
             return Err("duplicate stable plant ID in scene vegetation".into());
         }
         let asset = plant.proxy.as_ref().ok_or("plant proxy missing: call CookedPlant::cook_proxy")?;
-        let index = match self.proxy_assets.iter().position(|a| a == asset) {
-            Some(index) => index,
+        // Tens of thousands of trees share a few proxies: look them up by
+        // cook, never by comparing voxels.
+        let (index, lo, hi) = match self.proxy_lookup.get(&plant.proxy_id) {
+            Some(&found) => found,
             None => {
-                if self.proxy_assets.len() >= self.limits.pack.max_assets {
-                    return Err("shared vegetation proxy asset capacity exceeded".into());
-                }
-                self.proxy_assets.push(asset.clone());
-                self.proxy_assets.len() - 1
+                let index = match self.proxy_assets.iter().position(|a| a == asset) {
+                    Some(index) => index,
+                    None => {
+                        if self.proxy_assets.len() >= self.limits.pack.max_assets {
+                            return Err("shared vegetation proxy asset capacity exceeded".into());
+                        }
+                        self.proxy_assets.push(asset.clone());
+                        self.proxy_assets.len() - 1
+                    }
+                };
+                let (lo, hi) = support(asset);
+                self.proxy_lookup.insert(plant.proxy_id, (index, lo, hi));
+                (index, lo, hi)
             }
         };
         let rest = instance.root * plant.branches[0].assembly_rest;
         let scale = max_axis(instance.root);
-        let (lo, hi) = support(asset);
         let centre = rest.transform_point3((lo + hi) * 0.5);
         let owner = u32::try_from(self.scene.instances.len()).map_err(|_| "shared vegetation instance index overflow")?;
         let mut proxy = GpuInstance {

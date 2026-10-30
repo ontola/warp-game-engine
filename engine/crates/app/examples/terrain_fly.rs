@@ -364,7 +364,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 3, firs: false } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, recipe_trees: 3, firs: false } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -481,14 +481,19 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
     let instance = |i: usize, &(pos, yaw, scale, _): &(Vec3, f32, Vec3, usize)| PlantInstance { id: i as u64 + 1, generation: 0,
         root: glam::Mat4::from_scale_rotation_translation(Vec3::splat(scale.y), Quat::from_rotation_y(yaw), pos), category: GeometryCategory::Trees };
     for (i, spot) in near.iter().enumerate() { vegetation.append(&cooked[spot.3], instance(i, spot))?; }
+    let appending = std::time::Instant::now();
     for (i, spot) in far.iter().enumerate() { vegetation.append_proxy(&cooked[spot.3], instance(near.len() + i, spot))?; }
+    println!("{} proxies appended in {} ms", far.len(), appending.elapsed().as_millis());
     if !aggregate { vegetation.finish_source()?; return Ok(()); }
     let proxy_pixels = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-px")
         .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels);
     let proxy_pixels_from = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-from")
         .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels_from);
-    vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false,
-        proxy_pixels, proxy_pixels_from, ..Default::default() })?;
+    let finishing = std::time::Instant::now();
+    let finished = vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false,
+        proxy_pixels, proxy_pixels_from, ..Default::default() });
+    println!("vegetation finished in {} ms", finishing.elapsed().as_millis());
+    finished?;
     Ok(())
 }
 
@@ -571,6 +576,7 @@ fn main() -> Result<(), String> {
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine")).transpose()?.unwrap_or(0);
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
         firs: args.iter().any(|a| a == "--firs"),
+        tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
         recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(World::default().recipe_trees), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
