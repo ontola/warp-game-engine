@@ -100,7 +100,7 @@ struct ForestCanopy {
 };
 
 // Mean occlusion over a crown (forest_field.rs CROWN_OCCLUSION).
-const FF_CROWN_OCCLUSION: f32 = 0.45 + 0.55 * (1.0 / 3.0) * 0.8;
+const FF_CROWN_OCCLUSION: f32 = 0.6 + 0.4 * (1.0 / 3.0) * 0.8;
 
 // The spot of cell (i, j) if it grows a tree, without the terrain:
 // xy centre, z width, w tint; w < 0 when there is none.
@@ -120,16 +120,19 @@ fn ff_phase(i: i32, j: i32, seed: u32) -> f32 {
 // `sun` (unit, towards the sun); `ground` false where the terrain carries
 // no forest. Crown cones up close, their average once a crown is subpixel.
 fn forest_canopy(x: f32, z: f32, footprint: f32, sun: vec3<f32>, seed: u32, density: f32, ground: bool, fs: ForestStyle) -> ForestCanopy {
-    let mean_cover = select(0.0, ff_chance(ff_stand(x, z, seed), density) * fs.crown.y, ground);
+    let crowd = select(0.0, ff_chance(ff_stand(x, z, seed), density), ground);
+    let mean_cover = crowd * fs.crown.y;
+    // Gaps sit in their neighbours' shade only where the stand is dense.
+    let gap = 1.0 - (1.0 - fs.floor.w) * min(crowd * 1.25, 1.0);
     var mean: ForestCanopy;
     // The same light as the crowns and gaps it stands for (albedo x occlusion).
     mean.albedo = mix(fs.floor.rgb, fs.needles.rgb, mean_cover);
-    let light = fs.needles.y * FF_CROWN_OCCLUSION * mean_cover + fs.floor.y * fs.floor.w * (1.0 - mean_cover);
+    let light = fs.needles.y * FF_CROWN_OCCLUSION * mean_cover + fs.floor.y * gap * (1.0 - mean_cover);
     mean.normal = vec3<f32>(0.0, 1.0, 0.0);
     mean.occlusion = light / mean.albedo.y;
     mean.cover = mean_cover;
     // Average once a pixel spans a good part of a crown, before it aliases.
-    let far = clamp((footprint - FF_CELL * 0.06) / (FF_CELL * 0.3), 0.0, 1.0);
+    let far = clamp((footprint - FF_CELL * 0.15) / (FF_CELL * 0.45), 0.0, 1.0);
     if far >= 1.0 || !ground { return mean; }
     let ci = i32(floor(x / FF_CELL));
     let cj = i32(floor(z / FF_CELL));
@@ -157,13 +160,13 @@ fn forest_canopy(x: f32, z: f32, footprint: f32, sun: vec3<f32>, seed: u32, dens
         let lit = max(dot(normal, sun), 0.0);
         near.albedo = fs.needles.rgb * best_tint;
         near.normal = normal;
-        near.occlusion = 0.45 + 0.55 * tip * (0.6 + 0.4 * lit);
+        near.occlusion = 0.6 + 0.4 * tip * (0.6 + 0.4 * lit);
         near.cover = 1.0;
     } else {
         // A gap: forest floor under the neighbours' shade.
         near.albedo = fs.floor.rgb;
         near.normal = vec3<f32>(0.0, 1.0, 0.0);
-        near.occlusion = fs.floor.w;
+        near.occlusion = gap;
         near.cover = 0.0;
     }
     var c: ForestCanopy;
