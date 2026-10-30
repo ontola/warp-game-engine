@@ -195,6 +195,25 @@ fn surge(s: GameSprite) -> vec4<f32> {
     return vec4(lin(c), clamp(ends * tail * (0.75 + 0.25 * foam) * (0.3 + 0.7 * sink), 0.0, 1.0));
 }
 
+// ---- The lane a rolling spell will sweep (cast_mark.gdshader mode 1) ----
+// params: fill (0..1 as it charges), time, length in metres. Flat on the
+// floor, its top (uv.y 0) the far end: a bright rim, a faint fill and
+// chevrons running the way it will go.
+
+fn lane(s: GameSprite) -> vec4<f32> {
+    let fill = s.params.x;
+    let t = s.params.y;
+    let along = (1.0 - s.uv.y) * s.params.z;
+    let x = abs(s.uv.x - 0.5) * 2.0;
+    let m = vec2(x * s.size.x * 0.5, min(s.uv.y, 1.0 - s.uv.y) * s.size.y);
+    let rim = 1.0 - smoothstep(0.06, 0.16, min(s.size.x * 0.5 - m.x, m.y));
+    let chev = fract(along * 0.4 - x * 0.9 - t * 1.6);
+    let arrow = smoothstep(0.0, 0.08, chev) * (1.0 - smoothstep(0.12, 0.3, chev)) * (1.0 - x * 0.6);
+    let ends = smoothstep(0.0, 0.08, s.uv.y) * smoothstep(0.0, 0.25, 1.0 - s.uv.y);
+    let a = (rim * 0.8 + arrow * 0.3 + 0.035) * fill * mix(0.5, 1.0, ends);
+    return vec4(vec3(1.0), clamp(a, 0.0, 1.0));
+}
+
 fn game_sprite(s: GameSprite) -> vec4<f32> {
     switch s.effect {
         case 66u: { return wave(s); }
@@ -203,6 +222,7 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         case 69u: { return blood(s); }
         case 70u: { return jet(s); }
         case 71u: { return surge(s); }
+        case 72u: { return lane(s); }
         default: { return fx_sprite(s); }
     }
 }
