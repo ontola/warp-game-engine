@@ -248,7 +248,8 @@ impl Visuals {
                 Event::Kill { victim, attacker, gib, dir } => {
                     self.players.kill(s, &mut self.phys, &mut self.fx, &mut self.arena, world, victim, attacker, gib, dir, now);
                 }
-                Event::Picked { player, .. } => self.guns.grow(player, &world.players[player]),
+                // Picks can happen while dead, before the round finishes.
+                // Guns starts the visible morph on the next round boundary.
                 Event::Teleport { from, to, .. } => {
                     for at in [from, to] { self.fx.particles.burst(s, at, Vec3::Y, &Burst { mesh: m.spark, count: 24, ..Burst::sparks() }); }
                 }

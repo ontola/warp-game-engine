@@ -4,6 +4,7 @@ use glam::{Affine3A, Quat, Vec3};
 use render::{Camera, Gpu, Renderer};
 
 pub fn run(args: &crate::Args) -> Result<(), String> {
+    if args.flag("--growth") { return growth(args); }
     let out = std::path::Path::new(args.value("--out").unwrap_or("build/gun-review"));
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let (w, h) = args.size((1600, 1000));
@@ -14,6 +15,7 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
         ("uzi", "Uzi (kort)", &["uzi"]),
         ("poison", "Poison", &["poison"]),
         ("cooling", "Chilling Rounds", &["chilling_rounds"]),
+        ("poison-cooling", "Poison + Chilling Rounds", &["poison", "chilling_rounds"]),
         ("sniper-poison", "Sniper + Poison + Heavy Rounds", &["sniper", "poison", "heavy_rounds"]),
         ("shotgun-heavy", "Shotgun + Extra Barrel + Heavy Rounds", &["shotgun", "extra_barrel", "heavy_rounds"]),
         ("minigun", "Uzi + Rapid Fire x2 + Big Mag", &["uzi", "rapid_fire", "rapid_fire", "big_mag"]),
@@ -77,5 +79,63 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
     }
     std::fs::write(out.join("manifest.json"), serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Fixed-camera clips of the actual runtime morph, including topology changes.
+/// Write 30 fps frames; no game window or synthetic interpolation is involved.
+fn growth(args: &crate::Args) -> Result<(), String> {
+    let out = std::path::Path::new(args.value("--out").unwrap_or("build/gun-growth-review"));
+    let (w, h) = args.size((960, 600));
+    if w < 64 || h < 64 || w > 4096 || h > 4096 { return Err("review size must be 64..4096 per axis".into()); }
+    let cases: &[(&str, &[&str], &[&str])] = &[
+        ("damage-rail", &[], &["heavy_rounds"]),
+        ("sniper-scope", &[], &["sniper"]),
+        ("drum-minigun", &["uzi"], &["uzi", "rapid_fire", "rapid_fire", "big_mag"]),
+        ("elemental", &[], &["poison", "chilling_rounds"]),
+        ("character-only", &[], &["acrobat"]),
+    ];
+    if args.value("--only").is_some_and(|id| !cases.iter().any(|c| c.0 == id)) { return Err("unknown growth case".into()); }
+    let mut world = growing_guns::World::new(3, &[false]);
+    let _scripts = crate::scripts::attach(&mut world)?;
+    let mut stats = |cards: &[&str]| -> Result<crate::gun::Stats, String> {
+        world.players[0] = growing_guns::Player::new(false);
+        for &name in cards { let card = world.cards.find(name).ok_or_else(|| format!("missing card {name}"))?; world.give(0, card); }
+        Ok(crate::gun::Stats::of(&world.players[0]))
+    };
+    let mut gpu = Gpu::new()?;
+    gpu.features.remove(wgpu::Features::TIMESTAMP_QUERY);
+    let light = render::Lighting { sun_dir: Vec3::new(1.0, 1.6, 0.7).normalize(),
+        sun_lux: 8000.0, sky_lux: 3500.0, sun_color: Vec3::ONE, ev100: 12.0,
+        taa: 0.0, fog_density: 0.0, gi: 0.0, contact_occlusion: 0.0,
+        reflection_occlusion: 0.0, lod_pixels: 0.0, ..Default::default() };
+    for &(id, before, after) in cases {
+        if args.value("--only").is_some_and(|only| only != id) { continue; }
+        let (from, to) = (stats(before)?, stats(after)?);
+        let dir = out.join(id); std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut scene = render::Scene::default();
+        let guns = crate::view::guns::Guns::reserve(&mut scene, 1);
+        let mut rig = crate::gun::Rig::default(); rig.set(from); guns.review_pose(&mut scene, &rig);
+        let floor = scene.add_material(render::scene::Material { tint: [0.16, 0.18, 0.21], layer: -1, roughness: 0.95, flags: 0, scale: 1.0, metal: 0.0 });
+        let cube = scene.add_mesh(&render::primitives::cube(floor).mesh());
+        scene.add_instance(cube, Affine3A::from_scale_rotation_translation(Vec3::new(30.0, 0.1, 30.0), Quat::IDENTITY, Vec3::new(0.0, -0.8, 0.0)));
+        scene.add_instance(cube, Affine3A::from_scale_rotation_translation(Vec3::new(0.1, 20.0, 30.0), Quat::IDENTITY, Vec3::new(-4.0, 5.0, 0.0)));
+        let renderer = Renderer::new(&gpu, &scene, &light);
+        let target = if id == "sniper-scope" { Vec3::new(0.0, -0.1, -0.65) } else { Vec3::new(0.0, -0.14, -0.15) };
+        let distance = if id == "sniper-scope" { 3.4 } else { 1.85 };
+        let camera = Camera { pos: target + Vec3::new(1.0, 0.20, 0.25).normalize() * distance, target, fov_y: 32f32.to_radians(), near: 0.01 };
+        let mut active = Vec::new();
+        for frame in 0..90 {
+            if frame == 15 { rig.grow_to(to); }
+            if frame >= 15 { rig.update(1.0 / 30.0); }
+            active.push(rig.is_growing());
+            guns.review_pose(&mut scene, &rig);
+            renderer.update_instances(&gpu, 0, &scene.instances)?;
+            let (rgba, _) = renderer.try_render_views(&gpu, &[render::ViewRect { cam: camera, x: 0, y: 0, w, h }], &light, w, h, &[])?;
+            render::write_png(&dir.join(format!("frame-{frame:03}.png")), w, h, &rgba)?;
+        }
+        std::fs::write(dir.join("manifest.json"), serde_json::to_vec_pretty(&serde_json::json!({"from":before,"to":after,"fps":30,"morph_active":active})).unwrap()).map_err(|e| e.to_string())?;
+        println!("{id}: 90 frames");
+    }
     Ok(())
 }
