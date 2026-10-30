@@ -60,6 +60,8 @@ impl Guns {
                         gun::Shape::Taper105 => primitives::cylinder(mat, 1.0, 1.05, 8),
                         gun::Shape::Ring18 => primitives::torus(mat, 0.099, 10, 6),
                         gun::Shape::Ring25 => primitives::torus(mat, 0.143, 10, 6),
+                        gun::Shape::Grip => grip_mesh(mat, false),
+                        gun::Shape::GripPanel => grip_mesh(mat, true),
                     };
                     row.push(scene.add_mesh(&prim.mesh()));
                 }
@@ -248,6 +250,38 @@ fn gun_box(material: u32) -> primitives::Primitive {
     mesh
 }
 
+/// Chamfered cross sections create an ergonomic grip with a neck, palm swell
+/// and heel. The rubber insert follows the same contour and sits on both sides.
+fn grip_mesh(material: u32, panel: bool) -> primitives::Primitive {
+    let mut mesh = primitives::Primitive { material, ..Default::default() };
+    let sections = if panel { &gun::GRIP_SECTIONS[2..=4] } else { &gun::GRIP_SECTIONS[..] };
+    let rings: Vec<[Vec3; 8]> = sections.iter().map(|&(y, width, front, back)| {
+        let (w, f, b) = if panel { (width + 0.0006, front + 0.007, back - 0.007) } else { (width, front, back) };
+        let bevel = if panel { 0.001 } else { 0.004 };
+        [(-w + bevel, f), (w - bevel, f), (w, f + bevel), (w, b - bevel),
+            (w - bevel, b), (-w + bevel, b), (-w, b - bevel), (-w, f + bevel)]
+            .map(|(x, z)| Vec3::new(x, y, z))
+    }).collect();
+    let mut face = |points: &[Vec3]| {
+        for i in 1..points.len() - 1 {
+            let tri = [points[0], points[i], points[i + 1]];
+            let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize();
+            let first = mesh.vertices.len() as u32;
+            for p in tri { mesh.vertices.push(render::cluster::Vertex { pos: p.to_array(), normal: normal.to_array(), uv: [0.0; 2] }); }
+            mesh.indices.extend([first, first + 1, first + 2]);
+        }
+    };
+    for pair in rings.windows(2) {
+        for i in 0..8 {
+            let j = (i + 1) % 8;
+            face(&[pair[0][i], pair[0][j], pair[1][j], pair[1][i]]);
+        }
+    }
+    let mut top = rings[0]; top.reverse(); face(&top);
+    face(rings.last().unwrap());
+    mesh
+}
+
 /// Isolated review scene using the exact gameplay meshes and materials.
 /// Empty reserved slots remain hidden; only the settled gun is instantiated.
 pub(crate) fn review_scene(stats: Stats) -> (Scene, Vec3, Vec3, usize) {
@@ -259,9 +293,13 @@ pub(crate) fn review_scene(stats: Stats) -> (Scene, Vec3, Vec3, usize) {
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
     for (part, xf) in rig.pose(0.0) {
         scene.add_instance(guns.mesh(part.shape, part.mat, 0), xf);
-        let half = if part.shape == gun::Shape::Box { Vec3::splat(0.5) } else { Vec3::new(1.0, 0.5, 1.0) };
-        for x in [-1.0, 1.0] { for y in [-1.0, 1.0] { for z in [-1.0, 1.0] {
-            let p = xf.transform_point3(half * Vec3::new(x, y, z));
+        let (min, max) = match part.shape {
+            gun::Shape::Grip | gun::Shape::GripPanel => (Vec3::new(-0.023, -0.135, -0.028), Vec3::new(0.023, 0.009, 0.063)),
+            gun::Shape::Box => (Vec3::splat(-0.5), Vec3::splat(0.5)),
+            _ => (Vec3::new(-1.15, -0.5, -1.15), Vec3::new(1.15, 0.5, 1.15)),
+        };
+        for x in [min.x, max.x] { for y in [min.y, max.y] { for z in [min.z, max.z] {
+            let p = xf.transform_point3(Vec3::new(x, y, z));
             lo = lo.min(p); hi = hi.max(p);
         } } }
     }

@@ -66,9 +66,10 @@ pub const MATS: [Mat; 10] = [Mat::Metal, Mat::Dark, Mat::Barrel, Mat::Polymer, M
 
 /// Unit shapes: a box (side 1), cylinders of height 1 along Y with radius 1
 /// at the top (tapering to `bottom` below), rings around Y of radius 1.
+/// Grip shapes instead use the metre-sized GRIP_SECTIONS below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Shape { Box, Cyl, Taper85, Taper105, Ring18, Ring25 }
-pub const SHAPES: [Shape; 6] = [Shape::Box, Shape::Cyl, Shape::Taper85, Shape::Taper105, Shape::Ring18, Shape::Ring25];
+pub enum Shape { Box, Cyl, Taper85, Taper105, Ring18, Ring25, Grip, GripPanel }
+pub const SHAPES: [Shape; 8] = [Shape::Box, Shape::Cyl, Shape::Taper85, Shape::Taper105, Shape::Ring18, Shape::Ring25, Shape::Grip, Shape::GripPanel];
 
 /// How a part moves: bolts slide back on a shot, minigun barrels spin,
 /// the magazine drops out on reload.
@@ -101,7 +102,22 @@ pub struct Look {
 
 const MUZZLE_FLARE: f32 = 1.55;
 const MUZZLE_LENGTH: f32 = 0.05;
-const MAG_OFFSET_Z: f32 = 0.04;
+// The lower controls share a fixed layout. Magazine growth stays in front of
+// this rear face; receiver/barrel growth must never squeeze the trigger space.
+const MAG_REAR_Z: f32 = -0.045;
+const GRIP_Z: f32 = 0.085;
+/// Grip loft in metres: (height from receiver underside, half width, front Z,
+/// back Z). The narrow neck, palm swell, swept backstrap and flared heel are
+/// baked into the mesh instead of tilting a cylinder through the controls.
+pub const GRIP_SECTIONS: [(f32, f32, f32, f32); 7] = [
+    (0.009, 0.018, -0.028, 0.028),
+    (-0.014, 0.016, -0.025, 0.030),
+    (-0.038, 0.019, -0.017, 0.041),
+    (-0.078, 0.0215, -0.003, 0.055),
+    (-0.116, 0.020, 0.008, 0.063),
+    (-0.128, 0.023, 0.007, 0.061),
+    (-0.135, 0.021, 0.012, 0.056),
+];
 const FOREGRIP_LENGTH: f32 = 0.12;
 const FOREGRIP_RADIUS: f32 = 0.022;
 const FOREGRIP_OFFSET_Z: f32 = 0.26;
@@ -110,10 +126,6 @@ const RAIL_HEIGHT: f32 = 0.02;
 const SIGHT_POST: f32 = 0.04;
 const REAR_SIGHT_R: f32 = 0.022;
 const SCOPE_LENGTH: f32 = 0.18;
-const GRIP_LENGTH: f32 = 0.13;
-const GRIP_RADIUS: f32 = 0.024;
-const GRIP_TILT: f32 = -36.0 * PI / 180.0;
-const GUARD_R: f32 = 0.028;
 const STOCK: Vec3 = Vec3::new(0.05, 0.09, 0.2);
 const STOCK_TAPER: f32 = 0.7;
 const BOLT_TRAVEL_FRAC: f32 = 0.8;
@@ -238,13 +250,15 @@ pub fn build(l: &Look) -> Build {
     }
     if l.drum {
         let r = l.mag.y * 0.5;
+        let mag_z = MAG_REAR_Z - l.mag.x * 0.5;
         // A circular drum otherwise meets the receiver at a single tangent.
-        b.put(Shape::Box, Dark, Vec3::new(0.045, 0.04, 0.045), Vec3::new(0.0, -rs.y * 0.5 - 0.012, MAG_OFFSET_Z), Quat::IDENTITY, Motion::Mag);
-        b.put(Shape::Cyl, Dark, Vec3::new(r, l.mag.x, r), Vec3::new(0.0, -rs.y * 0.5 - r, MAG_OFFSET_Z), Quat::from_rotation_x(PI * 0.5), Motion::Mag);
+        b.put(Shape::Box, Dark, Vec3::new(0.045, 0.04, 0.045), Vec3::new(0.0, -rs.y * 0.5 - 0.012, mag_z), Quat::IDENTITY, Motion::Mag);
+        b.put(Shape::Cyl, Dark, Vec3::new(r, l.mag.x, r), Vec3::new(0.0, -rs.y * 0.5 - r, mag_z), Quat::from_rotation_x(PI * 0.5), Motion::Mag);
     } else {
         let y = -rs.y * 0.5 - l.mag.y * 0.5 + JOINT;
-        b.put(Shape::Box, Polymer, l.mag, Vec3::new(0.0, y, MAG_OFFSET_Z), Quat::IDENTITY, Motion::Mag);
-        b.put(Shape::Box, Dark, Vec3::new(l.mag.x * 1.1, 0.012, l.mag.z * 1.15), Vec3::new(0.0, y - l.mag.y * 0.5, MAG_OFFSET_Z), Quat::IDENTITY, Motion::Mag);
+        let mag_z = MAG_REAR_Z - l.mag.z * 0.5;
+        b.put(Shape::Box, Polymer, l.mag, Vec3::new(0.0, y, mag_z), Quat::IDENTITY, Motion::Mag);
+        b.put(Shape::Box, Dark, Vec3::new(l.mag.x * 1.1, 0.012, l.mag.z * 1.15), Vec3::new(0.0, y - l.mag.y * 0.5, mag_z), Quat::IDENTITY, Motion::Mag);
     }
     if l.foregrip {
         let gz = front - FOREGRIP_OFFSET_Z;
@@ -255,14 +269,7 @@ pub fn build(l: &Look) -> Build {
         let anchor = Vec3::new(0.0, hg_y - HANDGUARD_HEIGHT * 0.5 + JOINT + FOREGRIP_RADIUS * tilt.sin().abs(), gz + FOREGRIP_RADIUS * 1.1);
         b.put(Shape::Taper85, Polymer, Vec3::new(FOREGRIP_RADIUS, FOREGRIP_LENGTH, FOREGRIP_RADIUS), anchor - rot * Vec3::Y * (FOREGRIP_LENGTH * 0.5), rot, Motion::Fixed);
     }
-    let pz = rs.z * 0.32;
-    // Rotate about the attachment, not the centre: the complete upper cap
-    // stays seated in the receiver even on an angled grip.
-    let grip_rot = Quat::from_rotation_x(GRIP_TILT);
-    let grip_anchor = Vec3::new(0.0, -rs.y * 0.5 + JOINT + GRIP_RADIUS * GRIP_TILT.sin().abs(), pz);
-    b.put(Shape::Taper105, Polymer, Vec3::new(GRIP_RADIUS, GRIP_LENGTH, GRIP_RADIUS), grip_anchor - grip_rot * Vec3::Y * (GRIP_LENGTH * 0.5), grip_rot, Motion::Fixed);
-    // Trigger guard: a ring opening downward (axis along X).
-    b.put(Shape::Ring18, Dark, Vec3::splat(GUARD_R * 0.91), Vec3::new(0.0, -rs.y * 0.5 - GUARD_R * 0.5, (MAG_OFFSET_Z + pz) * 0.5), Quat::from_rotation_z(PI * 0.5), Motion::Fixed);
+    controls(&mut b, -rs.y * 0.5);
     if l.stock {
         let (back_h, front_h, half_z) = (STOCK.y, STOCK.y * STOCK_TAPER, STOCK.z * 0.5);
         let bottom = -rs.y * 0.5;
@@ -301,6 +308,34 @@ pub fn build(l: &Look) -> Build {
     }
     b.bx(INDICATOR, Vec3::new(rs.x * 0.52 + INDICATOR.x * 0.5 - 0.001, -rs.y * 0.23, 0.0), Indicator);
     Build { parts: b.parts, bolt_travel: travel, minigun: l.minigun, barrel_length: l.barrel_length, muzzle: Vec3::new(0.0, 0.0, muzzle_z - MUZZLE_LENGTH * 0.5) }
+}
+
+/// Fixed ergonomic assembly below the growing receiver. Z distances and the
+/// finger opening remain unchanged throughout upgrade morphs and reloads.
+fn controls(b: &mut B, bottom: f32) {
+    use Mat::*;
+    let origin = Vec3::new(0.0, bottom, GRIP_Z);
+    b.put(Shape::Grip, Polymer, Vec3::ONE, origin, Quat::IDENTITY, Motion::Fixed);
+    b.put(Shape::GripPanel, Pad, Vec3::ONE, origin, Quat::IDENTITY, Motion::Fixed);
+    for side in [-1.0, 1.0] {
+        b.put(Shape::Cyl, Bolt, Vec3::new(0.0035, 0.003, 0.0035),
+            Vec3::new(side * 0.0215, bottom - 0.060, GRIP_Z + 0.020), Quat::from_rotation_z(PI * 0.5), Motion::Fixed);
+        b.bx(Vec3::new(0.0008, 0.004, 0.001), Vec3::new(side * 0.023, bottom - 0.060, GRIP_Z + 0.020), Recess);
+    }
+    let mut stroke = |points: &[(f32, f32)], width: f32, thick: f32, mat: Mat| {
+        for pair in points.windows(2) {
+            let a = Vec3::new(0.0, bottom + pair[0].0, pair[0].1);
+            let c = Vec3::new(0.0, bottom + pair[1].0, pair[1].1);
+            let d = c - a;
+            b.put(Shape::Box, mat, Vec3::new(width, d.length() + JOINT, thick), (a + c) * 0.5,
+                Quat::from_rotation_arc(Vec3::Y, d.normalize()), Motion::Fixed);
+        }
+    };
+    stroke(&[(0.004, -0.027), (-0.035, -0.027), (-0.050, -0.016),
+        (-0.050, 0.048), (-0.025, 0.066), (0.004, 0.066)], 0.012, 0.006, Dark);
+    // Curved steel trigger, visibly separated from the front wall and floor
+    // of the guard. The root is embedded in the receiver.
+    stroke(&[(0.004, 0.030), (-0.014, 0.030), (-0.029, 0.024), (-0.035, 0.014)], 0.009, 0.0045, Bolt);
 }
 
 /// Godot `_add_barrel_shroud`: four slotted plates around the barrels.
@@ -450,16 +485,44 @@ mod tests {
         for damage_mult in [1.0, 2.5, 5.0] {
             let look = Look::of(&Stats { spread: 0.0, damage_mult, ..Default::default() });
             let built = build(&look);
-            let grip = built.parts.iter().find(|p| p.shape == Shape::Taper105).unwrap();
-            for i in 0..32 {
-                let a = i as f32 * TAU / 32.0;
-                let top = grip.xf.transform_point3(Vec3::new(a.cos(), 0.5, a.sin()));
-                assert!(top.y > -look.receiver.y * 0.5, "tilted upper grip cap must be embedded");
-            }
-            let pad = built.parts.iter().find(|p| p.mat == Mat::Pad).unwrap();
+            let grip = built.parts.iter().find(|p| p.shape == Shape::Grip).unwrap();
+            let top = grip.xf.transform_point3(Vec3::new(0.0, GRIP_SECTIONS[0].0, 0.0));
+            assert!(top.y > -look.receiver.y * 0.5, "upper grip cap must be embedded");
+            let pad = built.parts.iter().find(|p| p.mat == Mat::Pad && p.shape == Shape::Box).unwrap();
             let pad_front = pad.xf.transform_point3(Vec3::new(0.0, 0.0, -0.5)).z;
             let stock_back = look.receiver.z * 0.5 + STOCK.z;
             assert!(pad_front < stock_back && stock_back - pad_front < 0.01, "butt pad must sit on the stock");
+        }
+    }
+
+    #[test]
+    fn controls_keep_their_spacing_and_magazines_leave_finger_clearance() {
+        let start = Stats { spread: 0.1, ..Default::default() };
+        let end = Stats { spread: 0.0, damage_mult: 5.0, fire_rate_mult: 6.0, mag: 100, shots: 8, ..Default::default() };
+        let mut relative_trigger = None;
+        // Includes short receivers, the box-to-drum transition, large upgrades
+        // and intermediate shapes during the two-second morph.
+        for i in 0..=100 {
+            let look = Look::of(&Stats::lerp(&start, &end, i as f32 / 100.0));
+            let built = build(&look);
+            let grip = built.parts.iter().find(|p| p.shape == Shape::Grip).unwrap();
+            let trigger: Vec<_> = built.parts.iter().filter(|p| p.mat == Mat::Bolt && p.motion == Motion::Fixed && p.xf.translation.x.abs() < 0.001).collect();
+            assert_eq!(trigger.len(), 3, "a visible trigger must be present");
+            let offset = trigger[0].xf.translation - grip.xf.translation;
+            let expected = relative_trigger.get_or_insert(offset);
+            assert!((offset - *expected).length() < 1e-6, "trigger/grip spacing changed during growth");
+            assert_eq!(grip.xf.translation.z, GRIP_Z);
+            for part in built.parts.iter().filter(|p| p.motion == Motion::Mag) {
+                let half = if part.shape == Shape::Box { Vec3::splat(0.5) } else { Vec3::new(1.0, 0.5, 1.0) };
+                for x in [-1.0, 1.0] { for y in [-1.0, 1.0] { for z in [-1.0, 1.0] {
+                    let rear = part.xf.transform_point3(half * Vec3::new(x, y, z)).z;
+                    assert!(rear < -0.035, "magazine or base plate entered the trigger-guard clearance");
+                } } }
+            }
+            let mag = built.parts.iter().find(|p| p.motion == Motion::Mag && (p.mat == Mat::Polymer || p.shape == Shape::Cyl)).unwrap();
+            let rear = if mag.shape == Shape::Box { mag.xf.transform_point3(Vec3::Z * 0.5).z }
+                else { mag.xf.transform_point3(Vec3::Y * 0.5).z };
+            assert!((rear - MAG_REAR_Z).abs() < 1e-6, "rear mounting face must remain fixed");
         }
     }
 
