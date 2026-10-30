@@ -5,6 +5,7 @@
 // the GPU from one clock; the CPU uploads births only when they change.
 struct FxUniform {
     view_proj: mat4x4<f32>,
+    inverse_view_proj: mat4x4<f32>,
     depth_vp: mat4x4<f32>,
     view: mat4x4<f32>,
     // camera position, near plane
@@ -186,10 +187,13 @@ fn fx_column_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32
     let id = order[ii];
     let p = puffs[id];
     let age = clamp((u.clock.x - p.timing.x) / p.timing.y, 0.0, 1.0);
-    let local = cylinder_vertex(vi, 16u);
-    let radius = mix(p.ax.x, p.ax.y, pow(age, p.ax.w)) * mix(p.extra.z, 1.0, local.y);
-    let world = p.center_kind.xyz + vec3<f32>(local.x * radius, local.y * p.ax.z, local.z * radius);
-    return additive_vertex(id, world, age);
+    // A full-screen triangle also covers rays whose origin is inside the
+    // beam, and rays that hit an opaque object before reaching its far wall.
+    let clip = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0))[vi];
+    let point = u.inverse_view_proj * vec4<f32>(clip, 1.0, 1.0);
+    var out = additive_vertex(id, point.xyz / point.w, age);
+    out.position = vec4<f32>(clip, 0.0, 1.0);
+    return out;
 }
 
 @vertex
@@ -236,25 +240,59 @@ fn fp16_safe(c: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fx_column(in: V) -> @location(0) vec4<f32> {
     let p = puffs[in.id];
-    if depth_gap(in.world) <= 0.0 { discard; }
+    let ray = normalize(in.world - u.camera_near.xyz);
+    let origin = u.camera_near.xyz - p.center_kind.xyz;
+    let radius = max(mix(p.ax.x, p.ax.y, pow(in.age, p.ax.w)), 1e-5);
+    let bound = radius * max(1.0, p.extra.z);
+    // Intersect the radial cylinder and finite height independently. Avoid
+    // divisions by zero for axial rays and horizontal rays on either side.
+    let a = dot(ray.xz, ray.xz);
+    let b = dot(origin.xz, ray.xz);
+    let c = dot(origin.xz, origin.xz) - bound * bound;
+    var entry = 0.0;
+    var exit = 1e9;
+    if a > 1e-10 {
+        let disc = b * b - a * c;
+        if disc <= 0.0 { discard; }
+        let root = sqrt(disc);
+        entry = max(entry, (-b - root) / a);
+        exit = min(exit, (-b + root) / a);
+    } else if c >= 0.0 { discard; }
+    if abs(ray.y) > 1e-7 {
+        let bottom = -origin.y / ray.y;
+        let top = (p.ax.z - origin.y) / ray.y;
+        entry = max(entry, min(bottom, top));
+        exit = min(exit, max(bottom, top));
+    } else if origin.y < 0.0 || origin.y > p.ax.z { discard; }
+    // Sample depth using its own (possibly jittered) projection. Convert
+    // camera-forward depth to distance along this pixel's sightline.
+    let probe = u.depth_vp * vec4<f32>(u.camera_near.xyz + ray, 1.0);
+    let uv = probe.xy / probe.w * vec2<f32>(0.5, -0.5) + 0.5;
+    let forward = max(-(u.view * vec4<f32>(ray, 0.0)).z, 1e-6);
+    exit = min(exit, depth_metres(uv) / forward);
+    if exit <= entry { discard; }
+    let distance = exit - entry;
+    let middle = origin + ray * (entry + distance * 0.5);
+    var integral = 0.0;
+    if abs(p.extra.z - 1.0) < 1e-5 {
+        // Exact integral of 1 - r²/R². Density goes smoothly to zero at
+        // the rim; no polygon faces, near-plane holes or double surfaces.
+        integral = max(0.0, distance * (1.0 - (dot(middle.xz, middle.xz) + a * distance * distance / 12.0) / (radius * radius)));
+    } else {
+        for (var k = 0u; k < 8u; k++) {
+            let point = origin + ray * (entry + distance * (f32(k) + 0.5) / 8.0);
+            let local_radius = radius * mix(p.extra.z, 1.0, clamp(point.y / p.ax.z, 0.0, 1.0));
+            integral += max(0.0, 1.0 - dot(point.xz, point.xz) / (local_radius * local_radius)) * distance / 8.0;
+        }
+    }
+    let optical_depth = min(integral / radius, 32.0);
+    let soft = 3.8 * (1.0 - exp(-optical_depth));
     let alpha = mix(p.ay.w, p.az.w, pow(in.age, p.body.z));
     if alpha <= 0.0 { discard; }
     let power = pow(in.age, p.body.w);
     let radiance = max(0.0, mix(p.body.x, p.body.y, power)
         + sin((u.clock.x - p.timing.x) * p.extra.x) * p.extra.y * power);
     let color = mix(p.ay.rgb, p.az.rgb, smoothstep(p.timing.z, p.timing.w, in.age));
-    // A column of glowing air, not a tube: weight each surface by how
-    // squarely it faces the camera across the (vertical) axis, as the path
-    // through a lit cylinder shortens towards its silhouette, so the light
-    // falls off softly to the edges. Both faces draw; 1.4 keeps the energy
-    // of the flat shell (the mean of facing^1.5 across the width is ~0.72).
-    let radial = in.world.xz - p.center_kind.xz;
-    let view = u.camera_near.xz - in.world.xz;
-    var facing = 1.0;
-    if dot(radial, radial) > 1e-8 && dot(view, view) > 1e-8 {
-        facing = abs(dot(normalize(radial), normalize(view)));
-    }
-    let soft = pow(facing, 1.5) * 1.4;
     // Apply opacity before limiting HDR: a low-alpha high-radiance beam must
     // not lose energy merely because its unweighted radiance exceeds fp16.
     return vec4<f32>(fp16_safe(color * (radiance * alpha * soft)), 0.0);

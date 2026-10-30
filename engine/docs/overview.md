@@ -106,3 +106,15 @@ metadata or error is included beside the screenshot. Growing Guns implements
 a bounded state recorder and review UI (see its README). Games without this
 hook retain screenshot-only behavior. `Headless::frame_at` renders a specified
 sub-tick phase for repeatable captures.
+
+### Emissive columns
+
+`render::fx::AdditiveColumn` integrates a glowing volume on the GPU. Each view
+uses its inverse projection and opaque depth, so a camera inside the beam sees
+light in front of nearby surfaces; foreground walls outside the volume occlude
+it. Straight columns use an analytic integral of a soft radial density and a
+bounded optical response. Tapered columns use eight samples. One full-view
+triangle replaces the two-sided shell; ordinary streaks and blast meshes are
+unchanged. This is additive emission, not participating-media shadow transport.
+Run `cargo run --release -p render --example column_volume_gpu -- build/column`
+for inside/outside, axial, edge-crossing, occlusion and split-view GPU checks.

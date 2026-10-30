@@ -17,7 +17,7 @@ const MAX_DETONATIONS: usize = 32;
 const MAX_LIGHTS: usize = 16;
 const MAX_CD: f32 = 100_000_000.0;
 const MOTE_NITS: f32 = 1600.0;
-const DETONATION_SHELL_NITS: f32 = 2.0;
+const DETONATION_COLUMN_NITS: f32 = 2.0;
 const DETONATION_STREAK_NITS: f32 = 30.0;
 const ION_COLOR: Vec3 = Vec3::new(0.38, 0.78, 1.0);
 const ION_CORE: Vec3 = Vec3::new(0.92, 0.97, 1.0);
@@ -90,9 +90,9 @@ impl IonFx {
             effects.column(AdditiveColumn {
                 position: Vec3::new(position.x, bottom, position.z), birth: now + delay, life,
                 height: (position.y + 880.0 - bottom).max(12.0), radius: [radius; 2],
-                color: [tint; 2], opacity, radiance: radiance.map(|v| v * DETONATION_SHELL_NITS),
+                color: [tint; 2], opacity, radiance: radiance.map(|v| v * DETONATION_COLUMN_NITS),
                 opacity_power: power, radiance_power: power, ..Default::default()
-            }).expect("valid ion detonation shell recipe");
+            }).expect("valid ion detonation volume recipe");
         }
         let mut rng = Rng(position.to_array().iter().fold(0x2545_f491_4f6c_dd1du64,
             |s, v| s.rotate_left(13) ^ v.to_bits() as u64) ^ radius.to_bits() as u64);
@@ -281,23 +281,21 @@ mod tests {
     fn charge_energy_fits_hdr_and_builds_toward_detonation() {
         let columns = charge_columns(Vec3::ZERO, 0.0);
         assert_eq!(columns.len(), 1, "no nested charge shells");
-        // A line through the axis can see both faces of the single column.
-        // This conservative scalar sum bounds all RGB components, including
-        // the pulse, before the fragment shader's final fp16 guard.
+        // The volume response saturates at 3.8, then the GPU bounds HDR.
         let radiance = |u: f32| columns.iter().map(|c| {
             let power = u.powf(c.radiance_power);
             let alpha = c.opacity[0] + (c.opacity[1] - c.opacity[0]) * u.powf(c.opacity_power);
             let light = c.radiance[0] + (c.radiance[1] - c.radiance[0]) * power
                 + (u * CHARGE * c.pulse_radians_per_second).sin() * c.pulse_radiance * power;
-            light * alpha * 2.0
+            light * alpha * 3.8
         }).sum::<f32>();
         for step in 0..=1000 {
             let u = step as f32 / 1000.0;
-            assert!(radiance(u) < 55_000.0);
+            assert!(radiance(u) < 80_000.0);
             if step > 0 { assert!(radiance(u) >= radiance(u - 0.001)); }
         }
         assert!(radiance(1.0) > radiance(0.0) * 20.0);
-        assert!(radiance(0.25) < 2000.0, "the first second stays transparent");
+        assert!(radiance(0.25) < 3000.0, "the first second stays transparent");
     }
 
     #[test]
