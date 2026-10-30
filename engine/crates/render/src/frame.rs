@@ -54,6 +54,10 @@ const NEAR_SHADOW_EXTENT: f32 = 16.0;
 /// a full spruce assembly casts for ~2.5 ms (low2, 8 trees: 18 ms; 2x: 9.5,
 /// 4x: 1.5). But coarser spray cards lose coverage, and the crowns' shadows
 /// on the ground thin out visibly already at 2x, so 1 until their LOD keeps it.
+fn near_sun_source() -> bool {
+    static SOURCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SOURCE.get_or_init(|| std::env::var("KERN_NEAR_SUN_SOURCE").as_deref() == Ok("1"))
+}
 fn near_shadow_lod() -> f32 {
     static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *SCALE.get_or_init(|| std::env::var("KERN_NEAR_SHADOW_LOD").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0))
@@ -3562,9 +3566,18 @@ impl Renderer {
                 if self.receiver_demand.enabled() {near_uniform.extra[2]=-((vi+2)as f32);}
                 gpu.queue.write_buffer(&near.targets.uniform, 0, bytemuck::bytes_of(&near_uniform));
                 let texture_view = resources.near_shadow.get(&near.tex);
+                // Branch groups with voxels cast them here too, not their
+                // source sprays: a full spruce's sprays cost ~2.5 ms each in
+                // this 1.6 cm map, its voxels a fraction, at the same coverage
+                // (a coarser source cut thins it). KERN_NEAR_SUN_SOURCE=1
+                // keeps the source, for A/B runs.
+                let voxel_casters=self.voxel_forest.as_ref().is_some_and(|f|f.casts_sun())&&!near_sun_source();
+                if voxel_casters {
+                    gpu.queue.write_buffer(&near.targets.foliage_selection,0,bytemuck::cast_slice(&crate::voxel_forest::VoxelRenderer::sun_selection()));
+                }
                 self.cull_and_raster(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull",RasterPass::Sun);
                 // Whole-plant proxies have no source to cast here.
-                if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()) {
+                if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()||voxel_casters) {
                     let times=["voxel near sun splats","voxel near sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
                         let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                     forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&near.targets.foliage_selection,crate::voxel_forest::SunSplatView {
