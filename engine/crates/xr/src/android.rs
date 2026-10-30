@@ -1,0 +1,151 @@
+use anyhow::{Context, Result, ensure};
+use android_activity::{AndroidApp, MainEvent, PollEvent, InputStatus};
+use openxr as xr;
+use crate::{Eye, Game, Pose, Tracking};
+use std::time::{Duration,Instant};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+pub(crate) fn pose(p:xr::Posef)->Pose {
+    Pose {position:glam::Vec3::new(p.position.x,p.position.y,p.position.z),
+        orientation:glam::Quat::from_xyzw(p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w)}
+}
+const VIEW:xr::ViewConfigurationType=xr::ViewConfigurationType::PRIMARY_STEREO;
+const HUD:[u32;2]=[1280,720];
+fn swapchain(session:&xr::Session<xr::Vulkan>,size:[u32;2],layers:u32)->Result<xr::Swapchain<xr::Vulkan>> {
+    Ok(session.create_swapchain(&xr::SwapchainCreateInfo {create_flags:xr::SwapchainCreateFlags::EMPTY,
+        usage_flags:xr::SwapchainUsageFlags::COLOR_ATTACHMENT|xr::SwapchainUsageFlags::TRANSFER_DST,
+        format:ash::vk::Format::R8G8B8A8_SRGB.as_raw() as _,sample_count:1,width:size[0],height:size[1],face_count:1,array_size:layers,mip_count:1})?)
+}
+
+/// Keep lifecycle callbacks responsive even while the driver compiles pipelines.
+/// The game is created on the render thread; it need not be Send.
+pub fn run<G: Game + 'static>(app:AndroidApp, make:impl FnOnce()->Result<G,String> + Send + 'static)->Result<()> {
+    let stop=Arc::new(AtomicBool::new(false));
+    let worker_app=app.clone(); let worker_stop=stop.clone();
+    let worker=std::thread::Builder::new().name("warp-openxr".into()).spawn(move || {
+        let vm=unsafe {jni::JavaVM::from_raw(worker_app.vm_as_ptr().cast())}?;
+        let _attached=vm.attach_current_thread()?;
+        let game=make().map_err(anyhow::Error::msg)?;
+        if worker_stop.load(Ordering::Acquire) {return Ok(());}
+        run_inner(worker_app,game,worker_stop)
+    })?;
+    while !worker.is_finished() {
+        app.poll_events(Some(Duration::from_millis(20)),|event| {
+            match event {
+                PollEvent::Main(MainEvent::Destroy)=>{stop.store(true,Ordering::Release);}
+                PollEvent::Main(MainEvent::InputAvailable)=>{
+                    // Touch gameplay is read through OpenXR, but Android key
+                    // and motion events must still be acknowledged to prevent ANRs.
+                    if let Ok(mut input)=app.input_events_iter() {while input.next(|_| InputStatus::Unhandled) {}}
+                }
+                _=>{}
+            }
+        });
+        if stop.load(Ordering::Acquire) {std::thread::sleep(Duration::from_millis(20));}
+    }
+    worker.join().map_err(|_|anyhow::anyhow!("OpenXR worker panicked"))?
+}
+
+fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<()> {
+    // OpenXR 0.22 performs xrInitializeLoaderKHR using this VM/activity before
+    // enumerating extensions. AndroidApp keeps both valid throughout the loop.
+    let platform=unsafe {xr::AndroidPlatformInfo::new(app.vm_as_ptr().cast(),app.activity_as_ptr().cast())};
+    let entry=unsafe {xr::Entry::load(&platform)}?;
+    let available=entry.enumerate_extensions()?;
+    ensure!(available.khr_vulkan_enable,"OpenXR runtime lacks XR_KHR_vulkan_enable");
+    let mut extensions=xr::ExtensionSet::default();
+    extensions.khr_vulkan_enable=true; extensions.khr_android_create_instance=true;
+    let instance=entry.create_instance(&xr::ApplicationInfo {application_name:"Growing Guns",application_version:1,
+        engine_name:"Warp",engine_version:1,api_version:xr::Version::new(1,0,0)},&extensions,&[],&platform)?;
+    let system=instance.system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)?;
+    let config=instance.enumerate_view_configuration_views(system,VIEW)?;
+    ensure!(config.len()==2,"runtime did not return two stereo views");
+    // Conservative initial render scale; same geometry/materials/render passes.
+    let size=[config.iter().map(|v|v.recommended_image_rect_width).min().unwrap().min(1024),
+        config.iter().map(|v|v.recommended_image_rect_height).min().unwrap().min(1024)];
+    let (bridge,binding)=unsafe {crate::vulkan::Bridge::new(&instance,system)}?;
+    log::info!("Warp OpenXR GPU {}, eye size {:?}",bridge.gpu.info.name,size);
+    game.diagnose(&bridge.gpu).map_err(anyhow::Error::msg)?;
+    let (session,mut waiter,mut stream)=unsafe {instance.create_session::<xr::Vulkan>(system,&binding)}?;
+    ensure!(session.enumerate_swapchain_formats()?.contains(&(ash::vk::Format::R8G8B8A8_SRGB.as_raw() as u32)),"runtime lacks RGBA8 sRGB swapchain");
+    // LOCAL remains valid with Quest's stationary boundary, where STAGE can
+    // be created successfully yet reports invalid poses. The game calibrates
+    // eye height once, so neither a floor nor a room setup is required.
+    let stage=session.create_reference_space(xr::ReferenceSpaceType::LOCAL,xr::Posef::IDENTITY).context("LOCAL reference space")?;
+    let head=session.create_reference_space(xr::ReferenceSpaceType::VIEW,xr::Posef::IDENTITY)?;
+    let mut actions=crate::actions::Actions::new(&instance,&session)?;
+    let mut color=swapchain(&session,size,2)?; let images=color.enumerate_images()?;
+    let mut ui=swapchain(&session,HUD,1)?; let ui_images=ui.enumerate_images()?;
+    let mut hud=render::hud::HudRenderer::new(&bridge.gpu,wgpu::TextureFormat::Rgba8UnormSrgb).map_err(anyhow::Error::msg)?;
+    let ui_texture=bridge.gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("XR game HUD"),
+        size:wgpu::Extent3d {width:HUD[0],height:HUD[1],depth_or_array_layers:1},mip_level_count:1,sample_count:1,
+        dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
+    let mut running=false; let mut focused=false; let mut destroyed=false;
+    let mut event=xr::EventDataBuffer::new(); let mut last=Instant::now(); let mut recentered=false;
+    let mut frames=0u64; let mut report=Instant::now();
+    while !destroyed && !stop.load(Ordering::Acquire) {
+        while let Some(event)=instance.poll_event(&mut event)? {
+            match event {
+                xr::Event::SessionStateChanged(e)=> {
+                    log::info!("OpenXR state {:?}",e.state());
+                    focused=e.state()==xr::SessionState::FOCUSED;
+                    match e.state() {
+                        xr::SessionState::READY=>{session.begin(VIEW)?;running=true;last=Instant::now();},
+                        xr::SessionState::STOPPING=>{session.end()?;running=false;},
+                        xr::SessionState::EXITING|xr::SessionState::LOSS_PENDING=>destroyed=true,
+                        _=>{}
+                    }
+                }
+                xr::Event::InstanceLossPending(_)=>destroyed=true,
+                xr::Event::ReferenceSpaceChangePending(_)=>recentered=true,
+                _=>{}
+            }
+        }
+        if destroyed {break;} if !running {std::thread::sleep(Duration::from_millis(20));continue;}
+        let state=waiter.wait()?; stream.begin()?;
+        let now=Instant::now(); let dt=(now-last).as_secs_f32().min(0.1);last=now;
+        if !state.should_render {stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[])?;continue;}
+        let (flags,views)=session.locate_views(VIEW,state.predicted_display_time,&stage)?;
+        let h=head.locate(&stage,state.predicted_display_time)?;
+        let valid=flags.contains(xr::ViewStateFlags::POSITION_VALID|xr::ViewStateFlags::ORIENTATION_VALID)
+            && h.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID|xr::SpaceLocationFlags::ORIENTATION_VALID);
+        if !valid||views.len()!=2 {stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[])?;continue;}
+        let (controls,turn,aim)=actions.sample(&session,&stage,state.predicted_display_time,focused)?;
+        let tracking=Tracking {eyes:std::array::from_fn(|i|Eye {pose:pose(views[i].pose),fov:[views[i].fov.angle_left,views[i].fov.angle_right,views[i].fov.angle_up,views[i].fov.angle_down]}),
+            head:pose(h.pose),aim,controls,turn,focused,recentered:std::mem::take(&mut recentered)};
+        if game.quit() { session.request_exit()?; stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[])?; continue; }
+        if frames==0 {log::info!("Drawing first native Warp stereo frame");}
+        let output=game.frame(&bridge.gpu,&tracking,size,dt).map_err(anyhow::Error::msg)?;
+        let index=color.acquire_image()?;color.wait_image(xr::Duration::INFINITE)?;
+        bridge.copy(&output.color,images[index as usize],size[0],size[1],2)?;color.release_image()?;
+        hud.prepare(&bridge.gpu,&output.hud).map_err(anyhow::Error::msg)?;
+        let mut enc=bridge.gpu.device.create_command_encoder(&Default::default());
+        let ui_view=ui_texture.create_view(&Default::default());
+        {
+            let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor {label:Some("XR HUD"),color_attachments:&[Some(wgpu::RenderPassColorAttachment {
+                view:&ui_view,depth_slice:None,resolve_target:None,ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store}})],..Default::default()});
+            hud.render(&mut pass).map_err(anyhow::Error::msg)?;
+        }
+        bridge.gpu.queue.submit([enc.finish()]);
+        let index=ui.acquire_image()?;ui.wait_image(xr::Duration::INFINITE)?;
+        bridge.copy(&ui_texture,ui_images[index as usize],HUD[0],HUD[1],1)?;ui.release_image()?;
+        let rect=xr::Rect2Di {offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:size[0] as i32,height:size[1] as i32}};
+        let projection_views:Vec<_>=views.iter().enumerate().map(|(i,v)|xr::CompositionLayerProjectionView::new().pose(v.pose).fov(v.fov)
+            .sub_image(xr::SwapchainSubImage::new().swapchain(&color).image_array_index(i as u32).image_rect(rect))).collect();
+        let projection=xr::CompositionLayerProjection::new().space(&stage).views(&projection_views);
+        // Keep original menus/cards legible at a comfortable fixed distance.
+        // HUD rendering is premultiplied by normal alpha blending onto clear.
+        let quad=xr::CompositionLayerQuad::new().space(&head).eye_visibility(xr::EyeVisibility::BOTH)
+            .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+            .pose(xr::Posef {orientation:xr::Quaternionf{x:0.0,y:0.0,z:0.0,w:1.0},position:xr::Vector3f{x:0.0,y:0.0,z:-2.0}})
+            .size(xr::Extent2Df{width:2.4,height:1.35})
+            .sub_image(xr::SwapchainSubImage::new().swapchain(&ui).image_array_index(0).image_rect(xr::Rect2Di{offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:HUD[0] as i32,height:HUD[1] as i32}}));
+        stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&quad])?;
+        frames+=1;
+        if frames==1 {log::info!("First native Warp stereo frame submitted");report=Instant::now();}
+        if frames>1 && (frames-1)%30==0 {log::info!("30 frames submitted in {:.2}s ({:.1} fps), focused={}, controller={}",report.elapsed().as_secs_f32(),30.0/report.elapsed().as_secs_f32(),focused,tracking.aim.is_some());report=Instant::now();}
+    }
+    bridge.gpu.wait();
+    Ok(())
+}

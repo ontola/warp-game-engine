@@ -1,4 +1,8 @@
-# Standalone Quest VR demo
+# Simplified WebXR demo
+
+For the Android APK using the original Warp renderer and full Growing Guns app,
+see [Native Quest / OpenXR](quest-native.md). This page documents the earlier
+separate browser frontend.
 
 Warp has an experimental **WebXR shell** in `engine/webxr` and a standalone
 Growing Guns adapter in `games/growing-guns/quest`. The existing Rust simulation

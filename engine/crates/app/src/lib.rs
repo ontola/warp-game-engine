@@ -63,7 +63,12 @@ pub struct Frame<'a> {
     renderer: &'a mut Option<Renderer>,
 }
 
-impl Frame<'_> {
+impl<'a> Frame<'a> {
+    /// Frame access for an external presentation shell, including OpenXR.
+    pub fn new(gpu: &'a Gpu, renderer: &'a mut Option<Renderer>, size: [u32; 2], dt: f32, alpha: f32) -> Self {
+        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide }
+    }
+
     /// Upload a scene: creates the renderer, or replaces it.
     pub fn set_scene(&mut self, scene: &Scene, light: &Lighting) {
         let t = std::time::Instant::now();

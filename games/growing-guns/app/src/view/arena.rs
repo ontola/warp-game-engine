@@ -149,7 +149,7 @@ impl ArenaView {
         let marks = Marks { slots: mark_slots, ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
         if let Err(e) = scene.reserve_dents(DENTS) { eprintln!("growing-guns: no bullet dents: {e}"); }
         let dfao_grid = render::dfao::Grid { origin: Vec3::new(-52.0, -4.0, -52.0), voxel: 2.0, dims: [52, 18, 52], max_distance: 10.0 };
-        if let Err(e) = scene.reserve_dfao(dfao_grid) { eprintln!("growing-guns: no dfao: {e}"); }
+        if crate::graphics::get().sky_occlusion && let Err(e) = scene.reserve_dfao(dfao_grid) { eprintln!("growing-guns: no dfao: {e}"); }
         ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), static_set: Default::default(), static_shapes: Vec::new(), shown_wear: Vec::new(), marks, dents: Vec::new(), next_dent: 0, dents_changed: false, dfao_words: Vec::new(), dfao_changed: false, lights: Vec::new(), occupancy_repair: Default::default(), lava: Default::default() }
     }
 
@@ -285,8 +285,10 @@ impl ArenaView {
         // broken chunk, 128 to 900, thrown from the blast centre.
         for burst in &b.bursts {
             let st = self.kinds().stone(burst.kind);
-            let count = (burst.count * 70).clamp(128, 900);
-            fx.debris.burst(scene, &BurstSpec::rubble(burst.center, burst.radius.max(1.0), count, &st.shards));
+            let count = crate::graphics::get().debris_count((burst.count * 70).clamp(128, 900));
+            let mut spec = BurstSpec::rubble(burst.center, burst.radius.max(1.0), count, &st.shards);
+            spec.size *= crate::graphics::get().debris_size;
+            fx.debris.burst(scene, &spec);
             fx.particles.burst(scene, burst.center, Vec3::Y, &Burst { mesh: fx.meshes.dust, count: 12, spread: 1.5, speed: [0.5, 3.0], size: [0.9, 0.3], life: [0.8, 1.6], ..Burst::dust() });
         }
     }
@@ -357,6 +359,13 @@ fn rock(scene: &mut Scene, tint: [f32; 3], rough: f32, damage: f32) -> u32 {
 }
 
 fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
+    if crate::graphics::get().simple_blocks {
+        let shapes = [(1.0,0.0),(0.9,0.5),(0.8,1.0)].map(|(shade,damage)| {
+            let m=rock(scene,tint.map(|c|c*shade),rough,damage);
+            scene.add_mesh(&primitives::hewn_block(m,1,0.06+damage*0.05,damage*0.08,damage as u32).mesh())
+        });
+        return Stone { intact:[shapes[0];4], cracked:shapes[1], crumbling:shapes[2], shards:shapes };
+    }
     let legacy = super::stone_layer(scene) < 0;
     // Per-brick brightness variation (Godot's INSTANCE_CUSTOM) as four tints.
     let intact = [0.88, 0.96, 1.04, 1.12].map(|k| {

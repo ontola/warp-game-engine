@@ -50,6 +50,7 @@ struct Hit { rect: [f32; 4], item: usize, entry: usize }
 
 /// What the menus need to know about the session.
 pub struct Ctx<'a> {
+    pub xr: bool,
     pub ticket: Option<&'a str>, pub client: bool, pub seed: u64, pub bots: usize,
     /// Everyone in the match, bots too.
     pub players: usize,
@@ -134,6 +135,12 @@ const SHARE: &[(&str, Action)] = &[("HOST ONLINE", Action::Host), ("COPY", Actio
 
 fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
     let label = [0.7, 0.7, 0.85, 1.0];
+    if ctx.xr && matches!(screen, Screen::Start | Screen::Pause) {
+        return vec![Item::Button("RESUME", Action::Resume, true),
+            Item::Button("NEW MATCH", Action::Rematch, true), Item::Bots("AI PLAYERS"),
+            Item::Button("SETTINGS", Action::Settings, true), Item::Button("EXIT GAME", Action::Quit, true),
+            Item::Note("Left stick: select · A: confirm · B: back")];
+    }
     match screen {
         Screen::Start => vec![
             Item::Button("VERSUS", Action::Versus, true), Item::Button("WAVE SURVIVAL", Action::Wave, true), Item::Gap(4.0),
@@ -999,7 +1006,7 @@ pub const PLAYER_MENU: [&str; 2] = ["RESUME", "LEAVE"];
 mod pointer_tests {
     use super::*;
     const SIZE: [u32; 2] = [1600, 900];
-    fn ctx() -> Ctx<'static> { Ctx { ticket: None, client: false, seed: 1, bots: 1, players: 2, coop: false, party: None, seats: vec![] } }
+    fn ctx() -> Ctx<'static> { Ctx { xr: false, ticket: None, client: false, seed: 1, bots: 1, players: 2, coop: false, party: None, seats: vec![] } }
     fn at(r: [f32; 4], click: bool) -> app::Pointer {
         app::Pointer { position: Some([r[0] + r[2] * 0.5, r[1] + r[3] * 0.5]), moved: true, pressed: click, held: click, wheel: 0.0 }
     }
