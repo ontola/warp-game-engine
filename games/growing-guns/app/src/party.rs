@@ -316,6 +316,29 @@ pub fn to_controls(pad: &Pad, prev_triggers: u32, dt: f32) -> Controls {
 mod tests {
     use super::*;
 
+    /// The README's status (games/growing-guns/README.md) names what the
+    /// game has: every round modifier, party setting and live knob, the
+    /// card count, and the Godot original. Update the README with the game.
+    #[test]
+    fn readme_is_current() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let readme = std::fs::read_to_string(dir.join("README.md")).unwrap();
+        let text = readme.to_lowercase().replace('\n', " ").split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut missing = Vec::new();
+        if !readme.contains("https://github.com/ontola/growing-guns") { missing.push("the link to the Godot repository".to_string()); }
+        for m in MODIFIERS { let o = modifier_option(m.0); if !readme.contains(&format!("| {o} |")) { missing.push(format!("modifier row \"{o}\"")); } }
+        for s in specs().as_array().unwrap() {
+            let label = s["label"].as_str().unwrap();
+            let stem = label.split([',', '%', '(']).next().unwrap().trim().to_lowercase();
+            if !text.contains(&stem) { missing.push(format!("party setting \"{stem}\"")); }
+        }
+        if !text.contains("stick sensitivity") { missing.push("stick sensitivity".into()); }
+        for k in crate::knobs::all() { let n = k.1.name.replace('_', " "); if !text.contains(&n) { missing.push(format!("knob \"{n}\"")); } }
+        let cards = std::fs::read_to_string(dir.join("mods/base/cards.luau")).unwrap().matches("{ id = \"").count();
+        if !readme.contains(&format!("All {cards} cards")) { missing.push(format!("\"All {cards} cards\"")); }
+        assert!(missing.is_empty(), "games/growing-guns/README.md is out of date; add: {}", missing.join(", "));
+    }
+
     #[test]
     fn stick_sensitivity_is_each_players_own_setting() {
         let spec = stick_spec();
