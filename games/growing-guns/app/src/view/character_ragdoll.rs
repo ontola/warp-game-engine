@@ -10,6 +10,8 @@ pub(super) struct Corpse {
     pub rig: Ragdoll,
     initial: Vec<Mat4>,
     parts: Vec<usize>,
+    headless: bool,
+    neck_world: Vec3,
 }
 
 #[cfg(test)]
@@ -28,7 +30,7 @@ mod tests {
             let transform = Affine3A::from_rotation_translation(Quat::from_rotation_y(0.7), Vec3::new(2.0, 1.5, -3.0));
             let mut physics = Physics::new(Vec3::new(0.0, -20.0, 0.0), 60.0);
             physics.add_static(&YawBox::new(Vec3::new(0.0, -0.5, 0.0), Vec3::new(80.0, 1.0, 80.0), 0.0));
-            let mut corpse = Corpse::spawn(&model, &palette, transform, Vec3::X, Vec3::Z, 0, &mut physics).unwrap();
+            let mut corpse = Corpse::spawn(&model, &palette, transform, Vec3::X, Vec3::Z, 0, false, &mut physics).unwrap();
             let xf = Mat4::from(corpse.pose(1.0, &mut palette));
             for (&p, &initial) in palette.iter().zip(&original) {
                 assert!((xf * p).abs_diff_eq(Mat4::from(transform) * initial, 0.0001), "{name}: death transition moved a bone");
@@ -52,7 +54,7 @@ mod tests {
 
 fn canonical(name: &str) -> &str { name.rsplit(['_', ':']).next().unwrap_or(name) }
 
-fn part(name: &str) -> usize {
+pub(super) fn part(name: &str) -> usize {
     let name = canonical(name);
     match name {
         "Hips" => 0,
@@ -73,7 +75,7 @@ fn part(name: &str) -> usize {
 
 impl Corpse {
     pub fn spawn(model: &Character, palette: &[Mat4], transform: Affine3A, velocity: Vec3,
-        direction: Vec3, actor: usize, physics: &mut Physics) -> Result<Self, String> {
+        direction: Vec3, actor: usize, headless: bool, physics: &mut Physics) -> Result<Self, String> {
         let model_world = Mat4::from(transform);
         let joint = |name: &str| -> Result<Vec3, String> {
             model.joints().enumerate().find(|(_, (n, _))| canonical(n) == name)
@@ -112,14 +114,18 @@ impl Corpse {
         let rig = Ragdoll::spawn(physics, &segments, velocity + push * 3.5 + up * 1.2,
             up.cross(push) * 1.5, 1u32 << actor)?;
         Ok(Self { rig, initial: palette.iter().map(|p| model_world * *p).collect(),
-            parts: model.joints().map(|(name, _)| part(name)).collect() })
+            parts: model.joints().map(|(name, _)| part(name)).collect(), headless, neck_world: neck })
     }
 
     pub fn pose(&self, alpha: f32, palette: &mut [Mat4]) -> Affine3A {
         // Keep geometry near its instance origin for conservative culling bounds.
         let origin = self.rig.root_position(alpha);
         let local = Mat4::from_translation(-origin);
-        let deltas: [Mat4; PARTS] = std::array::from_fn(|i| local * self.rig.delta(i, alpha));
+        let mut deltas: [Mat4; PARTS] = std::array::from_fn(|i| local * self.rig.delta(i, alpha));
+        if self.headless {
+            let stump = deltas[1].transform_point3(self.neck_world);
+            deltas[2] = Mat4::from_translation(stump) * Mat4::from_scale(Vec3::splat(0.001)) * Mat4::from_translation(-stump) * deltas[1];
+        }
         for ((dst, initial), &part) in palette.iter_mut().zip(&self.initial).zip(&self.parts) {
             *dst = deltas[part] * *initial;
         }

@@ -14,6 +14,60 @@ pool limits. Screenshot readback happens after measurement. The ordinary bot
 benchmark is a different fixture; these results are not interchangeable with
 its old results or with Godot's differently staged stress scenes.
 
+## Continuation validation, 30 October 2026
+
+The interrupted roster/render/network work was resumed on top of `a3de830`.
+The shared shade shader initially failed WGSL parsing (`let _ = p`), even
+though the Rust binary compiled. Removing the invalid declarations restored
+699 passing renderer tests (16 ignored). Another 162 app/assets/game/network
+tests passed (one ignored), and the workspace all-target check passed after
+updating the two remaining `app::Config` initializers.
+
+The `ui-hotjoin.json` GPU script passes all expectations across one, two and
+three local seats, leaving, and disabling split screen. The reusable output
+texture is replaced when viewport layout changes, clearing stale pixels from
+the unused fourth quadrant. `ui-bots.json` adds and removes a bot through the
+actual pause menu. Each script creates its renderer once, at initial capture;
+roster edits retain the scene. Unit tests additionally require the scene
+allocation and renderer-rebuild flag to remain unchanged through these edits.
+`nettest` passes local join, movement, destruction and arena/card propagation.
+It is loopback evidence, not a two-machine or jitter/latency acceptance test.
+
+Apple M5 Pro, Metal, full lighting, four views, ordinary bot benchmark,
+30 warmup frames followed by 120 measured frames, one run per size:
+
+| Native output | CPU submit median / p95 | GPU median / p95 | Serialized wall median / p95 |
+| --- | --- | --- | --- |
+| 1920 x 1080 | 1.26 / 1.67 ms | 8.88 / 9.17 ms | 10.60 / 11.55 ms |
+| 3840 x 2160 | 1.21 / 1.39 ms | 20.78 / 21.20 ms | 22.52 / 23.27 ms |
+
+Both runs retained 120/120 GPU samples with zero errors or drops. Renderer
+construction was 246/236 ms in these warm runs; the first scripted capture
+before warming the driver took 2123 ms. No cold-start or before/after speedup
+claim follows. These are offscreen timings with serialized GPU completion,
+not presented FPS, and exclude adaptive quality, HUD and audio. The 4K/120 FPS
+target is not met. The largest 4K pass is shade at 11.746 ms.
+
+The compact arena DFAO grid is 52 x 18 x 52 at 2 m voxels, baked at arena setup.
+This avoids repeated baking during destruction but leaves approximate stale
+occlusion around removed walls until the next arena setup. It is not dynamic
+DFAO correctness. Cached model-derived gibs and adaptive quality are also part
+of the inherited work; physical controller feel and display-driven quality
+changes were not validated by these headless tests.
+
+Commands:
+
+```sh
+cargo test --locked -p render --lib -- --test-threads=1
+cargo test --locked -p app -p assets -p growing-guns -p growing-guns-app -p net --lib --bins
+cargo check --locked --workspace --all-targets
+target/release/growing-guns script games/growing-guns/scripts/ui-hotjoin.json --players 1 --out build/hotjoin
+target/release/growing-guns script games/growing-guns/scripts/ui-bots.json --players 1 --out build/bots
+target/release/growing-guns nettest
+target/release/growing-guns bench --views 4 --size 1920x1080 --frames 120
+target/release/growing-guns bench --views 4 --size 3840x2160 --frames 120
+```
+
 Recorded measurements from 2026-10-28:
 
 - [Cached stadium ambient visibility](../../../engine/docs/stadium-sky-occlusion.md):

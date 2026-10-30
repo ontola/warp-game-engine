@@ -25,6 +25,7 @@ pub mod tween;
 pub mod ui;
 pub mod manners;
 pub mod screenshot;
+pub mod quality;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
 pub use text::{FieldEvent, TextEvent, TextField};
@@ -151,6 +152,9 @@ pub trait Game {
     fn text_input(&self) -> bool { false }
     /// Text typed while [`Game::text_input`] holds.
     fn text(&mut self, _event: TextEvent) {}
+    /// Target framerate for dynamic adaptive graphics quality (e.g. Some(60.0)).
+    /// None falls back to `Config::target_fps`, `WARP_TARGET_FPS`, or the monitor refresh rate.
+    fn target_fps(&self) -> Option<f32> { None }
 }
 
 /// F1..F10 as 1..=10.
@@ -192,18 +196,21 @@ pub struct Config {
     /// (the HUD stays sharp): a 5K Retina screen shades 7x the pixels of
     /// 1080p. `WARP_RENDER_HEIGHT` overrides it, 0 for native.
     pub max_render_height: Option<u32>,
+    /// Target framerate for dynamic adaptive graphics quality.
+    /// None checks `Game::target_fps`, `WARP_TARGET_FPS`, or the monitor refresh rate.
+    pub target_fps: Option<f32>,
 }
 
 impl Default for Config {
-    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: false, keyboard: true, frames: 0, max_render_height: None } }
+    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: false, keyboard: true, frames: 0, max_render_height: None, target_fps: None } }
 }
 
 /// The present path shared by the window and headless capture.
-struct Output { presenter: Presenter, hud: HudRenderer, picture: Option<wgpu::Texture> }
+struct Output { presenter: Presenter, hud: HudRenderer, picture: Option<wgpu::Texture>, rects: Vec<(u32, u32, u32, u32)> }
 
 impl Output {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Self, String> {
-        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None })
+        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None, rects: Vec::new() })
     }
     fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>) -> Result<(), String> {
         self.draw_with(gpu, renderer, draw, size, split, target, max_height, true)
@@ -215,9 +222,14 @@ impl Output {
         let size = match max_height { Some(m) if m > 0 && size[1] > m => [(size[0] as u64 * m as u64 / size[1] as u64).max(1) as u32, m], _ => size };
         let rects = render::split_rects_with(draw.cameras.len(), size[0], size[1], split);
         let views: Vec<ViewRect> = draw.cameras.iter().zip(&rects).map(|(&cam, &(x, y, w, h))| ViewRect { cam, x, y, w, h }).collect();
-        // One output texture, reused while the size holds.
-        let fresh = self.picture.as_ref().is_none_or(|p| [p.width(), p.height()] != size);
-        if fresh { self.picture = Some(Renderer::output_texture(gpu, size[0], size[1])); }
+        // Reuse the output while both size and layout hold. After hot-join,
+        // fresh zeroed storage clears gaps and the unused fourth quadrant.
+        let fresh = self.picture.as_ref().is_none_or(|p| [p.width(), p.height()] != size) || self.rects != rects;
+        if fresh {
+            self.picture = Some(Renderer::output_texture(gpu, size[0], size[1]));
+            self.rects = rects;
+            renderer.reset_history();
+        }
         let picture = self.picture.as_ref().unwrap();
         if scene || fresh { renderer.try_render_into(gpu, &views, &draw.light, picture)?; }
         self.hud.prepare(gpu, &draw.hud)?;
@@ -409,6 +421,8 @@ struct Shell<'g> {
     /// Smoothed frames per second, for screenshot metadata.
     fps: f32,
     debug: debug::EngineDebug,
+    quality: Option<quality::AdaptiveQuality>,
+    screen_refresh_hz: Option<f64>,
     /// When the scene was last rendered (see [`Shell::scene_due`]).
     last_scene: Instant,
     error: Option<String>,
@@ -425,8 +439,17 @@ struct Shell<'g> {
 /// Open a window and run the game until it closes.
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let devices = Devices::new(cfg.keyboard);
+    let target_fps = game.target_fps().or(cfg.target_fps);
+    let quality = quality::AdaptiveQuality::new(target_fps, None, Instant::now());
+    let mut debug = debug::EngineDebug::default();
+    if let Some(target) = target_fps {
+        debug.set_fps_target(Some(target.round() as u32));
+    }
+    if let Some(q) = &quality {
+        println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
+    }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug: Default::default(), last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -459,6 +482,17 @@ impl Shell<'_> {
         let dt = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
         if dt > 0.0 { self.fps += (1.0 / dt - self.fps) * 0.05; }
+        if let Some(q) = &mut self.quality {
+            q.set_enabled(self.debug.adaptive_quality());
+            let target = match self.debug.target_fps() {
+                Some(user) => user,
+                None => self.game.target_fps().or(self.cfg.target_fps),
+            };
+            q.set_target_fps(target, self.screen_refresh_hz);
+            if self.focused && !self.zero_size && q.frame(f64::from(dt) * 1000.0, now) {
+                println!("{} adaptive quality: {}", manners::stamp(), q.label());
+            }
+        }
         self.devices.poll();
         self.game.tuning(&mut self.devices.tuning);
         self.sync_capture();
@@ -493,10 +527,19 @@ impl Shell<'_> {
         let mut draw = self.game.draw(&mut frame)?;
         let Some(renderer) = &live.renderer else { return Err("the game drew without a scene".into()) };
         draw.light = self.debug.light(draw.light);
-        self.debug.sync(renderer);
+        if let Some(q) = &self.quality {
+            draw.light = q.apply_light(draw.light);
+        }
+        let debug_options = if let Some(q) = &self.quality {
+            q.apply_options(self.debug.options())
+        } else {
+            self.debug.options()
+        };
+        self.debug.sync_options(renderer, debug_options);
         self.debug.profile(&live.gpu, renderer, self.debug.open() || self.cfg.frames > 0);
         if self.debug.open() {
-            self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps);
+            let quality_label = self.quality.as_ref().map(|q| q.label());
+            self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
             if let Some(a) = self.debug.tick(f64::from(dt), size) { self.game.debug_action(a); }
         }
         // The hint is for a developer at a desk: never on a GameNight TV,
@@ -507,7 +550,15 @@ impl Shell<'_> {
                 bounds: [0.0, 0.0, size[0] as f32, size[1] as f32], font_size: 18.0 * s, color: [220, 220, 215, 200], font: render::hud::FontFace::Body,
                 align: render::hud::TextAlign::Left, width: size[0] as f32 * 0.6 });
         }
-        let render_height = self.debug.render_height().unwrap_or_else(|| std::env::var("WARP_RENDER_HEIGHT").ok().and_then(|v| v.parse().ok()).or(self.cfg.max_render_height));
+        let base_height = self.debug.render_height().unwrap_or_else(|| std::env::var("WARP_RENDER_HEIGHT").ok().and_then(|v| v.parse().ok()).or(self.cfg.max_render_height));
+        let render_height = match (&self.quality, base_height) {
+            (Some(q), Some(h)) => Some(q.render_height(h)),
+            (Some(q), None) => {
+                let h = q.render_height(size[1]);
+                (h < size[1]).then_some(h)
+            }
+            (None, h) => h,
+        };
         // While the debug menu is open the scene renders about once a second
         // and shortly after a change; frames in between only redraw the HUD,
         // so the menu answers clicks even when the scene takes 500 ms.
@@ -521,11 +572,14 @@ impl Shell<'_> {
             let rgba = live.gpu.read_rgba8(&target);
             if to_file {
                 let state = self.game.state().map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s)));
-                let metadata = serde_json::json!({
+                let mut metadata = serde_json::json!({
                     "schema": 1, "game": self.cfg.title, "title": self.game.title(), "state": state,
                     "cameras": draw.cameras.iter().map(|c| serde_json::json!({"position": c.pos.to_array(), "target": c.target.to_array(), "fov_y_deg": c.fov_y.to_degrees(), "near": c.near})).collect::<Vec<_>>(),
                     "debug": self.debug.metadata(), "render": {"adapter": live.gpu.info.name, "backend": format!("{:?}", live.gpu.info.backend), "driver": live.gpu.info.driver, "size": size, "fps": self.fps, "frame": self.frames, "uptime_s": self.started.elapsed().as_secs_f32()},
                 });
+                if let Some(q) = &self.quality {
+                    metadata["render"]["adaptive_quality"] = q.metadata();
+                }
                 let line = screenshot::save(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }).unwrap_or_else(|e| { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") });
                 self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
             }
@@ -615,7 +669,8 @@ impl Shell<'_> {
             _ => return false,
         };
         let was_open = self.debug.open();
-        self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps);
+        let quality_label = self.quality.as_ref().map(|q| q.label());
+        self.debug.refresh(self.game.debug(), self.cfg.max_render_height, self.fps, quality_label.as_deref());
         let (used, action) = self.debug.key(key, self.size());
         if let Some(a) = action { self.game.debug_action(a); }
         // The pointer works the menu while it is open.
@@ -649,6 +704,21 @@ impl ApplicationHandler for Shell<'_> {
             self.game.loading(55, "preparing the screen");
             println!("{} startup: window {made} ms, instance and surface {} ms, adapter and device {} ms, swapchain and presenter {} ms", manners::stamp(), surfaced - made, devised - surfaced, t.elapsed().as_millis() - devised);
             println!("{} GPU {} ({}), {}x{}", manners::stamp(), live.gpu.info.name, live.gpu.info.backend, size.width, size.height);
+            let refresh = window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).map(|mhz| f64::from(mhz) / 1000.0);
+            self.screen_refresh_hz = refresh;
+            let target = match self.debug.target_fps() {
+                Some(user) => user,
+                None => self.game.target_fps().or(self.cfg.target_fps),
+            };
+            if let Some(q) = &mut self.quality {
+                q.set_target_fps(target, refresh);
+                println!("{} adaptive quality: {}", manners::stamp(), q.label());
+            } else {
+                self.quality = quality::AdaptiveQuality::new(target, refresh, Instant::now());
+                if let Some(q) = &self.quality {
+                    println!("{} adaptive quality: {}", manners::stamp(), q.label());
+                }
+            }
             self.zero_size = size.width == 0 || size.height == 0;
             self.live = Some(live);
             self.window = Some(window.clone());
@@ -742,6 +812,12 @@ impl ApplicationHandler for Shell<'_> {
                     if code == KeyCode::Tab { self.devices.key(KeyCode::ArrowDown, ElementState::Pressed, false); self.devices.key(KeyCode::ArrowDown, ElementState::Released, false); return; }
                 }
                 if event.state == ElementState::Pressed && !event.repeat {
+                    let cmd = self.modifiers.control_key() || self.modifiers.super_key();
+                    if code == KeyCode::KeyV && cmd {
+                        self.game.text(TextEvent::Paste(clipboard::get()));
+                        self.sync_capture();
+                        return;
+                    }
                     match code {
                         KeyCode::Escape => {
                             if self.game.escape() { self.sync_capture(); return; }

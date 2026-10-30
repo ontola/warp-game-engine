@@ -66,7 +66,9 @@ pub struct Particles {
 impl Particles {
     /// Reserve `capacity` instances. Call before the renderer exists.
     pub fn reserve(scene: &mut Scene, capacity: usize, seed: u64) -> Self {
-        Self { slots: Slots::reserve(scene, capacity), live: Vec::new(), rng: seed | 1, recycled: 0 }
+        let mut slots = Slots::reserve(scene, capacity);
+        slots.mark_no_shadow(scene);
+        Self { slots, live: Vec::new(), rng: seed | 1, recycled: 0 }
     }
 
     pub fn len(&self) -> usize { self.live.len() }

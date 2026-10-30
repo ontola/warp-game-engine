@@ -1,0 +1,71 @@
+{
+  "size": [
+    960,
+    540
+  ],
+  "steps": [
+    {
+      "note": "Change bot count from the pause menu without rebuilding the scene."
+    },
+    {
+      "cmd": [
+        "bots pause",
+        "menu pause"
+      ],
+      "ticks": 1
+    },
+    {
+      "capture": "before.png"
+    },
+    {
+      "press": [
+        "DOWN"
+      ]
+    },
+    {
+      "press": [
+        "DOWN"
+      ]
+    },
+    {
+      "press": [
+        "RIGHT"
+      ]
+    },
+    {
+      "press": [
+        "SOUTH"
+      ]
+    },
+    {
+      "expect": "/players/4/bot",
+      "equals": true
+    },
+    {
+      "ticks": 2
+    },
+    {
+      "capture": "added.png"
+    },
+    {
+      "press": [
+        "LEFT"
+      ]
+    },
+    {
+      "press": [
+        "SOUTH"
+      ]
+    },
+    {
+      "expect": "/players/4",
+      "equals": null
+    },
+    {
+      "ticks": 2
+    },
+    {
+      "capture": "removed.png"
+    }
+  ]
+}

@@ -531,26 +531,10 @@ impl Character {
         self.add_actor_full(scene, transform, min, max, None)
     }
 
-    fn add_actor_full(&self, scene: &mut Scene, transform: Affine3A, min: Vec3, max: Vec3, material: Option<u32>) -> Result<ActorHandle, String> {
-        if !min.is_finite()
-            || !max.is_finite()
-            || !min.cmple(max).all()
-            || !min.cmple(self.min).all()
-            || !max.cmpge(self.max).all()
-        {
-            return Err("actor bounds must be finite, ordered and enclose character bounds".into());
-        }
-        let center = (min + max) * 0.5;
-        let radius = (max - min).length() * 0.5;
-        if !center.is_finite() || !radius.is_finite() {
-            return Err("actor bounds exceed finite culling sphere capacity".into());
-        }
-        if scene.skinning.actors.len() >= skinning::MAX_ACTORS || !transform.is_finite() {
-            return Err("invalid actor transform or skinning actor capacity exceeded".into());
-        }
-        let initial = self.sample(&self.clips[0].name, 0.0, self.clips[0].looping)?;
-        let mut material_ids = Vec::new();
-        for surface in self.surfaces.iter().filter(|_| material.is_none()) {
+    /// Register or reuse the scene materials for every surface of this character.
+    pub fn surface_materials(&self, scene: &mut Scene) -> Vec<u32> {
+        let mut material_ids = Vec::with_capacity(self.surfaces.len());
+        for surface in &self.surfaces {
             let layer = if let Some((name, image)) = &surface.texture {
                 let key = format!(
                     "{name}#normal={:?}:{}",
@@ -605,7 +589,78 @@ impl Character {
                 .unwrap_or_else(|| scene.add_material(material));
             material_ids.push(id);
         }
-        if let Some(m) = material { material_ids = vec![m; self.surfaces.len()]; }
+        material_ids
+    }
+
+    /// Extract posed surfaces in `transform` space along with each vertex's
+    /// dominant joint index `(material_id, vertices, indices, dominant_joints)`.
+    pub fn posed_surfaces(
+        &self,
+        scene: &mut Scene,
+        palette: &[Mat4],
+        transform: Affine3A,
+    ) -> Vec<(u32, Vec<Vertex>, Vec<u32>, Vec<usize>)> {
+        let materials = self.surface_materials(scene);
+        self.surfaces
+            .iter()
+            .zip(materials)
+            .map(|(surface, material)| {
+                let mut vertices = Vec::with_capacity(surface.vertices.len());
+                let mut dominant = Vec::with_capacity(surface.vertices.len());
+                for (v, inf) in surface.vertices.iter().zip(&surface.influences) {
+                    let mut pos = Vec3::ZERO;
+                    let mut nrm = Vec3::ZERO;
+                    let mut best_joint = 0usize;
+                    let mut best_weight = -1.0f32;
+                    for k in 0..8 {
+                        let w = inf.weights[k];
+                        let j = (inf.joints[k] as usize).min(palette.len().saturating_sub(1));
+                        if w > best_weight {
+                            best_weight = w;
+                            best_joint = j;
+                        }
+                        if w > 0.0 && j < palette.len() {
+                            let m = palette[j];
+                            pos += m.transform_point3(Vec3::from(v.pos)) * w;
+                            nrm += m.transform_vector3(Vec3::from(v.normal)) * w;
+                        }
+                    }
+                    let world_pos = transform.transform_point3(pos);
+                    let world_nrm = transform.transform_vector3(nrm).normalize_or(Vec3::Y);
+                    vertices.push(Vertex {
+                        pos: world_pos.to_array(),
+                        normal: world_nrm.to_array(),
+                        uv: v.uv,
+                    });
+                    dominant.push(best_joint);
+                }
+                (material, vertices, surface.indices.clone(), dominant)
+            })
+            .collect()
+    }
+
+    fn add_actor_full(&self, scene: &mut Scene, transform: Affine3A, min: Vec3, max: Vec3, material: Option<u32>) -> Result<ActorHandle, String> {
+        if !min.is_finite()
+            || !max.is_finite()
+            || !min.cmple(max).all()
+            || !min.cmple(self.min).all()
+            || !max.cmpge(self.max).all()
+        {
+            return Err("actor bounds must be finite, ordered and enclose character bounds".into());
+        }
+        let center = (min + max) * 0.5;
+        let radius = (max - min).length() * 0.5;
+        if !center.is_finite() || !radius.is_finite() {
+            return Err("actor bounds exceed finite culling sphere capacity".into());
+        }
+        if scene.skinning.actors.len() >= skinning::MAX_ACTORS || !transform.is_finite() {
+            return Err("invalid actor transform or skinning actor capacity exceeded".into());
+        }
+        let initial = self.sample(&self.clips[0].name, 0.0, self.clips[0].looping)?;
+        let material_ids = match material {
+            Some(m) => vec![m; self.surfaces.len()],
+            None => self.surface_materials(scene),
+        };
         let parts: Vec<_> = self
             .surfaces
             .iter()

@@ -23,6 +23,8 @@ const LOD: u32 = 15;
 const EXPOSURE: u32 = 16;
 const RESOLUTION: u32 = 17;
 const TAA: u32 = 18;
+const ADAPTIVE_QUALITY: u32 = 19;
+const FPS_TARGET: u32 = 26;
 const SUN: u32 = 20;
 const SHADOWS: u32 = 21;
 const NEAR_SHADOWS: u32 = 22;
@@ -37,12 +39,17 @@ const GRASS_LOD: u32 = 33;
 /// Render heights offered, tallest first; 0 is native.
 const HEIGHTS: [u32; 6] = [0, 2160, 1800, 1440, 1080, 720];
 
+/// FPS targets offered; 0 follows display refresh rate.
+const FPS_TARGETS: [u32; 6] = [0, 60, 90, 120, 144, 240];
+
 #[derive(Clone, Debug, PartialEq)]
 struct Settings {
     options: DebugRenderOptions,
     fog: bool,
     /// Temporal AA as the game set it (false switches it off).
     taa: bool,
+    adaptive_quality: bool,
+    fps_target: Option<u32>,
     lod_pixels: Option<f32>,
     exposure: f32,
     /// None: the game's own [`crate::Config::max_render_height`].
@@ -57,7 +64,7 @@ struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { options: DebugRenderOptions::default(), fog: true, taa: true, lod_pixels: None, exposure: 0.0, render_height: None,
+        Settings { options: DebugRenderOptions::default(), fog: true, taa: true, adaptive_quality: true, fps_target: None, lod_pixels: None, exposure: 0.0, render_height: None,
             sun: 1.0, shadows: 1.0, near_shadows: true, contact: true, gi: true, reflection: true }
     }
 }
@@ -84,10 +91,11 @@ impl EngineDebug {
     pub fn open(&self) -> bool { self.ui.open }
 
     /// Rebuild the menu from the current settings and the game's controls.
-    pub fn refresh(&mut self, game: (Vec<DebugMenu>, Vec<DebugControl>), base_height: Option<u32>, fps: f32) {
+    pub fn refresh(&mut self, game: (Vec<DebugMenu>, Vec<DebugControl>), base_height: Option<u32>, fps: f32, quality_label: Option<&str>) {
         let (s, base_lod) = (&self.s, self.base_lod);
         let mut controls = Vec::new();
         let mut toggle = |id, menu, label: &str, value, help: &str| controls.push(DebugControl { id, label: label.into(), value: DebugValue::Toggle(value), enabled: true, menu: Some(menu), advanced: false, help: help.into() });
+        toggle(ADAPTIVE_QUALITY, RENDER_MENU, "Dynamic quality", s.adaptive_quality, "Dynamically adjust graphics settings and resolution to hit target framerate.");
         toggle(GRASS, GRASS_MENU, "Grass", s.options.meadow_enabled, "Skips grass rendering (when the scene has grass).");
         toggle(GLASS, RENDER_MENU, "Transparency", s.options.transparency_enabled, "Skips the transparent-material pass.");
         toggle(BLOOM, RENDER_MENU, "Highlight bloom", s.options.bloom_enabled, "Screen-space halo around bright highlights.");
@@ -113,6 +121,20 @@ impl EngineDebug {
         controls.push(DebugControl { id: RESOLUTION, label: "Render height".into(), enabled: true, menu: Some(RENDER_MENU), advanced: false,
             value: DebugValue::Choice { index, labels: HEIGHTS.iter().map(|&h| if h == 0 { "native".into() } else { format!("{h}p") }).collect() },
             help: "3D views render at most this tall and are scaled up; the HUD stays sharp. Shading cost follows the pixel count.".into() });
+        let fps_target = s.fps_target.unwrap_or(0);
+        let fps_index = FPS_TARGETS.iter().position(|&f| f == fps_target).unwrap_or(0);
+        controls.push(DebugControl {
+            id: FPS_TARGET,
+            label: "Target FPS".into(),
+            enabled: s.adaptive_quality,
+            menu: Some(RENDER_MENU),
+            advanced: false,
+            value: DebugValue::Choice {
+                index: fps_index,
+                labels: FPS_TARGETS.iter().map(|&f| if f == 0 { "display (auto)".into() } else { format!("{f} fps") }).collect(),
+            },
+            help: "Target frame rate for adaptive quality. 0 follows the screen refresh rate.".into(),
+        });
         let (game_menus, game_controls) = game;
         controls.extend(game_controls);
         let mut menus = vec![
@@ -123,8 +145,12 @@ impl EngineDebug {
         menus.extend(game_menus);
         let gpu_passes = self.passes.iter().map(|&(label, ms)| render::debug_ui::DebugPass { label: label.into(), ms }).collect();
         let gpu_active_ms = (!self.passes.is_empty()).then(|| self.passes.iter().map(|p| p.1).sum());
+        let status = match quality_label {
+            Some(lbl) => format!("{fps:.0} fps  |  {lbl}  |  F3 closes, arrows change, Enter selects"),
+            None => format!("{fps:.0} fps  |  F3 closes, arrows change, Enter selects"),
+        };
         self.model = DebugModel { controls, menus, gpu_passes, gpu_active_ms, cpu_frame_ms: (fps > 0.0).then(|| 1000.0 / f64::from(fps)),
-            status: Some(format!("{fps:.0} fps  |  F3 closes, arrows change, Enter selects")), ..Default::default() };
+            status: Some(status), ..Default::default() };
     }
 
     /// A key while the menu may be open. Returns the game's action, if the
@@ -158,6 +184,7 @@ impl EngineDebug {
                 BLOOM => s.options.bloom_enabled = value,
                 FOG => s.fog = value,
                 TAA => s.taa = value,
+                ADAPTIVE_QUALITY => s.adaptive_quality = value,
                 NEAR_SHADOWS => s.near_shadows = value,
                 CONTACT => s.contact = value,
                 GI => s.gi = value,
@@ -177,6 +204,7 @@ impl EngineDebug {
                 _ => {}
             },
             DebugAction::SetChoice { id: RESOLUTION, index } => s.render_height = HEIGHTS.get(index).copied(),
+            DebugAction::SetChoice { id: FPS_TARGET, index } => s.fps_target = FPS_TARGETS.get(index).copied(),
             DebugAction::SetToggle { .. } | DebugAction::SetNumber { .. } | DebugAction::SetChoice { .. } | DebugAction::Activate { .. } => {
                 return (action_id(action) >= GAME_IDS).then_some(action);
             }
@@ -201,14 +229,36 @@ impl EngineDebug {
         l
     }
 
+    pub fn adaptive_quality(&self) -> bool { self.s.adaptive_quality }
+
+    /// Target framerate from the debug menu.
+    /// `None`: follows game / display default.
+    /// `Some(None)`: explicit "display (auto)".
+    /// `Some(Some(fps))`: explicit fixed target.
+    pub fn target_fps(&self) -> Option<Option<f32>> {
+        self.s.fps_target.map(|f| if f > 0 { Some(f as f32) } else { None })
+    }
+
+    /// Set the FPS target shown in the menu (e.g. from game config).
+    pub fn set_fps_target(&mut self, target: Option<u32>) {
+        self.s.fps_target = target;
+    }
+
+    pub fn options(&self) -> DebugRenderOptions { self.s.options }
+
     /// The render height to use instead of the game's, if changed here.
     pub fn render_height(&self) -> Option<Option<u32>> { self.s.render_height.map(|h| (h > 0).then_some(h)) }
 
     /// Hand the render options to `renderer` when they or it changed.
     pub fn sync(&mut self, renderer: &render::Renderer) {
-        let key = (std::ptr::from_ref(renderer) as usize, self.s.options);
+        self.sync_options(renderer, self.s.options);
+    }
+
+    /// Hand specific render options to `renderer` (e.g. after adaptive quality scaling).
+    pub fn sync_options(&mut self, renderer: &render::Renderer, options: DebugRenderOptions) {
+        let key = (std::ptr::from_ref(renderer) as usize, options);
         if self.applied != Some(key) {
-            if let Err(e) = renderer.set_debug_options(self.s.options) { eprintln!("debug menu: {e}"); }
+            if let Err(e) = renderer.set_debug_options(options) { eprintln!("debug menu: {e}"); }
             self.applied = Some(key);
         }
     }
@@ -242,6 +292,8 @@ impl EngineDebug {
         let s = &self.s;
         let o = &s.options;
         serde_json::json!({
+            "dynamic_quality": s.adaptive_quality,
+            "fps_target": s.fps_target,
             "grass": o.meadow_enabled, "transparency": o.transparency_enabled, "bloom": o.bloom_enabled, "bloom_strength": o.bloom_strength,
             "fog": s.fog, "taa": s.taa, "lod_pixels": s.lod_pixels, "exposure_offset_ev": s.exposure, "render_height": s.render_height,
             "sun_scale": s.sun, "shadow_scale": s.shadows, "near_shadows": s.near_shadows, "contact_occlusion": s.contact, "gi": s.gi,
@@ -256,5 +308,20 @@ fn action_id(a: DebugAction) -> u32 {
     match a {
         DebugAction::SetToggle { id, .. } | DebugAction::SetNumber { id, .. } | DebugAction::SetChoice { id, .. } | DebugAction::Activate { id } => id,
         DebugAction::ResetDefaults => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fps_target_choice_updates_settings() {
+        let mut d = EngineDebug::default();
+        assert_eq!(d.target_fps(), None);
+        d.apply(DebugAction::SetChoice { id: FPS_TARGET, index: 3 }); // 120 fps
+        assert_eq!(d.target_fps(), Some(Some(120.0)));
+        d.apply(DebugAction::SetChoice { id: FPS_TARGET, index: 0 }); // display (auto)
+        assert_eq!(d.target_fps(), Some(None));
     }
 }

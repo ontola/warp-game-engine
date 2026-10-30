@@ -8,7 +8,7 @@
 //! client. A host-authoritative game sends inputs up and snapshots down;
 //! `latest` marks messages where only the newest matters (snapshots), so a
 //! slow client gets the newest instead of a backlog.
-use iroh::endpoint::{presets, Connection, RecvStream, SendStream};
+use iroh::endpoint::{presets, Connection, PortmapperConfig, RecvStream, SendStream};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -22,9 +22,11 @@ impl<T: Serialize + DeserializeOwned + Send + Sync + 'static> Message for T {}
 
 async fn write<T: Serialize>(s: &mut SendStream, msg: &T, bytes: &mut Vec<u8>) -> Result<(), String> {
     bytes.clear();
+    bytes.extend_from_slice(&[0u8; 4]);
     *bytes = postcard::to_extend(msg, std::mem::take(bytes)).map_err(|e| e.to_string())?;
-    if bytes.len() > 1 << 24 { return Err("message too large".into()); }
-    s.write_all(&(bytes.len() as u32).to_le_bytes()).await.map_err(|e| e.to_string())?;
+    let payload_len = bytes.len() - 4;
+    if payload_len > 1 << 24 { return Err("message too large".into()); }
+    bytes[..4].copy_from_slice(&(payload_len as u32).to_le_bytes());
     s.write_all(bytes).await.map_err(|e| e.to_string())
 }
 
@@ -44,8 +46,15 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
 
 /// `lan`: no relays or address publishing; direct addresses only (fast,
 /// local network or tests). Otherwise iroh's default relays and lookup.
+/// Binds IPv4 only (`0.0.0.0:0`) and disables portmapping so macOS `utun0`
+/// Continuity (`200::/7`) and router UPnP are never touched.
 async fn endpoint(lan: bool, alpns: Vec<Vec<u8>>) -> Result<Endpoint, String> {
     let b = if lan { Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled) } else { Endpoint::builder(presets::N0) };
+    let b = b
+        .clear_ip_transports()
+        .bind_addr("0.0.0.0:0")
+        .map_err(|e| e.to_string())?
+        .portmapper_config(PortmapperConfig::Disabled);
     b.alpns(alpns).bind().await.map_err(|e| e.to_string())
 }
 
@@ -55,9 +64,12 @@ pub fn ticket(addr: &EndpointAddr) -> String {
 
 pub fn parse_ticket(t: &str) -> Result<EndpointAddr, String> {
     let t = t.trim();
-    if t.len() % 2 != 0 || t.is_empty() { return Err("bad ticket".into()); }
+    if !t.is_ascii() || t.len() % 2 != 0 || t.is_empty() { return Err("bad ticket".into()); }
     let bytes: Result<Vec<u8>, _> = (0..t.len()).step_by(2).map(|i| u8::from_str_radix(&t[i..i + 2], 16)).collect();
-    postcard::from_bytes(&bytes.map_err(|_| "bad ticket")?).map_err(|e| format!("bad ticket: {e}"))
+    let addr: EndpointAddr = postcard::from_bytes(&bytes.map_err(|_| "bad ticket")?).map_err(|e| format!("bad ticket: {e}"))?;
+    // A peer can be on a routed LAN/VPN or use a relay. Its addresses must
+    // never be filtered using this machine's interfaces or subnet.
+    Ok(addr)
 }
 
 /// What the host's game loop sees.
@@ -190,6 +202,26 @@ impl<In: Message, Out: Message> Client<In, Out> {
 mod tests {
     use super::*;
     use serde::Deserialize;
+
+    #[test]
+    fn tickets_preserve_routed_peer_addresses() {
+        let id = iroh::PublicKey::from_bytes(&[0; 32]).unwrap();
+        let mut addr = EndpointAddr::new(id)
+            .with_relay_url("https://relay.example.com".parse().unwrap());
+        // .0/.255 can be hosts outside a /24; private peers can be on a VPN
+        // or a routed subnet, and IPv6 tickets must remain lossless too.
+        for ip in ["10.40.1.0:1234", "172.20.1.255:1234", "192.168.250.7:1234", "[2001:db8::1]:1234"] {
+            addr = addr.with_ip_addr(ip.parse().unwrap());
+        }
+        assert_eq!(parse_ticket(&ticket(&addr)).unwrap(), addr);
+    }
+
+    #[test]
+    fn malformed_tickets_return_errors_instead_of_panicking() {
+        for t in ["", "f", "zz", "0€", "€0", "😀", "00"] {
+            assert!(parse_ticket(t).is_err(), "accepted {t:?}");
+        }
+    }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     enum Up { Hello(String), Ping(u32) }

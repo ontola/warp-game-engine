@@ -21,6 +21,10 @@ authority model and the prediction are the game's.
 - `lan = true` disables relays and address publishing: direct addresses
   only, for a local network and tests. Otherwise iroh's default relays and
   lookup are used.
+- The current endpoint binds IPv4 only and disables automatic router port
+  mapping. Direct IPv6-only connections are not supported by this binding.
+  Ticket encoding and decoding preserve peer addresses without local-subnet
+  filtering; remote private addresses may be reachable through routed LANs/VPNs.
 
 ## API
 
@@ -78,8 +82,10 @@ godot_iroh. See `games/growing-guns/app/src/net.rs` (the protocol) and
   with `Arc`; decoded snapshots move into the client's world. The postcard
   wire format is unchanged. Each peer still serializes its own packet
   because its acknowledged input sequence differs.
-- A client renders snapshots and predicts only its own look direction; the
-  acknowledged input sequence reconciles it with the host.
+- A client buffers remote snapshots and predicts its own movement and look;
+  acknowledged input sequences reconcile that prediction with the host.
+  These paths have local tests; realistic latency, jitter and two-machine
+  presentation still need validation.
 
 ```sh
 cargo run -p growing-guns-app -- play --host            # prints a ticket

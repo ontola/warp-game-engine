@@ -630,6 +630,7 @@ pub struct Renderer {
     live_screens: Option<std::sync::Mutex<crate::screen_feed::LiveScreens>>,
     aux_buffer: wgpu::Buffer,
     dents: Option<(usize, usize)>,
+    dfao: Option<(usize, crate::dfao::Grid)>,
     irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
     sun_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
     headlight_diagnostics: std::sync::Mutex<crate::shadow_diagnostics::State>,
@@ -1064,6 +1065,14 @@ impl Renderer {
         let (offset, capacity) = self.dents.ok_or("the scene reserved no dents")?;
         let words = crate::dents::pack(capacity, dents);
         gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(&words));
+        Ok(())
+    }
+
+    /// Replace the 3D distance field reserved with `Scene::reserve_dfao`.
+    pub fn set_dfao(&self, gpu: &Gpu, words: &[u32]) -> Result<(), String> {
+        let (offset, grid) = self.dfao.ok_or("the scene reserved no dfao field")?;
+        if words.len() != grid.words() { return Err("dfao word count differs from the grid".into()); }
+        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(words));
         Ok(())
     }
 
@@ -1700,6 +1709,7 @@ impl Renderer {
             aux_buffer: aux.clone(),
             irradiance_volume: scene.irradiance_volume,
             dents: scene.dents,
+            dfao: scene.dfao,
             geometry_diagnostics,
             debug_options: Default::default(),
             upscaling: Default::default(),
@@ -3512,12 +3522,13 @@ impl Renderer {
                 vol_anchors: canopy.anchors,
                 vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], if light.gi>0.0 {1|((canopy.compact_support as u32)<<1)|((self.empty_gi_volume as u32)<<2)
                     |((self.sky_vis_bake.is_some() as u32)<<3)} else {0}],
-                hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3), 0.0],
+                hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3),
+                    if light.contact_occlusion > 0.0 || light.gi > 0.0 { self.dfao.map_or(0.0, |(offset, _)| offset as f32) } else { 0.0 }],
                 hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, self.dents.map_or(0, |(offset, _)| offset as u32)],
                 // Reflectance, conditioned on local sun and sky visibility.
                 bounce: [0.12 * 0.85, 0.12, 0.12 * 0.7, light.sky_lux],
                 params: [light.contact_occlusion, light.reflection_occlusion, self.sky_limit,
-                    self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32)],
+                    if light.gi > 0.0 { self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32) } else { 0.0 }],
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
             // A rebuilt canopy level gets its sky transmittance baked now,

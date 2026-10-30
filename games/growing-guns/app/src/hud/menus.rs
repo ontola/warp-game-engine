@@ -66,9 +66,16 @@ pub struct Ctx<'a> {
 pub enum JoinState { Empty, Invalid, Own, Valid, Connecting }
 
 /// Godot `extract_iroh_node_id`: the first piece of the pasted text that is
-/// a ticket, else the text itself (trimmed).
+/// a ticket (even inside a pasted shell command or quotes), else the text
+/// itself (trimmed).
 pub fn extract_ticket(text: &str) -> String {
     let t = text.trim();
+    if let Some(p) = t
+        .split(|c: char| !c.is_ascii_hexdigit())
+        .find(|p| p.len() >= 64 && net::parse_ticket(p).is_ok())
+    {
+        return p.to_string();
+    }
     t.split_whitespace().find(|p| net::parse_ticket(p).is_ok()).unwrap_or(t).to_string()
 }
 
@@ -119,7 +126,7 @@ pub struct Menus {
 impl Default for Menus {
     fn default() -> Self {
         Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None,
-            join: TextField::new(256), joining: false, name: TextField::new(20), player_name: String::new(), picker: None, copied: 0.0 }
+            join: TextField::new(4096), joining: false, name: TextField::new(20), player_name: String::new(), picker: None, copied: 0.0 }
     }
 }
 
@@ -133,6 +140,7 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Button("SETTINGS", Action::Settings, true), Item::Rule,
             Item::Text("Share your Match ID:", label), Item::Field(Field::Ticket), Item::Row(SHARE),
             Item::Text("Or join a friend's match:", label), Item::Field(Field::Join),
+            Item::Text("Bots:", label), Item::Bots(""),
             Item::Note("Click or arrows + Enter · Esc exits"),
         ],
         Screen::Pause if ctx.party.is_some() => vec![
@@ -176,8 +184,8 @@ fn music_label(db: f32) -> String { if db <= MUSIC_DB_MIN + 0.5 { "Off".into() }
 pub const MUSIC_DB_MIN: f32 = -45.0;
 
 /// The bot stepper's - (0) and + (1): host or offline, not in coop (the
-/// waves bring their own), 0..=6 bots and 8 players at most.
-fn bots_enabled(j: usize, ctx: &Ctx) -> bool { !ctx.client && !ctx.coop && if j == 0 { ctx.bots > 0 && ctx.players > 1 } else { ctx.players < 8 } }
+/// waves bring their own), 0..=6 bots and 2..=8 total players.
+fn bots_enabled(j: usize, ctx: &Ctx) -> bool { !ctx.client && !ctx.coop && if j == 0 { ctx.bots > 0 && ctx.players > 2 } else { ctx.players < 8 } }
 
 fn row_enabled(t: &str, ctx: &Ctx) -> bool { !(ctx.client || (t == "COPY" && ctx.ticket.is_none()) || (t == "HOST ONLINE" && ctx.ticket.is_some())) }
 
@@ -251,7 +259,21 @@ impl Menus {
 
     /// Typed text for the focused field (keyboard, IME, paste, a pad's picker).
     pub fn text(&mut self, ev: TextEvent, ctx: &Ctx) -> Action {
-        let Some(f) = self.text_focus(ctx) else { return Action::None };
+        let f = match self.text_focus(ctx) {
+            Some(f) => f,
+            None if matches!(ev, TextEvent::Paste(_)) && matches!(self.screen, Screen::Start | Screen::Pause) && !ctx.client => {
+                self.focus_field(Field::Join, ctx);
+                Field::Join
+            }
+            None => return Action::None,
+        };
+        if f == Field::Join && let TextEvent::Paste(s) = &ev {
+            let id = extract_ticket(s);
+            if net::parse_ticket(&id).is_ok() {
+                self.join.set(&id);
+                return if self.join_ok(ctx) { Action::Join } else { Action::None };
+            }
+        }
         let field = if f == Field::Join { &mut self.join } else { &mut self.name };
         match field.apply(&ev) {
             FieldEvent::Changed if f == Field::Join => {
@@ -477,7 +499,7 @@ impl Menus {
         d.rect(clip, [0.0, 0.0, 0.0, 0.32], clip);
         logo(d, [clip[2] * 0.5 - 220.0 * u, 20.0 * u, 440.0 * u, 190.0 * u], clip);
         let list = items(Screen::Start, ctx);
-        let (pw, ph) = (350.0 * u, 392.0 * u);
+        let (pw, ph) = (350.0 * u, 446.0 * u);
         let panel = [52.0 * u, clip[3] * 0.5 - ph * 0.5, pw, ph];
         gothic_frame(d, panel, u, 424242, clip);
         // The VBox centres its content between the crest and the bottom trim.
@@ -641,7 +663,7 @@ impl Menus {
                         let bx = if j == 0 { x0 } else { x0 + bw + cw + 16.0 * u };
                         let on = bots_enabled(j, ctx);
                         if on { self.hit([bx, y, bw, bh], k, j); }
-                        if gn { gn_button(d, [bx, y, bw, bh], t, fk(j), on, u, clip) } else { arena_button(d, [bx, y, bw, bh], t, fk(j), on, 1.0, u, clip) }
+                        if gothic { gothic_button(d, [bx, y, bw, bh], t, fk(j), on, u, clip) } else if gn { gn_button(d, [bx, y, bw, bh], t, fk(j), on, u, clip) } else { arena_button(d, [bx, y, bw, bh], t, fk(j), on, 1.0, u, clip) }
                     }
                     Label::poster(24.0 * u).shadow(2.0 * u, RED).center().draw(d, &ctx.bots.to_string(), x0 + bw + 8.0 * u + cw * 0.5, y + bh * 0.5, clip);
                     y += bh + sep;
@@ -1071,6 +1093,19 @@ mod pointer_tests {
         m.joining = false;
         m.focus_field(Field::Join, &c);
         assert_eq!(m.text(TextEvent::Escape, &c), Action::Back);
+        // Real 272-char multi-interface ticket and 500-char CLI one-liner pasted on the Start menu (even without focusing the field first).
+        let long_ticket = "168ea06eeabb0bb330288edac13a55e25067fae474c43bff0de51fb693e44c3007002368747470733a2f2f657563312d312e72656c61792e6e302e69726f682e6c696e6b2e2f010052acbff0d9e5030100c0a8004cd9e5030100c0a88b03d9e5030100c0a8c200d9e5030100c0a8d700d9e503010102003798bf4c7b4ba3b6c672798b4d908ef403";
+        assert!(long_ticket.len() > 256);
+        m.open(Screen::Start);
+        assert_eq!(m.text_focus(&c), None);
+        let oneliner = format!("curl -fL http://192.168.0.76:8787/Growing-Guns-macOS.zip -o /tmp/gg.zip && \"/tmp/Growing Guns.app/Contents/MacOS/growing-guns\" play --join {long_ticket}");
+        assert_eq!(m.text(TextEvent::Paste(oneliner), &c), Action::Join);
+        assert_eq!(m.join_ticket(), long_ticket);
+        assert_eq!(m.join_state(&c), JoinState::Valid);
+        draw(&m, &w, &h, &c);
+        let k = items(Screen::Start, &c).iter().position(|i| *i == Item::Field(Field::Join)).unwrap();
+        let b = m.hits.borrow().iter().find(|h| h.item == k && h.entry == 1).unwrap().rect;
+        assert_eq!(m.pointer(at(b, true), SIZE, &w, None, &c), Action::Join);
     }
 
     #[test]

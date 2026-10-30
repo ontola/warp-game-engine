@@ -608,4 +608,99 @@ impl World {
             p.frozen = false;
         }
     }
+
+    /// Hand slot `i` to a joining human: if the bot in that seat already died
+    /// (a ghost in a 3+ player round, or a parked coop seat), spawn the new
+    /// human into the round so they immediately have a visible body and gun.
+    pub fn join_human(&mut self, i: usize) {
+        let Some(p) = self.players.get_mut(i) else { return };
+        p.bot = false;
+        if self.phase == Phase::Playing && !self.round_over() && !self.players[i].alive {
+            let used: Vec<Vec3> = self.players.iter().enumerate().filter(|&(k, p)| k != i && p.alive).map(|(_, p)| p.pos).collect();
+            let pick = pick_spawn(&self.arena.spawns, &used);
+            self.flow.eliminated.retain(|&x| x != i);
+            self.flow.completed.retain(|&x| x != i);
+            self.waves.downed.retain(|d| d.player != i);
+            let p = &mut self.players[i];
+            let keep = (p.score, std::mem::take(&mut p.cards), p.weapon.clone(), p.air_strike_charges);
+            *p = crate::Player::new(false);
+            (p.score, p.cards, p.weapon, p.air_strike_charges) = keep;
+            p.health = p.max_health();
+            p.ammo = p.mag_size();
+            p.phoenix_charges = p.weapon.phoenix_revives;
+            p.jumps_left = 2 + p.weapon.extra_jumps;
+            let to = -Vec2::new(pick.x, pick.z);
+            p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
+            if self.flow.cage.is_some() {
+                p.pos = pick + Vec3::Y * CAGE_SPAWN_HEIGHT;
+                p.frozen = true;
+                if i < self.flow.cage_targets.len() { self.flow.cage_targets[i] = pick; }
+            } else {
+                p.pos = pick;
+                p.frozen = false;
+                p.iframes = 1.5;
+            }
+            if self.coop { self.coop_spawn_health(i); }
+        } else if self.phase == Phase::Picking && self.flow.eliminated.contains(&i) && !self.flow.completed.contains(&i) {
+            self.begin_pick(i);
+        }
+    }
+
+    /// Add a computer player (or a fresh seat) on a free spawn, with its own AI brain.
+    pub fn add_bot(&mut self) -> usize {
+        let i = self.players.len();
+        let used: Vec<Vec3> = self.players.iter().filter(|p| p.alive).map(|p| p.pos).collect();
+        let pick = pick_spawn(&self.arena.spawns, &used);
+        let mut p = crate::Player::new(true);
+        if let Some(m) = self.modifier { modifier_weapon(m, &mut p.weapon); }
+        p.health = p.max_health();
+        p.ammo = p.mag_size();
+        let to = -Vec2::new(pick.x, pick.z);
+        p.yaw = if to.length_squared() > 1e-4 { (-to.x).atan2(-to.y) } else { 0.0 };
+        if self.flow.cage.is_some() {
+            p.pos = pick + Vec3::Y * CAGE_SPAWN_HEIGHT;
+            p.frozen = true;
+            self.flow.cage_targets.push(pick);
+        } else {
+            p.pos = pick;
+        }
+        self.players.push(p);
+        self.brains.push(crate::bot::Brain::new(self.arena.seed ^ ((i as u64 + 1) * 0x9E37)));
+        i
+    }
+
+    /// Remove the last AI bot slot unless it is in `keep_slots` or fewer than
+    /// 2 players would remain.
+    pub fn remove_bot(&mut self, keep_slots: &[usize]) -> bool {
+        if self.coop || self.players.len() <= 2 { return false; }
+        let last = self.players.len() - 1;
+        if !self.players[last].bot || keep_slots.contains(&last) { return false; }
+        self.players.pop();
+        self.brains.truncate(last);
+        self.flow.cage_targets.truncate(last);
+        self.flow.eliminated.retain(|&i| i < last);
+        self.flow.completed.retain(|&i| i < last);
+        if self.flow.winner == Some(last) { self.flow.winner = None; }
+        self.bullets.retain(|b| b.owner < last);
+        self.projectiles.retain(|p| p.owner < last);
+        for s in &mut self.strikes { if s.owner == Some(last) { s.owner = None; } }
+        self.events.retain(|e| crate::coop::event_players(e).iter().all(|&p| p < last));
+        self.delayed.retain(|(_, d)| match *d {
+            crate::Delayed::Hit { victim, from, .. } => victim < last && from.is_none_or(|f| f < last),
+            crate::Delayed::Credit { shooter, .. } => shooter < last,
+            crate::Delayed::Echo { player } => player < last,
+        });
+        self.damages.retain(|&(v, _, by)| v < last && by.is_none_or(|b| b < last));
+        self.gives.retain(|&(p, _)| p < last);
+        for p in &mut self.players { if p.poison_from == Some(last) { p.poison_from = None; } }
+        if self.phase == Phase::Picking {
+            self.maybe_finish_picks();
+        } else if self.phase == Phase::Playing && !self.flow.round_ending {
+            let alive: Vec<usize> = (0..self.players.len()).filter(|&i| self.players[i].alive && !self.flow.eliminated.contains(&i)).collect();
+            if alive.len() <= 1 {
+                self.end_round(alive.first().copied());
+            }
+        }
+        true
+    }
 }

@@ -42,7 +42,7 @@ mod tests {
         let mut world = World::new(3, &[false, true, true]);
         let mut physics = Physics::new(Vec3::new(0.0, -20.0, 0.0), 60.0);
         world.players[0].alive = false;
-        c.kill(&mut physics, 0, &world.players[0], Vec3::X).unwrap();
+        c.kill(&mut physics, 0, &world.players[0], Vec3::X, false).unwrap();
         physics.step(); c.follow_physics(&physics);
         c.pose(&world, &[], 1.0);
         assert!(c.corpse_transform(0).is_some());
@@ -53,7 +53,7 @@ mod tests {
         assert_eq!(physics.body_count(), 0);
         assert!(c.corpse_transform(0).is_none() && c.hands[0].is_some());
         world.players[0].alive = false;
-        c.kill(&mut physics, 0, &world.players[0], Vec3::X).unwrap();
+        c.kill(&mut physics, 0, &world.players[0], Vec3::X, true).unwrap();
         c.reset(&mut physics);
         assert_eq!(physics.body_count(), 0);
         assert_eq!(physics.world.impulse_joints.len(), 0);
@@ -93,6 +93,8 @@ impl Characters {
         println!("characters: original knight, paladin, ch10 with idle/run/jump ({})", dir.display());
         Ok(Self { models, actors: Vec::new(), lava: Vec::new(), hands: Vec::new() })
     }
+
+    pub fn models(&self) -> &[Character] { &self.models }
 
     pub fn reserve_actor(&mut self, scene: &mut Scene, player: usize) -> Result<usize, String> {
         let model = &self.models[player % self.models.len()];
@@ -180,7 +182,12 @@ impl Characters {
     }
 
     pub fn pose(&mut self, world: &World, prev: &[crate::view::Pose], alpha: f32) {
-        for (i, (actor, p)) in self.actors.iter_mut().zip(&world.players).enumerate() {
+        for (i, actor) in self.actors.iter_mut().enumerate() {
+            let Some(p) = world.players.get(i) else {
+                actor.corpse_transform = None;
+                self.hands[i] = None;
+                continue;
+            };
             if !p.alive {
                 actor.corpse_transform = actor.corpse.as_ref().map(|c| c.pose(alpha, &mut actor.palette));
                 self.hands[i] = None;
@@ -206,7 +213,7 @@ impl Characters {
         }
     }
 
-    pub fn kill(&mut self, physics: &mut Physics, player: usize, p: &growing_guns::Player, direction: Vec3) -> Result<(), String> {
+    pub fn kill(&mut self, physics: &mut Physics, player: usize, p: &growing_guns::Player, direction: Vec3, headless: bool) -> Result<(), String> {
         let actor = self.actors.get_mut(player).ok_or("missing skinned actor")?;
         if let Some(mut corpse) = actor.corpse.take() { corpse.rig.remove(physics); }
         let model = &self.models[player % self.models.len()];
@@ -219,7 +226,7 @@ impl Characters {
             model.sample_into(RUN, actor.motion.run, true, &mut actor.run_palette)?;
             for (idle, run) in actor.palette.iter_mut().zip(&actor.run_palette) { *idle = mix(*idle, *run, actor.motion.blend); }
         }
-        actor.corpse = Some(Corpse::spawn(model, &actor.palette, model_transform(p.pos, p.yaw), actor.velocity, direction, player, physics)?);
+        actor.corpse = Some(Corpse::spawn(model, &actor.palette, model_transform(p.pos, p.yaw), actor.velocity, direction, player, headless, physics)?);
         self.hands[player] = None;
         Ok(())
     }

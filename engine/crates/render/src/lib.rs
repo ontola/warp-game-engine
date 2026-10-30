@@ -8,6 +8,7 @@
 
 pub mod cluster;
 pub mod dents;
+pub mod dfao;
 pub mod frame;
 pub mod static_sun;
 pub mod debug_settings;

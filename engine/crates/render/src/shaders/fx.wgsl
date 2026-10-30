@@ -89,6 +89,12 @@ fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V 
         let seed = p.ax.w;
         let delay = p.ay.w;
         out.age = clamp((anim - delay) * (1.0 + p.timing.w) / max(1.0 - delay, 0.001), 0.0, 1.0);
+        if anim <= delay || out.age >= 1.0 {
+            out.world = world;
+            out.normal = normal;
+            out.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+            return out;
+        }
         let s = seed * 100.0;
         let a = sin(local.x * 6.3 + s) * sin(local.y * 5.1 + s * 1.7) * sin(local.z * 7.2 + s * 0.9);
         let b = sin(local.x * 13.0 + s * 2.1) * sin(local.z * 11.0 + s * 1.3);
@@ -106,6 +112,12 @@ fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V 
         let delay = p.ax.w;
         let age = clamp((anim - delay) / max(1.0 - delay, 0.001), 0.0, 1.0);
         out.age = age;
+        if anim <= delay || age >= 1.0 {
+            out.world = world;
+            out.normal = normal;
+            out.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+            return out;
+        }
         let prog = 1.0 - pow(1.0 - age, 2.0);
         let dist = length(travel);
         let dir = select(vec3<f32>(0.0, 1.0, 0.0), travel / max(dist, 1e-4), dist > 1e-4);
@@ -122,6 +134,12 @@ fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V 
         // Heat shell: expands (expo out) to its end radius.
         let t = clamp((u.clock.x - p.timing.x) / max(p.timing.y, 1e-4), 0.0, 1.0);
         out.age = t;
+        if t <= 0.0 || t >= 0.9 {
+            out.world = world;
+            out.normal = normal;
+            out.position = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+            return out;
+        }
         let r = mix(0.22, p.ax.x, expo_out(t));
         world += n * r;
     }

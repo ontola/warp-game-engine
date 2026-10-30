@@ -89,6 +89,16 @@ impl Slots {
     /// Scene instance index of a slot (for flags such as `hide_in_views`).
     pub fn instance(&self, id: SlotId) -> usize { self.first + id.0 }
 
+    /// Mark every slot in this pool as non-shadow-casting (`NO_SHADOW`).
+    pub fn mark_no_shadow(&mut self, scene: &mut Scene) {
+        for k in 0..self.used.len() {
+            scene.instances[self.first + k].flags |= crate::scene::NO_SHADOW;
+        }
+        if !self.used.is_empty() {
+            self.dirty = Some((0, self.used.len()));
+        }
+    }
+
     fn touch(&mut self, k: usize) {
         self.dirty = Some(self.dirty.map_or((k, k + 1), |(a, b)| (a.min(k), b.max(k + 1))));
     }

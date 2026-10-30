@@ -545,7 +545,7 @@ fn min_flat(p: Vec3, others: &[Vec3]) -> f32 {
 }
 
 /// The player indices an event refers to.
-fn event_players(e: &Event) -> Vec<usize> {
+pub(crate) fn event_players(e: &Event) -> Vec<usize> {
     match *e {
         Event::Shot { player, .. } | Event::Jump { player } | Event::Dash { player } | Event::Special { player, .. } | Event::Slash { player, .. }
         | Event::Teleport { player, .. } | Event::Phoenix { player } | Event::PickedUp { player, .. } | Event::Picked { player, .. }

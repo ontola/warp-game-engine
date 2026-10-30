@@ -98,6 +98,8 @@ pub struct ArenaView {
     dents: Vec<(render::dents::Dent, u32)>,
     next_dent: usize,
     dents_changed: bool,
+    dfao_words: Vec<u32>,
+    dfao_changed: bool,
     lights: Vec<LocalLight>,
     occupancy_repair: OccupancyRepair,
     /// The light the lava casts.
@@ -142,9 +144,13 @@ impl ArenaView {
         let slots = Slots::reserve(scene, ARENA_SLOTS);
         let scorch_m = material(scene, [0.06, 0.055, 0.05], 0.95);
         let blood_m = material(scene, [0.36, 0.02, 0.015], 0.35);
-        let marks = Marks { slots: Slots::reserve(scene, MARKS), ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
+        let mut mark_slots = Slots::reserve(scene, MARKS);
+        mark_slots.mark_no_shadow(scene);
+        let marks = Marks { slots: mark_slots, ring: Vec::new(), next: 0, scorch: super::sphere(scene, scorch_m, 4, 8), blood: super::sphere(scene, blood_m, 4, 10) };
         if let Err(e) = scene.reserve_dents(DENTS) { eprintln!("growing-guns: no bullet dents: {e}"); }
-        ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), static_set: Default::default(), static_shapes: Vec::new(), shown_wear: Vec::new(), marks, dents: Vec::new(), next_dent: 0, dents_changed: false, lights: Vec::new(), occupancy_repair: Default::default(), lava: Default::default() }
+        let dfao_grid = render::dfao::Grid { origin: Vec3::new(-52.0, -4.0, -52.0), voxel: 2.0, dims: [52, 18, 52], max_distance: 10.0 };
+        if let Err(e) = scene.reserve_dfao(dfao_grid) { eprintln!("growing-guns: no dfao: {e}"); }
+        ArenaView { slots, kinds, inferno, island: false, chunk_slots: Vec::new(), statics: Vec::new(), static_set: Default::default(), static_shapes: Vec::new(), shown_wear: Vec::new(), marks, dents: Vec::new(), next_dent: 0, dents_changed: false, dfao_words: Vec::new(), dfao_changed: false, lights: Vec::new(), occupancy_repair: Default::default(), lava: Default::default() }
     }
 
     /// Fill the slots, colliders and debris grid from the world's arena (a
@@ -169,6 +175,13 @@ impl ArenaView {
         let occ = fx.debris.occupancy_mut();
         occ.clear();
         for c in a.chunks.iter().filter(|c| c.alive) { occ.fill_box(c.center, c.half, c.yaw, true); }
+        if let Some((offset, grid)) = scene.dfao {
+            if let Ok(words) = render::dfao::bake_from_occupancy(&grid, fx.debris.occupancy()) {
+                scene.aux[offset..offset + words.len()].copy_from_slice(&words);
+                self.dfao_words = words;
+                self.dfao_changed = true;
+            }
+        }
         self.chunk_slots = Vec::with_capacity(a.chunks.len());
         for (i, c) in a.chunks.iter().enumerate() {
             let slot = c.alive.then(|| {
@@ -191,6 +204,12 @@ impl ArenaView {
             self.dents_changed = false;
             let dents: Vec<_> = self.dents.iter().map(|d| d.0).collect();
             renderer.set_dents(gpu, &dents)?;
+        }
+        if self.dfao_changed {
+            self.dfao_changed = false;
+            if scene.dfao.is_some() && !self.dfao_words.is_empty() {
+                renderer.set_dfao(gpu, &self.dfao_words)?;
+            }
         }
         self.marks.slots.flush(gpu, renderer, scene)
     }
@@ -241,19 +260,21 @@ impl ArenaView {
         if b.is_empty() { return; }
         self.lava.broken(world, &b.removed);
         for &(i, _) in &b.worn {
-            let c = &world.arena.chunks[i as usize];
+            let idx = i as usize;
+            let (Some(c), Some(shown)) = (world.arena.chunks.get(idx), self.shown_wear.get_mut(idx)) else { continue };
             let lvl = wear_level(c.wear());
-            if lvl != self.shown_wear[i as usize] {
-                self.shown_wear[i as usize] = lvl;
-                if let Some(slot) = self.chunk_slots[i as usize] {
+            if lvl != *shown {
+                *shown = lvl;
+                if let Some(slot) = self.chunk_slots.get(idx).copied().flatten() {
                     let (mesh, xf) = self.chunk_look(c, lvl);
                     self.slots.set(scene, slot, mesh, xf);
                 }
             }
         }
         for &i in &b.removed {
-            if let Some(slot) = self.chunk_slots[i as usize].take() { self.slots.remove(scene, slot); }
-            if let Some(h) = self.statics[i as usize].take() { phys.remove_static(h); }
+            let idx = i as usize;
+            if let Some(slot) = self.chunk_slots.get_mut(idx).and_then(Option::take) { self.slots.remove(scene, slot); }
+            if let Some(h) = self.statics.get_mut(idx).and_then(Option::take) { phys.remove_static(h); }
             self.marks.drop_on(scene, i);
             let before = self.dents.len();
             self.dents.retain(|d| d.1 != i);
@@ -358,7 +379,7 @@ fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
         let shard_tint = tint.map(|c| (c * k).min(1.0));
         let m = if super::stone_layer(scene) < 0 { material(scene, shard_tint, rough) }
             else { rock(scene, shard_tint, rough, 0.35) };
-        scene.add_mesh(&primitives::hewn_block(m, 2, 0.15, 0.22, (k * 100.0) as u32).mesh())
+        scene.add_mesh(&primitives::hewn_block(m, 1, 0.15, 0.22, (k * 100.0) as u32).mesh())
     });
     Stone { intact, cracked, crumbling, shards }
 }

@@ -4,8 +4,10 @@
 //! blobs; a headshot bursts the head and the torso tumbles on. Pieces are
 //! rigid bodies that bounce through the arena, then go after their time or
 //! when newer gore needs the room (Godot caps live chunks the same way).
+use assets::skinned::Character;
 use glam::{Affine3A, Quat, Vec3};
 use physics::{Body, BodyDesc, Physics, Shape};
+use render::cluster::{ClusterMesh, Part as MeshPart, Vertex};
 use render::primitives::{self, Primitive};
 use render::scene::{Material, NO_SHADOW};
 use render::slots::{SlotId, Slots};
@@ -26,10 +28,18 @@ pub enum Part { Body, Head, Eyes }
 #[derive(Clone, Debug)]
 struct ShardMesh { mesh: usize, centroid: Vec3, half: Vec3 }
 
+#[derive(Clone, Debug, Default)]
+struct CharacterGore {
+    body: Vec<ShardMesh>,
+    head: Vec<ShardMesh>,
+}
+
 struct Piece { body: Body, slot: SlotId, mesh: usize, scale: Vec3, born: f32 }
 
 pub struct Gore {
-    /// Per player, per part, a few shatter layouts.
+    /// Per roster character model, anatomical body and head gib pieces.
+    character_shards: Vec<CharacterGore>,
+    /// Fallback per player, per part, a few shatter layouts for primitive bodies.
     shards: Vec<[Vec<Vec<ShardMesh>>; 3]>,
     blobs: [usize; 4],
     slots: Slots,
@@ -48,18 +58,25 @@ pub fn part_xf(part: Part, pos: Vec3, yaw: f32) -> Affine3A {
 }
 
 impl Gore {
-    /// `parts[p]`: player p's body, head and eye primitives (its materials).
-    pub fn reserve(scene: &mut Scene, parts: &[[Primitive; 3]], seed: u64) -> Self {
+    /// `parts[p]`: player p's fallback primitives; `characters`: loaded roster models.
+    pub fn reserve(scene: &mut Scene, parts: &[[Primitive; 3]], characters: &[Character], seed: u64) -> Self {
         // Flesh: Godot's cap colours run from deep to raw red.
         let flesh: Vec<u32> = [[0.45, 0.06, 0.05], [0.62, 0.11, 0.08], [0.82, 0.16, 0.11]]
             .map(|c| scene.add_material(Material { tint: c.map(|v: f32| v.powf(2.2)), layer: -1, roughness: 0.9, flags: 0, scale: 1.0, metal: 0.0 })).to_vec();
+        let character_shards: Vec<CharacterGore> = characters
+            .iter()
+            .enumerate()
+            .map(|(idx, model)| build_character_gore(scene, model, &flesh, idx))
+            .collect();
         let mut shards = Vec::new();
-        for (p, prims) in parts.iter().enumerate() {
-            let per: [Vec<Vec<ShardMesh>>; 3] = std::array::from_fn(|k| (0..VARIANTS).map(|v| {
-                primitives::shatter(&prims[k], CELLS, flesh[(p + k + v) % flesh.len()], seed ^ ((p * 31 + k * 7 + v) as u64 + 1))
-                    .into_iter().map(|s| ShardMesh { mesh: scene.add_mesh(&s.mesh()), centroid: s.centroid, half: s.half }).collect()
-            }).collect());
-            shards.push(per);
+        if character_shards.is_empty() {
+            for (p, prims) in parts.iter().enumerate() {
+                let per: [Vec<Vec<ShardMesh>>; 3] = std::array::from_fn(|k| (0..VARIANTS).map(|v| {
+                    primitives::shatter(&prims[k], CELLS, flesh[(p + k + v) % flesh.len()], seed ^ ((p * 31 + k * 7 + v) as u64 + 1))
+                        .into_iter().map(|s| ShardMesh { mesh: scene.add_mesh(&s.mesh()), centroid: s.centroid, half: s.half }).collect()
+                }).collect());
+                shards.push(per);
+            }
         }
         // Blood and meat blobs (Godot spawn_blood_gib_blobs): dark blood and flesh.
         let blobs = [[0.30, 0.018, 0.012], [0.20, 0.016, 0.012], [0.92, 0.18, 0.12], [0.55, 0.09, 0.07]].map(|c| {
@@ -67,7 +84,7 @@ impl Gore {
             scene.add_mesh(&primitives::sphere(m, 3, 5).mesh())
         });
         let slots = Slots::reserve(scene, MAX_PIECES);
-        Gore { shards, blobs, slots, pieces: Vec::new(), rng: seed | 1 }
+        Gore { character_shards, shards, blobs, slots, pieces: Vec::new(), rng: seed | 1 }
     }
 
     fn f(&mut self) -> f32 {
@@ -103,19 +120,39 @@ impl Gore {
         let base = vel * 0.5 + dir * self.range(2.2, 3.9) * kb * (1.0 + chaos * 0.18) + Vec3::Y * self.range(1.2, 2.8) * kb * (1.2 + chaos * 0.06);
         let strength = 1.45 * kb * (1.0 + chaos * 0.2);
         let rot = Quat::from_rotation_y(yaw);
-        for &part in parts {
-            let k = part as usize;
-            let v = (self.f() * VARIANTS as f32) as usize % VARIANTS;
-            let src = part_xf(part, pos, yaw);
-            let scale = Vec3::new(src.matrix3.x_axis.length(), src.matrix3.y_axis.length(), src.matrix3.z_axis.length());
-            let shards = self.shards[p.min(self.shards.len() - 1)][k][v].clone();
-            for s in shards {
-                let at = src.transform_point3(s.centroid);
+        if !self.character_shards.is_empty() {
+            let cg = &self.character_shards[p % self.character_shards.len()];
+            let mut active = Vec::new();
+            if parts.contains(&Part::Body) {
+                active.extend(cg.body.iter().cloned());
+            }
+            if parts.contains(&Part::Head) || parts.contains(&Part::Eyes) {
+                active.extend(cg.head.iter().cloned());
+            }
+            let xf = Affine3A::from_rotation_translation(rot, pos);
+            for s in active {
+                let at = xf.transform_point3(s.centroid);
                 let out = (at - pos - Vec3::Y * 0.1).try_normalize().unwrap_or(Vec3::Y);
                 let jitter = Vec3::new(self.range(-1.5, 1.5), 0.0, self.range(-1.5, 1.5));
                 let vel = base + jitter + out * strength + Vec3::Y * strength * 0.2;
-                let half = (s.half * scale).max(Vec3::splat(0.025));
-                self.spawn(scene, phys, s.mesh, scale, Shape::Box(half), at, rot, vel, now);
+                let half = s.half.max(Vec3::splat(0.025));
+                self.spawn(scene, phys, s.mesh, Vec3::ONE, Shape::Box(half), at, rot, vel, now);
+            }
+        } else if !self.shards.is_empty() {
+            for &part in parts {
+                let k = part as usize;
+                let v = (self.f() * VARIANTS as f32) as usize % VARIANTS;
+                let src = part_xf(part, pos, yaw);
+                let scale = Vec3::new(src.matrix3.x_axis.length(), src.matrix3.y_axis.length(), src.matrix3.z_axis.length());
+                let shards = self.shards[p.min(self.shards.len() - 1)][k][v].clone();
+                for s in shards {
+                    let at = src.transform_point3(s.centroid);
+                    let out = (at - pos - Vec3::Y * 0.1).try_normalize().unwrap_or(Vec3::Y);
+                    let jitter = Vec3::new(self.range(-1.5, 1.5), 0.0, self.range(-1.5, 1.5));
+                    let vel = base + jitter + out * strength + Vec3::Y * strength * 0.2;
+                    let half = (s.half * scale).max(Vec3::splat(0.025));
+                    self.spawn(scene, phys, s.mesh, scale, Shape::Box(half), at, rot, vel, now);
+                }
             }
         }
         // Blood and meat blobs, more for worse deaths.
@@ -157,4 +194,223 @@ impl Gore {
         for pc in self.pieces.drain(..) { phys.remove(pc.body); self.slots.remove(scene, pc.slot); }
     }
 
+}
+
+/// Partition a character model's posed geometry into textured anatomical body
+/// chunks (pelvis, left/right chest, arms, forearms, thighs, boots) and 3
+/// head/helmet chunks, each sealed with a raw flesh cap at open cut edges.
+fn build_character_gore(scene: &mut Scene, model: &Character, flesh: &[u32], model_idx: usize) -> CharacterGore {
+    let Some(palette) = model.sample("pistol_idle", 0.0, true).ok() else {
+        return CharacterGore::default();
+    };
+    let surfaces = model.posed_surfaces(scene, &palette, super::characters::model_transform(Vec3::ZERO, 0.0));
+    let joint_parts: Vec<usize> = model.joints().map(|(name, _)| super::character_ragdoll::part(name)).collect();
+
+    // Compute head center so head triangles split into 3 balanced chunks.
+    let mut head_sum = Vec3::ZERO;
+    let mut head_count = 0usize;
+    for (_, vertices, indices, dom) in &surfaces {
+        for tri in indices.chunks_exact(3) {
+            let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+            if joint_parts.get(dom[a]).copied().unwrap_or(1) == 2
+                || joint_parts.get(dom[b]).copied().unwrap_or(1) == 2
+                || joint_parts.get(dom[c]).copied().unwrap_or(1) == 2
+            {
+                let tc = (Vec3::from(vertices[a].pos) + Vec3::from(vertices[b].pos) + Vec3::from(vertices[c].pos)) / 3.0;
+                head_sum += tc;
+                head_count += 1;
+            }
+        }
+    }
+    let head_center = if head_count > 0 { head_sum / head_count as f32 } else { Vec3::new(0.0, 0.55, 0.0) };
+
+    // 11 body buckets (0: pelvis, 1: left chest, 2: right chest, 3..11: limbs 3..=10)
+    // and 3 head buckets (left face, right face, crown/back).
+    let mut body_tris: Vec<Vec<(usize, [u32; 3])>> = vec![Vec::new(); 11];
+    let mut head_tris: Vec<Vec<(usize, [u32; 3])>> = vec![Vec::new(); 3];
+
+    for (surf_idx, (_, vertices, indices, dom)) in surfaces.iter().enumerate() {
+        for tri in indices.chunks_exact(3) {
+            let [a, b, c] = [tri[0], tri[1], tri[2]];
+            let pa = joint_parts.get(dom[a as usize]).copied().unwrap_or(1);
+            let pb = joint_parts.get(dom[b as usize]).copied().unwrap_or(1);
+            let pc = joint_parts.get(dom[c as usize]).copied().unwrap_or(1);
+            let tc = (Vec3::from(vertices[a as usize].pos) + Vec3::from(vertices[b as usize].pos) + Vec3::from(vertices[c as usize].pos)) / 3.0;
+            let part = if pa == 2 || pb == 2 || pc == 2 { 2 } else { pa };
+            if part == 2 {
+                let rel = tc - head_center;
+                let angle = rel.z.atan2(rel.x);
+                let bucket = (((angle + std::f32::consts::PI) / std::f32::consts::TAU * 3.0).floor() as usize).min(2);
+                head_tris[bucket].push((surf_idx, [a, b, c]));
+            } else {
+                let bucket = match part {
+                    0 => 0,
+                    1 => if tc.x < 0.0 { 1 } else { 2 },
+                    p => p.clamp(3, 10),
+                };
+                body_tris[bucket].push((surf_idx, [a, b, c]));
+            }
+        }
+    }
+
+    let body = body_tris
+        .into_iter()
+        .enumerate()
+        .filter_map(|(k, tris)| {
+            let cap = flesh[(model_idx + k) % flesh.len()];
+            build_character_shard(scene, &surfaces, &tris, cap)
+        })
+        .collect();
+    let head = head_tris
+        .into_iter()
+        .enumerate()
+        .filter_map(|(k, tris)| {
+            let cap = flesh[(model_idx + k + 1) % flesh.len()];
+            build_character_shard(scene, &surfaces, &tris, cap)
+        })
+        .collect();
+    CharacterGore { body, head }
+}
+
+fn build_character_shard(
+    scene: &mut Scene,
+    surfaces: &[(u32, Vec<Vertex>, Vec<u32>, Vec<usize>)],
+    tris: &[(usize, [u32; 3])],
+    cap_mat: u32,
+) -> Option<ShardMesh> {
+    if tris.is_empty() {
+        return None;
+    }
+    let mut sub_surfaces: Vec<(u32, Vec<Vertex>, Vec<u32>)> = Vec::new();
+    let mut remap: std::collections::HashMap<(usize, u32), (usize, u32)> = std::collections::HashMap::new();
+    let mut surf_slot: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut pos_sum = Vec3::ZERO;
+    let mut pos_count = 0usize;
+
+    for &(surf_idx, [a, b, c]) in tris {
+        let slot = *surf_slot.entry(surf_idx).or_insert_with(|| {
+            let s = sub_surfaces.len();
+            sub_surfaces.push((surfaces[surf_idx].0, Vec::new(), Vec::new()));
+            s
+        });
+        for v_idx in [a, b, c] {
+            let (_, local_idx) = *remap.entry((surf_idx, v_idx)).or_insert_with(|| {
+                let v = surfaces[surf_idx].1[v_idx as usize];
+                pos_sum += Vec3::from(v.pos);
+                pos_count += 1;
+                let sub = &mut sub_surfaces[slot].1;
+                sub.push(v);
+                (slot, sub.len() as u32 - 1)
+            });
+            sub_surfaces[slot].2.push(local_idx);
+        }
+    }
+    if pos_count < 3 {
+        return None;
+    }
+    let centroid = pos_sum / pos_count as f32;
+    let mut lo = Vec3::splat(f32::MAX);
+    let mut hi = Vec3::splat(f32::MIN);
+    for (_, verts, _) in &mut sub_surfaces {
+        for v in verts {
+            let p = Vec3::from(v.pos) - centroid;
+            lo = lo.min(p);
+            hi = hi.max(p);
+            v.pos = p.to_array();
+        }
+    }
+
+    // Find open boundary edges across all triangles in this piece and close them
+    // with a double-sided flesh cap fan toward the piece centroid (Vec3::ZERO).
+    let key = |v: Vec3| (v * 1e4).round().as_ivec3();
+    let mut edges: std::collections::HashMap<(glam::IVec3, glam::IVec3), (Vec3, Vec3, u32)> = std::collections::HashMap::new();
+    for (_, verts, idx) in &sub_surfaces {
+        for t in idx.chunks_exact(3) {
+            for e in 0..3 {
+                let pa = Vec3::from(verts[t[e] as usize].pos);
+                let pb = Vec3::from(verts[t[(e + 1) % 3] as usize].pos);
+                let (ka, kb) = (key(pa), key(pb));
+                if ka == kb {
+                    continue;
+                }
+                let k = if (ka.x, ka.y, ka.z) <= (kb.x, kb.y, kb.z) { (ka, kb) } else { (kb, ka) };
+                edges.entry(k).and_modify(|c| c.2 += 1).or_insert((pa, pb, 1));
+            }
+        }
+    }
+    let mut cap_verts = Vec::new();
+    let mut cap_indices = Vec::new();
+    for (_, (pa, pb, count)) in edges {
+        if count != 1 {
+            continue;
+        }
+        let n = pa.cross(pb).normalize_or(Vec3::Y);
+        for (tri, nrm) in [([Vec3::ZERO, pa, pb], n), ([Vec3::ZERO, pb, pa], -n)] {
+            let base = cap_verts.len() as u32;
+            for (i, v) in tri.iter().enumerate() {
+                cap_verts.push(Vertex { pos: v.to_array(), normal: nrm.to_array(), uv: [i as f32 * 0.5, 0.0] });
+            }
+            cap_indices.extend([base, base + 1, base + 2]);
+        }
+    }
+
+    // Add inner backfaces so open armor/clothing shells never look hollow when tumbling.
+    for (_, verts, idx) in &mut sub_surfaces {
+        let back: Vec<u32> = idx.chunks_exact(3).flat_map(|t| [t[0], t[2], t[1]]).collect();
+        let flipped = verts.len() as u32;
+        let inner: Vec<Vertex> = verts.iter().map(|v| Vertex { normal: (-Vec3::from(v.normal)).to_array(), ..*v }).collect();
+        verts.extend(inner);
+        idx.extend(back.into_iter().map(|k| k + flipped));
+    }
+
+    let coarse_mat = sub_surfaces[0].0;
+    let mut parts: Vec<MeshPart> = sub_surfaces
+        .iter()
+        .filter(|(_, _, idx)| !idx.is_empty())
+        .map(|(mat, verts, idx)| MeshPart { vertices: verts, indices: idx, material: *mat })
+        .collect();
+    if !cap_indices.is_empty() {
+        parts.push(MeshPart { vertices: &cap_verts, indices: &cap_indices, material: cap_mat });
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let cluster_mesh = ClusterMesh::build(&parts).with_coarse(primitives::cube(coarse_mat).mesh(), 0.04);
+    let mesh = scene.add_mesh(&cluster_mesh);
+    let half = ((hi - lo) * 0.5).clamp(Vec3::splat(0.03), Vec3::splat(0.45));
+    Some(ShardMesh { mesh, centroid, half })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::view::characters::Characters;
+
+    #[test]
+    fn gore_builds_character_model_shards_and_spawns_head_and_body_pieces() {
+        let characters = Characters::load().expect("roster characters load");
+        let mut scene = Scene::default();
+        let mut phys = Physics::new(Vec3::new(0.0, -9.81, 0.0), 60.0);
+        let mut gore = Gore::reserve(&mut scene, &[], characters.models(), 42);
+        assert_eq!(gore.character_shards.len(), characters.models().len());
+        for cg in &gore.character_shards {
+            assert!(cg.body.len() >= 8, "expected anatomical body chunks, got {}", cg.body.len());
+            assert_eq!(cg.head.len(), 3, "expected 3 head chunks, got {}", cg.head.len());
+        }
+
+        // Headshot burst spawns the 3 head chunks + blood blobs.
+        gore.burst(&mut scene, &mut phys, 0, &[Part::Head, Part::Eyes], Vec3::new(1.0, 2.0, 3.0), 0.5, Vec3::ZERO, Vec3::X, 0.5, 0.0);
+        let head_pieces: Vec<usize> = gore.pieces.iter().map(|p| p.mesh).collect();
+        for hs in &gore.character_shards[0].head {
+            assert!(head_pieces.contains(&hs.mesh), "headshot burst must spawn actual character head shard mesh");
+        }
+
+        // Full body overkill burst spawns the character's anatomical body + head chunks.
+        gore.clear(&mut scene, &mut phys);
+        gore.burst(&mut scene, &mut phys, 1, &[Part::Body, Part::Head, Part::Eyes], Vec3::new(0.0, 1.0, 0.0), 0.0, Vec3::ZERO, Vec3::Z, 0.9, 1.0);
+        let burst_pieces: Vec<usize> = gore.pieces.iter().map(|p| p.mesh).collect();
+        for bs in &gore.character_shards[1].body {
+            assert!(burst_pieces.contains(&bs.mesh), "body burst must spawn actual character body shard mesh");
+        }
+    }
 }

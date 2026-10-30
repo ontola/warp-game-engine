@@ -562,6 +562,54 @@ impl ClusterMesh {
     pub fn leaf_triangles(&self) -> usize {
         self.clusters.iter().filter(|c| c.own_error == 0.0).map(|c| c.tri_count as usize).sum()
     }
+
+    /// Append a coarse whole-mesh replacement level that activates once `error`
+    /// (in mesh-space metres) projects to at most the view's LOD threshold.
+    /// Fine root clusters and coarse clusters share the combined mesh bounding
+    /// sphere at the `error` transition so GPU cluster selection switches
+    /// atomically without gaps or double draws.
+    pub fn with_coarse(mut self, coarse: ClusterMesh, error: f32) -> ClusterMesh {
+        if self.clusters.is_empty() || coarse.clusters.is_empty() || !error.is_finite() || error <= 0.0 {
+            return self;
+        }
+        let vbase = self.vertices.len() as u32;
+        let cvbase = self.cluster_verts.len() as u32;
+        let tbase = self.tris.len() as u32;
+        self.vertices.extend_from_slice(&coarse.vertices);
+        self.cluster_verts.extend(coarse.cluster_verts.iter().map(|v| v + vbase));
+        self.tris.extend_from_slice(&coarse.tris);
+        let sphere = bounding_sphere(&self.vertices);
+        let cut_error = self.clusters.iter().map(|c| c.own_error).fold(error, |acc, e| acc.max(e + 1e-4));
+        for c in &mut self.clusters {
+            c.cull = sphere;
+            if c.parent_error > 1e30 {
+                c.parent = sphere;
+                c.parent_error = cut_error;
+            } else {
+                c.parent = sphere;
+                c.parent_error = c.parent_error.min(cut_error);
+            }
+            if c.own_error > 0.0 {
+                c.own = sphere;
+            }
+        }
+        let base_depth = self.levels;
+        for mut c in coarse.clusters {
+            if c.own_error > 0.0 { continue; }
+            c.first_vert += cvbase;
+            c.first_tri += tbase;
+            c.cull = sphere;
+            c.own = sphere;
+            c.parent = sphere;
+            c.own_error = cut_error;
+            c.parent_error = f32::MAX;
+            c.depth = base_depth;
+            self.clusters.push(c);
+        }
+        self.sphere = sphere;
+        self.levels = base_depth + 1;
+        self
+    }
 }
 
 #[cfg(test)]

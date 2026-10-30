@@ -25,13 +25,13 @@ missing.
 | Round modifiers | Close | All twelve play; see the table below |
 | Arenas | Done | Walled, hole, open and lava island (18 %), mirrored layouts; destructible stone chunks with wear, bullet dents and debris |
 | Stadium | Done | Colosseum masonry, 8,363 animated spectators, crowd sound, four live TV screens |
-| Bots | Done | Godot's aim, reaction, strafing, jumps, dashes, pickups and specials; they keep to lava islands |
-| Characters | Close | Knight, paladin and zombie with Godot's textures and clips, GPU skinning, 11-body ragdolls, gibs. Not yet: skin-aware dismemberment, aim and strafe layers |
+| Bots | Done | Aim, reaction, strafing, jumps, dashes, pickups and specials; they keep to lava islands. Versus reserves eight visual seats so adding/removing bots keeps the renderer |
+| Characters | Close | Knight, paladin and zombie with textures and clips, GPU skinning, 11-body ragdolls, model-derived head/body gibs. Cuts use cached model geometry; animated skin-aware dismemberment, aim and strafe layers remain incomplete |
 | Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with smoke, sparks, chips, scorch and blood, air strike rocket and white-out, ion cannon |
 | Sky and light | Done | Godot's sky by default; procedural time of day and weather, per round or as a cycle; floodlights with shadows at night |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
-| Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen |
-| Online | Close | Host-authoritative over iroh; tested over loopback (`nettest`), not yet between two machines; clients predict only their look |
+| Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen. Join/leave reuses visual slots and clears unused screen regions |
+| Online | Close | Host-authoritative over iroh; local movement prediction and buffered remote snapshots. Tested over loopback (`nettest`), not yet between two machines or under realistic network jitter; transport currently binds IPv4 only |
 | Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
 | Music | Done | Godot's stems, following the match |
 | GameNight | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
