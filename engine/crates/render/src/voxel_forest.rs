@@ -626,8 +626,10 @@ impl VoxelRenderer {
             });
         let source = shader_source();
         let mut integrator_options = IntegratorOptions::from_environment();
-        // Far trees exist only as rasterized voxels.
-        integrator_options.raster |= far > 0.0;
+        // Far trees exist only as rasterized voxels; aggregate plants use them
+        // too unless KERN_VOXEL_RASTER=0 asks for the ray integrator.
+        integrator_options.raster |= far > 0.0
+            || (scene.aggregate_lod.is_some() && std::env::var("KERN_VOXEL_RASTER").as_deref() != Ok("0"));
         let mut catalog_words=vec![0u32;4];
         let mut bin_count=forest.instances.len() as u32;
         if integrator_options.brick_visibility {

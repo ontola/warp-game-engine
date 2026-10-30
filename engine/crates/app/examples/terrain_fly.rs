@@ -443,21 +443,32 @@ const SPRUCE: WoodyRecipe = WoodyRecipe {
 };
 
 /// Recipe spruces at these spots: three seeds, cooked once and shared.
+/// `--recipe-source` keeps them source-only (no voxel levels), for A/B runs.
 fn recipe_spruces(scene: &mut Scene, spots: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
     if spots.is_empty() { return Ok(()); }
+    let aggregate = !std::env::args().any(|a| a == "--recipe-source");
     static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
     let cooked = COOKED.get_or_init(|| (0..3u64).map(|seed| {
         let assembly = plant_recipe::build(&SPRUCE, BuildOptions::new(seed + 1), plant_recipe::recipe_limits())?;
-        CookedPlant::cook_source(&assembly)
+        if !aggregate { return CookedPlant::cook_source(&assembly); }
+        // Aggregate cook: each branch group also gets voxel levels, and the
+        // renderer picks source or voxels per group from projected error.
+        let config = render::vegetation_aggregate::Config { max_placements: 8192, max_source_triangles: 40_000_000,
+            max_samples: 150_000_000, triangle_refinements: true, max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
+            ..Default::default() };
+        CookedPlant::cook_aggregate(&assembly, config)
     }).collect()).as_ref().map_err(Clone::clone)?;
-    let limits = AttachLimits { max_poses: 64 * spots.len().max(4), max_primitive_instances: render::part_wind::MAX_ATTACHMENTS, ..Default::default() };
+    let branches = cooked.iter().map(|c| c.stats().branches).max().unwrap_or(64);
+    let mut limits = AttachLimits { max_poses: branches.max(64) * spots.len().max(4), max_primitive_instances: render::part_wind::MAX_ATTACHMENTS, ..Default::default() };
+    limits.pack.max_instances = limits.max_poses;
     let mut vegetation = SceneVegetation::new(scene, limits)?;
     for (i, &(pos, yaw, scale, variant)) in spots.iter().enumerate() {
         // The firs are ~15 m; the recipe is 16 m, scaled like them.
         let root = glam::Mat4::from_scale_rotation_translation(Vec3::splat(scale.y), Quat::from_rotation_y(yaw), pos);
         vegetation.append(&cooked[variant], PlantInstance { id: i as u64 + 1, generation: 0, root, category: GeometryCategory::Trees })?;
     }
-    vegetation.finish_source()?;
+    if !aggregate { vegetation.finish_source()?; return Ok(()); }
+    vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, ..Default::default() })?;
     Ok(())
 }
 
