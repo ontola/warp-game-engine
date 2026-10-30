@@ -83,13 +83,15 @@ pub struct Party {
     seats: Vec<Seat>,
     finished: bool,
     triggers: Vec<u32>,
+    /// Live control for the session assistant: its description and token file.
+    live: Option<(String, std::path::PathBuf)>,
 }
 
 impl Party {
     /// When launched by a party host (GAMENIGHT=1) or pointed at one (GAMENIGHT_ADDR).
     pub fn connect() -> Option<Party> {
         match Client::connect_from_env("growing-guns") {
-            Ok(Some(client)) => Some(Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new() }),
+            Ok(Some(client)) => Some(Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None }),
             Ok(None) => None,
             Err(e) => { eprintln!("gamenight: {e}"); None }
         }
@@ -115,8 +117,13 @@ impl Party {
             if cmds.is_empty() { break; }
             for c in cmds {
                 match c {
-                    Command::Connected => { let _ = self.client.declare_settings(specs()); }
-                    Command::Setting { key, value } => { if !self.settings.change(&key, &value) { eprintln!("gamenight: ignored setting {key} = {value}"); } }
+                    Command::Connected => { self.declare(); }
+                    Command::Setting { key, value } => match crate::knobs::from_setting(&key, &value) {
+                        // A knob: written into its mod, which reloads by itself.
+                        Some(Ok(file)) => println!("[gamenight] {key} = {value} (mods/{file})"),
+                        Some(Err(e)) => eprintln!("gamenight: {e}"),
+                        None => if !self.settings.change(&key, &value) { eprintln!("gamenight: ignored setting {key} = {value}"); },
+                    },
                     Command::Prepare { session, seats } => {
                         println!("[gamenight] prepare {session} ({} seats)", seats.len());
                         let _ = self.client.notify_progress(&session, 85, "setting up the match");
@@ -151,6 +158,30 @@ impl Party {
             }
         }
         out
+    }
+
+    /// The settings (the party's and the knobs as percent sliders) and,
+    /// with live control on, the session assistant's way in.
+    fn declare(&self) {
+        let mut all = specs().as_array().cloned().unwrap_or_default();
+        for k in crate::knobs::settings() {
+            all.push(json!({"key": k.key, "label": k.label, "kind": "number", "default": k.value, "min": k.min, "max": k.max}));
+        }
+        let _ = self.client.declare_settings(Value::Array(all));
+        if let Some((description, file)) = &self.live && let Err(e) = self.client.declare_commands(description, &[], Some(file)) { eprintln!("gamenight: {e}"); }
+    }
+
+    /// Let the session assistant change the game through live control.
+    pub fn offer_live(&mut self, description: String, token_file: std::path::PathBuf) {
+        self.live = Some((description, token_file));
+        if self.client.state.connected { self.declare(); }
+    }
+
+    /// A knob changed in the game (live tools, console): the app's slider follows.
+    pub fn knob_changed(&mut self, name: &str, value: &str) {
+        let Ok(v) = value.trim().parse::<f64>() else { return };
+        let key = format!("{}{name}", crate::knobs::SETTING_PREFIX);
+        if let Err(e) = self.client.send_json(json!({"type": "set_setting", "key": key, "value": (v * 100.0).round() as i64})) { eprintln!("gamenight: {e}"); }
     }
 
     /// Change setting `k` from the game's own menu (Godot `_gn_open_advanced`):
@@ -258,7 +289,7 @@ mod tests {
             }
         });
         let client = Client::connect(gamenight::Config { url: format!("ws://{address}"), game_id: "growing-guns".into(), token: String::new(), launched_by_daemon: true }).unwrap();
-        let mut party = Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new() };
+        let mut party = Party { client, settings: Settings::default(), session: String::new(), phase: Phase::Idle, seats: Vec::new(), finished: false, triggers: Vec::new(), live: None };
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let (mut prepared, mut fired) = (None, false);
         assert_eq!(party.screen(), app::Screen::Hidden);

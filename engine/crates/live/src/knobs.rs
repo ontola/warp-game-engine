@@ -1,6 +1,7 @@
 //! Knobs: the values a game marks as tweakable, so a person or an AI can
 //! list and change them while playing, and the change lands in the file,
-//! ready to commit. A knob block in main.luau:
+//! ready to commit. A knob block in a Luau file (a Warp game's main.luau,
+//! a Growing Guns mod):
 //!
 //! ```luau
 //! -- @knobs
@@ -64,7 +65,7 @@ pub fn set(source: &str, name: &str, value: &str) -> Result<String, String> {
 
 /// One line per knob: `name = value  -- about`.
 pub fn list(knobs: &[Knob]) -> String {
-    if knobs.is_empty() { return "no knobs: mark tweakable values in main.luau between `-- @knobs` and `-- @end` lines".into(); }
+    if knobs.is_empty() { return "no knobs: mark tweakable values in a Luau file between `-- @knobs` and `-- @end` lines".into(); }
     knobs.iter().map(|k| if k.about.is_empty() { format!("{} = {}", k.name, k.value) } else { format!("{} = {}  -- {}", k.name, k.value, k.about) }).collect::<Vec<_>>().join("\n")
 }
 
