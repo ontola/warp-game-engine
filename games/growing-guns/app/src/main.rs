@@ -2,6 +2,7 @@
 //!
 //!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm] [--no-music] [--music DIR] [--live [PORT]]
 //!   (play, shot, script: [--sky godot|TIME[:WEATHER]|rounds|cycle], see sky.rs)
+//!   growing-guns replay latest|FILE.ggreplay [--frame N] [--alpha A] [--out FILE.png] [--ui]
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T] [--trace players.0.health,round [--rows N]]
 //!   growing-guns nettest [--seconds T]   (host + client over iroh loopback, headless)
@@ -12,6 +13,7 @@
 //! Online: `play --host` prints a ticket; `play --join TICKET` joins it.
 //! `--lan` skips relays and address lookup (direct addresses only).
 mod bench;
+mod replay;
 mod hud;
 mod live;
 mod net;
@@ -54,6 +56,7 @@ fn main() {
     let result = match cmd.as_str() {
         "play" => play::run(&args),
         "shot" => shot(&args),
+        "replay" => replay::run(&args),
         "sim" => { sim(&args); Ok(()) }
         "bench" => bench::run(&args),
         "script" => script(&args),
