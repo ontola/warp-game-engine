@@ -16,7 +16,7 @@ struct FxUniform {
     clock: vec4<f32>,
 };
 struct Puff {
-    // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak)
+    // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak, 6 mote)
     center_kind: vec4<f32>,
     // local axes with lengths (columns of the end transform) and per-kind data
     ax: vec4<f32>,
@@ -216,6 +216,26 @@ fn fx_streak_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32
     return additive_vertex(id, world, age);
 }
 
+@vertex
+fn fx_mote_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V {
+    let id = order[ii];
+    let p = puffs[id];
+    let age = clamp((u.clock.x - p.timing.x) / p.timing.y, 0.0, 1.0);
+    let center = p.center_kind.xyz + p.ax.xyz * pow(age, p.ax.w);
+    let q = array<vec2<f32>, 6>(vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0),
+        vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0))[vi];
+    let right = vec3<f32>(u.view[0].x, u.view[1].x, u.view[2].x);
+    let up = vec3<f32>(u.view[0].y, u.view[1].y, u.view[2].y);
+    // Give subpixel dots a soft footprint, conserving their energy as it grows.
+    let clip = u.view_proj * vec4<f32>(center, 1.0);
+    let focal_y = length(vec3<f32>(u.view_proj[0].y, u.view_proj[1].y, u.view_proj[2].y));
+    let radius = max(p.ay.x, 1.5 * max(clip.w, 0.0) / (u.size.y * focal_y));
+    var out = additive_vertex(id, center + (right * q.x + up * q.y) * radius, age);
+    out.uv = q;
+    out.shade = pow(p.ay.x / max(radius, 1e-6), 2.0);
+    return out;
+}
+
 fn depth_metres(uv: vec2<f32>) -> f32 {
     let dims = vec2<i32>(textureDimensions(scene_depth));
     let px = clamp(vec2<i32>(uv * vec2<f32>(dims)), vec2<i32>(0), dims - 1);
@@ -306,6 +326,21 @@ fn fx_streak(in: V) -> @location(0) vec4<f32> {
     if p.body.y > 0.0 { fade *= smoothstep(0.0, p.body.y, in.age); }
     if p.body.z > 0.0 { fade *= 1.0 - smoothstep(1.0 - p.body.z, 1.0, in.age); }
     return vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade)), 0.0);
+}
+
+@fragment
+fn fx_mote(in: V) -> @location(0) vec4<f32> {
+    let p = puffs[in.id];
+    let r2 = dot(in.uv, in.uv);
+    if r2 >= 1.0 { discard; }
+    let gap = depth_gap(in.world);
+    if gap <= 0.0 { discard; }
+    var fade = 1.0;
+    if p.body.y > 0.0 { fade *= smoothstep(0.0, p.body.y, in.age); }
+    if p.body.z > 0.0 { fade *= 1.0 - smoothstep(1.0 - p.body.z, 1.0, in.age); }
+    let dot = exp(-4.0 * r2) * (1.0 - smoothstep(0.6, 1.0, r2));
+    let soft = smoothstep(0.0, max(p.ay.x * 2.0, 0.01), gap);
+    return vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade * dot * soft * in.shade)), 0.0);
 }
 
 @fragment

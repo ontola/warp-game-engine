@@ -1,0 +1,48 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "cage",
+        "health 0 50000",
+        "special 0 ion_cannon"
+      ],
+      "ticks": 30
+    },
+    {
+      "cmd": "aim 0 0 0 0"
+    },
+    {
+      "ticks": 1,
+      "hold": [
+        "LEFT_TRIGGER"
+      ]
+    },
+    {
+      "cmd": [
+        "teleport 0 8 1.8 8",
+        "aim 0 0 1.6 0"
+      ]
+    },
+    {
+      "ticks": 30,
+      "capture": "appearing.png"
+    },
+    {
+      "ticks": 45,
+      "capture": "rising.png"
+    },
+    {
+      "ticks": 60,
+      "capture": "accelerating.png"
+    },
+    {
+      "ticks": 90,
+      "capture": "charged.png"
+    }
+  ]
+}
