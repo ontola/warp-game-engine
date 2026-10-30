@@ -1056,6 +1056,8 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 @group(2) @binding(18) var volume_splat_depth: texture_depth_2d;
 const VOLUME_SPLAT_HEADER: u32 = 12u;
 const VOLUME_SPLAT_NONE: u32 = 0xffffffffu;
+// One quad per splat (voxel_splat_raster.wgsl).
+const VOLUME_SPLAT_VERTICES: u32 = 6u;
 // Selection w for the sun map: this group casts as voxels, its source does not.
 const VOLUME_SUN_CASTER: u32 = 2u;
 var<workgroup> volume_splat_level_shared: u32;
@@ -1141,7 +1143,7 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
         if index==0u {
             for(var c=0u;c<4u;c++) {volume_splats[c]=bitcast<vec4<u32>>(view.view_proj[c]);}
             volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,0u);
-            atomicStore(&volume_splat_draw[0],18u);
+            atomicStore(&volume_splat_draw[0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w {
@@ -1179,7 +1181,7 @@ fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invoca
     if lane==0u {
         if index==0u {
             volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,0u);
-            atomicStore(&volume_splat_draw[0],18u);
+            atomicStore(&volume_splat_draw[0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w {

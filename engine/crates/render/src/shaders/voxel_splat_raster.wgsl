@@ -1,7 +1,7 @@
-// Rasterized foliage voxels: three camera-facing faces of each listed cell,
-// kept per pixel with the cell's opacity. Writes the splat id; depth testing
-// leaves the nearest kept cell. Records and tree poses come from
-// voxel_splats in voxel_forest.wgsl, which documents the layout.
+// Rasterized foliage voxels: one quad per listed cell, facing the view
+// (or the sun), kept per pixel with the cell's opacity. Writes the splat id;
+// depth testing leaves the nearest kept cell. Records and tree poses come
+// from voxel_splats in voxel_forest.wgsl, which documents the layout.
 @group(0) @binding(0) var<storage,read> splats: array<vec4<u32>>;
 const HEADER: u32 = 12u;
 fn tree(index: u32, row: u32) -> vec4<f32> { return bitcast<vec4<f32>>(splats[HEADER + index * 4u + row]); }
@@ -28,14 +28,18 @@ fn hash(x: u32) -> u32 {
     let coord = vec3<f32>(f32(record.z & 1023u), f32((record.z >> 10u) & 1023u), f32(record.z >> 20u));
     let local = vec4<f32>(grid.xyz + (coord + 0.5) * grid.w, 1.0);
     let centre = vec3<f32>(dot(r0, local), dot(r1, local), dot(r2, local));
-    let half = 0.5 * grid.w;
-    var axes = array<vec3<f32>, 3>(vec3<f32>(r0.x, r1.x, r2.x) * half, vec3<f32>(r0.y, r1.y, r2.y) * half, vec3<f32>(r0.z, r1.z, r2.z) * half);
-    let face = vertex / 6u;
-    var corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+    // A cube's mean projected area is 1.5 faces: a quad of side 1.22 cells
+    // covers what three faces did, at a third of the vertices. Its axes are
+    // the view's right and up (rows x and y of the view-projection, also for
+    // the sun's orthographic map).
+    let scale = length(vec3<f32>(r0.x, r1.x, r2.x));
+    let half = 0.61 * grid.w * scale;
+    let corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
     let corner = corners[vertex % 6u];
-    let side = select(-1.0, 1.0, ((record.w >> 16u) & (1u << face)) != 0u);
-    let p = centre + axes[face] * side + axes[(face + 1u) % 3u] * corner.x + axes[(face + 2u) % 3u] * corner.y;
     let view_proj = mat4x4<f32>(bitcast<vec4<f32>>(splats[0]), bitcast<vec4<f32>>(splats[1]), bitcast<vec4<f32>>(splats[2]), bitcast<vec4<f32>>(splats[3]));
+    let right = normalize(vec3<f32>(view_proj[0].x, view_proj[1].x, view_proj[2].x));
+    let up = normalize(vec3<f32>(view_proj[0].y, view_proj[1].y, view_proj[2].y));
+    let p = centre + (right * corner.x + up * corner.y) * half;
     out.position = view_proj * vec4<f32>(p, 1.0);
     out.splat = instance + 1u;
     out.alpha = f32(record.w & 0xffffu) / 65535.0;
