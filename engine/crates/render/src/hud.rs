@@ -112,6 +112,8 @@ pub struct HudDrawList {
     /// Full-field display tints, in painter order (straight-alpha sRGB).
     /// XR submits these over the complete eye projection, outside the HUD panel.
     pub vision_tints: Vec<[f32;4]>,
+    /// Full-field tints behind the HUD, so card choices remain readable.
+    pub vision_background_tints: Vec<[f32;4]>,
     pub size: [u32; 2],
     pub vertices: Vec<HudVertex>,
     pub text: Vec<TextRun>,
@@ -129,7 +131,7 @@ pub struct HudDrawList {
 struct HudLayer { vertices: Range<u32>, text: Range<usize> }
 
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { size, vision_tints: Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { size, vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
 
     /// Draw text run `id` with a real stroke of `width` pixels around its
     /// letters (under the fill), for text over busy scenes.

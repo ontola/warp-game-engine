@@ -166,6 +166,11 @@ impl Forward {
         assert!(changed[0]>30,"explosion disappeared: {changed:?}");
         assert!(changed[1]>30,"ion column disappeared: {changed:?}");
         if let Ok(path)=std::env::var("WARP_FX_CAPTURE") {crate::write_png(std::path::Path::new(&path),256,160,&active).unwrap();}
+        let eye=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("direct FX eye"),size:wgpu::Extent3d{width:256,height:160,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
+        renderer.try_render_eye_targets(&gpu,&views,&light,&[&eye]).unwrap();
+        let direct=gpu.read_rgba8(&eye);let mut visible=[0;2];
+        for (i,pixel) in direct.chunks_exact(4).enumerate() {if pixel[..3].iter().any(|v|*v>20){visible[(i%256)/128]+=1;}}
+        assert!(visible.iter().all(|v|*v>30),"gameplay FX disappeared from direct sRGB attachment: {visible:?}");
         fx.flush(&gpu,&renderer,10.).unwrap();assert_eq!(draw(),baseline,"expired gameplay effects remain visible");
     }
 
