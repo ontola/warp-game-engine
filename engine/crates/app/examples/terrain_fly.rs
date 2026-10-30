@@ -364,7 +364,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 8, firs: false } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 3, firs: false } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
