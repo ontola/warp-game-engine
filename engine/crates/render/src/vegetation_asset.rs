@@ -22,6 +22,7 @@ use std::{
     ops::Range,
 };
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Primitive {
     mesh: ClusterMesh,
     material: Material,
@@ -35,7 +36,7 @@ struct Primitive {
 #[repr(u8)]
 enum PrimitivePolicy { ClosedSweep, TexturedGeometry, ThinFoliage }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Placement {
     id: u64,
     primitive: usize,
@@ -43,7 +44,7 @@ struct Placement {
     rest: Mat4,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Branch {
     id: u64,
     parent: Option<u32>,
@@ -57,6 +58,7 @@ struct Branch {
 
 /// Immutable CPU asset. Its source meshes contain only unique primitives,
 /// never transformed copies of every leaf in a branch.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct CookedPlant {
     primitives: Vec<Primitive>,
     placements: Vec<Placement>,
@@ -64,12 +66,13 @@ pub struct CookedPlant {
     stats: CookStats,
     /// The whole plant as one voxel pyramid in the root branch frame.
     proxy: Option<VoxelAsset>,
-    /// Unique per cook_proxy call, so append_proxy finds the shared asset
-    /// and its support without comparing voxels.
+    /// Unique per cook_proxy call (or load), so append_proxy finds the
+    /// shared asset and its support without comparing voxels.
+    #[serde(skip)]
     proxy_id: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CookStats {
     pub primitive_meshes: usize,
     /// Resident primitive vertices, including intermediate CLOD levels.
@@ -301,8 +304,7 @@ impl CookedPlant {
             return Err("plant proxy frame differs from the root branch".into());
         }
         self.proxy = Some(asset);
-        static NEXT_PROXY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        self.proxy_id = NEXT_PROXY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.proxy_id = next_proxy_id();
         Ok(())
     }
 
@@ -828,7 +830,12 @@ impl<'a> SceneVegetation<'a> {
                         self.proxy_assets.len() - 1
                     }
                 };
-                let (lo, hi) = support(asset);
+                // The plant itself, not its voxel support: the canopy volume
+                // (GI, sky light) sizes the crown from this sphere, and the
+                // support's padded coarse cells made crowns 1.8x too wide,
+                // darkening clearings. The voxel pass culls by pack_tree's
+                // own (padded) level bounds.
+                let [lo, hi] = asset.source_bounds.map(Vec3::from);
                 self.proxy_lookup.insert(plant.proxy_id, (index, lo, hi));
                 (index, lo, hi)
             }
@@ -969,6 +976,81 @@ impl Drop for SceneVegetation<'_> {
         self.scene.voxel_active_tiles = c.active_tiles;
         self.scene.aggregate_lod = None;
         self.scene.part_wind_lod = c.part_wind_lod;
+    }
+}
+
+fn next_proxy_id() -> u64 {
+    static NEXT_PROXY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT_PROXY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+// Cooked plants on disk (CookedPlant::cached): a header, then the plant in
+// postcard. The cook code itself is hashed into every key, so a cook that
+// changes never loads an old file; bump the version when only the file
+// layout changes.
+const COOK_MAGIC: &[u8; 8] = b"WARPCOOK";
+const COOK_FILE_VERSION: u32 = 1;
+const COOK_SOURCES: [&str; 8] = [include_str!("vegetation_asset.rs"), include_str!("vegetation_aggregate.rs"),
+    include_str!("vegetation_clod.rs"), include_str!("foliage_voxel.rs"), include_str!("foliage_assembly.rs"),
+    include_str!("plant_recipe.rs"), include_str!("cluster.rs"), include_str!("aggregate_lod.rs")];
+
+fn fnv64(hash: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
+}
+
+/// The cache key for a cook: `what` names everything it depends on outside
+/// the engine (recipe, build seed, configs; their Debug text will do).
+pub fn cook_key(what: &str) -> u64 {
+    static CODE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let code = *CODE.get_or_init(|| COOK_SOURCES.iter().fold(0xcbf29ce484222325, |h, s| fnv64(h, s.as_bytes())));
+    fnv64(fnv64(code, &COOK_FILE_VERSION.to_le_bytes()), what.as_bytes())
+}
+
+impl CookedPlant {
+    /// Write this plant to `path` under `key` (cook_key), atomically.
+    pub fn save(&self, path: &std::path::Path, key: u64) -> Result<(), String> {
+        let body = postcard::to_allocvec(self).map_err(|e| format!("cooked plant encode: {e}"))?;
+        let mut bytes = Vec::with_capacity(body.len() + 36);
+        bytes.extend_from_slice(COOK_MAGIC);
+        bytes.extend_from_slice(&COOK_FILE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&key.to_le_bytes());
+        bytes.extend_from_slice(&(body.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&fnv64(0xcbf29ce484222325, &body).to_le_bytes());
+        bytes.extend_from_slice(&body);
+        if let Some(dir) = path.parent() { std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?; }
+        let partial = path.with_extension(format!("partial{}", std::process::id()));
+        std::fs::write(&partial, &bytes).map_err(|e| format!("{}: {e}", partial.display()))?;
+        std::fs::rename(&partial, path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Read a plant saved under `key`; any other key, version or damage is
+    /// an error (the caller cooks again).
+    pub fn load(path: &std::path::Path, key: u64) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let field = |at: usize| bytes.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap()));
+        if bytes.len() < 36 || &bytes[..8] != COOK_MAGIC || bytes[8..12] != COOK_FILE_VERSION.to_le_bytes() {
+            return Err(format!("{}: not a cooked plant of this version", path.display()));
+        }
+        if field(12) != Some(key) { return Err(format!("{}: cooked for another key", path.display())); }
+        let body = &bytes[36..];
+        if field(20) != Some(body.len() as u64) || field(28) != Some(fnv64(0xcbf29ce484222325, body)) {
+            return Err(format!("{}: truncated or damaged", path.display()));
+        }
+        let mut plant: Self = postcard::from_bytes(body).map_err(|e| format!("{}: {e}", path.display()))?;
+        if plant.proxy.is_some() { plant.proxy_id = next_proxy_id(); }
+        Ok(plant)
+    }
+
+    /// The plant `what` describes (cook_key) from `dir`, or from `cook`
+    /// when no valid file is there yet, saving it for next time. Returns
+    /// whether it came from disk. A failed save only costs the next start.
+    pub fn cached(dir: &std::path::Path, what: &str, cook: impl FnOnce() -> Result<Self, String>) -> Result<(Self, bool), String> {
+        let key = cook_key(what);
+        let path = dir.join(format!("{key:016x}.cook"));
+        if let Ok(plant) = Self::load(&path, key) { return Ok((plant, true)); }
+        let plant = cook()?;
+        let _ = plant.save(&path, key);
+        Ok((plant, false))
     }
 }
 
@@ -1619,6 +1701,38 @@ mod tests {
         assert_eq!(forest.instances.len(),6);assert_eq!(report.packed_volume_bytes,forest.byte_len());
         crate::foliage_representation::validate_bindings(&scene).unwrap();
         crate::part_wind::validate_bindings(&scene.part_wind,&scene.part_attachments,&scene.instances,Some(forest)).unwrap();
+    }
+
+    #[test]
+    fn cooked_plants_round_trip_through_the_cache() {
+        let source=aggregate_fixture();
+        let mut cooked=CookedPlant::cook_aggregate(&source,aggregate_config()).unwrap();
+        cooked.cook_proxy(&source,aggregate_config(),3).unwrap();
+        let dir=std::env::temp_dir().join(format!("warp-cook-test-{}",std::process::id()));
+        let (key,other)=(cook_key("fixture"),cook_key("fixture 2"));
+        assert_ne!(key,other);
+        let path=dir.join("plant.cook");
+        cooked.save(&path,key).unwrap();
+        let loaded=CookedPlant::load(&path,key).unwrap();
+        // Byte-identical, and a fresh proxy identity (its own scene asset).
+        assert_eq!(postcard::to_allocvec(&loaded).unwrap(),postcard::to_allocvec(&cooked).unwrap());
+        assert_eq!(loaded.stats(),cooked.stats());
+        assert_eq!(loaded.proxy(),cooked.proxy());
+        assert_ne!(loaded.proxy_id,cooked.proxy_id);
+        assert!(CookedPlant::load(&path,other).is_err(),"another key");
+        let mut bytes=std::fs::read(&path).unwrap();
+        let last=bytes.len()-1;bytes[last]^=1;std::fs::write(&path,&bytes).unwrap();
+        assert!(CookedPlant::load(&path,key).is_err(),"damaged");
+        bytes.truncate(100);std::fs::write(&path,&bytes).unwrap();
+        assert!(CookedPlant::load(&path,key).is_err(),"truncated");
+        // cached: a miss cooks and saves, the next call loads.
+        let mut cooks=0;
+        let (_,hit)=CookedPlant::cached(&dir,"fixture",||{cooks+=1;CookedPlant::cook_aggregate(&source,aggregate_config())}).unwrap();
+        assert!(!hit);
+        let (again,hit)=CookedPlant::cached(&dir,"fixture",||{cooks+=1;CookedPlant::cook_aggregate(&source,aggregate_config())}).unwrap();
+        assert!(hit&&cooks==1);
+        assert_eq!(again.stats(),cooked.stats());
+        let _=std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -99,7 +99,7 @@ pub struct BlendMaterial {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
 pub struct Material {
     /// Albedo tint (linear), multiplied with the texture.
     pub tint: [f32; 3],
