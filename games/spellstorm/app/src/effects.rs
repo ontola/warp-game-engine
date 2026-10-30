@@ -44,6 +44,8 @@ pub const MOLTEN: u32 = 68;
 pub const BLOOD: u32 = 69;
 /// A jet of water along a shaft: params (time, seed, 0, 0).
 pub const JET: u32 = 70;
+/// The water a tidal wave pushes over the floor: params (time, sink, seed, 0).
+pub const SURGE: u32 = 71;
 
 struct State {
     /// The game's app/src, where fx.wgsl and spells.wgsl are.
