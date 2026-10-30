@@ -131,6 +131,7 @@ impl Guns {
             let (sy, cy) = p.yaw.sin_cos();
             let lateral = if self.tilt { (p.vel.dot(Vec3::new(cy, 0.0, -sy)) / growing_guns::WALK_SPEED).clamp(-1.0, 1.0) } else { 0.0 };
             f.tilt += ((lateral * 3.5f32).to_radians() - f.tilt) * k;
+            if new_round && !rig.is_growing() { f.inspect = 0.0; }
             f.previous_inspect = f.inspect;
             f.inspect += (if rig.is_growing() { 1.0 } else { 0.0 } - f.inspect) * (dt * 5.0).min(1.0);
         }
@@ -450,12 +451,16 @@ mod xr_tests {
         world.players[0].weapon = borrowed.clone();
         guns.tick(&world, 0.0);
         assert_ne!(guns.rigs[0].shown, own);
+        // A short previous round may still have had its inspection raised.
+        guns.feel[0].inspect = 0.8;
+        guns.feel[0].previous_inspect = 0.7;
         let card = world.cards.find("acrobat").unwrap(); world.give(0, card);
         world.round += 1; world.modifier = None; world.rebuild_weapon(0);
         guns.tick(&world, 0.0);
         assert_eq!(guns.rigs[0].shown, own);
         assert!(!guns.rigs[0].is_growing());
         assert_eq!(guns.feel[0].inspect, 0.0);
+        assert_eq!(guns.feel[0].previous_inspect, 0.0);
         world.players[0].weapon = borrowed;
         guns.tick(&world, 0.0);
         let card = world.cards.find("heavy_rounds").unwrap(); world.give(0, card);
