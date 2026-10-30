@@ -2,6 +2,7 @@
 //!
 //!   growing-guns play [--players N] [--total N] [--seed S] [--fullscreen] [--no-kbm] [--no-music] [--music DIR] [--live [PORT]]
 //!   (play, shot, script: [--sky godot|TIME[:WEATHER]|rounds|cycle], see sky.rs)
+//!   growing-guns replay latest|FILE.ggreplay [--frame N] [--alpha A] [--out FILE.png] [--ui]
 //!   growing-guns shot --out FILE.png [--views N] [--seed S] [--seconds T] [--size WxH]
 //!   growing-guns sim [--seed S] [--seconds T] [--trace players.0.health,round [--rows N]]
 //!   growing-guns nettest [--seconds T]   (host + client over iroh loopback, headless)
@@ -14,6 +15,7 @@
 mod graphics;
 mod xr;
 mod bench;
+mod replay;
 mod hud;
 mod live;
 mod net;
@@ -59,6 +61,7 @@ pub fn desktop_main() {
     let result = match cmd.as_str() {
         "play" => play::run(&args),
         "shot" => shot(&args),
+        "replay" => replay::run(&args),
         "xr-shot" => xr::shot(&args),
         "sim" => { sim(&args); Ok(()) }
         "bench" => bench::run(&args),

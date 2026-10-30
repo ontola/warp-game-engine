@@ -40,6 +40,10 @@ fn input(c: &Controls) -> Input {
 
 pub struct Gg {
     pub world: World,
+    pub(crate) recorder: crate::replay::Recorder,
+    replay: Option<Box<crate::replay::Viewer>>,
+    replay_size: [u32; 2],
+    replay_alpha: f32,
     prev: Vec<view::Pose>,
     /// Whether the last tick advanced the world; a frozen match (paused,
     /// warming) draws its current state instead of interpolating.
@@ -131,7 +135,7 @@ impl Gg {
         let scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
-        Gg { prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
+        Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
@@ -146,9 +150,46 @@ impl Gg {
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
 
+    /// Apply recorded gameplay without executing current simulation rules/mods.
+    pub(crate) fn replay_apply(&mut self, sample: crate::replay::Sample, arena: Option<growing_guns::arena::Arena>) -> Result<(), String> {
+        self.prev = view::Pose::all(&self.world);
+        let new_arena = arena.is_some();
+        if let Some(arena) = arena { self.world.arena = arena; }
+        self.world.arena.apply_breakage(&sample.broken);
+        self.world.breakage = sample.broken;
+        self.world.apply(sample.state);
+        self.slots = sample.slots;
+        self.ui.tilt = sample.tilt;
+        if new_arena { self.new_arena(); }
+        if self.vis.player_capacity() < self.world.players.len() { rebuild_views(self); }
+        self.vis.hide_own_bodies(&self.slots);
+        self.hud.locals.clone_from(&self.slots);
+        self.hud.set_names(&self.world, &self.slots, &[]);
+        let sky = crate::sky::SkyChoice::parse(&sample.sky)?;
+        if self.sky.choice != sky { self.set_sky(sky)?; }
+        self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
+        self.hud.tick(&self.world, DT);
+        // Canonical 60 Hz presentation state, independent of review framerate.
+        self.vis.pose(&self.world, &self.prev, 1.0, DT);
+        self.stepped = true;
+        Ok(())
+    }
+
+    pub(crate) fn replay_gpu_tick(&mut self, frame: &mut Frame) -> Result<(), String> {
+        if self.rebuild || frame.renderer().is_none() {
+            self.vis.scene.live_screen_feeds.clear();
+            app::Game::draw(self, frame)?;
+        }
+        let renderer = frame.renderer().ok_or("replay renderer unavailable")?;
+        self.vis.flush(frame.gpu, renderer, &self.light)?;
+        renderer.advance_replay_debris(frame.gpu);
+        Ok(())
+    }
+
     /// A fresh match in place (a party's prepare): new world, views and
     /// mods; the renderer, sound and party stay.
     pub fn reset(&mut self, mut world: World, slots: Vec<usize>) {
+        self.recorder.barrier();
         self.scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
         let bake = self.vis.stadium.bake_in_background;
         // The crowd's voices outlive the stadium they cheer in.
@@ -272,6 +313,7 @@ impl Gg {
 
     /// A new round: refill the arena slots; the renderer is kept.
     fn new_arena(&mut self) {
+        self.recorder.barrier();
         // Also between ticks (debug commands, live tools): clients need it.
         self.session.mark_arena();
         self.vis.set_arena(&self.world);
@@ -749,18 +791,27 @@ impl Gg {
 }
 
 impl app::Game for Gg {
-    fn local_players(&self) -> usize { self.slots.len() }
+    fn fixed_quality(&self) -> bool { self.replay.is_some() || self.recorder.disabled }
+
+    fn local_players(&self) -> usize { if self.replay.is_some() { 1 } else { self.slots.len() } }
 
     fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) {
+        if let Some(r) = &mut self.replay { app::Game::pointer(&mut **r, pointer, size); return; }
         self.pointer = (if self.no_kbm { app::Pointer::default() } else { pointer }, size);
     }
 
     fn mouse_capture(&self) -> Option<bool> {
+        if self.replay.is_some() { return Some(false); }
         Some(!self.no_kbm && !self.ui.is_open() && !self.debug.open && self.hud.match_over.is_none()
             && !self.slots.first().and_then(|&s| self.world.players.get(s)).is_some_and(|p| p.offer.is_some()))
     }
 
     fn tick(&mut self, controls: &[Controls]) {
+        if let Some(result) = self.recorder.completion() {
+            let message = match result { Ok(_) => "Replay saved. F9 to review.".into(), Err(e) => format!("Replay save failed: {e}") };
+            self.hud.announce(message, 4.0, 0.0);
+        }
+        if let Some(r) = &mut self.replay { app::Game::tick(&mut **r, controls); return; }
         self.stepped = false;
         let (pointer, pointer_size) = std::mem::take(&mut self.pointer);
         // Live-control requests, between ticks (also while a party is paused).
@@ -895,9 +946,13 @@ impl app::Game for Gg {
         let t = std::time::Instant::now();
         self.session.publish(&self.world);
         hitch("session.publish", t);
+        // Desktop replays do not capture headset/controller poses.
+        if !self.xr_stereo { self.recorder.push(&self.world, &self.slots, &self.sky.choice.name(), self.ui.tilt); }
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
+        if let Some(r) = &mut self.replay { return app::Game::draw(&mut **r, frame); }
+        self.replay_size = frame.size;
         let draw_t = std::time::Instant::now();
         // Interpolating a frozen match swings between two ticks (a flicker at 120 Hz).
         let alpha = if self.session.is_client() {
@@ -909,14 +964,17 @@ impl app::Game for Gg {
         } else {
             1.0
         };
+        self.replay_alpha = alpha;
         self.hud.xr = self.xr_stereo;
         if self.xr_stereo {
             self.vis.hide_own_bodies(&[self.slots[0], self.slots[0]]);
             self.vis.track_gun(self.slots[0], self.xr_gun);
         }
         self.vis.set_tilt(self.ui.tilt && !self.xr_stereo);
+
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
-        if self.sky.live.is_some() { self.cycle_sky(); }
+        if self.recorder.disabled { self.apply_sky()?; self.sky.live = None; }
+        else if self.sky.live.is_some() { self.cycle_sky(); }
         self.sync_atmosphere();
         self.sync_blackout();
         let t = std::time::Instant::now();
@@ -999,6 +1057,12 @@ impl app::Game for Gg {
         Ok(Draw { cameras, light, hud: list })
     }
 
+    fn feedback_replay(&mut self, path: &std::path::Path, alpha: f32) -> Result<Option<serde_json::Value>, String> {
+        if let Some(r) = &mut self.replay { return app::Game::feedback_replay(&mut **r, path, alpha); }
+        if self.session.is_client() { return Err("Replay recording currently requires local or host play".into()); }
+        self.recorder.save(path, self.replay_alpha, self.replay_size).map(Some)
+    }
+
     fn title(&self) -> Option<String> { Some(format!("round {}", self.world.round)) }
     fn wants_capture(&self) -> bool { crate::live::wants_capture(self) }
     fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) { crate::live::captured(self, size, rgba) }
@@ -1011,6 +1075,7 @@ impl app::Game for Gg {
     fn split(&self) -> render::SplitLayout { render::SplitLayout::SideBySide }
 
     fn escape(&mut self) -> bool {
+        if self.replay.take().is_some() { self.rebuild = true; return true; }
         use hud::menus::Screen;
         if self.debug.open { self.debug.set_open(false); return true; }
         match self.ui.screen {
@@ -1024,6 +1089,24 @@ impl app::Game for Gg {
 
     /// F3: the debug overlay.
     fn function_key(&mut self, n: u8) -> bool {
+        if n == 9 {
+            if self.replay.take().is_some() { self.rebuild = true; }
+            else if !matches!(self.session, Session::Local) || self.party.is_some() {
+                self.hud.announce("Open the saved replay separately during online play.", 4.0, 0.0);
+            } else if let Some((tape, path)) = &self.recorder.last {
+                match crate::replay::Viewer::new(tape.clone(), path.clone()) {
+                    Ok(r) => self.replay = Some(Box::new(r)),
+                    Err(e) => self.hud.announce(e, 4.0, 0.0),
+                }
+            } else {
+                match crate::replay::open_latest() {
+                    Ok(r) => self.replay = Some(Box::new(r)),
+                    Err(e) => self.hud.announce(e, 4.0, 0.0),
+                }
+            }
+            return true;
+        }
+        if self.replay.is_some() { return true; }
         if n != 3 { return false; }
         self.debug.toggle();
         true
@@ -1036,6 +1119,7 @@ impl app::Game for Gg {
     }
 
     fn devices(&mut self, devices: &[(Device, Controls)]) {
+        if self.replay.is_some() { return; }
         self.connected = devices.iter().map(|d| d.0).collect();
         for (d, c) in devices {
             if c.pressed.0 != 0 || c.mv != [0.0; 2] || c.look != [0.0; 2] { self.pad_last = d.is_pad(); if d.is_pad() { self.last_pad = Some(*d); } }
@@ -1056,9 +1140,10 @@ impl app::Game for Gg {
         }
     }
 
-    fn seats(&self) -> Option<Vec<Vec<Device>>> { (self.split && self.party.is_none()).then(|| self.binding.clone()) }
+    fn seats(&self) -> Option<Vec<Vec<Device>>> { if self.replay.is_some() { return None; } (self.split && self.party.is_none()).then(|| self.binding.clone()) }
 
     fn text_input(&self) -> bool {
+        if self.replay.is_some() { return false; }
         if self.debug.open { return self.debug.text_focus(&self.debug_ctx()); }
         let (ticket, _) = self.ctx_parts();
         self.ui.text_focus(&self.ctx(ticket.as_deref())).is_some()
@@ -1265,6 +1350,7 @@ impl app::Game for Gg {
     }
 
     fn state(&self) -> Option<String> {
+        if let Some(r) = &self.replay { return app::Game::state(&**r); }
         let w = &self.world;
         let players: Vec<_> = w.players.iter().enumerate().map(|(i, p)| serde_json::json!({
             "index": i, "bot": p.bot, "local_view": self.slots.iter().position(|&s| s == i),

@@ -1839,6 +1839,7 @@ dependencies = [
  "assets",
  "audio",
  "fastnoise-lite",
+ "flate2",
  "gamenight",
  "glam 0.31.1",
  "growing-guns",

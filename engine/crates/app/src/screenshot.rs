@@ -23,6 +23,12 @@ pub struct Shot<'a> {
 /// Write `<name>.png` and `<name>.json` and copy the image. Returns the
 /// line for the toast. A clipboard or JSON failure keeps the PNG.
 pub fn save(shot: Shot) -> Result<String, String> {
+    save_with(shot, |_| Ok(None))
+}
+
+/// A game's optional replay shares the screenshot's basename. A replay
+/// failure is visible in both metadata and the toast; it never loses the PNG.
+pub fn save_with(shot: Shot, replay: impl FnOnce(&std::path::Path) -> Result<Option<Value>, String>) -> Result<String, String> {
     let [w, h] = shot.size;
     if w == 0 || h == 0 || shot.rgba.len() != (w * h * 4) as usize { return Err("bad screenshot size".into()); }
     let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
@@ -40,12 +46,17 @@ pub fn save(shot: Shot) -> Result<String, String> {
         "pixels": "the presented frame including the HUD, sRGB RGBA8",
         "executable": std::env::current_exe().ok(), "args": std::env::args().collect::<Vec<_>>(),
     });
+    let replay_note = match replay(&png) {
+        Ok(Some(value)) => { metadata["replay"] = value; "  + gameplay replay" }
+        Ok(None) => "",
+        Err(e) => { eprintln!("replay: {e}"); metadata["replay_error"] = Value::String(e); "  (replay unavailable)" }
+    };
     let json_path = png.with_extension("json");
     let wrote = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&json_path, b).map_err(|e| e.to_string()));
     if let Err(e) = &wrote { eprintln!("screenshot metadata: {e}"); }
     note(shot.title, &png, wrote.is_ok().then_some(&json_path), ms);
     println!("screenshot: {}", png.display());
-    Ok(format!("{name}.png{}{}", if copied { "  copied, paste with Cmd/Ctrl+V" } else { "  saved" }, if wrote.is_err() { "  (no metadata)" } else { "" }))
+    Ok(format!("{name}.png{replay_note}{}{}", if copied { "  copied, paste with Cmd/Ctrl+V" } else { "  saved" }, if wrote.is_err() { "  (no metadata)" } else { "" }))
 }
 
 /// Note the capture where the `feedback` live tool (live::feedback) finds
