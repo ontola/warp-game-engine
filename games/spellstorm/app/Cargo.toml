@@ -13,6 +13,7 @@ spellstorm.workspace = true
 kern.workspace = true
 render = { path = "../../../engine/crates/render" }
 app = { path = "../../../engine/crates/app" }
+physics = { path = "../../../engine/crates/physics" }
 gamenight = { path = "../../../engine/crates/gamenight" }
 live = { path = "../../../engine/crates/live" }
 glam = "0.31"

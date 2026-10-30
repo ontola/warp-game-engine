@@ -137,7 +137,8 @@ pub struct View {
     pub marks: crate::marks::Marks,
     pub shrines: crate::shrines::Shrines,
     /// How long each wizard has lain fallen.
-    wizard_fallen: Vec<f32>,
+    /// The fallen wizards as ragdolls.
+    dolls: crate::ragdoll::Dolls,
     /// Each wizard's hurt_t last frame: a new hit spurts blood.
     wizard_hurt: Vec<f64>,
 }
@@ -176,7 +177,7 @@ impl View {
             probes: vec![],
             wizard_pieces: HashMap::new(),
             wizard_anims: vec![],
-            wizard_fallen: vec![],
+            dolls: Default::default(),
             wizard_hurt: vec![],
             enemy_anims: HashMap::new(),
             debris: Vec::new(),
@@ -208,6 +209,7 @@ impl View {
         self.prop_broken.clear();
         self.debris.clear();
         self.wizard_pieces.clear();
+        self.dolls = Default::default();
 
         // The floor, in 10 m chunks, each with only the bits of path,
         // islands and plazas that reach it (Arena._floor).
@@ -410,22 +412,31 @@ impl View {
         self.wizard_anims.resize_with(w.wizards.len(), Default::default);
         // Where each staff's gem is as the staff moves: its light and orbs sit there.
         let mut gems = vec![None; w.wizards.len()];
+        let doll_alpha = self.dolls.step(dt);
         for (i, &id) in w.wizards.iter().enumerate() {
             let a = w.a(id);
             let wz = w.wiz(id);
             let Some(pieces) = self.wizard_pieces.get(&i) else { continue };
             let Some(kit) = self.kits.kit("wizard") else { continue };
             let pose = self.wizard_anims[i].pose(kit, &a, &wz, dt);
-            // A fallen wizard lies down beside the grave.
-            self.wizard_fallen.resize(w.wizards.len(), 0.0);
-            let f = &mut self.wizard_fallen[i];
-            *f = if a.alive { 0.0 } else { *f + dt };
-            let k = (*f / 0.5).min(1.0);
-            let k = k * k * (3.0 - 2.0 * k);
-            let at = Mat4::from_translation(a.pos + Vec3::Y * 0.12 * k) * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2 * k);
+            let at = Mat4::from_translation(a.pos);
+            // A fallen wizard goes limp: a ragdoll thrown as it stood, with
+            // its momentum and the killing blow (Joep).
+            let fallen = self.dolls.dolls.get(i).is_some_and(Option::is_some);
+            if !a.alive && !fallen {
+                let xfs: Vec<Mat4> = pieces.iter().map(|p| at * anim::posed(kit, &pose, p.node)).collect();
+                let force = 3.0 + (a.overkill as f32 * 0.08).min(4.0);
+                let blow = if a.last_dir.length_squared() > 1e-4 { a.last_dir } else { a.hurt_dir };
+                let node = |n: usize| at * anim::posed(kit, &pose, n);
+                self.dolls.fall(i, kit, &node, pieces, &xfs, &self.scene.meshes, a.vel, blow, force);
+            } else if a.alive && fallen {
+                self.dolls.clear(i);
+            }
             let from = out.len();
-            for p in pieces {
-                out.push((p.mesh, look::affine(at * anim::posed(kit, &pose, p.node)), p.shadow));
+            for (j, p) in pieces.iter().enumerate() {
+                let xf = if a.alive { None } else { self.dolls.piece(i, j, doll_alpha) };
+                let xf = xf.unwrap_or_else(|| at * anim::posed(kit, &pose, p.node));
+                out.push((p.mesh, look::affine(xf), p.shadow));
             }
             // Low on health the robe gets bloodier; a new hit spurts blood.
             let life = if a.alive { (a.hp / a.max_hp.max(1e-6)) as f32 } else { 0.0 };
@@ -436,7 +447,8 @@ impl View {
             }
             self.wizard_hurt[i] = a.hurt_t;
             if let Some(&g) = kit.named.get("gem") {
-                gems[i] = Some((at * anim::posed(kit, &pose, g)).w_axis.truncate());
+                let piece = pieces.iter().position(|p| p.node == g).and_then(|j| out.get(from + j));
+                gems[i] = Some(piece.map(|o| Vec3::from(o.1.translation)).unwrap_or_else(|| (at * anim::posed(kit, &pose, g)).w_axis.truncate()));
             }
         }
         self.marks.gems = gems.clone();
