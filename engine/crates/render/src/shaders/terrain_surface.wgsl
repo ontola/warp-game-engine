@@ -219,16 +219,35 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     let grows = (1.0 - smoothstep(0.3 - e, 0.3 + e, f.rock)) * (1.0 - smoothstep(0.3 - e, 0.3 + e, f.scree))
         * (1.0 - smoothstep(0.01 - e * 0.2, 0.01 + e * 0.2, f.water)) * (1.0 - smoothstep(0.05 - e * 0.5, 0.05 + e * 0.5, f.snow))
         * smoothstep(0.82 - e, 0.82 + e, f.up);
-    if grows <= 0.0 { return MeadowCanopy(ground, nn); }
-    let canopy = forest_canopy(s.p.x, s.p.z, footprint, light.sun_dir.xyz, u32(s.metal + 0.5), params.density, true, params.style);
-    // Stands end at a crisp edge (a few metres wide, or a pixel when far);
-    // the clearings between them keep their ground.
-    let stand = ff_chance(ff_stand(s.p.x, s.p.z, u32(s.metal + 0.5)), 1.0);
+    let seed = u32(s.metal + 0.5);
     let edge_w = max(0.04, footprint / 150.0);
-    let w = grows * fade * smoothstep(0.2 - edge_w, 0.2 + edge_w, stand);
-    if w <= 0.0 { return MeadowCanopy(ground, nn); }
+    let stand = far_forest_stand(s.p.xz, seed, edge_w);
+    // A stand is a wall of crowns: towards the sun from a clearing, any
+    // stand closer than its height over the sun's slope shades this ground.
+    let sun = light.sun_dir.xyz;
+    let sun_xz = length(sun.xz);
+    var shade = 0.0;
+    if sun.y > 0.02 && sun_xz > 1e-3 && stand < 1.0 {
+        let reach = min(params.style.far.w * sun_xz / sun.y, 120.0);
+        let toward = sun.xz / sun_xz;
+        for (var k = 1; k <= 4; k++) {
+            shade = max(shade, far_forest_stand(s.p.xz + toward * reach * f32(k) * 0.25, seed, edge_w));
+        }
+    }
+    let shaded = ground * mix(1.0, 0.45, shade * (1.0 - stand) * fade);
+    if grows <= 0.0 { return MeadowCanopy(shaded, nn); }
+    let w = grows * fade * stand;
+    if w <= 0.0 { return MeadowCanopy(shaded, nn); }
+    let canopy = forest_canopy(s.p.x, s.p.z, footprint, sun, seed, params.density, true, params.style);
     let forest = canopy.albedo * canopy.occlusion;
-    return MeadowCanopy(mix(ground, forest, w), normalize(mix(nn, canopy.normal, w)));
+    return MeadowCanopy(mix(shaded, forest, w), normalize(mix(nn, canopy.normal, w)));
+}
+
+// Whether (x, z) lies in a stand, 0..1 with a crisp edge `edge_w` wide;
+// the clearings between stands keep their ground.
+fn far_forest_stand(xz: vec2<f32>, seed: u32, edge_w: f32) -> f32 {
+    let stand = ff_chance(ff_stand(xz.x, xz.y, seed), 1.0);
+    return smoothstep(0.2 - edge_w, 0.2 + edge_w, stand);
 }
 
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
