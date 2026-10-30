@@ -513,9 +513,14 @@ pub fn cook(source: &Assembly, placement_indices: &[u32], cluster_to_assembly: M
     Cooker::new(source,config)?.cook(placement_indices,cluster_to_assembly)
 }
 
-fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_assembly: Mat4,
-    subtree_root: Option<u32>)
-    -> Result<ClusterAsset,String>
+/// Source placements sampled into one reference grid in the frame of a branch.
+struct Reference {
+    memberships: Vec<u32>, matrices: Vec<Mat4>, source_branches: BTreeSet<u32>, branch: u32,
+    lo: Vec3, hi: Vec3, origin: Vec3, dimensions: [u32; 3], fine: Cells, stats: Stats,
+}
+
+fn reference_cells(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_assembly: Mat4,
+    subtree_root: Option<u32>) -> Result<Reference,String>
 {
     let source=cooker.source;let config=cooker.config;
     if placement_indices.is_empty() || placement_indices.len()>config.max_placements || !rigid(cluster_to_assembly) {
@@ -566,7 +571,6 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
     stats.unique_parts_validated=used.len();
     stats.closed_components_validated=used.iter().map(|i|cooker.components[i]).sum();
     stats.clod_bytes=cooker.clod_bytes;check_memory(config,0,&mut stats)?;
-    let cooked=&cooker.meshes;
     let mut fine=Cells::new();let mut scratch=Vec::new();
     for (&index,&matrix) in memberships.iter().zip(&matrices) {
         let instance=&source.instances[index as usize];let part=&source.parts[instance.part as usize];
@@ -578,6 +582,40 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
     }
     if fine.is_empty() {return Err("aggregate has no covered source cells".into());}
     stats.reference_voxels=fine.len();stats.reference_dimensions=dimensions;stats.reference_cell_size=cell;
+    Ok(Reference {memberships,matrices,source_branches,branch,lo,hi,origin,dimensions,fine,stats})
+}
+
+/// The whole plant at rest as one voxel pyramid in the root branch frame: no
+/// bricks, diagnostics or triangle cuts. Level zero is the reference grid.
+/// For a distant plant drawn as one instance; it never sways.
+pub(crate) fn cook_whole(cooker: &Cooker<'_>, levels: u32) -> Result<VoxelAsset,String> {
+    if !(1..=16).contains(&levels) {return Err("whole-plant voxels need 1..16 levels".into());}
+    let all:Vec<u32>=(0..cooker.source.instances.len() as u32).collect();
+    let frame=*cooker.poses.first().ok_or("whole-plant voxels need a root branch")?;
+    let reference=reference_cells(cooker,&all,frame,Some(0))?;
+    let mut current=reference.fine;let mut dimensions=reference.dimensions;
+    let mut cell=cooker.config.reference_cell_size;let mut out=Vec::new();
+    for _ in 0..levels {
+        out.push(level(&current,dimensions,cell));
+        if dimensions==[1;3] {break;}
+        current=reduce(current);dimensions=dimensions.map(|v|v.div_ceil(2));cell*=2.0;
+    }
+    let stats=BakeStats {triangles:reference.stats.source_triangles,samples:reference.stats.quadrature_samples,
+        closed_parts_checked:reference.stats.unique_parts_validated as u64,
+        closed_components_checked:reference.stats.closed_components_validated as u64,..Default::default()};
+    Ok(VoxelAsset {projection_measure:ProjectionMeasure::ClosedSurfaceEntries,origin:reference.origin.to_array(),
+        source_bounds:[reference.lo.to_array(),reference.hi.to_array()],levels:out,stats})
+}
+
+fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_assembly: Mat4,
+    subtree_root: Option<u32>)
+    -> Result<ClusterAsset,String>
+{
+    let source=cooker.source;let config=cooker.config;
+    let Reference {memberships,matrices,source_branches,branch,lo,hi,origin,dimensions,fine,mut stats}=
+        reference_cells(cooker,placement_indices,cluster_to_assembly,subtree_root)?;
+    let cell=config.reference_cell_size;let origin64=origin.as_dvec3();
+    let cooked=&cooker.meshes;
     let reference_level=level(&fine,dimensions,cell);let reference=Grid::new(&reference_level,origin64);
     let reference_mass:[f64;13]=std::array::from_fn(|k|fine.values().map(|m|m.directional[k]).sum());
     let source_samples=stats.quadrature_samples;
@@ -588,7 +626,6 @@ fn cook_prepared(cooker: &Cooker<'_>, placement_indices: &[u32], cluster_to_asse
         current=reduce(current);downsample*=2;level_dimensions=level_dimensions.map(|v|v.div_ceil(2));
     }
     stats.first_level_downsample=downsample;
-    drop(scratch); // Release the source transform buffer before measuring CLOD cuts.
     let triangle_alternate=|cut_error:f32,stats:&mut Stats|->Result<(VoxelLevel,u64),String> {
         let mut scratch=Vec::new();let mut alternate=Cells::new();let mut triangle_count=0u64;
         for (&index,&matrix) in memberships.iter().zip(&matrices) {

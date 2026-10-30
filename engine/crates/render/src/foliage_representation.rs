@@ -217,7 +217,7 @@ pub fn validate_bindings(scene:&crate::scene::Scene)->Result<(),String> {
         scene.foliage_representation_policy)?;
     if bindings.is_empty() {return Ok(());}
     let forest=scene.voxel_forest.as_ref().ok_or("foliage representations require their packed volumes")?;
-    if forest.instances.len()>MAX_GROUPS {
+    if forest.instances.len()-(scene.voxel_proxies as usize).min(forest.instances.len())>MAX_GROUPS {
         return Err("foliage representation forest exceeds the per-view GPU table".into());
     }
     for binding in bindings {

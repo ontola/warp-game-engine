@@ -97,3 +97,22 @@ integrator's.
 
 Not yet: the 64-tree acceptance run on a real GPU, Hi-Z culling, voxels in
 the near map and sun pages, live forests (M3).
+
+**Whole-plant proxies built (one forest, 2026-10-30).** The forest is one
+plant type: the nearest plants are full assemblies, every other one is the
+same cooked plant as a single voxel instance.
+`CookedPlant::cook_proxy` samples the whole plant at rest into one dense
+pyramid (`vegetation_aggregate::cook_whole`: the reference grid is level 0,
+no bricks, diagnostics or triangle cuts). `SceneVegetation::append_proxy`
+adds one instance per plant (no clusters, flag FOLIAGE so the canopy volume
+counts it) and `finish_aggregate` packs the proxies densely after the
+bricked branch groups (`GpuForest::append`). `Scene::voxel_proxies` trees
+trail the forest; the shaders know them from config `proxy.x`, never read
+the per-group selection for them, pick their level from the footprint at
+`Policy::proxy_pixels`, and draw them in the camera, the shared sun map and
+the near shadow map (they have no source to cast there). Proxies force the
+rasterized path. The splat and sun passes cull trees with their world boxes
+(the M1 code transformed those boxes a second time, culling far trees by a
+wrong centre). terrain_fly: spruce proxies at 0.1 m cells (about 83k cells),
+cooked in about 7 s per seed on the cloud CPU; `--firs` keeps the old cards
+for A/B.

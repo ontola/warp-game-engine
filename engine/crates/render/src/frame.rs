@@ -3554,6 +3554,14 @@ impl Renderer {
                 gpu.queue.write_buffer(&near.targets.uniform, 0, bytemuck::bytes_of(&near_uniform));
                 let texture_view = resources.near_shadow.get(&near.tex);
                 self.cull_and_raster(&mut enc, gpu, &near.targets, None, &texture_view, &mut ts, &mut names, "near shadow cull",RasterPass::Sun);
+                // Whole-plant proxies have no source to cast here.
+                if let Some(forest)=self.voxel_forest.as_ref().filter(|f|f.has_proxies()) {
+                    let times=["voxel near sun splats","voxel near sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
+                        let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
+                    forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&near.targets.foliage_selection,crate::voxel_forest::SunSplatView {
+                        depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
+                        texel_m:2.0*NEAR_SHADOW_EXTENT/NEAR_SHADOW_SIZE as f32},times)?;
+                }
                 view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
                 view_light.near_shadow[2] = 1.0;
                 texture_view
