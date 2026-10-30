@@ -12,7 +12,7 @@ use meshopt::clusterlod::{ClodMesh, clod_build, clod_default_config, clod_local_
 pub const MAX_TRIS: usize = 128;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
 pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
@@ -21,7 +21,7 @@ pub struct Vertex {
 
 /// One cluster as the GPU sees it (80 bytes).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
 pub struct GpuCluster {
     /// Culling sphere: centre and radius.
     pub cull: [f32; 4],
@@ -330,7 +330,7 @@ fn protect_card_coverage(vertices: &[Vertex], groups: &mut [[f32; 5]], pending: 
 
 /// Cluster data for a mesh, ready to append to the scene buffers. Indices
 /// in `clusters` are local to these arrays; the scene rebases them.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct ClusterMesh {
     pub vertices: Vec<Vertex>,
     /// Per cluster, the mesh vertices it uses (cluster-local index -> vertex).

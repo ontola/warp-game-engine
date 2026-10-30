@@ -13,7 +13,9 @@ pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }
 meshopt = "0.7"
 png = "0.18"
-glam = { version = "0.31", features = ["bytemuck"] }
+glam = { version = "0.31", features = ["bytemuck", "serde"] }
+postcard = { version = "1", features = ["alloc"] }
+serde.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "hdr", "webp"] }
 sha2.workspace = true
 glyphon = "0.12"

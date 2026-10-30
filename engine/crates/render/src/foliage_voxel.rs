@@ -35,7 +35,7 @@ pub const AXIS_NORMAL_CENTROIDS: [[f32; 3]; 6] = [
 
 /// What one optical crossing represents. This is geometry semantics, not an
 /// artistic density multiplier. Never infer closedness from TWO_SIDED.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProjectionMeasure {
     /// Every covered source sheet contributes |n dot d| dA. Existing cutout
     /// assets use this convention; an open leaf has only one geometric side.
@@ -75,7 +75,7 @@ impl Default for BakeConfig {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Voxel {
     pub coord: [u32; 3],
     /// Covered one-sided geometric surface area in square local metres.
@@ -149,7 +149,7 @@ impl Voxel {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VoxelLevel {
     pub cell_size: f32,
     pub dimensions: [u32; 3],
@@ -165,7 +165,7 @@ impl VoxelLevel {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BakeStats {
     pub triangles: u64,
     pub degenerate_triangles: u64,
@@ -175,7 +175,7 @@ pub struct BakeStats {
     pub closed_components_checked: u64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VoxelAsset {
     pub projection_measure: ProjectionMeasure,
     /// All levels use this same, finest-grid-aligned local-space origin.

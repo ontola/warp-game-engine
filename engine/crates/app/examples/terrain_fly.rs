@@ -25,9 +25,10 @@ use app::{Buttons, Controls, Draw, Frame, Game, Pointer};
 use glam::{Affine3A, Quat, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, SimplificationPolicy};
 use render::debug_ui::{DebugAction, DebugControl, DebugMenu, DebugValue};
-use render::plant_recipe::{self, BuildOptions, CrownProfile, FoliageKind, WoodyRecipe};
+use render::plant_recipe::{CrownProfile, FoliageKind, WoodyRecipe};
 use render::scene::{GeometryCategory, ALPHA_TEST, TWO_SIDED};
-use render::vegetation_asset::{AttachLimits, CookedPlant, PlantInstance, SceneVegetation};
+use render::recipe_forest;
+use render::vegetation_asset::CookedPlant;
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, SolarState};
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 use render::procedural_terrain::{self, ProceduralTerrain, Settings, Stats, TerrainView};
@@ -35,6 +36,7 @@ use render::scene::{Material, SURFACE, TERRAIN};
 use render::terrain_field::{self, Style};
 use render::foliage_assembly::MeadowBladeBudget;
 use render::meadow_data::{MeadowField, MeadowGeometry};
+use render::vegetation_style::VegetationStyle;
 use render::{Camera, Lighting, Scene};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -150,12 +152,14 @@ impl Fly {
     fn rebuild(&mut self) -> Result<(), String> {
         if self.building.is_some() { self.stale = true; return Ok(()); }
         let (seed, style, pos) = (self.seed, self.style(), self.pos);
+        // Each terrain preset has its palette (render::vegetation_style).
+        let palette = VegetationStyle::named(STYLES[self.style]).unwrap_or_default();
         let world = World { grass: self.grass_wanted(), ..self.world };
         self.built_world = world;
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
-            let ready = build_scene(seed, style, pos, world).map(|(scene, light, pool, at)| {
+            let ready = build_scene(seed, style, &palette, pos, world).map(|(scene, light, pool, at)| {
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool, settings));
                 (built, scene, light, pool, at)
             });
@@ -369,11 +373,11 @@ impl Default for World {
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
 /// `centre` as `world` asks, and the shadow heightfield around it. Returns the centre.
-fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
+fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, centre: Vec3, world: World) -> Built {
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
     let mut scene = Scene::default();
-    if world.grass { scene.meadow = Some(meadow(seed, &style, centre)?); }
+    if world.grass { scene.meadow = Some(meadow(seed, &style, palette.meadow_dry_season, centre)?); }
     // Layers in the order terrain_surface.wgsl reads them.
     let t0 = scene.add_texture(&root.join("grass_ground_albedo.jpg"))?;
     scene.add_texture(&root.join("forest_leaves_02_albedo.jpg"))?;
@@ -393,16 +397,22 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
     // the horizon.
-    if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density, &render::forest_field::ForestStyle::default()); }
+    procedural_terrain::vegetation_style(&mut scene, material, palette);
+    if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density, &palette.forest); }
     let mut light = Lighting::default();
-    let sky = AtmosphereCache::default().get_or_bake(&Atmosphere::default(), SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
+    // Sunlit valleys bounce light onto the slopes facing away from the sun:
+    // with the default 0.15 a lee slope 3 km out rendered near black.
+    let atmosphere = Atmosphere { ground_albedo: glam::DVec3::splat(0.25), ..Atmosphere::default() };
+    let sky = AtmosphereCache::default().get_or_bake(&atmosphere, SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
     sky.apply(&mut scene, &mut light);
     // Sun visibility baked on a coarse heightfield shades the valleys behind
     // mountains past the reach of the shadow maps.
     (scene.heightfield, scene.terrain_sun) = procedural_terrain::sun_heightfield(seed, &style, [centre.x, centre.z], SHADOW_SIZE, SHADOW_CELL, light.sun_dir);
     scene.terrain_visibility_complete = true;
     scene.world_terrain_visibility = true;
-    light.fog_density = 0.00003;
+    // A light summer haze (~60 km visibility): distant lee slopes
+    // and forests fade towards the sky instead of staying near black.
+    light.fog_density = 0.00005;
     light.fog_end = 60000.0;
     // TAA's history clamp rejects the jittered sub-pixel fir needles, so
     // distant trees flickered (headless: 0.5-5k changed pixels a frame from a
@@ -446,54 +456,30 @@ fn firs(scene: &mut Scene, assets: &std::path::Path, spots: &[(Vec3, f32, Vec3, 
     Ok(())
 }
 
-/// Recipe spruces: three seeds, cooked once and shared. `near` spots get the
-/// full assembly, `far` ones the same plant as one voxel proxy.
-/// `--recipe-source` keeps the near ones source-only (no voxels), for A/B runs.
+/// Recipe spruces (render::recipe_forest): three seeds, cooked once and
+/// shared. `near` spots get the full assembly, `far` ones the same plant as
+/// one voxel proxy.
 fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
     if near.is_empty() && far.is_empty() { return Ok(()); }
-    let aggregate = !std::env::args().any(|a| a == "--recipe-source");
-    if !aggregate && !far.is_empty() { return Err("--recipe-source has no proxies; add --firs".into()); }
     static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
-    let cooked = COOKED.get_or_init(|| (0..3u64).map(|seed| {
-        let started = std::time::Instant::now();
-        let assembly = plant_recipe::build(&SPRUCE, BuildOptions::new(seed + 1), plant_recipe::recipe_limits())?;
-        if !aggregate { return CookedPlant::cook_source(&assembly); }
-        // Aggregate cook: each branch group also gets voxel levels, and the
-        // renderer picks source or voxels per group from projected error.
-        let config = render::vegetation_aggregate::Config { max_placements: 8192, max_source_triangles: 40_000_000,
-            max_samples: 150_000_000, triangle_refinements: true, max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
-            ..Default::default() };
-        let mut plant = CookedPlant::cook_aggregate(&assembly, config)?;
-        let cooked_ms = started.elapsed().as_secs_f64() * 1000.0;
-        // The whole spruce as one voxel pyramid: 10 cm cells, then 20 cm .. 3.2 m.
-        plant.cook_proxy(&assembly, render::vegetation_aggregate::Config { reference_cell_size: 0.1,
-            max_reference_voxels: 1 << 21, max_build_bytes: 1 << 30, ..config }, 6)?;
-        let proxy = plant.proxy().unwrap();
-        eprintln!("spruce {seed}: cooked in {cooked_ms:.0} ms, proxy in {:.0} ms ({} cells at {} m, {} levels)",
-            started.elapsed().as_secs_f64() * 1000.0 - cooked_ms, proxy.levels[0].voxels.len(), proxy.levels[0].cell_size, proxy.levels.len());
-        Ok(plant)
-    }).collect()).as_ref().map_err(Clone::clone)?;
-    let branches = cooked.iter().map(|c| c.stats().branches).max().unwrap_or(64);
-    let mut limits = AttachLimits { max_poses: branches.max(64) * near.len().max(4), max_primitive_instances: render::part_wind::MAX_ATTACHMENTS, ..Default::default() };
-    limits.pack.max_instances = limits.max_poses.min(render::foliage_volume_data::MAX_INSTANCES);
-    let mut vegetation = SceneVegetation::new(scene, limits)?;
+    let cooked = COOKED.get_or_init(|| {
+        let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+        let cooked = recipe_forest::cook_variants(&[(SPRUCE, 1), (SPRUCE, 2), (SPRUCE, 3)], Some(&cache))?;
+        Ok(cooked.into_iter().enumerate().map(|(i, c)| {
+            eprintln!("spruce {i}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
+            c.plant
+        }).collect())
+    }).as_ref().map_err(Clone::clone)?;
     // The firs are ~15 m; the recipe is 16 m, scaled like them.
-    let instance = |i: usize, &(pos, yaw, scale, _): &(Vec3, f32, Vec3, usize)| PlantInstance { id: i as u64 + 1, generation: 0,
-        root: glam::Mat4::from_scale_rotation_translation(Vec3::splat(scale.y), Quat::from_rotation_y(yaw), pos), category: GeometryCategory::Trees };
-    for (i, spot) in near.iter().enumerate() { vegetation.append(&cooked[spot.3], instance(i, spot))?; }
-    let appending = std::time::Instant::now();
-    for (i, spot) in far.iter().enumerate() { vegetation.append_proxy(&cooked[spot.3], instance(near.len() + i, spot))?; }
-    println!("{} proxies appended in {} ms", far.len(), appending.elapsed().as_millis());
-    if !aggregate { vegetation.finish_source()?; return Ok(()); }
-    let proxy_pixels = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-px")
-        .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels);
-    let proxy_pixels_from = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-from")
-        .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels_from);
-    let finishing = std::time::Instant::now();
-    let finished = vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false,
-        proxy_pixels, proxy_pixels_from, ..Default::default() });
-    println!("vegetation finished in {} ms", finishing.elapsed().as_millis());
-    finished?;
+    let trees: Vec<recipe_forest::Tree> = near.iter().chain(far).map(|&(pos, yaw, scale, variant)|
+        recipe_forest::Tree { pos, yaw, scale: scale.y, variant }).collect();
+    let arg = |k: &str| std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == k).and_then(|w| w[1].parse().ok());
+    let defaults = recipe_forest::game_policy();
+    let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(defaults.proxy_pixels),
+        proxy_pixels_from: arg("--proxy-from").unwrap_or(defaults.proxy_pixels_from), ..defaults };
+    let started = std::time::Instant::now();
+    recipe_forest::plant(scene, cooked, &trees, near.len(), policy)?;
+    println!("{} trees ({} full) planted in {} ms", trees.len(), near.len(), started.elapsed().as_millis());
     Ok(())
 }
 
@@ -539,7 +525,7 @@ fn forest(seed: u32, style: &Style, centre: Vec3, world: World) -> Vec<(Vec3, f3
 /// Windswept meadow roots on a 0.5 m grid of the terrain function, 300 m
 /// around `centre` (as in render's procedural_terrain example). Rock,
 /// scree, snow and water are bare.
-fn meadow(seed: u32, style: &Style, centre: Vec3) -> Result<MeadowField, String> {
+fn meadow(seed: u32, style: &Style, dry_season: f32, centre: Vec3) -> Result<MeadowField, String> {
     let (cell, n) = (0.5f32, 1200u32);
     let origin = [(centre.x / cell).floor() * cell - n as f32 * cell * 0.5, (centre.z / cell).floor() * cell - n as f32 * cell * 0.5];
     let mut samples = Vec::with_capacity((n * n) as usize);
@@ -553,8 +539,8 @@ fn meadow(seed: u32, style: &Style, centre: Vec3) -> Result<MeadowField, String>
         }
     }
     let field = MeadowField {
-        origin, cell, width: n, height: n, samples, seed, growth: 1.0, dry_season: 0.0, radius: GRASS_RADIUS, fade_start: GRASS_RADIUS * 0.8,
-        geometry: MeadowGeometry::cook_windswept(seed as u64, 0.0, MeadowBladeBudget::Blades120)?,
+        origin, cell, width: n, height: n, samples, seed, growth: 1.0, dry_season, radius: GRASS_RADIUS, fade_start: GRASS_RADIUS * 0.8,
+        geometry: MeadowGeometry::cook_windswept(seed as u64, dry_season, MeadowBladeBudget::Blades120)?,
     };
     field.validate()?;
     Ok(field)

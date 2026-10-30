@@ -13,7 +13,7 @@
 //! ```
 use crate::cluster::{GpuCluster, Vertex};
 use crate::scene::{GeometryCategory, GpuInstance, Material, Scene, INSTANCE_CATEGORY_SHIFT};
-use crate::{forest_field, terrain_field, Camera, Gpu, Renderer};
+use crate::{forest_field, terrain_field, vegetation_style, Camera, Gpu, Renderer};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -114,18 +114,43 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Data materials the terrain material's scale points at, -(first + 1):
+/// the ForestStyle (2), far forest start and density (1), the GroundStyle
+/// (4); terrain_surface.wgsl far_forest_params and field_ground read them.
+/// Created with the defaults (no far forest) on first use.
+fn style_block(scene: &mut Scene, material: u32) -> usize {
+    let scale = scene.materials[material as usize].scale;
+    if scale < 0.0 { return (-scale - 1.0).round() as usize; }
+    let first = scene.materials.len();
+    assert!(first < 1 << 24, "terrain style material index out of range");
+    let forest: [Material; 2] = bytemuck::cast(forest_field::ForestStyle::default());
+    let ground: [Material; 4] = bytemuck::cast(vegetation_style::GroundStyle::default());
+    scene.materials.extend(forest);
+    scene.materials.push(Material { tint: [0.0; 3], layer: -1, roughness: 1.0, flags: 0, scale: 1.0, metal: 0.0 });
+    scene.materials.extend(ground);
+    scene.materials[material as usize].scale = -(first as f32 + 1.0);
+    first
+}
+
+/// Draw the terrain in `style`'s palette: its ground tints, and its forest
+/// for far_forest (call that with `style.forest`). The meadow's season is the
+/// caller's, for its meadow cook.
+pub fn vegetation_style(scene: &mut Scene, material: u32, style: &vegetation_style::VegetationStyle) {
+    let first = style_block(scene, material);
+    let forest: [Material; 2] = bytemuck::cast(style.forest);
+    let ground: [Material; 4] = bytemuck::cast(style.ground);
+    scene.materials[first..first + 2].copy_from_slice(&forest);
+    scene.materials[first + 3..first + 7].copy_from_slice(&ground);
+}
+
 /// Draw the forest of `forest_field` into the terrain from `start_m` from
 /// the camera on, where single trees end: its canopy from above in `style`,
-/// no geometry. `density` as forest_field's. Appends three data materials
-/// (the style, then start and density) that the terrain material's scale
-/// points at (terrain_surface.wgsl far_forest).
+/// no geometry. `density` as forest_field's (terrain_surface.wgsl far_forest).
 pub fn far_forest(scene: &mut Scene, material: u32, start_m: f32, density: f32, style: &forest_field::ForestStyle) {
-    let first = scene.materials.len();
-    assert!(first < 1 << 24, "far forest material index out of range");
-    let data: [Material; 2] = bytemuck::cast(*style);
-    scene.materials.extend(data);
-    scene.materials.push(Material { tint: [start_m.max(0.0), density.clamp(0.0, 1.0), 0.0], layer: -1, roughness: 1.0, flags: 0, scale: 1.0, metal: 0.0 });
-    scene.materials[material as usize].scale = -(first as f32 + 1.0);
+    let first = style_block(scene, material);
+    let forest: [Material; 2] = bytemuck::cast(*style);
+    scene.materials[first..first + 2].copy_from_slice(&forest);
+    scene.materials[first + 2].tint = [start_m.max(0.0), density.clamp(0.0, 1.0), 0.0];
 }
 
 /// Reserve `capacity` patch slots that draw with `material`.
