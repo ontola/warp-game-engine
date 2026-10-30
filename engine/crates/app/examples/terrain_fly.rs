@@ -464,7 +464,7 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
     static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
     let cooked = COOKED.get_or_init(|| {
         let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
-        let cooked = recipe_forest::cook_variants(&SPRUCE, &[1, 2, 3], Some(&cache))?;
+        let cooked = recipe_forest::cook_variants(&[(SPRUCE, 1), (SPRUCE, 2), (SPRUCE, 3)], Some(&cache))?;
         Ok(cooked.into_iter().enumerate().map(|(i, c)| {
             eprintln!("spruce {i}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
             c.plant

@@ -1,6 +1,6 @@
-//! Game-owned species selection and one-time assembly cooking for the live forest.
-//! Detailed shared assemblies are preview-only until forest-scale pose/LOD
-//! selection exists; the former flattened whole-tree path is disabled.
+//! Game-owned species selection for the live mixed forest, planted through
+//! the engine's recipe forest (full assemblies near the cameras, whole-plant
+//! voxel proxies elsewhere).
 use glam::{Affine3A, Quat, Vec3};
 use render::{Scene, scene::GeometryCategory};
 use sideways::{builder::Chunk, stage::Stage};
@@ -50,24 +50,36 @@ pub fn stage_index(stage: &Stage, x: f32, z: f32) -> usize {
     )
 }
 
-pub struct Sources {
-    pub trees: Vec<usize>,
-    pub shrubs: Vec<usize>,
-    pub metadata: serde_json::Value,
-}
-
-/// The rejected v1 route flattened all spray geometry into whole-tree CLOD.
-/// Detailed sources are intentionally not sent through that path: the shared
-/// runtime still has a bounded pose pool and no aggregate distance hierarchy.
-/// Fail before mutating the scene, rather than allocating millions of duplicated
-/// vertices or silently substituting a different tree at distance.
-pub fn cook(
-    _scene: &mut Scene,
-    _stage: &Stage,
-    _fullness: f32,
-    _names: &mut Vec<String>,
-) -> Result<Sources, String> {
-    Err("SIDEWAYS_TREE_SPECIES=mixed is unavailable while detailed assemblies lack forest-scale pose/LOD selection. Use tree_species_compare for the shared GPU assembly preview, or reference for the live forest.".into())
+/// The live mixed forest on the engine's recipe forest
+/// (render::recipe_forest): each species cooked once (cached in
+/// build/cook-cache) and shared by every tree; trees within FULL_RADIUS of a
+/// camera are full assemblies (at most MAX_FULL), every other tree is the
+/// same plant as one whole-plant voxel proxy.
+pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras: &[Vec3]) -> Result<serde_json::Value, String> {
+    const FULL_RADIUS: f32 = 40.0;
+    const MAX_FULL: usize = 8;
+    let started = std::time::Instant::now();
+    let variants: Vec<_> = TREE_IDS.iter().map(|id| crate::plant_species::find(id).map(|s| (s.recipe, 1)))
+        .collect::<Result<_, _>>()?;
+    let cache = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+    let cooked = render::recipe_forest::cook_variants(&variants, Some(&cache))?;
+    let cooked_ms = started.elapsed().as_secs_f64() * 1e3;
+    let loaded = cooked.iter().filter(|c| c.loaded).count();
+    let plants: Vec<_> = cooked.into_iter().map(|c| c.plant).collect();
+    let near = |p: Vec3| cameras.iter().map(|c| c.distance(p)).fold(f32::INFINITY, f32::min);
+    let mut trees: Vec<(f32, render::recipe_forest::Tree)> = chunks.iter().flat_map(|c| &c.trees).map(|spot| {
+        let pos = Vec3::new(spot.pos.0, spot.pos.1, spot.pos.2);
+        (near(pos), render::recipe_forest::Tree { pos, yaw: spot.yaw,
+            scale: crate::tree_assets::native_scale(spot).y, variant: stage_index(stage, spot.pos.0, spot.pos.2) })
+    }).collect();
+    trees.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let full = trees.iter().take(MAX_FULL).filter(|(d, _)| *d < FULL_RADIUS).count();
+    let trees: Vec<_> = trees.into_iter().map(|(_, t)| t).collect();
+    let mut counts = [0usize; TREE_IDS.len()];
+    for t in &trees { counts[t.variant] += 1; }
+    render::recipe_forest::plant(scene, &plants, &trees, full, render::recipe_forest::game_policy())?;
+    Ok(serde_json::json!({"route":"render::recipe_forest","species":TREE_IDS,"species_counts":counts,"trees":trees.len(),
+        "full_assemblies":full,"cooked_or_loaded_ms":cooked_ms,"loaded_from_cache":loaded,"total_ms":started.elapsed().as_secs_f64() * 1e3}))
 }
 
 /// Reuse game-authored decorative fern habitat instead of inventing CPU
