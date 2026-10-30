@@ -468,7 +468,7 @@ fn recipe_spruces(scene: &mut Scene, spots: &[(Vec3, f32, Vec3, usize)]) -> Resu
         vegetation.append(&cooked[variant], PlantInstance { id: i as u64 + 1, generation: 0, root, category: GeometryCategory::Trees })?;
     }
     if !aggregate { vegetation.finish_source()?; return Ok(()); }
-    vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, ..Default::default() })?;
+    vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false, ..Default::default() })?;
     Ok(())
 }
 
