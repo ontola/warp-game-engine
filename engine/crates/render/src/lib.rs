@@ -81,6 +81,7 @@ pub mod far_trees;
 pub mod foliage_shadow;
 pub mod foliage_assembly;
 pub mod plant_recipe;
+pub mod recipe_forest;
 pub mod plant_spray;
 pub mod vegetation_asset;
 pub mod aggregate_lod;

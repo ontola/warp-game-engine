@@ -25,9 +25,10 @@ use app::{Buttons, Controls, Draw, Frame, Game, Pointer};
 use glam::{Affine3A, Quat, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, SimplificationPolicy};
 use render::debug_ui::{DebugAction, DebugControl, DebugMenu, DebugValue};
-use render::plant_recipe::{self, BuildOptions, CrownProfile, FoliageKind, WoodyRecipe};
+use render::plant_recipe::{CrownProfile, FoliageKind, WoodyRecipe};
 use render::scene::{GeometryCategory, ALPHA_TEST, TWO_SIDED};
-use render::vegetation_asset::{AttachLimits, CookedPlant, PlantInstance, SceneVegetation};
+use render::recipe_forest;
+use render::vegetation_asset::CookedPlant;
 use render::atmosphere::{Atmosphere, AtmosphereCache, BakeQuality, SolarState};
 use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 use render::procedural_terrain::{self, ProceduralTerrain, Settings, Stats, TerrainView};
@@ -451,63 +452,30 @@ fn firs(scene: &mut Scene, assets: &std::path::Path, spots: &[(Vec3, f32, Vec3, 
     Ok(())
 }
 
-/// Recipe spruces: three seeds, cooked once and shared. `near` spots get the
-/// full assembly, `far` ones the same plant as one voxel proxy.
-/// `--recipe-source` keeps the near ones source-only (no voxels), for A/B runs.
+/// Recipe spruces (render::recipe_forest): three seeds, cooked once and
+/// shared. `near` spots get the full assembly, `far` ones the same plant as
+/// one voxel proxy.
 fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
     if near.is_empty() && far.is_empty() { return Ok(()); }
-    let aggregate = !std::env::args().any(|a| a == "--recipe-source");
-    if !aggregate && !far.is_empty() { return Err("--recipe-source has no proxies; add --firs".into()); }
     static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
-    // The three variants cook on their own threads (each cook is serial).
-    let cooked = COOKED.get_or_init(|| std::thread::scope(|scope| (0..3u64).map(|seed| scope.spawn(move || -> Result<CookedPlant, String> {
-        let started = std::time::Instant::now();
-        let build = || plant_recipe::build(&SPRUCE, BuildOptions::new(seed + 1), plant_recipe::recipe_limits());
-        if !aggregate { return CookedPlant::cook_source(&build()?); }
-        // Aggregate cook: each branch group also gets voxel levels, and the
-        // renderer picks source or voxels per group from projected error.
-        let config = render::vegetation_aggregate::Config { max_placements: 8192, max_source_triangles: 40_000_000,
-            max_samples: 150_000_000, triangle_refinements: true, max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
-            ..Default::default() };
-        // The whole spruce as one voxel pyramid: 10 cm cells, then 20 cm .. 3.2 m.
-        let proxy_config = render::vegetation_aggregate::Config { reference_cell_size: 0.1,
-            max_reference_voxels: 1 << 21, max_build_bytes: 1 << 30, ..config };
-        // Cooked once per recipe, configs and engine cook code, then loaded
-        // from build/cook-cache (seconds instead of half a minute).
-        let what = format!("{SPRUCE:?} {:?} {:?} {config:?} {proxy_config:?} 6", BuildOptions::new(seed + 1), plant_recipe::recipe_limits());
+    let cooked = COOKED.get_or_init(|| {
         let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
-        let (plant, hit) = CookedPlant::cached(&cache, &what, || {
-            let assembly = build()?;
-            let mut plant = CookedPlant::cook_aggregate(&assembly, config)?;
-            plant.cook_proxy(&assembly, proxy_config, 6)?;
-            Ok(plant)
-        })?;
-        let proxy = plant.proxy().unwrap();
-        eprintln!("spruce {seed}: {} in {:.0} ms ({} proxy cells at {} m, {} levels)", if hit { "loaded" } else { "cooked" },
-            started.elapsed().as_secs_f64() * 1000.0, proxy.levels[0].voxels.len(), proxy.levels[0].cell_size, proxy.levels.len());
-        Ok(plant)
-    })).collect::<Vec<_>>().into_iter().map(|h| h.join().map_err(|_| "spruce cook panicked".to_string())?).collect())).as_ref().map_err(Clone::clone)?;
-    let branches = cooked.iter().map(|c| c.stats().branches).max().unwrap_or(64);
-    let mut limits = AttachLimits { max_poses: branches.max(64) * near.len().max(4), max_primitive_instances: render::part_wind::MAX_ATTACHMENTS, ..Default::default() };
-    limits.pack.max_instances = limits.max_poses.min(render::foliage_volume_data::MAX_INSTANCES);
-    let mut vegetation = SceneVegetation::new(scene, limits)?;
+        let cooked = recipe_forest::cook_variants(&SPRUCE, &[1, 2, 3], Some(&cache))?;
+        Ok(cooked.into_iter().enumerate().map(|(i, c)| {
+            eprintln!("spruce {i}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
+            c.plant
+        }).collect())
+    }).as_ref().map_err(Clone::clone)?;
     // The firs are ~15 m; the recipe is 16 m, scaled like them.
-    let instance = |i: usize, &(pos, yaw, scale, _): &(Vec3, f32, Vec3, usize)| PlantInstance { id: i as u64 + 1, generation: 0,
-        root: glam::Mat4::from_scale_rotation_translation(Vec3::splat(scale.y), Quat::from_rotation_y(yaw), pos), category: GeometryCategory::Trees };
-    for (i, spot) in near.iter().enumerate() { vegetation.append(&cooked[spot.3], instance(i, spot))?; }
-    let appending = std::time::Instant::now();
-    for (i, spot) in far.iter().enumerate() { vegetation.append_proxy(&cooked[spot.3], instance(near.len() + i, spot))?; }
-    println!("{} proxies appended in {} ms", far.len(), appending.elapsed().as_millis());
-    if !aggregate { vegetation.finish_source()?; return Ok(()); }
-    let proxy_pixels = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-px")
-        .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels);
-    let proxy_pixels_from = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-from")
-        .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels_from);
-    let finishing = std::time::Instant::now();
-    let finished = vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false,
-        proxy_pixels, proxy_pixels_from, ..Default::default() });
-    println!("vegetation finished in {} ms", finishing.elapsed().as_millis());
-    finished?;
+    let trees: Vec<recipe_forest::Tree> = near.iter().chain(far).map(|&(pos, yaw, scale, variant)|
+        recipe_forest::Tree { pos, yaw, scale: scale.y, variant }).collect();
+    let arg = |k: &str| std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == k).and_then(|w| w[1].parse().ok());
+    let defaults = recipe_forest::game_policy();
+    let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(defaults.proxy_pixels),
+        proxy_pixels_from: arg("--proxy-from").unwrap_or(defaults.proxy_pixels_from), ..defaults };
+    let started = std::time::Instant::now();
+    recipe_forest::plant(scene, cooked, &trees, near.len(), policy)?;
+    println!("{} trees ({} full) planted in {} ms", trees.len(), near.len(), started.elapsed().as_millis());
     Ok(())
 }
 
