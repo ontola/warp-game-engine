@@ -555,6 +555,15 @@ impl View {
         self.light.time = w.time as f32;
         let mut sprites = self.marks.sprites.clone();
         sprites.extend_from_slice(&self.shrines.sprites);
+        // Round glows (the staff's gem) face the camera fully, as Fx's do: a
+        // square that keeps world up flattens to an oval from the high
+        // camera. Taller sprites (flames) stay standing.
+        let face = facing(&self.camera);
+        for sp in &mut sprites {
+            if sp.facing == render::sprites::Facing::Billboard && sp.size[0] == sp.size[1] {
+                sp.facing = render::sprites::Facing::Fixed { right: face.x_axis, up: face.y_axis };
+            }
+        }
         sprites.extend(self.fx.sprites(&self.camera));
         sprites.truncate(render::sprites::MAX_SPRITES);
         crate::effects::sync(gpu);

@@ -497,12 +497,7 @@ impl World {
             width: 0.18,
             time: 0.1,
         });
-        self.ev(Ev::Flash {
-            at: b,
-            c,
-            size: 1.4,
-            time: 0.14,
-        });
+        // No halo at `b`: the struck body flashes white itself.
     }
 
     /// A lightning bolt does not fly: a spark jumps at once from the staff
@@ -554,14 +549,6 @@ impl World {
             width: 0.05 + 0.03 * bo.size,
             time: 0.06,
         });
-        if hit.is_some() {
-            self.ev(Ev::Flash {
-                at: to_pt,
-                c,
-                size: 0.7,
-                time: 0.08,
-            });
-        }
         self.bolt_end(bo, to_pt);
     }
 
