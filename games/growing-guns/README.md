@@ -19,7 +19,7 @@ missing.
 |---|---|---|
 | Movement | Done | Jump, double jump, wall jump, dash, step-ups (0.35 m), lava burn and kill, falling off the map |
 | The gun | Done | Projectile rounds with drop, spread, bloom, recoil, ricochet, drill, homing, hitscan, poison, slow, lifesteal, explosive splash, impact mines, three hit ellipsoids |
-| Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Full-size chamfered blocks and seated grip, magazine, stock, sight and launcher attachments close assembly gaps. Trigger, distinct poison/chilling details and a finish/detail pass remain pending |
+| Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Full-size chamfered blocks close assembly gaps. Fixed grip/trigger/magazine clearances survive upgrades; a shaped pistol grip with rubber inserts, a steel trigger and an angular guard replace the intersecting cylinder/ring layout. Distinct poison/chilling details and a broader finish/detail pass remain pending |
 | Cards | Done | All 52 cards, Luau in `mods/base/cards.luau`, line for line from `card_library.gd`; rarity, pity slot, trailing-player factor |
 | Specials (RMB) | Done | Grenade, cluster, teleport, zoom, sword with backstabs, air strike, ion cannon; echo, tactical reload, refresh |
 | Rounds and match | Done | Spawn cage, kill order, card picks (the dead pick mid-round with 3+ players), first to ten wins, rematch, extend |
@@ -87,7 +87,7 @@ The earlier [simplified browser demo](../../engine/docs/quest-vr.md) remains ava
 ## Gun modelling review
 
 `cargo run --release -p growing-guns-app -- gun-review --out build/gun-review`
-renders eight real card combinations with fixed neutral lighting, in three-quarter,
+renders ten real card combinations (including short Shotgun and Uzi builds) with fixed neutral lighting, in three-quarter,
 side and receiver/trigger-detail views. It writes PNGs and `manifest.json` with
 cards, visual stats, dimensions and part counts. Use `--only base` for a quick
 iteration or `--size 2000x1250` for larger images. Each overview fits the model

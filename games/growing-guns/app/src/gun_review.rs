@@ -10,6 +10,8 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
     if w < 64 || h < 64 || w > 4096 || h > 4096 { return Err("review size must be 64..4096 per axis".into()); }
     let variants: &[(&str, &str, &[&str])] = &[
         ("base", "Basis", &[]),
+        ("shotgun", "Shotgun (kort)", &["shotgun"]),
+        ("uzi", "Uzi (kort)", &["uzi"]),
         ("poison", "Poison", &["poison"]),
         ("cooling", "Chilling Rounds", &["chilling_rounds"]),
         ("sniper-poison", "Sniper + Poison + Heavy Rounds", &["sniper", "poison", "heavy_rounds"]),
