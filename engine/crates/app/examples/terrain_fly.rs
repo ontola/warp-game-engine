@@ -36,6 +36,7 @@ use render::scene::{Material, SURFACE, TERRAIN};
 use render::terrain_field::{self, Style};
 use render::foliage_assembly::MeadowBladeBudget;
 use render::meadow_data::{MeadowField, MeadowGeometry};
+use render::vegetation_style::VegetationStyle;
 use render::{Camera, Lighting, Scene};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -151,12 +152,14 @@ impl Fly {
     fn rebuild(&mut self) -> Result<(), String> {
         if self.building.is_some() { self.stale = true; return Ok(()); }
         let (seed, style, pos) = (self.seed, self.style(), self.pos);
+        // Each terrain preset has its palette (render::vegetation_style).
+        let palette = VegetationStyle::named(STYLES[self.style]).unwrap_or_default();
         let world = World { grass: self.grass_wanted(), ..self.world };
         self.built_world = world;
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
-            let ready = build_scene(seed, style, pos, world).map(|(scene, light, pool, at)| {
+            let ready = build_scene(seed, style, &palette, pos, world).map(|(scene, light, pool, at)| {
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool, settings));
                 (built, scene, light, pool, at)
             });
@@ -370,11 +373,11 @@ impl Default for World {
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
 /// `centre` as `world` asks, and the shadow heightfield around it. Returns the centre.
-fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
+fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, centre: Vec3, world: World) -> Built {
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
     let mut scene = Scene::default();
-    if world.grass { scene.meadow = Some(meadow(seed, &style, centre)?); }
+    if world.grass { scene.meadow = Some(meadow(seed, &style, palette.meadow_dry_season, centre)?); }
     // Layers in the order terrain_surface.wgsl reads them.
     let t0 = scene.add_texture(&root.join("grass_ground_albedo.jpg"))?;
     scene.add_texture(&root.join("forest_leaves_02_albedo.jpg"))?;
@@ -394,7 +397,8 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
     // the horizon.
-    if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density, &render::forest_field::ForestStyle::default()); }
+    procedural_terrain::vegetation_style(&mut scene, material, palette);
+    if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density, &palette.forest); }
     let mut light = Lighting::default();
     // Sunlit valleys bounce light onto the slopes facing away from the sun:
     // with the default 0.15 a lee slope 3 km out rendered near black.
@@ -521,7 +525,7 @@ fn forest(seed: u32, style: &Style, centre: Vec3, world: World) -> Vec<(Vec3, f3
 /// Windswept meadow roots on a 0.5 m grid of the terrain function, 300 m
 /// around `centre` (as in render's procedural_terrain example). Rock,
 /// scree, snow and water are bare.
-fn meadow(seed: u32, style: &Style, centre: Vec3) -> Result<MeadowField, String> {
+fn meadow(seed: u32, style: &Style, dry_season: f32, centre: Vec3) -> Result<MeadowField, String> {
     let (cell, n) = (0.5f32, 1200u32);
     let origin = [(centre.x / cell).floor() * cell - n as f32 * cell * 0.5, (centre.z / cell).floor() * cell - n as f32 * cell * 0.5];
     let mut samples = Vec::with_capacity((n * n) as usize);
@@ -535,8 +539,8 @@ fn meadow(seed: u32, style: &Style, centre: Vec3) -> Result<MeadowField, String>
         }
     }
     let field = MeadowField {
-        origin, cell, width: n, height: n, samples, seed, growth: 1.0, dry_season: 0.0, radius: GRASS_RADIUS, fade_start: GRASS_RADIUS * 0.8,
-        geometry: MeadowGeometry::cook_windswept(seed as u64, 0.0, MeadowBladeBudget::Blades120)?,
+        origin, cell, width: n, height: n, samples, seed, growth: 1.0, dry_season, radius: GRASS_RADIUS, fade_start: GRASS_RADIUS * 0.8,
+        geometry: MeadowGeometry::cook_windswept(seed as u64, dry_season, MeadowBladeBudget::Blades120)?,
     };
     field.validate()?;
     Ok(field)

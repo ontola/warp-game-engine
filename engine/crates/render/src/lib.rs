@@ -58,6 +58,7 @@ pub mod scene;
 pub mod terrain_field;
 pub mod forest_field;
 pub mod procedural_terrain;
+pub mod vegetation_style;
 pub mod noise_field;
 pub mod stone_surface;
 pub mod primitives;
