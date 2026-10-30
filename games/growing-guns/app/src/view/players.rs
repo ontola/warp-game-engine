@@ -60,7 +60,9 @@ fn bullet_trail(head: Vec3, tail: Vec3, scale: f32, color: [f32; 3]) -> render::
     let strength = (3.2 * scale).clamp(2.4, 9.0) * 10.0;
     let mut s = render::sprites::Sprite::shaft(head - dir * len * 0.5, [radius * 6.0, len], dir, TRAIL_IMAGE, [0.0, 0.0, 1.0, 1.0], tint * strength * TRAIL_NITS);
     s.depth_bias = 0.0;
-    s.min_pixels = 2.0;
+    // The Gaussian texture spans six radii: a two-pixel quad gives a
+    // subpixel core without bloom. Keep the minimum-profile core readable.
+    s.min_pixels = if crate::graphics::get().minimal_forward {6.0}else{2.0};
     s
 }
 /// Instances per player in the dynamic range: body, head, eyes.
@@ -482,5 +484,36 @@ fn blood_splats(scene: &mut Scene, arena: &mut ArenaView, world: &World, at: Vec
         let rot = Quat::from_rotation_arc(Vec3::Y, normal) * Quat::from_rotation_y(a * 3.1);
         let xf = Affine3A::from_scale_rotation_translation(Vec3::new(size, 0.02, size * 0.8), rot, from + Vec3::NEG_Y * t);
         arena.blood(scene, xf, c as u32);
+    }
+}
+
+#[cfg(test)] mod trail_tests {
+    use super::*;
+    #[test] fn minimum_trail_texture_is_visible_in_both_direct_srgb_eyes() {
+        let gpu=render::Gpu::new().unwrap();let mut scene=Scene::default();scene.graphics.minimal_forward=true;
+        let material=scene.add_material(render::scene::Material{tint:[0.2;3],layer:-1,roughness:1.,flags:0,scale:1.,metal:0.});
+        let wall=scene.add_mesh(&render::primitives::quad(material).mesh());
+        scene.add_instance(wall,Affine3A::from_scale_rotation_translation(Vec3::splat(50.),Quat::IDENTITY,Vec3::new(0.,0.,-40.)));
+        let light=render::Lighting{sun_lux:0.,sky_lux:500.,ev100:12.,..Default::default()};
+        let renderer=render::Renderer::new(&gpu,&scene,&light);
+        renderer.set_sprite_image(&gpu,TRAIL_IMAGE,&trail_picture(),render::hud::ImageFilter::Linear);
+        let mut trails=[bullet_trail(Vec3::new(-2.,1.8,-12.),Vec3::new(3.,0.5,-8.),1.,[1.,0.8,0.3]),
+            bullet_trail(Vec3::new(0.3,1.2,-16.),Vec3::new(0.3,1.2,-3.),1.,[0.3,0.8,1.])];
+        for trail in &mut trails {trail.min_pixels=6.;}
+        let eyes:[wgpu::Texture;2]=std::array::from_fn(|_|gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("trail stereo fixture"),size:wgpu::Extent3d{width:640,height:640,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]}));
+        let views=[-0.032,0.032].map(|x|render::ViewRect{cam:render::Camera{pos:Vec3::new(x,1.6,0.),target:Vec3::new(x,1.6,-10.),fov_y:1.1,near:0.05},x:0,y:0,w:640,h:640});
+        renderer.try_render_eye_targets(&gpu,&views,&light,&[&eyes[0],&eyes[1]]).unwrap();
+        let baseline=eyes.each_ref().map(|eye|gpu.read_rgba8(eye));
+        renderer.set_sprites(&gpu,&trails).unwrap();
+        renderer.try_render_eye_targets(&gpu,&views,&light,&[&eyes[0],&eyes[1]]).unwrap();
+        let images=eyes.each_ref().map(|eye|gpu.read_rgba8(eye));
+        for i in 0..2 {
+            let bright=images[i].chunks_exact(4).zip(baseline[i].chunks_exact(4)).filter(|(a,b)|a[..3].iter().zip(*b).any(|(a,b)|*a as i32-*b as i32>60)).count();
+            assert!(bright>200,"bullet trails disappear in eye {i}: {bright}");
+        }
+        if let Ok(path)=std::env::var("WARP_TRAIL_CAPTURE") {
+            let mut stereo=Vec::new();for y in 0..640 {for image in &images{stereo.extend_from_slice(&image[y*640*4..(y+1)*640*4]);}}
+            render::write_png(std::path::Path::new(&path),1280,640,&stereo).unwrap();
+        }
     }
 }
