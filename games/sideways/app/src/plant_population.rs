@@ -52,12 +52,14 @@ pub fn stage_index(stage: &Stage, x: f32, z: f32) -> usize {
 
 /// The live mixed forest on the engine's recipe forest
 /// (render::recipe_forest): each species cooked once (cached in
-/// build/cook-cache) and shared by every tree; trees within FULL_RADIUS of a
-/// camera are full assemblies (at most MAX_FULL), every other tree is the
+/// build/cook-cache) and shared by every tree; trees within SIDEWAYS_FULL_RADIUS (40 m) of a
+/// camera are full assemblies (at most SIDEWAYS_MAX_FULL, 8), every other tree is the
 /// same plant as one whole-plant voxel proxy.
 pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras: &[Vec3]) -> Result<serde_json::Value, String> {
-    const FULL_RADIUS: f32 = 40.0;
-    const MAX_FULL: usize = 8;
+    // SIDEWAYS_FULL_RADIUS / SIDEWAYS_MAX_FULL: A/B knobs for the full set.
+    let knob = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
+    let full_radius = knob("SIDEWAYS_FULL_RADIUS", 40.0);
+    let max_full = knob("SIDEWAYS_MAX_FULL", 8.0) as usize;
     let started = std::time::Instant::now();
     let variants: Vec<_> = TREE_IDS.iter().map(|id| crate::plant_species::find(id).map(|s| (s.recipe, 1)))
         .collect::<Result<_, _>>()?;
@@ -73,7 +75,7 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
             scale: crate::tree_assets::native_scale(spot).y, variant: stage_index(stage, spot.pos.0, spot.pos.2) })
     }).collect();
     trees.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let full = trees.iter().take(MAX_FULL).filter(|(d, _)| *d < FULL_RADIUS).count();
+    let full = trees.iter().take(max_full).filter(|(d, _)| *d < full_radius).count();
     let trees: Vec<_> = trees.into_iter().map(|(_, t)| t).collect();
     let mut counts = [0usize; TREE_IDS.len()];
     for t in &trees { counts[t.variant] += 1; }
