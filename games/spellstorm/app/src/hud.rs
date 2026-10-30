@@ -214,6 +214,13 @@ impl Hud {
             }
             self.had.insert(wz.seat, now);
         }
+        // Everything unlocked at once (the menu's Unlocks: All, or forced):
+        // no cards for it, and none left over (Joep).
+        if w.settings.unlock_all || w.settings.forced_unlocks >= 0 {
+            self.unlocks.clear();
+            self.unlock_t = 0.0;
+            return;
+        }
         for (what, name) in fresh {
             match self.unlocks.iter_mut().find(|u| u.what == what) {
                 Some(u) => u.who.push(name),
