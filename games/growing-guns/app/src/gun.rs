@@ -122,6 +122,8 @@ const BOLT_LENGTH: f32 = 0.04;
 const INDICATOR: Vec3 = Vec3::new(0.012, 0.012, 0.05);
 const SHROUD_BPS_APPEAR: f32 = 6.0;
 const SHROUD_BPS_FULL: f32 = 42.0;
+// Seat attached parts slightly inside their supports, including bevels.
+const JOINT: f32 = 0.003;
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 
@@ -205,12 +207,12 @@ pub fn build(l: &Look) -> Build {
     let rail_y = rs.y * 0.5 + RAIL_HEIGHT * 0.5;
     let rail = Vec3::new((rs.x * 0.8).min(0.04), RAIL_HEIGHT, rs.z * 0.85);
     let base_h = rail.y * 0.5;
-    b.bx(Vec3::new(rail.x, base_h, rail.z), Vec3::new(0.0, rail_y - rail.y * 0.5 + base_h * 0.5, 0.0), Dark);
+    b.bx(Vec3::new(rail.x, base_h + JOINT, rail.z), Vec3::new(0.0, rail_y - rail.y * 0.5 + (base_h - JOINT) * 0.5, 0.0), Dark);
     let period = 0.022;
     let teeth = ((rail.z / period) as u32).max(1);
     for i in 0..teeth {
         let z = -((teeth - 1) as f32 * period) * 0.5 + i as f32 * period;
-        b.bx(Vec3::new(rail.x * 1.2, base_h, 0.012), Vec3::new(0.0, rail_y + rail.y * 0.5 - base_h * 0.5, z), Dark);
+        b.bx(Vec3::new(rail.x * 1.2, base_h + JOINT, 0.012), Vec3::new(0.0, rail_y + rail.y * 0.5 - (base_h + JOINT) * 0.5, z), Dark);
     }
     if l.minigun {
         for i in 0..6 {
@@ -236,49 +238,68 @@ pub fn build(l: &Look) -> Build {
     }
     if l.drum {
         let r = l.mag.y * 0.5;
+        // A circular drum otherwise meets the receiver at a single tangent.
+        b.put(Shape::Box, Dark, Vec3::new(0.045, 0.04, 0.045), Vec3::new(0.0, -rs.y * 0.5 - 0.012, MAG_OFFSET_Z), Quat::IDENTITY, Motion::Mag);
         b.put(Shape::Cyl, Dark, Vec3::new(r, l.mag.x, r), Vec3::new(0.0, -rs.y * 0.5 - r, MAG_OFFSET_Z), Quat::from_rotation_x(PI * 0.5), Motion::Mag);
     } else {
-        let y = -rs.y * 0.5 - l.mag.y * 0.5;
+        let y = -rs.y * 0.5 - l.mag.y * 0.5 + JOINT;
         b.put(Shape::Box, Polymer, l.mag, Vec3::new(0.0, y, MAG_OFFSET_Z), Quat::IDENTITY, Motion::Mag);
         b.put(Shape::Box, Dark, Vec3::new(l.mag.x * 1.1, 0.012, l.mag.z * 1.15), Vec3::new(0.0, y - l.mag.y * 0.5, MAG_OFFSET_Z), Quat::IDENTITY, Motion::Mag);
     }
     if l.foregrip {
         let gz = front - FOREGRIP_OFFSET_Z;
-        let hg_y = -l.barrel_radius - HANDGUARD_HEIGHT * 0.5;
+        let hg_y = -l.barrel_radius - HANDGUARD_HEIGHT * 0.5 + JOINT;
         b.bx(Vec3::new(l.barrel_radius * 2.4, HANDGUARD_HEIGHT, front - gz), Vec3::new(0.0, hg_y, (front + gz) * 0.5), Polymer);
-        let fy = hg_y - HANDGUARD_HEIGHT * 0.5 - FOREGRIP_LENGTH * 0.5;
-        b.put(Shape::Taper85, Polymer, Vec3::new(FOREGRIP_RADIUS, FOREGRIP_LENGTH, FOREGRIP_RADIUS), Vec3::new(0.0, fy, gz), Quat::from_rotation_x(-8f32.to_radians()), Motion::Fixed);
+        let tilt = -8f32.to_radians();
+        let rot = Quat::from_rotation_x(tilt);
+        let anchor = Vec3::new(0.0, hg_y - HANDGUARD_HEIGHT * 0.5 + JOINT + FOREGRIP_RADIUS * tilt.sin().abs(), gz + FOREGRIP_RADIUS * 1.1);
+        b.put(Shape::Taper85, Polymer, Vec3::new(FOREGRIP_RADIUS, FOREGRIP_LENGTH, FOREGRIP_RADIUS), anchor - rot * Vec3::Y * (FOREGRIP_LENGTH * 0.5), rot, Motion::Fixed);
     }
     let pz = rs.z * 0.32;
-    b.put(Shape::Taper105, Polymer, Vec3::new(GRIP_RADIUS, GRIP_LENGTH, GRIP_RADIUS), Vec3::new(0.0, -rs.y * 0.5 - GRIP_LENGTH * 0.5, pz), Quat::from_rotation_x(GRIP_TILT), Motion::Fixed);
+    // Rotate about the attachment, not the centre: the complete upper cap
+    // stays seated in the receiver even on an angled grip.
+    let grip_rot = Quat::from_rotation_x(GRIP_TILT);
+    let grip_anchor = Vec3::new(0.0, -rs.y * 0.5 + JOINT + GRIP_RADIUS * GRIP_TILT.sin().abs(), pz);
+    b.put(Shape::Taper105, Polymer, Vec3::new(GRIP_RADIUS, GRIP_LENGTH, GRIP_RADIUS), grip_anchor - grip_rot * Vec3::Y * (GRIP_LENGTH * 0.5), grip_rot, Motion::Fixed);
     // Trigger guard: a ring opening downward (axis along X).
     b.put(Shape::Ring18, Dark, Vec3::splat(GUARD_R * 0.91), Vec3::new(0.0, -rs.y * 0.5 - GUARD_R * 0.5, (MAG_OFFSET_Z + pz) * 0.5), Quat::from_rotation_z(PI * 0.5), Motion::Fixed);
     if l.stock {
         let (back_h, front_h, half_z) = (STOCK.y, STOCK.y * STOCK_TAPER, STOCK.z * 0.5);
         let bottom = -rs.y * 0.5;
         let back_z = rs.z * 0.5 + half_z * 1.5;
-        b.bx(Vec3::new(STOCK.x, back_h, half_z), Vec3::new(0.0, bottom + back_h * 0.5, back_z), Polymer);
-        b.bx(Vec3::new(STOCK.x * 0.95, front_h, half_z), Vec3::new(0.0, bottom + front_h * 0.5, rs.z * 0.5 + half_z * 0.5), Polymer);
-        b.bx(Vec3::new(STOCK.x * 1.04, back_h * 1.04, 0.012), Vec3::new(0.0, bottom + back_h * 0.5, back_z + half_z + 0.006), Pad);
+        b.bx(Vec3::new(STOCK.x, back_h, half_z + JOINT), Vec3::new(0.0, bottom + back_h * 0.5, back_z - JOINT * 0.5), Polymer);
+        b.bx(Vec3::new(STOCK.x * 0.95, front_h, half_z + JOINT), Vec3::new(0.0, bottom + front_h * 0.5, rs.z * 0.5 + (half_z - JOINT) * 0.5), Polymer);
+        b.bx(Vec3::new(STOCK.x * 1.04, back_h * 1.04, 0.012), Vec3::new(0.0, bottom + back_h * 0.5, back_z + half_z * 0.5 + 0.006 - JOINT), Pad);
     }
     if l.tube {
         let r = rs.y * 0.5;
-        b.cyl(Shape::Cyl, r, l.tube_length, Vec3::new(0.0, 0.0, rs.z * 0.5 + r * 0.12 + l.tube_length * 0.5), Dark, Motion::Fixed);
+        b.cyl(Shape::Cyl, r, l.tube_length, Vec3::new(0.0, 0.0, rs.z * 0.5 + l.tube_length * 0.5 - JOINT), Dark, Motion::Fixed);
     }
     if !l.scope {
-        b.bx(Vec3::new(0.005, SIGHT_POST, 0.012), Vec3::new(0.0, l.barrel_radius + SIGHT_POST * 0.5, front - l.barrel_length * 0.85), Dark);
+        let sight_z = front - l.barrel_length * 0.85;
+        let sight_base = if l.minigun {
+            let r = bundle + l.barrel_radius + 0.004;
+            for z in [front - 0.007, sight_z] { b.cyl(Shape::Cyl, r, 0.02, Vec3::new(0.0, 0.0, z), Dark, Motion::Fixed); }
+            r
+        } else if n > 1 {
+            // Even barrel counts have no central barrel beneath the sight.
+            b.bx(Vec3::new(span + l.barrel_radius * 2.0, 0.008, 0.018), Vec3::new(0.0, l.barrel_radius - 0.001, sight_z), Dark);
+            l.barrel_radius + 0.003
+        } else { l.barrel_radius };
+        b.bx(Vec3::new(0.005, SIGHT_POST, 0.012), Vec3::new(0.0, sight_base + SIGHT_POST * 0.5 - JOINT, sight_z), Dark);
         b.put(Shape::Ring25, Dark, Vec3::splat(REAR_SIGHT_R * 0.875), Vec3::new(0.0, rail_y + RAIL_HEIGHT * 0.5 + REAR_SIGHT_R * 0.4, rs.z * 0.32), Quat::from_rotation_x(PI * 0.5), Motion::Fixed);
     } else {
         let (tube_r, bell_r, bell_len) = (0.018, 0.028, 0.04);
         let top = rail_y + RAIL_HEIGHT * 0.5;
         let sy = top + 0.025;
-        for rz in [-SCOPE_LENGTH * 0.3, SCOPE_LENGTH * 0.3] { b.bx(Vec3::new(tube_r * 2.2, sy - top, 0.02), Vec3::new(0.0, (top + sy) * 0.5, rz), Dark); }
+        let mount_bottom = top - base_h - JOINT;
+        for rz in [-SCOPE_LENGTH * 0.3, SCOPE_LENGTH * 0.3] { b.bx(Vec3::new(tube_r * 2.2, sy - mount_bottom, 0.02), Vec3::new(0.0, (mount_bottom + sy) * 0.5, rz), Dark); }
         b.cyl(Shape::Cyl, tube_r, SCOPE_LENGTH, Vec3::new(0.0, sy, 0.0), Dark, Motion::Fixed);
         b.cyl(Shape::Cyl, bell_r, bell_len, Vec3::new(0.0, sy, -SCOPE_LENGTH * 0.5 - bell_len * 0.5), Dark, Motion::Fixed);
         b.cyl(Shape::Cyl, bell_r, bell_len, Vec3::new(0.0, sy, SCOPE_LENGTH * 0.5 + bell_len * 0.5), Dark, Motion::Fixed);
-        b.cyl(Shape::Cyl, bell_r * 0.85, 0.005, Vec3::new(0.0, sy, -SCOPE_LENGTH * 0.5 - bell_len - 0.004), Lens, Motion::Fixed);
+        b.cyl(Shape::Cyl, bell_r * 0.85, 0.005, Vec3::new(0.0, sy, -SCOPE_LENGTH * 0.5 - bell_len + 0.002), Lens, Motion::Fixed);
     }
-    b.bx(INDICATOR, Vec3::new(l.receiver.x * 0.5 + INDICATOR.x * 0.5, 0.0, 0.0), Indicator);
+    b.bx(INDICATOR, Vec3::new(rs.x * 0.52 + INDICATOR.x * 0.5 - 0.001, -rs.y * 0.23, 0.0), Indicator);
     Build { parts: b.parts, bolt_travel: travel, minigun: l.minigun, barrel_length: l.barrel_length, muzzle: Vec3::new(0.0, 0.0, muzzle_z - MUZZLE_LENGTH * 0.5) }
 }
 
@@ -423,6 +444,24 @@ pub fn reload_pose(u: f32) -> (Vec3, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grips_and_stock_remain_seated_across_receiver_sizes() {
+        for damage_mult in [1.0, 2.5, 5.0] {
+            let look = Look::of(&Stats { spread: 0.0, damage_mult, ..Default::default() });
+            let built = build(&look);
+            let grip = built.parts.iter().find(|p| p.shape == Shape::Taper105).unwrap();
+            for i in 0..32 {
+                let a = i as f32 * TAU / 32.0;
+                let top = grip.xf.transform_point3(Vec3::new(a.cos(), 0.5, a.sin()));
+                assert!(top.y > -look.receiver.y * 0.5, "tilted upper grip cap must be embedded");
+            }
+            let pad = built.parts.iter().find(|p| p.mat == Mat::Pad).unwrap();
+            let pad_front = pad.xf.transform_point3(Vec3::new(0.0, 0.0, -0.5)).z;
+            let stock_back = look.receiver.z * 0.5 + STOCK.z;
+            assert!(pad_front < stock_back && stock_back - pad_front < 0.01, "butt pad must sit on the stock");
+        }
+    }
 
     #[test]
     fn cards_grow_the_gun() {

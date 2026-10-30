@@ -54,7 +54,7 @@ impl Guns {
                 for h in 0..levels {
                     let mat = if m == gun::Mat::Barrel { barrel_first + h as u32 } else { gun_material(scene, m) };
                     let prim = match shape {
-                        gun::Shape::Box => primitives::hewn_block(mat, 1, 0.1, 0.0, 0),
+                        gun::Shape::Box => gun_box(mat),
                         gun::Shape::Cyl => primitives::cylinder(mat, 1.0, 1.0, 8),
                         gun::Shape::Taper85 => primitives::cylinder(mat, 1.0, 0.85, 8),
                         gun::Shape::Taper105 => primitives::cylinder(mat, 1.0, 1.05, 8),
@@ -211,6 +211,43 @@ impl Guns {
     }
 }
 
+/// Machined unit box: broad flat faces at exactly +/-0.5, with separate
+/// chamfers. A one-quad hewn_block only samples its inset corners and shrinks
+/// the entire box, opening every joint whose placement assumes a unit cube.
+fn gun_box(material: u32) -> primitives::Primitive {
+    let mut mesh = primitives::Primitive { material, ..Default::default() };
+    let inner = 0.475;
+    let mut face = |points: &[Vec3], normal: Vec3| {
+        let first = mesh.vertices.len() as u32;
+        for &p in points {
+            mesh.vertices.push(render::cluster::Vertex { pos: p.to_array(), normal: normal.to_array(), uv: [0.0; 2] });
+        }
+        for i in 1..points.len() - 1 {
+            let mut tri = [first, first + i as u32, first + i as u32 + 1];
+            if (points[i] - points[0]).cross(points[i + 1] - points[0]).dot(normal) < 0.0 { tri.swap(1, 2); }
+            mesh.indices.extend(tri);
+        }
+    };
+    for n in [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z] {
+        let u = if n.y.abs() > 0.5 { Vec3::X } else { Vec3::Y }.cross(n);
+        let v = n.cross(u);
+        face(&[n * 0.5 - u * inner - v * inner, n * 0.5 + u * inner - v * inner,
+            n * 0.5 + u * inner + v * inner, n * 0.5 - u * inner + v * inner], n);
+    }
+    for (a, b, c) in [(Vec3::X, Vec3::Y, Vec3::Z), (Vec3::Y, Vec3::Z, Vec3::X), (Vec3::Z, Vec3::X, Vec3::Y)] {
+        for sa in [-1.0, 1.0] { for sb in [-1.0, 1.0] {
+            let (a, b) = (a * sa, b * sb);
+            face(&[a * 0.5 + b * inner - c * inner, a * inner + b * 0.5 - c * inner,
+                a * inner + b * 0.5 + c * inner, a * 0.5 + b * inner + c * inner], (a + b).normalize());
+        } }
+    }
+    for x in [-1.0, 1.0] { for y in [-1.0, 1.0] { for z in [-1.0, 1.0] {
+        face(&[Vec3::new(x * 0.5, y * inner, z * inner), Vec3::new(x * inner, y * 0.5, z * inner),
+            Vec3::new(x * inner, y * inner, z * 0.5)], Vec3::new(x, y, z).normalize());
+    } } }
+    mesh
+}
+
 /// Isolated review scene using the exact gameplay meshes and materials.
 /// Empty reserved slots remain hidden; only the settled gun is instantiated.
 pub(crate) fn review_scene(stats: Stats) -> (Scene, Vec3, Vec3, usize) {
@@ -281,6 +318,28 @@ fn barrel_material(t: f32) -> Material {
 #[cfg(test)]
 mod xr_tests {
     use super::*;
+    #[test]
+    fn gun_box_preserves_mounting_dimensions_and_is_closed() {
+        let mesh = gun_box(0);
+        let mut edges = std::collections::BTreeMap::new();
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+            let lo = mesh.vertices.iter().map(|v| Vec3::from(v.pos).dot(axis)).fold(f32::INFINITY, f32::min);
+            let hi = mesh.vertices.iter().map(|v| Vec3::from(v.pos).dot(axis)).fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!((lo, hi), (-0.5, 0.5), "mounting dimensions must match the part layout");
+        }
+        for t in mesh.indices.chunks_exact(3) {
+            let v = [t[0], t[1], t[2]].map(|i| mesh.vertices[i as usize]);
+            let p = v.map(|v| Vec3::from(v.pos));
+            assert!((p[1] - p[0]).cross(p[2] - p[0]).dot(Vec3::from(v[0].normal)) > 0.0);
+            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                let mut edge = [v[a].pos.map(f32::to_bits), v[b].pos.map(f32::to_bits)];
+                edge.sort();
+                *edges.entry(edge).or_insert(0) += 1;
+            }
+        }
+        assert!(edges.values().all(|&count| count == 2), "every chamfer edge must be sealed");
+    }
+
     #[test]
     fn stereo_eyes_share_the_local_gun_and_hide_its_third_person_copy() {
         let mut scene=Scene::default();
