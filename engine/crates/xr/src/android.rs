@@ -55,19 +55,29 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
     ensure!(available.khr_vulkan_enable,"OpenXR runtime lacks XR_KHR_vulkan_enable");
     let mut extensions=xr::ExtensionSet::default();
     extensions.khr_vulkan_enable=true; extensions.khr_android_create_instance=true;
+    extensions.fb_display_refresh_rate=available.fb_display_refresh_rate;
+    extensions.ext_performance_settings=available.ext_performance_settings;
     let instance=entry.create_instance(&xr::ApplicationInfo {application_name:"Growing Guns",application_version:1,
         engine_name:"Warp",engine_version:1,api_version:xr::Version::new(1,0,0)},&extensions,&[],&platform)?;
     let system=instance.system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)?;
     let config=instance.enumerate_view_configuration_views(system,VIEW)?;
     ensure!(config.len()==2,"runtime did not return two stereo views");
-    // Conservative initial render scale; same geometry/materials/render passes.
-    let limit=game.eye_limit().clamp(256,4096);
-    let size=[config.iter().map(|v|v.recommended_image_rect_width).min().unwrap().min(limit),
-        config.iter().map(|v|v.recommended_image_rect_height).min().unwrap().min(limit)];
+    // Full resolution recommended by the runtime for its lens distortion.
+    let size=[config.iter().map(|v|v.recommended_image_rect_width).max().unwrap(),
+        config.iter().map(|v|v.recommended_image_rect_height).max().unwrap()];
     let (bridge,binding)=unsafe {crate::vulkan::Bridge::new(&instance,system)}?;
     log::info!("Warp OpenXR GPU {}, eye size {:?}",bridge.gpu.info.name,size);
     game.diagnose(&bridge.gpu).map_err(anyhow::Error::msg)?;
     let (session,mut waiter,mut stream)=unsafe {instance.create_session::<xr::Vulkan>(system,&binding)}?;
+    let desired_refresh=if extensions.fb_display_refresh_rate {
+        let rates=session.enumerate_display_refresh_rates()?;
+        log::info!("Supported display rates: {rates:?}");
+        game.refresh_rate().filter(|requested| {
+            let supported=rates.iter().any(|r|(*r-requested).abs()<0.1);
+            if !supported {log::warn!("Requested {requested} Hz is not exposed by this runtime");}
+            supported
+        })
+    }else {None};
     ensure!(session.enumerate_swapchain_formats()?.contains(&(ash::vk::Format::R8G8B8A8_SRGB.as_raw() as u32)),"runtime lacks RGBA8 sRGB swapchain");
     // LOCAL remains valid with Quest's stationary boundary, where STAGE can
     // be created successfully yet reports invalid poses. The game calibrates
@@ -92,12 +102,25 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
                     log::info!("OpenXR state {:?}",e.state());
                     focused=e.state()==xr::SessionState::FOCUSED;
                     match e.state() {
-                        xr::SessionState::READY=>{session.begin(VIEW)?;running=true;last=Instant::now();},
+                        xr::SessionState::READY=>{
+                            session.begin(VIEW)?;running=true;last=Instant::now();
+                            if let Some(ext)=instance.exts().ext_performance_settings.as_ref() {
+                                for domain in [xr::PerfSettingsDomainEXT::CPU,xr::PerfSettingsDomainEXT::GPU] {
+                                    let result=unsafe{(ext.perf_settings_set_performance_level)(session.as_raw(),domain,xr::PerfSettingsLevelEXT::SUSTAINED_HIGH)};
+                                    log::info!("Sustained performance {domain:?}: {result:?}");
+                                }
+                            }
+                            if let Some(hz)=desired_refresh {
+                                if let Err(e)=session.request_display_refresh_rate(hz) {log::warn!("Display rate request failed: {e}");}
+                            }
+                            if extensions.fb_display_refresh_rate {log::info!("Current display rate: {} Hz",session.get_display_refresh_rate()?);}
+                        },
                         xr::SessionState::STOPPING=>{session.end()?;running=false;},
                         xr::SessionState::EXITING|xr::SessionState::LOSS_PENDING=>destroyed=true,
                         _=>{}
                     }
                 }
+                xr::Event::DisplayRefreshRateChangedFB(e)=>log::info!("Display rate changed to {} Hz",e.to_display_refresh_rate()),
                 xr::Event::InstanceLossPending(_)=>destroyed=true,
                 xr::Event::ReferenceSpaceChangePending(_)=>recentered=true,
                 _=>{}
@@ -118,19 +141,12 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
         if game.quit() { session.request_exit()?; stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[])?; continue; }
         if frames==0 {log::info!("Drawing first native Warp stereo frame");}
         let output=game.frame(&bridge.gpu,&tracking,size,dt).map_err(anyhow::Error::msg)?;
-        let index=color.acquire_image()?;color.wait_image(xr::Duration::INFINITE)?;
-        bridge.copy(&output.color,images[index as usize],size[0],size[1],2)?;color.release_image()?;
-        hud.prepare(&bridge.gpu,&output.hud).map_err(anyhow::Error::msg)?;
-        let mut enc=bridge.gpu.device.create_command_encoder(&Default::default());
-        let ui_view=ui_texture.create_view(&Default::default());
-        {
-            let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor {label:Some("XR HUD"),color_attachments:&[Some(wgpu::RenderPassColorAttachment {
-                view:&ui_view,depth_slice:None,resolve_target:None,ops:wgpu::Operations {load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store}})],..Default::default()});
-            hud.render(&mut pass).map_err(anyhow::Error::msg)?;
-        }
-        bridge.gpu.queue.submit([enc.finish()]);
-        let index=ui.acquire_image()?;ui.wait_image(xr::Duration::INFINITE)?;
-        bridge.copy(&ui_texture,ui_images[index as usize],HUD[0],HUD[1],1)?;ui.release_image()?;
+        crate::draw_hud(&bridge.gpu,&mut hud,&output.hud,&ui_texture).map_err(anyhow::Error::msg)?;
+        let color_index=color.acquire_image()?;color.wait_image(xr::Duration::INFINITE)?;
+        let ui_index=ui.acquire_image()?;ui.wait_image(xr::Duration::INFINITE)?;
+        bridge.copy_batch(&[(&output.color,images[color_index as usize],size[0],size[1],2),
+            (&ui_texture,ui_images[ui_index as usize],HUD[0],HUD[1],1)])?;
+        color.release_image()?;ui.release_image()?;
         let rect=xr::Rect2Di {offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:size[0] as i32,height:size[1] as i32}};
         let projection_views:Vec<_>=views.iter().enumerate().map(|(i,v)|xr::CompositionLayerProjectionView::new().pose(v.pose).fov(v.fov)
             .sub_image(xr::SwapchainSubImage::new().swapchain(&color).image_array_index(i as u32).image_rect(rect))).collect();

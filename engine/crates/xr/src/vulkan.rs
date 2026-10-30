@@ -83,18 +83,19 @@ impl Bridge {
     /// native submission copies into runtime-owned array layers. A fence makes
     /// completion explicit before xrReleaseSwapchainImage (no borrowed-image
     /// destruction, no ambiguous wgpu layout tracking, no CPU pixel readback).
-    pub fn copy(&self, source: &wgpu::Texture, image: u64, width: u32, height: u32, layers: u32) -> Result<()> {
+    pub fn copy_batch(&self, copies:&[(&wgpu::Texture,u64,u32,u32,u32)]) -> Result<()> {
         let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
-        encoder.transition_resources(std::iter::empty(), [wgpu::TextureTransition { texture: source, selector: None, state: wgpu::TextureUses::COPY_SRC }].into_iter());
+        encoder.transition_resources(std::iter::empty(), copies.iter().map(|(source,_,_,_,_)|wgpu::TextureTransition { texture: *source, selector: None, state: wgpu::TextureUses::COPY_SRC }));
         self.gpu.queue.submit([encoder.finish()]);
         // Wait before using the raw queue: wgpu may have background submissions.
         self.gpu.wait();
         unsafe {
+            self.device.reset_command_buffer(self.command, vk::CommandBufferResetFlags::empty())?;
+            self.device.begin_command_buffer(self.command, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
+            for &(source,image,width,height,layers) in copies {
             let raw = source.as_hal::<wgpu::hal::api::Vulkan>().context("source is not Vulkan")?;
             let source_image = raw.raw_handle();
             let dest = vk::Image::from_raw(image);
-            self.device.reset_command_buffer(self.command, vk::CommandBufferResetFlags::empty())?;
-            self.device.begin_command_buffer(self.command, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
             let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(layers);
             let barrier = |old, new, src, dst| vk::ImageMemoryBarrier::default().image(dest).subresource_range(range)
                 .old_layout(old).new_layout(new).src_access_mask(src).dst_access_mask(dst)
@@ -109,6 +110,7 @@ impl Bridge {
             self.device.cmd_copy_image(self.command, source_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, dest, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &regions);
             self.device.cmd_pipeline_barrier(self.command, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[],
                 &[barrier(vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE)]);
+            }
             self.device.end_command_buffer(self.command)?;
             self.device.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&[self.command])], self.fence)?;
             self.device.wait_for_fences(&[self.fence], true, u64::MAX)?;

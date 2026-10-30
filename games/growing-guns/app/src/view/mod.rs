@@ -118,6 +118,7 @@ pub struct Visuals {
 impl Visuals {
     pub fn build(world: &World) -> Self {
         let mut scene = Scene::default();
+        scene.graphics.minimal_forward=crate::graphics::get().minimal_forward;
         scene.graphics.simple_lighting=crate::graphics::get().simple_lighting;
         scene.graphics.simple_mesh_culling=crate::graphics::get().simple_blocks;
         scene.sky = Some(sky());

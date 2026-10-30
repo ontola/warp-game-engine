@@ -66,6 +66,12 @@ fn bullet_trail(head: Vec3, tail: Vec3, scale: f32, color: [f32; 3]) -> render::
 /// Instances per player in the dynamic range: body, head, eyes.
 pub const PARTS: usize = 3;
 const HIDDEN: Vec3 = Vec3::new(0.0, -500.0, 0.0);
+// Inactive slots must not keep deforming their meshes or inflate direct-draw
+// budgets. update_instance restores the registered mesh when the slot returns.
+fn pose_instance(scene:&mut Scene,slot:usize,mesh:usize,xf:Affine3A) {
+    scene.update_instance(slot,mesh,xf);
+    if Vec3::from(xf.translation)==HIDDEN {scene.instances[slot].cluster_count=0;}
+}
 const BODY: Vec3 = Vec3::new(0.42, 0.5, 0.42);
 const HEAD: f32 = 0.3;
 
@@ -148,15 +154,15 @@ impl PlayersView {
 
     /// Player and tracer instances, rewritten every frame.
     pub fn reserve_dynamic(&mut self, scene: &mut Scene, players: usize) {
-        self.characters = match Characters::load() {
+        self.characters = if !crate::graphics::get().characters {None}else{match Characters::load() {
             Ok(characters) => Some(characters),
             Err(error) => { eprintln!("characters: using primitive fallback: {error}"); None }
-        };
+        }};
         self.first = scene.instances.len();
         let eye_m = material(scene, [0.05, 0.05, 0.06], 0.3);
         for i in 0..players {
             let body_m = material(scene, PLAYER_COLORS[i % 4], 0.55);
-            let prims = [primitives::sphere(body_m, 10, 16), primitives::sphere(body_m, 8, 14), primitives::sphere(eye_m, 6, 8)];
+            let prims = if crate::graphics::get().minimal_forward {[primitives::sphere(body_m,4,6),primitives::sphere(body_m,4,6),primitives::sphere(eye_m,3,4)]}else{[primitives::sphere(body_m, 10, 16), primitives::sphere(body_m, 8, 14), primitives::sphere(eye_m, 6, 8)]};
             let [proxy_body, head, eyes] = std::array::from_fn(|k| scene.add_mesh(&prims[k].mesh()));
             let actor = self.characters.as_mut().and_then(|c| c.reserve_actor(scene, i).ok());
             let skinned = actor.is_some();
@@ -203,7 +209,7 @@ impl PlayersView {
         self.ragdolls.clear();
         self.lava.clear();
         if let Some(characters) = &self.characters {
-            for (k, mesh) in characters.lava_instances() { scene.update_instance(k, mesh, Affine3A::from_translation(HIDDEN)); }
+            for (k, mesh) in characters.lava_instances() { pose_instance(scene, k, mesh, Affine3A::from_translation(HIDDEN)); }
         }
         self.gore().clear(scene, phys);
         if let Some(characters) = &mut self.characters { characters.reset(phys); }
@@ -305,7 +311,7 @@ impl PlayersView {
     fn end_lava(&mut self, scene: &mut Scene, victim: usize) {
         let Some(k) = self.lava.iter().position(|c| c.victim == victim) else { return };
         let c = self.lava.swap_remove(k);
-        if let Some((instance, mesh)) = c.twin { scene.update_instance(instance, mesh, Affine3A::from_translation(HIDDEN)); }
+        if let Some((instance, mesh)) = c.twin { pose_instance(scene, instance, mesh, Affine3A::from_translation(HIDDEN)); }
         for (slot, ..) in c.blobs { self.corpses.remove(scene, slot); }
         if let Some(slot) = c.splash { self.corpses.remove(scene, slot); }
     }
@@ -318,7 +324,7 @@ impl PlayersView {
         for c in &mut self.lava {
             let t = (clock - c.birth).max(0.0);
             let at = Vec3::new(c.pos.x, c.y(t), c.pos.z);
-            if let Some((instance, mesh)) = c.twin { scene.update_instance(instance, mesh, characters::model_transform(at, c.yaw)); }
+            if let Some((instance, mesh)) = c.twin { pose_instance(scene, instance, mesh, characters::model_transform(at, c.yaw)); }
             for &(slot, mesh, scale, offset) in &c.blobs {
                 self.corpses.set(scene, slot, mesh, Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(c.yaw), at + Vec3::Y * offset));
             }
@@ -375,7 +381,7 @@ impl PlayersView {
                 let corpse = world.players.get(i).and_then(|_| self.characters.as_ref().and_then(|c| c.corpse_transform(i)));
                 for (part, mesh) in [m.body, m.head, m.eyes].into_iter().enumerate() {
                     let xf = if part == 0 { corpse.unwrap_or(Affine3A::from_translation(HIDDEN)) } else { Affine3A::from_translation(HIDDEN) };
-                    scene.update_instance(slot, mesh, xf);
+                    pose_instance(scene, slot, mesh, xf);
                     scene.instances[slot].hide_in_views(0);
                     slot += 1;
                 }
@@ -391,7 +397,7 @@ impl PlayersView {
                  Affine3A::from_scale_rotation_translation(Vec3::new(0.2, 0.07, 0.05), rot, pos + Vec3::Y * 0.6 + rot * Vec3::new(0.0, 0.0, -0.27)))
             };
             for (mesh, xf) in [(m.body, body), (m.head, head), (m.eyes, eyes)] {
-                scene.update_instance(slot, mesh, xf);
+                pose_instance(scene, slot, mesh, xf);
                 scene.instances[slot].hide_in_views(m.own_views);
                 slot += 1;
             }
@@ -427,8 +433,8 @@ impl PlayersView {
                 (Affine3A::from_scale_rotation_translation(Vec3::new(scale, body_len, scale), rot, pos - dir * body_len * 0.5),
                  Affine3A::from_scale_rotation_translation(Vec3::new(scale, nose_len, scale), rot, pos + dir * nose_len * 0.5))
             });
-            scene.update_instance(slot, self.bullet[0], body);
-            scene.update_instance(slot + 1, self.bullet[1], nose);
+            pose_instance(scene, slot, self.bullet[0], body);
+            pose_instance(scene, slot + 1, self.bullet[1], nose);
             slot += 2;
         }
     }
