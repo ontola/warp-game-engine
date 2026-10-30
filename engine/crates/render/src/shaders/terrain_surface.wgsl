@@ -193,40 +193,42 @@ fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f
     return g;
 }
 
-// The forest where single trees end, as forest_field.wgsl places them
-// (same stand noise, chance and ground rules; this one reads the ground from
-// the vertex attributes, so it needs no terrain evaluation). The material's
-// scale carries it (procedural_terrain::far_forest): whole metres from the
-// camera where it starts, the fraction the tree density; 4.0 means none.
-// A forest seen from afar: dark crowns over the ground between them, more
-// of them towards a glancing view, lumpy and shadowed on the side away from
-// the sun.
+// The forest where single trees end, as forest_field.wgsl places them:
+// its canopy (crowns from above, their mean once subpixel) in the game's
+// ForestStyle. This reads the ground from the vertex attributes, so it needs
+// no terrain evaluation. procedural_terrain::far_forest stores the style in
+// three materials and the terrain material's scale points at them:
+// -(first + 1); a scale >= 0 means no forest.
+struct FarForest { style: ForestStyle, start: f32, density: f32 };
+fn far_forest_params(at: u32) -> FarForest {
+    let a = materials[at]; let b = materials[at + 1u]; let c = materials[at + 2u];
+    let fs = ForestStyle(vec4<f32>(a.tint, bitcast<f32>(a.layer)), vec4<f32>(a.roughness, bitcast<f32>(a.flags), a.scale, a.metal),
+        vec4<f32>(b.tint, bitcast<f32>(b.layer)), vec4<f32>(b.roughness, bitcast<f32>(b.flags), b.scale, b.metal));
+    return FarForest(fs, c.tint.x, c.tint.y);
+}
 fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: FieldAttr, footprint: f32) -> MeadowCanopy {
-    let density = fract(s.scale);
-    if density <= 0.0 { return MeadowCanopy(ground, nn); }
-    let start = floor(s.scale);
+    if s.scale >= 0.0 { return MeadowCanopy(ground, nn); }
+    let params = far_forest_params(u32(-s.scale - 0.5));
+    if params.density <= 0.0 { return MeadowCanopy(ground, nn); }
     // Horizontal: the trees stand in a disc around the camera at any height.
-    let fade = smoothstep(start - 150.0, start, distance(s.p.xz, view.cam.xz));
+    let fade = smoothstep(params.start - 150.0, params.start, distance(s.p.xz, view.cam.xz));
     if fade <= 0.0 { return MeadowCanopy(ground, nn); }
-    let seed = u32(s.metal + 0.5);
-    let stand = fs_noised(s.p.xz / 300.0, seed + 77u).x;
-    let grows = (1.0 - smoothstep(0.25, 0.35, f.rock)) * (1.0 - smoothstep(0.25, 0.35, f.scree))
-        * (1.0 - smoothstep(0.005, 0.015, f.water)) * (1.0 - smoothstep(0.03, 0.07, f.snow)) * smoothstep(0.8, 0.84, f.up);
-    let chance = clamp((stand + 0.15) * 2.0, 0.0, 1.0) * density * grows;
-    if chance <= 0.0 { return MeadowCanopy(ground, nn); }
-    let tone = clamp(stand * 0.5 + 0.5, 0.0, 1.0);
-    // A crown covers about 0.4 of its 8 m cell from above; between crowns
-    // the ground lies mostly in their shade.
-    let ndv = clamp(dot(n, -s.dir), 0.05, 1.0);
-    let cover = 1.0 - exp(-chance * 0.5 / ndv);
-    let floor = ground * mix(1.0, 0.35, smoothstep(0.0, 0.3, chance));
-    // Crowns a few metres across while a pixel can still show them.
-    let lumps_w = 1.0 - smoothstep(1.5, 6.0, footprint);
-    let lump = fs_noised(s.p.xz / 3.5, seed + 91u);
-    let crown_n = normalize(vec3<f32>(-lump.y * 0.6 * lumps_w, 1.0, -lump.z * 0.6 * lumps_w));
-    let crown = vec3<f32>(0.045, 0.085, 0.035) * (0.8 + 0.4 * tone) * (0.85 + 0.3 * lump.x * lumps_w);
-    let forest = mix(floor, crown, cover);
-    return MeadowCanopy(mix(ground, forest, fade), normalize(mix(nn, crown_n, cover * fade)));
+    // forest_field ff_grows from the vertex attributes, with a pixel of
+    // slack so stand edges stay crisp without aliasing.
+    let e = clamp(footprint * 0.02, 0.005, 0.05);
+    let grows = (1.0 - smoothstep(0.3 - e, 0.3 + e, f.rock)) * (1.0 - smoothstep(0.3 - e, 0.3 + e, f.scree))
+        * (1.0 - smoothstep(0.01 - e * 0.2, 0.01 + e * 0.2, f.water)) * (1.0 - smoothstep(0.05 - e * 0.5, 0.05 + e * 0.5, f.snow))
+        * smoothstep(0.82 - e, 0.82 + e, f.up);
+    if grows <= 0.0 { return MeadowCanopy(ground, nn); }
+    let canopy = forest_canopy(s.p.x, s.p.z, footprint, light.sun_dir.xyz, u32(s.metal + 0.5), params.density, true, params.style);
+    // Stands end at a crisp edge (a few metres wide, or a pixel when far);
+    // the clearings between them keep their ground.
+    let stand = ff_chance(ff_stand(s.p.x, s.p.z, u32(s.metal + 0.5)), 1.0);
+    let edge_w = max(0.04, footprint / 150.0);
+    let w = grows * fade * smoothstep(0.2 - edge_w, 0.2 + edge_w, stand);
+    if w <= 0.0 { return MeadowCanopy(ground, nn); }
+    let forest = canopy.albedo * canopy.occlusion;
+    return MeadowCanopy(mix(ground, forest, w), normalize(mix(nn, canopy.normal, w)));
 }
 
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
