@@ -3142,6 +3142,22 @@ impl Renderer {
         Ok(())
     }
 
+    /// Render a plain minimum-profile scene directly into one full-size colour
+    /// attachment per view. External owners (e.g. OpenXR) retain the textures.
+    pub fn try_render_eye_targets(&self,gpu:&Gpu,views:&[ViewRect],light:&Lighting,targets:&[&wgpu::Texture])->Result<FrameStats,String> {
+        let forward=self.minimal_forward.as_ref().ok_or("direct eye targets require the minimum renderer")?;
+        if views.is_empty()||views.len()>8||views.len()!=targets.len()||views.iter().zip(targets).any(|(v,t)|
+            v.w==0||v.h==0||(v.w,v.h)!=(t.width(),t.height())||t.depth_or_array_layers()!=1||t.sample_count()!=1||
+            !matches!(t.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb)||!t.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT)) {
+            return Err("direct eyes require matching single-layer full-size RGBA8 colour attachments".into());
+        }
+        let axes=self.camera_up_axes.lock().unwrap();let projections=self.camera_projections.lock().unwrap();
+        let camera_views:Vec<_>=views.iter().enumerate().map(|(vi,v)|camera_view(v.cam,axes.get(vi).copied())).collect();
+        let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
+            Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_views[vi]).collect();
+        forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),None,Some(targets))
+    }
+
     fn frame_output(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
         self.frame_output_into(gpu, views, light, out_w, out_h, picks, readback, None)
     }
@@ -3161,7 +3177,7 @@ impl Renderer {
             let camera_views:Vec<_>=views.iter().enumerate().map(|(vi,v)|camera_view(v.cam,axes.get(vi).copied())).collect();
             let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
                 Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
-            let stats=forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,light,&self.headlight_state.lock().unwrap(),&output)?;
+            let stats=forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,&self.fx,light,&self.headlight_state.lock().unwrap(),Some(&output),None)?;
             let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
             return Ok((output,pixels,stats));
         }

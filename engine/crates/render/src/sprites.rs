@@ -157,7 +157,7 @@ pub(crate) struct SpriteRenderer {
     layout: wgpu::BindGroupLayout,
     image_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
-    ldr_pipeline: Option<(u64,wgpu::RenderPipeline)>,
+    ldr_pipeline: Option<(u64,wgpu::TextureFormat,wgpu::RenderPipeline)>,
     /// The GAME_SPRITE version `pipeline` was built from.
     game: u64,
     linear: wgpu::Sampler,
@@ -250,12 +250,13 @@ impl SpriteRenderer {
             .filter(|(_, s)| self.images.contains_key(&s.image) && s.opacity > 0.0)
             .map(|(i, s)| (i, s.center.distance_squared(camera.pos))).collect();
         if order.is_empty() { return Ok(None); }
-        if input.format() != if ldr {wgpu::TextureFormat::Rgba8Unorm}else{wgpu::TextureFormat::Rgba16Float} { return Err("sprites require an HDR input".into()); }
+        if !if ldr {matches!(input.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb)}else{input.format()==wgpu::TextureFormat::Rgba16Float} { return Err("sprites require an HDR input".into()); }
         if GAME_SPRITE.lock().unwrap().0 != self.game {
             (self.game, self.pipeline) = Self::pipeline(gpu, &self.layout, &self.image_layout, wgpu::TextureFormat::Rgba16Float);
         }
-        if ldr && self.ldr_pipeline.as_ref().is_none_or(|(version,_)|*version!=self.game) {
-            self.ldr_pipeline=Some(Self::pipeline(gpu,&self.layout,&self.image_layout,wgpu::TextureFormat::Rgba8Unorm));
+        if ldr && self.ldr_pipeline.as_ref().is_none_or(|(version,format,_)|*version!=self.game||*format!=input.format()) {
+            let (version,pipeline)=Self::pipeline(gpu,&self.layout,&self.image_layout,input.format());
+            self.ldr_pipeline=Some((version,input.format(),pipeline));
         }
         order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let inverse = view.inverse();
@@ -287,7 +288,7 @@ impl SpriteRenderer {
         }
         let t = self.targets[index].as_ref().unwrap();
         let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(),
-            camera_near: camera.pos.extend(camera.near).to_array(), camera_right: cam_right.extend(size.0 as f32).to_array(),output:[exposure,0.,0.,0.] };
+            camera_near: camera.pos.extend(camera.near).to_array(), camera_right: cam_right.extend(size.0 as f32).to_array(),output:[exposure,if input.format().is_srgb(){1.0}else{0.0},0.,0.] };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         gpu.queue.write_buffer(&t.instances, 0, bytemuck::cast_slice(&gpu_sprites));
         if !ldr {enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());}
@@ -299,7 +300,7 @@ impl SpriteRenderer {
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("sprites"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &output, depth_slice: None,
             resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
             depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
-        pass.set_pipeline(if ldr {&self.ldr_pipeline.as_ref().unwrap().1}else{&self.pipeline});
+        pass.set_pipeline(if ldr {&self.ldr_pipeline.as_ref().unwrap().2}else{&self.pipeline});
         pass.set_bind_group(0, &bind, &[]);
         // Back to front; one draw per run of the same image.
         let mut start = 0;
@@ -406,7 +407,9 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     light *= min(1.0, 40000.0 / max(peak, 1e-6));
     if u.output.x>0.0 {
         let exposed=max(rgb*u.output.x,vec3<f32>(0.0));
-        light=sqrt(exposed/(1.0+exposed))*a;
+        var mapped=sqrt(exposed/(1.0+exposed));
+        if u.output.y>0.5 {mapped=select(mapped/12.92,pow((mapped+0.055)/1.055,vec3<f32>(2.4)),mapped>vec3<f32>(0.04045));}
+        light=mapped*a;
     }
     // Additive: premultiplied with zero alpha keeps what is behind.
     return vec4<f32>(light, select(a, 0.0, s.misc.y > 0.5));

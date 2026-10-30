@@ -338,6 +338,10 @@ impl Hud {
         if clear_banner && let Some(b) = &mut self.banner { b.left = b.left.min(BANNER_FADE_OUT); }
     }
 
+    fn screen_tint(&self,d:&mut HudDrawList,rect:[f32;4],color:C,clip:[f32;4]) {
+        if self.xr {d.vision_tints.push(color);}else{d.rect(rect,color,clip);}
+    }
+
     /// The HUD for local view `k` (world player `i`).
     pub fn view(&self, d: &mut HudDrawList, world: &World, i: usize, rect: [f32; 4], focus: usize, flash: f32, pad: bool) {
         let mut l = Layout::new(rect, d.size[1] as f32);
@@ -347,10 +351,10 @@ impl Hud {
         let clip = rect;
         let [x, y, w, h] = rect;
         let (cx, cy) = (x + w * 0.5, y + h * 0.5);
-        if flash > 0.0 { d.rect(rect, [0.96, 0.99, 1.0, flash], clip); }
+        if flash > 0.0 { self.screen_tint(d,rect, [0.96, 0.99, 1.0, flash], clip); }
         let picking = p.offer.is_some() || f.exit.is_some();
         // Ghost tint (spectating after a 3+ player death).
-        if p.ghost && !picking { d.rect(rect, [0.25, 0.55, 0.85, 0.28], clip); }
+        if p.ghost && !picking { self.screen_tint(d,rect, [0.25, 0.55, 0.85, 0.28], clip); }
         if !picking {
             self.damage_numbers(d, world, i, rect);
             damage_arcs(d, f, &l);
@@ -368,15 +372,15 @@ impl Hud {
         // dark backdrop (Godot `_blend_death_into_card_pick`).
         let death = death_color(world, p, f);
         // Above the HUD's text too (Godot z 25 over the panels' 10).
-        if death[3] > 0.003 { d.begin_overlay(); d.rect(rect, death, clip); }
+        if death[3] > 0.003 { d.begin_overlay(); self.screen_tint(d,rect, death, clip); }
         if picking {
             d.begin_overlay();
             cards::pick(d, world, i, &l, f, focus, &mut self.card_hits.borrow_mut());
         }
         // The phoenix white (its own canvas layer over this view's HUD) and the
         // explosion flash above everything (Godot canvas layer 50).
-        if f.phoenix[0] > 0.003 { d.begin_overlay(); d.rect(rect, [1.0, 1.0, 1.0, f.phoenix[0]], clip); }
-        if f.flash[0] > 0.003 { d.begin_overlay(); d.rect(rect, [1.0, 0.96, 0.88, f.flash[0]], clip); }
+        if f.phoenix[0] > 0.003 { d.begin_overlay(); self.screen_tint(d,rect, [1.0, 1.0, 1.0, f.phoenix[0]], clip); }
+        if f.flash[0] > 0.003 { d.begin_overlay(); self.screen_tint(d,rect, [1.0, 0.96, 0.88, f.flash[0]], clip); }
         let _ = cy;
     }
 
@@ -542,7 +546,7 @@ impl Hud {
         let clip = [0.0, 0.0, d.size[0] as f32, d.size[1] as f32];
         let t = ((self.round_age - 0.25) / 0.45).clamp(0.0, 1.0);
         d.begin_overlay();
-        d.rect(clip, [1.0, 0.98, 0.94, (t * std::f32::consts::FRAC_PI_2).cos()], clip);
+        self.screen_tint(d,clip, [1.0, 0.98, 0.94, (t * std::f32::consts::FRAC_PI_2).cos()], clip);
     }
 
     /// `net`: a network error for Godot's red panel at the top right.
@@ -735,5 +739,18 @@ mod pointer_tests {
         assert_eq!(h.card_hit(&w, 0, size, pos), None);
         w.players[0].offer = None;
         assert_eq!(h.card_hit(&w, 0, size, pos), None);
+    }
+}
+
+#[cfg(test)] mod xr_tint_tests {
+    use super::*;
+    #[test] fn round_flash_covers_vision_without_drawing_a_hud_rectangle() {
+        let mut hud=Hud::default();hud.round_age=0.0;hud.xr=true;
+        let mut draw=HudDrawList::new([1280,720]);hud.round_flash(&mut draw);
+        assert_eq!(draw.vision_tints,vec![[1.,0.98,0.94,1.]]);assert!(draw.vertices.is_empty());
+        hud.xr=false;let mut desktop=HudDrawList::new([1280,720]);hud.round_flash(&mut desktop);
+        assert!(desktop.vision_tints.is_empty());assert!(!desktop.vertices.is_empty());
+        hud.xr=true;hud.round_age=0.7;let mut faded=HudDrawList::new([1280,720]);hud.round_flash(&mut faded);
+        assert!(faded.vision_tints.is_empty()&&faded.vertices.is_empty());
     }
 }
