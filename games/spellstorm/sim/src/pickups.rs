@@ -298,22 +298,29 @@ impl World {
         s.vel *= (-3.0 * dt).exp() as f32;
         if s.t > 0.35 {
             let mut best = None;
+            // Nearest by the share of its pull (a Lodestone pulls from further).
             let mut best_d = SOUL_MAGNET;
+            let mut best_k = 1.0;
+            let mut best_r = SOUL_MAGNET;
             for &w in &self.wizards {
                 let a = self.a(w);
                 let wz = self.wiz(w);
                 if !a.alive || wz.mana >= wz.mana_max() - 0.5 {
                     continue;
                 }
+                let r = SOUL_MAGNET * a.mods.magnet as f32;
                 let d = Vec2::new(a.pos.x - pos.x, a.pos.z - pos.z).length();
-                if d < best_d {
+                if d < r && d / r < best_k {
                     best = Some(w);
                     best_d = d;
+                    best_k = d / r;
+                    best_r = r;
                 }
             }
             if let Some(w) = best {
                 if best_d < SOUL_TAKE {
-                    self.wiz_mut(w).add_mana(s.mana);
+                    let souls = self.a(w).mods.souls;
+                    self.wiz_mut(w).add_mana(s.mana * souls);
                     let at = self.pos(w) + Vec3::Y * 1.2;
                     self.burst(at, SOUL_COLOR, 6, 2.0, 0.12, None);
                     self.count("souls");
@@ -321,7 +328,7 @@ impl World {
                     return;
                 }
                 let to = self.pos(w) + Vec3::Y * 0.9 - pos;
-                s.vel += to.normalize() * (14.0 + 30.0 * (1.0 - best_d / SOUL_MAGNET)) * dt as f32;
+                s.vel += to.normalize() * (14.0 + 30.0 * (1.0 - best_d / best_r)) * dt as f32;
             }
         }
         pos += s.vel * dt as f32;

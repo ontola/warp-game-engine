@@ -403,7 +403,7 @@ fn mods_table(lua: &Lua, m: &Mods) -> mlua::Result<Table> {
         els.raw_set(key(e), m.el[e.idx()])?;
     }
     t.raw_set("el", els)?;
-    for (k, v) in [("dmg", m.dmg), ("heal", m.heal), ("reach", m.reach), ("charge", m.charge), ("enchant_time", m.enchant_time), ("sword", m.sword), ("afflicted", m.afflicted), ("speed", m.speed), ("hp", m.hp)] {
+    for (k, v) in [("dmg", m.dmg), ("heal", m.heal), ("reach", m.reach), ("charge", m.charge), ("enchant_time", m.enchant_time), ("sword", m.sword), ("afflicted", m.afflicted), ("speed", m.speed), ("hp", m.hp), ("mana", m.mana), ("regen", m.regen), ("cost", m.cost), ("souls", m.souls), ("magnet", m.magnet), ("guard", m.guard), ("status", m.status), ("push", m.push), ("bolt", m.bolt), ("swing", m.swing)] {
         t.raw_set(k, v)?;
     }
     for (k, v) in [("echo", m.echo), ("planter", m.planter), ("firewalker", m.firewalker)] {
@@ -536,6 +536,16 @@ fn read_tomes(t: &Table) -> mlua::Result<Vec<Tome>> {
                     "speed" => Mod::Speed(f()?),
                     "heal" => Mod::Heal(f()?),
                     "afflicted" => Mod::Afflicted(f()?),
+                    "mana" => Mod::Mana(f()?),
+                    "regen" => Mod::Regen(f()?),
+                    "cost" => Mod::Cost(f()?),
+                    "souls" => Mod::Souls(f()?),
+                    "magnet" => Mod::Magnet(f()?),
+                    "guard" => Mod::Guard(f()?),
+                    "status" => Mod::Status(f()?),
+                    "push" => Mod::Push(f()?),
+                    "bolt" => Mod::Bolt(f()?),
+                    "swing" => Mod::Swing(f()?),
                     "echo" if val.as_boolean() == Some(true) => Mod::Echo,
                     "planter" if val.as_boolean() == Some(true) => Mod::Planter,
                     "firewalker" if val.as_boolean() == Some(true) => Mod::Firewalker,

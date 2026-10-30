@@ -509,8 +509,8 @@ impl World {
                 });
             }
             dmg += d;
-            shove += eff.push * n * mult.max(0.0);
-            if a.status(&eff, n * mult.max(0.0)) {
+            shove += eff.push * n * mult.max(0.0) * mods.push;
+            if a.status(&eff, n * mult.max(0.0) * mods.status) {
                 let at = a.pos + Vec3::Y;
                 self.events.push(Ev::Puff {
                     at,

@@ -791,7 +791,25 @@ impl World {
             taken.extend(self.wiz(w).relics.iter().copied());
         }
         taken.extend(self.run.altars.iter().map(|a| a.relic));
-        let picks = relics::pick(n, &mut self.run.rng, &taken);
+        // Only tomes someone here can use: their elements, their forms.
+        // Bots know everything, so they count only when nobody else is here.
+        let humans: Vec<Id> = self.wizards.iter().copied().filter(|&w| self.wiz(w).bot.is_none()).collect();
+        let who = if humans.is_empty() { self.wizards.clone() } else { humans };
+        let knows: Vec<(Vec<El>, Vec<crate::grammar::Form>)> = who
+            .iter()
+            .map(|&w| {
+                let wz = self.wiz(w);
+                (wz.open_elements(), crate::grammar::FORMS.iter().copied().filter(|&f| wz.form_open(f)).collect())
+            })
+            .collect();
+        let has = |need: relics::Need| {
+            knows.iter().any(|(els, forms)| match need {
+                relics::Need::Nothing => true,
+                relics::Need::El(e) => e.parts().iter().all(|p| els.contains(p)),
+                relics::Need::Form(f) => forms.contains(&f),
+            })
+        };
+        let picks = relics::pick(n, &mut self.run.rng, &taken, &has);
         // Across the path, facing the way on.
         let along = self.level.clearing_at[k];
         let dir = (self.level.point_at(along + 1.0) - self.level.point_at(along - 1.0))
