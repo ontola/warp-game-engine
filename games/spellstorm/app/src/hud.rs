@@ -97,6 +97,9 @@ pub struct Hud {
     /// Unlocks to show one after another, and how long the first has shown.
     unlocks: Vec<Unlock>,
     unlock_t: f32,
+    /// Damage and healing numbers floating up: (where, text, colour,
+    /// size, age, life).
+    numbers: Vec<(Vec3, String, C, f32, f32, f32)>,
 }
 
 /// Something a wizard just learned, shown briefly mid-screen.
@@ -131,6 +134,7 @@ impl Default for Hud {
             had: Default::default(),
             unlocks: vec![],
             unlock_t: 0.0,
+            numbers: vec![],
         }
     }
 }
@@ -181,6 +185,7 @@ impl Hud {
                 }
                 Ev::YouDiedEnd => self.death_end = Some(0.0),
                 Ev::Level { .. } => self.level(w),
+                Ev::Text { at, text, c, size, time } => self.numbers.push((*at, text.clone(), *c, *size, 0.0, time.max(0.6) + 0.3)),
                 _ => {}
             }
         }
@@ -247,6 +252,10 @@ impl Hud {
             t.2 += dt;
         }
         self.toasts.retain(|t| t.2 < 5.0);
+        for n in &mut self.numbers {
+            n.4 += dt;
+        }
+        self.numbers.retain(|n| n.4 < n.5);
         self.fade.step(dt);
         self.card_t += dt;
         if let Some(d) = &mut self.death {
@@ -291,6 +300,8 @@ impl Hud {
             p.text(&wz.name, x, y + 14.0, body(), 26.0, lighten(wz.robe, 0.4), TextAlign::Center, 9.0);
         }
         tome_labels(&mut p, w, cam, &vp, size);
+        enemy_bars(&mut p, w, &vp, size);
+        self.draw_numbers(&mut p, &vp, size);
         p.d.begin_overlay();
         for (i, &id) in w.wizards.iter().enumerate() {
             let right = i % 2 == 1;
@@ -346,6 +357,44 @@ impl Hud {
                 p.text(l, sw * 0.5, y, title(), size, [0.62, 0.04, 0.03, a], TextAlign::Center, 0.0);
             }
         }
+    }
+
+    /// The damage and healing numbers (World::numbers): over whoever took
+    /// it, drifting up, fading at the end. One size each, as the atlas wants.
+    fn draw_numbers(&self, p: &mut Painter, vp: &Mat4, size: [u32; 2]) {
+        for (at, text, c, px, age, life) in &self.numbers {
+            let k = age / life;
+            let rise = 0.9 * (1.0 - (1.0 - k).powi(2));
+            let Some(q) = on_screen(vp, *at + Vec3::Y * rise, size, p.s) else { continue };
+            let a = 1.0 - ((k - 0.65) / 0.35).clamp(0.0, 1.0);
+            p.text(text, q.x, q.y, title(), *px, alpha(*c, a), TextAlign::Center, 8.0);
+        }
+    }
+}
+
+/// Where `at` lands on Godot's 1080-high canvas, if in front of the camera.
+fn on_screen(vp: &Mat4, at: Vec3, size: [u32; 2], s: f32) -> Option<Vec2> {
+    let c = *vp * Vec4::new(at.x, at.y, at.z, 1.0);
+    if c.w <= 0.0 {
+        return None;
+    }
+    Some(Vec2::new((c.x / c.w * 0.5 + 0.5) * size[0] as f32 / s, (0.5 - c.y / c.w * 0.5) * size[1] as f32 / s))
+}
+
+/// A thin health bar over every hurt monster, wider for bigger ones.
+fn enemy_bars(p: &mut Painter, w: &World, vp: &Mat4, size: [u32; 2]) {
+    for &id in &w.enemies {
+        let Some(a) = w.actor(id) else { continue };
+        if !a.alive || a.hp >= a.max_hp || a.max_hp <= 0.0 {
+            continue;
+        }
+        let r = a.radius as f32;
+        let Some(q) = on_screen(vp, a.pos + Vec3::Y * (1.15 + r * 1.3), size, p.s) else { continue };
+        let wd = (44.0 + 56.0 * r).min(160.0);
+        let k = (a.hp / a.max_hp).clamp(0.0, 1.0) as f32;
+        let x = q.x - wd * 0.5;
+        p.rect([x - 2.0, q.y - 2.0, wd + 4.0, 9.0], [0.0, 0.0, 0.0, 0.7]);
+        p.rect([x, q.y, wd * k, 5.0], [0.8, 0.12, 0.08, 1.0]);
     }
 }
 

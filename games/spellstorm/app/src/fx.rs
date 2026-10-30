@@ -835,7 +835,7 @@ impl Fx {
             Ev::Ripple { at, r, time } => self.waves.push(Wave { at, c: rgba(0.75, 0.85, 1.0, 0.35), r, age: 0.0, time, cell: Cell::Ring, glow: 0.0 }),
             Ev::LightPop { at, c, energy, range, time } => self.light_pop(at, c, energy, range, time),
             Ev::Flash { at, c, size, time } => self.flash(at, c, size, time),
-            // No text over characters (Joep).
+            // Damage numbers are the HUD's (Hud::draw_numbers).
             Ev::Text { .. } => {}
             Ev::Fountain { at, el, n, speed, spread, size } => {
                 let mut p = particles(el_c(el), n, 0.7, size);
