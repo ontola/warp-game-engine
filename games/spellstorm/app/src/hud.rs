@@ -92,7 +92,28 @@ pub struct Hud {
     death_end: Option<f32>,
     vignette: Arc<Picture>,
     words: usize,
+    /// What each seat had last tick (forms, LB, learned_t), to see unlocks.
+    had: std::collections::HashMap<usize, (usize, bool, f64)>,
+    /// Unlocks to show one after another, and how long the first has shown.
+    unlocks: Vec<Unlock>,
+    unlock_t: f32,
 }
+
+/// Something a wizard just learned, shown briefly mid-screen.
+#[derive(Clone, PartialEq)]
+enum Learned {
+    Element(El),
+    Move(Form),
+    Pairs,
+}
+
+struct Unlock {
+    what: Learned,
+    /// Who learned it, when not every wizard did.
+    who: Vec<String>,
+}
+
+const UNLOCK_SHOW: f32 = 3.2;
 
 impl Default for Hud {
     fn default() -> Self {
@@ -107,6 +128,9 @@ impl Default for Hud {
             death_end: None,
             vignette: Arc::new(vignette()),
             words: 0,
+            had: Default::default(),
+            unlocks: vec![],
+            unlock_t: 0.0,
         }
     }
 }
@@ -160,9 +184,57 @@ impl Hud {
                 _ => {}
             }
         }
+        self.watch_unlocks(w);
+    }
+
+    /// New elements, moves and the LB pairs, as they open for each human
+    /// wizard; one card for what several learned at once.
+    fn watch_unlocks(&mut self, w: &World) {
+        let mut fresh: Vec<(Learned, String)> = vec![];
+        let mut humans = 0;
+        for &id in &w.wizards {
+            let wz = w.wiz(id);
+            if wz.bot.is_some() {
+                continue;
+            }
+            humans += 1;
+            let forms = spellstorm::wizard::STAGE_FORMS[wz.stage.min(3)].len();
+            let now = (forms, wz.lb_open(), wz.learned_t);
+            // A wizard first seen (joining, a new run) shows nothing.
+            if let Some(&(f0, lb0, t0)) = self.had.get(&wz.seat) {
+                if wz.learned_t > t0 + 1.0 {
+                    fresh.extend(wz.learned.iter().map(|&e| (Learned::Element(e), wz.name.clone())));
+                }
+                for &f in &spellstorm::wizard::STAGE_FORMS[wz.stage.min(3)][f0.min(forms)..] {
+                    fresh.push((Learned::Move(f), wz.name.clone()));
+                }
+                if now.1 && !lb0 {
+                    fresh.push((Learned::Pairs, wz.name.clone()));
+                }
+            }
+            self.had.insert(wz.seat, now);
+        }
+        for (what, name) in fresh {
+            match self.unlocks.iter_mut().find(|u| u.what == what) {
+                Some(u) => u.who.push(name),
+                None => self.unlocks.push(Unlock { what, who: vec![name] }),
+            }
+        }
+        for u in &mut self.unlocks {
+            if u.who.len() >= humans {
+                u.who.clear();
+            }
+        }
     }
 
     pub fn update(&mut self, dt: f32) {
+        if !self.unlocks.is_empty() {
+            self.unlock_t += dt;
+            if self.unlock_t > UNLOCK_SHOW {
+                self.unlocks.remove(0);
+                self.unlock_t = 0.0;
+            }
+        }
         self.banner_t = (self.banner_t - dt).max(0.0);
         for t in &mut self.toasts {
             t.2 += dt;
@@ -224,6 +296,9 @@ impl Hud {
         for (k, (text, c, t)) in self.toasts.iter().enumerate() {
             let a = if *t < 4.0 { 1.0 } else { 1.0 - (t - 4.0) };
             p.text(text, sw * 0.5, 20.0 + 18.0 + k as f32 * 34.0, body(), 26.0, alpha(*c, a), TextAlign::Center, 8.0);
+        }
+        if let Some(u) = self.unlocks.first() {
+            unlock_card(&mut p, u, self.unlock_t, sw);
         }
         // Banner.
         if self.banner_t > 0.0 {
@@ -400,6 +475,65 @@ impl Painter<'_> {
         }
         self.text(text, x, y, font, size, c, TextAlign::Center, 0.0);
     }
+}
+
+/// What was just learned, below the middle of the screen: the element's
+/// ball or the button it is on, a small gold kicker, its name large in the
+/// title face and how to use it in plain text. In and up, a hold, out.
+fn unlock_card(p: &mut Painter, u: &Unlock, t: f32, sw: f32) {
+    let a = (t / 0.25).min(1.0) * ((UNLOCK_SHOW - t) / 0.5).clamp(0.0, 1.0);
+    if a <= 0.0 {
+        return;
+    }
+    let rise = (1.0 - (t / 0.35).min(1.0)).powi(2) * 18.0;
+    let (kicker, name, hint, col) = match u.what {
+        Learned::Element(e) => {
+            let (pad, lb) = [(el::PAIR_A, "A"), (el::PAIR_B, "B"), (el::PAIR_X, "X"), (el::PAIR_Y, "Y")]
+                .iter()
+                .find_map(|(pair, b)| pair.iter().position(|&x| x == e).map(|i| (*b, i == 1)))
+                .unwrap_or(("A", false));
+            let hint = if lb { format!("Hold LB and press {pad}") } else { format!("Press {pad} to load it") };
+            ("NEW ELEMENT", e.name().to_string(), hint, lighten(el_c(e), 0.25))
+        }
+        Learned::Move(f) => {
+            let (name, hint) = match f {
+                Form::Nova => ("Nova", "Hold RB, then let go"),
+                Form::Plant => ("Plant", "Click the left stick to set it down"),
+                Form::Enchant => ("Enchant", "Click the right stick to enchant your staff"),
+                Form::Cast => ("Cast", "Press RT"),
+            };
+            ("NEW MOVE", name.to_string(), hint.to_string(), [0.95, 0.82, 0.5, 1.0])
+        }
+        Learned::Pairs => ("NEW ELEMENTS", "Element Pairs".to_string(), "Hold LB: every button gives its other element".to_string(), [0.95, 0.82, 0.5, 1.0]),
+    };
+    let kicker = if u.who.is_empty() { kicker.to_string() } else { format!("{kicker}  ·  {}", u.who.join(", ").to_uppercase()) };
+    let (w, h) = (700.0, 150.0);
+    let (x0, y0) = (sw * 0.5 - w * 0.5, 690.0 + rise);
+    p.round_rect([x0, y0, w, h], 16.0, [0.04, 0.03, 0.03, 0.82 * a]);
+    p.rect([x0 + 24.0, y0, w - 48.0, 2.0], alpha(col, 0.7 * a));
+    let ic = Vec2::new(x0 + 86.0, y0 + h * 0.5);
+    match u.what {
+        Learned::Element(e) => {
+            p.circle(ic, 52.0, [0.0, 0.0, 0.0, 0.6 * a]);
+            ball(p, e, ic, 46.0, a);
+        }
+        _ => {
+            let label = match u.what {
+                Learned::Move(Form::Nova) => "RB",
+                Learned::Move(Form::Plant) => "LS",
+                Learned::Move(Form::Enchant) => "RS",
+                Learned::Move(Form::Cast) => "RT",
+                _ => "LB",
+            };
+            p.circle(ic, 50.0, alpha(col, 0.85 * a));
+            p.circle(ic, 45.0, [0.1, 0.08, 0.07, a]);
+            p.text(label, ic.x, ic.y + 2.0, title(), 40.0, alpha(col, a), TextAlign::Center, 0.0);
+        }
+    }
+    let tx = x0 + 164.0;
+    p.text(&kicker, tx, y0 + 34.0, title(), 22.0, [0.85, 0.72, 0.45, a], TextAlign::Left, 0.0);
+    p.text(&name, tx, y0 + 78.0, title(), 56.0, alpha(col, a), TextAlign::Left, 8.0);
+    p.text(&hint, tx, y0 + 121.0, body(), 28.0, [0.88, 0.84, 0.76, a], TextAlign::Left, 0.0);
 }
 
 /// An element as a little ball (ElementBall: its colour, lit from the top
