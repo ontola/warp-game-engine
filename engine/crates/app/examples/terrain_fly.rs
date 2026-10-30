@@ -462,21 +462,29 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
     // The three variants cook on their own threads (each cook is serial).
     let cooked = COOKED.get_or_init(|| std::thread::scope(|scope| (0..3u64).map(|seed| scope.spawn(move || -> Result<CookedPlant, String> {
         let started = std::time::Instant::now();
-        let assembly = plant_recipe::build(&SPRUCE, BuildOptions::new(seed + 1), plant_recipe::recipe_limits())?;
-        if !aggregate { return CookedPlant::cook_source(&assembly); }
+        let build = || plant_recipe::build(&SPRUCE, BuildOptions::new(seed + 1), plant_recipe::recipe_limits());
+        if !aggregate { return CookedPlant::cook_source(&build()?); }
         // Aggregate cook: each branch group also gets voxel levels, and the
         // renderer picks source or voxels per group from projected error.
         let config = render::vegetation_aggregate::Config { max_placements: 8192, max_source_triangles: 40_000_000,
             max_samples: 150_000_000, triangle_refinements: true, max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
             ..Default::default() };
-        let mut plant = CookedPlant::cook_aggregate(&assembly, config)?;
-        let cooked_ms = started.elapsed().as_secs_f64() * 1000.0;
         // The whole spruce as one voxel pyramid: 10 cm cells, then 20 cm .. 3.2 m.
-        plant.cook_proxy(&assembly, render::vegetation_aggregate::Config { reference_cell_size: 0.1,
-            max_reference_voxels: 1 << 21, max_build_bytes: 1 << 30, ..config }, 6)?;
+        let proxy_config = render::vegetation_aggregate::Config { reference_cell_size: 0.1,
+            max_reference_voxels: 1 << 21, max_build_bytes: 1 << 30, ..config };
+        // Cooked once per recipe, configs and engine cook code, then loaded
+        // from build/cook-cache (seconds instead of half a minute).
+        let what = format!("{SPRUCE:?} {:?} {:?} {config:?} {proxy_config:?} 6", BuildOptions::new(seed + 1), plant_recipe::recipe_limits());
+        let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+        let (plant, hit) = CookedPlant::cached(&cache, &what, || {
+            let assembly = build()?;
+            let mut plant = CookedPlant::cook_aggregate(&assembly, config)?;
+            plant.cook_proxy(&assembly, proxy_config, 6)?;
+            Ok(plant)
+        })?;
         let proxy = plant.proxy().unwrap();
-        eprintln!("spruce {seed}: cooked in {cooked_ms:.0} ms, proxy in {:.0} ms ({} cells at {} m, {} levels)",
-            started.elapsed().as_secs_f64() * 1000.0 - cooked_ms, proxy.levels[0].voxels.len(), proxy.levels[0].cell_size, proxy.levels.len());
+        eprintln!("spruce {seed}: {} in {:.0} ms ({} proxy cells at {} m, {} levels)", if hit { "loaded" } else { "cooked" },
+            started.elapsed().as_secs_f64() * 1000.0, proxy.levels[0].voxels.len(), proxy.levels[0].cell_size, proxy.levels.len());
         Ok(plant)
     })).collect::<Vec<_>>().into_iter().map(|h| h.join().map_err(|_| "spruce cook panicked".to_string())?).collect())).as_ref().map_err(Clone::clone)?;
     let branches = cooked.iter().map(|c| c.stats().branches).max().unwrap_or(64);
