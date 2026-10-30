@@ -248,9 +248,12 @@ impl ArenaView {
             let r = |k: u32| ((c.seed >> k) & 0xff) as f32 / 255.0 - 0.5;
             Quat::from_euler(glam::EulerRot::XYZ, r(0) * 0.05 * wear as f32, r(8) * 0.05 * wear as f32, r(16) * 0.05 * wear as f32)
         };
-        // The mortar gap is horizontal only: courses sit flush, so the bright
-        // lava never shows through a seam under a wall.
-        (mesh, Affine3A::from_scale_rotation_translation(c.half * 2.0 * Vec3::new(VISUAL_CHUNK_INSET, 1.0, VISUAL_CHUNK_INSET) * shrink, Quat::from_rotation_y(c.yaw) * tilt, c.center))
+        // Plain minimum-profile cubes need a readable joint, rather than the
+        // subpixel seam formerly supplied by bevelled geometry. Floor height
+        // and all simulation/collision boxes remain unchanged.
+        let inset=if crate::graphics::get().minimal_forward {Vec3::new(0.97,if c.kind==Kind::Floor{1.0}else{0.97},0.97)}
+            else{Vec3::new(VISUAL_CHUNK_INSET,1.0,VISUAL_CHUNK_INSET)};
+        (mesh, Affine3A::from_scale_rotation_translation(c.half * 2.0 * inset * shrink, Quat::from_rotation_y(c.yaw) * tilt, c.center))
     }
 
     /// This tick's breakage: worn bricks change look, broken ones and their

@@ -13,7 +13,7 @@ const VIEW:xr::ViewConfigurationType=xr::ViewConfigurationType::PRIMARY_STEREO;
 const HUD:[u32;2]=[1280,720];
 fn swapchain(session:&xr::Session<xr::Vulkan>,size:[u32;2],layers:u32)->Result<xr::Swapchain<xr::Vulkan>> {
     Ok(session.create_swapchain(&xr::SwapchainCreateInfo {create_flags:xr::SwapchainCreateFlags::EMPTY,
-        usage_flags:xr::SwapchainUsageFlags::COLOR_ATTACHMENT|xr::SwapchainUsageFlags::TRANSFER_DST,
+        usage_flags:xr::SwapchainUsageFlags::COLOR_ATTACHMENT,
         format:ash::vk::Format::R8G8B8A8_SRGB.as_raw() as _,sample_count:1,width:size[0],height:size[1],face_count:1,array_size:layers,mip_count:1})?)
 }
 
@@ -85,16 +85,18 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
     let stage=session.create_reference_space(xr::ReferenceSpaceType::LOCAL,xr::Posef::IDENTITY).context("LOCAL reference space")?;
     let head=session.create_reference_space(xr::ReferenceSpaceType::VIEW,xr::Posef::IDENTITY)?;
     let mut actions=crate::actions::Actions::new(&instance,&session)?;
-    let mut color=swapchain(&session,size,2)?; let images=color.enumerate_images()?;
-    let mut ui=swapchain(&session,HUD,1)?; let ui_images=ui.enumerate_images()?;
+    let mut color=swapchain(&session,size,1)?;
+    let mut right=swapchain(&session,size,1)?;
+    let mut ui=swapchain(&session,HUD,1)?;
+    let mut vision=swapchain(&session,[1,1],1)?;
+    let color_targets=unsafe{bridge.import_targets(&color.enumerate_images()?,size)}?;
+    let right_targets=unsafe{bridge.import_targets(&right.enumerate_images()?,size)}?;
+    let ui_targets=unsafe{bridge.import_targets(&ui.enumerate_images()?,HUD)}?;
+    let vision_targets=unsafe{bridge.import_targets(&vision.enumerate_images()?,[1,1])}?;
     let mut hud=render::hud::HudRenderer::new(&bridge.gpu,wgpu::TextureFormat::Rgba8UnormSrgb).map_err(anyhow::Error::msg)?;
-    let ui_texture=bridge.gpu.device.create_texture(&wgpu::TextureDescriptor {label:Some("XR game HUD"),
-        size:wgpu::Extent3d {width:HUD[0],height:HUD[1],depth_or_array_layers:1},mip_level_count:1,sample_count:1,
-        dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
     let mut running=false; let mut focused=false; let mut destroyed=false;
     let mut event=xr::EventDataBuffer::new(); let mut last=Instant::now(); let mut recentered=false;
-    let mut frames=0u64; let mut report=Instant::now();
+    let mut frames=0u64; let mut report=Instant::now(); let mut timings=[0.0f64;6];
     while !destroyed && !stop.load(Ordering::Acquire) {
         while let Some(event)=instance.poll_event(&mut event)? {
             match event {
@@ -127,6 +129,7 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
             }
         }
         if destroyed {break;} if !running {std::thread::sleep(Duration::from_millis(20));continue;}
+        let frame_start=Instant::now();
         let state=waiter.wait()?; stream.begin()?;
         let now=Instant::now(); let dt=(now-last).as_secs_f32().min(0.1);last=now;
         if !state.should_render {stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[])?;continue;}
@@ -140,16 +143,23 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
             head:pose(h.pose),aim,controls,turn,focused,recentered:std::mem::take(&mut recentered)};
         if game.quit() { session.request_exit()?; stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[])?; continue; }
         if frames==0 {log::info!("Drawing first native Warp stereo frame");}
-        let output=game.frame(&bridge.gpu,&tracking,size,dt).map_err(anyhow::Error::msg)?;
-        crate::draw_hud(&bridge.gpu,&mut hud,&output.hud,&ui_texture).map_err(anyhow::Error::msg)?;
+        let acquire_start=Instant::now();
         let color_index=color.acquire_image()?;color.wait_image(xr::Duration::INFINITE)?;
+        let right_index=right.acquire_image()?;right.wait_image(xr::Duration::INFINITE)?;
         let ui_index=ui.acquire_image()?;ui.wait_image(xr::Duration::INFINITE)?;
-        bridge.copy_batch(&[(&output.color,images[color_index as usize],size[0],size[1],2),
-            (&ui_texture,ui_images[ui_index as usize],HUD[0],HUD[1],1)])?;
-        color.release_image()?;ui.release_image()?;
+        let vision_index=vision.acquire_image()?;vision.wait_image(xr::Duration::INFINITE)?;
+        let draw_start=Instant::now();
+        let output=game.frame(&bridge.gpu,&tracking,size,dt,Some(&[&color_targets.images[color_index as usize],&right_targets.images[right_index as usize]])).map_err(anyhow::Error::msg)?;
+        let hud_start=Instant::now();
+        crate::draw_hud(&bridge.gpu,&mut hud,&output.hud,&ui_targets.images[ui_index as usize]).map_err(anyhow::Error::msg)?;
+        crate::draw_vision(&bridge.gpu,&output.hud.vision_tints,&vision_targets.images[vision_index as usize]);
+        let gpu_start=Instant::now();
+        bridge.gpu.wait();
+        let end_start=Instant::now();
+        color.release_image()?;right.release_image()?;ui.release_image()?;vision.release_image()?;
         let rect=xr::Rect2Di {offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:size[0] as i32,height:size[1] as i32}};
         let projection_views:Vec<_>=views.iter().enumerate().map(|(i,v)|xr::CompositionLayerProjectionView::new().pose(v.pose).fov(v.fov)
-            .sub_image(xr::SwapchainSubImage::new().swapchain(&color).image_array_index(i as u32).image_rect(rect))).collect();
+            .sub_image(xr::SwapchainSubImage::new().swapchain(if i==0{&color}else{&right}).image_array_index(0).image_rect(rect))).collect();
         let projection=xr::CompositionLayerProjection::new().space(&stage).views(&projection_views);
         // Keep original menus/cards legible at a comfortable fixed distance.
         // HUD rendering is premultiplied by normal alpha blending onto clear.
@@ -158,10 +168,19 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
             .pose(xr::Posef {orientation:xr::Quaternionf{x:0.0,y:0.0,z:0.0,w:1.0},position:xr::Vector3f{x:0.0,y:0.0,z:-2.0}})
             .size(xr::Extent2Df{width:2.4,height:1.35})
             .sub_image(xr::SwapchainSubImage::new().swapchain(&ui).image_array_index(0).image_rect(xr::Rect2Di{offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:HUD[0] as i32,height:HUD[1] as i32}}));
-        stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&quad])?;
+        let tint_views:Vec<_>=views.iter().map(|v|xr::CompositionLayerProjectionView::new().pose(v.pose).fov(v.fov)
+            .sub_image(xr::SwapchainSubImage::new().swapchain(&vision).image_array_index(0)
+                .image_rect(xr::Rect2Di{offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:1,height:1}}))).collect();
+        let tint=xr::CompositionLayerProjection::new().space(&stage).layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA).views(&tint_views);
+        if output.hud.vision_tints.is_empty() {
+            stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&quad])?;
+        }else{
+            stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&quad,&tint])?;
+        }
+        for (total,span) in timings.iter_mut().zip([acquire_start-frame_start,draw_start-acquire_start,hud_start-draw_start,gpu_start-hud_start,end_start-gpu_start,end_start.elapsed()]) { *total+=span.as_secs_f64()*1000.0; }
         frames+=1;
-        if frames==1 {log::info!("First native Warp stereo frame submitted");report=Instant::now();}
-        if frames>1 && (frames-1)%30==0 {log::info!("30 frames submitted in {:.2}s ({:.1} fps), focused={}, controller={}",report.elapsed().as_secs_f32(),30.0/report.elapsed().as_secs_f32(),focused,tracking.aim.is_some());report=Instant::now();}
+        if frames==1 {log::info!("First native Warp stereo frame submitted");report=Instant::now();timings.fill(0.0);}
+        if frames>1 && (frames-1)%30==0 {log::info!("30 frames submitted in {:.2}s ({:.1} fps), focused={}, controller={}, mean ms wait/acquire/game/hud/gpu/end={:?}",report.elapsed().as_secs_f32(),30.0/report.elapsed().as_secs_f32(),focused,tracking.aim.is_some(),timings.map(|t|(t/30.0*100.0).round()/100.0));report=Instant::now();timings.fill(0.0);}
     }
     bridge.gpu.wait();
     Ok(())

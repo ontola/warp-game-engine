@@ -7,14 +7,16 @@ use openxr as xr;
 use render::Gpu;
 use std::ffi::CString;
 
-pub struct Bridge {
-    // Keep the wgpu owner alive until after native command objects are destroyed.
-    pub gpu: Gpu,
-    device: ash::Device,
-    queue: vk::Queue,
-    pool: vk::CommandPool,
-    command: vk::CommandBuffer,
-    fence: vk::Fence,
+pub struct Bridge { pub gpu: Gpu }
+/// Declared after its OpenXR swapchain, so wrappers and their GPU work are
+/// retired before the runtime frees the images, including on error returns.
+pub struct ExternalTargets { pub images:Vec<wgpu::Texture>, device:wgpu::Device }
+impl Drop for ExternalTargets {
+    fn drop(&mut self) {
+        let _=self.device.poll(wgpu::PollType::wait_indefinitely());
+        self.images.clear();
+        let _=self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
 }
 fn extensions(names: &str) -> Vec<&'static std::ffi::CStr> {
     // A bounded set allocated once at startup; HAL requires static names.
@@ -67,58 +69,31 @@ impl Bridge {
             let gpu = Gpu::from_device(device, queue, adapter.get_info());
             let hal_device = gpu.device.as_hal::<wgpu::hal::api::Vulkan>().context("Vulkan device missing")?;
             let device = hal_device.raw_device().clone();
-            let queue = hal_device.raw_queue();
             let family = hal_device.queue_family_index();
             let info = xr::vulkan::SessionCreateInfo { instance: instance_handle.as_raw() as _,
                 physical_device: physical.as_raw() as _, device: device.handle().as_raw() as _, queue_family_index: family, queue_index: 0 };
             drop(hal_device);
-            let pool = device.create_command_pool(&vk::CommandPoolCreateInfo::default().queue_family_index(family).flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER), None)?;
-            let command = device.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1))?[0];
-            let fence = device.create_fence(&vk::FenceCreateInfo::default(), None)?;
-            Ok((Self { gpu, device, queue, pool, command, fence }, info))
+            Ok((Self { gpu }, info))
         }
     }
 
-    /// A single-threaded queue handoff: wgpu transitions the source, then a
-    /// native submission copies into runtime-owned array layers. A fence makes
-    /// completion explicit before xrReleaseSwapchainImage (no borrowed-image
-    /// destruction, no ambiguous wgpu layout tracking, no CPU pixel readback).
-    pub fn copy_batch(&self, copies:&[(&wgpu::Texture,u64,u32,u32,u32)]) -> Result<()> {
-        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
-        encoder.transition_resources(std::iter::empty(), copies.iter().map(|(source,_,_,_,_)|wgpu::TextureTransition { texture: *source, selector: None, state: wgpu::TextureUses::COPY_SRC }));
-        self.gpu.queue.submit([encoder.finish()]);
-        // Wait before using the raw queue: wgpu may have background submissions.
-        self.gpu.wait();
-        unsafe {
-            self.device.reset_command_buffer(self.command, vk::CommandBufferResetFlags::empty())?;
-            self.device.begin_command_buffer(self.command, &vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT))?;
-            for &(source,image,width,height,layers) in copies {
-            let raw = source.as_hal::<wgpu::hal::api::Vulkan>().context("source is not Vulkan")?;
-            let source_image = raw.raw_handle();
-            let dest = vk::Image::from_raw(image);
-            let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(layers);
-            let barrier = |old, new, src, dst| vk::ImageMemoryBarrier::default().image(dest).subresource_range(range)
-                .old_layout(old).new_layout(new).src_access_mask(src).dst_access_mask(dst)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED).dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED);
-            self.device.cmd_pipeline_barrier(self.command, vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[],
-                &[barrier(vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::AccessFlags::empty(), vk::AccessFlags::TRANSFER_WRITE)]);
-            let regions: Vec<_> = (0..layers).map(|layer| vk::ImageCopy::default()
-                .src_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1))
-                .src_offset(vk::Offset3D { x: (layer*width) as i32, y: 0, z: 0 })
-                .dst_subresource(vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).base_array_layer(layer).layer_count(1))
-                .extent(vk::Extent3D { width, height, depth: 1 })).collect();
-            self.device.cmd_copy_image(self.command, source_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, dest, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &regions);
-            self.device.cmd_pipeline_barrier(self.command, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT, vk::DependencyFlags::empty(), &[], &[],
-                &[barrier(vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::AccessFlags::TRANSFER_WRITE, vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE)]);
-            }
-            self.device.end_command_buffer(self.command)?;
-            self.device.queue_submit(self.queue, &[vk::SubmitInfo::default().command_buffers(&[self.command])], self.fence)?;
-            self.device.wait_for_fences(&[self.fence], true, u64::MAX)?;
-            self.device.reset_fences(&[self.fence])?;
-        }
-        Ok(())
+    /// OpenXR guarantees COLOR_ATTACHMENT_OPTIMAL after xrWaitSwapchainImage.
+    /// The no-op callback and External memory keep ownership with OpenXR.
+    pub unsafe fn import_targets(&self,images:&[u64],size:[u32;2])->Result<ExternalTargets> {
+        let desc=wgpu::TextureDescriptor {label:Some("OpenXR eye attachment"),
+            size:wgpu::Extent3d{width:size[0],height:size[1],depth_or_array_layers:1},mip_level_count:1,sample_count:1,
+            dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage:wgpu::TextureUsages::RENDER_ATTACHMENT,view_formats:&[]};
+        let hal_desc=wgpu::hal::TextureDescriptor {label:desc.label,size:desc.size,mip_level_count:1,sample_count:1,
+            dimension:desc.dimension,format:desc.format,usage:wgpu::TextureUses::COLOR_TARGET,
+            memory_flags:wgpu::hal::MemoryFlags::empty(),view_formats:Vec::new()};
+        let mut out=Vec::new();
+        for &image in images {unsafe {
+            let device=self.gpu.device.as_hal::<wgpu::hal::api::Vulkan>().context("Vulkan device missing")?;
+            let texture=device.texture_from_raw(vk::Image::from_raw(image),&hal_desc,Some(Box::new(||{})),wgpu::hal::vulkan::TextureMemory::External);
+            drop(device);
+            out.push(self.gpu.device.create_texture_from_hal::<wgpu::hal::api::Vulkan>(texture,&desc,wgpu::TextureUses::COLOR_TARGET));
+        }}
+        Ok(ExternalTargets{images:out,device:self.gpu.device.clone()})
     }
-}
-impl Drop for Bridge {
-    fn drop(&mut self) { unsafe { let _ = self.device.device_wait_idle(); self.device.destroy_fence(self.fence,None); self.device.destroy_command_pool(self.pool,None); } }
 }

@@ -22,3 +22,8 @@ struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>};
  var out:Out;out.pos=u.vp*vec4<f32>(world,1.0);out.color=mapped;return out;
 }
 @fragment fn fs(in:Out)->@location(0) vec4<f32>{return vec4<f32>(in.color,1.0);}
+
+@fragment fn fs_srgb(in:Out)->@location(0) vec4<f32>{
+ let c=in.color;let linear=select(c/12.92,pow((c+0.055)/1.055,vec3<f32>(2.4)),c>vec3<f32>(0.04045));
+ return vec4<f32>(linear,1.0);
+}
