@@ -89,10 +89,12 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
     let mut right=swapchain(&session,size,1)?;
     let mut ui=swapchain(&session,HUD,1)?;
     let mut vision=swapchain(&session,[1,1],1)?;
+    let mut vision_bg=swapchain(&session,[1,1],1)?;
     let color_targets=unsafe{bridge.import_targets(&color.enumerate_images()?,size)}?;
     let right_targets=unsafe{bridge.import_targets(&right.enumerate_images()?,size)}?;
     let ui_targets=unsafe{bridge.import_targets(&ui.enumerate_images()?,HUD)}?;
     let vision_targets=unsafe{bridge.import_targets(&vision.enumerate_images()?,[1,1])}?;
+    let vision_bg_targets=unsafe{bridge.import_targets(&vision_bg.enumerate_images()?,[1,1])}?;
     let mut hud=render::hud::HudRenderer::new(&bridge.gpu,wgpu::TextureFormat::Rgba8UnormSrgb).map_err(anyhow::Error::msg)?;
     let mut running=false; let mut focused=false; let mut destroyed=false;
     let mut event=xr::EventDataBuffer::new(); let mut last=Instant::now(); let mut recentered=false;
@@ -147,16 +149,22 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
         let color_index=color.acquire_image()?;color.wait_image(xr::Duration::INFINITE)?;
         let right_index=right.acquire_image()?;right.wait_image(xr::Duration::INFINITE)?;
         let ui_index=ui.acquire_image()?;ui.wait_image(xr::Duration::INFINITE)?;
-        let vision_index=vision.acquire_image()?;vision.wait_image(xr::Duration::INFINITE)?;
         let draw_start=Instant::now();
         let output=game.frame(&bridge.gpu,&tracking,size,dt,Some(&[&color_targets.images[color_index as usize],&right_targets.images[right_index as usize]])).map_err(anyhow::Error::msg)?;
         let hud_start=Instant::now();
         crate::draw_hud(&bridge.gpu,&mut hud,&output.hud,&ui_targets.images[ui_index as usize]).map_err(anyhow::Error::msg)?;
-        crate::draw_vision(&bridge.gpu,&output.hud.vision_tints,&vision_targets.images[vision_index as usize]);
+        let mut tinted=[false;2];
+        for (i,(chain,targets,tints)) in [(&mut vision_bg,&vision_bg_targets,&output.hud.vision_background_tints),(&mut vision,&vision_targets,&output.hud.vision_tints)].into_iter().enumerate() {
+            if !tints.is_empty() {
+                let index=chain.acquire_image()?;chain.wait_image(xr::Duration::INFINITE)?;
+                crate::draw_vision(&bridge.gpu,tints,&targets.images[index as usize]);tinted[i]=true;
+            }
+        }
         let gpu_start=Instant::now();
         bridge.gpu.wait();
         let end_start=Instant::now();
-        color.release_image()?;right.release_image()?;ui.release_image()?;vision.release_image()?;
+        color.release_image()?;right.release_image()?;ui.release_image()?;
+        if tinted[0]{vision_bg.release_image()?;}if tinted[1]{vision.release_image()?;}
         let rect=xr::Rect2Di {offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:size[0] as i32,height:size[1] as i32}};
         let projection_views:Vec<_>=views.iter().enumerate().map(|(i,v)|xr::CompositionLayerProjectionView::new().pose(v.pose).fov(v.fov)
             .sub_image(xr::SwapchainSubImage::new().swapchain(if i==0{&color}else{&right}).image_array_index(0).image_rect(rect))).collect();
@@ -172,10 +180,15 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
             .sub_image(xr::SwapchainSubImage::new().swapchain(&vision).image_array_index(0)
                 .image_rect(xr::Rect2Di{offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:1,height:1}}))).collect();
         let tint=xr::CompositionLayerProjection::new().space(&stage).layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA).views(&tint_views);
-        if output.hud.vision_tints.is_empty() {
-            stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&quad])?;
-        }else{
-            stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&quad,&tint])?;
+        let bg_views:Vec<_>=views.iter().map(|v|xr::CompositionLayerProjectionView::new().pose(v.pose).fov(v.fov)
+            .sub_image(xr::SwapchainSubImage::new().swapchain(&vision_bg).image_array_index(0)
+                .image_rect(xr::Rect2Di{offset:xr::Offset2Di{x:0,y:0},extent:xr::Extent2Di{width:1,height:1}}))).collect();
+        let bg=xr::CompositionLayerProjection::new().space(&stage).layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA).views(&bg_views);
+        match tinted {
+            [false,false]=>stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&quad])?,
+            [true,false]=>stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&bg,&quad])?,
+            [false,true]=>stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&quad,&tint])?,
+            [true,true]=>stream.end(state.predicted_display_time,xr::EnvironmentBlendMode::OPAQUE,&[&projection,&bg,&quad,&tint])?,
         }
         for (total,span) in timings.iter_mut().zip([acquire_start-frame_start,draw_start-acquire_start,hud_start-draw_start,gpu_start-hud_start,end_start-gpu_start,end_start.elapsed()]) { *total+=span.as_secs_f64()*1000.0; }
         frames+=1;

@@ -10,6 +10,7 @@ pub struct NativeGame {
     output:Option<wgpu::Texture>,
     origin:Option<Vec3>, yaw:f32, snap_ready:bool, accumulator:f32, pending:u32,
     _speaker:Option<app::sound::Speaker>,
+    audio_pending:bool,
     diagnostic:bool,
     diagnostic_requested:bool,
 }
@@ -24,13 +25,8 @@ impl NativeGame {
         game.light_mut().taa=0.0;
         game.light_mut().near_shadows=0.0;
         game.light_mut().lod_pixels=crate::graphics::get().lod_pixels;
-        let speaker=if sound {
-            let (speaker,tx,_)=crate::sounds::speakers(None,None)?;
-            game.set_sounds(crate::sounds::Sounds::new(tx,crate::sounds::find_patches(None),crate::sounds::find_dir(None).as_deref()));
-            Some(speaker)
-        }else{None};
         let yaw = game.world.players[0].yaw;
-        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:speaker,diagnostic:false,diagnostic_requested:std::path::Path::new("diagnose").exists()})
+        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:None,audio_pending:sound,diagnostic:false,diagnostic_requested:std::path::Path::new("diagnose").exists()})
     }
     fn anchor(&self,eye:Vec3)->Vec3 {eye-Quat::from_rotation_y(self.yaw)*self.origin.unwrap()}
     fn hand(&self,t:&Tracking,eye:Vec3)->Option<Affine3A> {
@@ -74,6 +70,18 @@ impl warp_xr::Game for NativeGame {
         Ok(())
     }
     fn frame(&mut self,gpu:&render::Gpu,t:&Tracking,size:[u32;2],dt:f32,targets:Option<&[&wgpu::Texture]>)->Result<warp_xr::FrameOutput,String> {
+        // A sleeping Quest can time out audio startup before OpenXR gets focus.
+        // Start it only once the headset is active; audio failure must not abort VR.
+        if self.audio_pending&&t.focused {
+            self.audio_pending=false;
+            match crate::sounds::speakers(None,None) {
+                Ok((speaker,tx,_))=>{
+                    self.game.set_sounds(crate::sounds::Sounds::new(tx,crate::sounds::find_patches(None),crate::sounds::find_dir(None).as_deref()));
+                    self._speaker=Some(speaker);
+                }
+                Err(error)=>eprintln!("XR audio unavailable: {error}"),
+            }
+        }
         if self.origin.is_none() {
             let f = t.head.orientation * Vec3::NEG_Z;
             self.yaw -= (-f.x).atan2(-f.z);

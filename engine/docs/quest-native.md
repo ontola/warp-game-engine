@@ -111,7 +111,9 @@ directly, with sRGB output conversion. There is no intermediate stereo copy or
 CPU pixel readback. GPU completion is awaited before releasing images in
 `COLOR_ATTACHMENT_OPTIMAL`; wrapper lifetimes end before the OpenXR swapchains.
 Full-field tints (round start, ion/explosion flash, death/ghost/phoenix) use a
-one-pixel alpha projection layer over both complete eye frusta and the HUD.
+one-pixel alpha projection layers over both complete eye frusta. Ghost/death
+tints remain behind the HUD so cards stay readable; round/phoenix/explosion
+flashes cover the HUD too. Only active tint layers are acquired and drawn.
 Menus and text remain on the comfortable head-relative quad.
 
 The minimum path renders each eye at the full resolution recommended by the
@@ -160,8 +162,23 @@ played. The user confirmed the arena and weapon were visible. Profiling located
 119–120 fps windows at the runtime's full 1440×1584 resolution per eye, with
 short dips; the user confirmed markedly smoother play. This measurement
 preceded restored gameplay FX and is not an effects-heavy worst-case guarantee.
-Final effects-on validation is in progress. Synthetic GPU fixtures separately
-check direct sRGB eye parity, per-eye hiding, explosion/ion visibility and expiry.
+The effects-on APK is installed. Final in-headset effects/flash visibility and
+sustained FPS await an active playtest; the headset was asleep at the end of
+this iteration. Synthetic GPU fixtures separately check direct sRGB eye parity,
+per-eye hiding, explosion/ion visibility and expiry in ordinary and sRGB targets.
+Workspace/all-target checking, 83 Growing Guns app tests (two ignored), three
+XR tests, two minimum GPU tests, three sprite tests and the HDR ion-volume GPU
+fixture passed. The volume fixture verifies interior views, opaque occlusion,
+axial rays, edge continuity and separate view projections.
+
+The cage mesh's generic coarsest LOD had collapsed 756 source triangles to 22,
+erasing its thin bars because a 90 m chain shared the bounding box. Cages now
+retain their small authored geometry on PC and VR; source bounds and triangle
+retention have a regression test and a GPU capture. Minimum-profile cube joints
+are widened from 0.8% to 3% without added geometry; distant unfiltered seams
+can still alias. Floor surface height and simulation collision stay unchanged.
+Audio initialization waits for headset focus, avoiding an audio-start timeout
+aborting VR when launched with the headset asleep.
 
 For diagnostics, use `adb logcat --pid=$(adb shell pidof com.ontola.warp.growingguns)`.
 Startup errors are tagged `WarpXR`. Preserve logs before restarting the app.

@@ -31,7 +31,7 @@ impl Cages {
             tint: super::srgb_to_linear([0.13, 0.13, 0.15]), layer: -1,
             roughness: 0.55, flags: 0, scale: 1.0, metal: 0.5,
         });
-        let frame = scene.add_mesh(&frame(iron).mesh());
+        let frame = scene.add_mesh(&frame_mesh(iron));
         let floor = scene.add_mesh(&primitives::cube(iron).mesh());
         let first = scene.instances.len();
         for _ in 0..players {
@@ -108,6 +108,18 @@ fn floor_transform(origin: Vec3, side: f32, angle: f32) -> Affine3A {
 
 /// Bake the fixed pieces into one shared mesh, rather than dozens of dynamic
 /// instances per player. Only the floor halves need separate transforms.
+fn frame_mesh(material:u32)->render::cluster::ClusterMesh {
+    // A 90 m chain shares this mesh with 7 cm bars. Generic coarse LODs
+    // erase the bars relative to that large bounding box. The authored mesh
+    // is already below 1,000 triangles; retain it on PC and minimum/VR alike.
+    let source=frame(material);
+    let (lo,hi)=source.vertices.iter().fold((Vec3::splat(f32::INFINITY),Vec3::splat(f32::NEG_INFINITY)),|(lo,hi),v|{
+        let p=Vec3::from(v.pos);(lo.min(p),hi.max(p))});
+    let center=(lo+hi)*0.5;
+    let radius=source.vertices.iter().map(|v|Vec3::from(v.pos).distance(center)).fold(0.0f32,f32::max);
+    render::cluster::ClusterMesh::build_fixed(&[source.part()],center.extend(radius+0.001).to_array())
+}
+
 fn frame(material: u32) -> Primitive {
     let mut out = Primitive { material, ..Default::default() };
     let cube = primitives::cube(material);
@@ -152,6 +164,24 @@ mod tests {
     use super::*;
 
     fn translation(i: &render::scene::GpuInstance) -> Vec3 { Vec3::new(i.rows[0][3], i.rows[1][3], i.rows[2][3]) }
+
+    #[test]
+    fn cage_frame_lod_retains_the_thin_bars_despite_its_long_chain() {
+        let source=frame(0);let generic=source.mesh();let fixed=frame_mesh(0);
+        assert_eq!(fixed.root_triangles(),source.indices.len()/3);
+        assert!(fixed.root_triangles()<1000,"cage budget grew unexpectedly");
+        eprintln!("cage triangles: source {}, generic root {}, retained root {}",source.indices.len()/3,generic.root_triangles(),fixed.root_triangles());
+        for v in &fixed.vertices {assert!(Vec3::from(v.pos).distance(Vec3::from_slice(&fixed.sphere[..3]))<=fixed.sphere[3]);}
+        if let Ok(path)=std::env::var("WARP_CAGE_CAPTURE") {
+            let gpu=render::Gpu::new().unwrap();let mut scene=Scene::default();scene.graphics.minimal_forward=true;
+            scene.add_material(Material{tint:[0.2,0.2,0.24],layer:-1,roughness:0.5,flags:0,scale:1.,metal:0.5});
+            let mesh=scene.add_mesh(&fixed);scene.add_instance(mesh,Affine3A::IDENTITY);
+            let light=render::Lighting::default();let renderer=render::Renderer::new(&gpu,&scene,&light);
+            let camera=render::Camera{pos:Vec3::new(6.,4.,10.),target:Vec3::new(0.,2.,0.),fov_y:0.65,near:0.05};
+            let (image,_)=renderer.render(&gpu,&camera,&light,640,640);
+            render::write_png(std::path::Path::new(&path),640,640,&image).unwrap();
+        }
+    }
 
     #[test]
     fn cage_follows_descent_opens_at_release_and_retracts_without_the_player() {
