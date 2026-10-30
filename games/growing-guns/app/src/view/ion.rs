@@ -202,11 +202,12 @@ fn charge_motes(position: Vec3, birth: f32, seed: u64) -> Vec<AdditiveMote> {
             let dist = rng.unit().sqrt() * growing_guns::ION_RADIUS as f32;
             let start = position + Vec3::new(angle.cos() * dist, 0.0, angle.sin() * dist);
             let life = CHARGE - at;
-            let power = rng.range(2.4, 3.6);
-            // Grains first lift only centimetres, hovering under a metre even
-            // at full charge. Late births keep the same slow trajectory; the
-            // sudden acceleration happens when they turn into impact streaks.
-            let rise = rng.range(0.4, 0.85) * (life / CHARGE).powf(power);
+            // Appearance and lift-off have independent clocks. Some grains
+            // leave immediately, others linger; vary acceleration and terminal
+            // speed separately so the field never rises as one flat sheet.
+            let motion_delay = rng.range(0.0, (life - 0.35).min(1.25));
+            let power = rng.range(1.4, 3.0);
+            let rise = (rng.range(0.45, 2.6) * (life - motion_delay) / power).min(2.8);
             let travel = Vec3::new(rng.range(-0.06, 0.06), 1.0, rng.range(-0.06, 0.06)) * rise;
             let fade_in = (rng.range(0.45, 0.95) / life).min(0.8);
             motes.push(AdditiveMote { position: start, travel, birth: birth + at, life,
@@ -214,7 +215,7 @@ fn charge_motes(position: Vec3, birth: f32, seed: u64) -> Vec<AdditiveMote> {
                 color: Vec3::new(0.18, rng.range(0.55, 0.78), 1.0),
                 radiance: rng.range(35.0, 55.0) * MOTE_NITS,
                 opacity: rng.range(0.75, 1.0), fade_in,
-                fade_out: 0.0, motion_power: power });
+                fade_out: 0.0, motion_power: power, motion_delay });
         }
     }
     motes
@@ -242,8 +243,7 @@ fn ground_motes(motes: &mut Vec<AdditiveMote>, arena: &growing_guns::Arena) {
 fn detonation_streaks(motes: &[AdditiveMote], now: f32, seed: u64) -> Vec<AdditiveStreak> {
     let mut rng = Rng(seed);
     motes.iter().map(|mote| {
-        let age = ((now - mote.birth) / mote.life).clamp(0.0, 1.0);
-        let position = mote.position + mote.travel * age.powf(mote.motion_power);
+        let position = mote.position_at(now);
         let life = rng.range(0.55, 0.85);
         AdditiveStreak { position, travel: Vec3::Y * (rng.range(35.0, 65.0) * life),
             birth: now, life, radius: [mote.radius * 0.75, mote.radius * 0.4],
@@ -312,19 +312,23 @@ mod tests {
         let outer=motes.iter().filter(|m| m.position.length()>growing_guns::ION_RADIUS as f32*0.7).count();
         assert!(outer>motes.len()/3, "the whole disc receives motes");
         assert!(motes.windows(2).any(|m| (m[0].birth - m[1].birth).abs() > 0.01));
+        let early: Vec<_> = motes.iter().filter(|m| m.birth < 10.45).collect();
+        let heights: Vec<_> = early.iter().map(|m| m.position_at(11.2).y - m.position.y).collect();
+        assert!(heights.iter().filter(|h| **h < 0.03).count() > 20, "some visible grains still linger");
+        assert!(heights.iter().filter(|h| **h > 0.2).count() > 10, "others have already lifted clearly");
         let mut effects = Effects::default();
         for mote in motes {
             effects.mote(mote).expect("valid soft-dot recipe");
             assert!(mote.birth >= 10.0);
             assert!((mote.birth + mote.life - (10.0 + CHARGE)).abs() < 0.00001);
             assert_eq!(mote.fade_out, 0.0, "dots remain visible until the hand-off");
-            // First fifth of life covers under 3% of the rise; speed increases.
-            assert!(0.2_f32.powf(mote.motion_power) < 0.03);
-            let speed = |age: f32| mote.travel.y / mote.life * mote.motion_power * age.powf(mote.motion_power - 1.0);
-            assert!(speed(0.1) < 0.11);
-            assert!(speed(0.75) > speed(0.25) * 4.0);
-            assert!(speed(1.0) <= 0.81, "the charge hovers slowly until the sudden discharge");
-            assert!(mote.travel.y <= 0.85);
+            assert_eq!(mote.position_at(mote.birth + mote.motion_delay * 0.9), mote.position);
+            let speed = |age: f32| mote.travel.y / (mote.life - mote.motion_delay)
+                * mote.motion_power * age.powf(mote.motion_power - 1.0);
+            assert_eq!(speed(0.0), 0.0);
+            assert!(speed(0.75) > speed(0.25) * 1.5);
+            assert!(speed(1.0) <= 2.601, "late lift-offs do not compress into an excessive speed");
+            assert!(mote.travel.y <= 2.8);
             assert!(mote.fade_in * mote.life >= 0.449);
             assert!((0.055..=0.085).contains(&mote.radius));
             assert!(mote.travel.x.abs().max(mote.travel.z.abs()) <= mote.travel.y * 0.061);
