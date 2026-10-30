@@ -30,7 +30,7 @@ impl Default for Policy {
             max_color_error: 0.08, allow_sampled_optics: false, measured_source_cuts: true, proxy_pixels: 4.0, proxy_pixels_from: 50.0 }
     }
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Candidate {
     pub source_only: bool,
     pub level: u32,
