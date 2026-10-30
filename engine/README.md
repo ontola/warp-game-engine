@@ -13,6 +13,7 @@ the game owns its simulation, assets, tuning and integration.
 | `physics` | Rigid bodies on Rapier: boxes, spheres, capsules, impulses, blasts, joints, rays |
 | `assets` | glTF import with materials and textures; baked weighted characters |
 | `net` | Online play over iroh: typed host/client messages behind polled channels |
+| `webxr` (JS) | Experimental standalone WebXR shell and lightweight mobile renderer; [Quest demo and limits](docs/quest-vr.md) |
 | `script` | Luau modules: sandbox, hot reload, deterministic step budget |
 
 `assets/` contains licensed default fonts, reusable audio resources and

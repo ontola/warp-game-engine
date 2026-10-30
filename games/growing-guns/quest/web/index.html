@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101b24"><title>Growing Guns • Warp VR</title><link rel="icon" href="./icon.svg"><link rel="manifest" href="./manifest.webmanifest"><link rel="stylesheet" href="./style.css"></head>
+<body>
+<canvas id="game" aria-label="Growing Guns arena"></canvas>
+<main id="landing">
+  <header><span class="brand">W<span class="brand-dot">/</span> WARP</span><span class="pill">STANDALONE VR DEMO</span></header>
+  <section class="intro"><p class="eyebrow">GROW YOUR GUN. OWN THE ARENA.</p><h1>GROWING<br><span>GUNS</span></h1><p class="lead">Jij. Drie bots. Een arena die uit elkaar knalt.<br>Nu van dichtbij.</p>
+  <div class="actions"><button id="enter" disabled>VR controleren…</button><button id="desktop" class="secondary" disabled>Bekijk de demo</button></div>
+  <p id="status" role="status" aria-live="polite">De game wordt geladen op dit apparaat…</p>
+  <p class="runtime">QUEST 2 · LOKAAL OP JE HEADSET · GEEN PC-STREAMING</p></section>
+  <footer><div><b>BEWEEG</b><span>Linkerstick · langzaam lopen<br>Rechterstick · 30° draaien</span></div><div><b>RICHT & SCHIET</b><span>Rechtercontroller · richten<br>Trekker · schieten / kaart kiezen</span></div><div><b>SPEEL</b><span>A · springen &nbsp; Grip · herladen<br>Linkertrekker · granaat &nbsp; B · pauze</span></div></footer>
+  <span class="build-note">Warp WebXR / vereenvoudigde graphics / 8 demokaarten</span>
+</main>
+<div id="hud" hidden><span id="stats"></span><button id="menu">Pauze</button></div>
+<div id="overlay" hidden><div class="dialog"><p class="eyebrow">WARP / GROWING GUNS</p><h2 id="dialog-title">Gepauzeerd</h2><div id="cards"></div><p id="help">WASD · muis · klik schieten · R herladen · spatie springen</p><button id="resume">Verder spelen</button><button id="restart" class="secondary">Nieuwe match</button><button id="back" class="secondary">Terug</button></div></div>
+<script type="module" src="./demo.js"></script>
+</body></html>

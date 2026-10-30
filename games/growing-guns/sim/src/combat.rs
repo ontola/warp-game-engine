@@ -64,8 +64,11 @@ impl World {
         let dir_cam = self.players[i].forward();
         let aim = self.ray_all(cam, dir_cam, AIM_RAY, &[i as u16], &[], false).map_or(cam + dir_cam * AIM_RAY, |(t, _)| cam + dir_cam * t);
         let p = &self.players[i];
-        let origin = p.muzzle();
-        let base = (aim - origin).normalize_or(dir_cam);
+        let tracked = self.tracked_ray(i);
+        let (origin, base) = tracked.unwrap_or_else(|| {
+            let origin = p.muzzle();
+            (origin, (aim - origin).normalize_or(dir_cam))
+        });
         let w = &p.weapon;
         let last = p.ammo == 0;
         let scale = w.bullet_scale_for_shot(last);
@@ -78,9 +81,15 @@ impl World {
         let p = &mut self.players[i];
         p.recoil_pitch += RIFLE_RECOIL_PITCH * recoil_scale;
         p.yaw += jitter;
-        p.vel -= dir_cam * kick * shots as f32;
+        p.vel -= if tracked.is_some() { base } else { dir_cam } * kick * shots as f32;
         p.bloom = (p.bloom + recoil).min(MAX_BLOOM);
-        let (right, up, _) = self.players[i].basis();
+        let (right, up) = if tracked.is_some() {
+            let right = base.cross(Vec3::Y).normalize_or(Vec3::X);
+            (right, right.cross(base).normalize())
+        } else {
+            let (right, up, _) = self.players[i].basis();
+            (right, up)
+        };
         for _ in 0..shots {
             let mut dir = base;
             if spread > 0.0 {

@@ -1,0 +1,44 @@
+name: Standalone Quest demo
+on:
+  push:
+    branches: [main]
+    paths: ['engine/webxr/**', 'engine/tools/*quest*', 'games/growing-guns/quest/**', 'games/growing-guns/sim/**', 'engine/crates/kern/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/quest.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  webxr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+      - run: cargo test --locked -p growing-guns -p growing-guns-quest
+      - run: python3 engine/tools/build-quest-demo.py
+      - run: npm test --prefix engine/webxr
+      - run: npx --prefix engine/webxr playwright install --with-deps chromium
+      - name: Browser and emulated stereo flow
+        env:
+          PLAYWRIGHT_CHANNEL: chromium
+        run: |
+          python3 engine/tools/serve-quest-demo.py > build/quest-server.log 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          for i in $(seq 1 30); do curl -fsS http://localhost:8787/ > /dev/null && break; sleep 1; done
+          npm run test:browser --prefix engine/webxr
+          npm run test:cards --prefix engine/webxr
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: growing-guns-quest-demo
+          path: |
+            build/growing-guns-quest-webxr.zip
+            build/quest-evidence
+            build/quest-server.log
+# Emulator checks are not physical Quest 2 acceptance or a framerate measurement.

@@ -30,6 +30,7 @@ missing.
 | Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with smoke, sparks, chips, scorch and blood, air strike rocket and white-out, ion cannon |
 | Sky and light | Done | Godot's sky by default; procedural time of day and weather, per round or as a cycle; floodlights with shadows at night |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
+| Standalone Quest VR | Experimental | Quest Browser runs the Rust sim locally via Wasm; tracked rifle/grenade, snap turn, bots, 8 demo cards and simplified graphics. [Build, controls and limits](../../engine/docs/quest-vr.md). Physical Quest 2 testing pending. |
 | Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen. Join/leave reuses visual slots and clears unused screen regions |
 | Online | Close | Host-authoritative over iroh; local movement prediction and buffered remote snapshots. Tested over loopback (`nettest`), not yet between two machines or under realistic network jitter; transport currently binds IPv4 only |
 | Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
@@ -72,6 +73,11 @@ right mouse special, R reload. Pad: sticks, A/LB jump, Y/RB dash, RT fire,
 LT/B special, X reload. F12 saves a screenshot. F3 (Back + Start on a pad)
 opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
+
+For the standalone Quest Browser demo, run `python3 engine/tools/build-quest-demo.py`
+then `python3 engine/tools/serve-quest-demo.py --public` from the repository root.
+See [Quest VR](../../engine/docs/quest-vr.md) for controls and the limited mobile
+presentation. It does not use the desktop `play` executable.
 
 ## Change it while it runs
 
