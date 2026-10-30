@@ -22,7 +22,7 @@ use std::sync::Mutex;
 /// target saturates anyway.
 const MAX_CD: f32 = 100_000_000.0;
 const SPHERE_VERTICES: u32 = 16 * 9 * 6;
-const COLUMN_VERTICES: u32 = 16 * 6;
+const COLUMN_VERTICES: u32 = 3; // One ray-integrated volume, including camera-inside views.
 const STREAK_VERTICES: u32 = 6 * 12;
 const MAX_PUFFS: usize = 16384;
 /// Heat shells only for blasts at least this big (Godot BLAST_DISTORTION_MIN_RADIUS).
@@ -47,10 +47,11 @@ const HEAT: f32 = 3.0;
 const COLUMN: f32 = 4.0;
 const STREAK: f32 = 5.0;
 
-/// An unlit, additive cylinder animated entirely from its birth time. Values
-/// are metres, seconds and linear RGB radiance in nits. `position` is the
-/// bottom centre; the cylinder has open ends so long columns have no visible
-/// cap. Several nested columns can describe a soft beam without a volume.
+/// An emissive volume animated entirely from its birth time. Values are
+/// metres, seconds and linear RGB radiance in nits. `position` is the bottom
+/// centre. The GPU integrates a soft radial density along the visible ray,
+/// clipped to opaque geometry; cameras may enter the volume. Tapered columns
+/// use eight density samples, straight cylinders an exact integral.
 #[derive(Clone, Copy, Debug)]
 pub struct AdditiveColumn {
     pub position: Vec3,
@@ -398,7 +399,7 @@ impl Effects {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniform { view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4] }
+struct Uniform { view_proj: [[f32; 4]; 4], inverse_view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4] }
 
 struct Target {
     size: (u32, u32),
@@ -553,7 +554,7 @@ impl FxRenderer {
                 backgrounds, binds });
         }
         let t = self.targets[index].as_mut().unwrap();
-        let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(), view: view.to_cols_array_2d(),
+        let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), inverse_view_proj: output_vp.inverse().to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(), view: view.to_cols_array_2d(),
             camera_near: camera.pos.extend(camera.near).to_array(), size: [size.0 as f32, size.1 as f32, 1.0 / size.0 as f32, 1.0 / size.1 as f32],
             clock: [self.time, white, 0.0, 0.0] };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
@@ -647,7 +648,7 @@ mod tests {
         let module = naga::front::wgsl::parse_str(shader_source()).unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<Puff>(), 112);
-        assert_eq!(std::mem::size_of::<Uniform>(), 240);
+        assert_eq!(std::mem::size_of::<Uniform>(), 304);
     }
 
     #[test]
@@ -700,7 +701,7 @@ mod tests {
         assert_eq!(s.ay, [0.1, 0.2, 16.0, 24.0]);
         assert_eq!(s.body, [0.7, 0.0, 0.85, 0.0]);
         assert!(fx.changed);
-        assert_eq!(COLUMN_VERTICES, 96);
+        assert_eq!(COLUMN_VERTICES, 3);
         assert_eq!(STREAK_VERTICES, 72);
         assert!(STREAK_VERTICES < SPHERE_VERTICES / 8);
     }
