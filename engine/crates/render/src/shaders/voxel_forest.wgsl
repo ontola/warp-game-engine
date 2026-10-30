@@ -1058,6 +1058,13 @@ const VOLUME_SPLAT_HEADER: u32 = 12u;
 const VOLUME_SPLAT_NONE: u32 = 0xffffffffu;
 // One quad per splat (voxel_splat_raster.wgsl).
 const VOLUME_SPLAT_VERTICES: u32 = 6u;
+// Splats fainter than this are thinned (volume_splat_append).
+const VOLUME_SPLAT_MIN_ALPHA: f32 = 0.25;
+fn volume_splat_hash(x:u32)->u32 {
+    var h=x*747796405u+2891336453u;
+    h=((h>>((h>>28u)+4u))^h)*277803737u;
+    return (h>>22u)^h;
+}
 // Selection w for the sun map: this group casts as voxels, its source does not.
 const VOLUME_SUN_CASTER: u32 = 2u;
 var<workgroup> volume_splat_level_shared: u32;
@@ -1138,10 +1145,19 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
     let sigma=volume_sigma(volume_cells[cell_ref.x],volume_direction(toward));
     let alpha=1.0-exp(-sigma*cell.size/max(dot(abs(toward),vec3<f32>(1.0)),1.0));
     if alpha<1.0/255.0 {return;}
+    // Faint cells are thinned to VOLUME_SPLAT_MIN_ALPHA: kept with
+    // probability alpha/min by a hash stable per tree and cell (no flicker),
+    // so expected coverage holds while the raster draws far fewer quads.
+    var kept_alpha=alpha;
+    if alpha<VOLUME_SPLAT_MIN_ALPHA {
+        let h=volume_splat_hash(index*0x9e3779b9u^cell_ref.x);
+        if f32(h>>8u)/16777216.0>=alpha/VOLUME_SPLAT_MIN_ALPHA {return;}
+        kept_alpha=VOLUME_SPLAT_MIN_ALPHA;
+    }
     let faces=select(0u,1u,toward.x>0.0)|select(0u,2u,toward.y>0.0)|select(0u,4u,toward.z>0.0);
     let slot=volume_splat_first()+atomicAdd(&volume_splat_draw[1],1u);
     if slot>=arrayLength(&volume_splats) {return;}
-    volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(alpha*65535.0+0.5)|(faces<<16u));
+    volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(kept_alpha*65535.0+0.5)|(faces<<16u));
 }
 
 @compute @workgroup_size(64)
