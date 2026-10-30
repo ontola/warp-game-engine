@@ -204,8 +204,8 @@ visual/correctness fixture, not a four-player performance claim.
 Games can tune their HDR highlight response through `Lighting::bloom_boost`,
 `bloom_rounds` and `bloom_threshold`; renderer defaults are unchanged. The
 existing bloom enable/strength controls and quality disable still apply.
-Growing Guns uses a wider, stronger halo so an Ion beam reads as intense
-emission. Three local samples along the charging column illuminate paving
+Growing Guns builds a wider, stronger halo during Ion charge and impact,
+then returns to its usual bloom when the effect expires. Three local samples along the charging column illuminate paving
 and walls; they build with charge and expire at detonation. These local
 samples use the engine's existing unshadowed local-light path.
 

@@ -151,6 +151,17 @@ impl IonFx {
         lights
     }
 
+    /// Optical bloom follows the charge and brief impact; no permanent change
+    /// to the scene's look after the Ion effect has finished.
+    pub fn glow(&self, clock: f32) -> f32 {
+        if !clock.is_finite() { return 0.0; }
+        let charge=self.charges.iter().filter_map(|c| {
+            let age=clock-c.birth;
+            (0.0..CHARGE).contains(&age).then(||smoothstep(0.4,0.9,age/CHARGE))
+        }).fold(0.0,f32::max);
+        self.detonations.iter().map(|d|flash_envelope(clock-d.birth)).fold(charge,f32::max)
+    }
+
     /// A brief, distance-weighted exposure flash; it never becomes a lasting
     /// full-screen white layer and each split-screen camera gets its own value.
     pub fn flash(&self, clock: f32, eye: Vec3) -> f32 {
@@ -303,6 +314,9 @@ mod tests {
         assert!(floor_lux(CHARGE*0.95)>60_000.0,"late beam clearly lights the paving even in daylight");
         assert!(floor_lux(CHARGE*0.15)<floor_lux(CHARGE*0.95)*0.01);
         assert_eq!(fx.lights(CHARGE).len(),0);
+        assert_eq!(fx.glow(0.0),0.0);
+        assert_eq!(fx.glow(CHARGE*0.95),1.0);
+        assert_eq!(fx.glow(CHARGE),0.0);
     }
 
     #[test]
