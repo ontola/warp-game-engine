@@ -11,20 +11,21 @@ use std::time::{Duration, Instant};
 /// factors multiply the debug menu's own distance and patch-count values.
 /// Grass is the costliest layer, so it gives way before resolution drops far:
 /// a mild resolution cut, then grass down to nothing, then the rest of the
-/// resolution. 0.25 is the shortest reach the meadow accepts.
+/// resolution. Past the shortened blades the terrain shades the field as a
+/// canopy (render's meadow_canopy.wgsl), so a short reach still reads as grass.
 const LADDER: [Rung; 12] = [
     Rung { scale: 1.00, grass_distance: 1.00, grass_count: 1.00 },
     Rung { scale: 0.90, grass_distance: 1.00, grass_count: 1.00 },
-    Rung { scale: 0.85, grass_distance: 0.80, grass_count: 0.90 },
-    Rung { scale: 0.80, grass_distance: 0.65, grass_count: 0.75 },
-    Rung { scale: 0.80, grass_distance: 0.50, grass_count: 0.60 },
-    Rung { scale: 0.80, grass_distance: 0.40, grass_count: 0.45 },
-    Rung { scale: 0.80, grass_distance: 0.30, grass_count: 0.30 },
-    Rung { scale: 0.80, grass_distance: 0.25, grass_count: 0.15 },
-    Rung { scale: 0.75, grass_distance: 0.25, grass_count: 0.05 },
-    Rung { scale: 0.70, grass_distance: 0.25, grass_count: 0.00 },
-    Rung { scale: 0.60, grass_distance: 0.25, grass_count: 0.00 },
-    Rung { scale: 0.50, grass_distance: 0.25, grass_count: 0.00 },
+    Rung { scale: 0.85, grass_distance: 0.70, grass_count: 1.00 },
+    Rung { scale: 0.80, grass_distance: 0.50, grass_count: 0.90 },
+    Rung { scale: 0.80, grass_distance: 0.35, grass_count: 0.80 },
+    Rung { scale: 0.80, grass_distance: 0.25, grass_count: 0.65 },
+    Rung { scale: 0.80, grass_distance: 0.18, grass_count: 0.50 },
+    Rung { scale: 0.80, grass_distance: 0.12, grass_count: 0.30 },
+    Rung { scale: 0.75, grass_distance: 0.10, grass_count: 0.10 },
+    Rung { scale: 0.70, grass_distance: 0.10, grass_count: 0.00 },
+    Rung { scale: 0.60, grass_distance: 0.10, grass_count: 0.00 },
+    Rung { scale: 0.50, grass_distance: 0.10, grass_count: 0.00 },
 ];
 const WINDOW: usize = 24;
 /// A median this far over the period means frames are being missed.
@@ -118,7 +119,7 @@ impl AdaptiveQuality {
     /// The debug menu's grass settings scaled down by the current rung.
     pub fn apply(&self, mut options: render::debug_settings::DebugRenderOptions) -> render::debug_settings::DebugRenderOptions {
         let r = self.rung();
-        options.meadow_distance_scale = (options.meadow_distance_scale * r.grass_distance).clamp(0.25, 1.0);
+        options.meadow_distance_scale = (options.meadow_distance_scale * r.grass_distance).clamp(render::debug_settings::MEADOW_DISTANCE_SCALE_MIN, 1.0);
         options.meadow_density = (options.meadow_density * r.grass_count).clamp(0.0, 1.0);
         options
     }

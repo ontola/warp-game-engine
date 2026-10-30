@@ -22,6 +22,8 @@ pub struct DebugRenderOptions {
     pub bloom_screen: bool,
     /// Scale both meadow representation transitions and its outer fade. This
     /// only shrinks the existing allocation; it does not change root density.
+    /// Past the blades the terrain draws the field as a canopy
+    /// (meadow_canopy.wgsl), so short ranges stay grassy.
     pub meadow_distance_scale: f32,
     /// Maximum projected source-geometry error in input pixels. Independent
     /// of draw distance and the general cluster-mesh LOD setting.
@@ -33,6 +35,9 @@ pub struct DebugRenderOptions {
     /// Linear albedo multiplier shared by source, aggregate and substrate.
     pub meadow_color_multiplier: [f32; 3],
 }
+
+/// The shortest grass range, as a fraction of the field's own.
+pub const MEADOW_DISTANCE_SCALE_MIN: f32 = 0.1;
 
 impl Default for DebugRenderOptions {
     fn default() -> Self {
@@ -65,9 +70,9 @@ impl DebugRenderOptions {
             return Err(format!("bloom rounds must be 1..={} and threshold 0..=16", crate::bloom::MAX_ROUNDS));
         }
         if !self.meadow_distance_scale.is_finite()
-            || !(0.25..=1.0).contains(&self.meadow_distance_scale)
+            || !(MEADOW_DISTANCE_SCALE_MIN..=1.0).contains(&self.meadow_distance_scale)
         {
-            return Err("meadow distance scale must be finite and in 0.25..=1.0".into());
+            return Err("meadow distance scale must be finite and in 0.1..=1.0".into());
         }
         if !self.meadow_lod_pixels.is_finite() || !(0.5..=4.0).contains(&self.meadow_lod_pixels) {
             return Err("meadow LOD error must be finite and in 0.5..=4.0 input pixels".into());
@@ -126,10 +131,10 @@ mod tests {
         assert!(defaults.meadow_enabled && defaults.headlights_enabled
             && defaults.transparency_enabled && defaults.exhaust_enabled
             && defaults.wheel_particles_enabled);
-        for scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 0.0, 0.249, 1.001] {
+        for scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 0.0, 0.099, 1.001] {
             assert!(DebugRenderOptions { meadow_distance_scale: scale, ..defaults }.validate().is_err());
         }
-        for scale in [0.25, 0.5, 1.0] {
+        for scale in [0.1, 0.25, 0.5, 1.0] {
             assert!(DebugRenderOptions { meadow_distance_scale: scale, ..defaults }.validate().is_ok());
         }
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.499, 4.001] {

@@ -57,10 +57,10 @@ const SHADOW_RECENTRE: f32 = 4000.0;
 /// Above this height over the ground the grass is too small to matter and
 /// is not followed.
 const GRASS_CEILING: f32 = 120.0;
-/// Grass radius. Sideways' 250 m covers a road corridor; here it covers the
-/// whole screen, and at 1440p on an M5 Pro the meadow passes took ~550 ms a
-/// frame seen from 60 m up (120 m: ~51 ms).
-const GRASS_RADIUS: f32 = 120.0;
+/// Grass blade radius. Meadow cost grows with radius times screen cover (at
+/// 1440p on an M5 Pro: 250 m ~550 ms, 120 m ~51-73 ms a frame); past the
+/// blades the terrain shader draws the field as a canopy.
+const GRASS_RADIUS: f32 = 45.0;
 
 type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
 /// A scene from the builder thread, with its renderer when the thread had
@@ -291,7 +291,7 @@ impl Game for Fly {
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
             number(RECIPE_TREES, "Recipe spruces near camera", f64::from(w.recipe_trees), (0.0, 32.0, 1.0, 0), "", "The nearest trees use the new recipe spruce (shared detailed sprays, branch wind). Each is millions of triangles."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
-            toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (120 m radius) below 120 m above ground. Expensive. The Grass menu only hides it."),
+            toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (45 m of blades, canopy shading beyond) below 120 m above ground. Expensive. The Grass menu only hides it."),
             number(CELL_PX, "Terrain cell size", f64::from(t.cell_pixels), (4.0, 96.0, 4.0, 0), "px", "Largest projected terrain cell before a patch splits."),
             number(ERROR_PX, "Terrain error", f64::from(t.error_pixels), (0.25, 12.0, 0.25, 2), "px", "Largest projected height error before a patch splits."),
         ])

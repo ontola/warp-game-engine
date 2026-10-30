@@ -1595,6 +1595,16 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
                 let detail = clamp(0.94 + 0.3 * dot(verge, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.94, 1.06);
                 c = mix(c, meadow_substrate.leaf_base.rgb * pigment * detail, coverage);
             }
+            // Past the meadow's blades the grass reads as a canopy: where the
+            // field grows, or on the grassy verge without a field.
+            var grassy = m_verge * (1.0 - m_bare);
+            if FEATURE_MEADOW && meadow_substrate.control.x != 0u {
+                grassy = meadow_habitat_coverage(wuv, uv.x, up, meadow_substrate.control.y) * smoothstep(1.5, 2.5, uv.x);
+            }
+            let canopy = meadow_canopy(c, nn, n, dir, wuv, max(length(fp.dx), length(fp.dy)), light.anim.x,
+                meadow_substrate.control.y, grassy * (1.0 - m_rock));
+            c = canopy.albedo;
+            nn = canopy.normal;
         }
         if m_rock > 0.0 {
             var tw = pow(abs(n), vec3<f32>(4.0));

@@ -224,6 +224,12 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     var nn = perturb_xz(n, nt);
     c *= 0.82 + 0.3 * broad;
 
+    // Past the meadow's blades the ground reads as a grass canopy.
+    let canopy = meadow_canopy(c, nn, n, s.dir, wuv, footprint, s.time, u32(s.metal + 0.5),
+        (1.0 - m_soil) * (1.0 - 0.5 * m_moor) * smoothstep(0.75, 0.9, f.up));
+    c = canopy.albedo;
+    nn = canopy.normal;
+
     // Loose stone.
     let m_scree = smoothstep(0.2, 0.7, f.scree + (mottle - 0.5) * 0.4);
     // Mountain stone is grey limestone and gneiss: the textures are warm, so
