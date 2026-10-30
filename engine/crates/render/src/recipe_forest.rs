@@ -124,7 +124,8 @@ pub struct Pool {
 
 struct Slot { variant: usize, plant: MovablePlant, tree: Option<usize> }
 
-/// Pool statistics for logs and tests.
+/// Pool statistics for logs and tests. `slots` can be fewer than asked:
+/// plant_streamed fits the pool to the renderer's budgets.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct PoolStats { pub slots: usize, pub placed: usize, pub moved: usize }
 
@@ -138,12 +139,23 @@ pub fn plant_streamed(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree
     if let Some(tree) = trees.iter().find(|t| t.variant >= variants.len()) {
         return Err(format!("recipe forest variant {} of {}", tree.variant, variants.len()));
     }
+    // The pool's members and branch volumes share the renderer's fixed
+    // budgets (part wind attachments, view groups): past them, the variant
+    // with the most members gives up a slot until the pool fits.
+    let counts: Vec<usize> = (0..variants.len()).map(|v| trees.iter().filter(|t| t.variant == v).count()).collect();
+    let mut per: Vec<usize> = counts.iter().map(|&n| slots.min(n)).collect();
+    let total = |per: &[usize], cost: &dyn Fn(&CookedPlant) -> usize| per.iter().zip(variants).map(|(&n, c)| n * cost(c)).sum::<usize>();
+    while total(&per, &|c| c.stats().placements) > crate::part_wind::MAX_ATTACHMENTS
+        || total(&per, &|c| c.stats().volume_assets) > crate::voxel_forest::MAX_VIEW_GROUPS {
+        let worst = (0..per.len()).filter(|&v| per[v] > 0)
+            .max_by_key(|&v| per[v] * variants[v].stats().placements).ok_or("not one full plant fits the renderer")?;
+        per[worst] -= 1;
+    }
     let mut built = Vec::new();
-    for variant in 0..variants.len() {
-        let mine: Vec<&Tree> = trees.iter().filter(|t| t.variant == variant).collect();
-        let Some(first) = mine.first() else { continue; };
-        let scale = mine.iter().map(|t| t.scale).fold(0.0, f32::max);
-        for _ in 0..slots.min(mine.len()) { built.push(Tree { scale, ..**first }); }
+    for (variant, &n) in per.iter().enumerate() {
+        let Some(first) = trees.iter().find(|t| t.variant == variant) else { continue; };
+        let scale = trees.iter().filter(|t| t.variant == variant).map(|t| t.scale).fold(0.0, f32::max);
+        for _ in 0..n { built.push(Tree { scale, ..*first }); }
     }
     let mut vegetation = SceneVegetation::new(scene, limits(variants, built.len()))?;
     let mut pool = Vec::with_capacity(built.len());
