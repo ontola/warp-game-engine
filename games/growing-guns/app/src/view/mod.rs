@@ -156,8 +156,12 @@ impl Visuals {
         self.players.clear(&mut self.scene, &mut self.phys);
         self.cages.reset(&mut self.scene, world);
         self.phys.clear_bodies();
+        let t = std::time::Instant::now();
         self.arena.set(&mut self.scene, &mut self.phys, &mut self.fx, world);
+        crate::play::hitch("set_arena: arena", t);
+        let t = std::time::Instant::now();
         self.stadium.set_arena(&mut self.scene, world);
+        crate::play::hitch("set_arena: stadium", t);
     }
 
     /// The renderer was rebuilt: restore sprite images and the debris

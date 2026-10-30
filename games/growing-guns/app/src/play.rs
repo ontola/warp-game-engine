@@ -404,6 +404,17 @@ impl Gg {
     }
 }
 
+/// `GG_HITCH=MS` (default 12 under GameNight, else off): print any step of
+/// a tick or frame slower than that, to find what freezes the screen.
+pub(crate) fn hitch(what: &str, since: std::time::Instant) {
+    static LIMIT: std::sync::LazyLock<Option<f32>> = std::sync::LazyLock::new(|| {
+        std::env::var("GG_HITCH").ok().and_then(|v| v.parse().ok()).or_else(|| std::env::var("GAMENIGHT").is_ok().then_some(12.0)).filter(|&l: &f32| l > 0.0)
+    });
+    let Some(limit) = *LIMIT else { return };
+    let ms = since.elapsed().as_secs_f32() * 1000.0;
+    if ms >= limit { eprintln!("hitch: {what} {ms:.0} ms"); }
+}
+
 /// A blackout round (Godot `game.gd`: ambient, sun and fill to zero, a
 /// near-black sky, no fog): only the flashlights and the emissive accents
 /// light the arena, exposed for them.
@@ -830,17 +841,28 @@ impl app::Game for Gg {
         let humans = self.world.players.iter().filter(|p| !p.bot).count();
         if matches!(self.ui.screen, hud::menus::Screen::Pause | hud::menus::Screen::Settings { from_start: false }) && humans <= 1 { return; }
         self.prev = view::Pose::all(&self.world);
+        let t = std::time::Instant::now();
         self.world.step(&inputs);
+        hitch("world.step", t);
         self.stepped = true;
+        let t = std::time::Instant::now();
         if self.world.events.contains(&Event::NewArena) { self.new_arena(); }
+        hitch("new_arena", t);
+        let t = std::time::Instant::now();
         self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
+        hitch("vis.absorb", t);
+        let t = std::time::Instant::now();
         self.hud.tick(&self.world, DT);
         if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); self.vis.stadium.sound.loudness_db = s.duck_db(); }
         follow_music(&mut self.music, &self.world, &self.slots);
+        hitch("hud+sounds+music", t);
+        let t = std::time::Instant::now();
         self.session.publish(&self.world);
+        hitch("session.publish", t);
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
+        let draw_t = std::time::Instant::now();
         // Interpolating a frozen match swings between two ticks (a flicker at 120 Hz).
         let alpha = if self.session.is_client() { self.receive(frame.dt) } else if self.stepped { frame.alpha } else { 1.0 };
         self.vis.set_tilt(self.ui.tilt);
@@ -848,11 +870,13 @@ impl app::Game for Gg {
         if self.sky.live.is_some() { self.cycle_sky(); }
         self.sync_atmosphere();
         self.sync_blackout();
+        let t = std::time::Instant::now();
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
             frame.set_scene(&self.vis.scene, &self.light);
             self.plates.invalidate();
             self.vis.invalidate_sprites();
             self.sky_upload = None;
+            hitch("set_scene", t);
         } else if let Some(prepared) = self.sky_upload.take() {
             let gpu = frame.gpu;
             let r = frame.renderer_mut().expect("renderer checked above");
@@ -860,7 +884,9 @@ impl app::Game for Gg {
         }
         crate::live::frame(self, frame);
         let r = frame.renderer().expect("scene set above");
+        let t = std::time::Instant::now();
         self.vis.flush(frame.gpu, r, &self.light)?;
+        hitch("vis.flush", t);
         r.update_instances(frame.gpu, self.vis.first_dynamic, self.vis.dynamic())?;
         let (lights, scatter) = self.vis.local_lights_scattering(self.scatter);
         r.set_local_lights_scattering(&lights, &scatter)?;
@@ -914,6 +940,7 @@ impl app::Game for Gg {
         let mut light = self.light.clone();
         // The lava flows on the game clock.
         light.time = (self.world.tick as f32 - 1.0 + alpha) * DT;
+        hitch("draw (game side)", draw_t);
         Ok(Draw { cameras, light, hud: list })
     }
 
