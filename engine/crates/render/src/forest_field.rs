@@ -41,8 +41,8 @@ pub struct ForestStyle {
     /// its foot (metres).
     pub far: [f32; 4],
     /// x: crown radius seen from above per unit of tree width (metres);
-    /// y: share of a full stand's ground under crowns (pi R^2 / CELL^2 less
-    /// overlap); z: how far a crown's normal leans out from the trunk (cone
+    /// y: crown area per tree spot over CELL^2 (cover from straight above is
+    /// 1 - exp(-chance y), as overlapping crowns hide ground); z: how far a crown's normal leans out from the trunk (cone
     /// steepness); w: share of the forest in the second canopy's patches.
     pub crown: [f32; 4],
 }
@@ -50,10 +50,10 @@ pub struct ForestStyle {
 impl Default for ForestStyle {
     fn default() -> Self {
         ForestStyle {
-            needles: [0.045, 0.085, 0.045, 0.5],
-            floor: [0.02, 0.03, 0.015, 0.15],
+            needles: [0.052, 0.097, 0.027, 0.5],
+            floor: [0.02, 0.029, 0.009, 0.15],
             far: [0.085, 0.09, 0.035, 15.0],
-            crown: [3.2, 0.33, 1.6, 0.2],
+            crown: [3.2, 0.375, 1.6, 0.2],
         }
     }
 }
@@ -221,17 +221,28 @@ fn spot(i: i32, j: i32, seed: u32, chance: f32, variation: f32) -> Option<(Vec2,
     Some((c, width, 1.0 + variation * (hash(i, j, 8, seed) - 0.5), hash(i, j, 9, seed) * std::f32::consts::TAU))
 }
 
+/// How much wider a crown looks seen from `eye` (unit, towards the viewer)
+/// than from straight above: its side, crown length x cot(elevation), adds
+/// to its top's area (capped where the 3x3 spots end).
+fn crown_growth(eye: Vec3, fs: &ForestStyle) -> f32 {
+    let cot = (Vec2::new(eye.x, eye.z).length() / eye.y.max(1e-3)).min(4.0);
+    (1.0 + 0.8 * fs.far[3] * cot / (std::f32::consts::PI * fs.crown[0])).sqrt().min(7.0 / fs.crown[0])
+}
+
 /// The canopy at (x, z) for a pixel `footprint` metres across, lit from
-/// `sun` (unit, towards the sun), on ground of `site` (`site()`, or
-/// `NO_FOREST`). Up close the crowns of the 3x3 nearest spots are cones; as
-/// the footprint grows past a crown they fade to their average, textured by
-/// clumps and gaps for as long as those span a few pixels.
+/// `sun` and seen from `eye` (units, towards each), on ground of `site`
+/// (`site()`, or `NO_FOREST`). Up close the crowns of the 3x3 nearest spots
+/// are cones, as wide as their side looks from `eye`; as the footprint grows
+/// past a crown they fade to their average, textured by clumps and gaps for
+/// as long as those span a few pixels.
 #[allow(clippy::too_many_arguments)]
-pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, seed: u32, density: f32, site: f32, fs: &ForestStyle) -> Canopy {
+pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, eye: Vec3, seed: u32, density: f32, site: f32, fs: &ForestStyle) -> Canopy {
     let floor = Vec3::from_slice(&fs.floor[..3]);
     let needles = Vec3::from_slice(&fs.needles[..3]).lerp(Vec3::from_slice(&fs.far[..3]), patch(x, z, seed, fs.crown[3]));
     let crowd = share(x, z, seed, site, footprint) * density;
-    let mean_cover = crowd * fs.crown[1];
+    let grow = crown_growth(eye, fs);
+    // Crowns overlap at random: the share of ground they hide.
+    let mean_cover = 1.0 - (-crowd * fs.crown[1] * grow * grow).exp();
     // Gaps sit in their neighbours' shade only where the stand is dense.
     let gap = 1.0 - (1.0 - fs.floor[3]) * (crowd * 1.25).min(1.0);
     // The same light as the crowns and gaps it stands for (albedo x occlusion).
@@ -247,7 +258,7 @@ pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, seed: u32, density: f32
     let clump = (1.0 + 0.6 * (a.x + 0.5 * b.x) * rise).max(0.2);
     let mean = Canopy { albedo, normal: Vec3::new(-slope.x, 1.0, -slope.y).normalize(), occlusion: light / albedo.y * clump, cover: mean_cover };
     // Average once a pixel spans a good part of a crown, before it aliases.
-    let far = ((footprint - CELL * 0.15) / (CELL * 0.45)).clamp(0.0, 1.0);
+    let far = ((footprint - CELL * 0.08) / (CELL * 0.25)).clamp(0.0, 1.0);
     if far >= 1.0 || crowd <= 0.0 { return mean; }
     let (ci, cj) = ((x / CELL).floor() as i32, (z / CELL).floor() as i32);
     let mut best = (0.0f32, Vec2::ZERO, 0.0f32, 1.0f32);
@@ -256,8 +267,8 @@ pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, seed: u32, density: f32
             let Some((c, width, tint, phase)) = spot(ci + di, cj + dj, seed, crowd, fs.needles[3]) else { continue };
             let d = p - c;
             // A spruce from above is a star of branch tiers, not a disc.
-            let radius = fs.crown[0] * width * (0.82 + 0.18 * (7.0 * d.y.atan2(d.x) + phase).sin());
-            let h = (1.0 - d.length() / radius) * width;
+            let radius = fs.crown[0] * grow * width * (0.82 + 0.18 * (7.0 * d.y.atan2(d.x) + phase).sin());
+            let h = (1.0 - d.length() / radius) * width * grow;
             if h > best.0 { best = (h, d, width, tint); }
         }
     }
@@ -266,7 +277,7 @@ pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, seed: u32, density: f32
         // A steep cone: its normal leans out from the trunk; sun-facing flanks light.
         let out = d / d.length().max(1e-4);
         let normal = Vec3::new(out.x * fs.crown[2], 1.0, out.y * fs.crown[2]).normalize();
-        let tip = (h / width).clamp(0.0, 1.0);
+        let tip = (h / (width * grow)).clamp(0.0, 1.0);
         let lit = normal.dot(sun).max(0.0);
         Canopy { albedo: needles * tint, normal, occlusion: 0.6 + 0.4 * tip * (0.6 + 0.4 * lit), cover: 1.0 }
     } else {
@@ -333,7 +344,7 @@ mod tests {
         for y in 0..h { for x in 0..w {
             let (foot, scale) = if x < w / 2 { (0.0, 0.17) } else { (6.0, 6.0) };
             let (wx, wz) = (3000.0 + (x % (w / 2)) as f32 * scale, -2000.0 + y as f32 * scale);
-            let c = canopy(wx, wz, foot, sun, 5, 0.9, 0.3, &fs);
+            let c = canopy(wx, wz, foot, sun, Vec3::Y, 5, 0.9, 0.3, &fs);
             let lit = c.albedo * c.occlusion * (0.35 + 1.6 * c.normal.dot(sun).max(0.0));
             for v in lit.to_array() { let v = (v * 6.0).min(1.0); rgba.push((if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 } * 255.0) as u8); }
             rgba.push(255);
@@ -350,10 +361,10 @@ mod tests {
         for k in 0..40_000 {
             let (x, z) = ((k % 200) as f32 * 1.37 + 3000.0, (k / 200) as f32 * 1.41 - 2000.0);
             let fs = ForestStyle::default();
-            let c = canopy(x, z, 0.0, sun, 5, 0.8, 0.3, &fs);
+            let c = canopy(x, z, 0.0, sun, Vec3::Y, 5, 0.8, 0.3, &fs);
             // Past the crowns, but with the stands' octaves all but whole
             // (dropping them is its own averaging, nonlinear at stand edges).
-            let f = canopy(x, z, 4.9, sun, 5, 0.8, 0.3, &fs);
+            let f = canopy(x, z, 4.9, sun, Vec3::Y, 5, 0.8, 0.3, &fs);
             n += 1.0;
             cover += c.cover as f64;
             light += (c.albedo.y * c.occlusion) as f64;
@@ -401,7 +412,8 @@ struct Params { seed: u32, density: f32, pad0: u32, pad1: u32, style: TerrainSty
     let sites = array<f32, 3>(0.3, -0.2, 0.0);
     let k = ((c.x + c.y) % 4 + 4) % 4;
     let ks = ((c.x - c.y) % 3 + 3) % 3;
-    let cp = forest_canopy((f32(c.x) + 0.3) * FF_CELL, (f32(c.y) + 0.7) * FF_CELL, foot[k], normalize(vec3<f32>(0.4, 0.8, 0.3)),
+    let eye = select(vec3<f32>(0.0, 1.0, 0.0), normalize(vec3<f32>(-0.7, 0.35, 0.2)), ks == 1);
+    let cp = forest_canopy((f32(c.x) + 0.3) * FF_CELL, (f32(c.y) + 0.7) * FF_CELL, foot[k], normalize(vec3<f32>(0.4, 0.8, 0.3)), eye,
         params.seed, params.density, sites[ks], params.fs);
     out[gid.x] = array<vec4<f32>, 6>(vec4<f32>(f.density, f.colour), vec4<f32>(f.crown_height, 0.0, 0.0, 0.0),
         vec4<f32>(t.pos, t.yaw), vec4<f32>(t.scale.xy, f32(t.variant), f32(t.present)),
@@ -438,7 +450,8 @@ struct Params { seed: u32, density: f32, pad0: u32, pad1: u32, style: TerrainSty
         for (c, g) in cells.iter().zip(&gpu_out) {
             let f = forest((c[0] as f32 + 0.5) * CELL, (c[1] as f32 + 0.5) * CELL, seed, &style, density, &fs);
             let (px, pz, foot, site) = canopy_point(c[0], c[1]);
-            let cp = canopy(px, pz, foot, Vec3::from(SUN).normalize(), seed, density, site, &fs);
+            let eye = if (c[0] - c[1]).rem_euclid(3) == 1 { Vec3::new(-0.7, 0.35, 0.2).normalize() } else { Vec3::Y };
+            let cp = canopy(px, pz, foot, Vec3::from(SUN).normalize(), eye, seed, density, site, &fs);
             let got = [g.canopy[0], g.canopy[1], g.canopy[2], g.canopy[3], g.canopy_normal[0], g.canopy_normal[1], g.canopy_normal[2], g.canopy_normal[3]];
             let want = [cp.albedo.x, cp.albedo.y, cp.albedo.z, cp.occlusion, cp.normal.x, cp.normal.y, cp.normal.z, cp.cover];
             if got.iter().zip(&want).all(|(a, b)| (a - b).abs() < 2e-3) { canopy_agree += 1; }

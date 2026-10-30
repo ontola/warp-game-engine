@@ -7,8 +7,8 @@ const FF_CELL: f32 = 8.0;
 // How a forest looks, the game artist's choice (forest_field.rs ForestStyle):
 // needles.rgb sunlit needle albedo, .w per-tree tone variation; floor.rgb
 // gap albedo, .w gap occlusion; far.rgb second canopy's albedo (patches),
-// .w crown top height (m); crown.x radius per unit width (m), .y full
-// stand's crown share, .z normal lean (cone steepness), .w second canopy's share.
+// .w crown top height (m); crown.x radius per unit width (m), .y crown
+// area per spot over FF_CELL^2, .z normal lean (cone steepness), .w second canopy's share.
 struct ForestStyle {
     needles: vec4<f32>,
     floor: vec4<f32>,
@@ -178,14 +178,25 @@ fn ff_phase(i: i32, j: i32, seed: u32) -> f32 {
     return ff_hash(i, j, 9u, seed) * 6.2831855;
 }
 
+// How much wider a crown looks seen from `eye` (unit, towards the viewer)
+// than from straight above: its side, crown length x cot(elevation), adds
+// to its top's area (capped where the 3x3 spots end).
+fn ff_crown_growth(eye: vec3<f32>, fs: ForestStyle) -> f32 {
+    let cot = min(length(eye.xz) / max(eye.y, 1e-3), 4.0);
+    return min(sqrt(1.0 + 0.8 * fs.far.w * cot / (3.14159265 * fs.crown.x)), 7.0 / fs.crown.x);
+}
+
 // The canopy at (x, z) for a pixel `footprint` metres across, lit from
-// `sun` (unit, towards the sun), on ground of `site` (ff_site, or
-// FF_NO_FOREST). Crown cones up close, their average once a crown is
-// subpixel, textured by clumps and gaps while those span a few pixels.
-fn forest_canopy(x: f32, z: f32, footprint: f32, sun: vec3<f32>, seed: u32, density: f32, site: f32, fs: ForestStyle) -> ForestCanopy {
+// `sun` and seen from `eye` (units, towards each), on ground of `site`
+// (ff_site, or FF_NO_FOREST). Crown cones up close, as wide as their side
+// looks from `eye`, their average once a crown is subpixel, textured by
+// clumps and gaps while those span a few pixels.
+fn forest_canopy(x: f32, z: f32, footprint: f32, sun: vec3<f32>, eye: vec3<f32>, seed: u32, density: f32, site: f32, fs: ForestStyle) -> ForestCanopy {
     let needles = mix(fs.needles.rgb, fs.far.rgb, ff_patch(x, z, seed, fs.crown.w));
     let crowd = ff_share(x, z, seed, site, footprint) * density;
-    let mean_cover = crowd * fs.crown.y;
+    let grow = ff_crown_growth(eye, fs);
+    // Crowns overlap at random: the share of ground they hide.
+    let mean_cover = 1.0 - exp(-crowd * fs.crown.y * grow * grow);
     // Gaps sit in their neighbours' shade only where the stand is dense.
     let gap = 1.0 - (1.0 - fs.floor.w) * min(crowd * 1.25, 1.0);
     var mean: ForestCanopy;
@@ -207,7 +218,7 @@ fn forest_canopy(x: f32, z: f32, footprint: f32, sun: vec3<f32>, seed: u32, dens
     mean.occlusion = light / mean.albedo.y * clump;
     mean.cover = mean_cover;
     // Average once a pixel spans a good part of a crown, before it aliases.
-    let far = clamp((footprint - FF_CELL * 0.15) / (FF_CELL * 0.45), 0.0, 1.0);
+    let far = clamp((footprint - FF_CELL * 0.08) / (FF_CELL * 0.25), 0.0, 1.0);
     if far >= 1.0 || crowd <= 0.0 { return mean; }
     let ci = i32(floor(x / FF_CELL));
     let cj = i32(floor(z / FF_CELL));
@@ -221,8 +232,8 @@ fn forest_canopy(x: f32, z: f32, footprint: f32, sun: vec3<f32>, seed: u32, dens
             if s.w < 0.0 { continue; }
             let d = p - s.xy;
             // A spruce from above is a star of branch tiers, not a disc.
-            let radius = fs.crown.x * s.z * (0.82 + 0.18 * sin(7.0 * atan2(d.y, d.x) + ff_phase(ci + di, cj + dj, seed)));
-            let h = (1.0 - length(d) / radius) * s.z;
+            let radius = fs.crown.x * grow * s.z * (0.82 + 0.18 * sin(7.0 * atan2(d.y, d.x) + ff_phase(ci + di, cj + dj, seed)));
+            let h = (1.0 - length(d) / radius) * s.z * grow;
             if h > best_h { best_h = h; best_d = d; best_width = s.z; best_tint = s.w; }
         }
     }
@@ -231,7 +242,7 @@ fn forest_canopy(x: f32, z: f32, footprint: f32, sun: vec3<f32>, seed: u32, dens
         // A steep cone: its normal leans out from the trunk; sun-facing flanks light.
         let out = best_d / max(length(best_d), 1e-4);
         let normal = normalize(vec3<f32>(out.x * fs.crown.z, 1.0, out.y * fs.crown.z));
-        let tip = clamp(best_h / best_width, 0.0, 1.0);
+        let tip = clamp(best_h / (best_width * grow), 0.0, 1.0);
         let lit = max(dot(normal, sun), 0.0);
         near.albedo = needles * best_tint;
         near.normal = normal;

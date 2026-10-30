@@ -241,7 +241,7 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     if grows <= 0.0 { return MeadowCanopy(shaded, nn); }
     let w = grows * fade * stand;
     if w <= 0.0 { return MeadowCanopy(shaded, nn); }
-    let canopy = forest_canopy(s.p.x, s.p.z, footprint, sun, seed, params.density, site, params.style);
+    let canopy = forest_canopy(s.p.x, s.p.z, footprint, sun, normalize(view.cam.xyz - s.p), seed, params.density, site, params.style);
     let forest = canopy.albedo * canopy.occlusion;
     return MeadowCanopy(mix(shaded, forest, w), normalize(mix(nn, canopy.normal, w)));
 }
