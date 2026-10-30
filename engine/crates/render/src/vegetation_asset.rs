@@ -367,6 +367,16 @@ pub struct PlantHandle {
     pub movable: MovablePlant,
 }
 
+/// How a whole-plant proxy draws (Renderer::set_plant_proxies).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProxyShow {
+    Shown = 0,
+    /// A full assembly stands in for it, shadow included.
+    Hidden = 1,
+    /// A cheaper stand-in (a card tree) draws it; the proxy still casts sun.
+    ShadowOnly = 2,
+}
+
 /// A full plant that can stand at another root without rebuilding the scene
 /// (Renderer::move_plant): a pool of these streams full assemblies to the
 /// trees nearest the cameras (recipe_forest::Pool).
@@ -1682,8 +1692,8 @@ mod tests {
         let moved=Mat4::from_scale_rotation_translation(Vec3::splat(1.5),Quat::from_rotation_y(0.3),target);
         assert!(renderer.move_plant(&gpu,&handle.movable,Mat4::from_scale_rotation_translation(Vec3::splat(2.5),Quat::IDENTITY,target)).is_err(),"never grows");
         renderer.move_plant(&gpu,&handle.movable,moved).unwrap();
-        renderer.set_plant_proxies_hidden(&gpu,&[(report.volume_instances as u32,true)]).unwrap();
-        assert!(renderer.set_plant_proxies_hidden(&gpu,&[(0,true)]).is_err(),"only proxies hide");
+        renderer.set_plant_proxies(&gpu,&[(report.volume_instances as u32,ProxyShow::Hidden)]).unwrap();
+        assert!(renderer.set_plant_proxies(&gpu,&[(0,ProxyShow::Hidden)]).is_err(),"only proxies hide");
         assert!(hits(&renderer)>0,"the moved plant draws at its new root");
     }
 

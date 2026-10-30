@@ -3052,12 +3052,12 @@ impl Renderer {
         Ok(())
     }
 
-    /// Hide whole-plant proxies (forest volume indices) whose plant a moved
-    /// full assembly now stands in for, and show the ones it left.
-    pub fn set_plant_proxies_hidden(&self, gpu: &Gpu, volumes: &[(u32, bool)]) -> Result<(), String> {
+    /// How whole-plant proxies (forest volume indices) draw while a moved
+    /// full assembly or a card tree stands in for their plant.
+    pub fn set_plant_proxies(&self, gpu: &Gpu, volumes: &[(u32, crate::vegetation_asset::ProxyShow)]) -> Result<(), String> {
         if volumes.is_empty() { return Ok(()); }
         let forest = self.voxel_forest.as_ref().ok_or("no voxel forest")?;
-        for &(volume, hidden) in volumes { forest.set_proxy_hidden(gpu, volume, hidden)?; }
+        for &(volume, show) in volumes { forest.set_proxy_show(gpu, volume, show)?; }
         self.invalidate_dynamic_shadow();
         Ok(())
     }
