@@ -214,6 +214,42 @@ fn lane(s: GameSprite) -> vec4<f32> {
     return vec4(vec3(1.0), clamp(a, 0.0, 1.0));
 }
 
+// ---- A trap on the floor (trap.gdshader) ----
+// params: armed (0..1), seed, time. A faint circle of runes etched into the
+// ground, lit from below in the element's colour (the sprite's radiance)
+// and softly breathing, never flicking. Worn: noise breaks every line up.
+
+fn trap(s: GameSprite) -> vec4<f32> {
+    let q = s.uv * 2.0 - 1.0;
+    let r = length(q);
+    if r > 1.0 {
+        return vec4(0.0);
+    }
+    let armed = s.params.x;
+    let seed = s.params.y;
+    let t = s.params.z;
+    let ang = atan2(q.y, q.x);
+    let grit = sn_fbm(vec3(q * 6.0, seed));
+    let wear = smoothstep(0.25, 0.65, grit);
+    // An outer circle with gaps, like a carved ring of glyphs.
+    var ring = 1.0 - smoothstep(0.0, 0.035, abs(r - 0.86));
+    let glyphs = step(0.35, fract(ang / 6.2832 * 12.0 + seed));
+    ring *= mix(0.35, 1.0, glyphs);
+    // Inner runes: six spokes and a small circle, thin and broken.
+    var spoke = 1.0 - smoothstep(0.0, 0.03, abs(sin(ang * 3.0 + seed)) * r);
+    spoke *= step(0.22, r) * step(r, 0.7);
+    let inner = 1.0 - smoothstep(0.0, 0.03, abs(r - 0.22));
+    let lines = max(ring, max(spoke * 0.7, inner)) * wear;
+    let under = (1.0 - smoothstep(0.0, 0.9, r)) * 0.16 * (0.7 + 0.3 * grit);
+    // A slow swell and a soft wave of light running out through the runes.
+    let breath = 0.72 + 0.28 * sin(t * 1.7 + seed * 6.0);
+    let wave = 0.5 + 0.5 * sin(r * 7.0 - t * 2.2 + seed);
+    let lit = mix(0.25, 1.0, armed) * breath * (0.8 + 0.35 * wave);
+    let k = (lines * 1.4 + under * 2.0) * lit * (1.0 + 0.15 * wave * lines);
+    let a = clamp(lines * 0.75 + under, 0.0, 1.0) * mix(0.4, 0.9, armed) * (0.8 + 0.2 * breath);
+    return vec4(vec3(k), a);
+}
+
 fn game_sprite(s: GameSprite) -> vec4<f32> {
     switch s.effect {
         case 66u: { return wave(s); }
@@ -223,6 +259,7 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         case 70u: { return jet(s); }
         case 71u: { return surge(s); }
         case 72u: { return lane(s); }
+        case 73u: { return trap(s); }
         default: { return fx_sprite(s); }
     }
 }

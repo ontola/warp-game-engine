@@ -49,6 +49,8 @@ pub const SURGE: u32 = 71;
 /// The lane a rolling spell will sweep, marked while it charges: params
 /// (fill, time, length in metres, 0).
 pub const LANE: u32 = 72;
+/// A trap's circle of runes: params (armed, seed, time, 0).
+pub const TRAP: u32 = 73;
 
 struct State {
     /// The game's app/src, where fx.wgsl and spells.wgsl are.
