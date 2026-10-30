@@ -32,7 +32,7 @@ pub struct ForestStyle {
     /// tree 0.8 to 1.2 times as bright).
     pub needles: [f32; 4],
     /// Linear albedo of the forest floor seen in the gaps; w: the gaps'
-    /// occlusion (the neighbours' shade).
+    /// occlusion under a closed canopy (sparser stands leave their gaps lit).
     pub floor: [f32; 4],
     /// Linear crown colour of a forest seen from far away (`forest`); w: the
     /// height of a full-size tree's crown top above its foot (metres).
@@ -47,8 +47,8 @@ pub struct ForestStyle {
 impl Default for ForestStyle {
     fn default() -> Self {
         ForestStyle {
-            needles: [0.075, 0.12, 0.022, 0.4],
-            floor: [0.012, 0.016, 0.01, 0.15],
+            needles: [0.1, 0.17, 0.035, 0.4],
+            floor: [0.03, 0.045, 0.02, 0.2],
             far: [0.045, 0.085, 0.035, 15.0],
             crown: [4.2, 0.56, 1.6, 0.0],
         }
@@ -147,7 +147,7 @@ pub struct Canopy {
 
 /// Mean occlusion over a crown: the cone's mean tip height is 1/3, and its
 /// flanks face the sun half of the time.
-const CROWN_OCCLUSION: f32 = 0.45 + 0.55 * (1.0 / 3.0) * 0.8;
+const CROWN_OCCLUSION: f32 = 0.6 + 0.4 * (1.0 / 3.0) * 0.8;
 
 /// Whether cell (i, j) grows a tree, without the terrain (the caller
 /// knows whether its ground carries forest).
@@ -164,13 +164,16 @@ fn spot(i: i32, j: i32, seed: u32, density: f32, variation: f32) -> Option<(Vec2
 /// cones; as the footprint grows past a crown it fades to their average.
 pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, seed: u32, density: f32, ground: bool, fs: &ForestStyle) -> Canopy {
     let (needles, floor) = (Vec3::from_slice(&fs.needles), Vec3::from_slice(&fs.floor));
-    let mean_cover = if ground { chance(stand(x, z, seed), density) * fs.crown[1] } else { 0.0 };
+    let crowd = if ground { chance(stand(x, z, seed), density) } else { 0.0 };
+    let mean_cover = crowd * fs.crown[1];
+    // Gaps sit in their neighbours' shade only where the stand is dense.
+    let gap = 1.0 - (1.0 - fs.floor[3]) * (crowd * 1.25).min(1.0);
     // The same light as the crowns and gaps it stands for (albedo x occlusion).
     let albedo = floor.lerp(needles, mean_cover);
-    let light = needles.y * CROWN_OCCLUSION * mean_cover + floor.y * fs.floor[3] * (1.0 - mean_cover);
+    let light = needles.y * CROWN_OCCLUSION * mean_cover + floor.y * gap * (1.0 - mean_cover);
     let mean = Canopy { albedo, normal: Vec3::Y, occlusion: light / albedo.y, cover: mean_cover };
     // Average once a pixel spans a good part of a crown, before it aliases.
-    let far = ((footprint - CELL * 0.06) / (CELL * 0.3)).clamp(0.0, 1.0);
+    let far = ((footprint - CELL * 0.15) / (CELL * 0.45)).clamp(0.0, 1.0);
     if far >= 1.0 || !ground { return mean; }
     let (ci, cj) = ((x / CELL).floor() as i32, (z / CELL).floor() as i32);
     let mut best = (0.0f32, Vec2::ZERO, 0.0f32, 1.0f32);
@@ -191,10 +194,10 @@ pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, seed: u32, density: f32
         let normal = Vec3::new(out.x * fs.crown[2], 1.0, out.y * fs.crown[2]).normalize();
         let tip = (h / width).clamp(0.0, 1.0);
         let lit = normal.dot(sun).max(0.0);
-        Canopy { albedo: needles * tint, normal, occlusion: 0.45 + 0.55 * tip * (0.6 + 0.4 * lit), cover: 1.0 }
+        Canopy { albedo: needles * tint, normal, occlusion: 0.6 + 0.4 * tip * (0.6 + 0.4 * lit), cover: 1.0 }
     } else {
         // A gap: forest floor under the neighbours' shade.
-        Canopy { albedo: floor, normal: Vec3::Y, occlusion: fs.floor[3], cover: 0.0 }
+        Canopy { albedo: floor, normal: Vec3::Y, occlusion: gap, cover: 0.0 }
     };
     Canopy {
         albedo: near.albedo.lerp(mean.albedo, far),
