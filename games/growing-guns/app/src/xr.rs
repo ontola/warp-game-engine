@@ -10,6 +10,7 @@ pub struct NativeGame {
     output:Option<wgpu::Texture>,
     origin:Option<Vec3>, yaw:f32, snap_ready:bool, accumulator:f32, pending:u32,
     _speaker:Option<app::sound::Speaker>,
+    audio_pending:bool,
     diagnostic:bool,
     diagnostic_requested:bool,
 }
@@ -24,13 +25,8 @@ impl NativeGame {
         game.light_mut().taa=0.0;
         game.light_mut().near_shadows=0.0;
         game.light_mut().lod_pixels=crate::graphics::get().lod_pixels;
-        let speaker=if sound {
-            let (speaker,tx,_)=crate::sounds::speakers(None,None)?;
-            game.set_sounds(crate::sounds::Sounds::new(tx,crate::sounds::find_patches(None),crate::sounds::find_dir(None).as_deref()));
-            Some(speaker)
-        }else{None};
         let yaw = game.world.players[0].yaw;
-        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:speaker,diagnostic:false,diagnostic_requested:std::path::Path::new("diagnose").exists()})
+        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:None,audio_pending:sound,diagnostic:false,diagnostic_requested:std::path::Path::new("diagnose").exists()})
     }
     fn anchor(&self,eye:Vec3)->Vec3 {eye-Quat::from_rotation_y(self.yaw)*self.origin.unwrap()}
     fn hand(&self,t:&Tracking,eye:Vec3)->Option<Affine3A> {
@@ -50,8 +46,8 @@ impl warp_xr::Game for NativeGame {
         for (name, debug) in [("lit",0.0),("albedo",2.0),("normals",11.0)] {
             self.game.light_mut().debug=debug;
             let start=std::time::Instant::now();
-            let out=self.frame(gpu,&t,[512,512],0.0)?;
-            let rgba=gpu.read_rgba8(&out.color);
+            let out=self.frame(gpu,&t,[512,512],0.0,None)?;
+            let rgba=gpu.read_rgba8(out.color.as_ref().unwrap());
             render::write_png(std::path::Path::new(&format!("diagnostic-{name}.png")),1024,512,&rgba)?;
             let light=self.game.light_mut();
             eprintln!("XR diagnostic {name}: {:.1} ms, mean RGB {:.1}, sun {}, sky {}, EV {}",start.elapsed().as_secs_f64()*1000.0,
@@ -73,7 +69,19 @@ impl warp_xr::Game for NativeGame {
         }
         Ok(())
     }
-    fn frame(&mut self,gpu:&render::Gpu,t:&Tracking,size:[u32;2],dt:f32)->Result<warp_xr::FrameOutput,String> {
+    fn frame(&mut self,gpu:&render::Gpu,t:&Tracking,size:[u32;2],dt:f32,targets:Option<&[&wgpu::Texture]>)->Result<warp_xr::FrameOutput,String> {
+        // A sleeping Quest can time out audio startup before OpenXR gets focus.
+        // Start it only once the headset is active; audio failure must not abort VR.
+        if self.audio_pending&&t.focused {
+            self.audio_pending=false;
+            match crate::sounds::speakers(None,None) {
+                Ok((speaker,tx,_))=>{
+                    self.game.set_sounds(crate::sounds::Sounds::new(tx,crate::sounds::find_patches(None),crate::sounds::find_dir(None).as_deref()));
+                    self._speaker=Some(speaker);
+                }
+                Err(error)=>eprintln!("XR audio unavailable: {error}"),
+            }
+        }
         if self.origin.is_none() {
             let f = t.head.orientation * Vec3::NEG_Z;
             self.yaw -= (-f.x).atan2(-f.z);
@@ -110,6 +118,10 @@ impl warp_xr::Game for NativeGame {
         renderer.set_camera_up_axes(&eyes.map(|e|e.pose.orientation*Vec3::Y));
         renderer.set_camera_projections(&eyes.map(Eye::projection));
         let views:Vec<_>=eyes.iter().enumerate().map(|(i,e)|render::ViewRect {cam:e.camera(),x:i as u32*size[0],y:0,w:size[0],h:size[1]}).collect();
+        if let Some(targets)=targets {
+            renderer.try_render_eye_targets(gpu,&views,&draw.light,targets)?;
+            return Ok(warp_xr::FrameOutput {color:None,hud:draw.hud});
+        }
         if self.output.as_ref().is_none_or(|tex|tex.width()!=size[0]*2||tex.height()!=size[1]) {
             self.output=Some(render::Renderer::output_texture(gpu,size[0]*2,size[1]));
         }
@@ -117,10 +129,10 @@ impl warp_xr::Game for NativeGame {
         if self.diagnostic {
             let (color, stats)=renderer.try_render_texture_profiled(gpu,&views,&draw.light,size[0]*2,size[1])?;
             eprintln!("XR GPU passes: {:?}; clusters {}, triangles {}, shadows {}; eye {:?}; projection {:?}",stats.gpu_ms,stats.clusters,stats.triangles,stats.shadow_clusters,views[0].cam,eyes[0].projection());
-            return Ok(warp_xr::FrameOutput {color,hud:draw.hud});
+            return Ok(warp_xr::FrameOutput {color:Some(color),hud:draw.hud});
         }
         renderer.try_render_into(gpu,&views,&draw.light,output)?;
-        Ok(warp_xr::FrameOutput {color:output.clone(),hud:draw.hud})
+        Ok(warp_xr::FrameOutput {color:Some(output.clone()),hud:draw.hud})
     }
 }
 
@@ -142,17 +154,17 @@ pub fn shot(args:&crate::Args)->Result<(),String> {
     for _ in 0..90 {game.game.tick(&[Default::default()]);}
     let mut hud=render::hud::HudRenderer::new(&gpu,wgpu::TextureFormat::Rgba8UnormSrgb)?;
     let hud_texture=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("XR fixture HUD"),size:wgpu::Extent3d{width:1280,height:720,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
-    let mut frame=game.frame(&gpu,&tracking,[size.0,size.1],DT)?;
+    let mut frame=game.frame(&gpu,&tracking,[size.0,size.1],DT,None)?;
     warp_xr::draw_hud(&gpu,&mut hud,&frame.hud,&hud_texture)?;
     if args.flag("--frames") {
         gpu.wait();
         let count=args.num("--frames",30u32).clamp(1,600);
         let start=std::time::Instant::now();
-        for _ in 0..count {frame=game.frame(&gpu,&tracking,[size.0,size.1],DT)?;warp_xr::draw_hud(&gpu,&mut hud,&frame.hud,&hud_texture)?;if !args.flag("--queued") {gpu.wait();}}
+        for _ in 0..count {frame=game.frame(&gpu,&tracking,[size.0,size.1],DT,None)?;warp_xr::draw_hud(&gpu,&mut hud,&frame.hud,&hud_texture)?;if !args.flag("--queued") {gpu.wait();}}
         gpu.wait();
         println!("Headless native fixture: {count} frames, {:.2} ms/frame at {}x{} per eye including HUD (queued={}); no compositor or display pacing",start.elapsed().as_secs_f64()*1000.0/count as f64,size.0,size.1,args.flag("--queued"));
     }
-    render::write_png(std::path::Path::new(out),size.0*2,size.1,&gpu.read_rgba8(&frame.color))?;
+    render::write_png(std::path::Path::new(out),size.0*2,size.1,&gpu.read_rgba8(frame.color.as_ref().unwrap()))?;
     println!("Native Warp stereo fixture: {out}; {} cards; GPU {}. This is not a headset test.",game.game.world.cards.enabled().count(),gpu.info.name);
     Ok(())
 }

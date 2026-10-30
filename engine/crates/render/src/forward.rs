@@ -15,7 +15,7 @@ struct Part {indices:Range<u32>,material:u32}
 struct Mesh {parts:Vec<Part>}
 struct Target {size:[u32;2],color:wgpu::Texture,depth:wgpu::Texture,instances:wgpu::Buffer,capacity:usize,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 pub(crate) struct Forward {
-    pipeline:wgpu::RenderPipeline,layout:wgpu::BindGroupLayout,vertices:wgpu::Buffer,indices:wgpu::Buffer,materials:wgpu::Buffer,
+    pipeline:wgpu::RenderPipeline,pipeline_srgb:wgpu::RenderPipeline,layout:wgpu::BindGroupLayout,vertices:wgpu::Buffer,indices:wgpu::Buffer,materials:wgpu::Buffer,
     meshes:Vec<Mesh>,ranges:HashMap<(u32,u32),usize>,owners:Vec<GpuInstance>,targets:Vec<Target>,
 }
 impl Forward {
@@ -42,14 +42,16 @@ impl Forward {
             wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None}]});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimal forward"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/forward.wgsl").into())});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
-        let pipeline=gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("minimal forward"),layout:Some(&pl),
+        let pipeline_for=|format,entry|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("minimal forward"),layout:Some(&pl),
             vertex:wgpu::VertexState{module:&module,entry_point:Some("vs"),compilation_options:Default::default(),buffers:&[
                 Some(wgpu::VertexBufferLayout{array_stride:32,step_mode:wgpu::VertexStepMode::Vertex,attributes:&wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x3,2=>Float32x2]}),
                 Some(wgpu::VertexBufferLayout{array_stride:64,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![3=>Float32x4,4=>Float32x4,5=>Float32x4,6=>Uint32,7=>Uint32]})]},
             primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},
             depth_stencil:Some(wgpu::DepthStencilState{format:wgpu::TextureFormat::Depth32Float,depth_write_enabled:Some(true),depth_compare:Some(wgpu::CompareFunction::GreaterEqual),stencil:Default::default(),bias:Default::default()}),
-            multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some("fs"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format:wgpu::TextureFormat::Rgba8Unorm,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
-        Self{pipeline,layout,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
+            multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some(entry),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
+        let pipeline=pipeline_for(wgpu::TextureFormat::Rgba8Unorm,"fs");
+        let pipeline_srgb=pipeline_for(wgpu::TextureFormat::Rgba8UnormSrgb,"fs_srgb");
+        Self{pipeline,pipeline_srgb,layout,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
     }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}
@@ -65,7 +67,7 @@ impl Forward {
         let instances=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:None,size:64,usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         Target{size,color,depth,instances,capacity:1,uniform,bind}
     }
-    pub fn render(&mut self,gpu:&Gpu,views:&[ViewRect],matrices:&[Mat4],camera_views:&[Mat4],sprites:&crate::sprites::SpriteSlot,light:&Lighting,spots:&[crate::headlights::SpotLight],output:&wgpu::Texture)->Result<FrameStats,String> {
+    pub fn render(&mut self,gpu:&Gpu,views:&[ViewRect],matrices:&[Mat4],camera_views:&[Mat4],sprites:&crate::sprites::SpriteSlot,fx:&crate::fx::FxSlot,light:&Lighting,spots:&[crate::headlights::SpotLight],output:Option<&wgpu::Texture>,external:Option<&[&wgpu::Texture]>)->Result<FrameStats,String> {
         let mut stats=FrameStats::default();let mut enc=gpu.device.create_command_encoder(&Default::default());
         for (vi,view) in views.iter().enumerate(){
             let vp=matrices[vi];let rows:[Vec4;4]=std::array::from_fn(|i|vp.row(i));
@@ -96,16 +98,23 @@ impl Forward {
             for (out,l) in lamps.iter_mut().zip(spots){*out=Spot{position:l.position.extend(l.range_m).to_array(),direction:l.direction.extend(l.outer_angle_radians.cos()).to_array(),intensity:(l.intensity_cd*exposure).extend(l.inner_angle_radians.cos()).to_array()};}
             let uniform=Uniform{vp:vp.to_cols_array_2d(),camera:view.cam.pos.extend(exposure).to_array(),sun:light.sun_dir.extend(light.sun_lux*exposure).to_array(),sun_color:light.sun_color.extend(light.emissive_scale()).to_array(),ambient:[light.sky_lux*exposure,spots.len().min(4)as f32,light.debug,0.],fog:[light.fog_start,light.fog_end,0.,0.],spots:lamps};
             gpu.queue.write_buffer(&t.uniform,0,bytemuck::bytes_of(&uniform));
-            let color=t.color.create_view(&Default::default());let depth=t.depth.create_view(&Default::default());
+            let target=external.map_or(&t.color,|targets|targets[vi]);
+            let color=target.create_view(&Default::default());let depth=t.depth.create_view(&Default::default());
             let sky=(light.sky_lux*exposure*0.25).max(0.0);let sky=(sky/(1.0+sky)).sqrt()as f64;
-            {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("minimal forward eye"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:&color,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color{r:sky*0.75,g:sky*0.85,b:sky,a:1.}),store:wgpu::StoreOp::Store}})],depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{view:&depth,depth_ops:Some(wgpu::Operations{load:wgpu::LoadOp::Clear(0.0),store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
-                pass.set_pipeline(&self.pipeline);pass.set_bind_group(0,&t.bind,&[]);pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_vertex_buffer(1,t.instances.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
+            let clear=|c:f64|if target.format().is_srgb(){if c<=0.04045{c/12.92}else{((c+0.055)/1.055).powf(2.4)}}else{c};
+            {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("minimal forward eye"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:&color,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color{r:clear(sky*0.75),g:clear(sky*0.85),b:clear(sky),a:1.}),store:wgpu::StoreOp::Store}})],depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{view:&depth,depth_ops:Some(wgpu::Operations{load:wgpu::LoadOp::Clear(0.0),store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
+                pass.set_pipeline(if target.format().is_srgb(){&self.pipeline_srgb}else{&self.pipeline});pass.set_bind_group(0,&t.bind,&[]);pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_vertex_buffer(1,t.instances.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
                 for (indices,instances) in draws {pass.draw_indexed(indices,0,instances);}
             }
-            if let Some(sprites)=sprites.0.lock().unwrap().as_mut() {
-                sprites.render_output(gpu,&mut enc,vi,&t.color,&depth,view.cam,camera_views[vi],vp,vp,exposure)?;
+            if let Some(fx)=fx.0.lock().unwrap().as_mut() {
+                let white=((light.sun_lux*light.sun_dir.y.max(0.0)+light.sky_lux)/std::f32::consts::PI)
+                    .max(light.fx_white_floor.max(0.0)/exposure);
+                fx.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,white,exposure)?;
             }
-            enc.copy_texture_to_texture(t.color.as_image_copy(),wgpu::TexelCopyTextureInfo{texture:output,mip_level:0,origin:wgpu::Origin3d{x:view.x,y:view.y,z:0},aspect:wgpu::TextureAspect::All},t.color.size());
+            if let Some(sprites)=sprites.0.lock().unwrap().as_mut() {
+                sprites.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,exposure)?;
+            }
+            if let Some(output)=output {enc.copy_texture_to_texture(t.color.as_image_copy(),wgpu::TexelCopyTextureInfo{texture:output,mip_level:0,origin:wgpu::Origin3d{x:view.x,y:view.y,z:0},aspect:wgpu::TextureAspect::All},t.color.size());}
         }
         gpu.queue.submit([enc.finish()]);Ok(stats)
     }
@@ -125,9 +134,44 @@ impl Forward {
         let draw=||renderer.try_render_views(&gpu,&views,&light,128,64,&[]).unwrap().0;
         let pixel=|image:&[u8],x:usize|image[(32*128+x)*4];
         let initial=draw();assert_eq!(pixel(&initial,32),0);assert!(pixel(&initial,96)>100);
+        let eye=||gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("direct SRGB test eye"),size:wgpu::Extent3d{width:64,height:64,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
+        let left=eye();let right=eye();
+        renderer.try_render_eye_targets(&gpu,&views,&light,&[&left,&right]).unwrap();
+        let direct=[gpu.read_rgba8(&left),gpu.read_rgba8(&right)];
+        for (eye,image) in direct.iter().enumerate() {for y in 0..64 {for x in 0..64 {for c in 0..4 {
+            assert!(image[(y*64+x)*4+c].abs_diff(initial[(y*128+x+eye*64)*4+c])<=1,"direct eye differs from offscreen output");
+        }}}}
         scene.instances[0].cluster_count=0;renderer.update_instances(&gpu,0,&scene.instances).unwrap();
         let hidden=draw();assert_eq!(pixel(&hidden,32),0);assert_eq!(pixel(&hidden,96),0);
         scene.update_instance(0,mesh,glam::Affine3A::IDENTITY);scene.instances[0].hide_in_views(0);
         renderer.update_instances(&gpu,0,&scene.instances).unwrap();let shown=draw();assert!(pixel(&shown,32)>100&&pixel(&shown,96)>100);
     }
+    #[test] fn minimum_keeps_explosion_and_ion_column_visible_until_their_expiry() {
+        let gpu=Gpu::new().unwrap();let mut scene=Scene::default();scene.graphics.minimal_forward=true;
+        let m=scene.add_material(crate::scene::Material{tint:[0.2;3],layer:-1,roughness:1.,flags:0,scale:1.,metal:0.});
+        let mesh=scene.add_mesh(&crate::primitives::quad(m).mesh());scene.add_instance(mesh,glam::Affine3A::from_translation(Vec3::new(0.,0.,-100.)));
+        let light=Lighting{sun_lux:0.,sky_lux:0.,fx_white_floor:1.,..Default::default()};
+        let renderer=crate::Renderer::new(&gpu,&scene,&light);
+        let camera=crate::Camera{pos:Vec3::new(0.,1.,8.),target:Vec3::new(0.,1.,0.),fov_y:1.,near:0.05};
+        let views=[ViewRect{cam:camera,x:0,y:0,w:256,h:160}];
+        let draw=||renderer.try_render_views(&gpu,&views,&light,256,160,&[]).unwrap().0;
+        let baseline=draw();let mut fx=crate::fx::Effects::default();
+        fx.explosion(0.,Vec3::new(-2.,0.7,0.),1.5,Vec3::new(1.,0.5,0.1));
+        fx.column(crate::fx::AdditiveColumn{position:Vec3::new(2.,-2.,0.),height:8.,radius:[0.3;2],color:[Vec3::new(0.05,0.5,1.);2],opacity:[0.8;2],radiance:[50000.;2],..Default::default()}).unwrap();
+        fx.flush(&gpu,&renderer,0.2).unwrap();let active=draw();
+        let mut changed=[0usize;2];
+        for (index,(a,b)) in active.chunks_exact(4).zip(baseline.chunks_exact(4)).enumerate() {
+            if a[..3].iter().zip(b).any(|(x,y)|x.abs_diff(*y)>20) {changed[(index%256)/128]+=1;}
+        }
+        assert!(changed[0]>30,"explosion disappeared: {changed:?}");
+        assert!(changed[1]>30,"ion column disappeared: {changed:?}");
+        if let Ok(path)=std::env::var("WARP_FX_CAPTURE") {crate::write_png(std::path::Path::new(&path),256,160,&active).unwrap();}
+        let eye=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("direct FX eye"),size:wgpu::Extent3d{width:256,height:160,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
+        renderer.try_render_eye_targets(&gpu,&views,&light,&[&eye]).unwrap();
+        let direct=gpu.read_rgba8(&eye);let mut visible=[0;2];
+        for (i,pixel) in direct.chunks_exact(4).enumerate() {if pixel[..3].iter().any(|v|*v>20){visible[(i%256)/128]+=1;}}
+        assert!(visible.iter().all(|v|*v>30),"gameplay FX disappeared from direct sRGB attachment: {visible:?}");
+        fx.flush(&gpu,&renderer,10.).unwrap();assert_eq!(draw(),baseline,"expired gameplay effects remain visible");
+    }
+
 }

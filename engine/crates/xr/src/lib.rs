@@ -45,15 +45,37 @@ pub struct Tracking {
     /// Runtime recenter: reset the game-owned tracking origin on this frame.
     pub recentered: bool,
 }
-pub struct FrameOutput { pub color: wgpu::Texture, pub hud: render::hud::HudDrawList }
+pub struct FrameOutput { pub color: Option<wgpu::Texture>, pub hud: render::hud::HudDrawList }
 pub trait Game {
     /// Preferred display frequency; actual support is queried from the runtime.
     fn refresh_rate(&self) -> Option<f32> { None }
     /// Optional explicit developer diagnostics before starting a session.
     fn diagnose(&mut self, _gpu: &render::Gpu) -> Result<(), String> { Ok(()) }
     fn quit(&self) -> bool { false }
-    /// Draw both eyes side by side into an RGBA8 texture, with no readback.
-    fn frame(&mut self, gpu: &render::Gpu, tracking: &Tracking, eye_size: [u32; 2], dt: f32) -> Result<FrameOutput, String>;
+    /// Draw directly into supplied per-eye attachments, or return side-by-side RGBA8 for diagnostics.
+    fn frame(&mut self, gpu: &render::Gpu, tracking: &Tracking, eye_size: [u32; 2], dt: f32, targets: Option<&[&wgpu::Texture]>) -> Result<FrameOutput, String>;
+}
+
+/// Collapse full-field display tints into a premultiplied linear colour.
+/// A one-pixel projection layer covers both complete eye frusta, including
+/// the HUD, without a screen-sized render target or another scene copy.
+pub fn vision_color(tints:&[[f32;4]])->wgpu::Color {
+    let mut out=[0.0f64;4];
+    for tint in tints {
+        let a=(tint[3] as f64).clamp(0.0,1.0);
+        for i in 0..3 {let c=(tint[i] as f64).clamp(0.0,1.0);let linear=if c<=0.04045{c/12.92}else{((c+0.055)/1.055).powf(2.4)};
+            out[i]=linear*a+out[i]*(1.0-a);}
+        out[3]=a+out[3]*(1.0-a);
+    }
+    wgpu::Color{r:out[0],g:out[1],b:out[2],a:out[3]}
+}
+
+pub fn draw_vision(gpu:&render::Gpu,tints:&[[f32;4]],target:&wgpu::Texture) {
+    let view=target.create_view(&Default::default());
+    let mut enc=gpu.device.create_command_encoder(&Default::default());
+    {let _pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("full-vision tint"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{
+        view:&view,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(vision_color(tints)),store:wgpu::StoreOp::Store}})],..Default::default()});}
+    gpu.queue.submit([enc.finish()]);
 }
 
 /// Shared HUD submission for native presentation and headless GPU measurements.
@@ -69,6 +91,13 @@ pub fn draw_hud(gpu:&render::Gpu,hud:&mut render::hud::HudRenderer,list:&render:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vision_tints_compose_in_linear_premultiplied_order() {
+        assert_eq!(vision_color(&[]),wgpu::Color::TRANSPARENT);
+        let tint=vision_color(&[[1.,0.,0.,0.5],[0.,0.,1.,0.5]]);
+        assert_eq!(tint,wgpu::Color{r:0.25,g:0.,b:0.5,a:0.75});
+        assert_eq!(vision_color(&[[0.2,0.4,0.8,0.5],[1.,1.,1.,1.]]),wgpu::Color::WHITE);
+    }
     #[test]
     fn asymmetric_frustum_maps_all_edges_and_reverse_depth() {
         let fov = [-0.8, 0.65, 0.9, -0.7];

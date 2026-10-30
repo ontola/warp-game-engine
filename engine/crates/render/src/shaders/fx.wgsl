@@ -12,7 +12,7 @@ struct FxUniform {
     camera_near: vec4<f32>,
     // width, height, 1/width, 1/height
     size: vec4<f32>,
-    // time, white luminance (nits), unused, unused
+    // time, white luminance (nits), LDR exposure (zero for HDR), sRGB output
     clock: vec4<f32>,
 };
 struct Puff {
@@ -258,6 +258,16 @@ fn fp16_safe(c: vec3<f32>) -> vec3<f32> {
     return c * min(1.0, 60000.0 / max(m, 1e-6));
 }
 
+// Convert the same gameplay recipes for a minimum-profile colour attachment.
+fn fx_output(value:vec4<f32>)->vec4<f32> {
+    if u.clock.z<=0.0 {return value;}
+    let alpha=select(1.0,max(value.a,0.0001),value.a>0.0);
+    let exposed=max(value.rgb/alpha*u.clock.z,vec3<f32>(0.0));
+    var mapped=sqrt(exposed/(1.0+exposed));
+    if u.clock.w>0.5 {mapped=select(mapped/12.92,pow((mapped+0.055)/1.055,vec3<f32>(2.4)),mapped>vec3<f32>(0.04045));}
+    return vec4<f32>(mapped*alpha,value.a);
+}
+
 @fragment
 fn fx_column(in: V) -> @location(0) vec4<f32> {
     let p = puffs[in.id];
@@ -316,7 +326,7 @@ fn fx_column(in: V) -> @location(0) vec4<f32> {
     let color = mix(p.ay.rgb, p.az.rgb, smoothstep(p.timing.z, p.timing.w, in.age));
     // Apply opacity before limiting HDR: a low-alpha high-radiance beam must
     // not lose energy merely because its unweighted radiance exceeds fp16.
-    return vec4<f32>(fp16_safe(color * (radiance * alpha * soft)), 0.0);
+    return fx_output(vec4<f32>(fp16_safe(color * (radiance * alpha * soft)), 0.0));
 }
 
 @fragment
@@ -326,7 +336,7 @@ fn fx_streak(in: V) -> @location(0) vec4<f32> {
     var fade = 1.0;
     if p.body.y > 0.0 { fade *= smoothstep(0.0, p.body.y, in.age); }
     if p.body.z > 0.0 { fade *= 1.0 - smoothstep(1.0 - p.body.z, 1.0, in.age); }
-    return vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade)), 0.0);
+    return fx_output(vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade)), 0.0));
 }
 
 @fragment
@@ -341,7 +351,7 @@ fn fx_mote(in: V) -> @location(0) vec4<f32> {
     if p.body.z > 0.0 { fade *= 1.0 - smoothstep(1.0 - p.body.z, 1.0, in.age); }
     let dot = exp(-4.0 * r2) * (1.0 - smoothstep(0.6, 1.0, r2));
     let soft = smoothstep(0.0, max(p.ay.x * 2.0, 0.01), gap);
-    return vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade * dot * soft * in.shade)), 0.0);
+    return fx_output(vec4<f32>(fp16_safe(p.az.rgb * (p.az.w * p.body.x * fade * dot * soft * in.shade)), 0.0));
 }
 
 @fragment
@@ -390,7 +400,7 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
     }
     if alpha < 0.0005 { discard; }
     // Unlit: Godot's 0..1 albedo scale is white under the current light.
-    return vec4<f32>(fp16_safe(color * u.clock.y) * alpha, alpha);
+    return fx_output(vec4<f32>(fp16_safe(color * u.clock.y) * alpha, alpha));
 }
 
 @fragment
@@ -400,7 +410,7 @@ fn fx_ember(in: V) -> @location(0) vec4<f32> {
     let b = (1.0 - smoothstep(0.35, 1.0, in.age)) * p.body.a;
     if b < 0.0005 { discard; }
     // Additive, HDR bright so it blooms.
-    return vec4<f32>(fp16_safe(p.body.rgb * p.extra.w * u.clock.y) * b, 0.0);
+    return fx_output(vec4<f32>(fp16_safe(p.body.rgb * p.extra.w * u.clock.y) * b, 0.0));
 }
 
 @fragment
