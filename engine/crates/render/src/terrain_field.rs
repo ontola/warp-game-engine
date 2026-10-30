@@ -136,7 +136,9 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+// Cut 0 is full detail; x / 0 is not portable WGSL (Metal gave other ground).
 fn fade(size: f32, cut: f32) -> f32 {
+    if cut <= 0.0 { return 1.0; }
     (size / (2.0 * cut) - 1.0).clamp(0.0, 1.0)
 }
 

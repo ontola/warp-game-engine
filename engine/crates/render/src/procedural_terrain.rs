@@ -114,6 +114,16 @@ fn smooth(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Draw the forest of `forest_field` into the terrain from `start_m` from
+/// the camera on, where single trees end: crown colour and lumps, no
+/// geometry. `density` as forest_field's. Call after reserve; the material's
+/// scale carries it (terrain_surface.wgsl far_forest).
+pub fn far_forest(scene: &mut Scene, material: u32, start_m: f32, density: f32) {
+    let start = start_m.max(0.0).round();
+    assert!(start < 1_048_576.0, "far forest start out of range");
+    scene.materials[material as usize].scale = start + density.clamp(0.0, 0.99);
+}
+
 /// Reserve `capacity` patch slots that draw with `material`.
 pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32, style: terrain_field::Style) -> TerrainSpec {
     assert!(scene.procedural_terrain.is_none(), "one procedural terrain per scene");
