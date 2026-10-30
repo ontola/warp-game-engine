@@ -1972,13 +1972,13 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     rad += surface_emit * emit;
     // LAVA: unlit, flowing molten rock; `tint * scale` is the radiance of white.
     if FEATURE_PROCEDURAL && (m.flags & 4096u) != 0u { rad = proc_lava(p, light.anim.x, max(length(fp.dx), length(fp.dy))) * m.tint * m.scale * emit; }
-    // Hit flash (instance bits 16..23): white over the body, strongest at
-    // its edges so it keeps its shape (a sheen, not a flat blob).
+    // Hit flash (instance bits 16..23): the body itself lights up white,
+    // nearly evenly; a slight facing term keeps its form readable.
     let flash = f32((inst.pad >> 16u) & 0xffu) / 255.0;
     if flash > 0.0 {
-        let rim = pow(1.0 - clamp(dot(n, -dir), 0.0, 1.0), 2.0);
-        let white = vec3<f32>(1.0, 0.97, 0.92) * light.anim.z;
-        rad = mix(rad, white, clamp(flash * (0.35 + 0.9 * rim), 0.0, 1.0));
+        let facing = clamp(dot(n, -dir), 0.0, 1.0);
+        let white = vec3<f32>(1.0, 0.97, 0.92) * light.anim.z * (0.8 + 0.2 * facing);
+        rad = mix(rad, white, clamp(flash * 0.9, 0.0, 1.0));
     }
     rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
