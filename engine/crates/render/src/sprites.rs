@@ -406,10 +406,13 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     let peak = max(light.r, max(light.g, light.b));
     light *= min(1.0, 40000.0 / max(peak, 1e-6));
     if u.output.x>0.0 {
-        let exposed=max(rgb*u.output.x,vec3<f32>(0.0));
+        // Additive alpha scales emitted energy BEFORE tone mapping. Applying
+        // it afterwards extinguishes bright low-coverage trails and glows.
+        let additive=s.misc.y>0.5;
+        let exposed=max(rgb*select(1.0,a,additive)*u.output.x,vec3<f32>(0.0));
         var mapped=sqrt(exposed/(1.0+exposed));
         if u.output.y>0.5 {mapped=select(mapped/12.92,pow((mapped+0.055)/1.055,vec3<f32>(2.4)),mapped>vec3<f32>(0.04045));}
-        light=mapped*a;
+        light=mapped*select(a,1.0,additive);
     }
     // Additive: premultiplied with zero alpha keeps what is behind.
     return vec4<f32>(light, select(a, 0.0, s.misc.y > 0.5));
@@ -501,4 +504,29 @@ mod tests {
         assert!(tag[1] > 100 && tag[1] > 4 * tag[0].max(1), "canvas tag is green: {tag:?}");
         }
     }
+    #[test]
+    fn minimum_additive_trails_keep_radiance_through_low_alpha_tails() {
+        let gpu=Gpu::new().unwrap();let mut scene=crate::Scene::default();scene.graphics.minimal_forward=true;
+        let material=scene.add_material(Material{tint:[0.;3],layer:-1,roughness:1.,flags:0,scale:1.,metal:0.});
+        let mesh=scene.add_mesh(&crate::primitives::quad(material).mesh());scene.add_instance(mesh,Affine3A::IDENTITY);
+        let light=crate::Lighting{sun_lux:0.,sky_lux:0.,ev100:10.,..Default::default()};
+        let renderer=crate::Renderer::new(&gpu,&scene,&light);
+        // Low alpha models a faint texel in the tapered tail. It scales emitted
+        // energy, not opacity after tone mapping. The dark wall tests occlusion.
+        renderer.set_sprite_image(&gpu,SpriteImage(90),&Picture::solid(2,2,[255,255,255,8]),ImageFilter::Nearest);
+        let sprite=|z|Sprite::shaft(Vec3::new(0.,0.,z),[0.5,1.5],Vec3::Y,SpriteImage(90),[0.,0.,1.,1.],Vec3::new(50000.,0.,0.));
+        let camera=Camera{pos:Vec3::new(0.,0.,3.),target:Vec3::ZERO,fov_y:1.,near:0.05};
+        let views=[crate::ViewRect{cam:camera,x:0,y:0,w:64,h:64}];
+        for format in [wgpu::TextureFormat::Rgba8Unorm,wgpu::TextureFormat::Rgba8UnormSrgb] {
+            let target=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("additive trail regression"),size:wgpu::Extent3d{width:64,height:64,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
+            for (z,visible) in [(0.5,true),(-0.5,false)] {
+                renderer.set_sprites(&gpu,&[sprite(z)]).unwrap();
+                renderer.try_render_eye_targets(&gpu,&views,&light,&[&target]).unwrap();
+                let image=gpu.read_rgba8(&target);let red=image[(32*64+32)*4];
+                if visible {assert!(red>150,"low-alpha trail lost its energy in {format:?}: {red}");}
+                else {assert_eq!(red,0,"trail leaks through wall in {format:?}");}
+            }
+        }
+    }
+
 }

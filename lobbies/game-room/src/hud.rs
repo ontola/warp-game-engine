@@ -30,15 +30,35 @@ fn project(view_proj: Mat4, size: [u32; 2], p: Vec3) -> Option<[f32; 2]> {
     Some([(ndc.x * 0.5 + 0.5) * size[0] as f32, (0.5 - ndc.y * 0.5) * size[1] as f32])
 }
 
+/// The room camera's view-projection for a screen of `size`.
+pub fn view_proj(camera: &render::Camera, size: [u32; 2]) -> Mat4 {
+    let (w, h) = (size[0] as f32, size[1] as f32);
+    let view = Mat4::look_at_rh(camera.pos, camera.target, Vec3::Y);
+    let proj = Mat4::perspective_rh(camera.fov_y, w / h.max(1.0), camera.near.max(0.05), 4000.0);
+    proj * view
+}
+
+/// Screen position of a world point, for the mouse.
+pub fn to_screen(view_proj: Mat4, size: [u32; 2], p: Vec3) -> Option<[f32; 2]> { project(view_proj, size, p) }
+
+/// Where the mouse's Start menu stands: the middle of the screen.
+fn mouse_menu_at(size: [u32; 2]) -> ([f32; 2], f32) {
+    let scale = size[1] as f32 / 1080.0;
+    ([size[0] as f32 / 2.0, size[1] as f32 * 0.62], (26.0 * scale).floor())
+}
+
+/// The mouse menu's item rows on screen, for pointing at them.
+pub fn mouse_menu_rows(lobby: &Lobby, size: [u32; 2]) -> Option<([f32; 4], Vec<[f32; 4]>)> {
+    let (at, fs) = mouse_menu_at(size);
+    menu_layout(lobby, crate::mouse::MOUSE, at, fs, size)
+}
+
 pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
     let mut list = HudDrawList::new(size);
     let (w, h) = (size[0] as f32, size[1] as f32);
     let mut c = Canvas::new(&mut list, [0, 0, size[0], size[1]]);
     let scale = h / 1080.0;
-    let camera = &lobby.stage.room.camera;
-    let view = Mat4::look_at_rh(camera.pos, camera.target, Vec3::Y);
-    let proj = Mat4::perspective_rh(camera.fov_y, w / h.max(1.0), camera.near.max(0.05), 4000.0);
-    let view_proj = proj * view;
+    let view_proj = view_proj(&lobby.stage.room.camera, size);
 
     let error = crate::host::get(&lobby.host.party, "onboarding_error", "");
     if !error.is_empty() && error != "<null>" {
@@ -81,6 +101,11 @@ pub fn draw(lobby: &Lobby, size: [u32; 2], _alpha: f32) -> HudDrawList {
         c.over();
         let fs = (20.0 * scale).floor();
         menu(lobby, &mut c, &p.id, [at[0], at[1] - fs - 10.0 * scale], (22.0 * scale).floor());
+    }
+    if lobby.menus.contains_key(crate::mouse::MOUSE) {
+        c.over();
+        let (at, fs) = mouse_menu_at(size);
+        menu(lobby, &mut c, crate::mouse::MOUSE, at, fs);
     }
     c.over();
     bench(lobby, &mut c, scale);
@@ -154,10 +179,11 @@ fn badge(c: &mut Canvas, at: [f32; 2], k: f32, key: &str, label: &str, color: Co
     c.text(bold(), [x + 90.0 * k, y0 + h / 2.0 + 16.0 * k], label, TextAlign::Left, -1.0, 44.0 * k, TEXT);
 }
 
-/// main.gd `_draw_menu`: a player's Start menu over their head.
-fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
+/// A Start menu's box and its item rows (main.gd `_draw_menu` layout),
+/// standing on `at` (bottom centre).
+fn menu_layout(lobby: &Lobby, id: &str, at: [f32; 2], fs: f32, size: [u32; 2]) -> Option<([f32; 4], Vec<[f32; 4]>)> {
+    lobby.menus.get(id)?;
     let items = lobby.menu_items(id);
-    let Some(state) = lobby.menus.get(id) else { return };
     let line = fs + 16.0;
     let block = fs * 0.5;
     let gap = fs * 0.22;
@@ -170,19 +196,39 @@ fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
     }
     mw += 80.0;
     let mh = line * items.len() as f32 + extra + 70.0;
-    let x = (at[0] - mw / 2.0).clamp(16.0, (c.size[0] - mw - 16.0).max(16.0));
+    let x = (at[0] - mw / 2.0).clamp(16.0, (size[0] as f32 - mw - 16.0).max(16.0));
     let y0 = (at[1] - mh).max(16.0);
+    let mut rows = vec![];
+    let mut y = y0 + 50.0;
+    for item in &items {
+        let couch = if item.action == "couch" { row } else { 0.0 };
+        rows.push([x + 12.0, y, mw - 24.0, line - 4.0 + couch]);
+        y += line + couch;
+    }
+    Some(([x, y0, mw, mh], rows))
+}
+
+/// main.gd `_draw_menu`: a player's Start menu over their head.
+fn menu(lobby: &Lobby, c: &mut Canvas, id: &str, at: [f32; 2], fs: f32) {
+    let items = lobby.menu_items(id);
+    let Some(state) = lobby.menus.get(id) else { return };
+    let Some(([x, y0, mw, mh], _)) = menu_layout(lobby, id, at, fs, [c.size[0] as u32, c.size[1] as u32]) else { return };
+    let line = fs + 16.0;
+    let block = fs * 0.5;
+    let gap = fs * 0.22;
+    let row = block + 12.0;
+    let mouse = id == crate::mouse::MOUSE;
     c.rect([x, y0, mw, mh], rgba(0.04, 0.035, 0.08, 0.95));
     let edge = VIOLET.with_alpha(0.9);
     for r in [[x, y0, mw, 3.0], [x, y0 + mh - 3.0, mw, 3.0], [x, y0, 3.0, mh], [x + mw - 3.0, y0, 3.0, mh]] { c.rect(r, edge); }
-    let heading = match state.page.as_str() { "lobbies" => "CHOOSE A LOBBY".to_string(), "remove" => "REMOVE A PLAYER".into(), _ => lobby.name(id).to_uppercase() };
+    let heading = match state.page.as_str() { "lobbies" => "CHOOSE A LOBBY".to_string(), "remove" => "REMOVE A PLAYER".into(), _ if mouse => "GAMENIGHT".into(), _ => lobby.name(id).to_uppercase() };
     text(c, &heading, [x + 24.0, y0 + fs + 14.0], (fs * 0.7).floor(), AMBER);
     let mut y = y0 + 50.0;
     for (i, item) in items.iter().enumerate() {
         let selected = i == state.index;
         let couch = item.action == "couch";
         let mut label = item.label.clone();
-        if item.action == "quit" && state.confirm && selected { label = "Press A again to quit".into(); }
+        if item.action == "quit" && state.confirm && selected { label = if mouse { "Click again to quit" } else { "Press A again to quit" }.into(); }
         if item.action == "remove" && state.confirm && selected { label = format!("Press A again to remove {}", short(&item.name, 14)); }
         if selected { c.rect([x + 12.0, y, mw - 24.0, line - 4.0 + if couch { row } else { 0.0 }], VIOLET.with_alpha(0.35)); }
         text(c, &label, [x + 32.0, y + fs], fs, if selected { TEXT } else { DIM });
