@@ -485,8 +485,10 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
     if !aggregate { vegetation.finish_source()?; return Ok(()); }
     let proxy_pixels = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-px")
         .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels);
+    let proxy_pixels_from = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-from")
+        .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels_from);
     vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false,
-        proxy_pixels, ..Default::default() })?;
+        proxy_pixels, proxy_pixels_from, ..Default::default() })?;
     Ok(())
 }
 

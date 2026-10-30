@@ -1071,7 +1071,15 @@ fn volume_far_tree(index:u32)->bool {
 fn volume_proxy(index:u32)->bool {return f32(index)>=volume_config.proxy.x;}
 fn volume_splat_level(index:u32)->u32 {
     let tree=volume_trees[index];
-    if volume_proxy(index) {return volume_footprint_level(index,tree.identity.z-1u,volume_config.proxy.y);}
+    if volume_proxy(index) {
+        // Far proxies loosen their pixel error with sqrt(distance / proxy.z).
+        var pixels=volume_config.proxy.y;
+        if volume_config.proxy.z>0.0 {
+            let t=distance(0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz),view.cam.xyz);
+            pixels*=sqrt(max(t/volume_config.proxy.z,1.0));
+        }
+        return volume_footprint_level(index,tree.identity.z-1u,pixels);
+    }
     if volume_config.march.y>0.0 {return volume_footprint_level(index,tree.identity.z-1u,volume_config.march.w);}
     let selected=volume_selection[index];
     let ceiling=min(tree.identity.z-1u,selected.y);

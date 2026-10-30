@@ -171,7 +171,7 @@ struct Config {
     size_count: [u32; 4],
     march: [f32; 4],
     dispatch: [u32; 4],
-    /// First whole-plant proxy tree, its pixel error.
+    /// First whole-plant proxy tree, its pixel error, the distance past which that error grows.
     proxy: [f32; 4],
 }
 /// Rasterized voxels (KERN_VOXEL_RASTER=1, docs/voxel-raster-plan.md): the
@@ -281,6 +281,7 @@ pub(crate) struct VoxelRenderer {
     /// Scene::voxel_proxies and voxel_proxy_pixels: config proxy.
     proxies: u32,
     proxy_pixels: f32,
+    proxy_pixels_from: f32,
     step: f32,
     empty_skip: bool,
     lod_pixels: f32,
@@ -749,6 +750,7 @@ impl VoxelRenderer {
             far,
             proxies,
             proxy_pixels: scene.voxel_proxy_pixels,
+            proxy_pixels_from: scene.voxel_proxy_pixels_from,
             step,
             empty_skip,
             lod_pixels,
@@ -889,7 +891,7 @@ impl VoxelRenderer {
                     march: [self.step, self.far, u32::from(self.empty_skip) as f32, self.lod_pixels],
                     dispatch: [u32::from(self.active_tiles), 0, interval_stream.map_or(0,|s|s.header_word),
                         interval_stream.map_or(0,|s|s.pixel_slots)],
-                    proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, 0.0, 0.0],
+                    proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, self.proxy_pixels_from, 0.0],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
