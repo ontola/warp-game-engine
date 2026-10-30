@@ -1,0 +1,56 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "cage",
+        "health 0 50000",
+        "special 0 ion_cannon"
+      ],
+      "ticks": 30
+    },
+    {
+      "cmd": "aim 0 0 0 0"
+    },
+    {
+      "ticks": 1,
+      "hold": [
+        "LEFT_TRIGGER"
+      ]
+    },
+    {
+      "ticks": 170,
+      "capture": "outside.png"
+    },
+    {
+      "cmd": [
+        "teleport 0 0 3 3",
+        "aim 0 0 4 -20"
+      ],
+      "capture": "inside.png"
+    },
+    {
+      "cmd": "aim 0 0 100 2.9",
+      "capture": "inside-up.png"
+    },
+    {
+      "cmd": "aim 0 0 -10 2.9",
+      "capture": "inside-ground.png"
+    },
+    {
+      "cmd": [
+        "teleport 0 20 0 0",
+        "aim 0 0 2 0"
+      ],
+      "capture": "outside-side.png"
+    },
+    {
+      "ticks": 80,
+      "capture": "after.png"
+    }
+  ]
+}
