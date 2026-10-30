@@ -46,6 +46,9 @@ pub const BLOOD: u32 = 69;
 pub const JET: u32 = 70;
 /// The water a tidal wave pushes over the floor: params (time, sink, seed, 0).
 pub const SURGE: u32 = 71;
+/// The lane a rolling spell will sweep, marked while it charges: params
+/// (fill, time, length in metres, 0).
+pub const LANE: u32 = 72;
 
 struct State {
     /// The game's app/src, where fx.wgsl and spells.wgsl are.

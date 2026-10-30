@@ -221,6 +221,24 @@ impl Marks {
     fn cast_mark(&mut self, w: &Wizard, time: f32) {
         let (Some(s), Some(at)) = (w.charging.as_ref(), w.mark) else { return };
         let k = (w.charge_t / w.charge_need.max(0.01)).clamp(0.0, 1.0) as f32;
+        if s.shape == spellstorm::Shape::Overload && s.primary == Some(spellstorm::el::El::Water) {
+            // A spell that rolls forward marks its lane, not a spot
+            // (cast_mark.gdshader mode 1): the strip the wave will sweep.
+            use spellstorm::spells::{WAVE_RUN, WAVE_START, WAVE_WIDTH};
+            let dir = Vec3::new(w.aim_dir.x, 0.0, w.aim_dir.z).normalize_or(Vec3::NEG_Z);
+            let side = Vec3::new(-dir.z, 0.0, dir.x);
+            let len = WAVE_RUN + 2.0;
+            let centre = Vec3::new(at.x, 0.05, at.z) + dir * (1.0 - WAVE_START * 0.5);
+            let c = el_c(spellstorm::el::El::Water);
+            let mut m = Sprite::fixed(centre, [WAVE_WIDTH, len], side, dir, IMAGE, uv(Cell::Patch), linear3([c[0], c[1], c[2]]) * 1.6);
+            m.additive = true;
+            m.alpha_cut = 0.0;
+            m.depth_bias = 0.2;
+            m.effect = crate::effects::LANE;
+            m.params = [0.25 + 0.75 * k, time, len, 0.0];
+            self.sprites.push(m);
+            return;
+        }
         let r = match s.shape {
             spellstorm::Shape::Overload => spellstorm::spells::overload_reach(s.primary),
             spellstorm::Shape::Projectile => (s.n.splash as f32 * 0.8).max(0.9),
