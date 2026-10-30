@@ -197,7 +197,7 @@ documentation for custom MCP connectors.
 - **DNS rebinding.** Unless `--live-remote` is set, a request whose `Host`
   is not `localhost`, `127.0.0.1` or `[::1]` is refused, and so is a
   request whose `Origin` is not loopback.
-- **Sandboxed files.** `read_file`, `write_file` and `list_files` see only
+- **Sandboxed files.** `read_file`, `find_text`, `write_file`, `edit_file` and `list_files` see only
   the folders the game names (Growing Guns: `mods`, `sounds`, `shaders`).
   Paths are relative to a folder: absolute paths and `..` are refused, and
   symlinks are resolved and checked to stay inside the folder. Each folder
@@ -221,7 +221,8 @@ supports it:
 | `query` | Parts of the state by JSON pointer (`/players/0/health`, or `players.0.health`). |
 | `screenshot` | A PNG of the current frame, with the HUD. `max_width` downscales it (default 1024). |
 | `run_luau` | One Luau chunk in the game's script console, against the live game. |
-| `list_files`, `read_file`, `write_file` | The moddable folders. A write triggers that folder's reload, and the reply says whether it loaded. |
+| `list_files`, `read_file`, `write_file` | The moddable folders. A write triggers that folder's reload, and the reply says whether it loaded. `read_file` with `offset`/`limit` returns those lines, numbered, so a long file is read in parts. |
+| `find_text`, `edit_file` | Find the lines that hold some text (`path:line: text`), and replace the one place an exact text occurs (it must occur once). An edit reloads like a write; for a long file it beats rewriting it whole. |
 | `reload_shaders` | Recompile the WGSL shading chain on the next frame (`Renderer::reload_shaders`). A failure keeps the old shaders and returns the compiler error. |
 | `logs` | Recent console output, errors and tool calls (`lines`, `filter`). |
 | `play_sound` | Without a name: list the sounds with their parameters. With a name: play it once with `params`, at the listener or `at` a world position. |

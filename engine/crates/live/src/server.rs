@@ -236,13 +236,31 @@ async fn call(shared: &Shared, name: &str, args: &Value) -> Reply {
         "list_files" => files::list(&m.roots, arg_str(args, "folder"), arg_str(args, "path").unwrap_or("")).map(|v| vec![Content::Json(v)]),
         "read_file" => {
             let path = arg_str(args, "path").ok_or("read_file needs a path, like mods/base/cards.luau")?;
-            files::read(&m.roots, arg_str(args, "folder"), path).map(|t| vec![Content::Text(t)])
+            let text = files::read(&m.roots, arg_str(args, "folder"), path)?;
+            let number = |k: &str| args.get(k).and_then(Value::as_u64).map(|n| n as usize);
+            Ok(vec![Content::Text(match (number("offset"), number("limit")) {
+                (None, None) => text,
+                (offset, limit) => files::lines(&text, offset.unwrap_or(1), limit.unwrap_or(400).clamp(1, 2000)),
+            })])
         }
-        "write_file" => {
-            let path = arg_str(args, "path").ok_or("write_file needs a path, like mods/my_rules.luau")?;
-            let content = arg_str(args, "content").ok_or("write_file needs the file's full content")?;
-            let (root, rel) = files::write(&m.roots, arg_str(args, "folder"), path, content)?;
-            let mut out = vec![Content::Text(format!("wrote {}/{rel} ({} bytes)", root.name, content.len()))];
+        "find_text" => {
+            let text = arg_str(args, "text").ok_or("find_text needs the text to look for")?;
+            files::find(&m.roots, arg_str(args, "folder"), text).map(|t| vec![Content::Text(t)])
+        }
+        "write_file" | "edit_file" => {
+            let path = arg_str(args, "path").ok_or_else(|| format!("{name} needs a path, like mods/my_rules.luau"))?;
+            let folder = arg_str(args, "folder");
+            let (root, rel, said) = if name == "write_file" {
+                let content = arg_str(args, "content").ok_or("write_file needs the file's full content")?;
+                let (root, rel) = files::write(&m.roots, folder, path, content)?;
+                (root, rel, format!("({} bytes)", content.len()))
+            } else {
+                let old = arg_str(args, "old").ok_or("edit_file needs old, the exact text to replace")?;
+                let new = arg_str(args, "new").ok_or("edit_file needs new, the text to put in its place")?;
+                let (root, rel) = files::edit(&m.roots, folder, path, old, new)?;
+                (root, rel, "(one place replaced)".to_string())
+            };
+            let mut out = vec![Content::Text(format!("wrote {}/{rel} {said}", root.name))];
             if root.reload != Reload::None {
                 let wait = if root.reload == Reload::Shaders { FRAME_WAIT } else { GAME_WAIT };
                 match done(shared, Job::FileWritten { root: root.name.clone(), path: rel, reload: root.reload }, wait).await {
@@ -354,11 +372,16 @@ pub(crate) fn tools(m: &Manifest) -> Vec<Value> {
     if !m.roots.is_empty() {
         t.push(("list_files", format!("List the moddable folders ({}) or the files in one.", folders.join(", ")),
             schema(json!({ "folder": { "type": "string", "enum": folders }, "path": { "type": "string", "description": "a subfolder, or folder/subfolder" } }), &[]), true));
-        t.push(("read_file", "Read a text file from a moddable folder, path like mods/base/cards.luau.".into(),
-            schema(json!({ "path": { "type": "string" }, "folder": { "type": "string", "enum": folders } }), &["path"]), true));
+        t.push(("read_file", "Read a text file from a moddable folder, path like mods/base/cards.luau. With offset and/or limit, only those lines, numbered: read a long file in parts.".into(),
+            schema(json!({ "path": { "type": "string" }, "folder": { "type": "string", "enum": folders },
+                "offset": { "type": "integer", "description": "first line, from 1" }, "limit": { "type": "integer", "description": "how many lines (default 400)" } }), &["path"]), true));
+        t.push(("find_text", "Find the lines that contain some text (ignoring case) in the moddable folders, as path:line: text.".into(),
+            schema(json!({ "text": { "type": "string" }, "folder": { "type": "string", "enum": folders } }), &["text"]), true));
         if !writable.is_empty() {
             t.push(("write_file", format!("Create or replace a whole text file in {}; the game hot-reloads it and the reply says whether it loaded.", writable.join(", ")),
                 schema(json!({ "path": { "type": "string" }, "content": { "type": "string" }, "folder": { "type": "string", "enum": writable } }), &["path", "content"]), false));
+            t.push(("edit_file", format!("Change part of a text file in {}: replace the one place the exact text `old` occurs with `new` (copy old from read_file without the line numbers; add surrounding lines until it occurs once). The game hot-reloads it and the reply says whether it loaded. Prefer this over write_file for a long file.", writable.join(", ")),
+                schema(json!({ "path": { "type": "string" }, "old": { "type": "string" }, "new": { "type": "string" }, "folder": { "type": "string", "enum": writable } }), &["path", "old", "new"]), false));
         }
     }
     if f.shaders {
