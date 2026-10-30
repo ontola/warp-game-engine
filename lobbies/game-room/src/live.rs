@@ -115,7 +115,7 @@ pub struct Lobby {
     screen: Option<Screen>,
     pub show: Show,
     pub prompts: HashMap<String, Prompt>,
-    pub(crate) prompt_active: HashMap<String, bool>,
+    pub prompt_active: HashMap<String, bool>,
     /// Each prompt's glow, easing towards lit while someone stands there.
     prompt_glow: HashMap<String, f32>,
     pub mood: Mood,
@@ -161,10 +161,11 @@ pub struct Lobby {
     featured: Vec<usize>,
     bumpers: Vec<usize>,
     hud_size: [u32; 2],
+    pub(crate) mouse: crate::mouse::Mouse,
 }
 
 /// Width of every prompt screen in the live lobby.
-const PROMPT_WIDTH: u32 = 1024;
+pub(crate) const PROMPT_WIDTH: u32 = 1024;
 
 const NAMES: [&str; 6] = ["Joep", "Mango", "Disco", "Waffle", "Pickle", "Rocket"];
 /// The host's guest colours and skins (demo.gd).
@@ -232,7 +233,7 @@ impl Lobby {
             props: props.expect("props"), board: board.expect("board"), events: vec![], controllers: HashMap::new(), held: HashMap::new(), input_blocked: HashSet::new(), menus: HashMap::new(),
             bench: vec![], phones: vec![], lost_since: HashMap::new(), toasts: vec![], unjoined: HashMap::new(), holds: HashMap::new(), station_cooldown: HashMap::new(),
             pickup_cooldown: 0.0, item_presses: HashMap::new(), pressed_flash: HashMap::new(), claims: HashMap::new(), pop_box: None, featured_visible: false,
-            bumpers_visible: false, display_active: None, quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080],
+            bumpers_visible: false, display_active: None, quit: false, web_tx, web_rx, links_due: 0.0, last_queue: vec![], featured, bumpers, hud_size: [1920, 1080], mouse: Default::default(),
         };
         lobby.prompts = lobby.build.prompts.iter().map(|p| (p.name.clone(), Prompt {
             items: p.items.iter().map(|(k, t)| (k.clone(), t.clone(), true)).collect(), enabled: true, ..Default::default() })).collect();
@@ -240,6 +241,8 @@ impl Lobby {
     }
 
     pub fn names() -> &'static [&'static str] { &NAMES }
+
+    pub(crate) fn build_prompts(&self) -> &[crate::room::PromptDef] { &self.build.prompts }
 
     /// The z a player is drawn at (view.gd `depth`).
     pub fn actor_depth(&self, id: &str) -> f32 { self.actors.get(id).map_or(0.0, |a| a.depth + (a.order % 8) as f32 * 0.03) }
@@ -686,6 +689,11 @@ impl Game for Lobby {
         let hud = crate::hud::draw(self, frame.size, frame.alpha);
         Ok(Draw { cameras: vec![self.stage.room.camera], light: self.stage.light.clone(), hud })
     }
+
+    fn pointer(&mut self, pointer: app::Pointer, size: [u32; 2]) { self.mouse_input(pointer, size); }
+
+    /// Escape is the mouse's Start: the room never closes on it.
+    fn escape(&mut self) -> bool { self.mouse_escape(); true }
 
     fn title(&self) -> Option<String> { Some("GameNight Game Room".into()) }
 

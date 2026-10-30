@@ -13,7 +13,7 @@ use crate::plant_mesh_lod::PlantCards;
 use crate::plant_recipe::{self, BuildOptions, WoodyRecipe};
 use crate::scene::{GeometryCategory, GpuInstance};
 use crate::vegetation_aggregate::Config;
-use crate::vegetation_asset::{AttachLimits, AttachmentReport, CookedPlant, MovablePlant, PlantInstance, SceneVegetation};
+use crate::vegetation_asset::{AttachLimits, AttachmentReport, CookedPlant, MovablePlant, PlantInstance, ProxyShow, SceneVegetation};
 use crate::{Gpu, Renderer, Scene};
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use std::path::Path;
@@ -137,7 +137,7 @@ fn instance(i: usize, t: &Tree) -> PlantInstance {
 /// Full trees that follow the cameras, the way Nanite streams detail: every
 /// tree is its whole-plant proxy, and a fixed pool of full assemblies (`slots`
 /// per variant) moves to the trees nearest the cameras, hiding their proxies
-/// (Renderer::move_plant, set_plant_proxies_hidden). A full tree still picks
+/// (Renderer::move_plant, set_plant_proxies). A full tree still picks
 /// per frame on the GPU between its branches and its own voxels.
 pub struct Pool {
     trees: Vec<Tree>,
@@ -148,7 +148,7 @@ pub struct Pool {
     last: Vec<Vec3>,
     cards: Option<Cards>,
     /// Trees whose proxies are hidden now (a full slot or a card stands there).
-    hidden: std::collections::HashSet<usize>,
+    hidden: std::collections::HashMap<usize, ProxyShow>,
 }
 
 struct Slot { variant: usize, plant: MovablePlant, tree: Option<usize> }
@@ -171,7 +171,9 @@ fn card_instance(mesh: &crate::scene::MeshRef, root: Mat4) -> GpuInstance {
     let scale = xf.matrix3.x_axis.length().max(xf.matrix3.y_axis.length()).max(xf.matrix3.z_axis.length());
     let r = root.transpose();
     let mut instance = GpuInstance { rows: [r.x_axis.to_array(), r.y_axis.to_array(), r.z_axis.to_array()],
-        sphere: [c.x, c.y, c.z, mesh.sphere[3] * scale], first_cluster: mesh.first_cluster, cluster_count: mesh.cluster_count, scale, flags: 0 };
+        sphere: [c.x, c.y, c.z, mesh.sphere[3] * scale], first_cluster: mesh.first_cluster, cluster_count: mesh.cluster_count, scale,
+        // The tree's proxy casts its shadow (ProxyShow::ShadowOnly).
+        flags: crate::scene::NO_SHADOW };
     instance.set_category(GeometryCategory::Trees);
     instance
 }
@@ -301,7 +303,7 @@ impl Pool {
             }
         }
         let full: std::collections::HashSet<usize> = self.slots.iter().filter_map(|s| s.tree).collect();
-        let mut wanted = full.clone();
+        let mut wanted: std::collections::HashMap<usize, ProxyShow> = full.iter().map(|&t| (t, ProxyShow::Hidden)).collect();
         // Cards: the nearest trees past the full ones, within the radius. A
         // card stays on a tree still wanted; freed cards take the new ones.
         if let Some(cards) = &mut self.cards {
@@ -319,7 +321,9 @@ impl Pool {
                 }
                 for k in free { if cards.slots[k].1.take().is_some() { moved = true; } }
             }
-            wanted.extend(cards.slots.iter().filter_map(|s| s.1));
+            // Cards cast no shadow: their proxies keep casting, as every
+            // other non-full tree's does.
+            wanted.extend(cards.slots.iter().filter_map(|s| s.1).map(|t| (t, ProxyShow::ShadowOnly)));
             if moved {
                 let instances: Vec<GpuInstance> = cards.slots.iter().map(|&(v, tree)| card_instance(&cards.meshes[v],
                     tree.map_or(Mat4::from_translation(PARKED), |t| root(&self.trees[t])))).collect();
@@ -328,9 +332,10 @@ impl Pool {
         }
         // Proxies hide where a full tree or a card stands, and show again
         // where none does, in one call (no frame without either).
-        let mut changes: Vec<(u32, bool)> = wanted.difference(&self.hidden).map(|&t| (self.first_proxy + t as u32, true)).collect();
-        changes.extend(self.hidden.difference(&wanted).map(|&t| (self.first_proxy + t as u32, false)));
-        renderer.set_plant_proxies_hidden(gpu, &changes)?;
+        let mut changes: Vec<(u32, ProxyShow)> = wanted.iter().filter(|(t, s)| self.hidden.get(t) != Some(s))
+            .map(|(&t, &s)| (self.first_proxy + t as u32, s)).collect();
+        changes.extend(self.hidden.keys().filter(|t| !wanted.contains_key(t)).map(|&t| (self.first_proxy + t as u32, ProxyShow::Shown)));
+        renderer.set_plant_proxies(gpu, &changes)?;
         self.hidden = wanted;
         stats.placed = self.slots.iter().filter(|s| s.tree.is_some()).count();
         Ok(stats)
