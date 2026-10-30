@@ -43,6 +43,12 @@ pub const COOP_VIEW_PLAYERS: usize = 24;
 const MAX_LIGHTS: usize = render::headlights::MAX_LOCAL_LIGHTS;
 /// Of those, the most that ion strikes and blasts take, so the floodlights
 /// and the lava keep theirs.
+/// The flashlight's place from the eye: left and down (Godot `FLASHLIGHT_OFFSET`).
+const FLASHLIGHT_OFFSET: [f32; 2] = [0.32, -0.18];
+/// Flashlight strength, candela (`GG_FLASHLIGHT` overrides).
+const FLASHLIGHT_CD: f32 = 60_000.0;
+fn flashlight_cd() -> f32 { std::env::var("GG_FLASHLIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(FLASHLIGHT_CD) }
+
 /// Share of the floods' intensity that comes back off the field as fill
 /// (`flood_bounce`; `GG_BOUNCE` overrides).
 const FLOOD_BOUNCE: f32 = 0.15;
@@ -99,6 +105,9 @@ pub struct Visuals {
     clock: f32,
     /// Floodlight strength against Godot's (crate::sky::floodlights).
     flood: f32,
+    /// A blackout round: the floods, lamps and lava glow are out; only the
+    /// players' flashlights (`flashlights`) and short flashes light the arena.
+    pub blackout: bool,
     /// Air strike targets in flight last tick, and when the last one hit.
     air_targets: Vec<Vec3>,
     air_impact: f32,
@@ -134,7 +143,7 @@ impl Visuals {
                 origin: Vec3::new(-192.0, -6.0, -192.0), cell: 6.0, dims: [65, 13, 65],
             }).expect("stadium sky grid");
         }
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, sprites: Vec::new() };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, blackout: false, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, sprites: Vec::new() };
         v.set_arena(world);
         v
     }
@@ -341,6 +350,11 @@ impl Visuals {
         l.truncate(MAX_TRANSIENT_LIGHTS);
         let mut w = vec![0.0; l.len()];
         let flood = self.flood;
+        if self.blackout {
+            l.extend(self.things.pickup_lights().iter().take(MAX_LIGHTS - l.len()).copied());
+            w.resize(l.len(), 0.0);
+            return (l, w);
+        }
         // Shadowed floods: their light bouncing off the field fills the
         // shade (else pitch black at night), as unshadowed soft lights.
         if self.flood_shadows() {
@@ -370,13 +384,30 @@ impl Visuals {
 
     /// The floodlights as shadowed spots (empty unless `flood_shadows`).
     pub fn flood_spots(&self) -> Vec<render::headlights::SpotLight> {
-        if !self.flood_shadows() { return Vec::new(); }
+        if !self.flood_shadows() || self.blackout { return Vec::new(); }
         self.stadium.lights().iter().take(render::headlights::MAX_LIGHTS).map(|f| {
             let side = f.direction.cross(Vec3::Y).normalize_or(Vec3::X);
             render::headlights::SpotLight {
                 position: f.position, direction: f.direction, up: side.cross(f.direction),
                 intensity_cd: (f.intensity_cd * self.flood).min(Vec3::splat(1.0e8)), range_m: f.range_m.clamp(1.0, 200.0),
                 inner_angle_radians: f.inner_cos.clamp(-1.0, 1.0).acos(), outer_angle_radians: f.outer_cos.clamp(-1.0, 1.0).acos().min(1.3),
+            }
+        }).collect()
+    }
+
+    /// Every living player's flashlight in a blackout round (Godot
+    /// `player.gd _build_flashlight`): a narrow shadowed beam from the off
+    /// hand, low and to the left of the eye, along the aim.
+    pub fn flashlights(world: &World, prev: &[Pose], alpha: f32) -> Vec<render::headlights::SpotLight> {
+        world.players.iter().enumerate().filter(|(_, p)| p.alive).take(render::headlights::MAX_LIGHTS).map(|(i, p)| {
+            let at = pose(world, i, prev, alpha).pos + Vec3::Y * p.eye_height();
+            let dir = growing_guns::look_dir(p.yaw, p.pitch);
+            let side = dir.cross(Vec3::Y).normalize_or(Vec3::X);
+            let up = side.cross(dir);
+            render::headlights::SpotLight {
+                position: at - side * FLASHLIGHT_OFFSET[0] + up * FLASHLIGHT_OFFSET[1], direction: dir, up,
+                intensity_cd: Vec3::new(1.0, 0.97, 0.88) * flashlight_cd(), range_m: 40.0,
+                inner_angle_radians: 12f32.to_radians(), outer_angle_radians: 20f32.to_radians(),
             }
         }).collect()
     }
@@ -402,6 +433,7 @@ impl Visuals {
     /// The floodlight beams and the pickups' drop-beam searchlights, which
     /// only scatter (night volumetric light).
     pub fn volumetric_beams(&self, scatter: Scatter) -> Vec<LocalLight> {
+        if self.blackout { return Vec::new(); }
         let flood = self.flood * scatter.beam;
         // The pickups' haze last: the renderer takes at most 32 scattering
         // lights, so when the lava glows fill the budget the floods keep theirs.

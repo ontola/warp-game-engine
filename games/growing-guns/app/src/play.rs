@@ -94,6 +94,8 @@ pub struct Gg {
     sky: crate::sky::Sky,
     /// A baked sky waiting for the renderer (`Renderer::update_sky`).
     sky_upload: Option<render::sky::PreparedSky>,
+    /// The light a blackout round replaced.
+    before_blackout: Option<Lighting>,
     /// `light KEY=VALUE` settings, applied again over every sky change.
     light_overrides: Vec<String>,
     /// Scatter weights of the stadium's lights (`light flood_scatter=..`).
@@ -128,7 +130,7 @@ impl Gg {
         vis.hide_own_bodies(&slots);
         Gg { prev: view::Pose::all(&world), stepped: true, vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
-            sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, light_overrides: Vec::new(), scatter: Default::default(),
+            sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
             .with_split()
     }
@@ -279,6 +281,7 @@ impl Gg {
                 self.light = Lighting { taa, ..view::lighting_for(self.inferno) };
                 self.vis.set_floodlights(1.0);
                 self.apply_light_overrides();
+                self.keep_blackout();
                 self.sky.applied = None;
                 self.sky_upload = None;
                 self.rebuild = true;
@@ -306,7 +309,30 @@ impl Gg {
         let taa = self.light.taa;
         self.light = Lighting { taa, ..view::lighting_for(inferno) };
         self.apply_light_overrides();
+        self.keep_blackout();
         self.rebuild = true;
+    }
+
+    /// A blackout round darkens the scene's light (the sky's light is baked
+    /// into the scene, so it rebuilds; a new round rebuilds anyway).
+    fn sync_blackout(&mut self) {
+        let on = self.world.modifier == Some(growing_guns::Modifier::Blackout);
+        if on == self.vis.blackout { return; }
+        self.vis.blackout = on;
+        if on {
+            self.before_blackout = Some(self.light.clone());
+            blackout_light(&mut self.light);
+        } else if let Some(l) = self.before_blackout.take() {
+            self.light = Lighting { taa: self.light.taa, ..l };
+        }
+        self.rebuild = true;
+    }
+
+    /// The light was replaced during a blackout: that is the light to come back to.
+    fn keep_blackout(&mut self) {
+        if !self.vis.blackout { return; }
+        self.before_blackout = Some(self.light.clone());
+        blackout_light(&mut self.light);
     }
 
     fn show_sky(&mut self, prepared: render::sky::PreparedSky) {
@@ -314,6 +340,7 @@ impl Gg {
         self.vis.set_floodlights(crate::sky::floodlights(prepared.settings.solar().elevation_degrees));
         self.light.volumetric = crate::sky::volumetric(&prepared.settings);
         self.apply_light_overrides();
+        self.keep_blackout();
         self.sky.applied = Some(prepared.settings);
         if let Some(live) = &mut self.sky.live { live.accepted(prepared.clone()); }
         self.sky_upload = Some(prepared);
@@ -376,6 +403,22 @@ impl Gg {
         if let Some(prepared) = live.poll(now) { self.show_sky(prepared); }
     }
 }
+
+/// A blackout round (Godot `game.gd`: ambient, sun and fill to zero, a
+/// near-black sky, no fog): only the flashlights and the emissive accents
+/// light the arena, exposed for them.
+fn blackout_light(light: &mut Lighting) {
+    light.sun_lux = 0.0;
+    light.sky_lux = 0.0;
+    light.fog_density = 0.0;
+    light.volumetric = None;
+    light.ev100 = *BLACKOUT_EV100;
+    light.fx_white_floor = light.fx_white_floor.max(1.0);
+}
+
+/// The exposure of a blackout round (`GG_BLACKOUT_EV` overrides).
+const BLACKOUT_EV: f32 = 8.0;
+static BLACKOUT_EV100: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("GG_BLACKOUT_EV").ok().and_then(|v| v.parse().ok()).unwrap_or(BLACKOUT_EV));
 
 /// What the menus show of the session; `party`: GameNight's settings.
 fn menu_ctx<'a>(session: &Session, world: &World, ticket: Option<&'a str>, party: Option<&crate::party::Settings>, names: &[String]) -> hud::menus::Ctx<'a> {
@@ -804,6 +847,7 @@ impl app::Game for Gg {
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if self.sky.live.is_some() { self.cycle_sky(); }
         self.sync_atmosphere();
+        self.sync_blackout();
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
             frame.set_scene(&self.vis.scene, &self.light);
             self.plates.invalidate();
@@ -822,7 +866,8 @@ impl app::Game for Gg {
         r.set_local_lights_scattering(&lights, &scatter)?;
         // At night the floodlights are shadowed spots: falloff 1 and the
         // range window of Godot's lights (the sign), as the unshadowed ones.
-        let spots = self.vis.flood_spots();
+        let blackout = self.vis.blackout;
+        let spots = if blackout { view::Visuals::flashlights(&self.world, &self.prev, alpha) } else { self.vis.flood_spots() };
         r.set_spot_falloff(&vec![-1.0; spots.len()]);
         r.set_spot_softness(if spots.is_empty() { 0.0 } else { FLOOD_SOFTNESS });
         r.set_headlights(&spots)?;
