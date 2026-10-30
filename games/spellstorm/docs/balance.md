@@ -261,27 +261,55 @@ fewer usable tomes are left than altars, the rest are filled from the others.
 
 ### The budget
 
-Spells are fitted without tomes, so a tome is pure profit. To keep a pick
-between tomes a real choice, every tome is worth about **+25% of what it
-touches, for the wizard who plays to it**:
+Spells are fitted without tomes, so a tome is pure profit. Joep (30 Oct):
+not everything has to be even, a very strong tome now and then is fine,
+but no tome may be one you would never take because it costs too much.
 
-| Reach of the tome | Size | Examples |
+The yardstick is one fight of about 40 s for one wizard:
+
+- **mana in:** regen 3/s = 120, souls about 90, so about 210 mana;
+- **damage out:** spells at about 5 damage per mana in play = about 1050,
+  bolts 12/s at 60% uptime = about 290. Spells are about 80% of what you
+  deal, bolts about 20%;
+- **staying alive:** 100 health.
+
+Every tome aims at **+15% to +25% of what a wizard deals, or +20% to +30%
+of how much they can take**, for the wizard who plays to it:
+
+| Tome | What it buys in the yardstick | About |
 |---|---|---|
-| Everything you do | +15% | Glass Staff (with -30 health), Blood Pact +25% (you take +25%) |
-| A family of 3 to 4 elements | +35% | Ember and Rime Codex, Storm Sigil |
-| One element and its fusion | +50% | Pyre Psalter, Frozen Heart, Thunder Rod |
-| One element | +60% | Tomb Dust (poison) |
-| One habit (a form, the staff, bolts, souls) | x1.4 to x2 | Keen Gem, Runed Staff, Quicksilver Grip, Soul Jar |
-| Staying alive | about one extra hit taken per fight | Thick Hide +30, Iron Skin -20%, Wayfarer's Charm |
+| Moon Font, regen x1.5 | +60 mana a fight | +23% damage |
+| Soul Jar, souls x1.5 | +45 mana a fight | +17% |
+| Lodestone, souls x1.2, far pull | +18 mana, souls you would miss | +10%, comfort |
+| Miser's Ledger, cost x0.8 | +25% spells for the same mana | +20% |
+| Deep Well, +40 max mana | a bigger opener every fight | +15% |
+| Keen Gem, bolts x1.8 | bolts are 20% of your damage | +16% |
+| Element family tomes, x1.4 | half your spells, usually | +15% to +20% |
+| One element and its fusion, x1.5 | a third of your spells | +15%, more if you build on it |
+| Tomb Dust, poison x1.6 | poison is the strongest element | +15% to +25% |
+| Hunter's Mark, x1.2 on afflicted | nearly every spell afflicts | +15% |
+| Glass Staff, +30% damage, -20 health | | +30% for -20% health |
+| Blood Pact, +40% damage, take 20% more | | +40% for -17% health |
+| Thick Hide +30, Iron Skin x0.8 | | +30% / +25% health |
+| Wayfarer's Charm, +20 health, speed x1.15 | | +20% health, easier dodging |
+| Ram's Horn, push x2, take 10% less | monsters kept off you | +11% health, control |
+| Whetstone, sword x2; Quicksilver Grip | the staff swing and its 3 mana a hit | for swing players |
+| Red Chalice, blood heals x2 | | more healing, no healing spells |
 
-Mana tomes are measured in damage through the exchange rate: +40 max mana
-(Deep Well) is two more one-element spells per fight, about 320 damage; Moon
-Font doubles the 3 mana/s regen, about +27 damage a second while you keep
-casting; Miser's Ledger (-20% cost) is +25% spells for the same mana.
+A downside buys a bigger number than the same tome without one (Glass
+Staff, Blood Pact), never a smaller one.
 
-A downside may buy a bigger number (Glass Staff, Blood Pact), never a
-smaller one. No tome heals: health still only comes from blood
-(Red Chalice makes that blood heal more).
+The 30 Oct pass: Moon Font was x2 (+45% damage, far too strong), Glass
+Staff +15% for -30 health and Blood Pact +25% for +25% taken cost more than
+they gave, Keen Gem x1.4, Whetstone x1.6, Red Chalice x1.6, Wayfarer's
+Charm and the family tomes (+30 to 35%) were too small to ever pick.
+
+`cargo run --release -p spellstorm --example tome_power [seconds] [seeds]`
+lets three bots play level 1 with each tome against none and prints damage
+dealt, taken and progress. Bots fight every pack to the end, so damage
+dealt is capped by the monsters there are: use it to catch a tome that
+breaks the game (one that makes bots die far more or far less), not to
+rank them.
 
 ### Ideas not built yet
 
