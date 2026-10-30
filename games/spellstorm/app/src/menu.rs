@@ -469,6 +469,49 @@ impl P<'_> {
     }
 }
 
+/// What an unlock card shows on its left: an element, or a part of the pad
+/// (a `glyph` kind).
+pub enum CardIcon {
+    Element(El),
+    Pad(&'static str),
+}
+
+/// Something just learned, in the menu's own look: its framed panel, the
+/// element as on the controls' face buttons or the pad part drawn large,
+/// a soft line saying what it is, the name in gold and how to use it.
+/// Centred on `cx`, its top at `y`, all faded by `a`.
+#[allow(clippy::too_many_arguments)]
+pub fn unlock_card(d: &mut HudDrawList, s: f32, cx: f32, y: f32, icon: CardIcon, kicker: &str, name: &str, hint: &str, a: f32) {
+    let (v0, t0) = (d.vertices.len(), d.text.len());
+    let (w, h) = (680.0, 128.0);
+    let x0 = cx - w * 0.5;
+    let mut p = P { d: &mut *d, s };
+    p.frame([x0, y, w, h]);
+    let ic = Vec2::new(x0 + 76.0, y + h * 0.5);
+    match icon {
+        CardIcon::Element(e) => {
+            let col = e.color();
+            p.circle(ic, 36.0, PAD_EDGE);
+            p.circle(ic, 34.0, [col[0], col[1], col[2], 1.0]);
+            crate::hud::icon(&mut crate::hud::Painter { d: &mut *p.d, s }, e, ic, 22.0, [0.06, 0.04, 0.04, 1.0]);
+        }
+        CardIcon::Pad(kind) => {
+            let k = 1.35;
+            glyph(&mut P { d: &mut *p.d, s: s * k }, kind, ic / k);
+        }
+    }
+    let tx = x0 + 168.0;
+    p.text(kicker, tx, y + 30.0, body(), 24.0, [0.75, 0.68, 0.56, 1.0], TextAlign::Left);
+    p.text(name, tx, y + 66.0, title(), 40.0, [1.0, 0.82, 0.4, 1.0], TextAlign::Left);
+    p.text(hint, tx, y + 102.0, body(), 24.0, TOME_TEXT, TextAlign::Left);
+    for v in &mut d.vertices[v0..] {
+        v.color[3] *= a;
+    }
+    for t in &mut d.text[t0..] {
+        t.color[3] = (t.color[3] as f32 * a).round() as u8;
+    }
+}
+
 /// One controller part, about 80 by 40 around `c` (Menu._glyph).
 fn glyph(p: &mut P, kind: &str, c: Vec2) {
     let f = title();
