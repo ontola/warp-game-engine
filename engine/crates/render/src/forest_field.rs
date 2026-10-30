@@ -4,14 +4,16 @@
 //! line for line the same, after `terrain_field.wgsl`), so a distant forest
 //! drawn into the terrain stands exactly where the trees are.
 //!
-//! Trees sit on a jittered 8 m grid. Slow noise (300 m) makes stands and
-//! clearings; nothing grows on rock, scree, water or snow, on slopes steeper
-//! than ~35 degrees, or within 250 m of the snow line. `density` (0..1) is
-//! the share of forest ground that grows a tree.
+//! Trees sit on a jittered 8 m grid. Stands follow the ground (`site`):
+//! forest on slopes and ridges, meadows on flat and damp ground, with noise
+//! from 300 m stands down to 12 m ragged edges, loose trees and hedgerows in
+//! the clearings. Nothing grows on rock, scree, water or snow, on slopes
+//! steeper than ~35 degrees, or within 250 m of the snow line. `density`
+//! (0..1) is the share of forest ground that grows a tree.
 //!
 //! ```ignore
 //! let trees = forest_field::trees_in_disc(Vec2::ZERO, 900.0, seed, &style, 0.6);
-//! let far = forest_field::forest(x, z, seed, &style, 0.6); // colour, cover, crown height
+//! let far = forest_field::forest(x, z, seed, &style, 0.6, &fs); // colour, cover, crown height
 //! ```
 use crate::terrain_field::{self, Sample, Style};
 use glam::{Vec2, Vec3};
@@ -22,9 +24,9 @@ pub const WGSL: &str = include_str!("shaders/forest_field.wgsl");
 pub const CELL: f32 = 8.0;
 /// How a forest looks, chosen by the game's artist: the palette and the
 /// crown shape. Passed to the GPU as is (`ForestStyle` in forest_field.wgsl,
-/// four vec4s). The default is calibrated on an aerial photo of conifer
-/// forest in sun: sunlit tips about sRGB 96,124,22 (to 140,147,103 at the
-/// brightest), gaps between crowns nearly black.
+/// four vec4s). The default follows aerial photos of Vosges conifer forest:
+/// dark blue-green with lit crown tips, nearly black between crowns, olive
+/// and brown patches; clearly darker than the meadows.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ForestStyle {
@@ -34,23 +36,24 @@ pub struct ForestStyle {
     /// Linear albedo of the forest floor seen in the gaps; w: the gaps'
     /// occlusion under a closed canopy (sparser stands leave their gaps lit).
     pub floor: [f32; 4],
-    /// Linear crown colour of a forest seen from far away (`forest`); w: the
-    /// height of a full-size tree's crown top above its foot (metres).
+    /// Linear albedo of a second canopy in patches (broadleaf, young or
+    /// dying trees); w: the height of a full-size tree's crown top above
+    /// its foot (metres).
     pub far: [f32; 4],
     /// x: crown radius seen from above per unit of tree width (metres);
     /// y: share of a full stand's ground under crowns (pi R^2 / CELL^2 less
     /// overlap); z: how far a crown's normal leans out from the trunk (cone
-    /// steepness); w unused.
+    /// steepness); w: share of the forest in the second canopy's patches.
     pub crown: [f32; 4],
 }
 
 impl Default for ForestStyle {
     fn default() -> Self {
         ForestStyle {
-            needles: [0.1, 0.17, 0.035, 0.4],
-            floor: [0.03, 0.045, 0.02, 0.2],
-            far: [0.045, 0.085, 0.035, 15.0],
-            crown: [3.2, 0.33, 1.6, 0.0],
+            needles: [0.045, 0.085, 0.045, 0.5],
+            floor: [0.02, 0.03, 0.015, 0.15],
+            far: [0.085, 0.09, 0.035, 15.0],
+            crown: [3.2, 0.33, 1.6, 0.2],
         }
     }
 }
@@ -58,6 +61,8 @@ impl Default for ForestStyle {
 /// cut 0 on the CPU, but defined on the GPU (terrain_field's fade divides by
 /// the cut, and x / 0 is not portable WGSL: Metal gave other ground).
 pub const CUT: f32 = 0.05;
+/// A `site` where no forest grows.
+pub const NO_FOREST: f32 = -10.0;
 
 /// The forest at a point, for drawing it where single trees are too small.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,14 +94,61 @@ fn hash(i: i32, j: i32, k: u32, seed: u32) -> f32 {
     (h & 0xffffff) as f32 / 16777216.0
 }
 
-/// Stands and clearings hundreds of metres across, -1..1.
-fn stand(x: f32, z: f32, seed: u32) -> f32 {
-    terrain_field::noised(Vec2::new(x, z) / 300.0, seed.wrapping_add(77)).x
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
-/// The chance a tree spot in this stand grows a tree.
-fn chance(stand: f32, density: f32) -> f32 {
-    ((stand + 0.15) * 2.0).clamp(0.0, 1.0) * density
+/// How much of a pattern `scale` metres across a pixel `footprint` metres
+/// across shows: all of it over four pixels, none under two (its mean, 0).
+fn band(scale: f32, footprint: f32) -> f32 {
+    (scale / footprint.max(1e-3) * 0.5 - 1.0).clamp(0.0, 1.0)
+}
+
+/// The ground's own leaning towards forest: slopes and ridges carry it,
+/// flat ground (valley floors, plateaus) and damp ground are meadow. From
+/// the terrain's `up` and `wet` (Sample, or the terrain's vertex attributes).
+pub fn site(up: f32, wet: f32) -> f32 {
+    0.4 - 0.8 * smooth(0.975, 0.998, up) - 0.6 * wet
+}
+
+/// Hedgerows: stretches of the edges of 110 by 80 m fields (on a grid
+/// turned by the seed), about a tree wide, 0..1.
+fn hedgerow(x: f32, z: f32, seed: u32) -> f32 {
+    let a = hash(0, 0, 10, seed) * 1.5;
+    let (u, v) = (x * a.cos() + z * a.sin(), z * a.cos() - x * a.sin());
+    let (fu, fv) = (u / 110.0, v / 80.0);
+    let (iu, iv) = (fu.round(), fv.round());
+    // Distance to the nearest field edge across u and across v (metres), and
+    // whether that stretch of edge carries a hedge.
+    let du = if hash(iu as i32, fv.floor() as i32, 11, seed) < 0.45 { (fu - iu).abs() * 110.0 } else { 1e3 };
+    let dv = if hash(fu.floor() as i32, iv as i32, 12, seed) < 0.45 { (fv - iv).abs() * 80.0 } else { 1e3 };
+    (1.0 - du.min(dv) / 4.0).clamp(0.0, 1.0)
+}
+
+/// Stands and clearings: 300 m stands with ragged edges down to 12 m, on
+/// the ground's `site`. Octaves under two `footprint`s are left out.
+fn stand(x: f32, z: f32, seed: u32, site: f32, footprint: f32) -> f32 {
+    let p = Vec2::new(x, z);
+    let mut s = terrain_field::noised(p / 300.0, seed.wrapping_add(77)).x + site;
+    let b = band(95.0, footprint);
+    if b > 0.0 { s += 0.45 * b * terrain_field::noised(p / 95.0 + Vec2::new(3.7, 1.3), seed.wrapping_add(78)).x; }
+    let b = band(33.0, footprint);
+    if b > 0.0 { s += 0.25 * b * terrain_field::noised(p / 33.0 + Vec2::new(8.1, 4.9), seed.wrapping_add(79)).x; }
+    let b = band(12.0, footprint);
+    if b > 0.0 { s += 0.14 * b * terrain_field::noised(p / 12.0 + Vec2::new(2.3, 6.2), seed.wrapping_add(80)).x; }
+    s
+}
+
+/// The share of tree spots at (x, z) that grow a tree, before `density`:
+/// 1 in a stand, falling to 0 over a few metres at its edge, with loose
+/// trees and hedgerows in the clearings. 0 on a `NO_FOREST` site. For
+/// drawing stands, `footprint` is the pixel's size in metres; 0 for trees.
+pub fn share(x: f32, z: f32, seed: u32, site: f32, footprint: f32) -> f32 {
+    if site <= NO_FOREST { return 0.0; }
+    let inside = ((stand(x, z, seed, site, footprint) + 0.05) * 5.0).clamp(0.0, 1.0);
+    let rows = 0.8 * band(16.0, footprint) * hedgerow(x, z, seed);
+    inside.max(0.04).max(rows)
 }
 
 /// Whether ground can carry a tree.
@@ -104,25 +156,36 @@ fn grows(s: &Sample, style: &Style) -> bool {
     !(s.rock > 0.3 || s.scree > 0.3 || s.water > 0.01 || s.snow > 0.05 || s.up < 0.82 || s.pos.y > style.snow_line - 250.0)
 }
 
+/// Where the second canopy grows instead, 0..1.
+fn patch(x: f32, z: f32, seed: u32, amount: f32) -> f32 {
+    if amount <= 0.0 { return 0.0; }
+    let n = terrain_field::noised(Vec2::new(x, z) / 70.0 + Vec2::new(1.9, 7.3), seed.wrapping_add(82)).x;
+    let t = 0.3 - 0.6 * amount;
+    smooth(t - 0.04, t + 0.04, n)
+}
+
 /// The forest at (x, z).
 pub fn forest(x: f32, z: f32, seed: u32, style: &Style, density: f32, fs: &ForestStyle) -> Forest {
-    let st = stand(x, z, seed);
     let s = terrain_field::eval(x, z, CUT, seed, style);
-    let cover = if grows(&s, style) { chance(st, density) } else { 0.0 };
-    let tone = (st * 0.5 + 0.5).clamp(0.0, 1.0);
+    let site = if grows(&s, style) { site(s.up, s.wet) } else { NO_FOREST };
+    let cover = share(x, z, seed, site, 0.0) * density;
+    let tone = (stand(x, z, seed, site.max(-1.0), 0.0) * 0.5 + 0.5).clamp(0.0, 1.0);
+    let colour = Vec3::from_slice(&fs.needles[..3]).lerp(Vec3::from_slice(&fs.far[..3]), patch(x, z, seed, fs.crown[3]));
     Forest {
         density: cover,
-        colour: Vec3::from_slice(&fs.far) * (0.8 + 0.4 * tone),
+        colour: colour * (0.8 + 0.4 * tone),
         crown_height: if cover > 0.0 { fs.far[3] * (0.85 + 0.3 * tone) } else { 0.0 },
     }
 }
 
 /// The tree of grid cell (i, j), if it grows one.
 pub fn tree(i: i32, j: i32, seed: u32, style: &Style, density: f32) -> Option<Tree> {
+    let roll = hash(i, j, 3, seed);
+    if roll >= density { return None; }
     let (x, z) = ((i as f32 + hash(i, j, 1, seed)) * CELL, (j as f32 + hash(i, j, 2, seed)) * CELL);
-    if hash(i, j, 3, seed) >= chance(stand(x, z, seed), density) { return None; }
     let s = terrain_field::eval(x, z, CUT, seed, style);
     if !grows(&s, style) { return None; }
+    if roll >= share(x, z, seed, site(s.up, s.wet), 0.0) * density { return None; }
     let width = 0.75 + 0.5 * hash(i, j, 4, seed);
     let height = width * (0.9 + 0.25 * hash(i, j, 5, seed));
     Some(Tree {
@@ -149,38 +212,49 @@ pub struct Canopy {
 /// flanks face the sun half of the time.
 const CROWN_OCCLUSION: f32 = 0.6 + 0.4 * (1.0 / 3.0) * 0.8;
 
-/// Whether cell (i, j) grows a tree, without the terrain (the caller
-/// knows whether its ground carries forest).
-fn spot(i: i32, j: i32, seed: u32, density: f32, variation: f32) -> Option<(Vec2, f32, f32, f32)> {
+/// Cell (i, j)'s tree in a stand where `chance` of the spots grow one,
+/// without the terrain: centre, width, tint and crown phase.
+fn spot(i: i32, j: i32, seed: u32, chance: f32, variation: f32) -> Option<(Vec2, f32, f32, f32)> {
+    if hash(i, j, 3, seed) >= chance { return None; }
     let c = Vec2::new((i as f32 + hash(i, j, 1, seed)) * CELL, (j as f32 + hash(i, j, 2, seed)) * CELL);
-    if hash(i, j, 3, seed) >= chance(stand(c.x, c.y, seed), density) { return None; }
     let width = 0.75 + 0.5 * hash(i, j, 4, seed);
     Some((c, width, 1.0 + variation * (hash(i, j, 8, seed) - 0.5), hash(i, j, 9, seed) * std::f32::consts::TAU))
 }
 
 /// The canopy at (x, z) for a pixel `footprint` metres across, lit from
-/// `sun` (unit, towards the sun). `ground` is false where the terrain
-/// carries no forest. Up close the crowns of the 3x3 nearest spots are
-/// cones; as the footprint grows past a crown it fades to their average.
-pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, seed: u32, density: f32, ground: bool, fs: &ForestStyle) -> Canopy {
-    let (needles, floor) = (Vec3::from_slice(&fs.needles), Vec3::from_slice(&fs.floor));
-    let crowd = if ground { chance(stand(x, z, seed), density) } else { 0.0 };
+/// `sun` (unit, towards the sun), on ground of `site` (`site()`, or
+/// `NO_FOREST`). Up close the crowns of the 3x3 nearest spots are cones; as
+/// the footprint grows past a crown they fade to their average, textured by
+/// clumps and gaps for as long as those span a few pixels.
+#[allow(clippy::too_many_arguments)]
+pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, seed: u32, density: f32, site: f32, fs: &ForestStyle) -> Canopy {
+    let floor = Vec3::from_slice(&fs.floor[..3]);
+    let needles = Vec3::from_slice(&fs.needles[..3]).lerp(Vec3::from_slice(&fs.far[..3]), patch(x, z, seed, fs.crown[3]));
+    let crowd = share(x, z, seed, site, footprint) * density;
     let mean_cover = crowd * fs.crown[1];
     // Gaps sit in their neighbours' shade only where the stand is dense.
     let gap = 1.0 - (1.0 - fs.floor[3]) * (crowd * 1.25).min(1.0);
     // The same light as the crowns and gaps it stands for (albedo x occlusion).
     let albedo = floor.lerp(needles, mean_cover);
     let light = needles.y * CROWN_OCCLUSION * mean_cover + floor.y * gap * (1.0 - mean_cover);
-    let mean = Canopy { albedo, normal: Vec3::Y, occlusion: light / albedo.y, cover: mean_cover };
+    // Clumps of crowns and the gaps between them, a few metres high.
+    let p = Vec2::new(x, z);
+    let (wa, wb) = (band(23.0, footprint), band(9.0, footprint));
+    let a = if wa > 0.0 { terrain_field::noised(p / 23.0 + Vec2::new(4.4, 0.7), seed.wrapping_add(83)) * wa } else { Vec3::ZERO };
+    let b = if wb > 0.0 { terrain_field::noised(p / 9.0 + Vec2::new(0.3, 5.8), seed.wrapping_add(84)) * wb } else { Vec3::ZERO };
+    let rise = crowd.min(1.0);
+    let slope = (Vec2::new(a.y, a.z) * (3.0 / 23.0) + Vec2::new(b.y, b.z) * (1.5 / 9.0)) * rise;
+    let clump = (1.0 + 0.6 * (a.x + 0.5 * b.x) * rise).max(0.2);
+    let mean = Canopy { albedo, normal: Vec3::new(-slope.x, 1.0, -slope.y).normalize(), occlusion: light / albedo.y * clump, cover: mean_cover };
     // Average once a pixel spans a good part of a crown, before it aliases.
     let far = ((footprint - CELL * 0.15) / (CELL * 0.45)).clamp(0.0, 1.0);
-    if far >= 1.0 || !ground { return mean; }
+    if far >= 1.0 || crowd <= 0.0 { return mean; }
     let (ci, cj) = ((x / CELL).floor() as i32, (z / CELL).floor() as i32);
     let mut best = (0.0f32, Vec2::ZERO, 0.0f32, 1.0f32);
     for dj in -1..=1 {
         for di in -1..=1 {
-            let Some((c, width, tint, phase)) = spot(ci + di, cj + dj, seed, density, fs.needles[3]) else { continue };
-            let d = Vec2::new(x, z) - c;
+            let Some((c, width, tint, phase)) = spot(ci + di, cj + dj, seed, crowd, fs.needles[3]) else { continue };
+            let d = p - c;
             // A spruce from above is a star of branch tiers, not a disc.
             let radius = fs.crown[0] * width * (0.82 + 0.18 * (7.0 * d.y.atan2(d.x) + phase).sin());
             let h = (1.0 - d.length() / radius) * width;
@@ -259,7 +333,7 @@ mod tests {
         for y in 0..h { for x in 0..w {
             let (foot, scale) = if x < w / 2 { (0.0, 0.17) } else { (6.0, 6.0) };
             let (wx, wz) = (3000.0 + (x % (w / 2)) as f32 * scale, -2000.0 + y as f32 * scale);
-            let c = canopy(wx, wz, foot, sun, 5, 0.9, true, &fs);
+            let c = canopy(wx, wz, foot, sun, 5, 0.9, 0.3, &fs);
             let lit = c.albedo * c.occlusion * (0.35 + 1.6 * c.normal.dot(sun).max(0.0));
             for v in lit.to_array() { let v = (v * 6.0).min(1.0); rgba.push((if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 } * 255.0) as u8); }
             rgba.push(255);
@@ -276,8 +350,10 @@ mod tests {
         for k in 0..40_000 {
             let (x, z) = ((k % 200) as f32 * 1.37 + 3000.0, (k / 200) as f32 * 1.41 - 2000.0);
             let fs = ForestStyle::default();
-            let c = canopy(x, z, 0.0, sun, 5, 0.8, true, &fs);
-            let f = canopy(x, z, 100.0, sun, 5, 0.8, true, &fs);
+            let c = canopy(x, z, 0.0, sun, 5, 0.8, 0.3, &fs);
+            // Past the crowns, but with the stands' octaves all but whole
+            // (dropping them is its own averaging, nonlinear at stand edges).
+            let f = canopy(x, z, 4.9, sun, 5, 0.8, 0.3, &fs);
             n += 1.0;
             cover += c.cover as f64;
             light += (c.albedo.y * c.occlusion) as f64;
@@ -296,8 +372,9 @@ mod tests {
 
     /// The canopy test point for cell (i, j): off-centre, and a footprint
     /// that cycles through near (cones), blending and far.
-    fn canopy_point(i: i32, j: i32) -> (f32, f32, f32) {
-        ((i as f32 + 0.3) * CELL, (j as f32 + 0.7) * CELL, [0.0f32, 2.0, 5.0][(i + j).rem_euclid(3) as usize])
+    fn canopy_point(i: i32, j: i32) -> (f32, f32, f32, f32) {
+        ((i as f32 + 0.3) * CELL, (j as f32 + 0.7) * CELL, [0.0f32, 2.0, 5.0, 30.0][(i + j).rem_euclid(4) as usize],
+            [0.3f32, -0.2, 0.0][(i - j).rem_euclid(3) as usize])
     }
     const SUN: [f32; 3] = [0.4, 0.8, 0.3];
 
@@ -320,10 +397,12 @@ struct Params { seed: u32, density: f32, pad0: u32, pad1: u32, style: TerrainSty
     let c = cells[gid.x];
     let f = forest_at((f32(c.x) + 0.5) * FF_CELL, (f32(c.y) + 0.5) * FF_CELL, params.seed, params.style, params.density, params.fs);
     let t = forest_tree(c.x, c.y, params.seed, params.style, params.density);
-    let foot = array<f32, 3>(0.0, 2.0, 5.0);
-    let k = ((c.x + c.y) % 3 + 3) % 3;
+    let foot = array<f32, 4>(0.0, 2.0, 5.0, 30.0);
+    let sites = array<f32, 3>(0.3, -0.2, 0.0);
+    let k = ((c.x + c.y) % 4 + 4) % 4;
+    let ks = ((c.x - c.y) % 3 + 3) % 3;
     let cp = forest_canopy((f32(c.x) + 0.3) * FF_CELL, (f32(c.y) + 0.7) * FF_CELL, foot[k], normalize(vec3<f32>(0.4, 0.8, 0.3)),
-        params.seed, params.density, true, params.fs);
+        params.seed, params.density, sites[ks], params.fs);
     out[gid.x] = array<vec4<f32>, 6>(vec4<f32>(f.density, f.colour), vec4<f32>(f.crown_height, 0.0, 0.0, 0.0),
         vec4<f32>(t.pos, t.yaw), vec4<f32>(t.scale.xy, f32(t.variant), f32(t.present)),
         vec4<f32>(cp.albedo, cp.occlusion), vec4<f32>(cp.normal, cp.cover));
@@ -358,8 +437,8 @@ struct Params { seed: u32, density: f32, pad0: u32, pad1: u32, style: TerrainSty
         let (mut agree, mut trees, mut canopy_agree) = (0, 0, 0);
         for (c, g) in cells.iter().zip(&gpu_out) {
             let f = forest((c[0] as f32 + 0.5) * CELL, (c[1] as f32 + 0.5) * CELL, seed, &style, density, &fs);
-            let (px, pz, foot) = canopy_point(c[0], c[1]);
-            let cp = canopy(px, pz, foot, Vec3::from(SUN).normalize(), seed, density, true, &fs);
+            let (px, pz, foot, site) = canopy_point(c[0], c[1]);
+            let cp = canopy(px, pz, foot, Vec3::from(SUN).normalize(), seed, density, site, &fs);
             let got = [g.canopy[0], g.canopy[1], g.canopy[2], g.canopy[3], g.canopy_normal[0], g.canopy_normal[1], g.canopy_normal[2], g.canopy_normal[3]];
             let want = [cp.albedo.x, cp.albedo.y, cp.albedo.z, cp.occlusion, cp.normal.x, cp.normal.y, cp.normal.z, cp.cover];
             if got.iter().zip(&want).all(|(a, b)| (a - b).abs() < 2e-3) { canopy_agree += 1; }
