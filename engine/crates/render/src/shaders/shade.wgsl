@@ -747,8 +747,21 @@ fn background_radiance(direction: vec3<f32>) -> vec3<f32> {
     return attenuate_background(direction, sky_radiance(direction));
 }
 
+// Background only: opaque geometry naturally hides the solar disc. The
+// environment bake remains disc-free, avoiding double-counted illumination.
+fn solar_disc(direction: vec3<f32>) -> vec3<f32> {
+    if light.anim.w == 0.0 || light.sun_dir.w <= 0.0 || light.sun_dir.y <= 0.0 { return vec3<f32>(0.0); }
+    let radius = 0.00465;
+    let pixel = 1.0 / max(view.cam.w, 1.0);
+    let angle = length(direction - light.sun_dir.xyz);
+    let disc = 1.0 - smoothstep(max(radius - pixel * 0.7, 0.0), radius + pixel * 0.7, angle);
+    // Preserve a finite fp16 HDR buffer, including at extreme solar luminance.
+    let radiance = min(light.sun_color.rgb * light.sun_dir.w / (PI * radius * radius), vec3<f32>(60000.0));
+    return radiance * disc * clamp(view.fog_cull.z, 0.0, 1.0);
+}
+
 fn visible_background_radiance(direction: vec3<f32>) -> vec3<f32> {
-    return attenuate_background(direction, sky_radiance(direction) + night_star_radiance(direction));
+    return attenuate_background(direction, min(sky_radiance(direction) + night_star_radiance(direction) + solar_disc(direction), vec3<f32>(65504.0)));
 }
 
 fn distance_fog_amount(distance: f32) -> f32 {
@@ -845,9 +858,13 @@ fn probe_axis(base: u32, visibility: bool) -> vec3<f32> {
 fn unpack_sky_transport(word:u32)->vec3<f32> {
     return vec3<f32>(f32(word&1023u),f32((word>>10u)&1023u),f32((word>>20u)&1023u))/1023.0;
 }
-fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
+struct IrradianceSample { value: vec4<f32>, emission: vec3<f32> }
+fn unpack_emission(word: u32) -> vec3<f32> {
+    return vec3<f32>(f32(word&511u),f32((word>>9u)&511u),f32((word>>18u)&511u))*exp2(f32(word>>27u)-24.0);
+}
+fn irradiance_sample(p: vec3<f32>, n: vec3<f32>) -> IrradianceSample {
     let o = u32(gi.params.w);
-    if o == 0u { return vec4<f32>(0.0); }
+    if o == 0u { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let transport = aux[o + 7u] >= 2u;
     let sun_transport = aux[o + 7u] == 3u;
     let visibility = aux[o + 7u] >= 1u;
@@ -858,7 +875,7 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
     let last = vec3<f32>(dims - vec3<u32>(1u));
     let outside = max(max(-f, f - last), vec3<f32>(0.0));
     let weight = clamp(1.0 - max(outside.x, max(outside.y, outside.z)) * 2.0, 0.0, 1.0);
-    if weight <= 0.0 { return vec4<f32>(0.0); }
+    if weight <= 0.0 { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
     let fc = clamp(f, vec3<f32>(0.0), last);
     let cell0 = min(floor(fc), last - 1.0);
     let t = fc - cell0;
@@ -876,6 +893,7 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
         var corner=vec3<u32>(0u);
         let weights=vec4<f32>(1.0-t[high],t[high]-t[middle],t[middle]-t[low],t[low]);
         var value=vec3<f32>(0.0);
+        var emission=vec3<f32>(0.0);
         var valid_weight=0.0;
         let trilinear=aux[o+7u]==6u;
         for(var c=0u;c<select(4u,8u,trilinear);c++) {
@@ -896,6 +914,14 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
                     let plane=vec4<f32>(aux_f32(base+1u),aux_f32(base+2u),aux_f32(base+4u),aux_f32(base+5u));
                     // Zero plane passes through. Blend over 15 cm to avoid a hard edge.
                     valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
+                }
+                if aux[o+7u]==7u {
+                    let plane=vec4<f32>(aux_f32(base+2u),aux_f32(base+5u),aux_f32(base+8u),aux_f32(base+11u));
+                    valid*=smoothstep(-0.15,0.0,dot(plane.xyz,p)+plane.w);
+                    let e=unpack_emission(aux[base+axis.x+1u])*n2.x
+                        +unpack_emission(aux[base+axis.y+1u])*n2.y
+                        +unpack_emission(aux[base+axis.z+1u])*n2.z;
+                    emission+=e*blend_weight*valid;
                 }
                 let v=unpack_sky_transport(aux[base+axis.x])*n2.x
                     +unpack_sky_transport(aux[base+axis.y])*n2.y
@@ -918,9 +944,9 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
             value+=vec3<f32>(dot(v,n2),bounce_value,sun_value)*blend_weight*valid;
             valid_weight+=blend_weight*valid;
         }
-        if valid_weight<1e-5 { return vec4<f32>(0.0); }
+        if valid_weight<1e-5 { return IrradianceSample(vec4<f32>(0.0),vec3<f32>(0.0)); }
         value/=max(dot(n2,vec3<f32>(1.0)),1e-12)*valid_weight;
-        return vec4<f32>(value,weight);
+        return IrradianceSample(vec4<f32>(value,weight),emission/(max(dot(n2,vec3<f32>(1.0)),1e-12)*valid_weight));
     }
     var e = vec3<f32>(0.0);
     for (var c = 0u; c < 8u; c++) {
@@ -933,8 +959,10 @@ fn irradiance_volume(p: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
         let ez = probe_axis(base + axis.z, visibility);
         e += (ex * n2.x + ey * n2.y + ez * n2.z) * (w3.x * w3.y * w3.z);
     }
-    return vec4<f32>(e / max(n2.x + n2.y + n2.z, 1e-12), weight);
+    return IrradianceSample(vec4<f32>(e / max(n2.x + n2.y + n2.z, 1e-12), weight),vec3<f32>(0.0));
 }
+
+fn irradiance_volume(p: vec3<f32>,n: vec3<f32>) -> vec4<f32> { return irradiance_sample(p,n).value; }
 
 fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
     let c1 = 0.429043;
@@ -1991,7 +2019,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let spec_contact=mix(contact.y,contact.x,smoothstep(0.08,0.6,rough));
         var env=mix(bounce/PI,environment(refl,rough,bounce),reflection_vis)*spec_contact;
         // Inside an indoor irradiance volume its probes replace sky and bounce.
-        let room=irradiance_volume(p+visibility_n*0.05,n);
+        let cached=irradiance_sample(p+visibility_n*0.05,n);
+        let room=cached.value;
         if room.w>0.0 {
           if aux[u32(gi.params.w)+7u] >= 1u {
             let access=clamp(room.x,0.0,1.0);
@@ -2000,7 +2029,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             let returned=sky_irradiance(vec3<f32>(0.0,1.0,0.0))*room.y
                 +light.sun_color.rgb*light.sun_dir.w*max(room.z,0.0);
             let corrected=(sky_irradiance(n)*sky_vis*meadow_ground_sky*meadow_edge.x*access
-                +bounce*(1.0-sky_vis)+returned)*ao*contact.x;
+                +bounce*(1.0-sky_vis)+returned+cached.emission*light.anim.y)*ao*contact.x;
             ambient=mix(ambient,corrected,room.w);
             // No blanket suppression of glossy reflections with diffuse AO.
           } else {

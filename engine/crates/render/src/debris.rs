@@ -272,11 +272,22 @@ impl Debris {
     /// centre, pulled back out of solid voxels, heavy-tailed sizes (mostly
     /// rubble, some boulders), heavier pieces slower, squashed per axis.
     pub fn burst(&mut self, scene: &Scene, b: &BurstSpec) {
+        self.burst_with_lift(scene, b, false);
+    }
+
+    /// Near-vertical launch for a lifting field; normal gravity still applies.
+    /// Spatial scatter is independent of velocity, so the cloud does not fan out.
+    pub fn burst_lift(&mut self, scene: &Scene, b: &BurstSpec) {
+        self.burst_with_lift(scene, b, true);
+    }
+
+    fn burst_with_lift(&mut self, scene: &Scene, b: &BurstSpec, lift: bool) {
         if b.meshes.is_empty() { return; }
         for _ in 0..b.count {
             let r: [f32; 11] = std::array::from_fn(|_| self.f());
             let dir = (Vec3::new(r[0], r[1], r[2]) * 2.0 - 1.0 + Vec3::Y * 0.45).normalize_or(Vec3::Y);
             let mut pos = b.center + dir * b.radius * (0.2 + 0.5 * r[3]);
+            if lift { pos.y = b.center.y + 0.2 + dir.y.abs() * b.radius * 0.35; }
             for _ in 0..4 {
                 if !self.occupancy.solid(pos) { break; }
                 pos = pos.lerp(b.center, 0.4);
@@ -286,6 +297,9 @@ impl Debris {
             let mass = (s / (b.size * 2.2)).clamp(0.0, 1.0);
             let mut vel = dir * b.speed * (0.3 + 1.15 * r[4]) * (1.15 - 0.6 * mass);
             vel.y += b.speed * (0.05 + 0.45 * r[5]);
+            if lift {
+                vel = Vec3::new((r[0] - 0.5) * 0.8, b.speed * (0.85 + 0.30 * r[4]), (r[2] - 0.5) * 0.8);
+            }
             let prop = Vec3::new(0.5 + 0.5 * self.f(), 0.32 + 0.6 * self.f(), 0.45 + 0.55 * self.f());
             let mesh = b.meshes[(r[10] * b.meshes.len() as f32) as usize % b.meshes.len()];
             let life = b.life * (0.85 + 0.3 * self.f());
@@ -447,6 +461,25 @@ mod tests {
         assert_eq!(std::mem::size_of::<Uniform>(), 80);
     }
 
+    #[test]
+    fn lifting_burst_launches_every_shard_nearly_vertically() {
+        let mut scene=Scene::default();
+        let cube=scene.add_mesh(&crate::primitives::cube(0).mesh());
+        let occ=Occupancy::new(Vec3::splat(-20.0),Vec3::splat(20.0),0.5);
+        let mut debris=Debris::reserve(&mut scene,512,occ,false);
+        let meshes=[cube];
+        let mut burst=BurstSpec::rubble(Vec3::ZERO,6.0,300,&meshes);
+        burst.speed=26.0;burst.life=5.5;
+        debris.burst_lift(&scene,&burst);
+        assert_eq!(debris.pending.len(),300);
+        for shard in &debris.pending {
+            let v=shard.vel_life;
+            assert!((22.1..=29.91).contains(&v[1]));
+            assert!(v[0].abs()<=0.4 && v[2].abs()<=0.4);
+            assert!(shard.pos_age[1]>0.0 && v[3]>4.6);
+        }
+    }
+
     /// Real GPU (any adapter; `KERN_ADAPTER=software` runs it on a CPU rasteriser):
     /// cargo test -p render --lib debris::tests::shards_fall_bounce_and_settle_on_the_gpu -- --ignored
     #[test]
@@ -484,6 +517,23 @@ mod tests {
         d.clear();
         frame(&mut d, 1);
         assert!(r.debris_debug_instances(&gpu).unwrap().iter().all(|i| i.cluster_count == 0));
+        // Same integrator, now the Ion-style launch: measure actual GPU
+        // instances during ascent, near the apex and on the way down.
+        let meshes=[cube];
+        let mut lift=BurstSpec::rubble(Vec3::new(0.0,1.0,0.0),2.0,300,&meshes);
+        lift.speed=26.0;lift.life=30.0;
+        d.burst_lift(&scene,&lift);
+        frame(&mut d,1);
+        let start=r.debris_debug_instances(&gpu).unwrap();
+        for _ in 0..6 {frame(&mut d,10);}
+        let raised=r.debris_debug_instances(&gpu).unwrap();
+        for (a,b) in start.iter().zip(&raised).filter(|(a,_)|a.cluster_count>0) {
+            assert!(b.rows[1][3]>a.rows[1][3]+8.0,"all shards rise");
+            assert!((b.rows[0][3]-a.rows[0][3]).abs()<0.5 && (b.rows[2][3]-a.rows[2][3]).abs()<0.5);
+        }
+        for _ in 0..12 {frame(&mut d,10);}
+        let fallen=r.debris_debug_instances(&gpu).unwrap();
+        assert!(raised.iter().zip(&fallen).filter(|(a,_)|a.cluster_count>0).all(|(a,b)|b.rows[1][3]<a.rows[1][3]),"gravity returns the lifted cloud");
     }
 
     #[test]

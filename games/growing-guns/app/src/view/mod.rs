@@ -236,7 +236,7 @@ impl Visuals {
                         self.fx.blasts.explosion(now, pos, radius, BLAST_TINT);
                     }
                     self.fx.blast_punch(world, now, pos, radius);
-                    self.phys.blast(pos, radius, 9.0);
+                    if kind != ExplosionKind::Ion { self.phys.blast(pos, radius, 9.0); }
                 }
                 Event::Hit { victim, attacker, pos, head, .. } => {
                     let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
@@ -279,6 +279,12 @@ impl Visuals {
                     self.fx.particles.burst_with(s, from + right * 0.35 - Vec3::Y * 0.25 + dir * 0.3, right + Vec3::Y * 0.6, p.vel, &Burst { mesh: m.casing, ..Burst::debris() });
                 }
                 _ => {}
+            }
+        }
+        // Include bodies created by this tick's Kill events, after the explosion.
+        for e in &world.events {
+            if let Event::Explosion { pos, radius, kind: ExplosionKind::Ion, .. } = e {
+                self.phys.lift(*pos, *radius, 26.0);
             }
         }
         self.air_targets = world.strikes.iter().filter(|s| s.kind == growing_guns::StrikeKind::AirStrike).map(|s| s.target).collect();
@@ -507,6 +513,10 @@ pub fn lighting() -> Lighting {
         sun_color: Vec3::from(palette::SUN),
         sky_lux: 14_000.0,
         ev100: 13.6,
+        // A wide optical glow around the Ion beam and bright lava/highlights.
+        bloom_boost: 32.0,
+        bloom_rounds: 4,
+        bloom_threshold: 1.0,
         // Emission (lava, tracers, beacons) is tuned at Godot's exposure; a
         // darker sky lowers the exposure, and the glow would clip to white.
         emissive_compensation: EMISSIVE_COMPENSATION,

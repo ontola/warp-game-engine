@@ -28,7 +28,7 @@ pub use coop::{Archetype, Waves};
 pub use destruct::{Breakage, Carve, Chunk};
 pub use flow::{Modifier, Phase, PickupKind, CARD_PICK_TIMEOUT, MODIFIERS, PICKUPS, ROUNDS_TO_WIN};
 pub use player::PHOENIX_TICKS;
-pub use specials::{AIR_STRIKE_TRAVEL, ION_CHARGE};
+pub use specials::{AIR_STRIKE_TRAVEL, ION_CHARGE, ION_RADIUS};
 pub use weapon::{Special, Weapon};
 use glam::Vec3;
 use rng::Rng;

@@ -8,7 +8,7 @@
 use crate::crowd_sound::CrowdSound;
 use audio::sfx::Listener;
 use glam::{Affine3A, Quat, Vec2, Vec3};
-use growing_guns::stadium::{sq, Stadium, PieceKind, ROWS, ROW_DEPTH, ROW_RISE, SEGMENTS};
+use growing_guns::stadium::{sq, Stadium, PieceKind, ROWS, ROW_DEPTH, ROW_RISE, SEGMENTS, FOUNDATION_Y};
 use growing_guns::{Event, World};
 use render::crowd::{Crowd, Seat};
 use render::headlights::LocalLight;
@@ -139,15 +139,21 @@ impl Rng {
 type Probes = Vec<render::irradiance_volume::Probe>;
 
 /// One stadium sky-occlusion bake (`render::sky_occlusion::bake_diffuse`).
-struct SkyBake { probes: Probes, planes: Vec<[f32;4]>, ms: f64 }
+struct SkyBake { emission: Probes, probes: Probes, planes: Vec<[f32;4]>, ms: f64 }
 
-fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectance: f32) -> SkyBake {
+fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectance: f32, half: f32) -> SkyBake {
     let start = std::time::Instant::now();
     let probes = render::sky_occlusion::bake_diffuse(&grid, boxes, 96, reflectance).expect("valid stadium occluders");
     let planes = if std::env::var("GG_SKY_SEPARATION").as_deref()==Ok("1") {
         render::sky_occlusion::bake_separation_planes(&grid, boxes).expect("valid separation geometry")
     } else { Vec::new() };
-    SkyBake { probes, planes, ms: start.elapsed().as_secs_f64()*1000.0 }
+    // Four non-overlapping rectangles: the outer lava sea, excluding the
+    // arena floor. Average hot-lava radiance is fixed; only geometry rebakes it.
+    let radiance=Vec3::new(1.0,0.147,0.0129)*8000.0;
+    let rects=[([-450.0,-450.0],[-half,450.0]),([half,-450.0],[450.0,450.0]),([-half,-450.0],[half,-half]),([-half,half],[half,450.0])];
+    let emitters=rects.map(|(min,max)| render::sky_occlusion::PlaneEmitter { y: growing_guns::arena::LAVA_KILL_Y, min: min.into(), max: max.into(), radiance });
+    let emission=render::sky_occlusion::bake_emission(&grid,boxes,&emitters,96).expect("valid lava emitters");
+    SkyBake { emission, probes, planes, ms: start.elapsed().as_secs_f64()*1000.0 }
 }
 
 pub struct StadiumVisuals {
@@ -160,6 +166,7 @@ pub struct StadiumVisuals {
     sky_boxes: Vec<Affine3A>,
     sky_planes: Vec<[f32;4]>,
     sky_probes: Vec<render::irradiance_volume::Probe>,
+    sky_emission: Probes,
     sky_dirty: bool,
     sky_reflectance: f32,
     sky_sun: Option<Vec3>,
@@ -270,7 +277,7 @@ impl StadiumVisuals {
         for i in 0..MARKS { scene.instances[marks.first + i].flags |= NO_SHADOW; }
         let mut crowd = Crowd::reserve(scene, CROWD_MAX);
         if detailed { crowd.arm_pivot(0.655); }
-        StadiumVisuals { bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
+        StadiumVisuals { bake_in_background: false, sky_job: None, sun_job: None, sky_planes: Vec::new(), sky_boxes: Vec::new(), sky_probes: Vec::new(), sky_emission: Vec::new(), sky_dirty: false, sky_reflectance: -1.0, sky_sun: None, stands, roof, tv, tv_mesh: [tv_picture, tv_housing], stone, masonry, roof_stone, wall_stone, lamp, shaft, bank, looks, crowd, sound: CrowdSound::new(None), marks, mark_ring: Vec::new(), mark_next: 0,
             scorch, blood, gore, geo: Stadium::new(80.0, true, 12.0), lights: Vec::new(), beams: Vec::new(), rng: Rng(1) }
     }
 
@@ -300,13 +307,16 @@ impl StadiumVisuals {
             if !matches!(p.kind, PieceKind::Wall) { self.stands.add(scene, mesh, box_xf(p.center, p.size, p.yaw)); }
         }
         let wall_outer=self.geo.wall_r()+1.1;
-        self.stands.add(scene,self.wall_stone[quarry],Affine3A::from_scale_rotation_translation(Vec3::new(wall_outer,self.geo.wall_h()+0.6,wall_outer),Quat::IDENTITY,Vec3::Y*(self.geo.wall_h()+0.6)*0.5));
+        let wall_top = self.geo.wall_h() + 0.6;
+        let wall_height = wall_top - FOUNDATION_Y;
+        let wall_mid = (wall_top + FOUNDATION_Y) * 0.5;
+        self.stands.add(scene,self.wall_stone[quarry],Affine3A::from_scale_rotation_translation(Vec3::new(wall_outer,wall_height,wall_outer),Quat::IDENTITY,Vec3::Y*wall_mid));
         for i in 0..ROOF_STEPS {
             let angle=TAU*(i as f32+0.5)/ROOF_STEPS as f32;
             let point=|a:f32| Vec3::new(a.cos()*sq(a),0.0,a.sin()*sq(a))*wall_outer;
             let outer=point(angle); let inner=outer*0.9795;
             let tangent=point(angle+TAU/ROOF_STEPS as f32*0.5)-point(angle-TAU/ROOF_STEPS as f32*0.5);
-            sky_boxes.push(Affine3A::from_cols(tangent.into(),(Vec3::Y*(self.geo.wall_h()+0.6)).into(),(outer-inner).into(),((outer+inner)*0.5+Vec3::Y*(self.geo.wall_h()+0.6)*0.5).into()));
+            sky_boxes.push(Affine3A::from_cols(tangent.into(),(Vec3::Y*wall_height).into(),(outer-inner).into(),((outer+inner)*0.5+Vec3::Y*wall_mid).into()));
         }
         // A single watertight rounded ring, with no overlapping plate ends.
         let (inner, base) = (self.geo.inner_r, self.geo.base_y);
@@ -329,12 +339,13 @@ impl StadiumVisuals {
                 if self.bake_in_background {
                     let (tx, rx) = std::sync::mpsc::channel();
                     let boxes = self.sky_boxes.clone();
-                    std::thread::spawn(move || { let _ = tx.send(bake_sky(grid, &boxes, reflectance)); });
+                    let half=world.arena.size*0.5;
+                    std::thread::spawn(move || { let _ = tx.send(bake_sky(grid, &boxes, reflectance, half)); });
                     // A newer arena replaces a bake still running.
                     self.sky_job = Some(rx);
                 } else {
                     self.sky_job = None;
-                    let bake = bake_sky(grid, &self.sky_boxes, reflectance);
+                    let bake = bake_sky(grid, &self.sky_boxes, reflectance, world.arena.size*0.5);
                     self.apply_sky(scene, offset, grid, bake);
                 }
             }
@@ -500,6 +511,7 @@ impl StadiumVisuals {
 
     fn apply_sky(&mut self, scene: &mut Scene, offset: usize, grid: render::irradiance_volume::Grid, bake: SkyBake) {
         self.sky_probes = bake.probes;
+        self.sky_emission = bake.emission;
         self.sky_planes = bake.planes;
         let mut words = render::irradiance_volume::pack(&grid, &self.sky_probes).unwrap();
         words[7] = 2;
@@ -525,7 +537,8 @@ impl StadiumVisuals {
     pub fn invalidate_lighting(&mut self) { self.sky_dirty=true; }
 
     fn upload_sun(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, probes: &[render::irradiance_volume::Probe]) -> Result<(), String> {
-        if self.sky_planes.is_empty() { renderer.set_sky_sun(gpu, probes) }
+        if std::env::var("GG_LAVA_BOUNCE").as_deref()!=Ok("0") { renderer.set_sky_sun_emission(gpu, probes, &self.sky_emission, &self.sky_planes) }
+        else if self.sky_planes.is_empty() { renderer.set_sky_sun(gpu, probes) }
         else { renderer.set_sky_sun_separated(gpu, probes, &self.sky_planes) }
     }
 

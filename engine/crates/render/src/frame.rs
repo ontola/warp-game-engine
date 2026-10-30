@@ -241,6 +241,20 @@ struct ToneUniform {
     grain: f32,
     aberration: f32,
     time: f32,
+    sun: [f32; 4], // view UV, angular footprint in UV-y, exposed flare strength
+    sun_tint: [f32; 4],
+}
+
+/// Project a direction (w=0), so camera translation cannot move the distant sun.
+fn solar_projection(cam: &Camera, view: Mat4, aspect: f32, light: &Lighting, visibility: f32) -> [f32; 4] {
+    if !light.sun_disc || light.lens_flare <= 0.0 || light.sun_lux <= 0.0 || light.sun_dir.y <= 0.0 { return [0.0;4]; }
+    let direction = light.sun_dir.normalize_or_zero();
+    let projected = Mat4::perspective_infinite_reverse_rh(cam.fov_y, aspect, cam.near) * view * direction.extend(0.0);
+    if projected.w <= 0.01 { return [0.0;4]; }
+    let uv = projected.truncate() / projected.w;
+    let radius = 0.00465 / (cam.fov_y * 0.5).tan() * 0.5 / projected.w;
+    let strength = light.lens_flare * visibility * (light.sun_lux / (1.2 * 2f32.powf(light.ev100))).min(4.0);
+    [uv.x * 0.5 + 0.5, 0.5 - uv.y * 0.5, radius, strength]
 }
 
 /// Where the camera is and what it sees.
@@ -290,6 +304,16 @@ pub struct Lighting {
     /// Illuminance of the sun on a surface facing it (lux).
     pub sun_lux: f32,
     pub sun_color: Vec3,
+    /// Visible analytic solar disc; enabled by Warp Sky, off for legacy HDR skies.
+    pub sun_disc: bool,
+    /// Optical glare/ghost strength, computed and occluded on the GPU per view.
+    pub lens_flare: f32,
+    /// Artistic highlight bloom multiplier over the debug/quality control.
+    pub bloom_boost: f32,
+    /// Minimum blur rounds for this game's look (1..=6).
+    pub bloom_rounds: u32,
+    /// Maximum exposed threshold for this game's highlights.
+    pub bloom_threshold: f32,
     pub shadow_strength: f32,
     /// Horizontal irradiance of the sky without the sun (lux).
     pub sky_lux: f32,
@@ -383,6 +407,11 @@ impl Lighting {
             "shadow_strength" => self.shadow_strength = f,
             "sky_lux" => self.sky_lux = f,
             "ev100" => self.ev100 = f,
+            "sun_disc" if f == 0.0 || f == 1.0 => self.sun_disc = f > 0.0,
+            "bloom_boost" if (0.0..=32.0).contains(&f) => self.bloom_boost = f,
+            "bloom_rounds" if (1.0..=6.0).contains(&f) && f.fract() == 0.0 => self.bloom_rounds = f as u32,
+            "bloom_threshold" if (0.0..=16.0).contains(&f) => self.bloom_threshold = f,
+            "lens_flare" if (0.0..=2.0).contains(&f) => self.lens_flare = f,
             "emissive_compensation" if (0.0..=1.0).contains(&f) => self.emissive_compensation = f,
             "emissive_ev100" if f.is_finite() => self.emissive_ev100 = f,
             "fx_white_floor" if f.is_finite() && f >= 0.0 => self.fx_white_floor = f,
@@ -432,6 +461,11 @@ impl Default for Lighting {
             sun_dir: Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos()),
             sun_lux: 100_000.0,
             sun_color: Vec3::new(1.0, 0.96, 0.9),
+            sun_disc: false,
+            lens_flare: 0.0,
+            bloom_boost: 1.0,
+            bloom_rounds: 1,
+            bloom_threshold: crate::bloom::THRESHOLD,
             shadow_strength: 1.0,
             sky_lux: 18_000.0,
             night_stars: [0.0; 4],
@@ -1136,6 +1170,14 @@ impl Renderer {
         Ok(())
     }
 
+    /// Combine cached emitter light with the sky/sun cache, without extra bindings.
+    pub fn set_sky_sun_emission(&self, gpu: &Gpu, probes: &[crate::irradiance_volume::Probe], emission: &[crate::irradiance_volume::Probe], planes: &[[f32;4]]) -> Result<(),String> {
+        let (offset,grid)=self.irradiance_volume.ok_or("no reserved probe volume")?;
+        let words=crate::irradiance_volume::pack_sky_emission(&grid,probes,emission,planes)?;
+        gpu.queue.write_buffer(&self.aux_buffer,(offset*4) as u64,bytemuck::cast_slice(&words));
+        Ok(())
+    }
+
     /// Opt-in packed transport with a nearest-static-surface separation plane.
     pub fn set_sky_sun_separated(&self, gpu:&Gpu, probes:&[crate::irradiance_volume::Probe], planes:&[[f32;4]]) -> Result<(),String> {
         let (offset,grid)=self.irradiance_volume.ok_or("no reserved probe volume")?;
@@ -1482,6 +1524,7 @@ impl Renderer {
                 (2, uniform()),
                 (3, wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
                 (4, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                (5, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
         let float_tex = |filterable| wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
@@ -3317,7 +3360,7 @@ impl Renderer {
             near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
-            anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), 0.0],
+            anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {1.0} else {0.0}],
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
@@ -3707,8 +3750,10 @@ impl Renderer {
             } else {
                 None
             };
-            let bloom_on=crate::bloom::active(debug_options.bloom_enabled,debug_options.bloom_strength);
-            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {debug_options.bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen), vignette: light.vignette, grain: light.grain, aberration: light.aberration, time: light.time }));
+            let bloom_strength=(debug_options.bloom_strength*light.bloom_boost.clamp(0.0,32.0)).min(2.0);
+            let bloom_on=crate::bloom::active(debug_options.bloom_enabled,bloom_strength);
+            let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);
+            let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen), vignette: light.vignette, grain: light.grain, aberration: light.aberration, time: light.time, sun: solar, sun_tint: [light.sun_color.x, light.sun_color.y, light.sun_color.z, 0.0] }));
             cpu.mark("view setup");
             let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
                 resources.taa.get(
@@ -4088,13 +4133,13 @@ impl Renderer {
             // after temporal reconstruction. Every view owns separate targets.
             let bloom_view=if bloom_on {
                 let time=self.query.as_ref().map(|(qs,_,_)|{names.push("bloom");(qs,timestamp_pair(&mut ts))});
-                self.bloom.render(gpu,&mut enc,vi,result,exposure,debug_options.bloom_threshold,debug_options.bloom_rounds,debug_options.bloom_screen,time)
+                self.bloom.render(gpu,&mut enc,vi,result,exposure,debug_options.bloom_threshold.min(light.bloom_threshold.clamp(0.0,16.0)),debug_options.bloom_rounds.max(light.bloom_rounds.clamp(1,crate::bloom::MAX_ROUNDS)),debug_options.bloom_screen,time)
             }else{self.bloom.disabled_view()};
             let result_view = resources.result.get(result);
             let tone_bind = resources.tone.get(gpu, &self.tone_layout, "cached tone view", &[
                 (0, wgpu::BindingResource::TextureView(&result_view)),
                 (1, wgpu::BindingResource::TextureView(&ldr_v)), (2, tone_buf.as_entire_binding()),
-                (3,wgpu::BindingResource::TextureView(&bloom_view)),(4,wgpu::BindingResource::Sampler(&self.bloom.sampler))]);
+                (3,wgpu::BindingResource::TextureView(&bloom_view)),(4,wgpu::BindingResource::Sampler(&self.bloom.sampler)),(5,wgpu::BindingResource::TextureView(&depth_v))]);
             let t = self.query.as_ref().map(|(qs, _, _)| {
                 names.push("tonemap"); (qs, timestamp_pair(&mut ts))
             });
@@ -5002,5 +5047,30 @@ fn view_uniform(vp: Mat4, cam: Vec3, px_scale: f32, params: [f32; 4], size: [f32
         extra: [alpha_cut, 0.0, 0.0, 0.0],
         grass: [40.0, 60.0, 0.0, 0.0],
         fog_cull: [0.0; 4],
+    }
+}
+
+#[cfg(test)]
+mod solar_effect_tests {
+    use super::*;
+    #[test]
+    fn solar_projection_is_directional_and_rejects_back_and_night() {
+        let cam=Camera {pos:Vec3::ZERO,target:Vec3::new(0.0,0.2,-1.0),fov_y:1.0,near:0.1};
+        let mut light=Lighting {sun_dir:cam.target.normalize(),sun_disc:true,lens_flare:0.22,..Default::default()};
+        let sample=|cam:&Camera,light:&Lighting| solar_projection(cam,camera_view(*cam,None),16.0/9.0,light,1.0);
+        let first=sample(&cam,&light);
+        assert!((first[0]-0.5).abs()<1e-5 && (first[1]-0.5).abs()<1e-5 && first[3]>0.0);
+        let shift=Vec3::new(100.0,30.0,-20.0);
+        let moved=sample(&Camera {pos:cam.pos+shift,target:cam.target+shift,..cam},&light);
+        for i in 0..4 { assert!((first[i]-moved[i]).abs()<1e-5); }
+        light.sun_dir=-light.sun_dir; assert_eq!(sample(&cam,&light),[0.0;4]);
+        light.sun_dir=cam.target.normalize(); light.sun_lux=0.0; assert_eq!(sample(&cam,&light),[0.0;4]);
+    }
+    #[test]
+    fn solar_tonemap_shader_validates() {
+        let src=include_str!("shaders/tonemap.wgsl");
+        let module=naga::front::wgsl::parse_str(src).unwrap_or_else(|e|panic!("{}",e.emit_to_string(src)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
+        assert_eq!(std::mem::size_of::<ToneUniform>(),80);
     }
 }

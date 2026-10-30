@@ -159,6 +159,60 @@ fn geometry(boxes: &[Affine3A]) -> Result<Vec<Shape>, String> {
     }
     Ok(shapes)
 }
+/// A static upward-facing rectangle, in world XZ; radiance is linear RGB nits.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaneEmitter { pub y: f32, pub min: glam::Vec2, pub max: glam::Vec2, pub radiance: Vec3 }
+
+/// Cache direct irradiance from emissive ground onto static surfaces. Geometry
+/// shadows the source; no dynamic lights or per-frame rays are needed afterwards.
+pub fn bake_emission(grid: &Grid, boxes: &[Affine3A], emitters: &[PlaneEmitter], rays: usize) -> Result<Vec<Probe>, String> {
+    grid.validate()?;
+    if rays < 16 || emitters.iter().any(|e| !e.y.is_finite() || !e.min.is_finite() || !e.max.is_finite()
+        || e.min.cmpge(e.max).any() || !e.radiance.is_finite() || e.radiance.min_element() < 0.0) {
+        return Err("invalid static emitters or ray count".into());
+    }
+    let tree = Node::build(geometry(boxes)?);
+    let axes = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
+    let directions: Vec<Vec3> = (0..rays).map(|i| {
+        let y = 1.0 - 2.0 * (i as f32 + 0.5) / rays as f32;
+        let a = i as f32 * 2.3999632;
+        let r = (1.0 - y*y).sqrt();
+        Vec3::new(r*a.cos(), y, r*a.sin())
+    }).collect();
+    let denom: [f32;6] = std::array::from_fn(|a| directions.iter().map(|d| axes[a].dot(*d).max(0.0)).sum());
+    let mut probes = vec![Probe::default();grid.count()];
+    let chunk = grid.count().div_ceil(4);
+    std::thread::scope(|scope| {
+        for (group,out) in probes.chunks_mut(chunk).enumerate() {
+            let (tree,directions,axes,denom) = (&tree,&directions,&axes,&denom);
+            scope.spawn(move || {
+                for (local,probe) in out.iter_mut().enumerate() {
+                    let origin = grid.position(group*chunk+local);
+                    if tree.contains(origin) { continue; }
+                    for &d in directions {
+                        if d.y >= -1e-6 { continue; }
+                        let mut hit: Option<(f32,Vec3)> = None;
+                        for e in emitters {
+                            let t = (e.y-origin.y)/d.y;
+                            if t <= 0.02 { continue; }
+                            let p = origin+d*t;
+                            let xz = glam::Vec2::new(p.x,p.z);
+                            if xz.cmpge(e.min).all() && xz.cmple(e.max).all() && hit.is_none_or(|(nearest,_)| t<nearest) {
+                                hit=Some((t,e.radiance));
+                            }
+                        }
+                        if let Some((t,radiance))=hit {
+                            if tree.hit(origin,d).is_some_and(|(wall,_)| wall<t-0.02) { continue; }
+                            for a in 0..6 { probe.axes[a]+=radiance*(axes[a].dot(d).max(0.0)*std::f32::consts::PI/denom[a]); }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    Ok(probes)
+}
+
 /// Experimental nearest-surface separation planes, cached with static geometry.
 /// Not full DDGI visibility: one plane cannot represent corners or openings.
 /// xyz points into the probe's half-space; w is the plane offset. Zero = no wall.
@@ -548,5 +602,24 @@ mod tests {
             Vec3::splat(-1.),
             Vec3::splat(1.)
         ));
+    }
+}
+
+#[cfg(test)]
+mod emitter_tests {
+    use super::*;
+    #[test]
+    fn baked_emission_is_directional_occluded_and_repeatable() {
+        let grid=Grid {origin:Vec3::new(0.0,2.0,0.0),cell:1.0,dims:[2,2,2]};
+        let emitter=PlaneEmitter {y:0.0,min:glam::Vec2::splat(-1000.0),max:glam::Vec2::splat(1000.0),radiance:Vec3::new(100.0,10.0,1.0)};
+        let bake=bake_emission(&grid,&[],&[emitter],256).unwrap();
+        assert_eq!(bake,bake_emission(&grid,&[],&[emitter],256).unwrap());
+        assert_eq!(bake[0].axes[2],Vec3::ZERO,"up-facing surface receives no light from below");
+        assert!(bake[0].axes[3].abs_diff_eq(emitter.radiance*std::f32::consts::PI,0.02));
+        assert!((bake[0].axes[0].x-std::f32::consts::PI*50.0).abs()<4.0);
+        let floor=Affine3A::from_scale_rotation_translation(Vec3::new(2100.0,0.5,2100.0),glam::Quat::IDENTITY,Vec3::Y);
+        let blocked=bake_emission(&grid,&[floor],&[emitter],256).unwrap();
+        assert!(blocked.iter().all(|p|p.axes==[Vec3::ZERO;6]));
+        assert!(bake_emission(&grid,&[],&[PlaneEmitter {radiance:Vec3::splat(f32::NAN),..emitter}],64).is_err());
     }
 }
