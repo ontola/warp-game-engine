@@ -1385,10 +1385,13 @@ impl Fx {
                     let e = tr.spell.primary.unwrap_or(El::Fire);
                     let c = el_c(e);
                     let arm = (tr.t as f32 / spellstorm::spells::TRAP_ARM as f32).min(1.0);
-                    let pulse = 0.6 + 0.4 * (t * 4.0).sin();
+                    // A circle of runes worn into the floor, lit from below in
+                    // its element's colour and breathing (spells.wgsl trap).
                     let r = tr.trigger_r() as f32;
-                    self.live.push(flat_sprite(tr.pos + Vec3::Y * 0.05, r, Cell::Ring, linear3([c[0], c[1], c[2]]) * 1.2 * arm * pulse));
-                    self.halo(tr.pos + Vec3::Y * 0.2, c, 0.8, 0.5 * arm);
+                    let mut s = flat_sprite(tr.pos + Vec3::Y * 0.05, r, Cell::Patch, linear3([c[0], c[1], c[2]]) * 1.6).solid();
+                    s.effect = crate::effects::TRAP;
+                    s.params = [arm, (key % 97) as f32 * 0.37, t, 0.0];
+                    self.live.push(s);
                 }
             } else if let Ok(s) = w.ecs.get::<&Sentry>(id) {
                 let e = s.spell.primary.unwrap_or(El::Fire);

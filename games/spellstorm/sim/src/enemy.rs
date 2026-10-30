@@ -1335,18 +1335,11 @@ impl World {
                 size: 1.2,
                 time: 0.3,
             });
-            // The blast round it winds up longer, and shows where it will
-            // reach: a ring grows out of the body to the edge of it in the
-            // element's colour, landing as the blast does (Joep: no attack
-            // without a readable warning).
+            // The blast round it winds up longer, read from the body as
+            // every attack is (Joep: no marks on the floor): it swells and
+            // rears for longer while its element streams into it.
             let wind = if pattern == BossPattern::Nova { BOSS_NOVA_WIND } else { BOSS_WIND };
             if pattern == BossPattern::Nova {
-                self.ev(Ev::Ring {
-                    at: self.pos(id),
-                    c: fx::lighten(fx::el_c(el), 0.35),
-                    r: BOSS_NOVA_R as f32,
-                    time: wind as f32,
-                });
                 self.burst(at, fx::el_c(el), 18, -3.0, 0.25, Some(el));
             }
             e.boss_wind = wind;
