@@ -108,6 +108,59 @@ pub fn read(roots: &[Root], root: Option<&str>, path: &str) -> Result<String, St
     String::from_utf8(bytes).map_err(|_| format!("{}/{}: not UTF-8 text", r.name, rel.display()))
 }
 
+/// Lines `offset` (from 1) to `offset + limit - 1` of a text, each with its
+/// number, so a long file can be read in parts and edited by what it says.
+pub fn lines(text: &str, offset: usize, limit: usize) -> String {
+    let all: Vec<&str> = text.lines().collect();
+    let start = offset.max(1);
+    let end = (start - 1 + limit).min(all.len());
+    let mut out = String::new();
+    for (i, line) in all.iter().enumerate().take(end).skip(start - 1) { out += &format!("{:>5}| {line}\n", i + 1); }
+    if end < all.len() { out += &format!("({} lines; read on with offset {})\n", all.len(), end + 1); }
+    if out.is_empty() { out = format!("(the file has {} lines)", all.len()); }
+    out
+}
+
+/// Replace the one place `old` occurs in a file with `new`; returns the root
+/// and the relative path, like [`write`]. `old` must occur exactly once, so
+/// an edit never lands somewhere unintended.
+pub fn edit<'a>(roots: &'a [Root], root: Option<&str>, path: &str, old: &str, new: &str) -> Result<(&'a Root, String), String> {
+    if old.is_empty() { return Err("edit_file needs the exact text to replace (old)".into()); }
+    let text = read(roots, root, path)?;
+    let text = if text.contains(old) || !text.contains("\r\n") { text } else { text.replace("\r\n", "\n") };
+    match text.matches(old).count() {
+        0 => Err(format!("{path}: the text to replace is not in the file (read it again; copy it exactly, without line numbers)")),
+        1 => write(roots, root, path, &text.replacen(old, new, 1)),
+        n => Err(format!("{path}: the text to replace occurs {n} times; include more lines around it so it occurs once")),
+    }
+}
+
+/// Lines that contain `needle` (ignoring case) in a root's files, as
+/// `path:line: text`, at most `MAX_FOUND`.
+pub fn find(roots: &[Root], root: Option<&str>, needle: &str) -> Result<String, String> {
+    const MAX_FOUND: usize = 200;
+    if needle.trim().is_empty() { return Err("find_text needs some text to look for".into()); }
+    let needle = needle.to_lowercase();
+    let mut out = Vec::new();
+    for r in roots.iter().filter(|r| root.is_none_or(|n| n == r.name)) {
+        let mut files = Vec::new();
+        let Ok(base) = r.path.canonicalize() else { continue };
+        walk(&base, &base, 0, r, &mut files);
+        files.sort();
+        for listed in files {
+            let rel = listed.rsplit_once(" (").map_or(listed.as_str(), |(p, _)| p);
+            let Ok(text) = read(roots, Some(&r.name), rel) else { continue };
+            for (i, line) in text.lines().enumerate() {
+                if line.to_lowercase().contains(&needle) {
+                    if out.len() == MAX_FOUND { out.push(format!("(more than {MAX_FOUND} lines; look for something more specific)")); return Ok(out.join("\n")); }
+                    out.push(format!("{}/{rel}:{}: {}", r.name, i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    Ok(if out.is_empty() { "(not found)".into() } else { out.join("\n") })
+}
+
 /// Write a file; returns the root (for its reload) and the relative path.
 pub fn write<'a>(roots: &'a [Root], root: Option<&str>, path: &str, text: &str) -> Result<(&'a Root, String), String> {
     let (r, rel) = resolve(roots, root, path)?;
@@ -148,6 +201,22 @@ mod tests {
             std::os::unix::fs::symlink("/tmp", dir.join("mods/out")).unwrap();
             assert!(write(&roots, None, "mods/out/x.luau", "x").unwrap_err().contains("outside"));
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn long_files_are_read_in_parts_found_and_edited_in_one_place() {
+        let dir = std::env::temp_dir().join(format!("live-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let roots = vec![Root::new("game", &dir, Reload::Game, "").extensions(&["luau"])];
+        write(&roots, None, "game/main.luau", "local speed = 1\nlocal hp = 3\nlocal hp_max = 3\n").unwrap();
+        assert_eq!(lines(&read(&roots, None, "game/main.luau").unwrap(), 2, 1), "    2| local hp = 3\n(3 lines; read on with offset 3)\n");
+        assert_eq!(find(&roots, None, "HP").unwrap(), "game/main.luau:2: local hp = 3\ngame/main.luau:3: local hp_max = 3");
+        assert!(edit(&roots, None, "game/main.luau", " = 3", " = 5").unwrap_err().contains("2 times"));
+        assert!(edit(&roots, None, "game/main.luau", "local mana", "x").unwrap_err().contains("not in the file"));
+        edit(&roots, None, "game/main.luau", "local hp = 3", "local hp = 5").unwrap();
+        assert_eq!(read(&roots, None, "game/main.luau").unwrap(), "local speed = 1\nlocal hp = 5\nlocal hp_max = 3\n");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

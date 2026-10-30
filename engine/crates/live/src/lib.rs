@@ -18,7 +18,7 @@
 //! route `play_sound` and `set_param` to whatever synth it uses.
 //!
 //! Generic tools: `describe`, `state`, `query`, `screenshot`, `run_luau`,
-//! `list_files`, `read_file`, `write_file`, `reload_shaders`, `logs`,
+//! `list_files`, `read_file`, `find_text`, `write_file`, `edit_file`, `reload_shaders`, `logs`,
 //! `play_sound`, `set_param`, `render_sound`; each is listed only when the
 //! game supports it.
 mod console;

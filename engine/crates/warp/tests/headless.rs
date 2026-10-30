@@ -95,7 +95,7 @@ fn serve_under_live_control() {
     http(port, &token, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
     let tools = rpc("tools/list", json!({}));
     let names: Vec<&str> = tools["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for n in ["describe", "state", "query", "screenshot", "run_luau", "write_file", "read_file", "logs", "play_sound", "set_param", "render_sound", "reload", "restart", "command"] {
+    for n in ["describe", "state", "query", "screenshot", "run_luau", "write_file", "edit_file", "read_file", "find_text", "logs", "play_sound", "set_param", "render_sound", "reload", "restart", "command"] {
         assert!(names.contains(&n), "{n} missing: {names:?}");
     }
     assert!(!names.contains(&"reload_shaders"));
@@ -123,6 +123,14 @@ fn serve_under_live_control() {
     assert!(bad.contains("main.luau:"), "{bad}");
     assert!(text(&call("reload", json!({}))).contains("nothing changed"));
     call("write_file", json!({ "path": "game/main.luau", "content": edited }));
+    // A long file in parts: find a line, read around it, change only that.
+    let found = text(&call("find_text", json!({ "text": "state.edited = true" })));
+    assert!(found.starts_with("game/main.luau:"), "{found}");
+    let line: u64 = found.split(':').nth(1).unwrap().parse().unwrap();
+    assert!(text(&call("read_file", json!({ "path": "game/main.luau", "offset": line, "limit": 1 }))).contains("| state.edited = true"));
+    let e = text(&call("edit_file", json!({ "path": "game/main.luau", "old": "state.edited = true", "new": "state.edited = 2" })));
+    assert!(e.contains("main.luau: reloaded"), "{e}");
+    assert!(text(&call("query", json!({ "pointer": "/state" }))).contains("\"edited\":2"));
     // Sounds: list, play, change a default, render offline.
     let sounds = text(&call("play_sound", json!({})));
     assert!(sounds.contains("pickup") && sounds.contains("bright"), "{sounds}");
