@@ -196,9 +196,9 @@ fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f
 // The forest where single trees end, as forest_field.wgsl places them:
 // its canopy (crowns from above, their mean once subpixel) in the game's
 // ForestStyle. This reads the ground from the vertex attributes, so it needs
-// no terrain evaluation. procedural_terrain::far_forest stores the style in
-// three materials and the terrain material's scale points at them:
-// -(first + 1); a scale >= 0 means no forest.
+// no terrain evaluation. procedural_terrain's style block holds the style in
+// data materials the terrain material's scale points at: -(first + 1); a
+// scale >= 0 means no forest (and the default ground, field_ground).
 struct FarForest { style: ForestStyle, start: f32, density: f32 };
 fn far_forest_params(at: u32) -> FarForest {
     let a = materials[at]; let b = materials[at + 1u]; let c = materials[at + 2u];
@@ -257,8 +257,39 @@ fn far_forest_stand(xz: vec2<f32>, seed: u32, site: f32, footprint: f32, edge_w:
     return smoothstep(0.25 - edge_w, 0.25 + edge_w, ff_share(xz.x, xz.y, seed, site, footprint));
 }
 
+// The ground's palette (vegetation_style.rs GroundStyle): tint rgb, and per
+// layer w: grass_dry.w moor's grass share, moor.w its grass darkening,
+// soil.w damp darkening, gravel.w and rock.w the saturation kept.
+struct FieldGround {
+    grass_dry: vec4<f32>,
+    grass_lush: vec4<f32>,
+    moor: vec4<f32>,
+    soil: vec4<f32>,
+    gravel: vec4<f32>,
+    rock: vec4<f32>,
+    snow: vec4<f32>,
+    reserved: vec4<f32>,
+};
+const FIELD_GROUND_DEFAULT = FieldGround(vec4<f32>(0.43, 0.55, 0.23, 0.3), vec4<f32>(0.32, 0.69, 0.28, 0.0),
+    vec4<f32>(0.6, 0.72, 0.7, 0.8), vec4<f32>(0.85, 0.8, 0.75, 0.35), vec4<f32>(0.95, 0.97, 1.0, 0.5),
+    vec4<f32>(1.0, 1.04, 1.1, 0.35), vec4<f32>(0.84, 0.87, 0.92, 0.0), vec4<f32>(0.0, 0.0, 0.0, 0.0));
+fn field_material_pair(m: Material) -> array<vec4<f32>, 2> {
+    return array<vec4<f32>, 2>(vec4<f32>(m.tint, bitcast<f32>(m.layer)), vec4<f32>(m.roughness, bitcast<f32>(m.flags), m.scale, m.metal));
+}
+// The style block's GroundStyle, after its ForestStyle and far forest params.
+fn field_ground(s: SurfaceIn) -> FieldGround {
+    if s.scale >= 0.0 { return FIELD_GROUND_DEFAULT; }
+    let at = u32(-s.scale - 0.5) + 3u;
+    let a = field_material_pair(materials[at]);
+    let b = field_material_pair(materials[at + 1u]);
+    let c = field_material_pair(materials[at + 2u]);
+    let d = field_material_pair(materials[at + 3u]);
+    return FieldGround(a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]);
+}
+
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let f = field_attr(s);
+    let g = field_ground(s);
     let p = s.p;
     let n = s.n;
     let wuv = p.xz;
@@ -274,10 +305,10 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let lush = clamp(0.5 + (broad - 0.5) * 1.2 + 0.4 * f.wet, 0.0, 1.0);
     // Darker than a lawn: seen from afar a meadow is mostly blade shadow,
     // so the ground matches the grass where the blades fade out.
-    let grass = terrain_layer(layer, wuv, 2.6, mapping) * mix(vec3<f32>(0.43, 0.55, 0.23), vec3<f32>(0.32, 0.69, 0.28), lush);
+    let grass = terrain_layer(layer, wuv, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
     // Moor: dark olive heather and bracken with grass between.
-    let moor = mix(terrain_layer(layer + 1, wuv, 3.2, mapping) * vec3<f32>(0.6, 0.72, 0.7), grass * 0.8, 0.3);
-    let soil = terrain_layer(layer + 2, wuv, 3.0, mapping) * vec3<f32>(0.85, 0.8, 0.75);
+    let moor = mix(terrain_layer(layer + 1, wuv, 3.2, mapping) * g.moor.rgb, grass * g.moor.w, g.grass_dry.w);
+    let soil = terrain_layer(layer + 2, wuv, 3.0, mapping) * g.soil.rgb;
     let m_moor = smoothstep(0.25, 0.8, clamp(f.moor + (broad - 0.5) * 0.7 + (mottle - 0.5) * 0.3, 0.0, 1.0));
     var c = mix(grass, moor, m_moor);
     var nt = mix(terrain_layer_normal(layer, wuv, 2.6, mapping), terrain_layer_normal(layer + 1, wuv, 3.2, mapping), m_moor);
@@ -306,7 +337,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Mountain stone is grey limestone and gneiss: the textures are warm, so
     // most of their colour goes.
     let gravel0 = terrain_layer(layer + 4, wuv, 1.8, mapping);
-    let gravel = mix(vec3<f32>(dot(gravel0, vec3<f32>(0.3, 0.59, 0.11))), gravel0, 0.5) * vec3<f32>(0.95, 0.97, 1.0);
+    let gravel = mix(vec3<f32>(dot(gravel0, vec3<f32>(0.3, 0.59, 0.11))), gravel0, g.gravel.w) * g.gravel.rgb;
     c = mix(c, gravel, m_scree);
     nn = normalize(mix(nn, perturb_xz(n, terrain_layer_normal(layer + 4, wuv, 1.8, mapping)), m_scree));
 
@@ -319,7 +350,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         let rot = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
         // Hex tiling: every few metres a new random turn, so no repeat shows.
         let bare0 = hex_triplanar(layer + 3, p, tw, 7.0);
-        let bare = mix(vec3<f32>(dot(bare0, vec3<f32>(0.3, 0.59, 0.11))), bare0, 0.35) * vec3<f32>(1.0, 1.04, 1.1) * (0.85 + 0.3 * broad);
+        let bare = mix(vec3<f32>(dot(bare0, vec3<f32>(0.3, 0.59, 0.11))), bare0, g.rock.w) * g.rock.rgb * (0.85 + 0.3 * broad);
         let mossy = triplanar(layer + 5, p, tw, 3.5, rot, 0.37);
         let m_moss = smoothstep(0.55, 0.9, n.y) * (0.5 + 0.5 * f.moor) * smoothstep(0.3, 0.7, broad);
         let rc = mix(bare, mossy, m_moss);
@@ -335,14 +366,14 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     nn = normalize(nn + vec3<f32>(-ds.x, 0.0, -ds.y));
 
     // Damp ground darkens near water.
-    c *= 1.0 - 0.35 * f.wet * (1.0 - m_rock * 0.5);
+    c *= 1.0 - g.soil.w * f.wet * (1.0 - m_rock * 0.5);
     var rough = mix(0.95, 0.55, f.wet * 0.6);
 
     // Snow over everything but water: bright, fairly smooth, thinning into
     // patches at its edge.
     let m_snow = smoothstep(0.3, 0.7, f.snow + (mottle - 0.5) * 0.5 + (broad - 0.5) * 0.3);
     if m_snow > 0.0 {
-        c = mix(c, vec3<f32>(0.84, 0.87, 0.92) * (0.93 + 0.1 * mottle), m_snow);
+        c = mix(c, g.snow.rgb * (0.93 + 0.1 * mottle), m_snow);
         nn = normalize(mix(nn, n, m_snow * 0.8));
         rough = mix(rough, 0.6, m_snow);
     }
