@@ -1,8 +1,8 @@
 # Native Quest / OpenXR
 
 Growing Guns' native Android build uses the existing Rust `Gg` application,
-Warp wgpu/Vulkan renderer, original character assets, procedural gun rigs,
-arena, Luau rules and all 52 cards. The shared low graphics profile omits stadium decoration. `engine/crates/xr` owns OpenXR and
+Warp wgpu/Vulkan renderer, shared character proxies, procedural gun rigs,
+arena, Luau rules and all 52 cards. The shared minimum graphics profile omits stadium decoration. `engine/crates/xr` owns OpenXR and
 presentation; `games/growing-guns/app/src/xr.rs` adapts the game's controls and
 world origin. There is no browser or streaming dependency at runtime.
 
@@ -35,8 +35,8 @@ The APK is a development build for sideloading, not a store release.
 
 ## Shared graphics profiles
 
-Desktop accepts `--graphics low` or `GG_GRAPHICS=low`; `full` remains its default.
-The native Quest adapter selects the same `low` profile before creating the scene.
+Desktop accepts `--graphics full|low|minimum` or `GG_GRAPHICS`; `full` remains its default.
+The native Quest adapter selects `minimum`; slower PCs can select the same profile.
 Profiles are fixed at startup; restart to change them.
 
 | Modifier | Full | Low |
@@ -61,6 +61,17 @@ omits normal maps, procedural surface detail, specular reflections and GI.
 The engine exposes these lighting/culling choices through `Scene::graphics`.
 Scenes using vegetation, GPU crowd/rigid animation or selection experiments
 retain the general culling path; the fast path is for plain meshes and skinning.
+
+The `minimum` profile additionally uses the engine's indexed forward renderer:
+coarsest authored mesh LOD, flat material colours and vertex lighting. Blocks
+are cubes, characters use the existing primitive proxies, GPU rubble is off,
+and effect particles are capped at 32. It skips textures, GI, shadows, bloom,
+volumetrics, TAA and procedural surface detail. Original sprite effects, names,
+HUD, bullets, growing guns, hit flashes and up to four unshadowed flashlights
+remain. The simpler flashlights can leak through walls. Transparent mesh
+materials are approximated as solid colour; this is not the full material path.
+CPU-owned rigid mesh scenes can opt in with `Scene::graphics.minimal_forward`;
+unsupported GPU-deformed/generated scenes retain the general renderer.
 
 ## Touch controls
 
@@ -97,12 +108,16 @@ selects its physical device, creates a compatible wgpu device, and copies Warp's
 offscreen result directly into runtime-owned Vulkan swapchain array layers.
 Images are transitioned back to `COLOR_ATTACHMENT_OPTIMAL` and a fence completes
 before release. There is no CPU pixel readback. The initial implementation
-serializes submissions and waits on fences; reducing that cost is future work.
+serializes submissions and waits on fences. Stereo colour and HUD now share
+one native copy submission and one completion fence.
 
-Android uses 512px material arrays, a 2048px main shadow map, no near shadow
-pass, and at most 640x640 rendered pixels per eye. Models and game code are
-shared with desktop. These are initial memory/performance settings, not a
-measured guarantee of 72 Hz on Quest 2.
+The minimum path renders each eye at the full resolution recommended by the
+OpenXR runtime, without downscaling or reconstruction. Growing Guns requests
+120 Hz through `XR_FB_display_refresh_rate` when the runtime exposes it, and
+logs supported, requested and actual changes. A display-rate request does not
+prove 120 rendered frames per second: the per-frame budget is 8.33 ms, including
+presentation. Device throughput and actual sustained headset FPS are separate
+acceptance checks.
 
 Tracking loss suppresses rendering until head/eye poses are valid. Loss of
 focus clears controls and simulation catch-up; missing right-controller poses
@@ -180,11 +195,14 @@ extracted game assets in `/data/local/tmp/warp-probe`, then run there:
 ```sh
 LD_LIBRARY_PATH=. GG_CHARACTERS=assets/characters GG_MODS=mods GG_SFX=sounds \
 KERN_PIPELINE_CACHE_DIR=pipeline-cache ./growing-guns xr-shot \
-  --diagnose --frames 60 --size 512x512 --out stereo.png
+  --frames 300 --fire --size 2048x2048 --out stereo.png
 ```
 
-The fixture runs one player and three bots with synthetic tracked poses. Its
-frame-throughput interval excludes initial compilation/warmup and final image
-readback. It includes no OpenXR compositor, physical input or display pacing;
+The fixture runs one player and three bots with synthetic tracked poses, and
+`--fire` holds the trigger. It draws the same 1280x720 HUD as the headset.
+It waits for GPU completion every frame by default, matching native submission
+serialization; `--queued` is an explicit throughput-only alternative. The timed
+interval excludes initial compilation/warmup and final image readback. It
+includes no OpenXR copies/compositor, physical input or display pacing;
 headset acceptance and sustained headset FPS must still be measured separately.
 Do not run this GPU workload alongside the VR app.

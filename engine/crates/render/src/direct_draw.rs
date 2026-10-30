@@ -71,6 +71,17 @@ impl Bounds {
         bounds.update(2,&scene.instances[2..3]).unwrap();
         assert_eq!(bounds.counts(true),[0,4,0,0]);
     }
+    #[test] fn invalid_batch_does_not_partially_change_bounds() {
+        let mut scene=Scene::default();
+        let mesh=scene.add_mesh(&crate::primitives::cube(0).mesh());
+        for _ in 0..2 {scene.add_instance(mesh,glam::Affine3A::IDENTITY);}
+        let mut bounds=Bounds::new(&scene,12);
+        let original=bounds.counts(true);
+        scene.instances[0].cluster_count=0;
+        scene.instances[1].first_cluster=u32::MAX;
+        assert!(bounds.update(0,&scene.instances).is_err());
+        assert_eq!(bounds.counts(true),original);
+    }
     #[test] fn every_triangle_count_fits_its_draw_bucket() {
         for small in [8,12] {for triangles in 1..=128 {let vertices=[small*3,96,192,384][bucket(triangles,small)];assert!(vertices>=triangles*3);}}
     }

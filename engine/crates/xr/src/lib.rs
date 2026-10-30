@@ -47,13 +47,23 @@ pub struct Tracking {
 }
 pub struct FrameOutput { pub color: wgpu::Texture, pub hud: render::hud::HudDrawList }
 pub trait Game {
-    /// Startup render budget per eye; the runtime recommendation remains the ceiling.
-    fn eye_limit(&self) -> u32 { 1024 }
+    /// Preferred display frequency; actual support is queried from the runtime.
+    fn refresh_rate(&self) -> Option<f32> { None }
     /// Optional explicit developer diagnostics before starting a session.
     fn diagnose(&mut self, _gpu: &render::Gpu) -> Result<(), String> { Ok(()) }
     fn quit(&self) -> bool { false }
     /// Draw both eyes side by side into an RGBA8 texture, with no readback.
     fn frame(&mut self, gpu: &render::Gpu, tracking: &Tracking, eye_size: [u32; 2], dt: f32) -> Result<FrameOutput, String>;
+}
+
+/// Shared HUD submission for native presentation and headless GPU measurements.
+pub fn draw_hud(gpu:&render::Gpu,hud:&mut render::hud::HudRenderer,list:&render::hud::HudDrawList,target:&wgpu::Texture)->Result<(),String> {
+    hud.prepare(gpu,list)?;
+    let mut enc=gpu.device.create_command_encoder(&Default::default());
+    let view=target.create_view(&Default::default());
+    {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("XR HUD"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{
+        view:&view,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store}})],..Default::default()});hud.render(&mut pass)?;}
+    gpu.queue.submit([enc.finish()]);Ok(())
 }
 
 #[cfg(test)]

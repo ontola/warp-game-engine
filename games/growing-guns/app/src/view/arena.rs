@@ -373,7 +373,8 @@ fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
     if crate::graphics::get().simple_blocks {
         let shapes = [(1.0,0.0),(0.9,0.5),(0.8,1.0)].map(|(shade,damage)| {
             let m=rock(scene,tint.map(|c|c*shade),rough,damage);
-            scene.add_mesh(&primitives::hewn_block(m,1,0.06+damage*0.05,damage*0.08,damage as u32).mesh())
+            let shape=if crate::graphics::get().minimal_forward {primitives::cube(m)}else{primitives::hewn_block(m,1,0.06+damage*0.05,damage*0.08,damage as u32)};
+            scene.add_mesh(&shape.mesh())
         });
         return Stone { intact:[shapes[0];4], cracked:shapes[1], crumbling:shapes[2], shards:shapes };
     }

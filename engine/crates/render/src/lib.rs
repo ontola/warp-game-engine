@@ -243,3 +243,5 @@ mod shader_tests {
         validator.validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
     }
 }
+
+mod forward;

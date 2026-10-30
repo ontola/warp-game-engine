@@ -1,9 +1,11 @@
 //! Shared startup graphics modifiers: the simulation and collision do not change.
-//! PC: --graphics low (or GG_GRAPHICS=low). Quest uses the same preset.
+//! PC: --graphics full|low|minimum (or GG_GRAPHICS). Quest selects minimum.
 use std::sync::OnceLock;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Graphics {
     pub stadium: bool,
+    pub minimal_forward: bool,
+    pub characters: bool,
     pub sky_occlusion: bool,
     pub simple_blocks: bool,
     pub simple_lighting: bool,
@@ -14,9 +16,10 @@ pub struct Graphics {
     pub lod_pixels: f32,
 }
 impl Graphics {
-    pub const FULL: Self=Self {stadium:true,sky_occlusion:true,simple_blocks:false,simple_lighting:false,debris_capacity:4096,debris_divisor:1,debris_size:1.0,particles:768,lod_pixels:1.0};
-    pub const LOW: Self=Self {stadium:false,sky_occlusion:false,simple_blocks:true,simple_lighting:true,debris_capacity:128,debris_divisor:16,debris_size:1.6,particles:128,lod_pixels:4.0};
-    pub fn parse(s:&str)->Result<Self,String> {match s {"full"=>Ok(Self::FULL),"low"=>Ok(Self::LOW),_=>Err(format!("unknown graphics profile {s}; use full or low"))}}
+    pub const FULL: Self=Self {minimal_forward:false,characters:true,stadium:true,sky_occlusion:true,simple_blocks:false,simple_lighting:false,debris_capacity:4096,debris_divisor:1,debris_size:1.0,particles:768,lod_pixels:1.0};
+    pub const LOW: Self=Self {minimal_forward:false,characters:true,stadium:false,sky_occlusion:false,simple_blocks:true,simple_lighting:true,debris_capacity:128,debris_divisor:16,debris_size:1.6,particles:128,lod_pixels:4.0};
+    pub const MINIMUM:Self=Self {minimal_forward:true,characters:false,debris_capacity:0,particles:32,lod_pixels:16.0,..Self::LOW};
+    pub fn parse(s:&str)->Result<Self,String> {match s {"full"=>Ok(Self::FULL),"low"=>Ok(Self::LOW),"minimum"=>Ok(Self::MINIMUM),_=>Err(format!("unknown graphics profile {s}; use full, low or minimum"))}}
     pub fn debris_count(self,count:u32)->u32 {count.div_ceil(self.debris_divisor).min(self.debris_capacity as u32)}
 }
 static GRAPHICS:OnceLock<Graphics>=OnceLock::new();

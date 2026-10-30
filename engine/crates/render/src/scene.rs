@@ -363,6 +363,9 @@ pub struct TextureSource {
 /// Startup graphics modifiers, independent of windowing or XR presentation.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Graphics {
+    /// Coarsest mesh LOD, indexed instancing and vertex-lit colour. Requires
+    /// plain CPU-owned meshes; no skinning, GPU debris or procedural animation.
+    pub minimal_forward: bool,
     /// Textured diffuse sun/sky lighting, without procedural relief, GI or shadows.
     pub simple_lighting: bool,
     /// One lane per mesh owner. For plain mesh scenes without wind, vegetation

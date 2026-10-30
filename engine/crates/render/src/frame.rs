@@ -777,6 +777,7 @@ pub struct Renderer {
     simple_lighting: bool,
     simple_cull: bool,
     small_cluster_vertices:u32,
+    minimal_forward: Option<std::sync::Mutex<crate::forward::Forward>>,
     direct_bounds: Option<std::sync::Mutex<crate::direct_draw::Bounds>>,
     raster_large_first: bool,
     early_grass_cull: bool,
@@ -1592,7 +1593,7 @@ impl Renderer {
             && scene.aggregate_lod.is_none() && scene.baked_animations.is_none()
             && scene.procedural_terrain.is_none() && scene.crowd.is_none()
             && scene.instances.iter().all(|i|i.flags & (crate::scene::FOLIAGE | crate::scene::LIVE_GRASS
-                | crate::scene::WIND_GRASS | crate::scene::PART_WIND | crate::scene::GRASS)==0);
+                | crate::scene::WIND_GRASS | crate::scene::PART_WIND)==0);
         let simple_cull=std::env::var("KERN_SIMPLE_CULL").map_or(scene.graphics.simple_mesh_culling,|v|v=="1")
             && plain_meshes && !instance_groups.allocated() && !cluster_traversal.enabled && !tree_occlusion.enabled
             && std::env::var("KERN_STATIC_SUN_CACHE").as_deref()!=Ok("1")
@@ -1606,6 +1607,8 @@ impl Renderer {
         // can use a conservative direct draw with GPU-side count rejection.
         let adreno=cfg!(target_os="android") && gpu.info.backend==wgpu::Backend::Vulkan && gpu.info.vendor==0x5143;
         let bounded_draws=plain_meshes && std::env::var("KERN_BOUNDED_DRAWS").map_or(adreno && simple_cull,|v|v=="1");
+        let minimal_forward=(scene.graphics.minimal_forward && plain_meshes && scene.skinning.actors.is_empty()
+            && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials)));
         let direct_bounds=bounded_draws.then(||std::sync::Mutex::new(crate::direct_draw::Bounds::new(scene,small_cluster_triangles)));
         let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64), ("VOXEL_FAR_M", far_trees), ("DIRECT_BOUNDED",u8::from(bounded_draws)as f64)];
         let cull_compute = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1898,6 +1901,7 @@ impl Renderer {
             simple_cull,
             small_cluster_vertices:small_cluster_triangles*3,
             direct_bounds,
+            minimal_forward,
             raster_large_first: std::env::var("KERN_RASTER_LARGE_FIRST").as_deref()==Ok("1"),
             early_grass_cull,
             raster,
@@ -2771,7 +2775,7 @@ impl Renderer {
         gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("frame output"),
             size: wgpu::Extent3d { width: out_w, height: out_h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] })
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] })
     }
 
     /// Like `try_render_texture`, but into the caller's texture (from
@@ -3100,6 +3104,7 @@ impl Renderer {
         }
         self.canopies.lock().unwrap()[0].validate_update(first, instances)?;
         if let Some(bounds)=&self.direct_bounds {bounds.lock().unwrap().update(first,instances)?;}
+        if let Some(forward)=&self.minimal_forward {forward.lock().unwrap().update(first,instances)?;}
         if let Some(cache) = &self.static_sun { cache.lock().unwrap().update_instances(gpu,first,instances)?; }
         if !instances.is_empty() {
             // Canopy density only changes with foliage. Moving cars and the
@@ -3134,6 +3139,23 @@ impl Renderer {
 
     #[allow(clippy::too_many_arguments)]
     fn frame_output_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback, target: Option<&wgpu::Texture>) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
+        if let Some(forward)=&self.minimal_forward {
+            if views.len()>8 || views.iter().any(|v|v.w==0||v.h==0||v.x.checked_add(v.w).is_none_or(|n|n>out_w)||v.y.checked_add(v.h).is_none_or(|n|n>out_h)) {
+                return Err("minimum renderer requires up to eight nonempty views inside its output".into());
+            }
+            if target.is_some_and(|t|(t.width(),t.height())!=(out_w,out_h)||t.format()!=wgpu::TextureFormat::Rgba8Unorm||!t.usage().contains(wgpu::TextureUsages::COPY_DST)) {
+                return Err("minimum renderer requires Renderer::output_texture".into());
+            }
+            if !picks.is_empty() {return Err("pixel picking is unavailable in the minimum graphics profile".into());}
+            let output=target.cloned().unwrap_or_else(||Self::output_texture(gpu,out_w,out_h));
+            let axes=self.camera_up_axes.lock().unwrap();let projections=self.camera_projections.lock().unwrap();
+            let camera_views:Vec<_>=views.iter().enumerate().map(|(vi,v)|camera_view(v.cam,axes.get(vi).copied())).collect();
+            let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
+                Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
+            let stats=forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,light,&self.headlight_state.lock().unwrap(),&output)?;
+            let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
+            return Ok((output,pixels,stats));
+        }
         // Serialize explicit diagnostic readbacks with writes to reused targets.
         // Errors before submission leave no stale frame advertised as current.
         let mut cpu = crate::cpu_spans::Spans::start(self.cpu_spans.as_ref());

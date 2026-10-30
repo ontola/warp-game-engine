@@ -30,7 +30,7 @@ missing.
 | Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with smoke, sparks, chips, scorch and blood, air strike rocket and white-out; ion cannon charges as one soft brightening column with wide bloom and bright ground illumination, with blue rising motes across the impact disc and nearly vertical rubble lift/fall |
 | Sky and light | Done | Godot's sky by default; procedural time of day and weather, per round or as a cycle; visible sun and GPU lens flare with per-view occlusion; floodlights with shadows at night |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
-| Standalone Quest VR | Experimental | Native Android/OpenXR APK uses this same app and Warp renderer, all 52 cards, character assets and tracked growing gun. Shared low graphics profile removes stadium/crowd/TVs and reduces rubble, particles and block detail; shared diffuse lighting avoids the black Quest arena. Quest GPU captures show arena and gun; sustained headset performance remains under validation. Local bots, stereo, snap turn and original menus. [Build, controls and validation limits](../../engine/docs/quest-native.md). The earlier simplified WebXR demo remains separate. |
+| Standalone Quest VR | Experimental | Native Android/OpenXR APK uses this same app and Warp renderer, all 52 cards, character assets and tracked growing gun. Shared minimum graphics profile removes stadium/crowd/TVs and GPU rubble; simple blocks, primitive characters and vertex lighting keep the full eye resolution. Requests 120 Hz when supported; sustained headset FPS remains under validation. Low and full profiles remain available on PC. Local bots, stereo, snap turn and original menus. [Build, controls and validation limits](../../engine/docs/quest-native.md). The earlier simplified WebXR demo remains separate. |
 | Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen. Join/leave reuses visual slots and clears unused screen regions |
 | Online | Close | Host-authoritative over iroh; local movement prediction and buffered remote snapshots. Tested over loopback (`nettest`), not yet between two machines or under realistic network jitter; transport currently binds IPv4 only |
 | Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
@@ -74,8 +74,8 @@ LT/B special, X reload. F12 saves a screenshot. F3 (Back + Start on a pad)
 opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
 
-For slower PCs, pass `--graphics low` (or `GG_GRAPHICS=low`); desktop defaults to `full`.
-The same low profile is used by the Quest demo; gameplay and collisions are unchanged.
+For slower PCs, pass `--graphics low` or `--graphics minimum` (also `GG_GRAPHICS`); desktop defaults to `full`.
+The same minimum profile is used by the Quest demo; gameplay and collisions are unchanged.
 
 For the native standalone Quest APK, run `python3 engine/tools/build-quest-native.py`.
 Add `--install` with an authorized USB-connected headset. See

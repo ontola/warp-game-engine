@@ -15,7 +15,7 @@ pub struct NativeGame {
 }
 impl NativeGame {
     pub fn new(sound:bool)->Result<Self,String> {
-        crate::graphics::configure(crate::graphics::Graphics::LOW)?;
+        crate::graphics::configure(crate::graphics::Graphics::MINIMUM)?;
         let mut game=crate::play::Gg::new(World::new(3,&[false,true,true,true]),crate::session::Session::Local,vec![0]);
         if game.scripts.is_none() {return Err("Growing Guns card scripts did not load".into());}
         game.xr_stereo=true;game.no_kbm=true;game.ui.tilt=false;
@@ -39,7 +39,7 @@ impl NativeGame {
     }
 }
 impl warp_xr::Game for NativeGame {
-    fn eye_limit(&self)->u32 {640}
+    fn refresh_rate(&self)->Option<f32> {Some(120.0)}
     fn quit(&self) -> bool { self.game.quit() }
     fn diagnose(&mut self, gpu: &render::Gpu) -> Result<(), String> {
         if !self.diagnostic_requested { return Ok(()); }
@@ -135,17 +135,22 @@ pub fn shot(args:&crate::Args)->Result<(),String> {
     let head=Pose {position:Vec3::new(0.0,1.65,0.0),orientation:Quat::IDENTITY};
     let eyes=[-0.032,0.032].map(|x|Eye {pose:Pose {position:head.position+Vec3::X*x,..head},fov:[-0.8,0.8,0.8,-0.8]});
     let aim=Pose {position:Vec3::new(0.25,1.3,-0.35),orientation:Quat::from_rotation_x(0.1)};
-    let tracking=Tracking {eyes,head,aim:Some(aim),controls:Default::default(),turn:0.0,focused:true,recentered:false};
+    let mut controls=app::Controls::default();
+    if args.flag("--fire") {controls.held.0|=app::Buttons::RIGHT_TRIGGER;}
+    let tracking=Tracking {eyes,head,aim:Some(aim),controls,turn:0.0,focused:true,recentered:false};
     // Real game logic and full card set, with the same rig used by Android.
     for _ in 0..90 {game.game.tick(&[Default::default()]);}
+    let mut hud=render::hud::HudRenderer::new(&gpu,wgpu::TextureFormat::Rgba8UnormSrgb)?;
+    let hud_texture=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("XR fixture HUD"),size:wgpu::Extent3d{width:1280,height:720,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]});
     let mut frame=game.frame(&gpu,&tracking,[size.0,size.1],DT)?;
+    warp_xr::draw_hud(&gpu,&mut hud,&frame.hud,&hud_texture)?;
     if args.flag("--frames") {
         gpu.wait();
         let count=args.num("--frames",30u32).clamp(1,600);
         let start=std::time::Instant::now();
-        for _ in 0..count {frame=game.frame(&gpu,&tracking,[size.0,size.1],DT)?;}
+        for _ in 0..count {frame=game.frame(&gpu,&tracking,[size.0,size.1],DT)?;warp_xr::draw_hud(&gpu,&mut hud,&frame.hud,&hud_texture)?;if !args.flag("--queued") {gpu.wait();}}
         gpu.wait();
-        println!("Headless native fixture: {count} frames, {:.2} ms/frame at {}x{} per eye; no compositor or display pacing",start.elapsed().as_secs_f64()*1000.0/count as f64,size.0,size.1);
+        println!("Headless native fixture: {count} frames, {:.2} ms/frame at {}x{} per eye including HUD (queued={}); no compositor or display pacing",start.elapsed().as_secs_f64()*1000.0/count as f64,size.0,size.1,args.flag("--queued"));
     }
     render::write_png(std::path::Path::new(out),size.0*2,size.1,&gpu.read_rgba8(&frame.color))?;
     println!("Native Warp stereo fixture: {out}; {} cards; GPU {}. This is not a headset test.",game.game.world.cards.enabled().count(),gpu.info.name);
