@@ -178,17 +178,23 @@ impl Gg {
                     let mut world = World::new(seed, &seat_flags);
                     let party = self.party.as_mut().expect("party");
                     party.settings.apply_match(&mut world);
+                    world.next_modifier = party.next_modifier;
                     self.reset(world, (0..humans.len()).collect());
                     self.names = humans;
                     self.party.as_mut().expect("party").ready();
                 }
                 crate::party::Ev::Names(n) => self.names = n,
+                crate::party::Ev::NextModifier(m) => self.world.next_modifier = m,
                 crate::party::Ev::Dispose => {}
             }
         }
         let party = self.party.as_mut()?;
         if self.world.events.iter().any(|e| matches!(e, Event::MatchOver { .. })) { party.finished(); }
-        if self.world.events.contains(&Event::NewArena) { party.settings.apply_round(&mut self.world); }
+        if self.world.events.contains(&Event::NewArena) {
+            party.settings.apply_round(&mut self.world);
+            // A pick for this round was taken (World::start_round).
+            if self.world.next_modifier.is_none() { party.next_modifier_used(); }
+        }
         Some(party.running().then(|| party.controls(self.slots.len(), DT)))
     }
 
