@@ -171,6 +171,8 @@ struct Config {
     size_count: [u32; 4],
     march: [f32; 4],
     dispatch: [u32; 4],
+    /// First whole-plant proxy tree, its pixel error.
+    proxy: [f32; 4],
 }
 /// Rasterized voxels (KERN_VOXEL_RASTER=1, docs/voxel-raster-plan.md): the
 /// static cell list and the id/depth raster pipeline.
@@ -186,7 +188,8 @@ struct SplatRaster {
     sun_splats: wgpu::ComputePipeline,
     sun_raster: wgpu::RenderPipeline,
     /// The sun target's selection buffer and its splat targets.
-    sun_target: Mutex<Option<(wgpu::Buffer, Targets)>>,
+    /// One target per sun map, keyed by its selection buffer.
+    sun_target: Mutex<Vec<(wgpu::Buffer, Targets)>>,
 }
 /// Where render_sun draws: the sun map's depth, view and texel size.
 pub(crate) struct SunSplatView<'a> {
@@ -275,6 +278,9 @@ pub(crate) struct VoxelRenderer {
     count: u32,
     /// Scene::voxel_far_distance_m; written as config march.y.
     far: f32,
+    /// Scene::voxel_proxies and voxel_proxy_pixels: config proxy.
+    proxies: u32,
+    proxy_pixels: f32,
     step: f32,
     empty_skip: bool,
     lod_pixels: f32,
@@ -359,7 +365,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let cells_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE });
     SplatRaster { cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster,
-        sun_target: Mutex::new(None) }
+        sun_target: Mutex::new(Vec::new()) }
 }
 fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool) -> [wgpu::ComputePipeline; 8] {
     let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -520,8 +526,10 @@ impl VoxelRenderer {
         }
         let far = scene.voxel_far_distance_m;
         assert!(far.is_finite() && far >= 0.0, "invalid far tree distance");
-        // Far trees never read the per-group selection.
-        assert!(far > 0.0 || forest.instances.len() <= MAX_VIEW_GROUPS,
+        let proxies = scene.voxel_proxies.min(forest.instances.len() as u32);
+        assert!(proxies == 0 || scene.voxel_proxy_pixels > 0.0, "whole-plant proxies need a pixel error");
+        // Far trees and proxies never read the per-group selection.
+        assert!(far > 0.0 || forest.instances.len() - proxies as usize <= MAX_VIEW_GROUPS,
             "voxel renderer exceeds checked selection capacity");
         assert!(forest.instances.len() < FAR_TREE as usize, "too many far trees");
         let upload = |name, data: &[u8]| {
@@ -628,7 +636,7 @@ impl VoxelRenderer {
         let mut integrator_options = IntegratorOptions::from_environment();
         // Far trees exist only as rasterized voxels; aggregate plants use them
         // too unless KERN_VOXEL_RASTER=0 asks for the ray integrator.
-        integrator_options.raster |= far > 0.0
+        integrator_options.raster |= far > 0.0 || proxies > 0
             || (scene.aggregate_lod.is_some() && std::env::var("KERN_VOXEL_RASTER").as_deref() != Ok("0"));
         let mut catalog_words=vec![0u32;4];
         let mut bin_count=forest.instances.len() as u32;
@@ -739,6 +747,8 @@ impl VoxelRenderer {
             bin_count,
             count: forest.instances.len() as u32,
             far,
+            proxies,
+            proxy_pixels: scene.voxel_proxy_pixels,
             step,
             empty_skip,
             lod_pixels,
@@ -879,6 +889,7 @@ impl VoxelRenderer {
                     march: [self.step, self.far, u32::from(self.empty_skip) as f32, self.lod_pixels],
                     dispatch: [u32::from(self.active_tiles), 0, interval_stream.map_or(0,|s|s.header_word),
                         interval_stream.map_or(0,|s|s.pixel_slots)],
+                    proxy: [(self.count - self.proxies) as f32, self.proxy_pixels, 0.0, 0.0],
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -1146,17 +1157,21 @@ impl VoxelRenderer {
     /// voxels on). The caller then marks the sun selection with
     /// sun_selection, so the replaced source stops casting there.
     pub(crate) fn casts_sun(&self) -> bool { self.raster.is_some() }
+    /// Whole-plant proxies have no source, so they also cast into the
+    /// near shadow map (render_sun with that map's own selection).
+    pub(crate) fn has_proxies(&self) -> bool { self.raster.is_some() && self.proxies > 0 }
     pub(crate) fn sun_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] { [[1, u32::MAX, 0, 2]; MAX_VIEW_GROUPS] }
     /// Draw the voxels of every sun-casting group into the sun map, after
     /// its source raster. `selection` is the sun view's selection buffer.
     pub(crate) fn render_sun(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, scene: &wgpu::BindGroup,
         selection: &wgpu::Buffer, sun: SunSplatView<'_>, times: [Option<(&wgpu::QuerySet, u32)>; 2]) -> Result<(), String> {
         let Some(raster) = &self.raster else { return Ok(()) };
-        let mut slot = raster.sun_target.lock().unwrap();
-        if !slot.as_ref().is_some_and(|(buffer, _)| buffer == selection) {
-            *slot = Some((selection.clone(), self.targets(gpu, (1, 1), selection, None)?));
-        }
-        let target = &slot.as_ref().unwrap().1;
+        let mut slots = raster.sun_target.lock().unwrap();
+        let slot = match slots.iter().position(|(buffer, _)| buffer == selection) {
+            Some(slot) => slot,
+            None => { slots.push((selection.clone(), self.targets(gpu, (1, 1), selection, None)?)); slots.len() - 1 }
+        };
+        let target = &slots[slot].1;
         let splat = target.splat.as_ref().unwrap();
         let mut header = [[0.0f32; 4]; 12];
         header[..4].copy_from_slice(&sun.view_proj.to_cols_array_2d());
@@ -1976,7 +1991,8 @@ mod tests {
     }
     #[test]
     fn config_layout_and_four_view_candidate_budget() {
-        assert_eq!(std::mem::size_of::<super::Config>(), 48);
+        assert_eq!(std::mem::size_of::<super::Config>(), 64);
+        assert_eq!(std::mem::offset_of!(super::Config, proxy), 48);
         assert_eq!(std::mem::offset_of!(super::Config, dispatch), 32);
         assert_eq!(super::COUNTER_BYTES, (14 + 4 * 2) * 4);
         assert_eq!(3840u64 * 2160 * 8, 66_355_200);

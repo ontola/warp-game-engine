@@ -149,6 +149,23 @@ pub struct GpuForest {
 }
 
 impl GpuForest {
+    /// Append another densely indexed forest's levels, cells and trees,
+    /// rebasing its indices. Trees keep their order after this forest's.
+    pub fn append(&mut self, other: GpuForest) -> Result<(), String> {
+        if other.levels.iter().any(|l| l.dims_offset[3] & BRICK_INDIRECTION != 0) {
+            return Err("only dense volume levels can be appended".into());
+        }
+        let (levels, indices, cells) = (self.levels.len(), self.indices.len(), self.cells.len());
+        if [levels + other.levels.len(), indices + other.indices.len(), cells + other.cells.len()].iter()
+            .any(|&n| n >= BRICK_INDIRECTION as usize) {
+            return Err("appended volume forest exceeds 31-bit addressing".into());
+        }
+        self.levels.extend(other.levels.into_iter().map(|mut l| { l.dims_offset[3] += indices as u32; l }));
+        self.indices.extend(other.indices.into_iter().map(|i| if i == 0 { 0 } else { i + cells as u32 }));
+        self.cells.extend(other.cells);
+        self.instances.extend(other.instances.into_iter().map(|mut t| { t.meta[1] += levels as u32; t }));
+        Ok(())
+    }
     pub fn byte_len(&self) -> usize {
         self.levels.len() * std::mem::size_of::<GpuLevel>()
             + self.indices.len() * std::mem::size_of::<u32>()
@@ -633,6 +650,30 @@ mod tests {
         assert_eq!(a.indices,b.indices);
         assert_eq!(bytemuck::cast_slice::<_,u8>(&a.cells),bytemuck::cast_slice::<_,u8>(&b.cells));
         assert_eq!(bytemuck::cast_slice::<_,u8>(&a.instances),bytemuck::cast_slice::<_,u8>(&b.instances));
+    }
+
+    #[test]
+    fn appended_dense_forest_keeps_every_cell_after_a_bricked_one() {
+        let mut forest=brick_fixture();pack_bricks(&mut forest,128).unwrap();
+        let before=forest.clone();let other=brick_fixture();
+        forest.append(other.clone()).unwrap();
+        assert_eq!(forest.instances.len(),before.instances.len()+other.instances.len());
+        for (i,tree) in other.instances.iter().enumerate() {
+            let moved=forest.instances[before.instances.len()+i];
+            assert_eq!(moved.meta[1],tree.meta[1]+before.levels.len() as u32);
+            for l in 0..tree.meta[2] {
+                let (a,b)=(&other.levels[(tree.meta[1]+l)as usize],&forest.levels[(moved.meta[1]+l)as usize]);
+                let [x,y,z]=[a.dims_offset[0],a.dims_offset[1],a.dims_offset[2]];
+                for c in (0..x).flat_map(|i|(0..y).flat_map(move|j|(0..z).map(move|k|[i,j,k]))) {
+                    let (old,new)=(cell_index(&other,a,c).unwrap(),cell_index(&forest,b,c).unwrap());
+                    assert_eq!(old==0,new==0);
+                    if old!=0 {assert_eq!(bytemuck::bytes_of(&other.cells[old as usize-1]),bytemuck::bytes_of(&forest.cells[new as usize-1]));}
+                }
+            }
+        }
+        // The bricked part is untouched; bricked input cannot be appended.
+        assert_eq!(bytemuck::cast_slice::<_,u8>(&forest.levels[..before.levels.len()]),bytemuck::cast_slice::<_,u8>(&before.levels));
+        assert!(forest.clone().append(before).is_err());
     }
 
     #[test]

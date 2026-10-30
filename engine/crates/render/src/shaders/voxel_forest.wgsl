@@ -6,7 +6,9 @@ struct VolumeTree {
     inverse: array<vec4<f32>,3>,
     bounds_min: vec4<f32>, bounds_max: vec4<f32>, identity: vec4<u32>,
 };
-struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u32> };
+// proxy: x first whole-plant proxy tree (Scene::voxel_proxies trail the
+// forest), y its pixel error.
+struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u32>, proxy: vec4<f32> };
 @group(2) @binding(0) var<storage,read> volume_levels: array<VolumeLevel>;
 @group(2) @binding(1) var<storage,read> volume_indices: array<u32>;
 @group(2) @binding(2) var<storage,read> volume_cells: array<VolumeCell>;
@@ -1064,36 +1066,33 @@ fn volume_far_tree(index:u32)->bool {
     let owner=instances[volume_trees[index].identity.x];
     return distance(vec3<f32>(owner.r0.w,owner.r1.w,owner.r2.w),view.cam.xyz)>volume_config.march.y;
 }
+fn volume_proxy(index:u32)->bool {return f32(index)>=volume_config.proxy.x;}
 fn volume_splat_level(index:u32)->u32 {
     let tree=volume_trees[index];
-    if volume_config.march.y>0.0 {return volume_footprint_level(index,tree.identity.z-1u);}
+    if volume_proxy(index) {return volume_footprint_level(index,tree.identity.z-1u,volume_config.proxy.y);}
+    if volume_config.march.y>0.0 {return volume_footprint_level(index,tree.identity.z-1u,volume_config.march.w);}
     let selected=volume_selection[index];
     let ceiling=min(tree.identity.z-1u,selected.y);
     if selected.w==1u || volume_config.march.w<=0.0 {return select(0u,ceiling,selected.w==1u);}
-    return volume_footprint_level(index,ceiling);
+    return volume_footprint_level(index,ceiling,volume_config.march.w);
 }
 // The integrator's projected-footprint rule, once at the crown centre so a
-// tree never mixes two levels.
-fn volume_footprint_level(index:u32,ceiling:u32)->u32 {
-    if volume_config.march.w<=0.0 {return 0u;}
+// tree never mixes two levels. Tree bounds are a world box.
+fn volume_footprint_level(index:u32,ceiling:u32,pixels:f32)->u32 {
+    if pixels<=0.0 {return 0u;}
     let tree=volume_trees[index];
-    let owner=instances[tree.identity.x];
-    let centre=vec4<f32>(0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz),1.0);
-    let world=vec3<f32>(dot(owner.r0,centre),dot(owner.r1,centre),dot(owner.r2,centre));
+    let world=0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz);
     let t=max(distance(world,view.cam.xyz),1e-3);
     let projected=volume_projected_cell(tree,(world-view.cam.xyz)/t);
-    let footprint=volume_config.march.w*t/max(projected.x+volume_config.march.w*projected.y,1e-8);
+    let footprint=pixels*t/max(projected.x+pixels*projected.y,1e-8);
     return u32(clamp(floor(log2(max(footprint,1e-8))),0.0,f32(ceiling)));
 }
-// Whole tree against six planes, before its cells.
+// Whole tree (its world box) against six planes, before its cells.
 fn volume_tree_outside(index:u32,plane:vec4<f32>)->bool {
     let tree=volume_trees[index];
-    let owner=instances[tree.identity.x];
-    let centre=vec4<f32>(0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz),1.0);
+    let centre=0.5*(tree.bounds_min.xyz+tree.bounds_max.xyz);
     let half=0.5*(tree.bounds_max.xyz-tree.bounds_min.xyz);
-    let radius=length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x))*half.x+length(vec3<f32>(owner.r0.y,owner.r1.y,owner.r2.y))*half.y
-        +length(vec3<f32>(owner.r0.z,owner.r1.z,owner.r2.z))*half.z;
-    return dot(plane.xyz,vec3<f32>(dot(owner.r0,centre),dot(owner.r1,centre),dot(owner.r2,centre)))+plane.w < -radius;
+    return dot(plane.xyz,centre)+plane.w < -dot(abs(plane.xyz),half);
 }
 // Publish the tree's pose and level grid for the raster pass.
 fn volume_splat_tree(index:u32,level:u32) {
@@ -1147,7 +1146,8 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w {
             var wanted=volume_config.march.y>0.0 && volume_far_tree(index);
-            if volume_config.march.y<=0.0 {wanted=volume_selection[index].x==1u;}
+            if volume_config.march.y<=0.0 && !volume_proxy(index) {wanted=volume_selection[index].x==1u;}
+            if volume_proxy(index) {wanted=true;}
             for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,view.planes[i]);}
             if wanted {level=volume_splat_level(index);volume_splat_tree(index,level);}
         }
@@ -1184,15 +1184,17 @@ fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invoca
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w {
             // Far trees all cast; the sun selection marks only index 0.
+            // Proxies always cast, also into maps whose source groups do not.
             var selected=volume_selection[0];
-            if volume_config.march.y<=0.0 {selected=volume_selection[index];}
-            var wanted=selected.x==1u && selected.w==VOLUME_SUN_CASTER;
+            if volume_config.march.y<=0.0 && !volume_proxy(index) {selected=volume_selection[index];}
+            var wanted=(selected.x==1u && selected.w==VOLUME_SUN_CASTER) || volume_proxy(index);
             for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,volume_splat_header(4u+i));}
             if wanted {
                 let tree=volume_trees[index];
                 let owner=instances[tree.identity.x];
                 let finest=volume_levels[tree.identity.y].origin_cell.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
-                level=u32(clamp(floor(log2(max(sun.w/max(finest,1e-6),1e-8))),0.0,f32(min(tree.identity.z-1u,selected.y))));
+                let ceiling=select(min(tree.identity.z-1u,selected.y),tree.identity.z-1u,volume_proxy(index));
+                level=u32(clamp(floor(log2(max(sun.w/max(finest,1e-6),1e-8))),0.0,f32(ceiling)));
                 volume_splat_tree(index,level);
             }
         }
@@ -1211,6 +1213,34 @@ fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invoca
         for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,volume_splat_header(4u+p));}
         if inside {volume_splat_append(index,cell_ref,cell,toward);}
     }
+}
+
+// World texel of the sun map that shades p.
+fn volume_sun_texel(p:vec3<f32>)->f32 {
+    if light.near_shadow.z>0.5 {
+        let c=light.near_shadow_view_proj*vec4<f32>(p,1.0);
+        if all(abs(c.xy)<vec2<f32>(1.0)) {return light.near_shadow.x;}
+    }
+    return light.sky.w;
+}
+// Sun transmittance through the tree's own cells at the drawn level, from
+// the cell after p's to the edge of its grid.
+fn volume_self_transmittance(tree:VolumeTree,grid:vec4<f32>,p:vec3<f32>,sun:vec3<f32>)->f32 {
+    let finest=volume_levels[tree.identity.y].origin_cell.w;
+    let index=min(u32(round(log2(max(grid.w/finest,1.0)))),tree.identity.z-1u);
+    let level=volume_levels[tree.identity.y+index];
+    let local=vec3<f32>(dot(tree.inverse[0],vec4<f32>(p,1.0)),dot(tree.inverse[1],vec4<f32>(p,1.0)),dot(tree.inverse[2],vec4<f32>(p,1.0)));
+    let d=normalize(vec3<f32>(dot(tree.inverse[0].xyz,sun),dot(tree.inverse[1].xyz,sun),dot(tree.inverse[2].xyz,sun)));
+    let direction=volume_direction(d);
+    let cell=level.origin_cell.w;
+    var tau=0.0;
+    for(var i=1u;i<=32u;i++) {
+        let c=floor((local+d*(f32(i)*cell)-level.origin_cell.xyz)/cell);
+        if any(c<vec3<f32>(0.0)) || any(c>=vec3<f32>(level.dims_offset.xyz)) {break;}
+        let address=volume_cell_address(level,vec3<u32>(c));
+        if address!=0u {tau+=volume_sigma(volume_cells[address-1u],direction)*cell;}
+    }
+    return exp(-tau);
 }
 
 @compute @workgroup_size(8,8)
@@ -1240,7 +1270,16 @@ fn voxel_splat_resolve(@builtin(global_invocation_id) id:vec3<u32>) {
     var empty:VolumeSample;
     let sample=volume_normalize_sample(volume_accumulate_cell(empty,cell,sigma));
     let up=vec3<f32>(0.0,1.0,0.0);
-    let shadow=mix(1.0,shadow_at(p,up),light.sun_color.w);
-    let rad=volume_radiance(sample,tree,p,-direction,shadow,sky_visibility(p,up));
+    // The sun maps hold this tree too, at their own texel, so looking them
+    // up inside the crown made whole crowns shadow themselves black. Its own
+    // cells shade it along the sun instead; the maps add everything else
+    // from just outside its box.
+    let grid=bitcast<vec4<f32>>(volume_splats[VOLUME_SPLAT_HEADER+record.x*4u+3u]);
+    let sun=light.sun_dir.xyz;
+    let exit=max(volume_interval(tree,p,sun,1e4).y,0.0);
+    let others=shadow_at(p+sun*(exit+volume_sun_texel(p)*2.0),up);
+    let shadow=mix(1.0,others*volume_self_transmittance(tree,grid,p,sun),light.sun_color.w);
+    let cell_m=grid.w/max(length(vec3<f32>(tree.inverse[0].x,tree.inverse[1].x,tree.inverse[2].x)),1e-6);
+    let rad=volume_radiance(sample,tree,p,-direction,shadow,sky_visibility(p+up*cell_m,up));
     textureStore(volume_output,px,vec4<f32>(rad,1.0));
 }

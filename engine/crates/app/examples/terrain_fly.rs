@@ -5,7 +5,8 @@
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --seed 3
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
-//!   ... --no-trees --grass --recipe N   (N nearest trees as recipe spruces, default 8)
+//!   ... --no-trees --grass --recipe N   (N nearest spruces in full, default 8; the rest are voxel proxies)
+//!   ... --firs   (the old forest: Sideways' fir cards, for A/B runs)   --proxy-px N   (proxy cell pixels, default 4)
 //!   cargo run --release -p app --example terrain_fly -- --bench 120 [--size 2560x1440]   # headless GPU pass times
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
@@ -16,8 +17,10 @@
 //! F3 opens the debug menu (engine render/light switches plus trees, grass
 //! and terrain LOD under "Terrain fly").
 //!
-//! Grass (render's meadow) and trees (Sideways' fir meshes) cover a disc
-//! around the camera; the scene is rebuilt on another thread as it moves.
+//! Grass (render's meadow) and trees (one recipe spruce, three seeds) cover a
+//! disc around the camera; the scene is rebuilt on another thread as it moves.
+//! The nearest spruces are full assemblies (branch wind, per-branch source or
+//! voxels); every other one is the same cooked plant as one voxel proxy.
 use app::{Buttons, Controls, Draw, Frame, Game, Pointer};
 use glam::{Affine3A, Quat, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, SimplificationPolicy};
@@ -77,13 +80,12 @@ struct World {
     tree_density: f32,
     /// Trees are placed this far around the camera (metres).
     tree_radius: f32,
-    /// The nearest this many trees are recipe spruces (the vegetation
-    /// push's approved r4 spruce); the rest are Sideways' fir meshes.
+    /// The nearest this many spruces are full assemblies; the rest are
+    /// whole-plant voxel proxies of the same cooked spruce.
     recipe_trees: u32,
-    /// Firs past render::far_trees' distance draw as rasterized voxels. Off by
-    /// default: on the Mac (2560x1440) the fir cards cost 1 ms of raster and
-    /// their voxels about 10 ms, so this only pays for heavy trees.
-    far_voxels: bool,
+    /// The old forest instead: Sideways' fir cards past the recipe spruces.
+    /// On the Mac they were 39M camera and 67M near shadow triangles.
+    firs: bool,
 }
 
 // Debug menu ids (app::debug::GAME_IDS and up).
@@ -95,7 +97,7 @@ const TREE_RADIUS: u32 = 1004;
 const CELL_PX: u32 = 1005;
 const ERROR_PX: u32 = 1006;
 const RECIPE_TREES: u32 = 1007;
-const FAR_VOXELS: u32 = 1008;
+const FIRS: u32 = 1008;
 
 struct Fly {
     seed: u32,
@@ -292,10 +294,10 @@ impl Game for Fly {
         let w = &self.world;
         let t = &self.terrain_settings;
         (menu, vec![
-            toggle(TREES, "Trees", w.trees, "Fir forest around the camera (Sideways' fir meshes)."),
+            toggle(TREES, "Trees", w.trees, "Spruce forest around the camera."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
-            number(RECIPE_TREES, "Recipe spruces near camera", f64::from(w.recipe_trees), (0.0, 32.0, 1.0, 0), "", "The nearest trees use the new recipe spruce (shared detailed sprays, branch wind). Each is millions of triangles."),
-            toggle(FAR_VOXELS, "Far trees as voxels", w.far_voxels, "Firs past 120 m draw as rasterized voxels (camera and sun shadow) instead of meshes."),
+            number(RECIPE_TREES, "Full spruces near camera", f64::from(w.recipe_trees), (0.0, 12.0, 1.0, 0), "", "The nearest spruces are full assemblies (detailed sprays, branch wind); the rest are voxel proxies of the same spruce."),
+            toggle(FIRS, "Old fir cards", w.firs, "The old forest past the full spruces: Sideways' fir meshes instead of voxel proxies."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
             toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (45 m of blades, canopy shading beyond) below 120 m above ground. Expensive. The Grass menu only hides it."),
             number(CELL_PX, "Terrain cell size", f64::from(t.cell_pixels), (4.0, 96.0, 4.0, 0), "px", "Largest projected terrain cell before a patch splits."),
@@ -308,9 +310,9 @@ impl Game for Fly {
             DebugAction::ResetDefaults => { self.world = World::default(); self.terrain_settings = Settings::default(); }
             DebugAction::SetToggle { id: TREES, value } => self.world.trees = value,
             DebugAction::SetToggle { id: GRASS, value } => self.world.grass = value,
-            DebugAction::SetToggle { id: FAR_VOXELS, value } => self.world.far_voxels = value,
+            DebugAction::SetToggle { id: FIRS, value } => self.world.firs = value,
             DebugAction::SetNumber { id: TREE_DENSITY, value } => self.world.tree_density = (value / 100.0).clamp(0.05, 1.0) as f32,
-            DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 32.0) as u32,
+            DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 12.0) as u32,
             DebugAction::SetNumber { id: TREE_RADIUS, value } => self.world.tree_radius = value.clamp(200.0, 3000.0) as f32,
             DebugAction::SetNumber { id: CELL_PX, value } => self.terrain_settings.cell_pixels = value.clamp(4.0, 96.0) as f32,
             DebugAction::SetNumber { id: ERROR_PX, value } => self.terrain_settings.error_pixels = value.clamp(0.25, 12.0) as f32,
@@ -325,7 +327,7 @@ impl Game for Fly {
         let g = terrain_field::eval(self.pos.x, self.pos.z, 0.0, self.seed, &self.style());
         Some(serde_json::json!({
             "style": STYLES[self.style], "seed": self.seed, "pos": self.pos.to_array(),
-            "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "recipe_trees": self.world.recipe_trees, "far_voxels": self.world.far_voxels,
+            "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "recipe_trees": self.world.recipe_trees, "firs": self.world.firs,
             "yaw_deg": self.yaw.to_degrees(), "pitch_deg": self.pitch.to_degrees(),
             "above_ground_m": self.pos.y - g.pos.y, "speed": self.speed, "ground_hug": self.hug, "fps": self.fps,
             "terrain": {"patches": self.stats.patches, "overflow": self.stats.overflow, "finest_level": self.stats.finest_level, "lod_scale": self.stats.lod_scale},
@@ -362,7 +364,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 8, far_voxels: false } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 8, firs: false } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -381,31 +383,12 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     scene.add_texture(&root.join("mossy_rock_albedo.jpg"))?;
     let material = scene.add_material(Material { tint: [1.0; 3], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
     if world.trees {
-        // Materials 1..=4, as tree_meshes() expects.
-        let m = |layer, flags| Material { tint: [1.0; 3], layer, roughness: 0.9, flags, scale: 1.0, metal: 0.0 };
-        for wood in ["trunk_a_albedo.jpg", "trunk_b_albedo.jpg", "bark_albedo.jpg"] {
-            let layer = scene.add_texture(&assets.join("trees").join(wood))?;
-            scene.add_material(m(layer, 0));
-        }
-        let crown = scene.add_texture(&assets.join("trees/authored_pine_albedo.png"))?;
-        scene.add_material(Material { tint: [0.62, 0.66, 0.55], ..m(crown, ALPHA_TEST | TWO_SIDED) });
-        let meshes: Vec<usize> = tree_meshes()?.iter().map(|cm| scene.add_mesh(cm)).collect();
         let mut trees = forest(seed, &style, centre, world);
         trees.sort_by(|a, b| (a.0 - centre).length_squared().total_cmp(&(b.0 - centre).length_squared()));
         let near = (world.recipe_trees as usize).min(trees.len());
-        for &(pos, yaw, scale, variant) in &trees[near..] {
-            scene.add_classified_instance(meshes[variant], Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(yaw), pos), GeometryCategory::Trees);
-            scene.mark_foliage();
-        }
-        recipe_spruces(&mut scene, &trees[..near])?;
-        if world.far_voxels && near < trees.len() {
-            let parts = fir_surfaces()?.iter().map(|surfaces| surfaces.iter().map(|(name, vertices, indices)|
-                Part { vertices, indices, material: fir_material(name) }).collect()).collect::<Vec<Vec<Part>>>();
-            let meshes: Vec<(usize, Vec<Part>)> = meshes.iter().copied().zip(parts).collect();
-            let report = render::far_trees::attach(&mut scene, &meshes, render::far_trees::FarTrees::default())?;
-            eprintln!("far trees: {} firs as voxels past {} m, {} cells, {:.1} MB, baked in {:.0} ms",
-                report.trees, scene.voxel_far_distance_m, report.cells, report.bytes as f64 / 1e6, report.bake_ms);
-        }
+        if world.firs { firs(&mut scene, &assets, &trees[near..])?; }
+        let far = if world.firs { &[][..] } else { &trees[near..] };
+        recipe_spruces(&mut scene, &trees[..near], far)?;
     }
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     let mut light = Lighting::default();
@@ -442,13 +425,34 @@ const SPRUCE: WoodyRecipe = WoodyRecipe {
     protected_trunk_height: 5.5,
 };
 
-/// Recipe spruces at these spots: three seeds, cooked once and shared.
-/// `--recipe-source` keeps them source-only (no voxel levels), for A/B runs.
-fn recipe_spruces(scene: &mut Scene, spots: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
-    if spots.is_empty() { return Ok(()); }
+/// Sideways' fir cards at these spots, as before the recipe spruces took
+/// over. Materials 1..=4, as tree_meshes() expects: call before any other.
+fn firs(scene: &mut Scene, assets: &std::path::Path, spots: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
+    let m = |layer, flags| Material { tint: [1.0; 3], layer, roughness: 0.9, flags, scale: 1.0, metal: 0.0 };
+    for wood in ["trunk_a_albedo.jpg", "trunk_b_albedo.jpg", "bark_albedo.jpg"] {
+        let layer = scene.add_texture(&assets.join("trees").join(wood))?;
+        scene.add_material(m(layer, 0));
+    }
+    let crown = scene.add_texture(&assets.join("trees/authored_pine_albedo.png"))?;
+    scene.add_material(Material { tint: [0.62, 0.66, 0.55], ..m(crown, ALPHA_TEST | TWO_SIDED) });
+    let meshes: Vec<usize> = tree_meshes()?.iter().map(|cm| scene.add_mesh(cm)).collect();
+    for &(pos, yaw, scale, variant) in spots {
+        scene.add_classified_instance(meshes[variant], Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(yaw), pos), GeometryCategory::Trees);
+        scene.mark_foliage();
+    }
+    Ok(())
+}
+
+/// Recipe spruces: three seeds, cooked once and shared. `near` spots get the
+/// full assembly, `far` ones the same plant as one voxel proxy.
+/// `--recipe-source` keeps the near ones source-only (no voxels), for A/B runs.
+fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
+    if near.is_empty() && far.is_empty() { return Ok(()); }
     let aggregate = !std::env::args().any(|a| a == "--recipe-source");
+    if !aggregate && !far.is_empty() { return Err("--recipe-source has no proxies; add --firs".into()); }
     static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
     let cooked = COOKED.get_or_init(|| (0..3u64).map(|seed| {
+        let started = std::time::Instant::now();
         let assembly = plant_recipe::build(&SPRUCE, BuildOptions::new(seed + 1), plant_recipe::recipe_limits())?;
         if !aggregate { return CookedPlant::cook_source(&assembly); }
         // Aggregate cook: each branch group also gets voxel levels, and the
@@ -456,19 +460,30 @@ fn recipe_spruces(scene: &mut Scene, spots: &[(Vec3, f32, Vec3, usize)]) -> Resu
         let config = render::vegetation_aggregate::Config { max_placements: 8192, max_source_triangles: 40_000_000,
             max_samples: 150_000_000, triangle_refinements: true, max_reference_voxels: 262_144, max_diagnostic_steps: 80_000_000,
             ..Default::default() };
-        CookedPlant::cook_aggregate(&assembly, config)
+        let mut plant = CookedPlant::cook_aggregate(&assembly, config)?;
+        let cooked_ms = started.elapsed().as_secs_f64() * 1000.0;
+        // The whole spruce as one voxel pyramid: 10 cm cells, then 20 cm .. 3.2 m.
+        plant.cook_proxy(&assembly, render::vegetation_aggregate::Config { reference_cell_size: 0.1,
+            max_reference_voxels: 1 << 21, max_build_bytes: 1 << 30, ..config }, 6)?;
+        let proxy = plant.proxy().unwrap();
+        eprintln!("spruce {seed}: cooked in {cooked_ms:.0} ms, proxy in {:.0} ms ({} cells at {} m, {} levels)",
+            started.elapsed().as_secs_f64() * 1000.0 - cooked_ms, proxy.levels[0].voxels.len(), proxy.levels[0].cell_size, proxy.levels.len());
+        Ok(plant)
     }).collect()).as_ref().map_err(Clone::clone)?;
     let branches = cooked.iter().map(|c| c.stats().branches).max().unwrap_or(64);
-    let mut limits = AttachLimits { max_poses: branches.max(64) * spots.len().max(4), max_primitive_instances: render::part_wind::MAX_ATTACHMENTS, ..Default::default() };
-    limits.pack.max_instances = limits.max_poses;
+    let mut limits = AttachLimits { max_poses: branches.max(64) * near.len().max(4), max_primitive_instances: render::part_wind::MAX_ATTACHMENTS, ..Default::default() };
+    limits.pack.max_instances = limits.max_poses.min(render::foliage_volume_data::MAX_INSTANCES);
     let mut vegetation = SceneVegetation::new(scene, limits)?;
-    for (i, &(pos, yaw, scale, variant)) in spots.iter().enumerate() {
-        // The firs are ~15 m; the recipe is 16 m, scaled like them.
-        let root = glam::Mat4::from_scale_rotation_translation(Vec3::splat(scale.y), Quat::from_rotation_y(yaw), pos);
-        vegetation.append(&cooked[variant], PlantInstance { id: i as u64 + 1, generation: 0, root, category: GeometryCategory::Trees })?;
-    }
+    // The firs are ~15 m; the recipe is 16 m, scaled like them.
+    let instance = |i: usize, &(pos, yaw, scale, _): &(Vec3, f32, Vec3, usize)| PlantInstance { id: i as u64 + 1, generation: 0,
+        root: glam::Mat4::from_scale_rotation_translation(Vec3::splat(scale.y), Quat::from_rotation_y(yaw), pos), category: GeometryCategory::Trees };
+    for (i, spot) in near.iter().enumerate() { vegetation.append(&cooked[spot.3], instance(i, spot))?; }
+    for (i, spot) in far.iter().enumerate() { vegetation.append_proxy(&cooked[spot.3], instance(near.len() + i, spot))?; }
     if !aggregate { vegetation.finish_source()?; return Ok(()); }
-    vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false, ..Default::default() })?;
+    let proxy_pixels = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--proxy-px")
+        .and_then(|w| w[1].parse().ok()).unwrap_or(render::aggregate_lod::Policy::default().proxy_pixels);
+    vegetation.finish_aggregate(render::aggregate_lod::Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false,
+        proxy_pixels, ..Default::default() })?;
     Ok(())
 }
 
@@ -560,11 +575,12 @@ fn meadow(seed: u32, style: &Style, centre: Vec3) -> Result<MeadowField, String>
 }
 
 fn main() -> Result<(), String> {
-    // Distant trees cast shadows from cached foliage sun pages; without them
-    // tree shadows popped in at the edge of the near shadow map. Headless
+    // Distant fir cards cast shadows from cached foliage sun pages; without
+    // them tree shadows popped in at the edge of the near shadow map. Headless
     // 1440p: the same GPU time, and unlike KERN_FAR_SUN_SHADOW no striping
-    // on the terrain. An explicit KERN_PAGED_FOLIAGE_SUN=0 still wins.
-    if std::env::var_os("KERN_PAGED_FOLIAGE_SUN").is_none() {
+    // on the terrain. An explicit KERN_PAGED_FOLIAGE_SUN=0 still wins. Voxel
+    // proxies cast into the sun maps themselves.
+    if std::env::var_os("KERN_PAGED_FOLIAGE_SUN").is_none() && std::env::args().any(|a| a == "--firs") {
         // Single-threaded here: nothing has started yet.
         unsafe { std::env::set_var("KERN_PAGED_FOLIAGE_SUN", "1"); }
     }
@@ -573,7 +589,7 @@ fn main() -> Result<(), String> {
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine")).transpose()?.unwrap_or(0);
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
-        far_voxels: args.iter().any(|a| a == "--far-voxels"),
+        firs: args.iter().any(|a| a == "--firs"),
         recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(World::default().recipe_trees), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.

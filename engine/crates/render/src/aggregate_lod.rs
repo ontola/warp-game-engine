@@ -16,11 +16,14 @@ pub struct Policy {
     /// comparison fixtures need. Off, they use the renderer's ordinary
     /// screen-error cluster LOD and traversal, as games want.
     pub measured_source_cuts: bool,
+    /// Whole-plant proxies (SceneVegetation::append_proxy) use the
+    /// coarsest level whose cell stays under this many pixels.
+    pub proxy_pixels: f32,
 }
 impl Default for Policy {
     fn default() -> Self {
         Self { max_error_pixels: 1.0, max_coverage_error: 0.08,
-            max_color_error: 0.08, allow_sampled_optics: false, measured_source_cuts: true }
+            max_color_error: 0.08, allow_sampled_optics: false, measured_source_cuts: true, proxy_pixels: 4.0 }
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -100,7 +103,8 @@ pub(crate) fn validate_scene(scene:&crate::Scene)->Result<(),String> {
     let Some(selection)=&scene.aggregate_lod else {return Ok(());};
     validate(selection)?;
     let forest=scene.voxel_forest.as_ref().ok_or("aggregate selection requires its voxel provider")?;
-    if selection.groups.len()!=forest.instances.len() {
+    // Whole-plant proxies follow the groups and have no selection.
+    if selection.groups.len()+scene.voxel_proxies as usize!=forest.instances.len() {
         return Err("aggregate selector must cover every volume exactly once".into());
     }
     for group in &selection.groups {

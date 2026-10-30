@@ -401,6 +401,12 @@ pub struct Scene {
     /// mesh, and the shared sun map takes voxels for all of them. Zero
     /// keeps per-group selection.
     pub voxel_far_distance_m: f32,
+    /// The last this many voxel_forest trees are whole-plant proxies
+    /// (vegetation_asset::SceneVegetation::append_proxy): no source, no
+    /// selection, drawn and casting sun at any distance.
+    pub voxel_proxies: u32,
+    /// A proxy uses the coarsest level whose cell stays under this many pixels.
+    pub voxel_proxy_pixels: f32,
     /// Experimental GPU worklist: integrate only tiles with volume candidates.
     /// Defaults to the full-screen reference until image/timing validation.
     pub voxel_active_tiles: bool,

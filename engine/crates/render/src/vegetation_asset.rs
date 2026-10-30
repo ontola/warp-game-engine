@@ -14,7 +14,7 @@ use crate::{
     foliage_volume_data::{self, ALL_MATERIALS, PackLimits, VolumeBinding},
     foliage_voxel::{BakeConfig, VoxelAsset},
     part_wind::{MAX_ASSEMBLY_PARTS, MAX_PARTS, PartAttachment, PartWind},
-    scene::{GeometryCategory, GpuInstance, Material, PART_WIND, Scene},
+    scene::{FOLIAGE, GeometryCategory, GpuInstance, Material, PART_WIND, Scene},
 };
 use glam::{Affine3A, Mat4, Vec3, Vec4};
 use std::{
@@ -62,6 +62,8 @@ pub struct CookedPlant {
     placements: Vec<Placement>,
     branches: Vec<Branch>,
     stats: CookStats,
+    /// The whole plant as one voxel pyramid in the root branch frame.
+    proxy: Option<VoxelAsset>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -239,6 +241,7 @@ impl CookedPlant {
             placements,
             branches,
             stats,
+            proxy: None,
         })
     }
 
@@ -281,6 +284,24 @@ impl CookedPlant {
         plant.branches[0].volume = Some(root.volume);
         plant.stats.volume_assets = plant.branches.iter().filter(|b|b.volume.is_some()).count();
         Ok(plant)
+    }
+
+    /// Also cook the whole plant as one voxel pyramid: finest cell
+    /// `config.reference_cell_size`, then `levels - 1` doublings. A distant
+    /// plant then costs one instance (SceneVegetation::append_proxy).
+    pub fn cook_proxy(&mut self, source: &Assembly, config: crate::vegetation_aggregate::Config, levels: u32) -> Result<(), String> {
+        let cooker = crate::vegetation_aggregate::Cooker::new(source, config)?;
+        let asset = crate::vegetation_aggregate::cook_whole(&cooker, levels).map_err(|e| format!("plant proxy: {e}"))?;
+        let root = self.branches.first().ok_or("plant proxy needs a root branch")?;
+        if !root.assembly_rest.abs_diff_eq(source.branch_transforms()?[0], 1e-5) {
+            return Err("plant proxy frame differs from the root branch".into());
+        }
+        self.proxy = Some(asset);
+        Ok(())
+    }
+
+    pub fn proxy(&self) -> Option<&VoxelAsset> {
+        self.proxy.as_ref()
     }
 
     pub fn stats(&self) -> CookStats {
@@ -381,6 +402,8 @@ pub struct AttachmentReport {
     /// Oracle vertex/index payload summed across placed plants, not allocated.
     pub expanded_source_bytes: usize,
     pub packed_volume_bytes: usize,
+    /// Whole plants appended as one voxel instance each.
+    pub plant_proxies: usize,
 }
 
 struct Checkpoint {
@@ -413,6 +436,8 @@ pub struct SceneVegetation<'a> {
     report: AttachmentReport,
     committed: bool,
     aggregate_groups: Vec<crate::aggregate_lod::Group>,
+    proxy_assets: Vec<VoxelAsset>,
+    proxy_bindings: Vec<VolumeBinding>,
 }
 
 fn max_axis(m: Mat4) -> f32 {
@@ -543,6 +568,8 @@ impl<'a> SceneVegetation<'a> {
             report: AttachmentReport::default(),
             committed: false,
             aggregate_groups: Vec::new(),
+            proxy_assets: Vec::new(),
+            proxy_bindings: Vec::new(),
         })
     }
 
@@ -767,13 +794,55 @@ impl<'a> SceneVegetation<'a> {
         })
     }
 
+    /// The whole plant as one voxel instance (CookedPlant::cook_proxy): no
+    /// branches, members or wind. For plants past the distance where their
+    /// full assembly is worth drawing. finish_aggregate packs them after the
+    /// aggregate plants; they draw and cast sun at any distance.
+    pub fn append_proxy(&mut self, plant: &CookedPlant, instance: PlantInstance) -> Result<usize, String> {
+        validate_root(instance.root)?;
+        if self.ids.contains(&instance.id) {
+            return Err("duplicate stable plant ID in scene vegetation".into());
+        }
+        let asset = plant.proxy.as_ref().ok_or("plant proxy missing: call CookedPlant::cook_proxy")?;
+        let index = match self.proxy_assets.iter().position(|a| a == asset) {
+            Some(index) => index,
+            None => {
+                if self.proxy_assets.len() >= self.limits.pack.max_assets {
+                    return Err("shared vegetation proxy asset capacity exceeded".into());
+                }
+                self.proxy_assets.push(asset.clone());
+                self.proxy_assets.len() - 1
+            }
+        };
+        let rest = instance.root * plant.branches[0].assembly_rest;
+        let scale = max_axis(instance.root);
+        let (lo, hi) = support(asset);
+        let centre = rest.transform_point3((lo + hi) * 0.5);
+        let owner = u32::try_from(self.scene.instances.len()).map_err(|_| "shared vegetation instance index overflow")?;
+        let mut proxy = GpuInstance {
+            rows: [rest.row(0).to_array(), rest.row(1).to_array(), rest.row(2).to_array()],
+            sphere: centre.extend((hi - lo).length() * 0.5 * scale).to_array(),
+            first_cluster: 0,
+            cluster_count: 0,
+            scale,
+            // The canopy volume (GI, sky light) counts it like any tree.
+            flags: FOLIAGE,
+        };
+        proxy.set_category(instance.category);
+        self.scene.instances.push(proxy);
+        self.proxy_bindings.push(VolumeBinding { owner, asset: index as u32, crown_material: ALL_MATERIALS });
+        self.ids.insert(instance.id);
+        self.report.plant_proxies += 1;
+        Ok(owner as usize)
+    }
+
     /// Commit source-only assemblies. Optically cooked assets must use finish
     /// instead; never silently discard their requested volume representations.
     pub fn finish_source(mut self) -> Result<AttachmentReport, String> {
         if self.report.plants == 0 {
             return Err("cannot finish an empty vegetation attachment".into());
         }
-        if !self.assets.is_empty() || !self.bindings.is_empty() {
+        if !self.assets.is_empty() || !self.bindings.is_empty() || !self.proxy_bindings.is_empty() {
             return Err("source-only finish requires plants cooked with cook_source".into());
         }
         crate::part_wind::validate_bindings(&self.scene.part_wind, &self.scene.part_attachments,
@@ -783,16 +852,37 @@ impl<'a> SceneVegetation<'a> {
     }
 
     pub fn finish_aggregate(mut self, policy: crate::aggregate_lod::Policy) -> Result<AttachmentReport, String> {
-        if self.aggregate_groups.is_empty() || self.aggregate_groups.len()!=self.bindings.len() {
+        if (self.aggregate_groups.is_empty() && self.proxy_bindings.is_empty()) || self.aggregate_groups.len()!=self.bindings.len() {
             return Err("aggregate finish requires exclusively aggregate-cooked plants".into());
         }
+        if !(policy.proxy_pixels.is_finite() && policy.proxy_pixels>0.0) {
+            return Err("aggregate proxy pixel error must be positive".into());
+        }
         let selection=crate::aggregate_lod::Selection { groups:self.aggregate_groups.clone(),policy };
-        crate::aggregate_lod::validate(&selection)?;
-        let mut forest=foliage_volume_data::pack(&self.assets,&self.bindings,&self.scene.instances,self.limits.pack)?;
-        foliage_volume_data::pack_bricks(&mut forest,128)?;
+        let mut forest=if self.bindings.is_empty() {foliage_volume_data::GpuForest::default()} else {
+            crate::aggregate_lod::validate(&selection)?;
+            let mut forest=foliage_volume_data::pack(&self.assets,&self.bindings,&self.scene.instances,self.limits.pack)?;
+            foliage_volume_data::pack_bricks(&mut forest,128)?;
+            forest
+        };
+        // Whole-plant proxies follow, densely indexed: they are larger than
+        // a 128-brick branch cluster and only the rasterized path draws them.
+        if !self.proxy_bindings.is_empty() {
+            let cells=self.proxy_assets.iter().flat_map(|a|&a.levels).map(|l|l.voxels.len()).sum();
+            let packed=foliage_volume_data::pack_assets(&self.proxy_assets,foliage_volume_data::AssetPackLimits {
+                max_assets:self.proxy_assets.len(),levels_per_asset:crate::foliage_representation::MAX_LEVELS,first_level_bounds:false,
+                max_dense_indices:1<<28,max_sparse_cells:cells})?;
+            let mut proxies=packed.forest.clone();
+            for binding in &self.proxy_bindings {
+                proxies.instances.push(packed.instance(*binding,&self.scene.instances[binding.owner as usize])?);
+            }
+            forest.append(proxies)?;
+        }
         self.report.packed_volume_bytes=forest.byte_len();
+        self.scene.voxel_proxies=self.proxy_bindings.len() as u32;
+        self.scene.voxel_proxy_pixels=policy.proxy_pixels;
         self.scene.voxel_forest=Some(forest);
-        self.scene.aggregate_lod=Some(selection);
+        self.scene.aggregate_lod=(!self.aggregate_groups.is_empty()).then_some(selection);
         crate::aggregate_lod::validate_scene(self.scene)?;
         self.scene.part_wind_lod=true;
         self.scene.voxel_lod_pixels=policy.max_error_pixels;
@@ -846,6 +936,7 @@ impl Drop for SceneVegetation<'_> {
         self.scene.instances.truncate(c.instances);
         self.scene.materials.truncate(c.materials);
         self.scene.voxel_forest = None;
+        self.scene.voxel_proxies = 0;
         self.scene.part_wind.clear();
         self.scene.part_attachments.clear();
         self.scene.foliage_representations.clear();
@@ -1505,6 +1596,50 @@ mod tests {
         assert_eq!(forest.instances.len(),6);assert_eq!(report.packed_volume_bytes,forest.byte_len());
         crate::foliage_representation::validate_bindings(&scene).unwrap();
         crate::part_wind::validate_bindings(&scene.part_wind,&scene.part_attachments,&scene.instances,Some(forest)).unwrap();
+    }
+
+    #[test]
+    fn whole_plant_proxies_trail_the_aggregate_forest_with_one_instance_each() {
+        let source=aggregate_fixture();
+        let mut cooked=CookedPlant::cook_aggregate(&source,aggregate_config()).unwrap();
+        let mut scene=Scene::default();
+        assert!(SceneVegetation::new(&mut scene,AttachLimits::default()).unwrap()
+            .append_proxy(&cooked,instance(1,Mat4::IDENTITY)).is_err(),"no proxy cooked yet");
+        cooked.cook_proxy(&source,aggregate_config(),3).unwrap();
+        let proxy=cooked.proxy().unwrap().clone();
+        // Level zero is the reference grid; every level keeps all optical mass.
+        assert_eq!(proxy.levels[0].cell_size,aggregate_config().reference_cell_size);
+        let mass=|l:&crate::foliage_voxel::VoxelLevel|l.voxels.iter().map(|v|f64::from(v.surface_area)).sum::<f64>();
+        for level in &proxy.levels[1..] {assert!((mass(level)/mass(&proxy.levels[0])-1.0).abs()<1e-4);}
+        let mut builder=SceneVegetation::new(&mut scene,AttachLimits::default()).unwrap();
+        builder.append(&cooked,instance(1,Mat4::IDENTITY)).unwrap();
+        let instances=builder.scene.instances.len();
+        let far=Mat4::from_scale_rotation_translation(Vec3::splat(2.0),Quat::from_rotation_y(0.4),Vec3::new(40.0,0.0,3.0));
+        let owner=builder.append_proxy(&cooked,instance(2,far)).unwrap();
+        builder.append_proxy(&cooked,instance(3,Mat4::from_translation(Vec3::Z*60.0))).unwrap();
+        assert!(builder.append_proxy(&cooked,instance(3,Mat4::IDENTITY)).is_err(),"duplicate id");
+        assert_eq!((owner,builder.scene.instances.len()),(instances,instances+2));
+        let report=builder.finish_aggregate(crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
+        assert_eq!((report.plants,report.plant_proxies),(1,2));
+        let forest=scene.voxel_forest.as_ref().unwrap();
+        assert_eq!(scene.voxel_proxies,2);assert_eq!(scene.voxel_proxy_pixels,4.0);
+        assert_eq!(scene.aggregate_lod.as_ref().unwrap().groups.len()+2,forest.instances.len());
+        let tree=forest.instances[forest.instances.len()-2];
+        let source_instance=scene.instances[owner];
+        assert_eq!((tree.meta[0],tree.meta[2]),(owner as u32,proxy.levels.len() as u32));
+        assert_eq!((source_instance.cluster_count,source_instance.flags&(FOLIAGE|PART_WIND)),(0,FOLIAGE));
+        // World bounds of the proxy contain its rest-pose source.
+        let poses=source.branch_transforms().unwrap();
+        for p in &source.instances {for v in &source.parts[p.part as usize].vertices {
+            let w=far.transform_point3((poses[p.branch as usize]*p.rest).transform_point3(Vec3::from(v.pos)));
+            assert!(w.cmpge(Vec3::from_slice(&tree.bounds_min)-1e-4).all() && w.cmple(Vec3::from_slice(&tree.bounds_max)+1e-4).all());
+        }}
+        // Both proxies share one dense asset after the bricked branch groups.
+        let [a,b]=[forest.instances.len()-2,forest.instances.len()-1].map(|i|forest.instances[i].meta[1]);
+        assert_eq!(a,b);
+        assert_eq!(forest.levels[a as usize].dims_offset[3]&foliage_volume_data::BRICK_INDIRECTION,0);
+        crate::aggregate_lod::validate_scene(&scene).unwrap();
+        crate::foliage_representation::validate_bindings(&scene).unwrap();
     }
 
     #[test]
