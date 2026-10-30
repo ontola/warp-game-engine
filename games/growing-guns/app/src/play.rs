@@ -936,7 +936,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -1017,6 +1017,14 @@ impl app::Game for Gg {
                 Ok(format!("sky {}", self.sky.choice.name()))
             }
             "light" => self.light_command(&w[1..]),
+            "knobs" => Ok(crate::knobs::list()),
+            "knob" => {
+                let (name, value) = cmd.trim_start().strip_prefix("knob").unwrap_or("").trim().split_once(' ').ok_or("knob NAME VALUE")?;
+                let rel = crate::knobs::set(name.trim(), value.trim())?;
+                if let Some(s) = &self.scripts { for line in s.poll(&mut self.world) { eprintln!("mods: {line}"); } }
+                if let Some(p) = self.party.as_mut() { p.knob_changed(name.trim(), value.trim()); }
+                Ok(format!("{} = {} in mods/{rel}", name.trim(), value.trim()))
+            }
             "round" => { self.world.next_round(); self.new_arena(); Ok(format!("round {}", self.world.round)) }
             "cage" => { self.world.release_cage(); Ok("cage open".into()) }
             "rematch" => { self.world.restart_match(); self.new_arena(); Ok("rematch".into()) }
@@ -1213,7 +1221,10 @@ pub fn run(args: &Args) -> Result<(), String> {
     game.vis.stadium.bake_in_background = true;
     game.party = crate::party::Party::connect();
     if game.party.is_some() { println!("gamenight: waiting for the party host"); }
-    game.live = crate::live::start(args)?.map(Box::new);
+    game.live = crate::live::start(args, game.party.is_some())?.map(Box::new);
+    if let (Some(party), Some(file)) = (game.party.as_mut(), game.live.as_ref().and_then(|l| l.token_file())) {
+        party.offer_live("Growing Guns can be changed live while you play: damage, fire rate, run and bullet speed, explosions, health, cards for a player, bots, rounds, rules and sounds. Send any request to change the game as it is said.".into(), file);
+    }
     game.no_kbm = args.flag("--no-kbm");
     game.lan = lan;
     // Settings persist like Godot's user://settings.cfg.

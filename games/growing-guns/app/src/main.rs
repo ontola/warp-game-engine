@@ -21,6 +21,7 @@ mod party;
 mod sounds;
 mod crowd_sound;
 mod gun;
+mod knobs;
 mod scripts;
 mod sky;
 mod stadium;

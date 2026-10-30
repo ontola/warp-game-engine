@@ -26,9 +26,20 @@ pub struct GgLive {
     synth: Synth,
 }
 
-/// `--live [PORT]` and friends (see live::Config::from_args).
-pub fn start(args: &Args) -> Result<Option<GgLive>, String> {
-    let Some(cfg) = live::Config::from_args("growing-guns", &args.list)? else { return Ok(None) };
+/// `--live [PORT]` and friends (see live::Config::from_args). Under
+/// GameNight (`party`) it is on without them, on a free local port, so the
+/// session assistant in the app can change the game (`WARP_LIVE=0`: off).
+pub fn start(args: &Args, party: bool) -> Result<Option<GgLive>, String> {
+    let cfg = match live::Config::from_args("growing-guns", &args.list)? {
+        Some(cfg) => cfg,
+        None if party && std::env::var("WARP_LIVE").as_deref() != Ok("0") => {
+            let mut cfg = live::Config::new("growing-guns");
+            cfg.port = 0;
+            cfg.announce = false;
+            cfg
+        }
+        None => return Ok(None),
+    };
     let mut roots = Vec::new();
     if let Some(d) = crate::scripts::find_dir() {
         roots.push(Root::new("mods", d, Reload::Game, "Luau cards and rules (read API.md and types.d.luau first); a write reloads the module and reports errors").extensions(&["luau", "md"]));
@@ -46,6 +57,7 @@ pub fn start(args: &Args) -> Result<Option<GgLive>, String> {
         version: env!("CARGO_PKG_VERSION").into(),
         about: "A last-man-standing arena shooter on Warp: up to 8 players (humans and bots) in a procedural castle arena; the loser of each round picks a card that changes their gun (52 cards in mods/base/cards.luau); first to ten round wins takes the match. 60 Hz deterministic sim, host-authoritative online play.".into(),
         guide: format!("- Look first: `match_state`, `screenshot`, `list_cards`, `logs`.\n\
+            - The feel of the match (damage, fire rate, run speed, bullet speed, explosions, health): `knobs` lists them, `set_knob` changes one for everyone at once and saves it in its mod (mods/base/knobs.luau). Start there for \"more damage\", \"faster\" and the like.\n\
             - Gameplay (host or offline only, applied between ticks, streamed to online clients): `give_card`, `set_weapon` (Weapon fields as in Godot's weapon.gd; weapons are rebuilt from cards each round, so a field change lasts until the round ends; make it permanent with a card), `spawn_bots`, `next_round`, `restart_match`, `command` (the debug console: teleport, health, modifier, boom, bots pause...).\n\
             - Rules and cards are Luau in `mods/`: `load_mod` (or `write_file` mods/NAME.luau) adds or replaces a module and returns its load errors; `run_luau` runs a line against the match as `g` (g:give(1, 'explosive'), g:set_stat(1, 'damage_mult', 3)).\n\
             - Sound: every game sound is a synth patch in `sounds/` (one file per sound, named as the game triggers it: shot, explosion, reload...). `play_sound` lists and plays them, `render_sound` measures one offline (levels and a text spectrogram), `set_param` changes a parameter's default for the game's own triggers too; edit a patch with `write_file` and it is live at once. {}\n\
@@ -67,6 +79,9 @@ fn tools() -> Vec<ToolSpec> {
     vec![
         ToolSpec::new("match_state", "Players (bot, alive, health, score, cards, special, changed weapon fields), round, phase, modifier. With player: that player's whole Weapon; with fields: the names and kinds of every Weapon field.",
             obj(json!({ "player": player, "fields": { "type": "boolean" } }), &[])).read_only(),
+        ToolSpec::new("knobs", "The match's tweakable values (`-- @knobs` blocks in the mods: damage, fire_rate, move_speed, bullet_speed, explosions, health, as multipliers of what the cards give) with their values and ranges.", obj(json!({}), &[])).read_only(),
+        ToolSpec::new("set_knob", "Set one knob for every player at once, mid-round too; saved in its mod file (ready to commit) and hot-reloaded. The GameNight app's settings show it.",
+            obj(json!({ "name": { "type": "string" }, "value": { "type": "string", "description": "one Luau value, such as 1.5" } }), &["name", "value"])),
         ToolSpec::new("list_cards", "Every card on offer: id, name, description, rarity.", obj(json!({}), &[])).read_only(),
         ToolSpec::new("give_card", "Give a player a card now (its stats, pick hook and the gun's growth), as if picked.",
             obj(json!({ "player": player, "card": { "type": "string", "description": "card id, see list_cards" } }), &["player", "card"])),
@@ -81,6 +96,11 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new("command", "A debug console line (`help` lists them): teleport P X Y Z, health P N, ammo P N, special P NAME, modifier ID, bots pause|resume, boom X Y Z R, arena SEED, cage, extend...",
             obj(json!({ "line": { "type": "string" } }), &["line"])),
     ]
+}
+
+impl GgLive {
+    /// Where the bridge (and the GameNight host) find the port and token.
+    pub fn token_file(&self) -> Option<PathBuf> { self.live.token_file().map(PathBuf::from) }
 }
 
 /// The game thread's part, once per tick.
@@ -113,7 +133,7 @@ pub fn serve(args: &Args) -> Result<(), String> {
     // Every seat is a bot; the single view follows player 0 (for screenshots).
     let mut game = Gg::new(world, crate::session::Session::Local, vec![0]);
     game.world.release_cage();
-    game.live = start(args)?.map(Box::new);
+    game.live = start(args, false)?.map(Box::new);
     // The game's sound runs as when playing, into a mixer drained in real
     // time and thrown away: triggers, patches and play_sound all work, silently.
     let (mut mix, tx, _crowd) = crate::sounds::offline(None);
@@ -278,6 +298,15 @@ impl LiveGame for Ctx<'_> {
             "next_round" => { self.authority()?; self.command("round") }
             "restart_match" => { self.authority()?; self.command("rematch") }
             "load_mod" => self.load_mod(args),
+            "knobs" => Ok(vec![Content::Text(crate::knobs::list())]),
+            "set_knob" => {
+                self.authority()?;
+                let name = args.get("name").and_then(Value::as_str).ok_or("set_knob needs a name (see knobs)")?;
+                let value = args.get("value").map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)).ok_or("set_knob needs a value")?;
+                let rel = crate::knobs::set(name, &value)?;
+                if let Some(p) = self.gg.party.as_mut() { p.knob_changed(name, &value); }
+                Ok(vec![Content::Text(format!("{name} = {value} in mods/{rel}\n{}", self.reload_mod(&rel)))])
+            }
             "command" => {
                 let line = args.get("line").and_then(Value::as_str).ok_or("command needs a line (try help)")?;
                 if line.trim() != "help" && line.trim() != "cards" && line.trim() != "mods" { self.authority()?; }
