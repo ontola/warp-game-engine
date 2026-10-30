@@ -382,6 +382,8 @@ fn pack_limited(parts:&[PartWind],attachments:&[PartAttachment],instances:&[GpuI
 /// prepares CPU descriptors; it creates no GPU resources or animated poses.
 pub(crate) fn validate_bindings(parts:&[PartWind],attachments:&[PartAttachment],instances:&[GpuInstance],
     forest:Option<&GpuForest>)->Result<(),String> {
+    // No rig at all (an all-proxy forest): nothing is uploaded (frame.rs).
+    if parts.is_empty() && attachments.is_empty() {return Ok(());}
     pack(parts,attachments,instances,forest).map(|_| ())
 }
 
@@ -597,6 +599,11 @@ pub const SHADER:&str=include_str!("shaders/part_wind.wgsl");
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// An all-proxy forest has no rig at all; frame.rs then uploads none.
+    #[test]
+    fn no_rig_is_valid() {
+        assert!(validate_bindings(&[], &[], &[], None).is_ok());
+    }
     #[test]
     fn rigid_part_compute_shader_validates() {
         let module=naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e|panic!("{}",e.emit_to_string(SHADER)));

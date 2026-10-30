@@ -49,6 +49,15 @@ const NORMAL_SIZE: u32 = 1024;
 const SHADOW_SIZE: u32 = 4096;
 const NEAR_SHADOW_SIZE: u32 = 2048;
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
+/// The near shadow's cluster LOD error, in multiples of the camera's
+/// (KERN_NEAR_SHADOW_LOD, for A/B runs). Its 1.6 cm texels pick full detail:
+/// a full spruce assembly casts for ~2.5 ms (low2, 8 trees: 18 ms; 2x: 9.5,
+/// 4x: 1.5). But coarser spray cards lose coverage, and the crowns' shadows
+/// on the ground thin out visibly already at 2x, so 1 until their LOD keeps it.
+fn near_shadow_lod() -> f32 {
+    static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SCALE.get_or_init(|| std::env::var("KERN_NEAR_SHADOW_LOD").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0))
+}
 const TIMESTAMP_CAPACITY: u32 = 512; // includes per-view aggregate depth/material/illumination
 
 /// Keep the grass rejection in culling identical to its opaque raster path.
@@ -3547,7 +3556,7 @@ impl Renderer {
                 let near_vp = sun_projection(near_centre, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE);
                 let mut near_uniform=view_uniform(
                     near_vp, sun_eye(near_centre), NEAR_SHADOW_SIZE as f32 / (2.0 * NEAR_SHADOW_EXTENT),
-                    [light.lod_pixels, 1.0, 1.0, self.shadow_capacity as f32], [NEAR_SHADOW_SIZE as f32; 4], light.alpha_cut);
+                    [light.lod_pixels * near_shadow_lod(), 1.0, 1.0, self.shadow_capacity as f32], [NEAR_SHADOW_SIZE as f32; 4], light.alpha_cut);
                 configure_sun_terrain_error(&mut near_uniform,self.sun_terrain_error);
                 near_uniform.fog_cull[3]=if self.sun_surface_source{1.0}else{0.0};
                 if self.receiver_demand.enabled() {near_uniform.extra[2]=-((vi+2)as f32);}
