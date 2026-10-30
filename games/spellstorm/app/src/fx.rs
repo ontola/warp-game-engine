@@ -330,6 +330,8 @@ pub struct Em {
     pub spin: (f32, f32),
     /// Lit chips: drawn darker, not glowing.
     pub solid: bool,
+    /// Lit by the lights round it like the floor (blood), not a set dim.
+    pub lit: bool,
 }
 
 /// Fx.particles: soft additive dots in `c`.
@@ -355,6 +357,7 @@ pub fn particles(c: C, amount: u32, life: f32, size: f32) -> Em {
         angle: (0.0, 0.0),
         spin: (0.0, 0.0),
         solid: false,
+        lit: false,
     }
 }
 
@@ -562,6 +565,10 @@ pub struct Fx {
     /// Props broken this tick: where the blow came from and how hard, for
     /// the view to throw their chunks.
     pub prop_hits: HashMap<usize, (Vec3, f32)>,
+    /// The light round the level last frame (the view sets it): local lights
+    /// and the even light from above (ambient and moon, lux).
+    pub env_lights: Vec<LocalLight>,
+    pub env_light: Vec3,
     /// Sprites of live things, made in `update`.
     live: Vec<Sprite>,
     live_lights: Vec<LocalLight>,
@@ -610,6 +617,8 @@ impl Default for Fx {
             shake: 0.0,
             blasts,
             prop_hits: HashMap::new(),
+            env_lights: Vec::new(),
+            env_light: Vec3::ZERO,
             live: vec![],
             live_lights: vec![],
             time: 0.0,
@@ -662,9 +671,16 @@ impl Fx {
     /// `n` particles of `e` at `at`, the first `age0` seconds into life.
     /// A small spurt of blood off a hit wizard, thrown the way the blow
     /// pushed them.
+    /// Radiance of a white surface facing up at `p`, lit as the floor is:
+    /// nearly black in the dark, bright under a torch.
+    pub fn lit_at(&self, p: Vec3) -> Vec3 {
+        render::sprites::irradiance(&self.env_lights, p, Vec3::Y, self.env_light) / std::f32::consts::PI
+    }
+
     pub fn spurt(&mut self, at: Vec3, dir: Vec3) {
         let mut p = particles(rgba(0.45, 0.04, 0.03, 1.0), 9, 0.5, 0.22);
         style(&mut p, El::Water, false);
+        p.lit = true;
         p.ramp = Ramp::new(&[rgba(0.5, 0.05, 0.03, 0.95), rgba(0.3, 0.02, 0.02, 0.0)], &[0.0, 1.0]);
         p.dir = (dir.normalize_or_zero() + Vec3::Y * 0.8).normalize();
         p.spread = 35.0;
@@ -965,6 +981,7 @@ impl Fx {
             Death::Gore => {
                 let mut p = particles(rgba(0.45, 0.04, 0.03, 1.0), (16.0 * s) as u32, 0.8, 0.5);
                 style(&mut p, El::Water, false);
+                p.lit = true;
                 p.ramp = Ramp::new(&[rgba(0.5, 0.05, 0.03, 0.95), rgba(0.3, 0.02, 0.02, 0.0)], &[0.0, 1.0]);
                 p.dir = Vec3::Y;
                 p.spread = 70.0;
@@ -1276,7 +1293,8 @@ impl Fx {
                     // nearest wizard and runs into them (spells.wgsl `blood`).
                     let to = g.to;
                     let reach = 0.8 + to.length();
-                    let mut pool = flat_sprite(Vec3::new(g.pos.x, 0.03, g.pos.z), reach, Cell::Patch, Vec3::splat(LIT * 2.5)).solid();
+                    // Lit like the floor under it: black in the dark, wet red by a torch.
+                    let mut pool = flat_sprite(Vec3::new(g.pos.x, 0.03, g.pos.z), reach, Cell::Patch, self.lit_at(g.pos)).solid();
                     pool.effect = crate::effects::BLOOD;
                     let pull = (g.pull as f32).clamp(0.0, 0.999);
                     let suck = (g.slurp / spellstorm::pickups::GLOBE_SLURP).clamp(0.0, 1.0) as f32;
@@ -1581,6 +1599,10 @@ impl Fx {
             if e.glow > 0.0 {
                 sp.additive = true;
                 sp.radiance = col * e.glow;
+                sp.opacity = c[3];
+            } else if e.lit {
+                // Blood: its colour as an albedo under the light round it.
+                sp.radiance = col * self.lit_at(p.pos);
                 sp.opacity = c[3];
             } else {
                 // Unlit and see-through: smoke, drops and chips show their
