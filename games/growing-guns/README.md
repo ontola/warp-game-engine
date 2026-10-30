@@ -1,236 +1,131 @@
-# Growing Guns (vertical slice)
+# Growing Guns on Warp
 
-A slice of the Godot game Growing Guns on [Warp](../../engine/README.md):
-one procedural castle arena, the movement set (jump, double jump, wall jump,
-dash), the rifle with projectile bullets and headshots, last-man-standing
-rounds, bots, 1 to 4 local players in split screen and host-authoritative
-online play over iroh. Its main purpose is to exercise Warp as a second,
-very different game and to find where the engine is in the way; see
-[engine/docs/second-game-findings.md](../../engine/docs/second-game-findings.md).
+A port of **[Growing Guns (Godot)](https://github.com/ontola/growing-guns)**
+to [Warp](../../engine/README.md). The Godot game is the reference: a fast
+last-man-standing arena shooter where the loser of a round picks a card that
+grows their gun. Gameplay follows Godot commit `3daf27e` (`player.gd`,
+`weapon.gd`, `bullet.gd`, `blast.gd`, `grenade.gd`, `game.gd`,
+`round_modifiers.gd`), checked tick for tick in `sim/src/tests.rs`.
 
-- `sim/` is the deterministic 60 Hz gameplay: arena generator (a port of
-  `arena_generator.gd`: walled, hole, open and lava-island variants,
-  mirrored layouts),
-  collision through `kern::collide`, movement and weapon constants from
-  `player.gd` and `weapon.gd`, rounds and bots. `World` implements
-  `kern::Sim`. No rendering dependency.
-- `app/` is the game on Warp: it implements `app::Game` (window, tick,
-  input and presentation come from `engine/crates/app`), builds the scene
-  from `render::primitives` with the arena in `render::slots` (new rounds
-  need no renderer rebuild), exposes `state()` for `script`, and adds the
-  HUD, `shot`, `bench` and online sessions.
+This is the version GameNight plays on the ManCave. The status below is
+kept current: see [Keeping this README current](#keeping-this-readme-current).
+
+## Status against Godot
+
+Done: as in Godot. Close: present, with the stated difference. Not yet:
+missing.
+
+| Area | Status | Notes |
+|---|---|---|
+| Movement | Done | Jump, double jump, wall jump, dash, step-ups (0.35 m), lava burn and kill, falling off the map |
+| The gun | Done | Projectile rounds with drop, spread, bloom, recoil, ricochet, drill, homing, hitscan, poison, slow, lifesteal, explosive splash, impact mines, three hit ellipsoids |
+| Cards | Done | All 52 cards, Luau in `mods/base/cards.luau`, line for line from `card_library.gd`; rarity, pity slot, trailing-player factor |
+| Specials (RMB) | Done | Grenade, cluster, teleport, zoom, sword with backstabs, air strike, ion cannon; echo, tactical reload, refresh |
+| Rounds and match | Done | Spawn cage, kill order, card picks (the dead pick mid-round with 3+ players), first to ten wins, rematch, extend |
+| Round modifiers | Close | All twelve play; see the table below |
+| Arenas | Done | Walled, hole, open and lava island (18 %), mirrored layouts; destructible stone chunks with wear, bullet dents and debris |
+| Stadium | Done | Colosseum masonry, 8,363 animated spectators, crowd sound, four live TV screens |
+| Bots | Done | Godot's aim, reaction, strafing, jumps, dashes, pickups and specials; they keep to lava islands |
+| Characters | Close | Knight, paladin and zombie with Godot's textures and clips, GPU skinning, 11-body ragdolls, gibs. Not yet: skin-aware dismemberment, aim and strafe layers |
+| Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with smoke, sparks, chips, scorch and blood, air strike rocket and white-out, ion cannon |
+| Sky and light | Done | Godot's sky by default; procedural time of day and weather, per round or as a cycle; floodlights with shadows at night |
+| HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
+| Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen |
+| Online | Close | Host-authoritative over iroh; tested over loopback (`nettest`), not yet between two machines; clients predict only their look |
+| Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
+| Music | Done | Godot's stems, following the match |
+| GameNight | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
+| Menu backdrop | Not yet | Godot's cinematic lava fort behind the start menu |
+| Ghost mines | Not yet | Dead players planting mines |
+
+### Round modifiers
+
+| Modifier | Status | Notes |
+|---|---|---|
+| Low gravity | Done | |
+| Fog | Close | Plays, but the fog itself is not drawn yet |
+| Supply storm | Done | |
+| Sudden death | Done | The lava leak from the start |
+| Headshots only | Done | |
+| Boom boom | Done | |
+| Brrrrt | Done | |
+| Gun swap | Done | |
+| Sniper fight | Done | |
+| Air strikes | Done | |
+| Ion cannon | Done | |
+| Blackout | Done | Sun, sky, floods and lamps out; every player carries a shadowed flashlight |
+
+## Play
 
 ```sh
-cargo run -p growing-guns-app -- play                      # 1 player + 3 bots
-cargo run -p growing-guns-app -- play --give explosive     # start with a card (repeatable)
-cargo run -p growing-guns-app -- play --players 4          # split screen, pads
-cargo run -p growing-guns-app -- play --host               # prints a ticket
-cargo run -p growing-guns-app -- play --join TICKET
-cargo run -p growing-guns-app -- nettest                   # host + client over loopback
-cargo run -p growing-guns-app -- shot --out s.png --views 4 --seconds 4
-cargo run -p growing-guns-app -- bench --views 4 --size 3840x2160
-cargo run --release -p growing-guns-app -- bench --stress bullets --csv bullets.csv
-cargo run --release -p growing-guns-app -- bench --stress explosions --csv explosions.csv --shot explosions.png
-cargo run -p growing-guns-app -- sim --seconds 120 --trace players.0.health,round
+cargo run --release -p growing-guns-app -- play                   # 1 player + 3 bots
+cargo run --release -p growing-guns-app -- play --players 4       # split screen, pads
+cargo run --release -p growing-guns-app -- play --give explosive  # start with a card (repeatable)
+cargo run --release -p growing-guns-app -- play --modifier blackout --rounds 3 --island
+cargo run --release -p growing-guns-app -- play --coop --players 2
+cargo run --release -p growing-guns-app -- play --host            # prints a ticket
+cargo run --release -p growing-guns-app -- play --join TICKET
+```
+
+Keyboard and mouse: WASD, mouse, Space jump, Shift dash, left mouse fire,
+right mouse special, R reload. Pad: sticks, A/LB jump, Y/RB dash, RT fire,
+LT/B special, X reload. F12 saves a screenshot. F3 (Back + Start on a pad)
+opens the debug overlay: give cards, set specials, drop pickups, pick the
+sky, force a modifier, start the lava leak, next round, pause the bots.
+
+## Change it while it runs
+
+- **GameNight app**: the party settings (rounds to win, modifiers (how
+  often), card time, gravity, bullet drop, body shot damage, random pickup
+  rate), a "Next
+  round" modifier pick, the live knobs, and each player's stick sensitivity
+  under My settings. Declared in `app/src/party.rs`.
+- **Live knobs** (`mods/base/knobs.luau`): damage, fire rate, move speed,
+  bullet speed, explosions, health, as multipliers on what the cards give.
+  Console `knobs` / `knob NAME VALUE`, MCP `knobs` / `set_knob`, or the app.
+- **Mods**: cards and rules are Luau in [`mods/`](mods/API.md), hot-reloaded
+  within a quarter second, run inside the host's sim tick so matches still
+  replay. `growing-guns mods-api` regenerates `mods/API.md`.
+- **Live control (MCP)**: `play --live [PORT]` or, under GameNight, always on
+  a free port for the session assistant: match state, cards, weapons, bots,
+  rounds, mods, knobs, screenshots. See `app/src/live.rs`.
+- **Console** (`help`): `give`, `special`, `modifier`, `round`, `arena SEED`,
+  `arena island`, `lava`, `sky`, `light`, `lua`, `mods`, `knob` and more.
+- **Environment**: `GG_HITCH=MS` logs slow steps (12 ms by default under
+  GameNight), `GG_FLASHLIGHT`, `GG_BLACKOUT_EV`, `GG_FLOOD_SHADOWS=0`,
+  `GG_BOUNCE`, `GG_CHARACTERS=off`, `GG_MODS=DIR`, `GG_SKY`.
+
+## Test and measure
+
+```sh
+cargo test -p growing-guns -p growing-guns-app
 cargo run -p growing-guns-app -- script games/growing-guns/scripts/smoke.json --out /tmp/gg
-cargo test -p growing-guns
+cargo run -p growing-guns-app -- shot --out s.png --views 4 --seconds 4   # no window
+cargo run -p growing-guns-app -- sim --seconds 120 --trace players.0.health,round
+cargo run -p growing-guns-app -- nettest                                  # host + client over loopback
+cargo run --release -p growing-guns-app -- bench --views 4 --size 3840x2160
 ```
 
-Online hosts and clients must use protocol version 2 (`warp/growing-guns/2`).
-It adds the spawn-cage countdown to snapshots. Version 1 builds cannot join;
-update both peers. Postcard snapshots are positional, so Serde field defaults
-do not make this wire-format change compatible with older builds.
+`shot`, `script` and `bench` open no window; `KERN_ADAPTER=software` runs them
+on a CPU rasteriser. Results and their scope: [docs/measurements.md](docs/measurements.md).
 
-The dev profile is the iteration loop: a code change rebuilds in seconds and
-plays fine. `shot` and `bench` open no window (`KERN_ADAPTER=software` runs
-them on a CPU rasteriser). Controls: WASD, mouse, Space jump, Shift dash,
-left mouse fire, right mouse special, R reload; on a pad the sticks, A/LB
-jump, Y/RB dash, RT fire, LT/B special, X reload. F12 saves a screenshot.
+## Layout
 
-F3 (Back + Start on a pad) opens the debug overlay over the running match:
-give any card to any player (type to search), set specials, drop pickups,
-pick the sky (time of day, weather, per round, day cycle), force a round
-modifier such as Blackout and start it at once, start the lava leak, an
-island arena, next round, open the cage, pause the bots. Its entries run the
-debug commands (`help`); scripts open it with `debug on`
-(scripts/debug-menu.json).
+- `sim/`: the deterministic 60 Hz game (arena generator, collision, weapons,
+  rounds, bots, coop). `World` implements `kern::Sim`; no rendering.
+- `app/`: the game on Warp (`app::Game`): view, HUD, sound, music, sessions,
+  GameNight party, live control, `shot`, `script`, `bench`.
+- `mods/`: the Luau cards, rules and knobs.
+- `docs/`: [UI parity](docs/ui-parity.md), [lava parity](docs/lava-parity.md),
+  [measurements](docs/measurements.md), playtest notes.
 
-Menus and card choices accept mouse hover/click as well as keyboard and pads;
-settings sliders can be dragged. The cursor is released while the keyboard
-player is choosing a card or a menu is open, and captured again on returning
-to play. Grounded players step over obstacles up to 0.35 m when there is
-headroom. After a death in a 3+ player round and a card choice, human ghosts
-can walk, look and jump from their own view while remaining eliminated and
-unable to shoot. The airstrike marker is a thin additive white/red laser
-along the incoming rocket path, visible until impact.
+Online peers must run the same protocol version (`warp/growing-guns/2`);
+snapshots are positional postcard, so older builds cannot join.
 
-Arena blocks now use angular quarried shapes and a shared stone surface with
-normal relief, fine grain and mipmapped detail at distance. Stadium stone and
-rubble share the surface. This is a visual prototype: the fracture pattern still
-needs less regularity. See [stone surfaces](../../engine/docs/stone-surfaces.md)
-for the engine API, reproducible comparisons and remaining work.
+## Keeping this README current
 
-The colosseum's inner facade and stepped seating now use shared masonry panels
-with real stone courses and clustered geometry LOD. Collision and instance
-counts are unchanged. `GG_STADIUM_BRICKS=0` restores the flat sections for A/B
-inspection. See [stadium masonry](../../engine/docs/stadium-masonry.md) for
-captures, geometry budgets and the measured four-view cost.
-
-Spawn cages descend and open their trapdoors at the simulation's existing
-release time, then winch away. Four stadium screens share a live feed of player
-0 before HUD, capped at 30 Hz without another scene render. Eliminated humans
-who cross lava recover onto surviving dry ground or stadium steps. The
-[28 October feedback checklist](docs/playtest-20261028.md) records these fixes,
-debris rebuild recovery, tests and outstanding stone refinement.
-
-The ion cannon has eight additive charge shells, nonlinear contraction and
-brightening, rising charge motes, local illumination, a blue-white detonation
-column, 40 ascending streaks and a brief per-view impact flash. `view/ion.rs`
-contains the game recipe; Warp's reusable `AdditiveColumn`/`AdditiveStreak`
-effects evaluate movement and radiance on the GPU after temporal reconstruction,
-with depth occlusion and bloom. Absolute emission is calibrated for Warp's HDR
-target; this is not a pixel-identical Godot render. Damage and charge timing are
-unchanged. `ExplosionKind` distinguishes ion impacts from ordinary fireballs.
-
-Reproduce the charge/impact/cleanup sequence without driving manually:
-
-```sh
-growing-guns script games/growing-guns/scripts/ion-transparency.json --out ion-captures --players 1 --seed 3
-growing-guns play --give ion_cannon
-```
-
-Gameplay is at parity with Godot 3daf27e (specs from `player.gd`,
-`weapon.gd`, `bullet.gd`, `blast.gd`, `grenade.gd`, `game.gd` and
-`round_modifiers.gd`; checked in `sim/src/tests.rs` against Godot's tick
-counts):
-
-- all 52 cards (`mods/base/cards.luau`, line-for-line from
-  `card_library.gd`, rarity-weighted offers with the pity slot and the
-  trailing-player factor) on a `Weapon` with Godot's fields and getters;
-- the rifle: muzzle-to-crosshair pellets in a centre-biased cone, movement
-  spread, bloom and recoil that wear off, self push, the projectile budget,
-  165 m/s bullets with drop, rays every other tick, three hit ellipsoids that
-  scale with the body cards, ricochet, drill, body bounce, homing, hitscan,
-  grow, last bullet, poison, slow, lifesteal, scavenger, explosive splash
-  (`Blast`, with sound-speed delays), impact mines;
-- the RMB specials: grenade (default), cluster, teleport, zoom, sword with
-  backstabs, air strike, ion cannon, with echo, tactical reload and refresh
-  (several strikes may be under way at once; Godot's single-strike gate was
-  a bug);
-- dash cards (dodge, ninja slash, backblast bomb), acrobat jumps, phoenix
-  ascent and sky drop, lava pool and burn band, falling off the map;
-- rounds: the 2.75 s spawn cage, kills in order (trades go to whoever died
-  second), offers 0.35 s after a win, the dead pick mid-round with 3+
-  players, bot picks after 1.2 s, no pick deadline for a solo human, match
-  end at ten wins (`rematch`, `extend`), the twelve round modifiers, pickups
-  and the lava leak at 30 s;
-- the lava-island arena, 18% of arenas as in Godot: no floor, lava at
-  0.04 m, mirrored stone islands within jump reach of each other, a kill
-  below the lava and a burn up to 1.15 m above it off the islands; the leak
-  only rises there. Bots keep to the islands (Godot's lava-map checks and
-  lapses) and leap between them. It has Godot's inferno stone, sky and sun
-  under Godot's sky; see [docs/lava-parity.md](docs/lava-parity.md).
-  `arena island [SEED]` (debug) or `--island` (every arena) forces it;
-  `scripts/island.json` shows it by day and night.
-
-Debug commands (`cmd` steps, `help`): `give`, `special`, `modifier`,
-`round`, `cage`, `rematch`, `extend`, `arena SEED`, `arena island [SEED]`,
-`lava [SECONDS]`, `lua`, `mods` and more.
-`play --modifier ID`, `--rounds N`, `--island`; `sim --arenas` lists each
-round's arena.
-
-Mods: the cards and game rules are Luau in [`mods/`](mods/API.md), run by
-`engine/crates/script` (sandboxed, a step budget per call, a load error
-keeps the previous version). Edit a file while the game runs and it reloads
-within a quarter second; `state` survives the reload. Hooks (`hit`, `kill`,
-`tick`, `round_start`, a card's `pick`) run inline in the host's sim tick, so
-matches still replay exactly. The debug console runs Luau against the live
-match: `lua g:give(1, 'explosive')`, `mods` lists modules and errors.
-`growing-guns mods-api` regenerates `mods/API.md` and `mods/types.d.luau`
-from the Rust side; `GG_MODS=DIR` points at another mods folder.
-
-The original knight, paladin and classic zombie now replace the primitive
-players, including their original textures and idle/run/jump clips. Weighted
-skinning runs once per frame on the GPU, shared across split-screen views and
-shadow maps. Weapons follow the animated right-hand socket. The physics capsule
-and gameplay rules are unchanged. See [asset provenance and regeneration](assets/characters/README.md).
-`GG_CHARACTERS=off` restores the explicit primitive fallback; a directory value
-loads an alternate roster. Packaged builds should include `assets/characters`
-beside the executable; development builds also find the source assets.
-
-Deaths now drive the original weighted skin from 11 connected physics bodies:
-pelvis, chest, head, upper/lower arms and upper/lower legs. Corpses collide with
-the arena, react to blasts and interpolate between physics ticks. A reused
-enemy slot removes its old corpse before animating again; round reset clears
-all ragdoll bodies. The reusable rig is `physics::ragdoll`.
-
-Character limitations: skin-aware dismemberment is not ported.
-Aim/spine and strafe animation layers are not yet equivalent to the original.
-Animated pixels reject temporal history until deformation motion vectors are
-implemented. The older benchmark results below used primitive characters and
-are not measurements of the new roster.
-
-Bots are Godot's (`sim/src/bot.rs`): sticky nearest target, a slewed aim
-point with lead and wobble, reaction time, their own spread, held range and
-strafing, gap jumps, ledge climbs, hops, dashes, strike fleeing, pickups and
-specials by distance.
-
-Wave survival: `--coop` on `play` or `script` (`sim/src/coop.rs`). The humans
-hold off endless waves of grunts, snipers, grenadiers, fraggers and bombers that
-rise out of the ground; a downed human is revived by a teammate standing where
-they fell for three seconds. Wave enemies are bot players appended after the
-match's seats for the wave; empty seats sit out (a remote player can still take
-one, from the next wave). The view draws up to 24 players in coop (8 animated
-characters, the rest as blobs). `scripts/coop.json` plays it headless with
-`--coop --players 2`.
-
-Not ported yet: ghosts planting mines and the menu's cinematic lava fort. Music and
-GameNight integration are present. Online play is tested
-over loopback (`nettest`), not yet between two machines; clients predict
-only their look direction.
-
-The opt-in stress fixtures run 180 warmup ticks and 900 measured ticks at the
-simulation's 60 Hz, with one offscreen render and GPU completion wait per tick.
-They sustain 210 rifle shots or 40 gameplay explosions per simulated second;
-these rates are not wall-clock presentation FPS. Explosion targets are restored
-every three simulated seconds, or sooner when depleted, and those costs remain
-in the measurements. Players are pinned and kept alive. The stress path flushes
-arena changes, debris and effects just as play does; audio and HUD are excluded.
-It checks actual event counts, writes raw CPU/GPU timings and reports effect
-pool limits. Screenshot readback happens after measurement. The ordinary bot
-benchmark is a different fixture; these results are not interchangeable with
-its old results or with Godot's differently staged stress scenes.
-
-Recorded measurements from 2026-10-28:
-
-- [Cached stadium ambient visibility](../../engine/docs/stadium-sky-occlusion.md):
-  Geometry-derived darkening under roofs, shared across views. Measured +0.43 ms
-  GPU at native 4K/four views; no indirect light bounces yet.
-- [Crowd silhouettes and measurements](../../engine/docs/growing-guns-crowd.md):
-  8,363 spectators, shared low-poly figures and GPU shoulder pivots. Three
-  alternating 4K/four-view pairs measure about 0.35 ms added GPU time;
-  geometry budgets and serialized benchmark FPS are documented separately.
-- [CPU spike optimization comparison](tools/cpu-spikes-20261028.md):
-  24 alternating runs with exact workload parity; substantially cheaper
-  explosion reset frames, but no general hitch-elimination claim. Includes
-  reusable comparison tools and an opt-in `--cpu-thread` diagnostic.
-- [Current roster benchmark and installed Godot comparison](tools/benchmark-comparison-20261028.md):
-  exact playtest commit `34a1895`, three repeats per workload/layout, with current
-  animated characters, raw CPU/GPU timings and background-load evidence. The
-  Godot and Warp fixtures differ; the report does not claim an engine speed ratio.
-- [Sustained bullet/explosion results](tools/stress-results-20261028.json):
-  three alternating pairs per layout, retained executable identity and workload
-  counts. These measurements precede the rebase onto the newer renderer; do not
-  present them as measurements of the latest commit.
-- [Godot probe and evidence](tools/godot-stress/README.txt): existing Godot stress
-  scenes, with resolution, event counts and timing scope recorded separately.
-- [Renderer configuration sweep](tools/perf-results-20261028.json): measured
-  commit `74ea8f0`, ten successful Vulkan configurations and two failed DX12
-  attempts. DX12 failed compiling the `cull` pipeline in FXC (X3663), before any
-  timing data. The renderer now links DXC on Windows (wgpu `static-dxc`), which
-  wgpu picks before FXC; this is not yet re-measured on DX12. This sweep is one fixed-order repetition, not evidence for a
-  default change. At 4K/four views the default GPU median is 4.15 ms and serialized
-  CPU-plus-GPU-wait median/p95 is 7.57/12.85 ms; this is an offscreen fixture, not
-  a sustained 120 FPS gameplay claim. Each measured run retains all 600 requested
-  GPU profiles. The sweep includes complete scene/effect uploads, unlike older
-  ordinary-benchmark results.
+Every commit that adds, finishes or removes something a player would notice
+updates the status tables above in the same commit (AGENTS.md says so too).
+`cargo test -p growing-guns-app readme` fails when the README misses a round
+modifier, a GameNight setting, a live knob or the card count, or stops
+linking the Godot repository.
