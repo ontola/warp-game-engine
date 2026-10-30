@@ -196,6 +196,14 @@ impl Build {
         })
     }
 
+    fn sight_anchor(&self) -> Vec3 {
+        if let Some(p) = self.parts.iter().find(|p| p.key == 10 * 1024) {
+            return Vec3::new(0.0, p.xf.translation.y - p.xf.matrix3.y_axis.length() * 0.5 + JOINT, p.xf.translation.z);
+        }
+        let radius = self.parts.iter().find(|p| p.key / 1024 == 3).map_or(0.022, |p| p.xf.matrix3.x_axis.length());
+        Vec3::new(0.0, radius, -self.parts[0].xf.matrix3.z_axis.length() * 0.5 - self.barrel_length * 0.85)
+    }
+
     fn anchor(&self, part: &Part) -> Vec3 {
         let half = self.parts[0].xf.matrix3.diagonal() * 0.5;
         let p: Vec3 = part.xf.translation.into();
@@ -203,10 +211,7 @@ impl Build {
             // A component shares one anchor: its teeth, mounts, bells and
             // lenses must remain joined while their whole assembly grows.
             2 | 16 => Vec3::new(0.0, half.y, 0.0),
-            10 if part.key % 1024 == 0 => {
-                let radius = self.parts.iter().find(|p| p.key / 1024 == 3).map_or(0.022, |p| p.xf.matrix3.x_axis.length());
-                Vec3::new(0.0, radius, -half.z - self.barrel_length * 0.85)
-            }
+            10 if part.key % 1024 == 0 => self.sight_anchor(),
             10 => Vec3::new(0.0, half.y, half.z * 0.64),
             3 | 4 | 6 | 14 | 15 => Vec3::new(0.0, 0.0, -half.z),
             5 => Vec3::new(0.0, -half.y, MAG_REAR_Z),
@@ -233,6 +238,27 @@ impl Morph {
             muzzle: self.source.muzzle.lerp(self.target.muzzle, t) };
         let scaled = |build: &Build, index: usize, amount: f32| {
             let mut p = build.parts[index];
+            // The existing front sight keeps its full size. Its new bearing
+            // collar/bridge grows in thickness on the current barrel section,
+            // rather than approaching from the receiver and leaving it floating.
+            if matches!(p.key / 1024, 14 | 15) {
+                let support = self.source.sight_anchor().lerp(self.target.sight_anchor(), t);
+                let (size, rotation, _) = p.xf.to_scale_rotation_translation();
+                let (size, position) = if p.key / 1024 == 14 {
+                    let front = lerp(-self.source.parts[0].xf.matrix3.z_axis.length() * 0.5,
+                        -self.target.parts[0].xf.matrix3.z_axis.length() * 0.5, t);
+                    (Vec3::new(support.y, size.y * amount.max(0.0001), support.y),
+                        Vec3::new(0.0, 0.0, if p.key % 1024 == 0 { front - 0.007 } else { support.z }))
+                } else {
+                    let width = |b: &Build| b.parts.iter().find(|q| q.key == p.key)
+                        .map_or(b.sight_anchor().y * 2.0, |q| q.xf.matrix3.x_axis.length());
+                    let size = Vec3::new(lerp(width(&self.source), width(&self.target), t),
+                        size.y * amount.max(0.0001), size.z * amount.max(0.0001));
+                    (size, support - Vec3::Y * (size.y * 0.5))
+                };
+                p.xf = Affine3A::from_scale_rotation_translation(size, rotation, position);
+                return p;
+            }
             let anchor = build.anchor(&p);
             let moving_anchor = self.source.anchor(&p).lerp(self.target.anchor(&p), t);
             let amount = amount.max(0.0001);
@@ -761,4 +787,27 @@ mod tests {
             assert!((mount_top - scope_center).abs() < 1e-5, "scope separated from its growing mounts");
         }
     }
+    #[test]
+    fn front_sight_stays_on_its_support_when_barrels_change() {
+        let base = Stats::default();
+        for other in [Stats { fire_rate_mult: 8.0, ..base }, Stats { shots: 4, ..base }] {
+            for (from, to) in [(base, other), (other, base)] {
+                let mut rig = Rig::default(); rig.set(from); rig.grow_to(to);
+                for _ in 0..60 {
+                    rig.update(1.0 / 30.0);
+                    let post = rig.build.parts.iter().find(|p| p.key == 10 * 1024).unwrap();
+                    let bottom = post.xf.translation.y - post.xf.matrix3.y_axis.length() * 0.5;
+                    let support = rig.build.parts.iter().find(|p| p.key == 14 * 1024 + 1)
+                        .map(|p| (p.xf.matrix3.x_axis.length(), p.xf.translation.z))
+                        .or_else(|| rig.build.parts.iter().find(|p| p.key == 15 * 1024)
+                            .map(|p| (p.xf.translation.y + p.xf.matrix3.y_axis.length() * 0.5, p.xf.translation.z)));
+                    if let Some((top, z)) = support {
+                        assert!((top - bottom - JOINT).abs() < 1e-5, "front sight separated from growing support");
+                        assert!((post.xf.translation.z - z).abs() < 1e-5);
+                    }
+                }
+            }
+        }
+    }
+
 }
