@@ -37,7 +37,8 @@ fn choose(g:Group)->vec4<u32> {
         if voxel_ok && (!triangle_ok || c.errors.y+c.errors.z<c.triangle.x+c.triangle.y) {
             decision=vec4<u32>(1u,c.info.x,0u,1u);
         }else if triangle_ok {
-            decision=vec4<u32>(0u,0u,bitcast<u32>(c.triangle.z*g.scale.x),1u);
+            // A negative cut tells cull.wgsl to use its own screen-error LOD.
+            decision=vec4<u32>(0u,0u,bitcast<u32>(select(-1.0,c.triangle.z*g.scale.x,state.policy.z>0.5)),1u);
         }
     }
     return decision;

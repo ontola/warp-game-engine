@@ -12,11 +12,15 @@ pub struct Policy {
     pub max_coverage_error: f32,
     pub max_color_error: f32,
     pub allow_sampled_optics: bool,
+    /// Source groups keep the measured world-error triangle cut the
+    /// comparison fixtures need. Off, they use the renderer's ordinary
+    /// screen-error cluster LOD and traversal, as games want.
+    pub measured_source_cuts: bool,
 }
 impl Default for Policy {
     fn default() -> Self {
         Self { max_error_pixels: 1.0, max_coverage_error: 0.08,
-            max_color_error: 0.08, allow_sampled_optics: false }
+            max_color_error: 0.08, allow_sampled_optics: false, measured_source_cuts: true }
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -142,7 +146,7 @@ impl Selector {
         vp:Mat4,size:[u32;2],enabled:bool,time:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {
         if !vp.is_finite()||size.contains(&0){return Err("invalid aggregate selection view".into());}
         let u=Uniform {vp:vp.to_cols_array(),output:[size[0]as f32,size[1]as f32,self.policy.max_error_pixels,0.],
-            policy:[self.policy.max_coverage_error,self.policy.max_color_error,0.,0.],
+            policy:[self.policy.max_coverage_error,self.policy.max_color_error,if self.policy.measured_source_cuts {1.} else {0.},0.],
             info:[self.count,u32::from(enabled&&self.policy.allow_sampled_optics),0,0]};
         let uniform=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {label:Some("aggregate selection view"),
             contents:bytemuck::bytes_of(&u),usage:wgpu::BufferUsages::UNIFORM});
