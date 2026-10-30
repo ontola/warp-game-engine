@@ -1,0 +1,35 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "arena 13",
+        "health 0 50000",
+        "teleport 0 42 3 0",
+        "aim 0 65 2 8"
+      ],
+      "ticks": 1,
+      "capture": "facade-day.png"
+    },
+    {
+      "cmd": [
+        "sky night"
+      ],
+      "ticks": 1,
+      "capture": "facade-night.png"
+    },
+    {
+      "cmd": [
+        "sky noon",
+        "teleport 0 48 1 36",
+        "aim 0 65 1 65"
+      ],
+      "ticks": 1,
+      "capture": "corner.png"
+    }
+  ]
+}

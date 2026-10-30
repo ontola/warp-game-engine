@@ -156,6 +156,23 @@ impl Physics {
         n
     }
 
+    /// Lift dynamic bodies in a field, damping sideways motion before normal
+    /// gravity brings them down. This changes visual debris, not game players.
+    pub fn lift(&mut self, center: Vec3, radius: f32, speed: f32) -> usize {
+        if !center.is_finite() || !radius.is_finite() || radius <= 0.0 || !speed.is_finite() || speed <= 0.0 { return 0; }
+        let mut count = 0;
+        for (_, rb) in self.world.bodies.iter_mut() {
+            if !rb.is_dynamic() { continue; }
+            let distance = from(rb.translation()).distance(center);
+            if distance >= radius { continue; }
+            let old = from(rb.linvel());
+            let vertical = speed * (1.0 - 0.25 * distance / radius);
+            rb.set_linvel(to(Vec3::new(old.x.clamp(-0.5, 0.5), vertical, old.z.clamp(-0.5, 0.5))), true);
+            count += 1;
+        }
+        count
+    }
+
     /// One fixed step (split into `substeps`).
     pub fn step(&mut self) {
         let dt = self.world.integration_parameters.dt;
@@ -221,6 +238,23 @@ mod tests {
         assert!(p.raycast(Vec3::new(0.0, 5.0, 10.0), Vec3::NEG_Y, 20.0).unwrap().2.is_none(), "the floor is static");
         p.clear_bodies();
         assert_eq!(p.body_count(), 0);
+    }
+
+    #[test]
+    fn lifted_body_rises_then_falls_with_little_sideways_drift() {
+        let mut p=Physics::new(Vec3::new(0.0,-21.0,0.0),60.0);
+        let b=p.add(&BodyDesc::new(Shape::Sphere(0.2),Vec3::new(2.0,1.0,0.0)));
+        let outside=p.add(&BodyDesc::new(Shape::Sphere(0.2),Vec3::new(20.0,1.0,0.0)));
+        p.impulse(b,Vec3::new(100.0,0.0,-100.0),None);
+        assert_eq!(p.lift(Vec3::ZERO,8.0,26.0),1);
+        assert_eq!(p.velocity(outside).unwrap(),Vec3::ZERO);
+        let start=p.pose(b).unwrap().0;
+        for _ in 0..30 {p.step();}
+        assert!(p.pose(b).unwrap().0.y>start.y+5.0);
+        for _ in 0..120 {p.step();}
+        let end=p.pose(b).unwrap().0;
+        assert!(p.velocity(b).unwrap().y<0.0 && end.y<start.y);
+        assert!((end.x-start.x).abs()<1.3 && (end.z-start.z).abs()<1.3);
     }
 
     #[test]

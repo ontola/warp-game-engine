@@ -174,3 +174,45 @@ exposure, fog start/end/density, LUT dimensions, bake CPU time and cache reuse.
 
 Main files: `crates/cli/src/procedural_sky.rs`, `play.rs`, `input.rs`, `hud.rs`,
 `gamenight.rs`. The parent task supplies the renderer's shared sky update API.
+
+
+## Visible sun and lens flare
+
+Warp Sky enables `Lighting::sun_disc` and `lens_flare=0.5` when applying a
+bake. The background draws a 0.266-degree-radius solar disc in the existing
+sunlight direction, with a pixel-sized soft edge. It stays out of the baked
+sky texture and diffuse irradiance; opaque foreground geometry hides it.
+Radiance is capped before the fp16 HDR target. Existing terrain-horizon
+visibility also attenuates the disc and its optical glare.
+
+The tonemap compute pass adds soft glare, a streak and three faint coloured
+lens ghosts. Sixteen depth taps across the solar disc run once per GPU tile,
+not per pixel and without CPU readback. Partly covered discs reduce the flare;
+fully covered, below-horizon and behind-camera suns produce none. Each split
+uses its own camera projection and depth image. The flare fades out as the
+disc leaves the viewport; it does not estimate visibility beyond the screen.
+Transparent objects do not contribute to this opaque-depth visibility test.
+
+`light lens_flare=0` disables the optical effect in Growing Guns;
+`light sun_disc=0` disables both disc and flare. Legacy skies retain their
+previous defaults. `render/examples/solar_flare_gpu.rs` captures clear, half
+covered and hidden cases, checks hidden effects against disabled effects,
+and compares each split with an independently rendered camera. This is a
+visual/correctness fixture, not a four-player performance claim.
+
+
+Games can tune their HDR highlight response through `Lighting::bloom_boost`,
+`bloom_rounds` and `bloom_threshold`; renderer defaults are unchanged. The
+existing bloom enable/strength controls and quality disable still apply.
+Growing Guns uses a wider, stronger halo so an Ion beam reads as intense
+emission. Three local samples along the charging column illuminate paving
+and walls; they build with charge and expire at detonation. These local
+samples use the engine's existing unshadowed local-light path.
+
+Stadium lava return is baked once per arena geometry into the existing
+irradiance grid, with static-box visibility against four emissive rectangles
+around the arena floor. Mode 7 combines packed sky/sun transport and RGB9E5
+emission without enlarging probes or adding light bindings. It follows the
+source emission's exposure compensation. This is an approximation of static
+illumination, not dynamic GI: later rubble, players and destruction do not
+rebake the lava cache. `GG_LAVA_BOUNCE=0` disables the additional term for A/B.

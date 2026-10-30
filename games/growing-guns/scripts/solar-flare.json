@@ -1,0 +1,33 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "arena 13",
+        "health 0 50000",
+        "sky morning",
+        "teleport 0 0 45 0",
+        "aim 0 88 65 24"
+      ],
+      "ticks": 1,
+      "capture": "sun.png"
+    },
+    {
+      "cmd": "aim 0 76 60 42",
+      "ticks": 1,
+      "capture": "sun-edge.png"
+    },
+    {
+      "cmd": [
+        "teleport 0 45 3 12",
+        "aim 0 133 45 36"
+      ],
+      "ticks": 1,
+      "capture": "sun-roof.png"
+    }
+  ]
+}

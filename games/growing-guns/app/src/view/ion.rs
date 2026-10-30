@@ -1,5 +1,5 @@
 //! The ion cannon's game-specific recipe, after `scripts/ion_cannon.gd`.
-//! Spawn the nested charge shells and their future motes once; Warp evaluates
+//! Spawn one soft charge column and its future motes once; Warp evaluates
 //! their animation on the GPU. The CPU keeps only strike identity and lights.
 use glam::Vec3;
 use growing_guns::{Strike, StrikeKind, World, ION_CHARGE, TICK_HZ};
@@ -16,33 +16,13 @@ const MAX_CHARGES: usize = 16;
 const MAX_DETONATIONS: usize = 32;
 const MAX_LIGHTS: usize = 16;
 const MAX_CD: f32 = 100_000_000.0;
-// Photometric calibration for Warp's absolute-nit HDR target. Godot's very
-// large late emission values cannot be multiplied by the exposure white:
-// overlapping shells would saturate fp16 long before the intended ignition.
-// Keep the source's timings/curves and fit their combined energy to the target.
-const CHARGE_START_NITS: f32 = 1000.0;
-const CHARGE_END_NITS: f32 = 2.0;
-const MOTE_NITS: f32 = 1000.0;
+const MOTE_NITS: f32 = 1600.0;
 const DETONATION_SHELL_NITS: f32 = 2.0;
 const DETONATION_STREAK_NITS: f32 = 30.0;
 const ION_COLOR: Vec3 = Vec3::new(0.38, 0.78, 1.0);
 const ION_CORE: Vec3 = Vec3::new(0.92, 0.97, 1.0);
 const FLASH_SUSTAIN: f32 = 0.05;
 const FLASH_RELEASE: f32 = 0.30;
-
-#[derive(Clone, Copy)]
-struct Layer { radius: f32, alpha: [f32; 2], emission: [f32; 2], color: Vec3 }
-
-const LAYERS: [Layer; 8] = [
-    Layer { radius: 0.08, alpha: [0.035, 1.00], emission: [5.0, 5200.0], color: Vec3::new(0.42, 0.72, 0.96) },
-    Layer { radius: 0.15, alpha: [0.028, 0.92], emission: [4.0, 3400.0], color: Vec3::new(0.46, 0.76, 0.98) },
-    Layer { radius: 0.25, alpha: [0.022, 0.78], emission: [3.2, 2100.0], color: Vec3::new(0.40, 0.74, 0.98) },
-    Layer { radius: 0.38, alpha: [0.018, 0.58], emission: [2.6, 1200.0], color: Vec3::new(0.36, 0.70, 0.98) },
-    Layer { radius: 0.52, alpha: [0.014, 0.42], emission: [2.0, 680.0], color: Vec3::new(0.32, 0.66, 0.96) },
-    Layer { radius: 0.68, alpha: [0.010, 0.28], emission: [1.5, 360.0], color: Vec3::new(0.28, 0.62, 0.94) },
-    Layer { radius: 0.84, alpha: [0.008, 0.18], emission: [1.1, 190.0], color: Vec3::new(0.24, 0.58, 0.90) },
-    Layer { radius: 1.00, alpha: [0.006, 0.12], emission: [0.8, 95.0], color: Vec3::new(0.20, 0.54, 0.86) },
-];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct StrikeKey { round: u32, owner: Option<usize>, target: [u32; 3], birth_tick: i128 }
@@ -157,12 +137,16 @@ impl IonFx {
             let age = clock - c.birth;
             if !(0.0..CHARGE).contains(&age) { continue; }
             let u = age / CHARGE;
-            let power = u.powf(2.35);
-            let focus = u * u;
+            let power = u.powf(3.0);
             let ignite = smoothstep(0.48, 0.985, u);
-            let energy = 3.0 + (240.0 - 3.0) * power + (age * 9.0).sin() * 10.0 * power;
-            push_light(&mut lights, c.position + Vec3::Y * 0.4,
-                ION_COLOR.lerp(Vec3::ONE, ignite * 0.75) * energy * c.light_scale, 30.0 - 8.0 * focus);
+            let tint = ION_COLOR.lerp(ION_CORE, ignite * 0.6);
+            // Sample the emitting column above the ground. A lamp only 40 cm
+            // high grazed the floor, illuminating walls but barely the paving.
+            // The three heights give a bright foot and broad blue-white spill.
+            for (height,energy) in [(4.0,650.0),(12.0,500.0),(24.0,350.0)] {
+                push_light(&mut lights, c.position + Vec3::Y * height,
+                    tint * ((0.3 + energy * power) * c.light_scale), 58.0);
+            }
         }
         lights
     }
@@ -179,48 +163,37 @@ impl IonFx {
     }
 }
 
-fn charge_columns(position: Vec3, birth: f32) -> [AdditiveColumn; 8] {
-    std::array::from_fn(|i| {
-        let layer = LAYERS[i];
-        AdditiveColumn { position: position - Vec3::Y * BOTTOM_DEPTH, birth, life: CHARGE,
-            height: SKY_HEIGHT + BOTTOM_DEPTH, radius: [START_RADIUS * layer.radius, END_RADIUS * layer.radius],
-            radius_power: 2.0, color: [layer.color, Vec3::ONE], color_transition: [0.48, 0.985],
-            // Godot ramps opacity with age^4.2; a gentler 2.4 makes the column
-            // show faintly from the start and build steadily to the strike.
-            opacity: layer.alpha, opacity_power: 2.4,
-            radiance: [layer.emission[0] * CHARGE_START_NITS, layer.emission[1] * CHARGE_END_NITS], radiance_power: 2.35,
-            pulse_radians_per_second: 9.0, pulse_radiance: 14.0 * (1.0 - i as f32 * 0.1) * CHARGE_END_NITS,
-            bottom_radius_scale: 1.03 }
-    })
+fn charge_columns(position: Vec3, birth: f32) -> [AdditiveColumn; 1] {
+    [AdditiveColumn { position: position - Vec3::Y * BOTTOM_DEPTH, birth, life: CHARGE,
+        height: SKY_HEIGHT + BOTTOM_DEPTH, radius: [START_RADIUS, END_RADIUS],
+        radius_power: 2.0, color: [ION_COLOR, ION_CORE], color_transition: [0.45, 0.98],
+        // One continuous volume: barely visible at first, then a smooth white-blue ignition.
+        opacity: [0.008, 0.95], opacity_power: 1.6,
+        radiance: [600.0, 20_000.0], radiance_power: 1.8,
+        pulse_radians_per_second: 0.0, pulse_radiance: 0.0,
+        bottom_radius_scale: 1.0 }]
 }
 
 fn charge_motes(position: Vec3, birth: f32, seed: u64) -> Vec<AdditiveStreak> {
     let mut rng = Rng(seed);
-    let mut motes = Vec::with_capacity(96);
-    for tick in 1..=(CHARGE / MOTE_INTERVAL) as u32 {
+    let mut motes = Vec::with_capacity(400);
+    for tick in 0..=(CHARGE / MOTE_INTERVAL) as u32 {
         let at = tick as f32 * MOTE_INTERVAL;
-        let u = at / CHARGE;
-        let power = u.powf(2.35);
-        if power < 0.12 { continue; }
-        let radius = START_RADIUS + (END_RADIUS - START_RADIUS) * u * u;
-        let count = if power < 0.42 { 1 } else if power < 0.78 { 2 } else { 3 };
+        // Full impact footprint, uniform by area; it does not shrink with
+        // the concentrating beam. Seed the warning field immediately.
+        let count = if tick == 0 { 48 } else { 6 };
         for _ in 0..count {
             let angle = rng.range(0.0, std::f32::consts::TAU);
-            let dist = rng.unit() * radius * 0.82;
-            let start = position + Vec3::new(angle.cos() * dist, rng.range(0.15, 2.5), angle.sin() * dist);
-            let width = rng.range(0.04, 0.11);
-            let full_life = rng.range(2.2, 4.2);
-            let life = full_life.min(CHARGE - at);
+            let dist = rng.unit().sqrt() * growing_guns::ION_RADIUS as f32;
+            let start = position + Vec3::new(angle.cos() * dist, rng.range(0.12, 0.9), angle.sin() * dist);
+            let width = rng.range(0.045, 0.095);
+            let life = rng.range(2.2, 3.6).min(CHARGE - at);
             if life <= 0.0 { continue; }
-            let fraction = life / full_life;
-            // The original kills charge motes on detonation. Shortening life
-            // must shorten travel too, otherwise the final motes shoot upward.
-            let travel = Vec3::new(rng.range(-1.2, 1.2), rng.range(12.0, 34.0), rng.range(-1.2, 1.2)) * fraction;
-            let end_width = width * (1.0 + (rng.range(1.4, 2.4) - 1.0) * fraction);
+            let travel = Vec3::Y * rng.range(0.65, 1.35) * life;
             motes.push(AdditiveStreak { position: start, travel, birth: birth + at, life,
-                radius: [width, end_width], length: [width * 2.0, end_width * 2.0],
-                color: Vec3::new(0.82, 0.94, 1.0), radiance: rng.range(32.0, 58.0) * MOTE_NITS,
-                opacity: rng.range(0.32, 0.62), fade_in: 0.28, fade_out: 0.72, motion_power: 1.0 });
+                radius: [width; 2], length: [width * 2.0; 2],
+                color: Vec3::new(0.08, 0.38, 1.0), radiance: rng.range(22.0, 36.0) * MOTE_NITS,
+                opacity: rng.range(0.50, 0.80), fade_in: 0.16, fade_out: 0.82, motion_power: 1.0 });
         }
     }
     motes
@@ -280,19 +253,24 @@ mod tests {
     #[test]
     fn charge_motes_end_at_detonation_without_speeding_up() {
         let motes = charge_motes(Vec3::ZERO, 10.0, 5);
-        assert!((40..100).contains(&motes.len()));
+        assert!((300..450).contains(&motes.len()));
+        assert!(motes.iter().any(|m| m.birth == 10.0));
+        let outer=motes.iter().filter(|m| m.position.length()>growing_guns::ION_RADIUS as f32*0.7).count();
+        assert!(outer>motes.len()/3, "the whole disc receives motes");
         for mote in motes {
-            assert!(mote.birth >= 10.0 + CHARGE * 0.12f32.powf(1.0 / 2.35));
+            assert!(mote.birth >= 10.0);
             assert!(mote.birth + mote.life <= 10.0 + CHARGE + 0.00001);
-            assert!((12.0 / 4.2..=34.0 / 2.2).contains(&(mote.travel.y / mote.life)));
+            assert!((0.649..=1.351).contains(&(mote.travel.y / mote.life)));
             assert_eq!(mote.motion_power, 1.0);
+            assert_eq!(mote.travel.x,0.0); assert_eq!(mote.travel.z,0.0);
         }
     }
 
     #[test]
     fn charge_energy_fits_hdr_and_builds_toward_detonation() {
         let columns = charge_columns(Vec3::ZERO, 0.0);
-        // A line through the axis can see both faces of every nested shell.
+        assert_eq!(columns.len(), 1, "no nested charge shells");
+        // A line through the axis can see both faces of the single column.
         // This conservative scalar sum bounds all RGB components, including
         // the pulse, before the fragment shader's final fp16 guard.
         let radiance = |u: f32| columns.iter().map(|c| {
@@ -302,9 +280,29 @@ mod tests {
                 + (u * CHARGE * c.pulse_radians_per_second).sin() * c.pulse_radiance * power;
             light * alpha * 2.0
         }).sum::<f32>();
-        for step in 0..=1000 { assert!(radiance(step as f32 / 1000.0) < 55_000.0); }
+        for step in 0..=1000 {
+            let u = step as f32 / 1000.0;
+            assert!(radiance(u) < 55_000.0);
+            if step > 0 { assert!(radiance(u) >= radiance(u - 0.001)); }
+        }
         assert!(radiance(1.0) > radiance(0.0) * 20.0);
         assert!(radiance(0.25) < 2000.0, "the first second stays transparent");
+    }
+
+    #[test]
+    fn charge_lights_illuminate_ground_at_a_distance_and_build_up() {
+        let mut fx=IonFx::default();
+        fx.charges.push(Charge {key:StrikeKey {round:1,owner:Some(0),target:[0;3],birth_tick:0},position:Vec3::ZERO,birth:0.0,light_scale:37_000.0});
+        let floor=Vec3::new(10.0,0.0,0.0);
+        let floor_lux=|time| fx.lights(time).iter().map(|l| {
+            let to=l.position-floor;
+            let d2=to.length_squared();
+            let fade=(1.0-(d2/(l.range_m*l.range_m)).powi(2)).max(0.0);
+            l.intensity_cd.y/d2 * to.normalize().y.max(0.0)*fade*fade
+        }).sum::<f32>();
+        assert!(floor_lux(CHARGE*0.95)>60_000.0,"late beam clearly lights the paving even in daylight");
+        assert!(floor_lux(CHARGE*0.15)<floor_lux(CHARGE*0.95)*0.01);
+        assert_eq!(fx.lights(CHARGE).len(),0);
     }
 
     #[test]
@@ -313,9 +311,9 @@ mod tests {
         for column in charge_columns(Vec3::ZERO, 0.0) { effects.column(column).unwrap(); }
         let mut ion = IonFx::default();
         ion.detonate(&mut effects, 4.0, Vec3::ZERO, 38.0, growing_guns::arena::LAVA_KILL_Y);
-        assert_eq!(effects.len(), 8 + 3 + 40);
+        assert_eq!(effects.len(), 1 + 3 + 40);
         ion.detonate(&mut effects, 4.0, Vec3::ZERO, 38.0, growing_guns::arena::LAVA_KILL_Y);
-        assert_eq!(effects.len(), 8 + 3 + 40);
+        assert_eq!(effects.len(), 1 + 3 + 40);
         assert_eq!(ion.flash(3.99, Vec3::ZERO), 0.0);
         assert!(ion.flash(4.01, Vec3::ZERO) > 0.7);
         assert_eq!(ion.flash(4.4, Vec3::ZERO), 0.0);

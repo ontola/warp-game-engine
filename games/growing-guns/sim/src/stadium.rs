@@ -15,6 +15,8 @@ pub const ROW_RISE: f32 = 1.4;
 pub const BACK_WALL_EXTRA: f32 = 6.0;
 pub const BASE_ABOVE_WALLS: f32 = 2.5;
 pub const BASE_NO_WALLS: f32 = 4.5;
+/// Footings continue below the permanent outer lava pool.
+pub const FOUNDATION_Y: f32 = crate::arena::LAVA_KILL_Y - 1.0;
 
 /// Superellipse (n = 4) plan: radius factor at a ring angle, 1 on the side
 /// midpoints and about 1.19 in the corners.
@@ -57,10 +59,10 @@ impl Stadium {
             let dir = Vec3::new(ang.cos(), 0.0, ang.sin());
             let yaw = -ang + PI * 0.5;
             let facade_r = (inner - 0.8) * s;
-            out.push(Piece { center: dir * facade_r + Vec3::Y * base * 0.5, size: Vec3::new(2.0 * facade_r * (seg * 0.5).tan() + 0.8, base, 1.6), yaw, kind: PieceKind::Facade });
+            out.push(Piece { center: dir * facade_r + Vec3::Y * (base + FOUNDATION_Y) * 0.5, size: Vec3::new(2.0 * facade_r * (seg * 0.5).tan() + 0.8, base - FOUNDATION_Y, 1.6), yaw, kind: PieceKind::Facade });
             if i % 2 == 0 {
                 let col_r = (inner - 2.0) * s;
-                out.push(Piece { center: dir * col_r + Vec3::Y * base * 0.55, size: Vec3::new(1.5, base * 1.1, 1.5), yaw, kind: PieceKind::Column });
+                out.push(Piece { center: dir * col_r + Vec3::Y * (base * 1.1 + FOUNDATION_Y) * 0.5, size: Vec3::new(1.5, base * 1.1 - FOUNDATION_Y, 1.5), yaw, kind: PieceKind::Column });
                 out.push(Piece { center: dir * col_r + Vec3::Y * (base * 1.1 + 0.6), size: Vec3::new(2.3, 1.2, 2.3), yaw, kind: PieceKind::Capital });
             }
             for row in 0..ROWS {
@@ -73,7 +75,7 @@ impl Stadium {
             let wall_r = self.wall_r() * s;
             let wall_h = self.wall_h();
             let wall_len = 2.0 * wall_r * (seg * 0.5).tan() + 0.9;
-            out.push(Piece { center: dir * wall_r + Vec3::Y * wall_h * 0.5, size: Vec3::new(wall_len, wall_h, 2.2), yaw, kind: PieceKind::Wall });
+            out.push(Piece { center: dir * wall_r + Vec3::Y * (wall_h + FOUNDATION_Y) * 0.5, size: Vec3::new(wall_len, wall_h - FOUNDATION_Y, 2.2), yaw, kind: PieceKind::Wall });
             if i % 2 == 0 {
                 out.push(Piece { center: dir * wall_r + Vec3::Y * (wall_h + 1.1), size: Vec3::new(wall_len * 0.55, 2.2, 2.2), yaw, kind: PieceKind::Crenel });
             }
@@ -117,6 +119,21 @@ impl Stadium {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_footings_enter_lava_without_moving_the_stands() {
+        for size in [40.0,80.0,160.0] {
+            for walls in [false,true] {
+                let s=Stadium::new(size,walls,12.0);
+                for p in s.pieces() {
+                    let top=match p.kind {PieceKind::Facade=>s.base_y,PieceKind::Column=>s.base_y*1.1,PieceKind::Wall=>s.wall_h(),_=>continue};
+                    assert!((p.center.y-p.size.y*0.5-FOUNDATION_Y).abs()<1e-4);
+                    assert!(p.center.y-p.size.y*0.5<crate::arena::LAVA_KILL_Y);
+                    assert!((p.center.y+p.size.y*0.5-top).abs()<1e-4);
+                }
+            }
+        }
+    }
 
     #[test]
     fn the_bowl_rings_the_arena_and_rises_above_the_walls() {

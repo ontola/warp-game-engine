@@ -65,6 +65,39 @@ pub fn pack(grid: &Grid, probes: &[Probe]) -> Result<Vec<u32>, String> {
     Ok(words)
 }
 
+// RGB9E5 shared-exponent radiance, retaining fractional lux at night and
+// up to 65408 lux by day. Six packed colours leave room for separation planes.
+fn pack_emission(rgb: Vec3) -> u32 {
+    let rgb = rgb.min(Vec3::splat(65408.0));
+    let maximum = rgb.max_element();
+    let mut exponent = ((maximum.max(2f32.powi(-16)).log2().floor() as i32) + 16).max(0);
+    let mut scale = 2f32.powi(exponent - 24);
+    if (maximum/scale).round() >= 512.0 { exponent += 1; scale *= 2.0; }
+    let q = (rgb/scale).round().as_uvec3();
+    q.x | (q.y << 9) | (q.z << 18) | ((exponent as u32) << 27)
+}
+
+/// Mode 7: sky/sun transport plus static RGB emission, in the existing 18
+/// words per probe. Optional planes use the spare third words of four axes.
+pub fn pack_sky_emission(grid: &Grid, sky: &[Probe], emission: &[Probe], planes: &[[f32;4]]) -> Result<Vec<u32>,String> {
+    let mut words=pack(grid,sky)?;
+    if emission.len()!=sky.len() || emission.iter().any(|p| p.axes.iter().any(|v| !v.is_finite() || v.min_element()<0.0))
+        || (!planes.is_empty() && planes.len()!=sky.len()) || planes.iter().flatten().any(|v| !v.is_finite()) {
+        return Err("invalid static emission probes or separation planes".into());
+    }
+    words[7]=7;
+    for (i,p) in sky.iter().enumerate() {
+        for (a,v) in p.axes.iter().enumerate() {
+            let at=8+i*18+a*3;
+            let q=|x:f32| (x.clamp(0.0,1.0)*1023.0).round() as u32;
+            words[at]=q(v.x)|(q(v.y)<<10)|(q(v.z)<<20)|(u32::from(v.z>1.5)<<31);
+            words[at+1]=pack_emission(emission[i].axes[a]);
+            words[at+2]=if a<4 && !planes.is_empty() { planes[i][a].to_bits() } else { 0 };
+        }
+    }
+    Ok(words)
+}
+
 /// Trilinear lookup on the CPU (the shade pass does the same).
 pub fn sample(grid: &Grid, probes: &[Probe], p: Vec3, n: Vec3) -> Vec3 {
     let f = ((p - grid.origin) / grid.cell).clamp(Vec3::ZERO, Vec3::new(grid.dims[0] as f32 - 1.0, grid.dims[1] as f32 - 1.0, grid.dims[2] as f32 - 1.0));
@@ -270,5 +303,27 @@ mod tests {
         renderer.set_irradiance_volume(&gpu, &room.bake(&grid, 64, 2).unwrap()).unwrap();
         let (lit, _) = renderer.render(&gpu, &camera, &light, 64, 48);
         assert!(floor(&lit) > floor(&dark) + 60, "probe light on the floor: dark {} lit {}", floor(&dark), floor(&lit));
+    }
+}
+
+#[cfg(test)]
+mod emission_pack_tests {
+    use super::*;
+    #[test]
+    fn packed_emission_preserves_hdr_and_fractional_lux() {
+        for rgb in [Vec3::ZERO,Vec3::new(0.1,0.02,0.001),Vec3::new(25000.0,4000.0,300.0),Vec3::splat(65408.0)] {
+            let w=pack_emission(rgb);
+            let scale=2f32.powi((w>>27) as i32-24);
+            let decoded=Vec3::new((w&511) as f32,((w>>9)&511) as f32,((w>>18)&511) as f32)*scale;
+            assert!(decoded.abs_diff_eq(rgb,scale*0.501));
+        }
+        let grid=Grid {origin:Vec3::ZERO,cell:1.0,dims:[2,2,2]};
+        let sky=vec![Probe {axes:[Vec3::new(0.5,0.2,2.0);6]};8];
+        let emission=vec![Probe {axes:[Vec3::splat(1000.0);6]};8];
+        let planes=vec![[1.0,0.0,0.0,-2.0];8];
+        let words=pack_sky_emission(&grid,&sky,&emission,&planes).unwrap();
+        assert_eq!(words.len(),8+18*8); assert_eq!(words[7],7);
+        assert_ne!(words[8]&0x80000000,0);
+        for j in 0..4 { assert_eq!(f32::from_bits(words[8+j*3+2]),planes[0][j]); }
     }
 }
