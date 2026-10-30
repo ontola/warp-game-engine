@@ -172,6 +172,29 @@ fn jet(s: GameSprite) -> vec4<f32> {
     return vec4(c, clamp(alpha, 0.0, 1.0));
 }
 
+// ---- The water a tidal wave pushes (surge) ----
+// params: time, sink, seed. Flat on the floor, its top (uv.y 0) the front.
+// Deep churning water, a white rolling front edge, foam streaks dragged
+// back along the flow, thinning out behind and fraying at the ends.
+
+fn surge(s: GameSprite) -> vec4<f32> {
+    let t = s.params.x;
+    let sink = s.params.y;
+    let x = s.uv.x;
+    let back = s.uv.y;
+    let m = vec2(x * s.size.x, back * s.size.y);
+    let n = sn_fbm(vec3(m.x * 0.9, m.y * 1.6 + t * 6.0, s.params.z));
+    let ends = smoothstep(0.0, 0.07 + 0.05 * n, x) * smoothstep(0.0, 0.07 + 0.05 * n, 1.0 - x);
+    let tail = 1.0 - smoothstep(0.45, 1.0, back + (n - 0.5) * 0.3);
+    var c = mix(vec3(0.04, 0.2, 0.42), vec3(0.12, 0.5, 0.68), n);
+    let front = 1.0 - smoothstep(0.0, 0.16 + 0.1 * n, back);
+    let streak = smoothstep(0.6, 0.85, sn_noise(vec3(m.x * 4.0, m.y * 0.8 + t * 5.0, s.params.z + 7.0)));
+    let foam = max(front, streak * 0.7);
+    c = mix(c, vec3(0.92, 0.97, 1.0), foam);
+    c = c * 1.2 + vec3(0.1, 0.15, 0.2) * foam;
+    return vec4(lin(c), clamp(ends * tail * (0.75 + 0.25 * foam) * (0.3 + 0.7 * sink), 0.0, 1.0));
+}
+
 fn game_sprite(s: GameSprite) -> vec4<f32> {
     switch s.effect {
         case 66u: { return wave(s); }
@@ -179,6 +202,7 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         case 68u: { return molten(s); }
         case 69u: { return blood(s); }
         case 70u: { return jet(s); }
+        case 71u: { return surge(s); }
         default: { return fx_sprite(s); }
     }
 }

@@ -241,8 +241,9 @@ pub struct Sentry {
 pub const OVERLOAD_REACH: f32 = 7.0;
 pub const WAVE_WIDTH: f32 = 7.2;
 pub const WAVE_START: f32 = 1.5;
-pub const WAVE_SPEED: f32 = 11.0;
-pub const WAVE_TIME: f64 = 1.3;
+// Slow enough to watch it roll and carry monsters along (Joep).
+pub const WAVE_SPEED: f32 = 8.0;
+pub const WAVE_TIME: f64 = 1.8;
 pub const WAVE_RUN: f32 = WAVE_SPEED * WAVE_TIME as f32;
 pub const METEOR_FROM: Vec3 = Vec3::new(4.0, 22.0, -4.0);
 pub const STORM_TIME: f64 = 3.2;
@@ -1617,7 +1618,9 @@ impl World {
                             let mut ac = self.am(a);
                             ac.push = ac.push.lerp(dir * 13.0, 0.5);
                         }
-                        self.hit(a, &mix, dt * 1.2, Some(caster), dir, ff);
+                        // As much in all as at its old 11 m/s: a slower wave holds
+                        // a monster longer.
+                        self.hit(a, &mix, dt * 1.2 * (WAVE_SPEED / 11.0) as f64, Some(caster), dir, ff);
                     }
                 }
                 if o.t > WAVE_TIME {

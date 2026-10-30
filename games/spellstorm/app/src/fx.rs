@@ -1071,11 +1071,25 @@ impl Fx {
                 self.live.push(wall);
                 // Spray torn off the crest, foam churning along its foot.
                 let white = [0.9, 0.96, 1.0, 1.0];
+                // The water it pushes along the floor (the Godot game's block
+                // of water, Joep's "vierkantje"): exactly the strip that
+                // shoves monsters, moving with it (spells.wgsl `surge`).
+                let mut sea = Sprite::fixed(at + Vec3::Y * 0.05 - dir * 0.2, [WAVE_WIDTH, 3.2], side, dir, IMAGE, uv(Cell::Patch), Vec3::splat(1.0));
+                sea.alpha_cut = 0.0;
+                sea.additive = false;
+                sea.depth_bias = 0.25;
+                sea.effect = crate::effects::SURGE;
+                sea.params = [t, sink, (key % 97) as f32, 0.0];
+                self.live.push(sea);
+                // Small drops, not blobs.
                 let mut spray = particles(white, 160, 0.8, 0.35);
                 spray.dir = (Vec3::Y + dir * 1.5).normalize();
                 spray.spread = 25.0;
                 spray.v = (2.0, 5.0);
                 spray.gravity = Vec3::new(0.0, -9.0, 0.0);
+                spray.cell = Cell::Drop;
+                spray.size = 0.09;
+                spray.glow = 0.6;
                 for k in 0..5 {
                     let x = (k as f32 / 4.0 - 0.5) * WAVE_WIDTH * 0.9;
                     self.stream((key, 10 + k), Em { amount: 32, ..spray }, at + side * x + Vec3::Y * h * 0.95 + dir * 0.6, dt);
