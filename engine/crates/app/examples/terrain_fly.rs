@@ -395,14 +395,19 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
     // the horizon.
     if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density, &render::forest_field::ForestStyle::default()); }
     let mut light = Lighting::default();
-    let sky = AtmosphereCache::default().get_or_bake(&Atmosphere::default(), SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
+    // Sunlit valleys bounce light onto the slopes facing away from the sun:
+    // with the default 0.15 a lee slope 3 km out rendered near black.
+    let atmosphere = Atmosphere { ground_albedo: glam::DVec3::splat(0.25), ..Atmosphere::default() };
+    let sky = AtmosphereCache::default().get_or_bake(&atmosphere, SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
     sky.apply(&mut scene, &mut light);
     // Sun visibility baked on a coarse heightfield shades the valleys behind
     // mountains past the reach of the shadow maps.
     (scene.heightfield, scene.terrain_sun) = procedural_terrain::sun_heightfield(seed, &style, [centre.x, centre.z], SHADOW_SIZE, SHADOW_CELL, light.sun_dir);
     scene.terrain_visibility_complete = true;
     scene.world_terrain_visibility = true;
-    light.fog_density = 0.00003;
+    // A light summer haze (~60 km visibility): distant lee slopes
+    // and forests fade towards the sky instead of staying near black.
+    light.fog_density = 0.00005;
     light.fog_end = 60000.0;
     // TAA's history clamp rejects the jittered sub-pixel fir needles, so
     // distant trees flickered (headless: 0.5-5k changed pixels a frame from a
