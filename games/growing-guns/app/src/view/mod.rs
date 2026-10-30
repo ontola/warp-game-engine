@@ -129,8 +129,9 @@ impl Visuals {
         let phys = Physics::new(Vec3::new(0.0, -20.0, 0.0), growing_guns::TICK_HZ as f32);
         let stadium = StadiumVisuals::reserve(&mut scene);
         let first_dynamic = scene.instances.len();
-        // Coop waves add players as they come.
-        let drawn = if world.coop { world.players.len().max(COOP_VIEW_PLAYERS) } else { world.players.len() };
+        // Coop waves add players as they come; versus reserves all 8 seats up front
+        // so players joining or bot counts changing never rebuild the GPU renderer.
+        let drawn = world.players.len().max(if world.coop { COOP_VIEW_PLAYERS } else { 8 });
         players.reserve_dynamic(&mut scene, drawn);
         let cages = cages::Cages::reserve(&mut scene, drawn);
         let guns = Guns::reserve(&mut scene, drawn);
@@ -315,6 +316,8 @@ impl Visuals {
 
     /// Morph a player's gun into their current stats (a card was given).
     pub fn grow_gun(&mut self, i: usize, p: &growing_guns::Player) { self.guns.grow(i, p); }
+
+    pub fn player_capacity(&self) -> usize { self.guns.capacity() }
 
     /// First person: in view k, local player `slots[k]` sees neither their
     /// own body nor their third-person gun, and only their first-person gun.
@@ -531,7 +534,7 @@ impl Pose {
 /// Player `i` blended from `prev` (the previous tick) by `alpha`.
 pub fn pose(world: &World, i: usize, prev: &[Pose], alpha: f32) -> Pose {
     let now = Pose::of(&world.players[i]);
-    let Some(q) = prev.get(i) else { return now };
+    let Some(q) = prev.get(i).filter(|q| q.pos.distance_squared(now.pos) < 36.0) else { return now };
     let turn = (now.yaw - q.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
     Pose { pos: q.pos.lerp(now.pos, alpha), yaw: q.yaw + turn * alpha, pitch: q.pitch + (now.pitch - q.pitch) * alpha }
 }

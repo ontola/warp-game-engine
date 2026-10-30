@@ -155,12 +155,21 @@ impl Guns {
         }
     }
 
+    pub fn capacity(&self) -> usize { self.rigs.len() }
+
     /// Each local player sees only their own first-person gun, and not
     /// their own third-person one.
     pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
         self.local.fill(false);
+        for (&tp, &fp) in self.tp.iter().zip(&self.fp) {
+            for n in 0..GUN_PARTS {
+                scene.instances[tp + n].hide_in_views(0);
+                scene.instances[fp + n].hide_in_views(0xff);
+            }
+        }
         for &s in slots { if let Some(l) = self.local.get_mut(s) { *l = true; } }
         for (k, &s) in slots.iter().enumerate().take(8) {
+            if s >= self.tp.len() { continue; }
             for n in 0..GUN_PARTS {
                 scene.instances[self.tp[s] + n].hide_in_views(1 << k);
                 scene.instances[self.fp[s] + n].hide_in_views(!(1u8 << k));

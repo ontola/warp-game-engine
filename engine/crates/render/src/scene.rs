@@ -440,6 +440,8 @@ pub struct Scene {
     pub irradiance_volume: Option<(usize, crate::irradiance_volume::Grid)>,
     /// Bullet dents in ROCK surfaces (`reserve_dents`): word offset and capacity.
     pub dents: Option<(usize, usize)>,
+    /// 3D unsigned Euclidean distance field for DFAO (`reserve_dfao`): word offset and grid.
+    pub dfao: Option<(usize, crate::dfao::Grid)>,
     /// A procedural terrain patch pool (`procedural_terrain::reserve`).
     pub procedural_terrain: Option<crate::procedural_terrain::TerrainSpec>,
     /// A GPU-simulated debris pool (`debris::Debris::reserve`).
@@ -673,6 +675,18 @@ impl Scene {
         if self.aux.len() + words >= 1 << 24 { return Err("aux too large for a dent offset".into()); }
         self.dents = Some((self.aux.len(), capacity));
         self.aux.extend(crate::dents::pack(capacity, &[]));
+        Ok(())
+    }
+
+    /// Reserve a 3D Euclidean distance field (`dfao`) in `aux`, unoccluded
+    /// until `Renderer::set_dfao`. Call after the game's own `aux` data.
+    pub fn reserve_dfao(&mut self, grid: crate::dfao::Grid) -> Result<(), String> {
+        if self.dfao.is_some() { return Err("the scene already has a dfao field".into()); }
+        let words = grid.empty_words()?;
+        if self.aux.is_empty() { self.aux.push(0); }
+        if self.aux.len() + words.len() >= 1 << 24 { return Err("aux too large for a dfao offset".into()); }
+        self.dfao = Some((self.aux.len(), grid));
+        self.aux.extend(words);
         Ok(())
     }
 

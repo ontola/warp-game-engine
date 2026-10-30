@@ -273,13 +273,82 @@ fn foliage(p: vec3<f32>) -> f32 {
     return sigma;
 }
 
+// Fast distance lookup in the packed 3D unsigned Euclidean distance field
+// (`dfao.rs`) stored in `aux` at offset `u32(gi.hf.w)`.
+fn dfao_byte(idx: u32, o: u32) -> f32 {
+    return f32((aux[o + 8u + (idx >> 2u)] >> ((idx & 3u) * 8u)) & 0xffu);
+}
+
+fn dfao_sample(q: vec3<f32>, o: u32, origin: vec3<f32>, inv_voxel: f32, dims: vec3<u32>, scale: f32) -> f32 {
+    let f = (q - origin) * inv_voxel - 0.5;
+    let last = vec3<f32>(dims - vec3<u32>(1u));
+    if any(f < vec3<f32>(-0.5)) || any(f > last + vec3<f32>(0.5)) { return 255.0 * scale; }
+    let fc = clamp(f, vec3<f32>(0.0), last);
+    let i0 = vec3<u32>(min(floor(fc), max(last - vec3<f32>(1.0), vec3<f32>(0.0))));
+    let t = fc - vec3<f32>(i0);
+    let sy = dims.x;
+    let sz = dims.x * dims.y;
+    let b00 = i0.x + i0.y * sy + i0.z * sz;
+    let b10 = b00 + sy;
+    let b01 = b00 + sz;
+    let b11 = b10 + sz;
+    let x00 = mix(dfao_byte(b00, o), dfao_byte(b00 + 1u, o), t.x);
+    let x10 = mix(dfao_byte(b10, o), dfao_byte(b10 + 1u, o), t.x);
+    let x01 = mix(dfao_byte(b01, o), dfao_byte(b01 + 1u, o), t.x);
+    let x11 = mix(dfao_byte(b11, o), dfao_byte(b11 + 1u, o), t.x);
+    let y0 = mix(x00, x10, t.y);
+    let y1 = mix(x01, x11, t.y);
+    return mix(y0, y1, t.z) * scale;
+}
+
+fn dfao_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>) -> vec2<f32> {
+    let o = u32(gi.hf.w);
+    if o == 0u { return vec2<f32>(1.0); }
+    let origin = vec3<f32>(aux_f32(o), aux_f32(o + 1u), aux_f32(o + 2u));
+    let voxel = aux_f32(o + 3u);
+    let dims = vec3<u32>(aux[o + 4u], aux[o + 5u], aux[o + 6u]);
+    let extent = origin + vec3<f32>(dims) * voxel;
+    if any(p < origin) || any(p > extent) { return vec2<f32>(1.0); }
+    let max_dist = aux_f32(o + 7u);
+    let inv_voxel = 1.0 / max(voxel, 0.01);
+    let scale = max_dist / 255.0;
+    let d1 = dfao_sample(p + n * (voxel * 0.85), o, origin, inv_voxel, dims, scale);
+    let d2 = dfao_sample(p + n * (voxel * 2.15), o, origin, inv_voxel, dims, scale);
+    let v1 = clamp(d1 / (voxel * 0.95), 0.22, 1.0);
+    let v2 = clamp(d2 / (voxel * 2.25), 0.30, 1.0);
+    let diffuse = min(v1, v2) * 0.65 + (v1 * v2) * 0.35;
+    let dr = dfao_sample(p + refl * (voxel * 1.4), o, origin, inv_voxel, dims, scale);
+    let specular = clamp(dr / (voxel * 1.45), 0.20, 1.0);
+    return vec2<f32>(diffuse, specular);
+}
+
+// Fast 4-tap Screen-Space Ambient Occlusion (SSAO) in reversed-Z hardware depth,
+// with thickness rejection so foreground edges never cast dark halos.
+fn screen_space_ao(px: vec2<i32>, size: vec2<u32>, p: vec3<f32>, n: vec3<f32>, dist: f32) -> f32 {
+    if gi.params.x < 0.5 || dist >= 48.0 { return 1.0; }
+    let d0 = textureLoad(depth_tex, px, 0);
+    if d0 <= 0.0001 { return 1.0; }
+    let fade = 1.0 - smoothstep(30.0, 48.0, dist);
+    let r = i32(clamp(0.75 * view.cam.w / max(dist, 0.8), 2.0, 14.0));
+    let max_px = vec2<i32>(size) - vec2<i32>(1);
+    let d_r = textureLoad(depth_tex, clamp(px + vec2<i32>(r, 0), vec2<i32>(0), max_px), 0) - d0;
+    let d_l = textureLoad(depth_tex, clamp(px + vec2<i32>(-r, 0), vec2<i32>(0), max_px), 0) - d0;
+    let d_u = textureLoad(depth_tex, clamp(px + vec2<i32>(0, -r), vec2<i32>(0), max_px), 0) - d0;
+    let d_d = textureLoad(depth_tex, clamp(px + vec2<i32>(0, r), vec2<i32>(0), max_px), 0) - d0;
+    let scale = dist * dist * 8.5;
+    let ox = clamp((d_r + d_l) * scale, 0.0, 1.0) * step(abs(d_r - d_l) * scale, 1.6);
+    let oy = clamp((d_u + d_d) * scale, 0.0, 1.0) * step(abs(d_u - d_d) * scale, 1.6);
+    return 1.0 - clamp((ox + oy) * 0.22 * fade, 0.0, 0.48);
+}
+
 // Smooth projected-area approximation for diffuse contact, and opaque ray
 // intersection for glossy visibility. Proxies follow the live car transform.
 // These small local bounds never share the coarse, translucent foliage grid.
 fn contact_visibility(p: vec3<f32>, n: vec3<f32>, refl: vec3<f32>, owner: u32) -> vec2<f32> {
     if gi.vol_dims.w == 0u || gi.params.x < 0.5 { return vec2<f32>(1.0); }
-    var diffuse = 1.0;
-    var specular = 1.0;
+    let dfao = dfao_visibility(p, n, refl);
+    var diffuse = dfao.x;
+    var specular = dfao.y;
     for (var i = 0u; i < gi.hf_dims.z; i++) {
         let bounds = solids[i];
         // A coarse interior proxy must never shade its own visible body:
@@ -728,6 +797,7 @@ fn rock_dents(p: vec3<f32>, face: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     let h = (u32(c.x) * 73856093u) ^ (u32(c.y) * 19349663u) ^ (u32(c.z) * 83492791u);
     let entry = aux[o + 4u + (h & (buckets - 1u))];
     let count = min(entry & 255u, 15u);
+    if count == 0u { return vec4<f32>(normal, 1.0); }
     var nn = normal;
     var dim = 1.0;
     let list = o + 4u + buckets + (entry >> 8u);
@@ -1787,7 +1857,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         rough_m = rs.rough;
         let face = n;
         n = rs.normal;
-        if view_hf_dents() != 0u {
+        if view_hf_dents() != 0u && max(length(fp.dx), length(fp.dy)) < 0.10 {
             let dent = rock_dents(p, face, n);
             base *= dent.w;
             n = dent.xyz;
@@ -1867,7 +1937,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     let terrain_error=select(0.0,world_visibility.params.z,(m.flags&6u)!=0u);
     var shadow = 1.0;
-    if sun > 0.0 || needles || gi.vol_dims.w != 0u || coat > 0.0 || rough_m < 0.55 {
+    if sun > 0.0 || needles || (gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u) || coat > 0.0 || rough_m < 0.55 {
         let s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
@@ -1891,7 +1961,8 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     if FEATURE_MEADOW && (m.flags&6u)!=0u {meadow_edge=meadow_edge_visibility(p,surface_n,l);}
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y;
     let refl = reflect(dir, n);
-    let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x);
+    let ssao = screen_space_ao(px, size, p, visibility_n, dist);
+    let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
     var reflection_vis = sky_vis;
     if coat > 0.0 || rough < 0.55 {

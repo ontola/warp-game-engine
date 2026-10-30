@@ -191,7 +191,8 @@ impl PlayersView {
 
     /// Gib pieces shattered from the players' own meshes.
     pub fn reserve_gore(&mut self, scene: &mut Scene, seed: u64) {
-        self.gore = Some(Gore::reserve(scene, &std::mem::take(&mut self.sources), seed));
+        let models = self.characters.as_ref().map_or(&[][..], |c| c.models());
+        self.gore = Some(Gore::reserve(scene, &std::mem::take(&mut self.sources), models, seed));
     }
 
     fn gore(&mut self) -> &mut Gore { self.gore.as_mut().expect("reserve_gore") }
@@ -248,7 +249,7 @@ impl PlayersView {
         if skinned && !matches!(gib, Gib::Burst { .. }) {
             // Drive the original textured skin from articulated limb bodies.
             if let Some(characters) = &mut self.characters {
-                if let Err(error) = characters.kill(phys, victim, v, push) { eprintln!("ragdoll: {error}"); }
+                if let Err(error) = characters.kill(phys, victim, v, push, matches!(gib, Gib::Head)) { eprintln!("ragdoll: {error}"); }
             }
             if matches!(gib, Gib::Head) {
                 self.gore().burst(scene, phys, victim, &[gore::Part::Head, gore::Part::Eyes], v.pos, v.yaw, v.vel, push, 0.5, now);
@@ -370,8 +371,8 @@ impl PlayersView {
         if let Some(characters) = &mut self.characters { characters.pose(world, prev, alpha); }
         let mut slot = self.first;
         for (i, m) in self.meshes.iter().enumerate() {
-            let Some(p) = world.players.get(i).filter(|p| p.alive) else {
-                let corpse = self.characters.as_ref().and_then(|c| c.corpse_transform(i));
+            let Some(_p) = world.players.get(i).filter(|p| p.alive) else {
+                let corpse = world.players.get(i).and_then(|_| self.characters.as_ref().and_then(|c| c.corpse_transform(i)));
                 for (part, mesh) in [m.body, m.head, m.eyes].into_iter().enumerate() {
                     let xf = if part == 0 { corpse.unwrap_or(Affine3A::from_translation(HIDDEN)) } else { Affine3A::from_translation(HIDDEN) };
                     scene.update_instance(slot, mesh, xf);
@@ -442,10 +443,14 @@ impl PlayersView {
     /// First person: hide each local player's own model from their view
     /// (`slots[k]` is drawn in view k). It still casts its shadow.
     pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
-        for m in &mut self.meshes { m.own_views = 0; }
+        for (i, m) in self.meshes.iter_mut().enumerate() {
+            m.own_views = 0;
+            for part in 0..PARTS { scene.instances[self.first + i * PARTS + part].hide_in_views(0); }
+        }
         for (k, &s) in slots.iter().enumerate().take(8) {
-            if let Some(m) = self.meshes.get_mut(s) { m.own_views |= 1 << k; }
-            for part in 0..PARTS { scene.instances[self.first + s * PARTS + part].hide_in_views(1 << k); }
+            let Some(m) = self.meshes.get_mut(s) else { continue };
+            m.own_views |= 1 << k;
+            for part in 0..PARTS { scene.instances[self.first + s * PARTS + part].hide_in_views(m.own_views); }
         }
     }
 

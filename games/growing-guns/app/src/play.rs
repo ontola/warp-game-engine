@@ -143,9 +143,11 @@ impl Gg {
     /// mods; the renderer, sound and party stay.
     pub fn reset(&mut self, mut world: World, slots: Vec<usize>) {
         self.scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
+        let bake = self.vis.stadium.bake_in_background;
         // The crowd's voices outlive the stadium they cheer in.
         let crowd = std::mem::replace(&mut self.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
         self.vis = view::Visuals::build(&world);
+        self.vis.stadium.bake_in_background = bake;
         self.vis.stadium.set_sound(crowd);
         self.vis.stadium.sound.kickoff();
         self.vis.hide_own_bodies(&slots);
@@ -208,19 +210,30 @@ impl Gg {
 
     /// Client: apply what the host sent; returns the interpolation alpha.
     pub fn receive(&mut self, dt: f32) -> f32 {
-        let before = view::Pose::all(&self.world);
         self.hud.locals.clone_from(&self.slots);
         let names = self.seat_names();
         self.hud.set_names(&self.world, &self.slots, &names);
-        let (vis, hud, sounds, music, slots) = (&mut self.vis, &mut self.hud, &mut self.sounds, &mut self.music, &self.slots);
-        let (snaps, arena) = self.session.receive(&mut self.world, slots, |w| {
+        let (vis, hud, sounds, music, slots, prev, since_snap) = (
+            &mut self.vis,
+            &mut self.hud,
+            &mut self.sounds,
+            &mut self.music,
+            &self.slots,
+            &mut self.prev,
+            &mut self.since_snap,
+        );
+        let (_snaps, arena) = self.session.receive(&mut self.world, prev, since_snap, dt, slots, |w| {
             vis.absorb(w, &crate::sounds::ears(w, slots));
             hud.tick(w, DT);
             if let Some(s) = sounds.as_mut() { s.tick(w, slots, DT); vis.stadium.sound.loudness_db = s.duck_db(); }
             follow_music(music, w, slots);
         });
-        if snaps > 0 { self.prev = before; self.since_snap = 0.0; } else { self.since_snap += dt; }
-        if arena { self.new_arena(); }
+        let needed = if self.world.coop { self.world.players.len().max(view::COOP_VIEW_PLAYERS) } else { self.world.players.len() };
+        if self.vis.player_capacity() < needed {
+            rebuild_views(self);
+        } else if arena {
+            self.new_arena();
+        }
         (self.since_snap / DT).clamp(0.0, 1.0)
     }
 
@@ -432,10 +445,11 @@ const BLACKOUT_EV: f32 = 8.0;
 static BLACKOUT_EV100: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("GG_BLACKOUT_EV").ok().and_then(|v| v.parse().ok()).unwrap_or(BLACKOUT_EV));
 
 /// What the menus show of the session; `party`: GameNight's settings.
-fn menu_ctx<'a>(session: &Session, world: &World, ticket: Option<&'a str>, party: Option<&crate::party::Settings>, names: &[String]) -> hud::menus::Ctx<'a> {
+fn menu_ctx<'a>(session: &Session, world: &World, start_seats: &[usize], ticket: Option<&'a str>, party: Option<&crate::party::Settings>, names: &[String]) -> hud::menus::Ctx<'a> {
     let status = if world.coop { format!("WAVE SURVIVAL  /  WAVE {}", world.waves.wave) } else { format!("VERSUS  /  ROUND {}  /  FIRST TO {}", world.round, world.rounds_to_win) };
+    let bots = (0..world.players.len()).filter(|i| world.players[*i].bot && !start_seats.contains(i)).count();
     hud::menus::Ctx {
-        ticket, client: session.is_client(), seed: world.arena.seed, bots: world.players.iter().filter(|p| p.bot).count(),
+        ticket, client: session.is_client(), seed: world.arena.seed, bots,
         players: world.players.len(), coop: world.coop, seats: if party.is_some() { names.to_vec() } else { Vec::new() }, party: party.map(|s| (s.entries(), status)),
     }
 }
@@ -465,6 +479,7 @@ impl Gg {
     pub fn show_start(&mut self) {
         self.start_seats = self.slots.clone();
         for &s in &self.slots { self.world.set_bot(s, true); }
+        self.vis.hide_own_bodies(&[]);
         self.ui.open(hud::menus::Screen::Start);
     }
 
@@ -502,15 +517,11 @@ impl Gg {
         let s = match free {
             Some(s) => s,
             None if self.session.remote_players() == 0 && !w.coop && w.players.len() < 8 => {
-                let mut p = growing_guns::Player::new(false);
-                let have = w.players.len();
-                p.pos = w.arena.spawns.get(have % w.arena.spawns.len().max(1)).copied().unwrap_or_default() + Vec3::Y;
-                self.world.players.push(p);
-                have
+                self.world.add_bot()
             }
             None => return Err("GAME FULL".into()),
         };
-        self.world.set_bot(s, false);
+        self.world.join_human(s);
         self.slots.push(s);
         self.binding.push(vec![dev]);
         self.joined_now.push(self.slots.len() - 1);
@@ -542,7 +553,7 @@ impl Gg {
 
     /// The shared menus' context.
     fn ctx<'a>(&'a self, ticket: Option<&'a str>) -> hud::menus::Ctx<'a> {
-        menu_ctx(&self.session, &self.world, ticket, self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names)
+        menu_ctx(&self.session, &self.world, &self.start_seats, ticket, self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names)
     }
 
     /// A finished join from the menu: the new session replaces this one.
@@ -586,7 +597,13 @@ impl Gg {
                 for s in std::mem::take(&mut self.start_seats) { self.world.set_bot(s, false); }
                 self.world.coop = a == Action::Wave;
                 self.world.restart_match();
-                self.new_arena();
+                let needed = if self.world.coop { self.world.players.len().max(view::COOP_VIEW_PLAYERS) } else { self.world.players.len() };
+                if self.vis.player_capacity() < needed {
+                    rebuild_views(self);
+                } else {
+                    self.vis.hide_own_bodies(&self.slots);
+                    self.new_arena();
+                }
                 self.hud = hud::Hud::new(&self.world);
                 // A match starts on the round flash, as every round does.
                 self.hud.round_age = 0.0;
@@ -638,21 +655,23 @@ impl Gg {
             Action::Party(k, v) => {
                 if let Some(p) = &mut self.party { p.set(k, v); } else if let Some(s) = &mut self.gn_preview && let Some(key) = s.key(k) { s.change(&key, &serde_json::json!(v)); }
             }
-            // Godot `_spawn_bots` / `_despawn_one_bot` from the pause menu: the
-            // views are rebuilt for the new count, so not with anyone joined.
-            Action::AddBot if host && self.session.remote_players() == 0 && !self.world.coop && self.world.players.len() < 8 => {
-                let w = &mut self.world;
-                let mut p = growing_guns::Player::new(true);
-                let have = w.players.len();
-                p.pos = w.arena.spawns.get(have % w.arena.spawns.len().max(1)).copied().unwrap_or_default() + Vec3::Y;
-                w.players.push(p);
-                rebuild_views(self);
-            }
-            Action::RemoveBot if host && self.session.remote_players() == 0 && !self.world.coop => {
-                let keep = self.slots.iter().chain(&self.start_seats).max().map_or(1, |&m| m + 1).max(2);
-                if self.world.players.len() > keep && self.world.players.last().is_some_and(|p| p.bot) {
-                    self.world.players.pop();
+            // Godot `_spawn_bots` / `_despawn_one_bot` from the start or pause menu.
+            Action::AddBot if host && !self.world.coop && self.world.players.len() < 8 => {
+                self.world.add_bot();
+                if self.vis.player_capacity() < self.world.players.len() {
                     rebuild_views(self);
+                } else {
+                    self.prev = view::Pose::all(&self.world);
+                    self.hud.sync(&self.world);
+                }
+            }
+            Action::RemoveBot if host && !self.world.coop => {
+                let mut keep = self.slots.clone();
+                keep.extend_from_slice(&self.start_seats);
+                keep.extend(self.session.remote_slots());
+                if self.world.remove_bot(&keep) {
+                    self.prev = view::Pose::all(&self.world);
+                    self.hud.sync(&self.world);
                 }
             }
             Action::Extend if host => self.world.extend_match(),
@@ -798,7 +817,7 @@ impl app::Game for Gg {
         }
         let debug = self.debug.open;
         let ctx_ticket = self.session.ticket().map(str::to_string);
-        let ctx = menu_ctx(&self.session, &self.world, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
+        let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
         let modal = self.ui.is_open() || self.hud.match_over.is_some() || debug;
         // The debug overlay takes the controls; the match runs on under it.
         if !debug {
@@ -832,10 +851,16 @@ impl app::Game for Gg {
             let focus = (age >= 0.75).then(|| self.menus[k].focus);
             if let Some(f) = self.hud.fb.get_mut(s) { hud::cards::ease_highlight(f, n, focus, DT); }
         }
-        if self.session.is_client() { self.session.send(local); return; }
+        if self.session.is_client() {
+            self.session.send(&mut self.world, &self.slots, local);
+            self.stepped = true;
+            return;
+        }
         let mut inputs = vec![Input::default(); self.world.players.len()];
         for (k, &s) in self.slots.iter().enumerate() { if let Some(i) = local.get(k) { inputs[s] = *i; } }
         self.session.poll(&mut self.world);
+        if self.vis.player_capacity() < self.world.players.len() { rebuild_views(self); }
+        inputs.resize(self.world.players.len(), Input::default());
         self.session.remote_inputs(&mut inputs);
         // The pause menu stops a match nobody else is playing (Godot: one human).
         let humans = self.world.players.iter().filter(|p| !p.bot).count();
@@ -864,7 +889,15 @@ impl app::Game for Gg {
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
         let draw_t = std::time::Instant::now();
         // Interpolating a frozen match swings between two ticks (a flicker at 120 Hz).
-        let alpha = if self.session.is_client() { self.receive(frame.dt) } else if self.stepped { frame.alpha } else { 1.0 };
+        let alpha = if self.session.is_client() {
+            let a = self.receive(frame.dt);
+            self.session.pose_locals(&mut self.world, &mut self.prev, &self.slots, frame.alpha, frame.dt);
+            a
+        } else if self.stepped {
+            frame.alpha
+        } else {
+            1.0
+        };
         self.vis.set_tilt(self.ui.tilt);
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if self.sky.live.is_some() { self.cycle_sky(); }
@@ -933,7 +966,7 @@ impl app::Game for Gg {
         };
         list.begin_overlay();
         let ticket = self.session.ticket().map(str::to_string);
-        let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
+        let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
         self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
         self.hud.round_flash(&mut list);
         if self.debug.open { let dctx = self.debug_ctx(); self.debug.draw(&mut list, &dctx); }
@@ -1017,7 +1050,7 @@ impl app::Game for Gg {
             return;
         }
         let (ticket, _) = self.ctx_parts();
-        let a = { let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.text(ev, &ctx) };
+        let a = { let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.text(ev, &ctx) };
         self.act(a);
     }
 
@@ -1035,7 +1068,7 @@ impl app::Game for Gg {
                 use hud::menus::Field;
                 let f = match w.get(1).copied() { Some("join") => Field::Join, Some("name") => Field::Name, _ => return Err("focus join|name".into()) };
                 let (ticket, _) = self.ctx_parts();
-                let ok = { let ctx = menu_ctx(&self.session, &self.world, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.focus_field(f, &ctx) };
+                let ok = { let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.focus_field(f, &ctx) };
                 if ok { Ok(format!("focus {f:?}")) } else { Err(format!("no {f:?} field on {:?}", self.ui.screen)) }
             }
             // Splitscreen on or off, as the pause menu's SPLITSCREEN.
@@ -1257,12 +1290,22 @@ pub fn music(args: &Args, sounds: Option<&std::path::Path>, seed: u64, backgroun
     Some(m)
 }
 
-/// After the player count changed (live `spawn_bots`): new views and a new
-/// renderer scene; the crowd keeps its voice.
+/// Refresh seat visibility after a join/leave. The reserved player slots keep
+/// the renderer and effects alive; only exceeding capacity needs a new scene.
 pub fn rebuild_views(gg: &mut Gg) {
+    let start = matches!(gg.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
+    let needed = gg.world.players.len().max(if gg.world.coop { view::COOP_VIEW_PLAYERS } else { 8 });
+    if gg.vis.player_capacity() >= needed {
+        gg.vis.hide_own_bodies(if start { &[] } else { &gg.slots });
+        gg.prev = view::Pose::all(&gg.world);
+        gg.hud.sync(&gg.world);
+        return;
+    }
+    let bake = gg.vis.stadium.bake_in_background;
     let sound = std::mem::replace(&mut gg.vis.stadium.sound, crate::crowd_sound::CrowdSound::new(None));
     gg.vis = view::Visuals::build(&gg.world);
-    gg.vis.hide_own_bodies(&gg.slots);
+    gg.vis.stadium.bake_in_background = bake;
+    gg.vis.hide_own_bodies(if start { &[] } else { &gg.slots });
     gg.vis.stadium.sound = sound;
     gg.prev = view::Pose::all(&gg.world);
     gg.hud.sync(&gg.world);
@@ -1296,7 +1339,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     let seed = args.num("--seed", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs()));
     let lan = args.flag("--lan");
     let (session, world, slots) = if let Some(ticket) = args.value("--join") {
-        let (session, world, slots) = Session::join(ticket, humans as u8, lan)?;
+        let ticket = hud::menus::extract_ticket(ticket);
+        let (session, world, slots) = Session::join(&ticket, humans as u8, lan)?;
         println!("joined: playing as {:?}", slots.iter().map(|s| s + 1).collect::<Vec<_>>());
         (session, world, slots)
     } else {
@@ -1347,12 +1391,14 @@ pub fn run(args: &Args) -> Result<(), String> {
         }
         Err(e) => { eprintln!("silent: {e}"); None }
     };
+    let target_fps = args.value("--target-fps").and_then(|v| v.parse().ok());
     let cfg = app::Config {
         title: "Growing Guns | Warp".into(),
         tick_hz: TICK_HZ as f32,
         fullscreen: args.flag("--fullscreen"),
         keyboard: !args.flag("--no-kbm"),
         frames: args.num("--frames", 0u64),
+        target_fps,
         ..Default::default()
     };
     app::run(cfg, &mut game)
@@ -1377,6 +1423,8 @@ mod tests {
         let mut world = World::new(5, &[false, true, true, true]);
         world.release_cage();
         let mut g = Gg::new(world, Session::Local, vec![0]);
+        g.rebuild = false; // Initial renderer already installed by the shell.
+        let instances = g.vis.scene.instances.as_ptr();
         // Not split: every device drives the one seat; a second pad shows the hint.
         step(&mut g, &idle(2));
         assert!(g.seats().is_none());
@@ -1422,6 +1470,22 @@ mod tests {
         g.command("split off").unwrap();
         assert_eq!(g.slots, vec![0]);
         assert!(g.world.players[2].bot && g.seats().is_none());
+        assert!(!g.rebuild, "joining/leaving must not recreate GPU pipelines");
+        assert_eq!(instances, g.vis.scene.instances.as_ptr(), "keep the scene and live effects");
+    }
+
+    #[test]
+    fn bot_count_changes_reuse_all_eight_reserved_seats() {
+        let mut g = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
+        g.rebuild = false;
+        let instances = g.vis.scene.instances.as_ptr();
+        for _ in 0..6 { g.act(hud::menus::Action::AddBot); }
+        assert_eq!(g.world.players.len(), 8);
+        for _ in 0..6 { g.act(hud::menus::Action::RemoveBot); }
+        assert_eq!(g.world.players.len(), 2);
+        g.vis.pose(&g.world, &g.prev, 1.0, DT);
+        assert!(!g.rebuild);
+        assert_eq!(instances, g.vis.scene.instances.as_ptr());
     }
 
     #[test]
@@ -1482,5 +1546,27 @@ mod tests {
         let state: serde_json::Value = serde_json::from_str(&g.state().unwrap()).unwrap();
         assert_eq!(state["menu"]["join_field"], "xyz");
         assert_eq!(state["menu"]["text_input"], true);
+    }
+
+    #[test]
+    fn start_menu_and_pause_adjust_bots_revive_joined_humans_and_size_coop_views() {
+        let mut g = Gg::new(World::new(5, &[false, true, true, true]), Session::Local, vec![0]);
+        g.show_start();
+        assert_eq!(g.ctx(None).bots, 3, "start screen excludes the host's own seat from bot count");
+        g.act(hud::menus::Action::RemoveBot);
+        assert_eq!(g.ctx(None).bots, 2);
+        assert_eq!(g.world.players.len(), 3);
+        // Joining into a dead/ghost bot seat revives that player for the round.
+        g.world.players[1].alive = false;
+        g.world.players[1].ghost = true;
+        g.world.join_human(1);
+        assert!(g.world.players[1].alive && !g.world.players[1].ghost && !g.world.players[1].bot);
+        // With two humans in the match, bots can be lowered all the way to 0 (1v1).
+        g.act(hud::menus::Action::RemoveBot);
+        assert_eq!(g.ctx(None).bots, 0);
+        assert_eq!(g.world.players.len(), 2);
+        // Switching to Wave Survival expands Visuals capacity for wave enemies.
+        g.act(hud::menus::Action::Wave);
+        assert!(g.vis.player_capacity() >= view::COOP_VIEW_PLAYERS);
     }
 }

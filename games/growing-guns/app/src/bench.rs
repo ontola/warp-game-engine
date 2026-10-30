@@ -57,6 +57,7 @@ pub fn sim(args: &Args) -> Result<(), String> {
         world.step(&[]);
         let a = ms(t);
         let t2 = Instant::now();
+        if world.events.contains(&growing_guns::Event::NewArena) { vis.set_arena(&world); }
         vis.absorb(&world, &[]);
         vis.pose(&world, &prev, 1.0, 1.0 / TICK_HZ as f32);
         let b = ms(t2);

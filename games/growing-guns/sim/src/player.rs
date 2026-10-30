@@ -73,6 +73,77 @@ impl World {
         }
     }
 
+    /// Client-side kinematic prediction for one local human slot `i`: steps
+    /// look, movement, jumps, wall-jumps, dash, and arena collision identically
+    /// to `player_tick` without spawning server-authoritative projectiles or
+    /// emitting duplicate events.
+    pub fn predict_player(&mut self, i: usize, input: Input) {
+        if i >= self.players.len() { return; }
+        self.players[i].bot = false;
+        let p = &self.players[i];
+        let input = if p.offer.is_some() {
+            Input { pick: input.pick, ..Default::default() }
+        } else {
+            input
+        };
+        {
+            let p = &mut self.players[i];
+            if p.iframes > 0.0 { p.iframes = (p.iframes - DT64).max(0.0); }
+            if p.slow_timer > 0.0 {
+                p.slow_timer = (p.slow_timer - DT64).max(0.0);
+                if p.slow_timer <= 0.0 { p.slow_mult = 1.0; }
+            }
+            p.held_special = input.special;
+            p.held_fire = input.fire;
+            p.since_shot += DT;
+        }
+        let event_len = self.events.len();
+        let p = &self.players[i];
+        if p.ghost {
+            if p.offer.is_none() && self.phase == Phase::Playing {
+                self.recover_ghost(i);
+                let p = &mut self.players[i];
+                p.dash_timer = 0.0;
+                p.zooming = false;
+                self.cooldowns(i);
+                self.move_player_with(i, Input { mv: input.mv, look: input.look, jump: input.jump, ..Default::default() }, false);
+                self.recover_ghost(i);
+            } else {
+                self.players[i].vel = Vec3::ZERO;
+            }
+            self.events.truncate(event_len);
+            return;
+        }
+        if p.downed {
+            self.downed_tick(i, input.look);
+            self.events.truncate(event_len);
+            return;
+        }
+        if !p.alive {
+            self.players[i].vel = Vec3::ZERO;
+            return;
+        }
+        if p.phoenix.is_some() || p.launching.is_some() {
+            return;
+        }
+        if p.frozen {
+            let p = &mut self.players[i];
+            p.vel = Vec3::ZERO;
+            p.yaw += input.look[0];
+            p.pitch = (p.pitch + input.look[1]).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+            return;
+        }
+        self.cooldowns(i);
+        self.move_player_with(i, input, false);
+        let p = &mut self.players[i];
+        if p.weapon.special == crate::Special::Zoom && p.air_strike_charges == 0 {
+            p.zooming = input.special;
+        } else {
+            p.zooming = false;
+        }
+        self.events.truncate(event_len);
+    }
+
     /// A dead local/remote player can walk around after choosing a card.
     /// Keep the eliminated body non-targetable and never enter combat input.
     fn ghost_tick(&mut self, i: usize, input: Input, fire_edge: bool) {
@@ -204,6 +275,10 @@ impl World {
     /// Gravity, jumps, dash and horizontal movement, then the slide (humans;
     /// bots move in `bot.rs`).
     fn move_player(&mut self, i: usize, input: Input) {
+        self.move_player_with(i, input, true);
+    }
+
+    fn move_player_with(&mut self, i: usize, input: Input, authoritative: bool) {
         let gravity = GRAVITY * self.gravity_mult();
         let mut ev = Vec::new();
         let mut dash_ended = false;
@@ -243,7 +318,7 @@ impl World {
             if input.dash && p.dash_charges > 0 { dash_started = Some(if wish.length_squared() < 1e-4 { fwd } else { wish }); }
 
         }
-        if let Some(d) = dash_started { self.start_dash(i, d); }
+        if let Some(d) = dash_started { self.start_dash_with(i, d, authoritative); }
         {
             let p = &mut self.players[i];
             let bot = p.bot;
@@ -279,12 +354,18 @@ impl World {
             }
         }
         self.slide(i);
-        self.events.extend(ev);
-        if dash_ended { self.dash_ended(i); }
+        if authoritative {
+            self.events.extend(ev);
+            if dash_ended { self.dash_ended(i); }
+        }
     }
 
     /// Godot `_start_dash`: a charge, the dodge immunity, the backblast bomb.
     pub(crate) fn start_dash(&mut self, i: usize, dir: Vec3) {
+        self.start_dash_with(i, dir, true);
+    }
+
+    fn start_dash_with(&mut self, i: usize, dir: Vec3, authoritative: bool) {
         let p = &mut self.players[i];
         if p.dash_charges == 0 { return; }
         let dir = if dir.length_squared() < 1e-4 { look_dir(p.yaw, 0.0) } else { dir };
@@ -292,9 +373,11 @@ impl World {
         p.dash_timer = DASH_TIME;
         p.dash_charges -= 1;
         if p.weapon.dash_iframes { p.iframes = DASH_TIME; }
-        let bomb = p.weapon.dash_spawn_bomb.then(|| p.pos + Vec3::Y * 0.08);
-        self.events.push(Event::Dash { player: i });
-        if let Some(at) = bomb { self.spawn_dash_bomb(i, at); }
+        if authoritative {
+            let bomb = p.weapon.dash_spawn_bomb.then(|| p.pos + Vec3::Y * 0.08);
+            self.events.push(Event::Dash { player: i });
+            if let Some(at) = bomb { self.spawn_dash_bomb(i, at); }
+        }
     }
 
     /// `move_and_slide` with Godot's floor snap: a grounded body is pressed

@@ -214,7 +214,10 @@ impl StadiumVisuals {
         let masonry = (std::env::var("GG_STADIUM_BRICKS").as_deref() != Ok("0")).then(||
             std::array::from_fn(|i| {
                 let m = quarry_mat(scene, quarry[i]);
-                [(4, 8), (6, 1)].map(|(cols, rows)| scene.add_mesh(&render::masonry::panel(m, cols, rows, 11).mesh()))
+                [(4, 8), (6, 1)].map(|(cols, rows)| {
+                    let fine = render::masonry::panel(m, cols, rows, 11).mesh();
+                    scene.add_mesh(&fine)
+                })
             }));
         let roof_stone: [usize; 6] = std::array::from_fn(|i| { let m = quarry_mat(scene, quarry[i].map(|v| v * 0.75)); scene.add_mesh(&roof_mesh(m).mesh()) });
         let wall_stone: [usize;6]=std::array::from_fn(|i| {let m=quarry_mat(scene,quarry[i]);scene.add_mesh(&ring_mesh(m,0.9795,0.0,1.0).mesh())});
