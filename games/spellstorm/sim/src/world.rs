@@ -835,14 +835,18 @@ impl World {
     /// Small floating numbers for what an actor took and healed since the
     /// last time: white on monsters, gold and bigger on a weakness, grey and
     /// smaller when it resists, red on wizards, green for healing.
-    fn numbers(&mut self, id: Id) {
+    pub(crate) fn numbers(&mut self, id: Id) {
         let Some(a) = self.actor(id) else { return };
         let s = a.shown;
+        // The killing blow shows a little bigger.
+        let killed = !a.alive && !a.wizard;
         let top = a.pos + Vec3::Y * if a.wizard { 2.6 } else { 1.4 + a.radius * 1.4 };
         let wizard = a.wizard;
         let pos = a.pos;
         drop(a);
-        let side = Vec3::new(self.rng.range(-0.35, 0.35), 0.0, 0.0);
+        // The killing blow sits in the middle: drawing at a death would
+        // change every roll after it.
+        let side = if killed { Vec3::ZERO } else { Vec3::new(self.rng.range(-0.35, 0.35), 0.0, 0.0) };
         if s.dmg >= 1.0 {
             let mut text = format!("{}", s.dmg.round() as i64);
             let mut c = fx::rgb(0.95, 0.92, 0.85);
@@ -856,6 +860,9 @@ impl World {
             } else if s.resist {
                 c = fx::rgb(0.6, 0.62, 0.68);
                 size = 24.0;
+            }
+            if killed {
+                size *= 1.25;
             }
             self.ev(Ev::Text {
                 at: top + side,

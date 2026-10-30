@@ -1881,6 +1881,8 @@ impl World {
         if c.boss {
             self.shake(1.2);
         }
+        // Its last hits show now: the 0.3 s round only counts the living.
+        self.numbers(id);
         self.corpses.push(id);
         let kind = c.key;
         self.ev(Ev::MonsterDied {

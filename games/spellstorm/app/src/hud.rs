@@ -367,7 +367,8 @@ impl Hud {
             let rise = 0.9 * (1.0 - (1.0 - k).powi(2));
             let Some(q) = on_screen(vp, *at + Vec3::Y * rise, size, p.s) else { continue };
             let a = 1.0 - ((k - 0.65) / 0.35).clamp(0.0, 1.0);
-            p.text(text, q.x, q.y, title(), *px, alpha(*c, a), TextAlign::Center, 8.0);
+            let px = px * spellstorm::knobs::number_size() as f32;
+            p.text(text, q.x, q.y, title(), px, alpha(*c, a), TextAlign::Center, (px * 0.27).max(2.0));
         }
     }
 }
