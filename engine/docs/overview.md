@@ -97,3 +97,12 @@ game's own tools while you play. See [live control](live-control.md).
 - Claiming the frame-rate target before it is measured. The Sideways target
   is four players on one 4K output at 120 FPS (8.33 ms per frame); it is
   not reached. See [rendering](rendering.md).
+
+### Gameplay attachments to feedback screenshots
+
+The app shell calls `Game::feedback_replay` with the F12 PNG path and its
+interpolation phase. A game may attach a replay using the same basename; its
+metadata or error is included beside the screenshot. Growing Guns implements
+a bounded state recorder and review UI (see its README). Games without this
+hook retain screenshot-only behavior. `Headless::frame_at` renders a specified
+sub-tick phase for repeatable captures.

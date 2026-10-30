@@ -112,6 +112,9 @@ pub trait Game {
     fn wants_capture(&self) -> bool { false }
     /// The frame asked for by [`Game::wants_capture`], RGBA8, top row first.
     fn captured(&mut self, size: [u32; 2], rgba: Vec<u8>) { let _ = (size, rgba); }
+    /// Attach a gameplay replay beside an F12 screenshot. Called only on
+    /// explicit capture, with its path and the interpolation phase shown.
+    fn feedback_replay(&mut self, _path: &std::path::Path, _alpha: f32) -> Result<Option<serde_json::Value>, String> { Ok(None) }
     /// How two views share the screen.
     fn split(&self) -> render::SplitLayout { render::SplitLayout::Stacked }
     /// Escape was pressed: return true when the game used it (to open or
@@ -152,6 +155,8 @@ pub trait Game {
     fn text_input(&self) -> bool { false }
     /// Text typed while [`Game::text_input`] holds.
     fn text(&mut self, _event: TextEvent) {}
+    /// Frame review needs fixed quality even when a slow seek misses its budget.
+    fn fixed_quality(&self) -> bool { false }
     /// Target framerate for dynamic adaptive graphics quality (e.g. Some(60.0)).
     /// None falls back to `Config::target_fps`, `WARP_TARGET_FPS`, or the monitor refresh rate.
     fn target_fps(&self) -> Option<f32> { None }
@@ -278,8 +283,13 @@ impl<'g> Headless<'g> {
     }
     /// Draw one frame and read it back as RGBA8.
     pub fn frame(&mut self, game: &mut dyn Game) -> Result<Vec<u8>, String> {
+        self.frame_at(game, 1.0)
+    }
+    /// Render an exact sub-tick phase (for saved gameplay moments).
+    pub fn frame_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<Vec<u8>, String> {
+        if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) { return Err("alpha must be in 0..1".into()); }
         let split = game.split();
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha: 1.0, split, renderer: &mut self.renderer };
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, renderer: &mut self.renderer };
         let draw = game.draw(&mut frame)?;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
         self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), None)?;
@@ -483,7 +493,7 @@ impl Shell<'_> {
         self.last = now;
         if dt > 0.0 { self.fps += (1.0 / dt - self.fps) * 0.05; }
         if let Some(q) = &mut self.quality {
-            q.set_enabled(self.debug.adaptive_quality());
+            q.set_enabled(self.debug.adaptive_quality() && !self.game.fixed_quality());
             let target = match self.debug.target_fps() {
                 Some(user) => user,
                 None => self.game.target_fps().or(self.cfg.target_fps),
@@ -580,7 +590,7 @@ impl Shell<'_> {
                 if let Some(q) = &self.quality {
                     metadata["render"]["adaptive_quality"] = q.metadata();
                 }
-                let line = screenshot::save(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }).unwrap_or_else(|e| { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") });
+                let line = screenshot::save_with(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }, |path| self.game.feedback_replay(path, (self.acc / step).clamp(0.0, 1.0))).unwrap_or_else(|e| { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") });
                 self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
             }
             if to_game { self.game.captured(size, rgba); }

@@ -2664,6 +2664,15 @@ impl Renderer {
         b
     }
 
+    /// Advance queued GPU debris without shading a frame. Replay seeking uses
+    /// this once per recorded tick so spawning/collisions retain their order.
+    pub fn advance_replay_debris(&self, gpu: &Gpu) {
+        if let Some(debris) = &self.debris {
+            let mut enc = gpu.device.create_command_encoder(&Default::default());
+            if debris.encode(gpu, &mut enc, None) { gpu.queue.submit(Some(enc.finish())); }
+        }
+    }
+
     /// Optional shade-shader features this renderer's scene can reach.
     pub fn shade_features(&self) -> crate::shade_features::ShadeFeatures { self.shade_features }
 
