@@ -391,6 +391,9 @@ fn build_scene(seed: u32, style: Style, centre: Vec3, world: World) -> Built {
         recipe_spruces(&mut scene, &trees[..near], far)?;
     }
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
+    // Beyond the trees the terrain draws the same forest as colour, out to
+    // the horizon.
+    if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density); }
     let mut light = Lighting::default();
     let sky = AtmosphereCache::default().get_or_bake(&Atmosphere::default(), SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
     sky.apply(&mut scene, &mut light);
@@ -518,36 +521,12 @@ fn tree_meshes() -> Result<&'static [ClusterMesh], String> {
     built.as_deref().map_err(Clone::clone)
 }
 
-/// Trees on a jittered 8 m grid within `world.tree_radius` of `centre`:
-/// stands where a slow noise says forest, never on rock, scree, water, snow,
-/// steep slopes or above the tree line. Position, yaw, scale and variant.
+/// Trees within `world.tree_radius` of `centre`, from the engine's forest
+/// field (the distant terrain draws the same forest). Position, yaw, scale
+/// and variant.
 fn forest(seed: u32, style: &Style, centre: Vec3, world: World) -> Vec<(Vec3, f32, Vec3, usize)> {
-    const CELL: f32 = 8.0;
-    let hash = |i: i32, j: i32, k: u32| {
-        let mut h = (i as u32).wrapping_mul(0x8da6b343) ^ (j as u32).wrapping_mul(0xd8163841) ^ seed.wrapping_mul(0xcb1ab31f) ^ k.wrapping_mul(0x165667b1);
-        h ^= h >> 15; h = h.wrapping_mul(0x2c1b3c6d); h ^= h >> 12;
-        (h & 0xffffff) as f32 / 16777216.0
-    };
-    let r = world.tree_radius;
-    let (i0, i1) = (((centre.x - r) / CELL).floor() as i32, ((centre.x + r) / CELL).ceil() as i32);
-    let (j0, j1) = (((centre.z - r) / CELL).floor() as i32, ((centre.z + r) / CELL).ceil() as i32);
-    let mut trees = Vec::new();
-    for j in j0..j1 {
-        for i in i0..i1 {
-            let (x, z) = ((i as f32 + hash(i, j, 1)) * CELL, (j as f32 + hash(i, j, 2)) * CELL);
-            if Vec2::new(x - centre.x, z - centre.z).length() > r { continue; }
-            // Stands and clearings hundreds of metres across.
-            let stand = terrain_field::noised(Vec2::new(x, z) / 300.0, seed.wrapping_add(77)).x;
-            let chance = ((stand + 0.15) * 2.0).clamp(0.0, 1.0) * world.tree_density;
-            if hash(i, j, 3) >= chance { continue; }
-            let s = terrain_field::eval(x, z, 0.0, seed, style);
-            if s.rock > 0.3 || s.scree > 0.3 || s.water > 0.01 || s.snow > 0.05 || s.up < 0.82 || s.pos.y > style.snow_line - 250.0 { continue; }
-            let width = 0.75 + 0.5 * hash(i, j, 4);
-            let height = width * (0.9 + 0.25 * hash(i, j, 5));
-            trees.push((Vec3::new(x, s.pos.y - 0.2, z), hash(i, j, 6) * std::f32::consts::TAU, Vec3::new(width, height, width), (hash(i, j, 7) * 3.0) as usize % 3));
-        }
-    }
-    trees
+    render::forest_field::trees_in_disc(Vec2::new(centre.x, centre.z), world.tree_radius, seed, style, world.tree_density)
+        .into_iter().map(|t| (t.pos, t.yaw, t.scale, t.variant as usize)).collect()
 }
 
 /// Windswept meadow roots on a 0.5 m grid of the terrain function, 300 m
