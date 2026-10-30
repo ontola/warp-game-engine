@@ -274,8 +274,17 @@ fn ss_cloth(s: SurfaceIn, o: u32) -> SurfaceOut {
 // aux at o: the level's numbers (see view.rs FloorData), then this chunk's
 // path segments, islands and plazas.
 
+// An integer hash of the cell: exact everywhere. The old
+// fract(sin(dot(p, k)) * 43758.5) lost its precision away from the origin
+// (large sine arguments), so neighbouring cells got the same value and the
+// noise broke into flat facets with straight seams (Joep's floor photo).
 fn ss_hash2(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+    let q = bitcast<vec2<u32>>(vec2<i32>(floor(p)));
+    var h = (q.x * 1597334673u) ^ (q.y * 3812015801u);
+    h = (h ^ (h >> 16u)) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 3266489917u;
+    h = h ^ (h >> 16u);
+    return f32(h >> 8u) * (1.0 / 16777216.0);
 }
 
 fn ss_noise2(p: vec2<f32>) -> f32 {
