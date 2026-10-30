@@ -130,24 +130,36 @@ pub struct AdditiveMote {
     pub fade_in: f32,
     pub fade_out: f32,
     pub motion_power: f32,
+    /// Seconds to remain stationary after birth, independently of fading in.
+    pub motion_delay: f32,
 }
 
 impl Default for AdditiveMote {
     fn default() -> Self {
         Self { position: Vec3::ZERO, travel: Vec3::Y, birth: 0.0, life: 2.0,
             radius: 0.025, color: Vec3::ONE, radiance: 1000.0, opacity: 1.0,
-            fade_in: 0.3, fade_out: 0.3, motion_power: 3.0 }
+            fade_in: 0.3, fade_out: 0.3, motion_power: 3.0, motion_delay: 0.0 }
     }
 }
 
 impl AdditiveMote {
+    /// Sample the same trajectory as fx_mote_vs for a validated recipe.
+    pub fn position_at(&self, time: f32) -> Vec3 {
+        let age = ((time - self.birth - self.motion_delay) / (self.life - self.motion_delay).max(1e-6)).clamp(0.0, 1.0);
+        self.position + self.travel * age.powf(self.motion_power)
+    }
+
     fn puff(self) -> Result<Puff, String> {
+        if !self.motion_delay.is_finite() || self.motion_delay < 0.0 || self.motion_delay >= self.life {
+            return Err("additive mote motion delay must be finite and in [0, life)".into());
+        }
         // Reuse the common additive particle validation and packed layout.
         let mut puff = AdditiveStreak { position: self.position, travel: self.travel,
             birth: self.birth, life: self.life, radius: [self.radius; 2], length: [0.0; 2],
             color: self.color, radiance: self.radiance, opacity: self.opacity,
             fade_in: self.fade_in, fade_out: self.fade_out, motion_power: self.motion_power }.puff()?;
         puff.center_kind[3] = MOTE;
+        puff.extra[0] = self.motion_delay;
         Ok(puff)
     }
 }
@@ -811,6 +823,9 @@ mod tests {
         let m = AdditiveMote::default();
         for bad in [AdditiveMote { radius: f32::NAN, ..m },
             AdditiveMote { motion_power: 0.0, ..m },
+            AdditiveMote { motion_delay: -1.0, ..m },
+            AdditiveMote { motion_delay: f32::NAN, ..m },
+            AdditiveMote { motion_delay: m.life, ..m },
             AdditiveMote { fade_in: 0.8, fade_out: 0.8, ..m }] {
             assert!(fx.mote(bad).is_err());
         }

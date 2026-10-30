@@ -491,8 +491,18 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
     }
     // Three variants: the full set is shared out over them.
     let slots = near.len().div_ceil(cooked.len());
-    let (_, pool) = recipe_forest::plant_streamed(scene, cooked, &trees, slots, policy)?;
-    println!("{} trees ({slots} full per variant, following the camera) planted in {} ms", trees.len(), started.elapsed().as_millis());
+    let (_, mut pool) = recipe_forest::plant_streamed(scene, cooked, &trees, slots, policy)?;
+    // Past the full ones, card trees (plant_mesh_lod) within --card-radius
+    // (150 m), --cards per variant (300; 0: voxel proxies only).
+    let (cards, card_radius) = (arg("--cards").unwrap_or(300.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
+    if cards > 0 {
+        static CARDS: std::sync::OnceLock<Result<Vec<render::plant_mesh_lod::PlantCards>, String>> = std::sync::OnceLock::new();
+        let baked = CARDS.get_or_init(|| recipe_forest::cook_cards(&[(SPRUCE, 1), (SPRUCE, 2), (SPRUCE, 3)],
+            Some(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache")))).as_ref().map_err(Clone::clone)?;
+        recipe_forest::add_cards(scene, &mut pool, baked, cards, card_radius)?;
+    }
+    println!("{} trees ({slots} full per variant following the camera, {cards} card trees per variant within {card_radius} m) planted in {} ms",
+        trees.len(), started.elapsed().as_millis());
     Ok(Some(pool))
 }
 
