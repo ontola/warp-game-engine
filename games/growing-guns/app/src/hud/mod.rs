@@ -80,6 +80,8 @@ pub struct Banner { pub text: String, pub size: f32, pub left: f32, pub total: f
 /// Everything the HUD remembers between ticks.
 #[derive(Clone, Debug, Default)]
 pub struct Hud {
+    /// A tracked gun replaces the screen-centred aiming reticle.
+    pub xr: bool,
     card_hits: std::cell::RefCell<Vec<cards::Hit>>,
     hit_size: std::cell::Cell<[u32; 2]>,
     pub fb: Vec<Feedback>,
@@ -352,7 +354,7 @@ impl Hud {
         if !picking {
             self.damage_numbers(d, world, i, rect);
             damage_arcs(d, f, &l);
-            if p.alive && !p.downed { crosshair(d, world, i, &l); hit_marker(d, f, &l); }
+            if p.alive && !p.downed { if !self.xr { crosshair(d, world, i, &l); } hit_marker(d, f, &l); }
             if p.alive || p.ghost { self.bottom_row(d, world, i, &l); }
         }
         // Coop: reviving a teammate.

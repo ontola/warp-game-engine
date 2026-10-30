@@ -2,6 +2,7 @@
 //! onto the same buttons and sticks, so a game handles one type. Devices
 //! drive local players in order (keyboard first, then pads); with a single
 //! local player every device drives it.
+#[cfg(not(target_os = "android"))]
 use gilrs::{Axis, Button as PadButton, EventType, GamepadId, Gilrs};
 use std::collections::HashSet;
 use winit::event::{ElementState, MouseButton};
@@ -106,6 +107,7 @@ fn key_button(k: KeyCode) -> u32 {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn pad_button(b: PadButton) -> u32 {
     match b {
         PadButton::South => Buttons::SOUTH,
@@ -128,6 +130,7 @@ fn pad_button(b: PadButton) -> u32 {
     }
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn shape(v: f32, t: &Tuning) -> f32 {
     let a = v.abs();
     if a < t.deadzone { 0.0 } else { v.signum() * ((a - t.deadzone) / (1.0 - t.deadzone)).powf(t.curve) }
@@ -143,17 +146,25 @@ pub struct Devices {
     pub mouse_captured: bool,
     pointer: Pointer,
     kb: Keyboard,
+    #[cfg(not(target_os = "android"))]
     gilrs: Option<Gilrs>,
+    #[cfg(not(target_os = "android"))]
     pads: Vec<(GamepadId, u32)>,
     /// Live rumble per pad; dropping an effect stops it.
+    #[cfg(not(target_os = "android"))]
     rumble: std::collections::HashMap<GamepadId, gilrs::ff::Effect>,
 }
 
 impl Devices {
     pub fn new(keyboard_enabled: bool) -> Self {
+        #[cfg(not(target_os = "android"))]
         let gilrs = Gilrs::new().map_err(|e| eprintln!("gamepads unavailable: {e}")).ok();
+        #[cfg(not(target_os = "android"))]
         let pads = gilrs.as_ref().map_or(Vec::new(), |g| g.gamepads().map(|(id, _)| (id, 0)).collect());
-        Self { tuning: Tuning::default(), keyboard_enabled, mouse_captured: false, pointer: Pointer::default(), kb: Keyboard::default(), gilrs, pads, rumble: Default::default() }
+        Self { tuning: Tuning::default(), keyboard_enabled, mouse_captured: false, pointer: Pointer::default(), kb: Keyboard::default(),
+            #[cfg(not(target_os = "android"))] gilrs,
+            #[cfg(not(target_os = "android"))] pads,
+            #[cfg(not(target_os = "android"))] rumble: Default::default() }
     }
 
     /// Vibrate local pad `pad` (in `controls` order, after the keyboard):
@@ -161,6 +172,7 @@ impl Devices {
     /// `seconds` (at most 5). Each call replaces the last; zeros stop it.
     /// Under GameNight a game rumbles through `gamenight::Client::rumble`.
     /// Returns false when the pad cannot vibrate.
+    #[cfg(not(target_os = "android"))]
     pub fn rumble(&mut self, pad: usize, weak: f32, strong: f32, seconds: f32) -> bool {
         use gilrs::ff::{BaseEffect, BaseEffectType, EffectBuilder, Replay, Ticks};
         let Some(g) = &mut self.gilrs else { return false };
@@ -181,7 +193,12 @@ impl Devices {
         }
     }
 
+    #[cfg(target_os = "android")]
+    pub fn rumble(&mut self, _: usize, _: f32, _: f32, _: f32) -> bool { false }
+    #[cfg(not(target_os = "android"))]
     pub fn pad_count(&self) -> usize { self.pads.len() }
+    #[cfg(target_os = "android")]
+    pub fn pad_count(&self) -> usize { 0 }
 
     pub fn key(&mut self, code: KeyCode, state: ElementState, repeat: bool) {
         let b = key_button(code);
@@ -233,6 +250,9 @@ impl Devices {
     }
 
     /// Drain pad events (edges) once per frame.
+    #[cfg(target_os = "android")]
+    pub fn poll(&mut self) {}
+    #[cfg(not(target_os = "android"))]
     pub fn poll(&mut self) {
         let Some(g) = &mut self.gilrs else { return };
         while let Some(ev) = g.next_event() {
@@ -249,6 +269,7 @@ impl Devices {
     pub fn connected(&self) -> Vec<Device> {
         let mut v = Vec::new();
         if self.keyboard_enabled { v.push(Device::Keyboard); }
+        #[cfg(not(target_os = "android"))]
         if let Some(g) = &self.gilrs { v.extend(self.pads.iter().filter(|p| g.gamepad(p.0).is_connected()).map(|p| Device::Pad(usize::from(p.0) as u32))); }
         v
     }
@@ -263,6 +284,8 @@ impl Devices {
     /// One tick of every connected device's input, keyboard first, then
     /// pads; consumes edges and mouse motion.
     pub fn device_controls(&mut self, dt: f32) -> Vec<(Device, Controls)> {
+        #[cfg(target_os = "android")]
+        let _ = dt;
         let t = self.tuning;
         let mut devices = Vec::new();
         if self.keyboard_enabled {
@@ -281,6 +304,7 @@ impl Devices {
             }));
             k.look = [0.0; 2];
         }
+        #[cfg(not(target_os = "android"))]
         if let Some(g) = &self.gilrs {
             for (id, pressed) in &mut self.pads {
                 let gp = g.gamepad(*id);

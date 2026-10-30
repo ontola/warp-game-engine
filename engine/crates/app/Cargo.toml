@@ -16,11 +16,15 @@ serde.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json.workspace = true
 # Text copy and paste, and F12 screenshots onto the clipboard.
+[target.'cfg(not(target_os = "android"))'.dependencies]
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 
 # Windows controllers are exposed through XInput; WGI can miss them.
 [target.'cfg(windows)'.dependencies]
 gilrs = { version = "0.11", default-features = false, features = ["xinput"] }
 
-[target.'cfg(not(windows))'.dependencies]
+[target.'cfg(all(not(windows), not(target_os = "android")))'.dependencies]
 gilrs = "0.11"
+
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30", features = ["android-native-activity"] }

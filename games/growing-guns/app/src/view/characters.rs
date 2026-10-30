@@ -116,6 +116,7 @@ impl Characters {
         self.lava = (0..self.actors.len()).map(|i| {
             let model = &self.models[i % self.models.len()];
             let handle = model.add_actor_with_material(scene, model_transform(Vec3::new(0.0, -500.0, 0.0), 0.0), Some(material)).ok()?;
+            scene.instances[handle.instance].cluster_count=0;
             Some(LavaTwin { handle, palette: model.sample(IDLE, 0.0, true).ok()? })
         }).collect();
     }

@@ -3,6 +3,7 @@
 // target stores which triangle covers each pixel; shading happens later,
 // once per pixel.
 override CLUSTER_BUCKETS: bool = true;
+override DIRECT_BOUNDED: bool = false;
 // See cull.wgsl.
 override VOXEL_FAR_M: f32 = 0.0;
 
@@ -80,6 +81,9 @@ struct VOut {
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     var o: VOut;
+    if DIRECT_BOUNDED && ii>=draw_args[(vi/384u)*4u+1u] {
+        o.pos=vec4<f32>(2.0,2.0,2.0,1.0);return o;
+    }
     var slot = ii;
     if CLUSTER_BUCKETS { slot = draw_map[draw_args[16u + vi / 384u] + ii]; }
     let vis = visible[slot];

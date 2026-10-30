@@ -43,11 +43,11 @@ pub(crate) mod texture_mips;
 pub const MAX_VISIBLE: u32 = 4 << 20;
 /// Albedo array resolution: the Poly Haven sets are 2K.
 /// Side of every albedo array layer; `screen::Screen` draws layers at this size.
-pub const TEXTURE_SIZE: u32 = 2048;
+pub const TEXTURE_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 2048 };
 /// Normal map array resolution.
-const NORMAL_SIZE: u32 = 1024;
-const SHADOW_SIZE: u32 = 4096;
-const NEAR_SHADOW_SIZE: u32 = 2048;
+const NORMAL_SIZE: u32 = if cfg!(target_os = "android") { 512 } else { 1024 };
+const SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 2048 } else { 4096 };
+const NEAR_SHADOW_SIZE: u32 = if cfg!(target_os = "android") { 1024 } else { 2048 };
 const NEAR_SHADOW_EXTENT: f32 = 16.0;
 /// The near shadow's cluster LOD error, in multiples of the camera's
 /// (KERN_NEAR_SHADOW_LOD, for A/B runs). Its 1.6 cm texels pick full detail:
@@ -676,6 +676,7 @@ struct MeadowBrickFixture {
 pub struct Renderer {
     // Optional per-view roll for flight games. Empty preserves world-up cameras.
     camera_up_axes: std::sync::Mutex<Vec<Vec3>>,
+    camera_projections: std::sync::Mutex<Vec<Mat4>>,
     resource_device: wgpu::Device,
     albedo_array: wgpu::Texture,
     live_screens: Option<std::sync::Mutex<crate::screen_feed::LiveScreens>>,
@@ -773,6 +774,11 @@ pub struct Renderer {
     prepare_tree_phase: Option<wgpu::ComputePipeline>,
     tree_occlusion: crate::tree_occlusion::Resources,
     cluster_buckets: bool,
+    simple_lighting: bool,
+    simple_cull: bool,
+    small_cluster_vertices:u32,
+    minimal_forward: Option<std::sync::Mutex<crate::forward::Forward>>,
+    direct_bounds: Option<std::sync::Mutex<crate::direct_draw::Bounds>>,
     raster_large_first: bool,
     early_grass_cull: bool,
     raster: wgpu::RenderPipeline,
@@ -1107,6 +1113,12 @@ impl Renderer {
         stored.clear(); stored.extend_from_slice(axes);
     }
 
+    /// Runtime-provided asymmetric, reversed-Z projections, one per view.
+    /// XR callers update these together with the predicted eye poses. Empty restores perspective FOV.
+    pub fn set_camera_projections(&self, projections: &[Mat4]) {
+        *self.camera_projections.lock().unwrap() = projections.to_vec();
+    }
+
     /// The albedo texture array (sRGB, TEXTURE_SIZE square, mipmapped). Live
     /// layers are redrawn through `screen::Screen`; do not resize it.
     pub fn albedo_array(&self) -> &wgpu::Texture { &self.albedo_array }
@@ -1345,7 +1357,7 @@ impl Renderer {
             crate::baked_animation::AnimationRenderer::new(gpu, animation, &scene.instances, &instances)
                 .expect("invalid baked animation scene"));
         let skinning = if scene.skinning.actors.is_empty() { None } else {
-            Some(crate::skinning::SkinningRenderer::new(gpu, &scene.skinning, &scene.vertices, &scene.instances, &vertices)
+            Some(crate::skinning::SkinningRenderer::new(gpu, &scene.skinning, &scene.vertices, &scene.instances, &vertices, &instances)
                 .expect("invalid weighted skinning scene"))
         };
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
@@ -1572,18 +1584,39 @@ impl Renderer {
         // Constructor-time switches permit same-binary ABBA comparisons with
         // identical assets, LOD thresholds, lighting and camera inputs.
         let cluster_buckets = std::env::var("KERN_CLUSTER_BUCKETS").as_deref() != Ok("0");
+        let simple_lighting=std::env::var("KERN_SIMPLE_LIGHTING").map_or(scene.graphics.simple_lighting,|v|v=="1");
         let tree_occlusion = crate::tree_occlusion::Resources::new(gpu,cluster_buckets);
+        let plain_meshes = scene.meadow.is_none() && scene.far_grass.is_none()
+            && scene.voxel_forest.is_none() && scene.foliage_world.is_none()
+            && scene.foliage_representations.is_empty() && scene.foliage_source_groups.is_empty()
+            && scene.part_wind.is_empty() && scene.part_attachments.is_empty()
+            && scene.aggregate_lod.is_none() && scene.baked_animations.is_none()
+            && scene.procedural_terrain.is_none() && scene.crowd.is_none()
+            && scene.instances.iter().all(|i|i.flags & (crate::scene::FOLIAGE | crate::scene::LIVE_GRASS
+                | crate::scene::WIND_GRASS | crate::scene::PART_WIND)==0);
+        let simple_cull=std::env::var("KERN_SIMPLE_CULL").map_or(scene.graphics.simple_mesh_culling,|v|v=="1")
+            && plain_meshes && !instance_groups.allocated() && !cluster_traversal.enabled && !tree_occlusion.enabled
+            && std::env::var("KERN_STATIC_SUN_CACHE").as_deref()!=Ok("1")
+            && std::env::var("KERN_INSTANCE_BROADPHASE").as_deref()!=Ok("1");
         let early_grass_cull = std::env::var("KERN_EARLY_GRASS_CULL").as_deref() != Ok("0");
         let far_trees = if scene.voxel_forest.is_some() { f64::from(scene.voxel_far_distance_m) } else { 0.0 };
-        let cull_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64),
+        let small_cluster_triangles=if simple_cull {12}else{8};
+        let cull_constants = [("SMALL_CLUSTER_TRIANGLES",small_cluster_triangles as f64),("INSTANCE_COUNT",scene.instances.len() as f64),("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64),
                               ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64), ("VOXEL_FAR_M", far_trees)];
-        let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64), ("VOXEL_FAR_M", far_trees)];
+        // Quest Adreno drivers silently drop indirect draws. Plain mesh scenes
+        // can use a conservative direct draw with GPU-side count rejection.
+        let adreno=cfg!(target_os="android") && gpu.info.backend==wgpu::Backend::Vulkan && gpu.info.vendor==0x5143;
+        let bounded_draws=plain_meshes && std::env::var("KERN_BOUNDED_DRAWS").map_or(adreno && simple_cull,|v|v=="1");
+        let minimal_forward=(scene.graphics.minimal_forward && plain_meshes && scene.skinning.actors.is_empty()
+            && scene.debris.is_none_or(|d|d.capacity==0)).then(||std::sync::Mutex::new(crate::forward::Forward::new(gpu,scene,&materials)));
+        let direct_bounds=bounded_draws.then(||std::sync::Mutex::new(crate::direct_draw::Bounds::new(scene,small_cluster_triangles)));
+        let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64), ("VOXEL_FAR_M", far_trees), ("DIRECT_BOUNDED",u8::from(bounded_draws)as f64)];
         let cull_compute = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(&cull_pl), module: &cull_mod, entry_point: Some(entry),
             compilation_options: wgpu::PipelineCompilationOptions { constants: &cull_constants, ..Default::default() },
             cache: gpu.pipeline_cache(),
         });
-        let cull = cull_compute("cull");
+        let cull = cull_compute(if simple_cull {"cull_simple"} else {"cull"});
         let static_sun = if std::env::var("KERN_STATIC_SUN_CACHE").as_deref() == Ok("1") {
             Some(crate::static_sun::StaticSun::new(gpu, scene, SHADOW_SIZE)
                 .expect("static sun cache exceeds device/source limits"))
@@ -1645,11 +1678,11 @@ impl Renderer {
         let hidden_meadow_fallback=crate::meadow::MeadowRenderer::hidden_shade_fallback(gpu);
         let meadow_edge_enabled=meadow.as_ref().is_some_and(|m|m.edge_shadow_stats().is_some_and(|s|s.enabled));
         let shade_features=crate::shade_features::ShadeFeatures::for_scene(scene,world_visibility.enabled,foliage_sun_pages.enabled,meadow_substrate_settings.control[0]!=0 || meadow_edge_enabled);
-        let sky_tiles=std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
+        let sky_tiles=!simple_lighting && std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade"),
+            label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
         let shade_classify = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1803,6 +1836,7 @@ impl Renderer {
             wheel_particles,
             headlight_state: Default::default(),
             camera_up_axes: Default::default(),
+            camera_projections: Default::default(),
             local_light_state: Default::default(),
             spot_falloff: Default::default(),
             spot_softness: Default::default(),
@@ -1863,6 +1897,11 @@ impl Renderer {
             prepare_tree_phase,
             tree_occlusion,
             cluster_buckets,
+            simple_lighting,
+            simple_cull,
+            small_cluster_vertices:small_cluster_triangles*3,
+            direct_bounds,
+            minimal_forward,
             raster_large_first: std::env::var("KERN_RASTER_LARGE_FIRST").as_deref()==Ok("1"),
             early_grass_cull,
             raster,
@@ -2153,7 +2192,7 @@ impl Renderer {
         self.cull_and_raster_pass(enc,gpu,v,color,depth,ts,names,name,kind,None,false);
     }
 
-    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, _gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool) {
+    fn cull_and_raster_pass(&self, enc: &mut wgpu::CommandEncoder, gpu: &Gpu, v: &ViewTargets, color: Option<&wgpu::TextureView>, depth: &wgpu::TextureView, ts: &mut u32, names: &mut Vec<&'static str>, name: &'static str, kind: RasterPass, phase_bind:Option<&wgpu::BindGroup>, append:bool) {
         if !append && matches!(kind,RasterPass::Color) {enc.clear_buffer(&v.traversal_counter,0,None);}
         let scene_bind=match kind {RasterPass::Color=>&self.scene_bind,RasterPass::FarSun=>&self.far_sun_scene_bind,RasterPass::FoliagePage=>&self.foliage_sun_scene_bind,_=>&self.shadow_scene_bind};
         let cull_scene_bind=match kind {RasterPass::FarSun=>&self.far_cull_scene_bind,RasterPass::FoliagePage=>&self.foliage_cull_scene_bind,_=>&self.cull_scene_bind};
@@ -2223,6 +2262,7 @@ impl Renderer {
                 pass.dispatch_workgroups_indirect(v.instance_dispatch.as_ref().unwrap(), 0);
             } else {
                 let n = match kind { RasterPass::SunStatic(n) | RasterPass::SunDynamic(n) => n, _ => self.instances };
+                let n=if self.simple_cull {n.div_ceil(64)} else {n};
                 pass.dispatch_workgroups(n.min(65535), n.div_ceil(65535), 1);
             }
             pass.set_pipeline(&self.finalize);
@@ -2242,6 +2282,17 @@ impl Renderer {
                 else if matches!(kind,RasterPass::SunDynamic(_)) {"dynamic sun raster"}
                 else if name=="far sun cull" {"far sun raster"} else if name=="foliage page cull" {"foliage page raster"} else { "shadow raster" });
         }
+        let bounds=self.direct_bounds.as_ref().map(|b|b.lock().unwrap().counts(self.cluster_buckets));
+        let direct = if bounds.is_none() && std::env::var("KERN_DIRECT_DRAWS").as_deref() == Ok("1") {
+            let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some("direct draw arguments"),size:80,
+                usage:wgpu::BufferUsages::COPY_DST|wgpu::BufferUsages::MAP_READ,mapped_at_creation:false});
+            enc.copy_buffer_to_buffer(&v.args,0,&read,0,80);
+            let pending=std::mem::replace(enc,gpu.device.create_command_encoder(&Default::default()));
+            gpu.queue.submit([pending.finish()]);
+            read.slice(..).map_async(wgpu::MapMode::Read,|_|{});gpu.wait();
+            let words:Vec<u32>=bytemuck::cast_slice(&read.slice(..).get_mapped_range().expect("draw arguments")).to_vec();
+            read.unmap();eprintln!("direct draw {name}: {words:?}");Some(words)
+        } else {None};
         let attachments = [color.map(|c| wgpu::RenderPassColorAttachment {
             view: c,
             depth_slice: None,
@@ -2271,7 +2322,15 @@ impl Renderer {
         pass.set_bind_group(0, scene_bind, &[]);
         pass.set_bind_group(1, &v.raster_bind, &[]);
         for &bucket in raster_bucket_order(self.cluster_buckets,self.raster_large_first,kind) {
-            pass.draw_indirect(&v.args, bucket * 16);
+            if let Some(bounds)=bounds {
+                let vertices=if self.cluster_buckets {[self.small_cluster_vertices,96,192,384][bucket as usize]}else{384};
+                let start=if self.cluster_buckets {bucket as u32*384}else{0};
+                pass.draw(start..start+vertices,0..bounds[bucket as usize]);
+            } else if let Some(words)=&direct {
+                let at=bucket as usize*4;
+                pass.draw(words[at+2]..words[at+2]+words[at],words[at+3]..words[at+3]+words[at+1]);
+            }else{pass.draw_indirect(&v.args, bucket * 16);}
+
         }
     }
 
@@ -2531,7 +2590,7 @@ impl Renderer {
                     compilation_options: wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},
                     cache: gpu.pipeline_cache(),
                 });
-                (make("shade"), make("classify"))
+                (make(if self.simple_lighting {"shade_simple"}else{"shade"}), make("classify"))
             }).map_err(|e| format!("opaque reload: {e}"))?)
         } else { None };
         // No live assignment above or below until all prepares have succeeded.
@@ -2725,7 +2784,7 @@ impl Renderer {
         gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("frame output"),
             size: wgpu::Extent3d { width: out_w, height: out_h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] })
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] })
     }
 
     /// Like `try_render_texture`, but into the caller's texture (from
@@ -2963,6 +3022,7 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     pub fn update_debris(&self, gpu: &Gpu, spawns: &[crate::debris::Shard], occupancy: Option<(usize, &[u32])>, meta: Option<&crate::debris::Occupancy>,
         steps: u32, reset: bool, active: bool, tuning: &crate::debris::Tuning) -> Result<(), String> {
+        if let Some(bounds)=&self.direct_bounds {bounds.lock().unwrap().shards(spawns,reset)?;}
         self.debris.as_ref().ok_or("this scene reserved no debris pool")?.update(gpu, spawns, occupancy, meta, steps, reset, active, tuning)
     }
 
@@ -3052,6 +3112,8 @@ impl Renderer {
             self.foliage_world_valid.store(false,std::sync::atomic::Ordering::Relaxed);
         }
         self.canopies.lock().unwrap()[0].validate_update(first, instances)?;
+        if let Some(bounds)=&self.direct_bounds {bounds.lock().unwrap().update(first,instances)?;}
+        if let Some(forward)=&self.minimal_forward {forward.lock().unwrap().update(first,instances)?;}
         if let Some(cache) = &self.static_sun { cache.lock().unwrap().update_instances(gpu,first,instances)?; }
         if !instances.is_empty() {
             // Canopy density only changes with foliage. Moving cars and the
@@ -3086,6 +3148,23 @@ impl Renderer {
 
     #[allow(clippy::too_many_arguments)]
     fn frame_output_into(&self, gpu: &Gpu, views: &[ViewRect], light: &Lighting, out_w: u32, out_h: u32, picks: &[(u32, u32)], readback: Readback, target: Option<&wgpu::Texture>) -> Result<(wgpu::Texture, Vec<u8>, FrameStats), String> {
+        if let Some(forward)=&self.minimal_forward {
+            if views.len()>8 || views.iter().any(|v|v.w==0||v.h==0||v.x.checked_add(v.w).is_none_or(|n|n>out_w)||v.y.checked_add(v.h).is_none_or(|n|n>out_h)) {
+                return Err("minimum renderer requires up to eight nonempty views inside its output".into());
+            }
+            if target.is_some_and(|t|(t.width(),t.height())!=(out_w,out_h)||t.format()!=wgpu::TextureFormat::Rgba8Unorm||!t.usage().contains(wgpu::TextureUsages::COPY_DST)) {
+                return Err("minimum renderer requires Renderer::output_texture".into());
+            }
+            if !picks.is_empty() {return Err("pixel picking is unavailable in the minimum graphics profile".into());}
+            let output=target.cloned().unwrap_or_else(||Self::output_texture(gpu,out_w,out_h));
+            let axes=self.camera_up_axes.lock().unwrap();let projections=self.camera_projections.lock().unwrap();
+            let camera_views:Vec<_>=views.iter().enumerate().map(|(vi,v)|camera_view(v.cam,axes.get(vi).copied())).collect();
+            let matrices:Vec<_>=views.iter().enumerate().map(|(vi,v)|projections.get(vi).copied().unwrap_or_else(||
+                Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near))*camera_view(v.cam,axes.get(vi).copied())).collect();
+            let stats=forward.lock().unwrap().render(gpu,views,&matrices,&camera_views,&self.sprites,light,&self.headlight_state.lock().unwrap(),&output)?;
+            let pixels=if readback==Readback::ImageAndMetrics {gpu.read_rgba8(&output)}else{Vec::new()};
+            return Ok((output,pixels,stats));
+        }
         // Serialize explicit diagnostic readbacks with writes to reused targets.
         // Errors before submission leave no stale frame advertised as current.
         let mut cpu = crate::cpu_spans::Spans::start(self.cpu_spans.as_ref());
@@ -3207,20 +3286,21 @@ impl Renderer {
             crate::stability::stable_shadow_depth(shared_centre,light.sun_dir,extent,SHADOW_SIZE,range)
         } else {sun_projection(centre,extent,SHADOW_SIZE)};
         let shared_eye=guard_depth.map_or_else(||sun_eye(centre),|range|crate::stability::shadow_eye(shared_centre,light.sun_dir,range));
-        let sun_needed = sun_visibility_required(self.zero_sun_fast_path, light.sun_lux, light.debug);
+        let sun_needed = !self.simple_lighting && sun_visibility_required(self.zero_sun_fast_path, light.sun_lux, light.debug);
         // Snapshot the same lamps used by the shadow passes below. Animation
         // scheduling must see all consumers before any source transforms move.
         let headlights = if debug_options.headlights_enabled {
             self.headlight_state.lock().unwrap().clone()
         } else { Vec::new() };
         let camera_up_axes=self.camera_up_axes.lock().unwrap().clone();
+        let camera_projections=self.camera_projections.lock().unwrap().clone();
         let mut part_animation_views=Vec::new();
         if self.part_wind_lod && self.part_wind.is_some() {
             use crate::part_wind::AnimationView;
             for (vi,view) in views.iter().enumerate() {
                 let (w,h)=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(view.w,view.h))?}
                     else {(view.w,view.h)};
-                let mut projection=Mat4::perspective_infinite_reverse_rh(view.cam.fov_y,view.w as f32/view.h as f32,view.cam.near);
+                let mut projection=camera_projections.get(vi).copied().unwrap_or_else(|| Mat4::perspective_infinite_reverse_rh(view.cam.fov_y,view.w as f32/view.h as f32,view.cam.near));
                 projection.z_axis.x+=jx*2.0/w as f32;projection.z_axis.y+=jy*2.0/h as f32;
                 part_animation_views.push(AnimationView {
                     view_projection:projection*camera_view(view.cam,camera_up_axes.get(vi).copied()),
@@ -3482,7 +3562,7 @@ impl Renderer {
             let mut cameras=Vec::new();let mut extra=Vec::new();
             for (vi,v) in views.iter().enumerate() {
                 let (w,h)=if let Some(backend)=&mut up.backend {backend.optimal_size(mode,(v.w,v.h))?}else{(v.w,v.h)};
-                let mut proj=Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near);
+                let mut proj=camera_projections.get(vi).copied().unwrap_or_else(|| Mat4::perspective_infinite_reverse_rh(v.cam.fov_y,v.w as f32/v.h as f32,v.cam.near));
                 proj.z_axis.x+=jx*2.0/w as f32;proj.z_axis.y+=jy*2.0/h as f32;
                 let vp=proj*camera_view(v.cam,camera_up_axes.get(vi).copied());
                 let mask=1|if near_enabled {1<<(vi+1)}else{0};
@@ -3723,7 +3803,7 @@ impl Renderer {
             cpu.mark("view lights and targets");
             // Reversed-Z infinite perspective.
             let view_m = camera_view(*cam,camera_up_axes.get(vi).copied());
-            let proj = Mat4::perspective_infinite_reverse_rh(cam.fov_y, view.w as f32 / view.h as f32, cam.near);
+            let proj = camera_projections.get(vi).copied().unwrap_or_else(|| Mat4::perspective_infinite_reverse_rh(cam.fov_y, view.w as f32 / view.h as f32, cam.near));
             let mut jittered = proj;
             jittered.z_axis.x += jx * 2.0 / w as f32;
             jittered.z_axis.y += jy * 2.0 / h as f32;

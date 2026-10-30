@@ -2158,3 +2158,52 @@ fn bake_sky_visibility(@builtin(global_invocation_id) gid: vec3<u32>) {
         if all(c < gi.vol_dims.xyz) { textureStore(sky_vis_out, vec3<i32>(c), value); }
     }
 }
+
+// Low-cost material lighting for the shared low graphics profile.
+@compute @workgroup_size(8, 8)
+fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
+    if any(gid.xy>=vec2<u32>(view.size.xy)) {return;}
+    let px=vec2<i32>(gid.xy);
+    let ndc=(vec2<f32>(gid.xy)+0.5)/view.size.xy*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
+    let far=view.inv_view_proj*vec4<f32>(ndc,1e-4,1.0);
+    let dir=normalize(far.xyz/far.w-view.cam.xyz);
+    let id=textureLoad(vis_tex,px,0).r;
+    if textureLoad(depth_tex,px,0)<=0.0 || id==0xffffffffu {
+        textureStore(out_hdr,px,vec4<f32>(visible_background_radiance(dir),1.0));return;
+    }
+    let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instances[vis.x];
+    let packed=tris[cl.first_tri+(id&127u)];
+    var points:array<vec3<f32>,3>;var normals:array<vec3<f32>,3>;var uvs:array<vec2<f32>,3>;
+    for(var k=0u;k<3u;k++) {
+        let v=cluster_verts[cl.first_vert+((packed>>(8u*k))&255u)]*8u;
+        let pos=vec4<f32>(vertices[v],vertices[v+1u],vertices[v+2u],1.0);
+        points[k]=wind_position(vis.x,inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
+        normals[k]=vec3<f32>(vertices[v+3u],vertices[v+4u],vertices[v+5u]);
+        uvs[k]=vec2<f32>(vertices[v+6u],vertices[v+7u]);
+    }
+    let e1=points[1]-points[0];let e2=points[2]-points[0];let pv=cross(dir,e2);
+    let det=dot(e1,pv);let inv=select(1.0/det,0.0,abs(det)<1e-12);let tv=view.cam.xyz-points[0];
+    let b1=clamp(dot(tv,pv)*inv,0.0,1.0);let b2=clamp(dot(dir,cross(tv,e1))*inv,0.0,1.0-b1);let b0=1.0-b1-b2;
+    let p=points[0]*b0+points[1]*b1+points[2]*b2;
+    let authored=normals[0]*b0+normals[1]*b1+normals[2]*b2;
+    var n=normalize(wind_normal(vis.x,vec3<f32>(dot(inst.r0.xyz,authored),dot(inst.r1.xyz,authored),dot(inst.r2.xyz,authored))));
+    if dot(n,dir)>0.0 {n=-n;}
+    let m=materials[cl.material];var base=m.tint;
+    if m.layer>=0 {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;
+        base*=textureSampleLevel(albedo,samp,uv,m.layer,max(log2(max(distance(p,view.cam.xyz)*0.03,1.0)),0.0)).rgb;}
+    let ambient=sky_irradiance(n);
+    var rad=base*(ambient+light.sun_color.rgb*light.sun_dir.w*max(dot(n,light.sun_dir.xyz),0.0))/3.14159265;
+    for(var index=0u;index<incident_light_count(p);index++) {
+        if dot(n,incident_light_position(index)-p)<=0.0 {continue;}
+        let sample=incident_light_sample(index,p,n);
+        rad+=base*sample.irradiance*max(dot(n,sample.direction),0.0)/PI;
+    }
+    if (m.flags&1024u)!=0u {rad+=base*m.scale*light.anim.y;}
+    if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
+    let flash=f32((inst.pad>>16u)&255u)/255.0;
+    rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
+    rad=apply_distance_fog(rad,distance(p,view.cam.xyz),dir);
+    if light.sky.z==2.0 {rad=base*6000.0;}
+    if light.sky.z==11.0 {rad=(n*0.5+0.5)*6000.0;}
+    textureStore(out_hdr,px,vec4<f32>(min(rad,vec3<f32>(65504.0)),1.0));
+}
