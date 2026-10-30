@@ -4,7 +4,7 @@
 use crate::kits::Kit;
 use glam::{EulerRot, Mat3, Mat4, Quat, Vec3};
 use spellstorm::actor::{Actor, HURT_TIME};
-use spellstorm::enemy::{Attack, Enemy, BOSS_WIND};
+use spellstorm::enemy::{Attack, Enemy};
 use spellstorm::wizard::{swing_reach, Wizard, ROLL_TIME, SWING_COOLDOWN};
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
@@ -210,7 +210,7 @@ impl EnemyAnim {
         let mut scale = Vec3::splat(self.scale);
         let winding = e.wind > 0.0 || e.boss_wind > 0.0;
         if winding {
-            let k = if e.wind > 0.0 { 1.0 - (e.wind / e.wind_time()) as f32 } else { 1.0 - (e.boss_wind / BOSS_WIND) as f32 };
+            let k = if e.wind > 0.0 { 1.0 - (e.wind / e.wind_time()) as f32 } else { 1.0 - (e.boss_wind / e.boss_wind_time.max(1e-3)) as f32 };
             let ee = k * k * (3.0 - 2.0 * k);
             let shake = (time * 1000.0 / 22.0).sin() * 0.04 * smoothstep(0.6, 1.0, k);
             let attack = if cfg.boss && e.wind <= 0.0 { Attack::Slam } else { cfg.attack };

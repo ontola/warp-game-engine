@@ -1244,6 +1244,19 @@ impl Level {
             }
             self.prop(kind, Some(v3(at)), Some(0.0));
         }
+        // Blood and mana round the inside of the ring: who keeps moving
+        // can heal and fill up during the boss (Joep: the first boss was
+        // too hard to outlast).
+        let n = 6;
+        for i in 0..n {
+            let ang = TAU * (i as f32 + 0.5) / n as f32;
+            let at = Vec2::new(a.x + ang.cos() * (a.z - 1.6), a.y + ang.sin() * (a.z - 1.6));
+            if self.path_dist(at) < PATH_W * 0.5 + 0.8 {
+                continue;
+            }
+            let kind = if i % 2 == 0 { "blood_urn" } else { "urn" };
+            self.prop(kind, Some(v3(at)), None);
+        }
     }
 
     fn nave_props(&mut self) {

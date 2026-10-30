@@ -94,6 +94,9 @@ pub struct Hud {
     words: usize,
     /// What each seat had last tick (forms, LB, learned_t), to see unlocks.
     had: std::collections::HashMap<usize, (usize, bool, f64)>,
+    /// What each seat was ever shown a card for: a card only for what is
+    /// truly new to that player (not again after a death or a new run).
+    seen: std::collections::HashSet<(usize, u32)>,
     /// Unlocks to show one after another, and how long the first has shown.
     unlocks: Vec<Unlock>,
     unlock_t: f32,
@@ -108,6 +111,17 @@ enum Learned {
     Element(El),
     Move(Form),
     Pairs,
+}
+
+impl Learned {
+    /// One number per thing that can be learned.
+    fn key(&self) -> u32 {
+        match self {
+            Learned::Element(e) => e.idx() as u32,
+            Learned::Move(f) => 100 + *f as u32,
+            Learned::Pairs => 200,
+        }
+    }
 }
 
 struct Unlock {
@@ -132,6 +146,7 @@ impl Default for Hud {
             vignette: Arc::new(vignette()),
             words: 0,
             had: Default::default(),
+            seen: Default::default(),
             unlocks: vec![],
             unlock_t: 0.0,
             numbers: vec![],
@@ -206,18 +221,33 @@ impl Hud {
             let forms = spellstorm::wizard::STAGE_FORMS[wz.stage.min(3)].len();
             let now = (forms, wz.lb_open(), wz.learned_t);
             // A wizard first seen (joining, a new run) shows nothing.
+            let mut new: Vec<Learned> = vec![];
             if let Some(&(f0, lb0, t0)) = self.had.get(&wz.seat) {
                 if wz.learned_t > t0 + 1.0 {
-                    fresh.extend(wz.learned.iter().map(|&e| (Learned::Element(e), wz.name.clone())));
+                    new.extend(wz.learned.iter().map(|&e| Learned::Element(e)));
                 }
                 for &f in &spellstorm::wizard::STAGE_FORMS[wz.stage.min(3)][f0.min(forms)..] {
-                    fresh.push((Learned::Move(f), wz.name.clone()));
+                    new.push(Learned::Move(f));
                 }
                 if now.1 && !lb0 {
-                    fresh.push((Learned::Pairs, wz.name.clone()));
+                    new.push(Learned::Pairs);
                 }
             }
             self.had.insert(wz.seat, now);
+            // Only what this player never had a card for (not again after
+            // a death or a new run); what they hold now counts as known.
+            let seat = wz.seat;
+            new.retain(|what| self.seen.insert((seat, what.key())));
+            fresh.extend(new.into_iter().map(|what| (what, wz.name.clone())));
+            for e in wz.open_elements() {
+                self.seen.insert((seat, Learned::Element(e).key()));
+            }
+            for &f in spellstorm::wizard::STAGE_FORMS[wz.stage.min(3)] {
+                self.seen.insert((seat, Learned::Move(f).key()));
+            }
+            if wz.lb_open() {
+                self.seen.insert((seat, Learned::Pairs.key()));
+            }
         }
         // Everything unlocked at once (the menu's Unlocks: All, or forced):
         // no cards for it, and none left over (Joep).

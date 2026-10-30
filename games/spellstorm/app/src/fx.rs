@@ -1305,7 +1305,15 @@ impl Fx {
                     // flames swell as they burn out down the stream.
                     p.amount = 90;
                     p.spread = 8.0;
-                    p.v = (10.0, 14.0);
+                    // As far as it burns (Joep): slowing by d m/s each
+                    // second a flame goes v t - d t^2 / 2; speeds so they
+                    // die out where the spell's range ends (less the swollen
+                    // flame's own half size), 90% of their life in.
+                    let reach = s.spell.n.range as f32 - 0.35;
+                    let (d, t) = (3.0, 0.9 * p.life);
+                    let v = (reach + d * t * t * 0.5) / t;
+                    p.damp = (d, d);
+                    p.v = (v * 0.92, v * 1.05);
                     p.curve = [0.35, 1.1, 1.7];
                     p.gravity = Vec3::Y * 1.5;
                 }

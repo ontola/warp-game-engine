@@ -60,6 +60,9 @@ pub const BOSS_PATTERNS: [BossPattern; 4] = [
     BossPattern::Fan9,
 ];
 pub const BOSS_WIND: f64 = 0.8;
+/// The boss's blast round itself: its longer wind-up and its reach.
+pub const BOSS_NOVA_WIND: f64 = 1.4;
+pub const BOSS_NOVA_R: f64 = 6.0;
 /// How far to each side of where it faces a melee blow reaches.
 pub const MELEE_ARC: f32 = 1.1;
 
@@ -685,6 +688,8 @@ pub struct Enemy {
     pub lock: Vec3,
     aim_lock: Vec3,
     pub boss_wind: f64,
+    /// How long this wind-up of the boss lasts (the Nova winds up longer).
+    pub boss_wind_time: f64,
     best_d: f32,
     stuck_t: f64,
     detour_t: f64,
@@ -734,6 +739,7 @@ impl Default for Enemy {
             lock: Vec3::ZERO,
             aim_lock: Vec3::ZERO,
             boss_wind: 0.0,
+            boss_wind_time: BOSS_WIND,
             best_d: f32::INFINITY,
             stuck_t: 0.0,
             detour_t: 0.0,
@@ -781,7 +787,7 @@ impl Enemy {
         if self.wind > 0.0 {
             1.0 - self.wind / self.wind_time()
         } else if self.boss_wind > 0.0 {
-            1.0 - self.boss_wind / BOSS_WIND
+            1.0 - self.boss_wind / self.boss_wind_time.max(1e-3)
         } else {
             0.0
         }
@@ -1329,8 +1335,23 @@ impl World {
                 size: 1.2,
                 time: 0.3,
             });
-            e.boss_wind = BOSS_WIND;
-            self.later_shot(id, e, BOSS_WIND, Pending::Boss { pattern, el, dmg });
+            // The blast round it winds up longer, and shows where it will
+            // reach: a ring grows out of the body to the edge of it in the
+            // element's colour, landing as the blast does (Joep: no attack
+            // without a readable warning).
+            let wind = if pattern == BossPattern::Nova { BOSS_NOVA_WIND } else { BOSS_WIND };
+            if pattern == BossPattern::Nova {
+                self.ev(Ev::Ring {
+                    at: self.pos(id),
+                    c: fx::lighten(fx::el_c(el), 0.35),
+                    r: BOSS_NOVA_R as f32,
+                    time: wind as f32,
+                });
+                self.burst(at, fx::el_c(el), 18, -3.0, 0.25, Some(el));
+            }
+            e.boss_wind = wind;
+            e.boss_wind_time = wind;
+            self.later_shot(id, e, wind, Pending::Boss { pattern, el, dmg });
         }
         if e.summon_t <= 0.0 {
             e.summon_t = self.rng.range(10.0, 14.0) as f64;
@@ -1385,9 +1406,10 @@ impl World {
                 }
             }
             BossPattern::Nova => {
-                let d = e.cfg().dmg * 0.7 * self.damage_scale();
+                // Gentler than it was (0.7, 7 m): a hit to dodge, not a wipe.
+                let d = e.cfg().dmg * 0.4 * self.damage_scale();
                 let n = NovaN {
-                    radius: 7.0,
+                    radius: BOSS_NOVA_R,
                     rate: attack_scale(el, d),
                 };
                 let at = self.pos(id);
