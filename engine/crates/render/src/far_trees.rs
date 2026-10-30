@@ -24,7 +24,10 @@ pub struct FarTrees {
 }
 
 impl Default for FarTrees {
-    fn default() -> Self { Self { distance_m: 120.0, cell_m: 0.2, levels: 4, cell_pixels: 1.5 } }
+    // Every occupied cell is a splat, interior ones too, so cells of a few
+    // pixels keep a forest of thousands of trees within one view's splat
+    // budget (voxel_forest.rs, 4M).
+    fn default() -> Self { Self { distance_m: 120.0, cell_m: 0.2, levels: 5, cell_pixels: 3.0 } }
 }
 
 #[derive(Clone, Debug, Default)]

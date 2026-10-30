@@ -80,7 +80,9 @@ struct World {
     /// The nearest this many trees are recipe spruces (the vegetation
     /// push's approved r4 spruce); the rest are Sideways' fir meshes.
     recipe_trees: u32,
-    /// Firs past render::far_trees' distance draw as rasterized voxels.
+    /// Firs past render::far_trees' distance draw as rasterized voxels. Off by
+    /// default: on the Mac (2560x1440) the fir cards cost 1 ms of raster and
+    /// their voxels about 10 ms, so this only pays for heavy trees.
     far_voxels: bool,
 }
 
@@ -360,7 +362,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 8, far_voxels: true } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 900.0, recipe_trees: 8, far_voxels: false } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -560,7 +562,7 @@ fn main() -> Result<(), String> {
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine")).transpose()?.unwrap_or(0);
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
-        far_voxels: !args.iter().any(|a| a == "--no-far-voxels"),
+        far_voxels: args.iter().any(|a| a == "--far-voxels"),
         recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(World::default().recipe_trees), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
