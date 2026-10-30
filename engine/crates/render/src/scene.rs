@@ -407,6 +407,9 @@ pub struct Scene {
     pub voxel_proxies: u32,
     /// A proxy uses the coarsest level whose cell stays under this many pixels.
     pub voxel_proxy_pixels: f32,
+    /// Past this camera distance (m) the proxy pixel error grows with
+    /// sqrt(distance / voxel_proxy_pixels_from); zero keeps it constant.
+    pub voxel_proxy_pixels_from: f32,
     /// Experimental GPU worklist: integrate only tiles with volume candidates.
     /// Defaults to the full-screen reference until image/timing validation.
     pub voxel_active_tiles: bool,

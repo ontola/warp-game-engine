@@ -855,6 +855,9 @@ impl<'a> SceneVegetation<'a> {
         if (self.aggregate_groups.is_empty() && self.proxy_bindings.is_empty()) || self.aggregate_groups.len()!=self.bindings.len() {
             return Err("aggregate finish requires exclusively aggregate-cooked plants".into());
         }
+        if !(policy.proxy_pixels_from.is_finite() && policy.proxy_pixels_from>=0.0) {
+            return Err("aggregate proxy pixel growth distance must be finite and non-negative".into());
+        }
         if !(policy.proxy_pixels.is_finite() && policy.proxy_pixels>0.0) {
             return Err("aggregate proxy pixel error must be positive".into());
         }
@@ -881,6 +884,7 @@ impl<'a> SceneVegetation<'a> {
         self.report.packed_volume_bytes=forest.byte_len();
         self.scene.voxel_proxies=self.proxy_bindings.len() as u32;
         self.scene.voxel_proxy_pixels=policy.proxy_pixels;
+        self.scene.voxel_proxy_pixels_from=policy.proxy_pixels_from;
         self.scene.voxel_forest=Some(forest);
         self.scene.aggregate_lod=(!self.aggregate_groups.is_empty()).then_some(selection);
         crate::aggregate_lod::validate_scene(self.scene)?;
@@ -937,6 +941,7 @@ impl Drop for SceneVegetation<'_> {
         self.scene.materials.truncate(c.materials);
         self.scene.voxel_forest = None;
         self.scene.voxel_proxies = 0;
+        self.scene.voxel_proxy_pixels_from = 0.0;
         self.scene.part_wind.clear();
         self.scene.part_attachments.clear();
         self.scene.foliage_representations.clear();
@@ -1622,7 +1627,7 @@ mod tests {
         let report=builder.finish_aggregate(crate::aggregate_lod::Policy {allow_sampled_optics:true,..Default::default()}).unwrap();
         assert_eq!((report.plants,report.plant_proxies),(1,2));
         let forest=scene.voxel_forest.as_ref().unwrap();
-        assert_eq!(scene.voxel_proxies,2);assert_eq!(scene.voxel_proxy_pixels,4.0);
+        assert_eq!(scene.voxel_proxies,2);assert_eq!(scene.voxel_proxy_pixels,4.0);assert_eq!(scene.voxel_proxy_pixels_from,100.0);
         assert_eq!(scene.aggregate_lod.as_ref().unwrap().groups.len()+2,forest.instances.len());
         let tree=forest.instances[forest.instances.len()-2];
         let source_instance=scene.instances[owner];

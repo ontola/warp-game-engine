@@ -19,11 +19,15 @@ pub struct Policy {
     /// Whole-plant proxies (SceneVegetation::append_proxy) use the
     /// coarsest level whose cell stays under this many pixels.
     pub proxy_pixels: f32,
+    /// Past this camera distance (m) a proxy's pixel error grows with
+    /// sqrt(distance / proxy_pixels_from), so far forest costs far fewer
+    /// splats. Zero keeps proxy_pixels at every distance.
+    pub proxy_pixels_from: f32,
 }
 impl Default for Policy {
     fn default() -> Self {
         Self { max_error_pixels: 1.0, max_coverage_error: 0.08,
-            max_color_error: 0.08, allow_sampled_optics: false, measured_source_cuts: true, proxy_pixels: 4.0 }
+            max_color_error: 0.08, allow_sampled_optics: false, measured_source_cuts: true, proxy_pixels: 4.0, proxy_pixels_from: 100.0 }
     }
 }
 #[derive(Clone, Copy, Debug)]
