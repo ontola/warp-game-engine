@@ -346,6 +346,8 @@ impl Visuals {
 
     pub fn dynamic(&self) -> &[GpuInstance] { &self.scene.instances[self.first_dynamic..] }
 
+    pub fn ion_glow(&self) -> f32 { self.ion.glow(self.clock) }
+
     /// A player's camera with the explosion punch applied.
     pub fn punched(&self, world: &World, i: usize, cam: Camera) -> Camera { self.fx.punched(world, i, cam) }
 
@@ -513,10 +515,6 @@ pub fn lighting() -> Lighting {
         sun_color: Vec3::from(palette::SUN),
         sky_lux: 14_000.0,
         ev100: 13.6,
-        // A wide optical glow around the Ion beam and bright lava/highlights.
-        bloom_boost: 32.0,
-        bloom_rounds: 4,
-        bloom_threshold: 1.0,
         // Emission (lava, tracers, beacons) is tuned at Godot's exposure; a
         // darker sky lowers the exposure, and the glow would clip to white.
         emissive_compensation: EMISSIVE_COMPENSATION,
