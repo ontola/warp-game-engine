@@ -43,6 +43,18 @@
     {
       "ticks": 90,
       "capture": "charged.png"
+    },
+    {
+      "ticks": 3,
+      "capture": "impact.png"
+    },
+    {
+      "ticks": 12,
+      "capture": "streaks.png"
+    },
+    {
+      "ticks": 12,
+      "capture": "streaks-rising.png"
     }
   ]
 }
