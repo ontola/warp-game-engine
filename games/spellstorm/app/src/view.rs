@@ -316,7 +316,22 @@ impl View {
         // The pool for whatever moves: every kit it may show is built now.
         for (i, &id) in w.wizards.iter().enumerate() {
             let robe = w.wiz(id).robe;
-            let pieces = look.wizard(&self.kits, &mut scene, i, &wizard_cloth([robe[0], robe[1], robe[2]]));
+            let mut pieces = look.wizard(&self.kits, &mut scene, i, &wizard_cloth([robe[0], robe[1], robe[2]]));
+            // The staff's head casts no shadow: its prongs sit right by the
+            // gem's light and threw big claws over the floor (Joep).
+            if let Some(kit) = self.kits.kit("wizard") {
+                let staff = kit.named.get("staff").copied();
+                for p in &mut pieces {
+                    let mut n = Some(p.node);
+                    while let Some(j) = n {
+                        if Some(j) == staff {
+                            p.shadow = false;
+                            break;
+                        }
+                        n = kit.nodes[j].parent;
+                    }
+                }
+            }
             self.wizard_pieces.insert(i, pieces);
         }
         for k in spellstorm::enemy::KINDS.iter() {
