@@ -54,15 +54,18 @@ const NEAR_SHADOW_EXTENT: f32 = 16.0;
 /// a full spruce assembly casts for ~2.5 ms (low2, 8 trees: 18 ms; 2x: 9.5,
 /// 4x: 1.5). But coarser spray cards lose coverage, and the crowns' shadows
 /// on the ground thin out visibly already at 2x, so 1 until their LOD keeps it.
-/// The finest voxel cell the near shadow map splats (texel_m only picks the
-/// level): its 1.6 cm texels would take every tree's 10 cm level, ~80k cells
-/// each. 0.5 m takes the 40 cm level: low2, 3 full spruces, near sun splats
-/// 2.26 -> 0.63 ms and their raster 2.0 -> 0.44 ms, the crowns' ground
-/// shadows only slightly softer. KERN_NEAR_SUN_VOXEL_M overrides it.
-fn near_sun_voxel_m() -> f32 {
-    static CELL: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *CELL.get_or_init(|| std::env::var("KERN_NEAR_SUN_VOXEL_M").ok().and_then(|v| v.parse().ok())
-        .unwrap_or(0.5f32).max(2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32))
+/// The finest voxel cell a sun map splats (texel_m only picks the level):
+/// at their texels (near 1.6 cm, shared ~4.4 cm) every tree would take its
+/// 10 cm level, ~80k cells each. The near map takes 0.5 m cells (the 40 cm
+/// level), the shared map, which only shades past it, 1 m. terrain_fly low2,
+/// 3 full spruces: near sun splats 2.26 -> 0.63 ms, their raster 2.0 -> 0.44;
+/// Sideways' 32k recipe trees, shared map: splats 30 -> 2.4 ms, raster 62 ->
+/// 5.5. Crown shadows only get slightly softer. KERN_SUN_VOXEL_M sets both.
+const NEAR_SUN_VOXEL_M: f32 = 0.5;
+const SHARED_SUN_VOXEL_M: f32 = 1.0;
+fn sun_voxel_m(texel: f32, cell: f32) -> f32 {
+    static CELL: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::env::var("KERN_SUN_VOXEL_M").ok().and_then(|v| v.parse().ok())).unwrap_or(cell).max(texel)
 }
 fn near_sun_source() -> bool {
     static SOURCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -3464,7 +3467,7 @@ impl Renderer {
                     let times=["voxel sun splats","voxel sun splat raster"].map(|name|self.query.as_ref().map(|(qs,_,_)|{
                         let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                     forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&shadow_t.foliage_selection,crate::voxel_forest::SunSplatView {
-                        depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:texel},times)?;
+                        depth:&shadow_v,view_proj:svp,planes:shadow_uniform.planes,direction:light.sun_dir,texel_m:sun_voxel_m(texel,SHARED_SUN_VOXEL_M)},times)?;
                 }
             }
         }
@@ -3603,7 +3606,7 @@ impl Renderer {
                         let i=timestamp_pair(&mut ts);names.push(name);(qs,i)}));
                     forest.render_sun(gpu,&mut enc,&self.voxel_scene_bind,&near.targets.foliage_selection,crate::voxel_forest::SunSplatView {
                         depth:&texture_view,view_proj:near_vp,planes:near_uniform.planes,direction:light.sun_dir,
-                        texel_m:near_sun_voxel_m()},times)?;
+                        texel_m:sun_voxel_m(2.0*NEAR_SHADOW_EXTENT/NEAR_SHADOW_SIZE as f32,NEAR_SUN_VOXEL_M)},times)?;
                 }
                 view_light.near_shadow_view_proj = near_vp.to_cols_array_2d();
                 view_light.near_shadow[2] = 1.0;
