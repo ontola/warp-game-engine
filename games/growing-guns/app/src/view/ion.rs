@@ -1,6 +1,7 @@
 //! The ion cannon's game-specific recipe, after `scripts/ion_cannon.gd`.
 //! Spawn one soft charge column and its future motes once; Warp evaluates
-//! their animation on the GPU. The CPU keeps only strike identity and lights.
+//! their animation on the GPU. The CPU retains spawn recipes for continuity
+//! from grains lifting off the ground to the upward discharge.
 use glam::Vec3;
 use growing_guns::{Strike, StrikeKind, World, ION_CHARGE, TICK_HZ};
 use render::fx::{AdditiveColumn, AdditiveMote, AdditiveStreak, Effects};
@@ -32,7 +33,7 @@ fn strike_key(tick: u64, round: u32, strike: &Strike) -> StrikeKey {
         birth_tick: tick as i128 - (strike.age * TICK_HZ as f64).round() as i128 }
 }
 
-struct Charge { key: StrikeKey, position: Vec3, birth: f32, light_scale: f32 }
+struct Charge { key: StrikeKey, position: Vec3, birth: f32, light_scale: f32, motes: Vec<AdditiveMote> }
 struct Detonation { position: Vec3, birth: f32, radius: f32, light_scale: f32 }
 
 #[derive(Default)]
@@ -47,8 +48,12 @@ impl IonFx {
     pub fn sync(&mut self, world: &World, effects: &mut Effects, now: f32) {
         if !now.is_finite() { return; }
         self.detonations.retain(|d| now < d.birth + FLASH_SUSTAIN + FLASH_RELEASE);
-        self.charges.retain(|c| now < c.birth + CHARGE && world.strikes.iter().any(|s|
-            s.kind == StrikeKind::IonCannon && s.age.is_finite() && strike_key(world.tick, world.round, s) == c.key));
+        // absorb() syncs after the sim removes the strike, before consuming its
+        // explosion event. Preserve the particle field through that hand-off.
+        self.charges.retain(|c| (now < c.birth + CHARGE && world.strikes.iter().any(|s|
+            s.kind == StrikeKind::IonCannon && s.age.is_finite() && strike_key(world.tick, world.round, s) == c.key))
+            || world.events.iter().any(|e| matches!(e, growing_guns::Event::Explosion {
+                pos, kind: growing_guns::ExplosionKind::Ion, .. } if *pos == c.position)));
         for strike in &world.strikes {
             if strike.kind != StrikeKind::IonCannon || !strike.target.is_finite()
                 || !strike.age.is_finite() || !(0.0..ION_CHARGE).contains(&strike.age) { continue; }
@@ -61,12 +66,14 @@ impl IonFx {
             }
             // Past motes are also registered when joining a charge midway;
             // the GPU samples their current age, rather than restarting them.
-            for mote in charge_motes(position, birth, seed(key)) {
+            let mut motes = charge_motes(position, birth, seed(key));
+            ground_motes(&mut motes, &world.arena);
+            for &mote in &motes {
                 if mote.birth + mote.life > now {
                     effects.mote(mote).expect("valid ion mote recipe");
                 }
             }
-            self.charges.push(Charge { key, position, birth, light_scale: light_scale(effects) });
+            self.charges.push(Charge { key, position, birth, light_scale: light_scale(effects), motes });
         }
     }
 
@@ -76,7 +83,6 @@ impl IonFx {
         self.detonations.retain(|d| now < d.birth + FLASH_SUSTAIN + FLASH_RELEASE);
         if self.detonations.iter().any(|d| d.birth == now && d.position == position) { return; }
         if self.detonations.len() >= MAX_DETONATIONS { self.detonations.remove(0); }
-        self.charges.retain(|c| c.position != position);
         let radius = radius.min(200.0);
         let bottom = lava_y - 20.0;
         let tint = ION_CORE.lerp(ION_COLOR, 0.18);
@@ -94,21 +100,18 @@ impl IonFx {
                 opacity_power: power, radiance_power: power, ..Default::default()
             }).expect("valid ion detonation volume recipe");
         }
-        let mut rng = Rng(position.to_array().iter().fold(0x2545_f491_4f6c_dd1du64,
-            |s, v| s.rotate_left(13) ^ v.to_bits() as u64) ^ radius.to_bits() as u64);
-        for _ in 0..40 {
-            let length = rng.range(16.0, 30.0);
-            let width = rng.range(0.09, 0.22);
-            let angle = rng.range(0.0, std::f32::consts::TAU);
-            let dist = rng.unit().sqrt() * radius * 0.88;
-            let start = position + Vec3::new(angle.cos() * dist, rng.range(-20.0, 20.0), angle.sin() * dist);
-            let life = rng.range(0.28, 0.62);
-            let travel = Vec3::new(rng.range(-1.5, 1.5), rng.range(70.0, 120.0) * life, rng.range(-1.5, 1.5));
-            effects.streak(AdditiveStreak { position: start, travel, birth: now, life,
-                radius: [width; 2], length: [length; 2], color: Vec3::ONE,
-                radiance: rng.range(420.0, 900.0) * DETONATION_STREAK_NITS,
-                opacity: rng.range(0.7, 1.0), fade_in: 0.0, fade_out: 1.0, motion_power: 1.0,
-            }).expect("valid ion detonation streak recipe");
+        let burst_seed = position.to_array().iter().fold(0x2545_f491_4f6c_dd1du64,
+            |s, v| s.rotate_left(13) ^ v.to_bits() as u64) ^ radius.to_bits() as u64;
+        let charge = self.charges.iter().enumerate().filter(|(_, c)| c.position == position)
+            .min_by(|(_, a), (_, b)| a.birth.total_cmp(&b.birth)).map(|(i, _)| i);
+        let motes = match charge {
+            Some(i) => self.charges.remove(i).motes,
+            // A direct debug explosion or snapshot arriving at impact has no
+            // observed charge. Reconstruct the same kind of field in that case.
+            None => charge_motes(position, now - CHARGE, burst_seed),
+        };
+        for streak in detonation_streaks(&motes, now, burst_seed) {
+            effects.streak(streak).expect("valid ion detonation streak recipe");
         }
         self.detonations.push(Detonation { position, birth: now, radius, light_scale: light_scale(effects) });
     }
@@ -187,34 +190,68 @@ fn charge_columns(position: Vec3, birth: f32) -> [AdditiveColumn; 1] {
 
 fn charge_motes(position: Vec3, birth: f32, seed: u64) -> Vec<AdditiveMote> {
     let mut rng = Rng(seed);
-    let mut motes = Vec::with_capacity(400);
+    let mut motes = Vec::with_capacity(1000);
     for tick in 0..=(CHARGE / MOTE_INTERVAL) as u32 {
         // Uniform by area across the full footprint, with independent births
         // rather than visible waves. The initial field fades in asynchronously.
-        let count = if tick == 0 { 48 } else { 6 };
+        let count = if tick == 0 { 144 } else { 18 };
         for _ in 0..count {
             let at = tick as f32 * MOTE_INTERVAL + rng.range(0.0, if tick == 0 { 0.45 } else { MOTE_INTERVAL });
             if CHARGE - at < 0.8 { continue; }
             let angle = rng.range(0.0, std::f32::consts::TAU);
             let dist = rng.unit().sqrt() * growing_guns::ION_RADIUS as f32;
-            let start = position + Vec3::new(angle.cos() * dist, rng.range(0.12, 0.9), angle.sin() * dist);
-            let nominal_life = rng.range(2.4, 3.6);
-            let life = nominal_life.min(CHARGE - at);
+            let start = position + Vec3::new(angle.cos() * dist, 0.0, angle.sin() * dist);
+            let life = CHARGE - at;
             let power = rng.range(2.4, 3.6);
-            // Truncate the original trajectory at impact: late births must not
-            // compress a full rise into their shorter remaining lifetime.
-            let rise = rng.range(1.2, 2.6) * nominal_life / power * (life / nominal_life).powf(power);
+            // Grains first lift only centimetres, hovering under a metre even
+            // at full charge. Late births keep the same slow trajectory; the
+            // sudden acceleration happens when they turn into impact streaks.
+            let rise = rng.range(0.4, 0.85) * (life / CHARGE).powf(power);
             let travel = Vec3::new(rng.range(-0.06, 0.06), 1.0, rng.range(-0.06, 0.06)) * rise;
             let fade_in = (rng.range(0.45, 0.95) / life).min(0.8);
             motes.push(AdditiveMote { position: start, travel, birth: birth + at, life,
-                radius: rng.range(0.025, 0.045),
-                color: Vec3::new(0.12, rng.range(0.42, 0.65), 1.0),
-                radiance: rng.range(22.0, 36.0) * MOTE_NITS,
-                opacity: rng.range(0.50, 0.80), fade_in,
-                fade_out: rng.range(0.22, 0.35).min(1.0 - fade_in), motion_power: power });
+                radius: rng.range(0.055, 0.085),
+                color: Vec3::new(0.18, rng.range(0.55, 0.78), 1.0),
+                radiance: rng.range(35.0, 55.0) * MOTE_NITS,
+                opacity: rng.range(0.75, 1.0), fade_in,
+                fade_out: 0.0, motion_power: power });
         }
     }
     motes
+}
+
+/// Project births onto the live solid surface once. Share ray scratch across
+/// the field; there are no per-frame CPU particle or collision updates.
+fn ground_motes(motes: &mut Vec<AdditiveMote>, arena: &growing_guns::Arena) {
+    let top = arena.grid.boxes.iter().map(|b| b.top()).fold(0.0, f32::max) + 1.0;
+    let mut scratch = kern::collide::BoxGridScratch::default();
+    motes.retain_mut(|mote| {
+        let origin = Vec3::new(mote.position.x, top, mote.position.z);
+        let Some((distance, normal, _)) = arena.grid.ray_with_scratch(origin, Vec3::NEG_Y,
+            (top - arena.lava_surface()).max(0.0), &mut scratch) else { return false; };
+        if normal.y < 0.5 { return false; }
+        // The glowing core touches the paving; the halo can overlap it and
+        // is softly clipped by the depth buffer. Do not seed empty lava holes.
+        mote.position.y = top - distance + mote.radius * 0.5 + 0.015;
+        true
+    });
+}
+
+/// Continue each charging dot from the same GPU-evaluated position. The
+/// streak begins dot-sized, then stretches upward as the field discharges.
+fn detonation_streaks(motes: &[AdditiveMote], now: f32, seed: u64) -> Vec<AdditiveStreak> {
+    let mut rng = Rng(seed);
+    motes.iter().map(|mote| {
+        let age = ((now - mote.birth) / mote.life).clamp(0.0, 1.0);
+        let position = mote.position + mote.travel * age.powf(mote.motion_power);
+        let life = rng.range(0.55, 0.85);
+        AdditiveStreak { position, travel: Vec3::Y * (rng.range(35.0, 65.0) * life),
+            birth: now, life, radius: [mote.radius * 0.75, mote.radius * 0.4],
+            length: [mote.radius * 2.0, rng.range(8.0, 18.0)],
+            color: mote.color.lerp(Vec3::ONE, 0.72),
+            radiance: rng.range(420.0, 900.0) * DETONATION_STREAK_NITS,
+            opacity: 0.85, fade_in: 0.0, fade_out: 0.85, motion_power: 1.0 }
+    }).collect()
 }
 
 fn light_scale(effects: &Effects) -> f32 {
@@ -271,7 +308,7 @@ mod tests {
     #[test]
     fn charge_motes_fade_in_accelerate_and_end_without_rushing_late_births() {
         let motes = charge_motes(Vec3::ZERO, 10.0, 5);
-        assert!((300..450).contains(&motes.len()));
+        assert!((900..1050).contains(&motes.len()));
         let outer=motes.iter().filter(|m| m.position.length()>growing_guns::ION_RADIUS as f32*0.7).count();
         assert!(outer>motes.len()/3, "the whole disc receives motes");
         assert!(motes.windows(2).any(|m| (m[0].birth - m[1].birth).abs() > 0.01));
@@ -279,17 +316,84 @@ mod tests {
         for mote in motes {
             effects.mote(mote).expect("valid soft-dot recipe");
             assert!(mote.birth >= 10.0);
-            assert!(mote.birth + mote.life <= 10.0 + CHARGE + 0.00001);
+            assert!((mote.birth + mote.life - (10.0 + CHARGE)).abs() < 0.00001);
+            assert_eq!(mote.fade_out, 0.0, "dots remain visible until the hand-off");
             // First fifth of life covers under 3% of the rise; speed increases.
             assert!(0.2_f32.powf(mote.motion_power) < 0.03);
             let speed = |age: f32| mote.travel.y / mote.life * mote.motion_power * age.powf(mote.motion_power - 1.0);
             assert!(speed(0.1) < 0.11);
             assert!(speed(0.75) > speed(0.25) * 4.0);
-            assert!(speed(1.0) <= 2.601, "late births keep the same speed ceiling");
+            assert!(speed(1.0) <= 0.81, "the charge hovers slowly until the sudden discharge");
+            assert!(mote.travel.y <= 0.85);
             assert!(mote.fade_in * mote.life >= 0.449);
-            assert!((0.025..=0.045).contains(&mote.radius));
+            assert!((0.055..=0.085).contains(&mote.radius));
             assert!(mote.travel.x.abs().max(mote.travel.z.abs()) <= mote.travel.y * 0.061);
         }
+    }
+
+    #[test]
+    fn grains_start_on_live_surfaces_and_skip_lava_holes() {
+        use kern::collide::{BoxGrid, YawBox};
+        let mut arena = growing_guns::Arena::empty();
+        arena.grid = BoxGrid::new(vec![
+            YawBox::new(Vec3::new(0.0, -0.5, 0.0), Vec3::new(4.0, 1.0, 4.0), 0.0),
+            YawBox::new(Vec3::new(5.0, 2.5, 0.0), Vec3::new(4.0, 1.0, 4.0), 0.0),
+        ], 4.0);
+        let raw = [0.0, 5.0, 10.0].map(|x| AdditiveMote {
+            position: Vec3::new(x, 100.0, 0.0), ..Default::default() });
+        let mut motes = raw.to_vec();
+        ground_motes(&mut motes, &arena);
+        assert_eq!(motes.len(), 2, "no sand spawns above the empty lava hole");
+        for (mote, floor) in motes.iter().zip([0.0, 3.0]) {
+            assert!((mote.position.y - floor - mote.radius * 0.5 - 0.015).abs() < 0.00001);
+        }
+        arena.grid.remove(0);
+        let mut motes = raw.to_vec();
+        ground_motes(&mut motes, &arena);
+        assert_eq!(motes.len(), 1, "destroyed flooring no longer emits grains");
+        assert_eq!(motes[0].position.x, 5.0);
+    }
+
+    #[test]
+    fn explosion_continues_the_observed_particle_field_after_strike_removal() {
+        let mut world = World::new(3, &[false]);
+        world.tick = 60;
+        world.strikes.clear();
+        world.events.clear();
+        let position = Vec3::new(2.0, 0.0, 6.0);
+        world.strikes.push(Strike { kind: StrikeKind::IonCannon, target: position, owner: Some(0), age: 0.0 });
+        let mut ion = IonFx::default();
+        let mut effects = Effects::default();
+        ion.sync(&world, &mut effects, 1.0);
+        let motes = ion.charges[0].motes.clone();
+        let initial_count = effects.len();
+        ion.sync(&world, &mut effects, 1.0);
+        assert_eq!(effects.len(), initial_count, "repeated sync does not double the field");
+
+        // Match the real absorb order: the sim removes the strike, sync runs,
+        // and only then is the explosion event consumed by detonate().
+        world.tick += 228;
+        world.strikes.clear();
+        world.events.push(growing_guns::Event::Explosion { pos: position, radius: 38.0,
+            owner: 0, kind: growing_guns::ExplosionKind::Ion });
+        let now = 1.0 + CHARGE;
+        ion.sync(&world, &mut effects, now);
+        assert_eq!(ion.charges.len(), 1, "keep the exact field until the explosion consumes it");
+        let streaks = detonation_streaks(&motes, now, 17);
+        assert_eq!(streaks.len(), motes.len());
+        for (mote, streak) in motes.iter().zip(&streaks) {
+            assert!(streak.position.distance(mote.position + mote.travel) < 0.0001);
+            assert_eq!(streak.length[0], mote.radius * 2.0);
+            assert!(streak.length[1] > streak.length[0]);
+            assert_eq!(streak.travel.x, 0.0);
+            assert_eq!(streak.travel.z, 0.0);
+            assert!(streak.travel.y > 0.0);
+        }
+        ion.detonate(&mut effects, now, position, 38.0, growing_guns::arena::LAVA_KILL_Y);
+        assert!(ion.charges.is_empty());
+        assert_eq!(effects.len(), initial_count + 3 + motes.len());
+        ion.detonate(&mut effects, now, position, 38.0, growing_guns::arena::LAVA_KILL_Y);
+        assert_eq!(effects.len(), initial_count + 3 + motes.len(), "one streak per dot, once");
     }
 
     #[test]
@@ -316,7 +420,7 @@ mod tests {
     #[test]
     fn charge_lights_illuminate_ground_at_a_distance_and_build_up() {
         let mut fx=IonFx::default();
-        fx.charges.push(Charge {key:StrikeKey {round:1,owner:Some(0),target:[0;3],birth_tick:0},position:Vec3::ZERO,birth:0.0,light_scale:37_000.0});
+        fx.charges.push(Charge {key:StrikeKey {round:1,owner:Some(0),target:[0;3],birth_tick:0},position:Vec3::ZERO,birth:0.0,light_scale:37_000.0,motes:Vec::new()});
         let floor=Vec3::new(10.0,0.0,0.0);
         let floor_lux=|time| fx.lights(time).iter().map(|l| {
             let to=l.position-floor;
@@ -338,9 +442,10 @@ mod tests {
         for column in charge_columns(Vec3::ZERO, 0.0) { effects.column(column).unwrap(); }
         let mut ion = IonFx::default();
         ion.detonate(&mut effects, 4.0, Vec3::ZERO, 38.0, growing_guns::arena::LAVA_KILL_Y);
-        assert_eq!(effects.len(), 1 + 3 + 40);
+        let count = effects.len();
+        assert!((904..1054).contains(&count));
         ion.detonate(&mut effects, 4.0, Vec3::ZERO, 38.0, growing_guns::arena::LAVA_KILL_Y);
-        assert_eq!(effects.len(), 1 + 3 + 40);
+        assert_eq!(effects.len(), count);
         assert_eq!(ion.flash(3.99, Vec3::ZERO), 0.0);
         assert!(ion.flash(4.01, Vec3::ZERO) > 0.7);
         assert_eq!(ion.flash(4.4, Vec3::ZERO), 0.0);
