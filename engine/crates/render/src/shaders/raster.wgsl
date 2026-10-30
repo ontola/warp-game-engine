@@ -3,6 +3,8 @@
 // target stores which triangle covers each pixel; shading happens later,
 // once per pixel.
 override CLUSTER_BUCKETS: bool = true;
+// See cull.wgsl.
+override VOXEL_FAR_M: f32 = 0.0;
 
 struct View {
     view_proj: mat4x4<f32>,
@@ -104,6 +106,9 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     var replaced=replacement==0xffffffffu || replacement==cl.material+1u;
     if replacement!=0xffffffffu && (replacement&0x80000000u)!=0u {
         replaced=foliage_selection[replacement&0x7fffffffu].x!=0u;
+    }
+    if VOXEL_FAR_M>0.0 && replacement!=0xffffffffu && (replacement&0xc0000000u)==0x40000000u {
+        replaced=distance(vec3<f32>(inst.r0.w,inst.r1.w,inst.r2.w),view.cam.xyz)>VOXEL_FAR_M;
     }
     if view.params.z<0.5 && view.extra.y<1.5 && replaced {
         o.pos=vec4<f32>(2.0,2.0,2.0,1.0);

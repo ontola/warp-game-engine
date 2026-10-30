@@ -1483,9 +1483,10 @@ impl Renderer {
         let cluster_buckets = std::env::var("KERN_CLUSTER_BUCKETS").as_deref() != Ok("0");
         let tree_occlusion = crate::tree_occlusion::Resources::new(gpu,cluster_buckets);
         let early_grass_cull = std::env::var("KERN_EARLY_GRASS_CULL").as_deref() != Ok("0");
+        let far_trees = if scene.voxel_forest.is_some() { f64::from(scene.voxel_far_distance_m) } else { 0.0 };
         let cull_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64),
-                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64)];
-        let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64)];
+                              ("EARLY_GRASS_CULL", u8::from(early_grass_cull) as f64), ("VOXEL_FAR_M", far_trees)];
+        let raster_constants = [("CLUSTER_BUCKETS", u8::from(cluster_buckets) as f64), ("VOXEL_FAR_M", far_trees)];
         let cull_compute = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(&cull_pl), module: &cull_mod, entry_point: Some(entry),
             compilation_options: wgpu::PipelineCompilationOptions { constants: &cull_constants, ..Default::default() },

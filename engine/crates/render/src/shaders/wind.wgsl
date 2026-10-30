@@ -23,7 +23,8 @@ fn update_wind(@builtin(global_invocation_id) id: vec3<u32>) {
     // FOLIAGE=1, LIVE_GRASS=8, WIND_GRASS=16. A volume crown and its source
     // trunk/shadows remain at rest together until volume deformation is ready.
     if inst.cluster_count == 0u || (inst.flags & 25u) == 0u || (inst.flags & 32u) != 0u
-        || wind_voxel_replacement[owner] != 0u || wind.field.z == 0.0 { return; }
+        || (wind_voxel_replacement[owner] != 0u && (wind_voxel_replacement[owner] & 0xc0000000u) != 0x40000000u)
+        || wind.field.z == 0.0 { return; }
     let direction = wind.field.xy;
     let across_dir = vec2<f32>(-direction.y, direction.x);
     let root = vec2<f32>(inst.r0.w, inst.r2.w);
