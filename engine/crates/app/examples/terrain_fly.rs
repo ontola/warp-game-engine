@@ -67,11 +67,11 @@ const GRASS_CEILING: f32 = 120.0;
 /// blades the terrain shader draws the field as a canopy.
 const GRASS_RADIUS: f32 = 45.0;
 
-type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
+type Built = Result<(Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>, Option<recipe_forest::Pool>), String>;
 /// A scene from the builder thread, with its renderer when the thread had
 /// the GPU (every rebuild after the first): the swap then costs nothing on
 /// the frame instead of ~300 ms of uploads.
-type Ready = Result<(Option<(render::Renderer, ProceduralTerrain)>, Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>), String>;
+type Ready = Result<(Option<(render::Renderer, ProceduralTerrain)>, Scene, Lighting, procedural_terrain::TerrainSpec, Option<Vec3>, Option<recipe_forest::Pool>), String>;
 
 /// What goes into a scene besides the terrain; changing it rebuilds.
 #[derive(Clone, Copy, PartialEq)]
@@ -128,6 +128,7 @@ struct Fly {
     /// Terrain LOD from the debug menu, kept across rebuilds.
     terrain_settings: Settings,
     terrain: Option<ProceduralTerrain>,
+    trees: Option<recipe_forest::Pool>,
     light: Lighting,
     stats: Stats,
     jumps: u32,
@@ -137,7 +138,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, speed: 40.0, hug: None, wheel: 0.0,
-            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0 };
+            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0 };
         fly.pos = Vec3::new(0.0, fly.ground(0.0, 0.0) + 60.0, 0.0);
         fly.prev = fly.pos;
         fly.rebuild()?;
@@ -159,9 +160,9 @@ impl Fly {
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
-            let ready = build_scene(seed, style, &palette, pos, world).map(|(scene, light, pool, at)| {
+            let ready = build_scene(seed, style, &palette, pos, world).map(|(scene, light, pool, at, trees)| {
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool, settings));
-                (built, scene, light, pool, at)
+                (built, scene, light, pool, at, trees)
             });
             let _ = tx.send(ready);
         });
@@ -254,7 +255,8 @@ impl Game for Fly {
         };
         if let Some(built) = ready {
             self.building = None;
-            let (prebuilt, scene, light, pool, world_at) = built??;
+            let (prebuilt, scene, light, pool, world_at, trees) = built??;
+            self.trees = trees;
             match prebuilt {
                 Some((renderer, terrain)) => { frame.set_renderer(renderer); self.terrain = Some(terrain); }
                 None => { frame.set_scene(&scene, &light); self.terrain = Some(ProceduralTerrain::new(pool, self.terrain_settings)); }
@@ -269,6 +271,8 @@ impl Game for Fly {
         let [w, h] = frame.size;
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
+            // The full spruces follow the camera (recipe_forest::Pool).
+            if let Some(trees) = &mut self.trees { trees.update(renderer, frame.gpu, &[pos])?; }
         }
         if frame.dt > 0.0 { self.fps += (1.0 / frame.dt - self.fps) * 0.05; }
 
@@ -386,13 +390,14 @@ fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, centre: Vec3,
     scene.add_texture_with_normal_encoding(&root.join("gravel_ground_01_albedo.jpg"), render::scene::NormalEncoding::SrgbTransferred)?;
     scene.add_texture(&root.join("mossy_rock_albedo.jpg"))?;
     let material = scene.add_material(Material { tint: [1.0; 3], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
+    let mut tree_pool = None;
     if world.trees {
         let mut trees = forest(seed, &style, centre, world);
         trees.sort_by(|a, b| (a.0 - centre).length_squared().total_cmp(&(b.0 - centre).length_squared()));
         let near = (world.recipe_trees as usize).min(trees.len());
         if world.firs { firs(&mut scene, &assets, &trees[near..])?; }
         let far = if world.firs { &[][..] } else { &trees[near..] };
-        recipe_spruces(&mut scene, &trees[..near], far)?;
+        tree_pool = recipe_spruces(&mut scene, &trees[..near], far)?;
     }
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
@@ -418,7 +423,7 @@ fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, centre: Vec3,
     // distant trees flickered (headless: 0.5-5k changed pixels a frame from a
     // still camera with TAA, ~300 without). Sideways plays without TAA too.
     light.taa = 0.0;
-    Ok((scene, light, pool, Some(centre)))
+    Ok((scene, light, pool, Some(centre), tree_pool))
 }
 
 /// The renderer for `scene`, built on the scene thread: the swap then
@@ -457,10 +462,11 @@ fn firs(scene: &mut Scene, assets: &std::path::Path, spots: &[(Vec3, f32, Vec3, 
 }
 
 /// Recipe spruces (render::recipe_forest): three seeds, cooked once and
-/// shared. `near` spots get the full assembly, `far` ones the same plant as
-/// one voxel proxy.
-fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
-    if near.is_empty() && far.is_empty() { return Ok(()); }
+/// shared. Every spot is the plant as one voxel proxy, and as many full
+/// assemblies as `near` has follow the camera (the returned pool). Without
+/// `far` (the firs draw those) the `near` spots are full and fixed.
+fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(Vec3, f32, Vec3, usize)]) -> Result<Option<recipe_forest::Pool>, String> {
+    if near.is_empty() && far.is_empty() { return Ok(None); }
     static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
     let cooked = COOKED.get_or_init(|| {
         let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
@@ -478,9 +484,16 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
     let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(defaults.proxy_pixels),
         proxy_pixels_from: arg("--proxy-from").unwrap_or(defaults.proxy_pixels_from), ..defaults };
     let started = std::time::Instant::now();
-    recipe_forest::plant(scene, cooked, &trees, near.len(), policy)?;
-    println!("{} trees ({} full) planted in {} ms", trees.len(), near.len(), started.elapsed().as_millis());
-    Ok(())
+    if far.is_empty() {
+        recipe_forest::plant(scene, cooked, &trees, near.len(), policy)?;
+        println!("{} full trees planted in {} ms", trees.len(), started.elapsed().as_millis());
+        return Ok(None);
+    }
+    // Three variants: the full set is shared out over them.
+    let slots = near.len().div_ceil(cooked.len());
+    let (_, pool) = recipe_forest::plant_streamed(scene, cooked, &trees, slots, policy)?;
+    println!("{} trees ({slots} full per variant, following the camera) planted in {} ms", trees.len(), started.elapsed().as_millis());
+    Ok(Some(pool))
 }
 
 type Surfaces = Vec<(String, Vec<render::cluster::Vertex>, Vec<u32>)>;

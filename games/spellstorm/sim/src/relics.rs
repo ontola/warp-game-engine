@@ -78,21 +78,8 @@ const fn r(name: &'static str, text: &'static str, mods: &'static [Mod]) -> Reli
 }
 
 pub const ALL: [Relic; 32] = [
-    r(
-        "Black Grimoire",
-        "Poison and Void +30%",
-        &[M::El(Poison, 1.3), M::El(Void, 1.3)],
-    ),
-    r(
-        "Ember and Rime Codex",
-        "Fire, Frost, Steam and Ice +35%",
-        &[
-            M::El(Fire, 1.35),
-            M::El(Frost, 1.35),
-            M::El(Steam, 1.35),
-            M::El(Ice, 1.35),
-        ],
-    ),
+    r("Black Grimoire", "Poison and Void +40%", &[M::El(Poison, 1.4), M::El(Void, 1.4)]),
+    r("Ember and Rime Codex", "Fire, Frost, Steam and Ice +40%", &[M::El(Fire, 1.4), M::El(Frost, 1.4), M::El(Steam, 1.4), M::El(Ice, 1.4)]),
     r(
         "Tide Scroll",
         "Water, Air, Mud and Storm +50%",
@@ -103,15 +90,7 @@ pub const ALL: [Relic; 32] = [
             M::El(Storm, 1.5),
         ],
     ),
-    r(
-        "Storm Sigil",
-        "Lightning, Earth and Magma +35%",
-        &[
-            M::El(Lightning, 1.35),
-            M::El(Earth, 1.35),
-            M::El(Magma, 1.35),
-        ],
-    ),
+    r("Storm Sigil", "Lightning, Earth and Magma +40%", &[M::El(Lightning, 1.4), M::El(Earth, 1.4), M::El(Magma, 1.4)]),
     r(
         "Quick Hands",
         "Aimed spells wind up 40% faster",
@@ -133,45 +112,33 @@ pub const ALL: [Relic; 32] = [
         "Enchantments last twice as long",
         &[M::EnchantTime(2.0)],
     ),
-    r("Whetstone", "Sword hits 60% harder", &[M::Sword(1.6)]),
+    r("Whetstone", "Sword hits twice as hard", &[M::Sword(2.0)]),
     r("Thick Hide", "+30 max health", &[M::Hp(30.0)]),
-    r(
-        "Glass Staff",
-        "+15% to all your damage, -30 max health",
-        &[M::Dmg(1.15), M::Hp(-30.0)],
-    ),
+    r("Glass Staff", "+30% to all your damage, -20 max health", &[M::Dmg(1.3), M::Hp(-20.0)]),
     r("Zephyr Feather", "You move 20% faster", &[M::Speed(1.2)]),
-    r(
-        "Red Chalice",
-        "Blood you drink heals 60% more",
-        &[M::Heal(1.6)],
-    ),
+    r("Red Chalice", "Blood you drink heals twice as much", &[M::Heal(2.0)]),
     r(
         "Pilgrim Boots",
         "Nothing on the ground can hurt or slow you",
         &[M::Firewalker],
     ),
-    r(
-        "Hunter's Mark",
-        "+25% on wet, burning, chilled or poisoned monsters",
-        &[M::Afflicted(1.25)],
-    ),
+    r("Hunter's Mark", "+20% on wet, burning, chilled or poisoned monsters", &[M::Afflicted(1.2)]),
     r("Pyre Psalter", "Fire and Magma +50%", &[M::El(Fire, 1.5), M::El(Magma, 1.5)]),
     r("Frozen Heart", "Frost and Ice +50%", &[M::El(Frost, 1.5), M::El(Ice, 1.5)]),
     r("Thunder Rod", "Lightning and Storm +50%", &[M::El(Lightning, 1.5), M::El(Storm, 1.5)]),
     r("Tomb Dust", "Poison +60%", &[M::El(Poison, 1.6)]),
     r("Deep Well", "+40 max mana", &[M::Mana(40.0)]),
-    r("Moon Font", "Mana comes back twice as fast", &[M::Regen(2.0)]),
+    r("Moon Font", "Mana comes back 50% faster", &[M::Regen(1.5)]),
     r("Miser's Ledger", "Loading and casting cost 20% less", &[M::Cost(0.8)]),
     r("Soul Jar", "Souls give 50% more mana", &[M::Souls(1.5)]),
-    r("Lodestone", "Souls fly to you from 3 times as far", &[M::Magnet(3.0)]),
+    r("Lodestone", "Souls fly to you from afar and give 20% more", &[M::Magnet(3.0), M::Souls(1.2)]),
     r("Iron Skin", "You take 20% less damage", &[M::Guard(0.8)]),
     r("Plague Primer", "Your burns, poisons and chills go 50% deeper", &[M::Status(1.5)]),
-    r("Ram's Horn", "Your spells knock monsters back twice as far", &[M::Push(2.0)]),
-    r("Keen Gem", "Your bolts hit 40% harder", &[M::Bolt(1.4)]),
-    r("Quicksilver Grip", "The staff swing recovers twice as fast", &[M::Swing(0.5)]),
-    r("Blood Pact", "+25% to all your damage, but you take 25% more", &[M::Dmg(1.25), M::Guard(1.25)]),
-    r("Wayfarer's Charm", "+15 max health and you move 10% faster", &[M::Hp(15.0), M::Speed(1.1)]),
+    r("Ram's Horn", "Spells knock monsters back twice as far, -10% hurt", &[M::Push(2.0), M::Guard(0.9)]),
+    r("Keen Gem", "Your bolts hit 80% harder", &[M::Bolt(1.8)]),
+    r("Quicksilver Grip", "Swing recovers twice as fast, hits 30% harder", &[M::Swing(0.5), M::Sword(1.3)]),
+    r("Blood Pact", "+40% to all your damage, but you take 20% more", &[M::Dmg(1.4), M::Guard(1.2)]),
+    r("Wayfarer's Charm", "+20 max health and you move 15% faster", &[M::Hp(20.0), M::Speed(1.15)]),
 ];
 
 /// A tome as the game uses it: the built-in ones, or the Luau rules'

@@ -561,6 +561,8 @@ impl App {
             let renderer = Renderer::new(&g.gpu, &self.built.scene, &self.light);
             renderer.set_upscale(&g.gpu,self.args.upscale)?;
             g.renderer = renderer;
+            // A new renderer starts from the built forest: place the pool again.
+            if let Some(pool)=&mut self.built.tree_pool {pool.reset();}
             self.debug.reset_measurements(self.rendered);self.debug.gpu_unavailable=false;
         }
         self.debug.tree_committed(tree_settings,tree_report);
@@ -1219,7 +1221,8 @@ impl App {
         let views = crate::shot::view_rects(if ordered.is_empty(){&cams}else{&ordered}, self.args.views, render_w, render_h);
         // The fixed pool sits before the cars. World-cell changes upload only
         // its dirty range; unchanged camera anchors require no grass upload.
-        let grass_dirty=self.built.update_ground_cover(&views.iter().map(|v|v.cam.pos).collect::<Vec<_>>());
+        let view_positions:Vec<_>=views.iter().map(|v|v.cam.pos).collect();
+        let grass_dirty=self.built.update_ground_cover(&view_positions);
         frame_profile::section(trace,"hud_layout");
         let layout_started=Instant::now();
         if self.screenshot_toast.as_ref().is_some_and(|(_,until)|now>=*until){self.screenshot_toast=None;}
@@ -1252,6 +1255,7 @@ impl App {
         frame_profile::section(trace,"scene_uploads");
         let first = self.built.cars.first().map(|c|c.first).unwrap_or(self.built.scene.instances.len());
         if let Some(range)=grass_dirty {g.renderer.update_instances(&g.gpu,range.start,&self.built.scene.instances[range])?;}
+        self.built.update_trees(&g.renderer,&g.gpu,&view_positions)?;
         g.renderer.update_instances(&g.gpu, first, &self.built.scene.instances[first..])?;
         if let Some((log,_))=self.live_edit.poll(Duration::from_millis(250),&g.gpu,&mut g.renderer,&self.built.car_slots){
             for l in log{eprintln!("live edit: {l}");}

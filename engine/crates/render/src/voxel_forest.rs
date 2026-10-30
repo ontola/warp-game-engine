@@ -548,7 +548,7 @@ impl VoxelRenderer {
             gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("voxel trees"),
                 contents: bytemuck::cast_slice(&forest.instances),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             }),
         ];
         // Both Frobenius and sqrt(matrix 1-norm * infinity-norm) bound
@@ -769,6 +769,17 @@ impl VoxelRenderer {
         [Some("voxel bins"),Some("voxel tiles"),self.has_visibility_stream().then_some("voxel visibility"),Some("voxel integrate"),Some("voxel composite")]
     }
     pub(crate) fn tree_buffer(&self) -> &wgpu::Buffer { &self.data[3] }
+    /// Hide or show whole-plant proxy `volume` (forest index): hidden while a
+    /// full assembly stands in for its plant (recipe_forest::Pool).
+    pub(crate) fn set_proxy_hidden(&self, gpu: &Gpu, volume: u32, hidden: bool) -> Result<(), String> {
+        if volume < self.count - self.proxies || volume >= self.count {
+            return Err("only whole-plant proxies can be hidden".into());
+        }
+        let offset = volume as usize * std::mem::size_of::<crate::foliage_volume_data::GpuTree>()
+            + std::mem::offset_of!(crate::foliage_volume_data::GpuTree, bounds_min) + 12;
+        gpu.queue.write_buffer(&self.data[3], offset as u64, bytemuck::bytes_of(&if hidden { 1.0f32 } else { 0.0 }));
+        Ok(())
+    }
     pub(crate) fn contains_owner_range(&self, first: usize, count: usize) -> bool {
         self.owners
             .iter()

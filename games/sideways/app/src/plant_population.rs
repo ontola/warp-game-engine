@@ -52,17 +52,22 @@ pub fn stage_index(stage: &Stage, x: f32, z: f32) -> usize {
 
 /// The live mixed forest on the engine's recipe forest
 /// (render::recipe_forest): each species cooked once (cached in
-/// build/cook-cache) and shared by every tree; trees within FULL_RADIUS of a
-/// camera are full assemblies (at most MAX_FULL), every other tree is the
-/// same plant as one whole-plant voxel proxy.
-pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras: &[Vec3]) -> Result<serde_json::Value, String> {
-    const FULL_RADIUS: f32 = 40.0;
-    const MAX_FULL: usize = 8;
+/// build/cook-cache) and shared by every tree. Every tree is a whole-plant
+/// voxel proxy; a pool of SIDEWAYS_POOL_SLOTS (4) full assemblies per species
+/// follows the cameras (Pool::update each frame), standing in for the
+/// nearest trees; past them, SIDEWAYS_CARD_SLOTS (250) card trees per species
+/// (rigid card meshes) stand in within SIDEWAYS_CARD_RADIUS (80 m).
+pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras: &[Vec3])
+    -> Result<(serde_json::Value, render::recipe_forest::Pool), String> {
+    let knob = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
+    let slots = knob("SIDEWAYS_POOL_SLOTS", 4.0) as usize;
+    let (card_slots, card_radius) = (knob("SIDEWAYS_CARD_SLOTS", 250.0) as usize, knob("SIDEWAYS_CARD_RADIUS", 80.0));
     let started = std::time::Instant::now();
     let variants: Vec<_> = TREE_IDS.iter().map(|id| crate::plant_species::find(id).map(|s| (s.recipe, 1)))
         .collect::<Result<_, _>>()?;
     let cache = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
     let cooked = render::recipe_forest::cook_variants(&variants, Some(&cache))?;
+    let cards = if card_slots > 0 { render::recipe_forest::cook_cards(&variants, Some(&cache))? } else { Vec::new() };
     let cooked_ms = started.elapsed().as_secs_f64() * 1e3;
     let loaded = cooked.iter().filter(|c| c.loaded).count();
     let plants: Vec<_> = cooked.into_iter().map(|c| c.plant).collect();
@@ -73,13 +78,18 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
             scale: crate::tree_assets::native_scale(spot).y, variant: stage_index(stage, spot.pos.0, spot.pos.2) })
     }).collect();
     trees.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let full = trees.iter().take(MAX_FULL).filter(|(d, _)| *d < FULL_RADIUS).count();
     let trees: Vec<_> = trees.into_iter().map(|(_, t)| t).collect();
     let mut counts = [0usize; TREE_IDS.len()];
     for t in &trees { counts[t.variant] += 1; }
-    render::recipe_forest::plant(scene, &plants, &trees, full, render::recipe_forest::game_policy())?;
-    Ok(serde_json::json!({"route":"render::recipe_forest","species":TREE_IDS,"species_counts":counts,"trees":trees.len(),
-        "full_assemblies":full,"cooked_or_loaded_ms":cooked_ms,"loaded_from_cache":loaded,"total_ms":started.elapsed().as_secs_f64() * 1e3}))
+    // Proxies take 8 px of error, loosening from 20 m: the stage's forest
+    // stands close to the road, and at 4 px from 50 m its splats cost two
+    // split-screen views ~30 ms more per frame for no visible gain.
+    let policy = render::aggregate_lod::Policy { proxy_pixels: 8.0, proxy_pixels_from: 20.0, ..render::recipe_forest::game_policy() };
+    let (_, mut pool) = render::recipe_forest::plant_streamed(scene, &plants, &trees, slots, policy)?;
+    if card_slots > 0 { render::recipe_forest::add_cards(scene, &mut pool, &cards, card_slots, card_radius)?; }
+    Ok((serde_json::json!({"route":"render::recipe_forest::Pool","species":TREE_IDS,"species_counts":counts,"trees":trees.len(),
+        "pool_slots_per_species":slots,"card_slots_per_species":card_slots,"card_radius_m":card_radius,"cooked_or_loaded_ms":cooked_ms,"loaded_from_cache":loaded,
+        "total_ms":started.elapsed().as_secs_f64() * 1e3}), pool))
 }
 
 /// Reuse game-authored decorative fern habitat instead of inventing CPU

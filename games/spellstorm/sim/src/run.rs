@@ -157,6 +157,12 @@ pub struct Run {
     pub practice: Option<Practice>,
     lead: f32,
     lead_t: f64,
+    /// Unlocks earned but not yet given (wizard, up to): they wait for a
+    /// calm moment (Joep: never mid-fight), `calm_t` seconds so far.
+    learn: Vec<(Id, i32)>,
+    calm_t: f64,
+    /// This level's first shrine has taught.
+    taught: bool,
 }
 
 impl Default for Run {
@@ -187,6 +193,9 @@ impl Default for Run {
             practice: None,
             lead: 0.0,
             lead_t: 0.0,
+            learn: Vec::new(),
+            calm_t: 0.0,
+            taught: false,
         }
     }
 }
@@ -227,12 +236,8 @@ impl World {
             self.run.biome_index,
             self.run.seed.wrapping_mul(31).wrapping_add(depth as u64),
         );
-        // From the second level on LB and the enchantment are open.
-        if depth >= 1 {
-            for id in self.wizards.clone() {
-                self.unlock_to(id, 3);
-            }
-        }
+        // Each level teaches once at its first shrine and once at its boss.
+        self.run.taught = false;
         let sz = self.level.start;
         let starts = [
             Vec2::new(-1.5, -1.0),
@@ -465,6 +470,9 @@ impl World {
                 }
             }
             State::Travel => {}
+        }
+        if !matches!(self.run.state, State::Dead | State::Won) {
+            self.learn_step(dt);
         }
         for w in &mut self.run.wards {
             if w.opening {
@@ -833,19 +841,52 @@ impl World {
         }
     }
 
-    /// What a shrine teaches every wizard present: the first shrine water
-    /// and the nova, the first boss poison and the plant, every later boss
-    /// one more LB element.
+    /// What a shrine teaches every wizard present: the next step of the
+    /// unlock ladder (wizard::STAGE_*), given once the fight is over
+    /// (learn_step).
     fn teach(&mut self, k: usize) {
-        let depth = self.run.depth();
+        // One step of the ladder (wizard::STAGE_*) at a level's first
+        // shrine and one at its boss: it runs over five levels (Joep).
+        if k < 2 {
+            if self.run.taught {
+                return;
+            }
+            self.run.taught = true;
+        }
         for id in self.wizards.clone() {
-            if depth == 0 && k < 2 {
-                self.unlock_to(id, 1);
-            } else if depth == 0 {
-                self.unlock_to(id, 2);
-            } else if k == 2 {
-                let u = self.wiz(id).unlocks;
-                self.unlock_to(id, u + 1);
+            let u = self.learned_by(id).max(0);
+            self.learn_later(id, (u + 1).min(crate::wizard::STAGES as i32 - 1));
+        }
+    }
+
+    /// What `id` will know once its waiting unlocks are given.
+    fn learned_by(&self, id: Id) -> i32 {
+        let u = self.wiz(id).unlocks;
+        self.run.learn.iter().filter(|l| l.0 == id).map(|l| l.1).fold(u, i32::max)
+    }
+
+    /// Unlocks up to `n` for `id`, at the next calm moment.
+    pub(crate) fn learn_later(&mut self, id: Id, n: i32) {
+        self.run.learn.push((id, n));
+    }
+
+    /// Waiting unlocks are given once it has been calm for 2 s: no monster
+    /// near a wizard or still to come, no wizard hurt (Joep: never
+    /// mid-fight, new things want a quiet moment).
+    fn learn_step(&mut self, dt: f64) {
+        if self.run.learn.is_empty() {
+            self.run.calm_t = 0.0;
+            return;
+        }
+        let hurt = self.wizards.iter().any(|&w| self.a(w).hurt_t > 0.0);
+        let calm = self.near_count() == 0 && self.run.spawn_queue.is_empty() && !hurt;
+        self.run.calm_t = if calm { self.run.calm_t + dt } else { 0.0 };
+        if self.run.calm_t < 2.0 {
+            return;
+        }
+        for (id, n) in std::mem::take(&mut self.run.learn) {
+            if self.ecs.contains(id) {
+                self.unlock_to(id, n);
             }
         }
     }

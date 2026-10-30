@@ -1477,12 +1477,19 @@ impl World {
                 self.ride(&o, target, 5.0);
             }
             Some(El::Water) => {
-                let dir = self
-                    .ecs
-                    .get::<&crate::wizard::Wizard>(caster)
-                    .map(|w| w.aim_dir)
-                    .unwrap_or(Vec3::NEG_Z);
-                o.thing = Some(self.pos(caster) + dir * WAVE_START);
+                // It rolls from the caster towards `target` (the caster
+                // passes its aim that way): the Wizard component is not the
+                // live one while its own cast runs, and read 0, so the wave
+                // stood still (Joep).
+                let pos = flat(self.pos(caster));
+                let mut dir = flat(target - pos).normalize_or_zero();
+                if dir == Vec3::ZERO {
+                    dir = self.ecs.get::<&crate::wizard::Wizard>(caster).map(|w| flat(w.aim_dir).normalize_or_zero()).unwrap_or(Vec3::ZERO);
+                }
+                if dir == Vec3::ZERO {
+                    dir = Vec3::NEG_Z;
+                }
+                o.thing = Some(pos + dir * WAVE_START);
                 o.wave_dir = dir;
             }
             Some(El::Lightning) => {
