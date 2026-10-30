@@ -208,7 +208,10 @@ impl Visuals {
                     let stone = self.arena.stone_at(world, chunk);
                     let scale = (0.06 + damage * 0.008).clamp(0.06, 1.0);
                     let amount = ((16.0 * scale).round() as u32).clamp(2, 20);
-                    let size = 2.4 * (0.05 + damage * 0.0022).clamp(0.05, 0.35);
+                    // A base round (22 damage) chips about 14 cm, a heavy one
+                    // up to the old size; Godot's 0.05 floor read too chunky
+                    // for small guns (Joep).
+                    let size = 2.4 * (0.004 + damage * 0.0024).clamp(0.03, 0.35);
                     let radius = growing_guns::destruct::rifle_chip(damage / 16.0).1;
                     self.fx.debris.burst(s, &render::debris::BurstSpec::chips(pos + normal * 0.15, radius * 0.3, amount, size, &stone.shards));
                     // A bullet hole where the chips came off, bigger for strong rounds.
