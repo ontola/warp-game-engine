@@ -29,6 +29,7 @@ missing.
 | Characters | Close | Knight, paladin and zombie with textures and clips, GPU skinning, 11-body ragdolls, model-derived head/body gibs. Cuts use cached model geometry; animated skin-aware dismemberment, aim and strafe layers remain incomplete |
 | Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with smoke, sparks, chips, scorch and blood, air strike rocket and white-out; ion cannon charges as one soft brightening column with wide bloom and bright ground illumination, with blue rising motes across the impact disc and nearly vertical rubble lift/fall |
 | Sky and light | Done | Godot's sky by default; procedural time of day and weather, per round or as a cycle; visible sun and GPU lens flare with per-view occlusion; floodlights with shadows at night |
+| Gameplay replay | Added | F12 saves a screenshot plus a bounded state replay; F9 review, pause/step/seek, saved frames and headless re-render after code edits. Local/host recording; see below for visual-history limits |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
 | Standalone Quest VR | Experimental | Native Android/OpenXR APK uses this same app and Warp renderer, all 52 cards, character assets and tracked growing gun. Shared minimum graphics profile removes stadium/crowd/TVs and GPU rubble; simple blocks, primitive characters and vertex lighting keep the full eye resolution. Requests 120 Hz when supported; sustained headset FPS remains under validation. Low and full profiles remain available on PC. Local bots, stereo, snap turn and original menus. [Build, controls and validation limits](../../engine/docs/quest-native.md). The earlier simplified WebXR demo remains separate. |
 | Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen. Join/leave reuses visual slots and clears unused screen regions |
@@ -70,7 +71,7 @@ cargo run --release -p growing-guns-app -- play --join TICKET
 
 Keyboard and mouse: WASD, mouse, Space jump, Shift dash, left mouse fire,
 right mouse special, R reload. Pad: sticks, A/LB jump, Y/RB dash, RT fire,
-LT/B special, X reload. F12 saves a screenshot. F3 (Back + Start on a pad)
+LT/B special, X reload. F12 saves a screenshot plus recent gameplay; F9 opens its replay. F3 (Back + Start on a pad)
 opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
 
@@ -81,6 +82,54 @@ For the native standalone Quest APK, run `python3 engine/tools/build-quest-nativ
 Add `--install` with an authorized USB-connected headset. See
 [Native Quest / OpenXR](../../engine/docs/quest-native.md) for controls and test limits.
 The earlier [simplified browser demo](../../engine/docs/quest-vr.md) remains available.
+
+## Replay a moment while editing graphics
+
+During local play, press **F12** to save the screenshot and the preceding
+35–40 seconds of gameplay (less near startup or after frequent arena resets).
+**F9** opens that saved clip, paused at the screenshot's exact sub-tick moment.
+The live local match waits while reviewing; **F9** or **Esc** returns to it.
+Online hosts can save, but must open the replay separately; clients currently
+save screenshots only. Recording does not capture audio, menus or private names.
+
+- **Space / Enter** or the Play button: play/pause. Playing from the end restarts.
+- **Left / Right**: one simulation frame (1/60 s). Click the timeline to seek.
+- **R / Save frame**: bookmark this frame. **F12** in review also takes a screenshot
+  and bookmarks the current moment. Gold ticks mark saved frames; click one to restore its exact sub-tick phase,
+  or use its frame number when rendering from the command line.
+- **F12 moment** returns to the original screenshot's moment.
+
+After editing rendering code, rebuild and press **F9** again: it also opens the
+latest saved replay after a restart. You can open a specific file below. The most recently
+saved bookmark opens automatically; the recording's gameplay stays fixed while
+the new code draws its particles, lighting, meshes and effects:
+
+```sh
+cargo run --release -p growing-guns-app -- replay latest
+cargo run --release -p growing-guns-app -- replay build/screenshots/NAME.ggreplay
+# Repeat a particular frame without a window (add --ui for the review controls):
+cargo run --release -p growing-guns-app -- replay build/screenshots/NAME.ggreplay --frame 210 --alpha 0.5 --out build/frame-210.png
+```
+
+Files stay local in `build/screenshots` (`WARP_SCREENSHOTS` overrides this): PNG,
+screenshot JSON, compressed `.ggreplay`, and `.marks.json` bookmarks. F12 keeps
+its existing clipboard behavior. Recording stores binary state/events and arena
+destruction, without rendering/encoding video. Its rolling buffer is capped at
+64 MiB; compression and atomic file publication happen on a worker. The toast
+confirms completion or reports failure. A save in progress retains shared chunks
+until it finishes; only one save may run at a time.
+
+Replay uses recorded authoritative states, not today's simulation or mods. It
+rebuilds CPU effects and steps GPU debris in order while seeking. Rendering edits
+are supported; incompatible state-schema edits produce a load error. The beginning
+of a rolling clip has no effects from before that clip, so use its later moments
+for comparisons. Replay has a canonical 60 Hz presentation history and disables
+TAA and adaptive quality. Stadium TV feeds use their static initial texture,
+and cycling skies bake synchronously in review. It reproduces gameplay and the saved interpolation phase, not a pixel-identical
+original window frame with its variable-rate camera punch, adaptive quality,
+menus, live lighting overrides or asynchronous sky transitions. New replays of
+the same saved frame should be stable. Seeking back reconstructs effects and can
+take a moment; the UI shows progress. No video/audio file is encoded.
 
 ## Change it while it runs
 
