@@ -692,7 +692,7 @@ pub struct Renderer {
     #[allow(clippy::type_complexity)]
     view_targets: std::sync::Mutex<Vec<Option<((u32, u32), wgpu::Texture, wgpu::Texture, wgpu::Texture)>>>,
     /// Per view: the gi, view light, TAA and tone uniforms, rewritten each frame.
-    view_uniforms: std::sync::Mutex<Vec<[Option<wgpu::Buffer>; 4]>>,
+    view_uniforms: std::sync::Mutex<Vec<[Option<wgpu::Buffer>; 5]>>,
     frame_resources: std::sync::Mutex<Vec<FrameResources>>,
     output_view: std::sync::Mutex<resource_cache::TextureViews<1>>,
     shadow_view: std::sync::Mutex<resource_cache::TextureViews<1>>,
@@ -738,6 +738,10 @@ pub struct Renderer {
     /// runs indirectly over the listed tiles only. Same image either way.
     sky_tiles: bool,
     shade_classify: wgpu::ComputePipeline,
+    /// Bakes each changed canopy level's sky transmittance into the canopy
+    /// texture, so shading reads it instead of marching per pixel
+    /// (`KERN_SKY_VIS_CACHE=0` keeps the per-pixel march).
+    sky_vis_bake: Option<SkyVisBake>,
     /// Per view: tile list (count first) and the indirect dispatch
     /// arguments copied from it (a buffer cannot be storage and indirect in
     /// one dispatch).
@@ -841,6 +845,15 @@ fn layout_entries(entries: &[(u32, wgpu::BindingType)]) -> Vec<wgpu::BindGroupLa
         .iter()
         .map(|(b, ty)| wgpu::BindGroupLayoutEntry { binding: *b, visibility: if writable(ty) { wgpu::ShaderStages::COMPUTE } else { all }, ty: *ty, count: None })
         .collect()
+}
+
+/// `shade.wgsl` `bake_sky_visibility`: its own group 1 (heightfield, gi,
+/// canopy texture and sampler) and group 3 (scratch level, level index).
+struct SkyVisBake {
+    pipeline: wgpu::ComputePipeline,
+    inputs: wgpu::BindGroupLayout,
+    output: wgpu::BindGroupLayout,
+    levels: [wgpu::Buffer; 3],
 }
 
 fn layout(gpu: &Gpu, label: &str, entries: &[(u32, wgpu::BindingType)]) -> wgpu::BindGroupLayout {
@@ -1565,6 +1578,26 @@ impl Renderer {
             label:Some("shade sky tiles"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("classify"),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
+        let sky_vis_bake = (std::env::var("KERN_SKY_VIS_CACHE").as_deref() != Ok("0")).then(|| {
+            let inputs = layout(gpu, "sky transmittance inputs", &[
+                (10, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (11, uniform()),
+                (13, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }),
+                (14, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+            ]);
+            let output = layout(gpu, "sky transmittance output", &[
+                (30, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D3 }),
+                (31, uniform()),
+            ]);
+            let empty = layout(gpu, "empty", &[]);
+            let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("bake sky transmittance"), layout: Some(&pl(&[&empty, &inputs, &empty, &output])), module: &shade_mod,
+                entry_point: Some("bake_sky_visibility"),
+                compilation_options: wgpu::PipelineCompilationOptions { constants: &shade_constants, ..Default::default() }, cache: gpu.pipeline_cache(),
+            });
+            let levels = [0u32, 1, 2].map(|l| buffer(gpu, "sky transmittance level", bytemuck::cast_slice(&[l, 0, 0, 0]), wgpu::BufferUsages::UNIFORM));
+            SkyVisBake { pipeline, inputs, output, levels }
+        });
         startup.mark("shade_pipeline");
         // Tonemap and TAA read their neighbourhoods from a shared tile;
         // KERN_TILED_POST=0 selects the direct versions (same image).
@@ -1770,6 +1803,7 @@ impl Renderer {
             shade_pl,
             sky_tiles,
             shade_classify,
+            sky_vis_bake,
             shade_tiles: std::sync::Mutex::new(Vec::new()),
             shade_text: crate::wind::shade_source(),
             shader_wind_text: crate::wind::common_source(),
@@ -3467,7 +3501,8 @@ impl Renderer {
             let gi_u = GiUniform {
                 vol_origins: canopy.origins,
                 vol_anchors: canopy.anchors,
-                vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], if light.gi>0.0 {1|((canopy.compact_support as u32)<<1)|((self.empty_gi_volume as u32)<<2)} else {0}],
+                vol_dims: [canopy.dims[0], canopy.dims[1], canopy.dims[2], if light.gi>0.0 {1|((canopy.compact_support as u32)<<1)|((self.empty_gi_volume as u32)<<2)
+                    |((self.sky_vis_bake.is_some() as u32)<<3)} else {0}],
                 hf: [self.hf.origin[0], self.hf.origin[1], self.hf.cell.max(1e-3), 0.0],
                 hf_dims: [self.hf.w.max(2), self.hf.h.max(2), self.solid_count, self.dents.map_or(0, |(offset, _)| offset as u32)],
                 // Reflectance, conditioned on local sun and sky visibility.
@@ -3476,6 +3511,34 @@ impl Renderer {
                     self.irradiance_volume.map_or(0.0, |(offset, _)| offset as f32)],
             };
             let gi_buf = self.view_uniform(gpu, vi, 0, "gi", bytemuck::bytes_of(&gi_u));
+            // A rebuilt canopy level gets its sky transmittance baked now,
+            // with GI on or off, so the cache is never stale when GI returns.
+            if let Some(bake) = &self.sky_vis_bake && canopy.updated_levels != 0 && !self.empty_gi_volume {
+                let mut bake_gi = gi_u;
+                bake_gi.vol_dims[3] = 1 | ((canopy.compact_support as u32) << 1);
+                let bake_gi = self.view_uniform(gpu, vi, 4, "gi bake", bytemuck::bytes_of(&bake_gi));
+                let inputs = bind(gpu, &bake.inputs, &[
+                    (10, wgpu::BindingResource::TextureView(&self.heightfield)), (11, bake_gi.as_entire_binding()),
+                    (13, wgpu::BindingResource::TextureView(&density_view)), (14, wgpu::BindingResource::Sampler(&self.density_sampler))]);
+                for level in 0..3u32 {
+                    if canopy.updated_levels & (1 << level) == 0 { continue; }
+                    let output = bind(gpu, &bake.output, &[
+                        (30, wgpu::BindingResource::TextureView(&canopy.scratch)), (31, bake.levels[level as usize].as_entire_binding())]);
+                    let time = self.query.as_ref().map(|(qs, _, _)| { names.push("canopy sky transmittance"); (qs, timestamp_pair(&mut ts)) });
+                    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("bake sky transmittance"),
+                        timestamp_writes: time.map(|(query_set, i)| wgpu::ComputePassTimestampWrites { query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
+                    pass.set_pipeline(&bake.pipeline);
+                    pass.set_bind_group(1, &inputs, &[]);
+                    pass.set_bind_group(3, &output, &[]);
+                    let [x, y, z] = canopy.dims;
+                    pass.dispatch_workgroups(x.div_ceil(8), y.div_ceil(8), z.div_ceil(8));
+                    drop(pass);
+                    let scratch_texture = canopy.scratch.texture();
+                    enc.copy_texture_to_texture(scratch_texture.as_image_copy(), wgpu::TexelCopyTextureInfo {
+                        texture: &canopy.texture, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: canopy.dims[1] * (3 + level), z: 0 }, aspect: wgpu::TextureAspect::All },
+                        wgpu::Extent3d { width: x, height: y, depth_or_array_layers: z });
+                }
+            }
             let mut view_light = lu;
             let near_view = if near_enabled {
                 let near = &near_shadows[vi];

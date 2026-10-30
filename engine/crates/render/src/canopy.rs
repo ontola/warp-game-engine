@@ -8,7 +8,10 @@
 //! Structural tree changes invalidate the field; a future wind phase must not
 //! be treated as a structural revision or trigger per-leaf rebuilds.
 //! Each view owns its receiver window so other players cannot change its LOD
-//! blend or lighting. Three levels cost 27 MiB per view, 108 MiB for four.
+//! blend or lighting. Three levels cost 27 MiB per view, 108 MiB for four,
+//! plus 25 MiB per view for the sky transmittance cache: three more Y slabs
+//! in the same texture, baked by the renderer (`shade.wgsl`
+//! `bake_sky_visibility`) through a scratch level whenever a level changes.
 //! `KERN_CANOPY_COMPACT_SUPPORT=1` additionally bounds reconstruction by the
 //! source leaves' vertical envelope. It preserves integrated proxy mass, not
 //! directional gaps/mean transmission. Opt-in pending matched GPU acceptance;
@@ -22,6 +25,9 @@ use wgpu::util::DeviceExt;
 
 pub const CANOPY_DIMS: [u32; 3] = [128, 48, 128];
 pub const CANOPY_LEVELS: usize = 3;
+/// Y slabs in the canopy texture: extinction levels 0..3, then the cached
+/// sky transmittance of each level (L1: mean and gradient).
+pub const CANOPY_SLABS: u32 = 6;
 pub const CANOPY_SNAP_CELLS: f32 = 8.0;
 /// Half the snap displacement plus one trilinear-filter cell.
 pub const CANOPY_SUPPORT_GUARD_CELLS: f32 = 5.0;
@@ -58,6 +64,11 @@ struct Cache {
 
 pub struct CanopyFrame {
     pub view: wgpu::TextureView,
+    /// The whole canopy texture, for copying a baked transmittance level
+    /// into its slab (`CANOPY_DIMS[1] * (3 + level)`).
+    pub texture: wgpu::Texture,
+    /// One level's worth of scratch the transmittance bake writes.
+    pub scratch: wgpu::TextureView,
     /// xyz is storage lower corner, w is metres per voxel.
     pub origins: [[f32; 4]; 3],
     /// Continuous centres for blending, independent of snapped storage.
@@ -70,8 +81,9 @@ pub struct CanopyFrame {
 }
 
 pub struct CanopyClipmap {
-    _texture: wgpu::Texture,
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
+    scratch: wgpu::TextureView,
     atomic: wgpu::Buffer,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -94,6 +106,7 @@ pub struct CanopyClipmap {
 struct ViewResources {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    scratch: wgpu::TextureView,
     atomic: wgpu::Buffer,
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -106,12 +119,20 @@ fn view_resources(gpu: &Gpu, layout: &wgpu::BindGroupLayout, source_buffer: &wgp
     });
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("canopy clipmap extinction"),
-        size: wgpu::Extent3d { width: 128, height: 48 * 3, depth_or_array_layers: 128 },
+        size: wgpu::Extent3d { width: 128, height: 48 * CANOPY_SLABS, depth_or_array_layers: 128 },
         mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D3,
         format: wgpu::TextureFormat::Rgba16Float,
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    let scratch = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("canopy sky transmittance scratch"),
+        size: wgpu::Extent3d { width: 128, height: 48, depth_or_array_layers: 128 },
+        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    }).create_view(&Default::default());
     let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("canopy clipmap fill parameters"), size: std::mem::size_of::<FillUniform>() as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
@@ -125,7 +146,7 @@ fn view_resources(gpu: &Gpu, layout: &wgpu::BindGroupLayout, source_buffer: &wgp
             wgpu::BindGroupEntry { binding: 3, resource: source_buffer.as_entire_binding() },
         ],
     });
-    ViewResources { texture, view, atomic, uniform, bind }
+    ViewResources { texture, view, scratch, atomic, uniform, bind }
 }
 
 fn legacy_crown(instance: &GpuInstance) -> (Vec3, Vec3) {
@@ -308,7 +329,7 @@ impl CanopyClipmap {
             label: Some("shared source crown bounds"), contents: bytemuck::cast_slice(&source_crowns.packed()), usage: wgpu::BufferUsages::STORAGE,
         });
         let resources = view_resources(gpu, &layout, &source_buffer, compact_support);
-        Ok(Self { _texture: resources.texture, view: resources.view, atomic: resources.atomic,
+        Ok(Self { texture: resources.texture, view: resources.view, scratch: resources.scratch, atomic: resources.atomic,
             uniform: resources.uniform, bind: resources.bind, bind_layout: layout,
             fill, filter, cache: Mutex::new(Cache::default()),
             initial_crowns: Arc::new(initial_crowns), foliage_y, mass_scale, source_crowns, source_buffer,
@@ -321,7 +342,7 @@ impl CanopyClipmap {
     /// Cache state starts empty: no inherited union/spread-dependent pitch.
     pub fn fork_view(&self, gpu: &Gpu) -> Self {
         let resources = view_resources(gpu, &self.bind_layout, &self.source_buffer, self.compact_support);
-        Self { _texture: resources.texture, view: resources.view, atomic: resources.atomic,
+        Self { texture: resources.texture, view: resources.view, scratch: resources.scratch, atomic: resources.atomic,
             uniform: resources.uniform, bind: resources.bind, bind_layout: self.bind_layout.clone(),
             fill: self.fill.clone(), filter: self.filter.clone(), cache: Mutex::new(Cache::default()),
             initial_crowns: Arc::clone(&self.initial_crowns), foliage_y: self.foliage_y, mass_scale: self.mass_scale,
@@ -420,7 +441,7 @@ impl CanopyClipmap {
             cache.revision = foliage_revision;
             cache.coarse_pitch = layout.origins[2][3];
         }
-        CanopyFrame { view: self.view.clone(), origins: layout.origins,
+        CanopyFrame { view: self.view.clone(), texture: self.texture.clone(), scratch: self.scratch.clone(), origins: layout.origins,
             anchors: layout.anchors, dims: CANOPY_DIMS, updated_levels: dirty, compact_support: self.compact_support }
     }
 }

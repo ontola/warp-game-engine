@@ -1,5 +1,24 @@
 # Shared world-space diffuse radiance cache
 
+## Live: cached sky transmittance through the canopy (30 October 2026)
+
+`sky_visibility` and `reflected_visibility` in `shade.wgsl` (also used by the
+meadow, far grass, transparency, vegetation bricks and voxel forest shaders)
+no longer march the canopy volume per pixel. When a canopy level is rebuilt,
+`bake_sky_visibility` traces each 2x2x2 cell block along the six axes with
+the same `transmittance` march (50 m) and stores L1 coefficients
+(T(w) = a0 + dot(b, w)) in three extra Y slabs of the canopy texture
+(`canopy.rs`, 25 MiB per view). Shading samples them with the same level
+blend as `foliage`: sky visibility is the cosine-weighted integral
+a0 + 2/3 dot(b, n); reflections use T(r) and still march the terrain.
+`KERN_SKY_VIS_CACHE=0` restores the per-pixel march.
+
+terrain_fly forest view (2 m up, firs and grass), 2560x1440, M5 Pro:
+16.9 -> 51.3 fps; shade 21.3 -> 7.8 ms, meadow placement 12.5 -> 5.7,
+meadow render 29.3 -> 2.7, meadow composite 27.9 -> 1.6, tonemap 3.5 -> 0.4.
+Image RMSE against the march 0.0045. This is a visibility cache, not the
+transport cache described below: the bounce term is unchanged.
+
 Status, 24 October 2026: `render::radiance_cache` is an original CPU transport
 reference. `render::radiance_cache_gpu` consumes its packed SH and visibility
 data in an isolated GPU sampling fixture. **Neither is used by the live renderer.**
