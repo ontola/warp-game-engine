@@ -79,7 +79,11 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
     let trees: Vec<_> = trees.into_iter().map(|(_, t)| t).collect();
     let mut counts = [0usize; TREE_IDS.len()];
     for t in &trees { counts[t.variant] += 1; }
-    render::recipe_forest::plant(scene, &plants, &trees, full, render::recipe_forest::game_policy())?;
+    // Proxies take 8 px of error, loosening from 20 m: the stage's forest
+    // stands close to the road, and at 4 px from 50 m its splats cost two
+    // split-screen views ~30 ms more per frame for no visible gain.
+    let policy = render::aggregate_lod::Policy { proxy_pixels: 8.0, proxy_pixels_from: 20.0, ..render::recipe_forest::game_policy() };
+    render::recipe_forest::plant(scene, &plants, &trees, full, policy)?;
     Ok(serde_json::json!({"route":"render::recipe_forest","species":TREE_IDS,"species_counts":counts,"trees":trees.len(),
         "full_assemblies":full,"cooked_or_loaded_ms":cooked_ms,"loaded_from_cache":loaded,"total_ms":started.elapsed().as_secs_f64() * 1e3}))
 }

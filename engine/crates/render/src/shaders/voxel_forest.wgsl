@@ -1058,8 +1058,10 @@ const VOLUME_SPLAT_HEADER: u32 = 12u;
 const VOLUME_SPLAT_NONE: u32 = 0xffffffffu;
 // One quad per splat (voxel_splat_raster.wgsl).
 const VOLUME_SPLAT_VERTICES: u32 = 6u;
-// Splats fainter than this are thinned (volume_splat_append).
-const VOLUME_SPLAT_MIN_ALPHA: f32 = 0.25;
+// Splats fainter than this are thinned (volume_splat_append). 0.5 instead
+// of 0.25 halved the camera splat raster (terrain_fly high60 14 -> 7.6 ms,
+// Sideways' mixed forest likewise) with no visible change after TAA.
+const VOLUME_SPLAT_MIN_ALPHA: f32 = 0.5;
 fn volume_splat_hash(x:u32)->u32 {
     var h=x*747796405u+2891336453u;
     h=((h>>((h>>28u)+4u))^h)*277803737u;
