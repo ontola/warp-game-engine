@@ -44,6 +44,9 @@ pub struct Gg {
     /// Whether the last tick advanced the world; a frozen match (paused,
     /// warming) draws its current state instead of interpolating.
     stepped: bool,
+    pub(crate) xr_gun: Option<glam::Affine3A>,
+    pub(crate) xr_aim: Option<growing_guns::TrackedAim>,
+    pub(crate) xr_stereo: bool,
     pub vis: view::Visuals,
     light: Lighting,
     pub hud: hud::Hud,
@@ -128,7 +131,7 @@ impl Gg {
         let scripts = crate::scripts::attach(&mut world).map_err(|e| eprintln!("mods: {e}")).ok();
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
-        Gg { prev: view::Pose::all(&world), stepped: true, vis, light: view::lighting(),
+        Gg { prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
@@ -136,6 +139,10 @@ impl Gg {
     }
 
     fn with_split(mut self) -> Self { self.split = self.slots.len() > 1; self }
+
+    pub(crate) fn xr_eye(&self, alpha: f32) -> Vec3 {
+        view::pose(&self.world, self.slots[0], &self.prev, if self.stepped { alpha } else { 1.0 }).pos + Vec3::Y * growing_guns::EYE
+    }
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
 
@@ -445,11 +452,11 @@ const BLACKOUT_EV: f32 = 8.0;
 static BLACKOUT_EV100: std::sync::LazyLock<f32> = std::sync::LazyLock::new(|| std::env::var("GG_BLACKOUT_EV").ok().and_then(|v| v.parse().ok()).unwrap_or(BLACKOUT_EV));
 
 /// What the menus show of the session; `party`: GameNight's settings.
-fn menu_ctx<'a>(session: &Session, world: &World, start_seats: &[usize], ticket: Option<&'a str>, party: Option<&crate::party::Settings>, names: &[String]) -> hud::menus::Ctx<'a> {
+fn menu_ctx<'a>(session: &Session, world: &World, start_seats: &[usize], ticket: Option<&'a str>, party: Option<&crate::party::Settings>, names: &[String], xr: bool) -> hud::menus::Ctx<'a> {
     let status = if world.coop { format!("WAVE SURVIVAL  /  WAVE {}", world.waves.wave) } else { format!("VERSUS  /  ROUND {}  /  FIRST TO {}", world.round, world.rounds_to_win) };
     let bots = (0..world.players.len()).filter(|i| world.players[*i].bot && !start_seats.contains(i)).count();
     hud::menus::Ctx {
-        ticket, client: session.is_client(), seed: world.arena.seed, bots,
+        xr, ticket, client: session.is_client(), seed: world.arena.seed, bots,
         players: world.players.len(), coop: world.coop, seats: if party.is_some() { names.to_vec() } else { Vec::new() }, party: party.map(|s| (s.entries(), status)),
     }
 }
@@ -553,7 +560,7 @@ impl Gg {
 
     /// The shared menus' context.
     fn ctx<'a>(&'a self, ticket: Option<&'a str>) -> hud::menus::Ctx<'a> {
-        menu_ctx(&self.session, &self.world, &self.start_seats, ticket, self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names)
+        menu_ctx(&self.session, &self.world, &self.start_seats, ticket, self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names, self.xr_stereo)
     }
 
     /// A finished join from the menu: the new session replaces this one.
@@ -817,7 +824,7 @@ impl app::Game for Gg {
         }
         let debug = self.debug.open;
         let ctx_ticket = self.session.ticket().map(str::to_string);
-        let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
+        let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ctx_ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names, self.xr_stereo);
         let modal = self.ui.is_open() || self.hud.match_over.is_some() || debug;
         // The debug overlay takes the controls; the match runs on under it.
         if !debug {
@@ -867,7 +874,11 @@ impl app::Game for Gg {
         if matches!(self.ui.screen, hud::menus::Screen::Pause | hud::menus::Screen::Settings { from_start: false }) && humans <= 1 { return; }
         self.prev = view::Pose::all(&self.world);
         let t = std::time::Instant::now();
-        self.world.step(&inputs);
+        if self.xr_stereo {
+            let mut aims = vec![None; inputs.len()];
+            if let Some(&slot) = self.slots.first() { aims[slot] = self.xr_aim; }
+            self.world.step_tracked(&inputs, &aims);
+        } else { self.world.step(&inputs); }
         hitch("world.step", t);
         self.stepped = true;
         let t = std::time::Instant::now();
@@ -898,7 +909,12 @@ impl app::Game for Gg {
         } else {
             1.0
         };
-        self.vis.set_tilt(self.ui.tilt);
+        self.hud.xr = self.xr_stereo;
+        if self.xr_stereo {
+            self.vis.hide_own_bodies(&[self.slots[0], self.slots[0]]);
+            self.vis.track_gun(self.slots[0], self.xr_gun);
+        }
+        self.vis.set_tilt(self.ui.tilt && !self.xr_stereo);
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
         if self.sky.live.is_some() { self.cycle_sky(); }
         self.sync_atmosphere();
@@ -966,7 +982,7 @@ impl app::Game for Gg {
         };
         list.begin_overlay();
         let ticket = self.session.ticket().map(str::to_string);
-        let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names);
+        let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names, self.xr_stereo);
         self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
         self.hud.round_flash(&mut list);
         if self.debug.open { let dctx = self.debug_ctx(); self.debug.draw(&mut list, &dctx); }
@@ -1050,7 +1066,7 @@ impl app::Game for Gg {
             return;
         }
         let (ticket, _) = self.ctx_parts();
-        let a = { let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.text(ev, &ctx) };
+        let a = { let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names, self.xr_stereo); self.ui.text(ev, &ctx) };
         self.act(a);
     }
 
@@ -1068,7 +1084,7 @@ impl app::Game for Gg {
                 use hud::menus::Field;
                 let f = match w.get(1).copied() { Some("join") => Field::Join, Some("name") => Field::Name, _ => return Err("focus join|name".into()) };
                 let (ticket, _) = self.ctx_parts();
-                let ok = { let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names); self.ui.focus_field(f, &ctx) };
+                let ok = { let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names, self.xr_stereo); self.ui.focus_field(f, &ctx) };
                 if ok { Ok(format!("focus {f:?}")) } else { Err(format!("no {f:?} field on {:?}", self.ui.screen)) }
             }
             // Splitscreen on or off, as the pause menu's SPLITSCREEN.

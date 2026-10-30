@@ -118,6 +118,8 @@ pub struct Visuals {
 impl Visuals {
     pub fn build(world: &World) -> Self {
         let mut scene = Scene::default();
+        scene.graphics.simple_lighting=crate::graphics::get().simple_lighting;
+        scene.graphics.simple_mesh_culling=crate::graphics::get().simple_blocks;
         scene.sky = Some(sky());
         // Godot's lava noise texture, for the lava shader.
         scene.noise = Some(render::noise_field::NoiseField { size: lava::NOISE_SIZE, values: lava::noise_texture() });
@@ -139,7 +141,7 @@ impl Visuals {
         // Gore lives in the dynamic range too: uploaded with it every frame.
         players.reserve_gore(&mut scene, world.arena.seed);
         // Shared geometry cache, reserved after all game-owned aux data.
-        if std::env::var("GG_SKY_OCCLUSION").as_deref() != Ok("0") {
+        if crate::graphics::get().sky_occlusion && std::env::var("GG_SKY_OCCLUSION").as_deref() != Ok("0") {
             scene.reserve_irradiance_volume(render::irradiance_volume::Grid {
                 origin: Vec3::new(-192.0, -6.0, -192.0), cell: 6.0, dims: [65, 13, 65],
             }).expect("stadium sky grid");
@@ -218,7 +220,7 @@ impl Visuals {
                     // for small guns (Joep).
                     let size = 2.4 * (0.004 + damage * 0.0024).clamp(0.03, 0.35);
                     let radius = growing_guns::destruct::rifle_chip(damage / 16.0).1;
-                    self.fx.debris.burst(s, &render::debris::BurstSpec::chips(pos + normal * 0.15, radius * 0.3, amount, size, &stone.shards));
+                    self.fx.debris.burst(s, &render::debris::BurstSpec::chips(pos + normal * 0.15, radius * 0.3, crate::graphics::get().debris_count(amount), size * crate::graphics::get().debris_size, &stone.shards));
                     // A bullet hole where the chips came off, bigger for strong rounds.
                     if let Some(c) = chunk {
                         let r = if strong { 0.24 } else { 0.15 };
@@ -315,6 +317,9 @@ impl Visuals {
     pub fn set_tilt(&mut self, on: bool) { self.guns.tilt = on; }
 
     /// Morph a player's gun into their current stats (a card was given).
+    pub fn track_gun(&mut self, player: usize, pose: Option<glam::Affine3A>) { self.guns.track(player, pose); }
+    pub fn tracked_muzzle(&self, player: usize, pose: glam::Affine3A) -> Vec3 { self.guns.tracked_muzzle(player, pose) }
+
     pub fn grow_gun(&mut self, i: usize, p: &growing_guns::Player) { self.guns.grow(i, p); }
 
     pub fn player_capacity(&self) -> usize { self.guns.capacity() }
@@ -506,6 +511,9 @@ pub fn lighting() -> Lighting {
         sun_lux: 60_000.0,
         sun_color: Vec3::from(palette::SUN),
         sky_lux: 14_000.0,
+        lod_pixels: crate::graphics::get().lod_pixels,
+        gi: if crate::graphics::get().sky_occlusion { 1.0 } else { 0.0 },
+        near_shadows: if crate::graphics::get().simple_blocks { 0.0 } else { 1.0 },
         ev100: 13.6,
         // Emission (lava, tracers, beacons) is tuned at Godot's exposure; a
         // darker sky lowers the exposure, and the glow would clip to white.

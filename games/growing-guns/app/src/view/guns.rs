@@ -37,6 +37,8 @@ pub struct Guns {
     tp: Vec<usize>,
     /// Settings: movement tilt (the strafe lean) on.
     pub tilt: bool,
+    tracked: Vec<Option<Affine3A>>,
+    tracking: Vec<bool>,
 }
 
 impl Guns {
@@ -72,7 +74,14 @@ impl Guns {
             fp.push(a);
             tp.push(Slots::reserve(scene, GUN_PARTS).first);
         }
-        Guns { meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true }
+        Guns { meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players] }
+    }
+
+    pub fn track(&mut self, player: usize, pose: Option<Affine3A>) {
+        if let Some(p) = self.tracked.get_mut(player) { *p = pose; self.tracking[player] = true; }
+    }
+    pub fn tracked_muzzle(&self, player: usize, pose: Affine3A) -> Vec3 {
+        pose.transform_point3(self.rigs[player].build.muzzle)
     }
 
     /// A card pick: the gun grows into the new stats.
@@ -135,16 +144,18 @@ impl Guns {
             let s = f.inspect;
             let fp = view * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, 0.0, r_tilt, f.tilt), muzzle)
                 * Affine3A::from_rotation_translation(Quat::from_euler(glam::EulerRot::YXZ, s, 0.12 * s, 0.08 * s), Vec3::new(-0.14, 0.04, 0.14) * s);
+            let fp = self.tracked[i].unwrap_or(fp);
             let drawn = crate::view::pose(world, i, prev, alpha);
             let (pos, rot) = (drawn.pos, Quat::from_rotation_y(drawn.yaw));
             let hand = hands.get(i).copied().flatten().map_or(
                 pos + Vec3::Y * 0.05 + rot * Vec3::new(0.45, 0.0, -0.12),
                 |hand| hand + rot * Vec3::new(0.0, 0.085, -0.143));
             let tp = Affine3A::from_rotation_translation(rot * Quat::from_rotation_x(drawn.pitch), hand);
-            self.muzzles[i] = p.alive.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
+            let visible = p.alive && (!self.tracking[i] || self.tracked[i].is_some());
+            self.muzzles[i] = visible.then(|| [fp.transform_point3(rig.build.muzzle), tp.transform_point3(rig.build.muzzle)]);
             for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {
                 let mut n = 0;
-                if p.alive {
+                if visible {
                     for (part, local) in rig.pose(drop).take(GUN_PARTS) {
                         scene.update_instance(first + n, self.mesh(part.shape, part.mat, i), xf * local);
                         n += 1;
@@ -168,11 +179,12 @@ impl Guns {
             }
         }
         for &s in slots { if let Some(l) = self.local.get_mut(s) { *l = true; } }
-        for (k, &s) in slots.iter().enumerate().take(8) {
+        for &s in slots.iter().take(8) {
             if s >= self.tp.len() { continue; }
             for n in 0..GUN_PARTS {
-                scene.instances[self.tp[s] + n].hide_in_views(1 << k);
-                scene.instances[self.fp[s] + n].hide_in_views(!(1u8 << k));
+                let mask = slots.iter().enumerate().take(8).filter(|(_, slot)| **slot == s).fold(0u8, |m, (v, _)| m | (1 << v));
+                scene.instances[self.tp[s] + n].hide_in_views(mask);
+                scene.instances[self.fp[s] + n].hide_in_views(!mask);
             }
         }
     }
@@ -244,4 +256,20 @@ fn barrel_material(t: f32) -> Material {
     }
     let (c, e) = gun::heat_glow(t);
     Material { tint: c, layer: -1, roughness: 0.8, flags: render::scene::EMISSIVE, scale: e * 4000.0, metal: 0.0 }
+}
+
+#[cfg(test)]
+mod xr_tests {
+    use super::*;
+    #[test]
+    fn stereo_eyes_share_the_local_gun_and_hide_its_third_person_copy() {
+        let mut scene=Scene::default();
+        let mut guns=Guns::reserve(&mut scene,2);
+        guns.hide_own(&mut scene,&[0,0]);
+        let hidden=|index:usize| (scene.instances[index].flags & render::scene::HIDE_IN_VIEW_MASK)>>render::scene::HIDE_IN_VIEW_SHIFT;
+        assert_eq!(hidden(guns.fp[0]) & 3,0);
+        assert_eq!(hidden(guns.tp[0]) & 3,3);
+        assert_eq!(hidden(guns.fp[1]) & 3,3);
+        assert_eq!(hidden(guns.tp[1]) & 3,0);
+    }
 }

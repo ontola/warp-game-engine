@@ -360,8 +360,19 @@ pub struct TextureSource {
     pub normal: Option<image::RgbaImage>,
 }
 
+/// Startup graphics modifiers, independent of windowing or XR presentation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Graphics {
+    /// Textured diffuse sun/sky lighting, without procedural relief, GI or shadows.
+    pub simple_lighting: bool,
+    /// One lane per mesh owner. For plain mesh scenes without wind, vegetation
+    /// replacement, spatial aggregation, cluster traversal or cached sun pages.
+    pub simple_mesh_culling: bool,
+}
+
 #[derive(Default)]
 pub struct Scene {
+    pub graphics: Graphics,
     pub vertices: Vec<Vertex>,
     pub cluster_verts: Vec<u32>,
     pub tris: Vec<u32>,

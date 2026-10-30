@@ -188,6 +188,7 @@ impl SkinningRenderer {
         vertices: &[Vertex],
         instances: &[GpuInstance],
         output: &wgpu::Buffer,
+        owners: &wgpu::Buffer,
     ) -> Result<Self, String> {
         skinning.validate(vertices, instances)?;
         let mut palette = Vec::new();
@@ -211,7 +212,7 @@ impl SkinningRenderer {
                         influence.weights[..4].try_into().unwrap(),
                         influence.weights[4..].try_into().unwrap(),
                     ],
-                    address: [destination, offset, 0, 0],
+                    address: [destination, offset, actor.owner, 0],
                 });
             }
         }
@@ -252,7 +253,7 @@ impl SkinningRenderer {
                 layout: None,
                 module: &module,
                 entry_point: Some("skin_vertices"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {constants:&[("SOURCE_COUNT",sources.len()as f64)],..Default::default()},
                 cache: gpu.pipeline_cache(),
             });
         let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -271,6 +272,7 @@ impl SkinningRenderer {
                     binding: 2,
                     resource: output.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry { binding: 3, resource: owners.as_entire_binding() },
             ],
         });
         Ok(Self {

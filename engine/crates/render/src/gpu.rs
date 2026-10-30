@@ -141,6 +141,15 @@ impl Gpu {
         Ok((Gpu { device, queue, info, features, limits, pipeline_cache }, adapter))
     }
 
+    /// Adopt a device created for an external compositor (e.g. OpenXR).
+    /// The caller selects the runtime's adapter and enables its required Vulkan extensions.
+    pub fn from_device(device: wgpu::Device, queue: wgpu::Queue, info: wgpu::AdapterInfo) -> Self {
+        let features = device.features();
+        let limits = device.limits();
+        let pipeline_cache = std::sync::Arc::new(crate::pipeline_cache::Cache::new(&device, &info));
+        Self { device, queue, info, features, limits, pipeline_cache }
+    }
+
     /// One cache is shared by all views, stage workers and pipeline variants.
     pub(crate) fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> { self.pipeline_cache.handle() }
 

@@ -105,6 +105,7 @@ pub mod part_wind;
 pub mod baked_animation;
 pub mod skinning;
 pub mod debris;
+mod direct_draw;
 pub mod fx;
 pub mod crowd;
 pub mod motion;
