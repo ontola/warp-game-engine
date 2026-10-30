@@ -18,6 +18,7 @@ mod marks;
 mod menu;
 mod party;
 mod play;
+mod ragdoll;
 mod shrines;
 mod view;
 
