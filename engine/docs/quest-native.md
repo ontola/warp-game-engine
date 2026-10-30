@@ -64,9 +64,10 @@ retain the general culling path; the fast path is for plain meshes and skinning.
 
 The `minimum` profile additionally uses the engine's indexed forward renderer:
 coarsest authored mesh LOD, flat material colours and vertex lighting. Blocks
-are cubes, characters use the existing primitive proxies, GPU rubble is off,
+are cubes with readable 3% joints, characters use the existing primitive proxies, GPU rubble is off,
 and effect particles are capped at 32. It skips textures, GI, shadows, bloom,
-volumetrics, TAA and procedural surface detail. Original sprite effects, names,
+volumetrics, TAA and procedural surface detail. Gameplay billows, explosion embers, ion columns and streaks render in place
+with exposure conversion; heat refraction is omitted. Original sprite effects, names,
 HUD, bullets, growing guns, hit flashes and up to four unshadowed flashlights
 remain. The simpler flashlights can leak through walls. Transparent mesh
 materials are approximated as solid colour; this is not the full material path.
@@ -104,12 +105,16 @@ color rendering, vegetation animation scheduling and shadow receiver demand.
 Both eyes hide the local player's body and show the same tracked gun.
 
 The OpenXR `XR_KHR_vulkan_enable` path queries runtime-required extensions,
-selects its physical device, creates a compatible wgpu device, and copies Warp's
-offscreen result directly into runtime-owned Vulkan swapchain array layers.
-Images are transitioned back to `COLOR_ATTACHMENT_OPTIMAL` and a fence completes
-before release. There is no CPU pixel readback. The initial implementation
-serializes submissions and waits on fences. Stereo colour and HUD now share
-one native copy submission and one completion fence.
+selects its physical device and imports runtime-owned eye/HUD images as
+non-owning wgpu colour attachments. The minimum renderer draws into each eye
+directly, with sRGB output conversion. There is no intermediate stereo copy or
+CPU pixel readback. GPU completion is awaited before releasing images in
+`COLOR_ATTACHMENT_OPTIMAL`; wrapper lifetimes end before the OpenXR swapchains.
+Full-field tints (round start, ion/explosion flash, death/ghost/phoenix) use a
+one-pixel alpha projection layers over both complete eye frusta. Ghost/death
+tints remain behind the HUD so cards stay readable; round/phoenix/explosion
+flashes cover the HUD too. Only active tint layers are acquired and drawn.
+Menus and text remain on the comfortable head-relative quad.
 
 The minimum path renders each eye at the full resolution recommended by the
 OpenXR runtime, without downscaling or reconstruction. Growing Guns requests
@@ -151,15 +156,29 @@ The APK tool verifies signature and alignment. Actual Quest launch/render and
 controller checks must be recorded separately; neither compilation nor an
 installed APK proves those behaviors.
 
-The full-resolution/minimum build was rebuilt on 30 October 2026 after merging
-the desktop replay changes. Workspace/all-target checks passed, as did 81
-Growing Guns app tests (two ignored), two XR tests and the four focused
-minimum-renderer/sprite tests. The simple-mesh fixture matched the reference
-pixels exactly in all three activation/hiding phases. APK signature and
-alignment verification passed. Installation of this revision and sustained
-120 FPS remain unverified: the attached Quest was reporting `unauthorized`
-over USB. Earlier device-only GPU throughput measurements exclude the runtime
-compositor and must not be presented as headset FPS.
+On 30 October 2026 the physical Quest 2 was authorized over USB, installed and
+played. The user confirmed the arena and weapon were visible. Profiling located
+25–44 ms in the old raw Vulkan copy stage. Removing that stage produced many
+119–120 fps windows at the runtime's full 1440×1584 resolution per eye, with
+short dips; the user confirmed markedly smoother play. This measurement
+preceded restored gameplay FX and is not an effects-heavy worst-case guarantee.
+The effects-on APK is installed. Final in-headset effects/flash visibility and
+sustained FPS await an active playtest; the headset was asleep at the end of
+this iteration. Synthetic GPU fixtures separately check direct sRGB eye parity,
+per-eye hiding, explosion/ion visibility and expiry in ordinary and sRGB targets.
+Workspace/all-target checking, 83 Growing Guns app tests (two ignored), three
+XR tests, two minimum GPU tests, three sprite tests and the HDR ion-volume GPU
+fixture passed. The volume fixture verifies interior views, opaque occlusion,
+axial rays, edge continuity and separate view projections.
+
+The cage mesh's generic coarsest LOD had collapsed 756 source triangles to 22,
+erasing its thin bars because a 90 m chain shared the bounding box. Cages now
+retain their small authored geometry on PC and VR; source bounds and triangle
+retention have a regression test and a GPU capture. Minimum-profile cube joints
+are widened from 0.8% to 3% without added geometry; distant unfiltered seams
+can still alias. Floor surface height and simulation collision stay unchanged.
+Audio initialization waits for headset focus, avoiding an audio-start timeout
+aborting VR when launched with the headset asleep.
 
 For diagnostics, use `adb logcat --pid=$(adb shell pidof com.ontola.warp.growingguns)`.
 Startup errors are tagged `WarpXR`. Preserve logs before restarting the app.

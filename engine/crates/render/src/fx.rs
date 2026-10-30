@@ -524,6 +524,7 @@ pub(crate) struct FxRenderer {
     column: wgpu::RenderPipeline,
     streak: wgpu::RenderPipeline,
     mote: wgpu::RenderPipeline,
+    ldr: Option<(wgpu::TextureFormat,[wgpu::RenderPipeline;5])>,
     sampler: wgpu::Sampler,
     puffs: wgpu::Buffer,
     source: Vec<Puff>,
@@ -565,8 +566,19 @@ impl FxRenderer {
             address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, ..Default::default() });
         let puffs = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("fx puffs"), size: (MAX_PUFFS * std::mem::size_of::<Puff>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        FxRenderer { layout, billow, ember, heat, column, streak, mote, sampler, puffs, source: Vec::new(), time: 0.0,
+        FxRenderer { layout, billow, ember, heat, column, streak, mote, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
             draw_order: DrawOrder::default(), targets: Vec::new() }
+    }
+
+    fn ldr_pipelines(&self,gpu:&Gpu,format:wgpu::TextureFormat)->[wgpu::RenderPipeline;5] {
+        let shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimum gameplay FX"),source:wgpu::ShaderSource::Wgsl(shader_source().into())});
+        let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&self.layout)],immediate_size:0});
+        let additive=wgpu::BlendState{color:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::One,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Zero,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add}};
+        [("fx_vs","fx_billow",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),("fx_vs","fx_ember",additive),("fx_column_vs","fx_column",additive),("fx_streak_vs","fx_streak",additive),("fx_mote_vs","fx_mote",additive)].map(|(vertex,fragment,blend)|
+            gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some(fragment),layout:Some(&layout),
+                vertex:wgpu::VertexState{module:&shader,entry_point:Some(vertex),compilation_options:Default::default(),buffers:&[]},
+                primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},depth_stencil:None,multisample:Default::default(),
+                fragment:Some(wgpu::FragmentState{module:&shader,entry_point:Some(fragment),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:Some(blend),write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()}))
     }
 
     fn set(&mut self, gpu: &Gpu, time: f32, puffs: Option<&[Puff]>) {
@@ -593,20 +605,30 @@ impl FxRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, index: usize, input: &wgpu::Texture, depth: &wgpu::TextureView,
         camera: Camera, view: Mat4, output_vp: Mat4, depth_vp: Mat4, white: f32) -> Result<Option<wgpu::Texture>, String> {
+        self.render_output(gpu,enc,index,input,depth,camera,view,output_vp,depth_vp,white,0.0)
+    }
+
+    /// Minimum profiles draw gameplay effects in place, without scene copies,
+    /// heat refraction or an HDR intermediate. Exposure zero retains the HDR path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_output(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,index:usize,input:&wgpu::Texture,depth:&wgpu::TextureView,
+        camera:Camera,view:Mat4,output_vp:Mat4,depth_vp:Mat4,white:f32,exposure:f32)->Result<Option<wgpu::Texture>,String> {
+        let ldr=exposure>0.0;
         // Heat first (it refracts the plain scene), then billows back to front, then embers.
         let [nh, nb, ne, nc, ns, nm] = self.draw_order.prepare(&self.source, self.time, camera.pos);
         if self.draw_order.ids.is_empty() { return Ok(None); }
-        if input.format() != wgpu::TextureFormat::Rgba16Float || !input.usage().contains(wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING) {
+        if if ldr {!matches!(input.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb)||!input.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT)}else{input.format()!=wgpu::TextureFormat::Rgba16Float||!input.usage().contains(wgpu::TextureUsages::COPY_SRC|wgpu::TextureUsages::TEXTURE_BINDING)} {
             return Err("fx requires copyable sampleable HDR input".into());
         }
+        if ldr&&self.ldr.as_ref().is_none_or(|(format,_)|*format!=input.format()) {self.ldr=Some((input.format(),self.ldr_pipelines(gpu,input.format())));}
         let size = (input.width(), input.height());
         if self.targets.len() <= index { self.targets.resize_with(index + 1, || None); }
-        if self.targets[index].as_ref().is_none_or(|t| t.size != size) {
+        if self.targets[index].as_ref().is_none_or(|t| t.size != size||t.output.format()!=input.format()) {
             // Retain bounded cache bookkeeping across resize. New uniform and
             // order buffer identities force a miss even if an input is reused.
             let (backgrounds, binds) = self.targets[index].take()
                 .map(|previous| (previous.backgrounds, previous.binds)).unwrap_or_default();
-            let output = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("fx HDR output (not temporal history)"), size: input.size(), mip_level_count: 1, sample_count: 1,
+            let output = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("fx HDR output (not temporal history)"), size: if ldr {wgpu::Extent3d{width:1,height:1,depth_or_array_layers:1}}else{input.size()}, mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: input.format(),
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[] });
             let buffer = |label, size, usage| gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false });
@@ -619,27 +641,29 @@ impl FxRenderer {
         let t = self.targets[index].as_mut().unwrap();
         let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), inverse_view_proj: output_vp.inverse().to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(), view: view.to_cols_array_2d(),
             camera_near: camera.pos.extend(camera.near).to_array(), size: [size.0 as f32, size.1 as f32, 1.0 / size.0 as f32, 1.0 / size.1 as f32],
-            clock: [self.time, white, 0.0, 0.0] };
+            clock: [self.time, white, exposure, if input.format().is_srgb(){1.0}else{0.0}] };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         gpu.queue.write_buffer(&t.order, 0, bytemuck::cast_slice(&self.draw_order.ids));
-        enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());
-        let background = t.backgrounds.get(input);
+        if !ldr {enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());}
+        let background = t.backgrounds.get(if ldr{&t.output}else{input});
         let bind = t.binds.get(gpu, &self.layout, "cached fx view", &[
             (0, t.uniform.as_entire_binding()), (1, self.puffs.as_entire_binding()), (2, t.order.as_entire_binding()),
             (3, wgpu::BindingResource::TextureView(&background)), (4, wgpu::BindingResource::TextureView(depth)),
             (5, wgpu::BindingResource::Sampler(&self.sampler))]);
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("fx"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &t.output_view, depth_slice: None,
+        let direct_view=ldr.then(||input.create_view(&Default::default()));
+        let pipelines=self.ldr.as_ref().map(|(_,p)|p);
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("fx"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: direct_view.as_ref().unwrap_or(&t.output_view), depth_slice: None,
             resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
             depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
         pass.set_bind_group(0, &bind, &[]);
-        if nh > 0 { pass.set_pipeline(&self.heat); pass.draw(0..SPHERE_VERTICES, 0..nh); }
-        if nb > 0 { pass.set_pipeline(&self.billow); pass.draw(0..SPHERE_VERTICES, nh..nh + nb); }
-        if ne > 0 { pass.set_pipeline(&self.ember); pass.draw(0..SPHERE_VERTICES, nh + nb..nh + nb + ne); }
-        if nc > 0 { pass.set_pipeline(&self.column); pass.draw(0..COLUMN_VERTICES, nh + nb + ne..nh + nb + ne + nc); }
-        if ns > 0 { pass.set_pipeline(&self.streak); pass.draw(0..STREAK_VERTICES, nh + nb + ne + nc..nh + nb + ne + nc + ns); }
-        if nm > 0 { pass.set_pipeline(&self.mote); pass.draw(0..MOTE_VERTICES, nh + nb + ne + nc + ns..nh + nb + ne + nc + ns + nm); }
+        if !ldr && nh > 0 { pass.set_pipeline(&self.heat); pass.draw(0..SPHERE_VERTICES, 0..nh); }
+        if nb > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[0]}else{&self.billow}); pass.draw(0..SPHERE_VERTICES, nh..nh + nb); }
+        if ne > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[1]}else{&self.ember}); pass.draw(0..SPHERE_VERTICES, nh + nb..nh + nb + ne); }
+        if nc > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[2]}else{&self.column}); pass.draw(0..COLUMN_VERTICES, nh + nb + ne..nh + nb + ne + nc); }
+        if ns > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[3]}else{&self.streak}); pass.draw(0..STREAK_VERTICES, nh + nb + ne + nc..nh + nb + ne + nc + ns); }
+        if nm > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[4]}else{&self.mote}); pass.draw(0..MOTE_VERTICES, nh + nb + ne + nc + ns..nh + nb + ne + nc + ns + nm); }
         drop(pass);
-        Ok(Some(t.output.clone()))
+        Ok((!ldr).then(||t.output.clone()))
     }
 }
 
