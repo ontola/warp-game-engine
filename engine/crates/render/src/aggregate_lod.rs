@@ -126,12 +126,14 @@ pub(crate) fn validate_scene(scene:&crate::Scene)->Result<(),String> {
 pub(crate) struct Selector {
     groups:wgpu::Buffer, levels:wgpu::Buffer, layout:wgpu::BindGroupLayout,
     pipeline:wgpu::ComputePipeline, count:u32, policy:Policy,
+    /// As built: moved groups are placed from these, never from a moved copy.
+    built:Vec<Descriptor>,
 }
 impl Selector {
     pub(crate) fn new(gpu:&Gpu,selection:&Selection)->Result<Self,String> {
         let (groups,levels)=pack(selection)?;
         let upload=|label,data:&[u8]|gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:Some(label),contents:data,usage:wgpu::BufferUsages::STORAGE });
+            label:Some(label),contents:data,usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST });
         crate::shaders::checked(gpu,|| {
             let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label:Some("aggregate error selection"),entries:&(0..4).map(|binding|wgpu::BindGroupLayoutEntry {
@@ -147,8 +149,19 @@ impl Selector {
                 layout:Some(&pl),module:&shader,entry_point:Some("select_aggregate"),compilation_options:Default::default(),cache:gpu.pipeline_cache()});
             Self { groups:upload("aggregate hierarchy groups",bytemuck::cast_slice(&groups)),
                 levels:upload("aggregate measured candidate errors",bytemuck::cast_slice(&levels)),
-                layout,pipeline,count:groups.len()as u32,policy:selection.policy }
+                layout,pipeline,count:groups.len()as u32,policy:selection.policy,built:groups }
         })
+    }
+    /// Place groups `range` (selection order) of a moved plant: `delta` maps
+    /// the built plant onto its new root, `ratio` is its scale change.
+    pub(crate) fn move_groups(&self,gpu:&Gpu,range:std::ops::Range<u32>,delta:Mat4,ratio:f32)->Result<(),String> {
+        let built=self.built.get(range.start as usize..range.end as usize).ok_or("moved aggregate groups out of range")?;
+        let moved:Vec<_>=built.iter().map(|g|{
+            let centre=delta.transform_point3(Vec3::from_slice(&g.sphere[..3]));
+            Descriptor {sphere:centre.extend(g.sphere[3]*ratio).to_array(),info:g.info,scale:[g.scale[0]*ratio,0.,0.,0.]}
+        }).collect();
+        gpu.queue.write_buffer(&self.groups,(range.start as usize*std::mem::size_of::<Descriptor>()) as u64,bytemuck::cast_slice(&moved));
+        Ok(())
     }
     pub(crate) fn encode(&self,gpu:&Gpu,encoder:&mut wgpu::CommandEncoder,selection:&wgpu::Buffer,
         vp:Mat4,size:[u32;2],enabled:bool,time:Option<(&wgpu::QuerySet,u32)>)->Result<(),String> {

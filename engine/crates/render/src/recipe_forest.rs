@@ -10,8 +10,8 @@ use crate::aggregate_lod::Policy;
 use crate::plant_recipe::{self, BuildOptions, WoodyRecipe};
 use crate::scene::GeometryCategory;
 use crate::vegetation_aggregate::Config;
-use crate::vegetation_asset::{AttachLimits, AttachmentReport, CookedPlant, PlantInstance, SceneVegetation};
-use crate::Scene;
+use crate::vegetation_asset::{AttachLimits, AttachmentReport, CookedPlant, MovablePlant, PlantInstance, SceneVegetation};
+use crate::{Gpu, Renderer, Scene};
 use glam::{Mat4, Quat, Vec3};
 use std::path::Path;
 
@@ -84,19 +84,126 @@ pub fn plant(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree], full: 
         return Err(format!("recipe forest variant {} of {}", tree.variant, variants.len()));
     }
     let full = full.min(trees.len());
-    let branches = variants.iter().map(|c| c.stats().branches).max().unwrap_or(64);
-    let mut limits = AttachLimits { max_poses: branches.max(64) * full.max(4),
-        max_primitive_instances: crate::part_wind::MAX_ATTACHMENTS, ..Default::default() };
-    limits.pack.max_instances = limits.max_poses.min(crate::foliage_volume_data::MAX_INSTANCES);
-    let mut vegetation = SceneVegetation::new(scene, limits)?;
-    let instance = |i: usize, t: &Tree| PlantInstance { id: i as u64 + 1, generation: 0,
-        root: Mat4::from_scale_rotation_translation(Vec3::splat(t.scale), Quat::from_rotation_y(t.yaw), t.pos),
-        category: GeometryCategory::Trees };
+    let mut vegetation = SceneVegetation::new(scene, limits(variants, full))?;
     for (i, tree) in trees[..full].iter().enumerate() { vegetation.append(&variants[tree.variant], instance(i, tree))?; }
     for (i, tree) in trees[full..].iter().enumerate() {
         vegetation.append_proxy(&variants[tree.variant], instance(full + i, tree))?;
     }
     vegetation.finish_aggregate(policy)
+}
+
+fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
+    let branches = variants.iter().map(|c| c.stats().branches).max().unwrap_or(64);
+    let mut limits = AttachLimits { max_poses: branches.max(64) * full.max(4),
+        max_primitive_instances: crate::part_wind::MAX_ATTACHMENTS, ..Default::default() };
+    limits.pack.max_instances = limits.max_poses.min(crate::foliage_volume_data::MAX_INSTANCES);
+    limits
+}
+
+fn root(t: &Tree) -> Mat4 {
+    Mat4::from_scale_rotation_translation(Vec3::splat(t.scale), Quat::from_rotation_y(t.yaw), t.pos)
+}
+
+fn instance(i: usize, t: &Tree) -> PlantInstance {
+    PlantInstance { id: i as u64 + 1, generation: 0, root: root(t), category: GeometryCategory::Trees }
+}
+
+/// Full trees that follow the cameras, the way Nanite streams detail: every
+/// tree is its whole-plant proxy, and a fixed pool of full assemblies (`slots`
+/// per variant) moves to the trees nearest the cameras, hiding their proxies
+/// (Renderer::move_plant, set_plant_proxies_hidden). A full tree still picks
+/// per frame on the GPU between its branches and its own voxels.
+pub struct Pool {
+    trees: Vec<Tree>,
+    slots: Vec<Slot>,
+    /// Forest volume index of tree 0's proxy; the rest follow in order.
+    first_proxy: u32,
+    by_variant: Vec<Vec<usize>>,
+    last: Vec<Vec3>,
+}
+
+struct Slot { variant: usize, plant: MovablePlant, tree: Option<usize> }
+
+/// Pool statistics for logs and tests.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct PoolStats { pub slots: usize, pub placed: usize, pub moved: usize }
+
+/// Put `trees` into `scene` as proxies, plus `slots` full assemblies per
+/// variant that Pool::update gives to the trees nearest the cameras. Each
+/// slot is built at its variant's largest scale (moves may
+/// only shrink it) on that variant's first tree, so pass trees nearest first.
+pub fn plant_streamed(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree], slots: usize,
+    policy: Policy) -> Result<(AttachmentReport, Pool), String> {
+    if trees.is_empty() { return Err("a streamed recipe forest needs trees".into()); }
+    if let Some(tree) = trees.iter().find(|t| t.variant >= variants.len()) {
+        return Err(format!("recipe forest variant {} of {}", tree.variant, variants.len()));
+    }
+    let mut built = Vec::new();
+    for variant in 0..variants.len() {
+        let mine: Vec<&Tree> = trees.iter().filter(|t| t.variant == variant).collect();
+        let Some(first) = mine.first() else { continue; };
+        let scale = mine.iter().map(|t| t.scale).fold(0.0, f32::max);
+        for _ in 0..slots.min(mine.len()) { built.push(Tree { scale, ..**first }); }
+    }
+    let mut vegetation = SceneVegetation::new(scene, limits(variants, built.len()))?;
+    let mut pool = Vec::with_capacity(built.len());
+    for (k, tree) in built.iter().enumerate() {
+        let handle = vegetation.append(&variants[tree.variant], instance(trees.len() + k, tree))?;
+        pool.push(Slot { variant: tree.variant, plant: handle.movable, tree: None });
+    }
+    for (i, tree) in trees.iter().enumerate() { vegetation.append_proxy(&variants[tree.variant], instance(i, tree))?; }
+    let report = vegetation.finish_aggregate(policy)?;
+    let first_proxy = report.volume_instances as u32;
+    Ok((report, Pool { trees: trees.to_vec(), slots: pool, first_proxy, last: Vec::new(),
+        by_variant: (0..variants.len()).map(|v| (0..trees.len()).filter(|&i| trees[i].variant == v).collect()).collect() }))
+}
+
+impl Pool {
+    /// Forget where the slots stand, for a renderer built anew from the
+    /// scene: the next update places every slot again.
+    pub fn reset(&mut self) {
+        for slot in &mut self.slots { slot.tree = None; }
+        self.last.clear();
+    }
+
+    /// Give each variant's slots to its trees nearest `points` (the cameras).
+    /// Call before the first frame: until then slots stand unplaced. Slots
+    /// on trees still wanted stay; a slot moves only when a nearer tree needs
+    /// it. Cheap when the cameras stand still.
+    pub fn update(&mut self, renderer: &Renderer, gpu: &Gpu, points: &[Vec3]) -> Result<PoolStats, String> {
+        let mut stats = PoolStats { slots: self.slots.len(), placed: self.slots.iter().filter(|s| s.tree.is_some()).count(), moved: 0 };
+        let still = points.len() == self.last.len() && points.iter().zip(&self.last).all(|(a, b)| a.distance(*b) < 1.0);
+        if still || points.is_empty() { return Ok(stats); }
+        self.last = points.to_vec();
+        let mut hidden = Vec::new();
+        for (variant, members) in self.by_variant.iter().enumerate() {
+            let mine: Vec<usize> = (0..self.slots.len()).filter(|&k| self.slots[k].variant == variant).collect();
+            if mine.is_empty() { continue; }
+            // O(trees): the nearest few by selection, not a full sort.
+            let mut near: Vec<(f32, usize)> = members.iter().map(|&i| (points.iter()
+                .map(|p| p.distance_squared(self.trees[i].pos)).fold(f32::INFINITY, f32::min), i)).collect();
+            let count = mine.len().min(near.len());
+            if count < near.len() { near.select_nth_unstable_by(count, |a, b| a.0.total_cmp(&b.0)); }
+            near.truncate(count);
+            let wanted: Vec<usize> = near.iter().map(|&(_, i)| i).collect();
+            let mut free: Vec<usize> = mine.iter().copied().filter(|&k| self.slots[k].tree.is_none_or(|t| !wanted.contains(&t))).collect();
+            // Unplaced slots are taken first (pop from the back).
+            free.sort_by_key(|&k| std::cmp::Reverse(self.slots[k].tree.is_some()));
+            for tree in wanted {
+                if mine.iter().any(|&k| self.slots[k].tree == Some(tree)) { continue; }
+                let Some(k) = free.pop() else { break; };
+                let slot = &mut self.slots[k];
+                renderer.move_plant(gpu, &slot.plant, root(&self.trees[tree]))?;
+                if let Some(old) = slot.tree { hidden.push((self.first_proxy + old as u32, false)); }
+                hidden.push((self.first_proxy + tree as u32, true));
+                slot.tree = Some(tree);
+                stats.moved += 1;
+            }
+        }
+        renderer.set_plant_proxies_hidden(gpu, &hidden)?;
+        stats.placed = self.slots.iter().filter(|s| s.tree.is_some()).count();
+        Ok(stats)
+    }
 }
 
 /// The renderer policy for a recipe forest in a game: ordinary screen-error

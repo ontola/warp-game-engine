@@ -52,14 +52,14 @@ pub fn stage_index(stage: &Stage, x: f32, z: f32) -> usize {
 
 /// The live mixed forest on the engine's recipe forest
 /// (render::recipe_forest): each species cooked once (cached in
-/// build/cook-cache) and shared by every tree; trees within SIDEWAYS_FULL_RADIUS (40 m) of a
-/// camera are full assemblies (at most SIDEWAYS_MAX_FULL, 8), every other tree is the
-/// same plant as one whole-plant voxel proxy.
-pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras: &[Vec3]) -> Result<serde_json::Value, String> {
-    // SIDEWAYS_FULL_RADIUS / SIDEWAYS_MAX_FULL: A/B knobs for the full set.
+/// build/cook-cache) and shared by every tree. Every tree is a whole-plant
+/// voxel proxy; a pool of SIDEWAYS_POOL_SLOTS (4) full assemblies per species
+/// follows the cameras (Pool::update each frame), standing in for the
+/// nearest trees.
+pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras: &[Vec3])
+    -> Result<(serde_json::Value, render::recipe_forest::Pool), String> {
     let knob = |k: &str, d: f32| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
-    let full_radius = knob("SIDEWAYS_FULL_RADIUS", 40.0);
-    let max_full = knob("SIDEWAYS_MAX_FULL", 8.0) as usize;
+    let slots = knob("SIDEWAYS_POOL_SLOTS", 4.0) as usize;
     let started = std::time::Instant::now();
     let variants: Vec<_> = TREE_IDS.iter().map(|id| crate::plant_species::find(id).map(|s| (s.recipe, 1)))
         .collect::<Result<_, _>>()?;
@@ -75,7 +75,6 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
             scale: crate::tree_assets::native_scale(spot).y, variant: stage_index(stage, spot.pos.0, spot.pos.2) })
     }).collect();
     trees.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let full = trees.iter().take(max_full).filter(|(d, _)| *d < full_radius).count();
     let trees: Vec<_> = trees.into_iter().map(|(_, t)| t).collect();
     let mut counts = [0usize; TREE_IDS.len()];
     for t in &trees { counts[t.variant] += 1; }
@@ -83,9 +82,10 @@ pub fn plant_forest(scene: &mut Scene, stage: &Stage, chunks: &[Chunk], cameras:
     // stands close to the road, and at 4 px from 50 m its splats cost two
     // split-screen views ~30 ms more per frame for no visible gain.
     let policy = render::aggregate_lod::Policy { proxy_pixels: 8.0, proxy_pixels_from: 20.0, ..render::recipe_forest::game_policy() };
-    render::recipe_forest::plant(scene, &plants, &trees, full, policy)?;
-    Ok(serde_json::json!({"route":"render::recipe_forest","species":TREE_IDS,"species_counts":counts,"trees":trees.len(),
-        "full_assemblies":full,"cooked_or_loaded_ms":cooked_ms,"loaded_from_cache":loaded,"total_ms":started.elapsed().as_secs_f64() * 1e3}))
+    let (_, pool) = render::recipe_forest::plant_streamed(scene, &plants, &trees, slots, policy)?;
+    Ok((serde_json::json!({"route":"render::recipe_forest::Pool","species":TREE_IDS,"species_counts":counts,"trees":trees.len(),
+        "pool_slots_per_species":slots,"cooked_or_loaded_ms":cooked_ms,"loaded_from_cache":loaded,
+        "total_ms":started.elapsed().as_secs_f64() * 1e3}), pool))
 }
 
 /// Reuse game-authored decorative fern habitat instead of inventing CPU

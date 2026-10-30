@@ -75,6 +75,20 @@ pub struct Setup {
     pub metadata: serde_json::Value,
     pub looks: crate::car_look::Looks,
     pub car_slots: Vec<crate::car_look::Slot>,
+    /// The mixed forest's full trees: place them (Pool::update) after Renderer::new.
+    pub tree_pool: Option<render::recipe_forest::Pool>,
+}
+
+impl Setup {
+    /// Give the mixed forest's full trees to the trees nearest the cameras.
+    pub fn place_trees(&mut self, renderer: &Renderer, gpu: &render::Gpu) -> Result<(), String> {
+        let cameras: Vec<Vec3> = self.cams.iter().map(|c| c.pos).collect();
+        if let Some(pool) = &mut self.tree_pool {
+            let stats = pool.update(renderer, gpu, &cameras)?;
+            self.log.push(format!("tree pool: {stats:?}"));
+        }
+        Ok(())
+    }
 }
 
 pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
@@ -234,7 +248,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
     metadata["wheel_effects_disabled_for_lineup"]=(a.lineup>0).into();
     if a.lineup>0 {wheel_effects=crate::wheel_effects::WheelEffects::new(a.seed);}
     metadata["procedural_grass"]=built.procedural_grass.clone().unwrap_or(serde_json::Value::Null);
-    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), headlights, local_lights, lighting_focus, rear_lamps, exhaust:if a.lineup>0{vec![]}else{exhaust.sprites()}, wheel_effects, scene: built.scene, mesh_names: built.mesh_names, light, cams, log, metadata, looks, car_slots: built.car_slots })
+    Ok(Setup { wind: a.nature.wind(race.frame as f64 / 120.0), headlights, local_lights, lighting_focus, rear_lamps, exhaust:if a.lineup>0{vec![]}else{exhaust.sprites()}, wheel_effects, scene: built.scene, mesh_names: built.mesh_names, light, cams, log, metadata, looks, car_slots: built.car_slots, tree_pool: built.tree_pool })
 }
 
 /// `n` copies of `car` nose to tail along the road, 5.5 m apart, at its
@@ -319,6 +333,7 @@ pub fn run(a: &ShotArgs) -> i32 {
     if let Err(e)=renderer.set_lighting_focus(&setup.lighting_focus) {eprintln!("shot lighting focus: {e}");return 1;}
     if let Err(e)=renderer.set_upscale(&gpu,a.upscale) {eprintln!("shot upscale: {e}");return 1;}
     if let Err(e)=renderer.set_wind(&gpu,&setup.wind) {eprintln!("shot wind: {e}");return 1;}
+    if let Err(e)=setup.place_trees(&renderer,&gpu) {eprintln!("shot trees: {e}");return 1;}
     if let Err(e)=renderer.set_animation_time(setup.wind.time_seconds) {eprintln!("shot animation: {e}");return 1;}
     // Held-pose temporal convergence has a fixed cadence, not the wall time
     // spent synchronously reading images back for this diagnostic command.

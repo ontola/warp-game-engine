@@ -1078,6 +1078,9 @@ fn volume_far_tree(index:u32)->bool {
     return distance(vec3<f32>(owner.r0.w,owner.r1.w,owner.r2.w),view.cam.xyz)>volume_config.march.y;
 }
 fn volume_proxy(index:u32)->bool {return f32(index)>=volume_config.proxy.x;}
+// A proxy whose plant a full assembly stands in for (recipe_forest::Pool)
+// carries bounds_min.w=1 and draws nothing, in any pass.
+fn volume_proxy_shown(index:u32)->bool {return volume_trees[index].bounds_min.w==0.0;}
 fn volume_splat_level(index:u32)->u32 {
     let tree=volume_trees[index];
     if volume_proxy(index) {
@@ -1175,7 +1178,7 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
         if index<volume_config.size_count.w {
             var wanted=volume_config.march.y>0.0 && volume_far_tree(index);
             if volume_config.march.y<=0.0 && !volume_proxy(index) {wanted=volume_selection[index].x==1u;}
-            if volume_proxy(index) {wanted=true;}
+            if volume_proxy(index) {wanted=volume_proxy_shown(index);}
             for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,view.planes[i]);}
             if wanted {level=volume_splat_level(index);volume_splat_tree(index,level);}
         }
@@ -1216,6 +1219,7 @@ fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invoca
             var selected=volume_selection[0];
             if volume_config.march.y<=0.0 && !volume_proxy(index) {selected=volume_selection[index];}
             var wanted=(selected.x==1u && selected.w==VOLUME_SUN_CASTER) || volume_proxy(index);
+            if volume_proxy(index) {wanted=volume_proxy_shown(index);}
             for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,volume_splat_header(4u+i));}
             if wanted {
                 let tree=volume_trees[index];

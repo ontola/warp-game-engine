@@ -148,6 +148,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
     renderer.set_exhaust(gpu,&setup.exhaust)?;
     renderer.set_upscale(gpu,args.upscale)?;
     renderer.set_wind(gpu,&setup.wind)?;
+    setup.place_trees(&renderer,gpu)?;
     renderer.set_frame_time_ms(1000.0/60.0);
     setup.metadata["frame_time_ms"]=json!(1000.0f32/60.0);
     let upload_ms = t.ms();

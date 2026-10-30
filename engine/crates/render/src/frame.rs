@@ -2924,6 +2924,32 @@ impl Renderer {
         Ok(())
     }
 
+    /// Stand a full plant (SceneVegetation::append) at `root`: its built root
+    /// moved rigidly and at most shrunk. Poses, members, branch volumes and
+    /// aggregate groups follow on the GPU from the next frame; no rebuild.
+    pub fn move_plant(&self, gpu: &Gpu, plant: &crate::vegetation_asset::MovablePlant, root: Mat4) -> Result<(), String> {
+        let parts = self.part_wind.as_ref().ok_or("moved plant has no part wind rig")?;
+        let ratio = max_column(root) / max_column(plant.built);
+        let delta = root * plant.built.inverse();
+        parts.move_assembly(gpu, plant.pose, delta, ratio)?;
+        if !plant.groups.is_empty() {
+            self.aggregate_lod.as_ref().ok_or("moved plant has no aggregate selection")?
+                .move_groups(gpu, plant.groups.clone(), delta, ratio)?;
+        }
+        self.invalidate_dynamic_shadow();
+        Ok(())
+    }
+
+    /// Hide whole-plant proxies (forest volume indices) whose plant a moved
+    /// full assembly now stands in for, and show the ones it left.
+    pub fn set_plant_proxies_hidden(&self, gpu: &Gpu, volumes: &[(u32, bool)]) -> Result<(), String> {
+        if volumes.is_empty() { return Ok(()); }
+        let forest = self.voxel_forest.as_ref().ok_or("no voxel forest")?;
+        for &(volume, hidden) in volumes { forest.set_proxy_hidden(gpu, volume, hidden)?; }
+        self.invalidate_dynamic_shadow();
+        Ok(())
+    }
+
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.baked_animations.as_ref().is_some_and(|animation|animation.contains_owner_range(first,instances.len())) {
             return Err("baked actor parts are driven by the shared GPU animation pass".into());
@@ -5014,4 +5040,8 @@ fn view_uniform(vp: Mat4, cam: Vec3, px_scale: f32, params: [f32; 4], size: [f32
         grass: [40.0, 60.0, 0.0, 0.0],
         fog_cull: [0.0; 4],
     }
+}
+
+fn max_column(m: Mat4) -> f32 {
+    m.x_axis.truncate().length().max(m.y_axis.truncate().length()).max(m.z_axis.truncate().length())
 }
