@@ -23,6 +23,12 @@ though the Rust binary compiled. Removing the invalid declarations restored
 tests passed (one ignored), and the workspace all-target check passed after
 updating the two remaining `app::Config` initializers.
 
+After merging upstream through `22d9a5d`, the same checks pass: 701 renderer
+tests plus 162 app/assets/game/network tests, 17 ignored in total. The release
+binary and 97-page website also build; the website reports pre-existing links
+to absent historical capture artifacts. Timings below belong to the pre-merge
+continuation, not a new performance comparison against the integrated engine.
+
 The `ui-hotjoin.json` GPU script passes all expectations across one, two and
 three local seats, leaving, and disabling split screen. The reusable output
 texture is replaced when viewport layout changes, clearing stale pixels from
