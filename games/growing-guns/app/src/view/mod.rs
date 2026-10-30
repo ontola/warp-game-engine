@@ -10,7 +10,7 @@ mod characters;
 mod character_ragdoll;
 mod effects;
 mod gore;
-mod guns;
+pub(crate) mod guns;
 mod ion;
 mod lava;
 mod players;

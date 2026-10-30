@@ -1,0 +1,79 @@
+//! Repeatable modelling review: real card application, gameplay meshes and
+//! materials, fixed lighting, three views, and a manifest for review sheets.
+use glam::{Affine3A, Quat, Vec3};
+use render::{Camera, Gpu, Renderer};
+
+pub fn run(args: &crate::Args) -> Result<(), String> {
+    let out = std::path::Path::new(args.value("--out").unwrap_or("build/gun-review"));
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let (w, h) = args.size((1600, 1000));
+    if w < 64 || h < 64 || w > 4096 || h > 4096 { return Err("review size must be 64..4096 per axis".into()); }
+    let variants: &[(&str, &str, &[&str])] = &[
+        ("base", "Basis", &[]),
+        ("poison", "Poison", &["poison"]),
+        ("cooling", "Chilling Rounds", &["chilling_rounds"]),
+        ("sniper-poison", "Sniper + Poison + Heavy Rounds", &["sniper", "poison", "heavy_rounds"]),
+        ("shotgun-heavy", "Shotgun + Extra Barrel + Heavy Rounds", &["shotgun", "extra_barrel", "heavy_rounds"]),
+        ("minigun", "Uzi + Rapid Fire x2 + Big Mag", &["uzi", "rapid_fire", "rapid_fire", "big_mag"]),
+        ("explosive-heavy", "Explosive + Heavy Rounds + Big Mag x2", &["explosive", "heavy_rounds", "big_mag", "big_mag"]),
+        ("sniper-cooling", "Sniper + Chilling Rounds + Big Mag", &["sniper", "chilling_rounds", "big_mag"]),
+    ];
+    if let Some(only) = args.value("--only") && !variants.iter().any(|v| v.0 == only) {
+        return Err(format!("unknown review variant {only}"));
+    }
+    let mut world = growing_guns::World::new(3, &[false]);
+    let _scripts = crate::scripts::attach(&mut world)?;
+    let mut gpu = Gpu::new()?;
+    gpu.features.remove(wgpu::Features::TIMESTAMP_QUERY);
+    let light = render::Lighting { sun_dir: Vec3::new(1.0, 1.6, 0.7).normalize(),
+        sun_lux: 8000.0, sky_lux: 3500.0, sun_color: Vec3::ONE, ev100: 12.0,
+        taa: 0.0, fog_density: 0.0, gi: 0.0, contact_occlusion: 0.0,
+        reflection_occlusion: 0.0, lod_pixels: 0.0, ..Default::default() };
+    let mut manifest = Vec::new();
+    for &(id, title, cards) in variants {
+        if args.value("--only").is_some_and(|only| only != id) { continue; }
+        world.players[0] = growing_guns::Player::new(false);
+        for &card in cards {
+            let card = world.cards.find(card).ok_or_else(|| format!("missing card {card}"))?;
+            world.give(0, card);
+        }
+        let stats = crate::gun::Stats::of(&world.players[0]);
+        let (mut scene, lo, hi, parts) = crate::view::guns::review_scene(stats);
+        let mat = scene.add_material(render::scene::Material { tint: [0.16, 0.18, 0.21],
+            layer: -1, roughness: 0.95, flags: 0, scale: 1.0, metal: 0.0 });
+        let cube = scene.add_mesh(&render::primitives::cube(mat).mesh());
+        scene.add_instance(cube, Affine3A::from_scale_rotation_translation(Vec3::new(30.0, 0.1, 30.0),
+            Quat::IDENTITY, Vec3::new(0.0, lo.y - 0.09, 0.0)));
+        scene.add_instance(cube, Affine3A::from_scale_rotation_translation(Vec3::new(0.1, 20.0, 30.0),
+            Quat::IDENTITY, Vec3::new(-4.0, 5.0, 0.0)));
+        let renderer = Renderer::new(&gpu, &scene, &light);
+        let center = (lo + hi) * 0.5;
+        let mut files = Vec::new();
+        for (view, direction) in [("three-quarter", Vec3::new(1.0, 0.5, 0.65)),
+            ("side", Vec3::new(1.0, 0.03, 0.0)), ("detail", Vec3::new(1.0, 0.08, 0.25))] {
+            let dir = direction.normalize();
+            let right = (-dir).cross(Vec3::Y).normalize();
+            let up = right.cross(-dir);
+            let fov = 32f32.to_radians();
+            let tan = (fov * 0.5).tan();
+            let mut distance = 0.1f32;
+            for x in [lo.x, hi.x] { for y in [lo.y, hi.y] { for z in [lo.z, hi.z] {
+                let p = Vec3::new(x, y, z) - center;
+                distance = distance.max(p.dot(dir) + (p.dot(right).abs() / (tan * w as f32 / h as f32)).max(p.dot(up).abs() / tan));
+            } } }
+            let target = if view == "detail" { Vec3::new(0.0, -0.065, 0.035) } else { center };
+            let distance = if view == "detail" { 0.75 } else { distance * 1.18 };
+            let camera = Camera { pos: target + dir * distance, target, fov_y: fov, near: 0.01 };
+            let (rgba, _) = renderer.try_render_views(&gpu, &[render::ViewRect { cam: camera, x: 0, y: 0, w, h }], &light, w, h, &[])?;
+            let file = format!("{id}-{view}.png");
+            render::write_png(&out.join(&file), w, h, &rgba)?;
+            files.push(file);
+        }
+        manifest.push(serde_json::json!({"id":id,"title":title,"cards":cards,"parts":parts,
+            "bounds_m":[lo.to_array(),hi.to_array()],"visual_stats":format!("{stats:?}"),"images":files}));
+        println!("{id}: {parts} parts, cards {cards:?}");
+    }
+    std::fs::write(out.join("manifest.json"), serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
