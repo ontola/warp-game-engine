@@ -263,7 +263,7 @@ fn foliage(p: vec3<f32>) -> f32 {
             // centres so filtering cannot sample a different level's slab.
             let local = clamp(q, vec3<f32>(0.5), d - 0.5);
             let uv = vec3<f32>(local.x / d.x,
-                (local.y + f32(level) * d.y) / (3.0 * d.y), local.z / d.z);
+                (local.y + f32(level) * d.y) / (CANOPY_SLABS * d.y), local.z / d.z);
             value=textureSampleLevel(canopy_tex, canopy_sampler, uv, 0.0).r;
         }
         sigma += remaining * weight * value;
@@ -376,10 +376,43 @@ fn transmittance(p: vec3<f32>, dir: vec3<f32>, max_t: f32) -> f32 {
     return tr;
 }
 
+// The canopy texture's Y slabs: three extinction levels, then (canopy.rs)
+// the cached directional sky transmittance of each level.
+const CANOPY_SLABS: f32 = 6.0;
+
+// Cached sky transmittance at p (gi.vol_dims.w bit 3): per canopy level,
+// L1 coefficients of the transmittance towards each direction w,
+// T(w) = a0 + dot(b, w), baked by `bake_sky_visibility` whenever a level's
+// extinction is rebuilt, and blended across levels as `foliage` blends.
+fn cached_transmittance(p: vec3<f32>) -> vec4<f32> {
+    let d = vec3<f32>(gi.vol_dims.xyz);
+    var remaining = 1.0;
+    var sum = vec4<f32>(0.0);
+    for (var level = 0u; level < 3u; level++) {
+        let origin = gi.vol_origins[level];
+        let delta = abs((p - gi.vol_anchors[level].xyz) / origin.w);
+        let weights = 1.0 - smoothstep(d * 0.5 - 13.0, d * 0.5 - 5.0, delta);
+        let weight = min(weights.x, min(weights.y, weights.z));
+        if weight <= 0.0 { continue; }
+        let local = clamp((p - origin.xyz) / origin.w, vec3<f32>(0.5), d - 0.5);
+        let uv = vec3<f32>(local.x / d.x, (local.y + (3.0 + f32(level)) * d.y) / (CANOPY_SLABS * d.y), local.z / d.z);
+        sum += remaining * weight * textureSampleLevel(canopy_tex, canopy_sampler, uv, 0.0);
+        remaining *= 1.0 - weight;
+        if remaining <= 0.0001 { break; }
+    }
+    // Outside every level nothing was traced: open sky, as the march returns.
+    return sum + vec4<f32>(remaining, 0.0, 0.0, 0.0);
+}
+
 // Fraction of the sky a surface sees: five cones around its normal.
 fn sky_visibility(p: vec3<f32>, n: vec3<f32>) -> f32 {
     if gi.vol_dims.w == 0u || (gi.vol_dims.w & 4u) != 0u {
         return 1.0;
+    }
+    if (gi.vol_dims.w & 8u) != 0u {
+        // Cosine-weighted hemisphere integral of the L1 transmittance.
+        let c = cached_transmittance(p + n * 0.15);
+        return clamp(c.x + dot(c.yzw, n) * (2.0 / 3.0), 0.0, 1.0);
     }
     let t1 = normalize(select(cross(n, vec3<f32>(0.0, 0.0, 1.0)), cross(n, vec3<f32>(1.0, 0.0, 0.0)), abs(n.x) < 0.9));
     let t2 = cross(n, t1);
@@ -397,6 +430,19 @@ fn sky_visibility(p: vec3<f32>, n: vec3<f32>) -> f32 {
 fn reflected_visibility(p: vec3<f32>, n: vec3<f32>, r: vec3<f32>) -> f32 {
     if gi.vol_dims.w == 0u || gi.params.y < 0.5 || (gi.vol_dims.w & 4u) != 0u { return 1.0; }
     let o = p + n * 0.06;
+    if (gi.vol_dims.w & 8u) != 0u {
+        // The canopy from the cache along r; the terrain still marched (cheap:
+        // a few heightfield loads, none outside the field).
+        let c = cached_transmittance(o);
+        var t = 0.25;
+        for (var k = 0; k < 20; k++) {
+            let q = o + r * t;
+            if q.y < ground_at(q.xz) - 0.12 { return 0.0; }
+            t += max(0.6, t * 0.40);
+            if t > 250.0 { break; }
+        }
+        return clamp(c.x + dot(c.yzw, r), 0.0, 1.0);
+    }
     var t = 0.25;
     var tr = 1.0;
     for (var k = 0; k < 20; k++) {
@@ -1982,4 +2028,33 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     // fp16 target: a blast light next to a wall must saturate, not become inf.
     textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), 1.0));
+}
+
+// Sky transmittance cache (canopy.rs): for one canopy level, the
+// transmittance along the six axes through the same march sky_visibility
+// would do (`transmittance`, 50 m), stored as L1 coefficients: a0 the mean,
+// b half the opposing differences (T(w) = a0 + dot(b, w)). It runs only when
+// the level's extinction was rebuilt, instead of five to ten marches per
+// pixel. Sky visibility is smooth: one sample per 2x2x2 cells, written to
+// all eight, keeps a moving level's rebake inside a frame.
+@group(3) @binding(30) var sky_vis_out: texture_storage_3d<rgba16float, write>;
+@group(3) @binding(31) var<uniform> sky_vis_level: vec4<u32>;
+
+@compute @workgroup_size(4, 4, 4)
+fn bake_sky_visibility(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let cell = gid * 2u;
+    if any(cell >= gi.vol_dims.xyz) { return; }
+    let origin = gi.vol_origins[sky_vis_level.x];
+    let p = origin.xyz + (vec3<f32>(cell) + 1.0) * origin.w;
+    let px = transmittance(p, vec3<f32>(1.0, 0.0, 0.0), 50.0);
+    let nx = transmittance(p, vec3<f32>(-1.0, 0.0, 0.0), 50.0);
+    let py = transmittance(p, vec3<f32>(0.0, 1.0, 0.0), 50.0);
+    let ny = transmittance(p, vec3<f32>(0.0, -1.0, 0.0), 50.0);
+    let pz = transmittance(p, vec3<f32>(0.0, 0.0, 1.0), 50.0);
+    let nz = transmittance(p, vec3<f32>(0.0, 0.0, -1.0), 50.0);
+    let value = vec4<f32>((px + nx + py + ny + pz + nz) / 6.0, (px - nx) * 0.5, (py - ny) * 0.5, (pz - nz) * 0.5);
+    for (var k = 0u; k < 8u; k++) {
+        let c = cell + vec3<u32>(k & 1u, (k >> 1u) & 1u, k >> 2u);
+        if all(c < gi.vol_dims.xyz) { textureStore(sky_vis_out, vec3<i32>(c), value); }
+    }
 }
