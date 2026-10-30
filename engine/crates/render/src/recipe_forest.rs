@@ -37,13 +37,14 @@ pub struct Cooked {
     pub millis: f64,
 }
 
-/// Cook `recipe` once per seed, in parallel, each with its whole-plant
+/// Cook each (recipe, seed) variant in parallel, each with its whole-plant
 /// proxy. With `cache`, a variant cooked before with the same recipe, seed,
 /// configs and engine cook code loads from disk instead.
-pub fn cook_variants(recipe: &WoodyRecipe, seeds: &[u64], cache: Option<&Path>) -> Result<Vec<Cooked>, String> {
+pub fn cook_variants(variants: &[(WoodyRecipe, u64)], cache: Option<&Path>) -> Result<Vec<Cooked>, String> {
     let (config, proxy) = (aggregate_config(), proxy_config());
     std::thread::scope(|scope| {
-        let jobs: Vec<_> = seeds.iter().map(|&seed| scope.spawn(move || -> Result<Cooked, String> {
+        let jobs: Vec<_> = variants.iter().map(|(recipe, seed)| scope.spawn(move || -> Result<Cooked, String> {
+            let seed = *seed;
             let started = std::time::Instant::now();
             let cook = || {
                 let assembly = plant_recipe::build(recipe, BuildOptions::new(seed), plant_recipe::recipe_limits())?;
