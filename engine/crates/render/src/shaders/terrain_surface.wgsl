@@ -291,7 +291,9 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     nn = canopy.normal;
 
     // Past the trees the forest is part of the ground (forest_field).
-    let forest = far_forest(c, nn, n, s, f, footprint);
+    // At a glancing view a pixel is long and narrow: the forest filters by
+    // its mean width, so clumps and gaps survive towards the horizon.
+    let forest = far_forest(c, nn, n, s, f, sqrt(length(s.dx) * length(s.dy)));
     c = forest.albedo;
     nn = forest.normal;
 
