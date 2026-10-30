@@ -1,0 +1,76 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "cage",
+        "health 0 50000",
+        "special 0 ion_cannon"
+      ],
+      "ticks": 30
+    },
+    {
+      "cmd": "aim 0 0 0 0",
+      "capture": "before.png",
+      "state": "before.json"
+    },
+    {
+      "ticks": 1,
+      "hold": [
+        "LEFT_TRIGGER"
+      ]
+    },
+    {
+      "expect": "/strikes",
+      "min": 1
+    },
+    {
+      "ticks": 45,
+      "capture": "charge.png",
+      "state": "charge.json",
+      "note": "Scene must remain visible through the outer beam."
+    },
+    {
+      "ticks": 65,
+      "capture": "motes.png"
+    },
+    {
+      "ticks": 85,
+      "capture": "late-charge.png"
+    },
+    {
+      "ticks": 25,
+      "capture": "focus.png"
+    },
+    {
+      "ticks": 8,
+      "capture": "impact.png",
+      "state": "impact.json"
+    },
+    {
+      "ticks": 12,
+      "capture": "rise-lines.png"
+    },
+    {
+      "ticks": 60,
+      "capture": "after.png",
+      "note": "No beam or charge motes should remain after the strike."
+    },
+    {
+      "ticks": 45,
+      "capture": "debris-apex.png"
+    },
+    {
+      "ticks": 60,
+      "capture": "debris-falling.png"
+    },
+    {
+      "expect": "/strikes",
+      "equals": 0
+    }
+  ]
+}

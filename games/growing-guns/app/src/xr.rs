@@ -39,6 +39,7 @@ impl NativeGame {
     }
 }
 impl warp_xr::Game for NativeGame {
+    fn eye_limit(&self)->u32 {640}
     fn quit(&self) -> bool { self.game.quit() }
     fn diagnose(&mut self, gpu: &render::Gpu) -> Result<(), String> {
         if !self.diagnostic_requested { return Ok(()); }

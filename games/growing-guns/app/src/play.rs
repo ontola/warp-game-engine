@@ -987,6 +987,12 @@ impl app::Game for Gg {
         self.hud.round_flash(&mut list);
         if self.debug.open { let dctx = self.debug_ctx(); self.debug.draw(&mut list, &dctx); }
         let mut light = self.light.clone();
+        let glow = self.vis.ion_glow();
+        if glow > 0.0 {
+            light.bloom_boost *= 1.0 + 31.0 * glow;
+            light.bloom_rounds = light.bloom_rounds.max(4);
+            light.bloom_threshold = light.bloom_threshold.min(2.0 - glow);
+        }
         // The lava flows on the game clock.
         light.time = (self.world.tick as f32 - 1.0 + alpha) * DT;
         hitch("draw (game side)", draw_t);

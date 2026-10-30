@@ -100,7 +100,7 @@ before release. There is no CPU pixel readback. The initial implementation
 serializes submissions and waits on fences; reducing that cost is future work.
 
 Android uses 512px material arrays, a 2048px main shadow map, no near shadow
-pass, and at most 1024x1024 rendered pixels per eye. Models and game code are
+pass, and at most 640x640 rendered pixels per eye. Models and game code are
 shared with desktop. These are initial memory/performance settings, not a
 measured guarantee of 72 Hz on Quest 2.
 

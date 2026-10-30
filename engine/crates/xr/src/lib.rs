@@ -47,6 +47,8 @@ pub struct Tracking {
 }
 pub struct FrameOutput { pub color: wgpu::Texture, pub hud: render::hud::HudDrawList }
 pub trait Game {
+    /// Startup render budget per eye; the runtime recommendation remains the ceiling.
+    fn eye_limit(&self) -> u32 { 1024 }
     /// Optional explicit developer diagnostics before starting a session.
     fn diagnose(&mut self, _gpu: &render::Gpu) -> Result<(), String> { Ok(()) }
     fn quit(&self) -> bool { false }

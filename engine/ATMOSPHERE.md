@@ -8,6 +8,8 @@ ozone absorption, atmospheric transmittance and the planet's shadow. Units
 are kilometres and linear RGB. A solar elevation/azimuth controls the sky,
 direct sunlight and the SH9 diffuse environment together. The texture has
 no solar disc, so a bright sun is not counted again as diffuse sky lighting.
+The background renderer adds a visible disc and GPU lens flare, described in
+[Live sky controls](docs/live-sky-controls.md#visible-sun-and-lens-flare).
 Specular environment lookup uses that same sun-free texture. Lower-hemisphere
 radiance is an approximate Lambertian ground bounce, not a terrain simulation.
 
@@ -68,7 +70,7 @@ need review before changing a default.
 
 - Atmospheric multiple scattering and a true aerial-perspective volume.
 - Volumetric clouds, cloud transmittance/shadows and shared wind-driven weather.
-- A visible solar disc, moon, stars and night-specific light sources.
+- A moon and additional night-specific light sources.
 - Scheduled GPU LUT updates, live solar movement and exposure policy.
 
 The current distance fog converges to the visible sky in the same direction,

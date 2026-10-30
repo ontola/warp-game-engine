@@ -238,7 +238,7 @@ impl Visuals {
                         self.fx.blasts.explosion(now, pos, radius, BLAST_TINT);
                     }
                     self.fx.blast_punch(world, now, pos, radius);
-                    self.phys.blast(pos, radius, 9.0);
+                    if kind != ExplosionKind::Ion { self.phys.blast(pos, radius, 9.0); }
                 }
                 Event::Hit { victim, attacker, pos, head, .. } => {
                     let dir = (world.players[victim].pos - world.players[attacker].pos).normalize_or(Vec3::Y);
@@ -281,6 +281,12 @@ impl Visuals {
                     self.fx.particles.burst_with(s, from + right * 0.35 - Vec3::Y * 0.25 + dir * 0.3, right + Vec3::Y * 0.6, p.vel, &Burst { mesh: m.casing, ..Burst::debris() });
                 }
                 _ => {}
+            }
+        }
+        // Include bodies created by this tick's Kill events, after the explosion.
+        for e in &world.events {
+            if let Event::Explosion { pos, radius, kind: ExplosionKind::Ion, .. } = e {
+                self.phys.lift(*pos, *radius, 26.0);
             }
         }
         self.air_targets = world.strikes.iter().filter(|s| s.kind == growing_guns::StrikeKind::AirStrike).map(|s| s.target).collect();
@@ -344,6 +350,8 @@ impl Visuals {
     }
 
     pub fn dynamic(&self) -> &[GpuInstance] { &self.scene.instances[self.first_dynamic..] }
+
+    pub fn ion_glow(&self) -> f32 { self.ion.glow(self.clock) }
 
     /// A player's camera with the explosion punch applied.
     pub fn punched(&self, world: &World, i: usize, cam: Camera) -> Camera { self.fx.punched(world, i, cam) }
