@@ -50,7 +50,7 @@ impl Default for ForestStyle {
             needles: [0.1, 0.17, 0.035, 0.4],
             floor: [0.03, 0.045, 0.02, 0.2],
             far: [0.045, 0.085, 0.035, 15.0],
-            crown: [4.2, 0.56, 1.6, 0.0],
+            crown: [3.2, 0.33, 1.6, 0.0],
         }
     }
 }
@@ -286,7 +286,7 @@ mod tests {
         }
         let (cover, light, far_cover, far_light) = (cover / n, light / n, far_cover / n, far_light / n);
         eprintln!("CANOPY near cover {cover:.3} light {light:.4} | far cover {far_cover:.3} light {far_light:.4}");
-        assert!((cover - far_cover).abs() < 0.08, "cover near {cover} far {far_cover}");
+        assert!((cover - far_cover).abs() < 0.015, "cover near {cover} far {far_cover}");
         assert!((light / far_light - 1.0).abs() < 0.15, "light near {light} far {far_light}");
     }
 
