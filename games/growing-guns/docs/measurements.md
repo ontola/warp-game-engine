@@ -28,6 +28,10 @@ tests plus 162 app/assets/game/network tests, 17 ignored in total. The release
 binary and 97-page website also build; the website reports pre-existing links
 to absent historical capture artifacts. Timings below belong to the pre-merge
 continuation, not a new performance comparison against the integrated engine.
+The integrated `bench --sim` run reports 0.075 ms median / 0.285 ms p95 total
+CPU tick cost, but a 308.397 ms maximum around arena setup. That synchronous
+benchmark spike is not fixed by retaining roster visuals and is not a measured
+windowed-game stall; round-transition latency needs separate profiling.
 
 The `ui-hotjoin.json` GPU script passes all expectations across one, two and
 three local seats, leaving, and disabling split screen. The reusable output
