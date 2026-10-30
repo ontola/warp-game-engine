@@ -444,10 +444,10 @@ pub fn build(l: &Look) -> Build {
 }
 
 /// A coloured, glass-covered cartridge leans out from the upper camera-facing
-/// edge. Separate mounts keep both upgrades visible when combined.
+/// edge, leaning back along the receiver. Separate mounts keep both upgrades visible when combined.
 fn reservoir(b: &mut B, receiver: Vec3, z: f32, growth: f32, core: Mat) {
     let growth = growth * 0.72;
-    let axis = Vec3::new(-0.36, 0.64, -0.68).normalize();
+    let axis = Vec3::new(-0.28, 0.48, 0.83).normalize();
     let rot = Quat::from_rotation_arc(Vec3::Y, axis);
     let root = Vec3::new(-receiver.x * 0.5 + 0.003, receiver.y * 0.5 - 0.003, z);
     let mut cyl = |r: f32, h: f32, y: f32, mat: Mat| {
