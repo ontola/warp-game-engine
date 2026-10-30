@@ -33,6 +33,8 @@ knobs! {
     flash_brightness = 0.5;
     /// Scales how much light a hit, shot or burst throws around (looks only).
     flash_light = 0.5;
+    /// Scales the damage numbers over whoever is hit (looks only).
+    number_size = 0.5;
     /// How big the staff's light is, in metres, for its shadows: 0 hard,
     /// larger softer, the more so the further from what casts them (looks only).
     shadow_softness = 0.05;
