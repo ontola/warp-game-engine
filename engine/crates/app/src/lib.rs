@@ -121,6 +121,10 @@ pub trait Game {
     /// loading screen: the shell reports opening the window, starting the
     /// GPU and building the first scene. Party games pass it to their host.
     fn loading(&mut self, percent: u32, step: &str) { let _ = (percent, step); }
+    /// The GPU device was lost and replaced (a driver reset, the display
+    /// waking up): GPU resources the game made itself are invalid. The
+    /// renderer is gone too, so the next [`Game::draw`] sets the scene again.
+    fn gpu_reset(&mut self) {}
     /// Function key F`n` (1..=10) was pressed, also while typing: return
     /// true when the game used it. F11 and F12 stay the shell's.
     fn function_key(&mut self, _n: u8) -> bool { false }
@@ -331,6 +335,54 @@ struct Live {
     gpu: Gpu,
     out: Output,
     renderer: Option<Renderer>,
+    /// Set from wgpu's callbacks when the device is gone (a driver reset,
+    /// the display sleeping): everything made on it is invalid.
+    lost: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Live {
+    /// A device, surface and presenter for `window`.
+    fn open(window: &Arc<Window>, t: Instant) -> Result<(Self, [u128; 2]), String> {
+        let size = window.inner_size();
+        let open = |instance: wgpu::Instance| -> Result<_, String> {
+            let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+            let surfaced = t.elapsed().as_millis();
+            let (gpu, config) = Gpu::for_surface(&instance, &surface, size.width.max(1), size.height.max(1))?;
+            Ok((surface, gpu, config, surfaced))
+        };
+        let (surface, gpu, config, surfaced) = match render::gpu::window_instance().map(&open) {
+            Some(Ok(v)) => v,
+            Some(Err(e)) => { println!("{} Vulkan: {e}; trying the other backends", manners::stamp()); open(render::gpu::instance())? }
+            None => open(render::gpu::instance())?,
+        };
+        let devised = t.elapsed().as_millis();
+        surface.configure(&gpu.device, &config);
+        let out = Output::new(&gpu, config.format)?;
+        let lost = watch(&gpu);
+        Ok((Live { surface, config, gpu, out, renderer: None, lost }, [surfaced, devised]))
+    }
+
+    fn is_lost(&self) -> bool { self.lost.load(std::sync::atomic::Ordering::Relaxed) }
+}
+
+/// Log wgpu errors instead of panicking on them, and flag a lost device so
+/// the shell builds a new one instead of crashing on invalid buffers.
+fn watch(gpu: &Gpu) -> Arc<std::sync::atomic::AtomicBool> {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let lost = Arc::new(AtomicBool::new(false));
+    let flag = lost.clone();
+    gpu.device.set_device_lost_callback(move |reason, message| {
+        eprintln!("{} GPU device lost ({reason:?}): {message}", manners::stamp());
+        flag.store(true, Ordering::Relaxed);
+    });
+    let flag = lost.clone();
+    let count = AtomicU32::new(0);
+    gpu.device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+        let n = count.fetch_add(1, Ordering::Relaxed);
+        if n < 10 || n % 1000 == 0 { eprintln!("{} GPU error #{}: {error}", manners::stamp(), n + 1); }
+        if matches!(error, wgpu::Error::OutOfMemory { .. }) || error.to_string().to_ascii_lowercase().contains("lost") { flag.store(true, Ordering::Relaxed); }
+    }));
+    lost
 }
 
 /// Started by or pointed at a GameNight host (GAMENIGHT=1 or GAMENIGHT_ADDR).
@@ -364,13 +416,17 @@ struct Shell<'g> {
     /// IME composition in progress: key text is the IME's until it commits.
     composing: bool,
     ime: bool,
+    /// The window has no pixels (minimised, the display asleep): nothing to present.
+    zero_size: bool,
+    /// When a lost device was last rebuilt or tried.
+    rebuilt: Option<Instant>,
 }
 
 /// Open a window and run the game until it closes.
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let devices = Devices::new(cfg.keyboard);
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug: Default::default(), last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug: Default::default(), last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -422,6 +478,13 @@ impl Shell<'_> {
         if steps == 6 { self.acc = 0.0; }
         let wants_text = self.game.text_input();
         if wants_text != self.ime && let Some(w) = &self.window { w.set_ime_allowed(wants_text); self.ime = wants_text; }
+        // `WARP_TEST_DEVICE_LOSS=SECONDS`: destroy the device once, to try the rebuild.
+        if let Some(live) = &self.live && self.rebuilt.is_none() && std::env::var("WARP_TEST_DEVICE_LOSS").ok().and_then(|v| v.parse::<f32>().ok()).is_some_and(|t| self.started.elapsed().as_secs_f32() >= t) {
+            println!("{} WARP_TEST_DEVICE_LOSS: destroying the GPU device", manners::stamp());
+            self.rebuilt = Some(Instant::now() - std::time::Duration::from_secs(2));
+            live.gpu.device.destroy();
+        }
+        if self.live.as_ref().is_some_and(Live::is_lost) && !self.recover() { return Ok(()); }
         let Some(live) = &mut self.live else { return Ok(()) };
         let size = [live.config.width, live.config.height];
         let split = self.game.split();
@@ -471,9 +534,22 @@ impl Shell<'_> {
         if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() > *until) { self.toast = None; }
         if let Some((line, _)) = &self.toast { toast(&mut draw.hud, line); }
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
+        // Nothing to show on a window without pixels; the game keeps ticking.
+        if self.zero_size || live.is_lost() { return Ok(()); }
         match live.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => {
-                live.out.draw_with(&live.gpu, renderer, &draw, size, split, &tex.texture.create_view(&Default::default()), render_height, scene)?;
+                let view = tex.texture.create_view(&Default::default());
+                // A device lost mid-frame panics inside the text renderer
+                // (glyphon unwraps a mapped buffer): rebuild instead of crashing.
+                let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| live.out.draw_with(&live.gpu, renderer, &draw, size, split, &view, render_height, scene)));
+                match drawn {
+                    Ok(r) => r?,
+                    Err(_) => {
+                        eprintln!("{} drawing the frame panicked; rebuilding the GPU device", manners::stamp());
+                        live.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return Ok(());
+                    }
+                }
                 if let Some(w) = &self.window { w.pre_present_notify(); }
                 live.gpu.queue.present(tex);
                 if let Some(w) = &self.window { self.manners.presented(w, size); }
@@ -482,6 +558,27 @@ impl Shell<'_> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Replace a lost device: a new device, surface and presenter; the game
+    /// builds its scene again (its renderer is gone). Tried at most once a
+    /// second while the screen has no pixels or no adapter answers. True
+    /// when there is a working device again.
+    fn recover(&mut self) -> bool {
+        if self.zero_size { std::thread::sleep(std::time::Duration::from_millis(50)); return false; }
+        if self.rebuilt.is_some_and(|t| t.elapsed().as_secs_f32() < 1.0) { std::thread::sleep(std::time::Duration::from_millis(50)); return false; }
+        self.rebuilt = Some(Instant::now());
+        let Some(window) = self.window.clone() else { return false };
+        // The old device stays (flagged lost) until a new one answers.
+        match Live::open(&window, Instant::now()) {
+            Ok((live, _)) => {
+                println!("{} GPU device rebuilt: {} ({}), {}x{}", manners::stamp(), live.gpu.info.name, live.gpu.info.backend, live.config.width, live.config.height);
+                self.live = Some(live);
+                self.game.gpu_reset();
+                true
+            }
+            Err(e) => { eprintln!("{} GPU device rebuild failed: {e}; trying again", manners::stamp()); false }
+        }
     }
 
     fn capture_mouse(&mut self, on: bool) {
@@ -548,24 +645,12 @@ impl ApplicationHandler for Shell<'_> {
             let made = t.elapsed().as_millis();
             self.game.loading(35, "starting the graphics card");
             let size = window.inner_size();
-            let open = |instance: wgpu::Instance| -> Result<_, String> {
-                let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-                let surfaced = t.elapsed().as_millis();
-                let (gpu, config) = Gpu::for_surface(&instance, &surface, size.width, size.height)?;
-                Ok((surface, gpu, config, surfaced))
-            };
-            let (surface, gpu, config, surfaced) = match render::gpu::window_instance().map(&open) {
-                Some(Ok(v)) => v,
-                Some(Err(e)) => { println!("{} Vulkan: {e}; trying the other backends", manners::stamp()); open(render::gpu::instance())? }
-                None => open(render::gpu::instance())?,
-            };
-            let devised = t.elapsed().as_millis();
+            let (live, [surfaced, devised]) = Live::open(&window, t)?;
             self.game.loading(55, "preparing the screen");
-            surface.configure(&gpu.device, &config);
-            let out = Output::new(&gpu, config.format)?;
             println!("{} startup: window {made} ms, instance and surface {} ms, adapter and device {} ms, swapchain and presenter {} ms", manners::stamp(), surfaced - made, devised - surfaced, t.elapsed().as_millis() - devised);
-            println!("{} GPU {} ({}), {}x{}", manners::stamp(), gpu.info.name, gpu.info.backend, size.width, size.height);
-            self.live = Some(Live { surface, config, gpu, out, renderer: None });
+            println!("{} GPU {} ({}), {}x{}", manners::stamp(), live.gpu.info.name, live.gpu.info.backend, size.width, size.height);
+            self.zero_size = size.width == 0 || size.height == 0;
+            self.live = Some(live);
             self.window = Some(window.clone());
             self.last = Instant::now();
             self.started = Instant::now();
@@ -583,7 +668,8 @@ impl ApplicationHandler for Shell<'_> {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                if let Some(l) = &mut self.live {
+                self.zero_size = size.width == 0 || size.height == 0;
+                if let Some(l) = &mut self.live && !l.is_lost() {
                     l.config.width = size.width.max(1);
                     l.config.height = size.height.max(1);
                     l.surface.configure(&l.gpu.device, &l.config);

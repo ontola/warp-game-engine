@@ -36,6 +36,8 @@ pub struct Plates {
 impl Plates {
     /// The renderer was rebuilt: draw and bind the tags again.
     pub fn invalidate(&mut self) { self.rows.clear(); }
+    /// The GPU device was replaced: the canvas belonged to the old one.
+    pub fn reset(&mut self) { self.rows.clear(); self.canvas = None; }
 
     /// The tags this frame (with the world's `extra` sprites, as the renderer
     /// takes one list): rows are redrawn when the names change.
