@@ -2698,6 +2698,7 @@ impl Renderer {
     /// Enable delayed GPU pass timestamps. Repeated calls preserve in-flight
     /// samples and reuse the four buffers; unsupported devices return an error.
     pub fn set_async_gpu_profiling(&self, gpu: &Gpu, enabled: bool) -> Result<(), String> {
+        if let Some(forward)=&self.minimal_forward {let mut f=forward.lock().unwrap();f.profiler.configure(gpu,enabled)?;f.profiling=enabled;return Ok(());}
         self.async_gpu_profile.lock().unwrap().configure(gpu, enabled)
     }
 
@@ -2742,12 +2743,14 @@ impl Renderer {
     /// Associate the next render with the caller's frame ID. If not supplied,
     /// the renderer uses its own monotonically increasing render sequence.
     pub fn set_gpu_profile_frame_id(&self, frame_id: u64) {
+        if let Some(forward)=&self.minimal_forward {forward.lock().unwrap().profile_frame_id=Some(frame_id);return;}
         self.profile_frame_id.store(frame_id, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Collect only completed timestamp copies, including while paused. This
     /// polls callbacks without waiting for a GPU submission to finish.
     pub fn drain_gpu_profiles(&self, gpu: &Gpu) -> crate::gpu_profile::GpuProfileDrain {
+        if let Some(forward)=&self.minimal_forward {return forward.lock().unwrap().profiler.drain(gpu);}
         self.async_gpu_profile.lock().unwrap().drain(gpu)
     }
 

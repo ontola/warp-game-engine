@@ -282,6 +282,8 @@ pub struct HudStats {
     /// Text buffers rebuilt this frame; changing only position/color does not reshape.
     pub reshaped: usize,
     pub prepare_ms: f64,
+    /// CPU wall milliseconds: image/geometry upload, shaping, glyph warmup, outlines, atlas preparation.
+    pub phase_ms: [f64;5],
 }
 
 struct CachedText { text: String, font: FontFace, align: TextAlign, size: u32, width: u32, buffer: Buffer }
@@ -403,6 +405,7 @@ pub struct HudRenderer {
     strokes: HashMap<(glyphon::CacheKey,u32),Option<(CustomGlyphId,swash::zeno::Placement)>>,
     stroke_images: Vec<Vec<u8>>,
     stroke_context: swash::scale::ScaleContext,
+    text_phase_ms:[f64;3],
 }
 
 /// Custom glyph ids are 16 bit; past this the stroke cache (and the atlas
@@ -462,7 +465,7 @@ impl HudRenderer {
         let viewport=Viewport::new(&gpu.device,&cache);
         let mut atlas=new_atlas(gpu,&cache,format);
         let renderer=TextRenderer::new(&mut atlas,&gpu.device,wgpu::MultisampleState::default(),None);
-        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false,strokes:HashMap::new(),stroke_images:Vec::new(),stroke_context:swash::scale::ScaleContext::new()})
+        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false,strokes:HashMap::new(),stroke_images:Vec::new(),text_phase_ms:[0.;3],stroke_context:swash::scale::ScaleContext::new()})
     }
 
     /// Upload (or replace) the picture drawn by `HudDrawList::image` with `id`.
@@ -505,11 +508,13 @@ impl HudRenderer {
             self.vertices=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("HUD vertices"),size:self.vertex_capacity,usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         }
         if !bytes.is_empty(){gpu.queue.write_buffer(&self.vertices,0,bytes);}
+        let uploaded=Instant::now();
         let mut reshaped=self.text.update(&list.text);
         if !self.text.system_fallback && self.text.missing_glyphs() {
             self.text.load_fallback();self.swash=SwashCache::new();self.warmed.clear();
             reshaped+=self.text.update(&list.text);
         }
+        let shaped=Instant::now();self.text_phase_ms.fill(0.);
         // A full glyph atlas (huge titles at 4K) starts a fresh one once; if
         // the text still does not fit, this frame draws without it rather
         // than failing the game.
@@ -538,11 +543,12 @@ impl HudRenderer {
         // Atlas remains GPU-resident. Bound the auxiliary CPU raster cache if
         // repeated window sizes or many changing Unicode names expand it.
         if self.swash.image_cache.len()>16_384 {self.swash.image_cache.clear();self.swash.outline_command_cache.clear();}
-        Ok(HudStats{text_runs:list.text.len(),glyphs,vertices:list.vertices.len(),reshaped,prepare_ms:begin.elapsed().as_secs_f64()*1000.0})
+        Ok(HudStats{text_runs:list.text.len(),glyphs,vertices:list.vertices.len(),reshaped,prepare_ms:begin.elapsed().as_secs_f64()*1000.0,phase_ms:[(uploaded-begin).as_secs_f64()*1000.,(shaped-uploaded).as_secs_f64()*1000.,self.text_phase_ms[0],self.text_phase_ms[1],self.text_phase_ms[2]]})
     }
 
     /// Glyphs for every text layer into the shared atlas.
     fn prepare_text(&mut self,gpu:&Gpu,list:&HudDrawList,layers:&[HudLayer])->Result<(),glyphon::PrepareError> {
+        let start=Instant::now();
         // Release last frame's pin set, preserving the atlas's resident glyphs.
         self.atlas.trim();
         // Prepare invisible warm text first: uploads the complete instrument
@@ -565,7 +571,9 @@ impl HudRenderer {
         // Do not trim between layers: earlier glyphs stay pinned while later
         // overlays are prepared. Atlas growth preserves glyph coordinates.
         if self.stroke_images.len()>MAX_STROKES { return Err(glyphon::PrepareError::AtlasFull); }
+        let warmed=Instant::now();self.text_phase_ms[0]+=(warmed-start).as_secs_f64()*1000.;
         let strokes:Vec<Vec<CustomGlyph>>=list.text.iter().map(|run| list.outlines.get(&run.id).map_or_else(Vec::new,|o|self.stroke_glyphs(run.id,o))).collect();
+        let outlined=Instant::now();self.text_phase_ms[1]+=(outlined-warmed).as_secs_f64()*1000.;
         let images=&self.stroke_images;
         for (renderer, layer) in self.renderers.iter_mut().zip(layers) {
             let areas=list.text[layer.text.clone()].iter().zip(&strokes[layer.text.clone()]).map(|(run,stroke)| {
@@ -578,6 +586,7 @@ impl HudRenderer {
             renderer.prepare_with_custom(&gpu.device,&gpu.queue,&mut self.text.fonts,&mut self.atlas,&self.viewport,areas,&mut self.swash,
                 |req| images.get(req.id as usize).map(|data| RasterizedCustomGlyph{data:data.clone(),content_type:ContentType::Mask}))?;
         }
+        self.text_phase_ms[2]+=outlined.elapsed().as_secs_f64()*1000.;
         Ok(())
     }
 

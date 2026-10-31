@@ -1,12 +1,12 @@
 //! Visual regression and isolated full-resolution stereo cost for minimum lava.
-//! minimum_lava OUT_DIRECTORY [--flat] [--bench] [--covered]
+//! minimum_lava OUT_DIRECTORY [--flat] [--bench] [--covered] [--paired]
 #[cfg(target_os="android")]
 #[link(name="c++_shared")]
 unsafe extern "C" {}
 use glam::{Affine3A,Quat,Vec3};
 use render::{Gpu,Scene,Renderer,Lighting,Camera,ViewRect};
 fn main()->Result<(),String> {
-    let args:Vec<_>=std::env::args().collect();let out=std::path::Path::new(args.get(1).ok_or("minimum_lava OUT_DIRECTORY [--flat] [--bench] [--covered]")?);
+    let args:Vec<_>=std::env::args().collect();let out=std::path::Path::new(args.get(1).ok_or("minimum_lava OUT_DIRECTORY [--flat] [--bench] [--covered] [--paired]")?);
     std::fs::create_dir_all(out).map_err(|e|e.to_string())?;
     let covered=args.iter().any(|s|s=="--covered");
     let flat=args.iter().any(|s|s=="--flat");let bench=args.iter().any(|s|s=="--bench");
@@ -19,7 +19,7 @@ fn main()->Result<(),String> {
     for (x,z,h) in [(-3.,-2.,1.),(-1.,-2.,1.),(1.,-2.,1.7),(3.,-2.,1.),(-3.,0.,0.9),(3.,0.,1.2)] {
         scene.add_instance(stone_mesh,Affine3A::from_scale_rotation_translation(Vec3::new(1.94,h,1.94),Quat::IDENTITY,Vec3::new(x,h*0.5,z)));
     }
-    if covered {scene.add_instance(stone_mesh,Affine3A::from_scale_rotation_translation(Vec3::new(80.,0.5,80.),Quat::IDENTITY,Vec3::new(0.,0.25,0.)));}
+    if covered {scene.add_instance(stone_mesh,Affine3A::from_scale_rotation_translation(Vec3::new(900.,0.5,900.),Quat::IDENTITY,Vec3::new(0.,0.25,0.)));}
     let mut light=Lighting{ev100:12.,sun_lux:12000.,sky_lux:2500.,time:0.,..Default::default()};
     let renderer=Renderer::new(&gpu,&scene,&light);
     let (w,h)=if bench{(1440,1584)}else{(960,640)};
@@ -41,6 +41,25 @@ fn main()->Result<(),String> {
         assert!(hot>500&&crust>500,"missing glowing cracks or dark crust: {hot}/{crust}");
         render::write_png(&out.join("lava-3s.png"),w,h,&after)?;
         println!("PASS: hot cracks {hot}, dark pixels {crust}, animated pixels {changed}");
+    }
+    if args.iter().any(|s|s=="--paired") {
+        renderer.set_async_gpu_profiling(&gpu,true)?;
+        let material=scene.materials[lava as usize];let mut samples=String::from("cycle,slot,detail,cpu_ms,geometry_gpu_ms,fx_gpu_ms,sprites_gpu_ms\n");
+        light.time=3.;
+        // One renderer, same mesh order/pose/time/targets. ABBA balances linear
+        // clock drift; upload a material in both arms, outside the wall timer.
+        for cycle in 0..74 {for (slot,detail) in [false,true,true,false].into_iter().enumerate() {
+            let mut m=material;m.flags=if detail{render::scene::LAVA}else{render::scene::EMISSIVE};
+            renderer.update_materials(&gpu,lava as usize,&[m])?;
+            let start=std::time::Instant::now();draw(&light)?;gpu.wait();let cpu=start.elapsed().as_secs_f64()*1000.;
+            let drain=renderer.drain_gpu_profiles(&gpu);
+            if drain.errors>0||drain.samples.len()!=1 {return Err(format!("missing GPU sample: errors {}, samples {}",drain.errors,drain.samples.len()));}
+            let sample=&drain.samples[0];let ms=|name|sample.gpu_ms.iter().find(|v|v.0==name).map_or(0.,|v|v.1);
+            if cycle>=10 {samples.push_str(&format!("{},{},{},{:.6},{:.6},{:.6},{:.6}\n",cycle-10,slot,detail,cpu,ms("minimum_geometry"),ms("minimum_fx"),ms("minimum_sprites")));}
+        }}
+        std::fs::write(out.join("paired.csv"),samples).map_err(|e|e.to_string())?;
+        println!("PAIRED: 64 ABBA cycles after 40 warmup frames, {w}x{h} per eye on {}; covered={covered}; timestamps include diagnostic overhead, no compositor",gpu.info.name);
+        return Ok(());
     }
     if bench {
         for i in 0..20 {light.time=i as f32/120.;draw(&light)?;gpu.wait();}

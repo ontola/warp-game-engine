@@ -80,12 +80,18 @@ pub fn draw_vision(gpu:&render::Gpu,tints:&[[f32;4]],target:&wgpu::Texture) {
 
 /// Shared HUD submission for native presentation and headless GPU measurements.
 pub fn draw_hud(gpu:&render::Gpu,hud:&mut render::hud::HudRenderer,list:&render::hud::HudDrawList,target:&wgpu::Texture)->Result<(),String> {
-    hud.prepare(gpu,list)?;
+    draw_hud_timed(gpu,hud,list,target).map(|_|())
+}
+/// CPU wall phases: text/geometry preparation, encoding, queue submission.
+pub fn draw_hud_timed(gpu:&render::Gpu,hud:&mut render::hud::HudRenderer,list:&render::hud::HudDrawList,target:&wgpu::Texture)->Result<([f64;3],render::hud::HudStats),String> {
+    let start=std::time::Instant::now();
+    let stats=hud.prepare(gpu,list)?;let prepared=std::time::Instant::now();
     let mut enc=gpu.device.create_command_encoder(&Default::default());
     let view=target.create_view(&Default::default());
     {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("XR HUD"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{
         view:&view,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store}})],..Default::default()});hud.render(&mut pass)?;}
-    gpu.queue.submit([enc.finish()]);Ok(())
+    let commands=enc.finish();let encoded=std::time::Instant::now();
+    gpu.queue.submit([commands]);Ok(([(prepared-start).as_secs_f64()*1000.,(encoded-prepared).as_secs_f64()*1000.,encoded.elapsed().as_secs_f64()*1000.],stats))
 }
 
 #[cfg(test)]

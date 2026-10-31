@@ -17,6 +17,7 @@ struct Target {size:[u32;2],color:wgpu::Texture,depth:wgpu::Texture,instances:wg
 pub(crate) struct Forward {
     pipeline:wgpu::RenderPipeline,pipeline_srgb:wgpu::RenderPipeline,layout:wgpu::BindGroupLayout,vertices:wgpu::Buffer,indices:wgpu::Buffer,materials:wgpu::Buffer,
     lava_view:wgpu::TextureView,lava_sampler:wgpu::Sampler,
+    pub(crate) profiler:crate::gpu_profile::Profiler, pub(crate) profiling:bool, query:Option<(wgpu::QuerySet,wgpu::Buffer)>, sequence:u64, pub(crate) profile_frame_id:Option<u64>,
     meshes:Vec<Mesh>,ranges:HashMap<(u32,u32),usize>,owners:Vec<GpuInstance>,targets:Vec<Target>,
 }
 impl Forward {
@@ -55,7 +56,9 @@ impl Forward {
         let pipeline=pipeline_for(wgpu::TextureFormat::Rgba8Unorm,"fs");
         let pipeline_srgb=pipeline_for(wgpu::TextureFormat::Rgba8UnormSrgb,"fs_srgb");
         let (lava_view,lava_sampler)=crate::minimum_lava::texture(gpu);
-        Self{pipeline,pipeline_srgb,layout,lava_view,lava_sampler,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
+        let supported=gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY|wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+        let query=supported.then(||(gpu.device.create_query_set(&wgpu::QuerySetDescriptor{label:Some("minimum timestamps"),ty:wgpu::QueryType::Timestamp,count:48}),gpu.device.create_buffer(&wgpu::BufferDescriptor{label:Some("minimum timestamps resolve"),size:48*8,usage:wgpu::BufferUsages::QUERY_RESOLVE|wgpu::BufferUsages::COPY_SRC,mapped_at_creation:false})));
+        Self{profiler:crate::gpu_profile::Profiler::new(supported,48),profiling:false,query,sequence:0,profile_frame_id:None,pipeline,pipeline_srgb,layout,lava_view,lava_sampler,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
     }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}
@@ -72,6 +75,15 @@ impl Forward {
         Target{size,color,depth,instances,capacity:1,uniform,bind}
     }
     pub fn render(&mut self,gpu:&Gpu,views:&[ViewRect],matrices:&[Mat4],camera_views:&[Mat4],sprites:&crate::sprites::SpriteSlot,fx:&crate::fx::FxSlot,light:&Lighting,spots:&[crate::headlights::SpotLight],output:Option<&wgpu::Texture>,external:Option<&[&wgpu::Texture]>)->Result<FrameStats,String> {
+        let ticket=if self.profiling {
+        let names:Vec<_>=(0..views.len()).flat_map(|_|["minimum_geometry","minimum_fx","minimum_sprites"]).collect();
+        let ranges:Vec<_>=(0..views.len()).map(|i|(i as u32,i*3..i*3+3)).collect();
+        let specs=crate::gpu_profile::describe_passes(&names,&ranges,&[]).map_err(|_|"invalid minimum profiling layout")?;
+        let context=crate::gpu_profile::Context{frame_id:self.profile_frame_id.take().unwrap_or(self.sequence),render_sequence:self.sequence,output_size:[views.iter().map(|v|v.w).sum(),views.iter().map(|v|v.h).max().unwrap_or(0)],views:views.len() as u32};
+        self.profiler.reserve(context,&specs,(views.len()*6) as u32,gpu.queue.get_timestamp_period() as f64)
+        }else{None};
+        self.sequence+=1;
+        let query=ticket.as_ref().and(self.query.as_ref()).map(|q|&q.0);
         let mut stats=FrameStats::default();let mut enc=gpu.device.create_command_encoder(&Default::default());
         for (vi,view) in views.iter().enumerate(){
             let vp=matrices[vi];let rows:[Vec4;4]=std::array::from_fn(|i|vp.row(i));
@@ -108,21 +120,26 @@ impl Forward {
             let color=target.create_view(&Default::default());let depth=t.depth.create_view(&Default::default());
             let sky=(light.sky_lux*exposure*0.25).max(0.0);let sky=(sky/(1.0+sky)).sqrt()as f64;
             let clear=|c:f64|if target.format().is_srgb(){if c<=0.04045{c/12.92}else{((c+0.055)/1.055).powf(2.4)}}else{c};
+            if let Some(q)=query {enc.write_timestamp(q,vi as u32*6);}
             {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("minimal forward eye"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:&color,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color{r:clear(sky*0.75),g:clear(sky*0.85),b:clear(sky),a:1.}),store:wgpu::StoreOp::Store}})],depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{view:&depth,depth_ops:Some(wgpu::Operations{load:wgpu::LoadOp::Clear(0.0),store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
                 pass.set_pipeline(if target.format().is_srgb(){&self.pipeline_srgb}else{&self.pipeline});pass.set_bind_group(0,&t.bind,&[]);pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_vertex_buffer(1,t.instances.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
                 for (_,indices,instances) in draws {pass.draw_indexed(indices,0,instances);}
             }
+            if let Some(q)=query {enc.write_timestamp(q,vi as u32*6+1);enc.write_timestamp(q,vi as u32*6+2);}
             if let Some(fx)=fx.0.lock().unwrap().as_mut() {
                 let white=((light.sun_lux*light.sun_dir.y.max(0.0)+light.sky_lux)/std::f32::consts::PI)
                     .max(light.fx_white_floor.max(0.0)/exposure);
                 fx.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,white,exposure)?;
             }
+            if let Some(q)=query {enc.write_timestamp(q,vi as u32*6+3);enc.write_timestamp(q,vi as u32*6+4);}
             if let Some(sprites)=sprites.0.lock().unwrap().as_mut() {
                 sprites.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,exposure)?;
             }
+            if let Some(q)=query {enc.write_timestamp(q,vi as u32*6+5);}
             if let Some(output)=output {enc.copy_texture_to_texture(t.color.as_image_copy(),wgpu::TexelCopyTextureInfo{texture:output,mip_level:0,origin:wgpu::Origin3d{x:view.x,y:view.y,z:0},aspect:wgpu::TextureAspect::All},t.color.size());}
         }
-        gpu.queue.submit([enc.finish()]);Ok(stats)
+        if let (Some(ticket),Some((query,resolve)))=(&ticket,&self.query) {enc.resolve_query_set(query,0..ticket.query_count,resolve,0);enc.copy_buffer_to_buffer(resolve,0,&ticket.read,0,ticket.query_count as u64*8);}
+        gpu.queue.submit([enc.finish()]);if let Some(ticket)=ticket {ticket.submitted();}Ok(stats)
     }
 }
 

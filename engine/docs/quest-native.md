@@ -279,3 +279,6 @@ interval excludes initial compilation/warmup and final image readback. It
 includes no OpenXR copies/compositor, physical input or display pacing;
 headset acceptance and sustained headset FPS must still be measured separately.
 Do not run this GPU workload alongside the VR app.
+
+For the subsequent per-pass investigation, controlled lava comparison and HUD
+cache diagnosis, see [Quest cost investigation, 31 October](quest-profile-2026-10-31.md).
