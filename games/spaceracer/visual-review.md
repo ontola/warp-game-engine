@@ -1,3 +1,22 @@
+# Reef planting clearance - 31 October 2026
+
+Fix for stalks clipping into canyon walls: plant clearance now derives its
+bounds and terrain probes from the rendered kelp, lantern, fan and sponge
+geometry, including bent stalks and bulbs. Terrain probes cover triangle
+interiors as well as edges. Reject steep roots and buried upper geometry;
+allow a small anchoring root band. Tests cover flat ground, an overhanging
+lantern facing into/away from a cliff, and steep terrain, plus the existing
+five-biome stage/road checks. These two focused tests pass.
+
+Placement and tolerance policy remain Luau (`reefPlantClearance`); Rust owns
+the batched geometry query. Probes are cached per generated stage, with no
+additional per-frame work. Changes apply when generating the next race.
+The user photo's seed/camera is unknown; visual review uses ocean seed 35.
+Artifacts: `build/spaceracer-reef-clearance/`. Windows build regenerated;
+no Android build or interactive/hardware test.
+
+---
+
 # Biome character and material polish - 31 October 2026
 
 Baseline: 4f4964d. Keep distinctive biome life while improving the native

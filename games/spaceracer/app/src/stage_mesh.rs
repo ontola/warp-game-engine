@@ -106,7 +106,7 @@ fn normalized_sphere(m: u32) -> Primitive {
     }
     p
 }
-pub fn build(scene: &mut Scene, name: &str, m: u32) -> (usize, Vec3, Vec3) {
+pub fn geometry(scene: &mut Scene, name: &str, m: u32) -> Vec<Primitive> {
     let mut p = Primitive {
         material: m,
         ..Default::default()
@@ -619,6 +619,10 @@ pub fn build(scene: &mut Scene, name: &str, m: u32) -> (usize, Vec3, Vec3) {
     if !p.indices.is_empty() {
         parts.push(p);
     }
+    parts
+}
+pub fn build(scene: &mut Scene, name: &str, m: u32) -> (usize, Vec3, Vec3) {
+    let parts = geometry(scene, name, m);
     let mut lo = Vec3::splat(f32::INFINITY);
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
     for p in &parts {

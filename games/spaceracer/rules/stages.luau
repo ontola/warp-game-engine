@@ -5,6 +5,8 @@ local V=vector.create
 local Z=V(0,0,0)
 local U=V(0,1,0)
 local TAU=math.pi*2
+-- Placement policy lives here; mesh/height-field queries run in native code.
+local reefPlantClearance={root_band=.035,max_slope_degrees=45,clearance=.25,road_margin=8}
 local function R(a,b) return a+(b-a)*random() end
 local function put(mesh,mat,p,s,r,solid) emit(mesh,mat,p,s,r or Z,solid or false) end
 local function box(mat,p,s,solid) put("box",mat,p,s,Z,solid) end
@@ -254,7 +256,7 @@ local function dry(ctx,ocean)
             for k=1,count do
                 local spot=p+V(R(-55,55),0,R(-55,55));spot=V(spot.x,ground(spot.x,spot.z)-.5,spot.z)
                 local h=kind=="kelp" and R(40,115) or (kind=="lantern" and R(40,85) or R(18,42));local size=V(h,h,h);local rot=V(0,R(0,TAU),0)
-                if mesh_clear(kind,spot,size,rot) then put(kind,kind,spot,size,rot) end
+                if mesh_clear(kind,spot,size,rot,reefPlantClearance) then put(kind,kind,spot,size,rot) end
             end
         end
     end end

@@ -39,6 +39,82 @@ struct Bounds {
     lo: Vec3,
     hi: Vec3,
 }
+// Shared planting probes from the rendered geometry, including overhanging bulbs
+// and broad leaves. Evaluated only during generation, never during a frame.
+struct PlantShape {
+    bounds: Bounds,
+    probes: Vec<Vec3>,
+}
+#[derive(Clone, Copy, serde::Deserialize)]
+struct PlantClearance {
+    root_band: f32,
+    max_slope_degrees: f32,
+    clearance: f32,
+    road_margin: f32,
+}
+impl PlantClearance {
+    fn valid(self) -> bool {
+        (0.0..=0.1).contains(&self.root_band)
+            && (0.0..=80.).contains(&self.max_slope_degrees)
+            && (0.0..=5.).contains(&self.clearance)
+            && (0.0..=100.).contains(&self.road_margin)
+    }
+}
+impl PlantShape {
+    fn new(name: &str) -> Self {
+        let mut scratch = Scene::default();
+        let mut probes = Vec::new();
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for part in stage_mesh::geometry(&mut scratch, name, 0) {
+            for v in &part.vertices {
+                let p = Vec3::from(v.pos);
+                lo = lo.min(p);
+                hi = hi.max(p);
+            }
+            for triangle in part.indices.chunks_exact(3) {
+                let a = Vec3::from(part.vertices[triangle[0] as usize].pos);
+                let b = Vec3::from(part.vertices[triangle[1] as usize].pos);
+                let c = Vec3::from(part.vertices[triangle[2] as usize].pos);
+                let steps = (a.distance(b).max(b.distance(c)).max(c.distance(a)) / 0.035)
+                    .ceil()
+                    .max(1.) as usize;
+                for i in 0..=steps {
+                    for j in 0..=steps - i {
+                        probes.push(
+                            a + (b - a) * (i as f32 / steps as f32)
+                                + (c - a) * (j as f32 / steps as f32),
+                        );
+                    }
+                }
+            }
+        }
+        Self {
+            bounds: Bounds { lo, hi },
+            probes,
+        }
+    }
+    fn clears_ground(
+        &self,
+        terrain: &Landscape,
+        transform: Affine3A,
+        rules: PlantClearance,
+    ) -> bool {
+        let root = transform.translation;
+        // Do not plant upright stalks into a cliff face. The small buried root
+        // band anchors them naturally; the rest of the geometry must be exposed.
+        if terrain.normal(root.x, root.z).y < rules.max_slope_degrees.to_radians().cos() {
+            return false;
+        }
+        self.probes
+            .iter()
+            .filter(|p| p.y > rules.root_band)
+            .all(|&p| {
+                let p = transform.transform_point3(p);
+                p.y > terrain.height(p.x, p.z) + rules.clearance
+            })
+    }
+}
 impl Bounds {
     fn center(c: Vec3, h: Vec3) -> Self {
         Self {
@@ -293,6 +369,14 @@ impl Stage {
                 .collect(),
         );
         let requests = Arc::new(Mutex::new(Vec::<Request>::new()));
+        let plants: HashMap<_, _> = if race.biome == "ocean" {
+            ["kelp", "lantern", "fan", "sponge"]
+                .into_iter()
+                .map(|name| (name.to_owned(), PlantShape::new(name)))
+                .collect()
+        } else {
+            HashMap::new()
+        };
         let occupied = Arc::new(Mutex::new(Vec::<Bounds>::new()));
         let lamps = Arc::new(Mutex::new(Vec::<LocalLight>::new()));
         let walkers = Arc::new(Mutex::new(Vec::<(Vec3, f32, f32)>::new()));
@@ -411,16 +495,35 @@ impl Stage {
                     )?,
                 )?;
                 let r = road.clone();
+                let terrain = landscape.clone();
                 api.set(
                     "mesh_clear",
                     lua.create_function(
-                        move |_,
-                              (name, p, s, rot): (
+                        move |lua,
+                              (name, p, s, rot, options): (
                             String,
                             mlua::Vector,
                             mlua::Vector,
                             mlua::Vector,
+                            Option<mlua::Table>,
                         )| {
+                            let transform = xf(p, s, rot);
+                            if let Some(plant) = plants.get(&name) {
+                                let rules: PlantClearance =
+                                    lua.from_value(mlua::Value::Table(options.ok_or_else(
+                                        || mlua::Error::runtime("plant clearance rules required"),
+                                    )?))?;
+                                if !rules.valid() {
+                                    return Err(mlua::Error::runtime(
+                                        "invalid plant clearance rules",
+                                    ));
+                                }
+                                let mut bounds = plant.bounds.transformed(transform);
+                                bounds.lo -= Vec3::splat(rules.road_margin);
+                                bounds.hi += Vec3::splat(rules.road_margin);
+                                return Ok(!r.iter().any(|b| b.intersects(bounds))
+                                    && plant.clears_ground(&terrain, transform, rules));
+                            }
                             let (c, h) = match name.as_str() {
                                 "dna" => (Vec3::ZERO, Vec3::new(0.14, 0.52, 0.14)),
                                 "protein" => (Vec3::ZERO, Vec3::new(0.45, 0.3, 0.45)),
@@ -993,6 +1096,55 @@ fn reflection_data(scene: &mut Scene, posters: &[Request], buildings: &[(Bounds,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reef_plants_reject_cliffs_and_overhangs_but_keep_clear_ground() {
+        let rules = PlantClearance {
+            root_band: 0.035,
+            max_slope_degrees: 45.,
+            clearance: 0.25,
+            road_margin: 8.,
+        };
+        let mut terrain = Landscape {
+            heights: vec![0.; 81 * 81],
+            cells: 80,
+            step: 2.,
+            half: 80.,
+            outside: 0.,
+        };
+        let upright = Affine3A::from_scale_rotation_translation(
+            Vec3::splat(50.),
+            Quat::IDENTITY,
+            Vec3::new(0., -0.5, 0.),
+        );
+        for name in ["kelp", "lantern", "fan", "sponge"] {
+            assert!(
+                PlantShape::new(name).clears_ground(&terrain, upright, rules),
+                "{name} on flat ground"
+            );
+        }
+        let lantern = PlantShape::new("lantern");
+        // Root remains on flat ground, but the bent head reaches into a wall.
+        for z in 0..=80 {
+            for x in 0..=80 {
+                if x as f32 * 2. - 80. >= 16. {
+                    terrain.heights[z * 81 + x] = 100.;
+                }
+            }
+        }
+        assert!(!lantern.clears_ground(&terrain, upright, rules));
+        let away = Affine3A::from_scale_rotation_translation(
+            Vec3::splat(50.),
+            Quat::from_rotation_y(std::f32::consts::PI),
+            Vec3::new(0., -0.5, 0.),
+        );
+        assert!(lantern.clears_ground(&terrain, away, rules));
+        for z in 0..=80 {
+            for x in 0..=80 {
+                terrain.heights[z * 81 + x] = (x as f32 * 2. - 80.) * 2.;
+            }
+        }
+        assert!(!PlantShape::new("kelp").clears_ground(&terrain, upright, rules));
+    }
     #[test]
     fn source_stages_keep_distinct_components_and_road_clearance() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../assets");
