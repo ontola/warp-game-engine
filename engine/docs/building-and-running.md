@@ -163,7 +163,11 @@ they are described in the engineering notes that introduced them.
 ## Measuring
 
 - GPU timestamps per pass: `Renderer::set_async_gpu_profiling`; Growing
-  Guns' `bench` shows how (`bench --views 4 --size 3840x2160`).
+  Guns' `bench` shows how (`bench --views 4 --size 3840x2160`). Minimum rendering
+  reports geometry, FX and sprites per view with inside-encoder timestamps;
+  [Quest profiling](quest-profile-2026-10-31.md) documents the opt-in live capture
+  and paired lava/HUD probes. `HudStats::phase_ms` separates CPU upload, shaping,
+  glyph warmup, outlines and atlas preparation.
 - Sideways scenarios: `engine/tools/run-frame-scenario.py` with
   `games/sideways/scenarios/*.toml`, then `frame-budget.py`. See the
   [frame budget guide](../tools/frame-budget.md).

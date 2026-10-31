@@ -98,6 +98,8 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
     let mut hud=render::hud::HudRenderer::new(&bridge.gpu,wgpu::TextureFormat::Rgba8UnormSrgb).map_err(anyhow::Error::msg)?;
     let mut running=false; let mut focused=false; let mut destroyed=false;
     let mut event=xr::EventDataBuffer::new(); let mut last=Instant::now(); let mut recentered=false;
+    let profile=std::path::Path::new("xr-profile").exists();
+    let mut detail=[0.0f64;5];let mut detail_max=[0.0f64;5];
     let mut frames=0u64; let mut report=Instant::now(); let mut timings=[0.0f64;6];
     while !destroyed && !stop.load(Ordering::Acquire) {
         while let Some(event)=instance.poll_event(&mut event)? {
@@ -152,13 +154,21 @@ fn run_inner(app:AndroidApp, mut game:impl Game, stop:Arc<AtomicBool>)->Result<(
         let draw_start=Instant::now();
         let output=game.frame(&bridge.gpu,&tracking,size,dt,Some(&[&color_targets.images[color_index as usize],&right_targets.images[right_index as usize]])).map_err(anyhow::Error::msg)?;
         let hud_start=Instant::now();
-        crate::draw_hud(&bridge.gpu,&mut hud,&output.hud,&ui_targets.images[ui_index as usize]).map_err(anyhow::Error::msg)?;
+        let (hud_parts,hud_stats)=crate::draw_hud_timed(&bridge.gpu,&mut hud,&output.hud,&ui_targets.images[ui_index as usize]).map_err(anyhow::Error::msg)?;
+        let mut overlay_parts=[0.0f64;2];
         let mut tinted=[false;2];
         for (i,(chain,targets,tints)) in [(&mut vision_bg,&vision_bg_targets,&output.hud.vision_background_tints),(&mut vision,&vision_targets,&output.hud.vision_tints)].into_iter().enumerate() {
             if !tints.is_empty() {
-                let index=chain.acquire_image()?;chain.wait_image(xr::Duration::INFINITE)?;
-                crate::draw_vision(&bridge.gpu,tints,&targets.images[index as usize]);tinted[i]=true;
+                let start=Instant::now();let index=chain.acquire_image()?;chain.wait_image(xr::Duration::INFINITE)?;
+                overlay_parts[0]+=start.elapsed().as_secs_f64()*1000.;let start=Instant::now();
+                crate::draw_vision(&bridge.gpu,tints,&targets.images[index as usize]);tinted[i]=true;overlay_parts[1]+=start.elapsed().as_secs_f64()*1000.;
             }
+        }
+        let parts=[hud_parts[0],hud_parts[1],hud_parts[2],overlay_parts[0],overlay_parts[1]];
+        if profile {
+            for i in 0..5 {detail[i]+=parts[i];detail_max[i]=detail_max[i].max(parts[i]);}
+            if parts.iter().sum::<f64>()>4. {log::info!("XR detail hitch frame={} hud_prepare/encode/submit/overlay_acquire/submit_ms={:?} text={} vertices={} tints={:?} reshaped={} upload/shape/warm/outline/atlas_ms={:?}",frames,parts,output.hud.text.len(),output.hud.vertices.len(),tinted,hud_stats.reshaped,hud_stats.phase_ms);}
+            if frames>0&&frames%120==0 {log::info!("XR detail 120 frames mean={:?} max={:?}",detail.map(|v|v/120.),detail_max);detail.fill(0.);detail_max.fill(0.);}
         }
         let gpu_start=Instant::now();
         bridge.gpu.wait();

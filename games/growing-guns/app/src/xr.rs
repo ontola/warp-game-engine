@@ -12,6 +12,7 @@ pub struct NativeGame {
     _speaker:Option<app::sound::Speaker>,
     audio_pending:bool,
     diagnostic:bool,
+    profile:bool, profile_sequence:u64,
     diagnostic_requested:bool,
 }
 impl NativeGame {
@@ -26,7 +27,7 @@ impl NativeGame {
         game.light_mut().near_shadows=0.0;
         game.light_mut().lod_pixels=crate::graphics::get().lod_pixels;
         let yaw = game.world.players[0].yaw;
-        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:None,audio_pending:sound,diagnostic:false,diagnostic_requested:std::path::Path::new("diagnose").exists()})
+        Ok(Self {game,renderer:None,output:None,origin:None,yaw,snap_ready:true,accumulator:0.0,pending:0,_speaker:None,audio_pending:sound,diagnostic:false,profile:std::path::Path::new("xr-profile").exists(),profile_sequence:0,diagnostic_requested:std::path::Path::new("diagnose").exists()})
     }
     fn anchor(&self,eye:Vec3)->Vec3 {eye-Quat::from_rotation_y(self.yaw)*self.origin.unwrap()}
     fn hand(&self,t:&Tracking,eye:Vec3)->Option<Affine3A> {
@@ -120,6 +121,14 @@ impl warp_xr::Game for NativeGame {
         renderer.set_camera_projections(&eyes.map(Eye::projection));
         let views:Vec<_>=eyes.iter().enumerate().map(|(i,e)|render::ViewRect {cam:e.camera(),x:i as u32*size[0],y:0,w:size[0],h:size[1]}).collect();
         if let Some(targets)=targets {
+            if self.profile {
+                renderer.set_async_gpu_profiling(gpu,true)?;
+                for sample in renderer.drain_gpu_profiles(gpu).samples {
+                    #[cfg(target_os="android")] log::info!("XR GPU frame={} passes={:?}",sample.frame_id,sample.gpu_ms);
+                    #[cfg(not(target_os="android"))] eprintln!("XR GPU frame={} passes={:?}",sample.frame_id,sample.gpu_ms);
+                }
+                renderer.set_gpu_profile_frame_id(self.profile_sequence);self.profile_sequence+=1;
+            }
             renderer.try_render_eye_targets(gpu,&views,&draw.light,targets)?;
             return Ok(warp_xr::FrameOutput {color:None,hud:draw.hud});
         }
