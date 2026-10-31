@@ -1,8 +1,8 @@
 //! Articulated capsule bodies with interpolated world-space skin deltas.
 //! A game supplies joint positions and maps its skin joints to these segments.
-use super::{Body, BodyDesc, Physics, Shape, to};
+use super::{Body, BodyDesc, Physics, Shape, to, to_q};
 use glam::{Mat4, Quat, Vec3};
-use rapier3d::prelude::{Group, InteractionGroups, InteractionTestMode, SphericalJointBuilder};
+use rapier3d::prelude::{Group, InteractionGroups, InteractionTestMode, SphericalJointBuilder, ImpulseJointHandle, JointAxis, MotorModel};
 
 /// One capsule in a connected, parent-before-child tree. Endpoints are world
 /// joint positions and describe the capsule's outer tips; very short segments
@@ -16,6 +16,56 @@ pub struct Segment {
     pub anchor: Vec3,
 }
 
+/// Game-authored passive response: radians and force-based spring coefficients.
+/// These are approximations, not inferred anatomical measurements.
+#[derive(Clone, Copy, Debug)]
+pub struct AngularProfile {
+    pub min: Vec3, pub max: Vec3, pub neutral: Vec3,
+    pub soft_zone: f32, pub stiffness: f32, pub limit_stiffness: f32,
+    pub damping: f32, pub max_torque: f32,
+}
+impl AngularProfile {
+    fn valid(self) -> bool {
+        self.min.is_finite() && self.max.is_finite() && self.neutral.is_finite()
+            && self.neutral.cmpge(self.min).all() && self.neutral.cmple(self.max).all()
+            && self.min.cmpgt(Vec3::splat(-std::f32::consts::PI)).all()
+            && self.max.cmplt(Vec3::splat(std::f32::consts::PI)).all()
+            && [self.soft_zone, self.stiffness, self.limit_stiffness, self.damping, self.max_torque]
+                .iter().all(|x| x.is_finite() && *x >= 0.0)
+            && self.soft_zone > 0.0
+            && (self.max-self.min).cmpgt(Vec3::splat(2.0*self.soft_zone)).all()
+    }
+    // Sum the neutral spring and a quadratic edge spring into one solver motor.
+    fn response(self, i: usize, angle: f32) -> (f32, f32) {
+        let edge = angle.clamp(self.min[i]+self.soft_zone, self.max[i]-self.soft_zone);
+        let ramp = ((angle-edge).abs()/self.soft_zone).clamp(0.0,1.0);
+        let extra = self.limit_stiffness*ramp*ramp;
+        let stiffness = self.stiffness+extra;
+        let target = if stiffness > 0.0 { (self.neutral[i]*self.stiffness+edge*extra)/stiffness }
+            else { self.neutral[i] };
+        (target, stiffness)
+    }
+}
+pub(crate) struct PassiveJoint { pub handle: ImpulseJointHandle, pub profile: AngularProfile }
+pub(crate) fn update_passive_joints(phys: &mut Physics) {
+    phys.passive_joints.retain(|j| phys.world.impulse_joints.get(j.handle).is_some());
+    for passive in &phys.passive_joints {
+        let Some(joint) = phys.world.impulse_joints.get_mut(passive.handle, false) else { continue };
+        let Some(a) = phys.world.bodies.get(joint.body1()) else { continue };
+        let Some(b) = phys.world.bodies.get(joint.body2()) else { continue };
+        let qa = *a.rotation()*joint.data.local_frame1.rotation;
+        let qb = *b.rotation()*joint.data.local_frame2.rotation;
+        let mut q = qa.inverse()*qb;
+        if q.w < 0.0 { q = -q; }
+        for (i, axis) in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ].into_iter().enumerate() {
+            // Same angular coordinate as Rapier's generic-joint motors.
+            let angle = 2.0*q.to_array()[i].clamp(-1.0,1.0).asin();
+            let (target, stiffness) = passive.profile.response(i, angle);
+            joint.data.set_motor_position(axis, target, stiffness, passive.profile.damping);
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Pose { position: Vec3, rotation: Quat }
 impl Pose {
@@ -25,7 +75,7 @@ impl Pose {
         Self { position: self.position.lerp(next.position, alpha), rotation: self.rotation.slerp(next.rotation, alpha) }
     }
 }
-struct Part { body: Body, initial_inverse: Mat4, previous: Pose, current: Pose }
+struct Part { body: Body, initial_inverse: Mat4, previous: Pose, current: Pose, joint: Option<ImpulseJointHandle> }
 
 /// Owns the body's handles, but not the physics world. Call [`Self::remove`]
 /// before discarding it, or clear all bodies when discarding an entire level.
@@ -66,17 +116,48 @@ impl Ragdoll {
                 phys.world.colliders.get_mut(collider).expect("new ragdoll collider").set_collision_groups(groups);
             }
             let initial_inverse = pose.matrix().inverse();
-            if let Some(parent) = s.parent {
+            let joint = if let Some(parent) = s.parent {
                 let a = &parts[parent];
                 let joint = SphericalJointBuilder::new()
                     .local_anchor1(to(a.initial_inverse.transform_point3(s.anchor)))
                     .local_anchor2(to(initial_inverse.transform_point3(s.anchor)))
                     .contacts_enabled(false);
-                phys.world.impulse_joints.insert(a.body.0, body.0, joint, true);
-            }
-            parts.push(Part { body, initial_inverse, previous: pose, current: pose });
+                Some(phys.world.impulse_joints.insert(a.body.0, body.0, joint, true))
+            } else { None };
+            parts.push(Part { body, initial_inverse, previous: pose, current: pose, joint });
         }
         Ok(Self { parts })
+    }
+
+    /// Local anatomical frames define zero independently of the death pose.
+    pub fn set_angular_profile(&self, phys: &mut Physics, part: usize,
+        parent_frame: Quat, child_frame: Quat, profile: AngularProfile) -> Result<(), String> {
+        if !profile.valid() || !parent_frame.is_finite() || !child_frame.is_finite()
+            || (parent_frame.length_squared()-1.0).abs()>0.001
+            || (child_frame.length_squared()-1.0).abs()>0.001 {
+            return Err("invalid ragdoll angular profile or frame".into());
+        }
+        let handle = self.parts.get(part).and_then(|p| p.joint).ok_or("part has no parent joint")?;
+        let joint = phys.world.impulse_joints.get_mut(handle, true).ok_or("ragdoll joint removed")?;
+        joint.data.local_frame1.rotation = to_q(parent_frame);
+        joint.data.local_frame2.rotation = to_q(child_frame);
+        for (i, axis) in [JointAxis::AngX, JointAxis::AngY, JointAxis::AngZ].into_iter().enumerate() {
+            joint.data.set_limits(axis, [profile.min[i],profile.max[i]]);
+            joint.data.set_motor_model(axis, MotorModel::ForceBased);
+            joint.data.set_motor_max_force(axis, profile.max_torque);
+            joint.data.set_motor_position(axis, profile.neutral[i], profile.stiffness, profile.damping);
+        }
+        // Default sleep thresholds cut off a deliberately weak rest spring
+        // halfway through relaxation. Still allow settled corpses to sleep.
+        for body in [joint.body1(), joint.body2()] {
+            if let Some(rb) = phys.world.bodies.get_mut(body) {
+                rb.activation_mut().normalized_linear_threshold = 0.02;
+                rb.activation_mut().angular_threshold = 0.02;
+            }
+        }
+        phys.passive_joints.retain(|p| p.handle != handle);
+        phys.passive_joints.push(PassiveJoint { handle, profile });
+        Ok(())
     }
 
     pub fn len(&self) -> usize { self.parts.len() }
@@ -109,6 +190,7 @@ impl Ragdoll {
     /// physics clear, and safe to call more than once.
     pub fn remove(&mut self, phys: &mut Physics) {
         for part in self.parts.drain(..) { phys.remove(part.body); }
+        phys.passive_joints.retain(|j| phys.world.impulse_joints.get(j.handle).is_some());
     }
 }
 
@@ -123,6 +205,64 @@ mod tests {
             Segment { start: Vec3::new(0.0, 2.6, 0.0), end: Vec3::new(0.6, 2.6, 0.0), radius: 0.1, parent: Some(0), anchor: Vec3::new(0.0, 2.6, 0.0) },
             Segment { start: Vec3::new(0.6, 2.6, 0.0), end: Vec3::new(1.1, 2.6, 0.0), radius: 0.09, parent: Some(1), anchor: Vec3::new(0.6, 2.6, 0.0) },
         ]
+    }
+
+    fn passive_profile() -> AngularProfile {
+        AngularProfile { min: Vec3::splat(-0.8), max: Vec3::splat(0.8),
+            neutral: Vec3::new(0.25, 0.0, 0.0), soft_zone: 0.2,
+            stiffness: 1.0, limit_stiffness: 20.0, damping: 0.5, max_torque: 15.0 }
+    }
+
+    #[test]
+    fn passive_response_is_weak_inside_and_progressively_resists_both_edges() {
+        let p = passive_profile();
+        assert_eq!(p.response(0, 0.0), (0.25, 1.0));
+        assert_eq!(p.response(0, 0.5), (0.25, 1.0));
+        for sign in [-1.0, 1.0] {
+            let mut previous = 0.0;
+            for a in [0.61, 0.65, 0.7, 0.75, 0.8] {
+                let angle = sign*a;
+                let (target, stiffness) = p.response(0, angle);
+                let restoring = sign*(angle-target)*stiffness;
+                assert!(restoring > previous);
+                previous = restoring;
+            }
+        }
+    }
+
+    #[test]
+    fn passive_joint_returns_to_neutral_resists_impacts_and_cleans_up() {
+        let run = || {
+            let mut phys = Physics::new(Vec3::ZERO, 120.0);
+            phys.substeps = 4;
+            let seg = [
+                Segment { start: Vec3::ZERO, end: Vec3::Y*0.6, radius: 0.12, parent: None, anchor: Vec3::ZERO },
+                Segment { start: Vec3::Y*0.6, end: Vec3::Y*1.2, radius: 0.1, parent: Some(0), anchor: Vec3::Y*0.6 },
+            ];
+            let mut doll = Ragdoll::spawn(&mut phys, &seg, Vec3::ZERO, Vec3::ZERO, 1).unwrap();
+            doll.set_angular_profile(&mut phys, 1, Quat::IDENTITY, Quat::IDENTITY, passive_profile()).unwrap();
+            let relative = |p: &Physics| {
+                let a = p.pose(doll.body(0)).unwrap().1;
+                let b = p.pose(doll.body(1)).unwrap().1;
+                let mut q = a.inverse()*b;
+                if q.w < 0.0 { q = -q; }
+                2.0*q.x.clamp(-1.0,1.0).asin()
+            };
+            for _ in 0..1200 { phys.step(); }
+            assert!((relative(&phys)-0.25).abs()<0.06, "neutral angle {}", relative(&phys));
+            phys.world.bodies.get_mut(doll.body(1).0).unwrap().apply_torque_impulse(to(Vec3::X*0.6), true);
+            for _ in 0..1200 {
+                phys.step();
+                assert!(relative(&phys).abs()<0.95, "hard limit exceeded: {}", relative(&phys));
+            }
+            assert!((relative(&phys)-0.25).abs()<0.06);
+            let bits = relative(&phys).to_bits();
+            doll.remove(&mut phys);
+            assert!(phys.passive_joints.is_empty());
+            assert_eq!(phys.world.impulse_joints.len(), 0);
+            bits
+        };
+        assert_eq!(run(), run());
     }
 
     #[test]

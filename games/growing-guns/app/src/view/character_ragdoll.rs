@@ -1,8 +1,8 @@
 //! Map the imported humanoid's weighted bones to a small articulated physics rig.
 //! The original textured mesh stays on the GPU; only its skin palette changes.
 use assets::skinned::Character;
-use glam::{Affine3A, Mat4, Vec3};
-use physics::{ragdoll::{Ragdoll, Segment}, Physics};
+use glam::{Affine3A, Mat4, Quat, Vec3};
+use physics::{ragdoll::{Ragdoll, Segment, AngularProfile}, Physics};
 
 const PARTS: usize = 11;
 
@@ -73,6 +73,26 @@ pub(super) fn part(name: &str) -> usize {
     }
 }
 
+// Model coordinates: +Y up, +Z forward. Ranges are deliberately approximate
+// game tuning in degrees relative to the bind skeleton, not clinical ROM data.
+fn profile(part: usize) -> AngularProfile {
+    let (min, max, neutral) = match part {
+        1 => ([-25., -25., -20.], [35., 25., 20.], [5., 0., 0.]),
+        2 => ([-40., -65., -35.], [50., 65., 35.], [8., 0., 0.]),
+        3 => ([-80., -80., -100.], [90., 80., 50.], [10., 0., -65.]),
+        5 => ([-80., -80., -50.], [90., 80., 100.], [10., 0., 65.]),
+        4 => ([-12., -145., -12.], [12., 5., 12.], [0., -35., 0.]),
+        6 => ([-12., -5., -12.], [12., 145., 12.], [0., 35., 0.]),
+        7 | 9 => ([-110., -35., -45.], [30., 35., 45.], [-15., 0., 0.]),
+        8 | 10 => ([-5., -10., -10.], [145., 10., 10.], [25., 0., 0.]),
+        _ => unreachable!(),
+    };
+    let radians = |v: [f32; 3]| Vec3::from_array(v.map(f32::to_radians));
+    AngularProfile { min: radians(min), max: radians(max), neutral: radians(neutral),
+        soft_zone: 4.0_f32.to_radians(), stiffness: 0.35, limit_stiffness: 18.0,
+        damping: 0.25, max_torque: 12.0 }
+}
+
 impl Corpse {
     pub fn spawn(model: &Character, palette: &[Mat4], transform: Affine3A, velocity: Vec3,
         direction: Vec3, actor: usize, headless: bool, physics: &mut Physics) -> Result<Self, String> {
@@ -111,8 +131,28 @@ impl Corpse {
         }
         debug_assert_eq!(segments.len(), PARTS);
         let push = direction.with_y(0.0).normalize_or(Vec3::Z);
-        let rig = Ragdoll::spawn(physics, &segments, velocity + push * 3.5 + up * 1.2,
+        let mut rig = Ragdoll::spawn(physics, &segments, velocity + push * 3.5 + up * 1.2,
             up.cross(push) * 1.5, 1u32 << actor)?;
+        // Recover each part's animated anatomical axes from the skin delta.
+        // Unlike a frame captured from the capsule at death, bind-relative axes
+        // retain the same rest target when dying mid-run or while aiming.
+        let names = ["Hips", "Spine2", "Head", "LeftArm", "LeftForeArm",
+            "RightArm", "RightForeArm", "LeftUpLeg", "LeftLeg", "RightUpLeg", "RightLeg"];
+        let model_rotation = transform.to_scale_rotation_translation().1;
+        let mut frames = [Quat::IDENTITY; PARTS];
+        for (i, name) in names.into_iter().enumerate() {
+            let index = model.joints().position(|(n, _)| canonical(n) == name).expect("validated skeleton");
+            let bone_rotation = (model_rotation * palette[index].to_scale_rotation_translation().1).normalize();
+            let body_rotation = physics.pose(rig.body(i)).expect("new body").1;
+            frames[i] = (body_rotation.inverse() * bone_rotation).normalize();
+        }
+        for i in 1..PARTS {
+            if let Err(error) = rig.set_angular_profile(physics, i,
+                frames[segments[i].parent.unwrap()], frames[i], profile(i)) {
+                rig.remove(physics);
+                return Err(error);
+            }
+        }
         Ok(Self { rig, initial: palette.iter().map(|p| model_world * *p).collect(),
             parts: model.joints().map(|(name, _)| part(name)).collect(), headless, neck_world: neck })
     }
