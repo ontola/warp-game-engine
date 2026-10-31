@@ -36,3 +36,20 @@ retains a linked peak limiter with a -1 dBFS ceiling.
 No physical receiver, speakers or Quest listening validation is claimed.
 The runtime synth still has its deliberately saturated weapon timbre;
 this change addresses mix overload and voice churn, not a new sound design.
+
+## Playtest correction: explosions must dominate shots
+
+The first protected mix was too subdued in the actual playtest. Explosions
+now use a +10 dB report and 0 dB bass, without the old close-range boost.
+Own/world shot bases are -12/-14 dB, with only +1 dB per damage doubling
+(capped at +3). Explosive weapons reserve their extra bass for impacts,
+rather than triggering the same bass layer under every muzzle report.
+The blast-report budget is 24; the shared bass budget stays six.
+
+A new isolated close-impact regression loads the same uzi x2 + bazooka x2
+weapon and compares the loudest 50 ms RMS after the entire game master chain:
+shot 0.211, explosion 0.385, explosion advantage 5.23 dB. It requires at
+least 4 dB, so a protected but inaudible explosion mix cannot pass again.
+The sustained tests still have zero stolen voices, now maximum 77 active;
+peaks are 0.747 stereo/48 kHz and 0.824 surround/44.1 kHz. All three tests
+pass. These are offline measurements; the user evaluates the physical mix.

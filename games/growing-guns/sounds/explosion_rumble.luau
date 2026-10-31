@@ -6,7 +6,7 @@
 -- Params:
 --   radius  in m. Explosions pass round(clamp(radius, 2, 24)); a heavy gunshot
 --           (damage / 22 > 1.4) passes round(clamp(damage / 22 * 1.5, 2, 12)).
--- Warp mix: explosion -14 dB, heavy shot -18 dB, dry with no hall send.
+-- Warp mix: explosion 0 dB, non-explosive heavy shot -18 dB, dry with no hall send.
 -- Both share a six-voice bass budget; overlapping new layers are attenuated.
 length(2.0)
 

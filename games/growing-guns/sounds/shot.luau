@@ -5,10 +5,11 @@
 --             Higher: brighter tail and the 2.4 kHz click.
 --   velocity  clamp(bullet_speed_mult, 0.5, 3). Higher: shorter, harder.
 -- Every play draws its own jitter from the voice seed (Godot: 5 seeded variants).
--- Warp mix (app/src/sounds.rs): authored self/world levels -8/-12 dB,
--- +2 dB per damage doubling (max +6), no close-muzzle boost. A 0.10 room
+-- Warp mix (app/src/sounds.rs): authored self/world levels -12/-14 dB,
+-- +1 dB per damage doubling (max +3), no close-muzzle boost. A 0.10 room
 -- send shares the dry voice. Own reports bypass HDR culling; overlapping
--- reports have an energy budget. Heavy shots add a bounded -18 dB rumble.
+-- reports have an energy budget. Non-explosive heavy shots add a bounded -18 dB rumble; explosive weapons
+-- reserve the bass for their impact.
 -- Pitch and weapon character retain the original synth below.
 local D = param("damage", 1)
 local A = param("accuracy", 0.87)
