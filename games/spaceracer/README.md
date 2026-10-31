@@ -101,7 +101,7 @@ structures/walkers/membrane, sandstone canyons and underwater reef plants are
 now present, including giant animated octopuses, fish schools, jellyfish, mantas
 and rising bubble vents. Five retained ship variants are displayed. Sandworm encounters,
 full foliage/water animation, visor/distortion stack,
-wear/debris/respawn presentation, victory camera, full weapon models and
+live wear/respawn presentation, victory camera, full weapon models and
 original audio still need work. Forest collision uses trunk proxies;
 cell/rock proxies are approximate. Vehicle contact is simplified rather than
 the original complete rotated hull solver. Weapon tuning and AI behavior need
@@ -141,6 +141,21 @@ boost lengthen the plume. Braking opens the source airbrake pivots and fires
 orange reverse jets. Heat refracts the actual background; bounded 0.38-second
 phosphor trails follow the driven path and clear on crash/recovery/teleport.
 Effects freeze with race time and shut down immediately during EMP.
+
+Crashes disintegrate the actual hull into bounded spinning fragments, retaining
+paint under procedural soot and scorches. Parts use gravity, damped bounces,
+small flame/smoke plumes and independent expiry after respawn. Collision is
+cosmetic (nearby scenery bounds, terrain and local road plane), not a full
+connected rigid-body destruction solver. Explosion light energy is calibrated
+for the night scene, with continuous dark smoke and smoother billow geometry.
+
+Optional per-view motion-vector blur uses a fixed shutter with speed/boost
+strength, before bloom and HUD. It excludes stationary pixels and rejects
+foreground bleed, invalid history, pause and recovery. Split views own separate
+targets. Artistic tuning/fragment launches live in `rules/effects.luau`; native
+code handles GPU work and bounded collision. Reload on the next race.
+`--no-motion-blur` or live `blur off`/`blur on` permits A/B review;
+`crash INDEX` triggers a deterministic visual test.
 Their bounded local lights follow the same interpolated engine state and create
 real specular highlights on roads and nearby ships. Roads now also trace bounded analytic rays against nearby facade boxes and
 actual billboard planes, sampling the retained office/poster artwork. This is

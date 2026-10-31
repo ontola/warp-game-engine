@@ -200,6 +200,13 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
         let moss=smoothstep(0.25,0.8,s.n.y)*smoothstep(0.3,0.65,moss_noise);
         o.albedo=mix(vec3<f32>(0.13,0.15,0.14),vec3<f32>(0.07,0.16,0.025),moss)*(0.8+moss_noise*0.4);
         o.rough=0.94;o.metal=0.0;
+    } else if s.kind==23u { // Retained paint under irregular soot and exposed metal.
+        let soot=sr_noise(s.local.xz*1.9+s.local.y*.7)*.65+sr_noise(s.local.xy*7.1)*.35;
+        let burn=smoothstep(.28,.68,soot);
+        let scraped=pow(max(0.,sin(s.local.y*65.+s.local.x*5.)),24.)*smoothstep(.65,.82,soot);
+        o.albedo=mix(s.tint*.7,vec3<f32>(.012,.009,.007),burn*.92);
+        o.albedo=mix(o.albedo,vec3<f32>(.12,.13,.14),scraped*.6);
+        o.rough=mix(.4,.94,burn);o.metal=mix(.45,.03,burn);
     } else if s.kind==19u || s.kind==20u { // Living chromatophores, no plastic flat orange.
         let mottles=sr_noise(s.local.xy*14.0+s.local.z*9.0);
         let wave=.5+.5*sin(s.local.y*6.0-s.time*1.3+s.local.x*3.0);

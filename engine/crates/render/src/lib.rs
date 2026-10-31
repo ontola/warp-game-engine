@@ -110,6 +110,7 @@ mod direct_draw;
 pub mod fx;
 pub mod crowd;
 pub mod motion;
+pub mod motion_blur;
 pub mod dlss;
 pub mod upscale;
 mod stability;

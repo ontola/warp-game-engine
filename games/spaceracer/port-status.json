@@ -13,7 +13,7 @@
     {
       "path": "src/blast_vfx.gd",
       "sha256": "36b459b3ce3264985b7ee688478ac65f26eac4f96c5b7b84c9432d1de41c3347",
-      "status": "shared native Warp explosion effects; source presentation parity pending"
+      "status": "shared native Growing Guns fire/smoke/embers/heat; smoother billow geometry, continuous dark soot and night-calibrated light scale; source-inspired rather than exact shader parity"
     },
     {
       "path": "src/boost_trails.gd",
@@ -163,7 +163,7 @@
     {
       "path": "src/motion_blur.gd",
       "sha256": "460c33af66f9538faf55d8991717882c0348435f2bf5ae5c88f4ffc2cb2567ba",
-      "status": "pending"
+      "status": "native per-view camera/rigid-object motion-vector blur, fixed shutter, speed/boost policy in Luau, depth rejection, pause/recovery suppression; custom deformation motion incomplete"
     },
     {
       "path": "src/obstacles.gd",
@@ -268,7 +268,7 @@
     {
       "path": "src/speed_effects.gd",
       "sha256": "7df7f9e0adffeea84a275b8172af56d66ac6e8dd4be460a16f8273a0c0cad22f",
-      "status": "pending"
+      "status": "camera FOV/shake, native speed/boost motion blur and bounded phosphor exhaust trails; source presentation is adapted"
     },
     {
       "path": "src/touch_controls.gd",
@@ -328,7 +328,7 @@
     {
       "path": "src/wreck.gd",
       "sha256": "f4eb861146bd826a7d2ff768e3fd6426c0c08ec8c4c8f9de493c073e042edc16",
-      "status": "pending"
+      "status": "actual retained hull pieces, original paint with procedural soot, Luau launch/lifetime policy, interpolated 120 Hz cosmetic gravity/bounces, flame/smoke, expiry independent of respawn; coarse collision proxies, not connected-body fracture"
     }
   ],
   "verified": {
@@ -345,7 +345,7 @@
     "ship_variants_preserved": 5,
     "source_assets_preserved": 102,
     "renderer_camera_math_tests": 1,
-    "native_app_tests": 7,
+    "native_app_tests": 10,
     "app_input_tests_total": 21,
     "headless_flow_ticks": 1207,
     "capture_resolution": [
@@ -361,13 +361,15 @@
     "biome_capture_count": 5,
     "native_visual_revision": "source-based stages, restored jets, clearcoat/glass, forest understory and GPU-skinned giant octopuses; 27 sim/app checks; native city/forest/ocean screenshots and four-view ocean measurement",
     "jet_effect_scenario_ticks": 601,
-    "ocean_life_scenario_ticks": 960
+    "ocean_life_scenario_ticks": 960,
+    "crash_effect_scenario_ticks": 1724,
+    "four_view_effect_scenario_ticks": 803
   },
   "next_required": [
     "Remaining source stage features: sandworm, full environmental animation and material/effect fidelity",
     "Original audio, face decals and full GameNight settings/profile behavior",
     "Real controller playtests for AI, contacts, weapons and flight tuning",
-    "Complete visor, victory, crash debris, wear and respawn presentation",
+    "Complete visor, victory, wear and respawn presentation",
     "Equal-content visual review before steady-state CPU/GPU performance claims"
   ]
 }

@@ -270,7 +270,7 @@ fn pass_group(name: &str) -> &'static str {
     else if name.contains("cull") || name.contains("raster") || name.contains("broadphase")
         || name.contains("occlusion pyramid") { "Geometry" }
     else if matches!(name, "shade") || name.contains("radiance") { "Lighting" }
-    else if matches!(name, "taa" | "dlss" | "tonemap" | "motion vectors") { "Post-processing" }
+    else if matches!(name, "taa" | "dlss" | "tonemap" | "motion vectors" | "motion blur") { "Post-processing" }
     else if name.contains("particles") || name.contains("exhaust") || name.contains("transparency")
         || name.contains("animation") { "Effects" }
     else { "Other" }

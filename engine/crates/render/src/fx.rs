@@ -22,6 +22,7 @@ use std::sync::Mutex;
 /// target saturates anyway.
 const MAX_CD: f32 = 100_000_000.0;
 const SPHERE_VERTICES: u32 = 16 * 9 * 6;
+const BILLOW_VERTICES: u32 = 32 * 18 * 6;
 const COLUMN_VERTICES: u32 = 3; // One ray-integrated volume, including camera-inside views.
 const STREAK_VERTICES: u32 = 6 * 12;
 const MOTE_VERTICES: u32 = 6;
@@ -238,10 +239,12 @@ pub struct Effects {
     /// distance d with energy / d^attenuation times its sun, so one unit at
     /// 1 m is about a sun's worth (37,000 lux horizontal at midday).
     pub light_scale: f32,
+    /// Continuous soot shading instead of the original banded arena palette.
+    pub smooth_billows: bool,
 }
 
 impl Default for Effects {
-    fn default() -> Self { Effects { puffs: Vec::new(), pops: Vec::new(), rng: 0x2545_F491_4F6C_DD1D, changed: false, light_scale: 37_000.0 } }
+    fn default() -> Self { Effects { puffs: Vec::new(), pops: Vec::new(), rng: 0x2545_F491_4F6C_DD1D, changed: false, light_scale: 37_000.0, smooth_billows: false } }
 }
 
 impl Effects {
@@ -309,6 +312,15 @@ impl Effects {
         self.changed = true;
     }
 
+    /// A sparse attached emitter; callers provide positions at their own fixed
+    /// emission interval. Uses the same soft fire/smoke volumes as explosions.
+    pub fn burning_fragment(&mut self, time:f32, pos:Vec3, radius:f32) {
+        let r=radius.clamp(0.1,3.0);
+        self.billows(time,pos,r,1,false,0.8,0.55,1.4,r*0.3,1.1,0.0,Vec3::ONE,0.7);
+        self.billows(time,pos,r,1,true,0.28,0.45,0.9,r*0.15,1.7,0.0,Vec3::ONE,1.0);
+        self.changed=true;
+    }
+
     /// A hanging red haze where spectators died (Godot's blood mist: the
     /// smoke billow with a red tint, translucent, slower to rise).
     pub fn blood_mist(&mut self, time: f32, pos: Vec3, radius: f32, kills: usize) {
@@ -362,7 +374,7 @@ impl Effects {
             let tail = if fire { 2.2 } else { 0.38 };
             self.puffs.push(Puff {
                 center_kind: (base + off).extend(if fire { FIRE } else { SMOKE }).to_array(),
-                ax: ax.extend(seed).to_array(), ay: ay.extend(delay).to_array(), az: az.extend(heat).to_array(),
+                ax: ax.extend(seed).to_array(), ay: ay.extend(delay).to_array(), az: az.extend(heat + if self.smooth_billows { 2.0 } else { 0.0 }).to_array(),
                 body: body.extend(opk * opacity).to_array(),
                 timing: [time, life, rise, speed],
                 extra: tint.extend(tail).to_array(),
@@ -657,7 +669,7 @@ impl FxRenderer {
             depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
         pass.set_bind_group(0, &bind, &[]);
         if !ldr && nh > 0 { pass.set_pipeline(&self.heat); pass.draw(0..SPHERE_VERTICES, 0..nh); }
-        if nb > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[0]}else{&self.billow}); pass.draw(0..SPHERE_VERTICES, nh..nh + nb); }
+        if nb > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[0]}else{&self.billow}); pass.draw(0..BILLOW_VERTICES, nh..nh + nb); }
         if ne > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[1]}else{&self.ember}); pass.draw(0..SPHERE_VERTICES, nh + nb..nh + nb + ne); }
         if nc > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[2]}else{&self.column}); pass.draw(0..COLUMN_VERTICES, nh + nb + ne..nh + nb + ne + nc); }
         if ns > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[3]}else{&self.streak}); pass.draw(0..STREAK_VERTICES, nh + nb + ne + nc..nh + nb + ne + nc + ns); }

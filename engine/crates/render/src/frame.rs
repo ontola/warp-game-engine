@@ -689,6 +689,7 @@ pub struct Renderer {
     geometry_diagnostics: crate::geometry_diagnostics::State,
     debug_options: std::sync::Mutex<crate::debug_settings::DebugRenderOptions>,
     upscaling: std::sync::Mutex<Upscaling>,
+    motion_blur: std::sync::Mutex<Option<crate::motion_blur::Resources>>,
     frame_time_ms: std::sync::atomic::AtomicU32,
     scene_bind: wgpu::BindGroup,
     cull_scene_bind: wgpu::BindGroup,
@@ -1806,6 +1807,7 @@ impl Renderer {
             geometry_diagnostics,
             debug_options: Default::default(),
             upscaling: Default::default(),
+            motion_blur: Default::default(),
             async_gpu_profile,
             profile_sequence: std::sync::atomic::AtomicU64::new(0),
             profile_frame_id: std::sync::atomic::AtomicU64::new(u64::MAX),
@@ -2648,8 +2650,17 @@ impl Renderer {
         self.frame.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Opt-in, one shutter policy per view. Empty disables the post effect.
+    pub fn set_motion_blur(&self, gpu: &Gpu, settings: &[crate::motion_blur::Settings]) {
+        let mut blur=self.motion_blur.lock().unwrap();
+        if blur.is_none() && settings.iter().any(|s|s.strength>0.) {
+            *blur=Some(crate::motion_blur::Resources::new(gpu));
+        }
+        if let Some(blur)=blur.as_mut() {blur.settings=settings.to_vec();}
+    }
+
     /// Select an explicit reconstruction mode. Failure keeps the prior mode.
-    /// Native allocates no DLSS feature or motion history.
+    /// Native allocates no DLSS feature; motion history is optional for blur.
     pub fn set_upscale(&self, gpu: &Gpu, mode: crate::upscale::UpscaleMode) -> Result<(), String> {
         if mode != crate::upscale::UpscaleMode::Native
             && self.meadow.as_ref().is_some_and(|m|m.group_cache_enabled()) {
@@ -3239,9 +3250,15 @@ impl Renderer {
         let ldr_v = self.output_view.lock().unwrap().get(&ldr);
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
+        let blur=self.motion_blur.lock().unwrap();
+        if blur.is_some() && up.motion.is_none() {
+            up.motion=Some(crate::motion::MotionRenderer::new(gpu,&self.instance_buffer,self.wind.buffer(),self.instances as usize)?);
+        }
+
         if self.meadow_brick_fixture.is_some() && (dlss_on || light.taa > 0.5) {
             return Err("meadow brick fixture supports native spatial frames only".into());
         }
+        let motion_on = up.motion.is_some();
         let mode = up.mode;
         let view_layout: Vec<_> = views.iter().map(|v| (v.x, v.y, v.w, v.h)).collect();
         let layout_changed = up.layout != view_layout;
@@ -3969,7 +3986,7 @@ impl Renderer {
                     times[slot]=self.query.as_ref().map(|(qs,_,_)| {names.push(name);(qs,timestamp_pair(&mut ts))});
                 }
                 Some(meadow.prepare_visibility(gpu,&mut enc,vi,(w,h),&self.scene_bind,&meadow_bindings,
-                    &hdr_v,&depth,times,dlss_on,debug_options)?)
+                    &hdr_v,&depth,times,motion_on,debug_options)?)
             } else {None};
             // Tile list for this view: reset to an empty indirect dispatch.
             let shade_tiles = {
@@ -4080,7 +4097,7 @@ impl Renderer {
                         });
                         forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
                             volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
-                            up.motion.as_ref().filter(|_|dlss_on).map(|motion|crate::voxel_forest::TemporalInputs {
+                            up.motion.as_ref().filter(|_|motion_on).map(|motion|crate::voxel_forest::TemporalInputs {
                                 previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),times)?;
                     }
                     if let Some(grass) = self.grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()) {
@@ -4104,7 +4121,7 @@ impl Renderer {
                             (13, wgpu::BindingResource::TextureView(&density_view)),
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
-                        ], &hdr_v, &depth, far_grass.as_ref(), transition_times, composite_times, dlss_on, light.grass_reference);
+                        ], &hdr_v, &depth, far_grass.as_ref(), transition_times, composite_times, motion_on, light.grass_reference);
                     }
                     if let Some(brick) = &self.meadow_brick_fixture {
                         if vi == 0 {
@@ -4167,13 +4184,13 @@ impl Renderer {
                             (14, wgpu::BindingResource::Sampler(&self.density_sampler)),
                             (15, wgpu::BindingResource::TextureView(&near_view)),
                         ], &hdr_v, &depth_v,
-                            t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }), dlss_on,geometry_diagnostic.excluded_mask);
+                            t.map(|(qs, i)| wgpu::RenderPassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }), motion_on,geometry_diagnostic.excluded_mask);
                     }
                     far_motion_layer = far_grass;
                 }
             }
             cpu.mark("view shade and layers");
-            let resolved = if dlss_on {
+            let motion_output = if up.motion.is_some() {
                 let grass_motion = self.grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).and_then(|g| g.motion_layer(vi));
                 let glass_motion = self.transparency.as_ref().filter(|_|debug_options.transparency_enabled).and_then(|t| t.motion_layer(vi));
                 let voxel_motion = self.voxel_forest.as_ref().and_then(|v|v.motion_layer(vi));
@@ -4191,6 +4208,10 @@ impl Renderer {
                         far_grass: far_motion_layer.as_ref().map(|layer| (&layer.color, &layer.distance)),
                         voxel:voxel_motion.as_ref().map(|(color,reprojection)|(color,reprojection)),
                         meadow:meadow_motion.as_ref().map(|(color,reprojection)|(color,reprojection)) }, motion_time)?;
+                Some(motion)
+            } else {None};
+            let resolved = if dlss_on {
+                let motion=motion_output.as_ref().unwrap();
                 let dlss_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
                     names.push("dlss"); (qs, timestamp_pair(&mut ts))
                 });
@@ -4284,6 +4305,16 @@ impl Renderer {
                 output
             } else { None };
             let result=particle_output.as_ref().or(exhaust_output.as_ref()).unwrap_or(&resolved);
+            let blurred=match (blur.as_ref(),motion_output.as_ref()) {
+                (Some(blur),Some(motion)) => {
+                    let enabled=!motion.reset && blur.settings.get(vi).is_some_and(|s|s.scale()>0. && s.max_pixels>0.);
+                    let times=self.query.as_ref().filter(|_|enabled).map(|(qs,_,_)|{names.push("motion blur");(qs,timestamp_pair(&mut ts))});
+                    Some(blur.render(gpu,&mut enc,vi,result,motion,times))
+                },
+                _=>None,
+            };
+            let result=blurred.as_ref().unwrap_or(result);
+
             // Extract the actual final HDR, including lens emission and exhaust,
             // after temporal reconstruction. Every view owns separate targets.
             let bloom_view=if bloom_on {
@@ -5085,6 +5116,8 @@ mod layout_tests {
         assert_eq!(next,414);
         for _ in 0..4 {timestamp_pair(&mut next);} // separate voxel visibility stream per view
         assert_eq!(next,422);
+        assert!(next<=TIMESTAMP_CAPACITY);
+        for _ in 0..4 {timestamp_pair(&mut next);} // optional motion blur after temporal resolve
         assert!(next<=TIMESTAMP_CAPACITY);
         let brick_fixture_upper_bound = 330 - 4*6*2 + (8+4*3)*2;
         assert!(brick_fixture_upper_bound <= TIMESTAMP_CAPACITY);

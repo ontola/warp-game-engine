@@ -40,6 +40,7 @@ reproduction commands, current performance, source reference and next steps.
 | [Physics](physics.md) | `kern::collide` for characters and levels, the Rapier-based `physics` crate. |
 | [Live sky: time of day and weather](live-sky-controls.md) | `render::sky`: presets, the background bake, Sideways' pause menu and Growing Guns' `--sky` and `sky` command. |
 | [Rendering overview](rendering.md) | Clusters, visibility buffer, lighting, content systems, and where performance stands. |
+| [Motion blur](motion-blur.md) | Opt-in per-view motion vectors, fixed shutter, split-screen isolation and limitations. |
 | [Quarried stone surfaces](stone-surfaces.md) | Shared stone meshes, physical normal relief, footprint filtering and the Growing Guns prototype's remaining visual issues. |
 | [Stadium masonry](stadium-masonry.md) | Shared clustered brick panels, geometry LOD, fixed-camera comparisons and four-view render cost. |
 
