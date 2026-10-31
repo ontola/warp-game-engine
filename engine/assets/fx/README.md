@@ -31,6 +31,27 @@ does not simulate or collide smoke with the scene.
 - 7,077,888 bytes (6.75 MiB), shared by all explosions and camera views.
 - The adjacent JSON records SHA-256, seed, dimensions and density statistics.
 
+## Generated bounds contract
+
+`explosion-smoke-bounds.wgsl` is generated alongside the texture and JSON from
+its quantized R bytes. It contains 32 `SMOKE_BOUNDS_MIN` rows followed by 32
+`SMOKE_BOUNDS_MAX` rows, with one `vec4<f32>` per animation frame:
+
+- XYZ are lower/upper bounds in normalized texture coordinates. Voxel index
+  `i` maps to `i / 47`; the support of every nonzero density voxel is padded
+  by one voxel for trilinear filtering, then clamped to [0, 1].
+- MIN.w is zero. MAX.w is the frame's peak quantized density, `max(R) / 255`,
+  used as a conservative density bound.
+- Empty frames have MIN.xyz = (1, 1, 1), MAX.xyz = (0, 0, 0) and MAX.w = 0.
+  The renderer unions adjacent frame bounds during animation interpolation.
+- The header records the RG8 asset's SHA-256. Keep the texture, JSON and WGSL
+  together on every rebake; stale bounds can clip the smoke's outer wisps.
+
+These bounds let the renderer skip empty space when projecting and marching
+smoke. The renderer's `baked_smoke_bounds_cover_quantized_density_and_filter_support`
+test checks every exported nonzero voxel against the padded bounds, empty-frame
+markers and peak density. Do not edit the generated WGSL by hand.
+
 ## Rebuild
 
 Install Python 3, NumPy and SciPy in a development environment; add Pillow for
@@ -43,6 +64,7 @@ python engine/tools/bake-explosion-smoke.py --preview build/smoke-bake-preview
 
 The fixed seed and single-worker solver make repeated runs reproducible within
 the same numerical-library versions. FFT/library changes can affect the last
-quantization bit; regenerate the JSON checksum with the asset. The optional
+quantization bit; regenerate the JSON checksum and WGSL bounds with the asset.
+The bake command writes all three files. The optional
 contact sheet and GIF are CPU orthographic diagnostics, not game screenshots
 or GPU performance evidence.

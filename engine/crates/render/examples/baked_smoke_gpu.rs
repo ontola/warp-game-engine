@@ -34,6 +34,174 @@ fn capture(renderer: &Renderer, gpu: &Gpu, light: &Lighting, cam: Camera, size: 
 fn save(out: &Path, name: &str, size: [u32; 2], rgba: &[u8]) -> Result<(), String> {
     render::write_png(&out.join(format!("{name}.png")), size[0], size[1], rgba)
 }
+// Exercise a sub-low-resolution-pixel foreground strip and the lifecycle of
+// per-view targets. Bloom is disabled here so a halo is not mistaken for a
+// compositing leak; the ordinary game-like checks below retain their defaults.
+fn adaptive_checks(gpu: &Gpu, light: &Lighting, size: [u32; 2], out: &Path,
+    failures: &mut Vec<String>) -> Result<Value, String> {
+    let mut scene = Scene::default();
+    scene.sky = Some((16,8,vec![[0.4,0.5,0.65,1.0];128]));
+    let ground = scene.add_material(render::scene::Material { tint:[0.45,0.48,0.52],layer:-1,roughness:1.0,flags:0,scale:1.0,metal:0.0 });
+    let strip_material = scene.add_material(render::scene::Material { tint:[0.22,0.06,0.025],layer:-1,roughness:1.0,flags:0,scale:1.0,metal:0.0 });
+    let floor_mesh = scene.add_mesh(&render::primitives::cube(ground).mesh());
+    let strip_mesh = scene.add_mesh(&render::primitives::cube(strip_material).mesh());
+    scene.add_instance(floor_mesh,Affine3A::from_scale_rotation_translation(Vec3::new(60.0,0.2,60.0),Quat::IDENTITY,Vec3::new(0.0,-0.2,0.0)));
+    let cam = camera(Vec3::new(0.0,3.0,12.0),Vec3::new(0.0,3.0,0.0));
+    let front_z = 6.06;
+    let distance = cam.pos.z-front_z;
+    let tan_y = (cam.fov_y*0.5).tan();
+    let pixels_per_metre = size[1] as f32/(2.0*tan_y*distance);
+    // Four output pixels wide: this is thinner than an eighth-resolution
+    // texel, with a slanted edge that changes its phase against the low grid.
+    let strip_width = 4.0/pixels_per_metre;
+    let rotation = Quat::from_rotation_z(0.23);
+    let inverse_rotation=rotation.inverse();
+    let strip_local=|x:u32,y:u32,centre:Vec3| {
+        let front_z=centre.z+0.06;
+        let distance=cam.pos.z-front_z;
+        let ndc_x=2.0*(x as f32+0.5)/size[0] as f32-1.0;
+        let ndc_y=1.0-2.0*(y as f32+0.5)/size[1] as f32;
+        let front=Vec3::new(ndc_x*tan_y*size[0] as f32/size[1] as f32*distance,
+            cam.pos.y+ndc_y*tan_y*distance,front_z);
+        inverse_rotation*(front-centre)
+    };
+    let strip_slot = scene.instances.len();
+    scene.add_instance(strip_mesh,Affine3A::from_scale_rotation_translation(Vec3::new(strip_width,5.0,0.12),rotation,Vec3::new(0.0,3.0,6.0)));
+    let renderer = Renderer::new(gpu,&scene,light);
+    renderer.set_debug_options(render::debug_settings::DebugRenderOptions {bloom_enabled:false,..Default::default()})?;
+    let swarm = |time: f32| -> Vec<Puff> {
+        (0..64).map(|_| {let mut p=smoke();p.timing[0]=time-AGE;p}).collect()
+    };
+    let one = |time: f32| {let mut p=smoke();p.timing[0]=time-AGE;p};
+    let mut edge_cases = Vec::new();
+    for (case,x_offset) in [-0.18f32,0.19].into_iter().enumerate() {
+        let centre = Vec3::new(x_offset,3.0,6.0);
+        scene.update_instance(strip_slot,strip_mesh,Affine3A::from_scale_rotation_translation(Vec3::new(strip_width,5.0,0.12),rotation,centre));
+        renderer.update_instances(gpu,strip_slot,&scene.instances[strip_slot..])?;
+        let now=6.0+case as f32;
+        renderer.set_effects(gpu,now,Some(&[]))?;
+        let empty=capture(&renderer,gpu,light,cam,size)?;
+        renderer.set_effects(gpu,now,Some(&swarm(now)))?;
+        let smoky=capture(&renderer,gpu,light,cam,size)?;
+        let mut tested=0usize;
+        let mut leaked=0usize;
+        let mut boundary_tested=0usize;
+        let mut boundary_leaked=0usize;
+        for y in 0..size[1] {for x in 0..size[0] {
+            let local=strip_local(x,y,centre);
+            // A quarter-pixel guard avoids ambiguous raster-edge coverage;
+            // the outer 1.25-pixel band still tests the foreground silhouette.
+            let edge_distance=strip_width*0.5-local.x.abs();
+            if edge_distance>0.25/pixels_per_metre && local.y.abs()<2.4 {
+                let i=((y*size[0]+x)*4) as usize;
+                let different=empty[i..i+3]!=smoky[i..i+3];
+                tested+=1;leaked+=usize::from(different);
+                if edge_distance<1.25/pixels_per_metre {boundary_tested+=1;boundary_leaked+=usize::from(different);}
+            }
+        }}
+        if tested<50 || boundary_tested<20 {failures.push(format!("thin occluder mask too small: {tested}, boundary {boundary_tested}"));}
+        if leaked!=0 {failures.push(format!("smoke leaked over thin foreground in position {case}: {leaked}/{tested}, boundary {boundary_leaked}/{boundary_tested}"));}
+        let visible=changed(&empty,&smoky);
+        if visible<100 {failures.push(format!("thin-occluder test did not exercise visible smoke: {visible}"));}
+        save(out,&format!("thin-occluder-{case}-empty"),size,&empty)?;
+        save(out,&format!("thin-occluder-{case}-smoke"),size,&smoky)?;
+        edge_cases.push(json!({"x_offset_m":x_offset,"masked_foreground_pixels":tested,"changed_foreground_pixels":leaked,
+            "masked_boundary_pixels":boundary_tested,"changed_boundary_pixels":boundary_leaked,"visible_changed_pixels":visible}));
+    }
+
+    // A background strip must not cut a hole through smoke in front of it.
+    // The full smoke cube ends at z=-4; the strip's nearest face is z=-5.94.
+    // Find opaque smoke independently: doubling 32 layers to 64 changes RGB
+    // by at most one code value, while smoke changes the empty scene by >=12.
+    scene.update_instance(strip_slot,strip_mesh,Affine3A::from_scale_rotation_translation(
+        Vec3::new(strip_width,5.0,0.12),rotation,Vec3::new(1000.0,3.0,-6.0)));
+    renderer.update_instances(gpu,strip_slot,&scene.instances[strip_slot..])?;
+    renderer.set_effects(gpu,8.0,Some(&[]))?;
+    let unobstructed_empty=capture(&renderer,gpu,light,cam,size)?;
+    let dense_swarm=swarm(8.0);
+    renderer.set_effects(gpu,8.0,Some(&dense_swarm[..32]))?;
+    let density_reference=capture(&renderer,gpu,light,cam,size)?;
+    renderer.set_effects(gpu,8.0,Some(&dense_swarm))?;
+    let unobstructed_smoke=capture(&renderer,gpu,light,cam,size)?;
+    save(out,"thin-background-unobstructed",size,&unobstructed_smoke)?;
+    let rear_pixels_per_metre=size[1] as f32/(2.0*tan_y*(cam.pos.z+5.94));
+    let rear_width=4.0/rear_pixels_per_metre;
+    let mut rear_cases=Vec::new();
+    for (case,x_offset) in [-0.18f32,0.19].into_iter().enumerate() {
+        let centre=Vec3::new(x_offset,3.0,-6.0);
+        scene.update_instance(strip_slot,strip_mesh,Affine3A::from_scale_rotation_translation(
+            Vec3::new(rear_width,5.0,0.12),rotation,centre));
+        renderer.update_instances(gpu,strip_slot,&scene.instances[strip_slot..])?;
+        let now=8.1+case as f32*0.1;
+        renderer.set_effects(gpu,now,Some(&[]))?;
+        let empty=capture(&renderer,gpu,light,cam,size)?;
+        renderer.set_effects(gpu,now,Some(&swarm(now)))?;
+        let smoky=capture(&renderer,gpu,light,cam,size)?;
+        let mut tested=0usize;
+        let mut unchanged=0usize;
+        let mut mismatch=0usize;
+        let mut max_reference_delta=0u8;
+        for y in 0..size[1] {for x in 0..size[0] {
+            let local=strip_local(x,y,centre);
+            if rear_width*0.5-local.x.abs()<=0.25/rear_pixels_per_metre || local.y.abs()>=2.4 {continue;}
+            let i=((y*size[0]+x)*4) as usize;
+            let convergence=(0..3).map(|c|unobstructed_smoke[i+c].abs_diff(density_reference[i+c])).max().unwrap();
+            let signal=(0..3).map(|c|unobstructed_smoke[i+c].abs_diff(unobstructed_empty[i+c])).max().unwrap();
+            if convergence>1 || signal<12 {continue;}
+            tested+=1;
+            unchanged+=usize::from(empty[i..i+3]==smoky[i..i+3]);
+            let delta=(0..3).map(|c|smoky[i+c].abs_diff(unobstructed_smoke[i+c])).max().unwrap();
+            max_reference_delta=max_reference_delta.max(delta);
+            mismatch+=usize::from(delta>6);
+        }}
+        if tested<20 {failures.push(format!("background strip dense-smoke mask too small in position {case}: {tested}"));}
+        if unchanged!=0 || mismatch!=0 {failures.push(format!("background strip cut through dense smoke in position {case}: {unchanged}/{tested} unchanged, {mismatch} differ from unobstructed smoke by >6, max {max_reference_delta}"));}
+        save(out,&format!("thin-background-{case}-empty"),size,&empty)?;
+        save(out,&format!("thin-background-{case}-smoke"),size,&smoky)?;
+        rear_cases.push(json!({"x_offset_m":x_offset,"masked_dense_smoke_pixels":tested,"unchanged_pixels":unchanged,
+            "reference_mismatch_pixels":mismatch,"max_reference_rgb_delta":max_reference_delta}));
+    }
+    // Keep the original foreground scene for the target-lifecycle checks.
+    scene.update_instance(strip_slot,strip_mesh,Affine3A::from_scale_rotation_translation(
+        Vec3::new(strip_width,5.0,0.12),rotation,Vec3::new(0.19,3.0,6.0)));
+    renderer.update_instances(gpu,strip_slot,&scene.instances[strip_slot..])?;
+
+    // Resize while overloaded, then lower the load at the same final size.
+    // Keep smoke's age constant while advancing the policy clock past its
+    // recovery hysteresis, so a fresh renderer is an exact image reference.
+    let close=camera(Vec3::new(0.0,2.0,0.0),Vec3::new(0.0,3.0,-5.0));
+    renderer.set_effects(gpu,10.0,Some(&swarm(10.0)))?;
+    capture(&renderer,gpu,light,close,size)?;
+    capture(&renderer,gpu,light,close,[size[0]/2,size[1]/2])?;
+    capture(&renderer,gpu,light,close,size)?;
+    renderer.set_effects(gpu,10.1,Some(&[one(10.1)]))?;
+    capture(&renderer,gpu,light,cam,size)?;
+    renderer.set_effects(gpu,10.5,Some(&[one(10.5)]))?;
+    let restored=capture(&renderer,gpu,light,cam,size)?;
+    let fresh=Renderer::new(gpu,&scene,light);
+    fresh.set_debug_options(render::debug_settings::DebugRenderOptions {bloom_enabled:false,..Default::default()})?;
+    fresh.set_effects(gpu,10.5,Some(&[one(10.5)]))?;
+    let reference=capture(&fresh,gpu,light,cam,size)?;
+    let resize_delta=changed(&restored,&reference);
+    if resize_delta!=0 {failures.push(format!("adaptive target/quality recovery differs from fresh renderer: {resize_delta} pixels"));}
+    save(out,"adaptive-restored",size,&restored)?;
+
+    renderer.set_effects(gpu,11.0,Some(&swarm(11.0)))?;
+    capture(&renderer,gpu,light,close,size)?;
+    renderer.set_effects(gpu,AGE,Some(&[smoke()]))?;
+    fresh.set_effects(gpu,AGE,Some(&[smoke()]))?;
+    let rewind_delta=changed(&capture(&renderer,gpu,light,cam,size)?,&capture(&fresh,gpu,light,cam,size)?);
+    if rewind_delta!=0 {failures.push(format!("effect-clock rewind retained stale adaptive state: {rewind_delta} pixels"));}
+    renderer.set_effects(gpu,AGE,Some(&[]))?;
+    fresh.set_effects(gpu,AGE,Some(&[]))?;
+    let removed_delta=changed(&capture(&renderer,gpu,light,cam,size)?,&capture(&fresh,gpu,light,cam,size)?);
+    if removed_delta!=0 {failures.push(format!("removed adaptive smoke retained color: {removed_delta} pixels"));}
+    Ok(json!({"thin_foreground":{"output_width_pixels":4,"bloom_enabled":false,"smoke_volumes":64,"cases":edge_cases},
+        "thin_background":{"output_width_pixels":4,"smoke_volumes":64,"nearest_depth_metres":17.94,
+            "dense_mask_max_32_to_64_rgb_delta":1,"dense_mask_min_signal":12,"max_reference_rgb_tolerance":6,"cases":rear_cases},
+        "resize_recovery_changed_pixels":resize_delta,"rewind_changed_pixels":rewind_delta,"removed_changed_pixels":removed_delta}))
+}
+
 fn quantiles(values: &mut [f64]) -> Value {
     values.sort_by(f64::total_cmp);
     if values.is_empty() { return Value::Null; }
@@ -90,7 +258,8 @@ fn run() -> Result<(), String> {
     if !(8..=240).contains(&samples) { return Err("samples must be 8..240".into()); }
     std::fs::create_dir_all(out).map_err(|e|e.to_string())?;
     let mut gpu = Gpu::new()?;
-    if args.iter().any(|a|a=="--no-timings") { gpu.features.remove(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS); }
+    let no_timings=args.iter().any(|a|a=="--no-timings");
+    if no_timings { gpu.features.remove(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS); }
     let mut scene = Scene::default();
     scene.sky = Some((16, 8, vec![[0.4, 0.5, 0.65, 1.0]; 128]));
     let mat = scene.add_material(render::scene::Material { tint:[0.45,0.48,0.52],layer:-1,roughness:1.0,flags:0,scale:1.0,metal:0.0 });
@@ -205,7 +374,9 @@ fn run() -> Result<(), String> {
     let (split,_) = renderer.try_render_views(&gpu,&views,&light,size[0],size[1],&[])?;
     let mut split_deltas = Vec::new();
     for (i,v) in views.iter().enumerate() {
-        let single = capture(&renderer,&gpu,&light,v.cam,[v.w,v.h])?;
+        let single_renderer=Renderer::new(&gpu,&scene,&light);
+        single_renderer.set_effects(&gpu,AGE,Some(&[smoke()]))?;
+        let single = capture(&single_renderer,&gpu,&light,v.cam,[v.w,v.h])?;
         let mut tile = Vec::with_capacity(single.len());
         for y in 0..v.h { let start=(((v.y+y)*size[0]+v.x)*4) as usize; tile.extend_from_slice(&split[start..start+(v.w*4)as usize]); }
         let n=changed(&single,&tile);
@@ -226,13 +397,16 @@ fn run() -> Result<(), String> {
     if n!=0 {failures.push(format!("smoke contaminated TAA history: {n} pixels"));}
     checks.insert("taa_history_changed_pixels".into(),json!(n));
 
-    let timing=timings(&gpu,&renderer,&light,&cams,size,samples)?;
+    checks.insert("adaptive".into(),adaptive_checks(&gpu,&light,size,out,&mut failures)?);
+    let timing=if no_timings {json!({"available":false,"reason":"explicitly disabled by --no-timings"})}
+        else {timings(&gpu,&renderer,&light,&cams,size,samples)?};
     let report=json!({"scope":"bounded native smoke renderer fixture, not full Growing Guns gameplay or target FPS acceptance",
         "adapter":{"name":gpu.info.name,"backend":format!("{:?}",gpu.info.backend),"driver":gpu.info.driver},
-        "size":size,"rendering":"native resolution, HDR, no reconstruction; TAA only in history check",
+        "size":size,"rendering":"native output, HDR, no reconstruction; TAA only in history check",
+        "smoke_quality":std::env::var("WARP_SMOKE_QUALITY").unwrap_or_else(|_|"adaptive".into()),
         "checks":checks,"timing":timing,"passed":failures.is_empty(),"failures":failures});
     std::fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    if failures.is_empty() {println!("PASS: smoke visibility, occlusion, lifetime, animation, gradual tail, four views and temporal-history isolation");Ok(())}
+    if failures.is_empty() {println!("PASS: smoke visibility, occlusion, lifetime, animation, gradual tail, adaptive depth edges/targets, four views and temporal-history isolation");Ok(())}
     else {Err(failures.join("\n"))}
 }
 fn main() {if let Err(error)=run(){eprintln!("baked smoke fixture: {error}");std::process::exit(1);}}

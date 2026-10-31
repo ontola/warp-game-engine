@@ -6,9 +6,10 @@ embers, heat distortion, flash and lights retain their existing recipe and
 random sequence. Low/minimum profiles, including native Quest, retain billows.
 `GG_BAKED_SMOKE=0` selects the earlier smoke for an identical-event comparison.
 This is a visual trial; it does not change explosion damage or physics.
-[Scalability measurements](baked-smoke-scaling.md) show that the current full-
-resolution pass is not ready for unrestricted explosion-heavy combat; close
-overlap is expensive and the 16-volume cap truncates tails at high spawn rates.
+[Adaptive rendering](adaptive-explosion-smoke.md) now reduces the soft-effects
+resolution and ray count per view as projected coverage or overlap increases.
+The [earlier scalability report](baked-smoke-scaling.md) records the full-resolution
+baseline that motivated this change.
 
 ## Asset and rendering
 
@@ -22,8 +23,10 @@ shared by all explosions and views.
 
 `render::fx::Effects::set_baked_smoke(true)` opts subsequent explosions into
 this path. The engine default remains off; blood/gib mist retain their own
-recipe. Each blast has a seeded yaw and radius-scaled volume. At most 16 baked
-volumes are retained; a new blast replaces the oldest at this limit.
+recipe. Each blast has a seeded yaw and radius-scaled volume. Up to 64 plumes
+remain active, with up to 32 additional plumes retiring over 0.30 seconds.
+Retirement fades density without restarting or accelerating the animation.
+A hard total limit of 96 still applies to extreme bursts.
 
 Playback retains the first 1.2 seconds of the burst, then smoothly slows the
 later frames into a 4.6-second lifetime. The low-density shape trim follows the
@@ -35,11 +38,16 @@ The WGSL pass blends adjacent baked frames and raymarches density in the
 volume's local coordinates. It samples each frame within its half-texel bounds,
 so texture filtering cannot bleed into the next frame. Projected bounds limit
 screen coverage; near-plane crossing expands coverage to support cameras
-inside. Rays stop at the opaque scene depth. HDR uses at most 48 samples per
-ray, with early termination; the optional LDR path uses 24. Growing Guns keeps
-its low/minimum profile on the earlier smoke.
+inside. Rays stop at the opaque scene depth. Conservative per-frame density bounds
+skip empty regions without shifting the ray sample positions. Adaptive HDR uses
+full, half, quarter or eighth resolution on each axis with 48, 40, 32 or 24 ray
+samples respectively. Depth-aware upsampling protects foreground edges. The
+optional LDR path uses 24 samples; Growing Guns keeps its low/minimum profile
+on the earlier smoke. `WARP_SMOKE_QUALITY=full` disables adaptive resolution
+for comparisons, while retaining the empty-space and lifetime improvements.
 
-Smoke and fire share the per-view back-to-front translucent ordering. The pass
+Smoke and fire share the per-view back-to-front translucent ordering and
+resolution. Sparks, streaks, columns, motes and heat stay at full resolution. The pass
 runs after temporal reconstruction and does not write TAA/DLSS history. The
 normal interpolated effects clock drives every view; drawing another view does
 not advance the animation.
@@ -74,11 +82,13 @@ store videos or target-frame-rate acceptance.
   world shadow maps. It retains the existing effect exposure convention.
 - Intersecting transparent volumes/fire use object sorting, not a joint medium
   integral. Transparent glass is not represented in the opaque depth clip.
-- A 16-volume cap bounds lifetime/overdraw growth but does not guarantee a frame
-  budget. Measure on the intended GPU and viewport; four-player 4K/120 FPS is
-  not established by this feature's isolated fixture.
+- Projected coverage is a workload heuristic, not GPU-time feedback. The
+  eighth-resolution floor and hard volume limit do not guarantee a frame budget.
+  Measure on the intended GPU and viewport; four-player 4K/120 FPS is not
+  established by this feature's isolated fixture. Heavy overlap trades detail
+  for cost, and crowded scenes can still shorten older smoke tails.
 
-## Validation, 31 October 2026
+## Initial validation, 31 October 2026 (before adaptive rendering)
 
 ![Full-quality Growing Guns explosion smoke trial](images/baked-explosion-smoke.jpg)
 

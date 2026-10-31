@@ -27,7 +27,11 @@ const COLUMN_VERTICES: u32 = 3; // One ray-integrated volume, including camera-i
 const STREAK_VERTICES: u32 = 6 * 12;
 const MOTE_VERTICES: u32 = 6;
 const MAX_PUFFS: usize = 16384;
-const MAX_SMOKE_VOLUMES: usize = 16;
+// A larger history lets the renderer reduce resolution under load instead of
+// abruptly replacing every old plume. Retirement has separate bounded room.
+const MAX_ACTIVE_SMOKE_VOLUMES: usize = 64;
+const MAX_SMOKE_VOLUMES: usize = 96;
+const SMOKE_RETIRE_SECONDS: f32 = 0.30;
 const SMOKE_SIZE: u32 = 48;
 const SMOKE_FRAMES: u32 = 32;
 // Playback duration in fx.wgsl; the source bake contains 2.6 seconds of motion.
@@ -226,7 +230,12 @@ impl AdditiveStreak {
 
 impl Puff {
     fn kind(&self) -> u32 { self.center_kind[3] as u32 }
-    fn end(&self) -> f32 { self.timing[0] + self.timing[1] }
+    fn end(&self) -> f32 {
+        let natural = self.timing[0] + self.timing[1];
+        if self.kind() == BAKED_SMOKE as u32 && self.extra[1] > 0.0 {
+            natural.min(self.extra[0] + self.extra[1])
+        } else { natural }
+    }
 }
 
 /// A point light that flashes and fades (Godot's blast lights).
@@ -300,6 +309,36 @@ impl Effects {
         self.changed = true;
     }
 
+    /// Preserve ordinary tail motion while easing the oldest over-budget
+    /// plumes out. Kind 7 packs retirement start/duration in extra.xy; a zero
+    /// duration means the natural animation lifetime. Only a pathological
+    /// burst exceeding the hard total bound can force an earlier removal.
+    fn make_smoke_room(&mut self, time: f32) {
+        self.puffs.retain(|p| p.kind() != BAKED_SMOKE as u32 || p.end() > time);
+        if self.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count() >= MAX_SMOKE_VOLUMES {
+            // Source frame zero is empty. Prefer removing a plume that has not
+            // been visible yet; otherwise reclaim the retirement nearest its
+            // end, preserving established smoke through large same-tick bursts.
+            let unseen = self.puffs.iter().position(|p| p.kind() == BAKED_SMOKE as u32 && p.timing[0] >= time);
+            let retiring = self.puffs.iter().enumerate()
+                .filter(|(_,p)| p.kind() == BAKED_SMOKE as u32 && p.extra[1] > 0.0)
+                .min_by(|(_,a),(_,b)| a.end().total_cmp(&b.end())).map(|(i,_)| i);
+            let oldest = self.puffs.iter().enumerate().filter(|(_,p)| p.kind() == BAKED_SMOKE as u32)
+                .min_by(|(_,a),(_,b)| a.timing[0].total_cmp(&b.timing[0])).map(|(i,_)| i);
+            if let Some(index) = unseen.or(retiring).or(oldest) { self.puffs.remove(index); }
+        }
+        if self.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32 && p.extra[1] <= 0.0).count() >= MAX_ACTIVE_SMOKE_VOLUMES {
+            let oldest = self.puffs.iter().enumerate()
+                .filter(|(_,p)| p.kind() == BAKED_SMOKE as u32 && p.extra[1] <= 0.0)
+                .min_by(|(_,a),(_,b)| a.timing[0].total_cmp(&b.timing[0])).map(|(i,_)| i);
+            if let Some(index) = oldest {
+                let puff = &mut self.puffs[index];
+                puff.extra[0] = time.max(puff.timing[0]);
+                puff.extra[1] = SMOKE_RETIRE_SECONDS;
+            }
+        }
+    }
+
     /// A full blast at `time` (seconds on the clock passed to `flush`):
     /// smoke, fireball, flame tongues, embers, heat shell and lights.
     /// `color` tints embers (Godot passes the bullet colour).
@@ -312,12 +351,7 @@ impl Effects {
         self.billows(time, pos, r, n, false, 0.5 + r * 0.13, 0.5, 1.3, r * 0.7, 1.0, 0.0, Vec3::ONE, 1.0);
         if self.baked_smoke {
             self.puffs.truncate(smoke_start);
-            self.puffs.retain(|p| p.kind() != BAKED_SMOKE as u32 || p.end() > time);
-            if self.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count() >= MAX_SMOKE_VOLUMES {
-                if let Some(oldest) = self.puffs.iter().position(|p| p.kind() == BAKED_SMOKE as u32) {
-                    self.puffs.remove(oldest);
-                }
-            }
+            self.make_smoke_room(time);
             let yaw = (self.rng >> 40) as f32 / (1u64 << 24) as f32 * std::f32::consts::TAU;
             let (sin, cos) = yaw.sin_cos();
             let side = r * 2.4;
@@ -506,7 +540,114 @@ impl Effects {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniform { view_proj: [[f32; 4]; 4], inverse_view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4] }
+struct Uniform { view_proj: [[f32; 4]; 4], inverse_view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4], smoke: [f32; 4], depth_from_output: [[f32;4];4] }
+
+// The budget counts full-resolution pixel layers, so approaching a plume or
+// overlapping more plumes lowers raymarch resolution before work is submitted.
+const SMOKE_PIXEL_BUDGET: f32 = 450_000.0;
+
+fn projected_smoke_work(source: &[Puff], time: f32, vp: Mat4, near: f32, size: (u32,u32)) -> (f32,usize) {
+    source.iter().filter(|p| p.kind() == BAKED_SMOKE as u32 && p.timing[0] <= time && p.end() > time).map(|p| {
+        let base=Vec3::from_slice(&p.center_kind[..3]);
+        let ax=Vec3::from_slice(&p.ax[..3]);
+        let ay=Vec3::from_slice(&p.ay[..3]);
+        let az=Vec3::from_slice(&p.az[..3]);
+        let corners:[glam::Vec4;8]=std::array::from_fn(|i| {
+            let q=Vec3::new((i&1) as f32-0.5,((i>>1)&1) as f32,((i>>2)&1) as f32-0.5);
+            vp*(base+ax*q.x+ay*q.y+az*q.z).extend(1.0)
+        });
+        if corners.iter().all(|c|c.x < -c.w) || corners.iter().all(|c|c.x > c.w)
+            || corners.iter().all(|c|c.y < -c.w) || corners.iter().all(|c|c.y > c.w)
+            || corners.iter().all(|c|c.w <= near) {return 0.0;}
+        let pixels=size.0 as f32*size.1 as f32;
+        if corners.iter().any(|c|c.w <= near) {return pixels;}
+        let mut lo=glam::Vec2::ONE;
+        let mut hi=glam::Vec2::NEG_ONE;
+        for c in corners {
+            let q=glam::Vec2::new(c.x,c.y)/c.w;
+            lo=lo.min(q); hi=hi.max(q);
+        }
+        let span=(hi.min(glam::Vec2::ONE)-lo.max(glam::Vec2::NEG_ONE)).max(glam::Vec2::ZERO);
+        span.x*span.y*0.25*pixels
+    }).fold((0.0,0),|(pixels,count),area|(pixels+area,count+usize::from(area>0.0)))
+}
+
+// Farthest possible camera-forward depth of the complete soft bucket. When
+// both scene guides lie beyond this bound, their discontinuity cannot occlude
+// any soft effect and ordinary bilinear reconstruction is safe.
+fn soft_depth_limit(source: &[Puff], time: f32, view: Mat4) -> f32 {
+    source.iter().filter(|p| matches!(p.kind(),0|1|7) && p.timing[0]<=time && p.end()>time).map(|p| {
+        let center=-view.transform_point3(Vec3::from_slice(&p.center_kind[..3])).z;
+        let axes=Vec3::new(-view.transform_vector3(Vec3::from_slice(&p.ax[..3])).z,
+            -view.transform_vector3(Vec3::from_slice(&p.ay[..3])).z,
+            -view.transform_vector3(Vec3::from_slice(&p.az[..3])).z);
+        let (extent,rise)=if p.kind()==BAKED_SMOKE as u32 {
+            // Texture local x/z are -0.5..0.5; local y is 0..1.
+            (0.5*(axes.x.abs()+axes.z.abs())+axes.y.max(0.0),0.0)
+        } else {
+            // fx_vs keeps local position parallel to a unit sphere normal.
+            // Its largest radial displacement is 0.5+0.32=0.82 (continuous
+            // billows are smaller), and growth never exceeds one. Include
+            // both ends of the full rise, including negative rise amounts.
+            (0.82*axes.length(),(-view.transform_vector3(Vec3::Y*p.timing[2]).z).max(0.0))
+        };
+        let guard=0.05+0.001*(center.abs()+extent+rise);
+        center+extent+rise+guard
+    }).fold(0.0,f32::max)
+}
+
+/// Actual per-view adaptive decision from the last FX submission. Pixel layers
+/// use conservative projected volume bounds, not an estimate of visible density.
+#[derive(Clone,Debug,Default,serde::Serialize)]
+pub struct SmokeQualityStats {
+    pub view_index: usize,
+    pub divisor: u32,
+    pub ray_steps: u32,
+    pub projected_pixel_layers: f32,
+    pub visible_volumes: usize,
+    pub soft_size: [u32;2],
+}
+
+#[derive(Default)]
+struct SmokeQuality {
+    divisor: u32,
+    last_time: Option<f32>,
+    recover_since: Option<f32>,
+}
+impl SmokeQuality {
+    fn desired(pixels: f32) -> u32 {
+        [1,2,4,8].into_iter().find(|d|pixels/((*d * *d) as f32) <= SMOKE_PIXEL_BUDGET).unwrap_or(8)
+    }
+    fn update(&mut self, pixels: f32, time: f32) -> u32 {
+        let desired=Self::desired(pixels);
+        let reset=self.divisor==0 || self.last_time.is_some_and(|last|time<last || time-last>1.0);
+        self.last_time=Some(time);
+        if reset || pixels<=0.0 || desired>self.divisor {
+            self.divisor=desired;
+            self.recover_since=None;
+        } else if desired<self.divisor && pixels/((self.divisor/2).pow(2) as f32) < SMOKE_PIXEL_BUDGET*0.65 {
+            let since=*self.recover_since.get_or_insert(time);
+            if time-since>=0.25 {self.divisor=desired; self.recover_since=None;}
+        } else {self.recover_since=None;}
+        self.divisor
+    }
+}
+
+#[repr(C)]
+#[derive(Clone,Copy,Pod,Zeroable)]
+struct CompositeUniform {
+    depth_from_output: [[f32;4];4],
+    // Output width, height, near plane, farthest possible soft-effect depth.
+    full: [f32;4],
+    // Reduced width, height and reciprocals.
+    low: [f32;4],
+}
+struct SoftTarget {
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    size: (u32,u32),
+    binds: BindGroups<2>,
+}
 
 struct Target {
     size: (u32, u32),
@@ -518,6 +659,10 @@ struct Target {
     // a same-size replacement must not sample the preceding frame's textures.
     backgrounds: TextureViews<2>,
     binds: BindGroups<2>,
+    composite_uniform: wgpu::Buffer,
+    soft: [Option<SoftTarget>;3],
+    quality: SmokeQuality,
+    quality_stats: SmokeQualityStats,
 }
 
 /// Shared CPU scratch: views encode serially and queue writes copy their data.
@@ -578,6 +723,9 @@ pub(crate) struct FxRenderer {
     streak: wgpu::RenderPipeline,
     mote: wgpu::RenderPipeline,
     smoke: wgpu::RenderPipeline,
+    composite_layout: wgpu::BindGroupLayout,
+    composite: wgpu::RenderPipeline,
+    adaptive_smoke: bool,
     smoke_view: wgpu::TextureView,
     smoke_loaded: bool,
     ldr: Option<(wgpu::TextureFormat,[wgpu::RenderPipeline;6])>,
@@ -589,7 +737,8 @@ pub(crate) struct FxRenderer {
     targets: Vec<Option<Target>>,
 }
 
-pub fn shader_source() -> &'static str { include_str!("shaders/fx.wgsl") }
+pub fn shader_source() -> &'static str { concat!(include_str!("../../../assets/fx/explosion-smoke-bounds.wgsl"), include_str!("shaders/fx.wgsl")) }
+fn composite_shader_source() -> &'static str { include_str!("shaders/fx_composite.wgsl") }
 
 impl FxRenderer {
     fn new(gpu: &Gpu) -> Self {
@@ -627,7 +776,21 @@ impl FxRenderer {
             address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, address_mode_w: wgpu::AddressMode::ClampToEdge, ..Default::default() });
         let puffs = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("fx puffs"), size: (MAX_PUFFS * std::mem::size_of::<Puff>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        FxRenderer { layout, billow, ember, heat, column, streak, mote, smoke, smoke_view, smoke_loaded: false, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
+        let composite_layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:Some("soft FX depth-aware composite"),entries:&[
+                wgpu::BindGroupLayoutEntry{binding:0,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},count:None},
+                wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
+                wgpu::BindGroupLayoutEntry{binding:2,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
+            ]});
+        let composite_pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:Some("soft FX composite"),bind_group_layouts:&[Some(&composite_layout)],immediate_size:0});
+        let composite_shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("soft FX composite"),source:wgpu::ShaderSource::Wgsl(composite_shader_source().into())});
+        let composite=gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("soft FX depth-aware upsample"),layout:Some(&composite_pl),
+            vertex:wgpu::VertexState{module:&composite_shader,entry_point:Some("fullscreen"),compilation_options:Default::default(),buffers:&[]},
+            primitive:Default::default(),depth_stencil:None,multisample:Default::default(),
+            fragment:Some(wgpu::FragmentState{module:&composite_shader,entry_point:Some("composite"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format:wgpu::TextureFormat::Rgba16Float,blend:Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
+            multiview_mask:None,cache:gpu.pipeline_cache()});
+        let adaptive_smoke=std::env::var("WARP_SMOKE_QUALITY").as_deref()!=Ok("full");
+        FxRenderer { layout, billow, ember, heat, column, streak, mote, smoke, composite_layout, composite, adaptive_smoke, smoke_view, smoke_loaded: false, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
             draw_order: DrawOrder::default(), targets: Vec::new() }
     }
 
@@ -671,11 +834,16 @@ impl FxRenderer {
         }
     }
 
+    pub(crate) fn quality_stats(&self) -> Vec<SmokeQualityStats> {
+        self.targets.iter().flatten().map(|target|target.quality_stats.clone()).collect()
+    }
+
     pub(crate) fn resource_cache_stats(&self) -> CacheStats {
         let mut stats = CacheStats::default();
         for target in self.targets.iter().flatten() {
             stats.add(target.backgrounds.stats());
             stats.add(target.binds.stats());
+            for soft in target.soft.iter().flatten() {stats.add(soft.binds.stats());}
         }
         stats
     }
@@ -696,7 +864,13 @@ impl FxRenderer {
         let ldr=exposure>0.0;
         // Heat first (it refracts the plain scene), then billows back to front, then embers.
         let [nh, nb, ne, nc, ns, nm] = self.draw_order.prepare(&self.source, self.time, camera.pos);
-        if self.draw_order.ids.is_empty() { return Ok(None); }
+        if self.draw_order.ids.is_empty() {
+            if let Some(Some(target))=self.targets.get_mut(index) {
+                target.quality.update(0.0,self.time);
+                target.quality_stats=SmokeQualityStats{view_index:index,divisor:1,ray_steps:if ldr{24}else{48},soft_size:[input.width(),input.height()],..Default::default()};
+            }
+            return Ok(None);
+        }
         if if ldr {!matches!(input.format(),wgpu::TextureFormat::Rgba8Unorm|wgpu::TextureFormat::Rgba8UnormSrgb)||!input.usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT)}else{input.format()!=wgpu::TextureFormat::Rgba16Float||!input.usage().contains(wgpu::TextureUsages::COPY_SRC|wgpu::TextureUsages::TEXTURE_BINDING)} {
             return Err("fx requires copyable sampleable HDR input".into());
         }
@@ -716,12 +890,32 @@ impl FxRenderer {
             self.targets[index] = Some(Target { size, output, output_view,
                 uniform: buffer("fx view", std::mem::size_of::<Uniform>() as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST),
                 order: buffer("fx order", (MAX_PUFFS * 4) as u64, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST),
-                backgrounds, binds });
+                backgrounds, binds,
+                composite_uniform: buffer("soft FX composite view",std::mem::size_of::<CompositeUniform>() as u64,wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST),
+                soft: std::array::from_fn(|_|None), quality: SmokeQuality::default(), quality_stats: SmokeQualityStats::default() });
         }
+        let (pixels,visible_volumes)=projected_smoke_work(&self.source,self.time,output_vp,camera.near,size);
         let t = self.targets[index].as_mut().unwrap();
+        let divisor=t.quality.update(if self.adaptive_smoke && !ldr {pixels}else{0.0},self.time);
+        let samples=if ldr {24.0}else{match divisor {1=>48.0,2=>40.0,4=>32.0,_=>24.0}};
+        t.quality_stats=SmokeQualityStats{view_index:index,divisor,ray_steps:samples as u32,projected_pixel_layers:pixels,visible_volumes,
+            soft_size:[size.0.div_ceil(divisor),size.1.div_ceil(divisor)]};
+        let soft_index=match divisor {2=>Some(0),4=>Some(1),8=>Some(2),_=>None};
+        if let Some(slot)=soft_index {
+            if t.soft[slot].is_none() {
+                let small=(size.0.div_ceil(divisor),size.1.div_ceil(divisor));
+                let texture=gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("adaptive soft FX layer"),size:wgpu::Extent3d{width:small.0,height:small.1,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,
+                    format:wgpu::TextureFormat::Rgba16Float,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]});
+                let view=texture.create_view(&Default::default());
+                t.soft[slot]=Some(SoftTarget{_texture:texture,view,size:small,binds:Default::default()});
+            }
+        }
+        let depth_from_output=(depth_vp*output_vp.inverse()).to_cols_array_2d();
+        let soft_size=t.quality_stats.soft_size;
         let uniform = Uniform { view_proj: output_vp.to_cols_array_2d(), inverse_view_proj: output_vp.inverse().to_cols_array_2d(), depth_vp: depth_vp.to_cols_array_2d(), view: view.to_cols_array_2d(),
             camera_near: camera.pos.extend(camera.near).to_array(), size: [size.0 as f32, size.1 as f32, 1.0 / size.0 as f32, 1.0 / size.1 as f32],
-            clock: [self.time, white, exposure, if input.format().is_srgb(){1.0}else{0.0}] };
+            clock: [self.time, white, exposure, if input.format().is_srgb(){1.0}else{0.0}],
+            smoke: [samples,divisor as f32,1.0/soft_size[0] as f32,1.0/soft_size[1] as f32], depth_from_output };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         gpu.queue.write_buffer(&t.order, 0, bytemuck::cast_slice(&self.draw_order.ids));
         if !ldr {enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());}
@@ -732,28 +926,54 @@ impl FxRenderer {
             (5, wgpu::BindingResource::Sampler(&self.sampler)), (6, wgpu::BindingResource::TextureView(&self.smoke_view))]);
         let direct_view=ldr.then(||input.create_view(&Default::default()));
         let pipelines=self.ldr.as_ref().map(|(_,p)|p);
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("fx"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: direct_view.as_ref().unwrap_or(&t.output_view), depth_slice: None,
-            resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
-        pass.set_bind_group(0, &bind, &[]);
-        if !ldr && nh > 0 { pass.set_pipeline(&self.heat); pass.draw(0..SPHERE_VERTICES, 0..nh); }
-        // A volume participates in the same back-to-front order as the fire.
-        // Batch adjacent kinds, retaining one shared upload and bind per view.
-        let mut start = nh;
-        while start < nh + nb {
-            let volume = self.source[self.draw_order.ids[start as usize] as usize].kind() == BAKED_SMOKE as u32;
-            let mut end = start + 1;
-            while end < nh + nb && (self.source[self.draw_order.ids[end as usize] as usize].kind() == BAKED_SMOKE as u32) == volume { end += 1; }
-            let pipeline = if volume { if ldr { &pipelines.unwrap()[5] } else { &self.smoke } }
-                else if ldr { &pipelines.unwrap()[0] } else { &self.billow };
-            pass.set_pipeline(pipeline);
-            pass.draw(0..if volume { 6 } else { BILLOW_VERTICES }, start..end);
-            start = end;
+        let output_view=direct_view.as_ref().unwrap_or(&t.output_view);
+        // Reducing the entire sorted soft bucket retains fire/smoke ordering.
+        // Heat and all sharp additive effects still draw at output resolution.
+        let draw_billows=|pass:&mut wgpu::RenderPass<'_>| {
+            let mut start=nh;
+            while start<nh+nb {
+                let volume=self.source[self.draw_order.ids[start as usize] as usize].kind()==BAKED_SMOKE as u32;
+                let mut end=start+1;
+                while end<nh+nb && (self.source[self.draw_order.ids[end as usize] as usize].kind()==BAKED_SMOKE as u32)==volume {end+=1;}
+                let pipeline=if volume {if ldr{&pipelines.unwrap()[5]}else{&self.smoke}}
+                    else if ldr {&pipelines.unwrap()[0]} else {&self.billow};
+                pass.set_pipeline(pipeline);
+                pass.draw(0..if volume{6}else{BILLOW_VERTICES},start..end);
+                start=end;
+            }
+        };
+        if let Some(slot)=soft_index {
+            if nh>0 {
+                let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("full-resolution heat"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:output_view,depth_slice:None,resolve_target:None,
+                    ops:wgpu::Operations{load:wgpu::LoadOp::Load,store:wgpu::StoreOp::Store}})],depth_stencil_attachment:None,timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
+                pass.set_bind_group(0,&bind,&[]); pass.set_pipeline(&self.heat); pass.draw(0..SPHERE_VERTICES,0..nh);
+            }
+            let soft=t.soft[slot].as_mut().unwrap();
+            {
+                let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("adaptive smoke and fire"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:&soft.view,depth_slice:None,resolve_target:None,
+                    ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),store:wgpu::StoreOp::Store}})],depth_stencil_attachment:None,timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
+                pass.set_bind_group(0,&bind,&[]); draw_billows(&mut pass);
+            }
+            let composite_uniform=CompositeUniform{depth_from_output,
+                full:[size.0 as f32,size.1 as f32,camera.near,soft_depth_limit(&self.source,self.time,view)],low:[soft.size.0 as f32,soft.size.1 as f32,1.0/soft.size.0 as f32,1.0/soft.size.1 as f32]};
+            gpu.queue.write_buffer(&t.composite_uniform,0,bytemuck::bytes_of(&composite_uniform));
+            let composite_bind=soft.binds.get(gpu,&self.composite_layout,"cached soft FX composite",&[
+                (0,t.composite_uniform.as_entire_binding()),(1,wgpu::BindingResource::TextureView(&soft.view)),(2,wgpu::BindingResource::TextureView(depth))]);
+            let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("soft FX depth-aware composite"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:output_view,depth_slice:None,resolve_target:None,
+                ops:wgpu::Operations{load:wgpu::LoadOp::Load,store:wgpu::StoreOp::Store}})],depth_stencil_attachment:None,timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
+            pass.set_bind_group(0,&composite_bind,&[]); pass.set_pipeline(&self.composite); pass.draw(0..3,0..1);
         }
-        if ne > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[1]}else{&self.ember}); pass.draw(0..SPHERE_VERTICES, nh + nb..nh + nb + ne); }
-        if nc > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[2]}else{&self.column}); pass.draw(0..COLUMN_VERTICES, nh + nb + ne..nh + nb + ne + nc); }
-        if ns > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[3]}else{&self.streak}); pass.draw(0..STREAK_VERTICES, nh + nb + ne + nc..nh + nb + ne + nc + ns); }
-        if nm > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[4]}else{&self.mote}); pass.draw(0..MOTE_VERTICES, nh + nb + ne + nc + ns..nh + nb + ne + nc + ns + nm); }
+        let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("full-resolution FX"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:output_view,depth_slice:None,resolve_target:None,
+            ops:wgpu::Operations{load:wgpu::LoadOp::Load,store:wgpu::StoreOp::Store}})],depth_stencil_attachment:None,timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
+        pass.set_bind_group(0,&bind,&[]);
+        if soft_index.is_none() {
+            if !ldr && nh>0 {pass.set_pipeline(&self.heat); pass.draw(0..SPHERE_VERTICES,0..nh);}
+            draw_billows(&mut pass);
+        }
+        if ne>0 {pass.set_pipeline(if ldr{&pipelines.unwrap()[1]}else{&self.ember});pass.draw(0..SPHERE_VERTICES,nh+nb..nh+nb+ne);}
+        if nc>0 {pass.set_pipeline(if ldr{&pipelines.unwrap()[2]}else{&self.column});pass.draw(0..COLUMN_VERTICES,nh+nb+ne..nh+nb+ne+nc);}
+        if ns>0 {pass.set_pipeline(if ldr{&pipelines.unwrap()[3]}else{&self.streak});pass.draw(0..STREAK_VERTICES,nh+nb+ne+nc..nh+nb+ne+nc+ns);}
+        if nm>0 {pass.set_pipeline(if ldr{&pipelines.unwrap()[4]}else{&self.mote});pass.draw(0..MOTE_VERTICES,nh+nb+ne+nc+ns..nh+nb+ne+nc+ns+nm);}
         drop(pass);
         Ok((!ldr).then(||t.output.clone()))
     }
@@ -828,7 +1048,11 @@ mod tests {
         let module = naga::front::wgsl::parse_str(shader_source()).unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<Puff>(), 112);
-        assert_eq!(std::mem::size_of::<Uniform>(), 304);
+        assert_eq!(std::mem::size_of::<Uniform>(), 384);
+        assert_eq!(std::mem::size_of::<CompositeUniform>(),96);
+        let source=composite_shader_source();
+        let module=naga::front::wgsl::parse_str(source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(source)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
     }
 
     #[test]
@@ -880,22 +1104,57 @@ mod tests {
     }
 
     #[test]
-    fn baked_smoke_recycles_old_volumes_and_expires_before_new_spawns() {
+    fn baked_smoke_retires_over_budget_without_retiming_its_motion() {
         let mut fx = Effects::default();
         fx.set_baked_smoke(true);
-        for i in 0..MAX_SMOKE_VOLUMES + 4 {
+        for i in 0..MAX_ACTIVE_SMOKE_VOLUMES + 4 {
             fx.explosion(i as f32 * 0.01, Vec3::ZERO, 2.0, Vec3::ONE);
         }
         let volumes: Vec<_> = fx.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).collect();
-        assert_eq!(volumes.len(), MAX_SMOKE_VOLUMES);
-        assert_eq!(volumes[0].timing[0], 0.04);
+        assert_eq!(volumes.len(), MAX_ACTIVE_SMOKE_VOLUMES + 4);
+        assert_eq!(volumes.iter().filter(|p| p.extra[1] == 0.0).count(), MAX_ACTIVE_SMOKE_VOLUMES);
+        assert_eq!(volumes[0].timing[0], 0.0, "oldest plume stays present during retirement");
+        assert!((volumes[0].extra[0] - 0.64).abs() < 1e-6);
+        assert_eq!(volumes[0].extra[1], SMOKE_RETIRE_SECONDS);
+        assert!((volumes[0].end() - 0.94).abs() < 1e-6);
         for p in &volumes {
             assert!((Vec3::from_slice(&p.ax[..3]).length() - 4.8).abs() < 1e-5);
             assert!(Vec3::from_slice(&p.ax[..3]).dot(Vec3::from_slice(&p.az[..3])).abs() < 1e-4);
-            assert_eq!(p.timing[1], SMOKE_LIFETIME);
+            assert_eq!(p.timing[1], SMOKE_LIFETIME, "retirement must not speed the baked motion up");
         }
         fx.explosion(6.0, Vec3::ZERO, 2.0, Vec3::ONE);
         assert_eq!(fx.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count(), 1);
+    }
+
+    #[test]
+    fn baked_smoke_hard_bound_preserves_established_plumes_during_new_bursts() {
+        let mut fx = Effects::default();
+        fx.set_baked_smoke(true);
+        for _ in 0..MAX_ACTIVE_SMOKE_VOLUMES { fx.explosion(0.0, Vec3::ZERO, 2.0, Vec3::ONE); }
+        for _ in 0..MAX_SMOKE_VOLUMES * 2 { fx.explosion(1.0, Vec3::ZERO, 2.0, Vec3::ONE); }
+        let volumes: Vec<_> = fx.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).collect();
+        assert_eq!(volumes.len(), MAX_SMOKE_VOLUMES);
+        assert_eq!(volumes.iter().filter(|p| p.timing[0] == 0.0).count(), MAX_ACTIVE_SMOKE_VOLUMES,
+            "hard overflow should discard unseen new plumes before established ones");
+        assert_eq!(volumes.iter().filter(|p| p.extra[1] == 0.0).count(), MAX_ACTIVE_SMOKE_VOLUMES);
+        assert!(volumes.iter().filter(|p| p.extra[1] > 0.0).all(|p| (p.end()-1.3).abs()<1e-6));
+        fx.explosion(1.31, Vec3::ZERO, 2.0, Vec3::ONE);
+        assert!(fx.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).all(|p| p.end()>1.31));
+        assert!(fx.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count()<=MAX_SMOKE_VOLUMES);
+    }
+
+    #[test]
+    fn smoke_retirement_expiry_does_not_change_other_effect_kinds() {
+        let retiring = Puff { center_kind:[0.0,0.0,0.0,BAKED_SMOKE], timing:[1.0,4.6,0.0,0.0],
+            extra:[2.0,0.3,0.0,0.0], ..Default::default() };
+        assert_eq!(retiring.end(), 2.3);
+        let natural_end = retiring.timing[0]+retiring.timing[1];
+        for kind in [SMOKE,FIRE,EMBER,HEAT,COLUMN,STREAK,MOTE] {
+            let p=Puff {center_kind:[0.0,0.0,0.0,kind],..retiring};
+            assert_eq!(p.end(), natural_end);
+        }
+        let natural = Puff { extra:[0.0;4],..retiring };
+        assert_eq!(natural.end(), natural_end);
     }
 
     #[test]
@@ -927,6 +1186,51 @@ mod tests {
         assert!(a.iter().step_by(2).any(|v| *v > 128));
         assert!(a.iter().zip(b).step_by(2).filter(|(a, b)| a != b).count() > 1000);
         assert!(a.iter().skip(1).step_by(2).any(|v| *v < 200), "baked self-shadow must carry shape");
+    }
+
+    #[test]
+    fn baked_smoke_bounds_cover_quantized_density_and_filter_support() {
+        let metadata = include_str!("../../../assets/fx/explosion-smoke-bounds.wgsl");
+        let rows: Vec<[f32; 4]> = metadata.lines().filter_map(|line| line.trim().strip_prefix("vec4<f32>("))
+            .map(|line| {
+                let fields: Vec<f32> = line.strip_suffix("),").expect("generated vec4 row terminator")
+                    .split(',').map(|field| field.trim().parse().expect("generated finite float")).collect();
+                fields.try_into().expect("generated bounds need four components")
+            }).collect();
+        let frames = SMOKE_FRAMES as usize;
+        let side = SMOKE_SIZE as usize;
+        let frame_bytes = side.pow(3) * 2;
+        const EPS: f32 = 1e-6;
+        assert_eq!(rows.len(), frames * 2, "expected MIN rows followed by MAX rows for every frame");
+        assert!(metadata.find("const SMOKE_BOUNDS_MIN:").unwrap() < metadata.find("const SMOKE_BOUNDS_MAX:").unwrap());
+        assert_eq!(SMOKE_BYTES.len(), frames * frame_bytes);
+        for (frame, bytes) in SMOKE_BYTES.chunks_exact(frame_bytes).enumerate() {
+            let (lo, hi) = (rows[frame], rows[frames + frame]);
+            assert!(lo.iter().chain(hi.iter()).all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+                "invalid normalized bounds in frame {frame}");
+            let mut peak = 0u8;
+            for (voxel, channels) in bytes.chunks_exact(2).enumerate() {
+                let density = channels[0];
+                peak = peak.max(density);
+                if density == 0 { continue; }
+                let xyz = [voxel % side, (voxel / side) % side, voxel / (side * side)];
+                for axis in 0..3 {
+                    // smoke_frame maps normalized uvw onto voxel centres at
+                    // i/(SIZE-1). Trilinear support extends one voxel each way.
+                    let support_min = xyz[axis].saturating_sub(1) as f32 / (side - 1) as f32;
+                    let support_max = (xyz[axis] + 1).min(side - 1) as f32 / (side - 1) as f32;
+                    assert!(lo[axis] <= support_min + EPS && hi[axis] + EPS >= support_max,
+                        "frame {frame}, voxel {xyz:?}, axis {axis}: [{}, {}] clips filter support [{support_min}, {support_max}]",
+                        lo[axis], hi[axis]);
+                }
+            }
+            if peak == 0 {
+                assert!(hi[3].abs() <= EPS, "empty frame {frame} must have MAX.w = 0");
+            } else {
+                assert!(hi[3] + EPS >= peak as f32 / 255.0,
+                    "frame {frame} peak {} underestimates quantized density {}", hi[3], peak as f32 / 255.0);
+            }
+        }
     }
 
     #[test]
@@ -1010,4 +1314,72 @@ mod tests {
         assert_eq!(fx.len(), MAX_PUFFS);
         assert_eq!(fx.puffs[0].timing[0], 3.0);
     }
+    #[test]
+    fn soft_depth_bound_contains_cube_and_billow_growth_with_signed_rise() {
+        let view=Mat4::look_at_rh(Vec3::new(4.0,8.0,12.0),Vec3::new(-1.0,2.0,0.0),Vec3::Y);
+        let base=Vec3::new(1.0,2.0,-3.0);
+        let ax=Vec3::new(3.0,1.0,0.0);
+        let ay=Vec3::new(0.0,4.0,0.0);
+        let az=Vec3::new(0.0,1.0,5.0);
+        let puff=Puff{center_kind:base.extend(BAKED_SMOKE).to_array(),ax:ax.extend(0.0).to_array(),ay:ay.extend(0.0).to_array(),az:az.extend(0.0).to_array(),timing:[0.0,4.6,0.0,0.0],..Default::default()};
+        let cube_limit=soft_depth_limit(&[puff],0.85,view);
+        for x in [-0.5,0.5] {for y in [0.0,1.0] {for z in [-0.5,0.5] {
+            assert!(-view.transform_point3(base+ax*x+ay*y+az*z).z<cube_limit);
+        }}}
+        for kind in [SMOKE,FIRE] {for rise in [-6.0,6.0] {
+            let billow=Puff{center_kind:base.extend(kind).to_array(),timing:[0.0,4.6,rise,0.0],..puff};
+            let limit=soft_depth_limit(&[billow],0.85,view);
+            // Exercise the outer geometric envelope independently of the
+            // procedural lump phases; every animated shape fits inside it.
+            for x in -3..=3 {for y in -3..=3 {for z in -3..=3 {
+                let direction=Vec3::new(x as f32,y as f32,z as f32).normalize_or_zero();
+                let local=direction*0.82;
+                for rise_fraction in [0.0,1.0] {
+                    let world=base+ax*local.x+ay*local.y+az*local.z+Vec3::Y*rise*rise_fraction;
+                    assert!(-view.transform_point3(world).z<limit,"kind {kind}, rise {rise}");
+                }
+            }}}
+        }}
+        let distant=Puff{center_kind:[0.0,0.0,-100_000.0,BAKED_SMOKE],..puff};
+        assert!(soft_depth_limit(&[distant],0.85,view)>60_000.0,"a clamped depth guide cannot bypass a farther volume");
+        let future=Puff{timing:[1.0,4.6,0.0,0.0],..distant};
+        let expired=Puff{timing:[-5.0,4.6,0.0,0.0],..distant};
+        let sharp=Puff{center_kind:[0.0,0.0,-100_000.0,EMBER],..puff};
+        assert_eq!(soft_depth_limit(&[puff,future,expired,sharp],0.85,view),cube_limit);
+    }
+
+    #[test]
+    fn adaptive_smoke_quality_changes_with_work_and_recovers_without_thrashing() {
+        let mut quality=SmokeQuality::default();
+        assert_eq!(quality.update(1_000_000.0,0.0),2);
+        assert_eq!(quality.update(400_000.0,0.05),2,"hold near a tier boundary");
+        assert_eq!(quality.update(100_000.0,0.10),2);
+        assert_eq!(quality.update(100_000.0,0.34),2);
+        assert_eq!(quality.update(100_000.0,0.36),1);
+        assert_eq!(quality.update(100_000_000.0,0.4),8,"coarsen immediately under load");
+        assert_eq!(quality.update(100_000.0,0.2),1,"rewinding resets prior quality");
+        assert_eq!(quality.update(100_000_000.0,0.4),8);
+        assert_eq!(quality.update(100_000.0,2.0),1,"a long inactive gap resets quality");
+        assert_eq!(quality.update(100_000_000.0,2.1),8);
+        assert_eq!(quality.update(0.0,2.2),1,"no visible baked smoke uses the original path");
+    }
+
+    #[test]
+    fn adaptive_smoke_projection_counts_only_live_visible_bounds() {
+        let mut puff=Puff{center_kind:[0.0,0.0,0.0,BAKED_SMOKE],ax:[2.0,0.0,0.0,0.0],ay:[0.0,2.0,0.0,0.0],az:[0.0,0.0,2.0,0.0],timing:[0.0,4.6,0.0,0.0],..Default::default()};
+        let projection=Mat4::perspective_infinite_reverse_rh(std::f32::consts::FRAC_PI_2,1.0,0.05);
+        let vp=projection*Mat4::look_at_rh(Vec3::new(0.0,1.0,10.0),Vec3::Y,Vec3::Y);
+        let (far,count)=projected_smoke_work(&[puff],0.85,vp,0.05,(1000,1000));
+        assert_eq!(count,1); assert!(far>1_000.0 && far<100_000.0);
+        let inside=projection*Mat4::look_at_rh(Vec3::Y,Vec3::Y+Vec3::NEG_Z,Vec3::Y);
+        assert_eq!(projected_smoke_work(&[puff],0.85,inside,0.05,(1000,1000)),(1_000_000.0,1));
+        puff.center_kind[0]=1000.0;
+        assert_eq!(projected_smoke_work(&[puff],0.85,vp,0.05,(1000,1000)),(0.0,0));
+        puff.center_kind[0]=0.0; puff.center_kind[2]=20.0;
+        assert_eq!(projected_smoke_work(&[puff],0.85,vp,0.05,(1000,1000)),(0.0,0));
+        puff.center_kind[2]=0.0;
+        assert_eq!(projected_smoke_work(&[puff],-0.1,vp,0.05,(1000,1000)),(0.0,0));
+        assert_eq!(projected_smoke_work(&[puff],4.6,vp,0.05,(1000,1000)),(0.0,0));
+    }
+
 }
