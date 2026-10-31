@@ -3,7 +3,9 @@ struct Uniform {vp:mat4x4<f32>,camera:vec4<f32>,sun:vec4<f32>,sun_color:vec4<f32
 struct Material {tint:vec3<f32>,layer:i32,roughness:f32,flags:u32,scale:f32,metal:f32};
 @group(0) @binding(0) var<uniform> u:Uniform;
 @group(0) @binding(1) var<storage,read> materials:array<Material>;
-struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>};
+@group(0) @binding(2) var lava_field:texture_2d<f32>;
+@group(0) @binding(3) var lava_sampler:sampler;
+struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>,@location(1) world:vec3<f32>,@location(2) @interpolate(flat) lava:vec4<f32>};
 @vertex fn vs(@location(0) position:vec3<f32>,@location(1) normal:vec3<f32>,@location(2) uv:vec2<f32>,
  @location(3) r0:vec4<f32>,@location(4) r1:vec4<f32>,@location(5) r2:vec4<f32>,@location(6) material:u32,@location(7) flags:u32)->Out {
  let p=vec4<f32>(position,1.0);let world=vec3<f32>(dot(r0,p),dot(r1,p),dot(r2,p));
@@ -19,11 +21,34 @@ struct Out {@builtin(position) pos:vec4<f32>,@location(0) color:vec3<f32>};
  if u.ambient.z==2.0 {value=m.tint;}
  if u.ambient.z==11.0 {value=n*0.5+0.5;}
  let mapped=sqrt(max(value,vec3<f32>(0.0))/(1.0+max(value,vec3<f32>(0.0))));
- var out:Out;out.pos=u.vp*vec4<f32>(world,1.0);out.color=mapped;return out;
+ var out:Out;out.pos=u.vp*vec4<f32>(world,1.0);out.color=mapped;out.world=world;
+ out.lava=vec4<f32>(m.tint*select(0.0,m.scale*u.camera.w*u.sun_color.w,(m.flags&4096u)!=0u && u.ambient.z==0.0),flash);return out;
 }
-@fragment fn fs(in:Out)->@location(0) vec4<f32>{return vec4<f32>(in.color,1.0);}
-
+// Two mip-filtered reads, only for lava. Coordinates live in the world, so
+// separate pieces and both eyes share one flowing surface. No extra pass.
+fn surface(in:Out)->vec3<f32> {
+ let uv=in.world.xz*0.0625;
+ let footprint=max(length(dpdx(uv)),length(dpdy(uv)))*128.0;
+ let lod=clamp(log2(max(footprint,1.0)),0.0,7.0);
+ if max(in.lava.r,max(in.lava.g,in.lava.b))<=0.0 {return in.color;}
+ let drift=u.ambient.w*vec2<f32>(0.0018,-0.0012);
+ let b=textureSampleLevel(lava_field,lava_sampler,uv.yx*1.71-drift*0.7+vec2<f32>(0.31,0.17),min(lod+0.77,7.0));
+ let warp=vec2<f32>(b.b-0.5,b.r-0.3)*0.045;
+ let a=textureSampleLevel(lava_field,lava_sampler,uv+drift+warp,min(lod+0.3,7.0));
+ let edge=a.r+(b.b-0.5)*0.055;
+ let rim=1.0-smoothstep(0.06,0.28,edge);
+ let core=1.0-smoothstep(0.015,0.085,edge);
+ let crust=vec3<f32>(0.006,0.002,0.001)*(0.45+a.g*0.5+b.b*1.1);
+ var radiance=mix(crust,vec3<f32>(0.65,0.035,0.002),rim);
+ radiance=mix(radiance,vec3<f32>(3.0,0.75,0.065)*(0.8+b.b*0.4),core);
+ // Subpixel cracks converge to a warm average instead of flashing dots.
+ radiance=mix(radiance,vec3<f32>(0.32,0.065,0.008),smoothstep(2.0,5.0,lod));
+ var value=radiance*in.lava.rgb;
+ value=mix(value,vec3<f32>(1.0),in.lava.w*0.9);
+ return sqrt(value/(1.0+value));
+}
+@fragment fn fs(in:Out)->@location(0) vec4<f32>{return vec4<f32>(surface(in),1.0);}
 @fragment fn fs_srgb(in:Out)->@location(0) vec4<f32>{
- let c=in.color;let linear=select(c/12.92,pow((c+0.055)/1.055,vec3<f32>(2.4)),c>vec3<f32>(0.04045));
+ let c=surface(in);let linear=select(c/12.92,pow((c+0.055)/1.055,vec3<f32>(2.4)),c>vec3<f32>(0.04045));
  return vec4<f32>(linear,1.0);
 }

@@ -167,6 +167,9 @@ impl Gg {
         self.hud.set_names(&self.world, &self.slots, &[]);
         let sky = crate::sky::SkyChoice::parse(&sample.sky)?;
         if self.sky.choice != sky { self.set_sky(sky)?; }
+        // Shot feedback needs this frame's controller pose, including after
+        // rebuilding the arena, before the render-time gun posing runs.
+        if self.xr_stereo {self.vis.track_gun(self.slots[0],self.xr_gun);}
         self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
         self.hud.tick(&self.world, DT);
         // Canonical 60 Hz presentation state, independent of review framerate.
@@ -936,6 +939,9 @@ impl app::Game for Gg {
         if self.world.events.contains(&Event::NewArena) { self.new_arena(); }
         hitch("new_arena", t);
         let t = std::time::Instant::now();
+        // Shot feedback needs this frame's controller pose, including after
+        // rebuilding the arena, before the render-time gun posing runs.
+        if self.xr_stereo {self.vis.track_gun(self.slots[0],self.xr_gun);}
         self.vis.absorb(&self.world, &crate::sounds::ears(&self.world, &self.slots));
         hitch("vis.absorb", t);
         let t = std::time::Instant::now();

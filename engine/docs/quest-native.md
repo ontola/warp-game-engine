@@ -65,11 +65,18 @@ retain the general culling path; the fast path is for plain meshes and skinning.
 The `minimum` profile additionally uses the engine's indexed forward renderer:
 coarsest authored mesh LOD, flat material colours and vertex lighting. Blocks
 are cubes with readable 3% joints, characters use the existing primitive proxies, GPU rubble is off,
-and effect particles are capped at 32. It skips textures, GI, shadows, bloom,
-volumetrics, TAA and procedural surface detail. Gameplay billows, explosion embers, ion columns and streaks render in place
+and effect particles are capped at 32. It skips general material textures, GI, shadows, bloom,
+volumetrics, TAA and expensive procedural surface detail. Lava is the exception:
+a seamless 128×128 field baked once on the CPU (about 85 KiB including mipmaps)
+provides dark crust and slowly flowing orange/yellow cracks with two filtered
+texture reads in the existing opaque pass. Solid meshes draw first so hidden
+lava can fail the depth test. Distant cracks fade to an average colour to reduce
+shimmer. This uses the generic `LAVA` material flag on PC and Quest. Gameplay billows, explosion embers, ion columns and streaks render in place
 with exposure conversion; heat refraction is omitted. Original sprite effects, names,
 HUD, bullets, growing guns, hit flashes and up to four unshadowed flashlights
-remain. The simpler flashlights can leak through walls. Transparent mesh
+remain. VR muzzle flashes spawn from the current controller pose, including
+the first shot after an arena rebuild, instead of a cached previous-frame
+barrel position. The simpler flashlights can leak through walls. Transparent mesh
 materials are approximated as solid colour; this is not the full material path.
 CPU-owned rigid mesh scenes can opt in with `Scene::graphics.minimal_forward`;
 unsupported GPU-deformed/generated scenes retain the general renderer.
@@ -179,6 +186,30 @@ are widened from 0.8% to 3% without added geometry; distant unfiltered seams
 can still alias. Floor surface height and simulation collision stay unchanged.
 Audio initialization waits for headset focus, avoiding an audio-start timeout
 aborting VR when launched with the headset asleep.
+
+On 31 October 2026, the minimum lava fixture passed on both Metal and the
+physical Quest 2 Adreno 650: dark crust/hot cracks, animation, and ordinary
+UNORM/direct sRGB parity within two channel values. At 1440×1584 per eye,
+120 serial stereo frames after 20 warmups measured the following CPU wall times
+including GPU completion (not GPU timestamps, no OpenXR compositor):
+
+| Fixture | Median | p95 |
+| --- | --- | --- |
+| Flat emissive lava | 4.349 ms | 4.799 ms |
+| Animated lava | 4.666 ms | 5.431 ms |
+| Flat lava hidden behind an opaque floor | 3.221 ms | 3.303 ms |
+| Animated lava hidden behind an opaque floor | 3.554 ms | 3.778 ms |
+
+The exposed-lava scene fills almost the entire view. A preceding run measured
+3.544/5.168 ms for flat/animated lava; sequential standalone runs are affected
+by device clocks and are not a precise incremental gameplay cost. These checks
+do not establish 120 fps with active VR gameplay. Reproduce with
+`cargo run -p render --example minimum_lava -- OUT --bench`; add `--flat` for
+the baseline or `--covered` for opaque occlusion. Android builds use cargo-ndk
+and link the NDK's `libc++_shared.so`. The current-pose muzzle regression and
+97 active Growing Guns app tests pass (two ignored); the native stereo firing
+capture shows the flash at the tracked barrel. Physical headset visibility
+and sustained effects-heavy performance still require active play.
 
 For diagnostics, use `adb logcat --pid=$(adb shell pidof com.ontola.warp.growingguns)`.
 Startup errors are tagged `WarpXR`. Preserve logs before restarting the app.
