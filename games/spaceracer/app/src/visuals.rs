@@ -18,10 +18,12 @@ pub const COLORS: [[f32; 3]; 6] = [
     [0.08, 0.55, 0.18],
     [0.6, 0.2, 0.03],
 ];
+type LoadedPart = (usize, Option<(usize, Vec3)>, Vec<(String, Affine3A)>);
 pub struct ShipPart {
     pub mesh: usize,
     pub slot: SlotId,
     pub chain: Vec<(String, Affine3A)>,
+    pub wreck: Option<(usize, Vec3, SlotId)>,
 }
 pub struct Visuals {
     pub stage: super::stage::Stage,
@@ -32,6 +34,9 @@ pub struct Visuals {
     pub slots: Slots,
     pub ships: Vec<Vec<ShipPart>>,
     pub jets: super::jets::Jets,
+    pub crash_fx: super::crash_fx::Crashes,
+    pub presentation_dt: f32,
+    last_presentation: Option<f32>,
     pub pickup_mesh: usize,
     pub pickup_slots: Vec<SlotId>,
     pub projectile_mesh: usize,
@@ -594,10 +599,19 @@ impl Visuals {
         stage.reserve(&mut scene, &mut slots);
         let ships = all_parts
             .into_iter()
-            .map(|parts: Vec<(usize, Vec<(String, Affine3A)>)>| {
+            .map(|parts: Vec<LoadedPart>| {
                 parts
                     .into_iter()
-                    .map(|(mesh, chain)| ShipPart {
+                    .map(|(mesh, wreck, chain)| ShipPart {
+                        wreck: wreck.map(|(m, c)| {
+                            (
+                                m,
+                                c,
+                                slots
+                                    .add(&mut scene, m, Affine3A::from_scale(Vec3::splat(0.0001)))
+                                    .unwrap(),
+                            )
+                        }),
                         mesh,
                         chain,
                         slot: slots.add(&mut scene, mesh, Affine3A::IDENTITY).unwrap(),
@@ -637,6 +651,10 @@ impl Visuals {
             })
             .collect();
         let jets = super::jets::Jets::new(root)?;
+        let crash_fx = super::crash_fx::Crashes::new(root)?;
+        let mut fx = render::fx::Effects::default();
+        fx.light_scale = crash_fx.config.explosion_light_scale;
+        fx.smooth_billows = true;
         Ok(Self {
             stage,
             scene,
@@ -646,6 +664,9 @@ impl Visuals {
             slots,
             ships,
             jets,
+            crash_fx,
+            presentation_dt: 0.,
+            last_presentation: None,
             pickup_mesh,
             pickup_slots,
             projectile_mesh,
@@ -653,14 +674,21 @@ impl Visuals {
             mounts,
             mount_meshes,
             uploaded: false,
-            fx: Default::default(),
+            fx,
             crashes: vec![0; 6],
             blast_stamp: -1.,
             fx_stamp: -1.,
         })
     }
-    pub fn update(&mut self, race: &Race, previous: &[spaceracer::race_rules::Pose], alpha: f32) {
+    pub fn update(
+        &mut self,
+        race: &Race,
+        previous: &[spaceracer::race_rules::Pose],
+        alpha: f32,
+    ) -> Result<(), String> {
         let time = (race.tick.saturating_sub(1) as f32 + alpha) / 120.;
+        self.presentation_dt = self.last_presentation.map_or(0., |t| (time - t).max(0.));
+        self.last_presentation = Some(time);
         self.stage.update(
             &mut self.scene,
             &mut self.slots,
@@ -686,12 +714,17 @@ impl Visuals {
             let p = &race.pilots[i];
             let input = race.drivers[i].input.drive;
             let base = Affine3A::from_mat3_translation(pose.basis, pose.origin);
+            let new_crash = race.drivers[i].motion.crash_id > self.crashes[i];
+            let mut wreck_parts = Vec::new();
             for part in &self.ships[i] {
                 let mut xf = base;
                 for (name, local) in &part.chain {
                     let local =
                         super::jets::control_transform(name, *local, input, input.brake as f32);
                     xf *= local;
+                }
+                if new_crash && let Some((mesh, center, slot)) = part.wreck {
+                    wreck_parts.push((mesh, slot, xf * Affine3A::from_translation(center)));
                 }
                 if p.crashed {
                     xf *= Affine3A::from_scale(Vec3::splat(0.001));
@@ -713,10 +746,22 @@ impl Visuals {
                     Vec3::from_array(self.jets.config.socket),
                 ),
             );
-            if race.drivers[i].motion.crash_id > self.crashes[i] {
+            if new_crash {
                 self.crashes[i] = race.drivers[i].motion.crash_id;
-                self.fx
-                    .explosion(time, pose.origin, 12., Vec3::new(1., 0.3, 0.05));
+                self.fx.explosion(
+                    time,
+                    pose.origin,
+                    self.crash_fx.config.crash_radius,
+                    Vec3::new(1., 0.3, 0.05),
+                );
+                self.crash_fx.spawn(
+                    race,
+                    i,
+                    time,
+                    &wreck_parts,
+                    &mut self.scene,
+                    &mut self.slots,
+                )?;
             }
         }
         self.jets.update(race, &poses, time);
@@ -848,6 +893,9 @@ impl Visuals {
             }
         }
         self.blast_stamp = race.clock;
+        self.crash_fx
+            .update(race, time, &mut self.scene, &mut self.slots, &mut self.fx);
+        Ok(())
     }
     pub fn light(&self, race: &Race) -> Lighting {
         let mut light = self.lighting.clone();
@@ -862,7 +910,7 @@ fn load_node(
     mats: &[u32],
     chain: &mut Vec<(String, Affine3A)>,
     visible: bool,
-    out: &mut Vec<(usize, Vec<(String, Affine3A)>)>,
+    out: &mut Vec<LoadedPart>,
 ) -> Result<(), String> {
     let name = node["name"].as_str().unwrap_or("");
     let visible = visible && node["visible"].as_bool().unwrap_or(true);
@@ -928,7 +976,7 @@ fn load_node(
                         scale: 1.,
                     });
                 }
-                let p = Primitive {
+                let mut p = Primitive {
                     material: mat,
                     vertices: positions
                         .into_iter()
@@ -942,7 +990,32 @@ fn load_node(
                     indices,
                 };
                 let mesh = scene.add_mesh(&p.mesh());
-                out.push((mesh, chain.clone()));
+                let lo = p
+                    .vertices
+                    .iter()
+                    .fold(Vec3::splat(f32::INFINITY), |a, v| a.min(v.pos.into()));
+                let hi = p
+                    .vertices
+                    .iter()
+                    .fold(Vec3::splat(f32::NEG_INFINITY), |a, v| a.max(v.pos.into()));
+                let extent = hi - lo;
+                let mut edges = extent.to_array();
+                edges.sort_by(f32::total_cmp);
+                let wreck = if edges[2] > 0.6
+                    && edges[1] > 0.2
+                    && scene.materials[mat as usize].flags & EMISSIVE == 0
+                {
+                    let center = (lo + hi) * 0.5;
+                    let tint = scene.materials[mat as usize].tint;
+                    p.material = super::visuals::surface(scene, 23, tint, 0.8, 1.);
+                    for v in &mut p.vertices {
+                        v.pos = (Vec3::from(v.pos) - center).to_array();
+                    }
+                    Some((scene.add_mesh(&p.mesh()), center))
+                } else {
+                    None
+                };
+                out.push((mesh, wreck, chain.clone()));
             }
         }
     }

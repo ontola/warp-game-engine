@@ -1,3 +1,4 @@
+mod crash_fx;
 mod jets;
 mod ocean_life;
 mod party;
@@ -39,6 +40,7 @@ struct Racer {
     fatal: Option<String>,
     ready: bool,
     demo: bool,
+    blur_enabled: bool,
     reload_ticks: u32,
 }
 const BIOMES: [&str; 5] = ["city", "forest", "cell", "desert", "ocean"];
@@ -88,6 +90,7 @@ impl Racer {
             fatal: None,
             ready: false,
             demo,
+            blur_enabled: true,
             reload_ticks: 0,
         })
     }
@@ -383,7 +386,7 @@ impl Game for Racer {
             || self.race.over
             || self.party.as_ref().is_some_and(|p| !p.running);
         let alpha = if frozen { 1. } else { frame.alpha };
-        self.visuals.update(&self.race, &self.previous, alpha);
+        self.visuals.update(&self.race, &self.previous, alpha)?;
         let mut light = self.visuals.light(&self.race);
         light.time = (self.race.tick.saturating_sub(1) as f32 + alpha) / 120.;
         if !self.visuals.uploaded {
@@ -397,6 +400,31 @@ impl Game for Racer {
         self.visuals.fx.flush(frame.gpu, renderer, light.time)?;
         self.visuals.jets.flush(frame.gpu, renderer)?;
         self.visuals.stage.flush(frame.gpu, renderer)?;
+        let effect = &self.visuals.crash_fx.config;
+        let blur: Vec<_> = self
+            .race
+            .pilots
+            .iter()
+            .take(self.players)
+            .map(|p| {
+                let speed = ((p.speed as f32 - effect.blur_start_speed)
+                    / (effect.blur_full_speed - effect.blur_start_speed))
+                    .clamp(0., 1.);
+                render::motion_blur::Settings {
+                    strength: if !self.blur_enabled || frozen || p.crashed || p.recovery > 0. {
+                        0.
+                    } else {
+                        speed * effect.blur_strength
+                            + if p.boost > 0. { effect.boost_blur } else { 0. }
+                    },
+                    shutter_seconds: effect.shutter_seconds,
+                    delta_seconds: self.visuals.presentation_dt,
+                    max_pixels: effect.max_blur_pixels,
+                }
+            })
+            .collect();
+        renderer.set_motion_blur(frame.gpu, &blur);
+
         let mut lights = self.visuals.fx.lights(light.time);
         lights.extend_from_slice(&self.visuals.jets.lights);
         let mut selected = std::collections::HashSet::new();
@@ -743,15 +771,17 @@ impl Game for Racer {
         })
     }
     fn state(&self) -> Option<String> {
-        Some(json!({"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"script_error":self.race.script_error,"error":self.fatal}).to_string())
+        Some(json!({"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"script_error":self.race.script_error,"error":self.fatal}).to_string())
     }
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let args: Vec<_> = cmd.split_whitespace().collect();
         match args.as_slice(){
         ["play"]=>self.menu=None,["pause"]=>self.menu=Some(0),["random"]=>self.random_race()?,
         ["give",who,weapon]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let d=self.race.drivers.get_mut(i).ok_or("pilot index")?;d.item=Some(Weapon::parse(weapon).ok_or("unknown weapon")?);},
+        ["blur","off"]=>self.blur_enabled=false,["blur","on"]=>self.blur_enabled=true,
+        ["crash",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let pose=self.race.pose(i);self.race.drivers[i].motion.air.position=pose.origin;self.race.drivers[i].motion.air.frame=pose.basis;self.race.drivers[i].motion.crash(&mut self.race.pilots[i],glam::Vec3::Y);},
         ["boost",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.lap=2;p.boost=3.;},
-        ["demo"]=>{self.demo=true;self.menu=None;},["help"]=>return Ok("play; pause; random; demo; give INDEX missile|warp|sentry|emp|railgun|glidebomb; boost INDEX".into()),_=>return Err("unknown command".into())}
+        ["demo"]=>{self.demo=true;self.menu=None;},["help"]=>return Ok("play; pause; random; demo; give INDEX missile|warp|sentry|emp|railgun|glidebomb; boost INDEX; crash INDEX; blur on|off".into()),_=>return Err("unknown command".into())}
         Ok("ok".into())
     }
 }
@@ -807,6 +837,7 @@ fn main() -> Result<(), String> {
         difficulty,
         demo,
     )?;
+    game.blur_enabled = !args.iter().any(|s| s == "--no-motion-blur");
     if let Some(frames) = arg("--bench") {
         let frames: u32 = frames.parse().map_err(|_| "--bench needs a frame count")?;
         if frames < 30 || frames > 10000 {
@@ -824,7 +855,7 @@ fn main() -> Result<(), String> {
         ];
         let gpu = render::Gpu::new()?;
         let (fps, passes) = app::bench(&mut game, &gpu, size, frames, 120.)?;
-        let report = json!({"gpu":{"name":gpu.summary().name,"backend":gpu.summary().backend,"driver":gpu.summary().driver},"size":size,"players":players,"frames":frames,"readback_fps":fps,"gpu_pass_ms_smoothed":passes,"scene":game.visuals.scene.stats(),"note":"Headless readback throughput is not interactive FPS; GPU times are smoothed pass samples, not latency percentiles."});
+        let report = json!({"gpu":{"name":gpu.summary().name,"backend":gpu.summary().backend,"driver":gpu.summary().driver},"size":size,"players":players,"motion_blur":game.blur_enabled,"frames":frames,"readback_fps":fps,"gpu_pass_ms_smoothed":passes,"scene":game.visuals.scene.stats(),"note":"Headless readback throughput is not interactive FPS; GPU times are smoothed pass samples, not latency percentiles."});
         let report = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
         println!("{report}");
         if let Some(path) = arg("--out") {

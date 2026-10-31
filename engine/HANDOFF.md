@@ -7,6 +7,16 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## SpaceRacer motion blur and crash debris - 31 October 2026
+
+Native effects complete for this iteration: per-view HDR motion-vector blur
+and source hull fragments with soot, gravity/bounces and small fire/smoke.
+Artistic policy in `games/spaceracer/rules/effects.luau`; bounded mechanics and
+GPU work native. Shared FX smoother billows with opt-in continuous smoke.
+See `games/spaceracer/visual-review.md` for captures, tests and 1/4-view timings;
+`engine/docs/motion-blur.md` for the optional renderer API and limitations.
+Portable Windows build refreshed. No interactive, Android or hardware test.
+
 ## SpaceRacer visual corrections — 31 October 2026
 
 Native visual revision: see `games/spaceracer/visual-review.md`. Game-owned

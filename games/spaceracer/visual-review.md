@@ -1,3 +1,71 @@
+# Crash effects and motion blur - 31 October 2026
+
+Baseline: 2200c12. Added the remaining effects discussed with the user:
+actual ship-fragment destruction and true motion-vector blur. Existing boost
+arcs, exhaust heat/flaring and phosphor trails remain in use.
+
+- `rules/effects.luau` owns shutter/speed/boost tuning, explosion light scale,
+  fragment count/lifetime, launch impulses and spin. Read at race generation.
+- Up to 28 actual hull components per racer retain the owner's paint under
+  procedural soot/scratches. Interpolated 120 Hz cosmetic gravity, drag and
+  bounce; nearest 64 scenery bounds, terrain and a local ribbon plane are
+  approximate contacts. Small fire/smoke plumes; independent expiry after
+  respawn. This is not connected-body fracture or detailed hull collision.
+- Shared Growing Guns billows now use 32x18 geometry (embers remain 16x9).
+  SpaceRacer opts into continuous soot shading and a single visible soft shell,
+  removing unsorted back/front triangle seams. Other games retain the banded
+  palette. Night explosion light scale is 500 instead of the arena default
+  37,000; roads still receive a warm bright specular flash.
+- Per-view 12-tap motion-vector blur follows HDR effects and precedes bloom/HUD.
+  Fixed shutter with speed/boost strength, depth/velocity rejection, separate
+  split-view targets. Pause/crash/recovery and invalid/long history gaps disable
+  blur. Custom octopus skin motion is not independently reconstructed; particle
+  blur uses underlying scene motion. See `engine/docs/motion-blur.md`.
+
+## Verification
+
+Ten app tests pass, including fragment pause, respawn independence, repeated
+crash replacement, expiry across presentation gaps and dissipative bounce.
+Seven shared FX tests, two motion-blur tests and renderer layout/timestamp
+checks pass. `scenarios/crash-effects.json`: 1,724 ticks, 18 advancing boost
+captures, crash/fire/debris, pause, respawn and zero debris after expiry; all
+expectations pass, including a repeat on the rebuilt portable executable.
+The initial expiry expectation ran before a draw (cosmetic state only advances
+at presentation); adding the final capture verifies actual cleanup, alongside
+the isolated unit test. Four-view boost/crash fixture: 803 ticks, all checks pass.
+
+Reviewed identical seeded motion frames with blur on/off: background and passing
+craft blur while the followed craft and HUD remain readable. Reviewed smoke
+and debris after reducing overexposure and removing polygon seams. These are
+headless views, not a physical controller playtest or full visual parity claim.
+
+Artifacts: `build/spaceracer-effects/portable/` (final packaged build),
+`smooth/`, `no-blur/`, `four/` and JSON timing reports. Windows portable rebuilt;
+no Android build or interactive window launched.
+
+## Measurements
+
+RTX 5070 Ti, Vulkan, NVIDIA 617.14; city seed 31, 750 warmup simulation ticks,
+1920x1080 output, native TAA; four views are 960x540 each. No simultaneous GPU
+fixture or compiler. Background services were not isolated.
+
+| Run | Moving frames | Headless readback frames/s | Motion vectors ms | Blur ms |
+| --- | ---: | ---: | ---: | ---: |
+| Four players, on | 120 | 115.42 | 0.0569 | 0.1062 |
+| Four players, off | 120 | 85.75 | absent | absent |
+| One player, on | 120 | 118.58 | 0.0494 | 0.1106 |
+| Four players, off (longer repeat) | 600 | 117.17 | absent | absent |
+| Four players, on (longer repeat) | 600 | 107.32 | 0.0491 | 0.1298 |
+
+GPU columns are final exponentially smoothed named-pass samples, summed across
+views by the shared profiler, not latency percentiles or whole-frame cost.
+Throughput excludes the first two render frames but includes readback; it is
+not interactive FPS. The contradictory short-run throughput shows noise;
+longer runs still do not establish isolated overhead. No 4K/120 or mobile
+performance claim. Initial scene upload and PNG encoding are excluded here.
+
+---
+
 # Reef planting clearance - 31 October 2026
 
 Fix for stalks clipping into canyon walls: plant clearance now derives its

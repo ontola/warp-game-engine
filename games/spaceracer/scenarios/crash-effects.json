@@ -1,0 +1,132 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": "demo",
+      "ticks": 750
+    },
+    {
+      "cmd": "boost 0",
+      "ticks": 2
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-00.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-01.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-02.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-03.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-04.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-05.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-06.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-07.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-08.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-09.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-10.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-11.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-12.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-13.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-14.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-15.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-16.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-17.png"
+    },
+    {
+      "cmd": "crash 0",
+      "ticks": 1,
+      "capture": "crash-birth.png",
+      "expect": "/debris",
+      "min": 1
+    },
+    {
+      "ticks": 20,
+      "capture": "crash-fire.png"
+    },
+    {
+      "ticks": 35,
+      "capture": "crash-pieces.png"
+    },
+    {
+      "cmd": "pause",
+      "ticks": 60,
+      "capture": "crash-pause.png",
+      "expect": "/paused",
+      "equals": true
+    },
+    {
+      "cmd": "play",
+      "ticks": 220,
+      "capture": "respawn-pieces.png",
+      "expect": "/pilots/0/crashed",
+      "equals": false
+    },
+    {
+      "ticks": 600,
+      "expect": "/debris",
+      "equals": 0,
+      "capture": "cleanup.png",
+      "state": "cleanup.json"
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}

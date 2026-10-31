@@ -37,8 +37,7 @@ struct Puff {
 @group(0) @binding(4) var scene_depth: texture_depth_2d;
 @group(0) @binding(5) var samp: sampler;
 
-const SEGMENTS: u32 = 16u;
-const RINGS: u32 = 9u;
+// Billows use 32 x 18; tiny embers and heat shells retain 16 x 9.
 
 struct V {
     @builtin(position) position: vec4<f32>,
@@ -50,22 +49,22 @@ struct V {
     @location(5) @interpolate(flat) id: u32,
 };
 
-// Unit-diameter UV sphere (Godot SphereMesh radius 0.5, 16 x 9), as six
+// UV sphere with radius 0.5 after scaling, as six
 // vertices per quad from the vertex index.
-fn sphere(v: u32) -> vec3<f32> {
+fn sphere(v: u32, segments: u32, rings: u32) -> vec3<f32> {
     let quad = v / 6u;
     let corner = array<vec2<u32>, 6>(vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 1u))[v % 6u];
-    let s = quad % SEGMENTS + corner.x;
-    let r = quad / SEGMENTS + corner.y;
-    let theta = f32(s) / f32(SEGMENTS) * 6.2831853;
-    let phi = f32(r) / f32(RINGS) * 3.14159265;
+    let s = quad % segments + corner.x;
+    let r = quad / segments + corner.y;
+    let theta = f32(s) / f32(segments) * 6.2831853;
+    let phi = f32(r) / f32(rings) * 3.14159265;
     return vec3<f32>(cos(theta) * sin(phi), cos(phi), sin(theta) * sin(phi));
 }
 
-fn sphere_uv(v: u32) -> vec2<f32> {
+fn sphere_uv(v: u32, segments: u32, rings: u32) -> vec2<f32> {
     let quad = v / 6u;
     let corner = array<vec2<u32>, 6>(vec2<u32>(0u, 0u), vec2<u32>(1u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 0u), vec2<u32>(1u, 1u), vec2<u32>(0u, 1u))[v % 6u];
-    return vec2<f32>(f32(quad % SEGMENTS + corner.x) / f32(SEGMENTS), f32(quad / SEGMENTS + corner.y) / f32(RINGS));
+    return vec2<f32>(f32(quad % segments + corner.x) / f32(segments), f32(quad / segments + corner.y) / f32(rings));
 }
 
 // Godot's TRANS_EXPO / EASE_OUT.
@@ -76,12 +75,14 @@ fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V 
     let id = order[ii];
     let p = puffs[id];
     let kind = u32(p.center_kind.w + 0.5);
-    let n = sphere(vi);
+    let segments = select(16u, 32u, kind <= 1u);
+    let rings = select(9u, 18u, kind <= 1u);
+    let n = sphere(vi, segments, rings);
     var local = n * 0.5;
     let anim = clamp((u.clock.x - p.timing.x) / max(p.timing.y, 1e-4), 0.0, 1.0);
     var out: V;
     out.id = id;
-    out.uv = sphere_uv(vi);
+    out.uv = sphere_uv(vi, segments, rings);
     out.shade = 0.0;
     var world = p.center_kind.xyz;
     var normal = n;
@@ -101,7 +102,7 @@ fn fx_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V 
         let b = sin(local.x * 13.0 + s * 2.1) * sin(local.z * 11.0 + s * 1.3);
         let c = sin(local.x * 21.0 + s * 3.3) * sin(local.y * 18.0 + s * 2.1) * sin(local.z * 25.0 + s * 1.5);
         out.shade = (a * 0.7 + b * 0.3) * 0.55 + c * 0.45;
-        local += n * (a * 0.7 + b * 0.3) * 0.32;
+        local += n * (a * 0.7 + b * 0.3) * select(0.32, 0.14, p.az.w >= 2.0);
         local *= mix(0.35, 1.0, out.age);
         world += p.ax.xyz * local.x + p.ay.xyz * local.y + p.az.xyz * local.z + vec3<f32>(0.0, p.timing.z * anim, 0.0);
         // Normal through the inverse transpose of the (orthogonal) axes.
@@ -360,7 +361,12 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
     let gap = depth_gap(in.world);
     if gap <= 0.0 { discard; }
     let view = normalize(u.camera_near.xyz - in.world);
-    let facing = abs(dot(normalize(in.normal), view));
+    let continuous = p.az.w >= 2.0;
+    let signed_facing = dot(normalize(in.normal), view);
+    // A single visible shell avoids unsorted back/front triangles printing
+    // hard seams through the otherwise translucent billow.
+    if continuous && signed_facing <= 0.0 { discard; }
+    let facing = abs(signed_facing);
     let fres = pow(1.0 - facing, 2.1);
     let age = in.age;
     let fade_in = smoothstep(0.0, 0.12, age);
@@ -368,13 +374,18 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
     // Long tail with a soft landing.
     let fade_out = pow(1.0 - t, p.extra.w) * (1.0 - smoothstep(0.5, 1.0, t));
     var alpha = p.body.a * fade_in * fade_out * smoothstep(0.0, 0.85, facing);
+    if continuous {
+        let q = (in.world-p.center_kind.xyz) / max(length(p.ax.xyz), 0.01) * 16.0;
+        let density = 0.75 + 0.25 * sin(q.x+q.y*0.7+p.ax.w*30.0) * sin(q.z-q.y);
+        alpha *= facing * density;
+    }
     // Soft particles: dissolve where the puff meets solid geometry.
     alpha *= clamp(gap / 1.6, 0.0, 1.0);
     let cell = floor(in.uv * vec2<f32>(8.0, 5.0));
-    let band = (cell.x + cell.y) % 3.0 - 1.0;
+    let band = select((cell.x + cell.y) % 3.0 - 1.0, in.shade, continuous);
     var color: vec3<f32>;
     if u32(p.center_kind.w + 0.5) == 1u {
-        let heat = clamp(p.az.w + band * 0.06, 0.0, 1.0);
+        let heat = clamp(p.az.w - select(0.0, 2.0, continuous) + band * 0.06, 0.0, 1.0);
         let cool = 1.0 - smoothstep(0.0, 0.75, age);
         let fire = clamp(heat * 0.6 + facing * 0.25 + cool * 0.15, 0.0, 1.0);
         var c = vec3<f32>(0.03, 0.025, 0.02);
@@ -392,10 +403,10 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
         shade = clamp(shade + band * 0.05, 0.0, 1.0);
         var grey = dot(p.body.rgb, vec3<f32>(0.3333)) * shade * 0.42;
         grey = mix(grey, grey * 0.22, fres);
-        grey = floor(grey * 16.0 + 0.5) / 16.0;
+        if !continuous { grey = floor(grey * 16.0 + 0.5) / 16.0; }
         // Godot's arena haze lifts its unshaded smoke to a mid grey that
         // darkens the background by about a quarter; match that.
-        color = vec3<f32>(grey * 3.0 + 0.12) * p.extra.rgb;
+        color = vec3<f32>(select(grey * 3.0 + 0.12, grey, continuous)) * p.extra.rgb;
         alpha *= 0.75;
     }
     if alpha < 0.0005 { discard; }
