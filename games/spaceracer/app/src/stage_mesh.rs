@@ -116,7 +116,7 @@ pub fn build(scene: &mut Scene, name: &str, m: u32) -> (usize, Vec3, Vec3) {
         "box" => p = primitives::cube(m),
         "octagon" => p = primitives::cylinder(m, 0.5, 0.5, 8),
         "rod" => p = primitives::cylinder(m, 0.5, 0.5, 8),
-        "sphere" | "mitochondrion" => p = normalized_sphere(m),
+        "sphere" | "mitochondrion" | "bubble" => p = normalized_sphere(m),
         "pore" => p = primitives::torus(m, 0.23, 24, 8),
         "dna" => {
             for strand in 0..2 {

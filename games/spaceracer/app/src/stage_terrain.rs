@@ -151,7 +151,13 @@ pub fn generate(race: &Race) -> Arc<Landscape> {
                 } else {
                     low[i]
                 };
-                top += 40. + 175. * wall[i];
+                // Reef shelves leave sightlines to schools and giant animals.
+                // Desert keeps its tall enclosing canyon walls.
+                top += if ocean {
+                    10. + 65. * wall[i]
+                } else {
+                    40. + 175. * wall[i]
+                };
                 if desert {
                     let t = (top - floor) / 46.;
                     top = floor + (t.floor() + smooth(0.62, 1., t.fract())) * 46.;
@@ -184,7 +190,13 @@ pub fn mesh(scene: &mut Scene, t: &Landscape, material: u32) {
                     let wz = (cz + z) as f32 * t.step - t.half;
                     p.vertices.push(Vertex {
                         pos: [wx, t.heights[(cz + z) * (t.cells + 1) + cx + x], wz],
-                        normal: t.normal(wx, wz).to_array(),
+                        normal: glam::Vec3::new(
+                            t.height(wx - t.step, wz) - t.height(wx + t.step, wz),
+                            2. * t.step,
+                            t.height(wx, wz - t.step) - t.height(wx, wz + t.step),
+                        )
+                        .normalize()
+                        .to_array(),
                         uv: [wx, wz],
                     });
                 }

@@ -81,6 +81,7 @@ pub struct Stage {
     walker_data: Vec<(Vec3, f32, f32)>,
     walker_meshes: [usize; 3],
     pub counts: HashMap<String, usize>,
+    octopuses: Vec<super::ocean_life::Octopus>,
 }
 fn vec(v: mlua::Vector) -> Vec3 {
     Vec3::new(v.x(), v.y(), v.z())
@@ -132,9 +133,9 @@ fn mat(scene: &mut Scene, name: &str, cache: &mut HashMap<String, u32>) -> u32 {
         let k = n.parse::<usize>().unwrap_or(0) % 6;
         material(
             scene,
-            palette(["b6d4f0", "f89446", "ecd378", "8ebcaf", "d27662", "699ddd"][k]),
+            palette(["b6d4f0", "f89466", "ecd378", "76d6c9", "bd82f2", "699ddd"][k]),
             0.5,
-            24.,
+            42.,
         )
     } else if name.starts_with("traffic") {
         let k = name[7..].parse::<usize>().unwrap_or(0) % 6;
@@ -159,7 +160,9 @@ fn mat(scene: &mut Scene, name: &str, cache: &mut HashMap<String, u32>) -> u32 {
             "membrane" => surface(scene, 9, [0.1, 0.3, 0.26], 1., 1.),
             "metal" => material(scene, [0.035, 0.05, 0.075], 0.55, 0.),
             "beacon" => material(scene, [1., 0.06, 0.025], 0.5, night),
-            "fern" => material(scene, [0.13, 0.3, 0.085], 0.95, 0.),
+            "fern" => material(scene, [0.075, 0.20, 0.035], 0.95, 0.),
+            "moss" => surface(scene, 18, [0.12, 0.15, 0.095], 0.9, 1.),
+            "bubble" => surface(scene, 22, [0.06, 0.22, 0.25], 0.12, 1.),
             "cactus" => material(scene, palette("6c8a4f"), 0.95, 0.),
             "sandstone" => surface(scene, 4, [0.55, 0.32, 0.15], 0.85, 1.),
             "reef" => surface(scene, 16, [0.16, 0.26, 0.23], 0.85, 1.),
@@ -293,6 +296,7 @@ impl Stage {
         let occupied = Arc::new(Mutex::new(Vec::<Bounds>::new()));
         let lamps = Arc::new(Mutex::new(Vec::<LocalLight>::new()));
         let walkers = Arc::new(Mutex::new(Vec::<(Vec3, f32, f32)>::new()));
+        let octopuses = Arc::new(Mutex::new(Vec::<super::ocean_life::Site>::new()));
         let mut host = Host::new(
             Limits {
                 memory: 96 << 20,
@@ -533,6 +537,30 @@ impl Stage {
                         Ok(())
                     })?,
                 )?;
+                let animals = octopuses.clone();
+                api.set(
+                    "octopus",
+                    lua.create_function(
+                        move |_, (p, size, yaw, phase): (mlua::Vector, f32, f32, f32)| {
+                            let mut sites = animals.lock().unwrap();
+                            if sites.len() >= 4
+                                || !(16.0..=40.0).contains(&size)
+                                || !vec(p).is_finite()
+                                || !yaw.is_finite()
+                                || !phase.is_finite()
+                            {
+                                return Err(mlua::Error::external("invalid octopus site"));
+                            }
+                            sites.push(super::ocean_life::Site {
+                                position: vec(p),
+                                size,
+                                yaw,
+                                phase,
+                            });
+                            Ok(())
+                        },
+                    )?,
+                )?;
                 let l = lamps.clone();
                 api.set("lamp",lua.create_function(move|_,(p,color,power,range):(mlua::Vector,mlua::Vector,f32,f32)|{l.lock().unwrap().push(LocalLight{position:vec(p),direction:Vec3::Y,intensity_cd:vec(color)*power,range_m:range,inner_cos:1.,outer_cos:-1.,source_radius_m:8.,falloff:1.8});Ok(())})?)?;
                 Ok(())
@@ -589,7 +617,7 @@ impl Stage {
                             roughness: 0.5,
                             metal: 0.,
                             flags: EMISSIVE,
-                            scale: 100.,
+                            scale: 145.,
                         });
                         let mut p = Primitive {
                             material: m,
@@ -704,6 +732,27 @@ impl Stage {
             dynamic.len(),
             walkers.lock().unwrap().len()
         );
+        let animals: Vec<_> = octopuses
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|&site| {
+                let bounds = Bounds {
+                    lo: Vec3::new(-1.2, 0., -1.2) * site.size,
+                    hi: Vec3::new(1.2, 2.85, 1.4) * site.size,
+                }
+                .transformed(Affine3A::from_rotation_translation(
+                    Quat::from_rotation_y(site.yaw),
+                    site.position,
+                ));
+                obstacles.push(Obstacle {
+                    min: bounds.lo,
+                    max: bounds.hi,
+                });
+                super::ocean_life::Octopus::add(scene, site)
+            })
+            .collect();
+        counts.insert("octopus".into(), animals.len());
         let walker_data = walkers.lock().unwrap().clone();
         let lamps = lamps.lock().unwrap().clone();
         Ok(Self {
@@ -716,6 +765,7 @@ impl Stage {
             walker_data,
             walker_meshes,
             counts,
+            octopuses: animals,
         })
     }
     pub fn capacity(&self) -> usize {
@@ -755,12 +805,25 @@ impl Stage {
             });
         }
     }
-    pub fn update(&self, scene: &mut Scene, slots: &mut Slots, time: f32) {
+    pub fn flush(&self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
+        for animal in &self.octopuses {
+            renderer.set_skinning_palette(gpu, animal.actor, &animal.palette)?;
+        }
+        Ok(())
+    }
+    pub fn update(&mut self, scene: &mut Scene, slots: &mut Slots, time: f32) {
+        for animal in &mut self.octopuses {
+            animal.update(time);
+        }
         for a in &self.animated {
             let mut xf = a.xf;
             let t = time * a.speed + a.phase;
             if a.kind == "traffic" {
                 xf.translation.x += (t).rem_euclid(a.length);
+            } else if a.kind == "bubble" {
+                xf.translation.y += t.rem_euclid(a.length);
+                xf.translation.x += (t * 0.13).sin() * 2.;
+                xf.translation.z += (t * 0.1).cos() * 2.;
             } else if a.kind == "swim" {
                 xf.translation += glam::Vec3A::new(
                     t.cos() * a.length,
@@ -956,7 +1019,12 @@ mod tests {
                 }
                 "desert" => assert!(count("cactus") > 200 && count("rock0") + count("rock1") > 100),
                 "ocean" => {
-                    assert!(count("kelp") > 500 && count("jelly") == 112 && count("manta") == 6)
+                    assert!(count("kelp") > 500 && count("jelly") == 112 && count("manta") == 6);
+                    assert!(count("octopus") >= 3);
+                    scene
+                        .skinning
+                        .validate(&scene.vertices, &scene.instances)
+                        .unwrap();
                 }
                 _ => unreachable!(),
             }

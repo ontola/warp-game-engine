@@ -178,7 +178,7 @@
     {
       "path": "src/ocean_life.gd",
       "sha256": "01005e570b460671eb299dbb8045faab7db088a9f120dfcba2e762144e251ec1",
-      "status": "interpolated fish, jelly and manta instances; simplified creature mesh/motion; giant octopuses, bubbles/snow and shafts pending"
+      "status": "interpolated fish, jelly and manta instances; four Luau-placed giant octopuses with GPU-skinned continuous arms, suckers and mantle breathing; rising rim-lit bubble instances; simplified collision and creature motion; snow and shafts pending"
     },
     {
       "path": "src/ocean_terrain.gd",
@@ -345,7 +345,7 @@
     "ship_variants_preserved": 5,
     "source_assets_preserved": 102,
     "renderer_camera_math_tests": 1,
-    "native_app_tests": 6,
+    "native_app_tests": 7,
     "app_input_tests_total": 21,
     "headless_flow_ticks": 1207,
     "capture_resolution": [
@@ -359,11 +359,12 @@
       1080
     ],
     "biome_capture_count": 5,
-    "native_visual_revision": "source-based stages plus native jet/core/flare/heat/brake/boost-trail restoration; 26 sim/app checks; headless city/day/four-view and controller/EMP flows; gameplay fixtures unchanged",
-    "jet_effect_scenario_ticks": 601
+    "native_visual_revision": "source-based stages, restored jets, clearcoat/glass, forest understory and GPU-skinned giant octopuses; 27 sim/app checks; native city/forest/ocean screenshots and four-view ocean measurement",
+    "jet_effect_scenario_ticks": 601,
+    "ocean_life_scenario_ticks": 960
   },
   "next_required": [
-    "Remaining source stage features: sandworm, giant octopuses, environmental animation and full material/effect fidelity",
+    "Remaining source stage features: sandworm, full environmental animation and material/effect fidelity",
     "Original audio, face decals and full GameNight settings/profile behavior",
     "Real controller playtests for AI, contacts, weapons and flight tuning",
     "Complete visor, victory, crash debris, wear and respawn presentation",

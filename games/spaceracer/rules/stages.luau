@@ -178,6 +178,26 @@ local function forest(ctx)
             if spot.y>ctx.water+1.5 and clear(spot+U*s*.7,V(s*1.4,s*.7,s*1.4)) then put("fern","fern",spot,V(R(.65,1.3),R(.55,1.4),R(.65,1.3))*s,V(0,angle,0)) end
         end
     end end
+    -- Understory follows the route and shoreline rather than a uniform grid.
+    -- Shared rock/fern templates keep this inexpensive; the ribbon stays clear.
+    seed(ctx.seed+29173)
+    for i=0,279 do
+        local n=sample(i/280)
+        local side=i%2==0 and -1 or 1
+        local p=n.p+n.r*side*(n.w+R(35,155))
+        p=V(p.x,ground(p.x,p.z)-.3,p.z)
+        if p.y<ctx.water-2 then continue end
+        local size=R(5,18)
+        local scale=V(size*R(1.2,1.8),size*.65,size)
+        local rotation=V(0,R(0,TAU),0)
+        if mesh_clear("rock2",p,scale,rotation) then put("rock2","moss",p,scale,rotation,true) end
+        for k=1,4 do
+            local a=R(0,TAU);local q=p+V(math.cos(a),0,math.sin(a))*R(size*.6,size*1.8)
+            q=V(q.x,ground(q.x,q.z)-.2,q.z)
+            local h=R(4,10)
+            if q.y>ctx.water+1 and clear(q+U*h*.5,V(h,h*.5,h)) then put("fern","fern",q,V(h,h*.7,h),V(0,a,0)) end
+        end
+    end
 end
 local function cell(ctx)
     local lowest,highest,reach=math.huge,-math.huge,0
@@ -246,6 +266,35 @@ local function dry(ctx,ocean)
     end
     if ocean then
         seed(ctx.seed+81919)
+        -- Giant animals are landmarks, not obstacles across the racing line.
+        -- Reserve the complete tentacle envelope, including their animation.
+        for _,fraction in {.035,.27,.53,.78} do
+            local best=nil;local score=math.huge
+            for attempt=0,79 do
+                local n=sample(fraction+(attempt//4)*.006)
+                local side=attempt%2==0 and -1 or 1
+                local size=R(22,30)
+                local p=n.p+n.r*side*(n.w+size*6.4+45+(attempt%4)*12)
+                p=V(p.x,ground(p.x,p.z)+size*1.5,p.z)
+                -- Prefer low shelves visible from the road, not hidden behind
+                -- the tall canyon walls. Keep a fallback for steep seeds.
+                local cost=math.abs(p.y+size*1.2-n.p.y)+attempt*.3
+                if cost<score and clear(p+U*size*2.5,V(size*6.2,size*3.5,size*6.2)) then
+                    local facing=n.p-p
+                    best={p=p,size=size,yaw=math.atan2(-facing.x,-facing.z)};score=cost
+                end
+            end
+            if best then octopus(best.p,best.size,best.yaw,R(0,TAU)) end
+        end
+        for vent=0,15 do
+            local n=sample((vent+.4)/16)
+            local p=n.p+n.r*(vent%2==0 and 100 or -100)
+            p=V(p.x,ground(p.x,p.z)+2,p.z)
+            for k=0,19 do
+                local r=R(.3,1.1)
+                moving("bubble","bubble",p+V(R(-5,5),0,R(-5,5)),V(r,r,r),Z,"bubble",k*6,R(4,7),120)
+            end
+        end
         for school=0,11 do
             local n=sample((school+R(.1,.9))/12);local p=n.p+n.r*(school%2==0 and 130 or -130)+U*R(10,45)
             if clear(p,V(65,45,65)) then for k=0,59 do moving("fish","fish"..(school%5),p+V(R(-35,35),R(-14,14),R(-35,35)),V(5,5,5),Z,"swim",R(0,TAU),R(.1,.18),R(40,100)) end end

@@ -1,4 +1,5 @@
 mod jets;
+mod ocean_life;
 mod party;
 mod stage;
 mod stage_mesh;
@@ -395,6 +396,7 @@ impl Game for Racer {
             .flush(frame.gpu, renderer, &self.visuals.scene)?;
         self.visuals.fx.flush(frame.gpu, renderer, light.time)?;
         self.visuals.jets.flush(frame.gpu, renderer)?;
+        self.visuals.stage.flush(frame.gpu, renderer)?;
         let mut lights = self.visuals.fx.lights(light.time);
         lights.extend_from_slice(&self.visuals.jets.lights);
         let mut selected = std::collections::HashSet::new();

@@ -1,0 +1,13 @@
+{
+  "size": [1600, 900],
+  "steps": [
+    {"cmd":"demo","ticks":430,"capture":"reef-life.png","expect":"/stage/octopus","equals":4},
+    {"expect":"/stage/bubble","equals":320},
+    {"expect":"/stage/jelly","equals":112},
+    {"expect":"/stage/manta","equals":6},
+    {"cmd":"pause","ticks":60,"expect":"/paused","equals":true},
+    {"cmd":"play","ticks":470,"capture":"reef-descent.png"},
+    {"expect":"/error","equals":null},
+    {"expect":"/script_error","equals":null}
+  ]
+}
