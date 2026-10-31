@@ -194,6 +194,12 @@ impl Visuals {
         self.fx.flush(gpu, renderer, &self.scene, self.clock)
     }
 
+    /// Reconstructing a recording needs collision/spawn ordering on the GPU,
+    /// but static lighting, materials and ordinary instances only at paint time.
+    pub fn flush_replay_debris(&mut self, gpu: &render::Gpu, renderer: &render::Renderer) -> Result<(), String> {
+        self.fx.debris.flush(gpu, renderer)
+    }
+
     /// Effects from this tick's events, then one tick of physics and
     /// particle motion (colliding with the arena). `ears` place the crowd's
     /// reactions.

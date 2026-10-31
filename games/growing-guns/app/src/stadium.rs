@@ -139,12 +139,50 @@ impl Rng {
 type Probes = Vec<render::irradiance_volume::Probe>;
 
 /// One stadium sky-occlusion bake (`render::sky_occlusion::bake_diffuse`).
+#[derive(Clone)]
 struct SkyBake { emission: Probes, probes: Probes, planes: Vec<[f32;4]>, ms: f64 }
+
+// Keep just two geometries per cache (~24 MiB total at the normal grid).
+// Rewinding identical geometry must not rebake half a second of static light.
+#[derive(PartialEq)]
+struct BakeKey { grid: [u32; 7], boxes: Vec<[u32; 12]>, reflectance: u32, extra: [u32; 4] }
+impl BakeKey {
+    fn new(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectance: f32, extra: [u32; 4]) -> Self {
+        Self { grid: [grid.origin.x.to_bits(), grid.origin.y.to_bits(), grid.origin.z.to_bits(), grid.cell.to_bits(), grid.dims[0], grid.dims[1], grid.dims[2]],
+            boxes: boxes.iter().map(|b| b.to_cols_array().map(f32::to_bits)).collect(), reflectance: reflectance.to_bits(), extra }
+    }
+}
+struct BakeCache<T>(std::collections::VecDeque<(BakeKey, T)>);
+impl<T: Clone> BakeCache<T> {
+    fn get(&self, key: &BakeKey) -> Option<T> { self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()) }
+    fn put(&mut self, key: BakeKey, value: T) {
+        self.0.retain(|(k, _)| *k != key);
+        self.0.push_back((key, value));
+        while self.0.len() > 2 { self.0.pop_front(); }
+    }
+}
+fn bake_sun_cached(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], sky: &[render::irradiance_volume::Probe], reflectance: f32, sun: Vec3) -> Result<Probes, String> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<BakeCache<Probes>>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(BakeCache(Default::default())));
+    let key = BakeKey::new(grid, boxes, reflectance, [sun.x.to_bits(), sun.y.to_bits(), sun.z.to_bits(), 0]);
+    if let Some(probes) = cache.lock().unwrap().get(&key) { return Ok(probes); }
+    let probes = render::sky_occlusion::bake_sun(&grid, boxes, sky, 96, reflectance, sun)?;
+    cache.lock().unwrap().put(key, probes.clone());
+    Ok(probes)
+}
 
 fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectance: f32, half: f32) -> SkyBake {
     let start = std::time::Instant::now();
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<BakeCache<SkyBake>>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(BakeCache(Default::default())));
+    let separate = std::env::var("GG_SKY_SEPARATION").as_deref() == Ok("1");
+    let key = BakeKey::new(grid, boxes, reflectance, [half.to_bits(), separate as u32, 0, 0]);
+    if let Some(mut bake) = cache.lock().unwrap().get(&key) {
+        bake.ms = start.elapsed().as_secs_f64() * 1000.0;
+        return bake;
+    }
     let probes = render::sky_occlusion::bake_diffuse(&grid, boxes, 96, reflectance).expect("valid stadium occluders");
-    let planes = if std::env::var("GG_SKY_SEPARATION").as_deref()==Ok("1") {
+    let planes = if separate {
         render::sky_occlusion::bake_separation_planes(&grid, boxes).expect("valid separation geometry")
     } else { Vec::new() };
     // Four non-overlapping rectangles: the outer lava sea, excluding the
@@ -153,7 +191,9 @@ fn bake_sky(grid: render::irradiance_volume::Grid, boxes: &[Affine3A], reflectan
     let rects=[([-450.0,-450.0],[-half,450.0]),([half,-450.0],[450.0,450.0]),([-half,-450.0],[half,-half]),([-half,half],[half,450.0])];
     let emitters=rects.map(|(min,max)| render::sky_occlusion::PlaneEmitter { y: growing_guns::arena::LAVA_KILL_Y, min: min.into(), max: max.into(), radiance });
     let emission=render::sky_occlusion::bake_emission(&grid,boxes,&emitters,96).expect("valid lava emitters");
-    SkyBake { emission, probes, planes, ms: start.elapsed().as_secs_f64()*1000.0 }
+    let bake = SkyBake { emission, probes, planes, ms: start.elapsed().as_secs_f64()*1000.0 };
+    cache.lock().unwrap().put(key, bake.clone());
+    bake
 }
 
 pub struct StadiumVisuals {
@@ -581,7 +621,7 @@ impl StadiumVisuals {
                 let (boxes, sky, reflectance, sun) = (self.sky_boxes.clone(), self.sky_probes.clone(), self.sky_reflectance, light.sun_dir);
                 let bake = move || {
                     let start=std::time::Instant::now();
-                    let probes=render::sky_occlusion::bake_sun(&grid,&boxes,&sky,96,reflectance,sun);
+                    let probes=bake_sun_cached(grid,&boxes,&sky,reflectance,sun);
                     eprintln!("stadium sun return: {:.1} ms bake",start.elapsed().as_secs_f64()*1000.0);
                     probes
                 };

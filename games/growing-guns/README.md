@@ -125,10 +125,10 @@ During local play, press **F12** to save the screenshot and the preceding
 **F9** opens that saved clip, paused at the screenshot's exact sub-tick moment.
 The live local match waits while reviewing; **F9** or **Esc** returns to it.
 Online hosts can save, but must open the replay separately; clients currently
-save screenshots only. Recording does not capture audio, menus or private names.
+save screenshots only. Recording stores game events, not an audio track, menus or private names. Playback rebuilds effects, sampled sounds, crowd reactions and music through the normal audio mixer; their exact waveforms/music position are not recorded. Pausing and seeking silence playback.
 
 - **Space / Enter** or the Play button: play/pause. Playing from the end restarts.
-- **Left / Right**: one simulation frame (1/60 s). Click the timeline to seek.
+- **Left / Right**: one simulation frame (1/60 s). Click or drag the timeline to seek, including dragging outside its bounds. Rapid drag updates are coalesced until the pointer briefly settles or is released.
 - **R / Save frame**: bookmark this frame. **F12** in review also takes a screenshot
   and bookmarks the current moment. Gold ticks mark saved frames; click one to restore its exact sub-tick phase,
   or use its frame number when rendering from the command line.
@@ -159,12 +159,12 @@ rebuilds CPU effects and steps GPU debris in order while seeking. Rendering edit
 are supported; incompatible state-schema edits produce a load error. The beginning
 of a rolling clip has no effects from before that clip, so use its later moments
 for comparisons. Replay has a canonical 60 Hz presentation history and disables
-TAA and adaptive quality. Stadium TV feeds use their static initial texture,
+TAA. Playback uses wall-clock time at 1x speed with sub-tick interpolation, independent of display rate; adaptive quality stays enabled while playing/dragging and is fixed for paused frame review. Stadium TV feeds use their static initial texture,
 and cycling skies bake synchronously in review. It reproduces gameplay and the saved interpolation phase, not a pixel-identical
 original window frame with its variable-rate camera punch, adaptive quality,
 menus, live lighting overrides or asynchronous sky transitions. New replays of
 the same saved frame should be stable. Seeking back reconstructs effects and can
-take a moment; the UI shows progress. No video/audio file is encoded.
+take a moment; reconstruction has a per-paint time budget and the UI shows progress. Rewinds reuse the existing GPU scene when its reserved layout matches, and bounded in-memory lighting caches avoid rebaking unchanged stadiums. No video/audio file is encoded.
 
 ## Change it while it runs
 

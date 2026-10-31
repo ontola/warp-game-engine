@@ -265,6 +265,19 @@ impl Sounds {
     }
 
 
+    /// A discontinuity is silent: discard active voices and delayed events,
+    /// while retaining decoded samples and compiled sound patches.
+    pub fn reset_replay(&mut self) {
+        self.tx.stop_all();
+        self.rng = 0x1234_5678;
+        self.time = 0.0;
+        self.later.clear(); self.walked.clear(); self.last_zip = -1.0;
+        self.lava_at.clear(); self.explosions.clear(); self.reloads.clear();
+        self.strikes.clear(); self.descents.clear(); self.pickups = 0;
+        self.incoming = None; self.offers.clear(); self.shot_tick.clear();
+        self.own_pan.clear(); self.ears.clear();
+    }
+
     /// The synth mixer (live `play_sound`).
     pub fn sender(&self) -> &SoundSender { &self.tx }
 
