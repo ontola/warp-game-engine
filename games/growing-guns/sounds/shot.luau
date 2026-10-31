@@ -5,15 +5,11 @@
 --             Higher: brighter tail and the 2.4 kHz click.
 --   velocity  clamp(bullet_speed_mult, 0.5, 3). Higher: shorter, harder.
 -- Every play draws its own jitter from the voice seed (Godot: 5 seeded variants).
--- Game (sfx.gd shot 771-846; the mixer applies these, not the patch):
---   dmg_db = clamp(6 log2(max(0.5, d)), -4, 14), d = get_damage_for_shot(last) / 22
---   pitch  = clamp(1 - 0.2 log2(max(1, d)), 0.35, 1.15) * U(0.97, 1.03) (x1.08 silenced), playback rate
---   dry: self 2D centre at -2 +-1.5 + dmg_db (+15.6 dB centre boost, max 18), others 3D dry unit 3 at
---        +5 +-1.5 + dmg_db; wet copy at dry - 10 dB, room reverb, unit 3; silenced -10 / -12 dB.
---   SPL 105 + 7 log2(max(1, d)).
---   Rumble: when d > 1.4, also play explosion_rumble.luau with radius = round(clamp(1.5 d, 2, 12))
---   at -12 dB (2D for the shooter, else at the muzzle), room reverb, unit clamp(0.8 radius, 4, 12),
---   the shot's SPL. Godot reuses the explosion rumble synth for it, so there is no separate patch.
+-- Warp mix (app/src/sounds.rs): authored self/world levels -8/-12 dB,
+-- +2 dB per damage doubling (max +6), no close-muzzle boost. A 0.10 room
+-- send shares the dry voice. Own reports bypass HDR culling; overlapping
+-- reports have an energy budget. Heavy shots add a bounded -18 dB rumble.
+-- Pitch and weapon character retain the original synth below.
 local D = param("damage", 1)
 local A = param("accuracy", 0.87)
 local V = param("velocity", 1)
