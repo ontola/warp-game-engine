@@ -6,7 +6,7 @@ use render::{
     primitives::{self, Primitive},
     scene::Material,
 };
-fn loft(material: u32, rings: &[[f32; 3]]) -> Primitive {
+pub(crate) fn loft(material: u32, rings: &[[f32; 3]]) -> Primitive {
     let cross = [
         [-1., -0.05],
         [-0.96, 0.10],

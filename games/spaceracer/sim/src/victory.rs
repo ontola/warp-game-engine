@@ -57,6 +57,7 @@ impl Race {
         p.boost = 0.;
         p.emp_time = 0.;
         p.warp_time = 0.;
+        self.drivers[i].warp_fx=0.;
         p.recovery = 0.;
         p.on_pad = false;
         self.drivers[i].finish_time.get_or_insert(self.clock);

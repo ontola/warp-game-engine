@@ -1,0 +1,33 @@
+{
+  "size": [
+    2560,
+    1440
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review warp",
+        "place 0 140",
+        "blur off"
+      ],
+      "capture": "split-before.png"
+    },
+    {
+      "cmd": "fire 0",
+      "ticks": 20,
+      "capture": "split-warp.png"
+    },
+    {
+      "expect": "/pilots/0/warp_time",
+      "min": 2.0
+    },
+    {
+      "expect": "/pilots/1/warp_time",
+      "equals": 0.0
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}

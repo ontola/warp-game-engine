@@ -1,3 +1,13 @@
+# SpaceRacer weapon restoration - 31 October 2026
+
+Restored source warp ribbon autopilot/phase/gap/EMP handling, 20-Hz mounted rotary
+sentry and powered predictive glide bomb. Luau combat/warp policies, native sweeps
+and bounded per-frame presentation. Source-shaped weapon mounts have separate
+head/barrel/rotor/wing joints. Frame-consumed shot IDs prevent persistent tracers.
+Generic exhaust compositor adds depth-aware world lenses and explicit per-view
+radial/chromatic lenses (kinds 3/4); opt-in, before HUD, no effect on other games.
+Details/tests/capture limits: games/spaceracer/parity-review.md.
+
 # Handoff: Warp engine (Sideways)
 
 For the next agent. Read this, `README.md`, `../games/sideways/README.md`

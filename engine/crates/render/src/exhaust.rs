@@ -14,17 +14,21 @@ pub struct Sprite {
     pub axis_length:[f32;4],
     /// Smoke: linear reflectance; flame: emitted HDR radiance; heat: unused RGB.
     pub colour_alpha:[f32;4],
-    /// Kind (0 smoke, 1 heat, 2 flame), deterministic phase, age seconds, heat pixels.
+    /// Kind: 0 smoke, 1 heat, 2 flame, 3 world lens, 4 view lens.
+    /// Phase (view index for kind 4), time, displacement pixels. World lenses use
+    /// position radius as half-width and axis length as half-height; view lenses
+    /// affect only their numbered viewport and never the HUD.
     pub params:[f32;4],
 }
 impl Sprite {
     fn valid(&self)->bool {
         self.position_radius.iter().chain(&self.axis_length).chain(&self.colour_alpha).chain(&self.params).all(|v|v.is_finite())
-            && self.position_radius[3]>0.0 && self.position_radius[3]<=2.0
-            && self.axis_length[3]>=0.0 && self.axis_length[3]<=4.0
+            && self.position_radius[3]>0.0 && self.position_radius[3]<=if self.params[0]>=3.0 {32.0}else{2.0}
+            && self.axis_length[3]>=0.0 && self.axis_length[3]<=if self.params[0]>=3.0 {32.0}else{4.0}
             && (0.0..=1.0).contains(&self.colour_alpha[3])
-            && matches!(self.params[0],0.0|1.0|2.0) && (0.0..=6.0).contains(&self.params[3])
-            && (self.params[0]<0.5||(self.axis_length[3]>0.0&&Vec3::from_slice(&self.axis_length[..3]).length_squared()>1e-8))
+            && matches!(self.params[0],0.0|1.0|2.0|3.0|4.0) && (0.0..=if self.params[0]>=3.0 {64.0}else{6.0}).contains(&self.params[3])
+            && (self.params[0]!=4.0 || (self.params[1].fract()==0.0 && (0.0..=3.0).contains(&self.params[1])))
+            && (self.params[0]<0.5||self.params[0]>=3.0||(self.axis_length[3]>0.0&&Vec3::from_slice(&self.axis_length[..3]).length_squared()>1e-8))
     }
 }
 #[repr(C)]
@@ -75,10 +79,11 @@ impl ExhaustRenderer {
         if source.is_empty(){return Ok(None);}
         if index>=4{return Err("exhaust supports at most four views".into());}
         let mut order:Vec<_>=source.iter().enumerate().filter_map(|(i,s)| {
+            if s.params[0]==4.0 {return (s.params[1] as usize==index).then_some((i as u32,-1.0));}
             let p=Vec3::from_slice(&s.position_radius[..3]);let r=s.position_radius[3]+s.axis_length[3];
             let clip=output_vp*p.extend(1.0);
             let margin=r*output_vp.y_axis.truncate().length().max(output_vp.x_axis.truncate().length());
-            (p.distance(camera.pos)<120.0+r&&clip.w+r>camera.near&&clip.x.abs()<clip.w+margin&&clip.y.abs()<clip.w+margin)
+            (p.distance(camera.pos)<if s.params[0]==3.0 {600.0+r}else{120.0+r}&&clip.w+r>camera.near&&clip.x.abs()<clip.w+margin&&clip.y.abs()<clip.w+margin)
                 .then_some((i as u32,p.distance_squared(camera.pos)))
         }).collect();
         if order.is_empty(){return Ok(None);}
@@ -92,8 +97,9 @@ impl ExhaustRenderer {
             let buffer=|label,size,usage|gpu.device.create_buffer(&wgpu::BufferDescriptor {label:Some(label),size,usage,mapped_at_creation:false});
             targets[index]=Some(Target {size,output,uniform:buffer("exhaust view",std::mem::size_of::<Uniform>() as u64,wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST),order:buffer("exhaust per-view order",(MAX_SPRITES*4)as u64,wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST)});
         }
-        let t=targets[index].as_ref().unwrap();let forward=(camera.target-camera.pos).normalize_or(Vec3::NEG_Z);
-        let right=forward.cross(Vec3::Y).normalize_or(Vec3::X);let up=right.cross(forward).normalize_or(Vec3::Y);
+        let t=targets[index].as_ref().unwrap();
+        let inverse=output_vp.inverse();let origin=inverse.project_point3(Vec3::new(0.0,0.0,0.5));
+        let right=(inverse.project_point3(Vec3::new(1.0,0.0,0.5))-origin).normalize_or(Vec3::X);let up=(inverse.project_point3(Vec3::new(0.0,1.0,0.5))-origin).normalize_or(Vec3::Y);
         // Low-opacity smoke uses shared sky irradiance, not an unshadowed sun
         // highlight. Directional volumetric self-shadowing is a later system.
         let ambient=Vec3::new(0.78,0.86,1.0)*light.sky_lux.max(0.0)/std::f32::consts::PI;
@@ -113,5 +119,6 @@ impl ExhaustRenderer {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn shader_and_shared_buffer_layout_validate(){assert_eq!(std::mem::size_of::<Sprite>(),64);assert_eq!(std::mem::size_of::<Uniform>(),208);let module=naga::front::wgsl::parse_str(shader_source()).unwrap();naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();}
+    #[test] fn lens_limits_and_view_indices_are_bounded(){let mut s=Sprite{position_radius:[0.,0.,0.,11.5],axis_length:[0.,0.,0.,7.],colour_alpha:[0.,0.,0.,1.],params:[3.,0.,0.,18.]};assert!(s.valid());s.params[0]=4.;assert!(s.valid());s.params[1]=4.;assert!(!s.valid());s.params[1]=0.5;assert!(!s.valid());s.params[1]=0.;s.params[3]=65.;assert!(!s.valid());}
     #[test] fn rejects_bad_pool_data(){let mut s=Sprite::zeroed();assert!(!s.valid());s.position_radius[3]=0.1;s.colour_alpha[3]=0.1;assert!(s.valid());s.params[3]=f32::NAN;assert!(!s.valid());}
 }

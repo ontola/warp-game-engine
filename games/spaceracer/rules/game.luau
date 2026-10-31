@@ -75,9 +75,9 @@ local function pickup(c)
 end
 local function balance(_)
     return {countdown=3,respawn_seconds=2,race_timeout=240,refill_rate=1,pickup_seconds=2,
-        pickup_spacing=650,warp_seconds=2.5,warp_speed=600,sentry_seconds=8,sentry_interval=.05,
+        pickup_spacing=650,warp_seconds=2.8,warp_speed=630,sentry_seconds=8,sentry_interval=.05,
         sentry_damage=.5,rail_damage=50,emp_seconds=3,missile_damage=60,missile_radius=55,
-        bomb_damage=85,bomb_radius=100,projectile_timeout=12}
+        bomb_damage=145,bomb_radius=120,projectile_timeout=12}
 end
 local rows={"RESUME / RACE","NEW RANDOM RACE","PLAYERS","WORLD","DIFFICULTY","TRACK SEED"}
 local function menu(c)
@@ -101,6 +101,7 @@ local function activate(c)
     local b=balance(nil)
     if c.item=="GlideBomb" and not c.airborne then return {effect="none"} end
     if c.item=="Emp" then return {effect="emp",duration=b.emp_seconds} end
+    if c.item=="Warp" and c.airborne then return {effect="none"} end
     if c.item=="Warp" then return {effect="active",duration=b.warp_seconds} end
     if c.item=="Sentry" then return {effect="active",duration=b.sentry_seconds} end
     if c.item=="Railgun" then return {effect="ray",cone=.975,range=700,damage=b.rail_damage} end
@@ -137,4 +138,16 @@ local function missile(c)
         terminal=c.target and c.age>.38 and c.range<180 and math.abs(c.along)<100,
         fuse=3.4,laser_seconds=.75}
 end
-return {victory=victory,missile=missile,track=track,ai=ai,plan=plan,pickup=pickup,balance=balance,menu=menu,environment=environment,activate=activate}
+-- Non-critical weapon policy remains editable without rebuilding the native game.
+local function combat(_)
+    return {bomb_speed=360,bomb_accel=200,bomb_burn=1.25,bomb_turn=1.15,bomb_gravity=14,
+        bomb_drag=.012,bomb_eject=55,bomb_range=1100,bomb_cone=.573576,bomb_fuse=18,
+        sentry_ahead=220,sentry_range=190,sentry_cone=.15,sentry_spinup=.25}
+end
+local function warp(c)
+    local function smooth(a,b,x) local t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t) end
+    local exit=clamp(1.65/math.max(.001,math.abs(c.curve)),135,315)
+    return {speed=exit+(630-exit)*smooth(0,.4,c.age)*smooth(0,.6,c.remaining),acceleration=850,lateral=90,
+        strength=smooth(0,.18,c.age)*smooth(0,.4,c.remaining)}
+end
+return {combat=combat,warp=warp,victory=victory,missile=missile,track=track,ai=ai,plan=plan,pickup=pickup,balance=balance,menu=menu,environment=environment,activate=activate}

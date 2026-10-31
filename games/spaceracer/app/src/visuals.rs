@@ -34,6 +34,7 @@ pub struct Visuals {
     pub slots: Slots,
     pub ships: Vec<Vec<ShipPart>>,
     pub jets: super::jets::Jets,
+    pub weapon_art: super::weapon_art::Art,
     pub faces: super::pilot_faces::Faces,
     pub crash_fx: super::crash_fx::Crashes,
     pub presentation_dt: f32,
@@ -368,51 +369,6 @@ fn weapon_mesh(scene: &mut Scene, kind: usize, metal: u32, glow: u32) -> usize {
             .extend(shape.indices.into_iter().map(|i| i + offset));
     };
     match kind {
-        0 | 5 => {
-            add(
-                primitives::cylinder(metal, 0.15, 0.46, 12),
-                Vec3::new(1., 5.4, 1.),
-                Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-                Vec3::ZERO,
-            );
-            for side in [-1., 1.] {
-                add(
-                    primitives::cube(metal),
-                    Vec3::new(1.5, 0.08, 1.3),
-                    Quat::from_rotation_y(side * 0.35),
-                    Vec3::new(side * 0.75, 0., -1.),
-                );
-            }
-        }
-        2 => {
-            add(
-                primitives::cylinder(metal, 0.7, 0.7, 12),
-                Vec3::new(1., 0.7, 1.),
-                Quat::IDENTITY,
-                Vec3::new(0., -0.2, 0.),
-            );
-            add(
-                primitives::cube(metal),
-                Vec3::new(1.1, 0.8, 1.1),
-                Quat::IDENTITY,
-                Vec3::new(0., 0.2, -0.3),
-            );
-            for j in 0..6 {
-                let a = j as f32 * std::f32::consts::TAU / 6.;
-                add(
-                    primitives::cylinder(metal, 0.12, 0.12, 6),
-                    Vec3::new(1., 2.8, 1.),
-                    Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-                    Vec3::new(a.cos() * 0.32, 0.25 + a.sin() * 0.32, 1.),
-                );
-            }
-            add(
-                primitives::cube(metal),
-                Vec3::new(0.6, 0.65, 1.4),
-                Quat::IDENTITY,
-                Vec3::new(-0.8, 0.1, -0.25),
-            );
-        }
         4 => {
             for side in [-1., 1.] {
                 add(
@@ -605,13 +561,15 @@ impl Visuals {
         let pickup_mat = material(&mut scene, [0.6, 0.15, 0.95], 0.3, 100.);
         let pickup_mesh = pickup_mesh(&mut scene, pickup_mat);
         let missile_mat = material(&mut scene, [0.32, 0.36, 0.4], 0.25, 0.);
+        let mut weapon_art=super::weapon_art::Art::new(&mut scene);
         let mount_meshes: Vec<_> = (0..6)
-            .map(|k| weapon_mesh(&mut scene, k, missile_mat, pickup_mat))
+            .map(|k| match k {1=>weapon_art.coil,2=>weapon_art.base,5=>weapon_art.bomb,_=>weapon_mesh(&mut scene,k,missile_mat,pickup_mat)})
             .collect();
         let projectile_mesh = mount_meshes[0];
         let mount_mesh = mount_meshes[2];
         let mut slots = Slots::reserve(&mut scene, 1024 + stage.capacity());
         stage.reserve(&mut scene, &mut slots);
+        weapon_art.reserve(&mut scene,&mut slots);
         let ships = all_parts
             .into_iter()
             .map(|parts: Vec<LoadedPart>| {
@@ -689,6 +647,7 @@ impl Visuals {
             projectiles,
             mounts,
             mount_meshes,
+            weapon_art,
             uploaded: false,
             fx,
             crashes: vec![0; 6],
@@ -780,6 +739,7 @@ impl Visuals {
                 )?;
             }
         }
+        self.weapon_art.update(&mut self.scene,&mut self.slots,race,&poses,time,alpha);
         self.jets.update(race, &poses, time);
         for (k, p) in race.pickups.iter().enumerate() {
             let n = race.world.track.sample(p.distance);
@@ -816,7 +776,7 @@ impl Visuals {
         }
         if fresh {
             for b in &race.beams {
-                if b.age <= spaceracer::handling::DT * 1.1 {
+                if b.rail && b.age <= spaceracer::handling::DT * 1.1 {
                     let d = b.to - b.from;
                     let _ = self.fx.streak(render::fx::AdditiveStreak {
                         position: (b.from + b.to) * 0.5,
@@ -850,22 +810,6 @@ impl Visuals {
                 }
             }
             for p in &race.projectiles {
-                let back = -p.velocity.normalize_or_zero();
-                if p.kind != Weapon::Missile {
-                    let _ = self.fx.mote(render::fx::AdditiveMote {
-                        position: p.position + back * 1.75,
-                        travel: back * 20.,
-                        birth: time - 0.001,
-                        life: 0.09,
-                        radius: 0.75,
-                        color: Vec3::new(0.2, 0.65, 1.),
-                        radiance: 35000.,
-                        fade_in: 0.,
-                        fade_out: 1.,
-                        motion_power: 1.,
-                        ..Default::default()
-                    });
-                }
                 if p.kind == Weapon::Missile {
                     if let Some(target) = p.target {
                         let goal = race.pose(target).origin;

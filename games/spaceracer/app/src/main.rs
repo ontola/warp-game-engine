@@ -13,6 +13,7 @@ mod stage;
 mod stage_mesh;
 mod stage_terrain;
 mod visuals;
+mod weapon_art;
 use app::{Buttons, Controls, Device, Draw, Frame, Game};
 use glam::{Mat3, Quat};
 use render::{
@@ -53,6 +54,7 @@ struct Racer {
     blur_enabled: bool,
     reload_ticks: u32,
     portrait: bool,
+    weapon_view: bool,
     missile_view: bool,
 }
 const BIOMES: [&str; 5] = ["city", "forest", "cell", "desert", "ocean"];
@@ -110,6 +112,7 @@ impl Racer {
             blur_enabled: true,
             reload_ticks: 0,
             portrait: false,
+            weapon_view: false,
             missile_view: false,
         })
     }
@@ -599,6 +602,9 @@ impl Game for Racer {
                     near: 0.1,
                 };
             }
+            if self.weapon_view {
+                cams[i]=Camera {pos:pose.origin+pose.basis*glam::Vec3::new(4.2,3.6,-6.2),target:pose.origin+pose.basis*glam::Vec3::new(0.,1.9,-0.8),fov_y:50f32.to_radians(),near:0.1};
+            }
             if self.missile_view {
                 if let Some(missile) = self.race.projectiles.first() {
                     let node = self.race.world.track.sample(missile.distance);
@@ -671,7 +677,7 @@ impl Game for Racer {
         })
     }
     fn state(&self) -> Option<String> {
-        Some(json!({"projectiles":self.race.projectiles.iter().map(|p|json!({"target":p.target,"locked":p.locked,"terminal":p.terminal,"position":p.position,"age":p.time})).collect::<Vec<_>>(),"victory_age":self.race.drivers.iter().map(|d|d.victory.as_ref().map(|v|v.age)).collect::<Vec<_>>(),"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"face_revisions":self.visuals.faces.revisions,"settings":self.preferences.values,"active_laps":self.race.laps,"pickup_count":self.race.pickups.len(),"pilot_names":self.race.drivers.iter().map(|d|&d.name).collect::<Vec<_>>(),"host_seats":self.party.as_ref().map(|p|p.seats.iter().map(|s|s.index).collect::<Vec<_>>()),"bots":self.race.drivers.iter().map(|d|d.bot).collect::<Vec<_>>(),"live_settings":{"refill":self.race.balance.refill_rate,"recovery":self.race.balance.respawn_seconds},"host_phase":self.party.as_ref().map(|p|p.client.state.phase.as_str()),"script_error":self.race.script_error,"error":self.fatal}).to_string())
+        Some(json!({"weapon_state":self.race.drivers.iter().map(|d|json!({"item":d.item,"active":d.active,"remaining":d.active_time,"shots":d.shot_count,"target":d.sentry_target,"warp_fx":d.warp_fx})).collect::<Vec<_>>(),"projectiles":self.race.projectiles.iter().map(|p|json!({"target":p.target,"locked":p.locked,"terminal":p.terminal,"position":p.position,"age":p.time})).collect::<Vec<_>>(),"victory_age":self.race.drivers.iter().map(|d|d.victory.as_ref().map(|v|v.age)).collect::<Vec<_>>(),"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"face_revisions":self.visuals.faces.revisions,"settings":self.preferences.values,"active_laps":self.race.laps,"pickup_count":self.race.pickups.len(),"pilot_names":self.race.drivers.iter().map(|d|&d.name).collect::<Vec<_>>(),"host_seats":self.party.as_ref().map(|p|p.seats.iter().map(|s|s.index).collect::<Vec<_>>()),"bots":self.race.drivers.iter().map(|d|d.bot).collect::<Vec<_>>(),"live_settings":{"refill":self.race.balance.refill_rate,"recovery":self.race.balance.respawn_seconds},"host_phase":self.party.as_ref().map(|p|p.client.state.phase.as_str()),"script_error":self.race.script_error,"error":self.fatal}).to_string())
     }
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let args: Vec<_> = cmd.split_whitespace().collect();
@@ -681,6 +687,14 @@ impl Game for Racer {
         ["finish",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}self.race.begin_victory(i);},
         ["fire",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let mut c=vec![Drive::default();self.race.pilots.len()];c[i].fire=true;let bot=self.race.drivers[i].bot;self.race.drivers[i].bot=false;self.previous=(0..self.race.pilots.len()).map(|i|self.race.pose(i)).collect();self.race.step(&c);self.race.drivers[i].bot=bot;},
         ["give",who,weapon]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let d=self.race.drivers.get_mut(i).ok_or("pilot index")?;d.item=Some(Weapon::parse(weapon).ok_or("unknown weapon")?);},
+        ["weapon-review",kind]=>{
+            let weapon=Weapon::parse(kind).ok_or("weapon kind")?;self.menu=None;self.demo=false;self.race.countdown=0.;self.race.projectiles.clear();self.race.beams.clear();
+            for i in 0..self.race.pilots.len(){let p=&mut self.race.pilots[i];p.distance=if i==0{0.}else if i==1{if weapon==Weapon::GlideBomb{230.}else{90.}}else{-500.-i as f64*30.};p.x=if i==1 && weapon==Weapon::GlideBomb {18.}else{0.};p.speed=if i==0{220.}else{130.};p.airborne=false;p.crashed=false;p.finished=false;p.recovery=0.;p.energy=100.;p.emp_time=0.;p.warp_time=0.;let d=&mut self.race.drivers[i];d.bot=false;d.item=None;d.active=None;d.active_time=0.;d.warp_fx=0.;d.victory=None;d.motion=Default::default();d.finish_time=None;}
+            self.race.drivers[0].item=Some(weapon);
+            if weapon==Weapon::GlideBomb {let node=self.race.world.track.sample(0.);let pose=Pose{origin:node.point(0.,65.),basis:node.geometry.basis()};self.race.drivers[0].motion.ground_velocity=pose.basis.z_axis*220.;self.race.drivers[0].motion.launch(&mut self.race.pilots[0],pose);}
+            self.previous=(0..self.race.pilots.len()).map(|i|self.race.pose(i)).collect();self.cameras=vec![Chase::default();4];
+        },
+        ["weapon-view","on"]=>self.weapon_view=true,["weapon-view","off"]=>self.weapon_view=false,
         ["missile-view","on"]=>self.missile_view=true,["missile-view","off"]=>self.missile_view=false,
         ["place",who,distance]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let distance:f64=distance.parse().map_err(|_|"distance")?;if !distance.is_finite() || distance.abs()>100000. {return Err("invalid distance".into());}let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.distance=distance;p.x=0.;self.previous[i]=self.race.pose(i);},
         ["portrait","on"]=>self.portrait=true,["portrait","off"]=>self.portrait=false,

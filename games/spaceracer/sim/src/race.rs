@@ -67,6 +67,9 @@ pub struct Driver {
     pub item: Option<Weapon>,
     pub active: Option<Weapon>,
     pub active_time: f64,
+    pub active_age: f64,
+    pub warp_fx: f32,
+    pub sentry_target: Option<usize>,
     pub shot_time: f64,
     pub shot_count: u64,
     pub ai_rng: u64,
@@ -93,6 +96,8 @@ pub struct Projectile {
     pub launch: Pose,
     pub launch_speed: f32,
     pub travel: f32,
+    pub owner_clear: bool,
+    pub owner_blast_clear: bool,
     pub locked: bool,
     pub terminal: bool,
     pub evaded: bool,
@@ -110,6 +115,8 @@ pub struct Blast {
 }
 #[derive(Clone, Debug)]
 pub struct Beam {
+    pub owner: usize,
+    pub serial: u64,
     pub from: Vec3,
     pub to: Vec3,
     pub age: f64,
@@ -118,6 +125,7 @@ pub struct Beam {
 pub struct Race {
     pub rules: crate::rules::Rules,
     pub balance: crate::rules::Balance,
+    pub combat: crate::combat::Config,
     pub script_error: Option<String>,
     pub world: Generated,
     pub environment: crate::environment::Environment,
@@ -159,6 +167,7 @@ impl Race {
     ) -> Result<Self, String> {
         let seed = seed.clamp(1, 99999);
         let balance = rules.balance()?;
+        let combat = crate::combat::Config::load(&mut rules)?;
         let mut environment = rules.environment(biome)?;
         let world = Generated::with_recipe(seed, difficulty, biome, rules.track(seed, difficulty)?);
         environment.ground = environment.ground.min(
@@ -201,6 +210,9 @@ impl Race {
                 item: None,
                 active: None,
                 active_time: 0.,
+                active_age: 0.,
+                warp_fx: 0.,
+                sentry_target: None,
                 shot_time: 0.,
                 shot_count: 0,
                 ai_rng: seed as u64 * 9176 + i as u64 * 104729 + 1,
@@ -229,6 +241,7 @@ impl Race {
         }
         Ok(Self {
             world,
+            combat,
             environment,
             obstacles: vec![],
             pilots,
@@ -259,6 +272,13 @@ impl Race {
             match self.rules.balance() {
                 Ok(b) => {
                     self.balance = b;
+                    match crate::combat::Config::load(&mut self.rules) {
+                        Ok(c) => self.combat = c,
+                        Err(e) => {
+                            self.script_error = Some(e);
+                            return;
+                        }
+                    }
                     self.script_error = None;
                 }
                 Err(e) => self.script_error = Some(e),
@@ -283,7 +303,7 @@ impl Race {
     pub fn target(&self, i: usize, cone: f32, range: f32) -> Option<usize> {
         let pose = self.pose(i);
         (0..self.pilots.len())
-            .filter(|&j| j != i && !self.pilots[j].crashed && !self.pilots[j].finished)
+            .filter(|&j| j != i && !self.pilots[j].crashed && !self.pilots[j].finished && self.pilots[j].warp_time<=0.)
             .filter_map(|j| {
                 let d = self.pose(j).origin - pose.origin;
                 let len = d.length();
@@ -366,7 +386,7 @@ impl Race {
                 d.motion.air.time > 7. && target.distance(d.motion.air.position) > 100.
             );
             args["air_fire"] = serde_json::json!(
-                d.item == Some(Weapon::GlideBomb) && self.target(i, 0.7, 800.).is_some()
+                d.item == Some(Weapon::GlideBomb) && self.bomb_target(i).is_some()
             );
         }
         match self.rules.call("ai", args) {
@@ -491,9 +511,22 @@ impl Race {
                 self.pilots[i].recovery = (self.pilots[i].recovery - DT).max(0.);
                 continue;
             }
-            if self.drivers[i].active == Some(Weapon::Warp) {
-                input[i] = self.ai(i);
-                input[i].drive.boost = false;
+            let warping =
+                self.drivers[i].active == Some(Weapon::Warp) && self.pilots[i].emp_time <= 0.;
+            if warping {
+                if let Err(e) = self.step_warp(i) {
+                    self.script_error = Some(e);
+                    return;
+                }
+                input[i] = Controls {
+                    drive: Input {
+                        throttle: 1.,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+            } else {
+                self.drivers[i].warp_fx *= (-DT as f32 * 12.).exp();
             }
             let p = &mut self.pilots[i];
             let d = &mut self.drivers[i];
@@ -506,7 +539,9 @@ impl Race {
             d.checkpoint.flash = (d.checkpoint.flash - DT).max(0.);
             d.bump.begin(p, input[i].left, input[i].right, DT, 0.);
             p.bump_velocity = d.bump.velocity();
-            if p.airborne {
+            if warping {
+                // Dedicated ribbon autopilot has already integrated this tick.
+            } else if p.airborne {
                 d.motion.step_air(
                     p,
                     &self.world.track,
@@ -519,9 +554,6 @@ impl Race {
             } else {
                 let n = self.world.track.sample(p.distance);
                 let launch = p.ground_step(input[i].drive, n.surface(), DT);
-                if d.active == Some(Weapon::Warp) {
-                    p.speed = self.balance.warp_speed;
-                }
                 let n = self.world.track.sample(p.distance);
                 p.constrain(n.surface());
                 d.motion.landing_blend = (d.motion.landing_blend - DT * 4.).max(0.);
@@ -607,6 +639,9 @@ impl Race {
     fn contacts(&mut self) {
         for a in 0..self.pilots.len() {
             for b in a + 1..self.pilots.len() {
+                if self.pilots[a].warp_time > 0. || self.pilots[b].warp_time > 0. {
+                    continue;
+                }
                 if self.pilots[a].airborne || self.pilots[b].airborne {
                     if self.pilots[a].crashed
                         || self.pilots[b].crashed
@@ -672,8 +707,11 @@ impl Race {
             }
         }
     }
-    fn damage(&mut self, owner: usize, target: usize, amount: f64, impulse: f64) {
-        if self.pilots[target].crashed || self.pilots[target].finished {
+    pub(crate) fn damage(&mut self, owner: usize, target: usize, amount: f64, impulse: f64) {
+        if self.pilots[target].crashed
+            || self.pilots[target].finished
+            || self.pilots[target].warp_time > 0.
+        {
             return;
         }
         let p = &mut self.pilots[target];
@@ -713,7 +751,7 @@ impl Race {
             }
         }
     }
-    fn weapons(&mut self, input: &[Controls]) {
+    pub(crate) fn weapons(&mut self, input: &[Controls]) {
         for b in &mut self.blasts {
             b.age += DT;
         }
@@ -721,8 +759,7 @@ impl Race {
         for b in &mut self.beams {
             b.age += DT;
         }
-        self.beams
-            .retain(|b| b.age < if b.rail { 0.15 } else { DT * 1.1 });
+        self.beams.retain(|b| b.age < 0.15);
         for k in 0..self.pickups.len() {
             self.pickups[k].cooldown = (self.pickups[k].cooldown - DT).max(0.);
             if self.pickups[k].cooldown > 0. {
@@ -788,6 +825,7 @@ impl Race {
                                 "emp" => {
                                     for j in 0..self.pilots.len() {
                                         if j != i {
+                                            self.interrupt_warp(j);
                                             self.pilots[j].emp_time = a.duration;
                                             self.pilots[j].boost = 0.;
                                         }
@@ -803,6 +841,13 @@ impl Race {
                                 "active" => {
                                     self.drivers[i].active = Some(kind);
                                     self.drivers[i].active_time = a.duration;
+                                    self.drivers[i].active_age = 0.;
+                                    self.drivers[i].shot_time =
+                                        self.clock + self.combat.sentry_spinup;
+                                    if kind == Weapon::Warp {
+                                        self.pilots[i].warp_time = a.duration;
+                                        self.pilots[i].boost = 0.;
+                                    }
                                 }
                                 "ray" => {
                                     let target = self.target(i, a.cone, a.range);
@@ -811,6 +856,8 @@ impl Race {
                                             self.pose(j).origin
                                         });
                                     self.beams.push(Beam {
+                                        owner: i,
+                                        serial: self.drivers[i].shot_count,
                                         from: pose.origin,
                                         to,
                                         age: 0.,
@@ -822,7 +869,11 @@ impl Race {
                                 }
                                 "projectile" => self.projectiles.push(Projectile {
                                     owner: i,
-                                    target: self.target(i, a.cone, a.range),
+                                    target: if kind == Weapon::GlideBomb {
+                                        self.bomb_target(i).map(|v| v.0)
+                                    } else {
+                                        self.target(i, a.cone, a.range)
+                                    },
                                     kind,
                                     position: pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8),
                                     previous: pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8),
@@ -830,11 +881,17 @@ impl Race {
                                     launch: pose,
                                     launch_speed: self.pilots[i].speed as f32,
                                     travel: 0.,
+                                    owner_clear: false,
+                                    owner_blast_clear: false,
                                     locked: false,
                                     terminal: false,
                                     evaded: false,
                                     x: self.pilots[i].x,
-                                    velocity: pose.basis.z_axis * a.speed,
+                                    velocity: if kind == Weapon::GlideBomb {
+                                        self.bomb_launch(i).1
+                                    } else {
+                                        pose.basis.z_axis * a.speed
+                                    },
                                     distance: self.pilots[i].distance - 1.8,
                                     time: 0.,
                                 }),
@@ -851,24 +908,10 @@ impl Race {
                 }
             }
             if self.drivers[i].active_time > 0. {
-                self.drivers[i].active_time -= DT;
-                if self.drivers[i].active == Some(Weapon::Sentry)
-                    && self.clock >= self.drivers[i].shot_time
-                    && self.pilots[i].emp_time <= 0.
-                {
-                    self.drivers[i].shot_time = self.clock + self.balance.sentry_interval;
-                    if let Some(j) = self.target(i, 0.5, 180.) {
-                        let from = self.pose(i).origin;
-                        let to = self.pose(j).origin;
-                        self.beams.push(Beam {
-                            from,
-                            to,
-                            age: 0.,
-                            rail: false,
-                        });
-                        self.damage(i, j, self.balance.sentry_damage, 0.);
-                        self.drivers[i].shot_count += 1;
-                    }
+                if self.drivers[i].active == Some(Weapon::Sentry) {
+                    self.step_sentry(i);
+                } else if self.drivers[i].active != Some(Weapon::Warp) {
+                    self.drivers[i].active_time -= DT;
                 }
                 if self.drivers[i].active_time <= 0. {
                     self.drivers[i].active = None;
@@ -888,13 +931,11 @@ impl Race {
                     }
                 }
             } else {
-                if let Some(j) = p.target {
-                    let wanted = (self.pose(j).origin - p.position).normalize_or_zero() * 360.;
-                    p.velocity = p.velocity.lerp(wanted, (DT * 1.7) as f32);
-                } else {
-                    p.velocity.y -= 18. * DT as f32;
+                if let Some(at) = self.step_bomb(&mut p) {
+                    self.bomb_explode(&p, at);
+                    continue;
                 }
-                p.position += p.velocity * DT as f32;
+                if p.time > self.balance.projectile_timeout { continue; }
                 false
             };
             if p.trail
@@ -917,14 +958,11 @@ impl Race {
                     let t = ((point - before).dot(d) / d.length_squared().max(0.001)).clamp(0., 1.);
                     point.distance(before + d * t) < 9.
                 });
-            let impact = if p.kind == Weapon::GlideBomb {
-                let road = self.world.track.project(p.position, p.distance, 200.);
-                road.1.supported(road.2, 0.)
-                    && (p.position - road.1.point(road.2, 0.)).dot(road.1.frame(road.2).y_axis) < 1.
-            } else {
-                false
-            };
-            if hit || impact || expired || p.time > self.balance.projectile_timeout {
+
+            if (hit && p.kind == Weapon::Missile)
+                || expired
+                || p.time > self.balance.projectile_timeout
+            {
                 self.explode(p.owner, p.position, p.kind);
             } else {
                 self.projectiles.push(p);
