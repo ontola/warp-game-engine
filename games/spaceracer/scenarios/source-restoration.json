@@ -1,0 +1,65 @@
+{
+  "size": [
+    2560,
+    1440
+  ],
+  "steps": [
+    {
+      "cmd": "demo",
+      "ticks": 650,
+      "capture": "race.png",
+      "state": "race.json"
+    },
+    {
+      "cmd": [
+        "give 0 missile",
+        "portrait on"
+      ],
+      "capture": "missile-mounted.png"
+    },
+    {
+      "cmd": "portrait off",
+      "capture": "missile-ready.png"
+    },
+    {
+      "cmd": "fire 0",
+      "ticks": 12,
+      "capture": "missile-launch.png",
+      "state": "launch.json"
+    },
+    {
+      "ticks": 70,
+      "capture": "missile-cruise.png",
+      "state": "cruise.json"
+    },
+    {
+      "cmd": "finish 0",
+      "capture": "finish-entry.png"
+    },
+    {
+      "ticks": 180,
+      "capture": "finish-rear.png",
+      "state": "finish.json"
+    },
+    {
+      "ticks": 410,
+      "capture": "finish-front.png"
+    },
+    {
+      "ticks": 576,
+      "capture": "finish-side.png"
+    },
+    {
+      "ticks": 576,
+      "capture": "finish-overhead.png"
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    },
+    {
+      "cmd": "pause",
+      "capture": "pause.png"
+    }
+  ]
+}

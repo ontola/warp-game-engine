@@ -1,0 +1,67 @@
+# SpaceRacer port review - 31 October 2026
+
+The port is playable, but **not a complete replacement**. This review reads the
+retained implementation and exercises the native game; it does not launch the
+retired Godot runtime. `port-status.json` retains the pinned source provenance.
+
+## Restored in this change
+
+- **HUD and menu:** Open Sans SemiBold from the original engine's packaged fallback,
+  retained logo, compact left menu, explicit aligned values, native-resolution
+  text, per-view 800x450 proportions, portrait profiles, minimap, segmented
+  energy arc, circular X/Y buttons, active/stored item indication, quiet victory
+  HUD and timed standings. The actual offscreen visor projection restores
+  curvature, instrument glow, faint ghosting and undercoat. Splitscreen uses
+  0.010 curvature versus 0.035 solo; reticles compensate for the projection.
+- **Cruise missile:** the old velocity-lerp approximation could cut through
+  banked turns and orbit targets. It now samples the track ribbon at cruise,
+  ejects from the mount, lofts and accelerates to 500 m/s (1800 km/h), retargets
+  the eligible leader until final lock, then attacks directly. It can fire after
+  the former leader finishes or without a target; an unguided shot has a fuse.
+  A fresh high-G terminal jink can evade it; EMP removes missiles. The original
+  faceted body, dark radome, swept wings and canted tail replace the cone/cylinder.
+  Launch/flight share that mesh. Bright nozzle, lens streak, local illumination,
+  continuous camera-faded smoke, blinking brackets and late white-core laser
+  replace the placeholders. Smoke is a native ribbon adaptation, not identical
+  to the old shader; smoke does not persist after projectile destruction yet.
+- **Finish sequence:** a separate noncompetitive pilot retains mounted hardware,
+  animates controls, follows splits and arcs across gaps. It continues after
+  results. Four 4.8-second camera shots use a 1.3-second vehicle-relative entry,
+  obstacle trace and the original horizontal-lens fit on wide split views.
+  Each local player's view changes independently. No speed blur during replay.
+
+Timing, cruise policy and victory choreography live in `rules/game.luau`;
+geometry integration, collision queries and rendering remain native.
+
+## Remaining differences (do not call these done)
+
+| Area | Current gap |
+|---|---|
+| Other weapons | Sentry deployment/scanning/animation, original railgun guide, glide trajectory/intercept guide and warp-space presentation remain simplified. |
+| EMP | Engine/HUD disable and missile cancellation work; initial glitch and electrical arcs on each affected hull are missing. |
+| Driving information | Original severity-coded corner/no-rail signs, some jump/checkpoint notices, gate art and the flight roll reference are missing. |
+| Vehicle damage | Static imported finish/scuffs and detached burning wrecks exist; energy-driven paint deterioration, damage smoke and respawn construction are incomplete. |
+| Standalone menu | Visual structure restored; original bot/graphics/lighting pages, credits panel, seed text editing and held D-pad shortcuts remain incomplete. |
+| AI | Seeded driving/flight/boost decisions work; original personalities, tactical mistakes and item tactics are not all preserved. |
+| Environment | Five distinct native biomes exist. Forest motion/water, underwater shafts/terrain detail, city searchlights/vista protection and sandworm encounters still differ. |
+| Lighting/performance | Analytic road reflections and local jets work. This is not full scene ray tracing, original lighting parity or a certified 4K/four-player/120 FPS build. |
+| Sound/platforms | Sound remains disabled as requested. Native source audio, touch controls and Android/Deck packaging are not completed by this change. |
+
+## Verification
+
+- 25 simulation tests, including a moving leader after a previous winner finishes,
+  banked-route following, changing leader before/after lock, untargeted fuse,
+  EMP cancellation and post-results movement with retained hardware.
+- 16 application tests, including missile outward normals and camera entry/split
+  lens continuity, plus existing jet/debris/stage/profile/host regressions.
+- 13 renderer HUD tests, serial GPU fixtures, including bounded viewport optics
+  and return to a flat menu. Optics is opt-in; other games keep their existing HUD.
+- `source-restoration.json`: 2560x1440 solo HUD, mount/launch, four victory angles
+  and pause. `source-restoration-split.json`: 3840x2160 two views, one finisher
+  while the other races, and pause. `missile-restoration.json`: diagnostic
+  close-camera launch/cruise review. These deliberately stage the finish/weapon
+  state, rather than pretending the screenshots are an uninterrupted human race.
+- Screenshots under `build/spaceracer-restoration-final`,
+  `build/spaceracer-restoration-split`, `build/spaceracer-missile-review`.
+  No new physical-controller or real GameNight-host playtest in this pass.
+  Readback/capture time is not interactive FPS.

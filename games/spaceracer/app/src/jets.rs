@@ -376,6 +376,60 @@ impl Jets {
                 }
             }
         }
+        // Missile ignition, plume and continuous camera-faded smoke share the existing
+        // sprite pass; no new lights/meshes per frame and no particle cloud dots.
+        let alpha = (time * 120. - race.tick.saturating_sub(1) as f32).clamp(0., 1.);
+        for p in &race.projectiles {
+            if p.kind != spaceracer::race::Weapon::Missile {
+                continue;
+            }
+            let power = smooth(0.18, 0.6, p.time as f32);
+            let axis = -p.velocity.try_normalize().unwrap_or(Vec3::Z);
+            let at = p.previous.lerp(p.position, alpha) + axis * 1.75;
+            let light = Vec3::new(0.5, 0.75, 1.) * radiance * power * 2.;
+            self.sprites.push(shaft(
+                at,
+                at + axis * (3. + power * 5.),
+                0.65,
+                light,
+                1,
+                [time, 0.2, 0., 0.],
+            ));
+            self.sprites.push(glow(at, [1.4, 1.4], light * 2., 2));
+            let mut flare = glow(at, [6., 1.4], light, 3);
+            flare.params = [at.x, at.y, at.z, 0.];
+            self.sprites.push(flare);
+            if power > 0.01 {
+                self.lights.push(LocalLight {
+                    position: at + axis * 0.4,
+                    direction: axis,
+                    intensity_cd: Vec3::new(0.5, 0.75, 1.) * power * c.boost_light_power,
+                    range_m: 24.,
+                    inner_cos: 1.,
+                    outer_cos: -1.,
+                    source_radius_m: 0.3,
+                    falloff: 2.,
+                });
+            }
+            let mut next = at;
+            for (k, point) in p.trail.iter().rev().enumerate() {
+                if next.distance_squared(*point) > 0.01 {
+                    let age = k as f32 / 48.;
+                    let mut smoke = shaft(
+                        next,
+                        *point,
+                        0.7 + age * 7.,
+                        Vec3::splat(2_f32.powf(race.environment.exposure) * 0.035),
+                        7,
+                        [age, (k + 1) as f32 / 48., time, 0.],
+                    );
+                    smoke.additive = false;
+                    smoke.opacity = 0.22 * power;
+                    self.sprites.push(smoke);
+                }
+                next = *point;
+            }
+        }
     }
     pub fn flush(&mut self, gpu: &Gpu, renderer: &Renderer) -> Result<(), String> {
         if !self.uploaded {

@@ -349,6 +349,9 @@ fn pickup_mesh(scene: &mut Scene, material: u32) -> usize {
     scene.add_mesh(&p.mesh())
 }
 fn weapon_mesh(scene: &mut Scene, kind: usize, metal: u32, glow: u32) -> usize {
+    if kind == 0 {
+        return super::missile_mesh::mesh(scene);
+    }
     let mut p = Primitive {
         material: metal,
         ..Default::default()
@@ -795,15 +798,21 @@ impl Visuals {
         for (k, id) in self.projectiles.iter().enumerate() {
             let xf = if let Some(p) = race.projectiles.get(k) {
                 Affine3A::from_scale_rotation_translation(
-                    Vec3::splat(1.3),
-                    Quat::from_rotation_arc(Vec3::Z, p.velocity.normalize_or_zero()),
-                    p.position,
+                    Vec3::ONE,
+                    Quat::from_rotation_arc(Vec3::Z, p.velocity.try_normalize().unwrap_or(Vec3::Z)),
+                    p.previous.lerp(p.position, alpha),
                 )
             } else {
                 Affine3A::from_scale(Vec3::splat(0.001))
             };
-            self.slots
-                .set(&mut self.scene, *id, self.projectile_mesh, xf);
+            self.slots.set(
+                &mut self.scene,
+                *id,
+                race.projectiles
+                    .get(k)
+                    .map_or(self.projectile_mesh, |p| self.mount_meshes[p.kind as usize]),
+                xf,
+            );
         }
         if fresh {
             for b in &race.beams {
@@ -842,33 +851,36 @@ impl Visuals {
             }
             for p in &race.projectiles {
                 let back = -p.velocity.normalize_or_zero();
-                let _ = self.fx.mote(render::fx::AdditiveMote {
-                    position: p.position + back * 3.,
-                    travel: back * 20.,
-                    birth: time - 0.001,
-                    life: 0.09,
-                    radius: 1.5,
-                    color: Vec3::new(0.2, 0.65, 1.),
-                    radiance: 35000.,
-                    fade_in: 0.,
-                    fade_out: 1.,
-                    motion_power: 1.,
-                    ..Default::default()
-                });
+                if p.kind != Weapon::Missile {
+                    let _ = self.fx.mote(render::fx::AdditiveMote {
+                        position: p.position + back * 1.75,
+                        travel: back * 20.,
+                        birth: time - 0.001,
+                        life: 0.09,
+                        radius: 0.75,
+                        color: Vec3::new(0.2, 0.65, 1.),
+                        radiance: 35000.,
+                        fade_in: 0.,
+                        fade_out: 1.,
+                        motion_power: 1.,
+                        ..Default::default()
+                    });
+                }
                 if p.kind == Weapon::Missile {
                     if let Some(target) = p.target {
                         let goal = race.pose(target).origin;
                         let distance = goal.distance(p.position);
-                        if distance < 160. {
+                        let eta = distance / p.velocity.length().max(80.);
+                        if p.locked && eta < 0.75 && !p.evaded {
                             let _ = self.fx.streak(render::fx::AdditiveStreak {
                                 position: (goal + p.position) * 0.5,
                                 travel: (goal - p.position).normalize_or_zero() * 0.001,
                                 birth: time - 0.001,
                                 life: 1. / 60.,
-                                radius: [0.025; 2],
+                                radius: [0.012; 2],
                                 length: [distance; 2],
-                                color: Vec3::new(1., 0.2, 0.12),
-                                radiance: 3000. * (1. - distance / 160.),
+                                color: Vec3::new(1., 0.72, 0.52),
+                                radiance: 12000. * (1. - eta / 0.75).powi(2),
                                 opacity: 0.4,
                                 fade_in: 0.,
                                 fade_out: 1.,
@@ -880,7 +892,7 @@ impl Visuals {
                                 life: 1. / 60.,
                                 radius: 0.5,
                                 color: Vec3::ONE,
-                                radiance: 20000. * (1. - distance / 160.),
+                                radiance: 65000. * (1. - eta / 0.75).powi(2),
                                 fade_in: 0.,
                                 fade_out: 1.,
                                 ..Default::default()

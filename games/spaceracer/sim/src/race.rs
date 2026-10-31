@@ -59,6 +59,7 @@ pub struct Driver {
     pub bot: bool,
     pub rank: usize,
     pub finish_time: Option<f64>,
+    pub victory: Option<crate::victory::Victory>,
     pub crash_time: f64,
     pub reset_time: f64,
     pub safe_distance: f64,
@@ -73,6 +74,7 @@ pub struct Driver {
     pub ai_line: f64,
     pub ai_pace: f64,
     pub boost_ready: f64,
+    pub last_jink: f64,
 }
 #[derive(Clone, Debug)]
 pub struct Pickup {
@@ -86,6 +88,15 @@ pub struct Projectile {
     pub target: Option<usize>,
     pub kind: Weapon,
     pub position: Vec3,
+    pub previous: Vec3,
+    pub trail: std::collections::VecDeque<Vec3>,
+    pub launch: Pose,
+    pub launch_speed: f32,
+    pub travel: f32,
+    pub locked: bool,
+    pub terminal: bool,
+    pub evaded: bool,
+    pub x: f64,
     pub velocity: Vec3,
     pub distance: f64,
     pub time: f64,
@@ -182,6 +193,7 @@ impl Race {
                 bot: i >= players,
                 rank: i + 1,
                 finish_time: None,
+                victory: None,
                 crash_time: 0.,
                 reset_time: 0.,
                 safe_distance: 0.,
@@ -196,6 +208,7 @@ impl Race {
                 ai_line: 0.,
                 ai_pace: 1.,
                 boost_ready: 4. + i as f64 * 0.7,
+                last_jink: -99.,
             })
             .collect();
         let mut pickups = vec![];
@@ -253,9 +266,14 @@ impl Race {
         }
     }
     pub fn pose(&self, i: usize) -> Pose {
-        self.drivers[i]
-            .motion
-            .pose(&self.pilots[i], &self.world.track, self.clock)
+        self.drivers[i].victory.as_ref().map_or_else(
+            || {
+                self.drivers[i]
+                    .motion
+                    .pose(&self.pilots[i], &self.world.track, self.clock)
+            },
+            |v| v.pose,
+        )
     }
     fn random(&mut self, i: usize) -> f64 {
         let a = &mut self.drivers[i].ai_rng;
@@ -412,10 +430,18 @@ impl Race {
             .crash(&mut self.pilots[i], Vec3::ZERO);
     }
     pub fn step(&mut self, controls: &[Controls]) {
-        if self.over || self.script_error.is_some() {
+        if self.script_error.is_some() {
             return;
         }
         self.tick += 1;
+        if self.over {
+            for i in 0..self.pilots.len() {
+                if self.pilots[i].finished {
+                    self.step_victory(i);
+                }
+            }
+            return;
+        }
         let mut input: Vec<_> = (0..self.pilots.len())
             .map(|i| {
                 if self.drivers[i].bot || self.pilots[i].finished {
@@ -426,6 +452,9 @@ impl Race {
             })
             .collect();
         for (d, c) in self.drivers.iter_mut().zip(&input) {
+            if (c.drive.steer - d.input.drive.steer).abs() > 0.65 && c.drive.steer.abs() > 0.7 {
+                d.last_jink = self.clock;
+            }
             d.input = *c;
         }
         if self.countdown > 0. {
@@ -443,6 +472,10 @@ impl Race {
             DT,
         );
         for i in 0..self.pilots.len() {
+            if self.pilots[i].finished {
+                self.step_victory(i);
+                continue;
+            }
             if self.pilots[i].crashed {
                 self.drivers[i].crash_time += DT;
                 if self.drivers[i].crash_time >= self.balance.respawn_seconds {
@@ -540,6 +573,11 @@ impl Race {
             }
             if p.energy <= 0. && !p.finished {
                 self.crash(i);
+            }
+        }
+        for i in 0..self.pilots.len() {
+            if self.pilots[i].finished && self.drivers[i].victory.is_none() {
+                self.begin_victory(i);
             }
         }
         self.contacts();
@@ -718,7 +756,7 @@ impl Race {
             if self.pilots[i].crashed || self.pilots[i].finished {
                 continue;
             }
-            if input[i].fire {
+            if input.get(i).is_some_and(|c| c.fire) {
                 if let Some(kind) = self.drivers[i].item {
                     #[derive(Deserialize, Default)]
                     #[serde(default)]
@@ -786,11 +824,18 @@ impl Race {
                                     owner: i,
                                     target: self.target(i, a.cone, a.range),
                                     kind,
-                                    position: pose.origin
-                                        + pose.basis.z_axis * 12.
-                                        + pose.basis.y_axis * 3.,
+                                    position: pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8),
+                                    previous: pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8),
+                                    trail: std::collections::VecDeque::with_capacity(48),
+                                    launch: pose,
+                                    launch_speed: self.pilots[i].speed as f32,
+                                    travel: 0.,
+                                    locked: false,
+                                    terminal: false,
+                                    evaded: false,
+                                    x: self.pilots[i].x,
                                     velocity: pose.basis.z_axis * a.speed,
-                                    distance: self.pilots[i].distance + 12.,
+                                    distance: self.pilots[i].distance - 1.8,
                                     time: 0.,
                                 }),
                                 _ => {
@@ -833,53 +878,53 @@ impl Race {
         let mut pending = std::mem::take(&mut self.projectiles);
         for mut p in pending.drain(..) {
             p.time += DT;
-            if p.kind == Weapon::Missile {
-                if p.target.is_none()
-                    || p.target
-                        .is_some_and(|j| self.pose(j).origin.distance(p.position) > 250.)
-                {
-                    p.target = (0..self.pilots.len())
-                        .filter(|&j| {
-                            j != p.owner && !self.pilots[j].finished && !self.pilots[j].crashed
-                        })
-                        .min_by_key(|&j| self.drivers[j].rank);
+            p.previous = p.position;
+            let expired = if p.kind == Weapon::Missile {
+                match self.guide_missile(&mut p) {
+                    Ok(expired) => expired,
+                    Err(e) => {
+                        self.script_error = Some(e);
+                        return;
+                    }
                 }
-                let speed = 80. + (416.67 - 80.) * (p.time / 1.).min(1.) as f32;
-                p.distance += speed as f64 * DT;
-                let path = self.world.track.sample(p.distance).point(0., 5.);
-                let target = p
-                    .target
-                    .filter(|&j| self.pose(j).origin.distance(p.position) < 250.);
-                let goal = target.map_or(path, |j| self.pose(j).origin);
-                p.velocity = p.velocity.lerp(
-                    (goal - p.position).normalize_or_zero() * speed,
-                    (DT * if target.is_some() { 7. } else { 12. }) as f32,
-                );
             } else {
                 if let Some(j) = p.target {
-                    let goal = self.pose(j).origin;
-                    let wanted = (goal - p.position).normalize_or_zero() * 360.;
+                    let wanted = (self.pose(j).origin - p.position).normalize_or_zero() * 360.;
                     p.velocity = p.velocity.lerp(wanted, (DT * 1.7) as f32);
                 } else {
                     p.velocity.y -= 18. * DT as f32;
                 }
-            }
-            let before = p.position;
-            p.position += p.velocity * DT as f32;
-            let hit = (0..self.pilots.len()).any(|j| {
-                if j == p.owner || self.pilots[j].crashed || self.pilots[j].finished {
-                    return false;
+                p.position += p.velocity * DT as f32;
+                false
+            };
+            if p.trail
+                .back()
+                .is_none_or(|v| v.distance_squared(p.position) >= 36.)
+            {
+                if p.trail.len() >= 48 {
+                    p.trail.pop_front();
                 }
-                let d = p.position - before;
-                let point = self.pose(j).origin;
-                let t = ((point - before).dot(d) / d.length_squared().max(0.001)).clamp(0., 1.);
-                point.distance(before + d * t) < 9.
-            });
-            let road = self.world.track.project(p.position, p.distance, 200.);
-            let impact = p.kind == Weapon::GlideBomb
-                && road.1.supported(road.2, 0.)
-                && (p.position - road.1.point(road.2, 0.)).dot(road.1.frame(road.2).y_axis) < 1.;
-            if hit || impact || p.time > self.balance.projectile_timeout {
+                p.trail.push_back(p.position);
+            }
+            let before = p.previous;
+            let hit = p.time > 0.38
+                && (0..self.pilots.len()).any(|j| {
+                    if j == p.owner || self.pilots[j].crashed || self.pilots[j].finished {
+                        return false;
+                    }
+                    let d = p.position - before;
+                    let point = self.pose(j).origin;
+                    let t = ((point - before).dot(d) / d.length_squared().max(0.001)).clamp(0., 1.);
+                    point.distance(before + d * t) < 9.
+                });
+            let impact = if p.kind == Weapon::GlideBomb {
+                let road = self.world.track.project(p.position, p.distance, 200.);
+                road.1.supported(road.2, 0.)
+                    && (p.position - road.1.point(road.2, 0.)).dot(road.1.frame(road.2).y_axis) < 1.
+            } else {
+                false
+            };
+            if hit || impact || expired || p.time > self.balance.projectile_timeout {
                 self.explode(p.owner, p.position, p.kind);
             } else {
                 self.projectiles.push(p);
@@ -891,6 +936,111 @@ impl Race {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn missile_race() -> Race {
+        let mut r = Race::new(80385, "hard", "city", 1, 3);
+        r.countdown = 0.;
+        for (i, d) in r.drivers.iter_mut().enumerate() {
+            d.bot = false;
+            d.rank = i + 1;
+        }
+        for (i, p) in r.pilots.iter_mut().enumerate() {
+            p.distance = if i == 0 { 0. } else { 400. + i as f64 * 80. };
+            p.x = 0.;
+            p.speed = 200.;
+        }
+        r.drivers[0].item = Some(Weapon::Missile);
+        r.weapons(&[Controls {
+            fire: true,
+            ..Default::default()
+        }]);
+        r
+    }
+    #[test]
+    fn missile_follows_banked_track_and_locks_only_near_impact() {
+        let mut r = missile_race();
+        let mut p = r.projectiles.remove(0);
+        r.pilots[1].distance = 2500.;
+        r.drivers[1].rank = 1;
+        let mut saw_lock = false;
+        for _ in 0..1800 {
+            p.time += DT;
+            r.pilots[1].distance += 180. * DT;
+            r.guide_missile(&mut p).unwrap();
+            if p.terminal {
+                saw_lock = p.locked;
+                break;
+            }
+            if p.time > 1.05 {
+                assert!(
+                    p.position
+                        .distance(r.world.track.sample(p.distance).point(p.x, 10.))
+                        < 0.01
+                );
+            }
+        }
+        assert!(
+            saw_lock,
+            "must catch the moving leader rather than orbit/cut through corners"
+        );
+    }
+    #[test]
+    fn missile_retargets_leader_until_laser_lock_then_keeps_target() {
+        let mut r = missile_race();
+        let mut p = r.projectiles.remove(0);
+        r.drivers[2].rank = 1;
+        r.drivers[1].rank = 4;
+        p.time = 1.2;
+        r.guide_missile(&mut p).unwrap();
+        assert_eq!(p.target, Some(2));
+        r.pilots[2].distance = p.distance + 60.;
+        r.guide_missile(&mut p).unwrap();
+        assert!(p.locked);
+        r.drivers[3].rank = 0;
+        r.guide_missile(&mut p).unwrap();
+        assert_eq!(p.target, Some(2));
+    }
+    #[test]
+    fn cruise_hits_moving_leader_after_previous_winner_finished() {
+        let mut r = missile_race();
+        r.pilots[1].finished = true;
+        r.drivers[2].rank = 2;
+        for _ in 0..1200 {
+            r.clock += DT;
+            for p in r.pilots.iter_mut().skip(2) {
+                p.distance += 180. * DT;
+            }
+            r.weapons(&[]);
+            if r.projectiles.is_empty() {
+                break;
+            }
+        }
+        assert!(r.projectiles.is_empty());
+        assert!(r.pilots[2].energy < 100.);
+        assert_eq!(r.pilots[1].energy, 100.);
+    }
+    #[test]
+    fn untargeted_missile_fuses_and_emp_clears_inflight_missile() {
+        let mut r = missile_race();
+        for p in r.pilots.iter_mut().skip(1) {
+            p.finished = true;
+        }
+        for _ in 0..480 {
+            r.clock += DT;
+            r.weapons(&[]);
+        }
+        assert!(r.projectiles.is_empty());
+        let mut r = missile_race();
+        r.drivers[1].item = Some(Weapon::Emp);
+        r.weapons(&[
+            Controls::default(),
+            Controls {
+                fire: true,
+                ..Default::default()
+            },
+        ]);
+        assert!(r.projectiles.is_empty());
+        assert!(r.pilots[0].emp_time > 0.);
+    }
     #[test]
     fn scripted_weapon_activation_preserves_queued_items_and_ground_bombs() {
         let mut r = Race::new(35, "easy", "city", 1, 1);

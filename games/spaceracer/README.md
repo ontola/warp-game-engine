@@ -6,6 +6,13 @@ valid equal-content performance comparison. Source provenance remains pinned
 in `port-status.json`; original assets and their attribution are retained.
 There is no Godot runtime or Godot build/export step.
 
+## Source restoration follow-up (31 October 2026)
+
+See [the parity review](parity-review.md) for restored HUD/visor, cruise guidance
+and model, four-angle victory replay, checks and the explicit remaining gaps.
+The port remains incomplete. `missile` and `victory` in `rules/game.luau` now
+control cruise timing and finish choreography without a native rebuild.
+
 ## Play and capture
 
 From the workspace root:

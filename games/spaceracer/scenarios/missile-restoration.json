@@ -1,0 +1,50 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": "play",
+      "ticks": 365
+    },
+    {
+      "cmd": [
+        "place 1 800",
+        "place 2 -500",
+        "place 3 -550",
+        "place 4 -600",
+        "place 5 -650",
+        "give 0 missile"
+      ],
+      "ticks": 1
+    },
+    {
+      "cmd": [
+        "fire 0",
+        "missile-view on"
+      ],
+      "ticks": 24,
+      "capture": "ejection.png"
+    },
+    {
+      "ticks": 110,
+      "capture": "cruise-close.png",
+      "state": "cruise-state.json"
+    },
+    {
+      "ticks": 120,
+      "capture": "approach.png",
+      "state": "approach-state.json"
+    },
+    {
+      "ticks": 120,
+      "capture": "terminal.png",
+      "state": "terminal-state.json"
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}

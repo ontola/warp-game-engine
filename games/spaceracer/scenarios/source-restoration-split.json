@@ -1,0 +1,35 @@
+{
+  "size": [
+    3840,
+    2160
+  ],
+  "steps": [
+    {
+      "cmd": "demo",
+      "ticks": 650,
+      "capture": "split-race-4k.png"
+    },
+    {
+      "cmd": "finish 0",
+      "ticks": 180,
+      "capture": "split-finish-4k.png",
+      "state": "split-finish.json"
+    },
+    {
+      "expect": "/pilots/0/finished",
+      "equals": true
+    },
+    {
+      "expect": "/pilots/1/finished",
+      "equals": false
+    },
+    {
+      "cmd": "pause",
+      "capture": "split-pause-4k.png"
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}

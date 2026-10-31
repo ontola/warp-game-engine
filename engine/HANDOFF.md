@@ -7,6 +7,24 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## SpaceRacer source restoration - 31 October 2026
+
+Restored retained Open Sans SemiBold/logo, source-proportioned HUD and actual visor glass
+(curvature/glow/ghost), segmented energy/minimap/buttons/results. Generic HUD
+`Optics` is opt-in (four bounded rectangles), offscreen at native resolution;
+menus are flat. New `hud_optics.rs`/WGSL, serial renderer regression.
+Cruise now follows banked track geometry, launches from the rack, accelerates,
+retargets until terminal lock, hits eligible leader after earlier finisher,
+fuses targetless shots and responds to EMP. Modern source loft mesh, corrected
+winding, interpolated pose, bright engine and continuous smoke ribbon.
+Victory is independent of combat/normal AI, preserves items, continues after
+results, animates fins and arcs over gaps; four cinematic shots, relative entry
+blend and fitted split FOV. Policy is Luau (`missile`, `victory`).
+See games/spaceracer/parity-review.md: explicit outstanding weapon, EMP, damage,
+menu, warning, content/audio/platform gaps. Native portable build refreshed;
+no Godot/Android build or new physical-controller run. Tests: sim 25, app 16,
+HUD 13. Only owned SpaceRacer/render files belong to this change.
+
 ## SpaceRacer city playtest follow-up - 31 October 2026
 
 4K playtest found a city light radius of 8 m violating renderer's 1 m cap:
