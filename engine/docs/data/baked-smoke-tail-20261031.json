@@ -1,0 +1,205 @@
+{
+  "adapter": {
+    "backend": "Vulkan",
+    "driver": "NVIDIA",
+    "name": "NVIDIA GeForce RTX 5070 Ti"
+  },
+  "checks": {
+    "after-expiry": {
+      "changed_pixels": 0
+    },
+    "animation": {
+      "early_middle_mae": 0.6516739004629629,
+      "peak_mae": 0.6420211226851852,
+      "tail_mae": 0.0
+    },
+    "before-birth": {
+      "changed_pixels": 0
+    },
+    "expired": {
+      "changed_pixels": 0
+    },
+    "inside_changed_pixels": 921600,
+    "occluded_changed_pixels": 0,
+    "outside_changed_pixels": 27657,
+    "split_changed_pixels": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "taa_history_changed_pixels": 0,
+    "tail": {
+      "curve": [
+        {
+          "changed_pixels": 38541,
+          "mae_to_empty": 0.5689015480324074,
+          "time_seconds": 1.7000000476837158
+        },
+        {
+          "changed_pixels": 39473,
+          "mae_to_empty": 0.5575260416666666,
+          "time_seconds": 1.8000000715255737
+        },
+        {
+          "changed_pixels": 40285,
+          "mae_to_empty": 0.532205222800926,
+          "time_seconds": 1.9000000953674316
+        },
+        {
+          "changed_pixels": 40882,
+          "mae_to_empty": 0.4907342303240741,
+          "time_seconds": 2.0
+        },
+        {
+          "changed_pixels": 41232,
+          "mae_to_empty": 0.4385709635416667,
+          "time_seconds": 2.1000001430511475
+        },
+        {
+          "changed_pixels": 41701,
+          "mae_to_empty": 0.3777951388888889,
+          "time_seconds": 2.200000047683716
+        },
+        {
+          "changed_pixels": 41902,
+          "mae_to_empty": 0.3184816261574074,
+          "time_seconds": 2.3000001907348633
+        },
+        {
+          "changed_pixels": 41930,
+          "mae_to_empty": 0.2625857204861111,
+          "time_seconds": 2.4000000953674316
+        },
+        {
+          "changed_pixels": 42006,
+          "mae_to_empty": 0.20965494791666667,
+          "time_seconds": 2.5
+        },
+        {
+          "changed_pixels": 41775,
+          "mae_to_empty": 0.16455620659722223,
+          "time_seconds": 2.6000001430511475
+        },
+        {
+          "changed_pixels": 41477,
+          "mae_to_empty": 0.12619321469907407,
+          "time_seconds": 2.700000047683716
+        },
+        {
+          "changed_pixels": 40973,
+          "mae_to_empty": 0.09622178819444445,
+          "time_seconds": 2.8000001907348633
+        },
+        {
+          "changed_pixels": 40299,
+          "mae_to_empty": 0.07158817997685185,
+          "time_seconds": 2.9000000953674316
+        },
+        {
+          "changed_pixels": 39251,
+          "mae_to_empty": 0.05286277488425926,
+          "time_seconds": 3.0
+        },
+        {
+          "changed_pixels": 38117,
+          "mae_to_empty": 0.039506655092592595,
+          "time_seconds": 3.0999999046325684
+        },
+        {
+          "changed_pixels": 36495,
+          "mae_to_empty": 0.028499348958333334,
+          "time_seconds": 3.200000047683716
+        },
+        {
+          "changed_pixels": 34369,
+          "mae_to_empty": 0.021557798032407406,
+          "time_seconds": 3.3000001907348633
+        },
+        {
+          "changed_pixels": 30890,
+          "mae_to_empty": 0.016195384837962963,
+          "time_seconds": 3.4000000953674316
+        },
+        {
+          "changed_pixels": 24041,
+          "mae_to_empty": 0.009048032407407407,
+          "time_seconds": 3.5
+        },
+        {
+          "changed_pixels": 17424,
+          "mae_to_empty": 0.006311848958333333,
+          "time_seconds": 3.5999999046325684
+        },
+        {
+          "changed_pixels": 15445,
+          "mae_to_empty": 0.005586299189814815,
+          "time_seconds": 3.700000047683716
+        },
+        {
+          "changed_pixels": 12920,
+          "mae_to_empty": 0.004673032407407407,
+          "time_seconds": 3.8000001907348633
+        },
+        {
+          "changed_pixels": 11075,
+          "mae_to_empty": 0.004005714699074074,
+          "time_seconds": 3.9000000953674316
+        },
+        {
+          "changed_pixels": 9858,
+          "mae_to_empty": 0.0035655381944444445,
+          "time_seconds": 4.0
+        },
+        {
+          "changed_pixels": 7172,
+          "mae_to_empty": 0.0025940393518518517,
+          "time_seconds": 4.100000381469727
+        },
+        {
+          "changed_pixels": 3160,
+          "mae_to_empty": 0.0011429398148148147,
+          "time_seconds": 4.199999809265137
+        },
+        {
+          "changed_pixels": 916,
+          "mae_to_empty": 0.00033130787037037037,
+          "time_seconds": 4.300000190734863
+        },
+        {
+          "changed_pixels": 198,
+          "mae_to_empty": 0.00007161458333333333,
+          "time_seconds": 4.400000095367432
+        },
+        {
+          "changed_pixels": 0,
+          "mae_to_empty": 0.0,
+          "time_seconds": 4.5
+        },
+        {
+          "changed_pixels": 0,
+          "mae_to_empty": 0.0,
+          "time_seconds": 4.600000381469727
+        }
+      ],
+      "largest_0_1s_mae_drop": 0.06077582465277781,
+      "lifetime_seconds": 4.599999904632568,
+      "old_cutoff_seconds": 2.6,
+      "remaining_at_3_2s_mae": 0.028499348958333334,
+      "remaining_at_old_cutoff_mae": 0.16455620659722223,
+      "sample_interval_seconds": 0.1
+    }
+  },
+  "failures": [],
+  "passed": true,
+  "rendering": "native resolution, HDR, no reconstruction; TAA only in history check",
+  "scope": "bounded native smoke renderer fixture, not full Growing Guns gameplay or target FPS acceptance",
+  "size": [
+    1280,
+    720
+  ],
+  "timing": {
+    "available": false,
+    "reason": "adapter lacks encoder timestamp queries; no wall-time substitute"
+  }
+}

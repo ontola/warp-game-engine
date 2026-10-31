@@ -12,7 +12,7 @@ This is a visual trial; it does not change explosion damage or physics.
 The original [offline bake](../tools/bake-explosion-smoke.py) uses buoyancy,
 velocity advection, pressure projection and vorticity to evolve a lobed blast.
 It stores 32 frames of 48-cubed density plus baked directional transmittance,
-covering 2.6 seconds with empty endpoints. See the [asset contract](../assets/fx/README.md)
+covering 2.6 seconds of source motion with empty endpoints. See the [asset contract](../assets/fx/README.md)
 and its checksum metadata. No Three.js runtime, VDB sample or external download
 is needed by a game. The committed asset is 6.75 MiB and uploads once, lazily,
 shared by all explosions and views.
@@ -21,6 +21,12 @@ shared by all explosions and views.
 this path. The engine default remains off; blood/gib mist retain their own
 recipe. Each blast has a seeded yaw and radius-scaled volume. At most 16 baked
 volumes are retained; a new blast replaces the oldest at this limit.
+
+Playback retains the first 1.2 seconds of the burst, then smoothly slows the
+later frames into a 4.6-second lifetime. The low-density shape trim follows the
+bake's fade envelope instead of cutting off sparse wisps at a fixed threshold.
+The asset bytes and memory cost are unchanged; longer-lived smoke can increase
+overlap between successive explosions.
 
 The WGSL pass blends adjacent baked frames and raymarches density in the
 volume's local coordinates. It samples each frame within its half-texel bounds,
@@ -73,7 +79,7 @@ store videos or target-frame-rate acceptance.
 
 ![Full-quality Growing Guns explosion smoke trial](images/baked-explosion-smoke.jpg)
 
-The final native MSVC dev build passes 11 focused renderer tests (including
+The initial native MSVC dev build passed 11 focused renderer tests (including
 WGSL validation) and 98 Growing Guns library tests; two optional game tests
 are ignored. The committed bake's checksum, empty endpoints, temporal changes
 and zero-density cube border were checked. Both game and GPU fixture build
@@ -99,9 +105,36 @@ This bounded static scene excludes startup, compilation and image readback.
 It is not a gameplay-FPS result or four-player 4K acceptance. It contains one
 explosion; the 16-volume limit has not been established as a performance budget.
 
-The game review runs a real queued radius-6.5m explosion with damage 0 in clear
+The initial game review ran a real queued radius-6.5m explosion with damage 0 in clear
 air above the arena, retaining the normal game rendering path. 96 frames at
 30 fps cover 3.2 seconds for both recipes and a four-view orbit. Early, middle
 and fading frames were inspected. The result is visibly soft at close range;
 it is an experimental compact bake, not parity with the high-resolution VDB
 showcase. The generator and original asset use the repository MIT license.
+
+
+## Slower tail revision
+
+The original bake's final density fade covered only source time 1.7 to 2.6 s.
+A fixed 0.025 density trim also discarded the penultimate frame's remaining
+wisps. Playback now eases from normal speed at 1.2 s to a stop at 4.6 s, while
+scaling the trim by the original density envelope. Early plume motion and the
+6.75 MiB asset are unchanged. Fire and the other explosion effects keep their
+own lifetimes.
+
+The revised build passes all 11 focused renderer tests and the updated
+[native GPU fixture](data/baked-smoke-tail-20261031.json). Rendered contrast
+against an empty scene remains at 25.6% of the measured peak at the old 2.6 s
+cutoff and 4.4% at 3.2 s. Sampling every 0.1 s from 1.7 to 4.6 s found no step
+larger than 9.5% of peak contrast; the end frame is empty. Occlusion, inside
+views, four-view equivalence and temporal-history isolation still pass. These
+are image continuity checks, not a new performance measurement.
+
+The capture helper now records 156 frames at 30 fps (5.2 s), including the
+complete tail. The revised night review uses the normal stadium floodlights
+plus a white 3000-lux directional key at elevation 25°, azimuth 60°. The fixed
+camera aims slightly higher to keep the rising plume in frame. Later frames
+were inspected as the smoke thins to nothing; world-light relighting remains
+the separate limitation described above.
+
+![Night smoke still dissipating around 2.6 seconds](images/baked-smoke-night-tail.jpg)

@@ -30,6 +30,8 @@ const MAX_PUFFS: usize = 16384;
 const MAX_SMOKE_VOLUMES: usize = 16;
 const SMOKE_SIZE: u32 = 48;
 const SMOKE_FRAMES: u32 = 32;
+// Playback duration in fx.wgsl; the source bake contains 2.6 seconds of motion.
+const SMOKE_LIFETIME: f32 = 4.6;
 const SMOKE_BYTES: &[u8] = include_bytes!("../../../assets/fx/explosion-smoke.rg8");
 /// Heat shells only for blasts at least this big (Godot BLAST_DISTORTION_MIN_RADIUS).
 pub const DISTORTION_MIN_RADIUS: f32 = 5.0;
@@ -325,7 +327,7 @@ impl Effects {
                 ay: [0.0, side, 0.0, 0.0],
                 az: [sin * side, 0.0, cos * side, 0.0],
                 body: [1.0, 0.97, 0.92, 14.0],
-                timing: [time, 2.6, 0.0, 0.0],
+                timing: [time, SMOKE_LIFETIME, 0.0, 0.0],
                 ..Default::default()
             });
         }
@@ -890,9 +892,9 @@ mod tests {
         for p in &volumes {
             assert!((Vec3::from_slice(&p.ax[..3]).length() - 4.8).abs() < 1e-5);
             assert!(Vec3::from_slice(&p.ax[..3]).dot(Vec3::from_slice(&p.az[..3])).abs() < 1e-4);
-            assert_eq!(p.timing[1], 2.6);
+            assert_eq!(p.timing[1], SMOKE_LIFETIME);
         }
-        fx.explosion(4.0, Vec3::ZERO, 2.0, Vec3::ONE);
+        fx.explosion(6.0, Vec3::ZERO, 2.0, Vec3::ONE);
         assert_eq!(fx.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count(), 1);
     }
 

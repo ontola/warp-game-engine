@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-const LIFE: f32 = 2.6;
+const LIFE: f32 = 4.6;
 const AGE: f32 = 0.85;
 
 fn smoke() -> Puff {
@@ -151,6 +151,43 @@ fn run() -> Result<(), String> {
     if tail_mae > (peak_mae * 0.05).max(0.05) { failures.push(format!("visible hard cutoff risk: tail MAE {tail_mae}, peak {peak_mae}")); }
     checks.insert("animation".into(),json!({"early_middle_mae":animation_delta,"tail_mae":tail_mae,"peak_mae":peak_mae}));
 
+    // Measure the rendered tail, including the former 2.6 s cutoff. Checking
+    // only the last frame misses a plume that dissipates much too early.
+    let mut tail_curve = Vec::new();
+    let mut previous_mae: Option<f64> = None;
+    let mut largest_drop = 0.0f64;
+    let mut remaining_at_old_end = 0.0;
+    let mut remaining_at_three_two = 0.0;
+    for sample in 0..=29 {
+        let time = 1.7 + sample as f32 * 0.1;
+        renderer.set_effects(&gpu,time,Some(&[smoke()]))?;
+        let pixels = capture(&renderer,&gpu,&light,cams[0],size)?;
+        let contrast = mae(&pixels,&base);
+        let n = changed(&pixels,&base);
+        if let Some(previous) = previous_mae { largest_drop = largest_drop.max(previous-contrast); }
+        previous_mae = Some(contrast);
+        if sample == 9 { remaining_at_old_end = contrast; save(out,"tail-2.6s",size,&pixels)?; }
+        if sample == 15 { remaining_at_three_two = contrast; save(out,"tail-3.2s",size,&pixels)?; }
+        if sample == 21 { save(out,"tail-3.8s",size,&pixels)?; }
+        if sample == 27 { save(out,"tail-4.4s",size,&pixels)?; }
+        tail_curve.push(json!({"time_seconds":time,"mae_to_empty":contrast,"changed_pixels":n}));
+    }
+    if remaining_at_old_end < (peak_mae*0.08).max(0.005) {
+        failures.push(format!("smoke still disappears at the old cutoff: 2.6 s MAE {remaining_at_old_end}, peak {peak_mae}"));
+    }
+    if remaining_at_three_two < (peak_mae*0.02).max(0.002) {
+        failures.push(format!("extended wisps missing: 3.2 s MAE {remaining_at_three_two}, peak {peak_mae}"));
+    }
+    // A generous screen-space continuity bound catches a dropped animation
+    // frame or lifetime pop without requiring every moving wisp to be monotone.
+    if largest_drop > (peak_mae*0.20).max(0.025) {
+        failures.push(format!("abrupt tail contrast drop over 0.1 s: {largest_drop}, peak {peak_mae}"));
+    }
+    checks.insert("tail".into(),json!({"old_cutoff_seconds":2.6,"lifetime_seconds":LIFE,
+        "sample_interval_seconds":0.1,"largest_0_1s_mae_drop":largest_drop,
+        "remaining_at_old_cutoff_mae":remaining_at_old_end,"remaining_at_3_2s_mae":remaining_at_three_two,
+        "curve":tail_curve}));
+
     scene.update_instance(blocker_slot,mesh,Affine3A::from_scale_rotation_translation(Vec3::new(100.0,100.0,0.2),Quat::IDENTITY,Vec3::new(0.0,0.0,6.0)));
     renderer.update_instances(&gpu,blocker_slot,&scene.instances[blocker_slot..])?;
     renderer.set_effects(&gpu,AGE,Some(&[]))?;
@@ -195,7 +232,7 @@ fn run() -> Result<(), String> {
         "size":size,"rendering":"native resolution, HDR, no reconstruction; TAA only in history check",
         "checks":checks,"timing":timing,"passed":failures.is_empty(),"failures":failures});
     std::fs::write(out.join("report.json"),serde_json::to_vec_pretty(&report).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    if failures.is_empty() {println!("PASS: smoke visibility, occlusion, lifetime, animation, four views and temporal-history isolation");Ok(())}
+    if failures.is_empty() {println!("PASS: smoke visibility, occlusion, lifetime, animation, gradual tail, four views and temporal-history isolation");Ok(())}
     else {Err(failures.join("\n"))}
 }
 fn main() {if let Err(error)=run(){eprintln!("baked smoke fixture: {error}");std::process::exit(1);}}

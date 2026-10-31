@@ -28,7 +28,7 @@ missing.
 | Stadium | Done | Colosseum masonry, 8,363 animated spectators, crowd sound, four live TV screens |
 | Bots | Done | Aim, reaction, strafing, jumps, pickups and specials; they keep to lava islands. Versus reserves eight visual seats so adding/removing bots keeps the renderer |
 | Characters | Close | Knight, paladin and zombie with textures and clips, GPU skinning, 11-body ragdolls, model-derived head/body gibs. Cuts use cached model geometry; animated skin-aware dismemberment, aim and strafe layers remain incomplete |
-| Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with experimental baked volumetric smoke on full desktop quality (low/minimum retain billows), sparks, chips, scorch and blood, air strike rocket and white-out; ion cannon charges as one depth-clipped luminous volume (including from inside and when looking up/down), with wide bloom and bright ground illumination, with a dense field of bright soft blue dots across the impact disc that appear on live solid ground, lift like glowing sand with independent delays, varied speeds and acceleration, then suddenly become upward streaks from their exact positions at impact and nearly vertical rubble lift/fall |
+| Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with experimental baked volumetric smoke with a gradual 4.6-second tail on full desktop quality (low/minimum retain billows), sparks, chips, scorch and blood, air strike rocket and white-out; ion cannon charges as one depth-clipped luminous volume (including from inside and when looking up/down), with wide bloom and bright ground illumination, with a dense field of bright soft blue dots across the impact disc that appear on live solid ground, lift like glowing sand with independent delays, varied speeds and acceleration, then suddenly become upward streaks from their exact positions at impact and nearly vertical rubble lift/fall |
 | Sky and light | Done | Godot's sky by default; procedural time of day and weather, per round or as a cycle; visible sun and GPU lens flare with per-view occlusion; floodlights with shadows at night |
 | Gameplay replay | Added | F12 saves a screenshot plus a bounded state replay; F9 review, pause/step/seek, saved frames and headless re-render after code edits. Local/host recording; see below for visual-history limits |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
@@ -226,7 +226,9 @@ linking the Godot repository.
 ### Baked explosion smoke trial
 
 Full desktop graphics uses a shared 32-frame density-volume animation for
-explosion smoke; fire, sparks, heat distortion and lights retain their recipe.
+explosion smoke. The initial burst retains its speed; later frames ease into a
+4.6-second tail with a thinning-density cutoff that preserves sparse wisps.
+Fire, sparks, heat distortion and lights retain their recipe.
 Low/minimum profiles (including native Quest) keep the earlier billows.
 `GG_BAKED_SMOKE=0` selects the earlier effect for comparison. The animation
 is baked offline and does not collide with walls; walls occlude its rendering.
@@ -243,6 +245,6 @@ games/growing-guns/tools/capture-explosion-smoke.ps1 -Views 4 -Orbit -Out build/
 ```
 
 Use `-Executable PATH` for a separate Cargo target directory. The helper
-writes 96 frames at 30 fps, the exact scenario JSON and (if FFmpeg is installed)
+writes 156 frames at 30 fps, the exact scenario JSON and (if FFmpeg is installed)
 `explosion.mp4`. The shorter `scripts/explosion-smoke.json` captures key ages.
 These are development review captures, not store gameplay previews.
