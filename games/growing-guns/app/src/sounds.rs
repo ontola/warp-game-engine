@@ -350,7 +350,7 @@ impl Sounds {
             let delay = g.at.filter(|_| g.delay).map_or(0.0, |at| self.ears.iter().map(|e| e.distance(at)).fold(1000.0, f32::min) / 343.0);
             let ends = &mut self.layers[family];
             ends.retain(|&end| end > self.time);
-            if ends.len() >= [80, 32, 24, 6][family] { return None; }
+            if ends.len() >= [80, 32, 24, 12][family] { return None; }
             // Lower new overlapping layers smoothly in energy, without modulating
             // a playing waveform or asking the limiter to flatten every transient.
             g.db -= 10.0 * (1.0 + ends.len() as f32).log10();
@@ -538,7 +538,7 @@ impl Sounds {
         let spl = 118.0 + 4.0 * (r / 6.0).max(1.0).log2();
         self.duck_music(crate::music::explosion_duck(r));
         self.named(world, "explosion_bang", &[("radius", rb)], G::at(pos, 10.0, bang_unit).dry().room(0.08).spl(spl));
-        self.named(world, "explosion_rumble", &[("radius", rb)], G::at(pos, 0.0, rumble_unit).dry().no_tail().spl(spl));
+        self.named(world, "explosion_rumble", &[("radius", rb)], G::at(pos, 3.0 * ((r - 6.0) / 18.0).clamp(0.0, 1.0), rumble_unit).dry().no_tail().spl(spl));
         if kind == ExplosionKind::Ion {
             let rb = r.clamp(8.0, 48.0).round();
             let unit = (1.6 * r).clamp(16.0, 72.0);
@@ -744,7 +744,13 @@ mod audio_stress_tests {
             sounds.ears = vec![Vec3::ZERO];
             if blast { sounds.explosion(&world, Vec3::new(0.0,0.0,-2.0), 24.0, ExplosionKind::Conventional); }
             else { sounds.shot(&world, 0, -Vec3::Z, -Vec3::Z, true, 0.0, &[0]); }
-            let audio = mix.render_seconds(3.0);
+            let audio = mix.render_seconds(4.0);
+            if blast {
+                // The aftershock must remain audible after the transient has died.
+                let tail = &audio[144_000..240_000]; // 1.5-2.5 s, 48 kHz stereo.
+                let rms = (tail.iter().map(|v| v*v).sum::<f32>() / tail.len() as f32).sqrt();
+                assert!(rms >= 0.08, "Large explosion lost its sustained rumble: {rms}");
+            }
             let loudest = audio.chunks(4800).map(|c| (c.iter().map(|v| v*v).sum::<f32>() / c.len() as f32).sqrt()).fold(0.0f32, f32::max);
             levels.push(loudest);
             if let Ok(dir) = std::env::var("GG_AUDIO_REVIEW") {

@@ -165,8 +165,12 @@ pub struct Debris {
     meta_dirty: bool,
     pending: Vec<Shard>,
     cursor: usize,
+    gradual_recycling: bool,
+    spawn_allowance: usize,
     /// Simulated time each slot's shard dies at.
     dies: Vec<f64>,
+    born: Vec<f64>,
+    volumes: Vec<f32>,
     time: f64,
     unsimulated: f64,
     reset: bool,
@@ -190,7 +194,7 @@ impl Debris {
             if !shadows { i.flags |= NO_SHADOW; }
         }
         scene.debris = Some(DebrisSpec { first: first as u32, capacity: capacity as u32, occupancy_words: occupancy.words() as u32 });
-        Debris { first, capacity, tuning: Tuning::default(), occupancy, meta_dirty: true, pending: Vec::new(), cursor: 0, dies: vec![0.0; capacity],
+        Debris { first, capacity, tuning: Tuning::default(), occupancy, meta_dirty: true, pending: Vec::new(), cursor: 0, gradual_recycling: false, spawn_allowance: capacity, dies: vec![0.0; capacity], born: vec![0.0; capacity], volumes: vec![0.0; capacity],
             time: 0.0, unsimulated: 0.0, reset: false, rng: 0x9E37_79B9_7F4A_7C15, spawned: 0 }
     }
 
@@ -226,15 +230,28 @@ impl Debris {
     /// Shards alive now.
     pub fn live(&self) -> usize { self.dies.iter().filter(|&&t| t > self.time).count() }
 
+    /// Reduce burst density under pressure and recycle only small batches.
+    /// Fresh shards get 0.8 seconds protected; at most 1/64 of the pool can
+    /// be recycled per tick once full. Empty capacity is admitted gradually.
+    pub fn set_gradual_recycling(&mut self) {
+        self.gradual_recycling = true;
+        self.spawn_allowance = (self.capacity - self.live()).div_ceil(4).max(self.capacity.div_ceil(64));
+    }
+
     /// Kill every shard (a new level).
     pub fn clear(&mut self) {
         self.pending.clear();
         self.dies.iter_mut().for_each(|t| *t = 0.0);
         self.reset = true;
+        self.spawn_allowance = if self.gradual_recycling { self.capacity.div_ceil(4) } else { self.capacity };
     }
 
     /// Simulated time passes (call per game tick).
-    pub fn advance(&mut self, dt: f32) { self.time += dt as f64; self.unsimulated += dt as f64; }
+    pub fn advance(&mut self, dt: f32) {
+        self.time += dt as f64;
+        self.unsimulated += dt as f64;
+        if self.gradual_recycling { self.spawn_allowance = (self.capacity - self.live()).div_ceil(4).max(self.capacity.div_ceil(64)); }
+    }
 
     fn f(&mut self) -> f32 {
         self.rng ^= self.rng << 13;
@@ -245,15 +262,27 @@ impl Debris {
 
     /// Spawn one shard; the oldest is recycled when the pool is full.
     pub fn spawn(&mut self, scene: &Scene, mesh: usize, pos: Vec3, vel: Vec3, size: Vec3, spin: f32, life: f32) {
-        if self.capacity == 0 { return; }
+        if self.capacity == 0 || (self.gradual_recycling && self.spawn_allowance == 0) { return; }
         // Prefer a dead slot near the cursor, else take the cursor's.
         let mut slot = self.cursor;
-        for k in 0..self.capacity.min(64) {
+        for k in 0..if self.gradual_recycling { self.capacity } else { self.capacity.min(64) } {
             let s = (self.cursor + k) % self.capacity;
             if self.dies[s] <= self.time { slot = s; break; }
         }
+        if self.gradual_recycling {
+            if self.dies[slot] > self.time {
+                let Some(old) = (0..self.capacity).map(|k| (self.cursor + k) % self.capacity)
+                    .filter(|&s| self.time - self.born[s] >= 0.8)
+                    .min_by(|&a, &b| self.volumes[a].total_cmp(&self.volumes[b])) else { return; };
+                if (size.x * size.y * size.z).abs() < self.volumes[old] { return; }
+                slot = old;
+            }
+            self.spawn_allowance -= 1;
+        }
         self.cursor = (slot + 1) % self.capacity;
         self.dies[slot] = self.time + life as f64;
+        self.born[slot] = self.time;
+        self.volumes[slot] = (size.x * size.y * size.z).abs();
         let m = &scene.meshes[mesh];
         let axis = Vec3::new(self.f() - 0.5, self.f() - 0.5, self.f() - 0.5).normalize_or(Vec3::Y);
         let angle = self.f() * std::f32::consts::TAU;
@@ -283,7 +312,11 @@ impl Debris {
 
     fn burst_with_lift(&mut self, scene: &Scene, b: &BurstSpec, lift: bool) {
         if b.meshes.is_empty() { return; }
-        for _ in 0..b.count {
+        let count = if self.gradual_recycling { b.count.min(self.spawn_allowance as u32) } else { b.count };
+        if count == 0 { return; }
+        let mut candidates = Vec::new();
+        // Candidate work is bounded too, even for an oversized requested burst.
+        for _ in 0..if self.gradual_recycling { b.count.min(MAX_SPAWNS as u32) } else { b.count } {
             let r: [f32; 11] = std::array::from_fn(|_| self.f());
             let dir = (Vec3::new(r[0], r[1], r[2]) * 2.0 - 1.0 + Vec3::Y * 0.45).normalize_or(Vec3::Y);
             let mut pos = b.center + dir * b.radius * (0.2 + 0.5 * r[3]);
@@ -303,7 +336,20 @@ impl Debris {
             let prop = Vec3::new(0.5 + 0.5 * self.f(), 0.32 + 0.6 * self.f(), 0.45 + 0.55 * self.f());
             let mesh = b.meshes[(r[10] * b.meshes.len() as f32) as usize % b.meshes.len()];
             let life = b.life * (0.85 + 0.3 * self.f());
-            self.spawn(scene, mesh, pos, vel, prop * s, (r[9] - 0.5) * 18.0, life);
+            if self.gradual_recycling {
+                candidates.push((mesh, pos, vel, prop * s, (r[9] - 0.5) * 18.0, life));
+            } else {
+                self.spawn(scene, mesh, pos, vel, prop * s, (r[9] - 0.5) * 18.0, life);
+            }
+        }
+        if self.gradual_recycling && candidates.len() > count as usize {
+            candidates.sort_by(|a,b| {
+                let volume = |v: Vec3| (v.x*v.y*v.z).abs();
+                volume(b.3).total_cmp(&volume(a.3))
+            });
+        }
+        for (mesh,pos,vel,size,spin,life) in candidates.into_iter().take(count as usize) {
+            self.spawn(scene,mesh,pos,vel,size,spin,life);
         }
     }
 
@@ -452,6 +498,83 @@ pub const SHADER: &str = include_str!("shaders/debris.wgsl");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pressure_selects_largest_new_shards_and_recycles_small_old_ones_first() {
+        fn pool(capacity: usize) -> (Scene, Debris, usize) {
+            let mut scene = Scene::default();
+            let mesh = scene.add_mesh(&crate::primitives::cube(0).mesh());
+            let occ = Occupancy::new(Vec3::splat(-10.0), Vec3::splat(10.0), 1.0);
+            let d = Debris::reserve(&mut scene, capacity, occ, false);
+            (scene,d,mesh)
+        }
+        let (scene,mut all,mesh) = pool(512);
+        all.set_gradual_recycling();
+        let (_,mut limited,_) = pool(64);
+        limited.set_gradual_recycling();
+        let meshes=[mesh];
+        let burst= BurstSpec::rubble(Vec3::ZERO,2.0,128,&meshes);
+        all.burst(&scene,&burst);
+        limited.burst(&scene,&burst);
+        let mut sizes: Vec<_> = all.volumes.iter().copied().filter(|v| *v>0.0).collect();
+        sizes.sort_by(|a,b|b.total_cmp(a));
+        let selected: Vec<_> = limited.volumes.iter().copied().filter(|v| *v>0.0).collect();
+        assert_eq!(selected.len(),16);
+        assert!(selected.iter().all(|v|*v>=sizes[15]));
+        let (scene,mut full,mesh) = pool(64);
+        for i in 0..64 {
+            full.spawn(&scene,mesh,Vec3::ZERO,Vec3::ZERO,Vec3::splat(if i==17 {0.1} else {2.0}),0.0,4.0);
+        }
+        full.set_gradual_recycling();
+        full.advance(1.0);
+        full.spawn(&scene,mesh,Vec3::X,Vec3::ZERO,Vec3::ONE,0.0,4.0);
+        assert_eq!(full.volumes[17],1.0);
+        assert_eq!(full.volumes.iter().filter(|v| **v==8.0).count(),63);
+    }
+
+    #[test]
+    fn full_debris_pool_replaces_only_a_small_batch_of_old_shards() {
+        let mut scene = Scene::default();
+        let mesh = scene.add_mesh(&crate::primitives::cube(0).mesh());
+        let occ = Occupancy::new(Vec3::splat(-10.0), Vec3::splat(10.0), 1.0);
+        let mut d = Debris::reserve(&mut scene, 64, occ, false);
+        d.burst(&scene, &BurstSpec::rubble(Vec3::ZERO, 2.0, 64, &[mesh]));
+        d.set_gradual_recycling();
+        let spawned = d.spawned;
+        d.burst(&scene, &BurstSpec::rubble(Vec3::X*5.0, 2.0, 500, &[mesh]));
+        assert_eq!(d.spawned, spawned, "fresh debris must survive overload");
+        d.advance(1.0);
+        d.burst(&scene, &BurstSpec::rubble(Vec3::X*5.0, 2.0, 500, &[mesh]));
+        assert_eq!(d.spawned-spawned, 1, "replace only 1/64 in a tick");
+        assert_eq!(d.live(),64);
+    }
+
+    #[test]
+    fn preserving_debris_reduces_new_bursts_without_erasing_earlier_ones() {
+        let mut scene = Scene::default();
+        let mesh = scene.add_mesh(&crate::primitives::cube(0).mesh());
+        let occ = Occupancy::new(Vec3::splat(-10.0), Vec3::splat(10.0), 1.0);
+        let mut d = Debris::reserve(&mut scene, 64, occ, false);
+        d.set_gradual_recycling();
+        d.burst(&scene, &BurstSpec::rubble(Vec3::ZERO, 2.0, 500, &[mesh]));
+        assert_eq!(d.live(),16);
+        let first = d.pending.clone();
+        for _ in 0..20 {
+            d.advance(STEP);
+            d.burst(&scene, &BurstSpec::rubble(Vec3::X*5.0, 2.0, 500, &[mesh]));
+        }
+        assert!(d.live() <= 64);
+        assert!(d.live() > 16);
+        for old in first {
+            let kept = d.pending.iter().find(|s| s.mesh[3] == old.mesh[3]).unwrap();
+            assert_eq!(kept.pos_age,old.pos_age);
+            assert_eq!(kept.vel_life,old.vel_life);
+        }
+        d.advance(10.0);
+        assert_eq!(d.live(),0);
+        d.burst(&scene, &BurstSpec::rubble(Vec3::Y, 2.0, 500, &[mesh]));
+        assert_eq!(d.live(),16);
+    }
 
     #[test]
     fn debris_wgsl_validates_and_layouts_match() {

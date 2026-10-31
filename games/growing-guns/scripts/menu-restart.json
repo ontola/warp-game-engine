@@ -1,0 +1,59 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "give 0 uzi",
+        "give 0 uzi",
+        "menu start"
+      ],
+      "ticks": 2,
+      "capture": "start-menu.png"
+    },
+    {
+      "press": [
+        "SOUTH"
+      ],
+      "ticks": 1
+    },
+    {
+      "expect": "/players/0/cards",
+      "equals": []
+    },
+    {
+      "expect": "/players/0/bot",
+      "equals": false
+    },
+    {
+      "expect": "/screen",
+      "equals": "Play"
+    },
+    {
+      "cmd": [
+        "cage",
+        "give 0 uzi",
+        "give 0 uzi",
+        "debug on",
+        "debug focus search"
+      ],
+      "text": "uzi",
+      "ticks": 100,
+      "capture": "debug-cards-before.png"
+    },
+    {
+      "cmd": "remove 0 uzi",
+      "ticks": 1,
+      "capture": "debug-cards-after.png"
+    },
+    {
+      "expect": "/players/0/cards",
+      "equals": [
+        "uzi"
+      ]
+    }
+  ]
+}

@@ -129,7 +129,7 @@ impl Forward {
             if let Some(fx)=fx.0.lock().unwrap().as_mut() {
                 let white=((light.sun_lux*light.sun_dir.y.max(0.0)+light.sky_lux)/std::f32::consts::PI)
                     .max(light.fx_white_floor.max(0.0)/exposure);
-                fx.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,white,exposure)?;
+                fx.render_output(gpu,&mut enc,vi,target,&depth,view.cam,camera_views[vi],vp,vp,white,exposure,light,Vec3::splat(light.sky_lux/std::f32::consts::PI),Vec3::splat(light.sky_lux/std::f32::consts::PI),None)?;
             }
             if let Some(q)=query {enc.write_timestamp(q,vi as u32*6+3);enc.write_timestamp(q,vi as u32*6+4);}
             if let Some(sprites)=sprites.0.lock().unwrap().as_mut() {

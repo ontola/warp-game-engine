@@ -240,6 +240,14 @@ impl Characters {
         self.actors.get(player).and_then(|a| a.corpse_transform)
     }
 
+    pub fn corpse_bodies(&self, bodies: &mut Vec<physics::Body>) {
+        for actor in &self.actors {
+            if let Some(c) = &actor.corpse {
+                bodies.extend((0..c.rig.len()).map(|i| c.rig.body(i)));
+            }
+        }
+    }
+
     pub fn ragdolls(&self) -> impl Iterator<Item = [f32; 3]> + '_ {
         self.actors.iter().filter_map(|a| a.corpse.as_ref()).map(|c| c.rig.root_position(1.0).to_array())
     }

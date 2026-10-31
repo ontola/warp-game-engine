@@ -53,3 +53,26 @@ least 4 dB, so a protected but inaudible explosion mix cannot pass again.
 The sustained tests still have zero stolen voices, now maximum 77 active;
 peaks are 0.747 stereo/48 kHz and 0.824 surround/44.1 kHz. All three tests
 pass. These are offline measurements; the user evaluates the physical mix.
+
+
+## Restoring large-blast bass
+
+Large impacts now add an audible 38-72 Hz body, remove subsonic rumble energy,
+and retain a slower tail up to 2.6 seconds. Bass has 12 reserved voices and
+size-dependent gain up to +3 dB; overlap attenuation and the master ceiling
+remain active. Stereo/surround spam peaks: 0.7754 / 0.8695; 83 maximum voices,
+zero stolen. Loudest 50 ms explosion advantage: 5.00 dB. These are offline
+mix measurements; the packaged playtest is the listening check.
+
+
+## Final listening correction: sustained noisy aftershock
+
+The user preferred the Godot-style brown-noise aftermath over the added sine
+body. Rumble now lasts up to 3.2 seconds, with a slower decay, a quieter tone
+and a roughly 6 Hz high-pass that preserves audible low-frequency noise.
+The 1.5-2.5 second window of the isolated large explosion rises from -25.6 to
+-16.4 dBFS RMS. A regression requires at least 0.08 RMS in that window.
+Stereo/surround spam peaks are 0.7951 / 0.8857, below the -1 dBFS ceiling;
+83 maximum voices, zero stolen voices. Explosion/report advantage is 4.79 dB.
+All three audio regressions pass. The user approved the packaged listening
+playtest; no separate physical receiver or Quest validation is claimed.

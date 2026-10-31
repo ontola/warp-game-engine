@@ -320,7 +320,7 @@ impl StadiumVisuals {
         let gore = { let m = mat(scene, [0.42, 0.03, 0.02], 0.5); scene.add_mesh(&primitives::hewn_block(m, 1, 0.2, 0.2, 9).mesh()) };
         let pieces = SEGMENTS * (ROWS + 4) + SEGMENTS / 2 + 16;
         let stands = Slots::reserve(scene, pieces);
-        for i in 0..pieces { scene.instances[stands.first + i].flags |= NO_SHADOW; }
+        // The colosseum walls and tiers occlude direct sun and atmospheric haze.
         let roof = Slots::reserve(scene, 1);
         let tv = Slots::reserve(scene, TV_COUNT * 4);
         for i in 0..tv.capacity() { scene.instances[tv.first + i].flags |= NO_SHADOW; }

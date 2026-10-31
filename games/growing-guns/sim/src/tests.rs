@@ -806,3 +806,41 @@ fn bots_keep_to_the_islands_and_jump_between_them() {
     assert!(moves >= 30, "the bots move between islands: {moves}");
     assert!(careful <= 8, "careful bots rarely fall: {careful}");
 }
+
+
+#[test]
+fn corpse_paths_follow_flight_and_stop_at_gameplay_hits() {
+    for hitscan in [false,true] {
+        let mut w=flat_world();
+        if hitscan { w.players[0].weapon.bullet_speed_mult=20.0; }
+        let origin=Vec3::new(5.0,2.0,0.0);
+        w.events.clear();
+        w.spawn_bullet(0,origin,Vec3::NEG_Y,false);
+        if !hitscan {
+            assert!(!w.events.iter().any(|e| matches!(e,Event::BulletPath{..})), "projectiles must travel before hitting a corpse");
+            for _ in 0..60 { w.step_bullets(); if w.bullets.is_empty() {break;} }
+        }
+        let paths:Vec<_>=w.events.iter().filter_map(|e| if let Event::BulletPath{from,to,damage}=e {Some((*from,*to,*damage))} else {None}).collect();
+        assert!(!paths.is_empty());
+        assert!(paths.iter().all(|(a,b,d)| a.is_finite() && b.is_finite() && b.y>=-0.001 && *d>0.0), "a shot must not reach corpses below its floor hit");
+        assert!(paths.last().unwrap().1.y.abs()<0.001);
+        for pair in paths.windows(2) { assert!(pair[0].1.abs_diff_eq(pair[1].0,1e-5), "no duplicate swept segment"); }
+    }
+}
+
+#[test]
+fn removing_a_card_keeps_other_copies_and_rebuilds_stats() {
+    let mut w = flat_world();
+    let card = w.cards.find("big_mag").unwrap();
+    w.give(0, card);
+    let single = w.players[0].weapon.clone();
+    w.give(0, card);
+    assert!(w.remove_card(0, card));
+    assert_eq!(w.players[0].cards, vec![card]);
+    assert_eq!(w.players[0].weapon.mag_size_bonus, single.mag_size_bonus);
+    assert_eq!(w.players[0].weapon.fire_rate_mult, single.fire_rate_mult);
+    assert!(w.players[0].ammo <= w.players[0].mag_size());
+    assert!(w.remove_card(0, card));
+    assert!(!w.remove_card(0, card));
+    assert_eq!(w.players[0].weapon.fire_rate_mult, Weapon::default().fire_rate_mult);
+}

@@ -18,6 +18,11 @@ struct FxUniform {
     smoke: vec4<f32>,
     // Use exactly the composite guide mapping at reduced pixel centres.
     depth_from_output: mat4x4<f32>,
+    ambient: vec4<f32>,
+    sunlight: vec4<f32>,
+    fog: vec4<f32>,
+    horizon: vec4<f32>,
+    sun_vp: mat4x4<f32>,
 };
 struct Puff {
     // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak, 6 mote, 7 baked smoke)
@@ -41,6 +46,33 @@ struct Puff {
 @group(0) @binding(4) var scene_depth: texture_depth_2d;
 @group(0) @binding(5) var samp: sampler;
 @group(0) @binding(6) var smoke_animation: texture_3d<f32>;
+@group(0) @binding(7) var sun_depth: texture_depth_2d;
+
+fn smoke_visibility(world: vec3<f32>) -> f32 {
+    if u.sunlight.w <= 0.0 { return 1.0; }
+    let p = u.sun_vp * vec4<f32>(world,1.0);
+    let uv = p.xy * vec2<f32>(0.5,-0.5) + 0.5;
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || p.z<0.0 || p.z>1.0 { return 1.0; }
+    let dims = vec2<i32>(textureDimensions(sun_depth));
+    let pixel = uv * vec2<f32>(dims) - 0.5;
+    let base = vec2<i32>(floor(pixel));
+    let f = fract(pixel);
+    var lit = 0.0;
+    for(var y=0;y<2;y++) { for(var x=0;x<2;x++) {
+        let q=clamp(base+vec2<i32>(x,y),vec2<i32>(0),dims-1);
+        let weight=select(1.0-f.x,f.x,x==1)*select(1.0-f.y,f.y,y==1);
+        lit += weight * select(0.0,1.0,p.z-0.0002 <= textureLoad(sun_depth,q,0));
+    }}
+    return mix(1.0,lit,u.sunlight.w);
+}
+fn smoke_radiance(world: vec3<f32>, self_light: f32, albedo: vec3<f32>) -> vec3<f32> {
+    let illumination = u.ambient.rgb * (0.35 + 0.65*self_light)
+        + u.sunlight.rgb * (0.40*self_light*smoke_visibility(world));
+    let distance = length(world-u.camera_near.xyz);
+    let linear = clamp((distance-u.fog.x)/max(u.fog.y-u.fog.x,1.0),0.0,1.0);
+    let fog = max(linear,1.0-exp(-u.fog.z*distance));
+    return mix(albedo*illumination,u.horizon.rgb,fog);
+}
 
 // Billows use 32 x 18; tiny embers and heat shells retain 16 x 9.
 
@@ -431,7 +463,10 @@ fn fx_billow(in: V) -> @location(0) vec4<f32> {
         alpha *= 0.75;
     }
     if alpha < 0.0005 { discard; }
-    // Unlit: Godot's 0..1 albedo scale is white under the current light.
+    if u32(p.center_kind.w) == 0u {
+        return fx_output(vec4<f32>(fp16_safe(smoke_radiance(in.world,clamp(in.shade*0.5+0.5,0.0,1.0),color))*alpha,alpha));
+    }
+    // Fire and sparks retain their emission.
     return fx_output(vec4<f32>(fp16_safe(color * u.clock.y) * alpha, alpha));
 }
 
@@ -611,6 +646,10 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
     let density_trim = 0.025 * (1.0 - smoothstep(1.7, 2.6, bake_time));
     var transmission = 1.0;
     var color = vec3<f32>(0.0);
+    // One world-shadow query per plume pixel, rather than per volume step.
+    let world = smoke_world(p, vec3<f32>(0.5));
+    let ambient_light = smoke_radiance(world, 0.0, p.body.rgb);
+    let direct_light = smoke_radiance(world, 1.0, p.body.rgb) - ambient_light;
     for (var k = first; k < end; k++) {
         let point = origin + direction * (full_entry + (f32(k) + 0.5) * step);
         let field = smoke_sample(point, frame);
@@ -618,7 +657,7 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
         let alpha = 1.0 - exp(-density * optical_step);
         // The G channel is baked light transmittance through this same frame.
         // It provides self-shadowed form; it does not sample world shadows.
-        let radiance = p.body.rgb * (0.025 + 0.40 * pow(field.g, 1.3 * retirement)) * u.clock.y;
+        let radiance = ambient_light + direct_light * pow(field.g, 1.3 * retirement);
         color += transmission * alpha * radiance;
         transmission *= 1.0 - alpha;
         if transmission < 0.015 { break; }
