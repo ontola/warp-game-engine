@@ -1,0 +1,2841 @@
+{
+  "render_commit": "9af7ed3",
+  "probe_source": "engine/crates/render/examples/baked_smoke_scaling.rs",
+  "game_stress": {
+    "source_commit": "9af7ed3",
+    "adapter": "NVIDIA GeForce RTX 5070 Ti",
+    "build": "native MSVC dev: workspace opt-level1, dependencies opt-level3",
+    "scope": "Existing Growing Guns stress fixture, full graphics, native output, 4 identical overhead views, no HUD/audio/presentation. GPU timings are measured scopes, not displayed FPS. CPU times are dev-profile observations.",
+    "workload": {
+      "explosions_per_sim_second": 40,
+      "radius_m": 6.5,
+      "damage": 140,
+      "warmup_frames": 180,
+      "measured_frames": 900,
+      "simulation_hz": 60,
+      "smoke_cap": 16,
+      "smoke_lifetime_seconds": 4.6
+    },
+    "cases": [
+      {
+        "case": "baked-4k-four",
+        "source_csv": "build\\smoke-scaling\\baked-4k-four.csv",
+        "measured_frames": 900,
+        "explosions": 600,
+        "requested": 600,
+        "resets": 15,
+        "removed_chunks": 7800,
+        "target_fallbacks": 0,
+        "fx_gpu": {
+          "samples": 900,
+          "mean_ms": 2.3266259199999997,
+          "median_ms": 2.817536,
+          "p95_ms": 3.086656,
+          "max_ms": 3.260928
+        },
+        "gpu_covered_union": {
+          "samples": 900,
+          "mean_ms": 9.587509084444443,
+          "median_ms": 10.121024,
+          "p95_ms": 10.452064,
+          "max_ms": 10.824
+        },
+        "cpu_submit": {
+          "samples": 900,
+          "mean_ms": 2.8186137777777778,
+          "median_ms": 2.5748,
+          "p95_ms": 4.298,
+          "max_ms": 18.2917
+        },
+        "serialized_cpu_and_gpu_wait": {
+          "samples": 900,
+          "mean_ms": 12.930105,
+          "median_ms": 12.9604,
+          "p95_ms": 14.815,
+          "max_ms": 25.5197
+        },
+        "fx_flush_cpu_wall": {
+          "samples": 900,
+          "mean_ms": 0.0670788888888889,
+          "median_ms": 0.0619,
+          "p95_ms": 0.1216,
+          "max_ms": 0.3048
+        },
+        "puffs_mean": 724.3333333333334,
+        "puffs_max": 987
+      },
+      {
+        "case": "legacy-4k-four",
+        "source_csv": "build\\smoke-scaling\\legacy-4k-four.csv",
+        "measured_frames": 900,
+        "explosions": 600,
+        "requested": 600,
+        "resets": 15,
+        "removed_chunks": 7800,
+        "target_fallbacks": 0,
+        "fx_gpu": {
+          "samples": 900,
+          "mean_ms": 0.6254656355555556,
+          "median_ms": 0.71664,
+          "p95_ms": 0.975872,
+          "max_ms": 1.15344
+        },
+        "gpu_covered_union": {
+          "samples": 900,
+          "mean_ms": 7.87887232,
+          "median_ms": 8.017216,
+          "p95_ms": 8.304352,
+          "max_ms": 8.825056
+        },
+        "cpu_submit": {
+          "samples": 900,
+          "mean_ms": 2.8915081111111114,
+          "median_ms": 2.6437,
+          "p95_ms": 4.3821,
+          "max_ms": 19.681
+        },
+        "serialized_cpu_and_gpu_wait": {
+          "samples": 900,
+          "mean_ms": 11.308706888888889,
+          "median_ms": 11.0831,
+          "p95_ms": 13.0719,
+          "max_ms": 26.8937
+        },
+        "fx_flush_cpu_wall": {
+          "samples": 900,
+          "mean_ms": 0.07548622222222223,
+          "median_ms": 0.069,
+          "p95_ms": 0.1402,
+          "max_ms": 0.2807
+        },
+        "puffs_mean": 877.4,
+        "puffs_max": 1307
+      }
+    ]
+  },
+  "isolated_probes": {
+    "4k": {
+      "adapter": {
+        "backend": "Vulkan",
+        "driver": "NVIDIA",
+        "name": "NVIDIA GeForce RTX 5070 Ti"
+      },
+      "allocation": "Shared 6.75 MiB smoke asset is primed before measurements; cold first-explosion upload is excluded.",
+      "baked_volume_cap_from_source": 16,
+      "baked_volume_counts": "Expected from current source rule, not observed/read back. Counts above16 retain other explosion effects but recycle old smoke volumes.",
+      "cases": [
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.004032,
+            "median_ms": 0.00256,
+            "min_ms": 0.00208,
+            "p95_ms": 0.003104,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 0,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0034560000000000003,
+            "median_ms": 0.0025599999999999998,
+            "min_ms": 0.00208,
+            "p95_ms": 0.003424,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 1,
+          "layout": "spread",
+          "live_puffs_after_flush": 1,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.203456,
+            "median_ms": 0.200288,
+            "min_ms": 0.19801599999999997,
+            "p95_ms": 0.20345599999999997,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 8,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.096512,
+            "median_ms": 0.09616,
+            "min_ms": 0.09590399999999999,
+            "p95_ms": 0.09644799999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 32,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.10617599999999999,
+            "median_ms": 0.10543999999999999,
+            "min_ms": 0.10499199999999999,
+            "p95_ms": 0.105984,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 4,
+          "layout": "spread",
+          "live_puffs_after_flush": 4,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.42111999999999994,
+            "median_ms": 0.416128,
+            "min_ms": 0.41088,
+            "p95_ms": 0.420672,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 8,
+          "layout": "spread",
+          "live_puffs_after_flush": 8,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.7239680000000001,
+            "median_ms": 0.713568,
+            "min_ms": 0.7090559999999999,
+            "p95_ms": 0.7196799999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 64,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.11302399999999999,
+            "median_ms": 0.112576,
+            "min_ms": 0.11215999999999998,
+            "p95_ms": 0.11296,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 128,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.139712,
+            "median_ms": 0.13904,
+            "min_ms": 0.13855999999999996,
+            "p95_ms": 0.13955199999999998,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "spread-baked-age0.85-radius3.3.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "spread",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.3502399999999999,
+            "median_ms": 1.344736,
+            "min_ms": 1.3391039999999998,
+            "p95_ms": 1.34768,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "spread",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.440448,
+            "median_ms": 1.4352,
+            "min_ms": 1.419872,
+            "p95_ms": 1.440288,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 256,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.19795200000000002,
+            "median_ms": 0.196896,
+            "min_ms": 0.196288,
+            "p95_ms": 0.197664,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0032,
+            "median_ms": 0.0025280000000000003,
+            "min_ms": 0.0016640000000000001,
+            "p95_ms": 0.0030080000000000003,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 0,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0035839999999999995,
+            "median_ms": 0.002336,
+            "min_ms": 0.0016320000000000002,
+            "p95_ms": 0.003232,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 1,
+          "layout": "overlap",
+          "live_puffs_after_flush": 1,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.43558399999999997,
+            "median_ms": 0.429312,
+            "min_ms": 0.42624,
+            "p95_ms": 0.43289599999999995,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 8,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.10278399999999999,
+            "median_ms": 0.102368,
+            "min_ms": 0.102016,
+            "p95_ms": 0.102656,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 32,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.113312,
+            "median_ms": 0.11260799999999999,
+            "min_ms": 0.11212799999999999,
+            "p95_ms": 0.113216,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 4,
+          "layout": "overlap",
+          "live_puffs_after_flush": 4,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.38224,
+            "median_ms": 1.3757119999999998,
+            "min_ms": 1.368576,
+            "p95_ms": 1.379712,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 8,
+          "layout": "overlap",
+          "live_puffs_after_flush": 8,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 2.631776,
+            "median_ms": 2.6231679999999997,
+            "min_ms": 2.61552,
+            "p95_ms": 2.63168,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 64,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.125696,
+            "median_ms": 0.124192,
+            "min_ms": 0.12390399999999999,
+            "p95_ms": 0.125632,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 128,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.165536,
+            "median_ms": 0.163488,
+            "min_ms": 0.161376,
+            "p95_ms": 0.164704,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "overlap-baked-age0.85-radius3.3.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "overlap",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 5.360256000000001,
+            "median_ms": 5.151104,
+            "min_ms": 5.08928,
+            "p95_ms": 5.359744,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "overlap",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 5.329279999999999,
+            "median_ms": 5.079232,
+            "min_ms": 5.0537279999999996,
+            "p95_ms": 5.128031999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 256,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.254656,
+            "median_ms": 0.25251199999999996,
+            "min_ms": 0.25014400000000003,
+            "p95_ms": 0.25376,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.002848,
+            "median_ms": 0.0020800000000000003,
+            "min_ms": 0.0012799999999999999,
+            "p95_ms": 0.00256,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "overlap-baked-age3.20-radius3.3.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "overlap",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 5.327808,
+            "median_ms": 5.1087359999999995,
+            "min_ms": 5.093696,
+            "p95_ms": 5.12416,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.003264,
+            "median_ms": 0.002528,
+            "min_ms": 0.002016,
+            "p95_ms": 0.00304,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "overlap-baked-age4.30-radius3.3.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "overlap",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 5.1727360000000004,
+            "median_ms": 5.1240000000000006,
+            "min_ms": 5.089727999999999,
+            "p95_ms": 5.172575999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 6.5,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0030080000000000003,
+            "median_ms": 0.002144,
+            "min_ms": 0.001664,
+            "p95_ms": 0.0030080000000000003,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 6.5,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0030080000000000003,
+            "median_ms": 0.0025280000000000003,
+            "min_ms": 0.0012799999999999999,
+            "p95_ms": 0.002912,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 1,
+          "layout": "inside",
+          "live_puffs_after_flush": 1,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 6.5,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 2.134656,
+            "median_ms": 2.133024,
+            "min_ms": 2.13024,
+            "p95_ms": 2.13456,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 8,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 6.5,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.539936,
+            "median_ms": 0.5387839999999999,
+            "min_ms": 0.5377919999999999,
+            "p95_ms": 0.53984,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 32,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 6.5,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.781952,
+            "median_ms": 1.778528,
+            "min_ms": 1.7764479999999998,
+            "p95_ms": 1.7811839999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 4,
+          "layout": "inside",
+          "live_puffs_after_flush": 4,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 6.5,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 8.315072,
+            "median_ms": 8.305024,
+            "min_ms": 8.293312,
+            "p95_ms": 8.31456,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 8,
+          "layout": "inside",
+          "live_puffs_after_flush": 8,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 6.5,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 16.505312,
+            "median_ms": 16.500896,
+            "min_ms": 16.49648,
+            "p95_ms": 16.503519999999998,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 64,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 6.5,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 3.3478719999999997,
+            "median_ms": 3.343744,
+            "min_ms": 3.318208,
+            "p95_ms": 3.346304,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 128,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 7.041183999999999,
+            "median_ms": 6.624832,
+            "min_ms": 6.621055999999999,
+            "p95_ms": 6.629568000000001,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "inside-baked-age0.85-radius6.5.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 33.53008,
+            "median_ms": 33.002463999999996,
+            "min_ms": 32.874432,
+            "p95_ms": 33.408863999999994,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 6.5,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 33.465376,
+            "median_ms": 33.001087999999996,
+            "min_ms": 32.874496,
+            "p95_ms": 33.00864,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 256,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 6.5,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 13.509215999999999,
+            "median_ms": 13.343936,
+            "min_ms": 13.262144,
+            "p95_ms": 13.49872,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.001408,
+            "median_ms": 0.0012799999999999999,
+            "min_ms": 0.001216,
+            "p95_ms": 0.0013759999999999998,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "inside-baked-age3.20-radius6.5.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 33.527136,
+            "median_ms": 33.006975999999995,
+            "min_ms": 33.003423999999995,
+            "p95_ms": 33.308831999999995,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.00352,
+            "median_ms": 0.002496,
+            "min_ms": 0.0012799999999999999,
+            "p95_ms": 0.003264,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "inside-baked-age4.30-radius6.5.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 33.523008,
+            "median_ms": 33.000416,
+            "min_ms": 32.997279999999996,
+            "p95_ms": 33.519616,
+            "samples": 24
+          }
+        }
+      ],
+      "layout_notes": {
+        "inside": "All explosions share one centre; four cameras sit within the default 6.5m-radius smoke box. Larger --radius overrides may also contain cameras in other layouts.",
+        "overlap": "All explosions share one centre; cameras outside default-radius volumes.",
+        "spread": "Centres are 5m apart on a centred grid; cameras stay outside default-radius volumes."
+      },
+      "layout_views": [
+        {
+          "layout": "spread",
+          "views": [
+            {
+              "camera_position": [
+                0.0,
+                18.0,
+                36.0
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                0,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                36.0,
+                18.0,
+                -1.5736100067442749e-06
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                1924,
+                0,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -3.1472200134885497e-06,
+                18.0,
+                -36.0
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                1084,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -36.0,
+                18.0,
+                4.2929571009153733e-07
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                1924,
+                1084,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            }
+          ]
+        },
+        {
+          "layout": "overlap",
+          "views": [
+            {
+              "camera_position": [
+                0.0,
+                7.0,
+                18.0
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                0,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                18.0,
+                7.0,
+                -7.868050033721374e-07
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                1924,
+                0,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -1.5736100067442749e-06,
+                7.0,
+                -18.0
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                1084,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -18.0,
+                7.0,
+                2.1464785504576867e-07
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                1924,
+                1084,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            }
+          ]
+        },
+        {
+          "layout": "inside",
+          "views": [
+            {
+              "camera_position": [
+                0.0,
+                2.0,
+                0.4000000059604645
+              ],
+              "camera_target": [
+                0.0,
+                2.1500000953674316,
+                -0.6000000238418579
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                0,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                0.4000000059604645,
+                2.0,
+                -1.7484556025237907e-08
+              ],
+              "camera_target": [
+                -0.6000000238418579,
+                2.1500000953674316,
+                2.622683226150002e-08
+              ],
+              "near_m": 0.05,
+              "rect": [
+                1924,
+                0,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -3.4969112050475815e-08,
+                2.0,
+                -0.4000000059604645
+              ],
+              "camera_target": [
+                5.245366452300004e-08,
+                2.1500000953674316,
+                0.6000000238418579
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                1084,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -0.4000000059604645,
+                2.0,
+                4.769952433036906e-09
+              ],
+              "camera_target": [
+                0.6000000238418579,
+                2.1500000953674316,
+                -7.154928205466149e-09
+              ],
+              "near_m": 0.05,
+              "rect": [
+                1924,
+                1084,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            }
+          ]
+        }
+      ],
+      "measured_frames_per_case": 24,
+      "output_size": [
+        3840,
+        2160
+      ],
+      "reconstruction": "native HDR, no TAA or spatial upscaler",
+      "scope": "GPU root-pass timestamps in static floor-only fixture using full Effects.explosion recipe and its local lights; excludes gameplay simulation, destruction, crowd, UI, startup, upload and image readback. Not gameplay FPS.",
+      "timing_aggregation": "Only FX root-scope GPU timestamps are retained here; already summed across all views. Not whole-frame time or presented FPS.",
+      "view_count": 4,
+      "warmup_frames_per_case": 12
+    },
+    "1080p": {
+      "adapter": {
+        "backend": "Vulkan",
+        "driver": "NVIDIA",
+        "name": "NVIDIA GeForce RTX 5070 Ti"
+      },
+      "allocation": "Shared 6.75 MiB smoke asset is primed before measurements; cold first-explosion upload is excluded.",
+      "baked_volume_cap_from_source": 16,
+      "baked_volume_counts": "Expected from current source rule, not observed/read back. Counts above16 retain other explosion effects but recycle old smoke volumes.",
+      "cases": [
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0041919999999999995,
+            "median_ms": 0.003296,
+            "min_ms": 0.002656,
+            "p95_ms": 0.004,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 0,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0038079999999999998,
+            "median_ms": 0.003296,
+            "min_ms": 0.003008,
+            "p95_ms": 0.003744,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 1,
+          "layout": "spread",
+          "live_puffs_after_flush": 1,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.086816,
+            "median_ms": 0.08544,
+            "min_ms": 0.084704,
+            "p95_ms": 0.08624,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 8,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.045599999999999995,
+            "median_ms": 0.045343999999999995,
+            "min_ms": 0.045184,
+            "p95_ms": 0.045439999999999994,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 32,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.054464,
+            "median_ms": 0.053984000000000004,
+            "min_ms": 0.053632,
+            "p95_ms": 0.054335999999999995,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 4,
+          "layout": "spread",
+          "live_puffs_after_flush": 4,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.16950400000000002,
+            "median_ms": 0.16611199999999998,
+            "min_ms": 0.16361599999999998,
+            "p95_ms": 0.16816,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 8,
+          "layout": "spread",
+          "live_puffs_after_flush": 8,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.239168,
+            "median_ms": 0.23407999999999998,
+            "min_ms": 0.228736,
+            "p95_ms": 0.23884799999999998,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 64,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.062432,
+            "median_ms": 0.061759999999999995,
+            "min_ms": 0.061568,
+            "p95_ms": 0.06192,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 128,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0872,
+            "median_ms": 0.086976,
+            "min_ms": 0.08671999999999999,
+            "p95_ms": 0.08713599999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "spread-baked-age0.85-radius3.3.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "spread",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.40832,
+            "median_ms": 0.39756800000000003,
+            "min_ms": 0.39059199999999994,
+            "p95_ms": 0.40368,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "spread",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.42374399999999995,
+            "median_ms": 0.419456,
+            "min_ms": 0.414624,
+            "p95_ms": 0.42111999999999994,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "spread",
+          "live_puffs_after_flush": 256,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.14182399999999998,
+            "median_ms": 0.141504,
+            "min_ms": 0.141312,
+            "p95_ms": 0.141728,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.003872,
+            "median_ms": 0.003296,
+            "min_ms": 0.0031039999999999996,
+            "p95_ms": 0.0038079999999999998,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 0,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.00512,
+            "median_ms": 0.0032639999999999995,
+            "min_ms": 0.0029759999999999995,
+            "p95_ms": 0.00384,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 1,
+          "layout": "overlap",
+          "live_puffs_after_flush": 1,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.174592,
+            "median_ms": 0.170464,
+            "min_ms": 0.16704,
+            "p95_ms": 0.172192,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 8,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.047296,
+            "median_ms": 0.04719999999999999,
+            "min_ms": 0.046976,
+            "p95_ms": 0.047296,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 32,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.05619199999999999,
+            "median_ms": 0.055807999999999996,
+            "min_ms": 0.05561599999999999,
+            "p95_ms": 0.056064,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 4,
+          "layout": "overlap",
+          "live_puffs_after_flush": 4,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.40291199999999994,
+            "median_ms": 0.39878399999999997,
+            "min_ms": 0.393408,
+            "p95_ms": 0.401984,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 8,
+          "layout": "overlap",
+          "live_puffs_after_flush": 8,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.716128,
+            "median_ms": 0.709664,
+            "min_ms": 0.7045119999999999,
+            "p95_ms": 0.7141759999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 64,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.06524799999999999,
+            "median_ms": 0.065024,
+            "min_ms": 0.06473599999999999,
+            "p95_ms": 0.065216,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 128,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.09062400000000001,
+            "median_ms": 0.09023999999999999,
+            "min_ms": 0.09004799999999999,
+            "p95_ms": 0.090528,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "overlap-baked-age0.85-radius3.3.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "overlap",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.3476160000000001,
+            "median_ms": 1.33952,
+            "min_ms": 1.33344,
+            "p95_ms": 1.346816,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "overlap",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.339744,
+            "median_ms": 1.327584,
+            "min_ms": 1.3222399999999999,
+            "p95_ms": 1.335936,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 256,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.144832,
+            "median_ms": 0.144416,
+            "min_ms": 0.144096,
+            "p95_ms": 0.14476799999999998,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.004255999999999999,
+            "median_ms": 0.0033599999999999993,
+            "min_ms": 0.0030399999999999997,
+            "p95_ms": 0.0037439999999999995,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "overlap-baked-age3.20-radius3.3.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "overlap",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.34848,
+            "median_ms": 1.343488,
+            "min_ms": 1.3372479999999998,
+            "p95_ms": 1.3484479999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "overlap",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.003744,
+            "median_ms": 0.003328,
+            "min_ms": 0.003136,
+            "p95_ms": 0.003744,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "overlap-baked-age4.30-radius3.3.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "overlap",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 3.299999952316284,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.350304,
+            "median_ms": 1.342784,
+            "min_ms": 1.3353599999999999,
+            "p95_ms": 1.349312,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 6.5,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.004736,
+            "median_ms": 0.003264,
+            "min_ms": 0.0027199999999999998,
+            "p95_ms": 0.003872,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 6.5,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.003968,
+            "median_ms": 0.0032319999999999996,
+            "min_ms": 0.00288,
+            "p95_ms": 0.003584,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 1,
+          "layout": "inside",
+          "live_puffs_after_flush": 1,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 6.5,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.570752,
+            "median_ms": 0.5686399999999999,
+            "min_ms": 0.5667519999999999,
+            "p95_ms": 0.57024,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 8,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 6.5,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.163328,
+            "median_ms": 0.16287999999999997,
+            "min_ms": 0.162464,
+            "p95_ms": 0.16319999999999998,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 32,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 6.5,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.482112,
+            "median_ms": 0.481088,
+            "min_ms": 0.48019199999999995,
+            "p95_ms": 0.481792,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 4,
+          "layout": "inside",
+          "live_puffs_after_flush": 4,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 6.5,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 2.088,
+            "median_ms": 2.08528,
+            "min_ms": 2.083456,
+            "p95_ms": 2.087776,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 8,
+          "layout": "inside",
+          "live_puffs_after_flush": 8,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 6.5,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 4.168991999999999,
+            "median_ms": 4.1248640000000005,
+            "min_ms": 4.1224,
+            "p95_ms": 4.168671999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 64,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 6.5,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.8766399999999999,
+            "median_ms": 0.8737919999999999,
+            "min_ms": 0.8712639999999999,
+            "p95_ms": 0.876416,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 128,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.7500799999999999,
+            "median_ms": 1.745344,
+            "min_ms": 1.740576,
+            "p95_ms": 1.74976,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "inside-baked-age0.85-radius6.5.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 8.281407999999999,
+            "median_ms": 8.27328,
+            "min_ms": 8.269120000000001,
+            "p95_ms": 8.279679999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 6.5,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 8.281024,
+            "median_ms": 8.271072,
+            "min_ms": 8.26048,
+            "p95_ms": 8.277567999999999,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 256,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8531000018119812,
+          "radius_m": 6.5,
+          "requested_explosions": 32,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 3.483968,
+            "median_ms": 3.4808319999999995,
+            "min_ms": 3.472576,
+            "p95_ms": 3.483808,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0037439999999999995,
+            "median_ms": 0.0032959999999999995,
+            "min_ms": 0.0030719999999999996,
+            "p95_ms": 0.0035839999999999995,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "inside-baked-age3.20-radius6.5.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 8.284863999999999,
+            "median_ms": 8.272192,
+            "min_ms": 8.267968,
+            "p95_ms": 8.277024,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.003616,
+            "median_ms": 0.0031999999999999997,
+            "min_ms": 0.0025919999999999997,
+            "p95_ms": 0.0034239999999999995,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": "inside-baked-age4.30-radius6.5.png",
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 6.5,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 8.284832,
+            "median_ms": 8.277632,
+            "min_ms": 8.189471999999999,
+            "p95_ms": 8.281792,
+            "samples": 24
+          }
+        }
+      ],
+      "layout_notes": {
+        "inside": "All explosions share one centre; four cameras sit within the default 6.5m-radius smoke box. Larger --radius overrides may also contain cameras in other layouts.",
+        "overlap": "All explosions share one centre; cameras outside default-radius volumes.",
+        "spread": "Centres are 5m apart on a centred grid; cameras stay outside default-radius volumes."
+      },
+      "layout_views": [
+        {
+          "layout": "spread",
+          "views": [
+            {
+              "camera_position": [
+                0.0,
+                18.0,
+                36.0
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                0,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                36.0,
+                18.0,
+                -1.5736100067442749e-06
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                962,
+                0,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -3.1472200134885497e-06,
+                18.0,
+                -36.0
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                542,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -36.0,
+                18.0,
+                4.2929571009153733e-07
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                962,
+                542,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            }
+          ]
+        },
+        {
+          "layout": "overlap",
+          "views": [
+            {
+              "camera_position": [
+                0.0,
+                7.0,
+                18.0
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                0,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                18.0,
+                7.0,
+                -7.868050033721374e-07
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                962,
+                0,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -1.5736100067442749e-06,
+                7.0,
+                -18.0
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                542,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -18.0,
+                7.0,
+                2.1464785504576867e-07
+              ],
+              "camera_target": [
+                0.0,
+                3.0,
+                0.0
+              ],
+              "near_m": 0.05,
+              "rect": [
+                962,
+                542,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            }
+          ]
+        },
+        {
+          "layout": "inside",
+          "views": [
+            {
+              "camera_position": [
+                0.0,
+                2.0,
+                0.4000000059604645
+              ],
+              "camera_target": [
+                0.0,
+                2.1500000953674316,
+                -0.6000000238418579
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                0,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                0.4000000059604645,
+                2.0,
+                -1.7484556025237907e-08
+              ],
+              "camera_target": [
+                -0.6000000238418579,
+                2.1500000953674316,
+                2.622683226150002e-08
+              ],
+              "near_m": 0.05,
+              "rect": [
+                962,
+                0,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -3.4969112050475815e-08,
+                2.0,
+                -0.4000000059604645
+              ],
+              "camera_target": [
+                5.245366452300004e-08,
+                2.1500000953674316,
+                0.6000000238418579
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                542,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -0.4000000059604645,
+                2.0,
+                4.769952433036906e-09
+              ],
+              "camera_target": [
+                0.6000000238418579,
+                2.1500000953674316,
+                -7.154928205466149e-09
+              ],
+              "near_m": 0.05,
+              "rect": [
+                962,
+                542,
+                958,
+                538
+              ],
+              "vertical_fov_degrees": 55
+            }
+          ]
+        }
+      ],
+      "measured_frames_per_case": 24,
+      "output_size": [
+        1920,
+        1080
+      ],
+      "reconstruction": "native HDR, no TAA or spatial upscaler",
+      "scope": "GPU root-pass timestamps in static floor-only fixture using full Effects.explosion recipe and its local lights; excludes gameplay simulation, destruction, crowd, UI, startup, upload and image readback. Not gameplay FPS.",
+      "timing_aggregation": "Only FX root-scope GPU timestamps are retained here; already summed across all views. Not whole-frame time or presented FPS.",
+      "view_count": 4,
+      "warmup_frames_per_case": 12
+    },
+    "airstrike": {
+      "adapter": {
+        "backend": "Vulkan",
+        "driver": "NVIDIA",
+        "name": "NVIDIA GeForce RTX 5070 Ti"
+      },
+      "allocation": "Shared 6.75 MiB smoke asset is primed before measurements; cold first-explosion upload is excluded.",
+      "baked_volume_cap_from_source": 16,
+      "baked_volume_counts": "Expected from current source rule, not observed/read back. Counts above16 retain other explosion effects but recycle old smoke volumes.",
+      "cases": [
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 30.0,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.0032,
+            "median_ms": 0.002528,
+            "min_ms": 0.00208,
+            "p95_ms": 0.00304,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 0,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 30.0,
+          "requested_explosions": 0,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.003072,
+            "median_ms": 0.002528,
+            "min_ms": 0.001728,
+            "p95_ms": 0.00304,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 1,
+          "layout": "inside",
+          "live_puffs_after_flush": 142,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 30.0,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 2.8928000000000003,
+            "median_ms": 2.883648,
+            "min_ms": 2.873824,
+            "p95_ms": 2.890912,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 165,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8500000238418579,
+          "radius_m": 30.0,
+          "requested_explosions": 1,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 1.3840000000000001,
+            "median_ms": 1.3817599999999999,
+            "min_ms": 1.379808,
+            "p95_ms": 1.383616,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 660,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 30.0,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 5.802144,
+            "median_ms": 5.798848,
+            "min_ms": 5.786911999999999,
+            "p95_ms": 5.802016,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 4,
+          "layout": "inside",
+          "live_puffs_after_flush": 568,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8503000140190125,
+          "radius_m": 30.0,
+          "requested_explosions": 4,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 12.051487999999999,
+            "median_ms": 11.667583999999998,
+            "min_ms": 11.637696,
+            "p95_ms": 11.904063999999998,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 8,
+          "layout": "inside",
+          "live_puffs_after_flush": 1136,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 30.0,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 23.29376,
+            "median_ms": 22.794624,
+            "min_ms": 22.771968,
+            "p95_ms": 22.954848,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 1320,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8507000207901001,
+          "radius_m": 30.0,
+          "requested_explosions": 8,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 12.304032,
+            "median_ms": 11.57184,
+            "min_ms": 11.516991999999998,
+            "p95_ms": 11.64144,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 2640,
+          "mode": "legacy",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 30.0,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 25.134432,
+            "median_ms": 24.85584,
+            "min_ms": 24.431424,
+            "p95_ms": 25.094112000000003,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 2272,
+          "mode": "baked",
+          "newest_age_seconds": 0.8500000238418579,
+          "oldest_age_seconds": 0.8515000343322754,
+          "radius_m": 30.0,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 48.82918399999999,
+            "median_ms": 48.402944,
+            "min_ms": 48.32735999999999,
+            "p95_ms": 48.797376,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 384,
+          "mode": "legacy",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 30.0,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 3.9472639999999997,
+            "median_ms": 3.5920319999999997,
+            "min_ms": 3.576352,
+            "p95_ms": 3.8538559999999995,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 3.200000047683716,
+          "oldest_age_seconds": 3.2014999389648438,
+          "radius_m": 30.0,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 33.284608,
+            "median_ms": 32.982367999999994,
+            "min_ms": 32.974336,
+            "p95_ms": 33.2792,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 0,
+          "layout": "inside",
+          "live_puffs_after_flush": 384,
+          "mode": "legacy",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 30.0,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 0.280768,
+            "median_ms": 0.27878400000000003,
+            "min_ms": 0.27827199999999996,
+            "p95_ms": 0.28047999999999995,
+            "samples": 24
+          }
+        },
+        {
+          "birth_interval_seconds": 9.999999747378752e-05,
+          "capture": null,
+          "expected_baked_volumes_from_source_rule": 16,
+          "layout": "inside",
+          "live_puffs_after_flush": 16,
+          "mode": "baked",
+          "newest_age_seconds": 4.300000190734863,
+          "oldest_age_seconds": 4.30150032043457,
+          "radius_m": 30.0,
+          "requested_explosions": 16,
+          "volume_count_is_observed": false,
+          "fx_gpu": {
+            "max_ms": 33.496544,
+            "median_ms": 32.976608,
+            "min_ms": 32.972448,
+            "p95_ms": 33.494527999999995,
+            "samples": 24
+          }
+        }
+      ],
+      "layout_notes": {
+        "inside": "All explosions share one centre; four cameras sit within the default 6.5m-radius smoke box. Larger --radius overrides may also contain cameras in other layouts.",
+        "overlap": "All explosions share one centre; cameras outside default-radius volumes.",
+        "spread": "Centres are 5m apart on a centred grid; cameras stay outside default-radius volumes."
+      },
+      "layout_views": [
+        {
+          "layout": "inside",
+          "views": [
+            {
+              "camera_position": [
+                0.0,
+                2.0,
+                0.4000000059604645
+              ],
+              "camera_target": [
+                0.0,
+                2.1500000953674316,
+                -0.6000000238418579
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                0,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                0.4000000059604645,
+                2.0,
+                -1.7484556025237907e-08
+              ],
+              "camera_target": [
+                -0.6000000238418579,
+                2.1500000953674316,
+                2.622683226150002e-08
+              ],
+              "near_m": 0.05,
+              "rect": [
+                1924,
+                0,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -3.4969112050475815e-08,
+                2.0,
+                -0.4000000059604645
+              ],
+              "camera_target": [
+                5.245366452300004e-08,
+                2.1500000953674316,
+                0.6000000238418579
+              ],
+              "near_m": 0.05,
+              "rect": [
+                0,
+                1084,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            },
+            {
+              "camera_position": [
+                -0.4000000059604645,
+                2.0,
+                4.769952433036906e-09
+              ],
+              "camera_target": [
+                0.6000000238418579,
+                2.1500000953674316,
+                -7.154928205466149e-09
+              ],
+              "near_m": 0.05,
+              "rect": [
+                1924,
+                1084,
+                1916,
+                1076
+              ],
+              "vertical_fov_degrees": 55
+            }
+          ]
+        }
+      ],
+      "measured_frames_per_case": 24,
+      "output_size": [
+        3840,
+        2160
+      ],
+      "reconstruction": "native HDR, no TAA or spatial upscaler",
+      "scope": "GPU root-pass timestamps in static floor-only fixture using full Effects.explosion recipe and its local lights; excludes gameplay simulation, destruction, crowd, UI, startup, upload and image readback. Not gameplay FPS.",
+      "timing_aggregation": "Only FX root-scope GPU timestamps are retained here; already summed across all views. Not whole-frame time or presented FPS.",
+      "view_count": 4,
+      "warmup_frames_per_case": 12
+    }
+  },
+  "probe_sha256_lf_normalized": "e4811cb7beae87ca05665f5636fee9dc8e6bd0d6fa590829723324883e639767"
+}
