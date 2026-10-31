@@ -65,7 +65,12 @@ Rust keeps 120 Hz handling/flight, track tessellation and projection, swept
 collision queries, targeting geometry, projectile integration, rendering and
 controller/host transport. Race bookkeeping still lives in `sim/src/race.rs`;
 it is not claimed to be an all-Luau game. Geometry-specific component formulas
-remain native. Luau has a 16 MiB memory limit and execution budget; design
+remain native. New gameplay and composition rules default to Luau. Native code
+is for renderer/physics integration and bulk numerical kernels, not merely
+because a feature is easier to write in Rust. Keep tuning/policy in Luau and
+measure before moving scripted logic for performance. For reef planting,
+`reefPlantClearance` in `rules/stages.luau` sets slope, root burial and spacing;
+Rust tests cached samples of the actual mesh against terrain and road bounds. Luau has a 16 MiB memory limit and execution budget; design
 parameters are validated before allocation/generation.
 
 The stage builder uses a separate 96 MiB / 8 million-instruction host; geometry
