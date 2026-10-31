@@ -11,11 +11,12 @@ struct Instance {rows:[[f32;4];3],material:u32,flags:u32,pad:[u32;2]}
 struct Spot {position:[f32;4],direction:[f32;4],intensity:[f32;4]}
 #[repr(C)] #[derive(Clone,Copy,Pod,Zeroable)]
 struct Uniform {vp:[[f32;4];4],camera:[f32;4],sun:[f32;4],sun_color:[f32;4],ambient:[f32;4],fog:[f32;4],spots:[Spot;4]}
-struct Part {indices:Range<u32>,material:u32}
+struct Part {indices:Range<u32>,material:u32,lava:bool}
 struct Mesh {parts:Vec<Part>}
 struct Target {size:[u32;2],color:wgpu::Texture,depth:wgpu::Texture,instances:wgpu::Buffer,capacity:usize,uniform:wgpu::Buffer,bind:wgpu::BindGroup}
 pub(crate) struct Forward {
     pipeline:wgpu::RenderPipeline,pipeline_srgb:wgpu::RenderPipeline,layout:wgpu::BindGroupLayout,vertices:wgpu::Buffer,indices:wgpu::Buffer,materials:wgpu::Buffer,
+    lava_view:wgpu::TextureView,lava_sampler:wgpu::Sampler,
     meshes:Vec<Mesh>,ranges:HashMap<(u32,u32),usize>,owners:Vec<GpuInstance>,targets:Vec<Target>,
 }
 impl Forward {
@@ -31,15 +32,17 @@ impl Forward {
                 }
             }
             let mut parts=Vec::new();
-            for (material,list) in by_material {let start=indices.len()as u32;indices.extend(list);parts.push(Part{indices:start..indices.len()as u32,material});}
+            for (material,list) in by_material {let start=indices.len()as u32;indices.extend(list);parts.push(Part{indices:start..indices.len()as u32,material,lava:scene.materials[material as usize].flags&crate::scene::LAVA!=0});}
             ranges.insert((mesh.first_cluster,mesh.cluster_count),meshes.len());meshes.push(Mesh{parts});
         }
         let vertices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal vertices"),contents:bytemuck::cast_slice(&scene.vertices),usage:wgpu::BufferUsages::VERTEX});
         if indices.is_empty(){indices.push(0);}
         let indices=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("minimal indices"),contents:bytemuck::cast_slice(&indices),usage:wgpu::BufferUsages::INDEX});
         let layout=gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{label:Some("minimal lighting"),entries:&[
-            wgpu::BindGroupLayoutEntry{binding:0,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},count:None},
-            wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None}]});
+            wgpu::BindGroupLayoutEntry{binding:0,visibility:wgpu::ShaderStages::VERTEX_FRAGMENT,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None},count:None},
+            wgpu::BindGroupLayoutEntry{binding:1,visibility:wgpu::ShaderStages::VERTEX,ty:wgpu::BindingType::Buffer{ty:wgpu::BufferBindingType::Storage{read_only:true},has_dynamic_offset:false,min_binding_size:None},count:None},
+            wgpu::BindGroupLayoutEntry{binding:2,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Texture{sample_type:wgpu::TextureSampleType::Float{filterable:true},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false},count:None},
+            wgpu::BindGroupLayoutEntry{binding:3,visibility:wgpu::ShaderStages::FRAGMENT,ty:wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),count:None}]});
         let module=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimal forward"),source:wgpu::ShaderSource::Wgsl(include_str!("shaders/forward.wgsl").into())});
         let pl=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&layout)],immediate_size:0});
         let pipeline_for=|format,entry|gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("minimal forward"),layout:Some(&pl),
@@ -51,7 +54,8 @@ impl Forward {
             multisample:Default::default(),fragment:Some(wgpu::FragmentState{module:&module,entry_point:Some(entry),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:None,write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()});
         let pipeline=pipeline_for(wgpu::TextureFormat::Rgba8Unorm,"fs");
         let pipeline_srgb=pipeline_for(wgpu::TextureFormat::Rgba8UnormSrgb,"fs_srgb");
-        Self{pipeline,pipeline_srgb,layout,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
+        let (lava_view,lava_sampler)=crate::minimum_lava::texture(gpu);
+        Self{pipeline,pipeline_srgb,layout,lava_view,lava_sampler,vertices,indices,materials:materials.clone(),meshes,ranges,owners:scene.instances.clone(),targets:Vec::new()}
     }
     pub fn update(&mut self,first:usize,instances:&[GpuInstance])->Result<(),String>{
         if first.checked_add(instances.len()).is_none_or(|n|n>self.owners.len()){return Err("minimal owner update exceeds scene".into());}
@@ -63,7 +67,7 @@ impl Forward {
         let color=texture("minimal eye",wgpu::TextureFormat::Rgba8Unorm,wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC|wgpu::TextureUsages::TEXTURE_BINDING);
         let depth=texture("minimal depth",wgpu::TextureFormat::Depth32Float,wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::TEXTURE_BINDING);
         let uniform=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:None,size:std::mem::size_of::<Uniform>()as u64,usage:wgpu::BufferUsages::UNIFORM|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
-        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor{label:None,layout:&self.layout,entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()},wgpu::BindGroupEntry{binding:1,resource:self.materials.as_entire_binding()}]});
+        let bind=gpu.device.create_bind_group(&wgpu::BindGroupDescriptor{label:None,layout:&self.layout,entries:&[wgpu::BindGroupEntry{binding:0,resource:uniform.as_entire_binding()},wgpu::BindGroupEntry{binding:1,resource:self.materials.as_entire_binding()},wgpu::BindGroupEntry{binding:2,resource:wgpu::BindingResource::TextureView(&self.lava_view)},wgpu::BindGroupEntry{binding:3,resource:wgpu::BindingResource::Sampler(&self.lava_sampler)}]});
         let instances=gpu.device.create_buffer(&wgpu::BufferDescriptor{label:None,size:64,usage:wgpu::BufferUsages::VERTEX|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         Target{size,color,depth,instances,capacity:1,uniform,bind}
     }
@@ -84,9 +88,11 @@ impl Forward {
                 for part in &mesh.parts {let start=packed.len()as u32;
                     for &owner in &owners {let i=self.owners[owner];packed.push(Instance{rows:i.rows,material:part.material,flags:i.flags,pad:[0;2]});}
                     let end=packed.len()as u32;stats.triangles+=(part.indices.len()/3)as u32*(end-start);stats.submitted_vertices+=part.indices.len()as u64*(end-start)as u64;
-                    draws.push((part.indices.clone(),start..end));
+                    draws.push((part.lava,part.indices.clone(),start..end));
                 }
             }
+            // Fill depth with solid blocks first; hidden lava needs no texture reads.
+            draws.sort_by_key(|draw|draw.0);
             let size=[view.w,view.h];
             if self.targets.len()<=vi {self.targets.push(self.target(gpu,size));}
             if self.targets[vi].size!=size {self.targets[vi]=self.target(gpu,size);}
@@ -96,7 +102,7 @@ impl Forward {
             let exposure=1.0/(1.2*2f32.powf(light.ev100));
             let mut lamps=[Spot::zeroed();4];
             for (out,l) in lamps.iter_mut().zip(spots){*out=Spot{position:l.position.extend(l.range_m).to_array(),direction:l.direction.extend(l.outer_angle_radians.cos()).to_array(),intensity:(l.intensity_cd*exposure).extend(l.inner_angle_radians.cos()).to_array()};}
-            let uniform=Uniform{vp:vp.to_cols_array_2d(),camera:view.cam.pos.extend(exposure).to_array(),sun:light.sun_dir.extend(light.sun_lux*exposure).to_array(),sun_color:light.sun_color.extend(light.emissive_scale()).to_array(),ambient:[light.sky_lux*exposure,spots.len().min(4)as f32,light.debug,0.],fog:[light.fog_start,light.fog_end,0.,0.],spots:lamps};
+            let uniform=Uniform{vp:vp.to_cols_array_2d(),camera:view.cam.pos.extend(exposure).to_array(),sun:light.sun_dir.extend(light.sun_lux*exposure).to_array(),sun_color:light.sun_color.extend(light.emissive_scale()).to_array(),ambient:[light.sky_lux*exposure,spots.len().min(4)as f32,light.debug,light.time],fog:[light.fog_start,light.fog_end,0.,0.],spots:lamps};
             gpu.queue.write_buffer(&t.uniform,0,bytemuck::bytes_of(&uniform));
             let target=external.map_or(&t.color,|targets|targets[vi]);
             let color=target.create_view(&Default::default());let depth=t.depth.create_view(&Default::default());
@@ -104,7 +110,7 @@ impl Forward {
             let clear=|c:f64|if target.format().is_srgb(){if c<=0.04045{c/12.92}else{((c+0.055)/1.055).powf(2.4)}}else{c};
             {let mut pass=enc.begin_render_pass(&wgpu::RenderPassDescriptor{label:Some("minimal forward eye"),color_attachments:&[Some(wgpu::RenderPassColorAttachment{view:&color,depth_slice:None,resolve_target:None,ops:wgpu::Operations{load:wgpu::LoadOp::Clear(wgpu::Color{r:clear(sky*0.75),g:clear(sky*0.85),b:clear(sky),a:1.}),store:wgpu::StoreOp::Store}})],depth_stencil_attachment:Some(wgpu::RenderPassDepthStencilAttachment{view:&depth,depth_ops:Some(wgpu::Operations{load:wgpu::LoadOp::Clear(0.0),store:wgpu::StoreOp::Store}),stencil_ops:None}),timestamp_writes:None,occlusion_query_set:None,multiview_mask:None});
                 pass.set_pipeline(if target.format().is_srgb(){&self.pipeline_srgb}else{&self.pipeline});pass.set_bind_group(0,&t.bind,&[]);pass.set_vertex_buffer(0,self.vertices.slice(..));pass.set_vertex_buffer(1,t.instances.slice(..));pass.set_index_buffer(self.indices.slice(..),wgpu::IndexFormat::Uint32);
-                for (indices,instances) in draws {pass.draw_indexed(indices,0,instances);}
+                for (_,indices,instances) in draws {pass.draw_indexed(indices,0,instances);}
             }
             if let Some(fx)=fx.0.lock().unwrap().as_mut() {
                 let white=((light.sun_lux*light.sun_dir.y.max(0.0)+light.sky_lux)/std::f32::consts::PI)

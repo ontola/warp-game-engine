@@ -214,9 +214,12 @@ impl Guns {
         }
     }
 
-    /// Where player `i`'s gun barrel ends as drawn last frame: in their own
-    /// first-person view when local, else in their hand.
+    /// Current tracked barrel end in VR; otherwise the last drawn barrel end
+    /// in the local first-person view or the remote player's hand.
     pub fn muzzle(&self, i: usize) -> Option<Vec3> {
+        if self.tracking.get(i).copied().unwrap_or(false) {
+            return self.tracked[i].map(|pose|self.tracked_muzzle(i,pose));
+        }
         self.muzzles.get(i).copied().flatten().map(|[fp, tp]| if self.local[i] { fp } else { tp })
     }
 
@@ -558,4 +561,18 @@ mod xr_tests {
         }
     }
 
+}
+
+#[cfg(test)] mod tracked_flash_tests {
+    use super::*;
+    #[test] fn shot_muzzle_uses_current_tracking_before_a_render_pose() {
+        let mut scene=Scene::default();let mut guns=Guns::reserve_with_detail(&mut scene,1,gun::Detail::Low);
+        guns.muzzles[0]=Some([Vec3::splat(99.);2]);
+        for (pos,angle) in [(Vec3::new(0.3,1.2,-0.4),0.1),(Vec3::new(-0.5,1.6,-0.9),0.8)] {
+            let pose=Affine3A::from_rotation_translation(Quat::from_rotation_y(angle),pos);
+            guns.track(0,Some(pose));
+            assert!(guns.muzzle(0).unwrap().abs_diff_eq(guns.tracked_muzzle(0,pose),1e-6));
+        }
+        guns.track(0,None);assert!(guns.muzzle(0).is_none(),"lost tracking must not reuse a stale muzzle");
+    }
 }

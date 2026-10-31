@@ -102,6 +102,7 @@ impl warp_xr::Game for NativeGame {
             let p=&mut self.game.world.players[0];
             p.yaw=(-forward.x).atan2(-forward.z);p.pitch=forward.y.clamp(-1.0,1.0).asin();
             let hand=self.hand(t,self.game.world.players[0].eye());
+            self.game.xr_gun=hand;
             self.game.xr_aim=hand.map(|pose|TrackedAim {offset:(self.game.vis.tracked_muzzle(0,pose)-self.game.world.players[0].pos).clamp_length_max(2.45),direction:pose.transform_vector3(Vec3::NEG_Z)});
             let mut controls=t.controls;controls.pressed.0=std::mem::take(&mut self.pending);
             if hand.is_none() {controls.held.0 &= !(app::Buttons::RIGHT_TRIGGER|app::Buttons::LEFT_TRIGGER|app::Buttons::EAST);}
