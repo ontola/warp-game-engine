@@ -18,11 +18,11 @@ impl Race {
     pub(crate) fn guide_missile(&mut self, p: &mut Projectile) -> Result<bool, String> {
         if !p.locked && !p.terminal {
             p.target = (0..self.pilots.len())
-                .filter(|&j| j != p.owner && !self.pilots[j].finished && !self.pilots[j].crashed)
+                .filter(|&j| j != p.owner && !self.pilots[j].finished && !self.pilots[j].crashed && self.pilots[j].warp_time<=0.)
                 .min_by_key(|&j| self.drivers[j].rank);
         }
         if p.target
-            .is_some_and(|j| self.pilots[j].finished || self.pilots[j].crashed)
+            .is_some_and(|j| self.pilots[j].finished || self.pilots[j].crashed || self.pilots[j].warp_time>0.)
         {
             p.target = None;
             p.evaded = true;

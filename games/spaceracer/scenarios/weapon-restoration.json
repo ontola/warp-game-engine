@@ -1,0 +1,84 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review warp",
+        "blur off"
+      ],
+      "ticks": 1,
+      "capture": "warp-carried.png"
+    },
+    {
+      "cmd": "fire 0",
+      "ticks": 80,
+      "capture": "warp-active.png",
+      "state": "warp-active.json"
+    },
+    {
+      "expect": "/pilots/0/speed",
+      "min": 600
+    },
+    {
+      "expect": "/pilots/1/warp_time",
+      "equals": 0.0
+    },
+    {
+      "ticks": 300,
+      "capture": "warp-exit.png"
+    },
+    {
+      "cmd": [
+        "weapon-review sentry",
+        "weapon-view on"
+      ],
+      "capture": "sentry-carried.png"
+    },
+    {
+      "cmd": "fire 0",
+      "ticks": 36,
+      "capture": "sentry-firing.png",
+      "state": "sentry.json"
+    },
+    {
+      "capture": "sentry-next-frame.png"
+    },
+    {
+      "cmd": "place 1 -250",
+      "ticks": 50,
+      "capture": "sentry-scanning.png"
+    },
+    {
+      "cmd": [
+        "weapon-review glidebomb",
+        "weapon-view off"
+      ],
+      "capture": "glide-preview.png",
+      "state": "glide-preview.json"
+    },
+    {
+      "cmd": [
+        "fire 0",
+        "missile-view on"
+      ],
+      "ticks": 42,
+      "capture": "glide-powered.png"
+    },
+    {
+      "ticks": 120,
+      "capture": "glide-impact.png",
+      "state": "glide-impact.json"
+    },
+    {
+      "expect": "/pilots/1/energy",
+      "max": 50
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}

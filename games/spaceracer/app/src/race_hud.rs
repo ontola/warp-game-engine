@@ -304,7 +304,9 @@ pub fn draw(
         dim,
     );
     if let Some(item) = d.item {
-        if d.active.is_none() {v.button("X", [w * 0.5 - 88., height * 0.82], white);}
+        if d.active.is_none() {
+            v.button("X", [w * 0.5 - 88., height * 0.82], white);
+        }
         v.text(
             item.name(),
             [w * 0.5 - 74., height * 0.82 - 8.],
@@ -377,9 +379,48 @@ pub fn draw(
             );
         }
     }
+    let preview = if d.item == Some(Weapon::GlideBomb)
+        && p.airborne
+        && d.active.is_none()
+        && p.emp_time <= 0.
+    {
+        Some(race.bomb_preview(i))
+    } else {
+        None
+    };
+    if let Some((lock, points)) = &preview {
+        let vp = Mat4::perspective_rh(cam.fov_y, r[2] / r[3], 0.15, 10000.)
+            * Mat4::look_at_rh(cam.pos, cam.target, up);
+        let project = |point: Vec3| -> Option<[f32; 2]> {
+            let q = vp * point.extend(1.);
+            if q.w <= 0. {
+                return None;
+            }
+            let q = q.truncate() / q.w;
+            let a = Vec2::new(q.x * 0.5, -q.y * 0.5);
+            let a = Vec2::splat(0.5) + a * (1. + curvature * a.length_squared() * 4.);
+            Some([a.x * w, a.y * height])
+        };
+        let color = if lock.is_some() {
+            [1., 0.65, 0.2, 0.7]
+        } else {
+            [0.4, 0.85, 1., 0.35]
+        };
+        for (k, pair) in points.windows(2).enumerate() {
+            if k % 2 == 0 {
+                if let (Some(a), Some(b)) = (project(pair[0]), project(pair[1])) {
+                    v.line(a, b, 0.8, color);
+                }
+            }
+        }
+        if let Some(point) = points.last().and_then(|p| project(*p)) {
+            v.arc(point, 12., 0., PI * 2., 1., color);
+            v.circle(point, 2., color);
+        }
+    }
     let target = match d.item {
         Some(Weapon::Railgun) => race.target(i, 0.975, 700.),
-        Some(Weapon::GlideBomb) if p.airborne => race.target(i, 0.7, 1000.),
+        Some(Weapon::GlideBomb) => preview.as_ref().and_then(|v| v.0),
         _ => None,
     };
     let mut markers = Vec::new();

@@ -1,3 +1,11 @@
+# Warp, minigun and glide bomb follow-up - 31 October 2026
+
+Source geometry and behaviour restored; see parity-review.md for exact scope.
+Single-view diagnostic captures show idle/active minigun, next-frame removal of
+tracers, powered glide and always-on intercept guide. Split review isolates the
+warp owner's screen distortion from the other viewport; other views see only
+the world-space lens. No new physical-controller or performance certification.
+
 # Source restoration review - 31 October 2026
 
 See [parity-review.md](parity-review.md). New captures exercise the native visor,

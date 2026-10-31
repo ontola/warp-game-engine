@@ -37,7 +37,7 @@ geometry integration, collision queries and rendering remain native.
 
 | Area | Current gap |
 |---|---|
-| Other weapons | Sentry deployment/scanning/animation, original railgun guide, glide trajectory/intercept guide and warp-space presentation remain simplified. |
+| Other weapons | Warp, minigun and guided glide behaviour/presentation restored in the follow-up below. Original railgun guide remains simplified. Unguided bomb preview shows a ballistic path, not an exact scenery-impact prediction. |
 | EMP | Engine/HUD disable and missile cancellation work; initial glitch and electrical arcs on each affected hull are missing. |
 | Driving information | Original severity-coded corner/no-rail signs, some jump/checkpoint notices, gate art and the flight roll reference are missing. |
 | Vehicle damage | Static imported finish/scuffs and detached burning wrecks exist; energy-driven paint deterioration, damage smoke and respawn construction are incomplete. |
@@ -65,3 +65,39 @@ geometry integration, collision queries and rendering remain native.
   `build/spaceracer-restoration-split`, `build/spaceracer-missile-review`.
   No new physical-controller or real GameNight-host playtest in this pass.
   Readback/capture time is not interactive FPS.
+
+## Weapon restoration follow-up
+
+Read the retained `weapons.gd`, `weapon_vfx.gd`, `dive_bomb.gd` and warp shaders.
+The earlier prose weapon guide contains superseded balance values; current
+source code is the reference. No retired runtime was launched.
+
+- Warp now uses a dedicated ribbon autopilot: 2.8 seconds, 630 m/s peak,
+  smooth entry/exit, bend-aware handback, split lane selection, extension across
+  missing deck, traffic/attack phasing, and EMP interruption into real flight.
+  Ground-only activation preserves the item if attempted in the air. The source
+  coil, filaments and untinted depth-aware refractive lens replace the placeholder.
+  The owner also gets radial/chromatic scene distortion; the HUD stays separate.
+  Native HDR refraction is an adaptation, not a pixel-identical old postprocess.
+- Minigun: attached low-segment housing, motor, rotor, black ammo cassette/feed,
+  six spinning barrels, scanning/tracking head, idle lowered barrels, recoil and
+  blinking LED. 20 shots/s after 250 ms spinup, 10 damage/s, forward progress/range
+  gates and scenery occlusion. Shot serials survive low render rates and are
+  consumed once per presented frame, so every split view sees the same flash and
+  no tracer persists into the next frame. Damage is independent of render rate.
+- Glide bomb: the same automatic lock is used by HUD and launch, 1100 m/55-degree
+  acquisition, predictive intercept along the road, 360 m/s launch motor for
+  1.25 seconds, gravity/drag, finite 1.15 rad/s steering and forward seeker loss.
+  Swept deck/scenery contact and 18 m target proximity fuse prevent tunnelling.
+  Source 120 m blast and 145-point centre damage use smooth power falloff;
+  launcher immunity lasts until physical separation, then return self-blast works.
+  Source payload body, folded/deployed wings and amber launch jet are restored.
+  Guided preview is cheap and current-frame; unguided guide deliberately avoids
+  full-track collision searches. Sound remains disabled.
+
+Validation: 31 simulation, 17 app and 3 exhaust shader/data tests. Weapon cases
+cover safe warp expiry and EMP gaps, minigun DPS/occlusion and one-frame visuals,
+steering limits/gravity, moving-target intercept and owner clearance. Scripted
+1920x1080 weapon review and 2560x1440 two-view warp captures are under
+`build/spaceracer-weapons-review` and `build/spaceracer-weapons-split`. These are
+staged diagnostic captures, not a physical-controller playtest or FPS benchmark.

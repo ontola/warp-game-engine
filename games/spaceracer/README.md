@@ -13,6 +13,11 @@ and model, four-angle victory replay, checks and the explicit remaining gaps.
 The port remains incomplete. `missile` and `victory` in `rules/game.luau` now
 control cruise timing and finish choreography without a native rebuild.
 
+Warp, rotary sentry and powered glide now use the source behaviour and mounted
+hardware. `combat` and `warp` in `rules/game.luau` control acquisition/motor values
+and the warp speed envelope. See the follow-up in the parity review for limits,
+including the approximate unguided bomb preview and native HDR refraction.
+
 ## Play and capture
 
 From the workspace root:

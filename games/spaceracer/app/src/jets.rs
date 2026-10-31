@@ -126,6 +126,7 @@ pub struct Jets {
     pub lights: Vec<LocalLight>,
     time: f32,
     strike: u32,
+    seen_shots: [u64; 6],
     uploaded: bool,
 }
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
@@ -170,6 +171,7 @@ impl Jets {
             lights: Vec::with_capacity(24),
             time: -1.,
             strike: 0,
+            seen_shots: [0; 6],
             uploaded: false,
         })
     }
@@ -376,11 +378,109 @@ impl Jets {
                 }
             }
         }
+        // World lenses are shared by all cameras; view lenses are explicitly
+        // restricted to the owner. Both refract scene colour before HUD composition.
+        for (i, pose) in poses.iter().enumerate() {
+            let power = race.drivers[i].warp_fx;
+            if power > 0.01 && !race.pilots[i].crashed {
+                let at = pose.origin + pose.basis * Vec3::new(0., 0.8, -1.);
+                self.heat.push(render::exhaust::Sprite {
+                    position_radius: at.extend(11.5).to_array(),
+                    axis_length: [0., 0., 1., 7.],
+                    colour_alpha: [0., 0., 0., power],
+                    params: [3., 0., time, 18.],
+                });
+                if i < 4 {
+                    self.heat.push(render::exhaust::Sprite {
+                        position_radius: at.extend(1.).to_array(),
+                        axis_length: [0., 0., 0., 0.],
+                        colour_alpha: [0., 0., 0., power],
+                        params: [4., i as f32, time, 24.],
+                    });
+                }
+                for k in 0..7 {
+                    let a = k as f32 * std::f32::consts::TAU / 7.;
+                    let offset =
+                        pose.basis.x_axis * a.cos() * 5. + pose.basis.y_axis * a.sin() * 3.;
+                    let start = pose.origin + offset;
+                    let end = start - pose.basis.z_axis * (14. + k as f32 * 1.3);
+                    let mut wake = shaft(
+                        start,
+                        end,
+                        0.32,
+                        Vec3::new(0.45, 0.8, 1.) * radiance * power * 0.3,
+                        8,
+                        [time, k as f32, 0., 0.],
+                    );
+                    wake.opacity = power;
+                    self.sprites.push(wake);
+                }
+            }
+        }
+        // Sentry shot IDs are consumed once per presented frame, not per tick.
+        // Thus 30/60/120-Hz views all see a shot, but no tracer repeats next frame.
+        let previous_shots = self.seen_shots;
+        for beam in &race.beams {
+            if beam.rail || beam.serial <= previous_shots[beam.owner] {
+                continue;
+            }
+            self.seen_shots[beam.owner] = self.seen_shots[beam.owner].max(beam.serial);
+            self.sprites.push(shaft(
+                beam.from,
+                beam.to,
+                0.025,
+                Vec3::new(1., 0.72, 0.3) * radiance * 2.,
+                5,
+                [0.; 4],
+            ));
+            self.sprites.push(glow(
+                beam.from,
+                [0.8, 0.8],
+                Vec3::new(1., 0.8, 0.4) * radiance * 5.,
+                9,
+            ));
+            self.sprites.push(glow(
+                beam.to,
+                [0.6, 0.6],
+                Vec3::new(1., 0.64, 0.22) * radiance * 3.,
+                2,
+            ));
+            self.lights.push(LocalLight {
+                position: beam.from,
+                direction: Vec3::Z,
+                intensity_cd: Vec3::new(1., 0.7, 0.3) * 900.,
+                range_m: 7.,
+                inner_cos: 1.,
+                outer_cos: -1.,
+                source_radius_m: 0.1,
+                falloff: 2.,
+            });
+        }
         // Missile ignition, plume and continuous camera-faded smoke share the existing
         // sprite pass; no new lights/meshes per frame and no particle cloud dots.
         let alpha = (time * 120. - race.tick.saturating_sub(1) as f32).clamp(0., 1.);
         for p in &race.projectiles {
-            if p.kind != spaceracer::race::Weapon::Missile {
+            if p.kind == spaceracer::race::Weapon::GlideBomb {
+                let power = 1.
+                    - smooth(
+                        race.combat.bomb_burn - 0.15,
+                        race.combat.bomb_burn,
+                        p.time as f32,
+                    );
+                if power > 0.001 {
+                    let axis = -p.velocity.normalize_or_zero();
+                    let at = p.previous.lerp(p.position, alpha) + axis * 2.05;
+                    let light = Vec3::new(1., 0.5, 0.16) * radiance * power;
+                    self.sprites.push(shaft(
+                        at,
+                        at + axis * 4.5,
+                        0.65,
+                        light,
+                        1,
+                        [time, 0., 0., 0.],
+                    ));
+                    self.sprites.push(glow(at, [1.2, 1.2], light * 2., 2));
+                }
                 continue;
             }
             let power = smooth(0.18, 0.6, p.time as f32);
@@ -515,6 +615,32 @@ mod tests {
         race.pilots[0].crashed = true;
         jets.update(&race, &poses, 0.4);
         assert!(jets.sprites.is_empty());
+    }
+    #[test]
+    fn minigun_events_render_once_and_warp_has_separate_world_and_view_lenses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut jets = Jets::new(&root).unwrap();
+        let mut race = Race::new(35, "normal", "city", 1, 3);
+        race.beams.push(spaceracer::race::Beam {
+            owner: 0,
+            serial: 1,
+            from: Vec3::ZERO,
+            to: Vec3::Z * 60.,
+            age: 0.1,
+            rail: false,
+        });
+        race.drivers[0].warp_fx = 0.8;
+        let poses: Vec<_> = (0..6).map(|i| race.pose(i)).collect();
+        jets.update(&race, &poses, 1.);
+        assert_eq!(jets.sprites.iter().filter(|s| s.effect == 9).count(), 1);
+        assert!(jets.heat.iter().any(|s| s.params[0] == 3.));
+        assert!(
+            jets.heat
+                .iter()
+                .any(|s| s.params[0] == 4. && s.params[1] == 0.)
+        );
+        jets.update(&race, &poses, 1.001);
+        assert!(!jets.sprites.iter().any(|s| s.effect == 9 || s.effect == 5));
     }
     #[test]
     fn trail_freezes_and_clears_on_teleport() {

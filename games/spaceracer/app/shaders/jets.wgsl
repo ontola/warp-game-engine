@@ -64,5 +64,14 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let near=smoothstep(4.,15.,distance(u.camera_near.xyz,s.world));
         return vec4<f32>(vec3<f32>(.75+.25*turbulence),across*pow(1.-age,1.7)*near*turbulence);
     }
+    if s.effect == 8u {
+        let crossfade=pow(max(0.,1.-abs(x)),2.8);let ends=smoothstep(0.,.1,t)*pow(1.-t,1.6);
+        let pulse=pow(.5+.5*sin(t*15.-s.params.x*11.+s.params.y*2.3),5.);
+        return vec4<f32>(vec3<f32>(1.),ends*crossfade*(.1+pulse*.55));
+    }
+    if s.effect == 9u {
+        let q=s.uv*2.-1.;let core=exp(-dot(q,q)*15.);let halo=exp(-dot(q,q)*4.);
+        return vec4<f32>(mix(vec3<f32>(1.,.65,.25),vec3<f32>(2.),core),halo*.6+core*.4);
+    }
     return vec4<f32>(0.0);
 }

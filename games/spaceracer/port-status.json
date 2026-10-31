@@ -143,7 +143,7 @@
     {
       "path": "src/hud.gd",
       "sha256": "5d695b0664429a72730b7d6be31864121f0e65fda02f84822447f2ae71c8c539",
-      "status": "retained Open Sans SemiBold, source-scaled per-view layout, profile faces, segmented energy arc, minimap, X/Y glyphs, queued items, winner and results; exact flight/glide trajectory guides and some transient notices pending"
+      "status": "retained Open Sans SemiBold, source-scaled per-view layout, profile faces, segmented energy arc, minimap, X/Y glyphs, queued items, winner and results; exact flight reference and unguided bomb impact projection and some transient notices pending"
     },
     {
       "path": "src/impact_vfx.gd",
@@ -313,12 +313,12 @@
     {
       "path": "src/weapon_vfx.gd",
       "sha256": "9feffe73011990fd44c12e01db52ea5b3c93bb56a5279ff191e75d88d6c7bb72",
-      "status": "source modern cruise loft/radome/swept wings/canted tail with outward winding; interpolated launch/flight, nozzle/plume/flare/light and continuous soft smoke ribbon; terminal thin laser/white hit glow and blinking target brackets; other weapon presentation still simplified"
+      "status": "source missile; mounted rotary minigun with head/barrels/rotor/LED, one-presentation tracers/muzzle flash; folding glide wings and finite launch motor; warp coil/wake and depth-aware world/view refraction adapted to native HDR"
     },
     {
       "path": "src/weapons.gd",
       "sha256": "7a9bba8dcdc06d579144f9b8e1f2522457727784d419317acc23c379eeadf9fc",
-      "status": "Luau activation/pickup/balance plus cruise speed/phase policy; route-following launch, retarget until terminal lock, late sharp-jink evasion, targetless fuse, EMP interception and moving-leader hit regressions; glide/sentry/warp fidelity incomplete"
+      "status": "Luau activation/pickups/balance/cruise plus warp autopilot speed envelope; safe gap extension/EMP interruption and phase immunity; sentry acquisition, occlusion, spinup and 20 Hz at 10 damage/sec; guided glide intercept, limited turns, swept proximity, launch-owner protection and source AoE curve"
     },
     {
       "path": "src/world.gd",
