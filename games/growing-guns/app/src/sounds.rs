@@ -1,8 +1,8 @@
-//! Growing Guns' sound, as Godot's `sfx.gd` plays it: procedural patches
+//! Growing Guns' sound: procedural patches
 //! (`games/growing-guns/sounds/*.luau`, hot-reloaded) and the Godot
 //! project's footstep, hurt and death recordings, through the engine's
-//! synth mixer with Godot's playback rules (gains, pitch, unit sizes, dry and
-//! room-reverb copies, the big-tail hall, loudness culling, the master bus).
+//! synth mixer. Combat has bounded overlapping layers, authored close-range
+//! levels and room sends from the same voice; other cues retain their original mix.
 //! The trigger table is sfx.gd's call sites; see the patch headers.
 use audio::sfx::Listener;
 use audio::synth::{self, CompiledPatch, Ear, Falloff, Handle, Node, Patch, Place, Play, SoundSender, Unit};
@@ -156,18 +156,21 @@ struct G {
     spl: Option<f32>,
     /// The big-tail hall send (3D only, -24 dB below the voice).
     tail: bool,
-    /// 2D at +20 log10(unit), at most +18 dB (a self shot's "centre").
+    /// Local weapon report: reserves its own voice budget, flat on its side.
     center: bool,
+    /// Override the room send without running a duplicate synth voice.
+    room: Option<f32>,
     pan: f32,
     delay: bool,
 }
 
 impl G {
-    fn at(at: Vec3, db: f32, unit: f32) -> G { G { at: Some(at), db, pitch: 1.0, unit, dry: false, spl: None, tail: true, center: false, pan: 0.0, delay: true } }
-    fn ui(db: f32) -> G { G { at: None, db, pitch: 1.0, unit: 12.0, dry: false, spl: None, tail: false, center: false, pan: 0.0, delay: false } }
+    fn at(at: Vec3, db: f32, unit: f32) -> G { G { at: Some(at), db, pitch: 1.0, unit, dry: false, spl: None, tail: true, center: false, room: None, pan: 0.0, delay: true } }
+    fn ui(db: f32) -> G { G { at: None, db, pitch: 1.0, unit: 12.0, dry: false, spl: None, tail: false, center: false, room: None, pan: 0.0, delay: false } }
     fn dry(mut self) -> G { self.dry = true; self }
     fn spl(mut self, s: f32) -> G { self.spl = Some(s); self }
     fn pitch(mut self, p: f32) -> G { self.pitch = p; self }
+    fn room(mut self, send: f32) -> G { self.room = Some(send); self }
     fn no_tail(mut self) -> G { self.tail = false; self }
 }
 
@@ -227,6 +230,7 @@ pub struct Sounds {
     last_zip: f32,
     lava_at: Vec<f32>,
     explosions: Vec<f32>,
+    layers: [Vec<f32>; 4],
     reloads: HashMap<usize, Handle>,
     strikes: Vec<(StrikeKind, Vec3, Vec<Handle>)>,
     descents: HashMap<usize, Handle>,
@@ -246,7 +250,7 @@ pub struct Sounds {
 impl Sounds {
     /// `samples`: the Godot project's audio folder (footsteps, hurts, deaths).
     pub fn new(tx: SoundSender, patches: Option<PathBuf>, samples: Option<&Path>) -> Self {
-        tx.master(synth::Master::godot());
+        tx.master(synth::Master { compressors: vec![synth::Compressor { threshold: -8.0, ratio: 3.0, release: 0.16 }], ceiling: -1.0 });
         tx.cull(Some(synth::Cull::default()));
         tx.hall(synth::Hall::default());
         // Godot RaytracedReverb: damping .55; room size ~0.18 in the arena.
@@ -260,7 +264,7 @@ impl Sounds {
         let deaths = load(&mut (1..=4).map(|i| format!("death{i}.wav")));
         if samples.is_some() { println!("sounds: {} recordings", steps.len() + hurts.len() + deaths.len()); }
         Sounds { tx, bank: Bank::load(patches), steps, hurts, deaths, rng: 0x1234_5678, time: 0.0, later: Vec::new(), walked: Vec::new(), last_zip: -1.0,
-            lava_at: Vec::new(), explosions: Vec::new(), reloads: HashMap::new(), strikes: Vec::new(), descents: HashMap::new(), pickups: 0, incoming: None,
+            lava_at: Vec::new(), explosions: Vec::new(), layers: std::array::from_fn(|_| Vec::new()), reloads: HashMap::new(), strikes: Vec::new(), descents: HashMap::new(), pickups: 0, incoming: None,
             offers: Vec::new(), shot_tick: Vec::new(), own_pan: Vec::new(), ears: Vec::new(), music: None }
     }
 
@@ -272,7 +276,9 @@ impl Sounds {
         self.rng = 0x1234_5678;
         self.time = 0.0;
         self.later.clear(); self.walked.clear(); self.last_zip = -1.0;
-        self.lava_at.clear(); self.explosions.clear(); self.reloads.clear();
+        self.lava_at.clear(); self.explosions.clear();
+        for layers in &mut self.layers { layers.clear(); }
+        self.reloads.clear();
         self.strikes.clear(); self.descents.clear(); self.pickups = 0;
         self.incoming = None; self.offers.clear(); self.shot_tick.clear();
         self.own_pan.clear(); self.ears.clear();
@@ -292,21 +298,24 @@ impl Sounds {
 
     fn play(&mut self, world: &World, patch: &Arc<CompiledPatch>, params: &[(&str, f32)], g: G) -> Handle {
         let seed = self.next();
+        let combat = matches!(patch.name.as_str(), "shot" | "explosion_bang" | "explosion_rumble");
         let p = match g.at {
             None => {
-                let db = if g.center { (g.db + 20.0 * g.unit.max(1e-3).log10()).min(18.0) } else { g.db };
+                let db = g.db; // Authored level: no artificial close-muzzle gain.
                 // `tail` on a flat sound: it still goes through the room.
-                let (reverb, tail) = if g.tail { (ROOM_SEND, TAIL_SEND) } else { (0.0, 0.0) };
+                let (room, tail) = if g.tail { (ROOM_SEND, TAIL_SEND) } else { (0.0, 0.0) };
+                let reverb = g.room.unwrap_or(room);
                 Play { place: Place::Pan(g.pan), pitch: g.pitch, spl: g.spl, seed, reverb, tail, ..Default::default() }.db(db)
             }
             Some(at) => {
-                let falloff = if g.dry { Falloff::godot(g.unit) } else {
+                let mut falloff = if g.dry { Falloff::godot(g.unit) } else {
                     // Raytraced players fade out linearly to where they are 30 dB down.
                     Falloff::godot(g.unit).fade(g.unit / 10f32.powf((-30.0 - g.db) / 20.0))
                 };
+                if combat { falloff.near_max = 1.0; }
                 let occlusion = if g.dry { 0.0 } else { occlusion(world, &self.ears, at) };
                 Play { place: Place::At(at.to_array()), falloff, pitch: g.pitch, spl: g.spl, seed, sound_delay: g.delay, occlusion,
-                    reverb: if g.dry { 0.0 } else { ROOM_SEND }, tail: if g.tail { TAIL_SEND } else { 0.0 }, ..Default::default() }.db(g.db)
+                    reverb: g.room.unwrap_or(if g.dry { 0.0 } else { ROOM_SEND }), tail: if g.tail { TAIL_SEND } else { 0.0 }, ..Default::default() }.db(g.db)
             }
         };
         self.tx.play(patch, params, p)
@@ -332,8 +341,21 @@ impl Sounds {
     /// A 2D sound for local player `p` (hurt, hit markers): on their side.
     fn ui_for(&self, p: usize, db: f32) -> G { G { pan: self.own_pan.get(p).copied().flatten().unwrap_or(0.0), ..G::ui(db) } }
 
-    fn named(&mut self, world: &World, name: &str, params: &[(&str, f32)], g: G) -> Option<Handle> {
+    // Admit whole voices before allocating DSP state. Leave existing tails intact
+    // and reserve separate budgets for reports and bass, below the 160-voice pool.
+    fn named(&mut self, world: &World, name: &str, params: &[(&str, f32)], mut g: G) -> Option<Handle> {
         let p = self.bank.get(name)?;
+        let family = match name { "shot" => Some(if g.center { 0 } else { 1 }), "explosion_bang" => Some(2), "explosion_rumble" => Some(3), _ => None };
+        if let Some(family) = family {
+            let delay = g.at.filter(|_| g.delay).map_or(0.0, |at| self.ears.iter().map(|e| e.distance(at)).fold(1000.0, f32::min) / 343.0);
+            let ends = &mut self.layers[family];
+            ends.retain(|&end| end > self.time);
+            if ends.len() >= [80, 32, 12, 6][family] { return None; }
+            // Lower new overlapping layers smoothly in energy, without modulating
+            // a playing waveform or asking the limiter to flatten every transient.
+            g.db -= 10.0 * (1.0 + ends.len() as f32).log10();
+            ends.push(self.time + p.max_length.max(0.1) / g.pitch.max(0.1) + delay + 0.1);
+        }
         Some(self.play(world, &p, params, g))
     }
 
@@ -459,26 +481,21 @@ impl Sounds {
         let w = &p.weapon;
         let last = p.ammo == 0;
         let d = w.damage_for_shot(last) / 22.0;
-        let dmg_db = (d.max(0.5).log2() * 6.0).clamp(-4.0, 14.0);
+        let dmg_db = (d.max(0.5).log2() * 2.0).clamp(-4.0, 6.0);
         let silenced = w.silencer_stacks > 0;
         let mut pitch = (1.0 - d.max(1.0).log2() * 0.2).clamp(0.35, 1.15) * self.u(0.97, 1.03);
-        let (mut self_base, mut world_base) = (-2.0 + self.u(-1.5, 1.5), 5.0 + self.u(-1.5, 1.5));
+        let (mut self_base, mut world_base) = (-8.0 + self.u(-1.5, 1.5), -12.0 + self.u(-1.5, 1.5));
         if silenced { self_base -= 10.0; world_base -= 12.0; pitch *= 1.08; }
         let dry = if is_self { self_base } else { world_base } + dmg_db;
-        let spl = 105.0 + 7.0 * d.max(1.0).log2();
         self.duck_music(crate::music::shot_duck(w.damage_for_shot(last)));
         let params = [("damage", (w.damage() / 22.0).max(1.0)), ("accuracy", (1.0 - w.spread() / 0.06).clamp(0.0, 1.0)), ("velocity", w.bullet_speed_mult.clamp(0.5, 3.0))];
-        if let Some(shot) = self.bank.get("shot") {
-            let g = if is_self { G { center: true, pan, unit: 6.0, ..G::ui(dry) } } else { G::at(from, dry, 3.0).dry() };
-            self.play(world, &shot, &params, g.pitch(pitch).spl(spl));
-            // The wet copy plays at the muzzle, through the room; your own
-            // is flat too (the room's reverb stays).
-            let wet = if is_self { G { pan, tail: true, ..G::ui(dry - 10.0 + 20.0 * 3f32.log10()) } } else { G::at(from, dry - 10.0, 3.0) };
-            self.play(world, &shot, &params, G { spl: None, ..wet.pitch(pitch) });
-        }
+        let g = if is_self { G { center: true, pan, unit: 6.0, ..G::ui(dry) } } else { G::at(from, dry, 3.0).dry() };
+        // A send from the same report replaces the independently generated wet
+        // copy. Weapon feedback must survive a blast's HDR gate (spl=None).
+        self.named(world, "shot", &params, g.pitch(pitch).room(0.10));
         if d > 1.4 {
             let rr = (d * 1.5).clamp(2.0, 12.0).round();
-            let g = if is_self { G { center: true, pan, unit: (rr * 0.8).clamp(4.0, 12.0), ..G::ui(-12.0) } } else { G::at(from, -12.0, (rr * 0.8).clamp(4.0, 12.0)) };
+            let g = if is_self { G { center: true, pan, unit: (rr * 0.8).clamp(4.0, 12.0), ..G::ui(-18.0) } } else { G::at(from, -18.0, (rr * 0.8).clamp(4.0, 12.0)).dry().no_tail() };
             self.named(world, "explosion_rumble", &[("radius", rr)], g);
         }
         // The bolt click in the gap before the next shot (not on fast guns).
@@ -518,11 +535,10 @@ impl Sounds {
         let r = if kind == ExplosionKind::Ion { 38.0 } else { radius };
         let rb = r.clamp(2.0, 24.0).round();
         let (bang_unit, rumble_unit) = ((0.8 * r).clamp(4.0, 24.0), (4.5 * r).clamp(20.0, 100.0));
-        let spl = 165.0 + 5.0 * (r / 6.0).max(1.0).log2();
+        let spl = 118.0 + 4.0 * (r / 6.0).max(1.0).log2();
         self.duck_music(crate::music::explosion_duck(r));
-        self.named(world, "explosion_bang", &[("radius", rb)], G::at(pos, 12.0, bang_unit).dry().spl(spl));
-        self.named(world, "explosion_bang", &[("radius", rb)], G::at(pos, 10.0, bang_unit).spl(spl));
-        self.named(world, "explosion_rumble", &[("radius", rb)], G::at(pos, 10.0, rumble_unit).spl(spl));
+        self.named(world, "explosion_bang", &[("radius", rb)], G::at(pos, -8.0, bang_unit).dry().room(0.08).spl(spl));
+        self.named(world, "explosion_rumble", &[("radius", rb)], G::at(pos, -14.0, rumble_unit).dry().no_tail().spl(spl));
         if kind == ExplosionKind::Ion {
             let rb = r.clamp(8.0, 48.0).round();
             let unit = (1.6 * r).clamp(16.0, 72.0);
@@ -702,4 +718,56 @@ fn occlusion(world: &World, ears: &[Vec3], at: Vec3) -> f32 {
     let side = (at - ear).cross(Vec3::Y).normalize_or_zero() * 1.5;
     let seen = [ear, ear + Vec3::Y * 1.5, ear + side, ear - side].into_iter().filter(|&p| clear(p)).count();
     1.0 - seen as f32 / 4.0
+}
+
+#[cfg(test)]
+mod audio_stress_tests {
+    use super::*;
+    #[test]
+    fn stacked_uzi_bazooka_mix() { stress_mix(synth::Layout::stereo(), 48000.0, true); }
+
+    #[test]
+    fn stacked_uzi_bazooka_surround() { stress_mix(synth::Layout::named("5.1").unwrap(), 44100.0, false); }
+
+    fn stress_mix(layout: synth::Layout, rate: f32, capture: bool) {
+        let mut world = World::new(17, &[false; 4]);
+        crate::scripts::attach_dir(&mut world, None).unwrap();
+        for player in 0..4 {
+            for id in ["uzi", "uzi", "bazooka", "bazooka"] {
+                let card = world.cards.find(id).unwrap();
+                world.give(player, card);
+            }
+        }
+        let channels = layout.channels();
+        let (tx, mut mix) = synth::mixer(layout, 160, rate);
+        let mut sounds = Sounds::new(tx, Some(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../sounds"))), None);
+        sounds.tx.ears(vec![Ear { pos: [0.0;3], forward: [0.0,0.0,-1.0], right: [1.0,0.0,0.0] }]);
+        sounds.ears = vec![Vec3::ZERO];
+        let mut audio = Vec::new();
+        let mut max_voices = 0;
+        let start = std::time::Instant::now();
+        // 12 close shots + blasts per second, then four shooters, then decay.
+        for frame in 0..840 {
+            sounds.time = frame as f32 / 60.0;
+            if frame < 480 && frame % 5 == 0 {
+                for player in 0..if frame < 240 { 1 } else { 4 } {
+                    sounds.shot(&world, player, Vec3::new(0.0,0.0,-1.0), -Vec3::Z, true, 0.0, &[0,1,2,3]);
+                    sounds.explosion(&world, Vec3::new(0.0,0.0,-2.0), 24.0, ExplosionKind::Conventional);
+                }
+            }
+            sounds.flush_later(&world);
+            audio.extend(mix.render_seconds(1.0/60.0));
+            max_voices = max_voices.max(mix.active());
+        }
+        let peak = audio.iter().fold(0.0f32, |a,b| a.max(b.abs()));
+        let tail = audio[audio.len() - rate as usize * channels..].iter().fold(0.0f32, |a,b| a.max(b.abs()));
+        println!("STRESS peak={peak} tail={tail} max_voices={max_voices} stolen={} culled={} render_seconds={:.3}", mix.stolen, mix.culled, start.elapsed().as_secs_f32());
+        if capture && let Ok(path) = std::env::var("GG_AUDIO_CAPTURE") { audio::analysis::write_wav(Path::new(&path), rate as u32, channels as u16, &audio).unwrap(); }
+        assert!(audio.iter().all(|s| s.is_finite()));
+        assert!(peak < 0.89, "Sustained spam must leave headroom, peak={peak}");
+        assert_eq!(mix.stolen, 0, "Do not hard-cut playing waveforms at the pool limit");
+        assert!(max_voices < 130, "Keep slots for UI and character cues");
+        assert!(tail < 0.001, "Bass must settle after firing stops");
+        assert_eq!(mix.active(), 0);
+    }
 }

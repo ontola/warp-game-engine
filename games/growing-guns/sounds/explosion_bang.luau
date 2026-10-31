@@ -4,10 +4,10 @@
 --
 -- Params:
 --   radius  blast radius in m; Godot passes round(clamp(radius, 2, 24)).
--- Game (sfx.gd explosion 948-988), all delayed d / 343 s:
---   dry copy +12 dB (unit clamp(0.8 r, 4, 24)) and a room-reverb copy +10 dB, each with a
---   big-tail send (-12 / -14 dB); SPL 165 + 5 log2(max(1, r / 6)). Pair with explosion_rumble.
---   The ion cannon plays this at radius 38 (bucket 24) before ion_burst.
+-- Warp mix: one -8 dB report with a 0.08 room send and the quiet hall,
+-- no amplified close-range gain. Shared bass plays separately at -14 dB.
+-- Overlap budgets preserve existing tails instead of stealing live voices.
+-- The ion cannon still adds its separate ion_burst layer.
 length(1.6)
 
 -- white44(): Godot's noise density (one uniform sample per 44.1 kHz tick).
