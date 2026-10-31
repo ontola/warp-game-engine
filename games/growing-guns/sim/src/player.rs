@@ -1,9 +1,9 @@
 //! One player's tick (Godot `Player._physics_process`): status effects,
-//! cooldowns, gravity, jumps and dash, movement, combat input, falling off
+//! cooldowns, gravity and jumps, movement, combat input, falling off
 //! the map; and the one place health goes down (`_apply_damage`).
 use crate::{flow::Phase, look_dir, move_toward, Event, Gib, Input, World};
-use crate::{AIR_ACCEL, BOT_MOVE_SPEED, DASH_RECHARGE_TIME, DASH_SPEED, DASH_TIME, DOUBLE_JUMP_VELOCITY, DT, DT64, FELL_OFF_Y, FRICTION, GRAVITY};
-use crate::{GROUND_ACCEL, JUMP_VELOCITY, MAX_DASH_CHARGES, MOVER, OVERKILL_HEALTH, PITCH_LIMIT, WALK_SPEED, WALL_JUMP_COOLDOWN, WALL_JUMP_H, WALL_JUMP_V};
+use crate::{AIR_ACCEL, BOT_MOVE_SPEED, DOUBLE_JUMP_VELOCITY, DT, DT64, FELL_OFF_Y, FRICTION, GRAVITY};
+use crate::{GROUND_ACCEL, JUMP_VELOCITY, MOVER, OVERKILL_HEALTH, PITCH_LIMIT, WALK_SPEED, WALL_JUMP_COOLDOWN, WALL_JUMP_H, WALL_JUMP_V};
 use glam::{Vec2, Vec3};
 
 /// Poison ticks once this much time has gathered.
@@ -74,7 +74,7 @@ impl World {
     }
 
     /// Client-side kinematic prediction for one local human slot `i`: steps
-    /// look, movement, jumps, wall-jumps, dash, and arena collision identically
+    /// look, movement, jumps, wall-jumps, and arena collision identically
     /// to `player_tick` without spawning server-authoritative projectiles or
     /// emitting duplicate events.
     pub fn predict_player(&mut self, i: usize, input: Input) {
@@ -250,19 +250,18 @@ impl World {
         self.apply_damage(i, amount, from, Blow::plain(pos));
     }
 
-    /// Godot `_tick_cooldowns`: weapon and special, wall jump, dash recharge, reload.
+    /// Godot `_tick_cooldowns`: weapon and special, wall jump and reload.
     pub(crate) fn cooldowns(&mut self, i: usize) {
         let p = &mut self.players[i];
         p.rifle_cd = (p.rifle_cd - DT64).max(0.0);
         p.special_cd = (p.special_cd - DT64).max(0.0);
         if p.reloading && p.rifle_cd <= 0.0 { p.ammo = p.mag_size(); p.reloading = false; }
         p.wall_jump_cd = (p.wall_jump_cd - DT64).max(0.0);
-        if p.dash_charges < MAX_DASH_CHARGES {
-            p.dash_recharge += DT64;
-            if p.dash_recharge >= DASH_RECHARGE_TIME { p.dash_charges += 1; p.dash_recharge = 0.0; }
-        } else {
-            p.dash_recharge = 0.0;
-        }
+        // Legacy serialized fields remain readable; dash has no gameplay effect.
+        p.dash_charges = 0;
+        p.dash_recharge = 0.0;
+        p.dash_timer = 0.0;
+        p.dash_dir = Vec3::ZERO;
     }
 
     /// Godot `_decay_view_recoil`: bloom and the recoil kick wear off.
@@ -272,7 +271,7 @@ impl World {
         p.recoil_pitch *= 1.0 - DT * 9.0;
     }
 
-    /// Gravity, jumps, dash and horizontal movement, then the slide (humans;
+    /// Gravity, jumps and horizontal movement, then the slide (humans;
     /// bots move in `bot.rs`).
     fn move_player(&mut self, i: usize, input: Input) {
         self.move_player_with(i, input, true);
@@ -281,19 +280,11 @@ impl World {
     fn move_player_with(&mut self, i: usize, input: Input, authoritative: bool) {
         let gravity = GRAVITY * self.gravity_mult();
         let mut ev = Vec::new();
-        let mut dash_ended = false;
-        let mut dash_started = None;
         {
             let p = &mut self.players[i];
             let bot = p.bot;
             p.yaw += input.look[0];
             p.pitch = (p.pitch + input.look[1]).clamp(-PITCH_LIMIT, PITCH_LIMIT);
-            let (sy, cy) = p.yaw.sin_cos();
-            let fwd = Vec3::new(-sy, 0.0, -cy);
-            let right = Vec3::new(cy, 0.0, -sy);
-            let mv = Vec2::from(input.mv);
-            let mv = if mv.length() > 1.0 { mv.normalize() } else { mv };
-            let wish = right * mv.x + fwd * mv.y;
             let extra = p.weapon.extra_jumps;
 
             if !p.on_floor { p.vel.y -= gravity * DT; } else { p.jumps_left = 2 + extra; }
@@ -315,10 +306,8 @@ impl World {
                     ev.push(Event::Jump { player: i });
                 }
             }
-            if input.dash && p.dash_charges > 0 { dash_started = Some(if wish.length_squared() < 1e-4 { fwd } else { wish }); }
 
         }
-        if let Some(d) = dash_started { self.start_dash_with(i, d, authoritative); }
         {
             let p = &mut self.players[i];
             let bot = p.bot;
@@ -330,24 +319,17 @@ impl World {
             let wish = right * mv.x + fwd * mv.y;
             let speed = if bot { BOT_MOVE_SPEED } else { WALK_SPEED };
             let walk = speed * p.weapon.move_speed_mult * p.slow_mult;
-            let mut target = wish * walk;
+            let target = wish * walk;
             let horiz = Vec3::new(p.vel.x, 0.0, p.vel.z);
             let speeding = horiz.length() > walk + 0.1;
-            let accel = if p.dash_timer > 0.0 {
-                p.dash_timer -= DT64;
-                p.vel.y = p.vel.y.max(0.0);
-                let k = (p.dash_timer / (DASH_TIME * 0.5)).clamp(0.0, 1.0) as f32;
-                target = target.lerp(p.dash_dir * DASH_SPEED * p.slow_mult, k);
-                if p.dash_timer <= 0.0 { dash_ended = true; }
-                2000.0
-            } else if p.on_floor {
+            let accel = if p.on_floor {
                 if !bot && speeding && wish.dot(horiz.normalize_or_zero()) <= 0.5 { FRICTION } else { GROUND_ACCEL }
             } else {
                 AIR_ACCEL
             };
             p.vel.x = move_toward(p.vel.x, target.x, accel * DT);
             p.vel.z = move_toward(p.vel.z, target.z, accel * DT);
-            if !bot && p.on_floor && wish == Vec3::ZERO && p.dash_timer <= 0.0 && !speeding {
+            if !bot && p.on_floor && wish == Vec3::ZERO && !speeding {
                 let f = FRICTION * DT * walk * 0.1;
                 p.vel.x = move_toward(p.vel.x, 0.0, f);
                 p.vel.z = move_toward(p.vel.z, 0.0, f);
@@ -356,27 +338,6 @@ impl World {
         self.slide(i);
         if authoritative {
             self.events.extend(ev);
-            if dash_ended { self.dash_ended(i); }
-        }
-    }
-
-    /// Godot `_start_dash`: a charge, the dodge immunity, the backblast bomb.
-    pub(crate) fn start_dash(&mut self, i: usize, dir: Vec3) {
-        self.start_dash_with(i, dir, true);
-    }
-
-    fn start_dash_with(&mut self, i: usize, dir: Vec3, authoritative: bool) {
-        let p = &mut self.players[i];
-        if p.dash_charges == 0 { return; }
-        let dir = if dir.length_squared() < 1e-4 { look_dir(p.yaw, 0.0) } else { dir };
-        p.dash_dir = dir.normalize();
-        p.dash_timer = DASH_TIME;
-        p.dash_charges -= 1;
-        if p.weapon.dash_iframes { p.iframes = DASH_TIME; }
-        if authoritative {
-            let bomb = p.weapon.dash_spawn_bomb.then(|| p.pos + Vec3::Y * 0.08);
-            self.events.push(Event::Dash { player: i });
-            if let Some(at) = bomb { self.spawn_dash_bomb(i, at); }
         }
     }
 
@@ -400,14 +361,7 @@ impl World {
         if contact.on_floor && !was_on_floor { self.events.push(crate::Event::Landed { player: i, speed: fall.max(0.0) }); }
     }
 
-    /// Godot `_on_dash_ended`: the ninja slash.
-    pub(crate) fn dash_ended(&mut self, i: usize) {
-        let p = &self.players[i];
-        if !p.weapon.dash_end_melee || !p.alive || p.ghost { return; }
-        let dir = if p.dash_dir.length_squared() > 0.001 { p.dash_dir } else { look_dir(p.yaw, 0.0) };
-        let origin = p.pos + Vec3::Y * 0.9;
-        self.melee(i, origin, dir.normalize(), crate::specials::NINJA_DAMAGE_MULT, crate::specials::NINJA_RANGE_MULT);
-    }
+
 
     /// Sky drop: a fixed fall, no input, until the floor.
     fn launch_tick(&mut self, i: usize, speed: f32) {

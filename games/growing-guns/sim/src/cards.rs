@@ -36,7 +36,11 @@ impl CardDef {
     pub fn new(id: &str, name: &str) -> Self {
         CardDef { id: id.into(), name: name.into(), desc: String::new(), color: [1.0; 3], firepower: false, rare: false, mul: Vec::new(), add: Vec::new(), enabled: true }
     }
-    fn weight(&self, score_factor: f32) -> f32 { if self.rare { RARE_WEIGHT * score_factor } else { 1.0 } }
+    fn weight(&self, score_factor: f32) -> f32 {
+        // Repeatable baseline gun growth should be easier to build around.
+        let basic = if matches!(self.id.as_str(), "dmg_up" | "big_mag" | "rapid_fire") { 3.0 } else { 1.0 };
+        basic * if self.rare { RARE_WEIGHT * score_factor } else { 1.0 }
+    }
 }
 
 /// The match's cards.
@@ -162,4 +166,16 @@ mod tests {
         }
         assert!(rare < 1200 && rare_behind > rare * 2, "{rare} {rare_behind}");
     }
+    #[test]
+    fn baseline_boosts_have_three_times_the_common_draw_weight() {
+        let book = Book::new(["dmg_up", "big_mag", "rapid_fire", "ordinary"].map(|id| CardDef::new(id, id)).into());
+        let mut rng = crate::rng::Rng::new(42);
+        let mut hits = [0usize; 4];
+        for _ in 0..20000 { hits[book.offer(&mut rng, 1.0, 1)[0].0 as usize] += 1; }
+        for count in &hits[..3] {
+            let ratio = *count as f32 / hits[3] as f32;
+            assert!((2.7..3.3).contains(&ratio), "draw ratio {ratio}; hits {hits:?}");
+        }
+    }
+
 }

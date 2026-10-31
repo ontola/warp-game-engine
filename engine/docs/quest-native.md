@@ -2,7 +2,7 @@
 
 Growing Guns' native Android build uses the existing Rust `Gg` application,
 Warp wgpu/Vulkan renderer, shared character proxies, procedural gun rigs,
-arena, Luau rules and all 52 cards. The shared minimum graphics profile omits stadium decoration. `engine/crates/xr` owns OpenXR and
+arena, Luau rules and all 49 cards. The shared minimum graphics profile omits stadium decoration. `engine/crates/xr` owns OpenXR and
 presentation; `games/growing-guns/app/src/xr.rs` adapts the game's controls and
 world origin. There is no browser or streaming dependency at runtime.
 

@@ -2,10 +2,10 @@
 //! and friends): a sticky nearest target, an aim point that turns at 3.2
 //! rad/s with a wandering error in metres, a reaction time before the first
 //! shot, full-auto fire with its own spread model, strafing at a held range,
-//! gap jumps, ledge climbs, random hops and dashes, fleeing strikes, going
+//! gap jumps, ledge climbs, random hops, fleeing strikes, going
 //! for pickups and using the RMB special by distance.
 //!
-//! On island arenas (Godot `_bot_on_lava_map`) every move, hop, dash, gap
+//! On island arenas (Godot `_bot_on_lava_map`) every move, hop, gap
 //! jump, climb and pickup is checked against the islands' safe disks first,
 //! except in a 0.6 s lapse a bot rolls into 7% of seconds. Two additions
 //! (Godot's bots, as written, never gap-jump while careful, since the safe
@@ -20,7 +20,7 @@
 //! from the match seed, drawn in Godot's order.
 use crate::rng::Rng;
 use crate::{look_dir, move_toward, shape, Event, Phase, Special, World, DT, DT64};
-use crate::{AIR_ACCEL, BOT_MOVE_SPEED, DASH_SPEED, DASH_TIME, DOUBLE_JUMP_VELOCITY, FELL_OFF_Y, GRAVITY, GROUND_ACCEL, JUMP_VELOCITY};
+use crate::{AIR_ACCEL, BOT_MOVE_SPEED, DOUBLE_JUMP_VELOCITY, FELL_OFF_Y, GRAVITY, GROUND_ACCEL, JUMP_VELOCITY};
 use glam::{Quat, Vec3};
 
 const FOLLOW_DIST: f32 = 7.0;
@@ -28,7 +28,6 @@ const ROT_SPEED: f32 = 6.0;
 const SPREAD: f32 = 0.09;
 const MISS_CHANCE: f32 = 0.45;
 const JUMP_CHANCE: f32 = 0.008;
-const DASH_CHANCE: f32 = 0.018;
 const EDGE_PROBE: f32 = 1.8;
 const LAVA_EDGE_PROBE: f32 = 3.0;
 const LAVA_MISTAKE_CHANCE: f32 = 0.07;
@@ -53,7 +52,6 @@ pub struct Brain {
     reaction: f32,
     shoot_cd: f64,
     jump_cd: f32,
-    dash_cd: f32,
     strafe_timer: f32,
     strafe: f32,
     approach: f32,
@@ -89,12 +87,11 @@ impl Brain {
 fn pick(rng: &mut Rng, of: &[f32]) -> f32 { of[rng.below(of.len() as u32) as usize] }
 
 /// Island arenas: whether a gap jump at walking speed, with the double jump
-/// and (past 7 m, as Godot's gap jump) a dash, lands `d` m on and `rise` m
-/// up. The jumps top out 2.55 m up; the dash adds about 3 m.
+/// lands `d` m on and `rise` m up. The jumps top out 2.55 m up.
 fn leap_reaches(d: f32, rise: f32) -> bool {
     if rise > 2.0 { return false; }
     let t = (JUMP_VELOCITY + DOUBLE_JUMP_VELOCITY) / GRAVITY + (2.0 * (2.55 - rise) / GRAVITY).sqrt();
-    d <= 0.85 * BOT_MOVE_SPEED * t + if d > 7.0 { 3.0 } else { 0.0 }
+    d <= 0.85 * BOT_MOVE_SPEED * t
 }
 
 impl World {
@@ -123,7 +120,6 @@ impl World {
         let mut rng = b.rng.take().unwrap_or_else(|| Rng::new(i as u64));
         b.shoot_cd = (b.shoot_cd - DT64).max(0.0);
         b.jump_cd = (b.jump_cd - DT).max(0.0);
-        b.dash_cd = (b.dash_cd - DT).max(0.0);
         b.special_think = (b.special_think - DT).max(0.0);
         b.climb_probe = (b.climb_probe - DT).max(0.0);
         b.climb_until = (b.climb_until - DT).max(0.0);
@@ -207,10 +203,9 @@ impl World {
         let strike = self.strikes.iter().map(|s| (glam::Vec2::new(me.x - s.target.x, me.z - s.target.z), s.kind))
             .min_by(|a, c| a.0.length().total_cmp(&c.0.length()));
         let strike_dist = strike.map_or(f32::INFINITY, |s| s.0.length());
-        let mut flee = Vec3::ZERO;
         if strike_dist < STRIKE_FLEE {
             let away = strike.unwrap().0;
-            flee = if away.length() > 1e-3 { Vec3::new(away.x, 0.0, away.y).normalize() } else { Vec3::new(rng.range(-1.0, 1.0), 0.0, rng.range(-1.0, 1.0)).normalize_or_zero() };
+            let mut flee = if away.length() > 1e-3 { Vec3::new(away.x, 0.0, away.y).normalize() } else { Vec3::new(rng.range(-1.0, 1.0), 0.0, rng.range(-1.0, 1.0)).normalize_or_zero() };
             if careful { flee = self.lava_safe_dir(i, me, flee); }
             if flee != Vec3::ZERO { mv = flee; b.approach = 0.0; b.strafe = 0.0; }
         } else if let Some(l) = b.leap.filter(|_| lava && !self.players[i].on_floor) {
@@ -219,11 +214,10 @@ impl World {
             mv = if to.length() < 0.4 { Vec3::ZERO } else { to.normalize() * (to.length() / 1.2).min(1.0) };
         } else if careful {
             // A gap towards the target with a safe landing across: jump it
-            // (below) rather than turn away from the edge; past 7 m only
-            // with a dash ready.
+            // (below) rather than turn away from the edge.
             let p = &self.players[i];
-            let leap = p.on_floor && p.dash_timer <= 0.0 && mv.length_squared() > 0.01 && !self.floor_ahead(me, mv, probe, true)
-                && { let d = self.gap_landing(me, mv, true); d > 0.0 && (d <= 7.0 || (p.dash_charges > 0 && b.dash_cd <= 0.0)) };
+            let leap = p.on_floor && mv.length_squared() > 0.01 && !self.floor_ahead(me, mv, probe, true)
+                && self.gap_landing(me, mv, true) > 0.0;
             if !leap { mv = self.lava_safe_dir(i, me, mv); }
         }
         // Edges and gaps.
@@ -232,7 +226,6 @@ impl World {
         let mut gap_jump = false;
         if on_floor && moving && !self.floor_ahead(me, mv, probe, careful) {
             let found = self.gap_landing_at(me, mv, careful);
-            let landing = found.map_or(0.0, |f| f.0);
             if let Some((d, y)) = found {
                 gap_jump = true;
                 if careful {
@@ -241,11 +234,7 @@ impl World {
                 }
                 self.bot_jump(i, JUMP_VELOCITY, true);
                 b.jump_cd = rng.range(0.8, 1.8);
-                let p = &self.players[i];
-                if landing > 7.0 && p.dash_timer <= 0.0 && p.dash_charges > 0 && b.dash_cd <= 0.0 {
-                    self.start_dash(i, mv);
-                    b.dash_cd = rng.range(2.0, 4.0);
-                }
+
             } else if b.jump_cd <= 0.0 {
                 self.bot_jump(i, JUMP_VELOCITY, true);
                 b.jump_cd = rng.range(0.8, 1.6);
@@ -290,47 +279,27 @@ impl World {
             self.bot_jump(i, JUMP_VELOCITY, false);
             b.jump_cd = rng.range(2.0, 4.5);
         }
-        // Dash: panic near strikes, else now and then.
-        let panic = strike_dist < STRIKE_PANIC;
-        let dash_ok = moving && (!careful || self.move_lava_safe(me, mv, probe + 1.2));
-        {
-            let p = &self.players[i];
-            if p.dash_timer <= 0.0 && p.dash_charges > 0 && b.dash_cd <= 0.0 && (panic || (rng.f() < DASH_CHANCE && dash_ok)) {
-                let wish = if panic && flee != Vec3::ZERO { flee } else if moving { mv } else { fwd };
-                self.start_dash(i, wish);
-                b.dash_cd = rng.range(2.5, 5.5);
-            }
-        }
         // Facing and velocity.
-        let mut dash_ended = false;
         {
             let p = &mut self.players[i];
-            let face = if p.dash_timer > 0.0 { p.dash_dir } else if dist > 0.05 { flat } else { mv };
+            let face = if dist > 0.05 { flat } else { mv };
             if face.length_squared() > 1e-6 {
                 let want = (-face.x).atan2(-face.z);
                 let d = (want - p.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
                 p.yaw += d * (DT * ROT_SPEED).min(1.0);
             }
-            let mut target = mv * BOT_MOVE_SPEED * p.weapon.move_speed_mult * p.slow_mult;
-            let accel = if p.dash_timer > 0.0 {
-                p.dash_timer -= DT64;
-                p.vel.y = p.vel.y.max(0.0);
-                let k = (p.dash_timer / (DASH_TIME * 0.5)).clamp(0.0, 1.0) as f32;
-                target = target.lerp(p.dash_dir * DASH_SPEED * p.slow_mult, k);
-                if p.dash_timer <= 0.0 { dash_ended = true; }
-                2000.0
-            } else if p.on_floor { GROUND_ACCEL } else { AIR_ACCEL };
+            let target = mv * BOT_MOVE_SPEED * p.weapon.move_speed_mult * p.slow_mult;
+            let accel = if p.on_floor { GROUND_ACCEL } else { AIR_ACCEL };
             p.vel.x = move_toward(p.vel.x, target.x, accel * DT);
             p.vel.z = move_toward(p.vel.z, target.z, accel * DT);
             let tv = Vec3::new(target.x, 0.0, target.z);
             let speed = Vec3::new(p.vel.x, 0.0, p.vel.z).length();
-            if tv.length_squared() > 0.25 && speed < 1.1 && p.on_floor && p.dash_timer <= 0.0 {
+            if tv.length_squared() > 0.25 && speed < 1.1 && p.on_floor {
                 b.stuck += DT;
             } else {
                 b.stuck = 0.0;
             }
         }
-        if dash_ended { self.dash_ended(i); }
         self.slide(i);
         if b.stuck > 0.5 && b.jump_cd <= 0.0 && self.players[i].on_floor {
             let p = &mut self.players[i];
@@ -475,7 +444,7 @@ impl World {
             if let Some((t, _, _)) = shape::raycast(&self.arena.grid, probe, Vec3::NEG_Y, 9.0) {
                 let y = probe.y - t;
                 if careful && !self.arena.spawn_safe(Vec3::new(probe.x, y + 0.9, probe.z)) { continue; }
-                // Islands: only what a jump, a double jump and a dash reach.
+                // Islands: only what a jump and a double jump reach.
                 if careful && !leap_reaches(d, y - (me.y - crate::HALF_HEIGHT)) { continue; }
                 if y >= me.y - 4.5 && y <= me.y + 3.5 { return Some((d, y)); }
             }

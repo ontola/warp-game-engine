@@ -134,7 +134,6 @@ impl World {
         self.projectiles.push(Projectile { kind, pos, vel, owner, age: 0.0, contact: false });
     }
 
-    pub(crate) fn spawn_dash_bomb(&mut self, i: usize, at: Vec3) { self.spawn_projectile(ProjectileKind::DashBomb, at, Vec3::ZERO, i); }
 
     /// Godot `_use_teleport`: to where the aim meets the world (or 45 m out).
     fn teleport(&mut self, i: usize) {

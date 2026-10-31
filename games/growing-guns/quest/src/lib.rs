@@ -25,7 +25,7 @@ struct Controls {
 struct Aim { offset: [f32; 3], direction: [f32; 3] }
 
 /// Deliberately small, data-only card deck for this demo. The desktop's Luau
-/// host and all 52 cards are not included in the WebAssembly build.
+/// host and all 49 cards are not included in the WebAssembly build.
 fn deck() -> Book {
     let card = |id: &str, name: &str, desc: &str, field: &str, value, mul, firepower| {
         let mut c = CardDef::new(id, name);

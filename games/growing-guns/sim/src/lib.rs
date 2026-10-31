@@ -111,7 +111,7 @@ pub const HITBOXES: [(f32, f32, bool); 3] = [(-0.20, 0.31, false), (0.16, 0.37, 
 #[derive(Clone, Copy, Debug)]
 pub struct TrackedAim { pub offset: Vec3, pub direction: Vec3 }
 
-/// One tick of input for one player. `jump`, `dash` and `reload` are edges
+/// One tick of input for one player. `jump` and `reload` are edges
 /// (pressed this tick); `fire` and `special` are held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Input {
@@ -120,6 +120,7 @@ pub struct Input {
     /// Look delta in radians: yaw (left positive), pitch (up positive).
     pub look: [f32; 2],
     pub jump: bool,
+    /// Retained for old replay/network input records; ignored by gameplay.
     pub dash: bool,
     pub fire: bool,
     pub reload: bool,
@@ -143,6 +144,7 @@ pub struct Player {
     pub wall_normal: Option<Vec3>,
     pub jumps_left: i32,
     pub wall_jump_cd: f64,
+    /// Legacy dash fields, retained for saved-state compatibility; always inactive.
     pub dash_timer: f64,
     pub dash_dir: Vec3,
     pub dash_charges: u32,
@@ -203,7 +205,7 @@ impl Player {
         Self {
             pos: Vec3::ZERO, vel: Vec3::ZERO, yaw: 0.0, pitch: 0.0, recoil_pitch: 0.0, on_floor: false, wall_normal: None,
             jumps_left: 2, wall_jump_cd: 0.0, dash_timer: 0.0, dash_dir: Vec3::ZERO,
-            dash_charges: MAX_DASH_CHARGES, dash_recharge: 0.0, health: MAX_HEALTH, alive: true, ghost: false,
+            dash_charges: 0, dash_recharge: 0.0, health: MAX_HEALTH, alive: true, ghost: false,
             ammo: weapon::BASE_MAG_SIZE as u32, reloading: false, rifle_cd: 0.0, bloom: 0.0, score: 0, bot, since_shot: 9.0,
             cards: Vec::new(), weapon: Weapon::default(), offer: None, offer_age: 0.0,
             iframes: 0.0, slow_mult: 1.0, slow_timer: 0.0, poison_left: 0.0, poison_dps: 0.0, poison_accum: 0.0, poison_from: None,
@@ -340,7 +342,7 @@ pub enum Event {
     Ricochet { pos: Vec3 },
     /// RMB used.
     Special { player: usize, special: Special },
-    /// Melee swing (sword, ninja dash end).
+    /// Melee swing (sword).
     Slash { player: usize, from: Vec3, dir: Vec3, range: f32 },
     Teleport { player: usize, from: Vec3, to: Vec3 },
     Phoenix { player: usize },
