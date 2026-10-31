@@ -1,9 +1,24 @@
-//! Seeded source centreline recipes. This module does not yet assemble full tracks.
+//! Native ribbon construction from validated Luau recipes and seeded samples.
 use gdcompat::Pcg;
 use glam::{Vec2, Vec3};
 use std::f64::consts::{PI, TAU};
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct Dimensions {
+    pub radius: [f32; 2],
+    pub lobes: [i32; 2],
+    pub amplitude: [f32; 2],
+    pub stretch: [f32; 2],
+    pub hills: [i32; 2],
+    pub climb: [f32; 2],
+    pub corner_a: [f32; 2],
+    pub corner_b: [f32; 2],
+    pub corner_shift: [f32; 2],
+    pub loop_radius: [f32; 2],
+    pub road_width: [f64; 3],
+}
 #[derive(Clone, Debug)]
 pub struct Recipe {
+    pub dimensions: Dimensions,
     pub name: &'static str,
     pub stadium: bool,
     pub corner_scale: f64,
@@ -15,110 +30,17 @@ pub struct Recipe {
     pub sections: Vec<(&'static str, f64, f64)>,
     pub jumps: Vec<[f64; 2]>,
     pub hard_flight: bool,
+    pub exposed: Vec<[f64; 2]>,
 }
 impl Recipe {
     pub fn index(seed: i64) -> usize {
         (seed - 31).rem_euclid(6) as usize
     }
     pub fn for_seed(seed: i64) -> Self {
-        let family = Self::index(seed);
-        let mut p = Self {
-            name: [
-                "Grand Circuit",
-                "Underpass",
-                "Switchback",
-                "Sky Circus",
-                "Velocity",
-                "Pipeline",
-            ][family],
-            stadium: false,
-            corner_scale: 1.0,
-            width_scale: 1.0,
-            boosts: vec![[0.115, 0.142], [0.63, 0.65]],
-            loops: vec![0.16],
-            tunnels: vec![[0.33, 0.38]],
-            corners: vec![],
-            sections: vec![
-                ("open", 0.275, 0.315),
-                ("halfpipe", 0.405, 0.49),
-                ("split", 0.535, 0.615),
-                ("tube", 0.805, 0.92),
-            ],
-            jumps: vec![[0.070, 0.152]],
-            hard_flight: true,
-        };
-        match family {
-            1 => {
-                p.loops.clear();
-                p.corner_scale = 0.6;
-                p.hard_flight = false;
-                p.tunnels = vec![[0.17, 0.30], [0.34, 0.51], [0.55, 0.72], [0.81, 0.92]];
-                p.sections = vec![("split", 0.735, 0.795), ("narrows", 0.365, 0.425)];
-            }
-            2 => {
-                p.loops.clear();
-                p.corner_scale = 0.25;
-                p.hard_flight = false;
-                p.corners = vec![
-                    [0.235, 125.0, 0.20],
-                    [0.495, -130.0, 0.20],
-                    [0.75, 120.0, 0.19],
-                ];
-                p.tunnels = vec![[0.57, 0.615]];
-                p.sections = vec![
-                    ("chicane", 0.19, 0.28),
-                    ("chicane", 0.45, 0.54),
-                    ("chicane", 0.705, 0.795),
-                    ("narrows", 0.83, 0.90),
-                ];
-            }
-            3 => {
-                p.loops = vec![0.17, 0.45, 0.73];
-                p.corner_scale = 0.45;
-                p.jumps = vec![[0.070, 0.152], [0.325, 0.410], [0.60, 0.682]];
-                p.tunnels.clear();
-                p.sections = vec![("open", 0.285, 0.31), ("halfpipe", 0.845, 0.912)];
-            }
-            4 => {
-                p.stadium = true;
-                p.loops.clear();
-                p.hard_flight = false;
-                p.boosts = vec![
-                    [0.165, 0.195],
-                    [0.235, 0.27],
-                    [0.365, 0.40],
-                    [0.515, 0.55],
-                    [0.58, 0.615],
-                    [0.635, 0.67],
-                    [0.745, 0.775],
-                    [0.85, 0.885],
-                    [0.925, 0.97],
-                ];
-                p.tunnels = vec![[0.62, 0.71]];
-                p.sections = vec![
-                    ("open", 0.18, 0.26),
-                    ("narrows", 0.30, 0.35),
-                    ("split", 0.435, 0.50),
-                    ("narrows", 0.78, 0.83),
-                ];
-            }
-            5 => {
-                p.loops.clear();
-                p.corner_scale = 0.3;
-                p.width_scale = 1.12;
-                p.tunnels.clear();
-                p.sections = vec![
-                    ("halfpipe", 0.17, 0.27),
-                    ("tube", 0.29, 0.42),
-                    ("halfpipe", 0.44, 0.58),
-                    ("split", 0.61, 0.67),
-                    ("tube", 0.69, 0.82),
-                    ("halfpipe", 0.84, 0.91),
-                ];
-            }
-            _ => {}
-        }
-        p
+        crate::rules::Rules::new(None)
+            .expect("bundled Luau rules")
+            .track(seed, "normal")
+            .expect("bundled track recipe")
     }
 }
 #[derive(Clone, Debug)]
@@ -160,6 +82,9 @@ fn angle_difference(a: f64, b: f64) -> f64 {
 }
 impl Centreline {
     pub fn new(seed: i64, difficulty: &str, biome: &str) -> Self {
+        Self::with_recipe(seed, difficulty, biome, Recipe::for_seed(seed))
+    }
+    pub fn with_recipe(seed: i64, difficulty: &str, biome: &str, recipe: Recipe) -> Self {
         let difficulty = if ["easy", "normal", "hard"].contains(&difficulty) {
             difficulty
         } else {
@@ -171,21 +96,22 @@ impl Centreline {
             "city"
         };
         let mut rng = Pcg::new(seed as u64);
+        let d = recipe.dimensions.clone();
         let mut c = Self {
-            recipe: Recipe::for_seed(seed),
+            recipe,
             difficulty: difficulty.into(),
             biome: biome.into(),
             theme: rng.randi_range(0, 3) as usize,
-            radius: range(&mut rng, 900.0, 1100.0),
-            lobes: rng.randi_range(2, 4),
-            amplitude: range(&mut rng, 65.0, 155.0),
+            radius: range(&mut rng, d.radius[0], d.radius[1]),
+            lobes: rng.randi_range(d.lobes[0], d.lobes[1]),
+            amplitude: range(&mut rng, d.amplitude[0], d.amplitude[1]),
             phase: rng.randf() as f64 * TAU,
-            stretch: range(&mut rng, 1.0, 1.3),
-            hills: rng.randi_range(2, 3),
-            climb: range(&mut rng, 105.0, 170.0),
-            corner_a_width: range(&mut rng, 0.15, 0.16),
-            corner_b_width: range(&mut rng, 0.18, 0.195),
-            corner_shift: range(&mut rng, -0.055, 0.055),
+            stretch: range(&mut rng, d.stretch[0], d.stretch[1]),
+            hills: rng.randi_range(d.hills[0], d.hills[1]),
+            climb: range(&mut rng, d.climb[0], d.climb[1]),
+            corner_a_width: range(&mut rng, d.corner_a[0], d.corner_a[1]),
+            corner_b_width: range(&mut rng, d.corner_b[0], d.corner_b[1]),
+            corner_shift: range(&mut rng, d.corner_shift[0], d.corner_shift[1]),
             loops: vec![],
             jumps: vec![],
             components: vec![],
@@ -205,7 +131,7 @@ impl Centreline {
             c.loops.push(Loop {
                 start,
                 end: start + 0.105,
-                radius: range(&mut rng, 185.0, 225.0),
+                radius: range(&mut rng, d.loop_radius[0], d.loop_radius[1]),
                 forward: f,
                 right: f.cross(Vec3::Y),
             });
@@ -246,7 +172,7 @@ impl Centreline {
             if family == 2 && difficulty == "hard" {
                 c.components.push(c.component("hairpin", 0.19, 0.29));
             }
-            if difficulty == "hard" && [0, 3, 4].contains(&family) {
+            if difficulty == "hard" && [0, 3, 4].contains(&family) && !c.jumps.is_empty() {
                 let jump = &mut c.jumps[0];
                 jump.turbo = true;
                 jump.rise = 38.0;
@@ -549,7 +475,10 @@ fn orthonormal(m: Mat3) -> Mat3 {
 }
 impl Generated {
     pub fn new(seed: i64, difficulty: &str, biome: &str) -> Self {
-        let c = Centreline::new(seed, difficulty, biome);
+        Self::with_recipe(seed, difficulty, biome, Recipe::for_seed(seed))
+    }
+    pub fn with_recipe(seed: i64, difficulty: &str, biome: &str, recipe: Recipe) -> Self {
+        let c = Centreline::with_recipe(seed, difficulty, biome, recipe);
         let difficulty = c.difficulty.as_str();
         let mut raw = Vec::with_capacity(4097);
         let mut distances = vec![0.0];
@@ -608,9 +537,15 @@ impl Generated {
                 geometry: Geometry {
                     p: raw[j].lerp(raw[j + 1], f as f32),
                     frame: Mat3::IDENTITY.to_cols_array_2d(),
-                    width: (23.0 + 6.0 * (u * TAU * 3.0 + c.phase).sin().powi(2))
+                    width: (c.recipe.dimensions.road_width[0]
+                        + c.recipe.dimensions.road_width[1]
+                            * (u * TAU * 3.0 + c.phase).sin().powi(2))
                         * c.recipe.width_scale
-                        + if difficulty == "easy" { 9.0 } else { 0.0 },
+                        + if difficulty == "easy" {
+                            c.recipe.dimensions.road_width[2]
+                        } else {
+                            0.0
+                        },
                     shape_angle: 0.0,
                 },
                 heading: 0.0,
@@ -733,7 +668,7 @@ impl Generated {
                         n.section = if n.rails {
                             "SKYWAY"
                         } else {
-                            "OPEN SKY Ã‚Â· NO RAILS"
+                            "OPEN SKY Ãƒâ€šÃ‚Â· NO RAILS"
                         }
                         .into();
                     }
@@ -748,7 +683,7 @@ impl Generated {
                         n.geometry.shape_angle = PI * blend;
                         n.geometry.width = mix(n.geometry.width, PI * 30.0 * size, blend);
                         n.rails = difficulty == "easy";
-                        n.section = "360Ã‚Â° MAGNETIC TUBE".into();
+                        n.section = "360Ãƒâ€šÃ‚Â° MAGNETIC TUBE".into();
                     }
                     "split" => {
                         n.split_gap = 18.0 * size * blend;
@@ -759,9 +694,9 @@ impl Generated {
                             n.preferred_route = -n.dead_side;
                             n.dead_gap = q >= 0.59;
                             n.section = if n.dead_side > 0.0 {
-                                "DEAD END Ã‚Â· KEEP LEFT"
+                                "DEAD END Ãƒâ€šÃ‚Â· KEEP LEFT"
                             } else {
-                                "DEAD END Ã‚Â· KEEP RIGHT"
+                                "DEAD END Ãƒâ€šÃ‚Â· KEEP RIGHT"
                             }
                             .into();
                         }
@@ -782,7 +717,7 @@ impl Generated {
                 n.section = if v.kind == "spiral" {
                     "SPIRAL ASCENT"
                 } else {
-                    "HAIRPIN Ã‚Â· BRAKE"
+                    "HAIRPIN Ãƒâ€šÃ‚Â· BRAKE"
                 }
                 .into();
                 if v.kind == "hairpin" {
@@ -812,14 +747,14 @@ impl Generated {
                 n.section = if n.air_gap {
                     "FLIGHT GAP"
                 } else if t < v.lip {
-                    "JUMP Ã‚Â· KEEP SPEED"
+                    "JUMP Ãƒâ€šÃ‚Â· KEEP SPEED"
                 } else {
                     "LANDING ZONE"
                 }
                 .into();
                 if v.turbo {
                     n.section = if t < v.land {
-                        "TURBO JUMP Ã‚Â· NOSE DOWN"
+                        "TURBO JUMP Ãƒâ€šÃ‚Â· NOSE DOWN"
                     } else {
                         "LANDING ZONE"
                     }
@@ -830,9 +765,7 @@ impl Generated {
                 && !n.is_loop
                 && !n.tunnel
                 && n.feature == "ribbon"
-                && [[0.02, 0.05], [0.285, 0.335], [0.64, 0.68], [0.755, 0.80]]
-                    .iter()
-                    .any(|s| n.u > s[0] && n.u < s[1])
+                && c.recipe.exposed.iter().any(|s| n.u > s[0] && n.u < s[1])
             {
                 n.rails = false;
                 n.section = "EXPOSED SKYWAY".into();

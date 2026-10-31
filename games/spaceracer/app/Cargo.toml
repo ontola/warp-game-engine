@@ -1,0 +1,23 @@
+[package]
+name = "spaceracer-app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "spaceracer"
+path = "src/main.rs"
+
+[dependencies]
+spaceracer = { path = "../sim" }
+app = { path = "../../../engine/crates/app" }
+render = { path = "../../../engine/crates/render" }
+assets = { path = "../../../engine/crates/assets" }
+gamenight.workspace = true
+glam = "0.31"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+flate2 = "1"
+
+[dev-dependencies]
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

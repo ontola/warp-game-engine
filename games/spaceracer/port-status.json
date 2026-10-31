@@ -3,17 +3,17 @@
   "commit": "66508c8539f5e4b348c0797b649b67b6d7a43dfc",
   "godot": "4.5.2",
   "tick_hz": 120,
-  "status": "in progress; not benchmark-equivalent yet",
+  "status": "playable native development port; Luau-driven rules; content/visual parity incomplete",
   "modules": [
     {
       "path": "src/ai_pilot.gd",
       "sha256": "0765604b0227f8c8140fe65d0a355d6e47114ac1dcc553b2136094ddaa32115a",
-      "status": "pending"
+      "status": "Luau driving/flight decisions, seeded line and pace plans; replay and three race completions tested; full tactical parity pending"
     },
     {
       "path": "src/blast_vfx.gd",
       "sha256": "36b459b3ce3264985b7ee688478ac65f26eac4f96c5b7b84c9432d1de41c3347",
-      "status": "pending"
+      "status": "shared native Warp explosion effects; source presentation parity pending"
     },
     {
       "path": "src/boost_trails.gd",
@@ -23,12 +23,12 @@
     {
       "path": "src/bridge.gd",
       "sha256": "082b1a642098f8e43cce0c9b678ed18626ef16c2049862238293f4e257274167",
-      "status": "pending"
+      "status": "native GameNight lifecycle/opaque seats/controller routing loopback-tested; profile faces and production host test pending"
     },
     {
       "path": "src/bump.gd",
       "sha256": "c4a687067d0705935286daadd96da961c3125051f853d6d7ec138c004b645ab6",
-      "status": "begin/velocity validated; strike integration pending"
+      "status": "validated kernel integrated with simplified vehicle contact"
     },
     {
       "path": "src/cell.gd",
@@ -38,12 +38,12 @@
     {
       "path": "src/chase.gd",
       "sha256": "7736dc52e5beb97da94a7f27b1d340e84465faf49e3d2e8a177f80478909e01e",
-      "status": "normal chase, roll, shake and split aspect FOV source-validated across 1800 ticks; crash/respawn camera pending"
+      "status": "validated normal chase/roll/boost FOV; native crash-to-spawn blend; victory camera pending"
     },
     {
       "path": "src/checkpoints.gd",
       "sha256": "3ae199a032ebd2480baeaa3ef0530ad35f4ee819e1791ea19dbd3713101fb93e",
-      "status": "gate crossing/progress ported; gate generation and rendering pending"
+      "status": "physical gate generation/crossing/progress integrated; miss notice and manual return; dedicated gate art pending"
     },
     {
       "path": "src/city_accents.gd",
@@ -53,7 +53,7 @@
     {
       "path": "src/city_layout.gd",
       "sha256": "36f8dd98f1491c511cc866f7aa22f120f026277db38e026309164884500da306",
-      "status": "pending"
+      "status": "native seeded grid, varied bounds and swept-road clearance; exact city layout parity pending"
     },
     {
       "path": "src/city_traffic.gd",
@@ -68,7 +68,7 @@
     {
       "path": "src/crash_vfx.gd",
       "sha256": "ef9820ebd634179563d3250a506e0da2e5720b6db9a8e107595717468e9ec1f9",
-      "status": "pending"
+      "status": "native shared explosion and camera return; disintegration/debris pending"
     },
     {
       "path": "src/cue_bank.gd",
@@ -93,7 +93,7 @@
     {
       "path": "src/dive_bomb.gd",
       "sha256": "a3b5132bc67ccd5d6ad51d0b5f5459b14b4bb1134ab1649d3fc22190fc69681b",
-      "status": "pending"
+      "status": "airborne-only Luau activation, native lock/steering/AOE and preview indicator; tuning needs playtest"
     },
     {
       "path": "src/emp_sparks.gd",
@@ -108,22 +108,22 @@
     {
       "path": "src/flight.gd",
       "sha256": "f994ab929f75becd65170ccc7e539df28d5219d09a70353d9e4b69541164d2f5",
-      "status": "aerodynamics and landing/crash/underside rules source-validated; full race/world integration and crash VFX pending"
+      "status": "validated integrator, takeoff/landing/underside handling integrated; native swept scenery proxies"
     },
     {
       "path": "src/forest.gd",
       "sha256": "9130917ceb08ed0f3580e17f947cfcfd38cf46b180fc57b6f6912136bcd0f293",
-      "status": "pending"
+      "status": "original glTF trees with normalized varied heights and native hill/water surface; visual parity pending"
     },
     {
       "path": "src/forest_assets.gd",
       "sha256": "ddc08526efcc3e16973d8469d378906579fe5de33f6f2effec4835346618193e",
-      "status": "pending"
+      "status": "original glTF pine/birch imported; advanced foliage lighting/LOD parity pending"
     },
     {
       "path": "src/forest_terrain.gd",
       "sha256": "2e24bae02eee0173862dce6942e7f94c6c3cf8a43de3be928146701b8c9eca9d",
-      "status": "pending"
+      "status": "native height-field mesh shared with ground collision; original terrain shader parity pending"
     },
     {
       "path": "src/game_audio.gd",
@@ -133,7 +133,7 @@
     {
       "path": "src/global_lighting.gd",
       "sha256": "069dcfa860f5e5a71691920c7aefce53697e4e919fdcac85a045fb69dfdf387b",
-      "status": "pending"
+      "status": "Luau biome sun/sky/exposure plus native local jet lights; reflection/GI parity pending"
     },
     {
       "path": "src/ground_traffic.gd",
@@ -143,7 +143,7 @@
     {
       "path": "src/hud.gd",
       "sha256": "5d695b0664429a72730b7d6be31864121f0e65fda02f84822447f2ae71c8c539",
-      "status": "pending"
+      "status": "native speed/energy/ranks/lap/items/target/EMP visibility; visor presentation pending"
     },
     {
       "path": "src/impact_vfx.gd",
@@ -153,7 +153,7 @@
     {
       "path": "src/main.gd",
       "sha256": "47141d2e788f66cf0ca916e76aa759b1c06e0617677aab87b1afb62ef3aaba4f",
-      "status": "pending"
+      "status": "native app, seed/player/biome/difficulty menu, split screen, headless scenarios"
     },
     {
       "path": "src/missile_audio.gd",
@@ -168,7 +168,7 @@
     {
       "path": "src/obstacles.gd",
       "sha256": "79d018e84d909882a13a4f3ff568f561b8d9b52a227e734e84594be7c2e3acbf",
-      "status": "pending"
+      "status": "native swept expanded AABB and ground traces; detailed mesh collision parity pending"
     },
     {
       "path": "src/ocean.gd",
@@ -193,7 +193,7 @@
     {
       "path": "src/race.gd",
       "sha256": "1b4f787d032687a178307eb63bd56fb36b750f61e8c3e893c079e34adf09fbe1",
-      "status": "partial: ground handling kernel validated; full race integration pending"
+      "status": "native lifecycle/checkpoints/recovery/contacts/items with Luau AI and item policy; complete source parity pending"
     },
     {
       "path": "src/race_audio_mix.gd",
@@ -203,22 +203,22 @@
     {
       "path": "src/racer_design.gd",
       "sha256": "21ed4aeacc617ac60d1d9f49c352df957a9ea0b3a2e467a4074c2326cae621ac",
-      "status": "all five source geometries exported with instance material parameters; native rendering pending"
+      "status": "five authored variants retained; first rendered natively with PBR materials"
     },
     {
       "path": "src/railgun.gd",
       "sha256": "67bbe57fa41f0407f31960a1dd9a984d2bf511f774c380fb7b9a66a058dff274",
-      "status": "pending"
+      "status": "single-shot cone targeting/damage and persistent target indicator; native beam effect"
     },
     {
       "path": "src/recharge_strips.gd",
       "sha256": "2d0e07b16aeac1cbbbfc350bad9cdde81545393811021b771051b3e7f15625d8",
-      "status": "native placement and recharge handling validated; visual integration pending"
+      "status": "validated recharge placement/handling and native stripe geometry"
     },
     {
       "path": "src/render_warmup.gd",
       "sha256": "cf01764a21fda40a38415e8a5e2f0e05d3963d1d577474d001fa819c93ec42e5",
-      "status": "pending"
+      "status": "scene upload before Ready; hardware/full effect warmup unverified"
     },
     {
       "path": "src/respawn_vfx.gd",
@@ -233,7 +233,7 @@
     {
       "path": "src/scenery.gd",
       "sha256": "c4485ab6a3ad37872dc623de7da7ad93e5119fc9e4ef291abf9759912a171604",
-      "status": "pending"
+      "status": "five native environments; city/forest have retained art, cell/desert/ocean are provisional native scenery"
     },
     {
       "path": "src/searchlights.gd",
@@ -243,7 +243,7 @@
     {
       "path": "src/settings.gd",
       "sha256": "fcc8d0ef6e4dd4fb548db0696c6eeb25cf19c68841c2a6ebf0e58c297e6bbf6a",
-      "status": "pending"
+      "status": "native start/pause settings via Luau menu; no persistence or full host settings parity yet"
     },
     {
       "path": "src/shadows.gd",
@@ -253,7 +253,7 @@
     {
       "path": "src/ship.gd",
       "sha256": "70a1631fc1ce050ba926cdb53de9363dcbaefc5cb7125cf540a80c1e737b211b",
-      "status": "all five generated ship hierarchies exported, geometry/pivots/effects retained; native animation and material rendering pending"
+      "status": "first original hierarchy rendered; steering/wing/brake pivots animate; optical shaders not yet equivalent"
     },
     {
       "path": "src/showpiece.gd",
@@ -263,7 +263,7 @@
     {
       "path": "src/slipstream.gd",
       "sha256": "cee748786037f158a1c2deabc1fa165f4dd38bfed5cc0536a655db22776d9a71",
-      "status": "kernel validated against source; race integration pending"
+      "status": "validated kernel integrated into native race"
     },
     {
       "path": "src/speed_effects.gd",
@@ -278,17 +278,17 @@
     {
       "path": "src/track.gd",
       "sha256": "ee954c6e877949e64ef7244a5082ee7fb7c3f03458dc8aeb653d5bb8dce560d0",
-      "status": "native centreline, banked frames, features, jumps and recharge validated against 18 source ribbons; hazards, warning metadata and world integration pending"
+      "status": "Luau design ranges/recipes, native seeded ribbon construction and rendering; original retained fixture checks pass"
     },
     {
       "path": "src/track_components.gd",
       "sha256": "f7f1e6ca4c11e8438a3a6bd5a6a8fe8a4865c598b6517e6da58b54d27f1a9abb",
-      "status": "native recipes and curve pieces validated across 90 layout/difficulty/biome centreline cases"
+      "status": "native geometric kernels and Luau recipe placement; retained fixtures pass"
     },
     {
       "path": "src/track_profiles.gd",
       "sha256": "e37fb3ddf9ce47cf722af091bcdb5ba5e9a59a9c927f2075d7f5971edf036e3e",
-      "status": "native recipes and curve pieces validated across 90 layout/difficulty/biome centreline cases"
+      "status": "six Luau recipe tables; native seeded sample order preserved"
     },
     {
       "path": "src/turn_markers.gd",
@@ -313,17 +313,17 @@
     {
       "path": "src/weapon_vfx.gd",
       "sha256": "9feffe73011990fd44c12e01db52ea5b3c93bb56a5279ff191e75d88d6c7bb72",
-      "status": "pending"
+      "status": "basic native mounts/beams/target markers/exhaust/explosions; full source presentation pending"
     },
     {
       "path": "src/weapons.gd",
       "sha256": "7a9bba8dcdc06d579144f9b8e1f2522457727784d419317acc23c379eeadf9fc",
-      "status": "pending"
+      "status": "Luau pickup/activation policies and balance; native targeting/projectiles/damage; six functional items; fidelity/tuning incomplete"
     },
     {
       "path": "src/world.gd",
       "sha256": "38d30882fdaac74baa22a17ca488ba82912fb74457eaefd8c8c3290ffc283c71",
-      "status": "pending"
+      "status": "native meshes and shared scenery collision; full world-content parity pending"
     },
     {
       "path": "src/wreck.gd",
@@ -337,20 +337,34 @@
     "track_sample_fixtures": 18,
     "slipstream_ticks": 700,
     "bump_ticks": 1680,
-    "tests_passed": 10,
+    "tests_passed": 18,
     "generated_centreline_cases": 90,
     "generated_full_ribbons": 18,
     "chase_camera_ticks": 1800,
     "landing_scenarios": 5,
     "ship_variants_preserved": 5,
     "source_assets_preserved": 102,
-    "renderer_camera_math_tests": 1
+    "renderer_camera_math_tests": 1,
+    "native_app_tests": 2,
+    "app_input_tests_total": 21,
+    "headless_flow_ticks": 1207,
+    "capture_resolution": [
+      1280,
+      720
+    ],
+    "physical_controller_test": false,
+    "production_gamenight_test": false,
+    "four_view_capture_resolution": [
+      1920,
+      1080
+    ],
+    "biome_capture_count": 5
   },
   "next_required": [
-    "Full race state integration: contacts, recovery, checkpoints, victory",
-    "AI and all weapons with source trace comparisons",
-    "Native world/rendering for all biomes, source materials and effects",
-    "HUD, menus, audio and GameNight/controller parity",
-    "Equal-content screenshot/replay review before CPU/GPU benchmarking"
+    "Full native material, shader/effect and scenery fidelity in all biomes",
+    "Original audio, face decals and full GameNight settings/profile behavior",
+    "Real controller playtests for AI, contacts, weapons and flight tuning",
+    "Complete visor, victory, crash debris, wear and respawn presentation",
+    "Equal-content visual review before steady-state CPU/GPU performance claims"
   ]
 }

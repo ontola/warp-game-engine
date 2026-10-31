@@ -46,6 +46,8 @@ pub struct Controls {
     /// The right stick's position: x right, y up, length at most 1 (0 on
     /// keyboard and mouse). For twin-stick aiming, where `look` is a rate.
     pub aim: [f32; 2],
+    /// Analog left/right trigger pressures, 0..1 (keyboard mouse buttons: 0 or 1).
+    pub triggers: [f32; 2],
     /// Held now.
     pub held: Buttons,
     /// Pressed since the previous tick (never lost between ticks).
@@ -302,6 +304,7 @@ impl Devices {
                 mv,
                 look: [k.look[0] as f32 * t.mouse, -k.look[1] as f32 * t.mouse],
                 aim: [0.0; 2],
+                triggers: [f32::from(held & Buttons::LEFT_TRIGGER != 0), f32::from(held & Buttons::RIGHT_TRIGGER != 0)],
                 held: Buttons(held),
                 pressed: Buttons(std::mem::take(&mut k.pressed)),
             }));
@@ -325,6 +328,7 @@ impl Devices {
                     mv: [shape(gp.value(Axis::LeftStickX), &t), shape(gp.value(Axis::LeftStickY), &t)],
                     look: [aim[0] * t.stick * dt, aim[1] * t.stick * dt],
                     aim,
+                    triggers: [PadButton::LeftTrigger2, PadButton::RightTrigger2].map(|b| gp.button_data(b).map_or(0.0, |d| d.value().clamp(0.0, 1.0))),
                     held: Buttons(held),
                     pressed: Buttons(std::mem::take(pressed)),
                 }));
@@ -359,6 +363,8 @@ impl std::fmt::Display for Device {
 pub fn merge_into(o: &mut Controls, d: &Controls) {
     o.mv = [(o.mv[0] + d.mv[0]).clamp(-1.0, 1.0), (o.mv[1] + d.mv[1]).clamp(-1.0, 1.0)];
     o.look = [o.look[0] + d.look[0], o.look[1] + d.look[1]];
+    o.aim = [(o.aim[0] + d.aim[0]).clamp(-1.0, 1.0), (o.aim[1] + d.aim[1]).clamp(-1.0, 1.0)];
+    o.triggers = [o.triggers[0].max(d.triggers[0]), o.triggers[1].max(d.triggers[1])];
     o.held.0 |= d.held.0;
     o.pressed.0 |= d.pressed.0;
 }
@@ -388,6 +394,15 @@ pub fn route(devices: &[(Device, Controls)], seats: Option<&[Vec<Device>]>, play
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seat_routing_preserves_analog_triggers_and_right_stick() {
+        let pad = Controls { aim: [0.6, -0.4], triggers: [0.25, 0.8], ..Default::default() };
+        let devices = [(Device::Keyboard, Controls::default()), (Device::Pad(7), pad)];
+        let routed = route(&devices, Some(&[vec![Device::Pad(7)]]), 1);
+        assert_eq!(routed[0].aim, pad.aim);
+        assert_eq!(routed[0].triggers, pad.triggers);
+    }
 
     #[test]
     fn pointer_edges_are_consumed_once_and_menu_clicks_do_not_fire() {

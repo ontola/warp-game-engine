@@ -173,7 +173,7 @@ pub fn to_controls(pad: &Pad, prev_triggers: u32, dt: f32) -> Controls {
     let r = pad.stick(1);
     let m = r[0].hypot(r[1]);
     let k = if m > 0.0 { m.powf(1.5) / m * 3.0 * dt as f64 } else { 0.0 };
-    Controls { mv: [l[0] as f32, -l[1] as f32], look: [(r[0] * k) as f32, (-r[1] * k) as f32], aim: [r[0] as f32, -r[1] as f32], held: Buttons(held), pressed: Buttons(pressed) }
+    Controls { mv: [l[0] as f32, -l[1] as f32], look: [(r[0] * k) as f32, (-r[1] * k) as f32], aim: [r[0] as f32, -r[1] as f32], triggers: [pad.trigger(0) as f32, pad.trigger(1) as f32], held: Buttons(held), pressed: Buttons(pressed) }
 }
 
 #[cfg(test)]

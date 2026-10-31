@@ -7,6 +7,33 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## SpaceRacer native/Luau development build — 31 October 2026
+
+SpaceRacer now has `games/spaceracer/app` (`spaceracer-app`, binary `spaceracer`).
+Pulled main through ae0b1c8 before this work. Read its README and port-status.json:
+it is playable, **not a visual/content-parity replacement**. Existing GameNight
+catalog and releases remain unchanged. No Godot runtime or export tooling used.
+
+`games/spaceracer/rules/game.luau` owns track recipes/design ranges, AI decisions,
+rank-weighted items, weapon activation, balance, menu and biome parameters.
+Rust retains geometry, handling/flight, queries, projectile integration,
+bookkeeping and rendering. Rules hot reload; geometry applies next race.
+Analog triggers were added to `app::Controls`, and seat merging now preserves
+the right stick. Shared GameNight adapters carry trigger pressures too.
+
+Validation: workspace all-target check; 18 sim + 2 native app + 21 app tests;
+1207-tick native two-controller flow with captures; five biome renders; a
+1920×1080 four-view capture. Mock-host lifecycle uses a real loopback WebSocket,
+sparse seat IDs and opaque controller tokens. No real controller/host, mobile
+or full-content performance acceptance yet. All assets/provenance retained.
+
+Windows: `games/spaceracer/tools/build-native.ps1` builds/packages only;
+`build/spaceracer-native/spaceracer.exe` resolves adjacent rules/assets.
+Local test cache used `C:/dev/warp-spaceracer-target`; captures/logs are in
+`build/spaceracer-review`. Final captures expose the provisional scenery and
+lighting: preserve this honesty, do not advertise it as finished or switch
+GameNight's released game without completing the remaining port.
+
 ## Main integration and next-agent entry point - 29 October 2026
 
 The recovered vegetation work is integrated with current main, including its
