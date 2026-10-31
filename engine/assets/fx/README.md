@@ -14,7 +14,10 @@ does not simulate or collide smoke with the scene.
 
 ## Texture contract
 
-- 32 frames, 48 x 48 x 48 voxels each, 2.6 seconds, including empty endpoints.
+- 32 frames, 48 x 48 x 48 voxels each, 2.6 seconds of source motion, including empty endpoints.
+  Runtime preserves the first 1.2 seconds, then eases playback to a 4.6-second
+  lifetime. The baked fade runs from source time 1.7 to 2.6 seconds; the shader
+  scales its low-density trim by this envelope to retain the thinning wisps.
 - Two unsigned normalized bytes per voxel: R density, G directional light
   transmittance (self-shadowing). No header or compression.
 - Bytes are ordered `[frame][z][y][x][channel]`, with X advancing fastest.

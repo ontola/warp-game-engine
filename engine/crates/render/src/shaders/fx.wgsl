@@ -513,6 +513,16 @@ fn smoke_sample(uvw: vec3<f32>, frame: f32) -> vec2<f32> {
     return mix(smoke_frame(uvw, a), smoke_frame(uvw, b), frame - a);
 }
 
+// Preserve the first 1.2 seconds of the blast. The later motion eases down
+// continuously, playing the 2.6-second bake over a 4.6-second lifetime.
+// This monotone Hermite curve has speed 1 at the join and 0 at the endpoint.
+fn smoke_bake_time(age: f32) -> f32 {
+    let elapsed = age * 4.6;
+    if elapsed <= 1.2 { return elapsed; }
+    let t = clamp((elapsed - 1.2) / 3.4, 0.0, 1.0);
+    return min(2.6, 1.2 + ((0.6 * t - 2.6) * t + 3.4) * t);
+}
+
 @fragment
 fn fx_smoke(in: V) -> @location(0) vec4<f32> {
     let p = puffs[in.id];
@@ -540,13 +550,17 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
     let samples = select(48u, 24u, u.clock.z > 0.0);
     let step = (exit - entry) / f32(samples);
     let optical_step = step * length(direction) * p.body.a;
-    let frame = in.age * 31.0;
+    let bake_time = smoke_bake_time(in.age);
+    let frame = bake_time / 2.6 * 31.0;
+    // The source bake applies this density envelope. Scale the shape trim with
+    // it so thinning wisps are not erased by a fixed threshold near the end.
+    let density_trim = 0.025 * (1.0 - smoothstep(1.7, 2.6, bake_time));
     var transmission = 1.0;
     var color = vec3<f32>(0.0);
     for (var k = 0u; k < samples; k++) {
         let point = origin + direction * (entry + (f32(k) + 0.5) * step);
         let field = smoke_sample(point, frame);
-        let density = max(0.0, (field.r - 0.025) / 0.975);
+        let density = max(0.0, (field.r - density_trim) / 0.975);
         let alpha = 1.0 - exp(-density * optical_step);
         // The G channel is baked light transmittance through this same frame.
         // It provides self-shadowed form; it does not sample world shadows.

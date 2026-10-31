@@ -16,11 +16,12 @@ if (!(Test-Path -LiteralPath $Executable)) { throw "Build growing-guns-app first
 $destination = if ([IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $repo $Out }
 [IO.Directory]::CreateDirectory($destination) | Out-Null
 $steps = @(@{cmd=@('bots pause','health 0 10000','teleport 0 7 23 12','aim 0 0 21 0');ticks=2;capture='baseline.png';state='baseline.json'}, @{cmd='boom 0 16 0 6.5 0';ticks=1})
-for ($frame=0; $frame -lt 96; $frame++) {
+$frameCount = 156 # 5.2 seconds: include the full 4.6-second smoke tail.
+for ($frame=0; $frame -lt $frameCount; $frame++) {
     $commands = @()
     for ($seat=0; $seat -lt $Views; $seat++) {
         $angle = 0.528 + $seat * [Math]::PI / 2
-        if ($Orbit) { $angle += $frame / 95.0 * 1.1 }
+        if ($Orbit) { $angle += $frame / ($frameCount - 1.0) * 1.1 }
         $x = (13.9 * [Math]::Sin($angle)).ToString('F4',[Globalization.CultureInfo]::InvariantCulture)
         $z = (13.9 * [Math]::Cos($angle)).ToString('F4',[Globalization.CultureInfo]::InvariantCulture)
         $commands += "health $seat 10000", "teleport $seat $x 23 $z", "aim $seat 0 21 0"

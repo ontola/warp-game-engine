@@ -8,5 +8,9 @@
     {"capture":"smoke-078.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":24},
     {"capture":"smoke-108.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":30},
     {"capture":"smoke-144.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":36},
-    {"capture":"smoke-174.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":30}
+    {"capture":"smoke-174.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":30},
+    {"capture":"smoke-216.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":42},
+    {"capture":"smoke-252.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":36},
+    {"capture":"smoke-282.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":30},
+    {"capture":"smoke-312.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":30}
 ]}
