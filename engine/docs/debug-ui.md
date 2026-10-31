@@ -1,6 +1,8 @@
 # Live render debug panel
 
-Press **F3** during a Sideways playtest to open or close the panel. Opening it
+The engine reserves **F10** for this panel, **F11** for fullscreen and **F12** for a feedback screenshot in every build. Games receive F1–F9. The engine keys run before game menus, replay and text-entry handlers.
+
+Press **F10** during a Sideways playtest to open or close the panel. Opening it
 does not pause the race. To start with it open:
 
 ```powershell
@@ -45,7 +47,7 @@ Release, focus loss, resize or closing the panel cancels the interaction.
 select a control, **Left / Right** adjust it, and **Enter** toggles the selected
 switch or activates **Reset defaults**. Scroll the mouse wheel over the panel
 to reach more controls; **Page Up / Page Down** also move the selection.
-**F3**, the top-right **x**, or Esc at the root closes the panel. Changes are
+**F10**, the top-right **x**, or Esc at the root closes the panel. Changes are
 process-local and never rewrite assets or saved defaults.
 
 Grass size (50–200%), patch count (0–100%) and red/green/blue albedo multipliers

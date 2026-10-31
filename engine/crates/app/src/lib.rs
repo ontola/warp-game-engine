@@ -4,10 +4,10 @@
 //! benchmarks. A game implements [`Game`]; the shell owns the GPU.
 //!
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
-//! released), F11 toggles fullscreen, F12 saves a feedback screenshot (PNG, JSON
-//! metadata and the clipboard; see [`screenshot`]). F1 to
-//! F10 go to [`Game::function_key`] first; an unused F3 opens the engine's
-//! debug menu ([`debug`]), where games add their own controls.
+//! released). F10 always opens the engine debug menu ([`debug`]), F11 toggles
+//! fullscreen, F12 saves a feedback screenshot (PNG, JSON and the clipboard;
+//! see [`screenshot`]). These reserved keys run before game/menu/text input.
+//! F1 to F9 belong to [`Game::function_key`].
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
 //! ([`Game::text`] gets characters, IME commits, editing keys and
@@ -134,12 +134,12 @@ pub trait Game {
     /// waking up): GPU resources the game made itself are invalid. The
     /// renderer is gone too, so the next [`Game::draw`] sets the scene again.
     fn gpu_reset(&mut self) {}
-    /// Function key F`n` (1..=10) was pressed, also while typing: return
-    /// true when the game used it. F11 and F12 stay the shell's.
+    /// Function key F`n` (1..=9) was pressed, also while typing: return
+    /// true when the game used it. F10, F11 and F12 stay the shell's.
     fn function_key(&mut self, _n: u8) -> bool { false }
     /// The game asks the shell to close (an Exit menu item).
     fn quit(&self) -> bool { false }
-    /// Extra menus and controls for the F3 debug menu, with ids from
+    /// Extra menus and controls for the F10 debug menu, with ids from
     /// [`debug::GAME_IDS`] up (a control's `menu` may name an engine menu).
     fn debug(&self) -> (Vec<render::debug_ui::DebugMenu>, Vec<render::debug_ui::DebugControl>) { (Vec::new(), Vec::new()) }
     /// One of the game's debug controls changed, or the menu was reset
@@ -167,10 +167,34 @@ pub trait Game {
     fn target_fps(&self) -> Option<f32> { None }
 }
 
-/// F1..F10 as 1..=10.
-fn function_key(code: KeyCode) -> Option<u8> {
+/// Engine-owned keys, shared with alternate presentation shells such as Sideways.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineShortcut { DebugMenu, Fullscreen, Screenshot }
+
+/// Reserved even when the game is paused, reviewing a replay or accepting text.
+pub fn engine_shortcut(code: KeyCode) -> Option<EngineShortcut> {
+    match code {
+        KeyCode::F10 => Some(EngineShortcut::DebugMenu),
+        KeyCode::F11 => Some(EngineShortcut::Fullscreen),
+        KeyCode::F12 => Some(EngineShortcut::Screenshot),
+        _ => None,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum KeyRoute { Engine(EngineShortcut), Consumed, Other }
+
+/// Route every function-key edge before either the game or text/navigation handlers.
+fn route_function_key(game: &mut dyn Game, code: KeyCode, state: ElementState, repeat: bool) -> KeyRoute {
+    let press = state == ElementState::Pressed && !repeat;
+    if let Some(action) = engine_shortcut(code) {
+        return if press { KeyRoute::Engine(action) } else { KeyRoute::Consumed };
+    }
     use KeyCode::*;
-    [F1, F2, F3, F4, F5, F6, F7, F8, F9, F10].iter().position(|&k| k == code).map(|i| i as u8 + 1)
+    if let Some(n) = [F1, F2, F3, F4, F5, F6, F7, F8, F9].iter().position(|&k| k == code) {
+        if press { game.function_key(n as u8 + 1); }
+        KeyRoute::Consumed
+    } else { KeyRoute::Other }
 }
 
 /// One tick's controls through the game's seat binding: `devices` goes to
@@ -670,12 +694,12 @@ impl Shell<'_> {
 
     fn size(&self) -> [u32; 2] { self.live.as_ref().map_or(self.cfg.size, |l| [l.config.width, l.config.height]) }
 
-    /// F3 opens and closes the debug menu; while it is open it takes the
+    /// F10 opens and closes the debug menu; while it is open it takes the
     /// navigation keys. True when the key was used.
     fn debug_key(&mut self, code: KeyCode, repeat: bool) -> bool {
         use render::debug_ui::DebugKey;
         let key = match code {
-            KeyCode::F3 if !repeat => DebugKey::Toggle,
+            KeyCode::F10 if !repeat => DebugKey::Toggle,
             _ if !self.debug.open() => return false,
             KeyCode::Escape if !repeat => DebugKey::Close,
             KeyCode::ArrowUp => DebugKey::Up,
@@ -698,7 +722,8 @@ impl Shell<'_> {
     }
 
     fn sync_capture(&mut self) {
-        if let Some(want) = self.game.mouse_capture() {
+        let capture = if self.debug.open() { Some(false) } else { self.game.mouse_capture() };
+        if let Some(want) = capture {
             let want = want && self.cfg.keyboard && self.focused && self.screen != Screen::Hidden;
             if want != self.devices.mouse_captured { self.capture_mouse(want); }
         }
@@ -802,7 +827,21 @@ impl ApplicationHandler for Shell<'_> {
             },
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
-                if event.state == ElementState::Pressed && !event.repeat && let Some(n) = function_key(code) && self.game.function_key(n) { self.sync_capture(); return; }
+                match route_function_key(self.game, code, event.state, event.repeat) {
+                    KeyRoute::Engine(action) => {
+                        match action {
+                            EngineShortcut::DebugMenu => { self.debug_key(KeyCode::F10, false); }
+                            EngineShortcut::Fullscreen => if let Some(w) = &self.window {
+                                w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
+                            },
+                            EngineShortcut::Screenshot => self.screenshot = true,
+                        }
+                        self.sync_capture();
+                        return;
+                    }
+                    KeyRoute::Consumed => { self.sync_capture(); return; }
+                    KeyRoute::Other => {}
+                }
                 if event.state == ElementState::Pressed && self.debug_key(code, event.repeat) { return; }
                 if self.game.text_input() && event.state == ElementState::Pressed {
                     // Text entry: editing keys and typed text go to the game;
@@ -819,7 +858,7 @@ impl ApplicationHandler for Shell<'_> {
                         KeyCode::End => Some(TextEvent::End),
                         KeyCode::KeyV if cmd && !event.repeat => Some(TextEvent::Paste(clipboard::get())),
                         KeyCode::KeyC if cmd && !event.repeat => Some(TextEvent::Copy),
-                        KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::Tab | KeyCode::F11 | KeyCode::F12 => None,
+                        KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::Tab => None,
                         _ => {
                             let typed = event.text.as_ref().filter(|t| !cmd && !self.composing && t.chars().any(|c| !c.is_control()));
                             if let Some(t) = typed { self.game.text(TextEvent::Insert(t.to_string())); }
@@ -843,11 +882,6 @@ impl ApplicationHandler for Shell<'_> {
                             if self.devices.mouse_captured { self.capture_mouse(false) } else { event_loop.exit() }
                             return;
                         }
-                        KeyCode::F11 => {
-                            if let Some(w) = &self.window { w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) }); }
-                            return;
-                        }
-                        KeyCode::F12 => { self.screenshot = true; return; }
                         _ => {}
                     }
                 }
@@ -865,5 +899,38 @@ impl ApplicationHandler for Shell<'_> {
         // yet a warm or paused game must keep answering its host, and a new
         // window must draw the first frame it appears with.
         if self.window.is_some() && self.manners.offscreen() && !event_loop.exiting() { self.redraw(event_loop); }
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    #[derive(Default)]
+    struct ClaimsAllKeys { received: Vec<u8>, typing: bool }
+    impl Game for ClaimsAllKeys {
+        fn local_players(&self) -> usize { 0 }
+        fn tick(&mut self, _: &[Controls]) {}
+        fn draw(&mut self, _: &mut Frame) -> Result<Draw, String> { unreachable!() }
+        fn text_input(&self) -> bool { self.typing }
+        fn function_key(&mut self, n: u8) -> bool { self.received.push(n); true }
+    }
+    #[test]
+    fn engine_shortcuts_cannot_be_claimed_by_games_or_text_fields() {
+        for typing in [false, true] {
+            let mut game = ClaimsAllKeys { typing, ..Default::default() };
+            for (code, action) in [(KeyCode::F10, EngineShortcut::DebugMenu), (KeyCode::F11, EngineShortcut::Fullscreen), (KeyCode::F12, EngineShortcut::Screenshot)] {
+                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false), KeyRoute::Engine(action));
+                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, true), KeyRoute::Consumed);
+                assert_eq!(route_function_key(&mut game, code, ElementState::Released, false), KeyRoute::Consumed);
+            }
+            assert!(game.received.is_empty());
+            for code in [KeyCode::F3, KeyCode::F9] {
+                assert_eq!(route_function_key(&mut game, code, ElementState::Pressed, false), KeyRoute::Consumed);
+                route_function_key(&mut game, code, ElementState::Pressed, true);
+                route_function_key(&mut game, code, ElementState::Released, false);
+            }
+            assert_eq!(game.received, [3, 9]);
+            assert_eq!(route_function_key(&mut game, KeyCode::KeyW, ElementState::Pressed, false), KeyRoute::Other);
+        }
     }
 }

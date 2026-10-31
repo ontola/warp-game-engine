@@ -82,7 +82,7 @@ builds on:
 - Growing Guns' console runs Luau against the live match
   (`lua g:give(1, 'explosive')`), and its rules and cards are Luau files
   that reload on save.
-- Sideways has a live render debug panel (F3) and `shot --watch`, which
+- Sideways has a live render debug panel (F10) and `shot --watch`, which
   re-renders when the car material data or shading shaders change.
 
 The `live` crate ties these together: a game started with `--live`
