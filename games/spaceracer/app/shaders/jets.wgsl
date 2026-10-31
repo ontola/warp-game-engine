@@ -56,5 +56,13 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let near = smoothstep(1.0,5.0,distance(u.camera_near.xyz,s.world));
         return vec4<f32>(vec3<f32>(glow*.85+core*4.0)+bleed*.32,pow(max(0.0,1.0-age),2.2)*near*(1.0-smoothstep(.7,1.0,abs(x))));
     }
+    if s.effect == 7u { // continuous low-opacity exhaust ribbon; fades when flown through
+        let age=mix(s.params.x,s.params.y,t);
+        let world=s.world*.18;
+        let turbulence=.65+.18*sin(world.x+world.y*1.7+s.params.z*.5)+.12*sin(world.z*1.3-world.y);
+        let across=exp(-x*x*5.)*(1.-smoothstep(.65,1.,abs(x)));
+        let near=smoothstep(4.,15.,distance(u.camera_near.xyz,s.world));
+        return vec4<f32>(vec3<f32>(.75+.25*turbulence),across*pow(1.-age,1.7)*near*turbulence);
+    }
     return vec4<f32>(0.0);
 }

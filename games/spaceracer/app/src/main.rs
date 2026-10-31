@@ -1,10 +1,14 @@
 mod crash_fx;
 mod integration_probe;
 mod jets;
+mod menu_view;
+mod missile_mesh;
 mod ocean_life;
 mod party;
 mod party_settings;
 mod pilot_faces;
+mod race_hud;
+mod replay;
 mod stage;
 mod stage_mesh;
 mod stage_terrain;
@@ -13,7 +17,7 @@ use app::{Buttons, Controls, Device, Draw, Frame, Game};
 use glam::{Mat3, Quat};
 use render::{
     Camera,
-    hud::{FontFace, HudDrawList, TextAlign, TextRun},
+    hud::{HudDrawList, TextAlign, TextRun},
 };
 use serde_json::json;
 use spaceracer::{
@@ -37,6 +41,7 @@ struct Racer {
     settings_dirty: bool,
     menu_axis: [i32; 2],
     cameras: Vec<Chase>,
+    replay: Vec<replay::Replay>,
     previous: Vec<Pose>,
     devices: Vec<Device>,
     party: Option<party::Party>,
@@ -48,6 +53,7 @@ struct Racer {
     blur_enabled: bool,
     reload_ticks: u32,
     portrait: bool,
+    missile_view: bool,
 }
 const BIOMES: [&str; 5] = ["city", "forest", "cell", "desert", "ocean"];
 const DIFFICULTIES: [&str; 3] = ["easy", "normal", "hard"];
@@ -92,6 +98,7 @@ impl Racer {
             menu_axis: [0; 2],
             settings_dirty: false,
             cameras: vec![Chase::default(); 4],
+            replay: vec![replay::Replay::default(); 4],
             previous,
             devices: vec![],
             party,
@@ -103,6 +110,7 @@ impl Racer {
             blur_enabled: true,
             reload_ticks: 0,
             portrait: false,
+            missile_view: false,
         })
     }
     fn restart(&mut self) -> Result<(), String> {
@@ -135,6 +143,7 @@ impl Racer {
             p.new_race();
         }
         self.cameras = vec![Chase::default(); 4];
+        self.replay = vec![replay::Replay::default(); 4];
         self.menu = None;
         self.settings_dirty = false;
         Ok(())
@@ -452,9 +461,7 @@ impl Game for Racer {
         }
     }
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        let frozen = self.menu.is_some()
-            || self.race.over
-            || self.party.as_ref().is_some_and(|p| !p.running);
+        let frozen = self.menu.is_some() || self.party.as_ref().is_some_and(|p| !p.running);
         let alpha = if frozen { 1. } else { frame.alpha };
         self.visuals.update(&self.race, &self.previous, alpha)?;
         let mut light = self.visuals.light(&self.race);
@@ -491,6 +498,7 @@ impl Game for Racer {
                     strength: if !self.blur_enabled
                         || !self.live_settings.blur
                         || frozen
+                        || p.finished
                         || p.crashed
                         || p.recovery > 0.
                     {
@@ -591,260 +599,45 @@ impl Game for Racer {
                     near: 0.1,
                 };
             }
-            ups.push(c.up());
-            if p.emp_time <= 0. && self.menu.is_none() {
-                text(
-                    &mut hud,
-                    100 + i as u64 * 20,
-                    &self.race.drivers[i].name,
-                    [rect[0] + 24., rect[1] + 20.],
-                    22.,
-                    rect,
-                    [175, 233, 255, 220],
-                );
-                text(
-                    &mut hud,
-                    101 + i as u64 * 20,
-                    &format!("LAP {}/{}", p.lap.min(self.race.laps), self.race.laps),
-                    [rect[0] + 24., rect[1] + 50.],
-                    16.,
-                    rect,
-                    [180, 205, 220, 200],
-                );
-                text(
-                    &mut hud,
-                    102 + i as u64 * 20,
-                    &format!("{:04} km/h", (p.speed * 3.6) as i32),
-                    [rect[0] + rect[2] - 235., rect[1] + rect[3] - 85.],
-                    27.,
-                    rect,
-                    [225, 245, 255, 230],
-                );
-                text(
-                    &mut hud,
-                    103 + i as u64 * 20,
-                    &format!("{} / 6", self.race.drivers[i].rank),
-                    [rect[0] + rect[2] - 125., rect[1] + 25.],
-                    30.,
-                    rect,
-                    [230, 240, 255, 230],
-                );
-                hud.rect(
-                    [rect[0] + rect[2] - 235., rect[1] + rect[3] - 40., 210., 5.],
-                    [0.08, 0.2, 0.3, 0.7],
-                    rect,
-                );
-                hud.rect(
-                    [
-                        rect[0] + rect[2] - 235.,
-                        rect[1] + rect[3] - 40.,
-                        210. * p.energy as f32 / 100.,
-                        5.,
-                    ],
-                    [0.25, 0.9, 1., 0.85],
-                    rect,
-                );
-                if let Some(item) = self.race.drivers[i].item {
-                    text(
-                        &mut hud,
-                        104 + i as u64 * 20,
-                        &format!("(X) {}", item.name()),
-                        [rect[0] + rect[2] * 0.32, rect[1] + rect[3] - 65.],
-                        18.,
-                        rect,
-                        [230, 220, 255, 230],
-                    );
-                }
-                if let Some(item) = self.race.drivers[i].active {
-                    text(
-                        &mut hud,
-                        105 + i as u64 * 20,
-                        &format!("{} ACTIVE", item.name()),
-                        [rect[0] + 24., rect[1] + rect[3] - 50.],
-                        15.,
-                        rect,
-                        [150, 225, 255, 210],
-                    );
-                }
-                if self.race.drivers[i].checkpoint.missed {
-                    text(
-                        &mut hud,
-                        106 + i as u64 * 20,
-                        "CHECKPOINT MISSED   (Y)",
-                        [rect[0] + rect[2] * 0.2, rect[1] + rect[3] * 0.58],
-                        26.,
-                        rect,
-                        [255, 130, 85, 240],
-                    );
-                } else if p.airborne {
-                    text(
-                        &mut hud,
-                        106 + i as u64 * 20,
-                        "(Y) RESET",
-                        [rect[0] + rect[2] * 0.4, rect[1] + rect[3] * 0.75],
-                        18.,
-                        rect,
-                        [200, 225, 245, 220],
-                    );
-                }
-                if self.race.countdown > 0. {
-                    text(
-                        &mut hud,
-                        107 + i as u64 * 20,
-                        &format!("{}", self.race.countdown.ceil() as i32),
-                        [rect[0] + rect[2] * 0.48, rect[1] + rect[3] * 0.35],
-                        72.,
-                        rect,
-                        [220, 250, 255, 220],
-                    );
-                }
-                if let Some((owner, target, at)) = self.race.destroyed {
-                    if owner == i && self.race.clock - at < 0.5 {
-                        text(
-                            &mut hud,
-                            111 + i as u64 * 20,
-                            &format!("DESTROYED {}", self.race.drivers[target].name),
-                            [rect[0] + rect[2] * 0.35, rect[1] + rect[3] * 0.4],
-                            24.,
-                            rect,
-                            [255, 195, 105, 240],
-                        );
-                    }
-                }
-                if let Some(item) = self.race.drivers[i].item {
-                    let target = match item {
-                        Weapon::Railgun => self.race.target(i, 0.975, 700.),
-                        Weapon::GlideBomb if p.airborne => self.race.target(i, 0.7, 1000.),
-                        _ => None,
+            if self.missile_view {
+                if let Some(missile) = self.race.projectiles.first() {
+                    let node = self.race.world.track.sample(missile.distance);
+                    let forward = missile
+                        .velocity
+                        .try_normalize()
+                        .unwrap_or(node.frame(missile.x).z_axis);
+                    let right = node.frame(missile.x).y_axis.cross(forward).normalize();
+                    let at = missile.previous.lerp(missile.position, alpha);
+                    cams[i] = Camera {
+                        pos: at + right * 9. + node.frame(missile.x).y_axis * 3. - forward * 7.,
+                        target: at,
+                        fov_y: 45f32.to_radians(),
+                        near: 0.1,
                     };
-                    if let Some(j) = target {
-                        let vp = glam::Mat4::perspective_rh(
-                            (c.fov as f32).to_radians(),
-                            rect[2] / rect[3],
-                            0.15,
-                            10000.,
-                        ) * glam::Mat4::look_at_rh(
-                            c.position,
-                            c.position + c.forward(),
-                            c.up(),
-                        );
-                        let h = vp * self.race.pose(j).origin.extend(1.);
-                        if h.w > 0. {
-                            let ndc = h.truncate() / h.w;
-                            let x = rect[0] + (ndc.x + 1.) * 0.5 * rect[2];
-                            let y = rect[1] + (1. - ndc.y) * 0.5 * rect[3];
-                            for sx in [-1., 1.] {
-                                for sy in [-1., 1.] {
-                                    let start = [x + sx * 25., y + sy * 20.];
-                                    hud.line(
-                                        start,
-                                        [start[0] - sx * 10., start[1]],
-                                        2.,
-                                        [1., 0.4, 0.15, 0.85],
-                                        rect,
-                                    );
-                                    hud.line(
-                                        start,
-                                        [start[0], start[1] - sy * 8.],
-                                        2.,
-                                        [1., 0.4, 0.15, 0.85],
-                                        rect,
-                                    );
-                                }
-                            }
-                        }
-                    }
                 }
-                if p.finished {
-                    text(
-                        &mut hud,
-                        108 + i as u64 * 20,
-                        if self.race.drivers[i].rank == 1 {
-                            "VICTORY"
-                        } else {
-                            "FINISHED"
-                        },
-                        [rect[0] + rect[2] * 0.32, rect[1] + rect[3] * 0.32],
-                        48.,
-                        rect,
-                        [220, 245, 255, 240],
-                    );
+            }
+            let (replay_camera, replay_up) =
+                self.replay[i].update(&self.race, i, pose, &cams[i], c.up(), rect[2] / rect[3]);
+            cams[i] = replay_camera;
+            ups.push(replay_up);
+            if p.emp_time <= 0. && self.menu.is_none() {
+                race_hud::draw(
+                    &mut hud,
+                    &self.race,
+                    i,
+                    rect,
+                    &cams[i],
+                    replay_up,
+                    if self.players > 1 { 0.010 } else { 0.035 },
+                );
+                if !p.finished && !self.race.over {
+                    self.visuals.faces.draw_hud(&mut hud, i, rect);
                 }
             }
         }
         renderer.set_camera_up_axes(&ups);
         if let Some(row) = self.menu {
-            let [w, h] = frame.size.map(|x| x as f32 / ui_scale);
-            let clip = [0., 0., w, h];
-            hud.rect(clip, [0.015, 0.025, 0.05, 0.8], clip);
-            text(
-                &mut hud,
-                1,
-                "SPACERACER",
-                [w * 0.12, h * 0.12],
-                64.,
-                clip,
-                [210, 240, 255, 240],
-            );
-            text(
-                &mut hud,
-                2,
-                "WARP ENGINE",
-                [w * 0.12, h * 0.12 + 80.],
-                18.,
-                clip,
-                [95, 170, 200, 220],
-            );
-            let rows = [
-                if self.race.clock > 0. {
-                    "RESUME RACE".into()
-                } else {
-                    "START RACE".into()
-                },
-                "NEW RANDOM RACE".into(),
-                format!("PLAYERS                 {}", self.players),
-                format!(
-                    "WORLD                    {}",
-                    BIOMES[self.biome].to_uppercase()
-                ),
-                format!(
-                    "DIFFICULTY             {}",
-                    DIFFICULTIES[self.difficulty].to_uppercase()
-                ),
-                format!("TRACK SEED           {:05}", self.seed),
-            ];
-            for (i, label) in rows.iter().enumerate() {
-                let y = h * 0.35 + i as f32 * 50.;
-                if i == row {
-                    hud.rect(
-                        [w * 0.12 - 12., y - 4., w * 0.68, 46.],
-                        [0.1, 0.35, 0.45, 0.45],
-                        clip,
-                    );
-                }
-                text(
-                    &mut hud,
-                    10 + i as u64,
-                    label,
-                    [w * 0.12, y],
-                    30.,
-                    clip,
-                    if i == row {
-                        [210, 250, 255, 255]
-                    } else {
-                        [205, 220, 235, 245]
-                    },
-                );
-            }
-            text(
-                &mut hud,
-                30,
-                "UP / DOWN SELECT    LEFT / RIGHT CHANGE    START TO RACE",
-                [w * 0.12, h - 46.],
-                18.,
-                clip,
-                [180, 205, 225, 235],
-            );
+            menu_view::draw(&mut hud, frame.size.map(|x| x as f32 / ui_scale), row, self);
         }
         if let Some(error) = self.fatal.as_ref().or(self.race.script_error.as_ref()) {
             let [w, h] = frame.size.map(|x| x as f32 / ui_scale);
@@ -859,6 +652,18 @@ impl Game for Racer {
             );
         }
         scale_hud(&mut hud, ui_scale);
+        if self.menu.is_none() && self.fatal.is_none() && self.race.script_error.is_none() {
+            for i in 0..self.players {
+                if self.race.pilots[i].emp_time <= 0. {
+                    hud.optics.push(render::hud::Optics {
+                        rect: rects[i],
+                        curvature: if self.players > 1 { 0.010 } else { 0.035 },
+                        glow: 1.,
+                        quiet: self.race.pilots[i].finished,
+                    });
+                }
+            }
+        }
         Ok(Draw {
             cameras: cams,
             light,
@@ -866,14 +671,18 @@ impl Game for Racer {
         })
     }
     fn state(&self) -> Option<String> {
-        Some(json!({"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"face_revisions":self.visuals.faces.revisions,"settings":self.preferences.values,"active_laps":self.race.laps,"pickup_count":self.race.pickups.len(),"pilot_names":self.race.drivers.iter().map(|d|&d.name).collect::<Vec<_>>(),"host_seats":self.party.as_ref().map(|p|p.seats.iter().map(|s|s.index).collect::<Vec<_>>()),"bots":self.race.drivers.iter().map(|d|d.bot).collect::<Vec<_>>(),"live_settings":{"refill":self.race.balance.refill_rate,"recovery":self.race.balance.respawn_seconds},"host_phase":self.party.as_ref().map(|p|p.client.state.phase.as_str()),"script_error":self.race.script_error,"error":self.fatal}).to_string())
+        Some(json!({"projectiles":self.race.projectiles.iter().map(|p|json!({"target":p.target,"locked":p.locked,"terminal":p.terminal,"position":p.position,"age":p.time})).collect::<Vec<_>>(),"victory_age":self.race.drivers.iter().map(|d|d.victory.as_ref().map(|v|v.age)).collect::<Vec<_>>(),"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"face_revisions":self.visuals.faces.revisions,"settings":self.preferences.values,"active_laps":self.race.laps,"pickup_count":self.race.pickups.len(),"pilot_names":self.race.drivers.iter().map(|d|&d.name).collect::<Vec<_>>(),"host_seats":self.party.as_ref().map(|p|p.seats.iter().map(|s|s.index).collect::<Vec<_>>()),"bots":self.race.drivers.iter().map(|d|d.bot).collect::<Vec<_>>(),"live_settings":{"refill":self.race.balance.refill_rate,"recovery":self.race.balance.respawn_seconds},"host_phase":self.party.as_ref().map(|p|p.client.state.phase.as_str()),"script_error":self.race.script_error,"error":self.fatal}).to_string())
     }
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let args: Vec<_> = cmd.split_whitespace().collect();
         match args.as_slice(){
         ["setting",key,value]=>{self.setting(key,serde_json::from_str(value).map_err(|_|"setting JSON")?)?;},
         ["play"]=>self.menu=None,["pause"]=>self.menu=Some(0),["random"]=>self.random_race()?,
+        ["finish",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}self.race.begin_victory(i);},
+        ["fire",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let mut c=vec![Drive::default();self.race.pilots.len()];c[i].fire=true;let bot=self.race.drivers[i].bot;self.race.drivers[i].bot=false;self.previous=(0..self.race.pilots.len()).map(|i|self.race.pose(i)).collect();self.race.step(&c);self.race.drivers[i].bot=bot;},
         ["give",who,weapon]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let d=self.race.drivers.get_mut(i).ok_or("pilot index")?;d.item=Some(Weapon::parse(weapon).ok_or("unknown weapon")?);},
+        ["missile-view","on"]=>self.missile_view=true,["missile-view","off"]=>self.missile_view=false,
+        ["place",who,distance]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let distance:f64=distance.parse().map_err(|_|"distance")?;if !distance.is_finite() || distance.abs()>100000. {return Err("invalid distance".into());}let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.distance=distance;p.x=0.;self.previous[i]=self.race.pose(i);},
         ["portrait","on"]=>self.portrait=true,["portrait","off"]=>self.portrait=false,
         ["blur","off"]=>self.blur_enabled=false,["blur","on"]=>self.blur_enabled=true,
         ["crash",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let pose=self.race.pose(i);self.race.drivers[i].motion.air.position=pose.origin;self.race.drivers[i].motion.air.frame=pose.basis;self.race.drivers[i].motion.crash(&mut self.race.pilots[i],glam::Vec3::Y);},
@@ -891,7 +700,7 @@ fn text(
     bounds: [f32; 4],
     color: [u8; 4],
 ) {
-    hud.outline(id, 1.5, [3, 9, 17, 235]);
+    hud.outline(id, 0.7, [3, 9, 17, 180]);
     hud.text.push(TextRun {
         id,
         text: s.into(),
@@ -899,7 +708,7 @@ fn text(
         bounds,
         font_size,
         color,
-        font: FontFace::Body,
+        font: race_hud::font(),
         align: TextAlign::Left,
         width: bounds[2],
     });

@@ -34,3 +34,6 @@ fn oracle(name: &str) -> String {
 #[cfg(test)]
 mod asset_tests;
 pub mod environment;
+
+pub mod victory;
+mod missile;

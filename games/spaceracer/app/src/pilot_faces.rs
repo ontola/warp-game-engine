@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 pub struct Faces {
     pub layer: i32,
     profiles: [Value; 6],
+    portraits: [std::sync::Arc<Picture>; 6],
     pub revisions: [u32; 6],
     dirty: bool,
     screen: Option<Screen>,
@@ -20,6 +21,7 @@ impl Faces {
         Self {
             layer: scene.add_screen_texture("pilot faces"),
             profiles: std::array::from_fn(|_| json!({})),
+            portraits: std::array::from_fn(|_| std::sync::Arc::new(compose(&json!({})))),
             revisions: [0; 6],
             dirty: true,
             screen: None,
@@ -34,6 +36,7 @@ impl Faces {
         if self.profiles[i] == next {
             return;
         }
+        self.portraits[i] = std::sync::Arc::new(compose(&next));
         self.profiles[i] = next;
         self.revisions[i] += 1;
         self.dirty = true;
@@ -51,6 +54,18 @@ impl Faces {
                 scene.materials[m].tint = linear;
             }
         }
+    }
+    pub fn draw_hud(&self, list: &mut HudDrawList, i: usize, rect: [f32; 4]) {
+        let s = (rect[2] / 800.).min(rect[3] / 450.);
+        let id = HudImage(0x535246414345 + i as u64);
+        list.provide_image(id, &self.portraits[i], ImageFilter::Nearest);
+        list.image(
+            [rect[0] + 3. * s, rect[1] + 2. * s, 38. * s, 38. * s],
+            id,
+            [0., 0., 1., 1.],
+            [1., 1., 1., 0.93],
+            rect,
+        );
     }
     pub fn flush(&mut self, gpu: &Gpu, renderer: &Renderer, scene: &Scene) -> Result<(), String> {
         if !self.dirty {

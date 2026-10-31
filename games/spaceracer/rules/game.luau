@@ -119,4 +119,22 @@ local function environment(c)
     end
     return e
 end
-return {track=track,ai=ai,plan=plan,pickup=pickup,balance=balance,menu=menu,environment=environment,activate=activate}
+-- Source victory choreography and cruise guidance policy. Geometry/sweeps stay native.
+local function victory(c)
+    local curve=c.curve
+    local t=(c.age%4.8)/4.8
+    local shot=math.floor(c.age/4.8)%4
+    local offsets={{-13+4*t,6,-21},{11,4.5,21-5*t},{20-4*t,9,-5},{-7,25-6*t,-23}}
+    return {speed=clamp(1.3/math.max(.005,math.abs(curve)),140,225),
+        throttle=.72,steer=clamp(curve*c.speed*.5,-1,1),
+        strafe=clamp(curve*c.speed*.22,-.65,.65),trim=clamp(c.crest*c.speed*.25,-.3,.3),
+        hop_height=18,offset=offsets[shot+1],fov=({58,52,56,62})[shot+1]}
+end
+local function missile(c)
+    local speed=math.min(500,math.max(80,c.launch_speed)+math.max(0,c.age-.18)*620)
+    return {speed=speed,launch_blend=clamp((c.age-.18)/.87,0,1),
+        lock=c.target and c.age>.38 and c.range/speed<.75,
+        terminal=c.target and c.age>.38 and c.range<180 and math.abs(c.along)<100,
+        fuse=3.4,laser_seconds=.75}
+end
+return {victory=victory,missile=missile,track=track,ai=ai,plan=plan,pickup=pickup,balance=balance,menu=menu,environment=environment,activate=activate}

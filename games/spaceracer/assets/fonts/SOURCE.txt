@@ -1,0 +1,4 @@
+Open Sans SemiBold: Godot 4.5-stable thirdparty/fonts/OpenSans_SemiBold.woff2
+https://github.com/godotengine/godot/tree/4.5-stable/thirdparty/fonts
+scene/theme/SCsub uses this face for ThemeDB fallback, which SpaceRacer HUD uses.
+Losslessly decompressed to OpenType with fontTools. Apache 2.0: LICENSE-OpenSans.txt.

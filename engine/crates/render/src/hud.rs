@@ -7,6 +7,8 @@ use glyphon::cosmic_text::Align;
 use std::{collections::{HashMap, HashSet}, ops::Range, time::Instant};
 use wgpu::util::DeviceExt;
 
+pub use crate::hud_optics::Optics;
+
 const BODY_FONT: &[u8] = include_bytes!("../../../assets/fonts/BarlowCondensed-SemiBold.ttf");
 const TITLE_FONT: &[u8] = include_bytes!("../../../assets/fonts/BarlowCondensed-ExtraBoldItalic.ttf");
 /// Barlow is packaged under SIL OFL 1.1; keep this notice with distributions.
@@ -109,6 +111,10 @@ pub enum ImageFilter { Linear, Nearest }
 
 #[derive(Clone, Debug)]
 pub struct HudDrawList {
+    /// Optional glass projection, independently bounded to each viewport (max four).
+    /// Use `provide_image` for pictures. Content outside these rectangles is hidden;
+    /// leave empty for flat menus/overlays. Other games are unchanged by default.
+    pub optics: Vec<Optics>,
     /// Full-field display tints, in painter order (straight-alpha sRGB).
     /// XR submits these over the complete eye projection, outside the HUD panel.
     pub vision_tints: Vec<[f32;4]>,
@@ -131,7 +137,7 @@ pub struct HudDrawList {
 struct HudLayer { vertices: Range<u32>, text: Range<usize> }
 
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { size, vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { size, optics: Vec::new(), vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
 
     /// Draw text run `id` with a real stroke of `width` pixels around its
     /// letters (under the fill), for text over busy scenes.
@@ -373,6 +379,8 @@ impl FontCache {
 struct GpuImage { bind: wgpu::BindGroup, size: [u32; 2] }
 
 pub struct HudRenderer {
+    optics: Option<Box<crate::hud_optics::Pass>>,
+    optics_active: bool,
     pipeline: wgpu::RenderPipeline,
     bind: wgpu::BindGroup,
     image_layout: wgpu::BindGroupLayout,
@@ -465,7 +473,7 @@ impl HudRenderer {
         let viewport=Viewport::new(&gpu.device,&cache);
         let mut atlas=new_atlas(gpu,&cache,format);
         let renderer=TextRenderer::new(&mut atlas,&gpu.device,wgpu::MultisampleState::default(),None);
-        Ok(Self{pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false,strokes:HashMap::new(),stroke_images:Vec::new(),text_phase_ms:[0.;3],stroke_context:swash::scale::ScaleContext::new()})
+        Ok(Self{optics:None,optics_active:false,pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false,strokes:HashMap::new(),stroke_images:Vec::new(),text_phase_ms:[0.;3],stroke_context:swash::scale::ScaleContext::new()})
     }
 
     /// Upload (or replace) the picture drawn by `HudDrawList::image` with `id`.
@@ -480,6 +488,14 @@ impl HudRenderer {
     pub fn image_size(&self,id:HudImage)->Option<[u32;2]> {self.images.get(&id).map(|i|i.size)}
 
     pub fn prepare(&mut self,gpu:&Gpu,list:&HudDrawList)->Result<HudStats,String> {
+        self.optics_active=false;
+        if !list.optics.is_empty() {
+            if list.optics.len()>4 || list.size.contains(&0) || list.size.iter().any(|v|*v>16384) || list.optics.iter().any(|v|v.rect.iter().any(|x|!x.is_finite()) || v.rect[0]<0. || v.rect[1]<0. || v.rect[2]<=0. || v.rect[3]<=0. || v.rect[0]+v.rect[2]>list.size[0] as f32+0.01 || v.rect[1]+v.rect[3]>list.size[1] as f32+0.01 || !v.curvature.is_finite() || v.curvature.abs()>0.1 || !v.glow.is_finite() || !(0.0..=2.0).contains(&v.glow)) {return Err("invalid HUD optics viewport".into());}
+            if self.optics.as_ref().is_none_or(|p|p.size()!=list.size) {self.optics=Some(Box::new(crate::hud_optics::Pass::new(gpu,list.size,self.format)?));}
+            let stats=self.optics.as_mut().unwrap().prepare(gpu,list,self.srgb)?;
+            self.optics_active=true;
+            return Ok(stats);
+        }
         let begin=Instant::now();
         for (id,picture,filter) in &list.pictures {
             let at=std::sync::Arc::as_ptr(picture) as usize;
@@ -621,6 +637,7 @@ impl HudRenderer {
     }
 
     pub fn render(&self,pass:&mut wgpu::RenderPass<'_>)->Result<(),String> {
+        if self.optics_active {self.optics.as_ref().unwrap().render(pass);return Ok(());}
         for ((layer, renderer), spans) in self.layers.iter().zip(&self.renderers).zip(&self.spans) {
             if !layer.vertices.is_empty() {
                 // Glyph rendering changes pipeline/bindings/vertex buffer.
@@ -681,6 +698,25 @@ mod tests {
         assert_eq!(list.vertices[12].shape,[1.0,0.0,0.0,3.0],"mirrored uv");
         let mut plain=HudDrawList::new([10,10]);plain.rect([0.0,0.0,1.0,1.0],[1.0;4],clip);
         assert_eq!(plain.image_spans(0..6),vec![(0..6,None)]);
+    }
+    #[test]
+    fn gpu_glass_projection_stays_in_its_view_and_flat_menus_restore() {
+        let gpu=Gpu::new().unwrap();let format=wgpu::TextureFormat::Rgba8Unorm;
+        let presenter=crate::present::Presenter::new(&gpu,format);
+        let mut hud=HudRenderer::new(&gpu,format).unwrap();
+        let background=gpu.device.create_texture_with_data(&gpu.queue,&wgpu::TextureDescriptor{label:None,size:wgpu::Extent3d{width:128,height:64,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format,usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[]},Default::default(),&[10u8,10,10,255].repeat(128*64));
+        let mut list=HudDrawList::new([128,64]);
+        let left=[0.,0.,64.,64.];list.rect([26.,26.,12.,12.],[1.,0.,0.,1.],left);
+        list.optics.push(Optics{rect:left,curvature:0.035,glow:1.,quiet:false});
+        hud.prepare(&gpu,&list).unwrap();
+        let out=presenter.capture_rgba(&gpu,&background,format,Some(&hud)).unwrap();
+        assert!(out[(32*128+32)*4]>150,"sharp red core survives projection");
+        assert_eq!(&out[(32*128+70)*4..(32*128+70)*4+3],&[10,10,10],"no glow or smoked film in the other view");
+        list.optics.clear();hud.prepare(&gpu,&list).unwrap();
+        let flat=presenter.capture_rgba(&gpu,&background,format,Some(&hud)).unwrap();
+        assert_eq!(&flat[(32*128+32)*4..(32*128+32)*4+3],&[255,0,0],"menu exits optics path");
+        list.optics.push(Optics{rect:[0.,0.,129.,64.],curvature:0.,glow:1.,quiet:false});
+        assert!(hud.prepare(&gpu,&list).is_err());
     }
     #[test]
     fn gpu_pictures_draw_mirrored_tinted_and_missing_ones_stay_invisible() {

@@ -1,3 +1,12 @@
+# Source restoration review - 31 October 2026
+
+See [parity-review.md](parity-review.md). New captures exercise the native visor,
+Open Sans SemiBold/logo/menu, faceted missile, launch and four independent finish angles.
+Reviewed solo at 2560x1440 and two-player at 3840x2160. Iteration caught and fixed
+an overly wide replay lens in split view, duplicate white-ball missile emission,
+menu gradient seams, and energy status overlapping the arc. Tests are scripted;
+not a new controller-playtest or an equal-content performance comparison.
+
 # City playtest fixes - 31 October 2026
 
 Actual 4K playtest exposed an existing city crash that the forest host fixture
