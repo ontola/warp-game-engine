@@ -42,7 +42,8 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
             world.give(0, card);
         }
         let stats = crate::gun::Stats::of(&world.players[0]);
-        let (mut scene, lo, hi, parts) = crate::view::guns::review_scene(stats);
+        let (mut scene, lo, hi, parts, triangles) = crate::view::guns::review_scene(stats);
+        apply_graphics(&mut scene);
         let mat = scene.add_material(render::scene::Material { tint: [0.16, 0.18, 0.21],
             layer: -1, roughness: 0.95, flags: 0, scale: 1.0, metal: 0.0 });
         let cube = scene.add_mesh(&render::primitives::cube(mat).mesh());
@@ -73,9 +74,9 @@ pub fn run(args: &crate::Args) -> Result<(), String> {
             render::write_png(&out.join(&file), w, h, &rgba)?;
             files.push(file);
         }
-        manifest.push(serde_json::json!({"id":id,"title":title,"cards":cards,"parts":parts,
+        manifest.push(serde_json::json!({"id":id,"title":title,"cards":cards,"parts":parts,"triangles":triangles,"simple_guns":crate::graphics::get().simple_guns,
             "bounds_m":[lo.to_array(),hi.to_array()],"visual_stats":format!("{stats:?}"),"images":files}));
-        println!("{id}: {parts} parts, cards {cards:?}");
+        println!("{id}: {parts} parts, {triangles} triangles, cards {cards:?}");
     }
     std::fs::write(out.join("manifest.json"), serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -114,8 +115,9 @@ fn growth(args: &crate::Args) -> Result<(), String> {
         let (from, to) = (stats(before)?, stats(after)?);
         let dir = out.join(id); std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let mut scene = render::Scene::default();
+        apply_graphics(&mut scene);
         let guns = crate::view::guns::Guns::reserve(&mut scene, 1);
-        let mut rig = crate::gun::Rig::default(); rig.set(from); guns.review_pose(&mut scene, &rig);
+        let mut rig = crate::gun::Rig::with_detail(guns.detail); rig.set(from); guns.review_pose(&mut scene, &rig);
         let floor = scene.add_material(render::scene::Material { tint: [0.16, 0.18, 0.21], layer: -1, roughness: 0.95, flags: 0, scale: 1.0, metal: 0.0 });
         let cube = scene.add_mesh(&render::primitives::cube(floor).mesh());
         scene.add_instance(cube, Affine3A::from_scale_rotation_translation(Vec3::new(30.0, 0.1, 30.0), Quat::IDENTITY, Vec3::new(0.0, -0.8, 0.0)));
@@ -138,4 +140,12 @@ fn growth(args: &crate::Args) -> Result<(), String> {
         println!("{id}: 90 frames");
     }
     Ok(())
+}
+
+/// Review both the actual gun topology and the selected runtime lighting path.
+fn apply_graphics(scene: &mut render::Scene) {
+    let g = crate::graphics::get();
+    scene.graphics.minimal_forward = g.minimal_forward;
+    scene.graphics.simple_lighting = g.simple_lighting;
+    scene.graphics.simple_mesh_culling = g.simple_blocks;
 }

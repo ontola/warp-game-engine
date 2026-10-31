@@ -78,6 +78,14 @@ pub const MATS: [Mat; 13] = [Mat::Metal, Mat::Dark, Mat::Barrel, Mat::Polymer, M
 pub enum Shape { Box, Cyl, Taper85, Taper105, Ring18, Ring25, Grip, GripPanel, Drum, Vial }
 pub const SHAPES: [Shape; 10] = [Shape::Box, Shape::Cyl, Shape::Taper85, Shape::Taper105, Shape::Ring18, Shape::Ring25, Shape::Grip, Shape::GripPanel, Shape::Drum, Shape::Vial];
 
+/// Selected once at scene creation; simulation stats and attachment IDs stay shared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Detail { #[default] Full, Low }
+impl Detail {
+    /// Includes both outgoing and incoming parts during a morph.
+    pub const fn part_capacity(self) -> usize { match self { Self::Full => 320, Self::Low => 160 } }
+}
+
 /// How a part moves: bolts slide back on a shot, minigun barrels spin,
 /// the magazine drops out on reload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,6 +451,50 @@ pub fn build(l: &Look) -> Build {
     Build { parts: b.parts, bolt_travel: travel, minigun: l.minigun, barrel_length: l.barrel_length, muzzle: Vec3::new(0.0, 0.0, muzzle_z - MUZZLE_LENGTH * 0.5) }
 }
 
+/// Low hardware keeps gameplay silhouettes and mounting points, while omitting
+/// tiny fasteners, rail teeth, vent ribs and the transparent reservoir shell.
+/// Simplify before comparing/morphing so omitted details cannot trigger inspect.
+pub fn build_with_detail(l: &Look, detail: Detail) -> Build {
+    let mut built = build(l);
+    if detail == Detail::Full { return built; }
+    let front = -built.parts[0].xf.matrix3.z_axis.length() * 0.5;
+    built.parts.retain_mut(|p| {
+        let (group, n) = (p.key / 1024, p.key % 1024);
+        match group {
+            0 if n == 2 => return false, // Tiny ejection recess.
+            1 if n % 2 == 0 => return false, // Bolt slots; moving handles stay.
+            2 => {
+                if n != 0 { return false; }
+                // One solid rail reaches the same top as the original teeth.
+                let extra = RAIL_HEIGHT * l.rail * 0.5;
+                p.xf.matrix3.y_axis *= (p.xf.matrix3.y_axis.length() + extra) / p.xf.matrix3.y_axis.length();
+                p.xf.translation.y += extra * 0.5;
+            }
+            4 => {
+                if n % 8 != 0 { return false; }
+                // Four continuous shroud plates instead of 32 caps/rails/ribs.
+                let length = l.barrel_length * l.shroud_frac.clamp(0.05, 0.95);
+                p.xf.matrix3.z_axis = Vec3::Z.into();
+                p.xf.matrix3.z_axis *= length;
+                p.xf.translation.z = front - length * 0.5;
+            }
+            7 if (2..6).contains(&n) => return false, // Grip screws only; keep trigger/guard/panels.
+            12 | 13 => {
+                if !matches!(n, 0 | 1 | 2 | 4) { return false; }
+                if n == 2 {
+                    // The opaque coloured core fills the former glass envelope.
+                    p.xf.matrix3.x_axis *= 0.014 / 0.0115;
+                    p.xf.matrix3.z_axis *= 0.014 / 0.0115;
+                    p.xf.matrix3.y_axis *= 0.060 / 0.056;
+                }
+            }
+            _ => {}
+        }
+        true
+    });
+    built
+}
+
 /// A coloured, glass-covered cartridge leans out from the upper camera-facing
 /// edge, leaning back along the receiver. Separate mounts keep both upgrades visible when combined.
 fn reservoir(b: &mut B, receiver: Vec3, z: f32, growth: f32, core: Mat) {
@@ -523,6 +575,7 @@ fn shroud(b: &mut B, centre_z: f32, length: f32, half_x: f32, half_y: f32, slots
 /// (heat, bolt, spin) that firing drives.
 #[derive(Clone, Debug)]
 pub struct Rig {
+    detail: Detail,
     pub shown: Stats,
     pub build: Build,
     grow: Option<Morph>,
@@ -535,23 +588,28 @@ pub struct Rig {
 }
 
 impl Default for Rig {
-    fn default() -> Self { let s = Stats::default(); Rig { shown: s, build: build(&Look::of(&s)), grow: None, heat: 0.0, bolt_back: 0.0, bolt_cycle: 0.08, spin_speed: 0.0, spin: 0.0, previous_pose: Vec::new() } }
+    fn default() -> Self { Self::with_detail(Detail::Full) }
 }
 
 pub const GROW_SECONDS: f32 = 2.0;
 
 impl Rig {
+    pub fn with_detail(detail: Detail) -> Self {
+        let s = Stats::default();
+        Rig { detail, shown: s, build: build_with_detail(&Look::of(&s), detail), grow: None,
+            heat: 0.0, bolt_back: 0.0, bolt_cycle: 0.08, spin_speed: 0.0, spin: 0.0, previous_pose: Vec::new() }
+    }
     /// Snap to these stats (a new round, a respawn).
     pub fn set(&mut self, s: Stats) {
         let interrupted = self.grow.take().is_some();
         self.previous_pose.clear();
-        if interrupted || s != self.shown { self.shown = s; self.build = build(&Look::of(&s)); }
+        if interrupted || s != self.shown { self.shown = s; self.build = build_with_detail(&Look::of(&s), self.detail); }
     }
 
     /// Morph from the currently visible model, including an interrupted morph.
     pub fn grow_to(&mut self, to: Stats) {
         if self.grow.as_ref().is_some_and(|g| g.to == to) { return; }
-        let target = build(&Look::of(&to));
+        let target = build_with_detail(&Look::of(&to), self.detail);
         if let Some(g) = &mut self.grow {
             if g.target.same_shape(&target) { g.to = to; return; }
         }
@@ -808,6 +866,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn low_growth_keeps_every_part_inside_the_preallocated_budget() {
+        let cases = [Stats::default(),
+            Stats { poison: 0.7, cooling: 0.52, ..Default::default() },
+            Stats { fire_rate_mult: 4.0, spread: 0.08, mag: 30, ..Default::default() },
+            Stats { fire_rate_mult: 8.0, damage_mult: 5.0, mag: 60, ..Default::default() },
+            Stats { shots: 16, damage_mult: 5.0, bullet_scale: 4.0, mag: 30, poison: 0.7, cooling: 0.52, ..Default::default() },
+            Stats { spread: 0.0, shots: 16, fire_rate_mult: 4.0, damage_mult: 5.0, mag: 60, explosive_radius: 8.0, poison: 0.7, cooling: 0.52, ..Default::default() }];
+        for from in cases { for to in cases {
+            let mut rig = Rig::with_detail(Detail::Low); rig.set(from); rig.grow_to(to);
+            for _ in 0..61 {
+                rig.update(1.0 / 30.0);
+                assert!(rig.build.parts.len() <= Detail::Low.part_capacity());
+                assert!(rig.build.parts.iter().all(|p| p.xf.is_finite() && p.mat != Mat::Glass));
+            }
+            assert!(!rig.is_growing());
+            assert!(rig.build.same_shape(&build_with_detail(&Look::of(&to), Detail::Low)));
+        } }
     }
 
 }

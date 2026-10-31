@@ -19,7 +19,7 @@ missing.
 |---|---|---|
 | Movement | Done | Jump, double jump, wall jump, dash, step-ups (0.35 m), lava burn and kill, falling off the map |
 | The gun | Done | Projectile rounds with drop, spread, bloom, recoil, ricochet, drill, homing, hitscan, poison, slow, lifesteal, explosive splash, impact mines, three hit ellipsoids |
-| Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Full-size chamfered blocks close assembly gaps. Large drums have a smooth 48-sided silhouette and rounded rims. Fixed grip/trigger/magazine clearances survive upgrades; a shaped pistol grip with rubber inserts, a steel trigger and an angular guard replace the intersecting cylinder/ring layout. Slim base receiver/magazine, damage-gated rail and separate green poison/blue chilling reservoirs angled rearward along the receiver; broader finish/detail refinements remain open |
+| Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Full-size chamfered blocks close assembly gaps. Large drums have a smooth 48-sided silhouette and rounded rims. Fixed grip/trigger/magazine clearances survive upgrades; a shaped pistol grip with rubber inserts, a steel trigger and an angular guard replace the intersecting cylinder/ring layout. Slim base receiver/magazine, damage-gated rail and separate green poison/blue chilling reservoirs angled rearward along the receiver; low/minimum profiles use simpler opaque gun assemblies with fewer parts/triangles and half the reserved instances; broader finish/detail refinements remain open |
 | Cards | Done | All 52 cards, Luau in `mods/base/cards.luau`, line for line from `card_library.gd`; rarity, pity slot, trailing-player factor |
 | Specials (RMB) | Done | Grenade, cluster, teleport, zoom, sword with backstabs, air strike, ion cannon; echo, tactical reload, refresh |
 | Rounds and match | Done | Spawn cage, kill order, card picks (the dead pick mid-round with 3+ players), first to ten wins, rematch, extend |
@@ -77,7 +77,13 @@ opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
 
 For slower PCs, pass `--graphics low` or `--graphics minimum` (also `GG_GRAPHICS`); desktop defaults to `full`.
-The same minimum profile is used by the Quest demo; gameplay and collisions are unchanged.
+Both profiles automatically select low-poly guns: plain full-size boxes, a 16-sided drum,
+8-sided reservoirs without glass or cage rods, a solid rail and four shroud plates.
+The shaped grip, trigger/guard, scope, upgrade colours, firing/reload and owned-loadout
+growth remain. Gun instance reservations drop from 320 to 160 per view representation;
+materials are shared across shapes. These are geometry/budget reductions, not a measured
+FPS guarantee on low-end hardware. The same minimum profile is used by the Quest demo;
+gameplay and collisions are unchanged.
 
 For the native standalone Quest APK, run `python3 engine/tools/build-quest-native.py`.
 Add `--install` with an authorized USB-connected headset. See
@@ -89,10 +95,13 @@ The earlier [simplified browser demo](../../engine/docs/quest-vr.md) remains ava
 `cargo run --release -p growing-guns-app -- gun-review --out build/gun-review`
 renders eleven real card combinations (including short Shotgun/Uzi builds and combined poison/chilling) with fixed neutral lighting, in three-quarter,
 side and receiver/trigger-detail views. It writes PNGs and `manifest.json` with
-cards, visual stats, dimensions and part counts. Use `--only base` for a quick
+cards, visual stats, dimensions, part counts and authored triangle counts. Use `--only base` for a quick
 iteration or `--size 2000x1250` for larger images. Each overview fits the model
 individually; detail views share a fixed camera. Meshes and materials are exactly
 those used during gameplay; the capture tool applies no geometry or material overrides.
+Pass `--graphics low` or `--graphics minimum` to review the lighter models and their
+actual lighting path; this also works with `--growth`. Compare detail views for identical
+framing across profiles. Triangle counts describe the authored model before renderer LOD.
 
 `gun-review --growth --out build/gun-growth-review` captures five 90-frame clips at
 30 fps: damage/rail growth, sniper/scope growth, box magazine to drum/minigun, elemental reservoirs,

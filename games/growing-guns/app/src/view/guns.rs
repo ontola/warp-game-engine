@@ -11,16 +11,14 @@ use render::scene::Material;
 use render::slots::Slots;
 use render::Scene;
 
-/// A morph may temporarily contain both old and new attachment shapes.
-/// Reserve once so a card pick never allocates new GPU slots.
-const GUN_PARTS: usize = 320;
-
 /// First-person gun feel (Godot `_update_gun_feel`): walk bob, jump bump,
 /// strafe tilt, recoil kick, the card-growth inspect blend.
 #[derive(Clone, Copy, Default)]
 struct GunFeel { phase: f32, bob: f32, bump: f32, tilt: f32, kick: f32, inspect: f32, previous_inspect: f32 }
 
 pub struct Guns {
+    pub(crate) detail: gun::Detail,
+    parts: usize,
     /// Mesh per shape, then per material (barrel: one per player, each
     /// with its own material that follows the heat every frame).
     meshes: Vec<Vec<usize>>,
@@ -46,42 +44,37 @@ pub struct Guns {
 
 impl Guns {
     pub fn reserve(scene: &mut Scene, players: usize) -> Self {
-        let mut meshes = Vec::new();
+        let detail = if crate::graphics::get().simple_guns { gun::Detail::Low } else { gun::Detail::Full };
+        Self::reserve_with_detail(scene, players, detail)
+    }
+
+    fn reserve_with_detail(scene: &mut Scene, players: usize, detail: gun::Detail) -> Self {
+        let parts = detail.part_capacity();
         let barrels: Vec<Material> = (0..players).map(|_| barrel_material(0.0)).collect();
         let barrel_first = scene.materials.len() as u32;
         for &m in &barrels { scene.add_material(m); }
-        for shape in gun::SHAPES {
-            let mut row = Vec::new();
-            for m in gun::MATS {
-                let levels = if m == gun::Mat::Barrel { players } else { 1 };
-                for h in 0..levels {
-                    let mat = if m == gun::Mat::Barrel { barrel_first + h as u32 } else { gun_material(scene, m) };
-                    let prim = match shape {
-                        gun::Shape::Box => gun_box(mat),
-                        gun::Shape::Cyl => primitives::cylinder(mat, 1.0, 1.0, 8),
-                        gun::Shape::Taper85 => primitives::cylinder(mat, 1.0, 0.85, 8),
-                        gun::Shape::Taper105 => primitives::cylinder(mat, 1.0, 1.05, 8),
-                        gun::Shape::Ring18 => primitives::torus(mat, 0.099, 10, 6),
-                        gun::Shape::Ring25 => primitives::torus(mat, 0.143, 10, 6),
-                        gun::Shape::Grip => grip_mesh(mat, false),
-                        gun::Shape::GripPanel => grip_mesh(mat, true),
-                        gun::Shape::Drum => drum_mesh(mat),
-                        gun::Shape::Vial => primitives::cylinder(mat, 1.0, 1.0, 24),
-                    };
-                    row.push(scene.add_mesh(&prim.mesh()));
-                }
+        // Share each material across shapes; low guns never register glass blending.
+        let mut palette = Vec::new();
+        let mut dark = 0;
+        for m in gun::MATS {
+            if m == gun::Mat::Barrel { palette.extend((0..players).map(|i| barrel_first + i as u32)); }
+            else {
+                let mat = if detail == gun::Detail::Low && m == gun::Mat::Glass { dark } else { gun_material(scene, m) };
+                if m == gun::Mat::Dark { dark = mat; }
+                palette.push(mat);
             }
-            meshes.push(row);
         }
+        let meshes = gun::SHAPES.into_iter().map(|shape| palette.iter().map(|&mat|
+            scene.add_mesh(&gun_primitive(shape, mat, detail).mesh())).collect()).collect();
         let (mut fp, mut tp) = (Vec::new(), Vec::new());
         for _ in 0..players {
-            let a = Slots::reserve(scene, GUN_PARTS).first;
+            let a = Slots::reserve(scene, parts).first;
             // Nobody sees a first-person gun until its player is local.
-            for k in 0..GUN_PARTS { let i = &mut scene.instances[a + k]; i.hide_in_views(0xff); i.flags |= render::scene::NO_SHADOW; }
+            for k in 0..parts { let i = &mut scene.instances[a + k]; i.hide_in_views(0xff); i.flags |= render::scene::NO_SHADOW; }
             fp.push(a);
-            tp.push(Slots::reserve(scene, GUN_PARTS).first);
+            tp.push(Slots::reserve(scene, parts).first);
         }
-        Guns { meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::default(); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
+        Guns { detail, parts, meshes, barrel_first, barrels, muzzles: vec![None; players], local: vec![false; players], rigs: vec![Rig::with_detail(detail); players], feel: vec![GunFeel::default(); players], fp, tp, tilt: true, tracked: vec![None; players], tracking: vec![false; players], own: vec![None; players], round: None }
     }
 
     pub fn track(&mut self, player: usize, pose: Option<Affine3A>) {
@@ -145,7 +138,7 @@ impl Guns {
         for i in 0..self.rigs.len() {
             // Slots past the players (a coop wave's enemies gone): empty.
             let Some(p) = world.players.get(i) else {
-                for first in [self.fp[i], self.tp[i]] { empty(scene, first, 0); }
+                for first in [self.fp[i], self.tp[i]] { empty(scene, first, 0, self.parts); }
                 continue;
             };
             let rig = &self.rigs[i];
@@ -177,12 +170,12 @@ impl Guns {
             for (first, xf, drop) in [(self.fp[i], fp, mag_drop), (self.tp[i], tp, 0.0)] {
                 let mut n = 0;
                 if visible {
-                    for (part, local) in rig.pose_at(drop, alpha).take(GUN_PARTS) {
+                    for (part, local) in rig.pose_at(drop, alpha).take(self.parts) {
                         scene.update_instance(first + n, self.mesh(part.shape, part.mat, i), xf * local);
                         n += 1;
                     }
                 }
-                empty(scene, first, n);
+                empty(scene, first, n, self.parts);
             }
         }
     }
@@ -193,11 +186,11 @@ impl Guns {
     pub(crate) fn review_pose(&self, scene: &mut Scene, rig: &Rig) {
         let mut n = 0;
         for (part, xf) in rig.pose(0.0) {
-            assert!(n < GUN_PARTS, "gun morph exceeds reserved visual capacity");
+            assert!(n < self.parts, "gun morph exceeds reserved visual capacity");
             scene.update_instance(self.tp[0] + n, self.mesh(part.shape, part.mat, 0), xf);
             n += 1;
         }
-        empty(scene, self.tp[0], n);
+        empty(scene, self.tp[0], n, self.parts);
     }
 
     /// Each local player sees only their own first-person gun, and not
@@ -205,7 +198,7 @@ impl Guns {
     pub fn hide_own(&mut self, scene: &mut Scene, slots: &[usize]) {
         self.local.fill(false);
         for (&tp, &fp) in self.tp.iter().zip(&self.fp) {
-            for n in 0..GUN_PARTS {
+            for n in 0..self.parts {
                 scene.instances[tp + n].hide_in_views(0);
                 scene.instances[fp + n].hide_in_views(0xff);
             }
@@ -213,7 +206,7 @@ impl Guns {
         for &s in slots { if let Some(l) = self.local.get_mut(s) { *l = true; } }
         for &s in slots.iter().take(8) {
             if s >= self.tp.len() { continue; }
-            for n in 0..GUN_PARTS {
+            for n in 0..self.parts {
                 let mask = slots.iter().enumerate().take(8).filter(|(_, slot)| **slot == s).fold(0u8, |m, (v, _)| m | (1 << v));
                 scene.instances[self.tp[s] + n].hide_in_views(mask);
                 scene.instances[self.fp[s] + n].hide_in_views(!mask);
@@ -240,6 +233,25 @@ impl Guns {
             k += if m == gun::Mat::Barrel { self.rigs.len() } else { 1 };
         }
         unreachable!("listed material")
+    }
+}
+
+/// Same dimensions at both detail levels, so no joint or animation changes.
+fn gun_primitive(shape: gun::Shape, mat: u32, detail: gun::Detail) -> primitives::Primitive {
+    use gun::Shape::*;
+    let low = detail == gun::Detail::Low;
+    // Eight sides keep the cardinal mounting surfaces under the sights.
+    let sides = 8;
+    match shape {
+        Box => if low { primitives::cube(mat) } else { gun_box(mat) },
+        Cyl => primitives::cylinder(mat, 1.0, 1.0, sides),
+        Taper85 => primitives::cylinder(mat, 1.0, 0.85, sides),
+        Taper105 => primitives::cylinder(mat, 1.0, 1.05, sides),
+        Ring18 | Ring25 => primitives::torus(mat, if shape == Ring18 { 0.099 } else { 0.143 }, if low { 8 } else { 10 }, if low { 3 } else { 6 }),
+        Grip => grip_mesh(mat, false),
+        GripPanel => grip_mesh(mat, true),
+        Drum => if low { primitives::cylinder(mat, 1.0, 1.0, 16) } else { drum_mesh(mat) },
+        Vial => primitives::cylinder(mat, 1.0, 1.0, if low { 8 } else { 24 }),
     }
 }
 
@@ -358,10 +370,10 @@ fn grip_mesh(material: u32, panel: bool) -> primitives::Primitive {
 
 /// Isolated review scene using the exact gameplay meshes and materials.
 /// Empty reserved slots remain hidden; only the settled gun is instantiated.
-pub(crate) fn review_scene(stats: Stats) -> (Scene, Vec3, Vec3, usize) {
+pub(crate) fn review_scene(stats: Stats) -> (Scene, Vec3, Vec3, usize, usize) {
     let mut scene = Scene::default();
     let guns = Guns::reserve(&mut scene, 1);
-    let mut rig = Rig::default();
+    let mut rig = Rig::with_detail(guns.detail);
     rig.set(stats);
     let mut lo = Vec3::splat(f32::INFINITY);
     let mut hi = Vec3::splat(f32::NEG_INFINITY);
@@ -377,12 +389,13 @@ pub(crate) fn review_scene(stats: Stats) -> (Scene, Vec3, Vec3, usize) {
             lo = lo.min(p); hi = hi.max(p);
         } } }
     }
-    (scene, lo, hi, rig.build.parts.len())
+    let triangles = rig.build.parts.iter().map(|p| gun_primitive(p.shape, 0, guns.detail).indices.len() / 3).sum();
+    (scene, lo, hi, rig.build.parts.len(), triangles)
 }
 
 /// Empty a gun block from part `n` on, up to the first already empty slot.
-fn empty(scene: &mut Scene, first: usize, n: usize) {
-    for inst in scene.instances[first + n..first + GUN_PARTS].iter_mut().take_while(|i| i.cluster_count != 0) {
+fn empty(scene: &mut Scene, first: usize, n: usize, capacity: usize) {
+    for inst in scene.instances[first + n..first + capacity].iter_mut().take_while(|i| i.cluster_count != 0) {
         inst.cluster_count = 0;
         inst.sphere = [0.0; 4];
     }
@@ -439,13 +452,14 @@ mod xr_tests {
     use super::*;
     #[test]
     fn next_round_uses_owned_gun_and_invisible_cards_do_not_inspect() {
+        for detail in [gun::Detail::Full, gun::Detail::Low] {
         let mut world = World::new(7, &[false, false]);
         let _scripts = crate::scripts::attach(&mut world).unwrap();
         for (i, card) in [(0, "sniper"), (1, "uzi")] { let c = world.cards.find(card).unwrap(); world.give(i, c); }
         let own = Stats::weapon(&world.owned_weapon(0));
         let borrowed = world.owned_weapon(1);
         let mut scene = Scene::default();
-        let mut guns = Guns::reserve(&mut scene, 2);
+        let mut guns = Guns::reserve_with_detail(&mut scene, 2, detail);
         guns.tick(&world, 0.0);
         world.modifier = Some(growing_guns::Modifier::GunSwap);
         world.players[0].weapon = borrowed.clone();
@@ -468,6 +482,7 @@ mod xr_tests {
         guns.tick(&world, 0.0);
         assert!(guns.rigs[0].is_growing());
         assert_eq!(guns.rigs[0].shown, own, "the previous round's borrowed Uzi must not be the source");
+        }
     }
 
     #[test]
@@ -503,4 +518,44 @@ mod xr_tests {
         assert_eq!(hidden(guns.fp[1]) & 3,3);
         assert_eq!(hidden(guns.tp[1]) & 3,0);
     }
+    #[test]
+    fn low_guns_reduce_geometry_without_glass_or_mounting_changes() {
+        use gun::{Detail, Look, Mat};
+        let cases = [Stats::default(), Stats { poison: 0.7, cooling: 0.52, ..Default::default() },
+            Stats { mag: 60, fire_rate_mult: 8.0, ..Default::default() },
+            Stats { shots: 16, damage_mult: 5.0, spread: 0.0, mag: 60, poison: 0.7, cooling: 0.52, ..Default::default() }];
+        for stats in cases {
+            let full = gun::build_with_detail(&Look::of(&stats), Detail::Full);
+            let low = gun::build_with_detail(&Look::of(&stats), Detail::Low);
+            let triangles = |b: &gun::Build, detail| b.parts.iter().map(|p| gun_primitive(p.shape, 0, detail).indices.len() / 3).sum::<usize>();
+            assert!(triangles(&low, Detail::Low) * 10 < triangles(&full, Detail::Full) * 7);
+            assert!(low.parts.len() < full.parts.len());
+            assert_eq!(full.muzzle, low.muzzle);
+            assert_eq!(full.barrel_length, low.barrel_length);
+            assert!(low.parts.iter().all(|p| p.mat != Mat::Glass));
+            for part in full.parts.iter().filter(|p| p.key / 1024 == 7 && p.key % 1024 >= 6) {
+                assert_eq!(part.xf, low.parts.iter().find(|q| q.key == part.key).unwrap().xf, "trigger and guard must stay intact");
+            }
+            let top = |b: &gun::Build| b.parts.iter().filter(|p| p.key / 1024 == 2)
+                .map(|p| p.xf.translation.y + p.xf.matrix3.y_axis.length() * 0.5).fold(0.0, f32::max);
+            assert!((top(&full) - top(&low)).abs() < 1e-5);
+        }
+        let mut scene = Scene::default();
+        let guns = Guns::reserve_with_detail(&mut scene, 2, Detail::Low);
+        assert!(scene.blended_materials.is_empty());
+        assert_eq!(scene.instances.len(), 4 * Detail::Low.part_capacity());
+        guns.review_pose(&mut scene, &Rig::with_detail(Detail::Low));
+        // Cylinder extrema still meet the unchanged sights and magazine mount.
+        for shape in [gun::Shape::Box, gun::Shape::Cyl, gun::Shape::Drum] {
+            let a = gun_primitive(shape, 0, Detail::Full);
+            let b = gun_primitive(shape, 0, Detail::Low);
+            for axis in 0..3 {
+                for sign in [-1.0, 1.0] {
+                    let extent = |p: &primitives::Primitive| p.vertices.iter().map(|v| sign * v.pos[axis]).fold(0.0, f32::max);
+                    assert!((extent(&a) - extent(&b)).abs() < 1e-5);
+                }
+            }
+        }
+    }
+
 }
