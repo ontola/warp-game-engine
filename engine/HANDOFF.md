@@ -7,6 +7,17 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## SpaceRacer visual corrections — 31 October 2026
+
+Native visual revision: see `games/spaceracer/visual-review.md`. Game-owned
+`app/shaders/surfaces.wgsl` restores opaque ship livery, road detail, varied
+metre-sized city glazing and biome materials. Correct 3x2 poster atlas/orientation,
+soft additive exhaust with calibrated interpolated local lights, thin foliage,
+physical daytime sky, facade/track structure. Gameplay/asset bytes preserved.
+`--bench N --out PATH` records a repeatable headless report; not interactive FPS.
+20 focused tests and portable scripted controller flow pass; all five biomes
+rendered. Full visual fidelity and scene reflections are still incomplete.
+
 ## SpaceRacer native/Luau development build — 31 October 2026
 
 SpaceRacer now has `games/spaceracer/app` (`spaceracer-app`, binary `spaceracer`).

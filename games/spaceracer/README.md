@@ -96,6 +96,32 @@ finished notification. Ready is sent after scene upload/draw, on the next tick.
 Roster name updates apply live. **Face decals/profile artwork, complete settings
 parity and an installed-daemon end-to-end playtest remain outstanding.**
 
+## Native visual revision
+
+The renderer now uses game-owned WGSL surfaces for opaque hull livery, road
+panels/markings and roughness, metre-scaled office windows, water normals,
+stone and organic materials. Posters use the correct 3-by-2 atlas and face
+outwards without mirrored text. Facades have solid ribs/parapets; elevated
+roads have edge thickness and visible local-light fixtures. Original leaf
+materials use Warp's thin-foliage lighting. Day worlds use the physical sky;
+city lighting remains an artistic night setup configured from Luau.
+
+Exhaust is a soft, tapered additive mesh with throttle/boost-scaled length.
+Its bounded local lights follow the interpolated hull and create real local
+specular highlights on roads and nearby ships. This is **not** SSR or
+ray-traced billboard/window reflection. Scene reflection and full foliage,
+traffic, HUD and effect fidelity remain outstanding.
+
+Reproducible headless measurement (no window):
+
+```sh
+cargo run --locked -p spaceracer-app --bin spaceracer -- --demo --seed 31 --players 4 --ticks 750 --bench 120 --width 1920 --height 1080 --out build/spaceracer-bench.json
+```
+
+The report includes the adapter, geometry counts and smoothed GPU pass samples.
+Readback throughput is not interactive FPS, and these samples are not latency
+percentiles or an equal-content comparison. See [visual review](visual-review.md).
+
 ## Verification
 
 ```sh
