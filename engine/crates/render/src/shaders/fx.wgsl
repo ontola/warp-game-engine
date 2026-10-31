@@ -16,7 +16,7 @@ struct FxUniform {
     clock: vec4<f32>,
 };
 struct Puff {
-    // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak, 6 mote)
+    // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak, 6 mote, 7 baked smoke)
     center_kind: vec4<f32>,
     // local axes with lengths (columns of the end transform) and per-kind data
     ax: vec4<f32>,
@@ -36,6 +36,7 @@ struct Puff {
 @group(0) @binding(3) var background: texture_2d<f32>;
 @group(0) @binding(4) var scene_depth: texture_depth_2d;
 @group(0) @binding(5) var samp: sampler;
+@group(0) @binding(6) var smoke_animation: texture_3d<f32>;
 
 // Billows use 32 x 18; tiny embers and heat shells retain 16 x 9.
 
@@ -449,4 +450,111 @@ fn fx_heat(in: V) -> @location(0) vec4<f32> {
     let alpha = weight * falloff;
     if alpha < 0.002 { discard; }
     return vec4<f32>(col * alpha, alpha);
+}
+
+// One axis-aligned texture cube transformed by three orthogonal edge vectors.
+// The birth point is the bottom centre, so the plume rises above an impact.
+fn smoke_world(p: Puff, uvw: vec3<f32>) -> vec3<f32> {
+    return p.center_kind.xyz + p.ax.xyz * (uvw.x - 0.5) + p.ay.xyz * uvw.y + p.az.xyz * (uvw.z - 0.5);
+}
+fn smoke_local_vector(p: Puff, v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(v, p.ax.xyz) / dot(p.ax.xyz, p.ax.xyz),
+        dot(v, p.ay.xyz) / dot(p.ay.xyz, p.ay.xyz),
+        dot(v, p.az.xyz) / dot(p.az.xyz, p.az.xyz));
+}
+
+@vertex
+fn fx_smoke_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V {
+    let id = order[ii];
+    let p = puffs[id];
+    let age = clamp((u.clock.x - p.timing.x) / max(p.timing.y, 0.001), 0.0, 1.0);
+    var lo = vec2<f32>(1.0);
+    var hi = vec2<f32>(-1.0);
+    var front = false;
+    var clipped = false;
+    for (var corner = 0u; corner < 8u; corner++) {
+        let uvw = vec3<f32>(f32(corner & 1u), f32((corner >> 1u) & 1u), f32((corner >> 2u) & 1u));
+        let clip = u.view_proj * vec4<f32>(smoke_world(p, uvw), 1.0);
+        if clip.w > u.camera_near.w {
+            lo = min(lo, clip.xy / clip.w);
+            hi = max(hi, clip.xy / clip.w);
+            front = true;
+        } else { clipped = true; }
+    }
+    // Crossing the near plane includes cameras inside the smoke. The slab
+    // intersection in the fragment stage still rejects every missed ray.
+    if front && clipped { lo = vec2<f32>(-1.0); hi = vec2<f32>(1.0); }
+    lo = max(lo, vec2<f32>(-1.0));
+    hi = min(hi, vec2<f32>(1.0));
+    if !front || any(lo >= hi) || age <= 0.0 || age >= 1.0 {
+        lo = vec2<f32>(-2.0);
+        hi = lo;
+    }
+    let corner = array<vec2<f32>, 6>(vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0),
+        vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0))[vi];
+    let clip = mix(lo, hi, corner);
+    let point = u.inverse_view_proj * vec4<f32>(clip, 1.0, 1.0);
+    var out = additive_vertex(id, point.xyz / point.w, age);
+    out.position = vec4<f32>(clip, 0.0, 1.0);
+    return out;
+}
+
+// 32 independent 48-cubed volumes share one Z-stacked texture. Explicit
+// half-texel bounds prevent the trilinear filter crossing into another frame.
+// Time interpolation is independent of the raster frame rate and view count.
+fn smoke_frame(uvw: vec3<f32>, frame: f32) -> vec2<f32> {
+    let voxel = clamp(uvw, vec3<f32>(0.0), vec3<f32>(1.0)) * 47.0 + 0.5;
+    let coord = vec3<f32>(voxel.xy / 48.0, (voxel.z + frame * 48.0) / 1536.0);
+    return textureSampleLevel(smoke_animation, samp, coord, 0.0).rg;
+}
+fn smoke_sample(uvw: vec3<f32>, frame: f32) -> vec2<f32> {
+    let a = floor(frame);
+    let b = min(a + 1.0, 31.0);
+    return mix(smoke_frame(uvw, a), smoke_frame(uvw, b), frame - a);
+}
+
+@fragment
+fn fx_smoke(in: V) -> @location(0) vec4<f32> {
+    let p = puffs[in.id];
+    let ray = normalize(in.world - u.camera_near.xyz);
+    let origin = smoke_local_vector(p, u.camera_near.xyz - p.center_kind.xyz) + vec3<f32>(0.5, 0.0, 0.5);
+    let direction = smoke_local_vector(p, ray);
+    var entry = 0.0;
+    var exit = 1e9;
+    for (var axis = 0u; axis < 3u; axis++) {
+        if abs(direction[axis]) < 1e-8 {
+            if origin[axis] < 0.0 || origin[axis] > 1.0 { discard; }
+        } else {
+            let a = -origin[axis] / direction[axis];
+            let b = (1.0 - origin[axis]) / direction[axis];
+            entry = max(entry, min(a, b));
+            exit = min(exit, max(a, b));
+        }
+    }
+    let probe = u.depth_vp * vec4<f32>(u.camera_near.xyz + ray, 1.0);
+    let uv = probe.xy / probe.w * vec2<f32>(0.5, -0.5) + 0.5;
+    let forward = max(-(u.view * vec4<f32>(ray, 0.0)).z, 1e-6);
+    exit = min(exit, depth_metres(uv) / forward);
+    if exit <= entry { discard; }
+
+    let samples = select(48u, 24u, u.clock.z > 0.0);
+    let step = (exit - entry) / f32(samples);
+    let optical_step = step * length(direction) * p.body.a;
+    let frame = in.age * 31.0;
+    var transmission = 1.0;
+    var color = vec3<f32>(0.0);
+    for (var k = 0u; k < samples; k++) {
+        let point = origin + direction * (entry + (f32(k) + 0.5) * step);
+        let field = smoke_sample(point, frame);
+        let density = max(0.0, (field.r - 0.025) / 0.975);
+        let alpha = 1.0 - exp(-density * optical_step);
+        // The G channel is baked light transmittance through this same frame.
+        // It provides self-shadowed form; it does not sample world shadows.
+        let radiance = p.body.rgb * (0.025 + 0.40 * pow(field.g, 1.3)) * u.clock.y;
+        color += transmission * alpha * radiance;
+        transmission *= 1.0 - alpha;
+        if transmission < 0.015 { break; }
+    }
+    if transmission > 0.9995 { discard; }
+    return fx_output(vec4<f32>(fp16_safe(color), 1.0 - transmission));
 }

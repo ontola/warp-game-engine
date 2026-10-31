@@ -1,0 +1,12 @@
+{"size":[960,540],"steps":[
+    {"capture":"baseline.png","cmd":["bots pause","health 0 10000","teleport 0 7 23 12","aim 0 0 21 0"],"ticks":2},
+    {"cmd":"boom 0 16 0 6.5 0","ticks":1},
+    {"capture":"smoke-006.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":6},
+    {"capture":"smoke-021.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":15},
+    {"capture":"smoke-036.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":15},
+    {"capture":"smoke-054.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":18},
+    {"capture":"smoke-078.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":24},
+    {"capture":"smoke-108.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":30},
+    {"capture":"smoke-144.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":36},
+    {"capture":"smoke-174.png","cmd":["teleport 0 7 23 12","aim 0 0 21 0"],"ticks":30}
+]}

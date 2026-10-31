@@ -81,7 +81,13 @@ impl EffectsView {
         let particles = Particles::reserve(scene, crate::graphics::get().particles, seed | 1);
         let occ = Occupancy::new(Vec3::new(-OCC_HALF, -4.0, -OCC_HALF), Vec3::new(OCC_HALF, 30.0, OCC_HALF), OCC_VOXEL);
         let debris = Debris::reserve(scene, crate::graphics::get().debris_capacity, occ, false);
-        EffectsView { particles, meshes, debris, blasts: Effects::default(), flashes: Vec::new(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new() }
+        let mut blasts = Effects::default();
+        // Full desktop quality uses a shared baked density animation. Keep the
+        // existing inexpensive billows on low/minimum profiles (including Quest).
+        // This diagnostic override makes repeatable before/after captures possible.
+        blasts.set_baked_smoke(!crate::graphics::get().simple_lighting
+            && std::env::var("GG_BAKED_SMOKE").as_deref() != Ok("0"));
+        EffectsView { particles, meshes, debris, blasts, flashes: Vec::new(), clock: 0.0, punch: Vec::new(), pending_punch: Vec::new() }
     }
 
     pub fn flush(&mut self, gpu: &render::Gpu, renderer: &render::Renderer, scene: &Scene, clock: f32) -> Result<(), String> {

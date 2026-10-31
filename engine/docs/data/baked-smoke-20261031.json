@@ -1,0 +1,445 @@
+{
+  "adapter": {
+    "backend": "Vulkan",
+    "driver": "NVIDIA",
+    "name": "NVIDIA GeForce RTX 5070 Ti"
+  },
+  "checks": {
+    "after-expiry": {
+      "changed_pixels": 0
+    },
+    "animation": {
+      "early_middle_mae": 0.6516739004629629,
+      "peak_mae": 0.6420211226851852,
+      "tail_mae": 0.0
+    },
+    "before-birth": {
+      "changed_pixels": 0
+    },
+    "expired": {
+      "changed_pixels": 0
+    },
+    "inside_changed_pixels": 921600,
+    "occluded_changed_pixels": 0,
+    "outside_changed_pixels": 27657,
+    "split_changed_pixels": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "taa_history_changed_pixels": 0
+  },
+  "failures": [],
+  "passed": true,
+  "rendering": "native resolution, HDR, no reconstruction; TAA only in history check",
+  "scope": "bounded native smoke renderer fixture, not full Growing Guns gameplay or target FPS acceptance",
+  "size": [
+    1280,
+    720
+  ],
+  "timing": {
+    "available": true,
+    "cases": [
+      {
+        "mode": "baseline",
+        "output_size": [
+          1280,
+          720
+        ],
+        "per_pass": {
+          "bloom": {
+            "max_ms": 0.025151999999999997,
+            "median_ms": 0.02512,
+            "min_ms": 0.023615999999999998,
+            "p95_ms": 0.025151999999999997,
+            "samples": 24
+          },
+          "cull": {
+            "max_ms": 0.007871999999999999,
+            "median_ms": 0.007679999999999999,
+            "min_ms": 0.007679999999999999,
+            "p95_ms": 0.00784,
+            "samples": 24
+          },
+          "exhaust": {
+            "max_ms": 0.00031999999999999997,
+            "median_ms": 0.00031999999999999997,
+            "min_ms": 0.000288,
+            "p95_ms": 0.00031999999999999997,
+            "samples": 24
+          },
+          "fx": {
+            "max_ms": 0.0012159999999999999,
+            "median_ms": 0.0007999999999999999,
+            "min_ms": 0.000768,
+            "p95_ms": 0.001184,
+            "samples": 24
+          },
+          "raster": {
+            "max_ms": 0.015648,
+            "median_ms": 0.015423999999999998,
+            "min_ms": 0.014303999999999999,
+            "p95_ms": 0.015583999999999999,
+            "samples": 24
+          },
+          "shade": {
+            "max_ms": 0.113312,
+            "median_ms": 0.11295999999999999,
+            "min_ms": 0.112672,
+            "p95_ms": 0.11318399999999999,
+            "samples": 24
+          },
+          "tonemap": {
+            "max_ms": 0.013439999999999999,
+            "median_ms": 0.013408,
+            "min_ms": 0.013312,
+            "p95_ms": 0.013439999999999999,
+            "samples": 24
+          },
+          "wheel particles": {
+            "max_ms": 0.00031999999999999997,
+            "median_ms": 0.00031999999999999997,
+            "min_ms": 0.000288,
+            "p95_ms": 0.00031999999999999997,
+            "samples": 24
+          }
+        },
+        "views": 1
+      },
+      {
+        "mode": "legacy",
+        "output_size": [
+          1280,
+          720
+        ],
+        "per_pass": {
+          "bloom": {
+            "max_ms": 0.02592,
+            "median_ms": 0.023903999999999998,
+            "min_ms": 0.023776,
+            "p95_ms": 0.02592,
+            "samples": 24
+          },
+          "cull": {
+            "max_ms": 0.00784,
+            "median_ms": 0.007679999999999999,
+            "min_ms": 0.007647999999999999,
+            "p95_ms": 0.00784,
+            "samples": 24
+          },
+          "exhaust": {
+            "max_ms": 0.00031999999999999997,
+            "median_ms": 0.00031999999999999997,
+            "min_ms": 0.000288,
+            "p95_ms": 0.00031999999999999997,
+            "samples": 24
+          },
+          "fx": {
+            "max_ms": 0.015456,
+            "median_ms": 0.015392,
+            "min_ms": 0.015328,
+            "p95_ms": 0.015456,
+            "samples": 24
+          },
+          "raster": {
+            "max_ms": 0.014464,
+            "median_ms": 0.014303999999999999,
+            "min_ms": 0.013791999999999999,
+            "p95_ms": 0.0144,
+            "samples": 24
+          },
+          "shade": {
+            "max_ms": 0.113344,
+            "median_ms": 0.112992,
+            "min_ms": 0.11273599999999999,
+            "p95_ms": 0.113216,
+            "samples": 24
+          },
+          "tonemap": {
+            "max_ms": 0.013536,
+            "median_ms": 0.013375999999999999,
+            "min_ms": 0.013344,
+            "p95_ms": 0.013503999999999999,
+            "samples": 24
+          },
+          "wheel particles": {
+            "max_ms": 0.00031999999999999997,
+            "median_ms": 0.00031999999999999997,
+            "min_ms": 0.000288,
+            "p95_ms": 0.00031999999999999997,
+            "samples": 24
+          }
+        },
+        "views": 1
+      },
+      {
+        "mode": "baked",
+        "output_size": [
+          1280,
+          720
+        ],
+        "per_pass": {
+          "bloom": {
+            "max_ms": 0.02624,
+            "median_ms": 0.02528,
+            "min_ms": 0.02368,
+            "p95_ms": 0.025824,
+            "samples": 24
+          },
+          "cull": {
+            "max_ms": 0.007936,
+            "median_ms": 0.007679999999999999,
+            "min_ms": 0.007647999999999999,
+            "p95_ms": 0.00784,
+            "samples": 24
+          },
+          "exhaust": {
+            "max_ms": 0.00031999999999999997,
+            "median_ms": 0.00031999999999999997,
+            "min_ms": 0.000288,
+            "p95_ms": 0.00031999999999999997,
+            "samples": 24
+          },
+          "fx": {
+            "max_ms": 0.061056,
+            "median_ms": 0.058559999999999994,
+            "min_ms": 0.057024,
+            "p95_ms": 0.060447999999999995,
+            "samples": 24
+          },
+          "raster": {
+            "max_ms": 0.014624,
+            "median_ms": 0.014208,
+            "min_ms": 0.013663999999999999,
+            "p95_ms": 0.014464,
+            "samples": 24
+          },
+          "shade": {
+            "max_ms": 0.113312,
+            "median_ms": 0.113024,
+            "min_ms": 0.11273599999999999,
+            "p95_ms": 0.11327999999999999,
+            "samples": 24
+          },
+          "tonemap": {
+            "max_ms": 0.013439999999999999,
+            "median_ms": 0.013375999999999999,
+            "min_ms": 0.013344,
+            "p95_ms": 0.013408,
+            "samples": 24
+          },
+          "wheel particles": {
+            "max_ms": 0.00031999999999999997,
+            "median_ms": 0.00031999999999999997,
+            "min_ms": 0.000288,
+            "p95_ms": 0.00031999999999999997,
+            "samples": 24
+          }
+        },
+        "views": 1
+      },
+      {
+        "mode": "baseline",
+        "output_size": [
+          1280,
+          720
+        ],
+        "per_pass": {
+          "bloom": {
+            "max_ms": 0.06672,
+            "median_ms": 0.061535999999999993,
+            "min_ms": 0.058592,
+            "p95_ms": 0.06620799999999999,
+            "samples": 24
+          },
+          "cull": {
+            "max_ms": 0.03248,
+            "median_ms": 0.030848,
+            "min_ms": 0.030752,
+            "p95_ms": 0.031072000000000002,
+            "samples": 24
+          },
+          "exhaust": {
+            "max_ms": 0.0012799999999999999,
+            "median_ms": 0.001248,
+            "min_ms": 0.001216,
+            "p95_ms": 0.0012799999999999999,
+            "samples": 24
+          },
+          "fx": {
+            "max_ms": 0.003648,
+            "median_ms": 0.0032959999999999995,
+            "min_ms": 0.0030399999999999997,
+            "p95_ms": 0.0036479999999999998,
+            "samples": 24
+          },
+          "raster": {
+            "max_ms": 0.030432,
+            "median_ms": 0.028031999999999998,
+            "min_ms": 0.027232,
+            "p95_ms": 0.028576,
+            "samples": 24
+          },
+          "shade": {
+            "max_ms": 0.14038399999999998,
+            "median_ms": 0.131552,
+            "min_ms": 0.131168,
+            "p95_ms": 0.13203199999999998,
+            "samples": 24
+          },
+          "tonemap": {
+            "max_ms": 0.021184,
+            "median_ms": 0.020128,
+            "min_ms": 0.019968,
+            "p95_ms": 0.020288,
+            "samples": 24
+          },
+          "wheel particles": {
+            "max_ms": 0.0012799999999999999,
+            "median_ms": 0.001248,
+            "min_ms": 0.0011840000000000002,
+            "p95_ms": 0.0012799999999999999,
+            "samples": 24
+          }
+        },
+        "views": 4
+      },
+      {
+        "mode": "legacy",
+        "output_size": [
+          1280,
+          720
+        ],
+        "per_pass": {
+          "bloom": {
+            "max_ms": 0.063424,
+            "median_ms": 0.061472,
+            "min_ms": 0.061119999999999994,
+            "p95_ms": 0.063296,
+            "samples": 24
+          },
+          "cull": {
+            "max_ms": 0.0312,
+            "median_ms": 0.030912000000000002,
+            "min_ms": 0.030784,
+            "p95_ms": 0.031104,
+            "samples": 24
+          },
+          "exhaust": {
+            "max_ms": 0.0012799999999999999,
+            "median_ms": 0.001248,
+            "min_ms": 0.001152,
+            "p95_ms": 0.0012799999999999999,
+            "samples": 24
+          },
+          "fx": {
+            "max_ms": 0.043711999999999994,
+            "median_ms": 0.043488,
+            "min_ms": 0.043199999999999995,
+            "p95_ms": 0.043648,
+            "samples": 24
+          },
+          "raster": {
+            "max_ms": 0.027424,
+            "median_ms": 0.026687999999999996,
+            "min_ms": 0.026272,
+            "p95_ms": 0.027264,
+            "samples": 24
+          },
+          "shade": {
+            "max_ms": 0.13263999999999998,
+            "median_ms": 0.131968,
+            "min_ms": 0.131456,
+            "p95_ms": 0.13241599999999998,
+            "samples": 24
+          },
+          "tonemap": {
+            "max_ms": 0.020352,
+            "median_ms": 0.020159999999999997,
+            "min_ms": 0.020064,
+            "p95_ms": 0.020319999999999998,
+            "samples": 24
+          },
+          "wheel particles": {
+            "max_ms": 0.0012799999999999999,
+            "median_ms": 0.001248,
+            "min_ms": 0.001184,
+            "p95_ms": 0.0012799999999999999,
+            "samples": 24
+          }
+        },
+        "views": 4
+      },
+      {
+        "mode": "baked",
+        "output_size": [
+          1280,
+          720
+        ],
+        "per_pass": {
+          "bloom": {
+            "max_ms": 0.065408,
+            "median_ms": 0.0616,
+            "min_ms": 0.059968,
+            "p95_ms": 0.06336,
+            "samples": 24
+          },
+          "cull": {
+            "max_ms": 0.031168,
+            "median_ms": 0.030848,
+            "min_ms": 0.030784,
+            "p95_ms": 0.031167999999999994,
+            "samples": 24
+          },
+          "exhaust": {
+            "max_ms": 0.0012799999999999999,
+            "median_ms": 0.001248,
+            "min_ms": 0.001216,
+            "p95_ms": 0.0012799999999999999,
+            "samples": 24
+          },
+          "fx": {
+            "max_ms": 0.20784,
+            "median_ms": 0.20457599999999998,
+            "min_ms": 0.202048,
+            "p95_ms": 0.206848,
+            "samples": 24
+          },
+          "raster": {
+            "max_ms": 0.027583999999999997,
+            "median_ms": 0.026784,
+            "min_ms": 0.026144,
+            "p95_ms": 0.027392,
+            "samples": 24
+          },
+          "shade": {
+            "max_ms": 0.13251200000000002,
+            "median_ms": 0.131904,
+            "min_ms": 0.131584,
+            "p95_ms": 0.13228800000000002,
+            "samples": 24
+          },
+          "tonemap": {
+            "max_ms": 0.020352,
+            "median_ms": 0.020159999999999997,
+            "min_ms": 0.02,
+            "p95_ms": 0.020288,
+            "samples": 24
+          },
+          "wheel particles": {
+            "max_ms": 0.0012799999999999999,
+            "median_ms": 0.0012799999999999999,
+            "min_ms": 0.001216,
+            "p95_ms": 0.0012799999999999999,
+            "samples": 24
+          }
+        },
+        "views": 4
+      }
+    ],
+    "frames_per_case": 24,
+    "scope": "GPU pass timestamps in a bounded static fixture; readback, compilation and startup excluded; not gameplay FPS or 4K acceptance",
+    "warmup_frames_per_case": 12
+  }
+}

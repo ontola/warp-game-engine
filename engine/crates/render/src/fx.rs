@@ -27,6 +27,10 @@ const COLUMN_VERTICES: u32 = 3; // One ray-integrated volume, including camera-i
 const STREAK_VERTICES: u32 = 6 * 12;
 const MOTE_VERTICES: u32 = 6;
 const MAX_PUFFS: usize = 16384;
+const MAX_SMOKE_VOLUMES: usize = 16;
+const SMOKE_SIZE: u32 = 48;
+const SMOKE_FRAMES: u32 = 32;
+const SMOKE_BYTES: &[u8] = include_bytes!("../../../assets/fx/explosion-smoke.rg8");
 /// Heat shells only for blasts at least this big (Godot BLAST_DISTORTION_MIN_RADIUS).
 pub const DISTORTION_MIN_RADIUS: f32 = 5.0;
 
@@ -49,6 +53,7 @@ const HEAT: f32 = 3.0;
 const COLUMN: f32 = 4.0;
 const STREAK: f32 = 5.0;
 const MOTE: f32 = 6.0;
+const BAKED_SMOKE: f32 = 7.0;
 
 /// An emissive volume animated entirely from its birth time. Values are
 /// metres, seconds and linear RGB radiance in nits. `position` is the bottom
@@ -235,6 +240,7 @@ pub struct Effects {
     pops: Vec<LightPop>,
     rng: u64,
     changed: bool,
+    baked_smoke: bool,
     /// Candela per unit of Godot light energy: Godot lights a surface at
     /// distance d with energy / d^attenuation times its sun, so one unit at
     /// 1 m is about a sun's worth (37,000 lux horizontal at midday).
@@ -244,7 +250,7 @@ pub struct Effects {
 }
 
 impl Default for Effects {
-    fn default() -> Self { Effects { puffs: Vec::new(), pops: Vec::new(), rng: 0x2545_F491_4F6C_DD1D, changed: false, light_scale: 37_000.0, smooth_billows: false } }
+    fn default() -> Self { Effects { puffs: Vec::new(), pops: Vec::new(), rng: 0x2545_F491_4F6C_DD1D, changed: false, baked_smoke: false, light_scale: 37_000.0, smooth_billows: false } }
 }
 
 impl Effects {
@@ -259,6 +265,12 @@ impl Effects {
     pub fn len(&self) -> usize { self.puffs.len() }
     pub fn is_empty(&self) -> bool { self.puffs.is_empty() }
     pub fn clear(&mut self) { self.puffs.clear(); self.pops.clear(); self.changed = true; }
+
+    /// Use the baked volume animation for subsequent explosions. Other smoke
+    /// (blood mist, gib mist) and previously spawned effects are unchanged.
+    /// The animation is visual only, shared by every view and driven by the
+    /// same interpolated clock as the blast's fire, lights and embers.
+    pub fn set_baked_smoke(&mut self, enabled: bool) { self.baked_smoke = enabled; }
 
     /// Spawn one GPU-animated column. Oldest effects are recycled at the
     /// shared pool limit, including when many future births are scheduled.
@@ -291,9 +303,32 @@ impl Effects {
     /// `color` tints embers (Godot passes the bullet colour).
     pub fn explosion(&mut self, time: f32, pos: Vec3, radius: f32, color: Vec3) {
         let r = radius.max(0.5);
-        // Smoke: dark, lingering, rising (spawn_blast_fire_smoke).
+        // Consume the same recipe RNG in either mode: enabling volume smoke
+        // must not change the subsequent fire, embers or their trajectories.
+        let smoke_start = self.puffs.len();
         let n = ((r * 1.1) as i32).clamp(8, 24) as usize;
         self.billows(time, pos, r, n, false, 0.5 + r * 0.13, 0.5, 1.3, r * 0.7, 1.0, 0.0, Vec3::ONE, 1.0);
+        if self.baked_smoke {
+            self.puffs.truncate(smoke_start);
+            self.puffs.retain(|p| p.kind() != BAKED_SMOKE as u32 || p.end() > time);
+            if self.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count() >= MAX_SMOKE_VOLUMES {
+                if let Some(oldest) = self.puffs.iter().position(|p| p.kind() == BAKED_SMOKE as u32) {
+                    self.puffs.remove(oldest);
+                }
+            }
+            let yaw = (self.rng >> 40) as f32 / (1u64 << 24) as f32 * std::f32::consts::TAU;
+            let (sin, cos) = yaw.sin_cos();
+            let side = r * 2.4;
+            self.puffs.push(Puff {
+                center_kind: (pos - Vec3::Y * r * 0.12).extend(BAKED_SMOKE).to_array(),
+                ax: [cos * side, 0.0, -sin * side, 0.0],
+                ay: [0.0, side, 0.0, 0.0],
+                az: [sin * side, 0.0, cos * side, 0.0],
+                body: [1.0, 0.97, 0.92, 14.0],
+                timing: [time, 2.6, 0.0, 0.0],
+                ..Default::default()
+            });
+        }
         // Fireball (spawn_blast_fire_clouds).
         let n = ((r * 0.8) as i32).clamp(6, 18) as usize;
         self.billows(time, pos, r, n, true, 0.35 + r * 0.055, 0.3, 0.7, r * 0.3, 1.0, 0.0, Vec3::ONE, 1.0);
@@ -508,7 +543,11 @@ impl DrawOrder {
         for (i, p) in source.iter().enumerate() {
             if p.end() <= time || p.timing[0] > time { continue; }
             match p.kind() {
-                0 | 1 => self.billows.push((i as u32, Vec3::from_slice(&p.center_kind[..3]).distance_squared(camera))),
+                0 | 1 | 7 => {
+                    let mut center = Vec3::from_slice(&p.center_kind[..3]);
+                    if p.kind() == BAKED_SMOKE as u32 { center += Vec3::from_slice(&p.ay[..3]) * 0.5; }
+                    self.billows.push((i as u32, center.distance_squared(camera)));
+                },
                 2 => self.embers.push(i as u32),
                 3 => self.heat.push(i as u32),
                 4 => self.columns.push(i as u32),
@@ -536,7 +575,10 @@ pub(crate) struct FxRenderer {
     column: wgpu::RenderPipeline,
     streak: wgpu::RenderPipeline,
     mote: wgpu::RenderPipeline,
-    ldr: Option<(wgpu::TextureFormat,[wgpu::RenderPipeline;5])>,
+    smoke: wgpu::RenderPipeline,
+    smoke_view: wgpu::TextureView,
+    smoke_loaded: bool,
+    ldr: Option<(wgpu::TextureFormat,[wgpu::RenderPipeline;6])>,
     sampler: wgpu::Sampler,
     puffs: wgpu::Buffer,
     source: Vec<Puff>,
@@ -549,12 +591,13 @@ pub fn shader_source() -> &'static str { include_str!("shaders/fx.wgsl") }
 
 impl FxRenderer {
     fn new(gpu: &Gpu) -> Self {
-        let entries: Vec<_> = (0..6).map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None,
+        let entries: Vec<_> = (0..7).map(|binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None,
             ty: match binding {
                 0 => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                 1 | 2 => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
                 3 => wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
                 4 => wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                6 => wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false },
                 _ => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             } }).collect();
         let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("fx"), entries: &entries });
@@ -574,29 +617,52 @@ impl FxRenderer {
         let column = pipe("fx_column_vs", "fx_column", additive);
         let streak = pipe("fx_streak_vs", "fx_streak", additive);
         let mote = pipe("fx_mote_vs", "fx_mote", additive);
+        let smoke = pipe("fx_smoke_vs", "fx_smoke", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        // A tiny empty binding keeps games without baked smoke from allocating
+        // or uploading the 6.75 MiB animation. Replace it on the first spawn.
+        let smoke_view = Self::smoke_texture(gpu, false);
         let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor { label: Some("fx background"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear,
-            address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, ..Default::default() });
+            address_mode_u: wgpu::AddressMode::ClampToEdge, address_mode_v: wgpu::AddressMode::ClampToEdge, address_mode_w: wgpu::AddressMode::ClampToEdge, ..Default::default() });
         let puffs = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("fx puffs"), size: (MAX_PUFFS * std::mem::size_of::<Puff>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        FxRenderer { layout, billow, ember, heat, column, streak, mote, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
+        FxRenderer { layout, billow, ember, heat, column, streak, mote, smoke, smoke_view, smoke_loaded: false, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
             draw_order: DrawOrder::default(), targets: Vec::new() }
     }
 
-    fn ldr_pipelines(&self,gpu:&Gpu,format:wgpu::TextureFormat)->[wgpu::RenderPipeline;5] {
+    fn ldr_pipelines(&self,gpu:&Gpu,format:wgpu::TextureFormat)->[wgpu::RenderPipeline;6] {
         let shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimum gameplay FX"),source:wgpu::ShaderSource::Wgsl(shader_source().into())});
         let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&self.layout)],immediate_size:0});
         let additive=wgpu::BlendState{color:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::One,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Zero,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add}};
-        [("fx_vs","fx_billow",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),("fx_vs","fx_ember",additive),("fx_column_vs","fx_column",additive),("fx_streak_vs","fx_streak",additive),("fx_mote_vs","fx_mote",additive)].map(|(vertex,fragment,blend)|
+        [("fx_vs","fx_billow",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),("fx_vs","fx_ember",additive),("fx_column_vs","fx_column",additive),("fx_streak_vs","fx_streak",additive),("fx_mote_vs","fx_mote",additive),("fx_smoke_vs","fx_smoke",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)].map(|(vertex,fragment,blend)|
             gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some(fragment),layout:Some(&layout),
                 vertex:wgpu::VertexState{module:&shader,entry_point:Some(vertex),compilation_options:Default::default(),buffers:&[]},
                 primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},depth_stencil:None,multisample:Default::default(),
                 fragment:Some(wgpu::FragmentState{module:&shader,entry_point:Some(fragment),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:Some(blend),write_mask:wgpu::ColorWrites::ALL})]}),multiview_mask:None,cache:gpu.pipeline_cache()}))
     }
 
+    fn smoke_texture(gpu: &Gpu, animation: bool) -> wgpu::TextureView {
+        let side = if animation { SMOKE_SIZE } else { 1 };
+        let depth = if animation { SMOKE_SIZE * SMOKE_FRAMES } else { 1 };
+        let size = wgpu::Extent3d { width: side, height: side, depth_or_array_layers: depth };
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("baked explosion density and light"), size, mip_level_count: 1,
+            sample_count: 1, dimension: wgpu::TextureDimension::D3, format: wgpu::TextureFormat::Rg8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+        });
+        let bytes = if animation { SMOKE_BYTES } else { &[0, 255] };
+        gpu.queue.write_texture(texture.as_image_copy(), bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(side * 2), rows_per_image: Some(side) }, size);
+        texture.create_view(&Default::default())
+    }
+
     fn set(&mut self, gpu: &Gpu, time: f32, puffs: Option<&[Puff]>) {
         self.time = time;
         if let Some(p) = puffs {
             let p = &p[..p.len().min(MAX_PUFFS)];
+            if !self.smoke_loaded && p.iter().any(|p| p.kind() == BAKED_SMOKE as u32) {
+                self.smoke_view = Self::smoke_texture(gpu, true);
+                self.smoke_loaded = true;
+            }
             self.source.clear();
             self.source.extend_from_slice(p);
             if !p.is_empty() { gpu.queue.write_buffer(&self.puffs, 0, bytemuck::cast_slice(p)); }
@@ -661,7 +727,7 @@ impl FxRenderer {
         let bind = t.binds.get(gpu, &self.layout, "cached fx view", &[
             (0, t.uniform.as_entire_binding()), (1, self.puffs.as_entire_binding()), (2, t.order.as_entire_binding()),
             (3, wgpu::BindingResource::TextureView(&background)), (4, wgpu::BindingResource::TextureView(depth)),
-            (5, wgpu::BindingResource::Sampler(&self.sampler))]);
+            (5, wgpu::BindingResource::Sampler(&self.sampler)), (6, wgpu::BindingResource::TextureView(&self.smoke_view))]);
         let direct_view=ldr.then(||input.create_view(&Default::default()));
         let pipelines=self.ldr.as_ref().map(|(_,p)|p);
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("fx"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: direct_view.as_ref().unwrap_or(&t.output_view), depth_slice: None,
@@ -669,7 +735,19 @@ impl FxRenderer {
             depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
         pass.set_bind_group(0, &bind, &[]);
         if !ldr && nh > 0 { pass.set_pipeline(&self.heat); pass.draw(0..SPHERE_VERTICES, 0..nh); }
-        if nb > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[0]}else{&self.billow}); pass.draw(0..BILLOW_VERTICES, nh..nh + nb); }
+        // A volume participates in the same back-to-front order as the fire.
+        // Batch adjacent kinds, retaining one shared upload and bind per view.
+        let mut start = nh;
+        while start < nh + nb {
+            let volume = self.source[self.draw_order.ids[start as usize] as usize].kind() == BAKED_SMOKE as u32;
+            let mut end = start + 1;
+            while end < nh + nb && (self.source[self.draw_order.ids[end as usize] as usize].kind() == BAKED_SMOKE as u32) == volume { end += 1; }
+            let pipeline = if volume { if ldr { &pipelines.unwrap()[5] } else { &self.smoke } }
+                else if ldr { &pipelines.unwrap()[0] } else { &self.billow };
+            pass.set_pipeline(pipeline);
+            pass.draw(0..if volume { 6 } else { BILLOW_VERTICES }, start..end);
+            start = end;
+        }
         if ne > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[1]}else{&self.ember}); pass.draw(0..SPHERE_VERTICES, nh + nb..nh + nb + ne); }
         if nc > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[2]}else{&self.column}); pass.draw(0..COLUMN_VERTICES, nh + nb + ne..nh + nb + ne + nc); }
         if ns > 0 { pass.set_pipeline(if ldr{&pipelines.unwrap()[3]}else{&self.streak}); pass.draw(0..STREAK_VERTICES, nh + nb + ne + nc..nh + nb + ne + nc + ns); }
@@ -771,6 +849,82 @@ mod tests {
         let mut small = Effects::default();
         small.explosion(0.0, Vec3::ZERO, 4.0, Vec3::ONE);
         assert!(small.puffs.iter().all(|p| p.center_kind[3] != HEAT));
+    }
+
+    #[test]
+    fn baked_smoke_changes_only_explosion_smoke_and_keeps_random_sequence() {
+        let mut plain = Effects::default();
+        let mut baked = Effects::default();
+        baked.set_baked_smoke(true);
+        for time in [0.0, 0.5] {
+            plain.explosion(time, Vec3::new(1.0, 2.0, -3.0), 6.5, Vec3::ONE);
+            baked.explosion(time, Vec3::new(1.0, 2.0, -3.0), 6.5, Vec3::ONE);
+        }
+        let ordinary = |fx: &Effects| fx.puffs.iter().copied()
+            .filter(|p| p.kind() != SMOKE as u32 && p.kind() != BAKED_SMOKE as u32).collect::<Vec<_>>();
+        assert_eq!(ordinary(&plain), ordinary(&baked));
+        assert_eq!(plain.rng, baked.rng);
+        assert_eq!(baked.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count(), 2);
+        assert!(!baked.puffs.iter().any(|p| p.kind() == SMOKE as u32));
+        baked.blood_mist(0.8, Vec3::ZERO, 3.0, 1);
+        assert!(baked.puffs.iter().any(|p| p.kind() == SMOKE as u32));
+        baked.clear();
+        baked.explosion(1.0, Vec3::ZERO, 3.0, Vec3::ONE);
+        assert_eq!(baked.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count(), 1);
+        baked.set_baked_smoke(false);
+        baked.clear();
+        baked.explosion(1.0, Vec3::ZERO, 3.0, Vec3::ONE);
+        assert!(!baked.puffs.iter().any(|p| p.kind() == BAKED_SMOKE as u32));
+    }
+
+    #[test]
+    fn baked_smoke_recycles_old_volumes_and_expires_before_new_spawns() {
+        let mut fx = Effects::default();
+        fx.set_baked_smoke(true);
+        for i in 0..MAX_SMOKE_VOLUMES + 4 {
+            fx.explosion(i as f32 * 0.01, Vec3::ZERO, 2.0, Vec3::ONE);
+        }
+        let volumes: Vec<_> = fx.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).collect();
+        assert_eq!(volumes.len(), MAX_SMOKE_VOLUMES);
+        assert_eq!(volumes[0].timing[0], 0.04);
+        for p in &volumes {
+            assert!((Vec3::from_slice(&p.ax[..3]).length() - 4.8).abs() < 1e-5);
+            assert!(Vec3::from_slice(&p.ax[..3]).dot(Vec3::from_slice(&p.az[..3])).abs() < 1e-4);
+            assert_eq!(p.timing[1], 2.6);
+        }
+        fx.explosion(4.0, Vec3::ZERO, 2.0, Vec3::ONE);
+        assert_eq!(fx.puffs.iter().filter(|p| p.kind() == BAKED_SMOKE as u32).count(), 1);
+    }
+
+    #[test]
+    fn volume_and_fire_share_view_order_and_lifetime_clipping() {
+        let source = [
+            Puff { center_kind: [0.0, 0.0, -4.0, FIRE], timing: [0.0, 1.0, 0.0, 0.0], ..Default::default() },
+            Puff { center_kind: [0.0, -1.0, -6.0, BAKED_SMOKE], ay: [0.0, 2.0, 0.0, 0.0],
+                timing: [0.0, 2.6, 0.0, 0.0], ..Default::default() },
+        ];
+        let mut order = DrawOrder::default();
+        assert_eq!(order.prepare(&source, 0.5, Vec3::ZERO), [0, 2, 0, 0, 0, 0]);
+        assert_eq!(order.ids, [1, 0]);
+        order.prepare(&source, 0.5, Vec3::NEG_Z * 10.0);
+        assert_eq!(order.ids, [0, 1]);
+        order.prepare(&source, 1.0, Vec3::ZERO);
+        assert_eq!(order.ids, [1]);
+        order.prepare(&source, 2.6, Vec3::ZERO);
+        assert!(order.ids.is_empty());
+    }
+
+    #[test]
+    fn baked_smoke_asset_has_empty_endpoints_and_changes_between_frames() {
+        let frame_bytes = (SMOKE_SIZE.pow(3) * 2) as usize;
+        assert_eq!(SMOKE_BYTES.len(), frame_bytes * SMOKE_FRAMES as usize);
+        assert!(SMOKE_BYTES[..frame_bytes].iter().step_by(2).all(|v| *v == 0));
+        assert!(SMOKE_BYTES[SMOKE_BYTES.len() - frame_bytes..].iter().step_by(2).all(|v| *v == 0));
+        let a = &SMOKE_BYTES[frame_bytes * 8..frame_bytes * 9];
+        let b = &SMOKE_BYTES[frame_bytes * 16..frame_bytes * 17];
+        assert!(a.iter().step_by(2).any(|v| *v > 128));
+        assert!(a.iter().zip(b).step_by(2).filter(|(a, b)| a != b).count() > 1000);
+        assert!(a.iter().skip(1).step_by(2).any(|v| *v < 200), "baked self-shadow must carry shape");
     }
 
     #[test]
