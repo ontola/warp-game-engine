@@ -31,7 +31,7 @@ pub struct Visuals {
     pub obstacles: Vec<spaceracer::environment::Obstacle>,
     pub slots: Slots,
     pub ships: Vec<Vec<ShipPart>>,
-    pub jets: Vec<(usize, SlotId)>,
+    pub jets: super::jets::Jets,
     pub pickup_mesh: usize,
     pub pickup_slots: Vec<SlotId>,
     pub projectile_mesh: usize,
@@ -88,50 +88,6 @@ pub(super) fn surface(scene: &mut Scene, kind: i32, tint: [f32; 3], rough: f32, 
         flags: SURFACE,
         scale,
     })
-}
-fn jet_mesh(scene: &mut Scene, night: bool) -> usize {
-    let mask = image::RgbaImage::from_fn(64, 256, |x, y| {
-        let u = x as f32 / 63. * 2. - 1.;
-        let v = ((y as f32 - 12.) / 227.).clamp(0., 1.);
-        let width = (1. - v).powf(0.6) * (0.85 + 0.025 * (v * 32.).sin());
-        let a = (1. - (u / width.max(0.01)).powi(2)).max(0.).powf(2.) * (1. - v).powf(1.2);
-        image::Rgba([
-            155,
-            210,
-            255,
-            if y < 12 || y > 239 {
-                0
-            } else {
-                (a * 200.) as u8
-            },
-        ])
-    });
-    let layer = scene.add_image("spaceracer-plasma-profile", mask);
-    let mat = scene.add_material(Material {
-        tint: [0.2, 0.5, 1.],
-        layer,
-        roughness: 1.,
-        metal: 0.,
-        flags: EMISSIVE,
-        scale: if night { 650. } else { 35000. },
-    });
-    scene.set_material_additive(mat, 0.65, true);
-    let mut p = Primitive {
-        material: mat,
-        ..Default::default()
-    };
-    for k in 0..3 {
-        let a = k as f32 * std::f32::consts::PI / 3.;
-        let r = Vec3::new(a.cos(), a.sin(), 0.) * 0.7;
-        let tail = -Vec3::Z;
-        quad(
-            &mut p,
-            [-r, r, r + tail, -r + tail],
-            [Vec3::new(-a.sin(), a.cos(), 0.); 4],
-            [[0., 0.], [1., 0.], [1., 1.], [0., 1.]],
-        );
-    }
-    scene.add_mesh(&p.mesh())
 }
 fn track_lights(scene: &mut Scene, race: &Race) -> Vec<render::headlights::LocalLight> {
     let mut lights = Vec::new();
@@ -674,12 +630,7 @@ impl Visuals {
                     .unwrap()
             })
             .collect();
-        let mut jets = vec![];
-        let mesh = jet_mesh(&mut scene, race.biome == "city" || race.biome == "cell");
-        for _ in 0..12 {
-            let id = slots.add(&mut scene, mesh, Affine3A::IDENTITY).unwrap();
-            jets.push((mesh, id));
-        }
+        let jets = super::jets::Jets::new(root)?;
         Ok(Self {
             stage,
             scene,
@@ -703,16 +654,20 @@ impl Visuals {
         })
     }
     pub fn update(&mut self, race: &Race, previous: &[spaceracer::race_rules::Pose], alpha: f32) {
-        let time = race.tick as f32 / 120.;
+        let time = (race.tick.saturating_sub(1) as f32 + alpha) / 120.;
         self.stage.update(
             &mut self.scene,
             &mut self.slots,
             (race.tick as f32 - 1. + alpha).max(0.) / 120.,
         );
-        let fresh = time > self.fx_stamp;
-        self.fx_stamp = time;
+        // Emit discrete weapon events once per simulation tick, even when
+        // several interpolated presentation frames fall between two ticks.
+        let tick_time = race.tick as f32 / 120.;
+        let fresh = tick_time > self.fx_stamp;
+        self.fx_stamp = tick_time;
         // Explicit interpolation in draw handles >4 m/tick boosts; generic Slots
         // would classify that speed as a teleport.
+        let mut poses = Vec::with_capacity(race.pilots.len());
         for i in 0..race.pilots.len() {
             let mut pose = race.pose(i);
             if let Some(prev) = previous.get(i) {
@@ -721,29 +676,15 @@ impl Visuals {
                     Quat::from_mat3(&prev.basis).slerp(Quat::from_mat3(&pose.basis), alpha),
                 );
             }
+            poses.push(pose.clone());
             let p = &race.pilots[i];
             let input = race.drivers[i].input.drive;
             let base = Affine3A::from_mat3_translation(pose.basis, pose.origin);
             for part in &self.ships[i] {
                 let mut xf = base;
                 for (name, local) in &part.chain {
-                    let mut local = *local;
-                    let rot = if name.starts_with("WingControl") {
-                        let side = if name.ends_with('L') { -1. } else { 1. };
-                        Quat::from_rotation_x(
-                            (-input.trim * 0.55 - input.strafe * side * 0.5 + input.brake * 0.6)
-                                as f32,
-                        ) * Quat::from_rotation_z((-input.strafe * 0.16) as f32)
-                    } else if name.starts_with("Rudder") {
-                        Quat::from_rotation_y(
-                            (input.steer.signum() * input.steer.abs().powf(0.72) * 0.7) as f32,
-                        )
-                    } else if name.starts_with("Airbrake") {
-                        Quat::from_rotation_x(input.brake as f32 * 1.15)
-                    } else {
-                        Quat::IDENTITY
-                    };
-                    local.matrix3 *= glam::Mat3A::from_quat(rot);
+                    let local =
+                        super::jets::control_transform(name, *local, input, input.brake as f32);
                     xf *= local;
                 }
                 if p.crashed {
@@ -763,38 +704,16 @@ impl Visuals {
                         Vec3::splat(0.001)
                     },
                     Quat::IDENTITY,
-                    Vec3::new(0., 1.5, -1.),
+                    Vec3::from_array(self.jets.config.socket),
                 ),
             );
-            for side in 0..2 {
-                let (mesh, id) = self.jets[i * 2 + side];
-                let power = if p.crashed || p.emp_time > 0. {
-                    0.
-                } else {
-                    input.throttle as f32
-                };
-                let boosted = p.boost > 0. || p.on_pad;
-                let local = Vec3::new(if side == 0 { -2.45 } else { 2.45 }, -0.12, -3.8);
-                let pulse = 1. + 0.06 * (time * 91. + i as f32 * 3.).sin();
-                let length = (1.5 + power * 2. + if boosted { 4. } else { 0. }) * power;
-                self.slots.set(
-                    &mut self.scene,
-                    id,
-                    mesh,
-                    base * Affine3A::from_scale_rotation_translation(
-                        Vec3::new(power * 1.15, power * 1.15, length * pulse)
-                            .max(Vec3::splat(0.001)),
-                        Quat::IDENTITY,
-                        local,
-                    ),
-                );
-            }
             if race.drivers[i].motion.crash_id > self.crashes[i] {
                 self.crashes[i] = race.drivers[i].motion.crash_id;
                 self.fx
                     .explosion(time, pose.origin, 12., Vec3::new(1., 0.3, 0.05));
             }
         }
+        self.jets.update(race, &poses, time);
         for (k, p) in race.pickups.iter().enumerate() {
             let n = race.world.track.sample(p.distance);
             let size = if p.cooldown > 0. { 0.001 } else { 3. };
@@ -804,7 +723,7 @@ impl Visuals {
                 self.pickup_mesh,
                 Affine3A::from_scale_rotation_translation(
                     Vec3::splat(size),
-                    Quat::from_rotation_y(race.clock as f32) * Quat::from_rotation_z(0.7),
+                    Quat::from_rotation_y(time) * Quat::from_rotation_z(0.7),
                     n.point(p.x, 4.),
                 ),
             );

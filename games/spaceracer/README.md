@@ -55,6 +55,8 @@ Edit [`rules/game.luau`](rules/game.luau). No rebuild for:
 - `balance`: cooldowns, regeneration, weapon damage/duration, pickup density.
 - `menu`: navigation and settings changes.
 - `environment`: fallback collision ground and lighting/exposure.
+- [`rules/jets.luau`](rules/jets.luau): engine anchors, weapon socket, plume length,
+  throttle response, light intensity, heat and trail lifetime. Read on the next race.
 - [`rules/stages.luau`](rules/stages.luau): source-based stage composition, building
   families/roofs/posters, traffic lanes, tree age/scale, cell structures, reef
   plants and creature placement. Read when generating the next race.
@@ -117,9 +119,15 @@ city lighting remains an artistic night setup configured from Luau. Separate
 directional ambient probes keep ships/roads legible without brightening the
 night sky; they are authored ambient light, not baked scene GI.
 
-Exhaust is a soft, tapered additive mesh with throttle/boost-scaled length.
-Its bounded local lights follow the interpolated hull and create real local
-specular highlights on roads and nearby ships. Roads now also trace bounded analytic rays against nearby facade boxes and
+Exhaust uses per-view axis-facing plasma, hot nozzle cores, depth-occluded
+anamorphic flares, soft fast wisps and short electrical boost discharges.
+Throttle lights the nozzle before the countdown finishes; acceleration and
+boost lengthen the plume. Braking opens the source airbrake pivots and fires
+orange reverse jets. Heat refracts the actual background; bounded 0.38-second
+phosphor trails follow the driven path and clear on crash/recovery/teleport.
+Effects freeze with race time and shut down immediately during EMP.
+Their bounded local lights follow the same interpolated engine state and create
+real specular highlights on roads and nearby ships. Roads now also trace bounded analytic rays against nearby facade boxes and
 actual billboard planes, sampling the retained office/poster artwork. This is
 not hardware ray tracing or full-scene SSR: thin ribs, traffic and arbitrary
 geometry are not included. Full foliage, HUD and effect fidelity remain outstanding.

@@ -1,3 +1,55 @@
+# Exhaust and aircraft corrections - 31 October 2026
+
+Baseline: 7488c0b. Source `ship.gd`, `racer_design.gd`, plasma/glow/flare/
+boost-trail shaders inform the native implementation; retained assets unchanged.
+No retired runtime or export tools were run.
+
+- Replaced intersecting static white plume sheets with per-view procedural
+  plasma: narrow hot core, coloured transparent envelope and moving shock cells.
+- Restored nozzle glows, source-occluded horizontal flares, actual background
+  heat refraction, orange reverse jets and short soft exhaust wisps. Wisps move
+  backwards relative to the craft faster than its forward speed.
+- Throttle drives the nozzle even during countdown; acceleration/boost extend
+  the plume. Coloured local lights share that same state. EMP, crash and
+  recovery suppress them immediately; releasing throttle fades smoothly.
+- Boost adds irregular discharges that change on each advancing presentation
+  frame, and 0.38-second world-space phosphor trails. Pause freezes effects;
+  crash/recovery/teleport clears trail history. No per-frame mesh generation.
+- Restored source YXZ component replacement for wings, rudders and brakes;
+  preserves authored sweep/cant and clamps wing travel. Weapon mounts use the
+  source universal socket (0, 1.15, -1.8), instead of floating higher/forward.
+- `rules/jets.luau` holds effect tuning and anchors, read when generating a race.
+  GPU shading, bounded geometry/history and per-frame interpolation stay native.
+
+## Evidence
+
+26 focused sim/app checks pass. `scenarios/jet-effects.json` captures 24 advancing
+boost frames, countdown, throttle, brake and pause (601 ticks). It uses a virtual
+controller, not physical hardware. The existing 1,207-tick controller/pause/EMP
+scenario also passes. The initial test script incorrectly sent analog triggers
+to a keyboard seat; it was corrected to a virtual pad before the final run.
+
+Artifacts in `build/spaceracer-jets/`: `city.png`, `forest.png`, `four.png`,
+`effects/boost-18.png`, `effects/boost-motion.webp`, `effects/countdown-throttle.png`,
+`effects/brake.png` and `controller-flow/`. City/day/four-view images were inspected.
+The moving sequence advances two 120 Hz ticks per frame. Pause effect buffers
+are identical in the unit check; complete pause screenshots differ by about
+0.47/255 mean RGB as temporal reconstruction settles, so pixel identity is not
+claimed. Hardware controllers and production GameNight were not tested.
+
+Four-view city, seed 31, 750 warmup ticks, 1920x1080, 120 moving frames,
+RTX 5070 Ti / Vulkan / NVIDIA 617.14: **81.11 headless readback frames/s**.
+Smoothed reported sprite and exhaust passes were 0.050 and 0.047 ms respectively.
+These counters are not full-frame timings and must not be summed across views.
+Background load was not isolated; no steady 120 fps or improvement over the
+prior run is claimed. Report: `four-bench.json`.
+
+This improves the exhaust and aircraft details; full weapon meshes, visor,
+wear/debris/respawn presentation and the listed missing stage features remain.
+The source formulas are adapted to Warp, not a claim of identical rendering.
+
+---
+
 # Stage restoration review - 31 October 2026
 
 Baseline: native commit 08a9888, which still replaced original stages with
