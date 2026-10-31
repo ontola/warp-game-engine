@@ -59,6 +59,7 @@ impl BodyDesc {
 }
 
 pub struct Physics {
+    passive_joints: Vec<ragdoll::PassiveJoint>,
     pub world: PhysicsWorld,
     /// Simulation steps per `step` call (smaller steps, same dt total).
     pub substeps: u32,
@@ -70,7 +71,7 @@ impl Physics {
         let mut world = PhysicsWorld::default();
         world.gravity = to(gravity);
         world.integration_parameters.dt = 1.0 / hz;
-        Physics { world, substeps: 1 }
+        Physics { world, substeps: 1, passive_joints: Vec::new() }
     }
 
     pub fn add_static(&mut self, b: &YawBox) -> Static {
@@ -119,6 +120,7 @@ impl Physics {
     pub fn clear_bodies(&mut self) {
         let all: Vec<RigidBodyHandle> = self.world.bodies.iter().map(|(h, _)| h).collect();
         for h in all { self.remove(Body(h)); }
+        self.passive_joints.clear();
     }
 
     /// A ball joint: `a` and `b` stay connected at the given local anchors
@@ -177,7 +179,10 @@ impl Physics {
     pub fn step(&mut self) {
         let dt = self.world.integration_parameters.dt;
         if self.substeps > 1 { self.world.integration_parameters.dt = dt / self.substeps as f32; }
-        for _ in 0..self.substeps.max(1) { self.world.step(); }
+        for _ in 0..self.substeps.max(1) {
+            ragdoll::update_passive_joints(self);
+            self.world.step();
+        }
         self.world.integration_parameters.dt = dt;
     }
 

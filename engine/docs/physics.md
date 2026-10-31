@@ -88,4 +88,50 @@ that tumble, ragdolls and gibs. Its deterministic gameplay stays on
 - A collision layer for simple games beyond boxes: no meshes or
   heightfields in `kern::collide`.
 - A general vehicle API; Sideways' car model lives in the game.
-- Anatomical angular limits and skin-aware dismemberment for humanoid rigs.
+- Measured anatomical profiles, coupled swing/twist envelopes and skin-aware dismemberment for humanoid rigs.
+
+
+## Passive ragdoll joints
+
+`Ragdoll::set_angular_profile` adds three independent angular limits and
+force-based damped motors. Supply parent/child local joint frames calibrated
+against an authored reference skeleton, not the pose at death. An
+`AngularProfile` supplies hard min/max angles, a separate neutral target,
+soft-zone width, weak rest stiffness, edge stiffness, damping and a torque cap.
+`Physics::step` updates the motors before each substep. It combines the neutral
+spring with an edge spring whose stiffness rises quadratically over the soft
+zone; the solver still enforces the hard boundary. Motor forces do not wake a
+sleeping body on their own. Removing a rig also removes its passive controls.
+
+The Growing Guns profile is game tuning, not measured anatomical data. Its
+model assets contain bind transforms and animation, **no** joint ROM or muscle
+rest metadata. Bind-relative skin rotations calibrate the joint frames so that
+dying mid-run does not redefine neutral. Knees/elbows allow mainly flexion;
+hips, shoulders, neck and spine have wider three-axis motion. Rest springs are
+weak and torque-limited so gravity and contacts can win. The skin is never
+snapped to a neutral pose. The primitive fallback retains its old physics.
+
+The reference is a relaxed, slightly flexed posture, informed by the concept of
+[NASA neutral body posture](https://www.nasa.gov/image-article/neutral-body-posture-specifications/),
+not a literal microgravity posture forced on a body lying on the floor. Neutral
+is not necessarily the arithmetic midpoint of a joint's motion range.
+[Rapier joints](https://rapier.rs/docs/user_guides/templates/joints/) provide
+limits and motors; the progressive response is implemented here.
+
+Limitations: three independent angular coordinates approximate anatomy; they
+are not a coupled shoulder swing cone or a musculoskeletal model. Self-collision
+within one corpse is still disabled. Hand/foot articulation, active balance,
+protective reflexes and injury-dependent muscle tone are not modeled. Hard
+limits are numerical solver constraints and may transiently overshoot under
+large impulses. Tuning and tests do not establish anatomical accuracy.
+
+
+Validation (31 October 2026): 13 physics unit tests pass, including progressive
+response at both edges, return to neutral after a torque impulse, limit
+overshoot tolerance and exact repeatability. The character test loads all three
+roster assets, preserves the initial world skin pose, and steps ten seconds
+onto a floor; lifecycle cleanup also passes. A 255-tick headless gameplay
+fixture captures alive/death/falling/bending/settled at 960x540 with an explicit
+open arena (`games/growing-guns/scripts/character-ragdoll.json`). Static captures
+verify presentation at those times, not continuous motion quality, worst-case
+performance, every death mode, multiplayer or Quest hardware.
