@@ -208,8 +208,19 @@ do not establish 120 fps with active VR gameplay. Reproduce with
 the baseline or `--covered` for opaque occlusion. Android builds use cargo-ndk
 and link the NDK's `libc++_shared.so`. The current-pose muzzle regression and
 97 active Growing Guns app tests pass (two ignored); the native stereo firing
-capture shows the flash at the tracked barrel. Physical headset visibility
-and sustained effects-heavy performance still require active play.
+capture shows the flash at the tracked barrel. Physical headset visibility still needs the player's confirmation.
+
+A subsequent active headset run of `6717994` on 31 October (09:53:00–09:54:04
+Europe/Amsterdam, after startup) recorded 64 one-second VrApi samples at
+1440×1584 per eye and 120 Hz. Mean reported application FPS was 107.1, median
+118; 37 samples were at least 115 and 13 were below 90. The lowest sample was
+46 FPS. The highest reported sample was 121, an interval-counting artifact
+on a 120 Hz display. Controller tracking and focus were active; the filtered
+WarpXR/AndroidRuntime capture contained no errors. This confirms rendering
+during play, but not stable 120 FPS or the visibility of each effect. There
+was no matched pre-change gameplay run, so these dips cannot be attributed
+to lava from this capture. Local evidence is in
+`build/quest-native/lava-live-20261031.{log,json}`.
 
 For diagnostics, use `adb logcat --pid=$(adb shell pidof com.ontola.warp.growingguns)`.
 Startup errors are tagged `WarpXR`. Preserve logs before restarting the app.
