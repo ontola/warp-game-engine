@@ -27,10 +27,10 @@ fn input(c: &Controls) -> Input {
     Input {
         mv: c.mv,
         look: [-c.look[0], c.look[1]],
-        // Godot's bindings: A or LB jump, Y or RB (Shift) dash, X reload,
+        // A or LB jump, X reload,
         // RT (LMB) fire, LT or B (RMB) special.
         jump: c.pressed.has(Buttons::SOUTH | Buttons::LEFT_SHOULDER),
-        dash: c.pressed.has(Buttons::NORTH | Buttons::RIGHT_SHOULDER),
+        dash: false,
         reload: c.pressed.has(Buttons::WEST),
         fire: c.held.has(Buttons::RIGHT_TRIGGER),
         special: c.held.has(Buttons::LEFT_TRIGGER | Buttons::EAST),

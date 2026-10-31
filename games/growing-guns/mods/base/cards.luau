@@ -1,11 +1,11 @@
--- The card pool, a port of Godot's card_library.gd (same ids, names,
--- texts, colours, rarities and effects). This file hot-reloads: edit and
+-- The card pool: gun and character upgrades, without dash modifiers. This file hot-reloads: edit and
 -- save while the game runs. API: ../API.md (generated from the Rust side).
 --
 -- `apply(w)` mutates the player's Weapon like the Godot card does (field
 -- names are weapon.gd's). `tags = { "firepower" }` marks cards that improve
 -- the gun itself (every offer has one); `rarity = "rare"` makes a card less
--- likely. Godot helpers exist under the same names: Color, Vector3,
+-- likely. Damage, Big Mag and Rapid Fire have 3x common draw weight.
+-- Godot helpers exist under the same names: Color, Vector3,
 -- deg_to_rad, max, maxf, clampf, lerp.
 
 local cards = {
@@ -131,11 +131,6 @@ local cards = {
 			w.recoil_per_shot *= 0.65
 			w.bullet_color = lerp(w.bullet_color, Color(1.0, 0.72, 0.12), 0.65)
 		end },
-	{ id = "ninja", name = "NINJA", desc = "Shift ends with a quick slash", color = Color(0.35, 0.38, 0.48),
-		apply = function(w)
-			w.dash_end_melee = true
-			w.bullet_color = lerp(w.bullet_color, Color(0.45, 0.48, 0.62), 0.25)
-		end },
 	{ id = "homing", name = "HOMING", desc = "Bullets lazily curve toward enemies", rarity = "rare", tags = { "firepower" }, color = Color(0.7, 1.0, 0.55),
 		apply = function(w)
 			w.homing += 25.0
@@ -233,10 +228,6 @@ local cards = {
 			w.max_hp_bonus -= 10
 			w.bullet_color = lerp(w.bullet_color, Color(1.0, 0.45, 0.08), 0.35)
 		end },
-	{ id = "dodge", name = "DODGE", desc = "Shift grants brief invulnerability", color = Color(0.72, 0.92, 1.0),
-		apply = function(w)
-			w.dash_iframes = true
-		end },
 	{ id = "drill_rounds", name = "DRILL ROUNDS", desc = "Bullets bore through walls before stopping", tags = { "firepower" }, color = Color(0.75, 0.75, 0.82),
 		apply = function(w)
 			w.world_pierce_count += 2
@@ -282,10 +273,6 @@ local cards = {
 	{ id = "cluster_grenade", name = "CLUSTER", desc = "RMB: grenade that splits into smaller blasts", rarity = "rare", color = Color(1.0, 0.52, 0.12),
 		apply = function(w)
 			w.special = "cluster_grenade"
-		end },
-	{ id = "backblast", name = "BACKBLAST", desc = "Shift leaves a bomb where you dashed from", color = Color(1.0, 0.42, 0.12),
-		apply = function(w)
-			w.dash_spawn_bomb = true
 		end },
 	{ id = "bazooka", name = "BAZOOKA", desc = "Slow rocket-like shots with a massive explosion", rarity = "rare", tags = { "firepower" }, color = Color(1.0, 0.25, 0.0),
 		apply = function(w)

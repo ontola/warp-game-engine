@@ -417,6 +417,7 @@ pub fn api_doc() -> String {
     s += "```\n\n";
     for (k, _, doc) in HOOKS { s += &format!("- `{k}`: {doc}\n"); }
     s += "\n```luau\ntype Hit = { victim: number, attacker: number, damage: number, head: boolean, explosion: boolean }\ntype Kill = { victim: number, attacker: number? }  -- attacker nil: lava\n```\n\n";
+    s += "Dash is retired. The `dash_iframes`, `dash_end_melee` and `dash_spawn_bomb` weapon fields remain readable for old replay compatibility but have no gameplay effect. `dmg_up`, `big_mag` and `rapid_fire` have three times the ordinary draw weight.\n\n";
     s += "## Cards\n\nThe pool is `mods/base/cards.luau`, a port of Godot's `card_library.gd`. A card's `apply(w)` mutates the player's `Weapon` exactly like the GDScript card does; the Godot helpers exist under the same names: `Color(r, g, b)`, `Vector3(x, y, z)`, `deg_to_rad`, `max`, `min`, `maxf`, `minf`, `clampf`, `lerp(a, b, t)` (numbers or vectors) and `warp(w, bone, scale)` for cosmetic bone scales. Weapons are rebuilt from the cards every round, so `apply` must only depend on `w`.\n\n```luau\ntype Card = {\n  id: string,             -- stable; what `give P ID` uses\n  name: string?, desc: string?,\n  color: vector?,         -- Color(r, g, b), sRGB 0..1\n  tags: { string }?,      -- \"firepower\": improves the gun (every offer has one)\n  rarity: string?,        -- \"common\" (weight 1) or \"rare\" (0.15, more for trailing players)\n  apply: ((w: Weapon) -> ())?,  -- the card's effect\n  mul: { [string]: number }?,  -- or as data: field multipliers, then\n  add: { [string]: number }?,  -- field additions\n  pick: ((g: Game, p: number) -> ())?,  -- runs once when taken (match effects)\n}\n```\n\n## `Weapon` fields\n\nNames match Godot's `weapon.gd`; read and write them as `w.field` in `apply`, or with `g:stat` / `g:set_stat`. Numbers unless noted.\n\n";
     for (name, kind) in weapon::FIELDS {
         let k = match *kind { "i32" => "whole number", "bool" => "boolean", "vec" => "vector", "color" => "colour (vector)", _ => "number" };
@@ -462,7 +463,8 @@ mod tests {
     fn base_cards_load_from_luau() {
         let (mut w, s) = world();
         let ids: Vec<String> = w.cards.enabled().map(|(_, d)| d.id.clone()).collect();
-        assert_eq!(ids.len(), 52, "Godot's card pool");
+        assert_eq!(ids.len(), 49, "card pool without dash modifiers");
+        for id in ["ninja", "dodge", "backblast"] { assert!(w.cards.find(id).is_none()); }
         assert_eq!(&ids[..3], ["dmg_up", "healthy", "steady_hands"]);
         let rare = w.cards.enabled().filter(|(_, d)| d.rare).count();
         assert_eq!(rare, 14, "card_library.gd has 14 rare cards");

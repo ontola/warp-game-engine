@@ -181,18 +181,6 @@ pub fn grenade(d: &mut HudDrawList, r: [f32; 4], color: C, clip: [f32; 4]) {
     d.rect([c[0] - s * 0.26, c[1] + s * 0.08, s * 0.52, s * 0.06], groove, clip);
 }
 
-pub fn dash(d: &mut HudDrawList, r: [f32; 4], color: C, clip: [f32; 4]) {
-    let s = r[2].min(r[3]);
-    let o = [r[0] + r[2] * 0.5 - s * 0.5, r[1] + r[3] * 0.5 - s * 0.5];
-    for k in 0..2 {
-        let x = o[0] + s * (0.06 + k as f32 * 0.38);
-        let col = if k == 0 { color } else { with_alpha(color, 0.6) };
-        // A chevron: two quads so the notch stays open.
-        d.polygon(&[[x, o[1] + s * 0.15], [x + s * 0.24, o[1] + s * 0.15], [x + s * 0.5, o[1] + s * 0.5], [x + s * 0.26, o[1] + s * 0.5]], col, clip);
-        d.polygon(&[[x + s * 0.26, o[1] + s * 0.5], [x + s * 0.5, o[1] + s * 0.5], [x + s * 0.24, o[1] + s * 0.85], [x, o[1] + s * 0.85]], col, clip);
-    }
-}
-
 /// A small button prompt ("LMB", "RT") hanging off an icon's bottom-right.
 pub fn prompt(d: &mut HudDrawList, r: [f32; 4], text: &str, clip: [f32; 4]) {
     let size = (r[3] * 0.42).round().max(9.0);

@@ -12,7 +12,7 @@ pub mod plates;
 pub mod style;
 
 use crate::view::PLAYER_COLORS_U8;
-use growing_guns::{Event, PickupKind, Phase, World, DT, MAX_DASH_CHARGES};
+use growing_guns::{Event, PickupKind, Phase, World, DT};
 use render::hud::HudDrawList;
 use style::*;
 
@@ -396,7 +396,7 @@ impl Hud {
         let clip = l.rect;
         let ghost = p.ghost;
         let pad = l.controller;
-        let panels: [(f32, f32); 4] = [(-290.0, font_big), (-140.0, font_big), (10.0, font_small), (160.0, font_small)];
+        let panels: [(f32, f32); 3] = [(-215.0, font_big), (-65.0, font_big), (85.0, font_small)];
         for (k, (px, font)) in panels.into_iter().enumerate() {
             let r = [cx + px * s * l.u, y, 130.0 * s * l.u, panel_h];
             // Each panel stands on its own slanted plate with the red edge.
@@ -438,23 +438,7 @@ impl Hud {
                         Label { size, ..label }.draw(d, &text, cx0, mid, clip);
                     }
                 }
-                _ => {
-                    let is = r[3] * 0.95;
-                    let ir = [r[0], r[1] + (r[3] - is) * 0.5, is, is];
-                    dash(d, ir, BONE, clip);
-                    prompt(d, ir, if pad { "RB" } else { "SHIFT" }, clip);
-                    let sx = r[0] + is + 8.0 * l.u;
-                    let total = (r[0] + r[2] - sx).max(0.0);
-                    let gap = 6.0 * l.u;
-                    let sw = (total - gap) * 0.5;
-                    let (bh, by) = (r[3] * 0.5, r[1] + r[3] * 0.25);
-                    for b in 0..MAX_DASH_CHARGES {
-                        let fill = if b < p.dash_charges { 1.0 } else if b == p.dash_charges { (p.dash_recharge / growing_guns::DASH_RECHARGE_TIME).clamp(0.0, 1.0) as f32 } else { 0.0 };
-                        let bx = sx + b as f32 * (sw + gap);
-                        d.rect([bx, by, sw, bh], [0.0, 0.0, 0.0, 0.55], clip);
-                        d.rect([bx, by, sw * fill, bh], BONE, clip);
-                    }
-                }
+                _ => unreachable!("three status panels"),
             }
         }
     }
@@ -612,7 +596,7 @@ fn back_out(t: f32) -> f32 { let (c1, c3) = (1.70158, 2.70158); 1.0 + c3 * (t - 
 /// Mouse names in prompts rewritten for a pad (Godot `hud_icon.gd`).
 pub fn prompt_text(s: &str, pad: bool) -> String {
     if !pad { return s.to_string(); }
-    s.replace("RMB", "LT").replace("LMB", "RT").replace("Shift", "RB").replace("SHIFT", "RB")
+    s.replace("RMB", "LT").replace("LMB", "RT")
 }
 
 /// A view's layout: its rectangle, pixels per design unit and Godot's

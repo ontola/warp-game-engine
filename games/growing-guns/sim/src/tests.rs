@@ -65,16 +65,25 @@ fn jumps_leave_at_full_speed_and_ledges_leave_two_air_jumps() {
 }
 
 #[test]
-fn dash_covers_about_four_metres_and_recharges_in_three_seconds() {
-    let mut w = flat_world();
-    let z0 = w.players[0].pos.z;
-    w.step(&[Input { dash: true, ..Default::default() }, Input::default()]);
-    idle(&mut w, 30);
-    let d = z0 - w.players[0].pos.z;
-    assert!((3.0..6.0).contains(&d), "{d}");
-    assert_eq!(w.players[0].dash_charges, 1);
-    idle(&mut w, 181 - 30);
-    assert_eq!(w.players[0].dash_charges, 2);
+fn legacy_dash_input_and_modifiers_have_no_effect() {
+    let mut ordinary = flat_world();
+    let mut legacy = flat_world();
+    legacy.players[0].weapon.dash_iframes = true;
+    legacy.players[0].weapon.dash_end_melee = true;
+    legacy.players[0].weapon.dash_spawn_bomb = true;
+    legacy.players[0].dash_charges = 2;
+    for _ in 0..180 {
+        let input = Input { mv: [0.0, 1.0], ..Default::default() };
+        ordinary.step(&[input, Input::default()]);
+        legacy.step(&[Input { dash: true, ..input }, Input::default()]);
+        assert_eq!(legacy.players[0].pos, ordinary.players[0].pos);
+        assert_eq!(legacy.players[0].vel, ordinary.players[0].vel);
+        assert_eq!(legacy.players[0].iframes, ordinary.players[0].iframes);
+        assert_eq!(legacy.players[0].dash_charges, 0);
+        assert_eq!(legacy.players[0].dash_timer, 0.0);
+        assert!(!legacy.events.iter().any(|e| matches!(e, Event::Dash { .. })));
+        assert_eq!(legacy.projectiles.len(), ordinary.projectiles.len());
+    }
 }
 
 #[test]
@@ -228,10 +237,10 @@ fn phoenix_rises_and_drops_back() {
 }
 
 #[test]
-fn dodge_blocks_damage_but_not_knockback() {
+fn invulnerability_blocks_damage() {
     let mut w = flat_world();
-    w.players[1].weapon.dash_iframes = true;
-    w.step(&[Input::default(), Input { dash: true, ..Default::default() }]);
+    w.players[1].iframes = 0.2;
+    w.step(&[Input::default(); 2]);
     assert!(w.players[1].iframes > 0.0);
     w.players[1].poison_left = 0.0;
     assert!(!w.apply_damage(1, 50, Some(0), player::Blow::plain(Vec3::ZERO)));
@@ -791,7 +800,9 @@ fn bots_keep_to_the_islands_and_jump_between_them() {
         }
     }
     eprintln!("islands: {kills} kills, {moves} island changes, falls: {careful} careful, {careless} in a lapse or a drop");
-    assert!(kills >= 20, "the bots fight: {kills} kills");
-    assert!(moves >= 80, "the bots move between islands: {moves}");
+    // Walking/double-jumping has less reach than the removed dash. Still
+    // require combat and repeated safe island crossings over these four seeds.
+    assert!(kills >= 10, "the bots fight: {kills} kills");
+    assert!(moves >= 30, "the bots move between islands: {moves}");
     assert!(careful <= 8, "careful bots rarely fall: {careful}");
 }

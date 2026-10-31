@@ -29,6 +29,8 @@ type Hit = { victim: number, attacker: number, damage: number, head: boolean, ex
 type Kill = { victim: number, attacker: number? }  -- attacker nil: lava
 ```
 
+Dash is retired. The `dash_iframes`, `dash_end_melee` and `dash_spawn_bomb` weapon fields remain readable for old replay compatibility but have no gameplay effect. `dmg_up`, `big_mag` and `rapid_fire` have three times the ordinary draw weight.
+
 ## Cards
 
 The pool is `mods/base/cards.luau`, a port of Godot's `card_library.gd`. A card's `apply(w)` mutates the player's `Weapon` exactly like the GDScript card does; the Godot helpers exist under the same names: `Color(r, g, b)`, `Vector3(x, y, z)`, `deg_to_rad`, `max`, `min`, `maxf`, `minf`, `clampf`, `lerp(a, b, t)` (numbers or vectors) and `warp(w, bone, scale)` for cosmetic bone scales. Weapons are rebuilt from the cards every round, so `apply` must only depend on `w`.

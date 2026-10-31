@@ -57,7 +57,7 @@ pub fn stat_diff(world: &World, player: usize, card: Card) -> Vec<String> {
 }
 
 fn category(def: &CardDef) -> &'static str {
-    if def.desc.starts_with("RMB") { "SPECIAL" } else if def.desc.starts_with("Shift") { "MOVE" } else if BODY_CARDS.contains(&def.id.as_str()) { "BODY" } else if def.firepower { "FIREPOWER" } else { "PERK" }
+    if def.desc.starts_with("RMB") { "SPECIAL" } else if BODY_CARDS.contains(&def.id.as_str()) { "BODY" } else if def.firepower { "FIREPOWER" } else { "PERK" }
 }
 
 /// Greedy word wrap with measured widths.
