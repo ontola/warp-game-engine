@@ -107,11 +107,11 @@ local function activate(c)
     return {effect="projectile",cone=c.item=="GlideBomb" and .7 or 1,range=1000,speed=c.speed+40}
 end
 local function environment(c)
-    local e={ground=-150,hills=0,spacing=140,skip=.18,height={110,510},sun=1.5,sky=1.2,exposure=5.5}
+    local e={ground=-150,hills=0,spacing=140,skip=.18,height={110,510},sun=18,sky=3,exposure=5.5}
     if c.biome=="forest" then
         e={ground=-70,hills=28,spacing=62,skip=.08,height={90,170},sun=70000,sky=18000,exposure=13.5}
     elseif c.biome=="cell" then
-        e={ground=-110,hills=35,spacing=140,skip=.2,height={45,160},sun=50,sky=80,exposure=8}
+        e={ground=-110,hills=35,spacing=140,skip=.2,height={45,160},sun=50,sky=50,exposure=8}
     elseif c.biome=="desert" then
         e={ground=-90,hills=42,spacing=180,skip=.35,height={65,170},sun=85000,sky=15000,exposure=14}
     elseif c.biome=="ocean" then

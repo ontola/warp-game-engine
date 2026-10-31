@@ -5379,6 +5379,7 @@ dependencies = [
  "flate2",
  "gamenight",
  "glam 0.31.1",
+ "image",
  "render",
  "serde",
  "serde_json",

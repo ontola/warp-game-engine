@@ -48,7 +48,7 @@
     {
       "path": "src/city_accents.gd",
       "sha256": "e7e89c03f6a0fb12efbe11a658107bf80708465e0d6da1344d8c93b7a19bc94d",
-      "status": "pending"
+      "status": "native parapets, facade ribs and subtle roof trim; full city accent placement pending"
     },
     {
       "path": "src/city_layout.gd",
@@ -113,7 +113,7 @@
     {
       "path": "src/forest.gd",
       "sha256": "9130917ceb08ed0f3580e17f947cfcfd38cf46b180fc57b6f6912136bcd0f293",
-      "status": "original glTF trees with normalized varied heights and native hill/water surface; visual parity pending"
+      "status": "retained varied-height glTF trees with thin-leaf materials, daytime physical sky and reduced haze; full forest content parity pending"
     },
     {
       "path": "src/forest_assets.gd",
@@ -358,7 +358,8 @@
       1920,
       1080
     ],
-    "biome_capture_count": 5
+    "biome_capture_count": 5,
+    "native_visual_revision": "matched city/forest/four-view headless captures; all five biomes; portable controller scenario; 20 sim/app tests"
   },
   "next_required": [
     "Full native material, shader/effect and scenery fidelity in all biomes",

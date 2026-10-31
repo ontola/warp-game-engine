@@ -396,22 +396,48 @@ impl Game for Racer {
             if p.crashed || p.emp_time > 0. {
                 continue;
             }
-            let pose = self.race.pose(i);
+            let current = self.race.pose(i);
+            let previous = &self.previous[i];
+            let pose = Pose {
+                origin: previous.origin.lerp(current.origin, alpha),
+                basis: Mat3::from_quat(
+                    Quat::from_mat3(&previous.basis).slerp(Quat::from_mat3(&current.basis), alpha),
+                ),
+            };
             let power = self.race.drivers[i].input.drive.throttle as f32;
             for side in [-1., 1.] {
                 lights.push(LocalLight {
                     position: pose.origin + pose.basis * Vec3::new(side * 2.45, 0.3, -4.),
                     direction: -pose.basis.z_axis,
                     intensity_cd: Vec3::new(0.18, 0.5, 1.)
-                        * (3000.
-                            + power * 12000.
-                            + if p.boost > 0. || p.on_pad { 40000. } else { 0. }),
-                    range_m: 28.,
+                        * (80. + power * 280. + if p.boost > 0. || p.on_pad { 1400. } else { 0. }),
+                    range_m: 18.,
                     inner_cos: 1.,
                     outer_cos: -1.,
                     source_radius_m: 0.6,
                     falloff: 2.,
                 });
+            }
+        }
+        let mut selected = std::collections::HashSet::new();
+        for i in 0..self.players {
+            let at = self.race.pose(i).origin;
+            let mut near: Vec<_> = self
+                .visuals
+                .lamps
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.position.distance_squared(at) < 180. * 180.)
+                .collect();
+            near.sort_by(|a, b| {
+                a.1.position
+                    .distance_squared(at)
+                    .total_cmp(&b.1.position.distance_squared(at))
+            });
+            for (id, lamp) in near.into_iter().take(4) {
+                if selected.insert(id) {
+                    lights.push(*lamp);
+                }
             }
         }
         lights.truncate(32);
@@ -771,6 +797,7 @@ fn text(
     });
 }
 fn main() -> Result<(), String> {
+    render::set_game_surface(include_str!("../shaders/surfaces.wgsl"));
     let args: Vec<String> = std::env::args().collect();
     let arg = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone());
     let root = arg("--game-dir").map(PathBuf::from).unwrap_or_else(|| {
@@ -800,6 +827,31 @@ fn main() -> Result<(), String> {
         difficulty,
         demo,
     )?;
+    if let Some(frames) = arg("--bench") {
+        let frames: u32 = frames.parse().map_err(|_| "--bench needs a frame count")?;
+        if frames < 30 || frames > 10000 {
+            return Err("--bench frames must be 30..10000".into());
+        }
+        let ticks = arg("--ticks")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(750);
+        for _ in 0..ticks {
+            game.tick(&vec![Controls::default(); players]);
+        }
+        let size = [
+            arg("--width").and_then(|s| s.parse().ok()).unwrap_or(1920),
+            arg("--height").and_then(|s| s.parse().ok()).unwrap_or(1080),
+        ];
+        let gpu = render::Gpu::new()?;
+        let (fps, passes) = app::bench(&mut game, &gpu, size, frames, 120.)?;
+        let report = json!({"gpu":{"name":gpu.summary().name,"backend":gpu.summary().backend,"driver":gpu.summary().driver},"size":size,"players":players,"frames":frames,"readback_fps":fps,"gpu_pass_ms_smoothed":passes,"scene":game.visuals.scene.stats(),"note":"Headless readback throughput is not interactive FPS; GPU times are smoothed pass samples, not latency percentiles."});
+        let report = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        println!("{report}");
+        if let Some(path) = arg("--out") {
+            std::fs::write(path, report).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
     if let Some(path) = arg("--shot") {
         let ticks = arg("--ticks")
             .and_then(|s| s.parse::<u32>().ok())

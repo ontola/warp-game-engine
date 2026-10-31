@@ -3,7 +3,7 @@ use render::{
     Lighting, Scene,
     cluster::Vertex,
     primitives::{self, Primitive},
-    scene::{CLEARCOAT, EMISSIVE, Material},
+    scene::{EMISSIVE, Material, SURFACE, THIN_FOLIAGE},
     slots::{SlotId, Slots},
 };
 use serde_json::Value;
@@ -25,6 +25,8 @@ pub struct ShipPart {
 }
 pub struct Visuals {
     pub scene: Scene,
+    pub lighting: Lighting,
+    pub lamps: Vec<render::headlights::LocalLight>,
     pub obstacles: Vec<spaceracer::environment::Obstacle>,
     pub slots: Slots,
     pub ships: Vec<Vec<ShipPart>>,
@@ -76,8 +78,104 @@ fn quad(p: &mut Primitive, points: [Vec3; 4], normal: [Vec3; 4], uv: [[f32; 2]; 
     }
     p.indices.extend(ids);
 }
+fn surface(scene: &mut Scene, kind: i32, tint: [f32; 3], rough: f32, scale: f32) -> u32 {
+    scene.add_material(Material {
+        tint,
+        layer: -2 - kind,
+        roughness: rough,
+        metal: 0.0,
+        flags: SURFACE,
+        scale,
+    })
+}
+fn jet_mesh(scene: &mut Scene, night: bool) -> usize {
+    let mask = image::RgbaImage::from_fn(64, 256, |x, y| {
+        let u = x as f32 / 63. * 2. - 1.;
+        let v = ((y as f32 - 12.) / 227.).clamp(0., 1.);
+        let width = (1. - v).powf(0.6) * (0.85 + 0.025 * (v * 32.).sin());
+        let a = (1. - (u / width.max(0.01)).powi(2)).max(0.).powf(2.) * (1. - v).powf(1.2);
+        image::Rgba([
+            155,
+            210,
+            255,
+            if y < 12 || y > 239 {
+                0
+            } else {
+                (a * 200.) as u8
+            },
+        ])
+    });
+    let layer = scene.add_image("spaceracer-plasma-profile", mask);
+    let mat = scene.add_material(Material {
+        tint: [0.2, 0.5, 1.],
+        layer,
+        roughness: 1.,
+        metal: 0.,
+        flags: EMISSIVE,
+        scale: if night { 650. } else { 35000. },
+    });
+    scene.set_material_additive(mat, 0.65, true);
+    let mut p = Primitive {
+        material: mat,
+        ..Default::default()
+    };
+    for k in 0..3 {
+        let a = k as f32 * std::f32::consts::PI / 3.;
+        let r = Vec3::new(a.cos(), a.sin(), 0.) * 0.7;
+        let tail = -Vec3::Z;
+        quad(
+            &mut p,
+            [-r, r, r * 0.005 + tail, -r * 0.005 + tail],
+            [Vec3::new(-a.sin(), a.cos(), 0.); 4],
+            [[0., 0.], [1., 0.], [1., 1.], [0., 1.]],
+        );
+    }
+    scene.add_mesh(&p.mesh())
+}
+fn track_lights(scene: &mut Scene, race: &Race) -> Vec<render::headlights::LocalLight> {
+    let mut lights = Vec::new();
+    if race.biome != "city" {
+        return lights;
+    }
+    let steel = material(scene, [0.055, 0.065, 0.08], 0.65, 0.);
+    let glow = material(scene, [0.65, 0.8, 1.], 0.5, 90.);
+    let pole = scene.add_mesh(&primitives::cube(steel).mesh());
+    let lamp = scene.add_mesh(&primitives::cube(glow).mesh());
+    for d in (0..race.world.track.length as usize).step_by(90) {
+        let n = race.world.track.sample(d as f64);
+        if n.air_gap || !n.rails || n.geometry.shape_angle > 1. {
+            continue;
+        }
+        for side in [-1., 1.] {
+            let x = side * (n.geometry.width + 0.8);
+            let basis = n.frame(x);
+            let rot = Quat::from_mat3(&basis);
+            box_at(scene, pole, n.point(x, 4.), Vec3::new(0.28, 8., 0.28), rot);
+            box_at(
+                scene,
+                pole,
+                n.point(x - side * 2., 8.),
+                Vec3::new(4.3, 0.24, 0.4),
+                rot,
+            );
+            let at = n.point(x - side * 3.5, 7.8);
+            box_at(scene, lamp, at, Vec3::new(1.7, 0.12, 0.7), rot);
+            lights.push(render::headlights::LocalLight {
+                position: at - basis.y_axis * 0.2,
+                direction: -basis.y_axis,
+                intensity_cd: Vec3::new(0.65, 0.8, 1.) * 2200.,
+                range_m: 65.,
+                inner_cos: 0.8,
+                outer_cos: 0.05,
+                source_radius_m: 0.8,
+                falloff: 2.,
+            });
+        }
+    }
+    lights
+}
 fn road(scene: &mut Scene, race: &Race) {
-    let asphalt = material(scene, [0.035, 0.045, 0.055], 0.28, 0.);
+    let asphalt = surface(scene, 0, [0.035, 0.045, 0.055], 0.35, 1.);
     let edge = material(scene, [0.07, 0.65, 0.95], 0.3, 140.);
     let rail = material(scene, [0.08, 0.1, 0.14], 0.4, 0.);
     let boost = material(scene, [0.1, 0.8, 0.9], 0.3, 80.);
@@ -123,7 +221,24 @@ fn road(scene: &mut Scene, race: &Race) {
                     &mut parts[0],
                     top,
                     norms,
-                    [[0., 0.], [1., 0.], [1., 1.], [0., 1.]],
+                    [
+                        [
+                            u as f32,
+                            i as f32 * (race.world.track.length / nodes.len() as f64) as f32,
+                        ],
+                        [
+                            v as f32,
+                            i as f32 * (race.world.track.length / nodes.len() as f64) as f32,
+                        ],
+                        [
+                            v as f32,
+                            (i + 1) as f32 * (race.world.track.length / nodes.len() as f64) as f32,
+                        ],
+                        [
+                            u as f32,
+                            (i + 1) as f32 * (race.world.track.length / nodes.len() as f64) as f32,
+                        ],
+                    ],
                 );
                 if a.zone == "repair" && u >= -0.88 && v <= 0.3 && i % 3 == 0 {
                     quad(
@@ -170,6 +285,17 @@ fn road(scene: &mut Scene, race: &Race) {
                         b.point(y, 0.08),
                     ],
                     normal,
+                    [[0.; 2]; 4],
+                );
+                quad(
+                    &mut parts[2],
+                    [
+                        a.point(x, -2.5),
+                        a.point(x, 0.),
+                        b.point(y, 0.),
+                        b.point(y, -2.5),
+                    ],
+                    [a.frame(x).x_axis * side as f32; 4],
                     [[0.; 2]; 4],
                 );
                 if a.rails && a.geometry.shape_angle < 3. {
@@ -233,6 +359,35 @@ fn road(scene: &mut Scene, race: &Race) {
         }
     }
 }
+fn rock_mesh(scene: &mut Scene, material: u32, variant: usize) -> usize {
+    let mut p = primitives::sphere(material, 12, 18);
+    for v in &mut p.vertices {
+        let mut q = Vec3::from(v.pos);
+        let band = 1. + 0.12 * (q.y * 8. + variant as f32).sin();
+        let wobble = 1. + 0.12 * (q.x * 11. + q.z * 7. + variant as f32 * 2.).sin();
+        q.x = q.x.signum() * q.x.abs().powf(0.65) * band * wobble;
+        q.z = q.z.signum() * q.z.abs().powf(0.75) * band;
+        q.y = q.y.clamp(-0.8, 0.65 + variant as f32 * 0.05) + q.x * 0.12;
+        v.pos = q.to_array();
+    }
+    let mut out = Primitive {
+        material,
+        ..Default::default()
+    };
+    for tri in p.indices.chunks_exact(3) {
+        let a = Vec3::from(p.vertices[tri[0] as usize].pos);
+        let b = Vec3::from(p.vertices[tri[1] as usize].pos);
+        let c = Vec3::from(p.vertices[tri[2] as usize].pos);
+        let n = (b - a).cross(c - a).normalize_or_zero();
+        for &k in tri {
+            let mut v = p.vertices[k as usize];
+            v.normal = n.to_array();
+            out.indices.push(out.vertices.len() as u32);
+            out.vertices.push(v);
+        }
+    }
+    scene.add_mesh(&out.mesh())
+}
 fn scenery(
     scene: &mut Scene,
     race: &Race,
@@ -249,7 +404,7 @@ fn scenery(
         "cell" => [0.17, 0.045, 0.15],
         _ => [0.015, 0.02, 0.035],
     };
-    let mat = material(scene, color, 0.85, 0.);
+    let mat = surface(scene, 6, color, 0.85, 1.);
     let mut terrain = Primitive {
         material: mat,
         ..Default::default()
@@ -280,7 +435,7 @@ fn scenery(
     let mesh = scene.add_mesh(&terrain.mesh());
     scene.add_instance(mesh, Affine3A::IDENTITY);
     if forest || race.biome == "ocean" {
-        let water = material(scene, [0.015, 0.18, 0.24], 0.06, 0.);
+        let water = surface(scene, 3, [0.008, 0.065, 0.09], 0.16, 1.);
         let mesh = scene.add_mesh(&primitives::cube(water).mesh());
         box_at(
             scene,
@@ -290,6 +445,10 @@ fn scenery(
             Quat::IDENTITY,
         );
     }
+    let cladding = material(scene, [0.09, 0.12, 0.16], 0.5, 0.);
+    let trim = scene.add_mesh(&primitives::cube(cladding).mesh());
+    let rim_material = material(scene, [0.1, 0.5, 0.7], 0.5, 18.);
+    let rim = scene.add_mesh(&primitives::cube(rim_material).mesh());
     let mut models = vec![];
     if forest {
         for name in ["pine-tree-1", "birch-tree-1"] {
@@ -299,23 +458,37 @@ fn scenery(
             )?);
         }
     }
-    let facade = if city {
-        scene.add_texture(&root.join("source/assets/office-facade.png"))?
+    for model in &models {
+        for &id in &model.materials {
+            let m = &mut scene.materials[id as usize];
+            if m.flags & render::scene::ALPHA_TEST != 0 {
+                m.flags |= THIN_FOLIAGE;
+                m.roughness = 0.9;
+                m.metal = 0.;
+                m.tint = [0.65, 0.78, 0.56];
+            }
+        }
+    }
+    let building = if city {
+        surface(scene, 1, [0.045, 0.065, 0.085], 0.4, 1.)
     } else {
-        -1
+        surface(scene, 4, color, 0.8, 1.)
     };
-    let building = scene.add_material(Material {
-        tint: if city { [0.55, 0.56, 0.6] } else { color },
-        roughness: 0.6,
-        metal: 0.1,
-        layer: facade,
-        flags: if city { EMISSIVE } else { 0 },
-        scale: if city { 16. } else { 1. },
-    });
-    let cube = scene.add_mesh(&primitives::cube(building).mesh());
-    let rock = scene.add_mesh(&primitives::sphere(building, 7, 9).mesh());
-    let organelle = material(scene, [0.08, 0.6, 0.54], 0.3, 30.);
-    let sphere = scene.add_mesh(&primitives::sphere(organelle, 12, 18).mesh());
+    let mut towers = vec![];
+    for k in 0..8 {
+        let m = surface(
+            scene,
+            1,
+            [0.035 + k as f32 * 0.002, 0.05, 0.065],
+            0.4,
+            k as f32 + 1.,
+        );
+        towers.push(scene.add_mesh(&primitives::cube(m).mesh()));
+    }
+
+    let rocks: Vec<_> = (0..4).map(|v| rock_mesh(scene, building, v)).collect();
+    let organelle = surface(scene, 5, [0.08, 0.6, 0.54], 0.4, 1.);
+    let sphere = scene.add_mesh(&primitives::sphere(organelle, 16, 24).mesh());
     let ad = if city {
         let layer = scene.add_texture(&root.join("source/assets/corporate-posters.png"))?;
         Some(scene.add_material(Material {
@@ -359,6 +532,7 @@ fn scenery(
                 continue;
             }
             if city {
+                let cube = towers[((x.abs() + z.abs()) as usize) % towers.len()];
                 let pos = Vec3::new(x, y + h * 0.5, z);
                 let size = Vec3::new(w, h, depth);
                 box_at(scene, cube, pos, size, Quat::IDENTITY);
@@ -366,6 +540,41 @@ fn scenery(
                     min: pos - size * 0.5,
                     max: pos + size * 0.5,
                 });
+                let style = ((x.abs() * 0.7 + z.abs()) as usize) % 4;
+                // Solid parapets and buttresses anchor the glass curtain wall.
+                for side in [-1., 1.] {
+                    box_at(
+                        scene,
+                        trim,
+                        Vec3::new(x, y + h + 0.8, z + side * depth * 0.5),
+                        Vec3::new(w + 1., 1.6, 1.2),
+                        Quat::IDENTITY,
+                    );
+                    if style != 0 {
+                        box_at(
+                            scene,
+                            rim,
+                            Vec3::new(x, y + h - 3., z + side * (depth * 0.5 + 0.18)),
+                            Vec3::new(w, 0.25, 0.35),
+                            Quat::IDENTITY,
+                        );
+                    }
+                    for k in 0..=if style == 2 { 4 } else { 2 } {
+                        let divisions = if style == 2 { 4. } else { 2. };
+                        box_at(
+                            scene,
+                            trim,
+                            Vec3::new(
+                                x - w * 0.5 + w * k as f32 / divisions,
+                                y + h * 0.5,
+                                z + side * (depth * 0.5 + 0.15),
+                            ),
+                            Vec3::new(0.6, h, 0.6),
+                            Quat::IDENTITY,
+                        );
+                    }
+                }
+
                 if rand() > 0.5 {
                     let pos = Vec3::new(x, y + h + 15., z);
                     let size = Vec3::new(w * 0.65, 30., depth * 0.6);
@@ -386,27 +595,32 @@ fn scenery(
                 }
                 if let Some(mat) = ad {
                     if rand() > 0.42 {
-                        let tile = (rand() * 8.) as u32;
-                        let u = (tile % 4) as f32 / 4.;
-                        let v = (tile / 4) as f32 / 2.;
+                        let tile = (rand() * 6.) as u32;
+                        let u = (tile % 3) as f32 / 3.;
+                        let v = (tile / 3) as f32 / 2.;
                         for side in [-1., 1.] {
                             let mut poster = Primitive {
                                 material: mat,
                                 ..Default::default()
                             };
                             let p = Vec3::new(x, y + h * 0.58, z + side * (depth * 0.5 + 0.2));
-                            let a = w * 0.4;
-                            let b = (h * 0.35).min(80.);
+                            let a = (w * 0.42).min(h * 0.20);
+                            let b = a * 2.;
                             quad(
                                 &mut poster,
                                 [
-                                    p + Vec3::new(-a, -b, 0.),
-                                    p + Vec3::new(a, -b, 0.),
-                                    p + Vec3::new(a, b, 0.),
-                                    p + Vec3::new(-a, b, 0.),
+                                    p + Vec3::new(-a * side, -b, 0.),
+                                    p + Vec3::new(a * side, -b, 0.),
+                                    p + Vec3::new(a * side, b, 0.),
+                                    p + Vec3::new(-a * side, b, 0.),
                                 ],
                                 [Vec3::Z * side; 4],
-                                [[u, v + 0.5], [u + 0.25, v + 0.5], [u + 0.25, v], [u, v]],
+                                [
+                                    [u, v + 0.5],
+                                    [u + 1. / 3., v + 0.5],
+                                    [u + 1. / 3., v],
+                                    [u, v],
+                                ],
                             );
                             let mesh = scene.add_mesh(&poster.mesh());
                             scene.add_instance(mesh, Affine3A::IDENTITY);
@@ -462,7 +676,13 @@ fn scenery(
             } else {
                 let pos = Vec3::new(x, y + h * 0.25, z);
                 let size = Vec3::new(w, h, depth);
-                box_at(scene, rock, pos, size, Quat::from_rotation_y(rand() * 6.28));
+                box_at(
+                    scene,
+                    rocks[((x.abs() + z.abs()) as usize) % 4],
+                    pos,
+                    size,
+                    Quat::from_rotation_y(rand() * 6.28),
+                );
                 obstacles.push(Obstacle {
                     min: pos - Vec3::new(w * 0.25, h * 0.4, depth * 0.25),
                     max: pos + Vec3::new(w * 0.25, h * 0.4, depth * 0.25),
@@ -471,6 +691,32 @@ fn scenery(
         }
     }
     Ok(obstacles)
+}
+fn pickup_mesh(scene: &mut Scene, material: u32) -> usize {
+    let mut p = Primitive {
+        material,
+        ..Default::default()
+    };
+    for axis in 0..3 {
+        for a in [-0.5, 0.5] {
+            for b in [-0.5, 0.5] {
+                let mut scale = Vec3::splat(0.055);
+                scale[axis] = 1.;
+                let mut pos = Vec3::ZERO;
+                pos[(axis + 1) % 3] = a;
+                pos[(axis + 2) % 3] = b;
+                let shape = primitives::cube(material);
+                let offset = p.vertices.len() as u32;
+                for mut v in shape.vertices {
+                    v.pos = (Vec3::from(v.pos) * scale + pos).to_array();
+                    p.vertices.push(v);
+                }
+                p.indices
+                    .extend(shape.indices.into_iter().map(|i| i + offset));
+            }
+        }
+    }
+    scene.add_mesh(&p.mesh())
 }
 fn weapon_mesh(scene: &mut Scene, kind: usize, metal: u32, glow: u32) -> usize {
     let mut p = Primitive {
@@ -582,17 +828,56 @@ fn transform(v: &Value) -> Affine3A {
 impl Visuals {
     pub fn new(race: &Race, root: &Path) -> Result<Self, String> {
         let mut scene = Scene::default();
-        scene.sky = Some(if race.biome == "city" {
-            primitives::gradient_sky(
-                [0.003, 0.006, 0.018],
-                [0.025, 0.035, 0.07],
-                [0.005, 0.008, 0.015],
-            )
+        let mut lighting = Lighting::default();
+        if race.biome == "city" || race.biome == "cell" {
+            scene.sky = Some(primitives::gradient_sky(
+                [0.025, 0.045, 0.08],
+                [0.12, 0.16, 0.21],
+                [0.035, 0.045, 0.055],
+            ));
         } else {
-            primitives::gradient_sky([0.18, 0.38, 0.8], [0.7, 0.82, 0.95], [0.12, 0.2, 0.12])
-        });
+            let sky = render::sky::bake_live(
+                0,
+                render::sky::LiveSettings::preset(
+                    render::sky::DayTime::Noon,
+                    render::sky::WeatherLook::Clear,
+                ),
+                &mut Default::default(),
+                Default::default(),
+            )?;
+            sky.apply_scene(&mut scene, &mut lighting);
+        }
+        if race.biome == "cell" {
+            scene.sky = Some(primitives::gradient_sky(
+                [0.10, 0.12, 0.15],
+                [0.18, 0.14, 0.20],
+                [0.06, 0.04, 0.065],
+            ));
+        }
+        lighting.sun_lux = race.environment.sun;
+        lighting.sky_lux = race.environment.sky;
+        lighting.ev100 = race.environment.exposure;
+        if race.biome == "city" {
+            lighting.sun_color = Vec3::new(0.6, 0.72, 1.);
+        }
+        lighting.fog_height_m = 450.;
+        lighting.fog_density = if race.biome == "city" {
+            0.00015
+        } else {
+            0.000015
+        };
+        lighting.fog_start = 800.;
+        lighting.fog_end = 10000.;
+        lighting.fog_phase_g = 0.4;
+        lighting.bloom_boost = 0.65;
+        lighting.bloom_threshold = 1.4;
+        lighting.fx_white_floor = 0.25;
+        lighting.lod_pixels = 0.7;
+        lighting.vignette = 0.12;
+        lighting.sharpen = 0.15;
         road(&mut scene, race);
         let obstacles = scenery(&mut scene, race, root)?;
+        let lamps = track_lights(&mut scene, race);
         let mut raw = String::new();
         flate2::read::GzDecoder::new(include_bytes!("../../assets/ships.json.gz").as_slice())
             .read_to_string(&mut raw)
@@ -615,15 +900,30 @@ impl Visuals {
                 };
                 materials.push(scene.add_material(Material {
                     tint,
-                    layer: -1,
-                    roughness: source["roughness"].as_f64().unwrap_or(0.3) as f32,
+                    layer: if hull { -12 } else { -1 },
+                    roughness: source["roughness"].as_f64().unwrap_or(0.31) as f32,
                     metal: if hull {
-                        0.65
+                        0.32
                     } else {
                         source["metallic"].as_f64().unwrap_or(0.) as f32
                     },
-                    flags: if hull { CLEARCOAT } else { 0 },
-                    scale: 1.,
+                    flags: if hull {
+                        SURFACE
+                    } else if source["emission_enabled"].as_bool().unwrap_or(false) {
+                        EMISSIVE
+                    } else {
+                        0
+                    },
+                    scale: if hull {
+                        1.
+                    } else {
+                        source["emission_energy_multiplier"].as_f64().unwrap_or(0.) as f32
+                            * if race.biome == "city" || race.biome == "cell" {
+                                100.
+                            } else {
+                                12000.
+                            }
+                    },
                 }));
             }
             let mut parts = vec![];
@@ -639,7 +939,7 @@ impl Visuals {
             all_parts.push(parts);
         }
         let pickup_mat = material(&mut scene, [0.6, 0.15, 0.95], 0.3, 100.);
-        let pickup_mesh = scene.add_mesh(&primitives::cube(pickup_mat).mesh());
+        let pickup_mesh = pickup_mesh(&mut scene, pickup_mat);
         let missile_mat = material(&mut scene, [0.32, 0.36, 0.4], 0.25, 0.);
         let mount_meshes: Vec<_> = (0..6)
             .map(|k| weapon_mesh(&mut scene, k, missile_mat, pickup_mat))
@@ -692,14 +992,15 @@ impl Visuals {
             })
             .collect();
         let mut jets = vec![];
+        let mesh = jet_mesh(&mut scene, race.biome == "city" || race.biome == "cell");
         for _ in 0..12 {
-            let m = material(&mut scene, [0.22, 0.6, 1.], 0.1, 2200.);
-            let mesh = scene.add_mesh(&primitives::sphere(m, 8, 12).mesh());
             let id = slots.add(&mut scene, mesh, Affine3A::IDENTITY).unwrap();
             jets.push((mesh, id));
         }
         Ok(Self {
             scene,
+            lighting,
+            lamps,
             obstacles,
             slots,
             ships,
@@ -785,38 +1086,19 @@ impl Visuals {
                 };
                 let boosted = p.boost > 0. || p.on_pad;
                 let local = Vec3::new(if side == 0 { -2.45 } else { 2.45 }, -0.12, -3.8);
+                let pulse = 1. + 0.06 * (time * 91. + i as f32 * 3.).sin();
+                let length = (1.5 + power * 2. + if boosted { 4. } else { 0. }) * power;
                 self.slots.set(
                     &mut self.scene,
                     id,
                     mesh,
                     base * Affine3A::from_scale_rotation_translation(
-                        Vec3::new(0.33, 0.33, 0.12) * power.max(0.001),
+                        Vec3::new(power * 1.15, power * 1.15, length * pulse)
+                            .max(Vec3::splat(0.001)),
                         Quat::IDENTITY,
                         local,
                     ),
                 );
-                if fresh && power > 0.01 {
-                    let pos = base.transform_point3(local);
-                    let back = -pose.basis.z_axis;
-                    let length = if boosted { 9. } else { 3. };
-                    for k in 0..20 {
-                        let t = k as f32 / 20.;
-                        let _ = self.fx.mote(render::fx::AdditiveMote {
-                            position: pos + back * (t * length),
-                            travel: back * ((p.speed as f32 + 180.) * 0.07),
-                            birth: time - 0.002,
-                            life: 0.07,
-                            radius: (0.5 + t * 0.45) * if boosted { 1.3 } else { 1. },
-                            color: Vec3::new(0.12, 0.45, 1.),
-                            radiance: if boosted { 6000. } else { 1400. } * power,
-                            opacity: (1. - t) * 0.7,
-                            fade_in: 0.,
-                            fade_out: 1.,
-                            motion_power: 1.,
-                            ..Default::default()
-                        });
-                    }
-                }
             }
             if race.drivers[i].motion.crash_id > self.crashes[i] {
                 self.crashes[i] = race.drivers[i].motion.crash_id;
@@ -954,19 +1236,9 @@ impl Visuals {
         self.blast_stamp = race.clock;
     }
     pub fn light(&self, race: &Race) -> Lighting {
-        Lighting {
-            sun_lux: race.environment.sun,
-            sky_lux: race.environment.sky,
-            ev100: race.environment.exposure,
-            fog_start: 600.,
-            fog_end: 4500.,
-            fog_density: 0.00008,
-            bloom_boost: 1.4,
-            bloom_threshold: 0.65,
-            fx_white_floor: 1.,
-            time: race.tick as f32 / 120.,
-            ..Default::default()
-        }
+        let mut light = self.lighting.clone();
+        light.time = race.tick as f32 / 120.;
+        light
     }
 }
 fn load_node(
@@ -1019,8 +1291,21 @@ fn load_node(
                     surface["material"].as_i64().unwrap_or(0)
                 }
                 .max(0) as usize;
+                let mut mat = mats[m];
+                if scene.materials[mat as usize].flags & SURFACE != 0 {
+                    let mut copy = scene.materials[mat as usize];
+                    let style = node["instance_parameters"]["marking_style"]
+                        .as_i64()
+                        .unwrap_or(0)
+                        .clamp(0, 4);
+                    copy.layer = -12 - style as i32;
+                    copy.scale = node["instance_parameters"]["face_side"]
+                        .as_f64()
+                        .unwrap_or(1.) as f32;
+                    mat = scene.add_material(copy);
+                }
                 let p = Primitive {
-                    material: mats[m],
+                    material: mat,
                     vertices: positions
                         .into_iter()
                         .enumerate()
