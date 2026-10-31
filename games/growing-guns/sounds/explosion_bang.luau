@@ -4,8 +4,8 @@
 --
 -- Params:
 --   radius  blast radius in m; Godot passes round(clamp(radius, 2, 24)).
--- Warp mix: one -8 dB report with a 0.08 room send and the quiet hall,
--- no amplified close-range gain. Shared bass plays separately at -14 dB.
+-- Warp mix: one +10 dB report with a 0.08 room send and the quiet hall,
+-- no amplified close-range gain. Shared bass plays separately at 0 dB.
 -- Overlap budgets preserve existing tails instead of stealing live voices.
 -- The ion cannon still adds its separate ion_burst layer.
 length(1.6)
