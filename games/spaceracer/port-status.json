@@ -345,7 +345,7 @@
     "ship_variants_preserved": 5,
     "source_assets_preserved": 102,
     "renderer_camera_math_tests": 1,
-    "native_app_tests": 12,
+    "native_app_tests": 14,
     "app_input_tests_total": 21,
     "headless_flow_ticks": 1207,
     "capture_resolution": [
@@ -368,7 +368,12 @@
     "gamenight_capture_resolution": [
       1600,
       900
-    ]
+    ],
+    "city_ui_capture_resolution": [
+      3840,
+      2160
+    ],
+    "city_light_regression_ticks": 2400
   },
   "next_required": [
     "Remaining source stage features: sandworm, full environmental animation and material/effect fidelity",

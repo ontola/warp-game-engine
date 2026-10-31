@@ -531,11 +531,14 @@ impl Game for Racer {
             }
         }
         lights.truncate(32);
-        renderer.set_local_lights(&lights)?;
+        renderer
+            .set_local_lights(&lights)
+            .map_err(|e| format!("{e}: {:?}", lights.iter().find(|l| l.validated().is_err())))?;
         let rects = frame.rects(self.players);
         let mut cams = vec![];
         let mut ups = vec![];
         let mut hud = HudDrawList::new(frame.size);
+        let ui_scale = (frame.size[1] as f32 / 900.).max(1.);
         for i in 0..self.players {
             let p = &self.race.pilots[i];
             let current = self.race.pose(i);
@@ -546,7 +549,7 @@ impl Game for Racer {
                     Quat::from_mat3(&prev.basis).slerp(Quat::from_mat3(&current.basis), alpha),
                 ),
             };
-            let rect = rects[i];
+            let rect = rects[i].map(|v| v / ui_scale);
             let dt = if frozen { 0. } else { frame.dt as f64 };
             let camera_pose = if p.crashed {
                 let node = self.race.world.track.sample(
@@ -771,7 +774,7 @@ impl Game for Racer {
         }
         renderer.set_camera_up_axes(&ups);
         if let Some(row) = self.menu {
-            let [w, h] = frame.size.map(|x| x as f32);
+            let [w, h] = frame.size.map(|x| x as f32 / ui_scale);
             let clip = [0., 0., w, h];
             hud.rect(clip, [0.015, 0.025, 0.05, 0.8], clip);
             text(
@@ -779,16 +782,16 @@ impl Game for Racer {
                 1,
                 "SPACERACER",
                 [w * 0.12, h * 0.12],
-                50.,
+                64.,
                 clip,
                 [210, 240, 255, 240],
             );
             text(
                 &mut hud,
                 2,
-                "WARP ENGINE  /  DEVELOPMENT BUILD",
-                [w * 0.12, h * 0.12 + 65.],
-                15.,
+                "WARP ENGINE",
+                [w * 0.12, h * 0.12 + 80.],
+                18.,
                 clip,
                 [95, 170, 200, 220],
             );
@@ -811,10 +814,10 @@ impl Game for Racer {
                 format!("TRACK SEED           {:05}", self.seed),
             ];
             for (i, label) in rows.iter().enumerate() {
-                let y = h * 0.35 + i as f32 * 42.;
+                let y = h * 0.35 + i as f32 * 50.;
                 if i == row {
                     hud.rect(
-                        [w * 0.12 - 12., y - 5., w * 0.68, 38.],
+                        [w * 0.12 - 12., y - 4., w * 0.68, 46.],
                         [0.1, 0.35, 0.45, 0.45],
                         clip,
                     );
@@ -824,12 +827,12 @@ impl Game for Racer {
                     10 + i as u64,
                     label,
                     [w * 0.12, y],
-                    22.,
+                    30.,
                     clip,
                     if i == row {
                         [210, 250, 255, 255]
                     } else {
-                        [140, 165, 185, 210]
+                        [205, 220, 235, 245]
                     },
                 );
             }
@@ -838,13 +841,13 @@ impl Game for Racer {
                 30,
                 "UP / DOWN SELECT    LEFT / RIGHT CHANGE    START TO RACE",
                 [w * 0.12, h - 46.],
-                14.,
+                18.,
                 clip,
-                [120, 160, 180, 210],
+                [180, 205, 225, 235],
             );
         }
         if let Some(error) = self.fatal.as_ref().or(self.race.script_error.as_ref()) {
-            let [w, h] = frame.size.map(|x| x as f32);
+            let [w, h] = frame.size.map(|x| x as f32 / ui_scale);
             text(
                 &mut hud,
                 999,
@@ -855,6 +858,7 @@ impl Game for Racer {
                 [255, 130, 100, 255],
             );
         }
+        scale_hud(&mut hud, ui_scale);
         Ok(Draw {
             cameras: cams,
             light,
@@ -887,6 +891,7 @@ fn text(
     bounds: [f32; 4],
     color: [u8; 4],
 ) {
+    hud.outline(id, 1.5, [3, 9, 17, 235]);
     hud.text.push(TextRun {
         id,
         text: s.into(),
@@ -898,6 +903,31 @@ fn text(
         align: TextAlign::Left,
         width: bounds[2],
     });
+}
+fn scale_hud(hud: &mut HudDrawList, scale: f32) {
+    for v in &mut hud.vertices {
+        v.position = v.position.map(|x| x * scale);
+        v.clip = v.clip.map(|x| x * scale);
+        if v.shape[3] == 1. {
+            for x in &mut v.shape[..3] {
+                *x *= scale;
+            }
+        }
+        if v.shape[3] == 2. {
+            for x in &mut v.shape[..2] {
+                *x *= scale;
+            }
+        }
+    }
+    for t in &mut hud.text {
+        t.position = t.position.map(|x| x * scale);
+        t.bounds = t.bounds.map(|x| x * scale);
+        t.font_size *= scale;
+        t.width *= scale;
+    }
+    for o in hud.outlines.values_mut() {
+        o.width *= scale;
+    }
 }
 fn main() -> Result<(), String> {
     render::set_game_surface(include_str!("../shaders/surfaces.wgsl"));
@@ -1004,6 +1034,28 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn city_lights_remain_valid_during_race() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut game = Racer::new(root, 1, 35, 0, 1, true).unwrap();
+        for tick in 0..2400 {
+            game.tick(&[]);
+            game.visuals
+                .update(&game.race, &game.previous, 0.37)
+                .unwrap();
+            let time = (game.race.tick.saturating_sub(1) as f32 + 0.37) / 120.;
+            for l in game
+                .visuals
+                .fx
+                .lights(time)
+                .iter()
+                .chain(&game.visuals.jets.lights)
+                .chain(&game.visuals.lamps)
+            {
+                assert!(l.validated().is_ok(), "invalid light at {tick}: {l:?}");
+            }
+        }
+    }
     #[test]
     fn analog_flight_bindings_preserve_axes_and_trigger_pressure() {
         let c = Controls {

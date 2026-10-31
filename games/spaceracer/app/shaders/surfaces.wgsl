@@ -75,41 +75,59 @@ fn sr_facade(p:vec3<f32>,n:vec3<f32>,tint:vec3<f32>,fp:f32)->SurfaceOut {
     return SurfaceOut(paint,n,0.5,0.3,tex*tone*room*occupancy*58.0);
 }
 fn sr_aux3(i:u32)->vec3<f32>{return vec3<f32>(bitcast<f32>(aux[i]),bitcast<f32>(aux[i+1u]),bitcast<f32>(aux[i+2u]));}
+fn sr_ray_bounds(p:vec3<f32>,inv:vec3<f32>,lo:vec3<f32>,hi:vec3<f32>)->f32 {
+    let a=(lo-p)*inv;let b=(hi-p)*inv;let near=min(a,b);let far=max(a,b);
+    let enter=max(max(near.x,near.y),near.z);let leave=min(min(far.x,far.y),far.z);
+    return select(1e20,max(enter,0.0),leave>=max(enter,0.0));
+}
 fn sr_reflections(p:vec3<f32>,n:vec3<f32>,dir:vec3<f32>,fp:f32)->vec3<f32>{
-    if arrayLength(&aux)<8u || aux[0]!=0x53524143u || aux[1]==0u {return vec3<f32>(0);}
-    let tile=vec2<u32>(clamp(floor((p.xz+4096.0)/128.0),vec2<f32>(0),vec2<f32>(63)));
-    let grid=aux[5]+(tile.y*64u+tile.x)*18u;
+    if arrayLength(&aux)<8u || aux[0]!=0x53524143u || aux[7]==0u {return vec3<f32>(0);}
     let ray=reflect(dir,n);let inv=1.0/select(vec3<f32>(0.00001),ray,abs(ray)>vec3<f32>(0.00001));
-    var nearest=1600.0;var hit=0xffffffffu;var screens=vec3<f32>(0);
-    let fresnel=pow(1.0-max(dot(n,-dir),0.0),3.0);
-    for(var i=0u;i<12u;i++){
-        let id=aux[grid+6u+i];if id==0xffffffffu {continue;}let b=aux[4]+id*12u;
-        let lo=sr_aux3(b);let hi=sr_aux3(b+4u);let t0=(lo-p)*inv;let t1=(hi-p)*inv;
-        let near=min(t0,t1);let far=max(t0,t1);let enter=max(max(near.x,near.y),near.z);let leave=min(min(far.x,far.y),far.z);
-        if enter>0.0 && enter<=leave && enter<nearest {nearest=enter;hit=b;}
+    var nearest=1600.0;var hit=0xffffffffu;
+    var stack:array<u32,32>;stack[0]=0u;var size=1u;
+    // Near-first balanced BVH: at most one texture sample, no receiver-grid cuts.
+    for(var step=0u;step<256u && size>0u;step++) {
+        size--;let node=stack[size];let b=aux[6]+node*8u;
+        let enter=sr_ray_bounds(p,inv,sr_aux3(b),sr_aux3(b+4u));
+        if enter>=nearest {continue;}
+        let payload=aux[b+7u];
+        if payload==0xffffffffu {
+            let left=node+1u;let right=aux[b+3u];
+            let lb=aux[6]+left*8u;let rb=aux[6]+right*8u;
+            let ld=sr_ray_bounds(p,inv,sr_aux3(lb),sr_aux3(lb+4u));
+            let rd=sr_ray_bounds(p,inv,sr_aux3(rb),sr_aux3(rb+4u));
+            let first=select(right,left,ld<rd);let last=select(left,right,ld<rd);
+            if max(ld,rd)<nearest && size<31u {stack[size]=last;size++;}
+            if min(ld,rd)<nearest && size<32u {stack[size]=first;size++;}
+        } else if (payload&0x80000000u)!=0u {
+            let sign=aux[3]+(payload&0x7fffffffu)*16u;
+            let normal=sr_aux3(sign+12u);let facing=dot(ray,normal);
+            if facing>=-0.001 {continue;}
+            let distance=dot(sr_aux3(sign)-p,normal)/facing;
+            if distance<=0.0 || distance>=nearest {continue;}
+            let at=p+ray*distance-sr_aux3(sign);
+            let uv=vec2<f32>(dot(at,sr_aux3(sign+4u))/bitcast<f32>(aux[sign+3u])+0.5,0.5-dot(at,sr_aux3(sign+8u))/bitcast<f32>(aux[sign+7u]));
+            if min(uv.x,uv.y)>=0.0 && max(uv.x,uv.y)<=1.0 {nearest=distance;hit=payload;}
+        } else if enter>0.0 {nearest=enter;hit=payload;}
     }
-    if hit!=0xffffffffu {
-        let lo=sr_aux3(hit);let hi=sr_aux3(hit+4u);let at=p+ray*nearest;let rel=(at-(lo+hi)*0.5)/(hi-lo);
+    if hit==0xffffffffu {return vec3<f32>(0);}
+    let fresnel=pow(1.0-max(dot(n,-dir),0.0),3.0);
+    if (hit&0x80000000u)==0u {
+        let b=aux[4]+hit*12u;let lo=sr_aux3(b);let hi=sr_aux3(b+4u);
+        let at=p+ray*nearest;let rel=(at-(lo+hi)*0.5)/(hi-lo);
         var normal=select(vec3<f32>(0,0,sign(rel.z)),vec3<f32>(sign(rel.x),0,0),abs(rel.x)>abs(rel.z));
         if abs(rel.y)>max(abs(rel.x),abs(rel.z)){normal=vec3<f32>(0,sign(rel.y),0);}
-        let facade=sr_facade(at,normal,sr_aux3(hit+8u),fp+nearest*0.0005);
-        screens=(facade.emission+facade.albedo*2.0)*mix(0.08,0.65,fresnel)*exp(-nearest*0.0015);
+        let facade=sr_facade(at,normal,sr_aux3(b+8u),fp+nearest*0.0005);
+        return (facade.emission+facade.albedo*2.0)*mix(0.08,0.65,fresnel)*exp(-nearest*0.0015);
     }
-    for(var i=0u;i<6u;i++){
-        let id=aux[grid+i];if id==0xffffffffu {continue;}let b=aux[3]+id*16u;
-        let normal=sr_aux3(b+12u);let facing=dot(ray,normal);if facing>=-0.001 {continue;}
-        let distance=dot(sr_aux3(b)-p,normal)/facing;if distance<=0.0 || distance>=nearest {continue;}
-        let at=p+ray*distance-sr_aux3(b);let width=bitcast<f32>(aux[b+3u]);let height=bitcast<f32>(aux[b+7u]);
-        var uv=vec2<f32>(dot(at,sr_aux3(b+4u))/width+0.5,0.5-dot(at,sr_aux3(b+8u))/height);
-        if min(uv.x,uv.y)<0.0 || max(uv.x,uv.y)>1.0 {continue;}nearest=distance;
-        uv.x=clamp(uv.x+(sr_noise(p.xz*1.5)-0.5)*0.012,0.003,0.997);
-        let tile=u32(bitcast<f32>(aux[b+11u]));var layer=1;var atlas=(uv+vec2<f32>(f32(tile%3u),f32(tile/3u)))/vec2<f32>(3,2);
-        if tile>=6u {layer=2;atlas=(uv+vec2<f32>(f32(tile-6u),0))/vec2<f32>(4,1);}
-        let mip=max(0.0,log2(max(fp+distance*0.0003,0.001)*f32(textureDimensions(albedo).x)/width/3.0));
-        let art=textureSampleLevel(albedo,samp,atlas,layer,mip).rgb;
-        screens=art*145.0*mix(0.18,0.8,fresnel)*exp(-distance*0.0015);
-    }
-    return screens;
+    let b=aux[3]+(hit&0x7fffffffu)*16u;let at=p+ray*nearest-sr_aux3(b);
+    let width=bitcast<f32>(aux[b+3u]);let height=bitcast<f32>(aux[b+7u]);
+    var uv=vec2<f32>(dot(at,sr_aux3(b+4u))/width+0.5,0.5-dot(at,sr_aux3(b+8u))/height);
+    uv.x=clamp(uv.x+(sr_noise(p.xz*1.5)-0.5)*0.012,0.003,0.997);
+    let tile=u32(bitcast<f32>(aux[b+11u]));var layer=1;var atlas=(uv+vec2<f32>(f32(tile%3u),f32(tile/3u)))/vec2<f32>(3,2);
+    if tile>=6u {layer=2;atlas=(uv+vec2<f32>(f32(tile-6u),0))/vec2<f32>(4,1);}
+    let mip=max(0.0,log2(max(fp+nearest*0.0003,0.001)*f32(textureDimensions(albedo).x)/width/3.0));
+    return textureSampleLevel(albedo,samp,atlas,layer,mip).rgb*145.0*mix(0.18,0.8,fresnel)*exp(-nearest*0.0015);
 }
 fn sr_hash1(x:f32)->f32{return fract(sin(x*127.1+0.31)*43758.5453);}
 fn sr_noise1(x:f32)->f32{let f=fract(x);return mix(sr_hash1(floor(x)),sr_hash1(floor(x)+1.0),f*f*(3.0-2.0*f));}
@@ -197,7 +215,7 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
         let finish=sr_noise(p.xz*8.0);
         o.rough=mix(0.19,0.27,finish)+seam*0.15;o.metal=0.52;
         // The same nearby facade/screen rays used on the road: real moving
-        // reflections as the hull turns, bounded to 18 candidates per tile.
+        // reflections as the hull turns, using the shared near-first hierarchy.
         let fresnel=0.04+0.96*pow(1.0-max(dot(s.n,-s.dir),0.0),5.0);
         o.emission+=sr_reflections(s.p,s.n,s.dir,fp)*mix(0.11,0.38,fresnel);
 
