@@ -14,6 +14,10 @@ struct FxUniform {
     size: vec4<f32>,
     // time, white luminance (nits), LDR exposure (zero for HDR), sRGB output
     clock: vec4<f32>,
+    // Ray steps, soft-layer divisor, reciprocal soft-layer width/height.
+    smoke: vec4<f32>,
+    // Use exactly the composite guide mapping at reduced pixel centres.
+    depth_from_output: mat4x4<f32>,
 };
 struct Puff {
     // centre, kind (0 smoke, 1 fire, 2 ember, 3 heat, 4 column, 5 streak, 6 mote, 7 baked smoke)
@@ -245,6 +249,22 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     return u.camera_near.w / max(textureLoad(scene_depth, px, 0), 1e-9);
 }
 
+// A reduced texel centre can lie exactly on a full-depth texel boundary.
+// Reprojecting its interpolated world position adds enough roundoff to select
+// the adjacent texel. Share this pixel-based mapping and CPU reciprocals with
+// the composite guide so background smoke never receives a foreground guide.
+fn soft_depth_uv(pixel: vec2<f32>) -> vec2<f32> {
+    let uv = pixel * u.smoke.zw;
+    let clip = u.depth_from_output * vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 1.0, 1.0);
+    return clip.xy / clip.w * vec2<f32>(0.5, -0.5) + 0.5;
+}
+fn billow_depth_gap(world: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    let clip = u.depth_vp * vec4<f32>(world, 1.0);
+    var uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + 0.5;
+    if u.smoke.y > 1.0 { uv = soft_depth_uv(pixel); }
+    return depth_metres(uv) - clip.w;
+}
+
 // Metres of free space in front of the opaque scene at this fragment
 // (negative: hidden).
 fn depth_gap(world: vec3<f32>) -> f32 {
@@ -359,7 +379,7 @@ fn fx_mote(in: V) -> @location(0) vec4<f32> {
 @fragment
 fn fx_billow(in: V) -> @location(0) vec4<f32> {
     let p = puffs[in.id];
-    let gap = depth_gap(in.world);
+    let gap = billow_depth_gap(in.world, in.position.xy);
     if gap <= 0.0 { discard; }
     let view = normalize(u.camera_near.xyz - in.world);
     let continuous = p.az.w >= 2.0;
@@ -463,18 +483,36 @@ fn smoke_local_vector(p: Puff, v: vec3<f32>) -> vec3<f32> {
         dot(v, p.az.xyz) / dot(p.az.xyz, p.az.xyz));
 }
 
+struct SmokeBounds { low: vec3<f32>, high: vec3<f32>, peak: f32 };
+fn smoke_bounds(frame: f32) -> SmokeBounds {
+    let a = u32(clamp(floor(frame), 0.0, 31.0));
+    let b = min(a + 1u, 31u);
+    let lo_a = SMOKE_BOUNDS_MIN[a].xyz;
+    let hi_a = SMOKE_BOUNDS_MAX[a];
+    let lo_b = SMOKE_BOUNDS_MIN[b].xyz;
+    let hi_b = SMOKE_BOUNDS_MAX[b];
+    if hi_a.w == 0.0 { return SmokeBounds(lo_b, hi_b.xyz, hi_b.w); }
+    if hi_b.w == 0.0 { return SmokeBounds(lo_a, hi_a.xyz, hi_a.w); }
+    return SmokeBounds(min(lo_a, lo_b), max(hi_a.xyz, hi_b.xyz), max(hi_a.w, hi_b.w));
+}
+fn smoke_retirement(p: Puff) -> f32 {
+    if p.extra.y <= 0.0 { return 1.0; }
+    return 1.0 - smoothstep(p.extra.x, p.extra.x + p.extra.y, u.clock.x);
+}
+
 @vertex
 fn fx_smoke_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V {
     let id = order[ii];
     let p = puffs[id];
     let age = clamp((u.clock.x - p.timing.x) / max(p.timing.y, 0.001), 0.0, 1.0);
+    let bounds = smoke_bounds(smoke_bake_time(age) / 2.6 * 31.0);
     var lo = vec2<f32>(1.0);
     var hi = vec2<f32>(-1.0);
     var front = false;
     var clipped = false;
     for (var corner = 0u; corner < 8u; corner++) {
         let uvw = vec3<f32>(f32(corner & 1u), f32((corner >> 1u) & 1u), f32((corner >> 2u) & 1u));
-        let clip = u.view_proj * vec4<f32>(smoke_world(p, uvw), 1.0);
+        let clip = u.view_proj * vec4<f32>(smoke_world(p, mix(bounds.low, bounds.high, uvw)), 1.0);
         if clip.w > u.camera_near.w {
             lo = min(lo, clip.xy / clip.w);
             hi = max(hi, clip.xy / clip.w);
@@ -486,7 +524,7 @@ fn fx_smoke_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32)
     if front && clipped { lo = vec2<f32>(-1.0); hi = vec2<f32>(1.0); }
     lo = max(lo, vec2<f32>(-1.0));
     hi = min(hi, vec2<f32>(1.0));
-    if !front || any(lo >= hi) || age <= 0.0 || age >= 1.0 {
+    if !front || any(lo >= hi) || age <= 0.0 || age >= 1.0 || bounds.peak == 0.0 || smoke_retirement(p) <= 0.0 {
         lo = vec2<f32>(-2.0);
         hi = lo;
     }
@@ -529,42 +567,58 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
     let ray = normalize(in.world - u.camera_near.xyz);
     let origin = smoke_local_vector(p, u.camera_near.xyz - p.center_kind.xyz) + vec3<f32>(0.5, 0.0, 0.5);
     let direction = smoke_local_vector(p, ray);
+    let bake_time = smoke_bake_time(in.age);
+    let frame = bake_time / 2.6 * 31.0;
+    let bounds = smoke_bounds(frame);
+    let retirement = smoke_retirement(p);
+    if bounds.peak == 0.0 || retirement <= 0.0 { discard; }
+    var full_entry = 0.0;
+    var full_exit = 1e9;
     var entry = 0.0;
     var exit = 1e9;
     for (var axis = 0u; axis < 3u; axis++) {
         if abs(direction[axis]) < 1e-8 {
-            if origin[axis] < 0.0 || origin[axis] > 1.0 { discard; }
+            if origin[axis] < bounds.low[axis] || origin[axis] > bounds.high[axis] { discard; }
         } else {
             let a = -origin[axis] / direction[axis];
             let b = (1.0 - origin[axis]) / direction[axis];
-            entry = max(entry, min(a, b));
-            exit = min(exit, max(a, b));
+            full_entry = max(full_entry, min(a, b));
+            full_exit = min(full_exit, max(a, b));
+            let c = (bounds.low[axis] - origin[axis]) / direction[axis];
+            let d = (bounds.high[axis] - origin[axis]) / direction[axis];
+            entry = max(entry, min(c, d));
+            exit = min(exit, max(c, d));
         }
     }
     let probe = u.depth_vp * vec4<f32>(u.camera_near.xyz + ray, 1.0);
-    let uv = probe.xy / probe.w * vec2<f32>(0.5, -0.5) + 0.5;
+    var uv = probe.xy / probe.w * vec2<f32>(0.5, -0.5) + 0.5;
+    if u.smoke.y > 1.0 { uv = soft_depth_uv(in.position.xy); }
     let forward = max(-(u.view * vec4<f32>(ray, 0.0)).z, 1e-6);
-    exit = min(exit, depth_metres(uv) / forward);
+    let scene_exit = depth_metres(uv) / forward;
+    full_exit = min(full_exit, scene_exit);
+    exit = min(exit, scene_exit);
     if exit <= entry { discard; }
 
-    let samples = select(48u, 24u, u.clock.z > 0.0);
-    let step = (exit - entry) / f32(samples);
+    let samples = select(u32(clamp(u.smoke.x, 8.0, 48.0)), 24u, u.clock.z > 0.0);
+    // Retain the original cube-aligned quadrature positions. Tight supports
+    // skip empty samples without introducing frame-boundary sampling jumps.
+    let step = (full_exit - full_entry) / f32(samples);
+    let first = u32(clamp(ceil((entry - full_entry) / step - 0.5), 0.0, f32(samples)));
+    let end = u32(clamp(floor((exit - full_entry) / step - 0.5) + 1.0, 0.0, f32(samples)));
     let optical_step = step * length(direction) * p.body.a;
-    let bake_time = smoke_bake_time(in.age);
-    let frame = bake_time / 2.6 * 31.0;
     // The source bake applies this density envelope. Scale the shape trim with
     // it so thinning wisps are not erased by a fixed threshold near the end.
     let density_trim = 0.025 * (1.0 - smoothstep(1.7, 2.6, bake_time));
     var transmission = 1.0;
     var color = vec3<f32>(0.0);
-    for (var k = 0u; k < samples; k++) {
-        let point = origin + direction * (entry + (f32(k) + 0.5) * step);
+    for (var k = first; k < end; k++) {
+        let point = origin + direction * (full_entry + (f32(k) + 0.5) * step);
         let field = smoke_sample(point, frame);
-        let density = max(0.0, (field.r - density_trim) / 0.975);
+        let density = max(0.0, (field.r - density_trim) / 0.975) * retirement;
         let alpha = 1.0 - exp(-density * optical_step);
         // The G channel is baked light transmittance through this same frame.
         // It provides self-shadowed form; it does not sample world shadows.
-        let radiance = p.body.rgb * (0.025 + 0.40 * pow(field.g, 1.3)) * u.clock.y;
+        let radiance = p.body.rgb * (0.025 + 0.40 * pow(field.g, 1.3 * retirement)) * u.clock.y;
         color += transmission * alpha * radiance;
         transmission *= 1.0 - alpha;
         if transmission < 0.015 { break; }

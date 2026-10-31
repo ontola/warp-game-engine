@@ -1,4 +1,7 @@
-# Baked smoke scalability, 31 October 2026
+# Baked smoke scalability baseline, 31 October 2026
+
+This report describes the implementation before [adaptive smoke rendering](adaptive-explosion-smoke.md).
+Its 16-volume cap, full-resolution costs and proposed changes are historical.
 
 The current full-quality volume smoke is inexpensive for a few small distant
 blasts, but is not ready as an unrestricted effect for explosion-heavy combat.

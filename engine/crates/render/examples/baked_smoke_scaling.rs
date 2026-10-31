@@ -12,7 +12,7 @@ const WARMUP: usize = 12;
 const AGE: f32 = 0.85;
 const BIRTH_INTERVAL: f32 = 0.0001;
 // Metadata derived from the current Effects recipe, not a GPU counter.
-const BAKED_CAP: usize = 16;
+const BAKED_CAP: usize = 64;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Layout { Spread, Overlap, Inside }
@@ -86,7 +86,7 @@ fn measure(gpu:&Gpu,renderer:&Renderer,light:&Lighting,size:[u32;2],views:&[View
         layout.name(),passes["fx"]["median_ms"],passes["fx"]["p95_ms"]);
     Ok(json!({"layout":layout.name(),"mode":mode,"requested_explosions":count,"radius_m":radius,
         "newest_age_seconds":age,"oldest_age_seconds":time,"birth_interval_seconds":BIRTH_INTERVAL,
-        "live_puffs_after_flush":fx.len(),
+        "live_puffs_after_flush":fx.len(),"quality_decisions":renderer.smoke_quality_stats(),
         "expected_baked_volumes_from_source_rule":if mode=="baked" {count.min(BAKED_CAP)} else {0},
         "volume_count_is_observed":false,"per_pass":passes,"instrumented_root_pass_sum":quantiles(instrumented),"capture":image}))
 }
@@ -95,7 +95,7 @@ fn run()->Result<(),String> {
     let args:Vec<_>=std::env::args().skip(1).collect();
     let arg=|key:&str|args.windows(2).find(|a|a[0]==key).map(|a|a[1].as_str());
     if args.iter().any(|a|a=="--help") {
-        println!("baked_smoke_scaling --out DIR --size WIDTHxHEIGHT --views 1|4 --samples 24 --layout all|spread|overlap|inside [--radius METRES] [--counts 0,1,4,8,16,32] [--captures]");
+        println!("baked_smoke_scaling --out DIR --size WIDTHxHEIGHT --views 1|4 --samples 24 --layout all|spread|overlap|inside [--radius METRES] [--counts 0,1,4,8,16,32,64] [--captures]");
         return Ok(());
     }
     let size=match arg("--size").unwrap_or("1920x1080").split_once('x') {
@@ -113,7 +113,7 @@ fn run()->Result<(),String> {
     };
     let radius_override=arg("--radius").map(|v|v.parse::<f32>().map_err(|_|"invalid radius")).transpose()?;
     if radius_override.is_some_and(|r|!r.is_finite()||!(0.5..=100.0).contains(&r)) {return Err("radius must be finite, 0.5..100 metres".into());}
-    let counts:Vec<usize>=arg("--counts").unwrap_or("0,1,4,8,16,32").split(',').map(|v|v.parse().map_err(|_|"invalid count")).collect::<Result<_,_>>()?;
+    let counts:Vec<usize>=arg("--counts").unwrap_or("0,1,4,8,16,32,64").split(',').map(|v|v.parse().map_err(|_|"invalid count")).collect::<Result<_,_>>()?;
     if counts.is_empty() || counts.iter().any(|n|*n>64) {return Err("counts must be 0..64".into());}
     let out=Path::new(arg("--out").unwrap_or("build/smoke-scaling"));
     std::fs::create_dir_all(out).map_err(|e|e.to_string())?;
@@ -157,11 +157,13 @@ fn run()->Result<(),String> {
     }
     let report=json!({"adapter":{"name":gpu.info.name,"backend":format!("{:?}",gpu.info.backend),"driver":gpu.info.driver},
         "output_size":size,"view_count":view_count,"layout_views":layout_views,
-        "reconstruction":"native HDR, no TAA or spatial upscaler","warmup_frames_per_case":WARMUP,"measured_frames_per_case":samples,
+        "reconstruction":"native HDR output, no TAA or spatial upscaler",
+        "smoke_quality":std::env::var("WARP_SMOKE_QUALITY").unwrap_or_else(|_|"adaptive".into()),
+        "warmup_frames_per_case":WARMUP,"measured_frames_per_case":samples,
         "scope":"GPU root-pass timestamps in static floor-only fixture using full Effects.explosion recipe and its local lights; excludes gameplay simulation, destruction, crowd, UI, startup, upload and image readback. Not gameplay FPS.",
         "timing_aggregation":"Per-pass values already sum all views. instrumented_root_pass_sum is root-scope work, not covered elapsed GPU time or FPS.",
         "allocation":"Shared 6.75 MiB smoke asset is primed before measurements; cold first-explosion upload is excluded.",
-        "baked_volume_cap_from_source":BAKED_CAP,"baked_volume_counts":"Expected from current source rule, not observed/read back. Counts above16 retain other explosion effects but recycle old smoke volumes.",
+        "baked_volume_cap_from_source":BAKED_CAP,"baked_volume_counts":"Expected from current source rule, not observed/read back. Up to64 active volumes; an additional32 may retire over0.30s. This probe uses at most64, so its static births do not enter retirement.",
         "layout_notes":{"spread":"Centres are 5m apart on a centred grid; cameras stay outside default-radius volumes.",
             "overlap":"All explosions share one centre; cameras outside default-radius volumes.",
             "inside":"All explosions share one centre; four cameras sit within the default 6.5m-radius smoke box. Larger --radius overrides may also contain cameras in other layouts."},

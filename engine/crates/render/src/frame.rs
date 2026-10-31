@@ -3021,6 +3021,11 @@ impl Renderer {
     pub fn set_sprite_texture(&self, gpu: &Gpu, id: crate::sprites::SpriteImage, texture: &wgpu::Texture, filter: crate::hud::ImageFilter) { self.sprites.set_texture(gpu, id, texture, filter) }
     pub fn remove_sprite_image(&self, id: crate::sprites::SpriteImage) { self.sprites.remove(id) }
 
+    /// Last per-view smoke resolution/sample decisions; no GPU readback.
+    pub fn smoke_quality_stats(&self) -> Vec<crate::fx::SmokeQualityStats> {
+        self.fx.0.lock().unwrap().as_ref().map_or_else(Vec::new, |fx| fx.quality_stats())
+    }
+
     pub fn set_effects(&self, gpu: &Gpu, time: f32, puffs: Option<&[crate::fx::Puff]>) -> Result<(), String> {
         self.fx.set(gpu, time, puffs);
         Ok(())
