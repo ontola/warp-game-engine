@@ -1,3 +1,35 @@
+# Native GameNight integration - 31 October 2026
+
+The installed Windows Preview daemon launched the portable native game through
+its real authenticated launch path on a private loopback port. The test owns its
+host store and uses synthetic profiles; it does not touch the running party.
+
+- Twelve app and sixteen shared-client tests pass. Avatar composition covers
+  skin, hat/head coordinates, invalid payload fallback and live revisions.
+- All nine installed-daemon checks pass: launch/Ready after GPU upload, two
+  named views, ten settings, invalid-value rejection, atomic settings/Undo,
+  live avatar/paint/name updates while paused, overlay and explicit pause
+  semantics, swapped-seat Prepare with saved seed/settings, SDK6 new-race
+  action and joining up to four named views.
+- Captures at 1600x900: `build/spaceracer-gamenight-final/profiles-before.png`,
+  `profiles-after.png`, `two-player.png`, `four-player.png`. Inspected both face
+  projection and split-view layout. Hats are visible above the face circle;
+  profiles are in the hull shading, not separate floating meshes.
+- One atlas layer, uploaded only on profile changes. Paint changes update
+  relevant hull/debris materials; mip sampling is bounded to prevent tile bleed.
+- GameNight keeps a fixed race roster: changing seats in the overlay prepares a
+  fresh race on close. The first test incorrectly expected an immediate active
+  seat swap; the corrected test verifies the actual host Prepare boundary.
+- Registration updates only the local SpaceRacer launch, backs up both JSON
+  files, and needs a GameNight restart to load. Public catalog artifacts remain
+  the previously published build. No user-owned process was stopped.
+
+Physical pads, rumble, foreground/window transitions and sustained gameplay
+performance were not measured. These are headless integration/visual checks,
+not full content/visual parity or a certification of the downloadable release.
+Run `tools/test-gamenight.py` with an SDK6 daemon and a new output directory to
+repeat. See `README.md` for build/registration commands and settings timing.
+
 # Crash effects and motion blur - 31 October 2026
 
 Baseline: 2200c12. Added the remaining effects discussed with the user:

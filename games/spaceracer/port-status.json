@@ -23,7 +23,7 @@
     {
       "path": "src/bridge.gd",
       "sha256": "082b1a642098f8e43cce0c9b678ed18626ef16c2049862238293f4e257274167",
-      "status": "native GameNight lifecycle/opaque seats/controller routing loopback-tested; profile faces and production host test pending"
+      "status": "native lifecycle and opaque seats; ten Luau host settings, cached live profiles and painted faces; isolated installed-daemon two/four-view lifecycle/settings/Undo/new-race checks; physical controllers and desktop focus unverified"
     },
     {
       "path": "src/bump.gd",
@@ -188,7 +188,7 @@
     {
       "path": "src/pilot_face.gd",
       "sha256": "6d9ab8dec313ffac88ba60c68d54c3b33a14f7be351c3e0cd2692fbdeb229059",
-      "status": "pending"
+      "status": "cached avatar/skin atlas projected into nacelle paint; clothing colour updates hull/debris; head origin and hat space preserved; live update verified on installed host"
     },
     {
       "path": "src/race.gd",
@@ -345,7 +345,7 @@
     "ship_variants_preserved": 5,
     "source_assets_preserved": 102,
     "renderer_camera_math_tests": 1,
-    "native_app_tests": 10,
+    "native_app_tests": 12,
     "app_input_tests_total": 21,
     "headless_flow_ticks": 1207,
     "capture_resolution": [
@@ -363,11 +363,16 @@
     "jet_effect_scenario_ticks": 601,
     "ocean_life_scenario_ticks": 960,
     "crash_effect_scenario_ticks": 1724,
-    "four_view_effect_scenario_ticks": 803
+    "four_view_effect_scenario_ticks": 803,
+    "installed_daemon_headless_test": true,
+    "gamenight_capture_resolution": [
+      1600,
+      900
+    ]
   },
   "next_required": [
     "Remaining source stage features: sandworm, full environmental animation and material/effect fidelity",
-    "Original audio, face decals and full GameNight settings/profile behavior",
+    "Original audio and physical GameNight controller/window-focus playtest",
     "Real controller playtests for AI, contacts, weapons and flight tuning",
     "Complete visor, victory, wear and respawn presentation",
     "Equal-content visual review before steady-state CPU/GPU performance claims"

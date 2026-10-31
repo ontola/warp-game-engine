@@ -183,6 +183,17 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
         let scratches=step(0.95,sr_noise(p.xz*22.0))*sr_line(fract(p.z*8.0)-0.5,0.025,aa)*(1.0-smoothstep(0.03,0.15,fp));
         o.albedo=pigment*mix(0.52,1.0,smoothstep(-0.3,0.3,p.y))*(1.0-seam*0.5);
         o.albedo=mix(o.albedo,vec3<f32>(0.12),scratches*0.15);
+        if abs(s.scale)>=2.0 {
+            let code=u32(round(abs(s.scale)))-2u;let side=sign(s.scale);
+            let face_uv=vec2<f32>(.5+(p.z-.65)*side/.9,.5+(.24-p.y)/.9);
+            if all(face_uv>=vec2<f32>(0)) && all(face_uv<=vec2<f32>(1)) && p.x*side>.05 {
+                let tile=vec2<f32>(f32(code%8u%4u),f32(code%8u/4u));
+                let f=textureSampleLevel(albedo,samp,(tile+clamp(face_uv,vec2<f32>(.003),vec2<f32>(.997)))/4.,i32(code/8u),clamp(log2(max(fp,.001)*256./.9),0.,6.));
+                let obj=instances[s.instance];let axis=normalize(vec3<f32>(obj.r0.x,obj.r1.x,obj.r2.x));
+                let ink=f.a*smoothstep(.28,.48,abs(dot(s.n,axis)));
+                o.albedo=mix(o.albedo,f.rgb/max(f.a,.001),ink);
+            }
+        }
         let finish=sr_noise(p.xz*8.0);
         o.rough=mix(0.19,0.27,finish)+seam*0.15;o.metal=0.52;
         // The same nearby facade/screen rays used on the road: real moving

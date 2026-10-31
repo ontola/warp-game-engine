@@ -1,7 +1,10 @@
 mod crash_fx;
+mod integration_probe;
 mod jets;
 mod ocean_life;
 mod party;
+mod party_settings;
+mod pilot_faces;
 mod stage;
 mod stage_mesh;
 mod stage_terrain;
@@ -37,11 +40,14 @@ struct Racer {
     previous: Vec<Pose>,
     devices: Vec<Device>,
     party: Option<party::Party>,
+    preferences: party_settings::Settings,
+    live_settings: party_settings::Live,
     fatal: Option<String>,
     ready: bool,
     demo: bool,
     blur_enabled: bool,
     reload_ticks: u32,
+    portrait: bool,
 }
 const BIOMES: [&str; 5] = ["city", "forest", "cell", "desert", "ocean"];
 const DIFFICULTIES: [&str; 3] = ["easy", "normal", "hard"];
@@ -67,7 +73,9 @@ impl Racer {
         race.obstacles = visuals.obstacles.clone();
         race.environment.landscape = Some(visuals.stage.landscape.clone());
         let previous = (0..race.pilots.len()).map(|i| race.pose(i)).collect();
-        let party = party::Party::connect()?;
+        let preferences = party_settings::Settings::new(&root)?;
+        let live_settings = preferences.live()?;
+        let party = party::Party::connect(preferences.specs.clone())?;
         Ok(Self {
             race,
             visuals,
@@ -87,11 +95,14 @@ impl Racer {
             previous,
             devices: vec![],
             party,
+            preferences,
+            live_settings,
             fatal: None,
             ready: false,
             demo,
             blur_enabled: true,
             reload_ticks: 0,
+            portrait: false,
         })
     }
     fn restart(&mut self) -> Result<(), String> {
@@ -101,7 +112,7 @@ impl Racer {
             DIFFICULTIES[self.difficulty],
             BIOMES[self.biome],
             self.players,
-            3,
+            self.preferences.values["laps"].as_u64().unwrap_or(3) as u32,
             rules,
         )?;
         if let Some(p) = &self.party {
@@ -110,11 +121,19 @@ impl Racer {
                 race.drivers[i].bot = seat.ai;
             }
         }
+        if self.preferences.values["weapon_pickups"] == false {
+            race.pickups.clear();
+        }
         self.visuals = visuals::Visuals::new(&race, &self.root.join("assets"))?;
         race.obstacles = self.visuals.obstacles.clone();
         race.environment.landscape = Some(self.visuals.stage.landscape.clone());
         self.previous = (0..race.pilots.len()).map(|i| race.pose(i)).collect();
         self.race = race;
+        self.apply_live_settings();
+        self.sync_profiles();
+        if let Some(p) = &mut self.party {
+            p.new_race();
+        }
         self.cameras = vec![Chase::default(); 4];
         self.menu = None;
         self.settings_dirty = false;
@@ -122,8 +141,60 @@ impl Racer {
     }
     fn random_race(&mut self) -> Result<(), String> {
         self.seed = (self.seed * 48271) % 99999 + 1;
-        self.biome = (self.seed as usize / 7) % 5;
+        if self.party.is_none() {
+            self.biome = (self.seed as usize / 7) % 5;
+        }
         self.restart()
+    }
+    fn apply_live_settings(&mut self) {
+        for p in &mut self.race.pilots {
+            p.boost_cost = self.live_settings.cost;
+            p.boost_duration = self.live_settings.duration;
+        }
+        self.race.balance.refill_rate = self.live_settings.refill;
+        self.race.balance.respawn_seconds = self.live_settings.recovery;
+    }
+    fn sync_profiles(&mut self) {
+        if let Some(p) = &self.party {
+            for (i, seat) in p.seats.iter().enumerate().take(6) {
+                self.race.drivers[i].name = seat.name.clone();
+                self.race.drivers[i].bot = seat.ai;
+                if let Some(profile) = p.client.state.player(&seat.player_id) {
+                    self.visuals
+                        .faces
+                        .update(&mut self.visuals.scene, i, profile);
+                }
+            }
+        }
+    }
+    fn setting(&mut self, key: &str, value: serde_json::Value) -> Result<(), String> {
+        if !self.preferences.set(key, value.clone())? {
+            return Ok(());
+        }
+        match key {
+            "seed" => {
+                let n = value.as_i64().unwrap();
+                if n > 0 {
+                    self.seed = n;
+                }
+            }
+            "difficulty" => {
+                self.difficulty = DIFFICULTIES
+                    .iter()
+                    .position(|s| Some(*s) == value.as_str())
+                    .unwrap()
+            }
+            "biome" => {
+                self.biome = BIOMES
+                    .iter()
+                    .position(|s| Some(*s) == value.as_str())
+                    .unwrap()
+            }
+            _ => {}
+        }
+        self.live_settings = self.preferences.live()?;
+        self.apply_live_settings();
+        Ok(())
     }
     fn controls(c: Controls, pad: bool) -> Drive {
         Drive {
@@ -275,16 +346,12 @@ impl Game for Racer {
         self.reload_ticks += 1;
         if self.reload_ticks % 60 == 0 {
             self.race.reload();
-        }
-        if self.ready && self.visuals.uploaded {
-            if let Some(p) = &mut self.party {
-                p.ready();
-            }
-            self.ready = false;
+            self.apply_live_settings();
         }
         if let Some(mut p) = self.party.take() {
             let events = p.poll();
             self.party = Some(p);
+            let mut prepare = false;
             for event in events {
                 match event {
                     party::Event::Prepare => {
@@ -297,18 +364,17 @@ impl Game for Racer {
                             .filter(|s| !s.ai)
                             .count()
                             .clamp(1, 4);
+                        let seed = self.preferences.values["seed"].as_i64().unwrap_or(0);
+                        self.seed = if seed == 0 {
+                            (self.seed * 48271) % 99999 + 1
+                        } else {
+                            seed
+                        };
                         self.ready = true;
-                        if let Err(e) = self.restart() {
-                            self.fatal = Some(e);
-                        }
+                        prepare = true;
                     }
                     party::Event::Roster => {
-                        if let Some(p) = &self.party {
-                            for (i, seat) in p.seats.iter().enumerate().take(6) {
-                                self.race.drivers[i].name = seat.name.clone();
-                                self.race.drivers[i].bot = seat.ai;
-                            }
-                        }
+                        self.sync_profiles();
                     }
                     party::Event::Random => {
                         if let Err(e) = self.random_race() {
@@ -316,26 +382,30 @@ impl Game for Racer {
                         }
                     }
                     party::Event::Setting(key, value) => {
-                        if key == "seed" {
-                            if let Some(v) = value.as_i64() {
-                                self.seed = v.clamp(1, 99999);
-                            }
+                        if self.ready
+                            && self.preferences.values[&key] != value
+                            && matches!(
+                                key.as_str(),
+                                "seed" | "difficulty" | "biome" | "laps" | "weapon_pickups"
+                            )
+                        {
+                            prepare = true;
                         }
-                        if key == "difficulty" {
-                            if let Some(i) =
-                                DIFFICULTIES.iter().position(|s| Some(*s) == value.as_str())
-                            {
-                                self.difficulty = i;
-                            }
-                        }
-                        if key == "biome" {
-                            if let Some(i) = BIOMES.iter().position(|s| Some(*s) == value.as_str())
-                            {
-                                self.biome = i;
-                            }
+                        if let Err(e) = self.setting(&key, value) {
+                            self.fatal = Some(e);
                         }
                     }
                 }
+            }
+            // Apply the complete host settings batch before constructing its race.
+            if prepare {
+                if let Err(e) = self.restart() {
+                    self.fatal = Some(e);
+                }
+            }
+            if self.ready && self.visuals.uploaded && self.fatal.is_none() {
+                self.party.as_mut().unwrap().ready();
+                self.ready = false;
             }
             if !self.party.as_ref().unwrap().running {
                 return;
@@ -388,6 +458,10 @@ impl Game for Racer {
         let alpha = if frozen { 1. } else { frame.alpha };
         self.visuals.update(&self.race, &self.previous, alpha)?;
         let mut light = self.visuals.light(&self.race);
+        light.lod_pixels *= self.live_settings.lod;
+        if !self.live_settings.near_shadows {
+            light.near_shadows = 0.;
+        }
         light.time = (self.race.tick.saturating_sub(1) as f32 + alpha) / 120.;
         if !self.visuals.uploaded {
             frame.set_scene(&self.visuals.scene, &light);
@@ -396,6 +470,9 @@ impl Game for Racer {
         let renderer = frame.renderer().ok_or("renderer unavailable")?;
         self.visuals
             .slots
+            .flush(frame.gpu, renderer, &self.visuals.scene)?;
+        self.visuals
+            .faces
             .flush(frame.gpu, renderer, &self.visuals.scene)?;
         self.visuals.fx.flush(frame.gpu, renderer, light.time)?;
         self.visuals.jets.flush(frame.gpu, renderer)?;
@@ -411,7 +488,12 @@ impl Game for Racer {
                     / (effect.blur_full_speed - effect.blur_start_speed))
                     .clamp(0., 1.);
                 render::motion_blur::Settings {
-                    strength: if !self.blur_enabled || frozen || p.crashed || p.recovery > 0. {
+                    strength: if !self.blur_enabled
+                        || !self.live_settings.blur
+                        || frozen
+                        || p.crashed
+                        || p.recovery > 0.
+                    {
                         0.
                     } else {
                         speed * effect.blur_strength
@@ -497,6 +579,15 @@ impl Game for Racer {
                 fov_y: (c.fov as f32).to_radians(),
                 near: 0.15,
             });
+            if self.portrait {
+                let pose = self.race.pose(i);
+                cams[i] = Camera {
+                    pos: pose.origin + pose.basis * glam::Vec3::new(11., 3., 2.),
+                    target: pose.origin + pose.basis * glam::Vec3::new(0., 0.2, 0.),
+                    fov_y: 45f32.to_radians(),
+                    near: 0.1,
+                };
+            }
             ups.push(c.up());
             if p.emp_time <= 0. && self.menu.is_none() {
                 text(
@@ -771,13 +862,15 @@ impl Game for Racer {
         })
     }
     fn state(&self) -> Option<String> {
-        Some(json!({"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"script_error":self.race.script_error,"error":self.fatal}).to_string())
+        Some(json!({"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"debris":self.visuals.crash_fx.active_pieces(),"face_revisions":self.visuals.faces.revisions,"settings":self.preferences.values,"active_laps":self.race.laps,"pickup_count":self.race.pickups.len(),"pilot_names":self.race.drivers.iter().map(|d|&d.name).collect::<Vec<_>>(),"host_seats":self.party.as_ref().map(|p|p.seats.iter().map(|s|s.index).collect::<Vec<_>>()),"bots":self.race.drivers.iter().map(|d|d.bot).collect::<Vec<_>>(),"live_settings":{"refill":self.race.balance.refill_rate,"recovery":self.race.balance.respawn_seconds},"host_phase":self.party.as_ref().map(|p|p.client.state.phase.as_str()),"script_error":self.race.script_error,"error":self.fatal}).to_string())
     }
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let args: Vec<_> = cmd.split_whitespace().collect();
         match args.as_slice(){
+        ["setting",key,value]=>{self.setting(key,serde_json::from_str(value).map_err(|_|"setting JSON")?)?;},
         ["play"]=>self.menu=None,["pause"]=>self.menu=Some(0),["random"]=>self.random_race()?,
         ["give",who,weapon]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let d=self.race.drivers.get_mut(i).ok_or("pilot index")?;d.item=Some(Weapon::parse(weapon).ok_or("unknown weapon")?);},
+        ["portrait","on"]=>self.portrait=true,["portrait","off"]=>self.portrait=false,
         ["blur","off"]=>self.blur_enabled=false,["blur","on"]=>self.blur_enabled=true,
         ["crash",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let pose=self.race.pose(i);self.race.drivers[i].motion.air.position=pose.origin;self.race.drivers[i].motion.air.frame=pose.basis;self.race.drivers[i].motion.crash(&mut self.race.pilots[i],glam::Vec3::Y);},
         ["boost",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.lap=2;p.boost=3.;},
@@ -838,6 +931,9 @@ fn main() -> Result<(), String> {
         demo,
     )?;
     game.blur_enabled = !args.iter().any(|s| s == "--no-motion-blur");
+    if let Some(dir) = arg("--integration-probe") {
+        return integration_probe::run(&mut game, std::path::Path::new(&dir));
+    }
     if let Some(frames) = arg("--bench") {
         let frames: u32 = frames.parse().map_err(|_| "--bench needs a frame count")?;
         if frames < 30 || frames > 10000 {

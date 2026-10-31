@@ -7,6 +7,24 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## SpaceRacer native GameNight integration - 31 October 2026
+
+Shared client adds read-only `State::player(id)` for renderer profile access.
+SpaceRacer caches one avatar/skin atlas and projects it onto original nacelle
+paint; live clothing colour repaints hull/debris. Settings policy/schema lives
+in `games/spaceracer/rules/party.luau`: ten keys, next-race/live timing, all native
+biomes. Preparing batches are applied before Ready; profiles stay live while
+paused. Fixed rosters use the host Prepare boundary for seat/player changes.
+
+12 app + 16 SDK tests and nine isolated installed Windows Preview-daemon checks
+pass, including real authenticated launch, two/four views, profiles, settings,
+Undo, pause/resume, seat re-prepare and SDK6 new-race action. Reproduce with
+`games/spaceracer/tools/test-gamenight.py`; screenshots/report are under
+`build/spaceracer-gamenight-final`. This does not test physical pads or desktop
+foreground transitions. `register-local.ps1` points only local SpaceRacer at
+`build/spaceracer-native`; restart GameNight to reload. No catalog release or
+Android build was produced. Public canonical integration docs were regenerated.
+
 ## SpaceRacer motion blur and crash debris - 31 October 2026
 
 Native effects complete for this iteration: per-view HDR motion-vector blur

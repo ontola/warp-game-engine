@@ -34,6 +34,7 @@ pub struct Visuals {
     pub slots: Slots,
     pub ships: Vec<Vec<ShipPart>>,
     pub jets: super::jets::Jets,
+    pub faces: super::pilot_faces::Faces,
     pub crash_fx: super::crash_fx::Crashes,
     pub presentation_dt: f32,
     last_presentation: Option<f32>,
@@ -532,8 +533,10 @@ impl Visuals {
             .read_to_string(&mut raw)
             .map_err(|e| e.to_string())?;
         let data: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        let mut faces = super::pilot_faces::Faces::new(&mut scene);
         let mut all_parts = vec![];
         for (design, color) in COLORS.into_iter().enumerate() {
+            let first_material = scene.materials.len();
             let mut materials = vec![];
             for source in data["materials"].as_array().ok_or("ship materials")? {
                 let hull = source["shader"]
@@ -584,7 +587,16 @@ impl Visuals {
                 &mut vec![],
                 true,
                 &mut parts,
+                faces.layer * 8 + design as i32 + 2,
             )?;
+            faces.paints.push(
+                (first_material..scene.materials.len())
+                    .filter(|&m| {
+                        let k = -2 - scene.materials[m].layer;
+                        (10..=14).contains(&k) || k == 23
+                    })
+                    .collect(),
+            );
             all_parts.push(parts);
         }
         let pickup_mat = material(&mut scene, [0.6, 0.15, 0.95], 0.3, 100.);
@@ -665,6 +677,7 @@ impl Visuals {
             ships,
             jets,
             crash_fx,
+            faces,
             presentation_dt: 0.,
             last_presentation: None,
             pickup_mesh,
@@ -911,6 +924,7 @@ fn load_node(
     chain: &mut Vec<(String, Affine3A)>,
     visible: bool,
     out: &mut Vec<LoadedPart>,
+    face_code: i32,
 ) -> Result<(), String> {
     let name = node["name"].as_str().unwrap_or("");
     let visible = visible && node["visible"].as_bool().unwrap_or(true);
@@ -964,6 +978,9 @@ fn load_node(
                     copy.scale = node["instance_parameters"]["face_side"]
                         .as_f64()
                         .unwrap_or(1.) as f32;
+                    if node["instance_parameters"]["face_surface"].as_bool() == Some(true) {
+                        copy.scale = copy.scale.signum() * face_code as f32;
+                    }
                     mat = scene.add_material(copy);
                 }
                 if name == "Canopy" {
@@ -1020,7 +1037,7 @@ fn load_node(
         }
     }
     for child in node["children"].as_array().into_iter().flatten() {
-        load_node(scene, data, child, mats, chain, visible, out)?;
+        load_node(scene, data, child, mats, chain, visible, out, face_code)?;
     }
     chain.pop();
     Ok(())
