@@ -131,6 +131,7 @@ Vehicles and effects:
 - [Car headlights](car-headlights.md)
 - [Rear-lens emission](car-rear-lamps.md)
 - [Baked explosion smoke](baked-explosion-smoke.md)
+- [Baked smoke scalability measurements](baked-smoke-scaling.md)
 - [Exhaust gas, backfire and heat](exhaust-effects.md)
 - [Wheel particles and tyre marks](wheel-effects.md)
 - [Wheel dust and debris](wheel-particles.md)
