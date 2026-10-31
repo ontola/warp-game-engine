@@ -54,6 +54,95 @@ fn sr_noise(p:vec2<f32>)->f32 {
     return mix(mix(sr_hash(i),sr_hash(i+vec2<f32>(1,0)),u.x),mix(sr_hash(i+vec2<f32>(0,1)),sr_hash(i+vec2<f32>(1,1)),u.x),u.y);
 }
 fn sr_line(x:f32,width:f32,aa:f32)->f32 {return 1.0-smoothstep(width,width+aa,abs(x));}
+// Retained source city_surface: the tint encodes style/UV offsets, not paint.
+fn sr_facade(p:vec3<f32>,n:vec3<f32>,tint:vec3<f32>,fp:f32)->SurfaceOut {
+    let face=select(p.x,p.z,abs(n.x)>0.5);
+    let uv=vec2<f32>(face/(56.0+tint.b*20.0),-p.y/(90.0+tint.g*28.0))+floor(tint.rg*12.0)/12.0;
+    let mip=max(0.0,log2(max(fp,0.001)*f32(textureDimensions(albedo).x)/60.0));
+    let tex=textureSampleLevel(albedo,samp,fract(uv),0,mip).rgb;
+    let wall=1.0-smoothstep(0.4,0.8,abs(n.y));
+    let brightness=dot(tex,vec3<f32>(0.2126,0.7152,0.0722));
+    let style=floor(tint.r*4.0);var structure=1.0;
+    if style<1.0 {structure=mix(0.14,1.0,smoothstep(0.08,0.13,fract(face/22.0)));}
+    else if style<2.0 {structure=mix(0.10,1.0,smoothstep(0.12,0.18,fract(p.y/48.0)));}
+    else if style<3.0 {structure=mix(0.22,1.0,smoothstep(0.12,0.2,fract(face/13.0)));}
+    structure=mix(structure,0.85,smoothstep(0.5,2.0,fp/7.0));
+    let room=smoothstep(0.11,0.48,brightness)*wall*structure;
+    var occupancy=0.16+0.84*step(0.24,fract(sin(floor(p.y/8.0)*17.17+floor(face/7.0)*3.73+tint.r*33.0)*433.1));
+    occupancy=mix(occupancy,0.8,smoothstep(0.35,1.5,fp/7.0));
+    let tone=mix(vec3<f32>(1.0,0.64,0.30),vec3<f32>(0.76,0.88,1.0),tint.g*0.65);
+    let paint=mix(vec3<f32>(0.075,0.09,0.115),tex*0.52*mix(vec3<f32>(0.65,0.78,0.88),vec3<f32>(1.0,0.87,0.74),tint.b)*structure,wall);
+    return SurfaceOut(paint,n,0.5,0.3,tex*tone*room*occupancy*80.0);
+}
+fn sr_aux3(i:u32)->vec3<f32>{return vec3<f32>(bitcast<f32>(aux[i]),bitcast<f32>(aux[i+1u]),bitcast<f32>(aux[i+2u]));}
+fn sr_reflections(p:vec3<f32>,n:vec3<f32>,dir:vec3<f32>,fp:f32)->vec3<f32>{
+    if arrayLength(&aux)<8u || aux[0]!=0x53524143u || aux[1]==0u {return vec3<f32>(0);}
+    let tile=vec2<u32>(clamp(floor((p.xz+4096.0)/128.0),vec2<f32>(0),vec2<f32>(63)));
+    let grid=aux[5]+(tile.y*64u+tile.x)*18u;
+    let ray=reflect(dir,n);let inv=1.0/select(vec3<f32>(0.00001),ray,abs(ray)>vec3<f32>(0.00001));
+    var nearest=1600.0;var hit=0xffffffffu;var screens=vec3<f32>(0);
+    let fresnel=pow(1.0-max(dot(n,-dir),0.0),3.0);
+    for(var i=0u;i<12u;i++){
+        let id=aux[grid+6u+i];if id==0xffffffffu {continue;}let b=aux[4]+id*12u;
+        let lo=sr_aux3(b);let hi=sr_aux3(b+4u);let t0=(lo-p)*inv;let t1=(hi-p)*inv;
+        let near=min(t0,t1);let far=max(t0,t1);let enter=max(max(near.x,near.y),near.z);let leave=min(min(far.x,far.y),far.z);
+        if enter>0.0 && enter<=leave && enter<nearest {nearest=enter;hit=b;}
+    }
+    if hit!=0xffffffffu {
+        let lo=sr_aux3(hit);let hi=sr_aux3(hit+4u);let at=p+ray*nearest;let rel=(at-(lo+hi)*0.5)/(hi-lo);
+        var normal=select(vec3<f32>(0,0,sign(rel.z)),vec3<f32>(sign(rel.x),0,0),abs(rel.x)>abs(rel.z));
+        if abs(rel.y)>max(abs(rel.x),abs(rel.z)){normal=vec3<f32>(0,sign(rel.y),0);}
+        let facade=sr_facade(at,normal,sr_aux3(hit+8u),fp+nearest*0.0005);
+        screens=(facade.emission+facade.albedo*2.0)*mix(0.08,0.65,fresnel)*exp(-nearest*0.0015);
+    }
+    for(var i=0u;i<6u;i++){
+        let id=aux[grid+i];if id==0xffffffffu {continue;}let b=aux[3]+id*16u;
+        let normal=sr_aux3(b+12u);let facing=dot(ray,normal);if facing>=-0.001 {continue;}
+        let distance=dot(sr_aux3(b)-p,normal)/facing;if distance<=0.0 || distance>=nearest {continue;}
+        let at=p+ray*distance-sr_aux3(b);let width=bitcast<f32>(aux[b+3u]);let height=bitcast<f32>(aux[b+7u]);
+        var uv=vec2<f32>(dot(at,sr_aux3(b+4u))/width+0.5,0.5-dot(at,sr_aux3(b+8u))/height);
+        if min(uv.x,uv.y)<0.0 || max(uv.x,uv.y)>1.0 {continue;}nearest=distance;
+        uv.x=clamp(uv.x+(sr_noise(p.xz*1.5)-0.5)*0.012,0.003,0.997);
+        let tile=u32(bitcast<f32>(aux[b+11u]));var layer=1;var atlas=(uv+vec2<f32>(f32(tile%3u),f32(tile/3u)))/vec2<f32>(3,2);
+        if tile>=6u {layer=2;atlas=(uv+vec2<f32>(f32(tile-6u),0))/vec2<f32>(4,1);}
+        let mip=max(0.0,log2(max(fp+distance*0.0003,0.001)*f32(textureDimensions(albedo).x)/width/3.0));
+        let art=textureSampleLevel(albedo,samp,atlas,layer,mip).rgb;
+        screens=art*100.0*mix(0.18,0.8,fresnel)*exp(-distance*0.0015);
+    }
+    return screens;
+}
+fn sr_hash1(x:f32)->f32{return fract(sin(x*127.1+0.31)*43758.5453);}
+fn sr_noise1(x:f32)->f32{let f=fract(x);return mix(sr_hash1(floor(x)),sr_hash1(floor(x)+1.0),f*f*(3.0-2.0*f));}
+fn sr_sandstone(p:vec3<f32>,n:vec3<f32>,detail:f32)->vec4<f32>{
+    let steep=1.0-abs(n.y);let h=p.y+sr_noise(p.xz*0.0035)*26.0+sr_noise(p.xz*0.017)*6.0+dot(p.xz,vec2<f32>(0.011,0.006));
+    let unit_coordinate=h/68.0+sr_noise1(h/91.0)*0.8;let unit=floor(unit_coordinate);let kind=sr_hash1(unit*3.7+1.3);
+    var base=vec3<f32>(0.78,0.57,0.38);var bed_size=5.0;var crossbedded=0.0;var varnish_strength=0.35;
+    if kind<0.38 {base=vec3<f32>(0.60,0.28,0.15);bed_size=2.6;varnish_strength=0.7;}
+    else if kind<0.72 {base=vec3<f32>(0.74,0.43,0.24);bed_size=9.0;crossbedded=1.0;varnish_strength=0.5;}
+    else if kind<0.9 {base=vec3<f32>(0.52,0.27,0.16);bed_size=1.6;varnish_strength=0.2;}
+    base*=0.9+sr_hash1(unit*9.1)*0.2;
+    let edge=fract(unit_coordinate);base*=mix(0.86,1.0,smoothstep(0.0,0.05,edge)*(1.0-smoothstep(0.97,1.0,edge)));
+    let bed_coordinate=h/bed_size+sr_noise1(h/(bed_size*3.3)+unit*7.0)*1.4;let bed=floor(bed_coordinate);let within=fract(bed_coordinate);
+    let random=sr_hash1(bed*1.73+unit*13.1);var color=base*mix(1.0,0.86+random*0.28,detail*0.85+0.15);
+    let hard=step(0.58,random)*(1.0-crossbedded*0.6);let lip=1.0-smoothstep(0.0,0.14,within);
+    color*=1.0-hard*lip*0.32*detail*steep;color=mix(color,color*1.12+vec3<f32>(0.03,0.02,0.01),hard*smoothstep(0.75,1.0,within)*0.5*detail);
+    if crossbedded>0.5{let angle=sr_hash1(bed*5.3+unit)*6.2832;let dip=vec2<f32>(cos(angle),sin(angle))*(0.25+sr_hash1(bed*2.1)*0.35);let lamina=fract(h*0.9+dot(p.xz,dip)*0.9+sr_noise(p.xz*0.08)*0.8);color*=1.0-smoothstep(0.8,1.0,lamina)*0.12*detail*steep;}
+    let space=vec2<f32>((p.x*0.71-p.z*0.71)*0.21+(p.x+p.z)*0.05,h*0.012);let streak=sr_noise(space)*0.65+sr_noise(space*vec2<f32>(2.7,1.3)+4.0)*0.35;
+    let varnish=smoothstep(0.5,0.78,streak)*varnish_strength*(smoothstep(0.0,0.55,1.0-within)*0.4+0.6)*steep;
+    color=mix(color,vec3<f32>(0.22,0.11,0.07),varnish*mix(0.55,1.0,detail));
+    let face=vec2<f32>(p.x+p.z*0.6,p.y);let mottle=sr_noise(face*0.11)*0.6+sr_noise(face*0.43)*0.4;color*=0.86+mottle*0.26;
+    color*=1.0-smoothstep(0.78,0.92,sr_noise(face*1.3+bed))*detail*steep*0.25;
+    return vec4<f32>(color,(within-0.5)*mix(0.18,0.55,hard)*detail*steep);
+}
+fn sr_hash3(p:vec3<f32>)->vec3<f32>{return fract(sin(vec3<f32>(dot(p,vec3<f32>(127.1,311.7,74.7)),dot(p,vec3<f32>(269.5,183.3,246.1)),dot(p,vec3<f32>(113.5,271.9,124.6))))*43758.5453);}
+fn sr_voronoi(p:vec3<f32>)->vec3<f32>{
+    let cell=floor(p);let f=fract(p);var first=8.0;var second=8.0;var id=0.0;
+    for(var x=-1;x<=1;x++){for(var y=-1;y<=1;y++){for(var z=-1;z<=1;z++){
+        let o=vec3<f32>(f32(x),f32(y),f32(z));let r=o+sr_hash3(cell+o)-f;let d=dot(r,r);
+        if d<first{second=first;first=d;id=sr_hash3(cell+o+17.0).x;}else if d<second{second=d;}
+    }}}
+    return vec3<f32>(sqrt(first),sqrt(second)-sqrt(first),id);
+}
 fn game_surface(s:SurfaceIn)->SurfaceOut {
     let uv=s.uv0*s.bary.x+s.uv1*s.bary.y+s.uv2*s.bary.z;
     let fp=max(length(s.dx),length(s.dy));
@@ -61,31 +150,19 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
     if s.kind==0u { // Road: metres along ribbon, normalized lateral position.
         let grain=sr_noise(s.p.xz*14.0);let variation=sr_noise(s.p.xz*0.11);
         let micro=mix(0.5,grain,1.0-smoothstep(0.03,0.3,fp));
-        let cross_seam=sr_line(fract(uv.y/12.0)-0.5,0.0007,max(0.0004,fp/12.0));
+        let cross_seam=sr_line(fract(uv.y/18.0)-0.5,0.0007,max(0.0004,fp/12.0));
         let long_seam=sr_line(fract(uv.x*4.0)-0.5,0.003,0.002+fp*0.012);
-        let lane=sr_line(abs(uv.x)-0.5,0.002,0.001+fp*0.01)*step(0.6,fract(uv.y/18.0));
+        let lane=sr_line(abs(uv.x)-0.33,0.002,0.001+fp*0.01)*step(0.6,fract(uv.y/18.0));
         let edge=sr_line(abs(uv.x)-0.94,0.008,0.002+fp*0.012);
         o.albedo=mix(vec3<f32>(0.035,0.042,0.05)*(0.7+micro*0.35+variation*0.35),vec3<f32>(0.32,0.39,0.42),max(lane,edge)*0.5);
         o.albedo*=1.0-max(cross_seam,long_seam)*0.55;
         o.rough=mix(0.22,0.43,variation);o.metal=0.08;
         let ripple=vec3<f32>(sin(s.p.x*1.3+s.p.z*8.0),0.0,cos(s.p.z*1.6+s.p.x*3.0))*0.003*(1.0-smoothstep(0.2,2.0,fp));
         o.normal=normalize(s.n+ripple-s.n*dot(ripple,s.n));
-    } else if s.kind==1u { // City glazing: fixed metre-sized floors/windows.
-        let wall=select(s.p.xy,s.p.zy,abs(s.n.x)>abs(s.n.z));
-        let q=wall/vec2<f32>(3.2,4.0);let cell=floor(q);let f=fract(q);
-        let aa=clamp(fp*0.3,0.015,0.3);
-        let pane=smoothstep(0.1,0.1+aa,f.x)*(1.0-smoothstep(0.83-aa,0.83,f.x))*smoothstep(0.16,0.16+aa,f.y)*(1.0-smoothstep(0.86-aa,0.86,f.y));
-        let r=sr_hash(cell+vec2<f32>(s.scale*133.0,7.0));
-        let occupancy=step(0.64,sr_hash(floor(cell/vec2<f32>(3.0,2.0))+s.scale));
-        let lit=occupancy*step(0.24,r)*pane;
-        let blind=0.65+0.35*step(0.24,fract(f.y*6.0));
-        let warmth=mix(vec3<f32>(0.54,0.74,1.0),vec3<f32>(1.0,0.72,0.39),step(0.26,r));
-        let stripe=sr_line(fract(q.y/12.0)-0.02,0.012,aa/12.0);
-        let mullion=1.0-pane;
-        o.albedo=mix(vec3<f32>(0.018,0.031,0.047),s.tint,mullion*0.7);
-        o.rough=mix(0.24,0.58,mullion);o.metal=0.38;
-        o.emission=warmth*lit*blind*(10.0+r*30.0)+vec3<f32>(0.13,0.35,0.5)*stripe*1.5;
-        if abs(s.n.y)>0.7 {o.emission=vec3<f32>(0);o.albedo=s.tint*0.4;o.rough=0.7;}
+        o.emission+=sr_reflections(s.p,o.normal,s.dir,fp)*mix(0.38,1.0,micro);
+        o.rough=mix(0.32,0.12,smoothstep(0.28,0.72,variation));
+    } else if s.kind==1u {
+        o=sr_facade(s.p,s.n,s.tint,fp);
     } else if s.kind>=10u && s.kind<=14u { // Authored hull livery, in the opaque paint pass.
         let p=s.local;let aa=clamp(fp*0.2,0.002,0.04);
         let seam=sr_line(fract((p.z+0.6)*0.4)-0.5,0.002,aa*0.3);
@@ -101,18 +178,63 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
     } else if s.kind==3u { // Water: coherent swell and fine wind ripples.
         let a=s.p.x*0.055+s.p.z*0.032+s.time*0.65;let b=s.p.z*0.17-s.p.x*0.08-s.time*0.8;
         let dx=0.035*cos(a)+0.012*cos(b);let dz=0.025*sin(a)+0.018*sin(b);
-        o.normal=normalize(vec3<f32>(dx,1.0,dz));o.albedo=s.tint;o.rough=0.16;o.metal=0.18;
-    } else if s.kind==4u { // Stone: sediment rather than smooth plastic boulders.
-        let strata=0.5+0.5*sin(s.p.y*0.32+sr_noise(s.p.xz*0.02)*4.0);
-        let grain=sr_noise(s.p.xz*0.7+s.p.y*0.1);
-        o.albedo=s.tint*(0.75+strata*0.07+grain*0.18);o.rough=0.86;o.metal=0.0;
+        o.normal=normalize(vec3<f32>(dx,1.0,dz));
+        let shore=textureSampleLevel(albedo,samp,clamp(s.p.xz/7680.0+0.5,vec2<f32>(0.001),vec2<f32>(0.999)),3,0.0).r;
+        var foam=smoothstep(0.88,0.99,shore)*(1.0-smoothstep(0.99,1.0,shore));foam*=smoothstep(0.03,0.35,sin(a)+cos(b)+sin(s.time*0.65+shore*28.0)*0.4);
+        o.albedo=mix(mix(vec3<f32>(0.004,0.022,0.027),vec3<f32>(0.025,0.095,0.068),shore*shore),vec3<f32>(0.36,0.45,0.39),foam*0.35);o.rough=0.16+foam*0.15;o.metal=0.0;
+    } else if s.kind==4u {
+        o.albedo=sr_sandstone(s.p,s.n,1.0-smoothstep(0.3,1.5,fp)).rgb;o.rough=0.86;o.metal=0.0;
     } else if s.kind==5u {
         let wave=sr_noise(s.p.xz*0.05+s.p.y*0.03);let rim=pow(1.0-abs(dot(s.n,-s.dir)),3.0);
         o.albedo=s.tint*(0.3+wave*0.5);o.metal=0.0;o.rough=0.35;
         o.emission=s.tint*(1.0+rim*12.0)*s.scale;
     } else if s.kind==6u {
-        let variation=sr_noise(s.p.xz*0.027);let fine=sr_noise(s.p.xz*1.6);
-        o.albedo=s.tint*(0.55+variation*0.7+fine*0.15);o.rough=0.93;o.metal=0.0;
+        let patchiness=sr_noise(s.p.xz*0.012)*0.65+sr_noise(s.p.xz*0.043)*0.35;
+        let grain=(sr_noise(s.p.xz*0.38)-0.5)*(1.0-smoothstep(0.3,1.8,fp));
+        var grass=mix(vec3<f32>(0.045,0.095,0.024),vec3<f32>(0.13,0.21,0.045),patchiness);
+        var stone=mix(vec3<f32>(0.095,0.105,0.087),vec3<f32>(0.19,0.18,0.13),patchiness);
+        let rock=1.0-smoothstep(0.68,0.94,s.n.y);let earth=mix(vec3<f32>(0.095,0.074,0.037),vec3<f32>(0.23,0.20,0.115),patchiness);
+        let shore=1.0-smoothstep(1.0,9.0,s.p.y-s.scale);
+        let meadow=smoothstep(0.55,0.8,sr_noise(s.p.xz*0.004+3.1))*(1.0-rock)*(1.0-shore);
+        grass=mix(grass,mix(vec3<f32>(0.14,0.24,0.05),vec3<f32>(0.25,0.33,0.07),patchiness),meadow*0.7);
+        let cell=floor(s.p.xz*0.7);let bloom=sr_hash(cell);let petal=1.0-smoothstep(0.12,0.42,length(fract(s.p.xz*0.7)-0.5-(vec2<f32>(sr_hash(cell+5.3),sr_hash(cell+9.1))-0.5)*0.5));
+        let flowers=step(0.86-meadow*0.18,bloom)*petal*(1.0-smoothstep(0.12,0.52,fp));
+        var blossom=vec3<f32>(0.62,0.36,0.85);if bloom>0.96{blossom=vec3<f32>(0.85,0.78,0.95);}else if bloom>0.92{blossom=vec3<f32>(0.95,0.78,0.16);}
+        stone=mix(stone,vec3<f32>(0.08,0.13,0.04),smoothstep(0.35,0.7,sr_noise(s.p.xz*0.09))*0.5);
+        let ground=mix(mix(grass,stone,rock),earth,shore)*(0.94+grain*0.22);
+        o.albedo=mix(ground,blossom,flowers*(1.0-rock)*(1.0-shore))*mix(0.63,1.0,smoothstep(-1.0,3.0,s.p.y-s.scale));o.rough=0.95;o.metal=0.0;
+    }
+    if s.kind==8u || s.kind==15u || s.kind==16u {
+        let detail=1.0-smoothstep(0.3,1.5,fp);let patchiness=sr_noise(s.p.xz*0.006)*0.6+sr_noise(s.p.xz*0.031)*0.4;
+        let phase=dot(s.p.xz,vec2<f32>(0.82,0.57))*0.55+sr_noise(s.p.xz*0.02)*7.0;
+        var sand=mix(vec3<f32>(0.62,0.39,0.2),vec3<f32>(0.86,0.62,0.36),patchiness);
+        sand*=0.92+sr_noise(s.p.xz*0.9)*0.16*detail;
+        let rock=select(1.0-smoothstep(0.58,0.84,s.n.y),1.0,s.kind==16u);let stone=sr_sandstone(s.p,s.n,detail);
+        o.albedo=mix(sand,stone.rgb,rock);o.rough=0.92;o.metal=0.0;
+        let slope=cos(phase)*0.22*detail*(1.0-rock);
+        o.normal=normalize(s.n+vec3<f32>(0.82,0,0.57)*slope+vec3<f32>(0,1,0)*stone.a*rock);
+        if s.kind==15u || s.kind==16u {
+            let face=vec2<f32>(s.p.x+s.p.z*0.7,s.p.y+s.p.z*0.3);let mottle=sr_noise(s.p.xz*0.04+s.p.y*0.03)*0.5+sr_noise(face*0.19)*0.3+sr_noise(face*0.8)*0.2*detail;
+            let reef=mix(vec3<f32>(0.12,0.13,0.13),vec3<f32>(0.3,0.29,0.26),mottle);
+            let hue=sr_noise(s.p.xz*0.006+s.p.y*0.004);let colony=mix(vec3<f32>(0.62,0.3,0.16),vec3<f32>(0.42,0.22,0.42),smoothstep(0.3,0.7,hue));
+            let cover=smoothstep(0.56,0.72,sr_noise(face*0.12)*0.55+sr_noise(face*0.37+3.0)*0.3+sr_noise(face*1.4)*0.15*detail);
+            o.albedo=mix(mix(vec3<f32>(0.36,0.36,0.3),vec3<f32>(0.56,0.54,0.44),patchiness),mix(reef,colony,cover*0.7),rock);
+            let caustic=pow(0.5+0.5*sin(s.p.x*0.17+sin(s.p.z*0.12+s.time)*2.0)*sin(s.p.z*0.19+s.time*0.7),10.0);
+            o.emission=o.albedo*vec3<f32>(0.55,0.9,1)*caustic*250.0*max(s.n.y,0.0);
+        }
+    }
+    if s.kind==9u {
+        let p=normalize(s.local);let t=s.time;
+        let flow=sin(p.x*11.0+sin(p.z*8.0)*1.8)+sin(p.y*17.0+p.z*9.0+sin(p.x*12.0));
+        let cloud=0.5+0.5*sin(p.z*6.0+sin(p.x*7.0)+p.y*4.0);
+        let warm=pow(max(dot(p,normalize(vec3<f32>(0.55,0.35,-0.75))),0.0),2.0);let cool=pow(max(dot(p,normalize(vec3<f32>(-0.6,-0.2,0.7))),0.0),2.0);
+        var deep=mix(vec3<f32>(0.008,0.03,0.042),vec3<f32>(0.03,0.085,0.078),cloud)+vec3<f32>(0.09,0.035,0.05)*warm+vec3<f32>(0.02,0.03,0.08)*cool;
+        let tiles=sr_voronoi(p*7.0+vec3<f32>(0,t*0.02,0));let wall=1.0-smoothstep(0.0,0.06,tiles.y);let vein=pow(0.5+0.5*sin(flow*5.0+tiles.x*9.0),18.0);
+        let color=mix(vec3<f32>(0.07,0.2,0.17),vec3<f32>(0.24,0.11,0.15),warm);
+        let ridges=pow(0.5+0.5*sin(flow*3.0+p.y*9.0+t*0.15),12.0);let pulse=0.94+0.06*sin(t*0.35+flow);
+        let bokeh=sr_voronoi(p*13.0+vec3<f32>(t*0.01,0,-t*0.015));let glow=(1.0-smoothstep(0.06,0.2,bokeh.x))*step(0.7,bokeh.z);
+        deep+=color*wall*0.55+color*vein*0.18+vec3<f32>(0.028,0.065,0.05)*ridges+mix(vec3<f32>(0.12,0.3,0.26),vec3<f32>(0.36,0.2,0.24),warm)*glow*0.35;
+        o.albedo=vec3<f32>(0);o.emission=deep*pulse*280.0;o.rough=1.0;o.metal=0.0;
     }
     return o;
 }

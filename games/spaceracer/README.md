@@ -54,7 +54,10 @@ Edit [`rules/game.luau`](rules/game.luau). No rebuild for:
   including airborne-only glide bombs and no warp pickup for the leader.
 - `balance`: cooldowns, regeneration, weapon damage/duration, pickup density.
 - `menu`: navigation and settings changes.
-- `environment`: biome density, dimensions, ground relief, lighting/exposure.
+- `environment`: fallback collision ground and lighting/exposure.
+- [`rules/stages.luau`](rules/stages.luau): source-based stage composition, building
+  families/roofs/posters, traffic lanes, tree age/scale, cell structures, reef
+  plants and creature placement. Read when generating the next race.
 
 Rust keeps 120 Hz handling/flight, track tessellation and projection, swept
 collision queries, targeting geometry, projectile integration, rendering and
@@ -62,6 +65,10 @@ controller/host transport. Race bookkeeping still lives in `sim/src/race.rs`;
 it is not claimed to be an all-Luau game. Geometry-specific component formulas
 remain native. Luau has a 16 MiB memory limit and execution budget; design
 parameters are validated before allocation/generation.
+
+The stage builder uses a separate 96 MiB / 8 million-instruction host; geometry
+queries and shared mesh construction remain native. Its source is read on each
+new race; it does not regenerate a running track on edit.
 
 Rules poll twice a second. AI, item and menu edits apply live; validated balance
 values refresh on reload. Existing timers retain their elapsed state. Track,
@@ -81,11 +88,13 @@ animate for humans and AI. City facades/posters and original forest meshes are
 retained; exhaust lights illuminate road and ships, with shared Warp explosion
 and additive effects. Scenery collision uses swept bounds and ground heights.
 
-This is a **first visual integration**, not visual parity. City traffic,
-full biome set dressing, detailed water/vegetation shading, the visor/distortion
-stack, wear/debris/respawn presentation, victory camera, full weapon models and
-original audio still need work. Five authored ship variants are retained but
-this build displays the first design. Forest collision uses trunk proxies;
+This is a **development visual integration**, not full visual parity. Source-based
+city blocks, mounted screens, traffic, tall forest trees, shorelines, cell
+structures/walkers/membrane, sandstone canyons and underwater reef plants are
+now present. Five retained ship variants are displayed. Sandworm encounters,
+giant octopuses, full foliage/water animation, visor/distortion stack,
+wear/debris/respawn presentation, victory camera, full weapon models and
+original audio still need work. Forest collision uses trunk proxies;
 cell/rock proxies are approximate. Vehicle contact is simplified rather than
 the original complete rotated hull solver. Weapon tuning and AI behavior need
 controller playtesting. No Android or Steam Deck build/hardware claim is made.
@@ -104,13 +113,16 @@ stone and organic materials. Posters use the correct 3-by-2 atlas and face
 outwards without mirrored text. Facades have solid ribs/parapets; elevated
 roads have edge thickness and visible local-light fixtures. Original leaf
 materials use Warp's thin-foliage lighting. Day worlds use the physical sky;
-city lighting remains an artistic night setup configured from Luau.
+city lighting remains an artistic night setup configured from Luau. Separate
+directional ambient probes keep ships/roads legible without brightening the
+night sky; they are authored ambient light, not baked scene GI.
 
 Exhaust is a soft, tapered additive mesh with throttle/boost-scaled length.
 Its bounded local lights follow the interpolated hull and create real local
-specular highlights on roads and nearby ships. This is **not** SSR or
-ray-traced billboard/window reflection. Scene reflection and full foliage,
-traffic, HUD and effect fidelity remain outstanding.
+specular highlights on roads and nearby ships. Roads now also trace bounded analytic rays against nearby facade boxes and
+actual billboard planes, sampling the retained office/poster artwork. This is
+not hardware ray tracing or full-scene SSR: thin ribs, traffic and arbitrary
+geometry are not included. Full foliage, HUD and effect fidelity remain outstanding.
 
 Reproducible headless measurement (no window):
 
@@ -137,6 +149,8 @@ and five landing cases. These run directly against committed data; the retired
 Godot extraction tools are not part of the workflow. All original asset bytes
 remain unchanged (`assets/manifest.json`).
 
+New tests also check all five stage component sets, scenery/terrain clearance,
+triangle-consistent ground heights and swept flight across a terrain ridge.
 New tests cover deterministic full-race replay, three AI race completions,
 EMP/recovery, swept obstacle contact, script reload/validation, changing road
 width without rebuilding, analog bindings and a real loopback GameNight

@@ -52,6 +52,7 @@ impl Rules {
             || !(e.height[0]..=800.0).contains(&e.height[1])
             || !(0.0..=150000.0).contains(&e.sun)
             || !(0.0..=50000.0).contains(&e.sky)
+            || !(0.0..=50000.0).contains(&e.ambient)
             || !(0.0..=20.0).contains(&e.exposure)
         {
             return Err("environment values outside supported bounds".into());
