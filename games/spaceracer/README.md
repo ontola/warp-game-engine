@@ -161,6 +161,12 @@ city lighting remains an artistic night setup configured from Luau. Separate
 directional ambient probes keep ships/roads legible without brightening the
 night sky; they are authored ambient light, not baked scene GI.
 
+The city billboard/window reflection query uses a balanced hierarchy of actual
+screen planes and facade boxes, avoiding receiver-grid cuts. It remains a bounded
+analytic approximation, not full scene ray tracing. HUD/menu sizes follow output
+resolution and use outlined text; 4K presentation and consecutive boost frames
+are captured by `scenarios/city-playtest.json`.
+
 Hull paint and canopy now have separate clearcoat/glass finishes with bounded
 city reflections. Road roughness is less patchy, and forest lighting uses a
 directional afternoon sun with mossy rocks and fern clusters along the route.

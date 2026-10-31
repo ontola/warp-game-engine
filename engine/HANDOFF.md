@@ -7,6 +7,18 @@ Repo: https://github.com/ontola/warp-game-engine: the engine
 in `engine/`, the native game in `games/sideways/`. Godot code and its oracle
 comparison are removed; older sections below remain historical evidence.
 
+## SpaceRacer city playtest follow-up - 31 October 2026
+
+4K playtest found a city light radius of 8 m violating renderer's 1 m cap:
+fixed, with 2,400-tick interpolated light regression. UI scales from 900 logical
+pixels and text is outlined. Billboard/window reflection lookup now uses a
+near-first balanced BVH instead of discontinuous receiver-cell top-six lists.
+Bounded analytic proxies, not full scene RT. Stronger Luau-tuned motion blur,
+confirmed on consecutive 4K boost captures. `scenarios/city-playtest.json` and
+`build/spaceracer-city-playtest` hold the flow/captures; visual-review.md has
+limits and one 1080p GPU-pass sample. Fourteen app tests including hierarchy
+coverage and all-light validation. No Android build.
+
 ## SpaceRacer native GameNight integration - 31 October 2026
 
 Shared client adds read-only `State::player(id)` for renderer profile access.

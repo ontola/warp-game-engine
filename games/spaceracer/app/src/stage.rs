@@ -665,7 +665,7 @@ impl Stage {
                     )?,
                 )?;
                 let l = lamps.clone();
-                api.set("lamp",lua.create_function(move|_,(p,color,power,range):(mlua::Vector,mlua::Vector,f32,f32)|{l.lock().unwrap().push(LocalLight{position:vec(p),direction:Vec3::Y,intensity_cd:vec(color)*power,range_m:range,inner_cos:1.,outer_cos:-1.,source_radius_m:8.,falloff:1.8});Ok(())})?)?;
+                api.set("lamp",lua.create_function(move|_,(p,color,power,range):(mlua::Vector,mlua::Vector,f32,f32)|{l.lock().unwrap().push(LocalLight{position:vec(p),direction:Vec3::Y,intensity_cd:vec(color)*power,range_m:range,inner_cos:1.,outer_cos:-1.,source_radius_m:1.,falloff:1.8});Ok(())})?)?;
                 Ok(())
             },
         )?;
@@ -998,8 +998,8 @@ impl Stage {
     }
 }
 fn reflection_data(scene: &mut Scene, posters: &[Request], buildings: &[(Bounds, [f32; 3])]) {
-    // Six real screen planes and twelve real facade boxes nearest each 128 m tile.
-    // The same bounded analytic reflection method used by the source road shader.
+    // Packed screen planes, facade boxes and a shared balanced spatial hierarchy.
+    // GPU rays use near-first traversal, independent of receiver tile boundaries.
     let mut data = vec![
         0x53524143,
         posters.len() as u32,
@@ -1045,57 +1045,137 @@ fn reflection_data(scene: &mut Scene, posters: &[Request], buildings: &[(Bounds,
             data.push(f.to_bits());
         }
     }
-    let grid_start = data.len();
-    for z in 0..64 {
-        for x in 0..64 {
-            let at = Vec3::new(
-                x as f32 * 128. - 4096. + 64.,
-                0.,
-                z as f32 * 128. - 4096. + 64.,
-            );
-            let distance = |p: Vec3| {
-                let d = p - at;
-                d.x * d.x + d.z * d.z
-            };
-            let mut signs: Vec<_> = posters
+    // Trace actual world-space bounds instead of changing a top-six list at
+    // every 128 m boundary (which sliced reflections in the middle of a road).
+    let mut leaves: Vec<(Bounds, u32)> = posters
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let at = Vec3::from(p.xf.translation);
+            let extent = (Vec3::from(p.xf.matrix3.x_axis).abs()
+                + Vec3::from(p.xf.matrix3.y_axis).abs())
+                * 0.5
+                + Vec3::splat(0.03);
+            (
+                Bounds {
+                    lo: at - extent,
+                    hi: at + extent,
+                },
+                0x80000000 | i as u32,
+            )
+        })
+        .chain(
+            buildings
                 .iter()
                 .enumerate()
-                .map(|(i, p)| (i, distance(p.xf.translation.into())))
-                .collect();
-            signs.sort_by(|a, b| a.1.total_cmp(&b.1));
-            let mut boxes: Vec<_> = buildings
-                .iter()
-                .enumerate()
-                .map(|(i, (b, _))| (i, distance((b.lo + b.hi) * 0.5)))
-                .collect();
-            boxes.sort_by(|a, b| a.1.total_cmp(&b.1));
-            for i in 0..6 {
-                data.push(
-                    signs
-                        .get(i)
-                        .filter(|v| v.1 < 1000. * 1000.)
-                        .map_or(u32::MAX, |v| v.0 as u32),
-                );
-            }
-            for i in 0..12 {
-                data.push(
-                    boxes
-                        .get(i)
-                        .filter(|v| v.1 < 800. * 800.)
-                        .map_or(u32::MAX, |v| v.0 as u32),
-                );
-            }
-        }
-    }
+                .map(|(i, (b, _))| (*b, i as u32)),
+        )
+        .collect();
+    let tree_start = data.len();
+    reflection_bvh(&mut data, tree_start, &mut leaves);
     data[3] = sign_start as u32;
     data[4] = box_start as u32;
-    data[5] = grid_start as u32;
+    data[6] = tree_start as u32;
+    data[7] = ((data.len() - tree_start) / 8) as u32;
     scene.aux = data;
+}
+
+fn reflection_bvh(data: &mut Vec<u32>, start: usize, leaves: &mut [(Bounds, u32)]) {
+    if leaves.is_empty() {
+        return;
+    }
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for (b, _) in leaves.iter() {
+        lo = lo.min(b.lo);
+        hi = hi.max(b.hi);
+    }
+    let node = data.len();
+    data.extend_from_slice(&[
+        lo.x.to_bits(),
+        lo.y.to_bits(),
+        lo.z.to_bits(),
+        0,
+        hi.x.to_bits(),
+        hi.y.to_bits(),
+        hi.z.to_bits(),
+        u32::MAX,
+    ]);
+    if leaves.len() == 1 {
+        data[node + 7] = leaves[0].1;
+        return;
+    }
+    let extent = hi - lo;
+    let axis = if extent.x >= extent.y && extent.x >= extent.z {
+        0
+    } else if extent.y >= extent.z {
+        1
+    } else {
+        2
+    };
+    leaves.sort_unstable_by(|a, b| {
+        (a.0.lo[axis] + a.0.hi[axis]).total_cmp(&(b.0.lo[axis] + b.0.hi[axis]))
+    });
+    let mid = leaves.len() / 2;
+    reflection_bvh(data, start, &mut leaves[..mid]);
+    data[node + 3] = ((data.len() - start) / 8) as u32;
+    reflection_bvh(data, start, &mut leaves[mid..]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reflection_hierarchy_keeps_all_proxies_and_fits_gpu_stack() {
+        let mut leaves: Vec<_> = (0..1500u32)
+            .map(|i| {
+                let p = Vec3::new(
+                    (i % 31) as f32 * 113.,
+                    (i % 7) as f32 * 44.,
+                    (i / 31) as f32 * 127.,
+                );
+                (
+                    Bounds {
+                        lo: p - Vec3::splat(12.),
+                        hi: p + Vec3::new(20., 150., 4.),
+                    },
+                    i,
+                )
+            })
+            .collect();
+        let original = leaves.clone();
+        let mut data = vec![0; 8];
+        reflection_bvh(&mut data, 8, &mut leaves);
+        let read = |at: usize| {
+            Vec3::new(
+                f32::from_bits(data[at]),
+                f32::from_bits(data[at + 1]),
+                f32::from_bits(data[at + 2]),
+            )
+        };
+        let mut stack = vec![(0usize, 1usize)];
+        let mut found = std::collections::HashSet::new();
+        while let Some((node, depth)) = stack.pop() {
+            assert!(depth < 32);
+            let at = 8 + node * 8;
+            let lo = read(at);
+            let hi = read(at + 4);
+            let id = data[at + 7];
+            if id == u32::MAX {
+                for child in [node + 1, data[at + 3] as usize] {
+                    assert!(child > node);
+                    let c = 8 + child * 8;
+                    assert!(read(c).cmpge(lo).all() && read(c + 4).cmple(hi).all());
+                    stack.push((child, depth + 1));
+                }
+            } else {
+                assert!(found.insert(id));
+                assert_eq!(lo, original[id as usize].0.lo);
+                assert_eq!(hi, original[id as usize].0.hi);
+            }
+        }
+        assert_eq!(found.len(), original.len());
+    }
     #[test]
     fn reef_plants_reject_cliffs_and_overhangs_but_keep_clear_ground() {
         let rules = PlantClearance {

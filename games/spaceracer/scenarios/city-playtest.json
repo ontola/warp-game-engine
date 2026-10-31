@@ -1,0 +1,72 @@
+{
+  "size": [
+    3840,
+    2160
+  ],
+  "steps": [
+    {
+      "capture": "menu-4k.png"
+    },
+    {
+      "cmd": "demo",
+      "ticks": 650,
+      "capture": "moving-00.png"
+    },
+    {
+      "cmd": "boost 0",
+      "ticks": 2
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-00.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-01.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-02.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-03.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-04.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-05.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-06.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-07.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-08.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-09.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-10.png"
+    },
+    {
+      "ticks": 2,
+      "capture": "boost-11.png"
+    },
+    {
+      "cmd": "pause",
+      "capture": "pause-4k.png"
+    }
+  ]
+}

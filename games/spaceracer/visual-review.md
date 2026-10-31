@@ -1,3 +1,33 @@
+# City playtest fixes - 31 October 2026
+
+Actual 4K playtest exposed an existing city crash that the forest host fixture
+missed. Luau-authored city lamps used an 8 m source radius, exceeding the renderer
+contract of 1 m. Their radius is now 1 m. A regression drives seed 35 for 2,400
+ticks and validates every city/effect/jet light at interpolated presentation time.
+
+Menu/HUD geometry, type and clips now scale from 900 vertical logical pixels,
+including split-screen and target brackets. Menu rows are larger, muted text has
+higher contrast, and text gets a dark outline. Native output resolution is used
+independently of adaptive 3D rendering resolution.
+
+Billboard/window reflections now use a balanced near-first BVH of the real
+screen planes and facade boxes. This replaces the top-six screen list per 128 m
+receiver tile that could cut an image in half. Limits: 1,600 m ray range, 256
+node visits, 32 stack entries and analytic facade proxies; not full scene RT.
+One texture lookup after the closest hit. Hierarchy coverage/depth test retains
+all 1,500 synthetic proxies. Motion blur starts at 90 m/s, reaches full weight
+at 320 m/s, uses 1/75 s shutter and a stronger boost contribution. Pause/menus
+remain sharp; this is true scene-motion blur, before the outlined HUD.
+
+`scenarios/city-playtest.json`: 676 ticks, menu/pause at 3840x2160 and twelve
+consecutive moving boost frames, no errors. Inspected the readable menu, complete
+billboard reflections and visible background/traffic blur. Captures are in
+`build/spaceracer-city-playtest`. A 30-frame 1920x1080 headless sample (seed 35,
+tick 750, one view, RTX 5070 Ti/Vulkan) measured shade 2.43 ms and blur 0.14 ms
+(smoothed GPU passes). Readback throughput is not interactive FPS; this is not a
+4K/4-player performance certification. Original 4K startup built the renderer in
+about 11 seconds; it is not a steady-state hitch measurement.
+
 # Native GameNight integration - 31 October 2026
 
 The installed Windows Preview daemon launched the portable native game through
