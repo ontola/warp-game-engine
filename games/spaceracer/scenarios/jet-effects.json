@@ -1,0 +1,287 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": "play",
+      "capture": "idle.png",
+      "pads": 1
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 60,
+      "capture": "countdown-throttle.png",
+      "expect": "/pilots/0/speed",
+      "equals": 0.0,
+      "device": "pad0",
+      "state": "countdown-throttle.json"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 360,
+      "capture": "acceleration.png",
+      "device": "pad0"
+    },
+    {
+      "cmd": "boost 0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-start.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-00.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-01.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-02.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-03.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-04.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-05.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-06.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-07.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-08.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-09.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-10.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-11.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-12.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-13.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-14.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-15.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-16.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-17.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-18.png",
+      "device": "pad0",
+      "state": "boost.json"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-19.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-20.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-21.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-22.png",
+      "device": "pad0"
+    },
+    {
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 2,
+      "capture": "boost-23.png",
+      "device": "pad0"
+    },
+    {
+      "cmd": "pause",
+      "capture": "pause.png"
+    },
+    {
+      "ticks": 120,
+      "capture": "pause-still.png"
+    },
+    {
+      "cmd": "play",
+      "triggers": [
+        1,
+        0
+      ],
+      "ticks": 12,
+      "capture": "brake.png",
+      "device": "pad0"
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}

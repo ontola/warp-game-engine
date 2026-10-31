@@ -18,7 +18,7 @@
     {
       "path": "src/boost_trails.gd",
       "sha256": "250d95e0450bdd2bf933de45cc0d939c28c981885a51c211aaac2b0189c3df56",
-      "status": "pending"
+      "status": "native bounded world-space history with source-inspired phosphor shoulders, camera fade, pause freeze and crash/teleport clearing; shader adaptation, not bit-identical parity"
     },
     {
       "path": "src/bridge.gd",
@@ -203,7 +203,7 @@
     {
       "path": "src/racer_design.gd",
       "sha256": "21ed4aeacc617ac60d1d9f49c352df957a9ea0b3a2e467a4074c2326cae621ac",
-      "status": "five authored variants retained; first rendered natively with PBR materials"
+      "status": "all five authored variants rendered natively; original YXZ control pivots/cants/sweeps and universal weapon socket restored"
     },
     {
       "path": "src/railgun.gd",
@@ -253,7 +253,7 @@
     {
       "path": "src/ship.gd",
       "sha256": "70a1631fc1ce050ba926cdb53de9363dcbaefc5cb7125cf540a80c1e737b211b",
-      "status": "first original hierarchy rendered; steering/wing/brake pivots animate; optical shaders not yet equivalent"
+      "status": "all retained ship hierarchies; native plasma/core/flare/heat/reverse jets, one-presentation-frame boost arcs and soft fast wisps; Luau effect parameters; full optical/wear/respawn parity incomplete"
     },
     {
       "path": "src/showpiece.gd",
@@ -345,7 +345,7 @@
     "ship_variants_preserved": 5,
     "source_assets_preserved": 102,
     "renderer_camera_math_tests": 1,
-    "native_app_tests": 3,
+    "native_app_tests": 6,
     "app_input_tests_total": 21,
     "headless_flow_ticks": 1207,
     "capture_resolution": [
@@ -359,7 +359,8 @@
       1080
     ],
     "biome_capture_count": 5,
-    "native_visual_revision": "source-based stage restoration; 23 sim/app checks; all five biomes headless; source gameplay fixture outputs preserved"
+    "native_visual_revision": "source-based stages plus native jet/core/flare/heat/brake/boost-trail restoration; 26 sim/app checks; headless city/day/four-view and controller/EMP flows; gameplay fixtures unchanged",
+    "jet_effect_scenario_ticks": 601
   },
   "next_required": [
     "Remaining source stage features: sandworm, giant octopuses, environmental animation and full material/effect fidelity",

@@ -1,13 +1,13 @@
+mod jets;
 mod party;
 mod stage;
 mod stage_mesh;
 mod stage_terrain;
 mod visuals;
 use app::{Buttons, Controls, Device, Draw, Frame, Game};
-use glam::{Mat3, Quat, Vec3};
+use glam::{Mat3, Quat};
 use render::{
     Camera,
-    headlights::LocalLight,
     hud::{FontFace, HudDrawList, TextAlign, TextRun},
 };
 use serde_json::json;
@@ -393,38 +393,10 @@ impl Game for Racer {
         self.visuals
             .slots
             .flush(frame.gpu, renderer, &self.visuals.scene)?;
-        self.visuals
-            .fx
-            .flush(frame.gpu, renderer, self.race.tick as f32 / 120.)?;
-        let mut lights = self.visuals.fx.lights(self.race.tick as f32 / 120.);
-        for i in 0..self.race.pilots.len() {
-            let p = &self.race.pilots[i];
-            if p.crashed || p.emp_time > 0. {
-                continue;
-            }
-            let current = self.race.pose(i);
-            let previous = &self.previous[i];
-            let pose = Pose {
-                origin: previous.origin.lerp(current.origin, alpha),
-                basis: Mat3::from_quat(
-                    Quat::from_mat3(&previous.basis).slerp(Quat::from_mat3(&current.basis), alpha),
-                ),
-            };
-            let power = self.race.drivers[i].input.drive.throttle as f32;
-            for side in [-1., 1.] {
-                lights.push(LocalLight {
-                    position: pose.origin + pose.basis * Vec3::new(side * 2.45, 0.3, -4.),
-                    direction: -pose.basis.z_axis,
-                    intensity_cd: Vec3::new(0.18, 0.5, 1.)
-                        * (80. + power * 280. + if p.boost > 0. || p.on_pad { 1400. } else { 0. }),
-                    range_m: 18.,
-                    inner_cos: 1.,
-                    outer_cos: -1.,
-                    source_radius_m: 0.6,
-                    falloff: 2.,
-                });
-            }
-        }
+        self.visuals.fx.flush(frame.gpu, renderer, light.time)?;
+        self.visuals.jets.flush(frame.gpu, renderer)?;
+        let mut lights = self.visuals.fx.lights(light.time);
+        lights.extend_from_slice(&self.visuals.jets.lights);
         let mut selected = std::collections::HashSet::new();
         for i in 0..self.players {
             let at = self.race.pose(i).origin;
