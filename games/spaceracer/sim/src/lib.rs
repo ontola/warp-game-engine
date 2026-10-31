@@ -6,6 +6,8 @@ pub mod generation;
 pub mod handling;
 pub mod motion;
 pub mod race_rules;
+pub mod race;
+pub mod rules;
 pub mod track;
 
 #[cfg(test)]
@@ -31,3 +33,4 @@ fn oracle(name: &str) -> String {
 
 #[cfg(test)]
 mod asset_tests;
+pub mod environment;

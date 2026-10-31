@@ -66,6 +66,8 @@ pub struct Step {
     pub look: Option<[f32; 2]>,
     /// The right stick's position (twin-stick aim), x right, y up.
     pub aim: Option<[f32; 2]>,
+    /// Analog left/right trigger pressures (0..1); digital LT/RT remain supported.
+    pub triggers: Option<[f32; 2]>,
     #[serde(default)]
     pub hold: Vec<String>,
     #[serde(default)]
@@ -177,7 +179,7 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
     let mut tick = 0u64;
     let mut failed = 0;
     for (i, step) in script.steps.iter().enumerate() {
-        let has_controls = step.mv.is_some() || step.look.is_some() || step.aim.is_some() || !step.hold.is_empty() || !step.press.is_empty();
+        let has_controls = step.mv.is_some() || step.look.is_some() || step.aim.is_some() || step.triggers.is_some() || !step.hold.is_empty() || !step.press.is_empty();
         let ticks = if step.until.is_some() { step.max_ticks.unwrap_or(3600) } else { step.ticks.unwrap_or(u32::from(has_controls)) };
         let mut reached = None;
         let (hold, press) = (mask(&step.hold)?, mask(&step.press)?);
@@ -204,6 +206,10 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
                 mv: step.mv.unwrap_or_default(),
                 look: step.look.unwrap_or_default(),
                 aim: step.aim.unwrap_or_default(),
+                triggers: step.triggers.map(|v| v.map(|x| x.clamp(0.0, 1.0))).unwrap_or_else(|| {
+                    let held = hold | if t == 0 { press } else { 0 };
+                    [f32::from(held & Buttons::LEFT_TRIGGER != 0), f32::from(held & Buttons::RIGHT_TRIGGER != 0)]
+                }),
                 held: Buttons(hold | if t == 0 { press } else { 0 }),
                 pressed: Buttons(if t == 0 { press } else { 0 }),
             };

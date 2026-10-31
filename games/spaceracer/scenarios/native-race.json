@@ -1,0 +1,22 @@
+{
+  "size": [1280,720],
+  "steps": [
+    {"capture":"menu.png","expect":"/paused","equals":true},
+    {"press":["DOWN"]},{"press":["DOWN"]},{"press":["RIGHT"],"expect":"/players","equals":2},
+    {"press":["START"],"expect":"/paused","equals":false},
+    {"pads":2,"device":"pad0","triggers":[0,0.5],"ticks":420},
+    {"expect":"/pilots/0/speed","min":20},
+    {"expect":"/pilots/1/speed","equals":0.0},
+    {"expect":"/inputs/0/drive/throttle","equals":0.5},
+    {"device":"pad0","press":["START"],"expect":"/paused","equals":true,"capture":"paused.png"},
+    {"ticks":120,"expect":"/clock","min":0.49,"max":0.51},
+    {"device":"pad0","press":["START"],"expect":"/paused","equals":false},
+    {"device":"pad0","triggers":[0,1],"aim":[0.4,0],"mv":[0.1,0],"ticks":60},
+    {"expect":"/inputs/0/drive/strafe","min":0.39,"max":0.41},
+    {"cmd":"give 0 emp","device":"pad0","press":["X"]},
+    {"expect":"/pilots/0/emp_time","equals":0.0},
+    {"expect":"/pilots/1/emp_time","min":2.9},
+    {"cmd":"demo","ticks":600,"capture":"split-race.png","state":"split-race.json"},
+    {"expect":"/error","equals":null},{"expect":"/script_error","equals":null}
+  ]
+}

@@ -9,7 +9,8 @@ playtests and hot-reloaded Luau.
 
 Games on it: [Sideways](../../games/sideways/README.md), a gravel rally
 game, and [Growing Guns](../../games/growing-guns/README.md), an arena
-shooter. Spellstorm, a co-op wizard roguelite, and GameNight's Game Room
+shooter. [SpaceRacer](../../games/spaceracer/README.md) has a playable native
+development port with Luau rules; visual/content parity is still in progress. Spellstorm, a co-op wizard roguelite, and GameNight's Game Room
 lobby are being ported. The `warp` executable runs games made only of Luau
 scripts and sound patches, such as
 [Hello Warp](../../games/hello-warp/README.md), with no Rust.

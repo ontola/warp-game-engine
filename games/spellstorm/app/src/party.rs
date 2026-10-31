@@ -246,7 +246,7 @@ pub fn to_controls(pad: &Pad, prev_triggers: u32, _dt: f32) -> Controls {
     // Raw sticks: pad.gd's own dead zone shapes them (play::pad).
     let l = [pad.axes[0], pad.axes[1]];
     let r = [pad.axes[2], pad.axes[3]];
-    Controls { mv: [l[0] as f32, -l[1] as f32], look: [0.0; 2], aim: [r[0] as f32, -r[1] as f32], held: Buttons(held), pressed: Buttons(pressed) }
+    Controls { mv: [l[0] as f32, -l[1] as f32], look: [0.0; 2], aim: [r[0] as f32, -r[1] as f32], triggers: [pad.trigger(0) as f32, pad.trigger(1) as f32], held: Buttons(held), pressed: Buttons(pressed) }
 }
 
 #[cfg(test)]
