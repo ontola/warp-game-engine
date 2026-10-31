@@ -72,7 +72,7 @@ fn sr_facade(p:vec3<f32>,n:vec3<f32>,tint:vec3<f32>,fp:f32)->SurfaceOut {
     occupancy=mix(occupancy,0.8,smoothstep(0.35,1.5,fp/7.0));
     let tone=mix(vec3<f32>(1.0,0.64,0.30),vec3<f32>(0.76,0.88,1.0),tint.g*0.65);
     let paint=mix(vec3<f32>(0.075,0.09,0.115),tex*0.52*mix(vec3<f32>(0.65,0.78,0.88),vec3<f32>(1.0,0.87,0.74),tint.b)*structure,wall);
-    return SurfaceOut(paint,n,0.5,0.3,tex*tone*room*occupancy*80.0);
+    return SurfaceOut(paint,n,0.5,0.3,tex*tone*room*occupancy*58.0);
 }
 fn sr_aux3(i:u32)->vec3<f32>{return vec3<f32>(bitcast<f32>(aux[i]),bitcast<f32>(aux[i+1u]),bitcast<f32>(aux[i+2u]));}
 fn sr_reflections(p:vec3<f32>,n:vec3<f32>,dir:vec3<f32>,fp:f32)->vec3<f32>{
@@ -107,7 +107,7 @@ fn sr_reflections(p:vec3<f32>,n:vec3<f32>,dir:vec3<f32>,fp:f32)->vec3<f32>{
         if tile>=6u {layer=2;atlas=(uv+vec2<f32>(f32(tile-6u),0))/vec2<f32>(4,1);}
         let mip=max(0.0,log2(max(fp+distance*0.0003,0.001)*f32(textureDimensions(albedo).x)/width/3.0));
         let art=textureSampleLevel(albedo,samp,atlas,layer,mip).rgb;
-        screens=art*100.0*mix(0.18,0.8,fresnel)*exp(-distance*0.0015);
+        screens=art*145.0*mix(0.18,0.8,fresnel)*exp(-distance*0.0015);
     }
     return screens;
 }
@@ -154,13 +154,21 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
         let long_seam=sr_line(fract(uv.x*4.0)-0.5,0.003,0.002+fp*0.012);
         let lane=sr_line(abs(uv.x)-0.33,0.002,0.001+fp*0.01)*step(0.6,fract(uv.y/18.0));
         let edge=sr_line(abs(uv.x)-0.94,0.008,0.002+fp*0.012);
-        o.albedo=mix(vec3<f32>(0.035,0.042,0.05)*(0.7+micro*0.35+variation*0.35),vec3<f32>(0.32,0.39,0.42),max(lane,edge)*0.5);
+        o.albedo=mix(vec3<f32>(0.018,0.025,0.032)*(0.7+micro*0.35+variation*0.35),vec3<f32>(0.32,0.39,0.42),max(lane,edge)*0.5);
         o.albedo*=1.0-max(cross_seam,long_seam)*0.55;
         o.rough=mix(0.22,0.43,variation);o.metal=0.08;
         let ripple=vec3<f32>(sin(s.p.x*1.3+s.p.z*8.0),0.0,cos(s.p.z*1.6+s.p.x*3.0))*0.003*(1.0-smoothstep(0.2,2.0,fp));
         o.normal=normalize(s.n+ripple-s.n*dot(ripple,s.n));
         o.emission+=sr_reflections(s.p,o.normal,s.dir,fp)*mix(0.38,1.0,micro);
-        o.rough=mix(0.32,0.12,smoothstep(0.28,0.72,variation));
+        // Fine aggregate breaks up the clearcoat; larger wet patches remain coherent.
+        let wet=smoothstep(0.38,0.72,variation);
+        o.rough=mix(0.32,0.24,wet);
+        let shoulder=smoothstep(0.77,0.98,abs(uv.x));
+        let drain=sr_line(fract(uv.y*1.8)-0.5,0.12,clamp(fp*0.7,0.01,0.3));
+        o.albedo*=1.0-shoulder*drain*0.35;
+        // A broad reflection under the luminous edge, never a solid coloured lane.
+        o.emission+=vec3<f32>(0.04,0.45,0.65)*pow(smoothstep(0.78,1.0,abs(uv.x)),5.0)*3.0;
+
     } else if s.kind==1u {
         o=sr_facade(s.p,s.n,s.tint,fp);
     } else if s.kind>=10u && s.kind<=14u { // Authored hull livery, in the opaque paint pass.
@@ -174,10 +182,50 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
         let pigment=mix(s.tint,vec3<f32>(0.72,0.68,0.60),marking);
         let scratches=step(0.95,sr_noise(p.xz*22.0))*sr_line(fract(p.z*8.0)-0.5,0.025,aa)*(1.0-smoothstep(0.03,0.15,fp));
         o.albedo=pigment*mix(0.52,1.0,smoothstep(-0.3,0.3,p.y))*(1.0-seam*0.5);
-        o.albedo=mix(o.albedo,vec3<f32>(0.12),scratches*0.15);o.rough=mix(0.31,0.43,seam);o.metal=0.32;
+        o.albedo=mix(o.albedo,vec3<f32>(0.12),scratches*0.15);
+        let finish=sr_noise(p.xz*8.0);
+        o.rough=mix(0.19,0.27,finish)+seam*0.15;o.metal=0.52;
+        // The same nearby facade/screen rays used on the road: real moving
+        // reflections as the hull turns, bounded to 18 candidates per tile.
+        let fresnel=0.04+0.96*pow(1.0-max(dot(s.n,-s.dir),0.0),5.0);
+        o.emission+=sr_reflections(s.p,s.n,s.dir,fp)*mix(0.11,0.38,fresnel);
+
+    } else if s.kind==17u { // Tinted canopy glass with a crisp dielectric coat.
+        let rim=pow(1.0-max(dot(s.n,-s.dir),0.0),5.0);
+        o.albedo=mix(vec3<f32>(0.006,0.018,0.028),vec3<f32>(0.018,0.065,0.09),rim);
+        o.rough=0.11;o.metal=0.55;
+        o.emission=sr_reflections(s.p,s.n,s.dir,fp)*mix(0.13,0.65,rim);
+    } else if s.kind==18u { // Moss-covered boulders in the forest understory.
+        let moss_noise=sr_noise(s.p.xz*0.12+s.p.y*0.08);
+        let moss=smoothstep(0.25,0.8,s.n.y)*smoothstep(0.3,0.65,moss_noise);
+        o.albedo=mix(vec3<f32>(0.13,0.15,0.14),vec3<f32>(0.07,0.16,0.025),moss)*(0.8+moss_noise*0.4);
+        o.rough=0.94;o.metal=0.0;
+    } else if s.kind==19u || s.kind==20u { // Living chromatophores, no plastic flat orange.
+        let mottles=sr_noise(s.local.xy*14.0+s.local.z*9.0);
+        let wave=.5+.5*sin(s.local.y*6.0-s.time*1.3+s.local.x*3.0);
+        o.albedo=mix(vec3<f32>(.36,.055,.025),vec3<f32>(.82,.28,.10),wave*.65+mottles*.35);
+        o.albedo=mix(o.albedo,vec3<f32>(.95,.62,.40),smoothstep(.74,.95,mottles)*.45);
+        if s.kind==20u {
+            let row=min(abs(uv.x-.08),abs(uv.x-.92));
+            let cell=vec2<f32>((fract(uv.y*38.0)-.5)*1.4,row*9.0);
+            let d=length(cell);let cup=1.0-smoothstep(.23,.34,d);
+            let rim=smoothstep(.12,.22,d)*cup;
+            o.albedo=mix(o.albedo,vec3<f32>(.94,.65,.46)*(1.0-rim*.4),cup);
+        }
+        o.rough=.43;o.metal=0.0;
+        o.emission=o.albedo*80.0;
+    } else if s.kind==21u {
+        let slit=1.0-smoothstep(.035,.07,abs(uv.y-.5));
+        o.albedo=mix(vec3<f32>(.85,.48,.07),vec3<f32>(.007,.01,.008),slit);
+        o.emission=o.albedo*50.0;o.rough=.13;o.metal=.1;
+    } else if s.kind==22u {
+        let rim=pow(1.0-abs(dot(s.n,-s.dir)),3.0);
+        o.albedo=vec3<f32>(.015,.07,.08);o.rough=.08;o.metal=.25;
+        o.emission=vec3<f32>(.25,.75,.85)*rim*220.0;
     } else if s.kind==3u { // Water: coherent swell and fine wind ripples.
         let a=s.p.x*0.055+s.p.z*0.032+s.time*0.65;let b=s.p.z*0.17-s.p.x*0.08-s.time*0.8;
-        let dx=0.035*cos(a)+0.012*cos(b);let dz=0.025*sin(a)+0.018*sin(b);
+        let fine=sin(s.p.x*0.8+s.p.z*1.2+s.time*1.1)*(1.0-smoothstep(0.25,1.0,fp));
+        let dx=0.018*cos(a)+0.009*cos(b)+fine*0.005;let dz=0.015*sin(a)+0.011*sin(b)-fine*0.004;
         o.normal=normalize(vec3<f32>(dx,1.0,dz));
         let shore=textureSampleLevel(albedo,samp,clamp(s.p.xz/7680.0+0.5,vec2<f32>(0.001),vec2<f32>(0.999)),3,0.0).r;
         var foam=smoothstep(0.88,0.99,shore)*(1.0-smoothstep(0.99,1.0,shore));foam*=smoothstep(0.03,0.35,sin(a)+cos(b)+sin(s.time*0.65+shore*28.0)*0.4);

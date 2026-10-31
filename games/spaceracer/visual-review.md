@@ -1,3 +1,47 @@
+# Biome character and material polish - 31 October 2026
+
+Baseline: 4f4964d. Keep distinctive biome life while improving the native
+presentation; literal source-image parity is not the artistic goal.
+
+- Restored four giant octopus landmarks with a breathing mantle, eight
+  continuous GPU-skinned arms, animated chromatophore shading, golden eyes and
+  procedural sucker rows. Luau selects size, orientation and clear sites.
+  Raised swimming placements, lower reef shelves and lighter underwater haze
+  expose the animals from the racing camera instead of hiding behind cliffs.
+- Preserved fish schools, 112 jellyfish and six mantas; added 320 small rising
+  bubble instances. Arms are visual scenery, mantle collision is a coarse box.
+  Bubbles use opaque rim shading, not transparent volumetric refraction.
+- Clearcoat hulls, separate reflective canopy glass, restrained road roughness,
+  brighter city accents/posters, and stronger sun/shade separation in forest.
+  Added route-side mossy rocks and fern clusters; smooth terrain vertex normals
+  without changing the triangle height field used by collision.
+- Animal palettes use interpolated race time and freeze when paused. Existing
+  shared GPU skinning handles all four views; no per-frame mesh rebuild.
+
+## Verification and limitations
+
+20 simulation tests and seven application tests pass, including animated bounds,
+skin topology/palette validation, pause-time stability and five-biome road
+clearance. The stage test was rerun after the final placement change. Native
+city, forest and ocean screenshots were inspected. The initial preview sweep
+advanced 3,000 ticks without script errors; the reproducible final ocean fixture
+is `scenarios/ocean-life.json` (run with `--seed 35 --biome ocean`).
+
+Artifacts in `build/spaceracer-polish/`: `city-final.png`, `forest-final.png`,
+`ocean-final.png`, `ocean-four.png` and `ocean-four-bench.json`. The portable
+Windows build was regenerated and used for the final four-view measurements.
+No Android build, physical controller test or interactive launch was performed.
+
+Ocean seed 35, four views, 750 warmup ticks, 1920x1080 output, native-resolution
+TAA, 120 moving frames, RTX 5070 Ti / Vulkan / NVIDIA 617.14:
+**77.91 headless readback frames/s**. Reported smoothed weighted-skinning pass
+**0.0041 ms**, shade **0.596 ms**. These are pass samples, not summed full-frame
+timings or interactive FPS; background load was not isolated. 4K/120 is not
+claimed. The animal rig is stylized; full foliage motion, shafts, marine snow,
+sandworm, visor and remaining effect fidelity still need work.
+
+---
+
 # Exhaust and aircraft corrections - 31 October 2026
 
 Baseline: 7488c0b. Source `ship.gd`, `racer_design.gd`, plasma/glow/flare/

@@ -93,8 +93,9 @@ and additive effects. Scenery collision uses swept bounds and ground heights.
 This is a **development visual integration**, not full visual parity. Source-based
 city blocks, mounted screens, traffic, tall forest trees, shorelines, cell
 structures/walkers/membrane, sandstone canyons and underwater reef plants are
-now present. Five retained ship variants are displayed. Sandworm encounters,
-giant octopuses, full foliage/water animation, visor/distortion stack,
+now present, including giant animated octopuses, fish schools, jellyfish, mantas
+and rising bubble vents. Five retained ship variants are displayed. Sandworm encounters,
+full foliage/water animation, visor/distortion stack,
 wear/debris/respawn presentation, victory camera, full weapon models and
 original audio still need work. Forest collision uses trunk proxies;
 cell/rock proxies are approximate. Vehicle contact is simplified rather than
@@ -118,6 +119,15 @@ materials use Warp's thin-foliage lighting. Day worlds use the physical sky;
 city lighting remains an artistic night setup configured from Luau. Separate
 directional ambient probes keep ships/roads legible without brightening the
 night sky; they are authored ambient light, not baked scene GI.
+
+Hull paint and canopy now have separate clearcoat/glass finishes with bounded
+city reflections. Road roughness is less patchy, and forest lighting uses a
+directional afternoon sun with mossy rocks and fern clusters along the route.
+Ocean shelves and lighter haze keep its animals visible from the racing line.
+Four giant octopus landmarks use bounded GPU skinning (eight continuous arms,
+suckers and breathing mantle); placement stays in Luau. Mantles have coarse
+collision proxies; animated arms are scenery. Bubbles are small opaque rim-lit
+instances, not physically refractive volumes.
 
 Exhaust uses per-view axis-facing plasma, hot nozzle cores, depth-occluded
 anamorphic flares, soft fast wisps and short electrical boost discharges.

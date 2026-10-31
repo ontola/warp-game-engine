@@ -3,7 +3,7 @@ use render::{
     Lighting, Scene,
     cluster::Vertex,
     primitives::{self, Primitive},
-    scene::{EMISSIVE, Material, SURFACE},
+    scene::{CLEARCOAT, EMISSIVE, Material, SURFACE},
     slots::{SlotId, Slots},
 };
 use serde_json::Value;
@@ -463,7 +463,11 @@ impl Visuals {
             let sky = render::sky::bake_live(
                 0,
                 render::sky::LiveSettings::preset(
-                    render::sky::DayTime::Noon,
+                    if race.biome == "forest" {
+                        render::sky::DayTime::Afternoon
+                    } else {
+                        render::sky::DayTime::Noon
+                    },
                     render::sky::WeatherLook::Clear,
                 ),
                 &mut Default::default(),
@@ -498,14 +502,16 @@ impl Visuals {
                 [0.04, 0.25, 0.31],
                 [0.025, 0.12, 0.16],
             ));
-            lighting.sun_color = Vec3::new(0.35, 0.8, 0.86);
+            lighting.sun_color = Vec3::new(0.72, 0.9, 1.0);
             lighting.fog_height_m = 1800.;
-            lighting.fog_density = 0.0016;
-            lighting.fog_start = 65.;
-            lighting.fog_end = 1150.;
+            lighting.fog_density = 0.00035;
+            lighting.fog_start = 180.;
+            lighting.fog_end = 1800.;
         }
         lighting.fog_phase_g = 0.4;
-        lighting.bloom_boost = 0.65;
+        lighting.bloom_boost = 0.8;
+        lighting.contrast = 1.06;
+        lighting.saturation = 1.04;
         lighting.bloom_threshold = 1.4;
         lighting.fx_white_floor = 0.25;
         lighting.lod_pixels = 0.7;
@@ -546,7 +552,7 @@ impl Visuals {
                         source["metallic"].as_f64().unwrap_or(0.) as f32
                     },
                     flags: if hull {
-                        SURFACE
+                        SURFACE | CLEARCOAT
                     } else if source["emission_enabled"].as_bool().unwrap_or(false) {
                         EMISSIVE
                     } else {
@@ -911,6 +917,16 @@ fn load_node(
                         .as_f64()
                         .unwrap_or(1.) as f32;
                     mat = scene.add_material(copy);
+                }
+                if name == "Canopy" {
+                    mat = scene.add_material(Material {
+                        tint: [0.012, 0.035, 0.052],
+                        layer: -19,
+                        roughness: 0.12,
+                        metal: 0.55,
+                        flags: SURFACE | CLEARCOAT,
+                        scale: 1.,
+                    });
                 }
                 let p = Primitive {
                     material: mat,
