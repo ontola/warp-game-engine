@@ -488,6 +488,18 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// Exact immutable mesh buffers and reserved array sizes, for rewinding
+    /// runtime state on the same renderer. This does not compare textures or
+    /// dynamic instance/material/auxiliary values; those still need restoring.
+    pub fn same_reserved_geometry(&self, other: &Self) -> bool {
+        self.instances.len() == other.instances.len() && self.materials.len() == other.materials.len()
+            && self.aux.len() == other.aux.len() && self.meshes.len() == other.meshes.len()
+            && self.skinning.actors.len() == other.skinning.actors.len()
+            && self.cluster_verts == other.cluster_verts && self.tris == other.tris
+            && bytemuck::cast_slice::<_, u8>(&self.vertices) == bytemuck::cast_slice::<_, u8>(&other.vertices)
+            && bytemuck::cast_slice::<_, u8>(&self.clusters) == bytemuck::cast_slice::<_, u8>(&other.clusters)
+    }
+
     /// At most six opaque local boxes per SOLID instance. Build once after
     /// scene assembly; each descriptor's owner points at the live instance
     /// transform. Alpha-tested and explicitly non-occluding materials are

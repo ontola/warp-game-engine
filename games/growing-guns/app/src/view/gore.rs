@@ -340,6 +340,9 @@ fn build_character_shard(
     }
     let mut cap_verts = Vec::new();
     let mut cap_indices = Vec::new();
+    // Stable triangle order keeps meshlet packing identical across replay rewinds.
+    let mut edges: Vec<_> = edges.into_iter().collect();
+    edges.sort_unstable_by_key(|((a, b), _)| (a.to_array(), b.to_array()));
     for (_, (pa, pb, count)) in edges {
         if count != 1 {
             continue;

@@ -46,8 +46,6 @@ pub const ION_DAMAGE: f32 = 175.0;
 const MELEE_RANGE: f32 = 5.0;
 const MELEE_RADIUS: f32 = 1.2;
 const MELEE_BACKSTAB: i32 = 9999;
-pub const NINJA_DAMAGE_MULT: f32 = 0.42;
-pub const NINJA_RANGE_MULT: f32 = 0.62;
 
 impl ProjectileKind {
     /// (arm delay, fuse, proximity radius) for the thrown kinds.

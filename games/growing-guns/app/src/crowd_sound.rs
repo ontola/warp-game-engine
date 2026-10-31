@@ -34,6 +34,7 @@ const BED_CLAPS: u32 = 103;
 const BED_CHANT: u32 = 104;
 
 /// The recorded set (samples/ in the addon).
+#[derive(Clone)]
 pub struct Samples { cheer: Clip, panic: Clip, surge: Clip, roar: Vec<Clip>, goal: Vec<Clip>, ooh: Vec<Clip>, scream: Vec<Clip>, chant: Vec<Clip> }
 
 /// The addon's sample folder: `--crowd DIR`, `GG_CROWD`, a `crowd` folder
@@ -91,6 +92,15 @@ pub struct CrowdSound {
 }
 
 impl CrowdSound {
+    /// Replays share the already decoded clips and existing ambience beds.
+    pub(crate) fn audio_bank(&self) -> Option<(SfxSender, Samples)> {
+        self.tx.as_ref().map(|tx| (tx.clone(), self.s.clone()))
+    }
+    pub(crate) fn replay_audio(&mut self, bank: Option<&(SfxSender, Samples)>, audible: bool) {
+        self.tx = bank.filter(|_| audible).map(|(tx, _)| tx.clone());
+        if let Some((_, samples)) = bank { self.s = samples.clone(); }
+    }
+
     /// Start the beds (silent until the mood lifts them). Synthesis takes a
     /// moment. `None`: mood only.
     pub fn new(audio: Option<(SfxSender, Samples)>) -> Self {

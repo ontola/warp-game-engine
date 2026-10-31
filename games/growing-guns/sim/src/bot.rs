@@ -33,7 +33,6 @@ const LAVA_EDGE_PROBE: f32 = 3.0;
 const LAVA_MISTAKE_CHANCE: f32 = 0.07;
 const LAVA_JUMP_CHANCE: f32 = 0.0015;
 const STRIKE_FLEE: f32 = 40.0;
-const STRIKE_PANIC: f32 = 22.0;
 const GAP_LANDINGS: [f32; 5] = [4.5, 6.5, 8.5, 10.5, 12.0];
 const REACTION: (f32, f32) = (0.2, 0.55);
 const AIM_TURN: f32 = 3.2;

@@ -150,6 +150,37 @@ impl Gg {
 
     pub fn light_mut(&mut self) -> &mut Lighting { &mut self.light }
 
+    /// Rewind into the same reserved scene without recreating GPU pipelines.
+    pub(crate) fn replay_reuse_renderer(&mut self, frame: &mut Frame) -> Result<(), String> {
+        if let Some(renderer) = frame.renderer() {
+            renderer.reset_instance_state(frame.gpu, &self.vis.scene.instances)?;
+            renderer.update_materials(frame.gpu, 0, &self.vis.scene.materials)?;
+            self.vis.invalidate_sprites();
+            self.rebuild = false;
+        }
+        Ok(())
+    }
+
+    fn close_replay(&mut self) -> bool {
+        let Some(mut replay) = self.replay.take() else { return false };
+        self.sounds = replay.take_sounds();
+        if let Some((m, director)) = &mut self.music {
+            *director = Default::default();
+            crate::music::lock(m).set_music_db(self.ui.music_db);
+        }
+        if let Some(tx) = &self.crowd_tx { tx.volume(if self.crowd_audible { 1.0 } else { 0.0 }); }
+        self.rebuild = true;
+        true
+    }
+
+    fn attach_replay_audio(&mut self) {
+        if let Some(replay) = &mut self.replay {
+            if let Some(tx) = &self.crowd_tx { tx.volume(0.0); }
+            replay.set_crowd(self.vis.stadium.sound.audio_bank());
+            replay.set_audio(self.sounds.take(), self.music.as_ref().map(|(m, _)| m.clone()), self.ui.music_db);
+        }
+    }
+
     /// Apply recorded gameplay without executing current simulation rules/mods.
     pub(crate) fn replay_apply(&mut self, sample: crate::replay::Sample, arena: Option<growing_guns::arena::Arena>) -> Result<(), String> {
         self.prev = view::Pose::all(&self.world);
@@ -184,7 +215,7 @@ impl Gg {
             app::Game::draw(self, frame)?;
         }
         let renderer = frame.renderer().ok_or("replay renderer unavailable")?;
-        self.vis.flush(frame.gpu, renderer, &self.light)?;
+        self.vis.flush_replay_debris(frame.gpu, renderer)?;
         renderer.advance_replay_debris(frame.gpu);
         Ok(())
     }
@@ -794,7 +825,7 @@ impl Gg {
 }
 
 impl app::Game for Gg {
-    fn fixed_quality(&self) -> bool { self.replay.is_some() || self.recorder.disabled }
+    fn fixed_quality(&self) -> bool { self.replay.as_ref().is_some_and(|r| app::Game::fixed_quality(&**r)) || self.recorder.disabled }
 
     fn local_players(&self) -> usize { if self.replay.is_some() { 1 } else { self.slots.len() } }
 
@@ -1081,7 +1112,7 @@ impl app::Game for Gg {
     fn split(&self) -> render::SplitLayout { render::SplitLayout::SideBySide }
 
     fn escape(&mut self) -> bool {
-        if self.replay.take().is_some() { self.rebuild = true; return true; }
+        if self.close_replay() { return true; }
         use hud::menus::Screen;
         if self.debug.open { self.debug.set_open(false); return true; }
         match self.ui.screen {
@@ -1096,8 +1127,8 @@ impl app::Game for Gg {
     /// F3: the debug overlay.
     fn function_key(&mut self, n: u8) -> bool {
         if n == 9 {
-            if self.replay.take().is_some() { self.rebuild = true; }
-            else if !matches!(self.session, Session::Local) || self.party.is_some() {
+            if self.close_replay() { return true; }
+            if !matches!(self.session, Session::Local) || self.party.is_some() {
                 self.hud.announce("Open the saved replay separately during online play.", 4.0, 0.0);
             } else if let Some((tape, path)) = &self.recorder.last {
                 match crate::replay::Viewer::new(tape.clone(), path.clone()) {
@@ -1110,6 +1141,7 @@ impl app::Game for Gg {
                     Err(e) => self.hud.announce(e, 4.0, 0.0),
                 }
             }
+            self.attach_replay_audio();
             return true;
         }
         if self.replay.is_some() { return true; }

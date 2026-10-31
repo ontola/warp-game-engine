@@ -3065,6 +3065,16 @@ impl Renderer {
         Ok(())
     }
 
+    /// Restore the instance array of the same reserved scene during a rewind.
+    /// Geometry and pool layout must be unchanged. The caller must also reset
+    /// GPU simulation owners (debris/crowd/actors) before the next rendered frame.
+    pub fn reset_instance_state(&self, gpu: &Gpu, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
+        if instances.len() != self.instances as usize { return Err("rewind instance layout changed".into()); }
+        self.write_instances(gpu, 0, instances)?;
+        self.invalidate_dynamic_shadow();
+        Ok(())
+    }
+
     pub fn update_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
         if self.baked_animations.as_ref().is_some_and(|animation|animation.contains_owner_range(first,instances.len())) {
             return Err("baked actor parts are driven by the shared GPU animation pass".into());

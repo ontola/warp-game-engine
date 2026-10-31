@@ -6,6 +6,10 @@ use growing_guns::{arena::Arena, Breakage, Snapshot, World, DT, TICK_HZ};
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, io::{Read, Write}, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 
+// A paint stays responsive while canonical effects are reconstructed. This is
+// a time budget, not 120 arbitrarily expensive ticks in a single UI frame.
+const SEEK_BUDGET: std::time::Duration = std::time::Duration::from_millis(6);
+const SCRUB_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(80);
 const VERSION: u32 = 1;
 const CHUNK_TICKS: usize = 300;
 const MAX_CHUNKS: usize = 64; // Guard against rapid arena-reset commands.
@@ -154,6 +158,15 @@ pub struct Viewer {
     message: Option<String>,
     pub overlay: bool,
     exit: bool,
+    dragging: bool,
+    scrub_changed: Option<std::time::Instant>,
+    clock: Option<(std::time::Instant, f64)>,
+    sounds: Option<crate::sounds::Sounds>,
+    music: Option<(crate::music::Shared, crate::music::Director)>,
+    music_db: f32,
+    crowd: Option<(audio::sfx::SfxSender, crate::crowd_sound::Samples)>,
+    audio_running: bool,
+    rewind_reuses: usize,
 }
 impl Viewer {
     pub fn new(tape: Tape, path: PathBuf) -> Result<Self, String> {
@@ -165,7 +178,7 @@ impl Viewer {
         } else { Vec::new() };
         for m in &marks { tape.validate_mark(*m)?; }
         let target = marks.last().copied().unwrap_or(tape.mark);
-        Ok(Self { tape, path, game, current: None, target, paused: true, marks, message: None, overlay: true, exit: false })
+        Ok(Self { tape, path, game, current: None, target, paused: true, marks, message: None, overlay: true, exit: false, dragging: false, scrub_changed: None, clock: None, sounds: None, music: None, music_db: -9.0, crowd: None, audio_running: false, rewind_reuses: 0 })
     }
     fn game(tape: &Tape) -> Result<Gg, String> {
         let first = tape.sample(0)?;
@@ -185,9 +198,10 @@ impl Viewer {
     }
     pub fn seek(&mut self, mark: Mark) -> Result<(), String> {
         self.tape.validate_mark(mark)?;
-        if self.current.is_some_and(|n| mark.frame < n) { self.game = Self::game(&self.tape)?; self.current = None; }
         self.target = mark;
         self.paused = true;
+        self.clock = None;
+        self.silence();
         Ok(())
     }
     pub fn ready(&self) -> bool { self.current == Some(self.target.frame) }
@@ -208,15 +222,67 @@ impl Viewer {
         });
         result
     }
+    pub(crate) fn set_audio(&mut self, sounds: Option<crate::sounds::Sounds>, music: Option<crate::music::Shared>, music_db: f32) {
+        self.sounds = sounds;
+        self.music = music.map(|m| (m, Default::default()));
+        self.music_db = music_db;
+        self.silence();
+    }
+    pub(crate) fn take_sounds(&mut self) -> Option<crate::sounds::Sounds> {
+        self.silence();
+        self.sounds.take()
+    }
+    pub(crate) fn set_crowd(&mut self, bank: Option<(audio::sfx::SfxSender, crate::crowd_sound::Samples)>) {
+        self.crowd = bank;
+        self.game.vis.stadium.sound.replay_audio(self.crowd.as_ref(), false);
+        if let Some((tx, _)) = &self.crowd { tx.volume(0.0); }
+    }
+    fn silence(&mut self) {
+        self.audio_running = false;
+        if let Some((tx, _)) = &self.crowd { tx.volume(0.0); }
+        if let Some(s) = &mut self.sounds { s.reset_replay(); }
+        if let Some((m, _)) = &self.music { crate::music::lock(m).set_volume_db(crate::music::MUSIC_DB_MIN); }
+    }
     fn toggle(&mut self) {
         if self.ready() && self.target.frame + 1 == self.tape.len() { self.step(-(self.target.frame as isize)); }
         self.paused = !self.paused;
+        self.clock = None;
+        if self.paused { self.silence(); }
     }
+    /// Recorded time is independent of how many app ticks or paints happened.
+    /// A frame's alpha interpolates its previous and current snapshot.
+    fn advance_clock(&mut self, now: std::time::Instant) {
+        if self.paused { self.clock = None; return; }
+        let Some((start, phase)) = self.clock else {
+            if self.ready() { self.clock = Some((now, self.target.frame as f64 + self.target.alpha as f64)); }
+            return;
+        };
+        let phase = phase + now.duration_since(start).as_secs_f64() * self.tape.tick_hz as f64;
+        self.target = mark_at_phase(phase, self.tape.len());
+        if phase >= self.tape.len() as f64 { self.paused = true; self.clock = None; }
+    }
+    fn play_audio(&mut self) {
+        self.audio_running = true;
+        if let Some(s) = &mut self.sounds { s.tick(&self.game.world, &self.game.slots, DT); }
+        if let Some((m, director)) = &mut self.music {
+            let mut m = crate::music::lock(m);
+            m.set_volume_db(self.music_db);
+            director.follow(&mut *m, &self.game.world, &self.game.slots);
+            m.update(DT);
+        }
+    }
+
 }
+fn mark_at_phase(phase: f64, frames: usize) -> Mark {
+    let phase = phase.clamp(0.0, frames as f64);
+    let frame = (phase.ceil() as usize).saturating_sub(1).min(frames - 1);
+    Mark { frame, alpha: (phase - frame as f64).clamp(0.0, 1.0) as f32 }
+}
+
 impl Game for Viewer {
     fn quit(&self) -> bool { self.exit }
     fn function_key(&mut self, n: u8) -> bool { if n == 9 { self.exit = true; true } else { false } }
-    fn fixed_quality(&self) -> bool { true }
+    fn fixed_quality(&self) -> bool { self.paused && !self.dragging }
     fn local_players(&self) -> usize { 1 }
     fn mouse_capture(&self) -> Option<bool> { Some(false) }
     fn tick(&mut self, controls: &[Controls]) {
@@ -225,46 +291,70 @@ impl Game for Viewer {
         if c.pressed.has(Buttons::LEFT) { self.step(-1); }
         if c.pressed.has(Buttons::RIGHT) { self.step(1); }
         if c.pressed.has(Buttons::WEST) { let _ = self.bookmark(); }
-        if !self.paused && self.ready() {
-            if self.target.frame + 1 < self.tape.len() { self.target = Mark { frame: self.target.frame + 1, alpha: 1.0 }; }
-            else { self.paused = true; }
-        }
+
     }
     fn pointer(&mut self, p: Pointer, size: [u32; 2]) {
-        let Some([x, y]) = p.position.filter(|_| p.pressed) else { return };
+        let releasing = self.dragging && !p.held;
+        let was_dragging = self.dragging;
+        if releasing { self.dragging = false; self.scrub_changed = None; }
+        let Some([x, y]) = p.position.filter(|_| p.pressed || was_dragging) else { return };
         let s = size[1] as f32 / 900.0;
-        if y < size[1] as f32 - 118.0 * s { return; }
-        if y > size[1] as f32 - 48.0 * s {
+        if !was_dragging && y < size[1] as f32 - 118.0 * s { return; }
+        if was_dragging || y > size[1] as f32 - 48.0 * s {
+            self.dragging = p.held;
             let t = ((x - 32.0 * s) / (size[0] as f32 - 64.0 * s)).clamp(0.0, 1.0);
             let mark = self.marks.iter().chain(std::iter::once(&self.tape.mark)).copied().find(|m| {
                 let mx = 32.0 * s + (size[0] as f32 - 64.0 * s) * m.frame as f32 / (self.tape.len() - 1).max(1) as f32;
                 (mx - x).abs() <= 8.0 * s
             }).unwrap_or(Mark { frame: (t * (self.tape.len() - 1) as f32).round() as usize, alpha: 1.0 });
-            if let Err(e) = self.seek(mark) { self.message = Some(e); }
-        } else {
+            if mark != self.target {
+                if let Err(e) = self.seek(mark) { self.message = Some(e); }
+                if !releasing { self.scrub_changed = Some(std::time::Instant::now()); }
+            }
+        } else if p.pressed {
             match (x / s) as u32 { 20..=150 => self.toggle(), 151..=245 => self.step(-1), 246..=340 => self.step(1), 341..=520 => { let _ = self.bookmark(); }, 521..=700 => { if let Err(e) = self.seek(self.tape.mark) { self.message = Some(e); } }, _ => {} }
         }
     }
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
-        // Seeking runs the real visual event/physics path and GPU debris at
-        // every tick. Never skip straight to a snapshot with missing effects.
-        // Bound work per paint so the review UI can show reconstruction progress.
-        let start = self.current.map_or(0, |n| n + 1);
-        let end = self.target.frame.min(start + 119);
+        let now = std::time::Instant::now();
+        let was_playing = !self.paused;
+        let clock_running = self.clock.is_some();
+        self.advance_clock(now);
+        let coalescing = self.dragging && self.scrub_changed.is_some_and(|t| t.elapsed() < SCRUB_DEBOUNCE);
         let dt = frame.dt;
         let alpha = frame.alpha;
         frame.dt = 0.0;
         frame.alpha = 1.0;
-        for i in start..=end {
-            let sample = self.tape.sample(i)?;
-            let (chunk, offset) = self.tape.locate(i)?;
-            let arena = (offset == 0 && (i == 0 || self.tape.chunks[chunk].reset))
-                .then(|| decode::<Arena>(&self.tape.chunks[chunk].arena)).transpose()?;
-            self.game.replay_apply(sample, arena)?;
-            // Build/upload only when needed; dispatch simulation without shading.
-            self.game.replay_gpu_tick(frame)?;
-            self.current = Some(i);
+        if !coalescing {
+            if self.current.is_some_and(|n| self.target.frame < n) {
+                let fresh = Self::game(&self.tape)?;
+                // Same immutable geometry and reserved pools: retain the GPU
+                // renderer instead of recompiling/rebaking it on every rewind.
+                let same_layout = self.game.vis.scene.same_reserved_geometry(&fresh.vis.scene);
+                self.game = fresh;
+                self.game.vis.stadium.sound.replay_audio(self.crowd.as_ref(), false);
+                if same_layout { self.game.replay_reuse_renderer(frame)?; self.rewind_reuses += 1; }
+                self.current = None;
+            }
+            let started = std::time::Instant::now();
+            for i in self.current.map_or(0, |n| n + 1)..=self.target.frame {
+                let sample = self.tape.sample(i)?;
+                let (chunk, offset) = self.tape.locate(i)?;
+                let arena = (offset == 0 && (i == 0 || self.tape.chunks[chunk].reset))
+                    .then(|| decode::<Arena>(&self.tape.chunks[chunk].arena)).transpose()?;
+                let audible = was_playing && clock_running && self.target.frame.saturating_sub(i) < 3;
+                self.game.vis.stadium.sound.replay_audio(self.crowd.as_ref(), audible);
+                if let Some((tx, _)) = &self.crowd { tx.volume(if audible { 1.0 } else { 0.0 }); }
+                self.game.replay_apply(sample, arena)?;
+                self.game.replay_gpu_tick(frame)?;
+                self.current = Some(i);
+                // No seek/catch-up sound storm. Audible events belong only to
+                // ticks close to the running clock, never a paused restore.
+                if audible { self.play_audio(); }
+                if started.elapsed() >= SEEK_BUDGET { break; }
+            }
         }
+        if self.paused && self.audio_running { self.silence(); }
         frame.alpha = if self.ready() { self.target.alpha } else { 1.0 };
         let mut draw = self.game.draw(frame)?;
         frame.dt = dt;
@@ -276,7 +366,7 @@ impl Game for Viewer {
             let clip = [0.0, 0.0, w, h];
             draw.hud.begin_overlay();
             draw.hud.rect([0.0, h - 124.0 * s, w, 124.0 * s], [0.025, 0.035, 0.055, 0.96], clip);
-            let state = if !self.ready() { "RESTORING" } else if self.paused { "PAUSED" } else { "PLAYING" };
+            let state = if self.dragging { "SCRUBBING" } else if !self.ready() { "RESTORING EFFECTS" } else if self.paused { "PAUSED" } else { "PLAYING" };
             let n = self.current.unwrap_or(0);
             let label = format!("REPLAY  /  {state}     frame {n} / {}     {:.2}s     tick {}", self.tape.len() - 1, n as f32 * DT, self.game.world.tick);
             Label::new(BODY, 20.0 * s, [0.78, 0.86, 0.95, 1.0]).draw(&mut draw.hud, &label, 32.0 * s, h - 103.0 * s, clip);
@@ -284,17 +374,22 @@ impl Game for Viewer {
                 draw.hud.rect([left * s, h - 88.0 * s, (right - left - 5.0) * s, 36.0 * s], [0.12, 0.18, 0.26, 1.0], clip);
                 Label::new(BODY, 20.0 * s, [1.0; 4]).center().draw(&mut draw.hud, text, (left + right - 5.0) * 0.5 * s, h - 69.0 * s, clip);
             }
-            Label::new(BODY, 17.0 * s, [0.6, 0.72, 0.84, 1.0]).right().draw(&mut draw.hud, self.message.as_deref().unwrap_or("Click timeline to seek   |   F9 / Esc closes replay"), w - 32.0 * s, h - 69.0 * s, clip);
+            Label::new(BODY, 17.0 * s, [0.6, 0.72, 0.84, 1.0]).right().draw(&mut draw.hud, self.message.as_deref().unwrap_or("Drag timeline to seek   |   F9 / Esc closes replay"), w - 32.0 * s, h - 69.0 * s, clip);
             let bar = [32.0 * s, h - 30.0 * s, w - 64.0 * s, 5.0 * s];
             draw.hud.rect(bar, [0.18, 0.23, 0.3, 1.0], clip);
             let x = |m: Mark| bar[0] + bar[2] * m.frame as f32 / (self.tape.len() - 1).max(1) as f32;
             for m in self.marks.iter().chain(std::iter::once(&self.tape.mark)) { draw.hud.rect([x(*m) - 2.0 * s, bar[1] - 5.0 * s, 4.0 * s, 15.0 * s], [1.0, 0.72, 0.24, 1.0], clip); }
-            draw.hud.rect([x(Mark { frame: n, alpha: 1.0 }) - 4.0 * s, bar[1] - 7.0 * s, 8.0 * s, 19.0 * s], [0.3, 0.78, 1.0, 1.0], clip);
+            draw.hud.rect([x(self.target) - 4.0 * s, bar[1] - 7.0 * s, 8.0 * s, 19.0 * s], [0.3, 0.78, 1.0, 1.0], clip);
         }
         Ok(draw)
     }
     fn split(&self) -> render::SplitLayout { self.game.split() }
-    fn state(&self) -> Option<String> { self.game.state() }
+    fn state(&self) -> Option<String> {
+        let mut value: serde_json::Value = serde_json::from_str(&self.game.state()?).ok()?;
+        value["replay"] = serde_json::json!({"frame": self.current, "target": self.target.frame, "alpha": self.target.alpha,
+            "paused": self.paused, "ready": self.ready(), "dragging": self.dragging, "rewind_reuses": self.rewind_reuses});
+        Some(value.to_string())
+    }
     fn feedback_replay(&mut self, _path: &Path, _alpha: f32) -> Result<Option<serde_json::Value>, String> {
         self.bookmark()?;
         Ok(Some(serde_json::json!({"file": self.path, "frame": self.target.frame, "alpha": self.target.alpha})))
@@ -337,6 +432,19 @@ pub fn run(args: &Args) -> Result<(), String> {
         if let Some(out) = args.value("--state") { std::fs::write(out, viewer.state().unwrap_or_default()).map_err(|e| e.to_string())?; }
         Ok(())
     } else {
+        let samples = crate::sounds::find_dir(args.value("--sounds"));
+        let music = crate::play::music(args, samples.as_deref(), viewer.game.world.arena.seed, true);
+        let _speaker = match crate::sounds::speakers(args.value("--speakers"), music.as_ref()) {
+            Ok((speaker, tx, crowd)) => {
+                viewer.game.set_crowd(args.value("--crowd"), samples.as_deref(), &crowd);
+                viewer.set_crowd(viewer.game.vis.stadium.sound.audio_bank());
+                let mut sounds = crate::sounds::Sounds::new(tx, crate::sounds::find_patches(args.value("--sfx")), samples.as_deref());
+                sounds.music = music.clone();
+                viewer.set_audio(Some(sounds), music, -9.0);
+                Some(speaker)
+            }
+            Err(e) => { eprintln!("silent replay: {e}"); None }
+        };
         app::run(app::Config { title: "Growing Guns | Replay".into(), size: [w, h], tick_hz: TICK_HZ as f32, ..Default::default() }, &mut viewer)
     }
 }
@@ -398,6 +506,60 @@ mod tests {
         assert_eq!(saved.mark.alpha, 0.25);
     }
 
+    #[test]
+    fn clock_drag_and_audio_follow_the_recording() {
+        let mut world = World::new(3, &[false, true]);
+        let mut recorder = Recorder::default();
+        for _ in 0..300 { world.step(&[]); recorder.push(&world, &[0], "godot", true); }
+        let tape = recorder.tape(1.0, [1600, 900]).unwrap();
+        let mut viewer = Viewer::new(tape, std::env::temp_dir().join("replay-controls-test.ggreplay")).unwrap();
+        viewer.current = Some(20);
+        viewer.target = Mark { frame: 20, alpha: 0.25 };
+        viewer.toggle();
+        assert!(!viewer.fixed_quality(), "normal adaptive quality during playback");
+        let now = std::time::Instant::now();
+        viewer.advance_clock(now);
+        viewer.advance_clock(now + std::time::Duration::from_millis(250));
+        assert_eq!(viewer.target, Mark { frame: 35, alpha: 0.25 });
+        // Still only frame 20 rendered: time must nevertheless keep advancing.
+        for _ in 0..10 { viewer.tick(&[Controls::default()]); }
+        viewer.advance_clock(now + std::time::Duration::from_millis(500));
+        assert_eq!(viewer.target, Mark { frame: 50, alpha: 0.25 });
+        viewer.pointer(Pointer { position: Some([300.0, 880.0]), pressed: true, held: true, ..Default::default() }, [1600, 900]);
+        let first = viewer.target;
+        viewer.pointer(Pointer { position: Some([900.0, 880.0]), moved: true, held: true, ..Default::default() }, [1600, 900]);
+        assert!(viewer.target.frame > first.frame, "held drag moves without another press");
+        assert!(viewer.paused && viewer.dragging);
+        viewer.pointer(Pointer { position: Some([2000.0, 100.0]), ..Default::default() }, [1600, 900]);
+        assert_eq!(viewer.target.frame, 299, "drag keeps capture outside timeline");
+        assert!(!viewer.dragging);
+        assert_eq!(viewer.current, Some(20), "input only queues seeks; no expensive scene build");
+        assert_eq!(mark_at_phase(45.0, 300), Mark { frame: 44, alpha: 1.0 });
+        assert_eq!(mark_at_phase(999.0, 300), Mark { frame: 299, alpha: 1.0 });
+
+        let (tx, mut mix) = audio::synth::mixer(audio::synth::Layout::stereo(), 160, audio::SAMPLE_RATE);
+        viewer.set_audio(Some(crate::sounds::Sounds::new(tx, crate::sounds::find_patches(None), None)), None, -9.0);
+        let player = &viewer.game.world.players[0];
+        viewer.game.world.events = vec![growing_guns::Event::Shot { player: 0, from: player.pos, dir: glam::Vec3::NEG_Z }];
+        viewer.play_audio();
+        let mut pcm = vec![0.0; 4800 * 2];
+        mix.render(&mut pcm, 2);
+        assert!(pcm.iter().any(|x| x.abs() > 0.001), "recorded shot produces real PCM");
+        viewer.seek(Mark { frame: 0, alpha: 1.0 }).unwrap();
+        mix.render(&mut pcm, 2);
+        assert_eq!(mix.active(), 0, "seeking stops old voices, including loops");
+        assert!(viewer.take_sounds().is_some(), "live game gets its mixer controller back");
+    }
+
+    // Permit tiny GPU rasterization differences on isolated spectator pixels,
+    // not moving effects. Shard transforms are compared exactly below.
+    fn assert_same_image(a: &[u8], b: &[u8], label: &str) {
+        assert_eq!(a.len(), b.len());
+        let pixels = a.chunks_exact(4).zip(b.chunks_exact(4)).filter(|(a, b)| a != b).count();
+        let error: usize = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b) as usize).sum();
+        assert!(pixels <= 24 && error <= 256, "{label}: {pixels} pixels differ, total channel error {error}");
+    }
+
     /// Serial Metal fixture: exercises F12's screenshot/replay hook, rewinds,
     /// restores an exact sub-tick, and checks paused frames do not animate.
     #[test]
@@ -438,16 +600,15 @@ mod tests {
         let again = render_ready(&mut headless, &mut viewer);
         render::write_png(&root.join("again.png"), 1600, 900, &again).unwrap();
         render::write_png(&root.join("clean.png"), 1600, 900, &clean).unwrap();
-        let changed = clean.iter().zip(&again).filter(|(a, b)| a != b).count();
-        assert!(changed == 0, "paused frame animated: {changed} differing channels");
+        assert_same_image(&clean, &again, "paused frame animated");
         render::write_png(&root.join("clean.png"), 1600, 900, &clean).unwrap();
         viewer.seek(Mark { frame: 90, alpha: 1.0 }).unwrap();
         render_ready(&mut headless, &mut viewer);
         viewer.seek(tape.mark).unwrap();
         let restored = render_ready(&mut headless, &mut viewer);
+        assert_eq!(viewer.rewind_reuses, 1, "rewind must retain the existing GPU scene");
         render::write_png(&root.join("restored.png"), 1600, 900, &restored).unwrap();
-        let changed = clean.iter().zip(&restored).filter(|(a, b)| a != b).count();
-        assert!(changed == 0, "backward/forward seek changed the marked frame: {changed} differing channels");
+        assert_same_image(&clean, &restored, "backward/forward seek changed the marked frame");
         viewer.bookmark().unwrap();
         let reopened = Viewer::new(Tape::read(&path).unwrap(), path).unwrap();
         assert_eq!(reopened.target, tape.mark);
@@ -461,12 +622,73 @@ mod tests {
         let before = render_ready(&mut headless, &mut impact);
         render::write_png(&root.join("impact.png"), 1600, 900, &before).unwrap();
         let paused = render_ready(&mut headless, &mut impact);
-        assert!(before == paused, "GPU debris moved while paused");
+        assert_same_image(&before, &paused, "GPU debris moved while paused");
+        let debris_before = headless.renderer().unwrap().debris_debug_instances(&gpu).unwrap();
         impact.seek(Mark { frame: 40, alpha: 1.0 }).unwrap();
         render_ready(&mut headless, &mut impact);
         impact.seek(impact_tape.mark).unwrap();
         let after = render_ready(&mut headless, &mut impact);
-        assert!(before == after, "GPU debris changed after rewind");
+        assert_same_image(&before, &after, "GPU debris changed after rewind");
+        let debris_after = headless.renderer().unwrap().debris_debug_instances(&gpu).unwrap();
+        assert_eq!(debris_before.len(), debris_after.len());
+        for (a, b) in debris_before.iter().zip(&debris_after) {
+            assert_eq!(a.rows, b.rows, "GPU shard position/orientation changed after rewind");
+            assert_eq!((a.first_cluster, a.cluster_count), (b.first_cluster, b.cluster_count));
+        }
+
+        // Exercise the actual held-pointer path and repaint its selected frame.
+        impact.overlay = true;
+        for (x, pressed, held) in [(1000.0, true, true), (600.0, false, true), (600.0, false, false)] {
+            impact.pointer(Pointer { position: Some([x, 880.0]), pressed, held, moved: true, ..Default::default() }, [1600, 900]);
+        }
+        let selected = impact.target;
+        let scrubbed = render_ready(&mut headless, &mut impact);
+        assert_eq!(impact.current, Some(selected.frame));
+        assert_eq!(impact.game.world.tick, impact.tape.sample(selected.frame).unwrap().state.tick);
+        render::write_png(&root.join("scrubbed.png"), 1600, 900, &scrubbed).unwrap();
+
+        // A real wall-clock playback, including rendering/readback latency.
+        impact.seek(Mark { frame: 0, alpha: 1.0 }).unwrap();
+        render_ready(&mut headless, &mut impact);
+        impact.toggle();
+        let began = std::time::Instant::now();
+        impact.clock = Some((began, 1.0));
+        let mut paints = 0;
+        let mut painted_at = 0.0;
+        while began.elapsed().as_secs_f64() < 1.5 {
+            painted_at = began.elapsed().as_secs_f64();
+            headless.frame(&mut impact).unwrap();
+            paints += 1;
+        }
+        let replay_seconds = (impact.target.frame as f64 + impact.target.alpha as f64 - 1.0) / TICK_HZ as f64;
+        assert!((replay_seconds - painted_at).abs() < DT as f64, "playback drifted from real time");
+        assert!(impact.target.frame.saturating_sub(impact.current.unwrap()) <= 12, "presentation fell far behind its clock");
+        std::fs::write(root.join("timing.json"), serde_json::to_vec_pretty(&serde_json::json!({
+            "wall_seconds": painted_at, "replay_seconds": replay_seconds, "paints": paints,
+            "lag_ticks": impact.target.frame.saturating_sub(impact.current.unwrap()), "rewind_reuses": impact.rewind_reuses,
+            "includes_readback": true
+        })).unwrap()).unwrap();
+        impact.toggle();
+
+        // The replay's real audio mixer, rendered offline for inspection.
+        let (mut source, tx, _) = crate::sounds::offline(None);
+        impact.set_audio(Some(crate::sounds::Sounds::new(tx, crate::sounds::find_patches(None), crate::sounds::find_dir(None).as_deref())), None, -9.0);
+        let mut pcm = Vec::new();
+        for i in 0..impact.tape.len() {
+            let sample = impact.tape.sample(i).unwrap();
+            let (chunk, offset) = impact.tape.locate(i).unwrap();
+            if offset == 0 && (i == 0 || impact.tape.chunks[chunk].reset) { impact.game.world.arena = impact.tape.arena(i).unwrap(); }
+            impact.game.world.arena.apply_breakage(&sample.broken);
+            impact.game.world.apply(sample.state);
+            impact.game.slots = sample.slots;
+            impact.play_audio();
+            let mut tick = vec![0.0; (audio::SAMPLE_RATE as usize / TICK_HZ as usize) * 2];
+            source.render(&mut tick, 2);
+            pcm.extend(tick);
+        }
+        assert!(pcm.iter().any(|v| v.abs() > 0.01));
+        audio::analysis::write_wav(&root.join("replay-audio.wav"), audio::SAMPLE_RATE as u32, 2, &pcm).unwrap();
+        impact.silence();
         assert!(game.function_key(9));
         assert_eq!(game.mouse_capture(), Some(false));
         assert!(game.fixed_quality());
