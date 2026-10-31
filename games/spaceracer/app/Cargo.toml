@@ -20,5 +20,9 @@ serde_json.workspace = true
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+script = { path = "../../../engine/crates/script" }
+gdcompat = { path = "../../sideways/determinism" }
+fastnoise-lite = "1"
+
 [dev-dependencies]
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

@@ -33,7 +33,7 @@
     {
       "path": "src/cell.gd",
       "sha256": "7626ec980443c80d5341a537ffc4b585b9dc7bb6255b102c4949b310760ff55e",
-      "status": "pending"
+      "status": "source-based Luau organelle placement; native continuous DNA/protein/cristae/reticulum meshes, nucleus pores, interpolated walkers and membrane shader; collision proxies approximate"
     },
     {
       "path": "src/chase.gd",
@@ -48,17 +48,17 @@
     {
       "path": "src/city_accents.gd",
       "sha256": "e7e89c03f6a0fb12efbe11a658107bf80708465e0d6da1344d8c93b7a19bc94d",
-      "status": "native parapets, facade ribs and subtle roof trim; full city accent placement pending"
+      "status": "mounted original corporate/poster atlases, six roof families, aerials, facade ribs and crown lights; source-inspired selection bounded to 640 signs"
     },
     {
       "path": "src/city_layout.gd",
       "sha256": "36f8dd98f1491c511cc866f7aa22f120f026277db38e026309164884500da306",
-      "status": "native seeded grid, varied bounds and swept-road clearance; exact city layout parity pending"
+      "status": "source-based 120 m city grid, lot sizes/heights, eight building families, landmark placement and swept road clearance; original vista protection remains incomplete"
     },
     {
       "path": "src/city_traffic.gd",
       "sha256": "e8ef105d85a6e0d88b19032f9cf4e600d257052d6cc2e709828ec01c5956c601",
-      "status": "pending"
+      "status": "shared four-profile traffic meshes, white/red lamps, ground and three elevated traffic levels; interpolated analytic lane motion"
     },
     {
       "path": "src/corner_warnings.gd",
@@ -78,12 +78,12 @@
     {
       "path": "src/desert.gd",
       "sha256": "b01c61f1e5413f803534e387591077bcf07e32d8bf67bbbcedafb1d1dc8cd32e",
-      "status": "pending"
+      "status": "native hoodoo/boulder profiles, cacti and arches with Luau placement; sandworm encounters remain pending"
     },
     {
       "path": "src/desert_terrain.gd",
       "sha256": "32e7deb088987e88ad4e6f99a6ddcedd2330ee59aa4a34db1b93d9cdcb50a652",
-      "status": "pending"
+      "status": "source noise/mesa/canyon equations and sandstone shader; source phase/slot/basin specialization remains pending"
     },
     {
       "path": "src/dev_cheats.gd",
@@ -113,7 +113,7 @@
     {
       "path": "src/forest.gd",
       "sha256": "9130917ceb08ed0f3580e17f947cfcfd38cf46b180fc57b6f6912136bcd0f293",
-      "status": "retained varied-height glTF trees with thin-leaf materials, daytime physical sky and reduced haze; full forest content parity pending"
+      "status": "source tree ages/scales, imported pine/birch assets, fern undergrowth, shared heightfield, shore/water shading; foliage motion/full water reflection pending"
     },
     {
       "path": "src/forest_assets.gd",
@@ -123,7 +123,7 @@
     {
       "path": "src/forest_terrain.gd",
       "sha256": "2e24bae02eee0173862dce6942e7f94c6c3cf8a43de3be928146701b8c9eca9d",
-      "status": "native height-field mesh shared with ground collision; original terrain shader parity pending"
+      "status": "native FastNoiseLite landscape and source road clearance, shared triangle interpolation and swept terrain collision"
     },
     {
       "path": "src/game_audio.gd",
@@ -173,12 +173,12 @@
     {
       "path": "src/ocean.gd",
       "sha256": "be33d6387004fba56ff71935eec597e5c77ebd13b466393805f837dd52fa3ff5",
-      "status": "pending"
+      "status": "underwater atmosphere, reef terrain, kelp/lantern/fan/sponge meshes and source-based placement; some source plant motion/shading remains approximate"
     },
     {
       "path": "src/ocean_life.gd",
       "sha256": "01005e570b460671eb299dbb8045faab7db088a9f120dfcba2e762144e251ec1",
-      "status": "pending"
+      "status": "interpolated fish, jelly and manta instances; simplified creature mesh/motion; giant octopuses, bubbles/snow and shafts pending"
     },
     {
       "path": "src/ocean_terrain.gd",
@@ -233,7 +233,7 @@
     {
       "path": "src/scenery.gd",
       "sha256": "c4485ab6a3ad37872dc623de7da7ad93e5119fc9e4ef291abf9759912a171604",
-      "status": "five native environments; city/forest have retained art, cell/desert/ocean are provisional native scenery"
+      "status": "source building families/roof structures translated to Luau; shared native templates and collision bounds"
     },
     {
       "path": "src/searchlights.gd",
@@ -337,7 +337,7 @@
     "track_sample_fixtures": 18,
     "slipstream_ticks": 700,
     "bump_ticks": 1680,
-    "tests_passed": 18,
+    "tests_passed": 20,
     "generated_centreline_cases": 90,
     "generated_full_ribbons": 18,
     "chase_camera_ticks": 1800,
@@ -345,7 +345,7 @@
     "ship_variants_preserved": 5,
     "source_assets_preserved": 102,
     "renderer_camera_math_tests": 1,
-    "native_app_tests": 2,
+    "native_app_tests": 3,
     "app_input_tests_total": 21,
     "headless_flow_ticks": 1207,
     "capture_resolution": [
@@ -359,10 +359,10 @@
       1080
     ],
     "biome_capture_count": 5,
-    "native_visual_revision": "matched city/forest/four-view headless captures; all five biomes; portable controller scenario; 20 sim/app tests"
+    "native_visual_revision": "source-based stage restoration; 23 sim/app checks; all five biomes headless; source gameplay fixture outputs preserved"
   },
   "next_required": [
-    "Full native material, shader/effect and scenery fidelity in all biomes",
+    "Remaining source stage features: sandworm, giant octopuses, environmental animation and full material/effect fidelity",
     "Original audio, face decals and full GameNight settings/profile behavior",
     "Real controller playtests for AI, contacts, weapons and flight tuning",
     "Complete visor, victory, crash debris, wear and respawn presentation",

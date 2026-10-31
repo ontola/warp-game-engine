@@ -1,4 +1,7 @@
 mod party;
+mod stage;
+mod stage_mesh;
+mod stage_terrain;
 mod visuals;
 use app::{Buttons, Controls, Device, Draw, Frame, Game};
 use glam::{Mat3, Quat, Vec3};
@@ -59,6 +62,7 @@ impl Racer {
         )?;
         let visuals = visuals::Visuals::new(&race, &root.join("assets"))?;
         race.obstacles = visuals.obstacles.clone();
+        race.environment.landscape = Some(visuals.stage.landscape.clone());
         let previous = (0..race.pilots.len()).map(|i| race.pose(i)).collect();
         let party = party::Party::connect()?;
         Ok(Self {
@@ -104,6 +108,7 @@ impl Racer {
         }
         self.visuals = visuals::Visuals::new(&race, &self.root.join("assets"))?;
         race.obstacles = self.visuals.obstacles.clone();
+        race.environment.landscape = Some(self.visuals.stage.landscape.clone());
         self.previous = (0..race.pilots.len()).map(|i| race.pose(i)).collect();
         self.race = race;
         self.cameras = vec![Chase::default(); 4];
@@ -378,7 +383,8 @@ impl Game for Racer {
             || self.party.as_ref().is_some_and(|p| !p.running);
         let alpha = if frozen { 1. } else { frame.alpha };
         self.visuals.update(&self.race, &self.previous, alpha);
-        let light = self.visuals.light(&self.race);
+        let mut light = self.visuals.light(&self.race);
+        light.time = (self.race.tick.saturating_sub(1) as f32 + alpha) / 120.;
         if !self.visuals.uploaded {
             frame.set_scene(&self.visuals.scene, &light);
             self.visuals.uploaded = true;
@@ -763,7 +769,7 @@ impl Game for Racer {
         })
     }
     fn state(&self) -> Option<String> {
-        Some(json!({"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"script_error":self.race.script_error,"error":self.fatal}).to_string())
+        Some(json!({"seed":self.seed,"biome":BIOMES[self.biome],"difficulty":DIFFICULTIES[self.difficulty],"players":self.players,"clock":self.race.clock,"countdown":self.race.countdown,"paused":self.menu.is_some(),"pilots":self.race.pilots,"inputs":self.race.drivers.iter().map(|d|d.input).collect::<Vec<_>>(),"stage":self.visuals.stage.counts,"script_error":self.race.script_error,"error":self.fatal}).to_string())
     }
     fn command(&mut self, cmd: &str) -> Result<String, String> {
         let args: Vec<_> = cmd.split_whitespace().collect();
