@@ -567,7 +567,7 @@ impl DebugUi {
             _=>"Restore all of the host's default render settings.",
         };
         for (i,line) in [help,model.status.as_deref().unwrap_or("CPU excludes other threads; wall includes waiting."),
-                        "F3 close | Esc back | Arrows | Enter open/toggle", "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
+                        "F10 close | Esc back | Arrows | Enter open/toggle", "Drag values | Hold +/- | Wheel scroll"].into_iter().enumerate() {
             text(list,500+i as u64,line,[x,layout.footer_y+(8.0+i as f32*21.0)*s,w,22.0*s],footer_clip,17.5*s,if i==0{FG}else{MUTED},TextAlign::Left);
         }
     }

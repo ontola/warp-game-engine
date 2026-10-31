@@ -1,4 +1,4 @@
-//! The engine's debug menu (F3), for every game on the shell: switch render
+//! The engine's debug menu (F10), for every game on the shell: switch render
 //! features and light effects off, change LOD and render resolution, and
 //! whatever the game adds with [`crate::Game::debug`]. Built on render's
 //! [`DebugUi`]; nothing here changes the scene or the simulation.
@@ -146,8 +146,8 @@ impl EngineDebug {
         let gpu_passes = self.passes.iter().map(|&(label, ms)| render::debug_ui::DebugPass { label: label.into(), ms }).collect();
         let gpu_active_ms = (!self.passes.is_empty()).then(|| self.passes.iter().map(|p| p.1).sum());
         let status = match quality_label {
-            Some(lbl) => format!("{fps:.0} fps  |  {lbl}  |  F3 closes, arrows change, Enter selects"),
-            None => format!("{fps:.0} fps  |  F3 closes, arrows change, Enter selects"),
+            Some(lbl) => format!("{fps:.0} fps  |  {lbl}  |  F10 closes, arrows change, Enter selects"),
+            None => format!("{fps:.0} fps  |  F10 closes, arrows change, Enter selects"),
         };
         self.model = DebugModel { controls, menus, gpu_passes, gpu_active_ms, cpu_frame_ms: (fps > 0.0).then(|| 1000.0 / f64::from(fps)),
             status: Some(status), ..Default::default() };

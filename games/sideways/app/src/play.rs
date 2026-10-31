@@ -1134,13 +1134,7 @@ impl App {
             self.race.settings.manual = !self.race.settings.manual;
             for p in &mut self.race.players { p.car.manual = self.race.settings.manual; }
         }
-        if self.input.take_key(KeyCode::F11) {
-            if let Some(w) = &self.window { w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) }); }
-        }
-        // Input::take_key consumes only the press edge, not OS key repeats.
-        if self.input.take_key(KeyCode::F12) && self.focused && !self.invisible() {
-            self.screenshot_pending = true;
-        }
+
         if self.args.smoke_frames > 0 && self.host.is_none() && self.scenario.is_none() {
             self.race.phase = "racing"; self.race.clock = self.race.clock.max(0.0);
             for i in &mut inputs { i.control = Control { throttle: 0.75, steer: 0.04, ..Default::default() }; }
@@ -1593,6 +1587,24 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self,event_loop:&ActiveEventLoop,_id:WindowId,event:WindowEvent) {
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && let PhysicalKey::Code(code) = event.physical_key
+            && let Some(action) = app::engine_shortcut(code) {
+            if event.state == ElementState::Pressed && !event.repeat {
+                match action {
+                    app::EngineShortcut::DebugMenu => {
+                        let before = self.debug.ui.open;
+                        self.debug.key(DebugKey::Toggle, [self.args.size.0, self.args.size.1]);
+                        self.sync_debug_focus(before);
+                    }
+                    app::EngineShortcut::Fullscreen => if let Some(w) = &self.window {
+                        w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
+                    },
+                    app::EngineShortcut::Screenshot => self.screenshot_pending = true,
+                }
+            }
+            return;
+        }
         if self.tree_loading.is_some() && matches!(&event,WindowEvent::KeyboardInput{..}|WindowEvent::CursorMoved{..}|WindowEvent::MouseInput{..}|WindowEvent::MouseWheel{..}) {
             self.debug.cancel_interaction();self.input.clear_keys();return;
         }
@@ -1601,16 +1613,16 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(focused)=>{self.focused=focused;self.last_frame=Instant::now();if !focused{self.debug.cancel_interaction();self.input.clear_keys();self.input_edges=[(0,false);4];self.accumulator=0.0;}else if let Some(host)=&self.host{let _=host.request_start();}}
             WindowEvent::KeyboardInput{event,..}=>if let PhysicalKey::Code(code)=event.physical_key {
                 let pressed=event.state==ElementState::Pressed;
-                let key=match code {KeyCode::F3=>Some(DebugKey::Toggle),KeyCode::Escape=>Some(DebugKey::Close),
+                let key=match code {KeyCode::Escape=>Some(DebugKey::Close),
                     KeyCode::ArrowUp=>Some(DebugKey::Up),KeyCode::ArrowDown=>Some(DebugKey::Down),
                     KeyCode::ArrowLeft=>Some(DebugKey::Left),KeyCode::ArrowRight=>Some(DebugKey::Right),
                     KeyCode::Enter=>Some(DebugKey::Enter),KeyCode::PageUp=>Some(DebugKey::PageUp),KeyCode::PageDown=>Some(DebugKey::PageDown),
                     KeyCode::KeyW if self.paused=>Some(DebugKey::Up),KeyCode::KeyS if self.paused=>Some(DebugKey::Down),
                     KeyCode::KeyA if self.paused=>Some(DebugKey::Left),KeyCode::KeyD if self.paused=>Some(DebugKey::Right),
                     KeyCode::Space if self.paused=>Some(DebugKey::Enter),_=>None};
-                if key.is_some() && (code==KeyCode::F3 || self.debug.ui.open) {
+                if key.is_some() && self.debug.ui.open {
                     let before=self.debug.ui.open;
-                    if pressed && !(code==KeyCode::F3 && event.repeat) {self.debug.key(key.unwrap(),[self.args.size.0,self.args.size.1]);}
+                    if pressed {self.debug.key(key.unwrap(),[self.args.size.0,self.args.size.1]);}
                     self.sync_debug_focus(before);
                     self.input.key(code,false);
                 } else {self.input.key(code,pressed);}

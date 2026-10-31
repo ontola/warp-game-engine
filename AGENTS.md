@@ -15,7 +15,7 @@ One Rust workspace, with Cargo.toml and Cargo.lock at the repository root.
 | --- | --- |
 | `engine/crates/kern` | Engine core: a game is a deterministic `Sim` in fixed ticks; state digests, divergence search, value traces. |
 | `engine/crates/render` | The renderer (wgpu): headless by design, renders into textures. Clusters/LOD, shadows, GI, sky and fog, procedural terrain (`terrain_field`, `procedural_terrain`), grass (`meadow*`), trees and vegetation (`vegetation_asset`, `plant_recipe`, `foliage_*`, `voxel_*`), HUD, debug UI widgets. Shaders in `src/shaders/`. Many GPU probes in `examples/`. |
-| `engine/crates/app` | The game shell: window, fixed tick, input, split screen, HUD, headless capture and `bench`. Built-in keys: F3 debug menu (`debug.rs`), F11 fullscreen, F12 feedback screenshot (`screenshot.rs`). Example games in `examples/` (`terrain_fly`, `hello`). |
+| `engine/crates/app` | The game shell: window, fixed tick, input, split screen, HUD, headless capture and `bench`. Built-in keys: F10 debug menu (`debug.rs`), F11 fullscreen, F12 feedback screenshot (`screenshot.rs`). Example games in `examples/` (`terrain_fly`, `hello`). |
 | `engine/crates/audio` | Synthesised engine and effect sound. |
 | `engine/crates/physics` | Rapier rigid bodies with enhanced determinism. |
 | `engine/crates/assets` | Asset import for scenes. |
@@ -55,7 +55,7 @@ and copies the image to the clipboard, for every game on the `app` shell
 `<temp>/warp-live/feedback.jsonl`; the live MCP tool `feedback` (in every
 `--live` game and in `warp-mcp`, also with no game running) returns the
 newest captures, image and JSON together. `terrain_fly --from <that.json>`
-puts the camera back where it was. F3 opens the engine debug menu (render and
+puts the camera back where it was. F10 opens the engine debug menu (render and
 light switches, LOD, render height, GPU pass times; games add their own).
 
 Procedural terrain has one height function in two copies that must stay

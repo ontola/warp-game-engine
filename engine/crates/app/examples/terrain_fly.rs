@@ -11,10 +11,10 @@
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
 //! Q or LB sinks, Shift/E or RB goes fast, the wheel or arrows up/down set
-//! the speed. F1 default, F2 lowland, F4 alpine (F3 stays the debug
+//! the speed. F1 default, F2 lowland, F4 alpine (F10 opens the debug
 //! overlay), F5 the next seed, F6 jumps somewhere new, F7 hugs the ground,
 //! F12 saves a screenshot with its position and terrain stats for feedback,
-//! F3 opens the debug menu (engine render/light switches plus trees, grass
+//! F10 opens the debug menu (engine render/light switches plus trees, grass
 //! and terrain LOD under "Terrain fly").
 //!
 //! Grass (render's meadow) and trees (one recipe spruce, three seeds) cover a

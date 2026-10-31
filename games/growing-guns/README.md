@@ -37,6 +37,7 @@ missing.
 | Online | Close | Host-authoritative over iroh; local movement prediction and buffered remote snapshots. Tested over loopback (`nettest`), not yet between two machines or under realistic network jitter; transport currently binds IPv4 only |
 | Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
 | Music | Done | Godot's stems, following the match |
+| Engine controls | Done | Always-reserved F10 render/debug panel, F11 fullscreen and F12 feedback capture, ahead of game menus, typing and replay. F3 remains game debug; F9 replay |
 | GameNight | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
 | Menu backdrop | Not yet | Godot's cinematic lava fort behind the start menu |
 | Ghost mines | Not yet | Dead players planting mines |
@@ -72,7 +73,7 @@ cargo run --release -p growing-guns-app -- play --join TICKET
 
 Keyboard and mouse: WASD, mouse, Space jump, Shift dash, left mouse fire,
 right mouse special, R reload. Pad: sticks, A/LB jump, Y/RB dash, RT fire,
-LT/B special, X reload. F12 saves a screenshot plus recent gameplay; F9 opens its replay. F3 (Back + Start on a pad)
+LT/B special, X reload. F10 always opens the engine render/debug panel, F11 toggles fullscreen, and F12 saves a screenshot plus recent gameplay; F9 opens its replay. F3 (Back + Start on a pad)
 opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
 
