@@ -205,7 +205,7 @@ impl Hud {
             for a in &mut f.arcs { a.1 -= dt; }
             f.arcs.retain(|a| a.1 > 0.0);
             if let Some(b) = &mut f.burned { *b += dt; }
-            if p.alive { f.burned = None; }
+            if p.alive || (p.ghost && p.offer.is_none()) { f.burned = None; }
             let speed = (p.vel.x * p.vel.x + p.vel.z * p.vel.z).sqrt();
             f.bob += speed * dt * 0.75;
             if p.special_cd > f.last_special + 1e-6 { f.special_max = p.special_cd; }
@@ -686,7 +686,7 @@ fn death_color(world: &World, p: &growing_guns::Player, f: &Feedback) -> C {
         let from = if world.coop { [0.05, 0.05, 0.08, 0.5] } else { [0.09, 0.0, 0.0, 1.0] };
         let k = 1.0 - (1.0 - f.pick_closed / 0.18).powi(3);
         c = with_alpha(from, 1.0 - k);
-    } else if f.burned.is_none() { c[3] = 0.0; }
+    } else if p.ghost || f.burned.is_none() { c[3] = 0.0; }
     let _ = PLAYER_COLORS_U8;
     c
 }
@@ -694,6 +694,23 @@ fn death_color(world: &World, p: &growing_guns::Player, f: &Feedback) -> C {
 #[cfg(test)]
 mod pointer_tests {
     use super::*;
+    #[test]
+    fn lava_death_tint_does_not_return_after_ghost_card_pick() {
+        let mut w = World::new(1, &[false, false, false, false]);
+        w.players[0].alive = false;
+        w.players[0].ghost = true;
+        let mut f = Feedback::default();
+        f.burned = Some(4.0);
+        f.pick_closed = 0.09;
+        assert!(death_color(&w, &w.players[0], &f)[3] > 0.0);
+        f.pick_closed = 0.20;
+        assert_eq!(death_color(&w, &w.players[0], &f)[3], 0.0);
+        let mut hud = Hud::new(&w);
+        hud.fb[0].burned = Some(4.0);
+        hud.tick(&w, 1.0/60.0);
+        assert!(hud.fb[0].burned.is_none());
+    }
+
     #[test]
     fn cards_hit_painted_bounds_with_reveal_clip_and_offer_checks() {
         let mut w = World::new(1, &[false, true]);

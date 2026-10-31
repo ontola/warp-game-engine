@@ -733,7 +733,15 @@ impl Gg {
                 }
                 self.ui.open(Screen::Play);
             }
-            Action::Rematch if host => { self.world.restart_match(); self.new_arena(); self.hud.round_age = 0.0; self.ui.open(Screen::Play); }
+            Action::Rematch if host => {
+                for s in std::mem::take(&mut self.start_seats) { self.world.set_bot(s, false); }
+                self.world.restart_match();
+                self.vis.hide_own_bodies(&self.slots);
+                self.new_arena();
+                self.hud = hud::Hud::new(&self.world);
+                self.hud.round_age = 0.0;
+                self.ui.open(Screen::Play);
+            }
             Action::Advanced => self.ui.open(Screen::Advanced),
             Action::Party(k, v) => {
                 if let Some(p) = &mut self.party { p.set(k, v); } else if let Some(s) = &mut self.gn_preview && let Some(key) = s.key(k) { s.change(&key, &serde_json::json!(v)); }
@@ -1207,7 +1215,7 @@ impl app::Game for Gg {
             if p < world.players.len() { Ok(p) } else { Err(format!("no player {p}")) }
         };
         match w.first().copied().unwrap_or("") {
-            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
+            "help" => Ok("menu start|pause|settings|gamenight|advanced|none | debug [on|off] | debug tab cards|items|sky|modes | debug player P | debug focus search|N | focus join|name | split on|off | leave K | copy | names NAME,NAME.. | net-error TEXT|none | give P CARD | remove P CARD | pickup KIND X Z [Y] | teleport P X Y Z | aim P X Y Z | health P N | ammo P N | bots pause|resume | blast X Y Z R DAMAGE | boom X Y Z R [DAMAGE] | arena SEED | arena island [SEED] | lava [SECONDS] | cards | lua CODE | mods | knobs | knob NAME VALUE | special P NAME | modifier ID|none | sky [godot|TIME[:WEATHER]|rounds|cycle] | light [KEY=VALUE..|reset] | round | cage | rematch | extend".into()),
             // The keyboard focus on a text field of the open menu.
             "focus" => {
                 use hud::menus::Field;
@@ -1332,6 +1340,15 @@ impl app::Game for Gg {
                 Ok(format!("lava leak at {s} s: inset {:.1} m, surface {:.2} m", l.inset(), l.surface()))
             }
             "cards" => Ok(self.world.cards.enabled().map(|(_, d)| d.id.clone()).collect::<Vec<_>>().join(" ")),
+            "remove" => {
+                if self.session.is_client() { return Err("only the host can remove cards".into()); }
+                let p = player(1, &self.world)?;
+                let name = w.get(2).ok_or("remove P CARD")?.to_lowercase();
+                let card = self.world.cards.find(&name).ok_or(format!("unknown card {name}"))?;
+                if !self.world.remove_card(p, card) { return Ok(format!("player {p} has no {name}")); }
+                self.vis.grow_gun(p, &self.world.players[p]);
+                Ok(format!("removed one {name} from player {p}"))
+            }
             "give" => {
                 let p = player(1, &self.world)?;
                 let name = w.get(2).ok_or("give P CARD")?.to_lowercase();
@@ -1403,7 +1420,7 @@ impl app::Game for Gg {
             "arena": { "seed": w.arena.seed, "size": w.arena.size, "variant": format!("{:?}", w.arena.variant), "blocks": w.arena.blocks.len(),
                 "chunks": w.arena.chunks.len(), "chunks_broken": w.arena.chunks.len() - w.arena.alive_chunks(),
                 "islands": w.arena.islands.len(), "lava_surface": w.arena.lava_surface(), "leak_surface": w.lava.active.then(|| w.lava.surface()) },
-            "players": players, "waves": w.coop.then_some(&w.waves), "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "stadium": self.vis.stadium.state(),
+            "players": players, "waves": w.coop.then_some(&w.waves), "bullets": w.bullets.len(), "events": w.events, "ragdolls": self.vis.ragdolls(), "corpse_hits": self.vis.corpse_hits(), "stadium": self.vis.stadium.state(),
             "sky": { "choice": self.sky.choice.name(), "applied": self.sky.applied.map(|s| s.metadata()) },
             "local": { "seats": self.slots, "split": self.split, "devices": self.binding.iter().map(|b| b.iter().map(|d| d.to_string()).collect::<Vec<_>>()).collect::<Vec<_>>(),
                 "connected": self.connected.iter().map(|d| d.to_string()).collect::<Vec<_>>(), "player_menu": self.player_menu.as_ref().map(|m| m.0),

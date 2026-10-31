@@ -80,7 +80,8 @@ impl EffectsView {
         };
         let particles = Particles::reserve(scene, crate::graphics::get().particles, seed | 1);
         let occ = Occupancy::new(Vec3::new(-OCC_HALF, -4.0, -OCC_HALF), Vec3::new(OCC_HALF, 30.0, OCC_HALF), OCC_VOXEL);
-        let debris = Debris::reserve(scene, crate::graphics::get().debris_capacity, occ, false);
+        let mut debris = Debris::reserve(scene, crate::graphics::get().debris_capacity, occ, false);
+        debris.set_gradual_recycling();
         let mut blasts = Effects::default();
         // Full desktop quality uses a shared baked density animation. Keep the
         // existing inexpensive billows on low/minimum profiles (including Quest).

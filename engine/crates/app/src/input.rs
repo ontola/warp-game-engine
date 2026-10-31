@@ -61,6 +61,8 @@ pub struct Pointer {
     pub position: Option<[f32; 2]>,
     pub moved: bool,
     pub pressed: bool,
+    /// Secondary mouse button pressed since the previous tick.
+    pub right_pressed: bool,
     pub held: bool,
     /// Wheel lines scrolled since the last tick, positive away from the user (up).
     pub wheel: f32,
@@ -71,6 +73,7 @@ impl Pointer {
         let sample = *self;
         self.moved = false;
         self.pressed = false;
+        self.right_pressed = false;
         self.wheel = 0.0;
         sample
     }
@@ -219,6 +222,9 @@ impl Devices {
         if button == MouseButton::Left && !self.mouse_captured && (self.keyboard_enabled || self.pointer_enabled) {
             self.pointer.held = state == ElementState::Pressed;
             self.pointer.pressed |= self.pointer.held;
+        }
+        if button == MouseButton::Right && !self.mouse_captured && (self.keyboard_enabled || self.pointer_enabled) {
+            self.pointer.right_pressed |= state == ElementState::Pressed;
         }
         let b = match button { MouseButton::Left => Buttons::RIGHT_TRIGGER, MouseButton::Right => Buttons::LEFT_TRIGGER, _ => 0 };
         if state == ElementState::Pressed && self.mouse_captured { self.kb.mouse |= b; self.kb.pressed |= b; } else { self.kb.mouse &= !b; }
@@ -411,7 +417,10 @@ mod tests {
         d.cursor(Some([30.0, 40.0]));
         d.mouse_button(MouseButton::Left, ElementState::Pressed);
         d.mouse_button(MouseButton::Left, ElementState::Released);
+        d.mouse_button(MouseButton::Right, ElementState::Pressed);
+        d.mouse_button(MouseButton::Right, ElementState::Released);
         let p = d.pointer();
+        assert!(p.right_pressed);
         assert!(p.pressed && p.moved && !p.held);
         assert_eq!(d.pointer(), Pointer { position: p.position, ..Default::default() });
         assert!(!d.controls(1, 1.0 / 60.0)[0].pressed.has(Buttons::RIGHT_TRIGGER));

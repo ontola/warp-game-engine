@@ -751,7 +751,7 @@ fn background_radiance(direction: vec3<f32>) -> vec3<f32> {
 // environment bake remains disc-free, avoiding double-counted illumination.
 fn solar_disc(direction: vec3<f32>) -> vec3<f32> {
     if light.anim.w == 0.0 || light.sun_dir.w <= 0.0 || light.sun_dir.y <= 0.0 { return vec3<f32>(0.0); }
-    let radius = 0.00465;
+    let radius = max(light.anim.w, 0.0001);
     let pixel = 1.0 / max(view.cam.w, 1.0);
     let angle = length(direction - light.sun_dir.xyz);
     let disc = 1.0 - smoothstep(max(radius - pixel * 0.7, 0.0), radius + pixel * 0.7, angle);
@@ -780,7 +780,23 @@ fn apply_distance_fog(radiance: vec3<f32>, distance: f32, direction: vec3<f32>) 
     if light.fog.z > 0.0 {
         if light.fog.y <= 0.0 { return radiance; }
         let column = fog_column(distance, view.cam.y, direction.y, light.fog.z);
-        return fog_segment(radiance, fog_scattering_source(direction), light.fog.y * column);
+        // Direct sunlight in the local air is occluded by scene geometry too.
+        // Four samples cover the segment; diffuse skylight remains in shade.
+        var visible = 0.0;
+        for (var i = 0u; i < 4u; i++) {
+            let p = view.cam.xyz + direction * distance * (f32(i) + 0.5) / 4.0;
+            let q = light.shadow_view_proj * vec4<f32>(p,1.0);
+            let uv = q.xy * vec2<f32>(0.5,-0.5) + 0.5;
+            var sample = 1.0;
+            if all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0)) && q.z>=0.0 && q.z<=1.0 {
+                sample = textureSampleCompareLevel(shadow_tex,shadow_samp,uv,q.z-0.0002);
+            }
+            visible += sample;
+        }
+        visible = mix(1.0, visible * 0.25, light.sun_color.w);
+        let diffuse = light.fog_scattering.rgb * max(light.sh[0].rgb * 0.282095, vec3<f32>(0.0));
+        let source = diffuse + (fog_scattering_source(direction) - diffuse) * visible;
+        return fog_segment(radiance, source, light.fog.y * column);
     }
     let amount = distance_fog_amount(distance);
     // Near surfaces do not need an additional sky texture lookup.

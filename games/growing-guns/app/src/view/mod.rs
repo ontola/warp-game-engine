@@ -213,6 +213,12 @@ impl Visuals {
         let m = self.fx.meshes;
         for e in &world.events {
             match *e {
+                Event::BulletPath { from, to, damage } => {
+                    if let Some((pos, normal)) = self.players.shoot_corpses(&mut self.phys, from, to, damage) {
+                        self.fx.particles.burst(s, pos + normal * 0.02, normal + Vec3::Y * 0.2,
+                            &Burst { mesh: m.blood, count: 6, ..Burst::drops() });
+                    }
+                }
                 Event::Impact { pos, normal, damage, strong } => {
                     self.fx.particles.burst(s, pos + normal * 0.03, normal, &Burst { mesh: m.spark, count: 8, ..Burst::sparks() });
                     self.fx.particles.burst(s, pos + normal * 0.05, normal, &Burst { mesh: m.dust, count: 5, ..Burst::dust() });
@@ -346,6 +352,8 @@ impl Visuals {
     }
 
     /// Ragdoll torso positions (for state dumps).
+    pub fn corpse_hits(&self) -> u64 { self.players.corpse_hits }
+
     pub fn ragdolls(&self) -> Vec<[f32; 3]> { self.players.ragdolls(&self.phys) }
 
     pub fn gore_len(&self) -> usize { self.players.gore_len() }
@@ -525,6 +533,8 @@ pub fn lighting() -> Lighting {
     Lighting {
         sun_dir: Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos()),
         sun_lux: 60_000.0,
+        sun_disc: true,
+        sun_radius: 0.0093,
         sun_color: Vec3::from(palette::SUN),
         sky_lux: 14_000.0,
         lod_pixels: crate::graphics::get().lod_pixels,

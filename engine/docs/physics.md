@@ -135,3 +135,12 @@ fixture captures alive/death/falling/bending/settled at 960x540 with an explicit
 open arena (`games/growing-guns/scripts/character-ragdoll.json`). Static captures
 verify presentation at those times, not continuous motion quality, worst-case
 performance, every death mode, multiplayer or Quest hardware.
+
+
+`Physics::raycast_bodies` tests a finite segment against explicitly supplied
+body handles at current collider poses, including bodies created before the
+next physics step. It returns the nearest body, contact and normal; stale
+handles and shapes containing the segment origin are skipped. The caller must
+clip the segment against scenery first. Growing Guns uses collision-checked
+`BulletPath` events for this and calls `impulse(body, impulse, Some(contact))`
+to wake and rotate a hit corpse. Bodies remain cosmetic and penetrable.

@@ -27,8 +27,8 @@ missing.
 | Arenas | Done | Walled, hole, open and lava island (18 %), mirrored layouts; destructible stone chunks with wear, bullet dents and debris; stadium footings extend into lava, with cached orange lava illumination |
 | Stadium | Done | Colosseum masonry, 8,363 animated spectators, crowd sound, four live TV screens |
 | Bots | Done | Aim, reaction, strafing, jumps, pickups and specials; they keep to lava islands. Versus reserves eight visual seats so adding/removing bots keeps the renderer |
-| Characters | Close | Knight, paladin and zombie with textures and clips, GPU skinning, 11-body ragdolls with approximate angular limits, progressive end-range resistance and weak damped neutral-pose springs; model-derived head/body gibs. Cuts use cached model geometry; animated skin-aware dismemberment, aim and strafe layers remain incomplete |
-| Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with experimental baked volumetric smoke, adaptive per-view quality and a gradual tail up to 4.6 seconds on full desktop quality (64 active plumes plus up to 32 fading out; low/minimum retain billows), sparks, chips, scorch and blood, air strike rocket and white-out; ion cannon charges as one depth-clipped luminous volume (including from inside and when looking up/down), with wide bloom and bright ground illumination, with a dense field of bright soft blue dots across the impact disc that appear on live solid ground, lift like glowing sand with independent delays, varied speeds and acceleration, then suddenly become upward streaks from their exact positions at impact and nearly vertical rubble lift/fall |
+| Characters | Close | Knight, paladin and zombie with textures and clips, GPU skinning, 11-body ragdolls with approximate angular limits, progressive end-range resistance and weak damped neutral-pose springs; bullet hits wake and push the struck limb at the contact point, with blood feedback; model-derived head/body gibs. Cuts use cached model geometry; animated skin-aware dismemberment, aim and strafe layers remain incomplete |
+| Effects | Done | Muzzle flash and shot light, bullet streaks, blasts with a short, smoothly fading fireball light (no expanding light ring), experimental baked volumetric smoke, adaptive per-view quality and a gradual tail up to 4.6 seconds on full desktop quality (64 active plumes plus up to 32 fading out; low/minimum retain billows), sparks, chips, scorch and blood, air strike rocket and white-out; ion cannon charges as one depth-clipped luminous volume (including from inside and when looking up/down), with wide bloom and bright ground illumination, with a dense field of bright soft blue dots across the impact disc that appear on live solid ground, lift like glowing sand with independent delays, varied speeds and acceleration, then suddenly become upward streaks from their exact positions at impact and nearly vertical rubble lift/fall |
 | Sky and light | Done | Godot's sky by default; procedural time of day and weather, per round or as a cycle; visible sun and GPU lens flare with per-view occlusion; floodlights with shadows at night |
 | Gameplay replay | Added | F12 saves a screenshot plus a bounded state replay; F9 review, pause/step/seek, saved frames and headless re-render after code edits. Local/host recording; see below for visual-history limits |
 | HUD and menus | Done | Godot's layout, fonts (Anton, Barlow) and timing; mouse, keyboard and pads; see [docs/ui-parity.md](docs/ui-parity.md) |
@@ -36,10 +36,11 @@ missing.
 | Split screen | Done | 1 to 4 local players, hot-join with X, own audio flat on your side of the screen. Join/leave reuses visual slots and clears unused screen regions |
 | Online | Close | Host-authoritative over iroh; local movement prediction and buffered remote snapshots. Tested over loopback (`nettest`), not yet between two machines or under realistic network jitter; transport currently binds IPv4 only |
 | Wave survival (coop) | Done | `--coop`: grunts, snipers, grenadiers, fraggers, bombers, revives |
-| Combat audio | Added | Explosions louder than weapon reports, with bass reserved for explosive impacts; headroom for stacked weapons, one synth per report with a room send, bounded overlapping reports/bass and two-second explosion rumbles. Own shots bypass loudness culling. Offline spam regression covers uzi ×2 + bazooka ×2; receiver/headset listening remains a playtest check |
+| Combat audio | Added | Explosions louder than weapon reports, with bass reserved for explosive impacts; headroom for stacked weapons, one synth per report with a room send, bounded overlapping reports/bass and size-dependent brown-noise rumbles up to 3.2 seconds, preserving the deep Godot-style aftershock. Own shots bypass loudness culling. Offline spam regression covers uzi ×2 + bazooka ×2; receiver/headset listening remains a playtest check |
 | Music | Done | Godot's stems, following the match |
 | Engine controls | Done | Always-reserved F10 render/debug panel, F11 fullscreen and F12 feedback capture, ahead of game menus, typing and replay. F3 remains game debug; F9 replay |
 | GameNight | Done | Party settings, the next round's modifier, live knobs, each player's own stick sensitivity, the session assistant (MCP), loading and pause |
+| Debug card editing | Done | F3: LMB adds; RMB removes one owned copy and updates stats. Start/pause menus include RESTART MATCH. |
 | Menu backdrop | Not yet | Godot's cinematic lava fort behind the start menu |
 | Ghost mines | Not yet | Dead players planting mines |
 
@@ -267,3 +268,52 @@ Use `-Executable PATH` for a separate Cargo target directory. The helper
 writes 156 frames at 30 fps, the exact scenario JSON and (if FFmpeg is installed)
 `explosion.mp4`. The shorter `scripts/explosion-smoke.json` captures key ages.
 These are development review captures, not store gameplay previews.
+
+### Shooting ragdolls
+
+Corpses react to collision-checked bullet paths, including delayed projectile
+flight and instant sniper rays. Hits apply a bounded contact impulse to the
+nearest corpse limb, waking resting bodies and generating a small blood burst.
+The primitive corpse fallback also supports hits. Corpse hits are cosmetic:
+bullets pass through, corpses do not become cover or award damage/kills, and
+severed gibs are not additional shot targets. World and live-player hits clip
+the path before the corpse query. Explosions retain their existing physics push.
+
+Headless fixture: `growing-guns script games/growing-guns/scripts/shoot-ragdoll.json
+--out build/shoot-ragdoll --players 1 --seed 52 --sky noon --no-music`.
+The debug state exposes `corpse_hits` (reset with the arena).
+
+A new append-only `BulletPath` presentation event carries the checked segment
+and shot damage in snapshots/replays. Existing recordings load but cannot gain
+corpse bullet reactions they never recorded. Older binaries cannot decode the
+new event; online participants should use this same build. Corpse physics stays
+local presentation, not network-authoritative collision. No mixed-version or
+real-network/hardware validation is claimed.
+
+
+Validation: 14 physics, 54 simulation and 101 app tests passed (2 app tests
+ignored). The final 324-tick shooting fixture records two corpse hits and a
+changed resting position, with blood feedback captured at 960x540. No real
+network, hardware-controller, Quest or performance benchmark was run for this
+change. Tuning uses 0.8 N s per damage point, capped at 40 N s per contact.
+
+Start and pause menus offer RESTART MATCH (host/offline only), clearing scores
+and cards. In the F3 CARDS tab, left-click adds a card and right-click removes
+one copy from the selected player, rebuilding stats immediately.
+
+Lava death tint clears after the card pick when playing as a ghost. Large
+explosions retain a sustained 38-90 Hz bass body under the bounded mixer.
+
+Rock debris keeps the 4096-piece full-quality cap (128 on low). Fresh
+shards are protected for 0.8 seconds. New bursts thin out with occupancy; a
+full pool replaces at most 1/64 of its older shards per tick instead of
+erasing earlier blasts wholesale.
+
+Under debris pressure, the largest new fragments take priority. Recycling
+selects small, old pieces first and never replaces a larger piece with a
+smaller incoming splinter.
+
+Smoke takes colored skylight, sun visibility and haze into account. The
+colosseum tiers cast sunlight shadows; local atmospheric solar scattering
+samples those shadows along the view ray. The visible solar disc shares the
+lighting direction and is enabled for the default sky as well as presets.

@@ -362,6 +362,9 @@ pub enum Event {
     Lava { player: usize, fall: bool },
     /// A ghost planted a mine.
     MinePlanted { player: usize, pos: Vec3 },
+    /// Append-only presentation event: a collision-checked bullet path, clipped
+    /// at its first gameplay hit. Corpses react locally without becoming cover.
+    BulletPath { from: Vec3, to: Vec3, damage: f32 },
 }
 
 /// Presentation identity, independent of damage radius. Older recordings
@@ -585,6 +588,20 @@ impl World {
         p.health = if p.alive { p.health.max(p.max_health()) } else { p.health };
         p.phoenix_charges = p.phoenix_charges.max(p.weapon.phoenix_revives);
         if let Some(h) = self.hooks.0.clone() { h.pick(self, player, card); }
+    }
+
+    /// Remove one owned copy, rebuilding its stats without replaying pick hooks.
+    pub fn remove_card(&mut self, player: usize, card: cards::Card) -> bool {
+        let Some(p) = self.players.get_mut(player) else { return false };
+        let Some(index) = p.cards.iter().rposition(|c| *c == card) else { return false };
+        p.cards.remove(index);
+        self.rebuild_weapon(player);
+        if let Some(m) = self.modifier { flow::modifier_weapon(m, &mut self.players[player].weapon); }
+        let p = &mut self.players[player];
+        p.ammo = p.ammo.min(p.mag_size());
+        p.health = p.health.min(p.max_health());
+        p.phoenix_charges = p.phoenix_charges.min(p.weapon.phoenix_revives);
+        true
     }
 
     fn apply_card_to(&mut self, player: usize, card: cards::Card) {

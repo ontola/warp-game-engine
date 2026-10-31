@@ -129,6 +129,7 @@ impl LavaCorpse {
 struct LavaMeshes { body: usize, head: usize, splash: usize }
 
 pub struct PlayersView {
+    pub corpse_hits: u64,
     /// First instance of the players' block (then the tracers).
     pub first: usize,
     meshes: Vec<PlayerMeshes>,
@@ -151,7 +152,7 @@ pub struct PlayersView {
 impl PlayersView {
     /// Corpse slots (static range, before the dynamic instances).
     pub fn reserve_corpses(scene: &mut Scene) -> Self {
-        PlayersView { first: 0, meshes: Vec::new(), bullet: [0; 2], trails: Vec::new(), shot_offset: Vec::new(), corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None, lava: Vec::new(), lava_meshes: LavaMeshes::default() }
+        PlayersView { corpse_hits: 0, first: 0, meshes: Vec::new(), bullet: [0; 2], trails: Vec::new(), shot_offset: Vec::new(), corpses: Slots::reserve(scene, 32), ragdolls: Vec::new(), sources: Vec::new(), gore: None, characters: None, lava: Vec::new(), lava_meshes: LavaMeshes::default() }
     }
 
     /// Player and tracer instances, rewritten every frame.
@@ -209,6 +210,7 @@ impl PlayersView {
     pub fn clear(&mut self, scene: &mut Scene, phys: &mut Physics) {
         self.corpses.clear(scene);
         self.ragdolls.clear();
+        self.corpse_hits = 0;
         self.lava.clear();
         if let Some(characters) = &self.characters {
             for (k, mesh) in characters.lava_instances() { pose_instance(scene, k, mesh, Affine3A::from_translation(HIDDEN)); }
@@ -463,6 +465,18 @@ impl PlayersView {
     }
 
     /// Ragdoll torso positions (for state dumps).
+    pub fn shoot_corpses(&mut self, phys: &mut Physics, from: Vec3, to: Vec3, damage: f32) -> Option<(Vec3, Vec3)> {
+        let mut bodies = Vec::new();
+        if let Some(characters) = &self.characters { characters.corpse_bodies(&mut bodies); }
+        for doll in &self.ragdolls { bodies.extend(doll.parts.iter().map(|p| p.0)); }
+        let (body, point, normal) = phys.raycast_bodies(from, to, &bodies)?;
+        self.corpse_hits += 1;
+        // Contact impulses spin struck limbs and pull the connected body.
+        let strength = (damage.max(0.0) * 0.8).clamp(0.5, 40.0);
+        phys.impulse(body, (to-from).normalize_or(Vec3::ZERO)*strength, Some(point));
+        Some((point, normal))
+    }
+
     pub fn ragdolls(&self, phys: &Physics) -> Vec<[f32; 3]> {
         let mut positions: Vec<_> = self.ragdolls.iter().filter_map(|r| phys.pose(r.torso)).map(|(p, _)| p.to_array()).collect();
         if let Some(c) = &self.characters { positions.extend(c.ragdolls()); }

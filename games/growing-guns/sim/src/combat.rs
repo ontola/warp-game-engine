@@ -119,7 +119,10 @@ impl World {
         self.events.push(Event::Shot { player: owner, from: origin, dir });
         if speed >= HITSCAN_SPEED {
             // One instant ray; no ricochet, drill or pass-through after it.
-            if let Some((t, hit)) = self.ray_all(origin, dir, RANGE, &b.skip_players, &[], true) {
+            let hit = self.ray_all(origin, dir, RANGE, &b.skip_players, &[], true);
+            self.events.push(Event::BulletPath { from: origin,
+                to: origin + dir * hit.map_or(RANGE, |h| h.0), damage: w.damage_for_shot(last_in_mag) });
+            if let Some((t, hit)) = hit {
                 b.travelled = t;
                 b.pos = origin + dir * t;
                 self.bullet_hit(&mut b, hit);
@@ -144,6 +147,7 @@ impl World {
     fn bullet_tick(&mut self, b: &mut Bullet) -> bool {
         let Some(owner) = self.players.get(b.owner) else { return false };
         let w = &owner.weapon;
+        let damage = w.damage_for_shot(b.last_in_mag);
         let (drop, homing) = (w.bullet_drop * self.bullet_drop_mult(), w.homing);
         if drop > 0.0 { b.vel.y -= drop * DT; }
         let prev_dir = b.vel.normalize_or(Vec3::NEG_Z);
@@ -158,6 +162,9 @@ impl World {
             if hit.is_none() { b.last_query = Some(b.pos + step); }
             hit
         } else { None };
+        if b.query_tick {
+            self.events.push(Event::BulletPath { from, to: hit.map_or(b.pos + step, |h| h.0), damage });
+        }
         match hit {
             None => {
                 b.pos += step;

@@ -1,0 +1,100 @@
+{
+  "size": [
+    1280,
+    720
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "health 0 10000",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 2,
+      "capture": "before.png"
+    },
+    {
+      "cmd": [
+        "blast -12 0 -10 9 500",
+        "boom -12 1 -10 9 0",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 4
+    },
+    {
+      "cmd": [
+        "blast 12 0 -10 9 500",
+        "boom 12 1 -10 9 0",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 4
+    },
+    {
+      "cmd": [
+        "blast -12 0 10 9 500",
+        "boom -12 1 10 9 0",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 4
+    },
+    {
+      "cmd": [
+        "blast 12 0 10 9 500",
+        "boom 12 1 10 9 0",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 4
+    },
+    {
+      "cmd": [
+        "blast 0 0 0 9 500",
+        "boom 0 1 0 9 0",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 4
+    },
+    {
+      "cmd": [
+        "blast -20 0 0 9 500",
+        "boom -20 1 0 9 0",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 4
+    },
+    {
+      "cmd": [
+        "blast 20 0 0 9 500",
+        "boom 20 1 0 9 0",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 4
+    },
+    {
+      "cmd": [
+        "blast 0 0 -20 9 500",
+        "boom 0 1 -20 9 0",
+        "teleport 0 0 28 32",
+        "aim 0 0 1 0"
+      ],
+      "ticks": 4,
+      "capture": "overlap.png"
+    },
+    {
+      "ticks": 24,
+      "capture": "debris-together.png",
+      "state": "debris.json"
+    },
+    {
+      "expect": "/arena/chunks_broken",
+      "min": 10
+    }
+  ]
+}

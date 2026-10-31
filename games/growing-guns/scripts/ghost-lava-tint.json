@@ -1,0 +1,38 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "teleport 0 0 -30 0"
+      ],
+      "ticks": 5
+    },
+    {
+      "expect": "/players/0/ghost",
+      "equals": true
+    },
+    {
+      "ticks": 120,
+      "capture": "lava-card-pick.png"
+    },
+    {
+      "press": [
+        "SOUTH"
+      ],
+      "ticks": 20
+    },
+    {
+      "expect": "/players/0/offer",
+      "equals": null
+    },
+    {
+      "ticks": 40,
+      "capture": "ghost-after-lava.png",
+      "state": "ghost.json"
+    }
+  ]
+}

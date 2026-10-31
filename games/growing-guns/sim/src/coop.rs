@@ -555,6 +555,6 @@ pub(crate) fn event_players(e: &Event) -> Vec<usize> {
         Event::Kill { victim, attacker, .. } => vec![victim, attacker.unwrap_or(victim)],
         Event::RoundOver { winner } => winner.into_iter().collect(),
         Event::MatchOver { winner } => vec![winner],
-        Event::Impact { .. } | Event::Ricochet { .. } | Event::NewArena => vec![],
+        Event::Impact { .. } | Event::Ricochet { .. } | Event::NewArena | Event::BulletPath { .. } => vec![],
     }
 }

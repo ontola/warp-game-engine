@@ -309,6 +309,8 @@ pub struct Lighting {
     pub sun_color: Vec3,
     /// Visible analytic solar disc; enabled by Warp Sky, off for legacy HDR skies.
     pub sun_disc: bool,
+    /// Angular radius of the visible sun, in radians.
+    pub sun_radius: f32,
     /// Optical glare/ghost strength, computed and occluded on the GPU per view.
     pub lens_flare: f32,
     /// Artistic highlight bloom multiplier over the debug/quality control.
@@ -465,6 +467,7 @@ impl Default for Lighting {
             sun_lux: 100_000.0,
             sun_color: Vec3::new(1.0, 0.96, 0.9),
             sun_disc: false,
+            sun_radius: 0.00465,
             lens_flare: 0.0,
             bloom_boost: 1.0,
             bloom_rounds: 1,
@@ -3537,7 +3540,7 @@ impl Renderer {
             near_shadow: [2.0 * NEAR_SHADOW_EXTENT / NEAR_SHADOW_SIZE as f32, 0.8, 0.0, if self.raster_sun_depth.is_some() {1.0} else {0.0}],
             night_stars: [light.night_stars[0], light.night_stars[1],
                 if self.zero_sun_fast_path {1.0} else {0.0}, light.night_stars[3]],
-            anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {1.0} else {0.0}],
+            anim: [light.time, light.emissive_scale(), 1.2 * 2f32.powf(light.ev100), if light.sun_disc {light.sun_radius} else {0.0}],
         };
         let exposure = 1.0 / (1.2 * 2f32.powf(light.ev100));
 
@@ -4234,6 +4237,25 @@ impl Renderer {
                 let hh = hist.as_ref().unwrap(); hh.tex[hh.cur].clone()
             } else { hdr.clone() };
             cpu.mark("view temporal");
+            // Compose after temporal reconstruction into a separate output.
+            // Never write heat/smoke back into TAA or DLSS history.
+            // Blast effects (fire, smoke, embers, heat) over the resolved HDR.
+            let fx_output = {
+                let mut fx = self.fx.0.lock().unwrap();
+                match fx.as_mut() {
+                    Some(fx) => {
+                        let white = ((light.sun_lux * light.sun_dir.y.max(0.0) + light.sky_lux) / std::f32::consts::PI)
+                            .max(light.fx_white_floor.max(0.0) * 1.2 * 2f32.powf(light.ev100));
+                        let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
+                        let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white, light, Vec3::from_slice(&self.sky_sh[0][..3]) * 0.282095, self.sky_horizon, Some((&shadow_v, svp)))?;
+                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
+                        out
+                    }
+                    None => None,
+                }
+            };
+            let resolved = fx_output.unwrap_or(resolved);
             // Opt-in in-scattering from local lights, into a separate output.
             let resolved = match light.volumetric.as_ref() {
                 Some(medium) => {
@@ -4246,25 +4268,7 @@ impl Renderer {
                 }
                 None => resolved,
             };
-            // Compose after temporal reconstruction into a separate output.
-            // Never write heat/smoke back into TAA or DLSS history.
-            // Blast effects (fire, smoke, embers, heat) over the resolved HDR.
-            let fx_output = {
-                let mut fx = self.fx.0.lock().unwrap();
-                match fx.as_mut() {
-                    Some(fx) => {
-                        let white = ((light.sun_lux * light.sun_dir.y.max(0.0) + light.sky_lux) / std::f32::consts::PI)
-                            .max(light.fx_white_floor.max(0.0) * 1.2 * 2f32.powf(light.ev100));
-                        let time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| { names.push("fx"); (qs, timestamp_pair(&mut ts)) });
-                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i); }
-                        let out = fx.render(gpu, &mut enc, vi, &resolved, &depth_v, *cam, view_m, proj * view_m, vp, white)?;
-                        if let Some((qs, i)) = time { enc.write_timestamp(qs, i + 1); }
-                        out
-                    }
-                    None => None,
-                }
-            };
-            let resolved = fx_output.unwrap_or(resolved);
+
             // Sprites (characters, tags, prompts) over the resolved HDR.
             let sprite_output = {
                 let mut sprites = self.sprites.0.lock().unwrap();

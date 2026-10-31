@@ -1,0 +1,76 @@
+{
+  "note": "Shooting a settled ragdoll. Run --players 1 --seed 52 --sky noon --no-music.",
+  "size": [
+    960,
+    540
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "arena 13",
+        "cage",
+        "health 0 50000"
+      ],
+      "ticks": 30
+    },
+    {
+      "cmd": [
+        "teleport 0 0 0.9 25",
+        "teleport 1 4 1.5 25",
+        "aim 0 4 0.8 25"
+      ],
+      "ticks": 2,
+      "capture": "alive.png"
+    },
+    {
+      "cmd": "lua g:damage(2, 100, 1)",
+      "ticks": 1,
+      "capture": "death.png"
+    },
+    {
+      "expect": "/players/1/alive",
+      "equals": false
+    },
+    {
+      "ticks": 12,
+      "capture": "falling.png"
+    },
+    {
+      "ticks": 30,
+      "capture": "bending.png"
+    },
+    {
+      "ticks": 180,
+      "capture": "settled.png",
+      "state": "settled.json"
+    },
+    {
+      "expect": "/ragdolls/0/1",
+      "min": -0.5,
+      "max": 8.0
+    },
+    {
+      "cmd": "aim 0 4.14 0.16 26.60",
+      "ticks": 1,
+      "capture": "aim-at-corpse.png"
+    },
+    {
+      "hold": [
+        "RIGHT_TRIGGER"
+      ],
+      "ticks": 18,
+      "capture": "shot-corpse.png",
+      "state": "shot-corpse.json"
+    },
+    {
+      "expect": "/corpse_hits",
+      "min": 1
+    },
+    {
+      "ticks": 50,
+      "capture": "after-shot.png",
+      "state": "after-shot.json"
+    }
+  ]
+}

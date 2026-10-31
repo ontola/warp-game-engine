@@ -1,0 +1,39 @@
+{
+  "size": [
+    1280,
+    720
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "bots pause",
+        "health 0 10000",
+        "sky sunset:haze",
+        "teleport 0 7 23 12",
+        "aim 0 0 21 0"
+      ],
+      "ticks": 2
+    },
+    {
+      "cmd": "boom 0 16 0 6.5 0",
+      "ticks": 30,
+      "capture": "sunset-smoke.png"
+    },
+    {
+      "cmd": [
+        "teleport 0 0 60 0",
+        "aim 0 -1000 95 0"
+      ],
+      "ticks": 1,
+      "capture": "sun-visible.png"
+    },
+    {
+      "cmd": [
+        "teleport 0 0 4 0",
+        "aim 0 -1000 39 0"
+      ],
+      "ticks": 1,
+      "capture": "sun-blocked.png"
+    }
+  ]
+}

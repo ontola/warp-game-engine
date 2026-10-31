@@ -137,12 +137,13 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
     let label = [0.7, 0.7, 0.85, 1.0];
     if ctx.xr && matches!(screen, Screen::Start | Screen::Pause) {
         return vec![Item::Button("RESUME", Action::Resume, true),
-            Item::Button("NEW MATCH", Action::Rematch, true), Item::Bots("AI PLAYERS"),
+            Item::Button("RESTART MATCH", Action::Rematch, !ctx.client), Item::Bots("AI PLAYERS"),
             Item::Button("SETTINGS", Action::Settings, true), Item::Button("EXIT GAME", Action::Quit, true),
             Item::Note("Left stick: select · A: confirm · B: back")];
     }
     match screen {
         Screen::Start => vec![
+            Item::Button("RESTART MATCH", Action::Rematch, !ctx.client),
             Item::Button("VERSUS", Action::Versus, true), Item::Button("WAVE SURVIVAL", Action::Wave, true), Item::Gap(4.0),
             Item::Button("SETTINGS", Action::Settings, true), Item::Rule,
             Item::Text("Share your Match ID:", label), Item::Field(Field::Ticket), Item::Row(SHARE),
@@ -151,7 +152,7 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             Item::Note("Click or arrows + Enter · Esc exits"),
         ],
         Screen::Pause if ctx.party.is_some() => vec![
-            Item::Button("RESUME", Action::Resume, true), Item::Button("NEW MATCH", Action::Rematch, !ctx.client),
+            Item::Button("RESUME", Action::Resume, true), Item::Button("RESTART MATCH", Action::Rematch, !ctx.client),
             if ctx.coop { Item::Button("SWITCH TO VERSUS", Action::Versus, !ctx.client) } else { Item::Button("SWITCH TO WAVE SURVIVAL", Action::Wave, !ctx.client) },
             Item::Bots("AI PLAYERS"), Item::Button("ADVANCED", Action::Advanced, true), Item::Button("SETTINGS", Action::Settings, true),
         ],
@@ -162,6 +163,7 @@ fn items(screen: Screen, ctx: &Ctx) -> Vec<Item> {
             v
         }
         Screen::Pause => vec![
+            Item::Button("RESTART MATCH", Action::Rematch, !ctx.client),
             Item::Text("Share your match with friends:", label), Item::Field(Field::Ticket), Item::Row(SHARE),
             Item::Text("Or join a friend:", label), Item::Field(Field::Join), Item::Note("Paste an iroh game ID"),
             Item::Text("Bots:", label), Item::Bots(""), Item::Gap(4.0),
@@ -1008,7 +1010,7 @@ mod pointer_tests {
     const SIZE: [u32; 2] = [1600, 900];
     fn ctx() -> Ctx<'static> { Ctx { xr: false, ticket: None, client: false, seed: 1, bots: 1, players: 2, coop: false, party: None, seats: vec![] } }
     fn at(r: [f32; 4], click: bool) -> app::Pointer {
-        app::Pointer { position: Some([r[0] + r[2] * 0.5, r[1] + r[3] * 0.5]), moved: true, pressed: click, held: click, wheel: 0.0 }
+        app::Pointer { position: Some([r[0] + r[2] * 0.5, r[1] + r[3] * 0.5]), moved: true, pressed: click, held: click, wheel: 0.0, ..Default::default() }
     }
     fn draw(m: &Menus, w: &World, h: &Hud, c: &Ctx) { m.draw(&mut HudDrawList::new(SIZE), w, h, c); }
 
@@ -1020,9 +1022,9 @@ mod pointer_tests {
         let mut m = Menus::default();
         m.open(Screen::Start);
         draw(&m, &w, &h, &c);
-        let r = m.hits.borrow().iter().find(|h| h.item == 3).unwrap().rect;
+        let r = m.hits.borrow().iter().find(|h| h.item == 4).unwrap().rect;
         assert_eq!(m.pointer(at(r, false), SIZE, &w, None, &c), Action::None);
-        assert_eq!(m.menu.focus, 2);
+        assert_eq!(m.menu.focus, 3);
         m.menu.focus = 0;
         let mut stationary = at(r, false); stationary.moved = false;
         m.pointer(stationary, SIZE, &w, None, &c);
@@ -1041,8 +1043,8 @@ mod pointer_tests {
         let mut m = Menus::default();
         m.open(Screen::Start);
         draw(&m, &w, &h, &c);
-        let host = m.hits.borrow().iter().find(|h| h.item == 7 && h.entry == 0).unwrap().rect;
-        assert!(!m.hits.borrow().iter().any(|h| h.item == 7 && h.entry == 1));
+        let host = m.hits.borrow().iter().find(|h| h.item == 8 && h.entry == 0).unwrap().rect;
+        assert!(!m.hits.borrow().iter().any(|h| h.item == 8 && h.entry == 1));
         c.client = true;
         assert_eq!(m.pointer(at(host, true), SIZE, &w, None, &c), Action::None);
         m.open(Screen::Play);
@@ -1175,7 +1177,7 @@ mod pointer_tests {
         draw(&m, &w, &h, &c);
         let r = m.hits.borrow().iter().find(|h| h.item == 1).unwrap().rect;
         m.pointer(at(r, true), SIZE, &w, None, &c);
-        let drag = app::Pointer { position: Some([r[0] + r[2] + 100.0, r[1]]), moved: true, pressed: false, held: true, wheel: 0.0 };
+        let drag = app::Pointer { position: Some([r[0] + r[2] + 100.0, r[1]]), moved: true, pressed: false, held: true, wheel: 0.0, ..Default::default() };
         m.pointer(drag, SIZE, &w, None, &c);
         assert_eq!(m.music_db, 0.0);
         m.pointer(app::Pointer::default(), SIZE, &w, None, &c);

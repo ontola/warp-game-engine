@@ -49,7 +49,7 @@ pub struct Ctx {
 
 /// What an entry does.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Act { Tab(usize), Player(usize), Search, Run(Vec<String>) }
+pub enum Act { Tab(usize), Player(usize), Search, Card(usize, String), Run(Vec<String>) }
 
 #[derive(Clone, Debug)]
 struct Entry { text: String, sub: String, act: Act, on: bool, color: Option<C> }
@@ -137,10 +137,11 @@ impl DebugMenu {
         match self.tab {
             0 => {
                 v.push(Row::Search);
+                v.push(Row::Head("LMB: add card   RMB: remove one".into()));
                 let held = if ctx.held.is_empty() { "no cards".to_string() } else { ctx.held.join(", ") };
                 v.push(Row::Head(format!("HAS: {held}")));
                 let cards: Vec<Entry> = ctx.cards.iter().filter(|c| self.matches(&c.0, &c.1)).map(|(id, name, color, rare)| Entry {
-                    text: name.clone(), sub: if *rare { format!("{id} · rare") } else { id.clone() }, act: Act::Run(vec![format!("give {p} {id}")]), on: ctx.held.contains(id), color: Some(*color),
+                    text: name.clone(), sub: if *rare { format!("{id} · rare") } else { id.clone() }, act: Act::Card(p, id.clone()), on: ctx.held.contains(id), color: Some(*color),
                 }).collect();
                 if cards.is_empty() { v.push(Row::Head("no card matches".into())); }
                 v.extend(chunked(cards, 2));
@@ -250,6 +251,7 @@ impl DebugMenu {
             Act::Tab(t) => { self.set_tab(t); Vec::new() }
             Act::Player(k) => { self.player = k.min(ctx.players.len().saturating_sub(1)); Vec::new() }
             Act::Search => { self.picker = Some(Default::default()); Vec::new() }
+            Act::Card(p, id) => vec![format!("give {p} {id}")],
             Act::Run(c) => c,
         }
     }
@@ -325,7 +327,7 @@ impl DebugMenu {
     pub fn pointer(&mut self, p: app::Pointer, size: [u32; 2], ctx: &Ctx) -> Vec<String> {
         if self.hit_size.get() != size { return Vec::new(); }
         if p.wheel != 0.0 { self.scroll.set((self.scroll.get() - p.wheel * 60.0).max(0.0)); }
-        if !p.moved && !p.pressed { return Vec::new(); }
+        if !p.moved && !p.pressed && !p.right_pressed { return Vec::new(); }
         let Some(pos) = p.position else { return Vec::new() };
         let Some(hit) = self.hits.borrow().iter().rev().find(|h| app::ui::contains(h.rect, pos)).copied() else { return Vec::new() };
         let rows = self.rows(ctx);
@@ -333,6 +335,15 @@ impl DebugMenu {
         let Some(f) = foci.iter().position(|(k, _)| *k == hit.row) else { return Vec::new() };
         self.menu.focus = f;
         self.col = hit.entry;
+        if p.right_pressed {
+            return match &rows[hit.row] {
+                Row::Line(_, entries) => match entries.get(hit.entry).map(|e| &e.act) {
+                    Some(Act::Card(player, id)) => vec![format!("remove {player} {id}")],
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+        }
         if !p.pressed { return Vec::new(); }
         match &rows[hit.row] {
             Row::Line(_, e) => e.get(hit.entry).map_or(Vec::new(), |e| { let a = e.act.clone(); self.activate(a, ctx) }),
@@ -490,6 +501,23 @@ mod tests {
             players: vec![("Joep".into(), [1.0, 2.0, 3.0], false), ("Bot".into(), [0.0; 3], true)], sky: "godot".into(), max_health: 100, mag: 8, special: "grenade", ..Default::default() }
     }
     fn press(b: u32) -> Controls { Controls { held: Buttons(b), pressed: Buttons(b), ..Default::default() } }
+
+    #[test]
+    fn right_click_removes_one_card_only_from_hovered_target() {
+        let c = ctx();
+        let mut m = DebugMenu::default();
+        m.set_open(true);
+        m.player = 1;
+        let size = [1600, 900];
+        m.draw(&mut HudDrawList::new(size), &c);
+        let rows = m.rows(&c);
+        let hit = *m.hits.borrow().iter().find(|h| matches!(&rows[h.row], Row::Line(_, e) if matches!(e[h.entry].act, Act::Card(_, _)))).unwrap();
+        let pointer = app::Pointer { position: Some([hit.rect[0]+4.0, hit.rect[1]+4.0]), right_pressed: true, ..Default::default() };
+        assert_eq!(m.pointer(pointer, size, &c), vec!["remove 1 explosive"]);
+        assert!(m.pointer(app::Pointer { right_pressed: false, ..pointer }, size, &c).is_empty());
+        assert!(m.pointer(pointer, [800,600], &c).is_empty());
+        assert_eq!(m.pointer(app::Pointer { pressed: true, right_pressed: false, ..pointer }, size, &c), vec!["give 1 explosive"]);
+    }
 
     #[test]
     fn search_filters_and_enter_gives_the_first_match_to_the_target() {

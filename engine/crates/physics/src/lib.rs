@@ -196,6 +196,31 @@ impl Physics {
 
     pub fn body_count(&self) -> usize { self.world.bodies.len() }
 
+    /// Ray against selected dynamic bodies at their current poses. Unlike the
+    /// broadphase, this also sees newly spawned bodies before the next step.
+    /// Starts inside a shape are ignored: a penetrating path should not kick
+    /// the same limb again on the next segment. Caller clips against scenery.
+    pub fn raycast_bodies(&self, origin: Vec3, end: Vec3, bodies: &[Body]) -> Option<(Body, Vec3, Vec3)> {
+        let delta = end-origin;
+        let length = delta.length();
+        if !origin.is_finite() || !end.is_finite() || !length.is_finite() || length < 1e-6 { return None; }
+        let ray = Ray::new(to(origin), to(delta/length));
+        let mut nearest = length;
+        let mut result = None;
+        for &body in bodies {
+            let Some(rb) = self.world.bodies.get(body.0) else { continue };
+            for &handle in rb.colliders() {
+                let Some(c) = self.world.colliders.get(handle) else { continue };
+                if c.shape().contains_point(c.position(), ray.origin) { continue; }
+                if let Some(hit) = c.shape().cast_ray_and_get_normal(c.position(), &ray, nearest, true) {
+                    nearest = hit.time_of_impact;
+                    result = Some((body, origin+delta/length*nearest, from(hit.normal)));
+                }
+            }
+        }
+        result
+    }
+
     /// First hit along a ray: distance, normal and the body if it was one.
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<(f32, Vec3, Option<Body>)> {
         let ray = Ray::new(to(origin), to(dir));
@@ -210,6 +235,27 @@ mod tests {
     use super::*;
 
     fn floor() -> YawBox { YawBox::new(Vec3::new(0.0, -0.5, 0.0), Vec3::new(40.0, 1.0, 40.0), 0.0) }
+
+    #[test]
+    fn selected_body_shots_clip_skip_inside_and_wake_with_contact_torque() {
+        let mut p = Physics::new(Vec3::ZERO, 60.0);
+        let near = p.add(&BodyDesc::new(Shape::Box(Vec3::splat(0.5)), Vec3::X*3.0));
+        let far = p.add(&BodyDesc::new(Shape::Sphere(0.5), Vec3::X*6.0));
+        let origin = Vec3::Y*0.3;
+        let end = Vec3::new(10.0,0.3,0.0);
+        let (body, contact, _) = p.raycast_bodies(origin,end,&[far,near]).unwrap();
+        assert_eq!(body,near);
+        assert!((contact.x-2.5).abs()<1e-5);
+        assert!(p.raycast_bodies(origin,Vec3::new(2.0,0.3,0.0),&[near]).is_none());
+        assert!(p.raycast_bodies(Vec3::X*3.0,end,&[near]).is_none());
+        p.world.bodies.get_mut(near.0).unwrap().sleep();
+        p.impulse(near,Vec3::X*3.0,Some(contact));
+        assert!(!p.sleeping(near));
+        assert!(p.velocity(near).unwrap().x>0.0);
+        assert!(p.world.bodies.get(near.0).unwrap().angvel().z.abs()>0.0);
+        p.remove(near);
+        assert_eq!(p.raycast_bodies(origin,end,&[near,far]).unwrap().0,far);
+    }
 
     #[test]
     fn boxes_fall_settle_and_replay_identically() {
