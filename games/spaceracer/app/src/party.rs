@@ -12,16 +12,18 @@ pub struct Party {
     pub session: String,
     pub seats: Vec<Seat>,
     pub running: bool,
+    pub declarations: Value,
     finished: bool,
 }
 impl Party {
-    pub fn connect() -> Result<Option<Self>, String> {
+    pub fn connect(declarations: Value) -> Result<Option<Self>, String> {
         Ok(Client::connect_from_env("spaceracer")?.map(|client| Self {
             client,
             session: String::new(),
             seats: vec![],
             running: false,
             finished: false,
+            declarations,
         }))
     }
     pub fn screen(&self) -> app::Screen {
@@ -38,44 +40,75 @@ impl Party {
     }
     pub fn poll(&mut self) -> Vec<Event> {
         let mut events = vec![];
-        for cmd in self.client.poll() {
-            match cmd {
-                Command::Connected => {
-                    let _=self.client.declare_settings(json!([
-            {"key":"difficulty","label":"Difficulty","kind":"choice","default":"normal","options":["easy","normal","hard"]},
-            {"key":"biome","label":"World","kind":"choice","default":"city","options":["city","forest","cell","desert","ocean"]}
-        ]));
-                    let _ = self.client.declare_actions(
-                        json!([{"key":"new_race","label":"New random race","confirm":true}]),
-                    );
+        loop {
+            let commands = self.client.poll();
+            if commands.is_empty() {
+                break;
+            }
+            let boundary = commands
+                .iter()
+                .any(|c| matches!(c, Command::Prepare { .. } | Command::Dispose { .. }));
+            for cmd in commands {
+                match cmd {
+                    Command::Connected => {
+                        let _ = self.client.declare_settings(self.declarations.clone());
+                        let _ = self.client.declare_actions(
+                            json!([{"key":"new_race","label":"New random race","confirm":true}]),
+                        );
+                    }
+                    Command::Prepare { session, mut seats } => {
+                        seats.sort_by_key(|s| (s.ai, s.index));
+                        self.session = session;
+                        self.seats = seats;
+                        self.running = false;
+                        self.finished = false;
+                        let _ = self.client.notify_participation(&self.session, false);
+                        events.push(Event::Prepare);
+                    }
+                    Command::Start { session } | Command::Resume { session }
+                        if session == self.session =>
+                    {
+                        self.running = true
+                    }
+                    Command::Pause { session } if session == self.session => self.running = false,
+                    Command::Dispose { session } if session == self.session => {
+                        self.running = false;
+                        self.session.clear();
+                    }
+                    Command::Disconnected(_) => self.running = false,
+                    Command::Action { key, .. } if key == "new_race" => events.push(Event::Random),
+                    Command::Setting { key, value } => events.push(Event::Setting(key, value)),
+                    Command::PlayersUpdated { mut seats } | Command::Roster { mut seats } => {
+                        seats.sort_by_key(|s| (s.ai, s.index));
+                        // Race slots stay stable through disconnect/reorder. Mid-race
+                        // joining is declined through participation(false).
+                        for old in &mut self.seats {
+                            if let Some(new) = seats
+                                .iter()
+                                .filter(|s| {
+                                    s.ai || self.client.state.player(&s.player_id).is_some()
+                                })
+                                .find(|s| {
+                                    if old.player_id.is_empty() {
+                                        s.ai && s.index == old.index
+                                    } else {
+                                        s.player_id == old.player_id
+                                    }
+                                })
+                            {
+                                *old = new.clone();
+                            } else {
+                                old.ai = true;
+                                old.controller.clear();
+                            }
+                        }
+                        events.push(Event::Roster);
+                    }
+                    _ => {}
                 }
-                Command::Prepare { session, mut seats } => {
-                    seats.sort_by_key(|s| (s.ai, s.index));
-                    self.session = session;
-                    self.seats = seats;
-                    self.running = false;
-                    self.finished = false;
-                    events.push(Event::Prepare);
-                }
-                Command::Start { session } | Command::Resume { session }
-                    if session == self.session =>
-                {
-                    self.running = true
-                }
-                Command::Pause { session } if session == self.session => self.running = false,
-                Command::Dispose { session } if session == self.session => {
-                    self.running = false;
-                    self.session.clear();
-                }
-                Command::Disconnected(_) => self.running = false,
-                Command::Action { key, .. } if key == "new_race" => events.push(Event::Random),
-                Command::Setting { key, value } => events.push(Event::Setting(key, value)),
-                Command::PlayersUpdated { mut seats } | Command::Roster { mut seats } => {
-                    seats.sort_by_key(|s| (s.ai, s.index));
-                    self.seats = seats;
-                    events.push(Event::Roster);
-                }
-                _ => {}
+            }
+            if boundary {
+                break;
             }
         }
         events
@@ -84,6 +117,9 @@ impl Party {
         if !self.session.is_empty() {
             let _ = self.client.notify_ready(&self.session);
         }
+    }
+    pub fn new_race(&mut self) {
+        self.finished = false;
     }
     pub fn finished(&mut self) {
         if !self.finished {
@@ -97,7 +133,11 @@ impl Party {
         self.seats
             .iter()
             .map(|seat| {
-                let p = self.client.state.pad_for_seat(seat.index, now, false);
+                let p = if seat.ai {
+                    gamenight::Pad::default()
+                } else {
+                    self.client.state.pad_for_seat(seat.index, now, false)
+                };
                 let l = p.stick(0);
                 let r = p.stick(1);
                 if p.just(button::START) {
@@ -194,6 +234,7 @@ mod tests {
             seats: vec![],
             running: false,
             finished: false,
+            declarations: json!([]),
         };
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut stage = 0;

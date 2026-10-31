@@ -108,10 +108,46 @@ the original complete rotated hull solver. Weapon tuning and AI behavior need
 controller playtesting. No Android or Steam Deck build/hardware claim is made.
 
 GameNight uses the shared native client: prepare/ready/start/pause/resume/dispose,
-seat tokens, names, host overlay, difficulty/world settings, new-race action and
-finished notification. Ready is sent after scene upload/draw, on the next tick.
-Roster name updates apply live. **Face decals/profile artwork, complete settings
-parity and an installed-daemon end-to-end playtest remain outstanding.**
+exact seat tokens, names, host overlay, finished notification and the optional
+SDK6 new-race action. Ready follows scene upload/draw. Faces (including hats),
+skin and paint colours update live, including while paused. One cached atlas is
+projected onto the nacelle paint; there are no floating face meshes. Names and
+profiles are matched by player ID. Fixed race rosters decline instant joining;
+changing seats/players in the overlay takes effect through the host's next Prepare.
+
+All ten host settings are declared and validated by `rules/party.luau`. Laps,
+difficulty, world, seed and pickup placement wait for the next race. Boost cost,
+energy regeneration and crash recovery apply live; duration affects the next
+boost. Graphics presets change LOD error, motion blur and nearby shadows, not
+resolution. The optional new-race action rolls a new seed; a later host Prepare
+uses the configured seed again (zero means random).
+
+Register the packaged native build locally on Windows:
+
+```powershell
+./games/spaceracer/tools/build-native.ps1
+./games/spaceracer/tools/register-local.ps1
+```
+
+Registration backs up `local-games.json` and `shelf.json`, updates only SpaceRacer,
+and keeps a stable path for subsequent builds. **Restart GameNight once** to reload
+its library; the script does not interrupt existing sessions. Published catalog
+artifacts are unchanged.
+
+The installed-daemon test uses real authenticated process launch, a headless GPU
+and synthetic profiles. It checks two/four viewports, live profile changes,
+settings and Undo, overlay pause/resume, seat re-preparation and the SDK6 action:
+
+```powershell
+python games/spaceracer/tools/test-gamenight.py --daemon PATH/TO/gamenight-daemon.exe --game build/spaceracer-native/spaceracer.exe --out build/NEW-test-directory
+```
+
+The daemon must advertise SDK6 for the action check. The output directory must
+not exist; the script creates an isolated host store and only stops its own
+processes. `--integration-probe DIR` is an explicit headless test mode, never part
+of the normal local launch. Tests passed with the installed Windows Preview host;
+physical controllers, vibration and desktop foreground transitions remain manual
+checks. This does not certify the older downloadable catalog package.
 
 ## Native visual revision
 

@@ -143,6 +143,11 @@ impl State {
             "seats":self.seats().iter().map(|s| json!({"index":s.index,"player_id":s.player_id,"name":s.name,"color":s.color,"controller":s.controller,"ai":s.ai,"couch":s.couch})).collect::<Vec<_>>()})
     }
 
+    /// Profile by stable player ID; artwork must never be logged as diagnostics.
+    pub fn player(&self, id: &str) -> Option<&Value> {
+        self.party["players"].as_array()?.iter().find(|p| p["id"].as_str() == Some(id))
+    }
+
     pub fn seats(&self) -> Vec<Seat> {
         let mut seats: Vec<_> = self.party["seats"].as_array().into_iter().flatten().filter_map(|seat| {
             let kind = seat["occupant"]["kind"].as_str()?;
@@ -655,9 +660,12 @@ mod tests {
     #[test]
     fn profiles_do_not_restart_and_rosters_clear_old_input() {
         let mut state = running(); let now = Instant::now();
-        let commands = state.receive(json!({"type":"players_updated","session":"s1","players":[{"id":"p1","name":"New name","couch":2}]}), now);
+        let commands = state.receive(json!({"type":"players_updated","session":"s1","players":[{"id":"p1","name":"New name","couch":2,"avatar":"test-art","skin_color":"#aabbcc"}]}), now);
         assert!(matches!(commands[0], Command::PlayersUpdated { .. }));
         assert_eq!(state.phase, "running"); assert_eq!(state.seats()[1].name, "New name");
+        assert_eq!(state.player("p1").unwrap()["avatar"], "test-art");
+        assert_eq!(state.player("p1").unwrap()["skin_color"], "#aabbcc");
+        assert!(state.player("absent").is_none());
         state.receive(json!({"type":"party_updated","session":"s1","seats":[],"players":[]}), now);
         assert!(state.seats().is_empty());
         assert_eq!(state.pad_for_seat(0, now, false), Pad::default());
