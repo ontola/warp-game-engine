@@ -126,3 +126,22 @@ succeeded. `respawn-wear.json` and `respawn-wear-split.json` capture actual nati
 1920x1080 solo/two-player views, energy 100/45/12, scan stages and crash travel.
 Pause state is checked separately. These are staged diagnostic scenes, not a
 new controller playtest or a frame-time performance certification.
+
+## F12 split-road correction - 1 November 2026
+
+Feedback `spaceracer---warp-1793530264653` (seed 89502, hard, forest,
+distance 4854 m) showed jagged missing central road cells and no visible inner
+barrier. The mesh had discarded whole lateral cells by midpoint; collision used
+continuous `split_gap`. Decks now interpolate exact branch boundaries at both
+ends of each segment, including taper-in/out. Inner walls, guards and one neon
+edge strip follow the same boundary as `Pilot::constrain`. Their height tapers
+at the split nose. Dead-end branches omit their walls as well as their deck.
+Boost chevrons stay on each surviving branch. Launch lips now extend to the
+actual first air-gap node, matching `Track::sample` and the retained source.
+Track recipes and driving/flight physics are unchanged.
+
+Two targeted geometry regressions passed (supported coverage across seeds
+89502/35/80385, exact inner barrier alignment). Native 1920x1080 captures of the
+reported seed at 4854/4950/5300 m are in `build/spaceracer-split-road-fixed` using
+`scenarios/split-road-89502.json`. Diagnostic teleport deliberately triggers the
+missed-checkpoint notice; this is not a controller replay or FPS measurement.

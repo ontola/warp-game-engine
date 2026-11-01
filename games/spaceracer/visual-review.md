@@ -1,3 +1,11 @@
+# F12 split-road fix - 1 November 2026
+
+Reported seed 89502 / hard / forest at 4854 m. Original F12 showed a stair-step
+central cutout with missing inner guards. `build/spaceracer-split-road-fixed`
+contains native 1080p entry/wide/exit views after exact continuous ribbon and
+inner wall/neon construction. Verified against the F12 location. Teleport-only
+fixture has a missed-checkpoint banner, not a newly introduced gameplay failure.
+
 # Respawn and paint wear - 1 November 2026
 
 Native 1920x1080 captures: `build/spaceracer-respawn-wear-final` and

@@ -22,6 +22,9 @@ Energy-linked paint chips, scratches and scorch now use the retained wear mask.
 Critical energy emits soft smoke. Respawn has a smooth camera flight and a bright
 bottom-up construction scan (1 November 2026); see the parity review for checks.
 
+Split decks now follow exact smooth gap boundaries with visible inner guards,
+matching collision. F12 seed 89502 is covered by a focused capture scenario.
+
 ## Play and capture
 
 From the workspace root:
