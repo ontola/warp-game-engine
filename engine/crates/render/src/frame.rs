@@ -779,6 +779,7 @@ pub struct Renderer {
     tree_occlusion: crate::tree_occlusion::Resources,
     cluster_buckets: bool,
     simple_lighting: bool,
+    sharp_sprites: bool,
     simple_cull: bool,
     small_cluster_vertices:u32,
     minimal_forward: Option<std::sync::Mutex<crate::forward::Forward>>,
@@ -1912,6 +1913,7 @@ impl Renderer {
             tree_occlusion,
             cluster_buckets,
             simple_lighting,
+            sharp_sprites: scene.graphics.sharp_sprites,
             simple_cull,
             small_cluster_vertices:small_cluster_triangles*3,
             direct_bounds,
@@ -3421,7 +3423,8 @@ impl Renderer {
                 [page_lod,1.0,1.0,capacity as f32],[size;4],light.alpha_cut);
             gpu.queue.write_buffer(&page_targets[index].1.uniform,0,bytemuck::bytes_of(&vu));
         }
-        let far_lod=crate::far_sun::effective_lod(self.far_sun.lod_pixels,light.lod_pixels);
+        // A generated level bake must not change as adaptive camera quality changes.
+        let far_lod=if self.far_sun.stage {self.far_sun.lod_pixels}else{crate::far_sun::effective_lod(self.far_sun.lod_pixels,light.lod_pixels)};
         let far_projection=if sun_needed {self.far_sun.prepare(gpu,light.sun_dir,light.alpha_cut,far_lod)} else {None};
         let far_updated=far_projection.is_some_and(|(_,updated)|updated);
         let mut far_targets=self.far_sun_targets.lock().unwrap();
@@ -4278,6 +4281,19 @@ impl Renderer {
                 None => resolved,
             };
 
+            // Opt-in sharp effects: blur the moving world first. Sprite pixels
+            // have no rigid-object velocities and otherwise inherit the road's,
+            // producing multiple faded copies of one-frame electrical arcs.
+            let resolved = if self.sharp_sprites {
+                match (blur.as_ref(),motion_output.as_ref()) {
+                    (Some(blur),Some(motion)) => {
+                        let enabled=!motion.reset && blur.settings.get(vi).is_some_and(|s|s.scale()>0. && s.max_pixels>0.);
+                        let times=self.query.as_ref().filter(|_|enabled).map(|(qs,_,_)|{names.push("motion blur");(qs,timestamp_pair(&mut ts))});
+                        blur.render(gpu,&mut enc,vi,&resolved,motion,times)
+                    },
+                    _=>resolved,
+                }
+            }else{resolved};
             // Sprites (characters, tags, prompts) over the resolved HDR.
             let sprite_output = {
                 let mut sprites = self.sprites.0.lock().unwrap();
@@ -4324,7 +4340,7 @@ impl Renderer {
             } else { None };
             let result=particle_output.as_ref().or(exhaust_output.as_ref()).unwrap_or(&resolved);
             let blurred=match (blur.as_ref(),motion_output.as_ref()) {
-                (Some(blur),Some(motion)) => {
+                (Some(blur),Some(motion)) if !self.sharp_sprites => {
                     let enabled=!motion.reset && blur.settings.get(vi).is_some_and(|s|s.scale()>0. && s.max_pixels>0.);
                     let times=self.query.as_ref().filter(|_|enabled).map(|(qs,_,_)|{names.push("motion blur");(qs,timestamp_pair(&mut ts))});
                     Some(blur.render(gpu,&mut enc,vi,result,motion,times))

@@ -380,7 +380,8 @@ fn transform(v: &Value) -> Affine3A {
 }
 impl Visuals {
     pub fn new(race: &Race, root: &Path) -> Result<Self, String> {
-        let mut scene = Scene::default();
+        let mut scene = Scene {stage_sun:true,..Default::default()};
+        scene.graphics.sharp_sprites=true;
         let mut lighting = Lighting::default();
         if race.biome == "city" || race.biome == "cell" || race.biome == "ocean" {
             scene.sky = Some(primitives::gradient_sky(

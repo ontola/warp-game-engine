@@ -998,6 +998,7 @@ fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
 // instead of pushing every possible caster away by its unbounded slope.
 var<private> sun_receiver_tri: array<vec3<f32>,3>;
 var<private> sun_receiver_tri_set: bool;
+var<private> sun_receiver_error: f32;
 fn shadow_cross2(a:vec2<f32>,b:vec2<f32>)->f32 { return a.x*b.y-a.y*b.x; }
 fn shadow_triangle_contains(q:vec2<f32>,a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,orientation:f32)->bool {
     return shadow_cross2(b-a,q-a)*orientation>=0.0
@@ -1089,6 +1090,52 @@ fn sun_coverage_fade(projection: mat4x4<f32>, p: vec3<f32>, blend_start: f32) ->
     return max(smoothstep(blend_start, 1.0, edge), smoothstep(0.0, 1.0, depth_edge));
 }
 
+// Stage-wide texels can span metres. Evaluate receiver depth at each tap,
+// instead of comparing sloped ground to a single centre depth (striped acne).
+fn stage_sun_visibility(p:vec3<f32>,plane_n:vec3<f32>)->f32 {
+    let projection=far_sun.view_proj;
+    let c=projection*vec4<f32>(p,1.);
+    let size=vec2<i32>(textureDimensions(far_sun_tex));
+    let q=(c.xy*vec2<f32>(.5,-.5)+.5)*vec2<f32>(size)-.5;
+    let base=vec2<i32>(floor(q));let f=fract(q);
+    let row_x=vec3<f32>(projection[0].x,projection[1].x,projection[2].x);
+    let row_y=vec3<f32>(projection[0].y,projection[1].y,projection[2].y);
+    let row_z=vec3<f32>(projection[0].z,projection[1].z,projection[2].z);
+    let denominator=dot(plane_n,-normalize(row_z));var gradient=vec2<f32>(0.);
+    if dot(plane_n,plane_n)>1e-12 && abs(denominator)>1e-4 {
+        gradient=vec2<f32>(dot(plane_n,normalize(row_x)),-dot(plane_n,normalize(row_y)))
+            *(far_sun.params.x*length(row_z)/denominator);
+    }
+    // Include projection XY roundoff propagated through the receiver slope.
+    // At grazing sunlight a sub-millipixel XY error is larger than depth ULPs.
+    let xy_error=4.7683716e-7*vec2<f32>(size)*(vec2<f32>(dot(abs(row_x),abs(p)),dot(abs(row_y),abs(p)))+abs(projection[3].xy)+1.);
+    // Visible and cached meshes can use different cuts of the LOD tree.
+    // Their measured error bounds prevent their own hills from becoming dark
+    // triangle patches. This disappears with source geometry on both sides.
+    let geometry_error=sun_receiver_error+max(0.,far_sun.params.w-1.)*far_sun.params.x;
+    let epsilon=4.7683716e-7*(dot(abs(row_z),abs(p))+abs(projection[3].z)+1.)+dot(abs(gradient),xy_error)+length(row_z)*geometry_error;
+    let clipped=sun_receiver_tri_set && dot(plane_n,plane_n)>1e-12;
+    var triangle:array<vec2<f32>,3>;var orientation=0.;
+    if clipped {
+        for(var i=0;i<3;i++) {
+            let vertex=projection*vec4<f32>(sun_receiver_tri[i],1.);
+            triangle[i]=(vertex.xy*vec2<f32>(.5,-.5)+.5)*vec2<f32>(size)-.5;
+        }
+        orientation=sign(shadow_cross2(triangle[1]-triangle[0],triangle[2]-triangle[0]));
+    }
+    var lit=0.;var total=0.;
+    for(var y=0;y<2;y++){for(var x=0;x<2;x++){
+        let pixel=clamp(base+vec2<i32>(x,y),vec2<i32>(0),size-1);
+        if clipped && (orientation==0. || !shadow_triangle_contains(vec2<f32>(pixel),triangle[0],triangle[1],triangle[2],orientation)){continue;}
+        let weight=select(1.-f.x,f.x,x==1)*select(1.-f.y,f.y,y==1);
+        let reference=c.z+dot(gradient,vec2<f32>(pixel)-q)-epsilon;
+        lit+=weight*select(0.,1.,reference<=textureLoad(far_sun_tex,pixel,0,0));total+=weight;
+    }}
+    if total>1e-8 {return lit/total;}
+    let nearest=clamp(vec2<i32>(floor(q+.5)),vec2<i32>(0),size-1);
+    return select(0.,1.,c.z-epsilon<=textureLoad(far_sun_tex,nearest,0,0));
+}
+
 fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
     if FEATURE_FOLIAGE_PAGES {
         let page=foliage_page_visibility(p,n,plane_n);
@@ -1106,7 +1153,8 @@ fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
             let bias = min(0.06, far_sun.params.x * 0.1);
             let c = far_sun.view_proj * vec4<f32>(p + (n + light.sun_dir.xyz) * bias, 1.0);
             let uv = c.xy * vec2<f32>(0.5,-0.5) + 0.5;
-            mapped = textureSampleCompareLevel(far_sun_tex, shadow_samp, uv, 0, c.z);
+            if far_sun.params.w>0.5 {mapped=stage_sun_visibility(p,plane_n);}
+            else {mapped = textureSampleCompareLevel(far_sun_tex, shadow_samp, uv, 0, c.z);}
         }
         if fade <= 0.0 { return mapped; }
     }
@@ -1658,6 +1706,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let geo_n = normalize(cross(e1, e2));
     sun_receiver_tri[0]=p0;sun_receiver_tri[1]=p1;sun_receiver_tri[2]=p2;
     sun_receiver_tri_set=true;
+    sun_receiver_error=cl.own_error*inst.scale;
     let m = materials[cl.material];
     // Two-sided cards and backfaces face the viewer.
     if dot(n, dir) > 0.0 && (m.flags & 8u) != 0u && (m.flags & 64u) == 0u {

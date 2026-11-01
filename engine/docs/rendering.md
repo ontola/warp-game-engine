@@ -53,8 +53,32 @@ detail, the measurements and the dead ends are in the
   mipmapped) or `set_sprite_texture` with a `sprites::Canvas` (a HUD list
   drawn offscreen: name tags, 3D text, button prompts). Colour is radiance;
   `sprites::irradiance` lights a sprite from the scene's local lights.
+  `Scene.graphics.sharp_sprites` composes these effects after world motion blur,
+  before bloom/tonemapping. This avoids using the background's velocity for
+  electrical arcs and tracers; it also leaves exhaust/particle composition sharp.
+  The default order is unchanged for other games.
 
 ## Light
+
+Games can set `Scene::stage_sun = true` for a camera-independent sun-shadow
+cache of the generated level. It renders source geometry/alpha once before the
+first view, fitting the complete static scene (not only vegetation), and shares
+one 4096-square depth map across all views. The map adds 64 MiB plus bounded
+caster buffers. Live `Slots` ranges register in `Scene::dynamic_instances` and
+are excluded even when empty at creation; direct dynamic instance users must
+register their ranges before constructing the renderer. Skinning, rigid-part
+animation and car categories are excluded too. Nearby moving shadows remain
+in the existing dynamic maps. Distant foliage uses its rest pose.
+
+Camera movement, wind and adaptive camera LOD do not rebake this map. A static
+source transform, sunlight direction or alpha threshold change does; replacing
+the scene for a new seed creates a fresh cache. `KERN_FAR_SUN_SHADOW=0` disables
+it for A/B captures. `KERN_FAR_SUN_LOD` controls the bake's fixed source error.
+This is direct sun visibility, not baked indirect GI or local-lamp shadows.
+Near-map detail transitions and far-map resolution remain finite. The older
+experimental `KERN_FAR_SUN_SHADOW=1` opt-in retains its foliage-oriented fit
+unless the scene also opts in; paged foliage sun is a mutually exclusive mode.
+
 
 - Physical units: sun and sky in lux, exposure in EV100, emissive
   materials in nits. `Lighting::default()` is a sunny day.

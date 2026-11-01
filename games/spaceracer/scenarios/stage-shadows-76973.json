@@ -1,0 +1,28 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review sentry",
+        "place 0 9097.498306294134",
+        "blur off"
+      ],
+      "capture": "reported-area.png"
+    },
+    {
+      "cmd": "place 0 9197.498306294134",
+      "capture": "ahead-100m.png"
+    },
+    {
+      "cmd": "place 0 9317.498306294134",
+      "capture": "ahead-220m.png"
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    }
+  ]
+}
