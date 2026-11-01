@@ -298,7 +298,7 @@ impl Art {
                 pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8),
             );
             let mut transforms = [hidden; 6];
-            if !p.crashed {
+            if !p.crashed && p.recovery<=0. {
                 match kind {
                     Some(Weapon::Sentry) => {
                         let active = d.active == Some(Weapon::Sentry) && p.emp_time <= 0.;

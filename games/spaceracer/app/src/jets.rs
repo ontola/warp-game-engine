@@ -17,6 +17,8 @@ const UV: [f32; 4] = [0., 0., 1., 1.];
 
 #[derive(Deserialize)]
 pub struct Config {
+    damage_smoke_energy: f32,
+    respawn_light_power: f32,
     nozzle: [f32; 3],
     reverse: [f32; 3],
     pub socket: [f32; 3],
@@ -52,6 +54,8 @@ impl Config {
             .from_value(script::mlua::Value::Table(value))
             .map_err(|e| e.to_string())?;
         let values = [
+            c.damage_smoke_energy,
+            c.respawn_light_power,
             c.idle_length,
             c.throttle_length,
             c.acceleration_length,
@@ -219,6 +223,28 @@ impl Jets {
             let color =
                 Vec3::new(0.25, 0.7, 1.).lerp(Vec3::from_array(super::visuals::COLORS[i]), 0.45);
             let base = Affine3A::from_mat3_translation(pose.basis, pose.origin);
+            if !p.crashed && p.recovery>0. {
+                let alpha=((time*120.)-(race.tick.saturating_sub(1) as f32)).clamp(0.,1.);
+                let progress=super::respawn::progress(race,i,alpha);
+                let pulse=(std::f32::consts::PI*progress.powf(0.55)).sin().max(0.);
+                self.lights.push(LocalLight {position:base.transform_point3(Vec3::new(0.,1.1,0.)),direction:pose.basis.y_axis,
+                    intensity_cd:Vec3::new(0.3,0.8,1.)*c.respawn_light_power*pulse,range_m:15.,inner_cos:1.,outer_cos:-1.,source_radius_m:1.,falloff:2.});
+            }
+            if !p.crashed && p.recovery<=0. && p.energy < c.damage_smoke_energy as f64 {
+                let amount=smooth(0.,c.damage_smoke_energy,c.damage_smoke_energy-p.energy as f32);
+                for k in 0..12 {
+                    let side=if k%2==0 {-1.}else{1.};
+                    let age=(time*0.85+(k/2) as f32/6.+side*0.137).rem_euclid(1.);
+                    let envelope=smooth(0.,0.12,age)*(1.-smooth(0.5,1.,age));
+                    let drift=(k as f32*7.19+age*3.).sin()*age*0.8;
+                    let at=base.transform_point3(Vec3::new(side*2.45+drift,0.9+age*if p.speed>40.{2.5}else{5.},-1.9-age*(p.speed as f32*0.07).min(12.)));
+                    let size=1.2+age*3.2;
+                    let mut smoke=glow(at,[size,size],Vec3::new(0.18,0.17,0.16),10);
+                    smoke.additive=false;smoke.opacity=envelope*amount*0.42;
+                    smoke.params=[k as f32,time,0.,0.];self.sprites.push(smoke);
+                }
+            }
+
             let drive = if race.countdown <= 0. {
                 smooth(0., 125., p.acceleration as f32)
             } else {
@@ -578,6 +604,21 @@ pub fn control_transform(name: &str, local: Affine3A, input: Input, brake: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn wear_smoke_has_threshold_freezes_and_clears_during_reconstruction() {
+        let root=Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut jets=Jets::new(root).unwrap();let mut race=Race::new(31,"normal","city",1,3);
+        let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
+        race.pilots[0].energy=22.;jets.update(&race,&poses,1.);
+        assert!(!jets.sprites.iter().any(|s|s.effect==10));
+        race.pilots[0].energy=12.;jets.update(&race,&poses,1.1);
+        assert_eq!(jets.sprites.iter().filter(|s|s.effect==10).count(),12);
+        let sprites=jets.sprites.clone();jets.update(&race,&poses,1.1);assert_eq!(sprites,jets.sprites);
+        race.reset(0);jets.update(&race,&poses,1.2);
+        assert!(!jets.sprites.iter().any(|s|s.effect==10));
+        race.pilots[0].recovery=0.;race.pilots[0].energy=80.;jets.update(&race,&poses,1.3);
+        assert!(!jets.sprites.iter().any(|s|s.effect==10));
+    }
     #[test]
     fn exhaust_reacts_before_launch_freezes_and_shuts_off_with_emp() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets");

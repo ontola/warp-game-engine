@@ -491,3 +491,15 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 - No interpolation between ticks: entities move at the tick rate.
 - GameNight party settings (`declare_settings`), phone buttons
   (`declare_actions`) and per-player settings are not exposed to Luau yet.
+
+### Native game visibility masks
+
+Native Rust integrations can call `render::set_game_mask(source)` before renderer
+construction. Provide WGSL `fn game_mask(world:vec3<f32>, instance:u32,
+material:u32)->bool`; true discards that fragment in both opaque colour and depth
+raster passes. The default keeps every fragment. The function may read scene
+`aux` and `materials`; use an early range rejection for unrelated geometry. The
+mask is fixed for a renderer lifetime (not a Luau API or hot-reloaded shader).
+Reserve game-owned data in `Scene::aux` before engine reservations; update only
+that range with `Renderer::update_aux_words`. Writes are bounds checked. This is
+for opaque reconstruction/clipping, not forward transparency or ray-query masks.

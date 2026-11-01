@@ -40,7 +40,7 @@ geometry integration, collision queries and rendering remain native.
 | Other weapons | Warp, minigun and guided glide behaviour/presentation restored in the follow-up below. Original railgun guide remains simplified. Unguided bomb preview shows a ballistic path, not an exact scenery-impact prediction. |
 | EMP | Engine/HUD disable and missile cancellation work; initial glitch and electrical arcs on each affected hull are missing. |
 | Driving information | Original severity-coded corner/no-rail signs, some jump/checkpoint notices, gate art and the flight roll reference are missing. |
-| Vehicle damage | Static imported finish/scuffs and detached burning wrecks exist; energy-driven paint deterioration, damage smoke and respawn construction are incomplete. |
+| Vehicle damage | Energy-linked retained paint-wear mask, critical-energy smoke and respawn scan/camera restored below. Native optics differ; no continuous mesh deformation. |
 | Standalone menu | Visual structure restored; original bot/graphics/lighting pages, credits panel, seed text editing and held D-pad shortcuts remain incomplete. |
 | AI | Seeded driving/flight/boost decisions work; original personalities, tactical mistakes and item tactics are not all preserved. |
 | Environment | Five distinct native biomes exist. Forest motion/water, underwater shafts/terrain detail, city searchlights/vista protection and sandworm encounters still differ. |
@@ -101,3 +101,28 @@ steering limits/gravity, moving-target intercept and owner clearance. Scripted
 1920x1080 weapon review and 2560x1440 two-view warp captures are under
 `build/spaceracer-weapons-review` and `build/spaceracer-weapons-split`. These are
 staged diagnostic captures, not a physical-controller playtest or FPS benchmark.
+
+## Respawn and vehicle wear restored - 1 November 2026
+
+The previous port only had fixed scuffs. Hull paint now uses the retained
+`paint-wear.png` triplanar mask and source chip/rim/scratch/dirt/scorch formulas,
+with damage = 1 - energy/100. Recharging restores the finish with energy.
+Below 22 energy, twelve bounded, soft non-additive smoke billboards emerge from
+the rear panels; they stop on crash/recovery and freeze with simulation time.
+The smoke threshold and reconstruction light intensity are in `rules/jets.luau`.
+
+Respawn now uses the source quintic camera flight, bounded inherited momentum,
+raised arc and an exact normal-chase endpoint. Camera and reset share the safe
+checkpoint/split-lane destination. The actual hull is revealed from below by a
+cyan/white construction scan and lattice with local illumination. A game-owned
+visibility shader clips unreconstructed geometry in colour/depth raster passes;
+there are no duplicate floating hull meshes. Mounted weapons return after the
+existing 0.65-second recovery. Source used 0.7 seconds; the port keeps its existing
+recovery duration. Detached wreck pieces remain independent. This is a native
+adaptation, not identical optical output; there is no mesh dent/deformation pass.
+
+Validation: 32 simulation + 20 app + 1 renderer shader test passed. Native build
+succeeded. `respawn-wear.json` and `respawn-wear-split.json` capture actual native
+1920x1080 solo/two-player views, energy 100/45/12, scan stages and crash travel.
+Pause state is checked separately. These are staged diagnostic scenes, not a
+new controller playtest or a frame-time performance certification.

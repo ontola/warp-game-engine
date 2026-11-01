@@ -18,6 +18,10 @@ hardware. `combat` and `warp` in `rules/game.luau` control acquisition/motor val
 and the warp speed envelope. See the follow-up in the parity review for limits,
 including the approximate unguided bomb preview and native HDR refraction.
 
+Energy-linked paint chips, scratches and scorch now use the retained wear mask.
+Critical energy emits soft smoke. Respawn has a smooth camera flight and a bright
+bottom-up construction scan (1 November 2026); see the parity review for checks.
+
 ## Play and capture
 
 From the workspace root:
@@ -112,8 +116,7 @@ city blocks, mounted screens, traffic, tall forest trees, shorelines, cell
 structures/walkers/membrane, sandstone canyons and underwater reef plants are
 now present, including giant animated octopuses, fish schools, jellyfish, mantas
 and rising bubble vents. Five retained ship variants are displayed. Sandworm encounters,
-full foliage/water animation, visor/distortion stack,
-live wear/respawn presentation, victory camera, full weapon models and
+full foliage/water animation, remaining visor/weapon optical differences and
 original audio still need work. Forest collision uses trunk proxies;
 cell/rock proxies are approximate. Vehicle contact is simplified rather than
 the original complete rotated hull solver. Weapon tuning and AI behavior need

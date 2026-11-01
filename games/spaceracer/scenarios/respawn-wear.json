@@ -1,0 +1,80 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review warp",
+        "portrait on",
+        "blur off",
+        "energy 0 100"
+      ],
+      "ticks": 1,
+      "capture": "paint-100.png",
+      "state": "paint-100.json"
+    },
+    {
+      "cmd": "energy 0 45",
+      "ticks": 0,
+      "capture": "paint-45.png"
+    },
+    {
+      "cmd": "energy 0 12",
+      "ticks": 1,
+      "capture": "paint-12.png",
+      "state": "paint-12.json"
+    },
+    {
+      "cmd": "reset 0",
+      "ticks": 12,
+      "capture": "rebuild-start.png",
+      "state": "rebuild-start.json"
+    },
+    {
+      "ticks": 15,
+      "capture": "rebuild-scan.png",
+      "state": "rebuild-scan.json"
+    },
+    {
+      "ticks": 52,
+      "capture": "rebuild-complete.png",
+      "state": "rebuild-complete.json"
+    },
+    {
+      "expect": "/pilots/0/recovery",
+      "equals": 0.0
+    },
+    {
+      "cmd": [
+        "portrait off",
+        "place 0 450"
+      ],
+      "ticks": 1,
+      "capture": "before-crash.png"
+    },
+    {
+      "cmd": "crash 0",
+      "ticks": 1,
+      "capture": "crash.png"
+    },
+    {
+      "ticks": 90,
+      "capture": "return-camera.png"
+    },
+    {
+      "ticks": 100,
+      "capture": "return-arrival.png"
+    },
+    {
+      "ticks": 80,
+      "capture": "respawn.png",
+      "state": "respawn.json"
+    },
+    {
+      "expect": "/pilots/0/crashed",
+      "equals": false
+    }
+  ]
+}

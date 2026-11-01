@@ -9,6 +9,7 @@ mod party_settings;
 mod pilot_faces;
 mod race_hud;
 mod replay;
+mod respawn;
 mod stage;
 mod stage_mesh;
 mod stage_terrain;
@@ -43,6 +44,7 @@ struct Racer {
     menu_axis: [i32; 2],
     cameras: Vec<Chase>,
     replay: Vec<replay::Replay>,
+    respawn: Vec<respawn::Camera>,
     previous: Vec<Pose>,
     devices: Vec<Device>,
     party: Option<party::Party>,
@@ -101,6 +103,7 @@ impl Racer {
             settings_dirty: false,
             cameras: vec![Chase::default(); 4],
             replay: vec![replay::Replay::default(); 4],
+            respawn: vec![respawn::Camera::default(); 4],
             previous,
             devices: vec![],
             party,
@@ -147,6 +150,7 @@ impl Racer {
         }
         self.cameras = vec![Chase::default(); 4];
         self.replay = vec![replay::Replay::default(); 4];
+        self.respawn = vec![respawn::Camera::default(); 4];
         self.menu = None;
         self.settings_dirty = false;
         Ok(())
@@ -487,6 +491,7 @@ impl Game for Racer {
         self.visuals.fx.flush(frame.gpu, renderer, light.time)?;
         self.visuals.jets.flush(frame.gpu, renderer)?;
         self.visuals.stage.flush(frame.gpu, renderer)?;
+        renderer.update_aux_words(frame.gpu,self.visuals.vehicle_aux,&self.visuals.scene.aux[self.visuals.vehicle_aux..self.visuals.vehicle_aux+145])?;
         let effect = &self.visuals.crash_fx.config;
         let blur: Vec<_> = self
             .race
@@ -562,30 +567,10 @@ impl Game for Racer {
             };
             let rect = rects[i].map(|v| v / ui_scale);
             let dt = if frozen { 0. } else { frame.dt as f64 };
-            let camera_pose = if p.crashed {
-                let node = self.race.world.track.sample(
-                    self.race
-                        .world
-                        .safe_respawn(self.race.drivers[i].safe_distance),
-                );
-                let t = (self.race.drivers[i].crash_time / 1.8).clamp(0., 1.) as f32;
-                Pose {
-                    origin: pose.origin.lerp(node.point(0., 1.3), t * t * (3. - 2. * t)),
-                    basis: node.geometry.basis(),
-                }
-            } else {
-                pose
-            };
-            self.cameras[i].update(
-                camera_pose,
-                p.speed,
-                p.boost > 0. || p.on_pad,
-                p.acceleration,
-                dt,
-                false,
-                self.race.countdown <= 0.,
-                rect[2] as f64 / rect[3] as f64,
-            );
+            let aspect=rect[2] as f64/rect[3] as f64;
+            if !self.respawn[i].update(&self.race,i,alpha,&mut self.cameras[i],aspect) {
+                self.cameras[i].update(pose,p.speed,p.boost>0.||p.on_pad,p.acceleration,dt,false,self.race.countdown<=0.,aspect);
+            }
             let c = &self.cameras[i];
             cams.push(Camera {
                 pos: c.position,
@@ -696,6 +681,8 @@ impl Game for Racer {
         },
         ["weapon-view","on"]=>self.weapon_view=true,["weapon-view","off"]=>self.weapon_view=false,
         ["missile-view","on"]=>self.missile_view=true,["missile-view","off"]=>self.missile_view=false,
+        ["energy",who,value]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let v:f64=value.parse().map_err(|_|"energy")?;if !v.is_finite() {return Err("invalid energy".into());}self.race.pilots.get_mut(i).ok_or("pilot index")?.energy=v.clamp(0.,100.);},
+        ["reset",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}self.race.reset(i);self.previous[i]=self.race.pose(i);},
         ["place",who,distance]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let distance:f64=distance.parse().map_err(|_|"distance")?;if !distance.is_finite() || distance.abs()>100000. {return Err("invalid distance".into());}let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.distance=distance;p.x=0.;self.previous[i]=self.race.pose(i);},
         ["portrait","on"]=>self.portrait=true,["portrait","off"]=>self.portrait=false,
         ["blur","off"]=>self.blur_enabled=false,["blur","on"]=>self.blur_enabled=true,
@@ -753,7 +740,8 @@ fn scale_hud(hud: &mut HudDrawList, scale: f32) {
     }
 }
 fn main() -> Result<(), String> {
-    render::set_game_surface(include_str!("../shaders/surfaces.wgsl"));
+    render::set_game_surface(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),include_str!("../shaders/surfaces.wgsl")));
+    render::set_game_mask(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),include_str!("../shaders/vehicle_mask.wgsl")));
     let args: Vec<String> = std::env::args().collect();
     let arg = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone());
     let root = arg("--game-dir").map(PathBuf::from).unwrap_or_else(|| {

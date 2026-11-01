@@ -1,0 +1,37 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review warp",
+        "portrait on",
+        "energy 0 12",
+        "energy 1 100"
+      ],
+      "ticks": 1,
+      "capture": "split-wear.png"
+    },
+    {
+      "cmd": "reset 0",
+      "ticks": 26,
+      "capture": "split-rebuild.png"
+    },
+    {
+      "cmd": "pause",
+      "ticks": 0,
+      "capture": "split-paused.png",
+      "state": "paused.json"
+    },
+    {
+      "ticks": 80,
+      "state": "still-paused.json"
+    },
+    {
+      "expect": "/paused",
+      "equals": true
+    }
+  ]
+}

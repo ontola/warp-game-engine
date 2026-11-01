@@ -73,5 +73,10 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let q=s.uv*2.-1.;let core=exp(-dot(q,q)*15.);let halo=exp(-dot(q,q)*4.);
         return vec4<f32>(mix(vec3<f32>(1.,.65,.25),vec3<f32>(2.),core),halo*.6+core*.4);
     }
+    if s.effect == 10u {
+        let q=s.uv*2.-1.;let r=length(q);
+        let cloud=.8+.12*sin(q.x*11.+s.params.x)+.08*sin(q.y*15.-q.x*7.+s.params.x*2.);
+        return vec4<f32>(vec3<f32>(1.),exp(-r*r*3.)*(1.-smoothstep(.65,1.,r))*cloud);
+    }
     return vec4<f32>(0.0);
 }
