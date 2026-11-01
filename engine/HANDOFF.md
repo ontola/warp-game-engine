@@ -1,3 +1,11 @@
+## 2026-11-01 SpaceRacer adopts current Growing Guns smoke
+
+Latest shared baked-smoke implementation already present after origin fetch;
+SpaceRacer now opts in via effects.luau baked_explosion_smoke. Its common Effects
+instance covers crashes and non-EMP weapon explosions. No copied asset/shader.
+Five baked-smoke tests + explosion-smoke.json pass; native 1080p city/forest/two
+views reviewed at build/spaceracer-smoke-{city,forest,split}. No perf target claim.
+
 ## 2026-11-01 SpaceRacer blue root / dim tail
 
 Forward jet emission blue (.12/.4/1), bright near nozzle then exponential falloff;

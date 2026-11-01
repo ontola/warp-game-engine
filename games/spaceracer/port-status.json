@@ -13,7 +13,7 @@
     {
       "path": "src/blast_vfx.gd",
       "sha256": "36b459b3ce3264985b7ee688478ac65f26eac4f96c5b7b84c9432d1de41c3347",
-      "status": "shared native Growing Guns fire/smoke/embers/heat; smoother billow geometry, continuous dark soot and night-calibrated light scale; source-inspired rather than exact shader parity"
+      "status": "shared native Growing Guns fire/embers/heat plus latest baked animated volume smoke with adaptive rendering and gradual 4.6-second dissipation; enabled for crashes/non-EMP weapon blasts via Luau; native 1080p city/forest/two-view captures and five smoke tests; source-inspired rather than exact Godot shader parity"
     },
     {
       "path": "src/boost_trails.gd",

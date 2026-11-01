@@ -21,6 +21,7 @@ pub struct Config {
     pub boost_blur: f32,
     pub shutter_seconds: f32,
     pub max_blur_pixels: f32,
+    pub baked_explosion_smoke: bool,
     pub crash_radius: f32,
     pub explosion_light_scale: f32,
     debris_life: f32,
