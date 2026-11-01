@@ -1,3 +1,11 @@
+## 2026-11-01 SpaceRacer blue root / dim tail
+
+Forward jet emission blue (.12/.4/1), bright near nozzle then exponential falloff;
+7.2 m max authored plume before surge. AgX handles near-white highlights. Blue
+engine light, wisps .12x, wake .065x/.24 s. Tunables jets.luau, shape jets.wgsl.
+Eight effect tests + city/forest 1080p onset/sustain captures pass, at
+build/spaceracer-blue-core-*. Handling and global tone mapper unchanged.
+
 ## 2026-11-01 SpaceRacer compact glow / source occlusion
 
 Sprite.depth_test defaults Fragment; Source checks centre depth for optical
