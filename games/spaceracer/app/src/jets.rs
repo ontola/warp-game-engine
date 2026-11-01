@@ -18,6 +18,8 @@ const UV: [f32; 4] = [0., 0., 1., 1.];
 #[derive(Deserialize)]
 pub struct Config {
     boost_arc_start: f32, boost_arc_sustain: f32, boost_arc_decay: f32,
+    boost_arc_spread: f32, boost_arc_height: f32,
+    boost_width: f32, boost_radiance: f32, engine_glare_pixels: f32,
     warp_world_pixels: f32, warp_view_pixels: f32,
     emp_spark_fade: f32, sentry_spark_life: f32,
     damage_smoke_energy: f32,
@@ -58,6 +60,7 @@ impl Config {
             .map_err(|e| e.to_string())?;
         let values = [
             c.boost_arc_start,c.boost_arc_sustain,c.boost_arc_decay,
+            c.boost_arc_spread,c.boost_arc_height,c.boost_width,c.boost_radiance,c.engine_glare_pixels,
             c.warp_world_pixels,c.warp_view_pixels,c.emp_spark_fade,c.sentry_spark_life,
             c.damage_smoke_energy,
             c.respawn_light_power,
@@ -78,6 +81,9 @@ impl Config {
         ];
         if values.iter().any(|v| !v.is_finite() || *v < 0.)
             || c.warp_view_pixels>64. || c.warp_world_pixels>64. || c.sentry_spark_life>0.25 || c.emp_spark_fade<=0.
+            || c.boost_arc_start>40. || c.boost_arc_sustain>20. || c.boost_arc_spread>20. || c.boost_arc_height>12.
+            || !(1.0..=3.).contains(&c.boost_width) || !(1.0..=4.).contains(&c.boost_radiance)
+            || !(0.0..=48.).contains(&c.engine_glare_pixels)
             || c.width <= 0.
             || !(0.02..=0.8).contains(&c.trail_life)
             || !(0.008..=0.1).contains(&c.trail_interval)
@@ -301,17 +307,27 @@ impl Jets {
                 let axis = -pose.basis.z_axis;
                 if e.power > 0.015 {
                     let light = color * radiance * e.power;
+                    let plasma = light * (1. + boost * (c.boost_radiance - 1.));
                     self.sprites.push(shaft(
                         at,
                         at + axis * length,
-                        c.width * (1. + boost * (0.2 + surge * 0.2)),
-                        light,
+                        c.width * (1. + boost * (c.boost_width - 1. + surge * 0.25)),
+                        plasma,
                         1,
                         [phase, boost, 0., 0.],
                     ));
                     let core = at + axis * 0.08;
-                    self.sprites
-                        .push(glow(core, [2.4, 2.4], light * (2. + boost * 1.5), 2));
+                    let nozzle_size=2.4+boost*1.5;
+                    self.sprites.push(glow(core, [nozzle_size;2], plasma * (2. + boost), 2));
+                    // A bounded optical halo, not a giant world-space exhaust.
+                    // Screen-facing sizing is per viewport; source-depth gating
+                    // in effect 13 prevents enlarged halos leaking through walls.
+                    let glare_size=3.5+boost*2.;
+                    let mut glare=glow(core,[glare_size;2],plasma*1.8,13);
+                    glare.facing=render::sprites::Facing::Screen;
+                    glare.min_pixels=c.engine_glare_pixels*(1.+boost*0.45);
+                    glare.params=[core.x,core.y,core.z,boost];
+                    self.sprites.push(glare);
                     let mut flare = glow(
                         core,
                         [9. + boost * 3., 2.7 + boost * 0.9],
@@ -361,44 +377,47 @@ impl Jets {
                         self.sprites.push(w);
                     }
                     if boosting {
-                        for branch in 0..5u32 {
-                            let seed = self
-                                .strike
-                                .wrapping_mul(151)
-                                .wrapping_add(i as u32 * 83 + side as u32 * 19 + branch * 71);
-                            if branch>0 && hash(seed) < 0.60 {
-                                continue;
-                            }
-                            let angle = hash(seed + 1) * std::f32::consts::TAU;
-                            let reach = (c.boost_arc_sustain+(c.boost_arc_start-c.boost_arc_sustain)*onset)*(0.65+hash(seed+2)*0.35);
+                        // Two possible road strikes plus one short corona fork per
+                        // nozzle. Replace each presentation: no faded bolt history.
+                        for branch in 0..3u32 {
+                            let seed=self.strike.wrapping_mul(151)
+                                .wrapping_add(i as u32*83+side as u32*19+branch*71);
+                            if branch>0 && hash(seed)<0.45 {continue;}
+                            let reach=(c.boost_arc_sustain+(c.boost_arc_start-c.boost_arc_sustain)*onset)
+                                *(0.18+hash(seed+2).powi(2)*1.05);
+                            let spread=c.boost_arc_spread*(0.45+onset*0.55);
                             let road=race.world.track.sample(p.distance-reach as f64);
-                            let road_x=p.x+(hash(seed+3) as f64-0.5)*(3.+onset as f64*8.);
-                            let grounded=branch==0 && road.supported(road_x,0.5);
-                            let end=if grounded {road.point(road_x,0.12)}else{at+axis*reach+pose.basis.x_axis*angle.cos()*(1.+onset*3.)+pose.basis.y_axis*angle.sin()*(1.+onset*3.)};
-                            let radial =
-                                pose.basis.x_axis * angle.cos() + pose.basis.y_axis * angle.sin();
-                            let mut a = at;
-                            for segment in 1..=5 {
-                                let t = segment as f32 / 5.;
-                                let kink = (hash(seed + segment * 23) - 0.5)
-                                    * (t * std::f32::consts::PI).sin();
-                                let b = at.lerp(end,t) + radial * kink * (0.8+onset*2.5);
-                                self.sprites.push(shaft(
-                                    a,
-                                    b,
-                                    (0.09+onset*0.08) * (1. - t * 0.6),
-                                    light * 2.,
-                                    5,
-                                    [0.; 4],
-                                ));
-                                a = b;
+                            let road_x=(p.x+sign as f64*(2.+hash(seed+3)*spread) as f64)
+                                .clamp(-road.geometry.width*0.88,road.geometry.width*0.88);
+                            let grounded=branch<2 && road.supported(road_x,0.5);
+                            if branch<2 && !grounded {continue;}
+                            let end=if grounded {road.point(road_x,0.12)} else {
+                                at+axis*reach*0.35+pose.basis.x_axis*sign*(1.+hash(seed+7)*3.)
+                                    +pose.basis.y_axis*(hash(seed+8)-0.3)*3.
+                            };
+                            let up=if grounded {road.frame(road_x).y_axis}else{pose.basis.y_axis};
+                            let sideways=pose.basis.x_axis;
+                            let crown=(at+end)*0.5+up*c.boost_arc_height*(0.3+onset*0.7)*(0.4+hash(seed+4))
+                                +sideways*sign*(hash(seed+5)-0.25)*3.;
+                            let mut a=at;
+                            for segment in 1..=8u32 {
+                                let t=segment as f32/8.;let envelope=(t*std::f32::consts::PI).sin();
+                                // A high arch descends to a real deck contact. Fine
+                                // asymmetric kinks ride the curve, not parallel rays.
+                                let b=at*(1.-t).powi(2)+crown*(2.*t*(1.-t))+end*t*t
+                                    +(sideways*(hash(seed+segment*23)-0.5)
+                                        +up*(hash(seed+segment*47)-0.35))*envelope*(0.6+onset*1.8);
+                                let mut arc=shaft(a,b,(0.075+onset*0.045)*(1.-t*0.45),
+                                    light*(1.7+hash(seed+6)),5,[0.;4]);
+                                arc.min_pixels=1.25;
+                                self.sprites.push(arc);a=b;
                             }
                             if grounded {
                                 let f=road.frame(road_x);
-                                let mut contact=glow(end,[2.+onset*3.,2.+onset*3.],light*(1.+onset*2.),12);
+                                let mut contact=glow(end,[2.+onset*3.;2],light*(0.25+onset*0.35),12);
                                 contact.facing=render::sprites::Facing::Fixed {right:f.x_axis,up:f.z_axis};
                                 self.sprites.push(contact);
-                                if side==0 {self.lights.push(LocalLight {position:end+f.y_axis*0.45,direction:f.y_axis,intensity_cd:color*(180.+onset*650.),range_m:7.,inner_cos:1.,outer_cos:-1.,source_radius_m:0.4,falloff:2.});}
+                                if side==0 && branch==0 {self.lights.push(LocalLight {position:end+f.y_axis*0.45,direction:f.y_axis,intensity_cd:color*(180.+onset*650.),range_m:7.,inner_cos:1.,outer_cos:-1.,source_radius_m:0.4,falloff:2.});}
                             }
                         }
                     }
@@ -663,6 +682,43 @@ mod tests {
         assert_eq!(jets.sprites.iter().filter(|s|s.effect==11).count(),5);
         jets.update(&race,&poses,1.2);assert!(jets.impacts.is_empty());
     }
+    #[test]
+    fn boost_arcs_move_arch_and_end_at_road_contacts_with_bounded_glare() {
+        let mut jets=Jets::new(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let mut race=Race::new(35,"normal","city",1,3);
+        race.countdown=0.;race.drivers[0].input.drive.throttle=1.;
+        let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
+        jets.update(&race,&poses,0.);
+        let normal=jets.sprites.iter().find(|s|s.effect==1).unwrap().clone();
+        race.pilots[0].boost=3.;jets.update(&race,&poses,0.01);
+        let boosted=jets.sprites.iter().find(|s|s.effect==1).unwrap();
+        assert!(boosted.size[0]>normal.size[0]*1.7 && boosted.radiance.length()>normal.radiance.length()*1.5);
+        let glare=jets.sprites.iter().find(|s|s.effect==13).unwrap();
+        assert!(matches!(glare.facing,render::sprites::Facing::Screen));
+        assert!(glare.min_pixels>=30. && glare.min_pixels<48. && glare.depth_bias==0.);
+        let mut previous=Vec::new();let mut spans=Vec::new();
+        for frame in 0..13 {
+            jets.update(&race,&poses,0.02+frame as f32/120.);
+            let arcs:Vec<_>=jets.sprites.iter().filter(|s|s.effect==5).collect();
+            assert!(!arcs.is_empty() && arcs.len()<=48);
+            assert!(arcs.iter().any(|s|(s.center-poses[0].origin).dot(poses[0].basis.y_axis)>1.));
+            let contacts:Vec<_>=jets.sprites.iter().filter(|s|s.effect==12).map(|s|s.center).collect();
+            assert!(!contacts.is_empty());
+            for contact in &contacts {
+                // The last segment really terminates at the deck glow.
+                assert!(arcs.iter().any(|s|if let render::sprites::Facing::Axis{up}=s.facing {
+                    (s.center-up*s.size[1]*0.5).distance(*contact)<0.001
+                }else{false}));
+                spans.push(contact.distance(poses[0].origin));
+            }
+            assert_ne!(contacts,previous,"each presentation replaces its bolt geometry");
+            previous=contacts;
+        }
+        let min=spans.iter().copied().fold(f32::INFINITY,f32::min);
+        let max=spans.iter().copied().fold(0.,f32::max);
+        assert!(max>min*1.8,"strikes must vary widely in reach");
+    }
+
     #[test]
     fn boost_ground_contacts_decay_and_emp_sparks_fade_out() {
         let root=Path::new(env!("CARGO_MANIFEST_DIR"));let mut jets=Jets::new(root).unwrap();

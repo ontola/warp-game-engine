@@ -1,0 +1,90 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review sentry",
+        "blur on",
+        "weapon-view off",
+        "place 2 185",
+        "place 3 310",
+        "demo"
+      ],
+      "ticks": 1,
+      "capture": "warmup.png"
+    },
+    {
+      "cmd": [
+        "boost 0",
+        "boost 1",
+        "boost 2",
+        "boost 3"
+      ],
+      "ticks": 1,
+      "capture": "boost-00.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-01.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-02.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-03.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-04.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-05.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-06.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-07.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-08.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-09.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-10.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-11.png"
+    },
+    {
+      "ticks": 1,
+      "capture": "boost-12.png"
+    },
+    {
+      "ticks": 60,
+      "capture": "sustain.png"
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}
