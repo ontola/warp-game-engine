@@ -14,6 +14,16 @@ smoke, with gradual dissipation and adaptive rendering for overlapping plumes.
 See [the shared smoke implementation](../../engine/docs/baked-explosion-smoke.md)
 and the parity review for checks and limits.
 
+## Native 4K performance (1 November 2026)
+
+City reflections now use a surface-area hierarchy with stackless traversal,
+retaining every facade and billboard proxy. Two repeated matched comparisons
+reduced the measured GPU interval from about 8.6 to 6.2 ms; the reference 4K
+image is pixel-identical. Packaging defaults to release. Native measurements
+cover all five biomes with one/two views and two city seeds with four views.
+This is not a claim of locked 4K/120 FPS: see
+[measurements and remaining costs](../../engine/docs/spaceracer-native4k-2026-11-01.md).
+
 ## Boost presentation (1 November 2026)
 
 Uneven, changing lightning arches now strike the road with soft contact light.
@@ -99,6 +109,11 @@ Windows packaging (builds only, does not launch or stop another game):
 ./games/spaceracer/tools/build-native.ps1
 ./build/spaceracer-native/spaceracer.exe --players 2 --fullscreen
 ```
+
+Packaging defaults to the optimized `release` profile. Use `-Profile dev` for
+quick compilation, but use release for performance checks. The headless native
+4K profiling matrix and per-frame cost viewer are documented in
+[native profiling](../../engine/docs/native-profiling.md).
 
 The packaged executable resolves its adjacent `spaceracer/rules` and
 `spaceracer/assets`. Development runs fall back to the source directory;
@@ -291,12 +306,13 @@ geometry are not included. Full foliage, HUD and effect fidelity remain outstand
 Reproducible headless measurement (no window):
 
 ```sh
-cargo run --locked -p spaceracer-app --bin spaceracer -- --demo --seed 31 --players 4 --ticks 750 --bench 120 --width 1920 --height 1080 --out build/spaceracer-bench.json
+cargo run --release --locked -p spaceracer-app --bin spaceracer -- --demo --seed 31 --players 4 --ticks 750 --warmup 120 --bench 360 --width 3840 --height 2160 --out build/spaceracer-bench.json
 ```
 
-The report includes the adapter, geometry counts and smoothed GPU pass samples.
-Readback throughput is not interactive FPS, and these samples are not latency
-percentiles or an equal-content comparison. See [visual review](visual-review.md).
+The report includes adapter, geometry counts, scenario/build settings, raw CPU
+and GPU frame samples and p50/p95/p99 costs. Warmup and pixel readback are excluded.
+These are separate CPU/GPU timings, not interactive FPS or an equal-content
+comparison with another engine. See [native profiling](../../engine/docs/native-profiling.md).
 
 ## Verification
 

@@ -760,7 +760,12 @@ fn menu_entropy() -> u32 {
     std::collections::hash_map::RandomState::new().build_hasher().finish() as u32
 }
 fn main() -> Result<(), String> {
-    render::set_game_surface(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),include_str!("../shaders/surfaces.wgsl")));
+    let mut surface = include_str!("../shaders/surfaces.wgsl").to_owned();
+    // Diagnostic omission only; never persisted as a player quality setting.
+    if std::env::args().any(|a| a == "--profile-no-reflections") {
+        surface = surface.replace("if arrayLength(&aux)<8u", "if true || arrayLength(&aux)<8u");
+    }
+    render::set_game_surface(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),surface));
     render::set_game_mask(&format!("{}\n{}",include_str!("../shaders/vehicle_data.wgsl"),include_str!("../shaders/vehicle_mask.wgsl")));
     let args: Vec<String> = std::env::args().collect();
     let arg = |key: &str| args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone());
@@ -820,12 +825,18 @@ fn main() -> Result<(), String> {
             arg("--height").and_then(|s| s.parse().ok()).unwrap_or(1080),
         ];
         let gpu = render::Gpu::new()?;
-        let (fps, passes) = app::bench(&mut game, &gpu, size, frames, 120.)?;
-        let report = json!({"gpu":{"name":gpu.summary().name,"backend":gpu.summary().backend,"driver":gpu.summary().driver},"size":size,"players":players,"motion_blur":game.blur_enabled,"frames":frames,"readback_fps":fps,"gpu_pass_ms_smoothed":passes,"scene":game.visuals.scene.stats(),"note":"Headless readback throughput is not interactive FPS; GPU times are smoothed pass samples, not latency percentiles."});
+        let warmup = arg("--warmup").and_then(|s| s.parse().ok()).unwrap_or(60);
+        let measurements = app::profile::bench(&mut game, &gpu, size, warmup, frames, 120.)?;
+        let environment: std::collections::BTreeMap<_,_> = ["WGPU_BACKEND","WGPU_DEBUG","WGPU_VALIDATION","WGPU_VALIDATION_INDIRECT_CALL","VK_LOADER_LAYERS_DISABLE","KERN_CPU_SPANS","KERN_SHADE_FEATURES"].into_iter().map(|name| (name,std::env::var(name).ok())).collect();
+        let report = json!({"gpu":{"name":gpu.summary().name,"backend":gpu.summary().backend,"driver":gpu.summary().driver},"size":size,"players":players,"motion_blur":game.blur_enabled,"frames":frames,"profile":measurements,"scene":game.visuals.scene.stats(),
+            "scenario":{"seed":game.seed,"biome":BIOMES[game.biome],"difficulty":DIFFICULTIES[game.difficulty],"players":players,"ticks":ticks,"warmup":warmup,"frames":frames,"size":size},
+            "diagnostics":{"no_reflections":args.iter().any(|a|a=="--profile-no-reflections"),"debug_assertions":cfg!(debug_assertions),"environment":environment}});
         let report = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
-        println!("{report}");
         if let Some(path) = arg("--out") {
+            println!("{}", serde_json::to_string_pretty(&measurements["summary"]).unwrap());
             std::fs::write(path, report).map_err(|e| e.to_string())?;
+        } else {
+            println!("{report}");
         }
         return Ok(());
     }

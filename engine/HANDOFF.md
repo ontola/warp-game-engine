@@ -1,3 +1,21 @@
+## 2026-11-01 SpaceRacer native 4K profiling and reflections
+
+City reflection BVH uses surface-area splits + threaded escape indices (aux
+node word 3 is now subtree escape, not right child). No stack or 256-node cutoff.
+Matched native4K GPU median 8.59 -> 6.18 ms, repeat 8.56 -> 6.14; reference image
+pixel-identical. Final release tested five biomes 1/2p, city seeds 35/80385 4p.
+Four-player city GPU ~9 ms: no locked120 claim. Windows media service/daemon and
+other apps consume many CPU cores; left running. No interactive game launched.
+User explicitly said NOT to run a playtest after this work.
+
+Shared app::profile::bench separates CPU phases, GPU scopes and completion wait,
+excludes warmup/readback and checks native reconstruction. profile-report.py
+provides offline graphs; SpaceRacer profile-native.ps1 runs a serial matrix.
+build-native.ps1 now defaults release; -Profile dev remains available. Tests:
+5 stage tests, 23 app tests, all headless pipelines/captures. See
+engine/docs/spaceracer-native4k-2026-11-01.md and native-profiling.md; raw results
+at build/spaceracer-perf-{native4k,final4k,final-biomes4k}. Portable release ready.
+
 ## 2026-11-01 SpaceRacer adopts current Growing Guns smoke
 
 Latest shared baked-smoke implementation already present after origin fetch;

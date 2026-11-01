@@ -1074,6 +1074,10 @@ fn reflection_data(scene: &mut Scene, posters: &[Request], buildings: &[(Bounds,
 }
 
 fn reflection_bvh(data: &mut Vec<u32>, start: usize, leaves: &mut [(Bounds, u32)]) {
+    reflection_bvh_at(data, start, leaves, 0);
+}
+
+fn reflection_bvh_at(data: &mut Vec<u32>, start: usize, leaves: &mut [(Bounds, u32)], depth: usize) {
     if leaves.is_empty() {
         return;
     }
@@ -1095,6 +1099,7 @@ fn reflection_bvh(data: &mut Vec<u32>, start: usize, leaves: &mut [(Bounds, u32)
         u32::MAX,
     ]);
     if leaves.len() == 1 {
+        data[node + 3] = ((data.len() - start) / 8) as u32;
         data[node + 7] = leaves[0].1;
         return;
     }
@@ -1106,20 +1111,54 @@ fn reflection_bvh(data: &mut Vec<u32>, start: usize, leaves: &mut [(Bounds, u32)
     } else {
         2
     };
-    leaves.sort_unstable_by(|a, b| {
-        (a.0.lo[axis] + a.0.hi[axis]).total_cmp(&(b.0.lo[axis] + b.0.hi[axis]))
-    });
-    let mid = leaves.len() / 2;
-    reflection_bvh(data, start, &mut leaves[..mid]);
+    // Build once per generated level. Median splits put tall towers and small
+    // billboards into heavily overlapping boxes; millions of reflection rays
+    // then walk both branches. Minimize child surface area instead, retaining
+    // every proxy and the exact same nearest-hit reflection.
+    let mut best = (f32::INFINITY, axis, leaves.len() / 2);
+    let area = |lo: Vec3, hi: Vec3| { let d = (hi-lo).max(Vec3::ZERO); d.x*d.y+d.x*d.z+d.y*d.z };
+    if depth < 16 && leaves.len() > 2 {
+        let mut suffix = vec![(Vec3::ZERO, Vec3::ZERO); leaves.len()];
+        for axis in 0..3 {
+            leaves.sort_unstable_by(|a,b| (a.0.lo[axis]+a.0.hi[axis]).total_cmp(&(b.0.lo[axis]+b.0.hi[axis])).then(a.1.cmp(&b.1)));
+            let (mut l,mut h) = (Vec3::splat(f32::INFINITY),Vec3::splat(f32::NEG_INFINITY));
+            for i in (0..leaves.len()).rev() { l=l.min(leaves[i].0.lo); h=h.max(leaves[i].0.hi); suffix[i]=(l,h); }
+            let (mut l,mut h) = (Vec3::splat(f32::INFINITY),Vec3::splat(f32::NEG_INFINITY));
+            for i in 1..leaves.len() {
+                l=l.min(leaves[i-1].0.lo); h=h.max(leaves[i-1].0.hi);
+                let cost=area(l,h)*i as f32+area(suffix[i].0,suffix[i].1)*(leaves.len()-i) as f32;
+                if cost < best.0 { best=(cost,axis,i); }
+            }
+        }
+    }
+    leaves.sort_unstable_by(|a,b| (a.0.lo[best.1]+a.0.hi[best.1]).total_cmp(&(b.0.lo[best.1]+b.0.hi[best.1])).then(a.1.cmp(&b.1)));
+    let mid = best.2;
+    reflection_bvh_at(data, start, &mut leaves[..mid], depth+1);
+    reflection_bvh_at(data, start, &mut leaves[mid..], depth+1);
     data[node + 3] = ((data.len() - start) / 8) as u32;
-    reflection_bvh(data, start, &mut leaves[mid..]);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn reflection_hierarchy_keeps_all_proxies_and_fits_gpu_stack() {
+    fn reflection_hierarchy_bounds_depth_for_coincident_proxies() {
+        let bounds=Bounds {lo:Vec3::ZERO,hi:Vec3::ONE};
+        let mut leaves:Vec<_>=(0..10000).map(|id|(bounds,id)).collect();
+        let mut data=Vec::new();
+        reflection_bvh(&mut data,0,&mut leaves);
+        let mut stack=vec![(0usize,1usize)];
+        let mut count=0;
+        while let Some((node,depth))=stack.pop() {
+            assert!(depth<32,"builder must not degenerate into deep recursion");
+            assert!(data[node*8+3] as usize>node && data[node*8+3] as usize<=data.len()/8);
+            if data[node*8+7]==u32::MAX {stack.push((node+1,depth+1));stack.push((data[(node+1)*8+3] as usize,depth+1));}
+            else {count+=1;}
+        }
+        assert_eq!(count,10000);
+    }
+    #[test]
+    fn reflection_hierarchy_keeps_all_proxies_and_bounds() {
         let mut leaves: Vec<_> = (0..1500u32)
             .map(|i| {
                 let p = Vec3::new(
@@ -1155,7 +1194,7 @@ mod tests {
             let hi = read(at + 4);
             let id = data[at + 7];
             if id == u32::MAX {
-                for child in [node + 1, data[at + 3] as usize] {
+                for child in [node + 1, data[8 + (node+1)*8 + 3] as usize] {
                     assert!(child > node);
                     let c = 8 + child * 8;
                     assert!(read(c).cmpge(lo).all() && read(c + 4).cmple(hi).all());
@@ -1168,6 +1207,33 @@ mod tests {
             }
         }
         assert_eq!(found.len(), original.len());
+    }
+    #[test]
+    fn threaded_reflection_rays_match_exhaustive_bounds() {
+        let original:Vec<_>=(0..900u32).map(|i| {
+            let p=Vec3::new((i%30) as f32*30.,(i%7) as f32*2.,(i/30) as f32*30.);
+            (Bounds {lo:p,hi:p+Vec3::new(14.,20.+(i%17) as f32*5.,18.)},i)
+        }).collect();
+        let mut leaves=original.clone();let mut data=Vec::new();
+        reflection_bvh(&mut data,0,&mut leaves);
+        let vec3=|at:usize|Vec3::new(f32::from_bits(data[at]),f32::from_bits(data[at+1]),f32::from_bits(data[at+2]));
+        for i in 0..200 {
+            let p=Vec3::new(-40.,17.+i as f32*0.47,(i*37%900) as f32);
+            let ray=Vec3::new(1.,(i as f32*0.37).sin()*0.07,(i as f32*0.13).cos()*0.8).normalize();
+            let inv=Vec3::ONE/ray;
+            let distance=|lo:Vec3,hi:Vec3| {let a=(lo-p)*inv;let b=(hi-p)*inv;let near=a.min(b).max_element().max(0.);let far=a.max(b).min_element();if far>=near && near>0. {near}else{f32::INFINITY}};
+            let reference=original.iter().map(|(b,id)|(distance(b.lo,b.hi),*id)).filter(|(d,_)|*d<1600.).min_by(|a,b|a.0.total_cmp(&b.0));
+            let mut nearest=1600.;let mut hit=None;let mut node=0usize;let mut visits=0;
+            while node<data.len()/8 {
+                visits+=1;assert!(visits<=data.len()/8);
+                let current=node;let at=current*8;node=data[at+3] as usize;
+                let enter=distance(vec3(at),vec3(at+4));
+                if enter>=nearest {continue;}
+                let payload=data[at+7];
+                if payload==u32::MAX {node=current+1;}else {nearest=enter;hit=Some((enter,payload));}
+            }
+            assert_eq!(hit,reference,"ray {i}");
+        }
     }
     #[test]
     fn reef_plants_reject_cliffs_and_overhangs_but_keep_clear_ground() {

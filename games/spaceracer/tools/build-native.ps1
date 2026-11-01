@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('dev','release')][string]$Profile = 'dev',
+    [ValidateSet('dev','release')][string]$Profile = 'release',
     [string]$TargetDirectory = $env:CARGO_TARGET_DIR
 )
 $ErrorActionPreference = 'Stop'
@@ -22,7 +22,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $game 'rules') -Destination $content -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $game 'assets') -Destination $content -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $game 'licenses') -Destination $content -Recurse -Force
-    Write-Output "Built $output/spaceracer.exe (native development port; see games/spaceracer/README.md for gaps)"
+    Write-Output "Built $output/spaceracer.exe ($Profile profile; native development port; see games/spaceracer/README.md for gaps)"
 } finally {
     Pop-Location
     $env:CARGO_TARGET_DIR = $prior

@@ -26,6 +26,7 @@ pub mod ui;
 pub mod manners;
 pub mod screenshot;
 pub mod quality;
+pub mod profile;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
 pub use text::{FieldEvent, TextEvent, TextField};
@@ -243,11 +244,11 @@ impl Default for Config {
 }
 
 /// The present path shared by the window and headless capture.
-struct Output { presenter: Presenter, hud: HudRenderer, picture: Option<wgpu::Texture>, rects: Vec<(u32, u32, u32, u32)> }
+struct Output { presenter: Presenter, hud: HudRenderer, picture: Option<wgpu::Texture>, rects: Vec<(u32, u32, u32, u32)>, timings: profile::DrawTimings }
 
 impl Output {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Self, String> {
-        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None, rects: Vec::new() })
+        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None, rects: Vec::new(), timings: Default::default() })
     }
     fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>) -> Result<(), String> {
         self.draw_with(gpu, renderer, draw, size, split, target, max_height, true)
@@ -268,9 +269,16 @@ impl Output {
             renderer.reset_history();
         }
         let picture = self.picture.as_ref().unwrap();
+        let started = Instant::now();
         if scene || fresh { renderer.try_render_into(gpu, &views, &draw.light, picture)?; }
+        self.timings.render_ms = started.elapsed().as_secs_f64() * 1000.;
+        let started = Instant::now();
         self.hud.prepare(gpu, &draw.hud)?;
-        self.presenter.present(gpu, picture, target, Some(&self.hud), None)
+        self.timings.hud_ms = started.elapsed().as_secs_f64() * 1000.;
+        let started = Instant::now();
+        self.presenter.present(gpu, picture, target, Some(&self.hud), None)?;
+        self.timings.present_ms = started.elapsed().as_secs_f64() * 1000.;
+        Ok(())
     }
 }
 
@@ -319,13 +327,21 @@ impl<'g> Headless<'g> {
     }
     /// Render an exact sub-tick phase (for saved gameplay moments).
     pub fn frame_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<Vec<u8>, String> {
+        self.render_at(game, alpha)?;
+        Ok(self.gpu.read_rgba8(&self.target))
+    }
+    /// Submit a native-resolution frame without copying its pixels to the CPU.
+    /// Timings measure CPU wall time; GPU completion is deliberately separate.
+    pub fn render_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<profile::DrawTimings, String> {
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) { return Err("alpha must be in 0..1".into()); }
         let split = game.split();
         let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, renderer: &mut self.renderer };
+        let started = Instant::now();
         let draw = game.draw(&mut frame)?;
+        let game_ms = started.elapsed().as_secs_f64() * 1000.;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
         self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), None)?;
-        Ok(self.gpu.read_rgba8(&self.target))
+        Ok(profile::DrawTimings { game_ms, ..self.out.timings })
     }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
 }
