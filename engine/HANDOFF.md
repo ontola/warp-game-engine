@@ -1,3 +1,13 @@
+## 2026-11-01 SpaceRacer varied AI and finish racing
+
+Luau personality/plan/boost_plan give six seeded driving styles, smooth lateral
+plans, optional pickup pursuit and independent boost clocks/cooldowns. Lua must
+check optional pickup type: serde null is truthy userdata, not nil. Finished
+cars run race-speed/boost choreography with predictive braking, bank/fins and
+world motion blur; finish times/results and mounted hardware survive. Normal AI
+is skipped for finished drivers. 41 simulation tests pass; 1080p finish-racing
+scenario captures at build/spaceracer-finish-racing. See game parity review.
+
 ## 2026-11-01 SpaceRacer menu selections
 
 Local World/Difficulty/Seed default to Random. Start new race resolves only

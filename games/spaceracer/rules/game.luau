@@ -35,8 +35,22 @@ local function track(c)
         corner_shift={-.055,.055},loop_radius={185,225},road_width={23,6,9}}
     return p
 end
+local function personality(c)
+    local k=(c.seed+c.slot*5)%6+1
+    return {pace=({1.02,.98,1,.96,1.03,.99})[k],caution=({.94,1.07,1,1.10,.96,1.02})[k],
+        line=({-.18,.20,0,-.08,.12,-.24})[k],strafe=({.37,.23,.31,.26,.42,.34})[k],
+        reserve=({30,55,38,50,28,42})[k],boost_chance=({.82,.45,.65,.52,.90,.70})[k],
+        boost_cooldown=({2.2,4.4,3.1,4,2.6,3.6})[k],phase=.11+k*.23}
+end
 local function plan(c)
-    return {line=(c.r1*2-1)*.22,pace=.92+c.r2*.12,next=c.clock+3+c.r3*5}
+    return {line=clamp(c.style.line+(c.r1-.5)*.18,-.36,.36),
+        pace=c.style.pace+(c.r2-.5)*.06,next=c.clock+2.2+c.r3*4,
+        seek_item=c.r4<.58}
+end
+local function boost_plan(c)
+    -- An independent decision clock, including on lap one: crossing the lap
+    -- boundary or reaching a straight no longer triggers everyone together.
+    return {attempt=c.r1<c.style.boost_chance,next=c.clock+.35+c.r2*1.35}
 end
 local function ai(c)
     local p,n=c.p,c.node
@@ -49,11 +63,15 @@ local function ai(c)
         local bend=math.abs(v.curve);peak=math.max(peak,bend)
         local speed=clamp((c.hard and 2.7 or 1.65)/math.max(.001,bend),c.hard and 160 or 125,c.boost_speed)
         if v.hairpin then speed=clamp(1.5/math.max(.001,bend),75,c.boost_speed) end
-        safe=math.min(safe,math.sqrt((speed*c.pace)^2+300*v.ahead))
+        safe=math.min(safe,math.sqrt((speed*c.pace/c.style.caution)^2+300*v.ahead/c.style.caution))
     end
     local brake=clamp((p.speed-safe)/35,0,1)
     if not c.hard and math.abs(n.curve)>.006 and p.speed>145 then brake=math.max(brake,.48) end
     local target=c.line*n.width
+    if type(c.pickup)=="table" and peak<.004 and not c.has_item then
+        local weight=clamp(1-c.pickup.ahead/350,.2,1)
+        target=target+(c.pickup.x-target)*weight
+    end
     if math.abs(c.next_curve)>.003 then target-=math.sign(c.next_curve)*n.width*.18 end
     if math.abs(n.curve)>.004 then target+=math.sign(n.curve)*n.width*.22 end
     if n.zone=="repair" and p.energy<70 then target=-n.width*.29 end
@@ -63,11 +81,11 @@ local function ai(c)
     elseif c.next_route~=0 then target=c.next_route*15 end
     local lateral=clamp((target-p.x)*2.4,-45,45)
     local demand=lateral+n.curve*p.speed^2*(.25+.75*p.slide)/(14-12.2*p.slide)
-    local strafe=clamp(demand*.30/46,-.75,.75)
+    local strafe=clamp(demand*c.style.strafe/46,-.75,.75)
     local heading=math.asin(clamp((demand-strafe*46)/math.max(p.speed,60),-.75,.75))
     local steer=clamp((n.curve*p.speed+heading*(3.5-2.7*p.slide)+(heading-p.heading)*3.8+(lateral-p.slip)*.012)/(1.65+2.15*p.slide),-1,1)
     if c.at_jump then brake=0 end
-    return {drive={throttle=1,steer=steer,strafe=strafe,brake=brake,boost=p.lap>1 and p.energy>40 and peak<.003 and not c.near_jump and brake<.05 and c.boost_ready and p.boost<=0},reset=c.missed,fire=c.has_item and c.fire_tick}
+    return {drive={throttle=1,steer=steer,strafe=strafe,brake=brake,boost=p.lap>1 and p.energy>math.max(p.boost_cost+4,c.style.reserve) and peak<.003/c.style.caution and not c.near_jump and brake<.05 and c.boost_ready and p.boost<=0},reset=c.missed,fire=c.has_item and c.fire_tick}
 end
 local function pickup(c)
     local pool=c.rank==1 and {"sentry","railgun","glidebomb"} or {"missile","warp","warp","sentry","emp","railgun","glidebomb"}
@@ -134,10 +152,30 @@ local function victory(c)
     local t=(c.age%4.8)/4.8
     local shot=math.floor(c.age/4.8)%4
     local offsets={{-13+4*t,6,-21},{11,4.5,21-5*t},{20-4*t,9,-5},{-7,25-6*t,-23}}
-    return {speed=clamp(1.3/math.max(.005,math.abs(curve)),140,225),
-        throttle=.72,steer=clamp(curve*c.speed*.5,-1,1),
-        strafe=clamp(curve*c.speed*.22,-.65,.65),trim=clamp(c.crest*c.speed*.25,-.3,.3),
-        hop_height=18,offset=offsets[shot+1],fov=({58,52,56,62})[shot+1]}
+    -- Keep racing after the classification is fixed. Look ahead for braking,
+    -- and stagger boost decisions per driver rather than a synchronized parade.
+    local peak=math.abs(curve)
+    local safe=c.stack_speed
+    for _,v in ipairs(c.preview) do
+        local bend=math.abs(v.curve);peak=math.max(peak,bend)
+        local corner=clamp((v.hairpin and 1.45 or 2.15)/math.max(.001,bend),105,c.stack_speed)
+        safe=math.min(safe,math.sqrt(corner^2+2*240*v.ahead))
+    end
+    local boost=c.ready and c.boost<=0 and peak<.0035 and not c.near_jump and safe>c.top_speed*1.12
+    local powered=c.boost>0 or boost
+    local cruise=c.top_speed*(.96+.04*math.sin(c.age*.23+c.slot*1.7))
+    local target=powered and (c.on_pad and c.stack_speed or c.boost_speed) or (c.on_pad and c.boost_speed or cruise)
+    target=math.min(target,safe)
+    local brake=clamp((c.speed-safe)/65,0,1)
+    local steer=clamp(curve*c.speed*.6,-1,1)
+    return {speed=target,acceleration=brake>.02 and 260 or c.speed>target and 38 or (powered or c.on_pad) and 230 or 150,
+        throttle=brake>.15 and .25 or 1,brake=brake,boost=boost,
+        boost_delay=3.5+c.slot*.37+.7*math.sin(c.age*.4+c.slot),
+        steer=steer,strafe=clamp(curve*c.speed*.24,-.65,.65),
+        trim=clamp(c.crest*c.speed*.25,-.3,.3),
+        line=clamp(-c.next_curve*35,-.24,.24)+.035*math.sin(c.age*.6+c.slot),
+        heading=clamp(curve*c.speed*(.1+brake*.18),-.22,.22),bank=-steer*.19,
+        hop_height=24,offset=offsets[shot+1],fov=({58,52,56,62})[shot+1]}
 end
 local function missile(c)
     local speed=math.min(500,math.max(80,c.launch_speed)+math.max(0,c.age-.18)*620)
@@ -158,4 +196,4 @@ local function warp(c)
     return {speed=exit+(630-exit)*smooth(0,.4,c.age)*smooth(0,.6,c.remaining),acceleration=850,lateral=90,
         strength=smooth(0,.18,c.age)*smooth(0,.4,c.remaining)}
 end
-return {combat=combat,warp=warp,victory=victory,missile=missile,track=track,ai=ai,plan=plan,pickup=pickup,balance=balance,menu=menu,menu_defaults=menu_defaults,environment=environment,activate=activate}
+return {combat=combat,warp=warp,victory=victory,missile=missile,track=track,ai=ai,plan=plan,personality=personality,boost_plan=boost_plan,pickup=pickup,balance=balance,menu=menu,menu_defaults=menu_defaults,environment=environment,activate=activate}

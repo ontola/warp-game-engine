@@ -50,6 +50,19 @@ impl Weapon {
         }
     }
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AiStyle {
+    pub pace:f64, pub caution:f64, pub line:f64, pub strafe:f64,
+    pub reserve:f64, pub boost_chance:f64, pub boost_cooldown:f64, pub phase:f64,
+}
+impl AiStyle {
+    fn valid(&self)->bool {
+        (0.8..=1.2).contains(&self.pace) && (0.75..=1.3).contains(&self.caution)
+            && (-0.4..=0.4).contains(&self.line) && (0.1..=0.6).contains(&self.strafe)
+            && (25.0..=80.).contains(&self.reserve) && (0.1..=1.).contains(&self.boost_chance)
+            && (1.0..=10.).contains(&self.boost_cooldown) && (0.0..=5.).contains(&self.phase)
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Driver {
     pub motion: Motion,
@@ -73,6 +86,10 @@ pub struct Driver {
     pub shot_time: f64,
     pub shot_count: u64,
     pub ai_rng: u64,
+    pub ai_style: AiStyle,
+    pub ai_line_goal: f64,
+    pub ai_boost_next: f64,
+    pub ai_seek_item: bool,
     pub ai_next: f64,
     pub ai_line: f64,
     pub ai_pace: f64,
@@ -190,8 +207,11 @@ impl Race {
                 ..Default::default()
             })
             .collect();
-        let drivers = (0..6)
-            .map(|i| Driver {
+        let mut drivers=Vec::with_capacity(6);
+        for i in 0..6 {
+            let style:AiStyle=rules.call("personality",serde_json::json!({"seed":seed,"slot":i}))?;
+            if !style.valid() {return Err("invalid AI personality".into());}
+            drivers.push(Driver {
                 motion: Motion::default(),
                 checkpoint: Checkpoints::default(),
                 bump: Bump::default(),
@@ -218,12 +238,16 @@ impl Race {
                 shot_count: 0,
                 ai_rng: seed as u64 * 9176 + i as u64 * 104729 + 1,
                 ai_next: 0.,
-                ai_line: 0.,
-                ai_pace: 1.,
+                ai_line: style.line,
+                ai_line_goal: style.line,
+                ai_pace: style.pace,
+                ai_boost_next: style.phase,
+                ai_seek_item: false,
+                ai_style: style,
                 boost_ready: 4. + i as f64 * 0.7,
                 last_jink: -99.,
-            })
-            .collect();
+            });
+        }
         let mut pickups = vec![];
         for k in 1..=(world.track.length / balance.pickup_spacing) as usize {
             let distance = k as f64 * balance.pickup_spacing;
@@ -316,10 +340,11 @@ impl Race {
     }
     pub fn ai(&mut self, i: usize) -> Controls {
         if self.clock >= self.drivers[i].ai_next {
-            let args = serde_json::json!({"r1":self.random(i),"r2":self.random(i),"r3":self.random(i),"clock":self.clock});
+            let args = serde_json::json!({"r1":self.random(i),"r2":self.random(i),"r3":self.random(i),"r4":self.random(i),"clock":self.clock,"style":self.drivers[i].ai_style});
             match self.rules.call::<serde_json::Value>("plan", args) {
                 Ok(v) => {
-                    self.drivers[i].ai_line = v["line"].as_f64().unwrap_or(0.);
+                    self.drivers[i].ai_line_goal = v["line"].as_f64().unwrap_or(0.).clamp(-0.4,0.4);
+                    self.drivers[i].ai_seek_item = v["seek_item"].as_bool().unwrap_or(false);
                     self.drivers[i].ai_pace = v["pace"].as_f64().unwrap_or(1.);
                     self.drivers[i].ai_next = v["next"].as_f64().unwrap_or(self.clock + 5.);
                 }
@@ -329,9 +354,29 @@ impl Race {
                 }
             }
         }
+        self.drivers[i].ai_line=crate::handling::toward(self.drivers[i].ai_line,self.drivers[i].ai_line_goal,0.14*DT);
+        let mut boost_request=false;
+        if self.clock>=self.drivers[i].ai_boost_next {
+            let args=serde_json::json!({"r1":self.random(i),"r2":self.random(i),"clock":self.clock,"style":self.drivers[i].ai_style});
+            match self.rules.call::<serde_json::Value>("boost_plan",args) {
+                Ok(v)=>{
+                    let next=v["next"].as_f64().unwrap_or(self.clock+1.);
+                    self.drivers[i].ai_boost_next=next.clamp(self.clock+0.1,self.clock+5.);
+                    boost_request=v["attempt"].as_bool().unwrap_or(false) && self.clock>self.drivers[i].boost_ready;
+                }
+                Err(e)=>{self.script_error=Some(e);return Controls::default();}
+            }
+        }
         let p = &self.pilots[i];
         let d = &self.drivers[i];
         let track = &self.world.track;
+        let pickup=if d.ai_seek_item && d.item.is_none() {
+            self.pickups.iter().filter_map(|item| {
+                let ahead=(item.distance-p.distance).rem_euclid(track.length);
+                (item.cooldown<=0. && (10.0..350.).contains(&ahead))
+                    .then_some((ahead+(item.x-p.x).abs()*2.,serde_json::json!({"ahead":ahead,"x":item.x})))
+            }).min_by(|a,b|a.0.total_cmp(&b.0)).map(|v|v.1)
+        }else{None};
         let n = track.sample(p.distance);
         let next = track.sample(p.distance + 100.);
         let preview: Vec<_> = [0., 30., 65., 110., 165.]
@@ -342,7 +387,7 @@ impl Race {
                 serde_json::json!({"ahead":ahead,"curve":v.curve,"hairpin":v.feature=="hairpin"})
             })
             .collect();
-        let mut args = serde_json::json!({"p":p,"node":{"curve":n.curve,"width":n.geometry.width,"zone":n.zone,"split_gap":n.split_gap,"route":n.preferred_route},"preview":preview,"hard":track.difficulty=="hard","boost_speed":BOOST_SPEED,"line":d.ai_line,"pace":d.ai_pace,"next_curve":next.curve,"next_route":next.preferred_route,"boost_ready":self.clock>d.boost_ready,"missed":d.checkpoint.missed,"has_item":d.item.is_some(),"fire_tick":self.tick%120==i as u64*17,
+        let mut args = serde_json::json!({"p":p,"node":{"curve":n.curve,"width":n.geometry.width,"zone":n.zone,"split_gap":n.split_gap,"route":n.preferred_route},"preview":preview,"hard":track.difficulty=="hard","boost_speed":BOOST_SPEED,"line":d.ai_line,"pace":d.ai_pace,"style":d.ai_style,"pickup":pickup,"next_curve":next.curve,"next_route":next.preferred_route,"boost_ready":boost_request,"missed":d.checkpoint.missed,"has_item":d.item.is_some(),"fire_tick":self.tick%120==i as u64*17,
             "near_jump":self.world.jump_distances.iter().any(|j|(j[0]-p.distance).rem_euclid(track.length)<500.),"at_jump":self.world.jump_distances.iter().any(|j|(j[0]-p.distance).rem_euclid(track.length)<180.)});
         if p.airborne {
             let (at, _, _) = track.project(d.motion.air.position, p.distance, track.length);
@@ -466,7 +511,9 @@ impl Race {
         }
         let mut input: Vec<_> = (0..self.pilots.len())
             .map(|i| {
-                if self.drivers[i].bot || self.pilots[i].finished {
+                if self.pilots[i].finished {
+                    Controls::default() // Finished drivers have their own racing policy.
+                } else if self.drivers[i].bot {
                     self.ai(i)
                 } else {
                     controls.get(i).copied().unwrap_or_default()
@@ -603,7 +650,7 @@ impl Race {
             }
             p.refill(DT, self.balance.refill_rate);
             if input[i].drive.boost && p.boost > 0. {
-                d.boost_ready = self.clock + 2. + i as f64 * 0.37;
+                d.boost_ready = self.clock + d.ai_style.boost_cooldown;
             }
             if p.energy <= 0. && !p.finished {
                 self.crash(i);
@@ -1182,6 +1229,51 @@ mod tests {
         assert!(r.pilots[0].energy > 0.);
     }
     #[test]
+    fn ai_styles_and_boost_decisions_are_distinct_and_seeded() {
+        fn trace() -> (Vec<Vec<u64>>, Vec<Vec<Controls>>, Vec<[bool; 2]>) {
+            let mut r = Race::new(35, "hard", "city", 0, 3);
+            // Identical straight-line snapshots isolate driver decisions from
+            // different grid positions, collisions and track timing.
+            let distance = (0..(r.world.track.length as usize)).step_by(10)
+                .map(|v| v as f64).find(|&s| {
+                    [0.,30.,65.,100.,110.,165.].iter().all(|a| r.world.track.sample(s+a).curve.abs()<0.002)
+                        && !r.world.jump_distances.iter().any(|j| (j[0]-s).rem_euclid(r.world.track.length)<500.)
+                }).expect("safe straight for boost decisions");
+            for p in &mut r.pilots {
+                p.distance=distance; p.lap=2; p.speed=250.; p.energy=100.; p.x=0.;
+            }
+            let mut boosts=vec![Vec::new();6];
+            let mut controls=vec![Vec::new();6];
+            let mut pickup_choices=vec![[false;2];6];
+            for tick in 0..1440 {
+                r.clock=tick as f64*DT;
+                for i in 0..6 {
+                    let c=r.ai(i);
+                    if c.drive.boost {boosts[i].push(tick);}
+                    controls[i].push(c);
+                    pickup_choices[i][r.drivers[i].ai_seek_item as usize]=true;
+                }
+                assert!(r.script_error.is_none(),"{:?}",r.script_error);
+            }
+            (boosts,controls,pickup_choices)
+        }
+        let (boosts,controls,choices)=trace();
+        let (again,again_controls,_)=trace();
+        assert_eq!(boosts,again,"seeded decisions must replay exactly");
+        assert_eq!(serde_json::to_string(&controls).unwrap(),serde_json::to_string(&again_controls).unwrap());
+        assert!(boosts.iter().all(|v| !v.is_empty()),"every driver uses boost: {boosts:?}");
+        let first:std::collections::BTreeSet<_>=boosts.iter().map(|v|v[0]).collect();
+        assert!(first.len()>=4,"boost decisions should not synchronize: {boosts:?}");
+        for i in 0..6 {
+            for j in i+1..6 {
+                assert_ne!(boosts[i],boosts[j]);
+                assert!(controls[i].iter().zip(&controls[j]).any(|(a,b)| (a.drive.steer-b.drive.steer).abs()>0.02),"identical cornering lines for {i}/{j}");
+            }
+        }
+        assert!(choices.iter().any(|c| c[0]&&c[1]),"drivers must sometimes pass up pickups");
+    }
+
+    #[test]
     fn race_ai_progress() {
         for seed in [31, 33, 35] {
             let mut r = Race::new(seed, "normal", "city", 0, 1);
@@ -1191,6 +1283,7 @@ mod tests {
                     break;
                 }
             }
+            assert!(r.script_error.is_none(), "{:?}", r.script_error);
             let finish = r.pilots.iter().filter(|p| p.finished).count();
             println!("seed {seed} finishers {finish}");
             assert!(finish >= 4, "seed {seed}: {finish}");

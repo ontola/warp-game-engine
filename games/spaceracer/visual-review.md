@@ -487,3 +487,13 @@ flight/landing traces pass; underside crash positions now stop at the contact
 rather than up to one tick beyond it. Native 1920x1080 screenshots are in
 `build/spaceracer-flight-combat`. These staged captures do not certify controller
 feel or frame-time performance.
+
+## Finish racing - 1 November 2026
+
+`scenarios/finish-racing.json`, seed 35 / hard / city, native 1920x1080:
+`build/spaceracer-finish-racing/finish-boost.png` shows the rear-quarter boost
+shot with mounted sentry, bright exhaust and sharp electrical arcs. Front/side
+shots and the all-finished results view retain moving vehicles. The first
+boost capture records 434 m/s; simulation tests exercise repeated boosts and
+hairpin braking. World blur is enabled in replay; effects remain after blur.
+AI driving styles are validated in simulation rather than inferred from stills.

@@ -1,0 +1,55 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": "weapon-review sentry",
+      "capture": "before-finish.png"
+    },
+    {
+      "cmd": "finish 0",
+      "capture": "finish-entry.png"
+    },
+    {
+      "ticks": 120,
+      "capture": "finish-boost.png",
+      "state": "finish-boost.json",
+      "expect": "/pilots/0/boost",
+      "min": 0.1
+    },
+    {
+      "expect": "/pilots/0/speed",
+      "min": 400
+    },
+    {
+      "ticks": 540,
+      "capture": "finish-front.png"
+    },
+    {
+      "ticks": 576,
+      "capture": "finish-side.png"
+    },
+    {
+      "cmd": [
+        "finish 1",
+        "finish 2",
+        "finish 3",
+        "finish 4",
+        "finish 5"
+      ],
+      "ticks": 576,
+      "capture": "results-racing.png",
+      "state": "results-racing.json"
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    }
+  ]
+}

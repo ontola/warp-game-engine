@@ -233,6 +233,8 @@ impl Rules {
             "ai",
             "track",
             "plan",
+            "personality",
+            "boost_plan",
             "pickup",
             "balance",
             "menu",

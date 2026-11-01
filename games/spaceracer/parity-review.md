@@ -227,3 +227,28 @@ Start, same-seed restart, Random and resume), plus the native 1080p
 `scenarios/menu-settings.json` flow. Captures in `build/spaceracer-menu-settings`
 show random defaults, explicit choices, new race and pause. No physical pad or
 Android validation; this does not change the host settings protocol.
+
+## Racing personalities and finish laps - 1 November 2026
+
+The six seeded AI styles now differ in racing line, pace, braking margin,
+strafe use, energy reserve and boost cadence. Independent decision clocks run
+before boost becomes available, so reaching lap two or a straight does not
+trigger the whole field together. Drivers periodically choose whether to chase
+an available pickup; line changes blend smoothly. These decisions live in Luau;
+Rust retains deterministic RNG, timers and the unchanged movement integrators.
+
+Finish laps now maintain race speed and use staggered boosts, with corner
+anticipation, braking, bank and control-surface input. Ending a boost coasts down
+instead of braking hard. Existing boosts survive the finish line. Cinematic
+camera angles and mounted hardware remain, world motion blur stays enabled,
+and results/finish times remain fixed. This remains a noncompetitive ribbon
+pilot after finishing, not the normal collision/weapon AI.
+
+Validation: all 41 simulation tests pass, including deterministic but distinct
+six-driver control/boost traces, pickup choice variation, three completed races
+(seeds 31/33/35, all six finish), finish boost speed above 440 m/s, staggered
+activation, corner braking and immutable finish results. The native 1080p
+`scenarios/finish-racing.json` capture shows 434 m/s (1562 km/h) one second after
+finishing, with boost emission, animated controls and cinematic angles.
+Captures: `build/spaceracer-finish-racing`. This is not a hardware-controller
+playtest or a claim of tactical/human-like AI parity on every generated seed.
