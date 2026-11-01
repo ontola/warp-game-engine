@@ -17,6 +17,9 @@ const UV: [f32; 4] = [0., 0., 1., 1.];
 
 #[derive(Deserialize)]
 pub struct Config {
+    boost_arc_start: f32, boost_arc_sustain: f32, boost_arc_decay: f32,
+    warp_world_pixels: f32, warp_view_pixels: f32,
+    emp_spark_fade: f32, sentry_spark_life: f32,
     damage_smoke_energy: f32,
     respawn_light_power: f32,
     nozzle: [f32; 3],
@@ -54,6 +57,8 @@ impl Config {
             .from_value(script::mlua::Value::Table(value))
             .map_err(|e| e.to_string())?;
         let values = [
+            c.boost_arc_start,c.boost_arc_sustain,c.boost_arc_decay,
+            c.warp_world_pixels,c.warp_view_pixels,c.emp_spark_fade,c.sentry_spark_life,
             c.damage_smoke_energy,
             c.respawn_light_power,
             c.idle_length,
@@ -72,6 +77,7 @@ impl Config {
             c.boost_heat_pixels,
         ];
         if values.iter().any(|v| !v.is_finite() || *v < 0.)
+            || c.warp_view_pixels>64. || c.warp_world_pixels>64. || c.sentry_spark_life>0.25 || c.emp_spark_fade<=0.
             || c.width <= 0.
             || !(0.02..=0.8).contains(&c.trail_life)
             || !(0.008..=0.1).contains(&c.trail_interval)
@@ -89,6 +95,7 @@ impl Config {
 }
 #[derive(Default)]
 struct Engine {
+    boost_start: Option<f32>,
     power: f32,
     brake: f32,
     travel: f32,
@@ -122,6 +129,7 @@ impl Engine {
         }
     }
 }
+struct Impact {target:usize,local:Vec3,normal:Vec3,birth:f32,seed:u32}
 pub struct Jets {
     pub config: Config,
     engines: Vec<Engine>,
@@ -131,6 +139,7 @@ pub struct Jets {
     time: f32,
     strike: u32,
     seen_shots: [u64; 6],
+    impacts: VecDeque<Impact>,
     uploaded: bool,
 }
 fn smooth(a: f32, b: f32, x: f32) -> f32 {
@@ -176,6 +185,7 @@ impl Jets {
             time: -1.,
             strike: 0,
             seen_shots: [0; 6],
+            impacts: VecDeque::with_capacity(24),
             uploaded: false,
         })
     }
@@ -219,6 +229,8 @@ impl Jets {
                     h.clear();
                 }
             }
+            if !boosting {e.boost_start=None;} else if e.boost_start.is_none(){e.boost_start=Some(time);}
+            let onset=e.boost_start.map_or(0.,|t| (-(time-t).max(0.)*c.boost_arc_decay).exp());
             let boost = if boosting { 1. } else { 0. };
             let color =
                 Vec3::new(0.25, 0.7, 1.).lerp(Vec3::from_array(super::visuals::COLORS[i]), 0.45);
@@ -245,6 +257,25 @@ impl Jets {
                 }
             }
 
+            if p.emp_time>0. && !p.crashed {
+                let fade=smooth(0.,c.emp_spark_fade,p.emp_time as f32);
+                for k in 0..7u32 {
+                    let seed=self.strike.wrapping_mul(619).wrapping_add(i as u32*83+k*37);
+                    if hash(seed)<0.22 {continue;}
+                    let side=if k%2==0 {-1.}else{1.};
+                    let anchors=[Vec3::new(-2.45,0.65,-3.9),Vec3::new(2.45,0.65,-3.9),Vec3::new(-3.15,1.1,-1.),Vec3::new(3.15,1.1,-1.),Vec3::new(-4.4,0.3,0.),Vec3::new(4.4,0.3,0.),Vec3::new(0.,1.5,2.)];
+                    let start=anchors[k as usize]+Vec3::Y*hash(seed+1)*0.15;
+                    let end=start+Vec3::new(side*(0.4+hash(seed+4)),0.2+hash(seed+5)*0.45,hash(seed+6)-0.5);
+                    let mut a=base.transform_point3(start);
+                    for j in 1..=3u32 {
+                        let t=j as f32/3.;let kink=if j==3 {0.}else{(hash(seed+j*19)-0.5)*0.65};
+                        let b=base.transform_point3(start.lerp(end,t)+Vec3::Y*kink);
+                        let mut arc=shaft(a,b,0.07,Vec3::new(0.45,0.72,1.)*radiance*fade*2.2,5,[0.;4]);arc.min_pixels=2.;
+                        self.sprites.push(arc);a=b;
+                    }
+                    self.sprites.push(glow(base.transform_point3(start),[0.6,0.6],Vec3::new(0.5,0.8,1.)*radiance*fade,2));
+                }
+            }
             let drive = if race.countdown <= 0. {
                 smooth(0., 125., p.acceleration as f32)
             } else {
@@ -335,11 +366,15 @@ impl Jets {
                                 .strike
                                 .wrapping_mul(151)
                                 .wrapping_add(i as u32 * 83 + side as u32 * 19 + branch * 71);
-                            if hash(seed) < 0.60 {
+                            if branch>0 && hash(seed) < 0.60 {
                                 continue;
                             }
                             let angle = hash(seed + 1) * std::f32::consts::TAU;
-                            let reach = 3. + hash(seed + 2) * 6.;
+                            let reach = (c.boost_arc_sustain+(c.boost_arc_start-c.boost_arc_sustain)*onset)*(0.65+hash(seed+2)*0.35);
+                            let road=race.world.track.sample(p.distance-reach as f64);
+                            let road_x=p.x+(hash(seed+3) as f64-0.5)*(3.+onset as f64*8.);
+                            let grounded=branch==0 && road.supported(road_x,0.5);
+                            let end=if grounded {road.point(road_x,0.12)}else{at+axis*reach+pose.basis.x_axis*angle.cos()*(1.+onset*3.)+pose.basis.y_axis*angle.sin()*(1.+onset*3.)};
                             let radial =
                                 pose.basis.x_axis * angle.cos() + pose.basis.y_axis * angle.sin();
                             let mut a = at;
@@ -347,16 +382,23 @@ impl Jets {
                                 let t = segment as f32 / 5.;
                                 let kink = (hash(seed + segment * 23) - 0.5)
                                     * (t * std::f32::consts::PI).sin();
-                                let b = at + axis * (reach * t) + radial * (t * 0.8 + kink * 0.8);
+                                let b = at.lerp(end,t) + radial * kink * (0.8+onset*2.5);
                                 self.sprites.push(shaft(
                                     a,
                                     b,
-                                    0.10 * (1. - t * 0.6),
+                                    (0.09+onset*0.08) * (1. - t * 0.6),
                                     light * 2.,
                                     5,
                                     [0.; 4],
                                 ));
                                 a = b;
+                            }
+                            if grounded {
+                                let f=road.frame(road_x);
+                                let mut contact=glow(end,[2.+onset*3.,2.+onset*3.],light*(1.+onset*2.),12);
+                                contact.facing=render::sprites::Facing::Fixed {right:f.x_axis,up:f.z_axis};
+                                self.sprites.push(contact);
+                                if side==0 {self.lights.push(LocalLight {position:end+f.y_axis*0.45,direction:f.y_axis,intensity_cd:color*(180.+onset*650.),range_m:7.,inner_cos:1.,outer_cos:-1.,source_radius_m:0.4,falloff:2.});}
                             }
                         }
                     }
@@ -404,6 +446,12 @@ impl Jets {
                 }
             }
         }
+        for blast in &race.blasts {
+            if blast.kind==spaceracer::race::Weapon::Emp && blast.age<0.18 {
+                let fade=(1.-blast.age as f32/0.18).powi(2);
+                self.sprites.push(glow(blast.position+Vec3::Y*2.,[7.,7.],Vec3::new(0.4,0.8,1.)*radiance*fade*3.,2));
+            }
+        }
         // World lenses are shared by all cameras; view lenses are explicitly
         // restricted to the owner. Both refract scene colour before HUD composition.
         for (i, pose) in poses.iter().enumerate() {
@@ -414,14 +462,14 @@ impl Jets {
                     position_radius: at.extend(11.5).to_array(),
                     axis_length: [0., 0., 1., 7.],
                     colour_alpha: [0., 0., 0., power],
-                    params: [3., 0., time, 18.],
+                    params: [3., 0., time, c.warp_world_pixels],
                 });
                 if i < 4 {
                     self.heat.push(render::exhaust::Sprite {
                         position_radius: at.extend(1.).to_array(),
                         axis_length: [0., 0., 0., 0.],
                         colour_alpha: [0., 0., 0., power],
-                        params: [4., i as f32, time, 24.],
+                        params: [4., i as f32, time, c.warp_view_pixels],
                     });
                 }
                 for k in 0..7 {
@@ -445,42 +493,38 @@ impl Jets {
         }
         // Sentry shot IDs are consumed once per presented frame, not per tick.
         // Thus 30/60/120-Hz views all see a shot, but no tracer repeats next frame.
-        let previous_shots = self.seen_shots;
-        for beam in &race.beams {
-            if beam.rail || beam.serial <= previous_shots[beam.owner] {
-                continue;
+        for owner in 0..poses.len() {
+            let Some(beam)=race.beams.iter().filter(|b|!b.rail && b.owner==owner && b.serial>self.seen_shots[owner]).max_by_key(|b|b.serial) else {continue;};
+            self.seen_shots[owner]=beam.serial;
+            let sim_pose=race.pose(owner);let pose=poses[owner];
+            let from=pose.origin+pose.basis*(sim_pose.basis.transpose()*(beam.from-sim_pose.origin));
+            let to=if let Some(target)=beam.target {
+                let target_pose=poses[target];
+                let toward=(target_pose.basis.transpose()*(from-target_pose.origin)).normalize_or_zero();
+                // Strike the visible outer shell, not an invisible point in its centre.
+                let radius=1./(toward/Vec3::new(3.2,1.0,4.4)).length().max(0.001);
+                let local=toward*(radius+0.15)+Vec3::Y*0.45;
+                self.impacts.push_back(Impact {target,local,normal:toward,birth:time,seed:beam.serial as u32});
+                target_pose.origin+target_pose.basis*local
+            } else {beam.to};
+            let mut line=shaft(from,to,0.045,Vec3::new(1.,0.88,0.6)*radiance*2.,11,[0.;4]);
+            line.min_pixels=2.;self.sprites.push(line);
+            self.sprites.push(glow(from,[0.8,0.8],Vec3::new(1.,0.8,0.4)*radiance*5.,9));
+            self.lights.push(LocalLight {position:from,direction:Vec3::Z,intensity_cd:Vec3::new(1.,0.7,0.3)*900.,range_m:7.,inner_cos:1.,outer_cos:-1.,source_radius_m:0.1,falloff:2.});
+        }
+        while self.impacts.len()>24 || self.impacts.front().is_some_and(|s|time-s.birth>c.sentry_spark_life || time<s.birth) {self.impacts.pop_front();}
+        for impact in &self.impacts {
+            if race.pilots[impact.target].crashed {continue;}
+            let pose=poses[impact.target];let age=(time-impact.birth).max(0.);let fade=1.-age/c.sentry_spark_life;
+            let at=pose.origin+pose.basis*impact.local;let outward=pose.basis*impact.normal;
+            self.sprites.push(glow(at,[0.75,0.75],Vec3::new(1.,0.65,0.24)*radiance*fade*3.,2));
+            for k in 0..5u32 {
+                let seed=impact.seed.wrapping_mul(73).wrapping_add(k*17);
+                let direction=(outward+pose.basis*Vec3::new(hash(seed)-0.5,hash(seed+1),hash(seed+2)-0.5)).normalize_or_zero();
+                let start=at+direction*age*18.;
+                let mut spark=shaft(start,start+direction*(0.25+age*4.),0.055,Vec3::new(1.,0.7,0.3)*radiance*fade*2.,11,[0.;4]);
+                spark.min_pixels=1.2;self.sprites.push(spark);
             }
-            self.seen_shots[beam.owner] = self.seen_shots[beam.owner].max(beam.serial);
-            self.sprites.push(shaft(
-                beam.from,
-                beam.to,
-                0.025,
-                Vec3::new(1., 0.72, 0.3) * radiance * 2.,
-                5,
-                [0.; 4],
-            ));
-            self.sprites.push(glow(
-                beam.from,
-                [0.8, 0.8],
-                Vec3::new(1., 0.8, 0.4) * radiance * 5.,
-                9,
-            ));
-            self.sprites.push(glow(
-                beam.to,
-                [0.6, 0.6],
-                Vec3::new(1., 0.64, 0.22) * radiance * 3.,
-                2,
-            ));
-            self.lights.push(LocalLight {
-                position: beam.from,
-                direction: Vec3::Z,
-                intensity_cd: Vec3::new(1., 0.7, 0.3) * 900.,
-                range_m: 7.,
-                inner_cos: 1.,
-                outer_cos: -1.,
-                source_radius_m: 0.1,
-                falloff: 2.,
-            });
         }
         // Missile ignition, plume and continuous camera-faded smoke share the existing
         // sprite pass; no new lights/meshes per frame and no particle cloud dots.
@@ -605,6 +649,40 @@ pub fn control_transform(name: &str, local: Affine3A, input: Input, brake: f32) 
 mod tests {
     use super::*;
     #[test]
+    fn newest_sentry_shot_only_and_impacts_outlive_the_single_frame_tracer() {
+        let root=Path::new(env!("CARGO_MANIFEST_DIR"));let mut jets=Jets::new(root).unwrap();
+        let mut race=Race::new(35,"normal","city",1,3);
+        for serial in 1..=4 {race.beams.push(spaceracer::race::Beam {owner:0,target:Some(1),serial,from:race.pose(0).origin,to:race.pose(1).origin,age:0.,rail:false});}
+        let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
+        jets.update(&race,&poses,1.);
+        assert_eq!(jets.sprites.iter().filter(|s|s.effect==9).count(),1);
+        assert_eq!(jets.sprites.iter().filter(|s|s.effect==11 && s.min_pixels==2.).count(),1);
+        assert_eq!(jets.impacts.len(),1);
+        jets.update(&race,&poses,1.+1./120.);
+        assert!(!jets.sprites.iter().any(|s|s.effect==9 || (s.effect==11 && s.min_pixels==2.)));
+        assert_eq!(jets.sprites.iter().filter(|s|s.effect==11).count(),5);
+        jets.update(&race,&poses,1.2);assert!(jets.impacts.is_empty());
+    }
+    #[test]
+    fn boost_ground_contacts_decay_and_emp_sparks_fade_out() {
+        let root=Path::new(env!("CARGO_MANIFEST_DIR"));let mut jets=Jets::new(root).unwrap();
+        let mut race=Race::new(35,"normal","city",1,3);race.countdown=0.;race.pilots[0].boost=3.;race.drivers[0].input.drive.throttle=1.;
+        let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
+        jets.update(&race,&poses,1.);
+        let start=jets.sprites.iter().find(|s|s.effect==12).unwrap().size[0];
+        jets.update(&race,&poses,2.);
+        let sustain=jets.sprites.iter().find(|s|s.effect==12).unwrap().size[0];
+        assert!(start>sustain*2.);
+        race.pilots[0].emp_time=2.;jets.update(&race,&poses,2.1);
+        let bright=jets.sprites.iter().filter(|s|s.effect==5).map(|s|s.radiance.length()).fold(0.,f32::max);
+        assert!(bright>0.);assert!(!jets.sprites.iter().any(|s|s.effect==12));
+        race.pilots[0].emp_time=0.1;jets.update(&race,&poses,2.2);
+        let dim=jets.sprites.iter().filter(|s|s.effect==5).map(|s|s.radiance.length()).fold(0.,f32::max);
+        assert!(dim<bright*0.2);
+        race.pilots[0].emp_time=0.;race.pilots[0].boost=0.;jets.update(&race,&poses,2.3);
+        assert!(!jets.sprites.iter().any(|s|s.effect==5));
+    }
+    #[test]
     fn wear_smoke_has_threshold_freezes_and_clears_during_reconstruction() {
         let root=Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut jets=Jets::new(root).unwrap();let mut race=Race::new(31,"normal","city",1,3);
@@ -642,7 +720,8 @@ mod tests {
         assert_eq!(strike, jets.strike);
         race.pilots[0].emp_time = 2.;
         jets.update(&race, &poses, 0.2);
-        assert!(jets.sprites.is_empty() && jets.lights.is_empty() && jets.heat.is_empty());
+        assert!(jets.sprites.iter().any(|s|s.effect==5));
+        assert!(jets.lights.is_empty() && jets.heat.is_empty());
         race.pilots[0].emp_time = 0.;
         race.pilots[0].boost = 0.;
         race.drivers[0].input.drive.throttle = 0.;
@@ -664,6 +743,7 @@ mod tests {
         let mut race = Race::new(35, "normal", "city", 1, 3);
         race.beams.push(spaceracer::race::Beam {
             owner: 0,
+            target: None,
             serial: 1,
             from: Vec3::ZERO,
             to: Vec3::Z * 60.,

@@ -767,11 +767,7 @@ impl Stage {
                 }
             }
             if r.solid {
-                let b = Bounds { lo, hi }.transformed(r.xf);
-                obstacles.push(Obstacle {
-                    min: b.lo,
-                    max: b.hi,
-                });
+                obstacles.push(Obstacle::oriented(lo,hi,r.xf));
             }
             if r.mesh.starts_with("poster") {
                 posters.push(r.clone());
@@ -848,10 +844,7 @@ impl Stage {
                     Quat::from_rotation_y(site.yaw),
                     site.position,
                 ));
-                obstacles.push(Obstacle {
-                    min: bounds.lo,
-                    max: bounds.hi,
-                });
+                obstacles.push(Obstacle::bounds(bounds.lo,bounds.hi));
                 super::ocean_life::Octopus::add(scene, site)
             })
             .collect();

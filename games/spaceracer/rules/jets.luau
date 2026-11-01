@@ -1,6 +1,9 @@
 -- Presentation only. Loaded on the next race; distances in metres.
 -- The retained ship meshes all use these same engine and mounting anchors.
 return {
+    boost_arc_start = 23, boost_arc_sustain = 5, boost_arc_decay = 5,
+    warp_world_pixels = 48, warp_view_pixels = 64,
+    emp_spark_fade = .7, sentry_spark_life = .11,
     damage_smoke_energy = 22, respawn_light_power = 2100,
     nozzle = {2.45, -.12, -3.65}, reverse = {2.45, -.05, 2.2},
     socket = {0, 1.15, -1.8},

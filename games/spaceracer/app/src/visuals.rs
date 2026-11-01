@@ -141,12 +141,7 @@ fn track_lights(scene: &mut Scene, race: &Race) -> Vec<render::headlights::Local
 }
 // Two continuous ribbons, not cells discarded by their midpoint. This preserves
 // the exact collision boundary even when the split expands between samples.
-fn road_span(a:&spaceracer::track::Node,b:&spaceracer::track::Node,side:f64,u:f64,v:f64)->[f64;4] {
-    let bounds=|n:&spaceracer::track::Node| if side<0. {[-n.geometry.width,-n.split_gap]}else{[n.split_gap,n.geometry.width]};
-    let x=bounds(a);let y=bounds(b);
-    let lerp=|a:f64,b:f64,t:f64| a+(b-a)*t;
-    [lerp(x[0],x[1],u),lerp(x[0],x[1],v),lerp(y[0],y[1],v),lerp(y[0],y[1],u)]
-}
+use spaceracer::track_collision::road_span;
 fn road_edge(parts:&mut [Primitive],a:&spaceracer::track::Node,b:&spaceracer::track::Node,x:f64,y:f64,inward:f64,ha:f64,hb:f64) {
     let na=a.frame(x);let nb=b.frame(y);
     let top=[na.y_axis,na.y_axis,nb.y_axis,nb.y_axis];
@@ -838,16 +833,12 @@ impl Visuals {
         }
         for b in &race.blasts {
             let birth = race.clock - b.age;
-            if birth > self.blast_stamp {
+            if birth > self.blast_stamp && b.kind != Weapon::Emp {
                 self.fx.explosion(
                     time - b.age as f32,
                     b.position,
                     b.radius * 0.3,
-                    if b.kind == Weapon::Emp {
-                        Vec3::new(0.1, 0.7, 1.)
-                    } else {
-                        Vec3::new(1., 0.3, 0.05)
-                    },
+                    Vec3::new(1., 0.3, 0.05),
                 );
             }
         }

@@ -1,0 +1,97 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review sentry",
+        "blur off",
+        "weapon-view on"
+      ],
+      "capture": "sentry-ready.png"
+    },
+    {
+      "cmd": "fire 0",
+      "ticks": 36,
+      "capture": "sentry-hit.png",
+      "state": "sentry-hit.json"
+    },
+    {
+      "capture": "sentry-next-frame.png"
+    },
+    {
+      "ticks": 6,
+      "capture": "sentry-sparks.png"
+    },
+    {
+      "cmd": [
+        "weapon-review emp",
+        "place 0 40",
+        "place 1 80",
+        "weapon-view off",
+        "give 1 emp",
+        "fire 1"
+      ],
+      "ticks": 1,
+      "capture": "emp-sparks.png",
+      "state": "emp.json"
+    },
+    {
+      "expect": "/pilots/0/emp_time",
+      "min": 2.8
+    },
+    {
+      "expect": "/pilots/2/emp_time",
+      "equals": 0.0
+    },
+    {
+      "ticks": 300,
+      "capture": "emp-fading.png"
+    },
+    {
+      "cmd": [
+        "weapon-review warp",
+        "weapon-view off"
+      ],
+      "capture": "warp-before.png"
+    },
+    {
+      "cmd": "fire 0",
+      "ticks": 80,
+      "capture": "warp-active.png"
+    },
+    {
+      "cmd": [
+        "weapon-review sentry",
+        "boost 0"
+      ],
+      "pads": 1,
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-onset.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 72,
+      "capture": "boost-sustain.png"
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    }
+  ]
+}
