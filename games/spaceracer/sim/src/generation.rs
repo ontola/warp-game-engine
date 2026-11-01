@@ -33,6 +33,9 @@ pub struct Recipe {
     pub exposed: Vec<[f64; 2]>,
 }
 impl Recipe {
+    pub fn name_for_seed(seed: i64) -> &'static str {
+        ["Grand Circuit", "Underpass", "Switchback", "Sky Circus", "Velocity", "Pipeline"][Self::index(seed)]
+    }
     pub fn index(seed: i64) -> usize {
         (seed - 31).rem_euclid(6) as usize
     }

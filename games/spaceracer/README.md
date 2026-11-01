@@ -88,7 +88,15 @@ incomplete port.
 Controller: RT throttle, LT brake/slide, left X steer/yaw, right X strafe/roll,
 either stick Y grip/nose pitch, B boost, X fire, Y reset, LB/RB side bump.
 Start pauses. Menu: up/down select, left/right adjust, Start plays/resumes.
-A selects an action. Changing settings waits until Play to regenerate the world.
+A selects an action. Local launches default World, Difficulty and Track seed to
+Random. Left/right selects Random or a fixed value. Start new race resolves only
+Random fields and uses every fixed selection; Resume keeps the current race.
+Player count is never randomized. Explicit CLI parameters remain fixed, and
+headless fixtures retain deterministic defaults (`--random-settings` opts in).
+The six seed-selected types remain Grand Circuit (mixed), Underpass (tunnels),
+Switchback (tight turns/chicanes), Sky Circus (loops/jumps), Velocity (boost
+lanes), and Pipeline (half-pipes/tubes). The menu previews the selected seed's
+type immediately. Settings regenerate the world only when starting a race.
 Controllers take the local seats; keyboard takes seat one when no pad is present.
 Keyboard: W/S throttle/brake, A/D steer, arrows up/down trim, Space boost,
 R fire, F reset, Q/E bump, Enter start/pause. F10/F11/F12 are engine debug,
