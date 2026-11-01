@@ -397,23 +397,24 @@ impl Race {
             }
         }
     }
-    pub fn reset(&mut self, i: usize) {
-        let p = &mut self.pilots[i];
-        let d = &mut self.drivers[i];
+    pub fn respawn_location(&self, i: usize) -> (f64, f64) {
+        let p = &self.pilots[i]; let d = &self.drivers[i];
         let distance = if d.checkpoint.missed {
-            d.checkpoint
-                .return_distance(p, &self.gates, self.world.track.length)
-                .unwrap_or(d.safe_distance)
-        } else {
-            d.safe_distance
-        };
-        p.distance = self.world.safe_respawn(distance).max(0.);
-        let n = self.world.track.sample(p.distance);
-        p.x = if n.split_gap > 0.01 {
-            (n.split_gap + n.geometry.width) * 0.5
-        } else {
-            0.
-        };
+            d.checkpoint.return_distance(p, &self.gates, self.world.track.length).unwrap_or(d.safe_distance)
+        } else { d.safe_distance };
+        let distance = self.world.safe_respawn(distance).max(0.);
+        let n = self.world.track.sample(distance);
+        (distance, if n.split_gap > 0.01 { (n.split_gap + n.geometry.width)*0.5 } else {0.})
+    }
+    pub fn respawn_pose(&self, i: usize) -> Pose {
+        let (distance,x) = self.respawn_location(i);
+        let n = self.world.track.sample(distance);
+        Pose {origin:n.point(x,1.3),basis:n.frame(x)}
+    }
+    pub fn reset(&mut self, i: usize) {
+        let (distance,x) = self.respawn_location(i);
+        let p = &mut self.pilots[i]; let d = &mut self.drivers[i];
+        p.distance = distance; p.x = x; p.trim = 0.;
         p.speed = 90.;
         p.heading = 0.;
         p.slip = 0.;
@@ -1130,6 +1131,18 @@ mod tests {
             if tick < 359 {
                 assert_eq!(a.pilots[0].speed, 0.);
             }
+        }
+    }
+    #[test]
+    fn respawn_camera_target_matches_reset_even_after_missed_checkpoint() {
+        let mut r=Race::new(80385,"hard","city",1,3);
+        for missed in [false,true] {
+            r.drivers[0].safe_distance=3400.;
+            r.drivers[0].checkpoint.missed=missed;
+            r.pilots[0].trim=-1.; r.pilots[0].heading=1.; r.pilots[0].lift=12.;
+            let target=r.respawn_pose(0);r.reset(0);let actual=r.pose(0);
+            assert!(target.origin.distance(actual.origin)<0.001);
+            assert!(target.basis.z_axis.distance(actual.basis.z_axis)<0.001);
         }
     }
     #[test]

@@ -1,3 +1,14 @@
+# Respawn and paint wear - 1 November 2026
+
+Native 1920x1080 captures: `build/spaceracer-respawn-wear-final` and
+`build/spaceracer-respawn-split`. Same portrait pose at energy 100/45/12 shows
+progressive chips and soot while keeping the original body colour. Reconstruction
+shows the real hull appearing under a bright scan, then returning to paint.
+Iteration removed the floating mounted weapon during reconstruction. Dedicated
+crash camera samples show departure, travel and arrival; mathematical tests cover
+endpoint velocity/position. Smoke is soft, non-additive and bounded to 12 per car.
+These are staged native review shots, not controller footage or equal-content FPS.
+
 # Warp, minigun and glide bomb follow-up - 31 October 2026
 
 Source geometry and behaviour restored; see parity-review.md for exact scope.

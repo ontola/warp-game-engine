@@ -1,3 +1,15 @@
+## 2026-11-01 SpaceRacer respawn and energy wear
+
+Restored source-inspired smooth camera return and bottom-up hull construction,
+plus retained energy-linked paint wear/scorch and low-energy smoke. Game-owned
+WGSL visibility mask is injected via `render::set_game_mask` before construction;
+all default games retain an always-false mask. `Renderer::update_aux_words` writes
+a checked pre-reserved range. SpaceRacer uses header word 5 for six per-pilot
+records (pose, energy, scan progress), uploading only 580 bytes/frame. World
+fragments outside the contiguous ship slots return before the six-record lookup.
+No per-frame geometry allocation. 32 sim + 20 app + 1 renderer test; native build
+and staged solo/split 1080p captures. See games/spaceracer/parity-review.md.
+
 # SpaceRacer weapon restoration - 31 October 2026
 
 Restored source warp ribbon autopilot/phase/gap/EMP handling, 20-Hz mounted rotary

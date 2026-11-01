@@ -46,6 +46,7 @@ pub struct Visuals {
     pub mounts: Vec<SlotId>,
     pub mount_meshes: Vec<usize>,
     pub uploaded: bool,
+    pub vehicle_aux: usize,
     pub fx: render::fx::Effects,
     pub crashes: Vec<u64>,
     pub blast_stamp: f64,
@@ -570,7 +571,7 @@ impl Visuals {
         let mut slots = Slots::reserve(&mut scene, 1024 + stage.capacity());
         stage.reserve(&mut scene, &mut slots);
         weapon_art.reserve(&mut scene,&mut slots);
-        let ships = all_parts
+        let ships: Vec<Vec<ShipPart>> = all_parts
             .into_iter()
             .map(|parts: Vec<LoadedPart>| {
                 parts
@@ -623,6 +624,17 @@ impl Visuals {
                     .unwrap()
             })
             .collect();
+        let wear_layer = scene.add_texture(&root.join("source/assets/paint-wear.png"))?;
+        let vehicle_aux = scene.aux.len();
+        scene.aux[5] = vehicle_aux as u32;
+        scene.aux.push(wear_layer as u32);
+        for parts in &ships {
+            let mut record = [0u32;24];
+            record[0] = parts.iter().map(|p| slots.instance(p.slot)).min().unwrap() as u32;
+            record[1] = parts.iter().map(|p| slots.instance(p.slot)).max().unwrap() as u32 + 1;
+            record[3] = 1f32.to_bits();
+            scene.aux.extend(record);
+        }
         let jets = super::jets::Jets::new(root)?;
         let crash_fx = super::crash_fx::Crashes::new(root)?;
         let mut fx = render::fx::Effects::default();
@@ -649,6 +661,7 @@ impl Visuals {
             mount_meshes,
             weapon_art,
             uploaded: false,
+            vehicle_aux,
             fx,
             crashes: vec![0; 6],
             blast_stamp: -1.,
@@ -689,6 +702,15 @@ impl Visuals {
             let p = &race.pilots[i];
             let input = race.drivers[i].input.drive;
             let base = Affine3A::from_mat3_translation(pose.basis, pose.origin);
+            let b = self.vehicle_aux + 1 + i*24;
+            let record = &mut self.scene.aux[b..b+24];
+            record[2] = (1.0 - (p.energy as f32 / 100.).clamp(0.,1.)).to_bits();
+            record[3] = super::respawn::progress(race,i,alpha).to_bits();
+            for (offset,v) in [(4,pose.origin),(8,pose.basis.x_axis),(12,pose.basis.y_axis),(16,pose.basis.z_axis)] {
+                for (j,f) in v.to_array().into_iter().enumerate() {record[offset+j]=f.to_bits();}
+            }
+            record[20] = (2f32.powf(race.environment.exposure)*8.).to_bits();
+
             let new_crash = race.drivers[i].motion.crash_id > self.crashes[i];
             let mut wreck_parts = Vec::new();
             for part in &self.ships[i] {
@@ -712,7 +734,7 @@ impl Visuals {
                 self.mounts[i],
                 self.mount_meshes[mounting.map_or(0, |w| w as usize)],
                 base * Affine3A::from_scale_rotation_translation(
-                    if mounting.is_some() && !p.crashed {
+                    if mounting.is_some() && !p.crashed && p.recovery<=0. {
                         Vec3::ONE
                     } else {
                         Vec3::splat(0.001)

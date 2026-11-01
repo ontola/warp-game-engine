@@ -223,7 +223,7 @@
     {
       "path": "src/respawn_vfx.gd",
       "sha256": "d41e20b54ec82aab4971718adcf0dbc3b54a278603441b4479b14e6d55168caa",
-      "status": "pending"
+      "status": "native bottom-up hull mask, scan lattice/white band and local light; source camera quintic arc/momentum and exact reset destination; 0.65s existing recovery, optics adapted; solo/split scripted captures"
     },
     {
       "path": "src/sandworm.gd",
@@ -253,7 +253,7 @@
     {
       "path": "src/ship.gd",
       "sha256": "70a1631fc1ce050ba926cdb53de9363dcbaefc5cb7125cf540a80c1e737b211b",
-      "status": "all retained ship hierarchies; native plasma/core/flare/heat/reverse jets, one-presentation-frame boost arcs and soft fast wisps; Luau effect parameters; full optical/wear/respawn parity incomplete"
+      "status": "all retained ship hierarchies; native plasma/core/flare/heat/reverse jets, one-presentation-frame boost arcs and soft fast wisps; Luau effect parameters; energy-linked wear and respawn scan restored; full optical parity incomplete"
     },
     {
       "path": "src/showpiece.gd",
@@ -298,7 +298,7 @@
     {
       "path": "src/vehicle_wear.gd",
       "sha256": "296af0c864dc44725763a1fe6331167f74265707a6072571af74f5bf89ce0673",
-      "status": "pending"
+      "status": "retained paint-wear texture and energy-linked triplanar chip/scratch/scorch formulas; twelve bounded dark smoke billboards below 22 energy; recharge/restoration and pause checks; no mesh deformation"
     },
     {
       "path": "src/victory.gd",
@@ -379,7 +379,7 @@
     "Remaining source stage features: sandworm, full environmental animation and material/effect fidelity",
     "Original audio and physical GameNight controller/window-focus playtest",
     "Real controller playtests for AI, contacts, weapons and flight tuning",
-    "Complete visor, victory, wear and respawn presentation",
+    "Remaining visor/weapon/environment optical differences; wear and respawn restored with native adaptations",
     "Equal-content visual review before steady-state CPU/GPU performance claims"
   ]
 }

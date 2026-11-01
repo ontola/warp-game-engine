@@ -61,6 +61,7 @@ struct Material {
 @group(0) @binding(5) var<storage, read> materials: array<Material>;
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
+@group(0) @binding(8) var<storage,read> aux: array<u32>;
 @group(0) @binding(10) var plant_samp: sampler;
 @group(0) @binding(11) var<storage,read> voxel_replacement: array<u32>;
 
@@ -76,6 +77,8 @@ struct VOut {
     @location(1) @interpolate(flat) material: u32,
     @location(2) uv: vec2<f32>,
     @location(3) @interpolate(flat) grass_opacity: f32,
+    @location(4) world: vec3<f32>,
+    @location(5) @interpolate(flat) instance: u32,
 };
 
 @vertex
@@ -101,6 +104,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     let rest = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
     let w = wind_position(vis.x, inst.r1.w, rest);
     o.pos = view.view_proj * vec4<f32>(w, 1.0);
+    o.world = w; o.instance = vis.x;
     o.id = (slot << 7u) | tri;
     o.material = cl.material;
     o.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
@@ -133,6 +137,7 @@ fn alpha_cut(in: VOut) -> bool {
     let dx = dpdx(in.uv) * mip_scale;
     let dy = dpdy(in.uv) * mip_scale;
     if in.grass_opacity < GRASS_OPAQUE_THRESHOLD { return true; }
+    if game_mask(in.world,in.instance,in.material) {return true;}
     let m = materials[in.material];
     if (m.flags & 1u) != 0u && m.layer >= 0 {
         // PIXEL_ART keeps the top mip's hard silhouette.

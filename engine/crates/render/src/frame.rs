@@ -1127,6 +1127,15 @@ impl Renderer {
     /// layers are redrawn through `screen::Screen`; do not resize it.
     pub fn albedo_array(&self) -> &wgpu::Texture { &self.albedo_array }
 
+    /// Update a game-owned range reserved in `Scene::aux` before construction.
+    /// The caller owns the range; engine reservations must not be overwritten.
+    pub fn update_aux_words(&self, gpu: &Gpu, offset: usize, words: &[u32]) -> Result<(), String> {
+        let end = offset.checked_add(words.len()).and_then(|n| n.checked_mul(4)).ok_or("aux range overflow")?;
+        if end as u64 > self.aux_buffer.size() { return Err("aux write outside reserved buffer".into()); }
+        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(words));
+        Ok(())
+    }
+
     /// Replace the bullet dents reserved with `Scene::reserve_dents`.
     pub fn set_dents(&self, gpu: &Gpu, dents: &[crate::dents::Dent]) -> Result<(), String> {
         let (offset, capacity) = self.dents.ok_or("the scene reserved no dents")?;
