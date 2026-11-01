@@ -167,7 +167,11 @@ they are described in the engineering notes that introduced them.
   reports geometry, FX and sprites per view with inside-encoder timestamps;
   [Quest profiling](quest-profile-2026-10-31.md) documents the opt-in live capture
   and paired lava/HUD probes. `HudStats::phase_ms` separates CPU upload, shaping,
-  glyph warmup, outlines and atlas preparation.
+  glyph warmup, outlines and atlas preparation. Low-end games can opt into
+  `HudDrawList.cached_text` for animated labels: bounded fixed-size label
+  pictures scale as quads, trading a little texture memory/quad fill for
+  avoiding repeated glyph rasterization at continuously changing sizes.
+  Custom strokes and colour glyphs fall back to the regular text renderer.
 - Sideways scenarios: `engine/tools/run-frame-scenario.py` with
   `games/sideways/scenarios/*.toml`, then `frame-budget.py`. See the
   [frame budget guide](../tools/frame-budget.md).

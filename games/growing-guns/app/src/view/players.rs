@@ -47,23 +47,22 @@ pub fn trail_picture() -> render::picture::Picture {
 /// the crosshair's line).
 const CONVERGE: f32 = 12.0;
 
-/// A bullet's streak (Godot `_trail_inst`) from `tail` to `head`: 4 cm x
-/// scale thick, as long as it has flown up to `speed_mult` x 6 + 1 m (a
-/// bazooka keeps a stubby tail, a sniper round a long one), in the
-/// bullet's colour lifted 18 % toward white, its head strength 3.2 x scale
-/// (2.4 to 9).
-fn bullet_trail(head: Vec3, tail: Vec3, scale: f32, color: [f32; 3]) -> render::sprites::Sprite {
-    let len = head.distance(tail);
-    let dir = (head - tail) / len;
-    let radius = 0.02 * scale;
-    let tint = Vec3::from(color.map(|c| (c + (1.0 - c) * 0.18).powf(2.2)));
-    let strength = (3.2 * scale).clamp(2.4, 9.0) * 10.0;
-    let mut s = render::sprites::Sprite::shaft(head - dir * len * 0.5, [radius * 6.0, len], dir, TRAIL_IMAGE, [0.0, 0.0, 1.0, 1.0], tint * strength * TRAIL_NITS);
-    s.depth_bias = 0.0;
-    // The Gaussian texture spans six radii: a two-pixel quad gives a
-    // subpixel core without bloom. Keep the minimum-profile core readable.
-    s.min_pixels = if crate::graphics::get().minimal_forward {6.0}else{2.0};
-    s
+/// Two small textured quads: a round hot head and a subdued short wake.
+/// The head faces each eye, so a shot travelling away stays a soft point.
+/// No bloom, blur pass, extra light or particle simulation is required.
+fn bullet_trail(head: Vec3, tail: Vec3, scale: f32, color: [f32; 3]) -> [render::sprites::Sprite;2] {
+    use render::sprites::{Sprite,Facing};
+    let distance=head.distance(tail);
+    let dir=(head-tail).normalize_or(Vec3::NEG_Z);
+    let len=distance.min(0.7*scale.sqrt().clamp(0.65,2.));
+    let tint=Vec3::from(color.map(|c|(c+(1.-c)*0.35).powf(2.2)));
+    let light=tint*(3.2*scale).clamp(2.4,9.)*10.*TRAIL_NITS;
+    let mut wake=Sprite::shaft(head-dir*len*0.5,[0.10*scale,len],dir,TRAIL_IMAGE,[0.,0.,1.,1.],light*0.18);
+    wake.depth_bias=0.;wake.min_pixels=2.;
+    let diameter=0.16*scale.sqrt();
+    let mut point=Sprite::billboard(head,[diameter;2],super::effects::FLASH_IMAGE,[0.,0.,1.,1.],light);
+    point.facing=Facing::Screen;point.additive=true;point.alpha_cut=0.;point.depth_bias=0.;point.min_pixels=7.;
+    [wake,point]
 }
 /// Instances per player in the dynamic range: body, head, eyes.
 pub const PARTS: usize = 3;
@@ -432,7 +431,7 @@ impl PlayersView {
                     let len = (w.bullet_speed_mult * 6.0 + 1.0).clamp(1.0, 28.0);
                     let head = pos - dir * body_len;
                     let tail = at((flown - len).max(0.0));
-                    if head.distance(tail) > 0.05 { self.trails.push(bullet_trail(head, tail, scale, w.bullet_color)); }
+                    if head.distance(tail) > 0.05 { self.trails.extend(bullet_trail(head, tail, scale, w.bullet_color)); }
                 }
                 (Affine3A::from_scale_rotation_translation(Vec3::new(scale, body_len, scale), rot, pos - dir * body_len * 0.5),
                  Affine3A::from_scale_rotation_translation(Vec3::new(scale, nose_len, scale), rot, pos + dir * nose_len * 0.5))
@@ -511,9 +510,10 @@ fn blood_splats(scene: &mut Scene, arena: &mut ArenaView, world: &World, at: Vec
         let light=render::Lighting{sun_lux:0.,sky_lux:500.,ev100:12.,..Default::default()};
         let renderer=render::Renderer::new(&gpu,&scene,&light);
         renderer.set_sprite_image(&gpu,TRAIL_IMAGE,&trail_picture(),render::hud::ImageFilter::Linear);
-        let mut trails=[bullet_trail(Vec3::new(-2.,1.8,-12.),Vec3::new(3.,0.5,-8.),1.,[1.,0.8,0.3]),
+        let trails=[bullet_trail(Vec3::new(-2.,1.8,-12.),Vec3::new(3.,0.5,-8.),1.,[1.,0.8,0.3]),
             bullet_trail(Vec3::new(0.3,1.2,-16.),Vec3::new(0.3,1.2,-3.),1.,[0.3,0.8,1.])];
-        for trail in &mut trails {trail.min_pixels=6.;}
+        let trails:Vec<_>=trails.into_iter().flatten().collect();
+        renderer.set_sprite_image(&gpu,super::super::effects::FLASH_IMAGE,&super::super::effects::flash_picture(),render::hud::ImageFilter::Linear);
         let eyes:[wgpu::Texture;2]=std::array::from_fn(|_|gpu.device.create_texture(&wgpu::TextureDescriptor{label:Some("trail stereo fixture"),size:wgpu::Extent3d{width:640,height:640,depth_or_array_layers:1},mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::Rgba8UnormSrgb,usage:wgpu::TextureUsages::RENDER_ATTACHMENT|wgpu::TextureUsages::COPY_SRC,view_formats:&[]}));
         let views=[-0.032,0.032].map(|x|render::ViewRect{cam:render::Camera{pos:Vec3::new(x,1.6,0.),target:Vec3::new(x,1.6,-10.),fov_y:1.1,near:0.05},x:0,y:0,w:640,h:640});
         renderer.try_render_eye_targets(&gpu,&views,&light,&[&eyes[0],&eyes[1]]).unwrap();
@@ -523,11 +523,32 @@ fn blood_splats(scene: &mut Scene, arena: &mut ArenaView, world: &World, at: Vec
         let images=eyes.each_ref().map(|eye|gpu.read_rgba8(eye));
         for i in 0..2 {
             let bright=images[i].chunks_exact(4).zip(baseline[i].chunks_exact(4)).filter(|(a,b)|a[..3].iter().zip(*b).any(|(a,b)|*a as i32-*b as i32>60)).count();
-            assert!(bright>200,"bullet trails disappear in eye {i}: {bright}");
+            assert!(bright>40,"bullet trails disappear in eye {i}: {bright}");
         }
         if let Ok(path)=std::env::var("WARP_TRAIL_CAPTURE") {
             let mut stereo=Vec::new();for y in 0..640 {for image in &images{stereo.extend_from_slice(&image[y*640*4..(y+1)*640*4]);}}
             render::write_png(std::path::Path::new(&path),1280,640,&stereo).unwrap();
+        }
+
+        // End-on distant shots remain round in both eyes, also looking up/down.
+        // Old width-only sprites became flat lines as their height shrank.
+        for pitch in [-0.7f32,0.,0.7] {
+            let direction=Vec3::new(0.,pitch.sin(),-pitch.cos());
+            let mut point=bullet_trail(Vec3::new(0.,1.6,0.)+direction*30.,Vec3::ZERO,1.,[1.,0.8,0.3])[1];
+            point.size=[0.025;2]; // force minimum pixel size
+            let tilted=views.map(|mut v|{v.cam.target=v.cam.pos+direction;v});
+            renderer.set_sprites(&gpu,&[]).unwrap();renderer.try_render_eye_targets(&gpu,&tilted,&light,&[&eyes[0],&eyes[1]]).unwrap();
+            let empty=eyes.each_ref().map(|eye|gpu.read_rgba8(eye));
+            renderer.set_sprites(&gpu,&[point]).unwrap();renderer.try_render_eye_targets(&gpu,&tilted,&light,&[&eyes[0],&eyes[1]]).unwrap();
+            for i in 0..2 {
+                let image=gpu.read_rgba8(&eyes[i]);let mut bounds=[640usize,640,0,0];let mut count=0;
+                for (at,(a,b)) in image.chunks_exact(4).zip(empty[i].chunks_exact(4)).enumerate() {
+                    if a[..3].iter().zip(b).any(|(a,b)|*a as i32-*b as i32>40){let x=at%640;let y=at/640;bounds[0]=bounds[0].min(x);bounds[1]=bounds[1].min(y);bounds[2]=bounds[2].max(x);bounds[3]=bounds[3].max(y);count+=1;}
+                }
+                assert!(count>=12,"end-on glow missing at pitch {pitch}, eye {i}: {count}");
+                let w=bounds[2]-bounds[0]+1;let h=bounds[3]-bounds[1]+1;
+                assert!(w.abs_diff(h)<=1 && w>=4 && h>=4,"flattened glow {w}x{h} at pitch {pitch}");
+            }
         }
     }
 }
