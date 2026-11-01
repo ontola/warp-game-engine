@@ -1,5 +1,6 @@
 //! Exclusive-GPU regression for the shared static source-alpha sun map.
-//! KERN_FAR_SUN_SHADOW=1 far_sun_visibility --out FRESH_DIRECTORY
+//! far_sun_visibility --stage --out FRESH_DIRECTORY
+//! Legacy experiment: KERN_FAR_SUN_SHADOW=1, without --stage.
 //! No window, gameplay-performance claim, or automatic application restart.
 use glam::{Affine3A, Mat4, Vec3};
 use render::cluster::{ClusterMesh, Part, Vertex};
@@ -136,7 +137,8 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    if std::env::var("KERN_FAR_SUN_SHADOW").as_deref() != Ok("1") {
+    let stage=std::env::args().any(|a|a=="--stage");
+    if !stage && std::env::var("KERN_FAR_SUN_SHADOW").as_deref() != Ok("1") {
         return Err("set KERN_FAR_SUN_SHADOW=1 explicitly for this fixture".into());
     }
     let args: Vec<_> = std::env::args().collect();
@@ -150,7 +152,7 @@ fn run() -> Result<(), String> {
         return Err("output directory must be fresh".into());
     }
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    let mut scene = Scene::default();
+    let mut scene = Scene {stage_sun:stage,..Default::default()};
     scene.sky = Some((4, 2, vec![[0.0, 0.0, 0.0, 1.0]; 8]));
     scene.sky_physical = true;
     let floor = quad(
@@ -177,6 +179,7 @@ fn run() -> Result<(), String> {
     let car = quad(&mut scene, wall_points, Vec3::NEG_X, false);
     scene.add_instance(car, Affine3A::from_translation(Vec3::Z * 80.0));
     scene.instances[2].flags |= SOLID;
+    if stage {scene.dynamic_instances.push(2..3);}
 
     // The floor lies >180m from the camera, outside the ordinary 96m map.
     // At 2deg the source ray reaches y20.95m at x600m: inside the alpha wall.
@@ -209,13 +212,16 @@ fn run() -> Result<(), String> {
     let renderer = Renderer::new(&gpu, &scene, &light);
     let mut failures = Vec::new();
     let mut rows = Vec::new();
+    let mut control_light=light.clone();control_light.sun_dir=Vec3::Y;
+    let (_,_,clear_blocked,clear_gap)=capture(&renderer,&gpu,camera,&control_light,&out,"unoccluded-control",&mut rows)?;
+    if clear_blocked<100. || clear_gap<100. {return Err("unoccluded calibration is unexpectedly dark".into());}
     let (reference, initial, blocked, gap) =
         capture(&renderer, &gpu, camera, &light, &out, "initial", &mut rows)?;
     cache_check(&mut failures, "initial", &initial, true);
     if initial.far_sun_extent_m < 1024.0 {
         failures.push("far extent below1024m".into());
     }
-    if blocked > 3.0 || gap < 225.0 {
+    if blocked > 3.0 || gap < clear_gap-3.0 {
         failures.push(format!(
             "source alpha did not preserve blocked/gap probes: {blocked}/{gap}"
         ));
@@ -288,7 +294,7 @@ fn run() -> Result<(), String> {
         &mut rows,
     )?;
     cache_check(&mut failures, "dynamic-update", &stats, false);
-    if dynamic_gap < 225.0 {
+    if dynamic_gap < clear_gap-3.0 {
         failures.push(format!(
             "excluded dynamic owner entered far map: {dynamic_gap}"
         ));
@@ -306,7 +312,7 @@ fn run() -> Result<(), String> {
         &mut rows,
     )?;
     cache_check(&mut failures, "static-moved", &stats, true);
-    if open < 225.0 {
+    if open < clear_blocked-3.0 {
         failures.push(format!("static caster update left stale shadow: {open}"));
     }
 
@@ -394,7 +400,7 @@ fn run() -> Result<(), String> {
         &mut rows,
     )?;
     cache_check(&mut failures, "sun-changed", &stats, true);
-    if sun_open < 225.0 {
+    if sun_open < clear_blocked-3.0 {
         failures.push(format!("sun update left stale shadow: {sun_open}"));
     }
     light.alpha_cut = 0.7;
@@ -418,7 +424,7 @@ fn run() -> Result<(), String> {
         "lod-changed",
         &mut rows,
     )?;
-    cache_check(&mut failures, "lod-changed", &stats, true);
+    cache_check(&mut failures, "lod-changed", &stats, !stage);
 
     let report = format!(
         "{{\"schema\":1,\"scope\":\"isolated native640x384 far-map regression, not forest optics or gameplay FPS\",\"camera\":{:?},\"receiver\":[0,0,0],\"caster_sunward_m\":600,\"far_wind_policy\":\"static rest pose; dynamic classes remain in near maps\",\"rows\":[{}],\"split_differences\":[{}],\"failures\":{:?},\"passed\":{}}}",

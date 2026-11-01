@@ -1,3 +1,36 @@
+## Per-level shadows and sharp boost arcs - 1 November 2026
+
+SpaceRacer opts into a shared 4096-square static sun map. It owns static source
+geometry/alpha, including solid roads/buildings, while live slot pools, cars,
+skinning and animated rigid parts retain the existing dynamic maps. Dynamic
+slots are registered even when empty at construction. Camera/wind/adaptive LOD
+changes do not rebuild the cache. A seed/biome replacement or a changed static
+source/sun/alpha state does. One 64 MiB depth map is shared across views, plus
+caster buffers and initial bake cost. This is direct sun visibility, not GI.
+
+Receiver-plane filtering accounts for projection roundoff at grazing sun and
+the measured error of different visible/cached mesh LODs. Detailed near shadows
+still transition to coarser distant shadows; far foliage uses its rest pose.
+This reduces the disappearance of whole distant shadows, not every LOD change.
+
+Motion blur previously sampled electrical sprites using the road's velocity.
+SpaceRacer now opts into `Graphics.sharp_sprites`: world blur precedes sprite,
+exhaust and particle composition; bloom follows them. Other games keep their
+existing order. The blur target permits COPY_SRC for late sprite composition.
+
+Validation: native 1080p thirteen-frame boost sequence with blur enabled,
+`scenarios/boost-lightning-sharp.json`; reproduced faded parallel arc copies in
+`build/spaceracer-lightning-before` and sharp arcs in `build/spaceracer-lightning-final`.
+A second thirteen-frame sequence in `build/spaceracer-lightning-split` passes
+with two independent viewports. The shadow scenario stages seed 76973 / hard / forest at the reported 9097 m and
+100/220 m farther on (`build/spaceracer-stage-shadow-reviewed`); it is not a
+replay of the user's input trajectory. Coarse hill geometry remains visible in
+its self-shadow silhouettes; this change does not retessellate terrain.
+`far_sun_visibility --stage` checks source alpha, remote casters, live-owner
+exclusion, invalidation and identical four-view results on an exclusive GPU.
+Six far-sun, eight static-sun and 24 SpaceRacer app unit tests pass. No physical
+controller/display refresh-rate or steady gameplay performance certification.
+
 # F12 split-road fix - 1 November 2026
 
 Reported seed 89502 / hard / forest at 4854 m. Original F12 showed a stair-step

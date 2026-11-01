@@ -122,6 +122,7 @@ impl Partition {
             *slot = true;
             Ok(())
         };
+        for range in &scene.dynamic_instances { for owner in range.clone() {mark(owner as u32)?;} }
         for part in &scene.part_wind { if let Some(owner) = part.owner { mark(owner)?; } }
         for attachment in &scene.part_attachments { mark(attachment.owner)?; }
         if let Some(animation) = &scene.baked_animations {

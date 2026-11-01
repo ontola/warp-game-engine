@@ -41,6 +41,26 @@ with road-contact glows. Warp refraction is stronger, with per-view isolation.
 The EMP radius/pickup spacing are Luau gameplay values; arc/warp tuning lives in
 `rules/jets.luau`. `scenarios/flight-combat-effects.json` captures these effects.
 
+## Sharp electrical effects (1 November 2026)
+
+World motion blur now runs before SpaceRacer's sprites. Lightning, tracers and
+engine emission retain bloom without inheriting the road's motion vector (which
+previously made many faded copies of each bolt). Temporal AA was already before
+these effects. `scenarios/boost-lightning-sharp.json` captures thirteen successive
+120 Hz boost ticks at native 1080p with blur enabled.
+
+## Level shadow cache (1 November 2026)
+
+Every generated level now opts into Warp's shared 4096-square static sun map.
+Roads, buildings and trees retain distant shadows as the camera moves. Dynamic
+slot pools (ships, weapons, traffic, creatures and debris) stay outside the
+bake and keep near shadows. Camera quality changes do not invalidate the map.
+The depth texture costs 64 MiB once per level, shared by split-screen views;
+source buffers and initial baking have additional cost. A new seed/biome
+rebuilds it. This is direct directional light, not baked GI or local-jet light.
+Nearby detail still uses live maps and distant foliage is in its rest pose.
+`KERN_FAR_SUN_SHADOW=0` provides the previous path for comparison.
+
 ## Play and capture
 
 From the workspace root:

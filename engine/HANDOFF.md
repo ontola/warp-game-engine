@@ -1,3 +1,13 @@
+## 2026-11-01 SpaceRacer level shadow cache and sharp arcs
+
+Scene.stage_sun opts into a 4096-square/64 MiB shared static source-alpha map;
+Slots::reserve registers dynamic ownership. Static solid geometry now included,
+full-scene fit, fixed bake LOD, receiver-plane precision/mesh-error correction.
+Graphics.sharp_sprites moves world motion blur before sprite/exhaust/particle
+composition; target COPY_SRC is required. Bloom remains after emission.
+See SpaceRacer parity-review.md for captures, checks and limits. Near-detail
+transitions remain; distant wind is rest pose; this is not GI or an FPS claim.
+
 ## 2026-11-01 SpaceRacer flight/combat feedback
 
 Finite road/tunnel/guard sweeps replace nearest-section crash inference; shared

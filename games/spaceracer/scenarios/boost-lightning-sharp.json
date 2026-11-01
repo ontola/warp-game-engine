@@ -1,0 +1,143 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review sentry",
+        "blur on",
+        "weapon-view off"
+      ],
+      "pads": 1,
+      "capture": "warmup.png"
+    },
+    {
+      "cmd": "boost 0",
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-00.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-01.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-02.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-03.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-04.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-05.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-06.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-07.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-08.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-09.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-10.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-11.png"
+    },
+    {
+      "device": "pad0",
+      "triggers": [
+        0,
+        1
+      ],
+      "ticks": 1,
+      "capture": "boost-12.png"
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}
