@@ -75,7 +75,7 @@ See `games/spaceracer/visual-review.md` for captures, tests and 1/4-view timings
 `engine/docs/motion-blur.md` for the optional renderer API and limitations.
 Portable Windows build refreshed. No interactive, Android or hardware test.
 
-## SpaceRacer visual corrections — 31 October 2026
+## SpaceRacer visual corrections â€” 31 October 2026
 
 Native visual revision: see `games/spaceracer/visual-review.md`. Game-owned
 `app/shaders/surfaces.wgsl` restores opaque ship livery, road detail, varied
@@ -86,7 +86,7 @@ physical daytime sky, facade/track structure. Gameplay/asset bytes preserved.
 20 focused tests and portable scripted controller flow pass; all five biomes
 rendered. Full visual fidelity and scene reflections are still incomplete.
 
-## SpaceRacer native/Luau development build — 31 October 2026
+## SpaceRacer native/Luau development build â€” 31 October 2026
 
 SpaceRacer now has `games/spaceracer/app` (`spaceracer-app`, binary `spaceracer`).
 Pulled main through ae0b1c8 before this work. Read its README and port-status.json:
@@ -102,7 +102,7 @@ the right stick. Shared GameNight adapters carry trigger pressures too.
 
 Validation: workspace all-target check; 18 sim + 2 native app + 21 app tests;
 1207-tick native two-controller flow with captures; five biome renders; a
-1920×1080 four-view capture. Mock-host lifecycle uses a real loopback WebSocket,
+1920Ã—1080 four-view capture. Mock-host lifecycle uses a real loopback WebSocket,
 sparse seat IDs and opaque controller tokens. No real controller/host, mobile
 or full-content performance acceptance yet. All assets/provenance retained.
 

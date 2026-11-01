@@ -37,7 +37,7 @@ Windows packaging (builds only, does not launch or stop another game):
 
 The packaged executable resolves its adjacent `spaceracer/rules` and
 `spaceracer/assets`. Development runs fall back to the source directory;
-`--game-dir PATH` overrides both. Seeds are 1–99999. Worlds: `city`, `forest`,
+`--game-dir PATH` overrides both. Seeds are 1â€“99999. Worlds: `city`, `forest`,
 `cell`, `desert`, `ocean`; difficulty: `easy`, `normal`, `hard`.
 The existing GameNight catalog/release is deliberately not switched to this
 incomplete port.
@@ -57,7 +57,7 @@ Edit [`rules/game.luau`](rules/game.luau). No rebuild for:
 
 - `track`: six recipe families, road width, base radius/stretch, elevation and
   corner ranges, loop radii/positions, tunnels, jumps, sections, boost strips,
-  exposed edges. Spans are normalized positions around the lap (0–1); physical
+  exposed edges. Spans are normalized positions around the lap (0â€“1); physical
   dimensions are metres. `road_width` is base **half-width**, wave amplitude,
   and additional easy-mode half-width.
 - `ai` and `plan`: steering/braking/boost decisions, racing line and pace changes;
@@ -102,7 +102,7 @@ any replay/seed used for comparisons.
 The native build connects seeded roads, grounded handling, smooth flight and
 landing, physical checkpoints, boost/recharge, side bumps, six racers, automated
 recovery, ranks/laps, AI finishing, basic weapon gameplay, mounted items, target
-indicators, menus, 1–4 viewports and controller input. Ship control surfaces
+indicators, menus, 1â€“4 viewports and controller input. Ship control surfaces
 animate for humans and AI. City facades/posters and original forest meshes are
 retained; exhaust lights illuminate road and ships, with shared Warp explosion
 and additive effects. Scenery collision uses swept bounds and ground heights.
@@ -250,6 +250,6 @@ WebSocket with sparse seat IDs and pause/resume/dispose. The committed headless
 scenario checks two independent controllers, partial throttle, right stick,
 paused time, EMP owner exemption and screenshots. This does not prove real
 controller feel or production-host compatibility. Captures were reviewed at
-1280×720 (one/two views) and 1920×1080 (four views), native rendering. All five
+1280Ã—720 (one/two views) and 1920Ã—1080 (four views), native rendering. All five
 biomes render from the portable package. No steady-frame FPS/4K performance
 result is claimed.
