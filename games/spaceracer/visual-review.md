@@ -543,3 +543,19 @@ occlusion on a crossing surface and fully hidden source, in normal and minimal
 renderers. Native 1080p city/forest thirteen-frame boost and sustain scenarios
 pass; reviewed screenshots in `build/spaceracer-bloom-tight-city` and
 `build/spaceracer-bloom-tight-forest`. No physical display or performance claim.
+
+## White-blue nozzle, dim exhaust tail - 1 November 2026
+
+Forward exhaust now uses blue HDR emission (.12/.4/1) instead of mixing ship
+paint into its colour. The plume concentrates radiance at its root and decays
+exponentially along its length; maximum authored length before surge is 7.2 m
+(previously 14.55 m). AgX supplies the bright blue-to-white highlight rolloff;
+no global tone-map change. The engine light is blue too. Wisps use .12 rather
+than .5 radiance multiplier; the blue history wake uses .065 rather than .38
+and lasts .24 rather than .38 seconds. Compact optical halos/road occlusion and
+the moving arc shapes remain.
+
+Eight effect tests pass. Native 1080p city/forest thirteen-frame onset plus
+sustained-boost scenarios pass; reviewed captures in `build/spaceracer-blue-core-city`
+and `build/spaceracer-blue-core-forest`. This is a presentation adjustment, with
+no handling changes or new performance claim.

@@ -14,9 +14,15 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let tip = 1.0-smoothstep(.50,1.0,t);
         let flow = .83+.17*sin(t*43.0-time*65.0);
         let diamonds = pow(.5+.5*cos(t*30.0-time*8.0),5.0);
-        let hot = vec3<f32>(1.6,2.0,2.6);
-        let color = mix(vec3<f32>(.6,.8,1.0),hot,core*.6)+hot*core*diamonds*.5;
-        return vec4<f32>(color,edge*tip*flow*(.10+core*.58));
+        // Radiance is blue; AgX rolls the intense nozzle end toward white.
+        // Most energy lives in the first metre, not the length of the plume.
+        let root=exp(-t*12.0);
+        let falloff=exp(-t*5.5);
+        let forward=vec3<f32>(.35+root*6.0+core*diamonds*root);
+        let reverse=vec3<f32>(1.6,2.0,2.6)*(1.0+core*diamonds*.5);
+        let color=select(forward,reverse,s.params.z>.5);
+        let energy=select(falloff,1.0,s.params.z>.5);
+        return vec4<f32>(color,edge*tip*flow*(.10+core*.58)*energy);
     }
     if s.effect == 2u { // compact bright nozzle and broad low-energy glow
         let p = s.uv*2.0-1.0;

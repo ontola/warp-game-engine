@@ -35,6 +35,8 @@ pub struct Config {
     response: f32,
     brake_response: f32,
     radiance: f32,
+    exhaust_color: [f32;3],
+    trail_radiance: f32,
     light_power: f32,
     boost_light_power: f32,
     trail_life: f32,
@@ -71,7 +73,7 @@ impl Config {
             c.width,
             c.response,
             c.brake_response,
-            c.radiance,
+            c.radiance, c.trail_radiance,
             c.light_power,
             c.boost_light_power,
             c.trail_life,
@@ -84,6 +86,8 @@ impl Config {
             || c.boost_arc_start>40. || c.boost_arc_sustain>20. || c.boost_arc_spread>20. || c.boost_arc_height>12.
             || !(1.0..=3.).contains(&c.boost_width) || !(1.0..=4.).contains(&c.boost_radiance)
             || !(0.0..=48.).contains(&c.engine_glare_pixels)
+            || c.exhaust_color.iter().any(|v| !v.is_finite() || !(0.0..=1.).contains(v))
+            || c.trail_radiance>0.25
             || c.width <= 0.
             || !(0.02..=0.8).contains(&c.trail_life)
             || !(0.008..=0.1).contains(&c.trail_interval)
@@ -306,7 +310,8 @@ impl Jets {
                     * (1. + boost * (surge - 0.3) * 0.35);
                 let axis = -pose.basis.z_axis;
                 if e.power > 0.015 {
-                    let light = color * radiance * e.power;
+                    let engine_color=Vec3::from_array(c.exhaust_color);
+                    let light = engine_color * radiance * e.power;
                     let plasma = light * (1. + boost * (c.boost_radiance - 1.));
                     self.sprites.push(shaft(
                         at,
@@ -344,7 +349,7 @@ impl Jets {
                     self.lights.push(LocalLight {
                         position: at + axis * 0.5,
                         direction: axis,
-                        intensity_cd: color
+                        intensity_cd: engine_color
                             * e.power
                             * (c.light_power + boost * c.boost_light_power * (0.7 + surge * 0.3)),
                         range_m: 19. + boost * 9.,
@@ -374,7 +379,7 @@ impl Jets {
                             pos,
                             pos + axis * (1.2 + boost * 0.8),
                             0.24 + age * 0.24,
-                            light * 0.5,
+                            light * 0.12,
                             4,
                             [k as f32 * 2.4, 0., 0., 0.],
                         );
@@ -455,7 +460,7 @@ impl Jets {
                                 point,
                                 old_p,
                                 0.65,
-                                color * radiance * 0.38,
+                                Vec3::from_array(c.exhaust_color) * radiance * c.trail_radiance,
                                 6,
                                 [
                                     (time - t) / c.trail_life,
