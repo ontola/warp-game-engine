@@ -139,6 +139,22 @@ fn track_lights(scene: &mut Scene, race: &Race) -> Vec<render::headlights::Local
     }
     lights
 }
+// Two continuous ribbons, not cells discarded by their midpoint. This preserves
+// the exact collision boundary even when the split expands between samples.
+fn road_span(a:&spaceracer::track::Node,b:&spaceracer::track::Node,side:f64,u:f64,v:f64)->[f64;4] {
+    let bounds=|n:&spaceracer::track::Node| if side<0. {[-n.geometry.width,-n.split_gap]}else{[n.split_gap,n.geometry.width]};
+    let x=bounds(a);let y=bounds(b);
+    let lerp=|a:f64,b:f64,t:f64| a+(b-a)*t;
+    [lerp(x[0],x[1],u),lerp(x[0],x[1],v),lerp(y[0],y[1],v),lerp(y[0],y[1],u)]
+}
+fn road_edge(parts:&mut [Primitive],a:&spaceracer::track::Node,b:&spaceracer::track::Node,x:f64,y:f64,inward:f64,ha:f64,hb:f64) {
+    let na=a.frame(x);let nb=b.frame(y);
+    let top=[na.y_axis,na.y_axis,nb.y_axis,nb.y_axis];
+    let normal=[-na.x_axis*inward as f32,-na.x_axis*inward as f32,-nb.x_axis*inward as f32,-nb.x_axis*inward as f32];
+    quad(&mut parts[2],[a.point(x,-2.5),a.point(x,ha),b.point(y,hb),b.point(y,-2.5)],normal,[[0.;2];4]);
+    // One continuous neon strip along each actual edge, including unguarded edges.
+    quad(&mut parts[1],[a.point(x,ha+0.05),a.point(x+inward*0.3,ha+0.05),b.point(y+inward*0.3,hb+0.05),b.point(y,hb+0.05)],top,[[0.;2];4]);
+}
 fn road(scene: &mut Scene, race: &Race) {
     let asphalt = surface(scene, 0, [0.035, 0.045, 0.055], 0.35, 1.);
     let edge = material(scene, [0.07, 0.65, 0.95], 0.3, 140.);
@@ -156,20 +172,15 @@ fn road(scene: &mut Scene, race: &Race) {
         for i in start..(start + 64).min(nodes.len()) {
             let a = &nodes[i];
             let b = &nodes[(i + 1) % nodes.len()];
-            if a.air_gap || b.air_gap {
+            if a.air_gap {
                 continue;
             }
             for lane in 0..16 {
-                let u = -1. + lane as f64 / 8.;
-                let v = u + 0.125;
-                let x = (u + v) * 0.5 * a.geometry.width;
-                if !a.supported(x, 0.) {
-                    continue;
-                }
-                let ax = u * a.geometry.width;
-                let bx = v * a.geometry.width;
-                let cx = v * b.geometry.width;
-                let dx = u * b.geometry.width;
+                let side = if lane<8 {-1.}else{1.};
+                if a.dead_gap && a.dead_side*side>0. {continue;}
+                let t=(lane%8) as f64/8.;
+                let [ax,bx,cx,dx]=road_span(a,b,side,t,t+0.125);
+                let u=ax/a.geometry.width;let v=bx/a.geometry.width;
                 let top = [
                     a.point(ax, 0.),
                     a.point(bx, 0.),
@@ -196,11 +207,11 @@ fn road(scene: &mut Scene, race: &Race) {
                             i as f32 * (race.world.track.length / nodes.len() as f64) as f32,
                         ],
                         [
-                            v as f32,
+                            (cx/b.geometry.width) as f32,
                             (i + 1) as f32 * (race.world.track.length / nodes.len() as f64) as f32,
                         ],
                         [
-                            u as f32,
+                            (dx/b.geometry.width) as f32,
                             (i + 1) as f32 * (race.world.track.length / nodes.len() as f64) as f32,
                         ],
                     ],
@@ -217,75 +228,32 @@ fn road(scene: &mut Scene, race: &Race) {
             if a.zone == "boost" && i % 3 == 0 {
                 let d = (i as f64) * race.world.track.length / nodes.len() as f64;
                 for side in [-1., 1.] {
-                    let points = [
-                        (side * a.geometry.width * 0.3, d),
-                        (0., d + 6.),
-                        (0., d + 8.),
-                        (side * a.geometry.width * 0.3, d + 2.),
-                    ]
-                    .map(|(x, d)| race.world.track.sample(d).point(x, 0.05));
-                    quad(
-                        &mut parts[3],
-                        points,
-                        [a.geometry.basis().y_axis; 4],
-                        [[0.; 2]; 4],
-                    );
+                    if a.dead_gap && a.dead_side*side>0. {continue;}
+                    let split=a.split_gap.max(b.split_gap)>0.0001;
+                    let wings:&[f64]=if split {&[-1.,1.]}else{&[1.]};
+                    for &wing_side in wings {
+                        let points = [(0.28,d),(0.,d+6.),(0.,d+8.),(0.28,d+2.)]
+                            .map(|(wing,d)| {
+                                let n=race.world.track.sample(d);
+                                let center=if split {side*(n.geometry.width+n.split_gap)*0.5}else{0.};
+                                let span=n.geometry.width-n.split_gap;
+                                n.point(center+side*wing_side*span*wing,0.05)
+                            });
+                        quad(&mut parts[3],points,[a.geometry.basis().y_axis;4],[[0.;2];4]);
+                    }
                 }
             }
-            for side in [-1., 1.] {
-                let x = side * a.geometry.width;
-                let y = side * b.geometry.width;
-                let normal = [
-                    a.frame(x).y_axis,
-                    a.frame(x).y_axis,
-                    b.frame(y).y_axis,
-                    b.frame(y).y_axis,
-                ];
-                quad(
-                    &mut parts[1],
-                    [
-                        a.point(x, 0.08),
-                        a.point(x - side * 0.35, 0.08),
-                        b.point(y - side * 0.35, 0.08),
-                        b.point(y, 0.08),
-                    ],
-                    normal,
-                    [[0.; 2]; 4],
-                );
-                quad(
-                    &mut parts[2],
-                    [
-                        a.point(x, -2.5),
-                        a.point(x, 0.),
-                        b.point(y, 0.),
-                        b.point(y, -2.5),
-                    ],
-                    [a.frame(x).x_axis * side as f32; 4],
-                    [[0.; 2]; 4],
-                );
-                if a.rails && a.geometry.shape_angle < 3. {
-                    quad(
-                        &mut parts[2],
-                        [
-                            a.point(x, 0.),
-                            a.point(x, 2.4),
-                            b.point(y, 2.4),
-                            b.point(y, 0.),
-                        ],
-                        [-a.frame(x).x_axis * side as f32; 4],
-                        [[0.; 2]; 4],
-                    );
-                    quad(
-                        &mut parts[1],
-                        [
-                            a.point(x, 2.45),
-                            a.point(x - side * 0.3, 2.45),
-                            b.point(y - side * 0.3, 2.45),
-                            b.point(y, 2.45),
-                        ],
-                        normal,
-                        [[0.; 2]; 4],
-                    );
+            for side in [-1.,1.] {
+                if a.dead_gap && a.dead_side*side>0. {continue;}
+                road_edge(&mut parts,a,b,side*a.geometry.width,side*b.geometry.width,-side,
+                    if a.rails && a.geometry.shape_angle<3. {2.4}else{0.},
+                    if a.rails && b.geometry.shape_angle<3. {2.4}else{0.});
+                if a.split_gap.max(b.split_gap)>0.0001 {
+                    // This boundary already constrains racers in Pilot::constrain.
+                    // Match the source fork rail and fade its height at the nose.
+                    road_edge(&mut parts,a,b,side*a.split_gap,side*b.split_gap,side,
+                        2.4*spaceracer::handling::smooth(0.,3.,a.split_gap),
+                        2.4*spaceracer::handling::smooth(0.,3.,b.split_gap));
                 }
             }
             if a.tunnel && a.geometry.shape_angle < 0.1 {
@@ -1019,4 +987,51 @@ fn load_node(
     }
     chain.pop();
     Ok(())
+}
+
+#[cfg(test)]
+mod road_tests {
+    use super::*;
+    #[test]
+    fn split_ribbons_cover_supported_surface_without_covering_the_gap() {
+        for seed in [89502,35,80385] {
+            let race=Race::new(seed,"hard","forest",1,3);
+            let nodes=&race.world.track.nodes;
+            for (i,a) in nodes.iter().enumerate() {
+                let b=&nodes[(i+1)%nodes.len()];
+                if a.air_gap || a.split_gap.max(b.split_gap)<0.01 {continue;}
+                for t in [0.1,0.5,0.9] {
+                    let node=race.world.track.sample((i as f64+t)*race.world.track.step);
+                    for k in 0..101 {
+                        let x=(-1.+(k as f64+0.5)*2./101.)*node.geometry.width;
+                        // Collision intentionally treats sub-centimetre split openings as closed.
+                        if (x.abs()-node.split_gap).abs()<0.011 {continue;}
+                        let mut covers=0;
+                        for side in [-1.,1.] {
+                            if a.dead_gap && a.dead_side*side>0. {continue;}
+                            for lane in 0..8 {
+                                let q=road_span(a,b,side,lane as f64/8.,(lane+1) as f64/8.);
+                                let lo=q[0]+(q[3]-q[0])*t;let hi=q[1]+(q[2]-q[1])*t;
+                                if x>=lo && x<hi {covers+=1;}
+                            }
+                        }
+                        assert_eq!(covers,usize::from(node.supported(x,0.)),"seed {seed}, node {i}, x {x}, t {t}");
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn inner_guardrail_meets_exact_deck_boundary_at_both_ends() {
+        let race=Race::new(89502,"hard","forest",1,3);
+        let a=race.world.track.sample(4854.);let b=race.world.track.sample(4854.+race.world.track.step);
+        assert!(a.split_gap>0.01);
+        let mut parts:Vec<_>=(0..5).map(|_|Primitive::default()).collect();
+        road_edge(&mut parts,&a,&b,a.split_gap,b.split_gap,1.,2.4,2.4);
+        for (j,node) in [(0,&a),(1,&a),(2,&b),(3,&b)] {
+            let p=Vec3::from(parts[2].vertices[j].pos);
+            assert!((node.lateral(p)-node.split_gap).abs()<0.001);
+        }
+        assert_eq!(parts[1].indices.len(),6,"one unbroken neon strip per edge");
+    }
 }

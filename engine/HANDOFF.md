@@ -1,3 +1,11 @@
+## 2026-11-01 SpaceRacer split-road F12 correction
+
+Seed 89502 hard forest at 4854 m: coarse midpoint cell omission made sawtooth
+holes; inner split guards were missing despite simulation constraint. Restored
+continuous fork strips, matching inner walls/guards/neon, surviving-branch boosts
+and exact launch lip boundary. No track recipe/physics changes. Two geometry
+regressions and native 1080p entry/wide/exit captures; see parity-review.md.
+
 ## 2026-11-01 SpaceRacer respawn and energy wear
 
 Restored source-inspired smooth camera return and bottom-up hull construction,
