@@ -292,6 +292,22 @@ pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, eye: Vec3, seed: u32, d
     }
 }
 
+/// The share of trees drawn as objects `distance` metres from where they
+/// were placed, in a handover band `start..end` to the far forest layer
+/// (terrain_surface.wgsl draws the rest: smoothstep(start, end, distance)).
+/// Drawn and layer forest then sum to the same share at every distance.
+pub fn handover(distance: f32, start: f32, end: f32) -> f32 {
+    1.0 - smooth(start, end.max(start + 1e-3), distance)
+}
+
+/// Whether a tree at `pos` stays an object in the handover band: kept with
+/// probability `handover`, by a hash of its position (stable while the
+/// camera moves).
+pub fn handover_keep(pos: Vec3, centre: Vec2, start: f32, end: f32) -> bool {
+    let h = hash(pos.x.to_bits() as i32, pos.z.to_bits() as i32, 11, 0x5eed);
+    h < handover(Vec2::new(pos.x, pos.z).distance(centre), start, end)
+}
+
 /// Every tree within `radius` of `centre` (x, z), row by row.
 pub fn trees_in_disc(centre: Vec2, radius: f32, seed: u32, style: &Style, density: f32) -> Vec<Tree> {
     let (i0, i1) = (((centre.x - radius) / CELL).floor() as i32, ((centre.x + radius) / CELL).ceil() as i32);

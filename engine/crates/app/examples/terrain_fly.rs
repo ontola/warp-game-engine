@@ -392,7 +392,8 @@ fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, centre: Vec3,
     let material = scene.add_material(Material { tint: [1.0; 3], layer: t0, roughness: 0.9, flags: TERRAIN | SURFACE, scale: 4.0, metal: 0.0 });
     let mut tree_pool = None;
     if world.trees {
-        let mut trees = forest(seed, &style, centre, world);
+        let layer_only = std::env::args().any(|a| a == "--forest-layer-only");
+        let mut trees = if layer_only { Vec::new() } else { forest(seed, &style, centre, world) };
         trees.sort_by(|a, b| (a.0 - centre).length_squared().total_cmp(&(b.0 - centre).length_squared()));
         let near = (world.recipe_trees as usize).min(trees.len());
         if world.firs { firs(&mut scene, &assets, &trees[near..])?; }
@@ -403,7 +404,14 @@ fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, centre: Vec3,
     // Beyond the trees the terrain draws the same forest as colour, out to
     // the horizon.
     procedural_terrain::vegetation_style(&mut scene, material, palette);
-    if world.trees { procedural_terrain::far_forest(&mut scene, material, world.tree_radius * 0.85, world.tree_density, &palette.forest); }
+    // Drawn trees hand over to the painted forest in the outer 15 % of their
+    // radius, tree by tree (forest_field::handover_keep), so the forest share
+    // holds across the ring. --forest-layer-only paints it everywhere (the
+    // reference for that share).
+    if world.trees {
+        let (start, end) = if std::env::args().any(|a| a == "--forest-layer-only") { (0.0, 1.0) } else { handover_band(world) };
+        procedural_terrain::far_forest_handover(&mut scene, material, [centre.x, centre.z], start, end, world.tree_density, &palette.forest);
+    }
     let mut light = Lighting::default();
     // Sunlit valleys bounce light onto the slopes facing away from the sun:
     // with the default 0.15 a lee slope 3 km out rendered near black.
@@ -541,8 +549,16 @@ fn tree_meshes() -> Result<&'static [ClusterMesh], String> {
 /// field (the distant terrain draws the same forest). Position, yaw, scale
 /// and variant.
 fn forest(seed: u32, style: &Style, centre: Vec3, world: World) -> Vec<(Vec3, f32, Vec3, usize)> {
-    render::forest_field::trees_in_disc(Vec2::new(centre.x, centre.z), world.tree_radius, seed, style, world.tree_density)
-        .into_iter().map(|t| (t.pos, t.yaw, t.scale, t.variant as usize)).collect()
+    let (start, end) = handover_band(world);
+    let c = Vec2::new(centre.x, centre.z);
+    render::forest_field::trees_in_disc(c, world.tree_radius, seed, style, world.tree_density).into_iter()
+        .filter(|t| render::forest_field::handover_keep(t.pos, c, start, end))
+        .map(|t| (t.pos, t.yaw, t.scale, t.variant as usize)).collect()
+}
+
+/// Where drawn trees hand over to the painted forest (metres from the centre).
+fn handover_band(world: World) -> (f32, f32) {
+    (world.tree_radius * 0.85, world.tree_radius)
 }
 
 /// Windswept meadow roots on a 0.5 m grid of the terrain function, 300 m

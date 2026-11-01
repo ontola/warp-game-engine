@@ -150,7 +150,22 @@ pub fn far_forest(scene: &mut Scene, material: u32, start_m: f32, density: f32, 
     let first = style_block(scene, material);
     let forest: [Material; 2] = bytemuck::cast(*style);
     scene.materials[first..first + 2].copy_from_slice(&forest);
-    scene.materials[first + 2].tint = [start_m.max(0.0), density.clamp(0.0, 1.0), 0.0];
+    scene.materials[first + 2] = Material { tint: [(start_m - 150.0).max(0.0), density.clamp(0.0, 1.0), 0.0],
+        layer: -1, roughness: 0.0, flags: 0, scale: start_m.max(0.0), metal: 0.0 };
+}
+
+/// far_forest for trees placed around `centre` (x, z) and handed over in the
+/// band `start_m..end_m` (forest_field::handover_keep drops the objects the
+/// layer takes over), so drawn and painted forest sum to one share at every
+/// distance, also while the camera moves away from where the trees were
+/// placed.
+pub fn far_forest_handover(scene: &mut Scene, material: u32, centre: [f32; 2], start_m: f32, end_m: f32, density: f32,
+    style: &forest_field::ForestStyle) {
+    let first = style_block(scene, material);
+    let forest: [Material; 2] = bytemuck::cast(*style);
+    scene.materials[first..first + 2].copy_from_slice(&forest);
+    scene.materials[first + 2] = Material { tint: [start_m.max(0.0), density.clamp(0.0, 1.0), centre[0]],
+        layer: -1, roughness: centre[1], flags: 1, scale: end_m.max(start_m + 1e-3), metal: 0.0 };
 }
 
 /// Reserve `capacity` patch slots that draw with `material`.

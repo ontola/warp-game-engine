@@ -199,19 +199,24 @@ fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f
 // no terrain evaluation. procedural_terrain's style block holds the style in
 // data materials the terrain material's scale points at: -(first + 1); a
 // scale >= 0 means no forest (and the default ground, field_ground).
-struct FarForest { style: ForestStyle, start: f32, density: f32 };
+// start..end: the handover band from drawn trees to the layer, measured
+// from `centre` (where the trees were placed) when `centred`, else the camera.
+struct FarForest { style: ForestStyle, start: f32, density: f32, end: f32, centre: vec2<f32>, centred: bool };
 fn far_forest_params(at: u32) -> FarForest {
     let a = materials[at]; let b = materials[at + 1u]; let c = materials[at + 2u];
     let fs = ForestStyle(vec4<f32>(a.tint, bitcast<f32>(a.layer)), vec4<f32>(a.roughness, bitcast<f32>(a.flags), a.scale, a.metal),
         vec4<f32>(b.tint, bitcast<f32>(b.layer)), vec4<f32>(b.roughness, bitcast<f32>(b.flags), b.scale, b.metal));
-    return FarForest(fs, c.tint.x, c.tint.y);
+    return FarForest(fs, c.tint.x, c.tint.y, c.scale, vec2<f32>(c.tint.z, c.roughness), (c.flags & 1u) != 0u);
 }
 fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: FieldAttr, footprint: f32) -> MeadowCanopy {
     if s.scale >= 0.0 { return MeadowCanopy(ground, nn); }
     let params = far_forest_params(u32(-s.scale - 0.5));
     if params.density <= 0.0 { return MeadowCanopy(ground, nn); }
-    // Horizontal: the trees stand in a disc around the camera at any height.
-    let fade = smoothstep(params.start - 150.0, params.start, distance(s.p.xz, view.cam.xz));
+    // Horizontal: the trees stand in a disc around where they were placed
+    // (or the camera) at any height. In the band the layer takes exactly the
+    // share of trees no longer drawn (forest_field::handover).
+    let origin = select(view.cam.xz, params.centre, params.centred);
+    let fade = smoothstep(params.start, params.end, distance(s.p.xz, origin));
     if fade <= 0.0 { return MeadowCanopy(ground, nn); }
     // forest_field ff_grows from the vertex attributes, with a pixel of
     // slack so stand edges stay crisp without aliasing.
@@ -243,11 +248,39 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     }
     let shaded = ground * mix(1.0, 0.45, shade * (1.0 - stand) * fade);
     if grows <= 0.0 { return MeadowCanopy(shaded, nn); }
-    let w = grows * fade * stand;
-    if w <= 0.0 { return MeadowCanopy(shaded, nn); }
-    let canopy = forest_canopy(s.p.x, s.p.z, footprint, sun, normalize(view.cam.xyz - s.p), seed, params.density, site, params.style);
-    let forest = canopy.albedo * canopy.occlusion;
-    return MeadowCanopy(mix(shaded, forest, w), normalize(mix(nn, canopy.normal, w)));
+    // The canopy stands a tree height above the ground: the view ray meets
+    // the crown tops before this ground point, at q. From q on towards p it
+    // runs under the crowns, so a stand it crosses on the way is the wall
+    // of its edge (hiding the clearing behind it), and the tops shift with
+    // their height (parallax). Looking down steeply q is p.
+    let eye = normalize(view.cam.xyz - s.p);
+    let rise = max(dot(eye, n), 0.0);
+    let height = params.style.far.w;
+    let reach = min(height * length(eye - n * dot(eye, n)) / max(rise, 0.05), 250.0);
+    let back = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
+    let q = s.p.xz + back * reach;
+    var seen = 1.0;
+    var top = 0.0;
+    var wall = 0.0;
+    let taps = select(1, 6, reach > footprint);
+    for (var k = 0; k < taps; k++) {
+        let t = select(0.0, f32(k) / f32(taps - 1), taps > 1);
+        let a = far_forest_stand(mix(q, s.p.xz, t), seed, site, footprint, edge_w);
+        if k == 0 { top = seen * a; } else { wall += seen * a; }
+        seen *= 1.0 - a;
+    }
+    let w_top = grows * fade * top;
+    let w_wall = grows * fade * wall;
+    if w_top + w_wall <= 0.0 { return MeadowCanopy(shaded, nn); }
+    let canopy = forest_canopy(q.x, q.y, footprint, sun, eye, seed, params.density, site, params.style);
+    let crowns = canopy.albedo * canopy.occlusion;
+    // The wall: crowns' flanks over shaded trunks, facing the viewer.
+    let wall_n = normalize(vec3<f32>(eye.x, 0.15, eye.z));
+    let flank = mix(params.style.floor.rgb, canopy.albedo, 0.5) * 0.55;
+    var c = mix(shaded, crowns, w_top);
+    c = mix(c, flank, w_wall / max(1.0 - w_top, 1e-3));
+    let nrm = normalize(mix(mix(nn, canopy.normal, w_top), wall_n, w_wall));
+    return MeadowCanopy(c, nrm);
 }
 
 // Whether (x, z) lies in a stand or hedgerow on ground of `site`, 0..1
