@@ -1738,6 +1738,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var base = m.tint;
     var nn = n; // the normal after normal maps
     var meadow_ground_sky = 1.0;
+    field_sun = 1.0;
     if FEATURE_TERRAIN && (m.flags & 2u) != 0u && (m.flags & 32768u) == 0u {
         // Terrain (src/shaders/terrain.gdshader): moss, needles, a grassy
         // verge, bare ground beside the road and rock where it is steep.
@@ -2052,7 +2053,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let sky_vis = sky_visibility(p, visibility_n);
     var meadow_edge=vec2<f32>(1.0);
     if FEATURE_MEADOW && (m.flags&6u)!=0u {meadow_edge=meadow_edge_visibility(p,surface_n,l);}
-    let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y;
+    let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y * field_sun;
     let refl = reflect(dir, n);
     let ssao = screen_space_ao(px, size, p, visibility_n, dist);
     let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
