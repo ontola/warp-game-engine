@@ -1055,6 +1055,7 @@ impl app::Game for Gg {
         let drawn: Vec<Vec3> = (0..self.world.players.len()).map(|i| view::pose(&self.world, i, &self.prev, alpha).pos).collect();
         self.plates.update(frame.gpu, r, &self.world, &self.hud, if start { &[] } else { &self.slots }, &drawn, self.vis.sprites())?;
         let mut list = HudDrawList::new(frame.size);
+        list.cached_text=crate::graphics::get().simple_lighting;
         self.hud.begin_pointer_frame(frame.size);
         let cameras = if start {
             // The start screen orbits the arena while bots fight (Godot: 82 m out, 34 up, FOV 66).

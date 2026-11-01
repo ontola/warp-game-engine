@@ -225,9 +225,23 @@ fn fx_column_vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32
     let id = order[ii];
     let p = puffs[id];
     let age = clamp((u.clock.x - p.timing.x) / p.timing.y, 0.0, 1.0);
-    // A full-screen triangle also covers rays whose origin is inside the
-    // beam, and rays that hit an opaque object before reaching its far wall.
-    let clip = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0))[vi];
+    // Conservative projected cylinder box. Only near/inside volumes use the
+    // whole viewport; distant narrow warning beams no longer shade every pixel.
+    let radius=max(mix(p.ax.x,p.ax.y,pow(age,p.ax.w)),1e-5)*max(1.0,p.extra.z);
+    let centre=p.center_kind.xyz+vec3<f32>(0.0,p.ax.z*0.5,0.0);
+    let extent=vec3<f32>(radius,p.ax.z*0.5,radius);
+    var lo=vec2<f32>(1.0);var hi=vec2<f32>(-1.0);var crosses=false;var front=false;
+    for(var i=0u;i<8u;i++) {
+        let sign=vec3<f32>(f32(i&1u),f32((i>>1u)&1u),f32((i>>2u)&1u))*2.0-1.0;
+        let c=u.view_proj*vec4<f32>(centre+sign*extent,1.0);
+        crosses=crosses||c.w<=u.camera_near.w;front=front||c.w>u.camera_near.w;
+        let xy=c.xy/max(c.w,0.0001);lo=min(lo,xy);hi=max(hi,xy);
+    }
+    if crosses {lo=vec2<f32>(-1.0);hi=vec2<f32>(1.0);}
+    if !front {lo=vec2<f32>(0.0);hi=vec2<f32>(0.0);}
+    lo=clamp(lo,vec2<f32>(-1.0),vec2<f32>(1.0));hi=clamp(hi,vec2<f32>(-1.0),vec2<f32>(1.0));
+    let corner=array<vec2<f32>,6>(vec2<f32>(0.0,0.0),vec2<f32>(1.0,0.0),vec2<f32>(1.0,1.0),vec2<f32>(0.0,0.0),vec2<f32>(1.0,1.0),vec2<f32>(0.0,1.0))[vi];
+    let clip=mix(lo,hi,corner);
     let point = u.inverse_view_proj * vec4<f32>(clip, 1.0, 1.0);
     var out = additive_vertex(id, point.xyz / point.w, age);
     out.position = vec4<f32>(clip, 0.0, 1.0);
@@ -664,4 +678,49 @@ fn fx_smoke(in: V) -> @location(0) vec4<f32> {
     }
     if transmission > 0.9995 { discard; }
     return fx_output(vec4<f32>(fp16_safe(color), 1.0 - transmission));
+}
+
+// Minimum billows use a bounded projected sphere and an analytic soft density.
+// Six vertices replace the lumpy 864-vertex sphere; near/inside views still work.
+fn compact_billow(p:Puff)->vec4<f32> {
+ let anim=clamp((u.clock.x-p.timing.x)/max(p.timing.y,0.0001),0.0,1.0);
+ let age=clamp((anim-p.ay.w)*(1.0+p.timing.w)/max(1.0-p.ay.w,0.001),0.0,1.0);
+ let centre=p.center_kind.xyz+vec3<f32>(0.0,p.timing.z*anim,0.0);
+ let radius=max(length(p.ax.xyz),max(length(p.ay.xyz),length(p.az.xyz)))*0.5*mix(0.35,1.0,age);
+ return vec4<f32>(centre,select(radius,0.0,anim<=p.ay.w||age>=1.0));
+}
+@vertex fn fx_min_billow_vs(@builtin(vertex_index) vi:u32,@builtin(instance_index) ii:u32)->V {
+ let id=order[ii];let p=puffs[id];let ball=compact_billow(p);
+ let age=clamp((u.clock.x-p.timing.x)/max(p.timing.y,0.0001),0.0,1.0);
+ var lo=vec2<f32>(1.0);var hi=vec2<f32>(-1.0);var crosses=false;var front=false;
+ for(var i=0u;i<8u;i++) {
+  let sign=vec3<f32>(f32(i&1u),f32((i>>1u)&1u),f32((i>>2u)&1u))*2.0-1.0;
+  let clip=u.view_proj*vec4<f32>(ball.xyz+sign*ball.w,1.0);
+  if clip.w<=u.camera_near.w {crosses=true;}else{front=true;}
+  let xy=clip.xy/max(clip.w,0.0001);lo=min(lo,xy);hi=max(hi,xy);
+ }
+ if crosses {lo=vec2<f32>(-1.0);hi=vec2<f32>(1.0);}
+ if !front {lo=vec2<f32>(0.0);hi=vec2<f32>(0.0);}
+ lo=clamp(lo,vec2<f32>(-1.0),vec2<f32>(1.0));hi=clamp(hi,vec2<f32>(-1.0),vec2<f32>(1.0));
+ let uv=array<vec2<f32>,6>(vec2<f32>(0.0,0.0),vec2<f32>(1.0,0.0),vec2<f32>(1.0,1.0),vec2<f32>(0.0,0.0),vec2<f32>(1.0,1.0),vec2<f32>(0.0,1.0))[vi];
+ let xy=mix(lo,hi,uv);let point=u.inverse_view_proj*vec4<f32>(xy,1.0,1.0);
+ var out=additive_vertex(id,point.xyz/point.w,age);out.position=vec4<f32>(xy,0.0,1.0);return out;
+}
+@fragment fn fx_min_billow(in:V)->@location(0) vec4<f32> {
+ let p=puffs[in.id];let ball=compact_billow(p);if ball.w<=0.001 {discard;}
+ let ray=normalize(in.world-u.camera_near.xyz);let offset=u.camera_near.xyz-ball.xyz;
+ let b=dot(offset,ray);let d=b*b-dot(offset,offset)+ball.w*ball.w;if d<=0.0 {discard;}
+ let root=sqrt(d);let entry=max(-b-root,u.camera_near.w);
+ let screen=in.position.xy*u.size.zw;let forward=max(-(u.view*vec4<f32>(ray,0.0)).z,0.0001);
+ let exit=min(-b+root,depth_metres(screen)/forward);if exit<=entry {discard;}
+ let density=clamp((exit-entry)/ball.w,0.0,1.0);
+ let age=clamp((in.age-p.ay.w)*(1.0+p.timing.w)/max(1.0-p.ay.w,0.001),0.0,1.0);
+ let fade=smoothstep(0.0,0.12,age)*(1.0-age)*(1.0-age);
+ let alpha=p.body.a*fade*density;
+ var color=p.body.rgb*p.extra.rgb*0.6;
+ if p.center_kind.w>0.5 {
+  color=mix(vec3<f32>(3.0,0.12,0.005),vec3<f32>(9.0,2.0,0.12),density*(1.0-age));
+  return fx_output(vec4<f32>(color*u.clock.y*fade*density,0.0));
+ }
+ return fx_output(vec4<f32>(color*u.clock.y*alpha,alpha));
 }

@@ -82,7 +82,7 @@ impl EffectsView {
         let occ = Occupancy::new(Vec3::new(-OCC_HALF, -4.0, -OCC_HALF), Vec3::new(OCC_HALF, 30.0, OCC_HALF), OCC_VOXEL);
         let mut debris = Debris::reserve(scene, crate::graphics::get().debris_capacity, occ, false);
         debris.set_gradual_recycling();
-        let mut blasts = Effects::default();
+        let mut blasts = Effects::with_explosion_budget(if crate::graphics::get().minimal_forward {render::fx::ExplosionBudget::MINIMUM}else if crate::graphics::get().simple_lighting{render::fx::ExplosionBudget::LOW}else{render::fx::ExplosionBudget::FULL});
         // Full desktop quality uses a shared baked density animation. Keep the
         // existing inexpensive billows on low/minimum profiles (including Quest).
         // This diagnostic override makes repeatable before/after captures possible.
