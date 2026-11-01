@@ -53,6 +53,11 @@ detail, the measurements and the dead ends are in the
   mipmapped) or `set_sprite_texture` with a `sprites::Canvas` (a HUD list
   drawn offscreen: name tags, 3D text, button prompts). Colour is radiance;
   `sprites::irradiance` lights a sprite from the scene's local lights.
+  `Sprite.depth_test` defaults to `DepthTest::Fragment`. Optical halos can use
+  `DepthTest::Source`: test visibility at the sprite centre, then spread the
+  glow over nearby surfaces without slicing the quad against their depth.
+  A hidden source still hides the whole halo. Keep normal geometry/particles
+  on fragment depth; pair optical halos with `Facing::Screen`.
   `Scene.graphics.sharp_sprites` composes these effects after world motion blur,
   before bloom/tonemapping. This avoids using the background's velocity for
   electrical arcs and tracers; it also leaves exhaust/particle composition sharp.

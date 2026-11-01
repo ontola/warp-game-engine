@@ -279,3 +279,22 @@ at different distances, in city and forest. Reviewed captures are in
 city captures are in `build/spaceracer-arcs-before`. Scenario shader/error checks
 pass. This verifies rendered sequences, not physical-display temporal perception
 or a new frame-time performance target.
+
+## Compact bloom and road clipping correction - 1 November 2026
+
+Reduced boosted nozzle glow diameter from 3.9 to 2 m and optical halo from
+5.5 to 2.7 m, with a narrower/fainter outer falloff. The distant minimum is now
+14 pixels (about 20 on boost), retaining a compact distant engine highlight.
+Lightning contact diameter drops from 2-5 m to 0.65-1.65 m; contact illumination
+is smaller/weaker too. The bright plasma plume and moving arcs remain.
+
+The road cutoff came from fragment depth-testing enlarged optical quads. Engine
+nozzle/halo/flare now opt into shared `sprites::DepthTest::Source`: hide when the
+light source is hidden, but do not slice the halo where it spreads over the road.
+Road-contact sprites and other effects keep normal per-fragment depth.
+
+Validation: eight effects tests; GPU sprite regression checks source/fragment
+occlusion on a crossing surface and fully hidden source, in normal and minimal
+renderers. Native 1080p city/forest thirteen-frame boost and sustain scenarios
+pass; reviewed screenshots in `build/spaceracer-bloom-tight-city` and
+`build/spaceracer-bloom-tight-forest`. No physical display or performance claim.
