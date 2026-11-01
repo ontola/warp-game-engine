@@ -106,7 +106,7 @@ fn the_mouse_is_nobody_but_works_the_room() {
     run_until(&mut lobby, |l| l.accepts_input());
     let size = [1920, 1080];
     let point = |lobby: &mut Lobby, at: [f32; 2], pressed: bool, wheel: f32| {
-        app::Game::pointer(lobby, app::Pointer { position: Some(at), moved: true, pressed, held: false, wheel }, size);
+        app::Game::pointer(lobby, app::Pointer { position: Some(at), moved: true, pressed, held: false, wheel, ..Default::default() }, size);
         lobby.update(1.0 / 60.0);
     };
     let sent = |from: &mpsc::Receiver<Value>, kind: &str| {
