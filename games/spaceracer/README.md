@@ -6,6 +6,13 @@ valid equal-content performance comparison. Source provenance remains pinned
 in `port-status.json`; original assets and their attribution are retained.
 There is no Godot runtime or Godot build/export step.
 
+## Boost presentation (1 November 2026)
+
+Uneven, changing lightning arches now strike the road with soft contact light.
+Boost exhaust is wider/brighter, and distant engines retain a small luminous
+halo. Tunable in `rules/jets.luau`; consecutive city/daylight captures and effect
+checks are described in the parity review.
+
 ## Racing personalities and finish laps (1 November 2026)
 
 AI drivers use six seeded styles with different lines, braking margins, pickup

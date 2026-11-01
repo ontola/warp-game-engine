@@ -82,6 +82,18 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let edge=1.-smoothstep(.55,1.,abs(x));
         return vec4<f32>(mix(vec3<f32>(1.),vec3<f32>(1.5,1.45,1.3),1.-abs(x)),edge);
     }
+    if s.effect == 13u { // screen-sized optical bloom on distant engines
+        let clip=u.depth_vp*vec4<f32>(s.params.xyz,1.);
+        if clip.w<=0. {return vec4<f32>(0.);}
+        let uv=clip.xy/clip.w*vec2<f32>(.5,-.5)+.5;
+        let visible=smoothstep(-.12,.12,depth_metres(uv)-clip.w);
+        let q=s.uv*2.-1.;let r2=dot(q,q);
+        let halo=exp(-r2*5.)*(1.-smoothstep(.65,1.,sqrt(r2)));
+        let core=exp(-r2*65.);
+        let far=1.-smoothstep(650.,1200.,clip.w);
+        return vec4<f32>(mix(vec3<f32>(.65,.85,1.),vec3<f32>(2.5),core),
+            (halo*.16+core*.9)*visible*far);
+    }
     if s.effect == 12u { // inexpensive road-contact pool, no opaque disk
         let q=s.uv*2.-1.;let r2=dot(q,q);
         return vec4<f32>(vec3<f32>(1.),exp(-r2*5.)*(1.-smoothstep(.6,1.,sqrt(r2)))*.45);

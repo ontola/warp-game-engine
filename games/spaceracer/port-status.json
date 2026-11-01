@@ -253,7 +253,7 @@
     {
       "path": "src/ship.gd",
       "sha256": "70a1631fc1ce050ba926cdb53de9363dcbaefc5cb7125cf540a80c1e737b211b",
-      "status": "all retained ship hierarchies; native plasma/core/flare/heat/reverse jets, one-presentation-frame boost arcs and soft fast wisps; Luau effect parameters; energy-linked wear and respawn scan restored; full optical parity incomplete; electrical sprites composed after world motion blur"
+      "status": "all retained ship hierarchies; native plasma/core/flare/heat/reverse jets, one-presentation-frame boost arcs and soft fast wisps; Luau effect parameters; energy-linked wear and respawn scan restored; full optical parity incomplete; electrical sprites composed after world motion blur; varied road-striking boost arches, brighter wider plasma and source-depth-gated distant engine halos; city/forest 1080p sequences and eight effect tests"
     },
     {
       "path": "src/showpiece.gd",

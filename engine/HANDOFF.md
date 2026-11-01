@@ -1,3 +1,12 @@
+## 2026-11-01 SpaceRacer grounded lightning and engine halo
+
+Game jets use varied eight-segment arches to supported deck contacts, max 48
+segments/ship; onset decays, no bolt history. Boost plume width/radiance and
+local light increased. Effect 13 adds source-depth-gated Screen-facing halo,
+24 px minimum / ~35 on boost, far fade 650-1200 m. Tunables in jets.luau.
+Eight effect tests + 1080p thirteen-tick city/forest sequences and sustain pass;
+see boost-arcs-ground.json, game parity review and build/spaceracer-arcs-*-final.
+
 ## 2026-11-01 SpaceRacer varied AI and finish racing
 
 Luau personality/plan/boost_plan give six seeded driving styles, smooth lateral

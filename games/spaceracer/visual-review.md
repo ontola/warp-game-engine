@@ -497,3 +497,30 @@ shots and the all-finished results view retain moving vehicles. The first
 boost capture records 434 m/s; simulation tests exercise repeated boosts and
 hairpin braking. World blur is enabled in replay; effects remain after blur.
 AI driving styles are validated in simulation rather than inferred from stills.
+
+## Grounded boost lightning and distant engine bloom - 1 November 2026
+
+Boost discharges now vary widely in reach and branch count each presentation.
+Eight-segment jagged arches rise outward from the nozzles and descend onto actual
+supported road points; gaps do not receive fake ground contacts. Each nozzle has
+at most two deck strikes and one short free corona branch (48 segments per ship
+maximum). The initial large burst decays into smaller arcs. Contact glows are
+softened, with the existing bounded local contact light. No bolt history or
+extra temporal accumulation: sprites remain after world blur and before bloom.
+
+Boost plumes are roughly twice as wide/bright, with longer irregular exhaust,
+larger nozzle emission and stronger local light. A separate screen-facing engine
+halo has a 24-pixel minimum (about 35 on boost), including on distant opponents.
+Its source depth gates visibility behind scenery; it fades between 650 and
+1200 m. This is a cheap optical glow, not a large physical plume at distance.
+The settings live in `rules/jets.luau`; geometry/shading remain native presentation.
+
+Validation: eight exhaust/effects tests pass, including frame-to-frame contact
+variation, endpoints, raised arches, size/radiance, bounded geometry, pause and
+EMP shutoff. Native 1920x1080 `scenarios/boost-arcs-ground.json` captures thirteen
+successive 120 Hz ticks plus sustained boost, with four boosting ships staged
+at different distances, in city and forest. Reviewed captures are in
+`build/spaceracer-arcs-city-final` and `build/spaceracer-arcs-forest-final`; prior
+city captures are in `build/spaceracer-arcs-before`. Scenario shader/error checks
+pass. This verifies rendered sequences, not physical-display temporal perception
+or a new frame-time performance target.
