@@ -332,7 +332,7 @@ not replaced by a claim that the screenshots now match the original exactly.
 
 ---
 
-# Native visual review — 31 October 2026
+# Native visual review â€” 31 October 2026
 
 Baseline: native commit b0abd49. No retired runtime or export workflow used.
 All retained source assets are unchanged. Simulation geometry, collision bounds

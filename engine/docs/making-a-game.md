@@ -103,7 +103,7 @@ complete example with split screen, bots and online play.
 ## Gotchas
 
 - `Controls::aim` preserves raw right-stick position (x right, y up), and
-  `Controls::triggers` preserves left/right analog pressure in 0–1. Seat routing
+  `Controls::triggers` preserves left/right analog pressure in 0â€“1. Seat routing
   merges both. Headless steps accept `"triggers": [0.25, 0.8]`; digital LT/RT
   still work.
 - Look in `Controls` is right- and up-positive radians per tick; convert to
