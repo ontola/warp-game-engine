@@ -32,6 +32,8 @@ pub struct SpriteImage(pub u64);
 pub enum Facing {
     /// Turns to each camera; `up` stays world up (a standing character).
     Billboard,
+    /// Faces the eye plane, including pitch/roll; minimum width scales both axes.
+    Screen,
     /// Its own right and up axes (unit length; sizes scale them).
     Fixed { right: Vec3, up: Vec3 },
     /// Keeps `up` (unit length) and turns about it to face each camera's
@@ -265,6 +267,7 @@ impl SpriteRenderer {
             let s = &self.sprites[i];
             let (right, up) = match s.facing {
                 Facing::Billboard => { let r = Vec3::new(cam_right.x, 0.0, cam_right.z).try_normalize().unwrap_or(Vec3::X); (r, Vec3::Y) }
+                Facing::Screen => (cam_right, inverse.y_axis.truncate().normalize_or_zero()),
                 Facing::Fixed { right, up } => (right, up),
                 Facing::Axis { up } => {
                     let to_camera = camera.pos - s.center;
@@ -272,8 +275,21 @@ impl SpriteRenderer {
                     (r, up)
                 }
             };
-            GpuSprite { center: s.center.extend(s.depth_bias).to_array(), right: right.extend(s.size[0]).to_array(), up: up.extend(s.size[1]).to_array(),
-                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, if s.additive { 1.0 } else { 0.0 }, s.min_pixels.max(0.0), s.effect as f32], params: s.params }
+            let mut size=s.size;
+            // A glow must remain round when small or viewed along the bullet path.
+            // Use this eye's actual projection, including asymmetric VR frusta.
+            if s.facing==Facing::Screen && s.min_pixels>0.0 {
+                let c=output_vp*s.center.extend(1.);
+                let edge=output_vp*(s.center+right*size[0]).extend(1.);
+                if c.w>camera.near && edge.w>camera.near {
+                    let ndc=edge.truncate()/edge.w-c.truncate()/c.w;
+                    let pixels=(glam::Vec2::new(ndc.x*input.width() as f32,ndc.y*input.height() as f32)*0.5).length();
+                    let grow=(s.min_pixels/pixels.max(0.001)).max(1.);
+                    size=size.map(|v|v*grow);
+                }
+            }
+            GpuSprite { center: s.center.extend(s.depth_bias).to_array(), right: right.extend(size[0]).to_array(), up: up.extend(size[1]).to_array(),
+                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, if s.additive { 1.0 } else { 0.0 }, if s.facing==Facing::Screen {0.0}else{s.min_pixels.max(0.0)}, s.effect as f32], params: s.params }
         }).collect();
         let size = (input.width(), input.height());
         if self.targets.len() <= index { self.targets.resize_with(index + 1, || None); }

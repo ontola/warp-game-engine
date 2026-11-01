@@ -302,3 +302,16 @@ Controlled Quest probes before integration: animated label preparation median
 0.023 ms CPU (previous 4.793 ms); almost-full-view lava paired incremental GPU
 cost 0.232 ms (previous 2.671 ms). These isolate individual costs and do not
 prove sustained 120 fps in live gameplay.
+
+Bullet tracers now use a short, subdued textured wake plus one round glow.
+The generic `sprites::Facing::Screen` aligns the glow to each eye's actual
+view plane; minimum pixel width scales both axes, retaining a circular core
+at distance and when looking up or down. This adds one six-vertex quad per
+tracer, reuses the muzzle-flash image, and needs no blur/bloom pass. The
+stereo GPU regression covers direct sRGB eye attachments and distant end-on
+views at pitches -0.7, 0 and +0.7 radians.
+
+After integrating main through `2256242`, 736 renderer tests and 103 game
+app tests passed (17/2 intentionally ignored). The signed Android APK builds.
+The final integrated explosion coverage limit and new tracer still need a
+connected Quest playtest; earlier probe timings above predate that merge.
