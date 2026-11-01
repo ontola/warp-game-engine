@@ -84,21 +84,16 @@ fn sr_reflections(p:vec3<f32>,n:vec3<f32>,dir:vec3<f32>,fp:f32)->vec3<f32>{
     if arrayLength(&aux)<8u || aux[0]!=0x53524143u || aux[7]==0u {return vec3<f32>(0);}
     let ray=reflect(dir,n);let inv=1.0/select(vec3<f32>(0.00001),ray,abs(ray)>vec3<f32>(0.00001));
     var nearest=1600.0;var hit=0xffffffffu;
-    var stack:array<u32,32>;stack[0]=0u;var size=1u;
-    // Near-first balanced BVH: at most one texture sample, no receiver-grid cuts.
-    for(var step=0u;step<256u && size>0u;step++) {
-        size--;let node=stack[size];let b=aux[6]+node*8u;
+    var node=0u;
+    // Threaded surface-area BVH. Each node stores its subtree's escape index:
+    // no per-pixel stack, no repeated child tests, no arbitrary hit truncation.
+    for(var step=0u;step<aux[7] && node<aux[7];step++) {
+        let current=node;let b=aux[6]+current*8u;node=aux[b+3u];
         let enter=sr_ray_bounds(p,inv,sr_aux3(b),sr_aux3(b+4u));
         if enter>=nearest {continue;}
         let payload=aux[b+7u];
         if payload==0xffffffffu {
-            let left=node+1u;let right=aux[b+3u];
-            let lb=aux[6]+left*8u;let rb=aux[6]+right*8u;
-            let ld=sr_ray_bounds(p,inv,sr_aux3(lb),sr_aux3(lb+4u));
-            let rd=sr_ray_bounds(p,inv,sr_aux3(rb),sr_aux3(rb+4u));
-            let first=select(right,left,ld<rd);let last=select(left,right,ld<rd);
-            if max(ld,rd)<nearest && size<31u {stack[size]=last;size++;}
-            if min(ld,rd)<nearest && size<32u {stack[size]=first;size++;}
+            node=current+1u;
         } else if (payload&0x80000000u)!=0u {
             let sign=aux[3]+(payload&0x7fffffffu)*16u;
             let normal=sr_aux3(sign+12u);let facing=dot(ray,normal);
