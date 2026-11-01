@@ -75,8 +75,8 @@ local function pickup(c)
 end
 local function balance(_)
     return {countdown=3,respawn_seconds=2,race_timeout=240,refill_rate=1,pickup_seconds=2,
-        pickup_spacing=650,warp_seconds=2.8,warp_speed=630,sentry_seconds=8,sentry_interval=.05,
-        sentry_damage=.5,rail_damage=50,emp_seconds=3,missile_damage=60,missile_radius=55,
+        pickup_spacing=1300,warp_seconds=2.8,warp_speed=630,sentry_seconds=8,sentry_interval=.05,
+        sentry_damage=.5,rail_damage=50,emp_seconds=3,emp_radius=100,missile_damage=60,missile_radius=55,
         bomb_damage=145,bomb_radius=120,projectile_timeout=12}
 end
 local rows={"RESUME / RACE","NEW RANDOM RACE","PLAYERS","WORLD","DIFFICULTY","TRACK SEED"}
@@ -100,7 +100,7 @@ local function activate(c)
     if c.crashed or c.finished or c.active or c.emp>0 then return {effect="none"} end
     local b=balance(nil)
     if c.item=="GlideBomb" and not c.airborne then return {effect="none"} end
-    if c.item=="Emp" then return {effect="emp",duration=b.emp_seconds} end
+    if c.item=="Emp" then return {effect="emp",duration=b.emp_seconds,range=b.emp_radius} end
     if c.item=="Warp" and c.airborne then return {effect="none"} end
     if c.item=="Warp" then return {effect="active",duration=b.warp_seconds} end
     if c.item=="Sentry" then return {effect="active",duration=b.sentry_seconds} end

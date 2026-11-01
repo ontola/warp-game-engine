@@ -1,3 +1,14 @@
+## 2026-11-01 SpaceRacer flight/combat feedback
+
+Finite road/tunnel/guard sweeps replace nearest-section crash inference; shared
+ribbon geometry and oriented scenery proxies. F12 seed 46990/hard/cell covered
+by sidewall regression; actual previous input trajectory was not recorded.
+EMP now 100 m, fading ship arcs, local missile cancellation. Pickup spacing
+1300 m. Sentry newest-only interpolated tracer with surface sparks; boost arc
+onset/decay and contact glows; stronger world/per-view warp refraction.
+37 sim + 24 app tests; native capture scenario `flight-combat-effects.json`.
+No Android export or performance certification. See SpaceRacer parity review.
+
 ## 2026-11-01 SpaceRacer split-road F12 correction
 
 Seed 89502 hard forest at 4854 m: coarse midpoint cell omission made sawtooth

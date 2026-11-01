@@ -25,6 +25,22 @@ bottom-up construction scan (1 November 2026); see the parity review for checks.
 Split decks now follow exact smooth gap boundaries with visible inner guards,
 matching collision. F12 seed 89502 is covered by a focused capture scenario.
 
+## Flight collision and combat effects (1 November 2026)
+
+Flight now sweeps the finite road ribbons, split guards and tunnel shell instead
+of treating nearest-track projections as impacts. Rotated scenery uses oriented
+bounds. Scenery and the aircraft hull remain collision proxies, not per-triangle
+vehicle contacts. F12 now records flight position, velocity and orientation.
+
+EMP reaches 100 metres in 3D, leaves its owner immune, and disables only nearby
+cruise missiles. Hit ships short-circuit with fading blue-white arcs. Pickups are
+spaced 1300 metres apart (previously 650); catch-up weighting is unchanged.
+Sentry tracers consume at most one new shot per owner/presentation and leave
+brief surface sparks. Boost lightning decays from a long onset to smaller arcs
+with road-contact glows. Warp refraction is stronger, with per-view isolation.
+The EMP radius/pickup spacing are Luau gameplay values; arc/warp tuning lives in
+`rules/jets.luau`. `scenarios/flight-combat-effects.json` captures these effects.
+
 ## Play and capture
 
 From the workspace root:

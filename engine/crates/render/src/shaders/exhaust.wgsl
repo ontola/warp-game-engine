@@ -26,7 +26,8 @@ fn exhaust_depth_metres(uv:vec2<f32>)->f32 {
         let uv=in.position.xy*exhaust.size.zw;let p=(uv-.5)*2.;let r=length(p);
         let strength=s.colour_alpha.a;let envelope=smoothstep(.12,1.1,r)*strength;
         let pulse=sin(r*16.-s.params.z*11.)*.35;
-        let bend=p*(1.+pulse)*envelope*s.params.w*exhaust.size.zw;
+        let swirl=vec2<f32>(-p.y,p.x)*sin(r*7.-s.params.z*4.)*.28;
+        let bend=(p*(1.+pulse)+swirl)*envelope*s.params.w*exhaust.size.zw;
         let clamp_uv=clamp(uv+bend,exhaust.size.zw*.5,1.-exhaust.size.zw*.5);
         let split=p*envelope*2.5*exhaust.size.zw;
         var colour=textureSampleLevel(exhaust_background,exhaust_sampler,clamp_uv,0.).rgb;

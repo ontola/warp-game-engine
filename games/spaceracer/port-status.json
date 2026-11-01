@@ -318,7 +318,7 @@
     {
       "path": "src/weapons.gd",
       "sha256": "7a9bba8dcdc06d579144f9b8e1f2522457727784d419317acc23c379eeadf9fc",
-      "status": "Luau activation/pickups/balance/cruise plus warp autopilot speed envelope; safe gap extension/EMP interruption and phase immunity; sentry acquisition, occlusion, spinup and 20 Hz at 10 damage/sec; guided glide intercept, limited turns, swept proximity, launch-owner protection and source AoE curve"
+      "status": "Luau activation/pickups/balance/cruise plus warp autopilot speed envelope; safe gap extension/EMP interruption and phase immunity; sentry acquisition, occlusion, spinup and 20 Hz at 10 damage/sec; guided glide intercept, limited turns, swept proximity, launch-owner protection and source AoE curve; EMP limited to 100 m, half pickup row density, newest-only sentry tracers and brief hit sparks"
     },
     {
       "path": "src/world.gd",

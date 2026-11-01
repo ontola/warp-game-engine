@@ -78,5 +78,13 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let cloud=.8+.12*sin(q.x*11.+s.params.x)+.08*sin(q.y*15.-q.x*7.+s.params.x*2.);
         return vec4<f32>(vec3<f32>(1.),exp(-r*r*3.)*(1.-smoothstep(.65,1.,r))*cloud);
     }
+    if s.effect == 11u { // analytic, unbroken tracer / hot impact streak
+        let edge=1.-smoothstep(.55,1.,abs(x));
+        return vec4<f32>(mix(vec3<f32>(1.),vec3<f32>(1.5,1.45,1.3),1.-abs(x)),edge);
+    }
+    if s.effect == 12u { // inexpensive road-contact pool, no opaque disk
+        let q=s.uv*2.-1.;let r2=dot(q,q);
+        return vec4<f32>(vec3<f32>(1.),exp(-r2*5.)*(1.-smoothstep(.6,1.,sqrt(r2)))*.45);
+    }
     return vec4<f32>(0.0);
 }

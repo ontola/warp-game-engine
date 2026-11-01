@@ -145,3 +145,35 @@ Two targeted geometry regressions passed (supported coverage across seeds
 reported seed at 4854/4950/5300 m are in `build/spaceracer-split-road-fixed` using
 `scenarios/split-road-89502.json`. Diagnostic teleport deliberately triggers the
 missed-checkpoint notice; this is not a controller replay or FPS measurement.
+
+## Flight collisions and combat feedback - 1 November 2026
+
+F12 `spaceracer---warp-1793543480547` identifies seed 46990/hard/cell.
+Flight previously compared heights against two independently selected nearest
+road sections; this missed finite walls and could invent a crossing at an
+intersection or below a jump landing. Swept ribbon triangles now gate landing
+and underside contacts, with matching split edges, guardrails and tunnel roofs.
+The rendering/collision ribbon subdivision helper is shared. Oriented scenery
+boxes remove the empty corners of rotated world AABBs; weapon rays no longer
+inherit the aircraft's old 2.5 m inflation. Aircraft/scenery proxies remain
+approximate. This is a targeted fix, not a full exact-mesh collision conversion.
+The F12 state now includes flight transforms; the old still cannot reconstruct
+the exact preceding controller trajectory.
+
+EMP range is 100 m Euclidean distance (including altitude), owner immune, with
+local missile cancellation and small fading surface arcs. No fireball for EMP.
+Pickup spacing doubles to 1300 m. Sentry cadence/DPS stay 20 Hz/10 DPS, but each
+presentation consumes only its newest shot; interpolated endpoints, 2-pixel
+minimum tracer width and 0.11 s hit sparks remove subpixel breakup and invisible
+centre-of-hull impacts. Boost onset arcs reach up to 23 m, settling to 5 m, with
+bounded radial road-contact glows and one extra local light per boosting ship.
+Warp world/view refraction rises to 48/64 pixels with radial swirl; the HUD is
+composited later and each view lens remains restricted to its owner.
+
+Validation: 37 simulation and 24 app tests pass, including the reported seed's
+walls, finite gaps, roof/underside hits, rotated-box empty space, EMP 99/101 m
+horizontal/vertical boundaries, shot consumption and spark/arc decay. Retained
+flight/landing traces pass; underside crash positions now stop at the contact
+rather than up to one tick beyond it. Native 1920x1080 screenshots are in
+`build/spaceracer-flight-combat`. These staged captures do not certify controller
+feel or frame-time performance.

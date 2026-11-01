@@ -372,6 +372,7 @@ impl Race {
             }
             self.drivers[i].shot_count += 1;
             self.beams.push(Beam {
+                target: Some(j),
                 owner: i,
                 serial: self.drivers[i].shot_count,
                 from,
@@ -555,10 +556,7 @@ mod tests {
         let a = r.pose(0).origin;
         let b = r.pose(1).origin;
         let center = (a + b) * 0.5;
-        r.obstacles.push(crate::environment::Obstacle {
-            min: center - Vec3::splat(15.),
-            max: center + Vec3::splat(15.),
-        });
+        r.obstacles.push(crate::environment::Obstacle::bounds(center-Vec3::splat(15.),center+Vec3::splat(15.)));
         let count = r.drivers[0].shot_count;
         for _ in 0..60 {
             r.weapons(&[]);

@@ -115,6 +115,7 @@ pub struct Blast {
 }
 #[derive(Clone, Debug)]
 pub struct Beam {
+    pub target: Option<usize>,
     pub owner: usize,
     pub serial: u64,
     pub from: Vec3,
@@ -825,16 +826,16 @@ impl Race {
                             match a.effect.as_str() {
                                 "emp" => {
                                     for j in 0..self.pilots.len() {
-                                        if j != i {
+                                        if j != i && self.pose(j).origin.distance_squared(pose.origin) <= a.range * a.range {
                                             self.interrupt_warp(j);
                                             self.pilots[j].emp_time = a.duration;
                                             self.pilots[j].boost = 0.;
                                         }
                                     }
-                                    self.projectiles.retain(|p| p.kind != Weapon::Missile);
+                                    self.projectiles.retain(|p| p.kind != Weapon::Missile || p.position.distance_squared(pose.origin) > a.range * a.range);
                                     self.blasts.push(Blast {
                                         position: pose.origin,
-                                        radius: 180.,
+                                        radius: a.range,
                                         age: 0.,
                                         kind,
                                     });
@@ -857,6 +858,7 @@ impl Race {
                                             self.pose(j).origin
                                         });
                                     self.beams.push(Beam {
+                                        target,
                                         owner: i,
                                         serial: self.drivers[i].shot_count,
                                         from: pose.origin,
@@ -1058,6 +1060,21 @@ mod tests {
         assert_eq!(r.pilots[1].energy, 100.);
     }
     #[test]
+    fn emp_uses_world_radius_including_altitude_and_spares_distant_missiles() {
+        let mut r=missile_race();let center=r.pose(0).origin;
+        for (i,offset) in [(1,Vec3::X*99.),(2,Vec3::X*101.),(3,Vec3::Y*101.),(4,Vec3::Y*99.)] {
+            r.pilots[i].airborne=true;r.drivers[i].motion.air.position=center+offset;
+        }
+        r.projectiles[0].position=center+Vec3::Z*101.;
+        r.drivers[0].item=Some(Weapon::Emp);
+        r.weapons(&[Controls {fire:true,..Default::default()}]);
+        assert_eq!(r.pilots[0].emp_time,0.);
+        for i in [1,4] {assert_eq!(r.pilots[i].emp_time,3.);}
+        for i in [2,3] {assert_eq!(r.pilots[i].emp_time,0.);}
+        assert_eq!(r.projectiles.len(),1);
+        assert_eq!(r.blasts.last().unwrap().radius,100.);
+    }
+    #[test]
     fn untargeted_missile_fuses_and_emp_clears_inflight_missile() {
         let mut r = missile_race();
         for p in r.pilots.iter_mut().skip(1) {
@@ -1069,6 +1086,7 @@ mod tests {
         }
         assert!(r.projectiles.is_empty());
         let mut r = missile_race();
+        r.pilots[1].distance=40.;
         r.drivers[1].item = Some(Weapon::Emp);
         r.weapons(&[
             Controls::default(),
