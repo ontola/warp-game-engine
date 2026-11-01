@@ -1,0 +1,108 @@
+{
+  "date": "2026-11-01",
+  "code": "ee7ad75",
+  "gpu": "Quest 2 Adreno 650",
+  "eye_size": [
+    1440,
+    1584
+  ],
+  "eyes": 2,
+  "warmup_frames": 16,
+  "measured_frames": 64,
+  "fixture": "minimum_blasts --bench --spam [--inside]",
+  "limits": "Synthetic fixed scene, no OpenXR compositor; CPU wall time includes GPU wait. Runtime clocks not pinned. Earlier figures predate main integration. Not a sustained FPS guarantee.",
+  "probes": {
+    "merged-blasts": {
+      "sha256": "af17f738b463d931bf4b784ace8730daabfc6b9a511f52c3b4c6dab0234f4e80",
+      "stats": {
+        "cpu_ms": {
+          "count": 64,
+          "median": 5.5867715,
+          "p95": 5.679167,
+          "max": 5.936719
+        },
+        "geometry_gpu_ms": {
+          "count": 64,
+          "median": 2.2359374454116825,
+          "p95": 2.2373436953773496,
+          "max": 2.258437444862366
+        },
+        "fx_gpu_ms": {
+          "count": 64,
+          "median": 2.2732811944999693,
+          "p95": 2.2798436943397524,
+          "max": 2.2815624442977906
+        }
+      }
+    },
+    "merged-blasts-inside": {
+      "sha256": "903cb15919aba0a02a7c2887e078306442c70743c46bdfcd005e98b57d4f35c0",
+      "stats": {
+        "cpu_ms": {
+          "count": 64,
+          "median": 9.858699,
+          "p95": 10.035677999999999,
+          "max": 10.129324
+        },
+        "geometry_gpu_ms": {
+          "count": 64,
+          "median": 1.302187468208313,
+          "p95": 1.303749968170166,
+          "max": 1.312499967956543
+        },
+        "fx_gpu_ms": {
+          "count": 64,
+          "median": 6.6597915040740965,
+          "p95": 6.665676920597077,
+          "max": 6.666614420574188
+        }
+      }
+    },
+    "opt-blasts-spam": {
+      "sha256": "39fac1aa286e81e866d3200b91d8a2b60fa271cae8d52f50e6703118f877393c",
+      "stats": {
+        "cpu_ms": {
+          "count": 64,
+          "median": 5.6918235,
+          "p95": 5.798907,
+          "max": 6.278803
+        },
+        "geometry_gpu_ms": {
+          "count": 64,
+          "median": 2.2456770285072327,
+          "p95": 2.249114528423309,
+          "max": 2.2684374446182254
+        },
+        "fx_gpu_ms": {
+          "count": 64,
+          "median": 2.382786400159836,
+          "p95": 2.3965103581581113,
+          "max": 2.3991666080932617
+        }
+      }
+    },
+    "opt-blasts-inside": {
+      "sha256": "2fa6c2debb4f09df1d963661cc433d025f4baa077320f1a8d5adea4d6d31e31e",
+      "stats": {
+        "cpu_ms": {
+          "count": 64,
+          "median": 11.407474999999998,
+          "p95": 13.362605,
+          "max": 13.603491
+        },
+        "geometry_gpu_ms": {
+          "count": 64,
+          "median": 0.9394270603981019,
+          "p95": 1.0698437238807679,
+          "max": 1.0776562236900329
+        },
+        "fx_gpu_ms": {
+          "count": 64,
+          "median": 8.955312281364442,
+          "p95": 10.293749748687745,
+          "max": 10.300520581855775
+        }
+      }
+    }
+  }
+}

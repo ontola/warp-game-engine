@@ -313,5 +313,7 @@ views at pitches -0.7, 0 and +0.7 radians.
 
 After integrating main through `2256242`, 736 renderer tests and 103 game
 app tests passed (17/2 intentionally ignored). The signed Android APK builds.
-The final integrated explosion coverage limit and new tracer still need a
-connected Quest playtest; earlier probe timings above predate that merge.
+The final integrated APK was installed and launched on Quest. The updated
+512-request fixture costs 2.273 ms effects GPU time outside the blasts and
+6.660 ms inside (both eyes); an active playtest is separate from these
+synthetic results. [Optimization results and remaining limits](quest-optimization-2026-11-01.md).
