@@ -6,6 +6,13 @@ valid equal-content performance comparison. Source provenance remains pinned
 in `port-status.json`; original assets and their attribution are retained.
 There is no Godot runtime or Godot build/export step.
 
+## Racing personalities and finish laps (1 November 2026)
+
+AI drivers use six seeded styles with different lines, braking margins, pickup
+choices and independent boost timing. Finished cars keep racing and boosting,
+with corner braking, animated fins and the existing cinematic cameras. Settings
+live in `rules/game.luau`; results remain locked. See the parity review for checks.
+
 ## Source restoration follow-up (31 October 2026)
 
 See [the parity review](parity-review.md) for restored HUD/visor, cruise guidance

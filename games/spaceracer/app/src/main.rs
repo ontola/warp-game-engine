@@ -523,7 +523,6 @@ impl Game for Racer {
                     strength: if !self.blur_enabled
                         || !self.live_settings.blur
                         || frozen
-                        || p.finished
                         || p.crashed
                         || p.recovery > 0.
                     {
