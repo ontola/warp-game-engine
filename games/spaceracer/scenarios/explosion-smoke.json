@@ -1,0 +1,75 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review sentry",
+        "weapon-view off"
+      ],
+      "pads": 1,
+      "device": "pad0",
+      "triggers": [
+        1,
+        0
+      ],
+      "ticks": 600
+    },
+    {
+      "cmd": [
+        "place 0 0",
+        "place 1 40"
+      ],
+      "device": "pad0",
+      "triggers": [
+        1,
+        0
+      ],
+      "ticks": 120,
+      "capture": "baseline.png"
+    },
+    {
+      "cmd": "crash 1",
+      "ticks": 1,
+      "capture": "flash.png"
+    },
+    {
+      "ticks": 12,
+      "capture": "fire.png"
+    },
+    {
+      "ticks": 36,
+      "capture": "smoke-early.png"
+    },
+    {
+      "ticks": 48,
+      "capture": "smoke-rise.png"
+    },
+    {
+      "ticks": 72,
+      "capture": "smoke-body.png"
+    },
+    {
+      "ticks": 120,
+      "capture": "smoke-tail.png"
+    },
+    {
+      "ticks": 120,
+      "capture": "smoke-dissipate.png"
+    },
+    {
+      "ticks": 180,
+      "capture": "smoke-end.png"
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    },
+    {
+      "expect": "/script_error",
+      "equals": null
+    }
+  ]
+}

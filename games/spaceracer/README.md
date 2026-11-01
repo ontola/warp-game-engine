@@ -6,6 +6,14 @@ valid equal-content performance comparison. Source provenance remains pinned
 in `port-status.json`; original assets and their attribution are retained.
 There is no Godot runtime or Godot build/export step.
 
+## Growing Guns smoke (1 November 2026)
+
+Crashes and weapon explosions now use Growing Guns' shared animated volume
+smoke, with gradual dissipation and adaptive rendering for overlapping plumes.
+`baked_explosion_smoke` in `rules/effects.luau` selects it for a new race.
+See [the shared smoke implementation](../../engine/docs/baked-explosion-smoke.md)
+and the parity review for checks and limits.
+
 ## Boost presentation (1 November 2026)
 
 Uneven, changing lightning arches now strike the road with soft contact light.

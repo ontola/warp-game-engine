@@ -6,6 +6,8 @@ embers, heat distortion, flash and lights retain their existing recipe and
 random sequence. Low/minimum profiles, including native Quest, retain billows.
 `GG_BAKED_SMOKE=0` selects the earlier smoke for an identical-event comparison.
 This is a visual trial; it does not change explosion damage or physics.
+SpaceRacer also opts into this shared path for vehicle and weapon explosions;
+its `rules/effects.luau` setting `baked_explosion_smoke` applies on a new race.
 [Adaptive rendering](adaptive-explosion-smoke.md) now reduces the soft-effects
 resolution and ray count per view as projected coverage or overlap increases.
 The [earlier scalability report](baked-smoke-scaling.md) records the full-resolution

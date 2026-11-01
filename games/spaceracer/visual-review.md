@@ -559,3 +559,25 @@ Eight effect tests pass. Native 1080p city/forest thirteen-frame onset plus
 sustained-boost scenarios pass; reviewed captures in `build/spaceracer-blue-core-city`
 and `build/spaceracer-blue-core-forest`. This is a presentation adjustment, with
 no handling changes or new performance claim.
+
+## Shared Growing Guns explosion smoke - 1 November 2026
+
+Checked fetched origin/main (902994a) and the local smoke development checkout.
+The latest committed Growing Guns baked density animation/adaptive renderer was
+already present in Warp; SpaceRacer had not enabled it. The common Effects pool
+now calls set_baked_smoke using `baked_explosion_smoke=true` in effects.luau, so
+vehicle crashes and non-EMP weapon blasts use exactly the shared smoke path.
+No duplicate asset/shader, no unrelated Growing Guns checkout changes. Fire,
+debris, heat, explosion damage and EMP presentation retain their current paths.
+
+This reuses the 6.75 MiB shared density animation, seeded volume orientation,
+4.6-second gradual tail, scene-depth clipping and adaptive per-view smoke/fire
+resolution. Baked smoke does not flow around collisions; shared renderer limits
+and quality tradeoffs remain (see engine/docs/baked-explosion-smoke.md).
+
+Validation: five baked-smoke renderer tests pass (asset/bounds, RNG preservation,
+retirement and hard bounds). New scenarios/explosion-smoke.json stages an actual
+vehicle crash, captures fire/rise/body/fade/expiry, and passes shader/script checks
+at native 1920x1080 in city, forest and two-player split-screen. Captures are in
+build/spaceracer-smoke-city, -forest and -split; earlier billows in -before.
+Reviewed early/body/tail images. No new frame-time target or physical-pad claim.

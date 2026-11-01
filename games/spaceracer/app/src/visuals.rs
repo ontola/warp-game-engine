@@ -604,6 +604,9 @@ impl Visuals {
         let mut fx = render::fx::Effects::default();
         fx.light_scale = crash_fx.config.explosion_light_scale;
         fx.smooth_billows = true;
+        // Same shared animated density asset and adaptive renderer as Growing Guns.
+        // This Effects instance handles both vehicle crashes and weapon blasts.
+        fx.set_baked_smoke(crash_fx.config.baked_explosion_smoke);
         Ok(Self {
             stage,
             scene,
