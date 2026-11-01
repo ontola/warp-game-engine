@@ -12,6 +12,8 @@
 //! lights.extend(fx.lights(time));                            // local lights
 //! ```
 use crate::headlights::LocalLight;
+#[path="fx_budget.rs"] mod budget;
+pub use budget::{ExplosionBudget,ExplosionStats};
 use crate::frame::resource_cache::{BindGroups, CacheStats, TextureViews};
 use crate::{Camera, Gpu};
 use bytemuck::{Pod, Zeroable};
@@ -23,7 +25,7 @@ use std::sync::Mutex;
 const MAX_CD: f32 = 100_000_000.0;
 const SPHERE_VERTICES: u32 = 16 * 9 * 6;
 const BILLOW_VERTICES: u32 = 32 * 18 * 6;
-const COLUMN_VERTICES: u32 = 3; // One ray-integrated volume, including camera-inside views.
+const COLUMN_VERTICES: u32 = 6; // Bounded ray-integrated volume, including camera-inside views.
 const STREAK_VERTICES: u32 = 6 * 12;
 const MOTE_VERTICES: u32 = 6;
 const MAX_PUFFS: usize = 16384;
@@ -247,6 +249,7 @@ fn expo_out(t: f32) -> f32 { if t >= 1.0 { 1.0 } else { 1.0 - 2f32.powf(-10.0 * 
 
 /// Live effects owned by the game.
 pub struct Effects {
+    budget:Option<budget::BudgetState>,
     puffs: Vec<Puff>,
     pops: Vec<LightPop>,
     rng: u64,
@@ -261,7 +264,7 @@ pub struct Effects {
 }
 
 impl Default for Effects {
-    fn default() -> Self { Effects { puffs: Vec::new(), pops: Vec::new(), rng: 0x2545_F491_4F6C_DD1D, changed: false, baked_smoke: false, light_scale: 37_000.0, smooth_billows: false } }
+    fn default() -> Self { Effects { budget:None,puffs: Vec::new(), pops: Vec::new(), rng: 0x2545_F491_4F6C_DD1D, changed: false, baked_smoke: false, light_scale: 37_000.0, smooth_billows: false } }
 }
 
 impl Effects {
@@ -274,8 +277,8 @@ impl Effects {
     fn range(&mut self, a: f32, b: f32) -> f32 { a + (b - a) * self.f() }
 
     pub fn len(&self) -> usize { self.puffs.len() }
-    pub fn is_empty(&self) -> bool { self.puffs.is_empty() }
-    pub fn clear(&mut self) { self.puffs.clear(); self.pops.clear(); self.changed = true; }
+    pub fn is_empty(&self) -> bool { self.puffs.is_empty() && self.budget.as_ref().is_none_or(|b|b.is_empty()) }
+    pub fn clear(&mut self) { if let Some(b)=self.budget.take(){self.budget=Some(budget::BudgetState::reset(b));} self.puffs.clear(); self.pops.clear(); self.changed = true; }
 
     /// Use the baked volume animation for subsequent explosions. Other smoke
     /// (blood mist, gib mist) and previously spawned effects are unchanged.
@@ -342,7 +345,7 @@ impl Effects {
     /// A full blast at `time` (seconds on the clock passed to `flush`):
     /// smoke, fireball, flame tongues, embers, heat shell and lights.
     /// `color` tints embers (Godot passes the bullet colour).
-    pub fn explosion(&mut self, time: f32, pos: Vec3, radius: f32, color: Vec3) {
+    fn full_explosion(&mut self, time: f32, pos: Vec3, radius: f32, color: Vec3) {
         let r = radius.max(0.5);
         // Consume the same recipe RNG in either mode: enabling volume smoke
         // must not change the subsequent fire, embers or their trajectories.
@@ -521,6 +524,7 @@ impl Effects {
 
     /// Drop finished effects and send the live ones (only when changed).
     pub fn flush(&mut self, gpu: &Gpu, renderer: &crate::Renderer, time: f32) -> Result<(), String> {
+        self.emit_pending(time);
         let before = self.puffs.len();
         self.puffs.retain(|p| p.end() > time);
         self.pops.retain(|p| time - p.birth < 2.0);
@@ -662,6 +666,7 @@ struct Target {
 /// Each view still owns its GPU order buffer until the common submission.
 #[derive(Default)]
 struct DrawOrder {
+    minimum_selection:Option<(f32,Vec3,Vec3,Vec<u32>)>,
     heat: Vec<u32>,
     billows: Vec<(u32, f32)>,
     embers: Vec<u32>,
@@ -699,6 +704,37 @@ impl DrawOrder {
         // Source indices are unique, so the tie-break gives the same total
         // order as stable sort without that algorithm's temporary allocation.
         self.billows.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        self.finish()
+    }
+    fn limit_minimum(&mut self,source:&[Puff],time:f32,camera:Camera,vp:Mat4)->[u32;6] {
+        let forward=(camera.target-camera.pos).normalize_or_zero();
+        let selected=if let Some((old_time,old_pos,old_forward,ids))=&self.minimum_selection
+            && *old_time==time && old_pos.distance_squared(camera.pos)<0.04 && old_forward.dot(forward)>0.995 {ids.clone()}
+        else {
+            let rows:[glam::Vec4;4]=std::array::from_fn(|i|vp.row(i));
+            let planes=[rows[3]+rows[0],rows[3]-rows[0],rows[3]+rows[1],rows[3]-rows[1],rows[3]-rows[2]];
+            let mut candidates=Vec::new();
+            for &(id,_) in &self.billows {let p=&source[id as usize];if p.kind()==BAKED_SMOKE as u32 {continue;}let anim=((time-p.timing[0])/p.timing[1]).clamp(0.,1.);
+                let age=((anim-p.ay[3])*(1.+p.timing[3])/(1.-p.ay[3]).max(0.001)).clamp(0.,1.);
+                if anim<=p.ay[3]||age>=1. {continue;}
+                let centre=Vec3::from_slice(&p.center_kind[..3])+Vec3::Y*p.timing[2]*anim;
+                let radius=[p.ax,p.ay,p.az].map(|a|Vec3::from_slice(&a[..3]).length()).into_iter().fold(0.,f32::max)*0.5*(0.35+0.65*age);
+                if planes.iter().any(|p|p.dot(centre.extend(1.)) < -radius*p.truncate().length()){continue;}
+                let z=(vp*centre.extend(1.)).w;
+                let area=(std::f32::consts::PI*radius*radius*rows[0].truncate().length()*rows[1].truncate().length()/(4.*(z-radius).max(camera.near).powi(2))).min(1.);
+                candidates.push((p.kind()!=1,centre.distance_squared(camera.pos),id,area));
+            }
+            // Fire communicates the event; smoke spends only leftover coverage.
+            candidates.sort_by(|a,b|a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+            let mut area=0.;let mut ids=Vec::new();
+            for (_,_,id,cost) in candidates {if ids.is_empty()||area+cost<=0.65 {ids.push(id);area+=cost;}}
+            self.minimum_selection=Some((time,camera.pos,forward,ids.clone()));ids
+        };
+        self.billows.retain(|p|source[p.0 as usize].kind()==BAKED_SMOKE as u32||selected.contains(&p.0));
+        self.finish()
+    }
+    fn finish(&mut self)->[u32;6] {
+        self.ids.clear();
         self.ids.extend(self.heat.iter().copied().chain(self.billows.iter().map(|b| b.0))
             .chain(self.embers.iter().copied()).chain(self.columns.iter().copied()).chain(self.streaks.iter().copied()).chain(self.motes.iter().copied()));
         [self.heat.len() as u32, self.billows.len() as u32, self.embers.len() as u32,
@@ -791,7 +827,7 @@ impl FxRenderer {
         let shader=gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor{label:Some("minimum gameplay FX"),source:wgpu::ShaderSource::Wgsl(shader_source().into())});
         let layout=gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{label:None,bind_group_layouts:&[Some(&self.layout)],immediate_size:0});
         let additive=wgpu::BlendState{color:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::One,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add},alpha:wgpu::BlendComponent{src_factor:wgpu::BlendFactor::Zero,dst_factor:wgpu::BlendFactor::One,operation:wgpu::BlendOperation::Add}};
-        [("fx_vs","fx_billow",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),("fx_vs","fx_ember",additive),("fx_column_vs","fx_column",additive),("fx_streak_vs","fx_streak",additive),("fx_mote_vs","fx_mote",additive),("fx_smoke_vs","fx_smoke",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)].map(|(vertex,fragment,blend)|
+        [("fx_min_billow_vs","fx_min_billow",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),("fx_vs","fx_ember",additive),("fx_column_vs","fx_column",additive),("fx_streak_vs","fx_streak",additive),("fx_mote_vs","fx_mote",additive),("fx_smoke_vs","fx_smoke",wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)].map(|(vertex,fragment,blend)|
             gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some(fragment),layout:Some(&layout),
                 vertex:wgpu::VertexState{module:&shader,entry_point:Some(vertex),compilation_options:Default::default(),buffers:&[]},
                 primitive:wgpu::PrimitiveState{cull_mode:None,..Default::default()},depth_stencil:None,multisample:Default::default(),
@@ -821,6 +857,7 @@ impl FxRenderer {
                 self.smoke_view = Self::smoke_texture(gpu, true);
                 self.smoke_loaded = true;
             }
+            self.draw_order.minimum_selection=None;
             self.source.clear();
             self.source.extend_from_slice(p);
             if !p.is_empty() { gpu.queue.write_buffer(&self.puffs, 0, bytemuck::cast_slice(p)); }
@@ -856,7 +893,9 @@ impl FxRenderer {
         camera:Camera,view:Mat4,output_vp:Mat4,depth_vp:Mat4,white:f32,exposure:f32,light:&crate::Lighting,ambient:Vec3,horizon:Vec3,shadow:Option<(&wgpu::TextureView,Mat4)>)->Result<Option<wgpu::Texture>,String> {
         let ldr=exposure>0.0;
         // Heat first (it refracts the plain scene), then billows back to front, then embers.
-        let [nh, nb, ne, nc, ns, nm] = self.draw_order.prepare(&self.source, self.time, camera.pos);
+        let mut counts=self.draw_order.prepare(&self.source,self.time,camera.pos);
+        if ldr {counts=self.draw_order.limit_minimum(&self.source,self.time,camera,output_vp);}
+        let [nh,nb,ne,nc,ns,nm]=counts;
         if self.draw_order.ids.is_empty() {
             if let Some(Some(target))=self.targets.get_mut(index) {
                 target.quality.update(0.0,self.time);
@@ -936,7 +975,7 @@ impl FxRenderer {
                 let pipeline=if volume {if ldr{&pipelines.unwrap()[5]}else{&self.smoke}}
                     else if ldr {&pipelines.unwrap()[0]} else {&self.billow};
                 pass.set_pipeline(pipeline);
-                pass.draw(0..if volume{6}else{BILLOW_VERTICES},start..end);
+                pass.draw(0..if volume||ldr{6}else{BILLOW_VERTICES},start..end);
                 start=end;
             }
         };
@@ -992,6 +1031,22 @@ impl FxSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimum_overlap_keeps_one_fire_and_all_gameplay_warnings_in_both_eyes() {
+        let mut fx=Effects::with_explosion_budget(ExplosionBudget::MINIMUM);
+        for i in 0..8 {fx.explosion(0.,Vec3::new(i as f32*0.01,0.,-0.5),8.,Vec3::ONE);}
+        fx.column(AdditiveColumn{life:10.,..Default::default()}).unwrap();fx.emit_pending(0.2);
+        let cam=Camera{pos:Vec3::ZERO,target:Vec3::NEG_Z,near:0.05,fov_y:1.};
+        let projection=Mat4::perspective_infinite_reverse_rh(1.,1.,cam.near);
+        let mut order=DrawOrder::default();order.prepare(&fx.puffs,0.2,cam.pos);
+        let count=order.limit_minimum(&fx.puffs,0.2,cam,projection);
+        assert_eq!(count[1],1);assert_eq!(count[3],1);
+        assert_eq!(fx.puffs[order.billows[0].0 as usize].kind(),1);
+        let first=order.ids.clone();let right=Camera{pos:Vec3::X*0.064,target:Vec3::X*0.064+Vec3::NEG_Z,..cam};
+        order.prepare(&fx.puffs,0.2,right.pos);order.limit_minimum(&fx.puffs,0.2,right,projection*Mat4::look_at_rh(right.pos,right.target,Vec3::Y));
+        assert_eq!(order.ids,first,"stereo eyes must share coverage selection");
+    }
 
     #[test]
     fn fireball_light_has_stable_reach_and_a_soft_short_tail() {
@@ -1279,7 +1334,7 @@ mod tests {
         assert_eq!(s.ay, [0.1, 0.2, 16.0, 24.0]);
         assert_eq!(s.body, [0.7, 0.0, 0.85, 0.0]);
         assert!(fx.changed);
-        assert_eq!(COLUMN_VERTICES, 3);
+        assert_eq!(COLUMN_VERTICES, 6);
         assert_eq!(STREAK_VERTICES, 72);
         assert!(STREAK_VERTICES < SPHERE_VERTICES / 8);
     }

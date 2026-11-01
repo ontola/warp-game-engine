@@ -1,6 +1,7 @@
 //! Native-resolution HUD geometry and cached text, shared by every split view.
 //! Coordinates and clips are physical pixels; all rectangles are x/y/width/height.
 use crate::Gpu;
+#[path="hud_cached_labels.rs"] mod cached_labels;
 use bytemuck::{Pod, Zeroable};
 use glyphon::{Attrs, Buffer, Cache, Color, ColorMode, ContentType, CustomGlyph, CustomGlyphId, RasterizedCustomGlyph, Family, FontSystem, Metrics, Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap};
 use glyphon::cosmic_text::Align;
@@ -120,6 +121,8 @@ pub struct HudDrawList {
     pub vision_tints: Vec<[f32;4]>,
     /// Full-field tints behind the HUD, so card choices remain readable.
     pub vision_background_tints: Vec<[f32;4]>,
+    /// Cache fixed-resolution label pictures and scale their quads. Bounded; opt-in for low graphics.
+    pub cached_text: bool,
     pub size: [u32; 2],
     pub vertices: Vec<HudVertex>,
     pub text: Vec<TextRun>,
@@ -137,7 +140,7 @@ pub struct HudDrawList {
 struct HudLayer { vertices: Range<u32>, text: Range<usize> }
 
 impl HudDrawList {
-    pub fn new(size: [u32; 2]) -> Self { Self { size, optics: Vec::new(), vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
+    pub fn new(size: [u32; 2]) -> Self { Self { cached_text:false,size, optics: Vec::new(), vision_tints: Vec::new(), vision_background_tints:Vec::new(), vertices: Vec::new(), text: Vec::new(), overlay_boundaries: Vec::new(), image_runs: Vec::new(), pictures: Vec::new(), outlines: HashMap::new() } }
 
     /// Draw text run `id` with a real stroke of `width` pixels around its
     /// letters (under the fill), for text over busy scenes.
@@ -414,6 +417,7 @@ pub struct HudRenderer {
     stroke_images: Vec<Vec<u8>>,
     stroke_context: swash::scale::ScaleContext,
     text_phase_ms:[f64;3],
+    cached_labels:cached_labels::Labels, cached_label_ids:HashSet<HudImage>,
 }
 
 /// Custom glyph ids are 16 bit; past this the stroke cache (and the atlas
@@ -473,7 +477,7 @@ impl HudRenderer {
         let viewport=Viewport::new(&gpu.device,&cache);
         let mut atlas=new_atlas(gpu,&cache,format);
         let renderer=TextRenderer::new(&mut atlas,&gpu.device,wgpu::MultisampleState::default(),None);
-        Ok(Self{optics:None,optics_active:false,pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false,strokes:HashMap::new(),stroke_images:Vec::new(),text_phase_ms:[0.;3],stroke_context:swash::scale::ScaleContext::new()})
+        Ok(Self{optics:None,optics_active:false,pipeline,bind,image_layout,linear,nearest,blank,images:HashMap::new(),provided:HashMap::new(),spans:Vec::new(),uniform,vertices,vertex_capacity,layers:Vec::new(),srgb:format.is_srgb(),text:FontCache::new()?,swash:SwashCache::new(),viewport,atlas,renderers:vec![renderer],warmed:HashSet::new(),size:[0;2],cache,format,full_said:false,strokes:HashMap::new(),stroke_images:Vec::new(),cached_labels:Default::default(),cached_label_ids:HashSet::new(),text_phase_ms:[0.;3],stroke_context:swash::scale::ScaleContext::new()})
     }
 
     /// Upload (or replace) the picture drawn by `HudDrawList::image` with `id`.
@@ -497,6 +501,20 @@ impl HudRenderer {
             return Ok(stats);
         }
         let begin=Instant::now();
+        self.layers.clear(); self.spans.clear();
+        if list.text.len()>MAX_RUNS {return Err("HUD draw list exceeds bounded capacity".into());}
+        let mut ids=HashSet::new();
+        for run in &list.text {
+            if !ids.insert(run.id){return Err(format!("duplicate HUD text id {}",run.id));}
+            if !run.font_size.is_finite() || !(1.0..=512.0).contains(&run.font_size) || !run.width.is_finite() || run.width<0.0 || run.text.len()>16_384 || !run.position.iter().chain(run.bounds.iter()).all(|v|v.is_finite()) || run.bounds[2]<0.0 || run.bounds[3]<0.0 {
+                return Err(format!("invalid HUD text layout {}",run.id));
+            }
+        }
+        let converted=if list.cached_text {self.cached_labels.convert(list,&mut self.text,&mut self.swash)?}else{None};
+        let alive=self.cached_labels.ids();
+        for id in self.cached_label_ids.difference(&alive) {self.images.remove(id);self.provided.remove(id);}
+        self.cached_label_ids=alive;
+        let list=converted.as_ref().unwrap_or(list);
         for (id,picture,filter) in &list.pictures {
             let at=std::sync::Arc::as_ptr(picture) as usize;
             if self.provided.get(id)!=Some(&at) {self.set_image(gpu,*id,picture,*filter);self.provided.insert(*id,at);}
@@ -507,13 +525,6 @@ impl HudRenderer {
         if list.size.contains(&0){return Err("HUD output dimensions must be positive".into());}
         if list.text.len()>MAX_RUNS || list.vertices.len()>MAX_VERTICES{return Err("HUD draw list exceeds bounded capacity".into());}
         let layers = list.layer_ranges()?;
-        let mut ids=HashSet::new();
-        for run in &list.text {
-            if !ids.insert(run.id){return Err(format!("duplicate HUD text id {}",run.id));}
-            if !run.font_size.is_finite() || !(1.0..=512.0).contains(&run.font_size) || !run.width.is_finite() || run.width<0.0 || run.text.len()>16_384 || !run.position.iter().chain(run.bounds.iter()).all(|v|v.is_finite()) || run.bounds[2]<0.0 || run.bounds[3]<0.0 {
-                return Err(format!("invalid HUD text layout {}",run.id));
-            }
-        }
         if list.vertices.iter().any(|v|!v.position.iter().chain(v.color.iter()).chain(v.clip.iter()).chain(v.shape.iter()).all(|f|f.is_finite())){return Err("non-finite HUD geometry".into());}
         if self.size!=list.size {self.size=list.size;self.warmed.clear();}
         self.viewport.update(&gpu.queue,Resolution{width:list.size[0],height:list.size[1]});

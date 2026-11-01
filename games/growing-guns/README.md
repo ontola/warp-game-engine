@@ -87,9 +87,12 @@ growth remain. Gun instance reservations drop from 320 to 160 per view represent
 materials are shared across shapes. These are geometry/budget reductions, not a measured
 FPS guarantee on low-end hardware. The same minimum profile is used by the Quest demo;
 gameplay and collisions are unchanged. Minimum lava keeps dark crust and animated
-glowing cracks using two filtered reads from a small baked field, without an extra
+glowing cracks using one filtered read from a baked colour field, without an extra
 render pass. Muzzle flashes remain enabled; VR shots use the current tracked
-barrel position.
+barrel position. Low/minimum cache animated HUD labels as scalable bitmaps.
+Explosion visuals merge neighbouring events and cap burst/puff counts under load;
+minimum also limits projected smoke/fire coverage, while ion warning beams and
+simulation damage remain independent of the decorative budget.
 
 For the native standalone Quest APK, run `python3 engine/tools/build-quest-native.py`.
 Add `--install` with an authorized USB-connected headset. See

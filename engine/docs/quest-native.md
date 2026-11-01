@@ -67,9 +67,9 @@ coarsest authored mesh LOD, flat material colours and vertex lighting. Blocks
 are cubes with readable 3% joints, characters use the existing primitive proxies, GPU rubble is off,
 and effect particles are capped at 32. It skips general material textures, GI, shadows, bloom,
 volumetrics, TAA and expensive procedural surface detail. Lava is the exception:
-a seamless 128×128 field baked once on the CPU (about 85 KiB including mipmaps)
-provides dark crust and slowly flowing orange/yellow cracks with two filtered
-texture reads in the existing opaque pass. Solid meshes draw first so hidden
+a seamless 512×512 colour field baked once on the CPU (about 1.33 MiB including mipmaps)
+provides dark crust and slowly flowing orange/yellow cracks with one filtered
+texture read in the existing opaque pass. Solid meshes draw first so hidden
 lava can fail the depth test. Distant cracks fade to an average colour to reduce
 shimmer. This uses the generic `LAVA` material flag on PC and Quest. Gameplay billows, explosion embers, ion columns and streaks render in place
 with exposure conversion; heat refraction is omitted. Original sprite effects, names,
@@ -282,3 +282,23 @@ Do not run this GPU workload alongside the VR app.
 
 For the subsequent per-pass investigation, controlled lava comparison and HUD
 cache diagnosis, see [Quest cost investigation, 31 October](quest-profile-2026-10-31.md).
+
+### November 2026 optimization work
+
+Low/minimum opt into `HudDrawList.cached_text`: bounded label bitmaps at fixed
+raster sizes are scaled as quads, avoiding alphabet warmup for every animated
+font size. Unsupported coloured glyphs and custom strokes keep the glyph path.
+The label cache holds at most 256 labels / 16 MiB of source pixels.
+
+Explosion admission is independent of damage: nearby events within 3 metres
+are merged before uploading instances; a per-tick and half-second budget selects
+full or compact bursts. Minimum keeps at most 12 decorative puffs, one full
+burst per tick and four per half-second. Ion warnings are never evicted by
+that decorative budget. Minimum billows use bounded six-vertex analytic blobs;
+a projected coverage budget prioritizes fire over smoke. Ion columns now draw
+a conservative bounding quad rather than a full-screen triangle.
+
+Controlled Quest probes before integration: animated label preparation median
+0.023 ms CPU (previous 4.793 ms); almost-full-view lava paired incremental GPU
+cost 0.232 ms (previous 2.671 ms). These isolate individual costs and do not
+prove sustained 120 fps in live gameplay.
