@@ -1,3 +1,11 @@
+## 2026-11-01 SpaceRacer menu selections
+
+Local World/Difficulty/Seed default to Random. Start new race resolves only
+Random values; fixed choices and player count survive. Resume never rerolls.
+Initial menu hides Resume; seed recipe label updates immediately. Selection
+policy/navigation in game.luau, native entropy only at new-race creation.
+Focused tests + 1080p menu-settings.json capture flow; see game parity review.
+
 ## 2026-11-01 SpaceRacer level shadow cache and sharp arcs
 
 Scene.stage_sun opts into a 4096-square/64 MiB shared static source-alpha map;

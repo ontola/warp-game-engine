@@ -162,14 +162,7 @@ impl Rules {
         }
         let mut p = crate::generation::Recipe {
             dimensions: t.dimensions,
-            name: [
-                "Grand Circuit",
-                "Underpass",
-                "Switchback",
-                "Sky Circus",
-                "Velocity",
-                "Pipeline",
-            ][crate::generation::Recipe::index(seed)],
+            name: crate::generation::Recipe::name_for_seed(seed),
             stadium: false,
             corner_scale: 1.,
             width_scale: 1.,
@@ -284,6 +277,25 @@ impl Rules {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn menu_random_is_resolved_separately_from_new_race_selection() {
+        let mut rules=Rules::new(None).unwrap();
+        let context=serde_json::json!({"players":2,"biome":-1,"difficulty":-1,"seed":0,
+            "row":1,"vertical":0,"horizontal":0,"accept":true,"start":false,"can_resume":false});
+        let out:serde_json::Value=rules.call("menu",context.clone()).unwrap();
+        assert_eq!(out["action"],"new");assert_eq!(out["seed"],0);assert_eq!(out["biome"],-1);
+        let mut adjust=context;adjust["row"]=5.into();adjust["accept"]=false.into();adjust["horizontal"]=1.into();
+        let out:serde_json::Value=rules.call("menu",adjust.clone()).unwrap();assert_eq!(out["seed"],1);
+        adjust["seed"]=1.into();adjust["horizontal"]=(-1).into();
+        let out:serde_json::Value=rules.call("menu",adjust).unwrap();assert_eq!(out["seed"],0);
+        let mut worlds=std::collections::HashSet::new();let mut difficulties=std::collections::HashSet::new();
+        for entropy in (0u32..15).map(|i|i*99999+34567).chain([u32::MAX]) {
+            let out:serde_json::Value=rules.call("menu_defaults",serde_json::json!({"entropy":entropy})).unwrap();
+            assert!((1..=99999).contains(&out["seed"].as_i64().unwrap()));
+            worlds.insert(out["biome"].as_u64().unwrap());difficulties.insert(out["difficulty"].as_u64().unwrap());
+        }
+        assert_eq!(worlds.len(),5);assert_eq!(difficulties.len(),3);
+    }
     #[test]
     fn scripts_control_balance_and_seed_recipes() {
         let mut r = Rules::new(None).unwrap();

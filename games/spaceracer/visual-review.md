@@ -1,3 +1,20 @@
+## Local race setup - 1 November 2026
+
+Start new race uses the displayed selections. World, Difficulty and Track seed
+start on Random in normal local launches; only those fields roll on each new
+race. Player count stays fixed. Explicit CLI/host values and deterministic
+headless defaults remain supported. Luau owns random-value selection and menu
+navigation; Rust supplies startup entropy and constructs the chosen seeded race.
+Resume does not reroll, even with Random selections. Initial menu hides Resume.
+The seed's recipe name updates before rebuilding; all six retained recipe types
+remain present and source recipe names match.
+
+Validated with focused Luau/native tests (fixed settings, combined direction and
+Start, same-seed restart, Random and resume), plus the native 1080p
+`scenarios/menu-settings.json` flow. Captures in `build/spaceracer-menu-settings`
+show random defaults, explicit choices, new race and pause. No physical pad or
+Android validation; this does not change the host settings protocol.
+
 ## Per-level shadows and sharp boost arcs - 1 November 2026
 
 SpaceRacer opts into a shared 4096-square static sun map. It owns static source

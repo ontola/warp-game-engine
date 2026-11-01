@@ -153,7 +153,7 @@
     {
       "path": "src/main.gd",
       "sha256": "47141d2e788f66cf0ca916e76aa759b1c06e0617677aab87b1afb62ef3aaba4f",
-      "status": "native app, seed/player/biome/difficulty menu, split screen, headless scenarios"
+      "status": "native app; Luau menu with Random or fixed world/difficulty/seed; Start new race honors selections; immediate seed recipe preview; split screen and headless scenarios"
     },
     {
       "path": "src/missile_audio.gd",

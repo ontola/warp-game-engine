@@ -39,12 +39,12 @@ pub fn draw(hud: &mut HudDrawList, size: [f32; 2], row: usize, r: &super::Racer)
         clip,
     );
     let labels = [
-        if r.race.clock > 0. {
+        if r.race_started {
             "Resume race"
         } else {
             "Race"
         },
-        "New random race",
+        "Start new race",
         "Players",
         "World",
         "Difficulty",
@@ -54,12 +54,13 @@ pub fn draw(hud: &mut HudDrawList, size: [f32; 2], row: usize, r: &super::Racer)
         String::new(),
         String::new(),
         r.players.to_string(),
-        super::BIOMES[r.biome].to_uppercase(),
-        super::DIFFICULTIES[r.difficulty].to_uppercase(),
-        format!("{:05}", r.seed),
+        if r.random_biome {"RANDOM".into()} else {super::BIOMES[r.biome].to_uppercase()},
+        if r.random_difficulty {"RANDOM".into()} else {super::DIFFICULTIES[r.difficulty].to_uppercase()},
+        if r.random_seed {"RANDOM".into()} else {format!("{:05}", r.seed)},
     ];
-    for i in 0..6 {
-        let y = 180. + i as f32 * 66.;
+    let first_row=if r.race_started {0}else{1};
+    for i in first_row..6 {
+        let y = 180. + (i-first_row) as f32 * 66.;
         let selected = i == row;
         let color = if selected {
             [0.49, 0.91, 0.84, 0.22]
@@ -131,8 +132,8 @@ pub fn draw(hud: &mut HudDrawList, size: [f32; 2], row: usize, r: &super::Racer)
     super::text(
         hud,
         90,
-        r.race.world.centreline.recipe.name,
-        [x, 590.],
+        if r.random_seed {"Random track type"} else {spaceracer::generation::Recipe::name_for_seed(r.seed)},
+        [x, 180.+(6-first_row) as f32*66.+14.],
         18.,
         clip,
         [125, 233, 214, 235],

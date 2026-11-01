@@ -1,0 +1,120 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "capture": "random-defaults.png",
+      "expect": "/menu_random",
+      "equals": {
+        "world": true,
+        "difficulty": true,
+        "seed": true
+      }
+    },
+    {
+      "press": [
+        "DOWN"
+      ]
+    },
+    {
+      "press": [
+        "DOWN"
+      ]
+    },
+    {
+      "press": [
+        "RIGHT"
+      ],
+      "expect": "/biome",
+      "equals": "city"
+    },
+    {
+      "press": [
+        "DOWN"
+      ]
+    },
+    {
+      "press": [
+        "RIGHT"
+      ],
+      "expect": "/difficulty",
+      "equals": "easy"
+    },
+    {
+      "press": [
+        "DOWN"
+      ]
+    },
+    {
+      "press": [
+        "RIGHT"
+      ],
+      "expect": "/seed",
+      "equals": 1
+    },
+    {
+      "press": [
+        "RIGHT"
+      ],
+      "expect": "/track_type",
+      "equals": "Underpass",
+      "capture": "chosen-settings.png"
+    },
+    {
+      "press": [
+        "START"
+      ],
+      "expect": "/paused",
+      "equals": false,
+      "capture": "new-race.png"
+    },
+    {
+      "expect": "/seed",
+      "equals": 2
+    },
+    {
+      "expect": "/active_track_type",
+      "equals": "Underpass"
+    },
+    {
+      "expect": "/biome",
+      "equals": "city"
+    },
+    {
+      "expect": "/difficulty",
+      "equals": "easy"
+    },
+    {
+      "press": [
+        "START"
+      ],
+      "capture": "pause.png"
+    },
+    {
+      "press": [
+        "DOWN"
+      ]
+    },
+    {
+      "press": [
+        "SOUTH"
+      ],
+      "expect": "/seed",
+      "equals": 2
+    },
+    {
+      "expect": "/active_track_type",
+      "equals": "Underpass"
+    },
+    {
+      "expect": "/clock",
+      "equals": 0.0
+    },
+    {
+      "expect": "/error",
+      "equals": null
+    }
+  ]
+}

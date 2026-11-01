@@ -79,17 +79,25 @@ local function balance(_)
         sentry_damage=.5,rail_damage=50,emp_seconds=3,emp_radius=100,missile_damage=60,missile_radius=55,
         bomb_damage=145,bomb_radius=120,projectile_timeout=12}
 end
-local rows={"RESUME / RACE","NEW RANDOM RACE","PLAYERS","WORLD","DIFFICULTY","TRACK SEED"}
+-- Random is a selection, resolved only when creating a new race. Native code
+-- supplies entropy once; simulation and track generation remain deterministic.
+local function menu_defaults(c)
+    return {seed=c.entropy%99999+1,biome=math.floor(c.entropy/99999)%5,
+        difficulty=math.floor(c.entropy/499995)%3}
+end
+local rows={"RESUME RACE","START NEW RACE","PLAYERS","WORLD","DIFFICULTY","TRACK SEED"}
 local function menu(c)
-    local row=(c.row+c.vertical)%#rows
+    local first=c.can_resume and 0 or 1
+    local row=first+(math.max(first,c.row)-first+c.vertical)%(#rows-first)
     local action="none"
-    if c.start then action="play" elseif c.accept and row<2 then action=row==0 and "play" or "random" end
+    if c.start then action=c.can_resume and row~=1 and "play" or "new"
+    elseif c.accept and row<2 then action=row==0 and "play" or "new" end
     local players,biome,difficulty,seed=c.players,c.biome,c.difficulty,c.seed
     if c.horizontal~=0 then
         if row==2 then players=(players-1+c.horizontal)%4+1
-        elseif row==3 then biome=(biome+c.horizontal)%5
-        elseif row==4 then difficulty=(difficulty+c.horizontal)%3
-        elseif row==5 then seed=(seed-1+c.horizontal)%99999+1 end
+        elseif row==3 then biome=(biome+1+c.horizontal)%6-1
+        elseif row==4 then difficulty=(difficulty+1+c.horizontal)%4-1
+        elseif row==5 then seed=(seed+c.horizontal)%100000 end
     end
     return {row=row,action=action,label=rows[row+1],players=players,biome=biome,difficulty=difficulty,seed=seed,
         rebuild=c.horizontal~=0 and row>=2}
@@ -150,4 +158,4 @@ local function warp(c)
     return {speed=exit+(630-exit)*smooth(0,.4,c.age)*smooth(0,.6,c.remaining),acceleration=850,lateral=90,
         strength=smooth(0,.18,c.age)*smooth(0,.4,c.remaining)}
 end
-return {combat=combat,warp=warp,victory=victory,missile=missile,track=track,ai=ai,plan=plan,pickup=pickup,balance=balance,menu=menu,environment=environment,activate=activate}
+return {combat=combat,warp=warp,victory=victory,missile=missile,track=track,ai=ai,plan=plan,pickup=pickup,balance=balance,menu=menu,menu_defaults=menu_defaults,environment=environment,activate=activate}
