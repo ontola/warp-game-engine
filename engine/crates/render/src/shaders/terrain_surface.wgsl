@@ -280,6 +280,12 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     var c = mix(shaded, crowns, w_top);
     c = mix(c, flank, w_wall / max(1.0 - w_top, 1e-3));
     let nrm = normalize(mix(mix(nn, canopy.normal, w_top), wall_n, w_wall));
+    let crowd = ff_share(q.x, q.y, seed, site, footprint) * params.density;
+    let sun_grow = ff_crown_growth(sun, params.style);
+    // Seen from the sun's side the crowns hide their own shadows (the hot
+    // spot); against the sun every shadow shows.
+    let hidden = clamp(dot(eye, sun), 0.0, 1.0);
+    field_sun = mix(1.0, exp(-crowd * params.style.crown.y * sun_grow * sun_grow), min(w_top + w_wall, 1.0) * (1.0 - hidden));
     return MeadowCanopy(c, nrm);
 }
 
@@ -303,6 +309,14 @@ struct FieldGround {
     snow: vec4<f32>,
     reserved: vec4<f32>,
 };
+// Direct sun the painted forest keeps (shade.wgsl's sun term). Past the
+// sun maps a drawn forest shades its ground through the GI canopy volume
+// (distant_sun_visibility); the volume does not hold the painted forest, so
+// it stood ~20 % brighter than the drawn one where it took over. Its stands
+// keep the share of ground no crown shades from the sun (forest_field's
+// overlap model, crowns seen from the sun) that the view can see. 1 off the
+// forest.
+var<private> field_sun: f32 = 1.0;
 const FIELD_GROUND_DEFAULT = FieldGround(vec4<f32>(0.43, 0.55, 0.23, 0.3), vec4<f32>(0.32, 0.69, 0.28, 0.0),
     vec4<f32>(0.6, 0.72, 0.7, 0.8), vec4<f32>(0.85, 0.8, 0.75, 0.35), vec4<f32>(0.95, 0.97, 1.0, 0.5),
     vec4<f32>(1.0, 1.04, 1.1, 0.35), vec4<f32>(0.84, 0.87, 0.92, 0.0), vec4<f32>(0.0, 0.0, 0.0, 0.0));
