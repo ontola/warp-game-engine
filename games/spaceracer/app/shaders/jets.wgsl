@@ -88,11 +88,11 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let uv=clip.xy/clip.w*vec2<f32>(.5,-.5)+.5;
         let visible=smoothstep(-.12,.12,depth_metres(uv)-clip.w);
         let q=s.uv*2.-1.;let r2=dot(q,q);
-        let halo=exp(-r2*5.)*(1.-smoothstep(.65,1.,sqrt(r2)));
+        let halo=exp(-r2*9.)*(1.-smoothstep(.65,1.,sqrt(r2)));
         let core=exp(-r2*65.);
         let far=1.-smoothstep(650.,1200.,clip.w);
         return vec4<f32>(mix(vec3<f32>(.65,.85,1.),vec3<f32>(2.5),core),
-            (halo*.16+core*.9)*visible*far);
+            (halo*.08+core*.9)*visible*far);
     }
     if s.effect == 12u { // inexpensive road-contact pool, no opaque disk
         let q=s.uv*2.-1.;let r2=dot(q,q);

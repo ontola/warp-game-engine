@@ -1,3 +1,12 @@
+## 2026-11-01 SpaceRacer compact glow / source occlusion
+
+Sprite.depth_test defaults Fragment; Source checks centre depth for optical
+halos (misc.y now additive/source bit flags, GPU layout unchanged). Nozzle,
+glare and flare opt in; road contacts remain Fragment. Smaller engine halos
+and contact pools; distant minimum 14/~20 px. Eight effects tests and normal/
+minimal GPU source-occlusion regression pass. 1080p city/forest captures:
+build/spaceracer-bloom-tight-*. See game parity review and rendering.md.
+
 ## 2026-11-01 SpaceRacer grounded lightning and engine halo
 
 Game jets use varied eight-segment arches to supported deck contacts, max 48

@@ -317,14 +317,18 @@ impl Jets {
                         [phase, boost, 0., 0.],
                     ));
                     let core = at + axis * 0.08;
-                    let nozzle_size=2.4+boost*1.5;
-                    self.sprites.push(glow(core, [nozzle_size;2], plasma * (2. + boost), 2));
+                    let nozzle_size=1.35+boost*0.65;
+                    let mut nozzle=glow(core,[nozzle_size;2],plasma*(2.+boost),2);
+                    nozzle.facing=render::sprites::Facing::Screen;
+                    nozzle.depth_test=render::sprites::DepthTest::Source;
+                    self.sprites.push(nozzle);
                     // A bounded optical halo, not a giant world-space exhaust.
                     // Screen-facing sizing is per viewport; source-depth gating
                     // in effect 13 prevents enlarged halos leaking through walls.
-                    let glare_size=3.5+boost*2.;
+                    let glare_size=1.8+boost*0.9;
                     let mut glare=glow(core,[glare_size;2],plasma*1.8,13);
                     glare.facing=render::sprites::Facing::Screen;
+                    glare.depth_test=render::sprites::DepthTest::Source;
                     glare.min_pixels=c.engine_glare_pixels*(1.+boost*0.45);
                     glare.params=[core.x,core.y,core.z,boost];
                     self.sprites.push(glare);
@@ -335,6 +339,7 @@ impl Jets {
                         3,
                     );
                     flare.params = [core.x, core.y, core.z, 0.];
+                    flare.depth_test=render::sprites::DepthTest::Source;
                     self.sprites.push(flare);
                     self.lights.push(LocalLight {
                         position: at + axis * 0.5,
@@ -414,10 +419,10 @@ impl Jets {
                             }
                             if grounded {
                                 let f=road.frame(road_x);
-                                let mut contact=glow(end,[2.+onset*3.;2],light*(0.25+onset*0.35),12);
+                                let mut contact=glow(end,[0.65+onset;2],light*(0.18+onset*0.22),12);
                                 contact.facing=render::sprites::Facing::Fixed {right:f.x_axis,up:f.z_axis};
                                 self.sprites.push(contact);
-                                if side==0 && branch==0 {self.lights.push(LocalLight {position:end+f.y_axis*0.45,direction:f.y_axis,intensity_cd:color*(180.+onset*650.),range_m:7.,inner_cos:1.,outer_cos:-1.,source_radius_m:0.4,falloff:2.});}
+                                if side==0 && branch==0 {self.lights.push(LocalLight {position:end+f.y_axis*0.45,direction:f.y_axis,intensity_cd:color*(100.+onset*340.),range_m:4.,inner_cos:1.,outer_cos:-1.,source_radius_m:0.4,falloff:2.});}
                             }
                         }
                     }
@@ -695,7 +700,8 @@ mod tests {
         assert!(boosted.size[0]>normal.size[0]*1.7 && boosted.radiance.length()>normal.radiance.length()*1.5);
         let glare=jets.sprites.iter().find(|s|s.effect==13).unwrap();
         assert!(matches!(glare.facing,render::sprites::Facing::Screen));
-        assert!(glare.min_pixels>=30. && glare.min_pixels<48. && glare.depth_bias==0.);
+        assert!(glare.min_pixels>=18. && glare.min_pixels<24. && glare.depth_bias==0.);
+        assert_eq!(glare.depth_test,render::sprites::DepthTest::Source);
         let mut previous=Vec::new();let mut spans=Vec::new();
         for frame in 0..13 {
             jets.update(&race,&poses,0.02+frame as f32/120.);

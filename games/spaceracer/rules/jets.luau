@@ -3,7 +3,7 @@
 return {
     boost_arc_start = 22, boost_arc_sustain = 8, boost_arc_decay = 5,
     boost_arc_spread = 12, boost_arc_height = 7,
-    boost_width = 1.9, boost_radiance = 2.0, engine_glare_pixels = 24,
+    boost_width = 1.9, boost_radiance = 2.0, engine_glare_pixels = 14,
     warp_world_pixels = 48, warp_view_pixels = 64,
     emp_spark_fade = .7, sentry_spark_life = .11,
     damage_smoke_energy = 22, respawn_light_power = 2100,
