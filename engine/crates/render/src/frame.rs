@@ -816,6 +816,8 @@ pub struct Renderer {
     /// lights them from their surface (binding 20); stand-in without.
     voxel_surface: bool,
     voxel_surface_fallback: wgpu::TextureView,
+    /// shade_voxels (KERN_VOXEL_PASS=1): voxel pixels in their own pass.
+    voxel_pass: Option<wgpu::ComputePipeline>,
     /// Coarse terrain material (shade.wgsl terrain_coarse; KERN_TERRAIN_COARSE=0
     /// turns it off), its half-resolution target per view, the stand-in
     /// bound while it is written, and its output layout.
@@ -1720,6 +1722,12 @@ impl Renderer {
             && std::env::var("KERN_VOXEL_SURFACE").as_deref() != Ok("0");
         shade_constants.push(("VOXEL_OCCLUSION", if voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !voxel_surface {1.0} else {0.0}));
         shade_constants.push(("VOXEL_SURFACE", if voxel_surface {1.0} else {0.0}));
+        // Voxel pixels in their own pass (KERN_VOXEL_PASS=0 keeps them in
+        // shade): the big kernel's register footprint was the limit, not
+        // their lighting (playtest cameras 2560x1440: 29-34 -> 33-38 fps,
+        // frames identical).
+        let voxel_pass_on = voxel_surface && std::env::var("KERN_VOXEL_PASS").as_deref() != Ok("0");
+        shade_constants.push(("VOXEL_PASS", if voxel_pass_on {1.0} else {0.0}));
         let terrain_coarse_on = !simple_lighting && shade_features.terrain && std::env::var("KERN_TERRAIN_COARSE").as_deref() != Ok("0");
         shade_constants.push(("TERRAIN_COARSE", if terrain_coarse_on {1.0} else {0.0}));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1740,6 +1748,10 @@ impl Renderer {
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
             usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
+        let voxel_pass = voxel_pass_on.then(|| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("shade voxels"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade_voxels"),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
+        }));
         let shade_classify = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade sky tiles"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("classify"),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
@@ -1980,6 +1992,7 @@ impl Renderer {
             shade_classify,
             voxel_depth_fallback,
             voxel_surface,
+            voxel_pass,
             voxel_surface_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel surface"),
                 size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
@@ -2650,6 +2663,7 @@ impl Renderer {
                 constants.push(("SKY_TILES", if self.sky_tiles {1.0} else {0.0}));
                 constants.push(("VOXEL_OCCLUSION", if self.voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !self.voxel_surface {1.0} else {0.0}));
                 constants.push(("VOXEL_SURFACE", if self.voxel_surface {1.0} else {0.0}));
+                constants.push(("VOXEL_PASS", if self.voxel_pass.is_some() {1.0} else {0.0}));
                 constants.push(("TERRAIN_COARSE", if self.terrain_coarse.is_some() {1.0} else {0.0}));
                 let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
@@ -4148,6 +4162,7 @@ impl Renderer {
             let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = Vec::new();
             if let (Some(coarse), Some((bind, out))) = (&self.terrain_coarse, &coarse_binds) { passes.push(("terrain coarse", coarse, vec![&self.scene_bind, bind, out])); }
             passes.push(("shade", &self.shade, vec![&self.scene_bind, &shade_bind]));
+            if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind])); }
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {

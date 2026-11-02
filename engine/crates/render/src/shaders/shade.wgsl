@@ -182,6 +182,9 @@ override VOXEL_OCCLUSION: bool = false;
 // id, voxel_forest Stage::Splats): their surface, packed by
 // voxel_splat_gbuffer, lit here like the leaves they stand for.
 override VOXEL_SURFACE: bool = false;
+// Voxel pixels in their own small pass (shade_voxels) instead of inside
+// the big shade kernel, whose register footprint they would share.
+override VOXEL_PASS: bool = false;
 const VOXEL_SKY_LIFT: f32 = 1.0;
 @group(1) @binding(20) var voxel_surface: texture_2d<u32>;
 
@@ -1831,6 +1834,19 @@ fn coarse_surface(px: vec2<i32>, depth: f32) -> CoarseSurface {
     return out;
 }
 
+@compute @workgroup_size(8, 8)
+fn shade_voxels(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let size = vec2<u32>(view.size.xy);
+    if gid.x >= size.x || gid.y >= size.y { return; }
+    let px = vec2<i32>(gid.xy);
+    let depth = textureLoad(depth_tex, px, 0);
+    if depth <= 0.0 { return; }
+    if (textureLoad(vis_tex, px, 0).r & 0x80000000u) == 0u { return; }
+    let ndc = vec2<f32>((f32(gid.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(gid.y) + 0.5) / view.size.y * 2.0);
+    let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
+    shade_voxel(px, size, normalize(far.xyz / far.w - view.cam.xyz), depth);
+}
+
 // Sky for tiles without geometry; tiles with any are listed for `shade`.
 // Same sky as `shade` writes for its own background pixels.
 @compute @workgroup_size(8, 8)
@@ -1899,7 +1915,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     if VOXEL_OCCLUSION && textureLoad(voxel_depth, px, 0) > depth { return; }
     let id = textureLoad(vis_tex, px, 0).r;
-    if VOXEL_SURFACE && (id & 0x80000000u) != 0u { shade_voxel(px, size, dir, depth); return; }
+    if VOXEL_SURFACE && (id & 0x80000000u) != 0u {
+        if !VOXEL_PASS { shade_voxel(px, size, dir, depth); }
+        return;
+    }
     let vis = visible[id >> 7u];
     let tri = id & 127u;
     let cl = clusters[vis.y];
