@@ -22,7 +22,7 @@ pub struct Config {
     sonic_speed: f32, sonic_reset_speed: f32, vapor_life: f32, vapor_opacity: f32,
     pub speed_kmh_per_unit: f32,
     boost_arc_spread: f32, boost_arc_height: f32,
-    boost_width: f32, boost_radiance: f32, engine_glare_pixels: f32,
+    boost_width: f32, boost_radiance: f32, boost_release: f32, engine_glare_pixels: f32,
     warp_world_pixels: f32, warp_view_pixels: f32,
     emp_spark_fade: f32, sentry_spark_life: f32,
     damage_smoke_energy: f32,
@@ -68,7 +68,7 @@ impl Config {
             c.boost_arc_duration,c.boost_arc_width,
             c.sonic_speed,c.sonic_reset_speed,c.vapor_life,c.vapor_opacity,
             c.speed_kmh_per_unit,
-            c.boost_arc_spread,c.boost_arc_height,c.boost_width,c.boost_radiance,c.engine_glare_pixels,
+            c.boost_arc_spread,c.boost_arc_height,c.boost_width,c.boost_radiance,c.boost_release,c.engine_glare_pixels,
             c.warp_world_pixels,c.warp_view_pixels,c.emp_spark_fade,c.sentry_spark_life,
             c.damage_smoke_energy,
             c.respawn_light_power,
@@ -95,6 +95,7 @@ impl Config {
             || !(2.0..=3.6).contains(&c.speed_kmh_per_unit)
             || !(0.15..=0.8).contains(&c.vapor_life) || c.vapor_opacity>0.25
             || !(1.0..=3.).contains(&c.boost_width) || !(1.0..=4.).contains(&c.boost_radiance)
+            || !(0.1..=1.5).contains(&c.boost_release)
             || !(0.0..=48.).contains(&c.engine_glare_pixels)
             || c.exhaust_color.iter().any(|v| !v.is_finite() || !(0.0..=1.).contains(v))
             || c.trail_radiance>0.25
@@ -116,12 +117,13 @@ impl Config {
 #[derive(Default)]
 struct Engine {
     boost_start: Option<f32>,
+    boost_until:f32,
     supersonic: bool,
     vapor_start: Option<f32>,
     power: f32,
     brake: f32,
     travel: f32,
-    history: [VecDeque<(f32, Vec3)>; 2],
+    history: [VecDeque<(f32, Vec3, f32)>; 2],
 }
 impl Engine {
     fn record(
@@ -131,19 +133,19 @@ impl Engine {
         time: f32,
         life: f32,
         interval: f32,
-        enabled: bool,
+        intensity: f32,
     ) {
         let h = &mut self.history[side];
         if h.back()
-            .is_some_and(|&(t, p)| time < t || at.distance(p) > 120.)
+            .is_some_and(|&(t, p, _)| time < t || at.distance(p) > 120.)
         {
             h.clear();
         }
-        while h.front().is_some_and(|&(t, _)| time - t > life) {
+        while h.front().is_some_and(|&(t, _, _)| time - t > life) {
             h.pop_front();
         }
-        if enabled && h.back().is_none_or(|&(t, _)| time - t >= interval) {
-            h.push_back((time, at));
+        if intensity>0.001 && h.back().is_none_or(|&(t, _, _)| time - t >= interval) {
+            h.push_back((time, at,intensity));
         }
         // Bounded even if edited to the longest lifetime / smallest interval.
         while h.len() > 48 {
@@ -173,6 +175,23 @@ fn hash(n: u32) -> f32 {
     let mut x = n.wrapping_mul(747796405).wrapping_add(2891336453);
     x = ((x >> ((x >> 28) + 4)) ^ x).wrapping_mul(277803737);
     ((x >> 22) ^ x) as f32 / u32::MAX as f32
+}
+/// Continuous surface patches across nose, cockpit, wings, nacelles and fins.
+/// Each flash chooses a new patch and two nearby points, not a fixed hardpoint.
+fn emp_patch(seed:u32)->(Vec3,Vec3,Vec3) {
+    let side=if hash(seed.wrapping_add(41))<0.5 {-1.}else{1.};
+    let (center,u,v,normal)=match (hash(seed.wrapping_add(43))*5.) as u32 {
+        0=>(Vec3::new(0.,0.65,2.6),Vec3::X*0.85,Vec3::new(0.,-0.35,1.5),Vec3::Y),
+        1=>(Vec3::new(0.,1.3,-0.2),Vec3::X*0.8,Vec3::new(0.,0.15,1.5),Vec3::Y),
+        2=>(Vec3::new(side*3.1,0.25,-0.5),Vec3::new(side*1.4,0.,-0.4),Vec3::Z,Vec3::Y),
+        3=>(Vec3::new(side*2.45,0.48,-2.7),Vec3::X*0.45,Vec3::Z*1.1,Vec3::new(side*0.4,0.9,0.).normalize()),
+        _=>(Vec3::new(side*2.9,1.15,-2.1),Vec3::Y*0.65,Vec3::Z*0.7,Vec3::X*side),
+    };
+    let x=hash(seed.wrapping_add(47))*2.-1.;let y=hash(seed.wrapping_add(53))*2.-1.;
+    let dx=(hash(seed.wrapping_add(59))*2.-1.)*0.7;
+    let dy=(hash(seed.wrapping_add(61))*2.-1.)*0.7;
+    let surface=center+normal*0.2;
+    (surface+u*x+v*y,surface+u*(x+dx).clamp(-1.,1.)+v*(y+dy).clamp(-1.,1.),normal)
 }
 fn shaft(a: Vec3, b: Vec3, width: f32, color: Vec3, effect: u32, params: [f32; 4]) -> Sprite {
     let d = b - a;
@@ -269,7 +288,9 @@ impl Jets {
             }
             if !boosting {e.boost_start=None;} else if e.boost_start.is_none(){e.boost_start=Some(time);}
             let onset=e.boost_start.map_or(0.,|t| (-(time-t).max(0.)*c.boost_arc_decay).exp());
-            let boost = if boosting { 1. } else { 0. };
+            if boosting {e.boost_until=time+c.boost_release;}
+            if !alive || race.countdown>0. {e.boost_until=time;}
+            let boost=smooth(0.,1.,(e.boost_until-time)/c.boost_release);
             let thrust=race.countdown<=0. && alive && target>0.015 && e.power>0.015;
             // Cosmetic Mach crossing: never changes boost/handling. Hysteresis
             // prevents repeated bursts while hovering around the sound barrier.
@@ -334,15 +355,12 @@ impl Jets {
                 for k in 0..7u32 {
                     let seed=self.strike.wrapping_mul(619).wrapping_add(i as u32*83+k*37);
                     if hash(seed)<0.22 {continue;}
-                    let side=if k%2==0 {-1.}else{1.};
-                    let anchors=[Vec3::new(-2.45,0.65,-3.9),Vec3::new(2.45,0.65,-3.9),Vec3::new(-3.15,1.1,-1.),Vec3::new(3.15,1.1,-1.),Vec3::new(-4.4,0.3,0.),Vec3::new(4.4,0.3,0.),Vec3::new(0.,1.5,2.)];
-                    let start=anchors[k as usize]+Vec3::Y*hash(seed+1)*0.15;
-                    let end=start+Vec3::new(side*(0.4+hash(seed+4)),0.2+hash(seed+5)*0.45,hash(seed+6)-0.5);
+                    let (start,end,normal)=emp_patch(seed);
                     let mut a=base.transform_point3(start);
                     for j in 1..=3u32 {
                         let t=j as f32/3.;let kink=if j==3 {0.}else{(hash(seed+j*19)-0.5)*0.65};
-                        let b=base.transform_point3(start.lerp(end,t)+Vec3::Y*kink);
-                        let mut arc=shaft(a,b,0.07,Vec3::new(0.45,0.72,1.)*radiance*fade*2.2,5,[0.;4]);arc.min_pixels=2.;
+                        let b=base.transform_point3(start.lerp(end,t)+normal*(kink+0.25*(t*std::f32::consts::PI).sin()));
+                        let mut arc=shaft(a,b,0.04+hash(seed+17)*0.04,Vec3::new(0.45,0.72,1.)*radiance*fade*2.2,5,[0.;4]);arc.min_pixels=2.;
                         self.sprites.push(arc);a=b;
                     }
                     self.sprites.push(glow(base.transform_point3(start),[0.6,0.6],Vec3::new(0.5,0.8,1.)*radiance*fade,2));
@@ -511,11 +529,11 @@ impl Jets {
                     self.sprites
                         .push(glow(at - axis * 0.06, [1.5, 1.5], light, 2));
                 }
-                e.record(side, at, time, c.trail_life, c.trail_interval, boosting);
+                e.record(side, at, time, c.trail_life, c.trail_interval, boost);
                 let h = &e.history[side];
                 let mut tail = None;
-                for &(t, point) in h.iter().chain(boosting.then_some(&(time, at))) {
-                    if let Some((old_t, old_p)) = tail {
+                for &(t, point, strength) in h.iter().chain((boost>0.001).then_some(&(time, at,boost))) {
+                    if let Some((old_t, old_p, old_strength)) = tail {
                         if point.distance_squared(old_p) > 0.0001 {
                             self.sprites.push(shaft(
                                 point,
@@ -526,13 +544,13 @@ impl Jets {
                                 [
                                     (time - t) / c.trail_life,
                                     (time - old_t) / c.trail_life,
-                                    0.,
-                                    0.,
+                                    strength,
+                                    old_strength,
                                 ],
                             ));
                         }
                     }
-                    tail = Some((t, point));
+                    tail = Some((t, point,strength));
                 }
             }
         }
@@ -772,6 +790,48 @@ pub fn control_transform(name: &str, local: Affine3A, input: Input, brake: f32) 
 mod tests {
     use super::*;
     #[test]
+    fn boost_release_keeps_a_connected_fading_trail_then_expires() {
+        let mut jets=Jets::new(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let mut race=Race::new(35,"normal","city",1,3);race.countdown=0.;
+        race.pilots[0].boost=1.;race.drivers[0].input.drive.throttle=1.;
+        let mut poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
+        jets.update(&race,&poses,1.);race.pilots[0].boost=0.;
+        let mut last=1.;
+        for n in 1..=5 {
+            poses[0].origin+=Vec3::Z*10.;jets.update(&race,&poses,1.+n as f32*0.1);
+            let strength=jets.engines[0].history[0].back().unwrap().2;
+            assert!(strength>0. && strength<last);last=strength;
+            assert!(jets.sprites.iter().any(|s|s.effect==6 && (s.params[2]-strength).abs()<0.001));
+            let frozen=jets.sprites.clone();jets.update(&race,&poses,1.+n as f32*0.1);
+            assert_eq!(jets.sprites,frozen,"pause must freeze the afterglow");
+        }
+        jets.update(&race,&poses,1.9);
+        assert!(!jets.sprites.iter().any(|s|s.effect==6));
+        race.pilots[0].boost=2.;jets.update(&race,&poses,2.);
+        race.pilots[0].emp_time=2.;jets.update(&race,&poses,2.01);
+        assert!(jets.engines[0].history.iter().all(VecDeque::is_empty));
+        assert!(!jets.sprites.iter().any(|s|s.effect==6 || s.effect==15));
+    }
+    #[test]
+    fn emp_flashes_sample_the_whole_hull_with_new_positions_each_frame() {
+        let mut jets=Jets::new(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let mut race=Race::new(35,"normal","city",1,3);race.countdown=0.;race.pilots[0].emp_time=2.;
+        let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();let pose=&poses[0];
+        let mut positions=std::collections::HashSet::new();let mut lo=Vec3::splat(f32::INFINITY);let mut hi=-lo;
+        let mut previous=Vec::new();
+        for frame in 0..120 {
+            let time=1.+frame as f32/120.;jets.update(&race,&poses,time);
+            let starts:Vec<_>=jets.sprites.iter().filter(|s|s.effect==2).map(|s|s.center).collect();
+            assert_ne!(starts,previous);previous=starts.clone();
+            for at in starts {
+                let local=pose.basis.transpose()*(at-pose.origin);lo=lo.min(local);hi=hi.max(local);
+                assert!(positions.insert(at.to_array().map(f32::to_bits)),"reused EMP hardpoint");
+            }
+            let frozen=jets.sprites.clone();jets.update(&race,&poses,time);assert_eq!(jets.sprites,frozen);
+        }
+        assert!(lo.x< -4. && hi.x>4. && lo.z< -3.3 && hi.z>3.5 && hi.y>1.5,"insufficient coverage: {lo:?} {hi:?}");
+    }
+    #[test]
     #[ignore = "headless GPU diagnostic; run without a simultaneous game"]
     fn vapor_sprite_edges_gpu() {
         let gpu=render::Gpu::new().unwrap();
@@ -989,14 +1049,14 @@ mod tests {
     #[test]
     fn trail_freezes_and_clears_on_teleport() {
         let mut e = Engine::default();
-        e.record(0, Vec3::ZERO, 1., 0.38, 0.016, true);
-        e.record(0, Vec3::Z, 1., 0.38, 0.016, true);
+        e.record(0, Vec3::ZERO, 1., 0.38, 0.016, 1.);
+        e.record(0, Vec3::Z, 1., 0.38, 0.016, 1.);
         assert_eq!(e.history[0].len(), 1);
-        e.record(0, Vec3::Z * 10., 1.1, 0.38, 0.016, true);
+        e.record(0, Vec3::Z * 10., 1.1, 0.38, 0.016, 1.);
         assert_eq!(e.history[0].len(), 2);
-        e.record(0, Vec3::Z * 400., 1.2, 0.38, 0.016, true);
+        e.record(0, Vec3::Z * 400., 1.2, 0.38, 0.016, 1.);
         assert_eq!(e.history[0].len(), 1);
-        e.record(0, Vec3::Z * 400., 1.6, 0.38, 0.016, false);
+        e.record(0, Vec3::Z * 400., 1.6, 0.38, 0.016, 0.);
         assert!(e.history[0].is_empty());
     }
     #[test]

@@ -447,3 +447,18 @@ guidance, a tap shot, 50 damage, impact, expiry and the mounted model. It passes
 at 1600x900 with one/two players; captures are `build/rail-impact-{1,2}`. A
 90-frame 1280x720 airborne sequence is `build/jet-motion.mp4`. Release package
 updated; no new performance/FPS or physical-controller validation is claimed.
+
+### Boost release and EMP surface coverage
+
+Boost plume, light and newly emitted wake strength now ease out over 0.55 seconds
+(Luau `boost_release`). Wake vertices retain their emission strength and normal
+age fade, preventing a hard blue-to-normal transition. EMP interrupts thrust
+immediately. EMP sparks sample new continuous surface patches across the nose,
+cockpit, wings, nacelles and fins every flash, retaining the bounded seven-arc
+budget and existing expiry fade. Pause freezes both effects.
+
+Validation: 31 application tests pass (one opt-in test ignored), including two
+new release/expiry/pause and per-frame hull-coverage regressions. The split-screen
+`scenarios/boost-release-emp.json` passes at 1600x900 and captures active boost,
+release, 100/250/500ms afterglow, expiry and three successive EMP frames. Release
+package updated; no new hardware-controller or performance measurement claimed.

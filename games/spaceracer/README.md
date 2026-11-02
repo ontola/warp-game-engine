@@ -16,6 +16,12 @@ always-visible aim circle turns green for a clear target; tapping X fires one
 the straight shot stops at vehicle hulls, road geometry and scenery. Guide size,
 range and the AI aim cone are Luau combat parameters.
 
+Boost light, plume and newly emitted trail strength ease out over 0.55 seconds
+(`boost_release` in `rules/jets.luau`). Each trail point retains its emission
+strength, so the line tapers continuously after boost. EMP arcs choose fresh
+continuous positions across nose, cockpit, wings, nacelles and fins per flash,
+instead of using fixed anchors; their existing end-of-effect fade is retained.
+
 Forward exhaust is a bounded 3D gas cone, with a compact white-blue motor core
 and a dimmer tapered tail. Countdown shows only the engine lamps; thrust starts
 the plume. Boost increases it without covering the vehicle. Sonic vapor uses
