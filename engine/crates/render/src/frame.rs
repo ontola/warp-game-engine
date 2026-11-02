@@ -3384,9 +3384,15 @@ impl Renderer {
         let centre = anchors.iter().copied().sum::<Vec3>() / views.len().max(1) as f32;
         let spread = anchors.iter().map(|p|p.distance(centre)).fold(0.0f32,f32::max);
         let mut previous_extent = self.shadow_extent.lock().unwrap();
+        // Metres the shared sun map covers around the focus (KERN_SHADOW_REACH
+        // overrides). Past it the coarse distant visibility takes over, whose
+        // dark crown-sphere blobs read as a seam against sharp tree shadows:
+        // at 90 m that seam ran through the view from 140 m up (terrain_fly
+        // playtest); 180 m costs no measurable time at 1440p.
+        let reach = std::env::var("KERN_SHADOW_REACH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(180.0);
         let required_extent = if self.sun_cache_guard_m>0.0 {
-            (90.0+spread+self.sun_cache_guard_m)/crate::static_sun::FULL_COVERAGE_NDC
-        } else {90.0+spread};
+            (reach+spread+self.sun_cache_guard_m)/crate::static_sun::FULL_COVERAGE_NDC
+        } else {reach+spread};
         let extent = crate::stability::stable_shadow_extent(required_extent, *previous_extent);
         *previous_extent = extent;
         drop(previous_extent);
