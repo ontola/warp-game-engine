@@ -86,7 +86,7 @@ pub struct Tree {
 }
 
 /// A uniform 0..1 number for grid cell (i, j), channel k.
-fn hash(i: i32, j: i32, k: u32, seed: u32) -> f32 {
+pub(crate) fn hash(i: i32, j: i32, k: u32, seed: u32) -> f32 {
     let mut h = (i as u32).wrapping_mul(0x8da6b343) ^ (j as u32).wrapping_mul(0xd8163841) ^ seed.wrapping_mul(0xcb1ab31f) ^ k.wrapping_mul(0x165667b1);
     h ^= h >> 15;
     h = h.wrapping_mul(0x2c1b3c6d);
@@ -152,7 +152,7 @@ pub fn share(x: f32, z: f32, seed: u32, site: f32, footprint: f32) -> f32 {
 }
 
 /// Whether ground can carry a tree.
-fn grows(s: &Sample, style: &Style) -> bool {
+pub(crate) fn grows(s: &Sample, style: &Style) -> bool {
     !(s.rock > 0.3 || s.scree > 0.3 || s.water > 0.01 || s.snow > 0.05 || s.up < 0.82 || s.pos.y > style.snow_line - 250.0)
 }
 
