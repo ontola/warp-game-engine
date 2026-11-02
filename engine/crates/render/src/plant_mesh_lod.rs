@@ -30,6 +30,14 @@ pub const ATLAS_SIZE: u32 = 2048;
 /// Parts smaller than this (part space, metres) become cards whatever their
 /// material: sprays and their twigs, not trunks and branches.
 const CARD_MAX_M: f32 = 2.0;
+/// Darkening per layer of needles stacked over a card texel past the first:
+/// the source shades a needle spray's inner layers in their own shadow, a
+/// flat card would not. Leaves lie in fewer, flatter layers and keep their
+/// tone (forest_ladder measures both against the source).
+const OVERLAP_SHADE: f32 = 0.6;
+/// Parts whose triangles are thinner than this (area over longest edge
+/// squared) are needles.
+const NEEDLE_THINNESS: f32 = 0.1;
 
 /// The merged plant: its mesh, the atlas its cards sample, and its
 /// materials: the assembly's (wood), then one card material per foliage
@@ -80,6 +88,13 @@ fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage,
     let fit = side as f32 / size.x.max(size.y);
     let (w, h) = (((size.x * fit) as u32).clamp(1, side), ((size.y * fit) as u32).clamp(1, side));
     const SS: u32 = 4;
+    let (mut area, mut edge2) = (0.0f32, 0.0f32);
+    for t in indices.chunks_exact(3) {
+        let p: [Vec3; 3] = std::array::from_fn(|k| Vec3::from(vertices[t[k] as usize].pos));
+        area += (p[1] - p[0]).cross(p[2] - p[0]).length() * 0.5;
+        edge2 += (p[1] - p[0]).length_squared().max((p[2] - p[1]).length_squared()).max((p[0] - p[2]).length_squared());
+    }
+    let needles = area < NEEDLE_THINNESS * edge2;
     let mut cover = vec![0u16; (w * h) as usize];
     for t in indices.chunks_exact(3) {
         let p: [Vec2; 3] = std::array::from_fn(|k| (plane(Vec3::from(vertices[t[k] as usize].pos)) - lo) / size * Vec2::new(w as f32, h as f32) * SS as f32);
@@ -102,9 +117,14 @@ fn bake_card(vertices: &[Vertex], indices: &[u32], atlas: &mut image::RgbaImage,
     // so the alpha test keeps thin sprays' density at mip levels.
     for py in 0..h {
         for px in 0..w {
-            let c = (cover[(py * w + px) as usize] as f32 / (SS * SS) as f32 * 1.6).min(1.0);
+            let raw = cover[(py * w + px) as usize] as f32 / (SS * SS) as f32;
+            let c = (raw * 1.6).min(1.0);
+            // Where the part's own triangles stack, the source shades its
+            // inner layers in their own shadow; a flat card would not.
+            let shade = if needles { 1.0 / (1.0 + OVERLAP_SHADE * (raw - 1.0).max(0.0)) } else { 1.0 };
+            let v = (shade.powf(1.0 / 2.2) * 255.0) as u8;
             // Image rows run top down; the card's +y runs up.
-            atlas.put_pixel(cx + px, cy + (h - 1 - py), image::Rgba([255, 255, 255, (c * 255.0) as u8]));
+            atlas.put_pixel(cx + px, cy + (h - 1 - py), image::Rgba([v, v, v, (c * 255.0) as u8]));
         }
     }
     let depth = vertices.iter().map(|v| Vec3::from(v.pos).dot(n)).sum::<f32>() / vertices.len().max(1) as f32;

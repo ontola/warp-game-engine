@@ -26,7 +26,6 @@ use app::{Buttons, Controls, Draw, Frame, Game, Pointer};
 use glam::{Affine3A, Quat, Vec2, Vec3};
 use render::cluster::{ClusterMesh, Part, SimplificationPolicy};
 use render::debug_ui::{DebugAction, DebugControl, DebugMenu, DebugValue};
-use render::plant_recipe::{CrownProfile, FoliageKind, WoodyRecipe};
 use render::scene::{GeometryCategory, ALPHA_TEST, TWO_SIDED};
 use render::recipe_forest;
 use render::vegetation_asset::CookedPlant;
@@ -519,15 +518,6 @@ fn renderer_for(gpu: &render::Gpu, scene: &Scene, light: &Lighting, pool: proced
     (render::Renderer::new(gpu, scene, light), ProceduralTerrain::new(pool, settings))
 }
 
-/// Sideways' approved r4 spruce recipe (games/sideways plant_species.rs);
-/// copied here because the engine must not depend on Sideways.
-const SPRUCE: WoodyRecipe = WoodyRecipe {
-    id: 0x5350_5255_4345, height: 16.0, trunk_radius: 0.22, crown_base: 0.18, crown_radius: 2.9, crown_profile: CrownProfile::Conical,
-    tiers: 10, branches_per_tier: 3, branch_rise: 0.04, branch_radius: 0.065, stiffness: 0.72, foliage: FoliageKind::Needle,
-    sprays_per_branch: 84, spray_scale: 1.15, spray_axial_bias: 0.40, foliage_colour: [0.065, 0.135, 0.045], wood_colour: [0.16, 0.105, 0.062],
-    protected_trunk_height: 5.5,
-};
-
 /// Sideways' fir cards at these spots, as before the recipe spruces took
 /// over. Materials 1..=4, as tree_meshes() expects: call before any other.
 fn firs(scene: &mut Scene, assets: &std::path::Path, spots: &[(Vec3, f32, Vec3, usize)]) -> Result<(), String> {
@@ -590,8 +580,10 @@ fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3
     let slots = near.len().div_ceil(cooked.len());
     let (_, mut pool) = recipe_forest::plant_streamed(scene, cooked, &trees, slots, policy)?;
     // Past the full ones, card trees (plant_mesh_lod) within --card-radius
-    // (150 m), --cards per variant (300; 0: voxel proxies only).
-    let (cards, card_radius) = (arg("--cards").unwrap_or(300.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
+    // (300 m: forest_ladder has them within 10 % of the source's coverage
+    // and tone that far, the proxies past it), --cards per variant (1000;
+    // 0: voxel proxies only).
+    let (cards, card_radius) = (arg("--cards").unwrap_or(1000.0f32) as usize, arg("--card-radius").unwrap_or(300.0f32));
     if cards > 0 { recipe_forest::add_cards(scene, &mut pool, baked, cards, card_radius)?; }
     println!("{} trees ({slots} full per variant following the camera, {cards} card trees per variant within {card_radius} m) planted in {} ms",
         trees.len(), started.elapsed().as_millis());
