@@ -58,6 +58,30 @@ struct Material {
 @group(0) @binding(2) var<storage, read> tris: array<u32>;
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
+
+// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
+// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
+// rows are its part_wind pose and its first_cluster packs the templates
+// (start << 12 | count); a member is pose x template.
+const VIRTUAL_MEMBER: u32 = 0x80000000u;
+fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
+fn compose_member(owner: Instance, t: Instance) -> Instance {
+    var m = t;
+    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
+    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
+    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
+    let c = vec4<f32>(t.sphere.xyz, 1.0);
+    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
+    m.scale = t.scale * owner.scale;
+    // The owner's history epoch (bit 7) marks a woken pose for motion.
+    m.pad = (t.pad & ~0x80u) | (owner.pad & 0x80u);
+    return m;
+}
+fn instance_at(id: u32) -> Instance {
+    if (id & VIRTUAL_MEMBER) == 0u { return instances[id]; }
+    let owner = instances[(id >> 12u) & 0x7ffffu];
+    return compose_member(owner, instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+}
 @group(0) @binding(5) var<storage, read> materials: array<Material>;
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
@@ -96,13 +120,13 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
         o.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0); // degenerate, outside the clip volume
         return o;
     }
-    let inst = instances[vis.x];
+    let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + tri];
     let local = (packed >> (8u * (vi % 3u))) & 0xffu;
     let v = cluster_verts[cl.first_vert + local] * 8u;
     let p = vec4<f32>(vertices[v], vertices[v + 1u], vertices[v + 2u], 1.0);
     let rest = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
-    let w = wind_position(vis.x, inst.r1.w, rest);
+    let w = wind_position(member_slot(vis.x), inst.r1.w, rest);
     o.pos = view.view_proj * vec4<f32>(w, 1.0);
     o.world = w; o.instance = vis.x;
     o.id = (slot << 7u) | tri;
@@ -110,7 +134,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     o.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
     // Only the explicitly packed crown material is replaced in color. Wood,
     // unrelated cutouts and source sun-shadow geometry remain unchanged.
-    let replacement=voxel_replacement[vis.x];
+    let replacement=voxel_replacement[member_slot(vis.x)];
     var replaced=replacement==0xffffffffu || replacement==cl.material+1u;
     if replacement!=0xffffffffu && (replacement&0x80000000u)!=0u {
         replaced=foliage_selection[replacement&0x7fffffffu].x!=0u;

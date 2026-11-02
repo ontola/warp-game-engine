@@ -67,7 +67,12 @@ fn scene(tier: Option<Tier>, plant: &render::vegetation_asset::CookedPlant, card
         // At most 12 full spruces fit the part-wind budget: in the grove the
         // nearest 12 are full and the rest proxies, as a game would have it.
         Tier::Source => { recipe_forest::plant(&mut scene, variants, trees, trees.len().min(12), Policy { max_error_pixels: 1e-3, ..game })?; }
-        Tier::Aggregate => { recipe_forest::plant(&mut scene, variants, trees, trees.len().min(12), game)?; }
+        // LADDER_FULL=N: N full trees in the grove (default 12, the part-wind
+        // pool's cap without virtual members).
+        Tier::Aggregate => {
+            let full = std::env::var("LADDER_FULL").ok().and_then(|v| v.parse().ok()).unwrap_or(12usize);
+            recipe_forest::plant(&mut scene, variants, trees, trees.len().min(full), game)?;
+        }
         Tier::ProxyFly => { recipe_forest::plant(&mut scene, variants, trees, 0, game)?; }
         Tier::ProxySideways => {
             // LADDER_PROXY=PX,FROM tries another proxy policy in this row.

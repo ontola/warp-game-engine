@@ -128,6 +128,8 @@ fn source_triangles(
     let mut sorting = Vec::new();
     let mut owners = HashMap::new();
     for (owner, instance) in scene.instances.iter().enumerate() {
+        // Zero-cluster owners (virtual branches pack templates in first_cluster).
+        if instance.cluster_count == 0 { continue; }
         let start = instance.first_cluster as usize;
         let end = start + instance.cluster_count as usize;
         for cluster in &scene.clusters[start..end] {
