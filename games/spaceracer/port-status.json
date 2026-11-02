@@ -98,7 +98,7 @@
     {
       "path": "src/emp_sparks.gd",
       "sha256": "2b91b0d3deb08f0de2c0fe450faadb64b217eac806152694f23639e125ed52c8",
-      "status": "pending"
+      "status": "native per-hull single-presentation electrical arcs with fading EMP tail; tested; initial screen glitch remains pending"
     },
     {
       "path": "src/engine_audio.gd",
@@ -108,7 +108,7 @@
     {
       "path": "src/flight.gd",
       "sha256": "f994ab929f75becd65170ccc7e539df28d5219d09a70353d9e4b69541164d2f5",
-      "status": "validated integrator, takeoff/landing/underside handling integrated; native swept scenery proxies"
+      "status": "validated integrator, takeoff/landing/underside handling and native swept scenery proxies; grid ignition/staggered lift animation is still missing"
     },
     {
       "path": "src/forest.gd",

@@ -33,16 +33,16 @@ retired Godot runtime. `port-status.json` retains the pinned source provenance.
 Timing, cruise policy and victory choreography live in `rules/game.luau`;
 geometry integration, collision queries and rendering remain native.
 
-## Remaining differences (do not call these done)
+## Remaining differences (updated by the 2 November source audit below)
 
 | Area | Current gap |
 |---|---|
 | Other weapons | Warp, minigun and guided glide behaviour/presentation restored in the follow-up below. Original railgun guide remains simplified. Unguided bomb preview shows a ballistic path, not an exact scenery-impact prediction. |
-| EMP | Engine/HUD disable and missile cancellation work; initial glitch and electrical arcs on each affected hull are missing. |
+| EMP | Engine/HUD disable, radius-limited missile cancellation and fading hull arcs work. Initial screen glitch remains missing. EMP hull collision is repaired in the 2 November follow-up. |
 | Driving information | Original severity-coded corner/no-rail signs, some jump/checkpoint notices, gate art and the flight roll reference are missing. |
 | Vehicle damage | Energy-linked retained paint-wear mask, critical-energy smoke and respawn scan/camera restored below. Native optics differ; no continuous mesh deformation. |
 | Standalone menu | Visual structure restored; original bot/graphics/lighting pages, credits panel, seed text editing and held D-pad shortcuts remain incomplete. |
-| AI | Seeded driving/flight/boost decisions work; original personalities, tactical mistakes and item tactics are not all preserved. |
+| AI | Six seeded styles, differing lines/pickup choices and independent boost clocks are restored. Full tactical equivalence is not claimed. |
 | Environment | Five distinct native biomes exist. Forest motion/water, underwater shafts/terrain detail, city searchlights/vista protection and sandworm encounters still differ. |
 | Lighting/performance | Analytic road reflections and local jets work. This is not full scene ray tracing, original lighting parity or a certified 4K/four-player/120 FPS build. |
 | Sound/platforms | Sound remains disabled as requested. Native source audio, touch controls and Android/Deck packaging are not completed by this change. |
@@ -336,3 +336,64 @@ vehicle crash, captures fire/rise/body/fade/expiry, and passes shader/script che
 at native 1920x1080 in city, forest and two-player split-screen. Captures are in
 build/spaceracer-smoke-city, -forest and -split; earlier billows in -before.
 Reviewed early/body/tail images. No new frame-time target or physical-pad claim.
+
+
+## Source audit and follow-up - 2 November 2026
+
+Compared current native code with the retained source pinned above, without
+running the retired engine. This is a source audit, not a new visual-parity
+capture or controller playtest. Earlier dated sections record their own state.
+
+| Priority / area | Verified state and evidence |
+|---|---|
+| Present: five vehicle variants | Arrow, Delta, Raptor, Brute and Needle are retained in `assets/ships.json.gz`, loaded per slot in `app/src/visuals.rs`. `sim/src/asset_tests.rs` checks all five meshes, fins and sockets. P1 repeatedly gets the first model; no standalone vehicle chooser exists. Do not count five missing models. |
+| High: grid startup choreography | Missing. Source `race.gd` tracks throttle ignition/startup; `flight.gd::pose` raises the left and right sides separately over the countdown. Native `race_rules::ground_pose` always starts at normal hover height and has no ignition state. Pre-start throttle glow already works in `app/src/jets.rs`; that does not replace the lift animation. |
+| High: corner/flight information | Original `corner_warnings.gd` severity/no-rail signage has no native implementation. Checkpoint validation, missed-checkpoint/Y notice and reset work, but gate art, passed-checkpoint flash, jump approach instructions and HUD flight-roll reference are absent. Compare source `hud.gd` with `app/src/race_hud.rs`. |
+| Medium: menus and controls | `app/src/menu_view.rs` has the shared race/settings rows and random/fixed world, difficulty and seed selections. Original bot/graphics/lighting pages, credits, seed typing and held D-pad shortcuts are incomplete. Engine F10 is not the original player settings menu. Console item grants exist; the original F8/letter grant mode is not restored. |
+| Medium: environment finishing | Five biomes and ocean animals exist. Pending source-specific features include desert sandworm encounters, city searchlights, underwater light shafts/marine snow, and environmental animation/material fidelity. See stage source mapping in `port-status.json`; native geometry is not pixel-identical. |
+| Medium: weapon/HUD finish | Mounted/queued hardware, missile tracking/launch/terminal laser, warp distortion, minigun tracers/impact sparks, bomb preview, EMP hull arcs and HUD shutoff exist. Railgun guidance is simplified; bomb preview is not an exact scenery-impact prediction. Initial EMP screen glitch is still absent. |
+| Present: damage, respawn, AI and finish | Energy-linked paint wear/critical smoke, reconstruction and moving respawn camera, six AI styles, independent boost timing and cinematic continued racing have implementations and focused tests. Do not reopen these as wholly missing; tuning/visual equivalence still needs playtesting. |
+| Separate platform work | Sound is intentionally off. Completing source sound mix, touch controls and mobile/Deck packaging remains separate work; no Android build was made in this pass. |
+
+### Changes requested during this audit
+
+- Boost lightning is a 0.32-second ignition discharge. Initial reach is 38 m
+  before seeded variation (previously 22 m), with a substantially thicker core
+  and faster decay. Road contacts remain real and bolts still replace each
+  presentation rather than accumulating history. The engine jet continues
+  throughout the boost. Timing/shape parameters remain in `rules/jets.luau`.
+- Sonic condensation triggers above 343 m/s and rearms below 325 m/s. A hollow
+  cone uses up to 30 independently fluctuating smoke patches per vehicle for
+  0.48 seconds, with soft scene intersections and near-camera fade. It adds no
+  full-screen volume pass and changes no boost or driving parameters.
+- EMP no longer makes grounded vehicles non-solid: physical contacts previously
+  reused the slipstream/bump eligibility predicate, which excludes EMP. Ground
+  collisions now use the retained oriented hull footprint, nose offset, tube
+  seam, iterative pack/rail separation and closing-speed impulse. Air contacts
+  use oriented 3D hulls instead of the oversized sphere. Warp/recovery ghosts
+  remain deliberate. Existing movement integrator rates are unchanged.
+- Windows game executables use the GUI subsystem. Shared startup preserves
+  redirected/parent-console diagnostics, supplies a minimized non-focusing
+  taskbar marker and window icon, and opens gameplay fullscreen by default.
+  `--windowed` opts out; host warm launches remain hidden. See the engine launch
+  policy in `engine/docs/making-a-game.md`.
+
+### Validation and limits
+
+- All 45 simulation tests pass, including EMP side/rear/rotated contacts, a
+  three-wide pack, air overflight/overlap and deliberate warp/recovery ghosts.
+- Nine jet tests pass, including finite lightning duration, changing road
+  strikes, continued exhaust, fading EMP arcs and sonic threshold/hysteresis,
+  animation, pause, expiry and boost preservation.
+- Two shared startup tests pass. The Windows fixture creates only a minimized
+  taskbar marker, verifies its installed icon and unchanged foreground window,
+  then removes it. CLI/headless classification and explicit windowed mode pass.
+- All six desktop entry points compile: SpaceRacer, Growing Guns, Sideways,
+  Spellstorm, Game Room and the Luau runner. SpaceRacer release is rebuilt.
+- Six 1600x900 city captures and a 40-frame 1280x720 headless clip verify shader
+  compilation, boost ignition, sonic crossing, changing vapor and dissipation.
+  The capture uses explicit keyboard throttle and moves rivals away to isolate
+  presentation. Outputs: `build/sonic-review-final` and `build/sonic-boost.mp4`.
+  No new fullscreen playtest or GPU performance benchmark was launched. The
+  complete fullscreen handoff and controller feel need the next playtest; no
+  new performance numbers or full visual parity are claimed.

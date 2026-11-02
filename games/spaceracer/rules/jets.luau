@@ -1,7 +1,10 @@
 -- Presentation only. Loaded on the next race; distances in metres.
 -- The retained ship meshes all use these same engine and mounting anchors.
 return {
-    boost_arc_start = 22, boost_arc_sustain = 8, boost_arc_decay = 5,
+    -- A short ignition discharge; the bright jet continues for the whole boost.
+    boost_arc_start = 38, boost_arc_sustain = 5, boost_arc_decay = 12,
+    boost_arc_duration = .32, boost_arc_width = .20,
+    sonic_speed = 343, sonic_reset_speed = 325, vapor_life = .48, vapor_opacity = .18,
     boost_arc_spread = 12, boost_arc_height = 7,
     boost_width = 1.9, boost_radiance = 2.0, engine_glare_pixels = 14,
     warp_world_pixels = 48, warp_view_pixels = 64,

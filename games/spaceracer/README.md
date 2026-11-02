@@ -6,6 +6,17 @@ valid equal-content performance comparison. Source provenance remains pinned
 in `port-status.json`; original assets and their attribution are retained.
 There is no Godot runtime or Godot build/export step.
 
+## Startup, collisions and parity audit (2 November 2026)
+
+EMP vehicles remain solid. Vehicle collisions now use oriented hulls and resolve
+packs/rear impacts; boost lightning is a short, aggressive ignition burst.
+Crossing 343 m/s briefly produces a hollow, fluctuating vapor cone without
+changing boost or covering the centre of the view.
+Windows opens without a terminal, shows an icon in the taskbar while loading,
+and defaults to fullscreen (`--windowed` opts out). See the dated
+[parity audit](parity-review.md#source-audit-and-follow-up---2-november-2026)
+for remaining startup-animation, signage, menu and environment gaps and tests.
+
 ## Growing Guns smoke (1 November 2026)
 
 Crashes and weapon explosions now use Growing Guns' shared animated volume

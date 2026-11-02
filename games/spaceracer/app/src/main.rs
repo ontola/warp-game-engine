@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod crash_fx;
 mod integration_probe;
 mod jets;
@@ -760,6 +761,7 @@ fn menu_entropy() -> u32 {
     std::collections::hash_map::RandomState::new().build_hasher().finish() as u32
 }
 fn main() -> Result<(), String> {
+    app::startup::init("SpaceRacer", Some(include_bytes!("../../assets/source/assets/gamenight/icon.png")));
     let mut surface = include_str!("../shaders/surfaces.wgsl").to_owned();
     // Diagnostic omission only; never persisted as a player quality setting.
     if std::env::args().any(|a| a == "--profile-no-reflections") {
@@ -875,7 +877,7 @@ fn main() -> Result<(), String> {
         app::Config {
             title: "SpaceRacer / Warp".into(),
             tick_hz: 120.,
-            fullscreen: args.iter().any(|s| s == "--fullscreen"),
+            fullscreen: app::startup::fullscreen(&args),
             ..Default::default()
         },
         &mut game,

@@ -1,0 +1,115 @@
+{
+  "size": [
+    1600,
+    900
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review missile",
+        "place 1 -1100",
+        "place 2 -1200",
+        "place 3 -1300",
+        "place 4 -1400",
+        "place 5 -1500"
+      ],
+      "ticks": 120,
+      "hold": [
+        "RT"
+      ],
+      "capture": "before-boost.png",
+      "triggers": [
+        0,
+        1
+      ],
+      "state": "before-boost.png.json",
+      "mv": [
+        0,
+        1
+      ]
+    },
+    {
+      "cmd": "boost 0",
+      "ticks": 1,
+      "hold": [
+        "RT"
+      ],
+      "capture": "ignition.png",
+      "triggers": [
+        0,
+        1
+      ],
+      "state": "ignition.png.json",
+      "mv": [
+        0,
+        1
+      ]
+    },
+    {
+      "until": "/pilots/0/speed",
+      "min": 344,
+      "max_ticks": 150,
+      "hold": [
+        "RT"
+      ],
+      "capture": "barrier.png",
+      "triggers": [
+        0,
+        1
+      ],
+      "state": "barrier.png.json",
+      "mv": [
+        0,
+        1
+      ]
+    },
+    {
+      "ticks": 8,
+      "hold": [
+        "RT"
+      ],
+      "capture": "vapor-early.png",
+      "triggers": [
+        0,
+        1
+      ],
+      "state": "vapor-early.png.json",
+      "mv": [
+        0,
+        1
+      ]
+    },
+    {
+      "ticks": 12,
+      "hold": [
+        "RT"
+      ],
+      "capture": "vapor-late.png",
+      "triggers": [
+        0,
+        1
+      ],
+      "state": "vapor-late.png.json",
+      "mv": [
+        0,
+        1
+      ]
+    },
+    {
+      "ticks": 50,
+      "hold": [
+        "RT"
+      ],
+      "capture": "dissipated.png",
+      "triggers": [
+        0,
+        1
+      ],
+      "state": "dissipated.png.json",
+      "mv": [
+        0,
+        1
+      ]
+    }
+  ]
+}

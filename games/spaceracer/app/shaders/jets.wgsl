@@ -1,5 +1,13 @@
 // Source plasma, nozzle glow, flare and phosphor wake, in the per-view sprite
 // pass. Single axis-facing plumes avoid the intersecting opaque-looking fins.
+fn vapor_noise(p: vec2<f32>) -> f32 {
+    let cell=floor(p);let f=fract(p);let u=f*f*(3.-2.*f);
+    let a=fract(sin(dot(cell,vec2<f32>(127.1,311.7)))*43758.5453);
+    let b=fract(sin(dot(cell+vec2<f32>(1.,0.),vec2<f32>(127.1,311.7)))*43758.5453);
+    let c=fract(sin(dot(cell+vec2<f32>(0.,1.),vec2<f32>(127.1,311.7)))*43758.5453);
+    let d=fract(sin(dot(cell+vec2<f32>(1.,1.),vec2<f32>(127.1,311.7)))*43758.5453);
+    return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);
+}
 fn game_sprite(s: GameSprite) -> vec4<f32> {
     let x = s.uv.x * 2.0 - 1.0;
     let t = s.uv.y;
@@ -51,7 +59,8 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
     }
     if s.effect == 5u { // thin one-frame electrical discharge
         let core = exp(-x*x*32.0);
-        return vec4<f32>(mix(vec3<f32>(1.0),vec3<f32>(2.0,2.5,3.0),core),(1.0-smoothstep(.25,1.0,abs(x)))*.65);
+        let near=smoothstep(1.5,4.,distance(u.camera_near.xyz,s.world));
+        return vec4<f32>(mix(vec3<f32>(1.0),vec3<f32>(2.0,2.5,3.0),core),exp(-x*x*8.)*(1.-smoothstep(.65,1.,abs(x)))*near);
     }
     if s.effect == 6u { // analog colour shoulders around the boost wake
         let age = mix(s.params.x,s.params.y,t);
@@ -103,6 +112,18 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
     if s.effect == 12u { // inexpensive road-contact pool, no opaque disk
         let q=s.uv*2.-1.;let r2=dot(q,q);
         return vec4<f32>(vec3<f32>(1.),exp(-r2*5.)*(1.-smoothstep(.6,1.,sqrt(r2)))*.45);
+    }
+    if s.effect == 14u { // hollow sonic condensation: turbulent, broken smoke patches
+        let q=s.uv*2.-1.;let seed=s.params.x;
+        let flow=vec2<f32>(sin(q.y*6.+seed),cos(q.x*7.-seed))*.16;
+        let p=q+flow;
+        let cloud=.65*vapor_noise(p*3.+vec2<f32>(seed))+.35*vapor_noise(p*7.-vec2<f32>(seed));
+        let density=smoothstep(.2,.7,cloud)*exp(-dot(p,p)*2.)*(1.-smoothstep(.55,1.,length(q)));
+        let clip=u.depth_vp*vec4<f32>(s.world,1.);
+        let uv=clip.xy/clip.w*vec2<f32>(.5,-.5)+.5;
+        let soft=clamp((depth_metres(uv)-clip.w)/1.2,0.,1.);
+        let near=smoothstep(3.,10.,distance(u.camera_near.xyz,s.world));
+        return vec4<f32>(vec3<f32>(.85+.15*cloud),density*near*soft);
     }
     return vec4<f32>(0.0);
 }
