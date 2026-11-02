@@ -154,6 +154,17 @@ struct ShadeTiles { x: atomic<u32>, y: u32, z: u32, pad: u32, tiles: array<u32> 
 // opaque surface is theirs; its composite replaces whatever shade wrote.
 override VOXEL_OCCLUSION: bool = false;
 @group(1) @binding(18) var voxel_depth: texture_depth_2d;
+// Coarse terrain material (TERRAIN_COARSE): field_surface once per 2x2
+// pixels, at each quad's centre, packed by terrain_coarse below. Where a
+// pixel spans more than COARSE_FOOTPRINT_M of ground, shade interpolates it
+// instead of evaluating the material itself; lighting stays per pixel.
+// 8 cm: from about 100 m at 1440p, also straight down from 280 m (a 0.3 m
+// threshold never triggered there). A/B at the playtest cameras: PSNR 44-46
+// dB, under 0.01 % of pixels off by more than 3 %.
+override TERRAIN_COARSE: bool = false;
+const COARSE_FOOTPRINT_M: f32 = 0.08;
+@group(1) @binding(19) var terrain_coarse_tex: texture_2d<u32>;
+@group(2) @binding(0) var terrain_coarse_out: texture_storage_2d<rgba32uint, write>;
 var<workgroup> tile_has_geometry: atomic<u32>;
 
 struct Gi {
@@ -1611,6 +1622,125 @@ fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_f
     return result;
 }
 
+fn coarse_pack(so: SurfaceOut, sun: f32) -> vec4<u32> {
+    return vec4<u32>(pack2x16float(so.albedo.rg), pack2x16float(vec2<f32>(so.albedo.b, so.rough)),
+        pack2x16float(so.normal.xy), pack2x16float(vec2<f32>(so.normal.z, sun)));
+}
+
+@compute @workgroup_size(8, 8)
+fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let size = vec2<u32>(view.size.xy);
+    let half = (size + 1u) / 2u;
+    if gid.x >= half.x || gid.y >= half.y { return; }
+    let cx = vec2<i32>(gid.xy);
+    let invalid = vec4<u32>(0u, pack2x16float(vec2<f32>(0.0, -1.0)), 0u, 0u);
+    let px = min(cx * 2, vec2<i32>(size) - 1);
+    if textureLoad(depth_tex, px, 0) <= 0.0 { textureStore(terrain_coarse_out, cx, invalid); return; }
+    let id = textureLoad(vis_tex, px, 0).r;
+    let vis = visible[id >> 7u];
+    let cl = clusters[vis.y];
+    let m = materials[cl.material];
+    if (m.flags & 32770u) != 32770u { textureStore(terrain_coarse_out, cx, invalid); return; }
+    let inst = instances[vis.x];
+    let packed = tris[cl.first_tri + (id & 127u)];
+    var vi: array<u32, 3>;
+    for (var k = 0u; k < 3u; k++) { vi[k] = vtx(cluster_verts[cl.first_vert + ((packed >> (8u * k)) & 0xffu)]); }
+    // The ray through the quad's centre, on the triangle of its first pixel.
+    let centre = vec2<f32>(cx * 2) + 1.0;
+    let ndc = vec2<f32>(centre.x / view.size.x * 2.0 - 1.0, 1.0 - centre.y / view.size.y * 2.0);
+    let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
+    let dir = normalize(far.xyz / far.w - view.cam.xyz);
+    let p0 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[0])));
+    let p1 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[1])));
+    let p2 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[2])));
+    let e1 = p1 - p0;
+    let e2 = p2 - p0;
+    let pv = cross(dir, e2);
+    let det = dot(e1, pv);
+    let tv = view.cam.xyz - p0;
+    let inv = select(1.0 / det, 0.0, abs(det) < 1e-12);
+    let b1 = clamp(dot(tv, pv) * inv, 0.0, 1.0);
+    let b2 = clamp(dot(dir, cross(tv, e1)) * inv, 0.0, 1.0 - b1);
+    let b0 = 1.0 - b1 - b2;
+    let p = p0 * b0 + p1 * b1 + p2 * b2;
+    var n = vec3<f32>(0.0);
+    var uv = vec2<f32>(0.0);
+    let w = array<f32, 3>(b0, b1, b2);
+    for (var k = 0u; k < 3u; k++) {
+        let v = vi[k];
+        n += vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]) * w[k];
+        uv += vec2<f32>(vertices[v + 6u], vertices[v + 7u]) * w[k];
+    }
+    n = normalize(wind_normal(vis.x, xform_dir(inst, n)));
+    let geo_n = normalize(cross(e1, e2));
+    // One full-resolution pixel's footprint, as `shade` filters there.
+    let px_x = view.inv_view_proj * vec4<f32>(ndc + vec2<f32>(2.0 * view.size.z, 0.0), 1e-4, 1.0);
+    let px_y = view.inv_view_proj * vec4<f32>(ndc - vec2<f32>(0.0, 2.0 * view.size.w), 1e-4, 1.0);
+    let dir_x = normalize(px_x.xyz / px_x.w - view.cam.xyz);
+    let dir_y = normalize(px_y.xyz / px_y.w - view.cam.xyz);
+    let plane_d = dot(p - view.cam.xyz, geo_n);
+    let hit_x = view.cam.xyz + dir_x * (plane_d / select(dot(dir_x, geo_n), 1e-6, abs(dot(dir_x, geo_n)) < 1e-6));
+    let hit_y = view.cam.xyz + dir_y * (plane_d / select(dot(dir_y, geo_n), 1e-6, abs(dot(dir_y, geo_n)) < 1e-6));
+    let reach = distance(p, view.cam.xyz) * 0.05 + 0.05;
+    fp.dx = clamp(hit_x - p, vec3<f32>(-reach), vec3<f32>(reach));
+    fp.dy = clamp(hit_y - p, vec3<f32>(-reach), vec3<f32>(reach));
+    let mip_scale = select(1.0, view.extra.z, view.extra.z > 0.0);
+    fp.dx *= mip_scale;
+    fp.dy *= mip_scale;
+    // As `shade`: the material's own layer relief first (TERRAIN|SURFACE
+    // takes its generic textured branch).
+    if m.layer >= 0 {
+        var frame = uv_frame(e1, e2, vi);
+        if dot(geo_n, n) < 0.0 { frame[0] = -frame[0]; frame[1] = -frame[1]; }
+        n = perturb(n, nrm(m.layer, uv, uv_at(fp.dx, e1, e2, vi), uv_at(fp.dy, e1, e2, vi)), frame[0], frame[1]);
+    }
+    var local = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
+    let corner = array<vec2<f32>, 3>(vec2<f32>(vertices[vi[0] + 6u], vertices[vi[0] + 7u]),
+        vec2<f32>(vertices[vi[1] + 6u], vertices[vi[1] + 7u]), vec2<f32>(vertices[vi[2] + 6u], vertices[vi[2] + 7u]));
+    let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+        corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
+    field_sun = 1.0;
+    let so = field_surface(si, m.layer);
+    textureStore(terrain_coarse_out, cx, coarse_pack(so, field_sun));
+}
+
+struct CoarseSurface { ok: bool, so: SurfaceOut, sun: f32 };
+// The coarse material at full-resolution pixel `px` (depth `depth`): the
+// four nearest quad centres, bilinear, if all are terrain on the same
+// surface (depth within 2 %); else not ok and the pixel evaluates its own.
+fn coarse_surface(px: vec2<i32>, depth: f32) -> CoarseSurface {
+    var out: CoarseSurface;
+    let dims = vec2<i32>(textureDimensions(terrain_coarse_tex));
+    let q = (vec2<f32>(px) + 0.5) * 0.5 - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    var albedo = vec3<f32>(0.0);
+    var normal = vec3<f32>(0.0);
+    var rough = 0.0;
+    var sun = 0.0;
+    let full = vec2<i32>(view.size.xy) - 1;
+    for (var k = 0; k < 4; k++) {
+        let o = vec2<i32>(k & 1, k >> 1);
+        let c = clamp(base + o, vec2<i32>(0), dims - 1);
+        let t = textureLoad(terrain_coarse_tex, c, 0);
+        let ab = unpack2x16float(t.y);
+        if ab.y < 0.0 { return out; }
+        let d = textureLoad(depth_tex, min(c * 2, full), 0);
+        if abs(d - depth) > 0.02 * depth { return out; }
+        let wgt = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+        let nz = unpack2x16float(t.w);
+        albedo += vec3<f32>(unpack2x16float(t.x), ab.x) * wgt;
+        rough += ab.y * wgt;
+        normal += vec3<f32>(unpack2x16float(t.z), nz.x) * wgt;
+        sun += nz.y * wgt;
+    }
+    out.ok = true;
+    out.so = SurfaceOut(albedo, normalize(normal), rough, 0.0, vec3<f32>(0.0));
+    out.sun = sun;
+    return out;
+}
+
 // Sky for tiles without geometry; tiles with any are listed for `shade`.
 // Same sky as `shade` writes for its own background pixels.
 @compute @workgroup_size(8, 8)
@@ -1984,7 +2114,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x);
         // TERRAIN + SURFACE: the engine's procedural terrain, not the game's.
         var so: SurfaceOut;
-        if (m.flags & 2u) != 0u { so = field_surface(si, m.layer); } else { so = game_surface(si); }
+        if (m.flags & 2u) != 0u {
+            var coarse: CoarseSurface;
+            if TERRAIN_COARSE && max(length(fp.dx), length(fp.dy)) > COARSE_FOOTPRINT_M { coarse = coarse_surface(px, depth); }
+            if coarse.ok { so = coarse.so; field_sun = coarse.sun; } else { so = field_surface(si, m.layer); }
+        } else { so = game_surface(si); }
         base = so.albedo;
         n = so.normal;
         coat_n = n;
