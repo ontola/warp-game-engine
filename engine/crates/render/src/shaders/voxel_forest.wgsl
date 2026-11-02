@@ -1274,10 +1274,12 @@ fn volume_sun_texel(p:vec3<f32>)->f32 {
     return light.sky.w;
 }
 // Sun transmittance through the tree's own cells at the drawn level, from
-// the cell after p's to the edge of its grid.
+// the cell after p's to the edge of its grid. KERN_VOXEL_SELF_SHADOW_COARSER
+// marches that many levels coarser (fewer steps, softer; A/B only).
+override VOXEL_SELF_SHADOW_COARSER: u32 = 0u;
 fn volume_self_transmittance(tree:VolumeTree,grid:vec4<f32>,p:vec3<f32>,sun:vec3<f32>)->f32 {
     let finest=volume_levels[tree.identity.y].origin_cell.w;
-    let index=min(u32(round(log2(max(grid.w/finest,1.0)))),tree.identity.z-1u);
+    let index=min(u32(round(log2(max(grid.w/finest,1.0))))+VOXEL_SELF_SHADOW_COARSER,tree.identity.z-1u);
     let level=volume_levels[tree.identity.y+index];
     let local=vec3<f32>(dot(tree.inverse[0],vec4<f32>(p,1.0)),dot(tree.inverse[1],vec4<f32>(p,1.0)),dot(tree.inverse[2],vec4<f32>(p,1.0)));
     let d=normalize(vec3<f32>(dot(tree.inverse[0].xyz,sun),dot(tree.inverse[1].xyz,sun),dot(tree.inverse[2].xyz,sun)));

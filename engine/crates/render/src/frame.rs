@@ -1741,6 +1741,7 @@ impl Renderer {
         shade_constants.push(("VOXEL_PASS", if voxel_pass_on {1.0} else {0.0}));
         let terrain_coarse_on = !simple_lighting && shade_features.terrain && std::env::var("KERN_TERRAIN_COARSE").as_deref() != Ok("0");
         shade_constants.push(("TERRAIN_COARSE", if terrain_coarse_on {1.0} else {0.0}));
+        if let Some(m) = std::env::var("KERN_COARSE_FOOTPRINT_M").ok().and_then(|v| v.parse::<f64>().ok()) { shade_constants.push(("COARSE_FOOTPRINT_M", m)); }
         // KERN_SHADE_CLASSES=0: one shade pipeline for terrain and the rest.
         let shade_classes = !simple_lighting && shade_features.terrain && std::env::var("KERN_SHADE_CLASSES").as_deref() != Ok("0");
         // The terrain class keeps every feature terrain pixels can reach.
@@ -2712,6 +2713,7 @@ impl Renderer {
                 constants.push(("SHADE_CLASS", if self.terrain_shade.is_some() {2.0} else {0.0}));
                 constants.push(("SHADE_DIAGNOSTICS", 0.0));
                 constants.push(("TERRAIN_COARSE", if self.terrain_coarse.is_some() {1.0} else {0.0}));
+                if let Some(m) = std::env::var("KERN_COARSE_FOOTPRINT_M").ok().and_then(|v| v.parse::<f64>().ok()) { constants.push(("COARSE_FOOTPRINT_M", m)); }
                 let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
                     layout: Some(&self.shade_pl),
