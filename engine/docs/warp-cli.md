@@ -17,7 +17,7 @@ twin-stick shooter with hundreds of shots, bursts and rings at once.
 ```sh
 cargo build --release -p warp          # target/release/warp
 warp new my-game                       # a starter game
-warp run my-game                       # play it in a window
+warp run my-game                       # play fullscreen (--windowed to opt out)
 warp run my-game --live                # ... and let Claude change it over MCP
 ```
 
@@ -25,7 +25,7 @@ warp run my-game --live                # ... and let Claude change it over MCP
 
 | Command | What it does |
 | --- | --- |
-| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play in a window, with sound. `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a GameNight party host, the host's seats decide the players (see [GameNight](#gamenight)). |
+| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play fullscreen, with sound (`--windowed` opts out). `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a GameNight party host, the host's seats decide the players (see [GameNight](#gamenight)). |
 | `warp DIR` | The same as `warp run DIR`. This is how a GameNight host starts an installed game: the runtime gets the game folder. |
 | `warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]` | A headless playtest in the [`app::script` format](building-and-running.md): ticks with controls, `cmd` lines, `expect` and `until` checks, `capture` (PNG), `state` (JSON) and `audio` (WAV). Exits with status 1 when a check fails. |
 | `warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]` | Headless in real time with live control on (port 7878 by default). Renders a frame only for a screenshot. Sound plays into a mixer that is never heard. |

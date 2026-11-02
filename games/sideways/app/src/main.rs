@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! Sideways: native play, deterministic simulation, captures and sound tools.
 
 mod audio_out;
@@ -39,12 +40,14 @@ mod plant_population;
 mod voxel_tree_patch;
 
 fn main() {
+    app::startup::init("Sideways", None);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opt = |name: &str, default: &str| -> String {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned().unwrap_or(default.to_string())
     };
     let code = match args.first().map(|s| s.as_str()) {
-        Some("play") => play::run(&args),
+        Some("play") | None => play::run(&args),
+        Some(arg) if arg.starts_with("--") && arg!="--help" && arg!="--version" => play::run(&args),
         Some("sound") => sound::run(&args),
         Some("bench") => bench(&opt("--car", "rally2"), args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())),
         Some("sim") => sim(&args),

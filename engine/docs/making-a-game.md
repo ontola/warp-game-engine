@@ -115,3 +115,31 @@ complete example with split screen, bots and online play.
   frame; `KERN_CPU_SPANS=1` shows where a frame's CPU time goes.
 - Pipe test output with `set -o pipefail` when you filter it, or a failing
   `cargo test` looks green.
+
+
+## Desktop launch policy
+
+Windows games open fullscreen by default, after their first complete frame.
+Use `--windowed` or F11 for a window. During startup a minimized taskbar marker
+shows the game icon without taking focus; there is no terminal or white loading
+window. GameNight warm launches stay invisible until the host requests them.
+Sideways keeps its initial stage preparation hidden too; subsequent in-game
+stage changes retain their loading presentation.
+
+Native binary entry points use `#![cfg_attr(windows, windows_subsystem = "windows")]`
+and call `app::startup::init("Game title", Some(include_bytes!("icon.png")))`
+before loading assets. The shared shell installs that icon on the real window
+and removes the marker after presenting the first correctly sized frame.
+`None` uses the engine icon. Custom shells must call `app::startup::ready()`
+after their first complete frame. Use `app::startup::fullscreen(&args)` for the
+same explicit `--windowed` policy. This is enabled in all current desktop games.
+
+The Luau runner reads the game title from its manifest/header and checks
+`icon.png`, `assets/icon.png`, then `assets/branding/logo.png` in the game folder.
+Headless tools create no loading marker. Redirected stdout/stderr are preserved;
+console-launched tools attach to the parent console when needed. Unconnected
+Windows GUI launches write diagnostics under `%TEMP%/warp-logs/`.
+
+The Windows startup fixture verifies minimized state, installed icon, no focus
+steal and cleanup. The complete fullscreen transition still needs a desktop
+playtest; compilation/headless checks do not establish visual timing.
