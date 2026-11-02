@@ -43,7 +43,24 @@ use std::sync::mpsc::{Receiver, channel};
 
 const POOL: u32 = 16384;
 const TICK_HZ: f32 = 60.0;
-const STYLES: [&str; 3] = ["default", "lowland", "alpine"];
+/// The biomes (render::biome), as F1/F2/F4 and F8 step through them.
+const STYLES: [&str; 6] = ["default", "lowland", "alpine", "polder", "tundra", "desert"];
+
+/// The season and hour from --season (spring|summer|autumn|winter|0..1)
+/// and --hour (0..24); without --hour the sun stands as it always did.
+fn environment(style: usize) -> render::biome::Environment {
+    let args: Vec<String> = std::env::args().collect();
+    let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
+    let mut env = render::biome::Environment::new(render::biome::Biome::named(STYLES[style]).unwrap());
+    if let Some(s) = arg("--season").and_then(|s| render::biome::Season::named(&s)) { env.season = s; }
+    if let Some(h) = arg("--hour").and_then(|h| h.parse().ok()) { env.hour = h; }
+    env
+}
+
+/// The sun (elevation, azimuth degrees): from the environment with --hour.
+fn sun_degrees(env: &render::biome::Environment) -> (f32, f32) {
+    if std::env::args().any(|a| a == "--hour") { env.sun_degrees() } else { (28.0, 135.0) }
+}
 /// Grass is a field of roots around one point; it is rebuilt around the
 /// camera once the camera is this far (metres, horizontally) from it.
 const GRASS_RECENTRE: f32 = 150.0;
@@ -145,7 +162,7 @@ impl Fly {
         Ok(fly)
     }
 
-    fn style(&self) -> Style { Style::named(STYLES[self.style]).unwrap() }
+    fn style(&self) -> Style { environment(self.style).biome.terrain }
     fn ground(&self, x: f32, z: f32) -> f32 { terrain_field::height(x, z, self.seed, &self.style()) }
 
     /// Build a new scene for the current seed, style and position on another
@@ -153,14 +170,16 @@ impl Fly {
     fn rebuild(&mut self) -> Result<(), String> {
         if self.building.is_some() { self.stale = true; return Ok(()); }
         let (seed, style, pos) = (self.seed, self.style(), self.pos);
-        // Each terrain preset has its palette (render::vegetation_style).
-        let palette = VegetationStyle::named(STYLES[self.style]).unwrap_or_default();
-        let world = World { grass: self.grass_wanted(), ..self.world };
+        // Each biome has its palette, turned by the season (render::biome).
+        let env = environment(self.style);
+        let palette = env.vegetation();
+        // The density knob (60 % by default) scales the biome's own.
+        let world = World { grass: self.grass_wanted(), tree_density: self.world.tree_density / 0.6 * environment(self.style).biome.tree_density, ..self.world };
         self.built_world = world;
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
-            let ready = build_scene(seed, style, &palette, pos, world).map(|(scene, light, pool, at, trees)| {
+            let ready = build_scene(seed, style, &palette, sun_degrees(&env), pos, world).map(|(scene, light, pool, at, trees)| {
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool, settings));
                 (built, scene, light, pool, at, trees)
             });
@@ -227,16 +246,16 @@ impl Game for Fly {
     }
 
     fn function_key(&mut self, n: u8) -> bool {
-        let style = match n { 1 => Some(0), 2 => Some(1), 4 => Some(2), _ => None };
+        let style = match n { 1 => Some(0), 2 => Some(1), 4 => Some(2), 8 => Some((self.style + 1) % STYLES.len()), _ => None };
         let result = match n {
-            1 | 2 | 4 => { self.style = style.unwrap(); self.rebuild() }
+            1 | 2 | 4 | 8 => { self.style = style.unwrap(); self.rebuild() }
             5 => { self.seed += 1; self.rebuild() }
             6 => { self.jump(); Ok(()) }
             7 => { self.hug = match self.hug { Some(_) => None, None => Some(1.7) }; Ok(()) }
             _ => return false,
         };
         if let Err(e) = result { eprintln!("terrain fly: {e}"); }
-        if matches!(n, 1 | 2 | 4 | 5) {
+        if matches!(n, 1 | 2 | 4 | 5 | 8) {
             // Stay at the same height above the new ground.
             let floor = self.ground(self.pos.x, self.pos.z);
             self.pos.y = self.pos.y.max(floor + 30.0);
@@ -284,7 +303,7 @@ impl Game for Fly {
             format!("speed {:.0} m/s{}", self.speed, if self.hug.is_some() { "  ground hug" } else { "" }),
             format!("patches {}  overflow {}  finest {}  lod x{:.2}", self.stats.patches, self.stats.overflow, self.stats.finest_level, self.stats.lod_scale),
             format!("ground: rock {:.2}  scree {:.2}  snow {:.2}  water {:.2}  slope {:.0}°", s.rock, s.scree, s.snow, s.water, s.up.clamp(0.0, 1.0).acos().to_degrees()),
-            "F1 default  F2 lowland  F4 alpine  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
+            "F1 default  F2 lowland  F4 alpine  F8 next biome  F5 seed  F6 jump  F7 hug  wheel speed  F12 screenshot".to_string(),
         ];
         let mut hud = HudDrawList::new(frame.size);
         for (i, text) in lines.into_iter().enumerate() {
@@ -377,7 +396,7 @@ impl Default for World {
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
 /// `centre` as `world` asks, and the shadow heightfield around it. Returns the centre.
-fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, centre: Vec3, world: World) -> Built {
+fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World) -> Built {
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
     let mut scene = Scene::default();
@@ -416,7 +435,7 @@ fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, centre: Vec3,
     // Sunlit valleys bounce light onto the slopes facing away from the sun:
     // with the default 0.15 a lee slope 3 km out rendered near black.
     let atmosphere = Atmosphere { ground_albedo: glam::DVec3::splat(0.25), ..Atmosphere::default() };
-    let sky = AtmosphereCache::default().get_or_bake(&atmosphere, SolarState::from_degrees(28.0, 135.0)?, BakeQuality::default())?;
+    let sky = AtmosphereCache::default().get_or_bake(&atmosphere, SolarState::from_degrees(sun.0 as f64, sun.1 as f64)?, BakeQuality::default())?;
     sky.apply(&mut scene, &mut light);
     // Sun visibility baked on a coarse heightfield shades the valleys behind
     // mountains past the reach of the shadow maps.
@@ -598,7 +617,7 @@ fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
-    let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine")).transpose()?.unwrap_or(0);
+    let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine|polder|tundra|desert")).transpose()?.unwrap_or(0);
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
         firs: args.iter().any(|a| a == "--firs"),
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),

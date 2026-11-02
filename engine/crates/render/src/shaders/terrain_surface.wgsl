@@ -418,7 +418,13 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
 
     // Snow over everything but water: bright, fairly smooth, thinning into
     // patches at its edge.
-    let m_snow = smoothstep(0.3, 0.7, f.snow + (mottle - 0.5) * 0.5 + (broad - 0.5) * 0.3);
+    var m_snow = smoothstep(0.3, 0.7, f.snow + (mottle - 0.5) * 0.5 + (broad - 0.5) * 0.3);
+    // Seasonal snow (biome.rs Environment, GroundStyle snow.w) on open
+    // ground: thinning on slopes and in patches as the cover falls.
+    if g.snow.w > 0.0 {
+        let cover = g.snow.w * smoothstep(0.6, 0.85, f.up) * (1.0 - f.water * 4.0);
+        m_snow = max(m_snow, smoothstep(0.3, 0.7, cover + (mottle - 0.5) * 0.4 + (broad - 0.5) * 0.3));
+    }
     if m_snow > 0.0 {
         c = mix(c, g.snow.rgb * (0.93 + 0.1 * mottle), m_snow);
         nn = normalize(mix(nn, n, m_snow * 0.8));
