@@ -204,7 +204,7 @@ pub(crate) struct SunSplatView<'a> {
 /// rastered before the opaque shade (Splats), which then skips the pixels
 /// they cover, and resolved and composited after it (Rest).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Stage { All, Splats, Rest }
+pub(crate) enum Stage { Splats, Rest }
 
 struct SplatTargets {
     records: wgpu::Buffer,
