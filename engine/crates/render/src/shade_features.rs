@@ -40,7 +40,10 @@ impl ShadeFeatures {
         let any = |mask: u32| scene.materials.iter().any(|m| m.flags & mask != 0);
         Self {
             cars: !scene.car_materials.is_empty() || any(!0u32 << CAR_SHIFT),
-            grass: any(GRASS | TERRAIN | ROAD),
+            // Grass lighting on GRASS materials; on terrain and roads only the
+            // far grass field's sun transmittance (its optics are empty
+            // without one, so the code would only take registers).
+            grass: any(GRASS) || (any(TERRAIN | ROAD) && scene.far_grass.is_some()),
             tracks: any(TERRAIN | ROAD),
             world_terrain,
             foliage_pages,
@@ -83,7 +86,10 @@ mod tests {
         assert!(!f.cars && !f.grass && !f.tracks && !f.terrain && !f.foliage);
         scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: ROAD, scale: 1.0, metal: 0.0 });
         let f = ShadeFeatures::for_scene(&scene, false, false, true);
-        assert!(f.grass && f.tracks && !f.cars && f.meadow);
+        // A road alone has no grass to light or to shade it.
+        assert!(!f.grass && f.tracks && !f.cars && f.meadow);
+        scene.add_material(Material { tint: [0.5; 3], layer: -1, roughness: 0.8, flags: GRASS, scale: 1.0, metal: 0.0 });
+        assert!(ShadeFeatures::for_scene(&scene, false, false, true).grass);
         assert_eq!(ShadeFeatures::ALL.constants(false, false).len(), 11);
     }
 }
