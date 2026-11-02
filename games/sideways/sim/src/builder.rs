@@ -137,6 +137,9 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
     let mut ferns = Vec::new();
     let mut stumps = Vec::new();
     let gridf = GRID as f32;
+    // What grows on this land, relative to Sideways' own forest; the RNG
+    // draws stay the same, only the odds change.
+    let (tree_odds, grass_odds, fern_odds) = s.land.as_ref().map_or((1.0, 1.0, 1.0), |l| (l.trees as f64, l.grass as f64, l.ferns as f64));
     for j in 0..n {
         for i in 0..n {
             let k = (j + 1) * m + (i + 1);
@@ -149,6 +152,7 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
             let edge = road_d[k] as f64;
             if i < n - 1 && j < n - 1 && edge > 0.7 && edge < 26.0 && !steep {
                 let tufts = if edge < 9.0 { 7 } else if rng.randf() < 0.5 { 2 } else { 0 };
+                let tufts = if grass_odds >= 1.0 { tufts } else { (tufts as f64 * grass_odds).round() as i32 };
                 let cx = x + (rng.randf() * gridf) as f64;
                 let cz = z + (rng.randf() * gridf) as f64;
                 for _ in 0..tufts {
@@ -169,7 +173,7 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
                 let tz = z + rng.randf_range_f32(0.0, gridf * 2.0) as f64;
                 let clear = road_d[k] as f64 - rng.randf_range_f32(4.5, 9.0) as f64;
                 let thin = s.detail.get_2d((tx * 0.6) as f32, (tz * 0.6) as f32) as f64;
-                if clear > 0.0 && !steep && thin > -0.25 && (rng.randf() as f64) < 0.28 + 0.25 * thin {
+                if clear > 0.0 && !steep && thin > -0.25 && (rng.randf() as f64) < (0.28 + 0.25 * thin) * tree_odds {
                     let ty = s.height(tx, tz);
                     let mut foot = ty;
                     for (ox, oz) in [(0.7f32, 0.0f32), (-0.7, 0.0), (0.0, 0.7), (0.0, -0.7)] {
@@ -186,7 +190,7 @@ pub fn terrain_chunk(s: &Stage, c: (i32, i32)) -> Chunk {
                     let ss = rng.randf_range_f32(0.8, 1.3);
                     let yaw = (rng.randf() as f64 * TAU) as f32;
                     stumps.push(Spot { pos: v3(tx as f32, (sy - 0.05) as f32, tz as f32).into(), yaw, scale: ss, scale_y: ss });
-                } else if clear > 3.0 && !steep && (rng.randf() as f64) < 0.05 + 0.08 * thin.max(0.0) {
+                } else if clear > 3.0 && !steep && (rng.randf() as f64) < (0.05 + 0.08 * thin.max(0.0)) * fern_odds {
                     let fy = s.height(tx, tz);
                     let fs = rng.randf_range_f32(0.7, 1.3);
                     let yaw = (rng.randf() as f64 * TAU) as f32;

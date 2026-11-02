@@ -51,10 +51,13 @@ pub struct Vegetation {
     pub seed: u64,
     growth: f32,
     pub season: Season,
+    /// The land's own grass colour relative to Sideways' (a biome's; 1 is
+    /// Sideways' Finnish summer).
+    pub land_tint: [f32; 3],
 }
 
 impl Default for Vegetation {
-    fn default() -> Self { Self { seed: 0, growth: 1.0, season: Season::Summer } }
+    fn default() -> Self { Self { seed: 0, growth: 1.0, season: Season::Summer, land_tint: [1.0; 3] } }
 }
 
 impl Vegetation {
@@ -62,7 +65,7 @@ impl Vegetation {
         if !growth.is_finite() || !(0.0..=1.0).contains(&growth) {
             return Err("growth must be finite and in 0..=1".into());
         }
-        Ok(Self { seed, growth, season })
+        Ok(Self { seed, growth, season, land_tint: [1.0; 3] })
     }
     pub fn growth(self) -> f32 { self.growth }
     /// Stateless identity shared by near trees, background trees and their
@@ -106,6 +109,10 @@ impl Vegetation {
             Season::Autumn=>[0.98,0.96,0.91], Season::Winter=>[0.84,0.92,0.96] }
     }
     pub fn grass_tint(self) -> [f32; 3] {
+        let t = self.season_grass_tint();
+        std::array::from_fn(|i| t[i] * self.land_tint[i])
+    }
+    fn season_grass_tint(self) -> [f32; 3] {
         match self.season { Season::Spring=>[0.90,1.08,0.83], Season::Summer=>[1.0;3],
             Season::Autumn=>[1.12,0.91,0.65], Season::Winter=>[0.88,0.82,0.66] }
     }

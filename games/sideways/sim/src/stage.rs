@@ -19,14 +19,24 @@ pub const RIVER_STEP: f64 = 4.0;
 
 /// The natural ground a stage is laid on, when it is not Sideways' own
 /// noise: a biome of the engine's procedural terrain (the app supplies it).
-/// Called with the stage's noise seed, so each stage runs through its own
-/// part of the world. Must be deterministic: physics, AI and rendering all
-/// read it.
+/// `ground` is called with the stage's noise seed, so each stage runs
+/// through its own part of the world; it must be deterministic: physics, AI
+/// and rendering all read it. The rest is what grows there, relative to
+/// Sideways' own forest (1 each).
 #[derive(Clone)]
-pub struct Land(pub std::sync::Arc<dyn Fn(u32, f64, f64) -> f64 + Send + Sync>);
+pub struct Land {
+    pub ground: std::sync::Arc<dyn Fn(u32, f64, f64) -> f64 + Send + Sync>,
+    pub trees: f32,
+    pub grass: f32,
+    pub ferns: f32,
+    /// Grass and ground colour relative to Sideways' own.
+    pub tint: [f32; 3],
+}
 
 impl std::fmt::Debug for Land {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("Land(..)") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Land {{ trees: {}, grass: {}, ferns: {}, tint: {:?} }}", self.trees, self.grass, self.ferns, self.tint)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -549,7 +559,7 @@ impl Stage {
 
     /// Natural ground without the road.
     pub fn ground(&self, x: f64, z: f64) -> f64 {
-        if let Some(land) = &self.land { return (land.0)(self.noise_seed as u32, x, z); }
+        if let Some(land) = &self.land { return (land.ground)(self.noise_seed as u32, x, z); }
         self.noise.get_2d(x as f32, z as f32) as f64 * 34.0 + self.detail.get_2d(x as f32, z as f32) as f64 * 3.0
     }
 

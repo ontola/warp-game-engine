@@ -568,7 +568,8 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     let crown = tex(&mut scene, "assets/trees/authored_pine_albedo.png")?;
     scene.load_sky(&r.join("assets/sky/sky_2k.hdr"))?;
     let m = |tint: [f32; 3], layer: i32, flags: u32, scale: f32| Material { tint, layer, roughness: 0.9, flags, scale, metal: 0.0 };
-    let terrain_mat = scene.add_material(m([1.0, 1.0, 1.0], t0, TERRAIN, 4.0));
+    // A biome's ground colour (--biome), relative to Sideways' own.
+    let terrain_mat = scene.add_material(m(stage.vegetation.land_tint, t0, TERRAIN, 4.0));
     let road_mat = scene.add_material(m([1.9, 1.85, 1.8], gravel, ROAD, 3.0));
     let trunk_a_mat = scene.add_material(m([1.0, 1.0, 1.0], trunk_a, 0, 1.0));
     let trunk_b_mat = scene.add_material(m([1.0, 1.0, 1.0], trunk_b, 0, 1.0));
