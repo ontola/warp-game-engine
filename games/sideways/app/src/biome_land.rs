@@ -21,10 +21,13 @@ pub fn land(name: &str) -> Result<Land, String> {
     // What grows, against the temperate forest Sideways was made for.
     let home = Biome::named("temperate").expect("temperate biome");
     let ratio = |a: f32, b: f32| if b > 0.0 { a / b } else { 1.0 };
-    let trees = ratio(biome.tree_density, home.tree_density);
+    // Squared: a sparse biome's few trees are not Sideways' pines.
+    let trees = ratio(biome.tree_density, home.tree_density).powi(2);
     let grass = ratio(biome.terrain.grass, home.terrain.grass);
     let (g, h) = (biome.vegetation.ground.grass_dry, home.vegetation.ground.grass_dry);
-    let tint = [ratio(g[0], h[0]), ratio(g[1], h[1]), ratio(g[2], h[2])];
+    // Mild and clamped: the tint also falls on Sideways' soil and verge,
+    // where a full ratio turned them pink.
+    let tint = [0, 1, 2].map(|i| (1.0 + 0.6 * (ratio(g[i], h[i]) - 1.0)).clamp(0.7, 1.35));
     let ground = Arc::new(move |stage_seed: u32, x: f64, z: f64| {
         let (ox, oz, base) = *bases.lock().unwrap_or_else(|e| e.into_inner()).entry(stage_seed).or_insert_with(|| {
             // A spot kilometres apart per stage, where the land is open.

@@ -727,8 +727,11 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         log.push(summary);
     }
 
-    let meadow_field=crate::grass_field::enabled();
-    let procedural_patch=if meadow_field {None} else {
+    // Land without grass (a --biome desert) draws no ground cover at all.
+    let bare=stage.land.as_ref().is_some_and(|l|l.grass<0.05);
+    let (live_cover,ground_cover)=(live_cover&&!bare,ground_cover&&!bare);
+    let meadow_field=crate::grass_field::enabled()&&!bare;
+    let procedural_patch=if meadow_field||bare {None} else {
         crate::grass_voxel_asset::attach_procedural_patch(&mut scene,stage,&chunks,cameras,&mut mesh_names)?
     };
     let excluded=procedural_patch.as_ref().map(|patch|patch.excluded);
