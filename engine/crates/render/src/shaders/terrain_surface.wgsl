@@ -406,16 +406,26 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Darker than a lawn: seen from afar a meadow is mostly blade shadow,
     // so the ground matches the grass where the blades fade out.
     let grass = terrain_layer(layer, wuv, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
-    // Moor: dark olive heather and bracken with grass between.
-    let moor = mix(terrain_layer(layer + 1, wuv, 3.2, mapping) * g.moor.rgb, grass * g.moor.w, g.grass_dry.w);
-    let soil = terrain_layer(layer + 2, wuv, 3.0, mapping) * g.soil.rgb;
+    // Layers a pixel holds none of are not sampled (moor, soil, gravel):
+    // their weights come first.
     let m_moor = smoothstep(0.25, 0.8, clamp(f.moor + (broad - 0.5) * 0.7 + (mottle - 0.5) * 0.3, 0.0, 1.0));
-    var c = mix(grass, moor, m_moor);
-    var nt = mix(terrain_layer_normal(layer, wuv, 2.6, mapping), terrain_layer_normal(layer + 1, wuv, 3.2, mapping), m_moor);
     // Worn soil only on steep banks and the odd bare patch.
     let m_soil = clamp(smoothstep(0.9, 0.75, f.up) * 0.35 + smoothstep(0.7, 0.85, mottle) * 0.25, 0.0, 1.0);
+    let road = road_at(p.xz, s.scale);
+    let on_road = road.found && road.edge < 4.0;
+    // Moor: dark olive heather and bracken with grass between.
+    var moor = grass;
+    var nt = vec2<f32>(0.0);
+    if m_moor < 1.0 { nt = terrain_layer_normal(layer, wuv, 2.6, mapping); }
+    if m_moor > 0.0 {
+        moor = mix(terrain_layer(layer + 1, wuv, 3.2, mapping) * g.moor.rgb, grass * g.moor.w, g.grass_dry.w);
+        nt = mix(nt, terrain_layer_normal(layer + 1, wuv, 3.2, mapping), m_moor);
+    }
+    var soil = vec3<f32>(0.0);
+    if m_soil > 0.0 || on_road { soil = terrain_layer(layer + 2, wuv, 3.0, mapping) * g.soil.rgb; }
+    var c = mix(grass, moor, m_moor);
     c = mix(c, soil, m_soil);
-    nt = mix(nt, terrain_layer_normal(layer + 2, wuv, 3.0, mapping), m_soil);
+    if m_soil > 0.0 { nt = mix(nt, terrain_layer_normal(layer + 2, wuv, 3.0, mapping), m_soil); }
     var nn = perturb_xz(n, nt);
     c *= 0.82 + 0.3 * broad;
 
@@ -436,10 +446,12 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let m_scree = smoothstep(0.2, 0.7, f.scree + (mottle - 0.5) * 0.4);
     // Mountain stone is grey limestone and gneiss: the textures are warm, so
     // most of their colour goes.
-    let gravel0 = terrain_layer(layer + 4, wuv, 1.8, mapping);
-    let gravel = mix(vec3<f32>(dot(gravel0, vec3<f32>(0.3, 0.59, 0.11))), gravel0, g.gravel.w) * g.gravel.rgb;
-    c = mix(c, gravel, m_scree);
-    nn = normalize(mix(nn, perturb_xz(n, terrain_layer_normal(layer + 4, wuv, 1.8, mapping)), m_scree));
+    if m_scree > 0.0 {
+        let gravel0 = terrain_layer(layer + 4, wuv, 1.8, mapping);
+        let gravel = mix(vec3<f32>(dot(gravel0, vec3<f32>(0.3, 0.59, 0.11))), gravel0, g.gravel.w) * g.gravel.rgb;
+        c = mix(c, gravel, m_scree);
+        nn = normalize(mix(nn, perturb_xz(n, terrain_layer_normal(layer + 4, wuv, 1.8, mapping)), m_scree));
+    }
 
     // Bedrock: triplanar, mossy where it faces up.
     let m_rock = smoothstep(0.25, 0.75, f.rock + (mottle - 0.5) * 0.35);
@@ -466,8 +478,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // edge stays sharp on any mesh detail.
     var road_rough = 0.0;
     var road_cover = 0.0;
-    let road = road_at(p.xz, s.scale);
-    if road.found && road.edge < 4.0 {
+    if on_road {
         let fine = field_fbm(wuv * 2.3 + 17.0, footprint * 2.3);
         // The edge wanders half a metre to a metre over 5-15 m, with small
         // raggedness on top.
