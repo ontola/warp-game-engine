@@ -334,6 +334,59 @@ fn field_ground(s: SurfaceIn) -> FieldGround {
     return FieldGround(a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]);
 }
 
+// Roads drawn into the pixels (procedural_terrain.rs road_surface,
+// world_constraints.rs surface_words): data materials holding f32 words; the
+// style block's far forest params' metal points at them (first + 1).
+fn road_word(base: u32, i: u32) -> f32 {
+    let m = materials[base + i / 8u];
+    switch i % 8u {
+        case 0u: { return m.tint.x; }
+        case 1u: { return m.tint.y; }
+        case 2u: { return m.tint.z; }
+        case 3u: { return bitcast<f32>(m.layer); }
+        case 4u: { return m.roughness; }
+        case 5u: { return bitcast<f32>(m.flags); }
+        case 6u: { return m.scale; }
+        default: { return m.metal; }
+    }
+}
+
+// The nearest road to a pixel: edge = metres past its edge (negative on
+// it), u = across it, -1..1 edge to edge (right of travel positive).
+struct RoadPixel { found: bool, edge: f32, u: f32, half: f32, along: f32 };
+fn road_at(xz: vec2<f32>, scale: f32) -> RoadPixel {
+    var r = RoadPixel(false, 1e9, 0.0, 1.0, 0.0);
+    if scale >= 0.0 { return r; }
+    let ptr = materials[u32(-scale - 0.5) + 2u].metal;
+    if ptr < 0.5 { return r; }
+    let base = u32(ptr - 0.5);
+    let cell = road_word(base, 2u);
+    let fi = floor((xz.x - road_word(base, 0u)) / cell);
+    let fj = floor((xz.y - road_word(base, 1u)) / cell);
+    let sx = road_word(base, 3u);
+    if fi < 0.0 || fj < 0.0 || fi >= sx || fj >= road_word(base, 4u) { return r; }
+    let c = u32(fj * sx + fi);
+    let cells = u32(road_word(base, 5u));
+    let items = u32(road_word(base, 6u));
+    let first = u32(road_word(base, cells + c));
+    let end = u32(road_word(base, cells + c + 1u));
+    var best = 1e9;
+    for (var k = first; k < end; k++) {
+        let g = 8u + u32(road_word(base, items + k)) * 8u;
+        let a = vec2<f32>(road_word(base, g), road_word(base, g + 1u));
+        let ab = vec2<f32>(road_word(base, g + 2u), road_word(base, g + 3u)) - a;
+        let t = clamp(dot(xz - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+        let d = distance(a + ab * t, xz);
+        let half = mix(road_word(base, g + 4u), road_word(base, g + 5u), t);
+        if d - half < best {
+            best = d - half;
+            let cross = ab.x * (xz.y - a.y) - ab.y * (xz.x - a.x);
+            r = RoadPixel(true, d - half, select(d, -d, cross > 0.0) / half, half, mix(road_word(base, g + 6u), road_word(base, g + 7u), t));
+        }
+    }
+    return r;
+}
+
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let f = field_attr(s);
     let g = field_ground(s);
@@ -407,6 +460,38 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         nn = normalize(mix(nn, rn, m_rock));
     }
 
+    // A road: compacted gravel with two darker, smoother wheel lines and
+    // loose stone between and beside them, a ragged edge, then a shoulder
+    // where loose stone thins out into the grass. Exact per pixel, so the
+    // edge stays sharp on any mesh detail.
+    var road_rough = 0.0;
+    var road_cover = 0.0;
+    let road = road_at(p.xz, s.scale);
+    if road.found && road.edge < 4.0 {
+        let fine = field_fbm(wuv * 2.3 + 17.0, footprint * 2.3);
+        let ragged = (fine - 0.5) * 0.7 + (mottle - 0.5) * 0.4;
+        let soft = 0.15 + footprint;
+        let m_road = 1.0 - smoothstep(-soft, soft, road.edge + ragged);
+        let m_shoulder = (1.0 - smoothstep(0.0, 2.5, road.edge + ragged * 1.5)) * smoothstep(0.35, 0.6, fine + 0.25 * (1.0 - smoothstep(0.0, 1.0, road.edge)));
+        let stone0 = terrain_layer(layer + 4, wuv, 1.3, mapping);
+        let lum = dot(stone0, vec3<f32>(0.3, 0.59, 0.11));
+        let stone = mix(vec3<f32>(lum), stone0, 0.5) * vec3<f32>(0.5, 0.45, 0.37);
+        // Wheel lines a quarter of the width in from each edge.
+        let rut_w = 0.16 + footprint / road.half;
+        let rut = (1.0 - smoothstep(0.0, rut_w, abs(abs(road.u) - 0.45) - 0.02 * (fine - 0.5))) * (1.0 - smoothstep(-0.6, 0.0, road.edge));
+        let pebble = field_fbm(wuv * 9.0 + 3.0, footprint * 9.0);
+        var rc = stone * (0.9 + 0.35 * (pebble - 0.5) * (1.0 - 0.6 * rut)) * mix(1.06, 0.72, rut);
+        // Worn soil where the edge meets the grass.
+        let worn = (1.0 - smoothstep(0.0, 0.9, abs(road.edge + 0.1 + ragged * 0.5))) * 0.5;
+        c = mix(c, soil * 0.8, worn * (1.0 - m_road));
+        c = mix(c, stone * (0.95 + 0.3 * (pebble - 0.5)), m_shoulder * (1.0 - m_road) * 0.8);
+        c = mix(c, rc, m_road);
+        let rn = perturb_xz(n, terrain_layer_normal(layer + 4, wuv, 1.3, mapping) * (1.0 - 0.6 * rut));
+        nn = normalize(mix(nn, rn, max(m_road, m_shoulder * 0.6)));
+        road_rough = mix(0.92, 0.78, rut);
+        road_cover = m_road;
+    }
+
     // Roughness finer than the mesh, from the terrain function itself (the
     // material's metal carries the seed: terrain is never metal).
     let ds = field_detail_slope(p.xz, u32(s.metal + 0.5), footprint, f.rock, f.up, f.moor);
@@ -415,6 +500,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Damp ground darkens near water.
     c *= 1.0 - g.soil.w * f.wet * (1.0 - m_rock * 0.5);
     var rough = mix(0.95, 0.55, f.wet * 0.6);
+    rough = mix(rough, road_rough, road_cover);
 
     // Snow over everything but water: bright, fairly smooth, thinning into
     // patches at its edge.

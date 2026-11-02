@@ -473,7 +473,6 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
         tree_pool = recipe_spruces(&mut scene, biome, &trees[..near], far)?;
     }
     let mut pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
-    if let Some(w) = track { pool = procedural_terrain::constrain(&mut scene, w); }
     // Beyond the trees the terrain draws the same forest as colour, out to
     // the horizon.
     procedural_terrain::vegetation_style(&mut scene, material, palette);
@@ -484,6 +483,11 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     if world.trees {
         let (start, end) = if std::env::args().any(|a| a == "--forest-layer-only") { (0.0, 1.0) } else { handover_band(world) };
         procedural_terrain::far_forest_handover(&mut scene, material, [centre.x, centre.z], start, end, world.tree_density, &palette.forest);
+    }
+    // The --track road: the land bends to it, and its pixels draw gravel.
+    if let Some(w) = track {
+        procedural_terrain::road_surface(&mut scene, material, &w);
+        pool = procedural_terrain::constrain(&mut scene, w);
     }
     let mut light = Lighting::default();
     // Sunlit valleys bounce light onto the slopes facing away from the sun:

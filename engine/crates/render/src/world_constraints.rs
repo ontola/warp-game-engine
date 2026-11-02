@@ -33,6 +33,9 @@ pub const VERGE: f32 = 1.0;
 /// again (metres): steep enough for a cutting, never a cliff.
 pub const MIN_REACH: f32 = 4.0;
 pub const MAX_REACH: f32 = 100.0;
+/// Loose stone and worn grass beside the verge, drawn by the terrain's
+/// pixels (metres).
+pub const SHOULDER: f32 = 2.5;
 /// Run of a cutting or embankment per metre of rise.
 pub const BANK: f32 = 1.8;
 /// Height the bank allows at MAX_REACH past the edge: more than any land,
@@ -469,6 +472,49 @@ impl World {
             t.pos.y = s.pos.y - 0.2;
             Some(t)
         }).collect()
+    }
+
+    /// The roads for the terrain's pixels (terrain_surface.wgsl road_at):
+    /// a fine grid of only the segments whose surface or shoulder reaches
+    /// each 16 m cell, so a pixel tests a handful. As f32 words: a header
+    /// (origin x, z, cell, size x, z, first cell word, first item word,
+    /// segments), 8 words per segment (a.xz, b.xz, half a, b, along a, b),
+    /// then size x * z + 1 cell offsets and the items (all exact integers).
+    pub fn surface_words(&self) -> Vec<f32> {
+        const C: f32 = 16.0;
+        let roads: Vec<&Segment> = self.segments.iter().filter(|s| s.w[3] < 0.5).collect();
+        if roads.is_empty() { return Vec::new(); }
+        let reach = |s: &Segment| s.w[0].max(s.w[1]) + VERGE + SHOULDER;
+        let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for s in &roads {
+            let (a, b) = (Vec2::new(s.a[0], s.a[2]), Vec2::new(s.b[0], s.b[2]));
+            lo = lo.min(a.min(b) - reach(s));
+            hi = hi.max(a.max(b) + reach(s));
+        }
+        let origin = (lo / C).floor() * C;
+        let size = [((hi.x - origin.x) / C).ceil() as usize + 1, ((hi.y - origin.y) / C).ceil() as usize + 1];
+        let mut lists = vec![Vec::<u32>::new(); size[0] * size[1]];
+        let r = C * std::f32::consts::FRAC_1_SQRT_2;
+        for (k, s) in roads.iter().enumerate() {
+            let (a, b) = (Vec2::new(s.a[0], s.a[2]), Vec2::new(s.b[0], s.b[2]));
+            let (l, h) = (a.min(b) - reach(s) - origin, a.max(b) + reach(s) - origin);
+            for j in (l.y / C).floor().max(0.0) as usize..=((h.y / C).floor() as usize).min(size[1] - 1) {
+                for i in (l.x / C).floor().max(0.0) as usize..=((h.x / C).floor() as usize).min(size[0] - 1) {
+                    let centre = origin + Vec2::new(i as f32 + 0.5, j as f32 + 0.5) * C;
+                    if closest(s, centre).0 <= reach(s) + r { lists[j * size[0] + i].push(k as u32); }
+                }
+            }
+        }
+        let first_cell = 8 + roads.len() * 8;
+        let first_item = first_cell + lists.len() + 1;
+        let mut w = vec![origin.x, origin.y, C, size[0] as f32, size[1] as f32, first_cell as f32, first_item as f32, roads.len() as f32];
+        for s in &roads { w.extend_from_slice(&[s.a[0], s.a[2], s.b[0], s.b[2], s.w[0], s.w[1], s.a[3], s.b[3]]); }
+        let mut at = 0u32;
+        for l in &lists { w.push(at as f32); at += l.len() as u32; }
+        w.push(at as f32);
+        for l in &lists { w.extend(l.iter().map(|&k| k as f32)); }
+        assert!(w.len() < 1 << 24, "road surface grid too large");
+        w
     }
 
     /// The number of tracks baked in.
