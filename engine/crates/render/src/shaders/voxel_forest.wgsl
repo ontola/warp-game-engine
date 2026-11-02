@@ -1328,8 +1328,23 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
     }
     var n=select(-direction,normalize(sum),dot(sum,sum)>1e-12);
     if dot(n,-direction)<0.0 {n=-n;}
-    textureStore(volume_gbuffer,px,vec4<u32>(pack2x16float(sample.albedo.rg),pack2x16float(vec2<f32>(sample.albedo.b,sample.roughness)),
-        pack2x16float(n.xy),pack2x16float(vec2<f32>(n.z,sample.leaf_fraction))));
+    // The tree shades itself along the sun through its own cells; the sun
+    // maps (which hold this tree too, at their own texel) are read where the
+    // ray leaves its box, for everything else. As the resolve did.
+    let grid=bitcast<vec4<f32>>(volume_splats[VOLUME_SPLAT_HEADER+record.x*4u+3u]);
+    let sun=light.sun_dir.xyz;
+    // Only a whole plant (a proxy): a branch volume's own cells hold one
+    // branch, and the sun maps carry its neighbours at this very point.
+    var exit=0.0;var own=1.0;
+    if volume_proxy(record.x) {
+        exit=clamp(max(volume_interval(tree,p,sun,1e4).y,0.0)+volume_sun_texel(p)*2.0,0.0,63.0);
+        own=clamp(volume_self_transmittance(tree,grid,p,sun),0.0,1.0);
+    }
+    let rough_leaf=u32(round(clamp(sample.roughness,0.0,1.0)*255.0))|(u32(round(clamp(sample.leaf_fraction,0.0,1.0)*255.0))<<8u);
+    let own_exit=u32(round(own*255.0))|(u32(round(exit*4.0))<<8u);
+    textureStore(volume_gbuffer,px,vec4<u32>(pack2x16float(sample.albedo.rg),
+        (pack2x16float(vec2<f32>(sample.albedo.b,0.0))&0xffffu)|(rough_leaf<<16u),
+        pack2x16float(n.xy),(pack2x16float(vec2<f32>(n.z,0.0))&0xffffu)|(own_exit<<16u)));
 }
 
 @compute @workgroup_size(8,8)
