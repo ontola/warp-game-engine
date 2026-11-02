@@ -226,7 +226,10 @@ pub fn validate_bindings(scene:&crate::scene::Scene)->Result<(),String> {
         }
         let source=scene.instances.get(binding.owner as usize).ok_or("foliage representation owner is out of range")?;
         let volume=forest.instances.get(binding.volume as usize).ok_or("foliage representation volume is out of range")?;
-        let shared=scene.foliage_source_groups.iter().any(|group|group.owner==binding.owner);
+        // A virtual branch owner (vegetation_asset virtual members) draws its
+        // templates itself: first_cluster packs them.
+        let virtual_owner=source.cluster_count==0&&source.first_cluster!=0&&source.flags&crate::scene::PART_WIND!=0;
+        let shared=virtual_owner||scene.foliage_source_groups.iter().any(|group|group.owner==binding.owner);
         if (source.cluster_count==0&&!shared)||volume.meta[0]!=binding.owner {
             return Err("foliage representation source/volume owner mismatch or empty source".into());
         }

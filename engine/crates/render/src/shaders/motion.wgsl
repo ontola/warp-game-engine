@@ -10,6 +10,35 @@ struct MotionInstance {
 @group(0) @binding(0) var<uniform> motion: MotionUniform;
 @group(0) @binding(1) var<storage,read> current_instances: array<MotionInstance>;
 @group(0) @binding(2) var<storage,read> previous_instances: array<MotionInstance>;
+
+// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
+// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
+// rows are its part_wind pose and its first_cluster packs the templates
+// (start << 12 | count); a member is pose x template.
+const VIRTUAL_MEMBER: u32 = 0x80000000u;
+fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
+fn compose_member(owner: MotionInstance, t: MotionInstance) -> MotionInstance {
+    var m = t;
+    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
+    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
+    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
+    let c = vec4<f32>(t.sphere.xyz, 1.0);
+    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
+    m.scale = t.scale * owner.scale;
+    // The owner's history epoch (bit 7) marks a woken pose for motion.
+    m.flags = (t.flags & ~0x80u) | (owner.flags & 0x80u);
+    return m;
+}
+fn current_at(id: u32) -> MotionInstance {
+    if (id & VIRTUAL_MEMBER) == 0u { return current_instances[id]; }
+    let owner = current_instances[(id >> 12u) & 0x7ffffu];
+    return compose_member(owner, current_instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+}
+fn previous_at(id: u32) -> MotionInstance {
+    if (id & VIRTUAL_MEMBER) == 0u { return previous_instances[id]; }
+    let owner = previous_instances[(id >> 12u) & 0x7ffffu];
+    return compose_member(owner, previous_instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+}
 @group(0) @binding(3) var<storage,read> current_wind: array<vec4<f32>>;
 @group(0) @binding(4) var<storage,read> previous_wind: array<vec4<f32>>;
 @group(0) @binding(5) var<storage,read> visible: array<vec2<u32>>;
@@ -40,9 +69,10 @@ fn deform(p:vec3<f32>,root_y:f32,shear:vec2<f32>)->vec3<f32> {return p+vec3<f32>
 // A branch pivot moving in world space is motion, not recycled-slot identity.
 // Only LIVE_GRASS's camera-resident pool uses its root as the slot identity.
 fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
-    if owner>=arrayLength(&current_instances) || owner>=arrayLength(&previous_instances)
-        || owner>=arrayLength(&current_wind) || owner>=arrayLength(&previous_wind) {return vec4<f32>(0.0);}
-    let now=current_instances[owner];let old=previous_instances[owner];
+    let slot=member_slot(owner);
+    if slot>=arrayLength(&current_instances) || slot>=arrayLength(&previous_instances)
+        || slot>=arrayLength(&current_wind) || slot>=arrayLength(&previous_wind) {return vec4<f32>(0.0);}
+    let now=current_at(owner);let old=previous_at(owner);
     // Skinned vertices change object-space shape. Rigid root reprojection
     // cannot recover that deformation; reject history on this surface.
     if (now.flags&64u)!=0u {return vec4<f32>(0.0);}
@@ -53,12 +83,12 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
     // Match raster's actual affine wind buffer (zero for PART_WIND). The full
     // cofactor inverse is required: a nonuniform root followed by a rotated
     // child/primitive attachment can produce a nonorthogonal world basis.
-    let rest=deform(world,now.r1.w,-current_wind[owner].xy)-rest_root(now);
+    let rest=deform(world,now.r1.w,-current_wind[slot].xy)-rest_root(now);
     let co0=cross(now.r1.xyz,now.r2.xyz);let co1=cross(now.r2.xyz,now.r0.xyz);let co2=cross(now.r0.xyz,now.r1.xyz);
     let determinant=dot(now.r0.xyz,co0);
     if !(abs(determinant)>1e-12 && abs(determinant)<1e20) {return vec4<f32>(0.0);}
     let local=(co0*rest.x+co1*rest.y+co2*rest.z)/determinant;
-    return vec4<f32>(deform(transform(old,local),old.r1.w,previous_wind[owner].xy),1.0);
+    return vec4<f32>(deform(transform(old,local),old.r1.w,previous_wind[slot].xy),1.0);
 }
 
 @fragment fn motion_fs(@builtin(position) position:vec4<f32>)->MotionOut {

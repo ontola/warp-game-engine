@@ -68,6 +68,30 @@ struct Material {
 @group(0) @binding(2) var<storage, read> tris: array<u32>;
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
+
+// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
+// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
+// rows are its part_wind pose and its first_cluster packs the templates
+// (start << 12 | count); a member is pose x template.
+const VIRTUAL_MEMBER: u32 = 0x80000000u;
+fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
+fn compose_member(owner: Instance, t: Instance) -> Instance {
+    var m = t;
+    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
+    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
+    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
+    let c = vec4<f32>(t.sphere.xyz, 1.0);
+    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
+    m.scale = t.scale * owner.scale;
+    // The owner's history epoch (bit 7) marks a woken pose for motion.
+    m.pad = (t.pad & ~0x80u) | (owner.pad & 0x80u);
+    return m;
+}
+fn instance_at(id: u32) -> Instance {
+    if (id & VIRTUAL_MEMBER) == 0u { return instances[id]; }
+    let owner = instances[(id >> 12u) & 0x7ffffu];
+    return compose_member(owner, instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+}
 @group(0) @binding(5) var<storage, read> materials: array<Material>;
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
@@ -1641,7 +1665,7 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cl = clusters[vis.y];
     let m = materials[cl.material];
     if (m.flags & 32770u) != 32770u { textureStore(terrain_coarse_out, cx, invalid); return; }
-    let inst = instances[vis.x];
+    let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + (id & 127u)];
     var vi: array<u32, 3>;
     for (var k = 0u; k < 3u; k++) { vi[k] = vtx(cluster_verts[cl.first_vert + ((packed >> (8u * k)) & 0xffu)]); }
@@ -1650,9 +1674,9 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ndc = vec2<f32>(centre.x / view.size.x * 2.0 - 1.0, 1.0 - centre.y / view.size.y * 2.0);
     let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
     let dir = normalize(far.xyz / far.w - view.cam.xyz);
-    let p0 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[0])));
-    let p1 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[1])));
-    let p2 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[2])));
+    let p0 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[0])));
+    let p1 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[1])));
+    let p2 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[2])));
     let e1 = p1 - p0;
     let e2 = p2 - p0;
     let pv = cross(dir, e2);
@@ -1671,7 +1695,7 @@ fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
         n += vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]) * w[k];
         uv += vec2<f32>(vertices[v + 6u], vertices[v + 7u]) * w[k];
     }
-    n = normalize(wind_normal(vis.x, xform_dir(inst, n)));
+    n = normalize(wind_normal(member_slot(vis.x), xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
     // One full-resolution pixel's footprint, as `shade` filters there.
     let px_x = view.inv_view_proj * vec4<f32>(ndc + vec2<f32>(2.0 * view.size.z, 0.0), 1e-4, 1.0);
@@ -1812,7 +1836,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let vis = visible[id >> 7u];
     let tri = id & 127u;
     let cl = clusters[vis.y];
-    let inst = instances[vis.x];
+    let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + tri];
     var vi: array<u32, 3>;
     for (var k = 0u; k < 3u; k++) {
@@ -1820,9 +1844,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     // Match the actual deformed raster triangle before ray intersection and
     // texture derivatives. Rest-pose reconstruction would slide UVs and light.
-    let p0 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[0])));
-    let p1 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[1])));
-    let p2 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[2])));
+    let p0 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[0])));
+    let p1 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[1])));
+    let p2 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[2])));
     // Ray-triangle intersection for perspective-correct barycentrics.
     let e1 = p1 - p0;
     let e2 = p2 - p0;
@@ -1843,7 +1867,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         n += vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]) * w[k];
         uv += vec2<f32>(vertices[v + 6u], vertices[v + 7u]) * w[k];
     }
-    n = normalize(wind_normal(vis.x, xform_dir(inst, n)));
+    n = normalize(wind_normal(member_slot(vis.x), xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
     sun_receiver_tri[0]=p0;sun_receiver_tri[1]=p1;sun_receiver_tri[2]=p2;
     sun_receiver_tri_set=true;
@@ -2382,13 +2406,13 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     if textureLoad(depth_tex,px,0)<=0.0 || id==0xffffffffu {
         textureStore(out_hdr,px,vec4<f32>(visible_background_radiance(dir),1.0));return;
     }
-    let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instances[vis.x];
+    let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
     let packed=tris[cl.first_tri+(id&127u)];
     var points:array<vec3<f32>,3>;var normals:array<vec3<f32>,3>;var uvs:array<vec2<f32>,3>;
     for(var k=0u;k<3u;k++) {
         let v=cluster_verts[cl.first_vert+((packed>>(8u*k))&255u)]*8u;
         let pos=vec4<f32>(vertices[v],vertices[v+1u],vertices[v+2u],1.0);
-        points[k]=wind_position(vis.x,inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
+        points[k]=wind_position(member_slot(vis.x),inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
         normals[k]=vec3<f32>(vertices[v+3u],vertices[v+4u],vertices[v+5u]);
         uvs[k]=vec2<f32>(vertices[v+6u],vertices[v+7u]);
     }
@@ -2397,7 +2421,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     let b1=clamp(dot(tv,pv)*inv,0.0,1.0);let b2=clamp(dot(dir,cross(tv,e1))*inv,0.0,1.0-b1);let b0=1.0-b1-b2;
     let p=points[0]*b0+points[1]*b1+points[2]*b2;
     let authored=normals[0]*b0+normals[1]*b1+normals[2]*b2;
-    var n=normalize(wind_normal(vis.x,vec3<f32>(dot(inst.r0.xyz,authored),dot(inst.r1.xyz,authored),dot(inst.r2.xyz,authored))));
+    var n=normalize(wind_normal(member_slot(vis.x),vec3<f32>(dot(inst.r0.xyz,authored),dot(inst.r1.xyz,authored),dot(inst.r2.xyz,authored))));
     if dot(n,dir)>0.0 {n=-n;}
     let m=materials[cl.material];var base=m.tint;
     if m.layer>=0 {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;

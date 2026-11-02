@@ -118,9 +118,14 @@ pub fn plant(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree], full: 
     vegetation.finish_aggregate(policy)
 }
 
+pub fn virtual_members() -> bool { std::env::var("KERN_VIRTUAL_MEMBERS").as_deref() == Ok("1") }
+
 fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
     let branches = variants.iter().map(|c| c.stats().branches).max().unwrap_or(64);
-    let mut limits = AttachLimits { max_poses: branches.max(64) * full.max(4),
+    // KERN_VIRTUAL_MEMBERS=1: placements as shared templates composed with
+    // their branch pose on the GPU (docs/foliage-assemblies-plan.md).
+    let virtual_members = virtual_members();
+    let mut limits = AttachLimits { virtual_members, max_poses: branches.max(64) * full.max(4),
         max_primitive_instances: crate::part_wind::MAX_ATTACHMENTS, ..Default::default() };
     limits.pack.max_instances = limits.max_poses.min(crate::foliage_volume_data::MAX_INSTANCES);
     // Every variant brings its branch volumes and its proxy: a mixed forest
@@ -240,10 +245,12 @@ pub fn plant_streamed(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree
     let counts: Vec<usize> = (0..variants.len()).map(|v| trees.iter().filter(|t| t.variant == v).count()).collect();
     let mut per: Vec<usize> = counts.iter().map(|&n| slots.min(n)).collect();
     let total = |per: &[usize], cost: &dyn Fn(&CookedPlant) -> usize| per.iter().zip(variants).map(|(&n, c)| n * cost(c)).sum::<usize>();
-    while total(&per, &|c| c.stats().placements) > crate::part_wind::MAX_ATTACHMENTS
+    // Virtual members keep no attachment per placement.
+    let members = |c: &CookedPlant| if virtual_members() { 0 } else { c.stats().placements };
+    while total(&per, &members) > crate::part_wind::MAX_ATTACHMENTS
         || total(&per, &|c| c.stats().volume_assets) > crate::voxel_forest::MAX_VIEW_GROUPS {
         let worst = (0..per.len()).filter(|&v| per[v] > 0)
-            .max_by_key(|&v| per[v] * variants[v].stats().placements).ok_or("not one full plant fits the renderer")?;
+            .max_by_key(|&v| per[v] * variants[v].stats().volume_assets.max(members(&variants[v]))).ok_or("not one full plant fits the renderer")?;
         per[worst] -= 1;
     }
     let mut built = Vec::new();
