@@ -32,9 +32,14 @@ pub trait World: Sync {
     /// A named context field at (x, z): "forest" (share of forest), later
     /// "road_distance", "track_side", biome weights. 0 when unknown.
     fn field(&self, name: &str, x: f32, z: f32, ground: &Sample) -> f32 {
-        let _ = (x, z, ground);
-        // A world without constraints is clear of roads everywhere.
-        if name == "clearance" { 1e6 } else { 0.0 }
+        let _ = (name, x, z, ground);
+        0.0
+    }
+    /// Metres from (x, z) to the nearest road edge or pad rim (negative
+    /// inside); a world without constraints is clear everywhere.
+    fn clearance(&self, x: f32, z: f32) -> f32 {
+        let _ = (x, z);
+        1e6
     }
 }
 
@@ -54,6 +59,7 @@ impl World for TerrainWorld<'_> {
             None => terrain_field::eval(x, z, forest_field::CUT, self.seed, self.style),
         }
     }
+    fn clearance(&self, x: f32, z: f32) -> f32 { self.constraints.map_or(1e6, |w| w.clearance(x, z).min(1e6)) }
     fn field(&self, name: &str, x: f32, z: f32, ground: &Sample) -> f32 {
         match name {
             // Share of tree spots that grow a tree here, 0 where none can.
@@ -62,9 +68,8 @@ impl World for TerrainWorld<'_> {
             } else { 0.0 },
             "grows" => f32::from(u8::from(forest_field::grows(ground, self.style))),
             "snow_line" => self.style.snow_line,
-            // Metres to the nearest road edge or pad rim (negative inside;
-            // 1e6 far from all), and where along and beside the road.
-            "clearance" => self.constraints.map_or(1e6, |w| w.clearance(x, z).min(1e6)),
+            // World::clearance, and where along and beside the road.
+            "clearance" => self.clearance(x, z),
             "track_distance" => self.near(x, z).map_or(1e6, |n| n.distance),
             "track_side" => self.near(x, z).map_or(0.0, |n| n.side),
             "track_along" => self.near(x, z).map_or(0.0, |n| n.along),
@@ -291,7 +296,7 @@ pub fn flower_rule() -> Rule {
 
 /// 0 on and near a road or pad, 1 from `margin` + 1.5 m past its edge:
 /// nature rules multiply their density by it so roads stay clear.
-pub fn off_road(s: &Spot, margin: f32) -> f32 { smooth(margin, margin + 1.5, s.field("clearance")) }
+pub fn off_road(s: &Spot, margin: f32) -> f32 { smooth(margin, margin + 1.5, s.world.clearance(s.ground.pos.x, s.ground.pos.z)) }
 
 /// The built-in nature rules, in layer order.
 pub fn nature_rules(tree_density: f32) -> Vec<Rule> {
