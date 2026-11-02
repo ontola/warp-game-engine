@@ -9,7 +9,7 @@
 //! (default build/screenshots/forest-ladder: table.md, ladder.json and a
 //! contact sheet per species). The recipes are copied from terrain_fly and
 //! Sideways, as engine examples copy game data.
-use glam::{Affine3A, Quat, Vec3};
+use glam::{Affine3A, Mat4, Quat, Vec3};
 use render::aggregate_lod::Policy;
 use render::cluster::{ClusterMesh, Part, Vertex};
 use render::plant_recipe::{CrownProfile, FoliageKind, WoodyRecipe};
@@ -70,7 +70,10 @@ fn scene(tier: Option<Tier>, plant: &render::vegetation_asset::CookedPlant, card
         Tier::Aggregate => { recipe_forest::plant(&mut scene, variants, trees, trees.len().min(12), game)?; }
         Tier::ProxyFly => { recipe_forest::plant(&mut scene, variants, trees, 0, game)?; }
         Tier::ProxySideways => {
-            recipe_forest::plant(&mut scene, variants, trees, 0, Policy { proxy_pixels: 8.0, proxy_pixels_from: 20.0, ..game })?;
+            // LADDER_PROXY=PX,FROM tries another proxy policy in this row.
+            let (px, from) = std::env::var("LADDER_PROXY").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))
+                .unwrap_or((8.0, 20.0));
+            recipe_forest::plant(&mut scene, variants, trees, 0, Policy { proxy_pixels: px, proxy_pixels_from: from, ..game })?;
         }
         Tier::Cards => {
             let layer = scene.add_image("ladder cards", cards.atlas.clone());
@@ -104,18 +107,25 @@ fn linear(c: u8) -> f32 {
     if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
 
-/// Pixels that differ from the background, their count and mean linear RGB, and their bounding box.
-fn measure(img: &[u8], bg: &[u8]) -> (usize, [f32; 3], [u32; 4]) {
-    let (mut n, mut sum, mut bbox) = (0usize, [0f32; 3], [u32::MAX, u32::MAX, 0, 0]);
+/// Pixels that differ from the background, their count and mean linear RGB,
+/// their bounding box, and their mass: the summed linear luminance change
+/// against the background, what a viewer sees of a tree too small to resolve
+/// (a faint fringe counts a little, not as a covered pixel).
+/// Only pixels inside `region` (x0, y0, x1, y1, inclusive) count.
+fn measure(img: &[u8], bg: &[u8], region: [u32; 4]) -> (usize, [f32; 3], [u32; 4], f32) {
+    let (mut n, mut sum, mut bbox, mut mass) = (0usize, [0f32; 3], [u32::MAX, u32::MAX, 0, 0], 0f32);
+    let lum = |c: &[u8]| 0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2]);
     for (i, (p, b)) in img.chunks_exact(4).zip(bg.chunks_exact(4)).enumerate() {
+        let (x, y) = (i as u32 % W, i as u32 / W);
+        if x < region[0] || x > region[2] || y < region[1] || y > region[3] { continue; }
+        mass += (lum(p) - lum(b)).abs();
         let diff = (0..3).map(|k| (p[k] as i32 - b[k] as i32).abs()).max().unwrap();
         if diff <= 6 { continue; }
         n += 1;
         for k in 0..3 { sum[k] += linear(p[k]); }
-        let (x, y) = (i as u32 % W, i as u32 / W);
         bbox = [bbox[0].min(x), bbox[1].min(y), bbox[2].max(x), bbox[3].max(y)];
     }
-    (n, if n > 0 { sum.map(|s| s / n as f32) } else { [0.; 3] }, bbox)
+    (n, if n > 0 { sum.map(|s| s / n as f32) } else { [0.; 3] }, bbox, mass)
 }
 
 fn main() -> Result<(), String> {
@@ -152,18 +162,34 @@ fn main() -> Result<(), String> {
             for _ in 0..3 { renderer.try_render_views(&gpu, &[v], &light, W, H, &[])?; }
             Ok(renderer.try_render_views(&gpu, &[v], &light, W, H, &[])?.0)
         };
-        table += &format!("\n## {name}\n\n| distance | tier | covered px | vs source | mean colour (linear) | colour vs source |\n|---|---|---|---|---|---|\n");
+        table += &format!("\n## {name}\n\n| distance | tier | covered px | vs source | mass vs source | mean colour (linear) | colour vs source |\n|---|---|---|---|---|---|---|\n");
         let mut sheet: Vec<Vec<image::RgbaImage>> = vec![Vec::new(); TIERS.len()];
         for &d in &at {
             let bg = render(None, d)?;
             let mut reference = None;
             let mut crop = None;
+            // The tree alone, not its shadow: tiers cast differently (a far
+            // source may cast none), so only the source's crown and trunk
+            // columns above the root count, found from the source below.
+            let root = {
+                let v = view(d, recipe.height).cam;
+                let clip = Mat4::perspective_rh(v.fov_y, W as f32 / H as f32, v.near, 1e5) * Mat4::look_at_rh(v.pos, v.target, Vec3::Y) * Vec3::ZERO.extend(1.);
+                ((0.5 - 0.5 * clip.y / clip.w) * H as f32) as u32
+            };
+            let mut region = [0, 0, W - 1, root.min(H - 1)];
             for (ti, &(tier, label)) in TIERS.iter().enumerate() {
                 if !wanted(tier) { continue; }
                 let img = render(Some(tier), d)?;
-                let (n, colour, bbox) = measure(&img, &bg);
                 if tier == Tier::Source {
-                    reference = Some((n, colour));
+                    // Columns from the crown (rows clear of the ground), then all rows above the root.
+                    let tall = root as f32 - (measure(&img, &bg, [0, 0, W - 1, root.min(H - 1)]).2[1] as f32);
+                    let b = measure(&img, &bg, [0, 0, W - 1, (root as f32 - 0.1 * tall).max(0.) as u32]).2;
+                    let pad = ((b[2] - b[0]) / 10).max(2);
+                    region = [b[0].saturating_sub(pad), 0, (b[2] + pad).min(W - 1), root.min(H - 1)];
+                }
+                let (n, colour, bbox, mass) = measure(&img, &bg, region);
+                if tier == Tier::Source {
+                    reference = Some((n, colour, mass));
                     // One crop per distance, around the source tree, square, padded.
                     let (w, h) = (bbox[2].saturating_sub(bbox[0]) + 1, bbox[3].saturating_sub(bbox[1]) + 1);
                     let side = (w.max(h) as f32 * 1.15) as u32 + 8;
@@ -172,12 +198,12 @@ fn main() -> Result<(), String> {
                     let side = side.min(H);
                     crop = Some(((cx.saturating_sub(side / 2)).min(W - side), (cy.saturating_sub(side / 2)).min(H - side), side));
                 }
-                let (rn, rc) = reference.unwrap();
+                let (rn, rc, rm) = reference.unwrap();
                 let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
                 let cover = n as f32 / rn.max(1) as f32;
                 let tone = lum(colour) / lum(rc).max(1e-6);
-                table += &format!("| {d} m | {label} | {n} | {:.0} % | {:.3} {:.3} {:.3} | {:.0} % |\n", cover * 100., colour[0], colour[1], colour[2], tone * 100.);
-                report.push(json!({"species": name, "distance_m": d, "tier": label, "covered_px": n, "cover_vs_source": cover,
+                table += &format!("| {d} m | {label} | {n} | {:.0} % | {:.0} % | {:.3} {:.3} {:.3} | {:.0} % |\n", cover * 100., mass / rm.max(1e-6) * 100., colour[0], colour[1], colour[2], tone * 100.);
+                report.push(json!({"species": name, "distance_m": d, "tier": label, "covered_px": n, "cover_vs_source": cover, "mass_vs_source": mass / rm.max(1e-6),
                     "colour": colour, "luminance_vs_source": tone}));
                 let (x, y, side) = crop.unwrap();
                 let rgba = image::RgbaImage::from_raw(W, H, img).ok_or("image size")?;
