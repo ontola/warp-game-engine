@@ -471,8 +471,9 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         let fine = field_fbm(wuv * 2.3 + 17.0, footprint * 2.3);
         // The edge wanders half a metre to a metre over 5-15 m, with small
         // raggedness on top.
-        let wander = (field_fbm(wuv / 9.0 + 41.0, footprint / 9.0) - 0.5) * 1.8;
-        let ragged = wander + (fine - 0.5) * 0.6 + (mottle - 0.5) * 0.3;
+        // fbm stays near 0.5, so its swing is scaled up to about a metre.
+        let wander = clamp((field_fbm(wuv / 9.0 + 41.0, footprint / 9.0) - 0.5) * 5.0, -1.2, 1.2);
+        let ragged = wander + (fine - 0.5) * 1.2 + (mottle - 0.5) * 0.5;
         let soft = 0.12 + footprint;
         let m_road = 1.0 - smoothstep(-soft, soft, road.edge + ragged);
         let m_shoulder = (1.0 - smoothstep(0.0, 2.5, road.edge + ragged)) * smoothstep(0.35, 0.6, fine + 0.25 * (1.0 - smoothstep(0.0, 1.0, road.edge + ragged)));
@@ -483,17 +484,40 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         let lum = dot(stone0, vec3<f32>(0.3, 0.59, 0.11));
         // The road takes its colour from the land's soil: brown gravel in
         // the forest, sand-coloured in the desert.
-        let soil_tint = g.soil.rgb / max(dot(g.soil.rgb, vec3<f32>(0.3, 0.59, 0.11)), 1e-3);
+        let land = 0.5 * (g.soil.rgb + g.grass_dry.rgb);
+        let soil_tint = land / max(dot(land, vec3<f32>(0.3, 0.59, 0.11)), 1e-3);
         let stone = mix(vec3<f32>(lum), stone0, 0.4) * mix(vec3<f32>(0.5, 0.45, 0.37), 0.47 * soil_tint, 0.5);
         // Two packed wheel lines 1.8 m apart, 0.4 m wide, wandering a
         // little; loose gravel heaped between and outside them.
         let side_m = road.u * road.half + 0.08 * (fine - 0.5) * 2.0;
-        let rut_w = 0.2 + footprint;
-        let rut = (1.0 - smoothstep(rut_w * 0.5, rut_w, abs(abs(side_m) - 0.9))) * (1.0 - smoothstep(-0.8, 0.0, road.edge));
+        let rut_w = 0.45 + footprint;
+        let rut = (1.0 - smoothstep(0.1, rut_w, abs(abs(side_m) - 0.9))) * (1.0 - smoothstep(-0.8, 0.0, road.edge));
         let pebble = field_fbm(wuv * 9.0 + 3.0, footprint * 9.0);
         let grit = field_fbm(wuv * 31.0 + 9.0, footprint * 31.0);
         let loose = (1.0 - rut) * (0.6 + 0.4 * smoothstep(0.4, 0.75, pebble));
-        var rc = stone * (0.88 + 0.45 * (grit - 0.5) * loose + 0.25 * (pebble - 0.5)) * mix(1.1, 0.62, rut);
+        var rc = stone * (0.88 + 0.45 * (grit - 0.5) * loose + 0.25 * (pebble - 0.5)) * mix(1.08, 0.82, rut);
+        // Single stones a few centimetres across, where a pixel can hold
+        // them: lighter and darker pebbles over the loose gravel.
+        if footprint < 0.03 {
+            let q = wuv / 0.07;
+            let cell = floor(q);
+            var stones = 0.0;
+            var shade = 0.0;
+            for (var dy = -1; dy <= 1; dy++) {
+                for (var dx = -1; dx <= 1; dx++) {
+                    let k = cell + vec2<f32>(f32(dx), f32(dy));
+                    let h = field_hash(k + 913.0);
+                    if h < 0.45 { continue; }
+                    let centre = k + vec2<f32>(field_hash(k + 17.0), field_hash(k + 53.0));
+                    let r = 0.25 + 0.35 * field_hash(k + 101.0);
+                    let d = length(q - centre) / r;
+                    let m = 1.0 - smoothstep(0.7, 1.0, d);
+                    if m > stones { stones = m; shade = field_hash(k + 211.0); }
+                }
+            }
+            let near = 1.0 - smoothstep(0.015, 0.03, footprint);
+            rc = mix(rc, stone * (0.6 + 0.8 * shade), stones * loose * near * 0.85);
+        }
         // Worn soil where the edge meets the grass.
         let worn = (1.0 - smoothstep(0.0, 0.9, abs(road.edge + 0.1 + ragged))) * 0.5;
         c = mix(c, soil * 0.8, worn * (1.0 - m_road));
