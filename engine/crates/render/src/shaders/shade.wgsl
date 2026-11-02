@@ -182,6 +182,7 @@ override VOXEL_OCCLUSION: bool = false;
 // id, voxel_forest Stage::Splats): their surface, packed by
 // voxel_splat_gbuffer, lit here like the leaves they stand for.
 override VOXEL_SURFACE: bool = false;
+const VOXEL_SKY_LIFT: f32 = 1.0;
 @group(1) @binding(20) var voxel_surface: texture_2d<u32>;
 
 // A voxel pixel: the same sun, sky, contact and fog terms as a procedural
@@ -192,22 +193,32 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
     let hit = view.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
     let p = hit.xyz / hit.w;
     let dist = distance(p, view.cam.xyz);
+    // voxel_splat_gbuffer: albedo, roughness and leaf fraction (unorm8), the
+    // normal, the tree's own sun transmittance (unorm8) and where the sun ray
+    // leaves its box (quarter metres).
     let g = textureLoad(voxel_surface, px, 0);
-    let ab = unpack2x16float(g.y);
-    let nz = unpack2x16float(g.w);
-    let base = vec3<f32>(unpack2x16float(g.x), ab.x);
-    var n = normalize(vec3<f32>(unpack2x16float(g.z), nz.x));
-    let rough = clamp(ab.y, 0.04, 1.0);
-    let leaf = nz.y;
+    let base = vec3<f32>(unpack2x16float(g.x), unpack2x16float(g.y & 0xffffu).x);
+    var n = normalize(vec3<f32>(unpack2x16float(g.z), unpack2x16float(g.w & 0xffffu).x));
+    let rough = clamp(f32((g.y >> 16u) & 255u) / 255.0, 0.04, 1.0);
+    let leaf = f32(g.y >> 24u) / 255.0;
+    let own = f32((g.w >> 16u) & 255u) / 255.0;
+    let exit = f32(g.w >> 24u) / 4.0;
     let l = light.sun_dir.xyz;
     let v = -dir;
-    var shadow = mix(1.0, shadow_at_surface(p, n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0), light.sun_color.w);
+    // Other casters from the sun maps past this tree, its own crown from
+    // its cells: the maps hold it too, at their texel, and lit its shadow
+    // side through their bias.
+    // A whole plant's maps hold it at a coarse level with a texel of bias:
+    // they shade it too little on their own, its cells too little alone.
+    let others = shadow_at_surface(p, n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0);
+    var shadow = mix(1.0, others * sqrt(own), light.sun_color.w);
     let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
-    let sky_vis = sky_visibility(p, n);
-    let back_sky_vis = sky_visibility(p, -n);
+    let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n);
+    let back_sky_vis = sky_visibility(p - n * VOXEL_SKY_LIFT, -n);
     let refl = reflect(dir, n);
-    let ssao = screen_space_ao(px, size, p, n, dist);
-    let contact = contact_visibility(p + n * 0.025, n, refl, 0xffffffffu) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
+    // No screen-space AO: a voxel's blocky depth darkened its own crown to
+    // 60 % of the leaves' sky light (forest_ladder, sun_lux=0).
+    let contact = contact_visibility(p + n * 0.025, n, refl, 0xffffffffu);
     let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
     let front = (sky_irradiance(n) * sky_vis + bounce * (1.0 - sky_vis)) * contact.x;
     let back = (sky_irradiance(-n) * back_sky_vis + bounce * (1.0 - back_sky_vis)) * contact.x;

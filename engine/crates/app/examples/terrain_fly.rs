@@ -6,8 +6,8 @@
 //!   cargo run --release -p app --example terrain_fly -- --track   (a gravel road the land bends to)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
-//!   ... --no-trees --grass --recipe N   (N nearest trees in full, default 240; then card trees, then voxel proxies)
-//!   ... --firs   (the old forest: Sideways' fir cards, for A/B runs)   --proxy-px N   (proxy cell pixels, default 4)
+//!   ... --no-trees --grass --recipe N   (N nearest trees in full, default 240; then voxel proxies; --cards N for a card ring)
+//!   ... --firs   (the old forest: Sideways' fir cards, for A/B runs)   --proxy-px N   (proxy cell pixels, default 8)
 //!   cargo run --release -p app --example terrain_fly -- --bench 120 [--size 2560x1440]   # headless GPU pass times
 //!
 //! Mouse or right stick looks, WASD or left stick flies, Space or A climbs,
@@ -580,8 +580,10 @@ fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3
         recipe_forest::Tree { pos, yaw, scale: scale.y, variant }).collect();
     let arg = |k: &str| std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == k).and_then(|w| w[1].parse().ok());
     let defaults = recipe_forest::game_policy();
-    let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(defaults.proxy_pixels),
-        proxy_pixels_from: arg("--proxy-from").unwrap_or(defaults.proxy_pixels_from), ..defaults };
+    // Proxies start past the 240 full trees (~110 m): 8 px cells loosening
+    // from 20 m, as Sideways plays, draw half the splats of 4 px from 50 m.
+    let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(8.0),
+        proxy_pixels_from: arg("--proxy-from").unwrap_or(20.0), ..defaults };
     let started = std::time::Instant::now();
     if far.is_empty() {
         recipe_forest::plant(scene, cooked, &trees, near.len(), policy)?;
@@ -591,12 +593,12 @@ fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3
     // Three variants: the full set is shared out over them.
     let slots = near.len().div_ceil(cooked.len());
     let (_, mut pool) = recipe_forest::plant_streamed(scene, cooked, &trees, slots, policy)?;
-    // Past the full ones, card trees (plant_mesh_lod) within --card-radius
-    // (150 m), --cards per variant (150; 0: voxel proxies only). With 240
-    // full trees (40 a species) they fill only the ring the full ones do not
-    // reach: at the four playtest cameras 28.9, 26.4, 27.8, 25.1 fps against
-    // 27.1, 25.8, 26.9, 26.2 with 60 full and 400 cards.
-    let (cards, card_radius) = (arg("--cards").unwrap_or(150.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
+    // Card trees (plant_mesh_lod) are the low-end fallback now: --cards N
+    // per variant within --card-radius (150 m). Past the 240 full trees the
+    // voxel proxies hold the source's look about as well and, lit by shade,
+    // cost less: at the four playtest cameras 30.9, 29.5, 30.1, 26.6 fps with
+    // no cards against 27.5, 24.7, 27.4, 23.8 with 150 a species.
+    let (cards, card_radius) = (arg("--cards").unwrap_or(0.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
     if cards > 0 { recipe_forest::add_cards(scene, &mut pool, baked, cards, card_radius)?; }
     println!("{} trees ({slots} full per variant following the camera, {cards} card trees per variant within {card_radius} m) planted in {} ms",
         trees.len(), started.elapsed().as_millis());
