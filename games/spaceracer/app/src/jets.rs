@@ -616,6 +616,39 @@ impl Jets {
                 spark.min_pixels=1.2;self.sprites.push(spark);
             }
         }
+        for beam in race.beams.iter().filter(|b|b.rail) {
+            let alpha=(time*120.-race.tick.saturating_sub(1) as f32).clamp(0.,1.);
+            let age=(beam.age as f32-(1.-alpha)/120.).max(0.);let power=(1.-age/0.32).clamp(0.,1.).powi(2);
+            let axis=(beam.to-beam.from).normalize_or_zero();
+            let light=Vec3::new(0.25,0.7,1.)*radiance*power*8.;
+            self.sprites.push(shaft(beam.from,beam.to,0.07+0.06*power,light*3.,11,[0.;4]));
+            self.sprites.push(shaft(beam.from,beam.to,0.4+age*0.9,light,17,[0.;4]));
+            let right=axis.any_orthonormal_vector();let up=axis.cross(right);
+            for j in 0..5 {
+                let radius=(0.7+age*7.)*(1.-j as f32*0.1);
+                let mut ring=glow(beam.from.lerp(beam.to,(0.025+j as f32*0.12+age*0.8).min(0.98)),[radius*2.;2],light*0.3,16);
+                ring.facing=render::sprites::Facing::Fixed{right,up};self.sprites.push(ring);
+            }
+            let contact=beam.target.is_some() || beam.from.distance(beam.to)<race.combat.rail_range-0.01;
+            if contact && age<0.22 {
+                let fade=(1.-age/0.22).powi(2);
+                for k in 0..24u32 {
+                    let seed=(beam.serial as u32).wrapping_mul(197).wrapping_add(beam.owner as u32*641+k*31);
+                    let angle=hash(seed)*std::f32::consts::TAU;
+                    let direction=(right*angle.cos()+up*angle.sin()-axis*(0.2+hash(seed+1)*0.65)).normalize();
+                    let at=beam.to+direction*(0.2+age*(30.+hash(seed+2)*65.))-Vec3::Y*age*age*8.;
+                    let mut spark=shaft(at,at-direction*(0.4+hash(seed+3)*1.5)*fade,0.035+hash(seed+4)*0.035,
+                        Vec3::new(0.2,0.65,1.)*radiance*fade*18.,11,[0.;4]);
+                    spark.min_pixels=1.;self.sprites.push(spark);
+                }
+            }
+            for (at,scale) in [(beam.from,0.25+power*0.7),(beam.to,0.3+power*1.2)] {
+                if at==beam.to && !contact {continue;}
+                let mut flash=glow(at,[scale*8.;2],light,2);flash.facing=render::sprites::Facing::Screen;
+                self.sprites.push(flash);
+                self.lights.push(LocalLight {position:at,direction:axis,intensity_cd:Vec3::new(0.15,0.55,1.)*power*if at==beam.to {4500.}else{2500.},range_m:22.,inner_cos:1.,outer_cos:-1.,source_radius_m:0.2,falloff:2.});
+            }
+        }
         // Missile ignition, plume and continuous camera-faded smoke share the existing
         // sprite pass; no new lights/meshes per frame and no particle cloud dots.
         let alpha = (time * 120. - race.tick.saturating_sub(1) as f32).clamp(0., 1.);

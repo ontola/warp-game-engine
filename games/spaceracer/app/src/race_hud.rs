@@ -419,8 +419,26 @@ pub fn draw(
             v.circle(point, 2., color);
         }
     }
+    let rail_target=d.rail_preview.and_then(|shot|shot.target);
+    if race.rail_ready(i) {
+        let pose=race.pose(i);
+        let ahead=pose.origin+pose.basis*(spaceracer::railgun::MUZZLE+Vec3::Z*200.);
+        let vp=Mat4::perspective_rh(cam.fov_y,r[2]/r[3],0.15,10000.)*Mat4::look_at_rh(cam.pos,cam.target,up);
+        let q=vp*ahead.extend(1.);
+        if q.w>0. {
+            let center=Vec2::new(q.x/q.w*0.5+0.5,0.5-q.y/q.w*0.5)*Vec2::new(w,height);
+            let radius=height*race.combat.rail_guide_radius;
+            let color=if rail_target.is_some(){[0.55,1.,0.73,0.85]}else{[0.55,0.94,1.,0.45]};
+            let point=|angle:f32| {
+                let pixel=center+Vec2::new(angle.cos(),angle.sin())*radius;
+                let a=pixel/Vec2::new(w,height)-Vec2::splat(0.5);
+                ((Vec2::splat(0.5)+a*(1.+curvature*a.length_squared()*4.))*Vec2::new(w,height)).to_array()
+            };
+            for k in 0..64 {v.line(point(k as f32*PI/32.),point((k+1) as f32*PI/32.),1.3,color);}
+        }
+    }
     let target = match d.item {
-        Some(Weapon::Railgun) => race.target(i, 0.975, 700.),
+        Some(Weapon::Railgun) if race.rail_ready(i) => rail_target,
         Some(Weapon::GlideBomb) => preview.as_ref().and_then(|v| v.0),
         _ => None,
     };
@@ -451,6 +469,8 @@ pub fn draw(
                     let a = [center[0] + sx * 23., center[1] + sy * 17.];
                     let c = if incoming {
                         [1., 0.12, 0.08, 0.9]
+                    } else if d.item==Some(Weapon::Railgun) {
+                        [0.55,1.,0.73,0.85]
                     } else {
                         [1., 0.55, 0.2, 0.85]
                     };

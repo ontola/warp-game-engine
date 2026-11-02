@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Controls {
+    pub rail_aim: Option<crate::railgun::Aim>,
     pub drive: Input,
     pub fire: bool,
     pub reset: bool,
@@ -95,6 +96,8 @@ pub struct Driver {
     pub ai_pace: f64,
     pub boost_ready: f64,
     pub last_jink: f64,
+    pub rail_preview:Option<crate::railgun::Trace>,
+    pub rail_preview_at:f64,
 }
 #[derive(Clone, Debug)]
 pub struct Pickup {
@@ -246,6 +249,7 @@ impl Race {
                 ai_style: style,
                 boost_ready: 4. + i as f64 * 0.7,
                 last_jink: -99.,
+                rail_preview:None,rail_preview_at:-1.,
             });
         }
         let mut pickups = vec![];
@@ -435,8 +439,13 @@ impl Race {
                 d.item == Some(Weapon::GlideBomb) && self.bomb_target(i).is_some()
             );
         }
-        match self.rules.call("ai", args) {
-            Ok(c) => c,
+        match self.rules.call::<Controls>("ai", args) {
+            Ok(mut c) => {
+                if self.drivers[i].item==Some(Weapon::Railgun) {
+                    c.fire=(self.tick+i as u64*3)%19==0 && self.rail_ready(i) && self.rail_trace(i,None,true).target.is_some();
+                }
+                c
+            },
             Err(e) => {
                 self.script_error = Some(e);
                 Controls::default()
@@ -796,7 +805,7 @@ impl Race {
         for b in &mut self.beams {
             b.age += DT;
         }
-        self.beams.retain(|b| b.age < 0.15);
+        self.beams.retain(|b| b.age < if b.rail {0.32}else{0.15});
         for k in 0..self.pickups.len() {
             self.pickups[k].cooldown = (self.pickups[k].cooldown - DT).max(0.);
             if self.pickups[k].cooldown > 0. {
@@ -827,6 +836,14 @@ impl Race {
             }
         }
         for i in 0..self.pilots.len() {
+            if self.rail_ready(i) {
+                if self.clock>=self.drivers[i].rail_preview_at {
+                    let aim=input.get(i).and_then(|c|c.rail_aim);
+                    let quick=self.rail_trace(i,aim,false);
+                    self.drivers[i].rail_preview=Some(if quick.target.is_some(){self.rail_trace(i,aim,true)}else{quick});
+                    self.drivers[i].rail_preview_at=self.clock+0.075;
+                }
+            }else{self.drivers[i].rail_preview=None;self.drivers[i].rail_preview_at=-1.;}
             if self.pilots[i].crashed || self.pilots[i].finished {
                 continue;
             }
@@ -887,20 +904,21 @@ impl Race {
                                     }
                                 }
                                 "ray" => {
-                                    let target = self.target(i, a.cone, a.range);
-                                    let to = target
-                                        .map_or(pose.origin + pose.basis.z_axis * a.range, |j| {
-                                            self.pose(j).origin
-                                        });
+                                    let shot=self.rail_trace(i,input.get(i).and_then(|c|c.rail_aim),true);
+                                    let target=shot.target;let to=shot.to;
+                                    self.drivers[i].shot_count+=1;
                                     self.beams.push(Beam {
                                         target,
                                         owner: i,
                                         serial: self.drivers[i].shot_count,
-                                        from: pose.origin,
+                                        from: shot.from,
                                         to,
                                         age: 0.,
                                         rail: true,
                                     });
+                                    if self.beams.iter().filter(|b|b.rail).count()>12 {
+                                        if let Some(old)=self.beams.iter().position(|b|b.rail) {self.beams.remove(old);}
+                                    }
                                     if let Some(j) = target {
                                         self.damage(i, j, a.damage, 25.);
                                     }

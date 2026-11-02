@@ -130,7 +130,7 @@ local function activate(c)
     if c.item=="Warp" and c.airborne then return {effect="none"} end
     if c.item=="Warp" then return {effect="active",duration=b.warp_seconds} end
     if c.item=="Sentry" then return {effect="active",duration=b.sentry_seconds} end
-    if c.item=="Railgun" then return {effect="ray",cone=.975,range=700,damage=b.rail_damage} end
+    if c.item=="Railgun" then return {effect="ray",range=650,damage=b.rail_damage} end
     return {effect="projectile",cone=c.item=="GlideBomb" and .7 or 1,range=1000,speed=c.speed+40}
 end
 local function environment(c)
@@ -186,7 +186,8 @@ local function missile(c)
 end
 -- Non-critical weapon policy remains editable without rebuilding the native game.
 local function combat(_)
-    return {bomb_speed=360,bomb_accel=200,bomb_burn=1.25,bomb_turn=1.15,bomb_gravity=14,
+    return {rail_range=650,rail_tangent=.14,rail_guide_radius=.11,
+        bomb_speed=360,bomb_accel=200,bomb_burn=1.25,bomb_turn=1.15,bomb_gravity=14,
         bomb_drag=.012,bomb_eject=55,bomb_range=1100,bomb_cone=.573576,bomb_fuse=18,
         sentry_ahead=220,sentry_range=190,sentry_cone=.15,sentry_spinup=.25}
 end

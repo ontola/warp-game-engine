@@ -421,3 +421,29 @@ warmup frames and 120 measured frames, with one and four players. Reports are
 to 0.15 ms, but total covered GPU intervals varied from 18.6 to 35.9 ms across
 these runs. This is too variable to establish a whole-frame performance delta
 or a stable FPS claim, and does not measure the worst-case boost burst.
+
+### Railgun restoration and moving jets (2 November 2026)
+
+The original railgun source was inspected read-only. Its twin-rail dimensions,
+cyan strips, always-on guide (radius 11% of viewport height), nearest-to-centre
+selection, 650-unit range, 50 damage and 0.32-second beam presentation are
+restored natively. Shots originate at the weapon muzzle and stop at the nearest
+vehicle hull, road surface or scenery obstacle. Human view data is explicit,
+serializable simulation input; headless/bot aiming uses the original 0.14
+tangent. Previews cache expensive scenery checks for 75 ms; firing traces fresh.
+AI opportunities are staggered, and visible rail shots are capped at twelve.
+
+The beam has a white-blue core, transparent halo, expanding induction rings,
+endpoint flashes and local lights. Actual impacts add 24 seeded blue sparks
+lasting 0.22 seconds, interpolated between ticks. These are native adaptations;
+the game's broader post-hit immunity/impulse rules remain distinct from source.
+Jet volumes now have independent, smoothly joined 42 Hz random bend/length
+variation and travelling ripples, anchored to the nozzles. Countdown and pause
+behavior remain unchanged; no additional fullscreen effect pass is added.
+
+Validation: 49 simulation tests (four new railgun tests) and 29 application
+tests pass. The retained `scenarios/railgun-restored.json` exercises continuous
+guidance, a tap shot, 50 damage, impact, expiry and the mounted model. It passes
+at 1600x900 with one/two players; captures are `build/rail-impact-{1,2}`. A
+90-frame 1280x720 airborne sequence is `build/jet-motion.mp4`. Release package
+updated; no new performance/FPS or physical-controller validation is claimed.
