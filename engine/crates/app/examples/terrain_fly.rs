@@ -3,6 +3,7 @@
 //!
 //!   cargo run --release -p app --example terrain_fly
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --seed 3
+//!   cargo run --release -p app --example terrain_fly -- --track   (a gravel road the land bends to)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
 //!   ... --no-trees --grass --recipe N   (N nearest spruces in full, default 8; the rest are voxel proxies)
@@ -34,6 +35,8 @@ use render::hud::{FontFace, HudDrawList, TextAlign, TextRun};
 use render::procedural_terrain::{self, ProceduralTerrain, Settings, Stats, TerrainView};
 use render::scene::{Material, SURFACE, TERRAIN};
 use render::terrain_field::{self, Style};
+use render::world_constraints::{Constraints as WorldConstraints, Track, World as Constraints};
+use std::sync::Arc;
 use render::foliage_assembly::MeadowBladeBudget;
 use render::meadow_data::{MeadowField, MeadowGeometry};
 use render::vegetation_style::VegetationStyle;
@@ -150,25 +153,71 @@ struct Fly {
     stats: Stats,
     jumps: u32,
     fps: f32,
+    /// --track: a winding gravel road the land is bent to (render::world_constraints),
+    /// baked for the seed and style it was made for.
+    track: bool,
+    constraints: Option<(u32, usize, Arc<Constraints>)>,
 }
 
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, speed: 40.0, hug: None, wheel: 0.0,
-            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0 };
-        fly.pos = Vec3::new(0.0, fly.ground(0.0, 0.0) + 60.0, 0.0);
+            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0,
+            track: std::env::args().any(|a| a == "--track"), constraints: None };
+        fly.bake_track();
+        if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
+        if fly.track_start().is_none() { fly.pos = Vec3::new(0.0, fly.ground(0.0, 0.0) + 60.0, 0.0); }
         fly.prev = fly.pos;
         fly.rebuild()?;
         Ok(fly)
     }
 
     fn style(&self) -> Style { environment(self.style).biome.terrain }
-    fn ground(&self, x: f32, z: f32) -> f32 { terrain_field::height(x, z, self.seed, &self.style()) }
+    fn ground(&self, x: f32, z: f32) -> f32 {
+        match self.current_track() {
+            Some(w) => w.height(x, z, self.seed, &self.style()),
+            None => terrain_field::height(x, z, self.seed, &self.style()),
+        }
+    }
+
+    /// The track baked for the current seed and style, if any.
+    fn current_track(&self) -> Option<&Arc<Constraints>> {
+        self.constraints.as_ref().filter(|c| c.0 == self.seed && c.1 == self.style).map(|c| &c.2)
+    }
+
+    /// Bake the --track road for the current seed and style: a winding loop
+    /// about 700 m round the origin, laid on the land at grades up to 10 %.
+    fn bake_track(&mut self) {
+        if !self.track || self.current_track().is_some() { return; }
+        let (seed, style) = (self.seed, self.style());
+        let mut track = Track::wander_loop(Vec2::ZERO, 700.0, 3.5, seed);
+        track.fit_heights(|x, z| terrain_field::height(x, z, seed, &style), 0.10, 120.0);
+        let world = WorldConstraints { tracks: vec![track], pads: vec![] }.bake(seed, &style);
+        self.constraints = Some((self.seed, self.style, Arc::new(world)));
+    }
+
+    /// Above the start of the track, and the yaw looking along it.
+    fn track_start(&self) -> Option<(Vec3, f32)> {
+        let w = self.current_track()?;
+        let (s, ahead) = (w.segments.first()?, w.segments.get(10)?);
+        let (dx, dz) = (ahead.a[0] - s.a[0], ahead.a[2] - s.a[2]);
+        Some((Vec3::new(s.a[0], s.a[1] + 4.0, s.a[2]), (-dx).atan2(-dz)))
+    }
+
+    /// The ground at (x, z) at full detail, the track included.
+    fn sample(&self, x: f32, z: f32) -> terrain_field::Sample {
+        match self.current_track() {
+            Some(w) => w.eval(x, z, 0.0, self.seed, &self.style()),
+            None => terrain_field::eval(x, z, 0.0, self.seed, &self.style()),
+        }
+    }
 
     /// Build a new scene for the current seed, style and position on another
     /// thread; [`Game::draw`] uploads it when it is done.
     fn rebuild(&mut self) -> Result<(), String> {
         if self.building.is_some() { self.stale = true; return Ok(()); }
+        self.bake_track();
+        let track = self.current_track().cloned();
         let (seed, style, pos) = (self.seed, self.style(), self.pos);
         // Each biome has its palette, turned by the season (render::biome).
         let env = environment(self.style);
@@ -180,8 +229,8 @@ impl Fly {
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
             let biome = env.biome;
-            let ready = build_scene(seed, style, &biome, &palette, sun_degrees(&env), pos, world).map(|(scene, light, pool, at, trees)| {
-                let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool, settings));
+            let ready = build_scene(seed, style, &biome, &palette, sun_degrees(&env), pos, world, track).map(|(scene, light, pool, at, trees)| {
+                let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool.clone(), settings));
                 (built, scene, light, pool, at, trees)
             });
             let _ = tx.send(ready);
@@ -296,7 +345,7 @@ impl Game for Fly {
         }
         if frame.dt > 0.0 { self.fps += (1.0 / frame.dt - self.fps) * 0.05; }
 
-        let s = terrain_field::eval(pos.x, pos.z, 0.0, self.seed, &self.style());
+        let s = self.sample(pos.x, pos.z);
         let above = pos.y - s.pos.y;
         let lines = [
             format!("{}  seed {}  {:.0} fps", STYLES[self.style], self.seed, self.fps),
@@ -352,7 +401,7 @@ impl Game for Fly {
     fn title(&self) -> Option<String> { Some(format!("Terrain fly: {} seed {}", STYLES[self.style], self.seed)) }
 
     fn state(&self) -> Option<String> {
-        let g = terrain_field::eval(self.pos.x, self.pos.z, 0.0, self.seed, &self.style());
+        let g = self.sample(self.pos.x, self.pos.z);
         Some(serde_json::json!({
             "style": STYLES[self.style], "seed": self.seed, "pos": self.pos.to_array(),
             "trees": self.built_world.trees, "grass": self.built_world.grass, "tree_density": self.world.tree_density, "tree_radius_m": self.world.tree_radius, "recipe_trees": self.world.recipe_trees, "firs": self.world.firs,
@@ -397,7 +446,7 @@ impl Default for World {
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
 /// `centre` as `world` asks, and the shadow heightfield around it. Returns the centre.
-fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World) -> Built {
+fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World, track: Option<Arc<Constraints>>) -> Built {
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
     let mut scene = Scene::default();
@@ -413,7 +462,7 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     let mut tree_pool = None;
     if world.trees {
         let layer_only = std::env::args().any(|a| a == "--forest-layer-only");
-        let mut trees = if layer_only { Vec::new() } else { forest(seed, &style, biome, centre, world) };
+        let mut trees = if layer_only { Vec::new() } else { forest(seed, &style, biome, centre, world, track.as_deref()) };
         trees.sort_by(|a, b| (a.0 - centre).length_squared().total_cmp(&(b.0 - centre).length_squared()));
         let near = (world.recipe_trees as usize).min(trees.len());
         if world.firs {
@@ -423,7 +472,8 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
         let far = if world.firs { &[][..] } else { &trees[near..] };
         tree_pool = recipe_spruces(&mut scene, biome, &trees[..near], far)?;
     }
-    let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
+    let mut pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
+    if let Some(w) = track { pool = procedural_terrain::constrain(&mut scene, w); }
     // Beyond the trees the terrain draws the same forest as colour, out to
     // the horizon.
     procedural_terrain::vegetation_style(&mut scene, material, palette);
@@ -578,12 +628,13 @@ fn tree_meshes() -> Result<&'static [ClusterMesh], String> {
 /// Trees within `world.tree_radius` of `centre`, from the engine's forest
 /// field (the distant terrain draws the same forest). Position, yaw, scale
 /// and variant.
-fn forest(seed: u32, style: &Style, biome: &render::biome::Biome, centre: Vec3, world: World) -> Vec<(Vec3, f32, Vec3, usize)> {
+fn forest(seed: u32, style: &Style, biome: &render::biome::Biome, centre: Vec3, world: World, track: Option<&Constraints>) -> Vec<(Vec3, f32, Vec3, usize)> {
     use render::placement::{self, TerrainWorld};
     let (start, end) = handover_band(world);
     let c = Vec2::new(centre.x, centre.z);
     let biome = render::biome::Biome { tree_density: world.tree_density, ..*biome };
-    let land = TerrainWorld { seed, style };
+    // Bent to the --track road; the rules keep off it (placement::off_road).
+    let land = TerrainWorld { seed, style, constraints: track };
     let (trees, shrubs): (Vec<_>, Vec<_>) = biome.rules().into_iter().partition(|r| r.id == placement::TREE);
     // Trees out to the painted forest, handed over to it tree by tree;
     // shrubs only near, where a knee-high bush is more than a pixel.
