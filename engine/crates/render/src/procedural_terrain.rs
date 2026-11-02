@@ -553,7 +553,7 @@ impl TerrainRenderer {
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("procedural terrain"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("procedural terrain build"), layout: Some(&pipeline_layout),
             module: &module, entry_point: Some("build"), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
-        let params = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("procedural terrain params"), size: 64,
+        let params = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("procedural terrain params"), size: 16 + std::mem::size_of::<terrain_field::Style>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let jobs = Self::job_buffer(gpu, 1024);
         let bind = Self::bind(gpu, &layout, &params, &jobs, vertices, clusters);
