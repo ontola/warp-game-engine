@@ -159,6 +159,7 @@ override FEATURE_CARS: bool = true;
 // Procedural rock and lava surfaces (procedural_surface.wgsl).
 override FEATURE_PROCEDURAL: bool = true;
 override FEATURE_GRASS: bool = true;
+override FEATURE_GRASS_SHADE: bool = true;
 override FEATURE_TRACKS: bool = true;
 override FEATURE_WORLD_TERRAIN: bool = true;
 override FEATURE_FOLIAGE_PAGES: bool = true;
@@ -185,9 +186,10 @@ override VOXEL_SURFACE: bool = false;
 // Voxel pixels in their own small pass (shade_voxels) instead of inside
 // the big shade kernel, whose register footprint they would share.
 override VOXEL_PASS: bool = false;
-// Which pixels this shade pipeline lights (frame.rs): 0 all, 1 only the
-// procedural terrain (a lean specialisation without cars, foliage or
-// procedural rock), 2 everything but the terrain (field_surface compiled out).
+// Which pixels this shade pipeline lights (frame.rs): 0 all, 1 only terrain
+// (TERRAIN materials, procedural or not: a lean specialisation without cars,
+// foliage, grass lighting or procedural rock), 2 everything else (both
+// terrain paths compiled out).
 // Like the voxel pass: the kernel's size, not its work, set the pace.
 override SHADE_CLASS: u32 = 0u;
 override SHADE_DIAGNOSTICS: bool = true;
@@ -1928,7 +1930,10 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let vis = visible[id >> 7u];
     let tri = id & 127u;
     let cl = clusters[vis.y];
-    if SHADE_CLASS != 0u && ((materials[cl.material].flags & 32770u) == 32770u) != (SHADE_CLASS == 1u) { return; }
+    // Terrain: a TERRAIN material that is not a car part (car materials keep
+    // their index in bits 16.. and may carry low flag bits of their own).
+    let terrain_class = (materials[cl.material].flags & 2u) != 0u && (materials[cl.material].flags >> 16u) == 0u;
+    if SHADE_CLASS != 0u && terrain_class != (SHADE_CLASS == 1u) { return; }
     let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + tri];
     var vi: array<u32, 3>;
@@ -2297,7 +2302,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         let s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
-    if FEATURE_GRASS && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
+    if FEATURE_GRASS_SHADE && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
