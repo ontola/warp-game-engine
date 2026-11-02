@@ -200,6 +200,12 @@ pub(crate) struct SunSplatView<'a> {
     pub direction: glam::Vec3,
     pub texel_m: f32,
 }
+/// Which part of `render` to run. With rasterized voxels the splats are
+/// rastered before the opaque shade (Splats), which then skips the pixels
+/// they cover, and resolved and composited after it (Rest).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Stage { All, Splats, Rest }
+
 struct SplatTargets {
     records: wgpu::Buffer,
     draw: wgpu::Buffer,
@@ -1013,6 +1019,11 @@ impl VoxelRenderer {
             interval_stream,
         })
     }
+    /// The view's rastered splat depth (reversed Z, 0 where none), once
+    /// Stage::Splats has run for it.
+    pub(crate) fn splat_depth(&self, index: usize) -> Option<wgpu::TextureView> {
+        self.targets.lock().unwrap().get(index)?.as_ref()?.splat.as_ref().map(|s| s.depth.clone())
+    }
     pub(crate) fn render(
         &self,
         gpu: &Gpu,
@@ -1025,6 +1036,7 @@ impl VoxelRenderer {
         selection: &wgpu::Buffer,
         temporal: Option<TemporalInputs<'_>>,
         times: [Option<(&wgpu::QuerySet, u32)>; 5],
+        stage: Stage,
     ) -> Result<(),String> {
         let temporal_guard=self.temporal.lock().unwrap();
         let temporal_pipelines=temporal.as_ref().map(|_|temporal_guard.as_ref().expect("prepare_temporal before voxel render"));
@@ -1041,6 +1053,11 @@ impl VoxelRenderer {
         }
         let [bins,tiles,clear,integrate,intervals,scatter,splats,resolve]=temporal_pipelines.map_or([&self.bins,&self.tiles,&self.clear,&self.integrate,&self.intervals,&self.scatter,&self.splats,&self.resolve],
             |p|[&p.pipelines[0],&p.pipelines[1],&p.pipelines[2],&p.pipelines[3],&p.pipelines[4],&p.pipelines[5],&p.pipelines[6],&p.pipelines[7]]);
+        if stage == Stage::Splats && target.splat.is_none() { return Ok(()); }
+        // The splat stage ran before the opaque shade (Stage::Splats): the
+        // rest only resolves and composites what it rastered.
+        let splats_done = stage == Stage::Rest && target.splat.is_some();
+        if !splats_done {
         encoder.clear_buffer(&target.counters, 0, None);
         // Counts and slots share a buffer; clearing it preserves a bounded
         // zero-allocation append path and prevents old counts surviving views.
@@ -1053,7 +1070,9 @@ impl VoxelRenderer {
             let bytes=if self.integrator_options.brick_visibility {16+u64::from(stream.pixel_slots)*8}else{16};
             encoder.clear_buffer(&target.jobs,u64::from(stream.header_word)*4,Some(bytes));
         }
+        }
         if let (Some(raster), Some(splat)) = (&self.raster, &target.splat) {
+            if !splats_done {
             encoder.clear_buffer(&splat.draw, 0, None);
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splats"),
@@ -1079,6 +1098,8 @@ impl VoxelRenderer {
                 pass.set_bind_group(0, &splat.bind, &[]);
                 pass.draw_indirect(&splat.draw, 0);
             }
+            }
+            if stage == Stage::Splats { return Ok(()); }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splat resolve"),
                 timestamp_writes: times[3].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                     query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
