@@ -191,7 +191,8 @@ fn wc_apply(x: f32, z: f32, s_in: TerrainSample) -> TerrainSample {
     if pull <= 0.0 { return s; }
     s.pos.x += (x - s.pos.x) * pull;
     s.pos.z += (z - s.pos.z) * pull;
-    s.water *= 1.0 - pull;
+    let level = s.pos.y;
+    s.water = clamp(level - y, 0.0, s.water) * (1.0 - core);
     s.pos.y = y + s.water;
     var slope = 0.0;
     if y > land + 1e-3 { slope = lo_slope; } else if y < land - 1e-3 { slope = hi_slope; }
