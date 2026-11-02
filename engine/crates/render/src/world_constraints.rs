@@ -798,8 +798,9 @@ struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle 
             if s != terrain_field::eval(p[0], p[1], 0.5, seed, &style) { bent += 1; }
             // terrain_eval differs from eval in the last bits.
             if (g[0] - s.pos.y).abs() < 0.02 && (g[1] - s.scree).abs() < 1e-3 && (g[2] - s.up).abs() < 1e-3 && (g[3] - s.water).abs() < 0.02 { agree += 1; }
+            // `along` is metres from the track start: allow f32 rounding that grows with it (Metal fma).
             match world.near(p[0], p[1]) {
-                Some(c) => assert!((n[0] - c.distance).abs() < 1e-3 && (n[1] - c.along).abs() < 1e-2 && n[3] == c.track as f32, "near {p:?}: {n:?} vs {c:?}"),
+                Some(c) => assert!((n[0] - c.distance).abs() < 1e-3 && (n[1] - c.along).abs() < 1e-2 + 1e-5 * c.along.abs() && n[3] == c.track as f32, "near {p:?}: {n:?} vs {c:?}"),
                 None => assert!(n[0] > 1e38),
             }
             let c = world.clearance(p[0], p[1]);
