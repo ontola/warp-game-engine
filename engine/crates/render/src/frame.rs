@@ -1718,6 +1718,7 @@ impl Renderer {
         let sky_tiles=!simple_lighting && std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
+        shade_constants.push(("WORLD_TERRAIN_BAKED", if world_visibility.baked {1.0} else {0.0}));
         // KERN_VOXEL_SURFACE=0: rasterized voxels keep their own lighting
         // (resolve and composite) instead of drawing into the scene's
         // visibility buffer for shade (VOXEL_SURFACE).
@@ -2676,6 +2677,7 @@ impl Renderer {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade"), source: wgpu::ShaderSource::Wgsl(sources.shade.as_str().into()) });
                 let mut constants = self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()));
                 constants.push(("SKY_TILES", if self.sky_tiles {1.0} else {0.0}));
+                constants.push(("WORLD_TERRAIN_BAKED", if self.world_visibility.baked {1.0} else {0.0}));
                 constants.push(("VOXEL_OCCLUSION", if self.voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !self.voxel_surface {1.0} else {0.0}));
                 constants.push(("VOXEL_SURFACE", if self.voxel_surface {1.0} else {0.0}));
                 constants.push(("VOXEL_PASS", if self.voxel_pass.is_some() {1.0} else {0.0}));
