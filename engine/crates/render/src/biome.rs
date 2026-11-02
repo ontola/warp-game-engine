@@ -28,6 +28,28 @@ pub struct Biome {
     /// Share of the trees that drop their leaves (broadleaf): they colour in
     /// autumn and stand bare in winter. The rest are evergreen.
     pub deciduous: f32,
+    pub flora: Flora,
+}
+
+/// What grows: tree and shrub species (plant_species names) with their
+/// shares, as the biome's placement rules (`Biome::rules`) pick them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flora {
+    pub trees: [(&'static str, f32); 4],
+    /// Tree height scale (stunted on the tundra).
+    pub tree_scale: f32,
+    /// Trees along ditches and banks instead of in stands (polder rows).
+    pub tree_rows: bool,
+    pub shrubs: [(&'static str, f32); 2],
+    /// Share of open ground cells (3 m) with a shrub.
+    pub shrub_density: f32,
+}
+
+const NONE: (&str, f32) = ("", 0.0);
+
+impl Flora {
+    const TEMPERATE: Flora = Flora { trees: [("spruce", 0.55), ("pine", 0.15), ("birch", 0.15), ("broadleaf", 0.15)], tree_scale: 1.0,
+        tree_rows: false, shrubs: [("shrub", 0.6), ("juniper", 0.4)], shrub_density: 0.03 };
 }
 
 /// Every preset, for menus and tests.
@@ -40,11 +62,14 @@ impl Biome {
         let base = VegetationStyle::default();
         let terrain = Style::default();
         Some(match name {
-            "temperate" | "default" => Biome { name: "temperate", terrain, vegetation: base, tree_density: 0.6, deciduous: 0.2 },
+            "temperate" | "default" => Biome { name: "temperate", terrain, vegetation: base, tree_density: 0.6, deciduous: 0.2,
+                flora: Flora::TEMPERATE },
             "alpine" => Biome { name: "alpine", terrain: Style::alpine(), vegetation: VegetationStyle::named("alpine")?,
-                tree_density: 0.6, deciduous: 0.1 },
+                tree_density: 0.6, deciduous: 0.1,
+                flora: Flora { trees: [("spruce", 0.75), ("pine", 0.25), NONE, NONE], shrubs: [("juniper", 1.0), NONE], ..Flora::TEMPERATE } },
             "lowland" => Biome { name: "lowland", terrain: Style::lowland(), vegetation: VegetationStyle::named("lowland")?,
-                tree_density: 0.5, deciduous: 0.4 },
+                tree_density: 0.5, deciduous: 0.4,
+                flora: Flora { trees: [("broadleaf", 0.45), ("birch", 0.2), ("spruce", 0.2), ("pine", 0.15)], shrub_density: 0.05, ..Flora::TEMPERATE } },
             // Dead-flat reclaimed land: water everywhere in channels, lush
             // grass, a few rows of trees.
             "polder" => Biome { name: "polder",
@@ -54,7 +79,9 @@ impl Biome {
                     ground: GroundStyle { grass_dry: [0.36, 0.6, 0.22, 0.3], grass_lush: [0.26, 0.7, 0.24, 0.0], ..base.ground },
                     forest: ForestStyle { far: [0.075, 0.11, 0.04, 14.0], crown: [3.2, 0.375, 1.6, 0.6], ..base.forest },
                     meadow_dry_season: 0.0 },
-                tree_density: 0.15, deciduous: 0.8 },
+                tree_density: 0.15, deciduous: 0.8,
+                flora: Flora { trees: [("willow", 0.55), ("broadleaf", 0.3), ("birch", 0.15), NONE], tree_rows: true,
+                    shrubs: [("shrub", 1.0), NONE], shrub_density: 0.02, ..Flora::TEMPERATE } },
             // Cold open land: low rolling hills, moss and heather, ponds,
             // stunted spruce here and there, snow on any height.
             "tundra" => Biome { name: "tundra",
@@ -65,7 +92,9 @@ impl Biome {
                         moor: [0.62, 0.6, 0.55, 0.7], ..base.ground },
                     forest: ForestStyle { needles: [0.04, 0.075, 0.035, 0.5], ..base.forest },
                     meadow_dry_season: 0.5 },
-                tree_density: 0.12, deciduous: 0.0 },
+                tree_density: 0.12, deciduous: 0.0,
+                flora: Flora { trees: [("spruce", 0.7), ("birch", 0.3), NONE, NONE], tree_scale: 0.55,
+                    shrubs: [("dwarf_birch", 0.8), ("juniper", 0.2)], shrub_density: 0.35, ..Flora::TEMPERATE } },
             // A sand sea: dunes over low rolling ground, rocky outcrops, no
             // water, no grass.
             "desert" => Biome { name: "desert",
@@ -75,9 +104,85 @@ impl Biome {
                     ground: GroundStyle { grass_dry: [1.25, 0.95, 0.55, 0.0], grass_lush: [1.15, 0.9, 0.55, 0.0],
                         soil: [1.1, 0.85, 0.6, 0.1], gravel: [1.1, 0.95, 0.8, 0.6], rock: [1.15, 0.95, 0.8, 0.6], ..base.ground },
                     meadow_dry_season: 1.0, ..base },
-                tree_density: 0.0, deciduous: 0.0 },
+                tree_density: 0.0, deciduous: 0.0,
+                flora: Flora { trees: [NONE; 4], shrubs: [("desert_shrub", 1.0), NONE], shrub_density: 0.04, ..Flora::TEMPERATE } },
             _ => return None,
         })
+    }
+}
+
+/// The rule id of a biome's shrubs (placement::TREE are its trees).
+pub const SHRUB: u32 = 16;
+
+fn smooth(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+impl Biome {
+    /// The species that grow here (plant_species recipes): its trees, then
+    /// its shrubs. A placed object's `variant` indexes this list.
+    pub fn species(&self) -> Vec<(&'static str, crate::plant_recipe::WoodyRecipe)> {
+        self.flora.trees.iter().chain(&self.flora.shrubs).filter(|(n, w)| *w > 0.0 && !n.is_empty())
+            .map(|(n, _)| (*n, crate::plant_species::named(n).expect("biome species"))).collect()
+    }
+
+    /// The biome's placement rules: its trees (in the forest's stands, or in
+    /// rows along wet banks), then shrubs on open ground. Instances carry
+    /// the species index (`species`) as their variant.
+    pub fn rules(&self) -> Vec<crate::placement::Rule> {
+        use crate::placement::{Rule, Shape, TREE};
+        let flora = self.flora;
+        let pick = |list: &[(&'static str, f32)], first: u32, roll: f32| -> u32 {
+            let total: f32 = list.iter().map(|e| e.1).sum();
+            let mut acc = 0.0;
+            let mut index = first;
+            for e in list.iter().filter(|e| e.1 > 0.0) {
+                acc += e.1 / total.max(1e-6);
+                if roll < acc { return index; }
+                index += 1;
+            }
+            index.saturating_sub(1)
+        };
+        let trees = flora.trees.iter().filter(|e| e.1 > 0.0).count() as u32;
+        let mut rules = Vec::new();
+        if trees > 0 && self.tree_density > 0.0 {
+            let mut tree = crate::placement::tree_rule(self.tree_density);
+            let density = self.tree_density;
+            if flora.tree_rows {
+                // Rows along ditches and banks: damp ground, not water.
+                tree.cap = 0.7;
+                tree.density = Box::new(move |s| {
+                    let g = &s.ground;
+                    if g.water > 0.01 || s.field("grows") == 0.0 { return 0.0; }
+                    0.7 * smooth(0.25, 0.45, g.wet) * (1.0 - smooth(0.85, 0.98, g.wet)) + s.field("forest") * density * 0.3
+                });
+            }
+            let scale = flora.tree_scale;
+            tree.shape = Box::new(move |s| {
+                let width = (0.75 + 0.5 * s.cell.hash(4)) * scale;
+                Shape { yaw: s.cell.hash(6) * std::f32::consts::TAU, scale: glam::Vec3::new(width, width * (0.9 + 0.25 * s.cell.hash(5)), width),
+                    variant: pick(&flora.trees, 0, s.cell.hash(7)), lift: -0.2 }
+            });
+            rules.push(tree);
+        }
+        if flora.shrub_density > 0.0 && flora.shrubs.iter().any(|e| e.1 > 0.0) {
+            let d = flora.shrub_density;
+            rules.push(Rule { id: SHRUB, name: "shrub", cell: 3.0, salt: 0x5348_5255, cap: d,
+                density: Box::new(move |s| {
+                    let g = &s.ground;
+                    if g.water > 0.01 || g.snow > 0.3 || g.up < 0.8 { return 0.0; }
+                    // Open ground and forest edges; little in the stands' shade.
+                    d * (1.0 - smooth(0.2, 0.6, g.rock)) * (1.0 - 0.7 * smooth(0.3, 0.8, s.field("forest")))
+                }),
+                shape: Box::new(move |s| {
+                    let size = 0.6 + 0.8 * s.cell.hash(4);
+                    Shape { yaw: s.cell.hash(6) * std::f32::consts::TAU, scale: glam::Vec3::new(size, size * (0.8 + 0.4 * s.cell.hash(5)), size),
+                        variant: pick(&flora.shrubs, trees, s.cell.hash(7)), lift: -0.05 }
+                }),
+                avoid: vec![(TREE, 1.5)] });
+        }
+        rules
     }
 }
 
@@ -180,6 +285,42 @@ impl Environment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The biome's own terrain and forest, for its rules.
+    struct Land(Biome);
+    impl crate::placement::World for Land {
+        fn seed(&self) -> u32 { 1 }
+        fn ground(&self, x: f32, z: f32) -> crate::terrain_field::Sample {
+            crate::terrain_field::eval(x, z, crate::forest_field::CUT, 1, &self.0.terrain)
+        }
+        fn field(&self, name: &str, x: f32, z: f32, g: &crate::terrain_field::Sample) -> f32 {
+            let grows = crate::forest_field::grows(g, &self.0.terrain);
+            match name {
+                "forest" if grows => crate::forest_field::share(x, z, 1, crate::forest_field::site(g.up, g.wet), 0.0),
+                "grows" => f32::from(u8::from(grows)),
+                _ => 0.0,
+            }
+        }
+    }
+
+    #[test]
+    fn each_biome_grows_its_own_flora() {
+        for name in NAMES {
+            let biome = Biome::named(name).unwrap();
+            let species = biome.species();
+            let placed = crate::placement::place(&biome.rules(), &Land(biome), glam::Vec2::ZERO, 300.0);
+            let count = |rule| placed.iter().filter(|i| i.rule == rule).count();
+            assert!(placed.iter().all(|i| (i.variant as usize) < species.len()), "{name}: variant out of range");
+            eprintln!("FLORA {name}: {} trees, {} shrubs, species {:?}", count(crate::placement::TREE), count(SHRUB),
+                species.iter().map(|s| s.0).collect::<Vec<_>>());
+            match name {
+                "desert" => assert!(count(crate::placement::TREE) == 0 && count(SHRUB) > 20),
+                "tundra" => assert!(count(SHRUB) > 1000),
+                "polder" => assert!(count(crate::placement::TREE) > 20),
+                _ => assert!(count(crate::placement::TREE) > 100),
+            }
+        }
+    }
 
     #[test]
     fn presets_seasons_and_the_sun() {

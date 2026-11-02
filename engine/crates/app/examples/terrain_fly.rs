@@ -179,7 +179,8 @@ impl Fly {
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
-            let ready = build_scene(seed, style, &palette, sun_degrees(&env), pos, world).map(|(scene, light, pool, at, trees)| {
+            let biome = env.biome;
+            let ready = build_scene(seed, style, &biome, &palette, sun_degrees(&env), pos, world).map(|(scene, light, pool, at, trees)| {
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool, settings));
                 (built, scene, light, pool, at, trees)
             });
@@ -396,7 +397,7 @@ impl Default for World {
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
 /// `centre` as `world` asks, and the shadow heightfield around it. Returns the centre.
-fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World) -> Built {
+fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &VegetationStyle, sun: (f32, f32), centre: Vec3, world: World) -> Built {
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../games/sideways/assets");
     let root = assets.join("textures");
     let mut scene = Scene::default();
@@ -412,12 +413,15 @@ fn build_scene(seed: u32, style: Style, palette: &VegetationStyle, sun: (f32, f3
     let mut tree_pool = None;
     if world.trees {
         let layer_only = std::env::args().any(|a| a == "--forest-layer-only");
-        let mut trees = if layer_only { Vec::new() } else { forest(seed, &style, centre, world) };
+        let mut trees = if layer_only { Vec::new() } else { forest(seed, &style, biome, centre, world) };
         trees.sort_by(|a, b| (a.0 - centre).length_squared().total_cmp(&(b.0 - centre).length_squared()));
         let near = (world.recipe_trees as usize).min(trees.len());
-        if world.firs { firs(&mut scene, &assets, &trees[near..])?; }
+        if world.firs {
+            let firs_only: Vec<_> = trees[near..].iter().map(|&(p, y, s, v)| (p, y, s, v % 3)).collect();
+            firs(&mut scene, &assets, &firs_only)?;
+        }
         let far = if world.firs { &[][..] } else { &trees[near..] };
-        tree_pool = recipe_spruces(&mut scene, &trees[..near], far)?;
+        tree_pool = recipe_spruces(&mut scene, biome, &trees[..near], far)?;
     }
     let pool = procedural_terrain::reserve(&mut scene, POOL, material, seed, style);
     // Beyond the trees the terrain draws the same forest as colour, out to
@@ -492,17 +496,29 @@ fn firs(scene: &mut Scene, assets: &std::path::Path, spots: &[(Vec3, f32, Vec3, 
 /// shared. Every spot is the plant as one voxel proxy, and as many full
 /// assemblies as `near` has follow the camera (the returned pool). Without
 /// `far` (the firs draw those) the `near` spots are full and fixed.
-fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(Vec3, f32, Vec3, usize)]) -> Result<Option<recipe_forest::Pool>, String> {
+/// The biome's species (render::biome::Biome::species), cooked once per
+/// biome in this run (and from the disk cache across runs), and their cards.
+fn cooked_flora(biome: &render::biome::Biome) -> Result<&'static (Vec<CookedPlant>, Vec<render::plant_mesh_lod::PlantCards>), String> {
+    type Flora = (Vec<CookedPlant>, Vec<render::plant_mesh_lod::PlantCards>);
+    static COOKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<&'static str, &'static Flora>>> = std::sync::OnceLock::new();
+    let mut map = COOKED.get_or_init(Default::default).lock().unwrap();
+    if let Some(&flora) = map.get(biome.name) { return Ok(flora); }
+    let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
+    let species = biome.species();
+    let recipes: Vec<_> = species.iter().map(|(_, r)| (*r, 1)).collect();
+    let cooked = recipe_forest::cook_variants(&recipes, Some(&cache))?;
+    for (c, (name, _)) in cooked.iter().zip(&species) {
+        eprintln!("{name}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
+    }
+    let cards = recipe_forest::cook_cards(&recipes, Some(&cache))?;
+    let flora: &'static Flora = Box::leak(Box::new((cooked.into_iter().map(|c| c.plant).collect(), cards)));
+    map.insert(biome.name, flora);
+    Ok(flora)
+}
+
+fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3, f32, Vec3, usize)], far: &[(Vec3, f32, Vec3, usize)]) -> Result<Option<recipe_forest::Pool>, String> {
     if near.is_empty() && far.is_empty() { return Ok(None); }
-    static COOKED: std::sync::OnceLock<Result<Vec<CookedPlant>, String>> = std::sync::OnceLock::new();
-    let cooked = COOKED.get_or_init(|| {
-        let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
-        let cooked = recipe_forest::cook_variants(&[(SPRUCE, 1), (SPRUCE, 2), (SPRUCE, 3)], Some(&cache))?;
-        Ok(cooked.into_iter().enumerate().map(|(i, c)| {
-            eprintln!("spruce {i}: {} in {:.0} ms", if c.loaded { "loaded" } else { "cooked" }, c.millis);
-            c.plant
-        }).collect())
-    }).as_ref().map_err(Clone::clone)?;
+    let (cooked, baked) = cooked_flora(biome)?;
     // The firs are ~15 m; the recipe is 16 m, scaled like them.
     let trees: Vec<recipe_forest::Tree> = near.iter().chain(far).map(|&(pos, yaw, scale, variant)|
         recipe_forest::Tree { pos, yaw, scale: scale.y, variant }).collect();
@@ -522,12 +538,7 @@ fn recipe_spruces(scene: &mut Scene, near: &[(Vec3, f32, Vec3, usize)], far: &[(
     // Past the full ones, card trees (plant_mesh_lod) within --card-radius
     // (150 m), --cards per variant (300; 0: voxel proxies only).
     let (cards, card_radius) = (arg("--cards").unwrap_or(300.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
-    if cards > 0 {
-        static CARDS: std::sync::OnceLock<Result<Vec<render::plant_mesh_lod::PlantCards>, String>> = std::sync::OnceLock::new();
-        let baked = CARDS.get_or_init(|| recipe_forest::cook_cards(&[(SPRUCE, 1), (SPRUCE, 2), (SPRUCE, 3)],
-            Some(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache")))).as_ref().map_err(Clone::clone)?;
-        recipe_forest::add_cards(scene, &mut pool, baked, cards, card_radius)?;
-    }
+    if cards > 0 { recipe_forest::add_cards(scene, &mut pool, baked, cards, card_radius)?; }
     println!("{} trees ({slots} full per variant following the camera, {cards} card trees per variant within {card_radius} m) planted in {} ms",
         trees.len(), started.elapsed().as_millis());
     Ok(Some(pool))
@@ -567,13 +578,23 @@ fn tree_meshes() -> Result<&'static [ClusterMesh], String> {
 /// Trees within `world.tree_radius` of `centre`, from the engine's forest
 /// field (the distant terrain draws the same forest). Position, yaw, scale
 /// and variant.
-fn forest(seed: u32, style: &Style, centre: Vec3, world: World) -> Vec<(Vec3, f32, Vec3, usize)> {
+fn forest(seed: u32, style: &Style, biome: &render::biome::Biome, centre: Vec3, world: World) -> Vec<(Vec3, f32, Vec3, usize)> {
+    use render::placement::{self, TerrainWorld};
     let (start, end) = handover_band(world);
     let c = Vec2::new(centre.x, centre.z);
-    render::forest_field::trees_in_disc(c, world.tree_radius, seed, style, world.tree_density).into_iter()
+    let biome = render::biome::Biome { tree_density: world.tree_density, ..*biome };
+    let land = TerrainWorld { seed, style };
+    let (trees, shrubs): (Vec<_>, Vec<_>) = biome.rules().into_iter().partition(|r| r.id == placement::TREE);
+    // Trees out to the painted forest, handed over to it tree by tree;
+    // shrubs only near, where a knee-high bush is more than a pixel.
+    placement::place(&trees, &land, c, world.tree_radius).into_iter()
         .filter(|t| render::forest_field::handover_keep(t.pos, c, start, end))
+        .chain(placement::place(&shrubs, &land, c, SHRUB_RADIUS))
         .map(|t| (t.pos, t.yaw, t.scale, t.variant as usize)).collect()
 }
+
+/// Shrubs are placed this far around the camera (metres).
+const SHRUB_RADIUS: f32 = 400.0;
 
 /// Where drawn trees hand over to the painted forest (metres from the centre).
 fn handover_band(world: World) -> (f32, f32) {
