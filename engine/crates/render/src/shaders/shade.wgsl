@@ -185,6 +185,11 @@ override VOXEL_SURFACE: bool = false;
 // Voxel pixels in their own small pass (shade_voxels) instead of inside
 // the big shade kernel, whose register footprint they would share.
 override VOXEL_PASS: bool = false;
+// Which pixels this shade pipeline lights (frame.rs): 0 all, 1 only the
+// procedural terrain (a lean specialisation without cars, foliage or
+// procedural rock), 2 everything but the terrain (field_surface compiled out).
+// Like the voxel pass: the kernel's size, not its work, set the pace.
+override SHADE_CLASS: u32 = 0u;
 const VOXEL_SKY_LIFT: f32 = 1.0;
 @group(1) @binding(20) var voxel_surface: texture_2d<u32>;
 
@@ -1910,7 +1915,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let dir = normalize(far.xyz / far.w - view.cam.xyz);
     let depth = textureLoad(depth_tex, px, 0);
     if depth <= 0.0 {
-        textureStore(out_hdr, px, vec4<f32>(visible_background_radiance(dir), 1.0));
+        if SHADE_CLASS != 1u { textureStore(out_hdr, px, vec4<f32>(visible_background_radiance(dir), 1.0)); }
         return;
     }
     if VOXEL_OCCLUSION && textureLoad(voxel_depth, px, 0) > depth { return; }
@@ -1922,6 +1927,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let vis = visible[id >> 7u];
     let tri = id & 127u;
     let cl = clusters[vis.y];
+    if SHADE_CLASS != 0u && ((materials[cl.material].flags & 32770u) == 32770u) != (SHADE_CLASS == 1u) { return; }
     let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + tri];
     var vi: array<u32, 3>;
@@ -2224,7 +2230,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x);
         // TERRAIN + SURFACE: the engine's procedural terrain, not the game's.
         var so: SurfaceOut;
-        if (m.flags & 2u) != 0u {
+        if SHADE_CLASS != 2u && (m.flags & 2u) != 0u {
             var coarse: CoarseSurface;
             if TERRAIN_COARSE && max(length(fp.dx), length(fp.dy)) > COARSE_FOOTPRINT_M { coarse = coarse_surface(px, depth); }
             if coarse.ok { so = coarse.so; field_sun = coarse.sun; } else { so = field_surface(si, m.layer); }
