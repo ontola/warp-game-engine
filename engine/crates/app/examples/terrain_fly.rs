@@ -580,10 +580,11 @@ fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3
     let slots = near.len().div_ceil(cooked.len());
     let (_, mut pool) = recipe_forest::plant_streamed(scene, cooked, &trees, slots, policy)?;
     // Past the full ones, card trees (plant_mesh_lod) within --card-radius
-    // (300 m: forest_ladder has them within 10 % of the source's coverage
-    // and tone that far, the proxies past it), --cards per variant (1000;
-    // 0: voxel proxies only).
-    let (cards, card_radius) = (arg("--cards").unwrap_or(1000.0f32) as usize, arg("--card-radius").unwrap_or(300.0f32));
+    // (150 m), --cards per variant (400; 0: voxel proxies only). Cards hold
+    // the source's look to 300 m (forest_ladder), but seen from above out
+    // to 300 m they cost 23 ms at 1440p; to 150 m the four playtest cameras
+    // run 24-29 fps against 24-29 before at 300 m, the high ones +4.6.
+    let (cards, card_radius) = (arg("--cards").unwrap_or(400.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
     if cards > 0 { recipe_forest::add_cards(scene, &mut pool, baked, cards, card_radius)?; }
     println!("{} trees ({slots} full per variant following the camera, {cards} card trees per variant within {card_radius} m) planted in {} ms",
         trees.len(), started.elapsed().as_millis());
