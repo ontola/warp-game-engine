@@ -40,14 +40,30 @@ Each milestone ships on main with forest_ladder (coverage, mass and tone
 against the source, within ±10 % at every distance) and fps at the four
 playtest cameras (`terrain_fly --track --from build/screenshots/terrain-fly-*.json --bench 120`).
 
-1. **Part poses in cluster culling** (a, about 3 days). Today part_wind
-   evaluates rigid part matrices for a pool capped by its capacity, so at
-   most about 12 full trees. Move the pose evaluation into the cull pass:
-   per tree, a small pose buffer (root plus N branch-group matrices from the
-   wind field and the tree's seed), written by a compute pass over visible
-   trees only. Clusters read their part's matrix. Animation stops below a
-   projected size (0.1 of the screen in Unreal) and the poses freeze. Expected
-   fps: unchanged, but any number of trees can be full.
+1. **Assemblies as virtual instances** (a, about 4 days). Mapping the code
+   (2 Nov) showed that part_wind already evaluates poses on the GPU, and only
+   for assemblies that some view sees (`schedule_assemblies` sleeps the
+   rest). The ~12-tree cap comes from residency instead: every placement of
+   a full tree is its own `GpuInstance` plus a 160 B `PartAttachment`. A
+   spruce is 5,169 placements and 61 poses, about 1.8 MB, and
+   `MAX_ATTACHMENTS` is 65,536 / 5,169 = 12 trees. Two further caps sit
+   behind it: 4096 volume bindings, aggregate groups and the
+   `foliage_selection` uniform array.
+   The change:
+   - Placement rest transforms and mesh refs go into one table per variant.
+   - Each tree keeps only its root, phase and a block of branch poses
+     (61 × 96 B ≈ 6 KB).
+   - A reserved instance-id range means (tree, placement).
+     `instance_at(id)` composes `pose[tree, branch] × rest[variant,
+     placement]` wherever a shader reads `instances[id]` today: 41 reads
+     across 17 shaders, of which cull, raster, shade, motion and
+     voxel_forest matter for trees.
+   - Cull walks tree → branch group (skipping groups the aggregate selection
+     put on voxels) → that group's placements, so only visible, non-voxel
+     branches reach the cluster cut.
+   - `update_parts` is dispatched indirectly over awake trees only.
+   Expected fps: unchanged at equal tree counts, but full trees out to the
+   distance where branch groups switch to voxels, with no pool.
 2. **GPU instance hierarchy** (b, about 4 days). Trees become instances of an
    assembly (parts × placements) culled hierarchically: tree bounds, then
    branch groups, then part clusters. Built on the GPU from the placement
