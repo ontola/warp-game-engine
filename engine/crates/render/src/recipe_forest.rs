@@ -123,6 +123,10 @@ fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
     let mut limits = AttachLimits { max_poses: branches.max(64) * full.max(4),
         max_primitive_instances: crate::part_wind::MAX_ATTACHMENTS, ..Default::default() };
     limits.pack.max_instances = limits.max_poses.min(crate::foliage_volume_data::MAX_INSTANCES);
+    // Every variant brings its branch volumes and its proxy: a mixed forest
+    // of six species needs more than the default 256.
+    let assets: usize = variants.iter().map(|c| c.stats().volume_assets + 1).sum();
+    limits.pack.max_assets = limits.pack.max_assets.max(assets);
     limits
 }
 
