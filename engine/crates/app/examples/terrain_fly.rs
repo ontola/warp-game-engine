@@ -340,7 +340,11 @@ impl Game for Fly {
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
             // The full spruces follow the camera (recipe_forest::Pool).
-            if let Some(trees) = &mut self.trees { trees.update(renderer, frame.gpu, &[pos])?; }
+            if let Some(trees) = &mut self.trees {
+                let stats = trees.update(renderer, frame.gpu, &[pos])?;
+                // KERN_POOL_LOG=1: full-tree moves per update (tier churn checks).
+                if stats.moved > 0 && std::env::var("KERN_POOL_LOG").as_deref() == Ok("1") { eprintln!("pool moved {}", stats.moved); }
+            }
         }
         if frame.dt > 0.0 { self.fps += (1.0 / frame.dt - self.fps) * 0.05; }
 

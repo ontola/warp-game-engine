@@ -228,9 +228,15 @@ pub fn add_cards(scene: &mut Scene, pool: &mut Pool, cards: &[PlantCards], per_v
 
 /// The members of `members` nearest `points`, at most `count`, within
 /// `radius` and not in `skip`.
-fn nearest(trees: &[Tree], members: &[usize], points: &[Vec3], count: usize, radius: f32, skip: &std::collections::HashSet<usize>) -> Vec<usize> {
+/// Distance factor a tree already in a tier gets when that tier is chosen
+/// again: a newcomer must be over 15 % nearer to take its place.
+const STICKY: f32 = 0.87;
+
+fn nearest(trees: &[Tree], members: &[usize], points: &[Vec3], count: usize, radius: f32, skip: &std::collections::HashSet<usize>,
+    held: &std::collections::HashSet<usize>) -> Vec<usize> {
     let mut near: Vec<(f32, usize)> = members.iter().filter(|i| !skip.contains(i)).map(|&i| (points.iter()
-        .map(|p| p.distance_squared(trees[i].pos)).fold(f32::INFINITY, f32::min), i)).filter(|&(d, _)| d <= radius * radius).collect();
+        .map(|p| p.distance_squared(trees[i].pos)).fold(f32::INFINITY, f32::min)
+        * if held.contains(&i) { STICKY * STICKY } else { 1.0 }, i)).filter(|&(d, _)| d <= radius * radius).collect();
     let count = count.min(near.len());
     if count < near.len() { near.select_nth_unstable_by(count, |a, b| a.0.total_cmp(&b.0)); }
     near.truncate(count);
@@ -307,9 +313,13 @@ impl Pool {
         for (variant, members) in self.by_variant.iter().enumerate() {
             let mine: Vec<usize> = (0..self.slots.len()).filter(|&k| self.slots[k].variant == variant).collect();
             if mine.is_empty() { continue; }
-            // O(trees): the nearest few by selection, not a full sort.
+            // O(trees): the nearest few by selection, not a full sort. A tree
+            // already full counts as STICKY nearer, so one at the edge of the
+            // set does not flip between full and card at every camera metre.
+            let held: std::collections::HashSet<usize> = mine.iter().filter_map(|&k| self.slots[k].tree).collect();
             let mut near: Vec<(f32, usize)> = members.iter().map(|&i| (points.iter()
-                .map(|p| p.distance_squared(self.trees[i].pos)).fold(f32::INFINITY, f32::min), i)).collect();
+                .map(|p| p.distance_squared(self.trees[i].pos)).fold(f32::INFINITY, f32::min)
+                * if held.contains(&i) { STICKY * STICKY } else { 1.0 }, i)).collect();
             let count = mine.len().min(near.len());
             if count < near.len() { near.select_nth_unstable_by(count, |a, b| a.0.total_cmp(&b.0)); }
             near.truncate(count);
@@ -335,7 +345,8 @@ impl Pool {
             for (variant, members) in self.by_variant.iter().enumerate() {
                 let mine: Vec<usize> = (0..cards.slots.len()).filter(|&k| cards.slots[k].0 == variant).collect();
                 if mine.is_empty() { continue; }
-                let near = nearest(&self.trees, members, points, mine.len(), cards.radius, &full);
+                let held: std::collections::HashSet<usize> = mine.iter().filter_map(|&k| cards.slots[k].1).collect();
+                let near = nearest(&self.trees, members, points, mine.len(), cards.radius, &full, &held);
                 let mut free: Vec<usize> = mine.iter().copied().filter(|&k| cards.slots[k].1.is_none_or(|t| !near.contains(&t))).collect();
                 for &tree in &near {
                     if mine.iter().any(|&k| cards.slots[k].1 == Some(tree)) { continue; }

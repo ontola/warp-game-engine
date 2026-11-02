@@ -1264,7 +1264,9 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
     var far = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
     // The outer map uses actual alpha-tested tree geometry, not the coarse
     // density field that wrongly buried sunlit crowns in their own shadow.
-    let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.75);
+    // Over the outer 55 % of the map: sharp tree shadows thin out into the
+    // coarse distant field instead of meeting it at a line.
+    let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
     if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || foliage_sun_pages.counts.z != 0u || gi.vol_dims.w != 0u) {
         far = mix(far, distant_sun_visibility(p,n,plane_n), coverage_fade);
     }
