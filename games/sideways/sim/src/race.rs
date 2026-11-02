@@ -206,6 +206,7 @@ impl Race {
         let land = self.settings.land.clone();
         self.stage = timings.span("layout", || Stage::generate_on(rng, km * 1000.0 + RUNOUT, land));
         self.stage.vegetation = self.settings.vegetation;
+        if let Some(land) = &self.settings.land { self.stage.vegetation.land_tint = land.tint; }
         let stage = &self.stage;
         let (phys, chunks, trees) = timings.span("colliders", || build_colliders(stage));
         self.phys = phys;
