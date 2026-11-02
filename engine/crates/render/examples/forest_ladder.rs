@@ -62,6 +62,7 @@ fn scene(tier: Option<Tier>, plant: &render::vegetation_asset::CookedPlant, card
     let mut game = recipe_forest::game_policy();
     if std::env::var("LADDER_MEASURED_CUTS").is_ok() { game.measured_source_cuts = true; }
     if let Some(e) = std::env::var("LADDER_MAX_ERR").ok().and_then(|v| v.parse().ok()) { game.max_error_pixels = e; }
+    if let Some(e) = std::env::var("LADDER_MAX_COVERAGE").ok().and_then(|v| v.parse().ok()) { game.max_coverage_error = e; game.max_color_error = e; }
     match tier {
         // The finest voxel error a policy accepts: groups stay source.
         // At most 12 full spruces fit the part-wind budget: in the grove the
@@ -96,7 +97,12 @@ fn scene(tier: Option<Tier>, plant: &render::vegetation_asset::CookedPlant, card
 fn lighting() -> Lighting {
     let (el, az) = (28f32.to_radians(), 135f32.to_radians());
     let lod = std::env::var("LADDER_LOD_PIXELS").ok().and_then(|v| v.parse().ok()).unwrap_or(Lighting::default().lod_pixels);
-    Lighting { taa: 0., sharpen: 0., lod_pixels: lod, sun_dir: Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos()), ..Default::default() }
+    let mut light = Lighting { taa: 0., sharpen: 0., lod_pixels: lod, sun_dir: Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos()), ..Default::default() };
+    // LADDER_LIGHT=key=v[,key=v]: Lighting::set, e.g. sun_lux=0 to compare sky light alone.
+    for kv in std::env::var("LADDER_LIGHT").unwrap_or_default().split(',').filter(|kv| !kv.is_empty()) {
+        if let Err(e) = light.set(kv) { eprintln!("LADDER_LIGHT {kv}: {e}"); }
+    }
+    light
 }
 
 /// The camera `d` metres from the tree, looking at its middle from a little
