@@ -1054,6 +1054,12 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
 @group(2) @binding(16) var<storage,read_write> volume_splat_draw: array<atomic<u32>>;
 @group(2) @binding(17) var volume_splat_id: texture_2d<u32>;
 @group(2) @binding(18) var volume_splat_depth: texture_depth_2d;
+// Splats drawn into the main visibility buffer (voxel_forest Stage::Splats
+// with the scene's targets): their surface for shade, per pixel, packed as
+// f16 pairs: albedo rg, albedo b + roughness, normal xy, normal z + leaf
+// fraction. A pixel no splat wins keeps whatever was there; shade reads it
+// only where the visibility id says voxel.
+@group(2) @binding(19) var volume_gbuffer: texture_storage_2d<rgba32uint,write>;
 const VOLUME_SPLAT_HEADER: u32 = 12u;
 const VOLUME_SPLAT_NONE: u32 = 0xffffffffu;
 // One quad per splat (voxel_splat_raster.wgsl).
@@ -1276,6 +1282,45 @@ fn volume_self_transmittance(tree:VolumeTree,grid:vec4<f32>,p:vec3<f32>,sun:vec3
         if address!=0u {tau+=volume_sigma(volume_cells[address-1u],direction)*cell;}
     }
     return exp(-tau);
+}
+
+@compute @workgroup_size(8,8)
+fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
+    if any(id.xy>=volume_config.size_count.xy) {return;}
+    let px=vec2<i32>(id.xy);
+    let splat=textureLoad(volume_splat_id,px,0).x;
+    if splat==0u {return;}
+    let depth=textureLoad(depth_tex,px,0);
+    let ndc=(vec2<f32>(id.xy)+0.5)/vec2<f32>(volume_config.size_count.xy)*vec2<f32>(2.0,-2.0)+vec2<f32>(-1.0,1.0);
+    let hit=view.inv_view_proj*vec4<f32>(ndc,depth,1.0);
+    let p=hit.xyz/hit.w;
+    let direction=normalize(p-view.cam.xyz);
+    let record=volume_splats[volume_splat_first()+splat-1u];
+    let tree=volume_trees[record.x];
+    let cell=volume_cells[record.y];
+    let d=vec4<f32>(direction,0.0);
+    let local_d=vec3<f32>(dot(tree.inverse[0],d),dot(tree.inverse[1],d),dot(tree.inverse[2],d));
+    let sigma=max(volume_sigma(cell,volume_direction(normalize(local_d))),1e-6);
+    var empty:VolumeSample;
+    let sample=volume_normalize_sample(volume_accumulate_cell(empty,cell,sigma));
+    // The lobes' mean, each turned to face the viewer like a two-sided
+    // leaf. A per-pixel random lobe (as Nanite foliage picks) read as noise
+    // under motion even with TAA.
+    var sum=vec3<f32>(0.0);
+    for(var k=0u;k<VOLUME_NORMAL_COUNT;k++) {
+        let w=max(sample.normals[k].w,0.0);
+        if w<=0.0 {continue;}
+        let local_n=sample.normals[k].xyz;
+        let world_n=tree.inverse[0].xyz*local_n.x+tree.inverse[1].xyz*local_n.y+tree.inverse[2].xyz*local_n.z;
+        if dot(world_n,world_n)<=1e-16 {continue;}
+        var wn=normalize(world_n);
+        if dot(wn,-direction)<0.0 {wn=-wn;}
+        sum+=wn*w;
+    }
+    var n=select(-direction,normalize(sum),dot(sum,sum)>1e-12);
+    if dot(n,-direction)<0.0 {n=-n;}
+    textureStore(volume_gbuffer,px,vec4<u32>(pack2x16float(sample.albedo.rg),pack2x16float(vec2<f32>(sample.albedo.b,sample.roughness)),
+        pack2x16float(n.xy),pack2x16float(vec2<f32>(n.z,sample.leaf_fraction))));
 }
 
 @compute @workgroup_size(8,8)

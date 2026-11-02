@@ -96,10 +96,18 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
     let ndc=vec2<f32>(position.x*motion.size.z*2.0-1.0,1.0-position.y*motion.size.w*2.0);
     var out:MotionOut;out.vector=vec2<f32>(0.0);out.depth=textureLoad(opaque_depth,pixel,0);out.bias=0.0;
     var owner=0xffffffffu;
+    // A rasterized voxel (bit 31 of the visibility id, shade.wgsl
+    // VOXEL_SURFACE): far trees whose wind is frozen, reprojected as still
+    // world points.
+    var voxel=false;
     if out.depth>0.0 {
-        let slot=textureLoad(visibility,pixel,0).r>>7u;
-        if slot>=arrayLength(&visible) {out.bias=1.0;return out;}
-        owner=visible[slot].x;
+        let id=textureLoad(visibility,pixel,0).r;
+        voxel=(id&0x80000000u)!=0u;
+        let slot=id>>7u;
+        if !voxel {
+            if slot>=arrayLength(&visible) {out.bias=1.0;return out;}
+            owner=visible[slot].x;
+        }
     }
     var grass=vec2<u32>(0u);var glass=vec2<u32>(0u);
     if motion.flags.y!=0u {grass=textureLoad(grass_metadata,pixel,0).rg;}
@@ -204,8 +212,10 @@ fn previous_source_point(owner:u32,world:vec3<f32>)->vec4<f32> {
     else {
         if !finite4(current) || abs(current.w)<1e-10 {out.bias=1.0;return out;}
         current=vec4<f32>(current.xyz/current.w,1.0);
-        previous=previous_source_point(owner,current.xyz);
-        if previous.w==0.0 {out.bias=1.0;return out;}
+        if voxel {previous=current;} else {
+            previous=previous_source_point(owner,current.xyz);
+            if previous.w==0.0 {out.bias=1.0;return out;}
+        }
     }
     let a=motion.current*current;let b=motion.previous*previous;
     if !finite4(a) || !finite4(b) || a.w<=1e-7 || b.w<=1e-7 {out.bias=1.0;return out;}

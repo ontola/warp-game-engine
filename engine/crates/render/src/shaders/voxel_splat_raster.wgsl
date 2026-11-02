@@ -56,6 +56,13 @@ fn kept(in: Out) -> bool {
     if !kept(in) { discard; }
     return in.splat;
 }
+// Into the scene's own visibility buffer (bit 31 marks a voxel; shade.wgsl)
+// and the splat id target the surface pass reads.
+struct MainOut { @location(0) visibility: u32, @location(1) splat: u32 };
+@fragment fn fs_main(in: Out) -> MainOut {
+    if !kept(in) { discard; }
+    return MainOut(0x80000000u | in.splat, in.splat);
+}
 // Sun map: depth only.
 @fragment fn fs_depth(in: Out) {
     if !kept(in) { discard; }

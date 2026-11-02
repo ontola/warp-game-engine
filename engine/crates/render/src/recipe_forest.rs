@@ -356,10 +356,11 @@ impl Pool {
 /// The renderer policy for a recipe forest in a game: ordinary screen-error
 /// cluster LOD, sampled optics, proxies at Policy's defaults.
 pub fn game_policy() -> Policy {
-    // Branch groups may take their voxels at up to 8 px of spatial error: at
-    // 1 px their coarsest cells (0.39 m error) fitted only past ~400 m, and
-    // between that and 40 m the screen-error triangle cut thinned the sprays
-    // to a third of their cover (forest_ladder: spruce 33 % at 150-600 m, now
-    // 104-113 %, at the same cost). The voxels keep their measured coverage.
-    Policy { max_error_pixels: 8.0, allow_sampled_optics: true, measured_source_cuts: false, ..Default::default() }
+    // Branch groups take their voxels at up to 32 px of spatial error. The
+    // screen-error triangle cut thins sprays as they shrink (forest_ladder
+    // spruce: 84 % of the source's cover at 40 m, 50 % at 80 m with 8 px);
+    // the voxels keep their measured coverage, and since shade lights them
+    // like the leaves (VOXEL_SURFACE) their tone too: 40-300 m within 96-105 %
+    // cover and 99-106 % tone for spruce and birch, grove 51 -> 19 ms.
+    Policy { max_error_pixels: 32.0, allow_sampled_optics: true, measured_source_cuts: false, ..Default::default() }
 }
