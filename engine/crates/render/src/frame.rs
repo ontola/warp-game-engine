@@ -821,6 +821,11 @@ pub struct Renderer {
     /// shade for procedural terrain pixels only (SHADE_CLASS 1); `shade`
     /// then lights everything else (2).
     terrain_shade: Option<wgpu::ComputePipeline>,
+    /// Constants of the shade pipelines with their diagnostics, and those
+    /// pipelines (shade, terrain shade), built the first time
+    /// Lighting::debug asks for a component view.
+    diagnostic_constants: Vec<(&'static str, f64)>,
+    shade_diagnostic: std::sync::OnceLock<(wgpu::ComputePipeline, Option<wgpu::ComputePipeline>)>,
     /// Coarse terrain material (shade.wgsl terrain_coarse; KERN_TERRAIN_COARSE=0
     /// turns it off), its half-resolution target per view, the stand-in
     /// bound while it is written, and its output layout.
@@ -1737,6 +1742,12 @@ impl Renderer {
         // KERN_SHADE_CLASSES=0: one shade pipeline for terrain and the rest.
         let shade_classes = terrain_coarse_on && std::env::var("KERN_SHADE_CLASSES").as_deref() != Ok("0");
         shade_constants.push(("SHADE_CLASS", if shade_classes {2.0} else {0.0}));
+        // Component diagnostics (Lighting::debug) are compiled out of the
+        // shade pipelines; the first frame that asks for one builds the
+        // diagnostic pair (shade_diagnostic). They cost 1.3-3.6 fps at the
+        // playtest cameras in registers alone.
+        let diagnostic_constants: Vec<(&'static str, f64)> = shade_constants.clone();
+        shade_constants.push(("SHADE_DIAGNOSTICS", 0.0));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
@@ -2012,6 +2023,8 @@ impl Renderer {
             voxel_surface,
             voxel_pass,
             terrain_shade,
+            diagnostic_constants,
+            shade_diagnostic: std::sync::OnceLock::new(),
             voxel_surface_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel surface"),
                 size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
                 dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
@@ -2685,6 +2698,7 @@ impl Renderer {
                 constants.push(("VOXEL_SURFACE", if self.voxel_surface {1.0} else {0.0}));
                 constants.push(("VOXEL_PASS", if self.voxel_pass.is_some() {1.0} else {0.0}));
                 constants.push(("SHADE_CLASS", if self.terrain_shade.is_some() {2.0} else {0.0}));
+                constants.push(("SHADE_DIAGNOSTICS", 0.0));
                 constants.push(("TERRAIN_COARSE", if self.terrain_coarse.is_some() {1.0} else {0.0}));
                 let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
@@ -4182,9 +4196,21 @@ impl Renderer {
                     entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t.1) }] })));
             let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = Vec::new();
             if let (Some(coarse), Some((bind, out))) = (&self.terrain_coarse, &coarse_binds) { passes.push(("terrain coarse", coarse, vec![&self.scene_bind, bind, out])); }
-            passes.push(("shade", &self.shade, vec![&self.scene_bind, &shade_bind]));
+            let diagnostic = (light.debug != 0.0 && !self.simple_lighting).then(|| self.shade_diagnostic.get_or_init(|| {
+                let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade diagnostics"),
+                    source: wgpu::ShaderSource::Wgsl(self.shade_text.as_str().into()) });
+                let make = |constants: &[(&str, f64)]| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("shade diagnostics"), layout: Some(&self.shade_pl), module: &module, entry_point: Some("shade"),
+                    compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() }, cache: gpu.pipeline_cache() });
+                let terrain: Vec<(&str, f64)> = self.diagnostic_constants.iter().map(|&(k, v)| match k {
+                    "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" => (k, 0.0), "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).collect();
+                (make(&self.diagnostic_constants), self.terrain_shade.as_ref().map(|_| make(&terrain)))
+            }));
+            passes.push(("shade", diagnostic.map_or(&self.shade, |d| &d.0), vec![&self.scene_bind, &shade_bind]));
             if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind])); }
-            if let Some(terrain) = &self.terrain_shade { passes.push(("shade terrain", terrain, vec![&self.scene_bind, &shade_bind])); }
+            if let Some(terrain) = &self.terrain_shade {
+                passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind]));
+            }
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {

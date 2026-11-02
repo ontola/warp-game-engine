@@ -190,6 +190,7 @@ override VOXEL_PASS: bool = false;
 // procedural rock), 2 everything but the terrain (field_surface compiled out).
 // Like the voxel pass: the kernel's size, not its work, set the pace.
 override SHADE_CLASS: u32 = 0u;
+override SHADE_DIAGNOSTICS: bool = true;
 const VOXEL_SKY_LIFT: f32 = 1.0;
 @group(1) @binding(20) var voxel_surface: texture_2d<u32>;
 
@@ -2409,7 +2410,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
-    if light.sky.z > 0.5 && light.sky.z < 1.5 {
+    if !SHADE_DIAGNOSTICS {} else if light.sky.z > 0.5 && light.sky.z < 1.5 {
         rad = vec3<f32>(sky_vis) * 6000.0;
     } else if light.sky.z > 1.5 && light.sky.z < 2.5 {
         rad = base * 6000.0;
