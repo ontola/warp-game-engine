@@ -104,3 +104,86 @@ Each layer keeps a cheap setting:
   casts from the same voxels past the near map, as now.
 - **Hot-reload and four-view budgets.** The cull pass grows; the r55
   four-view budget plan has to be rechecked.
+
+## Code map and findings (2 Nov 2026)
+
+These are paths under `engine/crates/render/src/`. The numbers are for the
+recipe spruce at 2560x1440 on the M5 Pro.
+
+**How a full tree becomes instances today.** `vegetation_asset.rs`,
+`SceneVegetation::append`, does the expansion:
+- Each branch with a volume gets one owner `GpuInstance` (`PART_WIND`, no
+  clusters), a `VolumeBinding`, an `aggregate_lod::Group` and a
+  `foliage_representations` binding.
+- Each placement gets its own `GpuInstance` and a 160 B `PartAttachment {pose,
+  owner, rest}`.
+- Each branch gets one `PartWind` pose.
+
+A spruce comes to 5,169 placements, 61 poses and ~5,230 instances, about
+1.8 MB resident per tree:
+
+| Per placement | Bytes |
+|---|---|
+| `GpuInstance` | 80 |
+| Previous-frame copy (motion.rs copies the whole buffer each frame) | 80 |
+| Wind coefficients | 16 |
+| `PartAttachment` | 160 |
+
+| Per pose | Bytes |
+|---|---|
+| Descriptor | 304 |
+| Pose | 96 |
+
+**Caps.** These limit how many trees can be full:
+- `recipe_forest::limits()` and `plant_streamed` fit the pool to
+  `part_wind::MAX_ATTACHMENTS` = 65,536, which is 12 spruces.
+- Behind that sit 4096 volume bindings (`foliage_volume_data::MAX_INSTANCES`,
+  about 68 trees), aggregate group and volume ids < 4096, and the
+  `foliage_selection` uniform `array<vec4<u32>,4096>` (cull.wgsl,
+  voxel_forest.rs).
+- `part_wind::RuntimeLimits`: 262,144 poses, 1M attachments, 512 MiB.
+
+**part_wind** (`shaders/part_wind.wgsl`) already runs on the GPU:
+- `schedule_assemblies` sleeps assemblies that no view sees and scales motion
+  by projected size.
+- `update_parts` evaluates the poses parent-first, but is dispatched over all
+  assemblies, not indirectly.
+- `update_attachments` writes `pose x rest` into every member `GpuInstance`
+  of an awake assembly, even members whose branch group is on voxels.
+
+Pose evaluation is therefore not the bottleneck; residency and per-placement
+culling are.
+
+**Culling.**
+- `cull.wgsl` runs one 64-lane workgroup per instance.
+- `instance_policy` hides a source member when its group's
+  `foliage_selection` chose voxels.
+- `cull_cluster` makes the DAG cut, using the aggregate's world triangle cut
+  when one is set.
+- There is no tree-level node above instances. `cull_groups.rs` has an
+  optional Morton hierarchy over owners; `AssemblyDescriptor.sphere` is a
+  per-tree bound.
+
+**Instance reads.** `instances[...]` is read 41 times across 17 shaders. For
+trees, these matter: cull (4), raster (1), shade (4), motion (1),
+voxel_forest (10) and part_wind.
+
+**Dead end: merged branch meshes.** I merged each branch's placements into
+one cluster mesh, giving one instance per branch (branches are rigid under
+part_wind).
+- The image is the same (PSNR 43.9 dB).
+- 12 full trees went from 23.5 to 27.2 fps, and 200 trees render.
+- The cost is ~1 GB of geometry per spruce or pine variant (2.6 GB for six
+  species), because the source is millions of separately modelled needles.
+- 60 full trees ran at 16 fps.
+- So: instanced shared parts as in Unreal's Assemblies, not merged geometry.
+- The patch lives in session scratch only; it was not committed.
+
+**Handover.** Full source geometry must hand over to part voxels
+(aggregate_lod) much closer to the camera than today. Otherwise "full trees
+everywhere" blows the raster budget, whatever the instancing.
+
+**Measuring.** Per-pass GPU timestamps overlap on Metal and gave wrong costs:
+"voxel composite" read 6-15 ms while removing it changed nothing. Measure by
+fps with one thing switched off at a time (the `--bench` deltas at the four
+playtest cameras in `build/screenshots/terrain-fly-*.json`).
