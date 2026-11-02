@@ -494,6 +494,10 @@ struct Shell<'g> {
     rebuilt: Option<Instant>,
 }
 
+/// Without a game's own cap, adaptive quality scales down from at most this
+/// render height.
+const ADAPTIVE_BASE_HEIGHT: u32 = 1440;
+
 /// Open a window and run the game until it closes.
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
     let mut devices = Devices::new(cfg.keyboard);
@@ -613,7 +617,8 @@ impl Shell<'_> {
         let render_height = match (&self.quality, base_height) {
             (Some(q), Some(h)) => Some(q.render_height(h)),
             (Some(q), None) => {
-                let h = q.render_height(size[1]);
+                // A 5K or 4K window starts from about 1440p, not native.
+                let h = q.render_height(size[1].min(ADAPTIVE_BASE_HEIGHT));
                 (h < size[1]).then_some(h)
             }
             (None, h) => h,
