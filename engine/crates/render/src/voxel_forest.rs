@@ -729,9 +729,12 @@ impl VoxelRenderer {
             .expect("invalid voxel integrator option shader");
         let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals);
         let gbuffer = {
+            let coarser: Vec<(&str, f64)> = std::env::var("KERN_VOXEL_SELF_SHADOW_COARSER").ok().and_then(|v| v.parse().ok())
+                .map(|v: f64| ("VOXEL_SELF_SHADOW_COARSER", v)).into_iter().collect();
             let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxel surface"), source: wgpu::ShaderSource::Wgsl(specialized_source.as_str().into()) });
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("voxel_splat_gbuffer"), layout: Some(&pipeline_layout),
-                module: &module, entry_point: Some("voxel_splat_gbuffer"), compilation_options: Default::default(), cache: gpu.pipeline_cache() })
+                module: &module, entry_point: Some("voxel_splat_gbuffer"), compilation_options: wgpu::PipelineCompilationOptions { constants: &coarser,
+                    ..Default::default() }, cache: gpu.pipeline_cache() })
         };
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
