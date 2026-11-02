@@ -24,6 +24,8 @@ use render::debug_ui::DebugKey;
 
 #[derive(Clone)]
 struct Args {
+    /// --biome: the ground stages are laid on (None: Sideways' own noise).
+    land: Option<sideways::stage::Land>,
     upscale: render::upscale::UpscaleMode,
     nature: crate::nature::Nature,
     gpu_profile: Option<String>, gpu_warmup: usize, frame_profile:Option<String>,
@@ -248,8 +250,10 @@ fn args(args: &[String]) -> Result<Args, String> {
     if hud_profile.is_some() && (smoke_frames==0 || smoke_frames>4096 || hud_warmup>=smoke_frames as usize) {
         return Err("HUD profiling needs --smoke-render 1..4096 and fewer warmup frames than rendered frames".into());
     }
+    // --biome NAME (or SIDEWAYS_BIOME): stages on the engine's terrain of that biome.
+    let land=match value("--biome").or_else(||std::env::var("SIDEWAYS_BIOME").ok()) {Some(b)=>Some(crate::biome_land::land(&b)?),None=>None};
     let hud=match opt("--hud","on").as_str(){"on"=>true,"off"=>false,_=>return Err("hud must be on or off".into())};
-    Ok(Args { upscale:crate::upscale::parse(args)?,nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,frame_profile,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_next_stage, smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay"),
+    Ok(Args { land, upscale:crate::upscale::parse(args)?,nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,frame_profile,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_next_stage, smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay"),
         debug_ui:args.iter().any(|a|a=="--debug-ui"),debug_ui_script:value("--debug-ui-script"),
         start_paused:args.iter().any(|a|a=="--start-paused"),
         // Hidden smoke runs stay silent unless asked.
@@ -257,7 +261,7 @@ fn args(args: &[String]) -> Result<Args, String> {
 }
 
 fn race(a: &Args) -> Race {
-    let settings = Settings { vegetation:a.nature.vegetation, stage_km: a.km, bots: a.views, rivals: 0, weather: Some(a.weather.clone()), ..Default::default() };
+    let settings = Settings { vegetation:a.nature.vegetation, stage_km: a.km, bots: a.views, rivals: 0, weather: Some(a.weather.clone()), land: a.land.clone(), ..Default::default() };
     Race::new(a.seed, settings, sideways::spec::Cars::load(None).expect("bundled car specifications"))
 }
 
