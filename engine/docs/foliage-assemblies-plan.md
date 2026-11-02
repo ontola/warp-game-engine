@@ -187,3 +187,21 @@ everywhere" blows the raster budget, whatever the instancing.
 "voxel composite" read 6-15 ms while removing it changed nothing. Measure by
 fps with one thing switched off at a time (the `--bench` deltas at the four
 playtest cameras in `build/screenshots/terrain-fly-*.json`).
+
+## Status (2 Nov 2026, evening)
+
+Done and on main:
+
+- **Milestone 1:** virtual members, on by default in terrain_fly.
+- **Milestone 3:**
+  - Voxel splats go into the main visibility buffer and are lit by shade.
+  - Branch voxels switch in at 32 px.
+  - Whole-plant voxels shade themselves through their own cells.
+- **Milestone 4 for terrain_fly:** the card ring is the low-end fallback only.
+- **Group selection packed:** a view now holds 16384 groups, enough for 240 full trees by default.
+
+**Milestone 2 (GPU per-tree selection, streamed full assemblies) is parked.**
+
+- With the group budget fixed at about 270 resident full trees, letting the GPU choose among resident trees only replaces the CPU's nearest-240 assignment. That assignment now has hysteresis.
+- The real gain needs streaming pages of assemblies, as Nanite does. That is a multi-day project whose payoff is detail at range, not frame time.
+- Frame time is now dominated by shade and by the voxel pipeline's fixed passes. See the commit log from 0e1c803 on.
