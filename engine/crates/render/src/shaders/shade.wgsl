@@ -178,6 +178,47 @@ struct ShadeTiles { x: atomic<u32>, y: u32, z: u32, pad: u32, tiles: array<u32> 
 // opaque surface is theirs; its composite replaces whatever shade wrote.
 override VOXEL_OCCLUSION: bool = false;
 @group(1) @binding(18) var voxel_depth: texture_depth_2d;
+// Rasterized voxel trees in the scene's own visibility buffer (bit 31 of the
+// id, voxel_forest Stage::Splats): their surface, packed by
+// voxel_splat_gbuffer, lit here like the leaves they stand for.
+override VOXEL_SURFACE: bool = false;
+@group(1) @binding(20) var voxel_surface: texture_2d<u32>;
+
+// A voxel pixel: the same sun, sky, contact and fog terms as a procedural
+// leaf in `shade`, from the voxel's albedo, picked normal lobe and leaf
+// fraction instead of a triangle's.
+fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
+    let ndc = vec2<f32>((f32(px.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(px.y) + 0.5) / view.size.y * 2.0);
+    let hit = view.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
+    let p = hit.xyz / hit.w;
+    let dist = distance(p, view.cam.xyz);
+    let g = textureLoad(voxel_surface, px, 0);
+    let ab = unpack2x16float(g.y);
+    let nz = unpack2x16float(g.w);
+    let base = vec3<f32>(unpack2x16float(g.x), ab.x);
+    var n = normalize(vec3<f32>(unpack2x16float(g.z), nz.x));
+    let rough = clamp(ab.y, 0.04, 1.0);
+    let leaf = nz.y;
+    let l = light.sun_dir.xyz;
+    let v = -dir;
+    var shadow = mix(1.0, shadow_at_surface(p, n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0), light.sun_color.w);
+    let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
+    let sky_vis = sky_visibility(p, n);
+    let back_sky_vis = sky_visibility(p, -n);
+    let refl = reflect(dir, n);
+    let ssao = screen_space_ao(px, size, p, n, dist);
+    let contact = contact_visibility(p + n * 0.025, n, refl, 0xffffffffu) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
+    let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
+    let front = (sky_irradiance(n) * sky_vis + bounce * (1.0 - sky_vis)) * contact.x;
+    let back = (sky_irradiance(-n) * back_sky_vis + bounce * (1.0 - back_sky_vis)) * contact.x;
+    let spec_contact = mix(contact.y, contact.x, smoothstep(0.08, 0.6, rough));
+    let env = mix(bounce / PI, environment(refl, rough, bounce), sky_vis) * spec_contact;
+    let response = thin_foliage_response(base, n, v, rough, leaf, sun_e, front, back, env);
+    var rad = response.direct + response.indirect + response.specular;
+    rad = apply_distance_fog(rad, dist, dir);
+    if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }
+    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), 1.0));
+}
 // Coarse terrain material (TERRAIN_COARSE): field_surface once per 2x2
 // pixels, at each quad's centre, packed by terrain_coarse below. Where a
 // pixel spans more than COARSE_FOOTPRINT_M of ground, shade interpolates it
@@ -1833,6 +1874,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     if VOXEL_OCCLUSION && textureLoad(voxel_depth, px, 0) > depth { return; }
     let id = textureLoad(vis_tex, px, 0).r;
+    if VOXEL_SURFACE && (id & 0x80000000u) != 0u { shade_voxel(px, size, dir, depth); return; }
     let vis = visible[id >> 7u];
     let tri = id & 127u;
     let cl = clusters[vis.y];
