@@ -59,7 +59,9 @@ fn scene(tier: Option<Tier>, plant: &render::vegetation_asset::CookedPlant, card
     ground(&mut scene, half);
     let Some(tier) = tier else { return Ok(scene) };
     let variants = std::slice::from_ref(plant);
-    let game = recipe_forest::game_policy();
+    let mut game = recipe_forest::game_policy();
+    if std::env::var("LADDER_MEASURED_CUTS").is_ok() { game.measured_source_cuts = true; }
+    if let Some(e) = std::env::var("LADDER_MAX_ERR").ok().and_then(|v| v.parse().ok()) { game.max_error_pixels = e; }
     match tier {
         // The finest voxel error a policy accepts: groups stay source.
         // At most 12 full spruces fit the part-wind budget: in the grove the
@@ -85,7 +87,8 @@ fn scene(tier: Option<Tier>, plant: &render::vegetation_asset::CookedPlant, card
 
 fn lighting() -> Lighting {
     let (el, az) = (28f32.to_radians(), 135f32.to_radians());
-    Lighting { taa: 0., sharpen: 0., sun_dir: Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos()), ..Default::default() }
+    let lod = std::env::var("LADDER_LOD_PIXELS").ok().and_then(|v| v.parse().ok()).unwrap_or(Lighting::default().lod_pixels);
+    Lighting { taa: 0., sharpen: 0., lod_pixels: lod, sun_dir: Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos()), ..Default::default() }
 }
 
 /// The camera `d` metres from the tree, looking at its middle from a little
@@ -116,7 +119,18 @@ fn measure(img: &[u8], bg: &[u8]) -> (usize, [f32; 3], [u32; 4]) {
 }
 
 fn main() -> Result<(), String> {
-    let out = std::env::args().nth(1).map(PathBuf::from)
+    // --only TIER[,TIER] (source, full, cards, proxy4, proxy8), --at M[,M],
+    // --no-grove, --species spruce|birch: a quicker partial ladder.
+    let args: Vec<String> = std::env::args().collect();
+    let flag = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
+    let only: Option<Vec<String>> = flag("--only").map(|s| s.split(',').map(String::from).collect());
+    let at: Vec<f32> = flag("--at").map(|s| s.split(',').filter_map(|v| v.parse().ok()).collect()).unwrap_or(DISTANCES.to_vec());
+    let species_only = flag("--species");
+    let tier_key = |t: Tier| match t { Tier::Source => "source", Tier::Aggregate => "full", Tier::Cards => "cards",
+        Tier::ProxyFly => "proxy4", Tier::ProxySideways => "proxy8" };
+    let wanted = |t: Tier| t == Tier::Source || only.as_ref().is_none_or(|o| o.iter().any(|k| k == tier_key(t)));
+    let out = args.iter().skip(1).find(|a| !a.starts_with("--") && args.windows(2).all(|w| !(w[1] == **a && w[0].starts_with("--"))))
+        .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/screenshots/forest-ladder"));
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     let cache = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/cook-cache");
@@ -128,6 +142,7 @@ fn main() -> Result<(), String> {
     let mut table = String::from("# Forest density ladder\n\nCovered pixels and mean linear colour of covered pixels, each tier against the branch source at the same distance (2560x1440, 50 deg FOV, sun 28 deg, no TAA).\n");
     let mut report = Vec::new();
     for (si, (name, recipe)) in species.iter().enumerate() {
+        if species_only.as_ref().is_some_and(|s| s != name) { continue; }
         let tree = [Tree { pos: Vec3::ZERO, yaw: 0.4, scale: 1.0, variant: 0 }];
         let render = |tier: Option<Tier>, d: f32| -> Result<Vec<u8>, String> {
             let s = scene(tier, &cooked[si].plant, &cards[si], &tree, 3000.)?;
@@ -139,11 +154,12 @@ fn main() -> Result<(), String> {
         };
         table += &format!("\n## {name}\n\n| distance | tier | covered px | vs source | mean colour (linear) | colour vs source |\n|---|---|---|---|---|---|\n");
         let mut sheet: Vec<Vec<image::RgbaImage>> = vec![Vec::new(); TIERS.len()];
-        for &d in &DISTANCES {
+        for &d in &at {
             let bg = render(None, d)?;
             let mut reference = None;
             let mut crop = None;
             for (ti, &(tier, label)) in TIERS.iter().enumerate() {
+                if !wanted(tier) { continue; }
                 let img = render(Some(tier), d)?;
                 let (n, colour, bbox) = measure(&img, &bg);
                 if tier == Tier::Source {
@@ -171,13 +187,14 @@ fn main() -> Result<(), String> {
             eprintln!("{name} {d} m done");
         }
         // Contact sheet: rows tiers, columns distances.
-        let mut out_img = image::RgbaImage::from_pixel(160 * DISTANCES.len() as u32, 160 * TIERS.len() as u32, image::Rgba([0, 0, 0, 255]));
+        let mut out_img = image::RgbaImage::from_pixel(160 * at.len() as u32, 160 * TIERS.len() as u32, image::Rgba([0, 0, 0, 255]));
         for (r, row) in sheet.iter().enumerate() {
             for (c, cell) in row.iter().enumerate() { image::imageops::overlay(&mut out_img, cell, c as i64 * 160, r as i64 * 160); }
         }
         out_img.save(out.join(format!("{name}_ladder.png"))).map_err(|e| e.to_string())?;
     }
     std::fs::write(out.join("table.md"), &table).map_err(|e| e.to_string())?;
+    if args.iter().any(|a| a == "--no-grove") { println!("{table}"); return Ok(()); }
     // Perf: a 20 x 20 grove, 8 m apart, seen from 60 m out and 20 m up.
     table += "\n## Grove timing (20 x 20 spruces, 2560x1440, median of 8 frames, ms; full tiers: nearest 12 full, rest proxies)\n\n| tier | GPU total | top passes |\n|---|---|---|\n";
     let mut grove: Vec<Tree> = (0..400).map(|i| Tree { pos: Vec3::new((i % 20) as f32 * 8. - 76., 0., (i / 20) as f32 * 8. - 76.),
@@ -186,6 +203,7 @@ fn main() -> Result<(), String> {
         x: 0, y: 0, w: W, h: H };
     grove.sort_by(|a, b| a.pos.distance(cam.cam.pos).total_cmp(&b.pos.distance(cam.cam.pos)));
     for &(tier, label) in &TIERS {
+        if !wanted(tier) { continue; }
         let s = scene(Some(tier), &cooked[0].plant, &cards[0], &grove, 3000.)?;
         let renderer = Renderer::new(&gpu, &s, &light);
         let mut totals = Vec::new();
