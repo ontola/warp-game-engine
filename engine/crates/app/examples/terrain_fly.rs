@@ -4,6 +4,7 @@
 //!   cargo run --release -p app --example terrain_fly
 //!   cargo run --release -p app --example terrain_fly -- --style alpine --seed 3
 //!   cargo run --release -p app --example terrain_fly -- --track   (a gravel road the land bends to)
+//!   cargo run --release -p app --example terrain_fly -- --profile low   (Quest-class settings)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
 //!   ... --no-trees --grass --recipe N   (N nearest trees in full, default 240; then voxel proxies; --cards N for a card ring)
@@ -512,7 +513,8 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     // (motion pan test, playtest cameras 3 and 4). Its history converges
     // slowly (blend 0.04) and is barely sharpened, which re-adds shimmer.
     // --taa 0 turns it off.
-    light.taa = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--taa").and_then(|w| w[1].parse().ok()).unwrap_or(1.0);
+    let low = std::env::args().collect::<Vec<_>>().windows(2).any(|w| w[0] == "--profile" && w[1] == "low");
+    light.taa = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--taa").and_then(|w| w[1].parse().ok()).unwrap_or(if low { 0.0 } else { 1.0 });
     light.taa_blend = 0.04;
     light.sharpen = 0.2;
     // --light key=value[,key=value]: Lighting::set, for look and TAA tuning.
@@ -702,12 +704,24 @@ fn main() -> Result<(), String> {
     }
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.windows(2).find(|w| w[0] == k).map(|w| w[1].clone());
+    // --profile low: a Quest-class budget. Simple lighting (no shadow maps,
+    // GI or occlusion), 720p rendering, no TAA and 30 full trees; the voxel
+    // forest keeps its reach (simple lighting has no painted far forest, so
+    // shorter left the hills bare). M5 Pro at 1280x720: 116-199 fps at the
+    // playtest cameras, against 75-84 at full quality. Explicit flags and
+    // KERN_/WARP_ variables still win.
+    let low = arg("--profile").as_deref() == Some("low");
+    if low {
+        // Single-threaded here: nothing has started yet.
+        if std::env::var_os("KERN_SIMPLE_LIGHTING").is_none() { unsafe { std::env::set_var("KERN_SIMPLE_LIGHTING", "1"); } }
+        if std::env::var_os("WARP_RENDER_HEIGHT").is_none() { unsafe { std::env::set_var("WARP_RENDER_HEIGHT", "720"); } }
+    }
     let seed = arg("--seed").map(|s| s.parse().map_err(|_| "--seed N")).transpose()?.unwrap_or(1);
     let style = arg("--style").map(|s| STYLES.iter().position(|n| *n == s).ok_or("--style default|lowland|alpine|polder|tundra|desert")).transpose()?.unwrap_or(0);
     let world = World { trees: !args.iter().any(|a| a == "--no-trees"), grass: args.iter().any(|a| a == "--grass"),
         firs: args.iter().any(|a| a == "--firs"),
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
-        recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(World::default().recipe_trees), ..World::default() };
+        recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(if low { 30 } else { World::default().recipe_trees }), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
     // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
     if let Some(path) = arg("--from") {
