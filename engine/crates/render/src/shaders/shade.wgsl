@@ -263,7 +263,9 @@ fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
 override TERRAIN_COARSE: bool = false;
 const COARSE_FOOTPRINT_M: f32 = 0.08;
 @group(1) @binding(19) var terrain_coarse_tex: texture_2d<u32>;
-@group(2) @binding(0) var terrain_coarse_out: texture_storage_2d<rgba32uint, write>;
+// Group 3, beside the bakes' outputs: shade.wgsl is shared, and group 2
+// belongs to the passes that include it.
+@group(3) @binding(32) var terrain_coarse_out: texture_storage_2d<rgba32uint, write>;
 var<workgroup> tile_has_geometry: atomic<u32>;
 
 struct Gi {

@@ -83,14 +83,14 @@ pub(crate) fn shader_source() -> Result<String, String> {
             "world_tree(ray.identity>>12u)",
         ),
         (
-            "min(tree.identity.z-1u,volume_selection[ray.identity>>12u].y)",
+            "min(tree.identity.z-1u,volume_selection_at(ray.identity>>12u).y)",
             "tree.identity.z-1u",
         ),
         // This consumer uses the legacy footprint-selected mip chain, not
         // aggregate candidate decisions. Specialize the shared exact-level
         // branches to the explicit legacy sentinel without adding a binding.
         (
-            "volume_selection[ray.identity>>12u]",
+            "volume_selection_at(ray.identity>>12u)",
             "vec4<u32>(1u,0xffffffffu,0u,0u)",
         ),
         // The world-space wind shear has norm <= 1+|shear|. Keep the footprint
