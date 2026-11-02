@@ -62,6 +62,10 @@ fn main() {
                 frames: opt("--frames", "400").parse().unwrap(),
                 size: (size[0], size[1]),
                 weather: args.iter().position(|a| a == "--weather").map(|i| args[i + 1].clone()),
+                land: match args.iter().position(|a| a == "--biome").map(|i| args[i + 1].clone()).or_else(|| std::env::var("SIDEWAYS_BIOME").ok()) {
+                    Some(b) => match biome_land::land(&b) { Ok(l) => Some(l), Err(e) => { eprintln!("shot: {e}"); std::process::exit(2); } },
+                    None => None,
+                },
                 lod_pixels: opt("--lod", "1").parse().unwrap(),
                 picks: args
                     .iter()

@@ -16,6 +16,8 @@ pub struct ShotArgs {
     pub frames: u64,
     pub size: (u32, u32),
     pub weather: Option<String>,
+    /// `--biome NAME` (or SIDEWAYS_BIOME): the stage on the engine's terrain.
+    pub land: Option<sideways::stage::Land>,
     pub lod_pixels: f32,
     pub picks: Vec<(u32, u32)>,
     /// `--set key=value` light overrides.
@@ -99,6 +101,7 @@ pub fn prepare(a: &ShotArgs) -> Result<Setup, String> {
     settings.stage_km = a.km;
     settings.start_at = a.at;
     settings.weather = a.weather.clone();
+    settings.land = a.land.clone();
     settings.vegetation = a.nature.vegetation;
     if a.views > 1 {
         settings.bots = a.views;
