@@ -397,3 +397,27 @@ capture or controller playtest. Earlier dated sections record their own state.
   No new fullscreen playtest or GPU performance benchmark was launched. The
   complete fullscreen handoff and controller feel need the next playtest; no
   new performance numbers or full visual parity are claimed.
+
+### Exhaust / sonic-vapor follow-up (2 November 2026)
+
+Forward exhaust now integrates a bounded, tapered 3D volume (16 samples per
+covered pixel). The motor stays bright, with a smaller, dimmer blue plume;
+countdown has lamps only. Luau controls length, width, boost gain and camera
+distance/height/FOV. Speed display is scaled by 0.75 without changing motion;
+the sonic threshold is correspondingly 457.33 simulation units/s, roughly
+1235 displayed km/h, with a 0.72-second condensation burst.
+
+The visible diagonal smoke channels reproduced in an isolated GPU fixture:
+the thresholded lattice-noise shader produced adjacent-pixel jumps of 64/255.
+Smooth overlapping billows reduce that to 6/255. The ignored GPU regression
+requires visible vapor and a gradient below 20/255; it passed independently.
+All 29 application tests pass (the GPU test is run separately). The retained
+`boost-onset.json` now includes the lamp-only countdown. Seven 1600x900 city
+captures are in `build/jet-refined-review`; the testbuild includes these changes.
+
+Matched diagnostic runs used city seed 35, 3840x2160, 780 initial ticks, 30
+warmup frames and 120 measured frames, with one and four players. Reports are
+`build/jet-refined-{1p,4p}-{on,off}.json`. Sprite-pass medians ranged from 0.12
+to 0.15 ms, but total covered GPU intervals varied from 18.6 to 35.9 ms across
+these runs. This is too variable to establish a whole-frame performance delta
+or a stable FPS claim, and does not measure the worst-case boost burst.
