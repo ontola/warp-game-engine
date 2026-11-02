@@ -32,8 +32,9 @@ pub trait World: Sync {
     /// A named context field at (x, z): "forest" (share of forest), later
     /// "road_distance", "track_side", biome weights. 0 when unknown.
     fn field(&self, name: &str, x: f32, z: f32, ground: &Sample) -> f32 {
-        let _ = (name, x, z, ground);
-        0.0
+        let _ = (x, z, ground);
+        // A world without constraints is clear of roads everywhere.
+        if name == "clearance" { 1e6 } else { 0.0 }
     }
 }
 
