@@ -18,6 +18,8 @@ const UV: [f32; 4] = [0., 0., 1., 1.];
 #[derive(Deserialize)]
 pub struct Config {
     boost_arc_start: f32, boost_arc_sustain: f32, boost_arc_decay: f32,
+    boost_arc_duration: f32, boost_arc_width: f32,
+    sonic_speed: f32, sonic_reset_speed: f32, vapor_life: f32, vapor_opacity: f32,
     boost_arc_spread: f32, boost_arc_height: f32,
     boost_width: f32, boost_radiance: f32, engine_glare_pixels: f32,
     warp_world_pixels: f32, warp_view_pixels: f32,
@@ -62,6 +64,8 @@ impl Config {
             .map_err(|e| e.to_string())?;
         let values = [
             c.boost_arc_start,c.boost_arc_sustain,c.boost_arc_decay,
+            c.boost_arc_duration,c.boost_arc_width,
+            c.sonic_speed,c.sonic_reset_speed,c.vapor_life,c.vapor_opacity,
             c.boost_arc_spread,c.boost_arc_height,c.boost_width,c.boost_radiance,c.engine_glare_pixels,
             c.warp_world_pixels,c.warp_view_pixels,c.emp_spark_fade,c.sentry_spark_life,
             c.damage_smoke_energy,
@@ -84,6 +88,9 @@ impl Config {
         if values.iter().any(|v| !v.is_finite() || *v < 0.)
             || c.warp_view_pixels>64. || c.warp_world_pixels>64. || c.sentry_spark_life>0.25 || c.emp_spark_fade<=0.
             || c.boost_arc_start>40. || c.boost_arc_sustain>20. || c.boost_arc_spread>20. || c.boost_arc_height>12.
+            || !(0.05..=1.).contains(&c.boost_arc_duration) || !(0.02..=0.5).contains(&c.boost_arc_width)
+            || !(330.0..=370.).contains(&c.sonic_speed) || c.sonic_reset_speed>=c.sonic_speed
+            || !(0.15..=0.8).contains(&c.vapor_life) || c.vapor_opacity>0.25
             || !(1.0..=3.).contains(&c.boost_width) || !(1.0..=4.).contains(&c.boost_radiance)
             || !(0.0..=48.).contains(&c.engine_glare_pixels)
             || c.exhaust_color.iter().any(|v| !v.is_finite() || !(0.0..=1.).contains(v))
@@ -106,6 +113,8 @@ impl Config {
 #[derive(Default)]
 struct Engine {
     boost_start: Option<f32>,
+    supersonic: bool,
+    vapor_start: Option<f32>,
     power: f32,
     brake: f32,
     travel: f32,
@@ -242,6 +251,39 @@ impl Jets {
             if !boosting {e.boost_start=None;} else if e.boost_start.is_none(){e.boost_start=Some(time);}
             let onset=e.boost_start.map_or(0.,|t| (-(time-t).max(0.)*c.boost_arc_decay).exp());
             let boost = if boosting { 1. } else { 0. };
+            // Cosmetic Mach crossing: never changes boost/handling. Hysteresis
+            // prevents repeated bursts while hovering around the sound barrier.
+            if !alive || race.countdown>0. {e.supersonic=false;e.vapor_start=None;}
+            else {
+                if p.speed < c.sonic_reset_speed as f64 {e.supersonic=false;}
+                if !e.supersonic && p.speed>=c.sonic_speed as f64 {
+                    e.supersonic=true;e.vapor_start=Some(time);
+                }
+                if let Some(start)=e.vapor_start {
+                    let age=(time-start)/c.vapor_life;
+                    if age>=1. {e.vapor_start=None;}
+                    else {
+                        let envelope=smooth(0.,0.07,age)*(1.-smooth(0.3,1.,age));
+                        // Thirty low-opacity billboards form a hollow turbulent
+                        // cone, not a translucent solid mesh or full-screen fog.
+                        for band in 0..3u32 {for sector in 0..10u32 {
+                            let seed=self.strike.wrapping_mul(197).wrapping_add(i as u32*641+band*71+sector*31);
+                            if hash(seed)<0.12 {continue;}
+                            let t=(band as f32+0.5)/3.;
+                            let angle=(sector as f32+hash(seed+1)*0.55)*std::f32::consts::TAU/10.+age*0.8;
+                            let radius=(0.8+t*5.8)*(0.88+hash(seed+2)*0.24)*(1.+age*0.35);
+                            let local=Vec3::new(angle.cos()*radius,angle.sin()*radius,2.-t*9.-age*3.+hash(seed+3));
+                            let at=pose.origin+pose.basis*local;
+                            let size=1.2+radius*0.55;
+                            let mut cloud=glow(at,[size*(0.8+hash(seed+4)*0.5),size],Vec3::new(0.72,0.84,1.)*radiance*0.26,14);
+                            cloud.facing=render::sprites::Facing::Screen;
+                            cloud.additive=false;cloud.opacity=c.vapor_opacity*envelope*(0.6+hash(seed+5)*0.4);
+                            cloud.params=[hash(seed+6)*20.,time,age,0.];
+                            self.sprites.push(cloud);
+                        }}
+                    }
+                }
+            }
             let color =
                 Vec3::new(0.25, 0.7, 1.).lerp(Vec3::from_array(super::visuals::COLORS[i]), 0.45);
             let base = Affine3A::from_mat3_translation(pose.basis, pose.origin);
@@ -386,7 +428,7 @@ impl Jets {
                         w.opacity = (1. - age).powi(2) * smooth(0., 1., distance);
                         self.sprites.push(w);
                     }
-                    if boosting {
+                    if boosting && e.boost_start.is_some_and(|start| time-start<c.boost_arc_duration) {
                         // Two possible road strikes plus one short corona fork per
                         // nozzle. Replace each presentation: no faded bolt history.
                         for branch in 0..3u32 {
@@ -394,7 +436,7 @@ impl Jets {
                                 .wrapping_add(i as u32*83+side as u32*19+branch*71);
                             if branch>0 && hash(seed)<0.45 {continue;}
                             let reach=(c.boost_arc_sustain+(c.boost_arc_start-c.boost_arc_sustain)*onset)
-                                *(0.18+hash(seed+2).powi(2)*1.05);
+                                *(0.55+hash(seed+2).powi(2)*0.65);
                             let spread=c.boost_arc_spread*(0.45+onset*0.55);
                             let road=race.world.track.sample(p.distance-reach as f64);
                             let road_x=(p.x+sign as f64*(2.+hash(seed+3)*spread) as f64)
@@ -417,9 +459,9 @@ impl Jets {
                                 let b=at*(1.-t).powi(2)+crown*(2.*t*(1.-t))+end*t*t
                                     +(sideways*(hash(seed+segment*23)-0.5)
                                         +up*(hash(seed+segment*47)-0.35))*envelope*(0.6+onset*1.8);
-                                let mut arc=shaft(a,b,(0.075+onset*0.045)*(1.-t*0.45),
+                                let mut arc=shaft(a,b,(0.035+onset*c.boost_arc_width)*(1.-t*0.45),
                                     light*(1.7+hash(seed+6)),5,[0.;4]);
-                                arc.min_pixels=1.25;
+                                arc.min_pixels=0.75+onset*1.75;
                                 self.sprites.push(arc);a=b;
                             }
                             if grounded {
@@ -678,6 +720,27 @@ pub fn control_transform(name: &str, local: Affine3A, input: Input, brake: f32) 
 mod tests {
     use super::*;
     #[test]
+    fn sonic_cone_crosses_once_fluctuates_freezes_and_dissipates_without_changing_boost() {
+        let mut jets=Jets::new(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let mut race=Race::new(35,"normal","city",1,3);race.countdown=0.;
+        race.pilots[0].speed=315.;race.pilots[0].boost=2.;
+        let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
+        let vapor=|j:&Jets|j.sprites.iter().filter(|s|s.effect==14).cloned().collect::<Vec<_>>();
+        jets.update(&race,&poses,0.);assert!(vapor(&jets).is_empty());
+        race.pilots[0].speed=350.;jets.update(&race,&poses,1.);jets.update(&race,&poses,1.1);
+        let first=vapor(&jets);assert!(!first.is_empty() && first.len()<=30);
+        assert!(first.iter().all(|s|!s.additive && s.opacity<=0.18));
+        jets.update(&race,&poses,1.1);assert_eq!(first,vapor(&jets));
+        jets.update(&race,&poses,1.11);assert_ne!(first,vapor(&jets));
+        jets.update(&race,&poses,1.5);assert!(vapor(&jets).is_empty());
+        race.pilots[0].speed=340.;jets.update(&race,&poses,1.6);
+        race.pilots[0].speed=345.;jets.update(&race,&poses,1.7);assert!(vapor(&jets).is_empty());
+        race.pilots[0].speed=300.;jets.update(&race,&poses,1.8);
+        race.pilots[0].speed=350.;jets.update(&race,&poses,2.);jets.update(&race,&poses,2.1);
+        assert!(!vapor(&jets).is_empty());assert_eq!(race.pilots[0].boost,2.);
+        race.pilots[0].crashed=true;jets.update(&race,&poses,2.2);assert!(vapor(&jets).is_empty());
+    }
+    #[test]
     fn newest_sentry_shot_only_and_impacts_outlive_the_single_frame_tracer() {
         let root=Path::new(env!("CARGO_MANIFEST_DIR"));let mut jets=Jets::new(root).unwrap();
         let mut race=Race::new(35,"normal","city",1,3);
@@ -737,9 +800,12 @@ mod tests {
         let poses:Vec<_>=(0..6).map(|i|race.pose(i)).collect();
         jets.update(&race,&poses,1.);
         let start=jets.sprites.iter().find(|s|s.effect==12).unwrap().size[0];
-        jets.update(&race,&poses,2.);
+        jets.update(&race,&poses,1.16);
         let sustain=jets.sprites.iter().find(|s|s.effect==12).unwrap().size[0];
         assert!(start>sustain*2.);
+        jets.update(&race,&poses,1.33);
+        assert!(!jets.sprites.iter().any(|s|s.effect==5 || s.effect==12),"lightning stops while the boost continues");
+        assert!(jets.sprites.iter().any(|s|s.effect==1),"engine jet continues");
         race.pilots[0].emp_time=2.;jets.update(&race,&poses,2.1);
         let bright=jets.sprites.iter().filter(|s|s.effect==5).map(|s|s.radiance.length()).fold(0.,f32::max);
         assert!(bright>0.);assert!(!jets.sprites.iter().any(|s|s.effect==12));

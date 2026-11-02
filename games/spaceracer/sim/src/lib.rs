@@ -1,6 +1,7 @@
 //! Native Space Racer simulation. Source provenance and parity gates live beside this crate.
 pub mod chase;
 mod curve;
+mod contacts;
 pub mod flight;
 pub mod generation;
 pub mod handling;

@@ -686,74 +686,62 @@ impl Race {
             self.pilots.iter().all(|p| p.finished) || self.clock >= self.balance.race_timeout;
     }
     fn contacts(&mut self) {
-        for a in 0..self.pilots.len() {
-            for b in a + 1..self.pilots.len() {
-                if self.pilots[a].warp_time > 0. || self.pilots[b].warp_time > 0. {
-                    continue;
-                }
-                if self.pilots[a].airborne || self.pilots[b].airborne {
-                    if self.pilots[a].crashed
-                        || self.pilots[b].crashed
-                        || self.pilots[a].finished
-                        || self.pilots[b].finished
-                    {
+        // Resolve packs against rails repeatedly. EMP disables engines, not hulls.
+        for _ in 0..10 {
+            let mut touching=false;
+            for a in 0..self.pilots.len() {
+                for b in a+1..self.pilots.len() {
+                    if !crate::contacts::solid(&self.pilots[a]) || !crate::contacts::solid(&self.pilots[b]) {continue;}
+                    if self.pilots[a].airborne || self.pilots[b].airborne {
+                        let separation=crate::contacts::air(self.pose(a),self.pose(b));
+                        if separation.length_squared()<0.000001 {continue;}
+                        touching=true;
+                        let normal=separation.normalize();
+                        // Never push a grounded ship vertically through the road.
+                        let both=self.pilots[a].airborne && self.pilots[b].airborne;
+                        let velocity=|i:usize|if self.pilots[i].airborne {self.drivers[i].motion.air.velocity}else{self.drivers[i].motion.ground_velocity};
+                        let closing=(velocity(a)-velocity(b)).dot(normal);
+                        let impulse=(-closing).max(0.)*if both {0.55}else{1.1};
+                        for (i,sign) in [(a,1.),(b,-1.)] {
+                            if !self.pilots[i].airborne {continue;}
+                            let air=&mut self.drivers[i].motion.air;
+                            air.position+=(separation+normal*0.004)*sign*if both {0.5}else{1.};
+                            air.velocity+=normal*impulse*sign;
+                        }
                         continue;
                     }
-                    let delta = self.pose(a).origin - self.pose(b).origin;
-                    let distance = delta.length();
-                    if distance < 10. {
-                        let normal = delta.try_normalize().unwrap_or(Vec3::X);
-                        let correction = normal * (10. - distance) * 0.5;
-                        for (i, sign) in [(a, 1.), (b, -1.)] {
-                            if self.pilots[i].airborne {
-                                self.drivers[i].motion.air.position += correction * sign;
-                                let v = self.drivers[i].motion.air.velocity.dot(normal) * sign;
-                                if v < 0. {
-                                    self.drivers[i].motion.air.velocity -=
-                                        normal * (v * sign * 0.2);
-                                }
-                            } else {
-                                let right = self
-                                    .world
-                                    .track
-                                    .sample(self.pilots[i].distance)
-                                    .frame(self.pilots[i].x)
-                                    .x_axis;
-                                self.pilots[i].x += (correction * sign).dot(right) as f64;
-                            }
+                    let n=self.world.track.sample(self.pilots[a].distance);
+                    let separation=crate::contacts::ground(&self.pilots[a],&self.pilots[b],self.world.track.length,&n);
+                    if separation.length_squared()<0.000001 {continue;}
+                    touching=true;
+                    let normal=separation.normalize();
+                    let correction=separation*0.5+normal*0.002;
+                    self.pilots[a].x+=correction.x;self.pilots[b].x-=correction.x;
+                    self.pilots[a].distance+=correction.y;self.pilots[b].distance-=correction.y;
+                    let velocity=|p:&Pilot|glam::DVec2::new(p.slip,p.speed*p.heading.cos());
+                    let closing=(velocity(&self.pilots[a])-velocity(&self.pilots[b])).dot(normal);
+                    if closing<0. {
+                        let impulse=-closing*0.55;
+                        for (i,sign) in [(a,1.),(b,-1.)] {
+                            let p=&mut self.pilots[i];
+                            p.slip+=normal.x*impulse*sign;
+                            let forward=glam::DVec2::new(p.heading.sin(),p.heading.cos());
+                            p.speed=(p.speed+normal.dot(forward)*impulse*sign).max(0.);
                         }
                     }
-                    continue;
-                }
-                if !race_rules::eligible(&self.pilots[a]) || !race_rules::eligible(&self.pilots[b])
-                {
-                    continue;
-                }
-                let da = (self.pilots[a].distance - self.pilots[b].distance
-                    + self.world.track.length * 0.5)
-                    .rem_euclid(self.world.track.length)
-                    - self.world.track.length * 0.5;
-                let dx = self.pilots[a].x - self.pilots[b].x;
-                if da.abs() < 9. && dx.abs() < 9.4 {
-                    let side = if dx >= 0. { 1. } else { -1. };
-                    let correction = (9.4 - dx.abs()) * 0.5;
-                    self.pilots[a].x += side * correction;
-                    self.pilots[b].x -= side * correction;
-                    for (attacker, victim) in [(a, b), (b, a)] {
-                        if self.drivers[attacker].bump.time > 0.
-                            && !self.drivers[attacker].bump.hits.contains(&victim)
-                        {
+                    for (attacker,victim) in [(a,b),(b,a)] {
+                        if self.drivers[attacker].bump.time>0. && self.pilots[attacker].emp_time<=0.
+                            && !self.drivers[attacker].bump.hits.contains(&victim) {
                             self.drivers[attacker].bump.hits.push(victim);
-                            self.damage(
-                                attacker,
-                                victim,
-                                12.,
-                                self.drivers[attacker].bump.side * 55.,
-                            );
+                            self.damage(attacker,victim,12.,self.drivers[attacker].bump.side*55.);
                         }
                     }
                 }
             }
+            for p in &mut self.pilots {
+                if !p.airborne && !p.crashed {p.constrain(self.world.track.sample(p.distance).surface());}
+            }
+            if !touching {break;}
         }
     }
     pub(crate) fn damage(&mut self, owner: usize, target: usize, amount: f64, impulse: f64) {
@@ -1024,6 +1012,43 @@ impl Race {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn contact_race() -> Race {
+        let mut r=Race::new(35,"normal","city",1,3);
+        for p in &mut r.pilots {p.recovery=3.;p.distance=200.;p.x=0.;p.heading=0.;p.speed=200.;}
+        r.pilots[0].recovery=0.;r.pilots[1].recovery=0.;r
+    }
+    #[test]
+    fn emp_hulls_separate_and_transfer_rear_impact_momentum() {
+        for emp in [0.,3.] {
+            let mut r=contact_race();r.pilots[0].distance=207.;r.pilots[0].emp_time=emp;
+            r.pilots[1].speed=300.;r.contacts();
+            assert!(r.pilots[0].distance-r.pilots[1].distance>=8.9);
+            assert!(r.pilots[0].speed>200. && r.pilots[1].speed<300.);
+            assert_eq!(r.pilots[0].x,0.,"rear hits must not teleport cars sideways");
+        }
+    }
+    #[test]
+    fn rotated_emp_hulls_and_three_wide_pack_resolve() {
+        let mut r=contact_race();r.pilots[0].heading=0.7;r.pilots[0].x=7.;r.pilots[1].emp_time=3.;r.contacts();
+        let n=r.world.track.sample(r.pilots[0].distance);
+        assert!(crate::contacts::ground(&r.pilots[0],&r.pilots[1],r.world.track.length,&n).length()<0.02);
+        let mut r=contact_race();r.pilots[2].recovery=0.;
+        for i in 0..3 {r.pilots[i].x=(i as f64-1.)*8.;r.pilots[i].emp_time=3.;}
+        r.contacts();
+        for (a,b) in [(0,1),(1,2)] {assert!((r.pilots[a].x-r.pilots[b].x).abs()>9.38);}
+    }
+    #[test]
+    fn warp_and_recovery_ghosts_are_deliberate_emp_is_not() {
+        for recovery in [false,true] {
+            let mut r=contact_race();
+            if recovery {r.pilots[0].recovery=1.;}else{r.pilots[0].warp_time=1.;}
+            r.contacts();assert_eq!(r.pilots[0].x,r.pilots[1].x);
+            assert_eq!(r.pilots[0].distance,r.pilots[1].distance);
+        }
+        let mut r=contact_race();let pose=r.pose(1);r.pilots[0].airborne=true;r.pilots[0].emp_time=3.;
+        r.drivers[0].motion.air.position=pose.origin;r.drivers[0].motion.air.frame=pose.basis;
+        r.contacts();assert!(crate::contacts::air(r.pose(0),r.pose(1)).length()<0.002);
+    }
     fn missile_race() -> Race {
         let mut r = Race::new(80385, "hard", "city", 1, 3);
         r.countdown = 0.;
