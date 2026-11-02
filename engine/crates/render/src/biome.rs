@@ -155,7 +155,8 @@ impl Biome {
                 tree.density = Box::new(move |s| {
                     let g = &s.ground;
                     if g.water > 0.01 || s.field("grows") == 0.0 { return 0.0; }
-                    0.7 * smooth(0.25, 0.45, g.wet) * (1.0 - smooth(0.85, 0.98, g.wet)) + s.field("forest") * density * 0.3
+                    (0.7 * smooth(0.25, 0.45, g.wet) * (1.0 - smooth(0.85, 0.98, g.wet)) + s.field("forest") * density * 0.3)
+                        * crate::placement::off_road(s, 0.5)
                 });
             }
             let scale = flora.tree_scale;
@@ -173,7 +174,7 @@ impl Biome {
                     let g = &s.ground;
                     if g.water > 0.01 || g.snow > 0.3 || g.up < 0.8 { return 0.0; }
                     // Open ground and forest edges; little in the stands' shade.
-                    d * (1.0 - smooth(0.2, 0.6, g.rock)) * (1.0 - 0.7 * smooth(0.3, 0.8, s.field("forest")))
+                    d * (1.0 - smooth(0.2, 0.6, g.rock)) * (1.0 - 0.7 * smooth(0.3, 0.8, s.field("forest"))) * crate::placement::off_road(s, 0.5)
                 }),
                 shape: Box::new(move |s| {
                     let size = 0.6 + 0.8 * s.cell.hash(4);
