@@ -205,3 +205,75 @@ Done and on main:
 - With the group budget fixed at about 270 resident full trees, letting the GPU choose among resident trees only replaces the CPU's nearest-240 assignment. That assignment now has hysteresis.
 - The real gain needs streaming pages of assemblies, as Nanite does. That is a multi-day project whose payoff is detail at range, not frame time.
 - Frame time is now dominated by shade and by the voxel pipeline's fixed passes. See the commit log from 0e1c803 on.
+
+## Frame time state (3 Nov 2026)
+
+terrain_fly at Joep's four playtest cameras, 2560x1440, M5 Pro:
+
+| | cam 1 | cam 2 | cam 3 | cam 4 |
+|---|---|---|---|---|
+| Morning, 2 Nov | 18-27 fps | | | |
+| a986272 (shade classes) | 49.1 | 43.2 | 43.0 | 39.2 |
+| e9afabf and later (main) | 54.4-54.9 | 46.6-46.7 | 45.7-46.0 | 41.5-41.7 |
+
+GPU time per pass, ms per frame (Metal System Trace, summed encoder
+intervals, so passes that overlap count twice):
+
+| Pass | cam 1 | cam 2 | cam 3 | cam 4 |
+|---|---|---|---|---|
+| total | 17.37 | 21.83 | 21.12 | 22.99 |
+| shade terrain | 5.23 | 5.10 | 4.94 | 5.43 |
+| voxel surface | 1.91 | 1.96 | 1.78 | 2.95 |
+| voxel splats | 0.95 | 1.35 | 1.27 | 2.42 |
+| terrain coarse | 1.92 | 1.96 | 1.80 | 1.92 |
+| voxel splat raster | 1.12 | 1.93 | 1.95 | 1.90 |
+| shade voxels | 0.75 | 1.44 | 1.44 | 1.50 |
+| cull | 1.16 | 1.95 | 1.65 | 1.35 |
+| raster | 0.55 | 1.92 | 2.16 | 1.30 |
+| taa | 0.74 | 0.74 | 0.74 | 0.74 |
+| voxel sun splats | 0.54 | 0.66 | 0.52 | 0.55 |
+
+**Shipped:**
+- **a986272:** the terrain shade class covers every TERRAIN material (Sideways
+  included). Terrain and voxels are shaded before the main pass. Same image.
+- **e9afabf:** the sun march past the shared map runs once per
+  terrain_coarse quad and is compiled out of the terrain shader. +2-4 fps,
+  53-54 dB.
+
+**Tried and dropped** (cam 1 / cam 4 unless noted):
+- **Sun transmittance cached in canopy slabs** (+25 MiB per view): 57 / 44.5
+  fps, but distant ground came out too bright. The 6 m cells smear the
+  vertical profile; against the real shadow map the correlation was 0.22,
+  where the per-pixel march gives 0.41.
+- **The quad march with the march still compiled into the terrain shader:**
+  +0. Runtime skips do not free registers.
+- **A lean terrain shader plus the full one on listed tiles:** identical
+  image but slower, 54.8 -> 50.3 and 41.6 -> 38.7. About 60 % of the terrain
+  work is in tiles that need the near ground material.
+- **The voxel self-shadow one level coarser**
+  (`KERN_VOXEL_SELF_SHADOW_COARSER=1`, off): +0.4 / +0.8 fps for a visible
+  crown change, 32-48 dB.
+- **A lower coarse-terrain footprint threshold** (`KERN_COARSE_FOOTPRINT_M`,
+  off): no change even at 0. The near ground never takes the coarse path.
+  A/B shots are in `build/screenshots/ab-tradeoffs/`.
+- **Ground material ablation:** each block costs 0.3-1.1 fps (rock, far
+  forest, roads, detail slope, grass canopy, scree, water, snow); all
+  together cost 3.4. None can be compiled out per style without changing the
+  image, because snow and water follow altitude and position.
+- **Voxel splats:**
+  - Skipping cell culling for trees fully in view: +0.
+  - One global atomic per 64 cells: +0.
+  - 64 trees per workgroup: +0.7 / -2.3 (cam 3) / -0.8 (cam 4), from load
+    imbalance.
+
+**Remaining levers:**
+- **GPU-driven tree LOD and streaming (milestone 2).** Fewer voxel trees per
+  frame shrinks splats, splat raster and voxel surface together, and this
+  is the largest lever.
+- **An indirect visible-tree list for voxel splats and sun splats.** With
+  nothing drawn the two still cost 0.59 + 0.50 ms: one workgroup for each of
+  131k trees. Compacting the list should give about +1.5 fps. It needs a
+  storage binding in voxel group 2 (near the 16-buffer limit), or a list
+  carved from the splat records buffer.
+- **The near ground material** (`field_surface`, about 4 ms in terrain
+  shade): only image changes or a cheaper formulation of its layers remain.
