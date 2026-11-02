@@ -118,7 +118,20 @@ pub fn plant(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree], full: 
     vegetation.finish_aggregate(policy)
 }
 
-pub fn virtual_members() -> bool { std::env::var("KERN_VIRTUAL_MEMBERS").as_deref() == Ok("1") }
+static VIRTUAL_MEMBERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Full plants as virtual members (vegetation_asset AttachLimits): a game's
+/// choice (set_virtual_members), or KERN_VIRTUAL_MEMBERS=1/0 to force it.
+pub fn virtual_members() -> bool {
+    match std::env::var("KERN_VIRTUAL_MEMBERS").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => VIRTUAL_MEMBERS.load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+/// Turn virtual members on for plants planted from now on.
+pub fn set_virtual_members(on: bool) { VIRTUAL_MEMBERS.store(on, std::sync::atomic::Ordering::Relaxed); }
 
 fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
     let branches = variants.iter().map(|c| c.stats().branches).max().unwrap_or(64);
