@@ -29,7 +29,7 @@ pub struct GroundStyle {
     pub gravel: [f32; 4],
     /// Bedrock, after desaturating; w: the rock's saturation kept.
     pub rock: [f32; 4],
-    /// Lying snow; w unused.
+    /// Lying snow; w: seasonal snow on open ground, 0..1 (biome.rs).
     pub snow: [f32; 4],
     /// Unused, keeps the layout a whole number of data materials.
     pub reserved: [f32; 4],
