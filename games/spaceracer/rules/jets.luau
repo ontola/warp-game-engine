@@ -9,7 +9,7 @@ return {
     sonic_speed = 343 / metres_per_unit, sonic_reset_speed = 325 / metres_per_unit,
     vapor_life = .72, vapor_opacity = .25,
     boost_arc_spread = 12, boost_arc_height = 7,
-    boost_width = 1.25, boost_radiance = 1.8, engine_glare_pixels = 14,
+    boost_width = 1.25, boost_radiance = 1.8, boost_release = .55, engine_glare_pixels = 14,
     warp_world_pixels = 48, warp_view_pixels = 64,
     emp_spark_fade = .7, sentry_spark_life = .11,
     damage_smoke_energy = 22, respawn_light_power = 2100,

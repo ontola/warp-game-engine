@@ -111,7 +111,8 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let bleed = vec3<f32>(1.0,.08,.16)*exp(-pow(x-.26,2.0)*50.0)
                   + vec3<f32>(.03,.65,1.0)*exp(-pow(x+.26,2.0)*50.0);
         let near = smoothstep(1.0,5.0,distance(u.camera_near.xyz,s.world));
-        return vec4<f32>(vec3<f32>(glow*.85+core*4.0)+bleed*.32,pow(max(0.0,1.0-age),2.2)*near*(1.0-smoothstep(.7,1.0,abs(x))));
+        let strength=mix(s.params.z,s.params.w,t);
+        return vec4<f32>(vec3<f32>(glow*.85+core*4.0)+bleed*.32,pow(max(0.0,1.0-age),2.2)*near*(1.0-smoothstep(.7,1.0,abs(x)))*strength);
     }
     if s.effect == 7u { // continuous low-opacity exhaust ribbon; fades when flown through
         let age=mix(s.params.x,s.params.y,t);

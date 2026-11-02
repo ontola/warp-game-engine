@@ -712,6 +712,7 @@ impl Game for Racer {
         ["blur","off"]=>self.blur_enabled=false,["blur","on"]=>self.blur_enabled=true,
         ["crash",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let pose=self.race.pose(i);self.race.drivers[i].motion.air.position=pose.origin;self.race.drivers[i].motion.air.frame=pose.basis;self.race.drivers[i].motion.crash(&mut self.race.pilots[i],glam::Vec3::Y);},
         ["boost",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.lap=2;p.boost=3.;},
+        ["boost",who,seconds]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let duration:f64=seconds.parse().map_err(|_|"boost seconds")?;if !duration.is_finite() || !(0.0..=10.).contains(&duration) {return Err("boost seconds must be 0..10".into());}let p=self.race.pilots.get_mut(i).ok_or("pilot index")?;p.lap=2;p.boost=duration;},
         ["demo"]=>{self.demo=true;self.menu=None;},["help"]=>return Ok("play; pause; random; demo; give INDEX missile|warp|sentry|emp|railgun|glidebomb; boost INDEX; crash INDEX; blur on|off".into()),_=>return Err("unknown command".into())}
         Ok("ok".into())
     }
