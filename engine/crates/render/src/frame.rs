@@ -1375,7 +1375,7 @@ impl Renderer {
                 .expect("invalid weighted skinning scene"))
         };
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
-        let procedural_terrain = scene.procedural_terrain.map(|spec| crate::procedural_terrain::TerrainRenderer::new(gpu, spec, &vertices, &clusters));
+        let procedural_terrain = scene.procedural_terrain.clone().map(|spec| crate::procedural_terrain::TerrainRenderer::new(gpu, spec, &vertices, &clusters));
         let crowd = scene.crowd.map(|spec| crate::crowd::CrowdRenderer::new(gpu, &spec, &instances));
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
