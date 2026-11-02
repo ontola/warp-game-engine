@@ -833,6 +833,8 @@ pub struct Renderer {
     terrain_coarse_targets: std::sync::Mutex<Vec<Option<(wgpu::Texture, wgpu::TextureView)>>>,
     terrain_coarse_fallback: wgpu::TextureView,
     terrain_coarse_layout: wgpu::BindGroupLayout,
+    /// Group 2 of the coarse terrain pass, which writes through group 3.
+    empty_bind: wgpu::BindGroup,
     /// Bakes each changed canopy level's sky transmittance into the canopy
     /// texture, so shading reads it instead of marching per pixel
     /// (`KERN_SKY_VIS_CACHE=0` keeps the per-pixel march).
@@ -1766,10 +1768,12 @@ impl Renderer {
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
-        let terrain_coarse_layout = layout(gpu, "terrain coarse out", &[(0, wgpu::BindingType::StorageTexture {
+        let empty_layout = layout(gpu, "empty", &[]);
+        let empty_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("empty"), layout: &empty_layout, entries: &[] });
+        let terrain_coarse_layout = layout(gpu, "terrain coarse out", &[(32, wgpu::BindingType::StorageTexture {
             access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 })]);
         let terrain_coarse = terrain_coarse_on.then(|| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:Some("terrain coarse"),layout:Some(&pl(&[&scene_layout, &shade_layout, &terrain_coarse_layout])),module:&shade_mod,entry_point:Some("terrain_coarse"),
+            label:Some("terrain coarse"),layout:Some(&pl(&[&scene_layout, &shade_layout, &empty_layout, &terrain_coarse_layout])),module:&shade_mod,entry_point:Some("terrain_coarse"),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         }));
         let terrain_coarse_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no coarse terrain"),
@@ -2040,6 +2044,7 @@ impl Renderer {
             terrain_coarse_targets: std::sync::Mutex::new(Vec::new()),
             terrain_coarse_fallback,
             terrain_coarse_layout,
+            empty_bind,
             sky_vis_bake,
             shade_tiles: std::sync::Mutex::new(Vec::new()),
             shade_text: crate::wind::shade_source(),
@@ -4200,9 +4205,9 @@ impl Renderer {
             let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1));
             let coarse_binds = coarse_target.as_ref().map(|t| (shade_bind_with(resources, &self.terrain_coarse_fallback),
                 gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain coarse out"), layout: &self.terrain_coarse_layout,
-                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t.1) }] })));
+                    entries: &[wgpu::BindGroupEntry { binding: 32, resource: wgpu::BindingResource::TextureView(&t.1) }] })));
             let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = Vec::new();
-            if let (Some(coarse), Some((bind, out))) = (&self.terrain_coarse, &coarse_binds) { passes.push(("terrain coarse", coarse, vec![&self.scene_bind, bind, out])); }
+            if let (Some(coarse), Some((bind, out))) = (&self.terrain_coarse, &coarse_binds) { passes.push(("terrain coarse", coarse, vec![&self.scene_bind, bind, &self.empty_bind, out])); }
             let diagnostic = (light.debug != 0.0 && !self.simple_lighting).then(|| self.shade_diagnostic.get_or_init(|| {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade diagnostics"),
                     source: wgpu::ShaderSource::Wgsl(self.shade_text.as_str().into()) });
