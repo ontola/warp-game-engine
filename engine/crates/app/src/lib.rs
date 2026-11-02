@@ -24,6 +24,7 @@ pub mod sound;
 pub mod tween;
 pub mod ui;
 pub mod manners;
+pub mod startup;
 pub mod screenshot;
 pub mod quality;
 pub mod profile;
@@ -240,7 +241,7 @@ pub struct Config {
 }
 
 impl Default for Config {
-    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: false, keyboard: true, pointer: false, frames: 0, max_render_height: None, target_fps: None } }
+    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: true, keyboard: true, pointer: false, frames: 0, max_render_height: None, target_fps: None } }
 }
 
 /// The present path shared by the window and headless capture.
@@ -756,7 +757,8 @@ impl ApplicationHandler for Shell<'_> {
         if self.window.is_some() { return; }
         let result = (|| -> Result<(), String> {
             let attrs = Window::default_attributes().with_title(&self.cfg.title).with_inner_size(PhysicalSize::new(self.cfg.size[0], self.cfg.size[1]))
-                .with_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None)));
+                .with_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None)))
+                .with_window_icon(startup::icon());
             let attrs = self.manners.first(self.game.screen(), attrs);
             self.screen = self.manners.screen;
             self.game.loading(20, "opening the window");

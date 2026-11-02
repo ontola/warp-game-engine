@@ -253,7 +253,7 @@ fn args(args: &[String]) -> Result<Args, String> {
     // --biome NAME (or SIDEWAYS_BIOME): stages on the engine's terrain of that biome.
     let land=match value("--biome").or_else(||std::env::var("SIDEWAYS_BIOME").ok()) {Some(b)=>Some(crate::biome_land::land(&b)?),None=>None};
     let hud=match opt("--hud","on").as_str(){"on"=>true,"off"=>false,_=>return Err("hud must be on or off".into())};
-    Ok(Args { land, upscale:crate::upscale::parse(args)?,nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,frame_profile,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_next_stage, smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: args.iter().any(|a| a == "--fullscreen"), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay"),
+    Ok(Args { land, upscale:crate::upscale::parse(args)?,nature:crate::nature::Nature::parse(args)?,gpu_profile,gpu_warmup,frame_profile,seed: parse("--seed", "1")?, km, views, size: (size[0], size[1]), weather: opt("--weather", "clear"), smoke_next_stage, smoke_frames, smoke_ticks: parse("--smoke-ticks", "0")?, capture: value("--capture"), state_out: value("--state-out"), trace: value("--state-trace"), fullscreen: app::startup::fullscreen(args), hud,hud_profile,hud_warmup,autoplay:args.iter().any(|a|a=="--autoplay"),
         debug_ui:args.iter().any(|a|a=="--debug-ui"),debug_ui_script:value("--debug-ui-script"),
         start_paused:args.iter().any(|a|a=="--start-paused"),
         // Hidden smoke runs stay silent unless asked.
@@ -438,7 +438,7 @@ impl App {
         // behind the lobby until Alt+Tab).
         let hosted=self.host.as_ref().is_some_and(|h|h.launched_by_daemon);
         let wish=if !visible {app::Screen::Hidden} else if hosted || self.resume_fullscreen.is_some() {app::Screen::Fullscreen} else {app::Screen::Normal};
-        if visible {window.set_visible(true);}
+        if visible {window.set_visible(true); app::startup::ready();}
         else if window.is_visible()==Some(true) && window.is_minimized()!=Some(true) {self.resume_fullscreen=window.fullscreen();}
         self.manners.wish(wish,self.focused);
     }
@@ -1390,6 +1390,10 @@ impl App {
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {},
             wgpu::CurrentSurfaceTexture::Validation => return Err("surface validation failure".into()),
         }}
+        if ready_now && self.rendered==1 && self.args.smoke_frames==0 && self.host.is_none() {
+            if let Some(window)=&self.window {window.set_visible(true);window.request_redraw();}
+            app::startup::ready();
+        }
         if ready_now && let Some(session)=self.ready_due.take() && let Some(host)=self.host.as_mut() {
             if host.state.session==session {host.notify_ready(&session)?;}
         }
@@ -1551,7 +1555,7 @@ impl ApplicationHandler for App {
         let result = (|| -> Result<(), String> {
             // Do not expose the unpainted Win32 surface while device, HUD
             // and presentation pipelines are being initialized.
-            let attrs = Window::default_attributes().with_title("Sideways | loading stage").with_inner_size(PhysicalSize::new(self.args.size.0,self.args.size.1)).with_visible(false).with_fullscreen(if self.args.fullscreen && self.args.smoke_frames == 0 && self.host.is_none() { Some(Fullscreen::Borderless(None)) } else { None });
+            let attrs = Window::default_attributes().with_title("Sideways | loading stage").with_window_icon(app::startup::icon()).with_inner_size(PhysicalSize::new(self.args.size.0,self.args.size.1)).with_visible(false).with_fullscreen(if self.args.fullscreen && self.args.smoke_frames == 0 && self.host.is_none() { Some(Fullscreen::Borderless(None)) } else { None });
             let window = Arc::new(event_loop.create_window(attrs).map_err(|e|e.to_string())?);
             let instance = render::gpu::instance();
             let surface = instance.create_surface(window.clone()).map_err(|e|e.to_string())?;
@@ -1579,7 +1583,8 @@ impl ApplicationHandler for App {
             let refresh=window.current_monitor().and_then(|m|m.refresh_rate_millihertz()).map(|mhz|f64::from(mhz)/1000.0);
             self.quality=if measured {None} else {crate::adaptive_quality::AdaptiveQuality::new(refresh,Instant::now())};
             if let Some(q)=&self.quality {println!("play: adaptive quality, {}",q.label());}
-            if self.args.smoke_frames==0 && self.host.is_none(){window.set_visible(true);window.request_redraw();}
+            // Stay a taskbar marker until the first complete stage frame.
+            window.request_redraw();
             // Under a party host the window stays invisible until the host
             // starts the stage. Without this the window manners' show-anyway
             // fallback put the starting game over the lobby after 5 s, and
