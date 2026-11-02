@@ -1757,7 +1757,10 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
         let terrain_shade = shade_classes.then(|| {
             let constants: Vec<(&str, f64)> = shade_constants.iter().map(|&(k, v)| match k {
-                "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" => (k, 0.0), "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).collect();
+                "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" => (k, 0.0), "SHADE_CLASS" => (k, 1.0),
+                // Terrain pixels need grass code only for the far grass
+                // field's sun transmittance.
+                "FEATURE_GRASS" => (k, if scene.far_grass.is_some() { v } else { 0.0 }), _ => (k, v) }).collect();
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label:Some("shade terrain"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade"),
                 compilation_options:wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},cache: gpu.pipeline_cache(),
