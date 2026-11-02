@@ -8,6 +8,14 @@ There is no Godot runtime or Godot build/export step.
 
 ## Exhaust volume and speed presentation (2 November 2026)
 
+Jet volumes now bend, ripple and vary in length rapidly, independently for each
+engine, with their roots fixed to the nozzles. Railgun carries its original
+twin-rail model, blue-white beam, expanding rings and endpoint flashes. Its
+always-visible aim circle turns green for a clear target; tapping X fires one
+50-damage shot. Selection follows the closest target to the circle centre and
+the straight shot stops at vehicle hulls, road geometry and scenery. Guide size,
+range and the AI aim cone are Luau combat parameters.
+
 Forward exhaust is a bounded 3D gas cone, with a compact white-blue motor core
 and a dimmer tapered tail. Countdown shows only the engine lamps; thrust starts
 the plume. Boost increases it without covering the vehicle. Sonic vapor uses

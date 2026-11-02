@@ -7,6 +7,7 @@ use crate::{
 use glam::{Mat3, Quat, Vec3};
 #[derive(Clone, serde::Deserialize)]
 pub struct Config {
+    pub rail_range:f32,pub rail_tangent:f32,pub rail_guide_radius:f32,
     pub bomb_speed: f32,
     pub bomb_accel: f32,
     pub bomb_burn: f32,
@@ -42,6 +43,7 @@ impl Config {
         if values
             .iter()
             .any(|x| !x.is_finite() || *x < 0. || *x > 2000.)
+            || !(50.0..=1000.).contains(&c.rail_range) || !(0.02..=0.5).contains(&c.rail_tangent) || !(0.02..=0.25).contains(&c.rail_guide_radius)
             || c.bomb_speed < 80.
             || c.bomb_turn > 4.
             || !(0.0..=1.0).contains(&c.bomb_cone)

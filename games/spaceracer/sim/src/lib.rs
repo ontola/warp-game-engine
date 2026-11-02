@@ -40,5 +40,6 @@ pub mod victory;
 mod missile;
 
 pub mod combat;
+pub mod railgun;
 
 pub mod track_collision;

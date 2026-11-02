@@ -257,6 +257,7 @@ impl Racer {
             reset: c.pressed.has(Buttons::NORTH),
             left: c.held.has(Buttons::LEFT_SHOULDER),
             right: c.held.has(Buttons::RIGHT_SHOULDER),
+            rail_aim:None,
         }
     }
     fn menu_tick(&mut self, c: Controls) {
@@ -459,7 +460,7 @@ impl Game for Racer {
         self.previous = (0..self.race.pilots.len())
             .map(|i| self.race.pose(i))
             .collect();
-        let inputs = if let Some(p) = &mut self.party {
+        let mut inputs = if let Some(p) = &mut self.party {
             p.controls()
         } else {
             controls
@@ -471,6 +472,11 @@ impl Game for Racer {
         if self.demo {
             for d in &mut self.race.drivers {
                 d.bot = true;
+            }
+        }
+        for (i,input) in inputs.iter_mut().enumerate() {
+            if let Some(c)=self.cameras.get(i) {
+                input.rail_aim=Some(spaceracer::railgun::Aim::camera(c.position,c.forward(),c.up(),(c.fov as f32).to_radians(),self.race.combat.rail_guide_radius));
             }
         }
         self.race.step(&inputs);
@@ -688,11 +694,11 @@ impl Game for Racer {
         ["setting",key,value]=>{self.setting(key,serde_json::from_str(value).map_err(|_|"setting JSON")?)?;},
         ["play"]=>{self.menu=None;self.race_started=true;},["pause"]=>self.menu=Some(0),["random"]=>self.random_race()?,
         ["finish",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}self.race.begin_victory(i);},
-        ["fire",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let mut c=vec![Drive::default();self.race.pilots.len()];c[i].fire=true;let bot=self.race.drivers[i].bot;self.race.drivers[i].bot=false;self.previous=(0..self.race.pilots.len()).map(|i|self.race.pose(i)).collect();self.race.step(&c);self.race.drivers[i].bot=bot;},
+        ["fire",who]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;if i>=self.race.pilots.len(){return Err("pilot index".into());}let mut c=vec![Drive::default();self.race.pilots.len()];c[i].fire=true;if let Some(cam)=self.cameras.get(i){c[i].rail_aim=Some(spaceracer::railgun::Aim::camera(cam.position,cam.forward(),cam.up(),(cam.fov as f32).to_radians(),self.race.combat.rail_guide_radius));}let bot=self.race.drivers[i].bot;self.race.drivers[i].bot=false;self.previous=(0..self.race.pilots.len()).map(|i|self.race.pose(i)).collect();self.race.step(&c);self.race.drivers[i].bot=bot;},
         ["give",who,weapon]=>{let i:usize=who.parse().map_err(|_|"pilot index")?;let d=self.race.drivers.get_mut(i).ok_or("pilot index")?;d.item=Some(Weapon::parse(weapon).ok_or("unknown weapon")?);},
         ["weapon-review",kind]=>{
             let weapon=Weapon::parse(kind).ok_or("weapon kind")?;self.menu=None;self.race_started=true;self.demo=false;self.race.countdown=0.;self.race.projectiles.clear();self.race.beams.clear();
-            for i in 0..self.race.pilots.len(){let p=&mut self.race.pilots[i];p.distance=if i==0{0.}else if i==1{if weapon==Weapon::GlideBomb{230.}else{90.}}else{-500.-i as f64*30.};p.x=if i==1 && weapon==Weapon::GlideBomb {18.}else{0.};p.speed=if i==0{220.}else{130.};p.airborne=false;p.crashed=false;p.finished=false;p.recovery=0.;p.energy=100.;p.emp_time=0.;p.warp_time=0.;let d=&mut self.race.drivers[i];d.bot=false;d.item=None;d.active=None;d.active_time=0.;d.warp_fx=0.;d.victory=None;d.motion=Default::default();d.finish_time=None;}
+            for i in 0..self.race.pilots.len(){let p=&mut self.race.pilots[i];p.distance=if i==0{0.}else if i==1{if weapon==Weapon::GlideBomb{230.}else{90.}}else{-500.-i as f64*30.};p.x=if i==1 && weapon==Weapon::GlideBomb {18.}else{0.};p.speed=if i==0{220.}else{130.};p.airborne=false;p.crashed=false;p.finished=false;p.recovery=0.;p.energy=100.;p.emp_time=0.;p.warp_time=0.;let d=&mut self.race.drivers[i];d.bot=false;d.item=None;d.active=None;d.active_time=0.;d.warp_fx=0.;d.victory=None;d.motion=Default::default();d.finish_time=None;d.rail_preview=None;d.rail_preview_at=-1.;}
             self.race.drivers[0].item=Some(weapon);
             if weapon==Weapon::GlideBomb {let node=self.race.world.track.sample(0.);let pose=Pose{origin:node.point(0.,65.),basis:node.geometry.basis()};self.race.drivers[0].motion.ground_velocity=pose.basis.z_axis*220.;self.race.drivers[0].motion.launch(&mut self.race.pilots[0],pose);}
             self.previous=(0..self.race.pilots.len()).map(|i|self.race.pose(i)).collect();self.cameras=vec![Chase::default();4];

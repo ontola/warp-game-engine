@@ -208,7 +208,7 @@
     {
       "path": "src/railgun.gd",
       "sha256": "67bbe57fa41f0407f31960a1dd9a984d2bf511f774c380fb7b9a66a058dff274",
-      "status": "single-shot cone targeting/damage and persistent target indicator; native beam effect"
+      "status": "camera-matched always-on 11%-height guide, nearest-to-centre aim assist, hull/road/scenery-blocked 650 m hitscan and 50 damage; explicit serializable view input, cached preview and staggered AI opportunities; four focused native tests; original twin-rail mount and 0.32-second beam/rings/flashes adapted to native sprites"
     },
     {
       "path": "src/recharge_strips.gd",
@@ -313,7 +313,7 @@
     {
       "path": "src/weapon_vfx.gd",
       "sha256": "9feffe73011990fd44c12e01db52ea5b3c93bb56a5279ff191e75d88d6c7bb72",
-      "status": "source missile; mounted rotary minigun with head/barrels/rotor/LED, one-presentation tracers/muzzle flash; folding glide wings and finite launch motor; warp coil/wake and depth-aware world/view refraction adapted to native HDR"
+      "status": "source missile; mounted rotary minigun with head/barrels/rotor/LED, one-presentation tracers/muzzle flash; folding glide wings and finite launch motor; original twin-rail gun with blue-white beam, expanding rings and endpoint flashes; warp coil/wake and depth-aware world/view refraction adapted to native HDR"
     },
     {
       "path": "src/weapons.gd",

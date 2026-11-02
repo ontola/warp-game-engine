@@ -13,10 +13,18 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         var axis=vec3<f32>(s.params.xy,1.-abs(s.params.x)-abs(s.params.y));
         if axis.z<0. {axis=vec3<f32>((1.-abs(axis.yx))*select(vec2<f32>(-1.),vec2<f32>(1.),axis.xy>=vec2<f32>(0.)),axis.z);}
         axis=normalize(axis);
-        let plume_length=s.params.z;let time=s.params.w;
+        let full_length=s.params.z;let time=s.params.w;
         let bound=s.size.x*.5/1.12;
-        let radius=sqrt(max(.01,bound*bound-plume_length*plume_length*.25));
-        let root=s.center-axis*plume_length*.5;
+        let radius=sqrt(max(.01,bound*bound-full_length*full_length*.25));
+        let root=s.center-axis*full_length*.5;
+        // Independent rapid changes, smoothly joined at 42 Hz. The root stays
+        // fixed; downstream gas bends and pulses instead of being a rigid cone.
+        let beat=time*42.;let tick=i32(floor(beat));let f=fract(beat);let blend=f*f*(3.-2.*f);
+        let jitter=mix(vec2<f32>(vapor_hash(vec2<i32>(tick,71)),vapor_hash(vec2<i32>(tick,97))),
+            vec2<f32>(vapor_hash(vec2<i32>(tick+1,71)),vapor_hash(vec2<i32>(tick+1,97))),blend)*2.-1.;
+        let plume_length=full_length*(.92+.08*jitter.x);
+        let helper=select(vec3<f32>(0.,1.,0.),vec3<f32>(1.,0.,0.),abs(axis.y)>.9);
+        let side=normalize(cross(axis,helper));let up=cross(side,axis);
         let ray=normalize(s.world-u.camera_near.xyz);
         let oc=u.camera_near.xyz-s.center;
         let b=dot(oc,ray);let disc=b*b-dot(oc,oc)+bound*bound;
@@ -33,8 +41,9 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
             let local=u.camera_near.xyz+ray*(entry+(f32(i)+.5)*step)-root;
             let along=dot(local,axis);let z=along/plume_length;
             if z<0. || z>1. {continue;}
-            let radial=local-axis*along;
-            let width=radius*(1.-z)*(.9+.18*sin(z*3.14159));
+            let bend=(side*(jitter.x+sin(z*17.-time*65.)*.5)+up*(jitter.y+cos(z*13.-time*79.)*.5))*radius*z*(1.-z)*1.2;
+            let radial=local-axis*along-bend;
+            let width=radius*(1.-z)*(.88+.12*sin(z*28.-time*90.+jitter.x*3.));
             let r=length(radial)/max(.01,width);
             let flow=.85+.15*sin(along*8.-time*80.+dot(radial,vec3<f32>(3.,5.,7.)));
             let density=exp(-r*r*2.)*(1.-smoothstep(.65,1.,r))*smoothstep(0.,.035,z)*flow;
@@ -163,6 +172,13 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
         let soft=clamp((depth_metres(uv)-clip.w)/1.2,0.,1.);
         let near=smoothstep(3.,10.,distance(u.camera_near.xyz,s.world));
         return vec4<f32>(vec3<f32>(.85+.15*cloud),density*near*soft);
+    }
+    if s.effect == 16u { // expanding railgun induction ring
+        let r=length(s.uv*2.-1.);
+        return vec4<f32>(vec3<f32>(1.),exp(-pow((r-.72)*24.,2.))*.7);
+    }
+    if s.effect == 17u { // transparent blue shoulder around the white rail core
+        return vec4<f32>(vec3<f32>(1.),exp(-x*x*6.)*(1.-smoothstep(.6,1.,abs(x)))*.3);
     }
     return vec4<f32>(0.0);
 }

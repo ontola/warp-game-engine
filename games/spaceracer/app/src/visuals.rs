@@ -526,9 +526,9 @@ impl Visuals {
         let pickup_mat = material(&mut scene, [0.6, 0.15, 0.95], 0.3, 100.);
         let pickup_mesh = pickup_mesh(&mut scene, pickup_mat);
         let missile_mat = material(&mut scene, [0.32, 0.36, 0.4], 0.25, 0.);
-        let mut weapon_art=super::weapon_art::Art::new(&mut scene);
+        let mut weapon_art=super::weapon_art::Art::new(&mut scene,race.environment.exposure);
         let mount_meshes: Vec<_> = (0..6)
-            .map(|k| match k {1=>weapon_art.coil,2=>weapon_art.base,5=>weapon_art.bomb,_=>weapon_mesh(&mut scene,k,missile_mat,pickup_mat)})
+            .map(|k| match k {1=>weapon_art.coil,2=>weapon_art.base,4=>weapon_art.rail,5=>weapon_art.bomb,_=>weapon_mesh(&mut scene,k,missile_mat,pickup_mat)})
             .collect();
         let projectile_mesh = mount_meshes[0];
         let mount_mesh = mount_meshes[2];
@@ -764,40 +764,6 @@ impl Visuals {
             );
         }
         if fresh {
-            for b in &race.beams {
-                if b.rail && b.age <= spaceracer::handling::DT * 1.1 {
-                    let d = b.to - b.from;
-                    let _ = self.fx.streak(render::fx::AdditiveStreak {
-                        position: (b.from + b.to) * 0.5,
-                        travel: d.normalize_or_zero() * 0.001,
-                        birth: time - 0.001,
-                        life: if b.rail { 0.14 } else { 1. / 120. },
-                        radius: if b.rail { [0.16, 0.03] } else { [0.035, 0.015] },
-                        length: [d.length(); 2],
-                        color: if b.rail {
-                            Vec3::new(0.3, 0.8, 1.)
-                        } else {
-                            Vec3::new(1., 0.7, 0.2)
-                        },
-                        radiance: 15000.,
-                        opacity: 0.8,
-                        fade_in: 0.,
-                        fade_out: 1.,
-                        ..Default::default()
-                    });
-                    let _ = self.fx.mote(render::fx::AdditiveMote {
-                        position: b.to,
-                        birth: time - 0.001,
-                        life: 0.1,
-                        radius: 1.4,
-                        color: Vec3::new(1., 0.7, 0.3),
-                        radiance: 12000.,
-                        fade_in: 0.,
-                        fade_out: 1.,
-                        ..Default::default()
-                    });
-                }
-            }
             for p in &race.projectiles {
                 if p.kind == Weapon::Missile {
                     if let Some(target) = p.target {
