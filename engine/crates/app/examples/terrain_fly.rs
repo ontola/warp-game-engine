@@ -6,7 +6,7 @@
 //!   cargo run --release -p app --example terrain_fly -- --track   (a gravel road the land bends to)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
-//!   ... --no-trees --grass --recipe N   (N nearest spruces in full, default 8; the rest are voxel proxies)
+//!   ... --no-trees --grass --recipe N   (N nearest trees in full, default 60; then card trees, then voxel proxies)
 //!   ... --firs   (the old forest: Sideways' fir cards, for A/B runs)   --proxy-px N   (proxy cell pixels, default 4)
 //!   cargo run --release -p app --example terrain_fly -- --bench 120 [--size 2560x1440]   # headless GPU pass times
 //!
@@ -372,7 +372,7 @@ impl Game for Fly {
         (menu, vec![
             toggle(TREES, "Trees", w.trees, "Spruce forest around the camera."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
-            number(RECIPE_TREES, "Full spruces near camera", f64::from(w.recipe_trees), (0.0, 12.0, 1.0, 0), "", "The nearest spruces are full assemblies (detailed sprays, branch wind); the rest are voxel proxies of the same spruce."),
+            number(RECIPE_TREES, "Full spruces near camera", f64::from(w.recipe_trees), (0.0, 120.0, 6.0, 0), "", "The nearest spruces are full assemblies (detailed sprays, branch wind); the rest are voxel proxies of the same spruce."),
             toggle(FIRS, "Old fir cards", w.firs, "The old forest past the full spruces: Sideways' fir meshes instead of voxel proxies."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
             toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (45 m of blades, canopy shading beyond) below 120 m above ground. Expensive. The Grass menu only hides it."),
@@ -388,7 +388,7 @@ impl Game for Fly {
             DebugAction::SetToggle { id: GRASS, value } => self.world.grass = value,
             DebugAction::SetToggle { id: FIRS, value } => self.world.firs = value,
             DebugAction::SetNumber { id: TREE_DENSITY, value } => self.world.tree_density = (value / 100.0).clamp(0.05, 1.0) as f32,
-            DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 12.0) as u32,
+            DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 120.0) as u32,
             DebugAction::SetNumber { id: TREE_RADIUS, value } => self.world.tree_radius = value.clamp(200.0, 3000.0) as f32,
             DebugAction::SetNumber { id: CELL_PX, value } => self.terrain_settings.cell_pixels = value.clamp(4.0, 96.0) as f32,
             DebugAction::SetNumber { id: ERROR_PX, value } => self.terrain_settings.error_pixels = value.clamp(0.25, 12.0) as f32,
@@ -440,7 +440,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, recipe_trees: 3, firs: false } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, recipe_trees: 60, firs: false } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -682,6 +682,9 @@ fn meadow(seed: u32, style: &Style, dry_season: f32, centre: Vec3) -> Result<Mea
 }
 
 fn main() -> Result<(), String> {
+    // Full spruces share their sprays per species (virtual members), so
+    // dozens fit where 12 did (docs/foliage-assemblies-plan.md).
+    recipe_forest::set_virtual_members(true);
     // Distant fir cards cast shadows from cached foliage sun pages; without
     // them tree shadows popped in at the edge of the near shadow map. Headless
     // 1440p: the same GPU time, and unlike KERN_FAR_SUN_SHADOW no striping
