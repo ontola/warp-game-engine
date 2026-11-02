@@ -193,7 +193,26 @@ pub fn far_forest_handover(scene: &mut Scene, material: u32, centre: [f32; 2], s
     let forest: [Material; 2] = bytemuck::cast(*style);
     scene.materials[first..first + 2].copy_from_slice(&forest);
     scene.materials[first + 2] = Material { tint: [start_m.max(0.0), density.clamp(0.0, 1.0), centre[0]],
-        layer: -1, roughness: centre[1], flags: 1, scale: end_m.max(start_m + 1e-3), metal: 0.0 };
+        layer: -1, roughness: centre[1], flags: 1, scale: end_m.max(start_m + 1e-3), metal: scene.materials[first + 2].metal };
+}
+
+/// Draw `world`'s roads into the terrain's pixels: gravel with two worn
+/// wheel lines, a ragged edge and a shoulder of loose stone, sharp at any
+/// mesh detail (terrain_surface.wgsl road_at). The roads go into data
+/// materials after the style block; its far forest params' metal points
+/// at them (first + 1, 0 for none).
+pub fn road_surface(scene: &mut Scene, material: u32, world: &world_constraints::World) {
+    let first = style_block(scene, material);
+    let words = world.surface_words();
+    if words.is_empty() { scene.materials[first + 2].metal = 0.0; return; }
+    let at = scene.materials.len();
+    assert!(at < 1 << 24, "road data material index out of range");
+    for chunk in words.chunks(8) {
+        let mut w = [0.0f32; 8];
+        w[..chunk.len()].copy_from_slice(chunk);
+        scene.materials.push(Material { tint: [w[0], w[1], w[2]], layer: w[3].to_bits() as i32, roughness: w[4], flags: w[5].to_bits(), scale: w[6], metal: w[7] });
+    }
+    scene.materials[first + 2].metal = at as f32 + 1.0;
 }
 
 /// Reserve `capacity` patch slots that draw with `material`.
