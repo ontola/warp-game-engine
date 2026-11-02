@@ -6,7 +6,7 @@
 //!   cargo run --release -p app --example terrain_fly -- --track   (a gravel road the land bends to)
 //!   cargo run --release -p app --example terrain_fly -- --shot fly.png
 //!   cargo run --release -p app --example terrain_fly -- --fullscreen --frames 600   # fps benchmark
-//!   ... --no-trees --grass --recipe N   (N nearest trees in full, default 60; then card trees, then voxel proxies)
+//!   ... --no-trees --grass --recipe N   (N nearest trees in full, default 240; then card trees, then voxel proxies)
 //!   ... --firs   (the old forest: Sideways' fir cards, for A/B runs)   --proxy-px N   (proxy cell pixels, default 4)
 //!   cargo run --release -p app --example terrain_fly -- --bench 120 [--size 2560x1440]   # headless GPU pass times
 //!
@@ -372,7 +372,7 @@ impl Game for Fly {
         (menu, vec![
             toggle(TREES, "Trees", w.trees, "Spruce forest around the camera."),
             number(TREE_DENSITY, "Tree density", f64::from(w.tree_density) * 100.0, (5.0, 100.0, 5.0, 0), "%", "Share of forest ground that grows a tree."),
-            number(RECIPE_TREES, "Full spruces near camera", f64::from(w.recipe_trees), (0.0, 120.0, 6.0, 0), "", "The nearest spruces are full assemblies (detailed sprays, branch wind); the rest are voxel proxies of the same spruce."),
+            number(RECIPE_TREES, "Full spruces near camera", f64::from(w.recipe_trees), (0.0, 480.0, 12.0, 0), "", "The nearest spruces are full assemblies (detailed sprays, branch wind); the rest are voxel proxies of the same spruce."),
             toggle(FIRS, "Old fir cards", w.firs, "The old forest past the full spruces: Sideways' fir meshes instead of voxel proxies."),
             number(TREE_RADIUS, "Tree radius", f64::from(w.tree_radius), (200.0, 3000.0, 100.0, 0), "m", "Trees are placed this far around the camera."),
             toggle(GRASS, "Grass in scene", w.grass, "Builds the meadow (45 m of blades, canopy shading beyond) below 120 m above ground. Expensive. The Grass menu only hides it."),
@@ -388,7 +388,7 @@ impl Game for Fly {
             DebugAction::SetToggle { id: GRASS, value } => self.world.grass = value,
             DebugAction::SetToggle { id: FIRS, value } => self.world.firs = value,
             DebugAction::SetNumber { id: TREE_DENSITY, value } => self.world.tree_density = (value / 100.0).clamp(0.05, 1.0) as f32,
-            DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 120.0) as u32,
+            DebugAction::SetNumber { id: RECIPE_TREES, value } => self.world.recipe_trees = value.clamp(0.0, 480.0) as u32,
             DebugAction::SetNumber { id: TREE_RADIUS, value } => self.world.tree_radius = value.clamp(200.0, 3000.0) as f32,
             DebugAction::SetNumber { id: CELL_PX, value } => self.terrain_settings.cell_pixels = value.clamp(4.0, 96.0) as f32,
             DebugAction::SetNumber { id: ERROR_PX, value } => self.terrain_settings.error_pixels = value.clamp(0.25, 12.0) as f32,
@@ -440,7 +440,7 @@ impl Game for Fly {
 }
 
 impl Default for World {
-    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, recipe_trees: 60, firs: false } }
+    fn default() -> Self { World { grass: false, trees: true, tree_density: 0.6, tree_radius: 2500.0, recipe_trees: 240, firs: false } }
 }
 
 /// Terrain textures, the patch pool, the sky, and grass and trees around
@@ -588,11 +588,11 @@ fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3
     let slots = near.len().div_ceil(cooked.len());
     let (_, mut pool) = recipe_forest::plant_streamed(scene, cooked, &trees, slots, policy)?;
     // Past the full ones, card trees (plant_mesh_lod) within --card-radius
-    // (150 m), --cards per variant (400; 0: voxel proxies only). Cards hold
-    // the source's look to 300 m (forest_ladder), but seen from above out
-    // to 300 m they cost 23 ms at 1440p; to 150 m the four playtest cameras
-    // run 24-29 fps against 24-29 before at 300 m, the high ones +4.6.
-    let (cards, card_radius) = (arg("--cards").unwrap_or(400.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
+    // (150 m), --cards per variant (150; 0: voxel proxies only). With 240
+    // full trees (40 a species) they fill only the ring the full ones do not
+    // reach: at the four playtest cameras 28.9, 26.4, 27.8, 25.1 fps against
+    // 27.1, 25.8, 26.9, 26.2 with 60 full and 400 cards.
+    let (cards, card_radius) = (arg("--cards").unwrap_or(150.0f32) as usize, arg("--card-radius").unwrap_or(150.0f32));
     if cards > 0 { recipe_forest::add_cards(scene, &mut pool, baked, cards, card_radius)?; }
     println!("{} trees ({slots} full per variant following the camera, {cards} card trees per variant within {card_radius} m) planted in {} ms",
         trees.len(), started.elapsed().as_millis());

@@ -99,7 +99,16 @@ fn instance_at(id: u32) -> Instance {
 // Four draw records followed by four bucket starts.
 @group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
 @group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
-@group(1) @binding(5) var<uniform> foliage_selection: array<vec4<u32>,4096>;
+@group(1) @binding(5) var<uniform> foliage_selection_words: array<vec4<u32>,4096>;
+fn foliage_selection_at(i:u32)->vec4<u32> { let v=foliage_selection_words[i>>2u]; return selection_unpack(v[i&3u]); }
+// Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
+// four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
+// voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
+fn selection_unpack(w:u32)->vec4<u32> {
+    let y=(w>>2u)&63u;
+    return vec4<u32>(w&3u,select(y,0xffffffffu,y==63u),bitcast<u32>(unpack2x16float(w>>16u).x),(w>>8u)&3u);
+}
+
 @group(1) @binding(6) var<uniform> tree_phase: vec4<f32>; // x: 0 reference, 1 occluders, 2 remainder; y split metres; z enables Hi-Z rejection
 @group(1) @binding(7) var tree_hiz: texture_2d<f32>;
 // Original source-owner IDs, independent of camera visibility. Header:
@@ -234,19 +243,19 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     let replacement=cull_voxel_replacement[member_slot(id)];
     if view.params.z<0.5 && view.extra.y<1.5 && replacement!=0xffffffffu
         && (replacement&0x80000000u)!=0u {
-        if foliage_selection[replacement&0x7fffffffu].x!=0u {return 0u;}
+        if foliage_selection_at(replacement&0x7fffffffu).x!=0u {return 0u;}
     }
     // Rasterized voxels cast this group into this sun map instead
     // (selection w 2, see voxel_sun_splats).
     if view.params.z>0.5 && replacement!=0xffffffffu && (replacement&0x80000000u)!=0u
-        && foliage_selection[replacement&0x7fffffffu].w==2u {return 0u;}
+        && foliage_selection_at(replacement&0x7fffffffu).w==2u {return 0u;}
     // Far trees (FAR_TREE tag): rasterized voxels draw the whole owner past
     // the switch distance, and always in the shared sun map once its view
     // marks voxel casting.
     if VOXEL_FAR_M>0.0 && replacement!=0xffffffffu && (replacement&0xc0000000u)==0x40000000u {
         if view.params.z<0.5 && view.extra.y<1.5
             && distance(vec3<f32>(inst.r0.w,inst.r1.w,inst.r2.w),view.cam.xyz)>VOXEL_FAR_M {return 0u;}
-        if view.params.z>0.5 && foliage_selection[0].w==2u {return 0u;}
+        if view.params.z>0.5 && foliage_selection_at(0).w==2u {return 0u;}
     }
     // Per-view hiding (scene::HIDE_IN_VIEW): a player's own body is absent
     // from that player's camera, yet still casts shadows and shows elsewhere.
@@ -280,7 +289,7 @@ fn aggregate_triangle_error(id:u32)->f32 {
     if view.params.z>=0.5 || view.extra.y>=1.5 {return -1.0;}
     let replacement=cull_voxel_replacement[member_slot(id)];
     if replacement==0xffffffffu || (replacement&0x80000000u)==0u {return -1.0;}
-    let selected=foliage_selection[replacement&0x7fffffffu];
+    let selected=foliage_selection_at(replacement&0x7fffffffu);
     if selected.w==0u {return -1.0;}
     return bitcast<f32>(selected.z);
 }

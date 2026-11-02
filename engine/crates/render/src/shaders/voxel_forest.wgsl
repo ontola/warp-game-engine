@@ -18,7 +18,16 @@ struct VolumeConfig { size_count: vec4<u32>, march: vec4<f32>, dispatch: vec4<u3
 @group(2) @binding(6) var volume_output: texture_storage_2d<rgba16float,write>;
 @group(2) @binding(7) var<uniform> volume_config: VolumeConfig;
 @group(2) @binding(8) var<storage,read_write> volume_jobs: array<atomic<u32>>;
-@group(2) @binding(9) var<uniform> volume_selection: array<vec4<u32>,4096>;
+@group(2) @binding(9) var<uniform> volume_selection_words: array<vec4<u32>,4096>;
+fn volume_selection_at(i:u32)->vec4<u32> { let v=volume_selection_words[i>>2u]; return selection_unpack(v[i&3u]); }
+// Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
+// four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
+// voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
+fn selection_unpack(w:u32)->vec4<u32> {
+    let y=(w>>2u)&63u;
+    return vec4<u32>(w&3u,select(y,0xffffffffu,y==63u),bitcast<u32>(unpack2x16float(w>>16u).x),(w>>8u)&3u);
+}
+
 // VOLUME_MOTION_BEGIN
 // Included only in the temporal pipeline; native specialization removes all
 // these blocks, including the extra bindings and every moment calculation.
@@ -58,11 +67,11 @@ fn voxel_bins(@builtin(global_invocation_id) id:vec3<u32>) {
     if VOLUME_BRICK_VISIBILITY {
         if work>=volume_bricks[0] {return;}
         let reference=volume_bricks[1]+work*4u;i=volume_bricks[reference];
-        if volume_selection[i].x!=1u || volume_selection[i].y!=volume_bricks[reference+1u] {return;}
+        if volume_selection_at(i).x!=1u || volume_selection_at(i).y!=volume_bricks[reference+1u] {return;}
         let brick=4u+volume_bricks[reference+2u]*8u;
         brick_min=vec3<f32>(bitcast<f32>(volume_bricks[brick]),bitcast<f32>(volume_bricks[brick+1u]),bitcast<f32>(volume_bricks[brick+2u]));
         brick_max=vec3<f32>(bitcast<f32>(volume_bricks[brick+4u]),bitcast<f32>(volume_bricks[brick+5u]),bitcast<f32>(volume_bricks[brick+6u]));
-    } else {if i>=volume_config.size_count.w || volume_selection[i].x!=1u {return;}}
+    } else {if i>=volume_config.size_count.w || volume_selection_at(i).x!=1u {return;}}
     let tile_dims=(volume_config.size_count.xy+vec2<u32>(15u))/16u;
     let tree=volume_trees[i];
     var lo=vec2<f32>(1e30);var hi=vec2<f32>(-1e30);var in_front=0u;
@@ -278,7 +287,7 @@ fn volume_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
 }
 fn volume_lod(ray:VolumeRay,t:f32)->f32 {
     let tree=volume_trees[ray.identity>>12u];
-    let selected=volume_selection[ray.identity>>12u];
+    let selected=volume_selection_at(ray.identity>>12u);
     // Aggregate errors were measured for this exact representation. Sampling
     // a different finer mip would not implement the selected candidate.
     if selected.w==1u {return f32(min(tree.identity.z-1u,selected.y));}
@@ -287,11 +296,11 @@ fn volume_lod(ray:VolumeRay,t:f32)->f32 {
     // Cells touching the near plane therefore cannot pick a coarse level.
     let denominator=ray.lod_step.x+volume_config.march.w*ray.lod_step.z;
     let footprint=volume_config.march.w*max(t,1e-6)/max(denominator,1e-8);
-    let ceiling=min(tree.identity.z-1u,volume_selection[ray.identity>>12u].y);
+    let ceiling=min(tree.identity.z-1u,volume_selection_at(ray.identity>>12u).y);
     return clamp(log2(max(footprint,1e-8)),0.0,f32(ceiling));
 }
 fn volume_ray_step(ray:VolumeRay,t:f32)->f32 {
-    if volume_config.march.w<=0.0 && volume_selection[ray.identity>>12u].w!=1u {return volume_config.march.x;}
+    if volume_config.march.w<=0.0 && volume_selection_at(ray.identity>>12u).w!=1u {return volume_config.march.x;}
     return ray.lod_step.y*exp2(floor(volume_lod(ray,t)));
 }
 fn volume_ray_direction(ray:VolumeRay)->VolumeDirection {
@@ -331,7 +340,7 @@ fn volume_empty_brick_level(ray:VolumeRay,t:f32,relative:u32)->vec2<f32> {
     return vec2<f32>(leave,1.0);
 }
 fn volume_empty_brick(ray:VolumeRay,t:f32)->vec2<f32> {
-    if volume_selection[ray.identity>>12u].w==1u {
+    if volume_selection_at(ray.identity>>12u).w==1u {
         return volume_empty_brick_level(ray,t,u32(volume_lod(ray,t)));
     }
     if volume_config.march.w<=0.0 {return volume_empty_brick_level(ray,t,0u);}
@@ -342,7 +351,7 @@ fn volume_empty_brick(ray:VolumeRay,t:f32)->vec2<f32> {
     // contribute anywhere in this brick. An unclamped next-LOD time may then
     // already be behind t, causing needless rechecks and disabling empty skips.
     if VOLUME_EMPTY_CEILING {
-        let ceiling=min(tree.identity.z-1u,volume_selection[ray.identity>>12u].y);
+        let ceiling=min(tree.identity.z-1u,volume_selection_at(ray.identity>>12u).y);
         if relative>=ceiling {return a;}
     }
     if relative+1u>=tree.identity.z {return a;}
@@ -530,7 +539,7 @@ fn voxel_brick_scatter(@builtin(global_invocation_id) id:vec3<u32>) {
     if !VOLUME_BRICK_VISIBILITY {return;}
     let work=id.x+id.y*65535u*64u;if work>=volume_bricks[0] {return;}
     let reference=volume_bricks[1]+work*4u;let index=volume_bricks[reference];
-    if volume_selection[index].x!=1u || volume_selection[index].y!=volume_bricks[reference+1u] {return;}
+    if volume_selection_at(index).x!=1u || volume_selection_at(index).y!=volume_bricks[reference+1u] {return;}
     let brick=volume_bricks[reference+2u];let tree=volume_trees[index];let rect=volume_brick_rect(brick,tree);
     let p=vec4<f32>(view.cam.xyz,1.0);let origin=vec3<f32>(dot(tree.inverse[0],p),dot(tree.inverse[1],p),dot(tree.inverse[2],p));
     var tests=0u;
@@ -589,7 +598,7 @@ fn voxel_intervals_pixel(id:vec2<u32>,slot:u32) {
     var ray_count=0u;var interval_tests=0u;
     for(var j=0u;j<candidates;j++) {
         var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
-        if volume_selection[index].x!=1u {continue;}
+        if volume_selection_at(index).x!=1u {continue;}
         interval_tests++;
         var interval=volume_interval(volume_trees[index],view.cam.xyz,pixel_ray.direction,pixel_ray.limit);
         interval.x=max(interval.x,pixel_ray.near);
@@ -606,7 +615,7 @@ fn voxel_intervals_pixel(id:vec2<u32>,slot:u32) {
     var written=0u;
     for(var j=0u;j<candidates;j++) {
         var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
-        if volume_selection[index].x!=1u {continue;}
+        if volume_selection_at(index).x!=1u {continue;}
         interval_tests++;
         var interval=volume_interval(volume_trees[index],view.cam.xyz,pixel_ray.direction,pixel_ray.limit);
         interval.x=max(interval.x,pixel_ray.near);if interval.y<=interval.x {continue;}
@@ -643,7 +652,7 @@ fn volume_stream_ray(index:u32,leave:f32,direction:vec3<f32>)->VolumeRay {
     let scale=length(local_direction);let angular=volume_direction(local_direction/max(scale,1e-8));
     let identity=(index<<12u)|angular.indices.x|(angular.indices.y<<4u)|(angular.indices.z<<8u);
     var lod_step=vec4<f32>(0.0,volume_levels[tree.identity.y].origin_cell.w*0.5/max(scale,1e-8),0.0,0.0);
-    if volume_config.march.w>0.0 && volume_selection[index].w!=1u {
+    if volume_config.march.w>0.0 && volume_selection_at(index).w!=1u {
         let projected=volume_projected_cell(tree,direction);lod_step.x=projected.x;lod_step.z=projected.y;
     }
     return VolumeRay(vec4<f32>(local_origin,leave),vec4<f32>(local_direction,scale),angular.weights,identity,vec2<f32>(-1.0,0.0),lod_step);
@@ -679,7 +688,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
         ray_count=0u;
         for(var j=0u;j<candidates;j++) {
             var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
-            if volume_selection[index].x!=1u {continue;}interval_tests++;
+            if volume_selection_at(index).x!=1u {continue;}interval_tests++;
             var interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
             if interval.y<=interval.x {continue;}ray_count++;begin=min(begin,interval.x);end=max(end,interval.y);
         }
@@ -708,7 +717,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
             if streamed {let record=volume_stream_read(first,j);interval=record.time;index=record.index;}
             else {
                 if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
-                if volume_selection[index].x!=1u {continue;}interval_tests++;
+                if volume_selection_at(index).x!=1u {continue;}interval_tests++;
                 interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
             }
             if interval.y<=interval.x || interval.y<=t {continue;}
@@ -732,7 +741,7 @@ fn voxel_integrate_global_pixel(id:vec2<u32>,slot:u32) {
             if streamed {let record=volume_stream_read(first,j);interval=record.time;index=record.index;}
             else {
                 if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
-                if volume_selection[index].x!=1u {continue;}interval_tests++;
+                if volume_selection_at(index).x!=1u {continue;}interval_tests++;
                 interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);interval.x=max(interval.x,near_distance);
             }
             if streamed && VOLUME_BRICK_VISIBILITY && sample_t<interval.x {break;}
@@ -826,7 +835,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
     var begin=1e30;var end=0.0;
     for(var j=0u;j<candidates;j++) {
         var index=j;if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
-        if volume_selection[index].x!=1u {continue;}
+        if volume_selection_at(index).x!=1u {continue;}
         interval_tests++;
         var interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
         interval.x=max(interval.x,near_distance);
@@ -906,7 +915,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
                 if compact {interval=intervals[j].time;index=intervals[j].index;}
                 else {
                     if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
-                    if volume_selection[index].x!=1u {continue;}
+                    if volume_selection_at(index).x!=1u {continue;}
                     interval_tests++;
                     interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
                     interval.x=max(interval.x,near_distance);
@@ -955,7 +964,7 @@ fn voxel_integrate_pixel(id:vec3<u32>) {
                 if compact {index=intervals[j].index;interval=intervals[j].time;}
                 else {
                     if !tile_fallback {index=atomicLoad(&volume_tiles[start+1u+j]);}
-                    if volume_selection[index].x!=1u {continue;}
+                    if volume_selection_at(index).x!=1u {continue;}
                     interval_tests++;
                     interval=volume_interval(volume_trees[index],view.cam.xyz,direction,limit);
                 }
@@ -1102,7 +1111,7 @@ fn volume_splat_level(index:u32)->u32 {
         return volume_footprint_level(index,tree.identity.z-1u,pixels);
     }
     if volume_config.march.y>0.0 {return volume_footprint_level(index,tree.identity.z-1u,volume_config.march.w);}
-    let selected=volume_selection[index];
+    let selected=volume_selection_at(index);
     let ceiling=min(tree.identity.z-1u,selected.y);
     if selected.w==1u || volume_config.march.w<=0.0 {return select(0u,ceiling,selected.w==1u);}
     return volume_footprint_level(index,ceiling,volume_config.march.w);
@@ -1186,7 +1195,7 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w {
             var wanted=volume_config.march.y>0.0 && volume_far_tree(index);
-            if volume_config.march.y<=0.0 && !volume_proxy(index) {wanted=volume_selection[index].x==1u;}
+            if volume_config.march.y<=0.0 && !volume_proxy(index) {wanted=volume_selection_at(index).x==1u;}
             if volume_proxy(index) {wanted=volume_proxy_shown(index);}
             for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,view.planes[i]);}
             if wanted {level=volume_splat_level(index);volume_splat_tree(index,level);}
@@ -1225,8 +1234,8 @@ fn voxel_sun_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invoca
         if index<volume_config.size_count.w {
             // Far trees all cast; the sun selection marks only index 0.
             // Proxies always cast, also into maps whose source groups do not.
-            var selected=volume_selection[0];
-            if volume_config.march.y<=0.0 && !volume_proxy(index) {selected=volume_selection[index];}
+            var selected=volume_selection_at(0);
+            if volume_config.march.y<=0.0 && !volume_proxy(index) {selected=volume_selection_at(index);}
             var wanted=(selected.x==1u && selected.w==VOLUME_SUN_CASTER) || volume_proxy(index);
             if volume_proxy(index) {wanted=volume_proxy_casts(index);}
             for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,volume_splat_header(4u+i));}

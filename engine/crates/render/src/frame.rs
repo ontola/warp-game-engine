@@ -153,10 +153,10 @@ struct Upscaling {
     layout: Vec<(u32, u32, u32, u32)>,
     /// Bounded per-view temporal guard. A source/volume or selected-mip change
     /// resets that whole view initially, not a claim of mature streaming history.
-    foliage_selection: Vec<Vec<[u32;4]>>,
+    foliage_selection: Vec<Vec<u32>>,
 }
 
-fn update_foliage_history(previous:&mut Vec<[u32;4]>,current:&[[u32;4]])->bool {
+fn update_foliage_history(previous:&mut Vec<u32>,current:&[u32])->bool {
     if previous.as_slice()==current {return false;}
     previous.clear();previous.extend_from_slice(current);true
 }
@@ -2104,8 +2104,7 @@ impl Renderer {
         let categories=diagnostics.owners.as_ref().map(|owners|self.geometry_diagnostics.count(&pairs,owners,self.cluster_buckets)).transpose()?;
         let foliage_selection=if self.foliage_representations.is_empty() {Vec::new()} else {
             read(&target.foliage_selection,target.foliage_selection.size())?
-                .chunks_exact(16).map(|b|std::array::from_fn(|i|
-                    u32::from_le_bytes(b[i*4..i*4+4].try_into().unwrap()))).collect()
+                .chunks_exact(4).map(|b|crate::voxel_forest::selection_unpack(u32::from_le_bytes(b.try_into().unwrap()))).collect()
         };
         Ok(VisibleClusterDiagnostic { frame_id:context.frame_id, render_sequence:context.render_sequence,
             view_index:view,view_count:context.views,output_size:context.output_size,input_size:target.input_size,
@@ -3951,10 +3950,10 @@ impl Renderer {
                         width: view.w, height: view.h }, self.foliage_representation_policy)?;
                 let mut selection = crate::voxel_forest::default_selection();
                 for decision in decisions {
-                    selection[decision.volume as usize] = match decision.representation {
+                    selection[decision.volume as usize] = crate::voxel_forest::selection_pack(match decision.representation {
                         crate::foliage_representation::Representation::Source => [0, 0, 0, 0],
                         crate::foliage_representation::Representation::Voxel { level } => [1, level, 0, 0],
-                    };
+                    });
                 }
                 gpu.queue.write_buffer(&main.foliage_selection, 0, bytemuck::cast_slice(&selection));
                 if dlss_on {foliage_changed=update_foliage_history(&mut up.foliage_selection[vi],&selection);}
@@ -4858,15 +4857,16 @@ mod layout_tests {
     #[test]
     fn foliage_handoffs_reset_only_changed_views_and_not_stable_frames() {
         let mut views=[Vec::new(),Vec::new()];
-        let source=[[0,0,0,0],[0,0,0,0]];
-        let volume=[[1,2,0,0],[0,0,0,0]];
+        let pack=|s:[[u32;4];2]|s.map(crate::voxel_forest::selection_pack);
+        let source=pack([[0,0,0,0],[0,0,0,0]]);
+        let volume=pack([[1,2,0,0],[0,0,0,0]]);
         assert!(super::update_foliage_history(&mut views[0],&source));
         assert!(super::update_foliage_history(&mut views[1],&volume));
         assert!(!super::update_foliage_history(&mut views[0],&source));
         assert!(!super::update_foliage_history(&mut views[1],&volume));
         assert!(super::update_foliage_history(&mut views[0],&volume));
         assert!(!super::update_foliage_history(&mut views[1],&volume));
-        let coarser=[[1,3,0,0],[0,0,0,0]];
+        let coarser=pack([[1,3,0,0],[0,0,0,0]]);
         assert!(super::update_foliage_history(&mut views[0],&coarser));
     }
     use super::{split_rects, split_rects_with, SplitLayout, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};

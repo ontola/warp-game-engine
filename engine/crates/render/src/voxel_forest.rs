@@ -1,8 +1,9 @@
 //! Bounded validation renderer for source-derived fractional foliage volumes.
 //!
 //! Integrates all overlapping crown densities together, clipped by opaque
-//! scene depth. Crowns write C/T, never a false opaque first-hit depth. Current
-//! 4096-selection-slot limit is deliberate, not full-forest streaming support. Optional
+//! scene depth. Crowns write C/T, never a false opaque first-hit depth. The
+//! integrator's 4096-volume limit is deliberate, not full-forest streaming
+//! support; rasterized voxels select up to 16384 groups per view. Optional
 //! per-view projected mip selection shares the same immutable asset pyramid.
 use crate::{Gpu, Scene};
 use bytemuck::{Pod, Zeroable};
@@ -119,11 +120,51 @@ fn diagnostic_u64(bytes: &[u8], word: usize) -> u64 {
 // against WebGPU's per-stage limit (10 scene + 7 volume = 17). Keep this
 // interface small instead of increasing the requested hardware limit.
 pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 26];
-pub(crate) const MAX_VIEW_GROUPS: usize = 4096;
+/// Groups one view's selection holds: a packed u32 each (selection_pack),
+/// four per vec4 of the shaders' 64 KiB uniform.
+pub(crate) const MAX_VIEW_GROUPS: usize = 16384;
+/// Volumes the integrator path (no rasterized voxels) may march: its per-ray
+/// u32 sums are bounded for this many.
+pub(crate) const INTEGRATOR_MAX_VOLUMES: usize = 4096;
 /// Replacement tag of a distance-switched far tree (Scene::voxel_far_distance_m).
 pub(crate) const FAR_TREE: u32 = 0x4000_0000;
-pub(crate) fn default_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] {
-    [[1, u32::MAX, 0, 0]; MAX_VIEW_GROUPS]
+pub(crate) fn default_selection() -> Vec<u32> {
+    vec![selection_pack([1, u32::MAX, 0, 0]); MAX_VIEW_GROUPS]
+}
+
+/// A group's selection [choice, voxel level (u32::MAX none), triangle error
+/// f32 bits, sun mode] as the shaders hold it (aggregate_lod.wgsl).
+pub(crate) fn selection_pack(d: [u32; 4]) -> u32 {
+    d[0].min(3) | (d[1].min(63) << 2) | (d[3].min(3) << 8) | (u32::from(f16_bits(f32::from_bits(d[2]))) << 16)
+}
+pub(crate) fn selection_unpack(w: u32) -> [u32; 4] {
+    let y = (w >> 2) & 63;
+    [w & 3, if y == 63 { u32::MAX } else { y }, f16_value((w >> 16) as u16).to_bits(), (w >> 8) & 3]
+}
+fn f16_bits(v: f32) -> u16 {
+    let bits = v.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 255) as i32 - 127 + 15;
+    let mantissa = bits & 0x7f_ffff;
+    if v.is_nan() { return sign | 0x7e00; }
+    if exp >= 31 { return sign | 0x7c00; }
+    if exp <= 0 {
+        if exp < -10 { return sign; }
+        let m = (mantissa | 0x80_0000) >> (14 - exp);
+        return sign | ((m + 0x1000) >> 13) as u16;
+    }
+    let rounded = (((exp as u32) << 10) | (mantissa >> 13)) + ((mantissa >> 12) & 1);
+    sign | rounded.min(0x7c00) as u16
+}
+fn f16_value(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((h >> 10) & 31) as i32;
+    let mantissa = (h & 1023) as f32;
+    match exp {
+        0 => sign * mantissa * 2f32.powi(-24),
+        31 => if mantissa == 0.0 { sign * f32::INFINITY } else { f32::NAN },
+        _ => sign * (1.0 + mantissa / 1024.0) * 2f32.powi(exp - 15),
+    }
 }
 #[derive(Clone, Debug, Default)]
 pub struct VoxelViewDiagnostics {
@@ -707,6 +748,8 @@ impl VoxelRenderer {
             Ok(_) => { eprintln!("voxel raster fallback: no occupied cells"); None }
             Err(error) => { eprintln!("voxel raster fallback: {error}"); None }
         }} else { None };
+        assert!(raster.is_some() || far > 0.0 || forest.instances.len() - proxies as usize <= INTEGRATOR_MAX_VOLUMES,
+            "voxel integrator exceeds its checked volume capacity");
         integrator_options.raster = raster.is_some();
         let lighting_layout = pipeline_layout;
         let composite_layout = layout(
@@ -1254,7 +1297,7 @@ impl VoxelRenderer {
     /// Whole-plant proxies have no source, so they also cast into the
     /// near shadow map (render_sun with that map's own selection).
     pub(crate) fn has_proxies(&self) -> bool { self.raster.is_some() && self.proxies > 0 }
-    pub(crate) fn sun_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] { [[1, u32::MAX, 0, 2]; MAX_VIEW_GROUPS] }
+    pub(crate) fn sun_selection() -> Vec<u32> { vec![selection_pack([1, u32::MAX, 0, 2]); MAX_VIEW_GROUPS] }
     /// Draw the voxels of every sun-casting group into the sun map, after
     /// its source raster. `selection` is the sun view's selection buffer.
     pub(crate) fn render_sun(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, scene: &wgpu::BindGroup,
@@ -1566,7 +1609,7 @@ mod tests {
             assert!(records_end*4<=stream.bytes && stream.bytes-records_end*4<16);
             // Every admitted pixel can see the complete provider without
             // wrapping the u32 atomic reservation counter, even after full.
-            assert!(u64::from(stream.pixel_slots)*(super::MAX_VIEW_GROUPS as u64)<u64::from(u32::MAX));
+            assert!(u64::from(stream.pixel_slots)*(super::INTEGRATOR_MAX_VOLUMES as u64)<u64::from(u32::MAX));
             assert!(super::interval_stream_layout(size,stream.bytes).is_ok());
             assert!(super::interval_stream_layout(size,stream.bytes-1).is_err());
             let last_metadata=u64::from(stream.header_word)+4+(u64::from(stream.pixel_slots)-1)*2;
@@ -2131,7 +2174,7 @@ mod tests {
     #[test]
     fn per_ray_work_fits_local_u32_while_full_resolution_totals_require_u64() {
         let steps=4096u64;
-        let volumes=super::MAX_VIEW_GROUPS as u64;
+        let volumes=super::INTEGRATOR_MAX_VOLUMES as u64;
         let volume_samples=steps*volumes;
         // Every interpolation can fetch eight cells in each of two mips.
         // Empty-brick tests read only indirection, not occupied cell records.
@@ -2145,8 +2188,8 @@ mod tests {
         // The shader's literal caps are the premises of this local bound.
         let source=include_str!("shaders/voxel_forest.wgsl");
         assert!(source.contains("const VOLUME_MAX_STEPS: u32 = 4096u;"));
-        assert_eq!(super::MAX_VIEW_GROUPS,4096);
-        assert!(source.contains("var<uniform> volume_selection: array<vec4<u32>,4096>"));
+        assert_eq!(super::INTEGRATOR_MAX_VOLUMES,4096);
+        assert!(source.contains("var<uniform> volume_selection_words: array<vec4<u32>,4096>"));
     }
 
 }
