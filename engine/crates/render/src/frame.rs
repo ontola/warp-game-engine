@@ -22,7 +22,7 @@ struct FrameResources {
     near_shadow: resource_cache::TextureViews<1>,
     history: resource_cache::TextureViews<2>,
     result: resource_cache::TextureViews<2>,
-    shade: resource_cache::BindGroups<1>,
+    shade: resource_cache::BindGroups<2>,
     taa: resource_cache::BindGroups<2>,
     tone: resource_cache::BindGroups<2>,
     volume: resource_cache::BindGroups<1>,
@@ -812,6 +812,13 @@ pub struct Renderer {
     shade_classify: wgpu::ComputePipeline,
     /// Shade binding 18 without rasterized voxels: no voxel in front.
     voxel_depth_fallback: wgpu::TextureView,
+    /// Coarse terrain material (shade.wgsl terrain_coarse; KERN_TERRAIN_COARSE=0
+    /// turns it off), its half-resolution target per view, the stand-in
+    /// bound while it is written, and its output layout.
+    terrain_coarse: Option<wgpu::ComputePipeline>,
+    terrain_coarse_targets: std::sync::Mutex<Vec<Option<(wgpu::Texture, wgpu::TextureView)>>>,
+    terrain_coarse_fallback: wgpu::TextureView,
+    terrain_coarse_layout: wgpu::BindGroupLayout,
     /// Bakes each changed canopy level's sky transmittance into the canopy
     /// texture, so shading reads it instead of marching per pixel
     /// (`KERN_SKY_VIS_CACHE=0` keeps the per-pixel march).
@@ -1542,6 +1549,7 @@ impl Renderer {
                 (16, storage(false)),
                 (17, storage(false)),
                 (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -1699,6 +1707,8 @@ impl Renderer {
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
         shade_constants.push(("VOXEL_OCCLUSION", if voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) {1.0} else {0.0}));
+        let terrain_coarse_on = !simple_lighting && shade_features.terrain && std::env::var("KERN_TERRAIN_COARSE").as_deref() != Ok("0");
+        shade_constants.push(("TERRAIN_COARSE", if terrain_coarse_on {1.0} else {0.0}));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
@@ -1706,6 +1716,16 @@ impl Renderer {
         let voxel_depth_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel depth"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
+        let terrain_coarse_layout = layout(gpu, "terrain coarse out", &[(0, wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 })]);
+        let terrain_coarse = terrain_coarse_on.then(|| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("terrain coarse"),layout:Some(&pl(&[&scene_layout, &shade_layout, &terrain_coarse_layout])),module:&shade_mod,entry_point:Some("terrain_coarse"),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
+        }));
+        let terrain_coarse_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no coarse terrain"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
             usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
         let shade_classify = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade sky tiles"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("classify"),
@@ -1946,6 +1966,10 @@ impl Renderer {
             sky_tiles,
             shade_classify,
             voxel_depth_fallback,
+            terrain_coarse,
+            terrain_coarse_targets: std::sync::Mutex::new(Vec::new()),
+            terrain_coarse_fallback,
+            terrain_coarse_layout,
             sky_vis_bake,
             shade_tiles: std::sync::Mutex::new(Vec::new()),
             shade_text: crate::wind::shade_source(),
@@ -2608,6 +2632,7 @@ impl Renderer {
                 let mut constants = self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()));
                 constants.push(("SKY_TILES", if self.sky_tiles {1.0} else {0.0}));
                 constants.push(("VOXEL_OCCLUSION", if self.voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) {1.0} else {0.0}));
+                constants.push(("TERRAIN_COARSE", if self.terrain_coarse.is_some() {1.0} else {0.0}));
                 let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
                     layout: Some(&self.shade_pl),
@@ -4056,7 +4081,21 @@ impl Renderer {
                     crate::voxel_forest::Stage::Splats)?;
             }
             let voxel_depth = self.voxel_forest.as_ref().and_then(|forest| forest.splat_depth(vi));
-            let shade_bind = resources.shade.get(
+            let coarse_target = self.terrain_coarse.as_ref().map(|_| {
+                let mut all = self.terrain_coarse_targets.lock().unwrap();
+                if all.len() <= vi { all.resize_with(vi + 1, || None); }
+                let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+                if all[vi].as_ref().is_none_or(|t| t.0.width() != cw || t.0.height() != ch) {
+                    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("terrain coarse"),
+                        size: wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING, view_formats: &[] });
+                    let view = texture.create_view(&Default::default());
+                    all[vi] = Some((texture, view));
+                }
+                all[vi].clone().unwrap()
+            });
+            let shade_bind_with = |resources: &mut FrameResources, coarse: &wgpu::TextureView| resources.shade.get(
                 gpu,
                 &self.shade_layout,
                 "cached shade view",
@@ -4079,9 +4118,16 @@ impl Renderer {
                     (16, hidden_meadow.as_ref().unwrap_or(&self.hidden_meadow_fallback).as_entire_binding()),
                     (17, shade_tiles.0.as_entire_binding()),
                     (18, wgpu::BindingResource::TextureView(voxel_depth.as_ref().unwrap_or(&self.voxel_depth_fallback))),
+                    (19, wgpu::BindingResource::TextureView(coarse)),
                 ],
             );
-            let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = vec![("shade", &self.shade, vec![&self.scene_bind, &shade_bind])];
+            let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1));
+            let coarse_binds = coarse_target.as_ref().map(|t| (shade_bind_with(resources, &self.terrain_coarse_fallback),
+                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain coarse out"), layout: &self.terrain_coarse_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t.1) }] })));
+            let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = Vec::new();
+            if let (Some(coarse), Some((bind, out))) = (&self.terrain_coarse, &coarse_binds) { passes.push(("terrain coarse", coarse, vec![&self.scene_bind, bind, out])); }
+            passes.push(("shade", &self.shade, vec![&self.scene_bind, &shade_bind]));
             if let Some(b) = &taa_bind {
                 passes.push(("taa", &self.taa, vec![b]));
             }
@@ -4120,7 +4166,9 @@ impl Renderer {
                     });
                     for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
                     pass.set_pipeline(pipe);
-                    pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    // The coarse terrain pass runs one invocation per 2x2 pixels.
+                    let (dw, dh) = if label == "terrain coarse" { (w.div_ceil(2), h.div_ceil(2)) } else { (w, h) };
+                    pass.dispatch_workgroups(dw.div_ceil(8), dh.div_ceil(8), 1);
                     drop(pass);
                 }
                 if label == "shade" {
