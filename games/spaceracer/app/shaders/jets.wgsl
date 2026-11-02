@@ -1,16 +1,49 @@
 // Source plasma, nozzle glow, flare and phosphor wake, in the per-view sprite
 // pass. Single axis-facing plumes avoid the intersecting opaque-looking fins.
-fn vapor_noise(p: vec2<f32>) -> f32 {
-    let cell=floor(p);let f=fract(p);let u=f*f*(3.-2.*f);
-    let a=fract(sin(dot(cell,vec2<f32>(127.1,311.7)))*43758.5453);
-    let b=fract(sin(dot(cell+vec2<f32>(1.,0.),vec2<f32>(127.1,311.7)))*43758.5453);
-    let c=fract(sin(dot(cell+vec2<f32>(0.,1.),vec2<f32>(127.1,311.7)))*43758.5453);
-    let d=fract(sin(dot(cell+vec2<f32>(1.,1.),vec2<f32>(127.1,311.7)))*43758.5453);
-    return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);
+fn vapor_hash(cell: vec2<i32>) -> f32 {
+    let bits=bitcast<vec2<u32>>(cell);
+    var h=bits.x*1597334677u ^ bits.y*3812015801u;
+    h=(h^(h>>16u))*2246822519u;h=(h^(h>>13u))*3266489917u;
+    return f32((h^(h>>16u))>>8u)/16777215.;
 }
 fn game_sprite(s: GameSprite) -> vec4<f32> {
     let x = s.uv.x * 2.0 - 1.0;
     let t = s.uv.y;
+    if s.effect == 15u { // local 3D exhaust volume: a full, tapering jet stream
+        var axis=vec3<f32>(s.params.xy,1.-abs(s.params.x)-abs(s.params.y));
+        if axis.z<0. {axis=vec3<f32>((1.-abs(axis.yx))*select(vec2<f32>(-1.),vec2<f32>(1.),axis.xy>=vec2<f32>(0.)),axis.z);}
+        axis=normalize(axis);
+        let plume_length=s.params.z;let time=s.params.w;
+        let bound=s.size.x*.5/1.12;
+        let radius=sqrt(max(.01,bound*bound-plume_length*plume_length*.25));
+        let root=s.center-axis*plume_length*.5;
+        let ray=normalize(s.world-u.camera_near.xyz);
+        let oc=u.camera_near.xyz-s.center;
+        let b=dot(oc,ray);let disc=b*b-dot(oc,oc)+bound*bound;
+        if disc<=0. {return vec4<f32>(0.);}
+        let entry=max(.05,-b-sqrt(disc));
+        let clip=u.depth_vp*vec4<f32>(s.world,1.);
+        if clip.w<=0. {return vec4<f32>(0.);}
+        let uv=clip.xy/clip.w*vec2<f32>(.5,-.5)+.5;
+        let forward=clip.w/max(.001,distance(s.world,u.camera_near.xyz));
+        let end=min(-b+sqrt(disc),depth_metres(uv)/max(.01,forward));
+        if end<=entry {return vec4<f32>(0.);}
+        let step=(end-entry)/16.;var optical=0.;var energy=0.;
+        for(var i=0u;i<16u;i++) {
+            let local=u.camera_near.xyz+ray*(entry+(f32(i)+.5)*step)-root;
+            let along=dot(local,axis);let z=along/plume_length;
+            if z<0. || z>1. {continue;}
+            let radial=local-axis*along;
+            let width=radius*(1.-z)*(.9+.18*sin(z*3.14159));
+            let r=length(radial)/max(.01,width);
+            let flow=.85+.15*sin(along*8.-time*80.+dot(radial,vec3<f32>(3.,5.,7.)));
+            let density=exp(-r*r*2.)*(1.-smoothstep(.65,1.,r))*smoothstep(0.,.035,z)*flow;
+            let diamond=pow(.5+.5*cos(z*32.-time*4.),5.)*exp(-r*r*9.);
+            optical+=density*step;
+            energy+=density*step*(.28+exp(-z*9.)*2.2+diamond*.3*exp(-z*3.));
+        }
+        return vec4<f32>(vec3<f32>(energy/max(.001,optical)),1.-exp(-optical*1.6));
+    }
     if s.effect == 1u { // plasma: parameters time, boost, reverse, unused
         let boost = s.params.y;
         let time = s.params.x;
@@ -115,10 +148,16 @@ fn game_sprite(s: GameSprite) -> vec4<f32> {
     }
     if s.effect == 14u { // hollow sonic condensation: turbulent, broken smoke patches
         let q=s.uv*2.-1.;let seed=s.params.x;
-        let flow=vec2<f32>(sin(q.y*6.+seed),cos(q.x*7.-seed))*.16;
-        let p=q+flow;
-        let cloud=.65*vapor_noise(p*3.+vec2<f32>(seed))+.35*vapor_noise(p*7.-vec2<f32>(seed));
-        let density=smoothstep(.2,.7,cloud)*exp(-dot(p,p)*2.)*(1.-smoothstep(.55,1.,length(q)));
+        // Overlapping smooth billows, not thresholded lattice noise: the latter
+        // made conspicuous angular channels when the cone filled the view.
+        let key=i32(seed*4096.);var cloud=0.;
+        for(var k=0;k<6;k++) {
+            let centre=(vec2<f32>(vapor_hash(vec2<i32>(key,k*3)),vapor_hash(vec2<i32>(key,k*3+1)))*2.-1.)*.5;
+            let radius=.22+.23*vapor_hash(vec2<i32>(key,k*3+2));
+            let d=q-centre;
+            cloud+=exp(-dot(d,d)/(radius*radius))*.55;
+        }
+        let density=(1.-exp(-cloud))*(1.-smoothstep(.55,1.,length(q)));
         let clip=u.depth_vp*vec4<f32>(s.world,1.);
         let uv=clip.xy/clip.w*vec2<f32>(.5,-.5)+.5;
         let soft=clamp((depth_metres(uv)-clip.w)/1.2,0.,1.);

@@ -6,11 +6,26 @@ valid equal-content performance comparison. Source provenance remains pinned
 in `port-status.json`; original assets and their attribution are retained.
 There is no Godot runtime or Godot build/export step.
 
+## Exhaust volume and speed presentation (2 November 2026)
+
+Forward exhaust is a bounded 3D gas cone, with a compact white-blue motor core
+and a dimmer tapered tail. Countdown shows only the engine lamps; thrust starts
+the plume. Boost increases it without covering the vehicle. Sonic vapor uses
+soft overlapping billows instead of the angular lattice-noise pattern.
+The speed display is calibrated 25% lower; condensation now occurs around
+1235 displayed km/h, later into boost, and lasts 0.72 seconds. Actual driving
+physics are unchanged. A lower, closer chase camera and stronger acceleration
+FOV response are tunable in `rules/effects.luau`.
+
+`scenarios/boost-onset.json` captures countdown, thrust, ignition, crossing and
+dissipation. `--profile-no-plumes` omits just the volume plumes for matched GPU
+measurements, retaining lamps, lights and other effects.
+
 ## Startup, collisions and parity audit (2 November 2026)
 
 EMP vehicles remain solid. Vehicle collisions now use oriented hulls and resolve
 packs/rear impacts; boost lightning is a short, aggressive ignition burst.
-Crossing 343 m/s briefly produces a hollow, fluctuating vapor cone without
+Crossing the sound barrier briefly produces a hollow, fluctuating vapor cone without
 changing boost or covering the centre of the view.
 Windows opens without a terminal, shows an icon in the taskbar while loading,
 and defaults to fullscreen (`--windowed` opts out). See the dated

@@ -47,6 +47,9 @@ pub enum DepthTest {
     #[default]
     Fragment,
     Source,
+    /// A procedural volume clips its ray interval against scene depth itself.
+    /// Its bounding billboard must not reject gas in front of that plane.
+    Shader,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -298,7 +301,7 @@ impl SpriteRenderer {
                 }
             }
             GpuSprite { center: s.center.extend(s.depth_bias).to_array(), right: right.extend(size[0]).to_array(), up: up.extend(size[1]).to_array(),
-                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, (if s.additive {1.0}else{0.0}) + (if s.depth_test==DepthTest::Source {2.0}else{0.0}), if s.facing==Facing::Screen {0.0}else{s.min_pixels.max(0.0)}, s.effect as f32], params: s.params }
+                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, (if s.additive {1.0}else{0.0}) + match s.depth_test {DepthTest::Fragment=>0.,DepthTest::Source=>2.,DepthTest::Shader=>4.}, if s.facing==Facing::Screen {0.0}else{s.min_pixels.max(0.0)}, s.effect as f32], params: s.params }
         }).collect();
         let size = (input.width(), input.height());
         if self.targets.len() <= index { self.targets.resize_with(index + 1, || None); }
@@ -357,7 +360,7 @@ fn shader_with(game: Option<&str>) -> String {
 /// A game's own sprite looks: WGSL with
 /// `fn game_sprite(s: GameSprite) -> vec4<f32>`, run for every sprite whose
 /// `effect` is not 0. `GameSprite` holds `uv` (0..1 across the quad, y
-/// down), `size` (metres), `world`, `effect`, `params` and `texel` (the
+/// down), `size` (metres), `world`, `center`, `effect`, `params` and `texel` (the
 /// image under `uv`, premultiplied). It returns a colour that the sprite's
 /// radiance scales and its coverage in alpha. Checked here: on an error
 /// the shader in use stays. Sprites pick it up on their next frame.
@@ -373,7 +376,7 @@ pub fn set_game_sprite(gpu: &Gpu, source: &str) -> Result<(), String> {
 const SHADER: &str = r#"
 struct Uniform { view_proj: mat4x4<f32>, depth_vp: mat4x4<f32>, camera_near: vec4<f32>, camera_right: vec4<f32>, output:vec4<f32> };
 struct Sprite { center: vec4<f32>, right: vec4<f32>, up: vec4<f32>, uv: vec4<f32>, color: vec4<f32>, misc: vec4<f32>, params: vec4<f32> };
-struct GameSprite { uv: vec2<f32>, size: vec2<f32>, world: vec3<f32>, effect: u32, params: vec4<f32>, texel: vec4<f32> };
+struct GameSprite { uv: vec2<f32>, size: vec2<f32>, world: vec3<f32>, effect: u32, params: vec4<f32>, texel: vec4<f32>, center: vec3<f32> };
 @group(0) @binding(0) var<uniform> u: Uniform;
 @group(0) @binding(1) var<storage, read> sprites: array<Sprite>;
 @group(0) @binding(2) var scene_depth: texture_depth_2d;
@@ -414,7 +417,7 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     var texel = textureSample(image, image_sampler, in.uv);
     if s.misc.w > 0.5 {
         // The game's effect: straight colour and coverage, made premultiplied.
-        let g = game_sprite(GameSprite(in.local, vec2<f32>(s.right.w, s.up.w), in.world, u32(s.misc.w + 0.5), s.params, texel));
+        let g = game_sprite(GameSprite(in.local, vec2<f32>(s.right.w, s.up.w), in.world, u32(s.misc.w + 0.5), s.params, texel, s.center.xyz));
         let ga = clamp(g.a, 0.0, 1.0);
         texel = vec4<f32>(max(g.rgb, vec3<f32>(0.0)) * ga, ga);
     }
@@ -425,7 +428,7 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     let clip = u.depth_vp * vec4<f32>(depth_point, 1.0);
     if clip.w<=0.0 {discard;}
     let duv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + 0.5;
-    if depth_metres(duv) + s.center.w < clip.w { discard; }
+    if (u32(s.misc.y)&4u)==0u && depth_metres(duv) + s.center.w < clip.w { discard; }
     if texel.a <= s.misc.x || texel.a <= 0.0 { discard; }
     // Linear premultiplied texel; cut-out sprites draw opaque inside.
     let a = select(texel.a, 1.0, s.misc.x > 0.0) * s.color.a;

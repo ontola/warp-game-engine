@@ -1,5 +1,7 @@
 -- Artistic policy. Native code handles bulk mesh motion, collision and GPU work.
 local config={
+    camera={distance=16.5,height=4.6,speed_pullback=.004,boost_pullback=1,
+        fov_base=72,fov_speed=8,fov_surge=8,fov_boost=12,shake=1.5},
     blur_start_speed=90, blur_full_speed=320, blur_strength=1,
     boost_blur=.3, shutter_seconds=1/75, max_blur_pixels=48,
     baked_explosion_smoke=true,
