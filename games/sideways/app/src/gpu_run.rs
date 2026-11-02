@@ -116,6 +116,7 @@ fn stage_frame(gpu: &render::Gpu, job: &toml::Value, size: (u32, u32), out: &Pat
         frames: get("frames", 400.0) as u64,
         size,
         weather: job.get("weather").and_then(|v| v.as_str()).map(String::from),
+        land: match job.get("biome").and_then(|v| v.as_str()) { Some(b) => Some(crate::biome_land::land(b)?), None => None },
         lod_pixels: get("lod", 1.0) as f32,
         picks: vec![],
         views: get("views", 1.0) as usize,
