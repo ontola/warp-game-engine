@@ -13,7 +13,7 @@
 //! ```
 use crate::cluster::{GpuCluster, Vertex};
 use crate::scene::{GeometryCategory, GpuInstance, Material, Scene, INSTANCE_CATEGORY_SHIFT};
-use crate::{forest_field, terrain_field, vegetation_style, Camera, Gpu, Renderer};
+use crate::{forest_field, terrain_field, vegetation_style, world_constraints, Camera, Gpu, Renderer};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use std::collections::{HashMap, HashSet};
@@ -28,7 +28,7 @@ pub const PROCEDURAL: u32 = 128;
 const SHADER: &str = include_str!("shaders/procedural_terrain.wgsl");
 
 /// The reserved pool, made by [`reserve`] before the renderer.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TerrainSpec {
     pub first_instance: u32,
     pub first_cluster: u32,
@@ -36,6 +36,34 @@ pub struct TerrainSpec {
     pub capacity: u32,
     pub seed: u32,
     pub style: terrain_field::Style,
+    /// Roads and pads the land bends to (none: the bare function).
+    pub constraints: Option<std::sync::Arc<world_constraints::World>>,
+}
+
+impl TerrainSpec {
+    /// The ground at (x, z) for this terrain, constraints included.
+    pub fn eval(&self, x: f32, z: f32, cut: f32) -> terrain_field::Sample {
+        match &self.constraints {
+            Some(w) => w.eval(x, z, cut, self.seed, &self.style),
+            None => terrain_field::eval(x, z, cut, self.seed, &self.style),
+        }
+    }
+
+    /// Ground height under world (x, z) at full detail, for physics.
+    pub fn height(&self, x: f32, z: f32) -> f32 {
+        match &self.constraints {
+            Some(w) => w.height(x, z, self.seed, &self.style),
+            None => terrain_field::height(x, z, self.seed, &self.style),
+        }
+    }
+}
+
+/// Bend the scene's procedural terrain to `world`'s roads and pads. Call
+/// before the renderer is made, with the spec `reserve` returned.
+pub fn constrain(scene: &mut Scene, world: std::sync::Arc<world_constraints::World>) -> TerrainSpec {
+    let spec = scene.procedural_terrain.as_mut().expect("reserve the procedural terrain first");
+    spec.constraints = Some(world);
+    spec.clone()
 }
 
 /// Sun visibility baked for `size` metres square around `centre` at `cell`
@@ -212,8 +240,8 @@ pub fn reserve(scene: &mut Scene, capacity: u32, material: u32, seed: u32, style
             flags: PROCEDURAL | (GeometryCategory::Terrain as u32) << INSTANCE_CATEGORY_SHIFT,
         });
     }
-    let spec = TerrainSpec { first_instance, first_cluster, first_vertex, capacity, seed, style };
-    scene.procedural_terrain = Some(spec);
+    let spec = TerrainSpec { first_instance, first_cluster, first_vertex, capacity, seed, style, constraints: None };
+    scene.procedural_terrain = Some(spec.clone());
     spec
 }
 
@@ -336,7 +364,7 @@ const BUDGET: f32 = 0.9;
 
 impl ProceduralTerrain {
     pub fn new(spec: TerrainSpec, settings: Settings) -> Self {
-        ProceduralTerrain { spec, settings, slots: HashMap::new(), free: (0..spec.capacity).rev().collect(), lod: 1.0, samples: Default::default() }
+        ProceduralTerrain { free: (0..spec.capacity).rev().collect(), spec, settings, slots: HashMap::new(), lod: 1.0, samples: Default::default() }
     }
 
     fn cell(&self, level: u32) -> f32 { self.settings.finest * (1u32 << level) as f32 }
@@ -348,8 +376,14 @@ impl ProceduralTerrain {
         if let Some(&s) = cache.get(&n) { return s; }
         if cache.len() >= SAMPLE_CACHE { cache.clear(); }
         let (size, cell) = (self.size(n.level), self.cell(n.level));
-        let e = terrain_field::eval((n.ix as f32 + 0.5) * size, (n.iz as f32 + 0.5) * size, cell * CELLS as f32, self.spec.seed, &self.spec.style);
-        let s = (e.pos.y, e.error(cell));
+        let (x, z) = ((n.ix as f32 + 0.5) * size, (n.iz as f32 + 0.5) * size);
+        let e = self.spec.eval(x, z, cell * CELLS as f32);
+        let mut error = e.error(cell);
+        // A road's edge and banks are sharper than the land: refine there.
+        if let Some(w) = &self.spec.constraints {
+            if w.clearance(x, z) < size { error = error.max(0.2 * cell); }
+        }
+        let s = (e.pos.y, error);
         cache.insert(n, s);
         s
     }
@@ -539,26 +573,29 @@ pub(crate) struct TerrainRenderer {
     pending: Mutex<Vec<Job>>,
     vertices: wgpu::Buffer,
     clusters: wgpu::Buffer,
+    world: world_constraints::GpuWorld,
 }
 
 impl TerrainRenderer {
     pub fn new(gpu: &Gpu, spec: TerrainSpec, vertices: &wgpu::Buffer, clusters: &wgpu::Buffer) -> Self {
-        let source = format!("{}\n{}", terrain_field::WGSL, SHADER);
+        let source = format!("{}\n{}\n{}", terrain_field::WGSL, world_constraints::wgsl(0, 4), SHADER);
+        let world = world_constraints::GpuWorld::new(gpu, spec.constraints.as_deref().unwrap_or(&world_constraints::World::empty()));
         let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("procedural terrain"), source: wgpu::ShaderSource::Wgsl(source.into()) });
         let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None }, count: None };
         let st = |read_only| wgpu::BufferBindingType::Storage { read_only };
         let layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("procedural terrain"), entries: &[
-            entry(0, wgpu::BufferBindingType::Uniform), entry(1, st(true)), entry(2, st(false)), entry(3, st(false))] });
+            entry(0, wgpu::BufferBindingType::Uniform), entry(1, st(true)), entry(2, st(false)), entry(3, st(false)),
+            entry(4, st(true)), entry(5, st(true)), entry(6, st(true))] });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("procedural terrain"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("procedural terrain build"), layout: Some(&pipeline_layout),
             module: &module, entry_point: Some("build"), compilation_options: Default::default(), cache: gpu.pipeline_cache() });
         let params = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: Some("procedural terrain params"), size: 16 + std::mem::size_of::<terrain_field::Style>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let jobs = Self::job_buffer(gpu, 1024);
-        let bind = Self::bind(gpu, &layout, &params, &jobs, vertices, clusters);
+        let bind = Self::bind(gpu, &layout, &params, &jobs, vertices, clusters, &world);
         TerrainRenderer { spec, pipeline, layout, params, jobs: Mutex::new((jobs, bind)), pending: Mutex::new(Vec::new()),
-            vertices: vertices.clone(), clusters: clusters.clone() }
+            vertices: vertices.clone(), clusters: clusters.clone(), world }
     }
 
     fn job_buffer(gpu: &Gpu, count: usize) -> wgpu::Buffer {
@@ -566,12 +603,14 @@ impl TerrainRenderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false })
     }
 
-    fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, params: &wgpu::Buffer, jobs: &wgpu::Buffer, vertices: &wgpu::Buffer, clusters: &wgpu::Buffer) -> wgpu::BindGroup {
+    fn bind(gpu: &Gpu, layout: &wgpu::BindGroupLayout, params: &wgpu::Buffer, jobs: &wgpu::Buffer, vertices: &wgpu::Buffer, clusters: &wgpu::Buffer,
+        world: &world_constraints::GpuWorld) -> wgpu::BindGroup {
+        let [w0, w1, w2] = world.entries(4);
         gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("procedural terrain"), layout, entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: jobs.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 2, resource: vertices.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: clusters.as_entire_binding() }] })
+            wgpu::BindGroupEntry { binding: 3, resource: clusters.as_entire_binding() }, w0, w1, w2] })
     }
 
     /// Validation readback: slot `slot`'s 81 vertices and its cluster words.
@@ -614,7 +653,7 @@ impl TerrainRenderer {
         let bytes = (jobs.len() * std::mem::size_of::<Job>()) as u64;
         if held.0.size() < bytes {
             let buffer = Self::job_buffer(gpu, jobs.len().next_power_of_two());
-            let bind = Self::bind(gpu, &self.layout, &self.params, &buffer, &self.vertices, &self.clusters);
+            let bind = Self::bind(gpu, &self.layout, &self.params, &buffer, &self.vertices, &self.clusters, &self.world);
             *held = (buffer, bind);
         }
         gpu.queue.write_buffer(&held.0, 0, bytemuck::cast_slice(&jobs));
@@ -635,7 +674,7 @@ mod tests {
     use super::*;
 
     fn terrain() -> ProceduralTerrain {
-        ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 1 << 16, seed: 1, style: terrain_field::Style::default() }, Settings::default())
+        ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 1 << 16, seed: 1, style: terrain_field::Style::default(), constraints: None }, Settings::default())
     }
 
     #[test]
@@ -678,7 +717,7 @@ mod tests {
     #[test]
     fn alpine_views_fit_the_pool() {
         let style = terrain_field::Style::named("alpine").unwrap();
-        let mut t = ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 16384, seed: 1, style }, Settings::default());
+        let mut t = ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 16384, seed: 1, style, constraints: None }, Settings::default());
         // (x, z, metres above ground, yaw, pitch in degrees); the last two
         // are F12 screenshots that were mostly holes.
         for (x, z, above, yaw, pitch) in [(0.0f32, 0.0f32, 60.0, 35.0f32, -9.0f32), (-350.0, -742.0, 3.0, 35.0, -6.0), (542.0, -375.0, 257.0, 35.0, -17.0),

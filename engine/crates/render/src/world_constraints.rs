@@ -18,6 +18,7 @@
 //! let world = Constraints { tracks: vec![track], pads: vec![] }.bake();
 //! let s = world.eval(x, z, cut, seed, &style); // terrain_field::eval with the constraints
 //! ```
+use crate::forest_field;
 use crate::terrain_field::{self, Sample, Style};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
@@ -82,6 +83,20 @@ impl Track {
         if !closed { points.push(control[n - 1]); }
         let half = vec![half; points.len()];
         Track { points, half, closed }
+    }
+
+    /// A winding closed loop about `radius` metres around `centre`, `half`
+    /// metres either side, from `seed`: a test track, or a start for one.
+    /// Heights are 0; call `fit_heights`.
+    pub fn wander_loop(centre: Vec2, radius: f32, half: f32, seed: u32) -> Self {
+        let n = 14;
+        let control: Vec<Vec3> = (0..n).map(|k| {
+            let a = k as f32 / n as f32 * std::f32::consts::TAU;
+            let r = radius * (0.7 + 0.6 * forest_field::hash(k, 0, 11, seed));
+            let jitter = 0.25 * (forest_field::hash(k, 1, 11, seed) - 0.5) * std::f32::consts::TAU / n as f32;
+            Vec3::new(centre.x + r * (a + jitter).cos(), 0.0, centre.y + r * (a + jitter).sin())
+        }).collect();
+        Track::spline(&control, half, true)
     }
 
     /// Lay the road on `ground`: its heights follow the land, smoothed over
@@ -437,6 +452,21 @@ impl World {
         s.pos.y
     }
 
+    /// The forest's trees, fitted to the constraints: none on a road, its
+    /// verge or a pad (within `margin` metres of their edge) or on a bank
+    /// too steep or bare to grow on; the rest stand on the bent ground.
+    pub fn trees(&self, trees: Vec<forest_field::Tree>, margin: f32, seed: u32, style: &Style) -> Vec<forest_field::Tree> {
+        if self.segments.is_empty() { return trees; }
+        trees.into_iter().filter_map(|mut t| {
+            if self.list(t.pos.x, t.pos.z).is_empty() { return Some(t); }
+            if self.clearance(t.pos.x, t.pos.z) < margin { return None; }
+            let s = self.eval(t.pos.x, t.pos.z, forest_field::CUT, seed, style);
+            if !forest_field::grows(&s, style) { return None; }
+            t.pos.y = s.pos.y - 0.2;
+            Some(t)
+        }).collect()
+    }
+
     /// The number of tracks baked in.
     pub fn tracks(&self) -> usize { self.tracks }
 }
@@ -627,6 +657,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn no_tree_grows_on_the_road() {
+        let style = Style::default();
+        let (track, world) = ring(4, &style);
+        let all = forest_field::trees_in_disc(Vec2::new(150.0, -60.0), 700.0, 4, &style, 0.8);
+        let kept = world.trees(all.clone(), 2.0, 4, &style);
+        assert!(kept.len() > 100 && kept.len() < all.len(), "{} of {}", kept.len(), all.len());
+        for t in &kept {
+            assert!(world.clearance(t.pos.x, t.pos.z) >= 2.0);
+            assert!((t.pos.y + 0.2 - world.eval(t.pos.x, t.pos.z, forest_field::CUT, 4, &style).pos.y).abs() < 1e-3);
+        }
+        let _ = track;
+    }
+
     /// CPU and GPU bend the land the same way, to float rounding.
     #[test]
     fn gpu_matches_cpu() {
@@ -696,7 +740,7 @@ struct Params { seed: u32, pad0: u32, pad1: u32, pad2: u32, style: TerrainStyle 
     }
 }
 #[cfg(test)]
-fn tests_ring(seed: u32, style: &Style) -> (Track, World) {
+pub(crate) fn tests_ring(seed: u32, style: &Style) -> (Track, World) {
     let control: Vec<Vec3> = (0..10).map(|k| {
         let a = k as f32 / 10.0 * std::f32::consts::TAU;
         let r = 420.0 + 90.0 * (3.0 * a).sin();
