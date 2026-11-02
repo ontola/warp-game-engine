@@ -1403,15 +1403,20 @@ fn terrain_mapping(p: vec3<f32>) -> TerrainMapping {
     return mapping;
 }
 
+// Away from a seam between two turns only one of them is sampled.
 fn terrain_layer_normal(l: i32, uv: vec2<f32>, scale: f32, mapping: TerrainMapping) -> vec2<f32> {
-    let a = mapping.a * nrm(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale);
-    let b = mapping.b * nrm(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale);
+    var a = vec2<f32>(0.0);
+    var b = vec2<f32>(0.0);
+    if mapping.blend < 1.0 { a = mapping.a * nrm(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale); }
+    if mapping.blend > 0.0 { b = mapping.b * nrm(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale); }
     return mix(a, b, mapping.blend);
 }
 
 fn terrain_layer(l: i32, uv: vec2<f32>, scale: f32, mapping: TerrainMapping) -> vec3<f32> {
-    let a = tex_w(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale).rgb;
-    let b = tex_w(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale).rgb;
+    var a = vec3<f32>(0.0);
+    var b = vec3<f32>(0.0);
+    if mapping.blend < 1.0 { a = tex_w(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale).rgb; }
+    if mapping.blend > 0.0 { b = tex_w(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale).rgb; }
     return mix(a, b, mapping.blend);
 }
 
