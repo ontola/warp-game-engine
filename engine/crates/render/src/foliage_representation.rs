@@ -9,7 +9,7 @@ use crate::foliage_voxel::VoxelAsset;
 use glam::{Mat4, Vec3, Vec4};
 use std::collections::{BTreeMap,BTreeSet};
 
-pub const MAX_GROUPS:usize=4096;
+pub const MAX_GROUPS:usize=crate::voxel_forest::MAX_VIEW_GROUPS;
 pub const MAX_LEVELS:usize=16;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq,PartialOrd,Ord)]

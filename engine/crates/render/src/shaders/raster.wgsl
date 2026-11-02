@@ -93,7 +93,16 @@ fn instance_at(id: u32) -> Instance {
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
 @group(1) @binding(2) var<storage, read> draw_map: array<u32>;
 @group(1) @binding(3) var<storage, read> draw_args: array<u32, 20>;
-@group(1) @binding(4) var<uniform> foliage_selection: array<vec4<u32>,4096>;
+@group(1) @binding(4) var<uniform> foliage_selection_words: array<vec4<u32>,4096>;
+fn foliage_selection_at(i:u32)->vec4<u32> { let v=foliage_selection_words[i>>2u]; return selection_unpack(v[i&3u]); }
+// Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
+// four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
+// voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
+fn selection_unpack(w:u32)->vec4<u32> {
+    let y=(w>>2u)&63u;
+    return vec4<u32>(w&3u,select(y,0xffffffffu,y==63u),bitcast<u32>(unpack2x16float(w>>16u).x),(w>>8u)&3u);
+}
+
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -137,7 +146,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
     let replacement=voxel_replacement[member_slot(vis.x)];
     var replaced=replacement==0xffffffffu || replacement==cl.material+1u;
     if replacement!=0xffffffffu && (replacement&0x80000000u)!=0u {
-        replaced=foliage_selection[replacement&0x7fffffffu].x!=0u;
+        replaced=foliage_selection_at(replacement&0x7fffffffu).x!=0u;
     }
     if VOXEL_FAR_M>0.0 && replacement!=0xffffffffu && (replacement&0xc0000000u)==0x40000000u {
         replaced=distance(vec3<f32>(inst.r0.w,inst.r1.w,inst.r2.w),view.cam.xyz)>VOXEL_FAR_M;
