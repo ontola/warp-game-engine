@@ -503,10 +503,18 @@ fn build_scene(seed: u32, style: Style, biome: &render::biome::Biome, palette: &
     // and forests fade towards the sky instead of staying near black.
     light.fog_density = 0.00005;
     light.fog_end = 60000.0;
-    // TAA's history clamp rejects the jittered sub-pixel fir needles, so
-    // distant trees flickered (headless: 0.5-5k changed pixels a frame from a
-    // still camera with TAA, ~300 without). Sideways plays without TAA too.
-    light.taa = 0.0;
+    // TAA reprojects with per-pixel motion vectors (wind and parts too):
+    // turning the camera, foliage shimmers about 75 % less than without it
+    // (motion pan test, playtest cameras 3 and 4). Its history converges
+    // slowly (blend 0.04) and is barely sharpened, which re-adds shimmer.
+    // --taa 0 turns it off.
+    light.taa = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--taa").and_then(|w| w[1].parse().ok()).unwrap_or(1.0);
+    light.taa_blend = 0.04;
+    light.sharpen = 0.2;
+    // --light key=value[,key=value]: Lighting::set, for look and TAA tuning.
+    for kv in std::env::args().collect::<Vec<_>>().windows(2).filter(|w| w[0] == "--light").flat_map(|w| w[1].split(',').map(String::from).collect::<Vec<_>>()) {
+        if let Err(e) = light.set(&kv) { eprintln!("--light {kv}: {e}"); }
+    }
     Ok((scene, light, pool, Some(centre), tree_pool))
 }
 
@@ -739,15 +747,17 @@ fn main() -> Result<(), String> {
         println!("{w}x{h} {} frames at {} m/s: p50 {:.1} ms  p99 {:.1} ms  max {:.1} ms  {} frames over 3x p50", times.len(), game.speed, p(0.5), p(0.99), p(1.0), slow);
         return Ok(());
     }
-    // --dump N DIR: N consecutive headless frames as PNGs (flicker checks).
+    // --dump N DIR: N consecutive headless frames as PNGs (flicker checks);
+    // --pan DEG turns the camera that far right each frame (motion flicker).
     if let Some(n) = arg("--dump") {
         let dir = args.windows(3).find(|w| w[0] == "--dump").map(|w| w[2].clone()).ok_or("--dump N DIR")?;
         let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([1280, 720]);
         let gpu = render::Gpu::new()?;
         let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let pan = arg("--pan").and_then(|d| d.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
         for i in 0..n.parse::<u32>().map_err(|_| "--dump N DIR")? {
-            game.tick(&[Controls::default()]);
+            game.tick(&[Controls { look: [pan, 0.0], ..Default::default() }]);
             let rgba = headless.frame(&mut game)?;
             render::write_png(&PathBuf::from(&dir).join(format!("{i:03}.png")), w, h, &rgba)?;
         }

@@ -1019,6 +1019,8 @@ impl VoxelRenderer {
             interval_stream,
         })
     }
+    /// Whether prepare_temporal succeeded (its pipelines fit the device).
+    pub(crate) fn has_temporal(&self) -> bool { self.temporal.lock().unwrap().is_some() }
     /// The view's rastered splat depth (reversed Z, 0 where none), once
     /// Stage::Splats has run for it.
     pub(crate) fn splat_depth(&self, index: usize) -> Option<wgpu::TextureView> {
