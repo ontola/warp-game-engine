@@ -423,11 +423,15 @@ impl World {
         let moved = (y - land).abs();
         let pull = smooth(0.0, 0.5, moved).max(core);
         if pull <= 0.0 { return s; }
-        // Bent ground: the strata's sideways push fades out, rivers stop at
-        // the bank, and the road itself is bare gravel.
+        // Bent ground: the strata's sideways push fades out, and the road
+        // itself is bare gravel.
         s.pos.x += (x - s.pos.x) * pull;
         s.pos.z += (z - s.pos.z) * pull;
-        s.water *= 1.0 - pull;
+        // Standing water keeps its level where the bed rises (it meets an
+        // embankment flat) but is never deeper than it was (a cutting does
+        // not flood), and the road itself is dry.
+        let level = s.pos.y;
+        s.water = (level - y).clamp(0.0, s.water) * (1.0 - core);
         s.pos.y = y + s.water;
         let slope = if y > land + 1e-3 { lo_slope } else if y < land - 1e-3 { hi_slope } else { 0.0 };
         let bank_up = 1.0 / (1.0 + slope * slope).sqrt();
@@ -669,6 +673,26 @@ mod tests {
             assert!((t.pos.y + 0.2 - world.eval(t.pos.x, t.pos.z, forest_field::CUT, 4, &style).pos.y).abs() < 1e-3);
         }
         let _ = track;
+    }
+
+    #[test]
+    fn water_keeps_its_level_against_a_bank() {
+        let style = Style::default();
+        let (_, world) = ring(4, &style);
+        let (mut wet, mut checked) = (0, 0);
+        for k in 0..40000 {
+            let (x, z) = ((k as f32 * 7.31) % 1400.0 - 550.0, (k as f32 * 3.173) % 1400.0 - 760.0);
+            let n = terrain_field::eval(x, z, 0.0, 4, &style);
+            let b = world.eval(x, z, 0.0, 4, &style);
+            assert!(b.water <= n.water, "deeper water at {x} {z}");
+            if b.water > 0.0 && b.water < n.water {
+                // A raised bed: the water stays at its level.
+                checked += 1;
+                assert!((b.pos.y - n.pos.y).abs() < 1e-3, "water level moved at {x} {z}: {} vs {}", b.pos.y, n.pos.y);
+            }
+            if b.water > 0.0 { wet += 1; }
+        }
+        let _ = (wet, checked);
     }
 
     /// CPU and GPU bend the land the same way, to float rounding.
