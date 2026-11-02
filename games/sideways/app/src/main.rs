@@ -1,6 +1,7 @@
 //! Sideways: native play, deterministic simulation, captures and sound tools.
 
 mod audio_out;
+mod biome_land;
 mod sound;
 mod car_look;
 mod car_model;
@@ -149,6 +150,9 @@ fn sim(args: &[String]) -> i32 {
     settings.bots = opt("--bots", "1").parse().unwrap();
     if args.iter().any(|a| a == "--weather") {
         settings.weather = Some(opt("--weather", "clear"));
+    }
+    if args.iter().any(|a| a == "--biome") {
+        settings.land = match biome_land::land(&opt("--biome", "temperate")) { Ok(l) => Some(l), Err(e) => { eprintln!("sim: {e}"); return 2; } };
     }
     let cars = match sideways::spec::Cars::load(args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())) {
         Ok(c) => c,

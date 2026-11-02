@@ -60,11 +60,13 @@ pub struct Settings {
     pub bots: usize,
     /// Metres along the stage where the cars start (`--at`).
     pub start_at: f64,
+    /// The ground stages are laid on; None is Sideways' own noise.
+    pub land: Option<crate::stage::Land>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { vegetation: Default::default(), stage_km: 3.0, rivals: 1, contact: true, weather: None, manual: false, bots: 1, start_at: 0.0 }
+        Settings { vegetation: Default::default(), stage_km: 3.0, rivals: 1, contact: true, weather: None, manual: false, bots: 1, start_at: 0.0, land: None }
     }
 }
 
@@ -201,7 +203,8 @@ impl Race {
         self.surfaces = Surfaces::with_wetness(&Surfaces::default(), wet);
         let km = self.settings.stage_km;
         let rng = &mut self.rng;
-        self.stage = timings.span("layout", || Stage::generate(rng, km * 1000.0 + RUNOUT));
+        let land = self.settings.land.clone();
+        self.stage = timings.span("layout", || Stage::generate_on(rng, km * 1000.0 + RUNOUT, land));
         self.stage.vegetation = self.settings.vegetation;
         let stage = &self.stage;
         let (phys, chunks, trees) = timings.span("colliders", || build_colliders(stage));
