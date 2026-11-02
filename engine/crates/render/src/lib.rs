@@ -60,6 +60,7 @@ pub mod scene;
 pub mod terrain_field;
 pub mod forest_field;
 pub mod placement;
+pub mod world_constraints;
 pub mod procedural_terrain;
 pub mod plant_mesh_lod;
 pub mod vegetation_style;
