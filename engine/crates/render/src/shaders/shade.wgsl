@@ -149,6 +149,11 @@ var<workgroup> hidden_meadow_count:atomic<u32>;
 override SKY_TILES: bool = false;
 struct ShadeTiles { x: atomic<u32>, y: u32, z: u32, pad: u32, tiles: array<u32> };
 @group(1) @binding(17) var<storage,read_write> shade_tiles: ShadeTiles;
+// Rasterized voxel trees (voxel_forest.rs Stage::Splats): their depth,
+// reversed Z, 0 where there is none. A pixel they cover in front of the
+// opaque surface is theirs; its composite replaces whatever shade wrote.
+override VOXEL_OCCLUSION: bool = false;
+@group(1) @binding(18) var voxel_depth: texture_depth_2d;
 var<workgroup> tile_has_geometry: atomic<u32>;
 
 struct Gi {
@@ -1672,6 +1677,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         textureStore(out_hdr, px, vec4<f32>(visible_background_radiance(dir), 1.0));
         return;
     }
+    if VOXEL_OCCLUSION && textureLoad(voxel_depth, px, 0) > depth { return; }
     let id = textureLoad(vis_tex, px, 0).r;
     let vis = visible[id >> 7u];
     let tri = id & 127u;

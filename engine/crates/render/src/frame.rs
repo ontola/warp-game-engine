@@ -810,6 +810,8 @@ pub struct Renderer {
     /// runs indirectly over the listed tiles only. Same image either way.
     sky_tiles: bool,
     shade_classify: wgpu::ComputePipeline,
+    /// Shade binding 18 without rasterized voxels: no voxel in front.
+    voxel_depth_fallback: wgpu::TextureView,
     /// Bakes each changed canopy level's sky transmittance into the canopy
     /// texture, so shading reads it instead of marching per pixel
     /// (`KERN_SKY_VIS_CACHE=0` keeps the per-pixel march).
@@ -1539,6 +1541,7 @@ impl Renderer {
                 (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (16, storage(false)),
                 (17, storage(false)),
+                (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -1695,10 +1698,15 @@ impl Renderer {
         let sky_tiles=!simple_lighting && std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
+        shade_constants.push(("VOXEL_OCCLUSION", if voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) {1.0} else {0.0}));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
+        let voxel_depth_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel depth"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
         let shade_classify = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade sky tiles"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("classify"),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
@@ -1937,6 +1945,7 @@ impl Renderer {
             shade_pl,
             sky_tiles,
             shade_classify,
+            voxel_depth_fallback,
             sky_vis_bake,
             shade_tiles: std::sync::Mutex::new(Vec::new()),
             shade_text: crate::wind::shade_source(),
@@ -2598,6 +2607,7 @@ impl Renderer {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade"), source: wgpu::ShaderSource::Wgsl(sources.shade.as_str().into()) });
                 let mut constants = self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()));
                 constants.push(("SKY_TILES", if self.sky_tiles {1.0} else {0.0}));
+                constants.push(("VOXEL_OCCLUSION", if self.voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) {1.0} else {0.0}));
                 let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
                     layout: Some(&self.shade_pl),
@@ -4023,6 +4033,29 @@ impl Renderer {
                 gpu.queue.write_buffer(&b.0, 0, bytemuck::cast_slice(&[0u32, 1, 1, 0]));
                 b
             };
+            let volume_view=(self.far_grass.is_some() || self.voxel_forest.is_some() || self.foliage_world.is_some() || self.meadow_brick_fixture.is_some()).then(||
+                crate::volume_view::VolumeViewInputs {
+                    camera:&main.uniform, light:&light_buf, opaque_depth:&depth_v,
+                    sun_shadow:&shadow_v, shadow_sampler:&self.shadow_samp,
+                    sky:&self.sky_view, heightfield:&self.heightfield, gi:&gi_buf,
+                    canopy:&density_view, canopy_sampler:&self.density_sampler,
+                    near_shadow:&near_view,
+                }.bind_cached(gpu,&self.volume_view_layout,&mut resources.volume));
+            // Rasterized voxel trees go down before the opaque shade, which
+            // then skips the ground and trees they hide (shade.wgsl
+            // VOXEL_OCCLUSION); they are resolved and composited after it.
+            let voxel_times = self.voxel_forest.as_ref().map(|forest| forest.timing_names().map(|name|{
+                let name=name?;
+                self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts); names.push(name); (qs,i)})
+            }));
+            if let Some(forest) = &self.voxel_forest {
+                forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
+                    volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
+                    up.motion.as_ref().filter(|_|motion_on).map(|motion|crate::voxel_forest::TemporalInputs {
+                        previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),
+                    crate::voxel_forest::Stage::Splats)?;
+            }
+            let voxel_depth = self.voxel_forest.as_ref().and_then(|forest| forest.splat_depth(vi));
             let shade_bind = resources.shade.get(
                 gpu,
                 &self.shade_layout,
@@ -4045,6 +4078,7 @@ impl Renderer {
                     (15, wgpu::BindingResource::TextureView(&near_view)),
                     (16, hidden_meadow.as_ref().unwrap_or(&self.hidden_meadow_fallback).as_entire_binding()),
                     (17, shade_tiles.0.as_entire_binding()),
+                    (18, wgpu::BindingResource::TextureView(voxel_depth.as_ref().unwrap_or(&self.voxel_depth_fallback))),
                 ],
             );
             let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = vec![("shade", &self.shade, vec![&self.scene_bind, &shade_bind])];
@@ -4090,14 +4124,6 @@ impl Renderer {
                     drop(pass);
                 }
                 if label == "shade" {
-                    let volume_view=(self.far_grass.is_some() || self.voxel_forest.is_some() || self.foliage_world.is_some() || self.meadow_brick_fixture.is_some()).then(||
-                        crate::volume_view::VolumeViewInputs {
-                            camera:&main.uniform, light:&light_buf, opaque_depth:&depth_v,
-                            sun_shadow:&shadow_v, shadow_sampler:&self.shadow_samp,
-                            sky:&self.sky_view, heightfield:&self.heightfield, gi:&gi_buf,
-                            canopy:&density_view, canopy_sampler:&self.density_sampler,
-                            near_shadow:&near_view,
-                        }.bind_cached(gpu,&self.volume_view_layout,&mut resources.volume));
                     let far_grass = self.far_grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).map(|grass| {
                         let time = self.query.as_ref().map(|(qs,_,_)| {
                             let i=timestamp_pair(&mut ts); names.push("far grass volume"); (qs,i)
@@ -4111,14 +4137,11 @@ impl Renderer {
                             &main.spatial_owners,&self.instance_groups.owners,times);
                     }
                     if let Some(forest) = &self.voxel_forest {
-                        let times = forest.timing_names().map(|name|{
-                            let name=name?;
-                            self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts); names.push(name); (qs,i)})
-                        });
                         forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
                             volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
                             up.motion.as_ref().filter(|_|motion_on).map(|motion|crate::voxel_forest::TemporalInputs {
-                                previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),times)?;
+                                previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),
+                            crate::voxel_forest::Stage::Rest)?;
                     }
                     if let Some(grass) = self.grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()) {
                         let transition_times = self.query.as_ref().map(|(qs, _, _)| {
