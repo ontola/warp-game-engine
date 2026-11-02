@@ -77,12 +77,19 @@ pub struct Style {
     pub moor: f32,
     /// Grass cover for the meadow; the terrain itself ignores it.
     pub grass: f32,
-    pub _pad: [f32; 2],
+    /// Sand dunes on low ground: crests ~200 m apart, up to 18 m high (desert).
+    pub dunes: f32,
+    /// Straight drainage ditches round long flat parcels (polder).
+    pub ditches: f32,
+    /// Shallow ponds in flat hollows (tundra).
+    pub ponds: f32,
+    pub _pad: [f32; 3],
 }
 
 impl Default for Style {
     fn default() -> Self {
-        Style { mountains: 0.5, peaks: 0.5, snow_line: 1500.0, hills: 1.0, rivers: 0.5, streams: 0.5, rocks: 0.5, boulders: 1.0, moor: 0.5, grass: 1.0, _pad: [0.0; 2] }
+        Style { mountains: 0.5, peaks: 0.5, snow_line: 1500.0, hills: 1.0, rivers: 0.5, streams: 0.5, rocks: 0.5, boulders: 1.0, moor: 0.5, grass: 1.0,
+            dunes: 0.0, ditches: 0.0, ponds: 0.0, _pad: [0.0; 3] }
     }
 }
 
@@ -349,6 +356,21 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     }
     y += th;
     g += Vec2::new(tor_n.y, tor_n.z) * (tor_h * 6.0 * tt * (1.0 - tt) / tor_w * (55.0 / BASE));
+    // Dunes: crests across the wind, a long gentle windward slope and a
+    // steep lee, wandering with noise; whole fields of them on low ground.
+    if st.dunes > 0.0 {
+        let wind = Vec2::new(0.8, 0.6);
+        let field = (0.45 + 0.55 * smooth(-0.4, 0.3, noised(p * 0.8 + Vec2::new(1.7, 4.2), sd(25)).x)) * (1.0 - mountains);
+        let dh = st.dunes * 18.0 * field * fade(40.0, cut);
+        if dh > 0.0 {
+            let u = (x * wind.x + z * wind.y) / 200.0 + 0.6 * noised(p * 6.0 + Vec2::new(8.8, 3.1), sd(26)).x;
+            let s = u - u.floor();
+            let (f, df) = if s < 0.8 { (smooth(0.0, 0.8, s), 6.0 * (s / 0.8) * (1.0 - s / 0.8) / 0.8) }
+                else { let t = (1.0 - s) / 0.2; (t * t * (3.0 - 2.0 * t), -6.0 * t * (1.0 - t) / 0.2) };
+            y += dh * f;
+            g += wind * (dh * df / 200.0);
+        }
+    }
     let steep = (g.x * g.x + g.y * g.y).sqrt();
     let up = 1.0 / (1.0 + steep * steep).sqrt();
 
@@ -364,6 +386,8 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     rock = rock.max(bc);
 
     let rough = 0.15 + 0.85 * rock;
+    // The smooth ground, before its fine relief: still water stands level on it.
+    let y_base = y;
     let mut db = b * amp;
     // Ground keeps getting rougher the closer you look, whatever the relief:
     // metres of roughness per octave fall off as wavelength^0.6, from
@@ -384,9 +408,30 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
         q = rotate(q);
     }
 
+    // Ditches round long parcels on flat land, on a grid turned by the seed.
+    let flat = smooth(0.97, 0.995, up0);
+    let mut ditch = 1000.0f32;
+    let mut water_d = 0.0f32;
+    if st.ditches > 0.0 && flat > 0.0 {
+        let a = (seed % 97) as f32 * 0.0647;
+        let (u, v) = (x * a.cos() + z * a.sin(), z * a.cos() - x * a.sin());
+        let across = ((u / 60.0 + 0.5) - (u / 60.0 + 0.5).floor() - 0.5).abs() * 60.0;
+        let along = ((v / 400.0 + 0.5) - (v / 400.0 + 0.5).floor() - 0.5).abs() * 400.0;
+        ditch = across.min(along);
+        let on = st.ditches * flat * fade(3.0, cut);
+        y -= on * 1.3 * (1.0 - smooth(0.6, 1.8, ditch));
+        if ditch < 1.6 { water_d = ((y_base - 0.5) - y).max(0.0) * on; }
+    }
+    // Ponds in flat hollows, their water level with the ground round them.
+    let mut water_p = 0.0f32;
+    if st.ponds > 0.0 && flat > 0.0 {
+        let pond = st.ponds * flat * smooth(0.12, 0.2, noised(p * 14.0 + Vec2::new(2.6, 9.4), sd(27)).x) * fade(30.0, cut);
+        y -= pond * 1.6;
+        water_p = ((y_base - 0.35) - y).max(0.0) * pond.min(1.0);
+    }
     let water_r = if ch < ch_w { (river_level - y).max(0.0) } else { 0.0 };
     let water_s = if stream_line < 1.2 && notch > 0.0 { (stream_level - y).max(0.0) * notch } else { 0.0 };
-    let water = water_r.max(water_s) * channel;
+    let water = (water_r.max(water_s) * channel).max(water_d).max(water_p);
 
     let mut pos = Vec3::new(x, y + water, z);
     if rock > 0.0 && steep > 0.0 {
@@ -401,7 +446,8 @@ pub fn eval(x: f32, z: f32, cut: f32, seed: u32, st: &Style) -> Sample {
     // only sheer walls stay bare.
     let snow = smooth(st.snow_line - 150.0, st.snow_line + 150.0, y + 120.0 * noised(p * 12.0, sd(19)).x)
         * smooth(0.5, 0.7, up0) * smooth(0.35, 0.55, up);
-    Sample { pos, up, rock, scree: scree.clamp(0.0, 1.0), wet: smooth(8.0, 1.0, near_wet), water, moor, snow, amp, tors: tor_amp }
+    let wet = smooth(8.0, 1.0, near_wet).max(st.ditches * flat * smooth(5.0, 1.5, ditch)).max(smooth(0.0, 0.3, water_p));
+    Sample { pos, up, rock, scree: scree.clamp(0.0, 1.0), wet, water, moor, snow, amp, tors: tor_amp }
 }
 
 /// Ground height under world (x, z) at full detail, for physics. The strata
@@ -431,6 +477,68 @@ mod tests {
             assert_eq!(a, eval(x, z, 0.0, 7, &Style::default()));
             assert!(a.pos.is_finite() && a.pos.y.abs() < MAX_ABS_HEIGHT, "{a:?}");
             assert!((a.pos.x - x).abs() <= MAX_PUSH && (a.pos.z - z).abs() <= MAX_PUSH);
+        }
+    }
+
+    /// The biome terms (dunes, ditches, ponds) on CPU and GPU: heights and
+    /// water agree at nearly every point (the last float bits may flip a
+    /// threshold), at full detail and at a coarse cut.
+    #[test]
+    fn biome_shapes_match_on_gpu() {
+        use wgpu::util::DeviceExt;
+        let Ok(gpu) = crate::Gpu::new() else { return };
+        let shader = format!("{}\n{}", WGSL, r#"
+struct Params { seed: u32, cut: f32, pad0: u32, pad1: u32, style: TerrainStyle };
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> points: array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> out: array<vec4<f32>>;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x >= arrayLength(&points) { return; }
+    let s = terrain_eval(points[gid.x].x, points[gid.x].y, params.cut, params.seed, params.style);
+    out[gid.x] = vec4<f32>(s.pos.y, s.water, s.wet, s.up);
+}"#);
+        let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(shader.into()) });
+        let pipeline = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &module,
+            entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+        let points: Vec<[f32; 2]> = (0..4096).map(|i| [(i % 64) as f32 * 13.7 - 400.0, (i / 64) as f32 * 11.3 - 300.0]).collect();
+        let styles = [Style { dunes: 1.0, rivers: 0.0, streams: 0.0, mountains: 0.3, ..Style::default() },
+            Style { ditches: 1.0, mountains: 0.0, peaks: 0.0, hills: 0.04, ..Style::default() },
+            Style { ponds: 1.0, mountains: 0.1, peaks: 0.0, hills: 0.5, ..Style::default() }];
+        for (k, style) in styles.iter().enumerate() {
+            for cut in [0.5f32, 8.0] {
+                let mut params = bytemuck::bytes_of(&[7u32, cut.to_bits(), 0, 0]).to_vec();
+                params.extend_from_slice(bytemuck::bytes_of(style));
+                let params = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: &params, usage: wgpu::BufferUsages::UNIFORM });
+                let input = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&points), usage: wgpu::BufferUsages::STORAGE });
+                let size = (points.len() * 16) as u64;
+                let output = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+                let read = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+                let bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &pipeline.get_bind_group_layout(0), entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: input.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() }] });
+                let mut enc = gpu.device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = enc.begin_compute_pass(&Default::default());
+                    pass.set_pipeline(&pipeline);
+                    pass.set_bind_group(0, &bind, &[]);
+                    pass.dispatch_workgroups((points.len() as u32).div_ceil(64), 1, 1);
+                }
+                enc.copy_buffer_to_buffer(&output, 0, &read, 0, size);
+                gpu.queue.submit([enc.finish()]);
+                read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                let _ = gpu.device.poll(wgpu::PollType::wait_indefinitely());
+                let got: Vec<[f32; 4]> = bytemuck::cast_slice(&read.slice(..).get_mapped_range().unwrap()).to_vec();
+                let (mut agree, mut wet) = (0, 0);
+                for (p, g) in points.iter().zip(&got) {
+                    let c = eval(p[0], p[1], cut, 7, style);
+                    if (g[0] - c.pos.y).abs() < 0.05 && (g[1] - c.water).abs() < 0.05 && (g[2] - c.wet).abs() < 0.02 { agree += 1; }
+                    if c.water > 0.01 { wet += 1; }
+                }
+                assert!(agree * 100 >= points.len() * 99, "style {k} cut {cut}: {agree} of {} agree", points.len());
+                // The shapes are there: dunes raise the ground, ditches and ponds hold water.
+                if k > 0 && cut < 1.0 { assert!(wet > 20, "style {k}: {wet} wet points"); }
+            }
         }
     }
 

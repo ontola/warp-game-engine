@@ -49,7 +49,7 @@ impl Biome {
             // grass, a few rows of trees.
             "polder" => Biome { name: "polder",
                 terrain: Style { mountains: 0.0, peaks: 0.0, hills: 0.04, rivers: 1.0, streams: 0.9, rocks: 0.0, boulders: 0.0,
-                    moor: 0.05, grass: 1.0, ..terrain },
+                    moor: 0.05, grass: 1.0, ditches: 1.0, ..terrain },
                 vegetation: VegetationStyle {
                     ground: GroundStyle { grass_dry: [0.36, 0.6, 0.22, 0.3], grass_lush: [0.26, 0.7, 0.24, 0.0], ..base.ground },
                     forest: ForestStyle { far: [0.075, 0.11, 0.04, 14.0], crown: [3.2, 0.375, 1.6, 0.6], ..base.forest },
@@ -59,17 +59,18 @@ impl Biome {
             // stunted spruce here and there, snow on any height.
             "tundra" => Biome { name: "tundra",
                 terrain: Style { mountains: 0.15, peaks: 0.0, hills: 0.5, rivers: 0.6, streams: 0.7, rocks: 0.5, boulders: 1.4,
-                    moor: 1.0, grass: 0.6, snow_line: 600.0, ..terrain },
+                    moor: 1.0, grass: 0.6, snow_line: 600.0, ponds: 1.0, ..terrain },
                 vegetation: VegetationStyle {
                     ground: GroundStyle { grass_dry: [0.5, 0.5, 0.3, 0.5], grass_lush: [0.4, 0.55, 0.3, 0.0],
                         moor: [0.62, 0.6, 0.55, 0.7], ..base.ground },
                     forest: ForestStyle { needles: [0.04, 0.075, 0.035, 0.5], ..base.forest },
                     meadow_dry_season: 0.5 },
                 tree_density: 0.12, deciduous: 0.0 },
-            // Dry rocky land: no water, no grass, sand-coloured ground.
+            // A sand sea: dunes over low rolling ground, rocky outcrops, no
+            // water, no grass.
             "desert" => Biome { name: "desert",
-                terrain: Style { mountains: 0.35, peaks: 0.1, hills: 1.3, rivers: 0.0, streams: 0.0, rocks: 0.7, boulders: 1.2,
-                    moor: 0.0, grass: 0.0, snow_line: 4000.0, ..terrain },
+                terrain: Style { mountains: 0.15, peaks: 0.0, hills: 0.35, rivers: 0.0, streams: 0.0, rocks: 0.4, boulders: 0.6,
+                    moor: 0.0, grass: 0.0, snow_line: 4000.0, dunes: 1.0, ..terrain },
                 vegetation: VegetationStyle {
                     ground: GroundStyle { grass_dry: [1.25, 0.95, 0.55, 0.0], grass_lush: [1.15, 0.9, 0.55, 0.0],
                         soil: [1.1, 0.85, 0.6, 0.1], gravel: [1.1, 0.95, 0.8, 0.6], rock: [1.15, 0.95, 0.8, 0.6], ..base.ground },
