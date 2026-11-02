@@ -14,23 +14,29 @@ use render::Lighting;
 
 /// Fixed quality ladder: best/highest quality at index 0.
 /// Rungs trade:
-/// - 3D render resolution scale (0.50..1.00) while HUD remains native
-/// - Geometry cluster LOD error scale (1.0..4.0x)
+/// - 3D render resolution scale (0.67..1.00) while HUD remains native
 /// - Grass distance and patch density (for outdoor meadow stages)
-/// - Secondary lights/passes: near shadows, contact occlusion, bloom
-pub const LADDER: [Rung; 11] = [
-    Rung { scale: 1.00, lod_scale: 1.00, grass_distance: 1.00, grass_count: 1.00, near_shadows: true, contact: true, gi: true, bloom: true },
-    Rung { scale: 0.95, lod_scale: 1.08, grass_distance: 1.00, grass_count: 1.00, near_shadows: true, contact: true, gi: true, bloom: true },
-    Rung { scale: 0.90, lod_scale: 1.16, grass_distance: 0.80, grass_count: 1.00, near_shadows: true, contact: true, gi: true, bloom: true },
-    Rung { scale: 0.85, lod_scale: 1.25, grass_distance: 0.60, grass_count: 0.90, near_shadows: true, contact: true, gi: true, bloom: true },
-    Rung { scale: 0.80, lod_scale: 1.35, grass_distance: 0.45, grass_count: 0.80, near_shadows: false, contact: true, gi: true, bloom: true },
-    Rung { scale: 0.75, lod_scale: 1.45, grass_distance: 0.30, grass_count: 0.60, near_shadows: false, contact: true, gi: true, bloom: true },
-    Rung { scale: 0.70, lod_scale: 1.55, grass_distance: 0.20, grass_count: 0.40, near_shadows: false, contact: false, gi: false, bloom: true },
-    Rung { scale: 0.65, lod_scale: 1.65, grass_distance: 0.15, grass_count: 0.20, near_shadows: false, contact: false, gi: false, bloom: true },
-    Rung { scale: 0.60, lod_scale: 1.75, grass_distance: 0.10, grass_count: 0.00, near_shadows: false, contact: false, gi: false, bloom: true },
-    Rung { scale: 0.55, lod_scale: 1.88, grass_distance: 0.10, grass_count: 0.00, near_shadows: false, contact: false, gi: false, bloom: false },
-    Rung { scale: 0.50, lod_scale: 2.00, grass_distance: 0.10, grass_count: 0.00, near_shadows: false, contact: false, gi: false, bloom: false },
+/// - Contact occlusion and bloom
+///
+/// Geometry LOD, near shadows and GI stay as the game set them: a coarser LOD
+/// stripped card trees to their trunks and dropping near shadows drew a hard
+/// shadow edge (terrain_fly playtest), which reads far worse than a softer
+/// image. Below 0.67 the upscale itself turns to mush; a scene that misses
+/// its target there needs cheaper content, not a blurrier frame.
+pub const LADDER: [Rung; 8] = [
+    Rung { scale: 1.00, lod_scale: 1.0, grass_distance: 1.00, grass_count: 1.00, near_shadows: true, contact: true, gi: true, bloom: true },
+    Rung { scale: 0.95, lod_scale: 1.0, grass_distance: 1.00, grass_count: 1.00, near_shadows: true, contact: true, gi: true, bloom: true },
+    Rung { scale: 0.90, lod_scale: 1.0, grass_distance: 0.80, grass_count: 1.00, near_shadows: true, contact: true, gi: true, bloom: true },
+    Rung { scale: 0.85, lod_scale: 1.0, grass_distance: 0.60, grass_count: 0.90, near_shadows: true, contact: true, gi: true, bloom: true },
+    Rung { scale: 0.80, lod_scale: 1.0, grass_distance: 0.45, grass_count: 0.80, near_shadows: true, contact: true, gi: true, bloom: true },
+    Rung { scale: 0.75, lod_scale: 1.0, grass_distance: 0.30, grass_count: 0.60, near_shadows: true, contact: false, gi: true, bloom: true },
+    Rung { scale: 0.70, lod_scale: 1.0, grass_distance: 0.20, grass_count: 0.40, near_shadows: true, contact: false, gi: true, bloom: true },
+    Rung { scale: 0.67, lod_scale: 1.0, grass_distance: 0.10, grass_count: 0.20, near_shadows: true, contact: false, gi: true, bloom: false },
 ];
+
+/// Targets above this are not chased: a 144 Hz display would otherwise
+/// pull every scene to the bottom rung.
+const MAX_TARGET_FPS: f64 = 120.0;
 
 const WINDOW: usize = 24;
 /// A median this far over the period means frames are being missed.
@@ -71,7 +77,7 @@ impl AdaptiveQuality {
         let fps = match std::env::var("WARP_TARGET_FPS").ok().and_then(|v| v.parse::<f64>().ok()) {
             Some(v) if v <= 0.0 => return None,
             Some(v) => v,
-            None => target_fps.map(f64::from).or(refresh_hz).filter(|hz| hz.is_finite() && *hz >= 20.0).unwrap_or(60.0),
+            None => target_fps.map(f64::from).or(refresh_hz).filter(|hz| hz.is_finite() && *hz >= 20.0).unwrap_or(60.0).min(MAX_TARGET_FPS),
         };
         Some(Self {
             target_ms: 1000.0 / fps,
@@ -97,7 +103,7 @@ impl AdaptiveQuality {
     pub fn set_target_fps(&mut self, target_fps: Option<f32>, refresh_hz: Option<f64>) {
         let fps = match std::env::var("WARP_TARGET_FPS").ok().and_then(|v| v.parse::<f64>().ok()) {
             Some(v) if v > 0.0 => v,
-            _ => target_fps.map(f64::from).or(refresh_hz).filter(|hz| hz.is_finite() && *hz >= 20.0).unwrap_or(60.0),
+            _ => target_fps.map(f64::from).or(refresh_hz).filter(|hz| hz.is_finite() && *hz >= 20.0).unwrap_or(60.0).min(MAX_TARGET_FPS),
         };
         let new_target_ms = 1000.0 / fps;
         if (self.target_ms - new_target_ms).abs() > 0.1 {
@@ -274,12 +280,23 @@ mod tests {
     }
 
     #[test]
+    fn no_rung_coarsens_lod_or_drops_near_shadows_or_gi() {
+        assert!(LADDER.iter().all(|r| r.lod_scale == 1.0 && r.near_shadows && r.gi && r.scale >= 0.67));
+    }
+
+    #[test]
+    fn a_fast_display_is_chased_up_to_120_fps() {
+        let q = AdaptiveQuality::new(None, Some(144.0), Instant::now()).unwrap();
+        if std::env::var("WARP_TARGET_FPS").is_err() { assert_eq!(q.target_fps(), 120.0); }
+    }
+
+    #[test]
     fn render_height_keeps_even_pixels() {
         let now = Instant::now();
         let mut q = quality(now);
         assert_eq!(q.render_height(1080), 1080);
         q.level = LADDER.len() - 1;
-        assert_eq!(q.render_height(1080), 540);
+        assert_eq!(q.render_height(1080), 722);
         q.level = 3;
         let h = q.render_height(1081);
         assert_eq!(h % 2, 0);
