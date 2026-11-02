@@ -292,9 +292,10 @@ fn cameras(race: &Race, poses: &[CarPose], yaw: &[f32; 4], far: &[bool; 4], rest
 
 fn lighting(weather: &str) -> Lighting {
     let mut light = Lighting::default();
-    // Current TAA has no per-object motion vectors. Live driving must not
-    // leave old car silhouettes behind, so the first playable uses no history.
-    light.taa = 0.0;
+    // TAA reprojects each pixel by its own motion vector (cars, wheels,
+    // wind), so moving cars leave no trail: render's taa_ghost example shows
+    // none at 8-24 px/frame. SIDEWAYS_TAA=0 turns it off.
+    light.taa = if std::env::var("SIDEWAYS_TAA").as_deref() == Ok("0") { 0.0 } else { 1.0 };
     match weather {
         "overcast" => { light.sun_lux = 25_000.0; light.sky_lux = 14_000.0; light.ev100 = 12.5; light.shadow_strength = 0.6; }
         "mist" => { light.sun_lux = 30_000.0; light.sky_lux = 15_000.0; light.ev100 = 12.7; light.fog_density = 0.011; }
