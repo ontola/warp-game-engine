@@ -1578,6 +1578,8 @@ impl Renderer {
                 (3, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
                 (4, uniform()),
                 (5, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                (6, float_tex(false)),
+                (7, float_tex(false)),
             ],
         );
         let module = |name: &str, src: &str| gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(name), source: wgpu::ShaderSource::Wgsl(src.into()) });
@@ -3305,8 +3307,17 @@ impl Renderer {
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
         let blur=self.motion_blur.lock().unwrap();
-        if blur.is_some() && up.motion.is_none() {
+        // TAA reprojects with these per-pixel vectors too: wind-blown trees
+        // otherwise lose their history every frame and shimmer.
+        if (blur.is_some() || (light.taa > 0.5 && !dlss_on)) && up.motion.is_none() {
             up.motion=Some(crate::motion::MotionRenderer::new(gpu,&self.instance_buffer,self.wind.buffer(),self.instances as usize)?);
+            // Voxel trees write their motion layer from here on (as for DLSS).
+            // Where the device's binding limits allow its temporal pipelines;
+            // otherwise voxel pixels reproject with the surface behind them.
+            if let Some(forest)=&self.voxel_forest {
+                if let Err(e)=forest.prepare_temporal(gpu) {eprintln!("voxel motion layer off: {e}");}
+                forest.reset_targets();
+            }
         }
 
         if self.meadow_brick_fixture.is_some() && (dlss_on || light.taa > 0.5) {
@@ -3982,21 +3993,6 @@ impl Renderer {
             let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);
             let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen), vignette: light.vignette, grain: light.grain, aberration: light.aberration, time: light.time, sun: solar, sun_tint: [light.sun_color.x, light.sun_color.y, light.sun_color.z, 0.0] }));
             cpu.mark("view setup");
-            let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
-                resources.taa.get(
-                    gpu,
-                    &self.taa_layout,
-                    "cached TAA view",
-                    &[
-                        (0, wgpu::BindingResource::TextureView(&hdr_v)),
-                        (1, wgpu::BindingResource::TextureView(&depth_v)),
-                        (2, wgpu::BindingResource::TextureView(src)),
-                        (3, wgpu::BindingResource::TextureView(dst)),
-                        (4, u.as_entire_binding()),
-                        (5, wgpu::BindingResource::Sampler(&self.clamp_samp)),
-                    ],
-                )
-            });
             if self.tree_occlusion.enabled {
                 if let Some(selector)=&self.source_replacement {
                     let time=self.query.as_ref().map(|(qs,_,_)| {names.push("world foliage select");(qs,timestamp_pair(&mut ts))});
@@ -4076,7 +4072,7 @@ impl Renderer {
             if let Some(forest) = &self.voxel_forest {
                 forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
                     volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
-                    up.motion.as_ref().filter(|_|motion_on).map(|motion|crate::voxel_forest::TemporalInputs {
+                    up.motion.as_ref().filter(|_|motion_on && forest.has_temporal()).map(|motion|crate::voxel_forest::TemporalInputs {
                         previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),
                     crate::voxel_forest::Stage::Splats)?;
             }
@@ -4128,9 +4124,6 @@ impl Renderer {
             let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = Vec::new();
             if let (Some(coarse), Some((bind, out))) = (&self.terrain_coarse, &coarse_binds) { passes.push(("terrain coarse", coarse, vec![&self.scene_bind, bind, out])); }
             passes.push(("shade", &self.shade, vec![&self.scene_bind, &shade_bind]));
-            if let Some(b) = &taa_bind {
-                passes.push(("taa", &self.taa, vec![b]));
-            }
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {
@@ -4187,7 +4180,7 @@ impl Renderer {
                     if let Some(forest) = &self.voxel_forest {
                         forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
                             volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
-                            up.motion.as_ref().filter(|_|motion_on).map(|motion|crate::voxel_forest::TemporalInputs {
+                            up.motion.as_ref().filter(|_|motion_on && forest.has_temporal()).map(|motion|crate::voxel_forest::TemporalInputs {
                                 previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),
                             crate::voxel_forest::Stage::Rest)?;
                     }
@@ -4301,6 +4294,27 @@ impl Renderer {
                         meadow:meadow_motion.as_ref().map(|(color,reprojection)|(color,reprojection)) }, motion_time)?;
                 Some(motion)
             } else {None};
+            // TAA after the motion vectors it reprojects with.
+            if let (Some((src, dst, u)), Some(motion)) = (taa_pass.as_ref(), motion_output.as_ref()) {
+                let vectors = motion.vectors.create_view(&Default::default());
+                let bias = motion.bias.create_view(&Default::default());
+                let bind = resources.taa.get(gpu, &self.taa_layout, "cached TAA view", &[
+                    (0, wgpu::BindingResource::TextureView(&hdr_v)),
+                    (1, wgpu::BindingResource::TextureView(&depth_v)),
+                    (2, wgpu::BindingResource::TextureView(src)),
+                    (3, wgpu::BindingResource::TextureView(dst)),
+                    (4, u.as_entire_binding()),
+                    (5, wgpu::BindingResource::Sampler(&self.clamp_samp)),
+                    (6, wgpu::BindingResource::TextureView(&vectors)),
+                    (7, wgpu::BindingResource::TextureView(&bias)),
+                ]);
+                let t = self.query.as_ref().map(|(qs, _, _)| { names.push("taa"); (qs, timestamp_pair(&mut ts)) });
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("taa"),
+                    timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
+                pass.set_bind_group(0, &bind, &[]);
+                pass.set_pipeline(&self.taa);
+                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+            }
             let resolved = if dlss_on {
                 let motion=motion_output.as_ref().unwrap();
                 let dlss_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
