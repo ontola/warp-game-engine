@@ -1740,7 +1740,17 @@ impl Renderer {
         let terrain_coarse_on = !simple_lighting && shade_features.terrain && std::env::var("KERN_TERRAIN_COARSE").as_deref() != Ok("0");
         shade_constants.push(("TERRAIN_COARSE", if terrain_coarse_on {1.0} else {0.0}));
         // KERN_SHADE_CLASSES=0: one shade pipeline for terrain and the rest.
-        let shade_classes = terrain_coarse_on && std::env::var("KERN_SHADE_CLASSES").as_deref() != Ok("0");
+        let shade_classes = !simple_lighting && shade_features.terrain && std::env::var("KERN_SHADE_CLASSES").as_deref() != Ok("0");
+        // The terrain class keeps every feature terrain pixels can reach.
+        let terrain_constants: Vec<(&'static str, f64)> = shade_constants.iter().map(|&(k, v)| match k {
+            "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" | "FEATURE_GRASS" => (k, 0.0), _ => (k, v) })
+            .chain([("SHADE_CLASS", 1.0)]).collect();
+        // The rest class drops the terrain branch unless a car part carries
+        // the TERRAIN bit (car materials keep their index in bits 16..).
+        let car_terrain = scene.materials.iter().any(|m| m.flags & crate::scene::TERRAIN != 0 && m.flags >> 16 != 0);
+        if shade_classes && !car_terrain {
+            for c in shade_constants.iter_mut() { if c.0 == "FEATURE_TERRAIN" { c.1 = 0.0; } }
+        }
         shade_constants.push(("SHADE_CLASS", if shade_classes {2.0} else {0.0}));
         // Component diagnostics (Lighting::debug) are compiled out of the
         // shade pipelines; the first frame that asks for one builds the
@@ -1767,11 +1777,8 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
             usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
         let terrain_shade = shade_classes.then(|| {
-            let constants: Vec<(&str, f64)> = shade_constants.iter().map(|&(k, v)| match k {
-                "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" => (k, 0.0), "SHADE_CLASS" => (k, 1.0),
-                // Terrain pixels need grass code only for the far grass
-                // field's sun transmittance.
-                "FEATURE_GRASS" => (k, if scene.far_grass.is_some() { v } else { 0.0 }), _ => (k, v) }).collect();
+            let mut constants = terrain_constants.clone();
+            constants.push(("SHADE_DIAGNOSTICS", 0.0));
             gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label:Some("shade terrain"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade"),
                 compilation_options:wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},cache: gpu.pipeline_cache(),
@@ -4203,14 +4210,17 @@ impl Renderer {
                     label: Some("shade diagnostics"), layout: Some(&self.shade_pl), module: &module, entry_point: Some("shade"),
                     compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() }, cache: gpu.pipeline_cache() });
                 let terrain: Vec<(&str, f64)> = self.diagnostic_constants.iter().map(|&(k, v)| match k {
-                    "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" => (k, 0.0), "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).collect();
+                    "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" | "FEATURE_GRASS" => (k, 0.0), "FEATURE_TERRAIN" => (k, 1.0),
+                    "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).collect();
                 (make(&self.diagnostic_constants), self.terrain_shade.as_ref().map(|_| make(&terrain)))
             }));
-            passes.push(("shade", diagnostic.map_or(&self.shade, |d| &d.0), vec![&self.scene_bind, &shade_bind]));
-            if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind])); }
+            // Terrain and voxels first: glossy surfaces in the main pass
+            // reflect the already lit frame around them.
             if let Some(terrain) = &self.terrain_shade {
                 passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind]));
             }
+            if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind])); }
+            passes.push(("shade", diagnostic.map_or(&self.shade, |d| &d.0), vec![&self.scene_bind, &shade_bind]));
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {
