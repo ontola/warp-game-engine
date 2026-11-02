@@ -486,7 +486,7 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         // the forest, sand-coloured in the desert.
         let land = 0.5 * (g.soil.rgb + g.grass_dry.rgb);
         let soil_tint = land / max(dot(land, vec3<f32>(0.3, 0.59, 0.11)), 1e-3);
-        let stone = mix(vec3<f32>(lum), stone0, 0.4) * mix(vec3<f32>(0.5, 0.45, 0.37), 0.47 * soil_tint, 0.5);
+        let stone = mix(vec3<f32>(lum), stone0, 0.4) * mix(vec3<f32>(0.5, 0.45, 0.37), 0.5 * soil_tint, 0.8);
         // Two packed wheel lines 1.8 m apart, 0.4 m wide, wandering a
         // little; loose gravel heaped between and outside them.
         let side_m = road.u * road.half + 0.08 * (fine - 0.5) * 2.0;
@@ -498,8 +498,8 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         var rc = stone * (0.88 + 0.45 * (grit - 0.5) * loose + 0.25 * (pebble - 0.5)) * mix(1.08, 0.82, rut);
         // Single stones a few centimetres across, where a pixel can hold
         // them: lighter and darker pebbles over the loose gravel.
-        if footprint < 0.03 {
-            let q = wuv / 0.07;
+        if footprint < 0.05 {
+            let q = wuv / 0.1;
             let cell = floor(q);
             var stones = 0.0;
             var shade = 0.0;
@@ -515,13 +515,15 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
                     if m > stones { stones = m; shade = field_hash(k + 211.0); }
                 }
             }
-            let near = 1.0 - smoothstep(0.015, 0.03, footprint);
-            rc = mix(rc, stone * (0.6 + 0.8 * shade), stones * loose * near * 0.85);
+            let near = 1.0 - smoothstep(0.025, 0.05, footprint);
+            rc = mix(rc, stone * (0.45 + 1.1 * shade), stones * loose * near * 0.9);
         }
         // Worn soil where the edge meets the grass.
         let worn = (1.0 - smoothstep(0.0, 0.9, abs(road.edge + 0.1 + ragged))) * 0.5;
         c = mix(c, soil * 0.8, worn * (1.0 - m_road));
         c = mix(c, stone * (0.95 + 0.3 * (pebble - 0.5)), m_shoulder * (1.0 - m_road) * 0.8);
+        // A little of the land's own colour: dust from the verges.
+        rc = mix(rc, c * 0.85, 0.2);
         c = mix(c, rc, m_road);
         let rn = perturb_xz(n, mix(terrain_layer_normal(layer + 4, wuv, 1.3, mapping), terrain_layer_normal(layer + 4, wuv + vec2<f32>(0.37, 0.71), 0.45, mapping), 0.5) * (1.0 - 0.75 * rut));
         nn = normalize(mix(nn, rn, max(m_road, m_shoulder * 0.6)));
