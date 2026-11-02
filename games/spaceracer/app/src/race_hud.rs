@@ -74,6 +74,7 @@ pub fn draw(
     cam: &Camera,
     up: Vec3,
     curvature: f32,
+    speed_kmh_per_unit: f32,
 ) {
     let scale = (r[2] / 800.).min(r[3] / 450.);
     let w = r[2] / scale;
@@ -206,7 +207,7 @@ pub fn draw(
         white,
     );
     v.text(
-        &format!("{}", (p.speed.abs() * 3.6) as u32),
+        &format!("{}", (p.speed.abs() * speed_kmh_per_unit as f64) as u32),
         [w - 54., height - 82.],
         31.,
         TextAlign::Right,

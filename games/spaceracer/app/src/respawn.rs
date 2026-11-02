@@ -44,6 +44,7 @@ impl Camera {
         alpha: f32,
         chase: &mut Chase,
         aspect: f64,
+        tuning: spaceracer::chase::Tuning,
     ) -> bool {
         let p = &race.pilots[i];
         let d = &race.drivers[i];
@@ -84,7 +85,7 @@ impl Camera {
             (0.65, 0.65 - p.recovery - (1. - alpha as f64) / 120.)
         };
         let mut end = Chase::default();
-        end.update(e.target, 90., false, 0., 0., true, false, aspect);
+        end.update_tuned(e.target, 90., false, 0., 0., true, false, aspect, tuning);
         let (pos, t) = curve(
             e.position,
             end.position,
@@ -93,7 +94,7 @@ impl Camera {
             (elapsed / (duration - 0.12).max(0.01)) as f32,
         );
         // Initialize the normal chase at the target, including its internal rotation/distance.
-        chase.update(e.target, 90., false, 0., 0., true, false, aspect);
+        chase.update_tuned(e.target, 90., false, 0., 0., true, false, aspect, tuning);
         chase.position = pos;
         chase.frame = Mat3::from_quat(e.rotation.slerp(Quat::from_mat3(&end.frame), t));
         chase.fov = e.fov + (end.fov - e.fov) * t as f64;
@@ -124,9 +125,9 @@ mod tests {
         assert!((progress(&r, 0, 1.) - 0.5).abs() < 0.001);
         let mut c = Camera::default();
         let mut chase = Chase::default();
-        c.update(&r, 0, 1., &mut chase, 16. / 9.);
+        c.update(&r, 0, 1., &mut chase, 16. / 9.,Default::default());
         let at = chase.position;
-        c.update(&r, 0, 1., &mut chase, 16. / 9.);
+        c.update(&r, 0, 1., &mut chase, 16. / 9.,Default::default());
         assert_eq!(chase.position, at);
         r.pilots[0].recovery = 0.;
         assert_eq!(progress(&r, 0, 1.), 1.);

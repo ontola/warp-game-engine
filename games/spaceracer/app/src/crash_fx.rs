@@ -15,6 +15,7 @@ use spaceracer::{environment::Obstacle, race::Race};
 use std::path::Path;
 #[derive(Deserialize)]
 pub struct Config {
+    pub camera: spaceracer::chase::Tuning,
     pub blur_start_speed: f32,
     pub blur_full_speed: f32,
     pub blur_strength: f32,
@@ -90,6 +91,7 @@ impl Crashes {
             .from_value(table.get("config").map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         let c = &config;
+        if !c.camera.valid() {return Err("invalid chase camera configuration".into());}
         if [
             c.blur_start_speed,
             c.blur_full_speed,

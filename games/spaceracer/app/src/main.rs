@@ -585,8 +585,8 @@ impl Game for Racer {
             let rect = rects[i].map(|v| v / ui_scale);
             let dt = if frozen { 0. } else { frame.dt as f64 };
             let aspect=rect[2] as f64/rect[3] as f64;
-            if !self.respawn[i].update(&self.race,i,alpha,&mut self.cameras[i],aspect) {
-                self.cameras[i].update(pose,p.speed,p.boost>0.||p.on_pad,p.acceleration,dt,false,self.race.countdown<=0.,aspect);
+            if !self.respawn[i].update(&self.race,i,alpha,&mut self.cameras[i],aspect,effect.camera) {
+                self.cameras[i].update_tuned(pose,p.speed,p.boost>0.||p.on_pad,p.acceleration,dt,false,self.race.countdown<=0.,aspect,effect.camera);
             }
             let c = &self.cameras[i];
             cams.push(Camera {
@@ -637,6 +637,7 @@ impl Game for Racer {
                     &cams[i],
                     replay_up,
                     if self.players > 1 { 0.010 } else { 0.035 },
+                    self.visuals.jets.config.speed_kmh_per_unit,
                 );
                 if !p.finished && !self.race.over {
                     self.visuals.faces.draw_hud(&mut hud, i, rect);
@@ -808,6 +809,8 @@ fn main() -> Result<(), String> {
         game.random_seed=arg("--seed").is_none();
     }
     game.blur_enabled = !args.iter().any(|s| s == "--no-motion-blur");
+    // Diagnostic omission, never a persisted player quality setting.
+    game.visuals.jets.volume_plumes = !args.iter().any(|s|s=="--profile-no-plumes");
     if let Some(dir) = arg("--integration-probe") {
         return integration_probe::run(&mut game, std::path::Path::new(&dir));
     }
@@ -832,7 +835,7 @@ fn main() -> Result<(), String> {
         let environment: std::collections::BTreeMap<_,_> = ["WGPU_BACKEND","WGPU_DEBUG","WGPU_VALIDATION","WGPU_VALIDATION_INDIRECT_CALL","VK_LOADER_LAYERS_DISABLE","KERN_CPU_SPANS","KERN_SHADE_FEATURES"].into_iter().map(|name| (name,std::env::var(name).ok())).collect();
         let report = json!({"gpu":{"name":gpu.summary().name,"backend":gpu.summary().backend,"driver":gpu.summary().driver},"size":size,"players":players,"motion_blur":game.blur_enabled,"frames":frames,"profile":measurements,"scene":game.visuals.scene.stats(),
             "scenario":{"seed":game.seed,"biome":BIOMES[game.biome],"difficulty":DIFFICULTIES[game.difficulty],"players":players,"ticks":ticks,"warmup":warmup,"frames":frames,"size":size},
-            "diagnostics":{"no_reflections":args.iter().any(|a|a=="--profile-no-reflections"),"debug_assertions":cfg!(debug_assertions),"environment":environment}});
+            "diagnostics":{"no_reflections":args.iter().any(|a|a=="--profile-no-reflections"),"no_plumes":!game.visuals.jets.volume_plumes,"debug_assertions":cfg!(debug_assertions),"environment":environment}});
         let report = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
         if let Some(path) = arg("--out") {
             println!("{}", serde_json::to_string_pretty(&measurements["summary"]).unwrap());
