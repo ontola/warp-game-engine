@@ -74,6 +74,37 @@ opened. No new 8.33 ms claim. No shader timing is presented as whole-frame FPS.
 
 ## Remaining integration
 
+The current completion contract is
+[no CPU pool integration](foliage-no-cpu-pool-integration.md). Do not mark this
+work complete on the strength of the tests below: `terrain_fly` still uses the
+legacy CPU pool.
+
+### GPU branch residency checkpoint
+
+`foliage_residency::Residency` now consumes final selector records directly on
+GPU, with retained slots keyed by tree/node/generation. GPU hashing, retaining,
+free-list construction, allocation and final publication are separate ordered
+dispatches. No host-visible slot map or nearest-tree decision is used. The
+selector's indirect record count drives the request passes. Failed hash/slot
+allocation extends the same per-tree fallback flags; final publication removes
+all partial records of failed trees. Duplicate requests emit only once.
+
+Slot state explicitly distinguishes occupation, previous published history and
+current publication. Replacement and waking after a fallback frame invalidate
+history, including the existing packed virtual-member epoch bit. Storage is
+32 bytes per resident slot plus bounded request hash/maps and free-list scratch;
+it does not expand every world instance's branches. Each view owns mutable
+residency; source/voxel geometry may remain shared.
+
+Validation: 100 foliage-filtered tests passed, including actual GPU allocation
+for 3,600 synthetic branch records / 1,200 tree IDs, reversed request ordering,
+half-population replacement, generation changes, forced five-slot exhaustion,
+recovery after fallback, 512 duplicate requests and an empty frame. The existing
+1,025-instance selector GPU fixture now directly chains both selection phases
+into residency on one encoder, testing disocclusion and selection overflow with
+no CPU readback between those operations. These are correctness fixtures, not
+rendered forest images, FPS measurements or completed draw integration.
+
 1. Cook shared selection/representation tables from real plant assets; preserve
    measured optical source/voxel errors and conservative animated envelopes.
 2. Replace packed movable-owner identity with stable instance/member addressing

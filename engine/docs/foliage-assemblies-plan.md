@@ -5,9 +5,10 @@ a pool of full assemblies, alpha card trees, whole-plant voxel proxies, the
 painted far layer) with one representation per tree, after Unreal 5.7's
 Nanite Foliage and Assemblies.
 
-**Handoff:** read [Handoff (3 Nov 2026, evening)](#handoff-3-nov-2026-evening)
-first. It is the current state, the open issues and the next tasks; the
-sections after it are the history that led there.
+**Current completion gate:** [No CPU pool integration](foliage-no-cpu-pool-integration.md).
+The GPU selection and residency building blocks do not yet complete the demo
+integration. Do not close that milestone while `terrain_fly` still uses `Pool`.
+The [earlier handoff](#handoff-3-nov-2026-evening) and sections below retain history.
 
 ## Real recipe adapter and shared renderer addressing (3 November 2026)
 

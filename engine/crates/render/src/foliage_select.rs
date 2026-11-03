@@ -93,6 +93,7 @@ pub struct Selector {
     binds:std::sync::Mutex<crate::frame::resource_cache::BindGroups<2>>,
 }
 impl Selector {
+    pub(crate) fn dimensions(&self)->(u32,u32) {(self.capacity,self.count)}
     pub fn new(gpu:&Gpu,nodes:&[Node],instances:&[Instance],capacity:u32,deferred_capacity:u32)->Result<Self,String> {
         validate(nodes,instances,capacity)?;
         if deferred_capacity==0 || instances.len().div_ceil(64)>gpu.device.limits().max_compute_workgroups_per_dimension as usize
@@ -202,8 +203,15 @@ mod tests {
    let selector=Selector::new(&gpu,&n,&t,capacity,deferred_capacity).unwrap();
    let mut enc=gpu.device.create_command_encoder(&Default::default());
    selector.first(&gpu,&mut enc,Mat4::IDENTITY,Mat4::IDENTITY,[128;2],error,history,&blocked).unwrap();
-   selector.second(&gpu,&mut enc,if current_blocked {&blocked}else{&empty});gpu.queue.submit([enc.finish()]);
+   selector.second(&gpu,&mut enc,if current_blocked {&blocked}else{&empty});
+   let residency=crate::foliage_residency::Residency::new(&gpu,&selector,4096).unwrap();
+   residency.encode(&mut enc);gpu.queue.submit([enc.finish()]);
    let c=read(&gpu,&selector.counters);let f=read(&gpu,&selector.fallback);let records=read(&gpu,&selector.records);
+   let slots=read(&gpu,&residency.slots);let mappings=read(&gpu,&residency.request_slots);
+   for (r,&slot) in records.chunks_exact(4).take(c[0].min(capacity)as usize).zip(&mappings) {
+    if f[r[0]as usize]!=0 {assert_eq!(slot,NONE);}
+    else {assert!(slot<4096);assert_eq!(&slots[slot as usize*8..][..4],r);assert_eq!(slots[slot as usize*8+6],1);}
+   }
    assert_eq!(c[0],expected);assert_eq!(c[12],expected.min(capacity).div_ceil(64));
    if history && deferred_capacity>1 {assert_eq!(c[1],1025);}
    if deferred_capacity==1 {assert!(c[2]>0);}
