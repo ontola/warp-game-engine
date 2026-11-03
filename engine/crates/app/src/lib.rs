@@ -639,8 +639,8 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
 
 impl Shell<'_> {
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
-        if let Err(e) = self.frame() { self.error = Some(e); event_loop.exit(); return; }
-        if self.game.quit() { event_loop.exit(); return; }
+        if let Err(e) = self.frame() { startup::note_exit(&format!("frame error: {e}")); self.error = Some(e); event_loop.exit(); return; }
+        if self.game.quit() { startup::note_exit("the game quit"); event_loop.exit(); return; }
         self.frames += 1;
         if self.frames % 60 == 0 { if let (Some(w), Some(t)) = (&self.window, self.game.title()) { w.set_title(&format!("{} | {t}", self.cfg.title)); } }
         if self.cfg.frames > 0 && self.frames >= self.cfg.frames {
@@ -1081,7 +1081,7 @@ impl ApplicationHandler for Shell<'_> {
             window.request_redraw();
             Ok(())
         })();
-        if let Err(e) = result { self.error = Some(e); event_loop.exit(); }
+        if let Err(e) = result { startup::note_exit(&format!("error: {e}")); self.error = Some(e); event_loop.exit(); }
     }
 
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
@@ -1121,7 +1121,7 @@ impl ApplicationHandler for Shell<'_> {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => { startup::note_exit("window close requested"); event_loop.exit() }
             WindowEvent::Resized(size) => {
                 self.zero_size = size.width == 0 || size.height == 0;
                 if let Some(l) = &mut self.live && !l.is_lost() {
@@ -1237,7 +1237,7 @@ impl ApplicationHandler for Shell<'_> {
                     match code {
                         KeyCode::Escape => {
                             if self.game.escape() { self.sync_capture(); return; }
-                            if self.devices.mouse_captured { self.capture_mouse(false) } else { event_loop.exit() }
+                            if self.devices.mouse_captured { self.capture_mouse(false) } else { startup::note_exit("Esc"); event_loop.exit() }
                             return;
                         }
                         _ => {}
