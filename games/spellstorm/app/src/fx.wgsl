@@ -184,8 +184,7 @@ fn ward(s: GameSprite) -> vec4<f32> {
     // The foot melts into the floor instead of ending on a line (seen from
     // above the wall's lowest metre is only a few pixels high).
     a *= smoothstep(0.0, 1.0, w.y + (wisp - 0.5) * 0.6);
-    c += vec3(0.5, 0.45, 0.3) * mark * lit;
-    a = max(a, mark * lit * 0.3 * body);
+    // No rune marks along the foot: they read as flickering squares (Joep).
     // Opening: the haze thins from the top down and drifts apart.
     let gone = smoothstep(open - 0.15, open + 0.15, h * 0.6 + n * 0.4);
     return vec4(lin(c), clamp(a * (1.0 - gone) * open, 0.0, 0.7));
