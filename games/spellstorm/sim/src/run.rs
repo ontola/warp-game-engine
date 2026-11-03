@@ -829,7 +829,10 @@ impl World {
                 .filter(|&&w| self.alive(w))
                 .map(|&w| { let p = self.pos(w); self.level.progress_of(Vec2::new(p.x, p.z)) + 8.0 })
                 .fold(along, f32::max);
-            along = ahead.min(self.level.length() - 4.0).max(along);
+            // Never past the clearing's ward: the wall stays up until
+            // everyone took a tome, so altars beyond it could not be reached.
+            let ward = self.level.clearing_at[k] + (c.z - 3.0).max(0.0);
+            along = ahead.min(ward).min(self.level.length() - 4.0).max(along);
         }
         let dir = (self.level.point_at(along + 1.0) - self.level.point_at(along - 1.0))
             .normalize_or_zero();
