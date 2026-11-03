@@ -95,7 +95,7 @@ pub struct Hud {
     vignette: Arc<Picture>,
     words: usize,
     /// What each seat had last tick (forms, LB, learned_t), to see unlocks.
-    had: std::collections::HashMap<usize, (usize, bool, f64)>,
+    had: std::collections::HashMap<usize, (usize, bool, f64, usize)>,
     /// What each seat was ever shown a card for: a card only for what is
     /// truly new to that player (not again after a death or a new run).
     seen: std::collections::HashSet<(usize, u32)>,
@@ -113,6 +113,8 @@ enum Learned {
     Element(El),
     Move(Form),
     Pairs,
+    /// A spell holds this many elements now (a new slot in the queue).
+    Slots(usize),
 }
 
 impl Learned {
@@ -122,6 +124,7 @@ impl Learned {
             Learned::Element(e) => e.idx() as u32,
             Learned::Move(f) => 100 + *f as u32,
             Learned::Pairs => 200,
+            Learned::Slots(n) => 300 + *n as u32,
         }
     }
 }
@@ -227,10 +230,16 @@ impl Hud {
             }
             humans += 1;
             let forms = spellstorm::wizard::STAGE_FORMS[wz.stage.min(spellstorm::wizard::STAGES - 1)].len();
-            let now = (forms, wz.lb_open(), wz.learned_t);
+            let slots = spellstorm::wizard::STAGE_SLOTS[wz.stage.min(spellstorm::wizard::STAGES - 1)];
+            let now = (forms, wz.lb_open(), wz.learned_t, slots);
             // A wizard first seen (joining, a new run) shows nothing.
             let mut new: Vec<Learned> = vec![];
-            if let Some(&(f0, lb0, t0)) = self.had.get(&wz.seat) {
+            if let Some(&(f0, lb0, t0, s0)) = self.had.get(&wz.seat) {
+                // A new element slot is a big step: its own card, first
+                // (Joep).
+                if slots > s0 {
+                    new.insert(0, Learned::Slots(slots));
+                }
                 if wz.learned_t > t0 + 1.0 {
                     new.extend(wz.learned.iter().map(|&e| Learned::Element(e)));
                 }
@@ -255,6 +264,9 @@ impl Hud {
             }
             if wz.lb_open() {
                 self.seen.insert((seat, Learned::Pairs.key()));
+            }
+            for n in 2..=slots {
+                self.seen.insert((seat, Learned::Slots(n).key()));
             }
         }
         // Everything unlocked at once (the menu's Unlocks: All, or forced):
@@ -617,6 +629,10 @@ fn unlock_card(p: &mut Painter, u: &Unlock, t: f32, sw: f32) {
             ("New move", name.to_string(), hint.to_string(), CardIcon::Pad(pad))
         }
         Learned::Pairs => ("New elements", "Element Pairs".to_string(), "Hold LB: every button gives its other element".to_string(), CardIcon::Pad("lb")),
+        Learned::Slots(n) => {
+            let name = if n == 2 { "Second element slot" } else { "Third element slot" };
+            ("New element slot", name.to_string(), format!("Load {n} elements into one spell"), CardIcon::Slots(n))
+        }
     };
     let kicker = if u.who.is_empty() { kicker.to_string() } else { format!("{kicker}   ·   {}", u.who.join(", ")) };
     crate::menu::unlock_card(p.d, p.s, sw * 0.5, 690.0 + rise, icon, &kicker, &name, &hint, a);

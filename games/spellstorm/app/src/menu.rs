@@ -475,6 +475,8 @@ impl P<'_> {
 pub enum CardIcon {
     Element(El),
     Pad(&'static str),
+    /// The queue's sockets, the newest of `n` lit.
+    Slots(usize),
 }
 
 /// Something just learned, in the menu's own look: its framed panel, the
@@ -499,6 +501,19 @@ pub fn unlock_card(d: &mut HudDrawList, s: f32, cx: f32, y: f32, icon: CardIcon,
         CardIcon::Pad(kind) => {
             let k = 1.35;
             glyph(&mut P { d: &mut *p.d, s: s * k }, kind, ic / k);
+        }
+        CardIcon::Slots(n) => {
+            let r = 15.0;
+            let gap = 36.0;
+            for i in 0..n {
+                let c = ic + Vec2::new((i as f32 - (n as f32 - 1.0) * 0.5) * gap, 0.0);
+                let new = i + 1 == n;
+                if new {
+                    p.circle(c, r + 7.0, [1.0, 0.82, 0.4, 0.25]);
+                }
+                p.circle(c, r + 2.0, PAD_EDGE);
+                p.circle(c, r, if new { [1.0, 0.82, 0.4, 1.0] } else { PAD_DARK });
+            }
         }
     }
     let tx = x0 + 168.0;
