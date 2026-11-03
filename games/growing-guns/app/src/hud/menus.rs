@@ -36,6 +36,8 @@ pub enum Action { None, Resume, Versus, Wave, Settings, Back, Host, Copy, Quit, 
 enum Item { Text(&'static str, C), Note(&'static str), Field(Field), Button(&'static str, Action, bool), Row(&'static [(&'static str, Action)]), Slider(Slider), Gap(f32), Rule,
     /// Movement tilt on or off.
     Tilt,
+    /// The graphics profile: AUTO, FULL, LOW, MINIMUM (from the next round).
+    Graphics,
     /// Bots: - count +, with this label on the left (empty: none).
     Bots(&'static str),
     /// A GameNight setting slider (index into `Ctx::party`).
@@ -92,6 +94,8 @@ pub struct Menus {
     pub music_db: f32,
     /// Movement tilt (the gun's strafe lean).
     pub tilt: bool,
+    /// The graphics choice: "auto" (by chip) or a profile name.
+    pub graphics: &'static str,
     /// Stick sensitivity per GameNight player, by name.
     pub aim: Vec<(String, f32)>,
     /// Seconds the screen has been open (fades and the start orbit).
@@ -126,7 +130,7 @@ pub struct Menus {
 
 impl Default for Menus {
     fn default() -> Self {
-        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None,
+        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, graphics: "auto", aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None,
             join: TextField::new(4096), joining: false, name: TextField::new(20), player_name: String::new(), picker: None, copied: 0.0 }
     }
 }
@@ -184,8 +188,18 @@ fn settings_items(ctx: &Ctx) -> Vec<Item> {
     let mut v = if ctx.seats.is_empty() { vec![Item::Field(Field::Name)] } else { vec![] };
     v.extend([Item::Slider(Slider::Music), Item::Slider(Slider::Mouse)]);
     if ctx.seats.is_empty() { v.push(Item::Slider(Slider::Stick)); } else { v.extend((0..ctx.seats.len()).map(|k| Item::Slider(Slider::Aim(k)))); }
-    v.extend([Item::Tilt, Item::Gap(8.0), Item::Button("BACK", Action::Back, true)]);
+    v.push(Item::Tilt);
+    // The headset always uses the minimum profile.
+    if !ctx.xr && !crate::graphics::fixed() { v.push(Item::Graphics); }
+    v.extend([Item::Gap(8.0), Item::Button("BACK", Action::Back, true)]);
     v
+}
+
+const GRAPHICS_CHOICES: [&str; 4] = ["auto", "full", "low", "minimum"];
+/// The next (`step` 1) or previous (-1) graphics choice, wrapping around.
+fn next_graphics(current: &str, step: i32) -> &'static str {
+    let k = GRAPHICS_CHOICES.iter().position(|c| *c == current).unwrap_or(0) as i32;
+    GRAPHICS_CHOICES[(k + step).rem_euclid(GRAPHICS_CHOICES.len() as i32) as usize]
 }
 
 /// Godot `music_label_for`: Off at the bottom, else 0..100 %.
@@ -206,7 +220,7 @@ fn lines(items: &[Item], ctx: &Ctx, join_ok: bool) -> Vec<(usize, Vec<usize>)> {
         match it {
             Item::Field(Field::Join) if !ctx.client => out.push((k, if join_ok { vec![0, 1] } else { vec![0] })),
             Item::Field(Field::Name) => out.push((k, vec![0])),
-            Item::Button(_, _, true) | Item::Slider(_) | Item::Party(_) | Item::Tilt => out.push((k, vec![0])),
+            Item::Button(_, _, true) | Item::Slider(_) | Item::Party(_) | Item::Tilt | Item::Graphics => out.push((k, vec![0])),
             Item::Bots(_) => {
                 let on: Vec<usize> = [0, 1].into_iter().filter(|&j| bots_enabled(j, ctx)).collect();
                 if !on.is_empty() { out.push((k, on)); }
@@ -337,6 +351,7 @@ impl Menus {
             Item::Row(row) => row[hit.entry].1,
             Item::Bots(_) => if hit.entry == 0 { Action::RemoveBot } else { Action::AddBot },
             Item::Tilt => { self.tilt = !self.tilt; Action::None }
+            Item::Graphics => { self.graphics = next_graphics(self.graphics, 1); Action::None }
             Item::Slider(s) => {
                 if s == Slider::Music { self.music_db = (MUSIC_DB_MIN * (1.0 - t)).round(); }
                 else {
@@ -403,6 +418,10 @@ impl Menus {
             return Action::None;
         }
         if let Some((k, _)) = focus && list[k] == Item::Tilt && (step != 0 || c.pressed.has(Buttons::SOUTH)) { self.tilt = !self.tilt; return Action::None; }
+        if let Some((k, _)) = focus && list[k] == Item::Graphics && (step != 0 || c.pressed.has(Buttons::SOUTH)) {
+            self.graphics = next_graphics(self.graphics, if step < 0 { -1 } else { 1 });
+            return Action::None;
+        }
         if let Some((k, _)) = focus && let Item::Party(i) = list[k] && step != 0 && let Some((v, lo, hi)) = ctx.party.as_ref().and_then(|p| p.0.get(i)).map(|e| (e.1, e.2, e.3)) {
             let next = (v + step as i64).clamp(lo, hi);
             return if next != v { Action::Party(i, next) } else { Action::None };
@@ -440,7 +459,7 @@ impl Menus {
 
     /// The settings as JSON (Godot keeps them in `user://settings.cfg`).
     pub fn settings_json(&self) -> serde_json::Value {
-        serde_json::json!({ "name": self.player_name, "music_db": self.music_db, "mouse": self.mouse, "stick": self.stick, "tilt": self.tilt,
+        serde_json::json!({ "name": self.player_name, "music_db": self.music_db, "mouse": self.mouse, "stick": self.stick, "tilt": self.tilt, "graphics": self.graphics,
             "aim": self.aim.iter().map(|(n, v)| (n.clone(), serde_json::json!(v))).collect::<serde_json::Map<_, _>>() })
     }
     pub fn load_settings(&mut self, v: &serde_json::Value) {
@@ -449,6 +468,7 @@ impl Menus {
         self.mouse = f("mouse", 0.3, 3.0, self.mouse);
         self.stick = f("stick", 0.3, 2.5, self.stick);
         self.tilt = v.get("tilt").and_then(|x| x.as_bool()).unwrap_or(self.tilt);
+        if let Some(g) = v.get("graphics").and_then(|x| x.as_str()) && let Some(c) = GRAPHICS_CHOICES.iter().find(|c| **c == g) { self.graphics = c; }
         if let Some(n) = v.get("name").and_then(|x| x.as_str()) { self.player_name = n.chars().take(20).collect::<String>().trim().to_string(); }
         if let Some(m) = v.get("aim").and_then(|x| x.as_object()) { self.aim = m.iter().filter_map(|(n, x)| Some((n.clone(), (x.as_f64()? as f32).clamp(0.3, 2.5)))).collect(); }
     }
@@ -743,6 +763,15 @@ impl Menus {
                     d.circle([if on { sx + sw - sh * 0.5 } else { sx + sh * 0.5 }, mid], sh * 0.38, if fk(0) { BONE } else { [0.8, 0.78, 0.75, 1.0] }, clip);
                     y += rh + 14.0 * u;
                 }
+                Item::Graphics => {
+                    let rh = 30.0 * u;
+                    self.hit([r[0], y, r[2], rh], k, 0);
+                    let mid = y + rh * 0.5;
+                    Label::new(BODY, 14.0 * u, if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] }).draw(d, "Graphics (next round)", r[0], mid, clip);
+                    let value = if self.graphics == "auto" { format!("< AUTO: {} >", crate::graphics::auto().name().to_uppercase()) } else { format!("< {} >", self.graphics.to_uppercase()) };
+                    Label::new(BODY, 14.0 * u, [0.74, 0.78, 0.9, 1.0]).right().draw(d, &value, r[0] + r[2], mid, clip);
+                    y += rh + 14.0 * u;
+                }
                 Item::Gap(g) => y += g * u,
                 Item::Rule => { d.rect([r[0] - 2.0 * u, y + 3.0 * u, r[2] + 4.0 * u, u.max(1.0)], [0.48, 0.34, 0.14, 1.0], clip); y += 8.0 * u + sep; }
             }
@@ -770,7 +799,7 @@ fn column_height(list: &[Item], u: f32) -> f32 {
     list.iter().map(|it| match it {
         Item::Bots(_) => 34.0 + sep, Item::Party(_) => 36.0 + sep,
         Item::Text(..) => 20.0, Item::Note(t) => if *t == "BOTS" { 24.0 * 1.3 } else { 12.0 * 1.3 },
-        Item::Field(Field::Name) => 50.0, Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Tilt => 44.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
+        Item::Field(Field::Name) => 50.0, Item::Field(_) => 34.0 + sep, Item::Button(..) | Item::Row(_) => 32.0 + sep, Item::Slider(_) => 50.0, Item::Tilt | Item::Graphics => 44.0, Item::Gap(g) => *g, Item::Rule => 8.0 + sep,
     }).sum::<f32>() * u
 }
 
@@ -1157,6 +1186,13 @@ mod pointer_tests {
         let mut n = Menus::default();
         n.load_settings(&m.settings_json());
         assert_eq!(n.player_name, "JoepAce");
+        // The graphics choice cycles both ways and is remembered.
+        assert_eq!((next_graphics("auto", 1), next_graphics("minimum", 1), next_graphics("auto", -1)), ("full", "auto", "minimum"));
+        m.graphics = "low";
+        n.load_settings(&m.settings_json());
+        assert_eq!(n.graphics, "low");
+        n.load_settings(&serde_json::json!({ "graphics": "ultra" }));
+        assert_eq!(n.graphics, "low", "an unknown choice keeps the current one");
         // A pad: A on the field opens the on-screen keyboard; DONE closes it.
         m.menu.focus = 0;
         let press = |b: u32| Controls { held: Buttons(b), pressed: Buttons(b), ..Default::default() };

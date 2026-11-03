@@ -97,6 +97,12 @@ opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
 
 For slower PCs, pass `--graphics low` or `--graphics minimum` (also `GG_GRAPHICS`). Desktop defaults to `full`, except base Apple chips (M1 to M4 without Pro, Max or Ultra), which default to `low`.
+Without those flags, Settings has GRAPHICS (AUTO, FULL, LOW, MINIMUM), remembered in settings.json and
+applied from the next round. When the engine's adaptive quality has sat at its lowest resolution and still
+missed the frame-rate target for 12 seconds, the game lowers the profile one step from the next round and
+saves that choice (Settings shows it and can undo it); the console's `graphics PROFILE` switches at once.
+In a macOS app bundle the game reads its files from Contents/Resources and writes screenshots, replays and
+its pipeline cache to `~/Library/Application Support/Growing Guns`; `tools/package-mac.sh` builds the app and DMG.
 Both profiles automatically select low-poly guns: plain full-size boxes, a 16-sided drum,
 8-sided reservoirs without glass or cage rods, a solid rail and four shroud plates.
 The shaped grip, trigger/guard, scope, upgrade colours, firing/reload and owned-loadout
