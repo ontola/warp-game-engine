@@ -283,7 +283,6 @@ fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32;
 }
 struct Targets {
     splat: Option<SplatTargets>,
-    brick_mask: wgpu::Buffer,
     size: (u32, u32),
     layer: wgpu::Texture,
     bind: wgpu::BindGroup,
@@ -360,18 +359,22 @@ fn temporal_source(source:&str,enabled:bool)->Result<String,String> {
     if inside || blocks==0 {return Err("voxel temporal shader blocks are missing or incomplete".into());}
     Ok(result)
 }
-fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
+fn data_bindings(temporal: bool) -> Vec<(u32, wgpu::BindingType)> {
     let storage=|read_only|wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Storage {read_only},has_dynamic_offset:false,min_binding_size:None};
     let uniform=wgpu::BindingType::Buffer {ty:wgpu::BufferBindingType::Uniform,has_dynamic_offset:false,min_binding_size:None};
     let output=|format|wgpu::BindingType::StorageTexture {access:wgpu::StorageTextureAccess::WriteOnly,format,view_dimension:wgpu::TextureViewDimension::D2};
     let mut entries=vec![(0,storage(true)),(1,storage(true)),(2,storage(true)),(3,storage(true)),
         (4,storage(false)),(5,storage(false)),(6,output(wgpu::TextureFormat::Rgba16Float)),
-        (7,uniform),(8,storage(false)),(9,uniform),(12,storage(true)),(13,storage(false)),
+        (7,uniform),(8,storage(false)),(9,uniform),(12,storage(true)),
         (14,storage(true)),(15,storage(false)),(16,storage(false)),
         (17,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Uint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
         (18,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
         (19,output(wgpu::TextureFormat::Rgba32Uint))];
     if temporal {entries.extend([(10,output(wgpu::TextureFormat::Rgba32Float)),(11,storage(true))]);}
+    entries
+}
+fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
+    let entries = data_bindings(temporal);
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
         entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
 }
@@ -935,12 +938,9 @@ impl VoxelRenderer {
         if let Some(stream)=interval_stream {eprintln!("voxel interval target: {}x{} pixel_slots={} records={} total_worklist_bytes={}",
             size.0,size.1,stream.pixel_slots,stream.records,stream.bytes);}
         let mask_bytes=if self.integrator_options.brick_visibility {tile_count*u64::from(self.count.div_ceil(32))*4} else {4};
-        if mask_bytes>u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) {
+        if mask_bytes + COUNTER_BYTES > u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) {
             return Err("voxel brick visibility mask exceeds device limit".into());
         }
-        let brick_mask=gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label:Some("voxel brick tile deduplication"),size:mask_bytes,
-            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_DST,mapped_at_creation:false});
         let tiles = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel tile candidates"),
             size: tile_count * u64::from(CANDIDATES + 1) * 4,
@@ -949,7 +949,7 @@ impl VoxelRenderer {
         });
         let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel diagnostics"),
-            size: COUNTER_BYTES,
+            size: COUNTER_BYTES + mask_bytes,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
@@ -987,7 +987,6 @@ impl VoxelRenderer {
             });
         let mut entries=vec![
                 wgpu::BindGroupEntry {binding:12,resource:self.brick_catalog.as_entire_binding()},
-                wgpu::BindGroupEntry {binding:13,resource:brick_mask.as_entire_binding()},
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: self.data[0].as_entire_binding(),
@@ -1084,7 +1083,6 @@ impl VoxelRenderer {
         });
         Ok(Targets {
             splat,
-            brick_mask,
             size,
             layer,
             bind,
@@ -1151,7 +1149,6 @@ impl VoxelRenderer {
         // Counts and slots share a buffer; clearing it preserves a bounded
         // zero-allocation append path and prevents old counts surviving views.
         encoder.clear_buffer(&target.tiles, 0, None);
-        if self.integrator_options.brick_visibility {encoder.clear_buffer(&target.brick_mask,0,None);}
         if self.active_tiles {
             encoder.clear_buffer(&target.jobs, 0, Some(16));
         }
@@ -1783,6 +1780,18 @@ mod tests {
                 assert_eq!(sigma, 0.0);
             }
         }
+    }
+
+    #[test]
+    fn temporal_layout_fits_sixteen_storage_bindings() {
+        for temporal in [false, true] {
+            let count = super::data_bindings(temporal).iter().filter(|(_, ty)| matches!(ty,
+                wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { .. }, .. })).count();
+            // Reduced scene: instances, wind, terrain hierarchy, foliage pages.
+            assert_eq!(count + 4, if temporal { 16 } else { 15 });
+        }
+        assert!(super::shader_source().contains("const VOLUME_MASK_WORD: u32 = 22u;"));
+        assert_eq!(super::COUNTER_BYTES / 4, 22);
     }
 
     #[test]
