@@ -893,7 +893,12 @@ pub fn load_into(music: &Shared, dir: PathBuf, background: bool) {
 /// condition (high), and the card-pick muffle once fewer than two players
 /// are left standing.
 #[derive(Default)]
-pub struct Director { started: bool }
+pub struct Director {
+    started: bool,
+    /// The start menu shows a live arena behind it: keep the music at its
+    /// calm round level instead of escalating with the bots' fight.
+    pub menu: bool,
+}
 
 /// Within this distance of a local player's ear a bullet zips by (`bullet.gd`).
 const ZIP_RADIUS: f32 = 12.0;
@@ -903,7 +908,7 @@ impl Director {
     pub fn follow(&mut self, m: &mut impl DirectedMusic, world: &growing_guns::World, slots: &[usize]) {
         use growing_guns::{Event, Phase};
         if !std::mem::replace(&mut self.started, true) { m.start_match(); m.start_round(); }
-        let playing = world.phase == Phase::Playing;
+        let playing = world.phase == Phase::Playing && !self.menu;
         for e in &world.events {
             match *e {
                 Event::NewArena => {
@@ -1258,6 +1263,18 @@ mod tests {
         w.next_round();
         d.follow(&mut m, &w, &[0]);
         assert_eq!((m.round_level(), m.energy(), m.current), (1, 1, current));
+    }
+
+    #[test]
+    fn the_start_menu_keeps_the_music_calm_while_bots_fight() {
+        let mut w = growing_guns::World::new(11, &[false, true, true, true]);
+        let (mut m, mut d) = (music(6), Director { menu: true, ..Default::default() });
+        for _ in 0..60 * growing_guns::TICK_HZ {
+            w.step(&[]);
+            d.follow(&mut m, &w, &[0]);
+            m.update(growing_guns::DT);
+        }
+        assert_eq!(m.round_level(), 1);
     }
 
     /// Offline render of a scripted round to a WAV for listening:

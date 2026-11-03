@@ -1102,6 +1102,8 @@ impl app::Game for Gg {
         let t = std::time::Instant::now();
         self.hud.tick(&self.world, DT);
         if let Some(s) = &mut self.sounds { s.tick(&self.world, &self.slots, DT); self.vis.stadium.sound.loudness_db = s.duck_db(); }
+        let menu = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
+        if let Some((_, d)) = &mut self.music { d.menu = menu; }
         follow_music(&mut self.music, &self.world, &self.slots);
         hitch("hud+sounds+music", t);
         let t = std::time::Instant::now();

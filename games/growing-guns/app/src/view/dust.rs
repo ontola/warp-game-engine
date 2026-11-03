@@ -3,8 +3,11 @@
 use glam::Vec3;
 use growing_guns::{World,shape};
 pub(super) fn emit(fx:&mut render::fx::Effects,world:&World,time:f32,pos:Vec3,radius:f32) {
-    if radius<1.5 {return;}
-    let count=((radius*14.0) as usize).clamp(24,100).min(fx.dust_capacity(time));
+    let g=crate::graphics::get();
+    // Minimum draws no blast dust; low a quarter of it.
+    if radius<1.5 || g.minimal_forward {return;}
+    let full=((radius*14.0) as usize).clamp(24,100);
+    let count=if g.simple_lighting {full/4} else {full}.min(fx.dust_capacity(time));
     if count==0 {return;}
     let mut rng=0x9e3779b9u32 ^ pos.x.to_bits() ^ pos.z.to_bits().rotate_left(9) ^ time.to_bits();
     let mut random=|| {rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;(rng as f64/u32::MAX as f64) as f32};
