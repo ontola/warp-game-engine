@@ -35,7 +35,7 @@ missing.
 | Area | Status | Notes |
 |---|---|---|
 | Movement | Done | Jump, double jump, wall jump, step-ups (0.35 m), lava burn and kill, falling off the map |
-| The gun | Done | Projectile rounds with drop, spread, bloom, recoil, ricochet, drill, homing, hitscan, poison, slow, lifesteal, explosive splash, impact mines, three hit ellipsoids |
+| The gun | Done | Projectile rounds with drop, spread, bloom, recoil, ricochet, drill, homing, hitscan, poison, slow, lifesteal, explosive splash, impact mines, three hit ellipsoids. Shooting pushes the shooter back as in Godot, but deliberately capped: at most 6 m/s per trigger pull and 4.5 m/s of lift per airtime (refilled on landing), so firing at the floor hops instead of flying |
 | Gun model | Close | Procedural stat-driven parts; `gun-review` captures upgrade combinations from three angles using gameplay geometry and materials. Full-size chamfered blocks close assembly gaps. Large drums have a smooth 48-sided silhouette and rounded rims. Fixed grip/trigger/magazine clearances survive upgrades; a shaped pistol grip with rubber inserts, a steel trigger and an angular guard replace the intersecting cylinder/ring layout. Slim base receiver/magazine, damage-gated rail and separate green poison/blue chilling reservoirs angled rearward along the receiver; low/minimum profiles use simpler opaque gun assemblies with fewer parts/triangles and half the reserved instances; broader finish/detail refinements remain open |
 | Cards | Done | All 49 cards in `mods/base/cards.luau`; Ninja, Dodge and Backblast removed along with dash. Damage, Big Mag and Rapid Fire have 3x common draw weight; rarity, firepower pity slot and trailing-player factor remain |
 | Specials (RMB) | Done | Grenade, cluster, teleport, zoom, sword with backstabs, air strike, ion cannon; echo, tactical reload, refresh |
@@ -234,7 +234,7 @@ on a CPU rasteriser. Results and their scope: [docs/measurements.md](docs/measur
 - `docs/`: [UI parity](docs/ui-parity.md), [lava parity](docs/lava-parity.md),
   [measurements](docs/measurements.md), playtest notes.
 
-Online peers must run the same protocol version (`warp/growing-guns/2`);
+Online peers must run the same protocol version (`warp/growing-guns/3`);
 snapshots are positional postcard, so older builds cannot join.
 
 ## Keeping this README current

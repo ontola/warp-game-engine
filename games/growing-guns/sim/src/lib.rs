@@ -203,6 +203,10 @@ pub struct Player {
     /// Coop: down, waiting for a teammate.
     #[serde(default)]
     pub downed: bool,
+    /// Upward speed recoil has given since leaving the floor (capped by
+    /// `RECOIL_LIFT`, so shooting down cannot keep a player airborne).
+    #[serde(default)]
+    pub recoil_lift: f32,
 }
 
 impl Player {
@@ -215,7 +219,7 @@ impl Player {
             cards: Vec::new(), weapon: Weapon::default(), offer: None, offer_age: 0.0,
             iframes: 0.0, slow_mult: 1.0, slow_timer: 0.0, poison_left: 0.0, poison_dps: 0.0, poison_accum: 0.0, poison_from: None,
             phoenix_charges: 0, phoenix: None, launching: None, frozen: false, lava_accum: 0.0,
-            special_cd: 0.0, air_strike_charges: 0, zooming: false, held_fire: false, held_special: false, downed: false,
+            special_cd: 0.0, air_strike_charges: 0, zooming: false, held_fire: false, held_special: false, downed: false, recoil_lift: 0.0,
         }
     }
     /// Camera height scales with the body cards.

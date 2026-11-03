@@ -12,6 +12,12 @@ use glam::{Quat, Vec3};
 const HITSCAN_SPEED: f32 = 550.0;
 const MAX_BLOOM: f32 = 0.14;
 const RIFLE_RECOIL_PITCH: f32 = 0.018;
+/// The shooter's push per trigger pull, all pellets together (m/s). Godot
+/// pushes up to 12 per pellet, enough to fly by shooting at the floor.
+const MAX_RECOIL_PUSH: f32 = 6.0;
+/// Upward speed recoil may give per airtime (m/s), half a jump: a hop, not
+/// flight. Landing refills it.
+pub(crate) const RECOIL_LIFT: f32 = 4.5;
 const AIM_RAY: f32 = 200.0;
 /// Homing looks for targets in this cone (cosine).
 const HOMING_CONE: f32 = 0.82;
@@ -81,7 +87,12 @@ impl World {
         let p = &mut self.players[i];
         p.recoil_pitch += RIFLE_RECOIL_PITCH * recoil_scale;
         p.yaw += jitter;
-        p.vel -= if tracked.is_some() { base } else { dir_cam } * kick * shots as f32;
+        let mut push = -(if tracked.is_some() { base } else { dir_cam }) * (kick * shots as f32).min(MAX_RECOIL_PUSH);
+        if push.y > 0.0 {
+            push.y = push.y.min((RECOIL_LIFT - p.recoil_lift).max(0.0));
+            p.recoil_lift += push.y;
+        }
+        p.vel += push;
         p.bloom = (p.bloom + recoil).min(MAX_BLOOM);
         let (right, up) = if tracked.is_some() {
             let right = base.cross(Vec3::Y).normalize_or(Vec3::X);

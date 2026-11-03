@@ -885,3 +885,23 @@ fn crossbow_zoom_is_held_predicted_and_bolts_are_faster() {
     w.players[0].siege_crossbow=false;
     w.player_tick(0,input); assert!(!w.players[0].zooming);
 }
+
+#[test]
+fn recoil_hops_but_shooting_at_the_floor_cannot_fly() {
+    let mut w = flat_world();
+    let p = &mut w.players[0];
+    (p.weapon.damage_mult, p.weapon.extra_projectiles, p.weapon.fire_rate_mult, p.weapon.mag_size_bonus) = (6.0, 7, 4.0, 200);
+    p.ammo = p.weapon.mag_size() as u32;
+    p.pitch = -PITCH_LIMIT;
+    let mut peak: f32 = 0.0;
+    for _ in 0..180 {
+        w.players[0].pitch = -PITCH_LIMIT;
+        w.players[0].recoil_pitch = 0.0;
+        w.step(&[fire(), Input::default()]);
+        peak = peak.max(w.players[0].pos.y - HALF_HEIGHT);
+    }
+    let p = &w.players[0];
+    assert!(p.recoil_lift > 0.0 || p.on_floor, "the shots pushed the player");
+    // A 4.5 m/s hop climbs 4.5² / (2 · 30) = 0.34 m; a jump reaches 1.35 m.
+    assert!(peak > 0.05 && peak < 0.45, "{peak}");
+}
