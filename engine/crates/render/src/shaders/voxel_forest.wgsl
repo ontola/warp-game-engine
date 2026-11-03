@@ -1185,21 +1185,99 @@ fn volume_splat_append(index:u32,cell_ref:vec2<u32>,cell:VolumeSplatCell,toward:
     volume_splats[slot]=vec4<u32>(index,cell_ref.x,cell_ref.y,u32(kept_alpha*65535.0+0.5)|(faces<<16u));
 }
 
+// Experimental current-frame, two-phase brick culling. Seed trees are drawn
+// first; the opaque scene plus their depth occludes the remaining bricks.
+// No previous-frame depth is trusted, so disocclusion needs no history delay.
+override VOXEL_CULL_PHASE: u32 = 0u;
+override VOXEL_COMPACT: bool = false;
+@group(2) @binding(20) var volume_brick_hzb: texture_2d<f32>;
+
+fn volume_brick_hidden(index:u32, level:u32, packed:u32)->bool {
+    let tree=volume_trees[index];
+    let grid=volume_levels[tree.identity.y+level].origin_cell;
+    let coord=vec3<f32>(f32(packed&1023u),f32((packed>>10u)&1023u),f32(packed>>20u));
+    // Transform the envelope of cell centres, then add the billboard's
+    // WORLD-space support. Local padding is unsafe for nonuniform/sheared trees.
+    let owner=instances[tree.identity.x];
+    let centre=vec4<f32>(grid.xyz+(coord+2.0)*grid.w,1.0);
+    let world_centre=vec3<f32>(dot(owner.r0,centre),dot(owner.r1,centre),dot(owner.r2,centre));
+    // Raster half-width <= .688 cells, jitter <= .25 per screen axis:
+    // sqrt(2)*(.688+.25) < 1.5, using the raster's first-column scale.
+    let padding=1.5*grid.w*length(vec3<f32>(owner.r0.x,owner.r1.x,owner.r2.x));
+    let half=1.5*grid.w*vec3<f32>(dot(abs(owner.r0.xyz),vec3<f32>(1.0)),dot(abs(owner.r1.xyz),vec3<f32>(1.0)),dot(abs(owner.r2.xyz),vec3<f32>(1.0)))+padding;
+    var ndc_min=vec2<f32>(1e30);var ndc_max=vec2<f32>(-1e30);var nearest=0.0;
+    for(var i=0u;i<8u;i++) {
+        let world=vec4<f32>(world_centre+select(-half,half,vec3<bool>((i&1u)!=0u,(i&2u)!=0u,(i&4u)!=0u)),1.0);
+        let clip=view.view_proj*world;
+        // Near-plane crossings and degenerate projections are always visible.
+        if clip.w<=0.0001 || clip.z>=clip.w {return false;}
+        let ndc=clip.xyz/clip.w;
+        ndc_min=min(ndc_min,ndc.xy);ndc_max=max(ndc_max,ndc.xy);nearest=max(nearest,ndc.z);
+    }
+    if any(ndc_min>vec2<f32>(1.0)) || any(ndc_max<vec2<f32>(-1.0)) {return true;}
+    let size=textureDimensions(volume_brick_hzb,0);
+    let low=clamp(vec2<f32>(ndc_min.x*0.5+0.5,0.5-ndc_max.y*0.5)*vec2<f32>(size)-2.0,vec2<f32>(0.0),vec2<f32>(size-1u));
+    let high=clamp(vec2<f32>(ndc_max.x*0.5+0.5,0.5-ndc_min.y*0.5)*vec2<f32>(size)+2.0,vec2<f32>(0.0),vec2<f32>(size-1u));
+    let extent=max(high.x-low.x+1.0,high.y-low.y+1.0);
+    let mip=min(u32(max(ceil(log2(max(extent,1.0)))-1.0,0.0)),textureNumLevels(volume_brick_hzb)-1u);
+    let dims=textureDimensions(volume_brick_hzb,mip);
+    // Shift-and-clamp matches odd-size mip folding, unlike proportional UV.
+    let first=min(vec2<u32>(floor(low))>>vec2<u32>(mip),dims-1u);
+    let last=min(vec2<u32>(ceil(high))>>vec2<u32>(mip),dims-1u);
+    var farthest=1.0;
+    for(var y=first.y;y<=last.y;y++) {for(var x=first.x;x<=last.x;x++) {
+        farthest=min(farthest,textureLoad(volume_brick_hzb,vec2<i32>(i32(x),i32(y)),i32(mip)).x);
+    }}
+    // Reversed minimum depth: any sky hole (0) prevents rejection.
+    return nearest+0.00001<farthest;
+}
+
+fn volume_splat_wanted(index:u32)->bool {
+    var wanted=volume_config.march.y>0.0 && volume_far_tree(index);
+    if volume_config.march.y<=0.0 && !volume_proxy(index) {wanted=volume_selection_at(index).x==1u;}
+    if volume_proxy(index) {wanted=volume_proxy_shown(index);}
+    for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,view.planes[i]);}
+    if VOXEL_CULL_PHASE!=0u {
+        let centre=0.5*(volume_trees[index].bounds_min.xyz+volume_trees[index].bounds_max.xyz);
+        let seed=distance(centre,view.cam.xyz)<150.0;
+        wanted=wanted && select(!seed,seed,VOXEL_CULL_PHASE==1u);
+    }
+    return wanted;
+}
+@compute @workgroup_size(64)
+fn voxel_splat_tree_list(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
+    let index=(group.x+group.y*65535u)*64u+lane;
+    if index>=volume_config.size_count.w || !volume_splat_wanted(index) {return;}
+    let slot=atomicAdd(&volume_tiles[3],1u);
+    let capacity=arrayLength(&volume_tiles)-4u;
+    if slot<capacity {atomicStore(&volume_tiles[4u+slot],index);}
+    // On overflow dispatch every tree and use the direct path. Never drop it.
+    let count=select(volume_config.size_count.w,slot+1u,slot<capacity);
+    atomicMax(&volume_tiles[0],min(count,65535u));
+    atomicMax(&volume_tiles[1],(count+65534u)/65535u);
+    atomicMax(&volume_tiles[2],1u);
+}
+
 @compute @workgroup_size(64)
 fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation_index) lane:u32) {
-    let index=group.x+group.y*65535u;
+    let work=group.x+group.y*65535u;
+    var index=work;
+    if VOXEL_COMPACT {
+        let count=atomicLoad(&volume_tiles[3]);
+        if count<=arrayLength(&volume_tiles)-4u {
+            index=volume_config.size_count.w;
+            if work<count {index=atomicLoad(&volume_tiles[4u+work]);}
+        }
+    }
     if lane==0u {
-        if index==0u {
+        if work==0u {
             for(var c=0u;c<4u;c++) {volume_splats[c]=bitcast<vec4<u32>>(view.view_proj[c]);}
             volume_splats[11]=vec4<u32>(volume_config.size_count.w,0u,0u,0u);
             atomicStore(&volume_splat_draw[0],VOLUME_SPLAT_VERTICES);
         }
         var level=VOLUME_SPLAT_NONE;
         if index<volume_config.size_count.w {
-            var wanted=volume_config.march.y>0.0 && volume_far_tree(index);
-            if volume_config.march.y<=0.0 && !volume_proxy(index) {wanted=volume_selection_at(index).x==1u;}
-            if volume_proxy(index) {wanted=volume_proxy_shown(index);}
-            for(var i=0u;i<6u;i++) {wanted=wanted&&!volume_tree_outside(index,view.planes[i]);}
+            let wanted=volume_splat_wanted(index);
             if wanted {level=volume_splat_level(index);volume_splat_tree(index,level);}
         }
         volume_splat_level_shared=level;
@@ -1209,6 +1287,22 @@ fn voxel_splats(@builtin(workgroup_id) group:vec3<u32>,@builtin(local_invocation
     let tree=volume_trees[index];
     let eye=vec4<f32>(view.cam.xyz,1.0);
     let eye_local=vec3<f32>(dot(tree.inverse[0],eye),dot(tree.inverse[1],eye),dot(tree.inverse[2],eye));
+    if VOXEL_CULL_PHASE==2u {
+        let bricks=volume_splat_cells[arrayLength(&volume_levels)+tree.identity.y+level];
+        for(var b=lane;b<bricks.y;b+=64u) {
+            let range=volume_splat_cells[bricks.x+b*2u];
+            let packed=volume_splat_cells[bricks.x+b*2u+1u].x;
+            if volume_brick_hidden(index,level,packed) {continue;}
+            for(var c=0u;c<range.y;c++) {
+                let cell_ref=volume_splat_cells[range.x+c];
+                let cell=volume_splat_cell(index,level,cell_ref.y);
+                var inside=true;
+                for(var p=0u;p<6u;p++) {inside=inside&&!volume_splat_outside(cell,view.planes[p]);}
+                if inside {volume_splat_append(index,cell_ref,cell,normalize(eye_local-cell.local));}
+            }
+        }
+        return;
+    }
     let range=volume_splat_cells[tree.identity.y+level];
     for(var i=lane;i<range.y;i+=64u) {
         let cell_ref=volume_splat_cells[range.x+i];

@@ -276,12 +276,43 @@ pub(crate) fn splat_cells(forest: &crate::foliage_volume_data::GpuForest) -> Res
     }
     Ok(result)
 }
+/// Optional splat catalog: the original level table, a parallel brick table,
+/// then cell ranges grouped by 4x4x4 coordinates and two words per brick.
+/// Sun splats retain the original cell-range ABI and use every occupied cell.
+fn splat_cells_bricked(forest: &crate::foliage_volume_data::GpuForest) -> Result<Vec<[u32; 2]>, String> {
+    let source = splat_cells(forest)?;
+    let levels = forest.levels.len();
+    let mut result = vec![[0; 2]; levels * 2];
+    for level in 0..levels {
+        let [first, count] = source[level];
+        let mut groups = std::collections::BTreeMap::<u32, Vec<[u32; 2]>>::new();
+        for cell in &source[first as usize..(first+count) as usize] {
+            let c = cell[1];
+            let key = (c & 1023 & !3) | (((c >> 10) & 1023 & !3) << 10) | (((c >> 20) & 1023 & !3) << 20);
+            groups.entry(key).or_default().push(*cell);
+        }
+        let first_cell = result.len() as u32;
+        let mut bricks = Vec::new();
+        for (coord, cells) in groups {
+            bricks.push([result.len() as u32, cells.len() as u32]);
+            bricks.push([coord, 0]);
+            result.extend(cells);
+        }
+        result[level] = [first_cell, count];
+        result[levels + level] = [result.len() as u32, bricks.len() as u32 / 2];
+        result.extend(bricks);
+    }
+    Ok(result)
+}
+fn brick_hzb_enabled() -> bool { std::env::var("KERN_SPLAT_BRICK_HZB").as_deref() == Ok("1") }
+
 /// Splat records one view may hold: every tree at its finest level, capped.
 fn splat_capacity(forest: &crate::foliage_volume_data::GpuForest, cells: &[[u32; 2]]) -> u64 {
     const MAX_SPLATS: u64 = 4 << 20;
     forest.instances.iter().map(|tree| u64::from(cells[tree.meta[1] as usize][1])).sum::<u64>().clamp(1, MAX_SPLATS)
 }
 struct Targets {
+    hzb: Option<crate::depth_pyramid::PyramidTarget>,
     splat: Option<SplatTargets>,
     size: (u32, u32),
     layer: wgpu::Texture,
@@ -301,6 +332,8 @@ pub(crate) struct TemporalInputs<'a> {
 }
 struct TemporalPipelines {
     gbuffer: wgpu::ComputePipeline,
+    selection: Option<[wgpu::ComputePipeline; 2]>,
+    second: Option<wgpu::ComputePipeline>,
     data_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     pipelines: [wgpu::ComputePipeline;8],
@@ -317,6 +350,9 @@ pub(crate) struct VoxelRenderer {
     /// voxel_splat_gbuffer: the splats' surface where they won the scene's
     /// visibility buffer.
     gbuffer:wgpu::ComputePipeline,
+    selection: Option<[wgpu::ComputePipeline; 2]>,
+    second: Option<wgpu::ComputePipeline>,
+    brick_hzb: Option<crate::depth_pyramid::DepthPyramid>,
     raster:Option<SplatRaster>,
     pipeline_layout: wgpu::PipelineLayout,
     scene_layout: wgpu::BindGroupLayout,
@@ -345,7 +381,7 @@ pub(crate) struct VoxelRenderer {
     owners: Vec<u32>,
     targets: Mutex<Vec<Option<Targets>>>,
 }
-pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], temporal: Option<[wgpu::ComputePipeline;8]>, sun: Option<wgpu::ComputePipeline>, source: String }
+pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], surface: wgpu::ComputePipeline, selection: Option<[wgpu::ComputePipeline;2]>, second: Option<wgpu::ComputePipeline>, temporal: Option<([wgpu::ComputePipeline;8], wgpu::ComputePipeline, Option<wgpu::ComputePipeline>, Option<[wgpu::ComputePipeline;2]>)>, sun: Option<wgpu::ComputePipeline>, source: String }
 /// Native generation contains neither temporal resources nor per-sample work.
 /// Explicit blocks keep shader reload transactional for both pipeline sets.
 fn temporal_source(source:&str,enabled:bool)->Result<String,String> {
@@ -370,7 +406,8 @@ fn data_bindings(temporal: bool) -> Vec<(u32, wgpu::BindingType)> {
         (14,storage(true)),(15,storage(false)),(16,storage(false)),
         (17,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Uint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
         (18,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
-        (19,output(wgpu::TextureFormat::Rgba32Uint))];
+        (19,output(wgpu::TextureFormat::Rgba32Uint)),
+        (20,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Float {filterable:false},view_dimension:wgpu::TextureViewDimension::D2,multisampled:false})];
     if temporal {entries.extend([(10,output(wgpu::TextureFormat::Rgba32Float)),(11,storage(true))]);}
     entries
 }
@@ -378,6 +415,23 @@ fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
     let entries = data_bindings(temporal);
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
         entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
+}
+fn splat_selection_pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> Option<[wgpu::ComputePipeline;2]> {
+    if !brick_hzb_enabled() {return None;}
+    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label:Some("voxel visible tree list"),source:wgpu::ShaderSource::Wgsl(source.into()) });
+    Some([1.0,2.0].map(|phase|gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label:Some("voxel visible tree list"),layout:Some(layout),module:&module,entry_point:Some("voxel_splat_tree_list"),
+        compilation_options:wgpu::PipelineCompilationOptions {constants:&[("VOXEL_CULL_PHASE",phase)],..Default::default()},cache:gpu.pipeline_cache()
+    })))
+}
+fn second_splat_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
+    let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("voxel brick culling"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+    gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("voxel brick second pass"), layout: Some(layout), module: &module,
+        entry_point: Some("voxel_splats"), compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &[("VOXEL_CULL_PHASE", 2.0),("VOXEL_COMPACT",1.0)], ..Default::default() }, cache: gpu.pipeline_cache() })
 }
 fn surface_pipeline(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str) -> wgpu::ComputePipeline {
     let coarser: Vec<(&str, f64)> = std::env::var("KERN_VOXEL_SELF_SHADOW_COARSER").ok().and_then(|v| v.parse().ok())
@@ -460,7 +514,9 @@ fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tile
         if active_tiles {"voxel_intervals_active"} else {"voxel_intervals"},"voxel_brick_scatter","voxel_splats","voxel_splat_resolve"]
         .map(|entry| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some(entry), layout: Some(layout), module: &module, entry_point: Some(entry),
-            compilation_options: Default::default(), cache: gpu.pipeline_cache(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: if entry == "voxel_splats" && brick_hzb_enabled() { &[("VOXEL_CULL_PHASE", 1.0),("VOXEL_COMPACT",1.0)] } else { &[] },
+                ..Default::default() }, cache: gpu.pipeline_cache(),
         }))
 }
 pub(crate) fn shader_source() -> String {
@@ -743,13 +799,16 @@ impl VoxelRenderer {
             .expect("invalid voxel integrator option shader");
         let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals);
         let gbuffer = surface_pipeline(gpu, &pipeline_layout, &specialized_source);
+        let brick_hzb = brick_hzb_enabled().then(|| crate::depth_pyramid::DepthPyramid::new(gpu));
+        let selection = splat_selection_pipelines(gpu, &pipeline_layout, &specialized_source);
+        let second = brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &pipeline_layout, &specialized_source));
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
         eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=176 (experimental; exact pairs, generic fallback)",
             integrator_options.antipodal_normals,if integrator_options.antipodal_normals {3}else{6});
         eprintln!("voxel global intervals: enabled={} stream_bytes_per_view={} maximum_pixel_slots={} (experimental; complete scan on overflow)",
             integrator_options.global_intervals,INTERVAL_STREAM_BYTES,INTERVAL_STREAM_PIXEL_SLOTS);
-        let raster = if integrator_options.raster { match splat_cells(forest) {
+        let raster = if integrator_options.raster { match if brick_hzb.is_some() { splat_cells_bricked(forest) } else { splat_cells(forest) } {
             Ok(cells) if cells.len() > forest.levels.len() => {
                 let capacity = splat_capacity(forest, &cells);
                 eprintln!("voxel raster: enabled cells={} splats_per_view={capacity} (stochastic opaque voxels; integrator off)", cells.len() - forest.levels.len());
@@ -818,7 +877,7 @@ impl VoxelRenderer {
             scatter,
             splats,
             resolve,
-            gbuffer,
+            gbuffer, selection, second, brick_hzb,
             raster,
             pipeline_layout: lighting_layout,
             scene_layout: scene_layout.clone(),
@@ -849,10 +908,10 @@ impl VoxelRenderer {
     /// Shared rigid-part compute writes poses before volume tile/bin passes.
     /// Asset grids and cells remain immutable; the 96-byte tree layout is unchanged.
     pub(crate) fn has_visibility_stream(&self)->bool {self.integrator_options.global_intervals}
-    /// GPU scopes for the five timestamp slots render() takes, None when unused.
-    pub(crate) fn timing_names(&self)->[Option<&'static str>;5] {
-        if self.raster.is_some() {return [Some("voxel splats"),None,Some("voxel splat raster"),Some("voxel splat resolve"),Some("voxel composite")];}
-        [Some("voxel bins"),Some("voxel tiles"),self.has_visibility_stream().then_some("voxel visibility"),Some("voxel integrate"),Some("voxel composite")]
+    /// GPU scopes for the eight timestamp slots render() takes, None when unused.
+    pub(crate) fn timing_names(&self)->[Option<&'static str>;8] {
+        if self.raster.is_some() {return [Some("voxel splats"),None,Some("voxel splat raster"),Some("voxel splat resolve"),Some("voxel composite"),self.brick_hzb.as_ref().map(|_|"voxel brick hzb"),self.brick_hzb.as_ref().map(|_|"voxel brick cull"),self.brick_hzb.as_ref().map(|_|"voxel brick raster")];}
+        [Some("voxel bins"),Some("voxel tiles"),self.has_visibility_stream().then_some("voxel visibility"),Some("voxel integrate"),Some("voxel composite"),None,None,None]
     }
     pub(crate) fn tree_buffer(&self) -> &wgpu::Buffer { &self.data[3] }
     /// How whole-plant proxy `volume` (forest index) draws while another
@@ -882,7 +941,7 @@ impl VoxelRenderer {
                 label:Some("temporal voxel forest"),bind_group_layouts:&[Some(&self.scene_layout),Some(&self.view_layout),Some(&data_layout)],immediate_size:0});
             let pipelines=pipelines(gpu,&layout,&source,self.active_tiles,self.integrator_options.global_intervals);
             let gbuffer = surface_pipeline(gpu, &layout, &source);
-            TemporalPipelines {data_layout,layout,pipelines,gbuffer}
+            TemporalPipelines {selection: splat_selection_pipelines(gpu, &layout, &source),second: self.brick_hzb.as_ref().map(|_| second_splat_pipeline(gpu, &layout, &source)),data_layout,layout,pipelines,gbuffer}
         })?;
         *temporal=Some(prepared);Ok(())
     }
@@ -895,14 +954,24 @@ impl VoxelRenderer {
         let pipelines = crate::shaders::checked(gpu, || pipelines(gpu, &self.pipeline_layout, &specialized_source, self.active_tiles,self.integrator_options.global_intervals))?;
         let temporal=if let Some(temporal)=self.temporal.lock().unwrap().as_ref() {
             let specialized=self.integrator_options.specialize(&temporal_source(&source,true)?)?;
-            Some(crate::shaders::checked(gpu,||self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals))?)
+            Some(crate::shaders::checked(gpu,||(
+                self::pipelines(gpu,&temporal.layout,&specialized,self.active_tiles,self.integrator_options.global_intervals),
+                surface_pipeline(gpu,&temporal.layout,&specialized),
+                self.brick_hzb.as_ref().map(|_|second_splat_pipeline(gpu,&temporal.layout,&specialized)),
+                splat_selection_pipelines(gpu,&temporal.layout,&specialized)))?)
         } else {None};
         let sun=self.raster.as_ref().map(|r|crate::shaders::checked(gpu,||sun_splat_pipeline(gpu,&r.sun_layout,&specialized_source))).transpose()?;
-        Ok(Some(Reload { pipelines, temporal, sun, source }))
+        let surface=crate::shaders::checked(gpu,||surface_pipeline(gpu,&self.pipeline_layout,&specialized_source))?;
+        let second=self.brick_hzb.as_ref().map(|_|crate::shaders::checked(gpu,||second_splat_pipeline(gpu,&self.pipeline_layout,&specialized_source))).transpose()?;
+        let selection=crate::shaders::checked(gpu,||splat_selection_pipelines(gpu,&self.pipeline_layout,&specialized_source))?;
+        Ok(Some(Reload { pipelines, surface, selection, second, temporal, sun, source }))
     }
     pub(crate) fn commit_reload(&mut self, reload: Reload) {
         [self.bins, self.tiles, self.clear, self.integrate,self.intervals,self.scatter,self.splats,self.resolve] = reload.pipelines;
-        if let Some(pipelines)=reload.temporal {self.temporal.lock().unwrap().as_mut().unwrap().pipelines=pipelines;}
+        self.gbuffer=reload.surface;self.second=reload.second;self.selection=reload.selection;
+        if let Some((pipelines,gbuffer,second,selection))=reload.temporal {
+            let mut guard=self.temporal.lock().unwrap();let p=guard.as_mut().unwrap();p.pipelines=pipelines;p.gbuffer=gbuffer;p.second=second;p.selection=selection;
+        }
         if let (Some(raster),Some(sun))=(self.raster.as_mut(),reload.sun) {raster.sun_splats=sun;}
         self.source = reload.source;
     }
@@ -949,7 +1018,7 @@ impl VoxelRenderer {
         let tiles = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("voxel tile candidates"),
             size: tile_count * u64::from(CANDIDATES + 1) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let counters = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -990,7 +1059,13 @@ impl VoxelRenderer {
                 }),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
+        let hzb = self.brick_hzb.as_ref().map(|p| p.target(gpu, size));
+        let empty_hzb = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("unused voxel hzb"), size: wgpu::Extent3d {width:1,height:1,depth_or_array_layers:1},
+            mip_level_count:1,sample_count:1,dimension:wgpu::TextureDimension::D2,format:wgpu::TextureFormat::R32Float,
+            usage:wgpu::TextureUsages::TEXTURE_BINDING,view_formats:&[] }).create_view(&Default::default());
         let mut entries=vec![
+                wgpu::BindGroupEntry {binding:20,resource:wgpu::BindingResource::TextureView(hzb.as_ref().map_or(&empty_hzb, |h| &h.view))},
                 wgpu::BindGroupEntry {binding:12,resource:self.brick_catalog.as_entire_binding()},
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -1087,7 +1162,7 @@ impl VoxelRenderer {
             }],
         });
         Ok(Targets {
-            splat,
+            hzb, splat,
             size,
             layer,
             bind,
@@ -1113,6 +1188,16 @@ impl VoxelRenderer {
     pub(crate) fn splat_depth(&self, index: usize) -> Option<wgpu::TextureView> {
         self.targets.lock().unwrap().get(index)?.as_ref()?.splat.as_ref().map(|s| s.depth.clone())
     }
+    fn select_splat_trees(&self, encoder:&mut wgpu::CommandEncoder, target:&Targets,
+        scene:&wgpu::BindGroup, view:&wgpu::BindGroup, pipeline:&wgpu::ComputePipeline) {
+        encoder.clear_buffer(&target.tiles,0,Some(16));
+        {
+            let mut pass=encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label:Some("voxel visible tree list"),timestamp_writes:None});
+            pass.set_pipeline(pipeline);pass.set_bind_group(0,scene,&[]);pass.set_bind_group(1,view,&[]);pass.set_bind_group(2,&target.bind,&[]);
+            let groups=self.count.div_ceil(64);pass.dispatch_workgroups(groups.min(65535),groups.div_ceil(65535).max(1),1);
+        }
+        encoder.copy_buffer_to_buffer(&target.tiles,0,&target.indirect,0,12);
+    }
     pub(crate) fn render(
         &self,
         gpu: &Gpu,
@@ -1124,7 +1209,7 @@ impl VoxelRenderer {
         hdr: &wgpu::TextureView,
         selection: &wgpu::Buffer,
         temporal: Option<TemporalInputs<'_>>,
-        times: [Option<(&wgpu::QuerySet, u32)>; 5],
+        times: [Option<(&wgpu::QuerySet, u32)>; 8],
         stage: Stage,
         // The scene's visibility and depth: the splats draw into them and
         // shade lights them (Rest then writes their surface, no composite).
@@ -1165,37 +1250,58 @@ impl VoxelRenderer {
         if let (Some(raster), Some(splat)) = (&self.raster, &target.splat) {
             if !splats_done {
             encoder.clear_buffer(&splat.draw, 0, None);
+            let selection=temporal_pipelines.and_then(|p|p.selection.as_ref()).or(self.selection.as_ref());
+            if let Some(p)=selection {
+                if let Some((q,i))=times[0] {encoder.write_timestamp(q,i);}
+                self.select_splat_trees(encoder,target,scene,view,&p[0]);
+            }
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splats"),
                     timestamp_writes: times[0].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
-                        query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
+                        query_set, beginning_of_pass_write_index: if selection.is_some() { None } else { Some(i) }, end_of_pass_write_index: Some(i + 1) }) });
                 pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
                 pass.set_pipeline(splats);
                 // One workgroup per tree.
-                pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);
+                if selection.is_some() {pass.dispatch_workgroups_indirect(&target.indirect,0);}
+                else {pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);}
             }
+            for phase in 0..if self.brick_hzb.is_some() { 2 } else { 1 } {
+                if phase == 1 {
+                    let pyramid = self.brick_hzb.as_ref().unwrap();
+                    pyramid.encode(gpu, encoder, scene_targets.map_or(&splat.depth, |(_, d)| d), target.hzb.as_ref().unwrap(), times[5]);
+                    if let Some((q, i)) = times[5] { encoder.write_timestamp(q, i + 1); }
+                    if let Some((q,i))=times[6] {encoder.write_timestamp(q,i);}
+                    self.select_splat_trees(encoder,target,scene,view,&selection.unwrap()[1]);
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("voxel brick second pass"), timestamp_writes: times[6].map(|(query_set,i)| wgpu::ComputePassTimestampWrites {
+                            query_set, beginning_of_pass_write_index:None,end_of_pass_write_index:Some(i+1) }) });
+                    pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
+                    pass.set_pipeline(temporal_pipelines.and_then(|p|p.second.as_ref()).or(self.second.as_ref()).unwrap());
+                    pass.dispatch_workgroups_indirect(&target.indirect,0);
+                }
             {
                 let id = wgpu::RenderPassColorAttachment { view: &splat.id, depth_slice: None, resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } };
+                    ops: wgpu::Operations { load: if phase == 0 { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store } };
                 let (colors, depth) = match scene_targets {
                     Some((vis, depth)) => (vec![Some(wgpu::RenderPassColorAttachment { view: vis, depth_slice: None, resolve_target: None,
                         ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } }), Some(id)],
                         wgpu::RenderPassDepthStencilAttachment { view: depth,
                             depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
                     None => (vec![Some(id)], wgpu::RenderPassDepthStencilAttachment { view: &splat.depth,
-                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }), stencil_ops: None }),
+                        depth_ops: Some(wgpu::Operations { load: if phase == 0 { wgpu::LoadOp::Clear(0.0) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store }), stencil_ops: None }),
                 };
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("voxel splat raster"),
                     color_attachments: &colors,
                     depth_stencil_attachment: Some(depth),
-                    timestamp_writes: times[2].map(|(query_set, i)| wgpu::RenderPassTimestampWrites {
+                    timestamp_writes: (if phase == 0 { times[2] } else { times[7] }).map(|(query_set, i)| wgpu::RenderPassTimestampWrites {
                         query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
                     occlusion_query_set: None, multiview_mask: None,
                 });
                 pass.set_pipeline(if scene_targets.is_some() { &raster.main_pipeline } else { &raster.pipeline });
                 pass.set_bind_group(0, &splat.bind, &[]);
                 pass.draw_indirect(&splat.draw, 0);
+            }
             }
             }
             // In the scene's targets their surface is needed before shade.
@@ -1577,6 +1683,47 @@ mod tests {
         assert_eq!(splat_capacity(&forest,&cells),6);
         crate::foliage_volume_data::pack_bricks(&mut forest,128).unwrap();
         assert_eq!(splat_cells(&forest).unwrap(),cells);
+    }
+
+    #[test]
+    fn splat_bricks_preserve_cells_and_bound_each_group() {
+        use crate::foliage_volume_data::{GpuForest,GpuLevel,GpuCell};
+        use bytemuck::Zeroable;
+        let mut f=GpuForest::default();
+        f.levels=vec![GpuLevel {origin_cell:[0.0,0.0,0.0,1.0],dims_offset:[9,7,5,0]}];
+        f.indices=(0..315).map(|i|if i%3==0 {1}else{0}).collect();
+        f.cells=vec![GpuCell::zeroed()];
+        let plain=super::splat_cells(&f).unwrap();let grouped=super::splat_cells_bricked(&f).unwrap();
+        let [start,count]=grouped[0];let mut a=plain[1..].to_vec();
+        let mut b=grouped[start as usize..(start+count)as usize].to_vec();a.sort();b.sort();assert_eq!(a,b);
+        let [first,n]=grouped[1];let mut covered=0;
+        for brick in 0..n {
+            let [begin,len]=grouped[(first+brick*2)as usize];
+            let packed=grouped[(first+brick*2+1)as usize][0];
+            assert!(len>0 && len<=64);covered+=len;
+            for cell in &grouped[begin as usize..(begin+len)as usize] {
+                for shift in [0,10,20] {assert_eq!(((cell[1]>>shift)&1023)&!3,(packed>>shift)&1023);}
+            }
+        }
+        assert_eq!(covered,count);
+        crate::foliage_volume_data::pack_bricks(&mut f,128).unwrap();
+        assert_eq!(super::splat_cells_bricked(&f).unwrap(),grouped);
+    }
+
+    #[test]
+    fn splat_brick_world_bounds_cover_nonuniform_scale_and_billboard_jitter() {
+        use glam::{Mat3,Vec3};
+        for matrix in [Mat3::IDENTITY,Mat3::from_diagonal(Vec3::new(4.0,0.02,0.1)),
+            Mat3::from_cols(Vec3::new(2.0,0.3,0.0),Vec3::new(4.0,0.1,1.0),Vec3::new(-2.0,1.0,3.0))] {
+            let padding=1.5*matrix.x_axis.length();
+            let half=(matrix.x_axis.abs()+matrix.y_axis.abs()+matrix.z_axis.abs())*1.5+Vec3::splat(padding);
+            for x in 0..4 {for y in 0..4 {for z in 0..4 {
+                let centre=matrix*(Vec3::new(x as f32,y as f32,z as f32)-Vec3::splat(1.5));
+                // Every camera-facing billboard point fits this spherical bound.
+                let radius=2f32.sqrt()*(0.688+0.25)*matrix.x_axis.length();
+                assert!((centre.abs()+Vec3::splat(radius)).cmple(half+Vec3::splat(1e-5)).all());
+            }}}
+        }
     }
 
     #[test]

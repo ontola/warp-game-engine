@@ -452,15 +452,17 @@ pub fn bench(game: &mut dyn Game, gpu: &Gpu, size: [u32; 2], frames: u32, tick_h
     let mut h = Headless::new(gpu, size, tick_hz)?;
     let mut profile = debug::EngineDebug::default();
     let players = game.local_players();
+    let warmup = std::env::var("WARP_BENCH_WARMUP").ok().and_then(|s|s.parse::<u32>().ok()).unwrap_or(2).min(frames.saturating_sub(1));
     let mut started = Instant::now();
     for i in 0..frames {
-        // The first frames build the scene; time from the third on.
-        if i == 2 { started = Instant::now(); }
+        // Default: omit two startup frames. WARP_BENCH_WARMUP permits a
+        // longer explicit warmup for pipeline/temporal steady-state comparisons.
+        if i == warmup { started = Instant::now(); }
         game.tick(&vec![Controls::default(); players]);
         h.frame(game)?;
         if let Some(r) = h.renderer() { profile.profile(gpu, r, true); }
     }
-    Ok((f64::from(frames.saturating_sub(2)) / started.elapsed().as_secs_f64(), profile.passes().to_vec()))
+    Ok((f64::from(frames.saturating_sub(warmup)) / started.elapsed().as_secs_f64(), profile.passes().to_vec()))
 }
 
 /// Headless: run `ticks` steps with idle controls, draw one frame and return
