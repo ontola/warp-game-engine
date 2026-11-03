@@ -675,14 +675,19 @@ impl Shell<'_> {
                 None => self.game.target_fps().or(self.cfg.target_fps),
             };
             q.set_target_fps(target, self.screen_refresh_hz);
-            if self.focused && !self.zero_size && q.frame(f64::from(dt) * 1000.0, now) {
+            // A hidden or parked window (a warm game behind the lobby) idles
+            // at a few frames a second: that says nothing about the GPU, and
+            // must not cut its resolution or content before it is shown.
+            let measuring = self.focused && !self.zero_size && !self.manners.offscreen();
+            if !measuring { q.idle(); }
+            if measuring && q.frame(f64::from(dt) * 1000.0, now) {
                 let line = format!("adaptive quality: {}", q.label());
-                println!("{} {line}", manners::stamp());
+                println!("{} {} {line}", manners::stamp(), manners::process());
                 self.game.quality_event(&line);
             }
-            if q.content_too_heavy(now) {
+            if measuring && q.content_too_heavy(now) {
                 let line = format!("adaptive quality: content too heavy at {}", q.label());
-                println!("{} {line}", manners::stamp());
+                println!("{} {} {line}", manners::stamp(), manners::process());
                 self.game.quality_event(&line);
                 self.game.content_too_heavy();
             }
@@ -1061,11 +1066,11 @@ impl ApplicationHandler for Shell<'_> {
             };
             if let Some(q) = &mut self.quality {
                 q.set_target_fps(target, refresh);
-                println!("{} adaptive quality: {}", manners::stamp(), q.label());
+                println!("{} {} adaptive quality: {}", manners::stamp(), manners::process(), q.label());
             } else {
                 self.quality = quality::AdaptiveQuality::new(target, refresh, Instant::now());
                 if let Some(q) = &self.quality {
-                    println!("{} adaptive quality: {}", manners::stamp(), q.label());
+                    println!("{} {} adaptive quality: {}", manners::stamp(), manners::process(), q.label());
                 }
             }
             self.zero_size = size.width == 0 || size.height == 0;
