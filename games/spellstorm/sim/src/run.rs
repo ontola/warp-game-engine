@@ -818,12 +818,23 @@ impl World {
             })
         };
         let picks = relics::pick(n, &mut self.run.rng, &taken, &has);
-        // Across the path, facing the way on.
-        let along = self.level.clearing_at[k];
+        // Across the path, facing the way on. Wizards who ran on past the
+        // clearing find it ahead of them, never behind (Joep).
+        let mut along = self.level.clearing_at[k];
+        if k < 2 {
+            let ahead = self
+                .wizards
+                .iter()
+                .filter(|&&w| self.alive(w))
+                .map(|&w| { let p = self.pos(w); self.level.progress_of(Vec2::new(p.x, p.z)) + 8.0 })
+                .fold(along, f32::max);
+            along = ahead.min(self.level.length() - 4.0).max(along);
+        }
         let dir = (self.level.point_at(along + 1.0) - self.level.point_at(along - 1.0))
             .normalize_or_zero();
         let across = Vec2::new(-dir.y, dir.x);
-        let mid = Vec2::new(c.x, c.y) + if k == 2 { dir * -2.0 } else { Vec2::ZERO };
+        let mid = if along > self.level.clearing_at[k] { self.level.point_at(along) } else { Vec2::new(c.x, c.y) }
+            + if k == 2 { dir * -2.0 } else { Vec2::ZERO };
         let shrine = format!("{}_{}", self.run.biome_index, k);
         for (i, &relic) in picks.iter().enumerate() {
             let p = mid + across * (i as f32 - (picks.len() - 1) as f32 * 0.5) * 3.6;
