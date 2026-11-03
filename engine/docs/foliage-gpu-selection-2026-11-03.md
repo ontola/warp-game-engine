@@ -1,0 +1,87 @@
+# GPU foliage selection core, 3 November 2026
+
+Experimental, callable only: no gameplay defaults changed. Files:
+`render/src/foliage_select.rs` and `render/src/shaders/foliage_select.wgsl`.
+
+## What this implements
+
+Shared immutable preorder hierarchies (48 bytes/node), permanent instance IDs
+(80 bytes/instance), GPU frustum rejection and geometric screen-error cuts,
+compact selected records and compact deferred subtrees. Historical reversed-depth
+HZB can only defer work, never finally reject it. The second phase retests against
+current depth and appends recovered records. GPU-written indirect arguments live
+in a separate buffer from read/write counters, as required by wgpu usage rules.
+There is no synchronous readback or CPU nearest-tree shortlist in this path.
+Readbacks exist only in the diagnostic tests.
+
+The hierarchy uses escape indices, without a fixed-depth shader stack. Nodes are
+shared; there is no per-instance expanded branch hierarchy. Traversal currently
+uses one invocation per instance in phase one and per deferred subtree in phase
+two. This is NOT a load-balanced persistent cluster work queue, page streaming,
+or a complete source/voxel representation cooker.
+
+Geometry/aggregate error and representation IDs are caller-supplied. A production
+adapter must preserve the existing cooker's optical error policy, material,
+volume and motion identity; arbitrary geometric error alone is not proof of
+foliage appearance equivalence.
+
+## Safety and consumer contract
+
+- Parent bounds enclose children. Instance scale bounds and wind envelopes are
+  conservative. Invalid preorder ranges, non-finite inputs and undersized scale
+  bounds are rejected before allocation.
+- Bounds crossing projection limits or outside the historical view cannot be
+  declared occluded. Sky/zero depth in the footprint prevents rejection.
+- Deferred-list overflow traverses without historical rejection. Output-list
+  overflow marks that instance for its resident coarse root; consumers MUST skip
+  all its partial selected records and use that root once. Capacity therefore
+  changes fallback quality, not whether that tree exists.
+- For this prototype, phase-one records may seed depth, but final color must be
+  consumed after phase two and its fallback flags. Appending final color blindly
+  would leave duplicate partial subtrees after a phase-two overflow.
+- Each view owns its selector/scratch. A selector is encoded once per submitted
+  frame. The caller supplies the matching previous matrix/HZB and current HZB,
+  and invalidates unsuitable history. Visibility is never reused to drop
+  off-camera shadow casters.
+- Instances and recipes are immutable in this initial API. Live pose updates,
+  resource residency, stable motion history and streaming invalidation still
+  need integration.
+
+## Validation actually run
+
+`cargo test --locked -p render --lib foliage_select::tests -- --include-ignored --nocapture --test-threads=1`
+
+Three tests passed on the Windows GPU setup: input/bounds validation, Naga shader
+validation, and real GPU dispatch/readback. The GPU fixture used 1,025 instances
+sharing one three-node hierarchy with distinct root/child representation IDs.
+It checks exact selected IDs, generations, complete cuts and indirect counts.
+
+| Fixture | Selected records attempted | Nodes tested | Root fallbacks |
+|---|---:|---:|---:|
+| No history, detailed cut | 2050 | 3075 | 0 |
+| Historical blocker removed in current depth | 2050 | 4100 | 0 |
+| Blocker remains in current depth | 0 | 2050 | 0 |
+| Deferred capacity forced to one | 2050 | 3076 | 0 |
+| Coarse screen-error cut | 1025 | 1025 | 0 |
+| Output capacity forced to five | 2050 | 4100 | 1025 |
+
+The last row retains at most five records in storage; all marked instances must
+use their root instead. Atomic append order is intentionally unspecified.
+
+These are synthetic selection correctness tests, not rendered forest images,
+performance acceptance or a comparison with the old CPU pool. No game window was
+opened. No new 8.33 ms claim. No shader timing is presented as whole-frame FPS.
+
+## Remaining integration
+
+1. Cook shared selection/representation tables from real plant assets; preserve
+   measured optical source/voxel errors and conservative animated envelopes.
+2. Replace packed movable-owner identity with stable instance/member addressing
+   across raster, resolve, motion and independent shadow selection. A bounded
+   transient owner table must be produced on GPU, with explicit resident fallback.
+3. Feed compact records to source and voxel indirect work, build actual current
+   HZB between phases, and remove CPU `Pool::update` from the experimental route.
+4. Compare fixed camera and moving scenes, including disocclusion, wind and
+   overflow. Measure three alternating repeats before any default switch.
+5. Add page residency and work scheduling; then lighting and shadow-cache budget
+   work. The terrain CPU issue remains separate and unresolved.
