@@ -66,7 +66,7 @@ local SPECS = {
 	dasher = { hp = 2, r = 12, speed = 70, value = 25 },
 	orbiter = { hp = 2, r = 13, speed = 150, value = 30 },
 	hive = { hp = 650, r = 46, speed = 32, value = 1200, boss = true, extra = 140 },
-	serpent = { hp = 450, r = 24, speed = 155, value = 1400, boss = true, extra = 100 },
+	serpent = { hp = 800, r = 26, speed = 170, value = 1400, boss = true, extra = 160 },
 	segment = { hp = 1, r = 17, speed = 0, value = 5, armor = true },
 	prism = { hp = 420, r = 30, speed = 0, value = 1600, boss = true, extra = 90 },
 	sun = { hp = 1000, r = 56, speed = 28, value = 2400, boss = true, extra = 200 },
@@ -774,12 +774,13 @@ local function hostile_shot(x, y, a, speed, ttl)
 	end
 end
 
-local function fire_at(e, dx, dy, count, spread, speed)
+-- `size` (default 1) scales a bullet's look and how wide it hits.
+local function fire_at(e, dx, dy, count, spread, speed, size)
 	for i = 1, count do
 		if #s.hostile >= LIMITS.hostile then return end
 		local a = (i - (count + 1) / 2) * spread
 		local x, y = dx * math.cos(a) - dy * math.sin(a), dx * math.sin(a) + dy * math.cos(a)
-		table.insert(s.hostile, { x = e.x + x * e.r, y = e.y + y * e.r, vx = x * speed, vy = y * speed, ttl = 6 })
+		table.insert(s.hostile, { x = e.x + x * e.r, y = e.y + y * e.r, vx = x * speed, vy = y * speed, ttl = 6, size = size })
 	end
 end
 
@@ -1012,11 +1013,12 @@ local function special(e, dx, dy, length, dt)
 		end
 		if length < 200 then return 0 end
 	elseif e.kind == "serpent" then
-		-- Weaves toward the team; its armoured body blocks shots.
+		-- Weaves toward the team; its armoured body blocks shots. The head
+		-- spits a wide fan of big orbs; angry, it spits faster.
 		e.fire -= dt
 		if e.fire <= 0 then
-			e.fire = if e.hp < e.maxHp / 2 then 1.5 else 2.4
-			fire_at(e, dx, dy, 3, 0.25, 230)
+			e.fire = if e.hp < e.maxHp / 2 then 1.3 else 2.0
+			fire_at(e, dx, dy, 7, 0.16, 240, 1.8)
 		end
 		local wave = math.sin(s.time * 2.4 + e.phase) * 0.9
 		local x, y = dx - dy * wave, dy + dx * wave
@@ -1066,7 +1068,19 @@ local function enemies_step(dt)
 					local dx, dy = e.x - lead.x, e.y - lead.y
 					local d = len(dx, dy)
 					if d > 24 then e.x, e.y = lead.x + dx / d * 24, lead.y + dy / d * 24 end
+					if d > 0.001 then e.heading = math.atan2(-dy, -dx) end
 					if p then touch(e, false) end
+					-- Every body segment spits an orb sideways now and then,
+					-- staggered so the body ripples with fire.
+					e.fire = (e.fire or (e.phase % 1) * 3.5) - dt
+					if e.fire <= 0 and p then
+						e.fire = 3.5
+						local nx, ny = -dy, dx
+						local n = math.max(0.001, len(nx, ny))
+						nx, ny = nx / n, ny / n
+						if nx * (p.x - e.x) + ny * (p.y - e.y) < 0 then nx, ny = -nx, -ny end
+						fire_at(e, nx, ny, 1, 0, 190, 1.4)
+					end
 				end
 				p = nil
 			end
@@ -1219,7 +1233,7 @@ local function shots_step(dt)
 		local x, y = b.x + b.vx * dt, b.y + b.vy * dt
 		b.ttl -= dt
 		for _, p in s.players do
-			if alive(p) and segment_hit(b.x, b.y, x, y, p.x, p.y, 14) then
+			if alive(p) and segment_hit(b.x, b.y, x, y, p.x, p.y, 14 + 4 * ((b.size or 1) - 1)) then
 				hurt(p)
 				b.ttl = 0
 				break
@@ -1345,6 +1359,8 @@ local function enemy_angle(e)
 		if seg then angle = math.atan2(e.y - seg.y, e.x - seg.x) end
 	elseif (e.kind == "weaver" or e.kind == "chaser") and e.heading then
 		angle = e.heading
+	elseif e.kind == "segment" and e.heading then
+		angle = e.heading
 	elseif e.kind == "segment" or e.kind == "hive" then
 		angle = e.phase
 	elseif e.kind == "prism" then
@@ -1405,6 +1421,60 @@ MESHES.chaser = function(t, e)
 		table.insert(pts, p * (1.3 + 0.12 * math.sin(t * 6 + i + e.phase)))
 		table.insert(edges, { i, #pts })
 	end
+	return pts, edges
+end
+
+-- A hexagonal ring of radius `r` across the x axis at `x`; returns its first index.
+local function hex_ring(pts, edges, x, r, twist)
+	local base = #pts
+	for i = 0, 5 do
+		local a = i * math.pi / 3 + (twist or 0)
+		table.insert(pts, v3(x, math.cos(a) * r, math.sin(a) * r))
+	end
+	for i = 0, 5 do table.insert(edges, { base + i + 1, base + (i + 1) % 6 + 1 }) end
+	return base + 1
+end
+
+-- The serpent's head (+x forward): a hexagonal skull that narrows to a snout,
+-- two pairs of mandibles that snap open and shut, and a white eye core.
+MESHES.serpent = function(t, e)
+	local pts, edges = {}, {}
+	local back = hex_ring(pts, edges, -0.8, 0.75)
+	local mid = hex_ring(pts, edges, 0.1, 1.0, math.pi / 6)
+	local front = hex_ring(pts, edges, 0.85, 0.5)
+	for i = 0, 5 do
+		table.insert(edges, { back + i, mid + i })
+		table.insert(edges, { mid + i, front + i })
+	end
+	local bite = 0.35 + 0.3 * math.abs(math.sin(t * 5 + e.phase))
+	for _, side in { -1, 1 } do
+		for _, up in { -0.35, 0.35 } do
+			table.insert(pts, v3(0.7, side * 0.45, up))
+			table.insert(pts, v3(1.6, side * bite, up * 0.6))
+			table.insert(pts, v3(1.35, side * (bite - 0.25), up * 0.4))
+			local n = #pts
+			table.insert(edges, { n - 2, n - 1 })
+			table.insert(edges, { n - 1, n })
+		end
+	end
+	add(pts, edges, OCTA, OCTA_EDGES, 0.3, v3(0.25, 0, 0), true)
+	return pts, edges
+end
+
+-- A serpent body segment: an armoured hexagonal drum with a pair of legs
+-- that paddle in turn down the body.
+MESHES.segment = function(t, e)
+	local pts, edges = {}, {}
+	local a = hex_ring(pts, edges, -0.45, 0.9)
+	local b = hex_ring(pts, edges, 0.45, 0.9)
+	for i = 0, 5 do table.insert(edges, { a + i, b + i }) end
+	local stroke = math.sin(t * 7 + e.phase) * 0.45
+	for _, side in { -1, 1 } do
+		table.insert(pts, v3(0, side * 0.9, 0))
+		table.insert(pts, v3(stroke * side, side * 1.55, -0.2))
+		table.insert(edges, { #pts - 1, #pts })
+	end
+	add(pts, edges, TETRA, TETRA_EDGES, 0.3, ZERO, true)
 	return pts, edges
 end
 
@@ -1638,7 +1708,7 @@ MESHES.tumor = function(t, e)
 end
 
 -- Meshes that point where they swim (the rest tumble).
-local MESH_HEADING = { weaver = true, dasher = true }
+local MESH_HEADING = { weaver = true, dasher = true, serpent = true, segment = true }
 local WIRE = 0.02 -- edge thickness, metres
 
 -- Does this engine have wire entities (one entity per mesh)? Older builds
@@ -2120,7 +2190,8 @@ local function sync()
 	for _, b in s.hostile do
 		local pos = at(b.x, b.y, 0.14)
 		if not b.ent then
-			b.ent = world.spawn("sphere", { pos = pos, size = vector.create(0.17, 0.05, 0.17), color = rgb(HOSTILE_COLOR), emissive = GLOW.hostile, solid = false, tag = "hostile" })
+			local k = b.size or 1
+			b.ent = world.spawn("sphere", { pos = pos, size = vector.create(0.17 * k, 0.05 * k, 0.17 * k), color = rgb(HOSTILE_COLOR), emissive = GLOW.hostile, solid = false, tag = "hostile" })
 		else
 			world.place(b.ent, pos)
 		end
