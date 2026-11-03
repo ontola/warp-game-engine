@@ -346,7 +346,7 @@ impl PlayersView {
     }
 
     pub fn burn_lava_bodies(&self, world: &World, fire: &mut render::fx::Effects, now: f32) {
-        if world.tick % 5 != 0 { return; }
+        if world.tick % 5 != 0 || crate::graphics::get().minimal_forward { return; }
         for c in &self.lava {
             let age=now-c.birth;
             if !(0.0..2.4).contains(&age) || world.players[c.victim].alive {continue;}

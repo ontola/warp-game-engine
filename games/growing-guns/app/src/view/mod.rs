@@ -221,7 +221,8 @@ impl Visuals {
         let now = world.tick as f32 * growing_guns::DT;
         self.cages.sync(world);
         self.ion.sync(world, &mut self.fx.blasts, now);
-        things::airstrike::smoke(&world.strikes, world.tick, now, &mut self.fx.blasts);
+        // Minimum keeps the rocket and its plume, not the lingering trail smoke.
+        if !crate::graphics::get().minimal_forward { things::airstrike::smoke(&world.strikes, world.tick, now, &mut self.fx.blasts); }
         let lava = &world.lava;
         self.fx.debris.tuning.lava = Some(render::debris::LavaSurface {
             base: world.arena.lava_surface(), raised: if lava.active {lava.surface()}else{-1e20},
