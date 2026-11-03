@@ -702,8 +702,14 @@ impl Shell<'_> {
                         let line = saved.line.clone();
                         if let Ok(picture) = render::picture::Picture::new(size[0], size[1], rgba.clone()) {
                             self.crop = Some(Crop { saved, size, picture: Arc::new(picture), start: None, cursor: [0.0; 2] });
-                            self.capture_mouse(false);
-                            if let Some(w) = &self.window { w.set_cursor(winit::window::CursorIcon::Crosshair); }
+                            // capture_mouse(false), field by field: `live` is borrowed.
+                            self.devices.reset_mouse();
+                            self.devices.mouse_captured = false;
+                            if let Some(w) = &self.window {
+                                let _ = w.set_cursor_grab(CursorGrabMode::None);
+                                w.set_cursor_visible(true);
+                                w.set_cursor(winit::window::CursorIcon::Crosshair);
+                            }
                         }
                         line
                     }
