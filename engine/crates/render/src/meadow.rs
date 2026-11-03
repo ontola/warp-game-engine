@@ -631,7 +631,7 @@ impl MeadowRenderer {
             gpu,
             "meadow terrain",
             bytemuck::cast_slice(&field.samples),
-            wgpu::BufferUsages::STORAGE,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
         let recipe = buffer(
             gpu,
@@ -1117,6 +1117,20 @@ impl MeadowRenderer {
             groups,
         }))
     }
+    /// Replace only the sampled ground under a retained meadow. Geometry,
+    /// pipelines, view pools and world-space root identities are preserved.
+    pub fn update_ground(&mut self, gpu: &Gpu, origin: [f32; 2], samples: &[[f32; 4]]) -> Result<(), String> {
+        if origin.iter().any(|x| !x.is_finite()) || samples.len() != self.settings.grid[0] as usize * self.settings.grid[1] as usize
+            || samples.iter().flatten().any(|x| !x.is_finite()) {
+            return Err("invalid retained meadow ground update".into());
+        }
+        gpu.queue.write_buffer(&self.ground, 0, bytemuck::cast_slice(samples));
+        self.settings.field[0] = origin[0];
+        self.settings.field[1] = origin[1];
+        if let Some(groups) = &self.groups { groups.invalidate(); }
+        Ok(())
+    }
+
     pub fn set_wind(&self, state: &WindState) -> Result<bool, String> {
         let state = state.validated()?;
         let mut c = self.clock.lock().unwrap();

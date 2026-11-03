@@ -3156,6 +3156,11 @@ impl Renderer {
 
     /// Explicit blocking diagnostic for the per-view GPU placement/LOD lists.
     /// Normal gameplay and asynchronous GPU profiling never read these back.
+    /// Stream ground samples without replacing the renderer or meadow geometry.
+    pub fn update_meadow_ground(&mut self, gpu: &Gpu, origin: [f32; 2], samples: &[[f32; 4]]) -> Result<(), String> {
+        self.meadow.as_mut().ok_or("scene has no meadow")?.update_ground(gpu, origin, samples)
+    }
+
     pub fn meadow_diagnostics(&self,gpu:&Gpu)->Result<Vec<crate::meadow::MeadowStats>,String> {
         if !self.debug_options().draws_meadow() { return Ok(Vec::new()); }
         match &self.meadow {Some(meadow)=>meadow.diagnostics(gpu),None=>Ok(Vec::new())}

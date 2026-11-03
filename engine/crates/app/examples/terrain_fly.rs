@@ -150,6 +150,9 @@ struct Fly {
     built_world: World,
     /// Centre of the grass and trees in the current scene.
     world_at: Option<Vec3>,
+    stream_ground: bool,
+    meadow_at: Option<Vec3>,
+    meadow_building: Option<Receiver<(Vec3, [f32; 2], Vec<[f32; 4]>)>>,
     /// Terrain LOD from the debug menu, kept across rebuilds.
     terrain_settings: Settings,
     terrain: Option<ProceduralTerrain>,
@@ -168,7 +171,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, hug: None, wheel: 0.0,
-            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0, worst_ms: 0.0,
+            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, stream_ground: std::env::var("WARP_TERRAIN_STREAM_GROUND").as_deref() == Ok("1"), meadow_at: None, meadow_building: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0, worst_ms: 0.0,
             track: std::env::args().any(|a| a == "--track"), constraints: None };
         fly.bake_track();
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
@@ -229,14 +232,19 @@ impl Fly {
         let env = environment(self.style);
         let palette = env.vegetation();
         // The density knob (60 % by default) scales the biome's own.
-        let world = World { grass: self.grass_wanted(), tree_density: self.world.tree_density / 0.6 * environment(self.style).biome.tree_density, ..self.world };
-        self.built_world = world;
+        let world = World { grass: if self.stream_ground { self.world.grass } else { self.grass_wanted() }, tree_density: self.world.tree_density / 0.6 * environment(self.style).biome.tree_density, ..self.world };
+        self.built_world = World { grass: world.grass, ..self.world };
+        self.meadow_building = None;
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
             let biome = env.biome;
+            let started = std::time::Instant::now();
             let ready = build_scene(seed, style, &biome, &palette, sun_degrees(&env), pos, world, track).map(|(scene, light, pool, at, trees)| {
+                let scene_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let renderer_started = std::time::Instant::now();
                 let built = gpu.map(|gpu| renderer_for(&gpu, &scene, &light, pool.clone(), settings));
+                eprintln!("terrain stream: scene_cpu_ms={scene_ms:.2} renderer_build_wall_ms={:.2}", renderer_started.elapsed().as_secs_f64()*1000.0);
                 (built, scene, light, pool, at, trees)
             });
             let _ = tx.send(ready);
@@ -251,11 +259,17 @@ impl Fly {
     /// The scene's grass or trees no longer fit the settings or no longer
     /// cover what the camera sees.
     fn world_stale(&self) -> bool {
-        let want = World { grass: self.grass_wanted(), ..self.world };
+        let want = World { grass: if self.stream_ground { self.world.grass } else { self.grass_wanted() }, ..self.world };
         if want != self.built_world { return true; }
-        let low = self.pos.y - self.ground(self.pos.x, self.pos.z) < RECIPE_CEILING;
-        let reach = if want.trees && want.recipe_trees > 0 && low { RECIPE_RECENTRE }
-            else if want.grass { GRASS_RECENTRE } else if want.trees { TREES_RECENTRE } else { SHADOW_RECENTRE };
+        if !self.stream_ground {
+            let low = self.pos.y - self.ground(self.pos.x, self.pos.z) < RECIPE_CEILING;
+            let reach = if want.trees && want.recipe_trees > 0 && low { RECIPE_RECENTRE }
+                else if want.grass { GRASS_RECENTRE } else if want.trees { TREES_RECENTRE } else { SHADOW_RECENTRE };
+            return self.world_at.is_none_or(|c| (c - self.pos).with_y(0.0).length() > reach);
+        }
+        // Near assemblies already move through Pool::update. Meadow ground
+        // streams independently; neither needs a new forest or renderer.
+        let reach = if self.world.trees { TREES_RECENTRE } else { SHADOW_RECENTRE };
         self.world_at.is_none_or(|c| (c - self.pos).with_y(0.0).length() > reach)
     }
 
@@ -347,9 +361,33 @@ impl Game for Fly {
             }
             self.light = light;
             self.world_at = world_at;
+            self.meadow_at = world_at;
+            self.meadow_building = None;
             if std::mem::take(&mut self.stale) { self.rebuild()?; }
         }
         if self.building.is_none() && self.world_stale() { self.rebuild()?; }
+        if self.stream_ground && self.building.is_none() && self.built_world.grass {
+            if let Some((centre, origin, samples)) = self.meadow_building.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                let gpu = frame.gpu.clone();
+                let upload = std::time::Instant::now();
+                if let Some(renderer) = frame.renderer_mut() { renderer.update_meadow_ground(&gpu, origin, &samples)?; }
+                eprintln!("terrain stream: meadow_upload_bytes={} enqueue_cpu_ms={:.2}", samples.len()*16, upload.elapsed().as_secs_f64()*1000.0);
+                self.meadow_at = Some(centre);
+                self.meadow_building = None;
+            }
+            if self.meadow_building.is_none() && self.grass_wanted()
+                && self.meadow_at.is_none_or(|p| (p - self.pos).with_y(0.0).length() > GRASS_RECENTRE) {
+                let (tx, rx) = channel();
+                let (seed, style, centre) = (self.seed, self.style(), self.pos);
+                std::thread::spawn(move || {
+                    let started = std::time::Instant::now();
+                    let (origin, samples) = meadow_ground(seed, &style, centre);
+                    eprintln!("terrain stream: meadow_sample_cpu_ms={:.2}", started.elapsed().as_secs_f64()*1000.0);
+                    let _ = tx.send((centre, origin, samples));
+                });
+                self.meadow_building = Some(rx);
+            }
+        }
         let pos = self.prev.lerp(self.pos, frame.alpha);
         let cam = self.camera(pos, frame.alpha);
         let [w, h] = frame.size;
@@ -686,7 +724,7 @@ fn handover_band(world: World) -> (f32, f32) {
 /// Windswept meadow roots on a 0.5 m grid of the terrain function, 300 m
 /// around `centre` (as in render's procedural_terrain example). Rock,
 /// scree, snow and water are bare.
-fn meadow(seed: u32, style: &Style, dry_season: f32, centre: Vec3) -> Result<MeadowField, String> {
+fn meadow_ground(seed: u32, style: &Style, centre: Vec3) -> ([f32; 2], Vec<[f32; 4]>) {
     let (cell, n) = (0.5f32, 1200u32);
     let origin = [(centre.x / cell).floor() * cell - n as f32 * cell * 0.5, (centre.z / cell).floor() * cell - n as f32 * cell * 0.5];
     let mut samples = Vec::with_capacity((n * n) as usize);
@@ -699,6 +737,12 @@ fn meadow(seed: u32, style: &Style, dry_season: f32, centre: Vec3) -> Result<Mea
             samples.push(if bare { [0.0; 4] } else { [s.pos.y, 100.0, 1.0, 0.0] });
         }
     }
+    (origin, samples)
+}
+
+fn meadow(seed: u32, style: &Style, dry_season: f32, centre: Vec3) -> Result<MeadowField, String> {
+    let (origin, samples) = meadow_ground(seed, style, centre);
+    let (cell, n) = (0.5, 1200);
     let field = MeadowField {
         origin, cell, width: n, height: n, samples, seed, growth: 1.0, dry_season, radius: GRASS_RADIUS, fade_start: GRASS_RADIUS * 0.8,
         geometry: MeadowGeometry::cook_windswept(seed as u64, dry_season, MeadowBladeBudget::Blades120)?,

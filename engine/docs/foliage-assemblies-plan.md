@@ -9,6 +9,45 @@ Nanite Foliage and Assemblies.
 first. It is the current state, the open issues and the next tasks; the
 sections after it are the history that led there.
 
+## Windows follow-up (3 Nov 2026, retained meadow groundwork)
+
+The Windows terrain_fly playtest on dcc3f1d confirmed movement stalls, even at
+1713x964 internal rendering / 3840x2160 output. A single 355-frame headless route
+at 240 m/s measured p50 71.7 ms, p99 711.4 ms and max 755.3 ms; without trees,
+38.8 / 123.7 / 203.9 ms. These include synchronous image readback, are not gameplay
+FPS or isolated GPU timings, and are diagnostic runs, not an accepted A/B.
+Raw logs: C:/dev/warp-bench/terrain-diagnosis-{baseline,motion,motion-no-trees}.log.
+
+Prepared changes (GPU execution deferred: user is playing another game):
+
+- `WARP_TERRAIN_STREAM_GROUND=1` opts into updating meadow ground samples in the
+  retained GPU allocation. Geometry, pipelines, root seed and renderer survive.
+  Ground sampling remains on a worker. Near full-tree slots already follow the
+  camera through Pool::update; they no longer force 100 m scene rebuilds in this
+  mode. The existing 300 m outer forest refresh still rebuilds the renderer.
+- The 120 m altitude threshold no longer constructs/destroys the entire meadow
+  in this mode. Source visibility still depends on the camera and draw range.
+- Compare requested vegetation settings with requested settings, not biome-scaled
+  density: lowland/polder/desert previously kept identifying their scene as stale.
+- Pack the brick deduplication mask after the 22 diagnostic words. Native and
+  temporal voxel layouts now require 15 and 16 storage buffers respectively,
+  rather than 16/17. Preserve the 88-byte diagnostic readback prefix. This fixes
+  the layout budget without increasing device requirements.
+
+CPU validation passed: `cargo check --locked -p app --example terrain_fly`,
+`temporal_layout_fits_sixteen_storage_bindings` (declared layout count, not just
+used shader resources), and `volume_entry_points_fit_reduced_scene_binding_contract`
+(Naga validation of native/temporal and brick/normal specializations). No GPU
+was initialized by these checks. Build and shader/device creation on actual
+hardware, image comparisons and timing repeats are still pending.
+
+This is NOT complete world streaming or two-pass splat HZB occlusion. No measured
+performance improvement or visual acceptance is claimed for these changes yet.
+Next: validate retained ground at the source boundary, altitude changes and
+recentring; inspect upload spikes (still a complete 23 MB ground upload); move
+forest/heightfield refresh to persistent paged resources; then implement the
+brick HZB work below. Do not run GPU validation concurrently with the user's game.
+
 ## Handoff (3 Nov 2026, evening)
 
 Vegetation and terrain_fly frame time, as left by the session that did the

@@ -37,7 +37,9 @@ fn selection_unpack(w:u32)->vec4<u32> {
 
 // Shared immutable bounds/references plus a per-view deduplication mask.
 @group(2) @binding(12) var<storage,read> volume_bricks: array<u32>;
-@group(2) @binding(13) var<storage,read_write> volume_brick_mask: array<atomic<u32>>;
+// Deduplication words follow the 22 diagnostic words in volume_stats.
+// Sharing this allocation keeps the temporal pipeline within 16 storage bindings.
+const VOLUME_MASK_WORD: u32 = 22u;
 const VOLUME_BRICK_VISIBILITY: bool = false;
 const VOLUME_TILE: u32 = 16u;
 const VOLUME_CANDIDATES: u32 = 64u;
@@ -113,7 +115,7 @@ fn voxel_bins(@builtin(global_invocation_id) id:vec3<u32>) {
             if VOLUME_BRICK_VISIBILITY {
                 let mask=(y*tile_dims.x+x)*((volume_config.size_count.w+31u)/32u)+i/32u;
                 let bit=1u<<(i%32u);
-                if (atomicOr(&volume_brick_mask[mask],bit)&bit)!=0u {continue;}
+                if (atomicOr(&volume_stats[VOLUME_MASK_WORD+mask],bit)&bit)!=0u {continue;}
             }
             let slot=atomicAdd(&volume_tiles[start],1u);
             if slot<VOLUME_CANDIDATES {atomicStore(&volume_tiles[start+1u+slot],i);}
@@ -152,7 +154,7 @@ fn voxel_tiles(@builtin(global_invocation_id) id:vec3<u32>) {
     if count>0u && volume_config.dispatch.x!=0u {
         let job=atomicAdd(&volume_jobs[3],1u);
         atomicStore(&volume_jobs[4u+job],id.y*tile_dims.x+id.x);
-        if VOLUME_BRICK_VISIBILITY {atomicStore(&volume_brick_mask[id.y*tile_dims.x+id.x],job+1u);}
+        if VOLUME_BRICK_VISIBILITY {atomicStore(&volume_stats[VOLUME_MASK_WORD+id.y*tile_dims.x+id.x],job+1u);}
         atomicMax(&volume_jobs[0],min(job+1u,VOLUME_JOB_ROW));
         atomicMax(&volume_jobs[1],4u*(job/VOLUME_JOB_ROW+1u));
         atomicStore(&volume_jobs[2],1u);
@@ -546,7 +548,7 @@ fn voxel_brick_scatter(@builtin(global_invocation_id) id:vec3<u32>) {
     for(var y=rect.y;y<rect.w;y++) {for(var x=rect.x;x<rect.z;x++) {
         let pixel_id=vec2<u32>(u32(x),u32(y));var slot=u32(y)*volume_config.size_count.x+u32(x);
         if volume_config.dispatch.x!=0u {
-            let tile=pixel_id/16u;let job=atomicLoad(&volume_brick_mask[tile.y*volume_config.size_count.z+tile.x]);
+            let tile=pixel_id/16u;let job=atomicLoad(&volume_stats[VOLUME_MASK_WORD+tile.y*volume_config.size_count.z+tile.x]);
             if job==0u {continue;}slot=(job-1u)*256u+(pixel_id.y%16u)*16u+pixel_id.x%16u;
         }
         if slot>=volume_config.dispatch.w {continue;}
