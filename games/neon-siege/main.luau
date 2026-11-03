@@ -68,7 +68,7 @@ local SPECS = {
 	hive = { hp = 650, r = 46, speed = 32, value = 1200, boss = true, extra = 140 },
 	serpent = { hp = 800, r = 26, speed = 170, value = 1400, boss = true, extra = 160 },
 	segment = { hp = 1, r = 17, speed = 0, value = 5, armor = true },
-	prism = { hp = 420, r = 30, speed = 0, value = 1600, boss = true, extra = 90 },
+	prism = { hp = 340, r = 30, speed = 0, value = 1600, boss = true, extra = 75 },
 	sun = { hp = 1000, r = 56, speed = 28, value = 2400, boss = true, extra = 200 },
 	singularity = { hp = 520, r = 60, speed = 0, value = 6000, boss = true, final = true },
 	node = { hp = 1, r = 15, speed = 0, value = 0, armor = true },
@@ -884,19 +884,12 @@ local function late_boss(e, dx, dy, dt)
 				for i = 0, 13 do hostile_shot(e.x, e.y, e.novaTurn + i * math.pi * 2 / 14, 150, nil, 1.4) end
 			end
 		else
-			-- Alone, the survivor spins a dense spiral of bigger orbs, and
-			-- every few seconds a full ring on top.
+			-- Alone, the survivor spins a dense spiral (ruthless enough, Joep).
 			e.beams = {}
 			if e.fire <= 0 then
 				e.fire = 0.14
 				e.armAngle += 0.5
-				for i = 0, 2 do hostile_shot(e.x, e.y, e.armAngle + i * math.pi * 2 / 3, 170, nil, 1.3) end
-			end
-			e.nova = (e.nova or 3) - dt
-			if e.nova <= 0 then
-				e.nova = 3
-				ring(e.x, e.y, 70, COLORS.prism)
-				for i = 0, 15 do hostile_shot(e.x, e.y, e.armAngle + i * math.pi / 8, 140, nil, 1.5) end
+				for i = 0, 2 do hostile_shot(e.x, e.y, e.armAngle + i * math.pi * 2 / 3, 170) end
 			end
 		end
 	elseif e.kind == "sun" then
