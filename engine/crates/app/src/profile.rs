@@ -12,6 +12,9 @@ pub struct DrawTimings {
     pub render_ms: f64,
     pub hud_ms: f64,
     pub present_ms: f64,
+    /// HUD vertices and text runs drawn this frame.
+    pub hud_vertices: usize,
+    pub hud_text_runs: usize,
 }
 
 /// Nearest-rank percentiles, with all individual samples retained in the report.
