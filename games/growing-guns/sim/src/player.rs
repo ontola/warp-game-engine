@@ -257,6 +257,8 @@ impl World {
             let extra = p.weapon.extra_jumps;
 
             if !p.on_floor { p.vel.y -= gravity * DT; } else { p.jumps_left = 2 + extra; }
+            // Landed, not just lifting off from a shot this tick.
+            if p.on_floor && p.vel.y <= 0.0 { p.recoil_lift = 0.0; }
             if input.jump {
                 if p.on_floor {
                     p.vel.y = JUMP_VELOCITY;
