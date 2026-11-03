@@ -9,6 +9,29 @@ Nanite Foliage and Assemblies.
 first. It is the current state, the open issues and the next tasks; the
 sections after it are the history that led there.
 
+## GPU selection core checkpoint (3 November 2026)
+
+`render::foliage_select` is now a separately tested experimental API. It accepts
+persistent instances and shared preorder recipe hierarchies, performs frustum
+and screen-error selection on the GPU, defers historical-HZB rejects, and
+retests those subtrees against current HZB using indirect dispatch. Scratch and
+bind groups are retained. Overflow produces explicit root fallback flags instead
+of silently dropping geometry. The GPU test exercises 1,025 instances sharing
+three nodes, not 1,025 rendered detailed trees.
+
+**Not wired into terrain_fly or the renderer's source/voxel consumers yet.** The
+CPU pool is still active in gameplay. No GPU frame-time gain, image equivalence,
+full Nanite parity, shadow caching or lighting-budget completion is claimed.
+See [selection contract and validation](foliage-gpu-selection-2026-11-03.md).
+
+Next integration boundary: replace the current virtual-member owner identity
+(branch-owner slot packed into 19 bits) with stable instance + shared recipe
+member addressing, or a GPU-produced bounded transient owner table. Raster,
+material resolve, motion vectors and shadow consumers must agree on that mapping.
+Do not expand every branch owner for every distant instance just to bypass the
+240-slot limit. Preserve measured optical source/voxel choices from the existing
+aggregate cooker; the new generic traversal does not supply those measurements.
+
 ## Active priorities (3 November 2026, user correction)
 
 This section supersedes the older decision below to park milestone 2.
