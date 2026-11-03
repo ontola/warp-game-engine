@@ -41,6 +41,10 @@ pub const BANK: f32 = 1.8;
 /// Height the bank allows at MAX_REACH past the edge: more than any land,
 /// so the constraint ends without a seam (very deep cuts turn into walls).
 pub const OPEN: f32 = 9000.0;
+/// How fast a deep cutting or embankment steepens past the first BANK run:
+/// at MAX_REACH it stands at about 1.5 (a rock cut) and holds about 100 m
+/// of height, so only cuts deeper than that ever reach the OPEN wall.
+pub const STEEPEN: f32 = 0.0047;
 /// Most arms (stretches of road or pads) one sample blends.
 pub const MAX_ARMS: usize = 8;
 
@@ -102,32 +106,50 @@ impl Track {
         Track::spline(&control, half, true)
     }
 
-    /// Lay the road on `ground`: its heights follow the land, smoothed over
-    /// `window` metres and with grades no steeper than `max_grade`. The
-    /// land then bends where the road cannot follow it.
+    /// Lay the road on `ground`: as close to the land as grades of at most
+    /// `max_grade` allow, then smoothed over `window` metres. The land bends
+    /// where the road cannot follow it.
+    ///
+    /// The road is the midpoint of the highest and the lowest line that
+    /// keep to the grade and stay on one side of the land, which halves the
+    /// deepest cut or fill a one-sided grade clamp leaves. Smoothing keeps
+    /// the grade limit (an average of lines that keep it keeps it too).
     pub fn fit_heights(&mut self, ground: impl Fn(f32, f32) -> f32, max_grade: f32, window: f32) {
         let n = self.points.len();
+        if n == 0 { return; }
         let raw: Vec<f32> = self.points.iter().map(|p| ground(p.x, p.z)).collect();
         let along = self.along();
         let total = *along.last().unwrap() + if self.closed { self.points[n - 1].xz().distance(self.points[0].xz()) } else { 0.0 };
-        // Box filter by distance along the road (wrapping on a loop).
-        let mut y = vec![0.0f32; n];
-        for i in 0..n {
-            let (mut sum, mut weight) = (0.0f32, 0.0f32);
+        let gap = |i: usize, j: usize| {
+            let d = (along[j] - along[i]).abs();
+            if self.closed { d.min(total - d) } else { d }
+        };
+        let mid: Vec<f32> = (0..n).map(|i| {
+            let (mut under, mut over) = (f32::MAX, f32::MIN);
             for (j, h) in raw.iter().enumerate() {
-                let mut d = (along[j] - along[i]).abs();
-                if self.closed { d = d.min(total - d); }
+                let run = gap(i, j) * max_grade;
+                under = under.min(h + run);
+                over = over.max(h - run);
+            }
+            0.5 * (under + over)
+        }).collect();
+        // Box filter by distance along the road (wrapping on a loop).
+        let y: Vec<f32> = (0..n).map(|i| {
+            let (mut sum, mut weight) = (0.0f32, 0.0f32);
+            for (j, h) in mid.iter().enumerate() {
+                let d = gap(i, j);
                 if d <= window * 0.5 {
                     let w = 1.0 - d / (window * 0.5 + 1e-3);
                     sum += h * w;
                     weight += w;
                 }
             }
-            y[i] = sum / weight;
-        }
-        // Grade limit, forward and back (twice round a loop).
-        let passes = if self.closed { 2 } else { 1 };
-        for _ in 0..passes {
+            sum / weight
+        }).collect();
+        // Uneven point spacing lets the filter overshoot the grade by a hair:
+        // clamp it, forward and back (twice round a loop).
+        let mut y = y;
+        for _ in 0..if self.closed { 2 } else { 1 } {
             for i in 1..n + usize::from(self.closed) {
                 let (a, b) = ((i - 1) % n, i % n);
                 let run = self.points[a].xz().distance(self.points[b].xz()) * max_grade;
@@ -443,6 +465,8 @@ impl World {
         s.snow *= 1.0 - 0.7 * core;
         s.moor *= 1.0 - core;
         s.rock *= 1.0 - core;
+        // A steep cutting or embankment is bare rock, not stretched grass.
+        s.rock = s.rock.max(smooth(0.9, 1.4, slope) * smooth(0.0, 0.5, moved) * (1.0 - core));
         s.scree += (1.0 - s.scree) * core;
         s
     }
@@ -571,7 +595,7 @@ pub fn bank(u: f32) -> (f32, f32) {
     let u = u.max(0.0);
     let r = u / MAX_REACH;
     let r5 = r * r * r * r * r;
-    (u / BANK + OPEN * r5 * r, 1.0 / BANK + 6.0 * OPEN * r5 / MAX_REACH)
+    (u / BANK + STEEPEN * u * u + OPEN * r5 * r, 1.0 / BANK + 2.0 * STEEPEN * u + 6.0 * OPEN * r5 / MAX_REACH)
 }
 
 fn arm_pull(y: f32, u: f32, core: f32, near: Near) -> Pull {
