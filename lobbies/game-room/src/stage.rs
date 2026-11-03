@@ -192,7 +192,7 @@ impl Stage {
             let mut names: Vec<_> = self.room.screens.iter().filter(|s| s.1.layer == layer).collect();
             names.sort_by(|a, b| a.0.cmp(b.0));
             for (name, rect) in names {
-                let mut canvas = Canvas::new(&mut list, rect.rect);
+                let mut canvas = Canvas::scaled(&mut list, rect.rect, rect.k);
                 if !crate::paint::paint(&mut canvas, name, show, prompts) { eprintln!("game-room: no painter for screen {name}"); }
             }
             screen.draw(gpu, renderer, layer, [0.0; 4], &list)?;
