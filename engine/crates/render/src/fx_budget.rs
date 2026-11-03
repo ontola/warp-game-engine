@@ -3,7 +3,7 @@ use super::*;
 #[derive(Clone,Copy,Debug)]
 pub struct ExplosionBudget {pub cluster_metres:f32,pub pending:usize,pub full_per_tick:usize,pub full_per_window:usize,pub window_seconds:f32,pub live_puffs:usize,pub compact:bool}
 impl ExplosionBudget {
-    pub const FULL:Self=Self{cluster_metres:3.,pending:13,full_per_tick:3,full_per_window:25,window_seconds:0.5,live_puffs:256,compact:false};
+    pub const FULL:Self=Self{cluster_metres:3.,pending:13,full_per_tick:3,full_per_window:25,window_seconds:0.5,live_puffs:512,compact:false};
     pub const LOW:Self=Self{pending:8,full_per_tick:2,full_per_window:12,live_puffs:96,..Self::FULL};
     pub const MINIMUM:Self=Self{pending:8,full_per_tick:1,full_per_window:4,live_puffs:12,compact:true,..Self::FULL};
 }
@@ -47,8 +47,17 @@ impl Effects {
             }
         }
         // Budget decorative smoke/fire/embers only. Never evict ion warning columns.
-        let mut excess=self.puffs.iter().filter(|p|p.kind()<=3).count().saturating_sub(b.settings.live_puffs);
-        self.puffs.retain(|p|{if p.kind()<=3&&excess>0{excess-=1;false}else{true}});
+        // Over budget, drop the puffs nearest their end first: a new blast
+        // must not wipe a smoke trail that still has seconds to fade (a
+        // Growing Guns air strike trail is ~200 puffs, its blast ~140).
+        let excess=self.puffs.iter().filter(|p|p.kind()<=3).count().saturating_sub(b.settings.live_puffs);
+        if excess>0 {
+            let mut ends:Vec<(f32,usize)>=self.puffs.iter().enumerate().filter(|(_,p)|p.kind()<=3).map(|(i,p)|(p.end(),i)).collect();
+            ends.sort_by(|a,b|a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            let mut drop=vec![false;self.puffs.len()];
+            for &(_,i) in &ends[..excess] {drop[i]=true;}
+            let mut i=0;self.puffs.retain(|_|{i+=1;!drop[i-1]});self.changed=true;
+        }
         if self.pops.len()>32 {self.pops.drain(..self.pops.len()-32);}
         self.budget=Some(b);
     }
@@ -63,5 +72,14 @@ impl Effects {
         for tick in 1..100 {let t=tick as f32/60.;for i in 0..100 {fx.explosion(t,Vec3::new(i as f32*4.,0.,0.),5.,Vec3::ONE);}fx.emit_pending(t);
             assert!(fx.puffs.iter().filter(|p|p.kind()<=3).count()<=12);assert!(fx.pops.len()<=32);assert_eq!(fx.puffs.iter().filter(|p|p.kind()==4).count(),1);}
         assert!(fx.explosion_stats().omitted>0);assert!(fx.explosion_stats().cheap>0);assert!(fx.explosion_stats().full<=16);
+    }
+    #[test]fn a_rocket_trail_outlives_its_own_blast(){
+        // Growing Guns: up to 3 exhaust puffs every 2 ticks for 2.3 s, then the radius-30 blast.
+        let mut fx=Effects::with_explosion_budget(ExplosionBudget::FULL);
+        let mut t=0.;
+        for tick in 0..138 {t=tick as f32/60.;if tick%2==0{for k in 0..3{fx.exhaust_smoke(t,Vec3::new(0.,200.-tick as f32-k as f32*0.3,0.),5.);}}fx.emit_pending(t);}
+        let trail=fx.puffs.len();assert!(trail>150,"trail {trail}");
+        fx.explosion(t,Vec3::ZERO,30.,Vec3::ONE);fx.emit_pending(t+1./60.);
+        assert_eq!(fx.puffs.iter().filter(|p|p.kind()==SMOKE as u32&&p.center_kind[1]>60.).count()>=trail-1,true,"the trail survives the blast");
     }
 }
