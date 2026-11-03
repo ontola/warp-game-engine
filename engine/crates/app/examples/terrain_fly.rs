@@ -347,7 +347,8 @@ impl Game for Fly {
                 if stats.moved > 0 && std::env::var("KERN_POOL_LOG").as_deref() == Ok("1") { eprintln!("pool moved {}", stats.moved); }
             }
         }
-        if frame.dt > 0.0 { self.fps += (1.0 / frame.dt - self.fps) * 0.05; }
+        // Scene frames only: with the debug menu open the HUD redraws faster.
+        self.fps = frame.scene_fps;
 
         let s = self.sample(pos.x, pos.z);
         let above = pos.y - s.pos.y;
