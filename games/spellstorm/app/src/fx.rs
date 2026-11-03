@@ -627,7 +627,7 @@ impl Default for Fx {
 }
 
 impl Fx {
-    fn f(&mut self) -> f32 {
+    pub fn f(&mut self) -> f32 {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 7;
         self.rng ^= self.rng << 17;
