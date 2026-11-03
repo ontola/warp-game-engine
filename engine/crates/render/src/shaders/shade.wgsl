@@ -52,7 +52,7 @@ struct Instance {
     first_cluster: u32,
     cluster_count: u32,
     scale: f32,
-    pad: u32,
+    flags: u32,
 };
 
 struct Material {
@@ -70,28 +70,11 @@ struct Material {
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
 
-// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
-// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
-// rows are its part_wind pose and its first_cluster packs the templates
-// (start << 12 | count); a member is pose x template.
-const VIRTUAL_MEMBER: u32 = 0x80000000u;
-fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
-fn compose_member(owner: Instance, t: Instance) -> Instance {
-    var m = t;
-    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
-    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
-    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
-    let c = vec4<f32>(t.sphere.xyz, 1.0);
-    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
-    m.scale = t.scale * owner.scale;
-    // The owner's history epoch (bit 7) marks a woken pose for motion.
-    m.pad = (t.pad & ~0x80u) | (owner.pad & 0x80u);
-    return m;
-}
+// Address/deformation composition is shared in virtual_member.wgsl.
 fn instance_at(id: u32) -> Instance {
     if (id & VIRTUAL_MEMBER) == 0u { return instances[id]; }
-    let owner = instances[(id >> 12u) & 0x7ffffu];
-    return compose_member(owner, instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+    let owner = instances[member_owner(id)];
+    return compose_member(owner, instances[member_template(owner,id)]);
 }
 @group(0) @binding(5) var<storage, read> materials: array<Material>;
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
@@ -743,7 +726,7 @@ fn xform(inst: Instance, p: vec3<f32>) -> vec3<f32> {
 }
 
 fn xform_dir(inst: Instance, d: vec3<f32>) -> vec3<f32> {
-    if (inst.pad & 32u) != 0u {
+    if (inst.flags & 32u) != 0u {
         // A scaled assembly root followed by rigid child rotations can have
         // non-orthogonal columns. Match the volume's full affine inverse.
         let ax = vec3<f32>(inst.r0.x, inst.r1.x, inst.r2.x);
@@ -2404,7 +2387,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     // Wounds (instance bits 27..31): wet blood stains in the body's own
     // space, spreading from a few blotches to most of it.
-    let wounds = f32(inst.pad >> 27u) / 31.0;
+    let wounds = f32(inst.flags >> 27u) / 31.0;
     if wounds > 0.0 {
         let o = (pos_of(vi[0]) * b0 + pos_of(vi[1]) * b1 + pos_of(vi[2]) * b2) * inst.scale;
         let blot = 0.5 * vnoise(o.xy * 3.1 + o.z * 1.7) + 0.5 * vnoise(o.zy * 3.3 - o.x * 1.9 + 7.0);
@@ -2424,7 +2407,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var ao = 1.0;
     let grass = (m.flags & 64u) != 0u;
     let procedural_leaf = FEATURE_FOLIAGE && (m.flags & 512u) != 0u;
-    let needles = procedural_leaf || (FEATURE_FOLIAGE && (m.flags & 9u) == 9u && (inst.pad & 1u) != 0u && !grass);
+    let needles = procedural_leaf || (FEATURE_FOLIAGE && (m.flags & 9u) == 9u && (inst.flags & 1u) != 0u && !grass);
     if needles && !procedural_leaf {
         // foliage.gdshader: a little colour per tree, sunlight shining
         // through the needles from behind (BACKLIGHT), AO 0.85.
@@ -2554,7 +2537,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     // LAVA: molten emission plus sunlight reflected by the cooler surface.
     // MOLTEN_DEBRIS shares bit 7 with part_wind's history epoch, which wind
     // driven tree parts (PART_WIND, 32) toggle: only without that flag.
-    if FEATURE_PROCEDURAL && (inst.pad & (128u | 32u)) == 128u {
+    if FEATURE_PROCEDURAL && (inst.flags & (128u | 32u)) == 128u {
         rad = proc_lava(p * 1200.0, light.anim.x * 6.0, max(length(fp.dx),length(fp.dy)) * 1200.0)
             * vec3<f32>(1.0,0.20,0.02) * 5000.0 * emit;
     }
@@ -2580,7 +2563,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     // Hit flash (instance bits 16..23): the body itself lights up white,
     // nearly evenly; a slight facing term keeps its form readable.
-    let flash = f32((inst.pad >> 16u) & 0xffu) / 255.0;
+    let flash = f32((inst.flags >> 16u) & 0xffu) / 255.0;
     if flash > 0.0 {
         let facing = clamp(dot(n, -dir), 0.0, 1.0);
         let white = vec3<f32>(1.0, 0.97, 0.92) * light.anim.z * (0.8 + 0.2 * facing);
@@ -2706,7 +2689,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     }
     if (m.flags&1024u)!=0u {rad+=base*m.scale*light.anim.y;}
     if (m.flags&4096u)!=0u {rad=base*m.scale*light.anim.y;}
-    let flash=f32((inst.pad>>16u)&255u)/255.0;
+    let flash=f32((inst.flags>>16u)&255u)/255.0;
     rad=mix(rad,vec3<f32>(1.0,0.97,0.92)*light.anim.z*(0.8+0.2*max(dot(n,-dir),0.0)),flash*0.9);
     rad=apply_distance_fog(rad,distance(p,view.cam.xyz),dir);
     if light.sky.z==2.0 {rad=base*6000.0;}

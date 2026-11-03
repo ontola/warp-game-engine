@@ -156,7 +156,7 @@ fn instance(i: usize, t: &Tree) -> PlantInstance {
     PlantInstance { id: i as u64 + 1, generation: 0, root: root(t), category: GeometryCategory::Trees }
 }
 
-/// Full trees that follow the cameras, the way Nanite streams detail: every
+/// Legacy CPU-assigned detail pool (not GPU assembly streaming): every
 /// tree is its whole-plant proxy, and a fixed pool of full assemblies (`slots`
 /// per variant) moves to the trees nearest the cameras, hiding their proxies
 /// (Renderer::move_plant, set_plant_proxies). A full tree still picks

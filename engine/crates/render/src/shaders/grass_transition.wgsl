@@ -16,7 +16,7 @@ fn grass_vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: 
     out.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     let owner = grass_owners[index];
     let inst = instances[owner];
-    if inst.cluster_count == 0u || (inst.pad & 8u) == 0u { return out; }
+    if inst.cluster_count == 0u || (inst.flags & 8u) == 0u { return out; }
     let card = vertex / 6u;
     let root = vec3<f32>(inst.r0.w, inst.r1.w, inst.r2.w);
     let opacity = grass_card_opacity(root, view.cam.xyz, view.grass.xy, view.extra.w);

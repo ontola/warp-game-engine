@@ -58,28 +58,11 @@ struct CullMaterial {
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
 
-// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
-// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
-// rows are its part_wind pose and its first_cluster packs the templates
-// (start << 12 | count); a member is pose x template.
-const VIRTUAL_MEMBER: u32 = 0x80000000u;
-fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
-fn compose_member(owner: Instance, t: Instance) -> Instance {
-    var m = t;
-    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
-    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
-    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
-    let c = vec4<f32>(t.sphere.xyz, 1.0);
-    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
-    m.scale = t.scale * owner.scale;
-    // The owner's history epoch (bit 7) marks a woken pose for motion.
-    m.flags = (t.flags & ~0x80u) | (owner.flags & 0x80u);
-    return m;
-}
+// Address/deformation composition is shared in virtual_member.wgsl.
 fn instance_at(id: u32) -> Instance {
     if (id & VIRTUAL_MEMBER) == 0u { return instances[id]; }
-    let owner = instances[(id >> 12u) & 0x7ffffu];
-    return compose_member(owner, instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+    let owner = instances[member_owner(id)];
+    return compose_member(owner, instances[member_template(owner,id)]);
 }
 @group(0) @binding(5) var<storage, read> cull_materials: array<CullMaterial>;
 @group(0) @binding(12) var<storage, read> cull_wind: array<vec4<f32>>;
@@ -322,7 +305,7 @@ fn cull_instance(id: u32, li: u32) {
     let start = inst.first_cluster >> 12u;
     let count = inst.first_cluster & 0xfffu;
     for (var k = 0u; k < count; k++) {
-        cull_member(VIRTUAL_MEMBER | (id << 12u) | k, compose_member(inst, instances[start + k]), li);
+        cull_member(member_id(id,k), compose_member(inst, instances[start + k]), li);
         workgroupBarrier();
     }
 }

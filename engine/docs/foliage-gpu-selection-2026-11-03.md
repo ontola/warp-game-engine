@@ -85,3 +85,41 @@ opened. No new 8.33 ms claim. No shader timing is presented as whole-frame FPS.
    overflow. Measure three alternating repeats before any default switch.
 5. Add page residency and work scheduling; then lighting and shadow-cache budget
    work. The terrain CPU issue remains separate and unresolved.
+
+## Real cooked-plant adapter and renderer ABI follow-up
+
+`vegetation_asset::CookedPlant::shared_selection_recipe` exports a shared table
+of `SourceBranch { branch, branch_id }` and `Voxel { branch, branch_id, level }`.
+These are recipe identities, not per-camera owner slots. It uses the existing
+cooked voxel coverage/color measurements and spatial/motion errors. Disallowed
+voxel candidates are absent; exact source leaves remain. A root marked
+fallback-only cannot satisfy regular LOD selection, even with a huge pixel-error
+threshold. Its existing whole-subtree volume is reserved for explicit overflow.
+The adapter currently omits measured simplified-triangle cuts, and does not
+promise the same choice as the older selector when several alternatives qualify.
+
+Parent spheres enclose branch envelopes including ancestor wind. Placement
+scale bounds handle shear; cooked geometry and voxel bytes remain untouched.
+Tests check source IDs, optical admission and original vertices over five
+articulated poses. A real GPU test selects 1,200 copies of a small cooked recipe:
+4 shared nodes yield 3,600 source records; 10 shared nodes with permissive optics
+yield 1,200 whole-subtree voxel records. Zero fallbacks in either case.
+
+`virtual_member.wgsl` is now the single immutable addressing/composition helper
+for production cull, raster (including shadow raster), shading and motion.
+The existing packed IDs and 80-byte instance layout have NOT changed. The former
+`pad` field in raster/shade now consistently means `flags`. The helper is compiled
+in, not independently hot-reloaded while other consumers keep an older ABI.
+
+Validation: 49 shader-related tests passed. The real-GPU
+`virtual_source_matches_expanded_gpu` test renders source instances versus shared
+virtual branch templates at wind times 0, 1 and 1.4 seconds: RGBA MAE 0 and zero
+changed pixels in each 128x128 image. This exercises actual cull/raster/shade;
+it is not a full moving-camera/motion-vector/shadow regression suite or a forest
+benchmark. No playtest window was opened.
+
+The new selection remains disconnected from production draw ownership. Next is
+GPU allocation of bounded owner/pose records plus stable identity/history across
+reassignment; then connect source and voxel draws and remove CPU near-tree
+assignment from the opt-in route. Lighting and animated shadow caching remain
+separate unfinished milestones.

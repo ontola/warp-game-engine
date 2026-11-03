@@ -260,7 +260,7 @@ impl MotionRenderer {
 }
 
 pub(crate) fn shader_source()->String {
-    format!("{}\n{}",include_str!("shaders/grass_common.wgsl"),include_str!("shaders/motion.wgsl"))
+    format!("{}\n{}",include_str!("shaders/grass_common.wgsl"),concat!(include_str!("shaders/virtual_member.wgsl"), "\n", include_str!("shaders/motion.wgsl")))
 }
 
 /// Mathematical diagnostic, independent of jitter and raster sample location.

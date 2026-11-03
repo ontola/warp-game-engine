@@ -6,7 +6,7 @@ fn grass_transition_candidate(index: u32) -> bool {
     if index >= compact_params.count { return false; }
     let owner = compact_params.first + index;
     let inst = instances[owner];
-    if inst.cluster_count == 0u || (inst.pad & 8u) == 0u { return false; }
+    if inst.cluster_count == 0u || (inst.flags & 8u) == 0u { return false; }
     let root = vec3<f32>(inst.r0.w, inst.r1.w, inst.r2.w);
     let opacity = grass_card_opacity(root, view.cam.xyz, view.grass.xy, view.extra.w);
     if opacity <= 0.0 || opacity >= GRASS_OPAQUE_THRESHOLD { return false; }

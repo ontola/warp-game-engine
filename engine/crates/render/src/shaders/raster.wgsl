@@ -41,7 +41,7 @@ struct Instance {
     first_cluster: u32,
     cluster_count: u32,
     scale: f32,
-    pad: u32,
+    flags: u32,
 };
 
 struct Material {
@@ -59,28 +59,11 @@ struct Material {
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
 
-// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
-// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
-// rows are its part_wind pose and its first_cluster packs the templates
-// (start << 12 | count); a member is pose x template.
-const VIRTUAL_MEMBER: u32 = 0x80000000u;
-fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
-fn compose_member(owner: Instance, t: Instance) -> Instance {
-    var m = t;
-    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
-    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
-    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
-    let c = vec4<f32>(t.sphere.xyz, 1.0);
-    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
-    m.scale = t.scale * owner.scale;
-    // The owner's history epoch (bit 7) marks a woken pose for motion.
-    m.pad = (t.pad & ~0x80u) | (owner.pad & 0x80u);
-    return m;
-}
+// Address/deformation composition is shared in virtual_member.wgsl.
 fn instance_at(id: u32) -> Instance {
     if (id & VIRTUAL_MEMBER) == 0u { return instances[id]; }
-    let owner = instances[(id >> 12u) & 0x7ffffu];
-    return compose_member(owner, instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+    let owner = instances[member_owner(id)];
+    return compose_member(owner, instances[member_template(owner,id)]);
 }
 @group(0) @binding(5) var<storage, read> materials: array<Material>;
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
@@ -155,7 +138,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
         o.pos=vec4<f32>(2.0,2.0,2.0,1.0);
     }
     o.grass_opacity = 1.0;
-    if (inst.pad & 8u) != 0u {
+    if (inst.flags & 8u) != 0u {
         o.grass_opacity = grass_card_opacity(vec3<f32>(inst.r0.w, inst.r1.w, inst.r2.w),
             view.cam.xyz, view.grass.xy, view.extra.w);
         if o.grass_opacity < GRASS_OPAQUE_THRESHOLD {

@@ -680,7 +680,7 @@ mod tests {
     }
     #[test]
     fn shared_optics_shader_validates_without_temporal_or_root_bindings() {
-        let shared=crate::shaders::SHARED_NAMES.map(crate::shaders::built_in).join("\n");
+        let shared=format!("{}\n{}", include_str!("shaders/virtual_member.wgsl"), crate::shaders::SHARED_NAMES.map(crate::shaders::built_in).join("\n"));
         let source=format!("{shared}\n{}",include_str!("shaders/vegetation_bricks.wgsl"));
         let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
         let info=naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();

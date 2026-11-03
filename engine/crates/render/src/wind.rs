@@ -272,7 +272,7 @@ pub(crate) fn common_source() -> String { crate::shaders::source("wind_common.wg
 /// The lighting helpers and the shade entry point, with the car materials.
 /// Read from `KERN_SHADER_DIR` when it is set (see shaders.rs).
 pub(crate) fn shade_source() -> String {
-    crate::shaders::SHARED_NAMES.map(crate::shaders::source).join("\n")
+    format!("{}\n{}", include_str!("shaders/virtual_member.wgsl"), crate::shaders::SHARED_NAMES.map(crate::shaders::source).join("\n"))
 }
 
 #[cfg(test)]
