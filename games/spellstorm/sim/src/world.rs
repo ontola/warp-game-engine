@@ -57,7 +57,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Settings {
         Settings {
-            ff: 0.5,
+            ff: 0.25,
             monster_hp: 1.0,
             monster_damage: 1.0,
             monster_count: 1.0,
@@ -75,8 +75,9 @@ impl Settings {
             "friendly_fire" => {
                 self.ff = match value {
                     "off" => 0.0,
+                    "half" => 0.5,
                     "full" => 1.0,
-                    _ => 0.5,
+                    _ => 0.25,
                 }
             }
             "difficulty" => {

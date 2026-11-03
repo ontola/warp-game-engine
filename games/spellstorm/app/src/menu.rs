@@ -77,8 +77,9 @@ const CONTROLS: [(&str, &str); 13] = [
 fn ff_name(w: &World) -> &'static str {
     match w.settings.ff {
         f if f <= 0.0 => "off",
-        f if f >= 1.0 => "full",
-        _ => "half",
+        f if f < 0.375 => "quarter",
+        f if f < 0.75 => "half",
+        _ => "full",
     }
 }
 
@@ -196,7 +197,7 @@ impl Menu {
         match row {
             Row::Level => self.biome = (self.biome + 1 + dx).rem_euclid(BIOMES.len() as i32 + 1) - 1,
             Row::FriendlyFire => {
-                let v = step(&["off", "half", "full"], ff_name(w), dx);
+                let v = step(&["off", "quarter", "half", "full"], ff_name(w), dx);
                 w.set_option("friendly_fire", v);
             }
             Row::Difficulty => {
