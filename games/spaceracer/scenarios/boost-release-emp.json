@@ -1,0 +1,20 @@
+{
+  "size": [1600, 900],
+  "steps": [
+    {"cmd": ["weapon-review missile", "blur off", "place 1 -1100", "place 2 -1200", "place 3 -1300", "place 4 -1400", "place 5 -1500"], "ticks": 30, "mv": [0,1]},
+    {"cmd": "boost 0 0.4", "ticks": 2, "mv": [0,1], "capture": "boost-start.png"},
+    {"ticks": 22, "mv": [0,1], "capture": "boost-mid.png"},
+    {"ticks": 20, "mv": [0,1], "capture": "boost-active.png"},
+    {"ticks": 6, "mv": [0,1], "capture": "boost-release.png"},
+    {"expect": "/pilots/0/boost", "max": 0},
+    {"ticks": 12, "mv": [0,1], "capture": "boost-tail-100ms.png"},
+    {"ticks": 18, "mv": [0,1], "capture": "boost-tail-250ms.png"},
+    {"ticks": 30, "mv": [0,1], "capture": "boost-tail-500ms.png"},
+    {"ticks": 36, "mv": [0,1], "capture": "boost-tail-expired.png"},
+    {"cmd": "weapon-review emp", "ticks": 2},
+    {"cmd": "fire 0", "ticks": 2, "capture": "emp-a.png"},
+    {"expect": "/pilots/1/emp_time", "min": 2},
+    {"ticks": 2, "capture": "emp-b.png"},
+    {"ticks": 2, "capture": "emp-c.png"}
+  ]
+}

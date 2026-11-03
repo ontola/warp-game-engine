@@ -57,6 +57,30 @@ struct CullMaterial {
 
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
+
+// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
+// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
+// rows are its part_wind pose and its first_cluster packs the templates
+// (start << 12 | count); a member is pose x template.
+const VIRTUAL_MEMBER: u32 = 0x80000000u;
+fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
+fn compose_member(owner: Instance, t: Instance) -> Instance {
+    var m = t;
+    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
+    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
+    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
+    let c = vec4<f32>(t.sphere.xyz, 1.0);
+    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
+    m.scale = t.scale * owner.scale;
+    // The owner's history epoch (bit 7) marks a woken pose for motion.
+    m.flags = (t.flags & ~0x80u) | (owner.flags & 0x80u);
+    return m;
+}
+fn instance_at(id: u32) -> Instance {
+    if (id & VIRTUAL_MEMBER) == 0u { return instances[id]; }
+    let owner = instances[(id >> 12u) & 0x7ffffu];
+    return compose_member(owner, instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+}
 @group(0) @binding(5) var<storage, read> cull_materials: array<CullMaterial>;
 @group(0) @binding(12) var<storage, read> cull_wind: array<vec4<f32>>;
 @group(0) @binding(11) var<storage, read> cull_voxel_replacement: array<u32>;
@@ -75,7 +99,16 @@ struct CullMaterial {
 // Four draw records followed by four bucket starts.
 @group(1) @binding(3) var<storage, read_write> args: array<u32, 20>;
 @group(1) @binding(4) var<storage, read_write> draw_map: array<u32>;
-@group(1) @binding(5) var<uniform> foliage_selection: array<vec4<u32>,4096>;
+@group(1) @binding(5) var<uniform> foliage_selection_words: array<vec4<u32>,4096>;
+fn foliage_selection_at(i:u32)->vec4<u32> { let v=foliage_selection_words[i>>2u]; return selection_unpack(v[i&3u]); }
+// Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
+// four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
+// voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
+fn selection_unpack(w:u32)->vec4<u32> {
+    let y=(w>>2u)&63u;
+    return vec4<u32>(w&3u,select(y,0xffffffffu,y==63u),bitcast<u32>(unpack2x16float(w>>16u).x),(w>>8u)&3u);
+}
+
 @group(1) @binding(6) var<uniform> tree_phase: vec4<f32>; // x: 0 reference, 1 occluders, 2 remainder; y split metres; z enables Hi-Z rejection
 @group(1) @binding(7) var tree_hiz: texture_2d<f32>;
 // Original source-owner IDs, independent of camera visibility. Header:
@@ -187,18 +220,20 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     }
     // Unoccupied fixed-pool slots have no geometry. This is uniform across
     // the workgroup, so skip the frustum test/barrier without divergence.
-    if inst.cluster_count == 0u {
+    // A template draws only through its virtual branch owners.
+    if inst.sphere.w < 0.0 { return 0u; }
+    if inst.cluster_count == 0u && !virtual_owner(inst) {
         return 0u;
     }
     // Scalable whole-owner replacement is a colour-only decision. It neither
     // changes source wind tags nor removes any sun/headlight shadow caster.
     if view.params.z<0.5 && view.extra.y<1.5 && (spatial.header.w&8u)!=0u {
-        if source_replacement_owner_selected(spatial.header.z,id) {return 0u;}
+        if source_replacement_owner_selected(spatial.header.z,member_slot(id)) {return 0u;}
     }
     if tree_phase.x>0.5 {
         let tree=((inst.flags>>24u)&7u)==2u;
         let first=!tree || distance(inst.sphere.xyz,view.cam.xyz)
-            -(inst.sphere.w+cull_wind[id].z)<=tree_phase.y;
+            -(inst.sphere.w+cull_wind[member_slot(id)].z)<=tree_phase.y;
         if (tree_phase.x<1.5)!=first {return 0u;}
     }
     // Explicit colour-only category ablation. Orthographic sun/pages and
@@ -211,22 +246,22 @@ fn instance_policy(id: u32, inst: Instance) -> u32 {
     // Runtime groups replace this entire branch in the colour view only.
     // Do not spend cluster/raster work on the hidden source. Both sun and
     // perspective lamp shadows retain the same animated source geometry.
-    let replacement=cull_voxel_replacement[id];
+    let replacement=cull_voxel_replacement[member_slot(id)];
     if view.params.z<0.5 && view.extra.y<1.5 && replacement!=0xffffffffu
         && (replacement&0x80000000u)!=0u {
-        if foliage_selection[replacement&0x7fffffffu].x!=0u {return 0u;}
+        if foliage_selection_at(replacement&0x7fffffffu).x!=0u {return 0u;}
     }
     // Rasterized voxels cast this group into this sun map instead
     // (selection w 2, see voxel_sun_splats).
     if view.params.z>0.5 && replacement!=0xffffffffu && (replacement&0x80000000u)!=0u
-        && foliage_selection[replacement&0x7fffffffu].w==2u {return 0u;}
+        && foliage_selection_at(replacement&0x7fffffffu).w==2u {return 0u;}
     // Far trees (FAR_TREE tag): rasterized voxels draw the whole owner past
     // the switch distance, and always in the shared sun map once its view
     // marks voxel casting.
     if VOXEL_FAR_M>0.0 && replacement!=0xffffffffu && (replacement&0xc0000000u)==0x40000000u {
         if view.params.z<0.5 && view.extra.y<1.5
             && distance(vec3<f32>(inst.r0.w,inst.r1.w,inst.r2.w),view.cam.xyz)>VOXEL_FAR_M {return 0u;}
-        if view.params.z>0.5 && foliage_selection[0].w==2u {return 0u;}
+        if view.params.z>0.5 && foliage_selection_at(0).w==2u {return 0u;}
     }
     // Per-view hiding (scene::HIDE_IN_VIEW): a player's own body is absent
     // from that player's camera, yet still casts shadows and shows elsewhere.
@@ -258,22 +293,47 @@ var<workgroup> keep: bool;
 // Negative means the legacy screen-error policy. Shadows are independent.
 fn aggregate_triangle_error(id:u32)->f32 {
     if view.params.z>=0.5 || view.extra.y>=1.5 {return -1.0;}
-    let replacement=cull_voxel_replacement[id];
+    let replacement=cull_voxel_replacement[member_slot(id)];
     if replacement==0xffffffffu || (replacement&0x80000000u)==0u {return -1.0;}
-    let selected=foliage_selection[replacement&0x7fffffffu];
+    let selected=foliage_selection_at(replacement&0x7fffffffu);
     if selected.w==0u {return -1.0;}
     return bitcast<f32>(selected.z);
 }
 
+fn virtual_owner(inst: Instance) -> bool {
+    return inst.cluster_count == 0u && inst.first_cluster != 0u && (inst.flags & 32u) != 0u;
+}
+
+var<workgroup> branch_keep: bool;
+
 fn cull_instance(id: u32, li: u32) {
     if id >= INSTANCE_COUNT { return; }
     let inst = instances[id];
+    if !virtual_owner(inst) { cull_member(id, inst, li); return; }
+    // A virtual branch: its own policy (a branch on voxels is skipped
+    // whole) and bounds first, then each template composed with its pose.
+    if instance_policy(id, inst) != 1u { return; }
+    if li == 0u {
+        let radius = inst.sphere.w + cull_wind[id].z;
+        branch_keep = in_frustum(inst.sphere.xyz, radius) && !hidden_by_camera_fog(inst.sphere.xyz, radius);
+    }
+    workgroupBarrier();
+    if !workgroupUniformLoad(&branch_keep) { return; }
+    let start = inst.first_cluster >> 12u;
+    let count = inst.first_cluster & 0xfffu;
+    for (var k = 0u; k < count; k++) {
+        cull_member(VIRTUAL_MEMBER | (id << 12u) | k, compose_member(inst, instances[start + k]), li);
+        workgroupBarrier();
+    }
+}
+
+fn cull_member(id: u32, inst: Instance, li: u32) {
     let policy = instance_policy(id, inst);
     if policy != 1u {
         if li == 0u && policy == 2u { atomicAdd(&counter[3], 1u); }
         return;
     }
-    let wind_pad = cull_wind[id].z;
+    let wind_pad = cull_wind[member_slot(id)].z;
     if li == 0u {
         let radius = inst.sphere.w + wind_pad;
         keep = in_frustum(inst.sphere.xyz, radius) && !hidden_by_camera_fog(inst.sphere.xyz, radius);
@@ -326,7 +386,7 @@ fn cull_cluster(id:u32,inst:Instance,ci:u32,base_thr:f32,wind_pad:f32) {
     // Shear can stretch simplification error as well as move bounds.
     // ||I + shear|| <= 1 + |shear|; use the identical factor on both
     // sides of every parent/child cut so the DAG stays complete.
-    let error_scale = s * (1.0 + length(cull_wind[id].xy));
+    let error_scale = s * (1.0 + length(cull_wind[member_slot(id)].xy));
     let pc = to_world(inst, cl.parent.xyz);
     let aggregate_error=aggregate_triangle_error(id);
     var parent_px = select(projected(cl.parent_error * error_scale, pc, cl.parent.w * s + wind_pad), 1e30, cl.parent_error > 1e30);
@@ -396,7 +456,7 @@ fn instance_broadphase(@builtin(global_invocation_id) gid: vec3<u32>) {
     let policy = instance_policy(id, inst);
     if policy == 2u { atomicAdd(&counter[3], 1u); }
     if policy != 1u { return; }
-    let radius = inst.sphere.w + cull_wind[id].z;
+    let radius = inst.sphere.w + cull_wind[member_slot(id)].z;
     if !in_frustum(inst.sphere.xyz, radius) || hidden_by_camera_fog(inst.sphere.xyz, radius) { return; }
     let slot = atomicAdd(&counter[11], 1u);
     if slot < arrayLength(&draw_map) { draw_map[slot] = id; }
@@ -452,7 +512,7 @@ fn spatial_select_owner(id:u32,sun:bool) {
     let policy=instance_policy(id,inst);
     if policy==2u {atomicAdd(&counter[28],1u);}
     if policy!=1u {return;}
-    let radius=inst.sphere.w+cull_wind[id].z;
+    let radius=inst.sphere.w+cull_wind[member_slot(id)].z;
     if !in_frustum(inst.sphere.xyz,radius) {return;}
     if !sun && hidden_by_camera_fog(inst.sphere.xyz,radius) {return;}
     let slot=atomicAdd(&counter[11],1u);atomicAdd(&counter[25],1u);
@@ -600,7 +660,7 @@ fn cull_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
         if id>=first && id-first<count {return;}
     }
     let inst=instances[id];
-    if inst.cluster_count==0u {return;}
+    if inst.cluster_count==0u || inst.sphere.w<0.0 {return;}
     let shadow=view.params.z>0.5 || view.extra.y>1.5;
     if shadow && (inst.flags&4u)!=0u {return;}
     if !shadow && view.grass.z>0.5 && ((inst.flags>>8u)&(1u<<(u32(view.grass.z)-1u)))!=0u {return;}

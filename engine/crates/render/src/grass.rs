@@ -61,7 +61,8 @@ pub(crate) struct GrassRenderer {
 
 pub(crate) fn raster_source() -> String {
     format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
+        crate::shaders::game_mask(),
         crate::wind::common_source(),
         include_str!("shaders/grass_common.wgsl"),
         include_str!("shaders/raster.wgsl")
@@ -814,5 +815,15 @@ mod tests {
             Some(2)
         );
         assert_eq!(choose(0.6, &layers), None);
+    }
+}
+
+#[cfg(test)]
+mod game_visibility_tests {
+    #[test]
+    fn default_game_mask_keeps_raster_shader_valid() {
+        let source=super::raster_source();
+        let module=naga::front::wgsl::parse_str(&source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(&source)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(),naga::valid::Capabilities::all()).validate(&module).unwrap();
     }
 }

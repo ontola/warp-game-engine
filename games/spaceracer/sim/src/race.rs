@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Controls {
+    pub rail_aim: Option<crate::railgun::Aim>,
     pub drive: Input,
     pub fire: bool,
     pub reset: bool,
@@ -50,6 +51,19 @@ impl Weapon {
         }
     }
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AiStyle {
+    pub pace:f64, pub caution:f64, pub line:f64, pub strafe:f64,
+    pub reserve:f64, pub boost_chance:f64, pub boost_cooldown:f64, pub phase:f64,
+}
+impl AiStyle {
+    fn valid(&self)->bool {
+        (0.8..=1.2).contains(&self.pace) && (0.75..=1.3).contains(&self.caution)
+            && (-0.4..=0.4).contains(&self.line) && (0.1..=0.6).contains(&self.strafe)
+            && (25.0..=80.).contains(&self.reserve) && (0.1..=1.).contains(&self.boost_chance)
+            && (1.0..=10.).contains(&self.boost_cooldown) && (0.0..=5.).contains(&self.phase)
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Driver {
     pub motion: Motion,
@@ -73,11 +87,17 @@ pub struct Driver {
     pub shot_time: f64,
     pub shot_count: u64,
     pub ai_rng: u64,
+    pub ai_style: AiStyle,
+    pub ai_line_goal: f64,
+    pub ai_boost_next: f64,
+    pub ai_seek_item: bool,
     pub ai_next: f64,
     pub ai_line: f64,
     pub ai_pace: f64,
     pub boost_ready: f64,
     pub last_jink: f64,
+    pub rail_preview:Option<crate::railgun::Trace>,
+    pub rail_preview_at:f64,
 }
 #[derive(Clone, Debug)]
 pub struct Pickup {
@@ -115,6 +135,7 @@ pub struct Blast {
 }
 #[derive(Clone, Debug)]
 pub struct Beam {
+    pub target: Option<usize>,
     pub owner: usize,
     pub serial: u64,
     pub from: Vec3,
@@ -189,8 +210,11 @@ impl Race {
                 ..Default::default()
             })
             .collect();
-        let drivers = (0..6)
-            .map(|i| Driver {
+        let mut drivers=Vec::with_capacity(6);
+        for i in 0..6 {
+            let style:AiStyle=rules.call("personality",serde_json::json!({"seed":seed,"slot":i}))?;
+            if !style.valid() {return Err("invalid AI personality".into());}
+            drivers.push(Driver {
                 motion: Motion::default(),
                 checkpoint: Checkpoints::default(),
                 bump: Bump::default(),
@@ -217,12 +241,17 @@ impl Race {
                 shot_count: 0,
                 ai_rng: seed as u64 * 9176 + i as u64 * 104729 + 1,
                 ai_next: 0.,
-                ai_line: 0.,
-                ai_pace: 1.,
+                ai_line: style.line,
+                ai_line_goal: style.line,
+                ai_pace: style.pace,
+                ai_boost_next: style.phase,
+                ai_seek_item: false,
+                ai_style: style,
                 boost_ready: 4. + i as f64 * 0.7,
                 last_jink: -99.,
-            })
-            .collect();
+                rail_preview:None,rail_preview_at:-1.,
+            });
+        }
         let mut pickups = vec![];
         for k in 1..=(world.track.length / balance.pickup_spacing) as usize {
             let distance = k as f64 * balance.pickup_spacing;
@@ -315,10 +344,11 @@ impl Race {
     }
     pub fn ai(&mut self, i: usize) -> Controls {
         if self.clock >= self.drivers[i].ai_next {
-            let args = serde_json::json!({"r1":self.random(i),"r2":self.random(i),"r3":self.random(i),"clock":self.clock});
+            let args = serde_json::json!({"r1":self.random(i),"r2":self.random(i),"r3":self.random(i),"r4":self.random(i),"clock":self.clock,"style":self.drivers[i].ai_style});
             match self.rules.call::<serde_json::Value>("plan", args) {
                 Ok(v) => {
-                    self.drivers[i].ai_line = v["line"].as_f64().unwrap_or(0.);
+                    self.drivers[i].ai_line_goal = v["line"].as_f64().unwrap_or(0.).clamp(-0.4,0.4);
+                    self.drivers[i].ai_seek_item = v["seek_item"].as_bool().unwrap_or(false);
                     self.drivers[i].ai_pace = v["pace"].as_f64().unwrap_or(1.);
                     self.drivers[i].ai_next = v["next"].as_f64().unwrap_or(self.clock + 5.);
                 }
@@ -328,9 +358,29 @@ impl Race {
                 }
             }
         }
+        self.drivers[i].ai_line=crate::handling::toward(self.drivers[i].ai_line,self.drivers[i].ai_line_goal,0.14*DT);
+        let mut boost_request=false;
+        if self.clock>=self.drivers[i].ai_boost_next {
+            let args=serde_json::json!({"r1":self.random(i),"r2":self.random(i),"clock":self.clock,"style":self.drivers[i].ai_style});
+            match self.rules.call::<serde_json::Value>("boost_plan",args) {
+                Ok(v)=>{
+                    let next=v["next"].as_f64().unwrap_or(self.clock+1.);
+                    self.drivers[i].ai_boost_next=next.clamp(self.clock+0.1,self.clock+5.);
+                    boost_request=v["attempt"].as_bool().unwrap_or(false) && self.clock>self.drivers[i].boost_ready;
+                }
+                Err(e)=>{self.script_error=Some(e);return Controls::default();}
+            }
+        }
         let p = &self.pilots[i];
         let d = &self.drivers[i];
         let track = &self.world.track;
+        let pickup=if d.ai_seek_item && d.item.is_none() {
+            self.pickups.iter().filter_map(|item| {
+                let ahead=(item.distance-p.distance).rem_euclid(track.length);
+                (item.cooldown<=0. && (10.0..350.).contains(&ahead))
+                    .then_some((ahead+(item.x-p.x).abs()*2.,serde_json::json!({"ahead":ahead,"x":item.x})))
+            }).min_by(|a,b|a.0.total_cmp(&b.0)).map(|v|v.1)
+        }else{None};
         let n = track.sample(p.distance);
         let next = track.sample(p.distance + 100.);
         let preview: Vec<_> = [0., 30., 65., 110., 165.]
@@ -341,7 +391,7 @@ impl Race {
                 serde_json::json!({"ahead":ahead,"curve":v.curve,"hairpin":v.feature=="hairpin"})
             })
             .collect();
-        let mut args = serde_json::json!({"p":p,"node":{"curve":n.curve,"width":n.geometry.width,"zone":n.zone,"split_gap":n.split_gap,"route":n.preferred_route},"preview":preview,"hard":track.difficulty=="hard","boost_speed":BOOST_SPEED,"line":d.ai_line,"pace":d.ai_pace,"next_curve":next.curve,"next_route":next.preferred_route,"boost_ready":self.clock>d.boost_ready,"missed":d.checkpoint.missed,"has_item":d.item.is_some(),"fire_tick":self.tick%120==i as u64*17,
+        let mut args = serde_json::json!({"p":p,"node":{"curve":n.curve,"width":n.geometry.width,"zone":n.zone,"split_gap":n.split_gap,"route":n.preferred_route},"preview":preview,"hard":track.difficulty=="hard","boost_speed":BOOST_SPEED,"line":d.ai_line,"pace":d.ai_pace,"style":d.ai_style,"pickup":pickup,"next_curve":next.curve,"next_route":next.preferred_route,"boost_ready":boost_request,"missed":d.checkpoint.missed,"has_item":d.item.is_some(),"fire_tick":self.tick%120==i as u64*17,
             "near_jump":self.world.jump_distances.iter().any(|j|(j[0]-p.distance).rem_euclid(track.length)<500.),"at_jump":self.world.jump_distances.iter().any(|j|(j[0]-p.distance).rem_euclid(track.length)<180.)});
         if p.airborne {
             let (at, _, _) = track.project(d.motion.air.position, p.distance, track.length);
@@ -389,31 +439,37 @@ impl Race {
                 d.item == Some(Weapon::GlideBomb) && self.bomb_target(i).is_some()
             );
         }
-        match self.rules.call("ai", args) {
-            Ok(c) => c,
+        match self.rules.call::<Controls>("ai", args) {
+            Ok(mut c) => {
+                if self.drivers[i].item==Some(Weapon::Railgun) {
+                    c.fire=(self.tick+i as u64*3)%19==0 && self.rail_ready(i) && self.rail_trace(i,None,true).target.is_some();
+                }
+                c
+            },
             Err(e) => {
                 self.script_error = Some(e);
                 Controls::default()
             }
         }
     }
-    pub fn reset(&mut self, i: usize) {
-        let p = &mut self.pilots[i];
-        let d = &mut self.drivers[i];
+    pub fn respawn_location(&self, i: usize) -> (f64, f64) {
+        let p = &self.pilots[i]; let d = &self.drivers[i];
         let distance = if d.checkpoint.missed {
-            d.checkpoint
-                .return_distance(p, &self.gates, self.world.track.length)
-                .unwrap_or(d.safe_distance)
-        } else {
-            d.safe_distance
-        };
-        p.distance = self.world.safe_respawn(distance).max(0.);
-        let n = self.world.track.sample(p.distance);
-        p.x = if n.split_gap > 0.01 {
-            (n.split_gap + n.geometry.width) * 0.5
-        } else {
-            0.
-        };
+            d.checkpoint.return_distance(p, &self.gates, self.world.track.length).unwrap_or(d.safe_distance)
+        } else { d.safe_distance };
+        let distance = self.world.safe_respawn(distance).max(0.);
+        let n = self.world.track.sample(distance);
+        (distance, if n.split_gap > 0.01 { (n.split_gap + n.geometry.width)*0.5 } else {0.})
+    }
+    pub fn respawn_pose(&self, i: usize) -> Pose {
+        let (distance,x) = self.respawn_location(i);
+        let n = self.world.track.sample(distance);
+        Pose {origin:n.point(x,1.3),basis:n.frame(x)}
+    }
+    pub fn reset(&mut self, i: usize) {
+        let (distance,x) = self.respawn_location(i);
+        let p = &mut self.pilots[i]; let d = &mut self.drivers[i];
+        p.distance = distance; p.x = x; p.trim = 0.;
         p.speed = 90.;
         p.heading = 0.;
         p.slip = 0.;
@@ -464,7 +520,9 @@ impl Race {
         }
         let mut input: Vec<_> = (0..self.pilots.len())
             .map(|i| {
-                if self.drivers[i].bot || self.pilots[i].finished {
+                if self.pilots[i].finished {
+                    Controls::default() // Finished drivers have their own racing policy.
+                } else if self.drivers[i].bot {
                     self.ai(i)
                 } else {
                     controls.get(i).copied().unwrap_or_default()
@@ -601,7 +659,7 @@ impl Race {
             }
             p.refill(DT, self.balance.refill_rate);
             if input[i].drive.boost && p.boost > 0. {
-                d.boost_ready = self.clock + 2. + i as f64 * 0.37;
+                d.boost_ready = self.clock + d.ai_style.boost_cooldown;
             }
             if p.energy <= 0. && !p.finished {
                 self.crash(i);
@@ -637,74 +695,62 @@ impl Race {
             self.pilots.iter().all(|p| p.finished) || self.clock >= self.balance.race_timeout;
     }
     fn contacts(&mut self) {
-        for a in 0..self.pilots.len() {
-            for b in a + 1..self.pilots.len() {
-                if self.pilots[a].warp_time > 0. || self.pilots[b].warp_time > 0. {
-                    continue;
-                }
-                if self.pilots[a].airborne || self.pilots[b].airborne {
-                    if self.pilots[a].crashed
-                        || self.pilots[b].crashed
-                        || self.pilots[a].finished
-                        || self.pilots[b].finished
-                    {
+        // Resolve packs against rails repeatedly. EMP disables engines, not hulls.
+        for _ in 0..10 {
+            let mut touching=false;
+            for a in 0..self.pilots.len() {
+                for b in a+1..self.pilots.len() {
+                    if !crate::contacts::solid(&self.pilots[a]) || !crate::contacts::solid(&self.pilots[b]) {continue;}
+                    if self.pilots[a].airborne || self.pilots[b].airborne {
+                        let separation=crate::contacts::air(self.pose(a),self.pose(b));
+                        if separation.length_squared()<0.000001 {continue;}
+                        touching=true;
+                        let normal=separation.normalize();
+                        // Never push a grounded ship vertically through the road.
+                        let both=self.pilots[a].airborne && self.pilots[b].airborne;
+                        let velocity=|i:usize|if self.pilots[i].airborne {self.drivers[i].motion.air.velocity}else{self.drivers[i].motion.ground_velocity};
+                        let closing=(velocity(a)-velocity(b)).dot(normal);
+                        let impulse=(-closing).max(0.)*if both {0.55}else{1.1};
+                        for (i,sign) in [(a,1.),(b,-1.)] {
+                            if !self.pilots[i].airborne {continue;}
+                            let air=&mut self.drivers[i].motion.air;
+                            air.position+=(separation+normal*0.004)*sign*if both {0.5}else{1.};
+                            air.velocity+=normal*impulse*sign;
+                        }
                         continue;
                     }
-                    let delta = self.pose(a).origin - self.pose(b).origin;
-                    let distance = delta.length();
-                    if distance < 10. {
-                        let normal = delta.try_normalize().unwrap_or(Vec3::X);
-                        let correction = normal * (10. - distance) * 0.5;
-                        for (i, sign) in [(a, 1.), (b, -1.)] {
-                            if self.pilots[i].airborne {
-                                self.drivers[i].motion.air.position += correction * sign;
-                                let v = self.drivers[i].motion.air.velocity.dot(normal) * sign;
-                                if v < 0. {
-                                    self.drivers[i].motion.air.velocity -=
-                                        normal * (v * sign * 0.2);
-                                }
-                            } else {
-                                let right = self
-                                    .world
-                                    .track
-                                    .sample(self.pilots[i].distance)
-                                    .frame(self.pilots[i].x)
-                                    .x_axis;
-                                self.pilots[i].x += (correction * sign).dot(right) as f64;
-                            }
+                    let n=self.world.track.sample(self.pilots[a].distance);
+                    let separation=crate::contacts::ground(&self.pilots[a],&self.pilots[b],self.world.track.length,&n);
+                    if separation.length_squared()<0.000001 {continue;}
+                    touching=true;
+                    let normal=separation.normalize();
+                    let correction=separation*0.5+normal*0.002;
+                    self.pilots[a].x+=correction.x;self.pilots[b].x-=correction.x;
+                    self.pilots[a].distance+=correction.y;self.pilots[b].distance-=correction.y;
+                    let velocity=|p:&Pilot|glam::DVec2::new(p.slip,p.speed*p.heading.cos());
+                    let closing=(velocity(&self.pilots[a])-velocity(&self.pilots[b])).dot(normal);
+                    if closing<0. {
+                        let impulse=-closing*0.55;
+                        for (i,sign) in [(a,1.),(b,-1.)] {
+                            let p=&mut self.pilots[i];
+                            p.slip+=normal.x*impulse*sign;
+                            let forward=glam::DVec2::new(p.heading.sin(),p.heading.cos());
+                            p.speed=(p.speed+normal.dot(forward)*impulse*sign).max(0.);
                         }
                     }
-                    continue;
-                }
-                if !race_rules::eligible(&self.pilots[a]) || !race_rules::eligible(&self.pilots[b])
-                {
-                    continue;
-                }
-                let da = (self.pilots[a].distance - self.pilots[b].distance
-                    + self.world.track.length * 0.5)
-                    .rem_euclid(self.world.track.length)
-                    - self.world.track.length * 0.5;
-                let dx = self.pilots[a].x - self.pilots[b].x;
-                if da.abs() < 9. && dx.abs() < 9.4 {
-                    let side = if dx >= 0. { 1. } else { -1. };
-                    let correction = (9.4 - dx.abs()) * 0.5;
-                    self.pilots[a].x += side * correction;
-                    self.pilots[b].x -= side * correction;
-                    for (attacker, victim) in [(a, b), (b, a)] {
-                        if self.drivers[attacker].bump.time > 0.
-                            && !self.drivers[attacker].bump.hits.contains(&victim)
-                        {
+                    for (attacker,victim) in [(a,b),(b,a)] {
+                        if self.drivers[attacker].bump.time>0. && self.pilots[attacker].emp_time<=0.
+                            && !self.drivers[attacker].bump.hits.contains(&victim) {
                             self.drivers[attacker].bump.hits.push(victim);
-                            self.damage(
-                                attacker,
-                                victim,
-                                12.,
-                                self.drivers[attacker].bump.side * 55.,
-                            );
+                            self.damage(attacker,victim,12.,self.drivers[attacker].bump.side*55.);
                         }
                     }
                 }
             }
+            for p in &mut self.pilots {
+                if !p.airborne && !p.crashed {p.constrain(self.world.track.sample(p.distance).surface());}
+            }
+            if !touching {break;}
         }
     }
     pub(crate) fn damage(&mut self, owner: usize, target: usize, amount: f64, impulse: f64) {
@@ -759,7 +805,7 @@ impl Race {
         for b in &mut self.beams {
             b.age += DT;
         }
-        self.beams.retain(|b| b.age < 0.15);
+        self.beams.retain(|b| b.age < if b.rail {0.32}else{0.15});
         for k in 0..self.pickups.len() {
             self.pickups[k].cooldown = (self.pickups[k].cooldown - DT).max(0.);
             if self.pickups[k].cooldown > 0. {
@@ -790,6 +836,14 @@ impl Race {
             }
         }
         for i in 0..self.pilots.len() {
+            if self.rail_ready(i) {
+                if self.clock>=self.drivers[i].rail_preview_at {
+                    let aim=input.get(i).and_then(|c|c.rail_aim);
+                    let quick=self.rail_trace(i,aim,false);
+                    self.drivers[i].rail_preview=Some(if quick.target.is_some(){self.rail_trace(i,aim,true)}else{quick});
+                    self.drivers[i].rail_preview_at=self.clock+0.075;
+                }
+            }else{self.drivers[i].rail_preview=None;self.drivers[i].rail_preview_at=-1.;}
             if self.pilots[i].crashed || self.pilots[i].finished {
                 continue;
             }
@@ -824,16 +878,16 @@ impl Race {
                             match a.effect.as_str() {
                                 "emp" => {
                                     for j in 0..self.pilots.len() {
-                                        if j != i {
+                                        if j != i && self.pose(j).origin.distance_squared(pose.origin) <= a.range * a.range {
                                             self.interrupt_warp(j);
                                             self.pilots[j].emp_time = a.duration;
                                             self.pilots[j].boost = 0.;
                                         }
                                     }
-                                    self.projectiles.retain(|p| p.kind != Weapon::Missile);
+                                    self.projectiles.retain(|p| p.kind != Weapon::Missile || p.position.distance_squared(pose.origin) > a.range * a.range);
                                     self.blasts.push(Blast {
                                         position: pose.origin,
-                                        radius: 180.,
+                                        radius: a.range,
                                         age: 0.,
                                         kind,
                                     });
@@ -850,19 +904,21 @@ impl Race {
                                     }
                                 }
                                 "ray" => {
-                                    let target = self.target(i, a.cone, a.range);
-                                    let to = target
-                                        .map_or(pose.origin + pose.basis.z_axis * a.range, |j| {
-                                            self.pose(j).origin
-                                        });
+                                    let shot=self.rail_trace(i,input.get(i).and_then(|c|c.rail_aim),true);
+                                    let target=shot.target;let to=shot.to;
+                                    self.drivers[i].shot_count+=1;
                                     self.beams.push(Beam {
+                                        target,
                                         owner: i,
                                         serial: self.drivers[i].shot_count,
-                                        from: pose.origin,
+                                        from: shot.from,
                                         to,
                                         age: 0.,
                                         rail: true,
                                     });
+                                    if self.beams.iter().filter(|b|b.rail).count()>12 {
+                                        if let Some(old)=self.beams.iter().position(|b|b.rail) {self.beams.remove(old);}
+                                    }
                                     if let Some(j) = target {
                                         self.damage(i, j, a.damage, 25.);
                                     }
@@ -974,6 +1030,43 @@ impl Race {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn contact_race() -> Race {
+        let mut r=Race::new(35,"normal","city",1,3);
+        for p in &mut r.pilots {p.recovery=3.;p.distance=200.;p.x=0.;p.heading=0.;p.speed=200.;}
+        r.pilots[0].recovery=0.;r.pilots[1].recovery=0.;r
+    }
+    #[test]
+    fn emp_hulls_separate_and_transfer_rear_impact_momentum() {
+        for emp in [0.,3.] {
+            let mut r=contact_race();r.pilots[0].distance=207.;r.pilots[0].emp_time=emp;
+            r.pilots[1].speed=300.;r.contacts();
+            assert!(r.pilots[0].distance-r.pilots[1].distance>=8.9);
+            assert!(r.pilots[0].speed>200. && r.pilots[1].speed<300.);
+            assert_eq!(r.pilots[0].x,0.,"rear hits must not teleport cars sideways");
+        }
+    }
+    #[test]
+    fn rotated_emp_hulls_and_three_wide_pack_resolve() {
+        let mut r=contact_race();r.pilots[0].heading=0.7;r.pilots[0].x=7.;r.pilots[1].emp_time=3.;r.contacts();
+        let n=r.world.track.sample(r.pilots[0].distance);
+        assert!(crate::contacts::ground(&r.pilots[0],&r.pilots[1],r.world.track.length,&n).length()<0.02);
+        let mut r=contact_race();r.pilots[2].recovery=0.;
+        for i in 0..3 {r.pilots[i].x=(i as f64-1.)*8.;r.pilots[i].emp_time=3.;}
+        r.contacts();
+        for (a,b) in [(0,1),(1,2)] {assert!((r.pilots[a].x-r.pilots[b].x).abs()>9.38);}
+    }
+    #[test]
+    fn warp_and_recovery_ghosts_are_deliberate_emp_is_not() {
+        for recovery in [false,true] {
+            let mut r=contact_race();
+            if recovery {r.pilots[0].recovery=1.;}else{r.pilots[0].warp_time=1.;}
+            r.contacts();assert_eq!(r.pilots[0].x,r.pilots[1].x);
+            assert_eq!(r.pilots[0].distance,r.pilots[1].distance);
+        }
+        let mut r=contact_race();let pose=r.pose(1);r.pilots[0].airborne=true;r.pilots[0].emp_time=3.;
+        r.drivers[0].motion.air.position=pose.origin;r.drivers[0].motion.air.frame=pose.basis;
+        r.contacts();assert!(crate::contacts::air(r.pose(0),r.pose(1)).length()<0.002);
+    }
     fn missile_race() -> Race {
         let mut r = Race::new(80385, "hard", "city", 1, 3);
         r.countdown = 0.;
@@ -1057,6 +1150,21 @@ mod tests {
         assert_eq!(r.pilots[1].energy, 100.);
     }
     #[test]
+    fn emp_uses_world_radius_including_altitude_and_spares_distant_missiles() {
+        let mut r=missile_race();let center=r.pose(0).origin;
+        for (i,offset) in [(1,Vec3::X*99.),(2,Vec3::X*101.),(3,Vec3::Y*101.),(4,Vec3::Y*99.)] {
+            r.pilots[i].airborne=true;r.drivers[i].motion.air.position=center+offset;
+        }
+        r.projectiles[0].position=center+Vec3::Z*101.;
+        r.drivers[0].item=Some(Weapon::Emp);
+        r.weapons(&[Controls {fire:true,..Default::default()}]);
+        assert_eq!(r.pilots[0].emp_time,0.);
+        for i in [1,4] {assert_eq!(r.pilots[i].emp_time,3.);}
+        for i in [2,3] {assert_eq!(r.pilots[i].emp_time,0.);}
+        assert_eq!(r.projectiles.len(),1);
+        assert_eq!(r.blasts.last().unwrap().radius,100.);
+    }
+    #[test]
     fn untargeted_missile_fuses_and_emp_clears_inflight_missile() {
         let mut r = missile_race();
         for p in r.pilots.iter_mut().skip(1) {
@@ -1068,6 +1176,7 @@ mod tests {
         }
         assert!(r.projectiles.is_empty());
         let mut r = missile_race();
+        r.pilots[1].distance=40.;
         r.drivers[1].item = Some(Weapon::Emp);
         r.weapons(&[
             Controls::default(),
@@ -1133,6 +1242,18 @@ mod tests {
         }
     }
     #[test]
+    fn respawn_camera_target_matches_reset_even_after_missed_checkpoint() {
+        let mut r=Race::new(80385,"hard","city",1,3);
+        for missed in [false,true] {
+            r.drivers[0].safe_distance=3400.;
+            r.drivers[0].checkpoint.missed=missed;
+            r.pilots[0].trim=-1.; r.pilots[0].heading=1.; r.pilots[0].lift=12.;
+            let target=r.respawn_pose(0);r.reset(0);let actual=r.pose(0);
+            assert!(target.origin.distance(actual.origin)<0.001);
+            assert!(target.basis.z_axis.distance(actual.basis.z_axis)<0.001);
+        }
+    }
+    #[test]
     fn crash_respawns_and_emp_spares_owner() {
         let mut r = Race::new(35, "easy", "city", 2, 1);
         r.countdown = 0.;
@@ -1151,6 +1272,51 @@ mod tests {
         assert!(r.pilots[0].energy > 0.);
     }
     #[test]
+    fn ai_styles_and_boost_decisions_are_distinct_and_seeded() {
+        fn trace() -> (Vec<Vec<u64>>, Vec<Vec<Controls>>, Vec<[bool; 2]>) {
+            let mut r = Race::new(35, "hard", "city", 0, 3);
+            // Identical straight-line snapshots isolate driver decisions from
+            // different grid positions, collisions and track timing.
+            let distance = (0..(r.world.track.length as usize)).step_by(10)
+                .map(|v| v as f64).find(|&s| {
+                    [0.,30.,65.,100.,110.,165.].iter().all(|a| r.world.track.sample(s+a).curve.abs()<0.002)
+                        && !r.world.jump_distances.iter().any(|j| (j[0]-s).rem_euclid(r.world.track.length)<500.)
+                }).expect("safe straight for boost decisions");
+            for p in &mut r.pilots {
+                p.distance=distance; p.lap=2; p.speed=250.; p.energy=100.; p.x=0.;
+            }
+            let mut boosts=vec![Vec::new();6];
+            let mut controls=vec![Vec::new();6];
+            let mut pickup_choices=vec![[false;2];6];
+            for tick in 0..1440 {
+                r.clock=tick as f64*DT;
+                for i in 0..6 {
+                    let c=r.ai(i);
+                    if c.drive.boost {boosts[i].push(tick);}
+                    controls[i].push(c);
+                    pickup_choices[i][r.drivers[i].ai_seek_item as usize]=true;
+                }
+                assert!(r.script_error.is_none(),"{:?}",r.script_error);
+            }
+            (boosts,controls,pickup_choices)
+        }
+        let (boosts,controls,choices)=trace();
+        let (again,again_controls,_)=trace();
+        assert_eq!(boosts,again,"seeded decisions must replay exactly");
+        assert_eq!(serde_json::to_string(&controls).unwrap(),serde_json::to_string(&again_controls).unwrap());
+        assert!(boosts.iter().all(|v| !v.is_empty()),"every driver uses boost: {boosts:?}");
+        let first:std::collections::BTreeSet<_>=boosts.iter().map(|v|v[0]).collect();
+        assert!(first.len()>=4,"boost decisions should not synchronize: {boosts:?}");
+        for i in 0..6 {
+            for j in i+1..6 {
+                assert_ne!(boosts[i],boosts[j]);
+                assert!(controls[i].iter().zip(&controls[j]).any(|(a,b)| (a.drive.steer-b.drive.steer).abs()>0.02),"identical cornering lines for {i}/{j}");
+            }
+        }
+        assert!(choices.iter().any(|c| c[0]&&c[1]),"drivers must sometimes pass up pickups");
+    }
+
+    #[test]
     fn race_ai_progress() {
         for seed in [31, 33, 35] {
             let mut r = Race::new(seed, "normal", "city", 0, 1);
@@ -1160,6 +1326,7 @@ mod tests {
                     break;
                 }
             }
+            assert!(r.script_error.is_none(), "{:?}", r.script_error);
             let finish = r.pilots.iter().filter(|p| p.finished).count();
             println!("seed {seed} finishers {finish}");
             assert!(finish >= 4, "seed {seed}: {finish}");

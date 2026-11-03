@@ -66,7 +66,7 @@ fn build(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index)
         // Exact in f32: power-of-two spacing, origin a multiple of the patch.
         let x = job.origin.x + f32(i) * s;
         let z = job.origin.y + f32(j) * s;
-        let e = terrain_eval(x, z, cut_at(i, j, s, job.mask), params.seed, params.style);
+        let e = terrain_eval_world(x, z, cut_at(i, j, s, job.mask), params.seed, params.style);
         pos[t] = e.pos;
         attr[t] = vec4<f32>(e.rock, e.scree, e.wet, e.up);
         attr2[t] = vec3<f32>(e.water, e.moor, e.snow);

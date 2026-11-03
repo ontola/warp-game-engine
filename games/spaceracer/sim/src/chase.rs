@@ -1,6 +1,24 @@
 //! Original vehicle-relative chase camera. Render integration supplies this up axis.
 use crate::{handling::smooth, race_rules::Pose};
 use glam::{Mat3, Quat, Vec3};
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+pub struct Tuning {
+    pub distance: f64, pub height: f64, pub speed_pullback: f64, pub boost_pullback: f64,
+    pub fov_base: f64, pub fov_speed: f64, pub fov_surge: f64, pub fov_boost: f64, pub shake: f64,
+}
+impl Default for Tuning {
+    fn default()->Self {Self{distance:18.,height:7.,speed_pullback:0.008,boost_pullback:1.3,
+        fov_base:72.,fov_speed:10.,fov_surge:5.,fov_boost:9.,shake:1.}}
+}
+impl Tuning {
+    pub fn valid(self)->bool {
+        [self.distance,self.height,self.speed_pullback,self.boost_pullback,self.fov_base,self.fov_speed,self.fov_surge,self.fov_boost,self.shake].iter().all(|v|v.is_finite())
+            && (12.0..=24.).contains(&self.distance) && (3.0..=9.).contains(&self.height)
+            && (0.0..=0.02).contains(&self.speed_pullback) && (0.0..=3.).contains(&self.boost_pullback)
+            && (60.0..=80.).contains(&self.fov_base) && [self.fov_speed,self.fov_surge,self.fov_boost].iter().all(|v|(0.0..=15.).contains(v))
+            && (0.0..=2.).contains(&self.shake)
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Chase {
     pub position: Vec3,
@@ -47,6 +65,10 @@ impl Chase {
         effects: bool,
         aspect: f64,
     ) {
+        self.update_tuned(pose,speed,boosting,acceleration,dt,snap,effects,aspect,Tuning::default());
+    }
+    pub fn update_tuned(&mut self, pose:Pose, speed:f64, boosting:bool, acceleration:f64,
+        dt:f64, snap:bool, effects:bool, aspect:f64, tuning:Tuning) {
         let previous = self.position;
         let rush = if effects {
             smooth(80.0, 465.0, speed)
@@ -94,13 +116,13 @@ impl Chase {
                 .normalize();
         }
         let frame = Mat3::from_quat(self.rotation);
-        let wanted_distance = 18.0 + speed * 0.008 + self.boost * 1.3 + self.surge * 0.6;
+        let wanted_distance = tuning.distance + speed * tuning.speed_pullback + self.boost * tuning.boost_pullback + self.surge * 0.6;
         self.distance = if snap || !self.initialized {
             wanted_distance
         } else {
             blend(self.distance, wanted_distance, dt, 5.0)
         };
-        self.position = pose.origin - frame.z_axis * self.distance as f32 + frame.y_axis * 7.0;
+        self.position = pose.origin - frame.z_axis * self.distance as f32 + frame.y_axis * tuning.height as f32;
         let target = pose.origin + frame.z_axis * 24.0 + frame.y_axis * 1.5;
         let z = (self.position - target).normalize();
         let x = frame.y_axis.cross(z).normalize();
@@ -111,8 +133,8 @@ impl Chase {
         } else {
             0.0
         };
-        let reference = (72.0 + rush * 10.0 + self.surge * 5.0 + self.boost * 9.0 + extreme * 4.0)
-            .clamp(72.0, 100.0);
+        let reference = (tuning.fov_base + rush*tuning.fov_speed + self.surge*tuning.fov_surge + self.boost*tuning.fov_boost + extreme*4.)
+            .clamp(tuning.fov_base, 100.0);
         let fov = (2.0
             * ((reference.to_radians() * 0.5).tan() * (16.0 / 9.0 / aspect).min(1.0)).atan())
         .to_degrees();
@@ -125,7 +147,7 @@ impl Chase {
             self.clock += dt.min(0.05);
         }
         let shake = if effects && !snap {
-            self.boost * (0.4 + 0.6 * rush)
+            self.boost * (0.4 + 0.6 * rush) * tuning.shake
         } else {
             0.0
         };

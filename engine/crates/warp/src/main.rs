@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! warp: run a game made only of Luau scripts, synth patches and assets.
 //!
 //!   warp DIR                      (as `warp run DIR`)
@@ -16,7 +17,7 @@ use warp::{LuaGame, Overrides};
 const USAGE: &str = "warp: run a game made of Luau scripts, synth patches and assets (engine/docs/warp-cli.md)
 
   warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]
-      play in a window; --live serves MCP for an AI (engine/docs/live-control.md).
+      play fullscreen (--windowed opts out); --live serves MCP for an AI (engine/docs/live-control.md).
       A GameNight party host (GAMENIGHT=1 or GAMENIGHT_ADDR) decides the players.
   warp DIR
       the same as warp run DIR
@@ -39,6 +40,17 @@ SKY: gradient | sunrise | morning | noon | afternoon | sunset | night, optionall
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Read only the small manifest before creating the loading taskbar item.
+    // Packaged Luau games get their own name and optional icon, not "Warp".
+    let path=if args.first().is_some_and(|a|a=="run") {args.get(1).map(PathBuf::from)}
+        else if args.first().is_some_and(|a|is_game(Path::new(a))) {args.first().map(PathBuf::from)}
+        else if args.is_empty() {bundled()}else{None};
+    let metadata=path.as_ref().and_then(|p|if p.is_file(){warp::config::GameToml::load_file(p).ok()}else{warp::config::GameToml::load(p).ok()});
+    let icon=path.as_ref().and_then(|p| {
+        let dir=if p.is_file(){p.parent().unwrap_or(p)}else{p};
+        ["icon.png","assets/icon.png","assets/branding/logo.png"].iter().find_map(|f|std::fs::read(dir.join(f)).ok())
+    });
+    app::startup::init(metadata.as_ref().map_or("Warp",|m|m.title.as_str()),icon.as_deref());
     if let Err(e) = run(args) {
         eprintln!("{e}");
         std::process::exit(1);
@@ -122,7 +134,7 @@ fn play(args: &[String]) -> Result<(), String> {
     }
     let cfg = app::Config {
         title: game.cfg.title.clone(), size: size(args, game.cfg.size)?, tick_hz: game.cfg.tick_rate,
-        fullscreen: args.iter().any(|a| a == "--fullscreen"), keyboard: true, pointer: false, frames: parse(args, "--frames")?.unwrap_or(0), max_render_height: None, target_fps: None,
+        fullscreen: app::startup::fullscreen(args), keyboard: true, pointer: false, frames: parse(args, "--frames")?.unwrap_or(0), max_render_height: None, target_fps: None,
     };
     let r = app::run(cfg, &mut game);
     drop(speaker);

@@ -366,6 +366,9 @@ pub struct TextureSource {
 /// Startup graphics modifiers, independent of windowing or XR presentation.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Graphics {
+    /// Compose sprites after world motion blur. Useful for single-frame arcs,
+    /// tracers and screen-facing labels that must not inherit background motion.
+    pub sharp_sprites: bool,
     /// Coarsest mesh LOD, indexed instancing and vertex-lit colour. Requires
     /// plain CPU-owned meshes; no skinning, GPU debris or procedural animation.
     pub minimal_forward: bool,
@@ -385,6 +388,13 @@ pub struct Scene {
     pub clusters: Vec<GpuCluster>,
     pub meshes: Vec<MeshRef>,
     pub instances: Vec<GpuInstance>,
+    /// Camera-independent source-geometry sun map, baked once per assembled
+    /// level and sunlight state. Dynamic slots stay in the live shadow maps.
+    /// One shared 4096-square Depth32Float map adds 64 MiB, independent of views.
+    pub stage_sun: bool,
+    /// Live transform pools excluded from stage-static shadow ownership.
+    /// Slots::reserve registers these, including currently empty slots.
+    pub dynamic_instances: Vec<std::ops::Range<usize>>,
     pub materials: Vec<Material>,
     /// Procedural car surfaces, referenced through `CAR_SHIFT` flag bits.
     /// `Renderer::set_car_materials` replaces them without a rebuild.
@@ -499,7 +509,9 @@ impl Scene {
     /// runtime state on the same renderer. This does not compare textures or
     /// dynamic instance/material/auxiliary values; those still need restoring.
     pub fn same_reserved_geometry(&self, other: &Self) -> bool {
-        self.instances.len() == other.instances.len() && self.materials.len() == other.materials.len()
+        self.graphics.sharp_sprites == other.graphics.sharp_sprites
+            && self.stage_sun == other.stage_sun && self.dynamic_instances == other.dynamic_instances
+            && self.instances.len() == other.instances.len() && self.materials.len() == other.materials.len()
             && self.aux.len() == other.aux.len() && self.meshes.len() == other.meshes.len()
             && self.skinning.actors.len() == other.skinning.actors.len()
             && self.cluster_verts == other.cluster_verts && self.tris == other.tris

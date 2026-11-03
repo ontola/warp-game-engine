@@ -17,8 +17,6 @@ const RETRY: Duration = Duration::from_millis(250);
 const OFF_SCREEN_AFTER: Duration = Duration::from_secs(8);
 /// Stop asking for the screen after this; the window server said no.
 const CLAIM_FOR: Duration = Duration::from_secs(6);
-/// A window still waiting for its first frame shows itself after this.
-const SHOW_ANYWAY: Duration = Duration::from_secs(5);
 /// Where a parked window goes.
 const PARKED: PhysicalPosition<i32> = PhysicalPosition::new(-30000, -30000);
 
@@ -47,7 +45,7 @@ impl Manners {
     /// take the focus from the game being played.
     pub fn first(&mut self, wish: Screen, attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
         let attrs = attrs.with_visible(false);
-        // SHOW_ANYWAY counts from the window, not from loading the game.
+        // Loading stays in the taskbar until a correctly sized frame is ready.
         self.since = Instant::now();
         if wish != Screen::Hidden { return attrs; }
         self.screen = Screen::Hidden;
@@ -66,6 +64,7 @@ impl Manners {
         let size = w.inner_size();
         if [size.width, size.height] != surface { return; }
         w.set_visible(true);
+        crate::startup::ready();
         println!("{} window ({}): shown with its first frame, {}x{}", stamp(), process(), surface[0], surface[1]);
         if self.screen == Screen::Fullscreen { w.focus_window(); }
         self.shown = true;
@@ -92,13 +91,6 @@ impl Manners {
     pub fn step(&mut self, w: &Window, focused: bool, fullscreen: bool) {
         // A window shown by its owner (Sideways shows its own).
         if !self.shown && w.is_visible() == Some(true) { self.shown = true; }
-        // A window server that keeps an invisible window from presenting:
-        // show it anyway rather than never.
-        if !self.shown && self.screen != Screen::Hidden && self.since.elapsed() >= SHOW_ANYWAY {
-            w.set_visible(true);
-            println!("{} window ({}): shown without a matching frame", stamp(), process());
-            self.shown = true;
-        }
         if self.settled { return; }
         let now = Instant::now();
         if self.asked.is_some_and(|t| now - t < RETRY) { return; }

@@ -17,7 +17,7 @@ twin-stick shooter with hundreds of shots, bursts and rings at once.
 ```sh
 cargo build --release -p warp          # target/release/warp
 warp new my-game                       # a starter game
-warp run my-game                       # play it in a window
+warp run my-game                       # play fullscreen (--windowed to opt out)
 warp run my-game --live                # ... and let Claude change it over MCP
 ```
 
@@ -25,7 +25,7 @@ warp run my-game --live                # ... and let Claude change it over MCP
 
 | Command | What it does |
 | --- | --- |
-| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play in a window, with sound. `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a GameNight party host, the host's seats decide the players (see [GameNight](#gamenight)). |
+| `warp run DIR [--players N] [--bots N] [--live [PORT]] [--sky SKY] [--seed N] [--size WxH] [--fullscreen] [--frames N]` | Play fullscreen, with sound (`--windowed` opts out). `--live` serves MCP ([live control](live-control.md); all its `--live-*` flags work). `--frames N` quits after N frames (a smoke test). Launched by a GameNight party host, the host's seats decide the players (see [GameNight](#gamenight)). |
 | `warp DIR` | The same as `warp run DIR`. This is how a GameNight host starts an installed game: the runtime gets the game folder. |
 | `warp script DIR FILE.json --out OUT [--players N] [--sky SKY] [--seed N]` | A headless playtest in the [`app::script` format](building-and-running.md): ticks with controls, `cmd` lines, `expect` and `until` checks, `capture` (PNG), `state` (JSON) and `audio` (WAV). Exits with status 1 when a check fails. |
 | `warp serve DIR [--live [PORT]] [--seconds T] [--size WxH]` | Headless in real time with live control on (port 7878 by default). Renders a frame only for a screenshot. Sound plays into a mixer that is never heard. |
@@ -491,3 +491,15 @@ KERN_ADAPTER=software warp script games/hello-warp games/hello-warp/scripts/smok
 - No interpolation between ticks: entities move at the tick rate.
 - GameNight party settings (`declare_settings`), phone buttons
   (`declare_actions`) and per-player settings are not exposed to Luau yet.
+
+### Native game visibility masks
+
+Native Rust integrations can call `render::set_game_mask(source)` before renderer
+construction. Provide WGSL `fn game_mask(world:vec3<f32>, instance:u32,
+material:u32)->bool`; true discards that fragment in both opaque colour and depth
+raster passes. The default keeps every fragment. The function may read scene
+`aux` and `materials`; use an early range rejection for unrelated geometry. The
+mask is fixed for a renderer lifetime (not a Luau API or hot-reloaded shader).
+Reserve game-owned data in `Scene::aux` before engine reservations; update only
+that range with `Renderer::update_aux_words`. Writes are bounds checked. This is
+for opaque reconstruction/clipping, not forward transparency or ray-query masks.

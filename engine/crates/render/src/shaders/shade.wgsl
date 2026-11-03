@@ -69,6 +69,30 @@ struct Material {
 @group(0) @binding(2) var<storage, read> tris: array<u32>;
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
+
+// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
+// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
+// rows are its part_wind pose and its first_cluster packs the templates
+// (start << 12 | count); a member is pose x template.
+const VIRTUAL_MEMBER: u32 = 0x80000000u;
+fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
+fn compose_member(owner: Instance, t: Instance) -> Instance {
+    var m = t;
+    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
+    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
+    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
+    let c = vec4<f32>(t.sphere.xyz, 1.0);
+    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
+    m.scale = t.scale * owner.scale;
+    // The owner's history epoch (bit 7) marks a woken pose for motion.
+    m.pad = (t.pad & ~0x80u) | (owner.pad & 0x80u);
+    return m;
+}
+fn instance_at(id: u32) -> Instance {
+    if (id & VIRTUAL_MEMBER) == 0u { return instances[id]; }
+    let owner = instances[(id >> 12u) & 0x7ffffu];
+    return compose_member(owner, instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+}
 @group(0) @binding(5) var<storage, read> materials: array<Material>;
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
@@ -136,6 +160,7 @@ override FEATURE_CARS: bool = true;
 // Procedural rock and lava surfaces (procedural_surface.wgsl).
 override FEATURE_PROCEDURAL: bool = true;
 override FEATURE_GRASS: bool = true;
+override FEATURE_GRASS_SHADE: bool = true;
 override FEATURE_TRACKS: bool = true;
 override FEATURE_WORLD_TERRAIN: bool = true;
 override FEATURE_FOLIAGE_PAGES: bool = true;
@@ -150,6 +175,99 @@ var<workgroup> hidden_meadow_count:atomic<u32>;
 override SKY_TILES: bool = false;
 struct ShadeTiles { x: atomic<u32>, y: u32, z: u32, pad: u32, tiles: array<u32> };
 @group(1) @binding(17) var<storage,read_write> shade_tiles: ShadeTiles;
+// Rasterized voxel trees (voxel_forest.rs Stage::Splats): their depth,
+// reversed Z, 0 where there is none. A pixel they cover in front of the
+// opaque surface is theirs; its composite replaces whatever shade wrote.
+override VOXEL_OCCLUSION: bool = false;
+@group(1) @binding(18) var voxel_depth: texture_depth_2d;
+// Rasterized voxel trees in the scene's own visibility buffer (bit 31 of the
+// id, voxel_forest Stage::Splats): their surface, packed by
+// voxel_splat_gbuffer, lit here like the leaves they stand for.
+override VOXEL_SURFACE: bool = false;
+// Voxel pixels in their own small pass (shade_voxels) instead of inside
+// the big shade kernel, whose register footprint they would share.
+override VOXEL_PASS: bool = false;
+// Which pixels this shade pipeline lights (frame.rs): 0 all, 1 only terrain
+// (TERRAIN materials, procedural or not: a lean specialisation without cars,
+// foliage, grass lighting or procedural rock), 2 everything else (both
+// terrain paths compiled out).
+// Like the voxel pass: the kernel's size, not its work, set the pace.
+override SHADE_CLASS: u32 = 0u;
+override SHADE_DIAGNOSTICS: bool = true;
+const VOXEL_SKY_LIFT: f32 = 1.0;
+@group(1) @binding(20) var voxel_surface: texture_2d<u32>;
+
+// A voxel pixel: the same sun, sky, contact and fog terms as a procedural
+// leaf in `shade`, from the voxel's albedo, picked normal lobe and leaf
+// fraction instead of a triangle's.
+fn shade_voxel(px: vec2<i32>, size: vec2<u32>, dir: vec3<f32>, depth: f32) {
+    let ndc = vec2<f32>((f32(px.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(px.y) + 0.5) / view.size.y * 2.0);
+    let hit = view.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
+    let p = hit.xyz / hit.w;
+    let dist = distance(p, view.cam.xyz);
+    // voxel_splat_gbuffer: albedo, roughness and leaf fraction (unorm8), the
+    // normal, the tree's own sun transmittance (unorm8) and where the sun ray
+    // leaves its box (quarter metres).
+    let g = textureLoad(voxel_surface, px, 0);
+    let base = vec3<f32>(unpack2x16float(g.x), unpack2x16float(g.y & 0xffffu).x);
+    var n = normalize(vec3<f32>(unpack2x16float(g.z), unpack2x16float(g.w & 0xffffu).x));
+    let rough = clamp(f32((g.y >> 16u) & 255u) / 255.0, 0.04, 1.0);
+    let leaf = f32(g.y >> 24u) / 255.0;
+    let own = f32((g.w >> 16u) & 255u) / 255.0;
+    let exit = f32(g.w >> 24u) / 4.0;
+    let l = light.sun_dir.xyz;
+    let v = -dir;
+    // Other casters from the sun maps past this tree, its own crown from
+    // its cells: the maps hold it too, at their texel, and lit its shadow
+    // side through their bias.
+    // A whole plant's maps hold it at a coarse level with a texel of bias:
+    // they shade it too little on their own, its cells too little alone.
+    // Past the shared sun map a crown's light is its own cells' business:
+    // the coarse canopy march that would stand in for its neighbours cost a
+    // quarter of the frame at forest views (4 ms of 37 at the playtest's
+    // camera 4). Hills still shade it.
+    var others = 1.0;
+    if sun_coverage_fade(light.shadow_view_proj, p, 0.45) < 1.0 {
+        others = shadow_at_surface(p, n * sign(dot(n, l) + 1e-4), vec3<f32>(0.0), 0.0);
+    } else if FEATURE_WORLD_TERRAIN && sun_visibility_required() {
+        others = world_terrain_sun_visibility(p, n, 0.0);
+    }
+    // Out there its neighbours' shade is folded into its own: the plant's
+    // full transmittance instead of the square root the maps pair with.
+    let outside = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
+    var shadow = mix(1.0, others * mix(sqrt(own), own * own, outside), light.sun_color.w);
+    let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow;
+    let sky_vis = sky_visibility(p + n * VOXEL_SKY_LIFT, n);
+    let back_sky_vis = sky_visibility(p - n * VOXEL_SKY_LIFT, -n);
+    let refl = reflect(dir, n);
+    // No screen-space AO: a voxel's blocky depth darkened its own crown to
+    // 60 % of the leaves' sky light (forest_ladder, sun_lux=0).
+    let contact = contact_visibility(p + n * 0.025, n, refl, 0xffffffffu);
+    let bounce = gi.bounce.rgb * (gi.bounce.w * sky_vis + light.sun_dir.w * max(light.sun_dir.y, 0.0) * shadow);
+    let front = (sky_irradiance(n) * sky_vis + bounce * (1.0 - sky_vis)) * contact.x;
+    let back = (sky_irradiance(-n) * back_sky_vis + bounce * (1.0 - back_sky_vis)) * contact.x;
+    let spec_contact = mix(contact.y, contact.x, smoothstep(0.08, 0.6, rough));
+    let env = mix(bounce / PI, environment(refl, rough, bounce), sky_vis) * spec_contact;
+    let response = thin_foliage_response(base, n, v, rough, leaf, sun_e, front, back, env);
+    var rad = response.direct + response.indirect + response.specular;
+    rad = apply_distance_fog(rad, dist, dir);
+    if light.sky.z > 1.5 && light.sky.z < 2.5 { rad = base * 6000.0; }
+    textureStore(out_hdr, px, vec4<f32>(min(rad, vec3<f32>(65504.0)), 1.0));
+}
+// Coarse terrain material (TERRAIN_COARSE): field_surface once per 2x2
+// pixels, at each quad's centre, packed by terrain_coarse below. Where a
+// pixel spans more than COARSE_FOOTPRINT_M of ground, shade interpolates it
+// instead of evaluating the material itself; lighting stays per pixel.
+// 8 cm: from about 100 m at 1440p, also straight down from 280 m (a 0.3 m
+// threshold never triggered there). A/B at the playtest cameras: PSNR 44-46
+// dB, under 0.01 % of pixels off by more than 3 %.
+override TERRAIN_COARSE: bool = false;
+// KERN_COARSE_FOOTPRINT_M trades ground detail for frame time (A/B only).
+override COARSE_FOOTPRINT_M: f32 = 0.08;
+@group(1) @binding(19) var terrain_coarse_tex: texture_2d<u32>;
+// Group 3, beside the bakes' outputs: shade.wgsl is shared, and group 2
+// belongs to the passes that include it.
+@group(3) @binding(32) var terrain_coarse_out: texture_storage_2d<rgba32uint, write>;
 var<workgroup> tile_has_geometry: atomic<u32>;
 
 struct Gi {
@@ -1058,6 +1176,7 @@ fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
 // instead of pushing every possible caster away by its unbounded slope.
 var<private> sun_receiver_tri: array<vec3<f32>,3>;
 var<private> sun_receiver_tri_set: bool;
+var<private> sun_receiver_error: f32;
 fn shadow_cross2(a:vec2<f32>,b:vec2<f32>)->f32 { return a.x*b.y-a.y*b.x; }
 fn shadow_triangle_contains(q:vec2<f32>,a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,orientation:f32)->bool {
     return shadow_cross2(b-a,q-a)*orientation>=0.0
@@ -1149,6 +1268,55 @@ fn sun_coverage_fade(projection: mat4x4<f32>, p: vec3<f32>, blend_start: f32) ->
     return max(smoothstep(blend_start, 1.0, edge), smoothstep(0.0, 1.0, depth_edge));
 }
 
+// Stage-wide texels can span metres. Evaluate receiver depth at each tap,
+// instead of comparing sloped ground to a single centre depth (striped acne).
+fn stage_sun_visibility(p:vec3<f32>,plane_n:vec3<f32>)->f32 {
+    let projection=far_sun.view_proj;
+    let c=projection*vec4<f32>(p,1.);
+    let size=vec2<i32>(textureDimensions(far_sun_tex));
+    let q=(c.xy*vec2<f32>(.5,-.5)+.5)*vec2<f32>(size)-.5;
+    let base=vec2<i32>(floor(q));let f=fract(q);
+    let row_x=vec3<f32>(projection[0].x,projection[1].x,projection[2].x);
+    let row_y=vec3<f32>(projection[0].y,projection[1].y,projection[2].y);
+    let row_z=vec3<f32>(projection[0].z,projection[1].z,projection[2].z);
+    let denominator=dot(plane_n,-normalize(row_z));var gradient=vec2<f32>(0.);
+    if dot(plane_n,plane_n)>1e-12 && abs(denominator)>1e-4 {
+        gradient=vec2<f32>(dot(plane_n,normalize(row_x)),-dot(plane_n,normalize(row_y)))
+            *(far_sun.params.x*length(row_z)/denominator);
+    }
+    // Include projection XY roundoff propagated through the receiver slope.
+    // At grazing sunlight a sub-millipixel XY error is larger than depth ULPs.
+    let xy_error=4.7683716e-7*vec2<f32>(size)*(vec2<f32>(dot(abs(row_x),abs(p)),dot(abs(row_y),abs(p)))+abs(projection[3].xy)+1.);
+    // Visible and cached meshes can use different cuts of the LOD tree.
+    // Their measured error bounds prevent their own hills from becoming dark
+    // triangle patches. This disappears with source geometry on both sides.
+    let geometry_error=sun_receiver_error+max(0.,far_sun.params.w-1.)*far_sun.params.x;
+    let epsilon=4.7683716e-7*(dot(abs(row_z),abs(p))+abs(projection[3].z)+1.)+dot(abs(gradient),xy_error)+length(row_z)*geometry_error;
+    let clipped=sun_receiver_tri_set && dot(plane_n,plane_n)>1e-12;
+    var triangle:array<vec2<f32>,3>;var orientation=0.;
+    if clipped {
+        for(var i=0;i<3;i++) {
+            let vertex=projection*vec4<f32>(sun_receiver_tri[i],1.);
+            triangle[i]=(vertex.xy*vec2<f32>(.5,-.5)+.5)*vec2<f32>(size)-.5;
+        }
+        orientation=sign(shadow_cross2(triangle[1]-triangle[0],triangle[2]-triangle[0]));
+    }
+    var lit=0.;var total=0.;
+    for(var y=0;y<2;y++){for(var x=0;x<2;x++){
+        let pixel=clamp(base+vec2<i32>(x,y),vec2<i32>(0),size-1);
+        if clipped && (orientation==0. || !shadow_triangle_contains(vec2<f32>(pixel),triangle[0],triangle[1],triangle[2],orientation)){continue;}
+        let weight=select(1.-f.x,f.x,x==1)*select(1.-f.y,f.y,y==1);
+        let reference=c.z+dot(gradient,vec2<f32>(pixel)-q)-epsilon;
+        lit+=weight*select(0.,1.,reference<=textureLoad(far_sun_tex,pixel,0,0));total+=weight;
+    }}
+    if total>1e-8 {return lit/total;}
+    let nearest=clamp(vec2<i32>(floor(q+.5)),vec2<i32>(0),size-1);
+    return select(0.,1.,c.z-epsilon<=textureLoad(far_sun_tex,nearest,0,0));
+}
+
+// Distant ground: the sun march of `distant_sun_visibility`, interpolated
+// from terrain_coarse's quads (in the terrain shader only).
+var<private> coarse_sun_transmittance: f32 = 1.0;
 fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32 {
     if FEATURE_FOLIAGE_PAGES {
         let page=foliage_page_visibility(p,n,plane_n);
@@ -1170,13 +1338,18 @@ fn distant_sun_visibility(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
             let receiver_n = select(n, plane_n, architecture);
             let c = far_sun.view_proj * vec4<f32>(p + (receiver_n + light.sun_dir.xyz) * bias, 1.0);
             let uv = c.xy * vec2<f32>(0.5,-0.5) + 0.5;
-            mapped = textureSampleCompareLevel(far_sun_tex, shadow_samp, uv, 0, c.z);
+            if far_sun.params.w>0.5 {mapped=stage_sun_visibility(p,plane_n);}
+            else {mapped = textureSampleCompareLevel(far_sun_tex, shadow_samp, uv, 0, c.z);}
         }
         if fade <= 0.0 { return mapped; }
     }
     var fallback = 1.0;
     // vol_dims.w bit 4: no foliage and no heightfield, the march returns 1.
-    if gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u {
+    if SHADE_CLASS == 1u && TERRAIN_COARSE {
+        // Compiled out of the terrain shader: its pixels take the march from
+        // terrain_coarse's quads.
+        fallback = coarse_sun_transmittance;
+    } else if gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u {
         fallback = transmittance(p + n * 0.2, light.sun_dir.xyz, 50.0);
     }
     return mix(mapped, fallback, fade);
@@ -1199,7 +1372,9 @@ fn shadow_detail_receiver(p: vec3<f32>, n: vec3<f32>, plane_n: vec3<f32>) -> f32
     var far = shadow_filter(shadow_tex, light.shadow_view_proj, light.sky.w, p, n, plane_n);
     // The outer map uses actual alpha-tested tree geometry, not the coarse
     // density field that wrongly buried sunlit crowns in their own shadow.
-    let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.75);
+    // Over the outer 55 % of the map: sharp tree shadows thin out into the
+    // coarse distant field instead of meeting it at a line.
+    let coverage_fade = sun_coverage_fade(light.shadow_view_proj, p, 0.45);
     if coverage_fade > 0.0 && (far_sun.params.z > 0.5 || foliage_sun_pages.counts.z != 0u || gi.vol_dims.w != 0u) {
         far = mix(far, distant_sun_visibility(p,n,plane_n), coverage_fade);
     }
@@ -1419,15 +1594,20 @@ fn terrain_mapping(p: vec3<f32>) -> TerrainMapping {
     return mapping;
 }
 
+// Away from a seam between two turns only one of them is sampled.
 fn terrain_layer_normal(l: i32, uv: vec2<f32>, scale: f32, mapping: TerrainMapping) -> vec2<f32> {
-    let a = mapping.a * nrm(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale);
-    let b = mapping.b * nrm(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale);
+    var a = vec2<f32>(0.0);
+    var b = vec2<f32>(0.0);
+    if mapping.blend < 1.0 { a = mapping.a * nrm(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale); }
+    if mapping.blend > 0.0 { b = mapping.b * nrm(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale); }
     return mix(a, b, mapping.blend);
 }
 
 fn terrain_layer(l: i32, uv: vec2<f32>, scale: f32, mapping: TerrainMapping) -> vec3<f32> {
-    let a = tex_w(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale).rgb;
-    let b = tex_w(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale).rgb;
+    var a = vec3<f32>(0.0);
+    var b = vec3<f32>(0.0);
+    if mapping.blend < 1.0 { a = tex_w(l, mapping.a * uv / scale + mapping.offset_a, mapping.a * fp.dx.xz / scale, mapping.a * fp.dy.xz / scale).rgb; }
+    if mapping.blend > 0.0 { b = tex_w(l, mapping.b * uv / scale + mapping.offset_b, mapping.b * fp.dx.xz / scale, mapping.b * fp.dy.xz / scale).rgb; }
     return mix(a, b, mapping.blend);
 }
 
@@ -1617,6 +1797,206 @@ fn thin_foliage_response(base:vec3<f32>,n:vec3<f32>,v:vec3<f32>,rough:f32,leaf_f
     return result;
 }
 
+// Octahedral unit vectors, for the coarse normal.
+fn oct_encode(n: vec3<f32>) -> vec2<f32> {
+    let m = n / (abs(n.x) + abs(n.y) + abs(n.z));
+    let wrapped = (1.0 - abs(m.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), m.xy >= vec2<f32>(0.0));
+    return select(wrapped, m.xy, m.z >= 0.0);
+}
+
+fn oct_decode(e: vec2<f32>) -> vec3<f32> {
+    var n = vec3<f32>(e, 1.0 - abs(e.x) - abs(e.y));
+    let t = max(-n.z, 0.0);
+    n.x += select(t, -t, n.x >= 0.0);
+    n.y += select(t, -t, n.y >= 0.0);
+    return normalize(n);
+}
+
+// The normal's two low bits hold which pixel of the quad it was taken at.
+fn coarse_pack(so: SurfaceOut, sun: f32, sun_transmittance: f32, rep: u32) -> vec4<u32> {
+    return vec4<u32>(pack2x16float(so.albedo.rg), pack2x16float(vec2<f32>(so.albedo.b, so.rough)),
+        (pack2x16snorm(oct_encode(so.normal)) & ~3u) | rep, pack2x16float(vec2<f32>(sun, sun_transmittance)));
+}
+
+fn coarse_rep(c: vec2<i32>, t: vec4<u32>) -> vec2<i32> {
+    return min(c * 2 + vec2<i32>(i32(t.z & 1u), i32((t.z >> 1u) & 1u)), vec2<i32>(view.size.xy) - 1);
+}
+
+// The coarse sun march at full-resolution pixel `px`: bilinear over the
+// quads that sampled the same surface (depth within 2 %), lit if none did.
+fn coarse_sun_at(px: vec2<i32>, depth: f32) -> f32 {
+    let dims = vec2<i32>(textureDimensions(terrain_coarse_tex));
+    let q = (vec2<f32>(px) + 0.5) * 0.5 - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    var sum = 0.0;
+    var total = 0.0;
+    for (var k = 0; k < 4; k++) {
+        let o = vec2<i32>(k & 1, k >> 1);
+        let c = clamp(base + o, vec2<i32>(0), dims - 1);
+        let t = textureLoad(terrain_coarse_tex, c, 0);
+        let value = unpack2x16float(t.w).y;
+        if value < 0.0 { continue; }
+        let d = textureLoad(depth_tex, coarse_rep(c, t), 0);
+        if abs(d - depth) > 0.02 * depth { continue; }
+        let wgt = max(select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1), 1e-4);
+        sum += value * wgt;
+        total += wgt;
+    }
+    return select(1.0, sum / total, total > 0.0);
+}
+
+@compute @workgroup_size(8, 8)
+fn terrain_coarse(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let size = vec2<u32>(view.size.xy);
+    let half = (size + 1u) / 2u;
+    if gid.x >= half.x || gid.y >= half.y { return; }
+    let cx = vec2<i32>(gid.xy);
+    let invalid = vec4<u32>(0u, pack2x16float(vec2<f32>(0.0, -1.0)), 0u, pack2x16float(vec2<f32>(0.0, -1.0)));
+    // The quad's first terrain pixel (`rep`, kept in the normal's low bits)
+    // stands for it, so ground between tree trunks still has a sample.
+    var px = vec2<i32>(-1);
+    var id = 0u;
+    var rep = 0u;
+    for (var k = 0u; k < 4u; k++) {
+        let c = min(cx * 2 + vec2<i32>(i32(k & 1u), i32(k >> 1u)), vec2<i32>(size) - 1);
+        if textureLoad(depth_tex, c, 0) <= 0.0 { continue; }
+        let candidate = textureLoad(vis_tex, c, 0).r;
+        if (candidate & 0x80000000u) != 0u { continue; }
+        let flags = materials[clusters[visible[candidate >> 7u].y].material].flags;
+        if (flags & 2u) != 0u && (flags >> 16u) == 0u { px = c; id = candidate; rep = k; break; }
+    }
+    if px.x < 0 { textureStore(terrain_coarse_out, cx, invalid); return; }
+    let vis = visible[id >> 7u];
+    let cl = clusters[vis.y];
+    let m = materials[cl.material];
+    let inst = instance_at(vis.x);
+    let packed = tris[cl.first_tri + (id & 127u)];
+    var vi: array<u32, 3>;
+    for (var k = 0u; k < 3u; k++) { vi[k] = vtx(cluster_verts[cl.first_vert + ((packed >> (8u * k)) & 0xffu)]); }
+    // The ray through the quad's centre, on the triangle of its terrain pixel.
+    let centre = vec2<f32>(cx * 2) + 1.0;
+    let ndc = vec2<f32>(centre.x / view.size.x * 2.0 - 1.0, 1.0 - centre.y / view.size.y * 2.0);
+    let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
+    let dir = normalize(far.xyz / far.w - view.cam.xyz);
+    let p0 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[0])));
+    let p1 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[1])));
+    let p2 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[2])));
+    let e1 = p1 - p0;
+    let e2 = p2 - p0;
+    let pv = cross(dir, e2);
+    let det = dot(e1, pv);
+    let tv = view.cam.xyz - p0;
+    let inv = select(1.0 / det, 0.0, abs(det) < 1e-12);
+    let b1 = clamp(dot(tv, pv) * inv, 0.0, 1.0);
+    let b2 = clamp(dot(dir, cross(tv, e1)) * inv, 0.0, 1.0 - b1);
+    let b0 = 1.0 - b1 - b2;
+    let p = p0 * b0 + p1 * b1 + p2 * b2;
+    var n = vec3<f32>(0.0);
+    var uv = vec2<f32>(0.0);
+    let w = array<f32, 3>(b0, b1, b2);
+    for (var k = 0u; k < 3u; k++) {
+        let v = vi[k];
+        n += vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]) * w[k];
+        uv += vec2<f32>(vertices[v + 6u], vertices[v + 7u]) * w[k];
+    }
+    n = normalize(wind_normal(member_slot(vis.x), xform_dir(inst, n)));
+    let geo_n = normalize(cross(e1, e2));
+    // One full-resolution pixel's footprint, as `shade` filters there.
+    let px_x = view.inv_view_proj * vec4<f32>(ndc + vec2<f32>(2.0 * view.size.z, 0.0), 1e-4, 1.0);
+    let px_y = view.inv_view_proj * vec4<f32>(ndc - vec2<f32>(0.0, 2.0 * view.size.w), 1e-4, 1.0);
+    let dir_x = normalize(px_x.xyz / px_x.w - view.cam.xyz);
+    let dir_y = normalize(px_y.xyz / px_y.w - view.cam.xyz);
+    let plane_d = dot(p - view.cam.xyz, geo_n);
+    let hit_x = view.cam.xyz + dir_x * (plane_d / select(dot(dir_x, geo_n), 1e-6, abs(dot(dir_x, geo_n)) < 1e-6));
+    let hit_y = view.cam.xyz + dir_y * (plane_d / select(dot(dir_y, geo_n), 1e-6, abs(dot(dir_y, geo_n)) < 1e-6));
+    let reach = distance(p, view.cam.xyz) * 0.05 + 0.05;
+    fp.dx = clamp(hit_x - p, vec3<f32>(-reach), vec3<f32>(reach));
+    fp.dy = clamp(hit_y - p, vec3<f32>(-reach), vec3<f32>(reach));
+    let mip_scale = select(1.0, view.extra.z, view.extra.z > 0.0);
+    fp.dx *= mip_scale;
+    fp.dy *= mip_scale;
+    // The sun march past the shared map (`distant_sun_visibility`), once per
+    // quad for every terrain material: it is smooth at the canopy's cell
+    // size, and per pixel in shade it cost a tenth of the frame.
+    var sun_transmittance = 1.0;
+    let l = light.sun_dir.xyz;
+    if gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u && sun_coverage_fade(light.shadow_view_proj, p, 0.45) > 0.0 {
+        sun_transmittance = transmittance(p + n * sign(dot(n, l) + 1e-4) * 0.2, l, 50.0);
+    }
+    if (m.flags & 32768u) == 0u {
+        var out = invalid;
+        out.z = rep;
+        out.w = pack2x16float(vec2<f32>(1.0, sun_transmittance));
+        textureStore(terrain_coarse_out, cx, out);
+        return;
+    }
+    // As `shade`: the material's own layer relief first (TERRAIN|SURFACE
+    // takes its generic textured branch).
+    if m.layer >= 0 {
+        var frame = uv_frame(e1, e2, vi);
+        if dot(geo_n, n) < 0.0 { frame[0] = -frame[0]; frame[1] = -frame[1]; }
+        n = perturb(n, nrm(m.layer, uv, uv_at(fp.dx, e1, e2, vi), uv_at(fp.dy, e1, e2, vi)), frame[0], frame[1]);
+    }
+    var local = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k++) { local += pos_of(vi[k]) * w[k]; }
+    let corner = array<vec2<f32>, 3>(vec2<f32>(vertices[vi[0] + 6u], vertices[vi[0] + 7u]),
+        vec2<f32>(vertices[vi[1] + 6u], vertices[vi[1] + 7u]), vec2<f32>(vertices[vi[2] + 6u], vertices[vi[2] + 7u]));
+    let si = SurfaceIn(u32(max(-2 - m.layer, 0)), vis.x, p, local, n, dir, vec3<f32>(b0, b1, b2),
+        corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, m.roughness, m.metal, m.scale, light.anim.x);
+    field_sun = 1.0;
+    let so = field_surface(si, m.layer);
+    textureStore(terrain_coarse_out, cx, coarse_pack(so, field_sun, sun_transmittance, rep));
+}
+
+struct CoarseSurface { ok: bool, so: SurfaceOut, sun: f32 };
+// The coarse material at full-resolution pixel `px` (depth `depth`): the
+// four nearest quad centres, bilinear, if all are terrain on the same
+// surface (depth within 2 %); else not ok and the pixel evaluates its own.
+fn coarse_surface(px: vec2<i32>, depth: f32) -> CoarseSurface {
+    var out: CoarseSurface;
+    let dims = vec2<i32>(textureDimensions(terrain_coarse_tex));
+    let q = (vec2<f32>(px) + 0.5) * 0.5 - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    var albedo = vec3<f32>(0.0);
+    var normal = vec3<f32>(0.0);
+    var rough = 0.0;
+    var sun = 0.0;
+    for (var k = 0; k < 4; k++) {
+        let o = vec2<i32>(k & 1, k >> 1);
+        let c = clamp(base + o, vec2<i32>(0), dims - 1);
+        let t = textureLoad(terrain_coarse_tex, c, 0);
+        let ab = unpack2x16float(t.y);
+        if ab.y < 0.0 { return out; }
+        let d = textureLoad(depth_tex, coarse_rep(c, t), 0);
+        if abs(d - depth) > 0.02 * depth { return out; }
+        let wgt = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+        let suns = unpack2x16float(t.w);
+        albedo += vec3<f32>(unpack2x16float(t.x), ab.x) * wgt;
+        rough += ab.y * wgt;
+        normal += oct_decode(unpack2x16snorm(t.z)) * wgt;
+        sun += suns.x * wgt;
+    }
+    out.ok = true;
+    out.so = SurfaceOut(albedo, normalize(normal), rough, 0.0, vec3<f32>(0.0));
+    out.sun = sun;
+    return out;
+}
+
+@compute @workgroup_size(8, 8)
+fn shade_voxels(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let size = vec2<u32>(view.size.xy);
+    if gid.x >= size.x || gid.y >= size.y { return; }
+    let px = vec2<i32>(gid.xy);
+    let depth = textureLoad(depth_tex, px, 0);
+    if depth <= 0.0 { return; }
+    if (textureLoad(vis_tex, px, 0).r & 0x80000000u) == 0u { return; }
+    let ndc = vec2<f32>((f32(gid.x) + 0.5) / view.size.x * 2.0 - 1.0, 1.0 - (f32(gid.y) + 0.5) / view.size.y * 2.0);
+    let far = view.inv_view_proj * vec4<f32>(ndc, 1e-4, 1.0);
+    shade_voxel(px, size, normalize(far.xyz / far.w - view.cam.xyz), depth);
+}
+
 // Sky for tiles without geometry; tiles with any are listed for `shade`.
 // Same sky as `shade` writes for its own background pixels.
 @compute @workgroup_size(8, 8)
@@ -1680,14 +2060,23 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let dir = normalize(far.xyz / far.w - view.cam.xyz);
     let depth = textureLoad(depth_tex, px, 0);
     if depth <= 0.0 {
-        textureStore(out_hdr, px, vec4<f32>(visible_background_radiance(dir), 1.0));
+        if SHADE_CLASS != 1u { textureStore(out_hdr, px, vec4<f32>(visible_background_radiance(dir), 1.0)); }
         return;
     }
+    if VOXEL_OCCLUSION && textureLoad(voxel_depth, px, 0) > depth { return; }
     let id = textureLoad(vis_tex, px, 0).r;
+    if VOXEL_SURFACE && (id & 0x80000000u) != 0u {
+        if !VOXEL_PASS { shade_voxel(px, size, dir, depth); }
+        return;
+    }
     let vis = visible[id >> 7u];
     let tri = id & 127u;
     let cl = clusters[vis.y];
-    let inst = instances[vis.x];
+    // Terrain: a TERRAIN material that is not a car part (car materials keep
+    // their index in bits 16.. and may carry low flag bits of their own).
+    let terrain_class = (materials[cl.material].flags & 2u) != 0u && (materials[cl.material].flags >> 16u) == 0u;
+    if SHADE_CLASS != 0u && terrain_class != (SHADE_CLASS == 1u) { return; }
+    let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + tri];
     var vi: array<u32, 3>;
     for (var k = 0u; k < 3u; k++) {
@@ -1695,9 +2084,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     // Match the actual deformed raster triangle before ray intersection and
     // texture derivatives. Rest-pose reconstruction would slide UVs and light.
-    let p0 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[0])));
-    let p1 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[1])));
-    let p2 = wind_position(vis.x, inst.r1.w, xform(inst, pos_of(vi[2])));
+    let p0 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[0])));
+    let p1 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[1])));
+    let p2 = wind_position(member_slot(vis.x), inst.r1.w, xform(inst, pos_of(vi[2])));
     // Ray-triangle intersection for perspective-correct barycentrics.
     let e1 = p1 - p0;
     let e2 = p2 - p0;
@@ -1718,10 +2107,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         n += vec3<f32>(vertices[v + 3u], vertices[v + 4u], vertices[v + 5u]) * w[k];
         uv += vec2<f32>(vertices[v + 6u], vertices[v + 7u]) * w[k];
     }
-    n = normalize(wind_normal(vis.x, xform_dir(inst, n)));
+    n = normalize(wind_normal(member_slot(vis.x), xform_dir(inst, n)));
     let geo_n = normalize(cross(e1, e2));
     sun_receiver_tri[0]=p0;sun_receiver_tri[1]=p1;sun_receiver_tri[2]=p2;
     sun_receiver_tri_set=true;
+    sun_receiver_error=cl.own_error*inst.scale;
     let m = materials[cl.material];
     // Two-sided cards and backfaces face the viewer.
     if dot(n, dir) > 0.0 && (m.flags & 8u) != 0u && (m.flags & 64u) == 0u {
@@ -1753,6 +2143,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     var base = m.tint;
     var nn = n; // the normal after normal maps
     var meadow_ground_sky = 1.0;
+    field_sun = 1.0;
     if FEATURE_TERRAIN && (m.flags & 2u) != 0u && (m.flags & 32768u) == 0u {
         // Terrain (src/shaders/terrain.gdshader): moss, needles, a grassy
         // verge, bare ground beside the road and rock where it is steep.
@@ -1987,7 +2378,11 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
             corner[0], corner[1], corner[2], fp.dx, fp.dy, m.tint, rough_m, metal, m.scale, light.anim.x);
         // TERRAIN + SURFACE: the engine's procedural terrain, not the game's.
         var so: SurfaceOut;
-        if (m.flags & 2u) != 0u { so = field_surface(si, m.layer); } else { so = game_surface(si); }
+        if SHADE_CLASS != 2u && (m.flags & 2u) != 0u {
+            var coarse: CoarseSurface;
+            if TERRAIN_COARSE && max(length(fp.dx), length(fp.dy)) > COARSE_FOOTPRINT_M { coarse = coarse_surface(px, depth); }
+            if coarse.ok { so = coarse.so; field_sun = coarse.sun; } else { so = field_surface(si, m.layer); }
+        } else { so = game_surface(si); }
         base = so.albedo;
         n = so.normal;
         coat_n = n;
@@ -2043,13 +2438,16 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
         ao = mix(0.45, 1.0, height);
         back = vec3<f32>(0.12, 0.16, 0.05) * max(-ndl, 0.0);
     }
+    if SHADE_CLASS == 1u && TERRAIN_COARSE && sun_coverage_fade(light.shadow_view_proj, p, 0.45) > 0.0 {
+        coarse_sun_transmittance = coarse_sun_at(px, depth);
+    }
     let terrain_error=select(0.0,world_visibility.params.z,(m.flags&6u)!=0u);
     var shadow = 1.0;
     if sun > 0.0 || needles || (gi.vol_dims.w != 0u && (gi.vol_dims.w & 4u) == 0u) || coat > 0.0 || rough_m < 0.55 {
         let s_map = shadow_at_surface(p, surface_n * sign(dot(surface_n, l) + 1e-4), geo_n, terrain_error);
         shadow = mix(1.0, s_map, light.sun_color.w);
     }
-    if FEATURE_GRASS && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
+    if FEATURE_GRASS_SHADE && shadow > 0.0 && (m.flags & 70u) != 0u {shadow*=mix(1.0,grass_sun_transmittance_receiver(p,l,(m.flags & 2u)!=0u),light.sun_color.w);}
     // Base layer: Lambert plus GGX, metals tint their reflection.
     let v = -dir;
     let ndv = max(dot(n, v), 1e-4);
@@ -2067,7 +2465,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     let sky_vis = sky_visibility(p, visibility_n);
     var meadow_edge=vec2<f32>(1.0);
     if FEATURE_MEADOW && (m.flags&6u)!=0u {meadow_edge=meadow_edge_visibility(p,surface_n,l);}
-    let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y;
+    let sun_e = light.sun_color.rgb * light.sun_dir.w * shadow * meadow_edge.y * field_sun;
     let refl = reflect(dir, n);
     let ssao = screen_space_ao(px, size, p, visibility_n, dist);
     let contact = contact_visibility(p + visibility_n * 0.025, visibility_n, refl, vis.x) * vec2<f32>(ssao, mix(1.0, ssao, 0.65));
@@ -2188,7 +2586,7 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     }
     rad = apply_distance_fog(rad, dist, dir);
     // Component diagnostics retain the exact material, pose and lighting.
-    if light.sky.z > 0.5 && light.sky.z < 1.5 {
+    if !SHADE_DIAGNOSTICS {} else if light.sky.z > 0.5 && light.sky.z < 1.5 {
         rad = vec3<f32>(sky_vis) * 6000.0;
     } else if light.sky.z > 1.5 && light.sky.z < 2.5 {
         rad = base * 6000.0;
@@ -2277,13 +2675,13 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     if textureLoad(depth_tex,px,0)<=0.0 || id==0xffffffffu {
         textureStore(out_hdr,px,vec4<f32>(visible_background_radiance(dir),1.0));return;
     }
-    let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instances[vis.x];
+    let vis=visible[id>>7u];let cl=clusters[vis.y];let inst=instance_at(vis.x);
     let packed=tris[cl.first_tri+(id&127u)];
     var points:array<vec3<f32>,3>;var normals:array<vec3<f32>,3>;var uvs:array<vec2<f32>,3>;
     for(var k=0u;k<3u;k++) {
         let v=cluster_verts[cl.first_vert+((packed>>(8u*k))&255u)]*8u;
         let pos=vec4<f32>(vertices[v],vertices[v+1u],vertices[v+2u],1.0);
-        points[k]=wind_position(vis.x,inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
+        points[k]=wind_position(member_slot(vis.x),inst.r1.w,vec3<f32>(dot(inst.r0,pos),dot(inst.r1,pos),dot(inst.r2,pos)));
         normals[k]=vec3<f32>(vertices[v+3u],vertices[v+4u],vertices[v+5u]);
         uvs[k]=vec2<f32>(vertices[v+6u],vertices[v+7u]);
     }
@@ -2292,7 +2690,7 @@ fn shade_simple(@builtin(global_invocation_id) gid:vec3<u32>) {
     let b1=clamp(dot(tv,pv)*inv,0.0,1.0);let b2=clamp(dot(dir,cross(tv,e1))*inv,0.0,1.0-b1);let b0=1.0-b1-b2;
     let p=points[0]*b0+points[1]*b1+points[2]*b2;
     let authored=normals[0]*b0+normals[1]*b1+normals[2]*b2;
-    var n=normalize(wind_normal(vis.x,vec3<f32>(dot(inst.r0.xyz,authored),dot(inst.r1.xyz,authored),dot(inst.r2.xyz,authored))));
+    var n=normalize(wind_normal(member_slot(vis.x),vec3<f32>(dot(inst.r0.xyz,authored),dot(inst.r1.xyz,authored),dot(inst.r2.xyz,authored))));
     if dot(n,dir)>0.0 {n=-n;}
     let m=materials[cl.material];var base=m.tint;
     if m.layer>=0 {let uv=uvs[0]*b0+uvs[1]*b1+uvs[2]*b2;

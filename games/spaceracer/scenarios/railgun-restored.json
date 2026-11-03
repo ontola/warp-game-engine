@@ -1,0 +1,15 @@
+{
+  "size": [1600, 900],
+  "steps": [
+    {"cmd": ["weapon-review railgun", "blur off"], "ticks": 12, "capture": "rail-guide.png"},
+    {"cmd": "fire 0", "ticks": 1, "capture": "rail-shot.png", "state": "rail-shot.json"},
+    {"expect": "/pilots/1/energy", "max": 51},
+    {"ticks": 3, "capture": "rail-impact-sparks.png"},
+    {"ticks": 9, "capture": "rail-rings.png"},
+    {"ticks": 36, "capture": "rail-expired.png"},
+    {"cmd": ["weapon-review railgun", "weapon-view on"], "ticks": 1, "capture": "rail-model.png"},
+    {"cmd": ["weapon-view off", "boost 0"], "ticks": 3, "mv": [0,1], "capture": "jet-a.png"},
+    {"ticks": 2, "mv": [0,1], "capture": "jet-b.png"},
+    {"ticks": 2, "mv": [0,1], "capture": "jet-c.png"}
+  ]
+}

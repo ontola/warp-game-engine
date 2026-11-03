@@ -74,6 +74,7 @@ impl Slots {
     pub fn reserve(scene: &mut Scene, n: usize) -> Self {
         assert!(!scene.meshes.is_empty(), "add at least one mesh before reserving slots");
         let first = scene.instances.len();
+        if n>0 {scene.dynamic_instances.push(first..first+n);}
         for _ in 0..n {
             scene.add_instance(0, Affine3A::IDENTITY);
             let last = scene.instances.len() - 1;

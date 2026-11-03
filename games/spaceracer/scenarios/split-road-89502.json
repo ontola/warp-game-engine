@@ -1,0 +1,28 @@
+{
+  "size": [
+    1920,
+    1080
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "weapon-review sentry",
+        "place 0 4854",
+        "blur off"
+      ],
+      "ticks": 1,
+      "capture": "split-entry.png",
+      "state": "split-entry.json"
+    },
+    {
+      "cmd": "place 0 4950",
+      "ticks": 1,
+      "capture": "split-wide.png"
+    },
+    {
+      "cmd": "place 0 5300",
+      "ticks": 1,
+      "capture": "split-exit.png"
+    }
+  ]
+}

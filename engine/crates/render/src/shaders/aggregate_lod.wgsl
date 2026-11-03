@@ -4,7 +4,11 @@ struct Uniform {vp:mat4x4<f32>,output:vec4<f32>,policy:vec4<f32>,info:vec4<u32>}
 @group(0) @binding(0) var<uniform> state:Uniform;
 @group(0) @binding(1) var<storage,read> groups:array<Group>;
 @group(0) @binding(2) var<storage,read> levels:array<Level>;
-@group(0) @binding(3) var<storage,read_write> decisions:array<vec4<u32>>;
+@group(0) @binding(3) var<storage,read_write> decisions:array<u32>;
+// One packed u32 per group (cull.wgsl selection_unpack).
+fn selection_pack(d:vec4<u32>)->u32 {
+    return min(d.x,3u)|(min(d.y,63u)<<2u)|(min(d.w,3u)<<8u)|(pack2x16float(vec2<f32>(bitcast<f32>(d.z),0.0))<<16u);
+}
 
 fn choose(g:Group)->vec4<u32> {
     // w=1 marks an explicit source cut, including error zero. Legacy
@@ -52,10 +56,10 @@ fn select_aggregate(@builtin(global_invocation_id) id:vec3<u32>) {
     // cross-workgroup read/write dependency or frame-late suppression.
     if g.info.w!=0xffffffffu {
         let parent=choose(groups[g.info.w]);
-        if parent.x!=0u { decisions[g.info.x]=vec4<u32>(2u,0u,0u,1u);return; }
+        if parent.x!=0u { decisions[g.info.x]=selection_pack(vec4<u32>(2u,0u,0u,1u));return; }
         // A whole-subtree triangle candidate was measured across ALL members.
         // Propagate that exact cut instead of independently changing children.
-        if parent.z!=0u { decisions[g.info.x]=parent;return; }
+        if parent.z!=0u { decisions[g.info.x]=selection_pack(parent);return; }
     }
-    decisions[g.info.x]=choose(g);
+    decisions[g.info.x]=selection_pack(choose(g));
 }

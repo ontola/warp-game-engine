@@ -1,6 +1,8 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! Sideways: native play, deterministic simulation, captures and sound tools.
 
 mod audio_out;
+mod biome_land;
 mod sound;
 mod car_look;
 mod car_model;
@@ -38,12 +40,14 @@ mod plant_population;
 mod voxel_tree_patch;
 
 fn main() {
+    app::startup::init("Sideways", None);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opt = |name: &str, default: &str| -> String {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned().unwrap_or(default.to_string())
     };
     let code = match args.first().map(|s| s.as_str()) {
-        Some("play") => play::run(&args),
+        Some("play") | None => play::run(&args),
+        Some(arg) if arg.starts_with("--") && arg!="--help" && arg!="--version" => play::run(&args),
         Some("sound") => sound::run(&args),
         Some("bench") => bench(&opt("--car", "rally2"), args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())),
         Some("sim") => sim(&args),
@@ -61,6 +65,10 @@ fn main() {
                 frames: opt("--frames", "400").parse().unwrap(),
                 size: (size[0], size[1]),
                 weather: args.iter().position(|a| a == "--weather").map(|i| args[i + 1].clone()),
+                land: match args.iter().position(|a| a == "--biome").map(|i| args[i + 1].clone()).or_else(|| std::env::var("SIDEWAYS_BIOME").ok()) {
+                    Some(b) => match biome_land::land(&b) { Ok(l) => Some(l), Err(e) => { eprintln!("shot: {e}"); std::process::exit(2); } },
+                    None => None,
+                },
                 lod_pixels: opt("--lod", "1").parse().unwrap(),
                 picks: args
                     .iter()
@@ -149,6 +157,9 @@ fn sim(args: &[String]) -> i32 {
     settings.bots = opt("--bots", "1").parse().unwrap();
     if args.iter().any(|a| a == "--weather") {
         settings.weather = Some(opt("--weather", "clear"));
+    }
+    if args.iter().any(|a| a == "--biome") {
+        settings.land = match biome_land::land(&opt("--biome", "temperate")) { Ok(l) => Some(l), Err(e) => { eprintln!("sim: {e}"); return 2; } };
     }
     let cars = match sideways::spec::Cars::load(args.iter().position(|a| a == "--cars").map(|i| args[i + 1].as_str())) {
         Ok(c) => c,

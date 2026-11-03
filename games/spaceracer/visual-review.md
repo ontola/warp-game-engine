@@ -1,3 +1,72 @@
+## Local race setup - 1 November 2026
+
+Start new race uses the displayed selections. World, Difficulty and Track seed
+start on Random in normal local launches; only those fields roll on each new
+race. Player count stays fixed. Explicit CLI/host values and deterministic
+headless defaults remain supported. Luau owns random-value selection and menu
+navigation; Rust supplies startup entropy and constructs the chosen seeded race.
+Resume does not reroll, even with Random selections. Initial menu hides Resume.
+The seed's recipe name updates before rebuilding; all six retained recipe types
+remain present and source recipe names match.
+
+Validated with focused Luau/native tests (fixed settings, combined direction and
+Start, same-seed restart, Random and resume), plus the native 1080p
+`scenarios/menu-settings.json` flow. Captures in `build/spaceracer-menu-settings`
+show random defaults, explicit choices, new race and pause. No physical pad or
+Android validation; this does not change the host settings protocol.
+
+## Per-level shadows and sharp boost arcs - 1 November 2026
+
+SpaceRacer opts into a shared 4096-square static sun map. It owns static source
+geometry/alpha, including solid roads/buildings, while live slot pools, cars,
+skinning and animated rigid parts retain the existing dynamic maps. Dynamic
+slots are registered even when empty at construction. Camera/wind/adaptive LOD
+changes do not rebuild the cache. A seed/biome replacement or a changed static
+source/sun/alpha state does. One 64 MiB depth map is shared across views, plus
+caster buffers and initial bake cost. This is direct sun visibility, not GI.
+
+Receiver-plane filtering accounts for projection roundoff at grazing sun and
+the measured error of different visible/cached mesh LODs. Detailed near shadows
+still transition to coarser distant shadows; far foliage uses its rest pose.
+This reduces the disappearance of whole distant shadows, not every LOD change.
+
+Motion blur previously sampled electrical sprites using the road's velocity.
+SpaceRacer now opts into `Graphics.sharp_sprites`: world blur precedes sprite,
+exhaust and particle composition; bloom follows them. Other games keep their
+existing order. The blur target permits COPY_SRC for late sprite composition.
+
+Validation: native 1080p thirteen-frame boost sequence with blur enabled,
+`scenarios/boost-lightning-sharp.json`; reproduced faded parallel arc copies in
+`build/spaceracer-lightning-before` and sharp arcs in `build/spaceracer-lightning-final`.
+A second thirteen-frame sequence in `build/spaceracer-lightning-split` passes
+with two independent viewports. The shadow scenario stages seed 76973 / hard / forest at the reported 9097 m and
+100/220 m farther on (`build/spaceracer-stage-shadow-reviewed`); it is not a
+replay of the user's input trajectory. Coarse hill geometry remains visible in
+its self-shadow silhouettes; this change does not retessellate terrain.
+`far_sun_visibility --stage` checks source alpha, remote casters, live-owner
+exclusion, invalidation and identical four-view results on an exclusive GPU.
+Six far-sun, eight static-sun and 24 SpaceRacer app unit tests pass. No physical
+controller/display refresh-rate or steady gameplay performance certification.
+
+# F12 split-road fix - 1 November 2026
+
+Reported seed 89502 / hard / forest at 4854 m. Original F12 showed a stair-step
+central cutout with missing inner guards. `build/spaceracer-split-road-fixed`
+contains native 1080p entry/wide/exit views after exact continuous ribbon and
+inner wall/neon construction. Verified against the F12 location. Teleport-only
+fixture has a missed-checkpoint banner, not a newly introduced gameplay failure.
+
+# Respawn and paint wear - 1 November 2026
+
+Native 1920x1080 captures: `build/spaceracer-respawn-wear-final` and
+`build/spaceracer-respawn-split`. Same portrait pose at energy 100/45/12 shows
+progressive chips and soot while keeping the original body colour. Reconstruction
+shows the real hull appearing under a bright scan, then returning to paint.
+Iteration removed the floating mounted weapon during reconstruction. Dedicated
+crash camera samples show departure, travel and arrival; mathematical tests cover
+endpoint velocity/position. Smoke is soft, non-additive and bounded to 12 per car.
+These are staged native review shots, not controller footage or equal-content FPS.
+
 # Warp, minigun and glide bomb follow-up - 31 October 2026
 
 Source geometry and behaviour restored; see parity-review.md for exact scope.
@@ -386,3 +455,129 @@ Real controllers and production GameNight were not re-tested in this visual pass
 Full scene reflections (including billboard/window images), city traffic,
 complete biome dressing, visor effects and damage/respawn presentation remain
 incomplete. The build is still a development port, not full visual parity.
+
+## Flight collisions and combat feedback - 1 November 2026
+
+F12 `spaceracer---warp-1793543480547` identifies seed 46990/hard/cell.
+Flight previously compared heights against two independently selected nearest
+road sections; this missed finite walls and could invent a crossing at an
+intersection or below a jump landing. Swept ribbon triangles now gate landing
+and underside contacts, with matching split edges, guardrails and tunnel roofs.
+The rendering/collision ribbon subdivision helper is shared. Oriented scenery
+boxes remove the empty corners of rotated world AABBs; weapon rays no longer
+inherit the aircraft's old 2.5 m inflation. Aircraft/scenery proxies remain
+approximate. This is a targeted fix, not a full exact-mesh collision conversion.
+The F12 state now includes flight transforms; the old still cannot reconstruct
+the exact preceding controller trajectory.
+
+EMP range is 100 m Euclidean distance (including altitude), owner immune, with
+local missile cancellation and small fading surface arcs. No fireball for EMP.
+Pickup spacing doubles to 1300 m. Sentry cadence/DPS stay 20 Hz/10 DPS, but each
+presentation consumes only its newest shot; interpolated endpoints, 2-pixel
+minimum tracer width and 0.11 s hit sparks remove subpixel breakup and invisible
+centre-of-hull impacts. Boost onset arcs reach up to 23 m, settling to 5 m, with
+bounded radial road-contact glows and one extra local light per boosting ship.
+Warp world/view refraction rises to 48/64 pixels with radial swirl; the HUD is
+composited later and each view lens remains restricted to its owner.
+
+Validation: 37 simulation and 24 app tests pass, including the reported seed's
+walls, finite gaps, roof/underside hits, rotated-box empty space, EMP 99/101 m
+horizontal/vertical boundaries, shot consumption and spark/arc decay. Retained
+flight/landing traces pass; underside crash positions now stop at the contact
+rather than up to one tick beyond it. Native 1920x1080 screenshots are in
+`build/spaceracer-flight-combat`. These staged captures do not certify controller
+feel or frame-time performance.
+
+## Finish racing - 1 November 2026
+
+`scenarios/finish-racing.json`, seed 35 / hard / city, native 1920x1080:
+`build/spaceracer-finish-racing/finish-boost.png` shows the rear-quarter boost
+shot with mounted sentry, bright exhaust and sharp electrical arcs. Front/side
+shots and the all-finished results view retain moving vehicles. The first
+boost capture records 434 m/s; simulation tests exercise repeated boosts and
+hairpin braking. World blur is enabled in replay; effects remain after blur.
+AI driving styles are validated in simulation rather than inferred from stills.
+
+## Grounded boost lightning and distant engine bloom - 1 November 2026
+
+Boost discharges now vary widely in reach and branch count each presentation.
+Eight-segment jagged arches rise outward from the nozzles and descend onto actual
+supported road points; gaps do not receive fake ground contacts. Each nozzle has
+at most two deck strikes and one short free corona branch (48 segments per ship
+maximum). The initial large burst decays into smaller arcs. Contact glows are
+softened, with the existing bounded local contact light. No bolt history or
+extra temporal accumulation: sprites remain after world blur and before bloom.
+
+Boost plumes are roughly twice as wide/bright, with longer irregular exhaust,
+larger nozzle emission and stronger local light. A separate screen-facing engine
+halo has a 24-pixel minimum (about 35 on boost), including on distant opponents.
+Its source depth gates visibility behind scenery; it fades between 650 and
+1200 m. This is a cheap optical glow, not a large physical plume at distance.
+The settings live in `rules/jets.luau`; geometry/shading remain native presentation.
+
+Validation: eight exhaust/effects tests pass, including frame-to-frame contact
+variation, endpoints, raised arches, size/radiance, bounded geometry, pause and
+EMP shutoff. Native 1920x1080 `scenarios/boost-arcs-ground.json` captures thirteen
+successive 120 Hz ticks plus sustained boost, with four boosting ships staged
+at different distances, in city and forest. Reviewed captures are in
+`build/spaceracer-arcs-city-final` and `build/spaceracer-arcs-forest-final`; prior
+city captures are in `build/spaceracer-arcs-before`. Scenario shader/error checks
+pass. This verifies rendered sequences, not physical-display temporal perception
+or a new frame-time performance target.
+
+## Compact bloom and road clipping correction - 1 November 2026
+
+Reduced boosted nozzle glow diameter from 3.9 to 2 m and optical halo from
+5.5 to 2.7 m, with a narrower/fainter outer falloff. The distant minimum is now
+14 pixels (about 20 on boost), retaining a compact distant engine highlight.
+Lightning contact diameter drops from 2-5 m to 0.65-1.65 m; contact illumination
+is smaller/weaker too. The bright plasma plume and moving arcs remain.
+
+The road cutoff came from fragment depth-testing enlarged optical quads. Engine
+nozzle/halo/flare now opt into shared `sprites::DepthTest::Source`: hide when the
+light source is hidden, but do not slice the halo where it spreads over the road.
+Road-contact sprites and other effects keep normal per-fragment depth.
+
+Validation: eight effects tests; GPU sprite regression checks source/fragment
+occlusion on a crossing surface and fully hidden source, in normal and minimal
+renderers. Native 1080p city/forest thirteen-frame boost and sustain scenarios
+pass; reviewed screenshots in `build/spaceracer-bloom-tight-city` and
+`build/spaceracer-bloom-tight-forest`. No physical display or performance claim.
+
+## White-blue nozzle, dim exhaust tail - 1 November 2026
+
+Forward exhaust now uses blue HDR emission (.12/.4/1) instead of mixing ship
+paint into its colour. The plume concentrates radiance at its root and decays
+exponentially along its length; maximum authored length before surge is 7.2 m
+(previously 14.55 m). AgX supplies the bright blue-to-white highlight rolloff;
+no global tone-map change. The engine light is blue too. Wisps use .12 rather
+than .5 radiance multiplier; the blue history wake uses .065 rather than .38
+and lasts .24 rather than .38 seconds. Compact optical halos/road occlusion and
+the moving arc shapes remain.
+
+Eight effect tests pass. Native 1080p city/forest thirteen-frame onset plus
+sustained-boost scenarios pass; reviewed captures in `build/spaceracer-blue-core-city`
+and `build/spaceracer-blue-core-forest`. This is a presentation adjustment, with
+no handling changes or new performance claim.
+
+## Shared Growing Guns explosion smoke - 1 November 2026
+
+Checked fetched origin/main (902994a) and the local smoke development checkout.
+The latest committed Growing Guns baked density animation/adaptive renderer was
+already present in Warp; SpaceRacer had not enabled it. The common Effects pool
+now calls set_baked_smoke using `baked_explosion_smoke=true` in effects.luau, so
+vehicle crashes and non-EMP weapon blasts use exactly the shared smoke path.
+No duplicate asset/shader, no unrelated Growing Guns checkout changes. Fire,
+debris, heat, explosion damage and EMP presentation retain their current paths.
+
+This reuses the 6.75 MiB shared density animation, seeded volume orientation,
+4.6-second gradual tail, scene-depth clipping and adaptive per-view smoke/fire
+resolution. Baked smoke does not flow around collisions; shared renderer limits
+and quality tradeoffs remain (see engine/docs/baked-explosion-smoke.md).
+
+Validation: five baked-smoke renderer tests pass (asset/bounds, RNG preservation,
+retirement and hard bounds). New scenarios/explosion-smoke.json stages an actual
+vehicle crash, captures fire/rise/body/fade/expiry, and passes shader/script checks
+at native 1920x1080 in city, forest and two-player split-screen. Captures are in
+build/spaceracer-smoke-city, -forest and -split; earlier billows in -before.
+Reviewed early/body/tail images. No new frame-time target or physical-pad claim.

@@ -50,6 +50,8 @@ Reference that lives next to the code:
   from the Rust side.
 - [Frame budget and repeatable scenarios](../tools/frame-budget.md) and the
   [diagnostics tools](../tools/README.md).
+- [Native CPU/GPU profiling](native-profiling.md): no-readback headless samples,
+  native-resolution checks, per-frame reports and the remaining tooling gaps.
 - [Engine README](../README.md) and the [repository README](../../README.md).
 
 ## Engineering notes

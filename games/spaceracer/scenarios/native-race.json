@@ -2,7 +2,7 @@
   "size": [1280,720],
   "steps": [
     {"capture":"menu.png","expect":"/paused","equals":true},
-    {"press":["DOWN"]},{"press":["DOWN"]},{"press":["RIGHT"],"expect":"/players","equals":2},
+    {"press":["DOWN"]},{"press":["RIGHT"],"expect":"/players","equals":2},
     {"press":["START"],"expect":"/paused","equals":false},
     {"pads":2,"device":"pad0","triggers":[0,0.5],"ticks":420},
     {"expect":"/pilots/0/speed","min":20},

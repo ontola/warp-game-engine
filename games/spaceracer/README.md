@@ -6,6 +6,78 @@ valid equal-content performance comparison. Source provenance remains pinned
 in `port-status.json`; original assets and their attribution are retained.
 There is no Godot runtime or Godot build/export step.
 
+## Exhaust volume and speed presentation (2 November 2026)
+
+Jet volumes now bend, ripple and vary in length rapidly, independently for each
+engine, with their roots fixed to the nozzles. Railgun carries its original
+twin-rail model, blue-white beam, expanding rings and endpoint flashes. Its
+always-visible aim circle turns green for a clear target; tapping X fires one
+50-damage shot. Selection follows the closest target to the circle centre and
+the straight shot stops at vehicle hulls, road geometry and scenery. Guide size,
+range and the AI aim cone are Luau combat parameters.
+
+Boost light, plume and newly emitted trail strength ease out over 0.55 seconds
+(`boost_release` in `rules/jets.luau`). Each trail point retains its emission
+strength, so the line tapers continuously after boost. EMP arcs choose fresh
+continuous positions across nose, cockpit, wings, nacelles and fins per flash,
+instead of using fixed anchors; their existing end-of-effect fade is retained.
+
+Forward exhaust is a bounded 3D gas cone, with a compact white-blue motor core
+and a dimmer tapered tail. Countdown shows only the engine lamps; thrust starts
+the plume. Boost increases it without covering the vehicle. Sonic vapor uses
+soft overlapping billows instead of the angular lattice-noise pattern.
+The speed display is calibrated 25% lower; condensation now occurs around
+1235 displayed km/h, later into boost, and lasts 0.72 seconds. Actual driving
+physics are unchanged. A lower, closer chase camera and stronger acceleration
+FOV response are tunable in `rules/effects.luau`.
+
+`scenarios/boost-onset.json` captures countdown, thrust, ignition, crossing and
+dissipation. `--profile-no-plumes` omits just the volume plumes for matched GPU
+measurements, retaining lamps, lights and other effects.
+
+## Startup, collisions and parity audit (2 November 2026)
+
+EMP vehicles remain solid. Vehicle collisions now use oriented hulls and resolve
+packs/rear impacts; boost lightning is a short, aggressive ignition burst.
+Crossing the sound barrier briefly produces a hollow, fluctuating vapor cone without
+changing boost or covering the centre of the view.
+Windows opens without a terminal, shows an icon in the taskbar while loading,
+and defaults to fullscreen (`--windowed` opts out). See the dated
+[parity audit](parity-review.md#source-audit-and-follow-up---2-november-2026)
+for remaining startup-animation, signage, menu and environment gaps and tests.
+
+## Growing Guns smoke (1 November 2026)
+
+Crashes and weapon explosions now use Growing Guns' shared animated volume
+smoke, with gradual dissipation and adaptive rendering for overlapping plumes.
+`baked_explosion_smoke` in `rules/effects.luau` selects it for a new race.
+See [the shared smoke implementation](../../engine/docs/baked-explosion-smoke.md)
+and the parity review for checks and limits.
+
+## Native 4K performance (1 November 2026)
+
+City reflections now use a surface-area hierarchy with stackless traversal,
+retaining every facade and billboard proxy. Two repeated matched comparisons
+reduced the measured GPU interval from about 8.6 to 6.2 ms; the reference 4K
+image is pixel-identical. Packaging defaults to release. Native measurements
+cover all five biomes with one/two views and two city seeds with four views.
+This is not a claim of locked 4K/120 FPS: see
+[measurements and remaining costs](../../engine/docs/spaceracer-native4k-2026-11-01.md).
+
+## Boost presentation (1 November 2026)
+
+Uneven, changing lightning arches now strike the road with soft contact light.
+Boost exhaust has a short white-blue core and a dimmer blue tail; distant
+engines retain a small luminous halo. Tunable in `rules/jets.luau`; consecutive city/daylight captures and effect
+checks are described in the parity review.
+
+## Racing personalities and finish laps (1 November 2026)
+
+AI drivers use six seeded styles with different lines, braking margins, pickup
+choices and independent boost timing. Finished cars keep racing and boosting,
+with corner braking, animated fins and the existing cinematic cameras. Settings
+live in `rules/game.luau`; results remain locked. See the parity review for checks.
+
 ## Source restoration follow-up (31 October 2026)
 
 See [the parity review](parity-review.md) for restored HUD/visor, cruise guidance
@@ -17,6 +89,49 @@ Warp, rotary sentry and powered glide now use the source behaviour and mounted
 hardware. `combat` and `warp` in `rules/game.luau` control acquisition/motor values
 and the warp speed envelope. See the follow-up in the parity review for limits,
 including the approximate unguided bomb preview and native HDR refraction.
+
+Energy-linked paint chips, scratches and scorch now use the retained wear mask.
+Critical energy emits soft smoke. Respawn has a smooth camera flight and a bright
+bottom-up construction scan (1 November 2026); see the parity review for checks.
+
+Split decks now follow exact smooth gap boundaries with visible inner guards,
+matching collision. F12 seed 89502 is covered by a focused capture scenario.
+
+## Flight collision and combat effects (1 November 2026)
+
+Flight now sweeps the finite road ribbons, split guards and tunnel shell instead
+of treating nearest-track projections as impacts. Rotated scenery uses oriented
+bounds. Scenery and the aircraft hull remain collision proxies, not per-triangle
+vehicle contacts. F12 now records flight position, velocity and orientation.
+
+EMP reaches 100 metres in 3D, leaves its owner immune, and disables only nearby
+cruise missiles. Hit ships short-circuit with fading blue-white arcs. Pickups are
+spaced 1300 metres apart (previously 650); catch-up weighting is unchanged.
+Sentry tracers consume at most one new shot per owner/presentation and leave
+brief surface sparks. Boost lightning decays from a long onset to smaller arcs
+with road-contact glows. Warp refraction is stronger, with per-view isolation.
+The EMP radius/pickup spacing are Luau gameplay values; arc/warp tuning lives in
+`rules/jets.luau`. `scenarios/flight-combat-effects.json` captures these effects.
+
+## Sharp electrical effects (1 November 2026)
+
+World motion blur now runs before SpaceRacer's sprites. Lightning, tracers and
+engine emission retain bloom without inheriting the road's motion vector (which
+previously made many faded copies of each bolt). Temporal AA was already before
+these effects. `scenarios/boost-lightning-sharp.json` captures thirteen successive
+120 Hz boost ticks at native 1080p with blur enabled.
+
+## Level shadow cache (1 November 2026)
+
+Every generated level now opts into Warp's shared 4096-square static sun map.
+Roads, buildings and trees retain distant shadows as the camera moves. Dynamic
+slot pools (ships, weapons, traffic, creatures and debris) stay outside the
+bake and keep near shadows. Camera quality changes do not invalidate the map.
+The depth texture costs 64 MiB once per level, shared by split-screen views;
+source buffers and initial baking have additional cost. A new seed/biome
+rebuilds it. This is direct directional light, not baked GI or local-jet light.
+Nearby detail still uses live maps and distant foliage is in its rest pose.
+`KERN_FAR_SUN_SHADOW=0` provides the previous path for comparison.
 
 ## Play and capture
 
@@ -35,6 +150,11 @@ Windows packaging (builds only, does not launch or stop another game):
 ./build/spaceracer-native/spaceracer.exe --players 2 --fullscreen
 ```
 
+Packaging defaults to the optimized `release` profile. Use `-Profile dev` for
+quick compilation, but use release for performance checks. The headless native
+4K profiling matrix and per-frame cost viewer are documented in
+[native profiling](../../engine/docs/native-profiling.md).
+
 The packaged executable resolves its adjacent `spaceracer/rules` and
 `spaceracer/assets`. Development runs fall back to the source directory;
 `--game-dir PATH` overrides both. Seeds are 1–99999. Worlds: `city`, `forest`,
@@ -45,7 +165,15 @@ incomplete port.
 Controller: RT throttle, LT brake/slide, left X steer/yaw, right X strafe/roll,
 either stick Y grip/nose pitch, B boost, X fire, Y reset, LB/RB side bump.
 Start pauses. Menu: up/down select, left/right adjust, Start plays/resumes.
-A selects an action. Changing settings waits until Play to regenerate the world.
+A selects an action. Local launches default World, Difficulty and Track seed to
+Random. Left/right selects Random or a fixed value. Start new race resolves only
+Random fields and uses every fixed selection; Resume keeps the current race.
+Player count is never randomized. Explicit CLI parameters remain fixed, and
+headless fixtures retain deterministic defaults (`--random-settings` opts in).
+The six seed-selected types remain Grand Circuit (mixed), Underpass (tunnels),
+Switchback (tight turns/chicanes), Sky Circus (loops/jumps), Velocity (boost
+lanes), and Pipeline (half-pipes/tubes). The menu previews the selected seed's
+type immediately. Settings regenerate the world only when starting a race.
 Controllers take the local seats; keyboard takes seat one when no pad is present.
 Keyboard: W/S throttle/brake, A/D steer, arrows up/down trim, Space boost,
 R fire, F reset, Q/E bump, Enter start/pause. F10/F11/F12 are engine debug,
@@ -112,8 +240,7 @@ city blocks, mounted screens, traffic, tall forest trees, shorelines, cell
 structures/walkers/membrane, sandstone canyons and underwater reef plants are
 now present, including giant animated octopuses, fish schools, jellyfish, mantas
 and rising bubble vents. Five retained ship variants are displayed. Sandworm encounters,
-full foliage/water animation, visor/distortion stack,
-live wear/respawn presentation, victory camera, full weapon models and
+full foliage/water animation, remaining visor/weapon optical differences and
 original audio still need work. Forest collision uses trunk proxies;
 cell/rock proxies are approximate. Vehicle contact is simplified rather than
 the original complete rotated hull solver. Weapon tuning and AI behavior need
@@ -219,12 +346,13 @@ geometry are not included. Full foliage, HUD and effect fidelity remain outstand
 Reproducible headless measurement (no window):
 
 ```sh
-cargo run --locked -p spaceracer-app --bin spaceracer -- --demo --seed 31 --players 4 --ticks 750 --bench 120 --width 1920 --height 1080 --out build/spaceracer-bench.json
+cargo run --release --locked -p spaceracer-app --bin spaceracer -- --demo --seed 31 --players 4 --ticks 750 --warmup 120 --bench 360 --width 3840 --height 2160 --out build/spaceracer-bench.json
 ```
 
-The report includes the adapter, geometry counts and smoothed GPU pass samples.
-Readback throughput is not interactive FPS, and these samples are not latency
-percentiles or an equal-content comparison. See [visual review](visual-review.md).
+The report includes adapter, geometry counts, scenario/build settings, raw CPU
+and GPU frame samples and p50/p95/p99 costs. Warmup and pixel readback are excluded.
+These are separate CPU/GPU timings, not interactive FPS or an equal-content
+comparison with another engine. See [native profiling](../../engine/docs/native-profiling.md).
 
 ## Verification
 

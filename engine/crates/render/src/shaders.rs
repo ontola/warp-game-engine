@@ -296,3 +296,14 @@ mod tests {
         std::fs::remove_dir(path).unwrap();
     }
 }
+
+// Optional game-owned visibility mask, shared by colour and depth raster passes.
+static GAME_MASK: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Supply `fn game_mask(world:vec3<f32>, instance:u32, material:u32)->bool`.
+/// True discards the fragment, including its shadow. May read `aux` and materials.
+/// Set before renderer construction; this hook is immutable for that renderer.
+pub fn set_game_mask(source: &str) { *GAME_MASK.lock().unwrap() = Some(source.to_owned()); }
+pub(crate) fn game_mask() -> String {
+    GAME_MASK.lock().unwrap().clone().unwrap_or_else(||
+        "fn game_mask(world:vec3<f32>, instance:u32, material:u32)->bool {return false;}".into())
+}

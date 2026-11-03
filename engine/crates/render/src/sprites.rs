@@ -41,6 +41,17 @@ pub enum Facing {
     Axis { up: Vec3 },
 }
 
+/// Optical halos are occluded at their light source, not across their quad.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DepthTest {
+    #[default]
+    Fragment,
+    Source,
+    /// A procedural volume clips its ray interval against scene depth itself.
+    /// Its bounding billboard must not reject gas in front of that plane.
+    Shader,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sprite {
     pub center: Vec3,
@@ -58,6 +69,7 @@ pub struct Sprite {
     /// Metres towards the camera before the depth test, so a sprite standing
     /// on a floor or against a wall is not cut by it.
     pub depth_bias: f32,
+    pub depth_test: DepthTest,
     /// Adds its light without covering what is behind it (glows, beams):
     /// the texel alpha and `opacity` only scale the radiance.
     pub additive: bool,
@@ -73,7 +85,7 @@ pub struct Sprite {
 
 impl Sprite {
     pub fn billboard(center: Vec3, size: [f32; 2], image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
-        Self { center, size, facing: Facing::Billboard, image, uv, radiance, opacity: 1.0, alpha_cut: 0.5, depth_bias: 0.05, additive: false, min_pixels: 0.0, effect: 0, params: [0.0; 4] }
+        Self { center, size, facing: Facing::Billboard, image, uv, radiance, opacity: 1.0, alpha_cut: 0.5, depth_bias: 0.05, depth_test: DepthTest::Fragment, additive: false, min_pixels: 0.0, effect: 0, params: [0.0; 4] }
     }
     /// Turned about `up` towards the camera, additive and blended (no cut).
     pub fn shaft(center: Vec3, size: [f32; 2], up: Vec3, image: SpriteImage, uv: [f32; 4], radiance: Vec3) -> Self {
@@ -289,7 +301,7 @@ impl SpriteRenderer {
                 }
             }
             GpuSprite { center: s.center.extend(s.depth_bias).to_array(), right: right.extend(size[0]).to_array(), up: up.extend(size[1]).to_array(),
-                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, if s.additive { 1.0 } else { 0.0 }, if s.facing==Facing::Screen {0.0}else{s.min_pixels.max(0.0)}, s.effect as f32], params: s.params }
+                uv: s.uv, color: s.radiance.extend(s.opacity.clamp(0.0, 1.0)).to_array(), misc: [s.alpha_cut, (if s.additive {1.0}else{0.0}) + match s.depth_test {DepthTest::Fragment=>0.,DepthTest::Source=>2.,DepthTest::Shader=>4.}, if s.facing==Facing::Screen {0.0}else{s.min_pixels.max(0.0)}, s.effect as f32], params: s.params }
         }).collect();
         let size = (input.width(), input.height());
         if self.targets.len() <= index { self.targets.resize_with(index + 1, || None); }
@@ -348,7 +360,7 @@ fn shader_with(game: Option<&str>) -> String {
 /// A game's own sprite looks: WGSL with
 /// `fn game_sprite(s: GameSprite) -> vec4<f32>`, run for every sprite whose
 /// `effect` is not 0. `GameSprite` holds `uv` (0..1 across the quad, y
-/// down), `size` (metres), `world`, `effect`, `params` and `texel` (the
+/// down), `size` (metres), `world`, `center`, `effect`, `params` and `texel` (the
 /// image under `uv`, premultiplied). It returns a colour that the sprite's
 /// radiance scales and its coverage in alpha. Checked here: on an error
 /// the shader in use stays. Sprites pick it up on their next frame.
@@ -364,7 +376,7 @@ pub fn set_game_sprite(gpu: &Gpu, source: &str) -> Result<(), String> {
 const SHADER: &str = r#"
 struct Uniform { view_proj: mat4x4<f32>, depth_vp: mat4x4<f32>, camera_near: vec4<f32>, camera_right: vec4<f32>, output:vec4<f32> };
 struct Sprite { center: vec4<f32>, right: vec4<f32>, up: vec4<f32>, uv: vec4<f32>, color: vec4<f32>, misc: vec4<f32>, params: vec4<f32> };
-struct GameSprite { uv: vec2<f32>, size: vec2<f32>, world: vec3<f32>, effect: u32, params: vec4<f32>, texel: vec4<f32> };
+struct GameSprite { uv: vec2<f32>, size: vec2<f32>, world: vec3<f32>, effect: u32, params: vec4<f32>, texel: vec4<f32>, center: vec3<f32> };
 @group(0) @binding(0) var<uniform> u: Uniform;
 @group(0) @binding(1) var<storage, read> sprites: array<Sprite>;
 @group(0) @binding(2) var scene_depth: texture_depth_2d;
@@ -405,13 +417,18 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     var texel = textureSample(image, image_sampler, in.uv);
     if s.misc.w > 0.5 {
         // The game's effect: straight colour and coverage, made premultiplied.
-        let g = game_sprite(GameSprite(in.local, vec2<f32>(s.right.w, s.up.w), in.world, u32(s.misc.w + 0.5), s.params, texel));
+        let g = game_sprite(GameSprite(in.local, vec2<f32>(s.right.w, s.up.w), in.world, u32(s.misc.w + 0.5), s.params, texel, s.center.xyz));
         let ga = clamp(g.a, 0.0, 1.0);
         texel = vec4<f32>(max(g.rgb, vec3<f32>(0.0)) * ga, ga);
     }
-    let clip = u.depth_vp * vec4<f32>(in.world, 1.0);
+    // Halos are optical spreading around a visible source. Testing their
+    // expanded quad against the road would cut the glow in half.
+    let source_depth=(u32(s.misc.y)&2u)!=0u;
+    let depth_point=select(in.world,s.center.xyz,source_depth);
+    let clip = u.depth_vp * vec4<f32>(depth_point, 1.0);
+    if clip.w<=0.0 {discard;}
     let duv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + 0.5;
-    if depth_metres(duv) + s.center.w < clip.w { discard; }
+    if (u32(s.misc.y)&4u)==0u && depth_metres(duv) + s.center.w < clip.w { discard; }
     if texel.a <= s.misc.x || texel.a <= 0.0 { discard; }
     // Linear premultiplied texel; cut-out sprites draw opaque inside.
     let a = select(texel.a, 1.0, s.misc.x > 0.0) * s.color.a;
@@ -424,14 +441,14 @@ fn depth_metres(uv: vec2<f32>) -> f32 {
     if u.output.x>0.0 {
         // Additive alpha scales emitted energy BEFORE tone mapping. Applying
         // it afterwards extinguishes bright low-coverage trails and glows.
-        let additive=s.misc.y>0.5;
+        let additive=(u32(s.misc.y)&1u)!=0u;
         let exposed=max(rgb*select(1.0,a,additive)*u.output.x,vec3<f32>(0.0));
         var mapped=sqrt(exposed/(1.0+exposed));
         if u.output.y>0.5 {mapped=select(mapped/12.92,pow((mapped+0.055)/1.055,vec3<f32>(2.4)),mapped>vec3<f32>(0.04045));}
         light=mapped*select(a,1.0,additive);
     }
     // Additive: premultiplied with zero alpha keeps what is behind.
-    return vec4<f32>(light, select(a, 0.0, s.misc.y > 0.5));
+    return vec4<f32>(light, select(a, 0.0, (u32(s.misc.y)&1u)!=0u));
 }
 "#;
 
@@ -518,6 +535,18 @@ mod tests {
         assert!(front[0] > 100 && front[0] > 4 * front[1].max(1), "red sprite in front: {front:?}");
         assert!((front[0] as i32 - behind[0] as i32).abs() > 60 && behind[0] == behind[1], "sprite behind the wall is hidden: {behind:?}");
         assert!(tag[1] > 100 && tag[1] > 4 * tag[0].max(1), "canvas tag is green: {tag:?}");
+        // A tilted glow quad crosses the wall although its source is in front.
+        // Optical spreading remains whole; an actually hidden source stays hidden.
+        for (depth_test,z,visible) in [(DepthTest::Fragment,0.05,false),(DepthTest::Source,0.05,true),(DepthTest::Source,-0.6,false)] {
+            let mut halo=Sprite::fixed(Vec3::new(0.,0.,z),[1.5,1.],Vec3::new(1.,0.,-1.).normalize(),Vec3::Y,SpriteImage(1),[0.,0.,1.,1.],red);
+            halo.depth_test=depth_test;halo.depth_bias=0.;halo.additive=true;halo.alpha_cut=0.;
+            renderer.set_sprites(&gpu,&[halo]).unwrap();
+            let (pixels,_)=renderer.render(&gpu,&camera,&light,w,h);
+            let at=((h/2*w+w/2+7)*4) as usize;
+            let red_visible=pixels[at] as u32>pixels[at+1] as u32+50;
+            assert_eq!(red_visible,visible,"optical source clipping: {depth_test:?}, z={z}, minimal={minimum}, pixel={:?}",&pixels[at..at+3]);
+        }
+
         }
     }
     #[test]

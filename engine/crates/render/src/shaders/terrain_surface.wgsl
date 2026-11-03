@@ -199,19 +199,24 @@ fn field_detail_slope(xz: vec2<f32>, seed: u32, footprint: f32, rock: f32, up: f
 // no terrain evaluation. procedural_terrain's style block holds the style in
 // data materials the terrain material's scale points at: -(first + 1); a
 // scale >= 0 means no forest (and the default ground, field_ground).
-struct FarForest { style: ForestStyle, start: f32, density: f32 };
+// start..end: the handover band from drawn trees to the layer, measured
+// from `centre` (where the trees were placed) when `centred`, else the camera.
+struct FarForest { style: ForestStyle, start: f32, density: f32, end: f32, centre: vec2<f32>, centred: bool };
 fn far_forest_params(at: u32) -> FarForest {
     let a = materials[at]; let b = materials[at + 1u]; let c = materials[at + 2u];
     let fs = ForestStyle(vec4<f32>(a.tint, bitcast<f32>(a.layer)), vec4<f32>(a.roughness, bitcast<f32>(a.flags), a.scale, a.metal),
         vec4<f32>(b.tint, bitcast<f32>(b.layer)), vec4<f32>(b.roughness, bitcast<f32>(b.flags), b.scale, b.metal));
-    return FarForest(fs, c.tint.x, c.tint.y);
+    return FarForest(fs, c.tint.x, c.tint.y, c.scale, vec2<f32>(c.tint.z, c.roughness), (c.flags & 1u) != 0u);
 }
 fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: FieldAttr, footprint: f32) -> MeadowCanopy {
     if s.scale >= 0.0 { return MeadowCanopy(ground, nn); }
     let params = far_forest_params(u32(-s.scale - 0.5));
     if params.density <= 0.0 { return MeadowCanopy(ground, nn); }
-    // Horizontal: the trees stand in a disc around the camera at any height.
-    let fade = smoothstep(params.start - 150.0, params.start, distance(s.p.xz, view.cam.xz));
+    // Horizontal: the trees stand in a disc around where they were placed
+    // (or the camera) at any height. In the band the layer takes exactly the
+    // share of trees no longer drawn (forest_field::handover).
+    let origin = select(view.cam.xz, params.centre, params.centred);
+    let fade = smoothstep(params.start, params.end, distance(s.p.xz, origin));
     if fade <= 0.0 { return MeadowCanopy(ground, nn); }
     // forest_field ff_grows from the vertex attributes, with a pixel of
     // slack so stand edges stay crisp without aliasing.
@@ -243,11 +248,45 @@ fn far_forest(ground: vec3<f32>, nn: vec3<f32>, n: vec3<f32>, s: SurfaceIn, f: F
     }
     let shaded = ground * mix(1.0, 0.45, shade * (1.0 - stand) * fade);
     if grows <= 0.0 { return MeadowCanopy(shaded, nn); }
-    let w = grows * fade * stand;
-    if w <= 0.0 { return MeadowCanopy(shaded, nn); }
-    let canopy = forest_canopy(s.p.x, s.p.z, footprint, sun, normalize(view.cam.xyz - s.p), seed, params.density, site, params.style);
-    let forest = canopy.albedo * canopy.occlusion;
-    return MeadowCanopy(mix(shaded, forest, w), normalize(mix(nn, canopy.normal, w)));
+    // The canopy stands a tree height above the ground: the view ray meets
+    // the crown tops before this ground point, at q. From q on towards p it
+    // runs under the crowns, so a stand it crosses on the way is the wall
+    // of its edge (hiding the clearing behind it), and the tops shift with
+    // their height (parallax). Looking down steeply q is p.
+    let eye = normalize(view.cam.xyz - s.p);
+    let rise = max(dot(eye, n), 0.0);
+    let height = params.style.far.w;
+    let reach = min(height * length(eye - n * dot(eye, n)) / max(rise, 0.05), 250.0);
+    let back = normalize(eye.xz + vec2<f32>(1e-6, 0.0));
+    let q = s.p.xz + back * reach;
+    var seen = 1.0;
+    var top = 0.0;
+    var wall = 0.0;
+    let taps = select(1, 6, reach > footprint);
+    for (var k = 0; k < taps; k++) {
+        let t = select(0.0, f32(k) / f32(taps - 1), taps > 1);
+        let a = far_forest_stand(mix(q, s.p.xz, t), seed, site, footprint, edge_w);
+        if k == 0 { top = seen * a; } else { wall += seen * a; }
+        seen *= 1.0 - a;
+    }
+    let w_top = grows * fade * top;
+    let w_wall = grows * fade * wall;
+    if w_top + w_wall <= 0.0 { return MeadowCanopy(shaded, nn); }
+    let canopy = forest_canopy(q.x, q.y, footprint, sun, eye, seed, params.density, site, params.style);
+    let crowns = canopy.albedo * canopy.occlusion;
+    // The wall: crowns' flanks over shaded trunks, facing the viewer.
+    let wall_n = normalize(vec3<f32>(eye.x, 0.15, eye.z));
+    let flank = mix(params.style.floor.rgb, canopy.albedo, 0.5) * 0.55;
+    var c = mix(shaded, crowns, w_top);
+    c = mix(c, flank, w_wall / max(1.0 - w_top, 1e-3));
+    let nrm = normalize(mix(mix(nn, canopy.normal, w_top), wall_n, w_wall));
+    let crowd = ff_share(q.x, q.y, seed, site, footprint) * params.density;
+    let sun_grow = ff_crown_growth(sun, params.style);
+    // Seen from the sun's side the crowns hide their own shadows (the hot
+    // spot); against the sun every shadow shows.
+    let hidden = clamp(dot(eye, sun), 0.0, 1.0);
+    field_sun = mix(1.0, exp(-crowd * params.style.crown.y * sun_grow * sun_grow), min(w_top + w_wall, 1.0) * (1.0 - hidden));
+    return MeadowCanopy(c, nrm);
 }
 
 // Whether (x, z) lies in a stand or hedgerow on ground of `site`, 0..1
@@ -270,6 +309,14 @@ struct FieldGround {
     snow: vec4<f32>,
     reserved: vec4<f32>,
 };
+// Direct sun the painted forest keeps (shade.wgsl's sun term). Past the
+// sun maps a drawn forest shades its ground through the GI canopy volume
+// (distant_sun_visibility); the volume does not hold the painted forest, so
+// it stood ~20 % brighter than the drawn one where it took over. Its stands
+// keep the share of ground no crown shades from the sun (forest_field's
+// overlap model, crowns seen from the sun) that the view can see. 1 off the
+// forest.
+var<private> field_sun: f32 = 1.0;
 const FIELD_GROUND_DEFAULT = FieldGround(vec4<f32>(0.43, 0.55, 0.23, 0.3), vec4<f32>(0.32, 0.69, 0.28, 0.0),
     vec4<f32>(0.6, 0.72, 0.7, 0.8), vec4<f32>(0.85, 0.8, 0.75, 0.35), vec4<f32>(0.95, 0.97, 1.0, 0.5),
     vec4<f32>(1.0, 1.04, 1.1, 0.35), vec4<f32>(0.84, 0.87, 0.92, 0.0), vec4<f32>(0.0, 0.0, 0.0, 0.0));
@@ -285,6 +332,59 @@ fn field_ground(s: SurfaceIn) -> FieldGround {
     let c = field_material_pair(materials[at + 2u]);
     let d = field_material_pair(materials[at + 3u]);
     return FieldGround(a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]);
+}
+
+// Roads drawn into the pixels (procedural_terrain.rs road_surface,
+// world_constraints.rs surface_words): data materials holding f32 words; the
+// style block's far forest params' metal points at them (first + 1).
+fn road_word(base: u32, i: u32) -> f32 {
+    let m = materials[base + i / 8u];
+    switch i % 8u {
+        case 0u: { return m.tint.x; }
+        case 1u: { return m.tint.y; }
+        case 2u: { return m.tint.z; }
+        case 3u: { return bitcast<f32>(m.layer); }
+        case 4u: { return m.roughness; }
+        case 5u: { return bitcast<f32>(m.flags); }
+        case 6u: { return m.scale; }
+        default: { return m.metal; }
+    }
+}
+
+// The nearest road to a pixel: edge = metres past its edge (negative on
+// it), u = across it, -1..1 edge to edge (right of travel positive).
+struct RoadPixel { found: bool, edge: f32, u: f32, half: f32, along: f32 };
+fn road_at(xz: vec2<f32>, scale: f32) -> RoadPixel {
+    var r = RoadPixel(false, 1e9, 0.0, 1.0, 0.0);
+    if scale >= 0.0 { return r; }
+    let ptr = materials[u32(-scale - 0.5) + 2u].metal;
+    if ptr < 0.5 { return r; }
+    let base = u32(ptr - 0.5);
+    let cell = road_word(base, 2u);
+    let fi = floor((xz.x - road_word(base, 0u)) / cell);
+    let fj = floor((xz.y - road_word(base, 1u)) / cell);
+    let sx = road_word(base, 3u);
+    if fi < 0.0 || fj < 0.0 || fi >= sx || fj >= road_word(base, 4u) { return r; }
+    let c = u32(fj * sx + fi);
+    let cells = u32(road_word(base, 5u));
+    let items = u32(road_word(base, 6u));
+    let first = u32(road_word(base, cells + c));
+    let end = u32(road_word(base, cells + c + 1u));
+    var best = 1e9;
+    for (var k = first; k < end; k++) {
+        let g = 8u + u32(road_word(base, items + k)) * 8u;
+        let a = vec2<f32>(road_word(base, g), road_word(base, g + 1u));
+        let ab = vec2<f32>(road_word(base, g + 2u), road_word(base, g + 3u)) - a;
+        let t = clamp(dot(xz - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+        let d = distance(a + ab * t, xz);
+        let half = mix(road_word(base, g + 4u), road_word(base, g + 5u), t);
+        if d - half < best {
+            best = d - half;
+            let cross = ab.x * (xz.y - a.y) - ab.y * (xz.x - a.x);
+            r = RoadPixel(true, d - half, select(d, -d, cross > 0.0) / half, half, mix(road_word(base, g + 6u), road_word(base, g + 7u), t));
+        }
+    }
+    return r;
 }
 
 fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
@@ -306,16 +406,26 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Darker than a lawn: seen from afar a meadow is mostly blade shadow,
     // so the ground matches the grass where the blades fade out.
     let grass = terrain_layer(layer, wuv, 2.6, mapping) * mix(g.grass_dry.rgb, g.grass_lush.rgb, lush);
-    // Moor: dark olive heather and bracken with grass between.
-    let moor = mix(terrain_layer(layer + 1, wuv, 3.2, mapping) * g.moor.rgb, grass * g.moor.w, g.grass_dry.w);
-    let soil = terrain_layer(layer + 2, wuv, 3.0, mapping) * g.soil.rgb;
+    // Layers a pixel holds none of are not sampled (moor, soil, gravel):
+    // their weights come first.
     let m_moor = smoothstep(0.25, 0.8, clamp(f.moor + (broad - 0.5) * 0.7 + (mottle - 0.5) * 0.3, 0.0, 1.0));
-    var c = mix(grass, moor, m_moor);
-    var nt = mix(terrain_layer_normal(layer, wuv, 2.6, mapping), terrain_layer_normal(layer + 1, wuv, 3.2, mapping), m_moor);
     // Worn soil only on steep banks and the odd bare patch.
     let m_soil = clamp(smoothstep(0.9, 0.75, f.up) * 0.35 + smoothstep(0.7, 0.85, mottle) * 0.25, 0.0, 1.0);
+    let road = road_at(p.xz, s.scale);
+    let on_road = road.found && road.edge < 4.0;
+    // Moor: dark olive heather and bracken with grass between.
+    var moor = grass;
+    var nt = vec2<f32>(0.0);
+    if m_moor < 1.0 { nt = terrain_layer_normal(layer, wuv, 2.6, mapping); }
+    if m_moor > 0.0 {
+        moor = mix(terrain_layer(layer + 1, wuv, 3.2, mapping) * g.moor.rgb, grass * g.moor.w, g.grass_dry.w);
+        nt = mix(nt, terrain_layer_normal(layer + 1, wuv, 3.2, mapping), m_moor);
+    }
+    var soil = vec3<f32>(0.0);
+    if m_soil > 0.0 || on_road { soil = terrain_layer(layer + 2, wuv, 3.0, mapping) * g.soil.rgb; }
+    var c = mix(grass, moor, m_moor);
     c = mix(c, soil, m_soil);
-    nt = mix(nt, terrain_layer_normal(layer + 2, wuv, 3.0, mapping), m_soil);
+    if m_soil > 0.0 { nt = mix(nt, terrain_layer_normal(layer + 2, wuv, 3.0, mapping), m_soil); }
     var nn = perturb_xz(n, nt);
     c *= 0.82 + 0.3 * broad;
 
@@ -336,10 +446,12 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     let m_scree = smoothstep(0.2, 0.7, f.scree + (mottle - 0.5) * 0.4);
     // Mountain stone is grey limestone and gneiss: the textures are warm, so
     // most of their colour goes.
-    let gravel0 = terrain_layer(layer + 4, wuv, 1.8, mapping);
-    let gravel = mix(vec3<f32>(dot(gravel0, vec3<f32>(0.3, 0.59, 0.11))), gravel0, g.gravel.w) * g.gravel.rgb;
-    c = mix(c, gravel, m_scree);
-    nn = normalize(mix(nn, perturb_xz(n, terrain_layer_normal(layer + 4, wuv, 1.8, mapping)), m_scree));
+    if m_scree > 0.0 {
+        let gravel0 = terrain_layer(layer + 4, wuv, 1.8, mapping);
+        let gravel = mix(vec3<f32>(dot(gravel0, vec3<f32>(0.3, 0.59, 0.11))), gravel0, g.gravel.w) * g.gravel.rgb;
+        c = mix(c, gravel, m_scree);
+        nn = normalize(mix(nn, perturb_xz(n, terrain_layer_normal(layer + 4, wuv, 1.8, mapping)), m_scree));
+    }
 
     // Bedrock: triplanar, mossy where it faces up.
     let m_rock = smoothstep(0.25, 0.75, f.rock + (mottle - 0.5) * 0.35);
@@ -360,6 +472,76 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
         nn = normalize(mix(nn, rn, m_rock));
     }
 
+    // A road: compacted gravel with two darker, smoother wheel lines and
+    // loose stone between and beside them, a ragged edge, then a shoulder
+    // where loose stone thins out into the grass. Exact per pixel, so the
+    // edge stays sharp on any mesh detail.
+    var road_rough = 0.0;
+    var road_cover = 0.0;
+    if on_road {
+        let fine = field_fbm(wuv * 2.3 + 17.0, footprint * 2.3);
+        // The edge wanders half a metre to a metre over 5-15 m, with small
+        // raggedness on top.
+        // fbm stays near 0.5, so its swing is scaled up to about a metre.
+        let wander = clamp((field_fbm(wuv / 9.0 + 41.0, footprint / 9.0) - 0.5) * 5.0, -1.2, 1.2);
+        let ragged = wander + (fine - 0.5) * 1.2 + (mottle - 0.5) * 0.5;
+        let soft = 0.12 + footprint;
+        let m_road = 1.0 - smoothstep(-soft, soft, road.edge + ragged);
+        let m_shoulder = (1.0 - smoothstep(0.0, 2.5, road.edge + ragged)) * smoothstep(0.35, 0.6, fine + 0.25 * (1.0 - smoothstep(0.0, 1.0, road.edge + ragged)));
+        // Gravel at two scales, so it has grain from a metre to a hand.
+        let big = terrain_layer(layer + 4, wuv, 1.3, mapping);
+        let small = terrain_layer(layer + 4, wuv + vec2<f32>(0.37, 0.71), 0.45, mapping);
+        let stone0 = mix(big, small, 0.5 * (1.0 - smoothstep(0.02, 0.08, footprint)));
+        let lum = dot(stone0, vec3<f32>(0.3, 0.59, 0.11));
+        // The road takes its colour from the land's soil: brown gravel in
+        // the forest, sand-coloured in the desert.
+        let land = 0.5 * (g.soil.rgb + g.grass_dry.rgb);
+        let soil_tint = land / max(dot(land, vec3<f32>(0.3, 0.59, 0.11)), 1e-3);
+        let stone = mix(vec3<f32>(lum), stone0, 0.4) * mix(vec3<f32>(0.5, 0.45, 0.37), 0.5 * soil_tint, 0.8);
+        // Two packed wheel lines 1.8 m apart, 0.4 m wide, wandering a
+        // little; loose gravel heaped between and outside them.
+        let side_m = road.u * road.half + 0.08 * (fine - 0.5) * 2.0;
+        let rut_w = 0.45 + footprint;
+        let rut = (1.0 - smoothstep(0.1, rut_w, abs(abs(side_m) - 0.9))) * (1.0 - smoothstep(-0.8, 0.0, road.edge));
+        let pebble = field_fbm(wuv * 9.0 + 3.0, footprint * 9.0);
+        let grit = field_fbm(wuv * 31.0 + 9.0, footprint * 31.0);
+        let loose = (1.0 - rut) * (0.6 + 0.4 * smoothstep(0.4, 0.75, pebble));
+        var rc = stone * (0.88 + 0.45 * (grit - 0.5) * loose + 0.25 * (pebble - 0.5)) * mix(1.08, 0.82, rut);
+        // Single stones a few centimetres across, where a pixel can hold
+        // them: lighter and darker pebbles over the loose gravel.
+        if footprint < 0.05 {
+            let q = wuv / 0.1;
+            let cell = floor(q);
+            var stones = 0.0;
+            var shade = 0.0;
+            for (var dy = -1; dy <= 1; dy++) {
+                for (var dx = -1; dx <= 1; dx++) {
+                    let k = cell + vec2<f32>(f32(dx), f32(dy));
+                    let h = field_hash(k + 913.0);
+                    if h < 0.45 { continue; }
+                    let centre = k + vec2<f32>(field_hash(k + 17.0), field_hash(k + 53.0));
+                    let r = 0.25 + 0.35 * field_hash(k + 101.0);
+                    let d = length(q - centre) / r;
+                    let m = 1.0 - smoothstep(0.7, 1.0, d);
+                    if m > stones { stones = m; shade = field_hash(k + 211.0); }
+                }
+            }
+            let near = 1.0 - smoothstep(0.025, 0.05, footprint);
+            rc = mix(rc, stone * (0.45 + 1.1 * shade), stones * loose * near * 0.9);
+        }
+        // Worn soil where the edge meets the grass.
+        let worn = (1.0 - smoothstep(0.0, 0.9, abs(road.edge + 0.1 + ragged))) * 0.5;
+        c = mix(c, soil * 0.8, worn * (1.0 - m_road));
+        c = mix(c, stone * (0.95 + 0.3 * (pebble - 0.5)), m_shoulder * (1.0 - m_road) * 0.8);
+        // A little of the land's own colour: dust from the verges.
+        rc = mix(rc, c * 0.85, 0.2);
+        c = mix(c, rc, m_road);
+        let rn = perturb_xz(n, mix(terrain_layer_normal(layer + 4, wuv, 1.3, mapping), terrain_layer_normal(layer + 4, wuv + vec2<f32>(0.37, 0.71), 0.45, mapping), 0.5) * (1.0 - 0.75 * rut));
+        nn = normalize(mix(nn, rn, max(m_road, m_shoulder * 0.6)));
+        road_rough = mix(0.95, 0.7, rut);
+        road_cover = m_road;
+    }
+
     // Roughness finer than the mesh, from the terrain function itself (the
     // material's metal carries the seed: terrain is never metal).
     let ds = field_detail_slope(p.xz, u32(s.metal + 0.5), footprint, f.rock, f.up, f.moor);
@@ -368,10 +550,17 @@ fn field_surface(s: SurfaceIn, layer: i32) -> SurfaceOut {
     // Damp ground darkens near water.
     c *= 1.0 - g.soil.w * f.wet * (1.0 - m_rock * 0.5);
     var rough = mix(0.95, 0.55, f.wet * 0.6);
+    rough = mix(rough, road_rough, road_cover);
 
     // Snow over everything but water: bright, fairly smooth, thinning into
     // patches at its edge.
-    let m_snow = smoothstep(0.3, 0.7, f.snow + (mottle - 0.5) * 0.5 + (broad - 0.5) * 0.3);
+    var m_snow = smoothstep(0.3, 0.7, f.snow + (mottle - 0.5) * 0.5 + (broad - 0.5) * 0.3);
+    // Seasonal snow (biome.rs Environment, GroundStyle snow.w) on open
+    // ground: thinning on slopes and in patches as the cover falls.
+    if g.snow.w > 0.0 {
+        let cover = g.snow.w * smoothstep(0.6, 0.85, f.up) * (1.0 - f.water * 4.0);
+        m_snow = max(m_snow, smoothstep(0.3, 0.7, cover + (mottle - 0.5) * 0.4 + (broad - 0.5) * 0.3));
+    }
     if m_snow > 0.0 {
         c = mix(c, g.snow.rgb * (0.93 + 0.1 * mottle), m_snow);
         nn = normalize(mix(nn, n, m_snow * 0.8));

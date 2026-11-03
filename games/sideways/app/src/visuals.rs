@@ -568,7 +568,8 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
     let crown = tex(&mut scene, "assets/trees/authored_pine_albedo.png")?;
     scene.load_sky(&r.join("assets/sky/sky_2k.hdr"))?;
     let m = |tint: [f32; 3], layer: i32, flags: u32, scale: f32| Material { tint, layer, roughness: 0.9, flags, scale, metal: 0.0 };
-    let terrain_mat = scene.add_material(m([1.0, 1.0, 1.0], t0, TERRAIN, 4.0));
+    // A biome's ground colour (--biome), relative to Sideways' own.
+    let terrain_mat = scene.add_material(m(stage.vegetation.land_tint, t0, TERRAIN, 4.0));
     let road_mat = scene.add_material(m([1.9, 1.85, 1.8], gravel, ROAD, 3.0));
     let trunk_a_mat = scene.add_material(m([1.0, 1.0, 1.0], trunk_a, 0, 1.0));
     let trunk_b_mat = scene.add_material(m([1.0, 1.0, 1.0], trunk_b, 0, 1.0));
@@ -726,8 +727,11 @@ fn build_inner(stage: &Stage, cars: &[CarPose], cameras: &[Vec3], ground_cover: 
         log.push(summary);
     }
 
-    let meadow_field=crate::grass_field::enabled();
-    let procedural_patch=if meadow_field {None} else {
+    // Land without grass (a --biome desert) draws no ground cover at all.
+    let bare=stage.land.as_ref().is_some_and(|l|l.grass<0.05);
+    let (live_cover,ground_cover)=(live_cover&&!bare,ground_cover&&!bare);
+    let meadow_field=crate::grass_field::enabled()&&!bare;
+    let procedural_patch=if meadow_field||bare {None} else {
         crate::grass_voxel_asset::attach_procedural_patch(&mut scene,stage,&chunks,cameras,&mut mesh_names)?
     };
     let excluded=procedural_patch.as_ref().map(|patch|patch.excluded);

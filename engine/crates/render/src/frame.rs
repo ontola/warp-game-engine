@@ -22,7 +22,7 @@ struct FrameResources {
     near_shadow: resource_cache::TextureViews<1>,
     history: resource_cache::TextureViews<2>,
     result: resource_cache::TextureViews<2>,
-    shade: resource_cache::BindGroups<1>,
+    shade: resource_cache::BindGroups<2>,
     taa: resource_cache::BindGroups<2>,
     tone: resource_cache::BindGroups<2>,
     volume: resource_cache::BindGroups<1>,
@@ -153,10 +153,10 @@ struct Upscaling {
     layout: Vec<(u32, u32, u32, u32)>,
     /// Bounded per-view temporal guard. A source/volume or selected-mip change
     /// resets that whole view initially, not a claim of mature streaming history.
-    foliage_selection: Vec<Vec<[u32;4]>>,
+    foliage_selection: Vec<Vec<u32>>,
 }
 
-fn update_foliage_history(previous:&mut Vec<[u32;4]>,current:&[[u32;4]])->bool {
+fn update_foliage_history(previous:&mut Vec<u32>,current:&[u32])->bool {
     if previous.as_slice()==current {return false;}
     previous.clear();previous.extend_from_slice(current);true
 }
@@ -786,6 +786,7 @@ pub struct Renderer {
     tree_occlusion: crate::tree_occlusion::Resources,
     cluster_buckets: bool,
     simple_lighting: bool,
+    sharp_sprites: bool,
     simple_cull: bool,
     small_cluster_vertices:u32,
     minimal_forward: Option<std::sync::Mutex<crate::forward::Forward>>,
@@ -816,6 +817,31 @@ pub struct Renderer {
     /// runs indirectly over the listed tiles only. Same image either way.
     sky_tiles: bool,
     shade_classify: wgpu::ComputePipeline,
+    /// Shade binding 18 without rasterized voxels: no voxel in front.
+    voxel_depth_fallback: wgpu::TextureView,
+    /// Rasterized voxels draw into the scene's visibility buffer and shade
+    /// lights them from their surface (binding 20); stand-in without.
+    voxel_surface: bool,
+    voxel_surface_fallback: wgpu::TextureView,
+    /// shade_voxels (KERN_VOXEL_PASS=1): voxel pixels in their own pass.
+    voxel_pass: Option<wgpu::ComputePipeline>,
+    /// shade for procedural terrain pixels only (SHADE_CLASS 1); `shade`
+    /// then lights everything else (2).
+    terrain_shade: Option<wgpu::ComputePipeline>,
+    /// Constants of the shade pipelines with their diagnostics, and those
+    /// pipelines (shade, terrain shade), built the first time
+    /// Lighting::debug asks for a component view.
+    diagnostic_constants: Vec<(&'static str, f64)>,
+    shade_diagnostic: std::sync::OnceLock<(wgpu::ComputePipeline, Option<wgpu::ComputePipeline>)>,
+    /// Coarse terrain material (shade.wgsl terrain_coarse; KERN_TERRAIN_COARSE=0
+    /// turns it off), its half-resolution target per view, the stand-in
+    /// bound while it is written, and its output layout.
+    terrain_coarse: Option<wgpu::ComputePipeline>,
+    terrain_coarse_targets: std::sync::Mutex<Vec<Option<(wgpu::Texture, wgpu::TextureView)>>>,
+    terrain_coarse_fallback: wgpu::TextureView,
+    terrain_coarse_layout: wgpu::BindGroupLayout,
+    /// Group 2 of the coarse terrain pass, which writes through group 3.
+    empty_bind: wgpu::BindGroup,
     /// Bakes each changed canopy level's sky transmittance into the canopy
     /// texture, so shading reads it instead of marching per pixel
     /// (`KERN_SKY_VIS_CACHE=0` keeps the per-pixel march).
@@ -1187,6 +1213,15 @@ impl Renderer {
     /// layers are redrawn through `screen::Screen`; do not resize it.
     pub fn albedo_array(&self) -> &wgpu::Texture { &self.albedo_array }
 
+    /// Update a game-owned range reserved in `Scene::aux` before construction.
+    /// The caller owns the range; engine reservations must not be overwritten.
+    pub fn update_aux_words(&self, gpu: &Gpu, offset: usize, words: &[u32]) -> Result<(), String> {
+        let end = offset.checked_add(words.len()).and_then(|n| n.checked_mul(4)).ok_or("aux range overflow")?;
+        if end as u64 > self.aux_buffer.size() { return Err("aux write outside reserved buffer".into()); }
+        gpu.queue.write_buffer(&self.aux_buffer, (offset * 4) as u64, bytemuck::cast_slice(words));
+        Ok(())
+    }
+
     /// Replace the bullet dents reserved with `Scene::reserve_dents`.
     pub fn set_dents(&self, gpu: &Gpu, dents: &[crate::dents::Dent]) -> Result<(), String> {
         let (offset, capacity) = self.dents.ok_or("the scene reserved no dents")?;
@@ -1436,7 +1471,7 @@ impl Renderer {
                 .expect("invalid weighted skinning scene"))
         };
         let debris = scene.debris.map(|spec| crate::debris::DebrisRenderer::new(gpu, spec, &instances));
-        let procedural_terrain = scene.procedural_terrain.map(|spec| crate::procedural_terrain::TerrainRenderer::new(gpu, spec, &vertices, &clusters));
+        let procedural_terrain = scene.procedural_terrain.clone().map(|spec| crate::procedural_terrain::TerrainRenderer::new(gpu, spec, &vertices, &clusters));
         let crowd = scene.crowd.map(|spec| crate::crowd::CrowdRenderer::new(gpu, &spec, &instances));
         startup.mark("part_wind_animation_resources");
         let grass_lighting=crate::grass_lighting::Resources::new(gpu,scene.far_grass.as_ref().zip(far_grass.as_ref()),scene.terrain_visual_offset_m);
@@ -1600,6 +1635,9 @@ impl Renderer {
                 (15, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
                 (16, storage(false)),
                 (17, storage(false)),
+                (18, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (19, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                (20, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
             ],
         );
         let canopy = crate::canopy::CanopyClipmap::new(gpu, scene, &scene_layout)
@@ -1628,6 +1666,8 @@ impl Renderer {
                 (3, wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }),
                 (4, uniform()),
                 (5, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                (6, float_tex(false)),
+                (7, float_tex(false)),
             ],
         );
         let module = |name: &str, src: &str| gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(name), source: wgpu::ShaderSource::Wgsl(src.into()) });
@@ -1756,10 +1796,74 @@ impl Renderer {
         let sky_tiles=!simple_lighting && std::env::var("KERN_SKY_TILES").as_deref()==Ok("1");
         let mut shade_constants=shade_features.constants(rock_variation,skip_hidden_meadow);
         shade_constants.push(("SKY_TILES", if sky_tiles {1.0} else {0.0}));
+        shade_constants.push(("WORLD_TERRAIN_BAKED", if world_visibility.baked {1.0} else {0.0}));
+        // KERN_VOXEL_SURFACE=0: rasterized voxels keep their own lighting
+        // (resolve and composite) instead of drawing into the scene's
+        // visibility buffer for shade (VOXEL_SURFACE).
+        let voxel_surface = !simple_lighting && voxel_forest.as_ref().is_some_and(|f| f.casts_sun())
+            && std::env::var("KERN_VOXEL_SURFACE").as_deref() != Ok("0");
+        shade_constants.push(("VOXEL_OCCLUSION", if voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !voxel_surface {1.0} else {0.0}));
+        shade_constants.push(("VOXEL_SURFACE", if voxel_surface {1.0} else {0.0}));
+        // Voxel pixels in their own pass (KERN_VOXEL_PASS=0 keeps them in
+        // shade): the big kernel's register footprint was the limit, not
+        // their lighting (playtest cameras 2560x1440: 29-34 -> 33-38 fps,
+        // frames identical).
+        let voxel_pass_on = voxel_surface && std::env::var("KERN_VOXEL_PASS").as_deref() != Ok("0");
+        shade_constants.push(("VOXEL_PASS", if voxel_pass_on {1.0} else {0.0}));
+        let terrain_coarse_on = !simple_lighting && shade_features.terrain && std::env::var("KERN_TERRAIN_COARSE").as_deref() != Ok("0");
+        shade_constants.push(("TERRAIN_COARSE", if terrain_coarse_on {1.0} else {0.0}));
+        if let Some(m) = std::env::var("KERN_COARSE_FOOTPRINT_M").ok().and_then(|v| v.parse::<f64>().ok()) { shade_constants.push(("COARSE_FOOTPRINT_M", m)); }
+        // KERN_SHADE_CLASSES=0: one shade pipeline for terrain and the rest.
+        let shade_classes = !simple_lighting && shade_features.terrain && std::env::var("KERN_SHADE_CLASSES").as_deref() != Ok("0");
+        // The terrain class keeps every feature terrain pixels can reach.
+        let terrain_constants: Vec<(&'static str, f64)> = shade_constants.iter().map(|&(k, v)| match k {
+            "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" | "FEATURE_GRASS" => (k, 0.0), _ => (k, v) })
+            .chain([("SHADE_CLASS", 1.0)]).collect();
+        // The rest class drops the terrain branch unless a car part carries
+        // the TERRAIN bit (car materials keep their index in bits 16..).
+        let car_terrain = scene.materials.iter().any(|m| m.flags & crate::scene::TERRAIN != 0 && m.flags >> 16 != 0);
+        if shade_classes && !car_terrain {
+            for c in shade_constants.iter_mut() { if c.0 == "FEATURE_TERRAIN" { c.1 = 0.0; } }
+        }
+        shade_constants.push(("SHADE_CLASS", if shade_classes {2.0} else {0.0}));
+        // Component diagnostics (Lighting::debug) are compiled out of the
+        // shade pipelines; the first frame that asks for one builds the
+        // diagnostic pair (shade_diagnostic). They cost 1.3-3.6 fps at the
+        // playtest cameras in registers alone.
+        let diagnostic_constants: Vec<(&'static str, f64)> = shade_constants.clone();
+        shade_constants.push(("SHADE_DIAGNOSTICS", 0.0));
         let shade = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some(if simple_lighting {"shade_simple"} else {"shade"}),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
         });
+        let voxel_depth_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel depth"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
+        let empty_layout = layout(gpu, "empty", &[]);
+        let empty_bind = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("empty"), layout: &empty_layout, entries: &[] });
+        let terrain_coarse_layout = layout(gpu, "terrain coarse out", &[(32, wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Uint, view_dimension: wgpu::TextureViewDimension::D2 })]);
+        let terrain_coarse = terrain_coarse_on.then(|| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("terrain coarse"),layout:Some(&pl(&[&scene_layout, &shade_layout, &empty_layout, &terrain_coarse_layout])),module:&shade_mod,entry_point:Some("terrain_coarse"),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
+        }));
+        let terrain_coarse_fallback = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no coarse terrain"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
+        let terrain_shade = shade_classes.then(|| {
+            let mut constants = terrain_constants.clone();
+            constants.push(("SHADE_DIAGNOSTICS", 0.0));
+            gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label:Some("shade terrain"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade"),
+                compilation_options:wgpu::PipelineCompilationOptions {constants:&constants,..Default::default()},cache: gpu.pipeline_cache(),
+            })
+        });
+        let voxel_pass = voxel_pass_on.then(|| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:Some("shade voxels"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("shade_voxels"),
+            compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
+        }));
         let shade_classify = gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label:Some("shade sky tiles"),layout:Some(&shade_pl),module:&shade_mod,entry_point:Some("classify"),
             compilation_options:wgpu::PipelineCompilationOptions {constants:&shade_constants,..Default::default()},cache: gpu.pipeline_cache(),
@@ -1927,6 +2031,7 @@ impl Renderer {
             tree_occlusion,
             cluster_buckets,
             simple_lighting,
+            sharp_sprites: scene.graphics.sharp_sprites,
             simple_cull,
             small_cluster_vertices:small_cluster_triangles*3,
             direct_bounds,
@@ -1950,6 +2055,21 @@ impl Renderer {
             shade_pl,
             sky_tiles,
             shade_classify,
+            voxel_depth_fallback,
+            voxel_surface,
+            voxel_pass,
+            terrain_shade,
+            diagnostic_constants,
+            shade_diagnostic: std::sync::OnceLock::new(),
+            voxel_surface_fallback: gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("no voxel surface"),
+                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+                dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default()),
+            terrain_coarse,
+            terrain_coarse_targets: std::sync::Mutex::new(Vec::new()),
+            terrain_coarse_fallback,
+            terrain_coarse_layout,
+            empty_bind,
             sky_vis_bake,
             shade_tiles: std::sync::Mutex::new(Vec::new()),
             shade_text: crate::wind::shade_source(),
@@ -2066,8 +2186,7 @@ impl Renderer {
         let categories=diagnostics.owners.as_ref().map(|owners|self.geometry_diagnostics.count(&pairs,owners,self.cluster_buckets)).transpose()?;
         let foliage_selection=if self.foliage_representations.is_empty() {Vec::new()} else {
             read(&target.foliage_selection,target.foliage_selection.size())?
-                .chunks_exact(16).map(|b|std::array::from_fn(|i|
-                    u32::from_le_bytes(b[i*4..i*4+4].try_into().unwrap()))).collect()
+                .chunks_exact(4).map(|b|crate::voxel_forest::selection_unpack(u32::from_le_bytes(b.try_into().unwrap()))).collect()
         };
         Ok(VisibleClusterDiagnostic { frame_id:context.frame_id, render_sequence:context.render_sequence,
             view_index:view,view_count:context.views,output_size:context.output_size,input_size:target.input_size,
@@ -2627,6 +2746,14 @@ impl Renderer {
                 let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade"), source: wgpu::ShaderSource::Wgsl(sources.shade.as_str().into()) });
                 let mut constants = self.shade_features.constants(self.rock_variation,self.meadow.as_ref().is_some_and(|m|m.skip_hidden_shade_enabled()));
                 constants.push(("SKY_TILES", if self.sky_tiles {1.0} else {0.0}));
+                constants.push(("WORLD_TERRAIN_BAKED", if self.world_visibility.baked {1.0} else {0.0}));
+                constants.push(("VOXEL_OCCLUSION", if self.voxel_forest.as_ref().is_some_and(|f| f.casts_sun()) && !self.voxel_surface {1.0} else {0.0}));
+                constants.push(("VOXEL_SURFACE", if self.voxel_surface {1.0} else {0.0}));
+                constants.push(("VOXEL_PASS", if self.voxel_pass.is_some() {1.0} else {0.0}));
+                constants.push(("SHADE_CLASS", if self.terrain_shade.is_some() {2.0} else {0.0}));
+                constants.push(("SHADE_DIAGNOSTICS", 0.0));
+                constants.push(("TERRAIN_COARSE", if self.terrain_coarse.is_some() {1.0} else {0.0}));
+                if let Some(m) = std::env::var("KERN_COARSE_FOOTPRINT_M").ok().and_then(|v| v.parse::<f64>().ok()) { constants.push(("COARSE_FOOTPRINT_M", m)); }
                 let make = |entry: &str| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(entry),
                     layout: Some(&self.shade_pl),
@@ -3302,8 +3429,17 @@ impl Renderer {
         let mut up = self.upscaling.lock().unwrap();
         let dlss_on = up.mode != crate::upscale::UpscaleMode::Native;
         let blur=self.motion_blur.lock().unwrap();
-        if blur.is_some() && up.motion.is_none() {
+        // TAA reprojects with these per-pixel vectors too: wind-blown trees
+        // otherwise lose their history every frame and shimmer.
+        if (blur.is_some() || (light.taa > 0.5 && !dlss_on)) && up.motion.is_none() {
             up.motion=Some(crate::motion::MotionRenderer::new(gpu,&self.instance_buffer,self.wind.buffer(),self.instances as usize)?);
+            // Voxel trees write their motion layer from here on (as for DLSS).
+            // Where the device's binding limits allow its temporal pipelines;
+            // otherwise voxel pixels reproject with the surface behind them.
+            if let Some(forest)=&self.voxel_forest {
+                if let Err(e)=forest.prepare_temporal(gpu) {eprintln!("voxel motion layer off: {e}");}
+                forest.reset_targets();
+            }
         }
 
         if self.meadow_brick_fixture.is_some() && (dlss_on || light.taa > 0.5) {
@@ -3354,9 +3490,15 @@ impl Renderer {
         let centre = anchors.iter().copied().sum::<Vec3>() / views.len().max(1) as f32;
         let spread = anchors.iter().map(|p|p.distance(centre)).fold(0.0f32,f32::max);
         let mut previous_extent = self.shadow_extent.lock().unwrap();
+        // Metres the shared sun map covers around the focus (KERN_SHADOW_REACH
+        // overrides). Past it the coarse distant visibility takes over, whose
+        // dark crown-sphere blobs read as a seam against sharp tree shadows:
+        // at 90 m that seam ran through the view from 140 m up (terrain_fly
+        // playtest); 180 m costs no measurable time at 1440p.
+        let reach = std::env::var("KERN_SHADOW_REACH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(180.0);
         let required_extent = if self.sun_cache_guard_m>0.0 {
-            (90.0+spread+self.sun_cache_guard_m)/crate::static_sun::FULL_COVERAGE_NDC
-        } else {90.0+spread};
+            (reach+spread+self.sun_cache_guard_m)/crate::static_sun::FULL_COVERAGE_NDC
+        } else {reach+spread};
         let extent = crate::stability::stable_shadow_extent(required_extent, *previous_extent);
         *previous_extent = extent;
         drop(previous_extent);
@@ -3455,7 +3597,8 @@ impl Renderer {
                 [page_lod,1.0,1.0,capacity as f32],[size;4],light.alpha_cut);
             gpu.queue.write_buffer(&page_targets[index].1.uniform,0,bytemuck::bytes_of(&vu));
         }
-        let far_lod=crate::far_sun::effective_lod(self.far_sun.lod_pixels,light.lod_pixels);
+        // A generated level bake must not change as adaptive camera quality changes.
+        let far_lod=if self.far_sun.stage {self.far_sun.lod_pixels}else{crate::far_sun::effective_lod(self.far_sun.lod_pixels,light.lod_pixels)};
         let far_projection=if sun_needed {self.far_sun.prepare(gpu,light.sun_dir,light.alpha_cut,far_lod)} else {None};
         let far_updated=far_projection.is_some_and(|(_,updated)|updated);
         let mut far_targets=self.far_sun_targets.lock().unwrap();
@@ -3923,10 +4066,10 @@ impl Renderer {
                         width: view.w, height: view.h }, self.foliage_representation_policy)?;
                 let mut selection = crate::voxel_forest::default_selection();
                 for decision in decisions {
-                    selection[decision.volume as usize] = match decision.representation {
+                    selection[decision.volume as usize] = crate::voxel_forest::selection_pack(match decision.representation {
                         crate::foliage_representation::Representation::Source => [0, 0, 0, 0],
                         crate::foliage_representation::Representation::Voxel { level } => [1, level, 0, 0],
-                    };
+                    });
                 }
                 gpu.queue.write_buffer(&main.foliage_selection, 0, bytemuck::cast_slice(&selection));
                 if dlss_on {foliage_changed=update_foliage_history(&mut up.foliage_selection[vi],&selection);}
@@ -3982,21 +4125,6 @@ impl Renderer {
             let solar = solar_projection(cam, view_m, view.w as f32 / view.h as f32, light, sun_visibility);
             let tone_buf = self.view_uniform(gpu, vi, 3, "tone", bytemuck::bytes_of(&ToneUniform { exposure, contrast: light.contrast, saturation: light.saturation, sharpen: if taa_on { light.sharpen } else { 0.0 }, offset: [view.x, view.y], bloom_strength:if bloom_on {bloom_strength}else{0.0},screen:u32::from(bloom_on&&debug_options.bloom_screen), vignette: light.vignette, grain: light.grain, aberration: light.aberration, time: light.time, sun: solar, sun_tint: [light.sun_color.x, light.sun_color.y, light.sun_color.z, 0.0] }));
             cpu.mark("view setup");
-            let taa_bind = taa_pass.as_ref().map(|(src, dst, u)| {
-                resources.taa.get(
-                    gpu,
-                    &self.taa_layout,
-                    "cached TAA view",
-                    &[
-                        (0, wgpu::BindingResource::TextureView(&hdr_v)),
-                        (1, wgpu::BindingResource::TextureView(&depth_v)),
-                        (2, wgpu::BindingResource::TextureView(src)),
-                        (3, wgpu::BindingResource::TextureView(dst)),
-                        (4, u.as_entire_binding()),
-                        (5, wgpu::BindingResource::Sampler(&self.clamp_samp)),
-                    ],
-                )
-            });
             if self.tree_occlusion.enabled {
                 if let Some(selector)=&self.source_replacement {
                     let time=self.query.as_ref().map(|(qs,_,_)| {names.push("world foliage select");(qs,timestamp_pair(&mut ts))});
@@ -4058,7 +4186,45 @@ impl Renderer {
                 gpu.queue.write_buffer(&b.0, 0, bytemuck::cast_slice(&[0u32, 1, 1, 0]));
                 b
             };
-            let shade_bind = resources.shade.get(
+            let volume_view=(self.far_grass.is_some() || self.voxel_forest.is_some() || self.foliage_world.is_some() || self.meadow_brick_fixture.is_some()).then(||
+                crate::volume_view::VolumeViewInputs {
+                    camera:&main.uniform, light:&light_buf, opaque_depth:&depth_v,
+                    sun_shadow:&shadow_v, shadow_sampler:&self.shadow_samp,
+                    sky:&self.sky_view, heightfield:&self.heightfield, gi:&gi_buf,
+                    canopy:&density_view, canopy_sampler:&self.density_sampler,
+                    near_shadow:&near_view,
+                }.bind_cached(gpu,&self.volume_view_layout,&mut resources.volume));
+            // Rasterized voxel trees go down before the opaque shade, which
+            // then skips the ground and trees they hide (shade.wgsl
+            // VOXEL_OCCLUSION); they are resolved and composited after it.
+            let voxel_times = self.voxel_forest.as_ref().map(|forest| forest.timing_names().map(|name|{
+                let name=name?;
+                self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts); names.push(name); (qs,i)})
+            }));
+            if let Some(forest) = &self.voxel_forest {
+                forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
+                    volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
+                    up.motion.as_ref().filter(|_|motion_on && forest.has_temporal()).map(|motion|crate::voxel_forest::TemporalInputs {
+                        previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),
+                    crate::voxel_forest::Stage::Splats, self.voxel_surface.then_some((&vis_v, &depth_v)))?;
+            }
+            let voxel_depth = self.voxel_forest.as_ref().and_then(|forest| forest.splat_depth(vi));
+            let voxel_surface = self.voxel_forest.as_ref().filter(|_| self.voxel_surface).and_then(|forest| forest.surface(vi));
+            let coarse_target = self.terrain_coarse.as_ref().map(|_| {
+                let mut all = self.terrain_coarse_targets.lock().unwrap();
+                if all.len() <= vi { all.resize_with(vi + 1, || None); }
+                let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+                if all[vi].as_ref().is_none_or(|t| t.0.width() != cw || t.0.height() != ch) {
+                    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor { label: Some("terrain coarse"),
+                        size: wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING, view_formats: &[] });
+                    let view = texture.create_view(&Default::default());
+                    all[vi] = Some((texture, view));
+                }
+                all[vi].clone().unwrap()
+            });
+            let shade_bind_with = |resources: &mut FrameResources, coarse: &wgpu::TextureView| resources.shade.get(
                 gpu,
                 &self.shade_layout,
                 "cached shade view",
@@ -4080,12 +4246,35 @@ impl Renderer {
                     (15, wgpu::BindingResource::TextureView(&near_view)),
                     (16, hidden_meadow.as_ref().unwrap_or(&self.hidden_meadow_fallback).as_entire_binding()),
                     (17, shade_tiles.0.as_entire_binding()),
+                    (18, wgpu::BindingResource::TextureView(voxel_depth.as_ref().unwrap_or(&self.voxel_depth_fallback))),
+                    (19, wgpu::BindingResource::TextureView(coarse)),
+                    (20, wgpu::BindingResource::TextureView(voxel_surface.as_ref().unwrap_or(&self.voxel_surface_fallback))),
                 ],
             );
-            let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = vec![("shade", &self.shade, vec![&self.scene_bind, &shade_bind])];
-            if let Some(b) = &taa_bind {
-                passes.push(("taa", &self.taa, vec![b]));
+            let shade_bind = shade_bind_with(resources, coarse_target.as_ref().map_or(&self.terrain_coarse_fallback, |t| &t.1));
+            let coarse_binds = coarse_target.as_ref().map(|t| (shade_bind_with(resources, &self.terrain_coarse_fallback),
+                gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("terrain coarse out"), layout: &self.terrain_coarse_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 32, resource: wgpu::BindingResource::TextureView(&t.1) }] })));
+            let mut passes: Vec<(&'static str, &wgpu::ComputePipeline, Vec<&wgpu::BindGroup>)> = Vec::new();
+            if let (Some(coarse), Some((bind, out))) = (&self.terrain_coarse, &coarse_binds) { passes.push(("terrain coarse", coarse, vec![&self.scene_bind, bind, &self.empty_bind, out])); }
+            let diagnostic = (light.debug != 0.0 && !self.simple_lighting).then(|| self.shade_diagnostic.get_or_init(|| {
+                let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("shade diagnostics"),
+                    source: wgpu::ShaderSource::Wgsl(self.shade_text.as_str().into()) });
+                let make = |constants: &[(&str, f64)]| gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("shade diagnostics"), layout: Some(&self.shade_pl), module: &module, entry_point: Some("shade"),
+                    compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() }, cache: gpu.pipeline_cache() });
+                let terrain: Vec<(&str, f64)> = self.diagnostic_constants.iter().map(|&(k, v)| match k {
+                    "FEATURE_CARS" | "FEATURE_FOLIAGE" | "FEATURE_PROCEDURAL" | "FEATURE_GRASS" => (k, 0.0), "FEATURE_TERRAIN" => (k, 1.0),
+                    "SHADE_CLASS" => (k, 1.0), _ => (k, v) }).collect();
+                (make(&self.diagnostic_constants), self.terrain_shade.as_ref().map(|_| make(&terrain)))
+            }));
+            // Terrain and voxels first: glossy surfaces in the main pass
+            // reflect the already lit frame around them.
+            if let Some(terrain) = &self.terrain_shade {
+                passes.push(("shade terrain", diagnostic.and_then(|d| d.1.as_ref()).unwrap_or(terrain), vec![&self.scene_bind, &shade_bind]));
             }
+            if let Some(voxels) = &self.voxel_pass { passes.push(("shade voxels", voxels, vec![&self.scene_bind, &shade_bind])); }
+            passes.push(("shade", diagnostic.map_or(&self.shade, |d| &d.0), vec![&self.scene_bind, &shade_bind]));
             let mut far_motion_layer = None;
             for (label, pipe, bindings) in passes {
                 let t = self.query.as_ref().map(|(qs, _, _)| {
@@ -4121,18 +4310,12 @@ impl Renderer {
                     });
                     for (k, b) in bindings.iter().enumerate() { pass.set_bind_group(k as u32, *b, &[]); }
                     pass.set_pipeline(pipe);
-                    pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+                    // The coarse terrain pass runs one invocation per 2x2 pixels.
+                    let (dw, dh) = if label == "terrain coarse" { (w.div_ceil(2), h.div_ceil(2)) } else { (w, h) };
+                    pass.dispatch_workgroups(dw.div_ceil(8), dh.div_ceil(8), 1);
                     drop(pass);
                 }
                 if label == "shade" {
-                    let volume_view=(self.far_grass.is_some() || self.voxel_forest.is_some() || self.foliage_world.is_some() || self.meadow_brick_fixture.is_some()).then(||
-                        crate::volume_view::VolumeViewInputs {
-                            camera:&main.uniform, light:&light_buf, opaque_depth:&depth_v,
-                            sun_shadow:&shadow_v, shadow_sampler:&self.shadow_samp,
-                            sky:&self.sky_view, heightfield:&self.heightfield, gi:&gi_buf,
-                            canopy:&density_view, canopy_sampler:&self.density_sampler,
-                            near_shadow:&near_view,
-                        }.bind_cached(gpu,&self.volume_view_layout,&mut resources.volume));
                     let far_grass = self.far_grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()).map(|grass| {
                         let time = self.query.as_ref().map(|(qs,_,_)| {
                             let i=timestamp_pair(&mut ts); names.push("far grass volume"); (qs,i)
@@ -4146,14 +4329,11 @@ impl Renderer {
                             &main.spatial_owners,&self.instance_groups.owners,times);
                     }
                     if let Some(forest) = &self.voxel_forest {
-                        let times = forest.timing_names().map(|name|{
-                            let name=name?;
-                            self.query.as_ref().map(|(qs,_,_)|{let i=timestamp_pair(&mut ts); names.push(name); (qs,i)})
-                        });
                         forest.render(gpu,&mut enc,vi,(w,h),&self.voxel_scene_bind,
                             volume_view.as_ref().unwrap(),&hdr_v,&main.foliage_selection,
-                            up.motion.as_ref().filter(|_|motion_on).map(|motion|crate::voxel_forest::TemporalInputs {
-                                previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),times)?;
+                            up.motion.as_ref().filter(|_|motion_on && forest.has_temporal()).map(|motion|crate::voxel_forest::TemporalInputs {
+                                previous_instances:motion.previous_instances(),snapshot_valid:motion.snapshot_valid()}),voxel_times.unwrap(),
+                            crate::voxel_forest::Stage::Rest, self.voxel_surface.then_some((&vis_v, &depth_v)))?;
                     }
                     if let Some(grass) = self.grass.as_ref().filter(|_|geometry_diagnostic.grass_enabled()) {
                         let transition_times = self.query.as_ref().map(|(qs, _, _)| {
@@ -4265,6 +4445,27 @@ impl Renderer {
                         meadow:meadow_motion.as_ref().map(|(color,reprojection)|(color,reprojection)) }, motion_time)?;
                 Some(motion)
             } else {None};
+            // TAA after the motion vectors it reprojects with.
+            if let (Some((src, dst, u)), Some(motion)) = (taa_pass.as_ref(), motion_output.as_ref()) {
+                let vectors = motion.vectors.create_view(&Default::default());
+                let bias = motion.bias.create_view(&Default::default());
+                let bind = resources.taa.get(gpu, &self.taa_layout, "cached TAA view", &[
+                    (0, wgpu::BindingResource::TextureView(&hdr_v)),
+                    (1, wgpu::BindingResource::TextureView(&depth_v)),
+                    (2, wgpu::BindingResource::TextureView(src)),
+                    (3, wgpu::BindingResource::TextureView(dst)),
+                    (4, u.as_entire_binding()),
+                    (5, wgpu::BindingResource::Sampler(&self.clamp_samp)),
+                    (6, wgpu::BindingResource::TextureView(&vectors)),
+                    (7, wgpu::BindingResource::TextureView(&bias)),
+                ]);
+                let t = self.query.as_ref().map(|(qs, _, _)| { names.push("taa"); (qs, timestamp_pair(&mut ts)) });
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("taa"),
+                    timestamp_writes: t.map(|(qs, i)| wgpu::ComputePassTimestampWrites { query_set: qs, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
+                pass.set_bind_group(0, &bind, &[]);
+                pass.set_pipeline(&self.taa);
+                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+            }
             let resolved = if dlss_on {
                 let motion=motion_output.as_ref().unwrap();
                 let dlss_time = self.query.as_ref().filter(|_|gpu.features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)).map(|(qs, _, _)| {
@@ -4316,6 +4517,19 @@ impl Renderer {
                 None => resolved,
             };
 
+            // Opt-in sharp effects: blur the moving world first. Sprite pixels
+            // have no rigid-object velocities and otherwise inherit the road's,
+            // producing multiple faded copies of one-frame electrical arcs.
+            let resolved = if self.sharp_sprites {
+                match (blur.as_ref(),motion_output.as_ref()) {
+                    (Some(blur),Some(motion)) => {
+                        let enabled=!motion.reset && blur.settings.get(vi).is_some_and(|s|s.scale()>0. && s.max_pixels>0.);
+                        let times=self.query.as_ref().filter(|_|enabled).map(|(qs,_,_)|{names.push("motion blur");(qs,timestamp_pair(&mut ts))});
+                        blur.render(gpu,&mut enc,vi,&resolved,motion,times)
+                    },
+                    _=>resolved,
+                }
+            }else{resolved};
             // Sprites (characters, tags, prompts) over the resolved HDR.
             let sprite_output = {
                 let mut sprites = self.sprites.0.lock().unwrap();
@@ -4362,7 +4576,7 @@ impl Renderer {
             } else { None };
             let result=particle_output.as_ref().or(exhaust_output.as_ref()).unwrap_or(&resolved);
             let blurred=match (blur.as_ref(),motion_output.as_ref()) {
-                (Some(blur),Some(motion)) => {
+                (Some(blur),Some(motion)) if !self.sharp_sprites => {
                     let enabled=!motion.reset && blur.settings.get(vi).is_some_and(|s|s.scale()>0. && s.max_pixels>0.);
                     let times=self.query.as_ref().filter(|_|enabled).map(|(qs,_,_)|{names.push("motion blur");(qs,timestamp_pair(&mut ts))});
                     Some(blur.render(gpu,&mut enc,vi,result,motion,times))
@@ -4776,15 +4990,16 @@ mod layout_tests {
     #[test]
     fn foliage_handoffs_reset_only_changed_views_and_not_stable_frames() {
         let mut views=[Vec::new(),Vec::new()];
-        let source=[[0,0,0,0],[0,0,0,0]];
-        let volume=[[1,2,0,0],[0,0,0,0]];
+        let pack=|s:[[u32;4];2]|s.map(crate::voxel_forest::selection_pack);
+        let source=pack([[0,0,0,0],[0,0,0,0]]);
+        let volume=pack([[1,2,0,0],[0,0,0,0]]);
         assert!(super::update_foliage_history(&mut views[0],&source));
         assert!(super::update_foliage_history(&mut views[1],&volume));
         assert!(!super::update_foliage_history(&mut views[0],&source));
         assert!(!super::update_foliage_history(&mut views[1],&volume));
         assert!(super::update_foliage_history(&mut views[0],&volume));
         assert!(!super::update_foliage_history(&mut views[1],&volume));
-        let coarser=[[1,3,0,0],[0,0,0,0]];
+        let coarser=pack([[1,3,0,0],[0,0,0,0]]);
         assert!(super::update_foliage_history(&mut views[0],&coarser));
     }
     use super::{split_rects, split_rects_with, SplitLayout, timestamp_pair, LightUniform, NEAR_SHADOW_EXTENT, NEAR_SHADOW_SIZE, TIMESTAMP_CAPACITY};

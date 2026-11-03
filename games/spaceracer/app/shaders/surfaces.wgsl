@@ -84,21 +84,16 @@ fn sr_reflections(p:vec3<f32>,n:vec3<f32>,dir:vec3<f32>,fp:f32)->vec3<f32>{
     if arrayLength(&aux)<8u || aux[0]!=0x53524143u || aux[7]==0u {return vec3<f32>(0);}
     let ray=reflect(dir,n);let inv=1.0/select(vec3<f32>(0.00001),ray,abs(ray)>vec3<f32>(0.00001));
     var nearest=1600.0;var hit=0xffffffffu;
-    var stack:array<u32,32>;stack[0]=0u;var size=1u;
-    // Near-first balanced BVH: at most one texture sample, no receiver-grid cuts.
-    for(var step=0u;step<256u && size>0u;step++) {
-        size--;let node=stack[size];let b=aux[6]+node*8u;
+    var node=0u;
+    // Threaded surface-area BVH. Each node stores its subtree's escape index:
+    // no per-pixel stack, no repeated child tests, no arbitrary hit truncation.
+    for(var step=0u;step<aux[7] && node<aux[7];step++) {
+        let current=node;let b=aux[6]+current*8u;node=aux[b+3u];
         let enter=sr_ray_bounds(p,inv,sr_aux3(b),sr_aux3(b+4u));
         if enter>=nearest {continue;}
         let payload=aux[b+7u];
         if payload==0xffffffffu {
-            let left=node+1u;let right=aux[b+3u];
-            let lb=aux[6]+left*8u;let rb=aux[6]+right*8u;
-            let ld=sr_ray_bounds(p,inv,sr_aux3(lb),sr_aux3(lb+4u));
-            let rd=sr_ray_bounds(p,inv,sr_aux3(rb),sr_aux3(rb+4u));
-            let first=select(right,left,ld<rd);let last=select(left,right,ld<rd);
-            if max(ld,rd)<nearest && size<31u {stack[size]=last;size++;}
-            if min(ld,rd)<nearest && size<32u {stack[size]=first;size++;}
+            node=current+1u;
         } else if (payload&0x80000000u)!=0u {
             let sign=aux[3]+(payload&0x7fffffffu)*16u;
             let normal=sr_aux3(sign+12u);let facing=dot(ray,normal);
@@ -214,6 +209,33 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
         }
         let finish=sr_noise(p.xz*8.0);
         o.rough=mix(0.19,0.27,finish)+seam*0.15;o.metal=0.52;
+        let vehicle=sr_vehicle(s.instance);
+        if vehicle!=0u {
+            let amount=bitcast<f32>(aux[vehicle+2u]);
+            let obj=instances[s.instance];
+            let local_n=normalize(vec3<f32>(dot(s.n,vec3<f32>(obj.r0.x,obj.r1.x,obj.r2.x)),dot(s.n,vec3<f32>(obj.r0.y,obj.r1.y,obj.r2.y)),dot(s.n,vec3<f32>(obj.r0.z,obj.r1.z,obj.r2.z))));
+            var weights=pow(abs(local_n),vec3<f32>(6.));weights/=max(.001,weights.x+weights.y+weights.z);
+            let at=p*.38;let layer=i32(aux[aux[5]]);
+            let lod=max(0.,log2(max(fp,.001)*.38*f32(textureDimensions(albedo).x)));
+            var mask=textureSampleLevel(albedo,samp,at.yz,layer,lod).rgb*weights.x
+                +textureSampleLevel(albedo,samp,at.xz,layer,lod).rgb*weights.y
+                +textureSampleLevel(albedo,samp,at.xy,layer,lod).rgb*weights.z;
+            // Texture array is sRGB; the authored mask channels are linear data.
+            mask=select(mask*12.92,1.055*pow(mask,vec3<f32>(1./2.4))-.055,mask>vec3<f32>(.0031308));
+            let edge=max(.015,fp*.05);let threshold=.11+amount*.31;
+            let chip=1.-smoothstep(threshold-edge,threshold+edge,mask.r);
+            let rim=(1.-smoothstep(threshold+.015-edge,threshold+.045+edge,mask.r))-chip;
+            let scratch=mask.g*(.13+amount*.87);let metal=max(chip,scratch*.85);
+            let dirt=smoothstep(.40,.78,mask.b)*(.09+amount*.24);
+            let rear=1.-smoothstep(-2.3,.8,p.z);
+            let scorch=smoothstep(.55,1.,amount)*smoothstep(.35,.72,mask.b)*mix(.3,.95,rear);
+            o.albedo*=1.-dirt;
+            o.albedo=mix(o.albedo,vec3<f32>(.11,.12,.125),rim*.7);
+            o.albedo=mix(o.albedo,vec3<f32>(.20,.22,.23),metal);
+            o.albedo=mix(o.albedo,vec3<f32>(.028,.024,.021),scorch);
+            o.metal=mix(o.metal,.82,metal)*(1.-scorch*.85);
+            o.rough=clamp(o.rough+amount*.12+dirt*.8+scratch*.20+scorch*.42+chip*.22,.28,.91);
+        }
         // The same nearby facade/screen rays used on the road: real moving
         // reflections as the hull turns, using the shared near-first hierarchy.
         let fresnel=0.04+0.96*pow(1.0-max(dot(s.n,-s.dir),0.0),5.0);
@@ -319,6 +341,22 @@ fn game_surface(s:SurfaceIn)->SurfaceOut {
         let bokeh=sr_voronoi(p*13.0+vec3<f32>(t*0.01,0,-t*0.015));let glow=(1.0-smoothstep(0.06,0.2,bokeh.x))*step(0.7,bokeh.z);
         deep+=color*wall*0.55+color*vein*0.18+vec3<f32>(0.028,0.065,0.05)*ridges+mix(vec3<f32>(0.12,0.3,0.26),vec3<f32>(0.36,0.2,0.24),warm)*glow*0.35;
         o.albedo=vec3<f32>(0);o.emission=deep*pulse*280.0;o.rough=1.0;o.metal=0.0;
+    }
+    if (s.kind>=10u && s.kind<=14u) || s.kind==17u {
+        let b=sr_vehicle(s.instance);
+        if b!=0u {
+            let progress=bitcast<f32>(aux[b+3u]);
+            if progress<1.0 {
+                let q=sr_hull(s.p,b);let front=mix(-1.,2.6,min(1.,progress*1.4));
+                let band=1.-smoothstep(.035,.23,abs(q.y-front));
+                let grid=abs(fract(q*vec3<f32>(3.,9.,3.))-.5);
+                let line=1.-smoothstep(vec3<f32>(.015),vec3<f32>(.015+max(.012,fp*4.)),grid);
+                let lattice=max(line.y,max(line.x,line.z)*.55);
+                let fade=1.-smoothstep(.60,1.,progress);
+                o.emission+=mix(vec3<f32>(.12,.65,1.),vec3<f32>(.8,1.,1.),band)*
+                    (band*2.6+.08+.18*lattice)*fade*bitcast<f32>(aux[b+20u]);
+            }
+        }
     }
     return o;
 }

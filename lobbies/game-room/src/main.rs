@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! The GameNight Game Room lobby on Warp.
 //!
 //!   game-room shot [--dump DIR] --out room.png [--size 1280x720]
@@ -14,7 +15,8 @@ use render::{Gpu, Lighting, Renderer, Scene};
 use std::path::PathBuf;
 
 
-fn main() { if let Err(e) = run() { eprintln!("game-room: {e}"); std::process::exit(1); } }
+fn main() {
+    app::startup::init("GameNight", None); if let Err(e) = run() { eprintln!("game-room: {e}"); std::process::exit(1); } }
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
@@ -50,7 +52,7 @@ fn run() -> Result<(), String> {
         let bots = numf("--bots", 3.0) as usize;
         let mut lobby = if flag("--host") { game_room::live::Lobby::connect(options)? } else { game_room::live::Lobby::new(options, local, bots)? };
         if args[1] == "play" {
-            let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: flag("--fullscreen"), frames: numf("--frames", 0.0) as u64, ..Default::default() };
+            let cfg = app::Config { title: "GameNight Game Room".into(), size: [1600, 900], fullscreen: !flag("--windowed"), frames: numf("--frames", 0.0) as u64, ..Default::default() };
             return app::run(cfg, &mut lobby);
         }
         let out = arg("--out").ok_or("--out FILE required")?;

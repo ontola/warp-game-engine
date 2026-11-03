@@ -6,7 +6,8 @@
 //! Built-in keys: click captures the mouse, Esc releases it (or quits when
 //! released). F10 always opens the engine debug menu ([`debug`]), F11 toggles
 //! fullscreen, F12 saves a feedback screenshot (PNG, JSON and the clipboard;
-//! see [`screenshot`]). These reserved keys run before game/menu/text input.
+//! see [`screenshot`]); Shift+F12, or F12 twice, then a dragged rectangle
+//! saves a crop of it. These reserved keys run before game/menu/text input.
 //! F1 to F9 belong to [`Game::function_key`].
 //!
 //! Text entry: while [`Game::text_input`] is true the keyboard types
@@ -24,9 +25,13 @@ pub mod sound;
 pub mod tween;
 pub mod ui;
 pub mod manners;
+pub mod startup;
 pub mod screenshot;
 pub mod quality;
 mod frame_log;
+pub mod profile;
+pub mod frame_rate;
+pub use frame_rate::FrameRate;
 
 pub use input::{Buttons, Controls, Device, Devices, Pointer, Tuning};
 pub use text::{FieldEvent, TextEvent, TextField};
@@ -59,6 +64,11 @@ pub struct Frame<'a> {
     pub dt: f32,
     /// Interpolation between the previous and the latest tick, 0..1.
     pub alpha: f32,
+    /// Frames per second that render the scene: frames that only redraw the
+    /// HUD over the last scene image (debug menu open) do not count.
+    pub scene_fps: f32,
+    /// The longest scene frame of the last second, in ms (hitches the mean hides).
+    pub scene_worst_ms: f32,
     /// How two views share the screen ([`Game::split`]).
     pub split: render::SplitLayout,
     renderer: &'a mut Option<Renderer>,
@@ -67,7 +77,7 @@ pub struct Frame<'a> {
 impl<'a> Frame<'a> {
     /// Frame access for an external presentation shell, including OpenXR.
     pub fn new(gpu: &'a Gpu, renderer: &'a mut Option<Renderer>, size: [u32; 2], dt: f32, alpha: f32) -> Self {
-        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide }
+        Self { gpu, renderer, size, dt, alpha, split: render::SplitLayout::SideBySide, scene_fps: if dt > 0.0 { 1.0 / dt } else { 0.0 }, scene_worst_ms: dt * 1000.0 }
     }
 
     /// Upload a scene: creates the renderer, or replaces it.
@@ -240,15 +250,15 @@ pub struct Config {
 }
 
 impl Default for Config {
-    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: false, keyboard: true, pointer: false, frames: 0, max_render_height: None, target_fps: None } }
+    fn default() -> Self { Self { title: "Warp".into(), size: [1600, 900], tick_hz: 60.0, fullscreen: true, keyboard: true, pointer: false, frames: 0, max_render_height: None, target_fps: None } }
 }
 
 /// The present path shared by the window and headless capture.
-struct Output { presenter: Presenter, hud: HudRenderer, picture: Option<wgpu::Texture>, rects: Vec<(u32, u32, u32, u32)> }
+struct Output { presenter: Presenter, hud: HudRenderer, picture: Option<wgpu::Texture>, rects: Vec<(u32, u32, u32, u32)>, timings: profile::DrawTimings }
 
 impl Output {
     fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Self, String> {
-        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None, rects: Vec::new() })
+        Ok(Self { presenter: Presenter::new(gpu, format), hud: HudRenderer::new(gpu, format)?, picture: None, rects: Vec::new(), timings: Default::default() })
     }
     fn draw(&mut self, gpu: &Gpu, renderer: &Renderer, draw: &Draw, size: [u32; 2], split: render::SplitLayout, target: &wgpu::TextureView, max_height: Option<u32>) -> Result<(), String> {
         self.draw_with(gpu, renderer, draw, size, split, target, max_height, true)
@@ -269,13 +279,68 @@ impl Output {
             renderer.reset_history();
         }
         let picture = self.picture.as_ref().unwrap();
+        let started = Instant::now();
         if scene || fresh { renderer.try_render_into(gpu, &views, &draw.light, picture)?; }
+        self.timings.render_ms = started.elapsed().as_secs_f64() * 1000.;
+        let started = Instant::now();
         self.hud.prepare(gpu, &draw.hud)?;
-        self.presenter.present(gpu, picture, target, Some(&self.hud), None)
+        self.timings.hud_ms = started.elapsed().as_secs_f64() * 1000.;
+        let started = Instant::now();
+        self.presenter.present(gpu, picture, target, Some(&self.hud), None)?;
+        self.timings.present_ms = started.elapsed().as_secs_f64() * 1000.;
+        Ok(())
     }
 }
 
 /// A screenshot's line along the bottom of the screen.
+/// A frozen frame waiting for its crop rectangle (Shift+F12): shown dimmed
+/// outside the rectangle while the mouse drags it; Esc cancels.
+struct Crop {
+    saved: screenshot::Saved,
+    size: [u32; 2],
+    picture: Arc<render::picture::Picture>,
+    start: Option<[f32; 2]>,
+    cursor: [f32; 2],
+}
+
+impl Crop {
+    const IMAGE: render::hud::HudImage = render::hud::HudImage(u64::MAX - 40);
+
+    /// x, y, width, height in frame pixels.
+    fn rect(&self) -> Option<[f32; 4]> {
+        let a = self.start?;
+        let b = self.cursor;
+        let (x0, y0) = (a[0].min(b[0]).max(0.0), a[1].min(b[1]).max(0.0));
+        let (x1, y1) = (a[0].max(b[0]).min(self.size[0] as f32), a[1].max(b[1]).min(self.size[1] as f32));
+        Some([x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)])
+    }
+
+    fn draw(&self, hud: &mut HudDrawList) {
+        let [w, h] = self.size.map(|v| v as f32);
+        let clip = [0.0, 0.0, w, h];
+        hud.provide_image(Self::IMAGE, &self.picture, render::hud::ImageFilter::Linear);
+        hud.image([0.0, 0.0, w, h], Self::IMAGE, [0.0, 0.0, 1.0, 1.0], [1.0; 4], clip);
+        let dim = [0.0, 0.0, 0.0, 0.55];
+        match self.rect() {
+            Some([x, y, rw, rh]) => {
+                hud.rect([0.0, 0.0, w, y], dim, clip);
+                hud.rect([0.0, y + rh, w, h - y - rh], dim, clip);
+                hud.rect([0.0, y, x, rh], dim, clip);
+                hud.rect([x + rw, y, w - x - rw, rh], dim, clip);
+                let white = [1.0, 1.0, 1.0, 0.9];
+                for (a, b) in [([x, y], [x + rw, y]), ([x + rw, y], [x + rw, y + rh]), ([x + rw, y + rh], [x, y + rh]), ([x, y + rh], [x, y])] {
+                    hud.line(a, b, 2.0, white, clip);
+                }
+            }
+            None => hud.rect(clip, dim, clip),
+        }
+        let s = (h / 1080.0).clamp(0.6, 2.0);
+        hud.text.push(render::hud::TextRun { id: u64::MAX - 41, text: "drag a rectangle to crop, Esc cancels".into(), position: [16.0 * s, 16.0 * s],
+            bounds: clip, font_size: 22.0 * s, color: [255, 255, 255, 230], font: render::hud::FontFace::Body,
+            align: render::hud::TextAlign::Left, width: w * 0.6 });
+    }
+}
+
 fn toast(hud: &mut HudDrawList, line: &str) {
     let [w, h] = hud.size.map(|v| v as f32);
     let s = (h / 1080.0).clamp(0.6, 2.0);
@@ -320,13 +385,21 @@ impl<'g> Headless<'g> {
     }
     /// Render an exact sub-tick phase (for saved gameplay moments).
     pub fn frame_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<Vec<u8>, String> {
+        self.render_at(game, alpha)?;
+        Ok(self.gpu.read_rgba8(&self.target))
+    }
+    /// Submit a native-resolution frame without copying its pixels to the CPU.
+    /// Timings measure CPU wall time; GPU completion is deliberately separate.
+    pub fn render_at(&mut self, game: &mut dyn Game, alpha: f32) -> Result<profile::DrawTimings, String> {
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) { return Err("alpha must be in 0..1".into()); }
         let split = game.split();
-        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, renderer: &mut self.renderer };
+        let mut frame = Frame { gpu: self.gpu, size: self.size, dt: 1.0 / self.tick_hz, alpha, split, scene_fps: self.tick_hz, scene_worst_ms: 1000.0 / self.tick_hz, renderer: &mut self.renderer };
+        let started = Instant::now();
         let draw = game.draw(&mut frame)?;
+        let game_ms = started.elapsed().as_secs_f64() * 1000.;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
         self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), None)?;
-        Ok(self.gpu.read_rgba8(&self.target))
+        Ok(profile::DrawTimings { game_ms, ..self.out.timings })
     }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
 }
@@ -464,15 +537,27 @@ struct Shell<'g> {
     started: Instant,
     frames: u64,
     screenshot: bool,
+    /// Shift+F12: after the frame is saved, drag a rectangle of it.
+    crop_requested: bool,
+    crop: Option<Crop>,
+    /// The last F12 frame: a second F12 soon after crops it (no modifier).
+    last_shot: Option<(Instant, Crop)>,
+    /// Shift as seen by key events: ModifiersChanged alone missed it on macOS.
+    shift_down: bool,
     /// The last screenshot's line and until when it shows.
     toast: Option<(String, Instant)>,
     /// Smoothed frames per second, for screenshot metadata.
     fps: f32,
+    rate: FrameRate,
     debug: debug::EngineDebug,
     quality: Option<quality::AdaptiveQuality>,
     screen_refresh_hz: Option<f64>,
     /// When the scene was last rendered (see [`Shell::scene_due`]).
     last_scene: Instant,
+    /// Scene frames and loop iterations since `stats_at`, logged every 2 s.
+    scene_frames: u32,
+    loop_frames: u32,
+    stats_at: Instant,
     error: Option<String>,
     modifiers: ModifiersState,
     /// IME composition in progress: key text is the IME's until it commits.
@@ -483,6 +568,10 @@ struct Shell<'g> {
     /// When a lost device was last rebuilt or tried.
     rebuilt: Option<Instant>,
 }
+
+/// Without a game's own cap, adaptive quality scales down from at most this
+/// render height.
+const ADAPTIVE_BASE_HEIGHT: u32 = 1440;
 
 /// Open a window and run the game until it closes.
 pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
@@ -498,7 +587,7 @@ pub fn run(cfg: Config, game: &mut dyn Game) -> Result<(), String> {
         println!("{}: adaptive quality enabled, {}", cfg.title, q.label());
     }
     println!("{}: {} local players, {} gamepads", cfg.title, game.local_players(), devices.pad_count());
-    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, toast: None, fps: 0.0, debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
+    let mut shell = Shell { devices, cfg, game, live: None, window: None, screen: Screen::Normal, manners: manners::Manners::new(), focused: true, acc: 0.0, last: Instant::now(), last_frame_end: Instant::now(), mouse_events: 0, mouse_delta: [0.0; 2], mouse_peak: 0.0, cursor_events: 0, started: Instant::now(), frames: 0, screenshot: false, crop_requested: false, crop: None, last_shot: None, shift_down: false, toast: None, fps: 0.0, rate: FrameRate::new(), debug, quality, screen_refresh_hz: None, last_scene: Instant::now(), scene_frames: 0, loop_frames: 0, stats_at: Instant::now(), error: None, modifiers: ModifiersState::empty(), composing: false, ime: false, zero_size: false, rebuilt: None };
     let events = EventLoop::new().map_err(|e| e.to_string())?;
     events.run_app(&mut shell).map_err(|e| e.to_string())?;
     shell.error.map_or(Ok(()), Err)
@@ -534,7 +623,6 @@ impl Shell<'_> {
         let frame_interval_ms=(now-self.last).as_secs_f64()*1000.0;
         let dt = (now - self.last).as_secs_f32().min(0.1);
         self.last = now;
-        if dt > 0.0 { self.fps += (1.0 / dt - self.fps) * 0.05; }
         if let Some(q) = &mut self.quality {
             q.set_enabled(self.debug.adaptive_quality() && !self.game.fixed_quality());
             let target = match self.debug.target_fps() {
@@ -582,7 +670,22 @@ impl Shell<'_> {
         let size = [live.config.width, live.config.height];
         let split = self.game.split();
         if live.renderer.is_none() { self.game.loading(75, "building the scene"); }
-        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, renderer: &mut live.renderer };
+        // While the debug menu is open the scene renders about once a second
+        // and shortly after a change; frames in between only redraw the HUD,
+        // so the menu answers clicks even when the scene takes 500 ms.
+        let scene = !self.debug.open() || self.last_scene.elapsed().as_secs_f32() >= 1.0
+            || self.debug.changed.is_some_and(|t| t > self.last_scene && t.elapsed().as_secs_f32() >= 0.25);
+        // The fps shown counts scene frames only, not HUD-only redraws.
+        if scene {
+            // Mean scene frame time, not mean of 1/dt: that read 100+ fps
+            // through 200 ms hitches on fast mouse turns.
+            self.rate.push(self.last_scene.elapsed().as_secs_f32(), Instant::now());
+            self.fps = self.rate.fps();
+            self.last_scene = Instant::now();
+            self.scene_frames += 1;
+        }
+        self.loop_frames += 1;
+        let mut frame = Frame { gpu: &live.gpu, size, dt, alpha: (self.acc / step).clamp(0.0, 1.0), split, scene_fps: self.fps, scene_worst_ms: self.rate.worst_ms(), renderer: &mut live.renderer };
         let draw_started=Instant::now();
         let mut draw = self.game.draw(&mut frame)?;
         let draw_ms=draw_started.elapsed().as_secs_f64()*1000.0;
@@ -617,17 +720,20 @@ impl Shell<'_> {
         let render_height = match (&self.quality, base_height) {
             (Some(q), Some(h)) => Some(q.render_height(h)),
             (Some(q), None) => {
-                let h = q.render_height(size[1]);
+                // A 5K or 4K window starts from about 1440p, not native.
+                let h = q.render_height(size[1].min(ADAPTIVE_BASE_HEIGHT));
                 (h < size[1]).then_some(h)
             }
             (None, h) => h,
         };
-        // While the debug menu is open the scene renders about once a second
-        // and shortly after a change; frames in between only redraw the HUD,
-        // so the menu answers clicks even when the scene takes 500 ms.
-        let scene = !self.debug.open() || self.last_scene.elapsed().as_secs_f32() >= 1.0
-            || self.debug.changed.is_some_and(|t| t > self.last_scene && t.elapsed().as_secs_f32() >= 0.25);
-        if scene { self.last_scene = Instant::now(); }
+        let seconds = self.stats_at.elapsed().as_secs_f32();
+        if seconds >= 2.0 {
+            println!("{} frames: scene {:.1}/s, loop {:.1}/s, render {}x{} of {}x{}, debug menu {}", manners::stamp(),
+                self.scene_frames as f32 / seconds, self.loop_frames as f32 / seconds,
+                render_height.map_or(size[0], |h| (size[0] as u64 * h as u64 / size[1].max(1) as u64) as u32), render_height.unwrap_or(size[1]),
+                size[0], size[1], if self.debug.open() { "open" } else { "closed" });
+            (self.scene_frames, self.loop_frames, self.stats_at) = (0, 0, Instant::now());
+        }
         let (to_file, to_game) = (std::mem::take(&mut self.screenshot), self.game.wants_capture());
         if to_file || to_game {
             let target = offscreen(&live.gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb);
@@ -643,12 +749,39 @@ impl Shell<'_> {
                 if let Some(q) = &self.quality {
                     metadata["render"]["adaptive_quality"] = q.metadata();
                 }
-                let line = screenshot::save_with(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }, |path| self.game.feedback_replay(path, (self.acc / step).clamp(0.0, 1.0))).unwrap_or_else(|e| { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") });
+                let saved = screenshot::save_full(screenshot::Shot { title: &self.cfg.title, size, rgba: &rgba, metadata }, |path| self.game.feedback_replay(path, (self.acc / step).clamp(0.0, 1.0)));
+                let line = match saved {
+                    Ok(saved) => {
+                        let line = saved.line.clone();
+                        let crop = render::picture::Picture::new(size[0], size[1], rgba.clone()).ok()
+                            .map(|picture| Crop { saved, size, picture: Arc::new(picture), start: None, cursor: [0.0; 2] });
+                        match (crop, std::mem::take(&mut self.crop_requested)) {
+                          (Some(crop), true) => {
+                            self.crop = Some(crop);
+                            // capture_mouse(false), field by field: `live` is borrowed.
+                            self.devices.reset_mouse();
+                            self.devices.mouse_captured = false;
+                            if let Some(w) = &self.window {
+                                let _ = w.set_cursor_grab(CursorGrabMode::None);
+                                w.set_cursor_visible(true);
+                                w.set_cursor(winit::window::CursorIcon::Crosshair);
+                            }
+                            line
+                          }
+                          (crop, _) => {
+                            if let Some(crop) = crop { self.last_shot = Some((Instant::now(), crop)); }
+                            format!("{line}  (F12 again: crop)")
+                          }
+                        }
+                    }
+                    Err(e) => { eprintln!("screenshot failed: {e}"); format!("screenshot failed: {e}") }
+                };
                 self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
             }
             if to_game { self.game.captured(size, rgba); }
         }
         if self.toast.as_ref().is_some_and(|(_, until)| Instant::now() > *until) { self.toast = None; }
+        if let Some(crop) = &self.crop { draw.hud.begin_overlay(); crop.draw(&mut draw.hud); }
         if let Some((line, _)) = &self.toast { toast(&mut draw.hud, line); }
         if self.debug.open() { self.debug.draw(&mut draw.hud); }
         // Nothing to show on a window without pixels; the game keeps ticking.
@@ -756,7 +889,33 @@ impl Shell<'_> {
         used
     }
 
+    fn start_crop(&mut self, crop: Crop) {
+        self.crop = Some(crop);
+        self.capture_mouse(false);
+        if let Some(w) = &self.window { w.set_cursor(winit::window::CursorIcon::Crosshair); }
+    }
+
+    /// Left button down starts the rectangle, up saves it.
+    fn crop_drag(&mut self, state: ElementState) {
+        let Some(crop) = &mut self.crop else { return };
+        if state == ElementState::Pressed { crop.start = Some(crop.cursor); return; }
+        let Some([x, y, w, h]) = crop.rect() else { return };
+        if w < 4.0 || h < 4.0 { crop.start = None; return; }
+        let rect = [x.round() as u32, y.round() as u32, w.round() as u32, h.round() as u32];
+        let line = screenshot::save_crop(&self.cfg.title, &crop.saved, &crop.picture.rgba, crop.size, rect)
+            .unwrap_or_else(|e| { eprintln!("screenshot crop failed: {e}"); format!("crop failed: {e}") });
+        self.end_crop(line);
+    }
+
+    fn end_crop(&mut self, line: String) {
+        self.crop = None;
+        if let Some(w) = &self.window { w.set_cursor(winit::window::CursorIcon::Default); }
+        self.toast = Some((line, Instant::now() + std::time::Duration::from_secs(4)));
+        self.sync_capture();
+    }
+
     fn sync_capture(&mut self) {
+        if self.crop.is_some() { return; }
         let capture = if self.debug.open() { Some(false) } else { self.game.mouse_capture() };
         if let Some(want) = capture {
             let want = want && self.cfg.keyboard && self.focused && self.screen != Screen::Hidden;
@@ -776,7 +935,8 @@ impl ApplicationHandler for Shell<'_> {
         if self.window.is_some() { return; }
         let result = (|| -> Result<(), String> {
             let attrs = Window::default_attributes().with_title(&self.cfg.title).with_inner_size(PhysicalSize::new(self.cfg.size[0], self.cfg.size[1]))
-                .with_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None)));
+                .with_fullscreen(self.cfg.fullscreen.then_some(Fullscreen::Borderless(None)))
+                .with_window_icon(startup::icon());
             let attrs = self.manners.first(self.game.screen(), attrs);
             self.screen = self.manners.screen;
             self.game.loading(20, "opening the window");
@@ -868,6 +1028,7 @@ impl ApplicationHandler for Shell<'_> {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_events = self.cursor_events.saturating_add(1);
                 let p = [position.x as f32, position.y as f32];
+                if let Some(crop) = &mut self.crop { crop.cursor = p; return; }
                 self.debug.pointer_move(p);
                 self.devices.cursor(Some(p));
             }
@@ -881,6 +1042,10 @@ impl ApplicationHandler for Shell<'_> {
                 self.devices.wheel(lines);
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.crop.is_some() {
+                    if button == MouseButton::Left { self.crop_drag(state); }
+                    return;
+                }
                 if self.debug.open() && button == MouseButton::Left {
                     let action = if state == ElementState::Pressed { self.debug.pointer_down(self.size()).1 } else { self.debug.pointer_up() };
                     if let Some(a) = action { self.game.debug_action(a); }
@@ -900,6 +1065,11 @@ impl ApplicationHandler for Shell<'_> {
             },
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else { return };
+                if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) { self.shift_down = event.state == ElementState::Pressed; }
+                if self.crop.is_some() {
+                    if code == KeyCode::Escape && event.state == ElementState::Pressed { self.end_crop("crop cancelled".into()); }
+                    return;
+                }
                 match route_function_key(self.game, code, event.state, event.repeat) {
                     KeyRoute::Engine(action) => {
                         match action {
@@ -907,7 +1077,13 @@ impl ApplicationHandler for Shell<'_> {
                             EngineShortcut::Fullscreen => if let Some(w) = &self.window {
                                 w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
                             },
-                            EngineShortcut::Screenshot => self.screenshot = true,
+                            EngineShortcut::Screenshot => if self.crop.is_none() {
+                                let shift = self.modifiers.shift_key() || self.shift_down;
+                                let again = self.last_shot.take().filter(|(at, _)| at.elapsed().as_secs_f32() < 1.5);
+                                println!("F12: shift {shift}, again {}", again.is_some());
+                                if let Some((_, crop)) = again { self.start_crop(crop); }
+                                else { self.screenshot = true; self.crop_requested = shift; }
+                            },
                         }
                         self.sync_capture();
                         return;

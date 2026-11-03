@@ -95,6 +95,7 @@ pub struct Art {
     pub base: usize,
     pub bomb: usize,
     pub coil: usize,
+    pub rail: usize,
     head: usize,
     barrels: usize,
     rotor: usize,
@@ -107,7 +108,7 @@ pub struct Art {
     last_time: f32,
 }
 impl Art {
-    pub fn new(scene: &mut Scene) -> Self {
+    pub fn new(scene: &mut Scene, exposure:f32) -> Self {
         let steel = material(scene, [0.22, 0.27, 0.33], 0.34, 0.);
         let armor = material(scene, [0.35, 0.43, 0.52], 0.43, 0.);
         let black = material(scene, [0.014, 0.019, 0.025], 0.62, 0.);
@@ -242,7 +243,18 @@ impl Art {
         let mut b = Build::default();
         b.sphere(violet, 0.55, [0.; 3]);
         let core = b.finish(scene);
+        let cyan=material(scene,[0.10,0.65,1.],0.3,2_f32.powf(exposure)*2.);
+        let mut b=Build::default();
+        b.cube(steel,[1.3,0.65,1.7],[0.,0.32,-0.5]);
+        for side in [-1.,1.] {
+            b.cube(steel,[0.25,0.42,4.3],[side*0.48,0.48,1.4]);
+            b.cube(cyan,[0.08,0.12,3.8],[side*0.33,0.72,1.5]);
+            for z in [-0.7,-0.15,0.4] {b.cube(cyan,[0.15,0.8,0.17],[side*0.7,0.37,z]);}
+        }
+        b.cube(steel,[0.72,0.6,1.1],[0.,-0.02,-0.5]);
+        let rail=b.finish(scene);
         Self {
+            rail,
             base,
             bomb,
             coil,
@@ -298,7 +310,7 @@ impl Art {
                 pose.origin + pose.basis * Vec3::new(0., 1.15, -1.8),
             );
             let mut transforms = [hidden; 6];
-            if !p.crashed {
+            if !p.crashed && p.recovery<=0. {
                 match kind {
                     Some(Weapon::Sentry) => {
                         let active = d.active == Some(Weapon::Sentry) && p.emp_time <= 0.;
