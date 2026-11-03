@@ -28,6 +28,7 @@ const WC_VERGE: f32 = 1.0;
 const WC_MAX_REACH: f32 = 100.0;
 const WC_BANK: f32 = 1.8;
 const WC_OPEN: f32 = 9000.0;
+const WC_STEEPEN: f32 = 0.0047;
 const WC_MAX_ARMS: u32 = 8u;
 
 struct WcNear {
@@ -87,7 +88,7 @@ fn wc_bank(u_in: f32) -> vec2<f32> {
     let u = max(u_in, 0.0);
     let r = u / WC_MAX_REACH;
     let r5 = r * r * r * r * r;
-    return vec2<f32>(u / WC_BANK + WC_OPEN * r5 * r, 1.0 / WC_BANK + 6.0 * WC_OPEN * r5 / WC_MAX_REACH);
+    return vec2<f32>(u / WC_BANK + WC_STEEPEN * u * u + WC_OPEN * r5 * r, 1.0 / WC_BANK + 2.0 * WC_STEEPEN * u + 6.0 * WC_OPEN * r5 / WC_MAX_REACH);
 }
 
 fn wc_arm(y: f32, u: f32, core: f32, distance: f32) -> WcPull {
@@ -202,6 +203,8 @@ fn wc_apply(x: f32, z: f32, s_in: TerrainSample) -> TerrainSample {
     s.snow *= 1.0 - 0.7 * core;
     s.moor *= 1.0 - core;
     s.rock *= 1.0 - core;
+    // A steep cutting or embankment is bare rock, not stretched grass.
+    s.rock = max(s.rock, wc_smooth(0.9, 1.4, slope) * wc_smooth(0.0, 0.5, moved) * (1.0 - core));
     s.scree += (1.0 - s.scree) * core;
     return s;
 }
