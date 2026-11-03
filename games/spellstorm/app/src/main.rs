@@ -27,9 +27,12 @@ use render::Gpu;
 
 fn main() {
     app::startup::init("Spellstorm", Some(include_bytes!("../assets/branding/logo.png")));
-    if let Err(e) = run() {
-        eprintln!("spellstorm: {e}");
-        std::process::exit(1);
+    match run() {
+        Ok(()) => app::startup::note_exit("ended"),
+        Err(e) => {
+            app::startup::note_exit(&format!("error: {e}"));
+            std::process::exit(1);
+        }
     }
 }
 
@@ -55,6 +58,11 @@ fn run() -> Result<(), String> {
             let mut game = play::Spellstorm::new(kits::Kits::load(None)?, numf("--humans", 0.0) as usize, numf("--bots", 3.0) as usize, seed);
             // Seats nobody drives would sit in the start menu.
             game.menu.open = false;
+            // --biome N: start at level N+1 (0 chapel .. 5 pit).
+            if let Some(b) = arg("--biome").and_then(|v| v.parse::<usize>().ok()) {
+                game.world.run.biome_index = b;
+                game.world.enter_level();
+            }
             if flag("--practice") {
                 // The practice strip, as for players who know nothing yet.
                 game.world.settings.force_practice = true;
@@ -65,6 +73,18 @@ fn run() -> Result<(), String> {
             if let Some(m) = arg("--at").and_then(|v| v.parse::<f32>().ok()) {
                 game.step(&[]);
                 game.world.skip_to(m);
+            }
+            // --spawn a,b,c: those monsters in a row 5 m ahead of the first
+            // wizard (a look at each body).
+            if let Some(list) = arg("--spawn") {
+                game.step(&[]);
+                let at = game.world.pos(game.world.wizards[0]);
+                let keys: Vec<&str> = list.split(',').collect();
+                for (i, k) in keys.iter().enumerate() {
+                    let kind = spellstorm::enemy::KINDS.iter().position(|c| c.key == *k).ok_or(format!("no monster {k}"))?;
+                    let x = (i as f32 - (keys.len() as f32 - 1.0) * 0.5) * 2.2;
+                    game.world.spawn_enemy(kind, at + glam::Vec3::new(x, 0.0, -5.0), false, -1);
+                }
             }
             let ticks = numf("--ticks", 240.0) as u32;
             // --skip: past this level's fights to its last shrine and portal.
