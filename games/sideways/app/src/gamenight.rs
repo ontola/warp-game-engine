@@ -351,20 +351,31 @@ fn transport(config: Config, outgoing: Receiver<Value>, incoming: &Sender<Incomi
     }
     let mut hello = json!({"type":"hello", "role":"game", "game":config.game_id});
     if !config.token.is_empty() { hello["token"] = json!(config.token); }
-    socket.send(Message::Text(hello.to_string().into()))
-        .map_err(|error| diagnostics.failure("hello", websocket_error(&error)))?;
+    match socket.send(Message::Text(hello.to_string().into())) {
+        Err(error) if !would_block(&error) => return Err(diagnostics.failure("hello", websocket_error(&error))),
+        _ => {}
+    }
     diagnostics.sent_messages += 1;
     loop {
+        let mut busy = false;
         loop {
             match outgoing.try_recv() {
                 Ok(value) => {
-                    socket.send(Message::Text(value.to_string().into()))
-                        .map_err(|error| diagnostics.failure("send", websocket_error(&error)))?;
+                    // Non-blocking: a full socket buffer keeps the frame queued for the next flush.
+                    match socket.send(Message::Text(value.to_string().into())) {
+                        Err(error) if !would_block(&error) => return Err(diagnostics.failure("send", websocket_error(&error))),
+                        _ => {}
+                    }
                     diagnostics.sent_messages += 1;
+                    busy = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => { let _ = socket.close(None); return Ok(()); }
+                Err(mpsc::TryRecvError::Disconnected) => { let _ = socket.close(None); let _ = socket.flush(); return Ok(()); }
             }
+        }
+        match socket.flush() {
+            Err(error) if !would_block(&error) => return Err(diagnostics.failure("flush", websocket_error(&error))),
+            _ => {}
         }
         match socket.read() {
             Ok(Message::Text(raw)) => {
@@ -374,6 +385,7 @@ fn transport(config: Config, outgoing: Receiver<Value>, incoming: &Sender<Incomi
                     format!("json={:?}, line={}, column={}", error.classify(), error.line(), error.column())))?;
                 if !value.is_object() { continue; }
                 if incoming.send(Incoming::Json(value, Instant::now())).is_err() { return Ok(()); }
+                busy = true;
             }
             Ok(Message::Close(frame)) => return Err(diagnostics.failure("receive close",
                 format!("code={}", frame.map(|frame| u16::from(frame.code).to_string()).unwrap_or_else(|| "none".into())))),
@@ -382,7 +394,8 @@ fn transport(config: Config, outgoing: Receiver<Value>, incoming: &Sender<Incomi
                 diagnostics.last_received = Some(Instant::now());
                 let _ = socket.flush();
             }
-            Err(error) if read_timeout(&error) => {},
+            // Nothing to read: wait a moment rather than spin.
+            Err(error) if would_block(&error) => if !busy { std::thread::sleep(Duration::from_millis(2)); },
             Err(error) => return Err(diagnostics.failure("read", websocket_error(&error))),
         }
     }
@@ -410,9 +423,12 @@ impl TransportDiagnostics {
     }
 }
 
-fn read_timeout(error: &tungstenite::Error) -> bool {
+/// Nothing to do yet on the non-blocking socket; Windows error 997
+/// (ERROR_IO_PENDING) is never fatal (engine/crates/gamenight does the same).
+fn would_block(error: &tungstenite::Error) -> bool {
     matches!(error, tungstenite::Error::Io(error)
-        if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
+        if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted)
+            || (cfg!(windows) && error.raw_os_error() == Some(997)))
 }
 
 fn io_error(error: &std::io::Error) -> String {
@@ -438,9 +454,10 @@ fn websocket_error(error: &tungstenite::Error) -> String {
     }
 }
 
+/// Non-blocking, not a read timeout: on Windows a timed-out blocking read
+/// leaves the socket in an undefined state (and surfaced as error 997).
 fn configure_stream(stream: &TcpStream) -> Result<(), String> {
-    stream.set_read_timeout(Some(Duration::from_millis(10))).map_err(|e| format!("GameNight set_read_timeout failed: {}", io_error(&e)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2))).map_err(|e| format!("GameNight set_write_timeout failed: {}", io_error(&e)))?;
+    stream.set_nonblocking(true).map_err(|e| format!("GameNight set_nonblocking failed: {}", io_error(&e)))?;
     stream.set_nodelay(true).map_err(|e| format!("GameNight set_nodelay failed: {}", io_error(&e)))
 }
 
@@ -485,10 +502,10 @@ mod tests {
         assert!(websocket_error(&Error::Io(std::io::Error::from_raw_os_error(10054))).contains("os_code=10054"));
         assert_eq!(websocket_error(&Error::Protocol(ProtocolError::ResetWithoutClosingHandshake)), "protocol=ResetWithoutClosingHandshake");
         for kind in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
-            assert!(read_timeout(&Error::Io(std::io::Error::from(kind))));
+            assert!(would_block(&Error::Io(std::io::Error::from(kind))));
         }
-        assert!(!read_timeout(&Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset))));
-        assert!(!read_timeout(&Error::ConnectionClosed));
+        assert!(!would_block(&Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset))));
+        assert!(!would_block(&Error::ConnectionClosed));
     }
 
     #[test]
