@@ -108,8 +108,9 @@ impl Gpu {
         limits.max_storage_buffer_binding_size = al.max_storage_buffer_binding_size;
         limits.max_buffer_size = al.max_buffer_size;
         limits.max_storage_buffers_per_shader_stage = al.max_storage_buffers_per_shader_stage.min(16);
-        // The scene layout samples 17 textures in a stage (the noise field
-        // is the 17th); desktop adapters allow far more than WebGPU's 16.
+        // The shade layout samples 20 textures in a stage (the noise field,
+        // voxel depth, the coarse terrain and the voxel surface beyond
+        // WebGPU's 16); desktop adapters allow far more.
         limits.max_sampled_textures_per_shader_stage = al.max_sampled_textures_per_shader_stage.min(32);
         limits.max_compute_workgroups_per_dimension = al.max_compute_workgroups_per_dimension;
         #[cfg(test)]

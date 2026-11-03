@@ -392,6 +392,10 @@ pub struct MovablePlant {
 
 #[derive(Clone, Copy, Debug)]
 pub struct AttachLimits {
+    /// Placements as shared per-plant templates composed with their branch
+    /// pose on the GPU (VIRTUAL_MEMBER ids), not one instance each
+    /// (docs/foliage-assemblies-plan.md, milestone 1).
+    pub virtual_members: bool,
     pub max_poses: usize,
     pub max_primitive_instances: usize,
     pub max_primitive_meshes: usize,
@@ -401,6 +405,7 @@ pub struct AttachLimits {
 impl Default for AttachLimits {
     fn default() -> Self {
         Self {
+            virtual_members: false,
             max_poses: MAX_PARTS,
             max_primitive_instances: 16_384,
             max_primitive_meshes: 256,
@@ -473,6 +478,9 @@ pub struct SceneVegetation<'a> {
     proxy_bindings: Vec<VolumeBinding>,
     /// CookedPlant::proxy_id: its proxy_assets index and support.
     proxy_lookup: std::collections::HashMap<u64, (usize, Vec3, Vec3)>,
+    /// Per plant (by address): each branch's template range in the scene's
+    /// instances, for virtual members.
+    templates: std::collections::HashMap<usize, Vec<(u32, u32)>>,
 }
 
 fn max_axis(m: Mat4) -> f32 {
@@ -606,6 +614,7 @@ impl<'a> SceneVegetation<'a> {
             proxy_assets: Vec::new(),
             proxy_bindings: Vec::new(),
             proxy_lookup: std::collections::HashMap::new(),
+            templates: std::collections::HashMap::new(),
         })
     }
 
@@ -620,7 +629,8 @@ impl<'a> SceneVegetation<'a> {
         }
         if self.scene.part_wind.len() + plant.branches.len() > self.limits.max_poses
             || self.bindings.len() + plant.stats.volume_assets > self.limits.pack.max_instances
-            || self.report.primitive_instances + plant.placements.len()
+            || self.report.primitive_instances
+                + if self.limits.virtual_members { 0 } else { plant.placements.len() }
                 > self.limits.max_primitive_instances
         {
             return Err("shared vegetation exceeds explicit pose/volume/member capacity".into());
@@ -727,6 +737,32 @@ impl<'a> SceneVegetation<'a> {
             };
             mesh_indices.push(mesh);
         }
+        // Virtual members: every placement once per plant, in its branch's
+        // frame. Their sphere radius is negated so cull never draws a
+        // template itself; VIRTUAL_MEMBER ids compose them with a branch.
+        let templates = if self.limits.virtual_members {
+            let key = plant as *const CookedPlant as usize;
+            if !self.templates.contains_key(&key) {
+                let mut ranges = Vec::with_capacity(plant.branches.len());
+                for b in 0..plant.branches.len() {
+                    let start = self.scene.instances.len();
+                    for placement in plant.placements.iter().filter(|p| p.branch == b) {
+                        self.scene.add_classified_instance(mesh_indices[placement.primitive],
+                            Affine3A::from_mat4(placement.rest), instance.category);
+                        let template = self.scene.instances.last_mut().unwrap();
+                        template.flags |= PART_WIND;
+                        template.sphere[3] = -template.sphere[3].max(1e-6);
+                    }
+                    let count = self.scene.instances.len() - start;
+                    if start >= 1 << 20 || count >= 1 << 12 {
+                        return Err("virtual member templates exceed their id range".into());
+                    }
+                    ranges.push((start as u32, count as u32));
+                }
+                self.templates.insert(key, ranges);
+            }
+            Some(self.templates[&key].clone())
+        } else { None };
         let mut branch_owners = vec![None; plant.branches.len()];
         let mut group_keys = vec![None; plant.branches.len()];
         for (i, branch) in plant.branches.iter().enumerate() {
@@ -775,7 +811,33 @@ impl<'a> SceneVegetation<'a> {
                 (None, None)
             };
             let mut members = Vec::new();
-            for placement in plant.placements.iter().filter(|p| p.branch == i) {
+            // A virtual branch: its owner carries the pose (part_wind writes
+            // its rows) and, in first_cluster, its templates (start << 12 |
+            // count); cull expands it. Branches without a volume get an owner.
+            let mut owner = owner;
+            if let Some((start, count)) = templates.as_ref().map(|t| t[i]).filter(|t| t.1 > 0) {
+                let (lo, hi) = self.scene.instances[start as usize..(start + count) as usize].iter().fold(
+                    (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(lo, hi), t| {
+                        let c = Vec3::new(t.sphere[0], t.sphere[1], t.sphere[2]);
+                        (lo.min(c + t.sphere[3]), hi.max(c - t.sphere[3]))
+                    });
+                let index = *owner.get_or_insert_with(|| {
+                    let mut carrier = GpuInstance { rows: [rest.row(0).to_array(), rest.row(1).to_array(), rest.row(2).to_array()],
+                        sphere: [0.0; 4], first_cluster: 0, cluster_count: 0, scale, flags: PART_WIND };
+                    carrier.set_category(instance.category);
+                    self.scene.instances.push(carrier);
+                    self.scene.instances.len() as u32 - 1
+                });
+                if index >= 1 << 19 { return Err("virtual member owners exceed their id range".into()); }
+                let carrier = &mut self.scene.instances[index as usize];
+                carrier.first_cluster = start << 12 | count;
+                // The branch's templates bound in the world at rest; a volume
+                // owner keeps the larger of that and its voxel support.
+                let centre = rest.transform_point3((lo + hi) * 0.5);
+                let radius = (hi - lo).length() * 0.5 * scale;
+                if carrier.sphere[3] < radius { carrier.sphere = centre.extend(radius).to_array(); }
+            }
+            for placement in plant.placements.iter().filter(|p| p.branch == i && templates.is_none()) {
                 let mesh = mesh_indices[placement.primitive];
                 let member = self.scene.instances.len() as u32;
                 self.scene.add_classified_instance(
@@ -795,9 +857,12 @@ impl<'a> SceneVegetation<'a> {
                 });
                 members.push(member);
             }
-            if let Some(owner) = owner {
+            // Virtual members are the owner's own templates; cull reads the
+            // owner's replacement for them, so there is no source group.
+            if let Some(owner) = owner.filter(|_| volume.is_some() && templates.is_none()) {
                 self.scene.foliage_source_groups.push(SourceGroup { owner, members });
             }
+            if templates.is_some() { branch_owners[i] = owner; }
             self.scene.part_wind.push(PartWind {
                 parent: branch.parent.map(|p| pose_base as u32 + p),
                 owner,
@@ -814,7 +879,7 @@ impl<'a> SceneVegetation<'a> {
         }
         self.ids.insert(instance.id);
         self.report.plants += 1;
-        self.report.primitive_instances += plant.placements.len();
+        if !self.limits.virtual_members { self.report.primitive_instances += plant.placements.len(); }
         self.report.expanded_source_bytes += plant.stats.expanded_source_bytes;
         self.report.branch_proxies += plant.stats.volume_assets;
         self.report.pose_nodes = self.scene.part_wind.len();

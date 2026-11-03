@@ -1,17 +1,33 @@
 //! Shared scenery collision. Swept hull tests cannot tunnel through a building
 //! at racing speed; the renderer supplies the same bounds it draws.
 use crate::motion::Contact;
-use glam::Vec3;
+use glam::{Vec3,Affine3A};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Obstacle {
     pub min: Vec3,
     pub max: Vec3,
+    inverse: Affine3A,
+    lo: Vec3,
+    hi: Vec3,
 }
 impl Obstacle {
+    pub fn bounds(min:Vec3,max:Vec3)->Self {Self::oriented(min,max,Affine3A::IDENTITY)}
+    pub fn oriented(lo:Vec3,hi:Vec3,transform:Affine3A)->Self {
+        let center=transform.transform_point3((lo+hi)*0.5);
+        let half=(hi-lo)*0.5;
+        let extent=Vec3::from(transform.matrix3.x_axis).abs()*half.x+Vec3::from(transform.matrix3.y_axis).abs()*half.y+Vec3::from(transform.matrix3.z_axis).abs()*half.z;
+        Self {min:center-extent,max:center+extent,inverse:transform.inverse(),lo,hi}
+    }
     pub fn trace(&self, from: Vec3, to: Vec3) -> Option<(f32, Contact)> {
-        let lo = self.min - Vec3::splat(2.5);
-        let hi = self.max + Vec3::splat(2.5);
+        self.trace_radius(from,to,0.)
+    }
+    pub fn trace_radius(&self, world_from:Vec3,world_to:Vec3,radius:f32)->Option<(f32,Contact)> {
+        if world_from.min(world_to).cmpgt(self.max+Vec3::splat(radius)).any() || world_from.max(world_to).cmplt(self.min-Vec3::splat(radius)).any() {return None;}
+        let from=self.inverse.transform_point3(world_from);let to=self.inverse.transform_point3(world_to);
+        let m=self.inverse.matrix3.transpose();
+        let padding=Vec3::new(m.x_axis.length(),m.y_axis.length(),m.z_axis.length())*radius;
+        let lo=self.lo-padding;let hi=self.hi+padding;
         let delta = to - from;
         let mut enter = 0.0_f32;
         let mut exit = 1.0_f32;
@@ -38,8 +54,8 @@ impl Obstacle {
         (enter <= 1. && exit >= 0.).then_some((
             enter,
             Contact {
-                position: from + delta * enter,
-                normal,
+                position: world_from.lerp(world_to,enter),
+                normal: (self.inverse.matrix3.transpose()*normal).normalize_or_zero(),
             },
         ))
     }
@@ -112,7 +128,7 @@ impl Environment {
     pub fn trace(&self, obstacles: &[Obstacle], a: Vec3, b: Vec3) -> Option<Contact> {
         let mut hit = obstacles
             .iter()
-            .filter_map(|o| o.trace(a, b))
+            .filter_map(|o| o.trace_radius(a, b, 1.3))
             .min_by(|x, y| x.0.total_cmp(&y.0));
         if let Some(field) = &self.landscape {
             // Sample the whole sweep: both endpoints can be above a narrow ridge.
@@ -183,6 +199,13 @@ impl Environment {
 mod tests {
     use super::*;
     #[test]
+    fn rotated_thin_wall_does_not_fill_its_world_bounds() {
+        let wall=Obstacle::oriented(Vec3::new(-20.,-5.,-0.5),Vec3::new(20.,5.,0.5),
+            Affine3A::from_rotation_translation(glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),Vec3::ZERO));
+        assert!(wall.trace(Vec3::new(12.,-10.,12.),Vec3::new(12.,10.,12.)).is_none());
+        assert!(wall.trace(Vec3::new(0.,-10.,0.),Vec3::new(0.,10.,0.)).is_some());
+    }
+    #[test]
     fn landscape_matches_triangle_diagonal() {
         let f = Landscape {
             heights: vec![0., 4., 2., 20.],
@@ -215,15 +238,12 @@ mod tests {
     }
     #[test]
     fn swept_obstacles_stop_fast_flight() {
-        let b = Obstacle {
-            min: Vec3::new(-10., 0., -10.),
-            max: Vec3::new(10., 100., 10.),
-        };
+        let b = Obstacle::bounds(Vec3::new(-10., 0., -10.),Vec3::new(10.,100.,10.));
         let (_, hit) = b
             .trace(Vec3::new(-80., 50., 0.), Vec3::new(80., 50., 0.))
             .unwrap();
         assert_eq!(hit.normal, -Vec3::X);
-        assert_eq!(hit.position.x, -12.5);
+        assert_eq!(hit.position.x, -10.);
         assert!(
             b.trace(Vec3::new(-80., 150., 0.), Vec3::new(80., 150., 0.))
                 .is_none()

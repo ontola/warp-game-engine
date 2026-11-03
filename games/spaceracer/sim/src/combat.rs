@@ -7,6 +7,7 @@ use crate::{
 use glam::{Mat3, Quat, Vec3};
 #[derive(Clone, serde::Deserialize)]
 pub struct Config {
+    pub rail_range:f32,pub rail_tangent:f32,pub rail_guide_radius:f32,
     pub bomb_speed: f32,
     pub bomb_accel: f32,
     pub bomb_burn: f32,
@@ -42,6 +43,7 @@ impl Config {
         if values
             .iter()
             .any(|x| !x.is_finite() || *x < 0. || *x > 2000.)
+            || !(50.0..=1000.).contains(&c.rail_range) || !(0.02..=0.5).contains(&c.rail_tangent) || !(0.02..=0.25).contains(&c.rail_guide_radius)
             || c.bomb_speed < 80.
             || c.bomb_turn > 4.
             || !(0.0..=1.0).contains(&c.bomb_cone)
@@ -372,6 +374,7 @@ impl Race {
             }
             self.drivers[i].shot_count += 1;
             self.beams.push(Beam {
+                target: Some(j),
                 owner: i,
                 serial: self.drivers[i].shot_count,
                 from,
@@ -555,10 +558,7 @@ mod tests {
         let a = r.pose(0).origin;
         let b = r.pose(1).origin;
         let center = (a + b) * 0.5;
-        r.obstacles.push(crate::environment::Obstacle {
-            min: center - Vec3::splat(15.),
-            max: center + Vec3::splat(15.),
-        });
+        r.obstacles.push(crate::environment::Obstacle::bounds(center-Vec3::splat(15.),center+Vec3::splat(15.)));
         let count = r.drivers[0].shot_count;
         for _ in 0..60 {
             r.weapons(&[]);

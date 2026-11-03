@@ -118,11 +118,33 @@ pub fn plant(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree], full: 
     vegetation.finish_aggregate(policy)
 }
 
+static VIRTUAL_MEMBERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Full plants as virtual members (vegetation_asset AttachLimits): a game's
+/// choice (set_virtual_members), or KERN_VIRTUAL_MEMBERS=1/0 to force it.
+pub fn virtual_members() -> bool {
+    match std::env::var("KERN_VIRTUAL_MEMBERS").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => VIRTUAL_MEMBERS.load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+/// Turn virtual members on for plants planted from now on.
+pub fn set_virtual_members(on: bool) { VIRTUAL_MEMBERS.store(on, std::sync::atomic::Ordering::Relaxed); }
+
 fn limits(variants: &[CookedPlant], full: usize) -> AttachLimits {
     let branches = variants.iter().map(|c| c.stats().branches).max().unwrap_or(64);
-    let mut limits = AttachLimits { max_poses: branches.max(64) * full.max(4),
+    // KERN_VIRTUAL_MEMBERS=1: placements as shared templates composed with
+    // their branch pose on the GPU (docs/foliage-assemblies-plan.md).
+    let virtual_members = virtual_members();
+    let mut limits = AttachLimits { virtual_members, max_poses: branches.max(64) * full.max(4),
         max_primitive_instances: crate::part_wind::MAX_ATTACHMENTS, ..Default::default() };
     limits.pack.max_instances = limits.max_poses.min(crate::foliage_volume_data::MAX_INSTANCES);
+    // Every variant brings its branch volumes and its proxy: a mixed forest
+    // of six species needs more than the default 256.
+    let assets: usize = variants.iter().map(|c| c.stats().volume_assets + 1).sum();
+    limits.pack.max_assets = limits.pack.max_assets.max(assets);
     limits
 }
 
@@ -206,9 +228,15 @@ pub fn add_cards(scene: &mut Scene, pool: &mut Pool, cards: &[PlantCards], per_v
 
 /// The members of `members` nearest `points`, at most `count`, within
 /// `radius` and not in `skip`.
-fn nearest(trees: &[Tree], members: &[usize], points: &[Vec3], count: usize, radius: f32, skip: &std::collections::HashSet<usize>) -> Vec<usize> {
+/// Distance factor a tree already in a tier gets when that tier is chosen
+/// again: a newcomer must be over 15 % nearer to take its place.
+const STICKY: f32 = 0.87;
+
+fn nearest(trees: &[Tree], members: &[usize], points: &[Vec3], count: usize, radius: f32, skip: &std::collections::HashSet<usize>,
+    held: &std::collections::HashSet<usize>) -> Vec<usize> {
     let mut near: Vec<(f32, usize)> = members.iter().filter(|i| !skip.contains(i)).map(|&i| (points.iter()
-        .map(|p| p.distance_squared(trees[i].pos)).fold(f32::INFINITY, f32::min), i)).filter(|&(d, _)| d <= radius * radius).collect();
+        .map(|p| p.distance_squared(trees[i].pos)).fold(f32::INFINITY, f32::min)
+        * if held.contains(&i) { STICKY * STICKY } else { 1.0 }, i)).filter(|&(d, _)| d <= radius * radius).collect();
     let count = count.min(near.len());
     if count < near.len() { near.select_nth_unstable_by(count, |a, b| a.0.total_cmp(&b.0)); }
     near.truncate(count);
@@ -236,10 +264,12 @@ pub fn plant_streamed(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree
     let counts: Vec<usize> = (0..variants.len()).map(|v| trees.iter().filter(|t| t.variant == v).count()).collect();
     let mut per: Vec<usize> = counts.iter().map(|&n| slots.min(n)).collect();
     let total = |per: &[usize], cost: &dyn Fn(&CookedPlant) -> usize| per.iter().zip(variants).map(|(&n, c)| n * cost(c)).sum::<usize>();
-    while total(&per, &|c| c.stats().placements) > crate::part_wind::MAX_ATTACHMENTS
+    // Virtual members keep no attachment per placement.
+    let members = |c: &CookedPlant| if virtual_members() { 0 } else { c.stats().placements };
+    while total(&per, &members) > crate::part_wind::MAX_ATTACHMENTS
         || total(&per, &|c| c.stats().volume_assets) > crate::voxel_forest::MAX_VIEW_GROUPS {
         let worst = (0..per.len()).filter(|&v| per[v] > 0)
-            .max_by_key(|&v| per[v] * variants[v].stats().placements).ok_or("not one full plant fits the renderer")?;
+            .max_by_key(|&v| per[v] * variants[v].stats().volume_assets.max(members(&variants[v]))).ok_or("not one full plant fits the renderer")?;
         per[worst] -= 1;
     }
     let mut built = Vec::new();
@@ -283,9 +313,13 @@ impl Pool {
         for (variant, members) in self.by_variant.iter().enumerate() {
             let mine: Vec<usize> = (0..self.slots.len()).filter(|&k| self.slots[k].variant == variant).collect();
             if mine.is_empty() { continue; }
-            // O(trees): the nearest few by selection, not a full sort.
+            // O(trees): the nearest few by selection, not a full sort. A tree
+            // already full counts as STICKY nearer, so one at the edge of the
+            // set does not flip between full and card at every camera metre.
+            let held: std::collections::HashSet<usize> = mine.iter().filter_map(|&k| self.slots[k].tree).collect();
             let mut near: Vec<(f32, usize)> = members.iter().map(|&i| (points.iter()
-                .map(|p| p.distance_squared(self.trees[i].pos)).fold(f32::INFINITY, f32::min), i)).collect();
+                .map(|p| p.distance_squared(self.trees[i].pos)).fold(f32::INFINITY, f32::min)
+                * if held.contains(&i) { STICKY * STICKY } else { 1.0 }, i)).collect();
             let count = mine.len().min(near.len());
             if count < near.len() { near.select_nth_unstable_by(count, |a, b| a.0.total_cmp(&b.0)); }
             near.truncate(count);
@@ -311,7 +345,8 @@ impl Pool {
             for (variant, members) in self.by_variant.iter().enumerate() {
                 let mine: Vec<usize> = (0..cards.slots.len()).filter(|&k| cards.slots[k].0 == variant).collect();
                 if mine.is_empty() { continue; }
-                let near = nearest(&self.trees, members, points, mine.len(), cards.radius, &full);
+                let held: std::collections::HashSet<usize> = mine.iter().filter_map(|&k| cards.slots[k].1).collect();
+                let near = nearest(&self.trees, members, points, mine.len(), cards.radius, &full, &held);
                 let mut free: Vec<usize> = mine.iter().copied().filter(|&k| cards.slots[k].1.is_none_or(|t| !near.contains(&t))).collect();
                 for &tree in &near {
                     if mine.iter().any(|&k| cards.slots[k].1 == Some(tree)) { continue; }
@@ -345,5 +380,11 @@ impl Pool {
 /// The renderer policy for a recipe forest in a game: ordinary screen-error
 /// cluster LOD, sampled optics, proxies at Policy's defaults.
 pub fn game_policy() -> Policy {
-    Policy { max_error_pixels: 1.0, allow_sampled_optics: true, measured_source_cuts: false, ..Default::default() }
+    // Branch groups take their voxels at up to 32 px of spatial error. The
+    // screen-error triangle cut thins sprays as they shrink (forest_ladder
+    // spruce: 84 % of the source's cover at 40 m, 50 % at 80 m with 8 px);
+    // the voxels keep their measured coverage, and since shade lights them
+    // like the leaves (VOXEL_SURFACE) their tone too: 40-300 m within 96-105 %
+    // cover and 99-106 % tone for spruce and birch, grove 51 -> 19 ms.
+    Policy { max_error_pixels: 32.0, allow_sampled_optics: true, measured_source_cuts: false, ..Default::default() }
 }

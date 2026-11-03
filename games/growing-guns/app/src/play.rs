@@ -1586,7 +1586,7 @@ pub fn run(args: &Args) -> Result<(), String> {
     let cfg = app::Config {
         title: "Growing Guns | Warp".into(),
         tick_hz: TICK_HZ as f32,
-        fullscreen: args.flag("--fullscreen"),
+        fullscreen: !args.flag("--windowed"),
         keyboard: !args.flag("--no-kbm"),
         frames: args.num("--frames", 0u64),
         target_fps,

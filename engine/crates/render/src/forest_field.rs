@@ -86,7 +86,7 @@ pub struct Tree {
 }
 
 /// A uniform 0..1 number for grid cell (i, j), channel k.
-fn hash(i: i32, j: i32, k: u32, seed: u32) -> f32 {
+pub(crate) fn hash(i: i32, j: i32, k: u32, seed: u32) -> f32 {
     let mut h = (i as u32).wrapping_mul(0x8da6b343) ^ (j as u32).wrapping_mul(0xd8163841) ^ seed.wrapping_mul(0xcb1ab31f) ^ k.wrapping_mul(0x165667b1);
     h ^= h >> 15;
     h = h.wrapping_mul(0x2c1b3c6d);
@@ -152,7 +152,7 @@ pub fn share(x: f32, z: f32, seed: u32, site: f32, footprint: f32) -> f32 {
 }
 
 /// Whether ground can carry a tree.
-fn grows(s: &Sample, style: &Style) -> bool {
+pub(crate) fn grows(s: &Sample, style: &Style) -> bool {
     !(s.rock > 0.3 || s.scree > 0.3 || s.water > 0.01 || s.snow > 0.05 || s.up < 0.82 || s.pos.y > style.snow_line - 250.0)
 }
 
@@ -290,6 +290,22 @@ pub fn canopy(x: f32, z: f32, footprint: f32, sun: Vec3, eye: Vec3, seed: u32, d
         occlusion: near.occlusion + (mean.occlusion - near.occlusion) * far,
         cover: near.cover + (mean.cover - near.cover) * far,
     }
+}
+
+/// The share of trees drawn as objects `distance` metres from where they
+/// were placed, in a handover band `start..end` to the far forest layer
+/// (terrain_surface.wgsl draws the rest: smoothstep(start, end, distance)).
+/// Drawn and layer forest then sum to the same share at every distance.
+pub fn handover(distance: f32, start: f32, end: f32) -> f32 {
+    1.0 - smooth(start, end.max(start + 1e-3), distance)
+}
+
+/// Whether a tree at `pos` stays an object in the handover band: kept with
+/// probability `handover`, by a hash of its position (stable while the
+/// camera moves).
+pub fn handover_keep(pos: Vec3, centre: Vec2, start: f32, end: f32) -> bool {
+    let h = hash(pos.x.to_bits() as i32, pos.z.to_bits() as i32, 11, 0x5eed);
+    h < handover(Vec2::new(pos.x, pos.z).distance(centre), start, end)
 }
 
 /// Every tree within `radius` of `centre` (x, z), row by row.

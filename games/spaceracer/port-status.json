@@ -8,12 +8,12 @@
     {
       "path": "src/ai_pilot.gd",
       "sha256": "0765604b0227f8c8140fe65d0a355d6e47114ac1dcc553b2136094ddaa32115a",
-      "status": "Luau driving/flight decisions, seeded line and pace plans; replay and three race completions tested; full tactical parity pending"
+      "status": "Luau seeded driver styles, smooth varied lines, braking/strafe margins, optional pickup pursuit and independent boost clocks; deterministic diversity test and three six-finisher races pass; full tactical parity pending"
     },
     {
       "path": "src/blast_vfx.gd",
       "sha256": "36b459b3ce3264985b7ee688478ac65f26eac4f96c5b7b84c9432d1de41c3347",
-      "status": "shared native Growing Guns fire/smoke/embers/heat; smoother billow geometry, continuous dark soot and night-calibrated light scale; source-inspired rather than exact shader parity"
+      "status": "shared native Growing Guns fire/embers/heat plus latest baked animated volume smoke with adaptive rendering and gradual 4.6-second dissipation; enabled for crashes/non-EMP weapon blasts via Luau; native 1080p city/forest/two-view captures and five smoke tests; source-inspired rather than exact Godot shader parity"
     },
     {
       "path": "src/boost_trails.gd",
@@ -98,7 +98,7 @@
     {
       "path": "src/emp_sparks.gd",
       "sha256": "2b91b0d3deb08f0de2c0fe450faadb64b217eac806152694f23639e125ed52c8",
-      "status": "pending"
+      "status": "native per-hull single-presentation electrical arcs with fading EMP tail; tested; initial screen glitch remains pending"
     },
     {
       "path": "src/engine_audio.gd",
@@ -108,7 +108,7 @@
     {
       "path": "src/flight.gd",
       "sha256": "f994ab929f75becd65170ccc7e539df28d5219d09a70353d9e4b69541164d2f5",
-      "status": "validated integrator, takeoff/landing/underside handling integrated; native swept scenery proxies"
+      "status": "validated integrator, takeoff/landing/underside handling and native swept scenery proxies; grid ignition/staggered lift animation is still missing"
     },
     {
       "path": "src/forest.gd",
@@ -133,7 +133,7 @@
     {
       "path": "src/global_lighting.gd",
       "sha256": "069dcfa860f5e5a71691920c7aefce53697e4e919fdcac85a045fb69dfdf387b",
-      "status": "Luau biome sun/sky/exposure plus native local jet lights; reflection/GI parity pending"
+      "status": "Luau biome sun/sky/exposure and local jet lights; per-level shared static sun cache with dynamic vehicle shadows; reflection/GI parity pending"
     },
     {
       "path": "src/ground_traffic.gd",
@@ -153,7 +153,7 @@
     {
       "path": "src/main.gd",
       "sha256": "47141d2e788f66cf0ca916e76aa759b1c06e0617677aab87b1afb62ef3aaba4f",
-      "status": "native app, seed/player/biome/difficulty menu, split screen, headless scenarios"
+      "status": "native app; Luau menu with Random or fixed world/difficulty/seed; Start new race honors selections; immediate seed recipe preview; split screen and headless scenarios"
     },
     {
       "path": "src/missile_audio.gd",
@@ -208,7 +208,7 @@
     {
       "path": "src/railgun.gd",
       "sha256": "67bbe57fa41f0407f31960a1dd9a984d2bf511f774c380fb7b9a66a058dff274",
-      "status": "single-shot cone targeting/damage and persistent target indicator; native beam effect"
+      "status": "camera-matched always-on 11%-height guide, nearest-to-centre aim assist, hull/road/scenery-blocked 650 m hitscan and 50 damage; explicit serializable view input, cached preview and staggered AI opportunities; four focused native tests; original twin-rail mount and 0.32-second beam/rings/flashes adapted to native sprites"
     },
     {
       "path": "src/recharge_strips.gd",
@@ -223,7 +223,7 @@
     {
       "path": "src/respawn_vfx.gd",
       "sha256": "d41e20b54ec82aab4971718adcf0dbc3b54a278603441b4479b14e6d55168caa",
-      "status": "pending"
+      "status": "native bottom-up hull mask, scan lattice/white band and local light; source camera quintic arc/momentum and exact reset destination; 0.65s existing recovery, optics adapted; solo/split scripted captures"
     },
     {
       "path": "src/sandworm.gd",
@@ -253,7 +253,7 @@
     {
       "path": "src/ship.gd",
       "sha256": "70a1631fc1ce050ba926cdb53de9363dcbaefc5cb7125cf540a80c1e737b211b",
-      "status": "all retained ship hierarchies; native plasma/core/flare/heat/reverse jets, one-presentation-frame boost arcs and soft fast wisps; Luau effect parameters; full optical/wear/respawn parity incomplete"
+      "status": "all retained ship hierarchies; native plasma/core/flare/heat/reverse jets, one-presentation-frame boost arcs and soft fast wisps; Luau effect parameters; energy-linked wear and respawn scan restored; full optical parity incomplete; electrical sprites composed after world motion blur; varied road-striking boost arches, brighter wider plasma and source-depth-gated distant engine halos; city/forest 1080p sequences and eight effect tests; compact bloom/contact pools and source-depth optical occlusion remove road cutoff; normal/minimal GPU occlusion regression; short blue HDR plume with root-concentrated radiance, AgX white highlights and dimmer/shorter blue wake"
     },
     {
       "path": "src/showpiece.gd",
@@ -298,12 +298,12 @@
     {
       "path": "src/vehicle_wear.gd",
       "sha256": "296af0c864dc44725763a1fe6331167f74265707a6072571af74f5bf89ce0673",
-      "status": "pending"
+      "status": "retained paint-wear texture and energy-linked triplanar chip/scratch/scorch formulas; twelve bounded dark smoke billboards below 22 energy; recharge/restoration and pause checks; no mesh deformation"
     },
     {
       "path": "src/victory.gd",
       "sha256": "393ea55253624413a0cfb46c9a6643cf1e512630735677c108053f0f31cda58a",
-      "status": "Luau speed/control/shot/hop choreography; native noncompetitive ribbon autopilot preserves mounted hardware and continues after results; four 4.8-second shots, 1.3-second relative entry and split FOV; scripted captures and continuity regression"
+      "status": "Luau race-speed finish driving with staggered boosts, predictive braking and animated controls; noncompetitive ribbon autopilot preserves hardware/results after finish; four cinematic shots and entry blend retained; speed/stagger/result regressions and native 1080p captures"
     },
     {
       "path": "src/visor.gd",
@@ -313,12 +313,12 @@
     {
       "path": "src/weapon_vfx.gd",
       "sha256": "9feffe73011990fd44c12e01db52ea5b3c93bb56a5279ff191e75d88d6c7bb72",
-      "status": "source missile; mounted rotary minigun with head/barrels/rotor/LED, one-presentation tracers/muzzle flash; folding glide wings and finite launch motor; warp coil/wake and depth-aware world/view refraction adapted to native HDR"
+      "status": "source missile; mounted rotary minigun with head/barrels/rotor/LED, one-presentation tracers/muzzle flash; folding glide wings and finite launch motor; original twin-rail gun with blue-white beam, expanding rings and endpoint flashes; warp coil/wake and depth-aware world/view refraction adapted to native HDR"
     },
     {
       "path": "src/weapons.gd",
       "sha256": "7a9bba8dcdc06d579144f9b8e1f2522457727784d419317acc23c379eeadf9fc",
-      "status": "Luau activation/pickups/balance/cruise plus warp autopilot speed envelope; safe gap extension/EMP interruption and phase immunity; sentry acquisition, occlusion, spinup and 20 Hz at 10 damage/sec; guided glide intercept, limited turns, swept proximity, launch-owner protection and source AoE curve"
+      "status": "Luau activation/pickups/balance/cruise plus warp autopilot speed envelope; safe gap extension/EMP interruption and phase immunity; sentry acquisition, occlusion, spinup and 20 Hz at 10 damage/sec; guided glide intercept, limited turns, swept proximity, launch-owner protection and source AoE curve; EMP limited to 100 m, half pickup row density, newest-only sentry tracers and brief hit sparks"
     },
     {
       "path": "src/world.gd",
@@ -379,7 +379,7 @@
     "Remaining source stage features: sandworm, full environmental animation and material/effect fidelity",
     "Original audio and physical GameNight controller/window-focus playtest",
     "Real controller playtests for AI, contacts, weapons and flight tuning",
-    "Complete visor, victory, wear and respawn presentation",
+    "Remaining visor/weapon/environment optical differences; wear and respawn restored with native adaptations",
     "Equal-content visual review before steady-state CPU/GPU performance claims"
   ]
 }

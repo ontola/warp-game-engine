@@ -1,3 +1,114 @@
+## 2026-11-01 SpaceRacer native 4K profiling and reflections
+
+City reflection BVH uses surface-area splits + threaded escape indices (aux
+node word 3 is now subtree escape, not right child). No stack or 256-node cutoff.
+Matched native4K GPU median 8.59 -> 6.18 ms, repeat 8.56 -> 6.14; reference image
+pixel-identical. Final release tested five biomes 1/2p, city seeds 35/80385 4p.
+Four-player city GPU ~9 ms: no locked120 claim. Windows media service/daemon and
+other apps consume many CPU cores; left running. No interactive game launched.
+User explicitly said NOT to run a playtest after this work.
+
+Shared app::profile::bench separates CPU phases, GPU scopes and completion wait,
+excludes warmup/readback and checks native reconstruction. profile-report.py
+provides offline graphs; SpaceRacer profile-native.ps1 runs a serial matrix.
+build-native.ps1 now defaults release; -Profile dev remains available. Tests:
+5 stage tests, 23 app tests, all headless pipelines/captures. See
+engine/docs/spaceracer-native4k-2026-11-01.md and native-profiling.md; raw results
+at build/spaceracer-perf-{native4k,final4k,final-biomes4k}. Portable release ready.
+
+## 2026-11-01 SpaceRacer adopts current Growing Guns smoke
+
+Latest shared baked-smoke implementation already present after origin fetch;
+SpaceRacer now opts in via effects.luau baked_explosion_smoke. Its common Effects
+instance covers crashes and non-EMP weapon explosions. No copied asset/shader.
+Five baked-smoke tests + explosion-smoke.json pass; native 1080p city/forest/two
+views reviewed at build/spaceracer-smoke-{city,forest,split}. No perf target claim.
+
+## 2026-11-01 SpaceRacer blue root / dim tail
+
+Forward jet emission blue (.12/.4/1), bright near nozzle then exponential falloff;
+7.2 m max authored plume before surge. AgX handles near-white highlights. Blue
+engine light, wisps .12x, wake .065x/.24 s. Tunables jets.luau, shape jets.wgsl.
+Eight effect tests + city/forest 1080p onset/sustain captures pass, at
+build/spaceracer-blue-core-*. Handling and global tone mapper unchanged.
+
+## 2026-11-01 SpaceRacer compact glow / source occlusion
+
+Sprite.depth_test defaults Fragment; Source checks centre depth for optical
+halos (misc.y now additive/source bit flags, GPU layout unchanged). Nozzle,
+glare and flare opt in; road contacts remain Fragment. Smaller engine halos
+and contact pools; distant minimum 14/~20 px. Eight effects tests and normal/
+minimal GPU source-occlusion regression pass. 1080p city/forest captures:
+build/spaceracer-bloom-tight-*. See game parity review and rendering.md.
+
+## 2026-11-01 SpaceRacer grounded lightning and engine halo
+
+Game jets use varied eight-segment arches to supported deck contacts, max 48
+segments/ship; onset decays, no bolt history. Boost plume width/radiance and
+local light increased. Effect 13 adds source-depth-gated Screen-facing halo,
+24 px minimum / ~35 on boost, far fade 650-1200 m. Tunables in jets.luau.
+Eight effect tests + 1080p thirteen-tick city/forest sequences and sustain pass;
+see boost-arcs-ground.json, game parity review and build/spaceracer-arcs-*-final.
+
+## 2026-11-01 SpaceRacer varied AI and finish racing
+
+Luau personality/plan/boost_plan give six seeded driving styles, smooth lateral
+plans, optional pickup pursuit and independent boost clocks/cooldowns. Lua must
+check optional pickup type: serde null is truthy userdata, not nil. Finished
+cars run race-speed/boost choreography with predictive braking, bank/fins and
+world motion blur; finish times/results and mounted hardware survive. Normal AI
+is skipped for finished drivers. 41 simulation tests pass; 1080p finish-racing
+scenario captures at build/spaceracer-finish-racing. See game parity review.
+
+## 2026-11-01 SpaceRacer menu selections
+
+Local World/Difficulty/Seed default to Random. Start new race resolves only
+Random values; fixed choices and player count survive. Resume never rerolls.
+Initial menu hides Resume; seed recipe label updates immediately. Selection
+policy/navigation in game.luau, native entropy only at new-race creation.
+Focused tests + 1080p menu-settings.json capture flow; see game parity review.
+
+## 2026-11-01 SpaceRacer level shadow cache and sharp arcs
+
+Scene.stage_sun opts into a 4096-square/64 MiB shared static source-alpha map;
+Slots::reserve registers dynamic ownership. Static solid geometry now included,
+full-scene fit, fixed bake LOD, receiver-plane precision/mesh-error correction.
+Graphics.sharp_sprites moves world motion blur before sprite/exhaust/particle
+composition; target COPY_SRC is required. Bloom remains after emission.
+See SpaceRacer parity-review.md for captures, checks and limits. Near-detail
+transitions remain; distant wind is rest pose; this is not GI or an FPS claim.
+
+## 2026-11-01 SpaceRacer flight/combat feedback
+
+Finite road/tunnel/guard sweeps replace nearest-section crash inference; shared
+ribbon geometry and oriented scenery proxies. F12 seed 46990/hard/cell covered
+by sidewall regression; actual previous input trajectory was not recorded.
+EMP now 100 m, fading ship arcs, local missile cancellation. Pickup spacing
+1300 m. Sentry newest-only interpolated tracer with surface sparks; boost arc
+onset/decay and contact glows; stronger world/per-view warp refraction.
+37 sim + 24 app tests; native capture scenario `flight-combat-effects.json`.
+No Android export or performance certification. See SpaceRacer parity review.
+
+## 2026-11-01 SpaceRacer split-road F12 correction
+
+Seed 89502 hard forest at 4854 m: coarse midpoint cell omission made sawtooth
+holes; inner split guards were missing despite simulation constraint. Restored
+continuous fork strips, matching inner walls/guards/neon, surviving-branch boosts
+and exact launch lip boundary. No track recipe/physics changes. Two geometry
+regressions and native 1080p entry/wide/exit captures; see parity-review.md.
+
+## 2026-11-01 SpaceRacer respawn and energy wear
+
+Restored source-inspired smooth camera return and bottom-up hull construction,
+plus retained energy-linked paint wear/scorch and low-energy smoke. Game-owned
+WGSL visibility mask is injected via `render::set_game_mask` before construction;
+all default games retain an always-false mask. `Renderer::update_aux_words` writes
+a checked pre-reserved range. SpaceRacer uses header word 5 for six per-pilot
+records (pose, energy, scan progress), uploading only 580 bytes/frame. World
+fragments outside the contiguous ship slots return before the six-record lookup.
+No per-frame geometry allocation. 32 sim + 20 app + 1 renderer test; native build
+and staged solo/split 1080p captures. See games/spaceracer/parity-review.md.
+
 # SpaceRacer weapon restoration - 31 October 2026
 
 Restored source warp ribbon autopilot/phase/gap/EMP handling, 20-Hz mounted rotary

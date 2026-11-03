@@ -7,6 +7,8 @@ pub(crate) struct Resources {
     pub buffer: wgpu::Buffer,
     pub uniform: wgpu::Buffer,
     pub enabled: bool,
+    /// The scene baked its terrain sun visibility (no trace hierarchy).
+    pub baked: bool,
     pub bytes: u64,
     pub build_cpu_ms: f64,
 }
@@ -36,7 +38,7 @@ impl Resources {
         let uniform=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor{label:Some("world visibility policy"),
             contents:bytemuck::cast_slice(&params),usage:wgpu::BufferUsages::UNIFORM});
         let bytes=buffer.size()+uniform.size();
-        Ok(Self{buffer,uniform,enabled,bytes,build_cpu_ms:start.elapsed().as_secs_f64()*1000.0})
+        Ok(Self{buffer,uniform,enabled,baked,bytes,build_cpu_ms:start.elapsed().as_secs_f64()*1000.0})
     }
 }
 

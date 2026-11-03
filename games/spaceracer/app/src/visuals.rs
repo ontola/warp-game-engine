@@ -46,6 +46,7 @@ pub struct Visuals {
     pub mounts: Vec<SlotId>,
     pub mount_meshes: Vec<usize>,
     pub uploaded: bool,
+    pub vehicle_aux: usize,
     pub fx: render::fx::Effects,
     pub crashes: Vec<u64>,
     pub blast_stamp: f64,
@@ -138,6 +139,17 @@ fn track_lights(scene: &mut Scene, race: &Race) -> Vec<render::headlights::Local
     }
     lights
 }
+// Two continuous ribbons, not cells discarded by their midpoint. This preserves
+// the exact collision boundary even when the split expands between samples.
+use spaceracer::track_collision::road_span;
+fn road_edge(parts:&mut [Primitive],a:&spaceracer::track::Node,b:&spaceracer::track::Node,x:f64,y:f64,inward:f64,ha:f64,hb:f64) {
+    let na=a.frame(x);let nb=b.frame(y);
+    let top=[na.y_axis,na.y_axis,nb.y_axis,nb.y_axis];
+    let normal=[-na.x_axis*inward as f32,-na.x_axis*inward as f32,-nb.x_axis*inward as f32,-nb.x_axis*inward as f32];
+    quad(&mut parts[2],[a.point(x,-2.5),a.point(x,ha),b.point(y,hb),b.point(y,-2.5)],normal,[[0.;2];4]);
+    // One continuous neon strip along each actual edge, including unguarded edges.
+    quad(&mut parts[1],[a.point(x,ha+0.05),a.point(x+inward*0.3,ha+0.05),b.point(y+inward*0.3,hb+0.05),b.point(y,hb+0.05)],top,[[0.;2];4]);
+}
 fn road(scene: &mut Scene, race: &Race) {
     let asphalt = surface(scene, 0, [0.035, 0.045, 0.055], 0.35, 1.);
     let edge = material(scene, [0.07, 0.65, 0.95], 0.3, 140.);
@@ -155,20 +167,15 @@ fn road(scene: &mut Scene, race: &Race) {
         for i in start..(start + 64).min(nodes.len()) {
             let a = &nodes[i];
             let b = &nodes[(i + 1) % nodes.len()];
-            if a.air_gap || b.air_gap {
+            if a.air_gap {
                 continue;
             }
             for lane in 0..16 {
-                let u = -1. + lane as f64 / 8.;
-                let v = u + 0.125;
-                let x = (u + v) * 0.5 * a.geometry.width;
-                if !a.supported(x, 0.) {
-                    continue;
-                }
-                let ax = u * a.geometry.width;
-                let bx = v * a.geometry.width;
-                let cx = v * b.geometry.width;
-                let dx = u * b.geometry.width;
+                let side = if lane<8 {-1.}else{1.};
+                if a.dead_gap && a.dead_side*side>0. {continue;}
+                let t=(lane%8) as f64/8.;
+                let [ax,bx,cx,dx]=road_span(a,b,side,t,t+0.125);
+                let u=ax/a.geometry.width;let v=bx/a.geometry.width;
                 let top = [
                     a.point(ax, 0.),
                     a.point(bx, 0.),
@@ -195,11 +202,11 @@ fn road(scene: &mut Scene, race: &Race) {
                             i as f32 * (race.world.track.length / nodes.len() as f64) as f32,
                         ],
                         [
-                            v as f32,
+                            (cx/b.geometry.width) as f32,
                             (i + 1) as f32 * (race.world.track.length / nodes.len() as f64) as f32,
                         ],
                         [
-                            u as f32,
+                            (dx/b.geometry.width) as f32,
                             (i + 1) as f32 * (race.world.track.length / nodes.len() as f64) as f32,
                         ],
                     ],
@@ -216,75 +223,32 @@ fn road(scene: &mut Scene, race: &Race) {
             if a.zone == "boost" && i % 3 == 0 {
                 let d = (i as f64) * race.world.track.length / nodes.len() as f64;
                 for side in [-1., 1.] {
-                    let points = [
-                        (side * a.geometry.width * 0.3, d),
-                        (0., d + 6.),
-                        (0., d + 8.),
-                        (side * a.geometry.width * 0.3, d + 2.),
-                    ]
-                    .map(|(x, d)| race.world.track.sample(d).point(x, 0.05));
-                    quad(
-                        &mut parts[3],
-                        points,
-                        [a.geometry.basis().y_axis; 4],
-                        [[0.; 2]; 4],
-                    );
+                    if a.dead_gap && a.dead_side*side>0. {continue;}
+                    let split=a.split_gap.max(b.split_gap)>0.0001;
+                    let wings:&[f64]=if split {&[-1.,1.]}else{&[1.]};
+                    for &wing_side in wings {
+                        let points = [(0.28,d),(0.,d+6.),(0.,d+8.),(0.28,d+2.)]
+                            .map(|(wing,d)| {
+                                let n=race.world.track.sample(d);
+                                let center=if split {side*(n.geometry.width+n.split_gap)*0.5}else{0.};
+                                let span=n.geometry.width-n.split_gap;
+                                n.point(center+side*wing_side*span*wing,0.05)
+                            });
+                        quad(&mut parts[3],points,[a.geometry.basis().y_axis;4],[[0.;2];4]);
+                    }
                 }
             }
-            for side in [-1., 1.] {
-                let x = side * a.geometry.width;
-                let y = side * b.geometry.width;
-                let normal = [
-                    a.frame(x).y_axis,
-                    a.frame(x).y_axis,
-                    b.frame(y).y_axis,
-                    b.frame(y).y_axis,
-                ];
-                quad(
-                    &mut parts[1],
-                    [
-                        a.point(x, 0.08),
-                        a.point(x - side * 0.35, 0.08),
-                        b.point(y - side * 0.35, 0.08),
-                        b.point(y, 0.08),
-                    ],
-                    normal,
-                    [[0.; 2]; 4],
-                );
-                quad(
-                    &mut parts[2],
-                    [
-                        a.point(x, -2.5),
-                        a.point(x, 0.),
-                        b.point(y, 0.),
-                        b.point(y, -2.5),
-                    ],
-                    [a.frame(x).x_axis * side as f32; 4],
-                    [[0.; 2]; 4],
-                );
-                if a.rails && a.geometry.shape_angle < 3. {
-                    quad(
-                        &mut parts[2],
-                        [
-                            a.point(x, 0.),
-                            a.point(x, 2.4),
-                            b.point(y, 2.4),
-                            b.point(y, 0.),
-                        ],
-                        [-a.frame(x).x_axis * side as f32; 4],
-                        [[0.; 2]; 4],
-                    );
-                    quad(
-                        &mut parts[1],
-                        [
-                            a.point(x, 2.45),
-                            a.point(x - side * 0.3, 2.45),
-                            b.point(y - side * 0.3, 2.45),
-                            b.point(y, 2.45),
-                        ],
-                        normal,
-                        [[0.; 2]; 4],
-                    );
+            for side in [-1.,1.] {
+                if a.dead_gap && a.dead_side*side>0. {continue;}
+                road_edge(&mut parts,a,b,side*a.geometry.width,side*b.geometry.width,-side,
+                    if a.rails && a.geometry.shape_angle<3. {2.4}else{0.},
+                    if a.rails && b.geometry.shape_angle<3. {2.4}else{0.});
+                if a.split_gap.max(b.split_gap)>0.0001 {
+                    // This boundary already constrains racers in Pilot::constrain.
+                    // Match the source fork rail and fade its height at the nose.
+                    road_edge(&mut parts,a,b,side*a.split_gap,side*b.split_gap,side,
+                        2.4*spaceracer::handling::smooth(0.,3.,a.split_gap),
+                        2.4*spaceracer::handling::smooth(0.,3.,b.split_gap));
                 }
             }
             if a.tunnel && a.geometry.shape_angle < 0.1 {
@@ -416,7 +380,8 @@ fn transform(v: &Value) -> Affine3A {
 }
 impl Visuals {
     pub fn new(race: &Race, root: &Path) -> Result<Self, String> {
-        let mut scene = Scene::default();
+        let mut scene = Scene {stage_sun:true,..Default::default()};
+        scene.graphics.sharp_sprites=true;
         let mut lighting = Lighting::default();
         if race.biome == "city" || race.biome == "cell" || race.biome == "ocean" {
             scene.sky = Some(primitives::gradient_sky(
@@ -561,16 +526,16 @@ impl Visuals {
         let pickup_mat = material(&mut scene, [0.6, 0.15, 0.95], 0.3, 100.);
         let pickup_mesh = pickup_mesh(&mut scene, pickup_mat);
         let missile_mat = material(&mut scene, [0.32, 0.36, 0.4], 0.25, 0.);
-        let mut weapon_art=super::weapon_art::Art::new(&mut scene);
+        let mut weapon_art=super::weapon_art::Art::new(&mut scene,race.environment.exposure);
         let mount_meshes: Vec<_> = (0..6)
-            .map(|k| match k {1=>weapon_art.coil,2=>weapon_art.base,5=>weapon_art.bomb,_=>weapon_mesh(&mut scene,k,missile_mat,pickup_mat)})
+            .map(|k| match k {1=>weapon_art.coil,2=>weapon_art.base,4=>weapon_art.rail,5=>weapon_art.bomb,_=>weapon_mesh(&mut scene,k,missile_mat,pickup_mat)})
             .collect();
         let projectile_mesh = mount_meshes[0];
         let mount_mesh = mount_meshes[2];
         let mut slots = Slots::reserve(&mut scene, 1024 + stage.capacity());
         stage.reserve(&mut scene, &mut slots);
         weapon_art.reserve(&mut scene,&mut slots);
-        let ships = all_parts
+        let ships: Vec<Vec<ShipPart>> = all_parts
             .into_iter()
             .map(|parts: Vec<LoadedPart>| {
                 parts
@@ -623,11 +588,25 @@ impl Visuals {
                     .unwrap()
             })
             .collect();
+        let wear_layer = scene.add_texture(&root.join("source/assets/paint-wear.png"))?;
+        let vehicle_aux = scene.aux.len();
+        scene.aux[5] = vehicle_aux as u32;
+        scene.aux.push(wear_layer as u32);
+        for parts in &ships {
+            let mut record = [0u32;24];
+            record[0] = parts.iter().map(|p| slots.instance(p.slot)).min().unwrap() as u32;
+            record[1] = parts.iter().map(|p| slots.instance(p.slot)).max().unwrap() as u32 + 1;
+            record[3] = 1f32.to_bits();
+            scene.aux.extend(record);
+        }
         let jets = super::jets::Jets::new(root)?;
         let crash_fx = super::crash_fx::Crashes::new(root)?;
         let mut fx = render::fx::Effects::default();
         fx.light_scale = crash_fx.config.explosion_light_scale;
         fx.smooth_billows = true;
+        // Same shared animated density asset and adaptive renderer as Growing Guns.
+        // This Effects instance handles both vehicle crashes and weapon blasts.
+        fx.set_baked_smoke(crash_fx.config.baked_explosion_smoke);
         Ok(Self {
             stage,
             scene,
@@ -649,6 +628,7 @@ impl Visuals {
             mount_meshes,
             weapon_art,
             uploaded: false,
+            vehicle_aux,
             fx,
             crashes: vec![0; 6],
             blast_stamp: -1.,
@@ -689,6 +669,15 @@ impl Visuals {
             let p = &race.pilots[i];
             let input = race.drivers[i].input.drive;
             let base = Affine3A::from_mat3_translation(pose.basis, pose.origin);
+            let b = self.vehicle_aux + 1 + i*24;
+            let record = &mut self.scene.aux[b..b+24];
+            record[2] = (1.0 - (p.energy as f32 / 100.).clamp(0.,1.)).to_bits();
+            record[3] = super::respawn::progress(race,i,alpha).to_bits();
+            for (offset,v) in [(4,pose.origin),(8,pose.basis.x_axis),(12,pose.basis.y_axis),(16,pose.basis.z_axis)] {
+                for (j,f) in v.to_array().into_iter().enumerate() {record[offset+j]=f.to_bits();}
+            }
+            record[20] = (2f32.powf(race.environment.exposure)*8.).to_bits();
+
             let new_crash = race.drivers[i].motion.crash_id > self.crashes[i];
             let mut wreck_parts = Vec::new();
             for part in &self.ships[i] {
@@ -712,7 +701,7 @@ impl Visuals {
                 self.mounts[i],
                 self.mount_meshes[mounting.map_or(0, |w| w as usize)],
                 base * Affine3A::from_scale_rotation_translation(
-                    if mounting.is_some() && !p.crashed {
+                    if mounting.is_some() && !p.crashed && p.recovery<=0. {
                         Vec3::ONE
                     } else {
                         Vec3::splat(0.001)
@@ -775,40 +764,6 @@ impl Visuals {
             );
         }
         if fresh {
-            for b in &race.beams {
-                if b.rail && b.age <= spaceracer::handling::DT * 1.1 {
-                    let d = b.to - b.from;
-                    let _ = self.fx.streak(render::fx::AdditiveStreak {
-                        position: (b.from + b.to) * 0.5,
-                        travel: d.normalize_or_zero() * 0.001,
-                        birth: time - 0.001,
-                        life: if b.rail { 0.14 } else { 1. / 120. },
-                        radius: if b.rail { [0.16, 0.03] } else { [0.035, 0.015] },
-                        length: [d.length(); 2],
-                        color: if b.rail {
-                            Vec3::new(0.3, 0.8, 1.)
-                        } else {
-                            Vec3::new(1., 0.7, 0.2)
-                        },
-                        radiance: 15000.,
-                        opacity: 0.8,
-                        fade_in: 0.,
-                        fade_out: 1.,
-                        ..Default::default()
-                    });
-                    let _ = self.fx.mote(render::fx::AdditiveMote {
-                        position: b.to,
-                        birth: time - 0.001,
-                        life: 0.1,
-                        radius: 1.4,
-                        color: Vec3::new(1., 0.7, 0.3),
-                        radiance: 12000.,
-                        fade_in: 0.,
-                        fade_out: 1.,
-                        ..Default::default()
-                    });
-                }
-            }
             for p in &race.projectiles {
                 if p.kind == Weapon::Missile {
                     if let Some(target) = p.target {
@@ -848,16 +803,12 @@ impl Visuals {
         }
         for b in &race.blasts {
             let birth = race.clock - b.age;
-            if birth > self.blast_stamp {
+            if birth > self.blast_stamp && b.kind != Weapon::Emp {
                 self.fx.explosion(
                     time - b.age as f32,
                     b.position,
                     b.radius * 0.3,
-                    if b.kind == Weapon::Emp {
-                        Vec3::new(0.1, 0.7, 1.)
-                    } else {
-                        Vec3::new(1., 0.3, 0.05)
-                    },
+                    Vec3::new(1., 0.3, 0.05),
                 );
             }
         }
@@ -997,4 +948,51 @@ fn load_node(
     }
     chain.pop();
     Ok(())
+}
+
+#[cfg(test)]
+mod road_tests {
+    use super::*;
+    #[test]
+    fn split_ribbons_cover_supported_surface_without_covering_the_gap() {
+        for seed in [89502,35,80385] {
+            let race=Race::new(seed,"hard","forest",1,3);
+            let nodes=&race.world.track.nodes;
+            for (i,a) in nodes.iter().enumerate() {
+                let b=&nodes[(i+1)%nodes.len()];
+                if a.air_gap || a.split_gap.max(b.split_gap)<0.01 {continue;}
+                for t in [0.1,0.5,0.9] {
+                    let node=race.world.track.sample((i as f64+t)*race.world.track.step);
+                    for k in 0..101 {
+                        let x=(-1.+(k as f64+0.5)*2./101.)*node.geometry.width;
+                        // Collision intentionally treats sub-centimetre split openings as closed.
+                        if (x.abs()-node.split_gap).abs()<0.011 {continue;}
+                        let mut covers=0;
+                        for side in [-1.,1.] {
+                            if a.dead_gap && a.dead_side*side>0. {continue;}
+                            for lane in 0..8 {
+                                let q=road_span(a,b,side,lane as f64/8.,(lane+1) as f64/8.);
+                                let lo=q[0]+(q[3]-q[0])*t;let hi=q[1]+(q[2]-q[1])*t;
+                                if x>=lo && x<hi {covers+=1;}
+                            }
+                        }
+                        assert_eq!(covers,usize::from(node.supported(x,0.)),"seed {seed}, node {i}, x {x}, t {t}");
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn inner_guardrail_meets_exact_deck_boundary_at_both_ends() {
+        let race=Race::new(89502,"hard","forest",1,3);
+        let a=race.world.track.sample(4854.);let b=race.world.track.sample(4854.+race.world.track.step);
+        assert!(a.split_gap>0.01);
+        let mut parts:Vec<_>=(0..5).map(|_|Primitive::default()).collect();
+        road_edge(&mut parts,&a,&b,a.split_gap,b.split_gap,1.,2.4,2.4);
+        for (j,node) in [(0,&a),(1,&a),(2,&b),(3,&b)] {
+            let p=Vec3::from(parts[2].vertices[j].pos);
+            assert!((node.lateral(p)-node.split_gap).abs()<0.001);
+        }
+        assert_eq!(parts[1].indices.len(),6,"one unbroken neon strip per edge");
+    }
 }

@@ -35,7 +35,12 @@ fn world_terrain_baked_sun(p:vec3<f32>)->f32 {
     return mix(mix(a,b,f.x),mix(c,e,f.x),f.y);
 }
 
+// The scene baked its terrain sun visibility (world_visibility.rs): the
+// trace and its 64-entry stack are compiled out of the pipeline, not just
+// skipped at run time, which kept shade's registers (terrain_fly: +2.9 fps).
+override WORLD_TERRAIN_BAKED: bool = false;
 fn world_terrain_sun_visibility(p:vec3<f32>,surface_n:vec3<f32>,representation_error:f32)->f32 {
+    if WORLD_TERRAIN_BAKED {return world_terrain_baked_sun(p);}
     if world_visibility.params.x>0.5 && world_visibility.params.w>0.5 {return world_terrain_baked_sun(p);}
     let query=world_terrain_sun_query(p,surface_n,representation_error);
     // Unknown is deliberately conservative. Diagnostic23 makes it magenta;
@@ -44,6 +49,7 @@ fn world_terrain_sun_visibility(p:vec3<f32>,surface_n:vec3<f32>,representation_e
 }
 
 fn world_terrain_debug(p:vec3<f32>,surface_n:vec3<f32>,work:bool,representation_error:f32)->vec3<f32> {
+    if WORLD_TERRAIN_BAKED {return vec3<f32>(world_terrain_baked_sun(p));}
     let query=world_terrain_sun_query(p,surface_n,representation_error);
     if query.info.x==2u{return vec3<f32>(1.0,0.0,1.0);}
     if work{return vec3<f32>(f32(query.info.z)/max(world_visibility.params.y,1.0));}

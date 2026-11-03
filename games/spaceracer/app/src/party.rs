@@ -156,6 +156,7 @@ impl Party {
                     reset: p.just(button::Y),
                     left: p.held(button::LB),
                     right: p.held(button::RB),
+                    rail_aim:None,
                 }
             })
             .collect()

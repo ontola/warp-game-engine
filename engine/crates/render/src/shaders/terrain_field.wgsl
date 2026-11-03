@@ -40,8 +40,12 @@ struct TerrainStyle {
     boulders: f32,
     moor: f32,
     grass: f32,
+    dunes: f32,
+    ditches: f32,
+    ponds: f32,
     pad0: f32,
     pad1: f32,
+    pad2: f32,
 };
 
 const TF_BASE: f32 = 2048.0;
@@ -322,6 +326,23 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     }
     y += th;
     g += tor_n.yz * (tor_h * 6.0 * tt * (1.0 - tt) / tor_w * (55.0 / TF_BASE));
+    // Dunes: crests across the wind, a long gentle windward slope and a
+    // steep lee, wandering with noise; whole fields of them on low ground.
+    if st.dunes > 0.0 {
+        let wind = vec2<f32>(0.8, 0.6);
+        let field = (0.45 + 0.55 * tf_smooth(-0.4, 0.3, tf_noised(p * 0.8 + vec2<f32>(1.7, 4.2), seed + 25u).x)) * (1.0 - mountains);
+        let dh = st.dunes * 18.0 * field * tf_fade(40.0, cut);
+        if dh > 0.0 {
+            let u = (x * wind.x + z * wind.y) / 200.0 + 0.6 * tf_noised(p * 6.0 + vec2<f32>(8.8, 3.1), seed + 26u).x;
+            let s = u - floor(u);
+            var f: f32;
+            var df: f32;
+            if s < 0.8 { f = tf_smooth(0.0, 0.8, s); df = 6.0 * (s / 0.8) * (1.0 - s / 0.8) / 0.8; }
+            else { let t = (1.0 - s) / 0.2; f = t * t * (3.0 - 2.0 * t); df = -6.0 * t * (1.0 - t) / 0.2; }
+            y += dh * f;
+            g += wind * (dh * df / 200.0);
+        }
+    }
     let steep = sqrt(g.x * g.x + g.y * g.y);
     let up = 1.0 / sqrt(1.0 + steep * steep);
 
@@ -339,6 +360,8 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
 
     // Fine relief, far rougher on rock; calm on valley floors.
     let rough = 0.15 + 0.85 * rock;
+    // The smooth ground, before its fine relief: still water stands level on it.
+    let y_base = y;
     var db = b * amp;
     // Ground keeps getting rougher the closer you look, whatever the relief:
     // metres of roughness per octave fall off as wavelength^0.6, from
@@ -360,9 +383,31 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     }
 
     // Water: the bed stays where it is; the surface is level.
+    // Ditches round long parcels on flat land, on a grid turned by the seed.
+    let flat = tf_smooth(0.97, 0.995, up0);
+    var ditch = 1000.0;
+    var water_d = 0.0;
+    if st.ditches > 0.0 && flat > 0.0 {
+        let a = f32(seed % 97u) * 0.0647;
+        let u = x * cos(a) + z * sin(a);
+        let v = z * cos(a) - x * sin(a);
+        let across = abs((u / 60.0 + 0.5) - floor(u / 60.0 + 0.5) - 0.5) * 60.0;
+        let along = abs((v / 400.0 + 0.5) - floor(v / 400.0 + 0.5) - 0.5) * 400.0;
+        ditch = min(across, along);
+        let on = st.ditches * flat * tf_fade(3.0, cut);
+        y -= on * 1.3 * (1.0 - tf_smooth(0.6, 1.8, ditch));
+        if ditch < 1.6 { water_d = max((y_base - 0.5) - y, 0.0) * on; }
+    }
+    // Ponds in flat hollows, their water level with the ground round them.
+    var water_p = 0.0;
+    if st.ponds > 0.0 && flat > 0.0 {
+        let pond = st.ponds * flat * tf_smooth(0.12, 0.2, tf_noised(p * 14.0 + vec2<f32>(2.6, 9.4), seed + 27u).x) * tf_fade(30.0, cut);
+        y -= pond * 1.6;
+        water_p = max((y_base - 0.35) - y, 0.0) * min(pond, 1.0);
+    }
     let water_r = select(0.0, max(river_level - y, 0.0), ch < ch_w);
     let water_s = select(0.0, max(stream_level - y, 0.0) * notch, stream_line < 1.2 && notch > 0.0);
-    let water = max(water_r, water_s) * channel;
+    let water = max(max(max(water_r, water_s) * channel, water_d), water_p);
 
     // Bedrock strata: ledges stick out of steep rock and overhang a little.
     var pos = vec3<f32>(x, y + water, z);
@@ -379,7 +424,7 @@ fn terrain_eval(x: f32, z: f32, cut: f32, seed: u32, st: TerrainStyle) -> Terrai
     o.up = up;
     o.rock = rock;
     o.scree = clamp(scree, 0.0, 1.0);
-    o.wet = tf_smooth(8.0, 1.0, near_wet);
+    o.wet = max(max(tf_smooth(8.0, 1.0, near_wet), st.ditches * flat * tf_smooth(5.0, 1.5, ditch)), tf_smooth(0.0, 0.3, water_p));
     o.water = water;
     o.moor = moor;
     // Snow lies above the snow line on all but steep faces, in drifts.

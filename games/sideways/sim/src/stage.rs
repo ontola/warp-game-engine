@@ -17,6 +17,28 @@ pub const CORRIDOR: f64 = 230.0;
 pub const RUNOUT: f64 = 140.0;
 pub const RIVER_STEP: f64 = 4.0;
 
+/// The natural ground a stage is laid on, when it is not Sideways' own
+/// noise: a biome of the engine's procedural terrain (the app supplies it).
+/// `ground` is called with the stage's noise seed, so each stage runs
+/// through its own part of the world; it must be deterministic: physics, AI
+/// and rendering all read it. The rest is what grows there, relative to
+/// Sideways' own forest (1 each).
+#[derive(Clone)]
+pub struct Land {
+    pub ground: std::sync::Arc<dyn Fn(u32, f64, f64) -> f64 + Send + Sync>,
+    pub trees: f32,
+    pub grass: f32,
+    pub ferns: f32,
+    /// Grass and ground colour relative to Sideways' own.
+    pub tint: [f32; 3],
+}
+
+impl std::fmt::Debug for Land {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Land {{ trees: {}, grass: {}, ferns: {}, tint: {:?} }}", self.trees, self.grass, self.ferns, self.tint)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct River {
     pub pts: Vec<V2>,
@@ -74,6 +96,8 @@ pub struct Stage {
     pub detail_seed: i32,
     noise: Noise,
     pub detail: Noise,
+    /// The ground under the road; None is Sideways' own noise.
+    pub land: Option<Land>,
     hash: HashMap<Cell, Vec<i32>>,
     locate_candidates: HashMap<Cell, Vec<i32>>,
     river_candidates: HashMap<Cell, Vec<(usize, usize)>>,
@@ -81,7 +105,11 @@ pub struct Stage {
 
 impl Stage {
     /// `Stage.generate(target_length)`, drawing from the global RNG.
-    pub fn generate(rng: &mut Pcg, target_length: f64) -> Stage {
+    pub fn generate(rng: &mut Pcg, target_length: f64) -> Stage { Self::generate_on(rng, target_length, None) }
+
+    /// A stage on `land` (None: Sideways' own noise). The rng stream is
+    /// the same either way.
+    pub fn generate_on(rng: &mut Pcg, target_length: f64, land: Option<Land>) -> Stage {
         // FastNoiseLite stores the seed as a 32-bit int.
         let noise_seed = rng.next_u32() as i32;
         let detail_seed = rng.next_u32() as i32;
@@ -103,6 +131,7 @@ impl Stage {
             detail_seed,
             noise: Noise::new(noise_seed, 1.0 / 420.0, 3),
             detail: Noise::new(detail_seed, 1.0 / 70.0, 2),
+            land,
             hash: HashMap::new(),
             locate_candidates: HashMap::new(),
             river_candidates: HashMap::new(),
@@ -530,6 +559,7 @@ impl Stage {
 
     /// Natural ground without the road.
     pub fn ground(&self, x: f64, z: f64) -> f64 {
+        if let Some(land) = &self.land { return (land.ground)(self.noise_seed as u32, x, z); }
         self.noise.get_2d(x as f32, z as f32) as f64 * 34.0 + self.detail.get_2d(x as f32, z as f32) as f64 * 3.0
     }
 

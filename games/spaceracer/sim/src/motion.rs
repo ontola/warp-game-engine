@@ -139,20 +139,27 @@ impl Motion {
         let velocity = self.air.velocity;
         let frame = self.air.frame;
         self.air_travel += previous.distance(position) as f64;
-        let (distance, n, x) = track.project(position, p.distance, track.length);
-        let (_, previous_hit, previous_x) = track.project(previous, p.distance, track.length);
+        let contact = if self.air.time > 0.10 { track.sweep_road(previous, position) } else { None };
+        if let Some(hit) = contact.filter(|h| !h.top) {
+            self.air.position = previous.lerp(position,hit.t);
+            return self.crash(p,hit.normal);
+        }
+        let (mut distance, mut n, mut x) = track.project(position, p.distance, track.length);
+        if let Some(hit) = contact.filter(|h| ((h.distance-distance+track.length*0.5).rem_euclid(track.length)-track.length*0.5).abs()>track.step*2.) {
+            distance = p.distance + (hit.distance-p.distance+track.length*0.5).rem_euclid(track.length)-track.length*0.5;
+            n = track.sample(distance);
+            x = n.lateral(position);
+        }
+
         let surface = n.frame(x);
         let surface_position = n.point(x, 0.0);
-        let previous_surface = previous_hit.frame(previous_x);
-        let before = (previous - previous_hit.point(previous_x, 0.0)).dot(previous_surface.y_axis)
-            as f64
-            - 1.3;
         let after = (position - surface_position).dot(surface.y_axis) as f64 - 1.3;
         p.lift = after;
         p.lift_speed = velocity.dot(surface.y_axis) as f64;
-        let inside = n.supported(x, 5.8);
+        let inside = n.supported(x, 0.);
         let mut event = AirEvent::None;
-        if self.air.time > 0.10 && inside && before > 0.0 && after <= 0.0 {
+        if let Some(hit) = contact {
+            if !inside { self.air.position=previous.lerp(position,hit.t); return self.crash(p,hit.normal); }
             let nose = frame.z_axis.dot(surface.z_axis);
             let upright = frame.y_axis.dot(surface.y_axis);
             let approach = velocity.dot(surface.z_axis) as f64;
@@ -192,10 +199,6 @@ impl Motion {
             } else {
                 return self.crash(p, surface.y_axis);
             }
-        } else if self.air.time > 0.10 && inside && before < -2.0 && after >= -2.0 {
-            return self.crash(p, -surface.y_axis);
-        } else if self.air.time > 0.10 && inside && after < -2.0 && previous_hit.air_gap {
-            return self.crash(p, Vec3::ZERO);
         } else if (biome == "city"
             && position.x.abs() < 6000.0
             && position.z.abs() < 6000.0
@@ -276,10 +279,10 @@ mod tests {
                     "{name} tick {tick} crash"
                 );
                 let expected: Vec3 = serde_json::from_value(f["position"].clone()).unwrap();
-                assert!(
-                    m.air.position.distance(expected) < 0.02,
-                    "{name} tick {tick} position"
-                );
+                // Swept impacts stop at the first contact rather than the old
+                // end-of-tick penetration. Free-flight/landing traces stay exact.
+                let tolerance=if p.crashed {m.crash_velocity.length()/120.+0.02}else{0.02};
+                assert!(m.air.position.distance(expected)<tolerance,"{name} tick {tick} position");
                 for (key, v) in [
                     ("energy", p.energy),
                     ("speed", p.speed),

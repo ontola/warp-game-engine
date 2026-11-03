@@ -58,9 +58,34 @@ struct Material {
 @group(0) @binding(2) var<storage, read> tris: array<u32>;
 @group(0) @binding(3) var<storage, read> clusters: array<Cluster>;
 @group(0) @binding(4) var<storage, read> instances: array<Instance>;
+
+// Virtual assembly members (vegetation_asset AttachLimits::virtual_members):
+// bit 31, the branch owner (19 bits) and its template (12 bits). The owner's
+// rows are its part_wind pose and its first_cluster packs the templates
+// (start << 12 | count); a member is pose x template.
+const VIRTUAL_MEMBER: u32 = 0x80000000u;
+fn member_slot(id: u32) -> u32 { return select(id, (id >> 12u) & 0x7ffffu, (id & VIRTUAL_MEMBER) != 0u); }
+fn compose_member(owner: Instance, t: Instance) -> Instance {
+    var m = t;
+    m.r0 = owner.r0.x * t.r0 + owner.r0.y * t.r1 + owner.r0.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r0.w);
+    m.r1 = owner.r1.x * t.r0 + owner.r1.y * t.r1 + owner.r1.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r1.w);
+    m.r2 = owner.r2.x * t.r0 + owner.r2.y * t.r1 + owner.r2.z * t.r2 + vec4<f32>(0.0, 0.0, 0.0, owner.r2.w);
+    let c = vec4<f32>(t.sphere.xyz, 1.0);
+    m.sphere = vec4<f32>(dot(owner.r0, c), dot(owner.r1, c), dot(owner.r2, c), -t.sphere.w * owner.scale);
+    m.scale = t.scale * owner.scale;
+    // The owner's history epoch (bit 7) marks a woken pose for motion.
+    m.pad = (t.pad & ~0x80u) | (owner.pad & 0x80u);
+    return m;
+}
+fn instance_at(id: u32) -> Instance {
+    if (id & VIRTUAL_MEMBER) == 0u { return instances[id]; }
+    let owner = instances[(id >> 12u) & 0x7ffffu];
+    return compose_member(owner, instances[(owner.first_cluster >> 12u) + (id & 0xfffu)]);
+}
 @group(0) @binding(5) var<storage, read> materials: array<Material>;
 @group(0) @binding(6) var albedo: texture_2d_array<f32>;
 @group(0) @binding(7) var samp: sampler;
+@group(0) @binding(8) var<storage,read> aux: array<u32>;
 @group(0) @binding(10) var plant_samp: sampler;
 @group(0) @binding(11) var<storage,read> voxel_replacement: array<u32>;
 
@@ -68,7 +93,16 @@ struct Material {
 @group(1) @binding(1) var<storage, read> visible: array<vec2<u32>>;
 @group(1) @binding(2) var<storage, read> draw_map: array<u32>;
 @group(1) @binding(3) var<storage, read> draw_args: array<u32, 20>;
-@group(1) @binding(4) var<uniform> foliage_selection: array<vec4<u32>,4096>;
+@group(1) @binding(4) var<uniform> foliage_selection_words: array<vec4<u32>,4096>;
+fn foliage_selection_at(i:u32)->vec4<u32> { let v=foliage_selection_words[i>>2u]; return selection_unpack(v[i&3u]); }
+// Packed group selection (aggregate_lod.wgsl writes it): one u32 per group,
+// four per vec4 of the 64 KiB uniform, 16384 groups. Bits 0-1 choice, 2-7
+// voxel level (63: none), 8-9 sun mode, 16-31 the triangle error as f16.
+fn selection_unpack(w:u32)->vec4<u32> {
+    let y=(w>>2u)&63u;
+    return vec4<u32>(w&3u,select(y,0xffffffffu,y==63u),bitcast<u32>(unpack2x16float(w>>16u).x),(w>>8u)&3u);
+}
+
 
 struct VOut {
     @builtin(position) pos: vec4<f32>,
@@ -76,6 +110,8 @@ struct VOut {
     @location(1) @interpolate(flat) material: u32,
     @location(2) uv: vec2<f32>,
     @location(3) @interpolate(flat) grass_opacity: f32,
+    @location(4) world: vec3<f32>,
+    @location(5) @interpolate(flat) instance: u32,
 };
 
 @vertex
@@ -93,23 +129,24 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut 
         o.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0); // degenerate, outside the clip volume
         return o;
     }
-    let inst = instances[vis.x];
+    let inst = instance_at(vis.x);
     let packed = tris[cl.first_tri + tri];
     let local = (packed >> (8u * (vi % 3u))) & 0xffu;
     let v = cluster_verts[cl.first_vert + local] * 8u;
     let p = vec4<f32>(vertices[v], vertices[v + 1u], vertices[v + 2u], 1.0);
     let rest = vec3<f32>(dot(inst.r0, p), dot(inst.r1, p), dot(inst.r2, p));
-    let w = wind_position(vis.x, inst.r1.w, rest);
+    let w = wind_position(member_slot(vis.x), inst.r1.w, rest);
     o.pos = view.view_proj * vec4<f32>(w, 1.0);
+    o.world = w; o.instance = vis.x;
     o.id = (slot << 7u) | tri;
     o.material = cl.material;
     o.uv = vec2<f32>(vertices[v + 6u], vertices[v + 7u]);
     // Only the explicitly packed crown material is replaced in color. Wood,
     // unrelated cutouts and source sun-shadow geometry remain unchanged.
-    let replacement=voxel_replacement[vis.x];
+    let replacement=voxel_replacement[member_slot(vis.x)];
     var replaced=replacement==0xffffffffu || replacement==cl.material+1u;
     if replacement!=0xffffffffu && (replacement&0x80000000u)!=0u {
-        replaced=foliage_selection[replacement&0x7fffffffu].x!=0u;
+        replaced=foliage_selection_at(replacement&0x7fffffffu).x!=0u;
     }
     if VOXEL_FAR_M>0.0 && replacement!=0xffffffffu && (replacement&0xc0000000u)==0x40000000u {
         replaced=distance(vec3<f32>(inst.r0.w,inst.r1.w,inst.r2.w),view.cam.xyz)>VOXEL_FAR_M;
@@ -133,6 +170,7 @@ fn alpha_cut(in: VOut) -> bool {
     let dx = dpdx(in.uv) * mip_scale;
     let dy = dpdy(in.uv) * mip_scale;
     if in.grass_opacity < GRASS_OPAQUE_THRESHOLD { return true; }
+    if game_mask(in.world,in.instance,in.material) {return true;}
     let m = materials[in.material];
     if (m.flags & 1u) != 0u && m.layer >= 0 {
         // PIXEL_ART keeps the top mip's hard silhouette.

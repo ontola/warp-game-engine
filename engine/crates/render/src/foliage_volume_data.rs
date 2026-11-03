@@ -12,7 +12,7 @@ use glam::{Mat4, Vec3, Vec4};
 use std::collections::HashSet;
 
 /// Must match the runtime prototype's bounded candidate-list capacity.
-pub const MAX_INSTANCES: usize = 4096;
+pub const MAX_INSTANCES: usize = crate::voxel_forest::MAX_VIEW_GROUPS;
 /// Replace every source material for a procedural part. Its voxel albedo
 /// already contains the individual source materials' linear colours.
 pub const ALL_MATERIALS: u32 = u32::MAX;

@@ -9,6 +9,9 @@ Use a fresh output directory for each run and run GPU workloads serially.
   frame-ID-matched GPU foliage-page timings; JSON output.
 - `render-category-report.py`: controlled colour-geometry omission comparisons.
 - `iteration-report.py`: startup, cache, build and frame evidence.
+- `profile-report.py`: offline per-frame CPU/GPU graphs and pass-cost comparisons
+  from `app::profile::bench`, without full-frame pixel readback. See
+  [native profiling](../docs/native-profiling.md) for capture commands and limits.
 
 See [frame-budget.md](frame-budget.md) for contracts and limitations.
 Sideways launchers and GameNight acceptance tools live in

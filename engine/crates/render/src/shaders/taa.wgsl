@@ -19,6 +19,11 @@ struct Taa {
 @group(0) @binding(3) var out_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(4) var<uniform> taa: Taa;
 @group(0) @binding(5) var lin: sampler;
+// Per-pixel motion (motion.rs: previous minus current pixel, unjittered),
+// which also moves with wind and animated parts; and its bias, 1 where the
+// surface has no trustworthy history (invalid slot, ambiguous layer).
+@group(0) @binding(6) var motion_vec: texture_2d<f32>;
+@group(0) @binding(7) var motion_bias: texture_2d<f32>;
 
 fn luma(c: vec3<f32>) -> f32 {
     return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -121,18 +126,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3<f32>(0.0)));
     // Where that surface was last frame. Sky (depth 0) is a direction:
     // w = 0 keeps it at infinity through both matrices.
-    let ndc = vec2<f32>((f32(best.x) + 0.5) * taa.size.z * 2.0 - 1.0, 1.0 - (f32(best.y) + 0.5) * taa.size.w * 2.0);
-    let world = taa.inv_view_proj * vec4<f32>(ndc, best_d, 1.0);
-    let prev = taa.prev_view_proj * world;
-    let prev_ndc = prev.xy / prev.w;
+    // The surface's own motion (camera, wind, moving parts) from the
+    // motion vectors of the nearest surface around.
     let off = vec2<f32>(best - px);
-    let prev_uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5) - off * taa.size.zw;
+    let vector = textureLoad(motion_vec, best, 0).xy;
+    let prev_uv = (vec2<f32>(best) + 0.5 + vector - off) * taa.size.zw;
     let uv = (vec2<f32>(px) + 0.5) * taa.size.zw;
-    let motion = length((prev_uv - uv) * taa.size.xy);
-    let inside = all(prev_uv >= vec2<f32>(0.0)) && all(prev_uv <= vec2<f32>(1.0)) && prev.w > 0.0;
+    let motion = length(vector);
+    let inside = all(prev_uv >= vec2<f32>(0.0)) && all(prev_uv <= vec2<f32>(1.0));
+    let trusted = textureLoad(motion_bias, best, 0).r < 0.5;
     var n = 0.0;
     var result = c;
-    if inside && taa.params.z < 0.5 {
+    if inside && trusted && taa.params.z < 0.5 {
         n = textureSampleLevel(hist, lin, prev_uv, 0.0).a;
         // A still image can trust its history more than a moving one.
         let gamma = mix(taa.params.w, 1.0, smoothstep(0.05, 0.5, motion));
@@ -180,18 +185,18 @@ fn main_direct(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3<f32>(0.0)));
     // Where that surface was last frame. Sky (depth 0) is a direction:
     // w = 0 keeps it at infinity through both matrices.
-    let ndc = vec2<f32>((f32(best.x) + 0.5) * taa.size.z * 2.0 - 1.0, 1.0 - (f32(best.y) + 0.5) * taa.size.w * 2.0);
-    let world = taa.inv_view_proj * vec4<f32>(ndc, best_d, 1.0);
-    let prev = taa.prev_view_proj * world;
-    let prev_ndc = prev.xy / prev.w;
+    // The surface's own motion (camera, wind, moving parts) from the
+    // motion vectors of the nearest surface around.
     let off = vec2<f32>(best - px);
-    let prev_uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5) - off * taa.size.zw;
+    let vector = textureLoad(motion_vec, best, 0).xy;
+    let prev_uv = (vec2<f32>(best) + 0.5 + vector - off) * taa.size.zw;
     let uv = (vec2<f32>(px) + 0.5) * taa.size.zw;
-    let motion = length((prev_uv - uv) * taa.size.xy);
-    let inside = all(prev_uv >= vec2<f32>(0.0)) && all(prev_uv <= vec2<f32>(1.0)) && prev.w > 0.0;
+    let motion = length(vector);
+    let inside = all(prev_uv >= vec2<f32>(0.0)) && all(prev_uv <= vec2<f32>(1.0));
+    let trusted = textureLoad(motion_bias, best, 0).r < 0.5;
     var n = 0.0;
     var result = c;
-    if inside && taa.params.z < 0.5 {
+    if inside && trusted && taa.params.z < 0.5 {
         n = textureSampleLevel(hist, lin, prev_uv, 0.0).a;
         // A still image can trust its history more than a moving one.
         let gamma = mix(taa.params.w, 1.0, smoothstep(0.05, 0.5, motion));

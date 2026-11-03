@@ -1,8 +1,9 @@
 //! Bounded validation renderer for source-derived fractional foliage volumes.
 //!
 //! Integrates all overlapping crown densities together, clipped by opaque
-//! scene depth. Crowns write C/T, never a false opaque first-hit depth. Current
-//! 4096-selection-slot limit is deliberate, not full-forest streaming support. Optional
+//! scene depth. Crowns write C/T, never a false opaque first-hit depth. The
+//! integrator's 4096-volume limit is deliberate, not full-forest streaming
+//! support; rasterized voxels select up to 16384 groups per view. Optional
 //! per-view projected mip selection shares the same immutable asset pyramid.
 use crate::{Gpu, Scene};
 use bytemuck::{Pod, Zeroable};
@@ -119,11 +120,51 @@ fn diagnostic_u64(bytes: &[u8], word: usize) -> u64 {
 // against WebGPU's per-stage limit (10 scene + 7 volume = 17). Keep this
 // interface small instead of increasing the requested hardware limit.
 pub(crate) const SCENE_BINDINGS: &[u32] = &[4, 12, 13, 14, 15, 16, 17, 18, 22, 23, 24, 25, 26];
-pub(crate) const MAX_VIEW_GROUPS: usize = 4096;
+/// Groups one view's selection holds: a packed u32 each (selection_pack),
+/// four per vec4 of the shaders' 64 KiB uniform.
+pub(crate) const MAX_VIEW_GROUPS: usize = 16384;
+/// Volumes the integrator path (no rasterized voxels) may march: its per-ray
+/// u32 sums are bounded for this many.
+pub(crate) const INTEGRATOR_MAX_VOLUMES: usize = 4096;
 /// Replacement tag of a distance-switched far tree (Scene::voxel_far_distance_m).
 pub(crate) const FAR_TREE: u32 = 0x4000_0000;
-pub(crate) fn default_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] {
-    [[1, u32::MAX, 0, 0]; MAX_VIEW_GROUPS]
+pub(crate) fn default_selection() -> Vec<u32> {
+    vec![selection_pack([1, u32::MAX, 0, 0]); MAX_VIEW_GROUPS]
+}
+
+/// A group's selection [choice, voxel level (u32::MAX none), triangle error
+/// f32 bits, sun mode] as the shaders hold it (aggregate_lod.wgsl).
+pub(crate) fn selection_pack(d: [u32; 4]) -> u32 {
+    d[0].min(3) | (d[1].min(63) << 2) | (d[3].min(3) << 8) | (u32::from(f16_bits(f32::from_bits(d[2]))) << 16)
+}
+pub(crate) fn selection_unpack(w: u32) -> [u32; 4] {
+    let y = (w >> 2) & 63;
+    [w & 3, if y == 63 { u32::MAX } else { y }, f16_value((w >> 16) as u16).to_bits(), (w >> 8) & 3]
+}
+fn f16_bits(v: f32) -> u16 {
+    let bits = v.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 255) as i32 - 127 + 15;
+    let mantissa = bits & 0x7f_ffff;
+    if v.is_nan() { return sign | 0x7e00; }
+    if exp >= 31 { return sign | 0x7c00; }
+    if exp <= 0 {
+        if exp < -10 { return sign; }
+        let m = (mantissa | 0x80_0000) >> (14 - exp);
+        return sign | ((m + 0x1000) >> 13) as u16;
+    }
+    let rounded = (((exp as u32) << 10) | (mantissa >> 13)) + ((mantissa >> 12) & 1);
+    sign | rounded.min(0x7c00) as u16
+}
+fn f16_value(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((h >> 10) & 31) as i32;
+    let mantissa = (h & 1023) as f32;
+    match exp {
+        0 => sign * mantissa * 2f32.powi(-24),
+        31 => if mantissa == 0.0 { sign * f32::INFINITY } else { f32::NAN },
+        _ => sign * (1.0 + mantissa / 1024.0) * 2f32.powi(exp - 15),
+    }
 }
 #[derive(Clone, Debug, Default)]
 pub struct VoxelViewDiagnostics {
@@ -177,6 +218,9 @@ struct Config {
 /// Rasterized voxels (KERN_VOXEL_RASTER=1, docs/voxel-raster-plan.md): the
 /// static cell list and the id/depth raster pipeline.
 struct SplatRaster {
+    /// Into the scene's visibility buffer and depth (Stage::Splats with
+    /// the scene's targets), plus the splat id the surface pass reads.
+    main_pipeline: wgpu::RenderPipeline,
     cells: wgpu::Buffer,
     /// Splat records per view (splat_capacity).
     capacity: u64,
@@ -200,7 +244,15 @@ pub(crate) struct SunSplatView<'a> {
     pub direction: glam::Vec3,
     pub texel_m: f32,
 }
+/// Which part of `render` to run. With rasterized voxels the splats are
+/// rastered before the opaque shade (Splats), which then skips the pixels
+/// they cover, and resolved and composited after it (Rest).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Stage { Splats, Rest }
+
 struct SplatTargets {
+    /// The splats' surface for shade (volume_gbuffer).
+    gbuffer: wgpu::TextureView,
     records: wgpu::Buffer,
     draw: wgpu::Buffer,
     id: wgpu::TextureView,
@@ -262,6 +314,9 @@ pub(crate) struct VoxelRenderer {
     scatter:wgpu::ComputePipeline,
     splats:wgpu::ComputePipeline,
     resolve:wgpu::ComputePipeline,
+    /// voxel_splat_gbuffer: the splats' surface where they won the scene's
+    /// visibility buffer.
+    gbuffer:wgpu::ComputePipeline,
     raster:Option<SplatRaster>,
     pipeline_layout: wgpu::PipelineLayout,
     scene_layout: wgpu::BindGroupLayout,
@@ -314,7 +369,8 @@ fn create_data_layout(gpu:&Gpu,temporal:bool)->wgpu::BindGroupLayout {
         (7,uniform),(8,storage(false)),(9,uniform),(12,storage(true)),(13,storage(false)),
         (14,storage(true)),(15,storage(false)),(16,storage(false)),
         (17,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Uint,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
-        (18,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false})];
+        (18,wgpu::BindingType::Texture {sample_type:wgpu::TextureSampleType::Depth,view_dimension:wgpu::TextureViewDimension::D2,multisampled:false}),
+        (19,output(wgpu::TextureFormat::Rgba32Uint))];
     if temporal {entries.extend([(10,output(wgpu::TextureFormat::Rgba32Float)),(11,storage(true))]);}
     gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {label:Some("voxel data"),
         entries:&entries.into_iter().map(|(binding,ty)|wgpu::BindGroupLayoutEntry {binding,ty,visibility:wgpu::ShaderStages::COMPUTE,count:None}).collect::<Vec<_>>()})
@@ -346,6 +402,18 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
             targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
         multiview_mask: None, cache: gpu.pipeline_cache(),
     });
+    let main_pipeline = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("voxel splat raster (scene)"), layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+        primitive: Default::default(),
+        depth_stencil: Some(wgpu::DepthStencilState { format: wgpu::TextureFormat::Depth32Float, depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Greater), stencil: Default::default(), bias: Default::default() }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs_main"), compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL }),
+                Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Uint, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+        multiview_mask: None, cache: gpu.pipeline_cache(),
+    });
     // Like the scene's sun raster: ordinary Z with the same bias.
     let sun_raster = gpu.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("voxel sun splat raster"), layout: Some(&pipeline_layout),
@@ -365,7 +433,7 @@ fn splat_raster(gpu: &Gpu, cells: &[[u32; 2]], capacity: u64, scene_layout: &wgp
     let sun_splats = sun_splat_pipeline(gpu, &sun_layout, source);
     let cells_buffer = gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("voxel splat cells"), contents: bytemuck::cast_slice(cells), usage: wgpu::BufferUsages::STORAGE });
-    SplatRaster { cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster,
+    SplatRaster { main_pipeline, cells: cells_buffer, capacity, layout, pipeline, sun_layout, sun_empty, sun_splats, sun_raster,
         sun_target: Mutex::new(Vec::new()) }
 }
 fn pipelines(gpu: &Gpu, layout: &wgpu::PipelineLayout, source: &str, active_tiles: bool,global_intervals:bool) -> [wgpu::ComputePipeline; 8] {
@@ -660,6 +728,14 @@ impl VoxelRenderer {
         let specialized_source = integrator_options.specialize(&temporal_source(&source,false).expect("invalid voxel temporal blocks"))
             .expect("invalid voxel integrator option shader");
         let [bins, tiles, clear, integrate,intervals,scatter,splats,resolve] = pipelines(gpu, &pipeline_layout, &specialized_source, scene.voxel_active_tiles,integrator_options.global_intervals);
+        let gbuffer = {
+            let coarser: Vec<(&str, f64)> = std::env::var("KERN_VOXEL_SELF_SHADOW_COARSER").ok().and_then(|v| v.parse().ok())
+                .map(|v: f64| ("VOXEL_SELF_SHADOW_COARSER", v)).into_iter().collect();
+            let module = gpu.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("voxel surface"), source: wgpu::ShaderSource::Wgsl(specialized_source.as_str().into()) });
+            gpu.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("voxel_splat_gbuffer"), layout: Some(&pipeline_layout),
+                module: &module, entry_point: Some("voxel_splat_gbuffer"), compilation_options: wgpu::PipelineCompilationOptions { constants: &coarser,
+                    ..Default::default() }, cache: gpu.pipeline_cache() })
+        };
         eprintln!("voxel integrator: interval_capacity=64 active_capacity=16 empty_ceiling={} (accepted skip fix; bounded prototype, complete scan on cache overflow)",
             integrator_options.empty_ceiling);
         eprintln!("voxel normals: antipodal_requested={antipodal_requested} antipodal_eligible={antipodal_eligible} antipodal_enabled={} normal_lobes={} cell_bytes=176 (experimental; exact pairs, generic fallback)",
@@ -675,6 +751,8 @@ impl VoxelRenderer {
             Ok(_) => { eprintln!("voxel raster fallback: no occupied cells"); None }
             Err(error) => { eprintln!("voxel raster fallback: {error}"); None }
         }} else { None };
+        assert!(raster.is_some() || far > 0.0 || forest.instances.len() - proxies as usize <= INTEGRATOR_MAX_VOLUMES,
+            "voxel integrator exceeds its checked volume capacity");
         integrator_options.raster = raster.is_some();
         let lighting_layout = pipeline_layout;
         let composite_layout = layout(
@@ -733,6 +811,7 @@ impl VoxelRenderer {
             scatter,
             splats,
             resolve,
+            gbuffer,
             raster,
             pipeline_layout: lighting_layout,
             scene_layout: scene_layout.clone(),
@@ -955,6 +1034,11 @@ impl VoxelRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
         }).create_view(&Default::default());
         let splat_id = texture("voxel splat id", wgpu::TextureFormat::R32Uint);
+        let gbuffer = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("voxel surface"), size: wgpu::Extent3d { width: raster_size.0, height: raster_size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Uint,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        }).create_view(&Default::default());
         let splat_depth = texture("voxel splat depth", wgpu::TextureFormat::Depth32Float);
         let splat_capacity = self.raster.as_ref().map_or(0, |r| r.capacity
             .min((u64::from(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size) / 16).saturating_sub(12 + 4 * u64::from(self.count))));
@@ -976,11 +1060,12 @@ impl VoxelRenderer {
             wgpu::BindGroupEntry { binding: 16, resource: splat_draw.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 17, resource: wgpu::BindingResource::TextureView(&splat_id) },
             wgpu::BindGroupEntry { binding: 18, resource: wgpu::BindingResource::TextureView(&splat_depth) },
+            wgpu::BindGroupEntry { binding: 19, resource: wgpu::BindingResource::TextureView(&gbuffer) },
         ]);
         let splat = self.raster.as_ref().map(|raster| SplatTargets {
             bind: gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("voxel splat raster"), layout: &raster.layout,
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: splat_records.as_entire_binding() }] }),
-            records: splat_records.clone(), draw: splat_draw.clone(), id: splat_id.clone(), depth: splat_depth.clone(),
+            gbuffer: gbuffer.clone(), records: splat_records.clone(), draw: splat_draw.clone(), id: splat_id.clone(), depth: splat_depth.clone(),
         });
         if let Some((_,previous))=temporal {
             entries.push(wgpu::BindGroupEntry {binding:10,resource:wgpu::BindingResource::TextureView(motion_view.as_ref().unwrap())});
@@ -1013,6 +1098,18 @@ impl VoxelRenderer {
             interval_stream,
         })
     }
+    /// Whether prepare_temporal succeeded (its pipelines fit the device).
+    pub(crate) fn has_temporal(&self) -> bool { self.temporal.lock().unwrap().is_some() }
+    /// The view's voxel surface (volume_gbuffer) once Stage::Splats drew
+    /// into the scene's targets.
+    pub(crate) fn surface(&self, index: usize) -> Option<wgpu::TextureView> {
+        self.targets.lock().unwrap().get(index)?.as_ref()?.splat.as_ref().map(|s| s.gbuffer.clone())
+    }
+    /// The view's rastered splat depth (reversed Z, 0 where none), once
+    /// Stage::Splats has run for it.
+    pub(crate) fn splat_depth(&self, index: usize) -> Option<wgpu::TextureView> {
+        self.targets.lock().unwrap().get(index)?.as_ref()?.splat.as_ref().map(|s| s.depth.clone())
+    }
     pub(crate) fn render(
         &self,
         gpu: &Gpu,
@@ -1025,6 +1122,10 @@ impl VoxelRenderer {
         selection: &wgpu::Buffer,
         temporal: Option<TemporalInputs<'_>>,
         times: [Option<(&wgpu::QuerySet, u32)>; 5],
+        stage: Stage,
+        // The scene's visibility and depth: the splats draw into them and
+        // shade lights them (Rest then writes their surface, no composite).
+        scene_targets: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
     ) -> Result<(),String> {
         let temporal_guard=self.temporal.lock().unwrap();
         let temporal_pipelines=temporal.as_ref().map(|_|temporal_guard.as_ref().expect("prepare_temporal before voxel render"));
@@ -1041,6 +1142,11 @@ impl VoxelRenderer {
         }
         let [bins,tiles,clear,integrate,intervals,scatter,splats,resolve]=temporal_pipelines.map_or([&self.bins,&self.tiles,&self.clear,&self.integrate,&self.intervals,&self.scatter,&self.splats,&self.resolve],
             |p|[&p.pipelines[0],&p.pipelines[1],&p.pipelines[2],&p.pipelines[3],&p.pipelines[4],&p.pipelines[5],&p.pipelines[6],&p.pipelines[7]]);
+        if stage == Stage::Splats && target.splat.is_none() { return Ok(()); }
+        // The splat stage ran before the opaque shade (Stage::Splats): the
+        // rest only resolves and composites what it rastered.
+        let splats_done = stage == Stage::Rest && target.splat.is_some();
+        if !splats_done {
         encoder.clear_buffer(&target.counters, 0, None);
         // Counts and slots share a buffer; clearing it preserves a bounded
         // zero-allocation append path and prevents old counts surviving views.
@@ -1053,7 +1159,9 @@ impl VoxelRenderer {
             let bytes=if self.integrator_options.brick_visibility {16+u64::from(stream.pixel_slots)*8}else{16};
             encoder.clear_buffer(&target.jobs,u64::from(stream.header_word)*4,Some(bytes));
         }
+        }
         if let (Some(raster), Some(splat)) = (&self.raster, &target.splat) {
+            if !splats_done {
             encoder.clear_buffer(&splat.draw, 0, None);
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splats"),
@@ -1065,20 +1173,39 @@ impl VoxelRenderer {
                 pass.dispatch_workgroups(self.count.min(65535), self.count.div_ceil(65535).max(1), 1);
             }
             {
+                let id = wgpu::RenderPassColorAttachment { view: &splat.id, depth_slice: None, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } };
+                let (colors, depth) = match scene_targets {
+                    Some((vis, depth)) => (vec![Some(wgpu::RenderPassColorAttachment { view: vis, depth_slice: None, resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } }), Some(id)],
+                        wgpu::RenderPassDepthStencilAttachment { view: depth,
+                            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+                    None => (vec![Some(id)], wgpu::RenderPassDepthStencilAttachment { view: &splat.depth,
+                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }), stencil_ops: None }),
+                };
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("voxel splat raster"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &splat.id, depth_slice: None, resolve_target: None,
-                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &splat.depth,
-                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }), stencil_ops: None }),
+                    color_attachments: &colors,
+                    depth_stencil_attachment: Some(depth),
                     timestamp_writes: times[2].map(|(query_set, i)| wgpu::RenderPassTimestampWrites {
                         query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }),
                     occlusion_query_set: None, multiview_mask: None,
                 });
-                pass.set_pipeline(&raster.pipeline);
+                pass.set_pipeline(if scene_targets.is_some() { &raster.main_pipeline } else { &raster.pipeline });
                 pass.set_bind_group(0, &splat.bind, &[]);
                 pass.draw_indirect(&splat.draw, 0);
             }
+            }
+            // In the scene's targets their surface is needed before shade.
+            if stage == Stage::Splats && scene_targets.is_some() && !splats_done {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel surface"),
+                    timestamp_writes: times[3].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
+                        query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
+                pass.set_bind_group(0, scene, &[]); pass.set_bind_group(1, view, &[]); pass.set_bind_group(2, &target.bind, &[]);
+                pass.set_pipeline(&self.gbuffer);
+                pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
+            }
+            if stage == Stage::Splats || scene_targets.is_some() { return Ok(()); }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("voxel splat resolve"),
                 timestamp_writes: times[3].map(|(query_set, i)| wgpu::ComputePassTimestampWrites {
                     query_set, beginning_of_pass_write_index: Some(i), end_of_pass_write_index: Some(i + 1) }) });
@@ -1173,7 +1300,7 @@ impl VoxelRenderer {
     /// Whole-plant proxies have no source, so they also cast into the
     /// near shadow map (render_sun with that map's own selection).
     pub(crate) fn has_proxies(&self) -> bool { self.raster.is_some() && self.proxies > 0 }
-    pub(crate) fn sun_selection() -> [[u32; 4]; MAX_VIEW_GROUPS] { [[1, u32::MAX, 0, 2]; MAX_VIEW_GROUPS] }
+    pub(crate) fn sun_selection() -> Vec<u32> { vec![selection_pack([1, u32::MAX, 0, 2]); MAX_VIEW_GROUPS] }
     /// Draw the voxels of every sun-casting group into the sun map, after
     /// its source raster. `selection` is the sun view's selection buffer.
     pub(crate) fn render_sun(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, scene: &wgpu::BindGroup,
@@ -1485,7 +1612,7 @@ mod tests {
             assert!(records_end*4<=stream.bytes && stream.bytes-records_end*4<16);
             // Every admitted pixel can see the complete provider without
             // wrapping the u32 atomic reservation counter, even after full.
-            assert!(u64::from(stream.pixel_slots)*(super::MAX_VIEW_GROUPS as u64)<u64::from(u32::MAX));
+            assert!(u64::from(stream.pixel_slots)*(super::INTEGRATOR_MAX_VOLUMES as u64)<u64::from(u32::MAX));
             assert!(super::interval_stream_layout(size,stream.bytes).is_ok());
             assert!(super::interval_stream_layout(size,stream.bytes-1).is_err());
             let last_metadata=u64::from(stream.header_word)+4+(u64::from(stream.pixel_slots)-1)*2;
@@ -2050,7 +2177,7 @@ mod tests {
     #[test]
     fn per_ray_work_fits_local_u32_while_full_resolution_totals_require_u64() {
         let steps=4096u64;
-        let volumes=super::MAX_VIEW_GROUPS as u64;
+        let volumes=super::INTEGRATOR_MAX_VOLUMES as u64;
         let volume_samples=steps*volumes;
         // Every interpolation can fetch eight cells in each of two mips.
         // Empty-brick tests read only indirection, not occupied cell records.
@@ -2064,8 +2191,8 @@ mod tests {
         // The shader's literal caps are the premises of this local bound.
         let source=include_str!("shaders/voxel_forest.wgsl");
         assert!(source.contains("const VOLUME_MAX_STEPS: u32 = 4096u;"));
-        assert_eq!(super::MAX_VIEW_GROUPS,4096);
-        assert!(source.contains("var<uniform> volume_selection: array<vec4<u32>,4096>"));
+        assert_eq!(super::INTEGRATOR_MAX_VOLUMES,4096);
+        assert!(source.contains("var<uniform> volume_selection_words: array<vec4<u32>,4096>"));
     }
 
 }

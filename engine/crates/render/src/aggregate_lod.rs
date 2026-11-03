@@ -236,7 +236,7 @@ mod tests {
         fn decisions(gpu:&Gpu,selector:&Selector,slots:usize,vp:Mat4,enabled:bool)->Vec<[u32;4]> {
             // Sparse volume IDs deliberately differ from hierarchy indices.
             // Untouched slots expose accidental writes using the latter.
-            let initial=vec![[99u32;4];slots];
+            let initial=vec![99u32;slots];
             let output=gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label:Some("aggregate selector oracle decisions"),contents:bytemuck::cast_slice(&initial),
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC });
@@ -253,7 +253,9 @@ mod tests {
                 timeout:Some(std::time::Duration::from_secs(30))}).unwrap();
             receive.try_recv().unwrap().unwrap();
             let bytes=read.slice(..).get_mapped_range().unwrap();
-            bytes.chunks_exact(16).map(bytemuck::pod_read_unaligned).collect()
+            // Packed selection words; untouched slots read back as [99; 4].
+            bytes.chunks_exact(4).map(|b|{let w=u32::from_le_bytes(b.try_into().unwrap());
+                if w==99 {[99;4]} else {crate::voxel_forest::selection_unpack(w)}}).collect()
         }
         let gpu=Gpu::new().unwrap();
         let voxel=Candidate {source_only:false,level:3,spatial_error:0.1,voxel_coverage_error:0.01,
@@ -286,7 +288,9 @@ mod tests {
             triangle_coverage_error:0.01,triangle_color_error:0.01,..voxel};
         let triangle_selector=Selector::new(&gpu,&selection).unwrap();
         let triangle=decisions(&gpu,&triangle_selector,8,camera(100.0),true);
-        let inherited=[0,0,(voxel.triangle_error*2.0).to_bits(),1];
+        // Selections hold the triangle error as f16 (voxel_forest::selection_pack).
+        let q=|d:[u32;4]|crate::voxel_forest::selection_unpack(crate::voxel_forest::selection_pack(d));
+        let inherited=q([0,0,(voxel.triangle_error*2.0).to_bits(),1]);
         for id in [5,2,7] {assert_eq!(triangle[id],inherited,"parent's world-space triangle cut must propagate unchanged");}
 
         // Orthographic projection removes distance and perspective variation.
@@ -311,7 +315,7 @@ mod tests {
         let cuts_selector=Selector::new(&gpu,&cuts).unwrap();
         let choices=decisions(&gpu,&cuts_selector,2,ortho,true);
         for (id,scale) in [0.5,2.0].into_iter().enumerate() {
-            assert_eq!(choices[id],[0,0,(voxel.triangle_error*scale).to_bits(),1]);
+            assert_eq!(choices[id],q([0,0,(voxel.triangle_error*scale).to_bits(),1]));
         }
 
         // A source-only candidate has no voxel alternative, even when its
@@ -328,7 +332,7 @@ mod tests {
         let fine_selector=Selector::new(&gpu,&cuts).unwrap();
         let choices=decisions(&gpu,&fine_selector,2,ortho,true);
         for (id,scale) in [0.5,2.0].into_iter().enumerate() {
-            assert_eq!(choices[id],[0,0,(refinement.triangle_error*scale).to_bits(),1],
+            assert_eq!(choices[id],q([0,0,(refinement.triangle_error*scale).to_bits(),1]),
                 "source-only refinement must never select a voxel");
         }
         cuts.policy.max_coverage_error=0.01;cuts.policy.max_color_error=0.01;

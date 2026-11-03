@@ -59,9 +59,12 @@ pub mod present;
 pub mod scene;
 pub mod terrain_field;
 pub mod forest_field;
+pub mod placement;
+pub mod world_constraints;
 pub mod procedural_terrain;
 pub mod plant_mesh_lod;
 pub mod vegetation_style;
+pub mod biome;
 pub mod noise_field;
 pub mod stone_surface;
 pub mod primitives;
@@ -86,6 +89,7 @@ pub mod far_trees;
 pub mod foliage_shadow;
 pub mod foliage_assembly;
 pub mod plant_recipe;
+pub mod plant_species;
 pub mod recipe_forest;
 pub mod plant_spray;
 pub mod vegetation_asset;
@@ -134,7 +138,7 @@ mod rock_mapping;
 pub use frame::{Camera, FrameStats, Lighting, Renderer, SplitLayout, ViewRect, split_rects, split_rects_with};
 pub use gpu::{Gpu, Stopwatch, write_png};
 pub use scene::Scene;
-pub use shaders::{checked as validated, set_game_surface};
+pub use shaders::{checked as validated, set_game_surface, set_game_mask};
 /// A test frame: a compute shader fills an RGBA8 image with a gradient.
 /// Proves the device, compute, readback and PNG path end to end.
 pub fn test_frame(gpu: &Gpu, w: u32, h: u32) -> Vec<u8> {
