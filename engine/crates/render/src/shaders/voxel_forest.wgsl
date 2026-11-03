@@ -1330,6 +1330,28 @@ fn voxel_splat_gbuffer(@builtin(global_invocation_id) id:vec3<u32>) {
     }
     var n=select(-direction,normalize(sum),dot(sum,sum)>1e-12);
     if dot(n,-direction)<0.0 {n=-n;}
+    // Rounded within its disc (voxel_splat_raster.wgsl, same centre, jitter
+    // and radius): half the cell's normal, half a sphere's, so a cell reads
+    // as a clump of leaves rather than one flat square.
+    {
+        let base=VOLUME_SPLAT_HEADER+record.x*4u;
+        let r0=bitcast<vec4<f32>>(volume_splats[base]);
+        let r1=bitcast<vec4<f32>>(volume_splats[base+1u]);
+        let r2=bitcast<vec4<f32>>(volume_splats[base+2u]);
+        let g=bitcast<vec4<f32>>(volume_splats[base+3u]);
+        let coord=vec3<f32>(f32(record.z&1023u),f32((record.z>>10u)&1023u),f32(record.z>>20u));
+        let local=vec4<f32>(g.xyz+(coord+0.5)*g.w,1.0);
+        let right=normalize(vec3<f32>(view.view_proj[0].x,view.view_proj[1].x,view.view_proj[2].x));
+        let up=normalize(vec3<f32>(view.view_proj[0].y,view.view_proj[1].y,view.view_proj[2].y));
+        let scale=length(vec3<f32>(r0.x,r1.x,r2.x));
+        let key=volume_splat_hash(record.x)^record.y;
+        let jitter=vec2<f32>(f32(volume_splat_hash(key)&0xffffu),f32(volume_splat_hash(key^0x9e3779b9u)&0xffffu))/65535.0-0.5;
+        let centre=vec3<f32>(dot(r0,local),dot(r1,local),dot(r2,local))+(right*jitter.x+up*jitter.y)*0.5*g.w*scale;
+        let half=0.688*g.w*scale*sqrt(max(f32(record.w&0xffffu)/65535.0,0.25));
+        let d=vec2<f32>(dot(p-centre,right),dot(p-centre,up))/max(half,1e-6);
+        let sphere=right*d.x+up*d.y-direction*sqrt(max(1.0-dot(d,d),0.0));
+        n=normalize(mix(n,normalize(sphere),0.5));
+    }
     // The tree shades itself along the sun through its own cells; the sun
     // maps (which hold this tree too, at their own texel) are read where the
     // ray leaves its box, for everything else. As the resolve did.
