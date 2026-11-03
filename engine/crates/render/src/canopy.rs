@@ -93,6 +93,7 @@ pub struct CanopyClipmap {
     cache: Mutex<Cache>,
     // Original enclosing radius and integrated source-envelope mass.
     initial_crowns: Arc<Vec<Option<[f64; 2]>>>,
+    initial_heights: Arc<Vec<Option<[f32; 2]>>>,
     foliage_y: [f32; 2],
     mass_scale: f32,
     source_crowns: Arc<SourceCrowns>,
@@ -259,6 +260,10 @@ fn choose_layout(receivers: &[Vec3], foliage_y: [f32; 2], previous_pitch: f32) -
     Layout { origins, anchors }
 }
 
+pub(crate) struct ProxyBudget {
+    crowns: Arc<Vec<Option<[f64;2]>>>, heights: Arc<Vec<Option<[f32;2]>>>, y: [f32;2], scale: f32,
+}
+
 impl CanopyClipmap {
     pub fn new(gpu: &Gpu, scene: &Scene, scene_layout: &wgpu::BindGroupLayout) -> Result<Self, String> {
         let source_bounds = std::env::var("KERN_SOURCE_CROWN_BOUNDS").as_deref()==Ok("1");
@@ -267,6 +272,7 @@ impl CanopyClipmap {
             SourceCrowns::new(scene)
         } else { SourceCrowns {ids:Vec::new(),bounds:vec![CrownBounds::default()]} });
         let mut initial_crowns = vec![None; scene.instances.len()];
+        let mut initial_heights = vec![None; scene.instances.len()];
         let mut foliage_y = [f32::INFINITY, f32::NEG_INFINITY];
         let mut total_mass = 0.0;
         let mut count = 0usize;
@@ -288,6 +294,8 @@ impl CanopyClipmap {
                 foliage_y[0] = foliage_y[0].min(c.y-r.y);
                 foliage_y[1] = foliage_y[1].max(c.y+r.y);
             }
+            let (c,r)=if compact_support {source_crowns.crown(index,instance)}else{(centre,radii)};
+            initial_heights[index]=Some([(centre.y-radii.y).min(c.y-r.y),(centre.y+radii.y).max(c.y+r.y)]);
             total_mass += crown_mass(radii);
             count += 1;
         }
@@ -332,7 +340,7 @@ impl CanopyClipmap {
         Ok(Self { texture: resources.texture, view: resources.view, scratch: resources.scratch, atomic: resources.atomic,
             uniform: resources.uniform, bind: resources.bind, bind_layout: layout,
             fill, filter, cache: Mutex::new(Cache::default()),
-            initial_crowns: Arc::new(initial_crowns), foliage_y, mass_scale, source_crowns, source_buffer,
+            initial_crowns: Arc::new(initial_crowns), initial_heights: Arc::new(initial_heights), foliage_y, mass_scale, source_crowns, source_buffer,
             compact_support, source_bounds })
     }
 
@@ -345,9 +353,47 @@ impl CanopyClipmap {
         Self { texture: resources.texture, view: resources.view, scratch: resources.scratch, atomic: resources.atomic,
             uniform: resources.uniform, bind: resources.bind, bind_layout: self.bind_layout.clone(),
             fill: self.fill.clone(), filter: self.filter.clone(), cache: Mutex::new(Cache::default()),
-            initial_crowns: Arc::clone(&self.initial_crowns), foliage_y: self.foliage_y, mass_scale: self.mass_scale,
+            initial_crowns: Arc::clone(&self.initial_crowns), initial_heights: Arc::clone(&self.initial_heights), foliage_y: self.foliage_y, mass_scale: self.mass_scale,
             source_crowns: Arc::clone(&self.source_crowns), source_buffer: self.source_buffer.clone(),
             compact_support: self.compact_support, source_bounds: self.source_bounds }
+    }
+
+    /// Validate a geometry-free proxy replacement and recompute the fixed-point
+    /// mass budget. GPU texture/pipelines remain resident; every view shares
+    /// the new metadata. Do not bypass overflow checks for streamed vegetation.
+    pub(crate) fn prepare_proxy_update(&self, first: usize, instances: &[GpuInstance]) -> Result<ProxyBudget, String> {
+        if first.checked_add(instances.len()).is_none_or(|n|n>self.initial_crowns.len()) {return Err("canopy proxy range exceeds reserved scene".into());}
+        let mut crowns=(*self.initial_crowns).clone();
+        let mut heights=(*self.initial_heights).clone();
+        for (k,instance) in instances.iter().enumerate() {
+            let i=first+k;
+            if instance.cluster_count!=0 || self.source_crowns.ids.get(i).copied().unwrap_or(0)!=0 {return Err("canopy relocation only supports geometry-free proxies".into());}
+            crowns[i]=None;heights[i]=None;
+            if instance.flags & FOLIAGE == 0 {continue;}
+            let (c,r)=legacy_crown(instance);
+            if !c.is_finite() || !r.is_finite() || r.min_element()<=0.0 || c.abs().max_element()>1_000_000.0 ||
+                !instance.scale.is_finite() || instance.scale<=0.0 || footprint_bound(r,1.5)>MAX_CROWN_CELLS {
+                return Err("streamed canopy exceeds finite world/work bounds".into());
+            }
+            crowns[i]=Some([instance.sphere[3] as f64,crown_mass(r)]);
+            heights[i]=Some([c.y-r.y,c.y+r.y]);
+        }
+        let count=crowns.iter().flatten().count();
+        if count>MAX_FOLIAGE {return Err("streamed canopy exceeds crown budget".into());}
+        let mass=crowns.iter().flatten().map(|v|v[1]).sum::<f64>();
+        let budget=(u32::MAX as f64*0.5-count as f64)/mass.max(1.0);
+        let scale=2.0f64.powf(budget.log2().floor()).min(65_536.0) as f32;
+        if !scale.is_finite() || scale<=0.0 {return Err("streamed canopy mass budget is not representable".into());}
+        let mut y=[f32::INFINITY,f32::NEG_INFINITY];
+        for h in heights.iter().flatten() {y[0]=y[0].min(h[0]);y[1]=y[1].max(h[1]);}
+        if count==0 {y=[0.0,0.0];}
+        Ok(ProxyBudget {crowns:Arc::new(crowns),heights:Arc::new(heights),y,scale})
+    }
+    pub(crate) fn commit_proxy_update(&mut self, budget: &ProxyBudget) {
+        self.initial_crowns=Arc::clone(&budget.crowns);
+        self.initial_heights=Arc::clone(&budget.heights);
+        self.foliage_y=budget.y;self.mass_scale=budget.scale;
+        *self.cache.lock().unwrap()=Cache::default();
     }
 
     /// Call before changing the shared instance buffer. Rigid motion is valid;

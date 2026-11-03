@@ -1,0 +1,891 @@
+{
+  "hardware": "RTX 5070 Ti; Windows; driver 617.14",
+  "size": [
+    1713,
+    964
+  ],
+  "views": 1,
+  "scenario": "alpine seed 1; grass, track; fly 240 frames at 240 m/s; initial 5 wall samples excluded",
+  "background_load": "user watching film, uncontrolled",
+  "executable_sha256": "3e49da30620231ef37b9b0895046aaae85faecd1bba464555a44777d038a3220",
+  "modes": {
+    "0": "linear owner guards; renderer rebuild",
+    "1": "indexed owner guards; renderer rebuild",
+    "2": "indexed owner guards; retained forest; 50% spare proxy capacity"
+  },
+  "limits": "Wall times include readback; GPU union only covers instrumented scopes; async CPU workers complete at different simulation frames; not 4K/4-player performance",
+  "runs": [
+    {
+      "run": 0,
+      "mode": 0,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 56.6372,
+        "p99_ms": 519.9105000000001,
+        "max_ms": 674.4223999999999
+      },
+      "gpu_covered_scopes": {
+        "samples": 229,
+        "median_ms": 10.05564799999998,
+        "p99_ms": 21.143808000000007,
+        "max_ms": 21.663776000000226
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 36.6554,
+        "p99_ms": 486.8802,
+        "max_ms": 625.2804
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 1.9634,
+        "p99_ms": 3.7116,
+        "max_ms": 4.3206
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 38.926,
+          "p99_ms": 489.0796,
+          "max_ms": 627.6274
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 2.9261,
+          "p99_ms": 7.838299999999999,
+          "max_ms": 246.1038
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.30210000000000004,
+          "p99_ms": 0.48529999999999995,
+          "max_ms": 2.2498
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.1638,
+          "p99_ms": 0.3771,
+          "max_ms": 1.1925
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.014048,
+        "bloom": 0.054144,
+        "canopy sky transmittance": 0.14112,
+        "canopy volume": 0.292288,
+        "cull": 0.14895999999999998,
+        "exhaust": 0.000704,
+        "filter canopy": 0.013696,
+        "meadow composite": 0.008512,
+        "meadow placement": 0.1112,
+        "meadow render": 0.016832,
+        "motion vectors": 0.061919999999999996,
+        "near shadow cull": 0.140736,
+        "near shadow raster": 0.04288,
+        "raster": 0.19216,
+        "shade": 0.09008,
+        "shade terrain": 1.4954239999999999,
+        "shade voxels": 0.18243199999999998,
+        "shadow cull": 0.16985599999999998,
+        "shadow raster": 0.295488,
+        "taa": 0.08252799999999999,
+        "terrain coarse": 0.368736,
+        "tonemap": 0.066304,
+        "vegetation branch poses": 0.13494399999999998,
+        "voxel composite": 0.387744,
+        "voxel near sun splat raster": 0.073568,
+        "voxel near sun splats": 0.340416,
+        "voxel splat raster": 0.41296,
+        "voxel splat resolve": 0.589248,
+        "voxel splats": 2.159808,
+        "voxel sun splat raster": 0.35952,
+        "voxel sun splats": 0.357024,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 0,
+      "renderer_rebuilds_after_startup": 2,
+      "fallbacks": 0,
+      "frames_over_3x_median": 38
+    },
+    {
+      "run": 1,
+      "mode": 1,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 48.414899999999996,
+        "p99_ms": 152.3488,
+        "max_ms": 603.3213
+      },
+      "gpu_covered_scopes": {
+        "samples": 230,
+        "median_ms": 9.283055999999995,
+        "p99_ms": 22.279200000000024,
+        "max_ms": 23.179295999999972
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 29.7061,
+        "p99_ms": 96.1145,
+        "max_ms": 151.3556
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 2.1725999999999996,
+        "p99_ms": 3.6556,
+        "max_ms": 5.532
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 31.5752,
+          "p99_ms": 98.80940000000001,
+          "max_ms": 233.9664
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 3.2017,
+          "p99_ms": 6.6492,
+          "max_ms": 353.4985
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.3185,
+          "p99_ms": 0.5037,
+          "max_ms": 0.7067
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.177,
+          "p99_ms": 0.3883,
+          "max_ms": 0.7908000000000001
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.010752,
+        "bloom": 0.04992,
+        "canopy sky transmittance": 0.13744,
+        "canopy volume": 0.23328,
+        "cull": 0.14304,
+        "exhaust": 0.000352,
+        "filter canopy": 0.01328,
+        "meadow composite": 0.007647999999999999,
+        "meadow placement": 0.100272,
+        "meadow render": 0.015344,
+        "motion vectors": 0.057583999999999996,
+        "near shadow cull": 0.117376,
+        "near shadow raster": 0.04008,
+        "raster": 0.190336,
+        "shade": 0.083936,
+        "shade terrain": 1.263872,
+        "shade voxels": 0.149264,
+        "shadow cull": 0.13635199999999997,
+        "shadow raster": 0.249888,
+        "taa": 0.07292799999999999,
+        "terrain coarse": 0.326,
+        "tonemap": 0.065824,
+        "vegetation branch poses": 0.111344,
+        "voxel composite": 0.360672,
+        "voxel near sun splat raster": 0.067632,
+        "voxel near sun splats": 0.285888,
+        "voxel splat raster": 0.40811200000000003,
+        "voxel splat resolve": 0.58576,
+        "voxel splats": 1.926016,
+        "voxel sun splat raster": 0.32424,
+        "voxel sun splats": 0.338848,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 0,
+      "renderer_rebuilds_after_startup": 1,
+      "fallbacks": 0,
+      "frames_over_3x_median": 4
+    },
+    {
+      "run": 2,
+      "mode": 2,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 49.4262,
+        "p99_ms": 114.548,
+        "max_ms": 121.48249999999999
+      },
+      "gpu_covered_scopes": {
+        "samples": 229,
+        "median_ms": 10.126079999999991,
+        "p99_ms": 24.277055999999966,
+        "max_ms": 26.250751999999984
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 27.9375,
+        "p99_ms": 73.9002,
+        "max_ms": 85.1152
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 2.1582,
+        "p99_ms": 4.0675,
+        "max_ms": 6.7382
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 30.2758,
+          "p99_ms": 75.9008,
+          "max_ms": 87.27409999999999
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 2.8842,
+          "p99_ms": 5.2090000000000005,
+          "max_ms": 8.037
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.304,
+          "p99_ms": 0.5712999999999999,
+          "max_ms": 0.6629
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.1577,
+          "p99_ms": 0.3323,
+          "max_ms": 0.41340000000000005
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.01248,
+        "bloom": 0.054112,
+        "canopy sky transmittance": 0.14192,
+        "canopy volume": 0.30796799999999996,
+        "cull": 0.196928,
+        "exhaust": 0.000736,
+        "filter canopy": 0.013632,
+        "meadow composite": 0.008447999999999999,
+        "meadow placement": 0.11065599999999999,
+        "meadow render": 0.01664,
+        "motion vectors": 0.062912,
+        "near shadow cull": 0.180064,
+        "near shadow raster": 0.041824,
+        "raster": 0.20831999999999998,
+        "shade": 0.089248,
+        "shade terrain": 1.43248,
+        "shade voxels": 0.181344,
+        "shadow cull": 0.226656,
+        "shadow raster": 0.281728,
+        "taa": 0.074016,
+        "terrain coarse": 0.36646399999999996,
+        "tonemap": 0.066304,
+        "vegetation branch poses": 0.133568,
+        "voxel composite": 0.441664,
+        "voxel near sun splat raster": 0.074112,
+        "voxel near sun splats": 0.359488,
+        "voxel splat raster": 0.43072,
+        "voxel splat resolve": 0.600896,
+        "voxel splats": 2.048192,
+        "voxel sun splat raster": 0.375168,
+        "voxel sun splats": 0.37088,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 2,
+      "renderer_rebuilds_after_startup": 0,
+      "fallbacks": 0,
+      "frames_over_3x_median": 0
+    },
+    {
+      "run": 3,
+      "mode": 0,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 58.818799999999996,
+        "p99_ms": 576.7276,
+        "max_ms": 622.0432999999999
+      },
+      "gpu_covered_scopes": {
+        "samples": 228,
+        "median_ms": 10.263920000000041,
+        "p99_ms": 22.20700799999998,
+        "max_ms": 24.14550399999999
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 39.679100000000005,
+        "p99_ms": 541.4314,
+        "max_ms": 578.7462
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 2.1732,
+        "p99_ms": 3.8157,
+        "max_ms": 7.0771999999999995
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 42.2062,
+          "p99_ms": 543.6134000000001,
+          "max_ms": 581.0136
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 3.1052,
+          "p99_ms": 6.1708,
+          "max_ms": 312.2086
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.3117,
+          "p99_ms": 0.8774,
+          "max_ms": 1.212
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.1686,
+          "p99_ms": 0.49319999999999997,
+          "max_ms": 0.5450999999999999
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.012559999999999998,
+        "bloom": 0.05448,
+        "canopy sky transmittance": 0.14179199999999997,
+        "canopy volume": 0.286432,
+        "cull": 0.155664,
+        "exhaust": 0.000352,
+        "filter canopy": 0.013663999999999999,
+        "meadow composite": 0.008447999999999999,
+        "meadow placement": 0.11207999999999999,
+        "meadow render": 0.016895999999999998,
+        "motion vectors": 0.06168,
+        "near shadow cull": 0.135648,
+        "near shadow raster": 0.042784,
+        "raster": 0.204768,
+        "shade": 0.088944,
+        "shade terrain": 1.476816,
+        "shade voxels": 0.181456,
+        "shadow cull": 0.158304,
+        "shadow raster": 0.30198400000000003,
+        "taa": 0.074368,
+        "terrain coarse": 0.359552,
+        "tonemap": 0.066144,
+        "vegetation branch poses": 0.132016,
+        "voxel composite": 0.384752,
+        "voxel near sun splat raster": 0.074048,
+        "voxel near sun splats": 0.35256,
+        "voxel splat raster": 0.41664,
+        "voxel splat resolve": 0.6084479999999999,
+        "voxel splats": 2.2051999999999996,
+        "voxel sun splat raster": 0.37776,
+        "voxel sun splats": 0.357248,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 0,
+      "renderer_rebuilds_after_startup": 2,
+      "fallbacks": 0,
+      "frames_over_3x_median": 36
+    },
+    {
+      "run": 4,
+      "mode": 1,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 45.7691,
+        "p99_ms": 104.2882,
+        "max_ms": 475.526
+      },
+      "gpu_covered_scopes": {
+        "samples": 223,
+        "median_ms": 10.033055999999934,
+        "p99_ms": 21.78073600000001,
+        "max_ms": 22.84348799999999
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 26.4238,
+        "p99_ms": 71.07249999999999,
+        "max_ms": 125.8792
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 2.0934999999999997,
+        "p99_ms": 3.043,
+        "max_ms": 4.9724
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 28.2485,
+          "p99_ms": 73.4369,
+          "max_ms": 183.2832
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 2.7123999999999997,
+          "p99_ms": 4.8713999999999995,
+          "max_ms": 273.0069
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.29300000000000004,
+          "p99_ms": 0.4758,
+          "max_ms": 0.6903
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.1484,
+          "p99_ms": 0.289,
+          "max_ms": 0.4523
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.01184,
+        "bloom": 0.054144,
+        "canopy sky transmittance": 0.141472,
+        "canopy volume": 0.27848,
+        "cull": 0.149856,
+        "exhaust": 0.000736,
+        "filter canopy": 0.01368,
+        "meadow composite": 0.008095999999999999,
+        "meadow placement": 0.10912,
+        "meadow render": 0.016479999999999998,
+        "motion vectors": 0.061503999999999996,
+        "near shadow cull": 0.128544,
+        "near shadow raster": 0.042943999999999996,
+        "raster": 0.195904,
+        "shade": 0.087712,
+        "shade terrain": 1.495296,
+        "shade voxels": 0.179648,
+        "shadow cull": 0.15734399999999998,
+        "shadow raster": 0.28460799999999997,
+        "taa": 0.073664,
+        "terrain coarse": 0.359712,
+        "tonemap": 0.06608,
+        "vegetation branch poses": 0.13161599999999998,
+        "voxel composite": 0.388384,
+        "voxel near sun splat raster": 0.073376,
+        "voxel near sun splats": 0.356288,
+        "voxel splat raster": 0.419744,
+        "voxel splat resolve": 0.6066239999999999,
+        "voxel splats": 2.160864,
+        "voxel sun splat raster": 0.368768,
+        "voxel sun splats": 0.35526399999999997,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 0,
+      "renderer_rebuilds_after_startup": 1,
+      "fallbacks": 0,
+      "frames_over_3x_median": 1
+    },
+    {
+      "run": 5,
+      "mode": 2,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 45.2004,
+        "p99_ms": 107.3017,
+        "max_ms": 121.0362
+      },
+      "gpu_covered_scopes": {
+        "samples": 232,
+        "median_ms": 10.10788799999997,
+        "p99_ms": 25.987744000000017,
+        "max_ms": 28.980672000000023
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 25.1233,
+        "p99_ms": 74.4683,
+        "max_ms": 80.68010000000001
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 1.9692999999999998,
+        "p99_ms": 3.5932999999999997,
+        "max_ms": 3.7886
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 27.0387,
+          "p99_ms": 77.6122,
+          "max_ms": 83.354
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 2.7382999999999997,
+          "p99_ms": 5.8088999999999995,
+          "max_ms": 8.047
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.2836,
+          "p99_ms": 0.6011000000000001,
+          "max_ms": 2.5139
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.16,
+          "p99_ms": 0.3147,
+          "max_ms": 0.5431
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.011935999999999999,
+        "bloom": 0.053792,
+        "canopy sky transmittance": 0.14112,
+        "canopy volume": 0.32041600000000003,
+        "cull": 0.198256,
+        "exhaust": 0.000736,
+        "filter canopy": 0.013632,
+        "meadow composite": 0.008,
+        "meadow placement": 0.10833599999999999,
+        "meadow render": 0.016432000000000002,
+        "motion vectors": 0.0628,
+        "near shadow cull": 0.17647999999999997,
+        "near shadow raster": 0.04048,
+        "raster": 0.20862399999999998,
+        "shade": 0.08985599999999999,
+        "shade terrain": 1.418832,
+        "shade voxels": 0.18182399999999999,
+        "shadow cull": 0.205584,
+        "shadow raster": 0.27966399999999997,
+        "taa": 0.07368,
+        "terrain coarse": 0.35598399999999997,
+        "tonemap": 0.066144,
+        "vegetation branch poses": 0.12942399999999998,
+        "voxel composite": 0.383024,
+        "voxel near sun splat raster": 0.073936,
+        "voxel near sun splats": 0.34207999999999994,
+        "voxel splat raster": 0.43300799999999995,
+        "voxel splat resolve": 0.6156159999999999,
+        "voxel splats": 2.110048,
+        "voxel sun splat raster": 0.37414400000000003,
+        "voxel sun splats": 0.36475199999999997,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 2,
+      "renderer_rebuilds_after_startup": 0,
+      "fallbacks": 0,
+      "frames_over_3x_median": 0
+    },
+    {
+      "run": 6,
+      "mode": 0,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 50.355999999999995,
+        "p99_ms": 381.0063,
+        "max_ms": 460.3096
+      },
+      "gpu_covered_scopes": {
+        "samples": 229,
+        "median_ms": 10.049152000000015,
+        "p99_ms": 21.454464000000023,
+        "max_ms": 23.012415999999973
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 32.601,
+        "p99_ms": 352.39169999999996,
+        "max_ms": 420.3616
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 1.4414,
+        "p99_ms": 2.899,
+        "max_ms": 3.3322
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 34.351600000000005,
+          "p99_ms": 353.7047,
+          "max_ms": 421.7669
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 2.2938,
+          "p99_ms": 4.3356,
+          "max_ms": 210.1415
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.23570000000000002,
+          "p99_ms": 0.5055,
+          "max_ms": 0.6168
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.13540000000000002,
+          "p99_ms": 0.3518,
+          "max_ms": 0.44430000000000003
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.013855999999999999,
+        "bloom": 0.054335999999999995,
+        "canopy sky transmittance": 0.141328,
+        "canopy volume": 0.29476800000000003,
+        "cull": 0.151776,
+        "exhaust": 0.000352,
+        "filter canopy": 0.013696,
+        "meadow composite": 0.008512,
+        "meadow placement": 0.110944,
+        "meadow render": 0.016895999999999998,
+        "motion vectors": 0.062112,
+        "near shadow cull": 0.137984,
+        "near shadow raster": 0.042752,
+        "raster": 0.194624,
+        "shade": 0.089888,
+        "shade terrain": 1.380224,
+        "shade voxels": 0.1832,
+        "shadow cull": 0.161568,
+        "shadow raster": 0.290016,
+        "taa": 0.07929599999999999,
+        "terrain coarse": 0.370272,
+        "tonemap": 0.06611199999999999,
+        "vegetation branch poses": 0.13344,
+        "voxel composite": 0.46182399999999996,
+        "voxel near sun splat raster": 0.073888,
+        "voxel near sun splats": 0.354784,
+        "voxel splat raster": 0.414112,
+        "voxel splat resolve": 0.6118399999999999,
+        "voxel splats": 2.1396159999999997,
+        "voxel sun splat raster": 0.368512,
+        "voxel sun splats": 0.359968,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 0,
+      "renderer_rebuilds_after_startup": 2,
+      "fallbacks": 0,
+      "frames_over_3x_median": 34
+    },
+    {
+      "run": 7,
+      "mode": 1,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 40.0571,
+        "p99_ms": 96.4672,
+        "max_ms": 381.7906
+      },
+      "gpu_covered_scopes": {
+        "samples": 230,
+        "median_ms": 9.831680000000002,
+        "p99_ms": 21.876447999999982,
+        "max_ms": 22.30614399999999
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 20.9294,
+        "p99_ms": 63.952099999999994,
+        "max_ms": 99.43939999999999
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 1.4488999999999999,
+        "p99_ms": 2.7303,
+        "max_ms": 25.6504
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 22.618699999999997,
+          "p99_ms": 69.8113,
+          "max_ms": 153.5364
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 2.2236000000000002,
+          "p99_ms": 4.8521,
+          "max_ms": 211.3752
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.2392,
+          "p99_ms": 0.449,
+          "max_ms": 0.5339
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.1336,
+          "p99_ms": 0.2712,
+          "max_ms": 0.4073
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.01168,
+        "bloom": 0.053552,
+        "canopy sky transmittance": 0.14091199999999998,
+        "canopy volume": 0.27270399999999995,
+        "cull": 0.146976,
+        "exhaust": 0.000736,
+        "filter canopy": 0.0136,
+        "meadow composite": 0.007936,
+        "meadow placement": 0.106832,
+        "meadow render": 0.016448,
+        "motion vectors": 0.061056,
+        "near shadow cull": 0.128768,
+        "near shadow raster": 0.042735999999999996,
+        "raster": 0.19494399999999998,
+        "shade": 0.088768,
+        "shade terrain": 1.324704,
+        "shade voxels": 0.18128,
+        "shadow cull": 0.157712,
+        "shadow raster": 0.278064,
+        "taa": 0.07343999999999999,
+        "terrain coarse": 0.35675199999999996,
+        "tonemap": 0.065888,
+        "vegetation branch poses": 0.128736,
+        "voxel composite": 0.38136,
+        "voxel near sun splat raster": 0.07391999999999999,
+        "voxel near sun splats": 0.34321599999999997,
+        "voxel splat raster": 0.413616,
+        "voxel splat resolve": 0.588624,
+        "voxel splats": 2.0982879999999997,
+        "voxel sun splat raster": 0.358224,
+        "voxel sun splats": 0.36783999999999994,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 0,
+      "renderer_rebuilds_after_startup": 1,
+      "fallbacks": 0,
+      "frames_over_3x_median": 1
+    },
+    {
+      "run": 8,
+      "mode": 2,
+      "headless_wall": {
+        "samples": 235,
+        "median_ms": 39.0428,
+        "p99_ms": 88.17450000000001,
+        "max_ms": 99.73
+      },
+      "gpu_covered_scopes": {
+        "samples": 232,
+        "median_ms": 10.014799999999994,
+        "p99_ms": 23.866144000000002,
+        "max_ms": 26.99545599999999
+      },
+      "cpu_terrain": {
+        "samples": 235,
+        "median_ms": 20.953200000000002,
+        "p99_ms": 56.7338,
+        "max_ms": 64.151
+      },
+      "cpu_tree_pool": {
+        "samples": 235,
+        "median_ms": 1.3864999999999998,
+        "p99_ms": 2.7266999999999997,
+        "max_ms": 3.1532999999999998
+      },
+      "cpu_submission": {
+        "game_ms": {
+          "samples": 235,
+          "median_ms": 22.6997,
+          "p99_ms": 58.436099999999996,
+          "max_ms": 65.4395
+        },
+        "render_ms": {
+          "samples": 235,
+          "median_ms": 2.1237,
+          "p99_ms": 3.9412,
+          "max_ms": 4.5791
+        },
+        "hud_ms": {
+          "samples": 235,
+          "median_ms": 0.2229,
+          "p99_ms": 0.4424,
+          "max_ms": 0.6499
+        },
+        "present_ms": {
+          "samples": 235,
+          "median_ms": 0.12589999999999998,
+          "p99_ms": 0.2625,
+          "max_ms": 0.378
+        }
+      },
+      "pass_medians_ms": {
+        "aggregate error selection": 0.011871999999999999,
+        "bloom": 0.053952,
+        "canopy sky transmittance": 0.140672,
+        "canopy volume": 0.307616,
+        "cull": 0.191184,
+        "exhaust": 0.000736,
+        "filter canopy": 0.0136,
+        "meadow composite": 0.007936,
+        "meadow placement": 0.11023999999999999,
+        "meadow render": 0.016176,
+        "motion vectors": 0.06136,
+        "near shadow cull": 0.17348799999999998,
+        "near shadow raster": 0.040591999999999996,
+        "raster": 0.208496,
+        "shade": 0.088224,
+        "shade terrain": 1.299632,
+        "shade voxels": 0.1812,
+        "shadow cull": 0.2024,
+        "shadow raster": 0.269712,
+        "taa": 0.073376,
+        "terrain coarse": 0.350736,
+        "tonemap": 0.065984,
+        "vegetation branch poses": 0.127776,
+        "voxel composite": 0.375808,
+        "voxel near sun splat raster": 0.07436799999999999,
+        "voxel near sun splats": 0.35219199999999995,
+        "voxel splat raster": 0.43233599999999994,
+        "voxel splat resolve": 0.588464,
+        "voxel splats": 2.0196319999999996,
+        "voxel sun splat raster": 0.37257599999999996,
+        "voxel sun splats": 0.367888,
+        "wheel particles": 0.000352
+      },
+      "retained_updates": 2,
+      "renderer_rebuilds_after_startup": 0,
+      "fallbacks": 0,
+      "frames_over_3x_median": 0
+    }
+  ],
+  "median_of_run_statistics": {
+    "0": {
+      "wall_median_ms": 56.6372,
+      "wall_p99_ms": 519.9105000000001,
+      "wall_max_ms": 622.0432999999999,
+      "gpu_median_ms": 10.05564799999998,
+      "terrain_cpu_median_ms": 36.6554,
+      "large_frames": [
+        38,
+        36,
+        34
+      ]
+    },
+    "1": {
+      "wall_median_ms": 45.7691,
+      "wall_p99_ms": 104.2882,
+      "wall_max_ms": 475.526,
+      "gpu_median_ms": 9.831680000000002,
+      "terrain_cpu_median_ms": 26.4238,
+      "large_frames": [
+        4,
+        1,
+        1
+      ]
+    },
+    "2": {
+      "wall_median_ms": 45.2004,
+      "wall_p99_ms": 107.3017,
+      "wall_max_ms": 121.0362,
+      "gpu_median_ms": 10.10788799999997,
+      "terrain_cpu_median_ms": 25.1233,
+      "large_frames": [
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "images": {
+    "stationary_pngs_excluding_top_180px": {
+      "mae": 0.0,
+      "changed_pixels": 0
+    }
+  }
+}

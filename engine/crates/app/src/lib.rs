@@ -413,12 +413,13 @@ pub struct Headless<'g> {
     renderer: Option<Renderer>,
     out: Output,
     target: wgpu::Texture,
+    last_draw_timings: profile::DrawTimings,
 }
 
 impl<'g> Headless<'g> {
     pub fn new(gpu: &'g Gpu, size: [u32; 2], tick_hz: f32) -> Result<Self, String> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), max_height: None, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format) })
+        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), max_height: None, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format), last_draw_timings: Default::default() })
     }
     /// Draw one frame and read it back as RGBA8.
     pub fn frame(&mut self, game: &mut dyn Game) -> Result<Vec<u8>, String> {
@@ -440,8 +441,12 @@ impl<'g> Headless<'g> {
         let game_ms = started.elapsed().as_secs_f64() * 1000.;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
         self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), self.max_height)?;
-        Ok(profile::DrawTimings { game_ms, ..self.out.timings })
+        self.last_draw_timings = profile::DrawTimings { game_ms, ..self.out.timings };
+        Ok(self.last_draw_timings)
     }
+    /// CPU submission stages of the last rendered frame, excluding pixel
+    /// readback. These can include driver waits; GPU timestamps are separate.
+    pub fn last_draw_timings(&self) -> profile::DrawTimings { self.last_draw_timings }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
 }
 

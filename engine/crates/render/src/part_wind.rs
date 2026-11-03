@@ -552,7 +552,7 @@ impl PartWindRenderer {
     }
 
     pub fn contains_owner_range(&self,first:usize,count:usize)->bool {
-        let end=first.saturating_add(count);self.owners.iter().any(|owner|*owner>=first&&*owner<end)
+        crate::owner_ranges::contains(&self.owners,first,count)
     }
 
     /// Returns true for a changed pose field, including enabled -> disabled.
