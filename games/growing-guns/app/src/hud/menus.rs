@@ -96,6 +96,8 @@ pub struct Menus {
     pub tilt: bool,
     /// The graphics choice: "auto" (by chip) or a profile name.
     pub graphics: &'static str,
+    /// This session's automatic downgrade under "auto" (never saved).
+    pub graphics_lowered: Option<&'static str>,
     /// Stick sensitivity per GameNight player, by name.
     pub aim: Vec<(String, f32)>,
     /// Seconds the screen has been open (fades and the start orbit).
@@ -130,7 +132,7 @@ pub struct Menus {
 
 impl Default for Menus {
     fn default() -> Self {
-        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, graphics: "auto", aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None,
+        Menus { screen: Screen::Play, menu: Default::default(), rematch: Default::default(), mouse: 1.0, stick: 1.0, music_db: -16.0, tilt: true, graphics: "auto", graphics_lowered: None, aim: Vec::new(), age: 0.0, scoreboard: false, held_x: 0, repeat: 0.0, rematch_armed: false, col: 0, notice: None, error: None, hits: Default::default(), hit_size: Cell::new([0; 2]), drag: None,
             join: TextField::new(4096), joining: false, name: TextField::new(20), player_name: String::new(), picker: None, copied: 0.0 }
     }
 }
@@ -351,7 +353,7 @@ impl Menus {
             Item::Row(row) => row[hit.entry].1,
             Item::Bots(_) => if hit.entry == 0 { Action::RemoveBot } else { Action::AddBot },
             Item::Tilt => { self.tilt = !self.tilt; Action::None }
-            Item::Graphics => { self.graphics = next_graphics(self.graphics, 1); Action::None }
+            Item::Graphics => { self.graphics = next_graphics(self.graphics, 1); self.graphics_lowered = None; Action::None }
             Item::Slider(s) => {
                 if s == Slider::Music { self.music_db = (MUSIC_DB_MIN * (1.0 - t)).round(); }
                 else {
@@ -420,6 +422,7 @@ impl Menus {
         if let Some((k, _)) = focus && list[k] == Item::Tilt && (step != 0 || c.pressed.has(Buttons::SOUTH)) { self.tilt = !self.tilt; return Action::None; }
         if let Some((k, _)) = focus && list[k] == Item::Graphics && (step != 0 || c.pressed.has(Buttons::SOUTH)) {
             self.graphics = next_graphics(self.graphics, if step < 0 { -1 } else { 1 });
+            self.graphics_lowered = None;
             return Action::None;
         }
         if let Some((k, _)) = focus && let Item::Party(i) = list[k] && step != 0 && let Some((v, lo, hi)) = ctx.party.as_ref().and_then(|p| p.0.get(i)).map(|e| (e.1, e.2, e.3)) {
@@ -459,7 +462,7 @@ impl Menus {
 
     /// The settings as JSON (Godot keeps them in `user://settings.cfg`).
     pub fn settings_json(&self) -> serde_json::Value {
-        serde_json::json!({ "name": self.player_name, "music_db": self.music_db, "mouse": self.mouse, "stick": self.stick, "tilt": self.tilt, "graphics": self.graphics,
+        serde_json::json!({ "name": self.player_name, "music_db": self.music_db, "mouse": self.mouse, "stick": self.stick, "tilt": self.tilt, "graphics_choice": self.graphics,
             "aim": self.aim.iter().map(|(n, v)| (n.clone(), serde_json::json!(v))).collect::<serde_json::Map<_, _>>() })
     }
     pub fn load_settings(&mut self, v: &serde_json::Value) {
@@ -468,7 +471,7 @@ impl Menus {
         self.mouse = f("mouse", 0.3, 3.0, self.mouse);
         self.stick = f("stick", 0.3, 2.5, self.stick);
         self.tilt = v.get("tilt").and_then(|x| x.as_bool()).unwrap_or(self.tilt);
-        if let Some(g) = v.get("graphics").and_then(|x| x.as_str()) && let Some(c) = GRAPHICS_CHOICES.iter().find(|c| **c == g) { self.graphics = c; }
+        if let Some(g) = v.get("graphics_choice").and_then(|x| x.as_str()) && let Some(c) = GRAPHICS_CHOICES.iter().find(|c| **c == g) { self.graphics = c; }
         if let Some(n) = v.get("name").and_then(|x| x.as_str()) { self.player_name = n.chars().take(20).collect::<String>().trim().to_string(); }
         if let Some(m) = v.get("aim").and_then(|x| x.as_object()) { self.aim = m.iter().filter_map(|(n, x)| Some((n.clone(), (x.as_f64()? as f32).clamp(0.3, 2.5)))).collect(); }
     }
@@ -768,7 +771,11 @@ impl Menus {
                     self.hit([r[0], y, r[2], rh], k, 0);
                     let mid = y + rh * 0.5;
                     Label::new(BODY, 14.0 * u, if fk(0) { BONE } else { [0.85, 0.85, 0.95, 1.0] }).draw(d, "Graphics (next round)", r[0], mid, clip);
-                    let value = if self.graphics == "auto" { format!("< AUTO: {} >", crate::graphics::auto().name().to_uppercase()) } else { format!("< {} >", self.graphics.to_uppercase()) };
+                    let value = match (self.graphics, self.graphics_lowered) {
+                        ("auto", Some(low)) => format!("< AUTO: {} (lowered) >", low.to_uppercase()),
+                        ("auto", None) => format!("< AUTO: {} >", crate::graphics::auto().name().to_uppercase()),
+                        (choice, _) => format!("< {} >", choice.to_uppercase()),
+                    };
                     Label::new(BODY, 14.0 * u, [0.74, 0.78, 0.9, 1.0]).right().draw(d, &value, r[0] + r[2], mid, clip);
                     y += rh + 14.0 * u;
                 }
@@ -1191,8 +1198,13 @@ mod pointer_tests {
         m.graphics = "low";
         n.load_settings(&m.settings_json());
         assert_eq!(n.graphics, "low");
-        n.load_settings(&serde_json::json!({ "graphics": "ultra" }));
+        n.load_settings(&serde_json::json!({ "graphics_choice": "ultra" }));
         assert_eq!(n.graphics, "low", "an unknown choice keeps the current one");
+        let mut fresh = Menus::default();
+        fresh.load_settings(&serde_json::json!({ "graphics": "minimum" }));
+        assert_eq!(fresh.graphics, "auto", "the old key held automatic downgrades");
+        m.graphics_lowered = Some("low");
+        assert!(m.settings_json().get("graphics_lowered").is_none() && m.settings_json()["graphics_choice"] == "low");
         // A pad: A on the field opens the on-screen keyboard; DONE closes it.
         m.menu.focus = 0;
         let press = |b: u32| Controls { held: Buttons(b), pressed: Buttons(b), ..Default::default() };

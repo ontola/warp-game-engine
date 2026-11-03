@@ -1,7 +1,7 @@
 //! Engine measurement on a small game scene: startup phases, then steady
 //! frames with CPU submit, wall (submit + GPU wait) and per-pass GPU time.
 //!
-//!   growing-guns bench [--views N] [--size WxH] [--frames N] [--light full|lean] [--empty]
+//!   growing-guns bench [--views N] [--size WxH] [--frames N] [--light full|lean] [--empty] [--no-gpu-profile]
 //!   growing-guns bench --stress explosions --cpu-thread --csv frames.csv
 use crate::{view, Args};
 use glam::Vec3;
@@ -138,7 +138,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     gpu.wait();
     let t_first = ms(t);
     let output = Renderer::output_texture(&gpu, w, h);
-    let profiling = renderer.set_async_gpu_profiling(&gpu, true).is_ok();
+    // `--no-gpu-profile` measures what the timestamp queries themselves cost.
+    let profiling = !args.flag("--no-gpu-profile") && renderer.set_async_gpu_profiling(&gpu, true).is_ok();
     let (mut cpu, mut wall, mut gputot) = (Vec::new(), Vec::new(), Vec::new());
     let mut passes: BTreeMap<&'static str, f64> = BTreeMap::new();
     let mut samples = 0usize;
@@ -183,7 +184,11 @@ pub fn run(args: &Args) -> Result<(), String> {
     for s in drain.samples {
         if (30..(frames + 30) as u64).contains(&s.frame_id) { profiles.insert(s.frame_id, s); }
     }
+    let mut steps = Vec::new();
+    let mut last: Option<f64> = None;
     for s in profiles.values() {
+        if let Some(l) = last { steps.push((s.covered_union_ms - l).abs()); }
+        last = Some(s.covered_union_ms);
         gputot.push(s.covered_union_ms);
         for &(n, v) in &s.gpu_ms { *passes.entry(n).or_default() += v; }
         samples += 1;
@@ -201,6 +206,10 @@ pub fn run(args: &Args) -> Result<(), String> {
     println!("frame ms (median / p95): cpu submit {:.2} / {:.2}, wall {:.2} / {:.2}, gpu {:.2} / {:.2}",
         pct(&mut cpu.clone(), 0.5), pct(&mut cpu, 0.95), pct(&mut wall.clone(), 0.5), pct(&mut wall, 0.95),
         pct(&mut gputot.clone(), 0.5), pct(&mut gputot, 0.95));
+    if profiling && samples > 1 {
+        println!("gpu covered union ms frame to frame: p10 {:.2}, p90 {:.2}, |change| median {:.3} / p95 {:.3}",
+            pct(&mut gputot.clone(), 0.1), pct(&mut gputot.clone(), 0.9), pct(&mut steps.clone(), 0.5), pct(&mut steps, 0.95));
+    }
     if profiling && samples > 0 {
         let mut v: Vec<_> = passes.into_iter().map(|(n, t)| (n, t / samples as f64)).collect();
         v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
