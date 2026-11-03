@@ -430,7 +430,8 @@ function kill(e)
 			spawn("shard", e.x + math.cos(a) * 18, e.y + math.sin(a) * 18, 0.3)
 		end
 	end
-	if #s.pickups < LIMITS.pickups and random.float() < 0.09 then
+	-- A boss's escorts carry power-ups more often: the way to beat it.
+	if #s.pickups < LIMITS.pickups and random.float() < (if e.escort then 0.35 else 0.09) then
 		local kinds = { "spread", "pierce", "rapid", "repair" }
 		table.insert(s.pickups, { x = e.x, y = e.y, kind = kinds[random.int(1, 4)], ttl = 12 })
 	end
@@ -768,9 +769,28 @@ end
 ----------------------------------------------------------------------------
 -- Enemies
 
-local function hostile_shot(x, y, a, speed, ttl)
+local function hostile_shot(x, y, a, speed, ttl, size)
 	if #s.hostile < LIMITS.hostile then
-		table.insert(s.hostile, { x = x, y = y, vx = math.cos(a) * speed, vy = math.sin(a) * speed, ttl = ttl or 7 })
+		table.insert(s.hostile, { x = x, y = y, vx = math.cos(a) * speed, vy = math.sin(a) * speed, ttl = ttl or 7, size = size })
+	end
+end
+
+-- During a boss fight, small packs of escorts drift in from the edges now and
+-- then (never more than six alive); they drop power-ups more often.
+local ESCORT_KINDS = { "chaser", "chaser", "weaver", "dasher" }
+local function boss_escorts(e, dt)
+	if e.kind == "singularity" or e.kind == "tumor" or e.follower then return end
+	e.escortT = (e.escortT or 6) - dt
+	if e.escortT > 0 then return end
+	e.escortT = if e.hp < e.maxHp / 2 then 7 else 9
+	local alive_escorts = 0
+	for _, o in s.enemies do
+		if not o.dead and o.escort then alive_escorts += 1 end
+	end
+	for i = 1, math.min(3, 6 - alive_escorts) do
+		local a = random.float() * math.pi * 2
+		local o = spawn(ESCORT_KINDS[random.int(1, #ESCORT_KINDS)], s.width / 2 + math.cos(a) * s.width * 0.47, s.height / 2 + math.sin(a) * s.height * 0.45, 1.0)
+		if o then o.escort = true end
 	end
 end
 
@@ -850,16 +870,33 @@ local function late_boss(e, dx, dy, dt)
 				burn_beams(e)
 			end
 			if e.fire <= 0 then
-				e.fire = 2.6
-				for i = -1, 1 do hostile_shot(e.x, e.y, math.atan2(dy, dx) + i * 0.22, 210) end
+				-- An aimed fan of big orbs.
+				e.fire = if enraged then 1.6 else 2.2
+				for i = -2, 2 do hostile_shot(e.x, e.y, math.atan2(dy, dx) + i * 0.2, 220, nil, 1.6) end
+			end
+			-- Prism nova: the twins take turns blasting a turning ring of
+			-- orbs; slip through the gaps.
+			e.nova = (e.nova or (if e.follower then 2.4 else 4.8)) - dt
+			if e.nova <= 0 then
+				e.nova = if enraged then 3.4 else 4.8
+				e.novaTurn = (e.novaTurn or 0) + 0.13
+				ring(e.x, e.y, 70, COLORS.prism)
+				for i = 0, 13 do hostile_shot(e.x, e.y, e.novaTurn + i * math.pi * 2 / 14, 150, nil, 1.4) end
 			end
 		else
-			-- Alone, the survivor spins a dense spiral.
+			-- Alone, the survivor spins a dense spiral of bigger orbs, and
+			-- every few seconds a full ring on top.
 			e.beams = {}
 			if e.fire <= 0 then
 				e.fire = 0.14
 				e.armAngle += 0.5
-				for i = 0, 2 do hostile_shot(e.x, e.y, e.armAngle + i * math.pi * 2 / 3, 170) end
+				for i = 0, 2 do hostile_shot(e.x, e.y, e.armAngle + i * math.pi * 2 / 3, 170, nil, 1.3) end
+			end
+			e.nova = (e.nova or 3) - dt
+			if e.nova <= 0 then
+				e.nova = 3
+				ring(e.x, e.y, 70, COLORS.prism)
+				for i = 0, 15 do hostile_shot(e.x, e.y, e.armAngle + i * math.pi / 8, 140, nil, 1.5) end
 			end
 		end
 	elseif e.kind == "sun" then
@@ -1055,6 +1092,7 @@ local function enemies_step(dt)
 				end
 			end
 			e.flash = math.max(0, e.flash - dt)
+			if SPECS[e.kind].boss and e.warm == 0 then boss_escorts(e, dt) end
 			local p = nearest(e.x, e.y)
 			if e.kind == "node" then
 				node_step(e)
