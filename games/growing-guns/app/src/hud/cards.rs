@@ -78,11 +78,17 @@ pub fn wrap(text: &str, font: render::hud::FontFace, size: f32, width: f32, max_
     lines
 }
 
-/// One card face into `r` (x, y, w, h): `alpha` fades it.
-pub fn face(d: &mut HudDrawList, def: &CardDef, desc: &str, stats: &[String], r: [f32; 4], alpha: f32, bright: f32, clip: [f32; 4]) {
+/// One card face into `r` (x, y, w, h): `alpha` fades it. Text is laid out
+/// for a card `text_w` wide and clipped to `r`: while the card flips, grows
+/// or shrinks it keeps one size instead of new glyphs every frame (each new
+/// size rasterised the whole face again, 5-13 ms a frame as cards opened).
+#[allow(clippy::too_many_arguments)]
+pub fn face(d: &mut HudDrawList, def: &CardDef, desc: &str, stats: &[String], r: [f32; 4], alpha: f32, bright: f32, text_w: f32, clip: [f32; 4]) {
     let [x, y, w, h] = r;
     let k = w / 200.0;
     if k <= 0.0 { return; }
+    let tk = text_w / 200.0;
+    let tclip = intersect(clip, r);
     let a = |c: C| { let c = [c[0] * bright, c[1] * bright, c[2] * bright, c[3]]; with_alpha(c, alpha) };
     let col = rgb(def.color);
     let edge = if def.rare { GOLD } else { col };
@@ -102,20 +108,19 @@ pub fn face(d: &mut HudDrawList, def: &CardDef, desc: &str, stats: &[String], r:
     // Category band, slanted like the HUD plates.
     let (bh, bw) = (20.0 * k, 96.0 * k);
     d.polygon(&[[x, y + 6.0 * k], [x + bw + bh * SKEW, y + 6.0 * k], [x + bw, y + 6.0 * k + bh], [x, y + 6.0 * k + bh]], a(edge), clip);
-    Label::new(bold(), 13.0 * k, a(INK)).draw(d, category(def), x + 12.0 * k, y + 6.0 * k + bh * 0.5, clip);
-    if def.rare { Label::new(display(), 14.0 * k, a(GOLD)).right().draw(d, "RARE", x + w - 10.0 * k, y + 6.0 * k + bh * 0.5, clip); }
+    Label::new(bold(), 13.0 * tk, a(INK)).draw(d, category(def), x + 12.0 * k, y + 6.0 * k + bh * 0.5, tclip);
+    if def.rare { Label::new(display(), 14.0 * tk, a(GOLD)).right().draw(d, "RARE", x + w - 10.0 * k, y + 6.0 * k + bh * 0.5, tclip); }
     // Name: poster type, shrunk until it fits on one line.
     let name = def.name.to_uppercase();
-    let max_w = w - 22.0 * k;
-    let size = fit(&name, display(), 30.0 * k, max_w);
+    let size = fit(&name, display(), 30.0 * tk, text_w - 22.0 * tk);
     let name_mid = art[1] + art[3] + 10.0 * k + size * 0.62;
-    Label::new(display(), size, a(BONE)).shadow((2.0 * k).max(1.0), a(RED)).center().draw(d, &name, x + 11.0 * k + max_w * 0.5, name_mid, clip);
+    Label::new(display(), size, a(BONE)).shadow((2.0 * tk).max(1.0), a(RED)).center().draw(d, &name, x + w * 0.5, name_mid, tclip);
     // Description, up to three lines (two when there are three stat chips).
     let mut ty = name_mid + size * 0.62 + 4.0 * k;
     if !desc.is_empty() {
-        let ds = 14.0 * k;
-        for line in wrap(desc, BODY, ds, w - 28.0 * k, if stats.len() < 3 { 3 } else { 2 }) {
-            Label::new(BODY, ds, a(BONE_DIM)).center().draw(d, &line, x + w * 0.5, ty + ds * 0.6, clip);
+        let ds = 14.0 * tk;
+        for line in wrap(desc, BODY, ds, text_w - 28.0 * tk, if stats.len() < 3 { 3 } else { 2 }) {
+            Label::new(BODY, ds, a(BONE_DIM)).center().draw(d, &line, x + w * 0.5, ty + ds * 0.6, tclip);
             ty += ds * 1.15;
         }
     }
@@ -129,15 +134,21 @@ pub fn face(d: &mut HudDrawList, def: &CardDef, desc: &str, stats: &[String], r:
         d.rect(cr, a(with_alpha(tint, 0.12)), clip);
         d.rect([cr[0], cr[1], 3.0 * k, cr[3]], a(tint), clip);
         let mid = cr[1] + cr[3] * 0.5;
-        if !value.is_empty() { Label::new(display(), 13.0 * k, a(tint)).right().draw(d, value, cr[0] + 44.0 * k, mid, clip); }
-        let ls = fit(&label.to_uppercase(), bold(), 12.0 * k, cr[2] - 52.0 * k);
-        Label::new(bold(), ls, a(BONE_DIM)).draw(d, &label.to_uppercase(), cr[0] + 50.0 * k, mid, clip);
+        if !value.is_empty() { Label::new(display(), 13.0 * tk, a(tint)).right().draw(d, value, cr[0] + 44.0 * k, mid, tclip); }
+        let ls = fit(&label.to_uppercase(), bold(), 12.0 * tk, text_w - 74.0 * tk);
+        Label::new(bold(), ls, a(BONE_DIM)).draw(d, &label.to_uppercase(), cr[0] + 50.0 * k, mid, tclip);
         by += row;
     }
     // Thick colour edge on the left and a fine inner frame.
     d.rect([x, y, 6.0 * k, h], a(edge), clip);
     frame_rect(d, [x + 3.0 * k, y + 3.0 * k, w - 6.0 * k, h - 6.0 * k], k.max(1.0), a(with_alpha(BONE, 0.12)), clip);
     if def.rare { frame_rect(d, r, (2.5 * k).max(2.0), a(GOLD), clip); }
+}
+
+fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let (x0, y0) = (a[0].max(b[0]), a[1].max(b[1]));
+    let (x1, y1) = ((a[0] + a[2]).min(b[0] + b[2]), (a[1] + a[3]).min(b[1] + b[3]));
+    [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]
 }
 
 /// A soft drop shadow: rings of falling alpha around `r`.
@@ -218,7 +229,8 @@ pub(super) fn pick(d: &mut HudDrawList, world: &World, i: usize, l: &Layout, f: 
         shadow(d, r, sz * scale * u * 0.5, with_alpha(sc_col, alpha), clip);
         let desc = super::prompt_text(&def.desc, pad);
         let stats = f.stats.get(k).cloned().unwrap_or_default();
-        face(d, def, &desc, &stats, r, alpha, if focused { 1.12 } else { 1.0 }, clip);
+        let grown = if exit.is_some_and(|(picked, _)| picked == k) || (exit.is_none() && hl > 0.5) { 1.12 } else { 1.0 };
+        face(d, def, &desc, &stats, r, alpha, if focused { 1.12 } else { 1.0 }, 200.0 * scale * u * grown, clip);
         if def.rare {
             // The holo sheen: a rainbow band sweeping across.
             let t = (age * 0.5).fract();
