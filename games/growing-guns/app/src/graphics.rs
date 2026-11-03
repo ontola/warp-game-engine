@@ -1,6 +1,6 @@
 //! Shared graphics modifiers: the simulation and collision do not change.
 //! PC: --graphics full|low|minimum (or GG_GRAPHICS), else the Settings choice
-//! (`graphics` in settings.json), else by chip. Quest selects minimum. Without
+//! (`graphics_choice` in settings.json), else by chip. Quest selects minimum. Without
 //! an override the game may switch between rounds (`switch`), rebuilding its
 //! visuals.
 use std::sync::{Mutex, OnceLock};
@@ -52,11 +52,12 @@ fn initial()->Graphics {
     if let Some(p)=std::env::var("GG_GRAPHICS").ok().and_then(|s|Graphics::parse(&s).ok()) {return p;}
     saved_choice().map_or_else(auto,|c|chosen(&c))
 }
-/// `graphics` from settings.json, read before the menus load it so the first
-/// scene is built with it.
+/// `graphics_choice` from settings.json, read before the menus load it so
+/// the first scene is built with it. Only a manual choice is saved; the
+/// earlier `graphics` key also held automatic downgrades and is ignored.
 fn saved_choice()->Option<String> {
     let text=std::fs::read_to_string(crate::play::settings_path()?).ok()?;
-    serde_json::from_str::<serde_json::Value>(&text).ok()?.get("graphics")?.as_str().map(str::to_owned)
+    serde_json::from_str::<serde_json::Value>(&text).ok()?.get("graphics_choice")?.as_str().map(str::to_owned)
 }
 /// Without --graphics or GG_GRAPHICS: base Apple chips (M1, M2, M3, M4 without
 /// Pro/Max/Ultra, 7-10 GPU cores) get LOW; full quality ran far too slow on an M1.

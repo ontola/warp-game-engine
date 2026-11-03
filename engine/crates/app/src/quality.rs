@@ -46,9 +46,12 @@ const CALM: f64 = 1.04;
 const SETTLE: Duration = Duration::from_millis(600);
 const FIRST_TRY_UP: Duration = Duration::from_secs(3);
 const MAX_TRY_UP: Duration = Duration::from_secs(40);
-/// Missing the target this long on the lowest rung means the content is too
-/// heavy for this machine: the game is told (`Game::content_too_heavy`).
-pub const TOO_HEAVY_AFTER: Duration = Duration::from_secs(12);
+/// Below this frame rate on the lowest rung for [`TOO_HEAVY_AFTER`], the
+/// content is too heavy for this machine and the game is told
+/// (`Game::content_too_heavy`). Resolution chases the display (up to 120 Hz);
+/// visible content is only cut on a severe, sustained fall.
+pub const CONTENT_TARGET_FPS: f64 = 45.0;
+pub const TOO_HEAVY_AFTER: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rung {
@@ -128,7 +131,7 @@ impl AdaptiveQuality {
 
     pub fn level(&self) -> usize { self.level }
 
-    /// The lowest rung has missed the target for [`TOO_HEAVY_AFTER`]: true
+    /// The lowest rung has run below [`CONTENT_TARGET_FPS`] for [`TOO_HEAVY_AFTER`]: true
     /// once, then the wait starts over (the game lowers its content, and the
     /// controller gets the same time to settle on the lighter scene).
     pub fn content_too_heavy(&mut self, now: Instant) -> bool {
@@ -148,9 +151,11 @@ impl AdaptiveQuality {
         let mut sorted = self.samples.clone();
         sorted.sort_by(f64::total_cmp);
         let median = sorted[sorted.len() / 2];
+        let content_ms = self.target_ms.max(1000.0 / CONTENT_TARGET_FPS);
+        if self.level == LADDER.len() - 1 && median > content_ms * SLOW { self.starved_since.get_or_insert(now); }
+        else { self.starved_since = None; }
         if median > self.target_ms * SLOW {
             self.calm_since = None;
-            if self.level == LADDER.len() - 1 { self.starved_since.get_or_insert(now); }
             if self.probing.take().is_some_and(|t| now.duration_since(t) < self.try_up) {
                 self.try_up = (self.try_up * 2).min(MAX_TRY_UP);
             }
@@ -161,7 +166,6 @@ impl AdaptiveQuality {
             self.probing = None;
             self.try_up = FIRST_TRY_UP;
         }
-        self.starved_since = None;
         if median <= self.target_ms * CALM {
             let since = *self.calm_since.get_or_insert(now);
             if self.level > 0 && now.duration_since(since) >= self.try_up {
@@ -275,13 +279,29 @@ mod tests {
         run(&mut q, &mut now, 33.0, 30 * 6);
         assert_eq!(q.level, LADDER.len() - 1);
         assert!(!q.content_too_heavy(now));
-        run(&mut q, &mut now, 33.0, 30 * 13);
+        run(&mut q, &mut now, 33.0, 30 * 6);
         assert!(q.content_too_heavy(now));
         assert!(!q.content_too_heavy(now), "once, then the wait starts over");
         // Making the target again resets it.
         run(&mut q, &mut now, 16.0, 60);
-        run(&mut q, &mut now, 33.0, 30 * 6);
+        run(&mut q, &mut now, 33.0, 30 * 2);
         assert!(!q.content_too_heavy(now));
+    }
+
+    #[test]
+    fn a_120_hz_target_cuts_resolution_but_content_only_below_60_fps() {
+        let mut now = Instant::now();
+        let mut q = quality(now);
+        q.target_ms = 1000.0 / 120.0;
+        // 80 fps on a 120 Hz screen: the resolution ladder bottoms out ...
+        run(&mut q, &mut now, 12.5, 80 * 10);
+        assert_eq!(q.level, LADDER.len() - 1);
+        // ... but 80 fps (or 50) is plenty for content.
+        assert!(!q.content_too_heavy(now));
+        run(&mut q, &mut now, 20.0, 50 * 6);
+        assert!(!q.content_too_heavy(now));
+        run(&mut q, &mut now, 30.0, 33 * 6);
+        assert!(q.content_too_heavy(now), "30 fps is not");
     }
 
     #[test]

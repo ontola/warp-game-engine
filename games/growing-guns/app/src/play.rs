@@ -668,8 +668,16 @@ impl Gg {
     /// automatic downgrade) changed the graphics profile.
     fn apply_graphics_choice(&mut self) {
         if crate::graphics::fixed() || self.replay.is_some() || self.settings_file.is_none() { return; }
-        let want = crate::graphics::chosen(self.ui.graphics);
+        let want = self.wanted_graphics();
         if want != crate::graphics::get() { self.use_graphics(want); }
+    }
+
+    /// The Settings choice, or under AUTO this session's downgrade.
+    fn wanted_graphics(&self) -> crate::graphics::Graphics {
+        match (self.ui.graphics, self.ui.graphics_lowered) {
+            ("auto", Some(low)) => crate::graphics::chosen(low),
+            (choice, _) => crate::graphics::chosen(choice),
+        }
     }
 
     /// Switch the graphics profile now, building every view anew.
@@ -865,13 +873,14 @@ impl Gg {
 
 impl app::Game for Gg {
     fn fixed_quality(&self) -> bool { self.replay.as_ref().is_some_and(|r| app::Game::fixed_quality(&**r)) || self.recorder.disabled }
-    /// Resolution is already at its floor: step the graphics profile down for
-    /// the next round and remember it (Settings shows it and can undo it).
+    /// A severe, sustained fall at the lowest resolution: step the graphics
+    /// profile down for the next round, this session only, and never
+    /// automatically to MINIMUM (the headset's look). A manual Settings
+    /// choice is left alone.
     fn content_too_heavy(&mut self) {
-        if crate::graphics::fixed() || self.replay.is_some() || self.settings_file.is_none() { return; }
-        let Some(lower) = crate::graphics::chosen(self.ui.graphics).lower() else { return };
-        self.ui.graphics = lower.name();
-        self.save_settings();
+        if crate::graphics::fixed() || self.replay.is_some() || self.settings_file.is_none() || self.ui.graphics != "auto" { return; }
+        let Some(lower) = self.wanted_graphics().lower().filter(|g| *g != crate::graphics::Graphics::MINIMUM) else { return };
+        self.ui.graphics_lowered = Some(lower.name());
         println!("graphics: too slow, {} from the next round", lower.name());
         self.hud.announce(format!("Graphics lowered to {} for speed (Settings)", lower.name().to_uppercase()), 4.0, 0.0);
     }
