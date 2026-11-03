@@ -44,7 +44,9 @@ use render::{Camera, Lighting, Scene};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 
-const POOL: u32 = 16384;
+// Room beside the shown patches for the ones a turn builds ahead
+// (procedural_terrain build_budget).
+const POOL: u32 = 24576;
 const TICK_HZ: f32 = 60.0;
 /// The biomes (render::biome), as F1/F2/F4 and F8 step through them.
 const STYLES: [&str; 6] = ["default", "lowland", "alpine", "polder", "tundra", "desert"];
@@ -128,6 +130,9 @@ struct Fly {
     prev: Vec3,
     yaw: f32,
     pitch: f32,
+    /// The last tick's turn (yaw, pitch): drawn between ticks with
+    /// Frame::alpha, so turns are smooth on a 120 Hz screen.
+    turn: (f32, f32),
     /// Cruise speed, metres per second.
     speed: f32,
     /// Keep a fixed height above the ground, like walking with a drone.
@@ -162,7 +167,7 @@ struct Fly {
 
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
-        let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, speed: 40.0, hug: None, wheel: 0.0,
+        let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, hug: None, wheel: 0.0,
             building: None, gpu: None, stale: false, world, built_world: world, world_at: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0, worst_ms: 0.0,
             track: std::env::args().any(|a| a == "--track"), constraints: None };
         fly.bake_track();
@@ -264,11 +269,18 @@ impl Fly {
         self.prev = self.pos;
     }
 
-    fn camera(&self, pos: Vec3) -> Camera { Camera { pos, target: pos + self.forward(), fov_y: 65f32.to_radians(), near: 0.05 } }
-
-    fn forward(&self) -> Vec3 {
-        Vec3::new(-self.yaw.sin() * self.pitch.cos(), self.pitch.sin(), -self.yaw.cos() * self.pitch.cos())
+    /// The camera between the last two ticks (`alpha` 0..1).
+    fn camera(&self, pos: Vec3, alpha: f32) -> Camera {
+        let back = 1.0 - alpha;
+        let forward = look(self.yaw - self.turn.0 * back, self.pitch - self.turn.1 * back);
+        Camera { pos, target: pos + forward, fov_y: 65f32.to_radians(), near: 0.05 }
     }
+
+    fn forward(&self) -> Vec3 { look(self.yaw, self.pitch) }
+}
+
+fn look(yaw: f32, pitch: f32) -> Vec3 {
+    Vec3::new(-yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos())
 }
 
 impl Game for Fly {
@@ -280,8 +292,10 @@ impl Game for Fly {
         let dt = 1.0 / TICK_HZ;
         let c: Controls = c[0];
         self.prev = self.pos;
+        let pitch = (self.pitch + c.look[1]).clamp(-1.5, 1.5);
+        self.turn = (-c.look[0], pitch - self.pitch);
         self.yaw -= c.look[0];
-        self.pitch = (self.pitch + c.look[1]).clamp(-1.5, 1.5);
+        self.pitch = pitch;
         let steps = std::mem::take(&mut self.wheel) + if c.pressed.has(Buttons::UP) { 1.0 } else { 0.0 } - if c.pressed.has(Buttons::DOWN) { 1.0 } else { 0.0 };
         self.speed = (self.speed * 1.25f32.powf(steps)).clamp(1.0, 4000.0);
         let boost = if c.held.has(Buttons::RIGHT_SHOULDER) { 6.0 } else { 1.0 };
@@ -337,7 +351,7 @@ impl Game for Fly {
         }
         if self.building.is_none() && self.world_stale() { self.rebuild()?; }
         let pos = self.prev.lerp(self.pos, frame.alpha);
-        let cam = self.camera(pos);
+        let cam = self.camera(pos, frame.alpha);
         let [w, h] = frame.size;
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;

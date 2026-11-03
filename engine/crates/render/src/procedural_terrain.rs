@@ -278,10 +278,24 @@ pub struct Settings {
     pub root_level: u32,
     /// Cell target multiplier for patches outside every view.
     pub offscreen_factor: f32,
+    /// Degrees added around the view cone before a patch counts as outside:
+    /// a small turn does not refine what was just outside.
+    pub cone_margin_deg: f32,
+    /// New patches built per frame. A turn that wants more builds them
+    /// hidden over the next frames and shows them all at once, so the frame
+    /// never stalls and the ground never has holes.
+    pub build_budget: usize,
+    /// The selection reruns only after the camera moves this far (metres)
+    /// or turns this much (degrees).
+    pub reselect_m: f32,
+    pub reselect_deg: f32,
 }
 
 impl Default for Settings {
-    fn default() -> Self { Settings { cell_pixels: 24.0, error_pixels: 1.5, view_distance: 20000.0, finest: 1.0 / 16.0, root_level: 13, offscreen_factor: 8.0 } }
+    // offscreen_factor 8 swung a 5K view between 4k and 12k patches as it
+    // turned (6.9k new in one 30 degree step): mouse turns hitched.
+    fn default() -> Self { Settings { cell_pixels: 24.0, error_pixels: 1.5, view_distance: 20000.0, finest: 1.0 / 16.0, root_level: 13,
+        offscreen_factor: 2.5, cone_margin_deg: 15.0, build_budget: 1024, reselect_m: 0.5, reselect_deg: 1.0 } }
 }
 
 /// One camera as the LOD sees it.
@@ -313,7 +327,10 @@ impl TerrainView {
     }
 
     /// Whether a sphere can be inside the view cone.
-    fn sees(&self, centre: Vec3, radius: f32) -> bool {
+    fn sees(&self, centre: Vec3, radius: f32) -> bool { self.sees_within(centre, radius, 0.0) }
+
+    /// [`Self::sees`] with the cone widened by `margin` radians.
+    fn sees_within(&self, centre: Vec3, radius: f32, margin: f32) -> bool {
         let to = centre - self.pos;
         let d = to.length();
         if d <= radius { return true; }
@@ -321,9 +338,10 @@ impl TerrainView {
         let cos_a = to.dot(self.forward) / d;
         let sin_r = (radius / d).min(1.0);
         let cos_r = (1.0 - sin_r * sin_r).sqrt();
-        let sin_c = (1.0 - self.cos_half_cone * self.cos_half_cone).max(0.0).sqrt();
+        let cone = (self.cos_half_cone.clamp(-1.0, 1.0).acos() + margin).min(std::f32::consts::PI);
+        let (sin_c, cos_c) = cone.sin_cos();
         // cos(cone + r) <= cos_a
-        cos_a >= self.cos_half_cone * cos_r - sin_c * sin_r
+        cos_a >= cos_c * cos_r - sin_c * sin_r
     }
 }
 
@@ -344,6 +362,8 @@ pub struct Stats {
     pub freed: usize,
     /// Patches dropped because the pool was full.
     pub overflow: usize,
+    /// Wanted patches still to build before the shown set changes.
+    pub pending: usize,
     pub finest_level: u32,
     /// Pixel thresholds were multiplied by this to fit the pool (1 = as set).
     pub lod_scale: f32,
@@ -372,6 +392,17 @@ pub struct ProceduralTerrain {
     /// Centre height and geometric error per node: the field never changes,
     /// and evaluating it was most of the per-frame selection time.
     samples: std::cell::RefCell<HashMap<Node, (f32, f32)>>,
+    /// Patches built but not shown yet: slot and the instance that shows it.
+    hidden: HashMap<(Node, u32), (u32, GpuInstance)>,
+    /// The last selection, its views, patch count and finest level.
+    selection: Option<(Vec<TerrainView>, HashSet<(Node, u32)>, usize, u32)>,
+}
+
+/// One frame of terrain changes: instance writes and patch builds.
+pub struct Plan {
+    pub stats: Stats,
+    changed: Vec<(u32, GpuInstance)>,
+    jobs: Vec<Job>,
 }
 
 /// Cached node samples before the cache starts over.
@@ -383,7 +414,8 @@ const BUDGET: f32 = 0.9;
 
 impl ProceduralTerrain {
     pub fn new(spec: TerrainSpec, settings: Settings) -> Self {
-        ProceduralTerrain { free: (0..spec.capacity).rev().collect(), spec, settings, slots: HashMap::new(), lod: 1.0, samples: Default::default() }
+        ProceduralTerrain { free: (0..spec.capacity).rev().collect(), spec, settings, slots: HashMap::new(), lod: 1.0, samples: Default::default(),
+            hidden: HashMap::new(), selection: None }
     }
 
     fn cell(&self, level: u32) -> f32 { self.settings.finest * (1u32 << level) as f32 }
@@ -422,7 +454,7 @@ impl ProceduralTerrain {
             let dy = (v.pos.y - centre_y).abs() - reach;
             let d = (dx.max(0.0).powi(2) + dz.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt().max(0.05);
             // Out of view, patches only cast shadows: much coarser is fine.
-            let scale = self.lod * if v.sees(centre, radius) { 1.0 } else { self.settings.offscreen_factor };
+            let scale = self.lod * if v.sees_within(centre, radius, self.settings.cone_margin_deg.to_radians()) { 1.0 } else { self.settings.offscreen_factor };
             let px = v.pixels_per_radian / d;
             cell * px > self.settings.cell_pixels * scale || error * px > self.settings.error_pixels * scale
         })
@@ -471,45 +503,97 @@ impl ProceduralTerrain {
         leaves
     }
 
-    /// Choose this frame's patches, build the new ones on the GPU and hide
-    /// the ones no longer needed. Call once per frame before rendering.
-    pub fn update(&mut self, gpu: &Gpu, renderer: &Renderer, views: &[TerrainView]) -> Result<Stats, String> {
+    /// The wanted patches (with their stitch masks) for these views; the
+    /// last selection while the views stay within the reselect thresholds.
+    fn wanted(&mut self, views: &[TerrainView]) -> (HashSet<(Node, u32)>, usize, u32) {
+        let cos_turn = self.settings.reselect_deg.to_radians().cos();
+        if let Some((last, keys, patches, finest)) = &self.selection {
+            let same = last.len() == views.len() && last.iter().zip(views).all(|(a, b)| a.pos.distance(b.pos) <= self.settings.reselect_m
+                && a.forward.dot(b.forward) >= cos_turn && a.pixels_per_radian == b.pixels_per_radian && a.cos_half_cone == b.cos_half_cone);
+            if same { return (keys.clone(), *patches, *finest); }
+        }
         let leaves = self.select_within_budget(views);
-        let mut stats = Stats { patches: leaves.len(), finest_level: u32::MAX, lod_scale: self.lod, ..Default::default() };
-        let wanted: HashMap<(Node, u32), ()> = leaves.iter().map(|&n| ((n, mask(&leaves, n, self.settings.root_level)), ())).collect();
+        let keys: HashSet<(Node, u32)> = leaves.iter().map(|&n| (n, mask(&leaves, n, self.settings.root_level))).collect();
+        let finest = leaves.iter().map(|n| n.level).min().unwrap_or(u32::MAX);
+        self.selection = Some((views.to_vec(), keys.clone(), leaves.len(), finest));
+        (keys, leaves.len(), finest)
+    }
+
+    /// The instance that shows a built patch.
+    fn shown_instance(&self, n: Node, slot: u32) -> GpuInstance {
+        let size = self.size(n.level);
+        let origin = [n.ix as f32 * size, n.iz as f32 * size];
+        let centre_y = self.sample(n).0;
+        let half = size * 0.5;
+        let radius = (2.0 * half * half).sqrt() + size + 8.0 + terrain_field::MAX_PUSH;
+        let mut inst = hidden_instance(&self.spec, slot);
+        inst.sphere = [origin[0] + half, centre_y, origin[1] + half, radius];
+        inst.cluster_count = 1;
+        inst
+    }
+
+    fn job(&self, (n, m): (Node, u32), slot: u32) -> Job {
+        let size = self.size(n.level);
+        Job { origin: [n.ix as f32 * size, n.iz as f32 * size], spacing: self.cell(n.level), mask: m, slot, _pad: [0; 3] }
+    }
+
+    /// This frame's changes, CPU only. Up to `build_budget` new patches are
+    /// built; when the views want more, they are built hidden and the shown
+    /// set changes only once all of them exist (no holes, no stall).
+    pub fn plan(&mut self, views: &[TerrainView]) -> Plan {
+        let (wanted, patches, finest_level) = self.wanted(views);
+        let mut stats = Stats { patches, finest_level, lod_scale: self.lod, ..Default::default() };
         let mut changed: Vec<(u32, GpuInstance)> = Vec::new();
+        let mut jobs = Vec::new();
+        // Hidden patches no longer wanted go back to the pool (still hidden).
+        let free = &mut self.free;
+        self.hidden.retain(|key, (slot, _)| { if wanted.contains(key) { return true; } free.push(*slot); stats.freed += 1; false });
+        let mut new: Vec<(Node, u32)> = wanted.iter().filter(|k| !self.slots.contains_key(k) && !self.hidden.contains_key(k)).copied().collect();
+        // Coarse first: if the pool still runs out, far ground stays and only
+        // some detail goes missing.
+        new.sort_by_key(|(n, m)| (std::cmp::Reverse(n.level), n.ix, n.iz, *m));
+        let budget = self.settings.build_budget.max(1);
+        // With nothing shown yet (the first frame) there is nothing to keep.
+        if new.len() > budget && new.len() <= self.free.len() && !self.slots.is_empty() {
+            // Build ahead, hidden; the shown set stays as it is.
+            for key in new.into_iter().take(budget) {
+                let slot = self.free.pop().unwrap();
+                jobs.push(self.job(key, slot));
+                let inst = self.shown_instance(key.0, slot);
+                self.hidden.insert(key, (slot, inst));
+                stats.built += 1;
+            }
+            stats.pending = wanted.len() - self.slots.keys().filter(|k| wanted.contains(*k)).count() - self.hidden.len();
+            return Plan { stats, changed, jobs };
+        }
+        // Swap: everything wanted is built by the end of this frame (or the
+        // pool has no room to build ahead, which is the old behaviour).
         self.slots.retain(|key, slot| {
-            if wanted.contains_key(key) { return true; }
+            if wanted.contains(key) { return true; }
             self.free.push(*slot);
             changed.push((*slot, hidden_instance(&self.spec, *slot)));
             stats.freed += 1;
             false
         });
-        let mut jobs = Vec::new();
-        // Deterministic order: nearest-first would need sorting anyway.
-        let mut new: Vec<_> = wanted.keys().filter(|k| !self.slots.contains_key(k)).copied().collect();
-        // Coarse first: if the pool still runs out, far ground stays and only
-        // some detail goes missing.
-        new.sort_by_key(|(n, m)| (std::cmp::Reverse(n.level), n.ix, n.iz, *m));
+        for (key, (slot, inst)) in self.hidden.drain() {
+            changed.push((slot, inst));
+            self.slots.insert(key, slot);
+        }
         for key in new {
             let Some(slot) = self.free.pop() else { stats.overflow += 1; continue; };
-            let (n, m) = key;
-            let size = self.size(n.level);
-            let cell = self.cell(n.level);
-            let origin = [n.ix as f32 * size, n.iz as f32 * size];
-            jobs.push(Job { origin, spacing: cell, mask: m, slot, _pad: [0; 3] });
-            let centre_y = self.sample(n).0;
-            let half = size * 0.5;
-            let radius = (2.0 * half * half).sqrt() + size + 8.0 + terrain_field::MAX_PUSH;
-            let mut inst = hidden_instance(&self.spec, slot);
-            inst.sphere = [origin[0] + half, centre_y, origin[1] + half, radius];
-            inst.cluster_count = 1;
-            changed.push((slot, inst));
+            jobs.push(self.job(key, slot));
+            changed.push((slot, self.shown_instance(key.0, slot)));
             self.slots.insert(key, slot);
             stats.built += 1;
         }
-        for n in &leaves { stats.finest_level = stats.finest_level.min(n.level); }
         changed.sort_by_key(|c| c.0);
+        Plan { stats, changed, jobs }
+    }
+
+    /// Choose this frame's patches, build the new ones on the GPU and hide
+    /// the ones no longer needed. Call once per frame before rendering.
+    pub fn update(&mut self, gpu: &Gpu, renderer: &Renderer, views: &[TerrainView]) -> Result<Stats, String> {
+        let Plan { stats, changed, jobs } = self.plan(views);
         // Coalesce neighbouring slots into one upload each.
         let mut i = 0;
         while i < changed.len() {
@@ -519,7 +603,7 @@ impl ProceduralTerrain {
             renderer.write_procedural_instances(gpu, (self.spec.first_instance + changed[i].0) as usize, &run)?;
             i = j;
         }
-        renderer.queue_procedural_terrain(jobs)?;
+        if !jobs.is_empty() { renderer.queue_procedural_terrain(jobs)?; }
         Ok(stats)
     }
 }
@@ -731,6 +815,71 @@ mod tests {
         eprintln!("cam {:?} level6 seen {seen} dist p10 {} p50 {} p90 {}", views[0].pos, far[far.len()/10], far[far.len()/2], far[far.len()*9/10]);
         eprintln!("{} patches {:?}, unbalanced {} root size {rs}", leaves.len(), hist, raw.len());
         assert!(leaves.len() < 20000, "{} patches", leaves.len());
+    }
+
+    /// Joep's playtest spot (x 164, z -163, 46 m up), a 5K view at `yaw_deg`.
+    fn turn_view(t: &ProceduralTerrain, yaw_deg: f32) -> TerrainView {
+        let probe = Node { level: 2, ix: (164.0 / t.size(2)).floor() as i32, iz: (-163.0 / t.size(2)).floor() as i32 };
+        let pos = Vec3::new(164.0, t.sample(probe).0 + 46.0, -163.0);
+        let yaw = yaw_deg.to_radians();
+        TerrainView::new(&Camera { pos, target: pos + Vec3::new(-yaw.sin(), -0.03, -yaw.cos()), fov_y: 65f32.to_radians(), near: 0.05 }, 5120, 2880)
+    }
+
+    #[test]
+    fn turns_build_within_budget_and_show_whole_selections() {
+        let mut t = terrain();
+        let budget = t.settings.build_budget;
+        t.plan(&[turn_view(&t, 0.0)]);
+        while t.plan(&[turn_view(&t, 0.0)]).stats.pending > 0 {}
+        let mut shown: HashSet<(Node, u32)> = t.slots.keys().copied().collect();
+        let mut deferred = 0;
+        for step in 1..=12 {
+            let view = turn_view(&t, step as f32 * 30.0);
+            for _ in 0..64 {
+                let plan = t.plan(&[view]);
+                assert!(plan.jobs.len() <= budget, "{} builds in one frame", plan.jobs.len());
+                let now: HashSet<(Node, u32)> = t.slots.keys().copied().collect();
+                let wanted = t.selection.as_ref().unwrap().1.clone();
+                // The shown set is the previous selection or the new one,
+                // never a mix with holes or overlaps.
+                assert!(now == shown || now == wanted, "partial swap at step {step}");
+                if now != shown { shown = now; }
+                if plan.stats.pending == 0 && shown == wanted { break; }
+                deferred += 1;
+            }
+            assert_eq!(shown, t.selection.as_ref().unwrap().1, "step {step} never completed");
+        }
+        assert!(deferred > 0, "no turn needed more than one frame's budget");
+    }
+
+    #[test]
+    fn turns_change_far_fewer_patches_than_with_eightfold_offscreen() {
+        let worst = |settings: Settings| {
+            let mut t = ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 1 << 16, seed: 1,
+                style: terrain_field::Style::default(), constraints: None }, settings);
+            let mut prev = HashSet::new();
+            let mut worst = 0;
+            for step in 0..=24 {
+                let view = turn_view(&t, step as f32 * 30.0);
+                t.wanted(&[view]);
+                let keys = t.selection.as_ref().unwrap().1.clone();
+                if step > 12 { worst = worst.max(keys.difference(&prev).count()); }
+                prev = keys;
+            }
+            worst
+        };
+        let old = worst(Settings { offscreen_factor: 8.0, cone_margin_deg: 0.0, ..Settings::default() });
+        let new = worst(Settings::default());
+        assert!(new * 10 <= old * 8, "worst new patches per 30 degree turn: {new}, was {old}");
+    }
+
+    #[test]
+    fn a_still_camera_plans_nothing() {
+        let mut t = terrain();
+        let view = turn_view(&t, 40.0);
+        while t.plan(&[view]).stats.pending > 0 {}
+        let plan = t.plan(&[view]);
+        assert!(plan.jobs.is_empty() && plan.changed.is_empty());
     }
 
     #[test]
