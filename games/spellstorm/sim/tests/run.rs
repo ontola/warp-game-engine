@@ -78,3 +78,34 @@ fn every_biome_survives_bots() {
         assert!(w.stat("shots") > 0, "biome {b}: {:?}", w.stats);
     }
 }
+
+#[test]
+fn shrines_rise_ahead_and_before_their_ward() {
+    // Wherever the wizards stand when a shrine rises, its tomes are not
+    // behind the furthest one (Joep: they ran back for them), and never
+    // past a shut ward (they could not be reached).
+    for seed in [7, 11, 23] {
+        let mut w = bots(3, seed);
+        let mut seen = 0;
+        for _ in 0..60 * 150 {
+            w.step();
+            if w.run.altars.len() > seen {
+                let p = |v: glam::Vec3| w.level.progress_of(glam::Vec2::new(v.x, v.z));
+                let front = w.wizards.iter().filter(|&&id| w.alive(id)).map(|&id| p(w.pos(id))).fold(f32::MIN, f32::max);
+                for a in &w.run.altars[seen..] {
+                    let at = p(a.pos);
+                    // Up against a shut wall is as far ahead as anything can be.
+                    let at_wall = w.run.wards.iter().any(|wd| wd.k >= 0 && !wd.opening && (a.pos.z - wd.z - 2.0).abs() < 0.5);
+                    assert!(at_wall || at + 2.5 >= front, "seed {seed}: shrine {} altar at {at} m, behind the front at {front} m (clearings {:?})", seen / 4, w.level.clearing_at);
+                    // The way on runs to lower z; a shut wall is a line across it.
+                    for wd in w.run.wards.iter().filter(|wd| wd.k >= 0 && !wd.opening) {
+                        let near = (a.pos.z - wd.z).abs() < 12.0 && a.pos.x > wd.lo - 1.0 && a.pos.x < wd.hi + 1.0;
+                        assert!(!near || a.pos.z > wd.z + 1.0, "seed {seed}: an altar at {:?}, past the ward at z {}", a.pos, wd.z);
+                    }
+                }
+                seen = w.run.altars.len();
+            }
+        }
+        assert!(seen > 0, "seed {seed}: no shrine rose");
+    }
+}
