@@ -822,26 +822,37 @@ impl World {
         // Across the path, facing the way on. Wizards who ran on past the
         // clearing find it ahead of them, never behind (Joep).
         let mut along = self.level.clearing_at[k];
+        // This clearing's wall, while it is shut: it stays up until everyone
+        // took a tome, so nothing may stand past it.
+        let wall = self.run.wards.iter().find(|w| w.k == k as i32 && !w.opening).cloned();
         if k < 2 {
-            let ahead = self
+            along = self
                 .wizards
                 .iter()
                 .filter(|&&w| self.alive(w))
                 .map(|&w| { let p = self.pos(w); self.level.progress_of(Vec2::new(p.x, p.z)) + 8.0 })
-                .fold(along, f32::max);
-            // Never past the clearing's ward: the wall stays up until
-            // everyone took a tome, so altars beyond it could not be reached.
-            let ward = self.level.clearing_at[k] + (c.z - 3.0).max(0.0);
-            along = ahead.min(ward).min(self.level.length() - 4.0).max(along);
+                .fold(along, f32::max)
+                .min(self.level.length() - 4.0);
         }
         let dir = (self.level.point_at(along + 1.0) - self.level.point_at(along - 1.0))
             .normalize_or_zero();
-        let across = Vec2::new(-dir.y, dir.x);
-        let mid = if along > self.level.clearing_at[k] { self.level.point_at(along) } else { Vec2::new(c.x, c.y) }
+        let mut across = Vec2::new(-dir.y, dir.x);
+        let mut spacing: f32 = 3.6;
+        let mut mid = if along > self.level.clearing_at[k] { self.level.point_at(along) } else { Vec2::new(c.x, c.y) }
             + if k == 2 { dir * -2.0 } else { Vec2::ZERO };
+        // Ahead would be past the wall (the way on runs to lower z): a row
+        // along this side of it instead, which nobody can be beyond.
+        let half = (picks.len() as f32 - 1.0) * 0.5 * spacing;
+        let past = |wd: &Ward| [mid - across * half, mid, mid + across * half].iter().any(|p| p.y < wd.z + 2.0 && p.x > wd.lo - 1.0 && p.x < wd.hi + 1.0);
+        if let Some(wd) = wall.filter(|wd| past(wd)) {
+            let n = picks.len().max(2) as f32 - 1.0;
+            spacing = spacing.min((wd.hi - wd.lo - 2.0).max(0.0) / n);
+            mid = Vec2::new((wd.lo + wd.hi) * 0.5, wd.z + 2.0);
+            across = Vec2::X;
+        }
         let shrine = format!("{}_{}", self.run.biome_index, k);
         for (i, &relic) in picks.iter().enumerate() {
-            let p = mid + across * (i as f32 - (picks.len() - 1) as f32 * 0.5) * 3.6;
+            let p = mid + across * (i as f32 - (picks.len() - 1) as f32 * 0.5) * spacing;
             let pos = Vec3::new(p.x, 0.0, p.y);
             self.burst(pos + Vec3::Y, fx::rgb(1.0, 0.8, 0.4), 16, 3.0, 0.15, None);
             self.run.altars.push(Altar {
