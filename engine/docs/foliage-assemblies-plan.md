@@ -9,6 +9,52 @@ Nanite Foliage and Assemblies.
 first. It is the current state, the open issues and the next tasks; the
 sections after it are the history that led there.
 
+## Active priorities (3 November 2026, user correction)
+
+This section supersedes the older decision below to park milestone 2.
+The next primary architecture milestone is GPU-driven assembly selection,
+not further tuning of the CPU nearest-240 pool. Terrain CPU improvements
+remain supporting work, not a substitute for this milestone.
+
+1. **GPU-owned instance and cluster selection.** Upload persistent tree identity,
+   transform, species/recipe and conservative animated bounds. Share recipe
+   geometry and hierarchy; do not allocate every expanded branch for every tree.
+   GPU instance cull feeds bounded cluster traversal and per-cluster source/voxel
+   screen-error selection. Indirect draws/dispatches consume compact lists without
+   synchronous visibility readback or CPU nearest-tree assignment. Use previous
+   visibility for phase 1, build current depth/HZB, and retest rejected/new work
+   in phase 2. Camera cuts, teleports, disocclusion and list overflow must remain
+   conservative. Residency misses use a valid coarser representation and request
+   pages asynchronously. Moving the same 240-slot choice to a shader alone does
+   not satisfy this milestone.
+2. **Lighting budget: target 2.5 ms in the declared target scene.** Measure shade,
+   indirect/sky, and shadow sampling separately from visibility, raster and shadow
+   construction. The latest Windows ~10 ms number is covered GPU total at
+   1713x964/one view, not a 10 ms lighting measurement. Keep resolution, scene,
+   reconstruction and view count explicit; do not compare it directly with old
+   M5 Pro/1440p shade measurements. Classify tiles/materials before expensive
+   lighting and avoid shading hidden source/voxel samples repeatedly.
+3. **Cached animated vegetation shadows.** Preserve pages/tiles when their
+   caster content and light projection remain valid. Track affected caster bounds,
+   light changes, tree replacement and wind pose/version changes. A changed caster
+   dirties its affected pages, not the entire forest map. Wind cannot simply be
+   ignored: any temporal update cadence or coarse distant wind approximation
+   needs a measured visual-error limit. Keep camera visibility independent from
+   shadow-caster selection. Measure dirty pages, cache hit rate, rasterized caster
+   clusters and update cost during both still-camera wind and travel.
+
+Acceptance: same executable and scene, at least three alternating repetitions,
+per-pass medians and work counts, image/motion checks for LOD transitions and
+shadow validity. Keep experimental paths opt-in. Do not claim one-pixel foliage,
+full streaming, 4K/four-player 120 FPS or Nanite parity before those checks.
+
+Supporting terrain prototype: `WARP_TERRAIN_TOPOLOGY_INDEX=1` introduces explicit
+quadtree branch occupancy, incrementally maintained during balancing splits.
+Neighbour queries stop at known branches rather than searching to the root.
+Six focused CPU tests pass, including 250 randomized splits checked against the
+original ancestor search. This is not yet persistent selection across frames;
+no frame-time improvement or visual acceptance is claimed for this prototype.
+
 ## Windows movement follow-up: CPU owner indexing and retained forest
 
 [Measured implementation report](terrain-forest-streaming-2026-11-03.md):
