@@ -86,6 +86,18 @@ fn run() -> Result<(), String> {
                     game.world.spawn_enemy(kind, at + glam::Vec3::new(x, 0.0, -5.0), false, -1);
                 }
             }
+            // --enchant fire,fire,...: the first wizard's sword enchanted with
+            // that queue (a look at the blade).
+            if let Some(list) = arg("--enchant") {
+                game.step(&[]);
+                let els: Vec<spellstorm::El> = list.split(',').filter_map(|k| spellstorm::el::ALL.iter().copied().find(|e| format!("{e:?}").eq_ignore_ascii_case(k))).collect();
+                let id = game.world.wizards[0];
+                let mods = game.world.a(id).mods.clone();
+                let s = spellstorm::compose(&els, spellstorm::Form::Enchant, &mods);
+                let mut wz = game.world.wiz_mut(id);
+                wz.enchant_time = s.n.duration.max(30.0);
+                wz.enchant = Some(Box::new(s));
+            }
             let ticks = numf("--ticks", 240.0) as u32;
             // --skip: past this level's fights to its last shrine and portal.
             if flag("--skip") {

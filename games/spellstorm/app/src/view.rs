@@ -18,6 +18,10 @@ use std::f32::consts::PI;
 
 /// Instances kept for whatever moves (wizards, monsters, corpses, spells).
 const POOL: usize = 4096;
+/// The steel's length as exported (Godot: SWING_REACH 1.7 - SWORD_HAND 0.62
+/// - Art.BLADE_AT 0.12).
+const STEEL_LEN: f32 = 0.96;
+const BLADE_AT: f32 = 0.12;
 
 /// Godot's light energy 1 lights white albedo like this many lux.
 const LIGHT: f32 = PI;
@@ -146,6 +150,9 @@ pub struct View {
     ambient: Vec3,
     /// Each wizard's hurt_t last frame: a new hit spurts blood.
     wizard_hurt: Vec<f64>,
+    /// Each wizard's blade length as drawn: it grows to the enchanted reach.
+    blade_len: Vec<f32>,
+    blade_sparks: f32,
 }
 
 fn level_key(l: &Level) -> u64 {
@@ -186,6 +193,8 @@ impl View {
             dolls: Default::default(),
             ambient: Vec3::ZERO,
             wizard_hurt: vec![],
+            blade_len: vec![],
+            blade_sparks: 0.0,
             enemy_anims: HashMap::new(),
             debris: Vec::new(),
             cam_center: Vec3::ZERO,
@@ -436,6 +445,7 @@ impl View {
         let mut marked: Vec<(std::ops::Range<usize>, f32, f32)> = Vec::new();
         let time = w.time as f32;
         self.wizard_hurt.resize(w.wizards.len(), 0.0);
+        self.blade_len.resize(w.wizards.len(), STEEL_LEN);
         self.wizard_anims.resize_with(w.wizards.len(), Default::default);
         // Where each staff's gem is as the staff moves: its light and orbs sit there.
         let mut gems = vec![None; w.wizards.len()];
@@ -459,11 +469,46 @@ impl View {
             } else if a.alive && fallen {
                 self.dolls.clear(i);
             }
+            // The blade grows with the enchantment, as far as the swing then
+            // reaches: what you see is what it hits (Wizard._size_sword).
+            let enchanted = wz.enchant_time > 0.0;
+            let reach = if enchanted { wz.enchant_reach() } else { spellstorm::wizard::swing_reach() };
+            let want = (reach - 0.62 - BLADE_AT).max(0.2);
+            let len = &mut self.blade_len[i];
+            *len += (want - *len) * (1.0 - (-10.0 * dt).exp());
+            let stretch = *len / STEEL_LEN;
+            let steel = kit.named.get("steel").copied();
             let from = out.len();
+            let mut steel_xf = None;
             for (j, p) in pieces.iter().enumerate() {
                 let xf = if a.alive { None } else { self.dolls.piece(i, j, doll_alpha) };
-                let xf = xf.unwrap_or_else(|| at * anim::posed(kit, &pose, p.node));
+                let mut xf = xf.unwrap_or_else(|| at * anim::posed(kit, &pose, p.node));
+                if a.alive && Some(p.node) == steel {
+                    xf *= Mat4::from_scale(Vec3::new(1.0, stretch, 1.0));
+                    steel_xf = Some(xf);
+                }
                 out.push((p.mesh, look::affine(xf), p.shadow));
+            }
+            // The element runs off the enchanted blade along its whole
+            // length: fire rises, water drips, the rest drifts.
+            if let (true, Some(xf), Some(el)) = (enchanted, steel_xf, wz.enchant.as_ref().and_then(|e| e.primary)) {
+                let n: u32 = wz.enchant.as_ref().map(|e| e.counts.iter().map(|c| c.1 as u32).sum()).unwrap_or(1);
+                let c = el.color();
+                let mut em = crate::fx::particles([c[0], c[1], c[2], 0.9], 1, 0.45, 0.07 + 0.012 * n as f32);
+                em.gravity = match el {
+                    spellstorm::El::Fire => Vec3::Y * 2.5,
+                    spellstorm::El::Water | spellstorm::El::Poison => Vec3::Y * -6.0,
+                    _ => Vec3::Y * 0.4,
+                };
+                em.v = (0.1, 0.5);
+                em.spread = 180.0;
+                let k = (dt * 60.0 * (0.6 + 0.35 * n as f32)).max(0.0);
+                self.blade_sparks += k;
+                while self.blade_sparks >= 1.0 {
+                    self.blade_sparks -= 1.0;
+                    let t = self.fx.f();
+                    self.fx.emit(em, xf.transform_point3(Vec3::Y * t * STEEL_LEN), 1);
+                }
             }
             // Low on health the robe gets bloodier; a new hit spurts blood.
             let life = if a.alive { (a.hp / a.max_hp.max(1e-6)) as f32 } else { 0.0 };
