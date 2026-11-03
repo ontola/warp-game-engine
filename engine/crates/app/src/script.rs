@@ -27,6 +27,10 @@
 //! audio step as a WAV with its peak and RMS. `cmd` (a string or a list)
 //! runs game debug commands (`Game::command`) before the step's ticks, to
 //! set up a scenario: give items, teleport, aim. Every step prints one JSON line.
+//! `bench: N` then draws N frames of the current state (no ticks) and reports
+//! median and p95 CPU game/render/HUD/present ms, the serialized GPU wait and
+//! the HUD's vertex count; `bench_height` caps the 3D picture as a window
+//! does (1440), leaving the HUD at full size.
 //!
 //! Text and devices: `clipboard` sets the (in-process) clipboard, `text`
 //! types a string and `keys` sends editing keys (`Backspace`, `Enter`,
@@ -73,6 +77,8 @@ pub struct Step {
     #[serde(default)]
     pub press: Vec<String>,
     pub capture: Option<String>,
+    pub bench: Option<u32>,
+    pub bench_height: Option<u32>,
     pub state: Option<String>,
     pub expect: Option<String>,
     /// Tick (with this step's controls) until this pointer passes the
@@ -256,6 +262,27 @@ fn run_steps(game: &mut dyn Game, mut headless: Option<&mut Headless>, script: &
         if text_events > 0 { line["text_events"] = json!(text_events); }
         if let Some(d) = device { line["device"] = json!(d.to_string()); }
         if !replies.is_empty() { line["cmd"] = json!(replies); }
+        if let Some(n) = step.bench.filter(|n| *n > 0) {
+            let headless = headless.as_deref_mut().ok_or("bench needs a renderer")?;
+            headless.max_height = step.bench_height;
+            let mut cols: [Vec<f64>; 6] = Default::default();
+            let mut vertices = (0, 0);
+            for _ in 0..n {
+                let started = std::time::Instant::now();
+                let t = headless.render_at(game, 1.0)?;
+                let waiting = std::time::Instant::now();
+                headless.gpu.wait();
+                let wait = waiting.elapsed().as_secs_f64() * 1000.0;
+                let wall = started.elapsed().as_secs_f64() * 1000.0;
+                for (c, v) in cols.iter_mut().zip([t.game_ms, t.render_ms, t.hud_ms, t.present_ms, wait, wall]) { c.push(v); }
+                vertices = (t.hud_vertices, t.hud_text_runs);
+            }
+            headless.max_height = None;
+            let stat = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); json!({ "median": v[v.len() / 2], "p95": v[((v.len() - 1) as f64 * 0.95) as usize] }) };
+            let [game_ms, render_ms, hud_ms, present_ms, wait_ms, wall_ms] = &mut cols;
+            line["bench"] = json!({ "frames": n, "max_height": step.bench_height, "game_ms": stat(game_ms), "render_ms": stat(render_ms), "hud_ms": stat(hud_ms),
+                "present_ms": stat(present_ms), "gpu_wait_ms": stat(wait_ms), "wall_ms": stat(wall_ms), "hud_vertices": vertices.0, "hud_text_runs": vertices.1 });
+        }
         if let Some(name) = &step.capture {
             let headless = headless.as_deref_mut().ok_or("capture needs a renderer")?;
             let rgba = headless.frame(game)?;

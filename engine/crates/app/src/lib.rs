@@ -291,6 +291,7 @@ impl Output {
         let started = Instant::now();
         self.hud.prepare(gpu, &draw.hud)?;
         self.timings.hud_ms = started.elapsed().as_secs_f64() * 1000.;
+        (self.timings.hud_vertices, self.timings.hud_text_runs) = (draw.hud.vertices.len(), draw.hud.text.len());
         let started = Instant::now();
         self.presenter.present(gpu, picture, target, Some(&self.hud), None)?;
         self.timings.present_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -375,6 +376,8 @@ pub struct Headless<'g> {
     /// Offline sound: scripts mix one tick of audio per tick into `recorded`.
     pub audio: Option<Box<dyn audio::Source>>,
     pub recorded: Vec<f32>,
+    /// Cap the 3D picture's height as a window does (the HUD stays native).
+    pub max_height: Option<u32>,
     renderer: Option<Renderer>,
     out: Output,
     target: wgpu::Texture,
@@ -383,7 +386,7 @@ pub struct Headless<'g> {
 impl<'g> Headless<'g> {
     pub fn new(gpu: &'g Gpu, size: [u32; 2], tick_hz: f32) -> Result<Self, String> {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format) })
+        Ok(Self { gpu, size, tick_hz, audio: None, recorded: Vec::new(), max_height: None, renderer: None, out: Output::new(gpu, format)?, target: offscreen(gpu, size, format) })
     }
     /// Draw one frame and read it back as RGBA8.
     pub fn frame(&mut self, game: &mut dyn Game) -> Result<Vec<u8>, String> {
@@ -404,7 +407,7 @@ impl<'g> Headless<'g> {
         let draw = game.draw(&mut frame)?;
         let game_ms = started.elapsed().as_secs_f64() * 1000.;
         let renderer = self.renderer.as_ref().ok_or("the game drew without a scene")?;
-        self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), None)?;
+        self.out.draw(self.gpu, renderer, &draw, self.size, split, &self.target.create_view(&Default::default()), self.max_height)?;
         Ok(profile::DrawTimings { game_ms, ..self.out.timings })
     }
     pub fn renderer(&self) -> Option<&Renderer> { self.renderer.as_ref() }
