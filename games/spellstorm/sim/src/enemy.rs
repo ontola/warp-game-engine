@@ -90,7 +90,9 @@ pub struct Kind {
     pub resist: &'static [(El, f64)],
     pub heals_from: Option<El>,
     /// Pops in a burst of mud when it dies.
-    pub burst: bool,
+    /// Dies in a burst of this: a nova on whoever stands close and a
+    /// field where it fell.
+    pub burst: Option<El>,
     pub always_wet: bool,
     pub practice: bool,
     /// Raises these out of the ground (necromancer).
@@ -128,7 +130,7 @@ const K: Kind = Kind {
     undead: false,
     resist: &[],
     heals_from: None,
-    burst: false,
+    burst: None,
     always_wet: false,
     practice: false,
     raise: None,
@@ -147,7 +149,7 @@ use El::*;
 
 const BONES: &[(El, f64)] = &[(Frost, 0.3), (Earth, -0.3), (Void, 0.5)];
 
-pub static KINDS: [Kind; 26] = [
+pub static KINDS: [Kind; 30] = [
     Kind {
         key: "ghoul",
         name: "Ghoul",
@@ -210,7 +212,7 @@ pub static KINDS: [Kind; 26] = [
         size: 1.25,
         mass: 2.0,
         resist: &[(Water, 1.0), (Earth, 0.2)],
-        burst: true,
+        burst: Some(Mud),
         ..K
     },
     Kind {
@@ -553,6 +555,76 @@ pub static KINDS: [Kind; 26] = [
         ring: 16,
         summon: &["imp", "imp", "demon"],
         nova: Magma,
+        ..K
+    },
+    // The Drowned Caves' own (Warp, models in Godot's enemy.gd): bats in
+    // flocks that dive through you, toadstools that die in a cloud of
+    // poison, crabs shooting crystal shards, and the crabs' mother.
+    Kind {
+        key: "bat",
+        name: "Cave Bat",
+        hp: 16.0,
+        speed: 6.0,
+        dmg: 6.0,
+        reach: 5.0,
+        keep: Some(3.5),
+        el: Air,
+        size: 1.0,
+        attack: Attack::Dash,
+        dash: (14.0, 0.25),
+        wind: Some(0.45),
+        resist: &[(Air, 0.5), (Lightning, -0.4)],
+        pack: 4,
+        spawn: Spawn::Far,
+        ..K
+    },
+    Kind {
+        key: "shambler",
+        name: "Spore Shambler",
+        hp: 85.0,
+        speed: 2.0,
+        dmg: 11.0,
+        reach: 1.5,
+        el: Poison,
+        size: 1.15,
+        mass: 2.0,
+        burst: Some(Poison),
+        resist: &[(Poison, 1.0), (Fire, -0.5), (Water, 0.3)],
+        ..K
+    },
+    Kind {
+        key: "crawler",
+        name: "Crystal Crawler",
+        hp: 60.0,
+        speed: 2.6,
+        dmg: 9.0,
+        reach: 10.0,
+        keep: Some(7.0),
+        el: Ice,
+        attack: Attack::Ranged,
+        shots: &[Shot::Fan3, Shot::Burst3],
+        wind: Some(0.8),
+        mass: 1.6,
+        resist: &[(Frost, 1.0), (Ice, 1.0), (Earth, -0.4)],
+        ..K
+    },
+    Kind {
+        key: "crystal_mother",
+        name: "The Crystal Mother",
+        model: Some("crawler"),
+        hp: 1500.0,
+        speed: 2.4,
+        dmg: 26.0,
+        reach: 2.8,
+        el: Ice,
+        size: 2.5,
+        attack: Attack::Slam,
+        mass: 9.0,
+        resist: &[(Frost, 1.0), (Ice, 1.0), (Earth, -0.3)],
+        boss: true,
+        ring: 16,
+        summon: &["crawler", "bat", "bat"],
+        nova: Lightning,
         ..K
     },
     // Not in Godot's table: a stand-in so `Enemy::default()` (the component
@@ -1788,13 +1860,13 @@ impl World {
             self.drop_globes(pos, 1);
         }
         self.drop_souls(pos, max_hp);
-        if c.burst {
+        if let Some(el) = c.burst {
             let n = NovaN {
                 radius: 2.6,
-                rate: attack_scale(El::Mud, 18.0),
+                rate: attack_scale(el, 18.0),
             };
-            self.burst_nova(id, El::Mud, n, pos, Some(WIZARDS));
-            self.add_field(pos, El::Mud, 2.0, 7.0, None);
+            self.burst_nova(id, el, n, pos, Some(WIZARDS));
+            self.add_field(pos, el, 2.0, 7.0, None);
         }
         if let Some(el) = elite.and_then(|x| x.el) {
             let n = NovaN {

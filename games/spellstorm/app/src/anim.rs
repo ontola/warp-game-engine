@@ -180,6 +180,11 @@ pub fn fall(model: &str, big: f32) -> Fall {
         "ghoul" => Fall::Scatter { power: 2.6, up: 4.0, life: 3.0 },
         "frost_brute" => Fall::Scatter { power: 3.5 * big, up: 5.0, life: 3.0 },
         "lurker" => Fall::Scatter { power: 2.4, up: 3.0, life: 3.0 },
+        // A bat drops out of the air; crystal shells crack apart; a
+        // toadstool goes to pulp in its own spore cloud.
+        "bat" => Fall::Scatter { power: 1.2, up: 1.0, life: 2.0 },
+        "crawler" => Fall::Scatter { power: 2.8 * big, up: 3.5, life: 3.0 },
+        "shambler" => Fall::Scatter { power: 2.0, up: 2.5, life: 2.0 },
         "drowned" | "toad" => Fall::Scatter { power: 1.5 * big, up: 2.0, life: 0.6 },
         "bile" => Fall::Scatter { power: 5.0 * big, up: 5.0, life: 2.0 },
         "imp" | "sprite" | "watcher" | "demon" => Fall::BlowUp,
@@ -251,6 +256,11 @@ impl EnemyAnim {
             rot.y = self.spin;
         } else if cfg.key == "wraith" || model == "wraith" {
             pos.y = 0.3 + (time * 1000.0 / 400.0).sin() * 0.1;
+        } else if cfg.key == "bat" {
+            // Flutters: bobs and rocks as it hangs in the air.
+            let tt = time * 9.0 + jitter;
+            pos.y = 0.1 + tt.sin().abs() * 0.12;
+            rot.z = (tt * 0.5).sin() * 0.12;
         } else if cfg.key == "watcher" {
             let tt = time + jitter;
             pos.y = 0.25 + (tt * 2.1).sin() * 0.15;
