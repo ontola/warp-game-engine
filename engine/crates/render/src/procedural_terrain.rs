@@ -514,7 +514,8 @@ impl ProceduralTerrain {
             if same { return (keys.clone(), *patches, *finest); }
         }
         let leaves = self.select_within_budget(views);
-        let keys: HashSet<(Node, u32)> = leaves.iter().map(|&n| (n, mask(&leaves, n, self.settings.root_level))).collect();
+        let topology = TerrainTopology::new(&leaves, self.settings.root_level);
+        let keys: HashSet<(Node, u32)> = leaves.iter().map(|&n| (n, mask(&topology, n, self.settings.root_level))).collect();
         let finest = leaves.iter().map(|n| n.level).min().unwrap_or(u32::MAX);
         self.selection = Some((views.to_vec(), keys.clone(), leaves.len(), finest));
         (keys, leaves.len(), finest)
@@ -621,6 +622,7 @@ fn hidden_instance(spec: &TerrainSpec, slot: u32) -> GpuInstance {
 }
 
 /// The leaf covering node `n`'s area at `n.level` or coarser, if any.
+#[cfg(test)]
 fn covering(leaves: &HashSet<Node>, mut n: Node, root: u32) -> Option<Node> {
     loop {
         if leaves.contains(&n) { return Some(n); }
@@ -629,7 +631,46 @@ fn covering(leaves: &HashSet<Node>, mut n: Node, root: u32) -> Option<Node> {
     }
 }
 
+/// Explicit quadtree occupancy: branches terminate unsuccessful neighbour
+/// queries immediately. Splits update the index rather than rebuilding it.
+struct TerrainTopology {
+    nodes: HashMap<Node, bool>, // true: leaf; false: branch
+    indexed: bool,
+}
+impl TerrainTopology {
+    fn new(leaves: &HashSet<Node>, root: u32) -> Self {
+        Self::with_index(leaves, root, std::env::var("WARP_TERRAIN_TOPOLOGY_INDEX").is_ok_and(|v| v == "1"))
+    }
+    fn with_index(leaves: &HashSet<Node>, root: u32, indexed: bool) -> Self {
+        let mut nodes = HashMap::with_capacity(leaves.len() * 2);
+        for &leaf in leaves {
+            nodes.insert(leaf, true);
+            let mut n = leaf;
+            while indexed && n.level < root {
+                n = n.parent();
+                if nodes.insert(n, false).is_some() { break; }
+            }
+        }
+        Self { nodes, indexed }
+    }
+    fn covering(&self, mut n: Node, root: u32) -> Option<Node> {
+        loop {
+            if let Some(&leaf) = self.nodes.get(&n) {
+                if leaf { return Some(n); }
+                if self.indexed { return None; }
+            }
+            if n.level >= root { return None; }
+            n = n.parent();
+        }
+    }
+    fn split(&mut self, n: Node) {
+        if self.indexed { self.nodes.insert(n, false); } else { self.nodes.remove(&n); }
+        for child in n.children() { self.nodes.insert(child, true); }
+    }
+}
+
 fn balance(leaves: &mut HashSet<Node>, root: u32) {
+    let mut topology = TerrainTopology::new(leaves, root);
     let mut queue: Vec<Node> = leaves.iter().copied().collect();
     queue.sort_by_key(|n| (n.level, n.ix, n.iz));
     while let Some(n) = queue.pop() {
@@ -638,9 +679,10 @@ fn balance(leaves: &mut HashSet<Node>, root: u32) {
             for dx in -1..=1 {
                 if dx == 0 && dz == 0 { continue; }
                 let m = Node { level: n.level, ix: n.ix + dx, iz: n.iz + dz };
-                if let Some(c) = covering(leaves, m, root) {
+                if let Some(c) = topology.covering(m, root) {
                     if c.level > n.level + 1 {
                         leaves.remove(&c);
+                        topology.split(c);
                         for k in c.children() { leaves.insert(k); queue.push(k); }
                         queue.push(n);
                     }
@@ -652,9 +694,9 @@ fn balance(leaves: &mut HashSet<Node>, root: u32) {
 
 /// Edge (bits 0..3: -x, +x, -z, +z) and corner (bits 4..7) flags for
 /// neighbours one level coarser.
-fn mask(leaves: &HashSet<Node>, n: Node, root: u32) -> u32 {
+fn mask(topology: &TerrainTopology, n: Node, root: u32) -> u32 {
     let coarser = |dx: i32, dz: i32| {
-        covering(leaves, Node { level: n.level, ix: n.ix + dx, iz: n.iz + dz }, root).is_some_and(|c| c.level > n.level)
+        topology.covering(Node { level: n.level, ix: n.ix + dx, iz: n.iz + dz }, root).is_some_and(|c| c.level > n.level)
     };
     let mut m = 0;
     if coarser(-1, 0) { m |= 1; }
@@ -779,6 +821,30 @@ mod tests {
 
     fn terrain() -> ProceduralTerrain {
         ProceduralTerrain::new(TerrainSpec { first_instance: 0, first_cluster: 0, first_vertex: 0, capacity: 1 << 16, seed: 1, style: terrain_field::Style::default(), constraints: None }, Settings::default())
+    }
+
+    #[test]
+    fn topology_queries_match_reference_after_splits() {
+        let root = 7;
+        let mut leaves: HashSet<Node> = (-1..=1).flat_map(|ix| (-1..=1).map(move |iz| Node { level: root, ix, iz })).collect();
+        let mut topology = TerrainTopology::with_index(&leaves, root, true);
+        let mut seed = 13u32;
+        for _ in 0..250 {
+            let mut ordered: Vec<_> = leaves.iter().copied().filter(|n| n.level > 0).collect();
+            ordered.sort_by_key(|n| (n.level, n.ix, n.iz));
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let n = ordered[seed as usize % ordered.len()];
+            leaves.remove(&n);
+            leaves.extend(n.children());
+            topology.split(n);
+            for &leaf in &leaves {
+                for dz in -1..=1 { for dx in -1..=1 {
+                    let q = Node { level: leaf.level, ix: leaf.ix + dx, iz: leaf.iz + dz };
+                    assert_eq!(topology.covering(q, root), covering(&leaves, q, root));
+                }}
+            }
+        }
+        assert_eq!(topology.nodes, TerrainTopology::with_index(&leaves, root, true).nodes);
     }
 
     #[test]
