@@ -244,3 +244,21 @@ fn opaque_transparent_and_volume_fog_share_visible_background() {
         assert!(calls(&selected.body, fog), "{consumer} must use the common directional fog");
     }
 }
+
+#[test]
+fn smoke_and_surface_share_finite_atmosphere() {
+    let surface = module();
+    let smoke = naga::front::wgsl::parse_str(crate::fx::shader_source()).unwrap();
+    for distance in [0.0, 10.0, 50.0, 190.0, 650.0] {
+        for height in [-2.0, 0.0, 20.0, 200.0] {
+            for vertical in [-0.8, -0.00001, 0.0, 0.00001, 0.8] {
+                let args = [distance, height, vertical, 220.0];
+                assert_eq!(scalar_function(&smoke,"fog_column",&args), scalar_function(&surface,"fog_column",&args));
+            }
+        }
+    }
+    for g in [0.0, 0.6, 0.8] { for mu in [-1.0, 0.0, 0.9, 1.0] {
+        let args = [mu,g];
+        assert!((scalar_function(&smoke,"fog_phase",&args)-scalar_function(&surface,"fog_phase",&args)).abs()<0.00001);
+    }}
+}

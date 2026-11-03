@@ -45,6 +45,13 @@ impl Stadium {
     }
 
     pub fn wall_r(&self) -> f32 { self.inner_r + ROWS as f32 * ROW_DEPTH + 1.4 }
+    /// Outside the rounded-square audience wall, with clearance for wall
+    /// thickness, segmented corners and the player's body. No height ceiling.
+    pub fn outside(&self, pos: Vec3) -> bool {
+        let r = self.wall_r() + 3.0;
+        (pos.x / r).powi(4) + (pos.z / r).powi(4) > 1.0
+    }
+
     pub fn wall_h(&self) -> f32 { self.base_y + ROWS as f32 * ROW_RISE + BACK_WALL_EXTRA }
     pub fn seg_ang() -> f32 { TAU / SEGMENTS as f32 }
 

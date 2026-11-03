@@ -27,7 +27,7 @@ pub use blast::{Blast, Los};
 pub use coop::{Archetype, Waves};
 pub use destruct::{Breakage, Carve, Chunk};
 pub use flow::{Modifier, Phase, PickupKind, CARD_PICK_TIMEOUT, MODIFIERS, PICKUPS, ROUNDS_TO_WIN};
-pub use player::PHOENIX_TICKS;
+pub use player::{PHOENIX_TICKS, HOWITZER_RELOAD};
 pub use specials::{AIR_STRIKE_TRAVEL, ION_CHARGE, ION_RADIUS};
 pub use weapon::{Special, Weapon};
 use glam::Vec3;
@@ -153,6 +153,11 @@ pub struct Player {
     pub alive: bool,
     /// Dead in a 3+ player round: a walking spectator nobody can hurt.
     pub ghost: bool,
+    /// Fixed audience artillery station after elimination.
+    #[serde(default)]
+    pub howitzer: Option<Vec3>,
+    #[serde(default)]
+    pub siege_crossbow: bool,
     pub ammo: u32,
     pub reloading: bool,
     /// Shared by firing and reloading (Godot `rifle_cooldown`).
@@ -205,7 +210,7 @@ impl Player {
         Self {
             pos: Vec3::ZERO, vel: Vec3::ZERO, yaw: 0.0, pitch: 0.0, recoil_pitch: 0.0, on_floor: false, wall_normal: None,
             jumps_left: 2, wall_jump_cd: 0.0, dash_timer: 0.0, dash_dir: Vec3::ZERO,
-            dash_charges: 0, dash_recharge: 0.0, health: MAX_HEALTH, alive: true, ghost: false,
+            dash_charges: 0, dash_recharge: 0.0, health: MAX_HEALTH, alive: true, ghost: false, howitzer: None, siege_crossbow: false,
             ammo: weapon::BASE_MAG_SIZE as u32, reloading: false, rifle_cd: 0.0, bloom: 0.0, score: 0, bot, since_shot: 9.0,
             cards: Vec::new(), weapon: Weapon::default(), offer: None, offer_age: 0.0,
             iframes: 0.0, slow_mult: 1.0, slow_timer: 0.0, poison_left: 0.0, poison_dps: 0.0, poison_accum: 0.0, poison_from: None,
@@ -232,6 +237,9 @@ impl Player {
     pub fn max_health(&self) -> i32 { MAX_HEALTH + self.weapon.max_hp_bonus }
     pub fn mag_size(&self) -> u32 { self.weapon.mag_size() }
     /// Can be hurt and seen: alive, not a ghost.
+    pub fn artillery_elevation(&self, pitch: f32) -> f32 { (pitch + if self.siege_crossbow { 0.18 } else { 0.55 }).clamp(-0.5, 1.25) }
+    pub fn howitzer_elevation(&self) -> f32 { self.artillery_elevation(self.pitch) }
+    pub fn artillery_reload(&self) -> f64 { if self.siege_crossbow { 3.0 } else { HOWITZER_RELOAD } }
     pub fn targetable(&self) -> bool { self.alive && !self.ghost }
 
     /// The hit ellipsoids: centre, semi-axes (in the yaw frame), is head.
@@ -288,7 +296,7 @@ pub struct Bullet {
 
 /// Grenades, cluster fragments, mines and dash bombs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProjectileKind { Grenade, Cluster, Fragment, Mine, DashBomb }
+pub enum ProjectileKind { Grenade, Cluster, Fragment, Mine, DashBomb, Howitzer, SiegeBolt }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Projectile {
@@ -549,7 +557,15 @@ impl World {
             if p.bot { *input = Input::default(); }
         }
         // Each player runs its whole tick in turn, as Godot's nodes do.
-        for (i, &input) in inp.iter().enumerate() { self.player_tick(i, input); }
+        for (i, &input) in inp.iter().enumerate() {
+            self.player_tick(i, input);
+            if self.players[i].alive && !self.players[i].ghost && self.arena.stadium.outside(self.players[i].pos) {
+                self.players[i].launching = None;
+                self.players[i].phoenix = None;
+                self.players[i].downed = false;
+                self.kill(i, None, Gib::Ragdoll, Vec3::Y);
+            }
+        }
         self.step_bullets();
         self.step_projectiles();
         self.step_pickups();

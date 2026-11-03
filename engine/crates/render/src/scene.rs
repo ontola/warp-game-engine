@@ -32,7 +32,8 @@ pub const EMISSIVE: u32 = 1024;
 /// and moss on a block's faces, tinted by `tint`; `scale` 0..1 is damage
 /// (more and darker cracks). Meant for unit-cube blocks (hewn bricks).
 /// With a texture layer, samples a shared mipmapped stone surface instead:
-/// RGB albedo, normal XY and normal alpha roughness multiplier. The repeat
+/// RGB albedo, normal XY, normal B signed 32 mm height, and normal alpha
+/// roughness multiplier. Height 1 disables parallax for custom rock maps. The repeat
 /// is `stone_surface::REPEAT_METRES`; `scale` still carries damage.
 pub const ROCK: u32 = 2048;
 /// Procedural flowing lava (Growing Guns' lava_flow), unlit: an animated
@@ -103,7 +104,7 @@ pub struct BlendMaterial {
 pub struct Material {
     /// Albedo tint (linear), multiplied with the texture.
     pub tint: [f32; 3],
-    /// Texture array layer, or -1 for none.
+    /// Texture array layer, or -1 for none. LAVA with -2 uses mesh UVs for small molten chambers.
     pub layer: i32,
     pub roughness: f32,
     pub flags: u32,
@@ -142,6 +143,8 @@ pub const PART_WIND: u32 = 32;
 /// Weighted vertices are updated by the shared skinning pass. Dynamic shadow
 /// caster; temporal history is rejected until deformation vectors are supplied.
 pub const SKINNED: u32 = 64;
+/// GPU debris touching lava: use the shared molten surface shading.
+pub const MOLTEN_DEBRIS: u32 = 128;
 
 // Bit 7 is reserved for part_wind::HISTORY_EPOCH. The GPU toggles it when a
 // sleeping assembly wakes, so motion history rejects the old pose once while
@@ -475,6 +478,10 @@ pub struct Scene {
     /// Sun visibility 0..1 baked per `heightfield` sample (same grid). When
     /// present, terrain visibility reads it instead of tracing per pixel.
     pub terrain_sun: Vec<f32>,
+    /// Persistent sun-shadow casters, fitted to these static instance bounds.
+    /// Camera motion reuses the map; source transforms and sun changes rebake it.
+    /// Keep moving/destructible actors out. Empty preserves the default policy.
+    pub static_sun_instances: Vec<usize>,
     /// Game data for materials (Sideways: road surface per 2 m row).
     pub aux: Vec<u32>,
     /// A tiling scalar field procedural materials sample (`noise_field`):

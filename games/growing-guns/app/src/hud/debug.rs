@@ -166,7 +166,7 @@ impl DebugMenu {
                 v.push(Row::Head(format!("SKY: {}", ctx.sky)));
                 let head = ctx.sky.split(':').next().unwrap_or("");
                 v.push(Row::Line(String::new(), vec![
-                    Entry::run("GODOT", &cmds(&["sky godot"], p), head == "godot"),
+                    Entry::run("RANDOM", &cmds(&["sky random"], p), head == "random"),
                     Entry::run("PER ROUND", &cmds(&["sky rounds"], p), head == "rounds"),
                     Entry::run("DAY CYCLE", &cmds(&["sky cycle"], p), head == "cycle"),
                 ]));

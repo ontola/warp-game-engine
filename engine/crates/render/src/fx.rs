@@ -24,7 +24,7 @@ use std::sync::Mutex;
 /// target saturates anyway.
 const MAX_CD: f32 = 100_000_000.0;
 const SPHERE_VERTICES: u32 = 16 * 9 * 6;
-const BILLOW_VERTICES: u32 = 32 * 18 * 6;
+const BILLOW_VERTICES: u32 = 48 * 24 * 6;
 const COLUMN_VERTICES: u32 = 6; // Bounded ray-integrated volume, including camera-inside views.
 const STREAK_VERTICES: u32 = 6 * 12;
 const MOTE_VERTICES: u32 = 6;
@@ -231,6 +231,12 @@ impl AdditiveStreak {
 }
 
 impl Puff {
+    fn dust(&self) -> bool { self.kind() == 0 && self.az[3] >= 3.0 }
+    fn drift(&self, time: f32) -> Vec3 {
+        if !self.dust() { return Vec3::ZERO; }
+        let age=((time-self.timing[0])/self.timing[1]).clamp(0.0,1.0);
+        Vec3::from_slice(&self.extra[..3]) * (1.0-(1.0-age).powi(4))
+    }
     fn kind(&self) -> u32 { self.center_kind[3] as u32 }
     fn end(&self) -> f32 {
         let natural = self.timing[0] + self.timing[1];
@@ -342,6 +348,35 @@ impl Effects {
         }
     }
 
+    /// Remaining slots for live ground dust.
+    pub fn dust_capacity(&self, time: f32) -> usize {
+        384usize.saturating_sub(self.puffs.iter().filter(|p|p.dust() && p.end()>time).count())
+    }
+
+    /// Low ground dust, using the existing lit billow shader. Travel eases out
+    /// on the GPU; overload skips new dust rather than erasing existing trails.
+    pub fn ground_dust(&mut self,time:f32,pos:Vec3,travel:Vec3,radius:f32) {
+        if self.dust_capacity(time)==0 {return;}
+        let seed=self.f();let life=self.range(0.85,1.25);
+        self.additive(Puff {
+            center_kind:pos.extend(SMOKE).to_array(),
+            ax:[radius*2.0,0.0,0.0,seed], ay:[0.0,radius*1.3,0.0,0.0],
+            az:[0.0,0.0,radius*2.0,3.0],body:[0.9,0.83,0.72,1.2],
+            timing:[time,life,0.12,0.0],extra:travel.extend(0.55).to_array(),
+        });
+    }
+
+    pub fn exhaust_smoke(&mut self, time: f32, pos: Vec3, radius: f32) {
+        let seed=self.f();
+        let r=radius.max(0.1);
+        self.additive(Puff {
+            center_kind:pos.extend(SMOKE).to_array(),
+            ax:[r,0.0,0.0,seed], ay:[0.0,r,0.0,0.0], az:[0.0,0.0,r,2.25],
+            body:[0.22,0.23,0.24,0.65], timing:[time-0.30,3.0,2.8,0.35],
+            extra:[1.0,1.0,1.0,0.38],
+        });
+    }
+
     /// A full blast at `time` (seconds on the clock passed to `flush`):
     /// smoke, fireball, flame tongues, embers, heat shell and lights.
     /// `color` tints embers (Godot passes the bullet colour).
@@ -393,6 +428,21 @@ impl Effects {
         self.billows(time,pos,r,1,false,0.8,0.55,1.4,r*0.3,1.1,0.0,Vec3::ONE,0.7);
         self.billows(time,pos,r,1,true,0.28,0.45,0.9,r*0.15,1.7,0.0,Vec3::ONE,1.0);
         self.changed=true;
+    }
+
+    /// Narrow upright flames around a sinking body. Keep the hot geometry
+    /// away from its eye position instead of enclosing the camera in a puff.
+    pub fn burning_body(&mut self, time: f32, pos: Vec3) {
+        let seed = self.f();
+        let width = self.range(0.25, 0.42);
+        let height = self.range(2.4, 3.4);
+        self.additive(Puff {
+            center_kind: (pos + Vec3::Y * 0.12).extend(FIRE).to_array(),
+            ax: [width, 0.0, 0.0, seed], ay: [0.0, height, 0.0, 0.0],
+            az: [0.0, 0.0, width, 2.55], body: [1.0, 1.0, 1.0, 0.95],
+            timing: [time, 0.55, 0.08, 0.0], extra: [1.0, 1.0, 1.0, 1.2],
+            ..Default::default()
+        });
     }
 
     /// A hanging red haze where spectators died (Godot's blood mist: the
@@ -537,7 +587,7 @@ impl Effects {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniform { view_proj: [[f32; 4]; 4], inverse_view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4], smoke: [f32; 4], depth_from_output: [[f32;4];4], ambient: [f32;4], sunlight: [f32;4], fog: [f32;4], horizon: [f32;4], sun_vp: [[f32;4];4] }
+struct Uniform { view_proj: [[f32; 4]; 4], inverse_view_proj: [[f32; 4]; 4], depth_vp: [[f32; 4]; 4], view: [[f32; 4]; 4], camera_near: [f32; 4], size: [f32; 4], clock: [f32; 4], smoke: [f32; 4], depth_from_output: [[f32;4];4], ambient: [f32;4], sunlight: [f32;4], fog: [f32;4], horizon: [f32;4], sun_vp: [[f32;4];4], fog_scattering: [f32;4], sun_direction: [f32;4], sky_mean: [f32;4] }
 
 // The budget counts full-resolution pixel layers, so approaching a plume or
 // overlapping more plumes lowers raymarch resolution before work is submitted.
@@ -574,7 +624,7 @@ fn projected_smoke_work(source: &[Puff], time: f32, vp: Mat4, near: f32, size: (
 // any soft effect and ordinary bilinear reconstruction is safe.
 fn soft_depth_limit(source: &[Puff], time: f32, view: Mat4) -> f32 {
     source.iter().filter(|p| matches!(p.kind(),0|1|7) && p.timing[0]<=time && p.end()>time).map(|p| {
-        let center=-view.transform_point3(Vec3::from_slice(&p.center_kind[..3])).z;
+        let center=-view.transform_point3(Vec3::from_slice(&p.center_kind[..3])+p.drift(time)).z;
         let axes=Vec3::new(-view.transform_vector3(Vec3::from_slice(&p.ax[..3])).z,
             -view.transform_vector3(Vec3::from_slice(&p.ay[..3])).z,
             -view.transform_vector3(Vec3::from_slice(&p.az[..3])).z);
@@ -689,7 +739,7 @@ impl DrawOrder {
             if p.end() <= time || p.timing[0] > time { continue; }
             match p.kind() {
                 0 | 1 | 7 => {
-                    let mut center = Vec3::from_slice(&p.center_kind[..3]);
+                    let mut center = Vec3::from_slice(&p.center_kind[..3])+p.drift(time);
                     if p.kind() == BAKED_SMOKE as u32 { center += Vec3::from_slice(&p.ay[..3]) * 0.5; }
                     self.billows.push((i as u32, center.distance_squared(camera)));
                 },
@@ -717,7 +767,7 @@ impl DrawOrder {
             for &(id,_) in &self.billows {let p=&source[id as usize];if p.kind()==BAKED_SMOKE as u32 {continue;}let anim=((time-p.timing[0])/p.timing[1]).clamp(0.,1.);
                 let age=((anim-p.ay[3])*(1.+p.timing[3])/(1.-p.ay[3]).max(0.001)).clamp(0.,1.);
                 if anim<=p.ay[3]||age>=1. {continue;}
-                let centre=Vec3::from_slice(&p.center_kind[..3])+Vec3::Y*p.timing[2]*anim;
+                let centre=Vec3::from_slice(&p.center_kind[..3])+p.drift(time)+Vec3::Y*p.timing[2]*anim;
                 let radius=[p.ax,p.ay,p.az].map(|a|Vec3::from_slice(&a[..3]).length()).into_iter().fold(0.,f32::max)*0.5*(0.35+0.65*age);
                 if planes.iter().any(|p|p.dot(centre.extend(1.)) < -radius*p.truncate().length()){continue;}
                 let z=(vp*centre.extend(1.)).w;
@@ -746,6 +796,7 @@ impl DrawOrder {
 pub(crate) struct FxRenderer {
     layout: wgpu::BindGroupLayout,
     billow: wgpu::RenderPipeline,
+    dust: wgpu::RenderPipeline,
     ember: wgpu::RenderPipeline,
     heat: wgpu::RenderPipeline,
     column: wgpu::RenderPipeline,
@@ -791,6 +842,7 @@ impl FxRenderer {
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(entry), compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba16Float, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })] }),
             multiview_mask: None, cache: gpu.pipeline_cache() });
+        let dust = pipe("fx_min_billow_vs", "fx_min_billow", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let billow = pipe("fx_vs", "fx_billow", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let ember = pipe("fx_vs", "fx_ember", additive);
         let heat = pipe("fx_vs", "fx_heat", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
@@ -819,7 +871,7 @@ impl FxRenderer {
             fragment:Some(wgpu::FragmentState{module:&composite_shader,entry_point:Some("composite"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format:wgpu::TextureFormat::Rgba16Float,blend:Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),
             multiview_mask:None,cache:gpu.pipeline_cache()});
         let adaptive_smoke=std::env::var("WARP_SMOKE_QUALITY").as_deref()!=Ok("full");
-        FxRenderer { layout, billow, ember, heat, column, streak, mote, smoke, composite_layout, composite, adaptive_smoke, smoke_view, smoke_loaded: false, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
+        FxRenderer { layout, billow, dust, ember, heat, column, streak, mote, smoke, composite_layout, composite, adaptive_smoke, smoke_view, smoke_loaded: false, ldr:None, sampler, puffs, source: Vec::new(), time: 0.0,
             draw_order: DrawOrder::default(), targets: Vec::new() }
     }
 
@@ -860,6 +912,7 @@ impl FxRenderer {
             self.draw_order.minimum_selection=None;
             self.source.clear();
             self.source.extend_from_slice(p);
+
             if !p.is_empty() { gpu.queue.write_buffer(&self.puffs, 0, bytemuck::cast_slice(p)); }
         }
     }
@@ -882,15 +935,15 @@ impl FxRenderer {
     /// nothing is live.
     #[allow(clippy::too_many_arguments)]
     pub fn render(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, index: usize, input: &wgpu::Texture, depth: &wgpu::TextureView,
-        camera: Camera, view: Mat4, output_vp: Mat4, depth_vp: Mat4, white: f32, light: &crate::Lighting, ambient: Vec3, horizon: Vec3, shadow: Option<(&wgpu::TextureView, Mat4)>) -> Result<Option<wgpu::Texture>, String> {
-        self.render_output(gpu,enc,index,input,depth,camera,view,output_vp,depth_vp,white,0.0,light,ambient,horizon,shadow)
+        camera: Camera, view: Mat4, output_vp: Mat4, depth_vp: Mat4, white: f32, light: &crate::Lighting, ambient: Vec3, horizon: Vec3, sun_visibility: f32, shadow: Option<(&wgpu::TextureView, Mat4)>) -> Result<Option<wgpu::Texture>, String> {
+        self.render_output(gpu,enc,index,input,depth,camera,view,output_vp,depth_vp,white,0.0,light,ambient,horizon,sun_visibility,shadow)
     }
 
     /// Minimum profiles draw gameplay effects in place, without scene copies,
     /// heat refraction or an HDR intermediate. Exposure zero retains the HDR path.
     #[allow(clippy::too_many_arguments)]
     pub fn render_output(&mut self,gpu:&Gpu,enc:&mut wgpu::CommandEncoder,index:usize,input:&wgpu::Texture,depth:&wgpu::TextureView,
-        camera:Camera,view:Mat4,output_vp:Mat4,depth_vp:Mat4,white:f32,exposure:f32,light:&crate::Lighting,ambient:Vec3,horizon:Vec3,shadow:Option<(&wgpu::TextureView,Mat4)>)->Result<Option<wgpu::Texture>,String> {
+        camera:Camera,view:Mat4,output_vp:Mat4,depth_vp:Mat4,white:f32,exposure:f32,light:&crate::Lighting,ambient:Vec3,horizon:Vec3,sun_visibility:f32,shadow:Option<(&wgpu::TextureView,Mat4)>)->Result<Option<wgpu::Texture>,String> {
         let ldr=exposure>0.0;
         // Heat first (it refracts the plain scene), then billows back to front, then embers.
         let mut counts=self.draw_order.prepare(&self.source,self.time,camera.pos);
@@ -928,7 +981,11 @@ impl FxRenderer {
         }
         let (pixels,visible_volumes)=projected_smoke_work(&self.source,self.time,output_vp,camera.near,size);
         let t = self.targets[index].as_mut().unwrap();
-        let divisor=t.quality.update(if self.adaptive_smoke && !ldr {pixels}else{0.0},self.time);
+        let requested=t.quality.update(if self.adaptive_smoke && !ldr {pixels}else{0.0},self.time);
+        // Bright, sharp fire silhouettes reveal the coarse smoke grid. Keep them
+        // at least half resolution; smoke-only aftermath can still use 1/4-1/8.
+        let fire_visible=self.source.iter().any(|p|p.kind()==FIRE as u32 && p.timing[0]<=self.time && p.end()>self.time);
+        let divisor=if fire_visible {requested.min(2)} else {requested};
         let samples=if ldr {24.0}else{match divisor {1=>48.0,2=>40.0,4=>32.0,_=>24.0}};
         t.quality_stats=SmokeQualityStats{view_index:index,divisor,ray_steps:samples as u32,projected_pixel_layers:pixels,visible_volumes,
             soft_size:[size.0.div_ceil(divisor),size.1.div_ceil(divisor)]};
@@ -952,7 +1009,10 @@ impl FxRenderer {
             sunlight: (light.sun_color * light.sun_lux / std::f32::consts::PI).extend(if shadow.is_some() {light.shadow_strength} else {0.0}).to_array(),
             fog: [light.fog_start,light.fog_end,light.fog_density,light.fog_height_m],
             horizon: horizon.extend(0.0).to_array(),
-            sun_vp: shadow.map_or(Mat4::IDENTITY,|s|s.1).to_cols_array_2d() };
+            sun_vp: shadow.map_or(Mat4::IDENTITY,|s|s.1).to_cols_array_2d(),
+            fog_scattering: light.fog_scattering_albedo.extend(light.fog_phase_g).to_array(),
+            sun_direction: light.sun_dir.extend(sun_visibility.clamp(0.0,1.0)).to_array(),
+            sky_mean: ambient.max(Vec3::ZERO).extend(0.0).to_array() };
         gpu.queue.write_buffer(&t.uniform, 0, bytemuck::bytes_of(&uniform));
         gpu.queue.write_buffer(&t.order, 0, bytemuck::cast_slice(&self.draw_order.ids));
         if !ldr {enc.copy_texture_to_texture(input.as_image_copy(), t.output.as_image_copy(), input.size());}
@@ -970,12 +1030,13 @@ impl FxRenderer {
             let mut start=nh;
             while start<nh+nb {
                 let volume=self.source[self.draw_order.ids[start as usize] as usize].kind()==BAKED_SMOKE as u32;
+                let dust=self.source[self.draw_order.ids[start as usize] as usize].dust();
                 let mut end=start+1;
-                while end<nh+nb && (self.source[self.draw_order.ids[end as usize] as usize].kind()==BAKED_SMOKE as u32)==volume {end+=1;}
+                while end<nh+nb && (self.source[self.draw_order.ids[end as usize] as usize].kind()==BAKED_SMOKE as u32)==volume && self.source[self.draw_order.ids[end as usize] as usize].dust()==dust {end+=1;}
                 let pipeline=if volume {if ldr{&pipelines.unwrap()[5]}else{&self.smoke}}
-                    else if ldr {&pipelines.unwrap()[0]} else {&self.billow};
+                    else if ldr {&pipelines.unwrap()[0]} else if dust {&self.dust} else {&self.billow};
                 pass.set_pipeline(pipeline);
-                pass.draw(0..if volume||ldr{6}else{BILLOW_VERTICES},start..end);
+                pass.draw(0..if volume||ldr||dust{6}else{BILLOW_VERTICES},start..end);
                 start=end;
             }
         };
@@ -1021,6 +1082,9 @@ impl FxRenderer {
 pub(crate) struct FxSlot(pub Mutex<Option<FxRenderer>>);
 
 impl FxSlot {
+    pub fn prepare(&self, gpu: &Gpu) {
+        self.0.lock().unwrap().get_or_insert_with(|| FxRenderer::new(gpu));
+    }
     pub fn set(&self, gpu: &Gpu, time: f32, puffs: Option<&[Puff]>) {
         let mut g = self.0.lock().unwrap();
         if g.is_none() && puffs.is_none_or(|p| p.is_empty()) { return; }
@@ -1030,6 +1094,21 @@ impl FxSlot {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ground_dust_decelerates_without_replacing_live_puffs() {
+        let mut fx=super::Effects::default();
+        for _ in 0..400 {fx.ground_dust(1.0,glam::Vec3::ZERO,glam::Vec3::X*8.0,0.8);}
+        assert_eq!(fx.len(),384);
+        assert_eq!(fx.dust_capacity(1.1),0);
+        let p=fx.puffs[0];
+        let start=p.drift(1.0);let middle=p.drift(1.0+p.timing[1]*0.5);let end=p.drift(p.end());
+        assert_eq!(start,glam::Vec3::ZERO);
+        assert!((end.x-8.0).abs()<1e-4);
+        assert!(middle.x>7.0 && end.x-middle.x<1.0);
+        assert_eq!(middle.y,0.0);
+        assert_eq!(fx.dust_capacity(3.0),384);
+    }
+
     use super::*;
 
     #[test]
@@ -1121,7 +1200,7 @@ mod tests {
         let module = naga::front::wgsl::parse_str(shader_source()).unwrap_or_else(|e| panic!("{}", e.emit_to_string(shader_source())));
         naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&module).unwrap();
         assert_eq!(std::mem::size_of::<Puff>(), 112);
-        assert_eq!(std::mem::size_of::<Uniform>(), 512);
+        assert_eq!(std::mem::size_of::<Uniform>(), 560);
         assert_eq!(std::mem::size_of::<CompositeUniform>(),96);
         let source=composite_shader_source();
         let module=naga::front::wgsl::parse_str(source).unwrap_or_else(|e|panic!("{}",e.emit_to_string(source)));

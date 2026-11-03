@@ -86,11 +86,11 @@ struct Ragdoll { torso: Body, parts: Vec<(Body, SlotId, usize, Affine3A)> }
 /// Godot `Violence.play_lava_death`, tuned in `lava_death_lab.tscn`: the
 /// body turns to lava and sinks below the surface (a fall: a splash pillar
 /// first, then deeper and slower).
-const SINK_FALL: f32 = 0.75;
-const SINK_STAND: f32 = 0.5;
+const SINK_FALL: f32 = 1.6;
+const SINK_STAND: f32 = 1.6;
 const SINK_S_FALL: f32 = 2.15;
-const SINK_S_STAND: f32 = 1.35;
-const SPLASH_HEIGHT: f32 = 2.2;
+const SINK_S_STAND: f32 = 2.15;
+const SPLASH_HEIGHT: f32 = 0.35;
 const SPLASH_RADIUS: f32 = 0.55;
 const SPLASH_RISE_S: f32 = 0.18;
 const SPLASH_SINK_S: f32 = 0.55;
@@ -100,9 +100,20 @@ const SPLASH_SINK_S: f32 = 0.55;
 /// `surface` is where Godot's `_lava_surface_world_y` puts it: the pool
 /// under the floor (LAVA_POOL_Y) for every lava death, the leak's too; the
 /// lava floor (0.04 m) in an island arena, even under a risen leak.
-struct LavaCorpse { victim: usize, pos: Vec3, yaw: f32, birth: f32, fall: bool, surface: f32, twin: Option<(usize, usize)>, blobs: Vec<(SlotId, usize, Vec3, f32)>, splash: Option<SlotId> }
+struct LavaCorpse { victim: usize, pos: Vec3, yaw: f32, pitch: f32, camera_look: [f32; 2], camera_prev: [f32; 2], birth: f32, fall: bool, surface: f32, twin: Option<(usize, usize)>, blobs: Vec<(SlotId, usize, Vec3, f32)>, splash: Option<SlotId> }
 
 impl LavaCorpse {
+    fn camera_direction(&self, t: f32, alpha: f32) -> Vec3 {
+            let u = (t / 2.4).clamp(0.0, 1.0);
+            let look = std::array::from_fn::<_, 2, _>(|i| self.camera_prev[i] + (self.camera_look[i] - self.camera_prev[i]) * alpha);
+            let tremor = 0.012 * (t * 5.0).min(1.0) * (0.5 + u);
+            let yaw = self.yaw + look[0] + tremor * ((t*19.0).sin() + 0.45*(t*31.7).sin());
+            let pitch = (self.pitch + (1.1-self.pitch) * u * u + look[1]
+                + tremor * ((t*23.3).sin() + 0.35*(t*37.0).sin())).clamp(-1.35, 1.35);
+            growing_guns::look_dir(yaw, pitch)
+
+    }
+
     /// Centre height `t` seconds in (Godot: sine ease-in, after the splash
     /// has risen when it fell in).
     fn y(&self, t: f32) -> f32 {
@@ -188,7 +199,10 @@ impl PlayersView {
         for k in 0..TRACERS * 2 { scene.add_instance(self.bullet[k % 2], Affine3A::from_translation(HIDDEN)); scene.mark_no_shadow(); }
         // Lava deaths: twins of the characters after the tracers (outside
         // the players' block), blobs and the splash in the lava material.
-        let lava_m = super::arena::lava_material(scene);
+        let lava_m = scene.add_material(render::scene::Material {
+            tint: [1.0, 0.20, 0.02], layer: -2, roughness: 1.0,
+            flags: render::scene::LAVA, scale: 5000.0, metal: 0.0,
+        });
         if let Some(characters) = &mut self.characters { characters.reserve_lava(scene, lava_m); }
         self.lava_meshes = LavaMeshes {
             body: scene.add_mesh(&primitives::sphere(lava_m, 10, 16).mesh()),
@@ -239,7 +253,7 @@ impl PlayersView {
         // Lava (Godot `_lava_death`): no ragdoll and no blood, the body
         // takes the lava's look and sinks.
         if let Gib::Lava { fall } = gib {
-            if victim < self.meshes.len() { self.lava_death(scene, victim, v, fall, now, world.arena.lava_surface()); }
+            if victim < self.meshes.len() { self.lava_death(scene, victim, v, fall, now, world.lava_surface_at(v.pos)); }
             return;
         }
         let blood = fx.meshes.blood;
@@ -306,8 +320,43 @@ impl PlayersView {
             }
         }
         let splash = if fall { self.corpses.add(scene, self.lava_meshes.splash, Affine3A::from_translation(HIDDEN)) } else { None };
-        let c = LavaCorpse { victim, pos: v.pos, yaw: v.yaw, birth: now, fall, surface, twin, blobs, splash };
+        let c = LavaCorpse { victim, pos: v.pos.with_y(surface + growing_guns::HALF_HEIGHT * 0.65), yaw: v.yaw, pitch: v.pitch, camera_look: [0.;2], camera_prev: [0.;2], birth: now, fall, surface, twin, blobs, splash };
         self.lava.push(c);
+    }
+
+    pub fn lava_look(&mut self, victim: usize, look: [f32; 2]) {
+        if let Some(c) = self.lava.iter_mut().find(|c| c.victim == victim) {
+            c.camera_prev = c.camera_look;
+            c.camera_look[0] += look[0] * 0.3;
+            c.camera_look[1] = (c.camera_look[1] + look[1] * 0.3).clamp(-0.65, 0.65);
+        }
+    }
+
+    /// The victim follows exactly the same slow sink as the visible corpse.
+    pub fn lava_camera(&self, world: &World, victim: usize, mut camera: render::Camera, clock: f32) -> render::Camera {
+        if world.players[victim].alive || world.players[victim].howitzer.is_some() { return camera; }
+        if let Some(c)=self.lava.iter().find(|c|c.victim==victim && clock-c.birth<2.4) {
+            let t = (clock-c.birth).max(0.0);
+            let alpha = (clock / growing_guns::DT - (world.tick as f32 - 1.0)).clamp(0.0, 1.0);
+            let direction = c.camera_direction(t, alpha);
+            camera.pos=Vec3::new(c.pos.x,c.y((clock-c.birth).max(0.0))+growing_guns::EYE,c.pos.z);
+            camera.target=camera.pos+direction;
+        }
+        camera
+    }
+
+    pub fn burn_lava_bodies(&self, world: &World, fire: &mut render::fx::Effects, now: f32) {
+        if world.tick % 5 != 0 { return; }
+        for c in &self.lava {
+            let age=now-c.birth;
+            if !(0.0..2.4).contains(&age) || world.players[c.victim].alive {continue;}
+            let center=Vec3::new(c.pos.x,c.surface,c.pos.z);
+            for k in 0..6 {
+                let a=k as f32*2.399963+(world.tick/5) as f32*1.37;
+                let radius=0.45+0.12*((k as f32*7.1+age*11.0).sin());
+                fire.burning_body(now,center+Vec3::new(a.cos()*radius,0.0,a.sin()*radius));
+            }
+        }
     }
 
     /// Godot `end_lava_death`: player `victim`'s lava body goes (a revive).
@@ -327,11 +376,18 @@ impl PlayersView {
         for c in &mut self.lava {
             let t = (clock - c.birth).max(0.0);
             let at = Vec3::new(c.pos.x, c.y(t), c.pos.z);
-            if let Some((instance, mesh)) = c.twin { pose_instance(scene, instance, mesh, characters::model_transform(at, c.yaw)); }
+            if let Some((instance, mesh)) = c.twin {
+                pose_instance(scene, instance, mesh, characters::model_transform(at, c.yaw));
+                scene.instances[instance].hide_in_views(self.meshes[c.victim].own_views);
+            }
             for &(slot, mesh, scale, offset) in &c.blobs {
                 self.corpses.set(scene, slot, mesh, Affine3A::from_scale_rotation_translation(scale, Quat::from_rotation_y(c.yaw), at + Vec3::Y * offset));
             }
+            for &(slot, ..) in &c.blobs {
+                scene.instances[self.corpses.instance(slot)].hide_in_views(self.meshes[c.victim].own_views);
+            }
             if let Some(slot) = c.splash {
+                scene.instances[self.corpses.instance(slot)].hide_in_views(self.meshes[c.victim].own_views);
                 match c.splash_y(t) {
                     Some(y) => self.corpses.set(scene, slot, self.lava_meshes.splash, Affine3A::from_scale_rotation_translation(
                         Vec3::new(SPLASH_RADIUS, SPLASH_HEIGHT, SPLASH_RADIUS), rot, Vec3::new(c.pos.x, y, c.pos.z))),
@@ -550,5 +606,37 @@ fn blood_splats(scene: &mut Scene, arena: &mut ArenaView, world: &World, at: Vec
                 assert!(w.abs_diff(h)<=1 && w>=4 && h>=4,"flattened glow {w}x{h} at pitch {pitch}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod lava_sink_tests {
+    use super::*;
+    #[test]
+    fn full_reserved_roster_keeps_actual_character_lava_twins() {
+        let mut scene=Scene::default();let mut characters=Characters::load().unwrap();
+        for i in 0..8 {characters.reserve_actor(&mut scene,i).unwrap();}
+        let material=super::super::arena::lava_material(&mut scene);
+        characters.reserve_lava(&mut scene,material);
+        assert_eq!(characters.lava_instances().len(),8);
+        for i in 0..8 {assert!(characters.lava_twin(i).is_some());}
+    }
+
+    #[test]
+    fn lava_body_sinks_slowly_from_the_surface_then_fully_submerges() {
+        let c=LavaCorpse {victim:0,pos:Vec3::new(2.0,-3.0+growing_guns::HALF_HEIGHT*0.65,4.0),
+            yaw:0.0,pitch:0.0,camera_look:[0.;2],camera_prev:[0.;2],birth:0.0,fall:true,surface:-3.0,twin:None,blobs:vec![],splash:None};
+        assert!((c.camera_direction(0.0, 1.0) - growing_guns::look_dir(c.yaw, c.pitch)).length() < 1e-6);
+        assert!(c.camera_direction(2.2, 1.0).y > 0.7, "gaze rises during sinking");
+        let mut controlled = LavaCorpse { camera_look: [0.3, -0.2], camera_prev: [0.0; 2], ..c };
+        assert!((controlled.camera_direction(0.0, 0.0) - Vec3::NEG_Z).length() < 1e-6);
+        assert!((controlled.camera_direction(0.0, 1.0) - growing_guns::look_dir(0.3, -0.2)).length() < 1e-6);
+        controlled.camera_look = [0.; 2];
+        let c = controlled;
+        assert!(c.y(0.0)>c.surface);
+        assert!(c.y(0.5)>c.surface,"slow sink, not gravity");
+        let mut previous=c.y(0.0);
+        for i in 1..=144 {let y=c.y(i as f32/60.0);assert!(y<=previous+1e-6);previous=y;}
+        assert!(c.y(2.4)+growing_guns::EYE<c.surface);
     }
 }

@@ -168,6 +168,13 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 // The sharpened pass needs display() of each pixel's four neighbours: the
 // workgroup computes its 8x8 tile plus a one-pixel border once into shared
 // memory (100 evaluations instead of 320), then sharpens from there.
+// Quantize in display space with one code-value of stable, zero-mean
+// dither. This smooths near-black steps without lifting the black level.
+fn encode_ldr(linear: vec3<f32>, pixel: vec2<i32>) -> vec3<f32> {
+    let noise = fract(52.9829189 * fract(dot(vec2<f32>(pixel), vec2<f32>(0.06711056, 0.00583715)))) - 0.5;
+    return clamp(srgb(linear) + noise / 255.0, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 var<workgroup> tile: array<vec3<f32>, 100>;
 
 fn tile_at(l: vec2<i32>) -> vec3<f32> { return tile[u32(l.y * 10 + l.x)]; }
@@ -180,7 +187,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let inside = gid.x < size.x && gid.y < size.y;
     let p = vec2<i32>(gid.xy);
     if tone.sharpen <= 0.0 {
-        if inside { textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(srgb(display(p)), 1.0)); }
+        if inside { textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(encode_ldr(display(p), p + vec2<i32>(tone.offset)), 1.0)); }
         return;
     }
     // Uniform branch: every invocation reaches both barriers.
@@ -203,7 +210,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation
     let room = min(lo, 1.0 - hi) / max(hi, vec3<f32>(1e-4));
     let amp = sqrt(clamp(room, vec3<f32>(0.0), vec3<f32>(1.0))) * tone.sharpen;
     out = clamp(out + (out * 4.0 - (n + s + w + e)) * amp * 0.25, lo, hi);
-    textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(srgb(out), 1.0));
+    textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(encode_ldr(out, p + vec2<i32>(tone.offset)), 1.0));
 }
 
 // The same pass evaluating every neighbour itself (KERN_TILED_POST=0),
@@ -231,5 +238,5 @@ fn main_direct(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_inv
         let amp = sqrt(clamp(room, vec3<f32>(0.0), vec3<f32>(1.0))) * tone.sharpen;
         out = clamp(out + (out * 4.0 - (n + s + w + e)) * amp * 0.25, lo, hi);
     }
-    textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(srgb(out), 1.0));
+    textureStore(ldr, vec2<i32>(gid.xy + tone.offset), vec4<f32>(encode_ldr(out, p + vec2<i32>(tone.offset)), 1.0));
 }

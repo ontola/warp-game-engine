@@ -113,3 +113,17 @@ first terrain hierarchy is deliberately identified as a heightfield backend.
 is the technical reference for cached surface radiance and sparse world probes.
 Directional distance-moment interpolation in our smaller reference cache is
 DDGI-inspired; it is not attributed to Lumen's implementation.
+
+## Compact static architecture (Growing Guns)
+
+`Scene::static_sun_instances` explicitly opts fixed architecture into the far
+sun map. Growing Guns selects only stadium tiers, walls and roof; actors,
+destructible blocks and crowd animation remain in the dynamic maps. The map
+fits those sources (128 m minimum half extent), rather than the legacy forest
+map's 1024 m minimum. Camera motion and split views share one persistent bake;
+source updates, sun direction, alpha cut or LOD invalidate it. A 4096² Depth32Float
+map uses 64 MiB. This opt-in does not enable the rejected forest configuration.
+Coverage blends into the dynamic maps, with geometric-normal bias capped at
+6 cm for the architectural map. No claim is made here of a frame-time gain;
+validation uses the 4K Growing Guns stadium camera script and cache ownership,
+coverage and invalidation tests. Continuous day cycles invalidate as the sun moves.

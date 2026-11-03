@@ -11,7 +11,6 @@ use kern::collide::{BoxGridScratch, YawBox};
 use physics::{Physics, Static, StaticSet};
 use render::debris::{BurstSpec, Occupancy};
 use render::headlights::LocalLight;
-use render::particles::Burst;
 use render::primitives;
 use render::scene::Material;
 use render::slots::{SlotId, Slots};
@@ -55,10 +54,12 @@ const DENTS: usize = 2048;
 /// Every chunk of the largest arena (a sniper fight).
 const ARENA_SLOTS: usize = growing_guns::arena::MAX_PIECES;
 
-/// Stone per palette colour: four tint variants of the intact brick, then
+const STONE_VARIANTS: usize = 12;
+
+/// Stone per palette colour: varied weathered forms of the intact brick, then
 /// cracked and crumbling bricks for worn chunks, and rubble shards.
 #[derive(Clone, Copy)]
-pub struct Stone { intact: [usize; 4], cracked: usize, crumbling: usize, pub shards: [usize; 3] }
+pub struct Stone { intact: [usize; STONE_VARIANTS], cracked: [usize; STONE_VARIANTS], crumbling: [usize; STONE_VARIANTS], pub shards: [usize; 3] }
 
 #[derive(Clone, Copy)]
 struct KindMeshes { floor: Stone, wall: Stone, building: Stone, dark: Stone, accent_a: Stone, accent_b: Stone }
@@ -241,7 +242,9 @@ impl ArenaView {
     /// Mesh and transform for a chunk at a wear level.
     fn chunk_look(&self, c: &growing_guns::Chunk, wear: u8) -> (usize, Affine3A) {
         let st = self.kinds().stone(c.kind);
-        let mesh = match wear { 0 => st.intact[(c.seed % 4) as usize], 1 => st.cracked, _ => st.crumbling };
+        let variation = stone_hash(c.seed);
+        let variant = variation as usize % STONE_VARIANTS;
+        let mesh = match wear { 0 => st.intact[variant], 1 => st.cracked[variant], _ => st.crumbling[variant] };
         // Worn bricks shrink a little and sit askew, like Godot's deform carve.
         let shrink = [1.0, 0.97, 0.92][wear as usize];
         let tilt = if wear == 0 { Quat::IDENTITY } else {
@@ -253,7 +256,10 @@ impl ArenaView {
         // and all simulation/collision boxes remain unchanged.
         let inset=if crate::graphics::get().minimal_forward {Vec3::new(0.97,if c.kind==Kind::Floor{1.0}else{0.97},0.97)}
             else{Vec3::new(VISUAL_CHUNK_INSET,1.0,VISUAL_CHUNK_INSET)};
-        (mesh, Affine3A::from_scale_rotation_translation(c.half * 2.0 * inset * shrink, Quat::from_rotation_y(c.yaw) * tilt, c.center))
+        // Rotate the unit stone BEFORE stretching it to its collision box.
+        // Rotating an already stretched brick would turn long rows sideways.
+        let orientation = Affine3A::from_quat(stone_orientation((variation >> 8) % 24));
+        (mesh, Affine3A::from_scale_rotation_translation(c.half * 2.0 * inset * shrink, Quat::from_rotation_y(c.yaw) * tilt, c.center) * orientation)
     }
 
     /// This tick's breakage: worn bricks change look, broken ones and their
@@ -303,7 +309,6 @@ impl ArenaView {
                 fx.debris.burst(scene, &spec);
             }
 
-            fx.particles.burst(scene, burst.center, Vec3::Y, &Burst { mesh: fx.meshes.dust, count: 12, spread: 1.5, speed: [0.5, 3.0], size: [0.9, 0.3], life: [0.8, 1.6], ..Burst::dust() });
         }
     }
 }
@@ -372,6 +377,29 @@ fn rock(scene: &mut Scene, tint: [f32; 3], rough: f32, damage: f32) -> u32 {
     scene.add_material(Material { tint: srgb_to_linear(tint), layer, roughness: rough, flags: render::scene::ROCK, scale: damage, metal: 0.0 })
 }
 
+// Chunk seeds encode row/column in separate bytes. Mix every bit before
+// selecting a form, so adjacent courses do not repeat the same four stones.
+fn stone_hash(mut seed: u32) -> u32 {
+    seed ^= seed >> 16;
+    seed = seed.wrapping_mul(0x7feb_352d);
+    seed ^= seed >> 15;
+    seed = seed.wrapping_mul(0x846c_a68b);
+    seed ^ (seed >> 16)
+}
+
+fn stone_orientation(index: u32) -> Quat {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let face = match index / 4 {
+        0 => Quat::IDENTITY,
+        1 => Quat::from_rotation_x(FRAC_PI_2),
+        2 => Quat::from_rotation_x(PI),
+        3 => Quat::from_rotation_x(-FRAC_PI_2),
+        4 => Quat::from_rotation_z(FRAC_PI_2),
+        _ => Quat::from_rotation_z(-FRAC_PI_2),
+    };
+    face * Quat::from_rotation_y((index % 4) as f32 * FRAC_PI_2)
+}
+
 fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
     if crate::graphics::get().simple_blocks {
         let shapes = [(1.0,0.0),(0.9,0.5),(0.8,1.0)].map(|(shade,damage)| {
@@ -379,11 +407,42 @@ fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
             let shape=if crate::graphics::get().minimal_forward {primitives::cube(m)}else{primitives::hewn_block(m,1,0.06+damage*0.05,damage*0.08,damage as u32)};
             scene.add_mesh(&shape.mesh())
         });
-        return Stone { intact:[shapes[0];4], cracked:shapes[1], crumbling:shapes[2], shards:shapes };
+        return Stone { intact:[shapes[0];STONE_VARIANTS], cracked:[shapes[1];STONE_VARIANTS], crumbling:[shapes[2];STONE_VARIANTS], shards:shapes };
     }
     let legacy = super::stone_layer(scene) < 0;
+    let sdf = !legacy && std::env::var("GG_STONE_SHAPE").as_deref() != Ok("quarried");
+    if sdf {
+        // Cook geometry and its cluster hierarchy once per process, independent
+        // of palette/material. New arenas only select existing mesh slots.
+        static MESHES: std::sync::OnceLock<[[render::cluster::ClusterMesh; STONE_VARIANTS]; 3]> = std::sync::OnceLock::new();
+        let meshes = MESHES.get_or_init(|| std::array::from_fn(|stage| std::array::from_fn(|variant|
+            {
+                let seed = stone_hash(variant as u32 + 11);
+                let age = (seed >> 16) as f32 / 65535.0 * 0.28;
+                let wear = age + (1.0 - age) * stage as f32 * 0.5;
+                let stone = render::weathered_block::weathered_block(0, wear, seed);
+                // Positional-only LOD erases the SDF normals while keeping the
+                // silhouette, making broad light/shadow patches pop on approach.
+                render::cluster::ClusterMesh::build_with_policy(&[stone.part()],
+                    |_| render::cluster::SimplificationPolicy::TexturedGeometry)
+            })));
+        let mut add_stage = |stage: usize| std::array::from_fn(|variant| {
+            let shade = (0.88 + 0.24 * (stone_hash(variant as u32 + 71) >> 16) as f32 / 65535.0) * [1.0, 0.9, 0.8][stage];
+            let m = rock(scene, tint.map(|c| (c * shade).min(1.0)), rough, stage as f32 * 0.5);
+            let first = scene.clusters.len();
+            let id = scene.add_mesh(&meshes[stage][variant]);
+            for cluster in &mut scene.clusters[first..] { cluster.material = m; }
+            id
+        });
+        let intact = add_stage(0);
+        let cracked = add_stage(1);
+        let crumbling = add_stage(2);
+        let shards = stone_shards(scene, tint, rough);
+        return Stone { intact, cracked, crumbling, shards };
+    }
     // Per-brick brightness variation (Godot's INSTANCE_CUSTOM) as four tints.
-    let intact = [0.88, 0.96, 1.04, 1.12].map(|k| {
+    let intact = std::array::from_fn(|variant| {
+        let k = [0.88, 0.96, 1.04, 1.12][variant % 4];
         let m = rock(scene, tint.map(|c| (c * k).min(1.0)), rough, 0.0);
         let shape = if legacy { primitives::hewn_block(m, 3, 0.09, 0.0, 0) }
             else { render::quarried_block::quarried_block(m, 0.0, (k * 12.5) as u32) };
@@ -398,14 +457,18 @@ fn stone(scene: &mut Scene, tint: [f32; 3], rough: f32) -> Stone {
     let crumbling_shape = if legacy { primitives::hewn_block(km, 4, 0.14, 0.16, 2) }
         else { render::quarried_block::quarried_block(km, 1.0, 1) };
     let crumbling = scene.add_mesh(&crumbling_shape.mesh());
+    let shards = stone_shards(scene, tint, rough);
+    Stone { intact, cracked: [cracked;STONE_VARIANTS], crumbling: [crumbling;STONE_VARIANTS], shards }
+}
+
+fn stone_shards(scene: &mut Scene, tint: [f32; 3], rough: f32) -> [usize; 3] {
     // Rubble: rough shards in three shades (Godot: base colour x 0.72..1.17).
-    let shards = [0.72, 0.92, 1.12].map(|k| {
+    [0.72, 0.92, 1.12].map(|k| {
         let shard_tint = tint.map(|c| (c * k).min(1.0));
         let m = if super::stone_layer(scene) < 0 { material(scene, shard_tint, rough) }
             else { rock(scene, shard_tint, rough, 0.35) };
         scene.add_mesh(&primitives::hewn_block(m, 1, 0.15, 0.22, (k * 100.0) as u32).mesh())
-    });
-    Stone { intact, cracked, crumbling, shards }
+    })
 }
 
 #[cfg(test)]
@@ -415,6 +478,25 @@ mod tests {
     use growing_guns::destruct::Carve;
     use growing_guns::rng::Rng;
     use growing_guns::shape::{BoxGrid, YawBox};
+
+    #[test]
+    fn varied_stones_keep_rectangular_bounds_and_do_not_repeat_by_row() {
+        let mut orientations = std::collections::BTreeSet::new();
+        let half = Vec3::new(0.5, 1.5, 2.5);
+        for i in 0..24 {
+            let q = stone_orientation(i);
+            let axes = [Vec3::X, Vec3::Y, Vec3::Z].map(|a| (q*a).to_array().map(|v| v.round() as i32));
+            assert!(orientations.insert(axes));
+            let xf = Affine3A::from_scale(half * 2.0) * Affine3A::from_quat(q);
+            assert!(xf.matrix3.determinant() > 0.0);
+            for x in [-0.5,0.5] { for y in [-0.5,0.5] { for z in [-0.5,0.5] {
+                assert!((xf.transform_point3(Vec3::new(x,y,z)).abs() - half).abs().max_element() < 1e-5);
+            }}}
+        }
+        let forms: std::collections::BTreeSet<_> = (0..128u32)
+            .map(|row| stone_hash(123 ^ (row << 16).wrapping_mul(0x9e37_79b1)) as usize % STONE_VARIANTS).collect();
+        assert_eq!(forms.len(), STONE_VARIANTS);
+    }
 
     fn fixture(seed: u64) -> Arena {
         let mut a = Arena::empty();

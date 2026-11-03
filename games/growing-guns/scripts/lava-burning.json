@@ -1,0 +1,7 @@
+{"size":[1800,1000],"steps":[
+{"cmd":["bots pause","blast 0 0 0 9 99999","teleport 1 0 4 12"],"ticks":100},
+{"cmd":["teleport 0 0 -30 0","aim 1 0 -2 0"],"ticks":8,"capture":"burn-start.png"},
+{"ticks":38,"capture":"burn-sinking.png"},
+{"ticks":50,"capture":"burn-submerged.png"},
+{"ticks":60,"capture":"burn-cards.png"}
+]}

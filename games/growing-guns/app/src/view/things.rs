@@ -11,7 +11,7 @@ use render::Scene;
 use render::headlights::LocalLight;
 
 #[path = "airstrike.rs"]
-mod airstrike;
+pub(super) mod airstrike;
 #[path = "dropbeam.rs"]
 mod dropbeam;
 
@@ -104,6 +104,13 @@ impl Things {
             match g.kind {
                 ProjectileKind::Grenade => { put(scene, self.grenade, at(g.pos, Vec3::splat(0.2)), true); if blink { put(scene, self.beacon, at(g.pos + Vec3::Y * 0.17, Vec3::splat(0.05)), false); } }
                 ProjectileKind::Cluster => { put(scene, self.cluster, at(g.pos, Vec3::splat(0.244)), true); if blink { put(scene, self.beacon, at(g.pos + Vec3::Y * 0.2, Vec3::splat(0.06)), false); } }
+                ProjectileKind::SiegeBolt => {
+                    let rot=Quat::from_rotation_arc(Vec3::Z,g.vel.normalize_or_zero());
+                    put(scene,self.fragment,Affine3A::from_scale_rotation_translation(Vec3::new(0.12,0.12,2.4),rot,g.pos),false);
+                    put(scene,self.fragment,Affine3A::from_scale_rotation_translation(Vec3::new(0.4,0.12,0.4),rot*Quat::from_rotation_y(0.785),g.pos+rot*Vec3::Z*1.2),false);
+                    put(scene,self.fragment,Affine3A::from_scale_rotation_translation(Vec3::new(0.5,0.05,0.45),rot,g.pos-rot*Vec3::Z*0.9),false);
+                }
+                ProjectileKind::Howitzer => put(scene, self.bomb, at(g.pos, Vec3::splat(0.32)), false),
                 ProjectileKind::Fragment => put(scene, self.fragment, at(g.pos, Vec3::splat(0.11)), true),
                 ProjectileKind::Mine => {
                     put(scene, self.mine, at(g.pos, Vec3::new(0.27, 0.07, 0.27)), true);
@@ -173,7 +180,7 @@ impl Things {
             i.cluster_count = 0;
             i.sphere = [0.0; 4];
         }
-        self.laser_sprites = airstrike::sprites(&world.strikes);
+        self.laser_sprites = airstrike::sprites(&strikes);
         self.laser_sprites.extend(airstrike::plumes(&strikes, clock));
         self.strike_lights = airstrike::lights(&strikes, clock);
         self.beams.pose(scene, world, clock);

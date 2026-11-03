@@ -1,7 +1,8 @@
 //! Bounded native stone-material comparison; run serially with no game on the GPU.
-//! --mode legacy|textured --out FRESH_DIR [--frames 120] [--views 1|4]
-//! [--size 1920x1080] [--camera field|close|grazing|far|gallery] [--captures]
-//! Both modes retain identical source geometry. Captures/readbacks are outside timings.
+//! --mode legacy|textured|parallax --out FRESH_DIR [--frames 120] [--views 1|4]
+//! [--size 1920x1080] [--camera field|close|grazing|detail|far|gallery] [--captures]
+//! --geometry quarried|weathered (default quarried); hold this fixed for material comparisons.
+//! Captures/readbacks are outside timings.
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use render::debug_settings::DebugRenderOptions;
 use render::gpu_profile::GpuProfileSample;
@@ -18,6 +19,7 @@ const GALLERY_X: f32 = 80.;
 struct Options {
     out: PathBuf,
     mode: String,
+    geometry: String,
     frames: u32,
     views: usize,
     size: [u32; 2],
@@ -28,6 +30,7 @@ impl Options {
     fn parse() -> Result<Self, String> {
         let mut args = std::env::args().skip(1);
         let (mut out, mut mode) = (None, None);
+        let mut geometry = String::from("quarried");
         let (mut frames, mut views, mut size) = (120, 1, [1920, 1080]);
         let (mut camera, mut captures) = (String::from("field"), false);
         while let Some(arg) = args.next() {
@@ -36,6 +39,7 @@ impl Options {
             match arg.as_str() {
                 "--out" => out = Some(PathBuf::from(value)),
                 "--mode" => mode = Some(value),
+                "--geometry" => geometry = value,
                 "--frames" => frames = value.parse().map_err(|_| "invalid --frames")?,
                 "--views" => views = value.parse().map_err(|_| "invalid --views")?,
                 "--camera" => camera = value,
@@ -46,16 +50,17 @@ impl Options {
                 _ => return Err(format!("unknown option {arg}")),
             }
         }
-        let mode = mode.ok_or("--mode legacy|textured is required")?;
-        if !["legacy", "textured"].contains(&mode.as_str()) { return Err("invalid --mode".into()); }
+        if !["quarried", "weathered"].contains(&geometry.as_str()) { return Err("invalid --geometry".into()); }
+        let mode = mode.ok_or("--mode legacy|textured|parallax is required")?;
+        if !["legacy", "textured", "parallax"].contains(&mode.as_str()) { return Err("invalid --mode".into()); }
         if !(1..=3600).contains(&frames) || ![1, 4].contains(&views) { return Err("frames must be 1..=3600; views must be 1 or 4".into()); }
         if size[0] < 320 || size[1] < 180 || size[0] > 7680 || size[1] > 4320 { return Err("size must be between 320x180 and 7680x4320".into()); }
-        if !["field", "close", "grazing", "far", "gallery"].contains(&camera.as_str()) { return Err("invalid --camera".into()); }
-        Ok(Self { out: out.ok_or("--out FRESH_DIR is required")?, mode, frames, views, size, camera, captures })
+        if !["field", "close", "grazing", "detail", "far", "gallery"].contains(&camera.as_str()) { return Err("invalid --camera".into()); }
+        Ok(Self { geometry, out: out.ok_or("--out FRESH_DIR is required")?, mode, frames, views, size, camera, captures })
     }
 }
 
-fn scene(textured: bool) -> (Scene, u32) {
+fn scene(textured: bool, weathered: bool) -> (Scene, u32) {
     let mut scene = Scene::default();
     scene.sky = Some((16, 8, vec![[0.65, 0.75, 0.95, 1.0]; 128]));
     // Populate both modes identically, including resources; only the material
@@ -71,7 +76,7 @@ fn scene(textured: bool) -> (Scene, u32) {
                 tint: [0.60f32, 0.57, 0.53].map(|c| ((c * shade + 0.055) / 1.055).powf(2.4)),
                 layer: if textured { 0 } else { -1 }, roughness: 0.85, flags: ROCK, scale: damage, metal: 0.,
             });
-            meshes[wear][seed] = scene.add_mesh(&render::quarried_block::quarried_block(material, damage, seed as u32).mesh());
+            meshes[wear][seed] = scene.add_mesh(&(if weathered { render::weathered_block::weathered_block(material, damage, seed as u32) } else { render::quarried_block::quarried_block(material, damage, seed as u32) }).mesh());
         }
     }
     for z in 0..32 {
@@ -128,6 +133,7 @@ fn camera(name: &str) -> Camera {
     let target = Vec3::new(0., 2.4, PATCH_Z);
     let (pos, target) = match name {
         "close" => (Vec3::new(0., 2.4, -5.), target),
+        "detail" => (Vec3::new(1.5, 2.4, -7.0), target),
         "grazing" => (Vec3::new(7., 2.4, -5.), target),
         "far" => (Vec3::new(0., 7., 65.), target),
         "gallery" => (Vec3::new(GALLERY_X + 2.6, 1.4, 4.2), Vec3::new(GALLERY_X, 1.05, 0.4)),
@@ -269,7 +275,14 @@ fn run() -> Result<(), String> {
     let options = Options::parse()?;
     if options.out.exists() { return Err("--out must be a fresh directory".into()); }
     std::fs::create_dir_all(&options.out).map_err(|e| e.to_string())?;
-    let (scene, wall) = scene(options.mode == "textured");
+    let (mut scene, wall) = scene(options.mode != "legacy", options.geometry == "weathered");
+    if options.mode == "textured" {
+        for texture in &mut scene.textures {
+            if let Some(normal) = &mut texture.normal {
+                for pixel in normal.pixels_mut() { pixel[2] = 255; }
+            }
+        }
+    }
     let mut digest = Sha256::new();
     let geometry_bytes: [&[u8]; 4] = [bytemuck::cast_slice(&scene.vertices), bytemuck::cast_slice(&scene.clusters), bytemuck::cast_slice(&scene.instances), bytemuck::cast_slice(&scene.tris)];
     for bytes in geometry_bytes { digest.update(bytes); }
@@ -323,7 +336,7 @@ fn run() -> Result<(), String> {
         "adapter":gpu.info.name,"backend":format!("{:?}",gpu.info.backend),"output_size":options.size,"reconstruction":"native","sample_count":1,
         "benchmark_camera":options.camera,"views":view.iter().map(camera_json).collect::<Vec<_>>(),"warmup_frames":WARMUP,"measured_frames":options.frames,
         "gpu_sample_coverage":{"collected":samples.len(),"requested":options.frames,"dropped":dropped,"errors":errors,"pending":pending},
-        "geometry":"quarried blocks, 8 shared seeds at 3 wear levels","geometry_sha256":geometry_hash,"instances":scene.instances.len(),"meshes":scene.meshes.len(),"stored_clusters":scene.clusters.len(),
+        "geometry":options.geometry,"geometry_sha256":geometry_hash,"instances":scene.instances.len(),"meshes":scene.meshes.len(),"stored_clusters":scene.clusters.len(),
         "stored_lod_triangles":scene.clusters.iter().map(|c|u64::from(c.tri_count)).sum::<u64>(),
         "source_mesh_triangles":scene.clusters.iter().filter(|c|c.own_error==0.).map(|c|u64::from(c.tri_count)).sum::<u64>(),
         "root_mesh_triangles":scene.clusters.iter().filter(|c|c.parent_error>1e30).map(|c|u64::from(c.tri_count)).sum::<u64>(),

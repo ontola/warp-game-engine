@@ -1,9 +1,8 @@
-//! Short-lived effects: engine particles (sparks, dust, blood drops,
+//! Short-lived effects: engine particles (sparks, blood drops,
 //! casings), GPU debris (chips and rubble colliding with the arena's
 //! occupancy grid), explosions (render::fx), muzzle flashes and the
 //! explosion view punch.
 use super::{cube, glow, material, omni, sphere, Camera};
-use super::arena::palette;
 use glam::{Quat, Vec2, Vec3};
 use growing_guns::World;
 use render::debris::{Debris, Occupancy};
@@ -52,7 +51,7 @@ pub fn flash_picture() -> render::picture::Picture {
 struct Flash { at: Vec3, dir: Vec3, color: Vec3, scale: f32, bright: f32, spin: f32, born: f32 }
 
 #[derive(Clone, Copy)]
-pub struct FxMeshes { pub spark: usize, pub dust: usize, pub blood: usize, pub casing: usize }
+pub struct FxMeshes { pub spark: usize, pub blood: usize, pub casing: usize }
 
 pub struct EffectsView {
     pub particles: Particles,
@@ -74,7 +73,6 @@ impl EffectsView {
     pub fn reserve(scene: &mut Scene, seed: u64) -> Self {
         let meshes = FxMeshes {
             spark: { let m = glow(scene, [1.0, 0.6, 0.2], 20000.0); cube(scene, m) },
-            dust: { let m = material(scene, palette::DARK, 0.95); cube(scene, m) },
             blood: { let m = material(scene, [0.45, 0.02, 0.02], 0.35); sphere(scene, m, 4, 6) },
             casing: { let m = scene.add_material(Material { tint: [0.75, 0.55, 0.2], layer: -1, roughness: 0.35, flags: 0, scale: 1.0, metal: 1.0 }); cube(scene, m) },
         };

@@ -66,6 +66,8 @@ pub struct Gg {
     since_snap: f32,
     since_poll: u32,
     rebuild: bool,
+    environment_dirty: bool,
+    split_hint_left: f32,
     /// The atmosphere shown is the island arenas' (Godot's sky only).
     inferno: bool,
     pub(crate) sounds: Option<crate::sounds::Sounds>,
@@ -136,7 +138,7 @@ impl Gg {
         let mut vis = view::Visuals::build(&world);
         vis.hide_own_bodies(&slots);
         Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
-            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
+            hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
             split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
             .with_split()
@@ -354,12 +356,12 @@ impl Gg {
         self.prev = view::Pose::all(&self.world);
     }
 
-    /// Choose the sky (`--sky`, the `sky` command). Godot's is the default.
+    /// Choose the sky (`--sky`, the `sky` command). Random time and weather is the default.
     pub fn set_sky(&mut self, choice: crate::sky::SkyChoice) -> Result<(), String> {
         self.sky.choice = choice;
         self.sky.live = None;
         self.apply_sky()?;
-        if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. } | crate::sky::SkyChoice::Rounds(_))) {
+        if let Some(s) = self.sky.applied.filter(|_| matches!(choice, crate::sky::SkyChoice::Cycle { .. } | crate::sky::SkyChoice::Rounds(_) | crate::sky::SkyChoice::Random)) {
             self.sky.live = Some(render::sky::LiveSky::starting(s, &serde_json::Value::Null));
         }
         Ok(())
@@ -369,7 +371,7 @@ impl Gg {
     /// engine/docs/live-sky-controls.md for the cost). Godot's sky needs a
     /// renderer rebuild; a procedural one updates the renderer in place.
     fn apply_sky(&mut self) -> Result<(), String> {
-        match self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) {
+        match self.sky.choice.for_arena(self.world.round, self.world.tick as f32 * DT, self.world.arena.seed, self.world.modifier == Some(growing_guns::Modifier::Blackout)) {
             None if self.sky.applied.is_some() => {
                 self.vis.scene.sky = Some(view::sky_for(self.inferno));
                 self.vis.scene.sky_physical = false;
@@ -380,7 +382,7 @@ impl Gg {
                 self.keep_blackout();
                 self.sky.applied = None;
                 self.sky_upload = None;
-                self.rebuild = true;
+                self.environment_dirty = true;
             }
             None => {}
             Some(s) if self.sky.applied != Some(s) => {
@@ -406,7 +408,7 @@ impl Gg {
         self.light = Lighting { taa, ..view::lighting_for(inferno) };
         self.apply_light_overrides();
         self.keep_blackout();
-        self.rebuild = true;
+        self.environment_dirty = true;
     }
 
     /// A blackout round darkens the scene's light (the sky's light is baked
@@ -421,7 +423,10 @@ impl Gg {
         } else if let Some(l) = self.before_blackout.take() {
             self.light = Lighting { taa: self.light.taa, ..l };
         }
-        self.rebuild = true;
+        // Replace the visible sky as well as its illumination. Do not leave a
+        // daylight sky visible while the asynchronous next bake is pending.
+        if let Err(e)=self.apply_sky() { eprintln!("blackout sky: {e}"); }
+        self.environment_dirty = true;
     }
 
     /// The light was replaced during a blackout: that is the light to come back to.
@@ -435,6 +440,7 @@ impl Gg {
         prepared.apply_scene(&mut self.vis.scene, &mut self.light);
         self.vis.set_floodlights(crate::sky::floodlights(prepared.settings.solar().elevation_degrees));
         self.light.volumetric = crate::sky::volumetric(&prepared.settings);
+        self.light.indirect_fill_lux = crate::sky::indirect_fill(prepared.settings.solar().elevation_degrees);
         self.apply_light_overrides();
         self.keep_blackout();
         self.sky.applied = Some(prepared.settings);
@@ -492,11 +498,11 @@ impl Gg {
     /// Rounds and the cycle: request the sky for this round and the game
     /// clock off the frame loop (a bake is ~0.2 s), take finished bakes.
     fn cycle_sky(&mut self) {
-        let Some(want) = self.sky.choice.settings(self.world.round, self.world.tick as f32 * DT) else { return };
+        let Some(want) = self.sky.choice.for_arena(self.world.round, self.world.tick as f32 * DT, self.world.arena.seed, self.world.modifier == Some(growing_guns::Modifier::Blackout)) else { return };
         let now = std::time::Instant::now();
         let Some(live) = &mut self.sky.live else { return };
         if live.desired() != want && let Err(e) = live.request(want, now) { eprintln!("sky: {e}"); }
-        if let Some(prepared) = live.poll(now) { self.show_sky(prepared); }
+        if let Some(prepared) = live.poll(now) && prepared.settings == want { self.show_sky(prepared); }
     }
 }
 
@@ -517,6 +523,7 @@ pub(crate) fn hitch(what: &str, since: std::time::Instant) {
 fn blackout_light(light: &mut Lighting) {
     light.sun_lux = 0.0;
     light.sky_lux = 0.0;
+    light.indirect_fill_lux = 0.0;
     light.fog_density = 0.0;
     light.volumetric = None;
     light.ev100 = *BLACKOUT_EV100;
@@ -584,7 +591,7 @@ impl Gg {
     /// splitscreen is off (one pad only counts while the keyboard is in use).
     fn hint_visible(&self) -> bool {
         let pads = self.connected.iter().filter(|d| d.is_pad()).count();
-        self.party.is_none() && !self.split && !self.session.is_client() && pads > 0 && (pads >= 2 || !self.pad_last)
+        self.split_hint_left > 0.0 && matches!(self.ui.screen, hud::menus::Screen::Play) && self.party.is_none() && !self.split && !self.session.is_client() && pads > 0 && (pads >= 2 || !self.pad_last)
     }
 
     /// Godot `_join_player`: device `dev` gets a local seat. It takes over a
@@ -845,7 +852,10 @@ impl app::Game for Gg {
     fn mouse_capture(&self) -> Option<bool> {
         if self.replay.is_some() { return Some(false); }
         Some(!self.no_kbm && !self.ui.is_open() && !self.debug.open && self.hud.match_over.is_none()
-            && !self.slots.first().and_then(|&s| self.world.players.get(s)).is_some_and(|p| p.offer.is_some()))
+            && !self.slots.first().is_some_and(|&s| {
+                let burning = self.hud.fb.get(s).is_some_and(|f| f.lava_death && f.burned.is_some_and(|t| t < 2.4));
+                self.world.players.get(s).is_some_and(|p| p.offer.is_some()) && !burning
+            }))
     }
 
     fn tick(&mut self, controls: &[Controls]) {
@@ -929,6 +939,10 @@ impl app::Game for Gg {
         }
         let menu_open = self.ui.is_open() || debug;
         let mut local: Vec<Input> = if menu_open { vec![Input::default(); controls.len()] } else { controls.iter().map(input).collect() };
+        // The burning victim can still look around while the card UI waits.
+        for (k, &s) in self.slots.iter().enumerate() {
+            if let Some(i) = local.get(k) { self.vis.lava_look(s, i.look); }
+        }
         // Sniper zoom slows the look (Godot x0.4).
         for (k, &s) in self.slots.iter().enumerate() {
             if self.world.players.get(s).is_some_and(|p| p.zooming) && let Some(i) = local.get_mut(k) { i.look = i.look.map(|v| v * 0.4); }
@@ -936,6 +950,7 @@ impl app::Game for Gg {
         // Card picks: the menu takes this player's controls while an offer is open.
         self.menus.resize_with(self.slots.len(), Default::default);
         for (k, &s) in self.slots.iter().enumerate() {
+            if self.hud.fb[s].lava_death && self.hud.fb[s].burned.is_some_and(|t|t<2.4) { continue; }
             let Some((n, age)) = self.world.players.get(s).and_then(|p| p.offer.as_ref().map(|o| (o.len(), p.offer_age))) else { continue };
             // Godot locks the cards for 0.75 s while they flip open.
             if let (Some(c), Some(i)) = (controls.get(k), local.get_mut(k)) && !menu_open && age >= 0.75 {
@@ -992,7 +1007,9 @@ impl app::Game for Gg {
         self.session.publish(&self.world);
         hitch("session.publish", t);
         // Desktop replays do not capture headset/controller poses.
+        let t = std::time::Instant::now();
         if !self.xr_stereo { self.recorder.push(&self.world, &self.slots, &self.sky.choice.name(), self.ui.tilt); }
+        hitch("replay.record", t);
     }
 
     fn draw(&mut self, frame: &mut Frame) -> Result<Draw, String> {
@@ -1010,6 +1027,7 @@ impl app::Game for Gg {
             1.0
         };
         self.replay_alpha = alpha;
+        self.split_hint_left = (self.split_hint_left - frame.dt).max(0.0);
         self.hud.xr = self.xr_stereo;
         if self.xr_stereo {
             self.vis.hide_own_bodies(&[self.slots[0], self.slots[0]]);
@@ -1018,18 +1036,26 @@ impl app::Game for Gg {
         self.vis.set_tilt(self.ui.tilt && !self.xr_stereo);
 
         self.vis.pose(&self.world, &self.prev, alpha, frame.dt);
+        self.sync_blackout();
         if self.recorder.disabled { self.apply_sky()?; self.sky.live = None; }
         else if self.sky.live.is_some() { self.cycle_sky(); }
         self.sync_atmosphere();
-        self.sync_blackout();
         let t = std::time::Instant::now();
         if std::mem::take(&mut self.rebuild) || frame.renderer().is_none() {
             frame.set_scene(&self.vis.scene, &self.light);
+            let effects_started = std::time::Instant::now();
+            frame.renderer().expect("scene installed").prepare_effects(frame.gpu);
+            hitch("prepare effects", effects_started);
             self.plates.invalidate();
             self.vis.invalidate_sprites();
             self.sky_upload = None;
+            self.environment_dirty = false;
             hitch("set_scene", t);
-        } else if let Some(prepared) = self.sky_upload.take() {
+        } else if std::mem::take(&mut self.environment_dirty) {
+            let gpu = frame.gpu;
+            frame.renderer_mut().expect("renderer exists").update_scene_environment(gpu, &self.vis.scene, &self.light);
+        }
+        if let Some(prepared) = self.sky_upload.take() {
             let gpu = frame.gpu;
             let r = frame.renderer_mut().expect("renderer checked above");
             if let Err(e) = r.update_sky(gpu, &prepared.sky, &mut self.light) { eprintln!("sky unchanged on the GPU: {e}"); }
@@ -1049,6 +1075,7 @@ impl app::Game for Gg {
         r.set_spot_falloff(&vec![-1.0; spots.len()]);
         r.set_spot_softness(if spots.is_empty() { 0.0 } else { FLOOD_SOFTNESS });
         r.set_headlights(&spots)?;
+        if blackout { r.set_headlight_exclusions(&self.vis.flashlight_exclusions(&self.world)); }
         r.set_volumetric_beams(&if self.light.volumetric.is_some() { self.vis.volumetric_beams(self.scatter) } else { Vec::new() })?;
         let start = matches!(self.ui.screen, hud::menus::Screen::Start | hud::menus::Screen::Settings { from_start: true });
         // Name tags over everyone not seated here (on the start screen, everyone).
@@ -1057,6 +1084,8 @@ impl app::Game for Gg {
         let mut list = HudDrawList::new(frame.size);
         list.cached_text=crate::graphics::get().simple_lighting;
         self.hud.begin_pointer_frame(frame.size);
+        self.hud.round_flash(&mut list);
+        list.begin_overlay();
         let cameras = if start {
             // The start screen orbits the arena while bots fight (Godot: 82 m out, 34 up, FOV 66).
             let t = self.ui.age * 0.055;
@@ -1070,11 +1099,9 @@ impl app::Game for Gg {
                 self.vis.airstrike_flare(&mut list, *rect, &cam, &self.world);
                 let flash = self.vis.ion_flash(self.world.players[s].eye());
                 let pad = k > 0 || self.no_kbm;
-                self.hud.view(&mut list, &self.world, s, *rect, self.menus.get(k).map_or(0, |m| m.focus), flash, pad);
-                // An air strike's impact whites out every view for two frames
-                // (Godot `flash_air_strike_impact`).
                 let impact = self.vis.air_impact_flash();
-                if impact > 0.0 { list.begin_overlay(); list.rect(*rect, [1.0, 0.95, 0.86, impact * 0.92], *rect); }
+                if impact > 0.0 { self.hud.screen_tint(&mut list, *rect, [1.0, 0.95, 0.86, impact * 0.92], *rect, false); }
+                self.hud.view(&mut list, &self.world, s, *rect, self.menus.get(k).map_or(0, |m| m.focus), flash, pad);
             }
             list.begin_overlay();
             let error = self.session.error().or_else(|| self.ui.error.clone());
@@ -1088,7 +1115,6 @@ impl app::Game for Gg {
         let ticket = self.session.ticket().map(str::to_string);
         let ctx = menu_ctx(&self.session, &self.world, &self.start_seats, ticket.as_deref(), self.party.as_ref().map(|p| &p.settings).or(self.gn_preview.as_ref()), &self.names, self.xr_stereo);
         self.ui.draw(&mut list, &self.world, &self.hud, &ctx);
-        self.hud.round_flash(&mut list);
         if self.debug.open { let dctx = self.debug_ctx(); self.debug.draw(&mut list, &dctx); }
         let mut light = self.light.clone();
         let glow = self.vis.ion_glow();
@@ -1167,6 +1193,7 @@ impl app::Game for Gg {
 
     fn devices(&mut self, devices: &[(Device, Controls)]) {
         if self.replay.is_some() { return; }
+        if devices.iter().any(|(d, _)| d.is_pad() && !self.connected.contains(d)) { self.split_hint_left = 6.0; }
         self.connected = devices.iter().map(|d| d.0).collect();
         for (d, c) in devices {
             if c.pressed.0 != 0 || c.mv != [0.0; 2] || c.look != [0.0; 2] { self.pad_last = d.is_pad(); if d.is_pad() { self.last_pad = Some(*d); } }
@@ -1322,7 +1349,7 @@ impl app::Game for Gg {
                 // `arena SEED`, or `arena island [SEED]`: the island layout
                 // whatever the seed rolls (Godot `force_all_floor_lava`).
                 let island = w.get(1) == Some(&"island");
-                let seed = if island { w.get(2).map_or(Ok(1.0), |_| num(2))? } else { num(1)? } as u64;
+                let seed = w.get(if island { 2 } else { 1 }).copied().unwrap_or("1").parse::<u64>().map_err(|_| "arena seed must be an unsigned integer")?;
                 self.world.arena = growing_guns::Arena::generate_with(seed, 55.0, 95.0, island);
                 self.world.lava = Default::default();
                 // On islands everyone moves onto one (anywhere else is lava).
@@ -1410,7 +1437,7 @@ impl app::Game for Gg {
         let w = &self.world;
         let players: Vec<_> = w.players.iter().enumerate().map(|(i, p)| serde_json::json!({
             "index": i, "bot": p.bot, "local_view": self.slots.iter().position(|&s| s == i),
-            "alive": p.alive, "downed": p.downed, "ghost": p.ghost, "health": p.health, "score": p.score, "ammo": p.ammo, "reloading": p.reloading(),
+            "alive": p.alive, "downed": p.downed, "ghost": p.ghost, "howitzer": p.howitzer, "siege_crossbow": p.siege_crossbow, "health": p.health, "score": p.score, "ammo": p.ammo, "reloading": p.reloading(),
             "pos": p.pos.to_array(), "vel": p.vel.to_array(), "yaw": p.yaw, "pitch": p.pitch,
             "on_floor": p.on_floor, "on_wall": p.wall_normal.is_some(), "dash_charges": p.dash_charges,
             "cards": p.cards.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>(), "offer": p.offer.as_ref().map(|o| o.iter().map(|&c| card_id(w, c)).collect::<Vec<_>>()), "max_health": p.max_health(), "mag": p.mag_size(),
@@ -1582,6 +1609,29 @@ mod tests {
         c
     }
 
+    #[test]
+    fn lava_camera_keeps_mouse_capture_until_cards_become_visible() {
+        use app::Game;
+        let mut g = Gg::new(World::new(5, &[false, true]), Session::Local, vec![0]);
+        g.ui.open(hud::menus::Screen::Play);
+        g.world.players[0].offer = Some(vec![]);
+        g.hud.fb[0].lava_death = true;
+        g.hud.fb[0].burned = Some(1.0);
+        assert_eq!(g.mouse_capture(), Some(true));
+        g.ui.open(hud::menus::Screen::Pause);
+        assert_eq!(g.mouse_capture(), Some(false));
+        g.ui.open(hud::menus::Screen::Play);
+        g.hud.fb[0].burned = Some(2.4);
+        assert_eq!(g.mouse_capture(), Some(false));
+    }
+
+    #[test]
+    fn spare_pad_hint_expires_and_sky_changes_reuse_renderer() {
+        let mut g=Gg::new(World::new(5,&[false,true]),Session::Local,vec![0]);
+        step(&mut g,&idle(2));assert!(g.hint_visible());g.split_hint_left=0.0;
+        step(&mut g,&idle(2));assert!(!g.hint_visible());
+        g.rebuild=false;g.command("sky sunset:haze").unwrap();assert!(!g.rebuild);assert!(g.environment_dirty || g.sky_upload.is_some());
+    }
     #[test]
     fn spare_pads_join_over_bots_lead_their_own_seat_and_leave() {
         let mut world = World::new(5, &[false, true, true, true]);

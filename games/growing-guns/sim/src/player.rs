@@ -17,11 +17,8 @@ pub const PHOENIX_RISE: f32 = 10.0;
 pub const SKY_DROP_HEIGHT: f32 = 60.0;
 pub const SKY_DROP_SPEED: f32 = 80.0;
 
-/// What a blow carries besides its damage, for the death it may cause.
-/// Seconds between a ghost's mines (Godot MINE_RELOAD).
-pub const MINE_RELOAD: f64 = 2.5;
-/// How far in front of a ghost its mine lands (Godot MINE_FORWARD_OFFSET).
-pub const MINE_FORWARD_OFFSET: f32 = 0.9;
+pub const HOWITZER_RELOAD: f64 = 4.5;
+pub const HOWITZER_SPEED: f32 = 42.0;
 
 #[derive(Clone, Copy, Debug)]
 /// `lava`: a lava death if it kills, `Some(true)` falling in (Godot
@@ -101,13 +98,8 @@ impl World {
         let p = &self.players[i];
         if p.ghost {
             if p.offer.is_none() && self.phase == Phase::Playing {
-                self.recover_ghost(i);
-                let p = &mut self.players[i];
-                p.dash_timer = 0.0;
-                p.zooming = false;
+                self.howitzer_aim(i, input);
                 self.cooldowns(i);
-                self.move_player_with(i, Input { mv: input.mv, look: input.look, jump: input.jump, ..Default::default() }, false);
-                self.recover_ghost(i);
             } else {
                 self.players[i].vel = Vec3::ZERO;
             }
@@ -144,83 +136,60 @@ impl World {
         self.events.truncate(event_len);
     }
 
-    /// A dead local/remote player can walk around after choosing a card.
-    /// Keep the eliminated body non-targetable and never enter combat input.
-    fn ghost_tick(&mut self, i: usize, input: Input, fire_edge: bool) {
+    /// Eliminated humans operate a stationary audience gun after their pick.
+    fn ghost_tick(&mut self, i: usize, input: Input, _fire_edge: bool) {
         let p = &mut self.players[i];
-        // Dead bots include the parked co-op enemy pool; do not simulate them.
         if p.bot || p.offer.is_some() || self.phase != Phase::Playing {
             p.vel = Vec3::ZERO;
             return;
         }
-        self.recover_ghost(i);
-        let p = &mut self.players[i];
-        p.dash_timer = 0.0;
-        p.zooming = false;
+        if p.howitzer.is_none() {
+            let angle = crate::stadium::Stadium::seg_ang() * (self.rng.below(crate::stadium::SEGMENTS as u32) as f32 + 0.5);
+            let row = 6 + self.rng.below(6) as usize;
+            let stadium = self.arena.stadium;
+            let radius = (stadium.inner_r + (row as f32 + 0.5) * crate::stadium::ROW_DEPTH) * crate::stadium::sq(angle);
+            let at = Vec3::new(angle.cos()*radius, stadium.base_y + row as f32*crate::stadium::ROW_RISE + crate::HALF_HEIGHT, angle.sin()*radius);
+            let p = &mut self.players[i];
+            p.howitzer = Some(at);
+            p.siege_crossbow = self.rng.below(2) == 1;
+            p.pos = at;
+            p.yaw = at.x.atan2(at.z);
+            p.pitch = -0.35;
+            p.special_cd = 0.5;
+            p.on_floor = true;
+            p.wall_normal = None;
+        }
+        self.howitzer_aim(i, input);
         self.cooldowns(i);
         self.decay_recoil(i);
-        // Reuse collision, gravity and jumps, but no weapon/card dash effects.
-        let event_count = self.events.len();
-        self.move_player(i, Input { mv: input.mv, look: input.look, jump: input.jump, ..Default::default() });
-        self.events.truncate(event_count); // silent ghost footsteps/landings
-        self.recover_ghost(i);
-        // A ghost plants mines (Godot `_place_mine`, MINE_RELOAD apart).
-        if fire_edge && self.players[i].special_cd <= 0.0 {
-            self.players[i].special_cd = MINE_RELOAD;
-            let p = &self.players[i];
-            let start = p.pos + Vec3::Y * 0.6 + look_dir(p.yaw, 0.0) * MINE_FORWARD_OFFSET;
-            let pos = match crate::shape::raycast(&self.arena.grid, start, Vec3::NEG_Y, 3.0) {
-                Some((t, _, _)) => start + Vec3::NEG_Y * t + Vec3::Y * 0.12,
-                None => start + Vec3::NEG_Y * 0.6,
-            };
-            self.spawn_projectile(crate::ProjectileKind::Mine, pos, Vec3::ZERO, i);
-            self.events.push(crate::Event::MinePlanted { player: i, pos });
+        if input.fire && self.players[i].special_cd <= 0.0 {
+            let p = &mut self.players[i];
+            p.special_cd = p.artillery_reload();
+            p.since_shot = 0.0;
+            let dir = look_dir(p.yaw, p.howitzer_elevation());
+            let from = p.eye() - Vec3::Y*0.45 + dir*3.2;
+            let (kind, speed) = if p.siege_crossbow { (crate::ProjectileKind::SiegeBolt, 150.0) } else { (crate::ProjectileKind::Howitzer, HOWITZER_SPEED) };
+            self.spawn_projectile(kind, from, dir*speed, i);
+            self.events.push(Event::Shot { player: i, from, dir });
         }
     }
 
-    /// Ghosts remain immune to lava, but must not spend the interval after
-    /// a card pick under its opaque surface. Recover at the visible lava,
-    /// rather than the deep void, and recheck the destructible ground.
-    fn recover_ghost(&mut self, i: usize) {
-        let pos = self.players[i].pos;
-        let surface = self.ghost_lava_surface(pos);
-        if pos.y - crate::HALF_HEIGHT >= surface && pos.y >= FELL_OFF_Y { return; }
-        let ceiling = self.arena.chunks.iter().filter(|c| c.alive)
-            .map(|c| c.center.y + c.half.y).fold(self.arena.stadium.wall_h(), f32::max) + 3.0;
-        let ground = |at: Vec3| -> Option<Vec3> {
-            let from = Vec3::new(at.x, ceiling, at.z);
-            let (t, normal, _) = crate::shape::raycast(&self.arena.grid, from, Vec3::NEG_Y, (ceiling - self.arena.lava_surface()).max(1.0))?;
-            if normal.y < 0.75 { return None; }
-            let feet = from - Vec3::Y * t;
-            if feet.y <= self.ghost_lava_surface(feet) + 0.02 { return None; }
-            let center = feet + Vec3::Y * (crate::HALF_HEIGHT + 0.02);
-            let r = Vec2::splat(crate::RADIUS);
-            let xz = Vec2::new(center.x, center.z);
-            let mut blocked = false;
-            crate::shape::Boxes::near(&self.arena.grid, xz - r, xz + r, &mut |_, b| {
-                blocked |= b.push_out(center, crate::RADIUS, crate::HALF_HEIGHT).is_some();
-            });
-            (!blocked).then_some(center)
-        };
-        let spots = &self.arena.spawns;
-        let safe = spots.iter().cycle().skip(i).take(spots.len()).find_map(|&s| ground(s))
-            .or_else(|| self.arena.chunks.iter().filter(|c| c.alive && c.half.x >= crate::RADIUS && c.half.z >= crate::RADIUS).find_map(|c| ground(c.center)))
-            // Even if the arena was completely destroyed, the solid stands
-            // remain a place for the eliminated player to watch from.
-            .or_else(|| {
-                (0..crate::stadium::ROWS).find_map(|row| {
-                    let r = self.arena.stadium.inner_r + crate::stadium::ROW_DEPTH * (row as f32 + 0.5);
-                    [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z].into_iter().find_map(|d| ground(d * r))
-                })
-            });
+    fn howitzer_aim(&mut self, i: usize, input: Input) {
         let p = &mut self.players[i];
-        p.pos = safe.unwrap_or(Vec3::new(pos.x, surface + crate::HALF_HEIGHT + 0.02, pos.z));
+        let Some(at) = p.howitzer else { return; };
+        p.pos = at;
         p.vel = Vec3::ZERO;
-        p.on_floor = false;
-        p.wall_normal = None;
+        p.dash_timer = 0.0;
+        p.zooming = p.siege_crossbow && input.special;
+        let sensitivity = if p.zooming { 0.20 } else { 0.45 };
+        let centre = at.x.atan2(at.z);
+        let yaw = p.yaw + input.look[0]*sensitivity;
+        let relative = (yaw-centre+std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)-std::f32::consts::PI;
+        p.yaw = centre + relative.clamp(-1.1,1.1);
+        p.pitch = (p.pitch + input.look[1]*sensitivity).clamp(-0.8,0.35);
     }
 
-    fn ghost_lava_surface(&self, pos: Vec3) -> f32 {
+    pub fn lava_surface_at(&self, pos: Vec3) -> f32 {
         let l = &self.lava;
         let covered = l.full || l.floor_t() >= 1.0 || (l.floor_t() > 0.0
             && pos.x.abs() <= l.half && pos.z.abs() <= l.half

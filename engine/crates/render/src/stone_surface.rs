@@ -2,7 +2,8 @@
 //!
 //! RGB is neutral sRGB albedo, intended to multiply the material's stone tint.
 //! Albedo alpha is opaque; normal alpha is a **linear roughness multiplier**
-//! in 0.80..=1.00. The linear-UNORM normal uses OpenGL's +U / -V tangent frame. Both maps
+//! in 0.80..=1.00. The linear-UNORM normal uses OpenGL's +U / -V tangent frame.
+//! Normal B stores height in a signed 32 mm range for near-field parallax. Both maps
 //! describe the same 1.5 m periodic height field; there is no baked lighting.
 //! The ordinary texture-array mip chain filters away detail at distance.
 
@@ -13,8 +14,10 @@ use std::sync::OnceLock;
 /// Physical width of one repeat. Keep the shader's stone mapping in sync.
 pub const REPEAT_METRES: f32 = 1.5;
 
-const SIZE: usize = 512;
-const NAME: &str = "warp-quarried-stone-v1";
+const SIZE: usize = 1024;
+const NAME: &str = "warp-porous-stone-v4-quarried-height";
+/// Signed height range encoded in normal B, shared with procedural_surface.wgsl.
+pub const HEIGHT_RANGE_METRES: f32 = 0.032;
 static SURFACE: OnceLock<TextureSource> = OnceLock::new();
 
 /// Return an owned source for the renderer; the expensive bake happens once.
@@ -73,121 +76,6 @@ fn smootherstep(t: f32) -> f32 {
         polynomial(t)
     } else {
         1.0 - polynomial(1.0 - t)
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct Facet {
-    position: [f32; 2],
-    slope: [f32; 2],
-    height: f32,
-    albedo: f32,
-}
-
-// Squared-distance band in lattice-cell units. With 15 cm cells this softens
-// a typical plate boundary over ~15 mm, retaining broad, genuinely flat faces.
-const FACET_BLEND: f32 = 0.10;
-
-/// Blend ALL planes whose Voronoi regions meet the narrow transition band.
-/// A closest-distance/nearest-two blend introduces derivative jumps where a
-/// third plane enters. Pairwise compact C2 weights avoid that: a nearest
-/// site always has weight one, and an isolated face is exactly its plane.
-fn sample_facets(sites: &[Facet], p: [f32; 2], metres_per_cell: f32) -> Surface {
-    let mut distances = [0.0f32; 25];
-    let mut minimum = f32::MAX;
-    for (i, site) in sites.iter().enumerate() {
-        let dx = p[0] - site.position[0];
-        let dy = p[1] - site.position[1];
-        distances[i] = dx * dx + dy * dy;
-        minimum = minimum.min(distances[i]);
-    }
-    let mut active = [0usize; 25];
-    let mut count = 0;
-    for (i, &distance) in distances[..sites.len()].iter().enumerate() {
-        if distance - minimum < FACET_BLEND {
-            active[count] = i;
-            count += 1;
-        }
-    }
-    let mut result = Surface::default();
-    let mut total = 0.0;
-    for &i in &active[..count] {
-        let mut weight = 1.0;
-        for &j in &active[..count] {
-            // A rejected site is farther than every active site, so it
-            // contributes factor one here. Pruning cannot introduce a seam.
-            weight *= 1.0 - smootherstep((distances[i] - distances[j]) / FACET_BLEND);
-        }
-        let site = sites[i];
-        let height = site.height
-            + ((p[0] - site.position[0]) * site.slope[0]
-                + (p[1] - site.position[1]) * site.slope[1])
-                * metres_per_cell;
-        result.height += weight * height;
-        result.albedo += weight * site.albedo;
-        total += weight;
-    }
-    result.height /= total;
-    result.albedo /= total;
-    result
-}
-
-/// Periodic, jittered fracture plates, mostly 8..25 cm across. Neighbourhoods
-/// are prepared per cell once, keeping modulo and hashing out of the 25-site
-/// inner loop. Five-by-five includes all possible competitors at cell edges.
-struct Facets {
-    period: usize,
-    neighbourhoods: Vec<[Facet; 25]>,
-}
-
-impl Facets {
-    fn new(period: usize, seed: u32) -> Self {
-        let sites: Vec<_> = (0..period * period)
-            .map(|i| {
-                let i = i as u32;
-                let (sn, cs) = (random(i, seed ^ 0x8211) * std::f32::consts::TAU).sin_cos();
-                let slope = 0.025 + random(i, seed ^ 0x8212) * 0.055;
-                Facet {
-                    position: [
-                        0.22 + random(i, seed ^ 0x8213) * 0.56,
-                        0.22 + random(i, seed ^ 0x8214) * 0.56,
-                    ],
-                    slope: [cs * slope, sn * slope],
-                    height: (random(i, seed ^ 0x8215) - 0.5) * 0.006,
-                    albedo: (random(i, seed ^ 0x8216) - 0.5) * 0.045,
-                }
-            })
-            .collect();
-        let neighbourhoods = (0..period * period)
-            .map(|i| {
-                std::array::from_fn(|j| {
-                    let dx = (j % 5) as i32 - 2;
-                    let dy = (j / 5) as i32 - 2;
-                    let x = ((i % period) as i32 + dx).rem_euclid(period as i32) as usize;
-                    let y = ((i / period) as i32 + dy).rem_euclid(period as i32) as usize;
-                    let mut site = sites[y * period + x];
-                    site.position[0] += dx as f32;
-                    site.position[1] += dy as f32;
-                    site
-                })
-            })
-            .collect();
-        Self {
-            period,
-            neighbourhoods,
-        }
-    }
-
-    fn sample(&self, u: f32, v: f32) -> Surface {
-        let x = u * self.period as f32;
-        let y = v * self.period as f32;
-        let ix = (x.floor() as i32).rem_euclid(self.period as i32) as usize;
-        let iy = (y.floor() as i32).rem_euclid(self.period as i32) as usize;
-        sample_facets(
-            &self.neighbourhoods[iy * self.period + ix],
-            [x - x.floor(), y - y.floor()],
-            REPEAT_METRES / self.period as f32,
-        )
     }
 }
 
@@ -255,177 +143,64 @@ fn grain(field: &mut [Surface], center: [f32; 2], radius: [f32; 2], angle: f32, 
     }
 }
 
-/// Small four-sided chisel scallops. The interior walls are planar; only
-/// their ridges and outer rim are softened, unlike a rounded noise dimple.
-fn chisel(field: &mut [Surface], center: [f32; 2], radius: [f32; 2], angle: f32, depth: f32) {
-    let (sn, cs) = angle.sin_cos();
-    let bound = radius[0].max(radius[1]) * 1.1;
-    let ramp = |t: f32| {
-        let width = 0.12;
-        if t <= 0.0 {
-            0.0
-        } else if t >= width {
-            t - width * 0.5
-        } else {
-            let u = t / width;
-            width * u * u * u * (1.0 - u * 0.5)
-        }
-    };
-    for y in (center[1] - bound).floor() as i32..=(center[1] + bound).ceil() as i32 {
-        for x in (center[0] - bound).floor() as i32..=(center[0] + bound).ceil() as i32 {
-            let dx = x as f32 + 0.5 - center[0];
-            let dy = y as f32 + 0.5 - center[1];
-            let rx = (cs * dx + sn * dy) / radius[0];
-            let ry = (-sn * dx + cs * dy) / radius[1];
-            let diamond = (rx * rx + 0.0025).sqrt() + (ry * ry + 0.0025).sqrt() - 0.1;
-            field[wrapped_index(x, y)].add(
-                ramp(1.0 - diamond),
-                Surface {
-                    height: -depth,
-                    albedo: -0.008,
-                    roughness: 0.012,
-                },
-            );
-        }
-    }
-}
-
-/// A short, round-ended fracture segment. Compact support avoids dark webs;
-/// joining a few shallow segments gives the break an irregular direction.
-fn fracture(field: &mut [Surface], a: [f32; 2], b: [f32; 2], width: f32) {
-    let delta = [b[0] - a[0], b[1] - a[1]];
-    let inverse_length_squared = 1.0 / (delta[0] * delta[0] + delta[1] * delta[1]).max(1e-6);
-    let inverse_width_squared = 1.0 / (width * width);
-    let detail = Surface {
-        height: -0.00065,
-        albedo: -0.035,
-        roughness: 0.018,
-    };
-    for y in (a[1].min(b[1]) - width).floor() as i32..=(a[1].max(b[1]) + width).ceil() as i32 {
-        for x in (a[0].min(b[0]) - width).floor() as i32..=(a[0].max(b[0]) + width).ceil() as i32 {
-            let px = x as f32 + 0.5 - a[0];
-            let py = y as f32 + 0.5 - a[1];
-            let t = ((px * delta[0] + py * delta[1]) * inverse_length_squared).clamp(0.0, 1.0);
-            let dx = px - t * delta[0];
-            let dy = py - t * delta[1];
-            field[wrapped_index(x, y)]
-                .add(kernel((dx * dx + dy * dy) * inverse_width_squared), detail);
-        }
-    }
-}
-
+/// Porous stone: overlapping irregular depressions in three physical size
+/// bands, with restrained granular relief and mineral colour variation. No
+/// Voronoi plate boundaries, drawn crack network, or baked directional light.
 fn height_field() -> Vec<Surface> {
-    let facets = Facets::new(10, 0x17bc_930d);
-    let mottling = Noise::new(11, 0xa51c_8e29);
-    let chips = Noise::new(31, 0x63d8_35a7);
-    let grains = Noise::new(83, 0xc02b_79e3);
-    let grit = Noise::new(181, 0x95f1_b863);
+    let mottling = Noise::new(9, 0xa51c_8e29);
+    let coarse = Noise::new(31, 0x63d8_35a7);
+    let grains = Noise::new(181, 0xc02b_79e3);
+    let grit = Noise::new(371, 0x95f1_b863);
     let mut field = Vec::with_capacity(SIZE * SIZE);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let u = (x as f32 + 0.5) / SIZE as f32;
-            let v = (y as f32 + 0.5) / SIZE as f32;
-            let coarse = chips.sample(u, v);
-            let medium = grains.sample(u, v);
-            let fine = grit.sample(u, v);
-            let plate = facets.sample(u, v);
-            field.push(Surface {
-                // Broad angular plates carry the 3..12 mm fracture relief;
-                // subdued 8..48 mm grain roughens their otherwise flat faces.
-                height: plate.height + coarse * 0.00045 + medium * 0.00055 + fine * 0.00019,
-                albedo: 0.87
-                    + plate.albedo
-                    + mottling.sample(u, v) * 0.035
-                    + coarse * 0.035
-                    + medium * 0.025,
-                roughness: 0.93 + medium * 0.025 - fine * 0.018,
-            });
+    for y in 0..SIZE { for x in 0..SIZE {
+        let u = (x as f32 + 0.5) / SIZE as f32;
+        let v = (y as f32 + 0.5) / SIZE as f32;
+        let c = coarse.sample(u, v);
+        let g = grains.sample(u, v);
+        let f = grit.sample(u, v);
+        field.push(Surface {
+            height: c * 0.0012 + g * 0.00032 + f * 0.00013,
+            albedo: 0.87 + mottling.sample(u,v) * 0.045 + c * 0.025 + g * 0.035,
+            roughness: 0.93 + g * 0.018 - f * 0.012,
+        });
+    }}
+    let texels_per_metre = SIZE as f32 / REPEAT_METRES;
+    // Radius/depth in metres. Small pores dominate; a sparse larger family
+    // creates occasional cavities. Two offset elliptical lobes keep pits
+    // irregular instead of making a uniform polka-dot pattern.
+    for (count, radius_lo, radius_hi, depth_lo, depth_hi, seed) in [
+        (650u32, 0.012, 0.035, 0.0025, 0.0070, 0x1981u32),
+        (9000, 0.0016, 0.0065, 0.0006, 0.0025, 0x3811),
+        (50000, 0.0006, 0.0025, 0.00015, 0.0007, 0x2341),
+    ] {
+        for i in 0..count {
+            let radius = (radius_lo + random(i, seed) * (radius_hi-radius_lo)) * texels_per_metre;
+            let center = [random(i, seed+1) * SIZE as f32, random(i, seed+2) * SIZE as f32];
+            let aspect = 0.45 + random(i, seed+3) * 0.5;
+            let angle = random(i, seed+4) * std::f32::consts::TAU;
+            let density = 0.8 + 0.2 * coarse.sample(center[0]/SIZE as f32, center[1]/SIZE as f32);
+            let detail = Surface {
+                height: -(depth_lo + random(i, seed+5) * (depth_hi-depth_lo)) * density,
+                // Restrained mineral staining, not a painted lighting gradient.
+                albedo: -0.14, roughness: 0.018,
+            };
+            grain(&mut field, center, [radius, radius * aspect], angle, detail);
+            if i % 3 != 0 {
+                let (sn,cs) = angle.sin_cos();
+                grain(&mut field, [center[0]+cs*radius*0.55, center[1]+sn*radius*0.55],
+                    [radius*0.65, radius*aspect*0.85], angle+0.7,
+                    Surface { height: detail.height * 0.7, ..detail });
+            }
         }
     }
-
-    // Sparse chipped cavities, fine pores, and mixed pale/dark mineral grains.
-    // A seed is local to each feature family, so changes do not reshuffle all
-    // other features and no global random generator or source asset is needed.
-    for i in 0..180 {
-        let radius = 4.0 + random(i, 0x1981) * 8.0;
-        chisel(
-            &mut field,
-            [
-                random(i, 0x1982) * SIZE as f32,
-                random(i, 0x1983) * SIZE as f32,
-            ],
-            [radius, radius * (0.45 + random(i, 0x1984) * 0.45)],
-            random(i, 0x1985) * std::f32::consts::TAU,
-            0.0015 + random(i, 0x1986) * 0.0035,
-        );
-    }
-    for i in 0..240 {
-        let radius = 3.0 + random(i, 0x2341) * 6.0;
-        grain(
-            &mut field,
-            [
-                random(i, 0x2342) * SIZE as f32,
-                random(i, 0x2343) * SIZE as f32,
-            ],
-            [radius, radius * (0.35 + random(i, 0x2344) * 0.45)],
-            random(i, 0x2345) * std::f32::consts::TAU,
-            Surface {
-                height: -0.0014,
-                albedo: -0.025,
-                roughness: 0.028,
-            },
-        );
-    }
-    for i in 0..1900 {
-        let radius = 1.2 + random(i, 0x3811) * 2.6;
-        grain(
-            &mut field,
-            [
-                random(i, 0x3812) * SIZE as f32,
-                random(i, 0x3813) * SIZE as f32,
-            ],
-            [radius, radius * (0.55 + random(i, 0x3814) * 0.45)],
-            random(i, 0x3815) * std::f32::consts::TAU,
-            Surface {
-                height: -0.00055 - random(i, 0x3816) * 0.0008,
-                albedo: -0.045,
-                roughness: 0.035,
-            },
-        );
-    }
-    for i in 0..1500 {
-        let radius = 0.9 + random(i, 0x4c21) * 1.9;
-        let pale = random(i, 0x4c22) > 0.36;
-        grain(
-            &mut field,
-            [
-                random(i, 0x4c23) * SIZE as f32,
-                random(i, 0x4c24) * SIZE as f32,
-            ],
-            [radius, radius * (0.45 + random(i, 0x4c25) * 0.5)],
-            random(i, 0x4c26) * std::f32::consts::TAU,
-            Surface {
-                height: if pale { 0.00035 } else { -0.0002 },
-                albedo: if pale { 0.075 } else { -0.07 },
-                roughness: -0.065,
-            },
-        );
-    }
-    for i in 0..48 {
-        let mut a = [
-            random(i, 0x5711) * SIZE as f32,
-            random(i, 0x5712) * SIZE as f32,
-        ];
-        let angle = random(i, 0x5713) * std::f32::consts::TAU;
-        let step = 4.0 + random(i, 0x5714) * 12.0;
-        let width = 1.1 + random(i, 0x5715) * 1.2;
-        for segment in 0..3 {
-            let turn = angle + (random(i * 3 + segment, 0x5716) - 0.5) * 0.7;
-            let (sn, cs) = turn.sin_cos();
-            let b = [a[0] + cs * step, a[1] + sn * step];
-            fracture(&mut field, a, b, width);
-            a = b;
-        }
+    // Fine mineral flecks change colour and roughness independently of pores.
+    for i in 0..6500 {
+        let radius = (0.0020 + random(i, 0x4c21) * 0.0060) * texels_per_metre;
+        let pale = random(i, 0x4c22) > 0.4;
+        grain(&mut field, [random(i, 0x4c23)*SIZE as f32, random(i, 0x4c24)*SIZE as f32],
+            [radius, radius*(0.45+random(i,0x4c25)*0.5)], random(i,0x4c26)*std::f32::consts::TAU,
+            Surface { height: if pale {0.00015} else {-0.0001},
+                albedo: if pale {0.065} else {-0.06}, roughness: -0.04 });
     }
     field
 }
@@ -464,7 +239,7 @@ fn cook() -> TextureSource {
                 Rgba([
                     encode(n[0]),
                     encode(n[1]),
-                    encode(n[2]),
+                    ((0.5 + sample.height / HEIGHT_RANGE_METRES).clamp(0.0, 1.0) * 255.0).round() as u8,
                     (sample.roughness.clamp(0.8, 1.0) * 255.0).round() as u8,
                 ]),
             );
@@ -512,102 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn fracture_plates_are_planar_inside_and_periodic_at_cell_and_tile_edges() {
-        let facets = Facets::new(10, 0x17bc_930d);
-        let cell_metres = REPEAT_METRES / facets.period as f32;
-        for (i, sites) in facets.neighbourhoods.iter().enumerate() {
-            let site = sites[12];
-            let u = ((i % facets.period) as f32 + site.position[0]) / facets.period as f32;
-            let v = ((i / facets.period) as f32 + site.position[1]) / facets.period as f32;
-            for [x, y] in [[0.0, 0.0], [0.015, -0.02], [-0.015, 0.02]] {
-                let sampled =
-                    facets.sample(u + x / facets.period as f32, v + y / facets.period as f32);
-                let plane = site.height + (x * site.slope[0] + y * site.slope[1]) * cell_metres;
-                assert!((sampled.height - plane).abs() < 2e-7);
-            }
-        }
-        // These boundaries change the finite candidate window; they must not
-        // change the height or slope even when a blend spans several cells.
-        // A first-order left/right difference measures curvature as well as
-        // a seam: the narrow ledges can change slope appreciably over 30 um.
-        // Binary steps also avoid unequal f32 coordinate rounding at the
-        // two sides. Evaluate second-order slopes with f64 accumulation.
-        let step = 1.0f32 / 32768.0;
-        for boundary in [0.0, 0.1, 0.4, 0.9, 1.0] {
-            for v in [0.0713, 0.4187, 0.935] {
-                for transpose in [false, true] {
-                    let sample = |u| {
-                        if transpose {
-                            facets.sample(v, u).height
-                        } else {
-                            facets.sample(u, v).height
-                        }
-                    };
-                    assert!((sample(boundary) - sample(boundary + 1.0)).abs() < 2e-6);
-                    let slope_gap = |h: f32| {
-                        let center = sample(boundary) as f64;
-                        let left = (3.0 * center - 4.0 * sample(boundary - h) as f64
-                            + sample(boundary - 2.0 * h) as f64)
-                            / (2.0 * h as f64);
-                        let right = (-3.0 * center + 4.0 * sample(boundary + h) as f64
-                            - sample(boundary + 2.0 * h) as f64)
-                            / (2.0 * h as f64);
-                        (left - right).abs()
-                    };
-                    let coarse = slope_gap(step);
-                    let fine = slope_gap(step * 0.5);
-                    assert!(
-                        fine < 0.001,
-                        "plate seam at {boundary}, {v}, transpose={transpose}: {fine}"
-                    );
-                    // Below this roundoff floor, further shrinking the step
-                    // amplifies source f32 noise rather than resolving a seam.
-                    assert!(
-                        fine <= coarse * 0.75 + 0.0003,
-                        "plate slope failed to converge: {coarse} -> {fine}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn third_plate_does_not_kink_nearest_site_boundaries() {
-        // The third site is within the blend band, but not tied for nearest.
-        // A distance-minus-nearest weighting fails this case despite passing
-        // a two-plane boundary or a perfectly symmetric three-way junction.
-        let sites = [
-            Facet {
-                position: [-0.5, 0.0],
-                height: -0.003,
-                slope: [0.03, 0.01],
-                ..Facet::default()
-            },
-            Facet {
-                position: [0.5, 0.0],
-                height: 0.004,
-                slope: [-0.02, 0.04],
-                ..Facet::default()
-            },
-            Facet {
-                position: [0.0, 0.28f32.sqrt()],
-                height: 0.001,
-                slope: [0.01, -0.03],
-                ..Facet::default()
-            },
-        ];
-        let sample = |x| sample_facets(&sites, [x, 0.0], 0.15).height;
-        for step in [0.001, 0.0003] {
-            let left = (sample(0.0) - sample(-step)) / step;
-            let right = (sample(step) - sample(0.0)) / step;
-            assert!(
-                (left - right).abs() < 0.003,
-                "third-site kink: {left} / {right}"
-            );
-        }
-    }
-
-    #[test]
     fn features_and_normal_stencils_cross_both_tile_edges() {
         let mut field = vec![Surface::default(); SIZE * SIZE];
         grain(
@@ -621,7 +300,6 @@ mod tests {
                 roughness: 0.02,
             },
         );
-        fracture(&mut field, [-5.0, 1.0], [7.0, 1.0], 1.5);
         assert!(field[wrapped_index(-1, -1)].height < -0.0005);
         assert!(field[wrapped_index(0, 0)].height < -0.0005);
         for (x, y) in [(-1, -1), (0, 1), (3, -2), (511, 511)] {
@@ -660,7 +338,7 @@ mod tests {
         assert_eq!(source.name, NAME);
         assert_eq!(source.rgba, repeated.rgba);
         assert_eq!(source.normal, repeated.normal);
-        assert_eq!(source.rgba.dimensions(), (512, 512));
+        assert_eq!(source.rgba.dimensions(), (SIZE as u32, SIZE as u32));
         let mut min_color = 255;
         let mut max_color = 0;
         for pixel in source.rgba.pixels() {
@@ -677,11 +355,16 @@ mod tests {
         let mut energy = [0.0f64; 2];
         let mut positive = [0usize; 2];
         let mut negative = [0usize; 2];
-        for pixel in normals.pixels() {
+        let heights = height_field();
+        for (pixel, surface) in normals.pixels().zip(&heights) {
+            let decoded = (pixel[2] as f32 / 255.0 - 0.5) * HEIGHT_RANGE_METRES;
+            assert!((decoded - surface.height).abs() <= HEIGHT_RANGE_METRES / 510.0 + 1e-6,
+                "Packed height must preserve relief without clipping: {} -> {decoded}", surface.height);
             assert!((204..=255).contains(&pixel[3]));
             // Narrow fracture ledges can tilt much more than the fine grain,
             // but stay in the outward hemisphere without vertical walls.
-            assert!(pixel[2] > 160);
+            // B carries physical height; Z is reconstructed from normal XY.
+            assert!(pixel[2] > 0 && pixel[2] < 255);
             for axis in 0..2 {
                 let value = pixel[axis] as f64 / 127.5 - 1.0;
                 mean[axis] += value;

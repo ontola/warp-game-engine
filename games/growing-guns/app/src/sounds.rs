@@ -176,7 +176,7 @@ impl G {
 
 const TAIL_SEND: f32 = 0.063; // -24 dB
 /// sfx.gd `air_strike_inbound_db`.
-const AIR_STRIKE_DB: f32 = -4.0;
+const AIR_STRIKE_DB: f32 = 2.0;
 /// Godot RaytracedReverb wet level (dry 1.0).
 const ROOM_SEND: f32 = 0.35;
 
@@ -298,7 +298,7 @@ impl Sounds {
 
     fn play(&mut self, world: &World, patch: &Arc<CompiledPatch>, params: &[(&str, f32)], g: G) -> Handle {
         let seed = self.next();
-        let combat = matches!(patch.name.as_str(), "shot" | "explosion_bang" | "explosion_rumble");
+        let combat = matches!(patch.name.as_str(), "shot" | "explosive_launch" | "explosion_bang" | "explosion_rumble");
         let p = match g.at {
             None => {
                 let db = g.db; // Authored level: no artificial close-muzzle gain.
@@ -345,7 +345,7 @@ impl Sounds {
     // and reserve separate budgets for reports and bass, below the 160-voice pool.
     fn named(&mut self, world: &World, name: &str, params: &[(&str, f32)], mut g: G) -> Option<Handle> {
         let p = self.bank.get(name)?;
-        let family = match name { "shot" => Some(if g.center { 0 } else { 1 }), "explosion_bang" => Some(2), "explosion_rumble" => Some(3), _ => None };
+        let family = match name { "shot" | "explosive_launch" => Some(if g.center { 0 } else { 1 }), "explosion_bang" => Some(2), "explosion_rumble" => Some(3), _ => None };
         if let Some(family) = family {
             let delay = g.at.filter(|_| g.delay).map_or(0.0, |at| self.ears.iter().map(|e| e.distance(at)).fold(1000.0, f32::min) / 343.0);
             let ends = &mut self.layers[family];
@@ -380,7 +380,12 @@ impl Sounds {
                     // One shot sound per shooter per tick (Godot: per physics frame).
                     if self.shot_tick[player] == world.tick { continue; }
                     self.shot_tick[player] = world.tick;
-                    self.shot(world, player, from, dir, local(player), pan_of(player), slots);
+                    if world.players[player].howitzer.is_some() {
+                        let g = self.from(world, player, from, -2.0, 30.0);
+                        if world.players[player].siege_crossbow {
+                            self.named(world,"melee", &[("pitch_ratio",0.65)],g.spl(100.0));
+                        } else { self.named(world, "grenade_launch", &[], g.spl(118.0)); }
+                    } else { self.shot(world, player, from, dir, local(player), pan_of(player), slots); }
                 }
                 Event::Impact { pos, damage, .. } => {
                     let ratio = (damage - growing_guns::destruct::RIFLE_CHIP_DAMAGE_BASE) / growing_guns::destruct::RIFLE_CHIP_DAMAGE_PER_RATIO;
@@ -493,6 +498,11 @@ impl Sounds {
         // A send from the same report replaces the independently generated wet
         // copy. Weapon feedback must survive a blast's HDR gate (spl=None).
         self.named(world, "shot", &params, g.pitch(pitch).room(0.10));
+        if w.explosive_radius > 0.0 {
+            let g = if is_self { G { center: true, pan, ..G::ui(-22.0) } }
+                else { G::at(from, -24.0, 8.0).dry() };
+            self.named(world, "explosive_launch", &[], g.no_tail().room(0.03));
+        }
         if d > 1.4 && w.explosive_radius <= 0.0 {
             let rr = (d * 1.5).clamp(2.0, 12.0).round();
             let g = if is_self { G { center: true, pan, unit: (rr * 0.8).clamp(4.0, 12.0), ..G::ui(-18.0) } } else { G::at(from, -18.0, (rr * 0.8).clamp(4.0, 12.0)).dry().no_tail() };
@@ -583,7 +593,7 @@ impl Sounds {
                     let travel = growing_guns::AIR_STRIKE_TRAVEL as f32;
                     let sky = s.target + Vec3::new(0.0, 263.0, 93.0);
                     self.tx.lift(0.42);
-                    if let Some(h) = self.named(world, "air_strike_inbound", &[("travel_seconds", travel), ("distant", 0.0)], G { delay: false, ..G::at(sky, AIR_STRIKE_DB, 58.0) }) {
+                    if let Some(h) = self.named(world, "air_strike_inbound", &[("travel_seconds", travel), ("distant", 0.0)], G { delay: false, ..G::at(sky, AIR_STRIKE_DB, 80.0) }) {
                         // The swell starts at 0.62 (air_strike.gd `_process`).
                         self.tx.gain(&h, 10f32.powf(AIR_STRIKE_DB / 20.0) * 0.62);
                         handles.push(h);
@@ -728,6 +738,19 @@ mod audio_stress_tests {
 
     #[test]
     fn stacked_uzi_bazooka_surround() { stress_mix(synth::Layout::named("5.1").unwrap(), 44100.0, false); }
+
+    #[test]
+    fn inbound_rocket_rumble_stays_bounded_when_stacked() {
+        let world=World::new(17,&[false]);
+        let (tx,mut mix)=synth::mixer(synth::Layout::stereo(),160,48000.0);
+        let mut sounds=Sounds::new(tx,Some(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"),"/../sounds"))),None);
+        sounds.tx.ears(vec![Ear {pos:[0.0;3],forward:[0.0,0.0,-1.0],right:[1.0,0.0,0.0]}]);
+        sounds.ears=vec![Vec3::ZERO];
+        for _ in 0..4 { sounds.named(&world,"air_strike_inbound",&[("travel_seconds",2.3),("distant",0.0)],G {delay:false,..G::at(Vec3::NEG_Z*3.0,AIR_STRIKE_DB,80.0)}); }
+        let samples=mix.render_seconds(2.3);
+        assert!(samples.iter().all(|s|s.is_finite() && s.abs()<=1.0));
+        assert!(samples.iter().any(|s|s.abs()>0.05));
+    }
 
     #[test]
     fn explosions_dominate_weapon_reports() {

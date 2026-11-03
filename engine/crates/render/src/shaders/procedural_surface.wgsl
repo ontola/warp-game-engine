@@ -73,6 +73,41 @@ struct ProcRock { base: vec3<f32>, rough: f32, normal: vec3<f32> };
 // rubble shard therefore moves its texture with it, independent of the view.
 // Albedo alpha stays opaque; roughness is stored in the LINEAR normal alpha,
 // so foliage alpha-coverage mip correction cannot corrupt the roughness.
+// Height is packed in normal B (XY still reconstruct the shading normal).
+// A bounded ray march with linear intersection refinement, using the same
+// metric projection and mip derivatives as the color and normal samples.
+fn rock_parallax(uv: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>, layer: i32,
+    p: vec3<f32>, n: vec3<f32>, gu: vec3<f32>, gv: vec3<f32>) -> vec2<f32> {
+    let eye = safe_normalize(view.cam.xyz - p);
+    let facing = dot(eye, n);
+    let footprint = max(length(gx), length(gy)) * 1.5;
+    let fade = (1.0 - smoothstep(0.008, 0.025, footprint))
+        * (1.0 - smoothstep(12.0, 24.0, distance(view.cam.xyz, p)))
+        * smoothstep(0.06, 0.18, facing);
+    if fade <= 0.0 { return uv; }
+    let tangent_eye = eye - n * facing;
+    let travel = vec2<f32>(dot(tangent_eye, gu), dot(tangent_eye, gv))
+        * (0.032 * fade / (1.5 * max(facing, 0.06)));
+    if length(travel) < max(length(gx), length(gy)) * 0.35 { return uv; }
+    let steps = mix(20.0, 8.0, clamp(facing, 0.0, 1.0));
+    let step_depth = 1.0 / steps;
+    var depth = 0.0;
+    var height = textureSampleGrad(normal_tex, samp, uv, layer, gx, gy).b;
+    var previous_gap = 1.0 - height;
+    if previous_gap <= 0.001 { return uv; }
+    for (var i = 0u; i < 20u; i++) {
+        depth += step_depth;
+        height = textureSampleGrad(normal_tex, samp, uv - travel * depth, layer, gx, gy).b;
+        let gap = 1.0 - height - depth;
+        if gap <= 0.0 {
+            let fraction = previous_gap / max(previous_gap - gap, 1e-5);
+            return uv - travel * (depth - step_depth + step_depth * fraction);
+        }
+        previous_gap = gap;
+    }
+    return uv - travel;
+}
+
 fn textured_rock(inst: Instance, instance_id: u32, p: vec3<f32>, n: vec3<f32>,
     tint: vec3<f32>, damage: f32, roughness: f32, layer: i32,
     dx: vec3<f32>, dy: vec3<f32>) -> ProcRock {
@@ -98,9 +133,10 @@ fn textured_rock(inst: Instance, instance_id: u32, p: vec3<f32>, n: vec3<f32>,
     // Keep in sync with stone_surface::REPEAT_METRES, shared by every block.
     let repeat_m = 1.5;
     let offset = vec2<f32>(f32((h >> 2u) & 1023u), f32((h >> 12u) & 1023u)) / 1024.0;
-    let uv = vec2<f32>(dot(d, gu), dot(d, gv)) / repeat_m + offset;
+    var uv = vec2<f32>(dot(d, gu), dot(d, gv)) / repeat_m + offset;
     let gx = vec2<f32>(dot(dx, gu), dot(dx, gv)) / repeat_m;
     let gy = vec2<f32>(dot(dy, gu), dot(dy, gv)) / repeat_m;
+    uv = rock_parallax(uv, gx, gy, layer, p, n, gu, gv);
     let sampled = textureSampleGrad(albedo, samp, uv, layer, gx, gy);
     let footprint_m = max(length(gx), length(gy)) * repeat_m;
     // Fade unresolved millimetre relief continuously; beyond this band only

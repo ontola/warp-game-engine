@@ -39,13 +39,13 @@ impl LocalLight {
             || self.direction.length_squared()<1e-8
             || !self.direction.length_squared().is_finite()
             || self.intensity_cd.min_element()<0.0 || self.intensity_cd.max_element()>100_000_000.0
-            || !self.range_m.is_finite() || !(0.1..=200.0).contains(&self.range_m)
+            || !self.range_m.is_finite() || !(0.1..=500.0).contains(&self.range_m)
             || !self.source_radius_m.is_finite() || !(0.01..=1.0).contains(&self.source_radius_m)
             || self.source_radius_m>=self.range_m
             || !self.inner_cos.is_finite() || !self.outer_cos.is_finite()
             || !(-1.0..=1.0).contains(&self.outer_cos) || !(-1.0..=1.0).contains(&self.inner_cos)
             || self.outer_cos>=self.inner_cos || !(0.1..=4.0).contains(&self.falloff)
-        {return Err("local light requires finite pose/intensity, falloff 0.1..4, range 0.1..200 m, source radius0.01..1m smaller than range, and -1<=outer_cos<inner_cos<=1".into());}
+        {return Err("local light requires finite pose/intensity, falloff 0.1..4, range 0.1..500 m, source radius0.01..1m smaller than range, and -1<=outer_cos<inner_cos<=1".into());}
         Ok(Self{direction:self.direction.normalize(),..self})
     }
 }
@@ -73,11 +73,11 @@ impl SpotLight {
             || self.direction.length_squared()<1e-8 || self.up.length_squared()<1e-8
             || self.direction.normalize().cross(self.up.normalize()).length_squared()<1e-5
             || self.intensity_cd.min_element()<0.0 || self.intensity_cd.max_element()>100_000_000.0
-            || !self.range_m.is_finite() || !(1.0..=200.0).contains(&self.range_m)
+            || !self.range_m.is_finite() || !(1.0..=500.0).contains(&self.range_m)
             || !self.inner_angle_radians.is_finite() || !self.outer_angle_radians.is_finite()
             || self.inner_angle_radians<0.0 || self.inner_angle_radians>=self.outer_angle_radians
             || !(0.03..=1.3).contains(&self.outer_angle_radians) {
-            return Err("spot light requires finite pose/intensity, independent up/direction, range1..200m, and 0<=inner<outer<=1.3rad".into());
+            return Err("spot light requires finite pose/intensity, independent up/direction, range1..500m, and 0<=inner<outer<=1.3rad".into());
         }
         Ok(Self {direction:self.direction.normalize(),up:self.up.normalize(),..self})
     }
@@ -223,4 +223,18 @@ mod tests {
         let rotated=SpotLight {position:q*l.position,direction:q*l.direction,up:q*l.up,..l};
         assert!(vp.project_point3(p).abs_diff_eq(rotated.shadow_matrix().project_point3(q*p),1e-5));
     }
+    #[test] fn stadium_shadow_receiver_retains_nearby_blockers() {
+        let light=SpotLight { range_m:200.0, ..lamp() }.validated().unwrap();
+        let vp=light.shadow_matrix();
+        for distance in [20.0,50.0,80.0,120.0,160.0] {
+            let depth=|d|vp.project_point3(light.position+light.direction*d).z;
+            // A neighbouring stone 10 cm nearer the lamp must still occlude.
+            let receiver=depth(distance-(0.003+0.00015*distance)-0.002);
+            assert!(receiver>depth(distance-0.1), "lost nearby blocker at {distance} m");
+        }
+        // Demonstrate the regression: the old depth subtraction skips a 1 m blocker.
+        assert!(vp.project_point3(light.position+light.direction*80.0).z-0.00001
+            <vp.project_point3(light.position+light.direction*79.0).z);
+    }
+
 }

@@ -89,6 +89,12 @@ impl Guns {
 
     pub fn jump(&mut self, player: usize) { if let Some(f) = self.feel.get_mut(player) { f.bump = 0.06; } }
 
+    /// New arena, including restarting a match at the same round number.
+    pub fn reset_heat(&mut self) {
+        for rig in &mut self.rigs { rig.heat = 0.0; }
+        self.barrels.fill(barrel_material(0.0));
+    }
+
     /// A shot: bolt, spin and heat on the rig, recoil kick on the view model.
     pub fn shot(&mut self, player: usize, p: &Player) {
         let Some(rig) = self.rigs.get_mut(player) else { return };
@@ -101,6 +107,7 @@ impl Guns {
     /// spin) and the first-person feel eases (bob, bump, tilt, kick).
     pub fn tick(&mut self, world: &World, dt: f32) {
         let new_round = self.round != Some(world.round);
+        if new_round { self.reset_heat(); }
         for (i, p) in world.players.iter().enumerate().take(self.rigs.len()) {
             let rig = &mut self.rigs[i];
             if new_round || self.own[i].is_none() {
@@ -141,6 +148,10 @@ impl Guns {
                 for first in [self.fp[i], self.tp[i]] { empty(scene, first, 0, self.parts); }
                 continue;
             };
+            if p.howitzer.is_some() && p.ghost && p.offer.is_none() {
+                self.pose_howitzer(scene, world, prev, alpha, i);
+                continue;
+            }
             let rig = &self.rigs[i];
             self.barrels[i] = barrel_material(rig.heat_glow_t());
             let f = &self.feel[i];
@@ -178,6 +189,50 @@ impl Guns {
                 empty(scene, first, n, self.parts);
             }
         }
+    }
+
+    fn pose_howitzer(&mut self, scene: &mut Scene, world: &World, prev: &[crate::view::Pose], alpha: f32, i: usize) {
+        use gun::{Shape::*, Mat::*};
+        let p=&world.players[i];
+        let drawn=crate::view::pose(world,i,prev,alpha);
+        let yaw=Quat::from_rotation_y(drawn.yaw);
+        let elevation=p.artillery_elevation(drawn.pitch);
+        let aim=yaw*Quat::from_rotation_x(elevation);
+        let pivot=drawn.pos+Vec3::Y*(p.eye_height()-0.45);
+        let recoil=0.24*(-p.since_shot*9.0).exp();
+        let tube=Affine3A::from_rotation_translation(aim,pivot+aim*Vec3::Z*recoil);
+        let base=Affine3A::from_rotation_translation(yaw,drawn.pos-Vec3::Y*0.65);
+        let mut pieces=Vec::new();
+        let mut part=|shape,mat,xf:Affine3A,size:Vec3| pieces.push((shape,mat,xf*Affine3A::from_scale(size)));
+        let cylinder=Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        part(Box,Dark,base,Vec3::new(1.8,0.25,2.3));
+        part(Cyl,Metal,base*Affine3A::from_translation(Vec3::Y*0.35),Vec3::new(0.55,0.7,0.55));
+        if !p.siege_crossbow {
+        part(Box,Metal,tube*Affine3A::from_translation(Vec3::new(0.0,0.0,-0.5)),Vec3::new(0.85,0.65,1.2));
+        part(Cyl,Barrel,tube*Affine3A::from_rotation_translation(cylinder,Vec3::new(0.0,0.0,-1.85)),Vec3::new(0.28,2.3,0.28));
+        part(Ring25,Metal,tube*Affine3A::from_rotation_translation(cylinder,Vec3::new(0.0,0.0,-3.03)),Vec3::splat(0.36));
+        part(Cyl,Recess,tube*Affine3A::from_rotation_translation(cylinder,Vec3::new(0.0,0.0,-3.01)),Vec3::new(0.25,0.015,0.25));
+        } else {
+            part(Box,Dark,tube*Affine3A::from_translation(Vec3::new(0.0,0.0,-1.3)),Vec3::new(0.35,0.3,3.0));
+            for side in [-1.0,1.0] {
+                part(Box,Metal,tube*Affine3A::from_rotation_translation(Quat::from_rotation_y(side*0.3),Vec3::new(side*0.9,0.0,-2.1)),Vec3::new(1.9,0.15,0.22));
+                part(Box,Recess,tube*Affine3A::from_rotation_translation(Quat::from_rotation_y(side*0.72),Vec3::new(side*0.9,0.05,-1.59)),Vec3::new(2.4,0.04,0.04));
+            }
+            if p.special_cd < 0.2 {
+                part(Cyl,Metal,tube*Affine3A::from_rotation_translation(cylinder,Vec3::new(0.0,0.25,-1.6)),Vec3::new(0.09,2.4,0.09));
+                part(Box,Metal,tube*Affine3A::from_rotation_translation(Quat::from_rotation_y(0.785),Vec3::new(0.0,0.25,-2.85)),Vec3::new(0.32,0.1,0.32));
+            }
+        }
+        for side in [-1.0,1.0] {
+            part(Cyl,Dark,base*Affine3A::from_rotation_translation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),Vec3::new(side*0.9,0.15,0.2)),Vec3::new(0.6,0.3,0.6));
+            part(Box,Metal,tube*Affine3A::from_translation(Vec3::new(side*0.35,-0.25,-1.4)),Vec3::new(0.15,0.15,1.6));
+        }
+        for first in [self.fp[i],self.tp[i]] {
+            for (n,(shape,mat,xf)) in pieces.iter().enumerate() { scene.update_instance(first+n,self.mesh(*shape,*mat,i),*xf); }
+            empty(scene,first,pieces.len(),self.parts);
+        }
+        let muzzle=pivot+aim*Vec3::NEG_Z*3.2;
+        self.muzzles[i]=Some([muzzle,muzzle]);
     }
 
     pub fn capacity(&self) -> usize { self.rigs.len() }
@@ -247,6 +302,7 @@ fn gun_primitive(shape: gun::Shape, mat: u32, detail: gun::Detail) -> primitives
     let sides = 8;
     match shape {
         Box => if low { primitives::cube(mat) } else { gun_box(mat) },
+        VentedTube => vented_tube(mat),
         Cyl => primitives::cylinder(mat, 1.0, 1.0, sides),
         Taper85 => primitives::cylinder(mat, 1.0, 0.85, sides),
         Taper105 => primitives::cylinder(mat, 1.0, 1.05, sides),
@@ -256,6 +312,47 @@ fn gun_primitive(shape: gun::Shape, mat: u32, detail: gun::Detail) -> primitives
         Drum => if low { primitives::cylinder(mat, 1.0, 1.0, 16) } else { drum_mesh(mat) },
         Vial => primitives::cylinder(mat, 1.0, 1.0, if low { 8 } else { 24 }),
     }
+}
+
+/// Four open longitudinal vents with actual wall thickness and intact end bands.
+fn vented_tube(material: u32) -> primitives::Primitive {
+    let mut mesh = primitives::Primitive { material, ..Default::default() };
+    let mut quad = |p: [Vec3; 4], normals: [Vec3; 4]| {
+        let start = mesh.vertices.len() as u32;
+        for (v, n) in p.into_iter().zip(normals) {
+            mesh.vertices.push(render::cluster::Vertex { pos: v.to_array(), normal: n.to_array(), uv: [0.0; 2] });
+        }
+        for mut tri in [[0, 1, 2], [0, 2, 3]] {
+            if (p[tri[1]] - p[tri[0]]).cross(p[tri[2]] - p[tri[0]]).dot(normals[0]) < 0.0 { tri.swap(1, 2); }
+            mesh.indices.extend(tri.map(|i| start + i as u32));
+        }
+    };
+    // Match the drum's 48-sided silhouette. Radial vertex normals make the
+    // curved shell continuous; vent walls and end faces retain sharp edges.
+    const N: usize = 48;
+    for i in 0..N {
+        let a = i as f32 * std::f32::consts::TAU / N as f32;
+        let b = (i + 1) as f32 * std::f32::consts::TAU / N as f32;
+        let u = Vec3::new(a.cos(), 0.0, a.sin());
+        let v = Vec3::new(b.cos(), 0.0, b.sin());
+        for (band, (lo, hi, r0, r1)) in [(-0.5,-0.46,0.96,1.0),(-0.46,-0.34,1.0,1.0),
+            (-0.34,0.34,1.0,1.0),(0.34,0.46,1.0,1.0),(0.46,0.5,1.0,0.96)].into_iter().enumerate() {
+            if band == 2 && i % 12 < 3 { continue; }
+            let p = |axis: Vec3, r: f32, y: f32| axis * r + Vec3::Y * y;
+            let slope = (r0 - r1) / (hi - lo);
+            let nu = (u + Vec3::Y * slope).normalize();
+            let nv = (v + Vec3::Y * slope).normalize();
+            quad([p(u,r0,lo),p(v,r0,lo),p(v,r1,hi),p(u,r1,hi)], [nu,nv,nv,nu]);
+            quad([p(u,0.85,lo),p(v,0.85,lo),p(v,0.85,hi),p(u,0.85,hi)], [-u,-v,-v,-u]);
+            for (y,r,n) in [(lo,r0,-Vec3::Y),(hi,r1,Vec3::Y)] {
+                quad([p(u,0.85,y),p(v,0.85,y),p(v,r,y),p(u,r,y)], [n;4]);
+            }
+            for (axis,n) in [(u,Vec3::new(a.sin(),0.0,-a.cos())),(v,Vec3::new(-b.sin(),0.0,b.cos()))] {
+                quad([p(axis,0.85,lo),p(axis,r0,lo),p(axis,r1,hi),p(axis,0.85,hi)], [n;4]);
+            }
+        }
+    }
+    mesh
 }
 
 /// Machined unit box: broad flat faces at exactly +/-0.5, with separate
@@ -419,6 +516,8 @@ fn gun_material(scene: &mut Scene, m: gun::Mat) -> u32 {
     match m {
         Metal => metal(scene, rc, 0.85, 0.32),
         Dark => metal(scene, k(0.6), 0.95, 0.22),
+        Fire => scene.add_material(Material { tint: [1.0, 0.40, 0.015], layer: -2,
+            roughness: 1.0, flags: render::scene::LAVA, scale: 18000.0, metal: 0.0 }),
         Barrel => unreachable!("per-player barrel_material"),
         Polymer => material(scene, [0.3, 0.25, 0.18], 0.7),
         Pad => material(scene, [0.07, 0.07, 0.075], 0.7),
@@ -472,9 +571,14 @@ mod xr_tests {
         guns.feel[0].inspect = 0.8;
         guns.feel[0].previous_inspect = 0.7;
         let card = world.cards.find("acrobat").unwrap(); world.give(0, card);
+        guns.rigs[0].heat = 1.5; guns.barrels[0] = barrel_material(1.0);
         world.round += 1; world.modifier = None; world.rebuild_weapon(0);
         guns.tick(&world, 0.0);
         assert_eq!(guns.rigs[0].shown, own);
+        assert_eq!(guns.rigs[0].heat, 0.0);
+        assert_eq!(guns.barrels[0].flags, barrel_material(0.0).flags);
+        guns.rigs[0].heat = 1.5; guns.reset_heat();
+        assert_eq!(guns.rigs[0].heat, 0.0);
         assert!(!guns.rigs[0].is_growing());
         assert_eq!(guns.feel[0].inspect, 0.0);
         assert_eq!(guns.feel[0].previous_inspect, 0.0);

@@ -4,6 +4,7 @@
 //! gibs via `gore`), `guns` (the growing gun) and the colosseum
 //! (crate::stadium). This module owns the scene and the physics they share,
 //! routes each tick's events, and sets the lighting and cameras.
+mod dust;
 mod arena;
 mod cages;
 mod characters;
@@ -51,7 +52,7 @@ fn flashlight_cd() -> f32 { std::env::var("GG_FLASHLIGHT").ok().and_then(|v| v.p
 
 /// Share of the floods' intensity that comes back off the field as fill
 /// (`flood_bounce`; `GG_BOUNCE` overrides).
-const FLOOD_BOUNCE: f32 = 0.15;
+const FLOOD_BOUNCE: f32 = 0.0;
 const MAX_TRANSIENT_LIGHTS: usize = MAX_LIGHTS - 4 - lava::MAX_LAVA_LIGHTS;
 /// Scatter weights for the night's volumetric light: the wide floodlights,
 /// their narrow beams, the lava's glow and the roof beacons. Tuned on the
@@ -111,6 +112,7 @@ pub struct Visuals {
     /// Air strike targets in flight last tick, and when the last one hit.
     air_targets: Vec<Vec3>,
     air_impact: f32,
+    artillery_seats: Vec<Option<Vec3>>,
     /// World sprites: the light shafts, then the bullet streaks.
     sprites: Vec<render::sprites::Sprite>,
 }
@@ -147,7 +149,7 @@ impl Visuals {
                 origin: Vec3::new(-192.0, -6.0, -192.0), cell: 6.0, dims: [65, 13, 65],
             }).expect("stadium sky grid");
         }
-        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, blackout: false, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, sprites: Vec::new() };
+        let mut v = Visuals { scene, first_dynamic, phys, arena, fx, players, cages, guns, things, ion: Default::default(), stadium, clock: 0.0, flood: 1.0, blackout: false, sprite_images: false, air_targets: Vec::new(), air_impact: f32::NEG_INFINITY, artillery_seats: Vec::new(), sprites: Vec::new() };
         v.set_arena(world);
         v
     }
@@ -155,6 +157,8 @@ impl Visuals {
     /// Fill the arena from the world's current arena (a new round). Call
     /// `flush` afterwards to upload; the renderer stays.
     pub fn set_arena(&mut self, world: &World) {
+        self.artillery_seats.clear();
+        self.guns.reset_heat();
         self.ion.reset();
         self.fx.blasts.clear();
         self.players.clear(&mut self.scene, &mut self.phys);
@@ -204,9 +208,25 @@ impl Visuals {
     /// particle motion (colliding with the arena). `ears` place the crowd's
     /// reactions.
     pub fn absorb(&mut self, world: &World, ears: &[Listener]) {
+        self.artillery_seats.resize(world.players.len(), None);
+        for (i,p) in world.players.iter().enumerate() {
+            if self.artillery_seats[i] != p.howitzer {
+                if let Some(at)=p.howitzer {
+                    // Reserve space for the gun/operator without gore or a crowd hit.
+                    self.stadium.crowd.kill_near(at, 4.5, usize::MAX);
+                }
+                self.artillery_seats[i]=p.howitzer;
+            }
+        }
         let now = world.tick as f32 * growing_guns::DT;
         self.cages.sync(world);
         self.ion.sync(world, &mut self.fx.blasts, now);
+        things::airstrike::smoke(&world.strikes, world.tick, now, &mut self.fx.blasts);
+        let lava = &world.lava;
+        self.fx.debris.tuning.lava = Some(render::debris::LavaSurface {
+            base: world.arena.lava_surface(), raised: if lava.active {lava.surface()}else{-1e20},
+            half: lava.half, inset: lava.inset(), full: lava.full || lava.floor_t() >= 1.0,
+        });
         self.fx.debris.advance(growing_guns::DT);
         self.arena.break_chunks(&mut self.scene, &mut self.phys, &mut self.fx, world);
         let s = &mut self.scene;
@@ -221,7 +241,6 @@ impl Visuals {
                 }
                 Event::Impact { pos, normal, damage, strong } => {
                     self.fx.particles.burst(s, pos + normal * 0.03, normal, &Burst { mesh: m.spark, count: 8, ..Burst::sparks() });
-                    self.fx.particles.burst(s, pos + normal * 0.05, normal, &Burst { mesh: m.dust, count: 5, ..Burst::dust() });
                     // Chips fly off every hit, more and bigger for heavy rounds
                     // (Godot `request_chips`), as GPU debris.
                     let chunk = world.arena.grid.ray(pos + normal * 0.05, -normal, 0.3).map(|h| h.2);
@@ -249,6 +268,7 @@ impl Visuals {
                         // An air strike's rocket hit (its blast is 10 cm over the target).
                         if self.air_targets.iter().any(|t| t.distance(pos - Vec3::Y * 0.1) < 0.05) { self.air_impact = now; }
                         self.fx.blasts.explosion(now, pos, radius, BLAST_TINT);
+                        dust::emit(&mut self.fx.blasts,world,now,pos,radius);
                     }
                     self.fx.blast_punch(world, now, pos, radius);
                     if kind != ExplosionKind::Ion { self.phys.blast(pos, radius, 9.0); }
@@ -307,6 +327,7 @@ impl Visuals {
         self.stadium.absorb(s, &mut self.fx.particles, &mut self.fx.blasts, world, ears, now, growing_guns::DT);
         self.guns.tick(world, growing_guns::DT);
         self.players.tick(world, &mut self.phys);
+        self.players.burn_lava_bodies(world, &mut self.fx.blasts, now);
         self.phys.step();
         self.players.follow_physics(s, &mut self.phys, now);
         let shapes = &world.arena.grid;
@@ -370,7 +391,11 @@ impl Visuals {
     pub fn ion_glow(&self) -> f32 { self.ion.glow(self.clock) }
 
     /// A player's camera with the explosion punch applied.
-    pub fn punched(&self, world: &World, i: usize, cam: Camera) -> Camera { self.fx.punched(world, i, cam) }
+    pub fn lava_look(&mut self, player: usize, look: [f32; 2]) { self.players.lava_look(player, look); }
+
+    pub fn punched(&self, world: &World, i: usize, cam: Camera) -> Camera {
+        self.players.lava_camera(world, i, self.fx.punched(world, i, cam), self.clock)
+    }
 
     /// Blast lights first (they matter most while they last), then the
     /// floodlights, the lava's glow, the roof beacons and muzzle flashes.
@@ -394,8 +419,8 @@ impl Visuals {
             w.resize(l.len(), 0.0);
             return (l, w);
         }
-        // Shadowed floods: their light bouncing off the field fills the
-        // shade (else pitch black at night), as unshadowed soft lights.
+        // Legacy unoccluded flood fill is a diagnostic opt-in only: these
+        // synthetic lamps can sit behind walls and defeat the real shadows.
         if self.flood_shadows() {
             l.extend(self.flood_bounce().into_iter().take(MAX_LIGHTS - l.len()));
             w.resize(l.len(), 0.0);
@@ -428,10 +453,14 @@ impl Visuals {
             let side = f.direction.cross(Vec3::Y).normalize_or(Vec3::X);
             render::headlights::SpotLight {
                 position: f.position, direction: f.direction, up: side.cross(f.direction),
-                intensity_cd: (f.intensity_cd * self.flood).min(Vec3::splat(1.0e8)), range_m: f.range_m.clamp(1.0, 200.0),
+                intensity_cd: (f.intensity_cd * self.flood).min(Vec3::splat(1.0e8)), range_m: f.range_m.clamp(1.0, 500.0),
                 inner_angle_radians: f.inner_cos.clamp(-1.0, 1.0).acos(), outer_angle_radians: f.outer_cos.clamp(-1.0, 1.0).acos().min(1.3),
             }
         }).collect()
+    }
+
+    pub fn flashlight_exclusions(&self, world: &World) -> Vec<(u32,u32)> {
+        flashlight_owner_ranges(world, self.players.first)
     }
 
     /// Every living player's flashlight in a blackout round (Godot
@@ -458,7 +487,8 @@ impl Visuals {
         let floods = self.stadium.lights();
         if floods.is_empty() { return Vec::new(); }
         let k: f32 = std::env::var("GG_BOUNCE").ok().and_then(|v| v.parse().ok()).unwrap_or(FLOOD_BOUNCE);
-        // The field's stone lifts the floods' white a little toward warm.
+        if !k.is_finite() || k <= 0.0 { return Vec::new(); }
+        // Diagnostic approximation only: these lights have no occlusion.
         let tint = Vec3::new(1.0, 0.93, 0.84);
         let total: Vec3 = floods.iter().map(|f| f.intensity_cd).sum::<Vec3>() * self.flood * k * tint;
         let spots: Vec<Vec3> = std::iter::once(Vec3::ZERO).chain(floods.iter().map(|f| f.position.with_y(0.0) * 0.35)).collect();
@@ -585,14 +615,43 @@ pub fn camera(world: &World, i: usize, prev: &[Pose], alpha: f32) -> Camera {
     }
     // The player's own model is hidden from this view (hide_own_bodies).
     let eye = pos + Vec3::Y * p.eye_height();
+    let eye = if p.howitzer.is_some() {
+        let forward=growing_guns::look_dir(drawn.yaw,0.0);
+        eye - forward*2.0 - forward.cross(Vec3::Y)*1.35 + Vec3::Y*0.8
+    } else { eye };
+    if p.howitzer.is_some() && p.siege_crossbow && p.zooming {
+        let dir=growing_guns::look_dir(drawn.yaw,p.artillery_elevation(drawn.pitch));
+        let muzzle=pos+Vec3::Y*(p.eye_height()-0.45)+dir*3.3;
+        return Camera { pos:muzzle, target:muzzle+dir, fov_y:30f32.to_radians(), near:0.05 };
+    }
     // Sniper zoom (Godot FOV 30 instead of 75).
     let fov_y = if p.zooming { 30f32.to_radians() } else { FOV_Y };
     Camera { pos: eye, target: eye + growing_guns::look_dir(drawn.yaw, drawn.pitch), fov_y, near: 0.05 }
 }
 
+fn flashlight_owner_ranges(world: &World, first: usize) -> Vec<(u32, u32)> {
+    world.players.iter().enumerate().filter(|(_, p)| p.alive)
+        .take(render::headlights::MAX_LIGHTS)
+        .map(|(i, _)| ((first + i * players::PARTS) as u32, players::PARTS as u32)).collect()
+}
+
 #[cfg(test)]
 mod camera_tests {
     use super::*;
+
+    #[test]
+    fn flashlight_owners_keep_player_indices_when_dead_players_are_skipped() {
+        let mut world = World::new(3, &[false; 4]);
+        for p in &mut world.players { p.alive = true; }
+        world.players[1].alive = false;
+        world.players[1].ghost = true;
+        let ranges = flashlight_owner_ranges(&world, 100);
+        let part_count = players::PARTS as u32;
+        assert_eq!(ranges, vec![(100, part_count), (100 + 2 * part_count, part_count), (100 + 3 * part_count, part_count)]);
+        assert_eq!(ranges.len(), Visuals::flashlights(&world, &[], 1.0).len());
+        for p in &mut world.players { p.alive = false; }
+        assert!(flashlight_owner_ranges(&world, 100).is_empty());
+    }
 
     #[test]
     fn turning_is_blended_between_ticks_the_short_way_round() {

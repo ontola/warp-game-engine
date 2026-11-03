@@ -151,6 +151,7 @@ fn shadow(d: &mut HudDrawList, r: [f32; 4], size: f32, c: C, clip: [f32; 4]) {
 
 /// The pick overlay for player `i` in its view.
 pub(super) fn pick(d: &mut HudDrawList, world: &World, i: usize, l: &Layout, f: &Feedback, focus: usize, hits: &mut Vec<Hit>) {
+    if f.lava_death && f.burned.is_some_and(|t|t<2.4) { return; }
     let p = &world.players[i];
     let (cards, age, exit): (Vec<Card>, f32, Option<(usize, f32)>) = match (&p.offer, &f.exit) {
         (Some(o), _) => (o.clone(), p.offer_age as f32, None),

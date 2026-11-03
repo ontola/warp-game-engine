@@ -40,6 +40,7 @@ pub struct Feedback {
     pub arcs: Vec<(f32, f32)>,
     /// Seconds since a lava or fall death (the red screen).
     pub burned: Option<f32>,
+    pub lava_death: bool,
     pub bob: f32,
     /// The special's cooldown when it was last set, for the progress bar.
     pub special_max: f64,
@@ -64,7 +65,7 @@ pub struct Feedback {
 
 impl Default for Feedback {
     fn default() -> Self {
-        Feedback { hit: 9.0, hit_kind: HitKind::Body, arcs: Vec::new(), burned: None, bob: 0.0, special_max: 0.0, last_special: 0.0, toast: None,
+        Feedback { hit: 9.0, hit_kind: HitKind::Body, arcs: Vec::new(), burned: None, lava_death: false, bob: 0.0, special_max: 0.0, last_special: 0.0, toast: None,
             numbers: Vec::new(), exit: None, pick_closed: 9.0, highlight: Vec::new(), stats: Vec::new(), flash: [0.0; 3], phoenix: [0.0; 2], last_offer: None }
     }
 }
@@ -152,6 +153,7 @@ impl Hud {
     pub fn card_hit(&self, world: &World, player: usize, size: [u32; 2], pos: [f32; 2]) -> Option<usize> {
         if self.hit_size.get() != size { return None; }
         let p = world.players.get(player)?;
+        if self.fb[player].lava_death && self.fb[player].burned.is_some_and(|t|t<2.4) { return None; }
         if p.offer_age < 0.75 { return None; }
         let offer = p.offer.as_ref()?;
         self.card_hits.borrow().iter().rev().find(|h| h.player == player && offer.get(h.index) == Some(&h.card)
@@ -287,7 +289,7 @@ impl Hud {
                         if fwd * fwd + right * right > 1e-4 && let Some(f) = self.fb.get_mut(victim) { f.arcs.push((right.atan2(fwd), 0.28)); }
                     }
                 }
-                Event::Kill { victim, attacker, .. } => {
+                Event::Kill { victim, attacker, gib, .. } => {
                     if let Some(a) = attacker.filter(|&a| a != victim) {
                         if let Some(f) = self.fb.get_mut(a) { f.hit = 0.0; f.hit_kind = HitKind::Kill; }
                         if humans >= 3 { let line = format!("{} => {}", self.name(a), self.name(victim)); self.feed.push((line, 0.0)); }
@@ -295,6 +297,7 @@ impl Hud {
                     } else if let Some(f) = self.fb.get_mut(victim) && !world.players[victim].bot {
                         // Lava and falls: the red screen (Godot `_lava_death`).
                         f.burned = Some(0.0);
+                        f.lava_death = matches!(gib, growing_guns::Gib::Lava { .. });
                     }
                     if world.players.get(victim).is_some_and(|p| !p.bot) && !(world.coop && world.waves.is_enemy(victim)) {
                         let line = if world.coop && world.players[victim].downed { format!("{} is down", self.name(victim)) } else { format!("{} died", self.name(victim)) };
@@ -338,7 +341,7 @@ impl Hud {
         if clear_banner && let Some(b) = &mut self.banner { b.left = b.left.min(BANNER_FADE_OUT); }
     }
 
-    fn screen_tint(&self,d:&mut HudDrawList,rect:[f32;4],color:C,clip:[f32;4],above_hud:bool) {
+    pub(crate) fn screen_tint(&self,d:&mut HudDrawList,rect:[f32;4],color:C,clip:[f32;4],above_hud:bool) {
         if self.xr {if above_hud{d.vision_tints.push(color);}else{d.vision_background_tints.push(color);}}else{d.rect(rect,color,clip);}
     }
 
@@ -352,13 +355,15 @@ impl Hud {
         let [x, y, w, h] = rect;
         let (cx, cy) = (x + w * 0.5, y + h * 0.5);
         if flash > 0.0 { self.screen_tint(d,rect, [0.96, 0.99, 1.0, flash], clip,false); }
+        // World flashes belong beneath gameplay feedback and every interactive UI.
+        if f.phoenix[0] > 0.003 { self.screen_tint(d,rect, [1.0, 1.0, 1.0, f.phoenix[0]], clip,false); }
+        if f.flash[0] > 0.003 { self.screen_tint(d,rect, [1.0, 0.96, 0.88, f.flash[0]], clip,false); }
         let picking = p.offer.is_some() || f.exit.is_some();
-        // Ghost tint (spectating after a 3+ player death).
-        if p.ghost && !picking { self.screen_tint(d,rect, [0.25, 0.55, 0.85, 0.28], clip,false); }
+        // Artillery operators retain the normal scene colours.
         if !picking {
             self.damage_numbers(d, world, i, rect);
             damage_arcs(d, f, &l);
-            if p.alive && !p.downed { if !self.xr { crosshair(d, world, i, &l); } hit_marker(d, f, &l); }
+            if (p.alive && !p.downed) || (p.ghost && p.howitzer.is_some() && p.siege_crossbow) { if !self.xr { crosshair(d, world, i, &l); } hit_marker(d, f, &l); }
             if p.alive || p.ghost { self.bottom_row(d, world, i, &l); }
         }
         // Coop: reviving a teammate.
@@ -377,10 +382,6 @@ impl Hud {
             d.begin_overlay();
             cards::pick(d, world, i, &l, f, focus, &mut self.card_hits.borrow_mut());
         }
-        // The phoenix white (its own canvas layer over this view's HUD) and the
-        // explosion flash above everything (Godot canvas layer 50).
-        if f.phoenix[0] > 0.003 { d.begin_overlay(); self.screen_tint(d,rect, [1.0, 1.0, 1.0, f.phoenix[0]], clip,true); }
-        if f.flash[0] > 0.003 { d.begin_overlay(); self.screen_tint(d,rect, [1.0, 0.96, 0.88, f.flash[0]], clip,true); }
         let _ = cy;
     }
 
@@ -407,19 +408,21 @@ impl Hud {
                 0 => {
                     let cs = r[3] * 0.85;
                     heart(d, [r[0], r[1] + (r[3] - cs) * 0.5, cs, cs], if ghost { [0.65, 0.85, 1.0, 1.0] } else { RED }, true, clip);
-                    let text = if ghost { "GHOST".to_string() } else { p.health.max(0).to_string() };
+                    let text = if ghost { if p.siege_crossbow { "CROSSBOW" } else { "HOWITZER" }.to_string() } else { p.health.max(0).to_string() };
                     label.draw(d, &text, r[0] + cs + 8.0 * l.u, mid, clip);
                 }
                 1 | 2 => {
                     let is = r[3] * 0.95;
                     let ir = [r[0], r[1] + (r[3] - is) * 0.5, is, is];
                     if k == 1 { bullet(d, ir, BONE, clip) } else { grenade(d, ir, BONE, clip) }
-                    prompt(d, ir, match (k, pad) { (1, false) => "LMB", (1, true) => "RT", (_, false) => "RMB", _ => "LT" }, clip);
+                    if !ghost || k == 1 || p.siege_crossbow {
+                        prompt(d, ir, match (k, pad) { (1, false) => "LMB", (1, true) => "RT", (_, false) => "RMB", _ => "LT" }, clip);
+                    }
                     let (text, progress, fill) = if k == 1 {
-                        let prog = if !ghost && p.reloading() { (1.0 - p.rifle_cd / p.weapon.reload_time().max(0.01)).clamp(0.0, 1.0) as f32 } else { 0.0 };
-                        (if ghost { "GHOST".to_string() } else { format!("{} / {}", p.ammo, p.mag_size()) }, prog, BONE)
+                        let prog = if ghost && p.special_cd > 0.0 { (1.0-p.special_cd/p.artillery_reload()).clamp(0.0,1.0) as f32 } else if !ghost && p.reloading() { (1.0 - p.rifle_cd / p.weapon.reload_time().max(0.01)).clamp(0.0, 1.0) as f32 } else { 0.0 };
+                        (if ghost { if p.special_cd > 0.0 { format!("{:.1}s", p.special_cd) } else { "READY".into() } } else { format!("{} / {}", p.ammo, p.mag_size()) }, prog, BONE)
                     } else {
-                        let name = if ghost { "MINE".to_string() } else if p.air_strike_charges > 0 {
+                        let name = if ghost && p.siege_crossbow { "ZOOM".into() } else if ghost { format!("{:.0} DEG", p.howitzer_elevation().to_degrees()) } else if p.air_strike_charges > 0 {
                             if p.air_strike_charges == 1 { "AIR STRIKE".into() } else { format!("AIR STRIKE x{}", p.air_strike_charges) }
                         } else {
                             match p.weapon.special.name() { "cluster_grenade" => "CLUSTER".into(), n => n.replace('_', " ").to_uppercase() }
@@ -521,16 +524,14 @@ impl Hud {
         world.players.iter().enumerate().filter(|(_, p)| !p.bot && p.offer.is_some()).map(|(k, _)| self.name(k).to_string()).collect()
     }
 
-    /// Shared overlay: the round banner, kill feed, coop count, match over.
-    /// Round start (Godot `_round_start_flash`, canvas layer 51 over
-    /// everything, menus too): full white held 0.25 s, then a 0.45 s sine
-    /// ease-in fade. Draw last.
+    /// World transition: white held 0.25 s, then faded over 0.45 s.
+    /// Draw before the per-view HUD, death backdrop, cards and global menus.
     pub fn round_flash(&self, d: &mut HudDrawList) {
         if self.round_age >= 0.7 { return; }
         let clip = [0.0, 0.0, d.size[0] as f32, d.size[1] as f32];
         let t = ((self.round_age - 0.25) / 0.45).clamp(0.0, 1.0);
         d.begin_overlay();
-        self.screen_tint(d,clip, [1.0, 0.98, 0.94, (t * std::f32::consts::FRAC_PI_2).cos()], clip,true);
+        self.screen_tint(d,clip, [1.0, 0.98, 0.94, (t * std::f32::consts::FRAC_PI_2).cos()], clip,false);
     }
 
     /// `net`: a network error for Godot's red panel at the top right.
@@ -628,11 +629,18 @@ pub fn project(cam: &render::Camera, rect: [f32; 4], p: glam::Vec3) -> Option<(f
 
 /// Godot crosshair: four yellow strokes opening with the effective spread.
 fn crosshair(d: &mut HudDrawList, world: &World, i: usize, l: &Layout) {
-    let (cx, cy) = (l.rect[0] + l.rect[2] * 0.5, l.rect[1] + l.rect[3] * 0.5);
+    let (mut cx, mut cy) = (l.rect[0] + l.rect[2] * 0.5, l.rect[1] + l.rect[3] * 0.5);
+    let p=&world.players[i];
+    if p.howitzer.is_some() && p.siege_crossbow && !p.zooming {
+        let cam=crate::view::camera(world,i,&[],1.0);
+        let dir=growing_guns::look_dir(p.yaw,p.howitzer_elevation());
+        let point=p.eye()-glam::Vec3::Y*0.45+dir*100.0;
+        if let Some((x,y,_))=project(&cam,l.rect,point) { cx=x; cy=y; }
+    }
     let s = l.s;
     let width = (1.5 * s).max(1.0) * l.u;
     let len = (8.0 * s).max(5.0) * l.u;
-    let gap = ((4.0 * s).max(3.0) + world.effective_spread(i) * 400.0) * l.u;
+    let gap = ((4.0 * s).max(3.0) + if p.howitzer.is_some() { 0.0 } else { world.effective_spread(i) * 400.0 }) * l.u;
     let c = [1.0, 1.0, 0.4, 0.9];
     let clip = l.rect;
     d.line([cx, cy - gap], [cx, cy - gap - len], width, c, clip);
@@ -674,6 +682,10 @@ fn damage_arcs(d: &mut HudDrawList, f: &Feedback, l: &Layout) {
 /// The death overlay's colour now.
 fn death_color(world: &World, p: &growing_guns::Player, f: &Feedback) -> C {
     let ease = |t: f32| 0.5 - 0.5 * (t.clamp(0.0, 1.0) * std::f32::consts::PI).cos();
+    if f.lava_death && f.burned.is_some_and(|t| t < 2.4) {
+        let t=f.burned.unwrap();
+        return [1.0,0.18,0.015,0.14+0.04*(t*17.0).sin()];
+    }
     let mut c = [0.8, 0.0, 0.0, 0.0];
     if let Some(t) = f.burned { c = lerp([0.8, 0.0, 0.0, 0.6], [0.65, 0.0, 0.0, 1.0], ease(t / 0.4)); }
     if p.offer.is_some() {
@@ -694,6 +706,18 @@ fn death_color(world: &World, p: &growing_guns::Player, f: &Feedback) -> C {
 #[cfg(test)]
 mod pointer_tests {
     use super::*;
+    #[test]
+    fn world_flashes_stay_below_death_and_card_ui() {
+        let mut w=World::new(1,&[false,true]);w.players[0].alive=false;
+        let mut hud=Hud::new(&w);hud.fb[0].flash=[0.9,0.9,0.0];hud.fb[0].phoenix=[1.0,0.0];hud.fb[0].burned=Some(0.0);
+        let rect=[0.0,0.0,1280.0,720.0];let death=death_color(&w,&w.players[0],&hud.fb[0]);
+        assert!(death[3]>0.0);
+        let mut draw=HudDrawList::new([1280,720]);hud.view(&mut draw,&w,0,rect,0,0.0,false);
+        let flash=draw.vertices.iter().position(|v|v.color==[1.0,0.96,0.88,0.9]).unwrap();
+        let red=draw.vertices.iter().position(|v|v.color==death).unwrap();assert!(flash<red);
+        hud.xr=true;let mut xr=HudDrawList::new([1280,720]);hud.view(&mut xr,&w,0,rect,0,0.0,false);
+        assert!(xr.vision_tints.is_empty());assert_eq!(xr.vision_background_tints.last(),Some(&death));
+    }
     #[test]
     fn lava_death_tint_does_not_return_after_ghost_card_pick() {
         let mut w = World::new(1, &[false, false, false, false]);
@@ -748,7 +772,7 @@ mod pointer_tests {
     #[test] fn round_flash_covers_vision_without_drawing_a_hud_rectangle() {
         let mut hud=Hud::default();hud.round_age=0.0;hud.xr=true;
         let mut draw=HudDrawList::new([1280,720]);hud.round_flash(&mut draw);
-        assert_eq!(draw.vision_tints,vec![[1.,0.98,0.94,1.]]);assert!(draw.vertices.is_empty());
+        assert!(draw.vision_tints.is_empty());assert_eq!(draw.vision_background_tints,vec![[1.,0.98,0.94,1.]]);assert!(draw.vertices.is_empty());
         let mut death=HudDrawList::new([1280,720]);
         hud.screen_tint(&mut death,[0.,0.,1280.,720.],[0.,0.,0.,0.9],[0.,0.,1280.,720.],false);
         assert!(death.vision_tints.is_empty()&&death.vertices.is_empty());

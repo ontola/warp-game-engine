@@ -84,6 +84,7 @@ pub fn sim(args: &Args) -> Result<(), String> {
 }
 
 pub fn run(args: &Args) -> Result<(), String> {
+    if args.flag("--game-loop") { return game_loop(args); }
     if let Some(mode) = args.value("--stress") { return stress(args, StressMode::parse(mode)?); }
     if args.flag("--sim") { return sim(args); }
     let views = args.num("--views", 4usize).clamp(1, 4);
@@ -101,6 +102,7 @@ pub fn run(args: &Args) -> Result<(), String> {
         // Engine floor: one cube, nothing else.
         let first = vis.first_dynamic;
         vis.scene.instances.truncate(1);
+        vis.scene.static_sun_instances.clear();
         vis.first_dynamic = first.min(1);
         vis.scene.sky = None;
     }
@@ -708,4 +710,39 @@ mod diagnostics_tests {
         assert_eq!(&fields[32..], &["1.250000", "0.500000", "", "0.000000", "2.500000", "", "", "", "", "2.500000"]);
         assert!(lines.next().is_none());
     }
+}
+
+/// Exercise desktop game ticks, replay recording and round/sky transitions.
+/// Readback is deliberately excluded from tick percentiles, not called GPU time.
+fn game_loop(args: &Args) -> Result<(), String> {
+    use app::Game;
+    let (mut world,_) = armed_world(args)?;world.release_cage();
+    let mut game=crate::play::Gg::new(world,crate::session::Session::Local,vec![0]);
+    game.vis.stadium.bake_in_background=true;
+    game.set_sky(crate::sky::Sky::from_args(args.value("--sky"))?)?;
+    let gpu=Gpu::new()?;let (w,h)=args.size((960,540));
+    let mut headless=app::Headless::new(&gpu,[w,h],TICK_HZ as f32)?;
+    let frames=args.num("--frames",720usize);
+    let mut ticks=Vec::new();let mut transitions=Vec::new();
+    let mut gpu_times=Vec::new();let mut passes:BTreeMap<&str,f64>=BTreeMap::new();let mut gpu_samples=0;
+    for f in 0..frames {
+        if f>0 && f%120==0 {
+            let t=Instant::now();game.command("round")?;transitions.push(ms(t));
+        }
+        let t=Instant::now();game.tick(&[app::Controls::default()]);ticks.push(ms(t));
+        headless.frame(&mut game)?;
+        if let Some(renderer)=headless.renderer() {
+            let _=renderer.set_async_gpu_profiling(&gpu,true);
+            for sample in renderer.drain_gpu_profiles(&gpu).samples {
+                if f>=30 {gpu_times.push(sample.covered_union_ms);gpu_samples+=1;for (name,t) in sample.gpu_ms {*passes.entry(name).or_default()+=t;}}
+            }
+        }
+    }
+    if gpu_samples>0 {
+        let mut costs:Vec<_>=passes.into_iter().map(|(name,t)|(name,t/gpu_samples as f64)).collect();costs.sort_by(|a,b|b.1.total_cmp(&a.1));
+        println!("game-loop GPU active ms p50 {:.2}, p95 {:.2}, max {:.2}; {} samples; passes {:?}",pct(&mut gpu_times.clone(),0.5),pct(&mut gpu_times.clone(),0.95),pct(&mut gpu_times,1.0),gpu_samples,costs);
+    }
+    println!("game-loop tick CPU ms p50 {:.2}, p95 {:.2}, max {:.2}; explicit round commands ms {:?}; frame rendering includes readback and is not a GPU benchmark",
+        pct(&mut ticks.clone(),0.5),pct(&mut ticks.clone(),0.95),pct(&mut ticks,1.0),transitions);
+    Ok(())
 }

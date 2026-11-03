@@ -312,76 +312,41 @@ fn air_strike_echo_lands_twice_and_ion_ignores_cover() {
 }
 
 #[test]
-fn eliminated_human_walks_and_looks_after_picking_without_combat_or_resurrection() {
-    let mut w = World::new(3, &[false; 3]);
-    w.cards = Arc::new(cards::test_book());
-    w.arena = flat_world().arena;
-    w.modifier = None;
-    w.release_cage();
-    for (i, p) in w.players.iter_mut().enumerate() {
-        p.pos = Vec3::new(i as f32 * 20.0, HALF_HEIGHT, 0.0);
-        p.yaw = 0.0;
-        p.on_floor = true;
-    }
-    w.queue_damage(0, 1000, Some(1));
-    w.step(&[Input::default(); 3]);
-    assert!(w.players[0].ghost && !w.players[0].alive && w.players[0].offer.is_some());
-    let before_pick = w.players[0].pos;
-    w.step(&[Input { mv: [1.0, 0.0], ..Default::default() }]);
-    assert_eq!(w.players[0].pos, before_pick, "card picker still blocks movement");
-    w.step(&[Input { pick: Some(0), ..Default::default() }]);
-    assert!(w.players[0].offer.is_none());
-    let start = w.players[0].pos;
-    for _ in 0..60 {
-        w.step(&[Input { mv: [0.0, 1.0], look: [0.01, 0.002], fire: true, special: true, dash: true, ..Default::default() }]);
-        assert!(!w.events.iter().any(|e| matches!(e, Event::Shot { player: 0, .. } | Event::Dash { player: 0 })));
-    }
-    let p = &w.players[0];
-    assert!(p.pos.distance(start) > 3.0 && p.yaw > 0.5 && p.pitch > 0.1);
-    assert!(p.on_floor && p.ghost && !p.alive && p.health == 0 && !p.targetable());
-    // Held fire planted one mine, and nothing else (no shots, grenades or strikes).
+fn eliminated_human_gets_stationary_howitzer_after_card_pick() {
+    let mut w = World::new_with(3, &[false, true, true, true], |w| w.modifier_chance=0.0);
+    w.cards=Arc::new(cards::test_book()); w.release_cage(); w.bots_paused=true;
+    w.queue_damage(0,1000,Some(1)); w.step(&[]);
+    assert!(w.players[0].ghost && w.players[0].offer.is_some());
+    assert!(w.players[0].howitzer.is_none());
+    w.step(&[Input {pick:Some(0),..Default::default()}]); w.step(&[]);
+    let at=w.players[0].howitzer.expect("audience station after pick");
+    assert!(!w.arena.stadium.outside(at));
+    assert!(at.x.abs().max(at.z.abs())>w.arena.size*0.5);
+    assert!((at.y-HALF_HEIGHT-w.arena.stadium.ground(at)).abs()<0.01);
+    for _ in 0..60 {w.step(&[Input {mv:[1.0,1.0],jump:true,dash:true,look:[0.01,0.002],..Default::default()}]);}
+    assert_eq!(w.players[0].pos,at); assert_eq!(w.players[0].vel,Vec3::ZERO);
+    assert!(!w.players[0].targetable()); assert_eq!(w.players[0].health,0);
+    w.step(&[Input {fire:true,..Default::default()}]);
+    assert!(w.events.iter().any(|e|matches!(e,Event::Shot {player:0,..})));
+    assert_eq!(w.projectiles.len(),1); assert_eq!(w.projectiles[0].kind,ProjectileKind::Howitzer);
+    assert!(w.projectiles[0].vel.y>0.0);
     assert!(w.bullets.is_empty() && w.strikes.is_empty());
-    assert!(w.projectiles.len() == 1 && w.projectiles[0].kind == ProjectileKind::Mine, "{:?}", w.projectiles.iter().map(|g| g.kind).collect::<Vec<_>>());
-    w.step(&[Input { jump: true, ..Default::default() }]);
-    assert!(w.players[0].vel.y > 0.0 && w.players[0].pos.y > HALF_HEIGHT);
-    w.players[0].pos.y = FELL_OFF_Y - 10.0;
-    w.step(&[]);
-    assert!(w.players[0].pos.y > FELL_OFF_Y && w.players[0].ghost && !w.players[0].alive);
+    w.next_round(); assert!(w.players[0].howitzer.is_none() && w.players[0].alive && !w.players[0].ghost);
 }
 
 #[test]
-fn eliminated_human_recovers_from_lava_after_picking_on_surviving_ground() {
-    let mut w = World::new_with(3, &[false, true, true, true], |w| w.modifier_chance = 0.0);
-    w.cards = Arc::new(cards::test_book());
-    w.release_cage();
-    w.bots_paused = true;
-    w.arena.variant = arena::Variant::Island;
-    // The first authored spawn has lost its platform. Only the second has
-    // surviving collision; trusting the original spawn list causes a loop.
-    w.arena.spawns = vec![Vec3::new(-10.0, 3.0, 0.0), Vec3::new(12.0, 3.0, 0.0)];
-    w.arena.blocks = vec![Block::new(Vec3::new(12.0, 1.0, 0.0), Vec3::new(4.0, 2.0, 4.0), 0.0, Kind::Island)];
-    w.arena.build_chunks();
-    for p in &mut w.players { p.pos = Vec3::new(12.0, 2.0 + HALF_HEIGHT, 0.0); p.vel = Vec3::ZERO; }
-    w.queue_damage(0, 1000, Some(1));
-    w.step(&[]);
-    assert!(w.players[0].ghost && w.players[0].offer.is_some());
-    w.players[0].pos = Vec3::new(-10.0, -1.0, 0.0);
-    w.players[0].vel = Vec3::NEG_Y * 12.0;
-    w.step(&[Input { pick: Some(0), ..Default::default() }]);
-    w.step(&[]);
-    assert!((w.players[0].pos.x - 12.0).abs() < 0.01, "skip the destroyed spawn platform");
-    assert!(w.players[0].pos.y >= 2.0 + HALF_HEIGHT - 0.01, "recover above lava without waiting for the deep void");
-    idle(&mut w, 120);
-    let p = &w.players[0];
-    assert!(p.on_floor && p.ghost && !p.alive && p.health == 0 && !p.targetable());
-    // Rising lava can also cover every arena platform and the lower stand
-    // rows; the upper solid stands remain available to the eliminated ghost.
-    w.lava = flow::LavaLeak { active: true, full: true, rise: 18.0, spread: 30.0, half: w.arena.size * 0.5, ..Default::default() };
-    w.step(&[]);
-    let p = &w.players[0];
-    assert!(p.pos.y - HALF_HEIGHT > w.lava.surface());
-    assert!(p.ghost && !p.alive && p.health == 0);
-    assert!(shape::raycast(&w.arena.grid, p.pos, Vec3::NEG_Y, HALF_HEIGHT + 0.1).is_some(), "recovery has actual supporting collision");
+fn howitzer_station_is_seeded_and_client_prediction_cannot_walk_away() {
+    let mut locations=Vec::new();
+    for seed in 1..5 {
+        let mut a=World::new(seed,&[false,true,true]);a.release_cage();a.bots_paused=true;
+        a.players[0].ghost=true;a.players[0].alive=false;
+        let mut b=a.clone();a.step(&[]);b.step(&[]);
+        assert_eq!(a.players[0].howitzer,b.players[0].howitzer);
+        let at=a.players[0].pos;locations.push(at);
+        a.predict_player(0,Input {mv:[1.0,1.0],jump:true,look:[0.1,0.1],..Default::default()});
+        assert_eq!(a.players[0].pos,at);
+    }
+    assert!(locations.windows(2).any(|p|p[0]!=p[1]));
 }
 
 #[test]
@@ -736,32 +701,20 @@ fn coop_waves_go_on_with_bots_fighting() {
 }
 
 #[test]
-fn ghosts_plant_mines_that_blow_up_the_living() {
-    let mut w = World::new(5, &[false, true]);
-    w.release_cage();
-    for _ in 0..30 { w.step(&[Input::default(), Input::default()]); }
-    w.bots_paused = true;
-    let (ghost, other) = (0, 1);
-    w.players[ghost].ghost = true;
-    w.players[ghost].alive = false;
-    let fire = Input { fire: true, ..Default::default() };
-    w.step(&[fire, Input::default()]);
-    let mines = |w: &World| w.projectiles.iter().filter(|g| g.kind == ProjectileKind::Mine).count();
-    assert_eq!(mines(&w), 1, "a ghost's trigger plants a mine");
-    assert!(w.events.iter().any(|e| matches!(e, Event::MinePlanted { player: 0, .. })));
-    // Held fire does not plant another; a new press within the reload does not either.
-    w.step(&[fire, Input::default()]);
-    w.step(&[Input::default(), Input::default()]);
-    w.step(&[fire, Input::default()]);
-    assert_eq!(mines(&w), 1);
-    // A living player walking onto it sets it off once armed.
-    let at = w.projectiles.iter().find(|g| g.kind == ProjectileKind::Mine).unwrap().pos;
-    for _ in 0..90 { w.step(&[Input::default(), Input::default()]); }
-    let before = w.players[other].health;
-    w.players[other].pos = at + Vec3::Y * 0.9;
-    for _ in 0..5 { w.step(&[Input::default(), Input::default()]); }
-    assert_eq!(mines(&w), 0, "it went off");
-    assert!(w.players[other].health < before || !w.players[other].alive, "and hurt the living player");
+fn howitzer_shells_arc_explode_and_respect_reload() {
+    let mut w=flat_world();w.bots_paused=true;
+    w.players[0].ghost=true;w.players[0].alive=false;
+    w.step(&[]);w.players[0].special_cd=0.0;
+    let fire=Input {fire:true,..Default::default()};
+    w.step(&[fire]);let vy=w.projectiles[0].vel.y;
+    w.step(&[fire]);assert_eq!(w.projectiles.len(),1);assert!(w.projectiles[0].vel.y<vy);
+    // Place an already airborne shell just above the floor: impact, no bounce.
+    w.projectiles[0].pos=Vec3::new(0.0,0.5,0.0);w.projectiles[0].vel=Vec3::NEG_Y*42.0;
+    w.step(&[fire]);
+    assert!(w.projectiles.is_empty());
+    assert!(w.events.iter().any(|e|matches!(e,Event::Explosion {radius,..} if *radius==10.0)));
+    assert!(w.players[0].special_cd>4.0);
+    assert!(!w.events.iter().any(|e|matches!(e,Event::Shot {..})));
 }
 
 /// Island arenas (Godot `_bot_on_lava_map`): bots keep to the islands,
@@ -843,4 +796,92 @@ fn removing_a_card_keeps_other_copies_and_rebuilds_stats() {
     assert!(w.remove_card(0, card));
     assert!(!w.remove_card(0, card));
     assert_eq!(w.players[0].weapon.fire_rate_mult, Weapon::default().fire_rate_mult);
+}
+
+#[test]
+fn crossing_audience_boundary_kills_humans_and_bots_even_with_iframes() {
+    for bot in [false, true] {
+        let mut w=World::new(71,&[bot,false,false,false]);w.release_cage();
+        w.players[0].pos=Vec3::new(w.arena.stadium.wall_r()+5.0,90.0,0.0);
+        w.players[0].iframes=10.0;w.players[0].phoenix_charges=1;
+        idle(&mut w,1);
+        assert!(!w.players[0].alive);assert!(kills(&w,0));
+        assert!(!w.events.iter().any(|e|matches!(e,Event::Lava{player:0,..})));
+        if !bot {
+            w.players[0].offer=None; idle(&mut w,1);
+            assert!(!w.arena.stadium.outside(w.players[0].pos),"ghost returns inside after choosing a card");
+        }
+    }
+}
+
+#[test]
+fn audience_boundary_keeps_corner_seats_and_high_jumps_playable() {
+    let mut w=flat_world();let r=w.arena.stadium.wall_r();
+    for pos in [Vec3::new(r-1.0,120.0,0.0),Vec3::new(r*0.83,120.0,r*0.83),Vec3::new(0.0,200.0,0.0)] {
+        w.players[0].pos=pos;w.players[0].vel=Vec3::ZERO;idle(&mut w,1);assert!(w.players[0].alive);
+    }
+    assert!(w.arena.stadium.outside(Vec3::new(r,r*0.0,r)));
+}
+
+#[test]
+fn pickups_lost_to_island_lava_release_their_slot() {
+    let mut w = World::new(1, &[false, true]);
+    w.arena = crate::arena::Arena::generate_with(1, 64.0, 64.0, true);
+    w.pickups.clear();
+    w.pickups.push(Pickup { kind: PickupKind::Heart, pos: Vec3::new(0., -1., 0.), vy: -10., grounded: None });
+    w.step_pickups();
+    assert!(w.pickups.is_empty());
+}
+
+#[test]
+fn siege_bolt_kills_on_contact_without_blast_and_stops_at_stone() {
+    for wall in [false,true] {
+        let mut w=flat_world();
+        w.players[1].health=1200; w.players[1].iframes=0.0;
+        if wall {
+            w.arena.blocks.push(Block::new(Vec3::new(0.0,2.0,-18.5),Vec3::new(4.0,4.0,0.5),0.0,Kind::Floor));
+            w.arena.build_chunks();
+        }
+        w.events.clear();
+        w.spawn_projectile(ProjectileKind::SiegeBolt,Vec3::new(0.0,HALF_HEIGHT,-17.0),Vec3::NEG_Z*90.0,0);
+        for _ in 0..5 { w.step_projectiles(); }
+        assert_eq!(w.players[1].alive,wall);
+        assert!(w.projectiles.is_empty());
+        assert!(!w.events.iter().any(|e|matches!(e,Event::Explosion {..})));
+    }
+}
+
+#[test]
+fn audience_weapon_is_random_fixed_for_life_and_has_lower_aim_offset() {
+    let mut choices=[false;2];
+    for seed in 1..33 {
+        let mut w=World::new(seed,&[false,false,false,false]);
+        w.release_cage(); w.players[0].ghost=true;w.players[0].alive=false;w.players[0].offer=None;
+        w.player_tick(0,Input::default());
+        let choice=w.players[0].siege_crossbow;
+        choices[usize::from(choice)]=true;
+        w.player_tick(0,Input {special:true,..Default::default()});
+        assert_eq!(w.players[0].siege_crossbow,choice);
+        w.players[0].special_cd=0.0;
+        w.player_tick(0,fire());
+        assert_eq!(w.projectiles.last().unwrap().kind,if choice {ProjectileKind::SiegeBolt} else {ProjectileKind::Howitzer});
+        assert!(w.players[0].howitzer_elevation() < 0.25);
+    }
+    assert!(choices.into_iter().all(|x|x));
+}
+
+#[test]
+fn crossbow_zoom_is_held_predicted_and_bolts_are_faster() {
+    let mut w=flat_world();
+    let p=&mut w.players[0]; p.ghost=true;p.alive=false;p.howitzer=Some(p.pos);p.siege_crossbow=true;p.special_cd=0.0;
+    let mut predicted=w.clone();
+    let input=Input {special:true,look:[0.1,0.1],..Default::default()};
+    w.player_tick(0,input); predicted.predict_player(0,input);
+    assert!(w.players[0].zooming && predicted.players[0].zooming);
+    assert_eq!(w.players[0].pitch,predicted.players[0].pitch);
+    w.player_tick(0,fire());
+    assert!(!w.players[0].zooming);
+    assert!((w.projectiles.last().unwrap().vel.length()-150.0).abs()<0.01);
+    w.players[0].siege_crossbow=false;
+    w.player_tick(0,input); assert!(!w.players[0].zooming);
 }
