@@ -582,10 +582,11 @@ fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3
         recipe_forest::Tree { pos, yaw, scale: scale.y, variant }).collect();
     let arg = |k: &str| std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == k).and_then(|w| w[1].parse().ok());
     let defaults = recipe_forest::game_policy();
-    // Proxies start past the 240 full trees (~110 m): 8 px cells loosening
-    // from 20 m, as Sideways plays, draw half the splats of 4 px from 50 m.
-    let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(8.0),
-        proxy_pixels_from: arg("--proxy-from").unwrap_or(20.0), ..defaults };
+    // Proxies start past the 240 full trees (~110 m): 6 px cells loosening
+    // from 50 m, 12 px at 200 m. 8 px from 20 m (25 px at 200 m) read as
+    // cubes in Joep's playtest; this costs 5-10 % fps, 4 px about 22 %.
+    let policy = render::aggregate_lod::Policy { proxy_pixels: arg("--proxy-px").unwrap_or(6.0),
+        proxy_pixels_from: arg("--proxy-from").unwrap_or(50.0), ..defaults };
     let started = std::time::Instant::now();
     if far.is_empty() {
         recipe_forest::plant(scene, cooked, &trees, near.len(), policy)?;
