@@ -74,7 +74,7 @@ local SPECS = {
 	node = { hp = 1, r = 15, speed = 0, value = 0, armor = true },
 	-- The final boss: a tumour that keeps dividing; while its offspring live it
 	-- cannot be hurt. Metastases are those offspring.
-	tumor = { hp = 420, r = 56, speed = 22, value = 6000, boss = true, final = true },
+	tumor = { hp = 640, r = 56, speed = 22, value = 6000, boss = true, final = true, extra = 120 },
 	metastasis = { hp = 5, r = 16, speed = 85, value = 60 },
 }
 
@@ -983,6 +983,28 @@ local function tumor_step(e, dt)
 		ring(e.x, e.y, 140, COLORS.tumor)
 		sfx("boss")
 		s.shake = math.max(s.shake, 4)
+	end
+	-- It fights back the whole time: a pulse of big orbs with a gap to slip
+	-- through, quicker as it weakens; from the second stage a spore fan
+	-- aimed at the nearest pilot between pulses.
+	e.fire -= dt
+	if e.fire <= 0 then
+		e.fire = ({ 3.0, 2.4, 1.8 })[stage]
+		local gap = random.float() * math.pi * 2
+		local n = ({ 14, 18, 22 })[stage]
+		for i = 2, n - 1 do hostile_shot(e.x, e.y, gap + i * 2 * math.pi / n, 140 + stage * 15, nil, 1.6) end
+		ring(e.x, e.y, 90, COLORS.tumor)
+	end
+	if stage >= 2 then
+		e.spore = (e.spore or 1.2) - dt
+		if e.spore <= 0 then
+			e.spore = if stage == 3 then 1.1 else 1.6
+			local p = nearest(e.x, e.y)
+			if p then
+				local a = math.atan2(p.y - e.y, p.x - e.x)
+				for i = -2, 2 do hostile_shot(e.x, e.y, a + i * 0.14, 230, nil, 1.3) end
+			end
+		end
 	end
 	return nil
 end
