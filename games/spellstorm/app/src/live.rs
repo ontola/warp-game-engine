@@ -235,7 +235,7 @@ pub fn start(args: &[String], dir: Option<&Path>) -> Result<Option<SsLive>, Stri
         guide: format!(
             "- Look first: `state`, `screenshot`, `knobs`, `logs`.\n\
              - Balance: `knobs` lists them; `set_knob` changes one now and saves it in knobs.txt (`persist: false` only in the running game, then `keep` or `revert`). Walking and rolling speeds, cooldowns and reach, mana, damage and health scales, wave spacing, revives, tome time and the mist walls' rules (wards, ward_needs_tomes, practice).\n\
-             - Runs: `new_run`, `start_at` (a biome from 0), `setting` (friendly_fire off|half|full, difficulty easy|normal|hard, unlocks earned|all), `command` (the same as a console line; `help`).\n\
+             - Runs: `new_run`, `start_at` (a biome from 0), `setting` (friendly_fire off|quarter|half|full, difficulty easy|normal|hard, unlocks earned|all), `command` (the same as a console line; `help`).\n\
              - Shading: edit `game/app/src/surface.wgsl` with write_file (Spellstorm's floor, stone and cloth, ported from Godot's shaders); it compiles on the next frame. The spell effects' looks (flames, smoke puffs, glows, puddles and other ground fields, the mist walls) are `game/app/src/fx.wgsl`, the same way. {}\n\
              - Spells are Luau in `mods/` (read mods/README.md): edit base/spells.luau or base/tomes.luau with write_file, or add a module like mods/live/my_idea.luau with `cast`, `hit` or `tick` hooks; it reloads at once and the next cast uses it. `run_luau` runs a line against the live world as `g` (g:nova(g:pos(g:wizards()[1]), 4, 'fire')); `command mods` shows the modules and their errors.\n\
              - Monsters, levels and the rest of the sim are Rust (games/spellstorm/sim): they change with a rebuild.",
@@ -261,7 +261,7 @@ fn tools() -> Vec<ToolSpec> {
         ToolSpec::new("revert", "Undo the temporary knob values: back to knobs.txt as saved.", obj(json!({}), &[])),
         ToolSpec::new("new_run", "Start a fresh run for everyone, at the first biome.", obj(json!({}), &[])),
         ToolSpec::new("start_at", "Start a run at a biome (0 the chapel; the state lists the run).", obj(json!({ "biome": { "type": "integer", "minimum": 0 } }), &["biome"])),
-        ToolSpec::new("setting", "A party setting: friendly_fire off|half|full, difficulty easy|normal|hard, unlocks earned|all.",
+        ToolSpec::new("setting", "A party setting: friendly_fire off|quarter|half|full, difficulty easy|normal|hard, unlocks earned|all.",
             obj(json!({ "key": { "type": "string" }, "value": { "type": "string" } }), &["key", "value"])),
         ToolSpec::new("command", "One console line: knobs, knob NAME VALUE (saved), trial NAME VALUE (temporary), keep, revert, new_run, biome N, skip (past this level's fights to its shrine and portal), mods (the Luau modules and their errors), lua CODE, setting KEY VALUE, help.",
             obj(json!({ "line": { "type": "string" } }), &["line"])),
