@@ -143,8 +143,14 @@ pub const PART_WIND: u32 = 32;
 /// Weighted vertices are updated by the shared skinning pass. Dynamic shadow
 /// caster; temporal history is rejected until deformation vectors are supplied.
 pub const SKINNED: u32 = 64;
-/// GPU debris touching lava: use the shared molten surface shading.
+/// GPU debris touching lava: use the shared molten surface shading. Every
+/// bit is taken, so this shares bit 7 with `part_wind::HISTORY_EPOCH`, which
+/// only PART_WIND instances carry: it means molten only without PART_WIND
+/// (see [`is_molten`]; wind-woken trees glowed red when shade read bit 7 alone).
 pub const MOLTEN_DEBRIS: u32 = 128;
+
+/// Whether instance `flags` ask for molten shading (shade.wgsl tests the same).
+pub const fn is_molten(flags: u32) -> bool { flags & (MOLTEN_DEBRIS | PART_WIND) == MOLTEN_DEBRIS }
 
 // Bit 7 is reserved for part_wind::HISTORY_EPOCH. The GPU toggles it when a
 // sleeping assembly wakes, so motion history rejects the old pose once while
@@ -992,3 +998,22 @@ mod solid_tests {
         let p=Vec3::ZERO;assert!(solid_segments(&[[p,p,p]]).is_empty());
     }
 }
+
+#[cfg(test)]
+mod molten_tests {
+    use super::*;
+    #[test]
+    fn woken_tree_parts_are_not_molten() {
+        // part_wind toggles bit 7 (its history epoch) on PART_WIND instances.
+        assert!(!is_molten(PART_WIND | crate::part_wind::HISTORY_EPOCH));
+        assert!(!is_molten(PART_WIND | FOLIAGE | crate::part_wind::HISTORY_EPOCH));
+        assert!(is_molten(MOLTEN_DEBRIS));
+        assert!(is_molten(MOLTEN_DEBRIS | NO_SHADOW));
+        assert!(!is_molten(0));
+        assert_eq!(MOLTEN_DEBRIS, crate::part_wind::HISTORY_EPOCH, "the shared bit this guards");
+        // The shader's test is the same mask.
+        assert!(include_str!("shaders/shade.wgsl").contains("(inst.pad & (128u | 32u)) == 128u"));
+        assert_eq!(PART_WIND, 32);
+    }
+}
+

@@ -2552,7 +2552,9 @@ fn shade(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) li
     if (m.flags & 1024u) != 0u { rad += select(m.tint, base, m.layer >= 0) * m.scale * emit; }
     rad += surface_emit * emit;
     // LAVA: molten emission plus sunlight reflected by the cooler surface.
-    if FEATURE_PROCEDURAL && (inst.pad & 128u) != 0u {
+    // MOLTEN_DEBRIS shares bit 7 with part_wind's history epoch, which wind
+    // driven tree parts (PART_WIND, 32) toggle: only without that flag.
+    if FEATURE_PROCEDURAL && (inst.pad & (128u | 32u)) == 128u {
         rad = proc_lava(p * 1200.0, light.anim.x * 6.0, max(length(fp.dx),length(fp.dy)) * 1200.0)
             * vec3<f32>(1.0,0.20,0.02) * 5000.0 * emit;
     }
