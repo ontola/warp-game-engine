@@ -151,6 +151,9 @@ struct Fly {
     /// Centre of the grass and trees in the current scene.
     world_at: Option<Vec3>,
     stream_ground: bool,
+    stream_forest: bool,
+    forest_building: Option<Receiver<(Vec3, Vec<recipe_forest::Tree>, render::scene::Heightfield, Vec<f32>)>>,
+    forest_material: Option<(usize, Material)>,
     meadow_at: Option<Vec3>,
     meadow_building: Option<Receiver<(Vec3, [f32; 2], Vec<[f32; 4]>)>>,
     /// Terrain LOD from the debug menu, kept across rebuilds.
@@ -159,6 +162,7 @@ struct Fly {
     trees: Option<recipe_forest::Pool>,
     light: Lighting,
     stats: Stats,
+    last_updates: [f64;2],
     jumps: u32,
     fps: f32,
     worst_ms: f32,
@@ -171,7 +175,7 @@ struct Fly {
 impl Fly {
     fn new(seed: u32, style: usize, world: World) -> Result<Self, String> {
         let mut fly = Fly { seed, style, pos: Vec3::ZERO, prev: Vec3::ZERO, yaw: 0.6, pitch: -0.15, turn: (0.0, 0.0), speed: 40.0, hug: None, wheel: 0.0,
-            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, stream_ground: std::env::var("WARP_TERRAIN_STREAM_GROUND").as_deref() == Ok("1"), meadow_at: None, meadow_building: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), jumps: 0, fps: 0.0, worst_ms: 0.0,
+            building: None, gpu: None, stale: false, world, built_world: world, world_at: None, forest_building: None, forest_material: None, stream_forest: std::env::var("WARP_TERRAIN_STREAM_FOREST").as_deref() == Ok("1"), stream_ground: std::env::var("WARP_TERRAIN_STREAM_GROUND").as_deref() == Ok("1"), meadow_at: None, meadow_building: None, terrain_settings: Settings::default(), terrain: None, trees: None, light: Lighting::default(), stats: Stats::default(), last_updates: [0.0;2], jumps: 0, fps: 0.0, worst_ms: 0.0,
             track: std::env::args().any(|a| a == "--track"), constraints: None };
         fly.bake_track();
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
@@ -250,6 +254,7 @@ impl Fly {
         let world = World { grass: if self.stream_ground { self.world.grass } else { self.grass_wanted() }, tree_density: self.world.tree_density / 0.6 * environment(self.style).biome.tree_density, ..self.world };
         self.built_world = World { grass: world.grass, ..self.world };
         self.meadow_building = None;
+        self.forest_building = None;
         let (tx, rx) = channel();
         let (gpu, settings) = (self.gpu.clone(), self.terrain_settings);
         std::thread::spawn(move || {
@@ -284,6 +289,7 @@ impl Fly {
         }
         // Near assemblies already move through Pool::update. Meadow ground
         // streams independently; neither needs a new forest or renderer.
+        if self.stream_forest && self.trees.is_some() && self.forest_material.is_some() { return false; }
         let reach = if self.world.trees { TREES_RECENTRE } else { SHADOW_RECENTRE };
         self.world_at.is_none_or(|c| (c - self.pos).with_y(0.0).length() > reach)
     }
@@ -370,6 +376,8 @@ impl Game for Fly {
             self.building = None;
             let (prebuilt, scene, light, pool, world_at, trees) = built??;
             self.trees = trees;
+            self.forest_material = scene.materials.iter().find(|m| m.flags & TERRAIN != 0 && m.scale < 0.0)
+                .map(|m| {let i=(-m.scale-1.0).round() as usize+2; (i,scene.materials[i])});
             match prebuilt {
                 Some((renderer, terrain)) => { frame.set_renderer(renderer); self.terrain = Some(terrain); }
                 None => { frame.set_scene(&scene, &light); self.terrain = Some(ProceduralTerrain::new(pool, self.terrain_settings)); }
@@ -381,6 +389,42 @@ impl Game for Fly {
             if std::mem::take(&mut self.stale) { self.rebuild()?; }
         }
         if self.building.is_none() && self.world_stale() { self.rebuild()?; }
+        if self.stream_ground && self.stream_forest && self.building.is_none() && self.trees.is_some() && self.forest_material.is_some() {
+            if let Some((centre, trees, hf, sun)) = self.forest_building.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                self.forest_building = None;
+                let started = std::time::Instant::now();
+                let gpu = frame.gpu.clone();
+                let count = trees.len();
+                let renderer = frame.renderer_mut().ok_or("forest stream has no renderer")?;
+                if self.trees.as_mut().unwrap().replace_trees(renderer, &gpu, trees)? {
+                    renderer.update_baked_terrain_sun(&gpu, hf, &sun)?;
+                    let (i, material) = self.forest_material.as_mut().unwrap();
+                    material.tint[2] = centre.x; material.roughness = centre.z;
+                    renderer.update_materials(&gpu, *i, &[*material])?;
+                    self.world_at = Some(centre);
+                    eprintln!("terrain stream: forest_instances={count} retained_renderer=true enqueue_cpu_ms={:.2}", started.elapsed().as_secs_f64()*1000.0);
+                } else {
+                    eprintln!("terrain stream: forest capacity/species/scale changed; explicit rebuild fallback");
+                    self.rebuild()?;
+                }
+            }
+            if self.building.is_none() && self.forest_building.is_none() && self.world_at.is_some_and(|p| (p-self.pos).with_y(0.0).length() > TREES_RECENTRE) {
+                let (tx, rx) = channel();
+                let (seed, style, centre, sun) = (self.seed, self.style(), self.pos, self.light.sun_dir);
+                let biome = environment(self.style).biome;
+                let world = World {tree_density: self.world.tree_density / 0.6 * biome.tree_density, ..self.world};
+                let track = self.current_track().cloned();
+                std::thread::spawn(move || {
+                    let started = std::time::Instant::now();
+                    let trees = forest(seed, &style, &biome, centre, world, track.as_deref()).into_iter()
+                        .map(|(pos,yaw,scale,variant)| recipe_forest::Tree {pos,yaw,scale:scale.y,variant}).collect();
+                    let (hf, sun) = procedural_terrain::sun_heightfield(seed, &style, [centre.x,centre.z], SHADOW_SIZE, SHADOW_CELL, sun);
+                    eprintln!("terrain stream: forest_sample_cpu_ms={:.2}",started.elapsed().as_secs_f64()*1000.0);
+                    let _ = tx.send((centre,trees,hf,sun));
+                });
+                self.forest_building = Some(rx);
+            }
+        }
         if self.stream_ground && self.building.is_none() && self.built_world.grass {
             if let Some((centre, origin, samples)) = self.meadow_building.as_ref().and_then(|rx| rx.try_recv().ok()) {
                 let gpu = frame.gpu.clone();
@@ -407,10 +451,14 @@ impl Game for Fly {
         let cam = self.camera(pos, frame.alpha);
         let [w, h] = frame.size;
         if let (Some(terrain), Some(renderer)) = (self.terrain.as_mut(), frame.renderer()) {
+            let started=std::time::Instant::now();
             self.stats = terrain.update(frame.gpu, renderer, &[TerrainView::new(&cam, w, h)])?;
+            self.last_updates=[started.elapsed().as_secs_f64()*1000.0,0.0];
             // The full spruces follow the camera (recipe_forest::Pool).
             if let Some(trees) = &mut self.trees {
+                let started=std::time::Instant::now();
                 let stats = trees.update(renderer, frame.gpu, &[pos])?;
+                self.last_updates[1]=started.elapsed().as_secs_f64()*1000.0;
                 // KERN_POOL_LOG=1: full-tree moves per update (tier churn checks).
                 if stats.moved > 0 && std::env::var("KERN_POOL_LOG").as_deref() == Ok("1") { eprintln!("pool moved {}", stats.moved); }
             }
@@ -665,7 +713,8 @@ fn recipe_spruces(scene: &mut Scene, biome: &render::biome::Biome, near: &[(Vec3
     }
     // Three variants: the full set is shared out over them.
     let slots = near.len().div_ceil(cooked.len());
-    let (_, mut pool) = recipe_forest::plant_streamed(scene, cooked, &trees, slots, policy)?;
+    let reserve = if std::env::var("WARP_TERRAIN_STREAM_FOREST").as_deref() == Ok("1") { trees.len()/2 } else { 0 };
+    let (_, mut pool) = recipe_forest::plant_streamed_reserved(scene, cooked, &trees, slots, policy, reserve)?;
     // Card trees (plant_mesh_lod) are the low-end fallback now: --cards N
     // per variant within --card-radius (150 m). Past the 240 full trees the
     // voxel proxies hold the source's look about as well and, lit by shade,
@@ -818,12 +867,31 @@ fn main() -> Result<(), String> {
         let gpu = render::Gpu::new()?;
         let mut headless = app::Headless::new(&gpu, [w, h], TICK_HZ)?;
         let mut times = Vec::new();
+        let mut cpu_times = Vec::new();
+        let mut profiler = app::debug::EngineDebug::default();
         let forward = Controls { mv: [0.0, 1.0], ..Default::default() };
-        for i in 0..n.parse::<u32>().map_err(|_| "--fly N")? {
+        let frames = n.parse::<u32>().map_err(|_| "--fly N")?;
+        if frames <= 5 { return Err("--fly needs at least six frames".into()); }
+        for i in 0..frames {
             let t = std::time::Instant::now();
             game.tick(&[forward]);
-            headless.frame(&mut game)?;
-            if i >= 5 { times.push(t.elapsed().as_secs_f64() * 1e3); }
+            let rgba = headless.frame(&mut game)?;
+            if i >= 5 {
+                times.push(t.elapsed().as_secs_f64() * 1e3);
+                cpu_times.push(serde_json::json!({"frame":i,"draw":headless.last_draw_timings(),"terrain_ms":game.last_updates[0],"tree_pool_ms":game.last_updates[1],
+                    "renderer_spans":headless.renderer().and_then(|r|r.cpu_spans())}));
+            }
+            if let Some(renderer)=headless.renderer() {
+                // Rebuilds may replace a Renderer at the same address. Enable
+                // profiling on the actual instance, not just pointer changes.
+                renderer.set_async_gpu_profiling(&gpu,true)?;
+                profiler.profile(&gpu,renderer,true);
+            }
+            if i+1 == frames { if let Some(path) = arg("--fly-shot") { render::write_png(std::path::Path::new(&path), w, h, &rgba)?; } }
+        }
+        if let Some(path) = arg("--fly-times") {
+            std::fs::write(format!("{path}.cpu.json"),serde_json::to_vec(&cpu_times).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+            std::fs::write(path, serde_json::to_vec(&times).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         }
         times.sort_by(f64::total_cmp);
         let p = |q: f64| times[((times.len() - 1) as f64 * q) as usize];

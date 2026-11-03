@@ -379,6 +379,7 @@ pub(crate) struct VoxelRenderer {
     active_tiles: bool,
     integrator_options: IntegratorOptions,
     owners: Vec<u32>,
+    owner_index: Vec<usize>,
     targets: Mutex<Vec<Option<Targets>>>,
 }
 pub(crate) struct Reload { pipelines: [wgpu::ComputePipeline; 8], surface: wgpu::ComputePipeline, selection: Option<[wgpu::ComputePipeline;2]>, second: Option<wgpu::ComputePipeline>, temporal: Option<([wgpu::ComputePipeline;8], wgpu::ComputePipeline, Option<wgpu::ComputePipeline>, Option<[wgpu::ComputePipeline;2]>)>, sun: Option<wgpu::ComputePipeline>, source: String }
@@ -902,6 +903,7 @@ impl VoxelRenderer {
             active_tiles: scene.voxel_active_tiles,
             integrator_options,
             owners: forest.instances.iter().map(|t| t.meta[0]).collect(),
+            owner_index: { let mut owners:Vec<_>=forest.instances.iter().map(|t|t.meta[0] as usize).collect();owners.sort_unstable();owners.dedup();owners },
             targets: Mutex::new(Vec::new()),
         })
     }
@@ -925,10 +927,20 @@ impl VoxelRenderer {
         gpu.queue.write_buffer(&self.data[3], offset as u64, bytemuck::bytes_of(&(show as u32 as f32)));
         Ok(())
     }
+    pub(crate) fn validate_proxy_update(&self, first: u32, trees: &[crate::foliage_volume_data::GpuTree]) -> Result<(), String> {
+        if first < self.count-self.proxies || first as usize + trees.len() > self.count as usize {
+            return Err("proxy update exceeds reserved whole-plant range".into());
+        }
+        for (i,t) in trees.iter().enumerate() {
+            if t.meta[0] != self.owners[first as usize+i] || (t.meta[1] as u64 + t.meta[2] as u64) * std::mem::size_of::<crate::foliage_volume_data::GpuLevel>() as u64 > self.data[0].size() || t.meta[2] == 0 ||
+                !t.inverse.iter().flatten().chain(t.bounds_min.iter()).chain(t.bounds_max.iter()).all(|x| x.is_finite()) {
+                return Err("invalid proxy owner, levels or transform".into());
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn contains_owner_range(&self, first: usize, count: usize) -> bool {
-        self.owners
-            .iter()
-            .any(|&owner| (first..first + count).contains(&(owner as usize)))
+        crate::owner_ranges::contains(&self.owner_index,first,count)
     }
     pub(crate) fn prepare_temporal(&self,gpu:&Gpu)->Result<(),String> {
         if let Some(error)=&self.temporal_error {return Err(error.clone());}

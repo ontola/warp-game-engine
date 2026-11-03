@@ -281,7 +281,7 @@ fn pack_cell(voxel: &Voxel, cell_size: f32) -> Result<GpuCell, String> {
     Ok(cell)
 }
 
-fn matrix(rows: [[f32; 4]; 3]) -> Mat4 {
+pub(crate) fn matrix(rows: [[f32; 4]; 3]) -> Mat4 {
     Mat4::from_cols(
         Vec4::new(rows[0][0], rows[1][0], rows[2][0], 0.0),
         Vec4::new(rows[0][1], rows[1][1], rows[2][1], 0.0),

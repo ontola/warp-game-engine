@@ -9,6 +9,17 @@ Nanite Foliage and Assemblies.
 first. It is the current state, the open issues and the next tasks; the
 sections after it are the history that led there.
 
+## Windows movement follow-up: CPU owner indexing and retained forest
+
+[Measured implementation report](terrain-forest-streaming-2026-11-03.md):
+`KERN_OWNER_RANGE_INDEX=1` removes repeated linear owner scans in terrain updates.
+With `WARP_TERRAIN_STREAM_GROUND=1` and `WARP_TERRAIN_STREAM_FOREST=1`, the demo
+also retains forest GPU resources across recentering (capacity-checked fallback).
+Three alternating runs per mode: route wall p99 about 520 -> 107 ms and typical
+run maximum 622 -> 121 ms; readback is included, these are not gameplay FPS.
+GPU covered time remains about 10 ms. CPU terrain work still about 25 ms is now
+the next priority. All are opt-in; no 8.33 ms or full-streaming acceptance claim.
+
 ## Windows GPU follow-up: culling remains opt-in
 
 See [the implementation and acceptance report](voxel-brick-culling-2026-11-03.md).

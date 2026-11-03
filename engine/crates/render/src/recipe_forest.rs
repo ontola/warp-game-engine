@@ -163,6 +163,9 @@ fn instance(i: usize, t: &Tree) -> PlantInstance {
 /// per frame on the GPU between its branches and its own voxels.
 pub struct Pool {
     trees: Vec<Tree>,
+    proxy_templates: Vec<Option<(Tree, crate::foliage_volume_data::GpuTree, GpuInstance)>>,
+    proxy_owners: Vec<u32>,
+    slot_scales: Vec<f32>,
     slots: Vec<Slot>,
     /// Forest volume index of tree 0's proxy; the rest follow in order.
     first_proxy: u32,
@@ -254,6 +257,13 @@ pub struct PoolStats { pub slots: usize, pub placed: usize, pub moved: usize }
 /// only shrink it) on that variant's first tree, so pass trees nearest first.
 pub fn plant_streamed(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree], slots: usize,
     policy: Policy) -> Result<(AttachmentReport, Pool), String> {
+    plant_streamed_reserved(scene, variants, trees, slots, policy, 0)
+}
+
+/// Reserve spare whole-plant instance slots for relocating a forest without
+/// rebuilding shaders, geometry or view resources. Unused slots are parked.
+pub fn plant_streamed_reserved(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree], slots: usize,
+    policy: Policy, spare: usize) -> Result<(AttachmentReport, Pool), String> {
     if trees.is_empty() { return Err("a streamed recipe forest needs trees".into()); }
     if let Some(tree) = trees.iter().find(|t| t.variant >= variants.len()) {
         return Err(format!("recipe forest variant {} of {}", tree.variant, variants.len()));
@@ -272,26 +282,90 @@ pub fn plant_streamed(scene: &mut Scene, variants: &[CookedPlant], trees: &[Tree
             .max_by_key(|&v| per[v] * variants[v].stats().volume_assets.max(members(&variants[v]))).ok_or("not one full plant fits the renderer")?;
         per[worst] -= 1;
     }
+    let mut slot_scales = vec![0.0; variants.len()];
     let mut built = Vec::new();
     for (variant, &n) in per.iter().enumerate() {
         let Some(first) = trees.iter().find(|t| t.variant == variant) else { continue; };
         let scale = trees.iter().filter(|t| t.variant == variant).map(|t| t.scale).fold(0.0, f32::max);
+        let scale = scale * if spare > 0 { 1.25 } else { 1.0 };
+        slot_scales[variant] = scale;
         for _ in 0..n { built.push(Tree { scale, ..*first }); }
     }
+    let mut reserved = trees.to_vec();
+    reserved.extend((0..spare).map(|_| Tree { pos: PARKED, ..trees[0] }));
     let mut vegetation = SceneVegetation::new(scene, limits(variants, built.len()))?;
     let mut pool = Vec::with_capacity(built.len());
     for (k, tree) in built.iter().enumerate() {
-        let handle = vegetation.append(&variants[tree.variant], instance(trees.len() + k, tree))?;
+        let handle = vegetation.append(&variants[tree.variant], instance(reserved.len() + k, tree))?;
         pool.push(Slot { variant: tree.variant, plant: handle.movable, tree: None });
     }
-    for (i, tree) in trees.iter().enumerate() { vegetation.append_proxy(&variants[tree.variant], instance(i, tree))?; }
+    for (i, tree) in reserved.iter().enumerate() { vegetation.append_proxy(&variants[tree.variant], instance(i, tree))?; }
     let report = vegetation.finish_aggregate(policy)?;
     let first_proxy = report.volume_instances as u32;
-    Ok((report, Pool { trees: trees.to_vec(), slots: pool, first_proxy, last: Vec::new(), cards: None, hidden: Default::default(),
+    // Reserved slots must not enlarge the canopy's height/mass envelope.
+    for v in &mut scene.voxel_forest.as_mut().ok_or("missing packed forest")?.instances[first_proxy as usize+trees.len()..] {
+        v.bounds_min[3]=ProxyShow::Hidden as u32 as f32;
+        scene.instances[v.meta[0] as usize].flags=0;
+    }
+    let proxies = &scene.voxel_forest.as_ref().ok_or("missing packed forest")?.instances[first_proxy as usize..];
+    let proxy_owners = proxies.iter().map(|t| t.meta[0]).collect();
+    let proxy_templates = (0..variants.len()).map(|v| trees.iter().position(|t| t.variant == v)
+        .map(|i| (trees[i], proxies[i], scene.instances[proxies[i].meta[0] as usize]))).collect();
+    Ok((report, Pool { trees: trees.to_vec(), proxy_templates, proxy_owners, slot_scales, slots: pool, first_proxy, last: Vec::new(), cards: None, hidden: Default::default(),
         by_variant: (0..variants.len()).map(|v| (0..trees.len()).filter(|&i| trees[i].variant == v).collect()).collect() }))
 }
 
+/// Move an immutable proxy template. The transformed AABB is conservative;
+/// the inverse transform still addresses exactly the same shared voxel asset.
+fn relocated_proxy(template: &(Tree, crate::foliage_volume_data::GpuTree, GpuInstance), tree: &Tree,
+    owner: u32) -> (crate::foliage_volume_data::GpuTree, GpuInstance) {
+    let (old, mut volume, mut source) = *template;
+    let delta = root(tree) * root(&old).inverse();
+    let inverse = crate::foliage_volume_data::matrix(volume.inverse) * delta.inverse();
+    volume.inverse = [inverse.row(0).to_array(), inverse.row(1).to_array(), inverse.row(2).to_array()];
+    let lo = Vec3::from_slice(&volume.bounds_min);
+    let hi = Vec3::from_slice(&volume.bounds_max);
+    let mut a = Vec3::splat(f32::INFINITY);
+    let mut b = Vec3::splat(f32::NEG_INFINITY);
+    for k in 0..8 {
+        let p = delta.transform_point3(Vec3::new(if k&1==0 {lo.x}else{hi.x}, if k&2==0 {lo.y}else{hi.y}, if k&4==0 {lo.z}else{hi.z}));
+        a = a.min(p); b = b.max(p);
+    }
+    volume.bounds_min = a.extend(0.0).to_array();
+    volume.bounds_max = b.extend(0.0).to_array();
+    volume.meta[0] = owner;
+    let transform = delta * crate::foliage_volume_data::matrix(source.rows);
+    source.rows = [transform.row(0).to_array(), transform.row(1).to_array(), transform.row(2).to_array()];
+    source.sphere = delta.transform_point3(Vec3::from_slice(&source.sphere)).extend(source.sphere[3] * tree.scale / old.scale).to_array();
+    source.scale = tree.scale;
+    (volume, source)
+}
+
 impl Pool {
+    /// Replace placements atomically before drawing. False means capacity,
+    /// species or scale requires a real rebuild; no partial writes are made.
+    pub fn replace_trees(&mut self, renderer: &Renderer, gpu: &Gpu, trees: Vec<Tree>) -> Result<bool, String> {
+        if trees.len() > self.proxy_owners.len() || trees.iter().any(|t|
+            !t.pos.is_finite() || !t.yaw.is_finite() || !t.scale.is_finite() || t.scale < 1e-4 ||
+            self.proxy_templates.get(t.variant).is_none_or(|v| v.is_none()) ||
+            t.scale > self.slot_scales.get(t.variant).copied().unwrap_or(0.0)) { return Ok(false); }
+        if self.by_variant.iter().enumerate().any(|(v,_)| trees.iter().filter(|t| t.variant == v).count() < self.slots.iter().filter(|s| s.variant == v).count()) { return Ok(false); }
+        let fallback = self.proxy_templates.iter().flatten().next().ok_or("no proxy template")?;
+        let mut volumes = Vec::with_capacity(self.proxy_owners.len());
+        let mut sources = Vec::with_capacity(self.proxy_owners.len());
+        for (i, &owner) in self.proxy_owners.iter().enumerate() {
+            let (mut volume, mut source) = if let Some(tree) = trees.get(i) {
+                relocated_proxy(self.proxy_templates[tree.variant].as_ref().unwrap(), tree, owner)
+            } else { relocated_proxy(fallback, &Tree {pos: PARKED, ..fallback.0}, owner) };
+            if i >= trees.len() { volume.bounds_min[3] = ProxyShow::Hidden as u32 as f32; source.flags = 0; }
+            volumes.push(volume); sources.push(source);
+        }
+        renderer.replace_plant_proxy_instances(gpu, self.first_proxy, &volumes, &sources)?;
+        self.trees = trees;
+        self.by_variant = (0..self.proxy_templates.len()).map(|v| (0..self.trees.len()).filter(|&i| self.trees[i].variant == v).collect()).collect();
+        self.reset();
+        Ok(true)
+    }
     /// Forget where the slots stand, for a renderer built anew from the
     /// scene: the next update places every slot again.
     pub fn reset(&mut self) {
@@ -387,4 +461,37 @@ pub fn game_policy() -> Policy {
     // like the leaves (VOXEL_SURFACE) their tone too: 40-300 m within 96-105 %
     // cover and 99-106 % tone for spruce and birch, grove 51 -> 19 ms.
     Policy { max_error_pixels: 32.0, allow_sampled_optics: true, measured_source_cuts: false, ..Default::default() }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use bytemuck::Zeroable;
+
+    #[test]
+    fn relocated_proxy_keeps_local_samples_owner_and_asset() {
+        let old = Tree {pos:Vec3::new(100.0,20.0,-30.0),yaw:0.7,scale:1.3,variant:0};
+        let inv = root(&old).inverse();
+        let transform = root(&old);
+        let mut volume = crate::foliage_volume_data::GpuTree::zeroed();
+        volume.inverse = [inv.row(0).to_array(), inv.row(1).to_array(), inv.row(2).to_array()];
+        volume.meta = [9,12,6,u32::MAX];
+        let mut lo=Vec3::splat(f32::INFINITY); let mut hi=Vec3::splat(f32::NEG_INFINITY);
+        let points:Vec<_>=(0..8).map(|k| Vec3::new(if k&1==0 {-2.0}else{2.0}, if k&2==0 {0.0}else{14.0}, if k&4==0 {-3.0}else{3.0})).collect();
+        for p in &points {let w=transform.transform_point3(*p);lo=lo.min(w);hi=hi.max(w);}
+        volume.bounds_min=lo.extend(0.0).to_array();volume.bounds_max=hi.extend(0.0).to_array();
+        let source=GpuInstance {rows:[transform.row(0).to_array(),transform.row(1).to_array(),transform.row(2).to_array()],sphere:old.pos.extend(10.0).to_array(),scale:old.scale,..GpuInstance::zeroed()};
+        for yaw in [-2.0,0.0,1.7] {for scale in [0.2,1.0,2.0] {
+            let new=Tree {pos:Vec3::new(-400.0,50.0,190.0),yaw,scale,..old};
+            let (v,s)=relocated_proxy(&(old,volume,source),&new,47);
+            assert_eq!(v.meta,[47,12,6,u32::MAX]);
+            for p in &points {
+                let w=root(&new).transform_point3(*p);
+                assert!(crate::foliage_volume_data::matrix(v.inverse).transform_point3(w).distance(*p)<0.001);
+                assert!((w-Vec3::from_slice(&v.bounds_min)).min_element()>-0.001);
+                assert!((Vec3::from_slice(&v.bounds_max)-w).min_element()>-0.001);
+                assert!(crate::foliage_volume_data::matrix(s.rows).transform_point3(*p).distance(w)<0.001);
+            }
+        }}
+    }
 }

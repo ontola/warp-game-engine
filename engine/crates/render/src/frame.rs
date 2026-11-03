@@ -3259,6 +3259,43 @@ impl Renderer {
         Ok(())
     }
 
+    /// Relocate reserved whole-plant proxies, preserving their owner indices
+    /// and shared asset data. Branch volumes remain GPU-posed and immutable here.
+    pub fn replace_plant_proxy_instances(&self, gpu: &Gpu, first: u32,
+        volumes: &[crate::foliage_volume_data::GpuTree], sources: &[crate::scene::GpuInstance]) -> Result<(), String> {
+        let forest = self.voxel_forest.as_ref().ok_or("no voxel forest")?;
+        forest.validate_proxy_update(first, volumes)?;
+        if volumes.is_empty() { return Ok(()); }
+        let owner = volumes[0].meta[0] as usize;
+        if sources.len() != volumes.len() || volumes.iter().enumerate().any(|(i,v)| v.meta[0] as usize != owner+i) ||
+            sources.iter().any(|s| s.cluster_count != 0 || !s.rows.iter().flatten().chain(s.sphere.iter()).all(|x| x.is_finite())) {
+            return Err("proxy owners must be contiguous, finite, geometry-free instances".into());
+        }
+        let budget = self.canopies.lock().unwrap()[0].prepare_proxy_update(owner, sources)?;
+        self.write_instances_inner(gpu, owner, sources, true)?;
+        for canopy in self.canopies.lock().unwrap().iter_mut() {canopy.commit_proxy_update(&budget);}
+        gpu.queue.write_buffer(forest.tree_buffer(), first as u64 * std::mem::size_of::<crate::foliage_volume_data::GpuTree>() as u64, bytemuck::cast_slice(volumes));
+        // Relocated volume IDs must not reproject the previous tree's pixels.
+        self.reset_history();
+        Ok(())
+    }
+
+    /// Update a same-sized baked terrain sun field without a new renderer.
+    pub fn update_baked_terrain_sun(&mut self, gpu: &Gpu, hf: crate::scene::Heightfield, sun: &[f32]) -> Result<(), String> {
+        if (self.world_visibility.enabled && !self.world_visibility.baked) || hf.w != self.hf.w || hf.h != self.hf.h || hf.heights.len() != sun.len() ||
+            sun.len() != hf.w as usize * hf.h as usize || !hf.cell.is_finite() || hf.cell <= 0.0 ||
+            hf.origin.iter().chain(hf.heights.iter()).chain(sun.iter()).any(|x| !x.is_finite()) {
+            return Err("baked terrain sun update must preserve dimensions and finite samples".into());
+        }
+        let data: Vec<[f32;2]> = hf.heights.iter().zip(sun).map(|(&h,&v)| [h,v]).collect();
+        gpu.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: self.heightfield.texture(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            bytemuck::cast_slice(&data), wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(hf.w*8), rows_per_image: Some(hf.h) },
+            wgpu::Extent3d {width:hf.w,height:hf.h,depth_or_array_layers:1});
+        self.hf = hf;
+        self.invalidate_shadow();
+        Ok(())
+    }
+
     /// Restore the instance array of the same reserved scene during a rewind.
     /// Geometry and pool layout must be unchanged. The caller must also reset
     /// GPU simulation owners (debris/crowd/actors) before the next rendered frame.
@@ -3306,11 +3343,15 @@ impl Renderer {
     }
 
     fn write_instances(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance]) -> Result<(), String> {
+        self.write_instances_inner(gpu, first, instances, false)
+    }
+
+    fn write_instances_inner(&self, gpu: &Gpu, first: usize, instances: &[crate::scene::GpuInstance], proxies: bool) -> Result<(), String> {
         if self.part_wind.as_ref().is_some_and(|parts|parts.contains_owner_range(first,instances.len())) {
             return Err("procedural part owners are driven by shared GPU poses, not CPU instance updates".into());
         }
         if first.checked_add(instances.len()).is_none_or(|end|end>self.instances as usize) { return Err("instance update exceeds uploaded scene".into()); }
-        if self.voxel_forest.as_ref().is_some_and(|forest|forest.contains_owner_range(first,instances.len())) {
+        if !proxies && self.voxel_forest.as_ref().is_some_and(|forest|forest.contains_owner_range(first,instances.len())) {
             return Err("voxel test trees are static; rebuild their packed scene before changing transforms".into());
         }
         if self.foliage_world.as_ref().is_some_and(|forest|forest.contains_owner_range(first,instances.len())) {
@@ -3318,7 +3359,7 @@ impl Renderer {
             // Changed source plants retain meshes until their provider is rebuilt.
             self.foliage_world_valid.store(false,std::sync::atomic::Ordering::Relaxed);
         }
-        self.canopies.lock().unwrap()[0].validate_update(first, instances)?;
+        if !proxies { self.canopies.lock().unwrap()[0].validate_update(first, instances)?; }
         if let Some(bounds)=&self.direct_bounds {bounds.lock().unwrap().update(first,instances)?;}
         if let Some(forward)=&self.minimal_forward {forward.lock().unwrap().update(first,instances)?;}
         if let Some(cache) = &self.static_sun { cache.lock().unwrap().update_instances(gpu,first,instances)?; }
