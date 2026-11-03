@@ -463,6 +463,7 @@ impl World {
                 self.run.end_t -= dt;
                 if self.run.end_t <= 0.0 {
                     let died = self.run.state == State::Dead;
+                    self.runs_ended += 1;
                     self.new_run();
                     if died {
                         self.ev(Ev::YouDiedEnd);

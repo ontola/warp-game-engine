@@ -89,6 +89,8 @@ pub struct Hud {
     card: String,
     card_t: f32,
     death: Option<(String, f32)>,
+    /// "Run N" after a wipe, and how long it has shown.
+    run_card: (String, f32),
     death_end: Option<f32>,
     vignette: Arc<Picture>,
     words: usize,
@@ -142,6 +144,7 @@ impl Default for Hud {
             card: String::new(),
             card_t: 99.0,
             death: None,
+            run_card: (String::new(), 0.0),
             death_end: None,
             vignette: Arc::new(vignette()),
             words: 0,
@@ -198,7 +201,12 @@ impl Hud {
                     self.death = Some((DEATH_WORDS[(w.tick as usize + self.words) % DEATH_WORDS.len()].to_string(), 0.0));
                     self.death_end = None;
                 }
-                Ev::YouDiedEnd => self.death_end = Some(0.0),
+                Ev::YouDiedEnd => {
+                    self.death_end = Some(0.0);
+                    // Back on your feet: which run this is, a moment over
+                    // the level's name (Joep).
+                    self.run_card = (format!("Run {}", w.runs_ended + 1), 0.0);
+                }
                 Ev::Level { .. } => self.level(w),
                 Ev::Text { at, text, c, size, time } => self.numbers.push((*at, text.clone(), *c, *size, 0.0, time.max(0.6) + 0.3)),
                 _ => {}
@@ -288,6 +296,7 @@ impl Hud {
         self.numbers.retain(|n| n.4 < n.5);
         self.fade.step(dt);
         self.card_t += dt;
+        self.run_card.1 += dt;
         if let Some(d) = &mut self.death {
             d.1 += dt;
         }
@@ -328,6 +337,14 @@ impl Hud {
             let x = (c.x / c.w * 0.5 + 0.5) * size[0] as f32 / s;
             let y = (0.5 - c.y / c.w * 0.5) * size[1] as f32 / s;
             p.text(&wz.name, x, y + 14.0, body(), 26.0, lighten(wz.robe, 0.4), TextAlign::Center, 9.0);
+            // Health under the name (Joep): red on a dark sleeve, gone
+            // while down.
+            if a.alive && a.max_hp > 0.0 {
+                let k = (a.hp / a.max_hp).clamp(0.0, 1.0) as f32;
+                let (bw, by) = (96.0, y + 50.0);
+                p.rect([x - bw * 0.5 - 2.0, by - 2.0, bw + 4.0, 11.0], [0.0, 0.0, 0.0, 0.7]);
+                p.rect([x - bw * 0.5, by, bw * k, 7.0], [0.8, 0.12, 0.08, 1.0]);
+            }
         }
         tome_labels(&mut p, w, cam, &vp, size);
         enemy_bars(&mut p, w, &vp, size);
@@ -367,6 +384,12 @@ impl Hud {
             // alphabet into the glyph atlas, and a growing one filled it at 4K.
             p.shadow_text(&self.card, sw * 0.5, cy - 20.0, title(), 96.0, col);
             p.rect([sw * 0.5 - 380.0 * grow, cy + 44.0 * grow, 760.0 * grow, 2.0], [0.86, 0.8, 0.68, 0.55 * a]);
+        }
+        // The run counter after a wipe, over the card, as the card fades.
+        let t = self.run_card.1;
+        if t < 5.1 && !self.run_card.0.is_empty() {
+            let a = if t < 0.9 { 0.0 } else if t < 2.1 { (t - 0.9) / 1.2 } else if t < 3.7 { 1.0 } else { 1.0 - (t - 3.7) / 1.4 };
+            p.shadow_text(&self.run_card.0, sw * 0.5, 400.0, title(), 96.0, [0.86, 0.8, 0.68, a.clamp(0.0, 1.0)]);
         }
         // Black for portals and for the end of a run, over everything.
         p.d.begin_overlay();

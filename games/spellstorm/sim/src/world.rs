@@ -219,6 +219,9 @@ pub struct World {
     pub paused: bool,
     /// The run's seed; each new run takes the next one.
     pub seed: u64,
+    /// Runs this session that ended in a wipe or a win (the HUD's run
+    /// counter after a death says the next one's number).
+    pub runs_ended: u32,
 }
 
 impl World {
@@ -246,6 +249,7 @@ impl World {
             dmg_t: 0.0,
             paused: false,
             seed,
+            runs_ended: 0,
         };
         w.seat(seats);
         w.new_run();
