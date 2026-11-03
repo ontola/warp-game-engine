@@ -177,6 +177,21 @@ impl Fly {
         if let Some((start, yaw)) = fly.track_start() { fly.pos = start; fly.yaw = yaw; fly.pitch = -0.05; }
         if fly.track_start().is_none() { fly.pos = Vec3::new(0.0, fly.ground(0.0, 0.0) + 60.0, 0.0); }
         fly.prev = fly.pos;
+        // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
+        if let Some(path) = std::env::args().collect::<Vec<_>>().windows(2).find(|w| w[0] == "--from").map(|w| w[1].clone()) {
+            let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?;
+            let st = v.get("state").unwrap_or(&v);
+            let f = |k: &str| st.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
+            if let Some(name) = st.get("style").and_then(|x| x.as_str()) { fly.style = STYLES.iter().position(|n| *n == name).ok_or("unknown style")?; }
+            if let Some(seed) = st.get("seed").and_then(|x| x.as_u64()) { fly.seed = seed as u32; }
+            if let Some(p) = st.get("pos").and_then(|x| x.as_array()) {
+                let c: Vec<f32> = p.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
+                if c.len() == 3 { fly.pos = Vec3::new(c[0], c[1], c[2]); fly.prev = fly.pos; }
+            }
+            if let Some(y) = f("yaw_deg") { fly.yaw = y.to_radians(); }
+            if let Some(p) = f("pitch_deg") { fly.pitch = p.to_radians(); }
+            if let Some(s) = f("speed") { fly.speed = s; }
+        }
         fly.rebuild()?;
         Ok(fly)
     }
@@ -785,22 +800,6 @@ fn main() -> Result<(), String> {
         tree_radius: arg("--tree-radius").map(|n| n.parse().map_err(|_| "--tree-radius M")).transpose()?.unwrap_or(World::default().tree_radius),
         recipe_trees: arg("--recipe").map(|n| n.parse().map_err(|_| "--recipe N")).transpose()?.unwrap_or(if low { 30 } else { World::default().recipe_trees }), ..World::default() };
     let mut game = Fly::new(seed, style, world)?;
-    // --from: a JSON written by F12 (or just its "state"), to stand where the playtester stood.
-    if let Some(path) = arg("--from") {
-        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?;
-        let st = v.get("state").unwrap_or(&v);
-        let f = |k: &str| st.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
-        if let Some(name) = st.get("style").and_then(|x| x.as_str()) { game.style = STYLES.iter().position(|n| *n == name).ok_or("unknown style")?; }
-        if let Some(seed) = st.get("seed").and_then(|x| x.as_u64()) { game.seed = seed as u32; }
-        if let Some(p) = st.get("pos").and_then(|x| x.as_array()) {
-            let c: Vec<f32> = p.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
-            if c.len() == 3 { game.pos = Vec3::new(c[0], c[1], c[2]); game.prev = game.pos; }
-        }
-        if let Some(y) = f("yaw_deg") { game.yaw = y.to_radians(); }
-        if let Some(p) = f("pitch_deg") { game.pitch = p.to_radians(); }
-        if let Some(s) = f("speed") { game.speed = s; }
-        game.rebuild()?;
-    }
     // --bench N: N headless frames at --size (default 2560x1440), GPU pass times.
     if let Some(n) = arg("--bench") {
         let [w, h] = arg("--size").and_then(|s| s.split_once('x').and_then(|(w, h)| Some([w.parse().ok()?, h.parse().ok()?]))).unwrap_or([2560, 1440]);

@@ -9,6 +9,15 @@ Nanite Foliage and Assemblies.
 first. It is the current state, the open issues and the next tasks; the
 sections after it are the history that led there.
 
+## Windows GPU follow-up: culling remains opt-in
+
+See [the implementation and acceptance report](voxel-brick-culling-2026-11-03.md).
+The black-frame regression was repaired and GPU-checked. Current-frame two-pass
+brick HZB culling and compact visible-tree dispatch are implemented behind
+`KERN_SPLAT_BRICK_HZB=1`, but the measured prototypes do not improve the tested
+scenes, so the default remains off. Full streaming and one-pixel voxel parity
+are still open; do not mark the Nanite-style milestone complete.
+
 ## Windows follow-up (3 Nov 2026, retained meadow groundwork)
 
 The Windows terrain_fly playtest on dcc3f1d confirmed movement stalls, even at
