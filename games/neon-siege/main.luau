@@ -2486,7 +2486,7 @@ local function finish(won)
 	sfx(if won then "win" else "death")
 	local text = if won then "Neon Siege: in remission, " .. s.teamScore .. " points" else "Neon Siege: wave " .. math.max(1, s.wave) .. ", " .. s.teamScore .. " points"
 	game.log(text)
-	-- A win ends the session; after a wipe-out the team can play again (A).
+	-- A win also tells the host the session is done; either way A plays again.
 	if won then game.finish() end
 end
 
@@ -2626,7 +2626,8 @@ local function draw()
 		hud.box(0, 0, w, h, { 0, 0, 0, 0.55 * fade })
 		hud.text(if s.won then "IN REMISSION" else "WIPED OUT", 0, h * 0.42, { size = 54 * k, align = "center", width = w })
 		hud.text(tostring(s.teamScore), 0, h * 0.42 + 70 * k, { size = 26 * k, align = "center", width = w, color = { 0.85, 0.95, 1, 0.95 } })
-		if (s.overClock or 0) >= 1 and not s.won then
+		-- After a win too: the end screen always says how to go on.
+		if (s.overClock or 0) >= 1 then
 			hud.text("PRESS A TO PLAY AGAIN", 0, h * 0.42 + 120 * k, { size = 22 * k, align = "center", width = w, color = { 0.85, 0.95, 1, 0.6 + 0.3 * math.sin(s.overClock * 3) } })
 		end
 	end
