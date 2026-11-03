@@ -85,14 +85,40 @@ pub enum Check {
 pub struct Ward {
     /// The shrine it waits for, -1 for a practice stop.
     pub k: i32,
-    pub z: f32,
+    /// Where it crosses the path, and the way on there (unit): it stands
+    /// across the path, turned with it.
+    pub c: Vec2,
+    pub n: Vec2,
     pub at: f32,
+    /// How far it reaches to either side of `c`, along `across()` (lo < 0).
     pub lo: f32,
     pub hi: f32,
+    /// Shut and holding the wizards back (ward_step).
+    pub holds: bool,
     pub check: Option<Check>,
     /// Opening: 1 shut, fading to 0, then gone.
     pub open: f32,
     pub opening: bool,
+}
+
+impl Ward {
+    /// Along the wall, left to right as you face the way on.
+    pub fn across(&self) -> Vec2 {
+        Vec2::new(-self.n.y, self.n.x)
+    }
+
+    /// How far `p` is past the wall (negative: this side), and whether it
+    /// is within the wall's width.
+    pub fn past(&self, p: Vec2) -> (f32, bool) {
+        let d = p - self.c;
+        let t = d.dot(self.across());
+        (d.dot(self.n), t > self.lo - 1.0 && t < self.hi + 1.0)
+    }
+
+    /// The middle of the wall.
+    pub fn mid(&self) -> Vec2 {
+        self.c + self.across() * (self.lo + self.hi) * 0.5
+    }
 }
 
 /// The practice strip on the first level (practice.gd).
@@ -152,8 +178,6 @@ pub struct Run {
     pub boss_fell: bool,
     pub boss: Option<Id>,
     pub wards: Vec<Ward>,
-    /// Wizards may not walk further than this (z goes down along a level).
-    pub ward_z: f64,
     pub practice: Option<Practice>,
     lead: f32,
     lead_t: f64,
@@ -189,7 +213,6 @@ impl Default for Run {
             boss_fell: false,
             boss: None,
             wards: Vec::new(),
-            ward_z: f64::NEG_INFINITY,
             practice: None,
             lead: 0.0,
             lead_t: 0.0,
@@ -364,7 +387,6 @@ impl World {
         r.pending.clear();
         r.guard_quiet.clear();
         r.wards.clear();
-        r.ward_z = f64::NEG_INFINITY;
         r.practice = None;
         r.wave_at = -1.0;
         // How far the front wizard got belongs to the level just left.
@@ -505,7 +527,7 @@ impl World {
     fn build_wards(&mut self) {
         for k in 0..2 {
             let c = self.level.clearings[k];
-            let mut wd = self.ward_wall(Vec2::new(c.x, c.y - c.z - 1.5));
+            let mut wd = self.ward_wall(self.level.clearing_at[k] + c.z + 1.5);
             wd.k = k as i32;
             self.run.wards.push(wd);
         }
@@ -514,31 +536,36 @@ impl World {
 
     /// A practice ward `at` metres along the path that opens on `check`.
     fn add_ward(&mut self, at: f32, check: Check) {
-        let p = self.level.point_at(at);
-        let mut wd = self.ward_wall(p);
+        let mut wd = self.ward_wall(at);
         wd.k = -1;
         wd.at = at;
         wd.check = Some(check);
         self.run.wards.push(wd);
     }
 
-    fn ward_wall(&self, p: Vec2) -> Ward {
+    /// A wall `at` metres along the path, across it as the path runs
+    /// there and over all the ground you can walk.
+    fn ward_wall(&self, at: f32) -> Ward {
         let l = &self.level;
-        let z = p.y;
-        let mid = l.point_at(l.progress_of(p)).x;
-        let (mut lo, mut hi) = (mid, mid);
-        while lo > -l.half.x + 0.5 && l.bound(Vec2::new(lo - 0.5, z)) < 0.0 {
+        let c = l.point_at(at);
+        let n = (l.point_at(at + 1.0) - l.point_at(at - 1.0)).normalize_or(Vec2::NEG_Y);
+        let across = Vec2::new(-n.y, n.x);
+        let reach = l.half.x.max(l.half.y) * 2.0;
+        let (mut lo, mut hi) = (0.0f32, 0.0f32);
+        while lo > -reach && l.bound(c + across * (lo - 0.5)) < 0.0 {
             lo -= 0.5;
         }
-        while hi < l.half.x - 0.5 && l.bound(Vec2::new(hi + 0.5, z)) < 0.0 {
+        while hi < reach && l.bound(c + across * (hi + 0.5)) < 0.0 {
             hi += 0.5;
         }
         Ward {
             k: -1,
-            z,
-            at: 0.0,
+            c,
+            n,
+            at,
             lo: lo - 1.0,
             hi: hi + 1.0,
+            holds: false,
             check: None,
             open: 1.0,
             opening: false,
@@ -548,8 +575,8 @@ impl World {
     /// Opens every wall whose shrine has risen and given each living wizard
     /// a tome (or has none left they may take), and sets where the rest hold.
     fn ward_step(&mut self) {
-        self.run.ward_z = f64::NEG_INFINITY;
         for i in 0..self.run.wards.len() {
+            self.run.wards[i].holds = false;
             let wd = self.run.wards[i].clone();
             if wd.opening {
                 continue;
@@ -588,7 +615,7 @@ impl World {
             if done {
                 self.open_ward(i);
             } else {
-                self.run.ward_z = self.run.ward_z.max(wd.z as f64);
+                self.run.wards[i].holds = true;
             }
         }
     }
@@ -596,7 +623,8 @@ impl World {
     fn open_ward(&mut self, i: usize) {
         let wd = &mut self.run.wards[i];
         wd.opening = true;
-        let at = Vec3::new((wd.lo + wd.hi) * 0.5, 1.6, wd.z);
+        let m = wd.mid();
+        let at = Vec3::new(m.x, 1.6, m.y);
         self.burst(at, fx::rgb(0.9, 0.85, 0.7), 24, 3.0, 0.15, None);
     }
 
@@ -840,15 +868,20 @@ impl World {
         let mut spacing: f32 = 3.6;
         let mut mid = if along > self.level.clearing_at[k] { self.level.point_at(along) } else { Vec2::new(c.x, c.y) }
             + if k == 2 { dir * -2.0 } else { Vec2::ZERO };
-        // Ahead would be past the wall (the way on runs to lower z): a row
+        // Ahead would be past the wall: a row
         // along this side of it instead, which nobody can be beyond.
         let half = (picks.len() as f32 - 1.0) * 0.5 * spacing;
-        let past = |wd: &Ward| [mid - across * half, mid, mid + across * half].iter().any(|p| p.y < wd.z + 2.0 && p.x > wd.lo - 1.0 && p.x < wd.hi + 1.0);
+        let past = |wd: &Ward| {
+            [mid - across * half, mid, mid + across * half].iter().any(|&p| {
+                let (d, within) = wd.past(p);
+                within && d > -2.0
+            })
+        };
         if let Some(wd) = wall.filter(|wd| past(wd)) {
             let n = picks.len().max(2) as f32 - 1.0;
             spacing = spacing.min((wd.hi - wd.lo - 2.0).max(0.0) / n);
-            mid = Vec2::new((wd.lo + wd.hi) * 0.5, wd.z + 2.0);
-            across = Vec2::X;
+            mid = wd.mid() - wd.n * 2.0;
+            across = wd.across();
         }
         let shrine = format!("{}_{}", self.run.biome_index, k);
         for (i, &relic) in picks.iter().enumerate() {

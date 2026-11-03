@@ -691,12 +691,15 @@ impl World {
 
     /// Walls have gaps where they meet and a hard shove can squeeze
     /// through: in a walled level nobody ends up outside the band. A wizard
-    /// also waits at a shrine's wall of mist (Run.ward_z).
+    /// also waits at a shut wall of mist (Ward::holds).
     fn keep_inside(&self, id: Id, mut p: Vec3) -> Vec3 {
         if self.a(id).wizard {
-            let wz = self.run.ward_z as f32;
-            if p.z < wz + 0.5 && p.z > wz - 3.0 {
-                p.z = wz + 0.5;
+            for wd in self.run.wards.iter().filter(|w| w.holds) {
+                let (d, within) = wd.past(Vec2::new(p.x, p.z));
+                if within && d > -0.5 && d < 3.0 {
+                    p.x -= wd.n.x * (d + 0.5);
+                    p.z -= wd.n.y * (d + 0.5);
+                }
             }
         }
         if !self.level.corridor {
