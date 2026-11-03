@@ -96,7 +96,7 @@ LT/B special, X reload. F10 always opens the engine render/debug panel, F11 togg
 opens the debug overlay: give cards, set specials, drop pickups, pick the
 sky, force a modifier, start the lava leak, next round, pause the bots.
 
-For slower PCs, pass `--graphics low` or `--graphics minimum` (also `GG_GRAPHICS`); desktop defaults to `full`.
+For slower PCs, pass `--graphics low` or `--graphics minimum` (also `GG_GRAPHICS`). Desktop defaults to `full`, except base Apple chips (M1 to M4 without Pro, Max or Ultra), which default to `low`.
 Both profiles automatically select low-poly guns: plain full-size boxes, a 16-sided drum,
 8-sided reservoirs without glass or cage rods, a solid rail and four shroud plates.
 The shaped grip, trigger/guard, scope, upgrade colours, firing/reload and owned-loadout

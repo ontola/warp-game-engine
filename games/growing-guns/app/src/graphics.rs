@@ -28,7 +28,26 @@ pub fn configure(profile:Graphics)->Result<(),String> {
     if let Some(current)=GRAPHICS.get() {return if *current==profile {Ok(())}else{Err("graphics profile is fixed when the scene is created; restart to change it".into())};}
     GRAPHICS.set(profile).map_err(|_|"graphics profile already configured".into())
 }
-pub fn get()->Graphics {*GRAPHICS.get_or_init(||std::env::var("GG_GRAPHICS").ok().and_then(|s|Graphics::parse(&s).ok()).unwrap_or(Graphics::FULL))}
+pub fn get()->Graphics {*GRAPHICS.get_or_init(||std::env::var("GG_GRAPHICS").ok().and_then(|s|Graphics::parse(&s).ok()).unwrap_or_else(auto))}
+/// Without --graphics or GG_GRAPHICS: base Apple chips (M1, M2, M3, M4 without
+/// Pro/Max/Ultra, 7-10 GPU cores) get LOW; full quality ran far too slow on an M1.
+fn auto()->Graphics {
+    let chip=chip_name();
+    let profile=if chip.as_deref().is_some_and(base_apple_chip) {Graphics::LOW} else {Graphics::FULL};
+    if let Some(chip)=chip {eprintln!("graphics: {chip} -> {}",if profile==Graphics::LOW {"low"} else {"full"});}
+    profile
+}
+#[cfg(target_os="macos")]
+fn chip_name()->Option<String> {
+    let out=std::process::Command::new("/usr/sbin/sysctl").args(["-n","machdep.cpu.brand_string"]).output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s|!s.is_empty())
+}
+#[cfg(not(target_os="macos"))]
+fn chip_name()->Option<String> {None}
+fn base_apple_chip(name:&str)->bool {
+    let Some(rest)=name.strip_prefix("Apple M") else {return false};
+    rest.trim_start_matches(|c:char|c.is_ascii_digit()).trim().is_empty()
+}
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn low_changes_only_visual_budgets() {
@@ -38,5 +57,10 @@ pub fn get()->Graphics {*GRAPHICS.get_or_init(||std::env::var("GG_GRAPHICS").ok(
         assert!(Graphics::LOW.simple_blocks && Graphics::LOW.debris_size>1.0);
         assert!(Graphics::parse("typo").is_err());
         assert!(!Graphics::FULL.simple_guns && Graphics::LOW.simple_guns && Graphics::MINIMUM.simple_guns);
+    }
+    #[test] fn only_base_apple_chips_default_to_low() {
+        assert!(base_apple_chip("Apple M1") && base_apple_chip("Apple M2") && base_apple_chip("Apple M4"));
+        assert!(!base_apple_chip("Apple M1 Pro") && !base_apple_chip("Apple M5 Pro") && !base_apple_chip("Apple M2 Max"));
+        assert!(!base_apple_chip("Intel(R) Core(TM) i7") && !base_apple_chip("AMD Ryzen 9"));
     }
 }
