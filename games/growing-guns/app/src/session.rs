@@ -10,12 +10,61 @@ use std::collections::VecDeque;
 use net::HostSender;
 use std::sync::Arc;
 
+/// Inputs beyond this many queued ticks are folded together, so a stalled
+/// connection catches up instead of adding latency for the rest of the match.
+const MAX_QUEUED_INPUTS: usize = 4;
+
 pub struct Remote {
     client: u64,
     slots: Vec<usize>,
     tx: HostSender<ToClient>,
-    pending: Vec<Input>,
+    inputs: InputQueue,
+}
+
+/// A remote client's inputs on the host. One entry per client tick, applied
+/// one per host tick, so the host moves the player exactly as far as the
+/// client predicted (bunched packets merged into one tick rubber-banded).
+struct InputQueue {
+    queue: VecDeque<(u32, Vec<Input>)>,
+    /// The last applied input with its edges cleared: held move, fire and
+    /// special carry on while the queue is empty.
+    held: Vec<Input>,
+    /// The newest sequence received, and the last one applied (the ack).
+    received: u32,
     seq: u32,
+}
+
+impl InputQueue {
+    fn new(players: usize) -> Self { Self { queue: VecDeque::new(), held: vec![Input::default(); players], received: 0, seq: 0 } }
+
+    fn push(&mut self, seq: u32, inputs: Vec<Input>) {
+        if seq <= self.received { return; }
+        self.received = seq;
+        self.queue.push_back((seq, inputs));
+    }
+
+    /// This host tick's inputs, in slot order.
+    fn next(&mut self) -> Vec<Input> {
+        while self.queue.len() > MAX_QUEUED_INPUTS {
+            let (_, mut folded) = self.queue.pop_front().unwrap();
+            let next = &mut self.queue.front_mut().unwrap().1;
+            for (f, n) in folded.iter_mut().zip(next.iter()) { merge(f, n); }
+            *next = folded;
+        }
+        if let Some((seq, tick)) = self.queue.pop_front() {
+            for (h, i) in self.held.iter_mut().zip(tick) { *h = i; }
+            self.seq = seq;
+        }
+        let now = self.held.clone();
+        for p in &mut self.held {
+            p.look = [0.0; 2];
+            p.jump = false;
+            p.dash = false;
+            p.reload = false;
+            p.pick = None;
+        }
+        now
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +110,8 @@ pub enum Session {
 fn merge(into: &mut Input, i: &Input) {
     into.mv = i.mv;
     into.fire = i.fire;
+    // A press must survive folding (the sim finds the edge against the last tick).
+    into.special |= i.special;
     into.look = [into.look[0] + i.look[0], into.look[1] + i.look[1]];
     into.jump |= i.jump;
     into.dash |= i.dash;
@@ -141,13 +192,10 @@ impl Session {
                     for &s in &free { world.join_human(s); }
                     let _ = tx.send(ToClient::Welcome { slots: free.clone(), players: world.players.len(), arena: world.arena.clone(), coop: world.coop });
                     println!("client {client} joined as players {:?}", free.iter().map(|s| s + 1).collect::<Vec<_>>());
-                    remotes.push(Remote { client, pending: vec![Input::default(); free.len()], slots: free, tx, seq: 0 });
+                    remotes.push(Remote { client, inputs: InputQueue::new(free.len()), slots: free, tx });
                 }
                 HostEvent::Message { client, msg: ToHost::Input { seq, inputs } } => {
-                    if let Some(r) = remotes.iter_mut().find(|r| r.client == client) {
-                        for (p, i) in r.pending.iter_mut().zip(&inputs) { merge(p, i); }
-                        r.seq = r.seq.max(seq);
-                    }
+                    if let Some(r) = remotes.iter_mut().find(|r| r.client == client) { r.inputs.push(seq, inputs); }
                 }
                 HostEvent::Left { client } => {
                     joining.retain(|j| j.0 != client);
@@ -161,19 +209,14 @@ impl Session {
         }
     }
 
-    /// Host: put remote inputs into the tick's input list. Held state (move,
-    /// fire) persists until the next packet; look and edges are consumed.
+    /// Host: put remote inputs into the tick's input list, one client tick
+    /// per host tick. Without a new input, held state (move, fire, special)
+    /// persists; look and edges are consumed.
     pub fn remote_inputs(&mut self, inputs: &mut [Input]) {
         let Session::Host { remotes, .. } = self else { return };
         for r in remotes.iter_mut() {
-            for (k, &s) in r.slots.iter().enumerate() {
-                let p = &mut r.pending[k];
-                if let Some(slot) = inputs.get_mut(s) { *slot = *p; }
-                p.look = [0.0; 2];
-                p.jump = false;
-                p.dash = false;
-                p.reload = false;
-                p.pick = None;
+            for (&s, i) in r.slots.iter().zip(r.inputs.next()) {
+                if let Some(slot) = inputs.get_mut(s) { *slot = i; }
             }
         }
     }
@@ -187,7 +230,7 @@ impl Session {
         for r in remotes.iter() {
             if !world.breakage.is_empty() { let _ = r.tx.send(ToClient::Broken(world.breakage.clone())); }
             if let Some(a) = &arena { let _ = r.tx.send(ToClient::Arena(a.clone())); }
-            let _ = r.tx.send(ToClient::Snap { ack: r.seq, snap: snap.clone() });
+            let _ = r.tx.send(ToClient::Snap { ack: r.inputs.seq, snap: snap.clone() });
         }
     }
 
@@ -473,6 +516,56 @@ fn reconcile_locals(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bunched_remote_inputs_apply_one_per_tick_and_keep_the_special_press() {
+        let mut q = InputQueue::new(1);
+        let walk = Input { mv: [0.0, 1.0], look: [0.05, 0.0], ..Default::default() };
+        // Three client ticks in one packet burst: a press and release of RMB among them.
+        q.push(1, vec![walk]);
+        q.push(2, vec![Input { special: true, ..walk }]);
+        q.push(3, vec![walk]);
+        q.push(2, vec![Input { jump: true, ..walk }]); // a duplicate or late sequence is ignored
+        let ticks: Vec<Input> = (0..3).map(|_| q.next()[0]).collect();
+        assert_eq!(q.seq, 3);
+        assert_eq!(ticks.iter().map(|i| i.special).collect::<Vec<_>>(), [false, true, false]);
+        assert!(ticks.iter().all(|i| i.mv == walk.mv && i.look == walk.look && !i.jump));
+        // Starved: held movement continues, look and edges do not repeat.
+        let idle = q.next()[0];
+        assert_eq!((idle.mv, idle.look, idle.special), (walk.mv, [0.0; 2], false));
+        assert_eq!(q.seq, 3);
+    }
+
+    #[test]
+    fn a_remote_input_backlog_folds_so_latency_stays_bounded() {
+        let mut q = InputQueue::new(1);
+        for seq in 1..=10 { q.push(seq, vec![Input { look: [0.01, 0.0], special: seq == 2, jump: seq == 3, ..Default::default() }]); }
+        let first = q.next()[0];
+        assert_eq!(q.queue.len(), MAX_QUEUED_INPUTS - 1);
+        assert!(first.special && first.jump, "folded presses survive");
+        assert!((first.look[0] - 0.07).abs() < 1e-6, "folded look adds up");
+        assert_eq!(q.seq, 7);
+    }
+
+    #[test]
+    fn host_moves_a_remote_player_as_far_as_the_client_predicted_despite_bunching() {
+        let mut host = World::new(7, &[false, false]);
+        host.release_cage();
+        let mut client = World::remote(host.arena.clone(), 2);
+        client.apply(host.snapshot());
+        let mut q = InputQueue::new(1);
+        let inp = Input { mv: [0.3, 1.0], look: [0.02, 0.0], ..Default::default() };
+        // The client predicts 12 ticks; its packets reach the host in bursts of 3.
+        for tick in 1..=12u32 {
+            client.predict_player(1, inp);
+            q.push(tick, vec![inp]);
+            if tick % 3 != 0 { continue; }
+            for _ in 0..3 { let i = q.next(); host.step(&[Input::default(), i[0]]); }
+        }
+        assert_eq!(q.seq, 12);
+        assert!((host.players[1].pos - client.players[1].pos).length() < 1e-3,
+            "host {:?} vs predicted {:?}", host.players[1].pos, client.players[1].pos);
+    }
 
     #[test]
     fn client_prediction_and_reconciliation_keep_movement_and_look_continuous() {
