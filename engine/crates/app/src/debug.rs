@@ -82,6 +82,8 @@ pub struct EngineDebug {
     profiling: Option<usize>,
     /// Smoothed milliseconds per GPU pass, in first-seen order.
     passes: Vec<(&'static str, f64)>,
+    /// Each profiled frame's GPU time (covered union), for a start probe.
+    pub covered: Vec<f64>,
     /// When a setting last changed, so the shell can re-render the scene
     /// soon after instead of every frame while the menu is used.
     pub changed: Option<std::time::Instant>,
@@ -276,6 +278,7 @@ impl EngineDebug {
         }
         for sample in renderer.drain_gpu_profiles(gpu).samples {
             crate::frame_log::gpu(sample.frame_id,sample.covered_union_ms,&sample.gpu_ms);
+            if self.covered.len() < 4096 { self.covered.push(sample.covered_union_ms); }
             for (name, ms) in sample.gpu_ms {
                 match self.passes.iter_mut().find(|p| p.0 == name) {
                     Some(p) => p.1 += (ms - p.1) * 0.1,

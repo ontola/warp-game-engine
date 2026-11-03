@@ -284,6 +284,8 @@ pub struct StadiumVisuals {
 }
 
 impl StadiumVisuals {
+    /// A sky or sunlight bake is still running (a probe would measure it too).
+    pub fn baking(&self) -> bool { self.sky_job.is_some() || self.sun_job.is_some() }
     /// Meshes and reserved instances; call before the renderer exists.
     pub fn reserve(scene: &mut Scene) -> Self {
         if !crate::graphics::get().stadium {

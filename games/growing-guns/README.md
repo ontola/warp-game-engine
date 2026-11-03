@@ -101,7 +101,11 @@ Without those flags, Settings has GRAPHICS (AUTO, FULL, LOW, MINIMUM), remembere
 (`graphics_choice`) and applied from the next round. Adaptive quality lowers resolution to chase the display
 (up to 120 Hz); only when the lowest resolution stays below 45 fps for 5 seconds does AUTO lower the profile
 one step from the next round, for this session only and never automatically to MINIMUM. The console's
-`graphics PROFILE` switches at once.
+`graphics PROFILE` switches at once. AUTO starts from a probe: once the start menu's stadium has settled,
+the shell measures about 60 scene frames of GPU time (drawing the scene every other frame so the menu stays
+smooth) and keeps FULL unless it cannot hold 60 fps at the lowest resolution; then LOW. The decision is
+cached per chip, build and screen size (`graphics-probe.json`); probe numbers and adaptive decisions go to
+`quality.log` (Application Support on macOS).
 In a macOS app bundle the game reads its files from Contents/Resources and writes screenshots, replays and
 its pipeline cache to `~/Library/Application Support/Growing Guns`; `tools/package-mac.sh` builds the app and DMG.
 Both profiles automatically select low-poly guns: plain full-size boxes, a 16-sided drum,

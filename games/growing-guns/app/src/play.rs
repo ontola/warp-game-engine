@@ -126,6 +126,8 @@ pub struct Gg {
     joining: Option<std::sync::mpsc::Receiver<Result<(Session, World, Vec<usize>), String>>>,
     /// The Player name as last saved.
     saved_name: String,
+    /// Graphics profiles the start probe measured this session.
+    probe_tries: Vec<&'static str>,
     /// Menu joins skip relays (`--lan`, tests).
     pub lan: bool,
     /// The F3 debug overlay (hud/debug.rs): it runs the commands below.
@@ -140,7 +142,7 @@ impl Gg {
         Gg { recorder: Default::default(), replay: None, replay_size: [1600, 900], replay_alpha: 1.0, prev: view::Pose::all(&world), stepped: true, xr_gun: None, xr_aim: None, xr_stereo: false, vis, light: view::lighting(),
             hud: hud::Hud::new(&world), ui: Default::default(), plates: Default::default(), start_seats: Vec::new(), world, session, slots, since_snap: 0.0, since_poll: 0, rebuild: true, environment_dirty: false, split_hint_left: 0.0, inferno: false, sounds: None, crowd_tx: None, crowd_audible: true, music: None, menus: Vec::new(), pointer: Default::default(), quit: false, no_kbm: false, scripts, party: None, music_db: None, settings_file: None, gn_preview: None, names: Vec::new(), aim_synced: Vec::new(), live: None,
             sky: crate::sky::Sky::new(crate::sky::SkyChoice::Godot), sky_upload: None, before_blackout: None, light_overrides: Vec::new(), scatter: Default::default(),
-            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), lan: false, debug: Default::default() }
+            split: false, binding: Vec::new(), connected: Vec::new(), last_pad: None, pad_last: false, joined_now: Vec::new(), player_menu: None, joining: None, saved_name: String::new(), probe_tries: Vec::new(), lan: false, debug: Default::default() }
             .with_split()
     }
 
@@ -547,6 +549,28 @@ fn menu_ctx<'a>(session: &Session, world: &World, start_seats: &[usize], ticket:
 
 /// `$XDG_CONFIG_HOME/growing-guns/settings.json` (or ~/.config/...), or
 /// `%APPDATA%\growing-guns\settings.json` on Windows.
+#[derive(Debug, PartialEq)]
+enum ProbeNext { Keep(crate::graphics::Graphics), Try(crate::graphics::Graphics) }
+
+/// From one probe of `current` at adaptive quality's top rung: the estimated
+/// GPU ms at its 0.67 resolution floor (nearly all of it scales with pixels;
+/// a quarter more for explosions the menu lacks), and what to do. FULL that
+/// cannot hold 60 fps there tries LOW; LOW with three times that headroom
+/// tries FULL once; a FULL tried after LOW that misses returns to LOW.
+/// Never MINIMUM: that is the headset's look, chosen by hand.
+fn probe_decision(current: crate::graphics::Graphics, gpu_ms: f64, tried: &[&str]) -> (f64, ProbeNext) {
+    use crate::graphics::Graphics;
+    let floor_ms = gpu_ms * (0.1 + 0.9 * 0.67 * 0.67) * 1.25;
+    let budget = 1000.0 / 60.0;
+    let next = if current == Graphics::FULL {
+        if floor_ms <= budget { ProbeNext::Keep(Graphics::FULL) }
+        else if tried.contains(&"low") { ProbeNext::Keep(Graphics::LOW) }
+        else { ProbeNext::Try(Graphics::LOW) }
+    } else if floor_ms * 3.0 <= budget && !tried.contains(&"full") { ProbeNext::Try(Graphics::FULL) }
+    else { ProbeNext::Keep(Graphics::LOW) };
+    (floor_ms, next)
+}
+
 pub(crate) fn settings_path() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("APPDATA").map(std::path::PathBuf::from))
@@ -884,6 +908,40 @@ impl app::Game for Gg {
         println!("graphics: too slow, {} from the next round", lower.name());
         self.hud.announce(format!("Graphics lowered to {} for speed (Settings)", lower.name().to_uppercase()), 4.0, 0.0);
     }
+
+    /// AUTO measures the start menu's live stadium once per profile, screen
+    /// and build (cached), after the menu settles and the bakes finish.
+    fn probe_scene(&self) -> Option<u64> {
+        if crate::graphics::fixed() || self.replay.is_some() || self.settings_file.is_none() || self.ui.graphics != "auto" { return None; }
+        if self.ui.screen != hud::menus::Screen::Start || self.ui.age < 1.0 || self.vis.stadium.baking() || self.replay_size[0] == 0 { return None; }
+        if crate::graphics::cached_probe(Some(self.replay_size)).is_some() && self.probe_tries.is_empty() { return None; }
+        let g = crate::graphics::get();
+        if self.probe_tries.contains(&g.name()) { return None; }
+        Some(match g.name() { "full" => 1, "low" => 2, _ => 3 } << 32 | u64::from(self.replay_size[0]) << 16 | u64::from(self.replay_size[1]))
+    }
+
+    /// AUTO's profile from the probe (see [`probe_decision`]); a profile to
+    /// try next is switched to now, on the start screen, and probed again.
+    fn probed(&mut self, r: app::ProbeResult) {
+        let g = crate::graphics::get();
+        self.probe_tries.push(g.name());
+        let (floor_ms, next) = probe_decision(g, r.gpu_ms_median, &self.probe_tries);
+        let line = format!("probe: {} at {:.2} ms GPU ({}x{}); about {:.1} ms at the lowest resolution with effects; {}",
+            g.name(), r.gpu_ms_median, r.render_size[0], r.render_size[1], floor_ms,
+            match next { ProbeNext::Keep(d) => format!("AUTO = {}", d.name()), ProbeNext::Try(t) => format!("trying {} next", t.name()) });
+        println!("graphics: {line}");
+        crate::graphics::log(&line);
+        match next {
+            ProbeNext::Try(t) => self.use_graphics(t),
+            ProbeNext::Keep(d) => {
+                if d != g { self.use_graphics(d); }
+                crate::graphics::set_probed(d);
+                crate::graphics::cache_probe(r.output_size, d, r.gpu_ms_median);
+            }
+        }
+    }
+
+    fn quality_event(&mut self, line: &str) { crate::graphics::log(line); }
 
     fn local_players(&self) -> usize { if self.replay.is_some() { 1 } else { self.slots.len() } }
 
@@ -1649,6 +1707,20 @@ pub fn run(args: &Args) -> Result<(), String> {
 mod tests {
     use super::*;
     use app::Game;
+
+    #[test]
+    fn the_start_probe_keeps_full_where_60_fps_holds_and_never_picks_minimum() {
+        use crate::graphics::Graphics;
+        // M5 Pro, 1440p full: 15-21 ms at the top rung, about 8 at the floor.
+        assert_eq!(probe_decision(Graphics::FULL, 21.0, &["full"]).1, ProbeNext::Keep(Graphics::FULL));
+        // Two and a half times slower (an M1 Pro): try LOW, then keep it.
+        assert_eq!(probe_decision(Graphics::FULL, 50.0, &["full"]).1, ProbeNext::Try(Graphics::LOW));
+        assert_eq!(probe_decision(Graphics::LOW, 40.0, &["full", "low"]).1, ProbeNext::Keep(Graphics::LOW));
+        // A base chip starting on LOW with plenty of room tries FULL once.
+        assert_eq!(probe_decision(Graphics::LOW, 6.0, &["low"]).1, ProbeNext::Try(Graphics::FULL));
+        assert_eq!(probe_decision(Graphics::FULL, 40.0, &["low", "full"]).1, ProbeNext::Keep(Graphics::LOW));
+        assert_eq!(probe_decision(Graphics::LOW, 6.0, &["low", "full"]).1, ProbeNext::Keep(Graphics::LOW));
+    }
 
     fn press(b: u32) -> Controls { Controls { held: Buttons(b), pressed: Buttons(b), ..Default::default() } }
     fn idle(n: u32) -> Vec<(Device, Controls)> { std::iter::once(Device::Keyboard).chain((0..n).map(Device::Pad)).map(|d| (d, Controls::default())).collect() }
